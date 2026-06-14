@@ -1,0 +1,23 @@
+[Unit]
+Description=Greyproxy network proxy service
+ConditionFileIsExecutable=/home/theo/.local/bin/greyproxy
+
+
+[Service]
+StartLimitInterval=5
+StartLimitBurst=10
+ExecStart=/home/theo/.local/bin/greyproxy "serve"
+
+
+
+
+
+
+
+Restart=always
+
+RestartSec=120
+EnvironmentFile=-/etc/sysconfig/greyproxy
+
+[Install]
+WantedBy=multi-user.target
