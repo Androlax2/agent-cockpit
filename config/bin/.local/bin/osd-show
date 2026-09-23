@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Send one command to the OSD daemon (~/.config/osd/osd.py): osd-show volume 45 | mute | brightness 60
+fifo="${XDG_RUNTIME_DIR:-/tmp}/osd.fifo"
+[[ -p $fifo ]] || exit 0
+printf '%s\n' "$*" > "$fifo"
