@@ -1,3 +1,6 @@
 #!/bin/sh
 # Keep this launcher separate from the binary replaced by vendor updates.
-exec "$HOME/.local/bin/greywall" --auto-profile --profile claude -- "$HOME/.local/bin/claude" "$@"
+# Chrome writes its crash reports under the config dir even headless; give it one the sandbox allows.
+export CHROME_CONFIG_HOME="$HOME/.cache/chrome-sandbox"
+mkdir -p "$CHROME_CONFIG_HOME"
+exec "$HOME/.local/bin/greywall" --auto-profile --profile claude --allow-path "$CHROME_CONFIG_HOME" -- "$HOME/.local/bin/claude" "$@"

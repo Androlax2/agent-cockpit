@@ -9,6 +9,16 @@
         "action": "allow"
       },
       {
+        "destination": "*.frame.claudeusercontent.com",
+        "port": "443",
+        "action": "allow"
+      },
+      {
+        "destination": "assets-proxy.anthropic.com",
+        "port": "443",
+        "action": "allow"
+      },
+      {
         "destination": "api.anthropic.com",
         "port": "443",
         "action": "allow"
@@ -25,6 +35,31 @@
       },
       {
         "destination": "github.com",
+        "port": "443",
+        "action": "allow"
+      },
+      {
+        "destination": "claude.ai",
+        "port": "443",
+        "action": "allow"
+      },
+      {
+        "destination": "*.claude.ai",
+        "port": "443",
+        "action": "allow"
+      },
+      {
+        "destination": "*.claudeusercontent.com",
+        "port": "443",
+        "action": "allow"
+      },
+      {
+        "destination": "fonts.googleapis.com",
+        "port": "443",
+        "action": "allow"
+      },
+      {
+        "destination": "fonts.gstatic.com",
         "port": "443",
         "action": "allow"
       },

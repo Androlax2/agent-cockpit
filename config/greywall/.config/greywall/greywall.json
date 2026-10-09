@@ -1,6 +1,14 @@
 {
   "filesystem": {
     "defaultDenyRead": true,
+    "allowRead": [
+      "~/.cache/chrome-sandbox",
+      "/run/user/1000/wayland-1"
+    ],
+    "allowWrite": [
+      "~/.cache/chrome-sandbox",
+      "/run/user/1000/wayland-1"
+    ],
     "denyRead": [
       "~/.ssh/id_*",
       "~/.gnupg/**",

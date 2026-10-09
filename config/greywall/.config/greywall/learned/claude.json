@@ -1,0 +1,219 @@
+// Learned profile for "claude"
+// Updated by greywall after profile drift resolution
+{
+  "network": {
+    "rules": [
+      {
+        "destination": "api.anthropic.com",
+        "port": "443",
+        "action": "allow"
+      },
+      {
+        "destination": "mcp-proxy.anthropic.com",
+        "port": "443",
+        "action": "allow"
+      },
+      {
+        "destination": "downloads.claude.ai",
+        "port": "443",
+        "action": "allow"
+      },
+      {
+        "destination": "platform.claude.com",
+        "port": "443",
+        "action": "allow"
+      },
+      {
+        "destination": "github.com",
+        "port": "443",
+        "action": "allow"
+      },
+      {
+        "destination": "api.github.com",
+        "port": "443",
+        "action": "allow"
+      },
+      {
+        "destination": "*.githubusercontent.com",
+        "port": "443",
+        "action": "allow"
+      },
+      {
+        "destination": "registry.npmjs.org",
+        "port": "443",
+        "action": "allow"
+      },
+      {
+        "destination": "storage.googleapis.com",
+        "port": "443",
+        "action": "allow"
+      },
+      {
+        "destination": "claude.ai",
+        "port": "443",
+        "action": "allow"
+      },
+      {
+        "destination": "*.claude.ai",
+        "port": "443",
+        "action": "allow"
+      },
+      {
+        "destination": "console.anthropic.com",
+        "port": "443",
+        "action": "allow"
+      },
+      {
+        "destination": "statsig.anthropic.com",
+        "port": "443",
+        "action": "allow"
+      },
+      {
+        "destination": "assets-proxy.anthropic.com",
+        "port": "443",
+        "action": "allow"
+      },
+      {
+        "destination": "*.claudeusercontent.com",
+        "port": "443",
+        "action": "allow"
+      },
+      {
+        "destination": "*.frame.claudeusercontent.com",
+        "port": "443",
+        "action": "allow"
+      },
+      {
+        "destination": "fonts.googleapis.com",
+        "port": "443",
+        "action": "allow"
+      },
+      {
+        "destination": "fonts.gstatic.com",
+        "port": "443",
+        "action": "allow"
+      },
+      {
+        "destination": "drivemcp.googleapis.com",
+        "port": "443",
+        "action": "allow"
+      },
+      {
+        "destination": "calendarmcp.googleapis.com",
+        "port": "443",
+        "action": "allow"
+      },
+      {
+        "destination": "gmailmcp.googleapis.com",
+        "port": "443",
+        "action": "allow"
+      }
+    ]
+  },
+  "filesystem": {
+    "allowRead": [
+      ".",
+      "~/CLAUDE.md",
+      "~/AGENTS.md",
+      "~/.gitconfig",
+      "~/.gitignore",
+      "~/.config/git",
+      "~/.ssh/config",
+      "~/.ssh/known_hosts",
+      "~/.ssh/allowed_signers",
+      "~/.skills",
+      "~/.agents",
+      "~/.claude/agents",
+      "~/.claude/skills",
+      "~/.config/gh",
+      "~/.config/glab-cli",
+      "~/.claude",
+      "~/.claude.json",
+      "~/.claude.json.*",
+      "~/.config/claude",
+      "~/.local/share/claude",
+      "~/.local/state/claude",
+      "~/.mcp.json",
+      "~/.cache/claude",
+      "~/.cache/chrome-sandbox"
+    ],
+    "denyRead": [
+      "~/.ssh/id_*",
+      "~/.gnupg/**",
+      ".env",
+      ".env.*",
+      "~/.aws/**",
+      "~/.kube/**",
+      "~/.docker/config.json",
+      "~/.netrc",
+      "~/.git-credentials",
+      "~/.password-store/**",
+      "~/.local/share/keyrings/**",
+      "~/.mozilla/**",
+      "~/.config/chromium/**",
+      "~/.config/google-chrome/**",
+      "~/.config/.wrangler/**"
+    ],
+    "allowWrite": [
+      ".",
+      "~/.skills",
+      "~/.agents",
+      "~/AGENTS.md",
+      "~/.config/gh",
+      "~/.cache/gh",
+      "~/.local/share/gh",
+      "~/.local/state/gh",
+      "~/.ssh/known_hosts",
+      "~/.claude",
+      "~/.claude.json",
+      "~/.claude.lock",
+      "~/.cache/claude",
+      "~/.config/claude",
+      "~/.local/state/claude",
+      "~/.local/share/claude",
+      "~/.mcp.json",
+      "~/.cache/chrome-sandbox"
+    ],
+    "denyWrite": [
+      "~/.bashrc",
+      "~/.bash_profile",
+      "~/.zshrc",
+      "~/.zprofile",
+      "~/.profile",
+      "~/.ssh",
+      "~/.gnupg",
+      "~/.config/fish",
+      "~/.local/bin",
+      "~/.config/greywall",
+      "~/dotfiles/config/greywall",
+      "~/.config/systemd",
+      "~/.config/autostart",
+      "~/.gitconfig",
+      ".git/hooks"
+    ]
+  },
+  "command": {
+    "deny": [
+      "sudo",
+      "git push --force",
+      "git push -f",
+      "git push origin main",
+      "npm publish",
+      "pnpm publish",
+      "gh pr merge",
+      "gh repo delete",
+      "gh secret"
+    ],
+    "allow": null,
+    "useDefaults": true
+  },
+  "ssh": {
+    "allowedHosts": null,
+    "deniedHosts": null,
+    "allowedCommands": null,
+    "deniedCommands": null
+  },
+  "credentials": {},
+  "schemaVersion": 1,
+  "generatedBy": "0.3.7"
+}

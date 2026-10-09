@@ -1,0 +1,191 @@
+{
+  "network": {
+    "rules": [
+      {
+        "destination": "api.anthropic.com",
+        "port": "443",
+        "action": "allow"
+      },
+      {
+        "destination": "claude.ai",
+        "port": "443",
+        "action": "allow"
+      },
+      {
+        "destination": "*.claude.ai",
+        "port": "443",
+        "action": "allow"
+      },
+      {
+        "destination": "console.anthropic.com",
+        "port": "443",
+        "action": "allow"
+      },
+      {
+        "destination": "statsig.anthropic.com",
+        "port": "443",
+        "action": "allow"
+      },
+      {
+        "destination": "assets-proxy.anthropic.com",
+        "port": "443",
+        "action": "allow"
+      },
+      {
+        "destination": "*.claudeusercontent.com",
+        "port": "443",
+        "action": "allow"
+      },
+      {
+        "destination": "*.frame.claudeusercontent.com",
+        "port": "443",
+        "action": "allow"
+      },
+      {
+        "destination": "storage.googleapis.com",
+        "port": "443",
+        "action": "allow"
+      },
+      {
+        "destination": "github.com",
+        "port": "443",
+        "action": "allow"
+      },
+      {
+        "destination": "api.github.com",
+        "port": "443",
+        "action": "allow"
+      },
+      {
+        "destination": "*.githubusercontent.com",
+        "port": "443",
+        "action": "allow"
+      },
+      {
+        "destination": "registry.npmjs.org",
+        "port": "443",
+        "action": "allow"
+      },
+      {
+        "destination": "fonts.googleapis.com",
+        "port": "443",
+        "action": "allow"
+      },
+      {
+        "destination": "fonts.gstatic.com",
+        "port": "443",
+        "action": "allow"
+      },
+      {
+        "destination": "drivemcp.googleapis.com",
+        "port": "443",
+        "action": "allow"
+      },
+      {
+        "destination": "calendarmcp.googleapis.com",
+        "port": "443",
+        "action": "allow"
+      },
+      {
+        "destination": "gmailmcp.googleapis.com",
+        "port": "443",
+        "action": "allow"
+      }
+    ]
+  },
+  "filesystem": {
+    "allowRead": [
+      ".",
+      "~/CLAUDE.md",
+      "~/AGENTS.md",
+      "~/.gitconfig",
+      "~/.gitignore",
+      "~/.config/git",
+      "~/.ssh/config",
+      "~/.ssh/known_hosts",
+      "~/.ssh/allowed_signers",
+      "~/.skills",
+      "~/.agents",
+      "~/.claude",
+      "~/.claude.json",
+      "~/.local/share/claude",
+      "~/.cache/claude",
+      "~/.config/gh",
+      "~/.cache/chrome-sandbox"
+    ],
+    "denyRead": [
+      "~/.ssh/id_*",
+      "~/.gnupg/**",
+      "~/.aws/**",
+      "~/.kube/**",
+      "~/.docker/config.json",
+      "~/.netrc",
+      "~/.git-credentials",
+      "~/.password-store/**",
+      "~/.local/share/keyrings/**",
+      "~/.mozilla/**",
+      "~/.config/chromium/**",
+      "~/.config/google-chrome/**",
+      "~/.config/.wrangler/**",
+      ".env",
+      ".env.*"
+    ],
+    "allowWrite": [
+      ".",
+      "~/.skills",
+      "~/.agents",
+      "~/AGENTS.md",
+      "~/.claude",
+      "~/.claude.json",
+      "~/.local/share/claude",
+      "~/.cache/claude",
+      "~/.config/gh",
+      "~/.cache/gh",
+      "~/.local/share/gh",
+      "~/.local/state/gh",
+      "~/.ssh/known_hosts",
+      "~/.cache/chrome-sandbox"
+    ],
+    "denyWrite": [
+      "~/.bashrc",
+      "~/.bash_profile",
+      "~/.zshrc",
+      "~/.zprofile",
+      "~/.profile",
+      "~/.config/fish",
+      "~/.local/bin",
+      "~/.config/greywall",
+      "~/dotfiles/config/greywall",
+      "~/.config/systemd",
+      "~/.config/autostart",
+      "~/.gitconfig",
+      "~/.ssh",
+      "~/.gnupg",
+      ".git/hooks"
+    ]
+  },
+  "command": {
+    "deny": [
+      "sudo",
+      "git push --force",
+      "git push -f",
+      "git push origin main",
+      "npm publish",
+      "pnpm publish",
+      "gh pr merge",
+      "gh repo delete",
+      "gh secret"
+    ],
+    "allow": null,
+    "useDefaults": true
+  },
+  "ssh": {
+    "allowedHosts": null,
+    "deniedHosts": null,
+    "allowedCommands": null,
+    "deniedCommands": null
+  },
+  "credentials": {},
+  "schemaVersion": 1,
+  "generatedBy": "0.3.7"
+}
