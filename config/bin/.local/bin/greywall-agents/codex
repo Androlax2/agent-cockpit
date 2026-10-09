@@ -1,0 +1,3 @@
+#!/bin/sh
+# Keep this launcher separate from the binary replaced by vendor updates.
+exec "$HOME/.local/bin/greywall" --auto-profile --profile codex -- "$HOME/.local/npm/bin/codex" "$@"
