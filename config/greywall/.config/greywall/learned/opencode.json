@@ -1,0 +1,123 @@
+// Learned profile for "opencode"
+// Updated by greywall after profile drift resolution
+{
+  "network": {
+    "rules": [
+      {
+        "destination": "api.openai.com",
+        "port": "443",
+        "action": "allow"
+      },
+      {
+        "destination": "api.anthropic.com",
+        "port": "443",
+        "action": "allow"
+      },
+      {
+        "destination": "opencode.ai",
+        "port": "443",
+        "action": "allow"
+      },
+      {
+        "destination": "models.dev",
+        "port": "443",
+        "action": "allow"
+      },
+      {
+        "destination": "github.com",
+        "port": "443",
+        "action": "allow"
+      },
+      {
+        "destination": "api.github.com",
+        "port": "443",
+        "action": "allow"
+      },
+      {
+        "destination": "*.githubusercontent.com",
+        "port": "443",
+        "action": "allow"
+      },
+      {
+        "destination": "registry.npmjs.org",
+        "port": "443",
+        "action": "allow"
+      }
+    ]
+  },
+  "filesystem": {
+    "allowRead": [
+      ".",
+      "~/CLAUDE.md",
+      "~/AGENTS.md",
+      "~/.gitconfig",
+      "~/.gitignore",
+      "~/.config/git",
+      "~/.ssh/config",
+      "~/.ssh/known_hosts",
+      "~/.ssh/allowed_signers",
+      "~/.skills",
+      "~/.agents",
+      "~/.claude/agents",
+      "~/.claude/skills",
+      "~/.config/gh",
+      "~/.config/glab-cli",
+      "~/.opencode",
+      "~/.opencode.json",
+      "~/.config/opencode",
+      "~/.cache/opencode",
+      "~/.local/share/opencode",
+      "~/.local/share/opentui",
+      "~/.local/state/opencode",
+      "~/.config/github-copilot",
+      "~/dotfiles/config/opencode"
+    ],
+    "denyRead": [
+      "~/.ssh/id_*",
+      "~/.gnupg/**",
+      ".env",
+      ".env.*"
+    ],
+    "allowWrite": [
+      ".",
+      "~/.skills",
+      "~/.agents",
+      "~/AGENTS.md",
+      "~/.config/gh",
+      "~/.cache/gh",
+      "~/.local/share/gh",
+      "~/.local/state/gh",
+      "~/.ssh/known_hosts",
+      "~/.opencode",
+      "~/.opencode.json",
+      "~/.config/opencode",
+      "~/.cache/opencode",
+      "~/.local/share/opencode",
+      "~/.local/share/opentui",
+      "~/.local/state/opencode"
+    ],
+    "denyWrite": [
+      "~/.bashrc",
+      "~/.bash_profile",
+      "~/.zshrc",
+      "~/.zprofile",
+      "~/.profile",
+      "~/.ssh",
+      "~/.gnupg"
+    ]
+  },
+  "command": {
+    "deny": null,
+    "allow": null,
+    "useDefaults": true
+  },
+  "ssh": {
+    "allowedHosts": null,
+    "deniedHosts": null,
+    "allowedCommands": null,
+    "deniedCommands": null
+  },
+  "credentials": {},
+  "schemaVersion": 1,
+  "generatedBy": "0.3.7"
+}

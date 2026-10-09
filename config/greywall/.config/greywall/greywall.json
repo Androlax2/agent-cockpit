@@ -1,0 +1,47 @@
+{
+  "filesystem": {
+    "defaultDenyRead": true,
+    "denyRead": [
+      "~/.ssh/id_*",
+      "~/.gnupg/**",
+      "~/.aws/**",
+      "~/.kube/**",
+      "~/.docker/config.json",
+      "~/.netrc",
+      "~/.git-credentials",
+      "~/.password-store/**",
+      "~/.local/share/keyrings/**",
+      "~/.mozilla/**",
+      "~/.config/chromium/**",
+      "~/.config/google-chrome/**",
+      ".env",
+      ".env.*"
+    ],
+    "denyWrite": [
+      "~/.config/fish",
+      "~/.local/bin",
+      "~/.config/greywall",
+      "~/dotfiles/config/greywall",
+      "~/.config/systemd",
+      "~/.config/autostart",
+      "~/.gitconfig",
+      "~/.ssh",
+      "~/.gnupg",
+      ".git/hooks"
+    ]
+  },
+  "command": {
+    "useDefaults": true,
+    "deny": [
+      "sudo",
+      "git push --force",
+      "git push -f",
+      "git push origin main",
+      "npm publish",
+      "pnpm publish",
+      "gh pr merge",
+      "gh repo delete",
+      "gh secret"
+    ]
+  }
+}
