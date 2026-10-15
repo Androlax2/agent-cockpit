@@ -3,11 +3,13 @@
     "defaultDenyRead": true,
     "allowRead": [
       "~/.cache/chrome-sandbox",
-      "/run/user/1000/wayland-1"
+      "/run/user/1000/wayland-1",
+      "/run/user/1000/opusline-docker"
     ],
     "allowWrite": [
       "~/.cache/chrome-sandbox",
-      "/run/user/1000/wayland-1"
+      "/run/user/1000/wayland-1",
+      "/run/user/1000/opusline-docker"
     ],
     "denyRead": [
       "~/.ssh/id_*",
