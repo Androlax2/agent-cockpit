@@ -4,12 +4,14 @@
     "allowRead": [
       "~/.cache/chrome-sandbox",
       "/run/user/1000/wayland-1",
-      "/run/user/1000/opusline-docker"
+      "/run/user/1000/opusline-docker",
+      "~/dotfiles/config/claude"
     ],
     "allowWrite": [
       "~/.cache/chrome-sandbox",
       "/run/user/1000/wayland-1",
-      "/run/user/1000/opusline-docker"
+      "/run/user/1000/opusline-docker",
+      "/run/user/1000/osd.fifo"
     ],
     "denyRead": [
       "~/.ssh/id_*",
