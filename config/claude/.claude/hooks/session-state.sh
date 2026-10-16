@@ -49,11 +49,14 @@ case $event in
         ;;
     Notification)
         message=$(jq -r '.message | gsub("\\s+"; " ")' <<<"$payload")
-        # Unknown types count as "needs you": showing too much beats hiding a real request.
+        # Requests for a human stick and turn the session red; turn-end notices leave it waiting;
+        # anything informational (auth, quota, computer use, plugins) shows its message and keeps the state.
         case $(jq -r '.notification_type // ""' <<<"$payload") in
+            permission_prompt | worker_permission_prompt | elicitation_dialog | elicitation_url_dialog | agent_needs_input)
+                state=needs-you; sticky=true ;;
             idle_prompt) state=waiting; sticky=true ;;
-            auth_success) state=waiting ;;
-            *) state=needs-you; sticky=true ;;
+            agent_completed | push_notification) state=waiting ;;
+            *) state= ;;
         esac
         ;;
     Stop)
