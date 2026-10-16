@@ -1,8 +1,50 @@
+// Learned profile for "claude"
+// Updated by greywall after profile drift resolution
 {
   "network": {
     "rules": [
       {
         "destination": "api.anthropic.com",
+        "port": "443",
+        "action": "allow"
+      },
+      {
+        "destination": "mcp-proxy.anthropic.com",
+        "port": "443",
+        "action": "allow"
+      },
+      {
+        "destination": "downloads.claude.ai",
+        "port": "443",
+        "action": "allow"
+      },
+      {
+        "destination": "platform.claude.com",
+        "port": "443",
+        "action": "allow"
+      },
+      {
+        "destination": "github.com",
+        "port": "443",
+        "action": "allow"
+      },
+      {
+        "destination": "api.github.com",
+        "port": "443",
+        "action": "allow"
+      },
+      {
+        "destination": "*.githubusercontent.com",
+        "port": "443",
+        "action": "allow"
+      },
+      {
+        "destination": "registry.npmjs.org",
+        "port": "443",
+        "action": "allow"
+      },
+      {
+        "destination": "storage.googleapis.com",
         "port": "443",
         "action": "allow"
       },
@@ -38,31 +80,6 @@
       },
       {
         "destination": "*.frame.claudeusercontent.com",
-        "port": "443",
-        "action": "allow"
-      },
-      {
-        "destination": "storage.googleapis.com",
-        "port": "443",
-        "action": "allow"
-      },
-      {
-        "destination": "github.com",
-        "port": "443",
-        "action": "allow"
-      },
-      {
-        "destination": "api.github.com",
-        "port": "443",
-        "action": "allow"
-      },
-      {
-        "destination": "*.githubusercontent.com",
-        "port": "443",
-        "action": "allow"
-      },
-      {
-        "destination": "registry.npmjs.org",
         "port": "443",
         "action": "allow"
       },
@@ -106,16 +123,25 @@
       "~/.ssh/allowed_signers",
       "~/.skills",
       "~/.agents",
+      "~/.claude/agents",
+      "~/.claude/skills",
+      "~/.config/gh",
+      "~/.config/glab-cli",
       "~/.claude",
       "~/.claude.json",
+      "~/.claude.json.*",
+      "~/.config/claude",
       "~/.local/share/claude",
+      "~/.local/state/claude",
+      "~/.mcp.json",
       "~/.cache/claude",
-      "~/.config/gh",
       "~/.cache/chrome-sandbox"
     ],
     "denyRead": [
       "~/.ssh/id_*",
       "~/.gnupg/**",
+      ".env",
+      ".env.*",
       "~/.aws/**",
       "~/.kube/**",
       "~/.docker/config.json",
@@ -126,24 +152,21 @@
       "~/.mozilla/**",
       "~/.config/chromium/**",
       "~/.config/google-chrome/**",
-      "~/.config/.wrangler/**",
-      ".env",
-      ".env.*"
+      "~/.config/.wrangler/**"
     ],
     "allowWrite": [
       ".",
-      "~/.skills",
-      "~/.agents",
-      "~/AGENTS.md",
-      "~/.claude",
-      "~/.claude.json",
-      "~/.local/share/claude",
-      "~/.cache/claude",
-      "~/.config/gh",
       "~/.cache/gh",
-      "~/.local/share/gh",
       "~/.local/state/gh",
       "~/.ssh/known_hosts",
+      "~/.claude",
+      "~/.claude.json",
+      "~/.claude.lock",
+      "~/.cache/claude",
+      "~/.config/claude",
+      "~/.local/state/claude",
+      "~/.local/share/claude",
+      "~/.mcp.json",
       "~/.cache/chrome-sandbox"
     ],
     "denyWrite": [
@@ -152,6 +175,8 @@
       "~/.zshrc",
       "~/.zprofile",
       "~/.profile",
+      "~/.ssh",
+      "~/.gnupg",
       "~/.config/fish",
       "~/.local/bin",
       "~/.config/greywall",
@@ -159,8 +184,6 @@
       "~/.config/systemd",
       "~/.config/autostart",
       "~/.gitconfig",
-      "~/.ssh",
-      "~/.gnupg",
       ".git/hooks"
     ]
   },

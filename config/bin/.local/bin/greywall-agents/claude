@@ -4,14 +4,47 @@
 export CHROME_CONFIG_HOME="$HOME/.cache/chrome-sandbox"
 mkdir -p "$CHROME_CONFIG_HOME"
 
-# A project with its own isolated Docker daemon (agent-docker-add) has its socket at the
-# project root. Point Docker at it and let the sandbox reach that one file, even when
-# claude starts in a subfolder that greywall would otherwise mount alone.
-project_root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+project_root=$(git rev-parse --show-toplevel 2>/dev/null || pwd -P)
+project_name=$(basename "$project_root")
+greywall_options="--auto-profile --profile claude --allow-path $CHROME_CONFIG_HOME"
+
+# Greyproxy re-signs HTTPS with a CA the system deliberately does not trust. Greywall hands the
+# sandbox that CA alone (SSL_CERT_FILE), which git, curl and PHP ignore, so they get a bundle of
+# the system roots plus Greyproxy's CA. Rebuilt on every start so a regenerated CA is picked up;
+# ~/.cache/agent-ca is readable but not writable inside the sandbox.
+ca_dir="$HOME/.cache/agent-ca"
+mkdir -p "$ca_dir/php"
+cat /etc/ssl/cert.pem "$HOME/.local/share/greyproxy/ca-cert.pem" > "$ca_dir/bundle.pem.new"
+mv "$ca_dir/bundle.pem.new" "$ca_dir/bundle.pem"
+printf 'openssl.cafile=%s\ncurl.cainfo=%s\n' "$ca_dir/bundle.pem" "$ca_dir/bundle.pem" > "$ca_dir/php/zz-agent-ca.ini"
+export GIT_SSL_CAINFO="$ca_dir/bundle.pem"
+export CURL_CA_BUNDLE="$ca_dir/bundle.pem"
+# The leading ":" keeps PHP's own scan directory and adds ours after it.
+export PHP_INI_SCAN_DIR=":$ca_dir/php"
+
+# A per-project GitHub token from the keyring (make agent-github-token PROJECT=<name>).
+# Without one, gh inside the sandbox stays logged out: the keyring itself is hidden from it.
+# It is passed in as-is, not as a greyproxy placeholder: git sends credentials Basic-encoded,
+# where greyproxy cannot swap a placeholder, so git push needs the real, repo-scoped token.
+github_token=$(secret-tool lookup service agent-gh project "$project_name" 2>/dev/null || true)
+if [ -n "$github_token" ]; then
+    export GH_TOKEN="$github_token"
+    greywall_options="$greywall_options --ignore-secret GH_TOKEN"
+fi
+
+# A project with its own isolated Docker daemon (make agent-docker-add PROJECT=<name>) has its
+# socket at the project root. Started in a subfolder, greywall mounts only that folder, so the
+# socket needs a mount of its own; at the project root the folder mount already includes it and
+# stays live when the relay recreates the socket, which a single-file mount would not.
 docker_socket="$project_root/.agent-docker.sock"
 if [ -S "$docker_socket" ]; then
     export DOCKER_HOST="unix://$docker_socket"
     export DOCKER_CONFIG=/tmp/agent-docker-config
-    exec "$HOME/.local/bin/greywall" --auto-profile --profile claude --allow-path "$CHROME_CONFIG_HOME" --allow-path "$docker_socket" -- "$HOME/.local/bin/claude" "$@"
+    if [ "$(pwd -P)" != "$project_root" ]; then
+        greywall_options="$greywall_options --allow-path $docker_socket"
+    fi
 fi
-exec "$HOME/.local/bin/greywall" --auto-profile --profile claude --allow-path "$CHROME_CONFIG_HOME" -- "$HOME/.local/bin/claude" "$@"
+
+# greywall_options is split on spaces on purpose: every path in it is under $HOME, which has none.
+# shellcheck disable=SC2086
+exec "$HOME/.local/bin/greywall" $greywall_options -- "$HOME/.local/bin/claude" "$@"

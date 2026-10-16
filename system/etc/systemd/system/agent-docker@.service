@@ -14,9 +14,12 @@ Environment=DOCKERD_ROOTLESS_ROOTLESSKIT_DISABLE_HOST_LOOPBACK=false
 Environment=HTTP_PROXY=http://%i-docker:proxy@127.0.0.1:43051
 Environment=HTTPS_PROXY=http://%i-docker:proxy@127.0.0.1:43051
 Environment=NO_PROXY=localhost,127.0.0.1
+# Greyproxy intercepts TLS; its CA is trusted here only, not system-wide (make agent-docker-setup).
+Environment=SSL_CERT_FILE=/var/lib/agent-docker/ca-bundle.pem
 RuntimeDirectory=agent-%i
 RuntimeDirectoryMode=0700
 ExecStart=/usr/bin/dockerd-rootless.sh --exec-opt native.cgroupdriver=cgroupfs
+# Filesystem view: an empty /home except this project, and nothing else of yours
 TemporaryFileSystem=/home:ro
 BindPaths=/home/theo/IdeaProjects/%i
 PrivateTmp=yes

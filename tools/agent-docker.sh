@@ -14,6 +14,14 @@ FIRST_UID=2000
 LAST_UID=2999
 EGRESS_TABLE="inet agent_docker_egress"
 
+# Greyproxy intercepts TLS and its CA is deliberately not trusted system-wide, so the agent
+# daemons get a bundle of their own (system roots plus Greyproxy's CA), named in the unit's
+# SSL_CERT_FILE. Run setup again after regenerating Greyproxy's CA.
+SYSTEM_CA_BUNDLE=/etc/ssl/cert.pem
+GREYPROXY_CA=/home/theo/.local/share/greyproxy/ca-cert.pem
+CA_BUNDLE_DIR=/var/lib/agent-docker
+CA_BUNDLE=$CA_BUNDLE_DIR/ca-bundle.pem
+
 die() { echo "agent-docker: $*" >&2; exit 1; }
 
 require_root() { [[ $EUID -eq 0 ]] || die "run it with sudo"; }
@@ -34,6 +42,19 @@ next_free_uid() {
     echo "$uid"
 }
 
+write_ca_bundle() {
+    [[ -r $GREYPROXY_CA ]] || die "greyproxy CA not found at $GREYPROXY_CA"
+    install -d -m 755 "$CA_BUNDLE_DIR"
+    cat "$SYSTEM_CA_BUNDLE" "$GREYPROXY_CA" > "$CA_BUNDLE.new"
+    chmod 644 "$CA_BUNDLE.new"
+    mv "$CA_BUNDLE.new" "$CA_BUNDLE"
+    echo "agent-docker: CA bundle written to $CA_BUNDLE"
+}
+
+restart_running_daemons() {
+    systemctl try-restart 'agent-docker@*.service'
+}
+
 setup() {
     require_root
     getent group "$GROUP" >/dev/null || groupadd --system "$GROUP"
@@ -42,6 +63,8 @@ setup() {
         echo "added $OWNER to $GROUP: log out and back in before using the sockets"
     fi
     require_egress_firewall
+    write_ca_bundle
+    restart_running_daemons
     echo "agent-docker: ready"
 }
 
@@ -51,6 +74,7 @@ add() {
     require_valid_name "$name"
     [[ -d $project ]] || die "no such project: $project"
     getent group "$GROUP" >/dev/null || die "run make agent-docker-setup first"
+    [[ -r $CA_BUNDLE ]] || die "no CA bundle at $CA_BUNDLE: run make agent-docker-setup first"
     require_egress_firewall
     if ! id "$user" >/dev/null 2>&1; then
         useradd --uid "$(next_free_uid)" --gid "$GROUP" --create-home --home-dir "/var/lib/$user" \
@@ -83,9 +107,15 @@ remove() {
 }
 
 status() {
-    getent passwd | awk -F: -v first="$FIRST_UID" -v last="$LAST_UID" '$3 >= first && $3 <= last { print $1 }' \
-        | while read -r user; do
-            local name=${user#agent-} socket
+    local user name socket
+    if [[ -r $CA_BUNDLE ]]; then
+        echo "CA bundle: $CA_BUNDLE, written $(stat -c %y "$CA_BUNDLE" | cut -d. -f1)"
+    else
+        echo "CA bundle: missing (run make agent-docker-setup)"
+    fi
+    getent passwd | awk -F: -v first="$FIRST_UID" -v last="$LAST_UID" '$3 >= first && $3 <= last { print $1 }' |
+        while read -r user; do
+            name=${user#agent-}
             socket=$( [[ -S $PROJECTS_DIR/$name/.agent-docker.sock ]] && echo present || echo missing )
             printf '%-20s daemon=%-8s socket=%s\n' "$name" "$(systemctl is-active "agent-docker@$name" || true)" "$socket"
         done
