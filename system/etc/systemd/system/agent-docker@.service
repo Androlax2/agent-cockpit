@@ -1,0 +1,29 @@
+[Unit]
+Description=Rootless Docker for the %i agent
+After=network-online.target nftables.service
+Wants=network-online.target
+
+[Service]
+User=agent-%i
+Group=agent-docker
+Environment=HOME=/var/lib/agent-%i
+Environment=XDG_RUNTIME_DIR=/run/agent-%i
+Environment=PATH=/usr/bin
+Environment=DOCKERD_ROOTLESS_ROOTLESSKIT_NET=slirp4netns
+Environment=DOCKERD_ROOTLESS_ROOTLESSKIT_DISABLE_HOST_LOOPBACK=false
+Environment=HTTP_PROXY=http://%i-docker:proxy@127.0.0.1:43051
+Environment=HTTPS_PROXY=http://%i-docker:proxy@127.0.0.1:43051
+Environment=NO_PROXY=localhost,127.0.0.1
+RuntimeDirectory=agent-%i
+RuntimeDirectoryMode=0700
+ExecStart=/usr/bin/dockerd-rootless.sh --exec-opt native.cgroupdriver=cgroupfs
+TemporaryFileSystem=/home:ro
+BindPaths=/home/theo/IdeaProjects/%i
+PrivateTmp=yes
+InaccessiblePaths=-/mnt -/media -/srv -/opt -/root -/var/log -/boot
+Delegate=yes
+KillMode=mixed
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

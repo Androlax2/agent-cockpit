@@ -1,0 +1,16 @@
+[Unit]
+Description=Docker socket for the %i agent, inside the project folder
+Requires=agent-docker@%i.service
+After=agent-docker@%i.service
+
+[Service]
+User=agent-%i
+Group=agent-docker
+TemporaryFileSystem=/home:ro
+BindPaths=/home/theo/IdeaProjects/%i
+ExecStart=/usr/bin/socat -t 86400 UNIX-LISTEN:/home/theo/IdeaProjects/%i/.agent-docker.sock,fork,mode=0660,unlink-early UNIX-CONNECT:/run/agent-%i/docker.sock
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

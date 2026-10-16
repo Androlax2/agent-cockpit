@@ -156,12 +156,7 @@
     ],
     "allowWrite": [
       ".",
-      "~/.skills",
-      "~/.agents",
-      "~/AGENTS.md",
-      "~/.config/gh",
       "~/.cache/gh",
-      "~/.local/share/gh",
       "~/.local/state/gh",
       "~/.ssh/known_hosts",
       "~/.claude",

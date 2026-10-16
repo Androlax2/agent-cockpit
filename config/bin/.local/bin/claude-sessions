@@ -41,6 +41,15 @@ sidebar_width() {
     fi
 }
 
+# tmux expands formats in -c start directories, so refuse any directory containing #.
+require_plain_directory() {
+    local directory=$1
+    if [[ $directory == *"#"* || ! -d $directory ]]; then
+        echo "claude-sessions: refusing directory $directory" >&2
+        exit 1
+    fi
+}
+
 ensure_manager() {
     if ! tmux has-session -t "=$MANAGER" 2>/dev/null; then
         tmux new-session -d -s "$MANAGER" -n manager -x 240 -y 60 claude-sessions-sidebar
@@ -62,6 +71,7 @@ ensure_manager() {
 view_session() {
     local id=$1 pane target
     if [[ $id == claude-retry-* ]]; then
+        [[ $id == *"#"* ]] && { echo "claude-sessions: refusing session name $id" >&2; return 1; }
         target=$id
     else
         pane=$(jq -r --arg id "$id" '.sessions[] | select(.session == $id) | .tmux_pane // empty' "$SNAPSHOT")
@@ -84,6 +94,7 @@ focus_viewer() {
 new_session() {
     local directory=$1
     shift
+    require_plain_directory "$directory"
     ensure_manager
     # fish owns the `claude` function (greywall + claude-auto-retry). With no tmux variable left in
     # the environment the launcher creates the session's own tmux session and attaches it here;
@@ -95,6 +106,7 @@ new_session() {
 }
 
 resume_session() {
+    require_plain_directory "$1"
     ensure_manager
     tmux respawn-pane -k -t "$VIEWER_PANE" -c "$1" \
         env -u TMUX -u TMUX_PANE CLAUDE_SESSIONS_INSIDE=1 fish -ic 'claude --resume $argv' "$2"

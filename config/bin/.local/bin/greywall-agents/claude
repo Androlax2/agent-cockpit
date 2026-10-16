@@ -3,4 +3,15 @@
 # Chrome writes its crash reports under the config dir even headless; give it one the sandbox allows.
 export CHROME_CONFIG_HOME="$HOME/.cache/chrome-sandbox"
 mkdir -p "$CHROME_CONFIG_HOME"
+
+# A project with its own isolated Docker daemon (agent-docker-add) has its socket at the
+# project root. Point Docker at it and let the sandbox reach that one file, even when
+# claude starts in a subfolder that greywall would otherwise mount alone.
+project_root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+docker_socket="$project_root/.agent-docker.sock"
+if [ -S "$docker_socket" ]; then
+    export DOCKER_HOST="unix://$docker_socket"
+    export DOCKER_CONFIG=/tmp/agent-docker-config
+    exec "$HOME/.local/bin/greywall" --auto-profile --profile claude --allow-path "$CHROME_CONFIG_HOME" --allow-path "$docker_socket" -- "$HOME/.local/bin/claude" "$@"
+fi
 exec "$HOME/.local/bin/greywall" --auto-profile --profile claude --allow-path "$CHROME_CONFIG_HOME" -- "$HOME/.local/bin/claude" "$@"
