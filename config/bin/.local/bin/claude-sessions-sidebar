@@ -1,0 +1,768 @@
+#!/usr/bin/env python3
+"""Sidebar of the Claude session manager (left pane of `claude-sessions`).
+
+RUNNING: the sessions the OSD daemon knows (state, title, model and context from the
+statusline script) most urgent first, pinned ones on top, then every other claude-retry-*
+tmux session with an unknown state. Below, past sessions from ~/.claude/history.jsonl under
+day headings (today, yesterday, this week, older) and, inside each, the project they belong
+to; sessions with nothing worth resuming (no generated title and a trivial prompt) stay
+hidden unless shown with `.`.
+
+Keys: j/k or arrows move, 1-9 jump to a running session, Enter opens a running session (shows
+it and moves the cursor into it) or resumes a past one, Tab/l/Right move the cursor into the
+session, n peeks at the next session that needs you, / filters by project or title (Esc
+clears), a starts claude in a project picked with fzf, p pins a running session on top,
+x kills a running session or hides a past one (u undoes), h or Left folds a project, . shows
+or hides the trivial sessions, ? shows the help, q or Ctrl-C close the manager window. Mouse:
+click selects, double-click opens. The sidebar's width, pins, folds and hidden sessions
+persist in ~/.local/state/claude-sessions/view.json.
+Shift+Left / Shift+Right (tmux.conf) move between the list and the session.
+"""
+import curses
+import glob
+import json
+import os
+import re
+import subprocess
+import time
+from datetime import date, datetime
+
+RUNTIME_DIR = os.environ.get("XDG_RUNTIME_DIR", "/tmp")
+SNAPSHOT_PATH = os.path.join(RUNTIME_DIR, "claude-sessions.json")
+CURRENT_PATH = os.path.join(RUNTIME_DIR, "claude-sessions.current")
+HISTORY_PATH = os.environ.get("CLAUDE_SESSIONS_HISTORY", os.path.expanduser("~/.claude/history.jsonl"))
+TRANSCRIPTS_DIR = os.environ.get("CLAUDE_SESSIONS_TRANSCRIPTS", os.path.expanduser("~/.claude/projects"))
+STATUSLINE_DIR = os.path.expanduser("~/.cache/claude")
+STATUSLINE_MAX_AGE_S = 3600
+VIEW_STATE_PATH = os.path.join(os.environ.get("XDG_STATE_HOME", os.path.expanduser("~/.local/state")),
+                               "claude-sessions", "view.json")
+PROJECT_PATTERNS = ("~/IdeaProjects/*/", "~/dotfiles/")
+POLL_MS = 500
+RETRY_SESSION_PREFIX = "claude-retry-"
+RECENT_LIMIT = 40
+TITLE_SCAN_BYTES = 2 * 1024 * 1024  # the ai-title record lands early in a transcript
+TITLES_PER_TICK = 8
+TRIVIAL_PROMPT_WORDS = 4
+GLYPHS = {"working": "●", "waiting": "○", "needs-you": "!", "unknown": "·", "recent": "↻"}
+# kitty's 16-colour palette is Tokyo Night, so plain colour indexes match the rest of the desktop.
+RED, GREEN, YELLOW, BLUE, MAGENTA, CYAN, FG_DARK, BG_HIGHLIGHT, FG = 1, 2, 3, 4, 5, 6, 7, 8, 15
+STATE_COLORS = {"working": BLUE, "waiting": YELLOW, "needs-you": RED, "unknown": FG_DARK, "recent": CYAN}
+PROJECT_COLORS = (MAGENTA, CYAN, GREEN, BLUE, YELLOW)
+FOOTER_KEYS = (("j/k", "move"), ("⏎", "open"), ("/", "filter"), ("a", "new"), ("q", "close"), ("?", "help"))
+HELP_LINES = (
+    ("j/k ↑↓", "move the cursor"),
+    ("1-9", "jump to a running session"),
+    ("⏎", "open: show the session and type in it; resume a past one"),
+    ("n", "peek at the next session needing you"),
+    ("⇥ l →", "move the cursor into the session"),
+    ("⇧← ⇧→", "between the list and the session, from anywhere"),
+    ("/", "filter by project or title, Esc clears"),
+    ("a", "new session in a project"),
+    ("p", "pin or unpin a running session"),
+    ("x", "kill a running session, or hide a past one from the list"),
+    ("u", "bring back the last hidden past session"),
+    ("h ←", "fold or unfold a project's past sessions"),
+    (".", "show or hide trivial past sessions"),
+    ("q ^C", "close the manager window (sessions keep running; ALT+C reopens it)"),
+    ("", ""),
+    ("●", "working"), ("○", "waiting for you"), ("!", "needs you: permission or question"),
+    ("·", "running, state unknown"), ("↻", "past session, Enter resumes"),
+)
+KEY_ESCAPE, KEY_ENTER_LF, KEY_ENTER_CR, KEY_TAB, KEY_CTRL_C = 27, 10, 13, 9, 3
+color_pairs: dict[tuple[int, int], int] = {}
+hit_rows: list[tuple[int, int, int]] = []  # (first line, last line, selectable index) of the last draw
+
+
+def collapse(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def reported_sessions() -> list[dict]:
+    try:
+        with open(SNAPSHOT_PATH) as snapshot:
+            return json.load(snapshot)["sessions"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return []
+
+
+def tmux_claude_panes() -> list[dict]:
+    """One row per claude-retry-* tmux session: the pane claude runs in, its path and title."""
+    result = subprocess.run(
+        ["tmux", "list-panes", "-a", "-F", "#{session_name}\t#{pane_id}\t#{pane_current_path}\t#{pane_title}\t#{session_created}"],
+        capture_output=True, text=True)
+    if result.returncode != 0:
+        return []
+    rows = []
+    for line in result.stdout.splitlines():
+        session_name, pane, path, title, created = (line.split("\t") + [""] * 5)[:5]
+        if session_name.startswith(RETRY_SESSION_PREFIX):
+            rows.append({"name": session_name, "pane": pane, "path": path, "title": title, "created": created})
+    return rows
+
+
+def running_sessions() -> list[dict]:
+    """Reported sessions first, then tmux sessions the daemon does not know about."""
+    sessions = reported_sessions()
+    known_panes = {session.get("tmux_pane") for session in sessions}
+    for row in tmux_claude_panes():
+        if row["pane"] in known_panes:
+            continue
+        sessions.append({
+            "session": row["name"], "state": "unknown", "project": os.path.basename(row["path"]) or row["path"],
+            "task": row["title"].lstrip("✳◐◑ "), "since": int(row["created"] or time.time()), "tmux_pane": row["pane"],
+        })
+    return sessions
+
+
+def statusline_facts(session_id: str) -> dict:
+    path = os.path.join(STATUSLINE_DIR, f"statusline-{session_id}.json")
+    try:
+        if time.time() - os.stat(path).st_mtime > STATUSLINE_MAX_AGE_S:
+            return {}
+        with open(path) as facts:
+            return json.load(facts)
+    except (OSError, ValueError):
+        return {}
+
+
+class ViewState:
+    """What the user chose: hidden past sessions, folded projects, pins, trivial-session visibility,
+    sidebar width. Kept on disk."""
+
+    def __init__(self):
+        self.hidden: list[str] = []
+        self.folded: list[str] = []
+        self.pinned: list[str] = []
+        self.show_trivial = False
+        self.sidebar_width = 0
+        try:
+            with open(VIEW_STATE_PATH) as state:
+                saved = json.load(state)
+            self.hidden = [str(item) for item in saved.get("hidden", [])]
+            self.folded = [str(item) for item in saved.get("folded", [])]
+            self.pinned = [str(item) for item in saved.get("pinned", [])]
+            self.show_trivial = bool(saved.get("show_trivial", False))
+            self.sidebar_width = int(saved.get("sidebar_width", 0))
+        except (OSError, ValueError, AttributeError):
+            pass
+
+    def save(self):
+        os.makedirs(os.path.dirname(VIEW_STATE_PATH), exist_ok=True)
+        with open(VIEW_STATE_PATH + ".tmp", "w") as state:
+            json.dump({"hidden": self.hidden, "folded": self.folded, "pinned": self.pinned,
+                       "show_trivial": self.show_trivial, "sidebar_width": self.sidebar_width}, state)
+        os.replace(VIEW_STATE_PATH + ".tmp", VIEW_STATE_PATH)
+
+    def hide(self, session_id: str):
+        if session_id not in self.hidden:
+            self.hidden.append(session_id)
+            self.save()
+
+    def unhide_last(self) -> bool:
+        if not self.hidden:
+            return False
+        self.hidden.pop()
+        self.save()
+        return True
+
+    def toggle(self, collection: list[str], item: str):
+        if item in collection:
+            collection.remove(item)
+        else:
+            collection.append(item)
+        self.save()
+
+    def remember_width(self, width: int):
+        if width != self.sidebar_width:
+            self.sidebar_width = width
+            self.save()
+
+
+def project_color(project: str) -> int:
+    return PROJECT_COLORS[sum(map(ord, project)) % len(PROJECT_COLORS)]
+
+
+def context_color(percentage) -> int:
+    if percentage is None:
+        return FG_DARK
+    if percentage >= 80:
+        return RED
+    if percentage >= 50:
+        return YELLOW
+    return GREEN
+
+
+class History:
+    """Past sessions from history.jsonl (re-read when it changes) with lazily loaded titles."""
+
+    def __init__(self):
+        self.mtime = None
+        self.entries: list[dict] = []
+        self.titles: dict[str, str] = {}
+
+    def refresh(self):
+        try:
+            mtime = os.stat(HISTORY_PATH).st_mtime
+        except OSError:
+            self.entries = []
+            return
+        if mtime == self.mtime:
+            return
+        self.mtime = mtime
+        latest: dict[str, dict] = {}
+        with open(HISTORY_PATH) as history:
+            for line in history:
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                session_id, project = row.get("sessionId"), row.get("project")
+                if not session_id or not project:
+                    continue
+                since = int(row.get("timestamp", 0)) // 1000
+                prompt = collapse(str(row.get("display", "")))
+                entry = latest.setdefault(session_id, {"session": session_id, "cwd": project,
+                                                       "project": os.path.basename(project), "since": 0, "prompt": ""})
+                entry["since"] = max(entry["since"], since)
+                # Slash commands ("/resume", "/clear") say nothing about the session; keep the last real prompt.
+                if prompt and not prompt.startswith("/"):
+                    entry["prompt"] = prompt
+        self.entries = sorted(latest.values(), key=lambda entry: -entry["since"])
+
+    def title(self, session_id: str) -> str:
+        return self.titles.get(session_id, "")
+
+    def is_trivial(self, entry: dict) -> bool:
+        """No generated title and at most a few words of prompt: nothing to come back to."""
+        if self.titles.get(entry["session"], None) is None:
+            return False  # not known yet: keep it visible rather than hide it on a guess
+        return not self.titles[entry["session"]] and len(entry["prompt"].split()) < TRIVIAL_PROMPT_WORDS
+
+    def recent(self, exclude: set[str], query: str, view: "ViewState") -> list[dict]:
+        rows = []
+        for entry in self.entries:
+            if entry["session"] in exclude or entry["session"] in view.hidden:
+                continue
+            if not view.show_trivial and self.is_trivial(entry):
+                continue
+            row = {**entry, "state": "recent", "task": self.title(entry["session"]) or entry["prompt"]}
+            if matches(row, query):
+                rows.append(row)
+            if len(rows) == RECENT_LIMIT:
+                break
+        return rows
+
+    def load_titles(self, session_ids: list[str], budget: int):
+        for session_id in session_ids:
+            if budget == 0:
+                return
+            if session_id in self.titles:
+                continue
+            self.titles[session_id] = read_title(session_id)
+            budget -= 1
+
+
+def read_title(session_id: str) -> str:
+    transcripts = glob.glob(os.path.join(TRANSCRIPTS_DIR, "*", f"{session_id}.jsonl"))
+    if not transcripts:
+        return ""
+    try:
+        with open(transcripts[0], "rb") as transcript:
+            head = transcript.read(TITLE_SCAN_BYTES)
+    except OSError:
+        return ""
+    title = ""
+    for line in head.split(b"\n"):
+        if b'"type":"ai-title"' not in line:
+            continue
+        try:
+            title = json.loads(line).get("aiTitle", "") or title
+        except ValueError:
+            continue
+    return title
+
+
+def matches(row: dict, query: str) -> bool:
+    haystack = f"{row.get('project', '')} {row.get('task', '')} {row.get('prompt', '')}".lower()
+    return all(word in haystack for word in query.lower().split())
+
+
+def current_session() -> str:
+    try:
+        with open(CURRENT_PATH) as current:
+            return current.read().strip()
+    except OSError:
+        return ""
+
+
+def age(since: int) -> str:
+    seconds = int(time.time()) - since
+    if seconds < 60:
+        return f"{seconds}s"
+    if seconds < 3600:
+        return f"{seconds // 60}m"
+    if seconds < 86400:
+        return f"{seconds // 3600}h"
+    return f"{seconds // 86400}d"
+
+
+def day_bucket(since: int) -> str:
+    days = (date.today() - date.fromtimestamp(since)).days
+    if days <= 0:
+        return "TODAY"
+    if days == 1:
+        return "YESTERDAY"
+    if days < 7:
+        return "THIS WEEK"
+    return "OLDER"
+
+
+def clock(since: int) -> str:
+    """The time inside today's and yesterday's buckets, the weekday this week, the date beyond."""
+    moment = datetime.fromtimestamp(since)
+    days = (date.today() - moment.date()).days
+    if days <= 1:
+        return moment.strftime("%H:%M")
+    if days < 7:
+        return moment.strftime("%a")
+    return moment.strftime("%d %b")
+
+
+def focus_viewer():
+    subprocess.run(["tmux", "select-pane", "-t", "claude-manager:manager.1"])
+
+
+def manager(*arguments: str) -> str:
+    """Runs the manager command; returns its last error line, empty on success."""
+    result = subprocess.run(["claude-sessions", *arguments], capture_output=True, text=True)
+    if result.returncode == 0:
+        return ""
+    lines = result.stderr.strip().splitlines()
+    return lines[-1] if lines else f"claude-sessions {arguments[0]} failed"
+
+
+def tmux_session_of(pane: str) -> str:
+    if not pane:
+        return ""
+    result = subprocess.run(["tmux", "display-message", "-p", "-t", pane, "#{session_name}"],
+                            capture_output=True, text=True)
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def kill_session(session: dict) -> str:
+    """Ends the session's tmux session, or closes its terminal window when it never had one
+    (started outside claude-auto-retry). Returns a message for the footer."""
+    tmux_session = tmux_session_of(session.get("tmux_pane", ""))
+    if tmux_session:
+        subprocess.run(["tmux", "kill-session", "-t", f"={tmux_session}"])
+        return f"killed {session['project']}"
+    kitty_pid = session.get("kitty_pid")
+    if kitty_pid:
+        subprocess.run(["hyprctl", "dispatch", f'hl.dsp.window.close({{ window = "pid:{kitty_pid}" }})'],
+                       capture_output=True)
+        return f"no tmux session for {session['project']}: closed its terminal window instead"
+    # Nothing to kill: tell the daemon the session is gone. If its hook is still alive it comes back,
+    # which is the signal that it lives somewhere this manager cannot see.
+    report = json.dumps({"session": session["session"], "state": "gone", "project": session["project"]})
+    subprocess.run(["osd-show", f"session {report}"])
+    return f"nothing to kill for {session['project']}: removed it from the list"
+
+
+def pick_project() -> str:
+    directories = sorted({os.path.expanduser(path).rstrip("/") for pattern in PROJECT_PATTERNS
+                          for path in glob.glob(os.path.expanduser(pattern))})
+    result = subprocess.run(["fzf", "--prompt", "project> ", "--height", "100%"],
+                            input="\n".join(directories), capture_output=True, text=True)
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def next_attention_index(rows: list[dict], selected: int) -> int | None:
+    candidates = [index for index, row in enumerate(rows) if row["state"] not in ("working", "recent")]
+    if not candidates:
+        return None
+    later = [index for index in candidates if index > selected]
+    return later[0] if later else candidates[0]
+
+
+def style(foreground: int, background: int = -1, extra: int = 0) -> int:
+    key = (foreground, background)
+    if key not in color_pairs:
+        color_pairs[key] = len(color_pairs) + 1
+        curses.init_pair(color_pairs[key], foreground, background)
+    return curses.color_pair(color_pairs[key]) | extra
+
+
+def put(screen, row: int, column: int, text: str, attributes=0):
+    height, width = screen.getmaxyx()
+    if 0 <= row < height and column < width:
+        screen.addnstr(row, column, text, width - column - 1, attributes)
+
+
+def running_lines(session: dict) -> list[str]:
+    """The generated title when there is one, and the prompt in progress while Claude works on it."""
+    title = session.get("title") or ""
+    task = session.get("task") or ""
+    lines = [title or task]
+    if session["state"] == "working" and title and task and task != title:
+        lines.append(task)
+    return lines
+
+
+def draw_running(screen, row: int, session: dict, number: int, is_selected: bool, is_current: bool, width: int):
+    """Accent bar, number, state glyph, project, age; then title (and prompt), model and context."""
+    background = BG_HIGHLIGHT if is_selected else -1
+    state_color = STATE_COLORS.get(session["state"], FG_DARK)
+    lines = running_lines(session)
+    for line in range(row, row + 1 + len(lines)):
+        put(screen, line, 0, " " * (width - 1), style(FG, background))
+        if is_current:
+            put(screen, line, 0, "▎", style(state_color, background, curses.A_BOLD))
+    if number <= 9:
+        put(screen, row, 2, str(number), style(FG_DARK, background, curses.A_DIM))
+    put(screen, row, 4, GLYPHS.get(session["state"], "·"), style(state_color, background, curses.A_BOLD))
+    put(screen, row, 6, session.get("project", "?"), style(project_color(session.get("project", "")), background, curses.A_BOLD))
+    if session.get("pinned"):
+        put(screen, row, 7 + len(session.get("project", "?")), "⚲", style(YELLOW, background))
+    stamp = age(int(session.get("since", time.time())))
+    put(screen, row, max(6, width - 2 - len(stamp)), stamp, style(state_color, background))
+    put(screen, row + 1, 6, lines[0], style(FG, background))
+    facts = session.get("facts") or {}
+    if facts.get("model"):
+        context = facts.get("context")
+        percent = f"{round(context)}%" if context is not None else ""
+        detail = f"{facts['model']}  {percent}".rstrip()
+        column = max(6, width - 2 - len(detail))
+        put(screen, row + 1, column, facts["model"], style(FG_DARK, background, curses.A_DIM))
+        if percent:
+            put(screen, row + 1, column + len(facts["model"]) + 2, percent, style(context_color(context), background, curses.A_BOLD))
+    if len(lines) > 1:
+        put(screen, row + 2, 6, lines[1], style(FG_DARK, background, curses.A_DIM))
+
+
+def draw_recent(screen, row: int, session: dict, is_selected: bool, width: int):
+    """One line: resume glyph, title, time. The project is the sub-header above the group."""
+    background = BG_HIGHLIGHT if is_selected else -1
+    put(screen, row, 0, " " * (width - 1), style(FG, background))
+    put(screen, row, 4, GLYPHS["recent"], style(CYAN, background))
+    stamp = clock(int(session.get("since", time.time())))
+    put(screen, row, 6, session.get("task") or "(untitled)", style(FG if is_selected else FG_DARK, background))
+    put(screen, row, max(6, width - 2 - len(stamp)), stamp, style(FG_DARK, background, curses.A_DIM))
+
+
+def draw_help(screen):
+    height, width = screen.getmaxyx()
+    box_height = min(len(HELP_LINES) + 4, height - 2)
+    box_width = min(64, width - 2)
+    top, left = 1, 1
+    for line in range(box_height):
+        put(screen, top + line, left, " " * (box_width - 1), style(FG, BG_HIGHLIGHT))
+    put(screen, top + 1, left + 2, "Keys", style(MAGENTA, BG_HIGHLIGHT, curses.A_BOLD))
+    for index, (key, label) in enumerate(HELP_LINES[:box_height - 4]):
+        put(screen, top + 3 + index, left + 2, key, style(YELLOW, BG_HIGHLIGHT, curses.A_BOLD))
+        put(screen, top + 3 + index, left + 10, label, style(FG_DARK, BG_HIGHLIGHT))
+    put(screen, top + box_height - 1, left + 2, "any key closes", style(FG_DARK, BG_HIGHLIGHT, curses.A_DIM))
+
+
+def draw_footer(screen, row: int, message: str, query: str, filtering: bool):
+    if filtering:
+        put(screen, row, 2, "/", style(BLUE, -1, curses.A_BOLD))
+        put(screen, row, 4, query + "▏", style(FG))
+        return
+    if message:
+        put(screen, row, 2, message, style(YELLOW))
+        return
+    column = 2
+    for key, label in FOOTER_KEYS:
+        put(screen, row, column, key, style(BLUE, -1, curses.A_BOLD))
+        column += len(key) + 1
+        put(screen, row, column, label, style(FG_DARK, -1, curses.A_DIM))
+        column += len(label) + 2
+
+
+def row_height(row: tuple) -> int:
+    kind, payload, _ = row
+    if kind == "header":
+        return 2
+    if kind == "day":
+        return 2
+    if kind == "project":
+        return 1
+    if kind == "fold":
+        return 0
+    if payload["state"] == "recent":
+        return 1
+    return 2 + len(running_lines(payload))
+
+
+def first_visible(rows: list, selected_row: int, available: int) -> int:
+    """First row index to draw so the selected card fits."""
+    start = 0
+    while start < selected_row:
+        if sum(row_height(row) for row in rows[start:selected_row + 1]) <= available:
+            break
+        start += 1
+    return start
+
+
+def draw(screen, rows: list, selected: int, current: str, message: str, query: str, filtering: bool, help_open: bool):
+    screen.erase()
+    hit_rows.clear()
+    height, width = screen.getmaxyx()
+    put(screen, 0, 2, "Claude sessions", style(BLUE, -1, curses.A_BOLD))
+    needing = sum(1 for row in rows if row[0] == "card" and row[1]["state"] == "needs-you")
+    summary = f"{needing} need you" if needing else ""
+    put(screen, 0, max(2, width - 2 - len(summary)), summary, style(RED, -1, curses.A_BOLD))
+    put(screen, 1, 0, "─" * (width - 1), style(BG_HIGHLIGHT))
+    top, bottom = 3, height - 3  # list area: rows [top, bottom)
+    selected_row = next((index for index, row in enumerate(rows) if row[0] in ("card", "fold") and row[2] == selected), 0)
+    start = first_visible(rows, selected_row, bottom - top - 1)
+    line = top
+    if start > 0:
+        put(screen, line - 1, 2, f"▲ {start} more", style(FG_DARK, -1, curses.A_DIM))
+    drawn = 0
+    for position, row in enumerate(rows[start:], start):
+        kind, payload, index = row
+        if kind == "fold":
+            continue
+        if line + row_height(row) > bottom:
+            break
+        if kind == "header":
+            put(screen, line, 2, payload, style(MAGENTA, -1, curses.A_BOLD))
+        elif kind == "day":
+            put(screen, line, 2, payload, style(MAGENTA, -1, curses.A_BOLD))
+        elif kind == "project":
+            name, folded, count = payload
+            fold_index = rows[position + 1][2] if folded and position + 1 < len(rows) and rows[position + 1][0] == "fold" else None
+            is_fold_selected = fold_index is not None and fold_index == selected
+            background = BG_HIGHLIGHT if is_fold_selected else -1
+            if is_fold_selected:
+                put(screen, line, 0, " " * (width - 1), style(FG, background))
+            put(screen, line, 2, "▸" if folded else "▾", style(FG_DARK, background))
+            put(screen, line, 4, name, style(project_color(name), background, curses.A_BOLD))
+            if folded:
+                put(screen, line, 5 + len(name), f"{count}", style(FG_DARK, background, curses.A_DIM))
+                hit_rows.append((line, line, fold_index))
+        elif payload["state"] == "recent":
+            draw_recent(screen, line, payload, index == selected, width)
+            hit_rows.append((line, line, index))
+        else:
+            draw_running(screen, line, payload, index + 1, index == selected, payload["session"] == current, width)
+            hit_rows.append((line, line + len(running_lines(payload)), index))
+        line += row_height(row)
+        drawn += 1
+    remaining = len(rows) - start - drawn
+    if remaining > 0:
+        put(screen, bottom, 2, f"▼ {remaining} more", style(FG_DARK, -1, curses.A_DIM))
+    if not rows:
+        put(screen, 3, 2, "No session." if not query else "Nothing matches.", style(FG_DARK, -1, curses.A_DIM))
+        put(screen, 4, 2, "a  start one in a project", style(FG_DARK, -1, curses.A_DIM))
+    put(screen, height - 2, 0, "─" * (width - 1), style(BG_HIGHLIGHT))
+    draw_footer(screen, height - 1, message, query, filtering)
+    if help_open:
+        draw_help(screen)
+    screen.refresh()
+
+
+def build_rows(history: History, view: ViewState, query: str) -> tuple[list, list[dict]]:
+    """Display rows and the flat list of selectable sessions. Running sessions, pinned first, then
+    past sessions by day, each day grouped by project in order of its latest session. A folded
+    project keeps one invisible selectable row so it can be unfolded from the keyboard."""
+    running = [session for session in running_sessions() if matches(session, query)]
+    history.refresh()
+    history.load_titles([session["session"] for session in running if session["state"] != "unknown"], TITLES_PER_TICK)
+    for session in running:
+        if session["state"] != "unknown":
+            session["facts"] = statusline_facts(session["session"])
+            session["title"] = history.title(session["session"])
+        session["pinned"] = session["session"] in view.pinned
+    running.sort(key=lambda session: not session["pinned"])
+    running_ids = {session["session"] for session in running}
+    # Titles first: they decide what counts as trivial and what the row says.
+    history.load_titles([entry["session"] for entry in history.entries[:RECENT_LIMIT * 2]
+                         if entry["session"] not in running_ids], TITLES_PER_TICK)
+    recent = history.recent(running_ids, query, view)
+
+    rows, selectable = [], []
+    if running:
+        rows.append(("header", f"RUNNING  {len(running)}", None))
+        for session in running:
+            rows.append(("card", session, len(selectable)))
+            selectable.append(session)
+    day = None
+    for bucket, sessions in group_by_day(recent):
+        rows.append(("day", bucket, None))
+        for project, members in group_by_project(sessions):
+            folded = project in view.folded
+            rows.append(("project", (project, folded, len(members)), None))
+            if folded:
+                selectable.append({**members[0], "folded": True})
+                rows.append(("fold", None, len(selectable) - 1))
+                continue
+            for session in members:
+                rows.append(("card", session, len(selectable)))
+                selectable.append(session)
+    return rows, selectable
+
+
+def group_by_day(sessions: list[dict]) -> list[tuple[str, list[dict]]]:
+    buckets: dict[str, list[dict]] = {}
+    for session in sessions:
+        buckets.setdefault(day_bucket(session["since"]), []).append(session)
+    order = ("TODAY", "YESTERDAY", "THIS WEEK", "OLDER")
+    return [(name, buckets[name]) for name in order if name in buckets]
+
+
+def group_by_project(sessions: list[dict]) -> list[tuple[str, list[dict]]]:
+    """Projects in order of their most recent session (the input is newest first)."""
+    groups: dict[str, list[dict]] = {}
+    for session in sessions:
+        groups.setdefault(session["project"], []).append(session)
+    return list(groups.items())
+
+
+def run_outside_curses(screen, action):
+    curses.def_prog_mode()
+    curses.endwin()
+    try:
+        return action()
+    finally:
+        curses.reset_prog_mode()
+        screen.refresh()
+
+
+def activate(session: dict, view: ViewState) -> str:
+    if session.get("folded"):
+        view.toggle(view.folded, session["project"])
+        return ""
+    if session["state"] == "recent":
+        return manager("resume", session["cwd"], session["session"])
+    return manager("open", session["session"])
+
+
+def clicked_index(y: int) -> int | None:
+    for first, last, index in hit_rows:
+        if first <= y <= last:
+            return index
+    return None
+
+
+def main(screen):
+    curses.curs_set(0)
+    curses.use_default_colors()
+    curses.set_escdelay(25)
+    curses.raw()  # Ctrl-C arrives as a key (same as q) instead of killing the sidebar
+    curses.mousemask(curses.ALL_MOUSE_EVENTS)
+    screen.timeout(POLL_MS)
+    history = History()
+    view = ViewState()
+
+    selected = 0
+    message = ""
+    query = ""
+    filtering = False
+    help_open = False
+    while True:
+        rows, sessions = build_rows(history, view, query)
+        selected = min(selected, max(len(sessions) - 1, 0))
+        draw(screen, rows, selected, current_session(), message, query, filtering, help_open)
+        view.remember_width(screen.getmaxyx()[1])
+        key = screen.getch()
+        if key == -1:
+            continue
+        message = ""
+        if help_open:
+            help_open = False
+            continue
+        if filtering:
+            if key == KEY_ESCAPE:
+                query, filtering = "", False
+            elif key in (KEY_ENTER_LF, KEY_ENTER_CR, curses.KEY_ENTER):
+                filtering = False
+            elif key in (curses.KEY_BACKSPACE, 127, 8):
+                query = query[:-1]
+            elif 32 <= key < 127:
+                query += chr(key)
+            continue
+        if key == curses.KEY_MOUSE:
+            try:
+                _, x, y, _, state = curses.getmouse()
+            except curses.error:
+                continue
+            index = clicked_index(y)
+            if index is None:
+                continue
+            selected = index
+            if state & curses.BUTTON1_DOUBLE_CLICKED and sessions:
+                message = activate(sessions[selected], view)
+        elif key in (ord("j"), curses.KEY_DOWN):
+            selected = min(selected + 1, max(len(sessions) - 1, 0))
+        elif key in (ord("k"), curses.KEY_UP):
+            selected = max(selected - 1, 0)
+        elif key in (KEY_ENTER_LF, KEY_ENTER_CR, curses.KEY_ENTER) and sessions:
+            message = activate(sessions[selected], view)
+        elif key in (ord("h"), curses.KEY_LEFT) and sessions and sessions[selected]["state"] == "recent":
+            view.toggle(view.folded, sessions[selected]["project"])
+        elif key == ord("u"):
+            message = "unhid the last hidden session" if view.unhide_last() else "nothing hidden"
+        elif key == ord("."):
+            view.show_trivial = not view.show_trivial
+            view.save()
+            message = "showing trivial sessions" if view.show_trivial else "hiding trivial sessions"
+        elif key == ord("p") and sessions and sessions[selected]["state"] != "recent":
+            view.toggle(view.pinned, sessions[selected]["session"])
+        elif key in (KEY_TAB, ord("l"), curses.KEY_RIGHT):
+            focus_viewer()
+        elif key == ord("n"):
+            index = next_attention_index(sessions, selected)
+            if index is None:
+                message = "nothing needs you"
+            else:
+                selected = index
+                message = manager("view", sessions[selected]["session"])
+        elif key == ord("/"):
+            filtering = True
+        elif key == ord("?"):
+            help_open = True
+        elif key == KEY_ESCAPE:
+            query = ""
+        elif ord("1") <= key <= ord("9"):
+            running = [session for session in sessions if session["state"] != "recent"]
+            number = key - ord("1")
+            if number < len(running):
+                selected = number
+                message = manager("open", running[number]["session"])
+            else:
+                message = f"no running session {number + 1}"
+        elif key == ord("a"):
+            directory = run_outside_curses(screen, pick_project)
+            if directory:
+                message = manager("new", directory)
+        elif key == ord("x") and sessions:
+            session = sessions[selected]
+            if session["state"] == "recent":
+                if session.get("folded"):
+                    message = "unfold the project first (h)"
+                else:
+                    view.hide(session["session"])
+                    message = f"hidden: {session['task'][:40]}  (u undoes)"
+                continue
+            draw(screen, rows, selected, current_session(), f"kill {session['project']}? y/n", query, False, False)
+            screen.timeout(-1)
+            answer = screen.getch()
+            screen.timeout(POLL_MS)
+            if answer == ord("y"):
+                message = kill_session(session)
+        elif key in (ord("q"), KEY_CTRL_C):
+            draw(screen, rows, selected, current_session(), "close the manager window? sessions keep running  y/n", query, False, False)
+            screen.timeout(-1)
+            answer = screen.getch()
+            screen.timeout(POLL_MS)
+            if answer == ord("y"):
+                subprocess.run(["tmux", "detach-client"])
+
+
+if __name__ == "__main__":
+    try:
+        curses.wrapper(main)
+    except KeyboardInterrupt:
+        pass

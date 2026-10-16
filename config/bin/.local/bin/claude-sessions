@@ -1,0 +1,149 @@
+#!/usr/bin/env bash
+# Claude session manager, Turborepo style: a sidebar listing every Claude Code session on the
+# left (claude-sessions-sidebar) and the selected session, attached with nested tmux, on the
+# right. Sessions come from the OSD daemon's snapshot ($XDG_RUNTIME_DIR/claude-sessions.json);
+# each one lives in the tmux session claude-auto-retry created for it, so viewing is attaching.
+#
+#   claude-sessions              attach the manager in this terminal (created on first use)
+#   claude-sessions show [id]    open or focus the manager window (kitty, workspace 6), view id
+#   claude-sessions view <id>    show a session in the viewer pane (the sidebar's n); id is the
+#                                daemon's session id or a claude-retry-* tmux session name
+#   claude-sessions open <id>    view it and put the cursor in it (the sidebar's Enter)
+#   claude-sessions new <dir> [claude args…]
+#                                start `claude` in <dir> inside the viewer pane (the sidebar's a,
+#                                and the fish `claude` function from any terminal)
+#   claude-sessions resume <dir> <id>
+#                                resume a past session there (the sidebar's Enter on a recent one)
+#   claude-sessions idle         what the viewer pane runs while nothing is selected
+#   claude-sessions prepare      create the manager's tmux session without a window (login autostart)
+#   claude-sessions reload       restart the sidebar in place (after editing it)
+#   claude-sessions reset        close the manager and forget every tracked session; running
+#                                Claude sessions themselves are left alone
+set -euo pipefail
+
+MANAGER=claude-manager
+SIDEBAR_PANE="$MANAGER:manager.0"
+VIEWER_PANE="$MANAGER:manager.1"
+SNAPSHOT="${XDG_RUNTIME_DIR:-/tmp}/claude-sessions.json"
+CURRENT="${XDG_RUNTIME_DIR:-/tmp}/claude-sessions.current"
+VIEW_STATE="${XDG_STATE_HOME:-$HOME/.local/state}/claude-sessions/view.json"
+DEFAULT_SIDEBAR_WIDTH=56
+WINDOW_CLASS=claude-sessions
+WORKSPACE=6  # apps/claude.lua routes the manager window there
+
+sidebar_width() {
+    local width
+    width=$(jq -r '.sidebar_width // 0' "$VIEW_STATE" 2>/dev/null)
+    if [[ $width =~ ^[0-9]+$ ]] && (( width >= 30 )); then
+        printf '%s\n' "$width"
+    else
+        printf '%s\n' "$DEFAULT_SIDEBAR_WIDTH"
+    fi
+}
+
+ensure_manager() {
+    if ! tmux has-session -t "=$MANAGER" 2>/dev/null; then
+        tmux new-session -d -s "$MANAGER" -n manager -x 240 -y 60 claude-sessions-sidebar
+        # A pane whose command ends (a viewed session exits, the sidebar crashes) stays as a dead
+        # pane to be respawned instead of vanishing and leaving the sidebar alone in the window.
+        tmux set-option -w -t "$MANAGER:manager" remain-on-exit on
+    fi
+    if (( $(tmux list-panes -t "$MANAGER:manager" -F '#{pane_index}' | wc -l) < 2 )); then
+        tmux split-window -h -t "$SIDEBAR_PANE" -l 70% claude-sessions idle
+        # The sidebar remembers the width it was last resized to (mouse drag on the divider).
+        tmux resize-pane -t "$SIDEBAR_PANE" -x "$(sidebar_width)"
+        tmux select-pane -t "$SIDEBAR_PANE"
+    fi
+    if [[ $(tmux display-message -p -t "$SIDEBAR_PANE" '#{pane_dead}') == 1 ]]; then
+        tmux respawn-pane -k -t "$SIDEBAR_PANE" claude-sessions-sidebar
+    fi
+}
+
+view_session() {
+    local id=$1 pane target
+    if [[ $id == claude-retry-* ]]; then
+        target=$id
+    else
+        pane=$(jq -r --arg id "$id" '.sessions[] | select(.session == $id) | .tmux_pane // empty' "$SNAPSHOT")
+        if [[ -z $pane ]]; then
+            echo "claude-sessions: session $id has no tmux pane" >&2
+            return 1
+        fi
+        target=$(tmux display-message -p -t "$pane" '#{session_name}')
+    fi
+    ensure_manager
+    # Nested on purpose: the inner client is the real, interactive session.
+    tmux respawn-pane -k -t "$VIEWER_PANE" env -u TMUX tmux attach-session -t "=$target"
+    printf '%s\n' "$id" > "$CURRENT"
+}
+
+focus_viewer() {
+    tmux select-pane -t "$VIEWER_PANE"
+}
+
+new_session() {
+    local directory=$1
+    shift
+    ensure_manager
+    # fish owns the `claude` function (greywall + claude-auto-retry). With no tmux variable left in
+    # the environment the launcher creates the session's own tmux session and attaches it here;
+    # with one still set it would run claude directly in this pane, which the next view kills.
+    # CLAUDE_SESSIONS_INSIDE stops the function from delegating back to this manager.
+    tmux respawn-pane -k -t "$VIEWER_PANE" -c "$directory" \
+        env -u TMUX -u TMUX_PANE CLAUDE_SESSIONS_INSIDE=1 fish -ic 'claude $argv' "$@"
+    : > "$CURRENT"
+}
+
+resume_session() {
+    ensure_manager
+    tmux respawn-pane -k -t "$VIEWER_PANE" -c "$1" \
+        env -u TMUX -u TMUX_PANE CLAUDE_SESSIONS_INSIDE=1 fish -ic 'claude --resume $argv' "$2"
+    : > "$CURRENT"
+    focus_viewer
+}
+
+show_manager() {
+    ensure_manager
+    if [[ -n ${1:-} ]]; then
+        view_session "$1" && focus_viewer
+    fi
+    if hyprctl -j clients | jq -e --arg class "$WINDOW_CLASS" 'any(.[]; .class == $class)' >/dev/null; then
+        hyprctl dispatch "hl.dsp.focus({ window = \"class:^$WINDOW_CLASS\$\" })" >/dev/null
+    else
+        setsid -f kitty --class "$WINDOW_CLASS" -e claude-sessions
+        # The window rule puts it on the Claude workspace; go there now rather than when it maps.
+        hyprctl dispatch "hl.dsp.focus({ workspace = $WORKSPACE })" >/dev/null
+    fi
+}
+
+idle() {
+    printf '\n  No session selected.\n\n  j/k move   Enter open   n peek at the next one needing you   a new   x kill   q detach\n  Shift+Left / Shift+Right move between the list and the session\n'
+    exec sleep infinity
+}
+
+case ${1:-attach} in
+    attach)
+        ensure_manager
+        exec env -u TMUX tmux attach-session -t "=$MANAGER"
+        ;;
+    show) show_manager "${2:-}" ;;
+    view) view_session "${2:?usage: claude-sessions view <session-id>}" ;;
+    open) view_session "${2:?usage: claude-sessions open <session-id>}" && focus_viewer ;;
+    new) shift; new_session "${1:?usage: claude-sessions new <dir> [claude args]}" "${@:2}" ;;
+    resume) resume_session "${2:?usage: claude-sessions resume <dir> <session-id>}" "${3:?usage: claude-sessions resume <dir> <session-id>}" ;;
+    idle) idle ;;
+    prepare) ensure_manager ;;
+    reload)
+        ensure_manager
+        tmux respawn-pane -k -t "$SIDEBAR_PANE" claude-sessions-sidebar
+        ;;
+    reset)
+        tmux kill-session -t "=$MANAGER" 2>/dev/null || true
+        osd-show sessions-clear
+        rm -f "$CURRENT" "$HOME"/.cache/claude/statusline-*.json "$HOME"/.cache/claude/toast-*.id
+        ;;
+    *)
+        echo "usage: claude-sessions [attach|show [id]|view <id>|open <id>|new <dir>|resume <dir> <id>|prepare|idle|reload|reset]" >&2
+        exit 2
+        ;;
+esac

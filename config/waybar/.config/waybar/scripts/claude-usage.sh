@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Waybar custom module: Claude subscription usage, one window per invocation:
-#   claude-usage.sh five_hour    the current 5-hour window (clock icon in the bar)
-#   claude-usage.sh seven_day    the 7-day window (calendar icon)
-# The value is the window's utilisation in percent, the class its own threshold (warning / critical);
+#   claude-usage.sh five_hour    the current 5-hour window (clock glyph)
+#   claude-usage.sh seven_day    the 7-day window (calendar glyph)
+# The text is a dim glyph and the window's utilisation in percent, the class its own threshold
+# (warning / critical). The glyph lives in the text, not in an image module, so it hides with the value;
 # the tooltip lists every window the server reports. Read from the endpoint Claude Code's /usage
 # uses (api.anthropic.com/api/oauth/usage, undocumented, so a schema change shows up as itself in
 # the tooltip rather than being hidden). The response is cached in $XDG_RUNTIME_DIR so the two
@@ -12,12 +13,17 @@
 # "stale" until a Claude session refreshes it.
 # CLAUDE_USAGE_FIXTURE points at a saved response for testing without the network.
 WINDOW=${1:?usage: claude-usage.sh five_hour|seven_day}
+# Centre-island module: only while the Claude workspace is active (nothing printed hides it).
+[[ -n ${CLAUDE_USAGE_FIXTURE:-} ]] || "$HOME/.config/waybar/scripts/on-claude-workspace.sh" || exit 0
 CREDENTIALS="$HOME/.claude/.credentials.json"
 USAGE_URL="https://api.anthropic.com/api/oauth/usage"
 CACHE="${XDG_RUNTIME_DIR:-/tmp}/claude-usage.json"
 CACHE_MAX_AGE_S=240
 WARNING_AT=70
 CRITICAL_AT=90
+# Material clock-outline and calendar, in the bar's icon grey.
+declare -A GLYPHS=([five_hour]=$'\U000F0150' [seven_day]=$'\U000F00ED')
+GLYPH_COLOR="#a9b1d6"
 
 print_unavailable() { # class reason
     jq -cn --arg class "$1" --arg reason "$2" \
@@ -101,7 +107,7 @@ def window_line($label):
 (.[$window].utilization | pct) as $value
 | ($value | level_class) as $class
 | {
-    text: ($value | bar),
+    text: "<span color='\($glyph_color)'>\($glyph)</span> \($value | bar)",
     tooltip: ([
         ("Claude usage  \($plan | pango)" | header),
         (.five_hour | window_line("5-hour")),
@@ -118,6 +124,7 @@ def window_line($label):
 JQ
 
 if ! output=$(jq -c --arg window "$WINDOW" --arg plan "$plan" --argjson now "$(date +%s)" \
+        --arg glyph "${GLYPHS[$WINDOW]}" --arg glyph_color "$GLYPH_COLOR" \
         --argjson warning_at "$WARNING_AT" --argjson critical_at "$CRITICAL_AT" \
         "$PROGRAM" <<<"$response" 2>"$errors"); then
     print_unavailable unknown "unexpected response: $(head -c 300 "$errors")"
