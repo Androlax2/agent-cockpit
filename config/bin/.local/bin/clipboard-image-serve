@@ -1,0 +1,18 @@
+#!/bin/sh
+# Run by clipboard-image-bridge.service for each connection from a sandboxed agent: writes the
+# clipboard's PNG image to the socket, or nothing. Never text, which can hold passwords.
+
+# User services do not always inherit the compositor's environment.
+if [ -z "${WAYLAND_DISPLAY:-}" ]; then
+    for wayland_socket in "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"/wayland-[0-9]; do
+        if [ -S "$wayland_socket" ]; then
+            WAYLAND_DISPLAY=$(basename "$wayland_socket")
+            export WAYLAND_DISPLAY
+            break
+        fi
+    done
+fi
+
+if wl-paste --list-types 2>/dev/null | grep -qx 'image/png'; then
+    exec wl-paste --no-newline --type image/png
+fi

@@ -1,0 +1,14 @@
+[Unit]
+Description=Clipboard image bridge for sandboxed agents (PNG images only, never text)
+
+[Service]
+# A folder rather than a bare socket: greywall mounts it into sandboxes, and the folder survives
+# restarts, so running sessions keep reaching the recreated socket.
+RuntimeDirectory=clipboard-image
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
+ExecStart=/usr/bin/socat UNIX-LISTEN:%t/clipboard-image/clipboard.sock,fork,mode=0600,unlink-early EXEC:%h/.local/bin/clipboard-image-serve
+Restart=on-failure
+
+[Install]
+WantedBy=default.target

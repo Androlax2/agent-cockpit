@@ -19,9 +19,23 @@ mv "$ca_dir/bundle.pem.new" "$ca_dir/bundle.pem"
 printf 'openssl.cafile=%s\ncurl.cainfo=%s\n' "$ca_dir/bundle.pem" "$ca_dir/bundle.pem" > "$ca_dir/php/zz-agent-ca.ini"
 export GIT_SSL_CAINFO="$ca_dir/bundle.pem"
 export CURL_CA_BUNDLE="$ca_dir/bundle.pem"
-export NODE_EXTRA_CA_CERTS="$HOME/.local/share/greyproxy/ca-cert.pem"
 # The leading ":" keeps PHP's own scan directory and adds ours after it.
 export PHP_INI_SCAN_DIR=":$ca_dir/php"
+
+# Image paste: the Wayland socket stays hidden from the sandbox. A stand-in wl-paste asks the
+# clipboard-image bridge (a user service serving PNG images only). The stand-in lives in the
+# dotfiles, which the sandbox cannot see, so it is copied to ~/.cache/agent-shims (readable, not
+# writable inside the sandbox) on every start and put first on the sandbox's PATH only.
+shims_dir="$HOME/.cache/agent-shims/bin"
+mkdir -p "$shims_dir"
+cp "$HOME/.local/share/agent-shims/bin/wl-paste" "$shims_dir/wl-paste.new"
+chmod 755 "$shims_dir/wl-paste.new"
+mv "$shims_dir/wl-paste.new" "$shims_dir/wl-paste"
+export PATH="$shims_dir:$PATH"
+clipboard_dir="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/clipboard-image"
+if [ -d "$clipboard_dir" ]; then
+    greywall_options="$greywall_options --allow-path $clipboard_dir"
+fi
 
 # A per-project GitHub token from the keyring (make agent-github-token PROJECT=<name>).
 # Without one, gh inside the sandbox stays logged out: the keyring itself is hidden from it.
@@ -46,6 +60,7 @@ if [ -S "$docker_socket" ]; then
     fi
 fi
 
-# greywall_options is split on spaces on purpose: every path in it is under $HOME, which has none.
+# greywall_options is split on spaces on purpose: every path in it is under $HOME or
+# $XDG_RUNTIME_DIR, which have none.
 # shellcheck disable=SC2086
 exec "$HOME/.local/bin/greywall" $greywall_options -- "$HOME/.local/bin/claude" "$@"

@@ -1,0 +1,30 @@
+#!/bin/sh
+# Stand-in for wl-paste inside agent sandboxes, where the Wayland socket is hidden. It answers
+# only the two calls Claude Code makes to paste an image, through the clipboard-image bridge
+# (clipboard-image-bridge.service), which serves the clipboard's PNG image and never its text.
+# Every other use fails, so nothing in the sandbox can read copied text such as passwords.
+socket="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/clipboard-image/clipboard.sock"
+
+fetch_image() {
+    socat -u "UNIX-CONNECT:$socket" - 2>/dev/null
+}
+
+case " $* " in
+    *" -l "* | *" --list-types "*)
+        # The bridge only ever answers with an image, so any reply means one is there.
+        if [ -n "$(fetch_image | head -c 8 | od -An -tx1)" ]; then
+            echo image/png
+        fi
+        ;;
+    *" --type image/png "* | *" -t image/png "*)
+        image=$(mktemp)
+        trap 'rm -f "$image"' EXIT
+        fetch_image > "$image"
+        # An empty reply means no image: fail, so callers fall through instead of saving nothing.
+        [ -s "$image" ] || exit 1
+        cat "$image"
+        ;;
+    *)
+        exit 1
+        ;;
+esac
