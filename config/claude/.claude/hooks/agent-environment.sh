@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# SessionStart hook: tells each new Claude session what this sandbox gives it for the current
+# project (Docker daemon, GitHub token, image paste) and which `make` command Theo can run when
+# something is missing. Its stdout is added to the session's context. It only inspects
+# variables and sockets the launcher (~/.local/bin/greywall-agents/claude) prepares, so it is
+# instant and never fails the session start.
+set -uo pipefail
+
+DOTFILES=~/dotfiles
+PROJECTS_DIR=/home/theo/IdeaProjects
+
+payload=$(cat)
+cwd=$(jq -r '.cwd // empty' <<<"$payload" 2>/dev/null)
+cwd=${cwd:-$PWD}
+project_root=$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null || echo "$cwd")
+project_name=$(basename "$project_root")
+
+describe_sandbox() {
+    if [[ ${GREYWALL_SANDBOX:-} == 1 ]]; then
+        echo "- Sandbox: greywall is active. Most of the home folder is hidden; never probe for escapes."
+    else
+        echo "- Sandbox: NOT ACTIVE. This session was started outside greywall. Tell Theo before doing anything else, and do not run commands until Theo confirms."
+    fi
+}
+
+describe_docker() {
+    if [[ -n ${DOCKER_HOST:-} && -S ${DOCKER_HOST#unix://} ]]; then
+        echo "- Docker: ready, this project's own rootless daemon (${DOCKER_HOST})."
+    elif [[ $project_root == "$PROJECTS_DIR"/* ]]; then
+        echo "- Docker: not set up for ${project_name}. If the task needs Docker, ask Theo to run \`make -C ${DOTFILES} agent-docker-add PROJECT=${project_name}\`, then restart the session."
+    else
+        echo "- Docker: unavailable. Isolated daemons only exist for projects directly under ${PROJECTS_DIR}."
+    fi
+}
+
+describe_github() {
+    local remote repository
+    remote=$(git -C "$project_root" remote get-url origin 2>/dev/null || true)
+    repository=${remote%.git}
+    repository=${repository#https://github.com/}
+    repository=${repository#git@github.com:}
+    if [[ -z $repository ]]; then
+        repository="the project repository"
+    fi
+    if [[ -n ${GH_TOKEN:-} ]]; then
+        echo "- GitHub: ready, a token limited to ${repository}. gh and git push work; push feature branches only."
+    elif [[ $remote == *github.com* ]]; then
+        echo "- GitHub: no token for ${project_name}. If the task needs GitHub, ask Theo to run \`make -C ${DOTFILES} agent-github-token PROJECT=${project_name}\`, then restart the session."
+    else
+        echo "- GitHub: no GitHub remote for this project."
+    fi
+}
+
+describe_image_paste() {
+    if [[ -S ${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/clipboard-image/clipboard.sock ]]; then
+        echo "- Image paste: available through the PNG-only clipboard bridge."
+    else
+        echo "- Image paste: unavailable. Ask Theo to run \`systemctl --user enable --now clipboard-image-bridge\`, then restart the session."
+    fi
+}
+
+echo "Sandbox status for ${project_name} (from ~/.claude/hooks/agent-environment.sh):"
+describe_sandbox
+describe_docker
+describe_github
+describe_image_paste
+exit 0
