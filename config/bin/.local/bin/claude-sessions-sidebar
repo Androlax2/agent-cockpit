@@ -35,6 +35,10 @@ CURRENT_PATH = os.path.join(RUNTIME_DIR, "claude-sessions.current")
 HISTORY_PATH = os.environ.get("CLAUDE_SESSIONS_HISTORY", os.path.expanduser("~/.claude/history.jsonl"))
 TRANSCRIPTS_DIR = os.environ.get("CLAUDE_SESSIONS_TRANSCRIPTS", os.path.expanduser("~/.claude/projects"))
 STATUSLINE_DIR = os.path.expanduser("~/.cache/claude")
+USAGE_CACHE_PATH = os.path.join(RUNTIME_DIR, "claude-usage.json")
+USAGE_SCRIPT = os.path.expanduser("~/.config/waybar/scripts/claude-usage.sh")
+USAGE_REFRESH_S = 300
+USAGE_WINDOWS = (("five_hour", "\U000F0150"), ("seven_day", "\U000F00ED"))  # clock, calendar
 STATUSLINE_MAX_AGE_S = 3600
 VIEW_STATE_PATH = os.path.join(os.environ.get("XDG_STATE_HOME", os.path.expanduser("~/.local/state")),
                                "claude-sessions", "view.json")
@@ -115,6 +119,45 @@ def running_sessions() -> list[dict]:
             "task": row["title"].lstrip("✳◐◑ "), "since": int(row["created"] or time.time()), "tmux_pane": row["pane"],
         })
     return sessions
+
+
+def usage_percentages() -> list[tuple[str, int | None]]:
+    """The 5-hour and 7-day utilisation from the cache claude-usage.sh keeps, None when unknown."""
+    try:
+        with open(USAGE_CACHE_PATH) as cache:
+            usage = json.load(cache)
+    except (OSError, ValueError):
+        return []
+    percentages = []
+    for window, glyph in USAGE_WINDOWS:
+        value = (usage.get(window) or {}).get("utilization")
+        percentages.append((glyph, round(value) if isinstance(value, (int, float)) else None))
+    return percentages
+
+
+def usage_color(percentage) -> int:
+    if percentage is None:
+        return FG_DARK
+    if percentage >= 90:
+        return RED
+    if percentage >= 70:
+        return YELLOW
+    return MAGENTA
+
+
+class UsageRefresher:
+    """Runs claude-usage.sh every 5 minutes so the cache the header reads stays fresh."""
+
+    def __init__(self):
+        self.last_run = 0.0
+
+    def tick(self):
+        if time.time() - self.last_run < USAGE_REFRESH_S:
+            return
+        self.last_run = time.time()
+        if not os.access(USAGE_SCRIPT, os.X_OK):
+            return  # the header then shows no usage, which is the honest display
+        subprocess.Popen([USAGE_SCRIPT, "five_hour"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
 def statusline_facts(session_id: str) -> dict:
@@ -520,16 +563,33 @@ def first_visible(rows: list, selected_row: int, available: int) -> int:
     return start
 
 
+def draw_header(screen, rows: list, width: int):
+    """Line 0: title, the needs-you count, the clock. Line 1: Claude usage. The bar is hidden on
+    this workspace, so what it would have shown lives here."""
+    put(screen, 0, 2, "Claude sessions", style(BLUE, -1, curses.A_BOLD))
+    needing = sum(1 for row in rows if row[0] == "card" and row[1]["state"] == "needs-you")
+    if needing:
+        put(screen, 0, 2 + len("Claude sessions") + 2, f"{needing} need you", style(RED, -1, curses.A_BOLD))
+    clock = time.strftime("%H:%M  %a %d %b")
+    put(screen, 0, max(2, width - 2 - len(clock)), clock, style(FG_DARK))
+    segments = usage_percentages()
+    if segments:
+        labels = [f"{percentage}%" if percentage is not None else "–" for _, percentage in segments]
+        text_width = sum(2 + len(label) for label in labels) + 2 * (len(labels) - 1)
+        column = max(2, width - 2 - text_width)
+        for (glyph, percentage), label in zip(segments, labels):
+            put(screen, 1, column, glyph, style(FG_DARK))
+            put(screen, 1, column + 2, label, style(usage_color(percentage), -1, curses.A_BOLD))
+            column += 2 + len(label) + 2
+    put(screen, 2, 0, "─" * (width - 1), style(BG_HIGHLIGHT))
+
+
 def draw(screen, rows: list, selected: int, current: str, message: str, query: str, filtering: bool, help_open: bool):
     screen.erase()
     hit_rows.clear()
     height, width = screen.getmaxyx()
-    put(screen, 0, 2, "Claude sessions", style(BLUE, -1, curses.A_BOLD))
-    needing = sum(1 for row in rows if row[0] == "card" and row[1]["state"] == "needs-you")
-    summary = f"{needing} need you" if needing else ""
-    put(screen, 0, max(2, width - 2 - len(summary)), summary, style(RED, -1, curses.A_BOLD))
-    put(screen, 1, 0, "─" * (width - 1), style(BG_HIGHLIGHT))
-    top, bottom = 3, height - 3  # list area: rows [top, bottom)
+    draw_header(screen, rows, width)
+    top, bottom = 4, height - 3  # list area: rows [top, bottom)
     selected_row = next((index for index, row in enumerate(rows) if row[0] in ("card", "fold") and row[2] == selected), 0)
     start = first_visible(rows, selected_row, bottom - top - 1)
     line = top
@@ -672,6 +732,7 @@ def main(screen):
     screen.timeout(POLL_MS)
     history = History()
     view = ViewState()
+    usage = UsageRefresher()
 
     selected = 0
     message = ""
@@ -679,6 +740,7 @@ def main(screen):
     filtering = False
     help_open = False
     while True:
+        usage.tick()
         rows, sessions = build_rows(history, view, query)
         selected = min(selected, max(len(sessions) - 1, 0))
         draw(screen, rows, selected, current_session(), message, query, filtering, help_open)

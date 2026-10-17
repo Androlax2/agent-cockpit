@@ -5,7 +5,9 @@
 # each one lives in the tmux session claude-auto-retry created for it, so viewing is attaching.
 #
 #   claude-sessions              attach the manager in this terminal (created on first use)
-#   claude-sessions show [id]    open or focus the manager window (kitty, workspace 6), view id
+#   claude-sessions show [id]    open or focus the manager window (kitty, workspace 6), view id;
+#                                without id, from the Claude workspace itself, go back to the
+#                                previous workspace instead (ALT + C toggles)
 #   claude-sessions view <id>    show a session in the viewer pane (the sidebar's n); id is the
 #                                daemon's session id or a claude-retry-* tmux session name
 #   claude-sessions open <id>    view it and put the cursor in it (the sidebar's Enter)
@@ -37,6 +39,8 @@ VIEW_STATE="${XDG_STATE_HOME:-$HOME/.local/state}/claude-sessions/view.json"
 DEFAULT_SIDEBAR_WIDTH=56
 WINDOW_CLASS=claude-sessions
 WORKSPACE=6  # apps/claude.lua routes the manager window there
+ON_CLAUDE_WORKSPACE="$HOME/.config/waybar/scripts/on-claude-workspace.sh"
+BAR_VISIBILITY="$HOME/.config/waybar/scripts/waybar-visibility.sh"
 
 sidebar_width() {
     local width
@@ -202,9 +206,15 @@ restart_session() {
 
 show_manager() {
     ensure_manager
+    if [[ -z ${1:-} ]] && "$ON_CLAUDE_WORKSPACE"; then
+        hyprctl dispatch 'hl.dsp.focus({ workspace = "previous" })' >/dev/null
+        return
+    fi
     if [[ -n ${1:-} ]]; then
         view_session "$1" && focus_viewer
     fi
+    # Hide the bar before the switch rather than after it, or it flashes over the cockpit.
+    "$BAR_VISIBILITY" hide
     if hyprctl -j clients | jq -e --arg class "$WINDOW_CLASS" 'any(.[]; .class == $class)' >/dev/null; then
         hyprctl dispatch "hl.dsp.focus({ window = \"class:^$WINDOW_CLASS\$\" })" >/dev/null
     else

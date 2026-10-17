@@ -1,20 +1,18 @@
 #!/usr/bin/env bash
-# Waybar custom module: Claude subscription usage, one window per invocation:
+# Claude subscription usage, one window per invocation, as a waybar-style JSON object:
 #   claude-usage.sh five_hour    the current 5-hour window (clock glyph)
 #   claude-usage.sh seven_day    the 7-day window (calendar glyph)
 # The text is a dim glyph and the window's utilisation in percent, the class its own threshold
-# (warning / critical). The glyph lives in the text, not in an image module, so it hides with the value;
-# the tooltip lists every window the server reports. Read from the endpoint Claude Code's /usage
-# uses (api.anthropic.com/api/oauth/usage, undocumented, so a schema change shows up as itself in
-# the tooltip rather than being hidden). The response is cached in $XDG_RUNTIME_DIR so the two
-# modules share one request per poll.
+# (warning / critical); the tooltip lists every window the server reports. Read from the endpoint
+# Claude Code's /usage uses (api.anthropic.com/api/oauth/usage, undocumented, so a schema change
+# shows up as itself in the tooltip rather than being hidden). The response is cached in
+# $XDG_RUNTIME_DIR/claude-usage.json, which the claude-sessions sidebar reads for its header; the
+# sidebar runs this script every 5 min to keep that cache fresh.
 # The OAuth token comes from ~/.claude/.credentials.json and is never refreshed here: Claude Code
 # owns it, and a refresh from two places invalidates one of them. An expired token is shown as
 # "stale" until a Claude session refreshes it.
 # CLAUDE_USAGE_FIXTURE points at a saved response for testing without the network.
 WINDOW=${1:?usage: claude-usage.sh five_hour|seven_day}
-# Centre-island module: only while the Claude workspace is active (nothing printed hides it).
-[[ -n ${CLAUDE_USAGE_FIXTURE:-} ]] || "$HOME/.config/waybar/scripts/on-claude-workspace.sh" || exit 0
 CREDENTIALS="$HOME/.claude/.credentials.json"
 USAGE_URL="https://api.anthropic.com/api/oauth/usage"
 CACHE="${XDG_RUNTIME_DIR:-/tmp}/claude-usage.json"
