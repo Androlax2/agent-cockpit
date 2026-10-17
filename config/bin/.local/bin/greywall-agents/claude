@@ -47,6 +47,15 @@ if [ -n "$github_token" ]; then
     greywall_options="$greywall_options --ignore-secret GH_TOKEN"
 fi
 
+# A classic token with only the project scope (Project boards, which fine-grained tokens cannot
+# reach), shared by every project. Unlike GH_TOKEN it stays a greyproxy placeholder inside the
+# sandbox: gh sends it in an Authorization header, where greyproxy swaps in the real value.
+project_board_token=$(secret-tool lookup service agent-gh-projects 2>/dev/null || true)
+if [ -n "$project_board_token" ]; then
+    export GH_PROJECT_TOKEN="$project_board_token"
+    greywall_options="$greywall_options --secret GH_PROJECT_TOKEN"
+fi
+
 # A project with its own isolated Docker daemon (make agent-docker-add PROJECT=<name>) has its
 # socket at the project root. Started in a subfolder, greywall mounts only that folder, so the
 # socket needs a mount of its own; at the project root the folder mount already includes it and
@@ -54,11 +63,36 @@ fi
 docker_socket="$project_root/.agent-docker.sock"
 if [ -S "$docker_socket" ]; then
     export DOCKER_HOST="unix://$docker_socket"
-    export DOCKER_CONFIG=/tmp/agent-docker-config
+    # Build steps and containers live in the daemon's network namespace, where greyproxy is
+    # 10.0.2.2, not the 127.0.0.1 the daemon itself uses. The client injects this proxy into
+    # both, as build arguments and as container environment.
+    docker_config="$HOME/.cache/agent-docker-config/$project_name"
+    container_proxy="http://$project_name-docker:proxy@10.0.2.2:43051"
+    mkdir -p "$docker_config"
+    printf '{"proxies":{"default":{"httpProxy":"%s","httpsProxy":"%s","noProxy":"localhost,127.0.0.1"}}}\n' \
+        "$container_proxy" "$container_proxy" > "$docker_config/config.json"
+    export DOCKER_CONFIG="$docker_config"
+    greywall_options="$greywall_options --allow-path $docker_config"
     if [ "$(pwd -P)" != "$project_root" ]; then
         greywall_options="$greywall_options --allow-path $docker_socket"
     fi
 fi
+
+# After a reboot a session can start before DNS (Tailscale included) is up, and the sandbox's
+# DNS link to greyproxy never recovers. Wait until greyproxy's resolver answers, up to 30s.
+wait_for_greyproxy_dns() {
+    attempts=0
+    until dig +short +time=1 +tries=1 @127.0.0.1 -p 43053 api.anthropic.com | grep -q .; do
+        attempts=$((attempts + 1))
+        if [ "$attempts" -ge 30 ]; then
+            echo "claude launcher: no DNS through greyproxy after 30s, starting anyway" >&2
+            return
+        fi
+        sleep 1
+    done
+}
+
+wait_for_greyproxy_dns
 
 # greywall_options is split on spaces on purpose: every path in it is under $HOME or
 # $XDG_RUNTIME_DIR, which have none.

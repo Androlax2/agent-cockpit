@@ -12,8 +12,10 @@ Keys: j/k or arrows move, 1-9 jump to a running session, Enter opens a running s
 it and moves the cursor into it) or resumes a past one, Tab/l/Right move the cursor into the
 session, n peeks at the next session that needs you, / filters by project or title (Esc
 clears), a starts claude in a project picked with fzf, p pins a running session on top,
-x kills a running session or hides a past one (u undoes), h or Left folds a project, . shows
-or hides the trivial sessions, ? shows the help, q or Ctrl-C close the manager window. Mouse:
+x exits a running session (Ctrl-C twice, then killed if it lingers) or hides a past one
+(u undoes), r restarts a running session in place to apply an installed update, h or Left
+folds a project, . shows or hides the trivial sessions, ? shows the help, q or Ctrl-C close
+the manager window. Mouse:
 click selects, double-click opens. The sidebar's width, pins, folds and hidden sessions
 persist in ~/.local/state/claude-sessions/view.json.
 Shift+Left / Shift+Right (tmux.conf) move between the list and the session.
@@ -59,7 +61,8 @@ HELP_LINES = (
     ("/", "filter by project or title, Esc clears"),
     ("a", "new session in a project"),
     ("p", "pin or unpin a running session"),
-    ("x", "kill a running session, or hide a past one from the list"),
+    ("x", "exit a running session, or hide a past one from the list"),
+    ("r", "restart a running session (same conversation, new process)"),
     ("u", "bring back the last hidden past session"),
     ("h ←", "fold or unfold a project's past sessions"),
     (".", "show or hide trivial past sessions"),
@@ -224,8 +227,9 @@ class History:
                 entry = latest.setdefault(session_id, {"session": session_id, "cwd": project,
                                                        "project": os.path.basename(project), "since": 0, "prompt": ""})
                 entry["since"] = max(entry["since"], since)
-                # Slash commands ("/resume", "/clear") say nothing about the session; keep the last real prompt.
-                if prompt and not prompt.startswith("/"):
+                # Slash commands ("/resume") and paste placeholders ("[Pasted text #1 +9 lines]") say nothing
+                # about the session; keep the last real prompt.
+                if prompt and not prompt.startswith("/") and not prompt.startswith("[Pasted text"):
                     entry["prompt"] = prompt
         self.entries = sorted(latest.values(), key=lambda entry: -entry["since"])
 
@@ -332,6 +336,11 @@ def focus_viewer():
     subprocess.run(["tmux", "select-pane", "-t", "claude-manager:manager.1"])
 
 
+def manager_in_background(*arguments: str):
+    """For exit and restart, which wait on Claude for seconds: the sidebar must not freeze meanwhile."""
+    subprocess.Popen(["claude-sessions", *arguments], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
 def manager(*arguments: str) -> str:
     """Runs the manager command; returns its last error line, empty on success."""
     result = subprocess.run(["claude-sessions", *arguments], capture_output=True, text=True)
@@ -350,12 +359,12 @@ def tmux_session_of(pane: str) -> str:
 
 
 def kill_session(session: dict) -> str:
-    """Ends the session's tmux session, or closes its terminal window when it never had one
-    (started outside claude-auto-retry). Returns a message for the footer."""
-    tmux_session = tmux_session_of(session.get("tmux_pane", ""))
-    if tmux_session:
-        subprocess.run(["tmux", "kill-session", "-t", f"={tmux_session}"])
-        return f"killed {session['project']}"
+    """Ends the session gracefully through the manager (Ctrl-C, then its tmux session), or closes
+    its terminal window when it never had a pane (started outside claude-auto-retry).
+    Returns a message for the footer."""
+    if session.get("tmux_pane"):
+        manager_in_background("exit", session["session"])
+        return f"exiting {session['project']} …"
     kitty_pid = session.get("kitty_pid")
     if kitty_pid:
         subprocess.run(["hyprctl", "dispatch", f'hl.dsp.window.close({{ window = "pid:{kitty_pid}" }})'],
@@ -425,7 +434,7 @@ def draw_running(screen, row: int, session: dict, number: int, is_selected: bool
         put(screen, row, 7 + len(session.get("project", "?")), "⚲", style(YELLOW, background))
     stamp = age(int(session.get("since", time.time())))
     put(screen, row, max(6, width - 2 - len(stamp)), stamp, style(state_color, background))
-    put(screen, row + 1, 6, lines[0], style(FG, background))
+    put(screen, row + 1, 6, fit(lines[0], width - 6 - 2 - 18), style(FG, background))
     facts = session.get("facts") or {}
     if facts.get("model"):
         context = facts.get("context")
@@ -436,7 +445,13 @@ def draw_running(screen, row: int, session: dict, number: int, is_selected: bool
         if percent:
             put(screen, row + 1, column + len(facts["model"]) + 2, percent, style(context_color(context), background, curses.A_BOLD))
     if len(lines) > 1:
-        put(screen, row + 2, 6, lines[1], style(FG_DARK, background, curses.A_DIM))
+        put(screen, row + 2, 6, fit(lines[1], width - 6 - 2), style(FG_DARK, background, curses.A_DIM))
+
+
+def fit(text: str, available: int) -> str:
+    if available <= 1:
+        return ""
+    return text if len(text) <= available else text[:available - 1] + "…"
 
 
 def draw_recent(screen, row: int, session: dict, is_selected: bool, width: int):
@@ -445,8 +460,9 @@ def draw_recent(screen, row: int, session: dict, is_selected: bool, width: int):
     put(screen, row, 0, " " * (width - 1), style(FG, background))
     put(screen, row, 4, GLYPHS["recent"], style(CYAN, background))
     stamp = clock(int(session.get("since", time.time())))
-    put(screen, row, 6, session.get("task") or "(untitled)", style(FG if is_selected else FG_DARK, background))
-    put(screen, row, max(6, width - 2 - len(stamp)), stamp, style(FG_DARK, background, curses.A_DIM))
+    stamp_column = max(6, width - 2 - len(stamp))
+    put(screen, row, 6, fit(session.get("task") or "(untitled)", stamp_column - 6 - 2), style(FG if is_selected else FG_DARK, background))
+    put(screen, row, stamp_column, stamp, style(FG_DARK, background, curses.A_DIM))
 
 
 def draw_help(screen):
@@ -484,9 +500,9 @@ def row_height(row: tuple) -> int:
     if kind == "header":
         return 2
     if kind == "day":
-        return 2
+        return 3  # blank, heading, blank
     if kind == "project":
-        return 1
+        return 1 if payload[3] else 2  # the first group of a day sits right under the heading
     if kind == "fold":
         return 0
     if payload["state"] == "recent":
@@ -529,19 +545,20 @@ def draw(screen, rows: list, selected: int, current: str, message: str, query: s
         if kind == "header":
             put(screen, line, 2, payload, style(MAGENTA, -1, curses.A_BOLD))
         elif kind == "day":
-            put(screen, line, 2, payload, style(MAGENTA, -1, curses.A_BOLD))
+            put(screen, line + 1, 2, payload, style(MAGENTA, -1, curses.A_BOLD))
         elif kind == "project":
-            name, folded, count = payload
+            name, folded, count, is_first = payload
+            label_line = line if is_first else line + 1  # a blank line separates project groups
             fold_index = rows[position + 1][2] if folded and position + 1 < len(rows) and rows[position + 1][0] == "fold" else None
             is_fold_selected = fold_index is not None and fold_index == selected
             background = BG_HIGHLIGHT if is_fold_selected else -1
             if is_fold_selected:
-                put(screen, line, 0, " " * (width - 1), style(FG, background))
-            put(screen, line, 2, "▸" if folded else "▾", style(FG_DARK, background))
-            put(screen, line, 4, name, style(project_color(name), background, curses.A_BOLD))
+                put(screen, label_line, 0, " " * (width - 1), style(FG, background))
+            put(screen, label_line, 2, "▸" if folded else "▾", style(FG_DARK, background))
+            put(screen, label_line, 4, name, style(project_color(name), background, curses.A_BOLD))
             if folded:
-                put(screen, line, 5 + len(name), f"{count}", style(FG_DARK, background, curses.A_DIM))
-                hit_rows.append((line, line, fold_index))
+                put(screen, label_line, 5 + len(name), f"{count}", style(FG_DARK, background, curses.A_DIM))
+                hit_rows.append((label_line, label_line, fold_index))
         elif payload["state"] == "recent":
             draw_recent(screen, line, payload, index == selected, width)
             hit_rows.append((line, line, index))
@@ -591,9 +608,9 @@ def build_rows(history: History, view: ViewState, query: str) -> tuple[list, lis
     day = None
     for bucket, sessions in group_by_day(recent):
         rows.append(("day", bucket, None))
-        for project, members in group_by_project(sessions):
+        for position, (project, members) in enumerate(group_by_project(sessions)):
             folded = project in view.folded
-            rows.append(("project", (project, folded, len(members)), None))
+            rows.append(("project", (project, folded, len(members), position == 0), None))
             if folded:
                 selectable.append({**members[0], "folded": True})
                 rows.append(("fold", None, len(selectable) - 1))
@@ -710,6 +727,15 @@ def main(screen):
             message = "showing trivial sessions" if view.show_trivial else "hiding trivial sessions"
         elif key == ord("p") and sessions and sessions[selected]["state"] != "recent":
             view.toggle(view.pinned, sessions[selected]["session"])
+        elif key == ord("r") and sessions and sessions[selected]["state"] not in ("recent", "unknown"):
+            session = sessions[selected]
+            draw(screen, rows, selected, current_session(), f"restart {session['project']}? same conversation, new process  y/n", query, False, False)
+            screen.timeout(-1)
+            answer = screen.getch()
+            screen.timeout(POLL_MS)
+            if answer == ord("y"):
+                manager_in_background("restart", session["session"])
+                message = f"restarting {session['project']} …"
         elif key in (KEY_TAB, ord("l"), curses.KEY_RIGHT):
             focus_viewer()
         elif key == ord("n"):
@@ -746,7 +772,7 @@ def main(screen):
                     view.hide(session["session"])
                     message = f"hidden: {session['task'][:40]}  (u undoes)"
                 continue
-            draw(screen, rows, selected, current_session(), f"kill {session['project']}? y/n", query, False, False)
+            draw(screen, rows, selected, current_session(), f"exit {session['project']}? y/n", query, False, False)
             screen.timeout(-1)
             answer = screen.getch()
             screen.timeout(POLL_MS)

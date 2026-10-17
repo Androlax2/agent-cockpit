@@ -11,9 +11,16 @@
 #   claude-sessions open <id>    view it and put the cursor in it (the sidebar's Enter)
 #   claude-sessions new <dir> [claude args…]
 #                                start `claude` in <dir> inside the viewer pane (the sidebar's a,
-#                                and the fish `claude` function from any terminal)
+#                                and the fish `claude` function from any terminal). Without claude
+#                                arguments, a session already running in <dir> is shown instead:
+#                                typing `claude` twice in a project must not leave the first one
+#                                running unseen in the background.
 #   claude-sessions resume <dir> <id>
 #                                resume a past session there (the sidebar's Enter on a recent one)
+#   claude-sessions exit <id>    end a running session the way you would by hand: Ctrl-C twice,
+#                                then its tmux session is killed if it is still there (the sidebar's x)
+#   claude-sessions restart <id> exit it and resume the same conversation in its directory, which
+#                                is how an installed Claude update gets applied (the sidebar's r)
 #   claude-sessions idle         what the viewer pane runs while nothing is selected
 #   claude-sessions prepare      create the manager's tmux session without a window (login autostart)
 #   claude-sessions reload       restart the sidebar in place (after editing it)
@@ -91,17 +98,31 @@ focus_viewer() {
     tmux select-pane -t "$VIEWER_PANE"
 }
 
+running_session_in() {
+    jq -r --arg cwd "$1" '.sessions[] | select(.cwd == $cwd) | .session' "$SNAPSHOT" 2>/dev/null | head -1
+}
+
 new_session() {
-    local directory=$1
+    local directory=$1 existing
     shift
     require_plain_directory "$directory"
     ensure_manager
+    if (( $# == 0 )); then
+        existing=$(running_session_in "$directory")
+        if [[ -n $existing ]]; then
+            view_session "$existing"
+            return
+        fi
+    fi
     # fish owns the `claude` function (greywall + claude-auto-retry). With no tmux variable left in
     # the environment the launcher creates the session's own tmux session and attaches it here;
     # with one still set it would run claude directly in this pane, which the next view kills.
     # CLAUDE_SESSIONS_INSIDE stops the function from delegating back to this manager.
+    # The launch takes a few seconds (fish, the launcher, greywall, Claude): say so in the pane
+    # until Claude's own screen takes over.
     tmux respawn-pane -k -t "$VIEWER_PANE" -c "$directory" \
-        env -u TMUX -u TMUX_PANE CLAUDE_SESSIONS_INSIDE=1 fish -ic 'claude $argv' "$@"
+        env -u TMUX -u TMUX_PANE CLAUDE_SESSIONS_INSIDE=1 \
+        fish -ic 'echo; echo "  ⟳ Starting Claude in $PWD …"; echo; claude $argv' "$@"
     : > "$CURRENT"
 }
 
@@ -109,9 +130,74 @@ resume_session() {
     require_plain_directory "$1"
     ensure_manager
     tmux respawn-pane -k -t "$VIEWER_PANE" -c "$1" \
-        env -u TMUX -u TMUX_PANE CLAUDE_SESSIONS_INSIDE=1 fish -ic 'claude --resume $argv' "$2"
+        env -u TMUX -u TMUX_PANE CLAUDE_SESSIONS_INSIDE=1 \
+        fish -ic 'echo; echo "  ⟳ Resuming the conversation in $PWD …"; echo; claude --resume $argv' "$2"
     : > "$CURRENT"
     focus_viewer
+}
+
+session_field() { # id field
+    jq -r --arg id "$1" --arg field "$2" '.sessions[] | select(.session == $id) | .[$field] // empty' "$SNAPSHOT" 2>/dev/null
+}
+
+tmux_session_gone() { # name timeout-seconds
+    local tenths
+    for (( tenths = 0; tenths < $2 * 10; tenths++ )); do
+        tmux has-session -t "=$1" 2>/dev/null || return 0
+        sleep 0.1
+    done
+    return 1
+}
+
+exit_session() {
+    local id=$1 pane target attempt
+    if [[ $id == claude-retry-* ]]; then
+        [[ $id == *"#"* ]] && { echo "claude-sessions: refusing session name $id" >&2; return 1; }
+        target=$id
+        pane=$(tmux list-panes -t "=$target" -F '#{pane_id}' | head -1)
+    else
+        pane=$(session_field "$id" tmux_pane)
+        if [[ -z $pane ]]; then
+            echo "claude-sessions: session $id has no tmux pane" >&2
+            return 1
+        fi
+        target=$(tmux display-message -p -t "$pane" '#{session_name}')
+    fi
+    # At the idle prompt /exit is the clean way out. Otherwise two Ctrl-C in quick succession: the
+    # first interrupts the turn or clears typed input, the second must follow within Claude's short
+    # "press again to exit" window. Two rounds, then the tmux session is killed.
+    for attempt in 1 2; do
+        if pane_at_prompt "$pane"; then
+            tmux send-keys -t "$pane" "/exit" Enter
+        else
+            tmux send-keys -t "$pane" C-c
+            sleep 0.3
+            tmux send-keys -t "$pane" C-c
+        fi
+        tmux_session_gone "$target" 3 && return 0
+    done
+    echo "claude-sessions: $id did not exit, killing its tmux session" >&2
+    tmux kill-session -t "=$target"
+}
+
+pane_at_prompt() {
+    # Claude's input line: "❯" padded with a no-break space, with no spinner above it.
+    local tail
+    tail=$(tmux capture-pane -p -t "$1" -S -20 2>/dev/null) || return 1
+    grep -q $'^[[:space:]]*❯[ \u00a0]' <<<"$tail" && ! grep -Eq '^[[:space:]]*[^[:space:]]{0,2}[[:space:]]*[A-Z][a-z]+… \([0-9]+[smh]' <<<"$tail"
+}
+
+restart_session() {
+    local id=$1 directory
+    directory=$(session_field "$id" cwd)
+    if [[ -z $directory ]]; then
+        echo "claude-sessions: session $id has no directory to restart in" >&2
+        return 1
+    fi
+    exit_session "$id" || return 1
+    # The exited session leaves a dead pane behind; replace it right away so the gap reads as intended.
+    tmux respawn-pane -k -t "$VIEWER_PANE" sh -c 'printf "\n  ⟳ Session closed, resuming it …\n"; sleep 30'
+    resume_session "$directory" "$id"
 }
 
 show_manager() {
@@ -143,6 +229,8 @@ case ${1:-attach} in
     open) view_session "${2:?usage: claude-sessions open <session-id>}" && focus_viewer ;;
     new) shift; new_session "${1:?usage: claude-sessions new <dir> [claude args]}" "${@:2}" ;;
     resume) resume_session "${2:?usage: claude-sessions resume <dir> <session-id>}" "${3:?usage: claude-sessions resume <dir> <session-id>}" ;;
+    exit) exit_session "${2:?usage: claude-sessions exit <session-id>}" ;;
+    restart) restart_session "${2:?usage: claude-sessions restart <session-id>}" ;;
     idle) idle ;;
     prepare) ensure_manager ;;
     reload)
@@ -155,7 +243,7 @@ case ${1:-attach} in
         rm -f "$CURRENT" "$HOME"/.cache/claude/statusline-*.json "$HOME"/.cache/claude/toast-*.id
         ;;
     *)
-        echo "usage: claude-sessions [attach|show [id]|view <id>|open <id>|new <dir>|resume <dir> <id>|prepare|idle|reload|reset]" >&2
+        echo "usage: claude-sessions [attach|show [id]|view <id>|open <id>|new <dir>|resume <dir> <id>|exit <id>|restart <id>|prepare|idle|reload|reset]" >&2
         exit 2
         ;;
 esac
