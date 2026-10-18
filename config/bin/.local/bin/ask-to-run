@@ -24,7 +24,8 @@ RUNS_DIR = os.environ.get("CLAUDE_RUNS_DIR", os.path.expanduser("~/.cache/claude
 FIFO = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "osd.fifo")
 WAIT_S = int(os.environ.get("ASK_TO_RUN_WAIT_S", "540"))
 OUTPUT_LINES = 400
-ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\r")
+# CSI and OSC sequences, keypad-mode switches (ESC = / ESC >), carriage returns.
+ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[=>]|\r")
 DECLINED, TIMED_OUT, NO_DAEMON = 125, 124, 126
 
 
