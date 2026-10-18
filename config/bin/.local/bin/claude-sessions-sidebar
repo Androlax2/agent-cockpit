@@ -1241,6 +1241,29 @@ def review_age(updated: str) -> str:
     return f"{seconds // 86400}d"
 
 
+PRIORITY_LOW, PRIORITY_NORMAL, PRIORITY_HIGH = 1, 2, 3
+HIGH_LABEL = re.compile(r"\b(p0|p1|urgent|critical|high|priority[ :/_-]*(high|urgent|critical))\b", re.IGNORECASE)
+LOW_LABEL = re.compile(r"\b(p3|p4|low|priority[ :/_-]*low)\b", re.IGNORECASE)
+
+
+def issue_priority(labels: list[str]) -> int:
+    """From the issue's labels: P0/P1/urgent/critical/high are high, P3/P4/low are low."""
+    if any(HIGH_LABEL.search(label) for label in labels):
+        return PRIORITY_HIGH
+    if any(LOW_LABEL.search(label) for label in labels):
+        return PRIORITY_LOW
+    return PRIORITY_NORMAL
+
+
+def todo_order(item: dict) -> tuple:
+    """High priority first; at the same priority, typed items before issues, then oldest typed and
+    most recently updated issues first."""
+    priority = item.get("priority", PRIORITY_NORMAL)
+    if item["kind"] == "typed":
+        return (-priority, 0, item.get("created", 0), "")
+    return (-priority, 1, 0, "".join(chr(0x10FFFF - ord(character)) for character in item.get("updated", "")))
+
+
 TODO_PATH = os.path.join(os.environ.get("XDG_STATE_HOME", os.path.expanduser("~/.local/state")), "claude-sessions", "todo.json")
 
 
@@ -1262,12 +1285,18 @@ class TodoList:
         os.replace(TODO_PATH + ".tmp", TODO_PATH)
 
     def add(self, project: str, cwd: str, text: str):
-        self.items.append({"id": secrets.token_hex(4), "project": project, "cwd": cwd,
+        self.items.append({"id": secrets.token_hex(4), "project": project, "cwd": cwd, "priority": PRIORITY_NORMAL,
                            "text": " ".join(text.split()), "created": int(time.time()), "sent": False})
         self.save()
 
     def remove(self, item_id: str):
         self.items = [item for item in self.items if item["id"] != item_id]
+        self.save()
+
+    def change_priority(self, item_id: str, step: int):
+        for item in self.items:
+            if item["id"] == item_id:
+                item["priority"] = max(PRIORITY_LOW, min(PRIORITY_HIGH, item.get("priority", PRIORITY_NORMAL) + step))
         self.save()
 
     def mark_sent(self, item_id: str):
@@ -1841,21 +1870,28 @@ class TodoPanel(Panel):
         typed = [{"kind": "typed", **item} for item in app.todos.items if matches({"project": item["project"], "task": item["text"]}, app.query)]
         with app.reviews.lock:
             issues = [issue for issue in app.reviews.issues if matches({"project": issue["repository"], "task": issue["title"]}, app.query)]
-        self.items = typed + issues
+        for issue in issues:
+            issue["priority"] = issue_priority(issue["labels"])
+        self.items = sorted(typed + issues, key=todo_order)
         self.clamp()
         lines = []
         if not self.items:
             lines.append(Line([(0, "Nothing to do. t adds an item for the viewed project.", style(FG_DARK, -1, curses.A_DIM))]))
+        priority_marks = {PRIORITY_HIGH: ("‼", style(RED, -1, curses.A_BOLD)), PRIORITY_NORMAL: (" ", 0),
+                          PRIORITY_LOW: ("↓", style(FG_DARK, -1, curses.A_DIM))}
         for index, item in enumerate(self.items):
+            mark, mark_style = priority_marks[item.get("priority", PRIORITY_NORMAL)]
             if item["kind"] == "typed":
-                mark, color = ("→", FG_DARK) if item.get("sent") else ("•", YELLOW)
-                lines.append(Line([(0, mark, style(color, -1, curses.A_BOLD)), (2, item["project"], style(project_color(item["project"]), -1, curses.A_BOLD)),
-                                   (3 + len(item["project"]), item["text"], style(FG_DARK if item.get("sent") else FG))],
+                kind, color = ("→", FG_DARK) if item.get("sent") else ("•", YELLOW)
+                lines.append(Line([(0, mark, mark_style), (2, kind, style(color, -1, curses.A_BOLD)),
+                                   (4, item["project"], style(project_color(item["project"]), -1, curses.A_BOLD)),
+                                   (5 + len(item["project"]), item["text"], style(FG_DARK if item.get("sent") else FG))],
                                   right=[("sent", style(FG_DARK, -1, curses.A_DIM))] if item.get("sent") else [], item=index))
             else:
                 label = f"{item['repository']}#{item['number']}"
                 labels = ", ".join(item["labels"][:2])
-                lines.append(Line([(0, "◇", style(MAGENTA)), (2, label, style(MAGENTA, -1, curses.A_BOLD)), (3 + len(label), item["title"], style(FG_DARK))],
+                lines.append(Line([(0, mark, mark_style), (2, "◇", style(MAGENTA)), (4, label, style(MAGENTA, -1, curses.A_BOLD)),
+                                   (5 + len(label), item["title"], style(FG_DARK))],
                                   right=[(labels, style(FG_DARK, -1, curses.A_DIM))] if labels else [], item=index))
         self.lines = lines
 
@@ -1864,12 +1900,14 @@ class TodoPanel(Panel):
         return f"{open_items} typed · {len(app.reviews.issues)} issues"
 
     def hints(self):
-        return [("⏎", "to Claude"), ("t", "add"), ("x", "remove")]
+        return [("⏎", "to Claude"), ("t", "add"), ("+", "priority up"), ("-", "down"), ("x", "remove")]
 
     def help(self):
         return [("⏎", "hand the item to Claude: the project's running session, or a new one"),
                 ("t", "add an item for the viewed session's project (or pick a project)"),
-                ("x", "remove a typed item"), ("•", "typed, not sent yet · → sent to Claude · ◇ an open GitHub issue")]
+                ("+", "raise a typed item's priority"), ("-", "lower it"), ("x", "remove a typed item"),
+                ("‼ ↓", "high and low priority; an issue's comes from its labels (P0/P1/urgent/high, P3/P4/low)"),
+                ("•", "typed, not sent yet · → sent to Claude · ◇ an open GitHub issue")]
 
     def target_directory(self, app, item) -> str:
         if item["kind"] == "typed":
@@ -1891,6 +1929,13 @@ class TodoPanel(Panel):
         if key == ord("x") and item and item["kind"] == "typed":
             app.todos.remove(item["id"])
             return "removed"
+        if key in (ord("+"), ord("-")) and item:
+            if item["kind"] != "typed":
+                return "an issue's priority comes from its labels on GitHub"
+            app.todos.change_priority(item["id"], 1 if key == ord("+") else -1)
+            self.build(app)
+            self.selected = next(index for index, moved in enumerate(self.items) if moved.get("id") == item["id"])
+            return ""
         if key in (KEY_ENTER_LF, KEY_ENTER_CR, curses.KEY_ENTER) and item:
             directory = self.target_directory(app, item)
             if not directory:

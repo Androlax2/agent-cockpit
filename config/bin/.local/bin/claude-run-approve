@@ -73,17 +73,98 @@ def edit(command: str) -> str:
         os.remove(file.name)
 
 
-def ask(question: str, default: str) -> str:
+# Characters that can hide what a command really does on screen: terminal control codes (ESC
+# sequences clear or rewrite lines, carriage returns overwrite them) and invisible or direction-
+# changing Unicode (bidi overrides, zero-width characters). Shown escaped, never interpreted.
+HIDING = re.compile("[\x00-\x08\x0b-\x1f\x7f-\x9f\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]")
+LONG_COMMAND = 600
+
+
+def visible_command(command: str) -> tuple[str, bool]:
+    """The command as it will run, with every hiding character shown as an escape, and whether
+    there was any."""
+    shown = HIDING.sub(lambda match: f"{RED}\\u{ord(match.group()):04x}{RESET}{BOLD}", command)
+    return shown, shown != command
+
+
+def project_of(directory: str) -> str:
+    """The repository the command runs in, worked out here: the request's own label is not trusted."""
+    path = directory
+    while path and path != "/":
+        if os.path.exists(os.path.join(path, ".git")):
+            return os.path.basename(path)
+        path = os.path.dirname(path)
+    return os.path.basename(directory.rstrip("/")) or directory
+
+
+def choose(question: str, options: list[tuple[str, str]], default: str) -> str:
+    """An arrow-key menu (↑↓ or j/k, Enter), starting on `default`; returns the chosen option's key.
+    Without a terminal (tests), a line of input: an option key, or empty for the default."""
+    keys = [key for key, _ in options]
+    if not sys.stdin.isatty():
+        try:
+            answer = input(f"{question} [{'/'.join(keys)}] ").strip().lower()[:1]
+        except EOFError:
+            return default
+        return answer if answer in keys else default
+    import termios
+    import tty
+    selected = keys.index(default)
+    print(f"{BOLD}{question}{RESET}  {DIM}↑↓ choose · Enter confirms{RESET}")
+    descriptor = sys.stdin.fileno()
+    saved = termios.tcgetattr(descriptor)
+
+    def draw(first: bool):
+        if not first:
+            sys.stdout.write(f"\033[{len(options)}A")
+        for index, (_, label) in enumerate(options):
+            marker = f"{BLUE}❯ {BOLD}{label}{RESET}" if index == selected else f"  {DIM}{label}{RESET}"
+            sys.stdout.write(f"\r\033[2K{marker}\r\n")
+        sys.stdout.flush()
+
     try:
-        return (input(question).strip().lower() or default)[:1]
-    except EOFError:
-        return default
+        tty.setcbreak(descriptor)
+        draw(True)
+        while True:
+            key = os.read(descriptor, 3)
+            if key in (b"\x1b[A", b"k"):
+                selected = (selected - 1) % len(options)
+            elif key in (b"\x1b[B", b"j"):
+                selected = (selected + 1) % len(options)
+            elif key in (b"\r", b"\n"):
+                return keys[selected]
+            elif key in (b"\x03", b"\x1b", b"q"):
+                return default
+            draw(False)
+    finally:
+        termios.tcsetattr(descriptor, termios.TCSADRAIN, saved)
 
 
 def run(command: str, cwd: str, log_path: str) -> int:
+    """The command in a real terminal through `script` (sudo and prompts work), recorded, with a
+    "running · 12s" line kept at the bottom: the lines above it scroll, so output still shows,
+    and a command that prints nothing no longer looks stuck."""
     os.makedirs(LOG_DIR, mode=0o700, exist_ok=True)
-    result = subprocess.run(["script", "-qfec", shlex.join(["fish", "-c", command]), log_path], cwd=cwd)
-    return result.returncode
+    child = subprocess.Popen(["script", "-qfec", shlex.join(["fish", "-c", command]), log_path], cwd=cwd)
+    if not sys.stdout.isatty():
+        return child.wait()
+    rows = os.get_terminal_size().lines
+    started = time.time()
+    spinner = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+    sys.stdout.write(f"\033[1;{rows - 1}r\033[{rows - 1};1H")  # everything above the last row scrolls
+    try:
+        tick = 0
+        while child.poll() is None:
+            elapsed = int(time.time() - started)
+            sys.stdout.write(f"\0337\033[{rows};1H\033[2K{BLUE}{spinner[tick % len(spinner)]}{RESET} "
+                             f"{DIM}running · {elapsed // 60}m {elapsed % 60:02d}s{RESET}\0338")
+            sys.stdout.flush()
+            tick += 1
+            time.sleep(0.1)
+    finally:
+        sys.stdout.write(f"\0337\033[{rows};1H\033[2K\0338\033[r\033[{rows - 1};1H\n")
+        sys.stdout.flush()
+    return child.returncode
 
 
 def recorded_output(log_path: str) -> str:
@@ -102,10 +183,17 @@ def approve(request_id: str) -> int:
         return 1
     command, original = request["command"], request["command"]
     cwd = request.get("cwd") if isinstance(request.get("cwd"), str) and os.path.isdir(request.get("cwd")) else os.path.expanduser("~")
+    project = project_of(cwd)
     while True:
-        print(f"\n{BOLD}{BLUE}Claude · {request.get('project', '?')}{RESET} asks you to run, in {DIM}{cwd}{RESET}:\n")
-        print(f"  {BOLD}{command}{RESET}\n")
-        answer = ask(f"Run it? {BOLD}y{RESET} runs · {BOLD}e{RESET} edits first · {BOLD}n{RESET} or Enter declines: ", "n")
+        shown, hiding = visible_command(command)
+        print(f"\n{BOLD}{BLUE}Claude · {project}{RESET} asks you to run, in {DIM}{cwd}{RESET}:\n")
+        print("\n".join(f"  {BOLD}{line}{RESET}" for line in shown.split("\n")) + "\n")
+        if hiding:
+            print(f"{RED}{BOLD}This command contains hidden characters (shown in red as \\uXXXX). "
+                  f"They can make a command look different from what runs. Decline unless you know why.{RESET}\n")
+        if len(command) > LONG_COMMAND:
+            print(f"{YELLOW}Long command ({len(command)} characters): read all of it.{RESET}\n")
+        answer = choose("Run it?", [("n", "Decline"), ("y", "Run it"), ("e", "Edit it first")], "n")
         if answer == "e":
             command = edit(command) or command
             continue
@@ -113,21 +201,21 @@ def approve(request_id: str) -> int:
     send(f"notice-clear run-{request_id}")
     if answer != "y":
         write_result(request_id, {"status": "declined"})
-        log("INFO", f"declined {request_id} for {request.get('project', '?')}")
+        log("INFO", f"declined {request_id} for {project}")
         print("Declined: Claude is told.")
         return 0
     log_path = os.path.join(LOG_DIR, f"{request_id}.log")
     print(f"{DIM}─── running ───{RESET}")
     exit_code = run(command, cwd, log_path)
     print(f"{DIM}─── {RESET}{GREEN if exit_code == 0 else RED}exit {exit_code}{RESET}")
-    keep = ask(f"Send the output to Claude? {BOLD}Y{RESET}/n: ", "y") == "y"
+    keep = choose("Send the output to Claude?", [("y", "Send the output"), ("n", "Keep it out (only the exit status)")], "y") == "y"
     write_result(request_id, {"status": "ran", "exit": exit_code, "output": recorded_output(log_path) if keep else "",
                               "output_withheld": not keep, "edited_command": command if command != original else None})
     try:
         os.remove(log_path)
     except OSError:
         pass
-    log("INFO", f"ran {request_id} for {request.get('project', '?')}: exit {exit_code}"
+    log("INFO", f"ran {request_id} for {project}: exit {exit_code}"
                 f"{', edited' if command != original else ''}{', output withheld' if not keep else ''}")
     return 0
 
