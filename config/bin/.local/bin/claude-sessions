@@ -894,10 +894,17 @@ approval_pane() { # id | close
 
 # lazygit on a session's repository in a popup over the manager (the sidebar's g): review and
 # commit what Claude did without leaving the cockpit; q closes it.
+# lazygit runs inside greywall, like a session: git reads the repository's own configuration, which
+# a session can write (core.fsmonitor, filters), and out here that would run as Theo. Its settings
+# and state live in a folder of their own, the only one it may write besides the repository.
 git_popup() { # dir
-    local directory=$1
+    local directory=$1 lazygit_home="$HOME/.cache/lazygit-sandbox"
     require_plain_directory "$directory"
-    tmux display-popup -E -w 92% -h 92% -d "$directory" -T " lazygit · $(basename "$directory") " lazygit
+    mkdir -p "$lazygit_home/config/lazygit" "$lazygit_home/state"
+    if [[ -f $HOME/.config/lazygit/config.yml ]]; then cp "$HOME/.config/lazygit/config.yml" "$lazygit_home/config/lazygit/config.yml"; fi
+    tmux display-popup -E -w 92% -h 92% -d "$directory" -T " lazygit · $(basename "$directory") " \
+        env XDG_CONFIG_HOME="$lazygit_home/config" XDG_STATE_HOME="$lazygit_home/state" GIT_SSL_CAINFO="$HOME/.cache/agent-ca/bundle.pem" \
+        "$HOME/.local/bin/greywall" --auto-profile --profile claude --allow-path "$lazygit_home" -- lazygit
 }
 
 show_usage() {

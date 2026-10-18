@@ -551,6 +551,16 @@ fn git_opens_lazygit_on_the_repository_in_a_popup() {
 }
 
 #[test]
+fn lazygit_runs_inside_greywall() {
+    // A session can write its repository's git configuration; run out here, git would obey it.
+    let manager = Manager::new();
+    manager.run(&["git", &path_str(&manager.project)], &[]);
+    let popup = manager.tmux_calls("display-popup").pop().expect("no popup");
+    assert!(popup.contains("/.local/bin/greywall --auto-profile --profile claude"), "{popup}");
+    assert!(popup.ends_with("-- lazygit"), "{popup}");
+}
+
+#[test]
 fn parallel_session_gets_its_own_clone_on_its_branch() {
     let manager = Manager::new();
     manager.git_repository();
