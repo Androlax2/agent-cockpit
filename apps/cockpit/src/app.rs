@@ -699,6 +699,7 @@ impl App {
              ("R", "toggle Remote Control (phone / claude.ai/code)"), ("p", "pin on top"),
              ("e", "effort level: pick one, the session restarts on it (or click the level on the card)"),
              ("g", "lazygit on the session's repository, in a popup (q closes it)"),
+             ("U", "push the session's branch to origin with your SSH key, after a yes (lazygit's sandbox cannot)"),
              ("+", "another session on this repository, on its own branch in a separate clone"),
              ("C", "/compact in the session, when it waits (the /compact badge suggests it)"),
              ("B", "after a reboot: bring back the sessions that were running"),
@@ -815,6 +816,14 @@ impl App {
                 Some(s) if s.cwd.is_empty() => "no directory known for this session".into(),
                 Some(s) => {
                     manager_in_background(&["git", &s.cwd]);
+                    String::new()
+                }
+                None => String::new(),
+            },
+            Key::Char('U') => match session {
+                Some(s) if s.cwd.is_empty() => "no directory known for this session".into(),
+                Some(s) => {
+                    manager_in_background(&["push", &s.cwd]);
                     String::new()
                 }
                 None => String::new(),

@@ -974,3 +974,51 @@ fn a_pull_request_reviewed_before_gets_a_fresh_clone() {
     assert!(names.iter().any(|name| name.starts_with("pr-7-")), "{names:?}");
     assert_eq!(fs::read_dir(clones.join("proj-a/pr-7")).unwrap().count(), 1, "the earlier clone was touched");
 }
+
+fn push(manager: &Manager, answer: &str) -> String {
+    // ssh stands in for GitHub: it records the call and refuses, as an unreachable host would.
+    manager.sandbox.shim("ssh", "exit 1");
+    let output = manager.sandbox.run_with_input(bin().join("claude-sessions"), &["push-run", &path_str(&manager.project)], &[], answer);
+    // read -p prints its question on stderr.
+    format!("{}{}", stdout(&output), stderr(&output))
+}
+
+#[test]
+fn a_push_goes_to_the_github_origin_after_a_yes() {
+    let manager = Manager::new();
+    manager.git_repository();
+    let shown = push(&manager, "y\n\n");
+    assert!(shown.contains("to git@github.com:o/proj-a.git"), "{shown}");
+    assert!(manager.calls("ssh").iter().any(|call| call.contains("git-receive-pack 'o/proj-a.git'")), "{:?}", manager.calls("ssh"));
+}
+
+#[test]
+fn without_a_yes_nothing_is_pushed() {
+    let manager = Manager::new();
+    manager.git_repository();
+    push(&manager, "\n");
+    assert!(manager.calls("ssh").is_empty());
+}
+
+#[test]
+fn a_remote_that_is_not_github_is_not_pushed_to() {
+    let manager = Manager::new();
+    manager.git_repository();
+    git_output(&manager.project, &["remote", "set-url", "origin", "/tmp/elsewhere"]);
+    let shown = push(&manager, "y\n\n");
+    assert!(shown.contains("not a GitHub repository"), "{shown}");
+    assert!(manager.calls("ssh").is_empty());
+}
+
+#[test]
+fn a_hook_in_the_repository_does_not_run_on_push() {
+    let manager = Manager::new();
+    manager.git_repository();
+    let marker = manager.sandbox.root.join("hook-ran");
+    let hook = manager.project.join(".git/hooks/pre-push");
+    fs::write(&hook, format!("#!/bin/sh\ntouch {}\n", marker.display())).unwrap();
+    Command::new("chmod").arg("755").arg(&hook).status().unwrap();
+    push(&manager, "y\n\n");
+    assert!(!manager.calls("ssh").is_empty(), "the push did not run");
+    assert!(!marker.exists(), "the pre-push hook ran");
+}

@@ -39,6 +39,7 @@
 #   claude-sessions log <component> <INFO|WARN|ERROR> <message>
 #                                add a line, for the lock, idle and update scripts
 #   claude-sessions git <dir>    lazygit on that repository in a popup over the manager (the sidebar's g)
+#   claude-sessions push <dir>   push its branch to origin with Theo's SSH key, after a yes (the sidebar's U)
 #   claude-sessions prs          the pull requests window on the viewed session's repository (Super+Ctrl+P)
 #   claude-sessions digest       yesterday, today, usage, waiting sessions and pull requests in the viewer
 #                                (the sidebar's D; also the first time the cockpit opens each day)
@@ -1058,9 +1059,54 @@ git_popup() { # dir
     require_plain_directory "$directory"
     mkdir -p "$lazygit_home/config/lazygit" "$lazygit_home/state"
     if [[ -f $HOME/.config/lazygit/config.yml ]]; then cp "$HOME/.config/lazygit/config.yml" "$lazygit_home/config/lazygit/config.yml"; fi
-    tmux display-popup -E -w 92% -h 92% -d "$directory" -T " lazygit · $(basename "$directory") " \
+    tmux display-popup -E -w 92% -h 92% -d "$directory" -T " lazygit · $(basename "$directory") · push with U in the column " \
         env XDG_CONFIG_HOME="$lazygit_home/config" XDG_STATE_HOME="$lazygit_home/state" GIT_SSL_CAINFO="$HOME/.cache/agent-ca/bundle.pem" \
         "$HOME/.local/bin/greywall" --auto-profile --profile claude --allow-path "$lazygit_home" -- lazygit
+}
+
+# Pushing the session's branch (the sidebar's U), in a popup: lazygit runs inside greywall, which
+# has no SSH key and no agent, so it cannot push. This git runs out here, with Theo's key, in a
+# folder a session works in. Sessions cannot write .git/config or .git/hooks (greywall mounts them
+# read-only); hooks are off anyway, and the settings that could run a program are reset here.
+push_popup() { # dir
+    require_plain_directory "$1"
+    tmux display-popup -E -w 70% -h 50% -d "$1" -T " push · $(basename "$1") " "$0" push-run "$1"
+}
+
+SAFE_PUSH_CONFIG=(-c core.hooksPath=/dev/null -c core.sshCommand=ssh -c core.fsmonitor=false -c core.askPass=
+                  -c core.gitProxy= -c credential.helper= -c protocol.ext.allow=never -c protocol.file.allow=never
+                  -c remote.origin.receivepack=git-receive-pack)
+
+push_run() { # dir
+    local branch url answer
+    cd "$1" || return 1
+    if ! branch=$(git symbolic-ref --quiet --short HEAD); then
+        echo "Not on a branch (detached HEAD): nothing to push."
+        read -r -p "Enter closes. " _ || true
+        return 1
+    fi
+    url=$(git "${SAFE_PUSH_CONFIG[@]}" ls-remote --get-url origin 2>/dev/null)
+    # Only GitHub: a remote rewritten to a path or another host is not pushed to from here.
+    if [[ ! $url =~ ^(git@github\.com:|ssh://git@github\.com/|https://github\.com/)[A-Za-z0-9._/-]+$ ]]; then
+        echo "origin is $url, not a GitHub repository: not pushed."
+        read -r -p "Enter closes. " _ || true
+        return 1
+    fi
+    echo "Push $branch to $url"
+    # The commits it sends, when the branch already tracks one (a new branch has no upstream yet).
+    git --no-pager log --oneline "@{upstream}..HEAD" 2>/dev/null | head -20 | sed 's/^/  /' || true
+    read -r -p "Push? [y/N] " answer || answer=""
+    [[ $answer == y || $answer == Y ]] || { echo "Not pushed."; sleep 1; return 0; }
+    if git "${SAFE_PUSH_CONFIG[@]}" push --set-upstream origin "refs/heads/$branch:refs/heads/$branch"; then
+        log_event INFO sessions "pushed $branch of $(basename "$1")"
+        echo "Pushed."
+        read -r -p "Enter closes. " _ || true
+    else
+        log_event WARN sessions "push of $branch of $(basename "$1") failed"
+        echo "The push failed (above)."
+        read -r -p "Enter closes. " _ || true
+        return 1
+    fi
 }
 
 show_usage() {
@@ -1131,6 +1177,8 @@ case ${1:-attach} in
     digest) show_digest ;;
     prs) prs_window ;;
     git) git_popup "${2:?usage: claude-sessions git <dir>}" ;;
+    push) push_popup "${2:?usage: claude-sessions push <dir>}" ;;
+    push-run) push_run "${2:?usage: claude-sessions push-run <dir>}" ;;
     parallel) parallel_session "${2:?usage: claude-sessions parallel <dir> <branch>}" "${3:?usage: claude-sessions parallel <dir> <branch>}" ;;
     review) review_session "${2:?usage: claude-sessions review <dir> <pr-number>}" "${3:?usage: claude-sessions review <dir> <pr-number>}" ;;
     clones) clones_popup ;;
