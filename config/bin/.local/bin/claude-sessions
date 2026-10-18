@@ -681,6 +681,10 @@ clone_for() { # source-dir name -> prints the clone's path, created on first use
     local source=$1 name=$2 top repository clone origin
     top=$(git -C "$source" rev-parse --show-toplevel) || return 1
     repository=$(basename "$top")
+    # A clone of a clone (+ on a card that runs in one) still belongs to the first repository.
+    case $top in
+        "$CLONES_DIR"/*/*) repository=${top#"$CLONES_DIR"/}; repository=${repository%%/*} ;;
+    esac
     clone="$CLONES_DIR/$repository/$name"
     if [[ ! -d $clone/.git ]]; then
         mkdir -p "$CLONES_DIR/$repository"

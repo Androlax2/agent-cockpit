@@ -1660,13 +1660,14 @@ class SessionsPanel(Panel):
             return [("⏎", "open"), ("C", "/compact"), ("e", "effort"), ("g", "git"), ("z", "zoom"), ("x", "exit")]
         if selected.get("update"):
             return [("⏎", "open"), ("r", "restart to apply the update"), ("e", "effort"), ("g", "git"), ("x", "exit")]
-        return [("⏎", "open"), ("n", "peek"), ("e", "effort"), ("g", "git"), ("z", "zoom"), ("x", "exit"), ("r", "restart")]
+        return [("⏎", "open"), ("n", "peek"), ("+", "another"), ("e", "effort"), ("g", "git"), ("z", "zoom"), ("x", "exit")]
 
     def help(self):
         return [("⏎", "show the session and move the cursor into it"), ("n", "peek at the next session needing you"),
                 ("x", "exit the session: Ctrl-C twice, then killed if it lingers"), ("r", "restart in place: same conversation, new process"),
                 ("R", "toggle Remote Control (phone / claude.ai/code)"), ("p", "pin on top"), ("e", "effort level: pick one, the session restarts on it (or click the level on the card)"),
                 ("g", "lazygit on the session's repository, in a popup (q closes it)"),
+                ("+", "another session on this repository, on its own branch in a separate clone"),
                 ("C", "/compact in the session, when it waits (the /compact badge suggests it)"),
                 ("B", "after a reboot: bring back the sessions that were running"),
                 ("z", "the session over the whole window; Ctrl+Tab comes back"),
@@ -1705,6 +1706,13 @@ class SessionsPanel(Panel):
             app.view.save()
             count, app.restore = len(app.restore), []
             return f"bringing back {count} session{'s' if count != 1 else ''} …"
+        elif key == ord("+") and session:
+            if not session.get("cwd"):
+                return "no directory known for this session"
+            suggested = time.strftime("parallel-%H%M")
+            branch = run_outside_curses(screen, lambda: input_line(f"branch for another {session['project']} session (Enter: {suggested})> ")) or suggested
+            manager_in_background("parallel", session["cwd"], branch)
+            return f"cloning {session['project']} for {branch} …"
         elif key == ord("C") and session and session["state"] != "unknown":
             error = manager("compact", session["session"])
             return error or f"/compact sent to {session['project']}"
