@@ -21,35 +21,90 @@
 #                                resume a past session there (the sidebar's Enter on a recent one)
 #   claude-sessions exit <id>    end a running session the way you would by hand: Ctrl-C twice,
 #                                then its tmux session is killed if it is still there (the sidebar's x)
-#   claude-sessions restart <id> exit it and resume the same conversation in its directory, which
-#                                is how an installed Claude update gets applied (the sidebar's r)
+#   claude-sessions restart <id> [effort]
+#                                exit it and resume the same conversation in its directory, which
+#                                is how an installed Claude update gets applied (the sidebar's r);
+#                                with an effort level (low … max) it comes back on that one (the
+#                                sidebar's effort menu), without one it keeps the level it had
 #   claude-sessions idle         what the viewer pane runs while nothing is selected
+#   claude-sessions usage        show the plan's usage report in the viewer pane (the sidebar's Enter on Status)
+#   claude-sessions logs [lines] the end of the log (~/.local/state/claude-sessions/log) and the hook's
+#   claude-sessions log <component> <INFO|WARN|ERROR> <message>
+#                                add a line, for the lock, idle and update scripts
+#   claude-sessions git <dir>    lazygit on that repository in a popup over the manager (the sidebar's g)
+#   claude-sessions digest       yesterday, today, usage, waiting sessions and pull requests in the viewer
+#                                (the sidebar's D; also the first time the cockpit opens each day)
+#   claude-sessions parallel <dir> <branch>
+#                                a new session on <branch> in its own clone of the repository (the sidebar's A)
+#   claude-sessions review <dir> <pr-number>
+#                                a session reviewing that pull request in its own clone (the sidebar's c)
+#   claude-sessions label-state <state>
+#                                colour the viewer's title line by the viewed session's state (the sidebar)
+#   claude-sessions focus-viewer move the cursor into the viewer pane (the sidebar's l / Right)
 #   claude-sessions prepare      create the manager's tmux session without a window (login autostart)
 #   claude-sessions reload       restart the sidebar in place (after editing it)
+#   claude-sessions layout       reapply the sidebar width
 #   claude-sessions reset        close the manager and forget every tracked session; running
 #                                Claude sessions themselves are left alone
+#   claude-sessions doctor       check every piece this depends on (daemon, FIFO, greywall paths,
+#                                hooks, bar, tmux, manager) and what the pane heuristics see
+#   claude-sessions handoff [on|off|lock|unlock]
+#                                hand every running session to Remote Control (Claude's /rc, driven
+#                                from the phone or claude.ai/code) before leaving, or take them back
+#   claude-sessions remote <id>  toggle Remote Control for one session (the sidebar's R)
+#   claude-sessions restore <dir> <id> […]
+#                                resume those sessions one after the other (the sidebar's B after a reboot)
+#   claude-sessions compact <id> type /compact into a session waiting at its prompt (the sidebar's C)
+#   claude-sessions zoom         the session pane over the whole window, and back (the sidebar's z)
+#   claude-sessions say <id> <message>
+#                                send a session a message without opening it (the sidebar's m)
+#   claude-sessions answer <id> yes|no
+#                                answer its open permission dialog (the sidebar's Y and N)
 set -euo pipefail
 
 MANAGER=claude-manager
-SIDEBAR_PANE="$MANAGER:manager.0"
-VIEWER_PANE="$MANAGER:manager.1"
+MANAGER_WINDOW="$MANAGER:manager"
 SNAPSHOT="${XDG_RUNTIME_DIR:-/tmp}/claude-sessions.json"
+# One log for the manager, the sidebar, the daemon and the lock and idle scripts: a line per event
+# ("<time> <LEVEL> <component>: <message>"), never per redraw. 1 MB, then one previous file. Prompt
+# text stays out of it; long command lines are cut. `claude-sessions logs` shows the end of it.
+LOG_FILE="${XDG_STATE_HOME:-$HOME/.local/state}/claude-sessions/log"
+LOG_MAX_BYTES=1048576
+LOG_LINE_MAX=300
+HOOK_LOG_FILE="$HOME/.cache/claude/hook.log"
 CURRENT="${XDG_RUNTIME_DIR:-/tmp}/claude-sessions.current"
-VIEW_STATE="${XDG_STATE_HOME:-$HOME/.local/state}/claude-sessions/view.json"
-DEFAULT_SIDEBAR_WIDTH=56
+SIDEBAR_WIDTH=60   # columns; the rest is the session
 WINDOW_CLASS=claude-sessions
+KITTY_CONFIG="$HOME/.config/kitty/kitty.conf"
+KITTY_MANAGER_CONFIG="$HOME/.config/kitty/claude-sessions.conf"
 WORKSPACE=6  # apps/claude.lua routes the manager window there
 ON_CLAUDE_WORKSPACE="$HOME/.config/waybar/scripts/on-claude-workspace.sh"
 BAR_VISIBILITY="$HOME/.config/waybar/scripts/waybar-visibility.sh"
 
-sidebar_width() {
-    local width
-    width=$(jq -r '.sidebar_width // 0' "$VIEW_STATE" 2>/dev/null)
-    if [[ $width =~ ^[0-9]+$ ]] && (( width >= 30 )); then
-        printf '%s\n' "$width"
-    else
-        printf '%s\n' "$DEFAULT_SIDEBAR_WIDTH"
+log_event() { # LEVEL component message
+    local message=${3//$'\n'/ }
+    {
+        mkdir -p "$(dirname "$LOG_FILE")"
+        if (( $(stat -c %s "$LOG_FILE" 2>/dev/null || echo 0) > LOG_MAX_BYTES )); then
+            mv -f "$LOG_FILE" "$LOG_FILE.1"
+        fi
+        printf '%s %s %s: %s\n' "$(date -Iseconds)" "$1" "$2" "${message:0:$LOG_LINE_MAX}" >> "$LOG_FILE"
+    } 2>/dev/null || true  # a read-only state dir (inside greywall) must not break the command
+}
+
+show_logs() { # [lines]
+    local lines=${1:-80}
+    [[ $lines =~ ^[0-9]+$ ]] || { echo "usage: claude-sessions logs [lines]" >&2; return 1; }
+    echo "== $LOG_FILE"
+    tail -n "$lines" "$LOG_FILE" 2>/dev/null || echo "(empty)"
+    if [[ -f $HOOK_LOG_FILE ]]; then
+        echo "== $HOOK_LOG_FILE (the hook, inside greywall)"
+        tail -n 20 "$HOOK_LOG_FILE"
     fi
+}
+
+apply_layout() {
+    tmux resize-pane -t "$(sidebar_pane)" -x "$SIDEBAR_WIDTH"
 }
 
 # tmux expands formats in -c start directories, so refuse any directory containing #.
@@ -61,21 +116,50 @@ require_plain_directory() {
     fi
 }
 
+# Panes are addressed by a role tag (@role = sidebar | viewer), never by index: tmux
+# numbers panes by position, so a later split moves the numbers around.
+pane_by_role() {
+    tmux list-panes -t "$MANAGER_WINDOW" -F '#{pane_id} #{@role}' 2>/dev/null | awk -v role="$1" '$2 == role { print $1; exit }'
+}
+
+sidebar_pane() { pane_by_role sidebar; }
+viewer_pane() { pane_by_role viewer; }
+
+tag_pane() { # pane role
+    tmux set-option -p -t "$1" @role "$2"
+}
+
 ensure_manager() {
+    local sidebar viewer
     if ! tmux has-session -t "=$MANAGER" 2>/dev/null; then
         tmux new-session -d -s "$MANAGER" -n manager -x 240 -y 60 claude-sessions-sidebar
         # A pane whose command ends (a viewed session exits, the sidebar crashes) stays as a dead
         # pane to be respawned instead of vanishing and leaving the sidebar alone in the window.
-        tmux set-option -w -t "$MANAGER:manager" remain-on-exit on
+        tmux set-option -w -t "$MANAGER_WINDOW" remain-on-exit on
+        # The kitty window's title: "Claude · <project>" on the sidebar, "Claude · ✳ <task>" in a session.
+        tmux set-option -t "$MANAGER" set-titles-string 'Claude · #{pane_title}'
+        tag_pane "$(tmux display-message -p -t "$MANAGER_WINDOW" '#{pane_id}')" sidebar
     fi
-    if (( $(tmux list-panes -t "$MANAGER:manager" -F '#{pane_index}' | wc -l) < 2 )); then
-        tmux split-window -h -t "$SIDEBAR_PANE" -l 70% claude-sessions idle
-        # The sidebar remembers the width it was last resized to (mouse drag on the divider).
-        tmux resize-pane -t "$SIDEBAR_PANE" -x "$(sidebar_width)"
-        tmux select-pane -t "$SIDEBAR_PANE"
+    sidebar=$(sidebar_pane)
+    if [[ -z $sidebar ]]; then
+        echo "claude-sessions: the manager predates pane roles; run: tmux kill-session -t $MANAGER" >&2
+        return 1
     fi
-    if [[ $(tmux display-message -p -t "$SIDEBAR_PANE" '#{pane_dead}') == 1 ]]; then
-        tmux respawn-pane -k -t "$SIDEBAR_PANE" claude-sessions-sidebar
+    # A title line over the session pane names the project and Claude's own title for it, so the
+    # session you are typing in is never a guess; the sidebar's own top border stays blank.
+    tmux set-option -w -t "$MANAGER_WINDOW" pane-border-status top
+    # @state (label_state, pushed by the sidebar) colours the title: red needs you, yellow waiting.
+    tmux set-option -w -t "$MANAGER_WINDOW" pane-border-format \
+        '#{?#{==:#{@role},viewer},#{?#{@project},#{?#{==:#{@state},needs-you},#[fg=red],#{?#{==:#{@state},waiting},#[fg=yellow],#[fg=blue]}} #[bold]#{@project}#[nobold] · #{pane_title} #[default], no session },}'
+    viewer=$(viewer_pane)
+    if [[ -z $viewer ]]; then
+        viewer=$(tmux split-window -h -t "$sidebar" -l 70% -P -F '#{pane_id}' claude-sessions idle)
+        tag_pane "$viewer" viewer
+        tmux resize-pane -t "$sidebar" -x "$SIDEBAR_WIDTH"
+        tmux select-pane -t "$sidebar"
+    fi
+    if [[ $(tmux display-message -p -t "$sidebar" '#{pane_dead}') == 1 ]]; then
+        tmux respawn-pane -k -t "$sidebar" claude-sessions-sidebar
     fi
 }
 
@@ -94,12 +178,30 @@ view_session() {
     fi
     ensure_manager
     # Nested on purpose: the inner client is the real, interactive session.
-    tmux respawn-pane -k -t "$VIEWER_PANE" env -u TMUX tmux attach-session -t "=$target"
+    tmux respawn-pane -k -t "$(viewer_pane)" env -u TMUX tmux attach-session -t "=$target"
     printf '%s\n' "$id" > "$CURRENT"
+    label_panes "$(session_field "$id" project)"
+}
+
+# The kitty window title (sidebar pane title) and the session pane's title line both carry the project.
+label_panes() {
+    tmux select-pane -t "$(sidebar_pane)" -T "${1:-sessions}"
+    tmux set-option -p -t "$(viewer_pane)" @project "${1:-}"
+    tmux set-option -p -t "$(viewer_pane)" @state ""
+}
+
+# The viewed session's state for the title line's colour (the sidebar calls this when it changes).
+label_state() {
+    local state=$1
+    case $state in
+        working|waiting|needs-you|unknown) ;;
+        *) echo "claude-sessions: unknown state $state" >&2; return 1 ;;
+    esac
+    tmux set-option -p -t "$(viewer_pane)" @state "$state"
 }
 
 focus_viewer() {
-    tmux select-pane -t "$VIEWER_PANE"
+    tmux select-pane -t "$(viewer_pane)"
 }
 
 running_session_in() {
@@ -124,19 +226,41 @@ new_session() {
     # CLAUDE_SESSIONS_INSIDE stops the function from delegating back to this manager.
     # The launch takes a few seconds (fish, the launcher, greywall, Claude): say so in the pane
     # until Claude's own screen takes over.
-    tmux respawn-pane -k -t "$VIEWER_PANE" -c "$directory" \
+    tmux respawn-pane -k -t "$(viewer_pane)" -c "$directory" \
         env -u TMUX -u TMUX_PANE CLAUDE_SESSIONS_INSIDE=1 \
-        fish -ic 'echo; echo "  ⟳ Starting Claude in $PWD …"; echo; claude $argv' "$@"
+        fish -ic 'echo; echo "  ⟳ Starting Claude in $PWD …"; echo; claude $argv'"$LAUNCH_EPILOGUE" "$@"
     : > "$CURRENT"
+    label_panes "$(basename "$directory")"
 }
 
-resume_session() {
+# Appended to every launch in the viewer pane: a start that fails says so and stays on screen,
+# instead of leaving a bare "Pane is dead (status 1)". Claude itself runs in its own tmux session
+# (claude-auto-retry), so its error may be there; the epilogue lists those sessions.
+LAUNCH_EPILOGUE='; set -l code $status; if test $code -ne 0; echo; echo "  ✗ claude exited with status $code"; echo "  Claude sessions still open:"; tmux ls 2>/dev/null | string match "*claude-retry*" | string replace -r "^" "    "; echo "  More: claude-sessions doctor · journalctl --user -u claude-sessions"; read -n 1 -P "  any key closes this pane " answer; end'
+
+# Claude's effort levels (claude --help, --effort).
+EFFORT_LEVELS=(low medium high xhigh max)
+
+require_effort() {
+    local level=$1 known
+    for known in "${EFFORT_LEVELS[@]}"; do [[ $level == "$known" ]] && return 0; done
+    echo "claude-sessions: unknown effort $level (${EFFORT_LEVELS[*]})" >&2
+    return 1
+}
+
+resume_session() { # dir id [effort]
     require_plain_directory "$1"
+    local effort_flags=()
+    if [[ -n ${3:-} ]]; then
+        require_effort "$3"
+        effort_flags=(--effort "$3")
+    fi
     ensure_manager
-    tmux respawn-pane -k -t "$VIEWER_PANE" -c "$1" \
+    tmux respawn-pane -k -t "$(viewer_pane)" -c "$1" \
         env -u TMUX -u TMUX_PANE CLAUDE_SESSIONS_INSIDE=1 \
-        fish -ic 'echo; echo "  ⟳ Resuming the conversation in $PWD …"; echo; claude --resume $argv' "$2"
+        fish -ic 'echo; echo "  ⟳ Resuming the conversation in $PWD …"; echo; claude --resume $argv'"$LAUNCH_EPILOGUE" "$2" "${effort_flags[@]}"
     : > "$CURRENT"
+    label_panes "$(basename "$1")"
     focus_viewer
 }
 
@@ -185,23 +309,224 @@ exit_session() {
 }
 
 pane_at_prompt() {
-    # Claude's input line: "❯" padded with a no-break space, with no spinner above it.
-    local tail
-    tail=$(tmux capture-pane -p -t "$1" -S -20 2>/dev/null) || return 1
-    grep -q $'^[[:space:]]*❯[ \u00a0]' <<<"$tail" && ! grep -Eq '^[[:space:]]*[^[:space:]]{0,2}[[:space:]]*[A-Z][a-z]+… \([0-9]+[smh]' <<<"$tail"
+    # The daemon's reading of the pane (claude_registry.py): one definition of "idle".
+    [[ $(tmux capture-pane -p -t "$1" -S -20 2>/dev/null | python3 "$HOME/.config/osd/claude_registry.py" classify) == waiting ]]
 }
 
-restart_session() {
-    local id=$1 directory
+session_is_remote() {
+    [[ $(jq -r '.remote // false' "$HOME/.cache/claude/statusline-$1.json" 2>/dev/null) == true ]]
+}
+
+# Claude's /rc toggles Remote Control. At an idle prompt it is typed and sent; while Claude works
+# it is queued (ctrl+x, Enter) so the running turn is not interrupted.
+send_remote_toggle() { # pane
+    tmux send-keys -t "$1" "/rc"
+    if pane_at_prompt "$1"; then
+        tmux send-keys -t "$1" Enter
+    else
+        tmux send-keys -t "$1" C-x Enter
+    fi
+}
+
+toggle_remote() {
+    local id=$1 pane
+    pane=$(session_field "$id" tmux_pane)
+    if [[ -z $pane ]]; then
+        echo "claude-sessions: session $id has no tmux pane" >&2
+        return 1
+    fi
+    send_remote_toggle "$pane"
+}
+
+# /compact typed into a session that waits at its prompt (the sidebar's C). Not queued while it
+# works: a compaction landing mid-task would summarise away what it is doing.
+compact_session() { # id
+    local id=$1 pane
+    pane=$(session_field "$id" tmux_pane)
+    if [[ -z $pane ]]; then
+        echo "claude-sessions: session $id has no tmux pane" >&2
+        return 1
+    fi
+    if ! pane_at_prompt "$pane"; then
+        echo "claude-sessions: $(session_field "$id" project) is busy; compact it when it waits" >&2
+        return 1
+    fi
+    tmux send-keys -t "$pane" "/compact" Enter
+}
+
+# Answer a session's permission dialog from the sidebar (Y approves, N declines). The pane is read
+# again right before: approve presses Enter only while the dialog is open with its cursor on
+# "1. Yes"; decline presses Escape, Claude's own "no". Nothing is sent when the dialog is gone.
+answer_permission() { # id yes|no
+    local id=$1 answer=$2 pane tail
+    pane=$(session_field "$id" tmux_pane)
+    [[ -n $pane ]] || { echo "claude-sessions: session $id has no tmux pane" >&2; return 1; }
+    tail=$(tmux capture-pane -p -t "$pane" -S -20 2>/dev/null)
+    if [[ $(python3 "$HOME/.config/osd/claude_registry.py" classify <<<"$tail") != needs-you ]]; then
+        echo "claude-sessions: no permission dialog open in $(session_field "$id" project) any more" >&2
+        return 1
+    fi
+    case $answer in
+        yes)
+            if ! grep -qE '❯[[:space:]]*1\.[[:space:]]*Yes' <<<"$tail"; then
+                echo "claude-sessions: the dialog's cursor is not on \"1. Yes\"; answer it in the session" >&2
+                return 1
+            fi
+            tmux send-keys -t "$pane" Enter
+            ;;
+        no) tmux send-keys -t "$pane" Escape ;;
+        *) echo "usage: claude-sessions answer <session-id> yes|no" >&2; return 1 ;;
+    esac
+}
+
+# A message for a session without opening it (the sidebar's m): sent at its prompt, queued with
+# Claude's own Ctrl+X Enter while it works, refused while a dialog is open (it would answer it).
+say_to_session() { # id message
+    local id=$1 message=$2 pane tail
+    pane=$(session_field "$id" tmux_pane)
+    [[ -n $pane ]] || { echo "claude-sessions: session $id has no tmux pane" >&2; return 1; }
+    if [[ -z $message || $message == *$'\n'* || ${#message} -gt 4000 ]]; then
+        echo "claude-sessions: a message is one line of at most 4000 characters" >&2
+        return 1
+    fi
+    tail=$(tmux capture-pane -p -t "$pane" -S -20 2>/dev/null)
+    if [[ $(python3 "$HOME/.config/osd/claude_registry.py" classify <<<"$tail") == needs-you ]]; then
+        echo "claude-sessions: $(session_field "$id" project) has a dialog open; answer it first (Y or N)" >&2
+        return 1
+    fi
+    tmux send-keys -t "$pane" -l -- "$message"
+    if pane_at_prompt "$pane"; then
+        tmux send-keys -t "$pane" Enter
+    else
+        tmux send-keys -t "$pane" C-x Enter
+    fi
+}
+
+# The session pane over the whole window and back (the sidebar's z). Moving to the column with
+# Ctrl+Tab unzooms too: tmux leaves zoom when the active pane changes.
+zoom_viewer() {
+    ensure_manager
+    tmux select-pane -t "$(viewer_pane)"
+    tmux resize-pane -Z -t "$(viewer_pane)"
+}
+
+# Sessions the lock screen handed to Remote Control (handoff lock), taken back on unlock only.
+HANDED_OFF="${XDG_RUNTIME_DIR:-/tmp}/claude-sessions.handed-off"
+
+# on / off: every session. lock / unlock: what hypr/scripts/lock.sh does around the lock screen;
+# unlock takes back only the sessions lock handed off, so one put on Remote Control by hand stays.
+handoff() { # on|off|lock|unlock
+    local wanted=${1:-on} id pane count=0
+    case $wanted in on|off|lock|unlock) ;; *) echo "usage: claude-sessions handoff [on|off|lock|unlock]" >&2; return 1 ;; esac
+    if [[ ! -s $SNAPSHOT ]]; then
+        [[ $wanted == lock || $wanted == unlock ]] && { rm -f "$HANDED_OFF"; return 0; }
+        echo "claude-sessions: no running session" >&2; return 1
+    fi
+    [[ $wanted == lock ]] && : > "$HANDED_OFF"
+    while IFS=$'\t' read -r id pane; do
+        [[ -n $pane ]] || continue
+        case $wanted in
+            on|lock)
+                session_is_remote "$id" && continue
+                send_remote_toggle "$pane"; count=$((count + 1))
+                [[ $wanted == lock ]] && printf '%s\n' "$id" >> "$HANDED_OFF"
+                ;;
+            off)
+                session_is_remote "$id" || continue
+                send_remote_toggle "$pane"; count=$((count + 1))
+                ;;
+            unlock)
+                grep -qx "$id" "$HANDED_OFF" 2>/dev/null || continue
+                send_remote_toggle "$pane"; count=$((count + 1))
+                ;;
+        esac
+    done < <(jq -r '.sessions[] | [.session, (.tmux_pane // "")] | @tsv' "$SNAPSHOT")
+    [[ $wanted == unlock ]] && rm -f "$HANDED_OFF"
+    echo "claude-sessions: remote control $wanted for $count session(s)"
+}
+
+# Claude writes a conversation's transcript only once something was said in it: a session nobody
+# typed in yet has nothing to resume (claude --resume fails with "No conversation found").
+has_conversation() { # id
+    local transcript
+    for transcript in "${CLAUDE_SESSIONS_TRANSCRIPTS:-$HOME/.claude/projects}"/*/"$1".jsonl; do
+        [[ -f $transcript ]] && grep -qs '"type":"user"' "$transcript" && return 0
+    done
+    return 1
+}
+
+# Sessions ended on purpose (exit, the sidebar's x): not offered back after a reboot.
+ENDED_SESSIONS="${XDG_STATE_HOME:-$HOME/.local/state}/claude-sessions/ended-sessions"
+RESTORE_WAIT_S=${CLAUDE_SESSIONS_RESTORE_WAIT:-25}
+
+# Resume each <dir> <id> pair, one after the other: every resume takes the viewer pane, and the
+# previous one must have its own tmux session (claude-auto-retry) before the next replaces it.
+restore_sessions() { # dir id [dir id …]
+    (( $# % 2 == 0 && $# > 0 )) || { echo "usage: claude-sessions restore <dir> <id> [<dir> <id> …]" >&2; return 1; }
+    local directory id effort before waited
+    while (( $# )); do
+        directory=$1 id=$2
+        shift 2
+        if [[ ! -d $directory ]] || ! has_conversation "$id"; then
+            log_event WARN manager "restore: skipped $id ($directory gone, or nothing to resume)"
+            continue
+        fi
+        effort=$(jq -r '.effort // empty' "$HOME/.cache/claude/statusline-$id.json" 2>/dev/null || true)
+        require_effort "$effort" 2>/dev/null || effort=""
+        before=$(tmux ls -F '#{session_name}' 2>/dev/null | grep -c '^claude-retry-' || true)
+        resume_session "$directory" "$id" "$effort"
+        for (( waited = 0; waited < RESTORE_WAIT_S; waited++ )); do
+            (( $(tmux ls -F '#{session_name}' 2>/dev/null | grep -c '^claude-retry-' || true) > before )) && break
+            sleep 1
+        done
+    done
+}
+
+# A restart keeps the session's effort unless a new one is given: the level the status line last
+# reported (statusline-command.sh copies CLAUDE_EFFORT, which Claude exports to its children).
+restart_session() { # id [effort]
+    local id=$1 effort=${2:-} directory
     directory=$(session_field "$id" cwd)
     if [[ -z $directory ]]; then
         echo "claude-sessions: session $id has no directory to restart in" >&2
         return 1
     fi
+    if [[ -n $effort ]]; then
+        require_effort "$effort" || return 1
+    else
+        effort=$(jq -r '.effort // empty' "$HOME/.cache/claude/statusline-$id.json" 2>/dev/null || true)
+        require_effort "$effort" 2>/dev/null || effort=""
+    fi
     exit_session "$id" || return 1
+    if ! has_conversation "$id"; then
+        # Nothing said yet: a fresh session in the same directory is the same thing.
+        new_session "$directory" ${effort:+--effort "$effort"}
+        return
+    fi
     # The exited session leaves a dead pane behind; replace it right away so the gap reads as intended.
-    tmux respawn-pane -k -t "$VIEWER_PANE" sh -c 'printf "\n  ⟳ Session closed, resuming it …\n"; sleep 30'
-    resume_session "$directory" "$id"
+    tmux respawn-pane -k -t "$(viewer_pane)" sh -c 'printf "\n  ⟳ Session closed, resuming it …\n"; sleep 30'
+    resume_session "$directory" "$id" "$effort"
+}
+
+# The morning digest (the sidebar's D, and the first time the cockpit opens each day): yesterday's
+# sessions and cost, today so far, plan usage, who waits for you, the pull requests. Any key goes
+# back to the session that was in the pane.
+DIGEST_DAY="${XDG_STATE_HOME:-$HOME/.local/state}/claude-sessions/digest-day"
+
+show_digest() {
+    ensure_manager
+    local previous
+    previous=$(cat "$CURRENT" 2>/dev/null || true)
+    tmux respawn-pane -k -t "$(viewer_pane)" bash -c 'claude-sessions-sidebar digest
+        read -rsn 1 -p "  any key goes back " _
+        if [[ -n $1 ]]; then exec claude-sessions view "$1"; else exec claude-sessions idle; fi' bash "$previous"
+    tmux set-option -p -t "$(viewer_pane)" @project "digest"
+    mkdir -p "$(dirname "$DIGEST_DAY")"
+    date +%F > "$DIGEST_DAY"
+}
+
+digest_due() {
+    [[ $(cat "$DIGEST_DAY" 2>/dev/null) != "$(date +%F)" ]]
 }
 
 show_manager() {
@@ -212,22 +537,220 @@ show_manager() {
     fi
     if [[ -n ${1:-} ]]; then
         view_session "$1" && focus_viewer
+    elif digest_due; then
+        show_digest
     fi
     # Hide the bar before the switch rather than after it, or it flashes over the cockpit.
     "$BAR_VISIBILITY" hide
     if hyprctl -j clients | jq -e --arg class "$WINDOW_CLASS" 'any(.[]; .class == $class)' >/dev/null; then
         hyprctl dispatch "hl.dsp.focus({ window = \"class:^$WINDOW_CLASS\$\" })" >/dev/null
     else
-        setsid -f kitty --class "$WINDOW_CLASS" -e claude-sessions
+        # claude-sessions.conf adds the key maps that turn Ctrl+Tab and Ctrl+digit into chords tmux can see.
+        setsid -f kitty --class "$WINDOW_CLASS" --config "$KITTY_CONFIG" --config "$KITTY_MANAGER_CONFIG" -e claude-sessions
         # The window rule puts it on the Claude workspace; go there now rather than when it maps.
         hyprctl dispatch "hl.dsp.focus({ workspace = $WORKSPACE })" >/dev/null
     fi
 }
 
+sweep_caches() {
+    # One status-line file per session ever run, and toast ids of sessions long gone.
+    find "$HOME/.cache/claude" -maxdepth 1 \( -name 'statusline-*.json' -o -name 'toast-*.id' \) -mtime +7 -delete 2>/dev/null || true
+}
+
+doctor() {
+    local failures=0 daemon_pid fifo="${XDG_RUNTIME_DIR:-/tmp}/osd.fifo"
+    report() { # ok|fail  what  [fix]
+        if [[ $1 == ok ]]; then
+            printf '  ok    %s\n' "$2"
+        else
+            printf '  FAIL  %s\n        fix: %s\n' "$2" "$3"
+            failures=$((failures + 1))
+        fi
+    }
+    echo "daemon"
+    # pgrep -f also matches wrappers around the daemon (a shell, a unit's exec line), so every
+    # match is inspected and the daemon is the one holding the FIFO open.
+    local daemon_pids holder=""
+    daemon_pids=$(pgrep -f 'osd/osd\.py' || true)
+    for daemon_pid in $daemon_pids; do
+        if ls -l "/proc/$daemon_pid/fd" 2>/dev/null | grep -q osd.fifo; then holder=$daemon_pid; break; fi
+    done
+    if [[ -n $daemon_pids ]]; then report ok "osd.py running (pid ${daemon_pids//$'\n'/, })"; else report fail "osd.py not running" "systemctl --user restart osd.service"; fi
+    if [[ -p $fifo ]]; then report ok "FIFO $fifo exists"; else report fail "FIFO $fifo missing" "restart the daemon, it creates it"; fi
+    if [[ -n $holder ]]; then report ok "daemon reads the FIFO (pid $holder)"; elif [[ -n $daemon_pids ]]; then report fail "no osd.py process holds the FIFO" "systemctl --user restart osd.service; then: pgrep -af 'osd/osd\.py'"; fi
+    echo "greywall (what sessions can reach)"
+    local greywall="$HOME/.config/greywall/greywall.json"
+    if jq -e --arg path "$fifo" '.filesystem.allowWrite | index($path)' "$greywall" >/dev/null 2>&1; then report ok "$fifo in allowWrite"; else report fail "$fifo not in greywall allowWrite" "add it to filesystem.allowWrite in $greywall"; fi
+    if jq -e '.filesystem.allowRead | index("~/dotfiles/config/claude")' "$greywall" >/dev/null 2>&1; then report ok "~/dotfiles/config/claude in allowRead"; else report fail "~/dotfiles/config/claude not in greywall allowRead" "add it, or hooks are unreachable from other projects"; fi
+    echo "hooks"
+    if [[ -x $(readlink -f "$HOME/.claude/hooks/session-state.sh") ]]; then report ok "~/.claude/hooks/session-state.sh resolves"; else report fail "~/.claude/hooks/session-state.sh does not resolve" "ln -s ../dotfiles/config/claude/.claude/hooks ~/.claude/hooks"; fi
+    local event missing_events=""
+    for event in SessionStart UserPromptSubmit PostToolUse Notification Stop SessionEnd; do
+        jq -e --arg event "$event" '[.hooks[$event][]?.hooks[]?.command] | any(test("session-state.sh"))' "$HOME/.claude/settings.json" >/dev/null 2>&1 \
+            || missing_events="$missing_events $event"
+    done
+    if [[ -z $missing_events ]]; then
+        report ok "settings.json runs session-state.sh on the six events"
+    else
+        report fail "settings.json misses session-state.sh on:$missing_events" "add {\"type\": \"command\", \"command\": \"bash ~/.claude/hooks/session-state.sh\"} under hooks.<event>"
+    fi
+    if [[ -x $(readlink -f "$HOME/.claude/statusline-command.sh") ]]; then report ok "status line script resolves"; else report fail "~/.claude/statusline-command.sh does not resolve" "ln -s ../dotfiles/config/claude/.claude/statusline-command.sh ~/.claude/statusline-command.sh"; fi
+    echo "bar"
+    if pgrep -x waybar >/dev/null; then report ok "waybar running"; else report fail "waybar not running" "waybar &"; fi
+    if pgrep -f workspace-listener.sh >/dev/null; then report ok "workspace listener running"; else report fail "workspace-listener.sh not running" "pkill -SIGUSR2 waybar (reload) and check custom/workspace-listener in config.jsonc"; fi
+    local wanted=1; "$ON_CLAUDE_WORKSPACE" && wanted=0
+    if [[ $(cat "${XDG_RUNTIME_DIR:-/tmp}/waybar-visible" 2>/dev/null || echo 1) == "$wanted" ]]; then report ok "bar visibility matches the workspace"; else report fail "bar visibility state out of step" "$HOME/.config/waybar/scripts/waybar-visibility.sh sync"; fi
+    echo "tmux"
+    if [[ $(tmux show -gv window-size 2>/dev/null) == latest ]]; then report ok "window-size latest"; else report fail "tmux window-size is not latest" "tmux source ~/.config/tmux/tmux.conf"; fi
+    if tmux list-keys -T root 2>/dev/null | grep -q 'S-Left'; then report ok "Shift+arrow pane keys bound"; else report fail "Shift+Left/Right not bound" "tmux source ~/.config/tmux/tmux.conf"; fi
+    echo "manager"
+    if tmux has-session -t "=$MANAGER" 2>/dev/null; then
+        report ok "manager tmux session exists"
+        if [[ $(tmux display-message -p -t "$(sidebar_pane)" '#{pane_dead}' 2>/dev/null) == 0 ]]; then report ok "sidebar alive"; else report fail "sidebar pane dead" "claude-sessions reload"; fi
+        if [[ -n $(viewer_pane) ]]; then report ok "viewer pane tagged"; else report fail "manager panes lack role tags" "tmux kill-session -t $MANAGER; claude-sessions prepare"; fi
+    else
+        report fail "manager tmux session missing" "claude-sessions prepare (systemctl --user start claude-sessions.service)"
+    fi
+    local usage="${XDG_RUNTIME_DIR:-/tmp}/claude-usage.json"
+    if [[ -f $usage ]] && (( $(date +%s) - $(stat -c %Y "$usage") < 900 )); then report ok "usage cache fresh"; else report fail "usage cache missing or stale" "$HOME/.config/waybar/scripts/claude-usage.sh five_hour (needs the OAuth token in ~/.claude/.credentials.json)"; fi
+    echo "services and updates"
+    local unit
+    for unit in claude-version-link.path elephant.service walker.service; do
+        if [[ $(systemctl --user is-active "$unit" 2>/dev/null) == active ]]; then report ok "$unit active"; else report fail "$unit not active" "systemctl --user enable --now $unit (units in .handoff/systemd-user until installed)"; fi
+    done
+    local versions_dir=${CLAUDE_VERSIONS_DIR:-$HOME/.local/share/claude/versions} link=${CLAUDE_LINK:-$HOME/.local/bin/claude} newest linked
+    newest=$(find "$versions_dir" -maxdepth 1 -type f -executable -printf '%f\n' 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
+    linked=$(basename "$(readlink "$link" 2>/dev/null || true)")
+    if [[ -z $newest || $linked == "$newest" ]]; then report ok "claude starts the newest version (${linked:-none})"; else report fail "claude starts $linked, $newest is downloaded: sessions show the update badge for good" "claude-version-link (claude-version-link.path does it on its own once active)"; fi
+    local archive="${XDG_STATE_HOME:-$HOME/.local/state}/claude-sessions/usage.sqlite" newest_transcript
+    newest_transcript=$(find "${CLAUDE_SESSIONS_TRANSCRIPTS:-$HOME/.claude/projects}" -name '*.jsonl' -printf '%T@\n' 2>/dev/null | sort -n | tail -1)
+    if [[ -f $archive ]] && (( $(stat -c %Y "$archive") + 600 >= ${newest_transcript%.*} )); then report ok "usage archive up to date"; else report fail "usage archive missing or behind the transcripts" "claude-sessions reload (the sidebar keeps it), or claude-sessions-sidebar costs"; fi
+    local recent_facts
+    recent_facts=$(find "$HOME/.cache/claude" -maxdepth 1 -name 'statusline-*.json' -mmin -60 2>/dev/null)
+    if [[ -z $recent_facts ]] || jq -e 'select(.effort != null)' $recent_facts >/dev/null 2>&1; then report ok "status line reports the effort"; else report fail "status line reports no effort" "install .handoff/claude/statusline-command.sh"; fi
+    if grep -qs "this terminal" "$HOME/.config/fish/config.fish"; then report ok "claude asks manager or terminal"; else report fail "fish claude function is the old one" "install .handoff/fish/config.fish"; fi
+    echo "logs"
+    local since errors last_error
+    since=$(date -d '24 hours ago' -Iseconds)
+    errors=$(awk -v since="$since" '$1 >= since && $2 == "ERROR"' "$LOG_FILE" 2>/dev/null | wc -l)
+    last_error=$(awk -v since="$since" '$1 >= since && $2 == "ERROR"' "$LOG_FILE" 2>/dev/null | tail -1)
+    if (( errors == 0 )); then report ok "no error logged in 24 h ($LOG_FILE)"; else report fail "$errors error(s) logged in 24 h, the last: ${last_error:0:160}" "claude-sessions logs"; fi
+    echo "pane heuristics (what the daemon sees for each running session, and the process that keeps it alive)"
+    if [[ -s $SNAPSHOT ]]; then
+        while IFS=$'\t' read -r session project state pane; do
+            local alive seen
+            alive=$(python3 "$HOME/.config/osd/claude_registry.py" liveness "$session" "$pane")
+            [[ -n $pane ]] || { printf '  %-24s hook says %-9s no tmux pane     process %s\n' "$project" "$state" "$alive"; continue; }
+            seen=$(tmux capture-pane -p -t "$pane" -S -20 2>/dev/null | python3 "$HOME/.config/osd/claude_registry.py" classify)
+            printf '  %-24s hook says %-9s pane shows %-9s process %s\n' "$project" "$state" "$seen" "$alive"
+        done < <(jq -r '.sessions[] | [.session, .project, .state, (.tmux_pane // "")] | @tsv' "$SNAPSHOT")
+    else
+        echo "  no session tracked"
+    fi
+    (( failures == 0 )) && echo "all good" || { echo "$failures problem(s)"; return 1; }
+}
+
+# Parallel sessions on one repository each get their own clone, so they never edit the same files.
+# A clone, not a git worktree: greywall mounts only the folder a session starts in, and a worktree
+# keeps its metadata in the main repository's .git, which the sandbox would not see. A local clone
+# hardlinks the objects (fast, little disk) and is self-contained; origin points at the real
+# remote. Clones live in $CLONES_DIR/<repository>/<name>; the registry and the sidebar name such a
+# session after <repository>. A per-project Docker daemon (agent-docker) does not follow a clone.
+CLONES_DIR="${CLAUDE_SESSIONS_CLONES:-$HOME/IdeaProjects/.parallel}"
+
+clone_for() { # source-dir name -> prints the clone's path, created on first use
+    local source=$1 name=$2 top repository clone origin
+    top=$(git -C "$source" rev-parse --show-toplevel) || return 1
+    repository=$(basename "$top")
+    clone="$CLONES_DIR/$repository/$name"
+    if [[ ! -d $clone/.git ]]; then
+        mkdir -p "$CLONES_DIR/$repository"
+        git clone --quiet "$top" "$clone" >&2 || return 1
+        if origin=$(git -C "$top" remote get-url origin 2>/dev/null); then
+            git -C "$clone" remote set-url origin "$origin"
+        fi
+    fi
+    printf '%s\n' "$clone"
+}
+
+# A failure in the background (the sidebar runs these without a terminal) shows in the viewer.
+show_failure() { # message
+    log_event ERROR manager "$1"
+    ensure_manager
+    tmux respawn-pane -k -t "$(viewer_pane)" sh -c 'printf "\n  ✗ %s\n\n  any key closes this pane " "$1"; read -r _' sh "$1"
+}
+
+# A new session on its own branch, in its own clone of the repository (the sidebar's A).
+parallel_session() { # dir branch
+    local directory=$1 branch=$2 clone
+    require_plain_directory "$directory"
+    if ! git check-ref-format --branch "$branch" >/dev/null 2>&1; then
+        show_failure "not a branch name: $branch"; return 1
+    fi
+    if ! clone=$(clone_for "$directory" "${branch//\//-}" 2>&1); then
+        show_failure "could not clone $directory: $clone"; return 1
+    fi
+    git -C "$clone" switch --quiet -c "$branch" 2>/dev/null || git -C "$clone" switch --quiet "$branch"
+    new_session "$clone"
+}
+
+# A Claude session reviewing pull request <number>, at its head in a clone (the sidebar's c on a
+# pull request).
+review_session() { # dir number
+    local directory=$1 number=$2 clone
+    require_plain_directory "$directory"
+    if [[ ! $number =~ ^[0-9]+$ ]]; then
+        show_failure "not a pull request number: $number"; return 1
+    fi
+    if ! clone=$(clone_for "$directory" "pr-$number" 2>&1); then
+        show_failure "could not clone $directory: $clone"; return 1
+    fi
+    if ! git -C "$clone" fetch --quiet origin "pull/$number/head" 2>/dev/null || ! git -C "$clone" switch --quiet --detach FETCH_HEAD; then
+        show_failure "could not fetch pull request #$number from $(git -C "$clone" remote get-url origin)"; return 1
+    fi
+    new_session "$clone" "Review pull request #$number of this repository (its head is checked out here): read the diff against its base branch, run the relevant tests, and report problems by severity with file and line. Do not push, and do not comment on GitHub."
+}
+
+# lazygit on a session's repository in a popup over the manager (the sidebar's g): review and
+# commit what Claude did without leaving the cockpit; q closes it.
+git_popup() { # dir
+    local directory=$1
+    require_plain_directory "$directory"
+    tmux display-popup -E -w 92% -h 92% -d "$directory" -T " lazygit · $(basename "$directory") " lazygit
+}
+
+show_usage() {
+    ensure_manager
+    tmux respawn-pane -k -t "$(viewer_pane)" claude-sessions-sidebar usage
+    : > "$CURRENT"
+    label_panes usage
+}
+
 idle() {
-    printf '\n  No session selected.\n\n  j/k move   Enter open   n peek at the next one needing you   a new   x kill   q detach\n  Shift+Left / Shift+Right move between the list and the session\n'
+    printf '\n  No session selected.\n\n  In the column: j/k move   Enter open   n peek at the next one needing you   a new   ? every key\n  Ctrl+Tab moves between the column and this pane; Ctrl+1/2/3 jump to a panel from here.\n'
     exec sleep infinity
 }
+
+# Every command leaves a line: what ran, how it ended, how long it took. idle (the viewer's
+# placeholder) and the log commands themselves are left out. Run from the sidebar in the
+# background (CLAUDE_SESSIONS_LOG_STDERR), the error messages go to the log too, since nobody
+# sees that terminal.
+log_command=${1:-attach}
+log_started=$(date +%s%N)
+log_arguments="${*:2}"
+if [[ $log_command == say ]]; then
+    log_arguments="${2:-} (message of ${#3} characters)"
+elif [[ $log_command == new ]]; then
+    # claude's own arguments after the directory may be a prompt: count them, do not copy them.
+    log_arguments="${2:-}"
+    if (( $# > 2 )); then log_arguments+=" (+$(( $# - 2 )) claude arguments)"; fi
+fi
+if [[ $log_command != idle && $log_command != log && $log_command != logs ]]; then
+    trap 'log_status=$?; log_event "$( ((log_status)) && echo ERROR || echo INFO)" manager "$log_command $log_arguments -> exit $log_status ($(( ($(date +%s%N) - log_started) / 1000000 )) ms)"' EXIT
+fi
+if [[ -n ${CLAUDE_SESSIONS_LOG_STDERR:-} ]]; then
+    exec 2> >(while IFS= read -r line; do log_event ERROR manager "$line"; done)
+fi
 
 case ${1:-attach} in
     attach)
@@ -239,21 +762,43 @@ case ${1:-attach} in
     open) view_session "${2:?usage: claude-sessions open <session-id>}" && focus_viewer ;;
     new) shift; new_session "${1:?usage: claude-sessions new <dir> [claude args]}" "${@:2}" ;;
     resume) resume_session "${2:?usage: claude-sessions resume <dir> <session-id>}" "${3:?usage: claude-sessions resume <dir> <session-id>}" ;;
-    exit) exit_session "${2:?usage: claude-sessions exit <session-id>}" ;;
-    restart) restart_session "${2:?usage: claude-sessions restart <session-id>}" ;;
+    exit)
+        exit_session "${2:?usage: claude-sessions exit <session-id>}"
+        mkdir -p "$(dirname "$ENDED_SESSIONS")" && printf '%s\n' "$2" >> "$ENDED_SESSIONS"
+        ;;
+    restore) shift; restore_sessions "$@" ;;
+    restart) restart_session "${2:?usage: claude-sessions restart <session-id> [effort]}" "${3:-}" ;;
     idle) idle ;;
+    usage) show_usage ;;
+    compact) compact_session "${2:?usage: claude-sessions compact <session-id>}" ;;
+    zoom) zoom_viewer ;;
+    say) say_to_session "${2:?usage: claude-sessions say <session-id> <message>}" "${3:?usage: claude-sessions say <session-id> <message>}" ;;
+    answer) answer_permission "${2:?usage: claude-sessions answer <session-id> yes|no}" "${3:?usage: claude-sessions answer <session-id> yes|no}" ;;
+    logs) show_logs "${2:-80}" ;;
+    log) log_event "${3:?usage: claude-sessions log <component> <INFO|WARN|ERROR> <message>}" "${2:?}" "${4:?}" ;;
+    digest) show_digest ;;
+    git) git_popup "${2:?usage: claude-sessions git <dir>}" ;;
+    parallel) parallel_session "${2:?usage: claude-sessions parallel <dir> <branch>}" "${3:?usage: claude-sessions parallel <dir> <branch>}" ;;
+    review) review_session "${2:?usage: claude-sessions review <dir> <pr-number>}" "${3:?usage: claude-sessions review <dir> <pr-number>}" ;;
+    label-state) label_state "${2:?usage: claude-sessions label-state <state>}" ;;
     prepare) ensure_manager ;;
     reload)
         ensure_manager
-        tmux respawn-pane -k -t "$SIDEBAR_PANE" claude-sessions-sidebar
+        tmux respawn-pane -k -t "$(sidebar_pane)" claude-sessions-sidebar
         ;;
+    focus-viewer) focus_viewer ;;
+    layout) ensure_manager && apply_layout ;;
     reset)
         tmux kill-session -t "=$MANAGER" 2>/dev/null || true
         osd-show sessions-clear
         rm -f "$CURRENT" "$HOME"/.cache/claude/statusline-*.json "$HOME"/.cache/claude/toast-*.id
         ;;
+    doctor) doctor ;;
+    handoff) handoff "${2:-on}" ;;
+    remote) toggle_remote "${2:?usage: claude-sessions remote <session-id>}" ;;
+    sweep) sweep_caches ;;
     *)
-        echo "usage: claude-sessions [attach|show [id]|view <id>|open <id>|new <dir>|resume <dir> <id>|exit <id>|restart <id>|prepare|idle|reload|reset]" >&2
+        echo "usage: claude-sessions [attach|show [id]|view <id>|open <id>|new <dir>|resume <dir> <id>|exit <id>|restart <id>|handoff [on|off]|remote <id>|prepare|idle|reload|reset|doctor|sweep]" >&2
         exit 2
         ;;
 esac

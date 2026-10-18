@@ -1,33 +1,45 @@
 #!/usr/bin/env python3
-"""Sidebar of the Claude session manager (left pane of `claude-sessions`).
+"""Left column of the Claude session manager (`claude-sessions`): three stacked panels, in the
+spirit of lazygit, with the viewed session in the terminal pane on the right.
 
-RUNNING: the sessions the OSD daemon knows (state, title, model and context from the
-statusline script) most urgent first, pinned ones on top, then every other claude-retry-*
-tmux session with an unknown state. Below, past sessions from ~/.claude/history.jsonl under
-day headings (today, yesterday, this week, older) and, inside each, the project they belong
-to; sessions with nothing worth resuming (no generated title and a trivial prompt) stay
-hidden unless shown with `.`.
+  [0] Status         the plan's usage as claude.ai shows it: the current session, this week, and
+                     every separate weekly limit (Fable …), with reset times (claude-usage.sh's cache)
+  [1] Sessions       running sessions (e, or a click on the effort level on a card, opens the effort
+                     menu: the chosen level restarts the session on it): state, project, title, model and context; most urgent first,
+                     pinned ones on top, then claude-retry-* tmux sessions the daemon does not know
+  [2] History        past sessions from ~/.claude/history.jsonl under day headings and projects, the
+                     transcript's generated title; trivial ones hidden unless shown with .
+  [3] Pull requests  open pull requests in the viewed session's repository, or in every running
+                     session's when none is viewed (your review requests when nothing runs), without
+                     bot authors or anything untouched for months
 
-Keys: j/k or arrows move, 1-9 jump to a running session, Enter opens a running session (shows
-it and moves the cursor into it) or resumes a past one, Tab/l/Right move the cursor into the
-session, n peeks at the next session that needs you, / filters by project or title (Esc
-clears), a starts claude in a project picked with fzf, p pins a running session on top,
-x exits a running session (Ctrl-C twice, then killed if it lingers) or hides a past one
-(u undoes), r restarts a running session in place to apply an installed update, h or Left
-folds a project, . shows or hides the trivial sessions, ? shows the help, q or Ctrl-C close
-the manager window. Mouse:
-click selects, double-click opens. The sidebar's width, pins, folds and hidden sessions
-persist in ~/.local/state/claude-sessions/view.json.
-Shift+Left / Shift+Right (tmux.conf) move between the list and the session.
+The focused panel takes half the column (Status keeps its size); 0/1/2/3, Tab and Shift+Tab move the focus, j/k or the
+arrows move inside it, / filters the focused panel (Esc clears), ? shows every key, q or Ctrl-C
+close the manager window, a starts a session in a project picked with fzf. Enter opens a running
+session (shows it in the viewer and moves the cursor there), resumes a past one, or opens a pull
+request in the cockpit's pull requests window (P, W and G show that window, Claude on the web and
+greyproxy's dashboard on top, like Super+Ctrl+P/A/G). Status: Enter shows the full usage report in the session pane, r refetches. Sessions: n peeks at the next one needing you, x exits (Ctrl-C twice,
+then killed if it lingers), r restarts in place, R toggles Remote Control, p pins. History: x hides
+(u undoes), h or Left folds a project. Pull requests: r refreshes. Mouse: click focuses and
+selects, double-click opens. Ctrl+Tab (tmux.conf) moves between the column and the session.
+F1 to F3 from tmux (Ctrl+1/2/3 in the session pane, tmux.conf) focus a panel
+even while filtering. Pins, folds and hidden sessions persist in ~/.local/state/claude-sessions/view.json.
+claude-sessions-sidebar costs prints this month's cost estimate per day.
+CLAUDE_REVIEWS_FIXTURE points at a saved gh JSON output for testing without GitHub.
 """
 import curses
 import glob
+import hashlib
 import json
 import os
 import re
+import sqlite3
 import subprocess
+import sys
+import threading
 import time
-from datetime import date, datetime
+import traceback
+from datetime import date, datetime, timedelta, timezone
 
 RUNTIME_DIR = os.environ.get("XDG_RUNTIME_DIR", "/tmp")
 SNAPSHOT_PATH = os.path.join(RUNTIME_DIR, "claude-sessions.json")
@@ -38,8 +50,16 @@ STATUSLINE_DIR = os.path.expanduser("~/.cache/claude")
 USAGE_CACHE_PATH = os.path.join(RUNTIME_DIR, "claude-usage.json")
 USAGE_SCRIPT = os.path.expanduser("~/.config/waybar/scripts/claude-usage.sh")
 USAGE_REFRESH_S = 300
-USAGE_WINDOWS = (("five_hour", "\U000F0150"), ("seven_day", "\U000F00ED"))  # clock, calendar
-STATUSLINE_MAX_AGE_S = 3600
+# The usage page is driven by the response's "limits" list (session, weekly_all, weekly_scoped
+# per model or surface); the flat windows below are the older shape, used only without that list.
+USAGE_WINDOWS = (("five_hour", "Current session"), ("seven_day", "This week"),
+                 ("seven_day_opus", "Opus this week"), ("seven_day_sonnet", "Sonnet this week"))
+USAGE_LIMIT_LABELS = {"session": "Current session", "weekly_all": "This week"}
+USAGE_BAR_MIN, USAGE_BAR_MAX = 8, 40
+DEFAULT_COLUMN_WIDTH = 60  # SIDEBAR_WIDTH in claude-sessions, until the first draw measures it
+USAGE_REPORT_BAR_WIDTH = 40
+USAGE_REPORT_REDRAW_S = 30
+CREDENTIALS_PATH = os.path.expanduser("~/.claude/.credentials.json")
 VIEW_STATE_PATH = os.path.join(os.environ.get("XDG_STATE_HOME", os.path.expanduser("~/.local/state")),
                                "claude-sessions", "view.json")
 PROJECT_PATTERNS = ("~/IdeaProjects/*/", "~/dotfiles/")
@@ -48,36 +68,32 @@ RETRY_SESSION_PREFIX = "claude-retry-"
 RECENT_LIMIT = 40
 TITLE_SCAN_BYTES = 2 * 1024 * 1024  # the ai-title record lands early in a transcript
 TITLES_PER_TICK = 8
+TITLE_RETRY_S = 30
 TRIVIAL_PROMPT_WORDS = 4
 GLYPHS = {"working": "●", "waiting": "○", "needs-you": "!", "unknown": "·", "recent": "↻"}
 # kitty's 16-colour palette is Tokyo Night, so plain colour indexes match the rest of the desktop.
 RED, GREEN, YELLOW, BLUE, MAGENTA, CYAN, FG_DARK, BG_HIGHLIGHT, FG = 1, 2, 3, 4, 5, 6, 7, 8, 15
 STATE_COLORS = {"working": BLUE, "waiting": YELLOW, "needs-you": RED, "unknown": FG_DARK, "recent": CYAN}
 PROJECT_COLORS = (MAGENTA, CYAN, GREEN, BLUE, YELLOW)
-FOOTER_KEYS = (("j/k", "move"), ("⏎", "open"), ("/", "filter"), ("a", "new"), ("q", "close"), ("?", "help"))
-HELP_LINES = (
-    ("j/k ↑↓", "move the cursor"),
-    ("1-9", "jump to a running session"),
-    ("⏎", "open: show the session and type in it; resume a past one"),
-    ("n", "peek at the next session needing you"),
-    ("⇥ l →", "move the cursor into the session"),
-    ("⇧← ⇧→", "between the list and the session, from anywhere"),
-    ("/", "filter by project or title, Esc clears"),
-    ("a", "new session in a project"),
-    ("p", "pin or unpin a running session"),
-    ("x", "exit a running session, or hide a past one from the list"),
-    ("r", "restart a running session (same conversation, new process)"),
-    ("u", "bring back the last hidden past session"),
-    ("h ←", "fold or unfold a project's past sessions"),
-    (".", "show or hide trivial past sessions"),
-    ("q ^C", "close the manager window (sessions keep running; ALT+C reopens it)"),
-    ("", ""),
-    ("●", "working"), ("○", "waiting for you"), ("!", "needs you: permission or question"),
-    ("·", "running, state unknown"), ("↻", "past session, Enter resumes"),
-)
 KEY_ESCAPE, KEY_ENTER_LF, KEY_ENTER_CR, KEY_TAB, KEY_CTRL_C = 27, 10, 13, 9, 3
+HEADER_LINES = 1
+MIN_PANEL_LINES = 4
 color_pairs: dict[tuple[int, int], int] = {}
-hit_rows: list[tuple[int, int, int]] = []  # (first line, last line, selectable index) of the last draw
+hit_lines: dict[int, tuple[int, int | None]] = {}  # screen row -> (panel index, item index) of the last draw
+hit_actions: dict[int, tuple[int, int, str]] = {}  # screen row -> (first column, last column, action) of a clickable stamp
+EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")  # claude --help, --effort
+
+# Pull requests: the running sessions' repositories, else every review request.
+REVIEWS_REFRESH_S = 300
+REVIEWS_LIMIT = 30
+REVIEWS_RECENT_DAYS = 180  # older pull requests are dead repositories, not work
+REVIEWS_FIXTURE = os.environ.get("CLAUDE_REVIEWS_FIXTURE")
+# Bot bumps (dependabot, renovate) are merged or closed without a review; they only bury real work.
+GH_COMMAND = ["gh", "search", "prs", "--state=open", "--sort=updated", "--limit", str(REVIEWS_LIMIT),
+              "--json", "url,title,repository,updatedAt,author,number"]
+GH_QUERY = ["-author:app/dependabot", "-author:app/renovate"]
+SCRATCHPAD_PAGE = re.compile(r"https?://[\x21-\x7e]+")  # ASCII only, so it is a valid Lua string as is
+GITHUB_REMOTE = re.compile(r"(?:https://github\.com/|git@github\.com:)([\w.-]+/[\w.-]+?)(?:\.git)?$")
 
 
 def collapse(text: str) -> str:
@@ -115,24 +131,121 @@ def running_sessions() -> list[dict]:
         if row["pane"] in known_panes:
             continue
         sessions.append({
-            "session": row["name"], "state": "unknown", "project": os.path.basename(row["path"]) or row["path"],
+            "session": row["name"], "state": "unknown", "project": project_name(row["path"]),
             "task": row["title"].lstrip("✳◐◑ "), "since": int(row["created"] or time.time()), "tmux_pane": row["pane"],
+            "started": int(row["created"] or time.time()),
+            "cwd": row["path"],
         })
     return sessions
 
 
-def usage_percentages() -> list[tuple[str, int | None]]:
-    """The 5-hour and 7-day utilisation from the cache claude-usage.sh keeps, None when unknown."""
+def usage_cache() -> dict:
     try:
         with open(USAGE_CACHE_PATH) as cache:
             usage = json.load(cache)
     except (OSError, ValueError):
-        return []
-    percentages = []
-    for window, glyph in USAGE_WINDOWS:
-        value = (usage.get(window) or {}).get("utilization")
-        percentages.append((glyph, round(value) if isinstance(value, (int, float)) else None))
-    return percentages
+        return {}
+    return usage if isinstance(usage, dict) else {}
+
+
+def usage_windows() -> list[dict]:
+    """Every limit in the cache claude-usage.sh keeps, as the claude.ai usage page lists them:
+    label, rounded percentage (None when unknown), reset time, and a note for scoped limits."""
+    usage = usage_cache()
+    if isinstance(usage.get("limits"), list):
+        return [limit_window(limit) for limit in usage["limits"] if isinstance(limit, dict)]
+    known = dict(USAGE_WINDOWS)
+    windows = [(key, label, usage.get(key)) for key, label in USAGE_WINDOWS]
+    windows += [(key, usage_label(key), window) for key, window in sorted(usage.items())
+                if key not in known and isinstance(window, dict) and "utilization" in window]
+    windows += [(f"model-{index}", f"{scoped.get('display_name') or 'Model'} this week", scoped)
+                for index, scoped in enumerate(usage.get("model_scoped") or [])]
+    rows = []
+    for key, label, window in windows:
+        if not isinstance(window, dict):
+            continue
+        value = window.get("utilization")
+        rows.append({"key": key, "label": label, "percentage": round(value) if isinstance(value, (int, float)) else None,
+                     "resets": reset_time(window.get("resets_at")), "resets_at": window.get("resets_at"), "note": ""})
+    return rows
+
+
+def limit_window(limit: dict) -> dict:
+    """One entry of the response's limits list. A scoped weekly limit names its model or surface
+    (Fable this week) and says so, as the page does."""
+    kind = limit.get("kind") or ""
+    scope = limit.get("scope") or {}
+    scoped_name = next((part.get("display_name") for part in (scope.get("model"), scope.get("surface"))
+                        if isinstance(part, dict) and part.get("display_name")), "")
+    if kind in USAGE_LIMIT_LABELS:
+        label, note = USAGE_LIMIT_LABELS[kind], ""
+    elif scoped_name:
+        label, note = f"{scoped_name} this week", f"separate weekly limit for {scoped_name}"
+    else:
+        label, note = kind.replace("_", " ").capitalize() or "Limit", ""
+    percent = limit.get("percent")
+    return {"key": kind + (":" + scoped_name if scoped_name else ""), "label": label,
+            "percentage": round(percent) if isinstance(percent, (int, float)) else None,
+            "resets": reset_time(limit.get("resets_at")), "resets_at": limit.get("resets_at"), "note": note}
+
+
+def usage_breakdown() -> list[tuple[str, int]]:
+    """Where this week's usage went (Claude Code, Chats, Cowork …), non-zero rows only."""
+    rows = (usage_cache().get("seven_day_breakdown") or {}).get("rows") or []
+    return [(row.get("display_name") or row.get("key") or "?", round(row["percent"]))
+            for row in rows if isinstance(row, dict) and isinstance(row.get("percent"), (int, float)) and row["percent"] > 0]
+
+
+def usage_credits() -> str:
+    """"€0 of €170 usage credits" from the spend block, empty when the response has none."""
+    spend = usage_cache().get("spend") or {}
+    used, limit = spend.get("used") or {}, spend.get("limit") or {}
+    if not isinstance(used.get("amount_minor"), (int, float)):
+        return ""
+    def money(amount: dict) -> str:
+        exponent = amount.get("exponent", 2)
+        value = amount.get("amount_minor", 0) / (10 ** exponent)
+        symbol = {"EUR": "€", "USD": "$", "GBP": "£"}.get(amount.get("currency"), amount.get("currency", "") + " ")
+        return f"{symbol}{value:.0f}" if value == int(value) else f"{symbol}{value:.2f}"
+    text = f"{money(used)} of {money(limit)} usage credits" if isinstance(limit.get("amount_minor"), (int, float)) else f"{money(used)} usage credits"
+    if not spend.get("enabled"):
+        text += "  (off)"
+    return text
+
+
+def usage_label(key: str) -> str:
+    """"seven_day_fable" -> "Fable this week"; anything else keeps its words."""
+    if key.startswith("seven_day_"):
+        return key[len("seven_day_"):].replace("_", " ").capitalize() + " this week"
+    return key.replace("_", " ").capitalize()
+
+
+def reset_time(stamp) -> str:
+    """"15:00" when the window resets within a day, else "Mon 09:00"; empty when unknown."""
+    if not stamp:
+        return ""
+    try:
+        moment = datetime.fromisoformat(stamp.replace("Z", "+00:00")).astimezone()
+    except ValueError:
+        return ""
+    local_format = "%H:%M" if moment - datetime.now().astimezone() < timedelta(days=1) else "%a %H:%M"
+    return moment.strftime(local_format)
+
+
+def usage_plan() -> str:
+    try:
+        with open(CREDENTIALS_PATH) as credentials:
+            plan = json.load(credentials).get("claudeAiOauth", {}).get("subscriptionType") or ""
+    except (OSError, ValueError, AttributeError):
+        return ""
+    return plan.capitalize()
+
+
+def usage_bar(percentage, width: int) -> str:
+    if percentage is None:
+        return "·" * width
+    filled = min(width, round(percentage / 100 * width))
+    return "█" * filled + "░" * (width - filled)
 
 
 def usage_color(percentage) -> int:
@@ -151,20 +264,295 @@ class UsageRefresher:
     def __init__(self):
         self.last_run = 0.0
 
-    def tick(self):
-        if time.time() - self.last_run < USAGE_REFRESH_S:
+    def tick(self, force: bool = False):
+        if not force and time.time() - self.last_run < USAGE_REFRESH_S:
             return
         self.last_run = time.time()
+        if force:
+            try:
+                os.remove(USAGE_CACHE_PATH)  # the script trusts a cache younger than 4 min
+            except OSError:
+                pass
         if not os.access(USAGE_SCRIPT, os.X_OK):
             return  # the header then shows no usage, which is the honest display
         subprocess.Popen([USAGE_SCRIPT, "five_hour"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
+COST_RESCAN_S = 60
+# $ per million tokens: input, output, cache read, cache write (5 min TTL), cache write (1 h TTL).
+# From the Claude API reference bundled with Claude Code (claude-api skill, prices cached
+# 2026-10-06): writes cost 1.25x / 2x input, reads 0.1x input except where the table lists them.
+MODEL_PRICES = {
+    "claude-fable-5-1": (10, 50, 0.25, 12.5, 20), "claude-mythos-5-1": (10, 50, 0.25, 12.5, 20),
+    "claude-fable-5": (10, 50, 1.0, 12.5, 20), "claude-mythos-5": (10, 50, 1.0, 12.5, 20),
+    "claude-opus-5-5": (4, 20, 0.20, 5, 8),
+    "claude-opus-5": (5, 25, 0.5, 6.25, 10),
+    "claude-opus-4-8": (5, 25, 0.5, 6.25, 10), "claude-opus-4-7": (5, 25, 0.5, 6.25, 10), "claude-opus-4-6": (5, 25, 0.5, 6.25, 10),
+    "claude-sonnet-5-5": (2, 10, 0.20, 2.5, 4), "claude-sonnet-5": (2, 10, 0.20, 2.5, 4),
+    "claude-sonnet-4-6": (3, 15, 0.3, 3.75, 6),
+    "claude-haiku-5-5": (0.10, 0.50, 0.01, 0.125, 0.2),
+    "claude-haiku-4-5": (1, 5, 0.1, 1.25, 2),
+}
+HAIKU_5_5_LONG_PROMPT = (100_000, (0.50, 2.50, 0.05, 0.625, 1.0))  # above 100K prompt tokens
+FAST_MODE_MULTIPLIER = 2  # usage.speed == "fast": Opus 5.5 $8 / $40
+
+
+def model_prices(model: str):
+    """The price row of a model id (date-suffixed ids included), or None for an unknown model."""
+    matches = [known for known in MODEL_PRICES if model == known or model.startswith(known + "-")]
+    return MODEL_PRICES[max(matches, key=len)] if matches else None
+
+
+def reply_cost(model: str, usage: dict):
+    """What one reply would cost at API prices, or None when the model has no known price."""
+    prices = model_prices(model)
+    if prices is None:
+        return None
+    tokens = lambda key: usage.get(key) or 0
+    written = tokens("cache_creation_input_tokens")
+    by_ttl = usage.get("cache_creation") or {}
+    written_1h = by_ttl.get("ephemeral_1h_input_tokens") or 0
+    written_5m = by_ttl.get("ephemeral_5m_input_tokens", written - written_1h) or 0
+    prompt = tokens("input_tokens") + tokens("cache_read_input_tokens") + written
+    if model.startswith("claude-haiku-5-5") and prompt > HAIKU_5_5_LONG_PROMPT[0]:
+        prices = HAIKU_5_5_LONG_PROMPT[1]
+    input_price, output_price, read_price, write_5m_price, write_1h_price = prices
+    cost = (tokens("input_tokens") * input_price + tokens("output_tokens") * output_price
+            + tokens("cache_read_input_tokens") * read_price + written_5m * write_5m_price + written_1h * write_1h_price) / 1e6
+    return cost * FAST_MODE_MULTIPLIER if usage.get("speed") == "fast" else cost
+
+
+USAGE_ARCHIVE_PATH = os.path.join(os.environ.get("XDG_STATE_HOME", os.path.expanduser("~/.local/state")),
+                                  "claude-sessions", "usage.sqlite")
+ARCHIVE_SCHEMA = """
+create table if not exists replies (
+    key text primary key,          -- message id and request id: a reply copied into a forked or
+                                   -- resumed transcript is the same row
+    day text not null,             -- local date of the reply
+    at text not null,              -- its timestamp as recorded (UTC)
+    model text not null,
+    project text not null,         -- basename of the session's directory
+    session text not null,
+    input integer not null, output integer not null, cache_read integer not null,
+    cache_write_5m integer not null, cache_write_1h integer not null,
+    speed text not null,
+    cost real                      -- at the prices of MODEL_PRICES when archived; null: no price known
+);
+create index if not exists replies_day on replies (day);
+create table if not exists files (path text primary key, mtime real not null, size integer not null);
+"""
+
+
+def open_archive(path: str = "") -> sqlite3.Connection:
+    path = path or USAGE_ARCHIVE_PATH
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    archive = sqlite3.connect(path, timeout=10)
+    archive.executescript(ARCHIVE_SCHEMA)
+    return archive
+
+
+def archive_transcripts(archive: sqlite3.Connection, transcripts_dir: str) -> int:
+    """Copy every reply of the transcripts into the archive, which keeps them after Claude Code
+    deletes the transcripts (cleanupPeriodDays, 30 days by default). Files unchanged since the last
+    pass are skipped. Returns how many replies were new."""
+    known = dict((path, (mtime, size)) for path, mtime, size in archive.execute("select path, mtime, size from files"))
+    added = 0
+    for path in glob.glob(os.path.join(transcripts_dir, "**", "*.jsonl"), recursive=True):
+        try:
+            status = os.stat(path)
+        except OSError:
+            continue
+        if known.get(path) == (status.st_mtime, status.st_size):
+            continue
+        rows = []
+        try:
+            with open(path, "rb") as transcript:
+                for line in transcript:
+                    row = reply_row(line)
+                    if row:
+                        rows.append(row)
+        except OSError:
+            continue
+        before = archive.total_changes
+        archive.executemany("insert or ignore into replies values (?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+        added += archive.total_changes - before
+        archive.execute("insert or replace into files values (?,?,?)", (path, status.st_mtime, status.st_size))
+        archive.commit()
+    return added
+
+
+def reply_row(line: bytes):
+    """The archive row of one transcript line, or None when it is not a priced-or-pricable reply."""
+    if b'"usage"' not in line:
+        return None
+    try:
+        record = json.loads(line)
+    except ValueError:
+        return None
+    message = record.get("message") if isinstance(record, dict) else None
+    usage = message.get("usage") if isinstance(message, dict) else None
+    model = message.get("model", "") if isinstance(message, dict) else ""
+    if not isinstance(usage, dict) or not record.get("timestamp") or not model or model.startswith("<"):
+        return None
+    try:
+        moment = datetime.fromisoformat(record["timestamp"].replace("Z", "+00:00")).astimezone()
+    except (ValueError, AttributeError):
+        return None
+    message_id, request_id = message.get("id") or "", record.get("requestId") or ""
+    key = f"{message_id}:{request_id}" if message_id or request_id else "line:" + hashlib.sha1(line).hexdigest()
+    tokens = lambda name: usage.get(name) or 0
+    written = tokens("cache_creation_input_tokens")
+    by_ttl = usage.get("cache_creation") or {}
+    written_1h = by_ttl.get("ephemeral_1h_input_tokens") or 0
+    written_5m = by_ttl.get("ephemeral_5m_input_tokens", written - written_1h) or 0
+    return (key, moment.date().isoformat(), record["timestamp"], model, os.path.basename(record.get("cwd") or "") or "?",
+            record.get("sessionId") or "", tokens("input_tokens"), tokens("output_tokens"), tokens("cache_read_input_tokens"),
+            written_5m, written_1h, usage.get("speed") or "standard", reply_cost(model, usage))
+
+
+def archived_costs(archive: sqlite3.Connection) -> tuple[dict[str, float], dict[str, int], float]:
+    """Cost per day, output tokens of replies without a known price per model, and the all-time cost."""
+    days = dict(archive.execute("select day, sum(cost) from replies where cost is not null group by day"))
+    unpriced = dict(archive.execute("select model, sum(output) from replies where cost is null group by model"))
+    return days, unpriced, sum(days.values())
+
+
+def transcript_costs(transcripts_dir: str, archive_path: str = "") -> tuple[dict[str, float], dict[str, int]]:
+    archive = open_archive(archive_path)
+    try:
+        archive_transcripts(archive, transcripts_dir)
+        days, unpriced, _ = archived_costs(archive)
+    finally:
+        archive.close()
+    return days, unpriced
+
+
+class TranscriptCosts:
+    """The archive brought up to date every minute in a thread, so the column never waits on it."""
+
+    def __init__(self):
+        self.days: dict[str, float] = {}
+        self.unpriced: dict[str, int] = {}
+        self.all_time = 0.0
+        self.error = ""  # shown in the Status panel: a broken archive must not pass for $0
+        self.scanned_at = 0.0
+        self.scanning = False
+        self.lock = threading.Lock()
+
+    def tick(self):
+        if self.scanning or time.time() - self.scanned_at < COST_RESCAN_S:
+            return
+        self.scanning = True
+        threading.Thread(target=self._scan, daemon=True).start()
+
+    def _scan(self):
+        try:
+            archive = open_archive()
+            try:
+                archive_transcripts(archive, TRANSCRIPTS_DIR)
+                days, unpriced, all_time = archived_costs(archive)
+            finally:
+                archive.close()
+        except (sqlite3.Error, OSError) as error:
+            if f"usage archive: {error}" != self.error:
+                log_event("ERROR", f"usage archive {USAGE_ARCHIVE_PATH}: {error}")
+            with self.lock:
+                self.error = f"usage archive: {error}"
+                self.scanned_at, self.scanning = time.time(), False
+            return
+        with self.lock:
+            self.days, self.unpriced, self.all_time, self.error = days, unpriced, all_time, ""
+            self.scanned_at, self.scanning = time.time(), False
+
+    def total_since(self, first_day: date) -> float:
+        with self.lock:
+            return sum(cost for day, cost in self.days.items() if day >= first_day.isoformat())
+
+    def totals(self) -> dict[str, float]:
+        today = date.today()
+        return {"today": self.total_since(today),
+                "week": self.total_since(today - timedelta(days=today.weekday())),
+                "month": self.total_since(today.replace(day=1))}
+
+
+def money(amount: float) -> str:
+    if amount >= 10000:
+        return f"${amount / 1000:.1f}k"
+    return f"${amount:,.0f}" if amount >= 100 else f"${amount:.2f}"
+
+
+ALERT_THRESHOLDS = (80, 95)  # percent of a usage limit
+ALERTS_PATH = os.path.join(os.environ.get("XDG_STATE_HOME", os.path.expanduser("~/.local/state")),
+                           "claude-sessions", "alerts.json")
+OSD_FIFO = os.path.join(RUNTIME_DIR, "osd.fifo")
+CONTEXT_COMPACT_AT = 90  # percent of the context window: the card suggests /compact
+
+
+def send_notice(notice: dict) -> bool:
+    """One banner through the OSD daemon's FIFO; False when the daemon is not reading it."""
+    try:
+        fifo = os.open(OSD_FIFO, os.O_WRONLY | os.O_NONBLOCK)
+    except OSError:
+        return False
+    try:
+        os.write(fifo, ("notice " + json.dumps(notice) + "\n").encode())
+    except OSError:
+        return False
+    finally:
+        os.close(fifo)
+    return True
+
+
+class BudgetAlerts:
+    """A banner once per limit, threshold and window when a usage limit passes 80% and 95%: the
+    plan's weekly limits are the ones that stop work for days. Remembered in alerts.json so a
+    restarted sidebar does not repeat itself."""
+
+    def __init__(self, send=send_notice):
+        self.send = send
+        try:
+            with open(ALERTS_PATH) as saved:
+                self.fired = set(json.load(saved))
+        except (OSError, ValueError, TypeError):
+            self.fired = set()
+
+    def check(self, windows: list[dict]):
+        live, changed = set(), False
+        for window in windows:
+            percentage = window.get("percentage")
+            for threshold in ALERT_THRESHOLDS:
+                key = f"{window['key']}:{threshold}:{window.get('resets_at') or ''}"
+                live.add(key)
+                if percentage is None or percentage < threshold or key in self.fired:
+                    continue
+                resets = usage_resets_in(window)
+                if self.send({"id": f"claude-usage-{threshold}", "title": f"Claude · {window['label']} at {percentage}%",
+                              "message": resets[:1].upper() + resets[1:] if resets else "the plan's limit is close"}):
+                    log_event("INFO", f"budget alert: {window['label']} at {percentage}% (threshold {threshold}%)")
+                    self.fired.add(key)
+                    changed = True
+        stale = self.fired - live if windows else set()  # no usage read: keep what fired
+        if stale:
+            self.fired -= stale
+            changed = True
+        if changed:
+            self.save()
+
+    def save(self):
+        try:
+            os.makedirs(os.path.dirname(ALERTS_PATH), exist_ok=True)
+            with open(ALERTS_PATH, "w") as saved:
+                json.dump(sorted(self.fired), saved)
+        except OSError:
+            pass  # read-only state: alerts may repeat, nothing worse
+
+
 def statusline_facts(session_id: str) -> dict:
+    """The status line's last report for the session (model, context, remote). Keyed by session id,
+    so it can only be old, never another session's: no age cutoff (claude-sessions reset and sweep
+    delete the files)."""
     path = os.path.join(STATUSLINE_DIR, f"statusline-{session_id}.json")
     try:
-        if time.time() - os.stat(path).st_mtime > STATUSLINE_MAX_AGE_S:
-            return {}
         with open(path) as facts:
             return json.load(facts)
     except (OSError, ValueError):
@@ -172,15 +560,15 @@ def statusline_facts(session_id: str) -> dict:
 
 
 class ViewState:
-    """What the user chose: hidden past sessions, folded projects, pins, trivial-session visibility,
-    sidebar width. Kept on disk."""
+    """What the user chose: hidden past sessions, folded projects, pins, trivial-session visibility.
+    Kept on disk."""
 
     def __init__(self):
         self.hidden: list[str] = []
         self.folded: list[str] = []
         self.pinned: list[str] = []
         self.show_trivial = False
-        self.sidebar_width = 0
+        self.restored_boot = 0  # the boot whose sessions were brought back (B): not offered again
         try:
             with open(VIEW_STATE_PATH) as state:
                 saved = json.load(state)
@@ -188,7 +576,7 @@ class ViewState:
             self.folded = [str(item) for item in saved.get("folded", [])]
             self.pinned = [str(item) for item in saved.get("pinned", [])]
             self.show_trivial = bool(saved.get("show_trivial", False))
-            self.sidebar_width = int(saved.get("sidebar_width", 0))
+            self.restored_boot = int(saved.get("restored_boot", 0))
         except (OSError, ValueError, AttributeError):
             pass
 
@@ -196,8 +584,15 @@ class ViewState:
         os.makedirs(os.path.dirname(VIEW_STATE_PATH), exist_ok=True)
         with open(VIEW_STATE_PATH + ".tmp", "w") as state:
             json.dump({"hidden": self.hidden, "folded": self.folded, "pinned": self.pinned,
-                       "show_trivial": self.show_trivial, "sidebar_width": self.sidebar_width}, state)
+                       "show_trivial": self.show_trivial, "restored_boot": self.restored_boot}, state)
         os.replace(VIEW_STATE_PATH + ".tmp", VIEW_STATE_PATH)
+
+    def forget_unknown_hidden(self, known_ids: set[str]):
+        """Hidden ids of sessions that left the history would otherwise accumulate forever."""
+        kept = [session_id for session_id in self.hidden if session_id in known_ids]
+        if len(kept) != len(self.hidden):
+            self.hidden = kept
+            self.save()
 
     def hide(self, session_id: str):
         if session_id not in self.hidden:
@@ -218,10 +613,128 @@ class ViewState:
             collection.append(item)
         self.save()
 
-    def remember_width(self, width: int):
-        if width != self.sidebar_width:
-            self.sidebar_width = width
-            self.save()
+
+branch_cache: dict[str, tuple[float, str]] = {}  # cwd -> (HEAD mtime, branch)
+
+
+CLONES_DIR = os.environ.get("CLAUDE_SESSIONS_CLONES", os.path.expanduser("~/IdeaProjects/.parallel"))
+
+
+def project_name(path: str) -> str:
+    """A directory's project: the repository for a claude-sessions clone (<CLONES_DIR>/<repo>/<name>),
+    else the directory's own name. Same rule as claude_registry.parallel_clone_repository."""
+    relative = os.path.relpath(path, CLONES_DIR) if path else ".."
+    parts = relative.split(os.sep)
+    if len(parts) >= 2 and not relative.startswith(".."):
+        return parts[0]
+    return os.path.basename(path.rstrip("/")) or path
+
+
+FOCUS_STATES = ("needs-you", "waiting")  # what the focus filter (f) keeps: sessions waiting on you
+
+
+def waiting_request(session: dict) -> str:
+    """What a session needing you asks: the dialog's own lines from its pane ("Bash command · npm
+    test") when the daemon read them, else the hook's sentence."""
+    if session.get("state") != "needs-you":
+        return ""
+    return session.get("detail") or session.get("request") or ""
+
+
+STATE_DIR = os.path.join(os.environ.get("XDG_STATE_HOME", os.path.expanduser("~/.local/state")), "claude-sessions")
+RECENT_SESSIONS_PATH = os.path.join(STATE_DIR, "recent-sessions.json")  # kept by the daemon
+ENDED_SESSIONS_PATH = os.path.join(STATE_DIR, "ended-sessions")  # appended by claude-sessions exit
+RESTORE_WINDOW_S = 600  # alive in the last ten minutes before the machine went down
+RESTORE_OFFER_HOURS = 6
+
+
+def boot_time() -> int:
+    try:
+        with open("/proc/uptime") as uptime:
+            return int(time.time() - float(uptime.read().split()[0]))
+    except (OSError, ValueError, IndexError):
+        return 0
+
+
+def sessions_to_restore(recent: dict, ended: set[str], running: set[str], boot: int, resumable) -> list[dict]:
+    """The sessions still alive when the machine went down: seen before this boot, within
+    RESTORE_WINDOW_S of the last one seen, not ended on purpose, not running now, and with a
+    conversation to resume."""
+    before = {session: row for session, row in recent.items()
+              if isinstance(row, dict) and row.get("last_seen", 0) < boot and row.get("cwd")}
+    if not before:
+        return []
+    last = max(row["last_seen"] for row in before.values())
+    return sorted(({"session": session, **row} for session, row in before.items()
+                   if row["last_seen"] >= last - RESTORE_WINDOW_S and session not in ended
+                   and session not in running and resumable(session)),
+                  key=lambda row: row.get("project", ""))
+
+
+def restore_offer(view: "ViewState", running: set[str]) -> list[dict]:
+    boot = boot_time()
+    if not boot or view.restored_boot == boot or time.time() - boot > RESTORE_OFFER_HOURS * 3600:
+        return []
+    try:
+        with open(RECENT_SESSIONS_PATH) as saved:
+            recent = json.load(saved)
+    except (OSError, ValueError):
+        return []
+    try:
+        with open(ENDED_SESSIONS_PATH) as ended_file:
+            ended = set(ended_file.read().split())
+    except OSError:
+        ended = set()
+    resumable = lambda session: bool(glob.glob(os.path.join(TRANSCRIPTS_DIR, "*", f"{session}.jsonl")))
+    return sessions_to_restore(recent if isinstance(recent, dict) else {}, ended, running, boot, resumable)
+
+
+def visible_task(session: dict) -> str:
+    """The session's task line, unless it is one of Claude's internal messages (<agent-message …>,
+    <task-notification>), which reach the hook like prompts but mean nothing on a card."""
+    task = (session.get("task") or "").strip()
+    return "" if task.startswith("<") else task
+
+
+def git_head_path(cwd: str) -> str:
+    """The HEAD file of the repository at cwd, through a worktree's gitdir file; empty if none."""
+    dot_git = os.path.join(cwd, ".git")
+    if os.path.isdir(dot_git):
+        return os.path.join(dot_git, "HEAD")
+    try:
+        with open(dot_git) as pointer:
+            first = pointer.readline().strip()
+    except OSError:
+        return ""
+    if not first.startswith("gitdir:"):
+        return ""
+    gitdir = first[len("gitdir:"):].strip()
+    return os.path.join(cwd, gitdir, "HEAD") if not os.path.isabs(gitdir) else os.path.join(gitdir, "HEAD")
+
+
+def git_branch(cwd: str) -> str:
+    """The checked-out branch (or a short commit when detached), read from HEAD itself: no git
+    process per tick. Cached by HEAD's mtime."""
+    if not cwd:
+        return ""
+    head = git_head_path(cwd)
+    if not head:
+        return ""
+    try:
+        mtime = os.stat(head).st_mtime
+    except OSError:
+        return ""
+    cached = branch_cache.get(cwd)
+    if cached and cached[0] == mtime:
+        return cached[1]
+    try:
+        with open(head) as file:
+            content = file.read().strip()
+    except OSError:
+        return ""
+    branch = content[len("ref: refs/heads/"):] if content.startswith("ref: refs/heads/") else content[:7]
+    branch_cache[cwd] = (mtime, branch)
+    return branch
 
 
 def project_color(project: str) -> int:
@@ -245,6 +758,7 @@ class History:
         self.mtime = None
         self.entries: list[dict] = []
         self.titles: dict[str, str] = {}
+        self.title_checked: dict[str, float] = {}  # session id -> when its transcript was last read for a title
 
     def refresh(self):
         try:
@@ -268,7 +782,7 @@ class History:
                 since = int(row.get("timestamp", 0)) // 1000
                 prompt = collapse(str(row.get("display", "")))
                 entry = latest.setdefault(session_id, {"session": session_id, "cwd": project,
-                                                       "project": os.path.basename(project), "since": 0, "prompt": ""})
+                                                       "project": project_name(project), "since": 0, "prompt": ""})
                 entry["since"] = max(entry["since"], since)
                 # Slash commands ("/resume") and paste placeholders ("[Pasted text #1 +9 lines]") say nothing
                 # about the session; keep the last real prompt.
@@ -300,12 +814,16 @@ class History:
         return rows
 
     def load_titles(self, session_ids: list[str], budget: int):
+        """Read the generated titles not known yet. Claude writes a session's title after its first
+        exchange, so an empty one is read again every TITLE_RETRY_S instead of staying empty."""
+        now = time.time()
         for session_id in session_ids:
             if budget == 0:
                 return
-            if session_id in self.titles:
+            if self.titles.get(session_id) or now - self.title_checked.get(session_id, 0) < TITLE_RETRY_S:
                 continue
             self.titles[session_id] = read_title(session_id)
+            self.title_checked[session_id] = now
             budget -= 1
 
 
@@ -320,12 +838,14 @@ def read_title(session_id: str) -> str:
         return ""
     title = ""
     for line in head.split(b"\n"):
-        if b'"type":"ai-title"' not in line:
+        if b"ai-title" not in line:
             continue
         try:
-            title = json.loads(line).get("aiTitle", "") or title
+            record = json.loads(line)
         except ValueError:
             continue
+        if record.get("type") == "ai-title":
+            title = record.get("aiTitle", "") or title
     return title
 
 
@@ -375,13 +895,51 @@ def clock(since: int) -> str:
     return moment.strftime("%d %b")
 
 
+def scratchpad_call(name: str, page: str = "") -> list[str]:
+    """hyprctl eval of OPEN_IN_SCRATCHPAD (scratchpads.lua): a cockpit web window, on a page."""
+    if page and (not SCRATCHPAD_PAGE.fullmatch(page) or '"' in page or "\\" in page):
+        raise ValueError(f"not a page address: {page!r}")
+    arguments = f'"{name}", "{page}"' if page else f'"{name}"'
+    return ["hyprctl", "eval", f"OPEN_IN_SCRATCHPAD({arguments})"]
+
+
+def open_in_scratchpad(name: str, page: str = "") -> str:
+    try:
+        call = scratchpad_call(name, page)
+    except ValueError as error:
+        return str(error)
+    result = subprocess.run(call, capture_output=True, text=True)
+    return "" if result.returncode == 0 else f"hyprctl: {(result.stderr or result.stdout).strip()[:60]}"
+
+
 def focus_viewer():
-    subprocess.run(["tmux", "select-pane", "-t", "claude-manager:manager.1"])
+    subprocess.run(["claude-sessions", "focus-viewer"])
+
+
+LOG_PATH = os.path.join(os.environ.get("XDG_STATE_HOME", os.path.expanduser("~/.local/state")), "claude-sessions", "log")
+LOG_MAX_BYTES = 1_048_576
+LOG_LINE_MAX = 300
+
+
+def log_event(level: str, message: str, component: str = "sidebar"):
+    """A line in the shared log (format and rotation as in claude-sessions' log_event). Never
+    raises: logging must not take the column down, and the state dir is read-only in greywall."""
+    try:
+        os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
+        if os.path.exists(LOG_PATH) and os.path.getsize(LOG_PATH) > LOG_MAX_BYTES:
+            os.replace(LOG_PATH, LOG_PATH + ".1")
+        stamp = datetime.now().astimezone().isoformat(timespec="seconds")
+        with open(LOG_PATH, "a") as log:
+            log.write(f"{stamp} {level} {component}: {' '.join(message.split())[:LOG_LINE_MAX]}\n")
+    except OSError:
+        pass
 
 
 def manager_in_background(*arguments: str):
-    """For exit and restart, which wait on Claude for seconds: the sidebar must not freeze meanwhile."""
-    subprocess.Popen(["claude-sessions", *arguments], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    """For exit and restart, which wait on Claude for seconds: the sidebar must not freeze meanwhile.
+    Nobody sees its terminal, so the manager sends its error messages to the log."""
+    subprocess.Popen(["claude-sessions", *arguments], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     env={**os.environ, "CLAUDE_SESSIONS_LOG_STDERR": "1"})
 
 
 def manager(*arguments: str) -> str:
@@ -390,6 +948,8 @@ def manager(*arguments: str) -> str:
     if result.returncode == 0:
         return ""
     lines = result.stderr.strip().splitlines()
+    if lines:
+        log_event("ERROR", f"claude-sessions {arguments[0]}: {lines[-1]}")
     return lines[-1] if lines else f"claude-sessions {arguments[0]} failed"
 
 
@@ -420,11 +980,48 @@ def kill_session(session: dict) -> str:
     return f"nothing to kill for {session['project']}: removed it from the list"
 
 
+def input_line(prompt: str) -> str:
+    try:
+        return input(f"\n  {prompt}").strip()
+    except (EOFError, KeyboardInterrupt):
+        return ""
+
+
+def recent_projects(history_path: str) -> list[str]:
+    """Project directories from Claude's history, most recently used first."""
+    last_used: dict[str, float] = {}
+    try:
+        with open(history_path, "rb") as history:
+            for line in history:
+                try:
+                    entry = json.loads(line)
+                except ValueError:
+                    continue
+                project, stamp = entry.get("project"), entry.get("timestamp")
+                if isinstance(project, str) and isinstance(stamp, (int, float)):
+                    last_used[project] = max(stamp, last_used.get(project, 0))
+    except OSError:
+        return []
+    return sorted(last_used, key=last_used.get, reverse=True)
+
+
+def project_choices(history_path: str) -> list[str]:
+    """The picker's list: the project directories (PROJECT_PATTERNS), the ones used with Claude
+    most recently first (a session in a subfolder counts for its project), the rest alphabetically.
+    Directories outside the projects (home, a game folder) stay out, as do claude-sessions clones."""
+    known = sorted({os.path.expanduser(path).rstrip("/") for pattern in PROJECT_PATTERNS
+                    for path in glob.glob(os.path.expanduser(pattern))})
+    ranked: list[str] = []
+    for used in recent_projects(history_path):
+        owner = next((project for project in known if used == project or used.startswith(project + os.sep)), None)
+        if owner and owner not in ranked:
+            ranked.append(owner)
+    return ranked + [project for project in known if project not in ranked]
+
+
 def pick_project() -> str:
-    directories = sorted({os.path.expanduser(path).rstrip("/") for pattern in PROJECT_PATTERNS
-                          for path in glob.glob(os.path.expanduser(pattern))})
-    result = subprocess.run(["fzf", "--prompt", "project> ", "--height", "100%"],
-                            input="\n".join(directories), capture_output=True, text=True)
+    result = subprocess.run(["fzf", "--prompt", "project> ", "--height", "100%", "--no-sort"],
+                            input="\n".join(project_choices(HISTORY_PATH)), capture_output=True, text=True)
     return result.stdout.strip() if result.returncode == 0 else ""
 
 
@@ -434,251 +1031,6 @@ def next_attention_index(rows: list[dict], selected: int) -> int | None:
         return None
     later = [index for index in candidates if index > selected]
     return later[0] if later else candidates[0]
-
-
-def style(foreground: int, background: int = -1, extra: int = 0) -> int:
-    key = (foreground, background)
-    if key not in color_pairs:
-        color_pairs[key] = len(color_pairs) + 1
-        curses.init_pair(color_pairs[key], foreground, background)
-    return curses.color_pair(color_pairs[key]) | extra
-
-
-def put(screen, row: int, column: int, text: str, attributes=0):
-    height, width = screen.getmaxyx()
-    if 0 <= row < height and column < width:
-        screen.addnstr(row, column, text, width - column - 1, attributes)
-
-
-def running_lines(session: dict) -> list[str]:
-    """The generated title when there is one, and the prompt in progress while Claude works on it."""
-    title = session.get("title") or ""
-    task = session.get("task") or ""
-    lines = [title or task]
-    if session["state"] == "working" and title and task and task != title:
-        lines.append(task)
-    return lines
-
-
-def draw_running(screen, row: int, session: dict, number: int, is_selected: bool, is_current: bool, width: int):
-    """Accent bar, number, state glyph, project, age; then title (and prompt), model and context."""
-    background = BG_HIGHLIGHT if is_selected else -1
-    state_color = STATE_COLORS.get(session["state"], FG_DARK)
-    lines = running_lines(session)
-    for line in range(row, row + 1 + len(lines)):
-        put(screen, line, 0, " " * (width - 1), style(FG, background))
-        if is_current:
-            put(screen, line, 0, "▎", style(state_color, background, curses.A_BOLD))
-    if number <= 9:
-        put(screen, row, 2, str(number), style(FG_DARK, background, curses.A_DIM))
-    put(screen, row, 4, GLYPHS.get(session["state"], "·"), style(state_color, background, curses.A_BOLD))
-    put(screen, row, 6, session.get("project", "?"), style(project_color(session.get("project", "")), background, curses.A_BOLD))
-    if session.get("pinned"):
-        put(screen, row, 7 + len(session.get("project", "?")), "⚲", style(YELLOW, background))
-    stamp = age(int(session.get("since", time.time())))
-    put(screen, row, max(6, width - 2 - len(stamp)), stamp, style(state_color, background))
-    put(screen, row + 1, 6, fit(lines[0], width - 6 - 2 - 18), style(FG, background))
-    facts = session.get("facts") or {}
-    if facts.get("model"):
-        context = facts.get("context")
-        percent = f"{round(context)}%" if context is not None else ""
-        detail = f"{facts['model']}  {percent}".rstrip()
-        column = max(6, width - 2 - len(detail))
-        put(screen, row + 1, column, facts["model"], style(FG_DARK, background, curses.A_DIM))
-        if percent:
-            put(screen, row + 1, column + len(facts["model"]) + 2, percent, style(context_color(context), background, curses.A_BOLD))
-    if len(lines) > 1:
-        put(screen, row + 2, 6, fit(lines[1], width - 6 - 2), style(FG_DARK, background, curses.A_DIM))
-
-
-def fit(text: str, available: int) -> str:
-    if available <= 1:
-        return ""
-    return text if len(text) <= available else text[:available - 1] + "…"
-
-
-def draw_recent(screen, row: int, session: dict, is_selected: bool, width: int):
-    """One line: resume glyph, title, time. The project is the sub-header above the group."""
-    background = BG_HIGHLIGHT if is_selected else -1
-    put(screen, row, 0, " " * (width - 1), style(FG, background))
-    put(screen, row, 4, GLYPHS["recent"], style(CYAN, background))
-    stamp = clock(int(session.get("since", time.time())))
-    stamp_column = max(6, width - 2 - len(stamp))
-    put(screen, row, 6, fit(session.get("task") or "(untitled)", stamp_column - 6 - 2), style(FG if is_selected else FG_DARK, background))
-    put(screen, row, stamp_column, stamp, style(FG_DARK, background, curses.A_DIM))
-
-
-def draw_help(screen):
-    height, width = screen.getmaxyx()
-    box_height = min(len(HELP_LINES) + 4, height - 2)
-    box_width = min(64, width - 2)
-    top, left = 1, 1
-    for line in range(box_height):
-        put(screen, top + line, left, " " * (box_width - 1), style(FG, BG_HIGHLIGHT))
-    put(screen, top + 1, left + 2, "Keys", style(MAGENTA, BG_HIGHLIGHT, curses.A_BOLD))
-    for index, (key, label) in enumerate(HELP_LINES[:box_height - 4]):
-        put(screen, top + 3 + index, left + 2, key, style(YELLOW, BG_HIGHLIGHT, curses.A_BOLD))
-        put(screen, top + 3 + index, left + 10, label, style(FG_DARK, BG_HIGHLIGHT))
-    put(screen, top + box_height - 1, left + 2, "any key closes", style(FG_DARK, BG_HIGHLIGHT, curses.A_DIM))
-
-
-def draw_footer(screen, row: int, message: str, query: str, filtering: bool):
-    if filtering:
-        put(screen, row, 2, "/", style(BLUE, -1, curses.A_BOLD))
-        put(screen, row, 4, query + "▏", style(FG))
-        return
-    if message:
-        put(screen, row, 2, message, style(YELLOW))
-        return
-    column = 2
-    for key, label in FOOTER_KEYS:
-        put(screen, row, column, key, style(BLUE, -1, curses.A_BOLD))
-        column += len(key) + 1
-        put(screen, row, column, label, style(FG_DARK, -1, curses.A_DIM))
-        column += len(label) + 2
-
-
-def row_height(row: tuple) -> int:
-    kind, payload, _ = row
-    if kind == "header":
-        return 2
-    if kind == "day":
-        return 3  # blank, heading, blank
-    if kind == "project":
-        return 1 if payload[3] else 2  # the first group of a day sits right under the heading
-    if kind == "fold":
-        return 0
-    if payload["state"] == "recent":
-        return 1
-    return 2 + len(running_lines(payload))
-
-
-def first_visible(rows: list, selected_row: int, available: int) -> int:
-    """First row index to draw so the selected card fits."""
-    start = 0
-    while start < selected_row:
-        if sum(row_height(row) for row in rows[start:selected_row + 1]) <= available:
-            break
-        start += 1
-    return start
-
-
-def draw_header(screen, rows: list, width: int):
-    """Line 0: title, the needs-you count, the clock. Line 1: Claude usage. The bar is hidden on
-    this workspace, so what it would have shown lives here."""
-    put(screen, 0, 2, "Claude sessions", style(BLUE, -1, curses.A_BOLD))
-    needing = sum(1 for row in rows if row[0] == "card" and row[1]["state"] == "needs-you")
-    if needing:
-        put(screen, 0, 2 + len("Claude sessions") + 2, f"{needing} need you", style(RED, -1, curses.A_BOLD))
-    clock = time.strftime("%H:%M  %a %d %b")
-    put(screen, 0, max(2, width - 2 - len(clock)), clock, style(FG_DARK))
-    segments = usage_percentages()
-    if segments:
-        labels = [f"{percentage}%" if percentage is not None else "–" for _, percentage in segments]
-        text_width = sum(2 + len(label) for label in labels) + 2 * (len(labels) - 1)
-        column = max(2, width - 2 - text_width)
-        for (glyph, percentage), label in zip(segments, labels):
-            put(screen, 1, column, glyph, style(FG_DARK))
-            put(screen, 1, column + 2, label, style(usage_color(percentage), -1, curses.A_BOLD))
-            column += 2 + len(label) + 2
-    put(screen, 2, 0, "─" * (width - 1), style(BG_HIGHLIGHT))
-
-
-def draw(screen, rows: list, selected: int, current: str, message: str, query: str, filtering: bool, help_open: bool):
-    screen.erase()
-    hit_rows.clear()
-    height, width = screen.getmaxyx()
-    draw_header(screen, rows, width)
-    top, bottom = 4, height - 3  # list area: rows [top, bottom)
-    selected_row = next((index for index, row in enumerate(rows) if row[0] in ("card", "fold") and row[2] == selected), 0)
-    start = first_visible(rows, selected_row, bottom - top - 1)
-    line = top
-    if start > 0:
-        put(screen, line - 1, 2, f"▲ {start} more", style(FG_DARK, -1, curses.A_DIM))
-    drawn = 0
-    for position, row in enumerate(rows[start:], start):
-        kind, payload, index = row
-        if kind == "fold":
-            continue
-        if line + row_height(row) > bottom:
-            break
-        if kind == "header":
-            put(screen, line, 2, payload, style(MAGENTA, -1, curses.A_BOLD))
-        elif kind == "day":
-            put(screen, line + 1, 2, payload, style(MAGENTA, -1, curses.A_BOLD))
-        elif kind == "project":
-            name, folded, count, is_first = payload
-            label_line = line if is_first else line + 1  # a blank line separates project groups
-            fold_index = rows[position + 1][2] if folded and position + 1 < len(rows) and rows[position + 1][0] == "fold" else None
-            is_fold_selected = fold_index is not None and fold_index == selected
-            background = BG_HIGHLIGHT if is_fold_selected else -1
-            if is_fold_selected:
-                put(screen, label_line, 0, " " * (width - 1), style(FG, background))
-            put(screen, label_line, 2, "▸" if folded else "▾", style(FG_DARK, background))
-            put(screen, label_line, 4, name, style(project_color(name), background, curses.A_BOLD))
-            if folded:
-                put(screen, label_line, 5 + len(name), f"{count}", style(FG_DARK, background, curses.A_DIM))
-                hit_rows.append((label_line, label_line, fold_index))
-        elif payload["state"] == "recent":
-            draw_recent(screen, line, payload, index == selected, width)
-            hit_rows.append((line, line, index))
-        else:
-            draw_running(screen, line, payload, index + 1, index == selected, payload["session"] == current, width)
-            hit_rows.append((line, line + len(running_lines(payload)), index))
-        line += row_height(row)
-        drawn += 1
-    remaining = len(rows) - start - drawn
-    if remaining > 0:
-        put(screen, bottom, 2, f"▼ {remaining} more", style(FG_DARK, -1, curses.A_DIM))
-    if not rows:
-        put(screen, 3, 2, "No session." if not query else "Nothing matches.", style(FG_DARK, -1, curses.A_DIM))
-        put(screen, 4, 2, "a  start one in a project", style(FG_DARK, -1, curses.A_DIM))
-    put(screen, height - 2, 0, "─" * (width - 1), style(BG_HIGHLIGHT))
-    draw_footer(screen, height - 1, message, query, filtering)
-    if help_open:
-        draw_help(screen)
-    screen.refresh()
-
-
-def build_rows(history: History, view: ViewState, query: str) -> tuple[list, list[dict]]:
-    """Display rows and the flat list of selectable sessions. Running sessions, pinned first, then
-    past sessions by day, each day grouped by project in order of its latest session. A folded
-    project keeps one invisible selectable row so it can be unfolded from the keyboard."""
-    running = [session for session in running_sessions() if matches(session, query)]
-    history.refresh()
-    history.load_titles([session["session"] for session in running if session["state"] != "unknown"], TITLES_PER_TICK)
-    for session in running:
-        if session["state"] != "unknown":
-            session["facts"] = statusline_facts(session["session"])
-            session["title"] = history.title(session["session"])
-        session["pinned"] = session["session"] in view.pinned
-    running.sort(key=lambda session: not session["pinned"])
-    running_ids = {session["session"] for session in running}
-    # Titles first: they decide what counts as trivial and what the row says.
-    history.load_titles([entry["session"] for entry in history.entries[:RECENT_LIMIT * 2]
-                         if entry["session"] not in running_ids], TITLES_PER_TICK)
-    recent = history.recent(running_ids, query, view)
-
-    rows, selectable = [], []
-    if running:
-        rows.append(("header", f"RUNNING  {len(running)}", None))
-        for session in running:
-            rows.append(("card", session, len(selectable)))
-            selectable.append(session)
-    day = None
-    for bucket, sessions in group_by_day(recent):
-        rows.append(("day", bucket, None))
-        for position, (project, members) in enumerate(group_by_project(sessions)):
-            folded = project in view.folded
-            rows.append(("project", (project, folded, len(members), position == 0), None))
-            if folded:
-                selectable.append({**members[0], "folded": True})
-                rows.append(("fold", None, len(selectable) - 1))
-                continue
-            for session in members:
-                rows.append(("card", session, len(selectable)))
-                selectable.append(session)
-    return rows, selectable
 
 
 def group_by_day(sessions: list[dict]) -> list[tuple[str, list[dict]]]:
@@ -697,6 +1049,193 @@ def group_by_project(sessions: list[dict]) -> list[tuple[str, list[dict]]]:
     return list(groups.items())
 
 
+def session_checkouts(only_session: str = "") -> dict[str, str]:
+    """owner/repo -> local directory, for every running session whose directory has a github.com
+    origin, or for the one session given (the one shown in the session pane) when it is known."""
+    try:
+        with open(SNAPSHOT_PATH) as snapshot:
+            sessions = json.load(snapshot)["sessions"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return {}
+    if only_session:
+        sessions = [session for session in sessions if session.get("session") == only_session] or sessions
+    directories = {session.get("cwd") for session in sessions if session.get("cwd")}
+    checkouts: dict[str, str] = {}
+    for directory in sorted(directories):
+        try:
+            result = subprocess.run(["git", "-C", directory, "remote", "get-url", "origin"], capture_output=True, text=True, timeout=5)
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        match = GITHUB_REMOTE.search(result.stdout.strip()) if result.returncode == 0 else None
+        if match and match.group(1) not in checkouts:
+            checkouts[match.group(1)] = directory
+    return checkouts
+
+
+def session_repositories(only_session: str = "") -> list[str]:
+    return list(session_checkouts(only_session))
+
+
+GH_LIST_FIELDS = "number,title,url,updatedAt,author,isDraft,reviewDecision,statusCheckRollup,headRefName"
+BOT_AUTHORS = {"dependabot", "renovate", "app/dependabot", "app/renovate", "dependabot[bot]", "renovate[bot]"}
+CHECK_FAILED = {"FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE"}
+CHECK_PENDING = {"PENDING", "QUEUED", "IN_PROGRESS", "WAITING", "REQUESTED", "EXPECTED"}
+
+
+def gh_command(repositories: list[str]) -> list[str]:
+    """Every review request, used when no session runs in a GitHub repository."""
+    since = (datetime.now(timezone.utc) - timedelta(days=REVIEWS_RECENT_DAYS)).strftime("%Y-%m-%d")
+    return [*GH_COMMAND, "--review-requested=@me", f"--updated=>={since}", "--", *GH_QUERY]
+
+
+def gh_list_command(repository: str) -> list[str]:
+    """One repository's open pull requests with their CI and review state (gh search has neither)."""
+    return ["gh", "pr", "list", "--repo", repository, "--state", "open", "--limit", "20", "--json", GH_LIST_FIELDS]
+
+
+def ci_state(checks) -> str:
+    """failing, pending, passing, or empty when the pull request has no checks."""
+    if not isinstance(checks, list) or not checks:
+        return ""
+    states = {str(check.get("conclusion") or check.get("state") or check.get("status") or "").upper() for check in checks if isinstance(check, dict)}
+    if states & CHECK_FAILED:
+        return "failing"
+    if states & CHECK_PENDING or "" in states:
+        return "pending"
+    return "passing"
+
+
+def parse_reviews(raw: str, repository: str = "") -> list[dict]:
+    """Rows from gh search prs (repository in each row) or gh pr list (repository given)."""
+    try:
+        rows = json.loads(raw)
+    except ValueError:
+        return []
+    reviews = []
+    for row in rows if isinstance(rows, list) else []:
+        full = repository or (row.get("repository") or {}).get("nameWithOwner") or (row.get("repository") or {}).get("name") or ""
+        reviews.append({
+            "title": row.get("title", ""), "url": row.get("url", ""), "number": row.get("number"),
+            "repository": full.split("/")[-1], "full_repository": full, "author": (row.get("author") or {}).get("login", ""),
+            "updated": row.get("updatedAt", ""), "draft": bool(row.get("isDraft")),
+            "review": row.get("reviewDecision") or "", "ci": ci_state(row.get("statusCheckRollup")),
+        })
+    return reviews
+
+
+def wanted_review(row: dict, since: str) -> bool:
+    """Not a bot bump, and touched in the last REVIEWS_RECENT_DAYS days."""
+    return row["author"] not in BOT_AUTHORS and row["updated"][:10] >= since
+
+
+def fetch_reviews(repositories: list[str]) -> tuple[list[dict], str]:
+    """The pull requests, or an empty list and the reason (gh missing, not logged in, offline)."""
+    if REVIEWS_FIXTURE:
+        with open(REVIEWS_FIXTURE) as fixture:
+            return parse_reviews(fixture.read()), ""
+    commands = [(gh_list_command(repository), repository) for repository in repositories] or [(gh_command([]), "")]
+    rows, errors = [], []
+    for command, repository in commands:
+        try:
+            result = subprocess.run(command, capture_output=True, text=True, timeout=30)
+        except FileNotFoundError:
+            return [], "gh is not installed"
+        except subprocess.TimeoutExpired:
+            errors.append(f"{repository or 'gh'}: timed out")
+            continue
+        if result.returncode != 0:
+            reason = result.stderr.strip().splitlines()
+            errors.append(f"{repository or 'gh'}: {reason[-1] if reason else f'exit {result.returncode}'}")
+            continue
+        rows += parse_reviews(result.stdout, repository)
+    since = (datetime.now(timezone.utc) - timedelta(days=REVIEWS_RECENT_DAYS)).strftime("%Y-%m-%d")
+    rows = sorted((row for row in rows if wanted_review(row, since)), key=lambda row: row["updated"], reverse=True)
+    return rows[:REVIEWS_LIMIT], "; ".join(errors)
+
+
+def review_age(updated: str) -> str:
+    try:
+        moment = datetime.fromisoformat(updated.replace("Z", "+00:00"))
+    except ValueError:
+        return ""
+    seconds = int((datetime.now(timezone.utc) - moment).total_seconds())
+    if seconds < 3600:
+        return f"{max(seconds, 0) // 60}m"
+    if seconds < 86400:
+        return f"{seconds // 3600}h"
+    return f"{seconds // 86400}d"
+
+
+class Reviews:
+    """Pull requests fetched in a thread, so a slow GitHub never freezes the column."""
+
+    def __init__(self):
+        self.rows: list[dict] = []
+        self.error = ""
+        self.fetched_at = 0.0
+        self.loading = False
+        self.lock = threading.Lock()
+        self.repositories: list[str] = []
+        self.checkouts: dict[str, str] = {}  # owner/repo -> a local checkout, for c (review session)
+        self.scope_key = None
+
+    def refresh(self):
+        if self.loading:
+            return
+        self.loading = True
+        threading.Thread(target=self._fetch, args=(list(self.repositories),), daemon=True).start()
+
+    def _fetch(self, repositories: list[str]):
+        rows, error = fetch_reviews(repositories)
+        if error and error != self.error:
+            log_event("WARN", f"pull requests: {error}")
+        with self.lock:
+            self.rows, self.error, self.fetched_at, self.loading = rows, error, time.time(), False
+
+    def tick(self):
+        """Re-read the repositories when the snapshot or the viewed session changes; refetch when
+        they change or age. In a session, only its repository; otherwise every running one."""
+        viewed = current_session()
+        try:
+            mtime = os.stat(SNAPSHOT_PATH).st_mtime
+        except OSError:
+            mtime = None
+        if (mtime, viewed) != self.scope_key:
+            self.scope_key = (mtime, viewed)
+            self.checkouts = session_checkouts()
+            repositories = session_repositories(viewed)
+            if repositories != self.repositories:
+                self.repositories = repositories
+                self.fetched_at = 0
+        if time.time() - self.fetched_at > REVIEWS_REFRESH_S:
+            self.refresh()
+
+    def current(self) -> tuple[list[dict], str, bool]:
+        with self.lock:
+            return list(self.rows), self.error, self.loading
+
+
+def style(foreground: int, background: int = -1, extra: int = 0) -> int:
+    key = (foreground, background)
+    if key not in color_pairs:
+        color_pairs[key] = len(color_pairs) + 1
+        curses.init_pair(color_pairs[key], foreground, background)
+    return curses.color_pair(color_pairs[key]) | extra
+
+
+def put(screen, row: int, column: int, text: str, attributes=0, limit: int | None = None):
+    height, width = screen.getmaxyx()
+    available = (width - column - 1) if limit is None else min(limit, width - column - 1)
+    if 0 <= row < height and column < width and available > 0:
+        screen.addnstr(row, column, text, available, attributes)
+
+
+def fit(text: str, available: int) -> str:
+    if available <= 1:
+        return ""
+    return text if len(text) <= available else text[:available - 1] + "…"
+
+
 def run_outside_curses(screen, action):
     curses.def_prog_mode()
     curses.endwin()
@@ -705,6 +1244,814 @@ def run_outside_curses(screen, action):
     finally:
         curses.reset_prog_mode()
         screen.refresh()
+
+
+def confirm(screen, app, question: str) -> bool:
+    app.message = f"{question}  y/n"
+    app.draw(screen)
+    screen.timeout(-1)
+    answer = screen.getch()
+    screen.timeout(POLL_MS)
+    app.message = ""
+    return answer == ord("y")
+
+
+class Line:
+    """One rendered line of a panel: segments at columns inside the box, an optional right-aligned
+    stamp, and the item it belongs to (None for headings) for selection and clicks."""
+
+    __slots__ = ("segments", "right", "item", "accent")
+
+    def __init__(self, segments=(), right=None, item=None, accent=None):
+        self.segments = list(segments)
+        # Right-aligned parts, two spaces apart: (text, attr) or (text, attr, action), where a click
+        # on that part runs the action (App.handle_mouse). A single (text, attr) pair is accepted.
+        if right and isinstance(right[0], str):
+            right = [right]
+        self.right = [part for part in (right or []) if part and part[0]]
+        self.item = item
+        self.accent = accent  # attr of a bar in the left padding column (the session in the pane)
+
+
+class Panel:
+    key = "?"
+    title = ""
+
+    def __init__(self):
+        self.items: list = []
+        self.lines: list[Line] = []
+        self.selected = 0
+        self.scroll = 0
+
+    def subtitle(self, app) -> str:
+        return ""
+
+    def height(self) -> int | None:
+        """A fixed number of lines, or None to share the column with the other flexible panels."""
+        return None
+
+    def build(self, app):
+        raise NotImplementedError
+
+    def handle(self, key: int, app, screen) -> str:
+        return ""
+
+    def hints(self) -> list[tuple[str, str]]:
+        return []
+
+    def help(self) -> list[tuple[str, str]]:
+        return self.hints()
+
+    def selected_item(self):
+        return self.items[self.selected] if self.items else None
+
+    def move(self, delta: int):
+        self.selected = max(0, min(len(self.items) - 1, self.selected + delta)) if self.items else 0
+
+    def clamp(self):
+        self.selected = max(0, min(len(self.items) - 1, self.selected)) if self.items else 0
+
+    def keep_selected_visible(self, inner_height: int):
+        target = next((index for index, line in enumerate(self.lines) if line.item == self.selected), 0)
+        if target < self.scroll:
+            self.scroll = max(0, target - 1)
+        elif target >= self.scroll + inner_height:
+            self.scroll = target - inner_height + 1
+
+    def draw(self, screen, top: int, height: int, width: int, focused: bool, panel_index: int, app):
+        border = style(BLUE if focused else BG_HIGHLIGHT, -1, curses.A_BOLD if focused else 0)
+        inner_height = height - 2
+        self.keep_selected_visible(inner_height)
+        put(screen, top, 0, "┌" + "─" * (width - 3) + "┐", border)
+        label = f"[{self.key}] {self.title}"
+        put(screen, top, 2, label, style(BLUE if focused else FG_DARK, -1, curses.A_BOLD))
+        subtitle = fit(self.subtitle(app), width - 8 - len(label))
+        if subtitle:
+            put(screen, top, 2 + len(label), f" · {subtitle} ", style(FG_DARK, -1, curses.A_DIM))
+        for offset in range(inner_height):
+            row = top + 1 + offset
+            put(screen, row, 0, "│", border)
+            put(screen, row, width - 2, "│", border)
+            index = self.scroll + offset
+            if index >= len(self.lines):
+                continue
+            line = self.lines[index]
+            highlighted = focused and line.item is not None and line.item == self.selected
+            background = BG_HIGHLIGHT if highlighted else -1
+            if highlighted:
+                put(screen, row, 1, " " * (width - 3), style(FG, background))
+            if line.accent is not None:
+                put(screen, row, 1, "▌", line.accent if not highlighted else (line.accent & ~curses.A_COLOR) | style(BLUE, background))
+            right_width = sum(len(part[0]) for part in line.right) + 2 * (len(line.right) - 1) if line.right else 0
+            for column, text, attr in line.segments:
+                fg_attr = attr if not highlighted else (attr & ~curses.A_COLOR) | style(FG, background)
+                put(screen, row, 2 + column, fit(text, width - 4 - column - (right_width + 2 if right_width else 0)), fg_attr)
+            column = width - 3 - right_width
+            for part in line.right:
+                text, attr = part[0], part[1]
+                put(screen, row, column, text, attr if not highlighted else (attr & ~curses.A_COLOR) | style(FG_DARK, background))
+                if len(part) > 2:
+                    hit_actions[row] = (column, column + len(text), part[2])
+                column += len(text) + 2
+            hit_lines[row] = (panel_index, line.item)
+        put(screen, top + height - 1, 0, "└" + "─" * (width - 3) + "┘", border)
+        hidden_below = len(self.lines) - self.scroll - inner_height
+        if hidden_below > 0:
+            note = f" ▼ {hidden_below} "
+            put(screen, top + height - 1, width - 3 - len(note), note, style(FG_DARK, -1, curses.A_DIM))
+        if self.scroll > 0:
+            note = f" ▲ {self.scroll} "
+            put(screen, top, width - 3 - len(note), note, style(FG_DARK, -1, curses.A_DIM))
+
+
+class StatusPanel(Panel):
+    """Fixed height: one line per usage window, never expands."""
+
+    key = "0"
+    title = "Status"
+
+    def build(self, app):
+        windows = usage_windows()
+        self.items = windows
+        self.clamp()
+        label_width = max((len(window["label"]) for window in windows), default=0)
+        resets = [usage_resets_short(window) for window in windows]
+        resets_width = max((len(text) for text in resets), default=0)
+        # Box edges and padding (4), label, gaps, the value, the right column: the bar takes the rest.
+        bar_width = max(USAGE_BAR_MIN, min(USAGE_BAR_MAX, app.width - 4 - label_width - 2 - 5 - (resets_width + 2 if resets_width else 0)))
+        lines = []
+        for index, (window, reset) in enumerate(zip(windows, resets)):
+            percentage = window["percentage"]
+            color = style(usage_color(percentage), -1, curses.A_BOLD)
+            value = f"{percentage:3d}%" if percentage is not None else "   –"
+            lines.append(Line([(0, window["label"], style(FG)), (label_width + 2, usage_bar(percentage, bar_width), color),
+                               (label_width + 3 + bar_width, value, color)],
+                              right=(reset, style(FG_DARK, -1, curses.A_DIM)), item=index))
+        if not windows:
+            lines.append(Line([(0, "No usage yet (claude-usage.sh has not fetched).", style(FG_DARK, -1, curses.A_DIM))]))
+        totals = app.costs.totals()
+        if any(totals.values()):
+            segments, column = [(0, "At API prices", style(FG))], label_width + 2
+            for label, key in (("today", "today"), ("week", "week"), ("month", "month")):
+                amount = money(totals[key])
+                segments += [(column, label, style(FG_DARK, -1, curses.A_DIM)), (column + len(label) + 1, amount, style(MAGENTA, -1, curses.A_BOLD))]
+                column += len(label) + len(amount) + 3
+            lines.append(Line(segments))
+        if app.costs.error:
+            lines.append(Line([(0, app.costs.error, style(YELLOW))]))
+        self.lines = lines
+
+    def height(self) -> int:
+        return len(self.lines) + 2
+
+    def subtitle(self, app):
+        all_time = app.costs.all_time
+        return f"{usage_plan()} · all time {money(all_time)}".lstrip(" ·") if all_time else usage_plan()
+
+    def hints(self):
+        return [("⏎", "details"), ("r", "refetch")]
+
+    def help(self):
+        return [("⏎", "the full usage report in the session pane"), ("r", "fetch the usage again now")]
+
+    def handle(self, key, app, screen):
+        if key in (KEY_ENTER_LF, KEY_ENTER_CR, curses.KEY_ENTER):
+            return manager("usage")
+        elif key == ord("r"):
+            app.usage.tick(force=True)
+            return "fetching usage …"
+        return ""
+
+
+class SessionsPanel(Panel):
+    key = "1"
+    title = "Sessions"
+
+    def subtitle(self, app):
+        return "waiting on you · f shows all" if app.focus_waiting else ""
+
+    def build(self, app):
+        running = [session for session in running_sessions() if matches(session, app.query)]
+        if app.focus_waiting:
+            running = [session for session in running if session["state"] in FOCUS_STATES]
+        app.history.load_titles([session["session"] for session in running if session["state"] != "unknown"], TITLES_PER_TICK)
+        for session in running:
+            if session["state"] != "unknown":
+                session["facts"] = statusline_facts(session["session"])
+                session["title"] = app.history.title(session["session"])
+            session["pinned"] = session["session"] in app.view.pinned
+        # A card keeps its place: pinned first, then in the order the sessions started. Urgency
+        # shows in the glyph and the header count, and n jumps to the next one needing you.
+        running.sort(key=lambda session: (not session["pinned"], session.get("started", session.get("since", 0)), session["session"]))
+        self.items = running
+        self.clamp()
+        current = current_session()
+        lines = []
+        if time.time() - app.restore_checked > 30:
+            app.restore_checked = time.time()
+            app.restore = restore_offer(app.view, {session["session"] for session in running})
+        if app.restore:
+            names = ", ".join(row.get("project", "?") for row in app.restore)
+            lines.append(Line([(0, f"↺ {len(app.restore)} running before the restart: {names}", style(CYAN, -1, curses.A_BOLD))]))
+            lines.append(Line([(2, "B brings them back, one after the other", style(FG_DARK, -1, curses.A_DIM))]))
+            lines.append(Line())
+        for index, session in enumerate(running):
+            state_color = style(STATE_COLORS.get(session["state"], FG_DARK), -1, curses.A_BOLD)
+            accent = state_color if session["session"] == current else None
+            segments = [(0, GLYPHS.get(session["state"], "·"), state_color),
+                        (2, session.get("project", "?"), style(project_color(session.get("project", "")), -1, curses.A_BOLD))]
+            branch = git_branch(session.get("cwd", ""))
+            if branch:
+                segments.append((4 + len(session.get("project", "?")), f"⎇ {branch}", style(FG_DARK, -1, curses.A_DIM)))
+            facts = session.get("facts") or {}
+            context = facts.get("context")
+            badges = [part for part, shown in (
+                (("/compact", style(YELLOW, -1, curses.A_BOLD)), isinstance(context, (int, float)) and context >= CONTEXT_COMPACT_AT),
+                (("⬆ update", style(GREEN, -1, curses.A_BOLD)), session.get("update")),
+                (("⇅ remote", style(CYAN, -1, curses.A_BOLD)), facts.get("remote")),
+                (("⚲", style(YELLOW)), session.get("pinned"))) if shown]
+            lines.append(Line(segments, right=badges + [(age(int(session.get("since", time.time()))), state_color)], item=index, accent=accent))
+            title = session.get("title") or visible_task(session) or ""
+            right = []
+            if session["state"] != "unknown":
+                context = facts.get("context")
+                right = [(facts.get("model") or "", style(FG_DARK, -1, curses.A_DIM)),
+                         (f"{facts.get('effort') or 'effort'} ▾", style(CYAN), "effort"),
+                         (f"{round(context)}%" if context is not None else "", style(context_color(context), -1, curses.A_BOLD))]
+            lines.append(Line([(2, title, style(FG))], right=right, item=index, accent=accent))
+            task = visible_task(session)
+            asks = waiting_request(session)
+            if asks:
+                lines.append(Line([(2, "⚠ " + asks, style(RED))], item=index, accent=accent))
+            elif session["state"] == "waiting" and session.get("outcome"):
+                lines.append(Line([(2, "✓ " + session["outcome"], style(GREEN, -1, curses.A_DIM))], item=index, accent=accent))
+            elif session["state"] == "working" and session.get("title") and task and task != session["title"]:
+                lines.append(Line([(2, task, style(FG_DARK, -1, curses.A_DIM))], item=index, accent=accent))
+            lines.append(Line())
+        if not running:
+            empty = "Nothing waits on you." if app.focus_waiting else "Nothing matches." if app.query else "No running session."
+            lines.append(Line([(0, empty, style(FG_DARK, -1, curses.A_DIM))]))
+            lines.append(Line([(0, "a  start one in a project", style(FG_DARK, -1, curses.A_DIM))]))
+        self.lines = lines
+
+    def hints(self):
+        selected = self.selected_item() or {}
+        if selected.get("state") == "needs-you" and waiting_request(selected):
+            return [("⏎", "open"), ("Y", "approve"), ("N", "decline"), ("n", "next"), ("g", "git"), ("z", "zoom")]
+        context = (selected.get("facts") or {}).get("context")
+        if isinstance(context, (int, float)) and context >= CONTEXT_COMPACT_AT:
+            return [("⏎", "open"), ("C", "/compact"), ("e", "effort"), ("g", "git"), ("z", "zoom"), ("x", "exit")]
+        if selected.get("update"):
+            return [("⏎", "open"), ("r", "restart to apply the update"), ("e", "effort"), ("g", "git"), ("x", "exit")]
+        return [("⏎", "open"), ("n", "peek"), ("e", "effort"), ("g", "git"), ("z", "zoom"), ("x", "exit"), ("r", "restart")]
+
+    def help(self):
+        return [("⏎", "show the session and move the cursor into it"), ("n", "peek at the next session needing you"),
+                ("x", "exit the session: Ctrl-C twice, then killed if it lingers"), ("r", "restart in place: same conversation, new process"),
+                ("R", "toggle Remote Control (phone / claude.ai/code)"), ("p", "pin on top"), ("e", "effort level: pick one, the session restarts on it (or click the level on the card)"),
+                ("g", "lazygit on the session's repository, in a popup (q closes it)"),
+                ("C", "/compact in the session, when it waits (the /compact badge suggests it)"),
+                ("B", "after a reboot: bring back the sessions that were running"),
+                ("z", "the session over the whole window; Ctrl+Tab comes back"),
+                ("f", "focus: only the sessions waiting on you; f again shows all"),
+                ("Y N", "approve or decline the permission a card asks for, after a y/n confirmation"),
+                ("m", "a message for the session without opening it: sent at its prompt, queued while it works"),
+                ("l →", "cursor into the session")]
+
+    def handle(self, key, app, screen):
+        session = self.selected_item()
+        if key in (KEY_ENTER_LF, KEY_ENTER_CR, curses.KEY_ENTER) and session:
+            return manager("open", session["session"])
+        if key in (ord("l"), curses.KEY_RIGHT):
+            focus_viewer()
+        elif key == ord("n"):
+            index = next_attention_index(self.items, self.selected)
+            if index is None:
+                return "nothing needs you"
+            self.selected = index
+            return manager("view", self.items[index]["session"])
+        elif key == ord("p") and session and session["state"] != "unknown":
+            app.view.toggle(app.view.pinned, session["session"])
+        elif key == ord("R") and session and session["state"] != "unknown":
+            manager_in_background("remote", session["session"])
+            return f"toggling remote control for {session['project']} …"
+        elif key == ord("r") and session and session["state"] != "unknown":
+            if confirm(screen, app, f"restart {session['project']}? same conversation, new process"):
+                manager_in_background("restart", session["session"])
+                return f"restarting {session['project']} …"
+        elif key == ord("e") and session:
+            return app.open_effort_menu(session)
+        elif key == ord("B") and app.restore:
+            pairs = [value for row in app.restore for value in (row["cwd"], row["session"])]
+            manager_in_background("restore", *pairs)
+            app.view.restored_boot = boot_time()
+            app.view.save()
+            count, app.restore = len(app.restore), []
+            return f"bringing back {count} session{'s' if count != 1 else ''} …"
+        elif key == ord("C") and session and session["state"] != "unknown":
+            error = manager("compact", session["session"])
+            return error or f"/compact sent to {session['project']}"
+        elif key == ord("z"):
+            return manager("zoom")
+        elif key in (ord("Y"), ord("N")) and session and session["state"] == "needs-you":
+            approve = key == ord("Y")
+            asks = waiting_request(session) or "its request"
+            if not confirm(screen, app, f"{'approve' if approve else 'decline'} {session['project']}: {asks[:60]}?"):
+                return ""
+            error = manager("answer", session["session"], "yes" if approve else "no")
+            return error or f"{'approved' if approve else 'declined'} for {session['project']}"
+        elif key == ord("m") and session and session["state"] != "unknown":
+            message = run_outside_curses(screen, lambda: input_line(f"message for {session['project']} (Enter sends, empty cancels)> "))
+            if not message:
+                return ""
+            error = manager("say", session["session"], message)
+            return error or (f"sent to {session['project']}" if session["state"] != "working" else f"queued for {session['project']}")
+        elif key == ord("f"):
+            app.focus_waiting = not app.focus_waiting
+            return "only the sessions waiting on you (f shows all)" if app.focus_waiting else ""
+        elif key == ord("g") and session:
+            if not session.get("cwd"):
+                return "no directory known for this session"
+            manager_in_background("git", session["cwd"])
+        elif key == ord("x") and session:
+            if confirm(screen, app, f"exit {session['project']}?"):
+                return kill_session(session)
+        return ""
+
+
+class HistoryPanel(Panel):
+    key = "2"
+    title = "History"
+
+    def build(self, app):
+        history, view = app.history, app.view
+        running_ids = {session["session"] for session in app.sessions}
+        history.refresh()
+        history.load_titles([entry["session"] for entry in history.entries[:RECENT_LIMIT * 2]
+                             if entry["session"] not in running_ids], TITLES_PER_TICK)
+        recent = history.recent(running_ids, app.query, view)
+        items, lines = [], []
+        for bucket, sessions in group_by_day(recent):
+            if lines:
+                lines.append(Line())
+            lines.append(Line([(0, bucket, style(MAGENTA, -1, curses.A_BOLD))]))
+            for position, (project, members) in enumerate(group_by_project(sessions)):
+                folded = project in view.folded
+                if position:
+                    lines.append(Line())
+                segments = [(0, "▸" if folded else "▾", style(FG_DARK)), (2, project, style(project_color(project), -1, curses.A_BOLD))]
+                if folded:
+                    segments.append((3 + len(project), str(len(members)), style(FG_DARK, -1, curses.A_DIM)))
+                    items.append({**members[0], "folded": True})
+                    lines.append(Line(segments, item=len(items) - 1))
+                    continue
+                lines.append(Line(segments))
+                for session in members:
+                    items.append(session)
+                    lines.append(Line([(2, GLYPHS["recent"], style(CYAN)), (4, session.get("task") or "(untitled)", style(FG_DARK))],
+                                      right=(clock(int(session.get("since", time.time()))), style(FG_DARK, -1, curses.A_DIM)), item=len(items) - 1))
+        if not recent:
+            lines.append(Line([(0, "No past session." if not app.query else "Nothing matches.", style(FG_DARK, -1, curses.A_DIM))]))
+        self.items, self.lines = items, lines
+        self.clamp()
+
+    def subtitle(self, app):
+        return "trivial shown" if app.view.show_trivial else ""
+
+    def hints(self):
+        return [("⏎", "resume"), ("x", "hide"), ("u", "undo"), ("h", "fold"), (".", "trivial")]
+
+    def help(self):
+        return [("⏎", "resume the conversation in the session pane (unfold a folded project)"),
+                ("x", "hide the session from the list"), ("u", "bring back the last hidden one"),
+                ("h ←", "fold or unfold the project"), (".", "show or hide trivial sessions")]
+
+    def handle(self, key, app, screen):
+        session = self.selected_item()
+        if key in (KEY_ENTER_LF, KEY_ENTER_CR, curses.KEY_ENTER) and session:
+            return activate(session, app.view)
+        if key in (ord("h"), curses.KEY_LEFT) and session:
+            app.view.toggle(app.view.folded, session["project"])
+        elif key == ord("u"):
+            return "unhid the last hidden session" if app.view.unhide_last() else "nothing hidden"
+        elif key == ord("."):
+            app.view.show_trivial = not app.view.show_trivial
+            app.view.save()
+        elif key == ord("x") and session:
+            if session.get("folded"):
+                return "unfold the project first (h)"
+            app.view.hide(session["session"])
+            return f"hidden: {(session.get('task') or '')[:40]}  (u undoes)"
+        return ""
+
+
+class ReviewsPanel(Panel):
+    key = "3"
+    title = "Pull requests"
+
+    def build(self, app):
+        rows, error, loading = app.reviews.current()
+        self.items = [row for row in rows if matches({"project": row["repository"], "task": row["title"]}, app.query)]
+        self.clamp()
+        lines = []
+        if error:
+            lines.append(Line([(0, error, style(YELLOW))]))
+        elif not self.items and not loading:
+            lines.append(Line([(0, "No open pull request here.", style(FG_DARK, -1, curses.A_DIM))]))
+        ci_marks = {"failing": ("✗", RED), "pending": ("●", YELLOW), "passing": ("✓", GREEN)}
+        reviews = {"APPROVED": ("approved", GREEN), "CHANGES_REQUESTED": ("changes", RED), "REVIEW_REQUIRED": ("review", YELLOW)}
+        for index, row in enumerate(self.items):
+            label = f"{row['repository']}#{row['number']}"
+            right = []
+            if row.get("draft"):
+                right.append(("draft", style(FG_DARK, -1, curses.A_DIM)))
+            if row.get("review") in reviews:
+                text, color = reviews[row["review"]]
+                right.append((text, style(color)))
+            if row.get("ci") in ci_marks:
+                glyph, color = ci_marks[row["ci"]]
+                right.append((glyph, style(color, -1, curses.A_BOLD)))
+            right.append((review_age(row["updated"]), style(FG_DARK, -1, curses.A_DIM)))
+            lines.append(Line([(0, label, style(MAGENTA, -1, curses.A_BOLD)), (1 + len(label), row["title"], style(FG_DARK))],
+                              right=right, item=index))
+        self.lines = lines
+
+    def subtitle(self, app):
+        scope = ", ".join(repository.split("/")[-1] for repository in app.reviews.repositories) or "awaiting my review"
+        return scope + ("  ⟳" if app.reviews.loading else "")
+
+    def hints(self):
+        return [("⏎", "open"), ("c", "Claude review"), ("P", "my reviews"), ("r", "refresh")]
+
+    def help(self):
+        return [("⏎", "open the pull request in the pull requests window"),
+                ("c", "a Claude session reviewing it, in its own clone of the repository"),
+                ("P", "the pull requests window on my review requests"), ("r", "refresh now"),
+                ("✓ ● ✗", "CI passing, running, failing"), ("approved", "review state: approved, changes (requested), review (required)")]
+
+    def handle(self, key, app, screen):
+        row = self.selected_item()
+        if key in (KEY_ENTER_LF, KEY_ENTER_CR, curses.KEY_ENTER) and row:
+            return open_in_scratchpad("prs", row["url"])
+        if key == ord("c") and row:
+            checkout = app.reviews.checkouts.get(row.get("full_repository", ""))
+            if not checkout:
+                return f"no local checkout of {row['repository']}: start a session there first"
+            manager_in_background("review", checkout, str(row["number"]))
+            return f"preparing a review of {row['repository']}#{row['number']} …"
+        elif key == ord("r"):
+            app.reviews.fetched_at = 0
+            return "refreshing pull requests …"
+        return ""
+
+
+class EffortMenu:
+    """The effort picker over a session card: the five levels, the current one marked. Choosing a
+    different level restarts the session on it (claude-sessions restart <id> <level>)."""
+
+    WIDTH = 30
+
+    def __init__(self, session: dict, anchor_row: int):
+        self.session = session
+        self.anchor_row = anchor_row
+        self.current = (session.get("facts") or {}).get("effort") or ""
+        self.selected = EFFORT_LEVELS.index(self.current) if self.current in EFFORT_LEVELS else EFFORT_LEVELS.index("high")
+        self.rows: dict[int, int] = {}  # screen row -> level index, from the last draw
+        self.box: tuple[int, int, int, int] = (0, 0, 0, 0)  # top, left, bottom, right
+
+    def draw(self, screen):
+        height, width = screen.getmaxyx()
+        box_height = len(EFFORT_LEVELS) + 3
+        top = self.anchor_row + 1 if self.anchor_row + 1 + box_height < height - 1 else max(1, self.anchor_row - box_height)
+        left = max(1, width - 3 - self.WIDTH)
+        right = left + self.WIDTH - 1
+        self.box = (top, left, top + box_height - 1, right)
+        frame, ground = style(BLUE, BG_HIGHLIGHT, curses.A_BOLD), style(FG, BG_HIGHLIGHT)
+        put(screen, top, left, "╭" + "─" * (self.WIDTH - 2) + "╮", frame)
+        put(screen, top, left + 2, f" Effort · {self.session.get('project', '?')} "[:self.WIDTH - 4], frame)
+        self.rows.clear()
+        for index, level in enumerate(EFFORT_LEVELS):
+            row = top + 1 + index
+            chosen = index == self.selected
+            put(screen, row, left, "│" + " " * (self.WIDTH - 2) + "│", frame)
+            put(screen, row, left + 1, " " * (self.WIDTH - 2), style(BG_HIGHLIGHT, BLUE) if chosen else ground)
+            marker = "●" if level == self.current else " "
+            text_style = style(BG_HIGHLIGHT, BLUE, curses.A_BOLD) if chosen else (style(GREEN, BG_HIGHLIGHT, curses.A_BOLD) if level == self.current else ground)
+            put(screen, row, left + 2, f"{marker} {level}", text_style)
+            if level == self.current:
+                put(screen, row, right - 9, "current", style(BG_HIGHLIGHT, BLUE) if chosen else style(FG_DARK, BG_HIGHLIGHT))
+            self.rows[row] = index
+        note_row = top + 1 + len(EFFORT_LEVELS)
+        put(screen, note_row, left, "│" + " " * (self.WIDTH - 2) + "│", frame)
+        put(screen, note_row, left + 2, "⏎ restarts on it  esc", style(FG_DARK, BG_HIGHLIGHT, curses.A_DIM))
+        put(screen, note_row + 1, left, "╰" + "─" * (self.WIDTH - 2) + "╯", frame)
+
+    def contains(self, x: int, y: int) -> bool:
+        top, left, bottom, right = self.box
+        return top <= y <= bottom and left <= x <= right
+
+
+PANEL_NAMES = ("Status", "Sessions", "History", "Pull requests")
+GLOBAL_HINTS = [("⇥", "panel"), ("/", "filter"), (":", "actions"), ("a", "new"), ("?", "help"), ("q", "close")]
+GLOBAL_HELP = [("0-3", "focus a panel"), ("^1 ^2 ^3", "focus a panel from inside the session (tmux)"), ("⇥ ⇧⇥", "next / previous panel"), ("j/k ↑↓", "move inside the panel"),
+               ("/", "filter the focused panel, Esc clears"), (":", "every action, searchable"), ("a", "new session in a project"),
+               ("A", "new session on its own branch, in a separate clone (parallel work on one repository)"),
+               ("D", "the digest: yesterday, today, plan usage, who waits, pull requests (also once a day by itself)"),
+               ("P W G", "windows on top: pull requests, Claude on the web, greyproxy (also Super+Ctrl+P/A/G)"),
+               ("≈ $", "today's Claude Code replies on this machine at API prices (the plan is flat); week and month in Status"),
+               ("^⇥", "cursor between the column and the session (tmux)"), ("q ^C", "close the manager window; sessions keep running")]
+LEGEND = [("●", "working"), ("○", "waiting for you"), ("!", "needs you: permission or question"), ("·", "running, state unknown"),
+          ("↻", "past session"), ("▌", "shown in the session pane"), ("⚲", "pinned"), ("⇅", "remote controlled"),
+          ("⬆", "Claude updated itself: r restarts on the new version"),
+          ("/compact", "context over 90%: /compact in the session before it gets slow and costly"), ("high ▾", "effort level: click to change it")]
+
+
+def palette_entries(app) -> list[tuple[int | None, str, str]]:
+    """Every action a single key runs, from the help tables: (panel index or None for anywhere,
+    key, description). Keys that are not one press (j/k ↑↓, ^⇥, 0-3) stay out."""
+    entries = [(None, key, label) for key, label in GLOBAL_HELP if len(key) == 1 and key not in ":?"]
+    for index, panel in enumerate(app.panels):
+        entries += [(index, key, label) for key, label in panel.help() if len(key) == 1 or key == "⏎"]
+    return entries
+
+
+def pick_action(entries: list[tuple[int | None, str, str]]):
+    """fzf over the actions; the chosen entry, or None."""
+    lines = [f"{number}\t{'everywhere' if panel is None else PANEL_NAMES[panel]:<13} {key:<2} {label}"
+             for number, (panel, key, label) in enumerate(entries)]
+    result = subprocess.run(["fzf", "--prompt", "action> ", "--height", "100%", "--delimiter", "\t", "--with-nth", "2..", "--no-sort"],
+                            input="\n".join(lines), capture_output=True, text=True)
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+    return entries[int(result.stdout.split("\t", 1)[0])]
+
+
+def run_palette_entry(app, entry, screen) -> str:
+    """Focus the action's panel and press its key, as if typed there."""
+    panel, key, _ = entry
+    if panel is not None:
+        app.focus = panel
+    app.handle(KEY_ENTER_LF if key == "⏎" else ord(key), screen)
+    return app.message
+
+
+class App:
+    def __init__(self):
+        self.history = History()
+        self.view = ViewState()
+        self.usage = UsageRefresher()
+        self.alerts = BudgetAlerts()
+        self.costs = TranscriptCosts()
+        self.reviews = Reviews()
+        self.panels: list[Panel] = [StatusPanel(), SessionsPanel(), HistoryPanel(), ReviewsPanel()]
+        self.focus = 1
+        self.query = ""
+        self.filtering = False
+        self.help_open = False
+        self.message = ""
+        self.labelled = ("", "")  # (session, state) last pushed with label-state
+        self.menu: EffortMenu | None = None
+        self.restore: list[dict] = []  # sessions running before the reboot (restore_offer)
+        self.focus_waiting = False  # f: only the sessions waiting on you
+        self.restore_checked = 0.0
+        self.width = DEFAULT_COLUMN_WIDTH
+
+    @property
+    def panel(self) -> Panel:
+        return self.panels[self.focus]
+
+    @property
+    def sessions(self) -> list[dict]:
+        return self.panels[1].items
+
+    def tick(self):
+        self.usage.tick()
+        self.alerts.check(usage_windows())
+        self.costs.tick()
+        self.reviews.tick()
+        for panel in self.panels:
+            panel.build(self)
+        self.push_viewed_state()
+
+    def push_viewed_state(self):
+        """The viewed session's state goes to the manager (its title line's colour) when it changes."""
+        viewed = current_session()
+        state = next((session["state"] for session in self.sessions if session["session"] == viewed), "")
+        if (viewed, state) == self.labelled:
+            return
+        self.labelled = (viewed, state)
+        if viewed and state:
+            manager_in_background("label-state", state)
+
+    def layout(self, height: int) -> list[int]:
+        """Fixed panels keep their size; of the flexible ones, the focused takes half the rest."""
+        heights = [panel.height() for panel in self.panels]
+        flexible = [index for index, fixed in enumerate(heights) if fixed is None]
+        available = height - HEADER_LINES - 1 - sum(fixed for fixed in heights if fixed is not None)
+        expanded = self.focus if self.focus in flexible else flexible[0]
+        others = max(MIN_PANEL_LINES, (available - max(MIN_PANEL_LINES, available // 2)) // max(1, len(flexible) - 1))
+        for index in flexible:
+            heights[index] = others
+        heights[expanded] = max(MIN_PANEL_LINES, available - others * (len(flexible) - 1))
+        return heights
+
+    def draw(self, screen):
+        screen.erase()
+        hit_lines.clear()
+        hit_actions.clear()
+        height, width = screen.getmaxyx()
+        self.width = width
+        self.draw_header(screen, width)
+        top = HEADER_LINES
+        for index, (panel, panel_height) in enumerate(zip(self.panels, self.layout(height))):
+            panel.draw(screen, top, panel_height, width, index == self.focus, index, self)
+            top += panel_height
+        self.draw_footer(screen, height - 1, width)
+        if self.menu:
+            self.menu.draw(screen)
+        if self.help_open:
+            self.draw_help(screen)
+        screen.refresh()
+
+    def open_effort_menu(self, session: dict, anchor_row: int | None = None) -> str:
+        if session["state"] == "unknown":
+            return "no effort for a session the daemon does not know"
+        if anchor_row is None:
+            # Under the card's last line, so the card and its effort stay readable above the menu.
+            anchor_row = max((row for row, (panel, item) in hit_lines.items() if panel == 1 and item == self.panels[1].selected), default=HEADER_LINES)
+        self.menu = EffortMenu(session, anchor_row)
+        return ""
+
+    def choose_effort(self, screen) -> str:
+        menu, self.menu = self.menu, None
+        level = EFFORT_LEVELS[menu.selected]
+        session = menu.session
+        if level == menu.current:
+            return f"{session['project']} already runs on {level}"
+        if session["state"] == "working" and not confirm(screen, self, f"{session['project']} is working: restart it on {level}?"):
+            return ""
+        manager_in_background("restart", session["session"], level)
+        return f"restarting {session['project']} on {level} effort …"
+
+    def handle_menu(self, key: int, screen) -> str:
+        """Keys and clicks while the effort menu is open; anything else closes it."""
+        if key == curses.KEY_MOUSE:
+            try:
+                _, x, y, _, _ = curses.getmouse()
+            except curses.error:
+                return ""
+            if y in self.menu.rows:
+                self.menu.selected = self.menu.rows[y]
+                return self.choose_effort(screen)
+            if not self.menu.contains(x, y):
+                self.menu = None
+            return ""
+        if key in (ord("j"), curses.KEY_DOWN):
+            self.menu.selected = min(len(EFFORT_LEVELS) - 1, self.menu.selected + 1)
+        elif key in (ord("k"), curses.KEY_UP):
+            self.menu.selected = max(0, self.menu.selected - 1)
+        elif ord("1") <= key < ord("1") + len(EFFORT_LEVELS):
+            self.menu.selected = key - ord("1")
+            return self.choose_effort(screen)
+        elif key in (KEY_ENTER_LF, KEY_ENTER_CR, curses.KEY_ENTER):
+            return self.choose_effort(screen)
+        else:
+            self.menu = None
+        return ""
+
+    def draw_header(self, screen, width: int):
+        """Title, the needs-you count and the clock (the bar is hidden on this workspace)."""
+        put(screen, 0, 2, "Claude sessions", style(BLUE, -1, curses.A_BOLD))
+        needing = sum(1 for session in self.sessions if session["state"] == "needs-you")
+        if needing:
+            put(screen, 0, 2 + len("Claude sessions") + 2, f"{needing} need you", style(RED, -1, curses.A_BOLD))
+        stamp = time.strftime("%H:%M  %a %d %b")
+        put(screen, 0, max(2, width - 2 - len(stamp)), stamp, style(FG_DARK))
+        cost = self.costs.totals()["today"]
+        if cost:
+            amount, label = f"≈ {money(cost)}", " today"
+            column = width - 2 - len(stamp) - 3 - len(amount) - len(label)
+            if column > 2 + len("Claude sessions") + (12 if needing else 0) + 2:
+                put(screen, 0, column, amount, style(MAGENTA, -1, curses.A_BOLD))
+                put(screen, 0, column + len(amount), label, style(FG_DARK, -1, curses.A_DIM))
+
+    def draw_footer(self, screen, row: int, width: int):
+        if self.filtering:
+            put(screen, row, 2, "/", style(BLUE, -1, curses.A_BOLD))
+            put(screen, row, 4, self.query + "▏", style(FG))
+            return
+        if self.message:
+            put(screen, row, 2, self.message, style(YELLOW))
+            return
+        column = 2
+        for key, label in self.panel.hints() + GLOBAL_HINTS:
+            if column + len(key) + len(label) + 3 > width:
+                break
+            put(screen, row, column, key, style(BLUE, -1, curses.A_BOLD))
+            column += len(key) + 1
+            put(screen, row, column, label, style(FG_DARK, -1, curses.A_DIM))
+            column += len(label) + 2
+
+    def draw_help(self, screen):
+        height, width = screen.getmaxyx()
+        sections = [("Everywhere", GLOBAL_HELP)] + [(f"[{panel.key}] {panel.title}", panel.help()) for panel in self.panels] + [("Glyphs", LEGEND)]
+        rows = []
+        for title, entries in sections:
+            rows.append((title, None))
+            rows.extend(entries)
+            rows.append(("", ""))
+        box_top, box_height = HEADER_LINES, height - HEADER_LINES - 1
+        for line in range(box_height):
+            put(screen, box_top + line, 0, " " * (width - 1), style(FG, BG_HIGHLIGHT))
+        for index, (key, label) in enumerate(rows[:box_height - 2]):
+            if label is None:
+                put(screen, box_top + 1 + index, 2, key, style(MAGENTA, BG_HIGHLIGHT, curses.A_BOLD))
+            else:
+                put(screen, box_top + 1 + index, 2, key, style(YELLOW, BG_HIGHLIGHT, curses.A_BOLD))
+                put(screen, box_top + 1 + index, 11, label, style(FG_DARK, BG_HIGHLIGHT))
+        put(screen, box_top + box_height - 1, 2, "any key closes", style(FG_DARK, BG_HIGHLIGHT, curses.A_DIM))
+
+    def handle_mouse(self):
+        try:
+            _, x, y, _, state = curses.getmouse()
+        except curses.error:
+            return
+        hit = hit_lines.get(y)
+        if hit is None:
+            return
+        panel_index, item = hit
+        self.focus = panel_index
+        if item is not None:
+            self.panel.selected = item
+            action = hit_actions.get(y)
+            if action and action[0] <= x < action[1] and action[2] == "effort":
+                self.message = self.open_effort_menu(self.panel.selected_item(), y)
+            elif state & curses.BUTTON1_DOUBLE_CLICKED:
+                self.message = self.panel.handle(KEY_ENTER_LF, self, None)
+
+    def handle(self, key: int, screen):
+        self.message = ""
+        if self.menu:
+            self.message = self.handle_menu(key, screen)
+            return
+        if self.help_open:
+            self.help_open = False
+            return
+        if curses.KEY_F1 <= key < curses.KEY_F1 + len(self.panels) - 1:
+            self.focus = key - curses.KEY_F1 + 1  # F1..F3 from the tmux Ctrl+digit binds, even mid-filter
+            self.filtering = False
+            return
+        if self.filtering:
+            if key == KEY_ESCAPE:
+                self.query, self.filtering = "", False
+            elif key in (KEY_ENTER_LF, KEY_ENTER_CR, curses.KEY_ENTER):
+                self.filtering = False
+            elif key in (curses.KEY_BACKSPACE, 127, 8):
+                self.query = self.query[:-1]
+            elif 32 <= key < 127:
+                self.query += chr(key)
+            return
+        if key == curses.KEY_MOUSE:
+            self.handle_mouse()
+        elif ord("0") <= key < ord("0") + len(self.panels):
+            self.focus = key - ord("0")
+        elif key == KEY_TAB:
+            self.focus = (self.focus + 1) % len(self.panels)
+        elif key == curses.KEY_BTAB:
+            self.focus = (self.focus - 1) % len(self.panels)
+        elif key in (ord("j"), curses.KEY_DOWN):
+            self.panel.move(1)
+        elif key in (ord("k"), curses.KEY_UP):
+            self.panel.move(-1)
+        elif key == ord("/"):
+            self.filtering = True
+        elif key == KEY_ESCAPE:
+            self.query = ""
+        elif key == ord("?"):
+            self.help_open = True
+        elif key == ord(":"):
+            choice = run_outside_curses(screen, lambda: pick_action(palette_entries(self)))
+            if choice:
+                self.message = run_palette_entry(self, choice, screen)
+        elif key == ord("a"):
+            directory = run_outside_curses(screen, pick_project)
+            if directory:
+                self.message = manager("new", directory)
+        elif key == ord("D"):
+            self.message = manager("digest")
+        elif key == ord("A"):
+            directory = run_outside_curses(screen, pick_project)
+            branch = run_outside_curses(screen, lambda: input_line("branch for the parallel session> ")) if directory else ""
+            if directory and branch:
+                manager_in_background("parallel", directory, branch)
+                self.message = f"cloning {os.path.basename(directory)} for {branch} …"
+        elif key in (ord("P"), ord("W"), ord("G")):
+            self.message = open_in_scratchpad({ord("P"): "prs", ord("W"): "claude", ord("G"): "greyproxy"}[key])
+        elif key in (ord("q"), KEY_CTRL_C):
+            if confirm(screen, self, "close the manager window? sessions keep running"):
+                subprocess.run(["tmux", "detach-client"])
+        else:
+            self.message = self.panel.handle(key, self, screen)
 
 
 def activate(session: dict, view: ViewState) -> str:
@@ -716,141 +2063,205 @@ def activate(session: dict, view: ViewState) -> str:
     return manager("open", session["session"])
 
 
-def clicked_index(y: int) -> int | None:
-    for first, last, index in hit_rows:
-        if first <= y <= last:
-            return index
-    return None
+def usage_report_lines(columns: int) -> list[str]:
+    """The usage page as text with ANSI colours, for the session pane (claude-sessions usage)."""
+    bold, dim, reset = "\033[1m", "\033[2m", "\033[0m"
+    ansi = {RED: "\033[31m", YELLOW: "\033[33m", MAGENTA: "\033[35m", FG_DARK: "\033[2m"}
+    width = max(10, min(USAGE_REPORT_BAR_WIDTH, columns - 30))
+    lines = ["", f"  {bold}\033[34mClaude usage{reset}  {dim}{usage_plan() or 'plan unknown'}{reset}", ""]
+    windows = usage_windows()
+    if not windows:
+        lines.append(f"  {dim}No usage fetched yet. r in the Status panel fetches it.{reset}")
+    for window in windows:
+        percentage = window["percentage"]
+        colour = ansi[usage_color(percentage)]
+        filled = 0 if percentage is None else min(width, round(percentage / 100 * width))
+        bar = colour + "█" * filled + dim + "░" * (width - filled) + reset
+        value = f"{percentage:3d}%" if percentage is not None else "   –"
+        heading = f"  {bold}{window['label']}{reset}" + (f"  {dim}{window['note']}{reset}" if window.get("note") else "")
+        lines += [heading, f"  {bar}  {colour}{bold}{value}{reset}  {dim}{usage_resets_in(window)}{reset}", ""]
+    breakdown = usage_breakdown()
+    if breakdown:
+        lines += [f"  {bold}This week by product{reset}", "  " + "   ".join(f"{name} {dim}{percent}%{reset}" for name, percent in breakdown), ""]
+    credits = usage_credits()
+    if credits:
+        lines += [f"  {bold}Usage credits{reset}  {dim}{credits}{reset}", ""]
+    try:
+        fetched = int(time.time() - os.stat(USAGE_CACHE_PATH).st_mtime)
+        lines.append(f"  {dim}Fetched {age(int(time.time()) - fetched)} ago, refreshed every {USAGE_REFRESH_S // 60} min. Pick a session to replace this.{reset}")
+    except OSError:
+        pass
+    return lines
+
+
+def usage_time_left(window: dict) -> str:
+    """"2d 3h", "2h 13m" or "7m" until the window resets; empty when unknown."""
+    try:
+        moment = datetime.fromisoformat(window["resets_at"].replace("Z", "+00:00"))
+    except (ValueError, AttributeError, TypeError, KeyError):
+        return ""
+    remaining = int((moment - datetime.now(timezone.utc)).total_seconds())
+    if remaining <= 0:
+        return "now"
+    hours, minutes = divmod(remaining // 60, 60)
+    if hours >= 48:
+        return f"{hours // 24}d {hours % 24}h"
+    if hours:
+        return f"{hours}h {minutes:02d}m"
+    return f"{minutes}m"
+
+
+def usage_resets_short(window: dict) -> str:
+    """The Status panel's right column: "in 2h 13m", or the clock time when only that is known."""
+    left = usage_time_left(window)
+    if left:
+        return "resets now" if left == "now" else f"in {left}"
+    return f"resets {window['resets']}" if window.get("resets") else ""
+
+
+def usage_resets_in(window: dict) -> str:
+    """The report's form: "resets 15:39  (in 2h 13m)"."""
+    if not window.get("resets"):
+        return ""
+    left = usage_time_left(window)
+    if left == "now":
+        return "resetting"
+    return f"resets {window['resets']}  (in {left})" if left else f"resets {window['resets']}"
+
+
+def usage_report():
+    """Redraws the report until the pane is replaced (claude-sessions usage runs this in the viewer)."""
+    while True:
+        columns = os.get_terminal_size().columns if sys.stdout.isatty() else 80
+        sys.stdout.write("\033[2J\033[H" + "\n".join(usage_report_lines(columns)) + "\n")
+        sys.stdout.flush()
+        time.sleep(USAGE_REPORT_REDRAW_S)
+
+
+def print_costs():
+    """claude-sessions-sidebar costs: the API-price estimate per day this month, per month, per
+    model and per project, from the archive (brought up to date first)."""
+    archive = open_archive()
+    archive_transcripts(archive, TRANSCRIPTS_DIR)
+    days, unpriced, all_time = archived_costs(archive)
+    first = date.today().replace(day=1).isoformat()
+    print("this month")
+    for day in sorted(day for day in days if day >= first):
+        print(f"  {day}  {money(days[day]):>9}")
+    print("per month")
+    for month, cost in archive.execute("select substr(day, 1, 7), sum(cost) from replies group by 1 order by 1"):
+        print(f"  {month}     {money(cost or 0):>9}")
+    print("per model")
+    for model, cost, output in archive.execute("select model, sum(cost), sum(output) from replies group by 1 order by 2 desc"):
+        print(f"  {model:<24} {money(cost or 0):>9}  {output / 1e6:.1f}M output tokens")
+    print("top projects")
+    for project, cost in archive.execute("select project, sum(cost) from replies group by 1 order by 2 desc limit 10"):
+        print(f"  {project:<24} {money(cost or 0):>9}")
+    first_day = archive.execute("select min(day) from replies").fetchone()[0]
+    print(f"all time      {money(all_time):>9}  (since {first_day})")
+    for model, tokens in sorted(unpriced.items()):
+        print(f"no price for {model}: {tokens} output tokens left out")
+    archive.close()
+
+
+DIGEST_MIN_REPLIES = 3
+
+
+def digest_lines(archive: sqlite3.Connection, sessions: list[dict], reviews: list[dict], today: date) -> list[str]:
+    """The morning digest as ANSI text: the last day with work before today, today so far, the
+    plan's usage, the sessions waiting for you, and the pull requests (failing CI first)."""
+    bold, dim, reset = "\033[1m", "\033[2m", "\033[0m"
+    red, green, yellow, blue, magenta = "\033[31m", "\033[32m", "\033[33m", "\033[34m", "\033[35m"
+    lines = ["", f"  {bold}{blue}Claude · {today.strftime('%A %d %B')}{reset}", ""]
+    last_day = archive.execute("select max(day) from replies where day < ?", (today.isoformat(),)).fetchone()[0]
+    if last_day:
+        total, count = archive.execute("select sum(cost), count(distinct session) from replies where day = ?", (last_day,)).fetchone()
+        label = "Yesterday" if last_day == (today - timedelta(days=1)).isoformat() else date.fromisoformat(last_day).strftime("%A %d %b")
+        lines.append(f"  {bold}{label}{reset}  {magenta}{money(total or 0)}{reset} {dim}at API prices · {count} session{'s' if count != 1 else ''}{reset}")
+        short_count, short_cost = 0, 0.0
+        for session, project, cost, replies in archive.execute(
+                "select session, project, sum(cost), count(*) from replies where day = ? group by session order by 3 desc", (last_day,)):
+            if replies < DIGEST_MIN_REPLIES:  # a one-off question, or a session opened and left
+                short_count, short_cost = short_count + 1, short_cost + (cost or 0)
+                continue
+            title = read_title(session) or "(untitled)"
+            lines.append(f"    {project[:18]:<18}  {title[:44]:<44}  {money(cost or 0):>8}  {dim}{replies} replies{reset}")
+        if short_count:
+            lines.append(f"    {dim}and {short_count} short session{'s' if short_count != 1 else ''} · {money(short_cost)}{reset}")
+        lines.append("")
+    week_start = today - timedelta(days=today.weekday())
+    today_cost = archive.execute("select sum(cost) from replies where day = ?", (today.isoformat(),)).fetchone()[0] or 0
+    week_cost = archive.execute("select sum(cost) from replies where day >= ?", (week_start.isoformat(),)).fetchone()[0] or 0
+    lines.append(f"  {bold}Today so far{reset}  {magenta}{money(today_cost)}{reset}   {dim}this week{reset} {magenta}{money(week_cost)}{reset}")
+    windows = usage_windows()
+    if windows:
+        parts = [f"{window['label']} {window['percentage']}%" + (f" {dim}({usage_time_left(window)} left){reset}" if usage_time_left(window) else "")
+                 for window in windows if window["percentage"] is not None]
+        lines.append(f"  {bold}Plan{reset}  " + "   ".join(parts))
+    lines.append("")
+    waiting = [session for session in sessions if session.get("state") in ("needs-you", "waiting")]
+    if waiting:
+        lines.append(f"  {bold}Waiting for you{reset}")
+        for session in waiting:
+            mark = f"{red}!{reset}" if session["state"] == "needs-you" else f"{yellow}○{reset}"
+            lines.append(f"    {mark} {session.get('project', '?'):<18} {dim}{visible_task(session)[:50]}{reset}")
+        lines.append("")
+    if reviews:
+        order = {"failing": 0, "pending": 1, "passing": 2, "": 3}
+        lines.append(f"  {bold}Pull requests{reset}")
+        marks = {"failing": f"{red}✗{reset}", "pending": f"{yellow}●{reset}", "passing": f"{green}✓{reset}", "": " "}
+        for row in sorted(reviews, key=lambda row: order.get(row.get("ci", ""), 3))[:10]:
+            review = {"APPROVED": f"{green}approved{reset}", "CHANGES_REQUESTED": f"{red}changes{reset}", "REVIEW_REQUIRED": f"{yellow}review{reset}"}.get(row.get("review", ""), "")
+            lines.append(f"    {marks.get(row.get('ci', ''), ' ')} {row['repository']}#{row['number']}  {row['title'][:50]}  {review}")
+        lines.append("")
+    return lines
+
+
+def print_digest():
+    """claude-sessions-sidebar digest: the morning digest (claude-sessions digest shows it)."""
+    archive = open_archive()
+    archive_transcripts(archive, TRANSCRIPTS_DIR)
+    reviews, _ = fetch_reviews(list(session_checkouts()))
+    print("\n".join(digest_lines(archive, reported_sessions(), reviews, date.today())))
+    archive.close()
 
 
 def main(screen):
     curses.curs_set(0)
     curses.use_default_colors()
     curses.set_escdelay(25)
-    curses.raw()  # Ctrl-C arrives as a key (same as q) instead of killing the sidebar
+    curses.raw()  # Ctrl-C arrives as a key (same as q) instead of killing the column
     curses.mousemask(curses.ALL_MOUSE_EVENTS)
     screen.timeout(POLL_MS)
-    history = History()
-    view = ViewState()
-    usage = UsageRefresher()
-
-    selected = 0
-    message = ""
-    query = ""
-    filtering = False
-    help_open = False
+    app = App()
+    subprocess.run(["claude-sessions", "sweep"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    app.history.refresh()
+    app.view.forget_unknown_hidden({entry["session"] for entry in app.history.entries})
     while True:
-        usage.tick()
-        rows, sessions = build_rows(history, view, query)
-        selected = min(selected, max(len(sessions) - 1, 0))
-        draw(screen, rows, selected, current_session(), message, query, filtering, help_open)
-        view.remember_width(screen.getmaxyx()[1])
+        app.tick()
+        app.draw(screen)
         key = screen.getch()
         if key == -1:
             continue
-        message = ""
-        if help_open:
-            help_open = False
-            continue
-        if filtering:
-            if key == KEY_ESCAPE:
-                query, filtering = "", False
-            elif key in (KEY_ENTER_LF, KEY_ENTER_CR, curses.KEY_ENTER):
-                filtering = False
-            elif key in (curses.KEY_BACKSPACE, 127, 8):
-                query = query[:-1]
-            elif 32 <= key < 127:
-                query += chr(key)
-            continue
-        if key == curses.KEY_MOUSE:
-            try:
-                _, x, y, _, state = curses.getmouse()
-            except curses.error:
-                continue
-            index = clicked_index(y)
-            if index is None:
-                continue
-            selected = index
-            if state & curses.BUTTON1_DOUBLE_CLICKED and sessions:
-                message = activate(sessions[selected], view)
-        elif key in (ord("j"), curses.KEY_DOWN):
-            selected = min(selected + 1, max(len(sessions) - 1, 0))
-        elif key in (ord("k"), curses.KEY_UP):
-            selected = max(selected - 1, 0)
-        elif key in (KEY_ENTER_LF, KEY_ENTER_CR, curses.KEY_ENTER) and sessions:
-            message = activate(sessions[selected], view)
-        elif key in (ord("h"), curses.KEY_LEFT) and sessions and sessions[selected]["state"] == "recent":
-            view.toggle(view.folded, sessions[selected]["project"])
-        elif key == ord("u"):
-            message = "unhid the last hidden session" if view.unhide_last() else "nothing hidden"
-        elif key == ord("."):
-            view.show_trivial = not view.show_trivial
-            view.save()
-            message = "showing trivial sessions" if view.show_trivial else "hiding trivial sessions"
-        elif key == ord("p") and sessions and sessions[selected]["state"] != "recent":
-            view.toggle(view.pinned, sessions[selected]["session"])
-        elif key == ord("r") and sessions and sessions[selected]["state"] not in ("recent", "unknown"):
-            session = sessions[selected]
-            draw(screen, rows, selected, current_session(), f"restart {session['project']}? same conversation, new process  y/n", query, False, False)
-            screen.timeout(-1)
-            answer = screen.getch()
-            screen.timeout(POLL_MS)
-            if answer == ord("y"):
-                manager_in_background("restart", session["session"])
-                message = f"restarting {session['project']} …"
-        elif key in (KEY_TAB, ord("l"), curses.KEY_RIGHT):
-            focus_viewer()
-        elif key == ord("n"):
-            index = next_attention_index(sessions, selected)
-            if index is None:
-                message = "nothing needs you"
-            else:
-                selected = index
-                message = manager("view", sessions[selected]["session"])
-        elif key == ord("/"):
-            filtering = True
-        elif key == ord("?"):
-            help_open = True
-        elif key == KEY_ESCAPE:
-            query = ""
-        elif ord("1") <= key <= ord("9"):
-            running = [session for session in sessions if session["state"] != "recent"]
-            number = key - ord("1")
-            if number < len(running):
-                selected = number
-                message = manager("open", running[number]["session"])
-            else:
-                message = f"no running session {number + 1}"
-        elif key == ord("a"):
-            directory = run_outside_curses(screen, pick_project)
-            if directory:
-                message = manager("new", directory)
-        elif key == ord("x") and sessions:
-            session = sessions[selected]
-            if session["state"] == "recent":
-                if session.get("folded"):
-                    message = "unfold the project first (h)"
-                else:
-                    view.hide(session["session"])
-                    message = f"hidden: {session['task'][:40]}  (u undoes)"
-                continue
-            draw(screen, rows, selected, current_session(), f"exit {session['project']}? y/n", query, False, False)
-            screen.timeout(-1)
-            answer = screen.getch()
-            screen.timeout(POLL_MS)
-            if answer == ord("y"):
-                message = kill_session(session)
-        elif key in (ord("q"), KEY_CTRL_C):
-            draw(screen, rows, selected, current_session(), "close the manager window? sessions keep running  y/n", query, False, False)
-            screen.timeout(-1)
-            answer = screen.getch()
-            screen.timeout(POLL_MS)
-            if answer == ord("y"):
-                subprocess.run(["tmux", "detach-client"])
+        app.handle(key, screen)
 
 
 if __name__ == "__main__":
     try:
-        curses.wrapper(main)
+        if sys.argv[1:] == ["usage"]:
+            usage_report()
+        elif sys.argv[1:] == ["costs"]:
+            print_costs()
+        elif sys.argv[1:] == ["digest"]:
+            print_digest()
+        elif sys.argv[1:]:
+            sys.exit(f"usage: {os.path.basename(sys.argv[0])} [usage|costs|digest]")
+        else:
+            log_event("INFO", f"started (pid {os.getpid()})")
+            curses.wrapper(main)
     except KeyboardInterrupt:
         pass
+    except Exception:
+        # The traceback on one line, so the sidebar's death is found later; then die as before.
+        log_event("ERROR", "crashed: " + " | ".join(line.strip() for line in traceback.format_exc().splitlines()[-6:]))
+        raise

@@ -1,0 +1,11 @@
+[Unit]
+Description=Claude session manager: its tmux session, ready before the first ALT+C
+After=osd.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=%h/.local/bin/claude-sessions prepare
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,7 @@
+[Unit]
+Description=Weekly health check of the Claude setup and the machine (~/.local/bin/claude-health-check)
+After=graphical-session.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/claude-health-check
