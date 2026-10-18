@@ -53,6 +53,9 @@ impl Manager {
         sandbox.shim("hyprctl", r#"[[ $1 == -j && $2 == activeworkspace ]] && echo "{\"id\": ${SHIM_WS:-2}}"; exit 0"#);
         sandbox.shim("setsid", "");
         sandbox.shim("osd-show", "");
+        // greywall runs the command as it is: the sandbox is not what these tests check.
+        sandbox.shim("greywall", r#"while [[ $1 != -- ]]; do shift; done; shift; exec "$@""#);
+        sandbox.env.insert("CLAUDE_SESSIONS_GREYWALL".into(), sandbox.shims.join("greywall").display().to_string());
         // Claude stays in its pane until SHIM_CLAUDE_EXIT_AFTER keys were sent (by default it never
         // leaves); the pane reading (classify) is the real one.
         sandbox.shim("osd", &format!(r#"if [[ $1 == liveness ]]; then
@@ -886,8 +889,6 @@ impl Clones {
         let busy = fs::canonicalize(root.join("busy")).unwrap();
         fs::write(&manager.snapshot, json!({"sessions": [{"session": SESSION_A, "state": "working", "project": "repo",
                                                           "cwd": busy.display().to_string(), "tmux_pane": "%4"}]}).to_string()).unwrap();
-        // greywall runs the command as it is: the sandbox is not what these tests check.
-        manager.sandbox.shim("greywall", r#"while [[ $1 != -- ]]; do shift; done; shift; exec "$@""#);
         Clones { manager, root }
     }
 
@@ -925,4 +926,51 @@ fn without_a_yes_no_clone_is_deleted() {
     let clones = Clones::new();
     clones.review("\n");
     assert!(clones.root.join("clean").exists());
+}
+
+#[test]
+fn restart_all_resumes_each_session_in_a_tmux_session_of_its_own() {
+    // In the viewer pane a launch dies with the next thing shown there, until claude-auto-retry has
+    // moved it out: a restart-all once lost a session that way.
+    let manager = Manager::new();
+    manager.run(&["restart-all", SESSION_A], &[("SHIM_PANE_TEXT", IDLE), ("SHIM_EXIT_AFTER", "1"), ("CLAUDE_SESSIONS_RESTORE_WAIT", "0")]);
+    let calls = manager.calls("tmux");
+    let launch = calls.iter().find(|call| call.starts_with("tmux new-session -d -s claude-retry-restart-")).expect("no detached launch");
+    assert!(launch.contains(&format!("--resume {SESSION_A}")), "{launch}");
+    assert!(!calls.iter().any(|call| call.starts_with("tmux respawn-pane") && call.contains("claude")), "{calls:?}");
+}
+
+#[test]
+fn restart_all_of_a_session_nobody_typed_in_starts_a_fresh_one_of_its_own() {
+    let manager = Manager::new();
+    let transcripts = manager.sandbox.root.join("transcripts");
+    fs::create_dir_all(&transcripts).unwrap();
+    manager.run(&["restart-all", SESSION_A], &[("SHIM_PANE_TEXT", IDLE), ("SHIM_EXIT_AFTER", "1"), ("CLAUDE_SESSIONS_RESTORE_WAIT", "0"),
+                                               ("CLAUDE_SESSIONS_TRANSCRIPTS", &path_str(&transcripts))]);
+    let launch = manager.calls("tmux").into_iter().find(|call| call.starts_with("tmux new-session -d -s claude-retry-restart-")).expect("no detached launch");
+    assert!(!launch.contains("--resume"), "{launch}");
+}
+
+#[test]
+fn the_branch_of_a_parallel_clone_is_switched_inside_greywall() {
+    // The clone may be one a session already ran in, with a .git/config it could write.
+    let manager = Manager::new();
+    manager.git_repository();
+    let clones = manager.sandbox.root.join("clones");
+    manager.run(&["parallel", &path_str(&manager.project), "feat/x"], &[("CLAUDE_SESSIONS_CLONES", &path_str(&clones))]);
+    assert!(manager.calls("greywall").iter().any(|call| call.ends_with("-- git switch --quiet -c feat/x")), "{:?}", manager.calls("greywall"));
+}
+
+#[test]
+fn a_pull_request_reviewed_before_gets_a_fresh_clone() {
+    // Fetching runs out of the sandbox: never in a clone a session already had.
+    let manager = Manager::new();
+    manager.git_repository();
+    let clones = manager.sandbox.root.join("clones");
+    fs::create_dir_all(clones.join("proj-a/pr-7")).unwrap();
+    fs::write(clones.join("proj-a/pr-7/left-by-a-session"), "").unwrap();
+    manager.run(&["review", &path_str(&manager.project), "7"], &[("CLAUDE_SESSIONS_CLONES", &path_str(&clones))]);
+    let names: Vec<String> = fs::read_dir(clones.join("proj-a")).unwrap().flatten().map(|entry| entry.file_name().to_string_lossy().into_owned()).collect();
+    assert!(names.iter().any(|name| name.starts_with("pr-7-")), "{names:?}");
+    assert_eq!(fs::read_dir(clones.join("proj-a/pr-7")).unwrap().count(), 1, "the earlier clone was touched");
 }

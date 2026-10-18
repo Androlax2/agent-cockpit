@@ -275,7 +275,7 @@ background_session() { # dir prompt
 # Appended to every launch in the viewer pane: a start that fails says so and stays on screen,
 # instead of leaving a bare "Pane is dead (status 1)". Claude itself runs in its own tmux session
 # (claude-auto-retry), so its error may be there; the epilogue lists those sessions.
-LAUNCH_EPILOGUE='; set -l code $status; if test $code -ne 0; echo; echo "  ✗ claude exited with status $code"; echo "  Claude sessions still open:"; tmux ls 2>/dev/null | string match "*claude-retry*" | string replace -r "^" "    "; echo "  More: claude-sessions doctor · journalctl --user -u claude-sessions"; read -n 1 -P "  any key closes this pane " answer; end'
+LAUNCH_EPILOGUE='; set -l code $status; if test $code -ne 0; claude-sessions log manager ERROR "claude exited with status $code in $PWD" 2>/dev/null; echo; echo "  ✗ claude exited with status $code"; echo "  Claude sessions still open:"; tmux ls 2>/dev/null | string match "*claude-retry*" | string replace -r "^" "    "; echo "  More: claude-sessions doctor · journalctl --user -u claude-sessions"; read -n 1 -P "  any key closes this pane " answer; end'
 
 # Claude's effort levels (claude --help, --effort).
 EFFORT_LEVELS=(low medium high xhigh max)
@@ -612,8 +612,8 @@ restore_sessions() { # dir id [dir id …]
 
 # A restart keeps the session's effort unless a new one is given: the level the status line last
 # reported (statusline-command.sh copies CLAUDE_EFFORT, which Claude exports to its children).
-restart_session() { # id [effort]
-    local id=$1 effort=${2:-} directory
+restart_session() { # id [effort] [detached]
+    local id=$1 effort=${2:-} detached=${3:-} directory
     directory=$(session_field "$id" cwd)
     if [[ -z $directory ]]; then
         echo "claude-sessions: session $id has no directory to restart in" >&2
@@ -624,6 +624,15 @@ restart_session() { # id [effort]
     else
         effort=$(jq -r '.effort // empty' "$HOME/.cache/claude/statusline-$id.json" 2>/dev/null || true)
         require_effort "$effort" 2>/dev/null || effort=""
+    fi
+    if [[ $detached == detached ]]; then
+        exit_session "$id" || return 1
+        if has_conversation "$id"; then
+            launch_detached "$directory" --resume "$id" ${effort:+--effort "$effort"}
+        else
+            launch_detached "$directory" ${effort:+--effort "$effort"}
+        fi
+        return
     fi
     loading_overlay "Restarting $(basename "$directory")${effort:+ · effort $effort} …" "$directory" "$id"
     exit_session "$id" || return 1
@@ -638,13 +647,33 @@ restart_session() { # id [effort]
 }
 
 # One after the other: each restart reuses the viewer pane. The session shown before comes back.
+# Each one is launched in a tmux session of its own, never in the viewer pane: a launch there dies
+# with whatever takes the pane next (the next restart, a click on another card) until
+# claude-auto-retry has moved it out, and one restart-all lost a session that way.
 restart_sessions() { # id...
-    local shown id
+    local shown id waited
     shown=$(cat "$CURRENT" 2>/dev/null || true)
     for id in "$@"; do
-        restart_session "$id" || log_event WARN sessions "restart of $id failed during restart-all"
+        restart_session "$id" "" detached || log_event WARN sessions "restart of $id failed during restart-all"
     done
-    if [[ -n $shown ]]; then view_session "$shown" || true; fi
+    [[ -n $shown ]] || return 0
+    # The session that was on screen comes back once it reports in again (it may be one of these).
+    for (( waited = 0; waited < RESTORE_WAIT_S; waited++ )); do
+        [[ -n $(session_field "$shown" tmux_pane) ]] && break
+        sleep 1
+    done
+    view_session "$shown" || true
+}
+
+# A session started out of the viewer pane, in a tmux session named like claude-auto-retry's so the
+# manager treats it as any other; inside tmux the launcher runs claude right there. A failed start
+# is logged, since nobody watches that session.
+launch_detached() { # dir claude-arguments...
+    local directory=$1
+    shift
+    tmux new-session -d -s "claude-retry-restart-$(date +%s%N)" -x 200 -y 50 -c "$directory" \
+        env -u TMUX_PANE CLAUDE_SESSIONS_INSIDE=1 \
+        fish -ic 'claude $argv; or claude-sessions log manager ERROR "claude exited with status $status in $PWD"' "$@"
 }
 
 # The morning digest (the sidebar's D, and the first time the cockpit opens each day): yesterday's
@@ -807,14 +836,19 @@ doctor() {
 CLONES_DIR="${CLAUDE_SESSIONS_CLONES:-$HOME/IdeaProjects/.parallel}"
 GREYWALL="${CLAUDE_SESSIONS_GREYWALL:-$HOME/.local/bin/greywall}"
 
+# The repository a clone is filed under: a clone of a clone (+ on a card that runs in one) still
+# belongs to the first repository.
+clone_repository() { # repository-top
+    case $1 in
+        "$CLONES_DIR"/*/*) local inside=${1#"$CLONES_DIR"/}; echo "${inside%%/*}" ;;
+        *) basename "$1" ;;
+    esac
+}
+
 clone_for() { # source-dir name -> prints the clone's path, created on first use
     local source=$1 name=$2 top repository clone origin
     top=$(git -C "$source" rev-parse --show-toplevel) || return 1
-    repository=$(basename "$top")
-    # A clone of a clone (+ on a card that runs in one) still belongs to the first repository.
-    case $top in
-        "$CLONES_DIR"/*/*) repository=${top#"$CLONES_DIR"/}; repository=${repository%%/*} ;;
-    esac
+    repository=$(clone_repository "$top")
     clone="$CLONES_DIR/$repository/$name"
     if [[ ! -d $clone/.git ]]; then
         mkdir -p "$CLONES_DIR/$repository"
@@ -868,8 +902,16 @@ parallel_session() { # dir branch
     if ! clone=$(clone_for "$directory" "${branch//\//-}" 2>&1); then
         show_failure "could not clone $directory: $clone"; return 1
     fi
-    git -C "$clone" switch --quiet -c "$branch" 2>/dev/null || git -C "$clone" switch --quiet "$branch"
+    # The clone may be one a session already ran in, with a .git/config it could write: git runs
+    # inside greywall there, as for lazygit.
+    git_in_sandbox "$clone" switch --quiet -c "$branch" 2>/dev/null || git_in_sandbox "$clone" switch --quiet "$branch"
     new_session "$clone"
+}
+
+git_in_sandbox() { # dir git-arguments...
+    local directory=$1
+    shift
+    (cd "$directory" && "$GREYWALL" --auto-profile --profile claude -- git "$@")
 }
 
 # A Claude session reviewing pull request <number>, at its head in a clone (the sidebar's c on a
@@ -880,7 +922,14 @@ review_session() { # dir number
     if [[ ! $number =~ ^[0-9]+$ ]]; then
         show_failure "not a pull request number: $number"; return 1
     fi
-    if ! clone=$(clone_for "$directory" "pr-$number" 2>&1); then
+    # Always a fresh clone: fetching needs the network and Theo's credentials, so git runs out here,
+    # and out here it must never run in a clone a session could have written (.git/config). A
+    # pull request reviewed before gets pr-<number>-<time>; K deletes the old ones.
+    local name="pr-$number" top repository
+    top=$(git -C "$directory" rev-parse --show-toplevel 2>/dev/null) || { show_failure "not a repository: $directory"; return 1; }
+    repository=$(clone_repository "$top")
+    if [[ -e $CLONES_DIR/$repository/$name ]]; then name="pr-$number-$(date +%Y%m%d-%H%M%S)"; fi
+    if ! clone=$(clone_for "$directory" "$name" 2>&1); then
         show_failure "could not clone $directory: $clone"; return 1
     fi
     if ! git -C "$clone" fetch --quiet origin "pull/$number/head" 2>/dev/null || ! git -C "$clone" switch --quiet --detach FETCH_HEAD; then
