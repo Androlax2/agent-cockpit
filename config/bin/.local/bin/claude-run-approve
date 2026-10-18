@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """claude-run-approve <id>: the approval terminal for a command Claude asked to run (ask-to-run).
 
-Opened by the OSD daemon outside the sandbox, as a popup over the cockpit or a floating window.
+Started by the OSD daemon outside the sandbox, in a tmux session of its own (claude-run-<id>), shown
+in the cockpit and, while it needs Theo, in a floating window; it reports asking / running / done.
 Runs with Theo's rights, so nothing happens without his "y". The request is read once, here: the
 sandbox can rewrite the file, so what is shown is what runs. "e" edits the command first; the
 edited command is what runs and what Claude is told. The command runs in a real terminal through
@@ -58,6 +59,12 @@ def send(line: str):
         pass
 
 
+def phase(request_id: str, name: str):
+    """Tell the daemon whether this needs Theo (asking: the floating window comes up wherever he
+    is) or not (running: it goes away again), or is done (the pane and window close)."""
+    send(f"run-phase {request_id} {name}")
+
+
 def log(level: str, message: str):
     subprocess.run(["claude-sessions", "log", "run", level, message], capture_output=True)
 
@@ -78,6 +85,19 @@ def edit(command: str) -> str:
 # changing Unicode (bidi overrides, zero-width characters). Shown escaped, never interpreted.
 HIDING = re.compile("[\x00-\x08\x0b-\x1f\x7f-\x9f\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]")
 LONG_COMMAND = 600
+TYPE_AHEAD_S = 0.5
+PROMPT_IDLE_S = 1.5  # output stopped mid-line this long: the command waits for input (sudo, [y/N])
+
+
+def waits_for_input(log_path: str, idle_s: float) -> bool:
+    """The recorded output ends without a newline and has not grown for PROMPT_IDLE_S: a prompt."""
+    try:
+        with open(log_path, "rb") as file:
+            file.seek(-1, os.SEEK_END)
+            last = file.read(1)
+    except OSError:
+        return False
+    return idle_s >= PROMPT_IDLE_S and last not in (b"\n", b"")
 
 
 def visible_command(command: str) -> tuple[str, bool]:
@@ -125,8 +145,14 @@ def choose(question: str, options: list[tuple[str, str]], default: str) -> str:
     try:
         tty.setcbreak(descriptor)
         draw(True)
+        # A new window takes the keyboard: keys typed for something else in the moment it appears
+        # must not answer. Drop what is pending, and anything typed in the first half second.
+        termios.tcflush(descriptor, termios.TCIFLUSH)
+        shown_at = time.time()
         while True:
             key = os.read(descriptor, 3)
+            if time.time() - shown_at < TYPE_AHEAD_S:
+                continue
             if key in (b"\x1b[A", b"k"):
                 selected = (selected - 1) % len(options)
             elif key in (b"\x1b[B", b"j"):
@@ -140,7 +166,7 @@ def choose(question: str, options: list[tuple[str, str]], default: str) -> str:
         termios.tcsetattr(descriptor, termios.TCSADRAIN, saved)
 
 
-def run(command: str, cwd: str, log_path: str) -> int:
+def run(command: str, cwd: str, log_path: str, request_id: str = "") -> int:
     """The command in a real terminal through `script` (sudo and prompts work), recorded, with a
     "running · 12s" line kept at the bottom: the lines above it scroll, so output still shows,
     and a command that prints nothing no longer looks stuck."""
@@ -154,7 +180,18 @@ def run(command: str, cwd: str, log_path: str) -> int:
     sys.stdout.write(f"\033[1;{rows - 1}r\033[{rows - 1};1H")  # everything above the last row scrolls
     try:
         tick = 0
+        size, changed_at, asking = -1, time.time(), False
         while child.poll() is None:
+            try:
+                now_size = os.path.getsize(log_path)
+            except OSError:
+                now_size = 0
+            if now_size != size:
+                size, changed_at = now_size, time.time()
+            prompt = waits_for_input(log_path, time.time() - changed_at)
+            if request_id and prompt != asking:
+                asking = prompt
+                phase(request_id, "asking" if asking else "running")
             elapsed = int(time.time() - started)
             sys.stdout.write(f"\0337\033[{rows};1H\033[2K{BLUE}{spinner[tick % len(spinner)]}{RESET} "
                              f"{DIM}running · {elapsed // 60}m {elapsed % 60:02d}s{RESET}\0338")
@@ -184,6 +221,7 @@ def approve(request_id: str) -> int:
     command, original = request["command"], request["command"]
     cwd = request.get("cwd") if isinstance(request.get("cwd"), str) and os.path.isdir(request.get("cwd")) else os.path.expanduser("~")
     project = project_of(cwd)
+    phase(request_id, "asking")
     while True:
         shown, hiding = visible_command(command)
         print(f"\n{BOLD}{BLUE}Claude · {project}{RESET} asks you to run, in {DIM}{cwd}{RESET}:\n")
@@ -200,13 +238,16 @@ def approve(request_id: str) -> int:
         break
     send(f"notice-clear run-{request_id}")
     if answer != "y":
+        phase(request_id, "done")
         write_result(request_id, {"status": "declined"})
         log("INFO", f"declined {request_id} for {project}")
         print("Declined: Claude is told.")
         return 0
     log_path = os.path.join(LOG_DIR, f"{request_id}.log")
     print(f"{DIM}─── running ───{RESET}")
-    exit_code = run(command, cwd, log_path)
+    phase(request_id, "running")
+    exit_code = run(command, cwd, log_path, request_id)
+    phase(request_id, "asking")
     print(f"{DIM}─── {RESET}{GREEN if exit_code == 0 else RED}exit {exit_code}{RESET}")
     keep = choose("Send the output to Claude?", [("y", "Send the output"), ("n", "Keep it out (only the exit status)")], "y") == "y"
     write_result(request_id, {"status": "ran", "exit": exit_code, "output": recorded_output(log_path) if keep else "",
@@ -215,6 +256,7 @@ def approve(request_id: str) -> int:
         os.remove(log_path)
     except OSError:
         pass
+    phase(request_id, "done")
     log("INFO", f"ran {request_id} for {project}: exit {exit_code}"
                 f"{', edited' if command != original else ''}{', output withheld' if not keep else ''}")
     return 0
@@ -224,8 +266,9 @@ if __name__ == "__main__":
     if len(sys.argv) != 2:
         sys.exit("usage: claude-run-approve <id>")
     status = approve(sys.argv[1])
-    try:
-        input(f"{DIM}Enter closes this window.{RESET}")
-    except EOFError:
-        pass
+    if not os.environ.get("TMUX"):  # in its tmux session, the pane and window close by themselves
+        try:
+            input(f"{DIM}Enter closes this window.{RESET}")
+        except EOFError:
+            pass
     sys.exit(status)

@@ -712,6 +712,21 @@ def restore_offer(view: "ViewState", running: set[str]) -> list[dict]:
     return sessions_to_restore(recent if isinstance(recent, dict) else {}, ended, running, boot, resumable)
 
 
+def grouped_by_project(sessions: list[dict]) -> list[dict]:
+    """Stable order, a repository's sessions together: pinned first, then each project at the place
+    of its first session, its other sessions (parallel clones, a second session) right under it."""
+    ordered = sorted(sessions, key=lambda session: (not session.get("pinned"), session.get("started", session.get("since", 0)), session["session"]))
+    groups: dict[str, list[dict]] = {}
+    for session in ordered:
+        groups.setdefault(session.get("project", "?"), []).append(session)
+    result = []
+    for members in groups.values():
+        for position, session in enumerate(members):
+            session["follows"] = position > 0  # drawn as a branch under the first card
+            result.append(session)
+    return result
+
+
 def visible_task(session: dict) -> str:
     """The session's task line, unless it is one of Claude's internal messages (<agent-message …>,
     <task-notification>), which reach the hook like prompts but mean nothing on a card."""
@@ -1591,7 +1606,7 @@ class SessionsPanel(Panel):
             session["pinned"] = session["session"] in app.view.pinned
         # A card keeps its place: pinned first, then in the order the sessions started. Urgency
         # shows in the glyph and the header count, and n jumps to the next one needing you.
-        running.sort(key=lambda session: (not session["pinned"], session.get("started", session.get("since", 0)), session["session"]))
+        running = grouped_by_project(running)
         self.items = running
         self.clamp()
         current = current_session()
@@ -1615,11 +1630,16 @@ class SessionsPanel(Panel):
         for index, session in enumerate(running):
             state_color = style(STATE_COLORS.get(session["state"], FG_DARK), -1, curses.A_BOLD)
             accent = state_color if session["session"] == current else None
-            segments = [(0, GLYPHS.get(session["state"], "·"), state_color),
-                        (2, session.get("project", "?"), style(project_color(session.get("project", "")), -1, curses.A_BOLD))]
             branch = git_branch(session.get("cwd", ""))
-            if branch:
-                segments.append((4 + len(session.get("project", "?")), f"⎇ {branch}", style(FG_DARK, -1, curses.A_DIM)))
+            if session.get("follows"):
+                # Another session of the repository above: a branch of it, named by its git branch.
+                segments = [(0, "└", style(FG_DARK, -1, curses.A_DIM)), (2, GLYPHS.get(session["state"], "·"), state_color),
+                            (4, f"⎇ {branch or session.get('project', '?')}", style(project_color(session.get("project", "")), -1, curses.A_BOLD))]
+            else:
+                segments = [(0, GLYPHS.get(session["state"], "·"), state_color),
+                            (2, session.get("project", "?"), style(project_color(session.get("project", "")), -1, curses.A_BOLD))]
+                if branch:
+                    segments.append((4 + len(session.get("project", "?")), f"⎇ {branch}", style(FG_DARK, -1, curses.A_DIM)))
             facts = session.get("facts") or {}
             context = facts.get("context")
             badges = [part for part, shown in (
