@@ -65,15 +65,14 @@ fn wait_for_result(id: &str) -> i32 {
     if let Some(edited) = result.get("edited_command").and_then(Value::as_str).filter(|e| !e.is_empty()) {
         println!("Theo edited the command before running it:\n  {edited}\n");
     }
-    if result.get("output_withheld").and_then(Value::as_bool).unwrap_or(false) {
-        println!("Theo ran it but kept the output out of the conversation.");
-    } else {
-        let output = approval::strip_ansi(result.get("output").and_then(Value::as_str).unwrap_or(""));
-        let lines: Vec<&str> = output.lines().collect();
-        if lines.len() > OUTPUT_LINES {
-            println!("[first {} lines left out]", lines.len() - OUTPUT_LINES);
-        }
-        println!("{}", lines[lines.len().saturating_sub(OUTPUT_LINES)..].join("\n"));
+    let output = approval::strip_ansi(result.get("output").and_then(Value::as_str).unwrap_or(""));
+    let lines: Vec<&str> = output.lines().collect();
+    if lines.len() > OUTPUT_LINES {
+        println!("[first {} lines left out]", lines.len() - OUTPUT_LINES);
+    }
+    println!("{}", lines[lines.len().saturating_sub(OUTPUT_LINES)..].join("\n"));
+    if let Some(redacted) = result.get("redacted").and_then(Value::as_u64).filter(|count| *count > 0) {
+        println!("[{redacted} secret-looking value(s) shown as [redacted]]");
     }
     let exit = result.get("exit").and_then(Value::as_i64).unwrap_or(1) as i32;
     println!("[exit {exit}]");

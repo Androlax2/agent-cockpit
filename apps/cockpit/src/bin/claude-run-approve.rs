@@ -95,14 +95,18 @@ fn approve(id: &str) -> i32 {
     let exit_code = approval::run(&command, &cwd, &log_path);
     approval::phase(id, "asking");
     println!("{DIM}─── {RESET}{}exit {exit_code}{RESET}", if exit_code == 0 { GREEN } else { RED });
-    let keep = approval::choose("Send the output to Claude?", &[("y", "Send the output"), ("n", "Keep it out (only the exit status)")], "y") == "y";
+    // The output always goes back, secrets taken out first: approving the command is approving
+    // that Claude reads what it printed.
+    let (output, redacted) = approval::redact_secrets(&approval::recorded_output(&log_path));
+    if redacted > 0 {
+        println!("{YELLOW}{redacted} secret-looking value{} redacted before the output went to Claude.{RESET}", if redacted == 1 { "" } else { "s" });
+    }
     let edited = if command != original { json!(command) } else { Value::Null };
-    write_result(id, json!({"status": "ran", "exit": exit_code, "output": if keep { approval::recorded_output(&log_path) } else { String::new() },
-                            "output_withheld": !keep, "edited_command": edited}));
+    write_result(id, json!({"status": "ran", "exit": exit_code, "output": output, "redacted": redacted, "edited_command": edited}));
     let _ = std::fs::remove_file(&log_path);
     approval::phase(id, "done");
-    approval::log("INFO", &format!("ran {id} for {project}: exit {exit_code}{}{}",
-                                   if command != original { ", edited" } else { "" }, if keep { "" } else { ", output withheld" }));
+    approval::log("INFO", &format!("ran {id} for {project}: exit {exit_code}{}{}", if command != original { ", edited" } else { "" },
+                                   if redacted > 0 { format!(", {redacted} secret(s) redacted") } else { String::new() }));
     0
 }
 

@@ -122,15 +122,14 @@ fn report(result: &Value) -> i32 {
             println!("Theo declined to run it.");
             continue;
         }
-        if run.get("output_withheld").and_then(Value::as_bool).unwrap_or(false) {
-            println!("Theo kept the output out of the conversation.");
-        } else {
-            let output = approval::strip_ansi(run.get("output").and_then(Value::as_str).unwrap_or(""));
-            let lines: Vec<&str> = output.lines().collect();
-            if lines.len() > OUTPUT_LINES {
-                println!("[first {} lines left out]", lines.len() - OUTPUT_LINES);
-            }
-            println!("{}", lines[lines.len().saturating_sub(OUTPUT_LINES)..].join("\n"));
+        let output = approval::strip_ansi(run.get("output").and_then(Value::as_str).unwrap_or(""));
+        let lines: Vec<&str> = output.lines().collect();
+        if lines.len() > OUTPUT_LINES {
+            println!("[first {} lines left out]", lines.len() - OUTPUT_LINES);
+        }
+        println!("{}", lines[lines.len().saturating_sub(OUTPUT_LINES)..].join("\n"));
+        if let Some(redacted) = run.get("redacted").and_then(Value::as_u64).filter(|count| *count > 0) {
+            println!("[{redacted} secret-looking value(s) shown as [redacted]]");
         }
         println!("[exit {}]", shown(run.get("exit")));
     }

@@ -293,11 +293,15 @@ fn run_step(guide: &mut Guide) {
     let log_path = approval::log_dir().join(format!("guide-{}-{}.log", guide.id, guide.position + 1));
     let exit_code = approval::run(&command, &guide.cwd, &log_path);
     println!("{DIM}─── {RESET}exit {exit_code}");
-    let keep = approval::choose("Send the output to Claude?", &[("y", "Send the output"), ("n", "Keep it out (only the exit status)")], "y") == "y";
+    // Like ask-to-run: the output always goes back, secrets taken out first.
+    let (output, redacted) = approval::redact_secrets(&approval::recorded_output(&log_path));
+    if redacted > 0 {
+        println!("{redacted} secret-looking value{} redacted before the output went to Claude.", if redacted == 1 { "" } else { "s" });
+    }
     run.insert("status".into(), json!("ran"));
     run.insert("exit".into(), json!(exit_code));
-    run.insert("output".into(), json!(if keep { approval::recorded_output(&log_path) } else { String::new() }));
-    run.insert("output_withheld".into(), json!(!keep));
+    run.insert("output".into(), json!(output));
+    run.insert("redacted".into(), json!(redacted));
     guide.runs.insert(guide.position, run);
     let _ = std::fs::remove_file(&log_path);
 }

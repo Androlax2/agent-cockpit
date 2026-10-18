@@ -228,12 +228,28 @@ fn an_edited_command_runs_and_is_reported() {
 }
 
 #[test]
-fn the_output_can_be_kept_out_of_the_conversation() {
+fn the_output_always_goes_back_without_a_question() {
     let fixture = Approve::new();
     let request_id = fixture.file_default();
-    fixture.approve(&request_id, "y\nn\n\n");
+    let shown = fixture.approve(&request_id, "y\n");
     let result = fixture.result(&request_id).unwrap();
-    assert_eq!((&result["output"], &result["output_withheld"]), (&json!(""), &json!(true)));
+    assert_eq!(result["status"], "ran");
+    assert!(!shown.contains("Send the output"), "{shown}");
+    assert!(result["output"].as_str().unwrap().contains("ran: "), "{result}");
+}
+
+#[test]
+fn secrets_in_the_output_are_redacted_before_they_go_back() {
+    let fixture = Approve::new();
+    // The fake `script` prints what it ran: a command that echoes a token stands for one that prints it.
+    let request_id = fixture.file("echo ghp_0123456789abcdefghijABCDEFGHIJ012345", 0, "0123456789ab", "x");
+    let shown = fixture.approve(&request_id, "y\n");
+    let result = fixture.result(&request_id).unwrap();
+    let output = result["output"].as_str().unwrap();
+    assert!(!output.contains("ghp_0123456789"), "{output}");
+    assert!(output.contains("[redacted]"), "{output}");
+    assert_eq!(result["redacted"], 1);
+    assert!(shown.contains("1 secret-looking value"), "{shown}");
 }
 
 #[test]

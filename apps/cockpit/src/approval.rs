@@ -5,6 +5,7 @@
 use crate::paths;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use regex::Regex;
+use std::sync::LazyLock;
 use serde_json::Value;
 use std::fs::{self, OpenOptions};
 use std::io::{self, BufRead, IsTerminal, Write};
@@ -308,9 +309,90 @@ pub fn recorded_output(log_path: &Path) -> String {
     banner.replace_all(&text, "").trim_matches('\n').to_string()
 }
 
+/// What a command's output must not carry back into a conversation: tokens and keys by their
+/// shape, private key blocks, credentials in headers and URLs, and the value of anything named like
+/// a password, secret, token or key. Matched values become [redacted]; names and the rest stay, so
+/// Claude still sees what happened.
+static SECRET_SHAPES: LazyLock<Vec<Regex>> = LazyLock::new(|| [
+    r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z0-9 ]*PRIVATE KEY-----|\z)",
+    r"\bgh[pousr]_[A-Za-z0-9]{30,}\b",
+    r"\bgithub_pat_[A-Za-z0-9_]{20,}\b",
+    r"\bsk-ant-[A-Za-z0-9_-]{20,}",
+    r"\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}",
+    r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b",
+    r"\bxox[abprs]-[A-Za-z0-9-]{10,}",
+    r"\bAIza[0-9A-Za-z_-]{35}\b",
+    r"\bglpat-[A-Za-z0-9_-]{20,}",
+    r"\bnpm_[A-Za-z0-9]{36}\b",
+    r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}",
+].iter().map(|pattern| Regex::new(pattern).unwrap()).collect());
+/// The value after a name that says it is secret, or after an Authorization scheme, or the
+/// password in scheme://user:password@host.
+static SECRET_VALUES: LazyLock<Vec<Regex>> = LazyLock::new(|| [
+    r#"(?i)((?:authorization|proxy-authorization)\s*:\s*(?:bearer|basic|token)\s+)[^\s"']+"#,
+    r#"(?i)(\b[a-z0-9_.-]*(?:password|passwd|passphrase|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|credentials?)[a-z0-9_.-]*\b["']?\s*[:=]\s*["']?)[^\s"',;]{4,}"#,
+    r"(?i)([a-z][a-z0-9+.-]*://[^\s:/@]+:)[^\s@/]+(@)",
+].iter().map(|pattern| Regex::new(pattern).unwrap()).collect());
+
+/// The output with every secret-looking value replaced, and how many were.
+pub fn redact_secrets(text: &str) -> (String, usize) {
+    let mut count = 0;
+    let mut redacted = text.to_string();
+    for shape in SECRET_SHAPES.iter() {
+        count += shape.find_iter(&redacted).count();
+        redacted = shape.replace_all(&redacted, "[redacted]").into_owned();
+    }
+    for value in SECRET_VALUES.iter() {
+        let mut found = 0;
+        redacted = value.replace_all(&redacted, |captures: &regex::Captures| {
+            // A value the shapes above already replaced is not counted twice.
+            if captures[0].ends_with("[redacted]") {
+                return captures[0].to_string();
+            }
+            found += 1;
+            format!("{}[redacted]{}", &captures[1], captures.get(2).map(|end| end.as_str()).unwrap_or(""))
+        }).into_owned();
+        count += found;
+    }
+    (redacted, count)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tokens_are_redacted_by_their_shape() {
+        let (text, count) = redact_secrets("GH_TOKEN=ghp_0123456789abcdefghijABCDEFGHIJ012345 and sk-ant-api03-abcdefghijklmnopqrstuvwxyz");
+        assert_eq!(count, 2, "{text}");
+        assert!(!text.contains("ghp_0123") && !text.contains("sk-ant-api03"), "{text}");
+    }
+
+    #[test]
+    fn a_private_key_block_is_redacted_whole() {
+        let (text, count) = redact_secrets("before\n-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXk\n-----END OPENSSH PRIVATE KEY-----\nafter");
+        assert_eq!((text.as_str(), count), ("before\n[redacted]\nafter", 1));
+    }
+
+    #[test]
+    fn named_secrets_keep_their_name() {
+        let (text, count) = redact_secrets("DB_PASSWORD=hunter2hunter\napi_key: \"abcd1234efgh\"\nport=5432");
+        assert_eq!(count, 2, "{text}");
+        assert!(text.contains("DB_PASSWORD=[redacted]") && text.contains("port=5432"), "{text}");
+    }
+
+    #[test]
+    fn credentials_in_headers_and_urls_are_redacted() {
+        let (text, count) = redact_secrets("Authorization: Bearer abc.def.ghi\nhttps://theo:s3cret@example.com/repo.git");
+        assert_eq!(count, 2, "{text}");
+        assert!(text.contains("Authorization: Bearer [redacted]") && text.contains("https://theo:[redacted]@example.com"), "{text}");
+    }
+
+    #[test]
+    fn ordinary_output_is_left_alone() {
+        let output = "Compiling cockpit v0.1.0\ntest result: ok. 91 passed\nmonkey token count: 3 words";
+        assert_eq!(redact_secrets(output), (output.to_string(), 0));
+    }
 
     #[test]
     fn quoting_matches_shlex() {
