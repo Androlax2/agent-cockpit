@@ -1083,3 +1083,20 @@ fn a_session_borrowing_a_projects_name_gets_none_of_its_queue() {
     app.dispatch_queue();
     assert!(fixture.calls("claude-sessions").is_empty());
 }
+
+#[test]
+fn the_column_says_when_sessions_are_paused_for_a_game() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "working", "runway", "/r/runway", 1)]));
+    fixture.write("run/game-performance.frozen", "tmux-spawn-aaa.scope\ntmux-spawn-bbb.scope\n");
+    let app = fixture.app();
+    assert!(texts(&app, 1).iter().any(|line| line.contains("2 sessions paused while you game")), "{:?}", texts(&app, 1));
+}
+
+#[test]
+fn no_pause_line_without_a_game() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "working", "runway", "/r/runway", 1)]));
+    let app = fixture.app();
+    assert!(!texts(&app, 1).iter().any(|line| line.contains("paused while you game")));
+}

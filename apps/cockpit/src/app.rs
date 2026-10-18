@@ -551,6 +551,13 @@ impl App {
             lines.push(Line::new(vec![segment(2, "0 then o opens status.claude.com", dim(FG_DARK))]));
             lines.push(Line::default());
         }
+        // game-performance froze the sessions for a game: their cards stand still until it ends.
+        let paused = std::fs::read_to_string(paths::game_frozen()).map(|list| list.lines().filter(|line| !line.trim().is_empty()).count()).unwrap_or(0);
+        if paused > 0 {
+            lines.push(Line::new(vec![segment(0, format!("⏸ {paused} session{} paused while you game", if paused > 1 { "s" } else { "" }), bold(BLUE))]));
+            lines.push(Line::new(vec![segment(2, "they resume where they stopped when the game ends", dim(FG_DARK))]));
+            lines.push(Line::default());
+        }
         self.start_files = sessions::start_file_mtimes();
         let outdated: Vec<&Session> = running.iter().filter(|s| !sessions::changed_since_start(s, &self.start_files).is_empty()).collect();
         if !outdated.is_empty() {
