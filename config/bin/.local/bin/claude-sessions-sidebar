@@ -633,6 +633,28 @@ def project_name(path: str) -> str:
 FOCUS_STATES = ("needs-you", "waiting")  # what the focus filter (f) keeps: sessions waiting on you
 
 
+GREYPROXY_DB = os.environ.get("CLAUDE_SESSIONS_GREYPROXY_DB", os.path.expanduser("~/.local/share/greyproxy/greyproxy.db"))
+GREYPROXY_RECENT_MINUTES = 10  # a held request retried this recently is blocking someone now
+GREYPROXY_POLL_S = 10
+
+
+def greyproxy_held(db_path: str) -> list[str]:
+    """host:port of the requests greyproxy holds for approval and that were retried in the last
+    GREYPROXY_RECENT_MINUTES (older rows linger after their session gave up). Read-only."""
+    try:
+        database = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=1)
+        try:
+            rows = database.execute(
+                "select destination_host, destination_port from pending_requests "
+                "where last_seen >= datetime('now', ?) order by last_seen desc",
+                (f"-{GREYPROXY_RECENT_MINUTES} minutes",)).fetchall()
+        finally:
+            database.close()
+    except sqlite3.Error:
+        return []
+    return [f"{host}:{port}" for host, port in rows]
+
+
 def waiting_request(session: dict) -> str:
     """What a session needing you asks: the dialog's own lines from its pane ("Bash command · npm
     test") when the daemon read them, else the hook's sentence."""
@@ -1450,6 +1472,14 @@ class SessionsPanel(Panel):
         if time.time() - app.restore_checked > 30:
             app.restore_checked = time.time()
             app.restore = restore_offer(app.view, {session["session"] for session in running})
+        if time.time() - app.held_checked > GREYPROXY_POLL_S:
+            app.held_checked = time.time()
+            app.held = greyproxy_held(GREYPROXY_DB)
+        if app.held:
+            hosts = ", ".join(app.held[:3]) + (f" and {len(app.held) - 3} more" if len(app.held) > 3 else "")
+            lines.append(Line([(0, f"⛔ greyproxy holds {hosts}", style(YELLOW, -1, curses.A_BOLD))]))
+            lines.append(Line([(2, "G opens its dashboard to approve or deny", style(FG_DARK, -1, curses.A_DIM))]))
+            lines.append(Line())
         if app.restore:
             names = ", ".join(row.get("project", "?") for row in app.restore)
             lines.append(Line([(0, f"↺ {len(app.restore)} running before the restart: {names}", style(CYAN, -1, curses.A_BOLD))]))
@@ -1813,6 +1843,8 @@ class App:
         self.menu: EffortMenu | None = None
         self.restore: list[dict] = []  # sessions running before the reboot (restore_offer)
         self.focus_waiting = False  # f: only the sessions waiting on you
+        self.held: list[str] = []  # requests greyproxy holds for approval (greyproxy_held)
+        self.held_checked = 0.0
         self.restore_checked = 0.0
         self.width = DEFAULT_COLUMN_WIDTH
 
@@ -1923,8 +1955,12 @@ class App:
         """Title, the needs-you count and the clock (the bar is hidden on this workspace)."""
         put(screen, 0, 2, "Claude sessions", style(BLUE, -1, curses.A_BOLD))
         needing = sum(1 for session in self.sessions if session["state"] == "needs-you")
+        column = 2 + len("Claude sessions") + 2
         if needing:
-            put(screen, 0, 2 + len("Claude sessions") + 2, f"{needing} need you", style(RED, -1, curses.A_BOLD))
+            put(screen, 0, column, f"{needing} need you", style(RED, -1, curses.A_BOLD))
+            column += len(f"{needing} need you") + 2
+        if self.held:
+            put(screen, 0, column, f"⛔ {len(self.held)}", style(YELLOW, -1, curses.A_BOLD))
         stamp = time.strftime("%H:%M  %a %d %b")
         put(screen, 0, max(2, width - 2 - len(stamp)), stamp, style(FG_DARK))
         cost = self.costs.totals()["today"]
