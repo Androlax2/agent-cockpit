@@ -270,14 +270,17 @@ pub fn refresh_hyprland_instance() {
 
 /// Game mode (the gamemode submap) or a game window focused; same rule as the daemon's.
 pub fn gaming() -> bool {
-    let game_class = regex::Regex::new(r"^(steam_app_[0-9]+|Star Citizen|Dofus\.x64|retroarch)$").unwrap();
     let submap = output_of("hyprctl", &["submap"]).unwrap_or_default();
-    let window = output_of("hyprctl", &["-j", "activewindow"]).unwrap_or_default();
-    let class = serde_json::from_str::<Value>(&window)
-        .ok()
-        .and_then(|window| window.get("class").and_then(Value::as_str).map(str::to_string))
-        .unwrap_or_default();
-    submap.trim() == "gamemode" || game_class.is_match(&class)
+    submap.trim() == "gamemode" || active_game().is_some()
+}
+
+/// The focused window's title (its class when untitled) when that window is a game.
+pub fn active_game() -> Option<String> {
+    let game_class = regex::Regex::new(r"^(steam_app_[0-9]+|Star Citizen|Dofus\.x64|retroarch)$").unwrap();
+    let window: Value = serde_json::from_str(&output_of("hyprctl", &["-j", "activewindow"])?).ok()?;
+    let class = window.get("class").and_then(Value::as_str)?;
+    let title = window.get("title").and_then(Value::as_str).map(str::trim).filter(|title| !title.is_empty());
+    game_class.is_match(class).then(|| title.unwrap_or(class).to_string())
 }
 
 /// One banner through the OSD daemon's FIFO; false when the daemon is not reading it.
