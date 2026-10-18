@@ -796,7 +796,7 @@ fn an_approval_nobody_waits_for_any_more_is_dropped_and_the_next_starts() {
     heartbeat(&bench, RUN_B, 0);
     bench.registry.run_request(RUN_A).unwrap();
     bench.registry.run_request(RUN_B).unwrap();
-    heartbeat(&bench, RUN_A, 120);
+    heartbeat(&bench, RUN_A, 600);
     bench.registry.tick_queues();
     assert_eq!(result_status(&bench, RUN_A).as_deref(), Some("abandoned"));
     assert!(bench.commands().contains(&vec!["tmux".to_string(), "kill-session".into(), "-t".into(), format!("=claude-run-{RUN_A}")]));
@@ -809,7 +809,7 @@ fn an_approval_whose_asker_still_waits_stays() {
     let mut bench = Bench::new();
     heartbeat(&bench, RUN_A, 0);
     bench.registry.run_request(RUN_A).unwrap();
-    heartbeat(&bench, RUN_A, 5);
+    heartbeat(&bench, RUN_A, 120);
     bench.registry.tick_queues();
     assert_eq!(bench.registry.runs.current, RUN_A);
     assert_eq!(result_status(&bench, RUN_A), None);
@@ -821,7 +821,7 @@ fn a_running_command_is_never_dropped() {
     heartbeat(&bench, RUN_A, 0);
     bench.registry.run_request(RUN_A).unwrap();
     bench.registry.run_phase(RUN_A, "running");
-    heartbeat(&bench, RUN_A, 120);
+    heartbeat(&bench, RUN_A, 600);
     bench.registry.tick_queues();
     assert_eq!(bench.registry.runs.current, RUN_A);
 }
@@ -833,7 +833,7 @@ fn a_queued_request_nobody_waits_for_is_skipped() {
     heartbeat(&bench, RUN_B, 0);
     bench.registry.run_request(RUN_A).unwrap();
     bench.registry.run_request(RUN_B).unwrap();
-    heartbeat(&bench, RUN_B, 120);
+    heartbeat(&bench, RUN_B, 600);
     bench.registry.run_phase(RUN_A, "done");
     assert_eq!(bench.registry.runs.current, "");
     assert_eq!(result_status(&bench, RUN_B).as_deref(), Some("abandoned"));

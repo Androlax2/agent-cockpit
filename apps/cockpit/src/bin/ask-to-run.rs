@@ -43,7 +43,7 @@ fn wait_for_result(id: &str) -> i32 {
     let mut last_beat: Option<Instant> = None;
     while !path.exists() {
         if Instant::now() >= deadline {
-            println!("No answer after {} min. Keep waiting with: ask-to-run --wait {id}", wait_seconds() / 60);
+            println!("No answer after {} min. Keep waiting with: ask-to-run --wait {id} (within 5 minutes, or the request is dropped)", wait_seconds() / 60);
             return TIMED_OUT;
         }
         if last_beat.is_none_or(|beat| beat.elapsed() >= HEARTBEAT_EVERY) {

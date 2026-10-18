@@ -42,8 +42,9 @@ const REQUEST_MAX_LENGTH: usize = 140;
 const FINISHED_MESSAGE: &str = "Finished, waiting for you"; // the hook's Stop message
 const RUN_PHASES: [&str; 3] = ["asking", "running", "done"];
 /// ask-to-run touches <id>.waiting every few seconds while it waits; this long without it, nobody
-/// waits for the answer any more (the session gave up, timed out without --wait, or died).
-const ABANDONED_AFTER: Duration = Duration::from_secs(30);
+/// waits for the answer any more (the session gave up, timed out without --wait, or died). Long
+/// enough for a session that timed out to do something else before it waits again.
+const ABANDONED_AFTER: Duration = Duration::from_secs(5 * 60);
 
 fn regex(pattern: &str) -> Regex {
     Regex::new(pattern).unwrap()
