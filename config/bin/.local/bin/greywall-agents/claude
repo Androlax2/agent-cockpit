@@ -2,6 +2,13 @@
 # Keep this launcher separate from the binary replaced by vendor updates.
 # Chrome writes its crash reports under the config dir even headless; give it one the sandbox allows.
 export CHROME_CONFIG_HOME="$HOME/.cache/chrome-sandbox"
+# Sessions do not update Claude Code: they cannot write ~/.local/share/claude/versions (greywall.json),
+# and a file planted there must never be run with Theo's rights. claude-update.timer updates it
+# outside the sandbox through the installed claude.
+export DISABLE_AUTOUPDATER=1
+# Theo's answers to ask-to-run and ask-to-guide (greywall.json allowRead, never allowWrite): it must
+# exist before greywall starts, or the sandbox does not get it.
+mkdir -p "$HOME/.cache/claude-answers/runs" "$HOME/.cache/claude-answers/guides"
 mkdir -p "$CHROME_CONFIG_HOME"
 
 project_root=$(git rev-parse --show-toplevel 2>/dev/null || pwd -P)
@@ -100,6 +107,25 @@ wait_for_greyproxy_dns() {
 }
 
 wait_for_greyproxy_dns
+
+# Host ports forwarded into this project's sandboxes, for a limited time.
+# One file per project, kept outside the sandbox so a session cannot widen
+# its own access. Content: "<expiry epoch> <port>...", e.g.
+#   ~/.config/greywall-agents/forward/opusline  ->  1760817600 3000 8088 8025
+# A running session keeps its forwards until it exits; the expiry only stops
+# new sessions from getting them.
+forward_root=$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null || printf '%s' "$PWD")
+forward_file="$HOME/.config/greywall-agents/forward/$(basename "$forward_root")"
+if [ -r "$forward_file" ]; then
+    read -r forward_until forward_ports < "$forward_file"
+    if [ "$(date +%s)" -lt "$forward_until" ]; then
+        for port in $forward_ports; do
+            greywall_options="$greywall_options --forward $port"
+        done
+    else
+        echo "greywall-agents: port forwards in $forward_file expired, not applied" >&2
+    fi
+fi
 
 # greywall_options is split on spaces on purpose: every path in it is under $HOME or
 # $XDG_RUNTIME_DIR, which have none.
