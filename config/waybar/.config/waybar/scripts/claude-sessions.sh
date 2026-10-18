@@ -4,7 +4,7 @@
 # the 60 s interval only refreshes the ages in the tooltip. Click (osd-show focus-next) jumps to the
 # most urgent session. CLAUDE_SESSIONS_SNAPSHOT overrides the path for testing against a fixture.
 SNAPSHOT="${CLAUDE_SESSIONS_SNAPSHOT:-${XDG_RUNTIME_DIR:-/tmp}/claude-sessions.json}"
-IDLE_GLYPH=$'\U000F06A9'  # nf-md-robot, the Claude workspace icon
+IDLE_GLYPH=$(printf '\xf3\xb0\x9a\xa9')  # nf-md-robot U+F06A9 as bytes: $'\U…' needs a UTF-8 locale, make runs with LC_ALL=C
 
 print_idle() {
     jq -cn --arg glyph "$IDLE_GLYPH" '{text: $glyph, tooltip: "No Claude session\nClick: open the manager", class: "idle", alt: "idle"}'

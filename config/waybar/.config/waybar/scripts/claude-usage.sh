@@ -19,8 +19,8 @@ CACHE="${XDG_RUNTIME_DIR:-/tmp}/claude-usage.json"
 CACHE_MAX_AGE_S=240
 WARNING_AT=70
 CRITICAL_AT=90
-# Material clock-outline and calendar, in the bar's icon grey.
-declare -A GLYPHS=([five_hour]=$'\U000F0150' [seven_day]=$'\U000F00ED')
+# Material clock-outline (U+F0150) and calendar (U+F00ED) as UTF-8 bytes: $'\U…' needs a UTF-8 locale.
+declare -A GLYPHS=([five_hour]=$(printf '\xf3\xb0\x85\x90') [seven_day]=$(printf '\xf3\xb0\x83\xad'))
 GLYPH_COLOR="#a9b1d6"
 
 print_unavailable() { # class reason
@@ -59,15 +59,15 @@ fetch_response() {
 errors=$(mktemp)
 trap 'rm -f "$errors"' EXIT
 
-if [[ ! -r $CREDENTIALS ]]; then
-    print_unavailable unknown "no credentials at $CREDENTIALS"
-    exit 0
-fi
-plan=$(jq -r '.claudeAiOauth.subscriptionType // "unknown plan"' "$CREDENTIALS")
-
+plan="unknown plan"
 if [[ -n ${CLAUDE_USAGE_FIXTURE:-} ]]; then
     response=$(cat "$CLAUDE_USAGE_FIXTURE")
 else
+    if [[ ! -r $CREDENTIALS ]]; then
+        print_unavailable unknown "no credentials at $CREDENTIALS"
+        exit 0
+    fi
+    plan=$(jq -r '.claudeAiOauth.subscriptionType // "unknown plan"' "$CREDENTIALS")
     # Both modules poll on the same schedule; the lock makes the second one read what the first fetched.
     # Without a writable runtime dir there is no cache either, so just fetch unlocked.
     if { exec 9>"$CACHE.lock"; } 2>/dev/null; then

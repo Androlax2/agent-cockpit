@@ -10,19 +10,51 @@
 set -euo pipefail
 
 # A nested claude (a `claude -p` that a tool of another session runs) is not a session of yours:
-# it shares the parent's pane and would shadow it in the manager. Its hooks have two claude
-# processes among their ancestors instead of one, and report nothing.
-claude_ancestors=0
+# it shares the parent's pane and would shadow it in the manager, so its hooks report nothing.
+# Claude Code marks every process a tool runs with CLAUDECODE=1; a session started by you from a
+# shell has no such mark, a nested one carries it in its own environment. Counting processes
+# named claude does not work since 2.1.300: the launcher, the daemon and the pty host are all
+# ancestors of every session. The marked ancestor is looked for among Claude processes only
+# (comm claude or a version number), so the hook's own tool shells never count.
+is_claude_process() { # pid
+    local comm
+    comm=$(cat "/proc/$1/comm" 2>/dev/null) || return 1
+    [[ $comm == claude || $comm =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]]
+}
+nested=0
 pid=$$
 while (( pid > 1 )); do
     pid=$(awk '/^PPid:/ { print $2 }' "/proc/$pid/status" 2>/dev/null) || break
     [[ -n $pid ]] || break
-    [[ $(cat "/proc/$pid/comm" 2>/dev/null) == claude ]] && (( claude_ancestors++ )) || true
+    if is_claude_process "$pid" && tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | grep -qx 'CLAUDECODE=1'; then
+        nested=1
+        break
+    fi
 done
-if (( claude_ancestors >= 2 )); then
+if (( nested )); then
     cat >/dev/null
     exit 0
 fi
+
+# The session binary runs under Claude's daemon with a scrubbed environment (2.1.300+): the tmux
+# pane and the kitty window the session was started in are only known to the launcher above it.
+# Take them from the nearest ancestor that has them when this process does not.
+inherited() { # NAME
+    local pid=$$ value
+    while (( pid > 1 )); do
+        pid=$(awk '/^PPid:/ { print $2 }' "/proc/$pid/status" 2>/dev/null) || break
+        [[ -n $pid ]] && (( pid > 1 )) || break
+        value=$(tr '\0' '\n' 2>/dev/null < "/proc/$pid/environ" | sed -n "s/^$1=//p" | head -1)
+        if [[ -n $value ]]; then
+            printf '%s' "$value"
+            return
+        fi
+    done
+}
+TMUX_PANE=${TMUX_PANE:-$(inherited TMUX_PANE)}
+KITTY_PID=${KITTY_PID:-$(inherited KITTY_PID)}
+KITTY_WINDOW_ID=${KITTY_WINDOW_ID:-$(inherited KITTY_WINDOW_ID)}
+KITTY_LISTEN_ON=${KITTY_LISTEN_ON:-$(inherited KITTY_LISTEN_ON)}
 
 payload=$(cat)
 event=$(jq -r '.hook_event_name' <<<"$payload")
@@ -42,7 +74,11 @@ case $event in
         ;;
     UserPromptSubmit)
         state=working
-        task=$(jq -r '.prompt // "" | split("\n")[0] | gsub("\\s+"; " ") | .[:60]' <<<"$payload")
+        # Only what you typed names the task: prompts from the system (task notifications, loop
+        # wake-ups) say nothing about it.
+        if [[ $(jq -r '.source // "user"' <<<"$payload") == user ]]; then
+            task=$(jq -r '.prompt // "" | split("\n")[0] | gsub("\\s+"; " ") | .[:60]' <<<"$payload")
+        fi
         ;;
     PostToolUse)
         state=working
@@ -81,6 +117,18 @@ report=$(jq -cn \
       $kitty_pid, $kitty_window, $kitty_listen, $tmux_pane}
      | with_entries(select(.value != "" and .value != false))')
 
+# One line per event in ~/.cache/claude/hook.log, the one place the sandbox lets the hook write:
+# the event, the session, the state and where the report went, never prompt text. 512 KB, then
+# one previous file. `claude-sessions logs` shows the end of it.
+hook_log() { # message
+    local log="$HOME/.cache/claude/hook.log"
+    {
+        mkdir -p "$(dirname "$log")"
+        if (( $(stat -c %s "$log" 2>/dev/null || echo 0) > 524288 )); then mv -f "$log" "$log.1"; fi
+        printf '%s %s %s %s: %s\n' "$(date -Iseconds)" "$event" "${session:0:8}" "${state:-·}" "$1" >> "$log"
+    } 2>/dev/null || true
+}
+
 # A FIFO without its daemon would block the open forever; give up after a second instead.
 send_to_osd() {
     [[ -p $fifo ]] || return 1
@@ -90,8 +138,10 @@ send_to_osd() {
 }
 
 if send_to_osd "session $report"; then
+    hook_log "sent to the osd daemon"
     exit 0
 fi
+hook_log "osd daemon not reading $fifo: falling back to a toast"
 
 # Fallback: swaync toasts, closed again once the session reports without a message.
 if [[ -n $message ]]; then

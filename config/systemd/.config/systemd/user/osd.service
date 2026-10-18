@@ -1,0 +1,12 @@
+[Unit]
+Description=On-screen display, Claude banners and the Claude session registry (~/.config/osd/osd.py)
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.config/osd/osd.py
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

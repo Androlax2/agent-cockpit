@@ -11,6 +11,7 @@ session=$(jq -r '.session_id // empty' <<<"$input")
 [[ -n $session ]] || exit 0
 cache_dir="$HOME/.cache/claude"
 mkdir -p "$cache_dir"
-jq -c '{model: .model.display_name, context: .context_window.used_percentage, cost: .cost.total_cost_usd,
-        name: .session_name, updated: now | floor}' <<<"$input" > "$cache_dir/statusline-$session.json.tmp" \
+# CLAUDE_EFFORT is the session's effort level, which Claude exports to the commands it runs.
+jq -c --arg effort "${CLAUDE_EFFORT:-}" '{model: .model.display_name, context: .context_window.used_percentage, cost: .cost.total_cost_usd,
+        name: .session_name, remote: (.remote != null), effort: (if $effort == "" then null else $effort end), updated: now | floor}' <<<"$input" > "$cache_dir/statusline-$session.json.tmp" \
     && mv "$cache_dir/statusline-$session.json.tmp" "$cache_dir/statusline-$session.json"
