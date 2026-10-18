@@ -1,88 +1,12 @@
-#!/usr/bin/env python3
-"""claude-todo: Theo's todo list (the cockpit's Todo panel), for Claude inside the sandbox.
-
-    claude-todo list [--all]        the items of this directory's project (--all: every project)
-    claude-todo start <id>          mark it in progress
-    claude-todo done <id>           mark it done
-    claude-todo todo <id>           back to to do
-    claude-todo add '<text>'        a new item for this directory's project
-
-An id is a typed item's 8 hex characters, or a GitHub issue as owner/repo#12. The list is read from
-~/.local/state/claude-sessions/todo.json; the sandbox cannot write there, so changes are appended
-to ~/.cache/claude/todo/updates.jsonl and the cockpit's column applies them (within a second).
-CLAUDE_TODO_PATH and CLAUDE_TODO_UPDATES override both paths (tests).
-"""
-
-import json
-import os
-import re
-import sys
-import time
-
-TODO_PATH = os.environ.get("CLAUDE_TODO_PATH", os.path.join(os.environ.get("XDG_STATE_HOME", os.path.expanduser("~/.local/state")),
-                                                             "claude-sessions", "todo.json"))
-UPDATES = os.environ.get("CLAUDE_TODO_UPDATES", os.path.expanduser("~/.cache/claude/todo/updates.jsonl"))
-KEY = re.compile(r"[0-9a-f]{8}|[\w.-]+/[\w.-]+#\d+")
-GLYPHS = {"todo": "•", "doing": "◐", "done": "✓"}
-
-
-def project_of(directory: str) -> str:
-    path = directory
-    while path and path != "/":
-        if os.path.exists(os.path.join(path, ".git")):
-            clones = os.path.expanduser("~/IdeaProjects/.parallel") + os.sep
-            return path[len(clones):].split(os.sep)[0] if path.startswith(clones) else os.path.basename(path)
-        path = os.path.dirname(path)
-    return os.path.basename(directory.rstrip("/")) or directory
-
-
-def load() -> dict:
-    try:
-        with open(TODO_PATH) as file:
-            data = json.load(file)
-    except (OSError, ValueError):
-        return {"items": [], "issues": {}}
-    return {"items": data, "issues": {}} if isinstance(data, list) else data
-
-
-def append(update: dict):
-    os.makedirs(os.path.dirname(UPDATES), exist_ok=True)
-    update.update(session=os.environ.get("CLAUDE_CODE_SESSION_ID", ""), at=int(time.time()))
-    with open(UPDATES, "a") as file:
-        file.write(json.dumps(update) + "\n")
-
-
-def list_items(everything: bool) -> int:
-    data, project = load(), project_of(os.getcwd())
-    shown = 0
-    for item in data.get("items", []):
-        if not everything and item.get("project") != project:
-            continue
-        status = item.get("status", "doing" if item.get("sent") else "todo")
-        print(f"{GLYPHS.get(status, '•')} {item.get('id')}  {status:<5}  {item.get('project')}: {item.get('text')}")
-        shown += 1
-    for key, value in data.get("issues", {}).items():
-        print(f"{GLYPHS.get(value.get('status'), '•')} {key}  {value.get('status')}")
-        shown += 1
-    if not shown:
-        print(f"Nothing on the list for {project}." if not everything else "The list is empty.")
-    return 0
-
-
-def main(arguments: list[str]) -> int:
-    if not arguments or arguments[0] == "list":
-        return list_items("--all" in arguments)
-    if arguments[0] in ("start", "done", "todo") and len(arguments) == 2 and KEY.fullmatch(arguments[1]):
-        append({"action": {"start": "doing"}.get(arguments[0], arguments[0]), "id": arguments[1]})
-        print(f"{arguments[1]} marked {'in progress' if arguments[0] == 'start' else arguments[0]} (the column applies it).")
-        return 0
-    if arguments[0] == "add" and len(arguments) == 2 and arguments[1].strip():
-        append({"action": "add", "text": " ".join(arguments[1].split())[:300], "cwd": os.getcwd()})
-        print(f"Added to {project_of(os.getcwd())}'s list.")
-        return 0
-    print(__doc__.strip().split("\n\n")[1], file=sys.stderr)
-    return 2
-
-
-if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+#!/bin/sh
+# A Rust program of the dotfiles (apps/, built with `make cockpit` into apps/target/release): this
+# runs the build named like this script, found next to it through the stow link.
+here=$(dirname "$(readlink -f "$0")")
+binary="$here/../../../../apps/target/release/$(basename "$0")"
+if [ ! -x "$binary" ]; then
+    echo "$(basename "$0") is not built yet: make -C ~/dotfiles cockpit" >&2
+    # In a terminal pane of its own the message stays on screen instead of a dead pane.
+    [ $# -eq 0 ] && [ -t 1 ] && exec sleep 3600
+    exit 1
+fi
+exec "$binary" "$@"

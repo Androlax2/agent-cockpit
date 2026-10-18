@@ -1,12 +1,11 @@
 #!/bin/sh
-# The column of the Claude session manager (claude-sessions) and its reports (usage, costs, digest)
-# are a Rust program: apps/claude-sessions-sidebar in the dotfiles, built with `make cockpit`. This
-# runs that build, found next to this script through the stow link.
+# A Rust program of the dotfiles (apps/, built with `make cockpit` into apps/target/release): this
+# runs the build named like this script, found next to it through the stow link.
 here=$(dirname "$(readlink -f "$0")")
-binary="$here/../../../../apps/claude-sessions-sidebar/target/release/claude-sessions-sidebar"
+binary="$here/../../../../apps/target/release/$(basename "$0")"
 if [ ! -x "$binary" ]; then
-    echo "claude-sessions-sidebar is not built yet: make -C ~/dotfiles cockpit" >&2
-    # In the manager's pane the message stays on screen instead of a dead pane.
+    echo "$(basename "$0") is not built yet: make -C ~/dotfiles cockpit" >&2
+    # In a terminal pane of its own the message stays on screen instead of a dead pane.
     [ $# -eq 0 ] && [ -t 1 ] && exec sleep 3600
     exit 1
 fi

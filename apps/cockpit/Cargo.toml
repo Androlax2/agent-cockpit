@@ -1,0 +1,22 @@
+[package]
+name = "cockpit"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+chrono = "0.4.45"
+crossterm = "0.29.0"
+ratatui = "0.30.2"
+regex = "1.13.1"
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+sha1_smol = "1.0.1"
+unicode-width = "0.2.2"
+ureq = "3.4.2"
+
+[dev-dependencies]
+libc = "0.2.191"
