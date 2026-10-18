@@ -1,0 +1,143 @@
+#!/usr/bin/env python3
+"""claude-run-approve <id>: the approval terminal for a command Claude asked to run (ask-to-run).
+
+Opened by the OSD daemon outside the sandbox, as a popup over the cockpit or a floating window.
+Runs with Theo's rights, so nothing happens without his "y". The request is read once, here: the
+sandbox can rewrite the file, so what is shown is what runs. "e" edits the command first; the
+edited command is what runs and what Claude is told. The command runs in a real terminal through
+`script`, so sudo passwords and prompts work, and its output is recorded in the runtime directory,
+which the sandbox cannot read; it reaches Claude only after "send the output to Claude? [Y/n]".
+CLAUDE_RUNS_DIR overrides the requests folder (tests).
+"""
+
+import json
+import os
+import re
+import shlex
+import subprocess
+import sys
+import tempfile
+import time
+
+RUNS_DIR = os.environ.get("CLAUDE_RUNS_DIR", os.path.expanduser("~/.cache/claude/runs"))
+LOG_DIR = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "claude-runs")
+FIFO = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "osd.fifo")
+MAX_AGE_S = 15 * 60
+BOLD, DIM, BLUE, YELLOW, RED, GREEN, RESET = "\033[1m", "\033[2m", "\033[34m", "\033[33m", "\033[31m", "\033[32m", "\033[0m"
+SCRIPT_BANNER = re.compile(r"^Script (started|done) on .*$", re.MULTILINE)
+
+
+def read_request(request_id: str) -> dict:
+    """The request, validated, or an exception saying why it cannot be answered."""
+    if not re.fullmatch(r"[0-9a-f]{12}", request_id):
+        raise ValueError("not a request id")
+    if os.path.exists(os.path.join(RUNS_DIR, f"{request_id}.result")):
+        raise ValueError("already answered")
+    with open(os.path.join(RUNS_DIR, f"{request_id}.request")) as file:
+        request = json.load(file)
+    if not isinstance(request, dict) or not isinstance(request.get("command"), str) or not request["command"].strip():
+        raise ValueError("no command in the request")
+    if time.time() - int(request.get("requested_at", 0)) > MAX_AGE_S:
+        raise ValueError("older than 15 minutes")
+    return request
+
+
+def write_result(request_id: str, result: dict):
+    path = os.path.join(RUNS_DIR, f"{request_id}.result")
+    with open(path + ".tmp", "w") as file:
+        json.dump(result, file)
+    os.replace(path + ".tmp", path)
+
+
+def send(line: str):
+    try:
+        fifo = os.open(FIFO, os.O_WRONLY | os.O_NONBLOCK)
+        os.write(fifo, (line + "\n").encode())
+        os.close(fifo)
+    except OSError:
+        pass
+
+
+def log(level: str, message: str):
+    subprocess.run(["claude-sessions", "log", "run", level, message], capture_output=True)
+
+
+def edit(command: str) -> str:
+    with tempfile.NamedTemporaryFile("w+", suffix=".fish", delete=False) as file:
+        file.write(command + "\n")
+    try:
+        subprocess.run([os.environ.get("EDITOR", "nano"), file.name])
+        with open(file.name) as edited:
+            return edited.read().strip()
+    finally:
+        os.remove(file.name)
+
+
+def ask(question: str, default: str) -> str:
+    try:
+        return (input(question).strip().lower() or default)[:1]
+    except EOFError:
+        return default
+
+
+def run(command: str, cwd: str, log_path: str) -> int:
+    os.makedirs(LOG_DIR, mode=0o700, exist_ok=True)
+    result = subprocess.run(["script", "-qfec", shlex.join(["fish", "-c", command]), log_path], cwd=cwd)
+    return result.returncode
+
+
+def recorded_output(log_path: str) -> str:
+    try:
+        with open(log_path, errors="replace") as file:
+            return SCRIPT_BANNER.sub("", file.read()).strip("\n")
+    except OSError:
+        return ""
+
+
+def approve(request_id: str) -> int:
+    try:
+        request = read_request(request_id)
+    except (OSError, ValueError) as error:
+        print(f"{RED}Cannot answer request {request_id}: {error}.{RESET}")
+        return 1
+    command, original = request["command"], request["command"]
+    cwd = request.get("cwd") if isinstance(request.get("cwd"), str) and os.path.isdir(request.get("cwd")) else os.path.expanduser("~")
+    while True:
+        print(f"\n{BOLD}{BLUE}Claude · {request.get('project', '?')}{RESET} asks you to run, in {DIM}{cwd}{RESET}:\n")
+        print(f"  {BOLD}{command}{RESET}\n")
+        answer = ask(f"Run it? {BOLD}y{RESET} runs · {BOLD}e{RESET} edits first · {BOLD}n{RESET} or Enter declines: ", "n")
+        if answer == "e":
+            command = edit(command) or command
+            continue
+        break
+    send(f"notice-clear run-{request_id}")
+    if answer != "y":
+        write_result(request_id, {"status": "declined"})
+        log("INFO", f"declined {request_id} for {request.get('project', '?')}")
+        print("Declined: Claude is told.")
+        return 0
+    log_path = os.path.join(LOG_DIR, f"{request_id}.log")
+    print(f"{DIM}─── running ───{RESET}")
+    exit_code = run(command, cwd, log_path)
+    print(f"{DIM}─── {RESET}{GREEN if exit_code == 0 else RED}exit {exit_code}{RESET}")
+    keep = ask(f"Send the output to Claude? {BOLD}Y{RESET}/n: ", "y") == "y"
+    write_result(request_id, {"status": "ran", "exit": exit_code, "output": recorded_output(log_path) if keep else "",
+                              "output_withheld": not keep, "edited_command": command if command != original else None})
+    try:
+        os.remove(log_path)
+    except OSError:
+        pass
+    log("INFO", f"ran {request_id} for {request.get('project', '?')}: exit {exit_code}"
+                f"{', edited' if command != original else ''}{', output withheld' if not keep else ''}")
+    return 0
+
+
+if __name__ == "__main__":
+    if len(sys.argv) != 2:
+        sys.exit("usage: claude-run-approve <id>")
+    status = approve(sys.argv[1])
+    try:
+        input(f"{DIM}Enter closes this window.{RESET}")
+    except EOFError:
+        pass
+    sys.exit(status)

@@ -1,0 +1,114 @@
+#!/usr/bin/env python3
+"""Ask Theo to run a command outside the sandbox, and get its output back.
+
+    ask-to-run [--cwd DIR] '<command>'
+    ask-to-run --wait <id>          keep waiting for an earlier request
+
+Run by Claude inside greywall, which cannot reach systemd, ~/.local/bin, sudo and the rest of the
+machine. The request goes to ~/.cache/claude/runs/<id>.request and the OSD daemon opens an approval
+terminal outside the sandbox (claude-run-approve): a popup over the cockpit, or a floating window.
+Nothing runs until Theo reads the command there and answers y. This prints the command's output and
+exits with its status; 125 when Theo declines, 124 when the wait runs out (9 minutes, under the Bash
+tool's 10), 126 when no daemon reads the requests (fall back to a fish block then).
+CLAUDE_RUNS_DIR and ASK_TO_RUN_WAIT_S override the folder and the wait (tests).
+"""
+
+import json
+import os
+import re
+import secrets
+import sys
+import time
+
+RUNS_DIR = os.environ.get("CLAUDE_RUNS_DIR", os.path.expanduser("~/.cache/claude/runs"))
+FIFO = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "osd.fifo")
+WAIT_S = int(os.environ.get("ASK_TO_RUN_WAIT_S", "540"))
+OUTPUT_LINES = 400
+ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\r")
+DECLINED, TIMED_OUT, NO_DAEMON = 125, 124, 126
+
+
+def project_of(directory: str) -> str:
+    path = directory
+    while path and path != "/":
+        if os.path.exists(os.path.join(path, ".git")):
+            return os.path.basename(path)
+        path = os.path.dirname(path)
+    return os.path.basename(directory.rstrip("/")) or directory
+
+
+def file_request(command: str, cwd: str) -> str:
+    os.makedirs(RUNS_DIR, exist_ok=True)
+    request_id = secrets.token_hex(6)
+    request = {"id": request_id, "command": command, "cwd": cwd, "project": project_of(cwd),
+               "session": os.environ.get("CLAUDE_CODE_SESSION_ID", ""), "requested_at": int(time.time())}
+    path = os.path.join(RUNS_DIR, f"{request_id}.request")
+    with open(path + ".tmp", "w") as file:
+        json.dump(request, file)
+    os.replace(path + ".tmp", path)
+    return request_id
+
+
+def notify_daemon(request_id: str) -> bool:
+    try:
+        fifo = os.open(FIFO, os.O_WRONLY | os.O_NONBLOCK)
+    except OSError:
+        return False
+    try:
+        os.write(fifo, f"run-request {request_id}\n".encode())
+        return True
+    except OSError:
+        return False
+    finally:
+        os.close(fifo)
+
+
+def wait_for_result(request_id: str) -> int:
+    path = os.path.join(RUNS_DIR, f"{request_id}.result")
+    deadline = time.time() + WAIT_S
+    while time.time() < deadline:
+        if os.path.exists(path):
+            break
+        time.sleep(0.5)
+    else:
+        print(f"No answer after {WAIT_S // 60} min. Keep waiting with: ask-to-run --wait {request_id}")
+        return TIMED_OUT
+    with open(path) as file:
+        result = json.load(file)
+    if result.get("status") == "declined":
+        print("Theo declined to run it.")
+        return DECLINED
+    if result.get("edited_command"):
+        print(f"Theo edited the command before running it:\n  {result['edited_command']}\n")
+    if result.get("output_withheld"):
+        print("Theo ran it but kept the output out of the conversation.")
+    else:
+        lines = ANSI.sub("", result.get("output", "")).splitlines()
+        if len(lines) > OUTPUT_LINES:
+            print(f"[first {len(lines) - OUTPUT_LINES} lines left out]")
+        print("\n".join(lines[-OUTPUT_LINES:]))
+    exit_code = int(result.get("exit", 1))
+    print(f"[exit {exit_code}]")
+    return exit_code
+
+
+def main(arguments: list[str]) -> int:
+    if arguments[:1] == ["--wait"] and len(arguments) == 2 and re.fullmatch(r"[0-9a-f]{12}", arguments[1]):
+        return wait_for_result(arguments[1])
+    cwd = os.getcwd()
+    if arguments[:1] == ["--cwd"] and len(arguments) >= 3:
+        cwd, arguments = os.path.abspath(arguments[1]), arguments[2:]
+    if len(arguments) != 1 or not arguments[0].strip():
+        print("usage: ask-to-run [--cwd DIR] '<command>' | ask-to-run --wait <id>", file=sys.stderr)
+        return 2
+    request_id = file_request(arguments[0], cwd)
+    if not notify_daemon(request_id):
+        os.remove(os.path.join(RUNS_DIR, f"{request_id}.request"))
+        print("No OSD daemon reads the requests (osd.service down?). Give Theo the command as a fish block instead.")
+        return NO_DAEMON
+    print(f"Asked Theo to run it (request {request_id}); waiting for his answer.", file=sys.stderr)
+    return wait_for_result(request_id)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

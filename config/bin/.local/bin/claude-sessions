@@ -571,6 +571,8 @@ show_manager() {
 sweep_caches() {
     # One status-line file per session ever run, and toast ids of sessions long gone.
     find "$HOME/.cache/claude" -maxdepth 1 \( -name 'statusline-*.json' -o -name 'toast-*.id' \) -mtime +7 -delete 2>/dev/null || true
+    # Run requests and their results (ask-to-run).
+    find "$HOME/.cache/claude/runs" -maxdepth 1 -type f -mtime +7 -delete 2>/dev/null || true
 }
 
 doctor() {
@@ -644,6 +646,7 @@ doctor() {
     local recent_facts
     recent_facts=$(find "$HOME/.cache/claude" -maxdepth 1 -name 'statusline-*.json' -mmin -60 2>/dev/null)
     if [[ -z $recent_facts ]] || jq -e 'select(.effort != null)' $recent_facts >/dev/null 2>&1; then report ok "status line reports the effort"; else report fail "status line reports no effort" "install .handoff/claude/statusline-command.sh"; fi
+    if command -v ask-to-run >/dev/null && command -v claude-run-approve >/dev/null; then report ok "ask-to-run and claude-run-approve resolve"; else report fail "ask-to-run or claude-run-approve not on PATH" "cd ~/dotfiles/config && stow -t ~ --restow bin"; fi
     if grep -qs "this terminal" "$HOME/.config/fish/config.fish"; then report ok "claude asks manager or terminal"; else report fail "fish claude function is the old one" "install .handoff/fish/config.fish"; fi
     echo "logs"
     local since errors last_error
