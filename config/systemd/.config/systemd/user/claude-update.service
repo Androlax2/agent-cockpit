@@ -1,0 +1,6 @@
+[Unit]
+Description=Update Claude Code outside the sandbox, through the installed claude (~/.local/bin/claude-update)
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/claude-update

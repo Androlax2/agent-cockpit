@@ -283,7 +283,7 @@ pub fn gaming() -> bool {
 /// One banner through the OSD daemon's FIFO; false when the daemon is not reading it.
 pub fn send_notice(notice: &Value) -> bool {
     use std::os::unix::fs::OpenOptionsExt;
-    let Ok(mut fifo) = OpenOptions::new().write(true).custom_flags(libc_nonblock()).open(paths::osd_fifo()) else {
+    let Ok(mut fifo) = OpenOptions::new().write(true).custom_flags(libc_nonblock()).open(paths::osd_host_fifo()) else {
         return false;
     };
     fifo.write_all(format!("notice {notice}\n").as_bytes()).is_ok()

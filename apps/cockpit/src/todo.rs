@@ -62,6 +62,8 @@ impl Item {
     pub fn status(&self) -> String { let status = self.text_of("status"); if status.is_empty() { "todo".into() } else { status } }
     pub fn priority(&self) -> i64 { self.0.get("priority").and_then(Value::as_i64).unwrap_or(PRIORITY_NORMAL) }
     pub fn created(&self) -> i64 { self.0.get("created").and_then(Value::as_i64).unwrap_or(0) }
+    /// Who filed it when not Theo: "session <id>" for claude-todo add.
+    pub fn source(&self) -> String { self.text_of("source") }
     fn updated(&self) -> i64 { self.0.get("updated").and_then(Value::as_i64).unwrap_or(0) }
 }
 
@@ -113,12 +115,21 @@ pub fn queue_order(a: &Entry, b: &Entry) -> Ordering {
 
 /// The message for Claude, with the item's key: Claude marks it done with claude-todo.
 pub fn with_todo_note(text: &str, key: &str) -> String {
+    // The text can become claude's first argument (claude-sessions new): one starting with "-"
+    // would be read as an option, such as --append-system-prompt=….
+    let text = if text.starts_with('-') { format!("Task: {text}") } else { text.to_string() };
     format!("{text} (todo {key}: when this is done, run claude-todo done {key})")
 }
 
 pub fn issue_prompt(issue: &Issue) -> String {
     format!("Work on GitHub issue #{} of this repository: {}. Read it with gh issue view {} first, then say how you will approach it before changing anything.",
-            issue.number, issue.title, issue.number)
+            issue.number, without_controls(&issue.title), issue.number)
+}
+
+/// Text typed into a session goes through tmux send-keys: a control character there is a key
+/// (Escape, Ctrl+C, Shift+Tab's sequence), and the column draws none of them. Gone before storing.
+pub fn without_controls(text: &str) -> String {
+    text.chars().map(|c| if c.is_control() && c != '\n' { ' ' } else { c }).collect()
 }
 
 pub struct TodoList {
@@ -194,11 +205,16 @@ impl TodoList {
     }
 
     pub fn add(&mut self, project: &str, cwd: &str, text: &str) -> String {
+        let id = self.add_unsaved(project, cwd, text);
+        self.save();
+        id
+    }
+
+    fn add_unsaved(&mut self, project: &str, cwd: &str, text: &str) -> String {
         let id = util::token_hex(4);
-        let text: String = util::collapse(text).chars().take(300).collect();
+        let text: String = util::collapse(&without_controls(text)).chars().take(300).collect();
         let item = json!({"id": id, "project": project, "cwd": cwd, "priority": PRIORITY_NORMAL, "text": text, "created": now_secs(), "status": "todo"});
         self.items.push(Item(item.as_object().unwrap().clone()));
-        self.save();
         id
     }
 
@@ -263,6 +279,12 @@ impl TodoList {
                 let cwd = update.get("cwd").and_then(Value::as_str).unwrap_or("").to_string();
                 if !text.is_empty() && std::path::Path::new(&cwd).is_dir() {
                     let id = self.add(&project_name(&repository_root(&cwd)), &cwd, &text);
+                    // Any sandbox can file an item under any project: the panel says it came from a
+                    // session, so Theo reads it before handing it on.
+                    if let Some(item) = self.items.iter_mut().find(|item| item.id() == id) {
+                        item.0.insert("source".into(), json!(if session.is_empty() { "a session".to_string() } else { format!("session {session}") }));
+                    }
+                    self.save();
                     util::log_event("INFO", &format!("todo {id} added by a session: {}", text.chars().take(60).collect::<String>()));
                     applied += 1;
                 }
@@ -281,6 +303,19 @@ impl TodoList {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_item_starting_with_a_dash_is_never_an_option() {
+        assert!(with_todo_note("--append-system-prompt=x", "ab12cd34").starts_with("Task: --append"));
+    }
+
+    #[test]
+    fn control_characters_never_reach_a_session() {
+        let mut todos = TodoList { items: Vec::new(), issues: Map::new(), queued: BTreeSet::new() };
+        let id = todos.add_unsaved("p", "/p", "fix typo\x1b[Z\x03\x03 now");
+        let text = todos.items.iter().find(|item| item.id() == id).unwrap().text();
+        assert!(!text.chars().any(char::is_control), "{text:?}");
+    }
 
     #[test]
     fn priority_marks_go_up_to_four() {

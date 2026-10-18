@@ -237,9 +237,13 @@ fn show_island(island: &Rc<RefCell<Island>>, kind: &str, icon_file: &str, fracti
     }));
 }
 
-fn handle(line: &str, registry: &Rc<RefCell<Registry>>, island: &Rc<RefCell<Island>>) {
+fn handle(line: &str, from_host: bool, registry: &Rc<RefCell<Registry>>, island: &Rc<RefCell<Island>>) {
     let (command, rest) = line.split_once(' ').unwrap_or((line, ""));
     let rest = rest.trim();
+    if !from_host && !command.is_empty() && !registry::allowed_from_sandbox(command) {
+        eprintln!("osd: {command:?} refused on the sandboxes' FIFO");
+        return;
+    }
     match command {
         "" => {}
         "session" => match registry::parse_session(rest) {
@@ -287,6 +291,34 @@ fn handle(line: &str, registry: &Rc<RefCell<Registry>>, island: &Rc<RefCell<Isla
 }
 
 /// The FIFO, opened read-write so the daemon never sees EOF when a writer closes.
+/// One command per line from a FIFO; `from_host` says whether it is the one sandboxes cannot open.
+fn listen(path: &std::path::Path, from_host: bool, registry: &Rc<RefCell<Registry>>, island: &Rc<RefCell<Island>>) {
+    let fifo = match desktop::fifo::open(path) {
+        Ok(fifo) => fifo,
+        Err(error) => {
+            eprintln!("osd: cannot open {}: {error}", path.display());
+            std::process::exit(1);
+        }
+    };
+    let raw = fifo.as_raw_fd();
+    // SAFETY: `fifo` is an open descriptor handed over to the File, which owns it from here on.
+    let mut reader = unsafe { std::fs::File::from_raw_fd(raw) };
+    std::mem::forget(fifo);
+    let mut buffer = Vec::new();
+    let (registry, island) = (registry.clone(), island.clone());
+    glib_unix::unix_fd_add_local(raw, glib::IOCondition::IN, move |_, _| {
+        let mut chunk = [0u8; 4096];
+        if let Ok(count) = reader.read(&mut chunk) {
+            buffer.extend_from_slice(&chunk[..count]);
+        }
+        while let Some(end) = buffer.iter().position(|byte| *byte == b'\n') {
+            let line: Vec<u8> = buffer.drain(..=end).collect();
+            handle(String::from_utf8_lossy(&line).trim(), from_host, &registry, &island);
+        }
+        glib::ControlFlow::Continue
+    });
+}
+
 fn activate(app: &Application) {
     let provider = CssProvider::new();
     provider.load_from_path(cockpit::paths::home().join(".config/osd/style.css"));
@@ -297,32 +329,8 @@ fn activate(app: &Application) {
     // Held for good: the daemon has no window most of the time.
     std::mem::forget(app.hold());
 
-    let fifo = match desktop::fifo::open(&cockpit::paths::osd_fifo()) {
-        Ok(fifo) => fifo,
-        Err(error) => {
-            eprintln!("osd: cannot open the FIFO: {error}");
-            std::process::exit(1);
-        }
-    };
-    let raw = fifo.as_raw_fd();
-    let mut reader = unsafe { std::fs::File::from_raw_fd(raw) };
-    std::mem::forget(fifo); // owned by `reader` from here on
-    let mut buffer = Vec::new();
-    {
-        let registry = registry.clone();
-        let island = island.clone();
-        glib_unix::unix_fd_add_local(raw, glib::IOCondition::IN, move |_, _| {
-            let mut chunk = [0u8; 4096];
-            if let Ok(count) = reader.read(&mut chunk) {
-                buffer.extend_from_slice(&chunk[..count]);
-            }
-            while let Some(end) = buffer.iter().position(|byte| *byte == b'\n') {
-                let line: Vec<u8> = buffer.drain(..=end).collect();
-                handle(String::from_utf8_lossy(&line).trim(), &registry, &island);
-            }
-            glib::ControlFlow::Continue
-        });
-    }
+    listen(&cockpit::paths::osd_fifo(), false, &registry, &island);
+    listen(&cockpit::paths::osd_host_fifo(), true, &registry, &island);
     {
         let registry = registry.clone();
         glib::timeout_add_seconds_local(1, move || {

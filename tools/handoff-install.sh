@@ -30,7 +30,14 @@ for group_dir in "$handoff"/*/; do
             problem="refusing $file -> $destination (a plain file name, and a destination inside the repository)"
             break
         fi
-        if ! grep -q "  $file\$" "$group_dir/SHA256SUMS" 2>/dev/null; then
+        # The destination, symlinks resolved, must stay inside the repository: a link planted in it
+        # (config/x -> ~/.ssh) would make the copy land elsewhere while the diff shows the repo path.
+        resolved=$(realpath -m -- "$repo/$destination")
+        if [[ $resolved != "$repo/"* || -L "$repo/$destination" ]]; then
+            problem="refusing $destination: it resolves outside the repository or is a symlink"
+            break
+        fi
+        if ! awk -v name="$file" '$2 == name { found = 1 } END { exit !found }' "$group_dir/SHA256SUMS" 2>/dev/null; then
             problem="$file is not in SHA256SUMS"
             break
         fi
@@ -49,8 +56,11 @@ for group_dir in "$handoff"/*/; do
         source="$group_dir/${files[$index]}" target="$repo/${destinations[$index]}"
         if ! cmp -s "$source" "$target"; then
             changed=1
-            diff -u --label "${destinations[$index]} (now)" --label "${destinations[$index]} (handoff)" "$target" "$source" 2>/dev/null \
-                || [[ -f $target ]] || echo "   new file: ${destinations[$index]}"
+            # Shown with control characters made visible (cat -v): nothing hides in the review.
+            # A new file is shown whole, against /dev/null.
+            current=$target
+            [[ -e $target ]] || { current=/dev/null; echo "   new file: ${destinations[$index]}"; }
+            diff -u --label "${destinations[$index]} (now)" --label "${destinations[$index]} (handoff)" "$current" "$source" | cat -v || true
         fi
     done
     if (( ! changed )); then
@@ -62,7 +72,7 @@ for group_dir in "$handoff"/*/; do
     for after in "${afters[@]}"; do
         [[ -z $after || -n ${shown[$after]:-} ]] && continue
         shown[$after]=1
-        echo "   then runs: $after"
+        echo "   then runs: $(cat -v <<< "$after")"
     done
     unset shown
     read -r -p "Install $group? [y/N] " answer || answer=""

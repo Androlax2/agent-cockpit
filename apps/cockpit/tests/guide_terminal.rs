@@ -29,11 +29,11 @@ fn guide(steps: Value, fields: Value) -> (PathBuf, &'static str) {
 
 fn start(root: &Path, id: &str) -> Terminal {
     Terminal::start(Path::new(env!("CARGO_BIN_EXE_claude-guide")), &[id],
-                    &[("CLAUDE_GUIDES_DIR", &root.join("guides")), ("XDG_RUNTIME_DIR", &root.join("run")), ("PATH", Path::new("/usr/bin:/bin"))])
+                    &[("CLAUDE_GUIDES_DIR", &root.join("guides")), ("CLAUDE_ANSWERS_DIR", &root.join("answers")), ("XDG_RUNTIME_DIR", &root.join("run")), ("PATH", Path::new("/usr/bin:/bin"))])
 }
 
 fn result(root: &Path, id: &str) -> Value {
-    serde_json::from_str(&fs::read_to_string(root.join(format!("guides/{id}.result"))).unwrap()).unwrap()
+    serde_json::from_str(&fs::read_to_string(root.join(format!("answers/guides/{id}.result"))).unwrap()).unwrap()
 }
 
 #[test]
@@ -77,7 +77,7 @@ fn unusable_guides_are_refused() {
         (json!([{"text": "x", "run": ["rm", "-rf"]}]), json!({}), "a step field that is not text"),
     ] {
         let (root, id) = guide(steps, fields);
-        let output = std::process::Command::new(env!("CARGO_BIN_EXE_claude-guide")).arg(id).env("CLAUDE_GUIDES_DIR", root.join("guides")).output().unwrap();
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_claude-guide")).arg(id).env("CLAUDE_GUIDES_DIR", root.join("guides")).env("CLAUDE_ANSWERS_DIR", root.join("answers")).output().unwrap();
         assert!(String::from_utf8_lossy(&output.stdout).contains(reason), "{reason}");
         let _ = fs::remove_dir_all(root);
     }

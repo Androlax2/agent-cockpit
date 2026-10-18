@@ -844,12 +844,25 @@ fn a_waiting_dotfiles_session_gets_it_as_a_message_with_the_report_in_a_file() {
     let fixture = Fixture::new();
     let mut reporter = reporter(&fixture);
     append_log(&fixture, &["2026-10-18T13:00:01+02:00 ERROR manager: it broke"]);
-    let dotfiles = sessions::Session { session: "s1".into(), state: "waiting".into(), project: "dotfiles".into(), ..Default::default() };
+    let dotfiles = sessions::Session { session: "s1".into(), state: "waiting".into(), project: "dotfiles".into(),
+                                       cwd: crate::paths::dotfiles().to_string_lossy().into_owned(), ..Default::default() };
     reporter.tick(&[dotfiles]);
     let calls = fixture.calls("claude-sessions");
     assert!(calls[0].starts_with("claude-sessions say s1 "));
     let report = calls[0].rsplit(' ').next().unwrap();
     assert!(fs::read_to_string(report).unwrap().contains("ERROR manager: it broke"));
+}
+
+#[test]
+fn a_session_calling_itself_dotfiles_elsewhere_gets_no_error_report() {
+    // Any sandbox can name its project "dotfiles" (a .git file pointing at a folder of that name).
+    let fixture = Fixture::new();
+    let mut reporter = reporter(&fixture);
+    append_log(&fixture, &["2026-10-18T13:00:01+02:00 ERROR manager: it broke"]);
+    let impostor = sessions::Session { session: "s9".into(), state: "waiting".into(), project: "dotfiles".into(), cwd: "/r/elsewhere".into(), ..Default::default() };
+    reporter.tick(&[impostor]);
+    let calls = fixture.wait_for_calls("claude-sessions", 1);
+    assert!(!calls.iter().any(|call| call.starts_with("claude-sessions say s9")), "{calls:?}");
 }
 
 #[test]
@@ -963,8 +976,23 @@ fn queue_fixture(state: &str, idle_s: i64) -> (Fixture, App) {
     let fixture = Fixture::new();
     let since = util::now() as i64 - idle_s;
     fixture.snapshot(json!([session(SESSION_A, state, "runway", "/r/runway", since)]));
-    let app = fixture.app();
+    let mut app = fixture.app();
+    app.gaming = || false;
     (fixture, app)
+}
+
+#[test]
+fn the_queue_waits_while_theo_games() {
+    let (fixture, mut app) = queue_fixture("waiting", 600);
+    app.gaming = || true;
+    let id = app.todos.add("runway", "/r/runway", "job");
+    app.todos.toggle_queued(&id);
+    app.dispatch_queue();
+    assert!(fixture.calls("claude-sessions").is_empty());
+    app.gaming = || false;
+    app.queue_checked = 0.0;
+    app.dispatch_queue();
+    assert_eq!(fixture.wait_for_calls("claude-sessions", 1).len(), 1);
 }
 
 #[test]
@@ -1041,4 +1069,17 @@ fn a_done_item_leaves_the_queue() {
     app.todos.toggle_queued(&id);
     app.todos.set_status(&id, "done", "");
     assert!(!TodoList::load().is_queued(&id));
+}
+
+#[test]
+fn a_session_borrowing_a_projects_name_gets_none_of_its_queue() {
+    let fixture = Fixture::new();
+    let since = util::now() as i64 - 600;
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "runway", "/r/impostor", since)]));
+    let mut app = fixture.app();
+    app.gaming = || false;
+    let id = app.todos.add("runway", "/r/runway", "job");
+    app.todos.toggle_queued(&id);
+    app.dispatch_queue();
+    assert!(fixture.calls("claude-sessions").is_empty());
 }

@@ -141,7 +141,9 @@ impl ErrorReporter {
     fn hand_over(&self, error: &str, context: &[String], sessions: &[Session]) {
         let prompt = prompt(error, context);
         let short: String = signature(error).chars().take(120).collect();
-        if let Some(waiting) = sessions.iter().find(|session| session.project == "dotfiles" && session.state == "waiting") {
+        // By folder: any session can name its project "dotfiles".
+        let dotfiles = paths::dotfiles().to_string_lossy().into_owned();
+        if let Some(waiting) = sessions.iter().find(|session| util::repository_root(&session.cwd) == dotfiles && session.state == "waiting") {
             let problem = match write_report(&prompt) {
                 Ok(path) => util::manager(&["say", &waiting.session, &message(&path)]),
                 Err(error) => format!("report not written: {error}"),

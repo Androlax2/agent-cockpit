@@ -32,7 +32,11 @@ pub fn state_dir() -> PathBuf { state_home().join("claude-sessions") }
 pub fn snapshot() -> PathBuf { runtime_dir().join("claude-sessions.json") }
 pub fn current() -> PathBuf { runtime_dir().join("claude-sessions.current") }
 pub fn usage_cache() -> PathBuf { runtime_dir().join("claude-usage.json") }
+/// Sessions' reports and requests: the one FIFO the sandboxes can write (greywall allowWrite).
 pub fn osd_fifo() -> PathBuf { runtime_dir().join("osd.fifo") }
+/// Everything else the OSD daemon takes (banners, focus, clearing, phases, volume): only programs
+/// outside the sandbox reach this one.
+pub fn osd_host_fifo() -> PathBuf { runtime_dir().join("osd-host.fifo") }
 pub fn history() -> PathBuf { from_env("CLAUDE_SESSIONS_HISTORY", home().join(".claude/history.jsonl")) }
 pub fn transcripts() -> PathBuf { from_env("CLAUDE_SESSIONS_TRANSCRIPTS", home().join(".claude/projects")) }
 pub fn statusline_dir() -> PathBuf { home().join(".cache/claude") }

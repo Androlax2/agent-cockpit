@@ -35,6 +35,7 @@ impl Fixture {
             std::env::set_var("XDG_STATE_HOME", root.join("state"));
             std::env::set_var("CLAUDE_RUNS_DIR", root.join("queue"));
             std::env::set_var("CLAUDE_GUIDES_DIR", root.join("queue"));
+            std::env::set_var("CLAUDE_ANSWERS_DIR", root.join("answers"));
             for name in ["CLAUDE_SESSIONS_CLONES", "HYPRLAND_INSTANCE_SIGNATURE"] {
                 std::env::remove_var(name);
             }
@@ -44,6 +45,13 @@ impl Fixture {
 
     fn queue(&self) -> PathBuf {
         self.root.join("queue")
+    }
+
+    /// Theo's answers, "runs" or "guides" (cockpit::approval::answers_dir).
+    fn answers(&self, kind: &str) -> PathBuf {
+        let directory = self.root.join("answers").join(kind);
+        fs::create_dir_all(&directory).unwrap();
+        directory
     }
 }
 
@@ -771,7 +779,7 @@ fn an_answered_request_in_the_queue_is_skipped() {
     let mut bench = Bench::new();
     bench.registry.run_request(RUN_A).unwrap();
     bench.registry.run_request(RUN_B).unwrap();
-    fs::write(bench.fixture.queue().join(format!("{RUN_B}.result")), "{}").unwrap();
+    fs::write(bench.fixture.answers("runs").join(format!("{RUN_B}.result")), "{}").unwrap();
     bench.registry.run_phase(RUN_A, "done");
     assert_eq!(bench.registry.runs.current, "");
 }
@@ -785,7 +793,7 @@ fn heartbeat(bench: &Bench, id: &str, seconds_ago: u64) {
 }
 
 fn result_status(bench: &Bench, id: &str) -> Option<String> {
-    let text = fs::read_to_string(bench.fixture.queue().join(format!("{id}.result"))).ok()?;
+    let text = fs::read_to_string(bench.fixture.answers("runs").join(format!("{id}.result"))).ok()?;
     serde_json::from_str::<Value>(&text).ok()?["status"].as_str().map(str::to_string)
 }
 
@@ -939,12 +947,33 @@ fn closing_the_guide_window_tells_claude_where_theo_stopped_and_opens_the_next()
     let mut bench = Bench::new();
     bench.registry.guide_request(RUN_A).unwrap();
     bench.registry.guide_request(RUN_B).unwrap();
-    fs::write(bench.fixture.queue().join(format!("{RUN_A}.progress")), json!({"step": 2, "total": 5, "done": 1}).to_string()).unwrap();
+    fs::write(bench.fixture.answers("guides").join(format!("{RUN_A}.progress")), json!({"step": 2, "total": 5, "done": 1}).to_string()).unwrap();
     bench.windows()[0].borrow_mut().closed = true;
     bench.registry.tick_queues();
-    let result: Value = serde_json::from_str(&fs::read_to_string(bench.fixture.queue().join(format!("{RUN_A}.result"))).unwrap()).unwrap();
+    let result: Value = serde_json::from_str(&fs::read_to_string(bench.fixture.answers("guides").join(format!("{RUN_A}.result"))).unwrap()).unwrap();
     assert_eq!((result["status"].as_str(), result["step"].as_i64(), result["total"].as_i64()), (Some("closed"), Some(2), Some(5)));
     assert!(bench.dropped().contains(&format!("notice:guide-{RUN_A}")));
     assert_eq!(bench.registry.guides.current, RUN_B);
     assert_eq!(bench.windows()[1].borrow().command.last().unwrap(), RUN_B);
+}
+
+#[test]
+fn a_sandbox_may_only_report_and_request_on_its_fifo() {
+    for command in ["session", "run-request", "guide-request"] {
+        assert!(allowed_from_sandbox(command), "{command}");
+    }
+    for command in ["sessions-clear", "focus-next", "notice", "notice-clear", "run-phase", "volume"] {
+        assert!(!allowed_from_sandbox(command), "{command}");
+    }
+}
+
+#[test]
+fn a_project_name_with_escape_codes_is_not_taken() {
+    let mut bench = Bench::new();
+    let folder = bench.fixture.root.join("evil");
+    fs::create_dir_all(bench.fixture.root.join("store/x\x1b[8my/.git")).unwrap();
+    fs::create_dir_all(&folder).unwrap();
+    fs::write(folder.join(".git"), format!("gitdir: {}\n", bench.fixture.root.join("store/x\x1b[8my/.git").display())).unwrap();
+    bench.report(SESSION_A, json!({"state": "waiting", "cwd": folder.to_string_lossy(), "project": "evil"}));
+    assert_eq!(bench.snapshot()[0]["project"], "evil");
 }

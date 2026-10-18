@@ -112,7 +112,7 @@ def window_line($label):
         (.seven_day | window_line("7-day")),
         (.seven_day_opus | window_line("7-day Opus")),
         (.seven_day_sonnet | window_line("7-day Sonnet")),
-        ((.model_scoped // [])[] | window_line("7-day \(.display_name // "model")")),
+        ((.model_scoped // [])[] | window_line("7-day \(.display_name // "model" | pango)")),
         "",
         "<span color='#565f89'>Click: usage page on claude.ai</span>"
       ] | join("\n")),

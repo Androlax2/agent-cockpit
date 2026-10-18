@@ -95,3 +95,16 @@ fn an_installed_group_is_just_removed() {
     assert!(stdout(&output).contains("already installed"));
     assert!(!handoff.group.exists());
 }
+
+#[test]
+fn a_destination_through_a_symlink_is_refused() {
+    // A link planted in the repository would carry the copy outside it.
+    let handoff = Handoff::new();
+    let outside = handoff.sandbox.root.join("outside");
+    fs::create_dir_all(&outside).unwrap();
+    fs::remove_dir_all(handoff.repo.join("config/claude")).unwrap();
+    std::os::unix::fs::symlink(&outside, handoff.repo.join("config/claude")).unwrap();
+    let output = handoff.install("y\n");
+    assert!(stdout(&output).contains("refusing"), "{}", stdout(&output));
+    assert!(fs::read_dir(&outside).unwrap().next().is_none());
+}

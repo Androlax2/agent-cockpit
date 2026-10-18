@@ -25,7 +25,7 @@ fn request(command: &str) -> (PathBuf, String) {
 fn approve_in_terminal(command: &str) -> (Terminal, PathBuf, String) {
     let (root, id) = request(command);
     let mut terminal = Terminal::start(Path::new(env!("CARGO_BIN_EXE_claude-run-approve")), &[&id],
-                                       &[("CLAUDE_RUNS_DIR", &root.join("runs")), ("XDG_RUNTIME_DIR", &root.join("run"))]);
+                                       &[("CLAUDE_RUNS_DIR", &root.join("runs")), ("CLAUDE_ANSWERS_DIR", &root.join("answers")), ("XDG_RUNTIME_DIR", &root.join("run"))]);
     terminal.pump(10.0, Some(b"Run it?"));
     terminal.pump(0.7, None);
     terminal.type_keys(b"\x1b[B");
@@ -53,7 +53,7 @@ fn a_question_without_newline_stays_on_screen_until_answered() {
     terminal.type_keys(b"\r");
     let _ = terminal.child.wait();
     assert!(contains(&terminal.screen, b"got y"));
-    let result: serde_json::Value = serde_json::from_str(&fs::read_to_string(root.join(format!("runs/{id}.result"))).unwrap()).unwrap();
+    let result: serde_json::Value = serde_json::from_str(&fs::read_to_string(root.join(format!("answers/runs/{id}.result"))).unwrap()).unwrap();
     assert_eq!((result["status"].as_str(), result["exit"].as_i64()), (Some("ran"), Some(0)));
     assert!(result["output"].as_str().unwrap().contains("got y"));
     let _ = fs::remove_dir_all(root);

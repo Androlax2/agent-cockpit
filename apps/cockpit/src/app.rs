@@ -315,6 +315,8 @@ pub struct App {
     pub held: Vec<String>,
     pub(crate) held_checked: f64,
     pub(crate) queue_checked: f64,
+    /// Whether Theo games right now; the queue waits meanwhile (a test sets its own).
+    pub gaming: fn() -> bool,
     pub(crate) restore_checked: f64,
     pub(crate) start_files: Vec<(&'static str, f64)>,
     pub width: u16,
@@ -334,7 +336,7 @@ impl App {
             costs: Costs::default(), reviews: Reviews::default(), todos: TodoList::load(), errors: ErrorReporter::new(),
             claude_status: ClaudeStatus::default(), panels: Default::default(), focus: 1, query: String::new(), filtering: false,
             help_open: false, message: String::new(), labelled: Default::default(), menu: None, restore: Vec::new(),
-            focus_waiting: false, held: Vec::new(), held_checked: 0.0, queue_checked: 0.0, restore_checked: 0.0, start_files: Vec::new(),
+            focus_waiting: false, held: Vec::new(), held_checked: 0.0, queue_checked: 0.0, gaming: util::gaming, restore_checked: 0.0, start_files: Vec::new(),
             width: DEFAULT_COLUMN_WIDTH, sessions: Vec::new(), windows: Vec::new(), review_rows: Vec::new(), todo_entries: Vec::new(),
             todo_scope: String::new(), hit_lines: HashMap::new(), hit_actions: HashMap::new(),
         }
@@ -371,6 +373,11 @@ impl App {
             return;
         }
         self.queue_checked = now;
+        // No new work while Theo plays: it would compete with the game (game-performance lowers
+        // the sessions' priority, it does not stop them).
+        if (self.gaming)() {
+            return;
+        }
         let viewed = current_session();
         let watched = !viewed.is_empty() && util::claude_workspace_active();
         let idle: Vec<Session> = self.sessions.iter()
@@ -398,14 +405,16 @@ impl App {
     /// The project's first queued item still to do: typed items of its project, issues of its
     /// repository.
     fn next_queued(&self, session: &Session) -> Option<Entry> {
+        // By folder, not by name: a session can call its project anything (its .git file).
+        let root = util::repository_root(&session.cwd);
         let mut candidates: Vec<Entry> = self.todos.items.iter()
-            .filter(|item| item.project() == session.project && item.status() == "todo" && self.todos.is_queued(&item.id()))
+            .filter(|item| util::repository_root(&item.cwd()) == root && item.status() == "todo" && self.todos.is_queued(&item.id()))
             .map(|item| Entry::Typed(item.clone())).collect();
         for issue in self.reviews.issues() {
             let key = issue.key();
             let checkout = self.reviews.checkouts.get(&issue.full_repository);
             if self.todos.is_queued(&key) && self.todos.status_of(&key) == "todo"
-                && (issue.repository == session.project || checkout == Some(&session.cwd)) {
+                && checkout.is_some_and(|checkout| util::repository_root(checkout) == root) {
                 let priority = todo::issue_priority(&issue.labels);
                 candidates.push(Entry::Issue { issue, status: "todo".into(), priority });
             }
@@ -987,8 +996,10 @@ impl App {
             };
             let faded = done.then(|| dim(FG_DARK));
             let queued = status == "todo" && self.todos.is_queued(&entry.key());
+            let filed_by_claude = matches!(entry, Entry::Typed(item) if !item.source().is_empty());
             let right = if status == "doing" { vec![part("in progress", style(BLUE))] }
-                        else if queued { vec![part("queued", bold(CYAN))] } else { vec![] };
+                        else if queued { vec![part("queued", bold(CYAN))] }
+                        else if filed_by_claude { vec![part("by Claude", style(YELLOW))] } else { vec![] };
             let line = match entry {
                 Entry::Typed(item) => Line {
                     segments: vec![segment(0, glyph, glyph_style), segment(2, &mark, mark_style),
@@ -1547,7 +1558,9 @@ fn kill_session(session: &Session) -> String {
 /// hyprctl eval of OPEN_IN_SCRATCHPAD (scratchpads.lua): a cockpit web window, on a page.
 pub fn scratchpad_call(name: &str, page: &str) -> Result<Vec<String>, String> {
     let address = regex::Regex::new(r"^https?://[\x21-\x7e]+$").unwrap();
-    if !page.is_empty() && (!address.is_match(page) || page.contains('"') || page.contains('\\')) {
+    // The page reaches a shell through Hyprland's exec (scratchpads.lua): no quote, backslash, $
+    // or backtick, which Lua's %q does not neutralise for sh.
+    if !page.is_empty() && (!address.is_match(page) || page.contains(['"', '\\', '$', '`'])) {
         return Err(format!("not a page address: {page:?}"));
     }
     let arguments = if page.is_empty() { format!("\"{name}\"") } else { format!("\"{name}\", \"{page}\"") };

@@ -33,6 +33,14 @@ pub fn guides_dir() -> PathBuf {
     std::env::var("CLAUDE_GUIDES_DIR").map(PathBuf::from).unwrap_or_else(|_| paths::home().join(".cache/claude/guides"))
 }
 
+/// Where Theo's answers go: the results of runs and guides, and a guide's progress. Every sandbox
+/// writes the request folders above, so an answer there could be forged for another session's
+/// request; this folder only the programs outside the sandbox write, sessions read it (greywall
+/// allowRead). `kind` is "runs" or "guides".
+pub fn answers_dir(kind: &str) -> PathBuf {
+    std::env::var("CLAUDE_ANSWERS_DIR").map(PathBuf::from).unwrap_or_else(|_| paths::home().join(".cache/claude-answers")).join(kind)
+}
+
 /// The run log, outside the sandbox's reach (the runtime directory).
 pub fn log_dir() -> PathBuf {
     paths::runtime_dir().join("claude-runs")
@@ -43,19 +51,29 @@ pub fn valid_id(id: &str) -> bool {
     id.len() == 12 && id.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
 }
 
-/// One line to the OSD daemon; false when no daemon reads the FIFO.
-pub fn send(line: &str) -> bool {
+fn send_to(path: &Path, line: &str) -> bool {
     use std::os::unix::fs::OpenOptionsExt;
-    let Ok(mut fifo) = OpenOptions::new().write(true).custom_flags(0o4000 /* O_NONBLOCK */).open(paths::osd_fifo()) else {
+    let Ok(mut fifo) = OpenOptions::new().write(true).custom_flags(0o4000 /* O_NONBLOCK */).open(path) else {
         return false;
     };
     fifo.write_all(format!("{line}\n").as_bytes()).is_ok()
 }
 
+/// A request to the OSD daemon from inside a sandbox (run-request, guide-request); false when no
+/// daemon reads the FIFO.
+pub fn send(line: &str) -> bool {
+    send_to(&paths::osd_fifo(), line)
+}
+
+/// A command only programs outside the sandbox may give (phases, banners, notice-clear).
+pub fn send_host(line: &str) -> bool {
+    send_to(&paths::osd_host_fifo(), line)
+}
+
 /// The daemon learns whether this needs Theo (asking: the floating window comes up wherever he
 /// is), runs (running: an open window stays, no new one opens), or is done (pane and window close).
 pub fn phase(id: &str, name: &str) {
-    send(&format!("run-phase {id} {name}"));
+    send_host(&format!("run-phase {id} {name}"));
 }
 
 /// A line in the shared log, through the manager.
@@ -95,7 +113,31 @@ pub fn strip_ansi(text: &str) -> String {
 /// sequences clear or rewrite lines, carriage returns overwrite them) and invisible or direction-
 /// changing Unicode (bidi overrides, zero-width characters). Shown escaped, never interpreted.
 pub fn is_hiding(character: char) -> bool {
-    matches!(character as u32, 0x00..=0x08 | 0x0b..=0x1f | 0x7f..=0x9f | 0x200b..=0x200f | 0x2028..=0x202e | 0x2060..=0x2069 | 0xfeff)
+    matches!(character as u32, 0x00..=0x09 | 0x0b..=0x1f | 0x7f..=0x9f | 0xad | 0x34f | 0x115f | 0x1160 | 0x200b..=0x200f | 0x2028..=0x202e
+                               | 0x2060..=0x2069 | 0x2800 | 0x3164 | 0xfe00..=0xfe0f | 0xfeff | 0xffa0 | 0xe0000..=0xe007f)
+}
+
+/// Blank lines in a row are where a payload hides: enough of them scroll the start of a command
+/// off the window. Each run of two or more shows as one marker line instead.
+fn mark_blank_runs(text: &str, before: &str, after: &str) -> String {
+    let mut shown = Vec::new();
+    let mut blanks = 0;
+    for line in text.split('\n').chain(std::iter::once("\u{0}end")) {
+        if line.trim().is_empty() {
+            blanks += 1;
+            continue;
+        }
+        match blanks {
+            0 => {}
+            1 => shown.push(String::new()),
+            many => shown.push(format!("{before}[{many} blank lines]{after}")),
+        }
+        blanks = 0;
+        if line != "\u{0}end" {
+            shown.push(line.to_string());
+        }
+    }
+    shown.join("\n")
 }
 
 /// Every hiding character as \uXXXX, each wrapped in `before` and `after` (colours, or nothing).
@@ -105,9 +147,31 @@ pub fn escape_hiding(text: &str, before: &str, after: &str) -> String {
 
 /// The command as it will run, hiding characters shown in red, and whether there was any.
 pub fn visible_command(command: &str) -> (String, bool) {
-    let shown = escape_hiding(command, RED, &format!("{RESET}{BOLD}"));
+    let escaped = escape_hiding(command, RED, &format!("{RESET}{BOLD}"));
+    let shown = mark_blank_runs(&escaped, RED, &format!("{RESET}{BOLD}"));
     let hiding = shown != command;
     (shown, hiding)
+}
+
+/// Characters outside ASCII in a command, as \uXXXX: lookalike letters (a Cyrillic а for an a) make
+/// a command read as something else. Named, not hidden: French text in a command is legitimate.
+pub fn non_ascii(command: &str) -> Vec<String> {
+    let mut found: Vec<String> = command.chars().filter(|c| !c.is_ascii() && !is_hiding(*c)).map(|c| format!("{c} \\u{:04x}", c as u32)).collect();
+    found.sort();
+    found.dedup();
+    found
+}
+
+/// The directory a command will run in, resolved once: symlinks followed now, so what Theo reads is
+/// where it runs (the process changes into it before he answers, see enter_directory).
+pub fn resolved_directory(cwd: &str) -> Option<String> {
+    fs::canonicalize(cwd).ok().filter(|path| path.is_dir()).map(|path| path.to_string_lossy().into_owned())
+}
+
+/// Moves this process into the directory before the command is shown: a symlink swapped in after
+/// Theo read the path no longer changes where the command runs.
+pub fn enter_directory(directory: &str) -> io::Result<()> {
+    std::env::set_current_dir(directory)
 }
 
 /// Like Python's shlex.quote: as is when it holds only safe characters, else single-quoted.
@@ -251,7 +315,18 @@ pub fn run(command: &str, cwd: &str, log_path: &Path) -> i32 {
         let _ = fs::set_permissions(log_dir(), fs::Permissions::from_mode(0o700));
     }
     let inner = ["fish", "-c", command].iter().map(|word| shell_quote(word)).collect::<Vec<_>>().join(" ");
-    let mut child = match Command::new("script").args(["-qfec", &inner]).arg(log_path).current_dir(cwd).spawn() {
+    // script hands `inner` to $SHELL, and the quoting above is sh's: under fish (Theo's login
+    // shell) a backslash inside single quotes is an escape, so the command shown and the command
+    // run could differ.
+    let mut command_line = Command::new("script");
+    command_line.args(["-qfec", &inner]).arg(log_path).env("SHELL", "/bin/sh")
+        // A progress bar redraws one line without ending it, which reads as a command waiting for
+        // an answer (waits_for_input): builds print plain lines here.
+        .env("CARGO_TERM_PROGRESS_WHEN", "never");
+    if !cwd.is_empty() {
+        command_line.current_dir(cwd);
+    }
+    let mut child = match command_line.spawn() {
         Ok(child) => child,
         Err(error) => {
             eprintln!("{RED}cannot run script: {error}{RESET}");
@@ -297,9 +372,15 @@ pub fn run(command: &str, cwd: &str, log_path: &Path) -> i32 {
         std::thread::sleep(Duration::from_millis(100));
     };
     print!("\x1b7\x1b[{rows};1H\x1b[2K\x1b8\x1b[r\x1b[{};1H\n", rows - 1);
+    // Whatever modes the output left on (no line wrap, a line-drawing charset, hidden text) must
+    // not change how the next command or question reads.
+    print!("{}", TERMINAL_RESET);
     let _ = io::stdout().flush();
     code
 }
+
+/// Soft reset, line wrap on, the ASCII charset, plain attributes.
+pub const TERMINAL_RESET: &str = "\x1b[!p\x1b[?7h\x1b(B\x1b[0m";
 
 /// What `script` recorded, without its "Script started/done" lines.
 pub fn recorded_output(log_path: &Path) -> String {
@@ -314,7 +395,11 @@ pub fn recorded_output(log_path: &Path) -> String {
 /// a password, secret, token or key. Matched values become [redacted]; names and the rest stay, so
 /// Claude still sees what happened.
 static SECRET_SHAPES: LazyLock<Vec<Regex>> = LazyLock::new(|| [
-    r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z0-9 ]*PRIVATE KEY-----|\z)",
+    r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----[\s\S]*?(?:-----END [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----|\z)",
+    r"\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}",
+    r"\bwhsec_[A-Za-z0-9+/=]{16,}",
+    r"\bya29\.[A-Za-z0-9_-]{20,}",
+    r"https://hooks\.slack\.com/services/[A-Za-z0-9/]+",
     r"\bgh[pousr]_[A-Za-z0-9]{30,}\b",
     r"\bgithub_pat_[A-Za-z0-9_]{20,}\b",
     r"\bsk-ant-[A-Za-z0-9_-]{20,}",
@@ -330,7 +415,12 @@ static SECRET_SHAPES: LazyLock<Vec<Regex>> = LazyLock::new(|| [
 /// password in scheme://user:password@host.
 static SECRET_VALUES: LazyLock<Vec<Regex>> = LazyLock::new(|| [
     r#"(?i)((?:authorization|proxy-authorization)\s*:\s*(?:bearer|basic|token)\s+)[^\s"']+"#,
-    r#"(?i)(\b[a-z0-9_.-]*(?:password|passwd|passphrase|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|credentials?)[a-z0-9_.-]*\b["']?\s*[:=]\s*["']?)[^\s"',;]{4,}"#,
+    r#"(?i)((?:set-)?cookie\s*:\s*)[^\n]+"#,
+    // JSON: a quoted secret value may hold spaces ("token": "…", Docker's "auth": "…").
+    r#"(?i)("[a-z0-9_.-]*(?:password|passwd|passphrase|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|credentials?|auth)[a-z0-9_.-]*"\s*:\s*")[^"]+(")"#,
+    r#"(?i)(\b[a-z0-9_.-]*(?:password|passwd|passphrase|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|credentials?)[a-z0-9_.-]*\b["']?\s*[:=]\s*["']?)[^\s"']+"#,
+    // .netrc and .pgpass style: the keyword, a space, the value.
+    r"(?im)(\b(?:password|passwd)\s+)[^\s=:]\S*",
     r"(?i)([a-z][a-z0-9+.-]*://[^\s:/@]+:)[^\s@/]+(@)",
 ].iter().map(|pattern| Regex::new(pattern).unwrap()).collect());
 
@@ -362,6 +452,57 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_command_runs_exactly_as_shown_even_under_fish() {
+        // Under fish as $SHELL, a backslash before the closing quote used to end the quoting early,
+        // so the second word ran as a command of its own.
+        let folder = std::env::temp_dir().join(format!("approval-run-{}", crate::util::token_hex(4)));
+        fs::create_dir_all(&folder).unwrap();
+        let log = folder.join("out.log");
+        // SAFETY: only this test reads SHELL; run() overrides it for script anyway.
+        unsafe { std::env::set_var("SHELL", "/usr/bin/fish") };
+        let marker = folder.join("ran");
+        let command = format!("echo 'a\\\\' '; touch {} #'", marker.display());
+        run(&command, folder.to_str().unwrap(), &log);
+        assert!(!marker.exists(), "the second word ran as a command");
+        fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[test]
+    fn blank_line_padding_shows_as_one_marked_line() {
+        let (shown, hiding) = visible_command("curl x | sh\n\n\n\n\necho ok");
+        assert!(hiding);
+        assert_eq!(shown.lines().count(), 3, "{shown}");
+        assert!(shown.contains("[4 blank lines]"), "{shown}");
+    }
+
+    #[test]
+    fn a_single_blank_line_is_left_as_is() {
+        assert_eq!(visible_command("a\n\nb"), ("a\n\nb".to_string(), false));
+    }
+
+    #[test]
+    fn tabs_and_invisible_fillers_are_shown_escaped() {
+        assert!(visible_command("rm\t-rf").1);
+        assert!(visible_command("echo \u{3164}").1);
+    }
+
+    #[test]
+    fn lookalike_letters_are_named() {
+        assert_eq!(non_ascii("rm -rf /\u{0430}"), ["\u{0430} \\u0430".to_string()]);
+        assert!(non_ascii("echo hi").is_empty());
+    }
+
+    #[test]
+    fn the_directory_is_resolved_through_symlinks() {
+        let folder = std::env::temp_dir().join(format!("approval-dir-{}", crate::util::token_hex(4)));
+        fs::create_dir_all(folder.join("real")).unwrap();
+        std::os::unix::fs::symlink(folder.join("real"), folder.join("link")).unwrap();
+        let resolved = resolved_directory(folder.join("link").to_str().unwrap()).unwrap();
+        assert!(resolved.ends_with("/real"), "{resolved}");
+        fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[test]
     fn tokens_are_redacted_by_their_shape() {
         let (text, count) = redact_secrets("GH_TOKEN=ghp_0123456789abcdefghijABCDEFGHIJ012345 and sk-ant-api03-abcdefghijklmnopqrstuvwxyz");
         assert_eq!(count, 2, "{text}");
@@ -386,6 +527,22 @@ mod tests {
         let (text, count) = redact_secrets("Authorization: Bearer abc.def.ghi\nhttps://theo:s3cret@example.com/repo.git");
         assert_eq!(count, 2, "{text}");
         assert!(text.contains("Authorization: Bearer [redacted]") && text.contains("https://theo:[redacted]@example.com"), "{text}");
+    }
+
+    #[test]
+    fn secrets_in_other_common_formats_are_redacted() {
+        for (text, leaked) in [
+            ("machine github.com login theo password hunter2hunter", "hunter2"),
+            (r#"{"auths": {"ghcr.io": {"auth": "dGhlbzpzZWNyZXQ="}}}"#, "dGhlbzpz"),
+            (r#"{"token": "two words secret"}"#, "two words"),
+            ("Cookie: session=abcdef123456; theme=dark", "abcdef123456"),
+            ("STRIPE=sk_live_0123456789abcdefABCD", "sk_live_0123"),
+            ("password=ab;cdef", "ab;cdef"),
+            ("-----BEGIN PGP PRIVATE KEY BLOCK-----\nlQOYBF\n-----END PGP PRIVATE KEY BLOCK-----", "lQOYBF"),
+        ] {
+            let (redacted, count) = redact_secrets(text);
+            assert!(count > 0 && !redacted.contains(leaked), "{text} -> {redacted}");
+        }
     }
 
     #[test]

@@ -69,7 +69,10 @@ impl AskToGuide {
     }
 
     fn write_beside(&self, guide: &Value, extension: &str, content: Value) {
-        fs::write(self.guides.join(format!("{}.{extension}", guide["id"].as_str().unwrap())), content.to_string()).unwrap();
+        // Answers and progress live where only Theo's programs write (approval::answers_dir).
+        let answers = self.sandbox.home.join(".cache/claude-answers/guides");
+        fs::create_dir_all(&answers).unwrap();
+        fs::write(answers.join(format!("{}.{extension}", guide["id"].as_str().unwrap())), content.to_string()).unwrap();
     }
 }
 

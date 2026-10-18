@@ -78,7 +78,7 @@ fn wait_seconds() -> u64 {
 }
 
 fn progress(id: &str) -> String {
-    let state = std::fs::read_to_string(approval::guides_dir().join(format!("{id}.progress"))).ok()
+    let state = std::fs::read_to_string(approval::answers_dir("guides").join(format!("{id}.progress"))).ok()
         .and_then(|text| serde_json::from_str::<Value>(&text).ok());
     match state {
         Some(state) if state.get("step").is_some() && state.get("total").is_some() && state.get("done").is_some() =>
@@ -137,7 +137,7 @@ fn report(result: &Value) -> i32 {
 }
 
 fn wait_for_result(id: &str) -> i32 {
-    let path = approval::guides_dir().join(format!("{id}.result"));
+    let path = approval::answers_dir("guides").join(format!("{id}.result"));
     let deadline = Instant::now() + Duration::from_secs(wait_seconds());
     while Instant::now() < deadline {
         if let Some(result) = std::fs::read_to_string(&path).ok().and_then(|text| serde_json::from_str::<Value>(&text).ok()) {

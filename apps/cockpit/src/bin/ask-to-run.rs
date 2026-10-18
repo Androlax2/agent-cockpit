@@ -37,7 +37,7 @@ fn touch(path: &std::path::Path) {
 }
 
 fn wait_for_result(id: &str) -> i32 {
-    let path = approval::runs_dir().join(format!("{id}.result"));
+    let path = approval::answers_dir("runs").join(format!("{id}.result"));
     let heartbeat = approval::runs_dir().join(format!("{id}.waiting"));
     let deadline = Instant::now() + Duration::from_secs(wait_seconds());
     let mut last_beat: Option<Instant> = None;

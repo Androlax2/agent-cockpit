@@ -136,6 +136,13 @@ pub struct Report {
     pub target: BTreeMap<String, String>,
 }
 
+/// What a sandbox may send (osd.fifo): its own session's reports and its requests to Theo. The
+/// rest (banners, focus, clearing, phases, volume) only comes through osd-host.fifo, which no
+/// sandbox can open: a session must not wipe the column, raise banners or close approvals.
+pub fn allowed_from_sandbox(command: &str) -> bool {
+    matches!(command, "session" | "run-request" | "guide-request")
+}
+
 pub fn parse_session(raw: &str) -> Result<Report, String> {
     let value: Value = serde_json::from_str(raw).map_err(|error| error.to_string())?;
     let report = value.as_object().ok_or("session report is not an object")?;
@@ -389,7 +396,13 @@ pub fn project_of(cache: &mut HashMap<String, String>, cwd: &str, fallback: &str
         Some(common) => basename(&common.to_string_lossy()).trim_end_matches(".git").to_string(),
         None => basename(cwd),
     };
-    let project = if project.is_empty() { fallback.to_string() } else { project };
+    // The name comes from files a session writes (its .git file can point anywhere): it reaches
+    // banners, the column, tmux options and prompts, so it obeys the rules of reported text.
+    let project = if project.is_empty() || validate_text("project", &project).is_err() || project.chars().any(|c| ('\u{80}'..='\u{9f}').contains(&c)) {
+        fallback.to_string()
+    } else {
+        project
+    };
     cache.insert(cwd.into(), project.clone());
     project
 }
@@ -422,7 +435,7 @@ fn is_abandoned(id: &str) -> bool {
 
 /// The answer ask-to-run --wait finds for a dropped request.
 fn write_abandoned(id: &str) {
-    let path = runs_dir().join(format!("{id}.result"));
+    let path = cockpit::approval::answers_dir("runs").join(format!("{id}.result"));
     if path.exists() {
         return;
     }
@@ -455,7 +468,7 @@ impl RunRequests {
         }
         while !self.queue.is_empty() {
             let id = self.queue.remove(0);
-            if runs_dir().join(format!("{id}.result")).exists() {
+            if cockpit::approval::answers_dir("runs").join(format!("{id}.result")).exists() {
                 continue;
             }
             if is_abandoned(&id) {
@@ -577,7 +590,7 @@ impl GuideRequests {
         }
         while !self.queue.is_empty() {
             let id = self.queue.remove(0);
-            if guides_dir().join(format!("{id}.result")).exists() {
+            if cockpit::approval::answers_dir("guides").join(format!("{id}.result")).exists() {
                 continue;
             }
             let guide = paths::home().join(".local/bin/claude-guide").to_string_lossy().into_owned();
@@ -594,10 +607,10 @@ impl GuideRequests {
 
     fn finish(&mut self, system: &mut dyn System, banners: &mut dyn Banners) {
         banners.drop_banner(&format!("notice:guide-{}", self.current));
-        let result = guides_dir().join(format!("{}.result", self.current));
+        let result = cockpit::approval::answers_dir("guides").join(format!("{}.result", self.current));
         if !result.exists() {
             // The window was closed: Claude must not wait on it, and learns where Theo stopped.
-            let progress = fs::read_to_string(guides_dir().join(format!("{}.progress", self.current))).ok()
+            let progress = fs::read_to_string(cockpit::approval::answers_dir("guides").join(format!("{}.progress", self.current))).ok()
                 .and_then(|text| serde_json::from_str::<Value>(&text).ok()).unwrap_or(json!({}));
             let closed = json!({"status": "closed", "step": progress.get("step").cloned().unwrap_or(json!("?")),
                                 "total": progress.get("total").cloned().unwrap_or(json!("?"))});

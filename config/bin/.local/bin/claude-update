@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Claude Code's updates, done outside the sandbox (claude-update.timer). Sessions cannot write
+# ~/.local/share/claude/versions (greywall.json denyWrite) and run with DISABLE_AUTOUPDATER=1: a
+# version file a session could plant there must never be run or linked with Theo's rights. The
+# installed, trusted claude downloads, verifies and links the new version itself.
+# CLAUDE_LINK overrides the binary (tests).
+set -uo pipefail
+claude=${CLAUDE_LINK:-$HOME/.local/bin/claude}
+
+before=$(basename "$(readlink "$claude" 2>/dev/null || true)")
+if ! output=$(timeout 300 "$claude" update 2>&1); then
+    claude-sessions log update WARN "claude update failed: $(tail -1 <<< "$output")" 2>/dev/null || true
+    echo "$output" >&2
+    exit 1
+fi
+after=$(basename "$(readlink "$claude" 2>/dev/null || true)")
+if [[ $after != "$before" ]]; then
+    claude-sessions log update INFO "claude now starts $after (was ${before:-nothing}); r on a card restarts it on the new version" 2>/dev/null || true
+fi
+echo "claude-update: ${after:-?}"

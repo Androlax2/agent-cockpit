@@ -16,6 +16,10 @@ fn sandbox() -> Sandbox {
     sandbox.shim("systemctl", FAKE_SYSTEMCTL);
     sandbox.shim("hyprctl", "");
     sandbox.shim("claude-sessions", "");
+    // Two Claude sessions in their tmux scopes, one of them with two processes (launcher, session).
+    sandbox.shim("ps", r#"printf '%s\n' "0::/user.slice/user-1000.slice/user@1000.service/app.slice/tmux-spawn-aaa.scope" \
+        "0::/user.slice/user-1000.slice/user@1000.service/app.slice/tmux-spawn-aaa.scope" \
+        "0::/user.slice/user-1000.slice/user@1000.service/app.slice/tmux-spawn-bbb.scope""#);
     sandbox
 }
 
@@ -32,10 +36,29 @@ fn a_game_start_pauses_only_the_timers_that_were_running() {
 }
 
 #[test]
-fn a_game_start_drops_claude_sessions_to_idle_priority() {
+fn a_game_start_pauses_each_claude_sessions_scope_once() {
     let sandbox = sandbox();
     run(&sandbox, "on", "");
-    assert!(sandbox.calls("systemctl").contains(&"systemctl --user set-property --runtime claude-sessions.service CPUWeight=idle IOWeight=1".to_string()));
+    let frozen: Vec<String> = sandbox.calls("systemctl").into_iter().filter(|call| call.contains(" freeze ")).collect();
+    assert_eq!(frozen, ["systemctl --user freeze tmux-spawn-aaa.scope", "systemctl --user freeze tmux-spawn-bbb.scope"]);
+}
+
+#[test]
+fn a_game_start_drops_running_jobs_to_idle_priority() {
+    let sandbox = sandbox();
+    run(&sandbox, "on", "");
+    assert!(sandbox.calls("systemctl").contains(&"systemctl --user set-property --runtime restic-backup.service CPUWeight=idle IOWeight=1".to_string()));
+}
+
+#[test]
+fn a_game_end_resumes_the_sessions_it_paused() {
+    let sandbox = sandbox();
+    run(&sandbox, "on", "");
+    sandbox.reset_log();
+    run(&sandbox, "off", "");
+    let thawed: Vec<String> = sandbox.calls("systemctl").into_iter().filter(|call| call.contains(" thaw ")).collect();
+    assert_eq!(thawed, ["systemctl --user thaw tmux-spawn-aaa.scope", "systemctl --user thaw tmux-spawn-bbb.scope"]);
+    assert!(!sandbox.runtime.join("game-performance.frozen").exists());
 }
 
 #[test]
@@ -53,7 +76,7 @@ fn a_game_end_restarts_what_it_paused_and_nothing_else() {
 fn a_game_end_puts_priorities_back_and_leaves_game_mode() {
     let sandbox = sandbox();
     run(&sandbox, "off", "");
-    assert!(sandbox.calls("systemctl").contains(&"systemctl --user set-property --runtime claude-sessions.service CPUWeight= IOWeight=".to_string()));
+    assert!(sandbox.calls("systemctl").contains(&"systemctl --user set-property --runtime restic-backup.service CPUWeight= IOWeight=".to_string()));
     assert_eq!(sandbox.calls("hyprctl"), ["hyprctl eval EXIT_GAME_MODE()"]);
 }
 

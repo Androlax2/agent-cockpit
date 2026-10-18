@@ -10,7 +10,7 @@
 //! CLAUDE_GUIDES_DIR overrides the folder (tests).
 
 use cockpit::app::{put, style, width_of};
-use cockpit::approval::{self, BOLD, DIM, RED, RESET};
+use cockpit::approval::{self, BOLD, DIM, RED, RESET, YELLOW};
 use cockpit::util::now_secs;
 use crossterm::event::{self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode};
@@ -23,7 +23,7 @@ use regex::Regex;
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
@@ -43,7 +43,7 @@ fn read_guide(id: &str) -> Result<Value, String> {
         return Err("not a guide id".into());
     }
     let directory = approval::guides_dir();
-    if directory.join(format!("{id}.result")).exists() {
+    if approval::answers_dir("guides").join(format!("{id}.result")).exists() {
         return Err("already answered".into());
     }
     let text = std::fs::read_to_string(directory.join(format!("{id}.guide"))).map_err(|error| error.to_string())?;
@@ -105,7 +105,7 @@ struct Guide {
 impl Guide {
     fn new(id: &str, guide: &Value) -> Self {
         let steps = guide["steps"].as_array().unwrap().iter().filter_map(|step| step.as_object().cloned()).collect();
-        let cwd = guide.get("cwd").and_then(Value::as_str).filter(|cwd| Path::new(cwd).is_dir()).map(str::to_string)
+        let cwd = guide.get("cwd").and_then(Value::as_str).and_then(approval::resolved_directory)
             .unwrap_or_else(|| cockpit::paths::home().to_string_lossy().into_owned());
         let title = guide.get("title").and_then(Value::as_str).filter(|t| !t.is_empty()).unwrap_or("Steps from Claude").to_string();
         Guide { id: id.into(), title, steps, project: approval::project_of(&cwd), cwd, position: 0, done: BTreeSet::new(),
@@ -167,14 +167,14 @@ impl Guide {
     }
 
     fn file(&self, extension: &str) -> PathBuf {
-        approval::guides_dir().join(format!("{}.{extension}", self.id))
+        approval::answers_dir("guides").join(format!("{}.{extension}", self.id))
     }
 }
 
 fn finish(guide: &Guide, status: &str, note: &str) {
     let _ = approval::write_json(&guide.file("result"), &guide.result(status, note));
     let _ = std::fs::remove_file(guide.file("progress"));
-    approval::send(&format!("notice-clear guide-{}", guide.id));
+    approval::send_host(&format!("notice-clear guide-{}", guide.id));
     let note_part = if note.is_empty() { String::new() } else { format!(" ({})", note.chars().take(80).collect::<String>()) };
     approval::log("INFO", &format!("guide {} for {}: {status} at step {}/{}{note_part}", guide.id, guide.project, guide.position + 1, guide.steps.len()));
 }
@@ -265,13 +265,21 @@ fn draw(buffer: &mut Buffer, guide: &Guide, draft: &str, message: &str) -> (u16,
 fn run_step(guide: &mut Guide) {
     let original = guide.field("run");
     let mut command = original.clone();
+    if let Err(error) = approval::enter_directory(&guide.cwd) {
+        println!("{RED}cannot enter {}: {error}{RESET}", approval::escape_hiding(&guide.cwd, "", ""));
+        return;
+    }
     let shown_cwd = approval::escape_hiding(&guide.cwd, RED, &format!("{RESET}{DIM}"));
     println!("\n{BOLD}Step {} of the guide{RESET} asks you to run, in {DIM}{shown_cwd}{RESET}:\n", guide.position + 1);
     let answer = loop {
         let (text, hiding) = approval::visible_command(&command);
         println!("{}\n", text.split('\n').map(|line| format!("  {BOLD}{line}{RESET}")).collect::<Vec<_>>().join("\n"));
         if hiding {
-            println!("{RED}{BOLD}This command contains hidden characters (shown in red as \\uXXXX). Decline unless you know why.{RESET}\n");
+            println!("{RED}{BOLD}This command contains hidden characters or blank-line padding (shown in red). Decline unless you know why.{RESET}\n");
+        }
+        let foreign = approval::non_ascii(&command);
+        if !foreign.is_empty() {
+            println!("{YELLOW}Characters outside ASCII (a lookalike letter can change a command): {}{RESET}\n", foreign.join(", "));
         }
         let answer = approval::choose("Run it?", &[("n", "Decline"), ("y", "Run it"), ("e", "Edit it first")], "n");
         if answer != "e" {
@@ -291,7 +299,7 @@ fn run_step(guide: &mut Guide) {
         return;
     }
     let log_path = approval::log_dir().join(format!("guide-{}-{}.log", guide.id, guide.position + 1));
-    let exit_code = approval::run(&command, &guide.cwd, &log_path);
+    let exit_code = approval::run(&command, "", &log_path);
     println!("{DIM}─── {RESET}exit {exit_code}");
     // Like ask-to-run: the output always goes back, secrets taken out first.
     let (output, redacted) = approval::redact_secrets(&approval::recorded_output(&log_path));

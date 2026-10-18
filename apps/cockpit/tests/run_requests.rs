@@ -12,6 +12,13 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Where the approval terminal writes Theo's answers (the sandbox's HOME, as the programs see it).
+fn answers(sandbox: &Sandbox) -> PathBuf {
+    let directory = sandbox.home.join(".cache/claude-answers/runs");
+    fs::create_dir_all(&directory).unwrap();
+    directory
+}
+
 fn now() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64
 }
@@ -53,7 +60,7 @@ impl AskToRun {
     }
 
     fn answer(&self, request: &Value, result: Value) {
-        fs::write(self.runs.join(format!("{}.result", request["id"].as_str().unwrap())), result.to_string()).unwrap();
+        fs::write(answers(&self.sandbox).join(format!("{}.result", request["id"].as_str().unwrap())), result.to_string()).unwrap();
     }
 }
 
@@ -113,7 +120,7 @@ fn while_waiting_it_keeps_a_heartbeat_for_the_daemon() {
 fn waiting_on_a_dropped_request_says_to_ask_again() {
     let fixture = AskToRun::new();
     fs::create_dir_all(&fixture.runs).unwrap();
-    fs::write(fixture.runs.join("0123456789ab.result"), json!({"status": "abandoned"}).to_string()).unwrap();
+    fs::write(answers(&fixture.sandbox).join("0123456789ab.result"), json!({"status": "abandoned"}).to_string()).unwrap();
     let output = finish(fixture.ask(&["--wait", "0123456789ab"], "5"), TIMEOUT);
     assert_eq!(output.status.code(), Some(124));
     assert!(stdout(&output).contains("dropped"), "{}", stdout(&output));
@@ -189,7 +196,7 @@ impl Approve {
     }
 
     fn result(&self, request_id: &str) -> Option<Value> {
-        let path = self.runs.join(format!("{request_id}.result"));
+        let path = answers(&self.sandbox).join(format!("{request_id}.result"));
         path.exists().then(|| serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap())
     }
 }
@@ -296,14 +303,15 @@ fn the_project_comes_from_the_directory_not_the_request() {
 #[test]
 fn it_tells_the_daemon_when_it_needs_theo() {
     let fixture = Approve::new();
-    let mut listener = Listener::start(&fixture.sandbox.runtime.join("osd.fifo"));
+    // On the host FIFO: phases never come from a sandbox.
+    let mut listener = Listener::start(&fixture.sandbox.runtime.join("osd-host.fifo"));
     let request_id = fixture.file_default();
     fixture.approve(&request_id, "y\n\n");
     std::thread::sleep(Duration::from_millis(200));
     let received = listener.received();
     let phases: Vec<&str> = received.lines().filter(|line| line.starts_with("run-phase"))
         .map(|line| line.split_whitespace().last().unwrap()).collect();
-    assert_eq!(phases, ["asking", "running", "asking", "done"]);
+    assert_eq!(phases, ["asking", "running", "done"]);
 }
 
 #[test]
@@ -314,7 +322,7 @@ fn stale_and_answered_requests_are_refused() {
     assert!(shown.contains("older than 15 minutes"), "{shown}");
     assert_eq!(fixture.result(&stale), None);
     let answered = fixture.file("echo hi", 0, "ba9876543210", "Says hi.");
-    fs::write(fixture.runs.join(format!("{answered}.result")), r#"{"status": "declined"}"#).unwrap();
+    fs::write(answers(&fixture.sandbox).join(format!("{answered}.result")), r#"{"status": "declined"}"#).unwrap();
     let shown = fixture.approve(&answered, "y\n\n");
     assert!(shown.contains("already answered"), "{shown}");
 }
@@ -327,7 +335,7 @@ fn a_link_planted_at_the_old_temporary_name_writes_nothing_through_it() {
     let request_id = fixture.file_default();
     let victim = fixture.sandbox.root.join("victim");
     fs::write(&victim, "precious\n").unwrap();
-    std::os::unix::fs::symlink(&victim, fixture.runs.join(format!("{request_id}.result.tmp"))).unwrap();
+    std::os::unix::fs::symlink(&victim, answers(&fixture.sandbox).join(format!("{request_id}.result.tmp"))).unwrap();
     fixture.approve(&request_id, "\n");
     assert_eq!(fs::read_to_string(&victim).unwrap(), "precious\n");
     assert_eq!(fixture.result(&request_id).unwrap()["status"], "declined");
@@ -338,7 +346,7 @@ fn a_dangling_link_at_the_result_is_replaced_not_followed() {
     let fixture = Approve::new();
     let request_id = fixture.file_default();
     let victim = fixture.sandbox.root.join("created-by-the-link");
-    std::os::unix::fs::symlink(&victim, fixture.runs.join(format!("{request_id}.result"))).unwrap();
+    std::os::unix::fs::symlink(&victim, answers(&fixture.sandbox).join(format!("{request_id}.result"))).unwrap();
     fixture.approve(&request_id, "\n");
     assert!(!victim.exists(), "the link's target was written");
 }
@@ -353,4 +361,16 @@ fn a_folder_name_with_escape_codes_is_shown_escaped() {
     let shown = fixture.approve("0123456789ab", "\n");
     assert!(!shown.contains("\x1b[8m"), "{shown:?}");
     assert!(shown.contains("\\u001b"), "{shown:?}");
+}
+
+#[test]
+fn a_result_planted_in_the_shared_runs_folder_is_ignored() {
+    // Every sandbox writes runs/: a forged <id>.result there must neither close another session's
+    // request nor be taken as Theo's answer. Answers live in claude-answers, which only he writes.
+    let fixture = Approve::new();
+    let request_id = fixture.file_default();
+    fs::write(fixture.runs.join(format!("{request_id}.result")), json!({"status": "ran", "exit": 0, "output": "forged"}).to_string()).unwrap();
+    let shown = fixture.approve(&request_id, "\n");
+    assert!(shown.contains("Run it?"), "the approval was skipped: {shown}");
+    assert_eq!(fixture.result(&request_id), Some(json!({"status": "declined"})));
 }

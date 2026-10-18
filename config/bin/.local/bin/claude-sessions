@@ -265,8 +265,10 @@ new_session() {
 background_session() { # dir prompt
     require_plain_directory "$1"
     [[ -n $2 ]] || { echo "claude-sessions: background needs a prompt" >&2; return 1; }
+    local prompt=$2
+    [[ $prompt == -* ]] && prompt="Task: $prompt" # never an option of claude's
     tmux new-session -d -s "claude-retry-bg-$(date +%s)" -x 200 -y 50 -c "$1" \
-        env -u TMUX_PANE CLAUDE_SESSIONS_INSIDE=1 fish -ic 'claude $argv' "$2"
+        env -u TMUX_PANE CLAUDE_SESSIONS_INSIDE=1 fish -ic 'claude $argv' "$prompt"
 }
 
 # Appended to every launch in the viewer pane: a start that fails says so and stays on screen,
@@ -509,6 +511,11 @@ say_to_session() { # id message
         echo "claude-sessions: a message is one line of at most 4000 characters" >&2
         return 1
     fi
+    # send-keys turns a control character into a key press (Escape, Ctrl+C, Shift+Tab's sequence).
+    if [[ $message == *[[:cntrl:]]* ]]; then
+        echo "claude-sessions: a message cannot carry control characters" >&2
+        return 1
+    fi
     tail=$(tmux capture-pane -p -t "$pane" -S -20 2>/dev/null)
     if [[ $(osd classify <<<"$tail") == needs-you ]]; then
         echo "claude-sessions: $(session_field "$id" project) has a dialog open; answer it first (Y or N)" >&2
@@ -749,13 +756,17 @@ doctor() {
     if [[ -f $usage ]] && (( $(date +%s) - $(stat -c %Y "$usage") < 900 )); then report ok "usage cache fresh"; else report fail "usage cache missing or stale" "$HOME/.config/waybar/scripts/claude-usage.sh five_hour (needs the OAuth token in ~/.claude/.credentials.json)"; fi
     echo "services and updates"
     local unit
-    for unit in claude-version-link.path elephant.service walker.service; do
+    # Sessions frozen by game-performance during a game; still listed with no game means a missed thaw.
+    if [[ -s ${XDG_RUNTIME_DIR:-/tmp}/game-performance.frozen ]] && ! pgrep -x gamemoded >/dev/null; then
+        report fail "Claude sessions still paused after a game" "game-performance off"
+    fi
+    for unit in claude-update.timer elephant.service walker.service; do
         if [[ $(systemctl --user is-active "$unit" 2>/dev/null) == active ]]; then report ok "$unit active"; else report fail "$unit not active" "systemctl --user enable --now $unit (units in .handoff/systemd-user until installed)"; fi
     done
     local versions_dir=${CLAUDE_VERSIONS_DIR:-$HOME/.local/share/claude/versions} link=${CLAUDE_LINK:-$HOME/.local/bin/claude} newest linked
     newest=$(find "$versions_dir" -maxdepth 1 -type f -executable -printf '%f\n' 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
     linked=$(basename "$(readlink "$link" 2>/dev/null || true)")
-    if [[ -z $newest || $linked == "$newest" ]]; then report ok "claude starts the newest version (${linked:-none})"; else report fail "claude starts $linked, $newest is downloaded: sessions show the update badge for good" "claude-version-link (claude-version-link.path does it on its own once active)"; fi
+    if [[ -z $newest || $linked == "$newest" ]]; then report ok "claude starts the newest version (${linked:-none})"; else report fail "claude starts $linked, $newest is in the versions folder" "claude-update (claude-update.timer runs it every 6 h)"; fi
     local archive="${XDG_STATE_HOME:-$HOME/.local/state}/claude-sessions/usage.sqlite" newest_transcript
     newest_transcript=$(find "${CLAUDE_SESSIONS_TRANSCRIPTS:-$HOME/.claude/projects}" -name '*.jsonl' -printf '%T@\n' 2>/dev/null | sort -n | tail -1)
     if [[ -f $archive ]] && (( $(stat -c %Y "$archive") + 600 >= ${newest_transcript%.*} )); then report ok "usage archive up to date"; else report fail "usage archive missing or behind the transcripts" "claude-sessions reload (the sidebar keeps it), or claude-sessions-sidebar costs"; fi
@@ -809,7 +820,9 @@ clone_for() { # source-dir name -> prints the clone's path, created on first use
         if origin=$(git -C "$top" remote get-url origin 2>/dev/null); then
             git -C "$clone" remote set-url origin "$origin"
         fi
-        inherit_trust "$top" "$clone"
+        # A pull request's clone gets someone else's code (its .claude/settings.json hooks, its
+        # CLAUDE.md): Claude Code's trust dialog must ask about it, never inherit the yes.
+        if [[ $name != pr-* ]]; then inherit_trust "$top" "$clone"; fi
     fi
     printf '%s\n' "$clone"
 }
