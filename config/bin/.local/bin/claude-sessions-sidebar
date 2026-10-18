@@ -7,20 +7,18 @@ spirit of lazygit, with the viewed session in the terminal pane on the right.
   [1] Sessions       running sessions (e, or a click on the effort level on a card, opens the effort
                      menu: the chosen level restarts the session on it): state, project, title, model and context; most urgent first,
                      pinned ones on top, then claude-retry-* tmux sessions the daemon does not know
-  [2] History        past sessions from ~/.claude/history.jsonl under day headings and projects, the
-                     transcript's generated title; trivial ones hidden unless shown with .
-  [3] Pull requests  open pull requests in the viewed session's repository, or in every running
+  [2] Pull requests  open pull requests in the viewed session's repository, or in every running
                      session's when none is viewed (your review requests when nothing runs), without
                      bot authors or anything untouched for months
 
 The focused panel takes half the column (Status keeps its size); 0/1/2/3, Tab and Shift+Tab move the focus, j/k or the
 arrows move inside it, / filters the focused panel (Esc clears), ? shows every key, q or Ctrl-C
 close the manager window, a starts a session in a project picked with fzf. Enter opens a running
-session (shows it in the viewer and moves the cursor there), resumes a past one, or opens a pull
+session (shows it in the viewer and moves the cursor there), or opens a pull
 request in the cockpit's pull requests window (P, W and G show that window, Claude on the web and
 greyproxy's dashboard on top, like Super+Ctrl+P/A/G). Status: Enter shows the full usage report in the session pane, r refetches. Sessions: n peeks at the next one needing you, x exits (Ctrl-C twice,
-then killed if it lingers), r restarts in place, R toggles Remote Control, p pins. History: x hides
-(u undoes), h or Left folds a project. Pull requests: r refreshes. Mouse: click focuses and
+then killed if it lingers), r restarts in place, R toggles Remote Control, p pins. H resumes a past
+session (fzf over ~/.claude/history.jsonl). Pull requests: r refreshes. Mouse: click focuses and
 selects, double-click opens. Ctrl+Tab (tmux.conf) moves between the column and the session.
 F1 to F3 from tmux (Ctrl+1/2/3 in the session pane, tmux.conf) focus a panel
 even while filtering. Pins, folds and hidden sessions persist in ~/.local/state/claude-sessions/view.json.
@@ -40,6 +38,7 @@ import sys
 import threading
 import time
 import traceback
+import urllib.request
 from datetime import date, datetime, timedelta, timezone
 
 RUNTIME_DIR = os.environ.get("XDG_RUNTIME_DIR", "/tmp")
@@ -647,6 +646,37 @@ FOCUS_STATES = ("needs-you", "waiting")  # what the focus filter (f) keeps: sess
 GREYPROXY_DB = os.environ.get("CLAUDE_SESSIONS_GREYPROXY_DB", os.path.expanduser("~/.local/share/greyproxy/greyproxy.db"))
 GREYPROXY_RECENT_MINUTES = 10  # a held request retried this recently is blocking someone now
 GREYPROXY_POLL_S = 10
+
+# What a session reads only when it starts: after a change, the sessions started before it run on
+# the old version until they restart. Label -> path (symlinks followed; a missing file is skipped).
+SESSION_START_FILES = {
+    "CLAUDE.md": "~/.claude/CLAUDE.md",
+    "settings": "~/.claude/settings.json",
+    "plugins": "~/.claude/plugins/installed_plugins.json",
+    "ADHD mode": "~/.claude/.i-have-adhd-always",
+    "session hook": "~/.claude/hooks/agent-environment.sh",
+    "sandbox": "~/.config/greywall/greywall.json",
+    "sandbox profile": "~/.config/greywall/learned/claude.json",
+    "launcher": "~/.local/bin/greywall-agents/claude",
+}
+
+
+def start_file_mtimes(files: dict[str, str]) -> dict[str, float]:
+    mtimes = {}
+    for label, path in files.items():
+        try:
+            mtimes[label] = os.stat(os.path.expanduser(path)).st_mtime
+        except OSError:
+            continue
+    return mtimes
+
+
+def changed_since_start(session: dict, mtimes: dict[str, float]) -> list[str]:
+    """What changed after the session started, so it does not have it yet; [] without a start time."""
+    started = session.get("started")
+    if not isinstance(started, (int, float)):
+        return []
+    return [label for label, mtime in mtimes.items() if mtime > started]
 
 
 def greyproxy_held(db_path: str) -> list[str]:
@@ -1302,6 +1332,142 @@ def todo_order(item: dict) -> tuple:
     return head + (1, 0, "".join(chr(0x10FFFF - ord(character)) for character in item.get("updated", "")))
 
 
+# Errors in the shared log go to a dotfiles session to be fixed: the waiting one gets a message,
+# else one starts in the background (claude-sessions background, the session pane is not
+# touched). The same error (ids and numbers masked) once a day, at most ERROR_REPORTS_PER_DAY a
+# day, held while Theo games. Lines logged before the column started are not reported.
+ERROR_REPORTS_PATH = os.path.join(STATE_DIR, "error-reports.json")
+# One file per report handed to a waiting session: `say` takes one line, the report has many.
+ERROR_REPORT_DIR = os.path.join(STATE_DIR, "error-reports")
+ERROR_REPORTS_PER_DAY = 3
+ERROR_REPORT_REPEAT_S = 24 * 3600
+ERROR_POLL_S = 15
+ERROR_CONTEXT_LINES = 40
+DOTFILES_DIR = os.path.expanduser("~/dotfiles")
+MASKED = re.compile(r"[0-9a-f]{8}-[0-9a-f-]{27}|[0-9a-f]{12,}|\d+")
+GAME_CLASS = re.compile(r"^(steam_app_[0-9]+|Star Citizen|Dofus\.x64|retroarch)$")  # as claude_registry.gaming
+
+
+def error_signature(line: str) -> str:
+    """The error without its time and with ids and numbers masked: the same failure, whichever session."""
+    message = line.split(" ", 1)[1] if line[:4].isdigit() and " " in line else line
+    return MASKED.sub("#", message.strip())[:200]
+
+
+def gaming() -> bool:
+    """Game mode (the gamemode submap) or a game window focused; same rule as the daemon's."""
+    try:
+        submap = subprocess.run(["hyprctl", "submap"], capture_output=True, text=True, timeout=2).stdout.strip()
+        window = subprocess.run(["hyprctl", "-j", "activewindow"], capture_output=True, text=True, timeout=2).stdout
+        window_class = json.loads(window).get("class", "") if window.strip().startswith("{") else ""
+    except (OSError, subprocess.SubprocessError, ValueError, AttributeError):
+        return False
+    return submap == "gamemode" or bool(GAME_CLASS.match(window_class or ""))
+
+
+def error_report_prompt(error: str, context: list[str]) -> str:
+    return ("claude-sessions logged an error (sent automatically by the cockpit's error hand-off). Find the cause in "
+            "the dotfiles and fix it, with a regression test. Ask me before anything that needs ask-to-run.\n\n"
+            f"Error:\n{error}\n\nThe log before it (~/.local/state/claude-sessions/log):\n" + "\n".join(context))
+
+
+def error_report_message(report_path: str) -> str:
+    """The one line `say` can type: the instructions, and where the error and its log wait."""
+    return ("claude-sessions logged an error (sent automatically by the cockpit's error hand-off). Find the cause in "
+            "the dotfiles and fix it, with a regression test. Ask me before anything that needs ask-to-run. "
+            f"The error and the log before it: {report_path}")
+
+
+def write_error_report(prompt: str) -> str:
+    os.makedirs(ERROR_REPORT_DIR, exist_ok=True)
+    path = os.path.join(ERROR_REPORT_DIR, f"{time.strftime('%Y%m%dT%H%M%S')}-{secrets.token_hex(3)}.md")
+    with open(path, "w") as file:
+        file.write(prompt + "\n")
+    return path
+
+
+class ErrorReporter:
+    def __init__(self):
+        self.checked_at = 0.0
+        try:
+            with open(ERROR_REPORTS_PATH) as file:
+                self.state = json.load(file)
+        except (OSError, ValueError):
+            self.state = {}
+        self.state.setdefault("sent", {})
+        try:
+            self.offset = os.path.getsize(LOG_PATH)  # what was logged before the column started is not news
+        except OSError:
+            self.offset = 0
+
+    def new_errors(self) -> list[tuple[str, list[str]]]:
+        """The ERROR lines logged since the last look, each with the lines before it."""
+        try:
+            size = os.path.getsize(LOG_PATH)
+            if size < self.offset:
+                self.offset = 0  # rotated
+            with open(LOG_PATH, errors="replace") as file:
+                file.seek(max(0, self.offset - 20_000))
+                earlier = file.read(self.offset - max(0, self.offset - 20_000)).splitlines()[-ERROR_CONTEXT_LINES:]
+                fresh = file.read().splitlines()
+            self.offset = size
+        except OSError:
+            return []
+        errors = []
+        for index, line in enumerate(fresh):
+            if line.split(" ", 2)[1:2] == ["ERROR"]:  # the level field: INFO lines quoting an error are no new error
+                errors.append((line, (earlier + fresh[:index])[-ERROR_CONTEXT_LINES:]))
+        return errors
+
+    def due(self, signature: str, now: float) -> bool:
+        sent = self.state["sent"]
+        today = [stamp for stamp in sent.values() if now - stamp < 24 * 3600]
+        return now - sent.get(signature, 0) >= ERROR_REPORT_REPEAT_S and len(today) < ERROR_REPORTS_PER_DAY
+
+    def tick(self, sessions: list[dict]):
+        if time.time() - self.checked_at < ERROR_POLL_S:
+            return
+        self.checked_at = time.time()
+        pending = self.state.setdefault("pending", [])
+        pending += [{"error": line, "context": context} for line, context in self.new_errors()]
+        if not pending or gaming():
+            self.save()
+            return
+        while pending:
+            report = pending.pop(0)
+            signature = error_signature(report["error"])
+            if not self.due(signature, time.time()):
+                continue
+            self.state["sent"][signature] = time.time()
+            self.hand_over(report, sessions)
+        self.save()
+
+    def hand_over(self, report: dict, sessions: list[dict]):
+        prompt = error_report_prompt(report["error"], report["context"])
+        waiting = next((session for session in sessions if session.get("project") == "dotfiles" and session.get("state") == "waiting"), None)
+        if waiting:
+            try:
+                problem = manager("say", waiting["session"], error_report_message(write_error_report(prompt)))
+            except OSError as error:
+                problem = f"report not written: {error}"
+            if not problem:
+                log_event("INFO", f"error handed to dotfiles session {waiting['session'][:8]}: {error_signature(report['error'])[:120]}")
+                return
+            log_event("WARN", f"error hand-off to dotfiles session {waiting['session'][:8]} failed ({problem}); starting a new session")
+        manager_in_background("background", DOTFILES_DIR, prompt)
+        log_event("INFO", f"error handed to a new dotfiles session: {error_signature(report['error'])[:120]}")
+
+    def save(self):
+        self.state["sent"] = {signature: stamp for signature, stamp in self.state["sent"].items() if time.time() - stamp < 7 * 24 * 3600}
+        try:
+            os.makedirs(os.path.dirname(ERROR_REPORTS_PATH), exist_ok=True)
+            with open(ERROR_REPORTS_PATH + ".tmp", "w") as file:
+                json.dump(self.state, file)
+            os.replace(ERROR_REPORTS_PATH + ".tmp", ERROR_REPORTS_PATH)
+        except OSError as error:
+            log_event("WARN", f"cannot save {ERROR_REPORTS_PATH}: {error}")
+
+
 TODO_PATH = os.path.join(os.environ.get("XDG_STATE_HOME", os.path.expanduser("~/.local/state")), "claude-sessions", "todo.json")
 
 
@@ -1635,6 +1801,76 @@ class Panel:
             put(screen, top, width - 3 - len(note), note, style(FG_DARK, -1, curses.A_DIM))
 
 
+# Anthropic's status page (Atlassian Statuspage): overall indicator none / minor / major / critical /
+# maintenance, each product's status, the open incidents. Fetched in the background; an empty
+# CLAUDE_STATUS_URL turns it off (tests).
+CLAUDE_STATUS_URL = os.environ.get("CLAUDE_STATUS_URL", "https://status.claude.com/api/v2/summary.json")
+CLAUDE_STATUS_PAGE = "https://status.claude.com/"
+CLAUDE_STATUS_POLL_S = 120
+CLAUDE_STATUS_COLORS = {"none": GREEN, "minor": YELLOW, "major": RED, "critical": RED, "maintenance": CYAN}
+
+
+def parse_claude_status(summary: dict) -> dict:
+    """The parts of a Statuspage summary.json shown here: indicator, description, the products not
+    operational and the open incidents' names."""
+    status = summary.get("status") or {}
+    components = [component for component in summary.get("components") or [] if not component.get("group")]
+    return {"indicator": status.get("indicator") or "", "description": status.get("description") or "",
+            "degraded": [(component.get("name", "?"), component.get("status", "?").replace("_", " "))
+                         for component in components if component.get("status") != "operational"],
+            "incidents": [incident.get("name", "?") for incident in summary.get("incidents") or [] if incident.get("status") != "resolved"]}
+
+
+class ClaudeStatus:
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.current: dict | None = None
+        self.error = ""
+        self.fetched_at = 0.0
+        self.fetching = False
+
+    def tick(self):
+        if not CLAUDE_STATUS_URL or self.fetching or time.time() - self.fetched_at < CLAUDE_STATUS_POLL_S:
+            return
+        self.fetching = True
+        threading.Thread(target=self._fetch, daemon=True).start()
+
+    def _fetch(self):
+        try:
+            request = urllib.request.Request(CLAUDE_STATUS_URL, headers={"User-Agent": "claude-sessions"})
+            with urllib.request.urlopen(request, timeout=10) as response:
+                current, error = parse_claude_status(json.load(response)), ""
+        except (OSError, ValueError) as failure:
+            current, error = None, f"status.claude.com unreachable ({failure.__class__.__name__})"
+        with self.lock:
+            previous = self.current
+            if current is not None:
+                self.current = current
+            if error != self.error:
+                log_event("WARN" if error else "INFO", error or "status.claude.com reachable again")
+            self.error, self.fetched_at, self.fetching = error, time.time(), False
+        if current and (previous or {}).get("indicator") != current["indicator"]:
+            # WARN, not ERROR: Anthropic's outage is not a claude-sessions bug for the error hand-off.
+            log_event("INFO" if current["indicator"] == "none" else "WARN", f"Claude status: {current['description']}")
+
+    def snapshot(self) -> tuple[dict | None, str, float]:
+        with self.lock:
+            return self.current, self.error, self.fetched_at
+
+
+def claude_status_lines(current: dict | None, error: str, label_width: int) -> list:
+    """The Status panel's Claude line, and one line per product not operational (at most three)."""
+    if current is None:
+        text = error or ("not checked" if not CLAUDE_STATUS_URL else "checking status.claude.com …")
+        return [Line([(0, "Claude", style(FG)), (label_width + 2, text, style(FG_DARK, -1, curses.A_DIM))])]
+    color = style(CLAUDE_STATUS_COLORS.get(current["indicator"], YELLOW), -1, curses.A_BOLD)
+    lines = [Line([(0, "Claude", style(FG)), (label_width + 2, "● " + current["description"], color)],
+                  right=("stale", style(YELLOW)) if error else None)]
+    for name, status in current["degraded"][:3]:
+        lines.append(Line([(label_width + 4, f"{name}: {status}", color)]))
+    return lines
+
+
 class StatusPanel(Panel):
     """Fixed height: one line per usage window, never expands."""
 
@@ -1670,6 +1906,8 @@ class StatusPanel(Panel):
             lines.append(Line(segments))
         if app.costs.error:
             lines.append(Line([(0, app.costs.error, style(YELLOW))]))
+        current, error, _ = app.claude_status.snapshot()
+        lines += claude_status_lines(current, error, label_width)
         self.lines = lines
 
     def height(self) -> int:
@@ -1680,10 +1918,11 @@ class StatusPanel(Panel):
         return f"{usage_plan()} · all time {money(all_time)}".lstrip(" ·") if all_time else usage_plan()
 
     def hints(self):
-        return [("⏎", "details"), ("r", "refetch")]
+        return [("⏎", "details"), ("r", "refetch"), ("o", "status page")]
 
     def help(self):
-        return [("⏎", "the full usage report in the session pane"), ("r", "fetch the usage again now")]
+        return [("⏎", "the full usage report in the session pane"), ("r", "fetch the usage again now"),
+                ("o", "open status.claude.com: Anthropic's incidents and each product's state")]
 
     def handle(self, key, app, screen):
         if key in (KEY_ENTER_LF, KEY_ENTER_CR, curses.KEY_ENTER):
@@ -1691,6 +1930,9 @@ class StatusPanel(Panel):
         elif key == ord("r"):
             app.usage.tick(force=True)
             return "fetching usage …"
+        elif key == ord("o"):
+            subprocess.Popen(["xdg-open", CLAUDE_STATUS_PAGE], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+            return "opening status.claude.com …"
         return ""
 
 
@@ -1739,6 +1981,23 @@ class SessionsPanel(Panel):
         if time.time() - app.held_checked > GREYPROXY_POLL_S:
             app.held_checked = time.time()
             app.held = greyproxy_held(GREYPROXY_DB)
+        claude, _, _ = app.claude_status.snapshot()
+        if claude and claude["indicator"] not in ("none", ""):
+            color = style(CLAUDE_STATUS_COLORS.get(claude["indicator"], YELLOW), -1, curses.A_BOLD)
+            lines.append(Line([(0, f"⚠ Claude: {claude['description']}", color)]))
+            details = [f"{name}: {status}" for name, status in claude["degraded"][:2]] + claude["incidents"][:1]
+            if details:
+                lines.append(Line([(2, " · ".join(details), style(FG_DARK, -1, curses.A_DIM))]))
+            lines.append(Line([(2, "0 then o opens status.claude.com", style(FG_DARK, -1, curses.A_DIM))]))
+            lines.append(Line())
+        app.start_files = start_file_mtimes(SESSION_START_FILES)
+        outdated = [session for session in running if changed_since_start(session, app.start_files)]
+        if outdated:
+            changes = sorted({label for session in outdated for label in changed_since_start(session, app.start_files)})
+            count = f"{len(outdated)} session{'s' * (len(outdated) > 1)}"
+            lines.append(Line([(0, f"⟳ {count} started before a change to {', '.join(changes)}", style(YELLOW, -1, curses.A_BOLD))]))
+            lines.append(Line([(2, "^R restarts the ones waiting at their prompt", style(FG_DARK, -1, curses.A_DIM))]))
+            lines.append(Line())
         if app.held:
             hosts = ", ".join(app.held[:3]) + (f" and {len(app.held) - 3} more" if len(app.held) > 3 else "")
             lines.append(Line([(0, f"⛔ greyproxy holds {hosts}", style(YELLOW, -1, curses.A_BOLD))]))
@@ -1774,6 +2033,7 @@ class SessionsPanel(Panel):
             badges = [part for part, shown in (
                 (("/compact", style(YELLOW, -1, curses.A_BOLD)), isinstance(context, (int, float)) and context >= CONTEXT_COMPACT_AT),
                 (("⬆ update", style(GREEN, -1, curses.A_BOLD)), session.get("update")),
+                (("⟳ restart", style(YELLOW, -1, curses.A_BOLD)), changed_since_start(session, app.start_files)),
                 (("⇅ remote", style(CYAN, -1, curses.A_BOLD)), facts.get("remote")),
                 (("⚲", style(YELLOW)), session.get("pinned"))) if shown]
             lines.append(Line(segments, right=badges + [(age(int(session.get("since", time.time()))), state_color)], item=index, accent=accent))
@@ -1824,16 +2084,13 @@ class SessionsPanel(Panel):
                 ("z", "the session over the whole window; Ctrl+Tab comes back"),
                 ("f", "focus: only the sessions waiting on you; f again shows all"),
                 ("Y N", "approve or decline the permission a card asks for, after a y/n confirmation"),
-                ("m", "a message for the session without opening it: sent at its prompt, queued while it works"),
-                ("l →", "cursor into the session")]
+                ("m", "a message for the session without opening it: sent at its prompt, queued while it works")]
 
     def handle(self, key, app, screen):
         session = self.selected_item()
         if key in (KEY_ENTER_LF, KEY_ENTER_CR, curses.KEY_ENTER) and session:
             return manager("open", session["session"])
-        if key in (ord("l"), curses.KEY_RIGHT):
-            focus_viewer()
-        elif key == ord("n"):
+        if key == ord("n"):
             index = next_attention_index(self.items, self.selected)
             if index is None:
                 return "nothing needs you"
@@ -1897,74 +2154,8 @@ class SessionsPanel(Panel):
         return ""
 
 
-class HistoryPanel(Panel):
-    key = "2"
-    title = "History"
-
-    def build(self, app):
-        history, view = app.history, app.view
-        running_ids = {session["session"] for session in app.sessions}
-        history.refresh()
-        history.load_titles([entry["session"] for entry in history.entries[:RECENT_LIMIT * 2]
-                             if entry["session"] not in running_ids], TITLES_PER_TICK)
-        recent = history.recent(running_ids, app.query, view)
-        items, lines = [], []
-        for bucket, sessions in group_by_day(recent):
-            if lines:
-                lines.append(Line())
-            lines.append(Line([(0, bucket, style(MAGENTA, -1, curses.A_BOLD))]))
-            for position, (project, members) in enumerate(group_by_project(sessions)):
-                folded = project in view.folded
-                if position:
-                    lines.append(Line())
-                segments = [(0, "▸" if folded else "▾", style(FG_DARK)), (2, project, style(project_color(project), -1, curses.A_BOLD))]
-                if folded:
-                    segments.append((3 + len(project), str(len(members)), style(FG_DARK, -1, curses.A_DIM)))
-                    items.append({**members[0], "folded": True})
-                    lines.append(Line(segments, item=len(items) - 1))
-                    continue
-                lines.append(Line(segments))
-                for session in members:
-                    items.append(session)
-                    lines.append(Line([(2, GLYPHS["recent"], style(CYAN)), (4, session.get("task") or "(untitled)", style(FG_DARK))],
-                                      right=(clock(int(session.get("since", time.time()))), style(FG_DARK, -1, curses.A_DIM)), item=len(items) - 1))
-        if not recent:
-            lines.append(Line([(0, "No past session." if not app.query else "Nothing matches.", style(FG_DARK, -1, curses.A_DIM))]))
-        self.items, self.lines = items, lines
-        self.clamp()
-
-    def subtitle(self, app):
-        return "trivial shown" if app.view.show_trivial else ""
-
-    def hints(self):
-        return [("⏎", "resume"), ("x", "hide"), ("u", "undo"), ("h", "fold"), (".", "trivial")]
-
-    def help(self):
-        return [("⏎", "resume the conversation in the session pane (unfold a folded project)"),
-                ("x", "hide the session from the list"), ("u", "bring back the last hidden one"),
-                ("h ←", "fold or unfold the project"), (".", "show or hide trivial sessions")]
-
-    def handle(self, key, app, screen):
-        session = self.selected_item()
-        if key in (KEY_ENTER_LF, KEY_ENTER_CR, curses.KEY_ENTER) and session:
-            return activate(session, app.view)
-        if key in (ord("h"), curses.KEY_LEFT) and session:
-            app.view.toggle(app.view.folded, session["project"])
-        elif key == ord("u"):
-            return "unhid the last hidden session" if app.view.unhide_last() else "nothing hidden"
-        elif key == ord("."):
-            app.view.show_trivial = not app.view.show_trivial
-            app.view.save()
-        elif key == ord("x") and session:
-            if session.get("folded"):
-                return "unfold the project first (h)"
-            app.view.hide(session["session"])
-            return f"hidden: {(session.get('task') or '')[:40]}  (u undoes)"
-        return ""
-
-
 class ReviewsPanel(Panel):
-    key = "3"
+    key = "2"
     title = "Pull requests"
 
     def build(self, app):
@@ -2024,7 +2215,7 @@ class ReviewsPanel(Panel):
 
 
 class TodoPanel(Panel):
-    key = "4"
+    key = "3"
     title = "Todo"
 
     def build(self, app):
@@ -2181,15 +2372,15 @@ class EffortMenu:
         return top <= y <= bottom and left <= x <= right
 
 
-PANEL_NAMES = ("Status", "Sessions", "History", "Pull requests", "Todo")
+PANEL_NAMES = ("Status", "Sessions", "Pull requests", "Todo")
 GLOBAL_HINTS = [("⇥", "panel"), ("/", "filter"), (":", "actions"), ("a", "new"), ("?", "help"), ("q", "close")]
-GLOBAL_HELP = [("0-4", "focus a panel"), ("^1 ^2 ^3", "focus a panel from inside the session (tmux)"), ("⇥ ⇧⇥", "next / previous panel"), ("j/k ↑↓", "move inside the panel"),
+GLOBAL_HELP = [("0-3", "focus a panel"), ("H", "resume a past session, searched by project and prompt"), ("^1 ^2 ^3", "focus a panel from inside the session (tmux)"), ("⇥ ⇧⇥", "next / previous panel"), ("j/k ↑↓", "move inside the panel"),
                ("/", "filter the focused panel, Esc clears"), (":", "every action, searchable"), ("a", "new session in a project"),
                ("A", "new session on its own branch, in a separate clone (parallel work on one repository)"),
                ("D", "the digest: yesterday, today, plan usage, who waits, pull requests (also once a day by itself)"),
                ("P W G", "windows on top: pull requests, Claude on the web, greyproxy (also Super+Ctrl+P/A/G)"),
                ("≈ $", "today's Claude Code replies on this machine at API prices (the plan is flat); week and month in Status"),
-               ("^⇥", "cursor between the column and the session (tmux)"), ("q ^C", "close the manager window; sessions keep running")]
+               ("^⇥", "cursor between the column and the session (tmux)"), ("l →  ←", "into the session from any panel; ← from the session comes back"), ("q ^C", "close the manager window; sessions keep running")]
 LEGEND = [("●", "working"), ("○", "waiting for you"), ("!", "needs you: permission or question"), ("·", "running, state unknown"),
           ("↻", "past session"), ("▌", "shown in the session pane"), ("⚲", "pinned"), ("⇅", "remote controlled"),
           ("⬆", "Claude updated itself: r restarts on the new version"),
@@ -2216,11 +2407,26 @@ def pick_action(entries: list[tuple[int | None, str, str]]):
     return entries[int(result.stdout.split("\t", 1)[0])]
 
 
+def pick_past_session(app):
+    """fzf over the past sessions (history.jsonl, newest first, running ones left out); the chosen
+    entry, or None."""
+    app.history.refresh()
+    running = {session["session"] for session in app.sessions}
+    entries = [entry for entry in app.history.entries if entry["session"] not in running]
+    lines = [f"{number}\t{datetime.fromtimestamp(entry['since']).strftime('%d %b %H:%M')}  {entry['project']:<18} "
+             f"{app.history.title(entry['session']) or entry['prompt']}" for number, entry in enumerate(entries)]
+    result = subprocess.run(["fzf", "--prompt", "resume> ", "--height", "100%", "--delimiter", "\t", "--with-nth", "2..", "--no-sort"],
+                            input="\n".join(lines), capture_output=True, text=True)
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+    return entries[int(result.stdout.split("\t", 1)[0])]
+
+
 def run_palette_entry(app, entry, screen) -> str:
     """Focus the action's panel and press its key, as if typed there."""
     panel, key, _ = entry
     if panel is not None:
-        app.focus = panel
+        app.focus_panel(panel)
     app.handle(KEY_ENTER_LF if key == "⏎" else ord(key), screen)
     return app.message
 
@@ -2234,7 +2440,9 @@ class App:
         self.costs = TranscriptCosts()
         self.reviews = Reviews()
         self.todos = TodoList()
-        self.panels: list[Panel] = [StatusPanel(), SessionsPanel(), HistoryPanel(), ReviewsPanel(), TodoPanel()]
+        self.errors = ErrorReporter()
+        self.claude_status = ClaudeStatus()
+        self.panels: list[Panel] = [StatusPanel(), SessionsPanel(), ReviewsPanel(), TodoPanel()]
         self.focus = 1
         self.query = ""
         self.filtering = False
@@ -2246,6 +2454,7 @@ class App:
         self.focus_waiting = False  # f: only the sessions waiting on you
         self.held: list[str] = []  # requests greyproxy holds for approval (greyproxy_held)
         self.held_checked = 0.0
+        self.start_files: dict[str, float] = {}
         self.restore_checked = 0.0
         self.width = DEFAULT_COLUMN_WIDTH
 
@@ -2253,12 +2462,21 @@ class App:
     def panel(self) -> Panel:
         return self.panels[self.focus]
 
+    def focus_panel(self, index: int):
+        """A panel taking the focus shows from its top: while small it scrolled to keep its
+        selection in view, and that scroll would otherwise stay once it is big again."""
+        if index != self.focus:
+            self.panels[index].scroll = 0
+        self.focus = index
+
     @property
     def sessions(self) -> list[dict]:
         return self.panels[1].items
 
     def tick(self):
         self.todos.apply_updates()
+        self.errors.tick(reported_sessions())
+        self.claude_status.tick()
         self.usage.tick()
         self.alerts.check(usage_windows())
         self.costs.tick()
@@ -2418,7 +2636,7 @@ class App:
         if hit is None:
             return
         panel_index, item = hit
-        self.focus = panel_index
+        self.focus_panel(panel_index)
         if item is not None:
             self.panel.selected = item
             action = hit_actions.get(y)
@@ -2436,7 +2654,7 @@ class App:
             self.help_open = False
             return
         if curses.KEY_F1 <= key < curses.KEY_F1 + len(self.panels) - 1:
-            self.focus = key - curses.KEY_F1 + 1  # F1..F3 from the tmux Ctrl+digit binds, even mid-filter
+            self.focus_panel(key - curses.KEY_F1 + 1)  # F1..F3 from the tmux Ctrl+digit binds, even mid-filter
             self.filtering = False
             return
         if self.filtering:
@@ -2452,15 +2670,17 @@ class App:
         if key == curses.KEY_MOUSE:
             self.handle_mouse()
         elif ord("0") <= key < ord("0") + len(self.panels):
-            self.focus = key - ord("0")
+            self.focus_panel(key - ord("0"))
         elif key == KEY_TAB:
-            self.focus = (self.focus + 1) % len(self.panels)
+            self.focus_panel((self.focus + 1) % len(self.panels))
         elif key == curses.KEY_BTAB:
-            self.focus = (self.focus - 1) % len(self.panels)
+            self.focus_panel((self.focus - 1) % len(self.panels))
         elif key in (ord("j"), curses.KEY_DOWN):
             self.panel.move(1)
         elif key in (ord("k"), curses.KEY_UP):
             self.panel.move(-1)
+        elif key in (ord("l"), curses.KEY_RIGHT):
+            focus_viewer()  # from any panel, as ← comes back from the session (tmux.conf)
         elif key == ord("/"):
             self.filtering = True
         elif key == KEY_ESCAPE:
@@ -2477,6 +2697,10 @@ class App:
                 self.message = manager("new", directory)
         elif key == ord("D"):
             self.message = manager("digest")
+        elif key == ord("H"):
+            past = run_outside_curses(screen, lambda: pick_past_session(self))
+            if past:
+                self.message = activate(past, self.view)
         elif key == ord("A"):
             directory = run_outside_curses(screen, pick_project)
             branch = run_outside_curses(screen, lambda: input_line("branch for the parallel session> ")) if directory else ""

@@ -26,6 +26,13 @@
 #                                is how an installed Claude update gets applied (the sidebar's r);
 #                                with an effort level (low … max) it comes back on that one (the
 #                                sidebar's effort menu), without one it keeps the level it had
+#   claude-sessions restart-all <id>...
+#                                restart those sessions one after the other (the sidebar's Ctrl+R)
+#   claude-sessions background <dir> <prompt>
+#                                start a session there out of sight, with that first message (the
+#                                sidebar's error hand-off); it shows as a card
+#   claude-sessions loading-screen
+#                                what the popup over the viewer pane runs while a session starts
 #   claude-sessions idle         what the viewer pane runs while nothing is selected
 #   claude-sessions usage        show the plan's usage report in the viewer pane (the sidebar's Enter on Status)
 #   claude-sessions logs [lines] the end of the log (~/.local/state/claude-sessions/log) and the hook's
@@ -244,11 +251,22 @@ new_session() {
     # CLAUDE_SESSIONS_INSIDE stops the function from delegating back to this manager.
     # The launch takes a few seconds (fish, the launcher, greywall, Claude): say so in the pane
     # until Claude's own screen takes over.
+    loading_overlay "Starting Claude in $(basename "$directory") …" "$directory"
     tmux respawn-pane -k -t "$(viewer_pane)" -c "$directory" \
         env -u TMUX -u TMUX_PANE CLAUDE_SESSIONS_INSIDE=1 \
         fish -ic 'echo; echo "  ⟳ Starting Claude in $PWD …"; echo; claude $argv'"$LAUNCH_EPILOGUE" "$@"
     : > "$CURRENT"
     label_panes "$(basename "$directory")"
+}
+
+# A session started out of sight, in a tmux session of its own: the session pane keeps what it
+# shows. Inside tmux the launcher runs claude right there. It appears as a card once it reports
+# in. The sidebar's error hand-off uses it.
+background_session() { # dir prompt
+    require_plain_directory "$1"
+    [[ -n $2 ]] || { echo "claude-sessions: background needs a prompt" >&2; return 1; }
+    tmux new-session -d -s "claude-retry-bg-$(date +%s)" -x 200 -y 50 -c "$1" \
+        env -u TMUX_PANE CLAUDE_SESSIONS_INSIDE=1 fish -ic 'claude $argv' "$2"
 }
 
 # Appended to every launch in the viewer pane: a start that fails says so and stays on screen,
@@ -266,6 +284,57 @@ require_effort() {
     return 1
 }
 
+# While a session closes and starts in the viewer pane (restart, effort switch, new, resume), a
+# popup exactly over that pane shows what is happening instead of the shell, the launcher and the
+# sandbox scrolling by. It closes once the new session reports in (its SessionStart in the
+# snapshot), after LOADING_TIMEOUT_S (logged), or on Escape. A second call while it shows only
+# changes its text. Nothing when no terminal shows the manager.
+LOADING_STATE="${XDG_RUNTIME_DIR:-/tmp}/claude-sessions-loading"
+LOADING_TIMEOUT_S=${CLAUDE_SESSIONS_LOADING_TIMEOUT_S:-60}
+
+loading_overlay() { # label directory [session-id]
+    local client pane size
+    printf '%s\n%s\n%s\n%s\n' "$1" "$2" "${3:-}" "$(date +%s)" > "$LOADING_STATE"
+    client=$(tmux list-clients -t "=$MANAGER" -F '#{client_name}' 2>/dev/null | head -n 1)
+    [[ -n $client ]] || return 0
+    pgrep -f "claude-sessions loading-screen" >/dev/null && return 0
+    pane=$(viewer_pane)
+    size=$(tmux display-message -p -t "$pane" '#{pane_width} #{pane_height}')
+    # display-popup waits for the popup to close: started in the background.
+    tmux display-popup -B -E -c "$client" -t "$pane" -x '#{popup_pane_left}' -y '#{popup_pane_bottom}' \
+        -w "${size% *}" -h "${size#* }" claude-sessions loading-screen >/dev/null 2>&1 &
+    disown
+}
+
+loading_ready() { # directory session-id since
+    jq -e --arg directory "$1" --arg session "$2" --argjson since "$3" \
+        '[.sessions[] | select((.started // 0) >= $since)
+          | select(if $session != "" then .session == $session else .cwd == $directory end)] | length > 0' \
+        "$SNAPSHOT" >/dev/null 2>&1
+}
+
+show_loading() {
+    local frames=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏) tick=0 label directory session since rows columns
+    tput civis 2>/dev/null
+    while { read -r label; read -r directory; read -r session; read -r since; } < "$LOADING_STATE" 2>/dev/null; do
+        if loading_ready "$directory" "$session" "$since"; then
+            sleep 1  # the session reported in; give it a moment to draw its screen
+            break
+        fi
+        if (( $(date +%s) - since > LOADING_TIMEOUT_S )); then
+            log_event WARN sessions "loading screen timed out after ${LOADING_TIMEOUT_S}s: $label in $directory"
+            break
+        fi
+        rows=$(tput lines 2>/dev/null || echo 24) columns=$(tput cols 2>/dev/null || echo 80)
+        printf '\033[2J\033[%d;%dH\033[1;34m%s\033[0m  \033[1m%s\033[0m' \
+            $(( rows / 2 )) $(( (columns - ${#label} - 3) / 2 > 1 ? (columns - ${#label} - 3) / 2 : 1 )) "${frames[tick % 10]}" "$label"
+        printf '\033[%d;%dH\033[2m%s\033[0m' $(( rows / 2 + 2 )) $(( (columns - 20) / 2 > 1 ? (columns - 20) / 2 : 1 )) "Escape hides this"
+        tick=$(( tick + 1 ))
+        sleep 0.15
+    done
+    rm -f "$LOADING_STATE"
+}
+
 resume_session() { # dir id [effort]
     require_plain_directory "$1"
     local effort_flags=()
@@ -274,6 +343,7 @@ resume_session() { # dir id [effort]
         effort_flags=(--effort "$3")
     fi
     ensure_manager
+    loading_overlay "Resuming $(basename "$1")${3:+ · effort $3} …" "$1" "$2"
     tmux respawn-pane -k -t "$(viewer_pane)" -c "$1" \
         env -u TMUX -u TMUX_PANE CLAUDE_SESSIONS_INSIDE=1 \
         fish -ic 'echo; echo "  ⟳ Resuming the conversation in $PWD …"; echo; claude --resume $argv'"$LAUNCH_EPILOGUE" "$2" "${effort_flags[@]}"
@@ -314,7 +384,7 @@ exit_session() {
     # "press again to exit" window. Two rounds, then the tmux session is killed.
     for attempt in 1 2; do
         if pane_at_prompt "$pane"; then
-            tmux send-keys -t "$pane" "/exit" Enter
+            submit_to_pane "$pane" "/exit"
         else
             tmux send-keys -t "$pane" C-c
             sleep 0.3
@@ -324,6 +394,15 @@ exit_session() {
     done
     echo "claude-sessions: $id did not exit, killing its tmux session" >&2
     tmux kill-session -t "=$target"
+}
+
+# A command typed at Claude's prompt and submitted. Text and Enter go in two send-keys calls with a
+# pause: in one burst Claude's input takes them as a paste and the Enter becomes a newline, so the
+# command never runs (claude-auto-retry's SUBMIT_DELAY_MS, src/tmux.js, documents the same).
+submit_to_pane() { # pane text
+    tmux send-keys -t "$1" -l -- "$2"
+    sleep 0.15
+    tmux send-keys -t "$1" Enter
 }
 
 pane_at_prompt() {
@@ -369,7 +448,7 @@ compact_session() { # id
         echo "claude-sessions: $(session_field "$id" project) is busy; compact it when it waits" >&2
         return 1
     fi
-    tmux send-keys -t "$pane" "/compact" Enter
+    submit_to_pane "$pane" "/compact"
 }
 
 # Answer a session's permission dialog from the sidebar (Y approves, N declines). The pane is read
@@ -515,6 +594,7 @@ restart_session() { # id [effort]
         effort=$(jq -r '.effort // empty' "$HOME/.cache/claude/statusline-$id.json" 2>/dev/null || true)
         require_effort "$effort" 2>/dev/null || effort=""
     fi
+    loading_overlay "Restarting $(basename "$directory")${effort:+ · effort $effort} …" "$directory" "$id"
     exit_session "$id" || return 1
     if ! has_conversation "$id"; then
         # Nothing said yet: a fresh session in the same directory is the same thing.
@@ -633,7 +713,7 @@ doctor() {
     if [[ $(cat "${XDG_RUNTIME_DIR:-/tmp}/waybar-visible" 2>/dev/null || echo 1) == "$wanted" ]]; then report ok "bar visibility matches the workspace"; else report fail "bar visibility state out of step" "$HOME/.config/waybar/scripts/waybar-visibility.sh sync"; fi
     echo "tmux"
     if [[ $(tmux show -gv window-size 2>/dev/null) == latest ]]; then report ok "window-size latest"; else report fail "tmux window-size is not latest" "tmux source ~/.config/tmux/tmux.conf"; fi
-    if tmux list-keys -T root 2>/dev/null | grep -q 'S-Left'; then report ok "Shift+arrow pane keys bound"; else report fail "Shift+Left/Right not bound" "tmux source ~/.config/tmux/tmux.conf"; fi
+    if tmux list-keys -T root 2>/dev/null | grep -q 'root Left .*viewer'; then report ok "Left from the session pane to the column bound"; else report fail "Left is not bound to the column in the session pane" "tmux source ~/.config/tmux/tmux.conf"; fi
     echo "manager"
     if tmux has-session -t "=$MANAGER" 2>/dev/null; then
         report ok "manager tmux session exists"
@@ -770,7 +850,8 @@ prs_window() {
 }
 
 # The approval of a run request (claude-run-<id>, the daemon starts it) in a pane under the
-# session pane, without taking the cursor: the other sessions stay usable, Ctrl+Tab reaches it.
+# session pane. It takes the cursor when Theo is in the session pane, not when he is in the
+# column (the other sessions stay usable there; Ctrl+Tab reaches it).
 # "close" removes the pane. Nothing happens when the manager does not run.
 approval_pane() { # id | close
     local pane
@@ -781,6 +862,10 @@ approval_pane() { # id | close
         return 0
     fi
     [[ $1 =~ ^[0-9a-f]{12}$ ]] || { echo "claude-sessions: not a run request id: $1" >&2; return 1; }
+    # Theo in the session pane: the cursor moves to the approval (claude-run-approve drops what he
+    # typed in the first half second, and Decline is the default). In the column it stays put.
+    local was_in_session
+    was_in_session=$(tmux display-message -p -t "$(viewer_pane)" '#{pane_active}' 2>/dev/null || true)
     if [[ -n $pane ]]; then
         tmux respawn-pane -k -t "$pane" env -u TMUX tmux attach-session -t "=claude-run-$1"
     else
@@ -789,6 +874,7 @@ approval_pane() { # id | close
     fi
     # Gone with its approval even when no "close" comes (the daemon restarted meanwhile): no dead pane left.
     tmux set-option -p -t "$pane" remain-on-exit off
+    if [[ $was_in_session == 1 ]]; then tmux select-pane -t "$pane"; fi
 }
 
 # lazygit on a session's repository in a popup over the manager (the sidebar's g): review and
@@ -848,6 +934,8 @@ case ${1:-attach} in
         ;;
     restore) shift; restore_sessions "$@" ;;
     restart-all) shift; restart_sessions "$@" ;;
+    background) background_session "${2:?usage: claude-sessions background <dir> <prompt>}" "${3:?usage: claude-sessions background <dir> <prompt>}" ;;
+    loading-screen) show_loading ;;
     restart) restart_session "${2:?usage: claude-sessions restart <session-id> [effort]}" "${3:-}" ;;
     idle) idle ;;
     usage) show_usage ;;
