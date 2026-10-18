@@ -219,3 +219,53 @@ fn a_turn_outside_a_repository_reports_no_outcome() {
     test.run_hook(with_session(json!({"hook_event_name": "Stop"}), &folder.to_string_lossy()), &[]);
     assert!(test.received().last().unwrap().get("outcome").is_none());
 }
+
+/// A transcript: a prompt, then each (command, failed) as a Bash call and its result.
+fn transcript(folder: &Path, turns: &[(&str, &[(&str, bool)])]) -> String {
+    let mut lines = Vec::new();
+    for (turn, (prompt, calls)) in turns.iter().enumerate() {
+        lines.push(json!({"type": "user", "message": {"role": "user", "content": prompt}}));
+        for (index, (command, failed)) in calls.iter().enumerate() {
+            let id = format!("toolu_{turn}_{index}");
+            lines.push(json!({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": id, "name": "Bash", "input": {"command": command}}]}}));
+            lines.push(json!({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": id, "is_error": failed, "content": "…"}]}}));
+        }
+    }
+    let path = folder.join("transcript.jsonl");
+    fs::write(&path, lines.iter().map(Value::to_string).collect::<Vec<_>>().join("\n") + "\n").unwrap();
+    path.to_string_lossy().into_owned()
+}
+
+fn stop_outcome(turns: &[(&str, &[(&str, bool)])]) -> Option<String> {
+    let mut test = HookTest::new();
+    let folder = test.sandbox.root.join("notes");
+    fs::create_dir(&folder).unwrap();
+    let mut payload = with_session(json!({"hook_event_name": "Stop"}), &folder.to_string_lossy());
+    payload["transcript_path"] = json!(transcript(&folder, turns));
+    test.run_hook(payload, &[]);
+    test.received().last().unwrap().get("outcome").and_then(Value::as_str).map(str::to_string)
+}
+
+#[test]
+fn a_turn_whose_last_test_run_failed_says_so() {
+    let outcome = stop_outcome(&[("fix it", &[("make test", false), ("cargo test -p vitals", true)])]);
+    assert_eq!(outcome.as_deref(), Some("tests failed"));
+}
+
+#[test]
+fn a_turn_that_passed_its_tests_and_closed_a_todo_says_both() {
+    let outcome = stop_outcome(&[("fix it", &[("ask-to-run --why 'x' 'make cockpit; and make test'", false), ("claude-todo done 8e50f7a0", false)])]);
+    assert_eq!(outcome.as_deref(), Some("tests passed · todo done"));
+}
+
+#[test]
+fn tests_of_an_earlier_turn_do_not_count() {
+    let outcome = stop_outcome(&[("first", &[("make test", true)]), ("second", &[("ls", false)])]);
+    assert_eq!(outcome, None);
+}
+
+#[test]
+fn a_test_command_only_mentioned_in_text_does_not_count() {
+    let outcome = stop_outcome(&[("write the test", &[("cat >> t.rs <<'X'\nstop_outcome(&[(\"make test\", true), (\"claude-todo done 1\", false)]);\nX", false)])]);
+    assert_eq!(outcome, None);
+}

@@ -88,6 +88,34 @@ outcome_of_turn() { # cwd: commits since the turn's start, uncommitted changes, 
     echo "${summary:-no changes}"
 }
 
+# What the turn's own transcript says: the result of its last test run, and whether it closed a
+# todo item (claude-todo done). Read here, inside the sandbox, like the git outcome above; only the
+# end of the transcript, so a long session does not slow every stop down.
+# A command counts where a command starts (line start, after ; & | and or, or an opening quote as in
+# ask-to-run's), not inside some text that mentions it.
+COMMAND_START='(^|[;&|]|\band|\bor|\s'"'"')\s*'
+TEST_COMMAND="${COMMAND_START}(make (test|check)|cargo (test|nextest)|(npm|pnpm|yarn|bun)( run)? test|pytest|(vendor/bin/)?phpunit|composer test|php artisan test|go test|vitest|jest)\\b"
+checks_of_turn() { # transcript
+    [[ -r $1 ]] || return 0
+    tail -n 3000 "$1" | jq -Rnr --arg tests "$TEST_COMMAND" --arg todo "${COMMAND_START}claude-todo done\\b" '
+        [inputs | fromjson? | select(type == "object")] as $entries
+        | ($entries | to_entries
+           | map(select(.value.type == "user" and ((.value.message.content | type) == "string"
+                         or ([.value.message.content[]? | .type?] | index("tool_result") | not))))
+           | last | .key // 0) as $start
+        | $entries[$start:] as $turn
+        | ([$turn[] | select(.type == "assistant") | .message.content[]? | select(.type? == "tool_use" and .name == "Bash")
+            | {id, command: (.input.command // "")}]) as $commands
+        | ([$turn[] | select(.type == "user") | .message.content[]? | select(type == "object" and .type == "tool_result")
+            | {id: .tool_use_id, failed: (.is_error // false)}]) as $results
+        | def ran($pattern): [$results[] | . as $result | select($commands | any(.id == $result.id and (.command | test($pattern))))];
+          (ran($tests) | last) as $last_tests
+        | (ran($todo) | map(select(.failed | not)) | length) as $todos
+        | [ (if $last_tests == null then empty elif $last_tests.failed then "tests failed" else "tests passed" end),
+            (if $todos > 0 then "todo done" else empty end) ]
+        | join(" · ")' 2>/dev/null || true
+}
+
 state=
 task=
 message=
@@ -126,6 +154,8 @@ case $event in
         state=waiting
         message="Finished, waiting for you"
         outcome=$(outcome_of_turn "$cwd")
+        checks=$(checks_of_turn "$(jq -r '.transcript_path // ""' <<<"$payload")")
+        if [[ -n $checks ]]; then outcome="${outcome:+$outcome · }$checks"; fi
         ;;
     SessionEnd)
         state=gone
