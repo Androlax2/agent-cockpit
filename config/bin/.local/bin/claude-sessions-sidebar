@@ -1711,12 +1711,12 @@ class ReviewsPanel(Panel):
         return scope + ("  ⟳" if app.reviews.loading else "")
 
     def hints(self):
-        return [("⏎", "open"), ("c", "Claude review"), ("P", "my reviews"), ("r", "refresh")]
+        return [("⏎", "open"), ("c", "Claude review"), ("P", "list"), ("r", "refresh")]
 
     def help(self):
         return [("⏎", "open the pull request in the pull requests window"),
                 ("c", "a Claude session reviewing it, in its own clone of the repository"),
-                ("P", "the pull requests window on my review requests"), ("r", "refresh now"),
+                ("P", "the pull requests window on the viewed session's repository (or your review requests)"), ("r", "refresh now"),
                 ("✓ ● ✗", "CI passing, running, failing"), ("approved", "review state: approved, changes (requested), review (required)")]
 
     def handle(self, key, app, screen):
@@ -2081,8 +2081,10 @@ class App:
             if directory and branch:
                 manager_in_background("parallel", directory, branch)
                 self.message = f"cloning {os.path.basename(directory)} for {branch} …"
-        elif key in (ord("P"), ord("W"), ord("G")):
-            self.message = open_in_scratchpad({ord("P"): "prs", ord("W"): "claude", ord("G"): "greyproxy"}[key])
+        elif key == ord("P"):
+            self.message = manager("prs")
+        elif key in (ord("W"), ord("G")):
+            self.message = open_in_scratchpad({ord("W"): "claude", ord("G"): "greyproxy"}[key])
         elif key in (ord("q"), KEY_CTRL_C):
             if confirm(screen, self, "close the manager window? sessions keep running"):
                 subprocess.run(["tmux", "detach-client"])

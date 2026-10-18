@@ -32,6 +32,7 @@
 #   claude-sessions log <component> <INFO|WARN|ERROR> <message>
 #                                add a line, for the lock, idle and update scripts
 #   claude-sessions git <dir>    lazygit on that repository in a popup over the manager (the sidebar's g)
+#   claude-sessions prs          the pull requests window on the viewed session's repository (Super+Ctrl+P)
 #   claude-sessions digest       yesterday, today, usage, waiting sessions and pull requests in the viewer
 #                                (the sidebar's D; also the first time the cockpit opens each day)
 #   claude-sessions parallel <dir> <branch>
@@ -711,6 +712,27 @@ review_session() { # dir number
     new_session "$clone" "Review pull request #$number of this repository (its head is checked out here): read the diff against its base branch, run the relevant tests, and report problems by severity with file and line. Do not push, and do not comment on GitHub."
 }
 
+# The pull requests window (Super+Ctrl+P, the sidebar's P), on the cockpit only: hidden again
+# when it shows; otherwise opened on the pull request list of the repository of the session in
+# the pane, or as it was (the review requests) when that session has no GitHub origin.
+prs_window() {
+    "$ON_CLAUDE_WORKSPACE" || return 0
+    local shown directory origin repository
+    shown=$(hyprctl -j monitors 2>/dev/null | jq -r '.[] | select(.focused) | .specialWorkspace.name // ""')
+    if [[ $shown == special:prs ]]; then
+        hyprctl dispatch 'hl.dsp.workspace.toggle_special("prs")' >/dev/null
+        return
+    fi
+    directory=$(session_field "$(cat "$CURRENT" 2>/dev/null || true)" cwd)
+    origin=$( [[ -n $directory ]] && git -C "$directory" remote get-url origin 2>/dev/null || true)
+    if [[ $origin =~ github\.com[:/]([A-Za-z0-9._-]+/[A-Za-z0-9._-]+)$ ]]; then
+        repository=${BASH_REMATCH[1]%.git}
+        hyprctl eval "OPEN_IN_SCRATCHPAD(\"prs\", \"https://github.com/$repository/pulls\")" >/dev/null
+    else
+        hyprctl eval 'TOGGLE_SCRATCHPAD("prs")' >/dev/null
+    fi
+}
+
 # lazygit on a session's repository in a popup over the manager (the sidebar's g): review and
 # commit what Claude did without leaving the cockpit; q closes it.
 git_popup() { # dir
@@ -777,6 +799,7 @@ case ${1:-attach} in
     logs) show_logs "${2:-80}" ;;
     log) log_event "${3:?usage: claude-sessions log <component> <INFO|WARN|ERROR> <message>}" "${2:?}" "${4:?}" ;;
     digest) show_digest ;;
+    prs) prs_window ;;
     git) git_popup "${2:?usage: claude-sessions git <dir>}" ;;
     parallel) parallel_session "${2:?usage: claude-sessions parallel <dir> <branch>}" "${3:?usage: claude-sessions parallel <dir> <branch>}" ;;
     review) review_session "${2:?usage: claude-sessions review <dir> <pr-number>}" "${3:?usage: claude-sessions review <dir> <pr-number>}" ;;
