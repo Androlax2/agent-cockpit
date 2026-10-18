@@ -14,6 +14,7 @@ import curses
 import importlib.machinery
 import importlib.util
 import json
+import locale
 import os
 import re
 import subprocess
@@ -87,6 +88,7 @@ class Guide:
         self.position = 0
         self.done: set[int] = set()
         self.answers: dict[int, str] = {}
+        self.notes: dict[int, str] = {}
         self.runs: dict[int, dict] = {}
 
     @property
@@ -105,13 +107,19 @@ class Guide:
         self.position = next((index for index in remaining if index > self.position), remaining[0])
         return False
 
-    def needs_action(self) -> str:
-        """What Enter does first on this step: "ask" for an answer, "run" a command, or ""."""
-        if self.step.get("ask") and self.position not in self.answers:
-            return "ask"
-        if self.step.get("run") and self.position not in self.runs:
-            return "run"
-        return ""
+    def typed(self) -> str:
+        """What the box holds for the step on screen: its answer, or its note to Claude."""
+        return (self.answers if self.step.get("ask") else self.notes).get(self.position, "")
+
+    def submit(self, text: str):
+        """The box's text: the answer when the step asks something, else a note (dropped when empty)."""
+        text = " ".join(text.split())
+        if self.step.get("ask"):
+            self.answers[self.position] = text
+        elif text:
+            self.notes[self.position] = text
+        else:
+            self.notes.pop(self.position, None)
 
     def progress(self) -> dict:
         return {"step": self.position + 1, "total": len(self.steps), "done": len(self.done)}
@@ -121,6 +129,7 @@ class Guide:
                 "step_text": self.step["text"].split("\n")[0], "note": note, "done": sorted(index + 1 for index in self.done),
                 "answers": [{"step": index + 1, "question": self.steps[index]["ask"], "answer": answer}
                             for index, answer in sorted(self.answers.items())],
+                "notes": [{"step": index + 1, "note": note} for index, note in sorted(self.notes.items())],
                 "runs": [{"step": index + 1, **run} for index, run in sorted(self.runs.items())]}
 
 
@@ -145,41 +154,31 @@ def finish(guide: Guide, status: str, note: str = ""):
                          f"{' (' + note[:80] + ')' if note else ''}")
 
 
-def render(guide: Guide, width: int) -> tuple[list[tuple[str, str]], int]:
-    """The guide's lines as (text, kind), kind naming the style, and the index of the step on screen."""
-    lines: list[tuple[str, str]] = []
-    wrap = lambda text, indent: textwrap.wrap(shown(text), max(10, width - indent)) or [""]
-    section, current_line = None, 0
-    for index, step in enumerate(guide.steps):
-        if step.get("section") and step["section"] != section:
-            lines += [("", "plain"), (shown(step["section"])[:width], "section")]
-        section = step.get("section")
-        number = f"{index + 1:>2}"
-        first_line = shown(step["text"].split("\n")[0])
-        if index != guide.position:
-            mark = "✓" if index in guide.done else " "
-            lines.append((f"{mark} {number} {first_line}"[:width], "done" if index in guide.done else "pending"))
-            continue
-        current_line = len(lines)
-        for line_number, line in enumerate(wrap(step["text"].replace("\n", " "), 6)):
-            lines.append((f"❯ {number}  {line}" if line_number == 0 else f"      {line}", "current"))
-        if shown(step["text"]) != step["text"] or any(shown(step.get(field, "")) != step.get(field, "") for field in STEP_FIELDS):
-            lines.append(("      ⚠ hidden characters, shown as \\uXXXX", "warning"))
-        for label, value, key in (("link", link_of(step), "o opens"), ("copy", step.get("copy", ""), "c copies"),
-                                  ("ask", step.get("ask", ""), "⏎ answers"), ("run", step.get("run", ""), "⏎ runs")):
-            if not value:
-                continue
-            lines.append((f"      {label} · {key}", "label"))
-            lines += [(f"        {line}", "value") for line in wrap(value, 8)]
-        if index in guide.answers:
-            lines += [(f"      ↳ {line}", "answer") for line in wrap(guide.answers[index] or "(no answer)", 8)]
-        if index in guide.runs:
-            run = guide.runs[index]
-            lines.append((f"      ↳ {'declined' if run.get('status') == 'declined' else 'exit ' + str(run.get('exit'))}", "answer"))
-    return lines, current_line
+def render_step(guide: Guide, width: int) -> list[tuple[str, str]]:
+    """The step on screen as (text, kind) lines, kind naming the style: its section, its text, and
+    its link, value and command with their keys. The box and the keys are drawn apart."""
+    step, lines = guide.step, []
+    wrap = lambda text, indent: [" " * indent + line for line in textwrap.wrap(shown(text), max(10, width - indent))] or [""]
+    if step.get("section"):
+        lines += [(shown(step["section"])[:width], "section"), ("", "plain")]
+    for paragraph in step["text"].split("\n"):
+        lines += [(line, "current") for line in wrap(paragraph, 0)]
+    if any(shown(step.get(field, "")) != step.get(field, "") for field in STEP_FIELDS):
+        lines += [("", "plain"), ("⚠ hidden characters, shown as \\uXXXX", "warning")]
+    details = [(label, value, key) for label, value, key in (("link", link_of(step), "^O opens"), ("copy", step.get("copy", ""), "^Y copies"),
+                                                           ("run", step.get("run", ""), "^R runs (⏎ too)")) if value]
+    if details:
+        lines.append(("", "plain"))
+    for label, value, key in details:
+        lines.append((f"  {label} · {key}", "label"))
+        lines += [(line, "value") for line in wrap(value, 4)]
+    if guide.position in guide.runs:
+        run = guide.runs[guide.position]
+        lines.append((f"  ↳ {'declined' if run.get('status') == 'declined' else 'exit ' + str(run.get('exit'))}", "answer"))
+    return lines
 
 
-HINTS = ("⏎ done  c copy  o open  ? stuck", "j k move  a answer  r run  q close")
+HINTS = ("⏎ next   ↑ back   ^O open   ^Y copy   ^R run", "^S stuck: send my note now   Esc close")
 
 
 def run_step(guide: Guide):
@@ -213,24 +212,6 @@ def run_step(guide: Guide):
         pass
 
 
-def ask_line(prompt: str) -> str | None:
-    """A line typed outside curses; None when Theo backs out (Ctrl-D / Ctrl-C)."""
-    try:
-        return input(prompt).strip()
-    except (EOFError, KeyboardInterrupt):
-        print()
-        return None
-
-
-def answer_step(guide: Guide) -> bool:
-    answer = ask_line(f"\n{guide.step['ask']}\n{approval.DIM}Goes into Claude's conversation: no secrets. "
-                      f"Empty skips, Ctrl-D backs out.{approval.RESET}\n> ")
-    if answer is None:
-        return False
-    guide.answers[guide.position] = answer
-    return True
-
-
 def outside(screen, action):
     """Leaves curses for a plain terminal (prompts, the command's output), then comes back."""
     curses.def_prog_mode()
@@ -258,24 +239,36 @@ def open_link(link: str) -> str:
         return f"cannot open: {error}"
 
 
-def draw(screen, guide: Guide, message: str):
+def draw(screen, guide: Guide, draft: str, message: str):
     height, width = screen.getmaxyx()
     screen.erase()
-    styles = {"current": curses.A_BOLD, "done": curses.A_DIM, "pending": curses.A_NORMAL, "section": curses.color_pair(1) | curses.A_BOLD,
-              "label": curses.color_pair(2), "value": curses.A_NORMAL, "answer": curses.color_pair(3), "warning": curses.color_pair(4) | curses.A_BOLD,
+    styles = {"current": curses.A_BOLD, "section": curses.color_pair(1) | curses.A_BOLD, "label": curses.color_pair(2),
+              "value": curses.A_NORMAL, "answer": curses.color_pair(3), "warning": curses.color_pair(4) | curses.A_BOLD,
               "plain": curses.A_NORMAL}
-    counter = f"{len(guide.done)}/{len(guide.steps)}"
-    put(screen, 0, 0, shown(guide.title)[:max(1, width - len(counter) - 2)], curses.A_BOLD)
-    put(screen, 0, width - len(counter) - 1, counter, curses.color_pair(1))
-    put(screen, 1, 0, f"Claude · {guide.project}"[:width - 1], curses.A_DIM)
-    lines, current_line = render(guide, width - 1)
-    body = height - 6
-    top = max(0, min(current_line - body // 4, len(lines) - body))
-    for row, (text, kind) in enumerate(lines[top:top + body]):
-        put(screen, 3 + row, 0, text, styles[kind])
-    put(screen, height - 3, 0, message[:width - 1], curses.color_pair(3))
+    counter = f"step {guide.position + 1} of {len(guide.steps)}"
+    put(screen, 0, 1, shown(guide.title)[:max(1, width - len(counter) - 4)], curses.A_BOLD)
+    put(screen, 0, width - len(counter) - 2, counter, curses.color_pair(1))
+    put(screen, 1, 1, f"Claude · {guide.project}" + (f" · {len(guide.done)} done" if guide.done else ""), curses.A_DIM)
+    put(screen, 2, 1, "─" * (width - 3), curses.A_DIM)
+    box_lines = textwrap.wrap(draft, max(10, width - 6)) or [""]
+    box_lines = box_lines[-3:]
+    box_top = height - 4 - len(box_lines) - 3
+    for row, (text, kind) in enumerate(render_step(guide, width - 4)[:max(0, box_top - 5)]):
+        put(screen, 4 + row, 2, text, styles[kind])
+    question = f"Claude asks: {shown(guide.step['ask'])}" if guide.step.get("ask") else "A note for Claude about this step (optional)"
+    put(screen, box_top - 1, 2, question[:width - 4], curses.color_pair(2) | (curses.A_BOLD if guide.step.get("ask") else curses.A_DIM))
+    put(screen, box_top, 1, "┌" + "─" * (width - 4) + "┐", curses.A_DIM)
+    for row, line in enumerate(box_lines):
+        put(screen, box_top + 1 + row, 1, "│ " + line.ljust(width - 6) + " │", curses.A_NORMAL)
+    put(screen, box_top + 1 + len(box_lines), 1, "└" + "─" * (width - 4) + "┘", curses.A_DIM)
+    put(screen, height - 3, 2, message[:width - 4], curses.color_pair(3))
     for offset, hint in enumerate(HINTS):
-        put(screen, height - 2 + offset, 0, hint[:width - 1], curses.A_DIM)
+        put(screen, height - 2 + offset, 2, hint[:width - 4], curses.A_DIM)
+    cursor_row, cursor_column = box_top + len(box_lines), 3 + len(box_lines[-1])
+    try:
+        screen.move(cursor_row, min(cursor_column, width - 3))
+    except curses.error:
+        pass
     screen.refresh()
 
 
@@ -286,54 +279,96 @@ def put(screen, row: int, column: int, text: str, attribute: int):
         pass  # the bottom-right cell, or a panel narrower than the text
 
 
+PASTE_START, PASTE_END = "[200~", "[201~"
+CTRL_C, CTRL_O, CTRL_R, CTRL_S, CTRL_Y, ESCAPE = "\x03", "\x0f", "\x12", "\x13", "\x19", "\x1b"
+BACKSPACES = (curses.KEY_BACKSPACE, "\x7f", "\x08")
+
+
+def escape_sequence(screen) -> str:
+    """What follows an Escape right away (a pasted block's markers, an arrow); "" for Escape alone."""
+    screen.nodelay(True)
+    sequence = ""
+    try:
+        while len(sequence) < 8:
+            try:
+                key = screen.get_wch()
+            except curses.error:
+                break
+            sequence += key if isinstance(key, str) else ""
+            if sequence[-1:] in ("~", "A", "B", "C", "D") and len(sequence) > 1:
+                break
+    finally:
+        screen.nodelay(False)
+    return sequence
+
+
+def read_paste(screen) -> str:
+    """A bracketed paste, up to its end marker: line breaks become spaces, so a paste never moves on."""
+    pasted = ""
+    while not pasted.endswith("\x1b" + PASTE_END):
+        key = screen.get_wch()
+        if isinstance(key, str):
+            pasted += key
+    return pasted[: -len("\x1b" + PASTE_END)].replace("\r", " ").replace("\n", " ")
+
+
 def loop(screen, guide: Guide):
-    curses.curs_set(0)
-    curses.set_escdelay(25)  # Escape closes: no second-long wait for a key sequence
+    curses.raw()  # Ctrl+S, Ctrl+O, Ctrl+Y and Ctrl+C reach the guide instead of the terminal
+    curses.set_escdelay(25)
     curses.use_default_colors()
     for pair, color in ((1, curses.COLOR_CYAN), (2, curses.COLOR_BLUE), (3, curses.COLOR_GREEN), (4, curses.COLOR_RED)):
         curses.init_pair(pair, color, -1)
-    message = ""
+    sys.stdout.write("\x1b[?2004h")  # bracketed paste
+    sys.stdout.flush()
+    draft, message = guide.typed(), ""
     while True:
         save_progress(guide)
-        draw(screen, guide, message)
-        try:
-            key = screen.getch()
-        except KeyboardInterrupt:
-            key = ord("q")  # Ctrl-C asks before closing, like q: closing unannounced would leave Claude waiting
+        curses.curs_set(1)
+        draw(screen, guide, draft, message)
+        key = screen.get_wch()
         message = ""
-        if key in KEY_ENTER or key == ord(" "):
-            action = guide.needs_action()
-            if action == "ask" and not outside(screen, lambda: answer_step(guide)):
+        if key == ESCAPE:
+            sequence = escape_sequence(screen)
+            if sequence == PASTE_START:
+                draft += read_paste(screen)
                 continue
-            if action == "run":
+            if sequence == "[A":
+                key = curses.KEY_UP
+            elif sequence:
+                continue
+        if key in ("\n", "\r", curses.KEY_ENTER):
+            if guide.step.get("run") and guide.position not in guide.runs:
                 outside(screen, lambda: run_step(guide))
+            guide.submit(draft)
             if guide.mark_done():
                 finish(guide, "done")
                 return "Every step done: Claude is told."
-        elif key in (ord("j"), curses.KEY_DOWN):
-            guide.move(1)
-        elif key in (ord("k"), curses.KEY_UP):
+            draft = guide.typed()
+        elif key == curses.KEY_UP:
+            guide.submit(draft)
             guide.move(-1)
-        elif key == ord("c"):
-            message = copy(guide.step["copy"]) if guide.step.get("copy") else "nothing to copy on this step"
-        elif key == ord("o"):
+            draft = guide.typed()
+        elif key in BACKSPACES:
+            draft = draft[:-1]
+        elif key == CTRL_O:
             message = open_link(link_of(guide.step)) if link_of(guide.step) else "no link on this step"
-        elif key == ord("a") and guide.step.get("ask"):
-            outside(screen, lambda: answer_step(guide))
-        elif key == ord("r") and guide.step.get("run"):
+        elif key == CTRL_Y:
+            message = copy(guide.step["copy"]) if guide.step.get("copy") else "nothing to copy on this step"
+        elif key == CTRL_R and guide.step.get("run"):
             outside(screen, lambda: run_step(guide))
-        elif key == ord("?"):
-            note = outside(screen, lambda: ask_line(f"\nStuck on step {guide.position + 1}. What happens? "
-                                                    f"{approval.DIM}(goes to Claude; Ctrl-D backs out){approval.RESET}\n> "))
-            if note is not None:
-                finish(guide, "stuck", note)
-                return "Claude is told where you are stuck."
-        elif key in (ord("q"), 27):
-            closing = outside(screen, lambda: approval.choose("Close the guide? Claude is told you stopped here.",
+        elif key == CTRL_S:
+            guide.submit(draft)
+            finish(guide, "stuck", draft.strip() or "(no note)")
+            return "Claude is told where you are stuck."
+        elif key in (ESCAPE, CTRL_C):
+            guide.submit(draft)
+            closing = outside(screen, lambda: approval.choose("Close the guide? Claude is told where you stopped.",
                                                               [("n", "Keep going"), ("y", "Close it")], "n"))
             if closing == "y":
                 finish(guide, "closed")
                 return "Closed: Claude is told."
+        elif isinstance(key, str) and key.isprintable():
+            draft += key
 
 
 def main(guide_id: str) -> int:
@@ -343,6 +378,7 @@ def main(guide_id: str) -> int:
         print(f"Cannot show guide {guide_id}: {error}.")
         time.sleep(5)
         return 1
+    locale.setlocale(locale.LC_ALL, "")  # curses reads typed é, ü… as characters, not bytes
     print(curses.wrapper(loop, guide))
     time.sleep(1.5)
     return 0

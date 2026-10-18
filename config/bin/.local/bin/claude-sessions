@@ -292,9 +292,9 @@ require_effort() {
 LOADING_STATE="${XDG_RUNTIME_DIR:-/tmp}/claude-sessions-loading"
 LOADING_TIMEOUT_S=${CLAUDE_SESSIONS_LOADING_TIMEOUT_S:-60}
 
-loading_overlay() { # label directory [session-id]
+loading_overlay() { # label directory [session-id] [start|gone]
     local client pane size
-    printf '%s\n%s\n%s\n%s\n' "$1" "$2" "${3:-}" "$(date +%s)" > "$LOADING_STATE"
+    printf '%s\n%s\n%s\n%s\n%s\n' "$1" "$2" "${3:-}" "$(date +%s)" "${4:-start}" > "$LOADING_STATE"
     client=$(tmux list-clients -t "=$MANAGER" -F '#{client_name}' 2>/dev/null | head -n 1)
     [[ -n $client ]] || return 0
     pgrep -f "claude-sessions loading-screen" >/dev/null && return 0
@@ -306,7 +306,12 @@ loading_overlay() { # label directory [session-id]
     disown
 }
 
-loading_ready() { # directory session-id since
+loading_ready() { # directory session-id since start|gone
+    if [[ $4 == gone ]]; then
+        # Closing: done once the daemon has dropped the session.
+        ! jq -e --arg session "$2" 'any(.sessions[]; .session == $session)' "$SNAPSHOT" >/dev/null 2>&1
+        return
+    fi
     jq -e --arg directory "$1" --arg session "$2" --argjson since "$3" \
         '[.sessions[] | select((.started // 0) >= $since)
           | select(if $session != "" then .session == $session else .cwd == $directory end)] | length > 0' \
@@ -314,10 +319,10 @@ loading_ready() { # directory session-id since
 }
 
 show_loading() {
-    local frames=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏) tick=0 label directory session since rows columns
+    local frames=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏) tick=0 label directory session since mode rows columns
     tput civis 2>/dev/null
-    while { read -r label; read -r directory; read -r session; read -r since; } < "$LOADING_STATE" 2>/dev/null; do
-        if loading_ready "$directory" "$session" "$since"; then
+    while { read -r label; read -r directory; read -r session; read -r since; read -r mode; } < "$LOADING_STATE" 2>/dev/null; do
+        if loading_ready "$directory" "$session" "$since" "$mode"; then
             sleep 1  # the session reported in; give it a moment to draw its screen
             break
         fi
@@ -929,7 +934,11 @@ case ${1:-attach} in
     new) shift; new_session "${1:?usage: claude-sessions new <dir> [claude args]}" "${@:2}" ;;
     resume) resume_session "${2:?usage: claude-sessions resume <dir> <session-id>}" "${3:?usage: claude-sessions resume <dir> <session-id>}" ;;
     exit)
-        exit_session "${2:?usage: claude-sessions exit <session-id>}"
+        # The session in the pane: a "Closing" screen until it is gone, as for a start.
+        if [[ $(cat "$CURRENT" 2>/dev/null) == "${2:?usage: claude-sessions exit <session-id>}" ]]; then
+            loading_overlay "Closing $(session_field "$2" project) …" "$(session_field "$2" cwd)" "$2" gone
+        fi
+        exit_session "$2"
         mkdir -p "$(dirname "$ENDED_SESSIONS")" && printf '%s\n' "$2" >> "$ENDED_SESSIONS"
         ;;
     restore) shift; restore_sessions "$@" ;;
