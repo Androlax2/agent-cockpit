@@ -44,6 +44,7 @@
 #                                (the sidebar's D; also the first time the cockpit opens each day)
 #   claude-sessions parallel <dir> <branch>
 #                                a new session on <branch> in its own clone of the repository (the sidebar's A)
+#   claude-sessions clones       the clones of + and of reviews, and delete those holding nothing new (the sidebar's K)
 #   claude-sessions review <dir> <pr-number>
 #                                a session reviewing that pull request in its own clone (the sidebar's c)
 #   claude-sessions label-state <state>
@@ -804,6 +805,7 @@ doctor() {
 # remote. Clones live in $CLONES_DIR/<repository>/<name>; the registry and the sidebar name such a
 # session after <repository>. A per-project Docker daemon (agent-docker) does not follow a clone.
 CLONES_DIR="${CLAUDE_SESSIONS_CLONES:-$HOME/IdeaProjects/.parallel}"
+GREYWALL="${CLAUDE_SESSIONS_GREYWALL:-$HOME/.local/bin/greywall}"
 
 clone_for() { # source-dir name -> prints the clone's path, created on first use
     local source=$1 name=$2 top repository clone origin
@@ -885,6 +887,65 @@ review_session() { # dir number
         show_failure "could not fetch pull request #$number from $(git -C "$clone" remote get-url origin)"; return 1
     fi
     new_session "$clone" "Review pull request #$number of this repository (its head is checked out here): read the diff against its base branch, run the relevant tests, and report problems by severity with file and line. Do not push, and do not comment on GitHub."
+}
+
+# The clones left by + and by pull request reviews, in a popup (the sidebar's K): each one with no
+# session in it, no uncommitted change and no commit missing from its remote can go, after a y.
+clones_popup() {
+    tmux display-popup -E -w 80% -h 70% -T " clones " "$0" clones-review
+}
+
+# What a clone holds that exists nowhere else: "changes", "commits", or nothing. git runs inside
+# greywall, as for lazygit: the clone's .git/config is the session's to write (core.fsmonitor,
+# filters), and out here git would run what it names. Its answer only decides whether to keep.
+clone_leftovers() { # clone
+    local report
+    report=$(cd "$1" && "$GREYWALL" --auto-profile --profile claude -- sh -c \
+        'git status --porcelain 2>/dev/null | head -1; echo "-- commits"; git log --branches --not --remotes --oneline 2>/dev/null | head -1' 2>/dev/null) \
+        || { echo "unreadable"; return; }
+    if [[ ${report%%-- commits*} == *[![:space:]]* ]]; then echo "changes"
+    elif [[ ${report#*-- commits} == *[![:space:]]* ]]; then echo "commits"
+    fi
+}
+
+clones_review() {
+    local clones_root clone real in_use leftovers removable=() line
+    clones_root=$(realpath -e "$CLONES_DIR" 2>/dev/null) || { echo "No clones ($CLONES_DIR does not exist)."; read -r -p "Enter closes. " _; return 0; }
+    in_use=$(jq -r '.sessions[]?.cwd // empty' "$SNAPSHOT" 2>/dev/null)
+    echo "Clones in $CLONES_DIR"
+    echo
+    for clone in "$clones_root"/*/*/; do
+        clone=${clone%/}
+        [[ -d $clone/.git && ! -L $clone ]] || continue
+        line="  $(basename "$(dirname "$clone")")/$(basename "$clone")"
+        if grep -qxF -- "$clone" <<< "$in_use"; then
+            echo "$line: kept, a session runs in it"
+            continue
+        fi
+        leftovers=$(clone_leftovers "$clone")
+        case $leftovers in
+            changes) echo "$line: kept, uncommitted changes" ;;
+            commits) echo "$line: kept, commits not on its remote" ;;
+            unreadable) echo "$line: kept, could not be checked" ;;
+            *) echo "$line: can go"; removable+=("$clone") ;;
+        esac
+    done
+    echo
+    if (( ${#removable[@]} == 0 )); then
+        read -r -p "Nothing to delete. Enter closes. " _
+        return 0
+    fi
+    read -r -p "Delete the ${#removable[@]} clone(s) that can go? [y/N] " answer || answer=""
+    [[ $answer == y || $answer == Y ]] || { echo "Nothing deleted."; return 0; }
+    for clone in "${removable[@]}"; do
+        # Only a folder two levels under the clones folder, reached without a symlink.
+        real=$(realpath -e "$clone" 2>/dev/null) || continue
+        [[ $real == "$clones_root"/*/* && $real != "$clones_root"/*/*/* && ! -L $clone ]] || { echo "  refused: $clone"; continue; }
+        rm -rf -- "$real" && echo "  deleted $(basename "$(dirname "$real")")/$(basename "$real")"
+        rmdir -- "$(dirname "$real")" 2>/dev/null || true
+    done
+    log_event INFO sessions "clones: deleted ${#removable[@]}"
+    read -r -p "Enter closes. " _ || true
 }
 
 # The pull requests window (Super+Ctrl+P, the sidebar's P), on the cockpit only: hidden again
@@ -1023,6 +1084,8 @@ case ${1:-attach} in
     git) git_popup "${2:?usage: claude-sessions git <dir>}" ;;
     parallel) parallel_session "${2:?usage: claude-sessions parallel <dir> <branch>}" "${3:?usage: claude-sessions parallel <dir> <branch>}" ;;
     review) review_session "${2:?usage: claude-sessions review <dir> <pr-number>}" "${3:?usage: claude-sessions review <dir> <pr-number>}" ;;
+    clones) clones_popup ;;
+    clones-review) clones_review ;;
     label-state) label_state "${2:?usage: claude-sessions label-state <state>}" ;;
     prepare) ensure_manager ;;
     reload)

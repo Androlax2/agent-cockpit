@@ -47,11 +47,12 @@ pub const EFFORT_LEVELS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
 const PANEL_NAMES: [&str; 4] = ["Status", "Sessions", "Pull requests", "Todo"];
 const PANEL_KEYS: [&str; 4] = ["0", "1", "2", "3"];
 const GLOBAL_HINTS: [(&str, &str); 6] = [("⇥", "panel"), ("/", "filter"), (":", "actions"), ("a", "new"), ("?", "help"), ("q", "close")];
-const GLOBAL_HELP: [(&str, &str); 16] = [
+const GLOBAL_HELP: [(&str, &str); 17] = [
     ("0-3", "focus a panel"), ("H", "resume a past session, searched by project and prompt"),
     ("^1 ^2 ^3", "focus a panel from inside the session (tmux)"), ("⇥ ⇧⇥", "next / previous panel"), ("j/k ↑↓", "move inside the panel"),
     ("/", "filter the focused panel, Esc clears"), (":", "every action, searchable"), ("a", "new session in a project"),
     ("A", "new session on its own branch, in a separate clone (parallel work on one repository)"),
+    ("K", "the clones of A, + and reviews: delete those with no session, no uncommitted change and nothing unpushed"),
     ("V", "a design session: a Claude Design canvas, worked on by a session in a project (link, then project)"),
     ("D", "the digest: yesterday, today, plan usage, who waits, pull requests (also once a day by itself)"),
     ("P W G", "windows on top: pull requests, Claude on the web, greyproxy (also Super+Ctrl+P/A/G)"),
@@ -1450,6 +1451,7 @@ impl App {
                 }
             }
             Key::Char('D') => self.message = manager(&["digest"]),
+            Key::Char('K') => manager_in_background(&["clones"]),
             Key::Char('H') => {
                 let past = self.past_sessions();
                 if let Some(index) = screen.outside(&mut || pick_past_session(&past)).and_then(|chosen| chosen.parse::<usize>().ok()) {

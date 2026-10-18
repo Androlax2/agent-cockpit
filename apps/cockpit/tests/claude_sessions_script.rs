@@ -853,3 +853,76 @@ fn a_manager_without_role_tags_is_refused_with_the_fix() {
     assert_eq!(result.status.code(), Some(1));
     assert!(stderr(&result).contains("tmux kill-session -t claude-manager"));
 }
+
+/// A repository and four clones of it: one clean, one with an uncommitted file, one with a
+/// commit not on its remote, one a session runs in.
+struct Clones {
+    manager: Manager,
+    root: PathBuf,
+}
+
+impl Clones {
+    fn new() -> Clones {
+        let manager = Manager::new();
+        let git = |directory: &Path, arguments: &[&str]| {
+            let status = Command::new("git").args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "init.defaultBranch=main"])
+                .args(arguments).current_dir(directory).env("HOME", &manager.sandbox.home).output().unwrap().status;
+            assert!(status.success(), "git {arguments:?}");
+        };
+        let source = manager.sandbox.root.join("source");
+        fs::create_dir(&source).unwrap();
+        git(&source, &["init", "-q"]);
+        fs::write(source.join("README"), "hi\n").unwrap();
+        git(&source, &["add", "README"]);
+        git(&source, &["commit", "-qm", "first"]);
+        let root = manager.sandbox.root.join("clones/repo");
+        fs::create_dir_all(&root).unwrap();
+        for name in ["clean", "dirty", "unpushed", "busy"] {
+            git(&root, &["clone", "-q", source.to_str().unwrap(), name]);
+        }
+        fs::write(root.join("dirty/notes.txt"), "draft\n").unwrap();
+        fs::write(root.join("unpushed/README"), "changed\n").unwrap();
+        git(&root.join("unpushed"), &["commit", "-qam", "local"]);
+        let busy = fs::canonicalize(root.join("busy")).unwrap();
+        fs::write(&manager.snapshot, json!({"sessions": [{"session": SESSION_A, "state": "working", "project": "repo",
+                                                          "cwd": busy.display().to_string(), "tmux_pane": "%4"}]}).to_string()).unwrap();
+        // greywall runs the command as it is: the sandbox is not what these tests check.
+        manager.sandbox.shim("greywall", r#"while [[ $1 != -- ]]; do shift; done; shift; exec "$@""#);
+        Clones { manager, root }
+    }
+
+    fn review(&self, answer: &str) -> String {
+        let clones = self.manager.sandbox.root.join("clones").display().to_string();
+        let greywall = self.manager.sandbox.shims.join("greywall").display().to_string();
+        let output = self.manager.sandbox.run_with_input(bin().join("claude-sessions"), &["clones-review"],
+            &[("CLAUDE_SESSIONS_CLONES", &clones), ("CLAUDE_SESSIONS_GREYWALL", &greywall)], answer);
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    }
+}
+
+#[test]
+fn a_clone_holding_nothing_new_is_deleted_after_a_yes() {
+    let clones = Clones::new();
+    let shown = clones.review("y\n\n");
+    assert!(shown.contains("repo/clean: can go"), "{shown}");
+    assert!(!clones.root.join("clean").exists(), "{shown}");
+}
+
+#[test]
+fn clones_with_changes_unpushed_commits_or_a_session_are_kept() {
+    let clones = Clones::new();
+    let shown = clones.review("y\n\n");
+    assert!(shown.contains("repo/dirty: kept, uncommitted changes"), "{shown}");
+    assert!(shown.contains("repo/unpushed: kept, commits not on its remote"), "{shown}");
+    assert!(shown.contains("repo/busy: kept, a session runs in it"), "{shown}");
+    for name in ["dirty", "unpushed", "busy"] {
+        assert!(clones.root.join(name).exists(), "{name} was deleted");
+    }
+}
+
+#[test]
+fn without_a_yes_no_clone_is_deleted() {
+    let clones = Clones::new();
+    clones.review("\n");
+    assert!(clones.root.join("clean").exists());
+}

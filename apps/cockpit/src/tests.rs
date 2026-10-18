@@ -1100,3 +1100,10 @@ fn no_pause_line_without_a_game() {
     let app = fixture.app();
     assert!(!texts(&app, 1).iter().any(|line| line.contains("paused while you game")));
 }
+
+#[test]
+fn the_clone_review_is_in_the_action_list() {
+    let fixture = Fixture::new();
+    let app = fixture.app();
+    assert!(app.palette_entries().iter().any(|entry| entry.starts_with("-\tK\t")), "{:?}", app.palette_entries());
+}
