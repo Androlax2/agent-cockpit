@@ -84,6 +84,28 @@ fn a_request_is_filed_announced_and_answered_with_the_output() {
 }
 
 #[test]
+fn a_chain_that_failed_names_the_step_it_stopped_at() {
+    let fixture = AskToRun::new();
+    let asking = fixture.ask(&["--why", "Build then test.", "make cockpit; and make test"], "5");
+    let request = fixture.request();
+    fixture.answer(&request, json!({"status": "ran", "exit": 2, "output": "error", "failed_step": "make test"}));
+    let shown = stdout(&finish(asking, TIMEOUT));
+    assert!(shown.contains("[exit 2 · stopped at: make test]"), "{shown}");
+}
+
+#[test]
+fn a_long_output_shows_its_end_and_where_the_rest_is() {
+    let fixture = AskToRun::new();
+    let asking = fixture.ask(&["--why", "Run the tests.", "make test"], "5");
+    let request = fixture.request();
+    let output: String = (1..=500).map(|line| format!("line {line}\n")).collect();
+    fixture.answer(&request, json!({"status": "ran", "exit": 0, "output": output, "output_file": "/answers/runs/x.output"}));
+    let shown = stdout(&finish(asking, TIMEOUT));
+    assert!(shown.contains("[first 380 of 500 lines left out; the whole output is in /answers/runs/x.output]"), "{shown}");
+    assert!(shown.contains("line 500") && !shown.contains("line 380\n"), "{shown}");
+}
+
+#[test]
 fn a_declined_request_exits_125() {
     let fixture = AskToRun::new();
     let asking = fixture.ask(&["--why", "x", "rm -rf /"], "5");
@@ -212,7 +234,7 @@ fn yes_runs_the_command_read_at_start_even_if_the_file_changes() {
     fixture.approve_with(&request_id, "y\n\n\n", swap_command, &[("SHIM_EXIT", "2")]);
     let result = fixture.result(&request_id).unwrap();
     assert_eq!((result["status"].as_str(), result["exit"].as_i64()), (Some("ran"), Some(2)));
-    assert!(result["output"].as_str().unwrap().contains("ran: fish -c 'echo hi'"), "{result}");
+    assert!(result["output"].as_str().unwrap().contains("-c 'echo hi'"), "{result}");
     assert_eq!(result.get("edited_command"), Some(&Value::Null));
 }
 
@@ -231,7 +253,7 @@ fn an_edited_command_runs_and_is_reported() {
     fixture.approve(&request_id, "e\ny\n\n\n");
     let result = fixture.result(&request_id).unwrap();
     assert_eq!(result["edited_command"], "echo edited");
-    assert!(result["output"].as_str().unwrap().contains("ran: fish -c 'echo edited'"), "{result}");
+    assert!(result["output"].as_str().unwrap().contains("-c 'echo edited'"), "{result}");
 }
 
 #[test]

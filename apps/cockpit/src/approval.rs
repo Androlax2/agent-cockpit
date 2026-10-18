@@ -314,7 +314,14 @@ pub fn run(command: &str, cwd: &str, log_path: &Path) -> i32 {
         use std::os::unix::fs::PermissionsExt;
         let _ = fs::set_permissions(log_dir(), fs::Permissions::from_mode(0o700));
     }
-    let inner = ["fish", "-c", command].iter().map(|word| shell_quote(word)).collect::<Vec<_>>().join(" ");
+    // fish traces each command it runs to a file of its own (not the output): the last top-level one
+    // names the step a chain stopped at (last_step). -C turns the trace on after config.fish and
+    // before the command, as a global left unexported, so the programs it starts are not traced.
+    let trace = trace_path(log_path);
+    let _ = fs::remove_file(&trace);
+    let debug_output = format!("--debug-output={}", trace.display());
+    let inner = ["fish", &debug_output, "-C", "set -g fish_trace 1", "-c", command].iter()
+        .map(|word| shell_quote(word)).collect::<Vec<_>>().join(" ");
     // script hands `inner` to $SHELL, and the quoting above is sh's: under fish (Theo's login
     // shell) a backslash inside single quotes is an escape, so the command shown and the command
     // run could differ.
@@ -377,6 +384,18 @@ pub fn run(command: &str, cwd: &str, log_path: &Path) -> i32 {
     print!("{}", TERMINAL_RESET);
     let _ = io::stdout().flush();
     code
+}
+
+/// Where run() leaves fish's trace of a command whose output goes to `log_path`.
+pub fn trace_path(log_path: &Path) -> PathBuf {
+    log_path.with_extension("trace")
+}
+
+/// The last top-level command fish ran, from its trace: with `a; and b; and c`, the step that
+/// failed when the whole failed. Nested lines (functions, blocks) start with more dashes.
+pub fn last_step(trace: &str) -> Option<String> {
+    trace.lines().filter_map(|line| line.strip_prefix("> ")).filter(|step| !step.starts_with("end ")).last()
+        .map(|step| step.chars().take(200).collect())
 }
 
 /// Soft reset, line wrap on, the ASCII charset, plain attributes.
@@ -465,6 +484,22 @@ mod tests {
         run(&command, folder.to_str().unwrap(), &log);
         assert!(!marker.exists(), "the second word ran as a command");
         fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[test]
+    fn a_chain_that_stops_names_its_last_step() {
+        let folder = std::env::temp_dir().join(format!("approval-step-{}", crate::util::token_hex(4)));
+        fs::create_dir_all(&folder).unwrap();
+        let log = folder.join("out.log");
+        let code = run("echo one; and false; and echo three", folder.to_str().unwrap(), &log);
+        let trace = fs::read_to_string(trace_path(&log)).unwrap_or_default();
+        assert_eq!((code, last_step(&trace)), (1, Some("false".into())));
+        fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[test]
+    fn the_end_of_a_block_is_not_a_step() {
+        assert_eq!(last_step("> begin\n-> make test\n> end begin\n"), Some("begin".into()));
     }
 
     #[test]

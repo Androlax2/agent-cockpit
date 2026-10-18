@@ -18,7 +18,8 @@ use cockpit::util::{now_secs, token_hex};
 use serde_json::{Value, json};
 use std::time::{Duration, Instant};
 
-const OUTPUT_LINES: usize = 400;
+/// The end of the output, where errors and test summaries are; the rest is in the output file.
+const OUTPUT_LINES: usize = 120;
 const WHY_MAX: usize = 1000;
 const USAGE: &str = "usage: ask-to-run [--cwd DIR] --why '<what it does and why>' '<command>' | ask-to-run --wait <id>";
 const DECLINED: i32 = 125;
@@ -68,14 +69,20 @@ fn wait_for_result(id: &str) -> i32 {
     let output = approval::strip_ansi(result.get("output").and_then(Value::as_str).unwrap_or(""));
     let lines: Vec<&str> = output.lines().collect();
     if lines.len() > OUTPUT_LINES {
-        println!("[first {} lines left out]", lines.len() - OUTPUT_LINES);
+        match result.get("output_file").and_then(Value::as_str) {
+            Some(file) => println!("[first {} of {} lines left out; the whole output is in {file}]", lines.len() - OUTPUT_LINES, lines.len()),
+            None => println!("[first {} lines left out]", lines.len() - OUTPUT_LINES),
+        }
     }
     println!("{}", lines[lines.len().saturating_sub(OUTPUT_LINES)..].join("\n"));
     if let Some(redacted) = result.get("redacted").and_then(Value::as_u64).filter(|count| *count > 0) {
         println!("[{redacted} secret-looking value(s) shown as [redacted]]");
     }
     let exit = result.get("exit").and_then(Value::as_i64).unwrap_or(1) as i32;
-    println!("[exit {exit}]");
+    match result.get("failed_step").and_then(Value::as_str) {
+        Some(step) => println!("[exit {exit} · stopped at: {step}]"),
+        None => println!("[exit {exit}]"),
+    }
     exit
 }
 

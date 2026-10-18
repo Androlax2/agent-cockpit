@@ -102,7 +102,11 @@ fn approve(id: &str) -> i32 {
     println!("{DIM}─── running ───{RESET}");
     approval::phase(id, "running");
     let exit_code = approval::run(&command, "", &log_path);
-    println!("{DIM}─── {RESET}{}exit {exit_code}{RESET}", if exit_code == 0 { GREEN } else { RED });
+    let trace_path = approval::trace_path(&log_path);
+    let failed_step = if exit_code == 0 { None } else { approval::last_step(&std::fs::read_to_string(&trace_path).unwrap_or_default()) };
+    let _ = std::fs::remove_file(&trace_path);
+    let stopped_at = failed_step.as_ref().map(|step| format!(" · stopped at: {step}")).unwrap_or_default();
+    println!("{DIM}─── {RESET}{}exit {exit_code}{stopped_at}{RESET}", if exit_code == 0 { GREEN } else { RED });
     // The output always goes back, secrets taken out first: approving the command is approving
     // that Claude reads what it printed.
     let (output, redacted) = approval::redact_secrets(&approval::recorded_output(&log_path));
@@ -110,7 +114,13 @@ fn approve(id: &str) -> i32 {
         println!("{YELLOW}{redacted} secret-looking value{} redacted before the output went to Claude.{RESET}", if redacted == 1 { "" } else { "s" });
     }
     let edited = if command != original { json!(command) } else { Value::Null };
-    write_result(id, json!({"status": "ran", "exit": exit_code, "output": output, "redacted": redacted, "edited_command": edited}));
+    // The whole output stays readable by Claude in a file; the result carries it too, and ask-to-run
+    // prints only its end.
+    let output_path = approval::answers_dir("runs").join(format!("{id}.output"));
+    let _ = std::fs::write(&output_path, approval::strip_ansi(&output));
+    let step = failed_step.map(Value::from).unwrap_or(Value::Null);
+    write_result(id, json!({"status": "ran", "exit": exit_code, "output": output, "redacted": redacted, "edited_command": edited,
+                            "failed_step": step, "output_file": output_path.display().to_string()}));
     let _ = std::fs::remove_file(&log_path);
     approval::phase(id, "done");
     approval::log("INFO", &format!("ran {id} for {project}: exit {exit_code}{}{}", if command != original { ", edited" } else { "" },
