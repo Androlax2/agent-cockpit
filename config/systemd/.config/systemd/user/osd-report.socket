@@ -1,0 +1,11 @@
+[Unit]
+Description=The OSD daemon's report socket: Claude sessions report through it, and the daemon learns who sent each report
+
+[Socket]
+# Held by systemd, so it outlives a daemon restart: the sandboxes bind-mount this very socket.
+ListenStream=%t/osd-report.sock
+SocketMode=0600
+Service=osd.service
+
+[Install]
+WantedBy=sockets.target

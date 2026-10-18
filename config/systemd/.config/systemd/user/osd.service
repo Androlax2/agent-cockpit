@@ -1,10 +1,13 @@
 [Unit]
 Description=On-screen display, Claude banners and the Claude session registry (osd, apps/desktop)
-After=graphical-session.target
+After=graphical-session.target osd-report.socket
+Wants=osd-report.socket
 
 [Service]
 Type=simple
 ExecStart=%h/.local/bin/osd
+# The report socket comes from systemd (LISTEN_FDS), see osd-report.socket.
+Sockets=osd-report.socket
 Restart=on-failure
 RestartSec=2
 

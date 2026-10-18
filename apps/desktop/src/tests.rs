@@ -96,6 +96,8 @@ struct World {
     clients: String,
     environments: HashMap<String, HashMap<String, String>>,
     dead_pids: HashSet<String>,
+    /// sender pid -> the focus target its trusted ancestor carries
+    sender_targets: HashMap<u32, BTreeMap<String, String>>,
 }
 
 impl World {
@@ -140,6 +142,10 @@ impl System for FakeSystem {
 
     fn process_alive(&mut self, pid: &str) -> bool {
         !self.0.borrow().dead_pids.contains(pid)
+    }
+
+    fn sender_target(&mut self, sender: u32) -> Option<BTreeMap<String, String>> {
+        self.0.borrow().sender_targets.get(&sender).cloned()
     }
 }
 
@@ -959,10 +965,11 @@ fn closing_the_guide_window_tells_claude_where_theo_stopped_and_opens_the_next()
 
 #[test]
 fn a_sandbox_may_only_report_and_request_on_its_fifo() {
-    for command in ["session", "run-request", "guide-request"] {
+    for command in ["run-request", "guide-request"] {
         assert!(allowed_from_sandbox(command), "{command}");
     }
-    for command in ["sessions-clear", "focus-next", "notice", "notice-clear", "run-phase", "volume"] {
+    // Reports only come through the socket, where the sender is known.
+    for command in ["session", "sessions-clear", "focus-next", "notice", "notice-clear", "run-phase", "volume"] {
         assert!(!allowed_from_sandbox(command), "{command}");
     }
 }
@@ -976,4 +983,81 @@ fn a_project_name_with_escape_codes_is_not_taken() {
     fs::write(folder.join(".git"), format!("gitdir: {}\n", bench.fixture.root.join("store/x\x1b[8my/.git").display())).unwrap();
     bench.report(SESSION_A, json!({"state": "waiting", "cwd": folder.to_string_lossy(), "project": "evil"}));
     assert_eq!(bench.snapshot()[0]["project"], "evil");
+}
+
+// ---- Reports through the socket: the sender decides the pane ----
+
+/// A process tree with namespaces: (pid, parent, namespace, environment).
+struct Tree(Vec<(&'static str, Option<&'static str>, &'static str, HashMap<String, String>)>);
+
+impl Processes for Tree {
+    fn pids(&self) -> Vec<String> { self.0.iter().map(|row| row.0.to_string()).collect() }
+    fn comm(&self, _: &str) -> String { String::new() }
+    fn command(&self, _: &str) -> Vec<String> { Vec::new() }
+    fn environment(&self, pid: &str) -> HashMap<String, String> {
+        self.0.iter().find(|row| row.0 == pid).map(|row| row.3.clone()).unwrap_or_default()
+    }
+    fn parent(&self, pid: &str) -> Option<String> {
+        self.0.iter().find(|row| row.0 == pid).and_then(|row| row.1).map(str::to_string)
+    }
+    fn pid_namespace(&self, pid: &str) -> Option<String> {
+        if pid == "self" { return Some("host".into()) }
+        self.0.iter().find(|row| row.0 == pid).map(|row| row.2.to_string())
+    }
+}
+
+fn environment(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+    pairs.iter().map(|(name, value)| (name.to_string(), value.to_string())).collect()
+}
+
+#[test]
+fn the_pane_comes_from_the_first_process_outside_the_sandbox() {
+    // socat (in the sandbox, forging TMUX_PANE) <- hook <- bwrap (outside, the launcher's pane).
+    let tree = Tree(vec![
+        ("50", Some("40"), "sandbox", environment(&[("TMUX_PANE", "%1")])),
+        ("40", Some("30"), "sandbox", environment(&[("TMUX_PANE", "%1")])),
+        ("30", Some("20"), "host", environment(&[("TMUX_PANE", "%7"), ("KITTY_PID", "4242")])),
+        ("20", None, "host", environment(&[])),
+    ]);
+    assert_eq!(trusted_target(&tree, "50"), Some(target(&[("tmux_pane", "%7"), ("kitty_pid", "4242")])));
+}
+
+#[test]
+fn a_sender_with_no_process_outside_the_sandbox_is_not_placed() {
+    let tree = Tree(vec![("50", Some("40"), "sandbox", environment(&[])), ("40", None, "sandbox", environment(&[]))]);
+    assert_eq!(trusted_target(&tree, "50"), None);
+}
+
+#[test]
+fn a_report_gets_its_senders_pane_not_the_one_it_claims() {
+    let mut bench = Bench::new();
+    bench.world.borrow_mut().sender_targets.insert(500, target(&[("tmux_pane", "%7")]));
+    let report = parse_session(&json!({"session": SESSION_A, "project": "p", "state": "working", "tmux_pane": "%1"}).to_string()).unwrap();
+    bench.registry.report_from(report, 500);
+    assert_eq!(bench.registry.sessions[SESSION_A].target.get("tmux_pane").map(String::as_str), Some("%7"));
+}
+
+#[test]
+fn a_session_cannot_be_moved_off_a_pane_where_it_still_runs() {
+    // Another sandbox reporting the dotfiles session's id from its own pane would take its card.
+    let mut bench = Bench::new();
+    {
+        let mut world = bench.world.borrow_mut();
+        world.sender_targets.insert(500, target(&[("tmux_pane", "%1")]));
+        world.sender_targets.insert(600, target(&[("tmux_pane", "%9")]));
+        world.claude_panes = set(&["%1", "%9"]);
+    }
+    let report = |state: &str| parse_session(&json!({"session": SESSION_A, "project": "p", "state": state}).to_string()).unwrap();
+    bench.registry.report_from(report("waiting"), 500);
+    bench.registry.report_from(report("needs-you"), 600);
+    let entry = &bench.registry.sessions[SESSION_A];
+    assert_eq!((entry.target.get("tmux_pane").map(String::as_str), entry.state.as_str()), (Some("%1"), "waiting"));
+}
+
+#[test]
+fn a_report_from_an_unplaceable_sender_is_refused() {
+    let mut bench = Bench::new();
+    let report = parse_session(&json!({"session": SESSION_A, "project": "p", "state": "working"}).to_string()).unwrap();
+    bench.registry.report_from(report, 777);
+    assert!(bench.registry.sessions.is_empty());
 }

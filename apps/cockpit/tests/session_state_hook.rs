@@ -1,39 +1,42 @@
-//! The Claude Code hook (config/claude/.claude/hooks/session-state.sh): one FIFO line per event.
+//! The Claude Code hook (config/claude/.claude/hooks/session-state.sh): one report per event, on the
+//! daemon's report socket.
 
 mod common;
 use common::sandbox::*;
 
 use serde_json::{Value, json};
-use std::ffi::CString;
 use std::fs;
-use std::os::unix::ffi::OsStrExt;
+use std::io::Read;
+use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Output, Stdio};
+use std::process::{Command, Output, Stdio};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 struct HookTest {
     sandbox: Sandbox,
-    fifo: PathBuf,
-    reader: Option<Child>,
-    holder: Child,
+    socket: PathBuf,
+    lines: Arc<Mutex<Vec<String>>>,
 }
 
 impl HookTest {
+    /// A stand-in for the daemon's report socket: every line any connection sends is kept.
     fn new() -> HookTest {
         let sandbox = Sandbox::new();
-        let fifo = sandbox.runtime.join("osd.fifo");
-        let fifo_path = CString::new(fifo.as_os_str().as_bytes()).unwrap();
-        assert_eq!(unsafe { libc::mkfifo(fifo_path.as_ptr(), 0o600) }, 0, "mkfifo {}", fifo.display());
-        // Collect what arrives, and hold the FIFO open for writing like the daemon does so the
-        // reader sees no EOF between hook runs. The reader must open first: opening a FIFO for
-        // writing blocks until someone reads.
-        let reader = Command::new("cat").arg(&fifo).stdout(Stdio::piped()).spawn().unwrap();
-        let writer = fs::OpenOptions::new().write(true).open(&fifo).unwrap();
-        // Only the holder keeps the write end (the temporary Command drops ours), so killing it gives the reader its EOF.
-        let holder = Command::new("sleep").arg("30").stdout(writer).spawn().unwrap();
+        let socket = sandbox.runtime.join("osd-report.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let lines = Arc::new(Mutex::new(Vec::new()));
+        let collected = lines.clone();
+        std::thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                let mut text = String::new();
+                let _ = stream.read_to_string(&mut text);
+                collected.lock().unwrap().extend(text.lines().map(str::to_string));
+            }
+        });
         sandbox.shim("notify-send", "echo 42");
         sandbox.shim("gdbus", "");
-        HookTest { sandbox, fifo, reader: Some(reader), holder }
+        HookTest { sandbox, socket, lines }
     }
 
     fn run_hook(&self, payload: Value, extra: &[(&str, &str)]) -> Output {
@@ -44,25 +47,10 @@ impl HookTest {
 
     fn received(&mut self) -> Vec<Value> {
         std::thread::sleep(Duration::from_millis(300));
-        let _ = self.holder.kill();
-        let _ = self.holder.wait();
-        let output = self.reader.take().unwrap().wait_with_output().unwrap();
-        stdout(&output)
-            .lines()
+        self.lines.lock().unwrap().iter()
             .filter_map(|line| line.strip_prefix("session "))
             .map(|payload| serde_json::from_str(payload).unwrap())
             .collect()
-    }
-}
-
-impl Drop for HookTest {
-    fn drop(&mut self) {
-        let _ = self.holder.kill();
-        let _ = self.holder.wait();
-        if let Some(mut reader) = self.reader.take() {
-            let _ = reader.kill();
-            let _ = reader.wait();
-        }
     }
 }
 
@@ -183,9 +171,9 @@ fn each_event_leaves_a_line_in_the_hook_log() {
 }
 
 #[test]
-fn fallback_toast_when_the_fifo_is_unreachable() {
+fn fallback_toast_when_the_daemon_is_unreachable() {
     let test = HookTest::new();
-    fs::remove_file(&test.fifo).unwrap();
+    fs::remove_file(&test.socket).unwrap();
     test.run_hook(with_session(json!({"hook_event_name": "Stop"}), "/x/proj"), &[]);
     assert_eq!(test.sandbox.calls("notify-send").len(), 1);
     let toast_id = test.sandbox.home.join(format!(".cache/claude/toast-{SESSION_A}.id"));

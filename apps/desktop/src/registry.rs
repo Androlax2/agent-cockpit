@@ -140,7 +140,8 @@ pub struct Report {
 /// rest (banners, focus, clearing, phases, volume) only comes through osd-host.fifo, which no
 /// sandbox can open: a session must not wipe the column, raise banners or close approvals.
 pub fn allowed_from_sandbox(command: &str) -> bool {
-    matches!(command, "session" | "run-request" | "guide-request")
+    // Session reports come through the report socket, never the FIFO: there the sender is known.
+    matches!(command, "run-request" | "guide-request")
 }
 
 pub fn parse_session(raw: &str) -> Result<Report, String> {
@@ -285,6 +286,8 @@ pub trait System {
     fn claude_panes(&mut self) -> HashSet<String>;
     fn process_environment(&mut self, pid: &str) -> HashMap<String, String>;
     fn process_alive(&mut self, pid: &str) -> bool;
+    /// trusted_target for the process that sent a report.
+    fn sender_target(&mut self, sender: u32) -> Option<BTreeMap<String, String>>;
     fn quiet(&mut self) -> bool {
         self.in_meeting() || self.gaming()
     }
@@ -694,6 +697,23 @@ impl Registry {
     pub fn tick_queues(&mut self) {
         self.runs.tick(self.system.as_mut(), self.banners.as_mut());
         self.guides.tick(self.system.as_mut(), self.banners.as_mut());
+    }
+
+    /// A report from the report socket: its focus target comes from where the sender really runs,
+    /// never from the report, and a session cannot be moved off a pane where its Claude still runs.
+    pub fn report_from(&mut self, mut report: Report, sender: u32) {
+        let Some(target) = self.system.sender_target(sender) else {
+            log(&format!("report for {} refused: its sender (pid {sender}) has no process outside the sandbox", &report.session[..8]));
+            return;
+        };
+        if let Some(known) = self.sessions.get(&report.session).and_then(|entry| entry.target.get("tmux_pane")).cloned() {
+            if target.get("tmux_pane") != Some(&known) && self.system.claude_panes().contains(&known) {
+                log(&format!("report for {} refused: it claims a pane other than {known}, where that session still runs", &report.session[..8]));
+                return;
+            }
+        }
+        report.target = target;
+        self.update(report);
     }
 
     pub fn update(&mut self, report: Report) {
@@ -1115,6 +1135,38 @@ pub trait Processes {
     fn comm(&self, pid: &str) -> String;
     fn command(&self, pid: &str) -> Vec<String>;
     fn environment(&self, pid: &str) -> HashMap<String, String>;
+    /// The parent's pid, None at the top or for a process gone.
+    fn parent(&self, pid: &str) -> Option<String> {
+        let _ = pid;
+        None
+    }
+    /// The process's pid namespace ("self" for the daemon), to tell sandboxed processes apart.
+    fn pid_namespace(&self, pid: &str) -> Option<String> {
+        let _ = pid;
+        None
+    }
+}
+
+/// Where a session report really comes from: the focus target (tmux pane, kitty window) in the
+/// environment of the first ancestor of the sending process that runs outside the sandbox, in the
+/// daemon's own pid namespace. What runs inside a sandbox can set any TMUX_PANE it likes in its own
+/// environment; the launcher's, outside, comes from the pane tmux started it in. None when the
+/// sender has no such ancestor (a report the daemon cannot place).
+pub fn trusted_target(table: &dyn Processes, sender: &str) -> Option<BTreeMap<String, String>> {
+    let own = table.pid_namespace("self")?;
+    let mut pid = sender.to_string();
+    for _ in 0..64 {
+        if table.pid_namespace(&pid).as_ref() == Some(&own) {
+            let environment = table.environment(&pid);
+            let target: BTreeMap<String, String> = [("tmux_pane", "TMUX_PANE"), ("kitty_pid", "KITTY_PID"), ("kitty_window", "KITTY_WINDOW_ID"), ("kitty_listen", "KITTY_LISTEN_ON")]
+                .iter().filter_map(|(key, variable)| environment.get(*variable).filter(|value| !value.is_empty()).map(|value| (key.to_string(), value.clone())))
+                .collect();
+            let fields: Map<String, Value> = target.iter().map(|(key, value)| (key.clone(), json!(value))).collect();
+            return validate_focus_target(&fields).ok().map(|_| target);
+        }
+        pid = table.parent(&pid)?;
+    }
+    None
 }
 
 pub struct Proc;
@@ -1139,6 +1191,15 @@ impl Processes for Proc {
             let text = String::from_utf8_lossy(entry);
             text.split_once('=').map(|(name, value)| (name.to_string(), value.to_string()))
         }).collect()).unwrap_or_default()
+    }
+
+    fn parent(&self, pid: &str) -> Option<String> {
+        let status = fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+        status.lines().find_map(|line| line.strip_prefix("PPid:")).map(|parent| parent.trim().to_string()).filter(|parent| parent != "0")
+    }
+
+    fn pid_namespace(&self, pid: &str) -> Option<String> {
+        fs::read_link(format!("/proc/{pid}/ns/pid")).ok().map(|link| link.to_string_lossy().into_owned())
     }
 }
 
@@ -1276,5 +1337,9 @@ impl System for RealSystem {
 
     fn process_alive(&mut self, pid: &str) -> bool {
         Path::new(&format!("/proc/{pid}")).exists()
+    }
+
+    fn sender_target(&mut self, sender: u32) -> Option<BTreeMap<String, String>> {
+        trusted_target(&Proc, &sender.to_string())
     }
 }

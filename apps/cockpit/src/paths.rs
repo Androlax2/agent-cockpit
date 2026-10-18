@@ -37,6 +37,9 @@ pub fn osd_fifo() -> PathBuf { runtime_dir().join("osd.fifo") }
 /// Everything else the OSD daemon takes (banners, focus, clearing, phases, volume): only programs
 /// outside the sandbox reach this one.
 pub fn osd_host_fifo() -> PathBuf { runtime_dir().join("osd-host.fifo") }
+/// Session reports: a socket (osd-report.socket keeps it across daemon restarts), so the daemon
+/// learns which process sent each report and takes the pane from where it really runs.
+pub fn osd_report_socket() -> PathBuf { runtime_dir().join("osd-report.sock") }
 pub fn history() -> PathBuf { from_env("CLAUDE_SESSIONS_HISTORY", home().join(".claude/history.jsonl")) }
 pub fn transcripts() -> PathBuf { from_env("CLAUDE_SESSIONS_TRANSCRIPTS", home().join(".claude/projects")) }
 pub fn statusline_dir() -> PathBuf { home().join(".cache/claude") }

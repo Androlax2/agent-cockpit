@@ -5,7 +5,7 @@
 # banner message. The daemon keeps the registry, colours the Hyprland window
 # border, feeds the waybar chip and shows the top-centre banners. A swaync toast is only the fallback
 # when the OSD cannot be reached (daemon down, or a sandbox without the FIFO).
-# Runs inside greywall: the session bus is exposed (notifications only) and $XDG_RUNTIME_DIR/osd.fifo
+# Runs inside greywall: the session bus is exposed (notifications only) and $XDG_RUNTIME_DIR/osd-report.sock
 # must be in allowWrite.
 set -euo pipefail
 
@@ -61,7 +61,9 @@ event=$(jq -r '.hook_event_name' <<<"$payload")
 session=$(jq -r '.session_id' <<<"$payload")
 cwd=$(jq -r '.cwd // ""' <<<"$payload")
 project=$(basename "$cwd")
-fifo="${XDG_RUNTIME_DIR:-/tmp}/osd.fifo"
+# A socket, not the FIFO: the daemon learns which process sent the report and takes the tmux pane
+# from where it really runs (a sandbox could otherwise claim another session's pane).
+report_socket="${XDG_RUNTIME_DIR:-/tmp}/osd-report.sock"
 toast_id_file="$HOME/.cache/claude/toast-$session.id"
 
 # What a turn left in the repository, worked out here, inside the session's sandbox: git reads the
@@ -156,11 +158,11 @@ hook_log() { # message
     } 2>/dev/null || true
 }
 
-# A FIFO without its daemon would block the open forever; give up after a second instead.
+# A daemon that does not answer must not hold the hook: give up after a second.
 send_to_osd() {
-    [[ -p $fifo ]] || return 1
-    timeout 1 tee "$fifo" >/dev/null <<<"$1" && return 0
-    echo "session-state.sh: osd fifo not read, is osd running?" >&2
+    [[ -S $report_socket ]] || return 1
+    printf '%s\n' "$1" | timeout 1 socat -t1 - "UNIX-CONNECT:$report_socket" >/dev/null 2>&1 && return 0
+    echo "session-state.sh: osd report socket not answering, is osd running?" >&2
     return 1
 }
 
@@ -168,7 +170,7 @@ if send_to_osd "session $report"; then
     hook_log "sent to the osd daemon"
     exit 0
 fi
-hook_log "osd daemon not reading $fifo: falling back to a toast"
+hook_log "osd daemon not reading $report_socket: falling back to a toast"
 
 # Fallback: swaync toasts, closed again once the session reports without a message.
 if [[ -n $message ]]; then

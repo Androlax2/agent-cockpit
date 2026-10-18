@@ -15,7 +15,8 @@
       "~/.cache/claude-answers"
     ],
     "allowWrite": [
-      "/run/user/1000/osd.fifo"
+      "/run/user/1000/osd.fifo",
+      "/run/user/1000/osd-report.sock"
     ],
     "denyRead": [
       "~/.ssh/id_*",
@@ -95,7 +96,8 @@
       "~/.claude/CLAUDE.md",
       ".claude/settings.json",
       ".claude/settings.local.json",
-      "~/.local/share/claude/versions"
+      "~/.local/share/claude/versions",
+      "~/.ssh/known_hosts"
     ]
   },
   "command": {

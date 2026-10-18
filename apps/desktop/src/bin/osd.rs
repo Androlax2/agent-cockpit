@@ -319,6 +319,52 @@ fn listen(path: &std::path::Path, from_host: bool, registry: &Rc<RefCell<Registr
     });
 }
 
+/// The report socket: from systemd (osd-report.socket, LISTEN_FDS) so it outlives the daemon and the
+/// sandboxes' bind mount of it stays valid; bound here when started by hand.
+fn report_listener() -> std::io::Result<std::os::unix::net::UnixListener> {
+    use std::os::fd::FromRawFd;
+    let ours = std::env::var("LISTEN_PID").ok().and_then(|pid| pid.parse::<u32>().ok()) == Some(std::process::id());
+    let count = std::env::var("LISTEN_FDS").ok().and_then(|count| count.parse::<i32>().ok()).unwrap_or(0);
+    if ours && count >= 1 {
+        // SAFETY: systemd passes the listening socket as fd 3 (SD_LISTEN_FDS_START).
+        return Ok(unsafe { std::os::unix::net::UnixListener::from_raw_fd(3) });
+    }
+    let path = cockpit::paths::osd_report_socket();
+    let _ = std::fs::remove_file(&path);
+    std::os::unix::net::UnixListener::bind(&path)
+}
+
+/// One `session <json>` line per connection; its focus target comes from the sender's ancestry.
+fn listen_for_reports(registry: &Rc<RefCell<Registry>>) {
+    let listener = match report_listener() {
+        Ok(listener) => listener,
+        Err(error) => {
+            eprintln!("osd: no report socket: {error}");
+            return;
+        }
+    };
+    let _ = listener.set_nonblocking(true);
+    let raw = listener.as_raw_fd();
+    let registry = registry.clone();
+    glib_unix::unix_fd_add_local(raw, glib::IOCondition::IN, move |_, _| {
+        while let Ok((mut stream, _)) = listener.accept() {
+            let Some(sender) = desktop::fifo::peer_pid(&stream) else { continue };
+            let _ = stream.set_nonblocking(false);
+            let _ = stream.set_read_timeout(Some(Duration::from_millis(300)));
+            let mut text = String::new();
+            let _ = (&mut stream).take(65_536).read_to_string(&mut text);
+            for line in text.lines() {
+                let Some(raw_report) = line.strip_prefix("session ") else { continue };
+                match registry::parse_session(raw_report) {
+                    Ok(report) => registry.borrow_mut().report_from(report, sender),
+                    Err(error) => eprintln!("osd: bad session report: {error}"),
+                }
+            }
+        }
+        glib::ControlFlow::Continue
+    });
+}
+
 fn activate(app: &Application) {
     let provider = CssProvider::new();
     provider.load_from_path(cockpit::paths::home().join(".config/osd/style.css"));
@@ -331,6 +377,7 @@ fn activate(app: &Application) {
 
     listen(&cockpit::paths::osd_fifo(), false, &registry, &island);
     listen(&cockpit::paths::osd_host_fifo(), true, &registry, &island);
+    listen_for_reports(&registry);
     {
         let registry = registry.clone();
         glib::timeout_add_seconds_local(1, move || {
