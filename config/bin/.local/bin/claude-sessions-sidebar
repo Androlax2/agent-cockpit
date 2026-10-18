@@ -34,6 +34,7 @@ import json
 import os
 import re
 import sqlite3
+import secrets
 import subprocess
 import sys
 import threading
@@ -1193,6 +1194,40 @@ def fetch_reviews(repositories: list[str]) -> tuple[list[dict], str]:
     return rows[:REVIEWS_LIMIT], "; ".join(errors)
 
 
+GH_ISSUE_FIELDS = "number,title,url,updatedAt,labels"
+ISSUES_PER_REPOSITORY = 20
+
+
+def parse_issues(raw: str, repository: str) -> list[dict]:
+    try:
+        rows = json.loads(raw)
+    except ValueError:
+        return []
+    return [{"kind": "issue", "number": row.get("number"), "title": row.get("title", ""), "url": row.get("url", ""),
+             "repository": repository.split("/")[-1], "full_repository": repository, "updated": row.get("updatedAt", ""),
+             "labels": [label.get("name", "") for label in row.get("labels") or [] if isinstance(label, dict)]}
+            for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
+
+
+def fetch_issues(repositories: list[str]) -> tuple[list[dict], str]:
+    """Open issues of the sessions' repositories (none when no session runs in one)."""
+    rows, errors = [], []
+    for repository in repositories:
+        try:
+            result = subprocess.run(["gh", "issue", "list", "--repo", repository, "--state", "open",
+                                     "--limit", str(ISSUES_PER_REPOSITORY), "--json", GH_ISSUE_FIELDS],
+                                    capture_output=True, text=True, timeout=30)
+        except (OSError, subprocess.TimeoutExpired) as error:
+            errors.append(f"{repository}: {error}")
+            continue
+        if result.returncode != 0:
+            reason = result.stderr.strip().splitlines()
+            errors.append(f"{repository}: {reason[-1] if reason else f'exit {result.returncode}'}")
+            continue
+        rows += parse_issues(result.stdout, repository)
+    return sorted(rows, key=lambda row: row["updated"], reverse=True), "; ".join(errors)
+
+
 def review_age(updated: str) -> str:
     try:
         moment = datetime.fromisoformat(updated.replace("Z", "+00:00"))
@@ -1206,6 +1241,47 @@ def review_age(updated: str) -> str:
     return f"{seconds // 86400}d"
 
 
+TODO_PATH = os.path.join(os.environ.get("XDG_STATE_HOME", os.path.expanduser("~/.local/state")), "claude-sessions", "todo.json")
+
+
+class TodoList:
+    """What Theo wants Claude to do, typed in the Todo panel (t): one line per item, per project.
+    Kept in ~/.local/state/claude-sessions/todo.json."""
+
+    def __init__(self):
+        try:
+            with open(TODO_PATH) as saved:
+                self.items = [item for item in json.load(saved) if isinstance(item, dict) and item.get("text")]
+        except (OSError, ValueError, TypeError):
+            self.items = []
+
+    def save(self):
+        os.makedirs(os.path.dirname(TODO_PATH), exist_ok=True)
+        with open(TODO_PATH + ".tmp", "w") as saved:
+            json.dump(self.items, saved)
+        os.replace(TODO_PATH + ".tmp", TODO_PATH)
+
+    def add(self, project: str, cwd: str, text: str):
+        self.items.append({"id": secrets.token_hex(4), "project": project, "cwd": cwd,
+                           "text": " ".join(text.split()), "created": int(time.time()), "sent": False})
+        self.save()
+
+    def remove(self, item_id: str):
+        self.items = [item for item in self.items if item["id"] != item_id]
+        self.save()
+
+    def mark_sent(self, item_id: str):
+        for item in self.items:
+            if item["id"] == item_id:
+                item["sent"] = True
+        self.save()
+
+
+def issue_prompt(issue: dict) -> str:
+    return (f"Work on GitHub issue #{issue['number']} of this repository: {issue['title']}. "
+            f"Read it with gh issue view {issue['number']} first, then say how you will approach it before changing anything.")
+
+
 class Reviews:
     """Pull requests fetched in a thread, so a slow GitHub never freezes the column."""
 
@@ -1217,6 +1293,7 @@ class Reviews:
         self.lock = threading.Lock()
         self.repositories: list[str] = []
         self.checkouts: dict[str, str] = {}  # owner/repo -> a local checkout, for c (review session)
+        self.issues: list[dict] = []  # open issues of the same repositories (the Todo panel)
         self.scope_key = None
 
     def refresh(self):
@@ -1227,10 +1304,13 @@ class Reviews:
 
     def _fetch(self, repositories: list[str]):
         rows, error = fetch_reviews(repositories)
+        issues, issue_error = fetch_issues(repositories) if not REVIEWS_FIXTURE else ([], "")
         if error and error != self.error:
             log_event("WARN", f"pull requests: {error}")
+        if issue_error:
+            log_event("WARN", f"issues: {issue_error}")
         with self.lock:
-            self.rows, self.error, self.fetched_at, self.loading = rows, error, time.time(), False
+            self.rows, self.error, self.issues, self.fetched_at, self.loading = rows, error, issues, time.time(), False
 
     def tick(self):
         """Re-read the repositories when the snapshot or the viewed session changes; refetch when
@@ -1753,6 +1833,84 @@ class ReviewsPanel(Panel):
         return ""
 
 
+class TodoPanel(Panel):
+    key = "4"
+    title = "Todo"
+
+    def build(self, app):
+        typed = [{"kind": "typed", **item} for item in app.todos.items if matches({"project": item["project"], "task": item["text"]}, app.query)]
+        with app.reviews.lock:
+            issues = [issue for issue in app.reviews.issues if matches({"project": issue["repository"], "task": issue["title"]}, app.query)]
+        self.items = typed + issues
+        self.clamp()
+        lines = []
+        if not self.items:
+            lines.append(Line([(0, "Nothing to do. t adds an item for the viewed project.", style(FG_DARK, -1, curses.A_DIM))]))
+        for index, item in enumerate(self.items):
+            if item["kind"] == "typed":
+                mark, color = ("→", FG_DARK) if item.get("sent") else ("•", YELLOW)
+                lines.append(Line([(0, mark, style(color, -1, curses.A_BOLD)), (2, item["project"], style(project_color(item["project"]), -1, curses.A_BOLD)),
+                                   (3 + len(item["project"]), item["text"], style(FG_DARK if item.get("sent") else FG))],
+                                  right=[("sent", style(FG_DARK, -1, curses.A_DIM))] if item.get("sent") else [], item=index))
+            else:
+                label = f"{item['repository']}#{item['number']}"
+                labels = ", ".join(item["labels"][:2])
+                lines.append(Line([(0, "◇", style(MAGENTA)), (2, label, style(MAGENTA, -1, curses.A_BOLD)), (3 + len(label), item["title"], style(FG_DARK))],
+                                  right=[(labels, style(FG_DARK, -1, curses.A_DIM))] if labels else [], item=index))
+        self.lines = lines
+
+    def subtitle(self, app):
+        open_items = sum(1 for item in app.todos.items if not item.get("sent"))
+        return f"{open_items} typed · {len(app.reviews.issues)} issues"
+
+    def hints(self):
+        return [("⏎", "to Claude"), ("t", "add"), ("x", "remove")]
+
+    def help(self):
+        return [("⏎", "hand the item to Claude: the project's running session, or a new one"),
+                ("t", "add an item for the viewed session's project (or pick a project)"),
+                ("x", "remove a typed item"), ("•", "typed, not sent yet · → sent to Claude · ◇ an open GitHub issue")]
+
+    def target_directory(self, app, item) -> str:
+        if item["kind"] == "typed":
+            return item.get("cwd", "")
+        return app.reviews.checkouts.get(item.get("full_repository", ""), "")
+
+    def handle(self, key, app, screen):
+        item = self.selected_item()
+        if key == ord("t"):
+            viewed = next((session for session in app.sessions if session["session"] == current_session() and session.get("cwd")), None)
+            directory = viewed["cwd"] if viewed else run_outside_curses(screen, pick_project)
+            if not directory:
+                return ""
+            text = run_outside_curses(screen, lambda: input_line(f"to do in {project_name(directory)} (Enter adds, empty cancels)> "))
+            if text:
+                app.todos.add(viewed["project"] if viewed else project_name(directory), directory, text)
+                return f"added to {project_name(directory)}"
+            return ""
+        if key == ord("x") and item and item["kind"] == "typed":
+            app.todos.remove(item["id"])
+            return "removed"
+        if key in (KEY_ENTER_LF, KEY_ENTER_CR, curses.KEY_ENTER) and item:
+            directory = self.target_directory(app, item)
+            if not directory:
+                return f"no local checkout of {item.get('repository', '?')}: start a session there first"
+            text = item["text"] if item["kind"] == "typed" else issue_prompt(item)
+            running = next((session for session in app.sessions if session.get("cwd") == directory and session["state"] != "unknown"), None)
+            if running:
+                error = manager("say", running["session"], text)
+                if error:
+                    return error
+                outcome = f"sent to {running['project']}"
+            else:
+                manager_in_background("new", directory, text)
+                outcome = f"starting a session in {project_name(directory)}"
+            if item["kind"] == "typed":
+                app.todos.mark_sent(item["id"])
+            return outcome
+        return ""
+
+
 class EffortMenu:
     """The effort picker over a session card: the five levels, the current one marked. Choosing a
     different level restarts the session on it (claude-sessions restart <id> <level>)."""
@@ -1799,9 +1957,9 @@ class EffortMenu:
         return top <= y <= bottom and left <= x <= right
 
 
-PANEL_NAMES = ("Status", "Sessions", "History", "Pull requests")
+PANEL_NAMES = ("Status", "Sessions", "History", "Pull requests", "Todo")
 GLOBAL_HINTS = [("⇥", "panel"), ("/", "filter"), (":", "actions"), ("a", "new"), ("?", "help"), ("q", "close")]
-GLOBAL_HELP = [("0-3", "focus a panel"), ("^1 ^2 ^3", "focus a panel from inside the session (tmux)"), ("⇥ ⇧⇥", "next / previous panel"), ("j/k ↑↓", "move inside the panel"),
+GLOBAL_HELP = [("0-4", "focus a panel"), ("^1 ^2 ^3", "focus a panel from inside the session (tmux)"), ("⇥ ⇧⇥", "next / previous panel"), ("j/k ↑↓", "move inside the panel"),
                ("/", "filter the focused panel, Esc clears"), (":", "every action, searchable"), ("a", "new session in a project"),
                ("A", "new session on its own branch, in a separate clone (parallel work on one repository)"),
                ("D", "the digest: yesterday, today, plan usage, who waits, pull requests (also once a day by itself)"),
@@ -1816,7 +1974,7 @@ LEGEND = [("●", "working"), ("○", "waiting for you"), ("!", "needs you: perm
 
 def palette_entries(app) -> list[tuple[int | None, str, str]]:
     """Every action a single key runs, from the help tables: (panel index or None for anywhere,
-    key, description). Keys that are not one press (j/k ↑↓, ^⇥, 0-3) stay out."""
+    key, description). Keys that are not one press (j/k ↑↓, ^⇥, 0-4) stay out."""
     entries = [(None, key, label) for key, label in GLOBAL_HELP if len(key) == 1 and key not in ":?"]
     for index, panel in enumerate(app.panels):
         entries += [(index, key, label) for key, label in panel.help() if len(key) == 1 or key == "⏎"]
@@ -1851,7 +2009,8 @@ class App:
         self.alerts = BudgetAlerts()
         self.costs = TranscriptCosts()
         self.reviews = Reviews()
-        self.panels: list[Panel] = [StatusPanel(), SessionsPanel(), HistoryPanel(), ReviewsPanel()]
+        self.todos = TodoList()
+        self.panels: list[Panel] = [StatusPanel(), SessionsPanel(), HistoryPanel(), ReviewsPanel(), TodoPanel()]
         self.focus = 1
         self.query = ""
         self.filtering = False
