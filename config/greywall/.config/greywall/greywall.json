@@ -3,7 +3,10 @@
     "defaultDenyRead": true,
     "allowRead": [
       "~/.cache/chrome-sandbox",
-      "~/dotfiles/config/claude"
+      "~/dotfiles/config/claude",
+      "~/dotfiles/config/bin/.local/bin/ask-to-run",
+      "~/dotfiles/config/bin/.local/bin/ask-to-guide",
+      "~/dotfiles/config/bin/.local/bin/claude-todo"
     ],
     "allowWrite": [
       "/run/user/1000/osd.fifo"

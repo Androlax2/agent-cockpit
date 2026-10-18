@@ -18,13 +18,14 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import textwrap
 import time
 
 RUNS_DIR = os.environ.get("CLAUDE_RUNS_DIR", os.path.expanduser("~/.cache/claude/runs"))
 LOG_DIR = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "claude-runs")
 FIFO = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "osd.fifo")
 MAX_AGE_S = 15 * 60
-BOLD, DIM, BLUE, YELLOW, RED, GREEN, RESET = "\033[1m", "\033[2m", "\033[34m", "\033[33m", "\033[31m", "\033[32m", "\033[0m"
+BOLD, DIM, BLUE, YELLOW, RED, GREEN, CYAN, RESET = "\033[1m", "\033[2m", "\033[34m", "\033[33m", "\033[31m", "\033[32m", "\033[36m", "\033[0m"
 SCRIPT_BANNER = re.compile(r"^Script (started|done) on .*$", re.MULTILINE)
 
 
@@ -115,6 +116,17 @@ def project_of(directory: str) -> str:
             return os.path.basename(path)
         path = os.path.dirname(path)
     return os.path.basename(directory.rstrip("/")) or directory
+
+
+def explanation(why: str) -> str:
+    """Claude's own account of the command, escaped like the command: it says what Claude means
+    the command to do, the command above is what runs."""
+    if not why.strip():
+        return f"{YELLOW}No explanation given: ask Claude what this does before running it.{RESET}"
+    text = HIDING.sub(lambda match: f"\\u{ord(match.group()):04x}", why)
+    width = min(100, max(40, (os.get_terminal_size().columns if sys.stdout.isatty() else 100) - 6))
+    lines = textwrap.wrap(text[:1000], width)
+    return f"{DIM}Why, in Claude's words (what runs is the command above):{RESET}\n" + "\n".join(f"  {CYAN}{line}{RESET}" for line in lines)
 
 
 def choose(question: str, options: list[tuple[str, str]], default: str) -> str:
@@ -219,6 +231,7 @@ def approve(request_id: str) -> int:
         print(f"{RED}Cannot answer request {request_id}: {error}.{RESET}")
         return 1
     command, original = request["command"], request["command"]
+    why = request.get("why") if isinstance(request.get("why"), str) else ""
     cwd = request.get("cwd") if isinstance(request.get("cwd"), str) and os.path.isdir(request.get("cwd")) else os.path.expanduser("~")
     project = project_of(cwd)
     phase(request_id, "asking")
@@ -226,6 +239,7 @@ def approve(request_id: str) -> int:
         shown, hiding = visible_command(command)
         print(f"\n{BOLD}{BLUE}Claude · {project}{RESET} asks you to run, in {DIM}{cwd}{RESET}:\n")
         print("\n".join(f"  {BOLD}{line}{RESET}" for line in shown.split("\n")) + "\n")
+        print(explanation(why) + "\n")
         if hiding:
             print(f"{RED}{BOLD}This command contains hidden characters (shown in red as \\uXXXX). "
                   f"They can make a command look different from what runs. Decline unless you know why.{RESET}\n")

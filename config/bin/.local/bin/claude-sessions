@@ -526,6 +526,16 @@ restart_session() { # id [effort]
     resume_session "$directory" "$id" "$effort"
 }
 
+# One after the other: each restart reuses the viewer pane. The session shown before comes back.
+restart_sessions() { # id...
+    local shown id
+    shown=$(cat "$CURRENT" 2>/dev/null || true)
+    for id in "$@"; do
+        restart_session "$id" || log_event WARN sessions "restart of $id failed during restart-all"
+    done
+    if [[ -n $shown ]]; then view_session "$shown" || true; fi
+}
+
 # The morning digest (the sidebar's D, and the first time the cockpit opens each day): yesterday's
 # sessions and cost, today so far, plan usage, who waits for you, the pull requests. Any key goes
 # back to the session that was in the pane.
@@ -575,6 +585,7 @@ sweep_caches() {
     find "$HOME/.cache/claude" -maxdepth 1 \( -name 'statusline-*.json' -o -name 'toast-*.id' \) -mtime +7 -delete 2>/dev/null || true
     # Run requests and their results (ask-to-run).
     find "$HOME/.cache/claude/runs" -maxdepth 1 -type f -mtime +7 -delete 2>/dev/null || true
+    find "$HOME/.cache/claude/guides" -maxdepth 1 -type f -mtime +7 -delete 2>/dev/null || true
 }
 
 doctor() {
@@ -649,6 +660,7 @@ doctor() {
     recent_facts=$(find "$HOME/.cache/claude" -maxdepth 1 -name 'statusline-*.json' -mmin -60 2>/dev/null)
     if [[ -z $recent_facts ]] || jq -e 'select(.effort != null)' $recent_facts >/dev/null 2>&1; then report ok "status line reports the effort"; else report fail "status line reports no effort" "install .handoff/claude/statusline-command.sh"; fi
     if command -v ask-to-run >/dev/null && command -v claude-run-approve >/dev/null; then report ok "ask-to-run and claude-run-approve resolve"; else report fail "ask-to-run or claude-run-approve not on PATH" "cd ~/dotfiles/config && stow -t ~ --restow bin"; fi
+    if command -v ask-to-guide >/dev/null && command -v claude-guide >/dev/null && command -v kitten >/dev/null; then report ok "ask-to-guide, claude-guide and kitten resolve"; else report fail "ask-to-guide, claude-guide or kitten not on PATH" "cd ~/dotfiles/config && stow -t ~ --restow bin"; fi
     if grep -qs "this terminal" "$HOME/.config/fish/config.fish"; then report ok "claude asks manager or terminal"; else report fail "fish claude function is the old one" "install .handoff/fish/config.fish"; fi
     echo "logs"
     local since errors last_error
@@ -775,6 +787,8 @@ approval_pane() { # id | close
         pane=$(tmux split-window -v -d -l 40% -t "$(viewer_pane)" -P -F '#{pane_id}' env -u TMUX tmux attach-session -t "=claude-run-$1")
         tag_pane "$pane" approval
     fi
+    # Gone with its approval even when no "close" comes (the daemon restarted meanwhile): no dead pane left.
+    tmux set-option -p -t "$pane" remain-on-exit off
 }
 
 # lazygit on a session's repository in a popup over the manager (the sidebar's g): review and
@@ -833,6 +847,7 @@ case ${1:-attach} in
         mkdir -p "$(dirname "$ENDED_SESSIONS")" && printf '%s\n' "$2" >> "$ENDED_SESSIONS"
         ;;
     restore) shift; restore_sessions "$@" ;;
+    restart-all) shift; restart_sessions "$@" ;;
     restart) restart_session "${2:?usage: claude-sessions restart <session-id> [effort]}" "${3:-}" ;;
     idle) idle ;;
     usage) show_usage ;;

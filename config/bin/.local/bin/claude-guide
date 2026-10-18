@@ -1,0 +1,354 @@
+#!/usr/bin/env python3
+"""claude-guide <id>: steps Claude handed Theo to do by hand (ask-to-guide), one at a time.
+
+Started by the OSD daemon outside the sandbox, in a floating kitty window of its own (class
+claude-guide) that Theo moves wherever he needs it. The guide file comes from the sandbox, so
+it is read once and checked; hidden characters are shown escaped; links open only on o, values are
+copied only on c; a run: step goes through the same approval as ask-to-run (claude-run-approve's
+code): nothing runs without Theo's "Run it". When every step is done, or Theo is stuck or closes
+it, the result goes back to Claude; <id>.progress tells a waiting Claude where Theo is.
+CLAUDE_GUIDES_DIR overrides the folder (tests).
+"""
+
+import curses
+import importlib.machinery
+import importlib.util
+import json
+import os
+import re
+import subprocess
+import sys
+import textwrap
+import time
+
+GUIDES_DIR = os.environ.get("CLAUDE_GUIDES_DIR", os.path.expanduser("~/.cache/claude/guides"))
+GUIDE_ID = re.compile(r"[0-9a-f]{12}")
+MAX_AGE_S = 2 * 3600  # a guide can wait in the queue behind another one
+MAX_STEPS = 60
+MAX_TEXT = 2000
+STEP_FIELDS = ("text", "section", "open", "copy", "ask", "run")
+LINK = re.compile(r"https?://[^\s<>\"')]+")
+KEY_ENTER = (10, 13, curses.KEY_ENTER)
+
+
+def load_approval():
+    """claude-run-approve, next to this script: one approval code for ask-to-run and run: steps."""
+    path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "claude-run-approve")
+    loader = importlib.machinery.SourceFileLoader("claude_run_approve", path)
+    module = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+    loader.exec_module(module)
+    return module
+
+
+approval = load_approval()
+
+
+def read_guide(guide_id: str) -> dict:
+    """The guide, checked, or a ValueError saying why it cannot be shown."""
+    if not GUIDE_ID.fullmatch(guide_id):
+        raise ValueError("not a guide id")
+    if os.path.exists(os.path.join(GUIDES_DIR, f"{guide_id}.result")):
+        raise ValueError("already answered")
+    with open(os.path.join(GUIDES_DIR, f"{guide_id}.guide")) as file:
+        guide = json.load(file)
+    if not isinstance(guide, dict) or time.time() - int(guide.get("requested_at", 0)) > MAX_AGE_S:
+        raise ValueError("older than two hours")
+    steps = guide.get("steps")
+    if not isinstance(steps, list) or not 0 < len(steps) <= MAX_STEPS:
+        raise ValueError("no steps, or too many")
+    for step in steps:
+        if not isinstance(step, dict) or not isinstance(step.get("text"), str) or not step["text"].strip():
+            raise ValueError("a step without text")
+        if any(not isinstance(step.get(field, ""), str) or len(step.get(field, "")) > MAX_TEXT for field in STEP_FIELDS):
+            raise ValueError("a step field that is not text, or too long")
+    if not isinstance(guide.get("title", ""), str):
+        raise ValueError("a title that is not text")
+    return guide
+
+
+def shown(text: str) -> str:
+    """Text as displayed: characters that could hide what it says are escaped."""
+    return approval.HIDING.sub(lambda match: f"\\u{ord(match.group()):04x}", text)
+
+
+def link_of(step: dict) -> str:
+    """The link o opens: the step's open: value, else the first link in its text; http(s) only."""
+    candidate = step.get("open") or next(iter(LINK.findall(step["text"])), "")
+    return candidate if LINK.fullmatch(candidate) else ""
+
+
+class Guide:
+    """Where Theo is: the step on screen, the steps done, his answers and the commands run."""
+
+    def __init__(self, guide_id: str, guide: dict):
+        self.id, self.title, self.steps = guide_id, guide.get("title") or "Steps from Claude", guide["steps"]
+        self.cwd = guide.get("cwd") if isinstance(guide.get("cwd"), str) and os.path.isdir(guide.get("cwd")) else os.path.expanduser("~")
+        self.project = approval.project_of(self.cwd)
+        self.position = 0
+        self.done: set[int] = set()
+        self.answers: dict[int, str] = {}
+        self.runs: dict[int, dict] = {}
+
+    @property
+    def step(self) -> dict:
+        return self.steps[self.position]
+
+    def move(self, offset: int):
+        self.position = max(0, min(len(self.steps) - 1, self.position + offset))
+
+    def mark_done(self) -> bool:
+        """Marks the step on screen done and moves to the next one not done; True when all are."""
+        self.done.add(self.position)
+        remaining = [index for index in range(len(self.steps)) if index not in self.done]
+        if not remaining:
+            return True
+        self.position = next((index for index in remaining if index > self.position), remaining[0])
+        return False
+
+    def needs_action(self) -> str:
+        """What Enter does first on this step: "ask" for an answer, "run" a command, or ""."""
+        if self.step.get("ask") and self.position not in self.answers:
+            return "ask"
+        if self.step.get("run") and self.position not in self.runs:
+            return "run"
+        return ""
+
+    def progress(self) -> dict:
+        return {"step": self.position + 1, "total": len(self.steps), "done": len(self.done)}
+
+    def result(self, status: str, note: str = "") -> dict:
+        return {"status": status, "step": self.position + 1, "total": len(self.steps),
+                "step_text": self.step["text"].split("\n")[0], "note": note, "done": sorted(index + 1 for index in self.done),
+                "answers": [{"step": index + 1, "question": self.steps[index]["ask"], "answer": answer}
+                            for index, answer in sorted(self.answers.items())],
+                "runs": [{"step": index + 1, **run} for index, run in sorted(self.runs.items())]}
+
+
+def write_json(path: str, data: dict):
+    with open(path + ".tmp", "w") as file:
+        json.dump(data, file)
+    os.replace(path + ".tmp", path)
+
+
+def save_progress(guide: Guide):
+    write_json(os.path.join(GUIDES_DIR, f"{guide.id}.progress"), guide.progress())
+
+
+def finish(guide: Guide, status: str, note: str = ""):
+    write_json(os.path.join(GUIDES_DIR, f"{guide.id}.result"), guide.result(status, note))
+    try:
+        os.remove(os.path.join(GUIDES_DIR, f"{guide.id}.progress"))
+    except OSError:
+        pass
+    approval.send(f"notice-clear guide-{guide.id}")
+    approval.log("INFO", f"guide {guide.id} for {guide.project}: {status} at step {guide.position + 1}/{len(guide.steps)}"
+                         f"{' (' + note[:80] + ')' if note else ''}")
+
+
+def render(guide: Guide, width: int) -> tuple[list[tuple[str, str]], int]:
+    """The guide's lines as (text, kind), kind naming the style, and the index of the step on screen."""
+    lines: list[tuple[str, str]] = []
+    wrap = lambda text, indent: textwrap.wrap(shown(text), max(10, width - indent)) or [""]
+    section, current_line = None, 0
+    for index, step in enumerate(guide.steps):
+        if step.get("section") and step["section"] != section:
+            lines += [("", "plain"), (shown(step["section"])[:width], "section")]
+        section = step.get("section")
+        number = f"{index + 1:>2}"
+        first_line = shown(step["text"].split("\n")[0])
+        if index != guide.position:
+            mark = "✓" if index in guide.done else " "
+            lines.append((f"{mark} {number} {first_line}"[:width], "done" if index in guide.done else "pending"))
+            continue
+        current_line = len(lines)
+        for line_number, line in enumerate(wrap(step["text"].replace("\n", " "), 6)):
+            lines.append((f"❯ {number}  {line}" if line_number == 0 else f"      {line}", "current"))
+        if shown(step["text"]) != step["text"] or any(shown(step.get(field, "")) != step.get(field, "") for field in STEP_FIELDS):
+            lines.append(("      ⚠ hidden characters, shown as \\uXXXX", "warning"))
+        for label, value, key in (("link", link_of(step), "o opens"), ("copy", step.get("copy", ""), "c copies"),
+                                  ("ask", step.get("ask", ""), "⏎ answers"), ("run", step.get("run", ""), "⏎ runs")):
+            if not value:
+                continue
+            lines.append((f"      {label} · {key}", "label"))
+            lines += [(f"        {line}", "value") for line in wrap(value, 8)]
+        if index in guide.answers:
+            lines += [(f"      ↳ {line}", "answer") for line in wrap(guide.answers[index] or "(no answer)", 8)]
+        if index in guide.runs:
+            run = guide.runs[index]
+            lines.append((f"      ↳ {'declined' if run.get('status') == 'declined' else 'exit ' + str(run.get('exit'))}", "answer"))
+    return lines, current_line
+
+
+HINTS = ("⏎ done  c copy  o open  ? stuck", "j k move  a answer  r run  q close")
+
+
+def run_step(guide: Guide):
+    """The step's command, through the ask-to-run approval: shown escaped, Decline by default."""
+    command = original = guide.step["run"]
+    print(f"\n{approval.BOLD}Step {guide.position + 1} of the guide{approval.RESET} asks you to run, "
+          f"in {approval.DIM}{guide.cwd}{approval.RESET}:\n")
+    while True:
+        text, hiding = approval.visible_command(command)
+        print("\n".join(f"  {approval.BOLD}{line}{approval.RESET}" for line in text.split("\n")) + "\n")
+        if hiding:
+            print(f"{approval.RED}{approval.BOLD}This command contains hidden characters (shown in red as \\uXXXX). "
+                  f"Decline unless you know why.{approval.RESET}\n")
+        answer = approval.choose("Run it?", [("n", "Decline"), ("y", "Run it"), ("e", "Edit it first")], "n")
+        if answer != "e":
+            break
+        command = approval.edit(command) or command
+    edited = command if command != original else None
+    if answer != "y":
+        guide.runs[guide.position] = {"status": "declined", "command": original, "edited_command": edited}
+        return
+    log_path = os.path.join(approval.LOG_DIR, f"guide-{guide.id}-{guide.position + 1}.log")
+    exit_code = approval.run(command, guide.cwd, log_path)
+    print(f"{approval.DIM}─── {approval.RESET}exit {exit_code}")
+    keep = approval.choose("Send the output to Claude?", [("y", "Send the output"), ("n", "Keep it out (only the exit status)")], "y") == "y"
+    guide.runs[guide.position] = {"status": "ran", "command": original, "edited_command": edited, "exit": exit_code,
+                                  "output": approval.recorded_output(log_path) if keep else "", "output_withheld": not keep}
+    try:
+        os.remove(log_path)
+    except OSError:
+        pass
+
+
+def ask_line(prompt: str) -> str | None:
+    """A line typed outside curses; None when Theo backs out (Ctrl-D / Ctrl-C)."""
+    try:
+        return input(prompt).strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return None
+
+
+def answer_step(guide: Guide) -> bool:
+    answer = ask_line(f"\n{guide.step['ask']}\n{approval.DIM}Goes into Claude's conversation: no secrets. "
+                      f"Empty skips, Ctrl-D backs out.{approval.RESET}\n> ")
+    if answer is None:
+        return False
+    guide.answers[guide.position] = answer
+    return True
+
+
+def outside(screen, action):
+    """Leaves curses for a plain terminal (prompts, the command's output), then comes back."""
+    curses.def_prog_mode()
+    curses.endwin()
+    try:
+        return action()
+    finally:
+        curses.reset_prog_mode()
+        screen.clear()
+
+
+def copy(value: str) -> str:
+    try:
+        subprocess.run(["wl-copy"], input=value, text=True, check=True, timeout=5)
+        return "copied"
+    except (OSError, subprocess.SubprocessError) as error:
+        return f"cannot copy: {error}"
+
+
+def open_link(link: str) -> str:
+    try:
+        subprocess.Popen(["xdg-open", link], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        return "opened in the browser"
+    except OSError as error:
+        return f"cannot open: {error}"
+
+
+def draw(screen, guide: Guide, message: str):
+    height, width = screen.getmaxyx()
+    screen.erase()
+    styles = {"current": curses.A_BOLD, "done": curses.A_DIM, "pending": curses.A_NORMAL, "section": curses.color_pair(1) | curses.A_BOLD,
+              "label": curses.color_pair(2), "value": curses.A_NORMAL, "answer": curses.color_pair(3), "warning": curses.color_pair(4) | curses.A_BOLD,
+              "plain": curses.A_NORMAL}
+    counter = f"{len(guide.done)}/{len(guide.steps)}"
+    put(screen, 0, 0, shown(guide.title)[:max(1, width - len(counter) - 2)], curses.A_BOLD)
+    put(screen, 0, width - len(counter) - 1, counter, curses.color_pair(1))
+    put(screen, 1, 0, f"Claude · {guide.project}"[:width - 1], curses.A_DIM)
+    lines, current_line = render(guide, width - 1)
+    body = height - 6
+    top = max(0, min(current_line - body // 4, len(lines) - body))
+    for row, (text, kind) in enumerate(lines[top:top + body]):
+        put(screen, 3 + row, 0, text, styles[kind])
+    put(screen, height - 3, 0, message[:width - 1], curses.color_pair(3))
+    for offset, hint in enumerate(HINTS):
+        put(screen, height - 2 + offset, 0, hint[:width - 1], curses.A_DIM)
+    screen.refresh()
+
+
+def put(screen, row: int, column: int, text: str, attribute: int):
+    try:
+        screen.addstr(row, column, text, attribute)
+    except curses.error:
+        pass  # the bottom-right cell, or a panel narrower than the text
+
+
+def loop(screen, guide: Guide):
+    curses.curs_set(0)
+    curses.set_escdelay(25)  # Escape closes: no second-long wait for a key sequence
+    curses.use_default_colors()
+    for pair, color in ((1, curses.COLOR_CYAN), (2, curses.COLOR_BLUE), (3, curses.COLOR_GREEN), (4, curses.COLOR_RED)):
+        curses.init_pair(pair, color, -1)
+    message = ""
+    while True:
+        save_progress(guide)
+        draw(screen, guide, message)
+        try:
+            key = screen.getch()
+        except KeyboardInterrupt:
+            key = ord("q")  # Ctrl-C asks before closing, like q: closing unannounced would leave Claude waiting
+        message = ""
+        if key in KEY_ENTER or key == ord(" "):
+            action = guide.needs_action()
+            if action == "ask" and not outside(screen, lambda: answer_step(guide)):
+                continue
+            if action == "run":
+                outside(screen, lambda: run_step(guide))
+            if guide.mark_done():
+                finish(guide, "done")
+                return "Every step done: Claude is told."
+        elif key in (ord("j"), curses.KEY_DOWN):
+            guide.move(1)
+        elif key in (ord("k"), curses.KEY_UP):
+            guide.move(-1)
+        elif key == ord("c"):
+            message = copy(guide.step["copy"]) if guide.step.get("copy") else "nothing to copy on this step"
+        elif key == ord("o"):
+            message = open_link(link_of(guide.step)) if link_of(guide.step) else "no link on this step"
+        elif key == ord("a") and guide.step.get("ask"):
+            outside(screen, lambda: answer_step(guide))
+        elif key == ord("r") and guide.step.get("run"):
+            outside(screen, lambda: run_step(guide))
+        elif key == ord("?"):
+            note = outside(screen, lambda: ask_line(f"\nStuck on step {guide.position + 1}. What happens? "
+                                                    f"{approval.DIM}(goes to Claude; Ctrl-D backs out){approval.RESET}\n> "))
+            if note is not None:
+                finish(guide, "stuck", note)
+                return "Claude is told where you are stuck."
+        elif key in (ord("q"), 27):
+            closing = outside(screen, lambda: approval.choose("Close the guide? Claude is told you stopped here.",
+                                                              [("n", "Keep going"), ("y", "Close it")], "n"))
+            if closing == "y":
+                finish(guide, "closed")
+                return "Closed: Claude is told."
+
+
+def main(guide_id: str) -> int:
+    try:
+        guide = Guide(guide_id, read_guide(guide_id))
+    except (OSError, ValueError) as error:
+        print(f"Cannot show guide {guide_id}: {error}.")
+        time.sleep(5)
+        return 1
+    print(curses.wrapper(loop, guide))
+    time.sleep(1.5)
+    return 0
+
+
+if __name__ == "__main__":
+    if len(sys.argv) != 2:
+        sys.exit("usage: claude-guide <id>")
+    sys.exit(main(sys.argv[1:][0]))

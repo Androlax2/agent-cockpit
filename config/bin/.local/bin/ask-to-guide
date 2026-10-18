@@ -1,0 +1,182 @@
+#!/usr/bin/env python3
+"""Hand Theo steps to do by hand (a browser, a console, an app) as a guide on screen, and learn how
+it went.
+
+    ask-to-guide [--title TITLE] < steps
+    ask-to-guide --wait <id>        keep waiting for an earlier guide
+
+Run by Claude inside greywall. The steps go to ~/.cache/claude/guides/<id>.guide and the OSD daemon
+opens claude-guide outside the sandbox, in a floating window at the right edge of Theo's current
+workspace, which he can move anywhere: one step at a time, Enter marks it done. The steps, read from stdin:
+
+    # Title                                  (or --title)
+    ## Turn on the API                       a section heading
+    1. Open https://console.cloud.google.com and pick the project      a step ("- ", "1. " or plain)
+       open: https://console.cloud.google.com/apis/library            the link o opens (else the
+                                                                       step's first https:// link)
+       copy: search-console-review@example.iam.gserviceaccount.com    the value c copies
+       ask: Paste the service account email                           Theo types an answer for you
+       run: make search-console                                       a command, approved like
+                                                                       ask-to-run before it runs
+       More text indented under a step continues it.
+
+Prints what Theo did: the answers, the commands run with their output, or where he got stuck and
+why. Exits 0 when every step is done, 3 when he is stuck (his note says why), 125 when he closed
+the guide, 124 when the wait runs out (9 minutes, under the Bash tool's 10: the guide stays open,
+ask-to-guide --wait <id> resumes), 126 when no daemon reads the requests (list the steps in the
+chat then), 2 for unusable steps.
+CLAUDE_GUIDES_DIR and ASK_TO_GUIDE_WAIT_S override the folder and the wait (tests).
+"""
+
+import json
+import os
+import re
+import secrets
+import sys
+import time
+
+GUIDES_DIR = os.environ.get("CLAUDE_GUIDES_DIR", os.path.expanduser("~/.cache/claude/guides"))
+FIFO = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "osd.fifo")
+WAIT_S = int(os.environ.get("ASK_TO_GUIDE_WAIT_S", "540"))
+MAX_STEPS = 60
+OUTPUT_LINES = 200
+ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[=>]|\r")
+STEP_MARKER = re.compile(r"^(?:[-*]|\d+[.)])\s+")
+ATTRIBUTE = re.compile(r"^(open|copy|ask|run):\s*(.*)$")
+STUCK, CLOSED, TIMED_OUT, NO_DAEMON, UNUSABLE = 3, 125, 124, 126, 2
+
+
+def parse_steps(text: str) -> tuple[str, list[dict]]:
+    """The title and the steps; each step {"text", "section", and any of open/copy/ask/run}."""
+    title, section, steps = "", "", []
+    for raw_line in text.splitlines():
+        if not raw_line.strip():
+            continue
+        indented = raw_line[:1] in (" ", "\t")
+        line = raw_line.strip()
+        if indented and steps:
+            attribute = ATTRIBUTE.match(line)
+            if attribute and attribute.group(2):
+                steps[-1][attribute.group(1)] = attribute.group(2)
+            else:
+                steps[-1]["text"] += "\n" + line
+            continue
+        if line.startswith("## "):
+            section = line[3:].strip()
+        elif line.startswith("# "):
+            title = line[2:].strip()
+        else:
+            steps.append({"text": STEP_MARKER.sub("", line), "section": section})
+    return title, steps
+
+
+def project_of(directory: str) -> str:
+    path = directory
+    while path and path != "/":
+        if os.path.exists(os.path.join(path, ".git")):
+            return os.path.basename(path)
+        path = os.path.dirname(path)
+    return os.path.basename(directory.rstrip("/")) or directory
+
+
+def file_guide(title: str, steps: list[dict]) -> str:
+    os.makedirs(GUIDES_DIR, exist_ok=True)
+    guide_id = secrets.token_hex(6)
+    guide = {"id": guide_id, "title": title, "steps": steps, "cwd": os.getcwd(), "project": project_of(os.getcwd()),
+             "session": os.environ.get("CLAUDE_CODE_SESSION_ID", ""), "requested_at": int(time.time())}
+    path = os.path.join(GUIDES_DIR, f"{guide_id}.guide")
+    with open(path + ".tmp", "w") as file:
+        json.dump(guide, file)
+    os.replace(path + ".tmp", path)
+    return guide_id
+
+
+def notify_daemon(guide_id: str) -> bool:
+    try:
+        fifo = os.open(FIFO, os.O_WRONLY | os.O_NONBLOCK)
+    except OSError:
+        return False
+    try:
+        os.write(fifo, f"guide-request {guide_id}\n".encode())
+        return True
+    except OSError:
+        return False
+    finally:
+        os.close(fifo)
+
+
+def progress(guide_id: str) -> str:
+    try:
+        with open(os.path.join(GUIDES_DIR, f"{guide_id}.progress")) as file:
+            state = json.load(file)
+        return f"Theo is on step {state['step']} of {state['total']} ({state['done']} done)."
+    except (OSError, ValueError, KeyError, TypeError):
+        return "Theo has not opened it yet."
+
+
+def report(result: dict) -> int:
+    """Prints what Theo did and returns the exit status."""
+    status, steps = result.get("status"), result.get("total", "?")
+    if status == "done":
+        print(f"Theo did every step ({steps}).")
+    elif status == "stuck":
+        print(f"Theo is stuck at step {result.get('step')} of {steps}: {result.get('step_text', '')}")
+        print(f"His note: {result.get('note') or '(none)'}")
+    else:
+        print(f"Theo closed the guide at step {result.get('step')} of {steps} without finishing.")
+    for answer in result.get("answers", []):
+        print(f"\nStep {answer.get('step')} asked: {answer.get('question')}\nTheo answered: {answer.get('answer')}")
+    for run in result.get("runs", []):
+        print(f"\nStep {run.get('step')} ran: {run.get('edited_command') or run.get('command')}"
+              f"{' (edited by Theo)' if run.get('edited_command') else ''}")
+        if run.get("status") == "declined":
+            print("Theo declined to run it.")
+            continue
+        if run.get("output_withheld"):
+            print("Theo kept the output out of the conversation.")
+        else:
+            lines = ANSI.sub("", run.get("output", "")).splitlines()
+            if len(lines) > OUTPUT_LINES:
+                print(f"[first {len(lines) - OUTPUT_LINES} lines left out]")
+            print("\n".join(lines[-OUTPUT_LINES:]))
+        print(f"[exit {run.get('exit')}]")
+    return {"done": 0, "stuck": STUCK}.get(status, CLOSED)
+
+
+def wait_for_result(guide_id: str) -> int:
+    path = os.path.join(GUIDES_DIR, f"{guide_id}.result")
+    deadline = time.time() + WAIT_S
+    while time.time() < deadline:
+        if os.path.exists(path):
+            with open(path) as file:
+                return report(json.load(file))
+        time.sleep(1)
+    print(f"The guide is still open. {progress(guide_id)} Keep waiting with: ask-to-guide --wait {guide_id}")
+    return TIMED_OUT
+
+
+def main(arguments: list[str]) -> int:
+    if arguments[:1] == ["--wait"] and len(arguments) == 2 and re.fullmatch(r"[0-9a-f]{12}", arguments[1]):
+        return wait_for_result(arguments[1])
+    title = ""
+    if arguments[:1] == ["--title"] and len(arguments) == 2:
+        title, arguments = arguments[1], []
+    if arguments:
+        print("usage: ask-to-guide [--title TITLE] < steps | ask-to-guide --wait <id>", file=sys.stderr)
+        return UNUSABLE
+    parsed_title, steps = parse_steps(sys.stdin.read())
+    title = title or parsed_title or "Steps from Claude"
+    if not steps or len(steps) > MAX_STEPS:
+        print(f"No steps read from stdin, or more than {MAX_STEPS}: one step per line, see ask-to-guide's header.", file=sys.stderr)
+        return UNUSABLE
+    guide_id = file_guide(title, steps)
+    if not notify_daemon(guide_id):
+        os.remove(os.path.join(GUIDES_DIR, f"{guide_id}.guide"))
+        print("No OSD daemon reads the requests (osd.service down?). List the steps in the chat instead.")
+        return NO_DAEMON
+    print(f"Guide {guide_id} is on Theo's screen ({len(steps)} steps); waiting for him.", file=sys.stderr)
+    return wait_for_result(guide_id)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

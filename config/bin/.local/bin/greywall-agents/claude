@@ -5,7 +5,13 @@ export CHROME_CONFIG_HOME="$HOME/.cache/chrome-sandbox"
 mkdir -p "$CHROME_CONFIG_HOME"
 
 project_root=$(git rev-parse --show-toplevel 2>/dev/null || pwd -P)
-project_name=$(basename "$project_root")
+# A parallel clone (claude-sessions' +, <clones>/<repo>/<name>) is its repository's project: same
+# GitHub token, same name everywhere.
+clones_dir="${CLAUDE_SESSIONS_CLONES:-$HOME/IdeaProjects/.parallel}"
+case "$project_root" in
+    "$clones_dir"/*/*) project_name=$(basename "$(dirname "$project_root")") ;;
+    *) project_name=$(basename "$project_root") ;;
+esac
 greywall_options="--auto-profile --profile claude --allow-path $CHROME_CONFIG_HOME"
 
 # Greyproxy re-signs HTTPS with a CA the system deliberately does not trust. Greywall hands the

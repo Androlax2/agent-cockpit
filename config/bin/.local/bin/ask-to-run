@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """Ask Theo to run a command outside the sandbox, and get its output back.
 
-    ask-to-run [--cwd DIR] '<command>'
+    ask-to-run [--cwd DIR] --why '<what it does and why>' '<command>'
     ask-to-run --wait <id>          keep waiting for an earlier request
 
 Run by Claude inside greywall, which cannot reach systemd, ~/.local/bin, sudo and the rest of the
 machine. The request goes to ~/.cache/claude/runs/<id>.request and the OSD daemon opens an approval
 terminal outside the sandbox (claude-run-approve): a popup over the cockpit, or a floating window.
-Nothing runs until Theo reads the command there and answers y. This prints the command's output and
+Nothing runs until Theo reads the command there and answers y. --why is required: a few plain
+sentences shown under the command, saying what it does, why it is needed and what to expect
+(a password prompt, a minute of output, a restart). This prints the command's output and
 exits with its status; 125 when Theo declines, 124 when the wait runs out (9 minutes, under the Bash
 tool's 10), 126 when no daemon reads the requests (fall back to a fish block then).
 CLAUDE_RUNS_DIR and ASK_TO_RUN_WAIT_S override the folder and the wait (tests).
@@ -24,6 +26,8 @@ RUNS_DIR = os.environ.get("CLAUDE_RUNS_DIR", os.path.expanduser("~/.cache/claude
 FIFO = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "osd.fifo")
 WAIT_S = int(os.environ.get("ASK_TO_RUN_WAIT_S", "540"))
 OUTPUT_LINES = 400
+WHY_MAX = 1000
+USAGE = "usage: ask-to-run [--cwd DIR] --why '<what it does and why>' '<command>' | ask-to-run --wait <id>"
 # CSI and OSC sequences, keypad-mode switches (ESC = / ESC >), carriage returns.
 ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[=>]|\r")
 DECLINED, TIMED_OUT, NO_DAEMON = 125, 124, 126
@@ -38,10 +42,10 @@ def project_of(directory: str) -> str:
     return os.path.basename(directory.rstrip("/")) or directory
 
 
-def file_request(command: str, cwd: str) -> str:
+def file_request(command: str, cwd: str, why: str) -> str:
     os.makedirs(RUNS_DIR, exist_ok=True)
     request_id = secrets.token_hex(6)
-    request = {"id": request_id, "command": command, "cwd": cwd, "project": project_of(cwd),
+    request = {"id": request_id, "command": command, "why": why, "cwd": cwd, "project": project_of(cwd),
                "session": os.environ.get("CLAUDE_CODE_SESSION_ID", ""), "requested_at": int(time.time())}
     path = os.path.join(RUNS_DIR, f"{request_id}.request")
     with open(path + ".tmp", "w") as file:
@@ -96,13 +100,21 @@ def wait_for_result(request_id: str) -> int:
 def main(arguments: list[str]) -> int:
     if arguments[:1] == ["--wait"] and len(arguments) == 2 and re.fullmatch(r"[0-9a-f]{12}", arguments[1]):
         return wait_for_result(arguments[1])
-    cwd = os.getcwd()
-    if arguments[:1] == ["--cwd"] and len(arguments) >= 3:
-        cwd, arguments = os.path.abspath(arguments[1]), arguments[2:]
+    cwd, why = os.getcwd(), ""
+    while arguments[:1] in (["--cwd"], ["--why"]) and len(arguments) >= 3:
+        if arguments[0] == "--cwd":
+            cwd = os.path.abspath(arguments[1])
+        else:
+            why = " ".join(arguments[1].split())
+        arguments = arguments[2:]
     if len(arguments) != 1 or not arguments[0].strip():
-        print("usage: ask-to-run [--cwd DIR] '<command>' | ask-to-run --wait <id>", file=sys.stderr)
+        print(USAGE, file=sys.stderr)
         return 2
-    request_id = file_request(arguments[0], cwd)
+    if not why or len(why) > WHY_MAX:
+        print(f"--why is required (at most {WHY_MAX} characters): what the command does, why it is needed and what "
+              f"Theo should expect. It is shown under the command in his approval window.\n{USAGE}", file=sys.stderr)
+        return 2
+    request_id = file_request(arguments[0], cwd, why)
     if not notify_daemon(request_id):
         os.remove(os.path.join(RUNS_DIR, f"{request_id}.request"))
         print("No OSD daemon reads the requests (osd.service down?). Give Theo the command as a fish block instead.")

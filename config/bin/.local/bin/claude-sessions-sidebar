@@ -76,7 +76,7 @@ GLYPHS = {"working": "●", "waiting": "○", "needs-you": "!", "unknown": "·",
 RED, GREEN, YELLOW, BLUE, MAGENTA, CYAN, FG_DARK, BG_HIGHLIGHT, FG = 1, 2, 3, 4, 5, 6, 7, 8, 15
 STATE_COLORS = {"working": BLUE, "waiting": YELLOW, "needs-you": RED, "unknown": FG_DARK, "recent": CYAN}
 PROJECT_COLORS = (MAGENTA, CYAN, GREEN, BLUE, YELLOW)
-KEY_ESCAPE, KEY_ENTER_LF, KEY_ENTER_CR, KEY_TAB, KEY_CTRL_C = 27, 10, 13, 9, 3
+KEY_ESCAPE, KEY_ENTER_LF, KEY_ENTER_CR, KEY_TAB, KEY_CTRL_C, KEY_CTRL_R = 27, 10, 13, 9, 3, 18
 HEADER_LINES = 1
 MIN_PANEL_LINES = 4
 color_pairs: dict[tuple[int, int], int] = {}
@@ -621,6 +621,16 @@ branch_cache: dict[str, tuple[float, str]] = {}  # cwd -> (HEAD mtime, branch)
 CLONES_DIR = os.environ.get("CLAUDE_SESSIONS_CLONES", os.path.expanduser("~/IdeaProjects/.parallel"))
 
 
+def repository_root(path: str) -> str:
+    """The git checkout holding `path` (Claude often works in a subdirectory), or `path` itself."""
+    directory = path
+    while directory and directory != "/":
+        if os.path.exists(os.path.join(directory, ".git")):
+            return directory
+        directory = os.path.dirname(directory)
+    return path
+
+
 def project_name(path: str) -> str:
     """A directory's project: the repository for a claude-sessions clone (<CLONES_DIR>/<repo>/<name>),
     else the directory's own name. Same rule as claude_registry.parallel_clone_repository."""
@@ -714,7 +724,8 @@ def restore_offer(view: "ViewState", running: set[str]) -> list[dict]:
 
 def grouped_by_project(sessions: list[dict]) -> list[dict]:
     """Stable order, a repository's sessions together: pinned first, then each project at the place
-    of its first session, its other sessions (parallel clones, a second session) right under it."""
+    of its first session, its other sessions (parallel clones, a second session) right under it.
+    Each session gets group_size (sessions of its project shown) and group_position (0 first)."""
     ordered = sorted(sessions, key=lambda session: (not session.get("pinned"), session.get("started", session.get("since", 0)), session["session"]))
     groups: dict[str, list[dict]] = {}
     for session in ordered:
@@ -722,7 +733,7 @@ def grouped_by_project(sessions: list[dict]) -> list[dict]:
     result = []
     for members in groups.values():
         for position, session in enumerate(members):
-            session["follows"] = position > 0  # drawn as a branch under the first card
+            session["group_size"], session["group_position"] = len(members), position
             result.append(session)
     return result
 
@@ -1257,6 +1268,7 @@ def review_age(updated: str) -> str:
 
 
 PRIORITY_LOW, PRIORITY_NORMAL, PRIORITY_HIGH = 1, 2, 3
+PRIORITY_MAX = PRIORITY_NORMAL + 4  # + up to four times: ! !! !!! !!!!
 HIGH_LABEL = re.compile(r"\b(p0|p1|urgent|critical|high|priority[ :/_-]*(high|urgent|critical))\b", re.IGNORECASE)
 LOW_LABEL = re.compile(r"\b(p3|p4|low|priority[ :/_-]*low)\b", re.IGNORECASE)
 
@@ -1270,39 +1282,74 @@ def issue_priority(labels: list[str]) -> int:
     return PRIORITY_NORMAL
 
 
+def priority_mark(priority: int) -> tuple[str, int]:
+    """! to !!!! above normal, ↓ below, nothing at normal."""
+    if priority > PRIORITY_NORMAL:
+        return "!" * (priority - PRIORITY_NORMAL), style(RED, -1, curses.A_BOLD)
+    if priority < PRIORITY_NORMAL:
+        return "↓", style(FG_DARK, -1, curses.A_DIM)
+    return "", 0
+
+
 def todo_order(item: dict) -> tuple:
-    """High priority first; at the same priority, typed items before issues, then oldest typed and
-    most recently updated issues first."""
+    """Done last; otherwise high priority first, in progress before to do, typed items before
+    issues, then oldest typed and most recently updated issues first."""
     priority = item.get("priority", PRIORITY_NORMAL)
+    status = item.get("status", "todo")
+    head = (status == "done", -priority, status != "doing")
     if item["kind"] == "typed":
-        return (-priority, 0, item.get("created", 0), "")
-    return (-priority, 1, 0, "".join(chr(0x10FFFF - ord(character)) for character in item.get("updated", "")))
+        return head + (0, item.get("created", 0), "")
+    return head + (1, 0, "".join(chr(0x10FFFF - ord(character)) for character in item.get("updated", "")))
 
 
 TODO_PATH = os.path.join(os.environ.get("XDG_STATE_HOME", os.path.expanduser("~/.local/state")), "claude-sessions", "todo.json")
 
 
+TODO_UPDATES = os.environ.get("CLAUDE_TODO_UPDATES", os.path.expanduser("~/.cache/claude/todo/updates.jsonl"))
+TODO_STATUSES = ("todo", "doing", "done")
+TODO_DONE_KEPT_DAYS = 7
+TYPED_ID = re.compile(r"[0-9a-f]{8}")
+ISSUE_KEY = re.compile(r"[\w.-]+/[\w.-]+#\d+")
+
+
 class TodoList:
-    """What Theo wants Claude to do, typed in the Todo panel (t): one line per item, per project.
-    Kept in ~/.local/state/claude-sessions/todo.json."""
+    """Theo's list for Claude: items he types (t), per project, and a status for each item or
+    GitHub issue: todo, doing (in progress) or done. Kept in ~/.local/state/claude-sessions/todo.json.
+    Sessions cannot write there (greywall): claude-todo appends their changes to
+    ~/.cache/claude/todo/updates.jsonl, which apply_updates checks and applies."""
 
     def __init__(self):
+        self.items: list[dict] = []
+        self.issues: dict[str, dict] = {}  # "owner/repo#12" -> {"status", "updated", "session"}
         try:
             with open(TODO_PATH) as saved:
-                self.items = [item for item in json.load(saved) if isinstance(item, dict) and item.get("text")]
-        except (OSError, ValueError, TypeError):
-            self.items = []
+                data = json.load(saved)
+        except (OSError, ValueError):
+            data = {}
+        if isinstance(data, list):  # the first format: items only, "sent" for handed to Claude
+            data = {"items": data}
+        for item in data.get("items", []) if isinstance(data, dict) else []:
+            if isinstance(item, dict) and item.get("text") and TYPED_ID.fullmatch(str(item.get("id", ""))):
+                item.setdefault("status", "doing" if item.pop("sent", False) else "todo")
+                self.items.append(item)
+        issues = data.get("issues", {}) if isinstance(data, dict) else {}
+        self.issues = {key: value for key, value in issues.items() if ISSUE_KEY.fullmatch(key) and isinstance(value, dict)}
 
     def save(self):
+        oldest = time.time() - TODO_DONE_KEPT_DAYS * 86400
+        self.items = [item for item in self.items if item.get("status") != "done" or item.get("updated", 0) >= oldest]
+        self.issues = {key: value for key, value in self.issues.items() if value.get("status") != "done" or value.get("updated", 0) >= oldest}
         os.makedirs(os.path.dirname(TODO_PATH), exist_ok=True)
         with open(TODO_PATH + ".tmp", "w") as saved:
-            json.dump(self.items, saved)
+            json.dump({"items": self.items, "issues": self.issues}, saved)
         os.replace(TODO_PATH + ".tmp", TODO_PATH)
 
-    def add(self, project: str, cwd: str, text: str):
-        self.items.append({"id": secrets.token_hex(4), "project": project, "cwd": cwd, "priority": PRIORITY_NORMAL,
-                           "text": " ".join(text.split()), "created": int(time.time()), "sent": False})
+    def add(self, project: str, cwd: str, text: str) -> str:
+        item_id = secrets.token_hex(4)
+        self.items.append({"id": item_id, "project": project, "cwd": cwd, "priority": PRIORITY_NORMAL,
+                           "text": " ".join(text.split())[:300], "created": int(time.time()), "status": "todo"})
         self.save()
+        return item_id
 
     def remove(self, item_id: str):
         self.items = [item for item in self.items if item["id"] != item_id]
@@ -1311,14 +1358,74 @@ class TodoList:
     def change_priority(self, item_id: str, step: int):
         for item in self.items:
             if item["id"] == item_id:
-                item["priority"] = max(PRIORITY_LOW, min(PRIORITY_HIGH, item.get("priority", PRIORITY_NORMAL) + step))
+                item["priority"] = max(PRIORITY_LOW, min(PRIORITY_MAX, item.get("priority", PRIORITY_NORMAL) + step))
         self.save()
 
-    def mark_sent(self, item_id: str):
-        for item in self.items:
-            if item["id"] == item_id:
-                item["sent"] = True
+    def status_of(self, key: str) -> str:
+        if ISSUE_KEY.fullmatch(key):
+            return self.issues.get(key, {}).get("status", "todo")
+        return next((item.get("status", "todo") for item in self.items if item["id"] == key), "todo")
+
+    def set_status(self, key: str, status: str, session: str = "") -> bool:
+        """Status of a typed item (its id) or an issue ("owner/repo#12"); False when unknown."""
+        if status not in TODO_STATUSES:
+            return False
+        if ISSUE_KEY.fullmatch(key):
+            self.issues[key] = {"status": status, "updated": int(time.time()), "session": session}
+        else:
+            item = next((item for item in self.items if item["id"] == key), None)
+            if item is None:
+                return False
+            item.update(status=status, updated=int(time.time()), session=session or item.get("session", ""))
         self.save()
+        return True
+
+    def apply_updates(self) -> int:
+        """The changes sessions asked for (claude-todo), each checked; returns how many applied."""
+        if not os.path.exists(TODO_UPDATES):
+            return 0
+        taken = f"{TODO_UPDATES}.{os.getpid()}"
+        try:
+            os.replace(TODO_UPDATES, taken)
+            with open(taken) as updates:
+                lines = updates.read().splitlines()
+        except OSError:
+            return 0
+        finally:
+            try:
+                os.remove(taken)
+            except OSError:
+                pass
+        applied = 0
+        for line in lines:
+            try:
+                update = json.loads(line)
+                action, session = update.get("action"), str(update.get("session", ""))[:40]
+            except (ValueError, AttributeError):
+                continue
+            if action == "add":
+                text, cwd = str(update.get("text", "")).strip(), str(update.get("cwd", ""))
+                if text and os.path.isdir(cwd):
+                    item_id = self.add(project_name(repository_root(cwd)), cwd, text)
+                    log_event("INFO", f"todo {item_id} added by a session: {text[:60]}")
+                    applied += 1
+            elif action in TODO_STATUSES and self.set_status(str(update.get("id", "")), action, session):
+                log_event("INFO", f"todo {update.get('id')} marked {action} by a session")
+                applied += 1
+        return applied
+
+
+def issue_key(issue: dict) -> str:
+    return f"{issue['full_repository']}#{issue['number']}"
+
+
+def todo_key(item: dict) -> str:
+    return item["id"] if item["kind"] == "typed" else issue_key(item)
+
+
+def with_todo_note(text: str, key: str) -> str:
+    """The message for Claude, with the item's key: Claude marks it done with claude-todo."""
+    return f"{text} (todo {key}: when this is done, run claude-todo done {key})"
 
 
 def issue_prompt(issue: dict) -> str:
@@ -1587,6 +1694,21 @@ class StatusPanel(Panel):
         return ""
 
 
+def restart_all(screen, app, sessions: list[dict]) -> str:
+    """Restart (same conversation, new process) every session sitting at its prompt: one that works
+    or asks for a permission would lose its turn, so it is skipped and named."""
+    ready = [session for session in sessions if session["state"] == "waiting"]
+    busy = [session for session in sessions if session["state"] in ("working", "needs-you")]
+    if not ready:
+        return "nothing to restart: every session is busy" if busy else "no session to restart"
+    skipped = f", leaving {len(busy)} busy" if busy else ""
+    if not confirm(screen, app, f"restart {len(ready)} session{'s' * (len(ready) > 1)}{skipped}? same conversations, new processes"):
+        return ""
+    manager_in_background("restart-all", *[session["session"] for session in ready])
+    busy_names = ", ".join(session["project"] for session in busy)
+    return f"restarting {len(ready)} …" + (f" busy, not restarted: {busy_names}" if busy else "")
+
+
 class SessionsPanel(Panel):
     key = "1"
     title = "Sessions"
@@ -1631,10 +1753,17 @@ class SessionsPanel(Panel):
             state_color = style(STATE_COLORS.get(session["state"], FG_DARK), -1, curses.A_BOLD)
             accent = state_color if session["session"] == current else None
             branch = git_branch(session.get("cwd", ""))
-            if session.get("follows"):
-                # Another session of the repository above: a branch of it, named by its git branch.
-                segments = [(0, "└", style(FG_DARK, -1, curses.A_DIM)), (2, GLYPHS.get(session["state"], "·"), state_color),
-                            (4, f"⎇ {branch or session.get('project', '?')}", style(project_color(session.get("project", "")), -1, curses.A_BOLD))]
+            grouped = session.get("group_size", 1) > 1
+            # Sessions of one repository: its name once as a heading, then each card on a rail,
+            # named by its branch, with no gap between them.
+            indent = 2 if grouped else 0
+            rail = [(0, "│", style(project_color(session.get("project", "")), -1, curses.A_DIM))] if grouped else []
+            if grouped and session["group_position"] == 0:
+                lines.append(Line([(0, session.get("project", "?"), style(project_color(session.get("project", "")), -1, curses.A_BOLD)),
+                                   (len(session.get("project", "?")) + 1, f"· {session['group_size']} sessions", style(FG_DARK, -1, curses.A_DIM))]))
+            if grouped:
+                segments = rail + [(2, GLYPHS.get(session["state"], "·"), state_color),
+                                   (4, branch or session.get("project", "?"), style(FG, -1, curses.A_BOLD))]
             else:
                 segments = [(0, GLYPHS.get(session["state"], "·"), state_color),
                             (2, session.get("project", "?"), style(project_color(session.get("project", "")), -1, curses.A_BOLD))]
@@ -1655,16 +1784,17 @@ class SessionsPanel(Panel):
                 right = [(facts.get("model") or "", style(FG_DARK, -1, curses.A_DIM)),
                          (f"{facts.get('effort') or 'effort'} ▾", style(CYAN), "effort"),
                          (f"{round(context)}%" if context is not None else "", style(context_color(context), -1, curses.A_BOLD))]
-            lines.append(Line([(2, title, style(FG))], right=right, item=index, accent=accent))
+            lines.append(Line(rail + [(2 + indent, title, style(FG))], right=right, item=index, accent=accent))
             task = visible_task(session)
             asks = waiting_request(session)
             if asks:
-                lines.append(Line([(2, "⚠ " + asks, style(RED))], item=index, accent=accent))
+                lines.append(Line(rail + [(2 + indent, "⚠ " + asks, style(RED))], item=index, accent=accent))
             elif session["state"] == "waiting" and session.get("outcome"):
-                lines.append(Line([(2, "✓ " + session["outcome"], style(GREEN, -1, curses.A_DIM))], item=index, accent=accent))
+                lines.append(Line(rail + [(2 + indent, "✓ " + session["outcome"], style(GREEN, -1, curses.A_DIM))], item=index, accent=accent))
             elif session["state"] == "working" and session.get("title") and task and task != session["title"]:
-                lines.append(Line([(2, task, style(FG_DARK, -1, curses.A_DIM))], item=index, accent=accent))
-            lines.append(Line())
+                lines.append(Line(rail + [(2 + indent, task, style(FG_DARK, -1, curses.A_DIM))], item=index, accent=accent))
+            if not grouped or session["group_position"] == session["group_size"] - 1:
+                lines.append(Line())
         if not running:
             empty = "Nothing waits on you." if app.focus_waiting else "Nothing matches." if app.query else "No running session."
             lines.append(Line([(0, empty, style(FG_DARK, -1, curses.A_DIM))]))
@@ -1685,6 +1815,7 @@ class SessionsPanel(Panel):
     def help(self):
         return [("⏎", "show the session and move the cursor into it"), ("n", "peek at the next session needing you"),
                 ("x", "exit the session: Ctrl-C twice, then killed if it lingers"), ("r", "restart in place: same conversation, new process"),
+                ("^R", "restart every session that waits for you; working ones and pending permissions are left alone"),
                 ("R", "toggle Remote Control (phone / claude.ai/code)"), ("p", "pin on top"), ("e", "effort level: pick one, the session restarts on it (or click the level on the card)"),
                 ("g", "lazygit on the session's repository, in a popup (q closes it)"),
                 ("+", "another session on this repository, on its own branch in a separate clone"),
@@ -1717,6 +1848,8 @@ class SessionsPanel(Panel):
             if confirm(screen, app, f"restart {session['project']}? same conversation, new process"):
                 manager_in_background("restart", session["session"])
                 return f"restarting {session['project']} …"
+        elif key == KEY_CTRL_R:
+            return restart_all(screen, app, app.sessions)
         elif key == ord("e") and session:
             return app.open_effort_menu(session)
         elif key == ord("B") and app.restore:
@@ -1895,47 +2028,60 @@ class TodoPanel(Panel):
     title = "Todo"
 
     def build(self, app):
-        typed = [{"kind": "typed", **item} for item in app.todos.items if matches({"project": item["project"], "task": item["text"]}, app.query)]
+        # Like the issues: the viewed session's project only, every project when none is viewed.
+        viewed = next((session for session in app.sessions if session["session"] == current_session()), None)
+        self.scope = viewed["project"] if viewed else ""
+        typed = [{"kind": "typed", **item} for item in app.todos.items
+                 if (not self.scope or item["project"] == self.scope) and matches({"project": item["project"], "task": item["text"]}, app.query)]
         with app.reviews.lock:
             issues = [issue for issue in app.reviews.issues if matches({"project": issue["repository"], "task": issue["title"]}, app.query)]
         for issue in issues:
             issue["priority"] = issue_priority(issue["labels"])
+            issue["status"] = app.todos.status_of(issue_key(issue))
         self.items = sorted(typed + issues, key=todo_order)
         self.clamp()
         lines = []
         if not self.items:
             lines.append(Line([(0, "Nothing to do. t adds an item for the viewed project.", style(FG_DARK, -1, curses.A_DIM))]))
-        priority_marks = {PRIORITY_HIGH: ("‼", style(RED, -1, curses.A_BOLD)), PRIORITY_NORMAL: (" ", 0),
-                          PRIORITY_LOW: ("↓", style(FG_DARK, -1, curses.A_DIM))}
         for index, item in enumerate(self.items):
-            mark, mark_style = priority_marks[item.get("priority", PRIORITY_NORMAL)]
+            status = item.get("status", "todo")
+            done = status == "done"
+            mark, mark_style = priority_mark(item.get("priority", PRIORITY_NORMAL))
+            mark = "" if done else mark
+            start = 2 + (len(mark) + 1 if mark else 0)
+            glyph, glyph_style = {"todo": ("•", style(YELLOW, -1, curses.A_BOLD)), "doing": ("◐", style(BLUE, -1, curses.A_BOLD)),
+                                  "done": ("✓", style(GREEN, -1, curses.A_DIM))}[status]
+            text_style = style(FG_DARK, -1, curses.A_DIM) if done else None
+            right = [("in progress", style(BLUE))] if status == "doing" else []
             if item["kind"] == "typed":
-                kind, color = ("→", FG_DARK) if item.get("sent") else ("•", YELLOW)
-                lines.append(Line([(0, mark, mark_style), (2, kind, style(color, -1, curses.A_BOLD)),
-                                   (4, item["project"], style(project_color(item["project"]), -1, curses.A_BOLD)),
-                                   (5 + len(item["project"]), item["text"], style(FG_DARK if item.get("sent") else FG))],
-                                  right=[("sent", style(FG_DARK, -1, curses.A_DIM))] if item.get("sent") else [], item=index))
+                lines.append(Line([(0, glyph, glyph_style), (2, mark, mark_style),
+                                   (start, item["project"], text_style or style(project_color(item["project"]), -1, curses.A_BOLD)),
+                                   (start + 1 + len(item["project"]), item["text"], text_style or style(FG))], right=right, item=index))
             else:
                 label = f"{item['repository']}#{item['number']}"
                 labels = ", ".join(item["labels"][:2])
-                lines.append(Line([(0, mark, mark_style), (2, "◇", style(MAGENTA)), (4, label, style(MAGENTA, -1, curses.A_BOLD)),
-                                   (5 + len(label), item["title"], style(FG_DARK))],
-                                  right=[(labels, style(FG_DARK, -1, curses.A_DIM))] if labels else [], item=index))
+                lines.append(Line([(0, glyph if status != "todo" else "◇", glyph_style if status != "todo" else style(MAGENTA)), (2, mark, mark_style),
+                                   (start, label, text_style or style(MAGENTA, -1, curses.A_BOLD)), (start + 1 + len(label), item["title"], text_style or style(FG_DARK))],
+                                  right=right or ([(labels, style(FG_DARK, -1, curses.A_DIM))] if labels else []), item=index))
         self.lines = lines
 
     def subtitle(self, app):
-        open_items = sum(1 for item in app.todos.items if not item.get("sent"))
-        return f"{open_items} typed · {len(app.reviews.issues)} issues"
+        doing = sum(1 for item in self.items if item.get("status") == "doing")
+        waiting = sum(1 for item in self.items if item.get("status") == "todo")
+        return f"{getattr(self, 'scope', '') or 'all projects'} · {doing} in progress · {waiting} to do"
 
     def hints(self):
-        return [("⏎", "to Claude"), ("t", "add"), ("+", "priority up"), ("-", "down"), ("x", "remove")]
+        return [("⏎", "to Claude"), ("t", "add"), ("i", "in progress"), ("d", "done"), ("+", "priority"), ("x", "remove")]
 
     def help(self):
         return [("⏎", "hand the item to Claude: the project's running session, or a new one"),
                 ("t", "add an item for the viewed session's project (or pick a project)"),
-                ("+", "raise a typed item's priority"), ("-", "lower it"), ("x", "remove a typed item"),
-                ("‼ ↓", "high and low priority; an issue's comes from its labels (P0/P1/urgent/high, P3/P4/low)"),
-                ("•", "typed, not sent yet · → sent to Claude · ◇ an open GitHub issue")]
+                ("i", "mark in progress (Enter does it too); i again: back to to do"),
+                ("d", "mark done, or back to to do; done items stay 7 days, dimmed at the bottom"),
+                ("+", "raise a typed item's priority: ! then !! up to !!!!"), ("-", "lower it"), ("x", "remove a typed item"),
+                ("! ↓", "raised and low priority; an issue's comes from its labels (P0/P1/urgent/high, P3/P4/low)"),
+                ("• ◐ ✓", "to do · in progress · done; ◇ an open GitHub issue still to do"),
+                ("", "Claude marks items itself with claude-todo: start, done, add")]
 
     def target_directory(self, app, item) -> str:
         if item["kind"] == "typed":
@@ -1957,6 +2103,11 @@ class TodoPanel(Panel):
         if key == ord("x") and item and item["kind"] == "typed":
             app.todos.remove(item["id"])
             return "removed"
+        if key in (ord("i"), ord("d")) and item:
+            target = "doing" if key == ord("i") else "done"
+            status = "todo" if app.todos.status_of(todo_key(item)) == target else target
+            app.todos.set_status(todo_key(item), status)
+            return {"doing": "in progress", "done": "done", "todo": "back to do"}[status]
         if key in (ord("+"), ord("-")) and item:
             if item["kind"] != "typed":
                 return "an issue's priority comes from its labels on GitHub"
@@ -1968,7 +2119,8 @@ class TodoPanel(Panel):
             directory = self.target_directory(app, item)
             if not directory:
                 return f"no local checkout of {item.get('repository', '?')}: start a session there first"
-            text = item["text"] if item["kind"] == "typed" else issue_prompt(item)
+            key_name = todo_key(item)
+            text = with_todo_note(item["text"] if item["kind"] == "typed" else issue_prompt(item), key_name)
             running = next((session for session in app.sessions if session.get("cwd") == directory and session["state"] != "unknown"), None)
             if running:
                 error = manager("say", running["session"], text)
@@ -1978,8 +2130,7 @@ class TodoPanel(Panel):
             else:
                 manager_in_background("new", directory, text)
                 outcome = f"starting a session in {project_name(directory)}"
-            if item["kind"] == "typed":
-                app.todos.mark_sent(item["id"])
+            app.todos.set_status(key_name, "doing", running["session"] if running else "")
             return outcome
         return ""
 
@@ -2107,6 +2258,7 @@ class App:
         return self.panels[1].items
 
     def tick(self):
+        self.todos.apply_updates()
         self.usage.tick()
         self.alerts.check(usage_windows())
         self.costs.tick()
