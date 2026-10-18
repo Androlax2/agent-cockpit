@@ -3,7 +3,7 @@
 mod common;
 use common::sandbox::*;
 use std::fs;
-use std::os::unix::fs::{PermissionsExt, symlink};
+use std::os::unix::fs::symlink;
 use std::path::PathBuf;
 use std::process::Output;
 
@@ -24,8 +24,7 @@ impl Versions {
 
     fn version(&self, name: &str, starts: bool) {
         let path = self.versions.join(name);
-        fs::write(&path, if starts { "#!/bin/sh\nexit 0\n" } else { "#!/bin/sh\nexit 1\n" }).unwrap();
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        write_executable(&path, if starts { "#!/bin/sh\nexit 0\n" } else { "#!/bin/sh\nexit 1\n" });
     }
 
     fn link_to(&self, name: &str) {

@@ -6,7 +6,6 @@ use common::sandbox::*;
 use serde_json::{Value, json};
 use std::fs;
 use std::io::Write;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -133,8 +132,7 @@ impl Approve {
         sandbox.shim("script", r#"printf "ran: %s\n" "$2" > "$3"; exit "${SHIM_EXIT:-0}""#);
         sandbox.shim("claude-sessions", "");
         let editor = sandbox.shims.join("edit-command");
-        fs::write(&editor, "#!/bin/sh\necho 'echo edited' > \"$1\"\n").unwrap();
-        fs::set_permissions(&editor, fs::Permissions::from_mode(0o755)).unwrap();
+        write_executable(&editor, "#!/bin/sh\necho 'echo edited' > \"$1\"\n");
         Approve { sandbox, runs, editor }
     }
 

@@ -4,7 +4,7 @@ mod common;
 use common::sandbox::*;
 
 use std::fs;
-use std::os::unix::fs::{PermissionsExt, symlink};
+use std::os::unix::fs::symlink;
 use std::path::PathBuf;
 use std::process::{Child, Output};
 use std::time::{Duration, Instant};
@@ -33,8 +33,7 @@ impl IdleTest {
     }
 
     fn screen(&self, body: &str) {
-        fs::write(&self.prompt, format!("#!/bin/sh\n{body}\n")).unwrap();
-        fs::set_permissions(&self.prompt, fs::Permissions::from_mode(0o755)).unwrap();
+        write_executable(&self.prompt, &format!("#!/bin/sh\n{body}\n"));
     }
 
     fn on_workspace(&self, workspace: u32) {

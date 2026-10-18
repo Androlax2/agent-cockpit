@@ -863,7 +863,9 @@ approval_pane() { # id | close
     tmux has-session -t "=$MANAGER" 2>/dev/null || return 0
     pane=$(pane_by_role approval)
     if [[ $1 == close ]]; then
-        [[ -n $pane ]] && tmux kill-pane -t "$pane"
+        # The pane closes itself when its approval ends (remain-on-exit off), often just before this
+        # close arrives: a pane already gone is the outcome wanted, not a failure.
+        if [[ -n $pane ]]; then tmux kill-pane -t "$pane" 2>/dev/null || true; fi
         return 0
     fi
     [[ $1 =~ ^[0-9a-f]{12}$ ]] || { echo "claude-sessions: not a run request id: $1" >&2; return 1; }

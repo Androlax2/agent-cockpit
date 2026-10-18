@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::os::unix::fs::{PermissionsExt, symlink};
+use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 use std::ffi::CString;
 use std::os::unix::ffi::OsStrExt;
@@ -33,6 +33,24 @@ pub fn waybar_scripts() -> PathBuf {
 /// before it is installed (config/claude is read-only for Claude inside the sandbox).
 pub fn hook() -> PathBuf {
     std::env::var("SESSION_STATE_HOOK").map(PathBuf::from).unwrap_or_else(|_| repo().join("config/claude/.claude/hooks/session-state.sh"))
+}
+
+/// An executable file with `content`, written by a short-lived `sh`, never by this process: tests
+/// run in parallel threads, and a file this process holds open for writing is inherited by any
+/// child another thread forks meanwhile, which makes running it fail with "Text file busy".
+pub fn write_executable(path: &Path, content: &str) {
+    use std::io::Write;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).unwrap();
+    }
+    let mut writer = Command::new("sh").args(["-c", "cat > \"$1\" && chmod 755 \"$1\"", "sh"]).arg(path).stdin(Stdio::piped()).spawn().unwrap();
+    writer.stdin.take().unwrap().write_all(content.as_bytes()).unwrap();
+    assert!(writer.wait().unwrap().success(), "cannot write {}", path.display());
+}
+
+/// A copy of an executable, made by `cp` for the same reason as `write_executable`.
+pub fn copy_executable(from: &Path, to: &Path) {
+    assert!(Command::new("cp").arg(from).arg(to).status().unwrap().success(), "cannot copy {}", from.display());
 }
 
 pub struct Sandbox {
@@ -80,9 +98,7 @@ impl Sandbox {
 
     /// A fake command. `body` is bash; $SHIM_LOG receives one line per call by convention.
     pub fn shim(&self, name: &str, body: &str) {
-        let path = self.shims.join(name);
-        fs::write(&path, format!("#!/usr/bin/env bash\necho \"{name} $*\" >> \"$SHIM_LOG\"\n{body}\n")).unwrap();
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        write_executable(&self.shims.join(name), &format!("#!/usr/bin/env bash\necho \"{name} $*\" >> \"$SHIM_LOG\"\n{body}\n"));
     }
 
     /// The logged calls of one command, "name arguments" each.

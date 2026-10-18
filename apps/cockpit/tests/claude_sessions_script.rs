@@ -4,7 +4,7 @@ mod common;
 use common::sandbox::*;
 
 use std::fs;
-use std::os::unix::fs::{PermissionsExt, symlink};
+use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -26,6 +26,7 @@ case $1 in
   set-option) if [[ $2 == -p && $5 == @role ]]; then echo "$4 $6" >> "$roles"; fi ;;
   capture-pane) printf '%b' "$SHIM_PANE_TEXT" ;;
   list-clients) echo "/dev/pts/9" ;;
+  kill-pane) if [[ -n $SHIM_PANE_GONE ]]; then echo "can't find pane: $3" >&2; exit 1; fi ;;
 esac
 "#;
 
@@ -279,8 +280,7 @@ fn doctor_flags_a_claude_link_behind_the_newest_download() {
     let versions = manager.sandbox.root.join("versions");
     fs::create_dir(&versions).unwrap();
     for name in ["2.1.300", "2.1.302"] {
-        fs::write(versions.join(name), "#!/bin/sh\n").unwrap();
-        fs::set_permissions(versions.join(name), fs::Permissions::from_mode(0o755)).unwrap();
+        write_executable(&versions.join(name), "#!/bin/sh\n");
     }
     let link = manager.sandbox.root.join("claude-link");
     symlink(versions.join("2.1.300"), &link).unwrap();
@@ -355,6 +355,22 @@ fn the_approval_pane_opens_under_the_session_without_the_cursor_and_closes() {
     // never left dead
     assert!(manager.tmux_calls("set-option").iter().any(|call| call.contains("remain-on-exit off")));
     assert_eq!(manager.run(&["approval-pane", "../x"], &[]).status.code(), Some(1));
+}
+
+#[test]
+fn closing_an_approval_pane_that_already_closed_itself_succeeds() {
+    let manager = Manager::new();
+    fs::write(&manager.roles, "%10 sidebar\n%11 viewer\n%76 approval\n").unwrap();
+    let output = manager.run(&["approval-pane", "close"], &[("SHIM_PANE_GONE", "1")]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+}
+
+#[test]
+fn closing_the_approval_pane_kills_it() {
+    let manager = Manager::new();
+    fs::write(&manager.roles, "%10 sidebar\n%11 viewer\n%76 approval\n").unwrap();
+    manager.run(&["approval-pane", "close"], &[]);
+    assert_eq!(manager.tmux_calls("kill-pane"), ["tmux kill-pane -t %76"]);
 }
 
 #[test]

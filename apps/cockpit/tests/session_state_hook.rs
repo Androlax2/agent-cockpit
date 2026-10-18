@@ -80,7 +80,7 @@ fn fake_claude(root: &Path) -> PathBuf {
         .find(|candidate| candidate.is_file())
         .expect("bash on PATH");
     let fake = root.join("claude");
-    fs::copy(bash, &fake).unwrap();
+    copy_executable(&bash, &fake);
     fake
 }
 

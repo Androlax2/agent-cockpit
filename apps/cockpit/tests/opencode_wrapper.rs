@@ -2,11 +2,10 @@
 //! the sandbox's private /tmp.
 
 mod common;
-use common::sandbox::bin;
+use common::sandbox::{bin, write_executable};
 
 use std::collections::HashMap;
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -26,9 +25,7 @@ struct Launch {
 }
 
 fn executable(path: &Path, body: &str) {
-    fs::create_dir_all(path.parent().unwrap()).unwrap();
-    fs::write(path, body).unwrap();
-    fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+    write_executable(path, body);
 }
 
 fn records(text: &str) -> Vec<String> {
