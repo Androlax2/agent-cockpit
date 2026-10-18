@@ -94,7 +94,6 @@ pub fn read_json(path: &Path) -> Option<Value> {
     serde_json::from_str(&fs::read_to_string(path).ok()?).ok()
 }
 
-/// Written beside the file, then renamed over it.
 /// Written to a new file beside it, then renamed over it. Several of these folders are the
 /// sandbox's to write (runs, guides): a symlink planted at the path or at a predictable temporary
 /// name must not make Theo's programs write through it, so the temporary file has a random name

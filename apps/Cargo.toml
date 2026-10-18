@@ -1,7 +1,7 @@
 # Every program of the Claude cockpit and the desktop that is not a shell script: one workspace,
 # built with `make cockpit` into apps/target/release.
 [workspace]
-members = ["cockpit", "desktop"]
+members = ["cockpit", "desktop", "vitals"]
 resolver = "3"
 
 [profile.release]
