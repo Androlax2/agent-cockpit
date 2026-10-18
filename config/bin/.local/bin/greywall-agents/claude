@@ -15,7 +15,7 @@ esac
 greywall_options="--auto-profile --profile claude --allow-path $CHROME_CONFIG_HOME"
 
 # Greyproxy re-signs HTTPS with a CA the system deliberately does not trust. Greywall hands the
-# sandbox that CA alone (SSL_CERT_FILE), which git, curl and PHP ignore, so they get a bundle of
+# sandbox that CA alone (SSL_CERT_FILE), which git, curl, cargo and PHP ignore, so they get a bundle of
 # the system roots plus Greyproxy's CA. Rebuilt on every start so a regenerated CA is picked up;
 # ~/.cache/agent-ca is readable but not writable inside the sandbox.
 ca_dir="$HOME/.cache/agent-ca"
@@ -25,6 +25,7 @@ mv "$ca_dir/bundle.pem.new" "$ca_dir/bundle.pem"
 printf 'openssl.cafile=%s\ncurl.cainfo=%s\n' "$ca_dir/bundle.pem" "$ca_dir/bundle.pem" > "$ca_dir/php/zz-agent-ca.ini"
 export GIT_SSL_CAINFO="$ca_dir/bundle.pem"
 export CURL_CA_BUNDLE="$ca_dir/bundle.pem"
+export CARGO_HTTP_CAINFO="$ca_dir/bundle.pem"
 # The leading ":" keeps PHP's own scan directory and adds ours after it.
 export PHP_INI_SCAN_DIR=":$ca_dir/php"
 

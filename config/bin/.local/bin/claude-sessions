@@ -318,12 +318,22 @@ loading_ready() { # directory session-id since start|gone
         "$SNAPSHOT" >/dev/null 2>&1
 }
 
+# Claude can ask something before SessionStart (the workspace trust prompt, for one): the loading
+# screen must not hide it. Its selection prompts end with this footer.
+viewer_shows_prompt() {
+    tmux capture-pane -p -t "$(viewer_pane)" 2>/dev/null | grep -q 'Enter to confirm'
+}
+
 show_loading() {
     local frames=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏) tick=0 label directory session since mode rows columns
     tput civis 2>/dev/null
     while { read -r label; read -r directory; read -r session; read -r since; read -r mode; } < "$LOADING_STATE" 2>/dev/null; do
         if loading_ready "$directory" "$session" "$since" "$mode"; then
             sleep 0.5  # the session reported in; give it a moment to draw its screen
+            break
+        fi
+        if viewer_shows_prompt; then
+            log_event INFO sessions "loading screen yielded to a prompt: $label in $directory"
             break
         fi
         if (( $(date +%s) - since > LOADING_TIMEOUT_S )); then
@@ -799,8 +809,31 @@ clone_for() { # source-dir name -> prints the clone's path, created on first use
         if origin=$(git -C "$top" remote get-url origin 2>/dev/null); then
             git -C "$clone" remote set-url origin "$origin"
         fi
+        inherit_trust "$top" "$clone"
     fi
     printf '%s\n' "$clone"
+}
+
+# A fresh clone holds the same files as its source, so a source Claude already trusts makes the
+# clone trusted too: no trust prompt on each parallel session. An untrusted source leaves the prompt.
+# Claude rewrites ~/.claude.json while it runs; the write is atomic (temp file, then mv), and
+# losing a race only brings the prompt back.
+CLAUDE_CONFIG_FILE="$HOME/.claude.json"
+
+inherit_trust() { # source-dir clone-dir
+    local updated
+    jq -e --arg source "$1" '.projects[$source].hasTrustDialogAccepted == true' "$CLAUDE_CONFIG_FILE" >/dev/null 2>&1 || return 0
+    if ! updated=$(mktemp "$CLAUDE_CONFIG_FILE.XXXXXX"); then
+        log_event WARN sessions "could not mark $2 as trusted: no temp file next to $CLAUDE_CONFIG_FILE"
+        return 0
+    fi
+    if jq --arg clone "$2" '.projects[$clone].hasTrustDialogAccepted = true' "$CLAUDE_CONFIG_FILE" > "$updated"; then
+        chmod 600 "$updated"
+        mv -f "$updated" "$CLAUDE_CONFIG_FILE"
+    else
+        rm -f "$updated"
+        log_event WARN sessions "could not mark $2 as trusted in $CLAUDE_CONFIG_FILE"
+    fi
 }
 
 # A failure in the background (the sidebar runs these without a terminal) shows in the viewer.

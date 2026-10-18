@@ -459,6 +459,19 @@ fn the_loading_screen_gives_up_and_logs_it() {
 }
 
 #[test]
+fn the_loading_screen_steps_aside_when_claude_asks_a_question_before_starting() {
+    let manager = Manager::new();
+    let loading = manager.runtime_file("claude-sessions-loading");
+    fs::write(&loading, format!("Starting Claude in proj-a …\n{}\n\n{}\nstart\n", manager.project.display(), now_seconds())).unwrap();
+    let trust_prompt = "Accessing workspace:\n❯ No, exit\n  Yes, I trust this folder\nEnter to confirm · Esc to cancel\n";
+    let started = Instant::now();
+    manager.run(&["loading-screen"], &[("SHIM_PANE_TEXT", trust_prompt)]);
+    assert!(started.elapsed() < Duration::from_secs(5));
+    assert!(!loading.exists());
+    assert!(manager.log_lines().iter().any(|line| line.contains("loading screen yielded to a prompt")));
+}
+
+#[test]
 fn a_background_session_gets_its_own_tmux_session_and_leaves_the_viewer_alone() {
     let manager = Manager::new();
     assert_eq!(manager.run(&["background", &path_str(&manager.project), "fix this"], &[]).status.code(), Some(0));
@@ -585,6 +598,49 @@ fn a_clone_of_a_clone_is_filed_under_the_first_repository() {
     let result = manager.run(&["parallel", &path_str(&clones.join("proj-a/first")), "second"], &[("CLAUDE_SESSIONS_CLONES", &clones_text)]);
     assert_eq!(result.status.code(), Some(0), "{}", stderr(&result));
     assert!(clones.join("proj-a/second/.git").is_dir());
+}
+
+fn claude_config_with_trust(manager: &Manager, is_trusted: bool) -> PathBuf {
+    let config = manager.sandbox.home.join(".claude.json");
+    let source = path_str(&fs::canonicalize(&manager.project).unwrap());
+    fs::write(&config, json!({"numStartups": 7, "projects": {source: {"hasTrustDialogAccepted": is_trusted}}}).to_string()).unwrap();
+    config
+}
+
+fn clone_trust(config: &Path, clone: &Path) -> serde_json::Value {
+    let settings: serde_json::Value = serde_json::from_str(&fs::read_to_string(config).unwrap()).unwrap();
+    settings["projects"][path_str(clone)]["hasTrustDialogAccepted"].clone()
+}
+
+#[test]
+fn a_clone_of_a_trusted_repository_is_trusted_too() {
+    let manager = Manager::new();
+    manager.git_repository();
+    let config = claude_config_with_trust(&manager, true);
+    let clones = fs::canonicalize(&manager.sandbox.root).unwrap().join("clones");
+    manager.run(&["parallel", &path_str(&manager.project), "feat"], &[("CLAUDE_SESSIONS_CLONES", &path_str(&clones))]);
+    assert_eq!(clone_trust(&config, &clones.join("proj-a/feat")), json!(true));
+}
+
+#[test]
+fn trusting_a_clone_keeps_the_rest_of_the_claude_config() {
+    let manager = Manager::new();
+    manager.git_repository();
+    let config = claude_config_with_trust(&manager, true);
+    let clones = fs::canonicalize(&manager.sandbox.root).unwrap().join("clones");
+    manager.run(&["parallel", &path_str(&manager.project), "feat"], &[("CLAUDE_SESSIONS_CLONES", &path_str(&clones))]);
+    let settings: serde_json::Value = serde_json::from_str(&fs::read_to_string(&config).unwrap()).unwrap();
+    assert_eq!(settings["numStartups"], json!(7));
+}
+
+#[test]
+fn a_clone_of_an_untrusted_repository_still_asks() {
+    let manager = Manager::new();
+    manager.git_repository();
+    let config = claude_config_with_trust(&manager, false);
+    let clones = fs::canonicalize(&manager.sandbox.root).unwrap().join("clones");
+    manager.run(&["parallel", &path_str(&manager.project), "feat"], &[("CLAUDE_SESSIONS_CLONES", &path_str(&clones))]);
+    assert_eq!(clone_trust(&config, &clones.join("proj-a/feat")), serde_json::Value::Null);
 }
 
 #[test]
