@@ -6,7 +6,6 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::rc::Rc;
 use std::sync::{Mutex, MutexGuard};
 
@@ -89,8 +88,6 @@ struct World {
     clients: String,
     environments: HashMap<String, HashMap<String, String>>,
     dead_pids: HashSet<String>,
-    /// git answers by "cwd args"; anything else asks the real git
-    git_answers: HashMap<String, String>,
 }
 
 impl World {
@@ -115,14 +112,6 @@ impl System for FakeSystem {
             "list-clients" => Some(world.clients.clone()),
             _ => Some(String::new()),
         }
-    }
-
-    fn git(&mut self, cwd: &str, arguments: &[&str]) -> String {
-        if let Some(answer) = self.0.borrow().git_answers.get(&format!("{cwd} {}", arguments.join(" "))) {
-            return answer.clone();
-        }
-        Command::new("git").arg("-C").arg(cwd).args(arguments).output().ok().filter(|output| output.status.success())
-            .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string()).unwrap_or_default()
     }
 
     fn open_window(&mut self, command: &[&str]) -> Option<Box<dyn Window>> {
@@ -466,37 +455,41 @@ fn sessions_are_remembered_across_reboots() {
     assert_eq!((recent[SESSION_A]["project"].as_str(), recent[SESSION_A]["cwd"].as_str()), (Some("runway"), Some("/r/runway")));
 }
 
-fn git(repository: &Path, arguments: &[&str]) {
-    let status = Command::new("git").arg("-C").arg(repository).args(["-c", "user.email=t@t", "-c", "user.name=t"]).args(arguments)
-        .output().unwrap().status;
-    assert!(status.success(), "git {arguments:?}");
-}
-
 #[test]
-fn a_finished_turn_reports_its_commits_and_uncommitted_changes() {
+fn a_finished_turn_shows_what_the_hook_found_it_did() {
     let mut bench = Bench::new();
-    let repository = bench.fixture.root.join("repo");
-    fs::create_dir(&repository).unwrap();
-    git(&repository, &["init", "-q"]);
-    fs::write(repository.join("a.txt"), "one\n").unwrap();
-    git(&repository, &["add", "a.txt"]);
-    git(&repository, &["commit", "-qm", "start"]);
-    let cwd = repository.to_string_lossy().into_owned();
-    bench.report(SESSION_A, json!({"state": "waiting", "cwd": cwd, "project": "repo"}));
     bench.report(SESSION_A, json!({"state": "working"}));
-    fs::write(repository.join("b.txt"), "two\n").unwrap();
-    git(&repository, &["add", "b.txt"]);
-    git(&repository, &["commit", "-qm", "work"]);
-    fs::write(repository.join("a.txt"), "one\nmore\nlines\n").unwrap();
-    bench.report(SESSION_A, json!({"state": "waiting", "message": "Finished, waiting for you"}));
+    bench.report(SESSION_A, json!({"state": "waiting", "message": "Finished, waiting for you", "outcome": "1 commit · 1 file changed, +2 −0 uncommitted"}));
     assert_eq!(bench.snapshot()[0]["outcome"], "1 commit · 1 file changed, +2 −0 uncommitted");
 }
 
 #[test]
-fn a_turn_outside_a_repository_has_no_outcome() {
+fn a_new_turn_forgets_the_last_outcome() {
     let mut bench = Bench::new();
-    let outside = bench.fixture.root.join("home").to_string_lossy().into_owned();
-    assert_eq!(turn_outcome(bench.registry.system.as_mut(), &outside, ""), "");
+    bench.report(SESSION_A, json!({"state": "waiting", "message": "Finished, waiting for you", "outcome": "no changes"}));
+    bench.report(SESSION_A, json!({"state": "working"}));
+    assert_eq!(bench.snapshot()[0]["outcome"], "");
+}
+
+#[test]
+fn an_outcome_with_a_tmux_format_is_refused() {
+    assert!(parse_session(&json!({"session": SESSION_A, "project": "p", "outcome": "#(id)"}).to_string()).is_err());
+}
+
+#[test]
+fn the_daemon_never_runs_git_on_a_session_folder() {
+    // A session can write its repository's configuration (core.fsmonitor, filters): git run out
+    // here on its folder would run that as Theo. The project is read from the .git files instead.
+    let mut bench = Bench::new();
+    let repository = bench.fixture.root.join("evil");
+    fs::create_dir_all(repository.join(".git")).unwrap();
+    let ran = bench.fixture.root.join("ran");
+    fs::write(repository.join(".git/config"), format!("[core]\n\tfsmonitor = touch {}\n", ran.display())).unwrap();
+    let cwd = repository.to_string_lossy().into_owned();
+    bench.report(SESSION_A, json!({"state": "working", "cwd": cwd}));
+    bench.report(SESSION_A, json!({"state": "waiting", "message": "Finished, waiting for you"}));
+    assert!(!ran.exists());
+    assert_eq!(bench.snapshot()[0]["project"], "evil");
 }
 
 #[test]
@@ -509,28 +502,46 @@ fn a_banner_left_up_while_the_session_works_is_removed() {
     assert!(bench.dropped().contains(&SESSION_A.to_string()));
 }
 
+/// A checkout at `path` (a .git folder), as git leaves it, without running git.
+fn checkout(path: &Path) {
+    fs::create_dir_all(path.join(".git")).unwrap();
+}
+
 #[test]
 fn the_project_is_the_starting_directorys_and_stays() {
     let mut bench = Bench::new();
-    {
-        let mut world = bench.world.borrow_mut();
-        for cwd in ["/r/opusline", "/r/opusline/apps/api"] {
-            world.git_answers.insert(format!("{cwd} rev-parse --path-format=absolute --git-common-dir"), "/r/opusline/.git".into());
-        }
-    }
-    bench.report(SESSION_A, json!({"state": "waiting", "cwd": "/r/opusline", "project": "opusline"}));
-    bench.report(SESSION_A, json!({"state": "working", "cwd": "/r/opusline/apps/api", "project": "api"}));
+    let main = bench.fixture.root.join("r/opusline");
+    checkout(&main);
+    fs::create_dir_all(main.join("apps/api")).unwrap();
+    bench.report(SESSION_A, json!({"state": "waiting", "cwd": main.join("apps/api").to_string_lossy(), "project": "api"}));
+    bench.report(SESSION_A, json!({"state": "working", "cwd": main.to_string_lossy(), "project": "opusline"}));
     let row = &bench.snapshot()[0];
-    assert_eq!((row["project"].as_str(), row["cwd"].as_str()), (Some("opusline"), Some("/r/opusline")));
+    assert_eq!((row["project"].as_str(), row["cwd"].as_str()), (Some("opusline"), Some(main.join("apps/api").to_string_lossy().as_ref())));
     assert!(row.get("started").is_some());
 }
 
 #[test]
 fn a_worktree_is_named_after_its_main_checkout() {
     let mut bench = Bench::new();
-    bench.world.borrow_mut().git_answers.insert("/w/feature rev-parse --path-format=absolute --git-common-dir".into(), "/r/opusline/.git".into());
-    bench.report(SESSION_A, json!({"state": "waiting", "cwd": "/w/feature", "project": "feature"}));
+    let main = bench.fixture.root.join("r/opusline");
+    checkout(&main);
+    let worktree_git = main.join(".git/worktrees/feature");
+    fs::create_dir_all(&worktree_git).unwrap();
+    fs::write(worktree_git.join("commondir"), "../..\n").unwrap();
+    let worktree = bench.fixture.root.join("w/feature");
+    fs::create_dir_all(&worktree).unwrap();
+    fs::write(worktree.join(".git"), format!("gitdir: {}\n", worktree_git.display())).unwrap();
+    bench.report(SESSION_A, json!({"state": "waiting", "cwd": worktree.to_string_lossy(), "project": "feature"}));
     assert_eq!(bench.snapshot()[0]["project"], "opusline");
+}
+
+#[test]
+fn a_folder_outside_any_repository_is_named_after_itself() {
+    let mut bench = Bench::new();
+    let folder = bench.fixture.root.join("notes");
+    fs::create_dir_all(&folder).unwrap();
+    bench.report(SESSION_A, json!({"state": "waiting", "cwd": folder.to_string_lossy()}));
+    assert_eq!(bench.snapshot()[0]["project"], "notes");
 }
 
 #[test]
@@ -763,6 +774,78 @@ fn an_answered_request_in_the_queue_is_skipped() {
     fs::write(bench.fixture.queue().join(format!("{RUN_B}.result")), "{}").unwrap();
     bench.registry.run_phase(RUN_A, "done");
     assert_eq!(bench.registry.runs.current, "");
+}
+
+/// The heartbeat ask-to-run keeps while it waits, last touched `seconds_ago`.
+fn heartbeat(bench: &Bench, id: &str, seconds_ago: u64) {
+    let path = bench.fixture.queue().join(format!("{id}.waiting"));
+    fs::write(&path, "").unwrap();
+    let touched = std::time::SystemTime::now() - std::time::Duration::from_secs(seconds_ago);
+    fs::File::options().write(true).open(&path).unwrap().set_modified(touched).unwrap();
+}
+
+fn result_status(bench: &Bench, id: &str) -> Option<String> {
+    let text = fs::read_to_string(bench.fixture.queue().join(format!("{id}.result"))).ok()?;
+    serde_json::from_str::<Value>(&text).ok()?["status"].as_str().map(str::to_string)
+}
+
+#[test]
+fn an_approval_nobody_waits_for_any_more_is_dropped_and_the_next_starts() {
+    let mut bench = Bench::new();
+    heartbeat(&bench, RUN_A, 0);
+    heartbeat(&bench, RUN_B, 0);
+    bench.registry.run_request(RUN_A).unwrap();
+    bench.registry.run_request(RUN_B).unwrap();
+    heartbeat(&bench, RUN_A, 120);
+    bench.registry.tick_queues();
+    assert_eq!(result_status(&bench, RUN_A).as_deref(), Some("abandoned"));
+    assert!(bench.commands().contains(&vec!["tmux".to_string(), "kill-session".into(), "-t".into(), format!("=claude-run-{RUN_A}")]));
+    assert!(bench.windows()[0].borrow().closed);
+    assert_eq!(bench.registry.runs.current, RUN_B);
+}
+
+#[test]
+fn an_approval_whose_asker_still_waits_stays() {
+    let mut bench = Bench::new();
+    heartbeat(&bench, RUN_A, 0);
+    bench.registry.run_request(RUN_A).unwrap();
+    heartbeat(&bench, RUN_A, 5);
+    bench.registry.tick_queues();
+    assert_eq!(bench.registry.runs.current, RUN_A);
+    assert_eq!(result_status(&bench, RUN_A), None);
+}
+
+#[test]
+fn a_running_command_is_never_dropped() {
+    let mut bench = Bench::new();
+    heartbeat(&bench, RUN_A, 0);
+    bench.registry.run_request(RUN_A).unwrap();
+    bench.registry.run_phase(RUN_A, "running");
+    heartbeat(&bench, RUN_A, 120);
+    bench.registry.tick_queues();
+    assert_eq!(bench.registry.runs.current, RUN_A);
+}
+
+#[test]
+fn a_queued_request_nobody_waits_for_is_skipped() {
+    let mut bench = Bench::new();
+    heartbeat(&bench, RUN_A, 0);
+    heartbeat(&bench, RUN_B, 0);
+    bench.registry.run_request(RUN_A).unwrap();
+    bench.registry.run_request(RUN_B).unwrap();
+    heartbeat(&bench, RUN_B, 120);
+    bench.registry.run_phase(RUN_A, "done");
+    assert_eq!(bench.registry.runs.current, "");
+    assert_eq!(result_status(&bench, RUN_B).as_deref(), Some("abandoned"));
+}
+
+#[test]
+fn a_request_without_a_heartbeat_counts_from_its_filing() {
+    let mut bench = Bench::new();
+    fs::write(bench.fixture.queue().join(format!("{RUN_A}.request")), "{}").unwrap();
+    bench.registry.run_request(RUN_A).unwrap();
+    bench.registry.tick_queues();
+    assert_eq!(bench.registry.runs.current, RUN_A, "a fresh request is not dropped for lack of a heartbeat");
 }
 
 #[test]

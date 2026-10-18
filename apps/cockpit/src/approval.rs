@@ -80,15 +80,9 @@ pub fn project_of(directory: &str) -> String {
     Path::new(trimmed).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| directory.to_string())
 }
 
-/// Written beside, then renamed over.
+/// Written beside, then renamed over, without following a link the sandbox planted (util::write_json).
 pub fn write_json(path: &Path, value: &Value) -> io::Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let mut temporary = path.as_os_str().to_owned();
-    temporary.push(".tmp");
-    fs::write(&temporary, value.to_string())?;
-    fs::rename(&temporary, path)
+    crate::util::write_json(path, value)
 }
 
 /// CSI and OSC sequences, keypad-mode switches (ESC = / ESC >), carriage returns.

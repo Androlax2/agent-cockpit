@@ -64,9 +64,32 @@ project=$(basename "$cwd")
 fifo="${XDG_RUNTIME_DIR:-/tmp}/osd.fifo"
 toast_id_file="$HOME/.cache/claude/toast-$session.id"
 
+# What a turn left in the repository, worked out here, inside the session's sandbox: git reads the
+# repository's own configuration, which the session can write, so it must never run outside.
+turn_head_file="$HOME/.cache/claude/turn-$session.head"
+outcome_of_turn() { # cwd: commits since the turn's start, uncommitted changes, or "no changes"
+    git -C "$1" rev-parse --git-dir >/dev/null 2>&1 || return 0
+    local start count stat files insertions deletions summary=""
+    start=$(cat "$turn_head_file" 2>/dev/null || true)
+    count=0
+    if [[ -n $start ]]; then count=$(git -C "$1" rev-list --count "$start..HEAD" 2>/dev/null || echo 0); fi
+    if (( count == 1 )); then summary="1 commit"; elif (( count > 1 )); then summary="$count commits"; fi
+    stat=$(git -C "$1" diff --shortstat HEAD 2>/dev/null || true)
+    files=$(grep -oE '[0-9]+ files? changed' <<<"$stat" | grep -oE '^[0-9]+' || echo 0)
+    insertions=$(grep -oE '[0-9]+ insertions?' <<<"$stat" | grep -oE '^[0-9]+' || echo 0)
+    deletions=$(grep -oE '[0-9]+ deletions?' <<<"$stat" | grep -oE '^[0-9]+' || echo 0)
+    if (( files > 0 )); then
+        local noun=files
+        if (( files == 1 )); then noun=file; fi
+        summary+="${summary:+ · }$files $noun changed, +$insertions −$deletions uncommitted"
+    fi
+    echo "${summary:-no changes}"
+}
+
 state=
 task=
 message=
+outcome=
 sticky=false
 case $event in
     SessionStart)
@@ -74,6 +97,8 @@ case $event in
         ;;
     UserPromptSubmit)
         state=working
+        # The commit the turn starts from, to tell what it did when it stops.
+        { mkdir -p "$(dirname "$turn_head_file")"; git -C "$cwd" rev-parse HEAD > "$turn_head_file"; } 2>/dev/null || rm -f "$turn_head_file"
         # Only what you typed names the task: prompts from the system (task notifications, loop
         # wake-ups) say nothing about it.
         if [[ $(jq -r '.source // "user"' <<<"$payload") == user ]]; then
@@ -98,9 +123,11 @@ case $event in
     Stop)
         state=waiting
         message="Finished, waiting for you"
+        outcome=$(outcome_of_turn "$cwd")
         ;;
     SessionEnd)
         state=gone
+        rm -f "$turn_head_file"
         ;;
     *)
         echo "session-state.sh: unexpected hook event $event" >&2
@@ -110,10 +137,10 @@ esac
 
 report=$(jq -cn \
     --arg session "$session" --arg state "$state" --arg project "$project" --arg cwd "$cwd" \
-    --arg task "$task" --arg message "$message" --argjson sticky "$sticky" \
+    --arg task "$task" --arg message "$message" --arg outcome "$outcome" --argjson sticky "$sticky" \
     --arg kitty_pid "${KITTY_PID:-}" --arg kitty_window "${KITTY_WINDOW_ID:-}" \
     --arg kitty_listen "${KITTY_LISTEN_ON:-}" --arg tmux_pane "${TMUX_PANE:-}" \
-    '{$session, $state, $project, $cwd, $task, $message, $sticky,
+    '{$session, $state, $project, $cwd, $task, $message, $outcome, $sticky,
       $kitty_pid, $kitty_window, $kitty_listen, $tmux_pane}
      | with_entries(select(.value != "" and .value != false))')
 

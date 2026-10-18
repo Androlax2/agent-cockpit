@@ -194,3 +194,40 @@ fn fallback_toast_when_the_fifo_is_unreachable() {
     assert_eq!(test.sandbox.calls("gdbus").len(), 1);
     assert!(!toast_id.exists());
 }
+
+fn git(repository: &Path, arguments: &[&str]) {
+    let status = Command::new("git").arg("-C").arg(repository).args(["-c", "user.email=t@t", "-c", "user.name=t"]).args(arguments)
+        .output().unwrap().status;
+    assert!(status.success(), "git {arguments:?}");
+}
+
+#[test]
+fn a_finished_turn_reports_its_commits_and_uncommitted_changes() {
+    // Worked out by the hook, inside the session's sandbox: git reads configuration the session
+    // can write, so the daemon outside never runs it.
+    let mut test = HookTest::new();
+    let repository = test.sandbox.root.join("repo");
+    fs::create_dir(&repository).unwrap();
+    git(&repository, &["init", "-q"]);
+    fs::write(repository.join("a.txt"), "one\n").unwrap();
+    git(&repository, &["add", "a.txt"]);
+    git(&repository, &["commit", "-qm", "start"]);
+    let cwd = repository.to_string_lossy().into_owned();
+    test.run_hook(with_session(json!({"hook_event_name": "UserPromptSubmit", "prompt": "work"}), &cwd), &[]);
+    fs::write(repository.join("b.txt"), "two\n").unwrap();
+    git(&repository, &["add", "b.txt"]);
+    git(&repository, &["commit", "-qm", "work"]);
+    fs::write(repository.join("a.txt"), "one\nmore\nlines\n").unwrap();
+    test.run_hook(with_session(json!({"hook_event_name": "Stop"}), &cwd), &[]);
+    let reports = test.received();
+    assert_eq!(reports.last().unwrap()["outcome"], "1 commit · 1 file changed, +2 −0 uncommitted");
+}
+
+#[test]
+fn a_turn_outside_a_repository_reports_no_outcome() {
+    let mut test = HookTest::new();
+    let folder = test.sandbox.root.join("notes");
+    fs::create_dir(&folder).unwrap();
+    test.run_hook(with_session(json!({"hook_event_name": "Stop"}), &folder.to_string_lossy()), &[]);
+    assert!(test.received().last().unwrap().get("outcome").is_none());
+}

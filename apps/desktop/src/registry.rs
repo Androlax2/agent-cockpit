@@ -30,7 +30,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::LazyLock;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-pub const PRUNE_INTERVAL_S: u32 = 5;
+pub const PRUNE_INTERVAL_S: u32 = 2;
 const RECENT_SESSIONS_DAYS: f64 = 7.0;
 const RECENT_SESSIONS_WRITE_S: f64 = 60.0;
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(3);
@@ -41,6 +41,9 @@ const MAX_TEXT_LENGTH: usize = 300;
 const REQUEST_MAX_LENGTH: usize = 140;
 const FINISHED_MESSAGE: &str = "Finished, waiting for you"; // the hook's Stop message
 const RUN_PHASES: [&str; 3] = ["asking", "running", "done"];
+/// ask-to-run touches <id>.waiting every few seconds while it waits; this long without it, nobody
+/// waits for the answer any more (the session gave up, timed out without --wait, or died).
+const ABANDONED_AFTER: Duration = Duration::from_secs(30);
 
 fn regex(pattern: &str) -> Regex {
     Regex::new(pattern).unwrap()
@@ -126,6 +129,8 @@ pub struct Report {
     pub cwd: Option<String>,
     pub task: Option<String>,
     pub message: Option<String>,
+    /// What the turn left in the repository, from the hook (it runs git inside the sandbox).
+    pub outcome: Option<String>,
     pub sticky: bool,
     pub target: BTreeMap<String, String>,
 }
@@ -144,7 +149,7 @@ pub fn parse_session(raw: &str) -> Result<Report, String> {
             return Err(format!("session.state {state:?} unknown"));
         }
     }
-    for key in ["cwd", "task", "message"] {
+    for key in ["cwd", "task", "message", "outcome"] {
         if report.get(key).is_some_and(|value| !value.is_string()) {
             return Err(format!("session.{key} is not a string"));
         }
@@ -153,7 +158,7 @@ pub fn parse_session(raw: &str) -> Result<Report, String> {
     if !SESSION_ID.is_match(&session) {
         return Err("session is not a Claude session id".into());
     }
-    for key in ["session", "project", "cwd", "task", "message"] {
+    for key in ["session", "project", "cwd", "task", "message", "outcome"] {
         if let Some(text) = report.get(key).and_then(Value::as_str) {
             validate_text(key, text)?;
         }
@@ -165,7 +170,7 @@ pub fn parse_session(raw: &str) -> Result<Report, String> {
     }).collect();
     Ok(Report {
         session, project: report["project"].as_str().unwrap().to_string(), state: text("state"), cwd: text("cwd"),
-        task: text("task"), message: text("message"), sticky: report.get("sticky").is_some_and(|s| s.as_bool().unwrap_or(!s.is_null())), target,
+        task: text("task"), message: text("message"), outcome: text("outcome"), sticky: report.get("sticky").is_some_and(|s| s.as_bool().unwrap_or(!s.is_null())), target,
     })
 }
 
@@ -264,7 +269,6 @@ pub trait System {
     /// A command; false (and logged) when it fails or exits with another code than `ok`.
     fn run(&mut self, command: &[&str], ok: &[i32]) -> bool;
     fn tmux(&mut self, arguments: &[&str]) -> Option<String>;
-    fn git(&mut self, cwd: &str, arguments: &[&str]) -> String;
     fn open_window(&mut self, command: &[&str]) -> Option<Box<dyn Window>>;
     fn claude_workspace_active(&mut self) -> bool;
     fn gaming(&mut self) -> bool;
@@ -309,31 +313,6 @@ fn basename(path: &str) -> String {
     Path::new(path.trim_end_matches('/')).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
 }
 
-/// What a turn left in the repository: commits since start_head, and the uncommitted changes.
-/// "no changes" when neither; empty outside a git repository.
-pub fn turn_outcome(system: &mut dyn System, cwd: &str, start_head: &str) -> String {
-    if cwd.is_empty() || system.git(cwd, &["rev-parse", "--git-dir"]).is_empty() {
-        return String::new();
-    }
-    let mut parts = Vec::new();
-    if !start_head.is_empty() {
-        let commits = system.git(cwd, &["rev-list", "--count", &format!("{start_head}..HEAD")]);
-        if let Ok(count) = commits.parse::<u32>() {
-            if count > 0 {
-                parts.push(format!("{count} commit{}", if count != 1 { "s" } else { "" }));
-            }
-        }
-    }
-    let stat = system.git(cwd, &["diff", "--shortstat", "HEAD"]);
-    let counts: HashMap<String, u32> = regex(r"(\d+) (file|insertion|deletion)").captures_iter(&stat)
-        .map(|found| (found[2].to_string(), found[1].parse().unwrap_or(0))).collect();
-    if let Some(files) = counts.get("file").filter(|files| **files > 0) {
-        parts.push(format!("{files} file{} changed, +{} −{} uncommitted", if *files != 1 { "s" } else { "" },
-                           counts.get("insertion").unwrap_or(&0), counts.get("deletion").unwrap_or(&0)));
-    }
-    if parts.is_empty() { "no changes".into() } else { parts.join(" · ") }
-}
-
 // ---- The run and guide queues ----
 
 pub fn runs_dir() -> PathBuf {
@@ -346,20 +325,54 @@ pub fn guides_dir() -> PathBuf {
 
 /// The project of a request's directory, from the directory itself: the request's own label is
 /// not trusted.
-fn project_from_request(system: &mut dyn System, path: &Path, project_cache: &mut HashMap<String, String>) -> String {
+fn project_from_request(path: &Path, project_cache: &mut HashMap<String, String>) -> String {
     let cwd = fs::read_to_string(path).ok().and_then(|text| serde_json::from_str::<Value>(&text).ok())
         .and_then(|request| request.get("cwd").and_then(Value::as_str).map(str::to_string)).unwrap_or_default();
     if cwd.is_empty() || !Path::new(&cwd).is_dir() {
         return "?".into();
     }
-    let project = project_of(system, project_cache, &cwd, "?");
+    let project = project_of(project_cache, &cwd, "?");
     if validate_text("project", &project).is_ok() { project } else { "?".into() }
+}
+
+/// The git directory shared by every checkout of the repository `directory` is in (a worktree's
+/// .git file points into the main one), found by reading the .git entries as files: git itself must
+/// never run on a session's folder out here, its configuration is the sandbox's to write
+/// (core.fsmonitor, filters) and would run as Theo.
+fn common_git_dir(directory: &Path) -> Option<PathBuf> {
+    for folder in directory.ancestors() {
+        let entry = folder.join(".git");
+        let Ok(metadata) = fs::symlink_metadata(&entry) else { continue };
+        if metadata.is_dir() {
+            return Some(entry);
+        }
+        let text = fs::read_to_string(&entry).ok()?;
+        let pointed = folder.join(text.trim().strip_prefix("gitdir:")?.trim());
+        // A worktree's own git directory names the shared one in its commondir file.
+        return Some(match fs::read_to_string(pointed.join("commondir")) {
+            Ok(common) => pointed.join(common.trim()),
+            Err(_) => pointed,
+        });
+    }
+    None
+}
+
+fn normalized(path: &Path) -> PathBuf {
+    let mut clean = PathBuf::new();
+    for part in path.components() {
+        match part {
+            std::path::Component::ParentDir => { clean.pop(); }
+            std::path::Component::CurDir => {}
+            other => clean.push(other),
+        }
+    }
+    clean
 }
 
 /// The repository a directory belongs to, named after its main checkout: a session that moves into
 /// a subfolder or runs in a worktree keeps the project's own name. Outside a repository, the
 /// directory's name; without a directory, the fallback.
-pub fn project_of(system: &mut dyn System, cache: &mut HashMap<String, String>, cwd: &str, fallback: &str) -> String {
+pub fn project_of(cache: &mut HashMap<String, String>, cwd: &str, fallback: &str) -> String {
     if cwd.is_empty() {
         return fallback.into();
     }
@@ -370,15 +383,12 @@ pub fn project_of(system: &mut dyn System, cache: &mut HashMap<String, String>, 
     if let Some(known) = cache.get(cwd) {
         return known.clone();
     }
-    let common = system.git(cwd, &["rev-parse", "--path-format=absolute", "--git-common-dir"]);
-    let project = if let Some(stripped) = common.strip_suffix("/.git") {
-        basename(stripped)
-    } else if !common.is_empty() {
-        basename(&common).trim_end_matches(".git").to_string()
-    } else {
-        let name = basename(cwd);
-        if name.is_empty() { fallback.into() } else { name }
+    let project = match common_git_dir(Path::new(cwd)).map(|common| normalized(&common)) {
+        Some(common) if common.file_name().is_some_and(|name| name == ".git") => common.parent().map(|main| basename(&main.to_string_lossy())).unwrap_or_default(),
+        Some(common) => basename(&common.to_string_lossy()).trim_end_matches(".git").to_string(),
+        None => basename(cwd),
     };
+    let project = if project.is_empty() { fallback.to_string() } else { project };
     cache.insert(cwd.into(), project.clone());
     project
 }
@@ -399,6 +409,27 @@ fn run_session(id: &str) -> String {
     format!("claude-run-{id}")
 }
 
+/// Whether nobody waits for this request any more. Its age counts from the last heartbeat, or from
+/// its filing when ask-to-run has not written one yet; with neither file there is nothing to judge
+/// by, and the request is kept.
+fn is_abandoned(id: &str) -> bool {
+    let touched = |extension: &str| fs::metadata(runs_dir().join(format!("{id}.{extension}"))).and_then(|metadata| metadata.modified()).ok();
+    touched("waiting").or_else(|| touched("request"))
+        .and_then(|time| time.elapsed().ok())
+        .is_some_and(|age| age > ABANDONED_AFTER)
+}
+
+/// The answer ask-to-run --wait finds for a dropped request.
+fn write_abandoned(id: &str) {
+    let path = runs_dir().join(format!("{id}.result"));
+    if path.exists() {
+        return;
+    }
+    if let Err(error) = cockpit::util::write_json(&path, &json!({"status": "abandoned"})) {
+        log(&format!("cannot drop request {id}: {error}"));
+    }
+}
+
 impl RunRequests {
     pub fn request(&mut self, system: &mut dyn System, banners: &mut dyn Banners, cache: &mut HashMap<String, String>, id: &str) -> Result<(), String> {
         if !RUN_ID.is_match(id) {
@@ -407,7 +438,7 @@ impl RunRequests {
         if self.queue.iter().any(|queued| queued == id) || self.current == id {
             return Ok(());
         }
-        let project = project_from_request(system, &runs_dir().join(format!("{id}.request")), cache);
+        let project = project_from_request(&runs_dir().join(format!("{id}.request")), cache);
         if !system.quiet() {
             banners.raise_notice(&Notice { id: format!("run-{id}"), title: format!("Claude · {project}"), message: "asks you to run a command".into() });
         }
@@ -424,6 +455,11 @@ impl RunRequests {
         while !self.queue.is_empty() {
             let id = self.queue.remove(0);
             if runs_dir().join(format!("{id}.result")).exists() {
+                continue;
+            }
+            if is_abandoned(&id) {
+                log(&format!("run request {id} dropped before it showed: nobody waits for it"));
+                write_abandoned(&id);
                 continue;
             }
             let approve = paths::home().join(".local/bin/claude-run-approve").to_string_lossy().into_owned();
@@ -488,7 +524,13 @@ impl RunRequests {
     pub fn tick(&mut self, system: &mut dyn System, banners: &mut dyn Banners) {
         if !self.current.is_empty() {
             let target = format!("={}", run_session(&self.current));
-            if system.tmux(&["has-session", "-t", &target]).is_none() {
+            // Only while it asks: a command already running is never cut off.
+            if self.phase == "asking" && is_abandoned(&self.current) {
+                log(&format!("run request {} dropped: nobody waits for its answer any more", self.current));
+                write_abandoned(&self.current);
+                system.run(&["tmux", "kill-session", "-t", &target], &[0, 1]);
+                self.finish(system, banners);
+            } else if system.tmux(&["has-session", "-t", &target]).is_none() {
                 self.finish(system, banners);
             } else {
                 self.show(system);
@@ -518,7 +560,7 @@ impl GuideRequests {
         if self.queue.iter().any(|queued| queued == id) || self.current == id {
             return Ok(());
         }
-        let project = project_from_request(system, &guides_dir().join(format!("{id}.guide")), cache);
+        let project = project_from_request(&guides_dir().join(format!("{id}.guide")), cache);
         if !system.gaming() {
             banners.raise_notice(&Notice { id: format!("guide-{id}"), title: format!("Claude · {project}"), message: "steps for you to do by hand".into() });
         }
@@ -558,7 +600,7 @@ impl GuideRequests {
                 .and_then(|text| serde_json::from_str::<Value>(&text).ok()).unwrap_or(json!({}));
             let closed = json!({"status": "closed", "step": progress.get("step").cloned().unwrap_or(json!("?")),
                                 "total": progress.get("total").cloned().unwrap_or(json!("?"))});
-            if let Err(error) = fs::write(&result, closed.to_string()) {
+            if let Err(error) = cockpit::util::write_json(&result, &closed) {
                 log(&format!("cannot close guide {}: {error}", self.current));
             }
         }
@@ -592,7 +634,6 @@ pub struct Entry {
     pub request: String,
     pub detail: String,
     pub outcome: String,
-    pub turn_head: String,
 }
 
 pub struct Registry {
@@ -620,7 +661,7 @@ impl Registry {
     }
 
     fn project_of(&mut self, cwd: &str, fallback: &str) -> String {
-        project_of(self.system.as_mut(), &mut self.project_cache, cwd, fallback)
+        project_of(&mut self.project_cache, cwd, fallback)
     }
 
     pub fn run_request(&mut self, id: &str) -> Result<(), String> {
@@ -695,14 +736,13 @@ impl Registry {
         if previous_state.as_deref() != Some(entry.state.as_str()) {
             entry.since = now();
         }
-        // A turn starts when the session starts working: note the commit, to tell what it did.
-        if entry.state == "working" && previous_state.as_deref() != Some("working") && !entry.cwd.is_empty() {
-            entry.turn_head = self.system.git(&entry.cwd, &["rev-parse", "HEAD"]);
+        // A new turn forgets what the last one did.
+        if entry.state == "working" && previous_state.as_deref() != Some("working") {
             entry.outcome.clear();
         }
         let mut message = report.message.clone();
-        if message.as_deref() == Some(FINISHED_MESSAGE) && !entry.cwd.is_empty() {
-            entry.outcome = turn_outcome(self.system.as_mut(), &entry.cwd, &entry.turn_head);
+        if message.as_deref() == Some(FINISHED_MESSAGE) {
+            entry.outcome = report.outcome.clone().unwrap_or_default();
             if !entry.outcome.is_empty() {
                 message = Some(format!("Finished · {}", entry.outcome));
             }
@@ -1156,12 +1196,6 @@ impl System for RealSystem {
         let mut command = vec!["tmux"];
         command.extend_from_slice(arguments);
         output_within(&command, COMMAND_TIMEOUT).filter(|(code, _, _)| *code == 0).map(|(_, stdout, _)| stdout)
-    }
-
-    fn git(&mut self, cwd: &str, arguments: &[&str]) -> String {
-        let mut command = vec!["git", "-C", cwd];
-        command.extend_from_slice(arguments);
-        output_within(&command, COMMAND_TIMEOUT).filter(|(code, _, _)| *code == 0).map(|(_, stdout, _)| stdout.trim().to_string()).unwrap_or_default()
     }
 
     fn open_window(&mut self, command: &[&str]) -> Option<Box<dyn Window>> {

@@ -265,7 +265,8 @@ fn draw(buffer: &mut Buffer, guide: &Guide, draft: &str, message: &str) -> (u16,
 fn run_step(guide: &mut Guide) {
     let original = guide.field("run");
     let mut command = original.clone();
-    println!("\n{BOLD}Step {} of the guide{RESET} asks you to run, in {DIM}{}{RESET}:\n", guide.position + 1, guide.cwd);
+    let shown_cwd = approval::escape_hiding(&guide.cwd, RED, &format!("{RESET}{DIM}"));
+    println!("\n{BOLD}Step {} of the guide{RESET} asks you to run, in {DIM}{shown_cwd}{RESET}:\n", guide.position + 1);
     let answer = loop {
         let (text, hiding) = approval::visible_command(&command);
         println!("{}\n", text.split('\n').map(|line| format!("  {BOLD}{line}{RESET}")).collect::<Vec<_>>().join("\n"));

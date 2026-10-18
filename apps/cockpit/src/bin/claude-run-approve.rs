@@ -59,7 +59,10 @@ fn approve(id: &str) -> i32 {
     approval::phase(id, "asking");
     let answer = loop {
         let (shown, hiding) = approval::visible_command(&command);
-        println!("\n{BOLD}{BLUE}Claude · {project}{RESET} asks you to run, in {DIM}{cwd}{RESET}:\n");
+        // The folder and project come from the sandbox too: a directory name can carry escape codes.
+        let shown_project = approval::escape_hiding(&project, RED, &format!("{RESET}{BOLD}{BLUE}"));
+        let shown_cwd = approval::escape_hiding(&cwd, RED, &format!("{RESET}{DIM}"));
+        println!("\n{BOLD}{BLUE}Claude · {shown_project}{RESET} asks you to run, in {DIM}{shown_cwd}{RESET}:\n");
         println!("{}\n", shown.split('\n').map(|line| format!("  {BOLD}{line}{RESET}")).collect::<Vec<_>>().join("\n"));
         println!("{}\n", approval::explanation(&why));
         if hiding {

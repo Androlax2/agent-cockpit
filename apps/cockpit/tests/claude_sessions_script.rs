@@ -53,6 +53,11 @@ impl Manager {
         sandbox.shim("hyprctl", r#"[[ $1 == -j && $2 == activeworkspace ]] && echo "{\"id\": ${SHIM_WS:-2}}"; exit 0"#);
         sandbox.shim("setsid", "");
         sandbox.shim("osd-show", "");
+        // Claude stays in its pane until SHIM_CLAUDE_EXIT_AFTER keys were sent (by default it never
+        // leaves); the pane reading (classify) is the real one.
+        sandbox.shim("osd", &format!(r#"if [[ $1 == liveness ]]; then
+  if (( $(grep -c "send-keys" "$SHIM_LOG") < ${{SHIM_CLAUDE_EXIT_AFTER:-99}} )); then echo "by pane"; else echo none; fi
+else exec {} "$@"; fi"#, bin().join("osd").display()));
         let project = sandbox.root.join("proj-a");
         fs::create_dir(&project).unwrap();
         let snapshot = sandbox.runtime.join("claude-sessions.json");
@@ -225,6 +230,18 @@ fn exit_sends_two_quick_ctrl_c_while_busy() {
     let manager = Manager::new();
     manager.run(&["exit", SESSION_A], &[("SHIM_PANE_TEXT", BUSY), ("SHIM_EXIT_AFTER", "2")]);
     assert_eq!(manager.tmux_calls("send-keys"), ["tmux send-keys -t %4 C-c"; 2]);
+}
+
+#[test]
+fn exit_closes_the_session_as_soon_as_claude_has_left_its_pane() {
+    // The session's wrapper can outlive Claude (a shell kept after a non-zero exit): waiting for
+    // the tmux session alone took two full rounds and a "did not exit" every time.
+    let manager = Manager::new();
+    let started = Instant::now();
+    let result = manager.run(&["exit", SESSION_A], &[("SHIM_PANE_TEXT", IDLE), ("SHIM_EXIT_AFTER", "99"), ("SHIM_CLAUDE_EXIT_AFTER", "1")]);
+    assert!(started.elapsed() < Duration::from_secs(2), "took {:?}", started.elapsed());
+    assert_eq!(manager.tmux_calls("kill-session"), ["tmux kill-session -t =claude-retry-9-9"]);
+    assert!(!stderr(&result).contains("did not exit"), "{}", stderr(&result));
 }
 
 #[test]

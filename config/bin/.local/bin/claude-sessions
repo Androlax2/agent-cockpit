@@ -323,7 +323,7 @@ show_loading() {
     tput civis 2>/dev/null
     while { read -r label; read -r directory; read -r session; read -r since; read -r mode; } < "$LOADING_STATE" 2>/dev/null; do
         if loading_ready "$directory" "$session" "$since" "$mode"; then
-            sleep 1  # the session reported in; give it a moment to draw its screen
+            sleep 0.5  # the session reported in; give it a moment to draw its screen
             break
         fi
         if (( $(date +%s) - since > LOADING_TIMEOUT_S )); then
@@ -361,10 +361,14 @@ session_field() { # id field
     jq -r --arg id "$1" --arg field "$2" '.sessions[] | select(.session == $id) | .[$field] // empty' "$SNAPSHOT" 2>/dev/null
 }
 
-tmux_session_gone() { # name timeout-seconds
+
+# The session is over once its tmux session ended, or once no Claude runs in its pane any more:
+# claude-auto-retry keeps a shell after a non-zero exit, and that wait used to cost two rounds.
+claude_left() { # tmux-session pane timeout-seconds
     local tenths
-    for (( tenths = 0; tenths < $2 * 10; tenths++ )); do
+    for (( tenths = 0; tenths < $3 * 10; tenths++ )); do
         tmux has-session -t "=$1" 2>/dev/null || return 0
+        [[ $(osd liveness "" "$2" 2>/dev/null) == none ]] && return 0
         sleep 0.1
     done
     return 1
@@ -395,7 +399,11 @@ exit_session() {
             sleep 0.3
             tmux send-keys -t "$pane" C-c
         fi
-        tmux_session_gone "$target" 3 && return 0
+        if claude_left "$target" "$pane" 3; then
+            # What claude-auto-retry left behind, if anything.
+            if tmux has-session -t "=$target" 2>/dev/null; then tmux kill-session -t "=$target" 2>/dev/null || true; fi
+            return 0
+        fi
     done
     echo "claude-sessions: $id did not exit, killing its tmux session" >&2
     tmux kill-session -t "=$target"

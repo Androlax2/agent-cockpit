@@ -9,6 +9,8 @@
 //! the command, saying what it does, why it is needed and what to expect. Prints the command's
 //! output and exits with its status; 125 when Theo declines, 124 when the wait runs out (9 minutes,
 //! under the Bash tool's 10), 126 when no daemon reads the requests (fall back to a fish block).
+//! While it waits it touches <id>.waiting every few seconds: the daemon drops an approval nobody
+//! waits for any more, and --wait on it then says so.
 //! CLAUDE_RUNS_DIR and ASK_TO_RUN_WAIT_S override the folder and the wait (tests).
 
 use cockpit::approval;
@@ -22,22 +24,40 @@ const USAGE: &str = "usage: ask-to-run [--cwd DIR] --why '<what it does and why>
 const DECLINED: i32 = 125;
 const TIMED_OUT: i32 = 124;
 const NO_DAEMON: i32 = 126;
+const HEARTBEAT_EVERY: Duration = Duration::from_secs(5);
 
 fn wait_seconds() -> u64 {
     std::env::var("ASK_TO_RUN_WAIT_S").ok().and_then(|s| s.parse().ok()).unwrap_or(540)
 }
 
+fn touch(path: &std::path::Path) {
+    if let Err(error) = std::fs::write(path, now_secs().to_string()) {
+        eprintln!("ask-to-run: cannot write {}: {error}", path.display());
+    }
+}
+
 fn wait_for_result(id: &str) -> i32 {
     let path = approval::runs_dir().join(format!("{id}.result"));
+    let heartbeat = approval::runs_dir().join(format!("{id}.waiting"));
     let deadline = Instant::now() + Duration::from_secs(wait_seconds());
+    let mut last_beat: Option<Instant> = None;
     while !path.exists() {
         if Instant::now() >= deadline {
             println!("No answer after {} min. Keep waiting with: ask-to-run --wait {id}", wait_seconds() / 60);
             return TIMED_OUT;
         }
+        if last_beat.is_none_or(|beat| beat.elapsed() >= HEARTBEAT_EVERY) {
+            touch(&heartbeat);
+            last_beat = Some(Instant::now());
+        }
         std::thread::sleep(Duration::from_millis(500));
     }
+    let _ = std::fs::remove_file(&heartbeat);
     let result: Value = std::fs::read_to_string(&path).ok().and_then(|text| serde_json::from_str(&text).ok()).unwrap_or(json!({}));
+    if result.get("status").and_then(Value::as_str) == Some("abandoned") {
+        println!("The request was dropped: nobody waited for its answer for a while, so Theo's approval window closed. Ask again if it is still needed.");
+        return TIMED_OUT;
+    }
     if result.get("status").and_then(Value::as_str) == Some("declined") {
         println!("Theo declined to run it.");
         return DECLINED;
@@ -93,8 +113,10 @@ fn main() {
         eprintln!("ask-to-run: cannot file the request: {error}");
         std::process::exit(1);
     }
+    touch(&approval::runs_dir().join(format!("{id}.waiting")));
     if !approval::send(&format!("run-request {id}")) {
         let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(approval::runs_dir().join(format!("{id}.waiting")));
         println!("No OSD daemon reads the requests (osd.service down?). Give Theo the command as a fish block instead.");
         std::process::exit(NO_DAEMON);
     }

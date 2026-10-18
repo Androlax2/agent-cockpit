@@ -95,14 +95,24 @@ pub fn read_json(path: &Path) -> Option<Value> {
 }
 
 /// Written beside the file, then renamed over it.
+/// Written to a new file beside it, then renamed over it. Several of these folders are the
+/// sandbox's to write (runs, guides): a symlink planted at the path or at a predictable temporary
+/// name must not make Theo's programs write through it, so the temporary file has a random name
+/// and is created, never opened (create_new does not follow symlinks), and the rename replaces a
+/// link at the path instead of writing to its target.
 pub fn write_json(path: &Path, value: &Value) -> std::io::Result<()> {
+    use std::io::Write;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
     let mut temporary = path.as_os_str().to_owned();
-    temporary.push(".tmp");
-    fs::write(&temporary, value.to_string())?;
-    fs::rename(&temporary, path)
+    temporary.push(format!(".tmp-{}", token_hex(6)));
+    let mut file = fs::OpenOptions::new().write(true).create_new(true).open(&temporary)?;
+    file.write_all(value.to_string().as_bytes())?;
+    drop(file);
+    fs::rename(&temporary, path).inspect_err(|_| {
+        let _ = fs::remove_file(&temporary);
+    })
 }
 
 pub fn current_session() -> String {

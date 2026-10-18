@@ -98,6 +98,28 @@ fn no_answer_in_time_says_how_to_keep_waiting() {
 }
 
 #[test]
+fn while_waiting_it_keeps_a_heartbeat_for_the_daemon() {
+    let fixture = AskToRun::new();
+    let asking = fixture.ask(&["--why", "x", "true"], "5");
+    let request = fixture.request();
+    let heartbeat = fixture.runs.join(format!("{}.waiting", request["id"].as_str().unwrap()));
+    assert!(heartbeat.exists(), "no heartbeat beside the request");
+    fixture.answer(&request, json!({"status": "declined"}));
+    finish(asking, TIMEOUT);
+    assert!(!heartbeat.exists(), "heartbeat left after the answer");
+}
+
+#[test]
+fn waiting_on_a_dropped_request_says_to_ask_again() {
+    let fixture = AskToRun::new();
+    fs::create_dir_all(&fixture.runs).unwrap();
+    fs::write(fixture.runs.join("0123456789ab.result"), json!({"status": "abandoned"}).to_string()).unwrap();
+    let output = finish(fixture.ask(&["--wait", "0123456789ab"], "5"), TIMEOUT);
+    assert_eq!(output.status.code(), Some(124));
+    assert!(stdout(&output).contains("dropped"), "{}", stdout(&output));
+}
+
+#[test]
 fn without_a_daemon_it_says_to_fall_back() {
     let mut fixture = AskToRun::new();
     fixture.listener = None;
@@ -279,4 +301,40 @@ fn stale_and_answered_requests_are_refused() {
     fs::write(fixture.runs.join(format!("{answered}.result")), r#"{"status": "declined"}"#).unwrap();
     let shown = fixture.approve(&answered, "y\n\n");
     assert!(shown.contains("already answered"), "{shown}");
+}
+
+#[test]
+fn a_link_planted_at_the_old_temporary_name_writes_nothing_through_it() {
+    // The runs folder is the sandbox's to write: a symlink where the result is written must not
+    // make the approval terminal (Theo's rights) overwrite its target, even on a decline.
+    let fixture = Approve::new();
+    let request_id = fixture.file_default();
+    let victim = fixture.sandbox.root.join("victim");
+    fs::write(&victim, "precious\n").unwrap();
+    std::os::unix::fs::symlink(&victim, fixture.runs.join(format!("{request_id}.result.tmp"))).unwrap();
+    fixture.approve(&request_id, "\n");
+    assert_eq!(fs::read_to_string(&victim).unwrap(), "precious\n");
+    assert_eq!(fixture.result(&request_id).unwrap()["status"], "declined");
+}
+
+#[test]
+fn a_dangling_link_at_the_result_is_replaced_not_followed() {
+    let fixture = Approve::new();
+    let request_id = fixture.file_default();
+    let victim = fixture.sandbox.root.join("created-by-the-link");
+    std::os::unix::fs::symlink(&victim, fixture.runs.join(format!("{request_id}.result"))).unwrap();
+    fixture.approve(&request_id, "\n");
+    assert!(!victim.exists(), "the link's target was written");
+}
+
+#[test]
+fn a_folder_name_with_escape_codes_is_shown_escaped() {
+    let fixture = Approve::new();
+    let folder = fixture.sandbox.root.join("x\x1b[8mhidden");
+    fs::create_dir(&folder).unwrap();
+    let request = json!({"id": "0123456789ab", "command": "true", "why": "x", "cwd": folder, "project": "p", "requested_at": now()});
+    fs::write(fixture.runs.join("0123456789ab.request"), request.to_string()).unwrap();
+    let shown = fixture.approve("0123456789ab", "\n");
+    assert!(!shown.contains("\x1b[8m"), "{shown:?}");
+    assert!(shown.contains("\\u001b"), "{shown:?}");
 }
