@@ -925,11 +925,28 @@ def scratchpad_call(name: str, page: str = "") -> list[str]:
     return ["hyprctl", "eval", f"OPEN_IN_SCRATCHPAD({arguments})"]
 
 
+def refresh_hyprland_instance():
+    """hyprctl finds Hyprland through HYPRLAND_INSTANCE_SIGNATURE. Processes that outlive a Hyprland
+    restart, or start outside it (the manager's tmux server, systemd units), hold a stale or no
+    value: take the running instance, the newest $XDG_RUNTIME_DIR/hypr/<id> with a socket."""
+    base = os.path.join(RUNTIME_DIR, "hypr")
+    current = os.environ.get("HYPRLAND_INSTANCE_SIGNATURE", "")
+    if current and os.path.exists(os.path.join(base, current, ".socket.sock")):
+        return
+    try:
+        running = [entry for entry in os.scandir(base) if os.path.exists(os.path.join(entry.path, ".socket.sock"))]
+    except OSError:
+        return
+    if running:
+        os.environ["HYPRLAND_INSTANCE_SIGNATURE"] = max(running, key=lambda entry: entry.stat().st_mtime).name
+
+
 def open_in_scratchpad(name: str, page: str = "") -> str:
     try:
         call = scratchpad_call(name, page)
     except ValueError as error:
         return str(error)
+    refresh_hyprland_instance()
     result = subprocess.run(call, capture_output=True, text=True)
     return "" if result.returncode == 0 else f"hyprctl: {(result.stderr or result.stdout).strip()[:60]}"
 
@@ -992,6 +1009,7 @@ def kill_session(session: dict) -> str:
         return f"exiting {session['project']} …"
     kitty_pid = session.get("kitty_pid")
     if kitty_pid:
+        refresh_hyprland_instance()
         subprocess.run(["hyprctl", "dispatch", f'hl.dsp.window.close({{ window = "pid:{kitty_pid}" }})'],
                        capture_output=True)
         return f"no tmux session for {session['project']}: closed its terminal window instead"

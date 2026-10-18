@@ -82,6 +82,21 @@ WORKSPACE=6  # apps/claude.lua routes the manager window there
 ON_CLAUDE_WORKSPACE="$HOME/.config/waybar/scripts/on-claude-workspace.sh"
 BAR_VISIBILITY="$HOME/.config/waybar/scripts/waybar-visibility.sh"
 
+# hyprctl finds Hyprland through HYPRLAND_INSTANCE_SIGNATURE. This runs from the manager's tmux
+# server and systemd units, which can hold a stale value (Hyprland restarted since) or none: take
+# the running instance, the newest $XDG_RUNTIME_DIR/hypr/<id> with a socket.
+refresh_hyprland_instance() {
+    local base="${XDG_RUNTIME_DIR:-/tmp}/hypr" instance
+    [[ -n ${HYPRLAND_INSTANCE_SIGNATURE:-} && -e $base/$HYPRLAND_INSTANCE_SIGNATURE/.socket.sock ]] && return
+    while read -r instance; do
+        if [[ -e $base/$instance/.socket.sock ]]; then
+            export HYPRLAND_INSTANCE_SIGNATURE=$instance
+            return
+        fi
+    done < <(ls -t "$base" 2>/dev/null)
+}
+refresh_hyprland_instance
+
 log_event() { # LEVEL component message
     local message=${3//$'\n'/ }
     {
