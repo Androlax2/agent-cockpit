@@ -1,6 +1,10 @@
 //! Theo's list for Claude: items he types, per project, and a status for each item or GitHub issue
 //! (todo, doing, done), in ~/.local/state/claude-sessions/todo.json. Sessions cannot write there
 //! (greywall): claude-todo appends their changes to updates.jsonl, which apply_updates checks.
+//!
+//! The queue: items Theo marked (Q) for Claude to take up on its own. When a session of the item's
+//! project has waited idle at its prompt for a while, the column sends it the project's first
+//! queued item (highest priority, then oldest), one at a time per session (App::dispatch_queue).
 
 use crate::paths;
 use crate::reviews::Issue;
@@ -8,6 +12,7 @@ use crate::util::{self, now_secs, project_name, repository_root};
 use regex::Regex;
 use serde_json::{Map, Value, json};
 use std::cmp::Ordering;
+use std::collections::BTreeSet;
 use std::fs;
 
 pub const PRIORITY_LOW: i64 = 1;
@@ -100,6 +105,12 @@ pub fn todo_order(a: &Entry, b: &Entry) -> Ordering {
     })
 }
 
+/// The queue's order: highest priority first, then the oldest.
+pub fn queue_order(a: &Entry, b: &Entry) -> Ordering {
+    let created = |entry: &Entry| match entry { Entry::Typed(item) => item.created(), Entry::Issue { .. } => 0 };
+    (-a.priority(), created(a)).cmp(&(-b.priority(), created(b)))
+}
+
 /// The message for Claude, with the item's key: Claude marks it done with claude-todo.
 pub fn with_todo_note(text: &str, key: &str) -> String {
     format!("{text} (todo {key}: when this is done, run claude-todo done {key})")
@@ -113,6 +124,9 @@ pub fn issue_prompt(issue: &Issue) -> String {
 pub struct TodoList {
     pub items: Vec<Item>,
     pub issues: Map<String, Value>, // "owner/repo#12" -> {"status", "updated", "session"}
+    /// Keys of the items and issues queued for Claude. Apart from the items: an issue's entry is
+    /// rewritten whole on each status change.
+    pub queued: BTreeSet<String>,
 }
 
 impl TodoList {
@@ -138,7 +152,27 @@ impl TodoList {
         let issues = data.get("issues").and_then(Value::as_object).map(|issues| {
             issues.iter().filter(|(key, value)| issue_key().is_match(key) && value.is_object()).map(|(k, v)| (k.clone(), v.clone())).collect()
         }).unwrap_or_default();
-        Self { items, issues }
+        let queued = data.get("queued").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str)
+            .filter(|key| typed_id().is_match(key) || issue_key().is_match(key)).map(str::to_string).collect();
+        Self { items, issues, queued }
+    }
+
+    /// Queues the item or issue, or takes it out of the queue; true when it is now queued.
+    pub fn toggle_queued(&mut self, key: &str) -> bool {
+        let queued = if self.queued.remove(key) { false } else { self.queued.insert(key.to_string()) };
+        self.save();
+        queued
+    }
+
+    pub fn is_queued(&self, key: &str) -> bool {
+        self.queued.contains(key)
+    }
+
+    /// Whether a session already works on an item it was given (queued or handed by Theo).
+    pub fn busy(&self, session: &str) -> bool {
+        self.items.iter().any(|item| item.status() == "doing" && item.text_of("session") == session)
+            || self.issues.values().any(|value| value.get("status").and_then(Value::as_str) == Some("doing")
+                                         && value.get("session").and_then(Value::as_str) == Some(session))
     }
 
     pub fn save(&mut self) {
@@ -146,8 +180,15 @@ impl TodoList {
         self.items.retain(|item| item.status() != "done" || item.updated() >= oldest);
         self.issues.retain(|_, value| value.get("status").and_then(Value::as_str) != Some("done")
             || value.get("updated").and_then(Value::as_i64).unwrap_or(0) >= oldest);
+        // A typed item that is gone or done leaves the queue; an issue leaves it once done.
+        let (items, issues) = (&self.items, &self.issues);
+        self.queued.retain(|key| if issue_key().is_match(key) {
+            issues.get(key).and_then(|value| value.get("status")).and_then(Value::as_str) != Some("done")
+        } else {
+            items.iter().any(|item| &item.id() == key && item.status() != "done")
+        });
         let items: Vec<Value> = self.items.iter().map(|item| Value::Object(item.0.clone())).collect();
-        if let Err(error) = util::write_json(&paths::todo(), &json!({"items": items, "issues": self.issues})) {
+        if let Err(error) = util::write_json(&paths::todo(), &json!({"items": items, "issues": self.issues, "queued": self.queued})) {
             util::log_event("WARN", &format!("cannot save the todo list: {error}"));
         }
     }

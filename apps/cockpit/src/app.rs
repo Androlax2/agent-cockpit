@@ -37,6 +37,10 @@ const POLL: Duration = Duration::from_millis(250);
 const DEFAULT_COLUMN_WIDTH: u16 = 60;
 const TITLES_PER_TICK: usize = 8;
 const GREYPROXY_POLL_S: f64 = 10.0;
+/// How long a session waits idle at its prompt before the queue gives it work, and how often the
+/// queue looks: long enough that Theo, reading what it just did, is not cut off.
+const QUEUE_IDLE_S: i64 = 5 * 60;
+const QUEUE_CHECK_S: f64 = 30.0;
 const RESTORE_CHECK_S: f64 = 30.0;
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 pub const EFFORT_LEVELS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
@@ -310,6 +314,7 @@ pub struct App {
     pub focus_waiting: bool,
     pub held: Vec<String>,
     pub(crate) held_checked: f64,
+    pub(crate) queue_checked: f64,
     pub(crate) restore_checked: f64,
     pub(crate) start_files: Vec<(&'static str, f64)>,
     pub width: u16,
@@ -329,7 +334,7 @@ impl App {
             costs: Costs::default(), reviews: Reviews::default(), todos: TodoList::load(), errors: ErrorReporter::new(),
             claude_status: ClaudeStatus::default(), panels: Default::default(), focus: 1, query: String::new(), filtering: false,
             help_open: false, message: String::new(), labelled: Default::default(), menu: None, restore: Vec::new(),
-            focus_waiting: false, held: Vec::new(), held_checked: 0.0, restore_checked: 0.0, start_files: Vec::new(),
+            focus_waiting: false, held: Vec::new(), held_checked: 0.0, queue_checked: 0.0, restore_checked: 0.0, start_files: Vec::new(),
             width: DEFAULT_COLUMN_WIDTH, sessions: Vec::new(), windows: Vec::new(), review_rows: Vec::new(), todo_entries: Vec::new(),
             todo_scope: String::new(), hit_lines: HashMap::new(), hit_actions: HashMap::new(),
         }
@@ -354,6 +359,59 @@ impl App {
         self.reviews.tick();
         self.build();
         self.push_viewed_state();
+        self.dispatch_queue();
+    }
+
+    /// Every half minute: a session idle at its prompt for QUEUE_IDLE_S, with nothing given to it
+    /// still in progress, gets its project's first queued item. Not the session Theo has on screen
+    /// in the cockpit: he may be about to type in it.
+    pub fn dispatch_queue(&mut self) {
+        let now = util::now();
+        if now - self.queue_checked < QUEUE_CHECK_S || self.todos.queued.is_empty() {
+            return;
+        }
+        self.queue_checked = now;
+        let viewed = current_session();
+        let watched = !viewed.is_empty() && util::claude_workspace_active();
+        let idle: Vec<Session> = self.sessions.iter()
+            .filter(|session| session.state == "waiting" && !session.cwd.is_empty() && now as i64 - session.since >= QUEUE_IDLE_S)
+            .filter(|session| !(watched && session.session == viewed) && !self.todos.busy(&session.session))
+            .cloned().collect();
+        for session in idle {
+            let Some(entry) = self.next_queued(&session) else { continue };
+            let (key, text) = match &entry {
+                Entry::Typed(item) => (item.id(), item.text()),
+                Entry::Issue { issue, .. } => (issue.key(), todo::issue_prompt(issue)),
+            };
+            let error = manager(&["say", &session.session, &todo::with_todo_note(&text, &key)]);
+            if !error.is_empty() {
+                util::log_event("WARN", &format!("queue: cannot give {key} to {}: {error}", session.project));
+                continue;
+            }
+            self.todos.set_status(&key, "doing", &session.session);
+            util::log_event("INFO", &format!("queue: {key} given to {} ({}), idle for {} min", session.project,
+                                             &session.session[..8.min(session.session.len())], (now as i64 - session.since) / 60));
+            self.message = format!("queue: gave {} its next item", session.project);
+        }
+    }
+
+    /// The project's first queued item still to do: typed items of its project, issues of its
+    /// repository.
+    fn next_queued(&self, session: &Session) -> Option<Entry> {
+        let mut candidates: Vec<Entry> = self.todos.items.iter()
+            .filter(|item| item.project() == session.project && item.status() == "todo" && self.todos.is_queued(&item.id()))
+            .map(|item| Entry::Typed(item.clone())).collect();
+        for issue in self.reviews.issues() {
+            let key = issue.key();
+            let checkout = self.reviews.checkouts.get(&issue.full_repository);
+            if self.todos.is_queued(&key) && self.todos.status_of(&key) == "todo"
+                && (issue.repository == session.project || checkout == Some(&session.cwd)) {
+                let priority = todo::issue_priority(&issue.labels);
+                candidates.push(Entry::Issue { issue, status: "todo".into(), priority });
+            }
+        }
+        candidates.sort_by(todo::queue_order);
+        candidates.into_iter().next()
     }
 
     pub fn build(&mut self) {
@@ -928,7 +986,9 @@ impl App {
                 _ => ("•", bold(YELLOW)),
             };
             let faded = done.then(|| dim(FG_DARK));
-            let right = if status == "doing" { vec![part("in progress", style(BLUE))] } else { vec![] };
+            let queued = status == "todo" && self.todos.is_queued(&entry.key());
+            let right = if status == "doing" { vec![part("in progress", style(BLUE))] }
+                        else if queued { vec![part("queued", bold(CYAN))] } else { vec![] };
             let line = match entry {
                 Entry::Typed(item) => Line {
                     segments: vec![segment(0, glyph, glyph_style), segment(2, &mark, mark_style),
@@ -941,6 +1001,7 @@ impl App {
                     let labels = issue.labels.iter().take(2).cloned().collect::<Vec<_>>().join(", ");
                     let (glyph, glyph_style) = if status == "todo" { ("◇", style(MAGENTA)) } else { (glyph, glyph_style) };
                     let right = if !right.is_empty() { right } else if !labels.is_empty() { vec![part(labels, dim(FG_DARK))] } else { vec![] };
+                    let right = if queued && status == "todo" { vec![part("queued", bold(CYAN))] } else { right };
                     Line {
                         segments: vec![segment(0, glyph, glyph_style), segment(2, &mark, mark_style),
                                        segment(start, &label, faded.unwrap_or(bold(MAGENTA))),
@@ -961,8 +1022,10 @@ impl App {
     fn todo_subtitle(&self) -> String {
         let doing = self.todo_entries.iter().filter(|e| e.status() == "doing").count();
         let waiting = self.todo_entries.iter().filter(|e| e.status() == "todo").count();
+        let queued = self.todo_entries.iter().filter(|e| e.status() == "todo" && self.todos.is_queued(&e.key())).count();
         let scope = if self.todo_scope.is_empty() { "all projects" } else { self.todo_scope.as_str() };
-        format!("{scope} · {doing} in progress · {waiting} to do")
+        let queue = if queued > 0 { format!(" · {queued} queued") } else { String::new() };
+        format!("{scope} · {doing} in progress · {waiting} to do{queue}")
     }
 
     pub(crate) fn handle_todo(&mut self, key: Key, screen: &mut dyn Screen) -> String {
@@ -1018,6 +1081,13 @@ impl App {
                 Some(entry) => self.hand_to_claude(&entry),
                 None => String::new(),
             },
+            Key::Char('Q') => match entry {
+                Some(entry) if entry.status() == "todo" => {
+                    if self.todos.toggle_queued(&entry.key()) { "queued: an idle session of its project takes it up".into() } else { "out of the queue".into() }
+                }
+                Some(_) => "only items still to do can be queued".into(),
+                None => String::new(),
+            },
             _ => String::new(),
         }
     }
@@ -1058,7 +1128,7 @@ impl App {
             0 => vec![("⏎", "details"), ("r", "refetch"), ("o", "status page")],
             1 => self.sessions_hints(),
             2 => vec![("⏎", "open"), ("c", "Claude review"), ("P", "list"), ("r", "refresh")],
-            _ => vec![("⏎", "to Claude"), ("t", "add"), ("i", "in progress"), ("d", "done"), ("+", "priority"), ("x", "remove")],
+            _ => vec![("⏎", "to Claude"), ("Q", "queue"), ("t", "add"), ("i", "in progress"), ("d", "done"), ("+", "priority"), ("x", "remove")],
         }
     }
 
@@ -1072,6 +1142,7 @@ impl App {
                       ("P", "the pull requests window on the viewed session's repository (or your review requests)"), ("r", "refresh now"),
                       ("✓ ● ✗", "CI passing, running, failing"), ("approved", "review state: approved, changes (requested), review (required)")],
             _ => vec![("⏎", "hand the item to Claude: the project's running session, or a new one"),
+                      ("Q", "queue it (again: unqueue): a session of its project idle for 5 min at its prompt takes the first queued item, by priority, one at a time"),
                       ("t", "add an item for the viewed session's project (or pick a project)"),
                       ("i", "mark in progress (Enter does it too); i again: back to to do"),
                       ("d", "mark done, or back to to do; done items stay 7 days, dimmed at the bottom"),

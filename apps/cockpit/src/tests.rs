@@ -956,3 +956,89 @@ fn v_refuses_a_link_that_is_not_a_canvas() {
     std::thread::sleep(Duration::from_millis(200));
     assert!(fixture.calls("claude-sessions").is_empty());
 }
+
+// ---- The queue ----
+
+fn queue_fixture(state: &str, idle_s: i64) -> (Fixture, App) {
+    let fixture = Fixture::new();
+    let since = util::now() as i64 - idle_s;
+    fixture.snapshot(json!([session(SESSION_A, state, "runway", "/r/runway", since)]));
+    let app = fixture.app();
+    (fixture, app)
+}
+
+#[test]
+fn an_idle_session_gets_its_projects_first_queued_item_by_priority() {
+    let (fixture, mut app) = queue_fixture("waiting", 600);
+    let normal = app.todos.add("runway", "/r/runway", "normal job");
+    let urgent = app.todos.add("runway", "/r/runway", "urgent job");
+    app.todos.change_priority(&urgent, 2);
+    app.todos.toggle_queued(&normal);
+    app.todos.toggle_queued(&urgent);
+    app.dispatch_queue();
+    let calls = fixture.wait_for_calls("claude-sessions", 1);
+    assert_eq!(calls, [format!("claude-sessions say {SESSION_A} urgent job (todo {urgent}: when this is done, run claude-todo done {urgent})")]);
+    assert_eq!(app.todos.status_of(&urgent), "doing");
+}
+
+#[test]
+fn a_session_gets_one_queued_item_at_a_time() {
+    let (fixture, mut app) = queue_fixture("waiting", 600);
+    for text in ["first", "second"] {
+        let id = app.todos.add("runway", "/r/runway", text);
+        app.todos.toggle_queued(&id);
+    }
+    app.dispatch_queue();
+    app.queue_checked = 0.0;
+    app.dispatch_queue();
+    assert_eq!(fixture.wait_for_calls("claude-sessions", 1).len(), 1);
+}
+
+#[test]
+fn a_session_idle_for_less_than_five_minutes_gets_nothing() {
+    let (fixture, mut app) = queue_fixture("waiting", 60);
+    let id = app.todos.add("runway", "/r/runway", "job");
+    app.todos.toggle_queued(&id);
+    app.dispatch_queue();
+    assert!(fixture.calls("claude-sessions").is_empty());
+}
+
+#[test]
+fn a_working_session_gets_nothing() {
+    let (fixture, mut app) = queue_fixture("working", 600);
+    let id = app.todos.add("runway", "/r/runway", "job");
+    app.todos.toggle_queued(&id);
+    app.dispatch_queue();
+    assert!(fixture.calls("claude-sessions").is_empty());
+}
+
+#[test]
+fn unqueued_items_and_other_projects_stay_put() {
+    let (fixture, mut app) = queue_fixture("waiting", 600);
+    app.todos.add("runway", "/r/runway", "not queued");
+    let elsewhere = app.todos.add("homelab", "/r/homelab", "other project");
+    app.todos.toggle_queued(&elsewhere);
+    app.dispatch_queue();
+    assert!(fixture.calls("claude-sessions").is_empty());
+}
+
+#[test]
+fn q_queues_an_item_and_the_panel_says_so() {
+    let (_fixture, mut app) = queue_fixture("working", 0);
+    let id = app.todos.add("runway", "/r/runway", "job");
+    app.build();
+    app.focus_panel(3);
+    app.handle(Key::Char('Q'), &mut FakeScreen::default());
+    assert!(TodoList::load().is_queued(&id));
+    app.build();
+    assert!(app.subtitle(3).ends_with("1 queued"), "{}", app.subtitle(3));
+}
+
+#[test]
+fn a_done_item_leaves_the_queue() {
+    let (_fixture, mut app) = queue_fixture("waiting", 600);
+    let id = app.todos.add("runway", "/r/runway", "job");
+    app.todos.toggle_queued(&id);
+    app.todos.set_status(&id, "done", "");
+    assert!(!TodoList::load().is_queued(&id));
+}

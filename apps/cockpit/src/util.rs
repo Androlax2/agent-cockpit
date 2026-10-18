@@ -114,6 +114,15 @@ pub fn write_json(path: &Path, value: &Value) -> std::io::Result<()> {
     })
 }
 
+/// apps/claude.lua (WORKSPACE) and waybar/scripts/on-claude-workspace.sh carry the same number.
+pub const CLAUDE_WORKSPACE: i64 = 6;
+
+/// Whether Theo is on the Claude workspace right now.
+pub fn claude_workspace_active() -> bool {
+    output_of("hyprctl", &["-j", "activeworkspace"]).and_then(|text| serde_json::from_str::<Value>(&text).ok())
+        .is_some_and(|workspace| workspace.get("id").and_then(Value::as_i64) == Some(CLAUDE_WORKSPACE))
+}
+
 pub fn current_session() -> String {
     fs::read_to_string(paths::current()).map(|text| text.trim().to_string()).unwrap_or_default()
 }
