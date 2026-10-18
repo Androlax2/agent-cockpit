@@ -1,0 +1,194 @@
+//! A scratch home, runtime and state folder, and fake commands on PATH that log how they were
+//! called: the scripts under test see only this environment, the host stays untouched.
+#![allow(dead_code)]
+
+use std::collections::HashMap;
+use std::fs;
+use std::os::unix::fs::{PermissionsExt, symlink};
+use std::path::{Path, PathBuf};
+use std::ffi::CString;
+use std::os::unix::ffi::OsStrExt;
+use std::process::{Child, Command, Output, Stdio};
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
+
+pub const SESSION_A: &str = "aaaaaaaa-0000-4000-8000-000000000000";
+pub const SESSION_B: &str = "bbbbbbbb-0000-4000-8000-000000000000";
+
+/// The dotfiles checkout these tests belong to.
+pub fn repo() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().unwrap()
+}
+
+/// config/bin/.local/bin: the wrappers and scripts on Theo's PATH.
+pub fn bin() -> PathBuf {
+    repo().join("config/bin/.local/bin")
+}
+
+pub fn waybar_scripts() -> PathBuf {
+    repo().join("config/waybar/.config/waybar/scripts")
+}
+
+/// SESSION_STATE_HOOK points the hook tests at another copy, such as the one in .handoff/claude
+/// before it is installed (config/claude is read-only for Claude inside the sandbox).
+pub fn hook() -> PathBuf {
+    std::env::var("SESSION_STATE_HOOK").map(PathBuf::from).unwrap_or_else(|_| repo().join("config/claude/.claude/hooks/session-state.sh"))
+}
+
+pub struct Sandbox {
+    pub root: PathBuf,
+    pub home: PathBuf,
+    pub runtime: PathBuf,
+    pub state: PathBuf,
+    pub shims: PathBuf,
+    pub log: PathBuf,
+    /// Added to (and overriding) the test process's own environment for every command.
+    pub env: HashMap<String, String>,
+}
+
+impl Sandbox {
+    pub fn new() -> Sandbox {
+        let root = std::env::temp_dir().join(format!("claude-sessions-test-{}", cockpit::util::token_hex(6)));
+        let (home, runtime, state, shims) = (root.join("home"), root.join("runtime"), root.join("state"), root.join("shims"));
+        for path in [&home, &runtime, &state, &shims] {
+            fs::create_dir_all(path).unwrap();
+        }
+        let log = root.join("calls.log");
+        fs::write(&log, "").unwrap();
+        // The scripts find their siblings through $HOME; link the real ones in.
+        let scripts = home.join(".config/waybar/scripts");
+        fs::create_dir_all(&scripts).unwrap();
+        for entry in fs::read_dir(waybar_scripts()).unwrap().flatten() {
+            symlink(entry.path(), scripts.join(entry.file_name())).unwrap();
+        }
+        let local_bin = home.join(".local/bin");
+        fs::create_dir_all(&local_bin).unwrap();
+        for name in ["claude-sessions", "claude-sessions-sidebar", "osd", "osd-show"] {
+            symlink(bin().join(name), local_bin.join(name)).unwrap();
+        }
+        let path = format!("{}:{}:{}", shims.display(), local_bin.display(), std::env::var("PATH").unwrap_or_default());
+        let env = HashMap::from([
+            ("HOME".to_string(), home.display().to_string()),
+            ("XDG_RUNTIME_DIR".into(), runtime.display().to_string()),
+            ("XDG_STATE_HOME".into(), state.display().to_string()),
+            ("PATH".into(), path),
+            ("SHIM_LOG".into(), log.display().to_string()),
+            ("CLAUDE_STATUS_URL".into(), String::new()), // no network: status.claude.com is not fetched
+        ]);
+        Sandbox { root, home, runtime, state, shims, log, env }
+    }
+
+    /// A fake command. `body` is bash; $SHIM_LOG receives one line per call by convention.
+    pub fn shim(&self, name: &str, body: &str) {
+        let path = self.shims.join(name);
+        fs::write(&path, format!("#!/usr/bin/env bash\necho \"{name} $*\" >> \"$SHIM_LOG\"\n{body}\n")).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    /// The logged calls of one command, "name arguments" each.
+    pub fn calls(&self, name: &str) -> Vec<String> {
+        let prefix = format!("{name} ");
+        fs::read_to_string(&self.log).unwrap_or_default().lines().filter(|line| line.starts_with(&prefix)).map(str::to_string).collect()
+    }
+
+    /// For commands the code runs in the background: their log lines arrive a little later.
+    pub fn wait_for_calls(&self, name: &str, count: usize, timeout: Duration) -> Vec<String> {
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            let calls = self.calls(name);
+            if calls.len() >= count {
+                return calls;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        self.calls(name)
+    }
+
+    pub fn reset_log(&self) {
+        fs::write(&self.log, "").unwrap();
+    }
+
+    /// `program` with the sandbox environment, plus `extra` on top.
+    pub fn command(&self, program: impl AsRef<std::ffi::OsStr>, extra: &[(&str, &str)]) -> Command {
+        let mut command = Command::new(program);
+        command.envs(&self.env).envs(extra.iter().copied()).stdin(Stdio::null());
+        command
+    }
+
+    /// Runs `program arguments` to the end, output captured.
+    pub fn run(&self, program: impl AsRef<std::ffi::OsStr>, arguments: &[&str], extra: &[(&str, &str)]) -> Output {
+        self.command(program, extra).args(arguments).output().unwrap()
+    }
+
+    /// Like `run`, with `input` on stdin.
+    pub fn run_with_input(&self, program: impl AsRef<std::ffi::OsStr>, arguments: &[&str], extra: &[(&str, &str)], input: &str) -> Output {
+        use std::io::Write;
+        let mut child = self.command(program, extra).args(arguments).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
+            .spawn().unwrap();
+        child.stdin.take().unwrap().write_all(input.as_bytes()).unwrap();
+        child.wait_with_output().unwrap()
+    }
+}
+
+impl Drop for Sandbox {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.root);
+    }
+}
+
+pub fn stdout(output: &Output) -> String {
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+pub fn stderr(output: &Output) -> String {
+    String::from_utf8_lossy(&output.stderr).into_owned()
+}
+
+/// Waits for `child` to exit and collects its output; kills it and fails past `timeout`.
+pub fn finish(child: Child, timeout: Duration) -> Output {
+    let pid = child.id() as libc::pid_t;
+    let (sender, receiver) = mpsc::channel();
+    std::thread::spawn(move || sender.send(child.wait_with_output()));
+    match receiver.recv_timeout(timeout) {
+        Ok(output) => output.unwrap(),
+        Err(_) => {
+            unsafe { libc::kill(pid, libc::SIGKILL) };
+            panic!("process {pid} still running after {timeout:?}");
+        }
+    }
+}
+
+/// A stand-in for the OSD daemon: `cat` reads its fifo, `sleep` holds it open for writing.
+pub struct Listener {
+    reader: Option<Child>,
+    holder: Child,
+}
+
+impl Listener {
+    pub fn start(fifo: &Path) -> Listener {
+        let path = CString::new(fifo.as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0, "mkfifo {}", fifo.display());
+        let reader = Command::new("cat").arg(fifo).stdout(Stdio::piped()).spawn().unwrap();
+        let writer = fs::OpenOptions::new().write(true).open(fifo).unwrap();
+        let holder = Command::new("sleep").arg("30").stdout(writer).spawn().unwrap();
+        Listener { reader: Some(reader), holder }
+    }
+
+    /// Closes the fifo and returns everything written to it.
+    pub fn received(&mut self) -> String {
+        let _ = self.holder.kill();
+        let _ = self.holder.wait();
+        stdout(&finish(self.reader.take().unwrap(), Duration::from_secs(5)))
+    }
+}
+
+impl Drop for Listener {
+    fn drop(&mut self) {
+        let _ = self.holder.kill();
+        let _ = self.holder.wait();
+        if let Some(mut reader) = self.reader.take() {
+            let _ = reader.kill();
+            let _ = reader.wait();
+        }
+    }
+}

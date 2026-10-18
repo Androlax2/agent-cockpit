@@ -1,6 +1,8 @@
 //! A program on a pseudo-terminal, for the tests that drive a full-screen program as Theo would.
 #![allow(dead_code)]
 
+pub mod sandbox;
+
 use std::fs;
 use std::io::{Read, Write};
 use std::os::fd::{FromRawFd, OwnedFd};

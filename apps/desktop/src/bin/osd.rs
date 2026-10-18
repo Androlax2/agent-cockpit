@@ -1,0 +1,367 @@
+//! On-screen display: a volume/brightness island and the Claude banners.
+//!
+//! Bottom centre: a 320x36 island for volume, mute and brightness changes. Top centre: a stack of
+//! banners, one per Claude Code session. Both are GTK4 + layer shell windows, namespace "osd".
+//!
+//! Reads one command per line from $XDG_RUNTIME_DIR/osd.fifo, written by osd-show and by the
+//! Claude Code hook ~/.claude/hooks/session-state.sh:
+//!
+//!     volume <0-100>          yellow line, icon by level
+//!     mute                    mute icon, empty line
+//!     brightness <0-100>      blue line, sun icon
+//!     session <json>          a Claude session's state report (the registry)
+//!     sessions-clear          forget every session (claude-sessions reset)
+//!     focus-next              show the most urgent Claude session in the manager
+//!     run-request <id>        Claude asks to run a command outside the sandbox (ask-to-run)
+//!     run-phase <id> <phase>  claude-run-approve's asking / running / done
+//!     guide-request <id>      steps for Theo to do by hand (ask-to-guide)
+//!     notice-clear <id>       drop the banner a notice raised
+//!     notice <json>           a sticky banner of its own ({"id", "title", "message"}); a click
+//!                             dismisses it (the column's budget alerts)
+//!
+//! Clicking a session's banner shows that session in the manager and drops the banner. The island
+//! hides 1.2 s after the last command. Icons are the bar's SVGs.
+//!
+//!     osd classify < pane-text          the state a pane's last lines show, for claude-sessions
+//!     osd liveness <session> <pane>     whether the session runs: by id, by pane, or none
+
+use desktop::registry::{self, Banner, Banners, NOTICE_ID, Notice, RealSystem, Registry};
+use gtk4::prelude::*;
+use gtk4::{Align, Application, Box as GtkBox, CssProvider, GestureClick, Image, Label, Orientation, Window, gdk, glib, pango};
+use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::io::Read;
+use std::os::fd::{AsRawFd, FromRawFd};
+use std::path::PathBuf;
+use std::rc::Rc;
+use std::time::Duration;
+
+const HIDE_AFTER: Duration = Duration::from_millis(1200);
+const WIDTH: i32 = 320;
+const HEIGHT: i32 = 36;
+const ISLAND_PADDING: i32 = 14;
+const ICON_SIZE: i32 = 18;
+const ROW_SPACING: i32 = 12;
+const TRACK_WIDTH: i32 = WIDTH - 2 * ISLAND_PADDING - ICON_SIZE - ROW_SPACING - 2; // 2 = the hairline border
+const BANNER_HIDE_AFTER: Duration = Duration::from_secs(6);
+const BANNER_MAX_CHARS: i32 = 64;
+const BANNER_SPACING: i32 = 8;
+const BANNER_ICON_SIZE: i32 = 22;
+
+fn icon_dir() -> PathBuf {
+    cockpit::paths::home().join(".config/waybar/icons")
+}
+
+fn layer_window(app: &Application, edge: Edge, margin: i32) -> Window {
+    let window = Window::builder().application(app).resizable(false).decorated(false).build();
+    // No client-side decoration: its shadow margins would inflate the layer surface.
+    window.add_css_class("osd-window"); // not "osd": GTK styles that class itself
+    window.init_layer_shell();
+    window.set_namespace(Some("osd"));
+    window.set_layer(Layer::Overlay);
+    window.set_anchor(edge, true);
+    window.set_margin(edge, margin);
+    window.set_keyboard_mode(KeyboardMode::None);
+    window
+}
+
+fn volume_icon(level: i32) -> &'static str {
+    match level {
+        0 => "volume-mute.svg",
+        1..=33 => "volume-low.svg",
+        34..=66 => "volume-mid.svg",
+        _ => "volume-high.svg",
+    }
+}
+
+fn banner_row(title: &str, message: &str, sticky: bool) -> GtkBox {
+    let row = GtkBox::new(Orientation::Horizontal, ROW_SPACING);
+    row.add_css_class("island");
+    row.add_css_class("banner");
+    if sticky {
+        row.add_css_class("attention");
+    }
+    let icon = Image::from_file(icon_dir().join(if sticky { "bell-dot.svg" } else { "bell.svg" }));
+    icon.set_pixel_size(BANNER_ICON_SIZE);
+    icon.set_valign(Align::Center);
+    let label = |text: &str, class: &str| {
+        let label = Label::builder().label(text).xalign(0.0).max_width_chars(BANNER_MAX_CHARS).single_line_mode(true).build();
+        label.set_ellipsize(pango::EllipsizeMode::End);
+        label.add_css_class(class);
+        label
+    };
+    let text = GtkBox::new(Orientation::Vertical, 0);
+    text.set_valign(Align::Center);
+    text.append(&label(title, "title"));
+    text.append(&label(message, "message"));
+    row.append(&icon);
+    row.append(&text);
+    row
+}
+
+/// The banner stack's window and rows, shared with the click handlers.
+struct Stack {
+    window: Window,
+    column: GtkBox,
+    rows: HashMap<String, GtkBox>,
+    timers: HashMap<String, glib::SourceId>,
+}
+
+#[derive(Clone)]
+struct GtkBanners(Rc<RefCell<Stack>>);
+
+impl GtkBanners {
+    fn new(app: &Application) -> Self {
+        let window = layer_window(app, Edge::Top, 15);
+        let column = GtkBox::new(Orientation::Vertical, BANNER_SPACING);
+        window.set_child(Some(&column));
+        GtkBanners(Rc::new(RefCell::new(Stack { window, column, rows: HashMap::new(), timers: HashMap::new() })))
+    }
+
+    fn add(&self, key: &str, row: GtkBox, on_click: impl Fn() + 'static) {
+        self.remove(key);
+        let click = GestureClick::new();
+        click.connect_released(move |_, _, _, _| on_click());
+        row.add_controller(click);
+        let mut stack = self.0.borrow_mut();
+        stack.column.append(&row);
+        stack.rows.insert(key.to_string(), row);
+        stack.window.present();
+    }
+}
+
+impl Banners for GtkBanners {
+    fn raise_banner(&mut self, banner: &Banner) {
+        let session = banner.session.clone();
+        let this = self.clone();
+        self.add(&session.clone(), banner_row(&banner.title, &banner.message, banner.sticky), move || {
+            let _ = std::process::Command::new("claude-sessions").args(["show", &session]).status();
+            this.remove(&session);
+        });
+        if !banner.sticky {
+            let this = self.clone();
+            let key = banner.session.clone();
+            let timer = glib::timeout_add_local_once(BANNER_HIDE_AFTER, move || {
+                this.0.borrow_mut().timers.remove(&key);
+                this.remove(&key);
+            });
+            self.0.borrow_mut().timers.insert(banner.session.clone(), timer);
+        }
+    }
+
+    /// A sticky banner that is not a session (budget alerts, run and guide requests); a click
+    /// dismisses it. Shown on every workspace, the Claude one included.
+    fn raise_notice(&mut self, notice: &Notice) {
+        let key = format!("notice:{}", notice.id);
+        let this = self.clone();
+        let click_key = key.clone();
+        self.add(&key, banner_row(&notice.title, &notice.message, true), move || this.remove(&click_key));
+    }
+
+    fn drop_banner(&mut self, key: &str) {
+        self.remove(key);
+    }
+
+    fn showing(&self, key: &str) -> bool {
+        self.0.borrow().rows.contains_key(key)
+    }
+}
+
+impl GtkBanners {
+    fn remove(&self, key: &str) {
+        let mut stack = self.0.borrow_mut();
+        let Some(row) = stack.rows.remove(key) else { return };
+        if let Some(timer) = stack.timers.remove(key) {
+            timer.remove();
+        }
+        stack.column.remove(&row);
+        if stack.rows.is_empty() {
+            stack.window.set_visible(false);
+        }
+    }
+}
+
+/// The volume/brightness island.
+struct Island {
+    window: Window,
+    icon: Image,
+    fill: GtkBox,
+    hide_timer: Option<glib::SourceId>,
+}
+
+impl Island {
+    fn new(app: &Application) -> Self {
+        let window = layer_window(app, Edge::Bottom, 15);
+        window.set_default_size(WIDTH, HEIGHT);
+        window.set_size_request(WIDTH, HEIGHT);
+        let icon = Image::new();
+        icon.set_pixel_size(ICON_SIZE);
+        // Two plain boxes instead of a progress bar: the GTK theme's rules would win over this
+        // file's, boxes take the CSS as written.
+        let track = GtkBox::new(Orientation::Horizontal, 0);
+        track.set_hexpand(true);
+        track.set_valign(Align::Center);
+        track.add_css_class("track");
+        track.set_size_request(TRACK_WIDTH, 2);
+        let fill = GtkBox::new(Orientation::Horizontal, 0);
+        fill.set_halign(Align::Start);
+        fill.add_css_class("fill");
+        track.append(&fill);
+        let row = GtkBox::new(Orientation::Horizontal, ROW_SPACING);
+        row.add_css_class("island");
+        row.append(&icon);
+        row.append(&track);
+        window.set_child(Some(&row));
+        Island { window, icon, fill, hide_timer: None }
+    }
+}
+
+fn show_island(island: &Rc<RefCell<Island>>, kind: &str, icon_file: &str, fraction: f64) {
+    let mut this = island.borrow_mut();
+    for class in ["volume", "brightness", "mute"] {
+        this.fill.remove_css_class(class);
+    }
+    this.fill.add_css_class(kind);
+    this.icon.set_from_file(Some(icon_dir().join(icon_file)));
+    this.fill.set_size_request((TRACK_WIDTH as f64 * fraction).round() as i32, 2);
+    this.window.present();
+    if let Some(timer) = this.hide_timer.take() {
+        timer.remove();
+    }
+    let shared = island.clone();
+    this.hide_timer = Some(glib::timeout_add_local_once(HIDE_AFTER, move || {
+        let mut this = shared.borrow_mut();
+        this.hide_timer = None;
+        this.window.set_visible(false);
+    }));
+}
+
+fn handle(line: &str, registry: &Rc<RefCell<Registry>>, island: &Rc<RefCell<Island>>) {
+    let (command, rest) = line.split_once(' ').unwrap_or((line, ""));
+    let rest = rest.trim();
+    match command {
+        "" => {}
+        "session" => match registry::parse_session(rest) {
+            Ok(report) => registry.borrow_mut().update(report),
+            Err(error) => eprintln!("osd: bad session {rest:?}: {error}"),
+        },
+        "focus-next" => registry.borrow_mut().focus_most_urgent(),
+        "sessions-clear" => registry.borrow_mut().clear(),
+        "notice" => match registry::parse_notice(rest) {
+            Ok(notice) => registry.borrow_mut().banners.raise_notice(&notice),
+            Err(error) => eprintln!("osd: bad notice {rest:?}: {error}"),
+        },
+        "notice-clear" if NOTICE_ID.is_match(rest) => registry.borrow_mut().banners.drop_banner(&format!("notice:{rest}")),
+        "notice-clear" => {}
+        "run-phase" => {
+            let parts: Vec<&str> = rest.split_whitespace().collect();
+            if parts.len() == 2 {
+                registry.borrow_mut().run_phase(parts[0], parts[1]);
+            }
+        }
+        "guide-request" => {
+            if let Err(error) = registry.borrow_mut().guide_request(rest) {
+                eprintln!("osd: bad guide request {rest:?}: {error}");
+            }
+        }
+        "run-request" => {
+            if let Err(error) = registry.borrow_mut().run_request(rest) {
+                eprintln!("osd: bad run request {rest:?}: {error}");
+            }
+        }
+        "volume" | "mute" | "brightness" => {
+            let level = if rest.is_empty() { Some(0) } else { rest.parse::<i32>().ok().map(|level| level.clamp(0, 100)) };
+            let Some(level) = level else {
+                eprintln!("osd: bad level in {line:?}");
+                return;
+            };
+            match command {
+                "volume" => show_island(island, "volume", volume_icon(level), level as f64 / 100.0),
+                "mute" => show_island(island, "mute", "volume-mute.svg", 0.0),
+                _ => show_island(island, "brightness", "brightness.svg", level as f64 / 100.0),
+            }
+        }
+        _ => eprintln!("osd: unknown command {line:?}"),
+    }
+}
+
+/// The FIFO, opened read-write so the daemon never sees EOF when a writer closes.
+fn activate(app: &Application) {
+    let provider = CssProvider::new();
+    provider.load_from_path(cockpit::paths::home().join(".config/osd/style.css"));
+    gtk4::style_context_add_provider_for_display(&gdk::Display::default().expect("a display"), &provider, gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION);
+    let island = Rc::new(RefCell::new(Island::new(app)));
+    let banners = GtkBanners::new(app);
+    let registry = Rc::new(RefCell::new(Registry::new(Box::new(RealSystem::new()), Box::new(banners))));
+    // Held for good: the daemon has no window most of the time.
+    std::mem::forget(app.hold());
+
+    let fifo = match desktop::fifo::open(&cockpit::paths::osd_fifo()) {
+        Ok(fifo) => fifo,
+        Err(error) => {
+            eprintln!("osd: cannot open the FIFO: {error}");
+            std::process::exit(1);
+        }
+    };
+    let raw = fifo.as_raw_fd();
+    let mut reader = unsafe { std::fs::File::from_raw_fd(raw) };
+    std::mem::forget(fifo); // owned by `reader` from here on
+    let mut buffer = Vec::new();
+    {
+        let registry = registry.clone();
+        let island = island.clone();
+        glib_unix::unix_fd_add_local(raw, glib::IOCondition::IN, move |_, _| {
+            let mut chunk = [0u8; 4096];
+            if let Ok(count) = reader.read(&mut chunk) {
+                buffer.extend_from_slice(&chunk[..count]);
+            }
+            while let Some(end) = buffer.iter().position(|byte| *byte == b'\n') {
+                let line: Vec<u8> = buffer.drain(..=end).collect();
+                handle(String::from_utf8_lossy(&line).trim(), &registry, &island);
+            }
+            glib::ControlFlow::Continue
+        });
+    }
+    {
+        let registry = registry.clone();
+        glib::timeout_add_seconds_local(1, move || {
+            registry.borrow_mut().tick_queues();
+            glib::ControlFlow::Continue
+        });
+    }
+    glib::timeout_add_seconds_local(registry::PRUNE_INTERVAL_S, move || {
+        registry.borrow_mut().prune_dead();
+        glib::ControlFlow::Continue
+    });
+}
+
+fn main() {
+    let arguments: Vec<String> = std::env::args().skip(1).collect();
+    match arguments.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
+        ["classify"] => {
+            let mut tail = String::new();
+            let _ = std::io::stdin().read_to_string(&mut tail);
+            println!("{}", registry::pane_state(&tail).unwrap_or("unknown"));
+        }
+        ["liveness", session, pane] => {
+            let verdict = if registry::live_session_ids().contains(*session) {
+                "by id"
+            } else if !pane.is_empty() && registry::claude_panes().contains(*pane) {
+                "by pane"
+            } else {
+                "none"
+            };
+            println!("{verdict}");
+        }
+        [] => {
+            let app = Application::builder().application_id("dotfiles.osd").build();
+            app.connect_activate(activate);
+            app.run_with_args::<&str>(&[]);
+        }
+        _ => {
+            eprintln!("usage: osd [classify < pane-text | liveness <session> <pane>]");
+            std::process::exit(2);
+        }
+    }
+}

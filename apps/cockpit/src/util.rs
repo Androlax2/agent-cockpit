@@ -31,6 +31,11 @@ pub fn collapse(text: &str) -> String {
 /// A line in the shared log (format and rotation as claude-sessions' log_event). Never fails:
 /// logging must not take the column down, and the state dir is read-only inside greywall.
 pub fn log_event(level: &str, message: &str) {
+    log_as("sidebar", level, message);
+}
+
+/// A line in the shared log under a component's name (the daemon logs as "daemon").
+pub fn log_as(component: &str, level: &str, message: &str) {
     let path = paths::log();
     let _ = (|| -> std::io::Result<()> {
         if let Some(parent) = path.parent() {
@@ -44,7 +49,7 @@ pub fn log_event(level: &str, message: &str) {
         let line: String = collapse(message).chars().take(LOG_LINE_MAX).collect();
         let stamp = Local::now().format("%Y-%m-%dT%H:%M:%S%:z");
         let mut file = OpenOptions::new().create(true).append(true).open(&path)?;
-        writeln!(file, "{stamp} {level} sidebar: {line}")
+        writeln!(file, "{stamp} {level} {component}: {line}")
     })();
 }
 
@@ -121,7 +126,7 @@ pub fn repository_root(path: &str) -> String {
 }
 
 /// A directory's project: the repository for a claude-sessions clone (<clones>/<repo>/<name>),
-/// else the directory's own name. Same rule as claude_registry.parallel_clone_repository.
+/// else the directory's own name. Same rule as the daemon's registry::parallel_clone_repository.
 pub fn project_name(path: &str) -> String {
     if !path.is_empty() {
         if let Ok(relative) = Path::new(path).strip_prefix(paths::clones_dir()) {

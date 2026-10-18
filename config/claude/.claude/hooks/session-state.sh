@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Claude Code hooks → the OSD daemon (~/.config/osd/osd.py): one `session <json>` line per event with
+# Claude Code hooks → the OSD daemon (osd, apps/desktop): one `session <json>` line per event with
 # the session's state (working | waiting | needs-you | gone), its project, the focus target of its
 # window (KITTY_* can be stale after a tmux re-attach; the daemon re-resolves it) and an optional
 # banner message. The daemon keeps the registry, colours the Hyprland window
@@ -133,7 +133,7 @@ hook_log() { # message
 send_to_osd() {
     [[ -p $fifo ]] || return 1
     timeout 1 tee "$fifo" >/dev/null <<<"$1" && return 0
-    echo "session-state.sh: osd fifo not read, is osd.py running?" >&2
+    echo "session-state.sh: osd fifo not read, is osd running?" >&2
     return 1
 }
 

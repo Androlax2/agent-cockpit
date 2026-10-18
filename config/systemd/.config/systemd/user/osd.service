@@ -1,10 +1,10 @@
 [Unit]
-Description=On-screen display, Claude banners and the Claude session registry (~/.config/osd/osd.py)
+Description=On-screen display, Claude banners and the Claude session registry (osd, apps/desktop)
 After=graphical-session.target
 
 [Service]
 Type=simple
-ExecStart=%h/.config/osd/osd.py
+ExecStart=%h/.local/bin/osd
 Restart=on-failure
 RestartSec=2
 

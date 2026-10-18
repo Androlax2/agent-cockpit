@@ -411,8 +411,8 @@ submit_to_pane() { # pane text
 }
 
 pane_at_prompt() {
-    # The daemon's reading of the pane (claude_registry.py): one definition of "idle".
-    [[ $(tmux capture-pane -p -t "$1" -S -20 2>/dev/null | python3 "$HOME/.config/osd/claude_registry.py" classify) == waiting ]]
+    # The daemon's reading of the pane (osd classify): one definition of "idle".
+    [[ $(tmux capture-pane -p -t "$1" -S -20 2>/dev/null | osd classify) == waiting ]]
 }
 
 session_is_remote() {
@@ -464,7 +464,7 @@ answer_permission() { # id yes|no
     pane=$(session_field "$id" tmux_pane)
     [[ -n $pane ]] || { echo "claude-sessions: session $id has no tmux pane" >&2; return 1; }
     tail=$(tmux capture-pane -p -t "$pane" -S -20 2>/dev/null)
-    if [[ $(python3 "$HOME/.config/osd/claude_registry.py" classify <<<"$tail") != needs-you ]]; then
+    if [[ $(osd classify <<<"$tail") != needs-you ]]; then
         echo "claude-sessions: no permission dialog open in $(session_field "$id" project) any more" >&2
         return 1
     fi
@@ -492,7 +492,7 @@ say_to_session() { # id message
         return 1
     fi
     tail=$(tmux capture-pane -p -t "$pane" -S -20 2>/dev/null)
-    if [[ $(python3 "$HOME/.config/osd/claude_registry.py" classify <<<"$tail") == needs-you ]]; then
+    if [[ $(osd classify <<<"$tail") == needs-you ]]; then
         echo "claude-sessions: $(session_field "$id" project) has a dialog open; answer it first (Y or N)" >&2
         return 1
     fi
@@ -687,13 +687,13 @@ doctor() {
     # pgrep -f also matches wrappers around the daemon (a shell, a unit's exec line), so every
     # match is inspected and the daemon is the one holding the FIFO open.
     local daemon_pids holder=""
-    daemon_pids=$(pgrep -f 'osd/osd\.py' || true)
+    daemon_pids=$(pgrep -x osd || true)
     for daemon_pid in $daemon_pids; do
         if ls -l "/proc/$daemon_pid/fd" 2>/dev/null | grep -q osd.fifo; then holder=$daemon_pid; break; fi
     done
-    if [[ -n $daemon_pids ]]; then report ok "osd.py running (pid ${daemon_pids//$'\n'/, })"; else report fail "osd.py not running" "systemctl --user restart osd.service"; fi
+    if [[ -n $daemon_pids ]]; then report ok "osd running (pid ${daemon_pids//$'\n'/, })"; else report fail "osd not running" "systemctl --user restart osd.service"; fi
     if [[ -p $fifo ]]; then report ok "FIFO $fifo exists"; else report fail "FIFO $fifo missing" "restart the daemon, it creates it"; fi
-    if [[ -n $holder ]]; then report ok "daemon reads the FIFO (pid $holder)"; elif [[ -n $daemon_pids ]]; then report fail "no osd.py process holds the FIFO" "systemctl --user restart osd.service; then: pgrep -af 'osd/osd\.py'"; fi
+    if [[ -n $holder ]]; then report ok "daemon reads the FIFO (pid $holder)"; elif [[ -n $daemon_pids ]]; then report fail "no osd process holds the FIFO" "systemctl --user restart osd.service; then: pgrep -ax osd"; fi
     echo "greywall (what sessions can reach)"
     local greywall="$HOME/.config/greywall/greywall.json"
     if jq -e --arg path "$fifo" '.filesystem.allowWrite | index($path)' "$greywall" >/dev/null 2>&1; then report ok "$fifo in allowWrite"; else report fail "$fifo not in greywall allowWrite" "add it to filesystem.allowWrite in $greywall"; fi
@@ -757,9 +757,9 @@ doctor() {
     if [[ -s $SNAPSHOT ]]; then
         while IFS=$'\t' read -r session project state pane; do
             local alive seen
-            alive=$(python3 "$HOME/.config/osd/claude_registry.py" liveness "$session" "$pane")
+            alive=$(osd liveness "$session" "$pane")
             [[ -n $pane ]] || { printf '  %-24s hook says %-9s no tmux pane     process %s\n' "$project" "$state" "$alive"; continue; }
-            seen=$(tmux capture-pane -p -t "$pane" -S -20 2>/dev/null | python3 "$HOME/.config/osd/claude_registry.py" classify)
+            seen=$(tmux capture-pane -p -t "$pane" -S -20 2>/dev/null | osd classify)
             printf '  %-24s hook says %-9s pane shows %-9s process %s\n' "$project" "$state" "$seen" "$alive"
         done < <(jq -r '.sessions[] | [.session, .project, .state, (.tmux_pane // "")] | @tsv' "$SNAPSHOT")
     else

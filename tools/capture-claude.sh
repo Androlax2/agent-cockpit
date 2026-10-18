@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Take the README screenshots of the Claude Code cockpit into assets/, from a made-up cockpit:
-# tools/claude-demo/build.py writes invented sessions, todos, pull requests and usage into a
+# claude-demo build (apps/cockpit) writes invented sessions, todos, pull requests and usage into a
 # temporary folder, a tmux server of its own (its own socket, -S) runs the real column on them beside a
-# still picture of a session (tools/claude-demo/session.py), and a kitty window shows it on an
+# still picture of a session (claude-demo session), and a kitty window shows it on an
 # empty workspace. Nothing of the real sessions, tasks or costs can appear; the real cockpit is
 # not touched. Shots: the cockpit, the cockpit on Todo, and a guide window (ask-to-guide, made-up
 # steps) over it. Runs outside the sandbox (grim, hyprctl, kitty), then returns.
@@ -13,7 +13,7 @@ out=$repo/assets
 mkdir -p "$out"
 
 demo=$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/claude-demo.XXXXXX")
-python3 "$repo/tools/claude-demo/build.py" "$demo" || exit 1
+"$repo/apps/target/release/claude-demo" build "$demo" || exit 1
 # tmux.conf sources its theme through ~: the fake home gets the real tmux folder.
 mkdir -p "$demo/home/.config" && ln -s "$HOME/.config/tmux" "$demo/home/.config/tmux"
 # The demo's own tmux server, by an explicit socket: inside tmux (the approval terminal) a client
@@ -67,7 +67,7 @@ env -u TMUX HOME="$demo/home" XDG_RUNTIME_DIR="$demo/run" XDG_STATE_HOME="$demo/
 sidebar=$(demo_tmux list-panes -t claude-manager: -F '#{pane_id}' | head -n 1)
 [[ $sidebar == %* ]] || { echo "capture-claude: the demo cockpit did not start" >&2; exit 1; }
 demo_tmux set-option -p -t "$sidebar" @role sidebar
-viewer=$(demo_tmux split-window -h -t "$sidebar" -l 70% -P -F '#{pane_id}' python3 "$repo/tools/claude-demo/session.py")
+viewer=$(demo_tmux split-window -h -t "$sidebar" -l 70% -P -F '#{pane_id}' "$repo/apps/target/release/claude-demo" session)
 demo_tmux set-option -p -t "$viewer" @role viewer
 demo_tmux set-option -p -t "$viewer" @project acme-shop
 demo_tmux select-pane -t "$viewer" -T "✳ Checkout totals with VAT per country"
@@ -88,7 +88,7 @@ for _ in $(seq 50); do [[ -n $(demo_tmux list-clients) ]] && break; sleep 0.1; d
 sleep 1
 # Once attached the window has the kitty's size: set the column's width and draw the session to fit.
 demo_tmux resize-pane -t "$sidebar" -x 60
-demo_tmux respawn-pane -k -t "$viewer" python3 "$repo/tools/claude-demo/session.py"
+demo_tmux respawn-pane -k -t "$viewer" "$repo/apps/target/release/claude-demo" session
 sleep 1.5
 
 # 1. The cockpit
