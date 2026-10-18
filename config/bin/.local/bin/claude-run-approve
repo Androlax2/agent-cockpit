@@ -62,7 +62,9 @@ def send(line: str):
 
 def phase(request_id: str, name: str):
     """Tell the daemon whether this needs Theo (asking: the floating window comes up wherever he
-    is) or not (running: it goes away again), or is done (the pane and window close)."""
+    is), runs (running: an open window stays, no new one opens), or is done (the pane and window
+    close). A run reports no prompts of its own: a pause mid-line (a progress bar) looked like one
+    and popped the window up on every workspace until the run ended."""
     send(f"run-phase {request_id} {name}")
 
 
@@ -99,7 +101,6 @@ def waits_for_input(log_path: str, idle_s: float) -> bool:
     except OSError:
         return False
     return idle_s >= PROMPT_IDLE_S and last not in (b"\n", b"")
-
 
 def visible_command(command: str) -> tuple[str, bool]:
     """The command as it will run, with every hiding character shown as an escape, and whether
@@ -178,10 +179,23 @@ def choose(question: str, options: list[tuple[str, str]], default: str) -> str:
         termios.tcsetattr(descriptor, termios.TCSADRAIN, saved)
 
 
-def run(command: str, cwd: str, log_path: str, request_id: str = "") -> int:
+def reserve_last_row(rows: int) -> str:
+    """Keep the last row out of the scroll region, so command output never lands under the status
+    line. IND (ESC D) first scrolls when the cursor sits on the last row, and keeps the column: a
+    half-printed prompt moves up whole instead of being cut or overwritten."""
+    return f"\033D\0337\033[1;{rows - 1}r\0338\033[A"
+
+
+def draw_status(rows: int, text: str):
+    sys.stdout.write(f"\0337\033[{rows};1H\033[2K{text}\0338")
+    sys.stdout.flush()
+
+
+def run(command: str, cwd: str, log_path: str) -> int:
     """The command in a real terminal through `script` (sudo and prompts work), recorded, with a
     "running · 12s" line kept at the bottom: the lines above it scroll, so output still shows,
-    and a command that prints nothing no longer looks stuck."""
+    and a command that prints nothing no longer looks stuck. While the command waits for an
+    answer, the line stops redrawing and says so once, below the question."""
     os.makedirs(LOG_DIR, mode=0o700, exist_ok=True)
     child = subprocess.Popen(["script", "-qfec", shlex.join(["fish", "-c", command]), log_path], cwd=cwd)
     if not sys.stdout.isatty():
@@ -189,26 +203,33 @@ def run(command: str, cwd: str, log_path: str, request_id: str = "") -> int:
     rows = os.get_terminal_size().lines
     started = time.time()
     spinner = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
-    sys.stdout.write(f"\033[1;{rows - 1}r\033[{rows - 1};1H")  # everything above the last row scrolls
+    sys.stdout.write(reserve_last_row(rows))
     try:
         tick = 0
-        size, changed_at, asking = -1, time.time(), False
+        size, changed_at, waiting = -1, time.time(), False
         while child.poll() is None:
+            # A resize (the floating window attaching to the tmux session) resets the scroll region.
+            now_rows = os.get_terminal_size().lines
+            if now_rows != rows:
+                rows, waiting = now_rows, False
+                sys.stdout.write(reserve_last_row(rows))
             try:
                 now_size = os.path.getsize(log_path)
             except OSError:
                 now_size = 0
             if now_size != size:
                 size, changed_at = now_size, time.time()
-            prompt = waits_for_input(log_path, time.time() - changed_at)
-            if request_id and prompt != asking:
-                asking = prompt
-                phase(request_id, "asking" if asking else "running")
-            elapsed = int(time.time() - started)
-            sys.stdout.write(f"\0337\033[{rows};1H\033[2K{BLUE}{spinner[tick % len(spinner)]}{RESET} "
-                             f"{DIM}running · {elapsed // 60}m {elapsed % 60:02d}s{RESET}\0338")
-            sys.stdout.flush()
-            tick += 1
+            if waits_for_input(log_path, time.time() - changed_at):
+                if not waiting:
+                    waiting = True
+                    sys.stdout.write(reserve_last_row(rows))
+                    draw_status(rows, f"{YELLOW}waiting for your answer above{RESET}")
+            else:
+                waiting = False
+                elapsed = int(time.time() - started)
+                draw_status(rows, f"{BLUE}{spinner[tick % len(spinner)]}{RESET} "
+                                  f"{DIM}running · {elapsed // 60}m {elapsed % 60:02d}s{RESET}")
+                tick += 1
             time.sleep(0.1)
     finally:
         sys.stdout.write(f"\0337\033[{rows};1H\033[2K\0338\033[r\033[{rows - 1};1H\n")
@@ -260,7 +281,7 @@ def approve(request_id: str) -> int:
     log_path = os.path.join(LOG_DIR, f"{request_id}.log")
     print(f"{DIM}─── running ───{RESET}")
     phase(request_id, "running")
-    exit_code = run(command, cwd, log_path, request_id)
+    exit_code = run(command, cwd, log_path)
     phase(request_id, "asking")
     print(f"{DIM}─── {RESET}{GREEN if exit_code == 0 else RED}exit {exit_code}{RESET}")
     keep = choose("Send the output to Claude?", [("y", "Send the output"), ("n", "Keep it out (only the exit status)")], "y") == "y"
