@@ -33,6 +33,11 @@ fi
 section "backup (restic-backup.service)"
 result=$(systemctl --user show restic-backup.service --property=Result --value 2>/dev/null)
 finished=$(systemctl --user show restic-backup.service --property=ExecMainExitTimestamp --value 2>/dev/null)
+if [[ -z $finished ]]; then
+    # systemd forgets the last run at a reboot, and then reads "never": the journal keeps the last
+    # successful one ("Finished restic-backup.service …"; a failed run says "Failed to start").
+    finished=$(journalctl --user -u restic-backup.service -o short-iso --no-pager -g '^Finished ' 2>/dev/null | tail -1 | awk '{ print $1 }')
+fi
 printf 'result %s, last run %s\n' "${result:-unknown}" "${finished:-never}" >> "$report"
 if [[ $result != success ]]; then
     problems+=("backup: ${result:-unknown}")

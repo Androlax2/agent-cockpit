@@ -1022,3 +1022,15 @@ fn a_hook_in_the_repository_does_not_run_on_push() {
     assert!(!manager.calls("ssh").is_empty(), "the push did not run");
     assert!(!marker.exists(), "the pre-push hook ran");
 }
+
+#[test]
+fn the_loading_screen_works_without_a_terminal_type() {
+    // The health check runs these tests from a systemd unit, where TERM is unset: tput failed and
+    // the screen quit at once.
+    let manager = Manager::new();
+    let loading = manager.runtime_file("claude-sessions-loading");
+    fs::write(&loading, format!("Closing proj-a …\n{}\n{SESSION_A}\n{}\ngone\n", manager.project.display(), now_seconds())).unwrap();
+    fs::write(&manager.snapshot, json!({"sessions": []}).to_string()).unwrap();
+    assert_eq!(manager.run(&["loading-screen"], &[("TERM", "")]).status.code(), Some(0));
+    assert!(!loading.exists());
+}

@@ -330,7 +330,9 @@ viewer_shows_prompt() {
 
 show_loading() {
     local frames=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏) tick=0 label directory session since mode rows columns
-    tput civis 2>/dev/null
+    # No TERM (the tests run from a systemd unit by the health check): no cursor to hide, and no
+    # reason to stop.
+    tput civis 2>/dev/null || true
     while { read -r label; read -r directory; read -r session; read -r since; read -r mode; } < "$LOADING_STATE" 2>/dev/null; do
         if loading_ready "$directory" "$session" "$since" "$mode"; then
             sleep 0.5  # the session reported in; give it a moment to draw its screen

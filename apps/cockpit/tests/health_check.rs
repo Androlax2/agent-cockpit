@@ -17,8 +17,9 @@ fn health_sandbox() -> Sandbox {
     let recent = stdout(&Command::new("date").args(["-d", "1 hour ago", "+%a %Y-%m-%d %H:%M:%S %Z"]).output().unwrap());
     let recent = recent.trim();
     sandbox.shim("systemctl", &format!(
-        r#"[[ $* == *Result* ]] && echo "${{SHIM_BACKUP:-success}}"; [[ $* == *ExecMainExitTimestamp* ]] && echo "${{SHIM_BACKUP_AT:-{recent}}}"; exit 0"#));
+        r#"[[ $* == *Result* ]] && echo "${{SHIM_BACKUP:-success}}"; [[ $* == *ExecMainExitTimestamp* ]] && echo "${{SHIM_BACKUP_AT-{recent}}}"; exit 0"#));
     sandbox.shim("df", r#"echo "Use% Mounted on"; echo " ${SHIM_DISK:-40%} /"; echo " 40% /home""#);
+    sandbox.shim("journalctl", r#"[[ -n ${SHIM_JOURNAL_FINISHED:-} ]] && echo "$SHIM_JOURNAL_FINISHED desktop systemd[1]: Finished restic-backup.service - Backup."; exit 0"#);
     sandbox
 }
 
@@ -92,4 +93,18 @@ fn an_old_backup_is_a_problem() {
     let sandbox = health_sandbox();
     run_check(&sandbox, &[("SHIM_BACKUP_AT", "Mon 2026-09-01 10:00:00 CEST")]);
     assert!(logged(&sandbox).last().unwrap().contains("backup older than two days"));
+}
+
+#[test]
+fn after_a_reboot_the_last_backup_comes_from_the_journal() {
+    // systemd forgets ExecMainExitTimestamp at a reboot: "never" was a false alarm after each boot.
+    let sandbox = health_sandbox();
+    let recent = stdout(&Command::new("date").args(["-d", "3 hours ago", "+%Y-%m-%dT%H:%M:%S%z"]).output().unwrap());
+    assert_eq!(run_check(&sandbox, &[("SHIM_BACKUP_AT", ""), ("SHIM_JOURNAL_FINISHED", recent.trim())]).status.code(), Some(0));
+}
+
+#[test]
+fn a_backup_neither_systemd_nor_the_journal_knows_is_a_problem() {
+    let sandbox = health_sandbox();
+    assert_eq!(run_check(&sandbox, &[("SHIM_BACKUP_AT", "")]).status.code(), Some(1));
 }
