@@ -296,6 +296,11 @@ impl Reviews {
     }
 
     #[cfg(test)]
+    pub fn set_rows(&self, rows: Vec<Review>) {
+        self.state.lock().unwrap().by_scope.entry(self.repositories.clone()).or_default().rows = rows;
+    }
+
+    #[cfg(test)]
     pub fn set_issues(&self, issues: Vec<Issue>) {
         self.state.lock().unwrap().by_scope.entry(self.repositories.clone()).or_default().issues = issues;
     }

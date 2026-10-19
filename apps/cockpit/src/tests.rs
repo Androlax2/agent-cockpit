@@ -595,9 +595,37 @@ fn the_status_panel_lists_each_window_with_its_bar_and_reset() {
 }
 
 #[test]
+fn pull_requests_and_todo_with_nothing_open_collapse_to_their_borders() {
+    let fixture = Fixture::new();
+    let app = fixture.app();
+    assert_eq!(app.layout(45), vec![4, 35, 2, 2]);
+}
+
+#[test]
+fn a_collapsed_panel_opens_while_focused() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    app.focus = 3;
+    assert_eq!(app.layout(45), vec![4, 19, 2, 18]);
+}
+
+#[test]
+fn done_items_alone_leave_the_todo_collapsed() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    let id = app.todos.add("runway", "/r/runway", "add a healthcheck");
+    app.todos.set_status(&id, "done", "");
+    app.build();
+    assert_eq!(app.layout(45)[3], 2);
+}
+
+#[test]
 fn the_focused_panel_takes_half_the_column_after_the_fixed_status() {
     let fixture = Fixture::new();
     let mut app = fixture.app();
+    app.reviews.set_rows(vec![Review { title: "VAT".into(), repository: "shop".into(), ..Review::default() }]);
+    app.todos.add("runway", "/r/runway", "add a healthcheck");
+    app.build();
     // No usage cache: one explanatory line and the Claude status line, four with the borders.
     assert_eq!(app.layout(45), vec![4, 19, 10, 10]);
     app.focus = 3;

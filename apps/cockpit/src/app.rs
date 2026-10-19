@@ -1811,16 +1811,29 @@ pub(crate) fn time_spent_text((today, all_time): (f64, f64)) -> Option<String> {
         }
     }
 
-    /// Fixed panels keep their size; of the flexible ones, the focused takes half the rest.
+    /// Pull requests with none open, Todo with nothing open: just their borders, unless focused.
+    fn is_collapsed(&self, index: usize) -> bool {
+        if index == self.focus {
+            return false;
+        }
+        match index {
+            2 => self.review_rows.is_empty() && self.reviews.current().1.is_empty(),
+            3 => self.todo_counts[0] == 0,
+            _ => false,
+        }
+    }
+
+    /// Fixed panels keep their size, collapsed ones their borders; of the flexible ones, the focused takes half the rest.
     pub fn layout(&self, height: u16) -> Vec<u16> {
         let status_height = self.panels[0].lines.len() as i64 + 2;
-        let flexible = [1usize, 2, 3];
-        let available = height as i64 - HEADER_LINES as i64 - 1 - status_height;
+        let collapsed: Vec<usize> = [2usize, 3].into_iter().filter(|index| self.is_collapsed(*index)).collect();
+        let flexible: Vec<usize> = [1usize, 2, 3].into_iter().filter(|index| !collapsed.contains(index)).collect();
+        let available = height as i64 - HEADER_LINES as i64 - 1 - status_height - 2 * collapsed.len() as i64;
         let expanded = if flexible.contains(&self.focus) { self.focus } else { flexible[0] };
         let minimum = MIN_PANEL_LINES as i64;
         let others = minimum.max((available - minimum.max(available / 2)) / (flexible.len() as i64 - 1).max(1));
-        let mut heights = vec![status_height as u16, 0, 0, 0];
-        for index in flexible {
+        let mut heights = vec![status_height as u16, 2, 2, 2];
+        for &index in &flexible {
             heights[index] = others as u16;
         }
         heights[expanded] = minimum.max(available - others * (flexible.len() as i64 - 1)) as u16;
