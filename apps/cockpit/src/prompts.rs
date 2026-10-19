@@ -54,3 +54,15 @@ pub fn clear(session: &str) {
         let _ = fs::remove_dir_all(folder);
     }
 }
+
+/// Sessions to restart once their turn ends (craft-open's --session): the marker files in
+/// <state>/restart-when-idle, each named after its session.
+pub fn restart_wanted(session: &str) -> bool {
+    valid_session(session) && paths::state_dir().join("restart-when-idle").join(session).exists()
+}
+
+pub fn restart_done(session: &str) {
+    if valid_session(session) {
+        let _ = fs::remove_file(paths::state_dir().join("restart-when-idle").join(session));
+    }
+}

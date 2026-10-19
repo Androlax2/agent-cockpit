@@ -387,9 +387,28 @@ impl App {
         self.dispatch_prompts();
     }
 
+    /// A session craft-open asked to restart (its figcraft-app server had exited at its start) is
+    /// restarted once its turn ends, in a tmux session of its own; its queued prompt then waits for
+    /// the restarted session. A terminal session is its terminal's: it is only told in the log.
+    fn dispatch_restarts(&mut self) {
+        let ready: Vec<Session> = self.sessions.iter()
+            .filter(|session| session.state == "waiting" && prompts::restart_wanted(&session.session)).cloned().collect();
+        for session in ready {
+            prompts::restart_done(&session.session);
+            if session.terminal {
+                util::log_event("WARN", &format!("{} asked for a restart to load figcraft-app, but runs in its own terminal: restart it there", session.project));
+                continue;
+            }
+            manager_in_background(&["restart", &session.session, "", "detached"]);
+            self.prompts_sent.insert(session.session.clone(), util::now() as i64);
+            util::log_event("INFO", &format!("{} restarted to load figcraft-app", session.project));
+        }
+    }
+
     /// Each session whose turn has ended gets its oldest queued prompt (prompts.rs), one per turn:
     /// the next waits until the session worked and stopped again.
     pub fn dispatch_prompts(&mut self) {
+        self.dispatch_restarts();
         let ready: Vec<Session> = self.sessions.iter()
             .filter(|session| session.state == "waiting" && session.since > self.prompts_sent.get(&session.session).copied().unwrap_or(0))
             .cloned().collect();

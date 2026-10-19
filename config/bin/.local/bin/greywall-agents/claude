@@ -112,6 +112,11 @@ wait_for_greyproxy_dns() {
 
 wait_for_greyproxy_dns
 
+# FigCraft's control port, in every session: the figcraft-app MCP server (registered for every
+# project) attaches to it. Only a FigCraft started by craft-open listens there, and it reads and
+# writes inside the one project it was opened for.
+greywall_options="$greywall_options --forward 7979"
+
 # Host ports forwarded into this project's sandboxes, for a limited time.
 # One file per project, kept outside the sandbox so a session cannot widen
 # its own access. Content: "<expiry epoch> <port>...", e.g.
@@ -124,7 +129,10 @@ if [ -r "$forward_file" ]; then
     read -r forward_until forward_ports < "$forward_file"
     if [ "$(date +%s)" -lt "$forward_until" ]; then
         for port in $forward_ports; do
-            greywall_options="$greywall_options --forward $port"
+            case " $greywall_options " in
+                *" --forward $port "*) ;;  # already forwarded (7979, above)
+                *) greywall_options="$greywall_options --forward $port" ;;
+            esac
         done
     else
         echo "greywall-agents: port forwards in $forward_file expired, not applied" >&2

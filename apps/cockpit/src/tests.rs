@@ -1304,3 +1304,36 @@ fn ctrl_c_and_escape_cancel_a_prompt_and_enter_sends_it() {
     assert_eq!(edit_line(&mut line, KeyCode::Esc, KeyModifiers::NONE), LineEdit::Cancelled);
     assert_eq!(edit_line(&mut line, KeyCode::Enter, KeyModifiers::NONE), LineEdit::Done);
 }
+
+fn want_restart(session: &str) {
+    let markers = crate::paths::state_dir().join("restart-when-idle");
+    fs::create_dir_all(&markers).unwrap();
+    fs::write(markers.join(session), "").unwrap();
+}
+
+#[test]
+fn a_restart_craft_open_asked_for_waits_for_the_end_of_the_turn() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "working", "opusline", "/r/opusline", 100)]));
+    want_restart(SESSION_A);
+    let mut app = fixture.app();
+    app.dispatch_prompts();
+    assert!(fixture.calls("claude-sessions").is_empty(), "restarted mid-turn");
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "opusline", "/r/opusline", 200)]));
+    app.build();
+    app.dispatch_prompts();
+    assert_eq!(fixture.wait_for_calls("claude-sessions", 1), [format!("claude-sessions restart {SESSION_A}  detached")]);
+    assert!(!crate::prompts::restart_wanted(SESSION_A), "restarted twice");
+}
+
+#[test]
+fn a_terminal_session_is_not_restarted_from_the_cockpit() {
+    let fixture = Fixture::new();
+    let mut row = session(SESSION_A, "waiting", "opusline", "/r/opusline", 100);
+    row["terminal"] = json!(true);
+    fixture.snapshot(json!([row]));
+    want_restart(SESSION_A);
+    let mut app = fixture.app();
+    app.dispatch_prompts();
+    assert!(fixture.calls("claude-sessions").iter().all(|call| !call.contains("restart")));
+}

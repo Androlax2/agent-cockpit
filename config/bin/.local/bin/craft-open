@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+# craft-open figcraft [--session <id>]: FigCraft for the project of the current folder, driven by
+# the session's figcraft-app MCP server (figcraft-cli mcp --attach 7979, registered for every
+# project; the launcher forwards 7979 into every sandbox). Run outside the sandbox, through
+# ask-to-run, when Theo asks a session to connect to FigCraft.
+#
+# FigCraft starts with --control 7979 and its file reads and writes limited to the project. An
+# open FigCraft is never closed (it may hold unsaved work): one already serving this project is
+# fine, any other is refused.
+#
+# --session <id>: that session's figcraft-app server exited at its start (FigCraft was closed);
+# the cockpit restarts it once its turn ends (the conversation is kept) and tells it to carry on.
+set -euo pipefail
+
+PORT=${CRAFT_OPEN_PORT:-7979}
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/claude-sessions"
+WAIT_S=${CRAFT_OPEN_WAIT_S:-15}
+
+usage() {
+    echo "usage: craft-open figcraft [--session <session-id>]" >&2
+    exit 2
+}
+
+[[ ${1:-} == figcraft ]] || usage
+session=""
+if (( $# == 3 )) && [[ $2 == --session ]]; then
+    session=$3
+    [[ $session =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || { echo "craft-open: not a session id: $session" >&2; exit 2; }
+elif (( $# != 1 )); then
+    usage
+fi
+
+root=$(git rev-parse --show-toplevel 2>/dev/null || pwd -P)
+root=$(realpath -e -- "$root")
+if [[ $root != "$HOME"/* ]]; then
+    echo "craft-open: $root is not a project under your home folder" >&2
+    exit 2
+fi
+
+answers() {
+    (exec 3<>"/dev/tcp/127.0.0.1/$PORT") 2>/dev/null
+}
+
+pid=$(pgrep -x figcraft | head -1 || true)
+if [[ -n $pid ]]; then
+    command_line=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)
+    if [[ $command_line != *"--control $PORT "* || $command_line != *"--automation-write-root $root "* ]]; then
+        echo "FigCraft is already open, for another folder or without --control $PORT: save and close it, then ask again."
+        exit 3
+    fi
+    echo "FigCraft already serves $root on port $PORT."
+else
+    setsid -f figcraft --control "$PORT" --automation-read-root "$root" --automation-write-root "$root" >/dev/null 2>&1
+    for (( waited = 0; waited < WAIT_S * 10; waited++ )); do
+        answers && break
+        sleep 0.1
+    done
+    if ! answers; then
+        echo "FigCraft did not start listening on port $PORT within ${WAIT_S}s." >&2
+        exit 1
+    fi
+    echo "FigCraft started for $root, listening on port $PORT."
+fi
+
+if [[ -n $session ]]; then
+    mkdir -p "$STATE_DIR/restart-when-idle" "$STATE_DIR/prompt-queue/$session"
+    : > "$STATE_DIR/restart-when-idle/$session"
+    printf '%s' "FigCraft is connected now (figcraft-app). Carry on with what you were doing." \
+        > "$STATE_DIR/prompt-queue/$session/$(date +%s%N).txt"
+    echo "The session restarts when its turn ends (its conversation is kept), then carries on."
+fi

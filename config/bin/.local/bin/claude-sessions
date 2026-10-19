@@ -1276,7 +1276,7 @@ case ${1:-attach} in
     restart-all) shift; restart_sessions "$@" ;;
     background) background_session "${2:?usage: claude-sessions background <dir> <prompt>}" "${3:?usage: claude-sessions background <dir> <prompt>}" ;;
     loading-screen) show_loading ;;
-    restart) restart_session "${2:?usage: claude-sessions restart <session-id> [effort]}" "${3:-}" ;;
+    restart) restart_session "${2:?usage: claude-sessions restart <session-id> [effort] [detached]}" "${3:-}" "${4:-}" ;;
     idle) idle ;;
     usage) show_usage ;;
     compact) compact_session "${2:?usage: claude-sessions compact <session-id>}" ;;
