@@ -630,7 +630,7 @@ fn an_unfocused_panel_takes_only_the_rows_its_lines_need() {
 }
 
 #[test]
-fn the_focused_panel_takes_half_the_column_after_the_fixed_status() {
+fn an_unfocused_panel_takes_at_most_a_quarter_of_the_column_after_the_fixed_status() {
     let fixture = Fixture::new();
     let mut app = fixture.app();
     app.reviews.set_rows((1..=20).map(|number| Review { number, title: "VAT".into(), repository: "shop".into(), ..Review::default() }).collect());
@@ -639,12 +639,12 @@ fn the_focused_panel_takes_half_the_column_after_the_fixed_status() {
     }
     app.build();
     // No usage cache: one explanatory line and the Claude status line, four with the borders.
-    assert_eq!(app.layout(45), vec![4, 19, 10, 10]);
+    assert_eq!(app.layout(45), vec![4, 21, 9, 9]);
     app.focus = 3;
     // No session: Sessions needs only its one line.
-    assert_eq!(app.layout(45), vec![4, 4, 10, 25]);
+    assert_eq!(app.layout(45), vec![4, 4, 9, 26]);
     app.focus = 0;
-    assert_eq!(app.layout(45), vec![4, 19, 10, 10]);
+    assert_eq!(app.layout(45), vec![4, 21, 9, 9]);
     assert!(app.layout(12).iter().all(|height| *height >= 3));
 }
 
