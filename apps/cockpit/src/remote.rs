@@ -312,6 +312,29 @@ pub fn alerts(sessions: &[Value], approvals: &[Value]) -> Vec<(String, Value)> {
     found
 }
 
+/// The notification of the lock handing the sessions to the phone, sent whatever they are doing:
+/// how many need Theo (by project), wait for the next prompt, work, and ask to run.
+pub fn handoff_alert(sessions: &[Value], approvals: &[Value]) -> Value {
+    let in_state = |state: &str| sessions.iter().filter(|session| text(session, "state") == state).collect::<Vec<_>>();
+    let needing = in_state("needs-you");
+    let mut parts = Vec::new();
+    if !needing.is_empty() {
+        let projects: Vec<String> = needing.iter().map(|session| text(session, "project")).collect();
+        parts.push(format!("{} need you ({})", needing.len(), projects.join(", ")));
+    }
+    for (state, said) in [("waiting", "wait for a prompt"), ("working", "working")] {
+        let count = in_state(state).len();
+        if count > 0 {
+            parts.push(format!("{count} {said}"));
+        }
+    }
+    if !approvals.is_empty() {
+        parts.push(format!("{} ask to run", approvals.len()));
+    }
+    let body = if parts.is_empty() { "No session is open".to_string() } else { parts.join(" · ") };
+    json!({"title": "Your sessions are on the phone", "body": shorten(&body), "topic": "handoff"})
+}
+
 fn shorten(text: &str) -> String {
     let short: String = text.chars().take(160).collect();
     if short.len() < text.len() { format!("{short}…") } else { short }
@@ -410,7 +433,7 @@ pub fn unpair_all() -> std::io::Result<()> {
     Ok(())
 }
 
-fn snapshot_sessions() -> Vec<Value> {
+pub fn snapshot_sessions() -> Vec<Value> {
     util::read_json(&paths::snapshot()).and_then(|snapshot| snapshot.get("sessions").and_then(Value::as_array).cloned()).unwrap_or_default()
 }
 
@@ -757,6 +780,19 @@ mod tests {
         assert!(!is_for_phone(&needs, false, &watching));
         assert!(is_for_phone(&turn("s1"), false, &watching));
         assert!(!is_for_phone(&turn("s2"), false, &watching));
+    }
+
+    #[test]
+    fn the_handoff_counts_the_sessions_by_what_they_do_and_names_those_that_need_you() {
+        let sessions = [needs_you("Bash: make deploy"), json!({"session": "s2", "state": "waiting", "project": "proj-b"}),
+                        json!({"session": "s3", "state": "working", "project": "proj-c"}), json!({"session": "s4", "state": "working", "project": "proj-d"})];
+        let handoff = handoff_alert(&sessions, &[json!({"id": "0123456789ab", "project": "proj-c", "command": "make test"})]);
+        assert_eq!(handoff["body"], "1 need you (proj-a) · 1 wait for a prompt · 2 working · 1 ask to run");
+    }
+
+    #[test]
+    fn the_handoff_is_sent_even_when_no_session_is_open() {
+        assert_eq!(handoff_alert(&[], &[])["body"], "No session is open");
     }
 
     #[test]

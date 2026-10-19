@@ -250,11 +250,18 @@ fn serve() -> Result<(), String> {
 }
 
 /// Every few seconds, what deserves a notification; the new ones go to the phones. What is already
-/// there when the server starts is not sent again after a restart.
+/// there when the server starts is not sent again after a restart. The lock handing the sessions
+/// to the phone (away on) is a notification of its own, whatever the sessions are doing.
 fn watch_for_notifications() {
     let mut seen: HashSet<String> = remote::current_alerts().into_iter().map(|(key, _)| key).collect();
+    let mut was_away = cockpit::paths::phone_away().exists();
     loop {
         std::thread::sleep(WATCH_EVERY);
+        let is_away = cockpit::paths::phone_away().exists();
+        if is_away && !was_away {
+            remote::notify(&[("handoff".into(), remote::handoff_alert(&remote::snapshot_sessions(), &remote::asking_approvals()))]);
+        }
+        was_away = is_away;
         let current = remote::current_alerts();
         let new_alerts: Vec<_> = current.iter().filter(|(key, _)| !seen.contains(key)).cloned().collect();
         if !new_alerts.is_empty() {
