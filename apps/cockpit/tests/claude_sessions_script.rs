@@ -155,7 +155,7 @@ fn git_output(directory: &Path, arguments: &[&str]) -> String {
 fn view_attaches_the_session_nested_in_the_viewer() {
     let manager = Manager::new();
     assert_eq!(manager.run(&["view", SESSION_A], &[]).status.code(), Some(0));
-    assert_eq!(manager.tmux_calls("respawn-pane"), ["tmux respawn-pane -k -t %11 env -u TMUX tmux attach-session -t =claude-retry-9-9"]);
+    assert_eq!(manager.tmux_calls("respawn-pane"), ["tmux respawn-pane -k -t %11 claude-fade env -u TMUX tmux attach-session -t =claude-retry-9-9"]);
     assert_eq!(fs::read_to_string(manager.runtime_file("claude-sessions.current")).unwrap().trim(), SESSION_A);
 }
 
@@ -412,14 +412,6 @@ fn the_divider_is_orange_on_the_side_of_the_focused_pane() {
     manager.run(&["view", SESSION_A], &[]);
     let borders = manager.tmux_calls("set-option").into_iter().find(|call| call.contains("pane-border-indicators")).expect("no pane-border-indicators");
     assert!(borders.contains("pane-border-indicators colour") && borders.contains("pane-active-border-style fg=#ff9e64"), "{borders}");
-}
-
-#[test]
-fn the_text_of_the_pane_without_the_focus_fades() {
-    let manager = Manager::new();
-    manager.run(&["view", SESSION_A], &[]);
-    let styles = manager.tmux_calls("set-option").into_iter().find(|call| call.contains("window-style")).expect("no window-style");
-    assert!(styles.contains("window-style fg=#565f89") && styles.contains("window-active-style fg=#c0caf5"), "{styles}");
 }
 
 #[test]

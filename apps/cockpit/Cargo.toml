@@ -19,6 +19,4 @@ sha2 = "0.10"
 tiny_http = "0.12"
 unicode-width = "0.2.2"
 ureq = "3.4.2"
-
-[dev-dependencies]
 libc = "0.2.191"

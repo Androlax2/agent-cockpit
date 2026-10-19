@@ -212,14 +212,12 @@ ensure_manager() {
     # @state (label_state, pushed by the sidebar) colours the title: red needs you, yellow waiting.
     # While the session pane has the focus the title is a filled bar of that colour (reverse); the
     # column greys its own panel then, so the lit side is the one the keys go to. The divider between
-    # them is orange on the active pane's half. The pane without the focus fades: window-style
-    # greys the text in the default colour, the column fades its own colours (tmux cannot).
+    # them is orange on the active pane's half. The pane without the focus fades: the column fades
+    # itself, the session through claude-fade (view_session); tmux's window-style cannot.
     tmux set-option -w -t "$MANAGER_WINDOW" pane-border-status top ";" set-option -w -t "$MANAGER_WINDOW" pane-border-format \
         '#{?#{==:#{@role},viewer},#{?pane_active,#[reverse],}#{?#{@project},#{?#{==:#{@state},needs-you},#[fg=red],#{?#{==:#{@state},waiting},#[fg=yellow],#[fg=blue]}} #[bold]#{@project}#[nobold] · #{pane_title} #[default], no session #[default]},}' \
         ";" set-option -w -t "$MANAGER_WINDOW" pane-border-indicators colour \
-        ";" set-option -w -t "$MANAGER_WINDOW" pane-active-border-style 'fg=#ff9e64' \
-        ";" set-option -w -t "$MANAGER_WINDOW" window-style 'fg=#565f89' \
-        ";" set-option -w -t "$MANAGER_WINDOW" window-active-style 'fg=#c0caf5'
+        ";" set-option -w -t "$MANAGER_WINDOW" pane-active-border-style 'fg=#ff9e64'
     if [[ -z $viewer ]]; then
         viewer=$(tmux split-window -h -t "$sidebar" -l 70% -P -F '#{pane_id}' claude-sessions idle)
         tag_pane "$viewer" viewer
@@ -255,8 +253,9 @@ view_session() {
     run=$(approval_for "$id")
     local size_before
     size_before=$(tmux display-message -p -t "=$target:" '#{window_width} #{window_height}' 2>/dev/null || true)
-    # Nested on purpose: the inner client is the real, interactive session.
-    local commands=(respawn-pane -k -t "$viewer" env -u TMUX tmux attach-session -t "=$target")
+    # Nested on purpose: the inner client is the real, interactive session. claude-fade relays it and
+    # fades it while the column has the focus.
+    local commands=(respawn-pane -k -t "$viewer" claude-fade env -u TMUX tmux attach-session -t "=$target")
     # The pane shows this session's own approval: another session's goes, this one's comes.
     if [[ -n $approval && ( -z $run || $approval_run != "$run" ) ]]; then
         commands+=(";" kill-pane -t "$approval")
