@@ -998,7 +998,7 @@ doctor() {
     if [[ $(cat "${XDG_RUNTIME_DIR:-/tmp}/waybar-visible" 2>/dev/null || echo 1) == "$wanted" ]]; then report ok "bar visibility matches the workspace"; else report fail "bar visibility state out of step" "$HOME/.config/waybar/scripts/waybar-visibility.sh sync"; fi
     echo "tmux"
     if [[ $(tmux show -gv window-size 2>/dev/null) == latest ]]; then report ok "window-size latest"; else report fail "tmux window-size is not latest" "tmux source ~/.config/tmux/tmux.conf"; fi
-    if tmux list-keys -T root 2>/dev/null | grep -q 'root Left .*viewer'; then report ok "Left from the session pane to the column bound"; else report fail "Left is not bound to the column in the session pane" "tmux source ~/.config/tmux/tmux.conf"; fi
+    if ! tmux list-keys -T root 2>/dev/null | grep -q ' root *Left '; then report ok "Left reaches Claude in the session pane"; else report fail "Left is still taken from Claude in the session pane" "tmux source ~/.config/tmux/tmux.conf"; fi
     echo "manager"
     if tmux has-session -t "=$MANAGER" 2>/dev/null; then
         report ok "manager tmux session exists"
@@ -1477,7 +1477,7 @@ show_usage() {
 }
 
 idle() {
-    printf '\n  No session selected.\n\n  In the column: j/k move   Enter open   n peek at the next one needing you   a new   ? every key\n  Ctrl+Tab moves between the column and this pane; Ctrl+1/2/3 jump to a panel from here.\n'
+    printf '\n  No session selected.\n\n  In the column: j/k move   Enter open   n peek at the next one needing you   a new   ? every key\n  ⌘Tab moves between the column and this pane; ⌘1/2/3 jump to a panel from here.\n'
     exec sleep infinity
 }
 

@@ -948,7 +948,7 @@ impl App {
              ("+", "another session on this repository, on its own branch in a separate clone"),
              ("C", "/compact in the session, when it waits (the /compact badge suggests it)"),
              ("B", "after a reboot: bring back the sessions that were running"),
-             ("z", "the session over the whole window; Ctrl+Tab comes back"),
+             ("z", "the session over the whole window; ⌘⇥ comes back"),
              ("f", "focus: only the sessions waiting on you; f again shows all"),
              ("Y N", "approve or decline the permission a card asks for, after a y/n confirmation"),
              ("m", "a message for the session without opening it: sent at its prompt; while it works, it waits and goes when the turn ends (Alt+Q in the session does the same)"),
