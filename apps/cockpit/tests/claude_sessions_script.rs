@@ -29,7 +29,7 @@ case $1 in
     elif [[ $* == *@role* ]]; then cat "$roles" 2>/dev/null
     else printf '0\n1\n'; fi ;;
   has-session) [[ $3 == "=claude-manager" ]] && exit 0; (( $(grep -c "send-keys" "$SHIM_LOG") < ${SHIM_EXIT_AFTER:-1} )) ;;
-  display-message) if [[ $* == *pane_dead* ]]; then echo 0; elif [[ $* == *pane_active* ]]; then echo "${SHIM_VIEWER_ACTIVE:-0}"; elif [[ $* == *pane_id* ]]; then echo "%10"; elif [[ $* == *pane_width* ]]; then echo "${SHIM_VIEWER_SIZE:-181 47}"; else echo "claude-retry-9-9"; fi ;;
+  display-message) if [[ $* == *pane_dead* ]]; then echo 0; elif [[ $* == *pane_active* ]]; then echo "${SHIM_VIEWER_ACTIVE:-0}"; elif [[ $* == *pane_id* ]]; then echo "%10"; elif [[ $* == *pane_width* ]]; then echo "${SHIM_VIEWER_SIZE:-181 47}"; elif [[ $* == *window_width* ]]; then echo "${SHIM_TARGET_SIZE:-181 47}"; elif [[ $* == *pane_height* ]]; then echo "${SHIM_APPROVAL_HEIGHT:-28}"; else echo "claude-retry-9-9"; fi ;;
   split-window) [[ $* == *-P* ]] && echo "%1$(( $(wc -l < "$roles" 2>/dev/null || echo 0) + 1 ))" ;;
   set-option) if [[ $2 == -p && $5 == @role ]]; then echo "$4 $6" >> "$roles"; fi ;;
   capture-pane) printf '%b' "$SHIM_PANE_TEXT" ;;
@@ -1270,4 +1270,42 @@ fn a_restarted_session_starts_at_the_viewer_panes_size() {
     manager.run(&["restart-all", SESSION_A], &[("SHIM_PANE_TEXT", IDLE), ("SHIM_EXIT_AFTER", "1"), ("CLAUDE_SESSIONS_RESTORE_WAIT", "0")]);
     let launch = manager.tmux_calls("new-session").into_iter().find(|call| call.contains("claude-retry-restart-")).expect("no launch");
     assert!(launch.contains(" -x 181 -y 47 "), "{launch}");
+}
+
+#[test]
+fn a_restart_while_an_approval_pane_is_open_counts_the_rows_it_will_give_back() {
+    let manager = Manager::new();
+    fs::write(&manager.roles, "%10 sidebar\n%11 viewer\n%76 approval\n").unwrap();
+    manager.run(&["restart-all", SESSION_A], &[("SHIM_PANE_TEXT", IDLE), ("SHIM_EXIT_AFTER", "1"), ("CLAUDE_SESSIONS_RESTORE_WAIT", "0")]);
+    let launch = manager.tmux_calls("new-session").into_iter().find(|call| call.contains("claude-retry-restart-")).expect("no launch");
+    assert!(launch.contains(" -x 181 -y 76 "), "{launch}");
+}
+
+fn redraws_after_viewing(target_size: &str, state: &str) -> bool {
+    let manager = Manager::new();
+    fs::write(&manager.snapshot, json!({"sessions": [{"session": SESSION_A, "state": state, "project": "proj-a", "tmux_pane": "%4"}]}).to_string()).unwrap();
+    manager.run(&["view", SESSION_A], &[("SHIM_TARGET_SIZE", target_size), ("CLAUDE_SESSIONS_REDRAW_DELAY", "0")]);
+    for _ in 0..40 {
+        if manager.tmux_calls("send-keys").iter().any(|call| call.ends_with(" C-l")) {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    false
+}
+
+#[test]
+fn a_session_the_viewer_resizes_is_told_to_redraw() {
+    // Claude Code did not always repaint after that resize: the pane stayed blank until a key.
+    assert!(redraws_after_viewing("181 70", "waiting"));
+}
+
+#[test]
+fn a_session_already_at_the_viewers_size_gets_no_key() {
+    assert!(!redraws_after_viewing("181 47", "waiting"));
+}
+
+#[test]
+fn a_session_at_a_permission_dialog_gets_no_key_even_resized() {
+    assert!(!redraws_after_viewing("181 70", "needs-you"));
 }

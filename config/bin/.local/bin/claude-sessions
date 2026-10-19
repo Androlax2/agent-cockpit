@@ -214,6 +214,8 @@ view_session() {
     viewer=$(viewer_pane)
     approval=$(pane_by_role approval)
     run=$(approval_for "$id")
+    local size_before
+    size_before=$(tmux display-message -p -t "=$target:" '#{window_width} #{window_height}' 2>/dev/null || true)
     # Nested on purpose: the inner client is the real, interactive session.
     local commands=(respawn-pane -k -t "$viewer" env -u TMUX tmux attach-session -t "=$target")
     if [[ -n $approval && -z $run ]]; then
@@ -226,10 +228,23 @@ view_session() {
         tag_pane "$new_pane" approval
         tmux set-option -p -t "$new_pane" remain-on-exit off
     fi
+    redraw_if_resized "$target" "$size_before" "$(session_field "$id" state)"
     printf '%s\n' "$id" > "$CURRENT"
     # Its banner ("waiting for your input") has been read now that the session is on screen.
     osd-show session-seen "$id" 2>/dev/null || true
     label_panes "$(session_field "$id" project)"
+}
+
+# A session whose window the viewer resizes as it attaches can stay blank: Claude Code does not
+# always repaint after that resize (seen on a session restarted while an approval pane was open).
+# Ctrl+L makes it clear and redraw, the conversation kept. Not at a permission dialog: no key goes
+# near a pending yes/no. In the background, once the nested client has attached and resized it.
+redraw_if_resized() { # target size-before state
+    local size_after
+    size_after=$(tmux display-message -p -t "$(viewer_pane)" '#{pane_width} #{pane_height}' 2>/dev/null || true)
+    [[ -n $2 && $2 != "$size_after" && $3 != needs-you ]] || return 0
+    ( sleep "${CLAUDE_SESSIONS_REDRAW_DELAY:-0.4}"; tmux send-keys -t "=$1:" C-l ) </dev/null >/dev/null 2>&1 &
+    disown
 }
 
 # The kitty window title (sidebar pane title) and the session pane's title line both carry the project.
@@ -735,12 +750,18 @@ restart_sessions() { # id...
 # matches its tmux session (stripped, the card had no pane and the tmux session showed up as a
 # second, unknown card).
 launch_detached() { # dir claude-arguments...
-    local directory=$1 size width=200 height=50
+    local directory=$1 size width=200 height=50 approval approval_height
     shift
     # The viewer pane's size: shown there later without a resize, Claude keeps its screen. Resized,
-    # it redrew and the resumed conversation sat above, out of view (an empty pane).
+    # it redrew and the resumed conversation sat above, out of view (an empty pane). An approval pane
+    # open now takes rows the viewer gets back once it closes: they count.
     size=$(tmux display-message -p -t "$(viewer_pane)" '#{pane_width} #{pane_height}' 2>/dev/null || true)
     if [[ $size =~ ^([0-9]+)\ ([0-9]+)$ ]]; then width=${BASH_REMATCH[1]} height=${BASH_REMATCH[2]}; fi
+    approval=$(pane_by_role approval)
+    if [[ -n $approval ]]; then
+        approval_height=$(tmux display-message -p -t "$approval" '#{pane_height}' 2>/dev/null || true)
+        [[ $approval_height =~ ^[0-9]+$ ]] && height=$(( height + approval_height + 1 ))
+    fi
     tmux new-session -d -s "claude-retry-restart-$(date +%s%N)" -x "$width" -y "$height" -c "$directory" \
         env CLAUDE_SESSIONS_INSIDE=1 \
         fish -ic 'claude $argv; or claude-sessions log manager ERROR "claude exited with status $status in $PWD"' -- "$@"
