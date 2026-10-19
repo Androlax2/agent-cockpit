@@ -68,10 +68,18 @@ fn a_session_id_belongs_to_its_agent_and_a_tmux_name_to_the_longest_prefix() {
 }
 
 #[test]
-fn claude_code_has_every_feature_and_opencode_none() {
+fn claude_code_has_every_feature_and_opencode_only_interrupt() {
     let features = [Feature::Effort, Feature::Billing, Feature::Compact, Feature::RemoteControl, Feature::Dialogs, Feature::Interrupt, Feature::ScreenStates];
     assert!(features.iter().all(|feature| agents::get("claude").can(*feature)));
-    assert!(features.iter().all(|feature| !agents::get("opencode").can(*feature)));
+    let opencode: Vec<Feature> = features.into_iter().filter(|feature| agents::get("opencode").can(*feature)).collect();
+    assert_eq!(opencode, [Feature::Interrupt]);
+}
+
+#[test]
+fn an_agent_that_can_interrupt_says_with_which_keys() {
+    for agent in &agents::AGENTS {
+        assert_eq!(agent.can(Feature::Interrupt), !agent.interrupt_keys.is_empty(), "{}", agent.name);
+    }
 }
 
 /// A copy of the agent files in the sandbox, plus `extra` as <name>.sh.
