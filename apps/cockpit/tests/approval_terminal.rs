@@ -78,6 +78,17 @@ fn a_resize_moves_the_reserved_row_to_the_new_bottom() {
 }
 
 #[test]
+fn a_command_gets_cat_as_its_pager() {
+    let (mut terminal, root, _) = approve_in_terminal("sh -c 'echo \"pager=$PAGER\"'");
+    terminal.pump(10.0, Some(b"Send the output"));
+    assert!(contains(&terminal.screen, b"pager=cat"));
+    terminal.pump(0.7, None);
+    terminal.type_keys(b"\r");
+    let _ = terminal.child.wait();
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn a_command_name_in_the_request_cannot_escape_its_folder() {
     let output = Command::new(env!("CARGO_BIN_EXE_claude-run-approve")).arg("../../etc").env("TMUX", "1").output().unwrap();
     assert!(String::from_utf8_lossy(&output.stdout).contains("not a request id"));

@@ -1361,8 +1361,9 @@ apply_dotfiles() {
     fi
     # Control characters shown, never interpreted: the patches are text a sandbox wrote. less reads
     # a file, not a pipe: q before the end would kill cat, and pipefail the whole command (exit 141).
+    # PAGER is cat in the approval window (ask-to-run), which shows the patches as plain output.
     cat -v "$copies"/*.patch > "$copies/review.txt"
-    if [[ -t 1 ]]; then less "$copies/review.txt"; else cat "$copies/review.txt"; fi
+    if [[ -t 1 ]]; then ${PAGER:-less} "$copies/review.txt"; else cat "$copies/review.txt"; fi
     read -r -p "Apply these $count commit(s) to $DOTFILES_LIVE? [y/N] " answer || answer=""
     if [[ $answer != y && $answer != Y ]]; then
         echo "Not applied."

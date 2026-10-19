@@ -378,7 +378,10 @@ pub fn run(command: &str, cwd: &str, log_path: &Path, request: Option<&str>) -> 
     command_line.args(["-qfec", &inner]).arg(log_path).env("SHELL", "/bin/sh")
         // A progress bar redraws one line without ending it, which reads as a command waiting for
         // an answer (waits_for_input): builds print plain lines here.
-        .env("CARGO_TERM_PROGRESS_WHEN", "never");
+        .env("CARGO_TERM_PROGRESS_WHEN", "never")
+        // A pager's full screen ends on its ":" prompt, which reads as a question, and the status
+        // line drawn under it left the window blank (apply-dotfiles showed its patches in less).
+        .env("PAGER", "cat");
     if !cwd.is_empty() {
         command_line.current_dir(cwd);
     }
