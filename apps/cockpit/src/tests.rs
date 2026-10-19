@@ -1289,3 +1289,18 @@ fn a_card_shows_the_craft_apps_its_session_drives() {
     let badges: Vec<String> = app.panels[1].lines.iter().flat_map(|line| line.right.iter().map(|part| part.text.clone())).collect();
     assert_eq!(badges.iter().filter(|badge| badge.starts_with('◆')).collect::<Vec<_>>(), ["◆ figcraft", "◆ wordcraft off"]);
 }
+
+#[test]
+fn ctrl_c_and_escape_cancel_a_prompt_and_enter_sends_it() {
+    use crate::app::{LineEdit, edit_line};
+    use crossterm::event::{KeyCode, KeyModifiers};
+    let mut line = String::new();
+    for typed in "hix".chars() {
+        assert_eq!(edit_line(&mut line, KeyCode::Char(typed), KeyModifiers::NONE), LineEdit::Typing);
+    }
+    edit_line(&mut line, KeyCode::Backspace, KeyModifiers::NONE);
+    assert_eq!(line, "hi");
+    assert_eq!(edit_line(&mut line, KeyCode::Char('c'), KeyModifiers::CONTROL), LineEdit::Cancelled);
+    assert_eq!(edit_line(&mut line, KeyCode::Esc, KeyModifiers::NONE), LineEdit::Cancelled);
+    assert_eq!(edit_line(&mut line, KeyCode::Enter, KeyModifiers::NONE), LineEdit::Done);
+}

@@ -16,7 +16,7 @@ use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseBu
 use ratatui::buffer::Buffer;
 use ratatui::style::{Color, Modifier, Style};
 use std::collections::HashMap;
-use std::io::{self, BufRead, Write};
+use std::io::{self, Write};
 use std::fs;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -1853,13 +1853,56 @@ pub(crate) fn todo_details(entry: &Entry) -> String {
     }
 }
 
+/// What a key does to a one-line prompt.
+#[derive(Debug, PartialEq)]
+pub(crate) enum LineEdit {
+    Typing,
+    Done,
+    Cancelled,
+}
+
+/// One key on the prompt's line: Enter sends it, Escape and Ctrl+C cancel it.
+pub(crate) fn edit_line(line: &mut String, code: KeyCode, modifiers: KeyModifiers) -> LineEdit {
+    match code {
+        KeyCode::Enter => LineEdit::Done,
+        KeyCode::Esc => LineEdit::Cancelled,
+        KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => LineEdit::Cancelled,
+        KeyCode::Backspace => {
+            line.pop();
+            LineEdit::Typing
+        }
+        KeyCode::Char(typed) if !modifiers.contains(KeyModifiers::CONTROL) => {
+            line.push(typed);
+            LineEdit::Typing
+        }
+        _ => LineEdit::Typing,
+    }
+}
+
+/// A one-line prompt under the column, read key by key in raw mode: in the terminal's own line
+/// mode a Ctrl+C killed the whole column ("Pane is dead (signal 2)").
 fn input_line(screen: &mut dyn Screen, prompt: &str) -> String {
     screen.outside(&mut || {
-        print!("\n  {prompt}");
-        let _ = io::stdout().flush();
+        let _ = crossterm::terminal::enable_raw_mode();
         let mut line = String::new();
-        io::stdin().lock().read_line(&mut line).ok()?;
-        Some(line.trim().to_string())
+        let outcome = loop {
+            print!("\r\x1b[2K  {prompt}{line}");
+            let _ = io::stdout().flush();
+            let step = match event::read() {
+                Ok(Event::Key(key)) if key.kind != KeyEventKind::Release => edit_line(&mut line, key.code, key.modifiers),
+                Ok(Event::Paste(pasted)) => {
+                    line.push_str(&pasted.replace(['\n', '\r'], " "));
+                    LineEdit::Typing
+                }
+                Ok(_) => LineEdit::Typing,
+                Err(_) => LineEdit::Cancelled,
+            };
+            if step != LineEdit::Typing {
+                break step;
+            }
+        };
+        let _ = crossterm::terminal::disable_raw_mode();
+        (outcome == LineEdit::Done).then(|| line.trim().to_string())
     }).unwrap_or_default()
 }
 
