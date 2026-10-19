@@ -8,8 +8,25 @@
 set -u
 export LC_ALL=C.UTF-8 # ${line:0:n} counts characters, not the bytes of ❯
 pane=${1:?usage: claude-sessions-left <pane>}
-read -r cursor_x cursor_y < <(tmux display-message -p -t "$pane" '#{cursor_x} #{cursor_y}')
-line=$(tmux capture-pane -p -t "$pane" -S "${cursor_y:-0}" -E "${cursor_y:-0}")
+
+# The session's own pane, not the viewer's copy of it: the viewer runs claude-fade and a nested
+# client, and a session window larger than the viewer (an opencode window made at the viewer's
+# height plus an approval pane's) showed there with another cursor and other lines, so Left never
+# matched. The session shown is claude-sessions.current: a daemon session id, or a tmux session
+# name (claude-retry-*) before it reports. The viewer itself when none is known.
+shown_pane() {
+    local shown snapshot="${XDG_RUNTIME_DIR:-/tmp}/claude-sessions.json"
+    shown=$(cat "${XDG_RUNTIME_DIR:-/tmp}/claude-sessions.current" 2>/dev/null) || return 1
+    case $shown in
+        claude-retry-*) tmux list-panes -t "=$shown" -F '#{pane_id}' 2>/dev/null | head -1 ;;
+        ?*) jq -r --arg id "$shown" 'first(.sessions[] | select(.session == $id) | .tmux_pane // empty)' "$snapshot" 2>/dev/null ;;
+        *) return 1 ;;
+    esac
+}
+read_from=$(shown_pane) || true
+[[ $read_from =~ ^%[0-9]+$ ]] || read_from=$pane
+read -r cursor_x cursor_y < <(tmux display-message -p -t "$read_from" '#{cursor_x} #{cursor_y}')
+line=$(tmux capture-pane -p -t "$read_from" -S "${cursor_y:-0}" -E "${cursor_y:-0}")
 before_cursor=${line:0:${cursor_x:-0}}
 # Spaces or the box's │, then ❯ and the space or no-break space Claude draws after it.
 prompt_start=$'^[[:space:]\u2502]*\u276f[ \u00a0]$'

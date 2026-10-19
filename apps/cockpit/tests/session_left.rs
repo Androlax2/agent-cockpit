@@ -54,3 +54,35 @@ fn left_on_an_empty_opencode_prompt_goes_back_to_the_column() {
 fn left_inside_opencode_text_reaches_opencode() {
     assert_eq!(left_with("  ┃  fix the login", 10), ["tmux send-keys -t %11 Left"]);
 }
+
+/// What tmux was asked after Left in the viewer %11 while the cockpit shows `shown`: the shown
+/// session's own pane %20 reads `own_line` at `own_x`, the viewer's copy reads something else.
+fn left_showing(shown: &str, own_line: &str, own_x: usize) -> Vec<String> {
+    let sandbox = Sandbox::new();
+    std::fs::write(sandbox.runtime.join("claude-sessions.current"), format!("{shown}\n")).unwrap();
+    std::fs::write(sandbox.runtime.join("claude-sessions.json"),
+                   serde_json::json!({"sessions": [{"session": OPENCODE_SESSION, "tmux_pane": "%20"}]}).to_string()).unwrap();
+    sandbox.shim("tmux", &format!(r#"case "$*" in
+  "list-panes -t =claude-retry-opencode-1"*) echo "%20" ;;
+  "display-message -p -t %20 "*) echo "{own_x} 64" ;;
+  "display-message -p -t %11 "*) echo "3 37" ;;
+  "capture-pane -p -t %20 "*) printf '%s\n' '{own_line}' ;;
+  "capture-pane -p -t %11 "*) printf '%s\n' 'some other line of the viewer' ;;
+esac"#));
+    let output = sandbox.run(bin().join("claude-sessions-left"), &["%11"], &[]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    sandbox.calls("tmux").into_iter().filter(|call| call.starts_with("tmux select-pane") || call.starts_with("tmux send-keys")).collect()
+}
+
+#[test]
+fn left_reads_the_shown_sessions_own_pane_not_the_viewers_copy() {
+    // As tmux showed it on 2026-10-19: opencode's window 70 rows high in a 41-row viewer.
+    for shown in [OPENCODE_SESSION, "claude-retry-opencode-1"] {
+        assert_eq!(left_showing(shown, "  ┃  ", 5), ["tmux select-pane -L -t %11"], "{shown}");
+    }
+}
+
+#[test]
+fn left_in_the_shown_sessions_text_still_goes_to_it_through_the_viewer() {
+    assert_eq!(left_showing(OPENCODE_SESSION, "  ┃  fix the login", 10), ["tmux send-keys -t %11 Left"]);
+}
