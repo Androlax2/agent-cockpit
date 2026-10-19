@@ -12,7 +12,7 @@
 //! asking (claude-run-approve shows the same command from `<id>.asking` and takes the answer from
 //! `<id>.remote`). Every action is an audit event (component "remote").
 
-use crate::{approval, audit, paths, prompts, util};
+use crate::{approval, audit, paths, prompts, push, util};
 use serde_json::{Value, json};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -35,7 +35,7 @@ pub fn state_dir() -> PathBuf {
     std::env::var("CLAUDE_REMOTE_DIR").map(PathBuf::from).unwrap_or_else(|_| paths::state_home().join("claude-remote"))
 }
 
-fn write_private(name: &str, value: &Value) -> std::io::Result<()> {
+pub(crate) fn write_private(name: &str, value: &Value) -> std::io::Result<()> {
     let folder = state_dir();
     fs::DirBuilder::new().recursive(true).mode(0o700).create(&folder)?;
     let temporary = folder.join(format!("{name}.tmp"));
@@ -44,7 +44,7 @@ fn write_private(name: &str, value: &Value) -> std::io::Result<()> {
     fs::rename(temporary, folder.join(name))
 }
 
-fn read_private(name: &str) -> Value {
+pub(crate) fn read_private(name: &str) -> Value {
     fs::read_to_string(state_dir().join(name)).ok().and_then(|text| serde_json::from_str(&text).ok()).unwrap_or(json!({}))
 }
 
@@ -169,6 +169,126 @@ pub fn phones() -> Vec<Value> {
     devices().iter().map(|device| json!({
         "id": device_id(device), "name": text(device, "name"), "paired_at": device.get("paired_at"), "last_seen": device.get("last_seen"),
     })).collect()
+}
+
+/// A one-time pairing code a paired phone asks for, for its Home Screen app: on iOS that app keeps
+/// cookies of its own, so it pairs anew. The phone already holds everything it could reach.
+pub fn pairing_code_from(phone: &str) -> Result<String, String> {
+    let name = devices().iter().find(|device| device_id(device) == phone).map(|device| text(device, "name")).ok_or("no such phone")?;
+    let home_screen_name: String = format!("{name} (Home Screen)").chars().take(32).collect();
+    let code = new_pairing_code(&home_screen_name).map_err(|error| error.to_string())?;
+    audit::record("remote", "remote.pairing_from_phone", "ok", json!({"phone": phone}));
+    Ok(code)
+}
+
+/// A phone's push subscription kept (Some) or dropped (None).
+pub fn set_push(phone: &str, subscription: Option<Value>) -> Result<(), String> {
+    let _guard = DEVICES.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut known = devices();
+    let device = known.iter_mut().find(|device| device_id(device) == phone).ok_or("no such phone")?;
+    match subscription {
+        Some(subscription) => device["push"] = subscription,
+        None => {
+            device.as_object_mut().map(|fields| fields.remove("push"));
+        }
+    }
+    write_devices(known).map_err(|error| error.to_string())?;
+    audit::record("remote", "remote.push", if device_has_push(phone) { "on" } else { "off" }, json!({"phone": phone}));
+    Ok(())
+}
+
+fn device_has_push(phone: &str) -> bool {
+    devices().iter().any(|device| device_id(device) == phone && device.get("push").is_some())
+}
+
+/// The phones that take notifications: id and subscription.
+pub fn push_targets() -> Vec<(String, Value)> {
+    devices().iter().filter_map(|device| Some((device_id(device), device.get("push")?.clone()))).collect()
+}
+
+/// What deserves a notification now, each with a key that stays the same while it lasts: a
+/// session that needs Theo (per request), an ask-to-run that asks. A key not seen on the previous
+/// look is a new notification.
+pub fn alerts(sessions: &[Value], approvals: &[Value]) -> Vec<(String, Value)> {
+    let mut found = Vec::new();
+    for session in sessions.iter().filter(|session| text(session, "state") == "needs-you") {
+        let (id, request) = (text(session, "session"), Some(text(session, "detail")).filter(|detail| !detail.is_empty()).unwrap_or(text(session, "request")));
+        found.push((format!("session {id} {request}"), json!({
+            "title": format!("{} needs you", text(session, "project")), "body": shorten(&request), "session": id, "topic": id,
+        })));
+    }
+    for asking in approvals {
+        let id = text(asking, "id");
+        // Characters that could hide what the command does show as �, never as what they do.
+        let command: String = text(asking, "command").chars().map(|character| if approval::is_hiding(character) { '�' } else { character }).collect();
+        found.push((format!("approval {id}"), json!({
+            "title": format!("{} asks to run", text(asking, "project")), "body": shorten(&command), "topic": id,
+        })));
+    }
+    found
+}
+
+fn shorten(text: &str) -> String {
+    let short: String = text.chars().take(160).collect();
+    if short.len() < text.len() { format!("{short}…") } else { short }
+}
+
+/// Everything that deserves a notification now (alerts over the snapshot and the approvals).
+pub fn current_alerts() -> Vec<(String, Value)> {
+    alerts(&snapshot_sessions(), &asking_approvals())
+}
+
+/// The VAPID subject: the page's own address, where the push service can reach whoever sends.
+fn push_contact() -> String {
+    tailnet_name().map(|host| format!("https://{host}")).unwrap_or_else(|| "https://localhost".into())
+}
+
+/// A notification to one phone, to check they reach it.
+pub fn send_test(phone: &str) -> Result<String, String> {
+    let (_, subscription) = push_targets().into_iter().find(|(id, _)| id == phone).ok_or("notifications are off on this phone")?;
+    let test = json!({"title": "Claude sessions", "body": "Notifications reach this phone.", "topic": "test"});
+    match push::send(&subscription, &test, "test", &push_contact()) {
+        push::Delivery::Sent => Ok("sent: it shows in a few seconds".into()),
+        push::Delivery::Gone => {
+            let _ = set_push(phone, None);
+            Err("the push service forgot this phone: turn notifications on again".into())
+        }
+        push::Delivery::Failed(error) => Err(error),
+    }
+}
+
+/// The new alerts sent to every phone that takes notifications; a phone whose subscription is gone
+/// stops taking them.
+pub fn notify(new_alerts: &[(String, Value)]) {
+    let contact = push_contact();
+    for (phone, subscription) in push_targets() {
+        for (_, notification) in new_alerts {
+            let topic = notification.get("topic").and_then(Value::as_str).unwrap_or("");
+            match push::send(&subscription, notification, topic, &contact) {
+                push::Delivery::Sent => {}
+                push::Delivery::Gone => {
+                    let _ = set_push(&phone, None);
+                    break;
+                }
+                push::Delivery::Failed(error) => util::log_event("WARN", &format!("claude-remote: no notification to phone {phone}: {error}")),
+            }
+        }
+    }
+}
+
+/// When a phone was last seen, said shortly: "now", "12 min ago", "3 h ago", "4 days ago".
+pub fn seen_ago(seconds: Option<i64>) -> String {
+    let Some(seconds) = seconds else { return "never".into() };
+    let elapsed = util::now_secs() - seconds;
+    if elapsed < 120 {
+        "now".into()
+    } else if elapsed < 7200 {
+        format!("{} min ago", elapsed / 60)
+    } else if elapsed < 172_800 {
+        format!("{} h ago", elapsed / 3600)
+    } else {
+        format!("{} days ago", elapsed / 86_400)
+    }
 }
 
 /// One phone forgotten, by its id.
@@ -358,4 +478,34 @@ pub fn decide(id: &str, is_run: bool, shown_command: &str) -> Result<String, Str
     audit::record("remote", if is_run { "remote.run" } else { "remote.decline" }, "ok",
                   json!({"id": id, "project": text(&asking, "project"), "command": audit::fingerprint(&command)}));
     Ok(if is_run { "it runs".into() } else { "declined".into() })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn needs_you(request: &str) -> Value {
+        json!({"session": "s1", "state": "needs-you", "project": "proj-a", "request": request})
+    }
+
+    #[test]
+    fn a_session_that_needs_you_and_an_approval_that_asks_are_alerts() {
+        let found = alerts(&[needs_you("Bash: make deploy"), json!({"session": "s2", "state": "waiting", "project": "proj-b"})],
+                           &[json!({"id": "0123456789ab", "project": "proj-c", "command": "make test"})]);
+        let shown: Vec<(&str, &str)> = found.iter().map(|(_, alert)| (alert["title"].as_str().unwrap(), alert["body"].as_str().unwrap())).collect();
+        assert_eq!(shown, [("proj-a needs you", "Bash: make deploy"), ("proj-c asks to run", "make test")]);
+    }
+
+    #[test]
+    fn a_new_request_in_the_same_session_is_a_new_alert() {
+        let first = alerts(&[needs_you("Bash: make deploy")], &[]);
+        assert_eq!(first[0].0, alerts(&[needs_you("Bash: make deploy")], &[])[0].0);
+        assert_ne!(first[0].0, alerts(&[needs_you("Edit: src/main.rs")], &[])[0].0);
+    }
+
+    #[test]
+    fn a_command_that_hides_characters_shows_them_as_replacement_marks() {
+        let found = alerts(&[], &[json!({"id": "0123456789ab", "project": "p", "command": "echo hi\x1b[2K\rrm -rf ~"})]);
+        assert_eq!(found[0].1["body"], "echo hi�[2K�rm -rf ~");
+    }
 }

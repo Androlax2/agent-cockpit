@@ -109,11 +109,21 @@ impl Drop for Remote {
 }
 
 #[test]
-fn an_unpaired_phone_gets_nothing() {
+fn an_unpaired_phone_gets_no_data() {
     let remote = Remote::start();
-    for path in ["/", "/api/state", "/page.js"] {
+    for path in ["/api/state", "/api/push/key", &format!("/api/screen/{SESSION_A}")] {
         assert_eq!(remote.request("GET", path, None, None, false).0, 401, "{path}");
         assert_eq!(remote.request("GET", path, Some(&"0".repeat(64)), None, false).0, 401, "{path} with a made-up secret");
+    }
+    assert_eq!(remote.request("POST", "/api/pairing-code", Some(&"0".repeat(64)), Some(json!({})), true).0, 401);
+}
+
+#[test]
+fn an_unpaired_phone_loads_the_page_itself_to_paste_a_code() {
+    // The Home Screen app on iOS keeps cookies of its own: it starts unpaired and needs the page.
+    let remote = Remote::start();
+    for path in ["/", "/page.js", "/sw.js", "/manifest.webmanifest"] {
+        assert_eq!(remote.request("GET", path, None, None, false).0, 200, "{path}");
     }
 }
 
@@ -331,4 +341,57 @@ fn the_screen_keeps_its_colours_and_drops_every_other_escape() {
     let (status, _, body) = remote.request("GET", &format!("/api/screen/{SESSION_A}"), Some(&secret), None, false);
     assert_eq!(status, 200, "{body}");
     assert_eq!(body, "\x1b[1;32mdone\x1b[0mnext\n");
+}
+
+fn subscription(endpoint: &str) -> Value {
+    json!({"endpoint": endpoint, "keys": {
+        "p256dh": "BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4", "auth": "BTBZMqHH6r4Tts7J_aSIgg"}})
+}
+
+fn takes_notifications(remote: &Remote, secret: &str) -> bool {
+    let (_, _, body) = remote.request("GET", "/api/state", Some(secret), None, false);
+    serde_json::from_str::<Value>(&body).unwrap()["push"].as_bool().unwrap()
+}
+
+#[test]
+fn a_phone_turns_its_notifications_on_and_off() {
+    let remote = Remote::start();
+    let secret = remote.paired();
+    let (status, _, body) = remote.request("POST", "/api/push/subscribe", Some(&secret), Some(subscription("https://web.push.apple.com/QGuQ")), true);
+    assert_eq!(status, 200, "{body}");
+    assert!(takes_notifications(&remote, &secret));
+    remote.request("POST", "/api/push/unsubscribe", Some(&secret), Some(json!({})), true);
+    assert!(!takes_notifications(&remote, &secret));
+}
+
+#[test]
+fn a_subscription_to_an_unknown_host_is_refused() {
+    let remote = Remote::start();
+    let secret = remote.paired();
+    let (status, _, body) = remote.request("POST", "/api/push/subscribe", Some(&secret), Some(subscription("https://192.168.1.1/admin")), true);
+    assert_eq!(status, 409, "{body}");
+    assert!(body.contains("not a known push service"), "{body}");
+    assert!(!takes_notifications(&remote, &secret));
+}
+
+#[test]
+fn the_push_key_is_a_p256_point_that_stays_the_same() {
+    let remote = Remote::start();
+    let secret = remote.paired();
+    let key = |remote: &Remote| serde_json::from_str::<Value>(&remote.request("GET", "/api/push/key", Some(&secret), None, false).2).unwrap()["key"].as_str().unwrap().to_string();
+    let first = key(&remote);
+    assert_eq!(first.len(), 87, "{first}"); // 65 bytes in base64url
+    assert_eq!(key(&remote), first);
+}
+
+#[test]
+fn a_paired_phone_gets_a_code_that_pairs_its_home_screen_app_once() {
+    let remote = Remote::start();
+    let secret = remote.paired_as(&["iPhone"]);
+    let (status, _, body) = remote.request("POST", "/api/pairing-code", Some(&secret), Some(json!({})), true);
+    assert_eq!(status, 200, "{body}");
+    let code = serde_json::from_str::<Value>(&body).unwrap()["message"].as_str().unwrap().to_string();
+    assert_eq!(remote.request("GET", &format!("/pair/{code}"), None, None, false).0, 303);
+    assert_eq!(remote.request("GET", &format!("/pair/{code}"), None, None, false).0, 403, "used twice");
+    assert!(remote.remote(&["phones"]).contains("iPhone (Home Screen)"));
 }

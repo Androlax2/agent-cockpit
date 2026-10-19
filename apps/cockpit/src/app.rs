@@ -342,9 +342,12 @@ pub struct SettingsMenu {
     rows: HashMap<u16, usize>,
     area: (u16, u16, u16, u16), // top, left, bottom, right
     pub(crate) phones: Vec<Value>,
-    /// Whether the server answers and tailscale serve publishes it, once the check made at opening ends.
-    phone_health: Arc<Mutex<Option<(bool, Option<bool>)>>>,
+    phone_health: Arc<Mutex<Option<PhoneHealth>>>,
 }
+
+/// Whether the phone page's server answers, and whether tailscale serve publishes it (None: Tailscale
+/// did not say); checked once the menu opens.
+type PhoneHealth = (bool, Option<bool>);
 
 /// What a row of the settings menu does.
 #[derive(Debug, PartialEq)]
@@ -428,7 +431,7 @@ impl SettingsMenu {
                 SettingsRow::PairPhone => put(buffer, row, left + 2, "Pair a phone (QR code)", text_style),
                 SettingsRow::Phone(phone) => {
                     let phone = &self.phones[phone];
-                    let seen = format!("seen {}", seen_ago(phone.get("last_seen").and_then(Value::as_i64)));
+                    let seen = format!("seen {}", remote::seen_ago(phone.get("last_seen").and_then(Value::as_i64)));
                     put(buffer, row, left + 2, &fit(phone["name"].as_str().unwrap_or(""), inner.saturating_sub(seen.width() + 3)), text_style);
                     put(buffer, row, right - seen.width() as u16 - 1, &seen, if chosen { on(BG_HIGHLIGHT, BLUE) } else { dim });
                 }
@@ -445,16 +448,6 @@ impl SettingsMenu {
     fn contains(&self, x: u16, y: u16) -> bool {
         let (top, left, bottom, right) = self.area;
         (top..=bottom).contains(&y) && (left..=right).contains(&x)
-    }
-}
-
-fn seen_ago(seconds: Option<i64>) -> String {
-    let Some(seconds) = seconds else { return "never".into() };
-    match util::now_secs() - seconds {
-        ..120 => "now".into(),
-        elapsed @ ..7200 => format!("{} min ago", elapsed / 60),
-        elapsed @ ..172_800 => format!("{} h ago", elapsed / 3600),
-        elapsed => format!("{} days ago", elapsed / 86_400),
     }
 }
 

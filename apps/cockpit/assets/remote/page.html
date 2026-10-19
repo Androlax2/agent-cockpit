@@ -4,6 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#1a1b26">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<link rel="manifest" href="/manifest.webmanifest">
 <title>Claude sessions</title>
 <style>
   :root { color-scheme: dark; --bg: #1a1b26; --card: #24283b; --fg: #c0caf5; --dim: #7a82a8; --red: #f7768e; --yellow: #e0af68;
@@ -35,6 +37,9 @@
   .back { background: none; color: var(--blue); min-height: 36px; flex: 0 0 auto; padding: 0; text-align: left; }
   .note { color: var(--dim); font-size: 13px; margin-top: 6px; min-height: 1em; }
   .empty { color: var(--dim); font-size: 14px; }
+  input { width: 100%; min-height: 44px; border-radius: 8px; border: 1px solid #414868; background: #16161e; color: var(--fg);
+          font: inherit; padding: 8px; margin-top: 8px; }
+  .code { font: 15px ui-monospace, monospace; overflow-wrap: anywhere; user-select: all; }
 </style>
 </head>
 <body>
@@ -42,6 +47,8 @@
 <div id="approvals"></div>
 <div id="list"></div>
 <div id="detail" hidden></div>
+<div id="phone"></div>
+<div id="pairing" hidden></div>
 <script src="/page.js"></script>
 </body>
 </html>

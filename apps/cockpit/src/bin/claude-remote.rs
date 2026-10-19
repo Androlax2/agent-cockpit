@@ -13,7 +13,9 @@ use cockpit::remote;
 use serde_json::{Value, json};
 use std::io::Read;
 use std::net::SocketAddr;
+use std::collections::HashSet;
 use std::process::Command;
+use std::time::Duration;
 use tiny_http::{Header, Method, Request, Response, Server};
 
 const COOKIE: &str = "claude_remote";
@@ -21,6 +23,9 @@ const BODY_MAX: u64 = 16 * 1024;
 const WORKERS: usize = 4;
 const PAGE: &str = include_str!("../../assets/remote/page.html");
 const SCRIPT: &str = include_str!("../../assets/remote/page.js");
+const SERVICE_WORKER: &str = include_str!("../../assets/remote/sw.js");
+const MANIFEST: &str = include_str!("../../assets/remote/manifest.webmanifest");
+const WATCH_EVERY: Duration = Duration::from_secs(3);
 
 fn header(name: &str, value: &str) -> Header {
     Header::from_bytes(name.as_bytes(), value.as_bytes()).expect("a valid header")
@@ -85,19 +90,46 @@ fn handle(mut request: Request) {
         }
         return;
     }
-    if cookie_secret(&request).and_then(|secret| remote::paired_phone(&secret)).is_none() {
-        respond(request, 401, "text/plain", "This phone is not paired: run claude-remote pair on the computer and open its link here.".into(), &[]);
+    // The page's own files hold no data: an unpaired phone (the Home Screen app, with cookies of
+    // its own) loads them to show where to paste a pairing code. Everything under /api needs a phone.
+    let static_file = match (&method, path.as_str()) {
+        (Method::Get, "/") => Some(("text/html; charset=utf-8", PAGE)),
+        (Method::Get, "/page.js") => Some(("text/javascript; charset=utf-8", SCRIPT)),
+        (Method::Get, "/sw.js") => Some(("text/javascript; charset=utf-8", SERVICE_WORKER)),
+        (Method::Get, "/manifest.webmanifest") => Some(("application/manifest+json", MANIFEST)),
+        _ => None,
+    };
+    if let Some((content_type, body)) = static_file {
+        respond(request, 200, content_type, body.into(), &[]);
         return;
     }
+    let Some(phone) = cookie_secret(&request).and_then(|secret| remote::paired_phone(&secret)) else {
+        respond(request, 401, "text/plain", "This phone is not paired: run claude-remote pair on the computer and open its link here.".into(), &[]);
+        return;
+    };
     if method == Method::Post && header_value(&request, "X-Claude-Remote").as_deref() != Some("1") {
         respond(request, 403, "text/plain", "refused: not from the page".into(), &[]);
         return;
     }
     let parts: Vec<&str> = path.trim_start_matches('/').split('/').collect();
     match (&method, parts.as_slice()) {
-        (Method::Get, [""]) => respond(request, 200, "text/html; charset=utf-8", PAGE.into(), &[]),
-        (Method::Get, ["page.js"]) => respond(request, 200, "text/javascript; charset=utf-8", SCRIPT.into(), &[]),
-        (Method::Get, ["api", "state"]) => respond_json(request, 200, remote::state()),
+        (Method::Get, ["api", "state"]) => {
+            let mut state = remote::state();
+            state["push"] = json!(remote::push_targets().iter().any(|(id, _)| *id == phone));
+            respond_json(request, 200, state);
+        }
+        (Method::Get, ["api", "push", "key"]) => match cockpit::push::public_key() {
+            Ok(key) => respond_json(request, 200, json!({"key": key})),
+            Err(message) => respond_json(request, 500, json!({"ok": false, "message": message})),
+        },
+        (Method::Post, ["api", "push", "subscribe"]) => {
+            let subscription = body_json(&mut request).unwrap_or(json!({}));
+            let kept = cockpit::push::checked_subscription(&subscription).and_then(|checked| remote::set_push(&phone, Some(checked)));
+            outcome(request, kept.map(|()| "notifications on".into()));
+        }
+        (Method::Post, ["api", "push", "unsubscribe"]) => outcome(request, remote::set_push(&phone, None).map(|()| "notifications off".into())),
+        (Method::Post, ["api", "push", "test"]) => outcome(request, remote::send_test(&phone)),
+        (Method::Post, ["api", "pairing-code"]) => outcome(request, remote::pairing_code_from(&phone)),
         (Method::Get, ["api", "screen", id]) if is_session_id(id) => match remote::screen(id) {
             Ok(screen) => respond(request, 200, "text/plain; charset=utf-8", screen, &[]),
             Err(message) => respond(request, 409, "text/plain; charset=utf-8", message, &[]),
@@ -148,6 +180,7 @@ fn serve() -> Result<(), String> {
     if let Ok(bound) = server.server_addr().to_ip().ok_or(()) {
         println!("claude-remote listening on {bound}");
     }
+    std::thread::spawn(watch_for_notifications);
     // A few workers: a slow tmux or claude-sessions call for one phone does not stall the others.
     let server = std::sync::Arc::new(server);
     let workers: Vec<_> = (0..WORKERS).map(|_| {
@@ -164,22 +197,26 @@ fn serve() -> Result<(), String> {
     Ok(())
 }
 
+/// Every few seconds, what deserves a notification; the new ones go to the phones. What is already
+/// there when the server starts is not sent again after a restart.
+fn watch_for_notifications() {
+    let mut seen: HashSet<String> = remote::current_alerts().into_iter().map(|(key, _)| key).collect();
+    loop {
+        std::thread::sleep(WATCH_EVERY);
+        let current = remote::current_alerts();
+        let new_alerts: Vec<_> = current.iter().filter(|(key, _)| !seen.contains(key)).cloned().collect();
+        if !new_alerts.is_empty() {
+            remote::notify(&new_alerts);
+        }
+        seen = current.into_iter().map(|(key, _)| key).collect();
+    }
+}
+
 fn pair(name: &str) -> Result<(), String> {
     let link = remote::pairing_link(name)?;
     println!("Open this on the phone within 10 minutes (once):\n\n  {link}\n");
     let _ = Command::new("qrencode").args(["-t", "ANSIUTF8", &link]).status();
     Ok(())
-}
-
-fn ago(seconds: Option<i64>) -> String {
-    let Some(seconds) = seconds else { return "never".into() };
-    let elapsed = cockpit::util::now_secs() - seconds;
-    match elapsed {
-        ..120 => "just now".into(),
-        ..7200 => format!("{} min ago", elapsed / 60),
-        ..172800 => format!("{} h ago", elapsed / 3600),
-        _ => format!("{} days ago", elapsed / 86400),
-    }
 }
 
 fn list_phones() {
@@ -188,7 +225,7 @@ fn list_phones() {
         println!("No phone is paired: claude-remote pair [name].");
     }
     for phone in phones {
-        println!("{}  {:<20} last seen {}", phone["id"].as_str().unwrap_or(""), phone["name"].as_str().unwrap_or(""), ago(phone["last_seen"].as_i64()));
+        println!("{}  {:<20} last seen {}", phone["id"].as_str().unwrap_or(""), phone["name"].as_str().unwrap_or(""), remote::seen_ago(phone["last_seen"].as_i64()));
     }
 }
 
@@ -198,7 +235,10 @@ fn main() {
         ["serve"] => serve(),
         ["pair"] => pair(""),
         ["pair", name] => pair(name),
-        ["phones"] => Ok(list_phones()),
+        ["phones"] => {
+            list_phones();
+            Ok(())
+        }
         ["unpair"] => remote::unpair_all().map(|()| println!("Every phone forgotten.")).map_err(|error| error.to_string()),
         ["unpair", id] => remote::unpair(id).map(|name| println!("{name} forgotten.")),
         _ => Err("usage: claude-remote serve | pair [name] | phones | unpair [id]".into()),

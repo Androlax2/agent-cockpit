@@ -224,8 +224,103 @@ function renderDetail() {
   box.replaceChildren(back, card, screen, message, sending, note);
 }
 
+// ---- This phone: notifications, and pairing the Home Screen app ----
+
+const isHomeScreenApp = window.navigator.standalone === true || window.matchMedia("(display-mode: standalone)").matches;
+const canPush = "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+let phoneLook = null; // what the phone section shows, to redraw it only when that changes
+
+function keyBytes(key) {
+  const text = atob(key.replace(/-/g, "+").replace(/_/g, "/") + "=".repeat((4 - (key.length % 4)) % 4));
+  return Uint8Array.from(text, (character) => character.charCodeAt(0));
+}
+
+async function turnNotificationsOn(note) {
+  note.textContent = "…";
+  if (await Notification.requestPermission() !== "granted") {
+    note.textContent = "Notifications are refused for this app: allow them in the phone's settings.";
+    return;
+  }
+  const registration = await navigator.serviceWorker.register("/sw.js");
+  await navigator.serviceWorker.ready;
+  const { key } = await (await call("GET", "/api/push/key")).json();
+  const subscription = await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: keyBytes(key) });
+  await post("/api/push/subscribe", subscription.toJSON(), note);
+}
+
+async function turnNotificationsOff(note) {
+  const registration = await navigator.serviceWorker.getRegistration();
+  const subscription = registration && await registration.pushManager.getSubscription();
+  if (subscription) await subscription.unsubscribe();
+  await post("/api/push/unsubscribe", {}, note);
+}
+
+function renderPhone() {
+  const box = document.getElementById("phone");
+  const look = JSON.stringify([opened === null, state.push]);
+  if (look === phoneLook) return;
+  phoneLook = look;
+  box.hidden = opened !== null;
+  const note = element("div", "note");
+  const card = element("div", "card");
+  const buttons = element("div", "buttons");
+  if (canPush && (isHomeScreenApp || !/iPhone|iPad/.test(navigator.userAgent))) {
+    card.append(element("div", "task", state.push ? "Notifications are on: a session that needs you or a command that asks to run." : "Notifications are off."));
+    if (state.push) {
+      const test = element("button", "no", "Send a test");
+      const off = element("button", "no", "Turn off");
+      test.onclick = () => post("/api/push/test", {}, note);
+      off.onclick = () => turnNotificationsOff(note).catch((error) => { note.textContent = String(error); });
+      buttons.append(test, off);
+    } else {
+      const on = element("button", "run", "Turn on notifications");
+      on.onclick = () => turnNotificationsOn(note).catch((error) => { note.textContent = String(error); });
+      buttons.append(on);
+    }
+  } else {
+    // iOS gives notifications only to a page added to the Home Screen, and that app has cookies
+    // of its own: it pairs with a code this paired page asks for.
+    card.append(element("div", "task", "For notifications: Share → Add to Home Screen, open it from there, and paste the code below in it."));
+    const code = element("div", "code");
+    const get = element("button", "run", "Get a code for the Home Screen app");
+    get.onclick = async () => {
+      const result = await post("/api/pairing-code", {}, note);
+      if (!result.ok) return;
+      code.textContent = result.message;
+      note.textContent = "One use, within 10 minutes.";
+      await navigator.clipboard?.writeText(result.message).then(() => { note.textContent = "Copied. One use, within 10 minutes."; }).catch(() => {});
+    };
+    buttons.append(get);
+    card.append(code);
+  }
+  card.append(buttons, note);
+  box.replaceChildren(element("h2", "", "This phone"), card);
+}
+
+// An unpaired phone (the Home Screen app, first time): where to paste the code.
+function renderPairing(message) {
+  for (const id of ["approvals", "list", "detail", "phone"]) document.getElementById(id).hidden = true;
+  const box = document.getElementById("pairing");
+  if (!box.hidden) return;
+  box.hidden = false;
+  const input = element("input");
+  input.placeholder = "Pairing code or link";
+  input.autocapitalize = "off";
+  const note = element("div", "note", message);
+  const pair = element("button", "run", "Pair");
+  pair.onclick = () => {
+    const code = (input.value.trim().split("/pair/").pop() || "").trim();
+    if (!/^[0-9a-f]{32}$/.test(code)) { note.textContent = "A code is 32 characters, 0-9 and a-f."; return; }
+    window.location.href = `/pair/${code}`;
+  };
+  const buttons = element("div", "buttons");
+  buttons.append(pair);
+  box.replaceChildren(element("h2", "", "Pair this phone"), input, buttons, note);
+}
+
 function render() {
   renderApprovals();
+  renderPhone();
   const detail = opened !== null;
   document.getElementById("list").hidden = detail;
   if (detail) renderDetail(); else document.getElementById("detail").hidden = true;
@@ -241,18 +336,31 @@ function detailLook() {
 async function refresh() {
   try {
     const response = await call("GET", "/api/state");
-    if (response.status === 401) { document.body.textContent = await response.text(); return; }
+    if (response.status === 401) { renderPairing(await response.text()); return; }
     const before = detailLook();
     state = await response.json();
     document.getElementById("updated").textContent = new Date().toLocaleTimeString();
     // The detail view redraws only when what it shows changed, keeping what is typed.
     renderApprovals();
+    renderPhone();
     if (opened === null) renderList();
     else if (detailLook() !== before) { renderDetail(); loadScreen(); }
   } catch (error) {
     document.getElementById("updated").textContent = "offline";
   }
 }
+
+// A tap on a notification opens its session: in a new window through the address, in an open one
+// through the service worker's message.
+function openSession(session) {
+  if (!session) return;
+  opened = session;
+  render();
+  loadScreen();
+}
+if (location.hash.startsWith("#session=")) opened = location.hash.slice("#session=".length);
+navigator.serviceWorker?.addEventListener("message", (event) => openSession(event.data && event.data.session));
+if (canPush) navigator.serviceWorker.register("/sw.js").catch(() => {});
 
 refresh().then(render);
 setInterval(refresh, 3000);
