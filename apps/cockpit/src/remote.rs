@@ -12,7 +12,7 @@
 //! asking (claude-run-approve shows the same command from `<id>.asking` and takes the answer from
 //! `<id>.remote`). Every action is an audit event (component "remote").
 
-use crate::{approval, audit, paths, prompts, push, util};
+use crate::{approval, audit, costs, paths, prompts, push, reviews, sessions, todo, usage, util};
 use serde_json::{Value, json};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -25,6 +25,8 @@ pub const DEFAULT_ADDRESS: &str = "127.0.0.1:7380";
 const PAIRING_VALID_S: i64 = 600;
 const MESSAGE_MAX: usize = 4000;
 const LAST_SEEN_STEP_S: i64 = 60;
+const PROJECTS_SHOWN: usize = 40;
+const PULLS_FRESH_S: i64 = 300;
 
 /// Where the server listens: CLAUDE_REMOTE_ADDRESS, or 127.0.0.1:7380.
 pub fn address() -> String {
@@ -201,6 +203,32 @@ fn device_has_push(phone: &str) -> bool {
     devices().iter().any(|device| device_id(device) == phone && device.get("push").is_some())
 }
 
+/// The sessions a phone is told about when their turn ends.
+pub fn watched(phone: &str) -> Vec<String> {
+    devices().iter().find(|device| device_id(device) == phone)
+        .and_then(|device| device.get("watched")?.as_array().cloned()).unwrap_or_default()
+        .iter().filter_map(|session| session.as_str().map(str::to_string)).collect()
+}
+
+/// A session's turn ends told to a phone (on), or no longer (off).
+pub fn set_watch(phone: &str, session: &str, is_on: bool) -> Result<String, String> {
+    let project = session_row(session).map(|row| text(&row, "project")).ok_or("no such session")?;
+    let _guard = DEVICES.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut known = devices();
+    let device = known.iter_mut().find(|device| device_id(device) == phone).ok_or("no such phone")?;
+    let mut watching: Vec<String> = device.get("watched").and_then(Value::as_array).into_iter().flatten()
+        .filter_map(|watched| watched.as_str().map(str::to_string)).filter(|watched| watched != session).collect();
+    if is_on {
+        watching.push(session.to_string());
+    }
+    // Sessions end: only the ones still running stay watched.
+    let running: Vec<String> = snapshot_sessions().iter().map(|row| text(row, "session")).collect();
+    watching.retain(|watched| running.contains(watched));
+    device["watched"] = json!(watching);
+    write_devices(known).map_err(|error| error.to_string())?;
+    Ok(if is_on { format!("you hear when {project} finishes a turn") } else { format!("no more news of {project}'s turns") })
+}
+
 /// The phones that take notifications: id and subscription.
 pub fn push_targets() -> Vec<(String, Value)> {
     devices().iter().filter_map(|device| Some((device_id(device), device.get("push")?.clone()))).collect()
@@ -215,6 +243,15 @@ pub fn alerts(sessions: &[Value], approvals: &[Value]) -> Vec<(String, Value)> {
         let (id, request) = (text(session, "session"), Some(text(session, "detail")).filter(|detail| !detail.is_empty()).unwrap_or(text(session, "request")));
         found.push((format!("session {id} {request}"), json!({
             "title": format!("{} needs you", text(session, "project")), "body": shorten(&request), "session": id, "topic": id,
+        })));
+    }
+    // Only for the phones that watch the session (notify): its turn ended, and what it left.
+    for session in sessions.iter().filter(|session| text(session, "state") == "waiting") {
+        let id = text(session, "session");
+        let since = session.get("since").map(Value::to_string).unwrap_or_default();
+        let left = Some(text(session, "outcome")).filter(|outcome| !outcome.is_empty()).unwrap_or_else(|| text(session, "task"));
+        found.push((format!("turn {id} {since}"), json!({
+            "title": format!("{} finished", text(session, "project")), "body": shorten(&left), "session": id, "topic": id, "kind": "turn",
         })));
     }
     for asking in approvals {
@@ -262,7 +299,12 @@ pub fn send_test(phone: &str) -> Result<String, String> {
 pub fn notify(new_alerts: &[(String, Value)]) {
     let contact = push_contact();
     for (phone, subscription) in push_targets() {
+        let watching = watched(&phone);
         for (_, notification) in new_alerts {
+            let session = notification.get("session").and_then(Value::as_str).unwrap_or("");
+            if notification.get("kind").and_then(Value::as_str) == Some("turn") && !watching.iter().any(|watched| watched == session) {
+                continue;
+            }
             let topic = notification.get("topic").and_then(Value::as_str).unwrap_or("");
             match push::send(&subscription, notification, topic, &contact) {
                 push::Delivery::Sent => {}
@@ -344,7 +386,7 @@ pub fn asking_approvals() -> Vec<Value> {
 pub fn state() -> Value {
     let cards: Vec<Value> = snapshot_sessions().iter().map(|row| json!({
         "session": text(row, "session"), "project": text(row, "project"), "state": text(row, "state"), "task": text(row, "task"),
-        "request": text(row, "request"), "detail": text(row, "detail"), "since": row.get("since"),
+        "request": text(row, "request"), "detail": text(row, "detail"), "since": row.get("since"), "outcome": text(row, "outcome"),
         "queued": prompts::count(&text(row, "session")),
         "remote_control": has_remote_control(row),
         "agent": Some(text(row, "agent")).filter(|agent| !agent.is_empty()).unwrap_or_else(|| "claude".into()),
@@ -472,6 +514,138 @@ pub fn toggle_remote_control(id: &str) -> Result<String, String> {
     Ok(if was_on { "Remote Control off".into() } else { "Remote Control on".into() })
 }
 
+// ---- Work from the phone: new sessions, the todo list, pull requests, usage ----
+
+/// The projects a session can start in (the column's a picker): path and name.
+pub fn projects() -> Vec<Value> {
+    sessions::project_choices().into_iter().take(PROJECTS_SHOWN)
+        .map(|path| json!({"name": util::project_name(&path), "path": path})).collect()
+}
+
+fn known_project(path: &str) -> Result<String, String> {
+    sessions::project_choices().into_iter().find(|known| known == path).ok_or_else(|| "not one of the projects".into())
+}
+
+fn one_line(text: &str, what: &str) -> Result<String, String> {
+    let text = text.trim();
+    if text.is_empty() || text.chars().count() > MESSAGE_MAX || text.chars().any(char::is_control) {
+        return Err(format!("{what} is one line of at most {MESSAGE_MAX} characters"));
+    }
+    Ok(text.to_string())
+}
+
+/// A new session in a project, out of sight, with its first message: in its own clone on a
+/// phone-<time> branch (as the column's +), or in the project's folder itself.
+pub fn start_session(project: &str, prompt: &str, in_clone: bool) -> Result<String, String> {
+    let directory = known_project(project)?;
+    let prompt = one_line(prompt, "the first message")?;
+    let branch = format!("phone-{}", chrono::Local::now().format("%Y%m%d-%H%M%S"));
+    let arguments: Vec<&str> = if in_clone { vec!["parallel", &directory, &branch, &prompt] } else { vec!["background", &directory, &prompt] };
+    let error = util::manager(&arguments);
+    if !error.is_empty() {
+        return Err(error);
+    }
+    audit::record("remote", "remote.session_started", "ok", json!({"project": directory, "clone": in_clone, "prompt": audit::fingerprint(&prompt)}));
+    Ok(if in_clone { format!("starting in a clone of {} (branch {branch})", util::project_name(&directory)) }
+       else { format!("starting in {}", util::project_name(&directory)) })
+}
+
+/// The items to do and in progress, highest priority first (the Todo panel's order).
+pub fn todos() -> Vec<Value> {
+    let list = todo::TodoList::load();
+    let mut open: Vec<todo::Entry> = list.items.iter().filter(|item| matches!(item.status().as_str(), "todo" | "doing"))
+        .map(|item| todo::Entry::Typed(item.clone())).collect();
+    open.sort_by(todo::todo_order);
+    open.iter().filter_map(|entry| match entry {
+        todo::Entry::Typed(item) => Some(json!({
+            "id": item.id(), "project": item.project(), "text": item.text(), "notes": item.notes(),
+            "status": item.status(), "priority": item.priority(),
+        })),
+        todo::Entry::Issue { .. } => None,
+    }).collect()
+}
+
+/// A change for the todo list, through the queue the column applies (claude-todo's), so the
+/// column stays the only writer of todo.json. `started_in` is the project's folder.
+fn queue_todo_update(update: Value) -> Result<(), String> {
+    let path = paths::todo_updates();
+    let mut file = OpenOptions::new().create(true).append(true).mode(0o600).open(&path).map_err(|error| format!("{}: {error}", path.display()))?;
+    writeln!(file, "{update}").map_err(|error| error.to_string())
+}
+
+/// A new item in a project's list (the column adds it within a second or two).
+pub fn add_todo(project: &str, text: &str, notes: &str) -> Result<String, String> {
+    let directory = known_project(project)?;
+    let text = one_line(text, "an item")?;
+    queue_todo_update(json!({"action": "add", "started_in": directory, "cwd": directory, "text": text,
+                             "notes": todo::multiline(notes, MESSAGE_MAX), "session": "the phone"}))?;
+    audit::record("remote", "remote.todo_added", "ok", json!({"project": directory, "text": audit::fingerprint(&text)}));
+    Ok("added".into())
+}
+
+/// An item handed to a new session in its own clone (the Todo panel's N), then in progress.
+pub fn start_todo(id: &str) -> Result<String, String> {
+    let list = todo::TodoList::load();
+    let item = list.items.iter().find(|item| item.id() == id).ok_or("no such item")?;
+    if item.status() == "done" {
+        return Err("this item is done".into());
+    }
+    let entry = todo::Entry::Typed(item.clone());
+    let (branch, text) = todo::handoff_of(&entry);
+    let directory = item.cwd();
+    let error = util::manager(&["parallel", &directory, &branch, &text]);
+    if !error.is_empty() {
+        return Err(error);
+    }
+    queue_todo_update(json!({"action": "doing", "id": id, "started_in": directory}))?;
+    audit::record("remote", "remote.todo_started", "ok", json!({"id": id, "project": directory}));
+    Ok(format!("starting a new session in a clone of {} (branch {branch})", util::project_name(&directory)))
+}
+
+/// The open pull requests of the repositories sessions run in (or the review requests), fetched
+/// with gh at most every 5 minutes unless asked again.
+pub fn pull_requests(is_refresh: bool) -> Value {
+    static FETCHED: Mutex<Option<(i64, Value)>> = Mutex::new(None);
+    let mut fetched = FETCHED.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some((at, pulls)) = fetched.as_ref().filter(|(at, _)| !is_refresh && util::now_secs() - at < PULLS_FRESH_S) {
+        return json!({"pulls": pulls, "fetched_at": at});
+    }
+    let repositories: Vec<String> = reviews::session_checkouts("").into_keys().collect();
+    let (rows, error) = reviews::fetch_reviews(&repositories);
+    let pulls = json!(rows.iter().map(|row| json!({
+        "title": row.title, "url": row.url, "number": row.number, "repository": row.repository, "author": row.author,
+        "updated": reviews::review_age(&row.updated), "draft": row.draft, "review": row.review, "ci": row.ci,
+    })).collect::<Vec<_>>());
+    if !error.is_empty() {
+        return json!({"pulls": pulls, "error": error});
+    }
+    let now = util::now_secs();
+    *fetched = Some((now, pulls.clone()));
+    json!({"pulls": pulls, "fetched_at": now})
+}
+
+/// The plan's limits (claude.ai's usage page, as the column's cache keeps it), the cost estimate
+/// and the time with Claude: today, this week, this month.
+pub fn usage() -> Value {
+    let windows: Vec<Value> = usage::windows().iter().map(|window| json!({
+        "label": window.label, "percentage": window.percentage, "resets": usage::resets_in(window), "note": window.note,
+    })).collect();
+    let checked_at = fs::metadata(paths::usage_cache()).and_then(|metadata| metadata.modified()).ok()
+        .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok()).map(|age| age.as_secs());
+    let flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX;
+    let archived = rusqlite::Connection::open_with_flags(paths::usage_archive(), flags).and_then(|archive| {
+        Ok((costs::archived_costs(&archive)?.0, costs::time_with_claude(&archive, &costs::period_starts())?))
+    });
+    let (cost, time) = match archived {
+        Ok((days, time)) => {
+            let totals = costs::totals_of(&days);
+            (json!({"today": totals.today, "week": totals.week, "month": totals.month}), json!({"today": time[0], "week": time[1], "month": time[2]}))
+        }
+        Err(error) => (json!({"error": error.to_string()}), json!(null)),
+    };
+    json!({"plan": usage::plan(), "windows": windows, "checked_at": checked_at, "cost": cost, "time": time})
+}
+
 /// Run or Decline for an approval that is asking now: its menu takes the answer (claude-run-approve
 /// polls `<id>.remote`). The command run is the one the page showed (`<id>.asking`).
 pub fn decide(id: &str, is_run: bool, shown_command: &str) -> Result<String, String> {
@@ -505,7 +679,16 @@ mod tests {
         let found = alerts(&[needs_you("Bash: make deploy"), json!({"session": "s2", "state": "waiting", "project": "proj-b"})],
                            &[json!({"id": "0123456789ab", "project": "proj-c", "command": "make test"})]);
         let shown: Vec<(&str, &str)> = found.iter().map(|(_, alert)| (alert["title"].as_str().unwrap(), alert["body"].as_str().unwrap())).collect();
-        assert_eq!(shown, [("proj-a needs you", "Bash: make deploy"), ("proj-c asks to run", "make test")]);
+        assert_eq!(shown, [("proj-a needs you", "Bash: make deploy"), ("proj-b finished", ""), ("proj-c asks to run", "make test")]);
+    }
+
+    #[test]
+    fn a_turn_end_says_what_the_turn_left_and_each_turn_is_a_new_alert() {
+        let waiting = |since: i64| json!({"session": "s1", "state": "waiting", "project": "proj-a", "since": since, "outcome": "2 commits, tests pass"});
+        let first = alerts(&[waiting(100)], &[]);
+        assert_eq!((first[0].1["title"].as_str(), first[0].1["body"].as_str(), first[0].1["kind"].as_str()),
+                   (Some("proj-a finished"), Some("2 commits, tests pass"), Some("turn")));
+        assert_ne!(first[0].0, alerts(&[waiting(200)], &[])[0].0);
     }
 
     #[test]

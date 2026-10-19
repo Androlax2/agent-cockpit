@@ -11,7 +11,7 @@
   :root { color-scheme: dark; --bg: #1a1b26; --card: #24283b; --fg: #c0caf5; --dim: #7a82a8; --red: #f7768e; --yellow: #e0af68;
           --green: #9ece6a; --blue: #7aa2f7; --cyan: #7dcfff; }
   * { box-sizing: border-box; }
-  body { margin: 0; padding: env(safe-area-inset-top) 12px 24px; background: var(--bg); color: var(--fg);
+  body { margin: 0; padding: env(safe-area-inset-top) 12px calc(76px + env(safe-area-inset-bottom)); background: var(--bg); color: var(--fg);
          font: 16px/1.4 system-ui, sans-serif; }
   h1 { font-size: 18px; margin: 14px 0 10px; display: flex; justify-content: space-between; align-items: baseline; }
   h1 small { font-size: 12px; color: var(--dim); font-weight: normal; }
@@ -39,16 +39,30 @@
   .empty { color: var(--dim); font-size: 14px; }
   input { width: 100%; min-height: 44px; border-radius: 8px; border: 1px solid #414868; background: #16161e; color: var(--fg);
           font: inherit; padding: 8px; margin-top: 8px; }
+  nav { position: fixed; left: 0; right: 0; bottom: 0; display: flex; gap: 4px; padding: 6px 8px calc(6px + env(safe-area-inset-bottom));
+        background: #16161e; border-top: 1px solid #414868; }
+  .tab { background: none; color: var(--dim); font-size: 13px; min-height: 44px; }
+  .tab.active { color: var(--blue); background: var(--card); }
+  select { width: 100%; min-height: 44px; border-radius: 8px; border: 1px solid #414868; background: #16161e; color: var(--fg); font: inherit; padding: 0 8px; }
+  .check { display: block; color: var(--dim); font-size: 14px; margin-top: 8px; }
+  .outcome { color: var(--green); font-size: 14px; margin-top: 4px; }
+  .notes { color: var(--fg); font-size: 14px; white-space: pre-wrap; overflow-wrap: anywhere; margin-top: 6px; }
+  .link { display: inline-block; color: var(--blue); margin-top: 8px; min-height: 32px; }
+  .bar { height: 8px; border-radius: 4px; background: #16161e; margin-top: 8px; overflow: hidden; }
+  .fill { height: 100%; }
   .code { font: 15px ui-monospace, monospace; overflow-wrap: anywhere; user-select: all; }
 </style>
 </head>
 <body>
 <h1>Claude sessions <small id="updated"></small></h1>
 <div id="approvals"></div>
+<div id="starter"></div>
 <div id="list"></div>
 <div id="detail" hidden></div>
 <div id="phone"></div>
+<div id="work" hidden></div>
 <div id="pairing" hidden></div>
+<nav id="tabs"></nav>
 <script src="/page.js"></script>
 </body>
 </html>

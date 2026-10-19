@@ -80,6 +80,7 @@ function renderList() {
     if (session.task) card.append(element("div", "task", session.task));
     if (session.request) card.append(element("div", "request", session.detail || session.request));
     if (session.queued) card.append(element("div", "task", `✉ ${session.queued} queued`));
+    if (session.state === "waiting" && session.outcome) card.append(element("div", "outcome", `✓ ${session.outcome}`));
     card.onclick = () => { opened = session.session; render(); loadScreen(); };
     box.append(card);
   }
@@ -185,6 +186,7 @@ function renderDetail() {
   screen.id = "screen";
   shownScreen = "";
   const note = element("div", "note");
+  const isClaude = session.agent !== "opencode";
   const controls = element("div", "buttons");
   if (session.state === "working" && isClaude) {
     const isArmed = armed === session.session;
@@ -202,7 +204,14 @@ function renderDetail() {
     controls.append(remoteControl);
   }
   card.append(controls);
-  const isClaude = session.agent !== "opencode";
+  if (state.push) {
+    const isWatched = (state.watched || []).includes(session.session);
+    const watch = element("button", "no", isWatched ? "Tell me when it finishes: on" : "Tell me when it finishes: off");
+    watch.onclick = () => post(`/api/watch/${session.session}`, { on: !isWatched }, note);
+    const watching = element("div", "buttons");
+    watching.append(watch);
+    card.append(watching);
+  }
   if (!isClaude) card.append(element("div", "task", "opencode: answer and interrupt it in its pane on the computer."));
   if (session.state === "needs-you" && isClaude) {
     card.append(element("div", "request", session.detail || session.request));
@@ -303,7 +312,7 @@ function renderPhone() {
 
 // An unpaired phone (the Home Screen app, first time): where to paste the code.
 function renderPairing(message) {
-  for (const id of ["approvals", "list", "detail", "phone"]) document.getElementById(id).hidden = true;
+  for (const id of ["approvals", "list", "detail", "phone", "starter", "work", "tabs"]) document.getElementById(id).hidden = true;
   const box = document.getElementById("pairing");
   if (!box.hidden) return;
   box.hidden = false;
@@ -322,10 +331,209 @@ function renderPairing(message) {
   box.replaceChildren(element("h2", "", "Pair this phone"), input, buttons, note);
 }
 
+// ---- Tabs: Sessions, Todo, Pull requests, Usage ----
+
+const TABS = [["sessions", "Sessions"], ["todo", "Todo"], ["pulls", "Pull requests"], ["usage", "Usage"]];
+let tab = "sessions";
+let projectChoices = null; // fetched once: the projects a session or an item can go to
+
+async function getJson(path) {
+  const response = await call("GET", path);
+  if (!response.ok) throw new Error(await response.text());
+  return response.json();
+}
+
+async function projects() {
+  if (projectChoices === null) projectChoices = await getJson("/api/projects");
+  return projectChoices;
+}
+
+function projectPicker(choices) {
+  const picker = element("select");
+  for (const project of choices) {
+    const option = element("option", "", project.name);
+    option.value = project.path;
+    picker.append(option);
+  }
+  return picker;
+}
+
+function renderTabs() {
+  const bar = document.getElementById("tabs");
+  bar.replaceChildren(...TABS.map(([name, label]) => {
+    const button = element("button", name === tab ? "tab active" : "tab", label);
+    button.onclick = () => showTab(name);
+    return button;
+  }));
+}
+
+function showTab(name) {
+  tab = name;
+  opened = null;
+  renderTabs();
+  const isSessions = name === "sessions";
+  for (const id of ["list", "phone", "starter"]) document.getElementById(id).hidden = !isSessions;
+  document.getElementById("detail").hidden = true;
+  document.getElementById("work").hidden = isSessions;
+  if (isSessions) { phoneLook = null; render(); return; }
+  const box = document.getElementById("work");
+  box.replaceChildren(element("div", "empty", "…"));
+  const views = { todo: renderTodos, pulls: renderPulls, usage: renderUsage };
+  views[name](box).catch((error) => box.replaceChildren(element("div", "warning", String(error.message || error))));
+}
+
+// A new session, out of sight on the computer, with its first message.
+async function renderStarter() {
+  const box = document.getElementById("starter");
+  if (box.dataset.open !== "yes") {
+    const open = element("button", "no", "+ New session");
+    open.onclick = () => { box.dataset.open = "yes"; renderStarter(); };
+    box.replaceChildren(open);
+    return;
+  }
+  const picker = projectPicker(await projects());
+  const prompt = element("textarea");
+  prompt.placeholder = "What should Claude do?";
+  const inClone = element("input");
+  inClone.type = "checkbox";
+  inClone.checked = true;
+  const label = element("label", "check");
+  label.append(inClone, element("span", "", " in its own clone (a branch of its own)"));
+  const note = element("div", "note");
+  const start = element("button", "run", "Start");
+  start.onclick = async () => {
+    const result = await post("/api/sessions", { project: picker.value, prompt: prompt.value, clone: inClone.checked }, note);
+    if (result.ok) prompt.value = "";
+  };
+  const close = element("button", "no", "Close");
+  close.onclick = () => { box.dataset.open = ""; renderStarter(); };
+  const buttons = element("div", "buttons");
+  buttons.append(close, start);
+  box.replaceChildren(element("h2", "", "New session"), picker, prompt, label, buttons, note);
+}
+
+async function renderTodos(box) {
+  const [todos, choices] = await Promise.all([getJson("/api/todos"), projects()]);
+  const picker = projectPicker(choices);
+  const text = element("input");
+  text.placeholder = "A new item";
+  const notes = element("textarea");
+  notes.placeholder = "Notes (optional)";
+  const note = element("div", "note");
+  const add = element("button", "run", "Add");
+  add.onclick = async () => {
+    const result = await post("/api/todos", { project: picker.value, text: text.value, notes: notes.value }, note);
+    if (result.ok) { text.value = ""; notes.value = ""; setTimeout(() => { if (tab === "todo") showTab("todo"); }, 2500); }
+  };
+  const adding = element("div", "buttons");
+  adding.append(add);
+  const nodes = [element("h2", "", "Add"), picker, text, notes, adding, note];
+  let shownProject = null;
+  if (todos.length === 0) nodes.push(element("div", "empty", "Nothing to do."));
+  for (const item of [...todos].sort((a, b) => a.project.localeCompare(b.project))) {
+    if (item.project !== shownProject) { shownProject = item.project; nodes.push(element("h2", "", item.project)); }
+    const card = element("div", `card ${item.status === "doing" ? "working" : ""}`);
+    const row = element("div", "row");
+    row.append(element("span", "project", `${"!".repeat(Math.max(0, item.priority - 2))} ${item.text}`.trim()));
+    row.append(element("span", "state", item.status === "doing" ? "in progress" : ""));
+    card.append(row);
+    const details = element("div");
+    details.hidden = true;
+    if (item.notes) details.append(element("div", "notes", item.notes));
+    const itemNote = element("div", "note");
+    const start = element("button", "run", "Start in a new session");
+    start.onclick = async (event) => {
+      event.stopPropagation();
+      const result = await post(`/api/todos/${item.id}/start`, {}, itemNote);
+      if (result.ok) setTimeout(() => { if (tab === "todo") showTab("todo"); }, 2500);
+    };
+    const buttons = element("div", "buttons");
+    buttons.append(start);
+    details.append(buttons, itemNote);
+    card.append(details);
+    card.onclick = () => { details.hidden = !details.hidden; };
+    nodes.push(card);
+  }
+  box.replaceChildren(...nodes);
+}
+
+const CI_LOOK = { failing: ["request", "✗ checks failing"], pending: ["task", "◌ checks running"], passing: ["outcome", "✓ checks pass"] };
+
+async function renderPulls(box, isRefresh) {
+  const { pulls, error, fetched_at: fetchedAt } = await getJson(isRefresh ? "/api/pulls?refresh=1" : "/api/pulls");
+  const refreshing = element("button", "no", "Refresh");
+  refreshing.onclick = () => { box.replaceChildren(element("div", "empty", "…")); renderPulls(box, true).catch((failure) => box.replaceChildren(element("div", "warning", String(failure)))); };
+  const head = element("div", "buttons");
+  head.append(refreshing);
+  const nodes = [head];
+  if (error) nodes.push(element("div", "warning", error));
+  if (fetchedAt) nodes.push(element("div", "note", `fetched ${age(fetchedAt)} ago`));
+  if (pulls.length === 0) nodes.push(element("div", "empty", "No open pull request."));
+  for (const pull of pulls) {
+    const card = element("div", "card");
+    const row = element("div", "row");
+    row.append(element("span", "project", `${pull.repository}#${pull.number}${pull.draft ? " · draft" : ""}`));
+    row.append(element("span", "state", pull.updated));
+    card.append(row, element("div", "task", pull.title));
+    const [look, label] = CI_LOOK[pull.ci] || [null, null];
+    if (label) card.append(element("div", look, label));
+    if (pull.review) card.append(element("div", "task", pull.review.toLowerCase().replace(/_/g, " ")));
+    card.append(element("div", "task", `by ${pull.author}`));
+    // Only GitHub's own addresses become links.
+    if (/^https:\/\/github\.com\//.test(pull.url)) {
+      const link = element("a", "link", "Open on GitHub");
+      link.href = pull.url;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      card.append(link);
+    }
+    nodes.push(card);
+  }
+  box.replaceChildren(...nodes);
+}
+
+function hours(seconds) {
+  const minutes = Math.round((seconds || 0) / 60);
+  return minutes < 60 ? `${minutes}m` : `${Math.floor(minutes / 60)}h${String(minutes % 60).padStart(2, "0")}`;
+}
+
+async function renderUsage(box) {
+  const usage = await getJson("/api/usage");
+  const nodes = [element("h2", "", `Plan${usage.plan ? ` · ${usage.plan}` : ""}`)];
+  if (usage.windows.length === 0) nodes.push(element("div", "empty", "No usage known yet: the cockpit checks it every 5 minutes."));
+  for (const window of usage.windows) {
+    const card = element("div", "card");
+    const row = element("div", "row");
+    row.append(element("span", "project", window.label));
+    row.append(element("span", "state", window.percentage === null ? "?" : `${window.percentage}%`));
+    const bar = element("div", "bar");
+    const fill = element("div", "fill");
+    const used = Math.min(100, Math.max(0, window.percentage || 0));
+    fill.style.width = `${used}%`;
+    fill.style.background = used >= 90 ? "var(--red)" : used >= 70 ? "var(--yellow)" : "var(--green)";
+    bar.append(fill);
+    card.append(row, bar);
+    if (window.resets) card.append(element("div", "task", window.resets));
+    if (window.note) card.append(element("div", "task", window.note));
+    nodes.push(card);
+  }
+  if (usage.checked_at) nodes.push(element("div", "note", `checked ${age(usage.checked_at)} ago`));
+  nodes.push(element("h2", "", "Cost estimate (API prices)"));
+  if (usage.cost.error) nodes.push(element("div", "warning", usage.cost.error));
+  else nodes.push(element("div", "card", `today $${usage.cost.today.toFixed(2)} · week $${usage.cost.week.toFixed(2)} · month $${usage.cost.month.toFixed(2)}`));
+  if (usage.time) {
+    nodes.push(element("h2", "", "Time with Claude"));
+    nodes.push(element("div", "card", `today ${hours(usage.time.today)} · week ${hours(usage.time.week)} · month ${hours(usage.time.month)}`));
+  }
+  box.replaceChildren(...nodes);
+}
+
 function render() {
   renderApprovals();
+  if (tab !== "sessions") return;
   renderPhone();
   const detail = opened !== null;
+  document.getElementById("starter").hidden = detail;
   document.getElementById("list").hidden = detail;
   if (detail) renderDetail(); else document.getElementById("detail").hidden = true;
   if (!detail) renderList();
@@ -334,7 +542,8 @@ function render() {
 // What the detail view's card and buttons depend on, to tell when they need redrawing.
 function detailLook() {
   const session = state.sessions.find((s) => s.session === opened);
-  return session ? JSON.stringify([session.state, session.request, session.detail, session.remote_control, session.task]) : "";
+  return session ? JSON.stringify([session.state, session.request, session.detail, session.remote_control, session.task,
+                                   (state.watched || []).includes(session.session), state.push]) : "";
 }
 
 async function refresh() {
@@ -346,6 +555,7 @@ async function refresh() {
     document.getElementById("updated").textContent = new Date().toLocaleTimeString();
     // The detail view redraws only when what it shows changed, keeping what is typed.
     renderApprovals();
+    if (tab !== "sessions") return;
     renderPhone();
     if (opened === null) renderList();
     else if (detailLook() !== before) { renderDetail(); loadScreen(); }
@@ -358,6 +568,7 @@ async function refresh() {
 // through the service worker's message.
 function openSession(session) {
   if (!session) return;
+  if (tab !== "sessions") showTab("sessions");
   opened = session;
   render();
   loadScreen();
@@ -366,6 +577,7 @@ if (location.hash.startsWith("#session=")) opened = location.hash.slice("#sessio
 navigator.serviceWorker?.addEventListener("message", (event) => openSession(event.data && event.data.session));
 if (canPush) navigator.serviceWorker.register("/sw.js").catch(() => {});
 
-refresh().then(render);
+renderTabs();
+refresh().then(() => { render(); renderStarter().catch(() => {}); });
 setInterval(refresh, 3000);
 setInterval(() => { if (opened) loadScreen(); }, 1500);

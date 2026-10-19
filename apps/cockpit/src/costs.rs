@@ -345,10 +345,24 @@ pub struct Costs {
 }
 
 /// When today, this week (from Monday) and this month began, local time, as Unix times.
-fn period_starts() -> [f64; 3] {
+pub fn period_starts() -> [f64; 3] {
     let today = Local::now().date_naive();
     let midnight = |day: NaiveDate| day.and_hms_opt(0, 0, 0).and_then(|time| time.and_local_timezone(Local).earliest()).map(|time| time.timestamp() as f64).unwrap_or(0.0);
     [midnight(today), midnight(today - Duration::days(today.weekday().num_days_from_monday() as i64)), midnight(today.with_day(1).unwrap_or(today))]
+}
+
+/// The cost of today, this week (from Monday) and this month, from the cost per day.
+pub fn totals_of(days: &HashMap<String, f64>) -> Totals {
+    let today = Local::now().date_naive();
+    let since = |first: NaiveDate| -> f64 {
+        let first = first.to_string();
+        days.iter().filter(|(day, _)| **day >= first).map(|(_, cost)| cost).sum()
+    };
+    Totals {
+        today: since(today),
+        week: since(today - Duration::days(today.weekday().num_days_from_monday() as i64)),
+        month: since(today.with_day(1).unwrap_or(today)),
+    }
 }
 
 pub struct Totals {
@@ -408,17 +422,7 @@ impl Costs {
     }
 
     pub fn totals(&self) -> Totals {
-        let state = self.state.lock().unwrap();
-        let today = Local::now().date_naive();
-        let since = |first: NaiveDate| -> f64 {
-            let first = first.to_string();
-            state.days.iter().filter(|(day, _)| **day >= first).map(|(_, cost)| cost).sum()
-        };
-        Totals {
-            today: since(today),
-            week: since(today - Duration::days(today.weekday().num_days_from_monday() as i64)),
-            month: since(today.with_day(1).unwrap_or(today)),
-        }
+        totals_of(&self.state.lock().unwrap().days)
     }
 
     pub fn all_time(&self) -> f64 {

@@ -410,3 +410,143 @@ fn yes_no_and_interrupt_refuse_an_opencode_session() {
         assert!(remote.keys_pressed().is_empty(), "{path}");
     }
 }
+
+// ---- Work from the phone ----
+
+impl Remote {
+    /// A project folder under ~/IdeaProjects, which the column's picker lists.
+    fn project(&self, name: &str) -> String {
+        let folder = self.sandbox.home.join("IdeaProjects").join(name);
+        fs::create_dir_all(&folder).unwrap();
+        folder.display().to_string()
+    }
+
+    fn post_json(&self, secret: &str, path: &str, body: Value) -> (u16, Value) {
+        let (status, _, answered) = self.request("POST", path, Some(secret), Some(body), true);
+        (status, serde_json::from_str(&answered).unwrap_or(json!({"raw": answered})))
+    }
+
+    fn get_json(&self, secret: &str, path: &str) -> Value {
+        let (status, _, answered) = self.request("GET", path, Some(secret), None, false);
+        assert_eq!(status, 200, "{path}: {answered}");
+        serde_json::from_str(&answered).unwrap()
+    }
+
+    fn todo_updates(&self) -> Vec<Value> {
+        fs::read_to_string(self.sandbox.runtime.join("claude-todo-updates.jsonl")).unwrap_or_default().lines()
+            .map(|line| serde_json::from_str(line).unwrap()).collect()
+    }
+}
+
+#[test]
+fn a_new_session_starts_out_of_sight_in_its_own_clone_or_in_the_folder() {
+    for (is_in_clone, expected) in [(true, "claude-sessions parallel {dir} phone-"), (false, "claude-sessions background {dir} Fix the login page")] {
+        let remote = Remote::start();
+        let secret = remote.paired();
+        remote.sandbox.shim("claude-sessions", "exit 0");
+        let directory = remote.project("shop");
+        let (status, answer) = remote.post_json(&secret, "/api/sessions", json!({"project": directory, "prompt": "Fix the login page", "clone": is_in_clone}));
+        assert_eq!(status, 200, "{answer}");
+        let call = remote.sandbox.calls("claude-sessions").pop().unwrap();
+        assert!(call.starts_with(&expected.replace("{dir}", &directory)), "{call}");
+        assert!(call.ends_with("Fix the login page"), "{call}");
+    }
+}
+
+#[test]
+fn a_session_starts_only_in_a_listed_project() {
+    let remote = Remote::start();
+    let secret = remote.paired();
+    remote.sandbox.shim("claude-sessions", "exit 0");
+    let (status, answer) = remote.post_json(&secret, "/api/sessions", json!({"project": "/etc", "prompt": "hi"}));
+    assert_eq!(status, 409, "{answer}");
+    assert!(remote.sandbox.calls("claude-sessions").is_empty());
+}
+
+#[test]
+fn the_projects_are_the_pickers() {
+    let remote = Remote::start();
+    let secret = remote.paired();
+    let directory = remote.project("shop");
+    let projects = remote.get_json(&secret, "/api/projects");
+    assert!(projects.as_array().unwrap().iter().any(|project| project["path"] == directory.as_str() && project["name"] == "shop"), "{projects}");
+}
+
+#[test]
+fn an_item_added_from_the_phone_goes_through_the_columns_update_queue() {
+    let remote = Remote::start();
+    let secret = remote.paired();
+    let directory = remote.project("shop");
+    let (status, answer) = remote.post_json(&secret, "/api/todos", json!({"project": directory, "text": "Cache the cart", "notes": "see #12"}));
+    assert_eq!(status, 200, "{answer}");
+    let updates = remote.todo_updates();
+    assert_eq!((updates[0]["action"].as_str(), updates[0]["started_in"].as_str(), updates[0]["text"].as_str()),
+               (Some("add"), Some(directory.as_str()), Some("Cache the cart")));
+    assert!(!remote.sandbox.state.join("claude-sessions/todo.json").exists(), "the phone wrote the column's file");
+}
+
+#[test]
+fn the_open_items_are_listed_and_done_ones_are_not() {
+    let remote = Remote::start();
+    let secret = remote.paired();
+    let todo = remote.sandbox.state.join("claude-sessions/todo.json");
+    fs::create_dir_all(todo.parent().unwrap()).unwrap();
+    fs::write(&todo, json!({"items": [
+        {"id": "aaaa1111", "project": "shop", "cwd": "/x", "text": "open one", "status": "todo", "created": 1},
+        {"id": "bbbb2222", "project": "shop", "cwd": "/x", "text": "finished", "status": "done", "created": 2}]}).to_string()).unwrap();
+    let todos = remote.get_json(&secret, "/api/todos");
+    let texts: Vec<&str> = todos.as_array().unwrap().iter().map(|item| item["text"].as_str().unwrap()).collect();
+    assert_eq!(texts, ["open one"]);
+}
+
+#[test]
+fn starting_an_item_hands_it_to_a_new_clone_and_marks_it_in_progress() {
+    let remote = Remote::start();
+    let secret = remote.paired();
+    remote.sandbox.shim("claude-sessions", "exit 0");
+    let directory = remote.project("shop");
+    let todo = remote.sandbox.state.join("claude-sessions/todo.json");
+    fs::create_dir_all(todo.parent().unwrap()).unwrap();
+    fs::write(&todo, json!({"items": [{"id": "aaaa1111", "project": "shop", "cwd": directory, "text": "Cache the cart", "status": "todo", "created": 1}]}).to_string()).unwrap();
+    let (status, answer) = remote.post_json(&secret, "/api/todos/aaaa1111/start", json!({}));
+    assert_eq!(status, 200, "{answer}");
+    let call = remote.sandbox.calls("claude-sessions").pop().unwrap();
+    assert!(call.starts_with(&format!("claude-sessions parallel {directory} todo-aaaa1111 Cache the cart (todo aaaa1111")), "{call}");
+    let updates = remote.todo_updates();
+    assert_eq!((updates[0]["action"].as_str(), updates[0]["id"].as_str()), (Some("doing"), Some("aaaa1111")));
+}
+
+#[test]
+fn the_usage_reads_the_columns_cache() {
+    let remote = Remote::start();
+    let secret = remote.paired();
+    fs::write(remote.sandbox.runtime.join("claude-usage.json"),
+              json!({"five_hour": {"utilization": 42.4, "resets_at": "2099-01-01T00:00:00Z"}}).to_string()).unwrap();
+    let usage = remote.get_json(&secret, "/api/usage");
+    assert_eq!((usage["windows"][0]["label"].as_str(), usage["windows"][0]["percentage"].as_i64()), (Some("Current session"), Some(42)));
+}
+
+#[test]
+fn the_pull_requests_come_from_gh_and_are_kept_five_minutes() {
+    let remote = Remote::start();
+    let secret = remote.paired();
+    remote.sandbox.shim("gh", r#"echo '[{"number": 7, "title": "Fix cart", "url": "https://github.com/o/shop/pull/7", "repository": {"name": "shop", "nameWithOwner": "o/shop"}, "author": {"login": "sam"}, "updatedAt": "2026-10-19T10:00:00Z"}]'"#);
+    let pulls = remote.get_json(&secret, "/api/pulls");
+    assert_eq!(pulls["pulls"][0]["title"], "Fix cart");
+    remote.get_json(&secret, "/api/pulls");
+    assert_eq!(remote.sandbox.calls("gh").len(), 1, "fetched again within 5 minutes");
+    remote.get_json(&secret, "/api/pulls?refresh=1");
+    assert_eq!(remote.sandbox.calls("gh").len(), 2);
+}
+
+#[test]
+fn a_phone_watches_a_session_and_stops() {
+    let remote = Remote::start();
+    let secret = remote.paired();
+    remote.session_in("working", IDLE);
+    let (status, answer) = remote.post_json(&secret, &format!("/api/watch/{SESSION_A}"), json!({"on": true}));
+    assert_eq!(status, 200, "{answer}");
+    assert_eq!(remote.get_json(&secret, "/api/state")["watched"], json!([SESSION_A]));
+    remote.post_json(&secret, &format!("/api/watch/{SESSION_A}"), json!({"on": false}));
+    assert_eq!(remote.get_json(&secret, "/api/state")["watched"], json!([]));
+}

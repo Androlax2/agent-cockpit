@@ -1865,20 +1865,15 @@ impl App {
     /// (claude-sessions parallel), never to a running one: it does not touch the files a session
     /// already works on. Then it is in progress.
     pub fn hand_to_new_session(&mut self, entry: &Entry) -> String {
-        let (directory, branch) = match entry {
-            Entry::Typed(item) => (item.cwd(), format!("todo-{}", item.id())),
-            Entry::Issue { issue, .. } => (self.reviews.checkouts.get(&issue.full_repository).cloned().unwrap_or_default(),
-                                           format!("issue-{}", issue.number)),
+        let directory = match entry {
+            Entry::Typed(item) => item.cwd(),
+            Entry::Issue { issue, .. } => self.reviews.checkouts.get(&issue.full_repository).cloned().unwrap_or_default(),
         };
         if directory.is_empty() {
             return "no local checkout of this issue's repository: clone it first".into();
         }
         let key = entry.key();
-        let text = todo::with_todo_note(&todo::prompt_of(entry), &key);
-        let text = match entry {
-            Entry::Typed(item) if item.is_design() => format!("Load the figcraft-design skill first. {text}"),
-            _ => text,
-        };
+        let (branch, text) = todo::handoff_of(entry);
         manager_in_background(&["parallel", &directory, &branch, &text]);
         self.todos.set_status(&key, "doing", "");
         format!("starting a new session in a clone of {} (branch {branch})", project_name(&directory))

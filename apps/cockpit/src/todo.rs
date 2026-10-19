@@ -180,6 +180,21 @@ pub fn prompt_of(entry: &Entry) -> String {
     }
 }
 
+/// What a new session gets for an item (the Todo panel's N, the phone): the branch named after it
+/// in its own clone, and its first message.
+pub fn handoff_of(entry: &Entry) -> (String, String) {
+    let branch = match entry {
+        Entry::Typed(item) => format!("todo-{}", item.id()),
+        Entry::Issue { issue, .. } => format!("issue-{}", issue.number),
+    };
+    let text = with_todo_note(&prompt_of(entry), &entry.key());
+    let text = match entry {
+        Entry::Typed(item) if item.is_design() => format!("Load the figcraft-design skill first. {text}"),
+        _ => text,
+    };
+    (branch, text)
+}
+
 pub fn without_controls(text: &str) -> String {
     text.chars().map(|c| if c.is_control() && c != '\n' { ' ' } else { c }).collect()
 }

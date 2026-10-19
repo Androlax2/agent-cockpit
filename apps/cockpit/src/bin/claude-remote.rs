@@ -60,6 +60,10 @@ fn is_session_id(id: &str) -> bool {
     id.len() == 36 && id.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
 }
 
+fn is_todo_id(id: &str) -> bool {
+    id.len() == 8 && id.chars().all(|c| c.is_ascii_hexdigit())
+}
+
 fn body_json(request: &mut Request) -> Option<Value> {
     let mut body = String::new();
     request.as_reader().take(BODY_MAX).read_to_string(&mut body).ok()?;
@@ -74,7 +78,8 @@ fn outcome(request: Request, result: Result<String, String>) {
 }
 
 fn handle(mut request: Request) {
-    let path = request.url().split('?').next().unwrap_or("").to_string();
+    let (path, query) = request.url().split_once('?').map(|(path, query)| (path.to_string(), query.to_string()))
+        .unwrap_or_else(|| (request.url().to_string(), String::new()));
     let method = request.method().clone();
     // For the cockpit's Phone section: whether the server answers, nothing more.
     if method == Method::Get && path == "/health" {
@@ -116,6 +121,7 @@ fn handle(mut request: Request) {
         (Method::Get, ["api", "state"]) => {
             let mut state = remote::state();
             state["push"] = json!(remote::push_targets().iter().any(|(id, _)| *id == phone));
+            state["watched"] = json!(remote::watched(&phone));
             respond_json(request, 200, state);
         }
         (Method::Get, ["api", "push", "key"]) => match cockpit::push::public_key() {
@@ -130,6 +136,35 @@ fn handle(mut request: Request) {
         (Method::Post, ["api", "push", "unsubscribe"]) => outcome(request, remote::set_push(&phone, None).map(|()| "notifications off".into())),
         (Method::Post, ["api", "push", "test"]) => outcome(request, remote::send_test(&phone)),
         (Method::Post, ["api", "pairing-code"]) => outcome(request, remote::pairing_code_from(&phone)),
+        (Method::Post, ["api", "watch", id]) if is_session_id(id) => {
+            let id = id.to_string();
+            match body_json(&mut request).and_then(|body| body.get("on").and_then(Value::as_bool)) {
+                Some(is_on) => outcome(request, remote::set_watch(&phone, &id, is_on)),
+                None => respond_json(request, 400, json!({"ok": false, "message": "on or off?"})),
+            }
+        }
+        (Method::Get, ["api", "projects"]) => respond_json(request, 200, json!(remote::projects())),
+        (Method::Post, ["api", "sessions"]) => {
+            let body = body_json(&mut request).unwrap_or(json!({}));
+            let field = |name: &str| body.get(name).and_then(Value::as_str).unwrap_or("").to_string();
+            let is_in_clone = body.get("clone").and_then(Value::as_bool).unwrap_or(true);
+            outcome(request, remote::start_session(&field("project"), &field("prompt"), is_in_clone));
+        }
+        (Method::Get, ["api", "todos"]) => respond_json(request, 200, json!(remote::todos())),
+        (Method::Post, ["api", "todos"]) => {
+            let body = body_json(&mut request).unwrap_or(json!({}));
+            let field = |name: &str| body.get(name).and_then(Value::as_str).unwrap_or("").to_string();
+            outcome(request, remote::add_todo(&field("project"), &field("text"), &field("notes")));
+        }
+        (Method::Post, ["api", "todos", id, "start"]) if is_todo_id(id) => {
+            let id = id.to_string();
+            outcome(request, remote::start_todo(&id));
+        }
+        (Method::Get, ["api", "pulls"]) => {
+            let is_refresh = query.split('&').any(|pair| pair == "refresh=1");
+            respond_json(request, 200, remote::pull_requests(is_refresh));
+        }
+        (Method::Get, ["api", "usage"]) => respond_json(request, 200, remote::usage()),
         (Method::Get, ["api", "screen", id]) if is_session_id(id) => match remote::screen(id) {
             Ok(screen) => respond(request, 200, "text/plain; charset=utf-8", screen, &[]),
             Err(message) => respond(request, 409, "text/plain; charset=utf-8", message, &[]),
