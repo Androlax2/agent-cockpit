@@ -4,12 +4,17 @@
 mod common;
 use common::sandbox::*;
 
+/// capture-pane as tmux does it: the line's trailing spaces dropped, unless -N keeps them.
+const CAPTURE: &str = r#"capture() { if [[ " $* " == *" -N "* ]]; then printf '%s\n' "$LINE"; else printf '%s\n' "${LINE%"${LINE##*[! ]}"}"; fi; }"#;
+
 /// What tmux was asked after Left, with the pane's cursor at `cursor_x` on a line reading `line`.
 fn left_with(line: &str, cursor_x: usize) -> Vec<String> {
     let sandbox = Sandbox::new();
-    sandbox.shim("tmux", &format!(r#"case $1 in
+    sandbox.shim("tmux", &format!(r#"{CAPTURE}
+LINE='{line}'
+case $1 in
   display-message) echo "{cursor_x} 7" ;;
-  capture-pane) printf '%s\n' '{line}' ;;
+  capture-pane) capture "$@" ;;
 esac"#));
     let output = sandbox.run(bin().join("claude-sessions-left"), &["%11"], &[]);
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
@@ -51,6 +56,13 @@ fn left_on_an_empty_opencode_prompt_goes_back_to_the_column() {
 }
 
 #[test]
+fn left_on_an_empty_opencode_prompt_inside_a_session_goes_back_to_the_column() {
+    // As tmux showed it on 2026-10-19 inside a session: no placeholder, so the two spaces after ┃
+    // are the line's last characters, which capture-pane drops without -N.
+    assert_eq!(left_with("  ┃  ", 5), ["tmux select-pane -L -t %11"]);
+}
+
+#[test]
 fn left_inside_opencode_text_reaches_opencode() {
     assert_eq!(left_with("  ┃  fix the login", 10), ["tmux send-keys -t %11 Left"]);
 }
@@ -62,12 +74,14 @@ fn left_showing(shown: &str, own_line: &str, own_x: usize) -> Vec<String> {
     std::fs::write(sandbox.runtime.join("claude-sessions.current"), format!("{shown}\n")).unwrap();
     std::fs::write(sandbox.runtime.join("claude-sessions.json"),
                    serde_json::json!({"sessions": [{"session": OPENCODE_SESSION, "tmux_pane": "%20"}]}).to_string()).unwrap();
-    sandbox.shim("tmux", &format!(r#"case "$*" in
+    sandbox.shim("tmux", &format!(r#"{CAPTURE}
+LINE='{own_line}'
+case "$*" in
   "list-panes -t =claude-retry-opencode-1"*) echo "%20" ;;
   "display-message -p -t %20 "*) echo "{own_x} 64" ;;
   "display-message -p -t %11 "*) echo "3 37" ;;
-  "capture-pane -p -t %20 "*) printf '%s\n' '{own_line}' ;;
-  "capture-pane -p -t %11 "*) printf '%s\n' 'some other line of the viewer' ;;
+  "capture-pane -p -N -t %20 "*) capture "$@" ;;
+  "capture-pane -p -N -t %11 "*) printf '%s\n' 'some other line of the viewer' ;;
 esac"#));
     let output = sandbox.run(bin().join("claude-sessions-left"), &["%11"], &[]);
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));

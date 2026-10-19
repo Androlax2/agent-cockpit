@@ -26,7 +26,9 @@ shown_pane() {
 read_from=$(shown_pane) || true
 [[ $read_from =~ ^%[0-9]+$ ]] || read_from=$pane
 read -r cursor_x cursor_y < <(tmux display-message -p -t "$read_from" '#{cursor_x} #{cursor_y}')
-line=$(tmux capture-pane -p -t "$read_from" -S "${cursor_y:-0}" -E "${cursor_y:-0}")
+# -N keeps the line's trailing spaces: an empty prompt with no placeholder (opencode inside a
+# session) ends in the spaces the cursor sits after, and without -N they were gone.
+line=$(tmux capture-pane -p -N -t "$read_from" -S "${cursor_y:-0}" -E "${cursor_y:-0}")
 before_cursor=${line:0:${cursor_x:-0}}
 # Spaces or the box's │, then ❯ and the space or no-break space Claude draws after it.
 prompt_start=$'^[[:space:]\u2502]*\u276f[ \u00a0]$'
