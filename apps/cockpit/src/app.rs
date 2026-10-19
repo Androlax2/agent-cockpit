@@ -1585,6 +1585,11 @@ impl App {
                 Some(entry) => self.hand_to_claude(&entry),
                 None => String::new(),
             },
+            Key::Char('N') => match entry {
+                Some(entry) if entry.status() == todo::PROPOSED => "approve it first (y)".into(),
+                Some(entry) => self.hand_to_new_session(&entry),
+                None => String::new(),
+            },
             Key::Char('x') => match entry {
                 Some(Entry::Typed(item)) => {
                     self.todos.remove(&item.id());
@@ -1675,6 +1680,29 @@ impl App {
         outcome
     }
 
+    /// The item to a new session in a parallel clone of its repository, on a branch named after it
+    /// (claude-sessions parallel), never to a running one: it does not touch the files a session
+    /// already works on. Then it is in progress.
+    pub fn hand_to_new_session(&mut self, entry: &Entry) -> String {
+        let (directory, branch) = match entry {
+            Entry::Typed(item) => (item.cwd(), format!("todo-{}", item.id())),
+            Entry::Issue { issue, .. } => (self.reviews.checkouts.get(&issue.full_repository).cloned().unwrap_or_default(),
+                                           format!("issue-{}", issue.number)),
+        };
+        if directory.is_empty() {
+            return "no local checkout of this issue's repository: clone it first".into();
+        }
+        let key = entry.key();
+        let text = todo::with_todo_note(&todo::prompt_of(entry), &key);
+        let text = match entry {
+            Entry::Typed(item) if item.is_design() => format!("Load the figcraft-design skill first. {text}"),
+            _ => text,
+        };
+        manager_in_background(&["parallel", &directory, &branch, &text]);
+        self.todos.set_status(&key, "doing", "");
+        format!("starting a new session in a clone of {} (branch {branch})", project_name(&directory))
+    }
+
     /// The session in the session pane, when it can take this item: running, not the designer, and
     /// on the item's project (by name, as the Todo list is narrowed) or the issue's repository.
     fn viewed_session_for(&self, entry: &Entry) -> Option<Session> {
@@ -1710,7 +1738,7 @@ impl App {
             todo::PROPOSED => vec![("y", "approve"), ("n", "decline"), ("⏎", "details"), ("e", "edit"), ("[ ]", "tabs")],
             "doing" => vec![("d", "done"), ("⏎", "details"), ("i", "back to to do"), ("e", "edit"), ("t", "add"), ("[ ]", "tabs")],
             "done" => vec![("⏎", "details"), ("d", "back to to do"), ("t", "add"), ("[ ]", "tabs")],
-            _ => vec![("h", "to Claude"), ("⏎", "details"), ("Q", "queue"), ("i", "doing"), ("d", "done"), ("e", "edit"), ("t", "add"), ("[ ]", "tabs")],
+            _ => vec![("h", "to Claude"), ("N", "to a new session"), ("⏎", "details"), ("Q", "queue"), ("i", "doing"), ("d", "done"), ("e", "edit"), ("t", "add"), ("[ ]", "tabs")],
         }
     }
 
@@ -1726,6 +1754,7 @@ impl App {
             _ => vec![("⏎", "the item's details: title, notes, why Claude proposed it, who filed it, when"),
                       ("[ ]", "previous / next tab: Open (Proposed, To do and In progress together) · Proposed · To do · In progress · Done"),
                       ("h", "hand the item to Claude: the session on screen if it is on the item's project (a parallel clone too), else the project's running session, or a new one"),
+                      ("N", "hand the item to a new session, in a parallel clone of its repository on a branch named after it (todo-<id>, issue-<n>), never to a running one"),
                       ("e", "edit the title and notes in your editor, in a popup (first line: the title)"),
                       ("y n", "approve or decline an idea Claude proposed; a declined idea is not proposed again"),
                       ("Q", "queue it (again: unqueue): a session of its project idle for 5 min at its prompt takes the first queued item, by priority, one at a time"),

@@ -1792,3 +1792,16 @@ fn the_push_after_the_apply_waits_for_its_own_yes() {
     assert!(shown.contains("Not pushed."), "{shown}");
     assert!(manager.calls("ssh").is_empty(), "pushed without a yes");
 }
+
+#[test]
+fn a_parallel_session_can_start_with_a_prompt_kept_out_of_the_log() {
+    // The Todo panel's N: the item is the new session's first message.
+    let manager = Manager::new();
+    manager.git_repository();
+    let clones = manager.sandbox.root.join("clones");
+    let result = manager.run(&["parallel", &path_str(&manager.project), "todo-0123abcd", "add a healthcheck"], &[("CLAUDE_SESSIONS_CLONES", &path_str(&clones))]);
+    assert_eq!(result.status.code(), Some(0), "{}", stderr(&result));
+    let start = manager.tmux_calls("respawn-pane").into_iter().find(|call| call.contains("claude $argv")).expect("no session started");
+    assert!(start.contains(&format!("-c {} ", clones.join("proj-a/todo-0123abcd").display())) && start.ends_with("add a healthcheck"), "{start}");
+    assert!(manager.log_lines().iter().all(|line| !line.contains("healthcheck")), "{:?}", manager.log_lines());
+}

@@ -1150,8 +1150,8 @@ show_failure() { # message
 }
 
 # A new session on its own branch, in its own clone of the repository (the sidebar's A).
-parallel_session() { # dir branch
-    local directory=$1 branch=$2 clone
+parallel_session() { # dir branch [prompt: its first message, the Todo panel's N]
+    local directory=$1 branch=$2 prompt=${3:-} clone
     require_plain_directory "$directory"
     if ! git check-ref-format --branch "$branch" >/dev/null 2>&1; then
         show_failure "not a branch name: $branch"; return 1
@@ -1162,7 +1162,12 @@ parallel_session() { # dir branch
     # The clone may be one a session already ran in, with a .git/config it could write: git runs
     # inside greywall there, as for lazygit.
     git_in_sandbox "$clone" switch --quiet -c "$branch" 2>/dev/null || git_in_sandbox "$clone" switch --quiet "$branch"
-    new_session "$clone"
+    if [[ -z $prompt ]]; then
+        new_session "$clone"
+        return
+    fi
+    [[ $prompt == -* ]] && prompt="Task: $prompt" # never an option of claude's
+    new_session "$clone" "$prompt"
 }
 
 git_in_sandbox() { # dir git-arguments...
@@ -1566,6 +1571,10 @@ elif [[ $log_command == new ]]; then
     # claude's own arguments after the directory may be a prompt: count them, do not copy them.
     log_arguments="${2:-}"
     if (( $# > 2 )); then log_arguments+=" (+$(( $# - 2 )) claude arguments)"; fi
+elif [[ $log_command == parallel ]]; then
+    # The Todo panel's N passes the item as the first prompt: its length, not its text.
+    log_arguments="${2:-} ${3:-}"
+    if (( $# > 3 )); then log_arguments+=" (prompt of ${#4} characters)"; fi
 fi
 if [[ $log_command == label-state || $log_command == focus-viewer ]]; then
     # Called on every view change: only their failures are worth a line (40% of the log were these).
@@ -1622,7 +1631,7 @@ case ${1:-attach} in
     push-run) push_run "${2:?usage: claude-sessions push-run <dir>}" ;;
     apply-dotfiles) apply_dotfiles "${2:-}" ;;
     apply-run) apply_run "${2:?usage: claude-sessions apply-run <dotfiles clone>}" ;;
-    parallel) parallel_session "${2:?usage: claude-sessions parallel <dir> <branch>}" "${3:?usage: claude-sessions parallel <dir> <branch>}" ;;
+    parallel) parallel_session "${2:?usage: claude-sessions parallel <dir> <branch> [prompt]}" "${3:?usage: claude-sessions parallel <dir> <branch> [prompt]}" "${4:-}" ;;
     review) review_session "${2:?usage: claude-sessions review <dir> <pr-number>}" "${3:?usage: claude-sessions review <dir> <pr-number>}" ;;
     clones) clones_popup ;;
     clones-review) clones_review ;;

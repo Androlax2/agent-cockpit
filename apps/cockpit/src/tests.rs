@@ -2052,3 +2052,20 @@ fn a_dotfiles_card_shows_what_the_live_checkout_has_not_pushed_and_u_pushes_it()
     assert!(badges.contains(&"↑2 unpushed".to_string()), "{badges:?}");
     assert!(app.sessions_hints().contains(&("U", "push")), "{:?}", app.sessions_hints());
 }
+
+#[test]
+fn n_hands_the_item_to_a_new_session_in_a_clone_even_with_one_running() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "runway", "/r/runway", 1)]));
+    fixture.write("run/claude-sessions.current", SESSION_A);
+    let mut app = fixture.app();
+    let healthcheck = app.todos.add("runway", "/r/runway", "add a healthcheck");
+    app.build();
+    app.focus_panel(3);
+    app.panels[3].selected = 0;
+    app.handle(Key::Char('N'), &mut FakeScreen::default());
+    let call = fixture.wait_for_calls("claude-sessions", 1).remove(0);
+    assert!(call.starts_with(&format!("claude-sessions parallel /r/runway todo-{healthcheck} ")) && call.contains("add a healthcheck"), "{call}");
+    assert!(!call.contains(" say "), "sent to the running session: {call}");
+    assert_eq!(app.todos.status_of(&healthcheck), "doing");
+}
