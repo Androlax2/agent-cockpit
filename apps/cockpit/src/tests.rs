@@ -616,6 +616,19 @@ fn pull_requests_and_todo_with_nothing_open_collapse_to_their_borders() {
 }
 
 #[test]
+fn a_collapsed_panel_shows_no_scroll_marker_from_one_frame_to_the_next() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    for _ in 0..2 {
+        let buffer = render(&mut app, 60, 45);
+        let markers: Vec<String> = (0..45).map(|y| (0..60).map(|x| buffer[(x, y)].symbol().to_string()).collect::<String>())
+            .filter(|row| row.contains('▲') || row.contains('▼')).collect();
+        assert!(markers.is_empty(), "{markers:?}");
+        assert_eq!(app.panels[2].scroll, 0);
+    }
+}
+
+#[test]
 fn a_collapsed_panel_opens_while_focused() {
     let fixture = Fixture::new();
     let mut app = fixture.app();

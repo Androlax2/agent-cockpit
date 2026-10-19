@@ -237,6 +237,11 @@ impl PanelState {
     }
 
     fn keep_selected_visible(&mut self, inner_height: usize) {
+        // A collapsed panel shows no line: scrolling it would flip between 0 and 1 at every frame.
+        if inner_height == 0 {
+            self.scroll = 0;
+            return;
+        }
         let target = self.lines.iter().position(|line| line.item == Some(self.selected)).unwrap_or(0);
         if target < self.scroll {
             self.scroll = target.saturating_sub(1);
@@ -1891,7 +1896,7 @@ impl App {
         }
         put(buffer, top + height - 1, 0, &format!("└{}┘", "─".repeat(inner)), border);
         let hidden_below = panel.lines.len() as i64 - panel.scroll as i64 - inner_height as i64;
-        if hidden_below > 0 {
+        if hidden_below > 0 && inner_height > 0 {
             let note = format!(" ▼ {hidden_below} ");
             put(buffer, top + height - 1, width - 3 - width_of(&note) as u16, &note, dim(FG_DARK));
         }
