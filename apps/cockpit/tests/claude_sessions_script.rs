@@ -1194,3 +1194,20 @@ fn escape_closes_the_alt_q_prompt_without_queuing() {
     let _ = child.wait();
     assert!(!manager.sandbox.state.join(format!("claude-sessions/prompt-queue/{SESSION_A}")).exists(), "queued after Escape");
 }
+
+#[test]
+fn run_with_the_tmux_servers_short_path_it_still_finds_its_helpers() {
+    // A tmux popup's PATH has no ~/.local/bin: osd-show must still be reached from there.
+    let manager = Manager::new();
+    let helpers = manager.sandbox.home.join(".local/bin");
+    fs::create_dir_all(&helpers).unwrap();
+    let log = manager.sandbox.root.join("helper.log");
+    let helper = helpers.join("osd-show");
+    fs::write(&helper, format!("#!/bin/sh\necho \"$*\" >> {}\n", log.display())).unwrap();
+    Command::new("chmod").arg("755").arg(&helper).status().unwrap();
+    let path = format!("{}:/usr/bin:/bin", manager.sandbox.shims.display());
+    let shims_without_osd_show = manager.sandbox.shims.join("osd-show");
+    let _ = fs::remove_file(&shims_without_osd_show);
+    manager.run(&["view", SESSION_A], &[("PATH", &path)]);
+    assert!(fs::read_to_string(&log).unwrap_or_default().contains("session-seen"), "osd-show not found");
+}

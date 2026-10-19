@@ -73,6 +73,10 @@
 #   claude-sessions answer <id> yes|no
 #                                answer its open permission dialog (the sidebar's Y and N)
 set -euo pipefail
+# Run from a tmux popup or binding, this gets the tmux server's PATH (/usr/local/bin:/usr/bin): the
+# helpers it calls (osd-show, osd, claude-sessions-sidebar) live in ~/.local/bin. Without it a U push
+# never told the daemon, and the card kept its "unpushed" count.
+case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) PATH="$HOME/.local/bin:$PATH" ;; esac
 
 MANAGER=claude-manager
 MANAGER_WINDOW="$MANAGER:manager"
