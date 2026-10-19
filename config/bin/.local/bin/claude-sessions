@@ -909,10 +909,25 @@ restart_stale_osd() {
     setsid -f "$0" restart-osd-when-idle >/dev/null 2>&1
 }
 
+# One waiter at a time: several sessions reloading around one apply each scheduled a restart, the
+# waiters all saw the last approval close at once, and six restarts in a second hit systemd's start
+# limit (2026-10-19 19:17, osd.service failed). A second waiter leaves; the one left checks again
+# that the daemon still runs an older build before it restarts it.
+OSD_RESTART_LOCK="${XDG_RUNTIME_DIR:-/tmp}/claude-sessions.osd-restart.lock"
+
 restart_osd_when_idle() {
+    exec {lock}>"$OSD_RESTART_LOCK"
+    if ! flock -n "$lock"; then
+        log_event INFO manager "osd.service restart already waiting: this one leaves"
+        return 0
+    fi
     while tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -q '^claude-run-'; do
         sleep 2
     done
+    if ! osd_is_stale; then
+        log_event INFO manager "osd.service already on its new build: no restart"
+        return 0
+    fi
     if systemctl --user restart osd.service; then
         log_event INFO manager "osd.service restarted on its new build"
     else

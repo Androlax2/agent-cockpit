@@ -1699,14 +1699,14 @@ fn reload_leaves_an_osd_daemon_on_its_build_alone() {
 fn the_osd_daemon_restarts_only_once_no_approval_is_open() {
     // A restart forgets the approval it shows: its pane and window would stay.
     let manager = Manager::new();
-    osd_daemon(&manager, 3600, 60);
+    let binary = osd_daemon(&manager, 3600, 60);
     let approvals = manager.sandbox.root.join("approvals-left");
     fs::write(&approvals, "2").unwrap();
     // The fake tmux lists one approval for the first two looks, then none.
     manager.sandbox.shim("tmux", &format!(r#"if [[ $1 == list-sessions ]]; then
   left=$(cat {0}); if (( left > 0 )); then echo claude-run-0123456789ab; echo $(( left - 1 )) > {0}; fi; exit 0
 fi"#, approvals.display()));
-    let output = finish(manager.sandbox.command(bin().join("claude-sessions"), &[]).arg("restart-osd-when-idle")
+    let output = finish(manager.sandbox.command(bin().join("claude-sessions"), &[("CLAUDE_SESSIONS_OSD_BINARY", &binary)]).arg("restart-osd-when-idle")
         .stdout(std::process::Stdio::piped()).spawn().unwrap(), std::time::Duration::from_secs(15));
     assert_eq!(output.status.code(), Some(0));
     assert_eq!(manager.calls("tmux").iter().filter(|call| call.starts_with("tmux list-sessions")).count(), 3);
@@ -1856,4 +1856,34 @@ fn a_parallel_session_can_start_with_a_prompt_kept_out_of_the_log() {
     let start = manager.tmux_calls("respawn-pane").into_iter().find(|call| call.contains("claude $argv")).expect("no session started");
     assert!(start.contains(&format!("-c {} ", clones.join("proj-a/todo-0123abcd").display())) && start.ends_with("add a healthcheck"), "{start}");
     assert!(manager.log_lines().iter().all(|line| !line.contains("healthcheck")), "{:?}", manager.log_lines());
+}
+
+fn restarts(manager: &Manager) -> usize {
+    manager.calls("systemctl").iter().filter(|call| *call == "systemctl --user restart osd.service").count()
+}
+
+#[test]
+fn waiters_started_together_restart_the_daemon_once() {
+    // Six restarts in a second hit systemd's start limit (2026-10-19): one waiter at a time.
+    let manager = Manager::new();
+    let binary = osd_daemon(&manager, 3600, 60);
+    // An approval stays open for a second, so every waiter is already waiting when it closes.
+    let opened = std::time::Instant::now();
+    manager.sandbox.shim("tmux", &format!(r#"[[ $1 == list-sessions ]] && (( $(date +%s) < {} )) && echo claude-run-0123456789ab; exit 0"#,
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() + 2));
+    let waiters: Vec<std::process::Child> = (0..3).map(|_| manager.sandbox.command(bin().join("claude-sessions"), &[("CLAUDE_SESSIONS_OSD_BINARY", &binary)])
+        .arg("restart-osd-when-idle").stdout(std::process::Stdio::null()).spawn().unwrap()).collect();
+    for waiter in waiters {
+        finish(waiter, std::time::Duration::from_secs(15));
+    }
+    assert!(opened.elapsed() >= std::time::Duration::from_secs(1));
+    assert_eq!(restarts(&manager), 1);
+}
+
+#[test]
+fn a_daemon_already_on_its_build_is_not_restarted() {
+    let manager = Manager::new();
+    let binary = osd_daemon(&manager, 60, 3600);
+    manager.sandbox.run(bin().join("claude-sessions"), &["restart-osd-when-idle"], &[("CLAUDE_SESSIONS_OSD_BINARY", &binary)]);
+    assert_eq!(restarts(&manager), 0);
 }
