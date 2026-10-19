@@ -207,6 +207,7 @@ view_session() {
     # Nested on purpose: the inner client is the real, interactive session.
     tmux respawn-pane -k -t "$(viewer_pane)" env -u TMUX tmux attach-session -t "=$target"
     printf '%s\n' "$id" > "$CURRENT"
+    place_approval
     # Its banner ("waiting for your input") has been read now that the session is on screen.
     osd-show session-seen "$id" 2>/dev/null || true
     label_panes "$(session_field "$id" project)"
@@ -1033,30 +1034,62 @@ prs_window() {
 # session pane. It takes the cursor when Theo is in the session pane, not when he is in the
 # column (the other sessions stay usable there; Ctrl+Tab reaches it).
 # "close" removes the pane. Nothing happens when the manager does not run.
+# The approval being asked, and the session that asked it ("<id> <session>"): its pane shows only
+# under that session, and comes back when Theo returns to it (view_session calls place_approval).
+APPROVAL_STATE="${XDG_RUNTIME_DIR:-/tmp}/claude-sessions-approval"
+RUNS_DIR="${CLAUDE_RUNS_DIR:-$HOME/.cache/claude/runs}"
+
 approval_pane() { # id | close
-    local pane
     tmux has-session -t "=$MANAGER" 2>/dev/null || return 0
-    pane=$(pane_by_role approval)
     if [[ $1 == close ]]; then
-        # The pane closes itself when its approval ends (remain-on-exit off), often just before this
-        # close arrives: a pane already gone is the outcome wanted, not a failure.
-        if [[ -n $pane ]]; then tmux kill-pane -t "$pane" 2>/dev/null || true; fi
+        rm -f "$APPROVAL_STATE"
+        hide_approval
         return 0
     fi
     [[ $1 =~ ^[0-9a-f]{12}$ ]] || { echo "claude-sessions: not a run request id: $1" >&2; return 1; }
-    # Theo in the session pane: the cursor moves to the approval (claude-run-approve drops what he
-    # typed in the first half second, and Decline is the default). In the column it stays put.
-    local was_in_session
-    was_in_session=$(tmux display-message -p -t "$(viewer_pane)" '#{pane_active}' 2>/dev/null || true)
-    if [[ -n $pane ]]; then
-        tmux respawn-pane -k -t "$pane" env -u TMUX tmux attach-session -t "=claude-run-$1"
-    else
-        pane=$(tmux split-window -v -d -l 40% -t "$(viewer_pane)" -P -F '#{pane_id}' env -u TMUX tmux attach-session -t "=claude-run-$1")
-        tag_pane "$pane" approval
+    # The session named in the request (ask-to-run writes it from inside the sandbox): it only
+    # decides under which session the pane shows; the command and its project show in the pane.
+    local session
+    session=$(jq -r '.session // empty' "$RUNS_DIR/$1.request" 2>/dev/null || true)
+    [[ $session =~ ^[0-9a-f-]{36}$ ]] || session=""
+    printf '%s %s\n' "$1" "$session" > "$APPROVAL_STATE"
+    hide_approval
+    place_approval focus
+}
+
+# The pane closes itself when its approval ends (remain-on-exit off), often just before a close
+# arrives: a pane already gone is the outcome wanted, not a failure.
+hide_approval() {
+    local pane
+    pane=$(pane_by_role approval)
+    if [[ -n $pane ]]; then tmux kill-pane -t "$pane" 2>/dev/null || true; fi
+}
+
+# The approval pane under the session pane while the session shown is the one that asked (or the
+# request names none); hidden under any other session. "focus": Theo in the session pane gets the
+# cursor moved to it (claude-run-approve drops what he typed in the first half second, and Decline
+# is the default); in the column it stays put.
+place_approval() { # [focus]
+    local id session pane current was_in_session
+    read -r id session < "$APPROVAL_STATE" 2>/dev/null || return 0
+    if ! tmux has-session -t "=claude-run-$id" 2>/dev/null; then
+        rm -f "$APPROVAL_STATE"
+        hide_approval
+        return 0
     fi
+    current=$(cat "$CURRENT" 2>/dev/null || true)
+    if [[ -n $session && $session != "$current" ]]; then
+        hide_approval
+        return 0
+    fi
+    pane=$(pane_by_role approval)
+    [[ -z $pane ]] || return 0
+    was_in_session=$(tmux display-message -p -t "$(viewer_pane)" '#{pane_active}' 2>/dev/null || true)
+    pane=$(tmux split-window -v -d -l 40% -t "$(viewer_pane)" -P -F '#{pane_id}' env -u TMUX tmux attach-session -t "=claude-run-$id")
+    tag_pane "$pane" approval
     # Gone with its approval even when no "close" comes (the daemon restarted meanwhile): no dead pane left.
     tmux set-option -p -t "$pane" remain-on-exit off
-    if [[ $was_in_session == 1 ]]; then tmux select-pane -t "$pane"; fi
+    if [[ ${1:-} == focus && $was_in_session == 1 ]]; then tmux select-pane -t "$pane"; fi
 }
 
 # lazygit on a session's repository in a popup over the manager (the sidebar's g): review and

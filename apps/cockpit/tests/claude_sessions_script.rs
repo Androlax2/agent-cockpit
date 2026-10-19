@@ -26,7 +26,7 @@ case $1 in
   set-option) if [[ $2 == -p && $5 == @role ]]; then echo "$4 $6" >> "$roles"; fi ;;
   capture-pane) printf '%b' "$SHIM_PANE_TEXT" ;;
   list-clients) echo "/dev/pts/9" ;;
-  kill-pane) if [[ -n $SHIM_PANE_GONE ]]; then echo "can't find pane: $3" >&2; exit 1; fi ;;
+  kill-pane) if [[ -n $SHIM_PANE_GONE ]]; then echo "can't find pane: $3" >&2; exit 1; fi; [[ -f $roles ]] && sed -i "/^$3 /d" "$roles" ;;
 esac
 "#;
 
@@ -1097,4 +1097,40 @@ fn a_new_session_with_an_effort_hands_it_to_claude_not_to_fish() {
     manager.run(&["new", &path_str(&manager.project), "--effort", "max"], &[]);
     let launch = manager.tmux_calls("respawn-pane").into_iter().find(|call| call.contains("claude $argv")).expect("no launch");
     assert!(fish_accepts(&fish_arguments(&launch)), "fish refuses: {launch}");
+}
+
+fn file_request(manager: &Manager, id: &str, session: &str) -> String {
+    let runs = manager.sandbox.root.join("runs");
+    fs::create_dir_all(&runs).unwrap();
+    fs::write(runs.join(format!("{id}.request")), json!({"id": id, "session": session}).to_string()).unwrap();
+    runs.display().to_string()
+}
+
+fn approval_shown(manager: &Manager) -> bool {
+    fs::read_to_string(&manager.roles).unwrap().lines().any(|line| line.ends_with(" approval"))
+}
+
+#[test]
+fn the_approval_pane_hides_under_a_session_that_did_not_ask() {
+    let manager = Manager::new();
+    let runs = file_request(&manager, "0123456789ab", SESSION_B);
+    fs::write(manager.runtime_file("claude-sessions.current"), format!("{SESSION_A}\n")).unwrap();
+    manager.run(&["approval-pane", "0123456789ab"], &[("CLAUDE_RUNS_DIR", &runs)]);
+    assert!(!approval_shown(&manager), "shown under a session that did not ask");
+}
+
+#[test]
+fn the_approval_pane_follows_theo_back_to_the_session_that_asked() {
+    let manager = Manager::new();
+    let runs = file_request(&manager, "0123456789ab", SESSION_A);
+    fs::write(manager.runtime_file("claude-sessions.current"), format!("{SESSION_A}\n")).unwrap();
+    manager.run(&["approval-pane", "0123456789ab"], &[("CLAUDE_RUNS_DIR", &runs)]);
+    assert!(approval_shown(&manager));
+    fs::write(&manager.snapshot, json!({"sessions": [
+        {"session": SESSION_A, "state": "waiting", "project": "proj-a", "cwd": path_str(&manager.project), "tmux_pane": "%4"},
+        {"session": SESSION_B, "state": "waiting", "project": "proj-b", "cwd": path_str(&manager.project), "tmux_pane": "%5"}]}).to_string()).unwrap();
+    manager.run(&["view", SESSION_B], &[]);
+    assert!(!approval_shown(&manager), "still shown under the other session");
+    manager.run(&["view", SESSION_A], &[]);
+    assert!(approval_shown(&manager), "not back under the session that asked");
 }
