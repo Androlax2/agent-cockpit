@@ -1,6 +1,7 @@
 # What every agent's launcher (claude, opencode) prepares before greywall starts, sourced by them:
 # the guards, the per-project paths and secrets and the forwards, collected in greywall_options.
-# Not executable: this folder is on PATH. The launcher sets $agent (messages) before sourcing it.
+# Not executable: this folder is on PATH. The launcher sets $agent (messages) before sourcing it,
+# and $own_folders: the denyRead entries of greywall.json that are its agent's own data.
 
 # Chrome writes its crash reports under the config dir even headless; give it one the sandbox allows.
 export CHROME_CONFIG_HOME="$HOME/.cache/chrome-sandbox"
@@ -58,9 +59,15 @@ other_projects=$(for folder in "$claude_projects"/*/; do
     [ -d "$folder" ] && [ "${folder%/}" != "$claude_projects/$own_slug" ] && printf '%s\n' "${folder%/}"
 done)
 settings_dir="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/greywall-agents"
-settings="$settings_dir/$own_slug.json"
+settings="$settings_dir/$own_slug.$agent.json"
 mkdir -p "$settings_dir"
-if ! jq --arg others "$other_projects" '.filesystem.denyWrite += ($others | split("\n") | map(select(. != "")))' \
+# greywall.json hides some agents' data from every sandbox (opencode's database and credentials
+# from Claude sessions). Hidden, it is an empty folder mounted over the one the agent's profile
+# allows, last, so the agent's own sessions lost what they wrote (opencode's sessions, on
+# 2026-10-19): its own entries leave denyRead in its settings.
+if ! jq --arg others "$other_projects" --arg own "${own_folders:-}" \
+        '.filesystem.denyWrite += ($others | split("\n") | map(select(. != "")))
+         | .filesystem.denyRead -= ($own | split(" ") | map(select(. != "")))' \
         "$HOME/.config/greywall/greywall.json" > "$settings.new"; then
     echo "$agent launcher: cannot write $settings from ~/.config/greywall/greywall.json, not starting." >&2
     exit 1

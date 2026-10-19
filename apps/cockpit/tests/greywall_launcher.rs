@@ -41,7 +41,7 @@ impl Launch {
         fs::create_dir_all(sandbox.home.join("IdeaProjects/proj-b")).unwrap();
         fs::create_dir_all(sandbox.home.join("dotfiles")).unwrap();
         for (path, content) in [(".local/share/greyproxy/ca-cert.pem", ""), (".local/share/agent-shims/bin/wl-paste", "#!/bin/sh\n"),
-                                (".config/greywall/greywall.json", r#"{"filesystem": {"denyWrite": [".git/hooks"]}}"#)] {
+                                (".config/greywall/greywall.json", r#"{"filesystem": {"denyWrite": [".git/hooks"], "denyRead": ["~/.ssh/id_*", "~/.local/share/opencode/**", "~/.config/opencode/**"]}}"#)] {
             let file = sandbox.home.join(path);
             fs::create_dir_all(file.parent().unwrap()).unwrap();
             fs::write(file, content).unwrap();
@@ -84,7 +84,11 @@ esac"#);
     }
 
     fn settings(&self) -> serde_json::Value {
-        let path = self.sandbox.runtime.join("greywall-agents").join(format!("{}.json", Launch::slug(&self.project)));
+        self.settings_of("claude")
+    }
+
+    fn settings_of(&self, agent: &str) -> serde_json::Value {
+        let path = self.sandbox.runtime.join("greywall-agents").join(format!("{}.{agent}.json", Launch::slug(&self.project)));
         serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap()
     }
 }
@@ -101,7 +105,7 @@ fn other_projects_folders_are_read_only_for(agent: &str) {
     let launch = Launch::new();
     let started = launch.run_agent(agent, &[], &[]);
     assert!(started.contains("--settings "), "{started}");
-    let denied: Vec<String> = launch.settings()["filesystem"]["denyWrite"].as_array().unwrap().iter()
+    let denied: Vec<String> = launch.settings_of(agent)["filesystem"]["denyWrite"].as_array().unwrap().iter()
         .map(|path| path.as_str().unwrap().to_string()).collect();
     let projects = launch.sandbox.home.join(".claude/projects");
     let other = projects.join(Launch::slug(&launch.sandbox.home.join("IdeaProjects/proj-b"))).display().to_string();
@@ -304,5 +308,32 @@ fn the_opencode_profile_names_no_link_in_the_hidden_claude_folder() {
     let readable = opencode_profile()["filesystem"]["allowRead"].clone();
     for link in ["~/.claude/CLAUDE.md", "~/.claude/hooks"] {
         assert!(!readable.as_array().unwrap().iter().any(|entry| entry == link), "{link}: {readable}");
+    }
+}
+
+fn denied_reads(settings: &serde_json::Value) -> Vec<String> {
+    settings["filesystem"]["denyRead"].as_array().unwrap().iter().map(|path| path.as_str().unwrap().to_string()).collect()
+}
+
+#[test]
+fn opencode_sees_its_own_data_and_claude_does_not() {
+    // Hidden, opencode's folder was an empty one mounted over its database: no session it ran was
+    // kept (/resume showed nothing on 2026-10-19).
+    let launch = Launch::new();
+    launch.run_agent("opencode", &[], &[]);
+    launch.run_agent("claude", &[], &[]);
+    let opencode = denied_reads(&launch.settings_of("opencode"));
+    let claude = denied_reads(&launch.settings_of("claude"));
+    assert_eq!(opencode, ["~/.ssh/id_*"], "every other rule stays");
+    assert!(claude.contains(&"~/.local/share/opencode/**".to_string()) && claude.contains(&"~/.config/opencode/**".to_string()), "{claude:?}");
+}
+
+#[test]
+fn each_agent_starts_on_a_settings_file_of_its_own() {
+    // One file per folder was rewritten by whichever agent started there last.
+    let launch = Launch::new();
+    for agent in AGENTS {
+        let started = launch.run_agent(agent, &[], &[]);
+        assert!(started.contains(&format!(".{agent}.json ")), "{started}");
     }
 }

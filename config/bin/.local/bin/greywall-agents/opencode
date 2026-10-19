@@ -1,6 +1,8 @@
 #!/bin/sh
 # Keep this launcher separate from the binary replaced by vendor updates.
 agent=opencode
+# Its database, credentials and config, which greywall.json hides from every other sandbox.
+own_folders="~/.local/share/opencode/** ~/.config/opencode/**"
 # Sessions do not update opencode, for the reason the claude launcher gives for Claude Code.
 export OPENCODE_DISABLE_AUTOUPDATE=1
 . "$(dirname "$0")/launcher-common.sh"
