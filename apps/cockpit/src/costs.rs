@@ -219,6 +219,29 @@ pub fn active_seconds(archive: &Connection, first_day: &str) -> rusqlite::Result
     rows.collect()
 }
 
+/// Seconds with Claude since each of `since` (Unix times), all sessions together: each session's
+/// active stretches (gaps under ACTIVE_GAP_S between its replies) merged where they overlap, so
+/// three sessions working through the same hour count one hour.
+pub fn time_with_claude(archive: &Connection, since: &[f64]) -> rusqlite::Result<Vec<f64>> {
+    let Some(earliest) = since.iter().copied().reduce(f64::min) else { return Ok(Vec::new()) };
+    let first_day = chrono::DateTime::from_timestamp(earliest as i64 - 86_400, 0).map(|time| time.date_naive().to_string()).unwrap_or_default();
+    let mut statement = archive.prepare(
+        "select (julianday(previous) - 2440587.5) * 86400.0, (julianday(at) - 2440587.5) * 86400.0 from (
+             select at, lag(at) over (partition by session order by at) as previous from replies where day >= ?1
+         ) where previous is not null and (julianday(at) - julianday(previous)) * 86400.0 < ?2")?;
+    let mut stretches: Vec<(f64, f64)> = statement.query_map(params![first_day, ACTIVE_GAP_S], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    stretches.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut merged: Vec<(f64, f64)> = Vec::new();
+    for (start, end) in stretches {
+        match merged.last_mut() {
+            Some(last) if start <= last.1 => last.1 = last.1.max(end),
+            _ => merged.push((start, end)),
+        }
+    }
+    Ok(since.iter().map(|from| merged.iter().map(|(start, end)| (end - start.max(*from)).max(0.0)).sum()).collect())
+}
+
 /// Cost per day, output tokens of replies without a known price per model, and the all-time cost.
 pub fn archived_costs(archive: &Connection) -> rusqlite::Result<(HashMap<String, f64>, HashMap<String, i64>, f64)> {
     let mut days = HashMap::new();
@@ -244,6 +267,8 @@ struct State {
     /// Seconds spent with Claude per project (active_seconds): today, and all the archive holds.
     active_today: HashMap<String, f64>,
     active_all_time: HashMap<String, f64>,
+    /// Seconds with Claude, all sessions together (time_with_claude): today, this week, this month.
+    time_together: [f64; 3],
     error: String,
     scanned_at: f64,
     scanning: bool,
@@ -253,6 +278,13 @@ struct State {
 #[derive(Clone, Default)]
 pub struct Costs {
     state: Arc<Mutex<State>>,
+}
+
+/// When today, this week (from Monday) and this month began, local time, as Unix times.
+fn period_starts() -> [f64; 3] {
+    let today = Local::now().date_naive();
+    let midnight = |day: NaiveDate| day.and_hms_opt(0, 0, 0).and_then(|time| time.and_local_timezone(Local).earliest()).map(|time| time.timestamp() as f64).unwrap_or(0.0);
+    [midnight(today), midnight(today - Duration::days(today.weekday().num_days_from_monday() as i64)), midnight(today.with_day(1).unwrap_or(today))]
 }
 
 pub struct Totals {
@@ -274,13 +306,16 @@ impl Costs {
         std::thread::spawn(move || {
             let path = paths::usage_archive();
             let today = Local::now().date_naive().to_string();
+            let starts = period_starts();
             let result = open_archive(&path).and_then(|mut archive| {
                 archive_transcripts(&mut archive, &paths::transcripts())?;
-                Ok((archived_costs(&archive)?, active_seconds(&archive, &today)?, active_seconds(&archive, "0000-00-00")?))
+                Ok((archived_costs(&archive)?, active_seconds(&archive, &today)?, active_seconds(&archive, "0000-00-00")?,
+                    time_with_claude(&archive, &starts)?))
             });
             let mut state = shared.lock().unwrap();
             match result {
-                Ok(((days, _, all_time), active_today, active_all_time)) => {
+                Ok(((days, _, all_time), active_today, active_all_time, together)) => {
+                    state.time_together = [together[0], together[1], together[2]];
                     state.days = days;
                     state.all_time = all_time;
                     state.active_today = active_today;
@@ -316,6 +351,12 @@ impl Costs {
 
     pub fn all_time(&self) -> f64 {
         self.state.lock().unwrap().all_time
+    }
+
+    /// Seconds with Claude, all sessions together (time_with_claude): today, this week, this month.
+    pub fn time_together(&self) -> Totals {
+        let [today, week, month] = self.state.lock().unwrap().time_together;
+        Totals { today, week, month }
     }
 
     /// Seconds spent with Claude on a project (active_seconds): today, and in all.

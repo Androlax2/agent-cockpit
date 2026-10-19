@@ -50,6 +50,7 @@ const QUEUE_CHECK_S: f64 = 30.0;
 const RESTORE_CHECK_S: f64 = 30.0;
 const COSTS_LABEL: &str = "At API prices";
 const CLAUDE_LABEL: &str = "Claude";
+const TIME_LABEL: &str = "Time with Claude";
 /// The Todo panel's tabs: the statuses each one shows. Open merges everything not done yet.
 const TODO_TABS: [(&str, &[&str]); 5] = [("Open", &[todo::PROPOSED, "todo", "doing"]), ("Proposed", &[todo::PROPOSED]), ("To do", &["todo"]),
                                          ("In progress", &["doing"]), ("Done", &["done"])];
@@ -668,24 +669,27 @@ impl App {
         self.build_todo();
     }
 
-    /// Time spent with Claude on a project (Costs::time_spent), "⏱ 34h" or "⏱ 1h20 today · 34h"; None
-/// under a minute in all.
-pub(crate) fn time_spent_text((today, all_time): (f64, f64)) -> Option<String> {
-    let short = |seconds: f64| {
+    /// A duration as the column shows it: "42m", "3h05", then "34h".
+    pub(crate) fn duration_text(seconds: f64) -> String {
         let minutes = (seconds / 60.0).round() as i64;
         match minutes {
             0..=59 => format!("{minutes}m"),
             60..=599 => format!("{}h{:02}", minutes / 60, minutes % 60),
             _ => format!("{}h", minutes / 60),
         }
-    };
-    if all_time < 60.0 {
-        return None;
     }
-    Some(if today >= 60.0 { format!("⏱ {} today · {}", short(today), short(all_time)) } else { format!("⏱ {}", short(all_time)) })
-}
 
-/// The viewed session's state goes to the manager (its title line's colour) when it changes.
+    /// Time spent with Claude on a project (Costs::time_spent), "⏱ 34h" or "⏱ 1h20 today · 34h"; None
+    /// under a minute in all.
+    pub(crate) fn time_spent_text((today, all_time): (f64, f64)) -> Option<String> {
+        if all_time < 60.0 {
+            return None;
+        }
+        let short = Self::duration_text;
+        Some(if today >= 60.0 { format!("⏱ {} today · {}", short(today), short(all_time)) } else { format!("⏱ {}", short(all_time)) })
+    }
+
+    /// The viewed session's state goes to the manager (its title line's colour) when it changes.
     fn push_viewed_state(&mut self) {
         let viewed = current_session();
         let state = self.sessions.iter().find(|s| s.session == viewed).map(|s| s.state.clone()).unwrap_or_default();
@@ -704,7 +708,7 @@ pub(crate) fn time_spent_text((today, all_time): (f64, f64)) -> Option<String> {
         let windows = &self.windows;
         // Every row's label shares the column, the cost and Claude rows too: sized on the usage rows
         // alone, it shrank to nothing before the first usage fetch and the values covered the labels.
-        let label_width = windows.iter().map(|w| width_of(&w.label)).chain([width_of(COSTS_LABEL), width_of(CLAUDE_LABEL)]).max().unwrap_or(0) as u16;
+        let label_width = windows.iter().map(|w| width_of(&w.label)).chain([width_of(COSTS_LABEL), width_of(CLAUDE_LABEL), width_of(TIME_LABEL)]).max().unwrap_or(0) as u16;
         let resets: Vec<String> = windows.iter().map(usage::resets_short).collect();
         let resets_width = resets.iter().map(|r| width_of(r)).max().unwrap_or(0);
         let budget = self.width as i64 - 4 - label_width as i64 - 2 - 5 - if resets_width > 0 { resets_width as i64 + 2 } else { 0 };
@@ -730,6 +734,19 @@ pub(crate) fn time_spent_text((today, all_time): (f64, f64)) -> Option<String> {
                 let amount = money(amount);
                 segments.push(segment(column, label, dim(FG_DARK)));
                 segments.push(segment(column + label.len() as u16 + 1, &amount, bold(MAGENTA)));
+                column += (label.len() + width_of(&amount) + 3) as u16;
+            }
+            lines.push(Line::new(segments));
+        }
+        // All sessions together, never the sum of the projects' times: parallel sessions overlap.
+        let together = self.costs.time_together();
+        if together.month >= 60.0 {
+            let mut segments = vec![segment(0, TIME_LABEL, style(FG))];
+            let mut column = label_width + 2;
+            for (label, seconds) in [("today", together.today), ("week", together.week), ("month", together.month)] {
+                let amount = Self::duration_text(seconds);
+                segments.push(segment(column, label, dim(FG_DARK)));
+                segments.push(segment(column + label.len() as u16 + 1, &amount, bold(CYAN)));
                 column += (label.len() + width_of(&amount) + 3) as u16;
             }
             lines.push(Line::new(segments));

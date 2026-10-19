@@ -2227,3 +2227,14 @@ fn time_spent_reads_in_minutes_then_hours() {
         assert_eq!(App::time_spent_text((today, all_time)).as_deref(), expected, "{today} {all_time}");
     }
 }
+
+#[test]
+fn time_with_claude_counts_overlapping_sessions_once() {
+    // Two sessions working through the same two minutes are two minutes with Claude, not three and a half.
+    let fixture = Fixture::new();
+    replies_at(&fixture, "s1", "/x/shop", &[0, 60, 120]);
+    replies_at(&fixture, "s2", "/x/runway", &[30, 90]);
+    let start = chrono::NaiveDate::from_ymd_opt(2026, 10, 18).unwrap().and_hms_opt(10, 0, 0).unwrap().and_utc().timestamp() as f64;
+    let together = costs::time_with_claude(&archived(&fixture), &[start, start + 60.0]).unwrap();
+    assert_eq!(together.iter().map(|seconds| seconds.round()).collect::<Vec<_>>(), [120.0, 60.0]);
+}
