@@ -1483,7 +1483,9 @@ impl App {
         let key = entry.key();
         let text = todo::with_todo_note(&text, &key);
         // A design to-do goes to the project's designer session, wherever its checkout is; any
-        // other item to a session of its folder that is not the designer.
+        // other item to the session on screen when it works on the item's project (a parallel
+        // clone's session lives in another folder than the one the item was filed in), else to a
+        // session of its folder that is not the designer.
         let design_project = match entry {
             Entry::Typed(item) if item.is_design() => Some(item.project()),
             _ => None,
@@ -1492,7 +1494,8 @@ impl App {
         let running = if let Some(project) = design_project {
             self.sessions.iter().find(|s| s.role == "designer" && s.project == project && s.state != "unknown").cloned()
         } else {
-            self.sessions.iter().find(|s| s.cwd == directory && s.state != "unknown" && s.role != "designer").cloned()
+            self.viewed_session_for(entry)
+                .or_else(|| self.sessions.iter().find(|s| s.cwd == directory && s.state != "unknown" && s.role != "designer").cloned())
         };
         let text = if is_design && running.is_none() { format!("Load the figcraft-design skill first. {text}") } else { text };
         let outcome = match &running {
@@ -1510,6 +1513,18 @@ impl App {
         };
         self.todos.set_status(&key, "doing", running.as_ref().map(|s| s.session.as_str()).unwrap_or(""));
         outcome
+    }
+
+    /// The session in the session pane, when it can take this item: running, not the designer, and
+    /// on the item's project (by name, as the Todo list is narrowed) or the issue's repository.
+    fn viewed_session_for(&self, entry: &Entry) -> Option<Session> {
+        let viewed = current_session();
+        let session = self.sessions.iter().find(|s| s.session == viewed && s.state != "unknown" && s.role != "designer")?;
+        let belongs = match entry {
+            Entry::Typed(item) => item.project() == session.project,
+            Entry::Issue { issue, .. } => self.reviews.repositories.contains(&issue.full_repository),
+        };
+        belongs.then(|| session.clone())
     }
 
     // ---- The whole column ----
@@ -1544,7 +1559,7 @@ impl App {
                       ("✓ ● ✗", "CI passing, running, failing"), ("approved", "review state: approved, changes (requested), review (required)")],
             _ => vec![("⏎", "the item's details: title, notes, why Claude proposed it, who filed it, when"),
                       ("[ ]", "previous / next tab: Proposed · To do · In progress · Done"),
-                      ("h", "hand the item to Claude: the project's running session, or a new one"),
+                      ("h", "hand the item to Claude: the session on screen if it is on the item's project (a parallel clone too), else the project's running session, or a new one"),
                       ("e", "edit the title and notes in your editor, in a popup (first line: the title)"),
                       ("y n", "approve or decline an idea Claude proposed; a declined idea is not proposed again"),
                       ("Q", "queue it (again: unqueue): a session of its project idle for 5 min at its prompt takes the first queued item, by priority, one at a time"),

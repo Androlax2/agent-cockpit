@@ -860,6 +860,31 @@ fn an_ordinary_item_skips_the_designer_session() {
 }
 
 #[test]
+fn an_item_goes_to_the_viewed_parallel_session_rather_than_the_main_checkout() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "opusline", "/r/opusline", 1),
+                            session(SESSION_B, "waiting", "opusline", "/r/.parallel/opusline/fix-login", 2)]));
+    fixture.view(SESSION_B);
+    let mut app = fixture.app();
+    app.todos.add("opusline", "/r/opusline", "fix the login redirect");
+    hand_over_first_item(&mut app);
+    assert!(fixture.wait_for_calls("claude-sessions", 1)[0].starts_with(&format!("claude-sessions say {SESSION_B} fix the login")));
+}
+
+#[test]
+fn an_item_of_another_project_skips_the_viewed_session() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "opusline", "/r/opusline", 1),
+                            session(SESSION_B, "waiting", "runway", "/r/runway", 2)]));
+    fixture.view(SESSION_B);
+    let mut app = fixture.app();
+    let id = app.todos.add("opusline", "/r/opusline", "fix the login redirect");
+    let entry = Entry::Typed(app.todos.items.iter().find(|item| item.id() == id).unwrap().clone());
+    app.hand_to_claude(&entry);
+    assert!(fixture.wait_for_calls("claude-sessions", 1)[0].starts_with(&format!("claude-sessions say {SESSION_A} fix the login")));
+}
+
+#[test]
 fn a_design_item_without_a_designer_starts_one_with_the_design_skill() {
     let fixture = Fixture::new();
     let mut app = fixture.app();
