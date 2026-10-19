@@ -1172,3 +1172,25 @@ fn alt_q_without_a_pane_asks_tmux_for_the_active_one() {
     let folder = manager.sandbox.state.join(format!("claude-sessions/prompt-queue/{SESSION_A}"));
     assert_eq!(fs::read_dir(&folder).map(|entries| entries.count()).unwrap_or(0), 1);
 }
+
+#[test]
+fn escape_closes_the_alt_q_prompt_without_queuing() {
+    // In a terminal (script gives it one), as in the popup: Escape alone ends it.
+    let manager = Manager::new();
+    let command = format!("{} queue-prompt-ask %4", bin().join("claude-sessions").display());
+    let mut child = manager.sandbox.command("script", &[]).args(["-qfec", &command, "/dev/null"])
+        .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::null()).spawn().unwrap();
+    let mut input = child.stdin.take().unwrap();
+    use std::io::Write;
+    std::thread::sleep(Duration::from_millis(500));
+    input.write_all(b"half a thought").unwrap();
+    std::thread::sleep(Duration::from_millis(200));
+    input.write_all(b"\x1b").unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    // Without the binding, this would finish the line and queue it.
+    let _ = input.write_all(b" more\r");
+    std::thread::sleep(Duration::from_millis(500));
+    drop(input);
+    let _ = child.wait();
+    assert!(!manager.sandbox.state.join(format!("claude-sessions/prompt-queue/{SESSION_A}")).exists(), "queued after Escape");
+}

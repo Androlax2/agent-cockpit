@@ -555,7 +555,10 @@ queue_prompt_ask() { # [pane]
         read -r -p "No Claude session here. Enter closes. " _ || true
         return 1
     fi
-    read -r -e -p "for $(session_field "$session" project), when its turn ends> " text || return 0
+    # Escape alone closes the popup; arrow keys (Escape then more within 30 ms) still edit the line.
+    bind 'set keyseq-timeout 30' 2>/dev/null
+    bind -x '"\e": exit 0' 2>/dev/null
+    read -r -e -p "for $(session_field "$session" project), when its turn ends (Esc cancels)> " text || return 0
     [[ -n ${text// } ]] || return 0
     if [[ $text == *[[:cntrl:]]* || ${#text} -gt 4000 ]]; then
         read -r -p "One line, without control characters. Enter closes. " _ || true
