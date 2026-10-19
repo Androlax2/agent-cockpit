@@ -37,6 +37,8 @@ const PROJECT_COLORS: [u8; 5] = [MAGENTA, CYAN, GREEN, BLUE, YELLOW];
 const HEADER_LINES: u16 = 1;
 const MIN_PANEL_LINES: u16 = 4;
 const POLL: Duration = Duration::from_millis(250);
+/// How long a session that exited cleanly may stay in the snapshot before its card shows again.
+const EXIT_SETTLE_S: f64 = 15.0;
 const DEFAULT_COLUMN_WIDTH: u16 = 60;
 const TITLES_PER_TICK: usize = 8;
 const GREYPROXY_POLL_S: f64 = 10.0;
@@ -308,6 +310,14 @@ pub trait Screen {
     fn outside(&mut self, action: &mut dyn FnMut() -> Option<String>) -> Option<String>;
 }
 
+/// A session told to exit, and the `claude-sessions exit` doing it.
+pub(crate) struct Exiting {
+    pub(crate) session: String,
+    project: String,
+    child: std::process::Child,
+    ended_at: Option<f64>,
+}
+
 pub struct App {
     pub history: History,
     pub view: ViewState,
@@ -324,6 +334,8 @@ pub struct App {
     pub filtering: bool,
     pub help_open: bool,
     pub message: String,
+    /// Sessions told to exit (x): off the list at once, back with a warning if the exit fails.
+    pub(crate) exiting: Vec<Exiting>,
     pub(crate) labelled: (String, String),
     pub(crate) menu: Option<EffortMenu>,
     pub restore: Vec<Restorable>,
@@ -361,7 +373,7 @@ impl App {
             history: History::default(), view: ViewState::load(), usage: Refresher::new(), alerts: BudgetAlerts::new(util::send_notice),
             costs: Costs::default(), reviews: Reviews::default(), todos: TodoList::load(), errors: ErrorReporter::new(),
             claude_status: ClaudeStatus::default(), panels: Default::default(), focus: 1, query: String::new(), filtering: false,
-            help_open: false, message: String::new(), labelled: Default::default(), menu: None, restore: Vec::new(),
+            help_open: false, message: String::new(), exiting: Vec::new(), labelled: Default::default(), menu: None, restore: Vec::new(),
             focus_waiting: false, held: Vec::new(), held_checked: 0.0, queue_checked: 0.0, gaming: util::gaming, restore_checked: 0.0, start_files: Vec::new(),
             width: DEFAULT_COLUMN_WIDTH, sessions: Vec::new(), windows: Vec::new(), review_rows: Vec::new(), todo_entries: Vec::new(),
             todo_scope: String::new(), shown_session: String::new(), todo_tab: TODO_TAB_TO_DO, todo_counts: [0; 4], prompts_sent: HashMap::new(), craft_roots: HashMap::new(), hit_lines: HashMap::new(), hit_actions: HashMap::new(),
@@ -580,8 +592,60 @@ impl App {
 
     // ---- Sessions ----
 
+    /// x on a card: a session in tmux leaves the list at once while `claude-sessions exit` runs.
+    fn exit_session(&mut self, session: &Session) -> String {
+        if session.tmux_pane.is_empty() {
+            return kill_session(session);
+        }
+        match util::manager_child(&["exit", &session.session]) {
+            Ok(child) => {
+                self.exiting.push(Exiting { session: session.session.clone(), project: session.project.clone(), child, ended_at: None });
+                format!("exiting {} …", session.project)
+            }
+            Err(error) => format!("⚠ cannot exit {}: {error}", session.project),
+        }
+    }
+
+    /// Drops the exits that are over: the session is gone, or it failed and its card comes back
+    /// with the reason in the footer. A clean exit may still be in the snapshot for a moment, until
+    /// its hook says it ended; after EXIT_SETTLE_S it shows again rather than vanish unexplained.
+    fn settle_exits(&mut self, running: &[Session]) {
+        let now = now();
+        let mut warnings = Vec::new();
+        self.exiting.retain_mut(|exit| {
+            if !running.iter().any(|s| s.session == exit.session) {
+                return false;
+            }
+            if exit.ended_at.is_none() {
+                match exit.child.try_wait() {
+                    Ok(None) => return true,
+                    Ok(Some(status)) if status.success() => exit.ended_at = Some(now),
+                    Ok(Some(status)) => {
+                        warnings.push(format!("⚠ {} did not exit ({status}): see ~/.local/state/claude-sessions/log", exit.project));
+                        return false;
+                    }
+                    Err(error) => {
+                        warnings.push(format!("⚠ {} exit unknown: {error}", exit.project));
+                        return false;
+                    }
+                }
+            }
+            if exit.ended_at.is_some_and(|ended| now - ended > EXIT_SETTLE_S) {
+                warnings.push(format!("⚠ {} still reports after its exit: it may live on elsewhere", exit.project));
+                return false;
+            }
+            true
+        });
+        if let Some(warning) = warnings.pop() {
+            self.message = warning;
+        }
+    }
+
     fn build_sessions(&mut self) {
-        let mut running: Vec<Session> = sessions::running().into_iter()
+        let mut running: Vec<Session> = sessions::running();
+        self.settle_exits(&running);
+        running.retain(|s| !self.exiting.iter().any(|exit| exit.session == s.session));
+        let mut running: Vec<Session> = running.into_iter()
             .filter(|s| sessions::matches(&[&s.project, &s.task], &self.query))
             .filter(|s| !self.focus_waiting || FOCUS_STATES.contains(&s.state.as_str()))
             .collect();
@@ -949,7 +1013,7 @@ impl App {
                 None => String::new(),
             },
             Key::Char('x') => match session {
-                Some(s) if self.confirm(screen, &format!("exit {}?", s.project)) => kill_session(&s),
+                Some(s) if self.confirm(screen, &format!("exit {}?", s.project)) => self.exit_session(&s),
                 _ => String::new(),
             },
             _ => String::new(),
@@ -1763,11 +1827,8 @@ fn claude_status_lines(claude_status: &ClaudeStatus, label_width: u16) -> Vec<Li
 
 /// Ends a session gracefully through the manager, or closes its terminal window when it never
 /// had a tmux pane, or else tells the daemon it is gone.
+/// A session outside tmux (exit_session handles the others): its terminal window, or its card.
 fn kill_session(session: &Session) -> String {
-    if !session.tmux_pane.is_empty() {
-        manager_in_background(&["exit", &session.session]);
-        return format!("exiting {} …", session.project);
-    }
     if !session.kitty_pid.is_empty() {
         util::refresh_hyprland_instance();
         let close = format!("hl.dsp.window.close({{ window = \"pid:{}\" }})", session.kitty_pid);

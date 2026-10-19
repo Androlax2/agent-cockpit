@@ -358,6 +358,33 @@ fn exit_goes_through_the_manager_when_there_is_a_pane() {
 }
 
 #[test]
+fn an_exiting_session_leaves_the_list_at_once() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "runway", "/r", 1), session(SESSION_B, "waiting", "opusline", "/o", 2)]));
+    fixture.shim("claude-sessions", "sleep 2");
+    let mut app = fixture.app();
+    app.handle(Key::Char('x'), &mut FakeScreen::answering(&[Key::Char('y')]));
+    app.build();
+    assert_eq!(app.sessions.iter().map(|s| s.project.as_str()).collect::<Vec<_>>(), ["opusline"]);
+}
+
+#[test]
+fn a_failed_exit_brings_the_card_back_and_says_so() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "runway", "/r", 1)]));
+    fixture.shim("claude-sessions", "exit 1");
+    let mut app = fixture.app();
+    app.handle(Key::Char('x'), &mut FakeScreen::answering(&[Key::Char('y')]));
+    for _ in 0..100 {
+        app.build();
+        if !app.sessions.is_empty() { break; }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(app.sessions.len(), 1);
+    assert!(app.message.starts_with("⚠ runway did not exit"), "{}", app.message);
+}
+
+#[test]
 fn exit_closes_the_window_of_a_session_without_a_pane() {
     // One with neither a pane nor a window gets no card at all (a_session_with_nothing_to_open_gets_no_card).
     let fixture = Fixture::new();

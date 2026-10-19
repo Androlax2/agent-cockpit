@@ -75,13 +75,18 @@ pub fn manager(arguments: &[&str]) -> String {
 /// For exit and restart, which wait on Claude for seconds: the column must not freeze meanwhile.
 /// Nobody sees its terminal, so the manager sends its error messages to the log.
 pub fn manager_in_background(arguments: &[&str]) {
-    let _ = Command::new("claude-sessions")
+    let _ = manager_child(arguments);
+}
+
+/// The manager running in the background, for a caller that wants to know how it ended.
+pub fn manager_child(arguments: &[&str]) -> std::io::Result<std::process::Child> {
+    Command::new("claude-sessions")
         .args(arguments)
         .env("CLAUDE_SESSIONS_LOG_STDERR", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .spawn();
+        .spawn()
 }
 
 /// A command's stdout when it succeeds.
