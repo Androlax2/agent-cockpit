@@ -93,6 +93,8 @@ impl Sandbox {
             ("HOME".to_string(), home.display().to_string()),
             ("XDG_RUNTIME_DIR".into(), runtime.display().to_string()),
             ("XDG_STATE_HOME".into(), state.display().to_string()),
+            // Wins over XDG_STATE_HOME in the cockpit's tools, and opencode sessions set it.
+            ("CLAUDE_SESSIONS_STATE_HOME".into(), state.display().to_string()),
             ("PATH".into(), path),
             ("SHIM_LOG".into(), log.display().to_string()),
             ("CLAUDE_STATUS_URL".into(), String::new()), // no network: status.claude.com is not fetched

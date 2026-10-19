@@ -63,6 +63,22 @@ fn list_shows_the_items_of_this_directorys_repository() {
 }
 
 #[test]
+fn list_reads_the_cockpits_state_folder_under_an_agents_private_xdg_state_home() {
+    // The opencode launcher moves XDG_STATE_HOME into the sandbox's /tmp for opencode's own state.
+    let sandbox = Sandbox::new();
+    let checkout = sandbox.root.join("runway");
+    fs::create_dir_all(checkout.join(".git")).unwrap();
+    fs::create_dir_all(sandbox.state.join("claude-sessions")).unwrap();
+    fs::write(sandbox.state.join("claude-sessions/todo.json"),
+              json!({"items": [{"id": "0123abcd", "project": "runway", "text": "deploy", "status": "todo"}], "issues": {}}).to_string()).unwrap();
+    let private = sandbox.root.join("opencode-greywall-state").display().to_string();
+    let state = sandbox.state.display().to_string();
+    let output = sandbox.command(bin().join("claude-todo"), &[("XDG_STATE_HOME", &private), ("CLAUDE_SESSIONS_STATE_HOME", &state)])
+        .args(["show", "0123abcd"]).current_dir(&checkout).output().unwrap();
+    assert!(stdout(&output).contains("deploy"), "{}{}", stdout(&output), stderr(&output));
+}
+
+#[test]
 fn propose_files_an_idea_with_why_and_notes() {
     let sandbox = Sandbox::new();
     let daemon = daemon(&sandbox, "ok");

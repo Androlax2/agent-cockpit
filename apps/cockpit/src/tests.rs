@@ -49,7 +49,9 @@ impl Fixture {
             std::env::set_var("CLAUDE_AUDIT_JOURNAL", "off");
             std::env::set_var("PATH", path);
             std::env::set_var("CLAUDE_STATUS_URL", "");
-            for name in ["CLAUDE_SESSIONS_HISTORY", "CLAUDE_SESSIONS_TRANSCRIPTS", "CLAUDE_TODO_UPDATES", "CLAUDE_REVIEWS_FIXTURE",
+            // CLAUDE_SESSIONS_STATE_HOME too: set in opencode sessions, it would win over the
+            // XDG_STATE_HOME above and point the tests at Theo's real state.
+            for name in ["CLAUDE_SESSIONS_STATE_HOME", "CLAUDE_SESSIONS_HISTORY", "CLAUDE_SESSIONS_TRANSCRIPTS", "CLAUDE_TODO_UPDATES", "CLAUDE_REVIEWS_FIXTURE",
                          "CLAUDE_SESSIONS_CLONES", "CLAUDE_SESSIONS_GREYPROXY_DB", "HYPRLAND_INSTANCE_SIGNATURE"] {
                 std::env::remove_var(name);
             }

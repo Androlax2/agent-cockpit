@@ -20,8 +20,12 @@ pub fn runtime_dir() -> PathBuf {
     PathBuf::from(env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".into()))
 }
 
+/// CLAUDE_SESSIONS_STATE_HOME first: the opencode launcher moves XDG_STATE_HOME into the sandbox's
+/// private /tmp for opencode's own state, and every tool opencode runs inherits it; this one keeps
+/// the cockpit's tools (claude-todo's list) on the real folder.
 pub fn state_home() -> PathBuf {
-    env::var("XDG_STATE_HOME").map(PathBuf::from).unwrap_or_else(|_| home().join(".local/state"))
+    env::var("CLAUDE_SESSIONS_STATE_HOME").or_else(|_| env::var("XDG_STATE_HOME")).map(PathBuf::from)
+        .unwrap_or_else(|_| home().join(".local/state"))
 }
 
 fn from_env(name: &str, default: PathBuf) -> PathBuf {

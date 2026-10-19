@@ -21,9 +21,11 @@ fi
 # Each Greywall launch has private network/PID namespaces and a private /tmp.
 # Sharing service.json across them makes unreachable servers replace each other.
 # Set only state inside the sandbox; keep the database, config and cache shared.
+# The tools opencode runs inherit that XDG_STATE_HOME: CLAUDE_SESSIONS_STATE_HOME keeps the
+# cockpit's (claude-todo list and show) on the real one, which the sandbox already reads.
 # greywall_options is split on spaces on purpose: every path in it is under $HOME or
 # $XDG_RUNTIME_DIR, which have none.
 # shellcheck disable=SC2086
 exec "$HOME/.local/bin/greywall" $greywall_options -- \
-    env XDG_STATE_HOME=/tmp/opencode-greywall-state \
+    env XDG_STATE_HOME=/tmp/opencode-greywall-state CLAUDE_SESSIONS_STATE_HOME="${XDG_STATE_HOME:-$HOME/.local/state}" \
     "$HOME/.opencode/bin/opencode" "$@"

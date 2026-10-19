@@ -222,6 +222,17 @@ fn opencodes_server_registration_stays_in_the_sandboxs_private_tmp() {
 }
 
 #[test]
+fn the_tools_opencode_runs_keep_the_cockpits_real_state_folder() {
+    // claude-todo list and show read todo.json there; under the private XDG_STATE_HOME they found
+    // an empty list (todo bc277a7c's report could not be read from an opencode session).
+    let launch = Launch::new();
+    launch.run_agent("opencode", &[], &[]);
+    let environment = launch.opencode_saw("environment");
+    let real = format!("CLAUDE_SESSIONS_STATE_HOME={}", launch.sandbox.state.display());
+    assert!(environment.contains(&real), "{environment:?}");
+}
+
+#[test]
 fn a_parallel_dotfiles_clone_reads_the_live_checkout_and_another_project_does_not() {
     let launch = Launch::new();
     let live = fs::canonicalize(launch.sandbox.home.join("dotfiles")).unwrap();
