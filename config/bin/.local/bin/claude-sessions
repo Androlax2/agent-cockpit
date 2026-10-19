@@ -232,7 +232,7 @@ view_session() {
         tag_pane "$new_pane" approval
         tmux set-option -p -t "$new_pane" remain-on-exit off
     fi
-    redraw_if_resized "$target" "$size_before" "$(session_field "$id" state)"
+    redraw_if_stale "$target" "$size_before" "$id"
     printf '%s\n' "$id" > "$CURRENT"
     # Its banner ("waiting for your input") has been read now that the session is on screen.
     osd-show session-seen "$id" 2>/dev/null || true
@@ -241,12 +241,25 @@ view_session() {
 
 # A session whose window the viewer resizes as it attaches can stay blank: Claude Code does not
 # always repaint after that resize (seen on a session restarted while an approval pane was open).
+# A session (re)started out of sight can also show a screen drawn for another size, prompt borders
+# gone and the status line cut (seen after restart-all while other cards were clicked): the first
+# view after each start redraws too, once ($VIEWED_STARTS keeps "<id> <started>" lines).
 # Ctrl+L makes it clear and redraw, the conversation kept. Not at a permission dialog: no key goes
-# near a pending yes/no. In the background, once the nested client has attached and resized it.
-redraw_if_resized() { # target size-before state
-    local size_after
+# near a pending yes/no, and that start stays unseen so a later view still redraws it. In the
+# background, once the nested client has attached and resized it.
+VIEWED_STARTS="${XDG_RUNTIME_DIR:-/tmp}/claude-sessions.viewed-starts"
+
+redraw_if_stale() { # target size-before id
+    local id=$3 size_after started is_stale=""
+    [[ $(session_field "$id" state) != needs-you ]] || return 0
     size_after=$(tmux display-message -p -t "$(viewer_pane)" '#{pane_width} #{pane_height}' 2>/dev/null || true)
-    [[ -n $2 && $2 != "$size_after" && $3 != needs-you ]] || return 0
+    [[ -n $2 && $2 != "$size_after" ]] && is_stale=1
+    started=$(session_field "$id" started)
+    if [[ -n $started ]] && ! grep -qxF "$id $started" "$VIEWED_STARTS" 2>/dev/null; then
+        printf '%s %s\n' "$id" "$started" >> "$VIEWED_STARTS"
+        is_stale=1
+    fi
+    [[ -n $is_stale ]] || return 0
     ( sleep "${CLAUDE_SESSIONS_REDRAW_DELAY:-0.4}"; tmux send-keys -t "=$1:" C-l ) </dev/null >/dev/null 2>&1 &
     disown
 }
@@ -1470,7 +1483,7 @@ case ${1:-attach} in
     reset)
         tmux kill-session -t "=$MANAGER" 2>/dev/null || true
         osd-show sessions-clear
-        rm -f "$CURRENT" "$HOME"/.cache/claude/statusline-*.json "$HOME"/.cache/claude/toast-*.id
+        rm -f "$CURRENT" "$VIEWED_STARTS" "$HOME"/.cache/claude/statusline-*.json "$HOME"/.cache/claude/toast-*.id
         ;;
     doctor) doctor ;;
     handoff) handoff "${2:-on}" ;;

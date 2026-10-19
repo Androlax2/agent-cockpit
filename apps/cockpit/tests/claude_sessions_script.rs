@@ -1385,17 +1385,28 @@ fn a_restart_while_an_approval_pane_is_open_counts_the_rows_it_will_give_back() 
     assert!(launch.contains(" -x 181 -y 76 "), "{launch}");
 }
 
-fn redraws_after_viewing(target_size: &str, state: &str) -> bool {
+/// The Ctrl+L sent to the session after each of `views` views in a row (the redraw runs in the background).
+fn redraws_per_view(target_size: &str, state: &str, started: Option<u64>, views: usize) -> Vec<bool> {
     let manager = Manager::new();
-    fs::write(&manager.snapshot, json!({"sessions": [{"session": SESSION_A, "state": state, "project": "proj-a", "tmux_pane": "%4"}]}).to_string()).unwrap();
-    manager.run(&["view", SESSION_A], &[("SHIM_TARGET_SIZE", target_size), ("CLAUDE_SESSIONS_REDRAW_DELAY", "0")]);
-    for _ in 0..40 {
-        if manager.tmux_calls("send-keys").iter().any(|call| call.ends_with(" C-l")) {
-            return true;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(25));
+    let mut session = json!({"session": SESSION_A, "state": state, "project": "proj-a", "tmux_pane": "%4"});
+    if let Some(started) = started {
+        session["started"] = json!(started);
     }
-    false
+    fs::write(&manager.snapshot, json!({"sessions": [session]}).to_string()).unwrap();
+    (0..views).map(|view| {
+        manager.run(&["view", SESSION_A], &[("SHIM_TARGET_SIZE", target_size), ("CLAUDE_SESSIONS_REDRAW_DELAY", "0")]);
+        for _ in 0..40 {
+            if manager.tmux_calls("send-keys").iter().filter(|call| call.ends_with(" C-l")).count() > view {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        false
+    }).collect()
+}
+
+fn redraws_after_viewing(target_size: &str, state: &str) -> bool {
+    redraws_per_view(target_size, state, None, 1)[0]
 }
 
 #[test]
@@ -1412,6 +1423,29 @@ fn a_session_already_at_the_viewers_size_gets_no_key() {
 #[test]
 fn a_session_at_a_permission_dialog_gets_no_key_even_resized() {
     assert!(!redraws_after_viewing("181 70", "needs-you"));
+}
+
+#[test]
+fn the_first_view_after_a_start_redraws_only_once() {
+    // A session restarted out of sight showed a screen drawn for another size until Ctrl+L.
+    assert_eq!(redraws_per_view("181 47", "waiting", Some(now_seconds()), 2), [true, false]);
+}
+
+#[test]
+fn a_start_first_viewed_at_a_permission_dialog_is_redrawn_on_a_later_view() {
+    let manager = Manager::new();
+    let write_state = |state: &str| {
+        fs::write(&manager.snapshot, json!({"sessions": [{"session": SESSION_A, "state": state, "project": "proj-a", "tmux_pane": "%4", "started": 1_700_000_000}]}).to_string()).unwrap();
+    };
+    write_state("needs-you");
+    manager.run(&["view", SESSION_A], &[("CLAUDE_SESSIONS_REDRAW_DELAY", "0")]);
+    write_state("waiting");
+    manager.run(&["view", SESSION_A], &[("CLAUDE_SESSIONS_REDRAW_DELAY", "0")]);
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while Instant::now() < deadline && manager.tmux_calls("send-keys").is_empty() {
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    assert_eq!(manager.tmux_calls("send-keys"), ["tmux send-keys -t =claude-retry-9-9: C-l"]);
 }
 
 /// A live dotfiles checkout and a work clone with one commit exported to .outgoing.
