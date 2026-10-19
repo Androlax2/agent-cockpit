@@ -1442,6 +1442,29 @@ fn apply_dotfiles_takes_the_clones_commits_after_a_yes() {
 }
 
 #[test]
+fn apply_dotfiles_still_asks_after_the_pager_quits_early() {
+    // q in less before the end of a long patch: the pipe into less broke, and pipefail ended the
+    // command with 141 before the question.
+    let manager = Manager::new();
+    let (live, work) = dotfiles_pair(&manager);
+    fs::write(work.join("big"), "line of a long patch\n".repeat(20_000)).unwrap();
+    for arguments in [&["add", "big"][..], &["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "Add big"], &["format-patch", "-q", "origin/main", "-o", ".outgoing"]] {
+        assert!(Command::new("git").arg("-C").arg(&work).args(arguments).status().unwrap().success());
+    }
+    manager.sandbox.shim("less", "exit 0");
+    let live_path = path_str(&live);
+    let work_path = path_str(&work);
+    let mut environment: Vec<(&str, &Path)> = manager.sandbox.env.iter().map(|(name, value)| (name.as_str(), Path::new(value))).collect();
+    environment.extend([("CLAUDE_DOTFILES_LIVE", Path::new(&live_path)), ("CLAUDE_DOTFILES_WORK", Path::new(&work_path))]);
+    let mut terminal = common::Terminal::start(&bin().join("claude-sessions"), &["apply-dotfiles"], &environment);
+    terminal.pump(10.0, Some(b"[y/N]"));
+    terminal.type_keys(b"y\r");
+    let status = terminal.child.wait().unwrap();
+    assert_eq!(status.code(), Some(0), "{}", String::from_utf8_lossy(&terminal.screen));
+    assert_eq!(git_output(&live, &["log", "-1", "--format=%s"]), "Add big");
+}
+
+#[test]
 fn apply_dotfiles_applies_nothing_without_a_yes() {
     let manager = Manager::new();
     let (live, work) = dotfiles_pair(&manager);

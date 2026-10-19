@@ -1359,8 +1359,10 @@ apply_dotfiles() {
         echo "They do not apply to $DOTFILES_LIVE as it is: rebase the clone on origin/main and export again." >&2
         return 1
     fi
-    # Control characters shown, never interpreted: the patches are text a sandbox wrote.
-    if [[ -t 1 ]]; then cat -v "$copies"/*.patch | less; else cat -v "$copies"/*.patch; fi
+    # Control characters shown, never interpreted: the patches are text a sandbox wrote. less reads
+    # a file, not a pipe: q before the end would kill cat, and pipefail the whole command (exit 141).
+    cat -v "$copies"/*.patch > "$copies/review.txt"
+    if [[ -t 1 ]]; then less "$copies/review.txt"; else cat "$copies/review.txt"; fi
     read -r -p "Apply these $count commit(s) to $DOTFILES_LIVE? [y/N] " answer || answer=""
     if [[ $answer != y && $answer != Y ]]; then
         echo "Not applied."
