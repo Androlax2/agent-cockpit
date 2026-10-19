@@ -1091,3 +1091,21 @@ fn a_terminal_session_is_marked_in_the_snapshot_and_the_reboot_record() {
     let recent: Value = serde_json::from_str(&fs::read_to_string(cockpit::paths::recent_sessions()).unwrap()).unwrap();
     assert_eq!(recent[SESSION_A]["terminal"], true);
 }
+
+#[test]
+fn unpushed_commits_are_counted_and_cleared_by_a_push() {
+    let mut bench = Bench::new();
+    bench.report(SESSION_A, json!({"state": "waiting", "cwd": "/r/dotfiles", "unpushed": 3}));
+    bench.report(SESSION_A, json!({"state": "working"}));
+    let unpushed = |bench: &Bench| bench.snapshot()[0]["unpushed"].as_u64().unwrap();
+    assert_eq!(unpushed(&bench), 3, "a report without a count keeps the last one");
+    bench.registry.pushed("/r/elsewhere");
+    assert_eq!(unpushed(&bench), 3);
+    bench.registry.pushed("/r/dotfiles");
+    assert_eq!(unpushed(&bench), 0);
+}
+
+#[test]
+fn an_unpushed_count_must_be_a_count() {
+    assert!(parse_session(&json!({"session": SESSION_A, "project": "p", "unpushed": "3; rm"}).to_string()).is_err());
+}

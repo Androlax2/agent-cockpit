@@ -1142,6 +1142,8 @@ push_run() { # dir
     [[ $answer == y || $answer == Y ]] || { echo "Not pushed."; sleep 1; return 0; }
     if git "${SAFE_PUSH_CONFIG[@]}" push --set-upstream origin "refs/heads/$branch:refs/heads/$branch"; then
         log_event INFO sessions "pushed $branch of $(basename "$1")"
+        # The card's "↑N unpushed" clears now, not at the session's next turn.
+        osd-show session-pushed "$1" 2>/dev/null || true
         echo "Pushed."
         read -r -p "Enter closes. " _ || true
     else

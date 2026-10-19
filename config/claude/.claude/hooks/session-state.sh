@@ -116,10 +116,18 @@ checks_of_turn() { # transcript
         | join(" · ")' 2>/dev/null || true
 }
 
+# Commits of the repository on no remote yet, for the card's "↑N unpushed". Only in a repository
+# with a remote; git runs here, inside the sandbox, like the outcome above.
+unpushed_of() { # cwd
+    git -C "$1" remote 2>/dev/null | grep -q . || return 0
+    git -C "$1" rev-list --count HEAD --not --remotes 2>/dev/null || true
+}
+
 state=
 task=
 message=
 outcome=
+unpushed=
 sticky=false
 # Started with "this terminal" (the claude function's t): the cockpit keeps it out of what acts on
 # every session.
@@ -128,6 +136,7 @@ terminal=false
 case $event in
     SessionStart)
         state=waiting
+        unpushed=$(unpushed_of "$cwd")
         ;;
     UserPromptSubmit)
         state=working
@@ -158,6 +167,7 @@ case $event in
         state=waiting
         message="Finished, waiting for you"
         outcome=$(outcome_of_turn "$cwd")
+        unpushed=$(unpushed_of "$cwd")
         checks=$(checks_of_turn "$(jq -r '.transcript_path // ""' <<<"$payload")")
         if [[ -n $checks ]]; then outcome="${outcome:+$outcome · }$checks"; fi
         ;;
@@ -173,12 +183,13 @@ esac
 
 report=$(jq -cn \
     --arg session "$session" --arg state "$state" --arg project "$project" --arg cwd "$cwd" \
-    --arg task "$task" --arg message "$message" --arg outcome "$outcome" --argjson sticky "$sticky" --argjson terminal "$terminal" \
+    --arg task "$task" --arg message "$message" --arg outcome "$outcome" --argjson sticky "$sticky" --argjson terminal "$terminal" --arg unpushed "$unpushed" \
     --arg kitty_pid "${KITTY_PID:-}" --arg kitty_window "${KITTY_WINDOW_ID:-}" \
     --arg kitty_listen "${KITTY_LISTEN_ON:-}" --arg tmux_pane "${TMUX_PANE:-}" \
     '{$session, $state, $project, $cwd, $task, $message, $outcome, $sticky, $terminal,
       $kitty_pid, $kitty_window, $kitty_listen, $tmux_pane}
-     | with_entries(select(.value != "" and .value != false))')
+     | with_entries(select(.value != "" and .value != false))
+     | if $unpushed == "" then . else .unpushed = ($unpushed | tonumber) end')
 
 # One line per event in ~/.cache/claude/hook.log, the one place the sandbox lets the hook write:
 # the event, the session, the state and where the report went, never prompt text. 512 KB, then

@@ -1133,3 +1133,14 @@ fn restart_all_leaves_terminal_sessions_alone() {
     app.handle(Key::Ctrl('r'), &mut FakeScreen::answering(&[Key::Char('y')]));
     assert_eq!(fixture.wait_for_calls("claude-sessions", 1), vec!["claude-sessions restart-all aaaaaaaa-0000-4000-8000-000000000000".to_string()]);
 }
+
+#[test]
+fn a_card_shows_its_unpushed_commits() {
+    let fixture = Fixture::new();
+    let mut row = session(SESSION_A, "waiting", "dotfiles", "/r/dotfiles", 1);
+    row["unpushed"] = json!(2);
+    fixture.snapshot(json!([row, session(SESSION_B, "waiting", "runway", "/r/runway", 2)]));
+    let app = fixture.app();
+    let badges: Vec<String> = app.panels[1].lines.iter().flat_map(|line| line.right.iter().map(|part| part.text.clone())).collect();
+    assert_eq!(badges.iter().filter(|badge| badge.starts_with('↑')).collect::<Vec<_>>(), ["↑2 unpushed"]);
+}

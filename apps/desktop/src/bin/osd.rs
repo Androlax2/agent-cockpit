@@ -13,6 +13,7 @@
 //!     sessions-clear          forget every session (claude-sessions reset)
 //!     focus-next              show the most urgent Claude session in the manager
 //!     session-seen <id>       Theo looked at that session (claude-sessions view): its banner goes
+//!     session-pushed <dir>    claude-sessions pushed the branch of the sessions started there
 //!     run-request <id>        Claude asks to run a command outside the sandbox (ask-to-run)
 //!     run-phase <id> <phase>  claude-run-approve's asking / running / done
 //!     guide-request <id>      steps for Theo to do by hand (ask-to-guide)
@@ -254,6 +255,7 @@ fn handle(line: &str, from_host: bool, registry: &Rc<RefCell<Registry>>, island:
         "focus-next" => registry.borrow_mut().focus_most_urgent(),
         "sessions-clear" => registry.borrow_mut().clear(),
         "session-seen" => registry.borrow_mut().seen(rest),
+        "session-pushed" => registry.borrow_mut().pushed(rest),
         "notice" => match registry::parse_notice(rest) {
             Ok(notice) => registry.borrow_mut().banners.raise_notice(&notice),
             Err(error) => eprintln!("osd: bad notice {rest:?}: {error}"),

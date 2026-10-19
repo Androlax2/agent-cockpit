@@ -63,9 +63,10 @@ const GLOBAL_HELP: [(&str, &str); 17] = [
     ("l →  ←", "into the session from any panel; ← from the session comes back"),
     ("q ^C", "close the manager window; sessions keep running"),
 ];
-const LEGEND: [(&str, &str); 11] = [
+const LEGEND: [(&str, &str); 12] = [
     ("●", "working"), ("○", "waiting for you"), ("!", "needs you: permission or question"), ("·", "running, state unknown"),
     ("▌", "shown in the session pane"), ("⚲", "pinned"), ("⇅", "remote controlled"),
+    ("↑2 unpushed", "commits on no remote yet: U pushes the branch"),
     ("▭ terminal", "started with \"this terminal\": no ^R, restore, queue, error hand-off or ask-to-run"),
     ("⬆", "Claude updated itself: r restarts on the new version"),
     ("/compact", "context over 90%: /compact in the session before it gets slow and costly"), ("high ▾", "effort level: click to change it"),
@@ -629,6 +630,9 @@ impl App {
             }
             if session.terminal {
                 badges.push(part("▭ terminal", bold(MAGENTA)));
+            }
+            if session.unpushed > 0 {
+                badges.push(part(format!("↑{} unpushed", session.unpushed), bold(YELLOW)));
             }
             if session.pinned {
                 badges.push(part("⚲", style(YELLOW)));

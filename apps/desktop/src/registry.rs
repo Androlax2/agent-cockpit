@@ -136,6 +136,8 @@ pub struct Report {
     /// Started with "this terminal" (the claude function's t): the cockpit shows it but leaves it out
     /// of what acts on every session (restart-all, the reboot restore, the queue, the hand-off).
     pub terminal: bool,
+    /// Commits of the session's repository on no remote yet (the hook counts them in the sandbox).
+    pub unpushed: Option<u64>,
     pub target: BTreeMap<String, String>,
 }
 
@@ -161,6 +163,9 @@ pub fn parse_session(raw: &str) -> Result<Report, String> {
             return Err(format!("session.state {state:?} unknown"));
         }
     }
+    if report.get("unpushed").is_some_and(|value| !value.is_u64()) {
+        return Err("session.unpushed is not a count".into());
+    }
     for key in ["cwd", "task", "message", "outcome"] {
         if report.get(key).is_some_and(|value| !value.is_string()) {
             return Err(format!("session.{key} is not a string"));
@@ -183,7 +188,8 @@ pub fn parse_session(raw: &str) -> Result<Report, String> {
     Ok(Report {
         session, project: report["project"].as_str().unwrap().to_string(), state: text("state"), cwd: text("cwd"),
         task: text("task"), message: text("message"), outcome: text("outcome"), sticky: report.get("sticky").is_some_and(|s| s.as_bool().unwrap_or(!s.is_null())),
-        terminal: report.get("terminal").and_then(Value::as_bool).unwrap_or(false), target,
+        terminal: report.get("terminal").and_then(Value::as_bool).unwrap_or(false),
+        unpushed: report.get("unpushed").and_then(Value::as_u64), target,
     })
 }
 
@@ -660,6 +666,7 @@ pub struct Entry {
     pub detail: String,
     pub outcome: String,
     pub terminal: bool,
+    pub unpushed: u64,
 }
 
 pub struct Registry {
@@ -770,6 +777,10 @@ impl Registry {
                 entry.project = self.project_of(cwd, &report.project);
                 changed = true;
             }
+        }
+        if let Some(unpushed) = report.unpushed.filter(|count| *count != entry.unpushed) {
+            entry.unpushed = unpushed;
+            changed = true;
         }
         if report.terminal && !entry.terminal {
             entry.terminal = true;
@@ -887,6 +898,22 @@ impl Registry {
         }
     }
 
+    /// claude-sessions pushed the branch of the sessions started in `directory` (the sidebar's U):
+    /// nothing of theirs waits on a push any more, until their hook counts again.
+    pub fn pushed(&mut self, directory: &str) {
+        if !directory.starts_with('/') || directory.chars().any(char::is_control) {
+            return;
+        }
+        let mut changed = false;
+        for entry in self.sessions.values_mut().filter(|entry| entry.cwd == directory && entry.unpushed > 0) {
+            entry.unpushed = 0;
+            changed = true;
+        }
+        if changed {
+            self.publish();
+        }
+    }
+
     /// Theo looked at the session: its banner (sticky ones too, and one held for a game or a
     /// meeting) has said what it had to say.
     pub fn seen(&mut self, session: &str) {
@@ -923,7 +950,7 @@ impl Registry {
             let mut row = json!({"session": session, "state": entry.state, "project": entry.project, "cwd": entry.cwd, "task": entry.task,
                                  "since": entry.since as i64, "started": entry.started as i64, "update": entry.update,
                                  "request": entry.request, "detail": entry.detail, "outcome": entry.outcome,
-                                 "terminal": entry.terminal});
+                                 "terminal": entry.terminal, "unpushed": entry.unpushed});
             for (key, value) in &entry.target {
                 row[key] = json!(value);
             }
@@ -995,7 +1022,8 @@ impl Registry {
                     started: row.get("started").and_then(Value::as_f64).unwrap_or(since),
                     target: target.into_iter().map(|(k, v)| (k, v.as_str().unwrap_or("").to_string())).collect(),
                     update: row.get("update").and_then(Value::as_bool).unwrap_or(false),
-                    terminal: row.get("terminal").and_then(Value::as_bool).unwrap_or(false), ..Entry::default()
+                    terminal: row.get("terminal").and_then(Value::as_bool).unwrap_or(false),
+                    unpushed: row.get("unpushed").and_then(Value::as_u64).unwrap_or(0), ..Entry::default()
                 }))
             })();
             match loaded {

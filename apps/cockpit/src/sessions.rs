@@ -88,6 +88,8 @@ pub struct Session {
     pub update: bool,
     /// Started with "this terminal": shown and usable here, left out of what acts on every session.
     pub terminal: bool,
+    /// Commits of its repository on no remote yet, as of its last start or turn end (or a U push).
+    pub unpushed: u64,
     // Added by the column.
     pub design: Option<Design>,
     pub facts: Facts,
@@ -123,6 +125,7 @@ impl Session {
             outcome: text(row, "outcome"),
             update: row.get("update").and_then(Value::as_bool).unwrap_or(false),
             terminal: row.get("terminal").and_then(Value::as_bool).unwrap_or(false),
+            unpushed: row.get("unpushed").and_then(Value::as_u64).unwrap_or(0),
             ..Session::default()
         })
     }

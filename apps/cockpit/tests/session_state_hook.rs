@@ -281,3 +281,36 @@ fn a_session_started_in_its_own_terminal_says_so() {
     assert_eq!(reports[0]["terminal"], true);
     assert!(reports[1].get("terminal").is_none(), "a cockpit session carries no flag");
 }
+
+#[test]
+fn a_finished_turn_counts_the_commits_not_on_a_remote() {
+    let mut test = HookTest::new();
+    let remote = test.sandbox.root.join("remote.git");
+    let repository = test.sandbox.root.join("repo");
+    fs::create_dir(&repository).unwrap();
+    assert!(Command::new("git").args(["init", "-q", "--bare"]).arg(&remote).status().unwrap().success());
+    git(&repository, &["init", "-q"]);
+    git(&repository, &["remote", "add", "origin", remote.to_str().unwrap()]);
+    fs::write(repository.join("a"), "1\n").unwrap();
+    git(&repository, &["add", "a"]);
+    git(&repository, &["commit", "-qm", "pushed"]);
+    git(&repository, &["push", "-q", "origin", "HEAD:refs/heads/main"]);
+    git(&repository, &["fetch", "-q", "origin"]);
+    for name in ["b", "c"] {
+        fs::write(repository.join(name), "1\n").unwrap();
+        git(&repository, &["add", name]);
+        git(&repository, &["commit", "-qm", name]);
+    }
+    test.run_hook(with_session(json!({"hook_event_name": "Stop"}), &repository.to_string_lossy()), &[]);
+    assert_eq!(test.received().last().unwrap()["unpushed"], 2);
+}
+
+#[test]
+fn a_repository_without_a_remote_reports_no_count() {
+    let mut test = HookTest::new();
+    let repository = test.sandbox.root.join("repo");
+    fs::create_dir(&repository).unwrap();
+    git(&repository, &["init", "-q"]);
+    test.run_hook(with_session(json!({"hook_event_name": "Stop"}), &repository.to_string_lossy()), &[]);
+    assert!(test.received().last().unwrap().get("unpushed").is_none());
+}
