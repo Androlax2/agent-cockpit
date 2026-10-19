@@ -1162,3 +1162,13 @@ fn tmux_bindings_name_claude_sessions_by_its_full_path() {
         }
     }
 }
+
+#[test]
+fn alt_q_without_a_pane_asks_tmux_for_the_active_one() {
+    // tmux leaves #{pane_id} empty in the binding: the popup finds the pane itself.
+    let manager = Manager::new();
+    manager.sandbox.shim("tmux", r#"[[ $1 == display-message && $* == *pane_id* ]] && echo "%4"; exit 0"#);
+    manager.sandbox.run_with_input(bin().join("claude-sessions"), &["queue-prompt-ask"], &[], "check the docs too\n");
+    let folder = manager.sandbox.state.join(format!("claude-sessions/prompt-queue/{SESSION_A}"));
+    assert_eq!(fs::read_dir(&folder).map(|entries| entries.count()).unwrap_or(0), 1);
+}

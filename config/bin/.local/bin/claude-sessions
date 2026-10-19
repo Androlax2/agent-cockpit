@@ -541,8 +541,11 @@ say_to_session() { # id message
 # A prompt for the end of the session's turn (Alt+Q, tmux.conf): it waits in the queue the column
 # sends from (apps/cockpit/src/prompts.rs), one per finished turn, instead of cutting into the turn.
 # The pane is the cockpit's viewer (the session on screen) or a session's own pane (a terminal).
-queue_prompt_ask() { # pane
-    local pane=$1 session text folder
+queue_prompt_ask() { # [pane]
+    # In the popup, the client's active pane is the one Alt+Q was pressed in: the binding cannot
+    # pass #{pane_id} (tmux leaves it empty in a command nested in if -F).
+    local pane=${1:-} session text folder
+    [[ -n $pane ]] || pane=$(tmux display-message -p '#{pane_id}' 2>/dev/null || true)
     if [[ $(tmux display-message -p -t "$pane" '#{@role}' 2>/dev/null) == viewer ]]; then
         session=$(cat "$CURRENT" 2>/dev/null || true)
     else
@@ -1249,7 +1252,7 @@ case ${1:-attach} in
     prs) prs_window ;;
     git) git_popup "${2:?usage: claude-sessions git <dir>}" ;;
     push) push_popup "${2:?usage: claude-sessions push <dir>}" ;;
-    queue-prompt-ask) queue_prompt_ask "${2:?usage: claude-sessions queue-prompt-ask <pane>}" ;;
+    queue-prompt-ask) queue_prompt_ask "${2:-}" ;;
     push-run) push_run "${2:?usage: claude-sessions push-run <dir>}" ;;
     parallel) parallel_session "${2:?usage: claude-sessions parallel <dir> <branch>}" "${3:?usage: claude-sessions parallel <dir> <branch>}" ;;
     review) review_session "${2:?usage: claude-sessions review <dir> <pr-number>}" "${3:?usage: claude-sessions review <dir> <pr-number>}" ;;
