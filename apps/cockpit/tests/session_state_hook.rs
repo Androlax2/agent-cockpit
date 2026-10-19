@@ -64,11 +64,16 @@ fn with_session(payload: Value, cwd: &str) -> Value {
 
 /// A stand-in process named "claude": a copy of bash under that name.
 fn fake_claude(root: &Path) -> PathBuf {
+    fake_agent(root, "claude")
+}
+
+/// A stand-in agent process: a copy of bash under the agent's name.
+fn fake_agent(root: &Path, name: &str) -> PathBuf {
     let bash = std::env::split_paths(&std::env::var_os("PATH").unwrap())
         .map(|directory| directory.join("bash"))
         .find(|candidate| candidate.is_file())
         .expect("bash on PATH");
-    let fake = root.join("claude");
+    let fake = root.join(name);
     copy_executable(&bash, &fake);
     fake
 }
@@ -128,6 +133,36 @@ fn nested_claude_reports_nothing() {
     let payload = with_session(json!({"hook_event_name": "Stop"}), "/x/.issues-tmp");
     test.sandbox.run_with_input(&fake, &["-c", &script], &[("CLAUDECODE", "1")], &payload.to_string());
     assert_eq!(test.received(), Vec::<Value>::new());
+}
+
+#[test]
+fn a_session_nested_in_an_opencode_tool_reports_nothing() {
+    // opencode marks the processes its tools run with OPENCODE=1.
+    let mut test = HookTest::new();
+    let fake = fake_agent(&test.sandbox.root, "opencode");
+    let script = format!("bash {}; :", hook().display());
+    let payload = with_session(json!({"hook_event_name": "Stop"}), "/x/proj");
+    test.sandbox.run_with_input(&fake, &["-c", &script], &[("OPENCODE", "1"), ("CLAUDE_SESSIONS_AGENT", "opencode")], &payload.to_string());
+    assert_eq!(test.received(), Vec::<Value>::new());
+}
+
+#[test]
+fn an_opencode_session_started_from_a_shell_reports_its_agent() {
+    use std::io::Write;
+    let mut test = HookTest::new();
+    let fake = fake_agent(&test.sandbox.root, "opencode");
+    let script = format!("bash {}; :", hook().display());
+    let mut payload = json!({"hook_event_name": "SessionStart", "session_id": "ses_3f2a9c0b1ffeQkTz8mWn4rJd2L", "cwd": "/x/proj"});
+    // Unmarked, like a session you start (these tests may themselves run under an agent's tool).
+    let mut child = test.sandbox.command(&fake, &[("CLAUDE_SESSIONS_AGENT", "opencode")]).env_remove("CLAUDECODE").env_remove("OPENCODE")
+        .args(["-c", &script]).stdin(Stdio::piped()).spawn().unwrap();
+    child.stdin.take().unwrap().write_all(payload.to_string().as_bytes()).unwrap();
+    child.wait().unwrap();
+    payload["session_id"] = json!(SESSION_A);
+    test.run_hook(payload, &[]);
+    let lines = test.received();
+    assert_eq!((&lines[0]["session"], &lines[0]["agent"], &lines[0]["state"]), (&json!("ses_3f2a9c0b1ffeQkTz8mWn4rJd2L"), &json!("opencode"), &json!("waiting")));
+    assert!(lines[1].get("agent").is_none(), "a Claude report carries no agent: {}", lines[1]);
 }
 
 #[test]

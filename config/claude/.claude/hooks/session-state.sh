@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Claude Code hooks → the OSD daemon (osd, apps/desktop): one `session <json>` line per event with
+# Claude Code hooks, and opencode's cockpit plugin (~/.config/opencode/plugins/cockpit.ts, which
+# sends the same payloads with CLAUDE_SESSIONS_AGENT=opencode) → the OSD daemon (osd, apps/desktop): one `session <json>` line per event with
 # the session's state (working | waiting | needs-you | gone), its project, the focus target of its
 # window (KITTY_* can be stale after a tmux re-attach; the daemon re-resolves it) and an optional
 # banner message. The daemon keeps the registry, colours the Hyprland window
@@ -11,22 +12,24 @@ set -euo pipefail
 
 # A nested claude (a `claude -p` that a tool of another session runs) is not a session of yours:
 # it shares the parent's pane and would shadow it in the manager, so its hooks report nothing.
-# Claude Code marks every process a tool runs with CLAUDECODE=1; a session started by you from a
-# shell has no such mark, a nested one carries it in its own environment. Counting processes
-# named claude does not work since 2.1.300: the launcher, the daemon and the pty host are all
-# ancestors of every session. The marked ancestor is looked for among Claude processes only
-# (comm claude or a version number), so the hook's own tool shells never count.
-is_claude_process() { # pid
+# Claude Code marks every process a tool runs with CLAUDECODE=1, opencode with OPENCODE=1; a
+# session started by you from a shell has no such mark, a nested one carries it in its own
+# environment (opencode sets its own mark after it started, so /proc does not show it on itself).
+# Counting processes named claude does not work since 2.1.300: the launcher, the daemon and the
+# pty host are all ancestors of every session. The marked ancestor is looked for among agent
+# processes only (comm claude, a version number or opencode), so the hook's own tool shells never
+# count.
+is_agent_process() { # pid
     local comm
     comm=$(cat "/proc/$1/comm" 2>/dev/null) || return 1
-    [[ $comm == claude || $comm =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]]
+    [[ $comm == claude || $comm == opencode || $comm =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]]
 }
 nested=0
 pid=$$
 while (( pid > 1 )); do
     pid=$(awk '/^PPid:/ { print $2 }' "/proc/$pid/status" 2>/dev/null) || break
     [[ -n $pid ]] || break
-    if is_claude_process "$pid" && tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | grep -qx 'CLAUDECODE=1'; then
+    if is_agent_process "$pid" && tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | grep -qxE 'CLAUDECODE=1|OPENCODE=1'; then
         nested=1
         break
     fi
@@ -184,6 +187,8 @@ terminal=false
 # card follows a switch back to the subscription.
 credits=false
 [[ ${CLAUDE_SESSIONS_CREDITS:-} == 1 ]] && credits=true
+# opencode's plugin says so; Claude's hooks say nothing, which the daemon takes for claude.
+agent=${CLAUDE_SESSIONS_AGENT:-}
 case $event in
     SessionStart)
         state=waiting
@@ -240,7 +245,7 @@ esac
 
 report=$(jq -cn \
     --arg session "$session" --arg state "$state" --arg project "$project" --arg cwd "$cwd" \
-    --arg task "$task" --arg message "$message" --arg outcome "$outcome" --argjson sticky "$sticky" --argjson terminal "$terminal" --argjson credits "$credits" --arg unpushed "$unpushed" --arg agents "$agents" --arg background "$background" --arg apps "$(craft_apps)" \
+    --arg task "$task" --arg message "$message" --arg outcome "$outcome" --argjson sticky "$sticky" --argjson terminal "$terminal" --argjson credits "$credits" --arg unpushed "$unpushed" --arg agents "$agents" --arg background "$background" --arg apps "$(craft_apps)" --arg agent "$agent" \
     --arg kitty_pid "${KITTY_PID:-}" --arg kitty_window "${KITTY_WINDOW_ID:-}" \
     --arg kitty_listen "${KITTY_LISTEN_ON:-}" --arg tmux_pane "${TMUX_PANE:-}" \
     '{$session, $state, $project, $cwd, $task, $message, $outcome, $sticky, $terminal,
@@ -248,6 +253,7 @@ report=$(jq -cn \
      | with_entries(select(.value != "" and .value != false))
      | if $unpushed == "" then . else .unpushed = ($unpushed | tonumber) end
      | if $agents == "" then . else .agents = ($agents | tonumber) | .background = ($background | tonumber) end
+     | if $agent == "" then . else .agent = $agent end
      | .apps = $apps | .credits = $credits')
 
 # One line per event in ~/.cache/claude/hook.log, the one place the sandbox lets the hook write:

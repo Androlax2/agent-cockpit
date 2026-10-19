@@ -86,6 +86,7 @@
       "~/CLAUDE.md",
       "~/AGENTS.md",
       "~/.claude/CLAUDE.md",
+      "~/.claude/hooks",
       "~/.gitconfig",
       "~/.gitignore",
       "~/.config/git",
@@ -122,7 +123,8 @@
       "~/.cache/opencode",
       "~/.local/share/opencode",
       "~/.local/share/opentui",
-      "~/.local/state/opencode"
+      "~/.local/state/opencode",
+      "~/.cache/claude"
     ],
     "denyWrite": [
       "~/.bashrc",
@@ -147,7 +149,8 @@
       "~/.local/share/gh",
       "~/.opencode",
       "~/.opencode.json",
-      "~/.config/opencode"
+      "~/.config/opencode",
+      "~/.claude/hooks"
     ]
   },
   "command": {

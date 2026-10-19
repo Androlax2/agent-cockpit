@@ -243,8 +243,18 @@ fn an_opencode_session_cannot_write_what_every_other_session_runs_or_reads() {
         profile["filesystem"][key].as_array().unwrap().iter().map(|path| path.as_str().unwrap().to_string()).collect()
     };
     let (writable, read_only) = (paths("allowWrite"), paths("denyWrite"));
-    for shared in ["~/.opencode", "~/.config/opencode", "~/.opencode.json", "~/AGENTS.md", "~/.skills", "~/.agents", "~/.config/gh", "~/.local/bin", ".git/hooks"] {
+    for shared in ["~/.opencode", "~/.config/opencode", "~/.opencode.json", "~/AGENTS.md", "~/.skills", "~/.agents", "~/.config/gh", "~/.local/bin", ".git/hooks", "~/.claude/hooks"] {
         assert!(!writable.contains(&shared.to_string()), "{shared} is writable: {writable:?}");
         assert!(read_only.contains(&shared.to_string()), "{shared} is not in denyWrite: {read_only:?}");
     }
+}
+
+#[test]
+fn an_opencode_session_reaches_the_hook_its_plugin_reports_through() {
+    // cockpit.ts runs ~/.claude/hooks/session-state.sh, which keeps its turn files and log in ~/.cache/claude.
+    let text = fs::read_to_string(repo().join("config/greywall/.config/greywall/learned/opencode.json")).unwrap();
+    let json: String = text.lines().filter(|line| !line.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");
+    let profile: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let has = |key: &str, path: &str| profile["filesystem"][key].as_array().unwrap().iter().any(|entry| entry == path);
+    assert!(has("allowRead", "~/.claude/hooks") && has("allowWrite", "~/.cache/claude"));
 }

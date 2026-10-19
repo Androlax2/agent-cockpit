@@ -64,7 +64,10 @@ static PROMPT_LINE: LazyLock<Regex> = LazyLock::new(|| regex(r"(?m)^\s*❯[ \x{a
 static UPDATE_READY: LazyLock<Regex> = LazyLock::new(|| regex(r"Update installed\s*·\s*Restart to update"));
 /// The session binary's process name: Claude Code's version.
 static CLAUDE_VERSION_NAME: LazyLock<Regex> = LazyLock::new(|| regex(r"^\d+\.\d+\.\d+$"));
-static SESSION_ID: LazyLock<Regex> = LazyLock::new(|| regex(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"));
+/// A Claude session's id (a UUID) or an opencode session's (ses_ and base62).
+static SESSION_ID: LazyLock<Regex> = LazyLock::new(|| regex(r"^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|ses_[0-9A-Za-z]{12,40})$"));
+/// The agents a session runs: Claude Code, or opencode (its plugin reports through the same hook).
+pub const AGENTS: [&str; 2] = ["claude", "opencode"];
 static TMUX_PANE: LazyLock<Regex> = LazyLock::new(|| regex(r"^%[0-9]{1,10}$"));
 static KITTY_LISTEN: LazyLock<Regex> = LazyLock::new(|| regex(r"^unix:[@/][A-Za-z0-9_./@-]{1,200}$"));
 static NUMBER: LazyLock<Regex> = LazyLock::new(|| regex(r"^[0-9]{1,10}$"));
@@ -151,6 +154,8 @@ pub struct Report {
     /// The desktop apps the session drives through an attached MCP server: "figcraft:on wordcraft:off"
     /// (the hook checks inside the sandbox). None when the report did not say (the daemon's own updates).
     pub apps: Option<String>,
+    /// Which agent runs the session (AGENTS). None when the report did not say: Claude.
+    pub agent: Option<String>,
     pub target: BTreeMap<String, String>,
 }
 
@@ -177,6 +182,9 @@ pub fn parse_session(raw: &str) -> Result<Report, String> {
     if report.get("credits").is_some_and(|value| !value.is_boolean()) {
         return Err("session.credits is not true or false".into());
     }
+    if report.get("agent").is_some_and(|agent| !agent.as_str().is_some_and(|agent| AGENTS.contains(&agent))) {
+        return Err(format!("session.agent is not one of {AGENTS:?}"));
+    }
     for key in ["unpushed", "agents", "background"] {
         if report.get(key).is_some_and(|value| !value.is_u64()) {
             return Err(format!("session.{key} is not a count"));
@@ -189,7 +197,7 @@ pub fn parse_session(raw: &str) -> Result<Report, String> {
     }
     let session = report["session"].as_str().unwrap().to_string();
     if !SESSION_ID.is_match(&session) {
-        return Err("session is not a Claude session id".into());
+        return Err("session is not a Claude or opencode session id".into());
     }
     for key in ["session", "project", "cwd", "task", "message", "outcome"] {
         if let Some(text) = report.get(key).and_then(Value::as_str) {
@@ -209,7 +217,8 @@ pub fn parse_session(raw: &str) -> Result<Report, String> {
         unpushed: report.get("unpushed").and_then(Value::as_u64),
         agents: report.get("agents").and_then(Value::as_u64),
         background: report.get("background").and_then(Value::as_u64),
-        apps: report.get("apps").and_then(Value::as_str).map(str::to_string), target,
+        apps: report.get("apps").and_then(Value::as_str).map(str::to_string),
+        agent: report.get("agent").and_then(Value::as_str).map(str::to_string), target,
     })
 }
 
@@ -898,6 +907,8 @@ pub struct Entry {
     pub agents: u64,
     pub background: u64,
     pub apps: String,
+    /// "claude" or "opencode" (AGENTS).
+    pub agent: String,
 }
 
 pub struct Registry {
@@ -1029,7 +1040,7 @@ impl Registry {
         if previous_state.is_none() {
             let time = now();
             self.sessions.insert(session.clone(), Entry { state: report.state.clone().unwrap_or("waiting".into()), project: report.project.clone(),
-                                                          since: time, started: time, ..Entry::default() });
+                                                          since: time, started: time, agent: "claude".into(), ..Entry::default() });
             changed = true;
         }
         let mut entry = self.sessions.remove(&session).unwrap();
@@ -1082,6 +1093,10 @@ impl Registry {
         }
         if let Some(credits) = report.credits.filter(|credits| *credits != entry.credits) {
             entry.credits = credits;
+            changed = true;
+        }
+        if let Some(agent) = report.agent.as_ref().filter(|agent| **agent != entry.agent) {
+            entry.agent = agent.clone();
             changed = true;
         }
         if report.terminal && !entry.terminal {
@@ -1253,7 +1268,7 @@ impl Registry {
                                  "since": entry.since as i64, "started": entry.started as i64, "update": entry.update,
                                  "request": entry.request, "detail": entry.detail, "outcome": entry.outcome,
                                  "terminal": entry.terminal, "credits": entry.credits, "unpushed": entry.unpushed,
-                                 "agents": entry.agents, "background": entry.background, "apps": entry.apps});
+                                 "agents": entry.agents, "background": entry.background, "apps": entry.apps, "agent": entry.agent});
             for (key, value) in &entry.target {
                 row[key] = json!(value);
             }
@@ -1289,7 +1304,7 @@ impl Registry {
         for id in &ids {
             let entry = &self.sessions[id];
             recent.insert(id.clone(), json!({"project": entry.project, "cwd": entry.cwd, "last_seen": time as i64, "terminal": entry.terminal,
-                                     "credits": entry.credits}));
+                                     "credits": entry.credits, "agent": entry.agent}));
         }
         let oldest = time - RECENT_SESSIONS_DAYS * 86400.0;
         recent.retain(|_, row| row.get("last_seen").and_then(Value::as_f64).unwrap_or(0.0) >= oldest);
@@ -1330,7 +1345,9 @@ impl Registry {
                     credits: row.get("credits").and_then(Value::as_bool).unwrap_or(false),
                     unpushed: row.get("unpushed").and_then(Value::as_u64).unwrap_or(0),
                     agents: row.get("agents").and_then(Value::as_u64).unwrap_or(0),
-                    background: row.get("background").and_then(Value::as_u64).unwrap_or(0), ..Entry::default()
+                    background: row.get("background").and_then(Value::as_u64).unwrap_or(0),
+                    agent: row.get("agent").and_then(Value::as_str).filter(|agent| AGENTS.contains(agent)).unwrap_or("claude").into(),
+                    ..Entry::default()
                 }))
             })();
             match loaded {
@@ -1406,9 +1423,11 @@ impl Registry {
         }
     }
 
-    /// The pane's last lines say what Claude is doing now; they win over stale hook states.
+    /// The pane's last lines say what Claude is doing now; they win over stale hook states. Only
+    /// Claude's: the patterns are Claude Code's screen, which opencode's does not look like.
     pub fn reconcile_with_panes(&mut self) {
-        let sessions: Vec<(String, String)> = self.sessions.iter().filter_map(|(id, entry)| entry.target.get("tmux_pane").map(|pane| (id.clone(), pane.clone()))).collect();
+        let sessions: Vec<(String, String)> = self.sessions.iter().filter(|(_, entry)| entry.agent == "claude")
+            .filter_map(|(id, entry)| entry.target.get("tmux_pane").map(|pane| (id.clone(), pane.clone()))).collect();
         for (session, pane) in sessions {
             let tail = self.system.tmux(&["capture-pane", "-p", "-t", &pane, "-S", &format!("-{PANE_TAIL_LINES}")]).unwrap_or_default();
             let update_ready = UPDATE_READY.is_match(&tail);
@@ -1604,15 +1623,19 @@ impl Processes for Proc {
     }
 }
 
-/// Pids of the Claude launchers and session binaries. Since Claude Code 2.1.300 a session is a
-/// tree: the launcher `claude`, `claude daemon run` (the launcher's environment inherited, and it
-/// outlives the launcher), a `bg-pty-host`, and the session binary named after the version with
-/// `--session-id <id>`; only the launcher and the session count.
+/// Pids of the Claude launchers and session binaries, and of opencode. Since Claude Code 2.1.300 a
+/// session is a tree: the launcher `claude`, `claude daemon run` (the launcher's environment
+/// inherited, and it outlives the launcher), a `bg-pty-host`, and the session binary named after
+/// the version with `--session-id <id>`; only the launcher and the session count. opencode is one
+/// process named opencode, its session id on no command line: its pane keeps it alive.
 pub fn claude_processes(table: &dyn Processes) -> Vec<String> {
     let version = &*CLAUDE_VERSION_NAME;
     let infrastructure = ["daemon", "bg-pty-host", "bg-spare"];
     let mut found: Vec<String> = table.pids().into_iter().filter(|pid| {
         let name = table.comm(pid);
+        if name == "opencode" {
+            return true;
+        }
         if name != "claude" && !version.is_match(&name) {
             return false;
         }

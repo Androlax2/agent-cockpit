@@ -12,6 +12,7 @@ use std::sync::{Mutex, MutexGuard};
 const SESSION_A: &str = "aaaaaaaa-0000-4000-8000-000000000000";
 const SESSION_B: &str = "bbbbbbbb-0000-4000-8000-000000000000";
 const SESSION_C: &str = "cccccccc-0000-4000-8000-000000000000";
+const OPENCODE_SESSION: &str = "ses_3f2a9c0b1ffeQkTz8mWn4rJd2L";
 const RUN_A: &str = "aaaaaaaaaaaa";
 const RUN_B: &str = "bbbbbbbbbbbb";
 const ANSWERS_KEY: &str = "-home-theo-IdeaProjects-proj-a";
@@ -339,6 +340,22 @@ fn injections_in_focus_fields_are_refused() {
 }
 
 #[test]
+fn an_opencode_session_id_is_accepted_with_its_agent() {
+    let report = parse_session(&json!({"session": OPENCODE_SESSION, "project": "p", "agent": "opencode"}).to_string()).unwrap();
+    assert_eq!(report.agent.as_deref(), Some("opencode"));
+}
+
+#[test]
+fn an_unknown_agent_or_a_malformed_id_is_refused() {
+    for bad in [json!({"session": SESSION_A, "agent": "codex"}), json!({"session": SESSION_A, "agent": true}),
+                json!({"session": "ses_a b"}), json!({"session": "ses_x"}), json!({"session": "../ses_3f2a9c0b1ffeQkTz"})] {
+        let mut report = json!({"project": "p"});
+        report.as_object_mut().unwrap().extend(bad.as_object().unwrap().clone());
+        assert!(parse_session(&report.to_string()).is_err(), "{bad}");
+    }
+}
+
+#[test]
 fn an_unknown_state_is_refused() {
     assert!(parse_session(&json!({"session": SESSION_A, "state": "bogus", "project": "p"}).to_string()).is_err());
 }
@@ -433,6 +450,15 @@ fn the_session_tree_of_claude_2_1_300_is_read_right() {
     assert_eq!(claude_panes_in(&tree), set(&["%12"]), "the launcher's pane, not the daemon's");
     tree.0.remove("10");
     assert_eq!(claude_panes_in(&tree), set(&[]));
+}
+
+#[test]
+fn an_opencode_process_keeps_its_pane_alive() {
+    let pane = HashMap::from([("TMUX_PANE".to_string(), "%21".to_string())]);
+    let tree = ProcessTree(BTreeMap::from([
+        ("30".into(), ("opencode".into(), vec!["/home/t/.opencode/bin/opencode".into()], pane)),
+    ]));
+    assert_eq!(claude_panes_in(&tree), set(&["%21"]));
 }
 
 // ---- The registry ----
@@ -701,6 +727,33 @@ fn reconcile_follows_the_pane_in_both_directions() {
     bench.registry.prune_dead();
     let states: BTreeMap<&str, &str> = bench.registry.sessions.iter().map(|(session, entry)| (&session[..8], entry.state.as_str())).collect();
     assert_eq!(states, BTreeMap::from([("aaaaaaaa", "working"), ("bbbbbbbb", "needs-you"), ("cccccccc", "waiting")]));
+}
+
+#[test]
+fn an_opencode_pane_is_not_read_with_claudes_patterns() {
+    // A "❯ " in opencode's screen is no idle Claude prompt: only its plugin's reports set its state.
+    let mut bench = Bench::new();
+    {
+        let mut world = bench.world.borrow_mut();
+        world.pane_tails = HashMap::from([("%5".into(), "done\n❯ \n Do you want to proceed?\n ❯ 1. Yes\n".into())]);
+        world.claude_panes = set(&["%5"]);
+    }
+    bench.report(OPENCODE_SESSION, json!({"state": "working", "tmux_pane": "%5", "agent": "opencode"}));
+    bench.registry.prune_dead();
+    assert_eq!(bench.registry.sessions[OPENCODE_SESSION].state, "working");
+}
+
+#[test]
+fn a_sessions_agent_is_in_the_snapshot_and_the_reboot_record_and_claude_by_default() {
+    let mut bench = Bench::new();
+    bench.report(SESSION_A, json!({"state": "waiting", "cwd": "/a"}));
+    bench.report(OPENCODE_SESSION, json!({"state": "waiting", "cwd": "/b", "agent": "opencode"}));
+    bench.report(OPENCODE_SESSION, json!({"state": "working"}));
+    let agent = |bench: &Bench, session: &str| bench.snapshot().iter().find(|row| row["session"] == session).unwrap()["agent"].clone();
+    assert_eq!(agent(&bench, SESSION_A), "claude");
+    assert_eq!(agent(&bench, OPENCODE_SESSION), "opencode", "a report without the field keeps it");
+    let recent: Value = serde_json::from_str(&fs::read_to_string(cockpit::paths::recent_sessions()).unwrap()).unwrap();
+    assert_eq!(recent[OPENCODE_SESSION]["agent"], "opencode");
 }
 
 #[test]
