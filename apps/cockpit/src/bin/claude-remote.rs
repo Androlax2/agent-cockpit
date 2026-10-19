@@ -5,7 +5,7 @@
 //!     claude-remote pair      a one-time link and its QR code, to open on the phone (10 minutes)
 //!     claude-remote unpair    forgets every phone
 //!
-//! Run by claude-remote.service. Every request but /pair/<code> needs a paired phone's secret (its
+//! Run by claude-remote.service. Every request but /health and /pair/<code> needs a paired phone's secret (its
 //! cookie); every POST also the X-Claude-Remote header, which another site cannot send.
 
 use cockpit::remote;
@@ -18,6 +18,7 @@ use tiny_http::{Header, Method, Request, Response, Server};
 const DEFAULT_ADDRESS: &str = "127.0.0.1:7380";
 const COOKIE: &str = "claude_remote";
 const BODY_MAX: u64 = 16 * 1024;
+const WORKERS: usize = 4;
 const PAGE: &str = include_str!("../../assets/remote/page.html");
 const SCRIPT: &str = include_str!("../../assets/remote/page.js");
 
@@ -70,6 +71,11 @@ fn outcome(request: Request, result: Result<String, String>) {
 fn handle(mut request: Request) {
     let path = request.url().split('?').next().unwrap_or("").to_string();
     let method = request.method().clone();
+    // For the cockpit's Phone section: whether the server answers, nothing more.
+    if method == Method::Get && path == "/health" {
+        respond(request, 200, "text/plain", "ok".into(), &[]);
+        return;
+    }
     if let (Method::Get, Some(code)) = (&method, path.strip_prefix("/pair/")) {
         match remote::redeem(code) {
             Some(secret) => respond(request, 303, "text/plain", "paired".into(), &[
@@ -134,8 +140,18 @@ fn serve() -> Result<(), String> {
     if let Ok(bound) = server.server_addr().to_ip().ok_or(()) {
         println!("claude-remote listening on {bound}");
     }
-    for request in server.incoming_requests() {
-        handle(request);
+    // A few workers: a slow tmux or claude-sessions call for one phone does not stall the others.
+    let server = std::sync::Arc::new(server);
+    let workers: Vec<_> = (0..WORKERS).map(|_| {
+        let server = server.clone();
+        std::thread::spawn(move || {
+            while let Ok(request) = server.recv() {
+                handle(request);
+            }
+        })
+    }).collect();
+    for worker in workers {
+        let _ = worker.join();
     }
     Ok(())
 }

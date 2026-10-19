@@ -21,7 +21,8 @@ impl Remote {
         let sandbox = Sandbox::new();
         sandbox.shim("tailscale", r#"echo '{"Self": {"DNSName": "box.tail1234.ts.net."}}'"#);
         sandbox.shim("qrencode", "");
-        sandbox.shim("tmux", "exit 0");
+        // capture-pane shows the file pane.txt, as a session's pane would.
+        sandbox.shim("tmux", r#"[[ $1 == capture-pane ]] && cat "$XDG_RUNTIME_DIR/pane.txt" 2>/dev/null; exit 0"#);
         let mut server = sandbox.command(bin().join("claude-remote"), &[("CLAUDE_REMOTE_ADDRESS", "127.0.0.1:0")]).arg("serve")
             .stdout(Stdio::piped()).spawn().unwrap();
         let mut line = String::new();
@@ -69,7 +70,21 @@ impl Remote {
         fs::create_dir_all(&runs).unwrap();
         fs::write(runs.join(format!("{id}.asking")), json!({"id": id, "project": "proj-a", "cwd": "/p", "command": command, "why": "x"}).to_string()).unwrap();
     }
+
+    /// Session A in the snapshot, its pane %4 showing `pane`.
+    fn session_showing(&self, pane: &str) {
+        fs::write(self.sandbox.runtime.join("claude-sessions.json"),
+                  json!({"sessions": [{"session": SESSION_A, "state": "needs-you", "project": "proj-a", "tmux_pane": "%4"}]}).to_string()).unwrap();
+        fs::write(self.sandbox.runtime.join("pane.txt"), pane).unwrap();
+    }
+
+    fn keys_pressed(&self) -> Vec<String> {
+        self.sandbox.calls("tmux").into_iter().filter(|call| call.starts_with("tmux send-keys")).collect()
+    }
 }
+
+const DIALOG: &str = " Bash command\n   npm test\n Do you want to proceed?\n ❯ 1. Yes\n   2. No\n";
+const IDLE: &str = "done\n❯ \n";
 
 impl Drop for Remote {
     fn drop(&mut self) {
@@ -175,4 +190,65 @@ fn every_phone_action_is_audited() {
         .flat_map(|entry| fs::read_to_string(entry.path()).unwrap().lines().map(|line| serde_json::from_str::<Value>(line).unwrap()["event"].as_str().unwrap().to_string()).collect::<Vec<_>>())
         .collect();
     assert!(events.contains(&"remote.paired".to_string()) && events.contains(&"remote.decline".to_string()), "{events:?}");
+}
+
+#[test]
+fn yes_and_no_from_the_phone_press_the_dialog_keys() {
+    for (is_yes, key) in [(true, "Enter"), (false, "Escape")] {
+        let remote = Remote::start();
+        let secret = remote.paired();
+        remote.session_showing(DIALOG);
+        let (status, _, body) = remote.request("POST", &format!("/api/answer/{SESSION_A}"), Some(&secret), Some(json!({"yes": is_yes})), true);
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(remote.keys_pressed(), [format!("tmux send-keys -t %4 {key}")]);
+    }
+}
+
+#[test]
+fn nothing_is_pressed_when_the_dialog_closed() {
+    let remote = Remote::start();
+    let secret = remote.paired();
+    remote.session_showing(IDLE);
+    let (status, _, body) = remote.request("POST", &format!("/api/answer/{SESSION_A}"), Some(&secret), Some(json!({"yes": true})), true);
+    assert_eq!(status, 409, "{body}");
+    assert!(remote.keys_pressed().is_empty());
+}
+
+#[test]
+fn yes_is_refused_when_the_cursor_left_yes() {
+    let remote = Remote::start();
+    let secret = remote.paired();
+    remote.session_showing(&DIALOG.replace("❯ 1. Yes\n   2. No", "  1. Yes\n ❯ 2. No"));
+    let (status, _, body) = remote.request("POST", &format!("/api/answer/{SESSION_A}"), Some(&secret), Some(json!({"yes": true})), true);
+    assert_eq!(status, 409, "{body}");
+    assert!(remote.keys_pressed().is_empty());
+}
+
+#[test]
+fn health_answers_without_a_phone_and_tells_nothing_else() {
+    let remote = Remote::start();
+    let (status, _, body) = remote.request("GET", "/health", None, None, false);
+    assert_eq!((status, body.as_str()), (200, "ok"));
+}
+
+#[test]
+fn a_slow_request_does_not_stall_the_others() {
+    let remote = Remote::start();
+    let secret = remote.paired();
+    remote.sandbox.shim("tmux", "sleep 3");
+    fs::write(remote.sandbox.runtime.join("claude-sessions.json"),
+              json!({"sessions": [{"session": SESSION_A, "state": "waiting", "project": "proj-a", "tmux_pane": "%4"}]}).to_string()).unwrap();
+    let port = remote.port;
+    let slow_secret = secret.clone();
+    let slow = std::thread::spawn(move || {
+        let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        stream.write_all(format!("GET /api/screen/{SESSION_A} HTTP/1.1\r\nCookie: claude_remote={slow_secret}\r\nConnection: close\r\n\r\n").as_bytes()).unwrap();
+        let mut response = String::new();
+        let _ = stream.read_to_string(&mut response);
+    });
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    let started = std::time::Instant::now();
+    assert_eq!(remote.request("GET", "/api/state", Some(&secret), None, false).0, 200);
+    assert!(started.elapsed() < std::time::Duration::from_secs(1), "waited {:?} behind the slow request", started.elapsed());
+    slow.join().unwrap();
 }

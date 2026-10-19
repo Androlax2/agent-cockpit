@@ -17,7 +17,7 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 const PAIRING_VALID_S: i64 = 600;
 const MESSAGE_MAX: usize = 4000;
@@ -118,15 +118,37 @@ pub fn state() -> Value {
     json!({"sessions": cards, "approvals": asking_approvals()})
 }
 
-/// The last lines a session's pane shows, as text.
-pub fn screen(id: &str) -> Result<String, String> {
+fn session_pane(id: &str) -> Result<String, String> {
     let row = session_row(id).ok_or("no such session")?;
     let pane = text(&row, "tmux_pane");
     if !regex::Regex::new(r"^%[0-9]{1,10}$").unwrap().is_match(&pane) {
         return Err("this session has no tmux pane".into());
     }
-    let shown = util::output_of("tmux", &["capture-pane", "-p", "-t", &pane, "-S", "-80"]).ok_or("tmux could not read its pane")?;
-    Ok(approval::strip_ansi(&shown))
+    Ok(pane)
+}
+
+fn pane_lines(pane: &str, lines: u32) -> Result<String, String> {
+    util::output_of("tmux", &["capture-pane", "-p", "-t", pane, "-S", &format!("-{lines}")]).ok_or_else(|| "tmux could not read its pane".into())
+}
+
+/// The state the pane's last lines show, by the daemon's own reading (osd classify).
+fn pane_state(tail: &str) -> String {
+    let child = Command::new("osd").arg("classify").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn();
+    let Ok(mut child) = child else { return String::new() };
+    if let Some(mut input) = child.stdin.take() {
+        let _ = input.write_all(tail.as_bytes());
+    }
+    child.wait_with_output().map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string()).unwrap_or_default()
+}
+
+fn press(pane: &str, key: &str) -> Result<(), String> {
+    let pressed = Command::new("tmux").args(["send-keys", "-t", pane, key]).stdin(Stdio::null()).status();
+    if pressed.is_ok_and(|status| status.success()) { Ok(()) } else { Err("tmux could not press the key".into()) }
+}
+
+/// The last lines a session's pane shows, as text.
+pub fn screen(id: &str) -> Result<String, String> {
+    Ok(approval::strip_ansi(&pane_lines(&session_pane(id)?, 80)?))
 }
 
 /// A message for a session: said at its prompt now, or queued for the end of its turn while it
@@ -151,16 +173,19 @@ pub fn message(id: &str, message: &str) -> Result<String, String> {
     Ok(outcome)
 }
 
-/// Yes or no to the permission dialog a session shows.
+/// Yes or no to the permission dialog a session shows. The pane is read again right before: Yes
+/// presses Enter only while the dialog is open with its cursor on "1. Yes"; No presses Escape,
+/// Claude's own "no".
 pub fn answer(id: &str, is_yes: bool) -> Result<String, String> {
-    let row = session_row(id).ok_or("no such session")?;
-    if text(&row, "state") != "needs-you" {
+    let pane = session_pane(id)?;
+    let tail = pane_lines(&pane, 20)?;
+    if pane_state(&tail) != "needs-you" {
         return Err("this session asks nothing now".into());
     }
-    let error = util::manager(&["answer", id, if is_yes { "yes" } else { "no" }]);
-    if !error.is_empty() {
-        return Err(error);
+    if is_yes && !regex::Regex::new(r"❯\s*1\.\s*Yes").unwrap().is_match(&tail) {
+        return Err("the dialog's cursor is not on \"1. Yes\": answer it in the session".into());
     }
+    press(&pane, if is_yes { "Enter" } else { "Escape" })?;
     audit::record("remote", "remote.answer", if is_yes { "yes" } else { "no" }, json!({"session": id}));
     Ok(if is_yes { "approved".into() } else { "declined".into() })
 }
