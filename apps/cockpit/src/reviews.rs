@@ -6,7 +6,7 @@ use crate::util::{self, current_session, now, parse_time};
 use chrono::{Duration, Utc};
 use regex::Regex;
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 
@@ -178,6 +178,17 @@ pub fn review_age(updated: &str) -> String {
     }
 }
 
+/// Each directory's origin URL (None: no origin). `git remote` per session on every snapshot
+/// change slowed the column's refresh; a remote rarely changes, and r (refresh) forgets them.
+static REMOTES: Mutex<Option<HashMap<String, Option<String>>>> = Mutex::new(None);
+
+fn origin_of(directory: &str) -> Option<String> {
+    let mut cache = REMOTES.lock().unwrap();
+    cache.get_or_insert_with(HashMap::new).entry(directory.to_string())
+        .or_insert_with(|| util::output_of("git", &["-C", directory, "remote", "get-url", "origin"]).map(|url| url.trim().to_string()))
+        .clone()
+}
+
 /// owner/repo -> local directory, for every running session whose directory has a github.com
 /// origin, or for the one session given (the one in the session pane) when it is known.
 pub fn session_checkouts(only_session: &str) -> BTreeMap<String, String> {
@@ -191,21 +202,28 @@ pub fn session_checkouts(only_session: &str) -> BTreeMap<String, String> {
     directories.dedup();
     let mut checkouts = BTreeMap::new();
     for directory in directories {
-        let Some(url) = util::output_of("git", &["-C", &directory, "remote", "get-url", "origin"]) else { continue };
-        if let Some(found) = remote.captures(url.trim()) {
+        let Some(url) = origin_of(&directory) else { continue };
+        if let Some(found) = remote.captures(&url) {
             checkouts.entry(found[1].to_string()).or_insert(directory);
         }
     }
     checkouts
 }
 
-#[derive(Default)]
-struct State {
+#[derive(Clone, Default)]
+struct Fetched {
     rows: Vec<Review>,
     issues: Vec<Issue>,
     error: String,
     fetched_at: f64,
-    loading: bool,
+}
+
+/// What GitHub said for each set of repositories the panel has shown, so a switch to another
+/// session shows that session's pull requests (or nothing while they load), never the previous ones.
+#[derive(Default)]
+struct State {
+    by_scope: HashMap<Vec<String>, Fetched>,
+    loading: HashSet<Vec<String>>,
 }
 
 /// Pull requests fetched in a thread, so a slow GitHub never freezes the column.
@@ -219,35 +237,29 @@ pub struct Reviews {
 
 impl Reviews {
     pub fn refresh(&self) {
-        {
-            let mut state = self.state.lock().unwrap();
-            if state.loading {
-                return;
-            }
-            state.loading = true;
+        let scope = self.repositories.clone();
+        if !self.state.lock().unwrap().loading.insert(scope.clone()) {
+            return;
         }
         let shared = self.state.clone();
-        let repositories = self.repositories.clone();
         std::thread::spawn(move || {
-            let (rows, error) = fetch_reviews(&repositories);
-            let (issues, issue_error) = if paths::reviews_fixture().is_some() { (Vec::new(), String::new()) } else { fetch_issues(&repositories) };
+            let (rows, error) = fetch_reviews(&scope);
+            let (issues, issue_error) = if paths::reviews_fixture().is_some() { (Vec::new(), String::new()) } else { fetch_issues(&scope) };
             let mut state = shared.lock().unwrap();
-            if !error.is_empty() && error != state.error {
+            let previous_error = state.by_scope.get(&scope).map(|fetched| fetched.error.clone()).unwrap_or_default();
+            if !error.is_empty() && error != previous_error {
                 util::log_event("WARN", &format!("pull requests: {error}"));
             }
             if !issue_error.is_empty() {
                 util::log_event("WARN", &format!("issues: {issue_error}"));
             }
-            state.rows = rows;
-            state.error = error;
-            state.issues = issues;
-            state.fetched_at = now();
-            state.loading = false;
+            state.loading.remove(&scope);
+            state.by_scope.insert(scope, Fetched { rows, issues, error, fetched_at: now() });
         });
     }
 
     /// Re-reads the repositories when the snapshot or the viewed session changes; refetches when
-    /// they change or age. In a session, only its repository; otherwise every running one.
+    /// they were never fetched or have aged. In a session, only its repository; otherwise every running one.
     pub fn tick(&mut self) {
         let viewed = current_session();
         let mtime = std::fs::metadata(paths::snapshot()).and_then(|m| m.modified()).ok();
@@ -255,33 +267,35 @@ impl Reviews {
         if self.scope_key.as_ref() != Some(&key) {
             self.scope_key = Some(key);
             self.checkouts = session_checkouts("");
-            let repositories: Vec<String> = session_checkouts(&viewed).into_keys().collect();
-            if repositories != self.repositories {
-                self.repositories = repositories;
-                self.state.lock().unwrap().fetched_at = 0.0;
-            }
+            self.repositories = session_checkouts(&viewed).into_keys().collect();
         }
-        if now() - self.state.lock().unwrap().fetched_at > REFRESH_S {
+        let fetched_at = self.state.lock().unwrap().by_scope.get(&self.repositories).map_or(0.0, |fetched| fetched.fetched_at);
+        if now() - fetched_at > REFRESH_S {
             self.refresh();
         }
     }
 
     pub fn force_refresh(&self) {
-        self.state.lock().unwrap().fetched_at = 0.0;
+        REMOTES.lock().unwrap().take();
+        if let Some(fetched) = self.state.lock().unwrap().by_scope.get_mut(&self.repositories) {
+            fetched.fetched_at = 0.0;
+        }
     }
 
+    /// The shown repositories' pull requests, the fetch error, and whether a fetch is under way.
     pub fn current(&self) -> (Vec<Review>, String, bool) {
         let state = self.state.lock().unwrap();
-        (state.rows.clone(), state.error.clone(), state.loading)
+        let fetched = state.by_scope.get(&self.repositories).cloned().unwrap_or_default();
+        (fetched.rows, fetched.error, state.loading.contains(&self.repositories))
     }
 
     pub fn issues(&self) -> Vec<Issue> {
-        self.state.lock().unwrap().issues.clone()
+        self.state.lock().unwrap().by_scope.get(&self.repositories).map(|fetched| fetched.issues.clone()).unwrap_or_default()
     }
 
     #[cfg(test)]
     pub fn set_issues(&self, issues: Vec<Issue>) {
-        self.state.lock().unwrap().issues = issues;
+        self.state.lock().unwrap().by_scope.entry(self.repositories.clone()).or_default().issues = issues;
     }
 }
 

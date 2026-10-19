@@ -5,7 +5,7 @@
 use crate::app::{App, Key, Screen};
 use crate::costs;
 use crate::errors::ErrorReporter;
-use crate::reviews::{self, Issue};
+use crate::reviews::{self, Issue, Review};
 use crate::sessions;
 use crate::todo::{Entry, TodoList};
 use crate::usage::{self, BudgetAlerts};
@@ -628,6 +628,60 @@ fn repositories_come_from_the_sessions_git_origins_and_the_viewed_one_narrows_th
     fixture.snapshot(json!([session(SESSION_A, "waiting", "shop", &shop, 1), session(SESSION_B, "waiting", "notes", &notes, 2)]));
     assert_eq!(reviews::session_checkouts("").into_keys().collect::<Vec<_>>(), vec!["acme/notes".to_string(), "acme/shop".to_string()]);
     assert_eq!(reviews::session_checkouts(SESSION_A).into_keys().collect::<Vec<_>>(), vec!["acme/shop".to_string()]);
+}
+
+/// gh answering one pull request for any repository, after `slow_seconds` for o/a.
+fn shim_gh_slow_for_a(fixture: &Fixture, slow_seconds: &str) {
+    let recent = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    let pull = format!(r#"[{{"number": 3, "title": "Fix", "url": "u", "author": {{"login": "sam"}}, "updatedAt": "{recent}"}}]"#);
+    fixture.shim("gh", &format!("case \"$*\" in\n  issue*) echo '[]' ;;\n  *o/a*) sleep {slow_seconds}; echo '{pull}' ;;\n  *) echo '{pull}' ;;\nesac"));
+}
+
+fn wait_for_rows(app: &App) -> Vec<Review> {
+    for _ in 0..150 {
+        let (rows, _, loading) = app.reviews.current();
+        if !rows.is_empty() && !loading { return rows; }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    Vec::new()
+}
+
+#[test]
+fn switching_session_never_shows_the_previous_sessions_pull_requests() {
+    let fixture = Fixture::new();
+    shim_gh_slow_for_a(&fixture, "2");
+    let mut app = fixture.app();
+    app.reviews.repositories = vec!["o/b".into()];
+    app.reviews.refresh();
+    assert_eq!(wait_for_rows(&app)[0].repository, "b");
+    app.reviews.repositories = vec!["o/a".into()];
+    app.reviews.refresh();
+    let (rows, _, loading) = app.reviews.current();
+    assert!(rows.is_empty() && loading, "{rows:?}");
+}
+
+#[test]
+fn a_fetch_still_running_for_another_session_does_not_hold_back_this_ones() {
+    let fixture = Fixture::new();
+    shim_gh_slow_for_a(&fixture, "0.5");
+    let mut app = fixture.app();
+    app.reviews.repositories = vec!["o/a".into()];
+    app.reviews.refresh();
+    app.reviews.repositories = vec!["o/b".into()];
+    app.reviews.refresh();
+    assert_eq!(wait_for_rows(&app).iter().map(|row| row.repository.as_str()).collect::<Vec<_>>(), ["b"]);
+}
+
+#[test]
+fn the_column_notices_another_session_in_the_pane_before_its_next_tick() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "runway", "/r", 1), session(SESSION_B, "waiting", "opusline", "/o", 2)]));
+    fixture.view(SESSION_A);
+    let mut app = fixture.app();
+    app.tick();
+    assert!(!app.viewed_changed());
+    fixture.view(SESSION_B);
+    assert!(app.viewed_changed());
 }
 
 #[test]

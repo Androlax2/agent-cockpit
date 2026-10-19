@@ -341,6 +341,8 @@ pub struct App {
     pub(crate) review_rows: Vec<Review>,
     pub todo_entries: Vec<Entry>,
     pub(crate) todo_scope: String,
+    /// The session in the session pane as of the last tick: its change wakes the column at once.
+    shown_session: String,
     /// The Todo tab shown (TODO_TABS), and how many entries each holds.
     pub(crate) todo_tab: usize,
     /// session -> when the column last sent it a queued prompt: the next one waits for a turn that
@@ -362,7 +364,7 @@ impl App {
             help_open: false, message: String::new(), labelled: Default::default(), menu: None, restore: Vec::new(),
             focus_waiting: false, held: Vec::new(), held_checked: 0.0, queue_checked: 0.0, gaming: util::gaming, restore_checked: 0.0, start_files: Vec::new(),
             width: DEFAULT_COLUMN_WIDTH, sessions: Vec::new(), windows: Vec::new(), review_rows: Vec::new(), todo_entries: Vec::new(),
-            todo_scope: String::new(), todo_tab: TODO_TAB_TO_DO, todo_counts: [0; 4], prompts_sent: HashMap::new(), craft_roots: HashMap::new(), hit_lines: HashMap::new(), hit_actions: HashMap::new(),
+            todo_scope: String::new(), shown_session: String::new(), todo_tab: TODO_TAB_TO_DO, todo_counts: [0; 4], prompts_sent: HashMap::new(), craft_roots: HashMap::new(), hit_lines: HashMap::new(), hit_actions: HashMap::new(),
         }
     }
 
@@ -376,6 +378,7 @@ impl App {
     }
 
     pub fn tick(&mut self) {
+        self.shown_session = current_session();
         self.todos.apply_updates();
         self.errors.tick(&sessions::reported());
         self.claude_status.tick();
@@ -2004,6 +2007,15 @@ pub fn read_key(timeout: Option<Duration>, last_click: &mut Option<(Instant, u16
 }
 
 pub const POLL_INTERVAL: Duration = POLL;
+/// How often the column looks whether another session went into the session pane (Ctrl+Tab, a
+/// banner, n): its Todo and Pull requests follow within this, not at the next full tick.
+pub const VIEW_CHECK_INTERVAL: Duration = Duration::from_millis(40);
+
+impl App {
+    pub fn viewed_changed(&self) -> bool {
+        current_session() != self.shown_session
+    }
+}
 
 #[cfg(test)]
 mod tests {

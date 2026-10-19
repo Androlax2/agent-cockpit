@@ -61,11 +61,16 @@ fn run() -> io::Result<()> {
     let mut app = App::new();
     let _ = Command::new("claude-sessions").arg("sweep").stdout(Stdio::null()).stderr(Stdio::null()).status();
     app.history.refresh();
+    let mut last_tick: Option<Instant> = None;
     loop {
-        app.tick();
-        screen.draw(&mut app);
-        if let Some(key) = screen.next_key(Some(app::POLL_INTERVAL)) {
+        if last_tick.is_none_or(|at| at.elapsed() >= app::POLL_INTERVAL) || app.viewed_changed() {
+            app.tick();
+            screen.draw(&mut app);
+            last_tick = Some(Instant::now());
+        }
+        if let Some(key) = screen.next_key(Some(app::VIEW_CHECK_INTERVAL)) {
             app.handle(key, &mut screen);
+            last_tick = None;
         }
     }
 }
