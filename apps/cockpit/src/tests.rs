@@ -263,6 +263,88 @@ fn any_other_key_closes_the_settings_menu_without_changing_anything() {
     assert!(fixture.calls("claude-sessions").is_empty());
 }
 
+/// The phone page as the column sees it: Tailscale names the computer, qrencode draws a 2×2 code,
+/// and devices.json holds `phones`.
+fn phone_page(fixture: &Fixture, phones: Value) {
+    fixture.shim("tailscale", r#"echo '{"Self": {"DNSName": "box.tail1234.ts.net."}}'"#);
+    fixture.shim("qrencode", "printf '##  \\n  ##\\n'");
+    fixture.write("state/claude-remote/devices.json", &json!({"devices": phones}).to_string());
+}
+
+fn phone(name: &str, hash: &str) -> Value {
+    json!({"sha256": hash, "name": name, "paired_at": 1, "last_seen": util::now_secs()})
+}
+
+fn open_settings_on(app: &mut App, index: usize) {
+    app.handle(Key::Char('S'), &mut FakeScreen::default());
+    for _ in 0..index {
+        app.handle(Key::Down, &mut FakeScreen::default());
+    }
+}
+
+#[test]
+fn the_settings_menu_lists_the_paired_phones_under_phone() {
+    let fixture = Fixture::new();
+    phone_page(&fixture, json!([phone("iPhone", "aa11"), phone("iPad", "bb22")]));
+    let mut app = fixture.app();
+    app.handle(Key::Char('S'), &mut FakeScreen::default());
+    let drawn = format!("{:?}", render(&mut app, 60, 40));
+    for shown in ["Phone", "Pair a phone (QR code)", "iPhone", "iPad", "seen now"] {
+        assert!(drawn.contains(shown), "{shown} missing");
+    }
+}
+
+#[test]
+fn enter_on_pair_a_phone_shows_a_one_time_link_and_its_qr_code() {
+    let fixture = Fixture::new();
+    phone_page(&fixture, json!([]));
+    let mut app = fixture.app();
+    open_settings_on(&mut app, crate::settings::SETTINGS.len());
+    app.handle(Key::Enter, &mut FakeScreen::default());
+    let pairing = app.pairing.as_ref().expect("no pairing shown");
+    assert!(pairing.link.starts_with("https://box.tail1234.ts.net/pair/"), "{}", pairing.link);
+    let drawn = format!("{:?}", render(&mut app, 60, 40));
+    assert!(drawn.contains("▀") && drawn.contains("scan within 10 minutes"), "no QR code drawn");
+}
+
+#[test]
+fn pair_phone_in_the_palette_shows_the_qr_code_and_says_when_the_phone_opened_it() {
+    let fixture = Fixture::new();
+    phone_page(&fixture, json!([]));
+    fixture.shim("fzf", "grep 'pairs a phone'");
+    let mut app = fixture.app();
+    app.handle(Key::Char(':'), &mut FakeScreen::default());
+    assert!(app.pairing.is_some(), "pair-phone in the : list shows no QR code");
+    fixture.write("state/claude-remote/devices.json", &json!({"devices": [phone("iPhone", "aa11")]}).to_string());
+    app.tick();
+    assert_eq!(app.pairing.as_ref().and_then(|pairing| pairing.paired.as_deref()), Some("iPhone"));
+}
+
+#[test]
+fn pairing_without_tailscale_says_why_and_shows_nothing() {
+    let fixture = Fixture::new();
+    phone_page(&fixture, json!([]));
+    fixture.shim("tailscale", "exit 1");
+    let mut app = fixture.app();
+    open_settings_on(&mut app, crate::settings::SETTINGS.len());
+    app.handle(Key::Enter, &mut FakeScreen::default());
+    assert!(app.pairing.is_none());
+    assert!(app.message.contains("is Tailscale up?"), "{}", app.message);
+}
+
+#[test]
+fn x_on_a_phone_forgets_it_after_a_yes_only() {
+    for (answer, kept) in [(Key::Char('y'), vec!["iPad"]), (Key::Char('n'), vec!["iPhone", "iPad"])] {
+        let fixture = Fixture::new();
+        phone_page(&fixture, json!([phone("iPhone", "aa11aa11ff"), phone("iPad", "bb22bb22ff")]));
+        let mut app = fixture.app();
+        open_settings_on(&mut app, crate::settings::SETTINGS.len() + 1);
+        app.handle(Key::Char('x'), &mut FakeScreen::answering(&[answer]));
+        let names: Vec<String> = crate::remote::phones().iter().map(|phone| phone["name"].as_str().unwrap().to_string()).collect();
+        assert_eq!(names, kept, "answered {answer:?}");
+    }
+}
+
 #[test]
 fn choosing_another_effort_restarts_the_session_on_it() {
     let fixture = Fixture::new();
@@ -2310,15 +2392,6 @@ fn time_with_claude_counts_overlapping_sessions_once() {
     let start = chrono::NaiveDate::from_ymd_opt(2026, 10, 18).unwrap().and_hms_opt(10, 0, 0).unwrap().and_utc().timestamp() as f64;
     let together = costs::time_with_claude(&archived(&fixture), &[start, start + 60.0]).unwrap();
     assert_eq!(together.iter().map(|seconds| seconds.round()).collect::<Vec<_>>(), [120.0, 60.0]);
-}
-
-#[test]
-fn the_palette_pairs_a_phone() {
-    let fixture = Fixture::new();
-    fixture.shim("fzf", "grep 'pairs a phone'");
-    let mut app = fixture.app();
-    app.handle(Key::Char(':'), &mut FakeScreen::default());
-    assert_eq!(fixture.wait_for_calls("claude-sessions", 1), vec!["claude-sessions pair-phone".to_string()]);
 }
 
 // ---- opencode sessions ----

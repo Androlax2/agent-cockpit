@@ -12,7 +12,9 @@ use crate::status::{self, ClaudeStatus};
 use crate::todo::{self, Entry, TodoList};
 use crate::usage::{self, BudgetAlerts, Refresher, Window};
 use crate::prompts;
+use crate::{approval, remote};
 use crate::util::{self, age, current_session, manager, manager_in_background, money, now, project_name};
+use serde_json::Value;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind};
 use ratatui::buffer::Buffer;
 use ratatui::style::{Color, Modifier, Style};
@@ -20,6 +22,7 @@ use std::collections::HashMap;
 use std::io::{self, Write};
 use std::fs;
 use std::process::{Command, Stdio};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -70,7 +73,7 @@ const GLOBAL_HELP: [(&str, &str); 14] = [
     ("⌘1 ⌘2 ⌘3", "focus a panel from inside the session (tmux)"), ("⇥ ⇧⇥", "next / previous panel"), ("j/k ↑↓", "move inside the panel"),
     (":", "every action, searchable; the rare ones have no key and are only there"), ("a", "new session in a project"),
     ("O", "new opencode session in a project: same sandbox, card and keys, but what only Claude Code does (effort, $, remote, /compact) is done in its pane"),
-    ("S", "settings, on or off: Remote Control on lock, the todo queue, errors handed to dotfiles, freezing sessions while gaming, the idle lock on workspace 6, the daily digest"),
+    ("S", "settings, on or off: Remote Control on lock, the todo queue, errors handed to dotfiles, freezing sessions while gaming, the idle lock on workspace 6, the daily digest; and the phone page: its server, pairing a phone (QR code), forgetting one (x)"),
     ("P W G", "windows on top: pull requests, Claude on the web, greyproxy (also Super+Ctrl+P/A/G)"),
     ("≈ $", "today's Claude Code and opencode replies on this machine at API prices (the plan is flat); week and month in Status"),
     ("⌘⇥", "cursor between the column and the session (tmux)"),
@@ -85,7 +88,7 @@ const PALETTE_ONLY: [(&str, &str, &str); 7] = [
     ("0", "status-page", "open status.claude.com: Anthropic's incidents and each product's state"),
     ("1", "remote", "toggle Remote Control (phone / claude.ai/code) for the selected session"),
     ("1", "drop-queued", "drop the messages queued for the selected session"),
-    ("-", "pair-phone", "a QR code that pairs a phone with the phone page (claude-remote), once, within 10 minutes"),
+    ("-", "pair-phone", "a QR code that pairs a phone with the phone page (claude-remote), once, within 10 minutes (also in S)"),
 ];
 const LEGEND: [(&str, &str); 22] = [
     ("●", "working"), ("○", "waiting for you"), ("!", "needs you: permission or question"), ("·", "running, state unknown"),
@@ -331,52 +334,181 @@ impl EffortMenu {
     }
 }
 
-/// The settings, each on or off, in the column's top right corner (S).
+/// The settings, each on or off, in the column's top right corner (S), and below them the phone
+/// page (claude-remote): whether its server answers and the tailnet publishes it, a row that pairs
+/// a phone, and the paired phones.
 pub struct SettingsMenu {
     pub(crate) selected: usize,
     rows: HashMap<u16, usize>,
     area: (u16, u16, u16, u16), // top, left, bottom, right
+    pub(crate) phones: Vec<Value>,
+    /// Whether the server answers and tailscale serve publishes it, once the check made at opening ends.
+    phone_health: Arc<Mutex<Option<(bool, Option<bool>)>>>,
+}
+
+/// What a row of the settings menu does.
+#[derive(Debug, PartialEq)]
+pub(crate) enum SettingsRow {
+    Setting(usize),
+    PairPhone,
+    Phone(usize),
 }
 
 impl SettingsMenu {
     fn new() -> Self {
-        Self { selected: 0, rows: HashMap::new(), area: (0, 0, 0, 0) }
+        let phone_health = Arc::new(Mutex::new(None));
+        let shared = phone_health.clone();
+        // Half a second at worst, off the key's path: the menu shows "checking" meanwhile.
+        std::thread::spawn(move || {
+            let health = (remote::server_answers(), remote::is_published());
+            *shared.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(health);
+        });
+        Self { selected: 0, rows: HashMap::new(), area: (0, 0, 0, 0), phones: remote::phones(), phone_health }
+    }
+
+    fn row_count(&self) -> usize {
+        SETTINGS.len() + 1 + self.phones.len()
+    }
+
+    pub(crate) fn row(&self, index: usize) -> SettingsRow {
+        match index {
+            index if index < SETTINGS.len() => SettingsRow::Setting(index),
+            index if index == SETTINGS.len() => SettingsRow::PairPhone,
+            index => SettingsRow::Phone(index - SETTINGS.len() - 1),
+        }
+    }
+
+    fn health_line(&self) -> (String, u8) {
+        match *self.phone_health.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) {
+            None => ("server … checking".into(), FG_DARK),
+            Some((false, _)) => ("server ● down".into(), RED),
+            Some((true, Some(false))) => ("server ● up · not on tailnet".into(), YELLOW),
+            Some((true, None)) => ("server ● up · tailnet ?".into(), YELLOW),
+            Some((true, Some(true))) => ("server ● up · tailnet ● on".into(), GREEN),
+        }
     }
 
     fn draw(&mut self, buffer: &mut Buffer) {
         let width = buffer.area.width;
-        let box_height = SETTINGS.len() as u16 + 3;
+        let box_height = self.row_count() as u16 + 5;
         let top = HEADER_LINES;
         let left = width.saturating_sub(3 + MENU_WIDTH).max(1);
         let right = left + MENU_WIDTH - 1;
         self.area = (top, left, top + box_height - 1, right);
         let frame = on(BLUE, BG_HIGHLIGHT).add_modifier(Modifier::BOLD);
         let ground = on(FG, BG_HIGHLIGHT);
+        let dim = on(FG_DARK, BG_HIGHLIGHT);
         let inner = (MENU_WIDTH - 2) as usize;
+        let blank = |buffer: &mut Buffer, row: u16| put(buffer, row, left, &format!("│{}│", " ".repeat(inner)), frame);
         put(buffer, top, left, &format!("╭{}╮", "─".repeat(inner)), frame);
         put(buffer, top, left + 2, " Settings ", frame);
         self.rows.clear();
-        for (index, (name, label)) in SETTINGS.iter().enumerate() {
-            let row = top + 1 + index as u16;
+        let mut row = top + 1;
+        for index in 0..self.row_count() {
+            if index == SETTINGS.len() {
+                put(buffer, row, left, &format!("├{}┤", "─".repeat(inner)), frame);
+                put(buffer, row, left + 2, " Phone ", frame);
+                blank(buffer, row + 1);
+                let (health, color) = self.health_line();
+                put(buffer, row + 1, left + 2, &fit(&health, inner - 2), on(color, BG_HIGHLIGHT));
+                row += 2;
+            }
             let chosen = index == self.selected;
-            let is_on = settings::is_on(name);
-            put(buffer, row, left, &format!("│{}│", " ".repeat(inner)), frame);
+            blank(buffer, row);
             put(buffer, row, left + 1, &" ".repeat(inner), if chosen { on(BG_HIGHLIGHT, BLUE) } else { ground });
             let text_style = if chosen { on(BG_HIGHLIGHT, BLUE).add_modifier(Modifier::BOLD) } else { ground };
-            put(buffer, row, left + 2, &fit(label, inner - 6), text_style);
-            let state_style = if chosen { on(BG_HIGHLIGHT, BLUE) } else if is_on { on(GREEN, BG_HIGHLIGHT).add_modifier(Modifier::BOLD) } else { on(FG_DARK, BG_HIGHLIGHT) };
-            put(buffer, row, right - 4, if is_on { " on" } else { "off" }, state_style);
+            match self.row(index) {
+                SettingsRow::Setting(setting) => {
+                    let (name, label) = SETTINGS[setting];
+                    let is_on = settings::is_on(name);
+                    put(buffer, row, left + 2, &fit(label, inner - 6), text_style);
+                    let state_style = if chosen { on(BG_HIGHLIGHT, BLUE) } else if is_on { on(GREEN, BG_HIGHLIGHT).add_modifier(Modifier::BOLD) } else { dim };
+                    put(buffer, row, right - 4, if is_on { " on" } else { "off" }, state_style);
+                }
+                SettingsRow::PairPhone => put(buffer, row, left + 2, "Pair a phone (QR code)", text_style),
+                SettingsRow::Phone(phone) => {
+                    let phone = &self.phones[phone];
+                    let seen = format!("seen {}", seen_ago(phone.get("last_seen").and_then(Value::as_i64)));
+                    put(buffer, row, left + 2, &fit(phone["name"].as_str().unwrap_or(""), inner.saturating_sub(seen.width() + 3)), text_style);
+                    put(buffer, row, right - seen.width() as u16 - 1, &seen, if chosen { on(BG_HIGHLIGHT, BLUE) } else { dim });
+                }
+            }
             self.rows.insert(row, index);
+            row += 1;
         }
-        let note_row = top + 1 + SETTINGS.len() as u16;
-        put(buffer, note_row, left, &format!("│{}│", " ".repeat(inner)), frame);
-        put(buffer, note_row, left + 2, "⏎ toggles  esc", on(FG_DARK, BG_HIGHLIGHT).add_modifier(Modifier::DIM));
-        put(buffer, note_row + 1, left, &format!("╰{}╯", "─".repeat(inner)), frame);
+        blank(buffer, row);
+        let keys = if matches!(self.row(self.selected), SettingsRow::Phone(_)) { "x forgets this phone  esc" } else { "⏎ toggles or pairs  esc" };
+        put(buffer, row, left + 2, keys, dim.add_modifier(Modifier::DIM));
+        put(buffer, row + 1, left, &format!("╰{}╯", "─".repeat(inner)), frame);
     }
 
     fn contains(&self, x: u16, y: u16) -> bool {
         let (top, left, bottom, right) = self.area;
         (top..=bottom).contains(&y) && (left..=right).contains(&x)
+    }
+}
+
+fn seen_ago(seconds: Option<i64>) -> String {
+    let Some(seconds) = seconds else { return "never".into() };
+    match util::now_secs() - seconds {
+        ..120 => "now".into(),
+        elapsed @ ..7200 => format!("{} min ago", elapsed / 60),
+        elapsed @ ..172_800 => format!("{} h ago", elapsed / 3600),
+        elapsed => format!("{} days ago", elapsed / 86_400),
+    }
+}
+
+/// A phone being paired: the one-time link's QR code over the column, until a key; it says so once
+/// the phone opened it.
+pub(crate) struct Pairing {
+    pub(crate) link: String,
+    modules: Option<Vec<Vec<bool>>>,
+    phones_before: usize,
+    pub(crate) paired: Option<String>,
+}
+
+impl Pairing {
+    fn draw(&self, buffer: &mut Buffer) {
+        let (width, height) = (buffer.area.width, buffer.area.height);
+        let ground = on(FG, BG_HIGHLIGHT);
+        for line in HEADER_LINES..height.saturating_sub(1) {
+            put(buffer, line, 0, &" ".repeat(width.saturating_sub(1) as usize), ground);
+        }
+        let mut row = HEADER_LINES + 1;
+        if let Some(name) = &self.paired {
+            put(buffer, row, 2, &format!("{name} is paired ✓"), on(GREEN, BG_HIGHLIGHT).add_modifier(Modifier::BOLD));
+            put(buffer, row + 2, 2, "any key closes", on(FG_DARK, BG_HIGHLIGHT).add_modifier(Modifier::DIM));
+            return;
+        }
+        put(buffer, row, 2, "Pair a phone: scan within 10 minutes, once", on(MAGENTA, BG_HIGHLIGHT).add_modifier(Modifier::BOLD));
+        row += 2;
+        let modules = self.modules.as_ref().filter(|modules| {
+            modules[0].len() as u16 + 4 <= width && (modules.len() as u16).div_ceil(2) + row + 4 <= height
+        });
+        match modules {
+            // Two module rows per terminal row (▀: the top one in the foreground), in true black and
+            // white whatever the theme, for the phone's camera.
+            Some(modules) => {
+                let shade = |is_dark: bool| if is_dark { Color::Rgb(0, 0, 0) } else { Color::Rgb(255, 255, 255) };
+                for pair in modules.chunks(2) {
+                    for (column, &is_dark) in pair[0].iter().enumerate() {
+                        let below = pair.get(1).is_some_and(|next| next[column]);
+                        put(buffer, row, 2 + column as u16, "▀", Style::default().fg(shade(is_dark)).bg(shade(below)));
+                    }
+                    row += 1;
+                }
+            }
+            None => {
+                put(buffer, row, 2, "No room for the QR code here (or qrencode is missing): open the link on the phone.", on(YELLOW, BG_HIGHLIGHT));
+                row += 1;
+            }
+        }
+        row += 1;
+        for line in approval::wrap(&self.link, width.saturating_sub(4) as usize) {
+            put(buffer, row, 2, &line, on(FG_DARK, BG_HIGHLIGHT));
+            row += 1;
+        }
+        put(buffer, row + 1, 2, "any key closes (the link keeps working until it is used or expires)", on(FG_DARK, BG_HIGHLIGHT).add_modifier(Modifier::DIM));
     }
 }
 
@@ -416,6 +548,7 @@ pub struct App {
     pub(crate) labelled: (String, String),
     pub(crate) menu: Option<EffortMenu>,
     pub(crate) settings_menu: Option<SettingsMenu>,
+    pub(crate) pairing: Option<Pairing>,
     pub restore: Vec<Restorable>,
     pub held: Vec<String>,
     pub(crate) held_checked: f64,
@@ -478,7 +611,7 @@ impl App {
             history: History::default(), view: ViewState::load(), usage: Refresher::new(), alerts: BudgetAlerts::new(util::send_notice),
             costs: Costs::default(), reviews: Reviews::default(), todos: TodoList::load(), errors: ErrorReporter::new(),
             claude_status: ClaudeStatus::default(), panels: Default::default(), focus: 1,
-            help_open: false, has_pane_focus: true, message: String::new(), exiting: Vec::new(), labelled: Default::default(), menu: None, settings_menu: None, restore: Vec::new(),
+            help_open: false, has_pane_focus: true, message: String::new(), exiting: Vec::new(), labelled: Default::default(), menu: None, settings_menu: None, pairing: None, restore: Vec::new(),
             held: Vec::new(), held_checked: 0.0, queue_checked: 0.0, gaming: util::gaming, restore_checked: 0.0, start_files: Vec::new(),
             width: DEFAULT_COLUMN_WIDTH, sessions: Vec::new(), windows: Vec::new(), review_rows: Vec::new(), todo_entries: Vec::new(),
             todo_scope: String::new(), shown_session: String::new(), todo_tab: TODO_TAB_OPEN, todo_tabs: HashMap::new(), todo_counts: [0; 5], prompts_sent: HashMap::new(), craft_roots: HashMap::new(), hit_lines: HashMap::new(), hit_actions: HashMap::new(),
@@ -505,6 +638,7 @@ impl App {
         self.alerts.check(&self.windows);
         self.costs.tick();
         self.reviews.tick();
+        self.watch_pairing();
         self.redraw();
         self.push_viewed_state();
         self.dispatch_queue();
@@ -1316,28 +1450,83 @@ impl App {
         if failure.is_empty() { format!("{label}: {wanted}") } else { failure }
     }
 
+    /// What Enter or a click does on a row of the settings menu.
+    fn choose_settings_row(&mut self, index: usize) -> String {
+        let Some(menu) = self.settings_menu.as_ref() else { return String::new() };
+        match menu.row(index) {
+            SettingsRow::Setting(setting) => self.toggle_setting(setting),
+            SettingsRow::PairPhone => {
+                self.settings_menu = None;
+                self.start_pairing()
+            }
+            SettingsRow::Phone(_) => String::new(),
+        }
+    }
+
+    /// The QR code of a new one-time pairing link, over the column.
+    fn start_pairing(&mut self) -> String {
+        match remote::pairing_link("") {
+            Ok(link) => {
+                self.pairing = Some(Pairing { modules: remote::qr_modules(&link), link, phones_before: remote::phones().len(), paired: None });
+                String::new()
+            }
+            Err(error) => format!("cannot pair a phone: {error}"),
+        }
+    }
+
+    fn forget_phone(&mut self, phone: usize, screen: &mut dyn Screen) -> String {
+        let Some(chosen) = self.settings_menu.as_ref().and_then(|menu| menu.phones.get(phone)).cloned() else { return String::new() };
+        let name = chosen["name"].as_str().unwrap_or("").to_string();
+        if !self.confirm(screen, &format!("Forget {name}? It needs a new pairing to come back.")) {
+            return String::new();
+        }
+        let outcome = match remote::unpair(chosen["id"].as_str().unwrap_or("")) {
+            Ok(name) => format!("{name} forgotten"),
+            Err(error) => error,
+        };
+        if let Some(menu) = self.settings_menu.as_mut() {
+            menu.phones = remote::phones();
+            menu.selected = menu.selected.min(menu.row_count() - 1);
+        }
+        outcome
+    }
+
     /// Keys and clicks while the settings menu is open; anything else closes it.
-    fn handle_settings_menu(&mut self, key: Key) -> String {
+    fn handle_settings_menu(&mut self, key: Key, screen: &mut dyn Screen) -> String {
         let Some(menu) = self.settings_menu.as_mut() else { return String::new() };
         match key {
             Key::Click { x, y, .. } => {
                 if let Some(index) = menu.rows.get(&y).copied() {
                     menu.selected = index;
-                    return self.toggle_setting(index);
+                    return self.choose_settings_row(index);
                 }
                 if !menu.contains(x, y) {
                     self.settings_menu = None;
                 }
             }
-            Key::Char('j') | Key::Down => menu.selected = (menu.selected + 1).min(SETTINGS.len() - 1),
+            Key::Char('j') | Key::Down => menu.selected = (menu.selected + 1).min(menu.row_count() - 1),
             Key::Char('k') | Key::Up => menu.selected = menu.selected.saturating_sub(1),
             Key::Enter | Key::Char(' ') => {
                 let index = menu.selected;
-                return self.toggle_setting(index);
+                return self.choose_settings_row(index);
+            }
+            Key::Char('x') => {
+                if let SettingsRow::Phone(phone) = menu.row(menu.selected) {
+                    return self.forget_phone(phone, screen);
+                }
             }
             _ => self.settings_menu = None,
         }
         String::new()
+    }
+
+    /// Once the phone opened the pairing link, the overlay says so.
+    fn watch_pairing(&mut self) {
+        let Some(pairing) = self.pairing.as_mut().filter(|pairing| pairing.paired.is_none()) else { return };
+        let phones = remote::phones();
+        if phones.len() > pairing.phones_before {
+            pairing.paired = phones.last().and_then(|phone| phone["name"].as_str()).map(str::to_string);
+        }
     }
 
     // ---- Pull requests ----
@@ -1824,6 +2013,9 @@ impl App {
         if let Some(menu) = self.settings_menu.as_mut() {
             menu.draw(buffer);
         }
+        if let Some(pairing) = self.pairing.as_ref() {
+            pairing.draw(buffer);
+        }
         if self.help_open {
             self.draw_help(buffer);
         }
@@ -2036,7 +2228,11 @@ impl App {
             return;
         }
         if self.settings_menu.is_some() {
-            self.message = self.handle_settings_menu(key);
+            self.message = self.handle_settings_menu(key, screen);
+            return;
+        }
+        if self.pairing.is_some() {
+            self.pairing = None;
             return;
         }
         if self.help_open {
@@ -2145,7 +2341,7 @@ impl App {
         let known = self.selected_session().filter(|s| s.state != "unknown");
         match name {
             "digest" => self.manager_async(&["digest"]),
-            "pair-phone" => self.manager_async(&["pair-phone"]),
+            "pair-phone" => self.start_pairing(),
             "design" => self.start_design_session(screen),
             "clones" => {
                 manager_in_background(&["clones"]);

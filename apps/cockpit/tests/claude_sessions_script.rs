@@ -1954,14 +1954,6 @@ fn each_session_shows_its_own_approval_when_several_run() {
     assert_eq!(state.trim(), format!("aaaaaaaaaaaa {SESSION_A}"));
 }
 
-#[test]
-fn pair_phone_shows_the_pairing_qr_code_in_a_popup() {
-    let manager = Manager::new();
-    manager.run(&["pair-phone"], &[]);
-    let popup = manager.tmux_calls("display-popup").pop().expect("no popup");
-    assert!(popup.contains("/.local/bin/claude-remote\" pair"), "{popup}");
-}
-
 // ---- opencode sessions ----
 
 impl Manager {

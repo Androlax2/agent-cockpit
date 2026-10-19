@@ -20,9 +20,15 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::process::{Command, Stdio};
 
+pub const DEFAULT_ADDRESS: &str = "127.0.0.1:7380";
 const PAIRING_VALID_S: i64 = 600;
 const MESSAGE_MAX: usize = 4000;
 const LAST_SEEN_STEP_S: i64 = 60;
+
+/// Where the server listens: CLAUDE_REMOTE_ADDRESS, or 127.0.0.1:7380.
+pub fn address() -> String {
+    std::env::var("CLAUDE_REMOTE_ADDRESS").unwrap_or_else(|_| DEFAULT_ADDRESS.into())
+}
 
 pub fn state_dir() -> PathBuf {
     std::env::var("CLAUDE_REMOTE_DIR").map(PathBuf::from).unwrap_or_else(|_| paths::state_home().join("claude-remote"))
@@ -49,6 +55,57 @@ pub fn new_pairing_code(name: &str) -> std::io::Result<String> {
     Ok(code)
 }
 
+/// The tailnet name of this computer (tailscale status), for the pairing link.
+fn tailnet_name() -> Option<String> {
+    let status: Value = serde_json::from_str(&util::output_of("tailscale", &["status", "--json"])?).ok()?;
+    status.get("Self")?.get("DNSName")?.as_str().map(|name| name.trim_end_matches('.').to_string()).filter(|name| !name.is_empty())
+}
+
+/// A new one-time pairing link for a phone called `name` ("" lets the phone name itself).
+pub fn pairing_link(name: &str) -> Result<String, String> {
+    if name.chars().count() > 32 || name.chars().any(char::is_control) {
+        return Err("a phone's name is one line of at most 32 characters".into());
+    }
+    let host = tailnet_name().ok_or("tailscale status gives no name for this computer: is Tailscale up?")?;
+    let code = new_pairing_code(name).map_err(|error| format!("cannot keep the pairing code: {error}"))?;
+    Ok(format!("https://{host}/pair/{code}"))
+}
+
+/// The QR code of `text` as rows of modules (true is dark), quiet zone included, from qrencode.
+pub fn qr_modules(text: &str) -> Option<Vec<Vec<bool>>> {
+    let drawn = util::output_of("qrencode", &["-t", "ASCII", "-m", "2", text])?;
+    let rows: Vec<Vec<bool>> = drawn.lines().filter(|line| !line.is_empty())
+        .map(|line| line.as_bytes().chunks(2).map(|module| module[0] == b'#').collect()).collect();
+    (!rows.is_empty()).then_some(rows)
+}
+
+/// A name for a phone paired without one, from its browser.
+fn name_from_browser(user_agent: &str) -> Option<&'static str> {
+    [("iPhone", "iPhone"), ("iPad", "iPad"), ("Android", "Android")].into_iter()
+        .find(|(marker, _)| user_agent.contains(marker)).map(|(_, name)| name)
+}
+
+/// Whether the server answers on its address (GET /health), within half a second.
+pub fn server_answers() -> bool {
+    let Ok(address) = address().parse::<std::net::SocketAddr>() else { return false };
+    let timeout = std::time::Duration::from_millis(500);
+    let Ok(mut stream) = std::net::TcpStream::connect_timeout(&address, timeout) else { return false };
+    let _ = stream.set_read_timeout(Some(timeout));
+    if stream.write_all(b"GET /health HTTP/1.0\r\n\r\n").is_err() {
+        return false;
+    }
+    let mut response = String::new();
+    let _ = std::io::Read::read_to_string(&mut stream, &mut response);
+    response.starts_with("HTTP/1.1 200") || response.starts_with("HTTP/1.0 200")
+}
+
+/// Whether `tailscale serve` publishes the server's port on the tailnet (None: Tailscale did not say).
+pub fn is_published() -> Option<bool> {
+    let port = address().rsplit(':').next()?.to_string();
+    let serving = util::output_of("tailscale", &["serve", "status", "--json"])?;
+    Some(serving.contains(&format!("127.0.0.1:{port}")) || serving.contains(&format!("localhost:{port}")))
+}
+
 /// devices.json is read, changed and written back by several workers: one at a time.
 static DEVICES: Mutex<()> = Mutex::new(());
 
@@ -66,7 +123,7 @@ fn device_id(device: &Value) -> String {
 }
 
 /// The phone's secret for a pairing code still valid, once: None for a wrong, used or old code.
-pub fn redeem(code: &str) -> Option<String> {
+pub fn redeem(code: &str, user_agent: &str) -> Option<String> {
     let _guard = DEVICES.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let pairing = read_private("pairing.json");
     let is_valid = pairing.get("sha256").and_then(Value::as_str) == Some(audit::sha256_hex(code.as_bytes()).as_str())
@@ -78,7 +135,9 @@ pub fn redeem(code: &str) -> Option<String> {
     let _ = fs::remove_file(state_dir().join("pairing.json"));
     let secret = util::token_hex(32);
     let mut known = devices();
-    let name = Some(text(&pairing, "name")).filter(|name| !name.is_empty()).unwrap_or_else(|| format!("Phone {}", known.len() + 1));
+    let name = Some(text(&pairing, "name")).filter(|name| !name.is_empty())
+        .or_else(|| name_from_browser(user_agent).map(str::to_string))
+        .unwrap_or_else(|| format!("Phone {}", known.len() + 1));
     let now = util::now_secs();
     known.push(json!({"sha256": audit::sha256_hex(secret.as_bytes()), "name": name, "paired_at": now, "last_seen": now}));
     write_devices(known).ok()?;

@@ -16,7 +16,6 @@ use std::net::SocketAddr;
 use std::process::Command;
 use tiny_http::{Header, Method, Request, Response, Server};
 
-const DEFAULT_ADDRESS: &str = "127.0.0.1:7380";
 const COOKIE: &str = "claude_remote";
 const BODY_MAX: u64 = 16 * 1024;
 const WORKERS: usize = 4;
@@ -78,7 +77,7 @@ fn handle(mut request: Request) {
         return;
     }
     if let (Method::Get, Some(code)) = (&method, path.strip_prefix("/pair/")) {
-        match remote::redeem(code) {
+        match remote::redeem(code, &header_value(&request, "User-Agent").unwrap_or_default()) {
             Some(secret) => respond(request, 303, "text/plain", "paired".into(), &[
                 header("Set-Cookie", &format!("{COOKIE}={secret}; Path=/; Max-Age=31536000; Secure; HttpOnly; SameSite=Strict")),
                 header("Location", "/")]),
@@ -131,7 +130,7 @@ fn handle(mut request: Request) {
 }
 
 fn serve() -> Result<(), String> {
-    let address: SocketAddr = std::env::var("CLAUDE_REMOTE_ADDRESS").unwrap_or_else(|_| DEFAULT_ADDRESS.into()).parse()
+    let address: SocketAddr = remote::address().parse()
         .map_err(|error| format!("not an address: {error}"))?;
     // Tailscale serve publishes it on the tailnet; bound anywhere else, the LAN would reach it.
     if !address.ip().is_loopback() {
@@ -157,20 +156,8 @@ fn serve() -> Result<(), String> {
     Ok(())
 }
 
-/// The tailnet name of this computer (tailscale status), for the pairing link.
-fn tailnet_name() -> Option<String> {
-    let output = Command::new("tailscale").args(["status", "--json"]).output().ok()?;
-    let status: Value = serde_json::from_slice(&output.stdout).ok()?;
-    status.get("Self")?.get("DNSName")?.as_str().map(|name| name.trim_end_matches('.').to_string()).filter(|name| !name.is_empty())
-}
-
 fn pair(name: &str) -> Result<(), String> {
-    if name.chars().count() > 32 || name.chars().any(char::is_control) {
-        return Err("a phone's name is one line of at most 32 characters".into());
-    }
-    let code = remote::new_pairing_code(name).map_err(|error| format!("cannot keep the pairing code: {error}"))?;
-    let host = tailnet_name().ok_or("tailscale status gives no name for this computer: is Tailscale up?")?;
-    let link = format!("https://{host}/pair/{code}");
+    let link = remote::pairing_link(name)?;
     println!("Open this on the phone within 10 minutes (once):\n\n  {link}\n");
     let _ = Command::new("qrencode").args(["-t", "ANSIUTF8", &link]).status();
     Ok(())
