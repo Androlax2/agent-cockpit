@@ -1130,7 +1130,7 @@ hide_approval() {
 # it names none); nothing otherwise, or when its approval has ended.
 approval_for() { # id
     local run session
-    read -r run session < "$APPROVAL_STATE" 2>/dev/null || return 0
+    read -r run session 2>/dev/null < "$APPROVAL_STATE" || return 0
     tmux has-session -t "=claude-run-$run" 2>/dev/null || return 0
     [[ -z $session || $session == "$1" ]] && echo "$run"
     return 0
@@ -1142,7 +1142,7 @@ approval_for() { # id
 # is the default); in the column it stays put.
 place_approval() { # [focus]
     local id session pane current was_in_session
-    read -r id session < "$APPROVAL_STATE" 2>/dev/null || return 0
+    read -r id session 2>/dev/null < "$APPROVAL_STATE" || return 0
     if ! tmux has-session -t "=claude-run-$id" 2>/dev/null; then
         rm -f "$APPROVAL_STATE"
         hide_approval

@@ -386,6 +386,16 @@ fn the_approval_pane_opens_under_the_session_without_the_cursor_and_closes() {
 }
 
 #[test]
+fn viewing_a_session_with_no_approval_ever_asked_logs_no_error() {
+    // The missing state file was reported on stderr, which the manager logs as an ERROR: a
+    // redirection after `< file` comes too late to silence the file's own error.
+    let manager = Manager::new();
+    let result = manager.run(&["view", SESSION_A], &[]);
+    assert_eq!(result.status.code(), Some(0));
+    assert!(!stderr(&result).contains("claude-sessions-approval"), "{}", stderr(&result));
+}
+
+#[test]
 fn closing_an_approval_pane_that_already_closed_itself_succeeds() {
     let manager = Manager::new();
     fs::write(&manager.roles, "%10 sidebar\n%11 viewer\n%76 approval\n").unwrap();
