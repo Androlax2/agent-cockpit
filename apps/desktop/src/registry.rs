@@ -509,7 +509,15 @@ pub fn project_of(cache: &mut HashMap<String, String>, cwd: &str, fallback: &str
 #[derive(Default)]
 pub struct RunRequests {
     pub queue: Vec<String>,
+    /// The run that has Theo's attention: its approval asks him, or its command waits for input.
     pub current: String,
+    /// Commands Theo approved that run on without needing him: they leave `current`, so the next
+    /// request is shown at once instead of after their end (several sessions, a project's parallel
+    /// clones, can each have one running). Each keeps its tmux session and its approval pane.
+    pub running: Vec<String>,
+    /// Running commands that then asked for input while another run had Theo's attention: next in
+    /// line for it, before the queue.
+    waiting_input: Vec<String>,
     pub phase: String,
     /// The current command asked for input once: Theo is following it, the window stays to its end.
     asked_input: bool,
@@ -598,7 +606,7 @@ impl RunRequests {
         if !RUN_ID.is_match(id) {
             return Err("not a request id".into());
         }
-        if self.queue.iter().any(|queued| queued == id) || self.current == id {
+        if self.queue.iter().any(|queued| queued == id) || self.current == id || self.running.iter().any(|run| run == id) {
             return Ok(());
         }
         let project = project_from_request(&cockpit::approval::held_request(id, "request"));
@@ -613,6 +621,11 @@ impl RunRequests {
 
     fn next(&mut self, system: &mut dyn System) {
         if !self.current.is_empty() {
+            return;
+        }
+        if !self.waiting_input.is_empty() {
+            let id = self.waiting_input.remove(0);
+            self.attend(system, &id, "input");
             return;
         }
         while !self.queue.is_empty() {
@@ -644,8 +657,40 @@ impl RunRequests {
         }
     }
 
+    /// A running command (one of `running`) back in Theo's attention: it asks for input.
+    fn attend(&mut self, system: &mut dyn System, id: &str, phase: &str) {
+        self.running.retain(|run| run != id);
+        self.current = id.into();
+        self.phase = phase.into();
+        self.asked_input = phase == "input";
+        self.dismissed = false;
+        self.show(system);
+    }
+
     pub fn phase_changed(&mut self, system: &mut dyn System, banners: &mut dyn Banners, id: &str, phase: &str) {
-        if id != self.current || !RUN_PHASES.contains(&phase) {
+        if !RUN_PHASES.contains(&phase) {
+            return;
+        }
+        let input_notice = format!("run-input-{id}");
+        if phase == "input" && !system.quiet() {
+            banners.raise_notice(&Notice { id: input_notice.clone(), title: "Command waiting".into(), message: "it asks for your input".into() });
+        } else {
+            banners.drop_banner(&format!("notice:{input_notice}"));
+        }
+        if self.running.iter().any(|run| run == id) {
+            match phase {
+                "done" => {
+                    self.running.retain(|run| run != id);
+                    self.waiting_input.retain(|run| run != id);
+                    system.run(&["claude-sessions", "approval-pane", "close", id], &[0]);
+                }
+                "input" if self.current.is_empty() => self.attend(system, id, "input"),
+                "input" if !self.waiting_input.iter().any(|run| run == id) => self.waiting_input.push(id.into()),
+                _ => {}
+            }
+            return;
+        }
+        if id != self.current {
             return;
         }
         if phase == "input" && self.phase != "input" {
@@ -653,13 +698,24 @@ impl RunRequests {
         }
         self.phase = phase.into();
         self.asked_input |= phase == "input";
-        let input_notice = format!("run-input-{id}");
-        if phase == "input" && !system.quiet() {
-            banners.raise_notice(&Notice { id: input_notice, title: "Command waiting".into(), message: "it asks for your input".into() });
-        } else {
-            banners.drop_banner(&format!("notice:{input_notice}"));
+        match phase {
+            "done" => self.finish(system, banners),
+            // Approved and running without needing Theo: the next request is shown now, this one
+            // runs on with its pane. One that asked for input keeps his attention to its end.
+            "running" if !self.asked_input => {
+                if let Some(mut window) = self.window.take() {
+                    if window.running() {
+                        window.terminate();
+                    }
+                }
+                banners.drop_banner(&format!("notice:run-{id}"));
+                self.running.push(std::mem::take(&mut self.current));
+                self.phase.clear();
+                self.dismissed = false;
+                self.next(system);
+            }
+            _ => self.show(system),
         }
-        if phase == "done" { self.finish(system, banners) } else { self.show(system) }
     }
 
     /// The floating window while the approval needs Theo (his yes, or input the running command
@@ -697,7 +753,7 @@ impl RunRequests {
             }
         }
         banners.drop_banner(&format!("notice:run-{}", self.current));
-        system.run(&["claude-sessions", "approval-pane", "close"], &[0]);
+        system.run(&["claude-sessions", "approval-pane", "close", &self.current], &[0]);
         self.current.clear();
         self.phase.clear();
         self.asked_input = false;
@@ -708,6 +764,14 @@ impl RunRequests {
     /// Every second: the window follows the workspace and the games, and an approval whose tmux
     /// session ended (closed by hand, crashed) is cleared.
     pub fn tick(&mut self, system: &mut dyn System, banners: &mut dyn Banners) {
+        // A running command whose tmux session ended (closed by hand, crashed) is forgotten.
+        for id in self.running.clone() {
+            if system.tmux(&["has-session", "-t", &format!("={}", run_session(&id))]).is_none() {
+                self.running.retain(|run| *run != id);
+                self.waiting_input.retain(|run| *run != id);
+                system.run(&["claude-sessions", "approval-pane", "close", &id], &[0]);
+            }
+        }
         if !self.current.is_empty() {
             let target = format!("={}", run_session(&self.current));
             // Only while it asks: a command already running is never cut off.

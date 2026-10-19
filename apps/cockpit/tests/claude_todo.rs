@@ -138,5 +138,5 @@ fn without_a_daemon_an_update_fails_loudly() {
     let sandbox = Sandbox::new();
     let output = claude_todo(&sandbox, &["done", "0123abcd"], &sandbox.root);
     assert_eq!(output.status.code(), Some(1));
-    assert!(stderr(&output).contains("no OSD daemon"), "{}", stderr(&output));
+    assert!(stderr(&output).contains("cannot reach the OSD daemon"), "{}", stderr(&output));
 }

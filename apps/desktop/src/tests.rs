@@ -790,7 +790,7 @@ fn a_finished_request_closes_the_pane_and_starts_the_next() {
     bench.registry.run_request(RUN_A).unwrap();
     bench.registry.run_request(RUN_B).unwrap();
     bench.registry.run_phase(RUN_A, "done");
-    assert!(bench.commands().contains(&vec!["claude-sessions".to_string(), "approval-pane".into(), "close".into()]));
+    assert!(bench.commands().contains(&vec!["claude-sessions".to_string(), "approval-pane".into(), "close".into(), RUN_A.into()]));
     assert_eq!(bench.registry.runs.current, RUN_B);
 }
 
@@ -869,7 +869,44 @@ fn a_running_command_is_never_dropped() {
     bench.registry.run_phase(RUN_A, "running");
     heartbeat(&bench, RUN_A, 600);
     bench.registry.tick_queues();
-    assert_eq!(bench.registry.runs.current, RUN_A);
+    assert_eq!(bench.registry.runs.running, [RUN_A]);
+    assert_eq!(result_status(&bench, RUN_A), None, "dropped while it runs");
+}
+
+#[test]
+fn the_next_request_shows_while_an_approved_command_runs() {
+    // Parallel sessions, a project's parallel clones too: a long command does not hold the others back.
+    let mut bench = Bench::new();
+    bench.registry.run_request(RUN_A).unwrap();
+    bench.registry.run_request(RUN_B).unwrap();
+    bench.registry.run_phase(RUN_A, "running");
+    assert_eq!((bench.registry.runs.current.as_str(), bench.registry.runs.running.as_slice()), (RUN_B, &[RUN_A.to_string()][..]));
+    assert_eq!(started_sessions(&bench), ["claude-run-aaaaaaaaaaaa", "claude-run-bbbbbbbbbbbb"]);
+}
+
+#[test]
+fn a_running_command_that_asks_for_input_waits_for_the_approval_on_screen() {
+    // Theo answers one thing at a time: the command waiting for its sudo password comes next.
+    let mut bench = Bench::new();
+    bench.registry.run_request(RUN_A).unwrap();
+    bench.registry.run_request(RUN_B).unwrap();
+    bench.registry.run_phase(RUN_A, "running");
+    bench.registry.run_phase(RUN_A, "input");
+    assert_eq!(bench.registry.runs.current, RUN_B);
+    bench.registry.run_phase(RUN_B, "done");
+    assert_eq!((bench.registry.runs.current.as_str(), bench.registry.runs.phase.as_str()), (RUN_A, "input"));
+}
+
+#[test]
+fn a_command_that_ends_while_running_on_closes_its_own_pane() {
+    let mut bench = Bench::new();
+    bench.registry.run_request(RUN_A).unwrap();
+    bench.registry.run_request(RUN_B).unwrap();
+    bench.registry.run_phase(RUN_A, "running");
+    bench.registry.run_phase(RUN_A, "done");
+    assert!(bench.commands().contains(&vec!["claude-sessions".to_string(), "approval-pane".into(), "close".into(), RUN_A.into()]));
+    assert!(bench.registry.runs.running.is_empty());
+    assert_eq!(bench.registry.runs.current, RUN_B);
 }
 
 #[test]

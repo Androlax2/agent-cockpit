@@ -1278,11 +1278,12 @@ fn a_new_session_with_an_effort_hands_it_to_claude_not_to_fish() {
     assert!(fish_accepts(&fish_arguments(&launch)), "fish refuses: {launch}");
 }
 
+/// A run request as the daemon holds it (cockpit::approval::held_request), and its approval running.
 fn file_request(manager: &Manager, id: &str, session: &str) -> String {
-    let runs = manager.sandbox.root.join("runs");
-    fs::create_dir_all(&runs).unwrap();
-    fs::write(runs.join(format!("{id}.request")), json!({"id": id, "session": session}).to_string()).unwrap();
-    runs.display().to_string()
+    let held = manager.sandbox.runtime.join("claude-requests");
+    fs::create_dir_all(&held).unwrap();
+    fs::write(held.join(format!("{id}.request")), json!({"id": id, "session": session}).to_string()).unwrap();
+    held.display().to_string()
 }
 
 fn approval_shown(manager: &Manager) -> bool {
@@ -1886,4 +1887,24 @@ fn a_daemon_already_on_its_build_is_not_restarted() {
     let binary = osd_daemon(&manager, 60, 3600);
     manager.sandbox.run(bin().join("claude-sessions"), &["restart-osd-when-idle"], &[("CLAUDE_SESSIONS_OSD_BINARY", &binary)]);
     assert_eq!(restarts(&manager), 0);
+}
+
+#[test]
+fn each_session_shows_its_own_approval_when_several_run() {
+    // The daemon shows the next request while an approved command runs: two sessions, two approvals.
+    let manager = Manager::new();
+    file_request(&manager, "aaaaaaaaaaaa", SESSION_A);
+    file_request(&manager, "bbbbbbbbbbbb", SESSION_B);
+    fs::write(manager.runtime_file("claude-sessions.current"), format!("{SESSION_A}\n")).unwrap();
+    manager.run(&["approval-pane", "aaaaaaaaaaaa"], &[]);
+    manager.run(&["approval-pane", "bbbbbbbbbbbb"], &[]);
+    fs::write(&manager.snapshot, json!({"sessions": [
+        {"session": SESSION_A, "state": "waiting", "project": "proj-a", "cwd": path_str(&manager.project), "tmux_pane": "%4"},
+        {"session": SESSION_B, "state": "waiting", "project": "proj-b", "cwd": path_str(&manager.project), "tmux_pane": "%5"}]}).to_string()).unwrap();
+    manager.run(&["view", SESSION_B], &[]);
+    let switch = manager.tmux_calls("respawn-pane").pop().expect("no switch");
+    assert!(switch.ends_with("attach-session -t =claude-run-bbbbbbbbbbbb"), "{switch}");
+    manager.run(&["approval-pane", "close", "bbbbbbbbbbbb"], &[]);
+    let state = fs::read_to_string(manager.runtime_file("claude-sessions-approval")).unwrap();
+    assert_eq!(state.trim(), format!("aaaaaaaaaaaa {SESSION_A}"));
 }
