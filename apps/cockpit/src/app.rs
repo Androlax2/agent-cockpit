@@ -252,6 +252,9 @@ pub enum Key {
     Right,
     F(u8),
     Click { x: u16, y: u16, double: bool },
+    /// tmux moved its focus into the column or out of it (focus-events).
+    FocusGained,
+    FocusLost,
 }
 
 /// The effort picker over a session card. Choosing another level restarts the session on it.
@@ -392,6 +395,8 @@ pub struct App {
     pub query: String,
     pub filtering: bool,
     pub help_open: bool,
+    /// Whether tmux's focus is in the column: out of it, nothing there is drawn as focused.
+    pub has_pane_focus: bool,
     pub message: String,
     /// Sessions told to exit (x): off the list at once, back with a warning if the exit fails.
     pub(crate) exiting: Vec<Exiting>,
@@ -459,7 +464,7 @@ impl App {
             history: History::default(), view: ViewState::load(), usage: Refresher::new(), alerts: BudgetAlerts::new(util::send_notice),
             costs: Costs::default(), reviews: Reviews::default(), todos: TodoList::load(), errors: ErrorReporter::new(),
             claude_status: ClaudeStatus::default(), panels: Default::default(), focus: 1, query: String::new(), filtering: false,
-            help_open: false, message: String::new(), exiting: Vec::new(), labelled: Default::default(), menu: None, settings_menu: None, restore: Vec::new(),
+            help_open: false, has_pane_focus: true, message: String::new(), exiting: Vec::new(), labelled: Default::default(), menu: None, settings_menu: None, restore: Vec::new(),
             focus_waiting: false, held: Vec::new(), held_checked: 0.0, queue_checked: 0.0, gaming: util::gaming, restore_checked: 0.0, start_files: Vec::new(),
             width: DEFAULT_COLUMN_WIDTH, sessions: Vec::new(), windows: Vec::new(), review_rows: Vec::new(), todo_entries: Vec::new(),
             todo_scope: String::new(), shown_session: String::new(), todo_tab: TODO_TAB_TO_DO, todo_counts: [0; 5], prompts_sent: HashMap::new(), craft_roots: HashMap::new(), hit_lines: HashMap::new(), hit_actions: HashMap::new(),
@@ -1867,7 +1872,7 @@ pub(crate) fn time_spent_text((today, all_time): (f64, f64)) -> Option<String> {
         if height < 2 || width < 4 {
             return;
         }
-        let focused = index == self.focus;
+        let focused = self.has_pane_focus && index == self.focus;
         let border = if focused { bold(BLUE) } else { style(BG_HIGHLIGHT) };
         let inner_height = (height - 2) as usize;
         let subtitle_text = self.subtitle(index);
@@ -2062,6 +2067,10 @@ pub(crate) fn time_spent_text((today, all_time): (f64, f64)) -> Option<String> {
     }
 
     pub fn handle(&mut self, key: Key, screen: &mut dyn Screen) {
+        if matches!(key, Key::FocusGained | Key::FocusLost) {
+            self.has_pane_focus = key == Key::FocusGained;
+            return;
+        }
         self.message.clear();
         if self.menu.is_some() {
             self.message = self.handle_menu(key, screen);
@@ -2454,6 +2463,8 @@ pub fn read_key(timeout: Option<Duration>, last_click: &mut Option<(Instant, u16
                 *last_click = Some((Instant::now(), mouse.row));
                 return Some(Key::Click { x: mouse.column, y: mouse.row, double });
             }
+            Event::FocusGained => return Some(Key::FocusGained),
+            Event::FocusLost => return Some(Key::FocusLost),
             Event::Resize(..) => return None,
             _ => continue,
         }

@@ -212,8 +212,10 @@ ensure_manager() {
     # A title line over the session pane names the project and Claude's own title for it, so the
     # session you are typing in is never a guess; the sidebar's own top border stays blank.
     # @state (label_state, pushed by the sidebar) colours the title: red needs you, yellow waiting.
+    # While the session pane has the focus the title is a filled bar of that colour (reverse); the
+    # column greys its own panel then, so the lit side is the one the keys go to.
     tmux set-option -w -t "$MANAGER_WINDOW" pane-border-status top ";" set-option -w -t "$MANAGER_WINDOW" pane-border-format \
-        '#{?#{==:#{@role},viewer},#{?#{@project},#{?#{==:#{@state},needs-you},#[fg=red],#{?#{==:#{@state},waiting},#[fg=yellow],#[fg=blue]}} #[bold]#{@project}#[nobold] · #{pane_title} #[default], no session },}'
+        '#{?#{==:#{@role},viewer},#{?pane_active,#[reverse],}#{?#{@project},#{?#{==:#{@state},needs-you},#[fg=red],#{?#{==:#{@state},waiting},#[fg=yellow],#[fg=blue]}} #[bold]#{@project}#[nobold] · #{pane_title} #[default], no session #[default]},}'
     if [[ -z $viewer ]]; then
         viewer=$(tmux split-window -h -t "$sidebar" -l 70% -P -F '#{pane_id}' claude-sessions idle)
         tag_pane "$viewer" viewer

@@ -5,7 +5,7 @@
 
 use cockpit::app::{self, App, Key, Screen};
 use cockpit::{costs, usage, util};
-use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
+use crossterm::event::{DisableFocusChange, DisableMouseCapture, EnableFocusChange, EnableMouseCapture};
 use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode};
 use crossterm::{cursor, execute};
 use ratatui::Terminal;
@@ -21,12 +21,12 @@ struct TerminalScreen {
 
 fn enter() -> io::Result<()> {
     enable_raw_mode()?; // Ctrl-C arrives as a key (same as q) instead of killing the column
-    execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture, cursor::Hide)
+    execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture, EnableFocusChange, cursor::Hide)
 }
 
 fn leave() -> io::Result<()> {
     disable_raw_mode()?;
-    execute!(io::stdout(), DisableMouseCapture, LeaveAlternateScreen, cursor::Show)
+    execute!(io::stdout(), DisableMouseCapture, DisableFocusChange, LeaveAlternateScreen, cursor::Show)
 }
 
 impl Screen for TerminalScreen {

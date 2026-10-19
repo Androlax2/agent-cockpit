@@ -1837,6 +1837,32 @@ fn enter_shows_the_details_in_a_popup_that_stays_open() {
     assert!(popup.contains(" less ") && !popup.contains("quit-if-one-screen"), "{popup}");
 }
 
+fn blue_panel_corners(app: &mut App) -> usize {
+    let buffer = render(app, 120, 40);
+    (0..40).filter(|y| buffer[(0, *y)].symbol() == "┌" && buffer[(0, *y)].fg == ratatui::style::Color::Indexed(crate::app::BLUE)).count()
+}
+
+#[test]
+fn the_column_greys_its_focused_panel_when_the_focus_leaves_it() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    app.build();
+    assert_eq!(blue_panel_corners(&mut app), 1);
+    app.handle(Key::FocusLost, &mut FakeScreen::default());
+    assert_eq!(blue_panel_corners(&mut app), 0);
+}
+
+#[test]
+fn the_focus_coming_back_lights_the_same_panel_again() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    app.build();
+    let screen = &mut FakeScreen::default();
+    app.handle(Key::FocusLost, screen);
+    app.handle(Key::FocusGained, screen);
+    assert_eq!((blue_panel_corners(&mut app), app.focus), (1, 1));
+}
+
 #[test]
 fn the_shown_todo_tab_is_drawn_as_a_chip() {
     let fixture = Fixture::new();
