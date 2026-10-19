@@ -1475,6 +1475,19 @@ fn a_card_shows_its_unpushed_commits() {
     assert_eq!(badges.iter().filter(|badge| badge.starts_with('↑')).collect::<Vec<_>>(), ["↑2 unpushed"]);
 }
 
+#[test]
+fn a_dotfiles_clone_counts_unapplied_commits_and_u_applies_them() {
+    let fixture = Fixture::new();
+    let clone = fixture.root.join("home/IdeaProjects/.parallel/dotfiles/p1").display().to_string();
+    let mut row = session(SESSION_A, "waiting", "dotfiles", &clone, 1);
+    row["unpushed"] = json!(3);
+    fixture.snapshot(json!([row]));
+    let app = fixture.app();
+    let badges: Vec<String> = app.panels[1].lines.iter().flat_map(|line| line.right.iter().map(|part| part.text.clone())).collect();
+    assert_eq!(badges.iter().filter(|badge| badge.starts_with('↑')).collect::<Vec<_>>(), ["↑3 unapplied"]);
+    assert!(app.sessions_hints().contains(&("U", "apply")));
+}
+
 fn first_hint_keys(app: &App, count: usize) -> Vec<&'static str> {
     app.sessions_hints().into_iter().take(count).map(|(key, _)| key).collect()
 }

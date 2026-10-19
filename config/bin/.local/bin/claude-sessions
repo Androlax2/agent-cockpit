@@ -1370,7 +1370,47 @@ git_popup() { # dir
 # (security audit 2026-10-19, H1).
 push_popup() { # dir
     require_plain_directory "$1"
+    local clone
+    # A dotfiles clone's commits reach ~/dotfiles through apply-dotfiles, never a push.
+    if clone=$(dotfiles_clone_root "$1"); then
+        tmux display-popup -E -w 80% -h 80% -d "$clone" -T " apply · $(basename "$clone") " "$0" apply-run "$clone"
+        return
+    fi
     tmux display-popup -E -w 70% -h 50% -d "$1" -T " push · $(basename "$1") " "$0" push-run "$1"
+}
+
+# The dotfiles clone a folder is in: the work clone, or one of its parallel clones
+# (<clones>/dotfiles/<name>). Prints the clone's root; fails for any other folder.
+dotfiles_clone_root() { # dir
+    local inside name
+    case "$1/" in
+        "$DOTFILES_WORK"/*) printf '%s\n' "$DOTFILES_WORK" ;;
+        "$CLONES_DIR"/dotfiles/*/*)
+            inside=${1#"$CLONES_DIR"/dotfiles/}
+            name=${inside%%/*}
+            [[ $name =~ ^[A-Za-z0-9._-]+$ && $name != . && $name != .. && -d $CLONES_DIR/dotfiles/$name && ! -L $CLONES_DIR/dotfiles/$name ]] || return 1
+            printf '%s\n' "$CLONES_DIR/dotfiles/$name" ;;
+        *) return 1 ;;
+    esac
+}
+
+# U on a dotfiles clone's card: the commits live main lacks are exported inside greywall (no host
+# git runs in a clone), from a fresh fetch of ~/dotfiles, leaving out those already applied (same
+# change, git am's new hash), then apply-dotfiles shows them and asks.
+apply_run() { # clone
+    local clone
+    clone=$(dotfiles_clone_root "$1") || { echo "Refused: $1 is not a dotfiles clone." >&2; return 1; }
+    echo "Exporting the commits $DOTFILES_LIVE lacks, inside greywall …"
+    # shellcheck disable=SC2016
+    if ! (cd "$clone" && "$GREYWALL" --auto-profile --profile claude --allow-read-path "$DOTFILES_LIVE" -- sh -c \
+            'git fetch -q "$1" main:refs/remotes/origin/main && rm -f .outgoing/*.patch && git format-patch -q --ignore-if-in-upstream -o .outgoing refs/remotes/origin/main' \
+            sh "$DOTFILES_LIVE"); then
+        echo "The export failed (above): nothing applied."
+        read -r -p "Enter closes. " _ || true
+        return 1
+    fi
+    apply_dotfiles "$clone" || true
+    read -r -p "Enter closes. " _ || true
 }
 
 SAFE_GIT_CONFIG=(-c core.hooksPath=/dev/null -c core.sshCommand=ssh -c core.fsmonitor=false -c core.askPass=
@@ -1427,8 +1467,13 @@ push_run() { # dir
 DOTFILES_LIVE="${CLAUDE_DOTFILES_LIVE:-$HOME/dotfiles}"
 DOTFILES_WORK="${CLAUDE_DOTFILES_WORK:-$HOME/IdeaProjects/dotfiles}"
 
-apply_dotfiles() {
-    local outgoing="$DOTFILES_WORK/.outgoing" copies patch subjects answer count
+apply_dotfiles() { # [clone]
+    local clone outgoing copies patch subjects answer count
+    if ! clone=$(dotfiles_clone_root "${1:-$DOTFILES_WORK}"); then
+        echo "Refused: ${1:-} is not a dotfiles clone ($DOTFILES_WORK or $CLONES_DIR/dotfiles/<name>)." >&2
+        return 1
+    fi
+    outgoing="$clone/.outgoing"
     if [[ ! -d $outgoing || -L $outgoing ]]; then
         echo "Nothing to apply: no $outgoing (git format-patch origin/main -o .outgoing in the clone)."
         return 0
@@ -1481,6 +1526,8 @@ apply_dotfiles() {
         return 1
     fi
     find "$outgoing" -maxdepth 1 -type f -name '*.patch' -delete
+    # The card's "↑N unapplied" clears now, not at the session's next turn.
+    osd-show session-pushed "$clone" 2>/dev/null || true
     log_event INFO apply "applied $count patch(es) to $DOTFILES_LIVE: ${subjects//$'\n'/ | }"
     audit_event apply dotfiles.applied ok "patches=$count" "head=$(git -C "$DOTFILES_LIVE" rev-parse HEAD 2>/dev/null)" "subjects=${subjects//$'\n'/ | }"
     echo "Applied. Next: make cockpit and make test in $DOTFILES_LIVE, then claude-sessions reload."
@@ -1565,7 +1612,8 @@ case ${1:-attach} in
     push) push_popup "${2:?usage: claude-sessions push <dir>}" ;;
     queue-prompt-ask) queue_prompt_ask "${2:-}" ;;
     push-run) push_run "${2:?usage: claude-sessions push-run <dir>}" ;;
-    apply-dotfiles) apply_dotfiles ;;
+    apply-dotfiles) apply_dotfiles "${2:-}" ;;
+    apply-run) apply_run "${2:?usage: claude-sessions apply-run <dotfiles clone>}" ;;
     parallel) parallel_session "${2:?usage: claude-sessions parallel <dir> <branch>}" "${3:?usage: claude-sessions parallel <dir> <branch>}" ;;
     review) review_session "${2:?usage: claude-sessions review <dir> <pr-number>}" "${3:?usage: claude-sessions review <dir> <pr-number>}" ;;
     clones) clones_popup ;;

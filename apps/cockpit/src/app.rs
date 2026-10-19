@@ -77,12 +77,13 @@ const GLOBAL_HELP: [(&str, &str); 18] = [
     ("l →  ←", "into the session from any panel; ← from the session comes back"),
     ("q ⌘C", "close the manager window; sessions keep running"),
 ];
-const LEGEND: [(&str, &str); 17] = [
+const LEGEND: [(&str, &str); 18] = [
     ("●", "working"), ("○", "waiting for you"), ("!", "needs you: permission or question"), ("·", "running, state unknown"),
     ("▌", "shown in the session pane"), ("⚲", "pinned"), ("⇅", "remote controlled"),
     ("◆ figcraft", "connected to FigCraft, which is open for this session's project (craft-open)"),
     ("✉ 2 queued", "messages waiting for the end of its turn, sent one per turn (m, Alt+Q; M drops them)"),
     ("↑2 unpushed", "commits on no remote yet: U pushes the branch"),
+    ("↑2 unapplied", "a dotfiles clone's commits ~/dotfiles lacks: U shows them and applies them after a yes"),
     ("▭ terminal", "started with \"this terminal\": no ⌘R, restore, queue, error hand-off or ask-to-run"),
     ("✎ designer ⌨ developer", "its role in a project designed in FigCraft (claude-design role): design to-dos go to the designer"),
     ("✎ design", "a to-do for the designer session: a gap a developer found in the design (claude-todo --design)"),
@@ -954,7 +955,8 @@ impl App {
                 badges.push(part(format!("✉ {queued} queued"), bold(CYAN)));
             }
             if session.unpushed > 0 {
-                badges.push(part(format!("↑{} unpushed", session.unpushed), bold(YELLOW)));
+                let count = if sessions::is_dotfiles_clone(&session.cwd) { "unapplied" } else { "unpushed" };
+                badges.push(part(format!("↑{} {count}", session.unpushed), bold(YELLOW)));
             }
             if session.pinned {
                 badges.push(part("⚲", style(YELLOW)));
@@ -1030,7 +1032,7 @@ impl App {
             hints.push(("o", "canvas"));
         }
         if selected.unpushed > 0 {
-            hints.push(("U", "push"));
+            hints.push(("U", if sessions::is_dotfiles_clone(&selected.cwd) { "apply" } else { "push" }));
         }
         if prompts::count(&selected.session) > 0 {
             hints.push(("M", "drop queued"));

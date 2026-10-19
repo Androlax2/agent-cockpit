@@ -1595,6 +1595,78 @@ fn apply_dotfiles_refuses_a_live_checkout_with_uncommitted_changes() {
     assert!(stderr(&output).contains("uncommitted changes"));
 }
 
+/// A parallel clone of the live checkout, <clones>/dotfiles/p1, with one commit already applied to
+/// live main (git am: a new hash) and one waiting; its origin/main predates both.
+fn parallel_dotfiles_clone(manager: &Manager, live: &Path) -> (PathBuf, PathBuf) {
+    let clones = manager.sandbox.root.join("clones");
+    let clone = clones.join("dotfiles/p1");
+    fs::create_dir_all(clone.parent().unwrap()).unwrap();
+    let git = |directory: &Path, arguments: &[&str]| {
+        let output = Command::new("git").arg("-C").arg(directory)
+            .args(["-c", "user.email=t@t", "-c", "user.name=t"]).args(arguments).output().unwrap();
+        assert!(output.status.success(), "git {arguments:?}: {}", stderr(&output));
+        output.stdout
+    };
+    git(&manager.sandbox.root, &["clone", "-q", &path_str(live), &path_str(&clone)]);
+    for name in ["applied", "waiting"] {
+        fs::write(clone.join(name), "1\n").unwrap();
+        git(&clone, &["add", name]);
+        git(&clone, &["commit", "-qm", &format!("Add {name}")]);
+    }
+    let patch = manager.sandbox.root.join("applied.patch");
+    fs::write(&patch, git(&clone, &["format-patch", "-1", "HEAD~1", "--stdout"])).unwrap();
+    git(live, &["am", "-q", &path_str(&patch)]);
+    (clones, clone)
+}
+
+#[test]
+fn apply_dotfiles_takes_a_parallel_clones_commits() {
+    let manager = Manager::new();
+    let (live, work) = dotfiles_pair(&manager);
+    let (clones, clone) = parallel_dotfiles_clone(&manager, &live);
+    Command::new("git").arg("-C").arg(&clone).args(["format-patch", "-q", "-1", "HEAD", "-o", ".outgoing"]).status().unwrap();
+    let output = manager.sandbox.run_with_input(bin().join("claude-sessions"), &["apply-dotfiles", &path_str(&clone)],
+        &[("CLAUDE_DOTFILES_LIVE", &path_str(&live)), ("CLAUDE_DOTFILES_WORK", &path_str(&work)), ("CLAUDE_SESSIONS_CLONES", &path_str(&clones))], "y\n");
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(git_output(&live, &["log", "-1", "--format=%s"]), "Add waiting");
+}
+
+#[test]
+fn apply_dotfiles_refuses_a_folder_that_is_no_dotfiles_clone() {
+    let manager = Manager::new();
+    let (live, work) = dotfiles_pair(&manager);
+    fs::create_dir_all(manager.project.join(".outgoing")).unwrap();
+    fs::copy(fs::read_dir(work.join(".outgoing")).unwrap().next().unwrap().unwrap().path(), manager.project.join(".outgoing/0001-x.patch")).unwrap();
+    let output = manager.sandbox.run_with_input(bin().join("claude-sessions"), &["apply-dotfiles", &path_str(&manager.project)],
+        &[("CLAUDE_DOTFILES_LIVE", &path_str(&live)), ("CLAUDE_DOTFILES_WORK", &path_str(&work))], "y\n");
+    assert_eq!(output.status.code(), Some(1));
+    assert!(stderr(&output).contains("not a dotfiles clone"), "{}", stderr(&output));
+    assert_eq!(git_output(&live, &["log", "-1", "--format=%s"]), "init");
+}
+
+#[test]
+fn u_on_a_dotfiles_clone_exports_only_what_live_main_lacks_then_applies_it() {
+    let manager = Manager::new();
+    let (live, work) = dotfiles_pair(&manager);
+    let (clones, clone) = parallel_dotfiles_clone(&manager, &live);
+    let output = manager.sandbox.run_with_input(bin().join("claude-sessions"), &["apply-run", &path_str(&clone)],
+        &[("CLAUDE_DOTFILES_LIVE", &path_str(&live)), ("CLAUDE_DOTFILES_WORK", &path_str(&work)), ("CLAUDE_SESSIONS_CLONES", &path_str(&clones))], "y\n\n");
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert!(stdout(&output).contains("1 commit(s)"), "the applied commit was exported again: {}", stdout(&output));
+    assert_eq!(git_output(&live, &["log", "--format=%s", "-3"]), "Add waiting\nAdd applied\ninit");
+}
+
+#[test]
+fn u_on_a_dotfiles_clone_opens_the_apply_not_a_push() {
+    let manager = Manager::new();
+    let (live, work) = dotfiles_pair(&manager);
+    let (clones, clone) = parallel_dotfiles_clone(&manager, &live);
+    fs::create_dir(clone.join("apps")).unwrap();
+    manager.run(&["push", &path_str(&clone.join("apps"))], &[("CLAUDE_DOTFILES_WORK", &path_str(&work)), ("CLAUDE_SESSIONS_CLONES", &path_str(&clones))]);
+    let popup = manager.tmux_calls("display-popup").pop().expect("no popup");
+    assert!(popup.contains(&format!("apply-run {}", clone.display())), "{popup}");
+}
+
 /// A daemon that started `running_for` seconds ago, and a build on disk `built_ago` seconds old.
 fn osd_daemon(manager: &Manager, running_for: u64, built_ago: u64) -> String {
     manager.sandbox.shim("systemctl", r#"[[ $* == *"show -p MainPID"* ]] && echo 4242; exit 0"#);

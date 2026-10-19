@@ -234,6 +234,13 @@ pub fn grouped_by_project(mut sessions: Vec<Session>) -> Vec<Session> {
 }
 
 /// The task line, unless it is one of Claude's internal messages (<agent-message …>).
+/// A dotfiles clone (the work clone, or <clones>/dotfiles/<name>): its commits reach ~/dotfiles
+/// through apply-dotfiles, never a push, so its count is of commits not applied yet (the hook).
+pub fn is_dotfiles_clone(cwd: &str) -> bool {
+    let cwd = Path::new(cwd);
+    cwd.starts_with(paths::dotfiles_work()) || cwd.starts_with(paths::clones_dir().join("dotfiles"))
+}
+
 pub fn visible_task(session: &Session) -> String {
     let task = session.task.trim();
     if task.starts_with('<') { String::new() } else { task.to_string() }

@@ -317,6 +317,32 @@ fn a_finished_turn_counts_the_commits_not_on_a_remote() {
 }
 
 #[test]
+fn a_dotfiles_clone_counts_the_commits_live_main_lacks_not_the_unpushed_ones() {
+    // apply-dotfiles brings a commit over with git am, under a new hash, and the clone's
+    // origin/main is only as fresh as its last fetch: counted by change, the applied one is done.
+    let mut test = HookTest::new();
+    let live = test.sandbox.home.join("dotfiles");
+    let clone = test.sandbox.root.join("clone");
+    fs::create_dir_all(&live).unwrap();
+    git(&live, &["init", "-q", "-b", "main"]);
+    fs::write(live.join("a"), "1\n").unwrap();
+    git(&live, &["add", "a"]);
+    git(&live, &["commit", "-qm", "base"]);
+    assert!(Command::new("git").args(["clone", "-q"]).arg(&live).arg(&clone).status().unwrap().success());
+    for name in ["applied", "waiting"] {
+        fs::write(clone.join(name), "1\n").unwrap();
+        git(&clone, &["add", name]);
+        git(&clone, &["commit", "-qm", name]);
+    }
+    let patch = Command::new("git").arg("-C").arg(&clone).args(["format-patch", "-1", "HEAD~1", "--stdout"]).output().unwrap().stdout;
+    let patch_file = test.sandbox.root.join("applied.patch");
+    fs::write(&patch_file, patch).unwrap();
+    git(&live, &["am", "-q", patch_file.to_str().unwrap()]);
+    test.run_hook(with_session(json!({"hook_event_name": "Stop"}), &clone.to_string_lossy()), &[]);
+    assert_eq!(test.received().last().unwrap()["unpushed"], 1);
+}
+
+#[test]
 fn a_repository_without_a_remote_reports_no_count() {
     let mut test = HookTest::new();
     let repository = test.sandbox.root.join("repo");

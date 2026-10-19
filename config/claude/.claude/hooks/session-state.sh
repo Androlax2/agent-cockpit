@@ -120,7 +120,23 @@ checks_of_turn() { # transcript
 # with a remote; git runs here, inside the sandbox, like the outcome above.
 unpushed_of() { # cwd
     git -C "$1" remote 2>/dev/null | grep -q . || return 0
+    local live="$HOME/dotfiles"
+    if [[ $(git -C "$1" remote get-url origin 2>/dev/null) == "$live" ]]; then
+        unapplied_of "$1" "$live"
+        return
+    fi
     git -C "$1" rev-list --count HEAD --not --remotes 2>/dev/null || true
+}
+
+# A clone of the live dotfiles (its origin) brings its commits over with apply-dotfiles, never a
+# push, and its origin/main is only as fresh as its last fetch: what counts is the commits whose
+# change live main lacks. git am gives an applied commit a new hash, so changes are compared by
+# patch id. Read-only: the launcher mounts the live checkout read-only for these clones.
+unapplied_of() { # cwd live
+    local base
+    base=$(git -C "$1" merge-base HEAD refs/remotes/origin/main 2>/dev/null) || return 0
+    patch_ids() { git -C "$1" log -p --no-color --no-merges "$2" 2>/dev/null | git patch-id --stable | cut -d' ' -f1; }
+    patch_ids "$1" "$base..HEAD" | grep -cvxF -f <(patch_ids "$2" "$base..main"; echo none) || true
 }
 
 # The desktop apps this session drives through an MCP server attached to them (`figcraft-cli mcp

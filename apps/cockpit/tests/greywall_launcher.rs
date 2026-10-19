@@ -133,3 +133,18 @@ fn a_subscription_session_gets_no_api_key_even_from_its_environment() {
     let started = launch.run(&[("ANTHROPIC_API_KEY", "sk-ant-stray"), ("SHIM_ANTHROPIC_KEY", "sk-ant-test")]);
     assert!(!started.contains("ANTHROPIC_API_KEY") && started.contains("(api key: none)"), "{started}");
 }
+
+#[test]
+fn a_parallel_dotfiles_clone_reads_the_live_checkout_and_another_project_does_not() {
+    let launch = Launch::new();
+    let live = fs::canonicalize(launch.sandbox.home.join("dotfiles")).unwrap();
+    let clone = launch.sandbox.home.join("IdeaProjects/.parallel/dotfiles/p1");
+    fs::create_dir_all(&clone).unwrap();
+    assert!(Command::new("git").args(["init", "-q"]).arg(&clone).status().unwrap().success());
+    let read_live = format!("--allow-read-path {} ", live.display());
+    let output = launch.sandbox.command(bin().join("greywall-agents/claude"), &[]).current_dir(&clone).output().unwrap();
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let started = launch.sandbox.calls("greywall").pop().unwrap();
+    assert!(started.contains(&read_live), "{started}");
+    assert!(!launch.run(&[]).contains(&read_live), "proj-a reads the live checkout");
+}
