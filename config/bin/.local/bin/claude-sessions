@@ -1246,6 +1246,67 @@ push_run() { # dir
     fi
 }
 
+# The dotfiles session works in a clone (DOTFILES_WORK) the host never runs or builds from; the live
+# checkout, stowed into ~/.local/bin and ~/.config, only takes its commits here, after Theo read them
+# (security audit 2026-10-19, C1). The session exports them as patches (git format-patch into
+# .outgoing): plain text, read from a host-only copy, applied with the live repository's own git.
+# No host git ever runs inside the clone, whose .git/config the sandbox writes.
+DOTFILES_LIVE="${CLAUDE_DOTFILES_LIVE:-$HOME/dotfiles}"
+DOTFILES_WORK="${CLAUDE_DOTFILES_WORK:-$HOME/IdeaProjects/dotfiles}"
+
+apply_dotfiles() {
+    local outgoing="$DOTFILES_WORK/.outgoing" copies patch subjects answer count
+    if [[ ! -d $outgoing || -L $outgoing ]]; then
+        echo "Nothing to apply: no $outgoing (git format-patch origin/main -o .outgoing in the clone)."
+        return 0
+    fi
+    if [[ -n $(find "$outgoing" -mindepth 1 \( ! -type f -o ! -name '*.patch' \) -print -quit) ]]; then
+        echo "Refused: $outgoing holds something other than .patch files (a link, a folder)." >&2
+        log_event WARN apply "refused: $outgoing holds something other than .patch files"
+        return 1
+    fi
+    copies=$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/apply-dotfiles.XXXXXX")
+    # shellcheck disable=SC2064
+    trap "rm -rf '$copies'" RETURN
+    while IFS= read -r -d '' patch; do
+        cp --no-dereference -- "$patch" "$copies/"
+    done < <(find "$outgoing" -maxdepth 1 -type f -name '*.patch' -print0 | sort -z)
+    count=$(find "$copies" -type f | wc -l)
+    if (( count == 0 )); then
+        echo "Nothing to apply: $outgoing is empty."
+        return 0
+    fi
+    if ! git -C "$DOTFILES_LIVE" diff --quiet || ! git -C "$DOTFILES_LIVE" diff --cached --quiet; then
+        echo "Refused: $DOTFILES_LIVE has uncommitted changes; commit or stash them first." >&2
+        return 1
+    fi
+    subjects=$(grep -h '^Subject: ' "$copies"/*.patch | sed 's/^Subject: //' | cat -v)
+    echo "$count commit(s) for $DOTFILES_LIVE, the live checkout the host runs:"
+    sed 's/^/  /' <<< "$subjects"
+    echo
+    if ! git -C "$DOTFILES_LIVE" apply --check --stat "$copies"/*.patch; then
+        echo "They do not apply to $DOTFILES_LIVE as it is: rebase the clone on origin/main and export again." >&2
+        return 1
+    fi
+    # Control characters shown, never interpreted: the patches are text a sandbox wrote.
+    if [[ -t 1 ]]; then cat -v "$copies"/*.patch | less; else cat -v "$copies"/*.patch; fi
+    read -r -p "Apply these $count commit(s) to $DOTFILES_LIVE? [y/N] " answer || answer=""
+    if [[ $answer != y && $answer != Y ]]; then
+        echo "Not applied."
+        log_event INFO apply "declined $count patch(es): ${subjects//$'\n'/ | }"
+        return 0
+    fi
+    if ! git -C "$DOTFILES_LIVE" am --quiet "$copies"/*.patch; then
+        git -C "$DOTFILES_LIVE" am --abort 2>/dev/null || true
+        echo "git am failed: nothing applied." >&2
+        log_event WARN apply "git am failed for $count patch(es)"
+        return 1
+    fi
+    find "$outgoing" -maxdepth 1 -type f -name '*.patch' -delete
+    log_event INFO apply "applied $count patch(es) to $DOTFILES_LIVE: ${subjects//$'\n'/ | }"
+    echo "Applied. Next: make cockpit and make test in $DOTFILES_LIVE, then claude-sessions reload."
+}
+
 show_usage() {
     ensure_manager
     tmux respawn-pane -k -t "$(viewer_pane)" claude-sessions-sidebar usage
@@ -1317,6 +1378,7 @@ case ${1:-attach} in
     push) push_popup "${2:?usage: claude-sessions push <dir>}" ;;
     queue-prompt-ask) queue_prompt_ask "${2:-}" ;;
     push-run) push_run "${2:?usage: claude-sessions push-run <dir>}" ;;
+    apply-dotfiles) apply_dotfiles ;;
     parallel) parallel_session "${2:?usage: claude-sessions parallel <dir> <branch>}" "${3:?usage: claude-sessions parallel <dir> <branch>}" ;;
     review) review_session "${2:?usage: claude-sessions review <dir> <pr-number>}" "${3:?usage: claude-sessions review <dir> <pr-number>}" ;;
     clones) clones_popup ;;

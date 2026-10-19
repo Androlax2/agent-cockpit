@@ -203,6 +203,14 @@ impl TodoList {
             if !valid {
                 continue;
             }
+            // Items of the dotfiles filed before its session moved to the work clone (C1): there is
+            // no session in ~/dotfiles any more to hand them to.
+            let live = paths::dotfiles().to_string_lossy().into_owned();
+            if let Some(rest) = object.get("cwd").and_then(Value::as_str).and_then(|cwd| cwd.strip_prefix(live.as_str())).map(str::to_string) {
+                if rest.is_empty() || rest.starts_with('/') {
+                    object.insert("cwd".into(), json!(format!("{}{rest}", paths::dotfiles_work().display())));
+                }
+            }
             if !object.contains_key("status") {
                 let sent = object.remove("sent").and_then(|sent| sent.as_bool()).unwrap_or(false);
                 object.insert("status".into(), json!(if sent { "doing" } else { "todo" }));
@@ -366,7 +374,7 @@ impl TodoList {
             util::log_event("WARN", &format!("blocked report from {reporter} dropped: {BLOCKED_OPEN_MAX} already open"));
             return false;
         }
-        let dotfiles = paths::dotfiles().to_string_lossy().into_owned();
+        let dotfiles = paths::dotfiles_work().to_string_lossy().into_owned();
         let id = self.add_unsaved("dotfiles", &dotfiles, &title);
         if let Some(item) = self.items.iter_mut().find(|item| item.id() == id) {
             let notes = format!("{}\n\nReported from {cwd}.", field("notes", NOTES_MAX));

@@ -1309,3 +1309,70 @@ fn a_session_already_at_the_viewers_size_gets_no_key() {
 fn a_session_at_a_permission_dialog_gets_no_key_even_resized() {
     assert!(!redraws_after_viewing("181 70", "needs-you"));
 }
+
+/// A live dotfiles checkout and a work clone with one commit exported to .outgoing.
+fn dotfiles_pair(manager: &Manager) -> (PathBuf, PathBuf) {
+    let live = manager.sandbox.root.join("live");
+    let work = manager.sandbox.root.join("work");
+    let git = |directory: &Path, arguments: &[&str]| {
+        let output = Command::new("git").arg("-C").arg(directory)
+            .args(["-c", "user.email=t@t", "-c", "user.name=t"]).args(arguments).output().unwrap();
+        assert!(output.status.success(), "git {arguments:?}: {}", stderr(&output));
+    };
+    fs::create_dir(&live).unwrap();
+    git(&live, &["init", "-q", "-b", "main"]);
+    git(&live, &["config", "user.email", "t@t"]);
+    git(&live, &["config", "user.name", "t"]);
+    fs::write(live.join("README"), "x\n").unwrap();
+    git(&live, &["add", "README"]);
+    git(&live, &["commit", "-qm", "init"]);
+    git(&manager.sandbox.root, &["clone", "-q", &path_str(&live), "work"]);
+    fs::write(work.join("README"), "x\ny\n").unwrap();
+    git(&work, &["commit", "-qam", "Add y"]);
+    git(&work, &["format-patch", "-q", "origin/main", "-o", ".outgoing"]);
+    (live, work)
+}
+
+fn apply_dotfiles(manager: &Manager, live: &Path, work: &Path, answer: &str) -> Output {
+    manager.sandbox.run_with_input(bin().join("claude-sessions"), &["apply-dotfiles"],
+                                   &[("CLAUDE_DOTFILES_LIVE", &path_str(live)), ("CLAUDE_DOTFILES_WORK", &path_str(work))], answer)
+}
+
+#[test]
+fn apply_dotfiles_takes_the_clones_commits_after_a_yes() {
+    let manager = Manager::new();
+    let (live, work) = dotfiles_pair(&manager);
+    let output = apply_dotfiles(&manager, &live, &work, "y\n");
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(git_output(&live, &["log", "-1", "--format=%s"]), "Add y");
+    assert_eq!(fs::read_dir(work.join(".outgoing")).unwrap().count(), 0);
+}
+
+#[test]
+fn apply_dotfiles_applies_nothing_without_a_yes() {
+    let manager = Manager::new();
+    let (live, work) = dotfiles_pair(&manager);
+    apply_dotfiles(&manager, &live, &work, "\n");
+    assert_eq!(git_output(&live, &["log", "-1", "--format=%s"]), "init");
+}
+
+#[test]
+fn apply_dotfiles_refuses_a_link_among_the_patches() {
+    // A link would make the host read a file of the sandbox's choosing.
+    let manager = Manager::new();
+    let (live, work) = dotfiles_pair(&manager);
+    std::os::unix::fs::symlink("/etc/hostname", work.join(".outgoing/0002-x.patch")).unwrap();
+    let output = apply_dotfiles(&manager, &live, &work, "y\n");
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(git_output(&live, &["log", "-1", "--format=%s"]), "init");
+}
+
+#[test]
+fn apply_dotfiles_refuses_a_live_checkout_with_uncommitted_changes() {
+    let manager = Manager::new();
+    let (live, work) = dotfiles_pair(&manager);
+    fs::write(live.join("README"), "edited by hand\n").unwrap();
+    let output = apply_dotfiles(&manager, &live, &work, "y\n");
+    assert_eq!(output.status.code(), Some(1));
+    assert!(stderr(&output).contains("uncommitted changes"));
+}

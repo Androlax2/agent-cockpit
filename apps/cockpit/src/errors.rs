@@ -142,7 +142,7 @@ impl ErrorReporter {
         let prompt = prompt(error, context);
         let short: String = signature(error).chars().take(120).collect();
         // By folder: any session can name its project "dotfiles".
-        let dotfiles = paths::dotfiles().to_string_lossy().into_owned();
+        let dotfiles = paths::dotfiles_work().to_string_lossy().into_owned();
         if let Some(waiting) = sessions.iter().find(|session| util::repository_root(&session.cwd) == dotfiles && session.state == "waiting" && !session.terminal) {
             let problem = match write_report(&prompt) {
                 Ok(path) => util::manager(&["say", &waiting.session, &message(&path)]),
@@ -155,7 +155,7 @@ impl ErrorReporter {
             }
             util::log_event("WARN", &format!("error hand-off to dotfiles session {id} failed ({problem}); starting a new session"));
         }
-        util::manager_in_background(&["background", &paths::dotfiles().to_string_lossy(), &prompt]);
+        util::manager_in_background(&["background", &paths::dotfiles_work().to_string_lossy(), &prompt]);
         util::log_event("INFO", &format!("error handed to a new dotfiles session: {short}"));
     }
 

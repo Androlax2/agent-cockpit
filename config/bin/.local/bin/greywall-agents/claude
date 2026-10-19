@@ -15,6 +15,18 @@ export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
 mkdir -p "$HOME/.cache/claude-answers/runs" "$HOME/.cache/claude-answers/guides"
 mkdir -p "$CHROME_CONFIG_HOME"
 
+# ~/dotfiles is the live checkout: stowed into ~/.local/bin and ~/.config, built and run by the host.
+# A session writing there would run its code with Theo's rights, unreviewed (security audit
+# 2026-10-19, C1). Sessions work in the clone ~/IdeaProjects/dotfiles; claude-sessions
+# apply-dotfiles brings its commits over after Theo read the diff.
+live_dotfiles=$(cd "$HOME/dotfiles" 2>/dev/null && pwd -P)
+case "$(pwd -P)/" in
+    "$live_dotfiles"/*)
+        echo "claude launcher: no session in $live_dotfiles, the live checkout the host runs." >&2
+        echo "Work in ~/IdeaProjects/dotfiles (make -C ~/dotfiles dotfiles-work creates it)." >&2
+        exit 1 ;;
+esac
+
 project_root=$(git rev-parse --show-toplevel 2>/dev/null || pwd -P)
 # A parallel clone (claude-sessions' +, <clones>/<repo>/<name>) is its repository's project: same
 # GitHub token, same name everywhere.
@@ -24,6 +36,10 @@ case "$project_root" in
     *) project_name=$(basename "$project_root") ;;
 esac
 greywall_options="--auto-profile --profile claude --allow-path $CHROME_CONFIG_HOME"
+# The work clone fetches from the live checkout (its origin) to start from what is applied.
+if [ -n "$live_dotfiles" ] && [ "$project_root" = "$HOME/IdeaProjects/dotfiles" ]; then
+    greywall_options="$greywall_options --allow-read-path $live_dotfiles"
+fi
 
 # Greyproxy re-signs HTTPS with a CA the system deliberately does not trust. Greywall hands the
 # sandbox that CA alone (SSL_CERT_FILE), which git, curl, cargo and PHP ignore, so they get a bundle of

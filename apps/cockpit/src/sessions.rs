@@ -488,9 +488,6 @@ pub fn project_choices() -> Vec<String> {
         .filter(|entry| entry.path().is_dir() && !entry.file_name().to_string_lossy().starts_with('.'))
         .map(|entry| entry.path().to_string_lossy().into_owned())
         .collect();
-    if paths::dotfiles().is_dir() {
-        known.push(paths::dotfiles().to_string_lossy().into_owned());
-    }
     known.sort();
     let mut ranked: Vec<String> = Vec::new();
     for used in recent_projects() {
