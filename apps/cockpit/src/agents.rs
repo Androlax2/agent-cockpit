@@ -105,6 +105,11 @@ pub fn is_session_id(id: &str) -> bool {
     ID_PATTERNS.iter().any(|pattern| pattern.is_match(id))
 }
 
+/// The agent whose reported ids `id` matches.
+pub fn of_session_id(id: &str) -> Option<&'static Agent> {
+    AGENTS.iter().zip(ID_PATTERNS.iter()).find(|(_, pattern)| pattern.is_match(id)).map(|(agent, _)| agent)
+}
+
 /// The agent of a tmux session not reported yet, by the longest prefix of its name.
 pub fn of_tmux_session(name: &str) -> Option<&'static Agent> {
     AGENTS.iter().filter(|agent| name.starts_with(agent.tmux_prefix)).max_by_key(|agent| agent.tmux_prefix.len())

@@ -2377,13 +2377,19 @@ impl App {
     }
 
     /// Past sessions not running now, newest first, with their titles.
-    fn past_sessions(&mut self) -> Vec<(PastSession, String)> {
+    /// Claude's past sessions and opencode's, newest first, the running ones left out.
+    pub(crate) fn past_sessions(&mut self) -> Vec<(PastSession, String)> {
         self.history.refresh();
         let running: Vec<&str> = self.sessions.iter().map(|s| s.session.as_str()).collect();
-        self.history.entries.iter()
-            .filter(|entry| !running.contains(&entry.session.as_str()))
-            .map(|entry| (entry.clone(), self.history.title(&entry.session)))
-            .collect()
+        let mut past: Vec<(PastSession, String)> = self.history.entries.iter()
+            .map(|entry| (entry.clone(), self.history.title(&entry.session))).collect();
+        match sessions::opencode_past_sessions(&paths::opencode_database()) {
+            Ok(opencode) => past.extend(opencode),
+            Err(error) => util::log_event("ERROR", &format!("H: opencode's past sessions left out ({}): {error}", paths::opencode_database().display())),
+        }
+        past.retain(|(entry, _)| !running.contains(&entry.session.as_str()));
+        past.sort_by(|a, b| b.0.since.cmp(&a.0.since));
+        past
     }
 }
 
@@ -2502,7 +2508,8 @@ fn pick_action(entries: &[String]) -> Option<String> {
 fn pick_past_session(past: &[(PastSession, String)]) -> Option<String> {
     let lines: Vec<String> = past.iter().enumerate().map(|(index, (entry, title))| {
         let when = chrono::DateTime::from_timestamp(entry.since, 0).map(|t| t.with_timezone(&chrono::Local).format("%d %b %H:%M").to_string()).unwrap_or_default();
-        format!("{index}\t{when}  {:<18} {}", entry.project, if title.is_empty() { &entry.prompt } else { title })
+        let badge = agents::of_session_id(&entry.session).and_then(|agent| agent.badge).map(|badge| format!("{badge}  ")).unwrap_or_default();
+        format!("{index}\t{when}  {:<18} {badge}{}", entry.project, if title.is_empty() { &entry.prompt } else { title })
     }).collect();
     let chosen = fzf("resume> ", &lines, &["--delimiter", "\t", "--with-nth", "2.."])?;
     chosen.split('\t').next().map(str::to_string)

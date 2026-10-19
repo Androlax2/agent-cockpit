@@ -339,6 +339,29 @@ pub struct PastSession {
     pub prompt: String,
 }
 
+/// The past sessions H offers from opencode's database: the newest ones.
+const OPENCODE_PAST_MAX: usize = 200;
+
+/// opencode's past sessions, newest first, each with its title: the top-level ones of its database
+/// (session_v2; a subagent's has a parent), not archived. Read-only, as its sandboxes write it;
+/// none when opencode never ran.
+pub fn opencode_past_sessions(database: &Path) -> rusqlite::Result<Vec<(PastSession, String)>> {
+    use rusqlite::{Connection, OpenFlags};
+    if !database.exists() {
+        return Ok(Vec::new());
+    }
+    let source = Connection::open_with_flags(database, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    source.busy_timeout(std::time::Duration::from_secs(1))?;
+    let mut statement = source.prepare(
+        "select id, directory, coalesce(title, ''), time_updated from session_v2
+         where parent_id is null and time_archived is null order by time_updated desc limit ?1")?;
+    let rows = statement.query_map([OPENCODE_PAST_MAX as i64], |row| {
+        let (session, cwd, title, updated_ms): (String, String, String, i64) = (row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?);
+        Ok((PastSession { project: project_name(&cwd), session, cwd, since: updated_ms / 1000, prompt: String::new() }, collapse(&title)))
+    })?;
+    rows.collect()
+}
+
 /// Past sessions from history.jsonl (re-read when it changes) with lazily loaded titles.
 #[derive(Default)]
 pub struct History {

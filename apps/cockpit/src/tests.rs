@@ -49,6 +49,8 @@ impl Fixture {
             std::env::set_var("CLAUDE_AUDIT_JOURNAL", "off");
             std::env::set_var("PATH", path);
             std::env::set_var("CLAUDE_STATUS_URL", "");
+            // H and the costs read opencode's database: never Theo's, wherever XDG_DATA_HOME points.
+            std::env::set_var("CLAUDE_SESSIONS_OPENCODE_DB", root.join("home/.local/share/opencode/opencode.db"));
             // CLAUDE_SESSIONS_STATE_HOME too: set in opencode sessions, it would win over the
             // XDG_STATE_HOME above and point the tests at Theo's real state.
             for name in ["CLAUDE_SESSIONS_STATE_HOME", "CLAUDE_SESSIONS_HISTORY", "CLAUDE_SESSIONS_TRANSCRIPTS", "CLAUDE_TODO_UPDATES", "CLAUDE_REVIEWS_FIXTURE",
@@ -636,6 +638,45 @@ fn h_resumes_the_past_session_picked() {
     let mut app = fixture.app();
     app.handle(Key::Char('H'), &mut FakeScreen::default());
     assert_eq!(fixture.wait_for_calls("claude-sessions", 1), vec!["claude-sessions resume /r/runway past-1".to_string()]);
+}
+
+/// An opencode database with the session_v2 columns H reads: (id, folder, title, parent, updated ms, archived).
+fn opencode_database_with(fixture: &Fixture, rows: &[(&str, &str, &str, Option<&str>, i64, Option<i64>)]) {
+    let path = fixture.root.join("home/.local/share/opencode/opencode.db");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let database = rusqlite::Connection::open(&path).unwrap();
+    database.execute_batch("create table session_v2 (id text primary key, directory text not null, title text, parent_id text,
+                            time_updated integer not null, time_archived integer)").unwrap();
+    for (id, directory, title, parent, updated, archived) in rows {
+        database.execute("insert into session_v2 values (?1, ?2, ?3, ?4, ?5, ?6)", rusqlite::params![id, directory, title, parent, updated, archived]).unwrap();
+    }
+}
+
+#[test]
+fn h_offers_opencode_sessions_with_claudes_newest_first_and_resumes_the_one_picked() {
+    let fixture = Fixture::new();
+    fixture.write("home/.claude/history.jsonl", &format!("{}\n", json!({"sessionId": "past-1", "project": "/r/runway", "timestamp": 1_000_000, "display": "fix login"})));
+    opencode_database_with(&fixture, &[
+        (OPENCODE_SESSION, "/r/opusline", "Prompt FigCraft", None, 2_000_000, None),
+        ("ses_3f2a9c0b2000AbCdEfGhIjKlMn", "/r/opusline", "a subagent's", Some(OPENCODE_SESSION), 3_000_000, None),
+        ("ses_3f2a9c0b3000AbCdEfGhIjKlMn", "/r/opusline", "archived", None, 4_000_000, Some(5)),
+    ]);
+    let mut app = fixture.app();
+    let past = app.past_sessions();
+    let listed: Vec<(&str, &str)> = past.iter().map(|(entry, title)| (entry.session.as_str(), title.as_str())).collect();
+    assert_eq!(listed, [(OPENCODE_SESSION, "Prompt FigCraft"), ("past-1", "")]);
+    fixture.shim("fzf", "head -n 1");
+    app.handle(Key::Char('H'), &mut FakeScreen::default());
+    assert_eq!(fixture.wait_for_calls("claude-sessions", 1), vec![format!("claude-sessions resume /r/opusline {OPENCODE_SESSION}")]);
+}
+
+#[test]
+fn h_leaves_a_running_opencode_session_out() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([opencode_session("waiting", "opusline", 1)]));
+    opencode_database_with(&fixture, &[(OPENCODE_SESSION, "/r/opusline", "Prompt FigCraft", None, 2_000_000, None)]);
+    let mut app = fixture.app();
+    assert!(app.past_sessions().is_empty());
 }
 
 #[test]
