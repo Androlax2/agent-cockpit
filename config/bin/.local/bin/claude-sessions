@@ -735,9 +735,13 @@ restart_sessions() { # id...
 # matches its tmux session (stripped, the card had no pane and the tmux session showed up as a
 # second, unknown card).
 launch_detached() { # dir claude-arguments...
-    local directory=$1
+    local directory=$1 size width=200 height=50
     shift
-    tmux new-session -d -s "claude-retry-restart-$(date +%s%N)" -x 200 -y 50 -c "$directory" \
+    # The viewer pane's size: shown there later without a resize, Claude keeps its screen. Resized,
+    # it redrew and the resumed conversation sat above, out of view (an empty pane).
+    size=$(tmux display-message -p -t "$(viewer_pane)" '#{pane_width} #{pane_height}' 2>/dev/null || true)
+    if [[ $size =~ ^([0-9]+)\ ([0-9]+)$ ]]; then width=${BASH_REMATCH[1]} height=${BASH_REMATCH[2]}; fi
+    tmux new-session -d -s "claude-retry-restart-$(date +%s%N)" -x "$width" -y "$height" -c "$directory" \
         env CLAUDE_SESSIONS_INSIDE=1 \
         fish -ic 'claude $argv; or claude-sessions log manager ERROR "claude exited with status $status in $PWD"' -- "$@"
 }

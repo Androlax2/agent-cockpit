@@ -29,7 +29,7 @@ case $1 in
     elif [[ $* == *@role* ]]; then cat "$roles" 2>/dev/null
     else printf '0\n1\n'; fi ;;
   has-session) [[ $3 == "=claude-manager" ]] && exit 0; (( $(grep -c "send-keys" "$SHIM_LOG") < ${SHIM_EXIT_AFTER:-1} )) ;;
-  display-message) if [[ $* == *pane_dead* ]]; then echo 0; elif [[ $* == *pane_active* ]]; then echo "${SHIM_VIEWER_ACTIVE:-0}"; elif [[ $* == *pane_id* ]]; then echo "%10"; else echo "claude-retry-9-9"; fi ;;
+  display-message) if [[ $* == *pane_dead* ]]; then echo 0; elif [[ $* == *pane_active* ]]; then echo "${SHIM_VIEWER_ACTIVE:-0}"; elif [[ $* == *pane_id* ]]; then echo "%10"; elif [[ $* == *pane_width* ]]; then echo "${SHIM_VIEWER_SIZE:-181 47}"; else echo "claude-retry-9-9"; fi ;;
   split-window) [[ $* == *-P* ]] && echo "%1$(( $(wc -l < "$roles" 2>/dev/null || echo 0) + 1 ))" ;;
   set-option) if [[ $2 == -p && $5 == @role ]]; then echo "$4 $6" >> "$roles"; fi ;;
   capture-pane) printf '%b' "$SHIM_PANE_TEXT" ;;
@@ -1251,4 +1251,13 @@ fn switching_sessions_changes_the_approval_pane_in_the_same_tmux_command() {
     manager.run(&["view", SESSION_A], &[]);
     let back = manager.tmux_calls("respawn-pane").pop().expect("no switch back");
     assert!(back.contains(" ; split-window ") && back.ends_with("attach-session -t =claude-run-0123456789ab"), "{back}");
+}
+
+#[test]
+fn a_restarted_session_starts_at_the_viewer_panes_size() {
+    // Resized when shown, Claude redrew and left the resumed conversation out of view.
+    let manager = Manager::new();
+    manager.run(&["restart-all", SESSION_A], &[("SHIM_PANE_TEXT", IDLE), ("SHIM_EXIT_AFTER", "1"), ("CLAUDE_SESSIONS_RESTORE_WAIT", "0")]);
+    let launch = manager.tmux_calls("new-session").into_iter().find(|call| call.contains("claude-retry-restart-")).expect("no launch");
+    assert!(launch.contains(" -x 181 -y 47 "), "{launch}");
 }

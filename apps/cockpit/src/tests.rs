@@ -1282,15 +1282,36 @@ fn a_session_with_nothing_to_open_gets_no_card() {
     assert!(!running.contains(&SESSION_B.to_string()), "a card nothing can open");
 }
 
+fn craft_badges(app: &App) -> Vec<String> {
+    app.panels[1].lines.iter().flat_map(|line| line.right.iter().map(|part| part.text.clone())).filter(|badge| badge.starts_with('◆')).collect()
+}
+
 #[test]
-fn a_card_shows_the_craft_apps_its_session_drives() {
+fn only_the_sessions_of_the_project_figcraft_serves_show_it() {
+    let fixture = Fixture::new();
+    fixture.shim("pgrep", "echo '4242 figcraft --control 7979 --automation-read-root /r/opusline --automation-write-root /r/opusline'");
+    let mut opusline = session(SESSION_A, "waiting", "opusline", "/r/opusline", 1);
+    opusline["apps"] = json!("figcraft:on");
+    let mut dotfiles = session(SESSION_B, "waiting", "dotfiles", "/r/dotfiles", 2);
+    dotfiles["apps"] = json!("figcraft:on");
+    fixture.snapshot(json!([opusline, dotfiles]));
+    let app = fixture.app();
+    assert_eq!(craft_badges(&app), ["◆ figcraft"], "shown on dotfiles, which FigCraft does not serve");
+}
+
+#[test]
+fn a_craft_app_that_does_not_answer_shows_no_badge() {
     let fixture = Fixture::new();
     let mut row = session(SESSION_A, "waiting", "opusline", "/r/opusline", 1);
-    row["apps"] = json!("figcraft:on wordcraft:off");
+    row["apps"] = json!("figcraft:off");
     fixture.snapshot(json!([row]));
-    let app = fixture.app();
-    let badges: Vec<String> = app.panels[1].lines.iter().flat_map(|line| line.right.iter().map(|part| part.text.clone())).collect();
-    assert_eq!(badges.iter().filter(|badge| badge.starts_with('◆')).collect::<Vec<_>>(), ["◆ figcraft", "◆ wordcraft off"]);
+    assert!(craft_badges(&fixture.app()).is_empty());
+}
+
+#[test]
+fn the_folder_figcraft_serves_comes_from_its_command_line() {
+    assert_eq!(sessions::write_root("4242 figcraft --control 7979 --automation-write-root /r/opusline"), Some("/r/opusline".into()));
+    assert_eq!(sessions::write_root("4242 figcraft"), None);
 }
 
 #[test]

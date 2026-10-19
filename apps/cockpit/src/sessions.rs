@@ -536,3 +536,16 @@ mod tests {
         assert!(changed_since_start(&Session::default(), &[("CLAUDE.md", 1000.0)]).is_empty());
     }
 }
+
+/// The folder a running craft app was opened for: the `--automation-write-root` craft-open starts
+/// it with, from its command line (`pgrep -a -x figcraft`). None when it is not running or was
+/// started without one.
+pub fn craft_root(app: &str) -> Option<String> {
+    write_root(&util::output_of("pgrep", &["-a", "-x", app])?)
+}
+
+pub fn write_root(command_line: &str) -> Option<String> {
+    let mut words = command_line.split_whitespace();
+    words.by_ref().find(|word| *word == "--automation-write-root")?;
+    words.next().map(str::to_string)
+}

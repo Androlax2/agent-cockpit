@@ -75,7 +75,7 @@ const GLOBAL_HELP: [(&str, &str); 17] = [
 const LEGEND: [(&str, &str); 14] = [
     ("●", "working"), ("○", "waiting for you"), ("!", "needs you: permission or question"), ("·", "running, state unknown"),
     ("▌", "shown in the session pane"), ("⚲", "pinned"), ("⇅", "remote controlled"),
-    ("◆ figcraft", "drives that app through its MCP server: green connected, red \"off\" when the app does not answer"),
+    ("◆ figcraft", "connected to FigCraft, which is open for this session's project (craft-open)"),
     ("✉ 2 queued", "messages waiting for the end of its turn, sent one per turn (m, Alt+Q; M drops them)"),
     ("↑2 unpushed", "commits on no remote yet: U pushes the branch"),
     ("▭ terminal", "started with \"this terminal\": no ⌘R, restore, queue, error hand-off or ask-to-run"),
@@ -346,6 +346,8 @@ pub struct App {
     /// session -> when the column last sent it a queued prompt: the next one waits for a turn that
     /// ended after that.
     pub(crate) prompts_sent: HashMap<String, i64>,
+    /// craft app -> the project folder its running instance serves (sessions::craft_root).
+    pub(crate) craft_roots: HashMap<String, String>,
     pub(crate) todo_counts: [usize; 4],
     pub(crate) hit_lines: HashMap<u16, (usize, Option<usize>)>,
     pub(crate) hit_actions: HashMap<u16, (u16, u16, &'static str)>,
@@ -360,7 +362,7 @@ impl App {
             help_open: false, message: String::new(), labelled: Default::default(), menu: None, restore: Vec::new(),
             focus_waiting: false, held: Vec::new(), held_checked: 0.0, queue_checked: 0.0, gaming: util::gaming, restore_checked: 0.0, start_files: Vec::new(),
             width: DEFAULT_COLUMN_WIDTH, sessions: Vec::new(), windows: Vec::new(), review_rows: Vec::new(), todo_entries: Vec::new(),
-            todo_scope: String::new(), todo_tab: TODO_TAB_TO_DO, todo_counts: [0; 4], prompts_sent: HashMap::new(), hit_lines: HashMap::new(), hit_actions: HashMap::new(),
+            todo_scope: String::new(), todo_tab: TODO_TAB_TO_DO, todo_counts: [0; 4], prompts_sent: HashMap::new(), craft_roots: HashMap::new(), hit_lines: HashMap::new(), hit_actions: HashMap::new(),
         }
     }
 
@@ -622,6 +624,7 @@ impl App {
             lines.push(Line::default());
         }
         self.start_files = sessions::start_file_mtimes();
+        self.craft_roots = ["figcraft"].iter().filter_map(|app| Some((app.to_string(), sessions::craft_root(app)?))).collect();
         let outdated: Vec<&Session> = running.iter().filter(|s| !sessions::changed_since_start(s, &self.start_files).is_empty()).collect();
         if !outdated.is_empty() {
             let mut changes: Vec<&str> = outdated.iter().flat_map(|s| sessions::changed_since_start(s, &self.start_files)).collect();
@@ -687,11 +690,13 @@ impl App {
             if session.terminal {
                 badges.push(part("▭ terminal", bold(MAGENTA)));
             }
+            // Every session has the craft servers (craft-open): the badge marks only the sessions of
+            // the project the running app serves, the ones that can work with it.
             for app in session.apps.split_whitespace() {
-                match app.split_once(':') {
-                    Some((name, "on")) => badges.push(part(format!("◆ {name}"), bold(GREEN))),
-                    Some((name, _)) => badges.push(part(format!("◆ {name} off"), bold(RED))),
-                    None => {}
+                let Some((name, "on")) = app.split_once(':') else { continue };
+                let serves_it = self.craft_roots.get(name).is_none_or(|root| *root == util::repository_root(&session.cwd));
+                if serves_it {
+                    badges.push(part(format!("◆ {name}"), bold(GREEN)));
                 }
             }
             let queued = prompts::count(&session.session);
