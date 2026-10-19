@@ -1410,6 +1410,14 @@ apply_run() { # clone
         return 1
     fi
     apply_dotfiles "$clone" || true
+    # ~/dotfiles is a GitHub repository too: what it holds and GitHub lacks (just applied, or
+    # applied earlier) goes out from here, after its own list and y/N. Never from the clone, whose
+    # origin is ~/dotfiles.
+    if [[ -n $(git "${SAFE_GIT_CONFIG[@]}" -C "$DOTFILES_LIVE" rev-list "@{upstream}..HEAD" 2>/dev/null | head -1) ]]; then
+        echo
+        push_run "$DOTFILES_LIVE" || true
+        return 0
+    fi
     read -r -p "Enter closes. " _ || true
 }
 

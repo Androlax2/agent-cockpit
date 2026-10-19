@@ -1754,3 +1754,41 @@ fn opening_a_session_costs_few_tmux_clients() {
     assert!(tmux <= 11, "{tmux} tmux clients: {:#?}", manager.calls("tmux"));
     assert!(jq_passes <= 1, "{jq_passes} jq passes");
 }
+
+/// The live checkout tracking a GitHub origin whose main is still at its first commit.
+fn track_github(live: &Path) {
+    for arguments in [vec!["remote", "add", "origin", "git@github.com:o/dotfiles.git"], vec!["update-ref", "refs/remotes/origin/main", "HEAD"],
+                      vec!["branch", "-q", "--set-upstream-to=origin/main"]] {
+        assert!(Command::new("git").arg("-C").arg(live).args(&arguments).status().unwrap().success(), "git {arguments:?}");
+    }
+}
+
+fn apply_run(manager: &Manager, live: &Path, work: &Path, clones: &Path, clone: &Path, answers: &str) -> String {
+    manager.sandbox.shim("ssh", "exit 1");
+    let output = manager.sandbox.run_with_input(bin().join("claude-sessions"), &["apply-run", &path_str(clone)],
+        &[("CLAUDE_DOTFILES_LIVE", &path_str(live)), ("CLAUDE_DOTFILES_WORK", &path_str(work)), ("CLAUDE_SESSIONS_CLONES", &path_str(clones))], answers);
+    format!("{}{}", stdout(&output), stderr(&output))
+}
+
+#[test]
+fn after_the_apply_u_offers_to_push_the_live_checkout_to_github() {
+    // ~/dotfiles is a GitHub repository: claude-sessions had no way to push it.
+    let manager = Manager::new();
+    let (live, work) = dotfiles_pair(&manager);
+    track_github(&live);
+    let (clones, clone) = parallel_dotfiles_clone(&manager, &live);
+    let shown = apply_run(&manager, &live, &work, &clones, &clone, "y\ny\n\n");
+    assert!(shown.contains("Push main to git@github.com:o/dotfiles.git"), "{shown}");
+    assert!(manager.calls("ssh").iter().any(|call| call.contains("git-receive-pack 'o/dotfiles.git'")), "{:?}", manager.calls("ssh"));
+}
+
+#[test]
+fn the_push_after_the_apply_waits_for_its_own_yes() {
+    let manager = Manager::new();
+    let (live, work) = dotfiles_pair(&manager);
+    track_github(&live);
+    let (clones, clone) = parallel_dotfiles_clone(&manager, &live);
+    let shown = apply_run(&manager, &live, &work, &clones, &clone, "y\n\n");
+    assert!(shown.contains("Not pushed."), "{shown}");
+    assert!(manager.calls("ssh").is_empty(), "pushed without a yes");
+}
