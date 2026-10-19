@@ -774,7 +774,7 @@ impl App {
     fn sessions_help() -> Vec<(&'static str, &'static str)> {
         vec![("⏎", "show the session and move the cursor into it"), ("n", "peek at the next session needing you"),
              ("x", "exit the session: Ctrl-C twice, then killed if it lingers"), ("r", "restart in place: same conversation, new process"),
-             ("⌘R", "restart every session that waits for you; working ones and pending permissions are left alone"),
+             ("⌘R", "restart the sessions started before a change they lack (badge ⟳ restart), when they wait at their prompt; busy ones are named and left alone"),
              ("R", "toggle Remote Control (phone / claude.ai/code)"), ("p", "pin on top"),
              ("e", "effort level: pick one, the session restarts on it (or click the level on the card)"),
              ("g", "lazygit on the session's repository, in a popup (q closes it)"),
@@ -934,11 +934,14 @@ impl App {
     /// Restart every session sitting at its prompt: one that works or asks for a permission would
     /// lose its turn, so it is skipped and named.
     pub(crate) fn restart_all(&mut self, screen: &mut dyn Screen) -> String {
-        // A terminal session is its terminal's: restart-all leaves it alone.
-        let ready: Vec<Session> = self.sessions.iter().filter(|s| s.state == "waiting" && !s.terminal).cloned().collect();
-        let busy: Vec<Session> = self.sessions.iter().filter(|s| (s.state == "working" || s.state == "needs-you") && !s.terminal).cloned().collect();
+        // Only the sessions started before a change they do not have yet (the "⟳ restart" badge);
+        // a terminal session is its terminal's and is left alone.
+        let stale: Vec<&Session> = self.sessions.iter()
+            .filter(|s| !s.terminal && !sessions::changed_since_start(s, &self.start_files).is_empty()).collect();
+        let ready: Vec<Session> = stale.iter().filter(|s| s.state == "waiting").map(|s| (*s).clone()).collect();
+        let busy: Vec<Session> = stale.iter().filter(|s| s.state == "working" || s.state == "needs-you").map(|s| (*s).clone()).collect();
         if ready.is_empty() {
-            return if busy.is_empty() { "no session to restart".into() } else { "nothing to restart: every session is busy".into() };
+            return if busy.is_empty() { "no session needs a restart".into() } else { "nothing to restart now: the sessions that need it are busy".into() };
         }
         let skipped = if busy.is_empty() { String::new() } else { format!(", leaving {} busy", busy.len()) };
         let question = format!("restart {} session{}{skipped}? same conversations, new processes", ready.len(), if ready.len() > 1 { "s" } else { "" });

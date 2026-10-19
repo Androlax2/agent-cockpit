@@ -327,10 +327,12 @@ fn greyproxy_requests_retried_lately_count_as_held() {
 }
 
 #[test]
-fn ctrl_r_restarts_the_waiting_sessions_and_names_the_busy_ones() {
+fn ctrl_r_restarts_the_stale_waiting_sessions_and_names_the_busy_ones() {
     let fixture = Fixture::new();
     fixture.snapshot(json!([session(SESSION_A, "waiting", "runway", "/r", 1), session(SESSION_B, "working", "opusline", "/o", 2)]));
     let mut app = fixture.app();
+    // CLAUDE.md changed after both started: both need a restart.
+    app.start_files = vec![("CLAUDE.md", 50.0)];
     app.handle(Key::Ctrl('r'), &mut FakeScreen::answering(&[Key::Char('y')]));
     assert_eq!(fixture.wait_for_calls("claude-sessions", 1), vec![format!("claude-sessions restart-all {SESSION_A}")]);
     assert!(app.message.contains("busy, not restarted: opusline"));
@@ -1128,6 +1130,7 @@ fn restart_all_leaves_terminal_sessions_alone() {
     terminal["terminal"] = json!(true);
     fixture.snapshot(json!([session("aaaaaaaa-0000-4000-8000-000000000000", "waiting", "dotfiles", "/r/dotfiles", 100), terminal]));
     let mut app = fixture.app();
+    app.start_files = vec![("CLAUDE.md", 500.0)];
     app.handle(Key::Ctrl('r'), &mut FakeScreen::answering(&[Key::Char('y')]));
     assert_eq!(fixture.wait_for_calls("claude-sessions", 1), vec!["claude-sessions restart-all aaaaaaaa-0000-4000-8000-000000000000".to_string()]);
 }
@@ -1336,4 +1339,25 @@ fn a_terminal_session_is_not_restarted_from_the_cockpit() {
     let mut app = fixture.app();
     app.dispatch_prompts();
     assert!(fixture.calls("claude-sessions").iter().all(|call| !call.contains("restart")));
+}
+
+#[test]
+fn ctrl_r_leaves_a_session_started_after_the_change_alone() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "runway", "/r", 1), session(SESSION_B, "waiting", "opusline", "/o", 100)]));
+    let mut app = fixture.app();
+    app.start_files = vec![("the launcher", 50.0)];
+    app.handle(Key::Ctrl('r'), &mut FakeScreen::answering(&[Key::Char('y')]));
+    assert_eq!(fixture.wait_for_calls("claude-sessions", 1), vec![format!("claude-sessions restart-all {SESSION_A}")]);
+}
+
+#[test]
+fn ctrl_r_with_nothing_stale_restarts_nothing() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "runway", "/r", 100)]));
+    let mut app = fixture.app();
+    app.start_files = vec![("CLAUDE.md", 50.0)];
+    app.handle(Key::Ctrl('r'), &mut FakeScreen::answering(&[Key::Char('y')]));
+    assert_eq!(app.message, "no session needs a restart");
+    assert!(fixture.calls("claude-sessions").is_empty());
 }
