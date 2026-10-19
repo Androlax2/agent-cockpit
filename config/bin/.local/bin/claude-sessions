@@ -1140,6 +1140,7 @@ doctor() {
     if [[ $(cat "${XDG_RUNTIME_DIR:-/tmp}/waybar-visible" 2>/dev/null || echo 1) == "$wanted" ]]; then report ok "bar visibility matches the workspace"; else report fail "bar visibility state out of step" "$HOME/.config/waybar/scripts/waybar-visibility.sh sync"; fi
     echo "tmux"
     if [[ $(tmux show -gv window-size 2>/dev/null) == latest ]]; then report ok "window-size latest"; else report fail "tmux window-size is not latest" "tmux source ~/.config/tmux/tmux.conf"; fi
+    if [[ $(tmux show -sv set-clipboard 2>/dev/null) == on ]]; then report ok "set-clipboard on (opencode's copy reaches the clipboard)"; else report fail "tmux set-clipboard is not on: opencode's copy reaches no clipboard" "tmux source ~/.config/tmux/tmux.conf"; fi
     if tmux list-keys -T root 2>/dev/null | grep -q ' root *Left .*claude-sessions-left'; then report ok "Left goes to the column from the start of the prompt only"; else report fail "Left in the session pane is not claude-sessions-left's" "tmux source ~/.config/tmux/tmux.conf"; fi
     echo "manager"
     if tmux has-session -t "=$MANAGER" 2>/dev/null; then
