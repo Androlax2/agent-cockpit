@@ -492,13 +492,25 @@ fn zoom_toggles_the_viewer_pane() {
 }
 
 #[test]
-fn restore_resumes_each_session_and_skips_what_cannot_be() {
+fn restore_resumes_each_session_and_skips_a_gone_folder() {
     let manager = Manager::new();
-    let result = manager.run(&["restore", &path_str(&manager.project), SESSION_A, "/no/such/dir", SESSION_B], &[("CLAUDE_SESSIONS_RESTORE_WAIT", "0")]);
+    let result = manager.run(&["restore", &path_str(&manager.project), SESSION_A, "/no/such/dir", SESSION_B], &[]);
     assert_eq!(result.status.code(), Some(0), "{}", stderr(&result));
-    let resumes: Vec<String> = manager.tmux_calls("respawn-pane").into_iter().filter(|call| call.contains("claude --resume $argv")).collect();
-    assert_eq!(resumes.len(), 1);
-    assert!(resumes[0].ends_with(SESSION_A));
+    let launches: Vec<String> = manager.tmux_calls("new-session").into_iter().filter(|call| call.contains("claude-retry-restart-")).collect();
+    assert_eq!(launches.len(), 1, "{launches:?}");
+    assert!(launches[0].contains(&format!("-- --resume {SESSION_A}")), "{}", launches[0]);
+    assert!(manager.tmux_calls("respawn-pane").iter().all(|call| !call.contains("claude")), "restore launched in the viewer pane");
+}
+
+#[test]
+fn a_session_nobody_typed_in_comes_back_fresh_in_its_folder() {
+    let manager = Manager::new();
+    let other = manager.sandbox.root.join("proj-b");
+    fs::create_dir(&other).unwrap();
+    manager.run(&["restore", &path_str(&other), SESSION_B], &[]);
+    let launch = manager.tmux_calls("new-session").into_iter().find(|call| call.contains("claude-retry-restart-")).expect("no launch");
+    assert!(launch.contains(&format!("-c {}", other.display())), "{launch}");
+    assert!(!launch.contains("--resume"), "{launch}");
 }
 
 #[test]

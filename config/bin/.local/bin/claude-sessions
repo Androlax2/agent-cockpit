@@ -594,26 +594,27 @@ has_conversation() { # id
 ENDED_SESSIONS="${XDG_STATE_HOME:-$HOME/.local/state}/claude-sessions/ended-sessions"
 RESTORE_WAIT_S=${CLAUDE_SESSIONS_RESTORE_WAIT:-25}
 
-# Resume each <dir> <id> pair, one after the other: every resume takes the viewer pane, and the
-# previous one must have its own tmux session (claude-auto-retry) before the next replaces it.
+# Bring back each <dir> <id> pair, each in a tmux session of its own (launch_detached), so none
+# depends on the viewer pane: a conversation is resumed; a session nobody typed in yet has none,
+# and starts fresh in its folder. A folder that is gone is skipped.
 restore_sessions() { # dir id [dir id …]
     (( $# % 2 == 0 && $# > 0 )) || { echo "usage: claude-sessions restore <dir> <id> [<dir> <id> …]" >&2; return 1; }
-    local directory id effort before waited
+    local directory id effort
     while (( $# )); do
         directory=$1 id=$2
         shift 2
-        if [[ ! -d $directory ]] || ! has_conversation "$id"; then
-            log_event WARN manager "restore: skipped $id ($directory gone, or nothing to resume)"
+        if [[ ! -d $directory ]]; then
+            log_event WARN manager "restore: skipped $id ($directory is gone)"
             continue
         fi
         effort=$(jq -r '.effort // empty' "$HOME/.cache/claude/statusline-$id.json" 2>/dev/null || true)
         require_effort "$effort" 2>/dev/null || effort=""
-        before=$(tmux ls -F '#{session_name}' 2>/dev/null | grep -c '^claude-retry-' || true)
-        resume_session "$directory" "$id" "$effort"
-        for (( waited = 0; waited < RESTORE_WAIT_S; waited++ )); do
-            (( $(tmux ls -F '#{session_name}' 2>/dev/null | grep -c '^claude-retry-' || true) > before )) && break
-            sleep 1
-        done
+        if has_conversation "$id"; then
+            launch_detached "$directory" --resume "$id" ${effort:+--effort "$effort"}
+        else
+            log_event INFO manager "restore: $id had no conversation yet, a fresh session starts in $directory"
+            launch_detached "$directory" ${effort:+--effort "$effort"}
+        fi
     done
 }
 

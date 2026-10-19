@@ -380,9 +380,10 @@ pub struct Restorable {
 }
 
 /// The sessions still alive when the machine went down: seen before this boot, within
-/// RESTORE_WINDOW_S of the last one seen, not ended on purpose, not running now, resumable.
-pub fn sessions_to_restore(recent: &Value, ended: &HashSet<String>, running: &HashSet<String>, boot: i64,
-                           resumable: impl Fn(&str) -> bool) -> Vec<Restorable> {
+/// RESTORE_WINDOW_S of the last one seen, not ended on purpose, not running now. One nobody typed in
+/// yet comes back too, as a fresh session in its folder (claude-sessions restore): leaving it out
+/// made sessions opened and not used yet vanish at each reboot.
+pub fn sessions_to_restore(recent: &Value, ended: &HashSet<String>, running: &HashSet<String>, boot: i64) -> Vec<Restorable> {
     let Some(recent) = recent.as_object() else { return Vec::new() };
     let before: Vec<(&String, &Value)> = recent.iter()
         .filter(|(_, row)| row.get("last_seen").and_then(Value::as_i64).unwrap_or(0) < boot && row.get("cwd").and_then(Value::as_str).is_some_and(|cwd| !cwd.is_empty()))
@@ -390,7 +391,7 @@ pub fn sessions_to_restore(recent: &Value, ended: &HashSet<String>, running: &Ha
     let Some(last) = before.iter().filter_map(|(_, row)| row.get("last_seen").and_then(Value::as_i64)).max() else { return Vec::new() };
     let mut rows: Vec<Restorable> = before.into_iter()
         .filter(|(session, row)| row.get("last_seen").and_then(Value::as_i64).unwrap_or(0) >= last - RESTORE_WINDOW_S
-                && !ended.contains(*session) && !running.contains(*session) && resumable(session))
+                && !ended.contains(*session) && !running.contains(*session))
         .map(|(session, row)| Restorable {
             session: session.clone(),
             cwd: row.get("cwd").and_then(Value::as_str).unwrap_or("").into(),
@@ -408,7 +409,7 @@ pub fn restore_offer(view: &ViewState, running: &HashSet<String>) -> Vec<Restora
     }
     let Some(recent) = read_json(&paths::recent_sessions()) else { return Vec::new() };
     let ended: HashSet<String> = fs::read_to_string(paths::ended_sessions()).unwrap_or_default().split_whitespace().map(str::to_string).collect();
-    sessions_to_restore(&recent, &ended, running, boot, |session| transcript_of(session).is_some())
+    sessions_to_restore(&recent, &ended, running, boot)
 }
 
 /// host:port of the requests greyproxy holds for approval, retried in the last few minutes.
@@ -501,7 +502,7 @@ mod tests {
         let recent = json!({"a": {"cwd": "/a", "project": "a", "last_seen": 1000}, "b": {"cwd": "/b", "project": "b", "last_seen": 100},
                             "c": {"cwd": "/c", "project": "c", "last_seen": 990}, "d": {"cwd": "/d", "project": "d", "last_seen": 995}});
         let ended: HashSet<String> = ["c".to_string()].into();
-        let offered = sessions_to_restore(&recent, &ended, &HashSet::new(), 2000, |_| true);
+        let offered = sessions_to_restore(&recent, &ended, &HashSet::new(), 2000);
         assert_eq!(offered.iter().map(|r| r.session.as_str()).collect::<Vec<_>>(), vec!["a", "d"]);
     }
 
