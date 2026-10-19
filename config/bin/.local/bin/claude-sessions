@@ -1481,7 +1481,7 @@ DOTFILES_LIVE="${CLAUDE_DOTFILES_LIVE:-$HOME/dotfiles}"
 DOTFILES_WORK="${CLAUDE_DOTFILES_WORK:-$HOME/IdeaProjects/dotfiles}"
 
 apply_dotfiles() { # [clone]
-    local clone outgoing copies patch subjects answer count
+    local clone outgoing copies patch subjects answer count before
     if ! clone=$(dotfiles_clone_root "${1:-$DOTFILES_WORK}"); then
         echo "Refused: ${1:-} is not a dotfiles clone ($DOTFILES_WORK or $CLONES_DIR/dotfiles/<name>)." >&2
         return 1
@@ -1531,6 +1531,7 @@ apply_dotfiles() { # [clone]
         audit_event apply dotfiles.declined declined "patches=$count" "subjects=${subjects//$'\n'/ | }"
         return 0
     fi
+    before=$(git -C "$DOTFILES_LIVE" rev-parse HEAD)
     if ! git -C "$DOTFILES_LIVE" am --quiet "$copies"/*.patch; then
         git -C "$DOTFILES_LIVE" am --abort 2>/dev/null || true
         echo "git am failed: nothing applied." >&2
@@ -1543,7 +1544,24 @@ apply_dotfiles() { # [clone]
     osd-show session-pushed "$clone" 2>/dev/null || true
     log_event INFO apply "applied $count patch(es) to $DOTFILES_LIVE: ${subjects//$'\n'/ | }"
     audit_event apply dotfiles.applied ok "patches=$count" "head=$(git -C "$DOTFILES_LIVE" rev-parse HEAD 2>/dev/null)" "subjects=${subjects//$'\n'/ | }"
-    echo "Applied. Next: make cockpit and make test in $DOTFILES_LIVE, then claude-sessions reload."
+    if git -C "$DOTFILES_LIVE" diff --quiet "$before" HEAD -- apps; then
+        echo "Applied."
+        return 0
+    fi
+    rebuild_apps
+}
+
+# The daemon's fixes are only live once it runs the new build: an apply that left osd.service on
+# the old one (security audits 2 and 3) broke ask-to-run and claude-todo until a manual restart.
+rebuild_apps() {
+    echo "Applied. apps/ changed: building it …"
+    if ! make -C "$DOTFILES_LIVE" cockpit; then
+        echo "The build failed (above): the OSD daemon keeps its old build." >&2
+        log_event WARN apply "make cockpit failed after the apply"
+        return 1
+    fi
+    restart_stale_osd
+    echo "Next: make test in $DOTFILES_LIVE, then claude-sessions reload for the column."
 }
 
 show_usage() {

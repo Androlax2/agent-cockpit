@@ -1713,6 +1713,58 @@ fi"#, approvals.display()));
     assert!(manager.calls("systemctl").iter().any(|call| call == "systemctl --user restart osd.service"), "{:?}", manager.calls("systemctl"));
 }
 
+/// The work clone's export replaced by one commit that changes apps/.
+fn export_an_apps_change(work: &Path) {
+    fs::create_dir(work.join("apps")).unwrap();
+    fs::write(work.join("apps/osd.rs"), "fn main() {}\n").unwrap();
+    fs::remove_dir_all(work.join(".outgoing")).unwrap();
+    for arguments in [&["add", "apps"][..], &["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "Change the daemon"], &["format-patch", "-q", "origin/main", "-o", ".outgoing"]] {
+        assert!(Command::new("git").arg("-C").arg(work).args(arguments).status().unwrap().success());
+    }
+}
+
+fn apply_dotfiles_with_osd(manager: &Manager, live: &Path, work: &Path, binary: &str) -> Output {
+    manager.sandbox.run_with_input(bin().join("claude-sessions"), &["apply-dotfiles"],
+                                   &[("CLAUDE_DOTFILES_LIVE", &path_str(live)), ("CLAUDE_DOTFILES_WORK", &path_str(work)), ("CLAUDE_SESSIONS_OSD_BINARY", binary)], "y\n")
+}
+
+#[test]
+fn an_apply_that_changes_apps_builds_them_and_restarts_the_osd_daemon() {
+    let manager = Manager::new();
+    let (live, work) = dotfiles_pair(&manager);
+    export_an_apps_change(&work);
+    manager.sandbox.shim("make", "exit 0");
+    let binary = osd_daemon(&manager, 3600, 60);
+    let output = apply_dotfiles_with_osd(&manager, &live, &work, &binary);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(manager.calls("make"), [format!("make -C {} cockpit", live.display())]);
+    assert!(manager.calls("setsid").iter().any(|call| call.ends_with("restart-osd-when-idle")), "{:?}", manager.calls("setsid"));
+}
+
+#[test]
+fn an_apply_that_leaves_apps_alone_builds_nothing() {
+    let manager = Manager::new();
+    let (live, work) = dotfiles_pair(&manager);
+    manager.sandbox.shim("make", "exit 0");
+    let binary = osd_daemon(&manager, 3600, 60);
+    apply_dotfiles_with_osd(&manager, &live, &work, &binary);
+    assert!(manager.calls("make").is_empty(), "{:?}", manager.calls("make"));
+    assert!(manager.calls("setsid").is_empty(), "{:?}", manager.calls("setsid"));
+}
+
+#[test]
+fn a_failed_build_after_an_apply_leaves_the_osd_daemon_running() {
+    let manager = Manager::new();
+    let (live, work) = dotfiles_pair(&manager);
+    export_an_apps_change(&work);
+    manager.sandbox.shim("make", "exit 2");
+    let binary = osd_daemon(&manager, 3600, 60);
+    let output = apply_dotfiles_with_osd(&manager, &live, &work, &binary);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(stderr(&output).contains("build failed"), "{}", stderr(&output));
+    assert!(manager.calls("setsid").is_empty(), "{:?}", manager.calls("setsid"));
+}
+
 #[test]
 fn a_message_said_to_a_session_is_audited_by_its_hash() {
     // Security audit M6: what reached a session is on record, its text kept out of the log.
