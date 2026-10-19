@@ -54,7 +54,9 @@ impl Fixture {
             }
         }
         let fixture = Fixture { root, _lock: lock };
-        for name in ["claude-sessions", "hyprctl", "osd-show", "xdg-open", "tmux"] {
+        // fzf too: the real one opens a picker on the terminal running the tests and waits there
+        // (make test on the host). Its stand-in picks nothing: a test that needs a pick shims its own.
+        for name in ["claude-sessions", "hyprctl", "osd-show", "xdg-open", "tmux", "fzf"] {
             fixture.shim(name, "");
         }
         fixture
