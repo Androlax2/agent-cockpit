@@ -361,6 +361,20 @@ async function projects() {
   return projectChoices;
 }
 
+// The agents a new session can run: the column's AGENTS (apps/cockpit/src/app.rs), which the
+// server checks.
+const AGENTS = [["claude", "Claude Code"], ["opencode", "opencode"]];
+
+function agentPicker() {
+  const picker = element("select");
+  for (const [value, label] of AGENTS) {
+    const option = element("option", "", label);
+    option.value = value;
+    picker.append(option);
+  }
+  return picker;
+}
+
 function projectPicker(choices) {
   const picker = element("select");
   for (const project of choices) {
@@ -405,8 +419,9 @@ async function renderStarter() {
     return;
   }
   const picker = projectPicker(await projects());
+  const agent = agentPicker();
   const prompt = element("textarea");
-  prompt.placeholder = "What should Claude do?";
+  prompt.placeholder = "What should the session do?";
   const inClone = element("input");
   inClone.type = "checkbox";
   inClone.checked = true;
@@ -415,14 +430,14 @@ async function renderStarter() {
   const note = element("div", "note");
   const start = element("button", "run", "Start");
   start.onclick = async () => {
-    const result = await post("/api/sessions", { project: picker.value, prompt: prompt.value, clone: inClone.checked }, note);
+    const result = await post("/api/sessions", { project: picker.value, agent: agent.value, prompt: prompt.value, clone: inClone.checked }, note);
     if (result.ok) prompt.value = "";
   };
   const close = element("button", "no", "Close");
   close.onclick = () => { box.dataset.open = ""; renderStarter(); };
   const buttons = element("div", "buttons");
   buttons.append(close, start);
-  box.replaceChildren(element("h2", "", "New session"), picker, prompt, label, buttons, note);
+  box.replaceChildren(element("h2", "", "New session"), picker, agent, prompt, label, buttons, note);
 }
 
 async function renderTodos(box) {
@@ -454,15 +469,17 @@ async function renderTodos(box) {
     details.hidden = true;
     if (item.notes) details.append(element("div", "notes", item.notes));
     const itemNote = element("div", "note");
+    const agent = agentPicker();
+    agent.onclick = (event) => event.stopPropagation();
     const start = element("button", "run", "Start in a new session");
     start.onclick = async (event) => {
       event.stopPropagation();
-      const result = await post(`/api/todos/${item.id}/start`, {}, itemNote);
+      const result = await post(`/api/todos/${item.id}/start`, { agent: agent.value }, itemNote);
       if (result.ok) setTimeout(() => { if (tab === "todo") showTab("todo"); }, 2500);
     };
     const buttons = element("div", "buttons");
     buttons.append(start);
-    details.append(buttons, itemNote);
+    details.append(agent, buttons, itemNote);
     card.append(details);
     card.onclick = () => { details.hidden = !details.hidden; };
     nodes.push(card);

@@ -165,7 +165,7 @@ fn handle(mut request: Request) {
             let body = body_json(&mut request).unwrap_or(json!({}));
             let field = |name: &str| body.get(name).and_then(Value::as_str).unwrap_or("").to_string();
             let is_in_clone = body.get("clone").and_then(Value::as_bool).unwrap_or(true);
-            outcome(request, remote::start_session(&field("project"), &field("prompt"), is_in_clone));
+            outcome(request, remote::start_session(&field("project"), &field("prompt"), is_in_clone, &field("agent")));
         }
         (Method::Get, ["api", "todos"]) => respond_json(request, 200, json!(remote::todos())),
         (Method::Post, ["api", "todos"]) => {
@@ -175,7 +175,8 @@ fn handle(mut request: Request) {
         }
         (Method::Post, ["api", "todos", id, "start"]) if is_todo_id(id) => {
             let id = id.to_string();
-            outcome(request, remote::start_todo(&id));
+            let agent = body_json(&mut request).and_then(|body| body.get("agent").and_then(Value::as_str).map(str::to_string)).unwrap_or_default();
+            outcome(request, remote::start_todo(&id, &agent));
         }
         (Method::Get, ["api", "pulls"]) => {
             let is_refresh = query.split('&').any(|pair| pair == "refresh=1");

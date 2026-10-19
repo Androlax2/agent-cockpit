@@ -71,8 +71,8 @@ const GLOBAL_HINTS: [(&str, &str); 5] = [("⇥", "panel"), (":", "actions"), ("a
 const GLOBAL_HELP: [(&str, &str); 14] = [
     ("0-3", "focus a panel"), ("H", "resume a past session, searched by project and prompt"),
     ("⌘1 ⌘2 ⌘3", "focus a panel from inside the session (tmux)"), ("⇥ ⇧⇥", "next / previous panel"), ("j/k ↑↓", "move inside the panel"),
-    (":", "every action, searchable; the rare ones have no key and are only there"), ("a", "new session in a project"),
-    ("O", "new opencode session in a project: same sandbox, card and keys, but what only Claude Code does (effort, $, remote, /compact) is done in its pane"),
+    (":", "every action, searchable; the rare ones have no key and are only there"), ("a", "new session in a project: pick the project, then the agent (Claude Code or opencode)"),
+    ("O", "new opencode session in a project, without the agent pick: same sandbox, card and keys, but what only Claude Code does (effort, $, remote, /compact) is done in its pane"),
     ("S", "settings, on or off: the phone on lock, the todo queue, errors handed to dotfiles, freezing sessions while gaming, the idle lock on workspace 6, the daily digest; and the phone page: its server, pairing a phone (QR code), forgetting one (x)"),
     ("P W G", "windows on top: pull requests, Claude on the web, greyproxy (also Super+Ctrl+P/A/G)"),
     ("≈ $", "today's Claude Code and opencode replies on this machine at API prices (the plan is flat); week and month in Status"),
@@ -1257,7 +1257,7 @@ impl App {
              ("$", "bill the session to the Console's API credits, or back to the subscription: it restarts on the same conversation (badge $ credits)"),
              ("g", "lazygit on the session's repository, in a popup (q closes it)"),
              ("U", "push the session's branch to origin with your SSH key, after a yes (lazygit's sandbox cannot)"),
-             ("+", "another session on this repository, on its own branch in a separate clone"),
+             ("+", "another session on this repository, on its own branch in a separate clone; it asks for the agent"),
              ("C", "/compact in the session, when it waits (the /compact badge suggests it)"),
              ("B", "after a reboot: bring back the sessions that were running"),
              ("o", "open the Claude Design canvas a design session works on (◆ on its card)")]
@@ -1325,7 +1325,8 @@ impl App {
                     let suggested = chrono::Local::now().format("parallel-%H%M").to_string();
                     let typed = input_line(screen, &format!("branch for another {} session (Enter: {suggested})> ", s.project));
                     let branch = if typed.is_empty() { suggested } else { typed };
-                    manager_in_background(&["parallel", &s.cwd, &branch]);
+                    let Some(agent) = screen.outside(&mut || pick_agent()) else { return "cancelled: no agent picked".into() };
+                    manager_in_background(&["--agent", &agent, "parallel", &s.cwd, &branch]);
                     format!("cloning {} for {branch} …", s.project)
                 }
                 None => String::new(),
@@ -1576,7 +1577,7 @@ impl App {
         scope + if self.reviews.current().2 { "  ⟳" } else { "" }
     }
 
-    pub(crate) fn handle_reviews(&mut self, key: Key) -> String {
+    pub(crate) fn handle_reviews(&mut self, key: Key, screen: &mut dyn Screen) -> String {
         let row = self.review_rows.get(self.panels[2].selected).cloned();
         match key {
             Key::Enter => row.map(|row| open_in_scratchpad("prs", &row.url)).unwrap_or_default(),
@@ -1584,7 +1585,8 @@ impl App {
                 Some(row) => match self.reviews.checkouts.get(&row.full_repository) {
                     None => format!("no local checkout of {}: start a session there first", row.repository),
                     Some(checkout) => {
-                        manager_in_background(&["review", checkout, &row.number.to_string()]);
+                        let Some(agent) = screen.outside(&mut || pick_agent()) else { return "cancelled: no agent picked".into() };
+                        manager_in_background(&["--agent", &agent, "review", checkout, &row.number.to_string()]);
                         format!("preparing a review of {}#{} …", row.repository, row.number)
                     }
                 },
@@ -1769,12 +1771,12 @@ impl App {
             },
             Key::Char('h') => match entry {
                 Some(entry) if entry.status() == todo::PROPOSED => "approve it first (y)".into(),
-                Some(entry) => self.hand_to_claude(&entry),
+                Some(entry) => self.hand_to_claude(&entry, screen),
                 None => String::new(),
             },
             Key::Char('N') => match entry {
                 Some(entry) if entry.status() == todo::PROPOSED => "approve it first (y)".into(),
-                Some(entry) => self.hand_to_new_session(&entry),
+                Some(entry) => self.hand_to_new_session(&entry, screen),
                 None => String::new(),
             },
             Key::Char('x') => match entry {
@@ -1824,7 +1826,7 @@ impl App {
     }
 
     /// The item to the project's running session, or to a new one; then it is in progress.
-    pub fn hand_to_claude(&mut self, entry: &Entry) -> String {
+    pub fn hand_to_claude(&mut self, entry: &Entry, screen: &mut dyn Screen) -> String {
         let (directory, text, repository) = match entry {
             Entry::Typed(item) => (item.cwd(), todo::prompt_of(entry), String::new()),
             Entry::Issue { issue, .. } => (self.reviews.checkouts.get(&issue.full_repository).cloned().unwrap_or_default(), todo::prompt_of(entry), issue.repository.clone()),
@@ -1859,9 +1861,10 @@ impl App {
                 format!("sent to {}", session.project)
             }
             None => {
+                let Some(agent) = screen.outside(&mut || pick_agent()) else { return "cancelled: no agent picked".into() };
                 // Out of sight, as a card of its own (claude-sessions background): in the session pane
                 // it replaced the session on screen, and the Todo panel lost its project.
-                manager_in_background(&["background", &directory, &text]);
+                manager_in_background(&["--agent", &agent, "background", &directory, &text]);
                 format!("starting a session in {}", project_name(&directory))
             }
         };
@@ -1872,7 +1875,7 @@ impl App {
     /// The item to a new session in a parallel clone of its repository, on a branch named after it
     /// (claude-sessions parallel), never to a running one: it does not touch the files a session
     /// already works on. Then it is in progress.
-    pub fn hand_to_new_session(&mut self, entry: &Entry) -> String {
+    pub fn hand_to_new_session(&mut self, entry: &Entry, screen: &mut dyn Screen) -> String {
         let directory = match entry {
             Entry::Typed(item) => item.cwd(),
             Entry::Issue { issue, .. } => self.reviews.checkouts.get(&issue.full_repository).cloned().unwrap_or_default(),
@@ -1880,9 +1883,10 @@ impl App {
         if directory.is_empty() {
             return "no local checkout of this issue's repository: clone it first".into();
         }
+        let Some(agent) = screen.outside(&mut || pick_agent()) else { return "cancelled: no agent picked".into() };
         let key = entry.key();
         let (branch, text) = todo::handoff_of(entry);
-        manager_in_background(&["parallel", &directory, &branch, &text]);
+        manager_in_background(&["--agent", &agent, "parallel", &directory, &branch, &text]);
         self.todos.set_status(&key, "doing", "");
         format!("starting a new session in a clone of {} (branch {branch})", project_name(&directory))
     }
@@ -1905,7 +1909,7 @@ impl App {
         match index {
             0 => vec![],
             1 => self.sessions_hints(),
-            2 => vec![("⏎", "open"), ("c", "Claude review"), ("P", "list")],
+            2 => vec![("⏎", "open"), ("c", "review"), ("P", "list")],
             _ => self.todo_hints(),
         }
     }
@@ -1922,7 +1926,7 @@ impl App {
             todo::PROPOSED => vec![("y", "approve"), ("n", "decline"), ("⏎", "details"), ("e", "edit"), ("[ ]", "tabs")],
             "doing" => vec![("d", "done"), ("⏎", "details"), ("i", "back to to do"), ("e", "edit"), ("t", "add"), ("[ ]", "tabs")],
             "done" => vec![("⏎", "details"), ("d", "back to to do"), ("t", "add"), ("[ ]", "tabs")],
-            _ => vec![("h", "to Claude"), ("N", "to a new session"), ("⏎", "details"), ("Q", "queue"), ("i", "doing"), ("d", "done"), ("e", "edit"), ("t", "add"), ("[ ]", "tabs")],
+            _ => vec![("h", "to a session"), ("N", "to a new session"), ("⏎", "details"), ("Q", "queue"), ("i", "doing"), ("d", "done"), ("e", "edit"), ("t", "add"), ("[ ]", "tabs")],
         }
     }
 
@@ -1931,13 +1935,13 @@ impl App {
             0 => vec![],
             1 => Self::sessions_help(),
             2 => vec![("⏎", "open the pull request in the pull requests window"),
-                      ("c", "a Claude session reviewing it, in its own clone of the repository"),
+                      ("c", "a session reviewing it, in its own clone of the repository; it asks for the agent"),
                       ("P", "the pull requests window on the viewed session's repository (or your review requests)"),
                       ("✓ ● ✗", "CI passing, running, failing"), ("approved", "review state: approved, changes (requested), review (required)")],
             _ => vec![("⏎", "the item's details: title, notes, why Claude proposed it, who filed it, when"),
                       ("[ ]", "previous / next tab: Open (Proposed, To do and In progress together) · Proposed · To do · In progress · Done"),
-                      ("h", "hand the item to Claude: the session on screen if it is on the item's project (a parallel clone too), else the project's running session, or a new one"),
-                      ("N", "hand the item to a new session, in a parallel clone of its repository on a branch named after it (todo-<id>, issue-<n>), never to a running one"),
+                      ("h", "hand the item over: the session on screen if it is on the item's project (a parallel clone too), Claude Code or opencode alike, else the project's running session, or a new one, asking for its agent"),
+                      ("N", "hand the item to a new session (it asks for the agent), in a parallel clone of its repository on a branch named after it (todo-<id>, issue-<n>), never to a running one"),
                       ("e", "edit the title and notes in your editor, in a popup (first line: the title)"),
                       ("y n", "approve or decline an idea Claude proposed; a declined idea is not proposed again"),
                       ("Q", "queue it (again: unqueue): a session of its project idle for 5 min at its prompt takes the first queued item, by priority, one at a time"),
@@ -2208,7 +2212,7 @@ impl App {
         match self.focus {
             0 => String::new(),
             1 => self.handle_sessions(key, screen),
-            2 => self.handle_reviews(key),
+            2 => self.handle_reviews(key, screen),
             _ => self.handle_todo(key, screen),
         }
     }
@@ -2267,7 +2271,9 @@ impl App {
             }
             Key::Char('a') => {
                 if let Some(directory) = screen.outside(&mut || pick_project()).filter(|d| !d.is_empty()) {
-                    self.message = self.manager_async(&["new", &directory]);
+                    if let Some(agent) = screen.outside(&mut || pick_agent()) {
+                        self.message = self.manager_async(&["--agent", &agent, "new", &directory]);
+                    }
                 }
             }
             Key::Char('O') => {
@@ -2475,6 +2481,15 @@ fn pick_project() -> Option<String> {
     fzf("project> ", &sessions::project_choices(), &[])
 }
 
+/// The agents a new session can run, by their claude-sessions --agent names: the two tested end to
+/// end in the cockpit (codex later).
+pub(crate) const AGENTS: [&str; 2] = ["claude", "opencode"];
+
+/// The agent a new session runs; None when the pick is cancelled, and then nothing starts.
+fn pick_agent() -> Option<String> {
+    fzf("agent> ", &AGENTS.map(String::from), &[]).filter(|agent| AGENTS.contains(&agent.as_str()))
+}
+
 /// "panel\tkey" of the chosen action.
 fn pick_action(entries: &[String]) -> Option<String> {
     let chosen = fzf("action> ", entries, &["--delimiter", "\t", "--with-nth", "3.."])?;
@@ -2552,7 +2567,7 @@ pub(crate) fn todo_details(entry: &Entry) -> String {
             }
             let notes = item.notes();
             text.push_str(&format!("\nNotes\n{}\n", if notes.is_empty() { "(none: e adds some)" } else { notes.as_str() }));
-            text.push_str(if item.status() == todo::PROPOSED { "\nIn the column: y approve · n decline · e edit\n" } else { "\nIn the column: e edit · h hand to Claude · d done\n" });
+            text.push_str(if item.status() == todo::PROPOSED { "\nIn the column: y approve · n decline · e edit\n" } else { "\nIn the column: e edit · h hand to a session · d done\n" });
             text
         }
         Entry::Issue { issue, status, .. } => format!("{}#{} {}\n\n{status} · labels: {}\n\n{}\n", issue.repository, issue.number, issue.title,

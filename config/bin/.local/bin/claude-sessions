@@ -75,8 +75,8 @@
 #                                show a run request's approval under the session pane (the daemon)
 #   claude-sessions say <id> <message>
 #                                send a session a message without opening it (the cockpit's queued prompts, and error hand-offs)
-#   claude-sessions --agent opencode new|parallel …
-#                                the same start with opencode instead of Claude (the cockpit's O):
+#   claude-sessions --agent claude|opencode new|parallel|background|review …
+#                                the same start with opencode instead of Claude (the cockpit asks):
 #                                opencode runs in a claude-retry-opencode-* tmux session, and its
 #                                plugin reports it like a Claude session; resume, restart, restore,
 #                                exit and say follow its id (ses_…), and what only Claude Code does
@@ -441,6 +441,10 @@ background_session() { # dir prompt
     [[ -n $2 ]] || { echo "claude-sessions: background needs a prompt" >&2; return 1; }
     local prompt=$2
     [[ $prompt == -* ]] && prompt="Task: $prompt" # never an option of claude's
+    if [[ $launch_agent == opencode ]]; then
+        start_opencode "$1" "$(new_opencode_session_id)" --prompt "$prompt" >/dev/null
+        return
+    fi
     tmux new-session -d -s "claude-retry-bg-$(date +%s)" -x 200 -y 50 -c "$1" \
         env CLAUDE_SESSIONS_INSIDE=1 CLAUDE_SESSIONS_CREDITS="$launch_credits" fish -ic 'claude $argv' -- "$prompt"
 }
@@ -1379,7 +1383,15 @@ review_session() { # dir number
     if ! git -C "$clone" fetch --quiet origin "pull/$number/head" 2>/dev/null || ! git -C "$clone" switch --quiet --detach FETCH_HEAD; then
         show_failure "could not fetch pull request #$number from $(git -C "$clone" remote get-url origin)"; return 1
     fi
-    new_session "$clone" "Review pull request #$number of this repository (its head is checked out here): read the diff against its base branch, run the relevant tests, and report problems by severity with file and line. Do not push, and do not comment on GitHub."
+    local prompt="Review pull request #$number of this repository (its head is checked out here): read the diff against its base branch, run the relevant tests, and report problems by severity with file and line. Do not push, and do not comment on GitHub."
+    # opencode takes its first message as --prompt: a bare argument would be its project folder.
+    if [[ $launch_agent == opencode ]]; then
+        ensure_manager
+        view_session "$(start_opencode "$clone" "$(new_opencode_session_id)" --prompt "$prompt")"
+        label_panes "$(basename "$clone")"
+        return
+    fi
+    new_session "$clone" "$prompt"
 }
 
 # The clones left by + and by pull request reviews, in a popup (the clones action of the sidebar's
@@ -1787,7 +1799,7 @@ idle() {
 # placeholder) and the log commands themselves are left out. Run from the sidebar in the
 # background (CLAUDE_SESSIONS_LOG_STDERR), the error messages go to the log too, since nobody
 # sees that terminal.
-# The agent a start runs (new, parallel): claude, or opencode with --agent opencode before the
+# The agent a start runs (new, parallel, background, review): claude, or opencode with --agent opencode before the
 # command. A running session is its own: resume, restart and restore go by its id.
 launch_agent=claude
 if [[ ${1:-} == --agent ]]; then

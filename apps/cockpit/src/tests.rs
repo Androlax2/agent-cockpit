@@ -2,7 +2,7 @@
 //! and state folder, stand-ins on PATH that log their calls (claude-sessions, tmux, gh, fzf,
 //! hyprctl, osd-show), and a screen that answers questions from a script.
 
-use crate::app::{App, Key, Screen};
+use crate::app::{AGENTS, App, Key, Screen};
 use crate::costs;
 use crate::errors::ErrorReporter;
 use crate::reviews::{self, Issue, Review};
@@ -479,9 +479,9 @@ fn plus_starts_another_session_on_the_cards_repository() {
     let fixture = Fixture::new();
     fixture.snapshot(json!([session(SESSION_A, "waiting", "runway", "/r/runway", 1)]));
     let mut app = fixture.app();
-    app.handle(Key::Char('+'), &mut FakeScreen::typing(&["fix-login"]));
+    app.handle(Key::Char('+'), &mut FakeScreen::typing(&["fix-login", "claude"]));
     assert_eq!(app.message, "cloning runway for fix-login …");
-    assert_eq!(fixture.wait_for_calls("claude-sessions", 1), vec!["claude-sessions parallel /r/runway fix-login".to_string()]);
+    assert_eq!(fixture.wait_for_calls("claude-sessions", 1), vec!["claude-sessions --agent claude parallel /r/runway fix-login".to_string()]);
 }
 
 #[test]
@@ -1002,11 +1002,11 @@ fn h_sends_to_the_running_session_or_starts_one_and_marks_it_in_progress() {
     for _ in 0..2 {
         app.build();
         app.panels[3].selected = 0;
-        app.handle(Key::Char('h'), &mut FakeScreen::default());
+        app.handle(Key::Char('h'), &mut FakeScreen::typing(&["claude"]));
     }
     let mut calls = fixture.wait_for_calls("claude-sessions", 2);
     calls.sort();
-    assert_eq!(calls, [format!("claude-sessions background /r/homelab bump postgres (todo {postgres}: when this is done, run claude-todo done {postgres})"),
+    assert_eq!(calls, [format!("claude-sessions --agent claude background /r/homelab bump postgres (todo {postgres}: when this is done, run claude-todo done {postgres})"),
                        format!("claude-sessions say {SESSION_A} add a healthcheck (todo {healthcheck}: when this is done, run claude-todo done {healthcheck})")]);
     assert!(TodoList::load().items.iter().all(|item| item.status() == "doing"));
 }
@@ -1022,10 +1022,15 @@ fn design_item(app: &mut App, project: &str, cwd: &str, text: &str) -> String {
 }
 
 fn hand_over_first_item(app: &mut App) {
+    hand_over_first_item_with(app, &["claude"]);
+}
+
+/// h on the first item, `typed` answering the agent pick if a new session starts.
+fn hand_over_first_item_with(app: &mut App, typed: &[&str]) {
     app.build();
     app.focus_panel(3);
     app.panels[3].selected = 0;
-    app.handle(Key::Char('h'), &mut FakeScreen::default());
+    app.handle(Key::Char('h'), &mut FakeScreen::typing(typed));
 }
 
 #[test]
@@ -1072,7 +1077,7 @@ fn an_item_of_another_project_skips_the_viewed_session() {
     let mut app = fixture.app();
     let id = app.todos.add("opusline", "/r/opusline", "fix the login redirect");
     let entry = Entry::Typed(app.todos.items.iter().find(|item| item.id() == id).unwrap().clone());
-    app.hand_to_claude(&entry);
+    app.hand_to_claude(&entry, &mut FakeScreen::default());
     assert!(fixture.wait_for_calls("claude-sessions", 1)[0].starts_with(&format!("claude-sessions say {SESSION_A} fix the login")));
 }
 
@@ -1082,7 +1087,7 @@ fn a_design_item_without_a_designer_starts_one_with_the_design_skill() {
     let mut app = fixture.app();
     design_item(&mut app, "opusline", "/r/opusline", "empty state");
     hand_over_first_item(&mut app);
-    assert!(fixture.wait_for_calls("claude-sessions", 1)[0].starts_with("claude-sessions background /r/opusline Load the figcraft-design skill first. empty state"));
+    assert!(fixture.wait_for_calls("claude-sessions", 1)[0].starts_with("claude-sessions --agent claude background /r/opusline Load the figcraft-design skill first. empty state"));
 }
 
 #[test]
@@ -2326,9 +2331,9 @@ fn n_hands_the_item_to_a_new_session_in_a_clone_even_with_one_running() {
     app.build();
     app.focus_panel(3);
     app.panels[3].selected = 0;
-    app.handle(Key::Char('N'), &mut FakeScreen::default());
+    app.handle(Key::Char('N'), &mut FakeScreen::typing(&["claude"]));
     let call = fixture.wait_for_calls("claude-sessions", 1).remove(0);
-    assert!(call.starts_with(&format!("claude-sessions parallel /r/runway todo-{healthcheck} ")) && call.contains("add a healthcheck"), "{call}");
+    assert!(call.starts_with(&format!("claude-sessions --agent claude parallel /r/runway todo-{healthcheck} ")) && call.contains("add a healthcheck"), "{call}");
     assert!(!call.contains(" say "), "sent to the running session: {call}");
     assert_eq!(app.todos.status_of(&healthcheck), "doing");
 }
@@ -2417,6 +2422,87 @@ fn capital_o_starts_opencode_in_the_picked_project() {
     app.handle(Key::Char('O'), &mut FakeScreen::default());
     let project = fixture.root.join("home/IdeaProjects/runway");
     assert_eq!(fixture.wait_for_calls("claude-sessions", 1), vec![format!("claude-sessions --agent opencode new {}", project.display())]);
+}
+
+#[test]
+fn a_asks_for_the_agent_after_the_project() {
+    for agent in AGENTS {
+        let fixture = Fixture::new();
+        let project = fixture.root.join("home/IdeaProjects/runway");
+        fs::create_dir_all(&project).unwrap();
+        let mut app = fixture.app();
+        app.handle(Key::Char('a'), &mut FakeScreen::typing(&[&project.display().to_string(), agent]));
+        assert_eq!(fixture.wait_for_calls("claude-sessions", 1), vec![format!("claude-sessions --agent {agent} new {}", project.display())]);
+    }
+}
+
+#[test]
+fn a_cancelled_agent_pick_starts_nothing() {
+    let fixture = Fixture::new();
+    let project = fixture.root.join("home/IdeaProjects/runway");
+    fs::create_dir_all(&project).unwrap();
+    let mut app = fixture.app();
+    // The fzf stand-in prints nothing: the agent pick is cancelled.
+    app.handle(Key::Char('a'), &mut FakeScreen::typing(&[&project.display().to_string()]));
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(fixture.calls("claude-sessions").is_empty(), "{:?}", fixture.calls("claude-sessions"));
+}
+
+#[test]
+fn h_sends_to_the_running_opencode_session_like_to_claude() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([opencode_session("waiting", "runway", 1)]));
+    let mut app = fixture.app();
+    let healthcheck = app.todos.add("runway", "/r/runway", "add a healthcheck");
+    hand_over_first_item(&mut app);
+    assert_eq!(fixture.wait_for_calls("claude-sessions", 1)[0],
+               format!("claude-sessions say {OPENCODE_SESSION} add a healthcheck (todo {healthcheck}: when this is done, run claude-todo done {healthcheck})"));
+}
+
+#[test]
+fn h_starts_opencode_when_it_is_the_agent_picked() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    app.todos.add("runway", "/r/runway", "add a healthcheck");
+    app.build();
+    app.focus_panel(3);
+    app.panels[3].selected = 0;
+    app.handle(Key::Char('h'), &mut FakeScreen::typing(&["opencode"]));
+    assert!(fixture.wait_for_calls("claude-sessions", 1)[0].starts_with("claude-sessions --agent opencode background /r/runway add a healthcheck"));
+}
+
+#[test]
+fn h_with_the_agent_pick_cancelled_leaves_the_item_to_do() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    let healthcheck = app.todos.add("runway", "/r/runway", "add a healthcheck");
+    hand_over_first_item_with(&mut app, &[]);
+    assert_eq!(app.message, "cancelled: no agent picked");
+    assert_eq!(app.todos.status_of(&healthcheck), "todo");
+}
+
+#[test]
+fn n_starts_opencode_in_a_clone_when_it_is_the_agent_picked() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    let healthcheck = app.todos.add("runway", "/r/runway", "add a healthcheck");
+    app.build();
+    app.focus_panel(3);
+    app.panels[3].selected = 0;
+    app.handle(Key::Char('N'), &mut FakeScreen::typing(&["opencode"]));
+    assert!(fixture.wait_for_calls("claude-sessions", 1)[0].starts_with(&format!("claude-sessions --agent opencode parallel /r/runway todo-{healthcheck} ")));
+}
+
+#[test]
+fn c_reviews_a_pull_request_with_the_agent_picked() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    app.reviews.checkouts.insert("acme/shop".into(), "/r/shop".into());
+    app.review_rows = vec![Review { number: 42, repository: "shop".into(), full_repository: "acme/shop".into(), ..Default::default() }];
+    app.focus_panel(2);
+    app.panels[2].selected = 0;
+    app.handle(Key::Char('c'), &mut FakeScreen::typing(&["opencode"]));
+    assert_eq!(fixture.wait_for_calls("claude-sessions", 1), vec!["claude-sessions --agent opencode review /r/shop 42".to_string()]);
 }
 
 #[test]

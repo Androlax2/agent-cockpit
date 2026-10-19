@@ -2070,6 +2070,38 @@ fn a_parallel_opencode_session_gets_its_first_prompt_as_one() {
 }
 
 #[test]
+fn a_background_opencode_session_gets_its_prompt_as_one() {
+    let manager = Manager::new();
+    let result = manager.run(&["--agent", "opencode", "background", &path_str(&manager.project), "-v fix the chip"], &[]);
+    assert_eq!(result.status.code(), Some(0), "{}", stderr(&result));
+    let start = manager.opencode_starts().pop().expect("no opencode start");
+    assert!(start.contains(&format!("-c {} ", manager.project.display())), "{start}");
+    assert!(Regex::new(r"--standalone --session ses_\S+ --prompt Task: -v fix the chip$").unwrap().is_match(&start), "{start}");
+    assert!(!manager.calls("tmux").iter().any(|call| call.contains("claude-retry-bg-")), "Claude started too");
+}
+
+#[test]
+fn an_opencode_review_gets_the_review_as_its_prompt() {
+    let manager = Manager::new();
+    manager.git_repository();
+    // A local origin that has the pull request's head, as GitHub keeps it under refs/pull.
+    let origin = manager.sandbox.root.join("origin.git");
+    let git = |directory: &Path, arguments: &[&str]| {
+        let output = Command::new("git").arg("-C").arg(directory).args(arguments).output().unwrap();
+        assert!(output.status.success(), "git {arguments:?}: {}", stderr(&output));
+    };
+    git(&manager.sandbox.root, &["init", "-q", "--bare", &path_str(&origin)]);
+    git(&manager.project, &["remote", "set-url", "origin", &path_str(&origin)]);
+    git(&manager.project, &["push", "-q", "origin", "main", "main:refs/pull/7/head"]);
+    let clones = manager.sandbox.root.join("clones");
+    let result = manager.run(&["--agent", "opencode", "review", &path_str(&manager.project), "7"], &[("CLAUDE_SESSIONS_CLONES", &path_str(&clones))]);
+    assert_eq!(result.status.code(), Some(0), "{}", stderr(&result));
+    let start = manager.opencode_starts().pop().expect("no opencode start");
+    assert!(start.contains(&format!("-c {} ", clones.join("proj-a/pr-7").display())), "{start}");
+    assert!(Regex::new(r"--standalone --session ses_\S+ --prompt Review pull request #7 of this repository").unwrap().is_match(&start), "{start}");
+}
+
+#[test]
 fn a_past_opencode_session_resumes_by_its_id() {
     let manager = Manager::new();
     manager.run(&["resume", &path_str(&manager.project), OPENCODE_SESSION], &[]);

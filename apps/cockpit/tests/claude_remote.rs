@@ -440,12 +440,15 @@ impl Remote {
 
 #[test]
 fn a_new_session_starts_out_of_sight_in_its_own_clone_or_in_the_folder() {
-    for (is_in_clone, expected) in [(true, "claude-sessions parallel {dir} phone-"), (false, "claude-sessions background {dir} Fix the login page")] {
+    for (is_in_clone, agent, expected) in [(true, "claude", "claude-sessions --agent claude parallel {dir} phone-"),
+                                           (false, "claude", "claude-sessions --agent claude background {dir} Fix the login page"),
+                                           (true, "opencode", "claude-sessions --agent opencode parallel {dir} phone-"),
+                                           (false, "opencode", "claude-sessions --agent opencode background {dir} Fix the login page")] {
         let remote = Remote::start();
         let secret = remote.paired();
         remote.sandbox.shim("claude-sessions", "exit 0");
         let directory = remote.project("shop");
-        let (status, answer) = remote.post_json(&secret, "/api/sessions", json!({"project": directory, "prompt": "Fix the login page", "clone": is_in_clone}));
+        let (status, answer) = remote.post_json(&secret, "/api/sessions", json!({"project": directory, "agent": agent, "prompt": "Fix the login page", "clone": is_in_clone}));
         assert_eq!(status, 200, "{answer}");
         let call = remote.sandbox.calls("claude-sessions").pop().unwrap();
         assert!(call.starts_with(&expected.replace("{dir}", &directory)), "{call}");
@@ -458,9 +461,25 @@ fn a_session_starts_only_in_a_listed_project() {
     let remote = Remote::start();
     let secret = remote.paired();
     remote.sandbox.shim("claude-sessions", "exit 0");
-    let (status, answer) = remote.post_json(&secret, "/api/sessions", json!({"project": "/etc", "prompt": "hi"}));
+    let (status, answer) = remote.post_json(&secret, "/api/sessions", json!({"project": "/etc", "agent": "claude", "prompt": "hi"}));
     assert_eq!(status, 409, "{answer}");
     assert!(remote.sandbox.calls("claude-sessions").is_empty());
+}
+
+#[test]
+fn a_session_starts_only_with_an_agent_the_column_offers() {
+    for body in [json!({"agent": "codex"}), json!({})] {
+        let remote = Remote::start();
+        let secret = remote.paired();
+        remote.sandbox.shim("claude-sessions", "exit 0");
+        let mut body = body;
+        body["project"] = json!(remote.project("shop"));
+        body["prompt"] = json!("hi");
+        let (status, answer) = remote.post_json(&secret, "/api/sessions", body);
+        assert_eq!(status, 409, "{answer}");
+        assert!(answer.to_string().contains("which agent?"), "{answer}");
+        assert!(remote.sandbox.calls("claude-sessions").is_empty());
+    }
 }
 
 #[test]
@@ -508,10 +527,10 @@ fn starting_an_item_hands_it_to_a_new_clone_and_marks_it_in_progress() {
     let todo = remote.sandbox.state.join("claude-sessions/todo.json");
     fs::create_dir_all(todo.parent().unwrap()).unwrap();
     fs::write(&todo, json!({"items": [{"id": "aaaa1111", "project": "shop", "cwd": directory, "text": "Cache the cart", "status": "todo", "created": 1}]}).to_string()).unwrap();
-    let (status, answer) = remote.post_json(&secret, "/api/todos/aaaa1111/start", json!({}));
+    let (status, answer) = remote.post_json(&secret, "/api/todos/aaaa1111/start", json!({"agent": "opencode"}));
     assert_eq!(status, 200, "{answer}");
     let call = remote.sandbox.calls("claude-sessions").pop().unwrap();
-    assert!(call.starts_with(&format!("claude-sessions parallel {directory} todo-aaaa1111 Cache the cart (todo aaaa1111")), "{call}");
+    assert!(call.starts_with(&format!("claude-sessions --agent opencode parallel {directory} todo-aaaa1111 Cache the cart (todo aaaa1111")), "{call}");
     let updates = remote.todo_updates();
     assert_eq!((updates[0]["action"].as_str(), updates[0]["id"].as_str()), (Some("doing"), Some("aaaa1111")));
 }

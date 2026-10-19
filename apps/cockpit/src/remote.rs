@@ -614,18 +614,24 @@ fn one_line(text: &str, what: &str) -> Result<String, String> {
     Ok(text.to_string())
 }
 
+/// One of the agents the column's pick offers; anything else, an absent one included, is refused.
+fn known_agent(agent: &str) -> Result<&'static str, String> {
+    crate::app::AGENTS.into_iter().find(|known| *known == agent).ok_or_else(|| format!("which agent? one of {}", crate::app::AGENTS.join(", ")))
+}
+
 /// A new session in a project, out of sight, with its first message: in its own clone on a
 /// phone-<time> branch (as the column's +), or in the project's folder itself.
-pub fn start_session(project: &str, prompt: &str, in_clone: bool) -> Result<String, String> {
+pub fn start_session(project: &str, prompt: &str, in_clone: bool, agent: &str) -> Result<String, String> {
     let directory = known_project(project)?;
     let prompt = one_line(prompt, "the first message")?;
+    let agent = known_agent(agent)?;
     let branch = format!("phone-{}", chrono::Local::now().format("%Y%m%d-%H%M%S"));
-    let arguments: Vec<&str> = if in_clone { vec!["parallel", &directory, &branch, &prompt] } else { vec!["background", &directory, &prompt] };
+    let arguments: Vec<&str> = if in_clone { vec!["--agent", agent, "parallel", &directory, &branch, &prompt] } else { vec!["--agent", agent, "background", &directory, &prompt] };
     let error = util::manager(&arguments);
     if !error.is_empty() {
         return Err(error);
     }
-    audit::record("remote", "remote.session_started", "ok", json!({"project": directory, "clone": in_clone, "prompt": audit::fingerprint(&prompt)}));
+    audit::record("remote", "remote.session_started", "ok", json!({"project": directory, "clone": in_clone, "agent": agent, "prompt": audit::fingerprint(&prompt)}));
     Ok(if in_clone { format!("starting in a clone of {} (branch {branch})", util::project_name(&directory)) }
        else { format!("starting in {}", util::project_name(&directory)) })
 }
@@ -664,7 +670,8 @@ pub fn add_todo(project: &str, text: &str, notes: &str) -> Result<String, String
 }
 
 /// An item handed to a new session in its own clone (the Todo panel's N), then in progress.
-pub fn start_todo(id: &str) -> Result<String, String> {
+pub fn start_todo(id: &str, agent: &str) -> Result<String, String> {
+    let agent = known_agent(agent)?;
     let list = todo::TodoList::load();
     let item = list.items.iter().find(|item| item.id() == id).ok_or("no such item")?;
     if item.status() == "done" {
@@ -673,12 +680,12 @@ pub fn start_todo(id: &str) -> Result<String, String> {
     let entry = todo::Entry::Typed(item.clone());
     let (branch, text) = todo::handoff_of(&entry);
     let directory = item.cwd();
-    let error = util::manager(&["parallel", &directory, &branch, &text]);
+    let error = util::manager(&["--agent", agent, "parallel", &directory, &branch, &text]);
     if !error.is_empty() {
         return Err(error);
     }
     queue_todo_update(json!({"action": "doing", "id": id, "started_in": directory}))?;
-    audit::record("remote", "remote.todo_started", "ok", json!({"id": id, "project": directory}));
+    audit::record("remote", "remote.todo_started", "ok", json!({"id": id, "project": directory, "agent": agent}));
     Ok(format!("starting a new session in a clone of {} (branch {branch})", util::project_name(&directory)))
 }
 
