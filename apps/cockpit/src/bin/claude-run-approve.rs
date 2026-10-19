@@ -101,7 +101,7 @@ fn approve(id: &str) -> i32 {
     let log_path = approval::log_dir().join(format!("{id}.log"));
     println!("{DIM}─── running ───{RESET}");
     approval::phase(id, "running");
-    let exit_code = approval::run(&command, "", &log_path);
+    let exit_code = approval::run(&command, "", &log_path, Some(id));
     let trace_path = approval::trace_path(&log_path);
     let failed_step = if exit_code == 0 { None } else { approval::last_step(&std::fs::read_to_string(&trace_path).unwrap_or_default()) };
     let _ = std::fs::remove_file(&trace_path);

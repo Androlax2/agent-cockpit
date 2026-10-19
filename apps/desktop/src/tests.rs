@@ -870,36 +870,36 @@ fn the_window_opens_while_it_needs_theo_off_the_cockpit() {
 }
 
 #[test]
-fn the_window_stays_open_while_the_command_runs() {
+fn the_window_closes_once_the_command_runs() {
     let mut bench = Bench::new();
     bench.registry.run_request(RUN_A).unwrap();
     bench.registry.run_phase(RUN_A, "running");
     bench.registry.tick_queues();
-    assert_eq!(bench.windows().len(), 1);
-    assert!(!bench.windows()[0].borrow().closed);
+    assert!(bench.windows()[0].borrow().closed);
+    assert_eq!(bench.windows().len(), 1, "none opens while it just runs");
 }
 
 #[test]
-fn a_window_closed_during_the_run_is_not_reopened_until_the_last_question() {
+fn the_window_comes_back_when_the_command_asks_for_input() {
     let mut bench = Bench::new();
     bench.registry.run_request(RUN_A).unwrap();
     bench.registry.run_phase(RUN_A, "running");
-    bench.windows()[0].borrow_mut().closed = true;
-    bench.registry.tick_queues();
-    bench.registry.tick_queues();
-    assert_eq!(bench.windows().len(), 1);
-    bench.registry.run_phase(RUN_A, "asking");
+    bench.registry.run_phase(RUN_A, "input");
     assert_eq!(bench.windows().len(), 2);
+    assert!(!bench.windows()[1].borrow().closed);
+    bench.registry.run_phase(RUN_A, "running");
+    assert!(bench.windows()[1].borrow().closed);
 }
 
 #[test]
-fn the_running_window_closes_when_a_game_starts() {
+fn input_asked_during_a_game_opens_no_window() {
     let mut bench = Bench::new();
     bench.registry.run_request(RUN_A).unwrap();
     bench.registry.run_phase(RUN_A, "running");
     bench.world.borrow_mut().gaming = true;
+    bench.registry.run_phase(RUN_A, "input");
     bench.registry.tick_queues();
-    assert!(bench.windows()[0].borrow().closed);
+    assert_eq!(bench.windows().len(), 1);
 }
 
 #[test]

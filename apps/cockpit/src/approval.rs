@@ -284,10 +284,26 @@ pub fn edit(command: &str) -> Option<String> {
     edited.filter(|text| !text.is_empty())
 }
 
-/// The recorded output ends without a newline and has not grown for PROMPT_IDLE: a prompt.
+/// What a question looks like at the end of a line: a password or passphrase, a yes/no choice,
+/// or a line ending in ":", "?" or ">". Progress output (test dots, a half-drawn bar) stops
+/// mid-line too, and is none of these.
+static PROMPT_SHAPE: LazyLock<Regex> = LazyLock::new(|| Regex::new(
+    r"(?i)(password|passphrase|\[y/n\]|\(y/n\)|yes/no|[:?>]\s*$)").unwrap());
+
+/// The recorded output ends mid-line on something shaped like a question, and has not grown for
+/// PROMPT_IDLE: a prompt.
 pub fn waits_for_input(log_path: &Path, idle: Duration) -> bool {
+    if idle < PROMPT_IDLE {
+        return false;
+    }
     let Ok(bytes) = fs::read(log_path) else { return false };
-    idle >= PROMPT_IDLE && bytes.last().is_some_and(|last| *last != b'\n')
+    if bytes.last().is_none_or(|last| *last == b'\n') {
+        return false;
+    }
+    let tail = &bytes[bytes.len().saturating_sub(400)..];
+    let text = strip_ansi(&String::from_utf8_lossy(tail));
+    let last_line = text.rsplit(['\n', '\r']).next().unwrap_or("");
+    PROMPT_SHAPE.is_match(last_line)
 }
 
 /// Keep the last row out of the scroll region, so command output never lands under the status
@@ -307,7 +323,9 @@ fn draw_status(rows: usize, text: &str) {
 /// "running · 12s" line kept at the bottom: the lines above it scroll, so output still shows, and
 /// a command that prints nothing no longer looks stuck. While the command waits for an answer,
 /// the line stops redrawing and says so once, below the question.
-pub fn run(command: &str, cwd: &str, log_path: &Path) -> i32 {
+/// `request`: the approval's id, to tell the daemon when the command starts and stops waiting
+/// for an answer (phases "input" and "running"), so the window can come back for it.
+pub fn run(command: &str, cwd: &str, log_path: &Path, request: Option<&str>) -> i32 {
     let _ = fs::create_dir_all(log_dir());
     #[cfg(unix)]
     {
@@ -367,10 +385,18 @@ pub fn run(command: &str, cwd: &str, log_path: &Path) -> i32 {
         if waits_for_input(log_path, changed_at.elapsed()) {
             if !waiting {
                 waiting = true;
+                if let Some(id) = request {
+                    phase(id, "input");
+                }
                 print!("{}", reserve_last_row(rows));
                 draw_status(rows, &format!("{YELLOW}waiting for your answer above{RESET}"));
             }
         } else {
+            if waiting {
+                if let Some(id) = request {
+                    phase(id, "running");
+                }
+            }
             waiting = false;
             let elapsed = started.elapsed().as_secs();
             draw_status(rows, &format!("{BLUE}{}{RESET} {DIM}running · {}m {:02}s{RESET}", spinner[tick % spinner.len()], elapsed / 60, elapsed % 60));
@@ -481,7 +507,7 @@ mod tests {
         unsafe { std::env::set_var("SHELL", "/usr/bin/fish") };
         let marker = folder.join("ran");
         let command = format!("echo 'a\\\\' '; touch {} #'", marker.display());
-        run(&command, folder.to_str().unwrap(), &log);
+        run(&command, folder.to_str().unwrap(), &log, None);
         assert!(!marker.exists(), "the second word ran as a command");
         fs::remove_dir_all(folder).unwrap();
     }
@@ -491,7 +517,7 @@ mod tests {
         let folder = std::env::temp_dir().join(format!("approval-step-{}", crate::util::token_hex(4)));
         fs::create_dir_all(&folder).unwrap();
         let log = folder.join("out.log");
-        let code = run("echo one; and false; and echo three", folder.to_str().unwrap(), &log);
+        let code = run("echo one; and false; and echo three", folder.to_str().unwrap(), &log, None);
         let trace = fs::read_to_string(trace_path(&log)).unwrap_or_default();
         assert_eq!((code, last_step(&trace)), (1, Some("false".into())));
         fs::remove_dir_all(folder).unwrap();
@@ -594,6 +620,16 @@ mod tests {
     }
 
     #[test]
+    fn test_progress_stopped_mid_line_is_no_prompt() {
+        let log = std::env::temp_dir().join(format!("progress-{}.log", crate::util::token_hex(4)));
+        fs::write(&log, "running 3 tests\n.").unwrap();
+        assert!(!waits_for_input(&log, Duration::from_secs(10)));
+        fs::write(&log, "   Compiling cockpit v0.1.0\r  Building [=====>    ] 120/240").unwrap();
+        assert!(!waits_for_input(&log, Duration::from_secs(10)));
+        let _ = fs::remove_file(log);
+    }
+
+    #[test]
     fn output_stopped_mid_line_reads_as_a_prompt() {
         let log = std::env::temp_dir().join(format!("prompt-{}.log", crate::util::token_hex(4)));
         fs::write(&log, "[sudo] password for theo: ").unwrap();
@@ -601,6 +637,10 @@ mod tests {
         assert!(!waits_for_input(&log, Duration::from_millis(500)));
         fs::write(&log, "built 12 targets\n").unwrap();
         assert!(!waits_for_input(&log, Duration::from_secs(5)));
+        fs::write(&log, "Enter passphrase for key '/home/theo/.ssh/id_ed25519': ").unwrap();
+        assert!(waits_for_input(&log, Duration::from_secs(2)));
+        fs::write(&log, ":: Proceed with installation? [Y/n] ").unwrap();
+        assert!(waits_for_input(&log, Duration::from_secs(2)));
         let _ = fs::remove_file(log);
     }
 

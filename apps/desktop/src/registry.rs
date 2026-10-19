@@ -40,7 +40,7 @@ const PANE_TAIL_LINES: usize = 20;
 const MAX_TEXT_LENGTH: usize = 300;
 const REQUEST_MAX_LENGTH: usize = 140;
 const FINISHED_MESSAGE: &str = "Finished, waiting for you"; // the hook's Stop message
-const RUN_PHASES: [&str; 3] = ["asking", "running", "done"];
+const RUN_PHASES: [&str; 4] = ["asking", "running", "input", "done"];
 /// ask-to-run touches <id>.waiting every few seconds while it waits; this long without it, nobody
 /// waits for the answer any more (the session gave up, timed out without --wait, or died). Long
 /// enough for a session that timed out to do something else before it waits again.
@@ -413,7 +413,8 @@ pub fn project_of(cache: &mut HashMap<String, String>, cwd: &str, fallback: &str
 /// Commands Claude asks Theo to run outside the sandbox (ask-to-run). The daemon runs nothing
 /// itself: each request gets claude-run-approve in a tmux session of its own (claude-run-<id>), one
 /// at a time, shown in a pane under the cockpit's session pane and in a floating window on the
-/// current workspace while it needs Theo; kept open while the command runs, never while he games.
+/// current workspace while it needs Theo: before he answers, and again when the command he approved
+/// waits for input (sudo, a passphrase); closed while it just runs, and never while he games.
 #[derive(Default)]
 pub struct RunRequests {
     pub queue: Vec<String>,
@@ -497,19 +498,22 @@ impl RunRequests {
             return;
         }
         self.phase = phase.into();
+        let input_notice = format!("run-input-{id}");
+        if phase == "input" && !system.quiet() {
+            banners.raise_notice(&Notice { id: input_notice, title: "Command waiting".into(), message: "it asks for your input".into() });
+        } else {
+            banners.drop_banner(&format!("notice:{input_notice}"));
+        }
         if phase == "done" { self.finish(system, banners) } else { self.show(system) }
     }
 
-    /// The floating window while the approval needs Theo, he is off the cockpit, and not gaming.
-    /// While the command runs, the window he approved in stays where it is and none opens on the
-    /// workspace he moves to; closed, it is back for the last question.
+    /// The floating window while the approval needs Theo (his yes, or input the running command
+    /// asks for), he is off the cockpit, and not gaming. Once he approved, it closes while the
+    /// command just runs; the pane under the cockpit's session keeps showing the output.
     fn show(&mut self, system: &mut dyn System) {
         let open_now = self.window.as_mut().is_some_and(|window| window.running());
-        let wanted = if self.phase == "running" {
-            open_now && !system.quiet()
-        } else {
-            self.phase == "asking" && !system.claude_workspace_active() && !system.quiet()
-        };
+        let needs_theo = self.phase == "asking" || self.phase == "input";
+        let wanted = needs_theo && !system.claude_workspace_active() && !system.quiet();
         if wanted && !open_now {
             let target = format!("={}", run_session(&self.current));
             self.window = system.open_window(&["kitty", "--class", "claude-run", "-T", "Claude asks to run a command", "tmux", "attach-session", "-t", &target]);

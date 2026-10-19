@@ -299,7 +299,7 @@ fn run_step(guide: &mut Guide) {
         return;
     }
     let log_path = approval::log_dir().join(format!("guide-{}-{}.log", guide.id, guide.position + 1));
-    let exit_code = approval::run(&command, "", &log_path);
+    let exit_code = approval::run(&command, "", &log_path, None);
     println!("{DIM}─── {RESET}exit {exit_code}");
     // Like ask-to-run: the output always goes back, secrets taken out first.
     let (output, redacted) = approval::redact_secrets(&approval::recorded_output(&log_path));
