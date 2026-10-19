@@ -39,7 +39,9 @@ pub fn osd_fifo() -> PathBuf { runtime_dir().join("osd.fifo") }
 pub fn osd_host_fifo() -> PathBuf { runtime_dir().join("osd-host.fifo") }
 /// Session reports: a socket (osd-report.socket keeps it across daemon restarts), so the daemon
 /// learns which process sent each report and takes the pane from where it really runs.
-pub fn osd_report_socket() -> PathBuf { runtime_dir().join("osd-report.sock") }
+/// In a folder of its own, which the sandboxes mount whole: a socket file mounted alone stays the
+/// old one in every running sandbox once the socket is made again.
+pub fn osd_report_socket() -> PathBuf { runtime_dir().join("claude-report/osd-report.sock") }
 /// The Claude sessions' scopes game-performance froze for a game, one per line; gone after it.
 pub fn game_frozen() -> PathBuf { runtime_dir().join("game-performance.frozen") }
 pub fn history() -> PathBuf { from_env("CLAUDE_SESSIONS_HISTORY", home().join(".claude/history.jsonl")) }

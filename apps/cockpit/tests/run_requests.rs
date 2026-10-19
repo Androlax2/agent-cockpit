@@ -41,7 +41,7 @@ impl AskToRun {
     fn answering(reply: &str) -> AskToRun {
         let sandbox = Sandbox::new();
         let runs = sandbox.root.join("runs");
-        let daemon = Some(ReportSocket::start(&sandbox.runtime.join("osd-report.sock"), reply));
+        let daemon = Some(ReportSocket::start(&sandbox.runtime.join("claude-report/osd-report.sock"), reply));
         AskToRun { sandbox, runs, daemon }
     }
 

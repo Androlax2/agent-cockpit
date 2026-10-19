@@ -148,3 +148,23 @@ fn a_parallel_dotfiles_clone_reads_the_live_checkout_and_another_project_does_no
     assert!(started.contains(&read_live), "{started}");
     assert!(!launch.run(&[]).contains(&read_live), "proj-a reads the live checkout");
 }
+
+#[test]
+fn sandboxes_mount_the_report_sockets_folder_never_the_socket_alone() {
+    // A socket file mounted alone stays the old one in every running sandbox once the socket is made
+    // again: on 2026-10-19 a socket restart cut every session off the daemon.
+    let profile: serde_json::Value = serde_json::from_str(&fs::read_to_string(repo().join("config/greywall/.config/greywall/greywall.json")).unwrap()).unwrap();
+    let writable: Vec<&str> = profile["filesystem"]["allowWrite"].as_array().unwrap().iter().filter_map(|path| path.as_str()).collect();
+    assert!(writable.contains(&"/run/user/1000/claude-report"), "{writable:?}");
+    assert!(writable.iter().all(|path| !path.ends_with(".sock")), "{writable:?}");
+    let unit = fs::read_to_string(repo().join("config/systemd/.config/systemd/user/osd-report.socket")).unwrap();
+    assert!(unit.contains("ListenStream=%t/claude-report/osd-report.sock"), "{unit}");
+}
+
+#[test]
+fn the_launcher_makes_the_report_sockets_folder_before_the_sandbox() {
+    // Greywall mounts only what exists when it starts.
+    let launch = Launch::new();
+    launch.run(&[]);
+    assert!(launch.sandbox.runtime.join("claude-report").is_dir());
+}

@@ -15,7 +15,7 @@
     ],
     "allowWrite": [
       "/run/user/1000/osd.fifo",
-      "/run/user/1000/osd-report.sock"
+      "/run/user/1000/claude-report"
     ],
     "denyRead": [
       "~/.ssh/id_*",

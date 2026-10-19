@@ -2,8 +2,10 @@
 Description=The OSD daemon's report socket: Claude sessions report through it, and the daemon learns who sent each report
 
 [Socket]
-# Held by systemd, so it outlives a daemon restart: the sandboxes bind-mount this very socket.
-ListenStream=%t/osd-report.sock
+# Held by systemd, so it outlives a daemon restart. In a folder of its own, which the sandboxes
+# bind-mount (greywall.json): a socket file mounted on its own stays the old one in every running
+# sandbox once the socket is made again (2026-10-19 19:20, a socket restart cut every session off).
+ListenStream=%t/claude-report/osd-report.sock
 SocketMode=0600
 Service=osd.service
 

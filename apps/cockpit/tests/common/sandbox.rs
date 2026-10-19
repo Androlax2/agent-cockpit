@@ -232,6 +232,7 @@ pub struct ReportSocket {
 impl ReportSocket {
     pub fn start(path: &Path, reply: &str) -> ReportSocket {
         use std::io::{Read, Write};
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
         let listener = std::os::unix::net::UnixListener::bind(path).unwrap();
         let lines = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let (kept, reply) = (lines.clone(), format!("{reply}\n"));

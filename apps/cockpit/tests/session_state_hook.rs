@@ -23,7 +23,8 @@ impl HookTest {
     /// A stand-in for the daemon's report socket: every line any connection sends is kept.
     fn new() -> HookTest {
         let sandbox = Sandbox::new();
-        let socket = sandbox.runtime.join("osd-report.sock");
+        let socket = sandbox.runtime.join("claude-report/osd-report.sock");
+        std::fs::create_dir_all(socket.parent().unwrap()).unwrap();
         let listener = UnixListener::bind(&socket).unwrap();
         let lines = Arc::new(Mutex::new(Vec::new()));
         let collected = lines.clone();

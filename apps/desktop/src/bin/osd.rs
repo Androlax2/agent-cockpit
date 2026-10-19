@@ -341,6 +341,9 @@ fn report_listener() -> std::io::Result<std::os::unix::net::UnixListener> {
         return Ok(unsafe { std::os::unix::net::UnixListener::from_raw_fd(3) });
     }
     let path = cockpit::paths::osd_report_socket();
+    if let Some(folder) = path.parent() {
+        std::fs::create_dir_all(folder)?;
+    }
     let _ = std::fs::remove_file(&path);
     std::os::unix::net::UnixListener::bind(&path)
 }

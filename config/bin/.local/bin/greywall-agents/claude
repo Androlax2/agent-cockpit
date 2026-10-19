@@ -11,6 +11,9 @@ export DISABLE_AUTOUPDATER=1
 # DISABLE_ERROR_REPORTING alone did not help). This also turns off /bug inside sessions.
 export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
 mkdir -p "$CHROME_CONFIG_HOME"
+# The report socket's folder (osd-report.socket), mounted whole into the sandbox (greywall.json),
+# so a socket made again is seen at once: greywall mounts only what exists when it starts.
+mkdir -p "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/claude-report"
 # The audit log (claude-audit; security audit 2026-10-19, M6): greywall.json hides it from the
 # sandbox, which greywall does only for a folder that exists when the sandbox starts.
 mkdir -p -m 700 "${XDG_STATE_HOME:-$HOME/.local/state}/claude-audit"

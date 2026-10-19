@@ -18,7 +18,7 @@ fn claude_todo(sandbox: &Sandbox, arguments: &[&str], cwd: &Path) -> Output {
 
 /// The daemon's report socket, answering every update `reply`.
 fn daemon(sandbox: &Sandbox, reply: &str) -> ReportSocket {
-    ReportSocket::start(&sandbox.runtime.join("osd-report.sock"), reply)
+    ReportSocket::start(&sandbox.runtime.join("claude-report/osd-report.sock"), reply)
 }
 
 /// The updates the daemon received.

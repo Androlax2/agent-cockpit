@@ -46,7 +46,7 @@ impl AskToGuide {
 
     /// The daemon's report socket, answering every guide "ok".
     fn listen(&self) -> ReportSocket {
-        ReportSocket::start(&self.sandbox.runtime.join("osd-report.sock"), "ok")
+        ReportSocket::start(&self.sandbox.runtime.join("claude-report/osd-report.sock"), "ok")
     }
 
     fn ask(&self, steps: &str, wait: &str) -> Child {
@@ -130,7 +130,7 @@ fn without_a_daemon_it_exits_126_and_leaves_no_guide() {
 #[test]
 fn a_guide_the_daemon_refuses_says_why() {
     let fixture = AskToGuide::new();
-    let _daemon = ReportSocket::start(&fixture.sandbox.runtime.join("osd-report.sock"), "refused: no valid id");
+    let _daemon = ReportSocket::start(&fixture.sandbox.runtime.join("claude-report/osd-report.sock"), "refused: no valid id");
     let output = finish(fixture.ask(STEPS, "5"), TIMEOUT);
     assert_eq!(output.status.code(), Some(2));
     assert!(stdout(&output).contains("refused the guide: no valid id"), "{}", stdout(&output));

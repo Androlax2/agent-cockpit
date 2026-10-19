@@ -5,7 +5,7 @@
 # banner message. The daemon keeps the registry, colours the Hyprland window
 # border, feeds the waybar chip and shows the top-centre banners. A swaync toast is only the fallback
 # when the OSD cannot be reached (daemon down, or a sandbox without the FIFO).
-# Runs inside greywall: the session bus is exposed (notifications only) and $XDG_RUNTIME_DIR/osd-report.sock
+# Runs inside greywall: the session bus is exposed (notifications only) and $XDG_RUNTIME_DIR/claude-report/osd-report.sock
 # must be in allowWrite.
 set -euo pipefail
 
@@ -63,7 +63,7 @@ cwd=$(jq -r '.cwd // ""' <<<"$payload")
 project=$(basename "$cwd")
 # A socket, not the FIFO: the daemon learns which process sent the report and takes the tmux pane
 # from where it really runs (a sandbox could otherwise claim another session's pane).
-report_socket="${XDG_RUNTIME_DIR:-/tmp}/osd-report.sock"
+report_socket="${XDG_RUNTIME_DIR:-/tmp}/claude-report/osd-report.sock"
 toast_id_file="$HOME/.cache/claude/toast-$session.id"
 
 # What a turn left in the repository, worked out here, inside the session's sandbox: git reads the
