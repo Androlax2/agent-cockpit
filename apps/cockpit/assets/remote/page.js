@@ -186,7 +186,7 @@ function renderDetail() {
   shownScreen = "";
   const note = element("div", "note");
   const controls = element("div", "buttons");
-  if (session.state === "working") {
+  if (session.state === "working" && isClaude) {
     const isArmed = armed === session.session;
     const interrupt = element("button", isArmed ? "armed" : "no", isArmed ? "Tap again to interrupt" : "Interrupt (Esc)");
     interrupt.onclick = () => {
@@ -196,11 +196,15 @@ function renderDetail() {
     };
     controls.append(interrupt);
   }
-  const remoteControl = element("button", "no", session.remote_control ? "Remote Control: on" : "Remote Control: off");
-  remoteControl.onclick = () => post(`/api/remote-control/${session.session}`, {}, note);
-  controls.append(remoteControl);
+  if (isClaude) {
+    const remoteControl = element("button", "no", session.remote_control ? "Remote Control: on" : "Remote Control: off");
+    remoteControl.onclick = () => post(`/api/remote-control/${session.session}`, {}, note);
+    controls.append(remoteControl);
+  }
   card.append(controls);
-  if (session.state === "needs-you") {
+  const isClaude = session.agent !== "opencode";
+  if (!isClaude) card.append(element("div", "task", "opencode: answer and interrupt it in its pane on the computer."));
+  if (session.state === "needs-you" && isClaude) {
     card.append(element("div", "request", session.detail || session.request));
     const buttons = element("div", "buttons");
     const no = element("button", "no", "No");

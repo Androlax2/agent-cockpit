@@ -395,3 +395,18 @@ fn a_paired_phone_gets_a_code_that_pairs_its_home_screen_app_once() {
     assert_eq!(remote.request("GET", &format!("/pair/{code}"), None, None, false).0, 403, "used twice");
     assert!(remote.remote(&["phones"]).contains("iPhone (Home Screen)"));
 }
+
+#[test]
+fn yes_no_and_interrupt_refuse_an_opencode_session() {
+    for (path, state, body) in [("answer", "needs-you", json!({"yes": true})), ("interrupt", "working", json!({}))] {
+        let remote = Remote::start();
+        let secret = remote.paired();
+        fs::write(remote.sandbox.runtime.join("claude-sessions.json"),
+                  json!({"sessions": [{"session": SESSION_A, "state": state, "project": "proj-a", "tmux_pane": "%4", "agent": "opencode"}]}).to_string()).unwrap();
+        fs::write(remote.sandbox.runtime.join("pane.txt"), DIALOG).unwrap();
+        let (status, _, answered) = remote.request("POST", &format!("/api/{path}/{SESSION_A}"), Some(&secret), Some(body), true);
+        assert_eq!(status, 409, "{path}: {answered}");
+        assert!(answered.contains("runs opencode"), "{path}: {answered}");
+        assert!(remote.keys_pressed().is_empty(), "{path}");
+    }
+}

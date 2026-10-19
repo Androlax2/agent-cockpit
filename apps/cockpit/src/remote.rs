@@ -347,8 +347,19 @@ pub fn state() -> Value {
         "request": text(row, "request"), "detail": text(row, "detail"), "since": row.get("since"),
         "queued": prompts::count(&text(row, "session")),
         "remote_control": has_remote_control(row),
+        "agent": Some(text(row, "agent")).filter(|agent| !agent.is_empty()).unwrap_or_else(|| "claude".into()),
     })).collect();
     json!({"sessions": cards, "approvals": asking_approvals()})
+}
+
+/// A session's row when it runs Claude Code: its dialogs and keys are what these actions know
+/// (as claude-sessions' require_claude_session).
+fn require_claude(id: &str, what: &str) -> Result<Value, String> {
+    let row = session_row(id).ok_or("no such session")?;
+    if text(&row, "agent") == "opencode" {
+        return Err(format!("{what} is Claude Code's; {} runs opencode: do it in its pane", text(&row, "project")));
+    }
+    Ok(row)
 }
 
 fn session_pane(id: &str) -> Result<String, String> {
@@ -424,6 +435,7 @@ pub fn message(id: &str, message: &str) -> Result<String, String> {
 /// presses Enter only while the dialog is open with its cursor on "1. Yes"; No presses Escape,
 /// Claude's own "no".
 pub fn answer(id: &str, is_yes: bool) -> Result<String, String> {
+    require_claude(id, "Yes and No")?;
     let pane = session_pane(id)?;
     let tail = pane_lines(&pane, 20)?;
     if pane_state(&tail) != "needs-you" {
@@ -439,7 +451,7 @@ pub fn answer(id: &str, is_yes: bool) -> Result<String, String> {
 
 /// Escape for a session that works: Claude stops its turn, as the key does in the session.
 pub fn interrupt(id: &str) -> Result<String, String> {
-    let row = session_row(id).ok_or("no such session")?;
+    let row = require_claude(id, "Interrupt")?;
     if text(&row, "state") != "working" {
         return Err("this session is not working".into());
     }
