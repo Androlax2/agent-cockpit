@@ -42,11 +42,35 @@ pub fn guides_dir() -> PathBuf {
 
 /// Where Theo's answers go: the results of runs and guides, and a guide's progress. Every sandbox
 /// writes the request folders above, so an answer there could be forged for another session's
-/// request; this folder only the programs outside the sandbox write, sessions read it (greywall
-/// allowRead). `kind` is "runs" or "guides".
-pub fn answers_dir(kind: &str) -> PathBuf {
-    std::env::var("CLAUDE_ANSWERS_DIR").map(PathBuf::from).unwrap_or_else(|_| paths::home().join(".cache/claude-answers")).join(kind)
+/// request; these folders only the programs outside the sandbox write. One per project (`key`, the
+/// launcher's CLAUDE_ANSWERS_KEY), in the runtime directory no sandbox sees: the launcher mounts a
+/// project's own folder, read-only, into its sandboxes and no other, so no session reads another
+/// project's command output (security audit 2026-10-19, M3). `kind` is "runs" or "guides".
+pub fn answers_dir(key: &str, kind: &str) -> PathBuf {
+    std::env::var("CLAUDE_ANSWERS_DIR").map(PathBuf::from).unwrap_or_else(|_| paths::runtime_dir().join("claude-answers")).join(key).join(kind)
 }
+
+/// A project's answers folder name, as the launcher makes it: letters, digits and "-" only, so it
+/// never leaves the answers folder.
+pub fn valid_answers_key(key: &str) -> bool {
+    !key.is_empty() && key.len() <= 255 && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+}
+
+/// This sandbox's answers folder name, from the launcher; None in a session started before answers
+/// went per project.
+pub fn own_answers_key() -> Option<String> {
+    std::env::var("CLAUDE_ANSWERS_KEY").ok().filter(|key| valid_answers_key(key))
+}
+
+/// The answers folder a run or guide request names (its "answers" field). The sandbox chose it:
+/// naming another project's folder only sends its own answer where it cannot read it.
+pub fn request_answers_dir(request: &Value, kind: &str) -> Option<PathBuf> {
+    request.get("answers").and_then(Value::as_str).filter(|key| valid_answers_key(key)).map(|key| answers_dir(key, kind))
+}
+
+/// What ask-to-run and ask-to-guide say in a session the launcher gave no answers folder.
+pub const NO_ANSWERS_KEY: &str = "This session started before Theo's answers went per project (no CLAUDE_ANSWERS_KEY): \
+                                  ask Theo to restart it (r in the column).";
 
 /// The run log, outside the sandbox's reach (the runtime directory).
 pub fn log_dir() -> PathBuf {

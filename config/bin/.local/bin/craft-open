@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # craft-open figcraft [--session <id>]: FigCraft for the project of the current folder, driven by
 # the session's figcraft-app MCP server (figcraft-cli mcp --attach 7979, registered for every
-# project; the launcher forwards 7979 into every sandbox). Run outside the sandbox, through
-# ask-to-run, when Theo asks a session to connect to FigCraft.
+# project; the launcher forwards 7979 only into the sandboxes of the project FigCraft serves). Run
+# outside the sandbox, through ask-to-run, when Theo asks a session to connect to FigCraft.
 #
 # FigCraft starts with --control 7979 and its file reads and writes limited to the project. An
 # open FigCraft is never closed (it may hold unsaved work): one already serving this project is
-# fine, any other is refused.
+# fine, any other is refused, and so is a new one while a sandbox of another project still has the
+# port (exit 3 for both).
 #
 # --session <id>: that session's figcraft-app server exited at its start (FigCraft was closed);
 # the cockpit restarts it once its turn ends (the conversation is kept) and tells it to carry on.
@@ -41,6 +42,19 @@ answers() {
     (exec 3<>"/dev/tcp/127.0.0.1/$PORT") 2>/dev/null
 }
 
+# A sandbox keeps its port forwards until it exits: one started while FigCraft served another
+# project would reach this project's design files too (security audit 2026-10-19, M2). Prints the
+# folder each such sandbox started in.
+sandboxes_of_other_projects_with_the_port() {
+    local sandbox command_line directory
+    for sandbox in $(pgrep -x greywall || true); do
+        command_line=" $(tr '\0' ' ' < "/proc/$sandbox/cmdline" 2>/dev/null) "
+        [[ $command_line == *" --forward $PORT "* ]] || continue
+        directory=$(readlink "/proc/$sandbox/cwd" 2>/dev/null) || continue
+        [[ $directory == "$root" || $directory == "$root"/* ]] || echo "$directory"
+    done
+}
+
 pid=$(pgrep -x figcraft | head -1 || true)
 if [[ -n $pid ]]; then
     command_line=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)
@@ -50,6 +64,13 @@ if [[ -n $pid ]]; then
     fi
     echo "FigCraft already serves $root on port $PORT."
 else
+    holders=$(sandboxes_of_other_projects_with_the_port)
+    if [[ -n $holders ]]; then
+        echo "Sessions of another project still reach FigCraft's port, from when it served them:"
+        printf '  %s\n' $holders
+        echo "Exit or restart them (r in the column), then ask again."
+        exit 3
+    fi
     setsid -f figcraft --control "$PORT" --automation-read-root "$root" --automation-write-root "$root" >/dev/null 2>&1
     for (( waited = 0; waited < WAIT_S * 10; waited++ )); do
         answers && break

@@ -14,6 +14,8 @@ use std::time::{Duration, Instant};
 
 pub const SESSION_A: &str = "aaaaaaaa-0000-4000-8000-000000000000";
 pub const SESSION_B: &str = "bbbbbbbb-0000-4000-8000-000000000000";
+/// The answers folder the launcher names for the sandbox's project (CLAUDE_ANSWERS_KEY).
+pub const ANSWERS_KEY: &str = "-home-theo-IdeaProjects-proj-a";
 
 /// The dotfiles checkout these tests belong to.
 pub fn repo() -> PathBuf {
@@ -92,6 +94,7 @@ impl Sandbox {
             ("PATH".into(), path),
             ("SHIM_LOG".into(), log.display().to_string()),
             ("CLAUDE_STATUS_URL".into(), String::new()), // no network: status.claude.com is not fetched
+            ("CLAUDE_ANSWERS_KEY".into(), ANSWERS_KEY.to_string()),
         ]);
         Sandbox { root, home, runtime, state, shims, log, env }
     }
@@ -143,6 +146,15 @@ impl Sandbox {
             .spawn().unwrap();
         child.stdin.take().unwrap().write_all(input.as_bytes()).unwrap();
         child.wait_with_output().unwrap()
+    }
+}
+
+impl Sandbox {
+    /// Theo's answers to this sandbox's project, "runs" or "guides" (cockpit::approval::answers_dir).
+    pub fn answers(&self, kind: &str) -> PathBuf {
+        let directory = self.runtime.join("claude-answers").join(ANSWERS_KEY).join(kind);
+        fs::create_dir_all(&directory).unwrap();
+        directory
     }
 }
 

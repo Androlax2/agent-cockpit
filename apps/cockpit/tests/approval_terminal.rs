@@ -16,7 +16,7 @@ fn request(command: &str) -> (PathBuf, String) {
     fs::create_dir_all(root.join("run")).unwrap();
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
     let id = "0123456789ab".to_string();
-    let request = serde_json::json!({"id": id, "command": command, "why": "A test.", "cwd": root, "requested_at": now});
+    let request = serde_json::json!({"id": id, "command": command, "why": "A test.", "cwd": root, "answers": "proj-a", "requested_at": now});
     fs::write(root.join(format!("runs/{id}.request")), request.to_string()).unwrap();
     (root, id)
 }
@@ -53,7 +53,7 @@ fn a_question_without_newline_stays_on_screen_until_answered() {
     terminal.type_keys(b"\r");
     let _ = terminal.child.wait();
     assert!(contains(&terminal.screen, b"got y"));
-    let result: serde_json::Value = serde_json::from_str(&fs::read_to_string(root.join(format!("answers/runs/{id}.result"))).unwrap()).unwrap();
+    let result: serde_json::Value = serde_json::from_str(&fs::read_to_string(root.join(format!("answers/proj-a/runs/{id}.result"))).unwrap()).unwrap();
     assert_eq!((result["status"].as_str(), result["exit"].as_i64()), (Some("ran"), Some(0)));
     assert!(result["output"].as_str().unwrap().contains("got y"));
     let _ = fs::remove_dir_all(root);

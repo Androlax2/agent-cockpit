@@ -37,17 +37,18 @@ const BLUE: u8 = 4;
 const GREEN: u8 = 2;
 const RED_INDEX: u8 = 1;
 
-/// The guide, checked, or why it cannot be shown.
-fn read_guide(id: &str) -> Result<Value, String> {
+/// The guide, checked, with the answers folder it names, or why it cannot be shown.
+fn read_guide(id: &str) -> Result<(Value, PathBuf), String> {
     if !approval::valid_id(id) {
         return Err("not a guide id".into());
     }
-    let directory = approval::guides_dir();
-    if approval::answers_dir("guides").join(format!("{id}.result")).exists() {
+    let text = std::fs::read_to_string(approval::guides_dir().join(format!("{id}.guide"))).map_err(|error| error.to_string())?;
+    let guide: Value = serde_json::from_str(&text).map_err(|error| error.to_string())?;
+    let answers_folder = approval::request_answers_dir(&guide, "guides")
+        .ok_or("it names no answers folder (its session started before answers went per project: restart it)")?;
+    if answers_folder.join(format!("{id}.result")).exists() {
         return Err("already answered".into());
     }
-    let text = std::fs::read_to_string(directory.join(format!("{id}.guide"))).map_err(|error| error.to_string())?;
-    let guide: Value = serde_json::from_str(&text).map_err(|error| error.to_string())?;
     if !guide.is_object() || now_secs() - guide.get("requested_at").and_then(Value::as_i64).unwrap_or(0) > MAX_AGE_S {
         return Err("older than two hours".into());
     }
@@ -69,7 +70,7 @@ fn read_guide(id: &str) -> Result<Value, String> {
     if guide.get("title").is_some_and(|title| !title.is_string()) {
         return Err("a title that is not text".into());
     }
-    Ok(guide)
+    Ok((guide, answers_folder))
 }
 
 /// Text as displayed: characters that could hide what it says are escaped.
@@ -95,6 +96,8 @@ struct Guide {
     steps: Vec<Map<String, Value>>,
     cwd: String,
     project: String,
+    /// Where Theo's answer and progress go: the folder the guide names (approval::answers_dir).
+    answers_folder: PathBuf,
     position: usize,
     done: BTreeSet<usize>,
     answers: BTreeMap<usize, String>,
@@ -103,12 +106,12 @@ struct Guide {
 }
 
 impl Guide {
-    fn new(id: &str, guide: &Value) -> Self {
+    fn new(id: &str, guide: &Value, answers_folder: PathBuf) -> Self {
         let steps = guide["steps"].as_array().unwrap().iter().filter_map(|step| step.as_object().cloned()).collect();
         let cwd = guide.get("cwd").and_then(Value::as_str).and_then(approval::resolved_directory)
             .unwrap_or_else(|| cockpit::paths::home().to_string_lossy().into_owned());
         let title = guide.get("title").and_then(Value::as_str).filter(|t| !t.is_empty()).unwrap_or("Steps from Claude").to_string();
-        Guide { id: id.into(), title, steps, project: approval::project_of(&cwd), cwd, position: 0, done: BTreeSet::new(),
+        Guide { id: id.into(), title, steps, project: approval::project_of(&cwd), cwd, answers_folder, position: 0, done: BTreeSet::new(),
                 answers: BTreeMap::new(), notes: BTreeMap::new(), runs: BTreeMap::new() }
     }
 
@@ -167,7 +170,7 @@ impl Guide {
     }
 
     fn file(&self, extension: &str) -> PathBuf {
-        approval::answers_dir("guides").join(format!("{}.{extension}", self.id))
+        self.answers_folder.join(format!("{}.{extension}", self.id))
     }
 }
 
@@ -441,7 +444,7 @@ fn main() {
         std::process::exit(1);
     }
     let mut guide = match read_guide(&arguments[0]) {
-        Ok(found) => Guide::new(&arguments[0], &found),
+        Ok((found, answers_folder)) => Guide::new(&arguments[0], &found, answers_folder),
         Err(reason) => {
             println!("Cannot show guide {}: {reason}.", arguments[0]);
             std::thread::sleep(Duration::from_secs(5));
@@ -463,7 +466,7 @@ mod tests {
     use super::*;
 
     fn guide(steps: Value) -> Guide {
-        Guide::new("aaaaaaaaaaaa", &json!({"title": "Key", "cwd": "/", "steps": steps}))
+        Guide::new("aaaaaaaaaaaa", &json!({"title": "Key", "cwd": "/", "steps": steps}), std::env::temp_dir())
     }
 
     #[test]

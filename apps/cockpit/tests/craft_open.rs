@@ -22,7 +22,8 @@ impl Craft {
         let project = sandbox.home.join("IdeaProjects/opusline");
         fs::create_dir_all(&project).unwrap();
         sandbox.shim("setsid", "exit 0");
-        sandbox.shim("pgrep", r#"[[ -n ${SHIM_FIGCRAFT_PID:-} ]] && echo "$SHIM_FIGCRAFT_PID"; [[ -n ${SHIM_FIGCRAFT_PID:-} ]]"#);
+        sandbox.shim("pgrep", r#"case $2 in figcraft) pid=${SHIM_FIGCRAFT_PID:-} ;; greywall) pid=${SHIM_GREYWALL_PID:-} ;; esac
+[[ -n $pid ]] && echo "$pid""#);
         Craft { sandbox, project, app: TcpListener::bind("127.0.0.1:0").unwrap() }
     }
 
@@ -89,4 +90,31 @@ fn an_unknown_app_or_session_is_refused() {
     let craft = Craft::new();
     assert_eq!(craft.run(&["photoshop"], &[]).status.code(), Some(2));
     assert_eq!(craft.run(&["figcraft", "--session", "../x"], &[]).status.code(), Some(2));
+}
+
+#[test]
+fn a_sandbox_of_another_project_still_holding_the_port_stops_a_new_figcraft() {
+    // Security audit M2: a sandbox keeps its forwards until it exits.
+    let craft = Craft::new();
+    let port = craft.app.local_addr().unwrap().port();
+    let elsewhere = craft.sandbox.home.join("IdeaProjects/other");
+    fs::create_dir_all(&elsewhere).unwrap();
+    let mut sandbox = Command::new("bash").args(["-c", &format!("exec -a 'greywall --auto-profile --forward {port} --' sleep 30")])
+        .current_dir(&elsewhere).spawn().unwrap();
+    let output = craft.run(&["figcraft"], &[("SHIM_GREYWALL_PID", &sandbox.id().to_string())]);
+    let _ = sandbox.kill();
+    assert_eq!(output.status.code(), Some(3), "{}", stdout(&output));
+    assert!(stdout(&output).contains("IdeaProjects/other"), "{}", stdout(&output));
+    assert!(craft.sandbox.calls("setsid").is_empty(), "FigCraft started");
+}
+
+#[test]
+fn a_sandbox_of_the_same_project_holding_the_port_is_fine() {
+    let craft = Craft::new();
+    let port = craft.app.local_addr().unwrap().port();
+    let mut sandbox = Command::new("bash").args(["-c", &format!("exec -a 'greywall --forward {port} --' sleep 30")])
+        .current_dir(&craft.project).spawn().unwrap();
+    let output = craft.run(&["figcraft"], &[("SHIM_GREYWALL_PID", &sandbox.id().to_string())]);
+    let _ = sandbox.kill();
+    assert_eq!(output.status.code(), Some(0), "{}", stdout(&output));
 }

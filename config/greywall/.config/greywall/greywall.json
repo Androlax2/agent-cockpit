@@ -11,8 +11,7 @@
       "~/dotfiles/apps/target/release/ask-to-run",
       "~/dotfiles/apps/target/release/ask-to-guide",
       "~/dotfiles/apps/target/release/claude-todo",
-      "~/dotfiles/apps/target/release/claude-design",
-      "~/.cache/claude-answers"
+      "~/dotfiles/apps/target/release/claude-design"
     ],
     "allowWrite": [
       "/run/user/1000/osd.fifo",
@@ -86,6 +85,7 @@
       "~/.ssh",
       "~/.gnupg",
       ".git/hooks",
+      ".git/config",
       "~/.claude/settings.json",
       "~/.claude/settings.local.json",
       "~/.claude/hooks",

@@ -37,8 +37,8 @@ fn touch(path: &std::path::Path) {
     }
 }
 
-fn wait_for_result(id: &str) -> i32 {
-    let path = approval::answers_dir("runs").join(format!("{id}.result"));
+fn wait_for_result(answers_key: &str, id: &str) -> i32 {
+    let path = approval::answers_dir(answers_key, "runs").join(format!("{id}.result"));
     let heartbeat = approval::runs_dir().join(format!("{id}.waiting"));
     let deadline = Instant::now() + Duration::from_secs(wait_seconds());
     let mut last_beat: Option<Instant> = None;
@@ -91,9 +91,13 @@ fn main() {
         println!("Not available in a session started with \"this terminal\": give Theo the command as a fish block instead.");
         std::process::exit(NO_DAEMON);
     }
+    let Some(answers_key) = approval::own_answers_key() else {
+        println!("{} Give Theo the command as a fish block meanwhile.", approval::NO_ANSWERS_KEY);
+        std::process::exit(NO_DAEMON);
+    };
     let mut arguments: Vec<String> = std::env::args().skip(1).collect();
     if arguments.len() == 2 && arguments[0] == "--wait" && approval::valid_id(&arguments[1]) {
-        std::process::exit(wait_for_result(&arguments[1]));
+        std::process::exit(wait_for_result(&answers_key, &arguments[1]));
     }
     let mut cwd = std::env::current_dir().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default();
     let mut why = String::new();
@@ -117,7 +121,8 @@ fn main() {
     }
     let id = token_hex(6);
     let request = json!({"id": id, "command": arguments[0], "why": why, "cwd": cwd, "project": approval::project_of(&cwd),
-                         "session": std::env::var("CLAUDE_CODE_SESSION_ID").unwrap_or_default(), "requested_at": now_secs()});
+                         "session": std::env::var("CLAUDE_CODE_SESSION_ID").unwrap_or_default(), "answers": answers_key,
+                         "requested_at": now_secs()});
     let path = approval::runs_dir().join(format!("{id}.request"));
     if let Err(error) = approval::write_json(&path, &request) {
         eprintln!("ask-to-run: cannot file the request: {error}");
@@ -131,5 +136,5 @@ fn main() {
         std::process::exit(NO_DAEMON);
     }
     eprintln!("Asked Theo to run it (request {id}); waiting for his answer.");
-    std::process::exit(wait_for_result(&id));
+    std::process::exit(wait_for_result(&answers_key, &id));
 }

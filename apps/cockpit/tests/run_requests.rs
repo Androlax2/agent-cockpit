@@ -12,11 +12,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Where the approval terminal writes Theo's answers (the sandbox's HOME, as the programs see it).
+/// Where the approval terminal writes Theo's answers.
 fn answers(sandbox: &Sandbox) -> PathBuf {
-    let directory = sandbox.home.join(".cache/claude-answers/runs");
-    fs::create_dir_all(&directory).unwrap();
-    directory
+    sandbox.answers("runs")
 }
 
 fn now() -> i64 {
@@ -189,7 +187,7 @@ impl Approve {
 
     fn file(&self, command: &str, age: i64, request_id: &str, why: &str) -> String {
         let request = json!({"id": request_id, "command": command, "why": why, "cwd": self.sandbox.root, "project": "dotfiles",
-                             "requested_at": now() - age});
+                             "answers": ANSWERS_KEY, "requested_at": now() - age});
         fs::write(self.runs.join(format!("{request_id}.request")), request.to_string()).unwrap();
         request_id.to_string()
     }
@@ -314,7 +312,7 @@ fn the_project_comes_from_the_directory_not_the_request() {
     let fixture = Approve::new();
     let root = &fixture.sandbox.root;
     fs::create_dir(root.join(".git")).unwrap();
-    let request = json!({"id": "0123456789ab", "command": "true", "cwd": root, "project": "dotfiles", "requested_at": now()});
+    let request = json!({"id": "0123456789ab", "command": "true", "cwd": root, "project": "dotfiles", "answers": ANSWERS_KEY, "requested_at": now()});
     fs::write(fixture.runs.join("0123456789ab.request"), request.to_string()).unwrap();
     let shown = fixture.approve("0123456789ab", "\n\n");
     let directory_name = root.file_name().unwrap().to_str().unwrap();
@@ -378,7 +376,7 @@ fn a_folder_name_with_escape_codes_is_shown_escaped() {
     let fixture = Approve::new();
     let folder = fixture.sandbox.root.join("x\x1b[8mhidden");
     fs::create_dir(&folder).unwrap();
-    let request = json!({"id": "0123456789ab", "command": "true", "why": "x", "cwd": folder, "project": "p", "requested_at": now()});
+    let request = json!({"id": "0123456789ab", "command": "true", "why": "x", "cwd": folder, "project": "p", "answers": ANSWERS_KEY, "requested_at": now()});
     fs::write(fixture.runs.join("0123456789ab.request"), request.to_string()).unwrap();
     let shown = fixture.approve("0123456789ab", "\n");
     assert!(!shown.contains("\x1b[8m"), "{shown:?}");
@@ -405,4 +403,38 @@ fn a_terminal_session_gets_no_approval_and_falls_back() {
         .args(["--why", "x", "true"]).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap(), TIMEOUT);
     assert_eq!(output.status.code(), Some(126));
     assert!(files_with_extension(&fixture.runs, "request").is_empty(), "a request was filed");
+}
+
+#[test]
+fn a_session_the_launcher_gave_no_answers_folder_falls_back() {
+    // Security audit M3: answers go to the asking project's own folder, or nowhere.
+    let fixture = AskToRun::new();
+    let runs = fixture.runs.display().to_string();
+    let output = finish(fixture.sandbox.command(bin().join("ask-to-run"), &[("CLAUDE_RUNS_DIR", &runs), ("CLAUDE_ANSWERS_KEY", "")])
+        .args(["--why", "x", "true"]).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap(), TIMEOUT);
+    assert_eq!(output.status.code(), Some(126));
+    assert!(stdout(&output).contains("restart it"), "{}", stdout(&output));
+    assert!(files_with_extension(&fixture.runs, "request").is_empty(), "a request was filed");
+}
+
+#[test]
+fn a_request_names_its_projects_answers_folder() {
+    let fixture = AskToRun::new();
+    let mut asking = fixture.ask(&["--why", "Says hi.", "echo hi"], "1");
+    let request = fixture.request();
+    let _ = asking.kill();
+    assert_eq!(request["answers"].as_str(), Some(ANSWERS_KEY));
+}
+
+#[test]
+fn a_request_naming_no_answers_folder_or_a_path_is_refused() {
+    let fixture = Approve::new();
+    for answers in [Value::Null, json!("../../.ssh"), json!("")] {
+        let request_id = "0123456789ab";
+        let request = json!({"id": request_id, "command": "echo hi", "why": "Says hi.", "cwd": fixture.sandbox.root, "answers": answers,
+                             "requested_at": now()});
+        fs::write(fixture.runs.join(format!("{request_id}.request")), request.to_string()).unwrap();
+        let shown = fixture.approve(request_id, "y\n");
+        assert!(shown.contains("names no answers folder"), "{answers}: {shown}");
+    }
 }

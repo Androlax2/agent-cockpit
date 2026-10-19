@@ -802,6 +802,7 @@ restart_sessions() { # id...
 launch_detached() { # dir claude-arguments...
     local directory=$1 size width=200 height=50 approval approval_height
     shift
+    require_plain_directory "$directory"
     # The viewer pane's size: shown there later without a resize, Claude keeps its screen. Resized,
     # it redrew and the resumed conversation sat above, out of view (an empty pane). An approval pane
     # open now takes rows the viewer gets back once it closes: they count.
@@ -1003,8 +1004,20 @@ clone_for() { # source-dir name -> prints the clone's path, created on first use
         # A pull request's clone gets someone else's code (its .claude/settings.json hooks, its
         # CLAUDE.md): Claude Code's trust dialog must ask about it, never inherit the yes.
         if [[ $name != pr-* ]]; then inherit_trust "$top" "$clone"; fi
+        set_aside_claude_memory "$clone"
     fi
     printf '%s\n' "$clone"
+}
+
+# A session started before this clone existed could write the clone's folder in ~/.claude/projects
+# (the launcher protects only the folders there when a sandbox starts) and plant memory the clone's
+# first session would load as Theo's own: memory found for a fresh clone is set aside, never loaded
+# (security audit 2026-10-19, H2).
+set_aside_claude_memory() { # clone-dir
+    local memory="$HOME/.claude/projects/${1//[^A-Za-z0-9]/-}/memory"
+    [[ -e $memory ]] || return 0
+    mv "$memory" "$memory.set-aside-$(date +%s)"
+    log_event WARN sessions "memory found for the fresh clone $1 was set aside: $memory.set-aside-*"
 }
 
 # A fresh clone holds the same files as its source, so a source Claude already trusts makes the
@@ -1153,7 +1166,7 @@ prs_window() {
         return
     fi
     directory=$(session_field "$(cat "$CURRENT" 2>/dev/null || true)" cwd)
-    origin=$( [[ -n $directory ]] && git -C "$directory" remote get-url origin 2>/dev/null || true)
+    origin=$( [[ -n $directory ]] && git "${SAFE_GIT_CONFIG[@]}" -C "$directory" remote get-url origin 2>/dev/null || true)
     if [[ $origin =~ github\.com[:/]([A-Za-z0-9._-]+/[A-Za-z0-9._-]+)$ ]]; then
         repository=${BASH_REMATCH[1]%.git}
         hyprctl eval "OPEN_IN_SCRATCHPAD(\"prs\", \"https://github.com/$repository/pulls\")" >/dev/null
@@ -1251,38 +1264,46 @@ git_popup() { # dir
 
 # Pushing the session's branch (the sidebar's U), in a popup: lazygit runs inside greywall, which
 # has no SSH key and no agent, so it cannot push. This git runs out here, with Theo's key, in a
-# folder a session works in. Sessions cannot write .git/config or .git/hooks (greywall mounts them
-# read-only); hooks are off anyway, and the settings that could run a program are reset here.
+# folder a session works in. Greywall mounts .git/config and .git/hooks read-only in the folder a
+# session starts in, but a session started in a subfolder, or one that replaced its .git, is not
+# covered: every git out here takes SAFE_GIT_CONFIG, which resets the settings that run a program
+# (security audit 2026-10-19, H1).
 push_popup() { # dir
     require_plain_directory "$1"
     tmux display-popup -E -w 70% -h 50% -d "$1" -T " push · $(basename "$1") " "$0" push-run "$1"
 }
 
-SAFE_PUSH_CONFIG=(-c core.hooksPath=/dev/null -c core.sshCommand=ssh -c core.fsmonitor=false -c core.askPass=
-                  -c core.gitProxy= -c credential.helper= -c protocol.ext.allow=never -c protocol.file.allow=never
-                  -c remote.origin.receivepack=git-receive-pack)
+SAFE_GIT_CONFIG=(-c core.hooksPath=/dev/null -c core.sshCommand=ssh -c core.fsmonitor=false -c core.askPass=
+                 -c core.gitProxy= -c core.pager=cat -c diff.external= -c credential.helper= -c protocol.ext.allow=never
+                 -c protocol.file.allow=never -c remote.origin.receivepack=git-receive-pack)
 
 push_run() { # dir
     local branch url answer
     cd "$1" || return 1
-    if ! branch=$(git symbolic-ref --quiet --short HEAD); then
+    if ! branch=$(git "${SAFE_GIT_CONFIG[@]}" symbolic-ref --quiet --short HEAD); then
         echo "Not on a branch (detached HEAD): nothing to push."
         read -r -p "Enter closes. " _ || true
         return 1
     fi
-    url=$(git "${SAFE_PUSH_CONFIG[@]}" ls-remote --get-url origin 2>/dev/null)
+    url=$(git "${SAFE_GIT_CONFIG[@]}" ls-remote --get-url origin 2>/dev/null)
     # Only GitHub: a remote rewritten to a path or another host is not pushed to from here.
     if [[ ! $url =~ ^(git@github\.com:|ssh://git@github\.com/|https://github\.com/)[A-Za-z0-9._/-]+$ ]]; then
         echo "origin is $url, not a GitHub repository: not pushed."
         read -r -p "Enter closes. " _ || true
         return 1
     fi
+    # A push URL or a URL rewrite would send the push somewhere other than the URL checked above.
+    if git "${SAFE_GIT_CONFIG[@]}" config --local --includes --get-regexp '^(remote\.origin\.pushurl|url\..*\.(push)?insteadof)$' >/dev/null 2>&1; then
+        echo "origin has a push URL or a URL rewrite in the repository's configuration: not pushed."
+        read -r -p "Enter closes. " _ || true
+        return 1
+    fi
     echo "Push $branch to $url"
     # The commits it sends, when the branch already tracks one (a new branch has no upstream yet).
-    git --no-pager log --oneline "@{upstream}..HEAD" 2>/dev/null | head -20 | sed 's/^/  /' || true
+    git "${SAFE_GIT_CONFIG[@]}" --no-pager log --oneline "@{upstream}..HEAD" 2>/dev/null | head -20 | sed 's/^/  /' || true
     read -r -p "Push? [y/N] " answer || answer=""
     [[ $answer == y || $answer == Y ]] || { echo "Not pushed."; sleep 1; return 0; }
-    if git "${SAFE_PUSH_CONFIG[@]}" push --set-upstream origin "refs/heads/$branch:refs/heads/$branch"; then
+    if git "${SAFE_GIT_CONFIG[@]}" push --set-upstream origin "refs/heads/$branch:refs/heads/$branch"; then
         log_event INFO sessions "pushed $branch of $(basename "$1")"
         # The card's "↑N unpushed" clears now, not at the session's next turn.
         osd-show session-pushed "$1" 2>/dev/null || true

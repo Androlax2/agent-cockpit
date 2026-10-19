@@ -10,9 +10,6 @@ export DISABLE_AUTOUPDATER=1
 # showing its prompt, 2.3 s of a 3.9 s start (measured 2026-10-19; DISABLE_TELEMETRY and
 # DISABLE_ERROR_REPORTING alone did not help). This also turns off /bug inside sessions.
 export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
-# Theo's answers to ask-to-run and ask-to-guide (greywall.json allowRead, never allowWrite): it must
-# exist before greywall starts, or the sandbox does not get it.
-mkdir -p "$HOME/.cache/claude-answers/runs" "$HOME/.cache/claude-answers/guides"
 mkdir -p "$CHROME_CONFIG_HOME"
 
 # ~/dotfiles is the live checkout: stowed into ~/.local/bin and ~/.config, built and run by the host.
@@ -36,6 +33,49 @@ case "$project_root" in
     *) project_name=$(basename "$project_root") ;;
 esac
 greywall_options="--auto-profile --profile claude --allow-path $CHROME_CONFIG_HOME"
+
+# A folder's name the way Claude names its folder in ~/.claude/projects: every character but a
+# letter or a digit becomes "-".
+folder_slug() {
+    printf '%s' "$1" | sed 's/[^A-Za-z0-9]/-/g'
+}
+
+# ~/.claude is writable (Claude keeps its state there), and ~/.claude/projects holds every project's
+# memory and transcripts: a session could plant "memory" another project loads as Theo's own
+# (security audit 2026-10-19, H2). Every project's folder but this session's own goes read-only,
+# through a settings file of its own: greywall.json plus those folders in denyWrite. Greywall
+# protects only folders that exist when the sandbox starts, so every project's and clone's folder
+# is made first; a project created later is the gap (a new clone sets aside memory found there).
+claude_projects="$HOME/.claude/projects"
+own_slug=$(folder_slug "$(pwd -P)")
+mkdir -p "$claude_projects/$own_slug"
+for folder in "$HOME"/IdeaProjects/*/ "$clones_dir"/*/*/; do
+    [ -d "$folder" ] && mkdir -p "$claude_projects/$(folder_slug "${folder%/}")"
+done
+other_projects=$(for folder in "$claude_projects"/*/; do
+    [ -d "$folder" ] && [ "${folder%/}" != "$claude_projects/$own_slug" ] && printf '%s\n' "${folder%/}"
+done)
+settings_dir="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/greywall-agents"
+settings="$settings_dir/$own_slug.json"
+mkdir -p "$settings_dir"
+if ! jq --arg others "$other_projects" '.filesystem.denyWrite += ($others | split("\n") | map(select(. != "")))' \
+        "$HOME/.config/greywall/greywall.json" > "$settings.new"; then
+    echo "claude launcher: cannot write $settings from ~/.config/greywall/greywall.json, not starting." >&2
+    exit 1
+fi
+mv "$settings.new" "$settings"
+greywall_options="$greywall_options --settings $settings"
+
+# Theo's answers to this project's ask-to-run and ask-to-guide requests, written outside the
+# sandbox. One folder per project, in the runtime directory, which no sandbox sees: only this
+# project's folder is mounted, read-only, so no session reads another project's command output or
+# guide answers (security audit 2026-10-19, M3). ask-to-run names it in its requests.
+answers_key=$(folder_slug "$project_root")
+answers_dir="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/claude-answers/$answers_key"
+mkdir -p "$answers_dir/runs" "$answers_dir/guides"
+export CLAUDE_ANSWERS_KEY="$answers_key"
+greywall_options="$greywall_options --allow-read-path $answers_dir"
+
 # The work clone fetches from the live checkout (its origin) to start from what is applied.
 if [ -n "$live_dotfiles" ] && [ "$project_root" = "$HOME/IdeaProjects/dotfiles" ]; then
     greywall_options="$greywall_options --allow-read-path $live_dotfiles"
@@ -128,10 +168,21 @@ wait_for_greyproxy_dns() {
 
 wait_for_greyproxy_dns
 
-# FigCraft's control port, in every session: the figcraft-app MCP server (registered for every
-# project) attaches to it. Only a FigCraft started by craft-open listens there, and it reads and
-# writes inside the one project it was opened for.
-greywall_options="$greywall_options --forward 7979"
+# FigCraft's control port, only into the project FigCraft serves: the figcraft-app MCP server
+# (registered for every project) attaches to it, and whoever reaches the port reads and writes that
+# project's design files (security audit 2026-10-19, M2). The running FigCraft's own command line
+# says which project (craft-open starts it with --automation-write-root <project>); a session that
+# started without the port gets it when craft-open --session restarts it.
+figcraft_pid=$(pgrep -x figcraft | head -1)
+if [ -n "$figcraft_pid" ]; then
+    figcraft_command=" $(tr '\0' ' ' < "/proc/$figcraft_pid/cmdline" 2>/dev/null)"
+    case "$figcraft_command" in
+        *" --control 7979 "*)
+            case "$figcraft_command" in
+                *" --automation-write-root $project_root "*) greywall_options="$greywall_options --forward 7979" ;;
+            esac ;;
+    esac
+fi
 
 # Host ports forwarded into this project's sandboxes, for a limited time.
 # One file per project, kept outside the sandbox so a session cannot widen

@@ -309,6 +309,8 @@ pub trait System {
     fn process_alive(&mut self, pid: &str) -> bool;
     /// trusted_target for the process that sent a report.
     fn sender_target(&mut self, sender: u32) -> Option<BTreeMap<String, String>>;
+    /// sandbox_directory for the process that sent a report.
+    fn sender_directory(&mut self, sender: u32) -> Option<String>;
     fn quiet(&mut self) -> bool {
         self.in_meeting() || self.gaming()
     }
@@ -461,9 +463,23 @@ fn is_abandoned(id: &str) -> bool {
         .is_some_and(|age| age > ABANDONED_AFTER)
 }
 
+/// The answers folder a run or guide request names (cockpit::approval::request_answers_dir); None
+/// when the request is gone or names none (its session started before answers went per project).
+fn answers_named_by(request: &Path, kind: &str) -> Option<PathBuf> {
+    let request: Value = fs::read_to_string(request).ok().and_then(|text| serde_json::from_str(&text).ok())?;
+    cockpit::approval::request_answers_dir(&request, kind)
+}
+
+fn run_result(id: &str) -> Option<PathBuf> {
+    answers_named_by(&runs_dir().join(format!("{id}.request")), "runs").map(|answers| answers.join(format!("{id}.result")))
+}
+
 /// The answer ask-to-run --wait finds for a dropped request.
 fn write_abandoned(id: &str) {
-    let path = cockpit::approval::answers_dir("runs").join(format!("{id}.result"));
+    let Some(path) = run_result(id) else {
+        log(&format!("run request {id} dropped without an answer: it names no answers folder"));
+        return;
+    };
     if path.exists() {
         return;
     }
@@ -496,7 +512,11 @@ impl RunRequests {
         }
         while !self.queue.is_empty() {
             let id = self.queue.remove(0);
-            if cockpit::approval::answers_dir("runs").join(format!("{id}.result")).exists() {
+            let Some(result) = run_result(&id) else {
+                log(&format!("run request {id} dropped: it names no answers folder (its session started before answers went per project)"));
+                continue;
+            };
+            if result.exists() {
                 continue;
             }
             if is_abandoned(&id) {
@@ -597,6 +617,9 @@ impl RunRequests {
 pub struct GuideRequests {
     pub queue: Vec<String>,
     pub current: String,
+    /// The answers folder the current guide named, kept from when it opened: the guide file is the
+    /// sandbox's to rewrite meanwhile.
+    current_answers: PathBuf,
     window: Option<Box<dyn Window>>,
 }
 
@@ -624,7 +647,11 @@ impl GuideRequests {
         }
         while !self.queue.is_empty() {
             let id = self.queue.remove(0);
-            if cockpit::approval::answers_dir("guides").join(format!("{id}.result")).exists() {
+            let Some(answers) = answers_named_by(&guides_dir().join(format!("{id}.guide")), "guides") else {
+                log(&format!("guide {id} dropped: it names no answers folder (its session started before answers went per project)"));
+                continue;
+            };
+            if answers.join(format!("{id}.result")).exists() {
                 continue;
             }
             let guide = paths::home().join(".local/bin/claude-guide").to_string_lossy().into_owned();
@@ -632,6 +659,7 @@ impl GuideRequests {
                 Some(window) => {
                     self.window = Some(window);
                     self.current = id;
+                    self.current_answers = answers;
                     return;
                 }
                 None => log(&format!("cannot open guide {id}")),
@@ -641,10 +669,10 @@ impl GuideRequests {
 
     fn finish(&mut self, system: &mut dyn System, banners: &mut dyn Banners) {
         banners.drop_banner(&format!("notice:guide-{}", self.current));
-        let result = cockpit::approval::answers_dir("guides").join(format!("{}.result", self.current));
+        let result = self.current_answers.join(format!("{}.result", self.current));
         if !result.exists() {
             // The window was closed: Claude must not wait on it, and learns where Theo stopped.
-            let progress = fs::read_to_string(cockpit::approval::answers_dir("guides").join(format!("{}.progress", self.current))).ok()
+            let progress = fs::read_to_string(self.current_answers.join(format!("{}.progress", self.current))).ok()
                 .and_then(|text| serde_json::from_str::<Value>(&text).ok()).unwrap_or(json!({}));
             let closed = json!({"status": "closed", "step": progress.get("step").cloned().unwrap_or(json!("?")),
                                 "total": progress.get("total").cloned().unwrap_or(json!("?"))});
@@ -747,6 +775,17 @@ impl Registry {
             }
         }
         report.target = target;
+        // The session's folder is where its sandbox started, never the one the report claims: a
+        // claimed folder of another project would make a restart resume the session there, in that
+        // project's sandbox with its token (security audit 2026-10-19, M1).
+        if let Some(claimed) = report.cwd.take().filter(|cwd| !cwd.is_empty()) {
+            let started_in = self.system.sender_directory(sender);
+            if !started_in.as_ref().is_some_and(|started_in| Path::new(&claimed).starts_with(started_in)) {
+                log(&format!("report for {} claims the folder {claimed:?}, outside {started_in:?} where its sandbox started: that one is kept",
+                             &report.session[..8]));
+            }
+            report.cwd = started_in;
+        }
         self.update(report);
     }
 
@@ -1215,6 +1254,11 @@ pub trait Processes {
         let _ = pid;
         None
     }
+    /// The process's working directory, None for a process gone.
+    fn cwd(&self, pid: &str) -> Option<String> {
+        let _ = pid;
+        None
+    }
     /// The process's pid namespace ("self" for the daemon), to tell sandboxed processes apart.
     fn pid_namespace(&self, pid: &str) -> Option<String> {
         let _ = pid;
@@ -1227,21 +1271,33 @@ pub trait Processes {
 /// daemon's own pid namespace. What runs inside a sandbox can set any TMUX_PANE it likes in its own
 /// environment; the launcher's, outside, comes from the pane tmux started it in. None when the
 /// sender has no such ancestor (a report the daemon cannot place).
-pub fn trusted_target(table: &dyn Processes, sender: &str) -> Option<BTreeMap<String, String>> {
+/// The sender itself or its first ancestor in the daemon's own pid namespace: outside the sandbox,
+/// out of reach of anything inside it.
+fn first_process_outside(table: &dyn Processes, sender: &str) -> Option<String> {
     let own = table.pid_namespace("self")?;
     let mut pid = sender.to_string();
     for _ in 0..64 {
         if table.pid_namespace(&pid).as_ref() == Some(&own) {
-            let environment = table.environment(&pid);
-            let target: BTreeMap<String, String> = [("tmux_pane", "TMUX_PANE"), ("kitty_pid", "KITTY_PID"), ("kitty_window", "KITTY_WINDOW_ID"), ("kitty_listen", "KITTY_LISTEN_ON")]
-                .iter().filter_map(|(key, variable)| environment.get(*variable).filter(|value| !value.is_empty()).map(|value| (key.to_string(), value.clone())))
-                .collect();
-            let fields: Map<String, Value> = target.iter().map(|(key, value)| (key.clone(), json!(value))).collect();
-            return validate_focus_target(&fields).ok().map(|_| target);
+            return Some(pid);
         }
         pid = table.parent(&pid)?;
     }
     None
+}
+
+pub fn trusted_target(table: &dyn Processes, sender: &str) -> Option<BTreeMap<String, String>> {
+    let environment = table.environment(&first_process_outside(table, sender)?);
+    let target: BTreeMap<String, String> = [("tmux_pane", "TMUX_PANE"), ("kitty_pid", "KITTY_PID"), ("kitty_window", "KITTY_WINDOW_ID"), ("kitty_listen", "KITTY_LISTEN_ON")]
+        .iter().filter_map(|(key, variable)| environment.get(*variable).filter(|value| !value.is_empty()).map(|value| (key.to_string(), value.clone())))
+        .collect();
+    let fields: Map<String, Value> = target.iter().map(|(key, value)| (key.clone(), json!(value))).collect();
+    validate_focus_target(&fields).ok().map(|_| target)
+}
+
+/// The folder the sender's sandbox started in: the working directory of its first process outside
+/// the sandbox (greywall, bwrap), which nothing inside can change.
+pub fn sandbox_directory(table: &dyn Processes, sender: &str) -> Option<String> {
+    table.cwd(&first_process_outside(table, sender)?)
 }
 
 pub struct Proc;
@@ -1266,6 +1322,10 @@ impl Processes for Proc {
             let text = String::from_utf8_lossy(entry);
             text.split_once('=').map(|(name, value)| (name.to_string(), value.to_string()))
         }).collect()).unwrap_or_default()
+    }
+
+    fn cwd(&self, pid: &str) -> Option<String> {
+        fs::read_link(format!("/proc/{pid}/cwd")).ok().map(|path| path.to_string_lossy().into_owned())
     }
 
     fn parent(&self, pid: &str) -> Option<String> {
@@ -1416,5 +1476,9 @@ impl System for RealSystem {
 
     fn sender_target(&mut self, sender: u32) -> Option<BTreeMap<String, String>> {
         trusted_target(&Proc, &sender.to_string())
+    }
+
+    fn sender_directory(&mut self, sender: u32) -> Option<String> {
+        sandbox_directory(&Proc, &sender.to_string())
     }
 }

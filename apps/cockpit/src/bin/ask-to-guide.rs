@@ -77,8 +77,8 @@ fn wait_seconds() -> u64 {
     std::env::var("ASK_TO_GUIDE_WAIT_S").ok().and_then(|s| s.parse().ok()).unwrap_or(540)
 }
 
-fn progress(id: &str) -> String {
-    let state = std::fs::read_to_string(approval::answers_dir("guides").join(format!("{id}.progress"))).ok()
+fn progress(answers_key: &str, id: &str) -> String {
+    let state = std::fs::read_to_string(approval::answers_dir(answers_key, "guides").join(format!("{id}.progress"))).ok()
         .and_then(|text| serde_json::from_str::<Value>(&text).ok());
     match state {
         Some(state) if state.get("step").is_some() && state.get("total").is_some() && state.get("done").is_some() =>
@@ -136,8 +136,8 @@ fn report(result: &Value) -> i32 {
     match status { "done" => 0, "stuck" => STUCK, _ => CLOSED }
 }
 
-fn wait_for_result(id: &str) -> i32 {
-    let path = approval::answers_dir("guides").join(format!("{id}.result"));
+fn wait_for_result(answers_key: &str, id: &str) -> i32 {
+    let path = approval::answers_dir(answers_key, "guides").join(format!("{id}.result"));
     let deadline = Instant::now() + Duration::from_secs(wait_seconds());
     while Instant::now() < deadline {
         if let Some(result) = std::fs::read_to_string(&path).ok().and_then(|text| serde_json::from_str::<Value>(&text).ok()) {
@@ -145,7 +145,7 @@ fn wait_for_result(id: &str) -> i32 {
         }
         std::thread::sleep(Duration::from_secs(1));
     }
-    println!("The guide is still open. {} Keep waiting with: ask-to-guide --wait {id}", progress(id));
+    println!("The guide is still open. {} Keep waiting with: ask-to-guide --wait {id}", progress(answers_key, id));
     TIMED_OUT
 }
 
@@ -154,9 +154,13 @@ fn main() {
         println!("Not available in a session started with \"this terminal\": list the steps in the chat instead.");
         std::process::exit(NO_DAEMON);
     }
+    let Some(answers_key) = approval::own_answers_key() else {
+        println!("{} List the steps in the chat meanwhile.", approval::NO_ANSWERS_KEY);
+        std::process::exit(NO_DAEMON);
+    };
     let mut arguments: Vec<String> = std::env::args().skip(1).collect();
     if arguments.len() == 2 && arguments[0] == "--wait" && approval::valid_id(&arguments[1]) {
-        std::process::exit(wait_for_result(&arguments[1]));
+        std::process::exit(wait_for_result(&answers_key, &arguments[1]));
     }
     let mut title = String::new();
     if arguments.len() == 2 && arguments[0] == "--title" {
@@ -180,7 +184,8 @@ fn main() {
     let id = token_hex(6);
     let cwd = std::env::current_dir().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default();
     let guide = json!({"id": id, "title": title, "steps": steps, "cwd": cwd, "project": approval::project_of(&cwd),
-                       "session": std::env::var("CLAUDE_CODE_SESSION_ID").unwrap_or_default(), "requested_at": now_secs()});
+                       "session": std::env::var("CLAUDE_CODE_SESSION_ID").unwrap_or_default(), "answers": answers_key,
+                       "requested_at": now_secs()});
     let path = approval::guides_dir().join(format!("{id}.guide"));
     if let Err(error) = approval::write_json(&path, &guide) {
         eprintln!("ask-to-guide: cannot file the guide: {error}");
@@ -192,7 +197,7 @@ fn main() {
         std::process::exit(NO_DAEMON);
     }
     eprintln!("Guide {id} is on Theo's screen ({} steps); waiting for him.", steps.len());
-    std::process::exit(wait_for_result(&id));
+    std::process::exit(wait_for_result(&answers_key, &id));
 }
 
 #[cfg(test)]

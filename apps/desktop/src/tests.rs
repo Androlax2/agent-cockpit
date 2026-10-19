@@ -12,6 +12,9 @@ use std::sync::{Mutex, MutexGuard};
 const SESSION_A: &str = "aaaaaaaa-0000-4000-8000-000000000000";
 const SESSION_B: &str = "bbbbbbbb-0000-4000-8000-000000000000";
 const SESSION_C: &str = "cccccccc-0000-4000-8000-000000000000";
+const RUN_A: &str = "aaaaaaaaaaaa";
+const RUN_B: &str = "bbbbbbbbbbbb";
+const ANSWERS_KEY: &str = "-home-theo-IdeaProjects-proj-a";
 
 static ENVIRONMENT: Mutex<()> = Mutex::new(());
 
@@ -40,6 +43,12 @@ impl Fixture {
                 std::env::remove_var(name);
             }
         }
+        // Run and guide requests as ask-to-run and ask-to-guide file them, naming their answers folder.
+        for id in [RUN_A, RUN_B] {
+            for extension in ["request", "guide"] {
+                fs::write(root.join("queue").join(format!("{id}.{extension}")), json!({"answers": ANSWERS_KEY}).to_string()).unwrap();
+            }
+        }
         Fixture { root, _lock: lock }
     }
 
@@ -47,9 +56,9 @@ impl Fixture {
         self.root.join("queue")
     }
 
-    /// Theo's answers, "runs" or "guides" (cockpit::approval::answers_dir).
+    /// Theo's answers, "runs" or "guides", in the folder the requests name (cockpit::approval::answers_dir).
     fn answers(&self, kind: &str) -> PathBuf {
-        let directory = self.root.join("answers").join(kind);
+        let directory = self.root.join("answers").join(ANSWERS_KEY).join(kind);
         fs::create_dir_all(&directory).unwrap();
         directory
     }
@@ -98,6 +107,7 @@ struct World {
     dead_pids: HashSet<String>,
     /// sender pid -> the focus target its trusted ancestor carries
     sender_targets: HashMap<u32, BTreeMap<String, String>>,
+    sender_directories: HashMap<u32, String>,
 }
 
 impl World {
@@ -146,6 +156,10 @@ impl System for FakeSystem {
 
     fn sender_target(&mut self, sender: u32) -> Option<BTreeMap<String, String>> {
         self.0.borrow().sender_targets.get(&sender).cloned()
+    }
+
+    fn sender_directory(&mut self, sender: u32) -> Option<String> {
+        self.0.borrow().sender_directories.get(&sender).cloned()
     }
 }
 
@@ -748,8 +762,6 @@ fn without_a_client_the_hook_values_stay() {
 
 // ---- The run queue ----
 
-const RUN_A: &str = "aaaaaaaaaaaa";
-const RUN_B: &str = "bbbbbbbbbbbb";
 
 fn started_sessions(bench: &Bench) -> Vec<String> {
     bench.commands().iter().filter(|command| command[..2] == ["tmux", "new-session"]).map(|command| command[4].clone()).collect()
@@ -788,6 +800,24 @@ fn an_answered_request_in_the_queue_is_skipped() {
     fs::write(bench.fixture.answers("runs").join(format!("{RUN_B}.result")), "{}").unwrap();
     bench.registry.run_phase(RUN_A, "done");
     assert_eq!(bench.registry.runs.current, "");
+}
+
+#[test]
+fn a_request_naming_no_answers_folder_never_shows() {
+    // Security audit M3: its answer would have nowhere to go but a folder every sandbox reads.
+    let mut bench = Bench::new();
+    fs::write(bench.fixture.queue().join(format!("{RUN_A}.request")), "{}").unwrap();
+    bench.registry.run_request(RUN_A).unwrap();
+    assert!(started_sessions(&bench).is_empty());
+    assert_eq!(bench.registry.runs.current, "");
+}
+
+#[test]
+fn a_guide_naming_no_answers_folder_never_opens() {
+    let mut bench = Bench::new();
+    fs::write(bench.fixture.queue().join(format!("{RUN_A}.guide")), "{}").unwrap();
+    bench.registry.guide_request(RUN_A).unwrap();
+    assert!(bench.windows().is_empty());
 }
 
 /// The heartbeat ask-to-run keeps while it waits, last touched `seconds_ago`.
@@ -856,7 +886,7 @@ fn a_queued_request_nobody_waits_for_is_skipped() {
 #[test]
 fn a_request_without_a_heartbeat_counts_from_its_filing() {
     let mut bench = Bench::new();
-    fs::write(bench.fixture.queue().join(format!("{RUN_A}.request")), "{}").unwrap();
+    fs::write(bench.fixture.queue().join(format!("{RUN_A}.request")), json!({"answers": ANSWERS_KEY}).to_string()).unwrap();
     bench.registry.run_request(RUN_A).unwrap();
     bench.registry.tick_queues();
     assert_eq!(bench.registry.runs.current, RUN_A, "a fresh request is not dropped for lack of a heartbeat");
@@ -1142,4 +1172,48 @@ fn a_session_says_which_craft_apps_it_drives() {
 #[test]
 fn an_apps_field_that_is_not_a_list_of_apps_is_refused() {
     assert!(parse_session(&json!({"session": SESSION_A, "project": "p", "apps": "figcraft:on; rm -rf"}).to_string()).is_err());
+}
+
+#[test]
+fn a_reported_folder_gives_way_to_the_one_its_sandbox_started_in() {
+    // Security audit M1: a restart would resume the session in the claimed folder's sandbox.
+    let mut bench = Bench::new();
+    {
+        let mut world = bench.world.borrow_mut();
+        world.sender_targets.insert(500, target(&[("tmux_pane", "%7")]));
+        world.sender_directories.insert(500, "/home/theo/IdeaProjects/opusline".into());
+    }
+    let report = parse_session(&json!({"session": SESSION_A, "project": "p", "state": "waiting", "cwd": "/home/theo/IdeaProjects/dotfiles"}).to_string()).unwrap();
+    bench.registry.report_from(report, 500);
+    assert_eq!(bench.registry.sessions[SESSION_A].cwd, "/home/theo/IdeaProjects/opusline");
+}
+
+#[test]
+fn a_session_whose_sandbox_folder_is_unknown_gets_no_folder() {
+    let mut bench = Bench::new();
+    bench.world.borrow_mut().sender_targets.insert(500, target(&[("tmux_pane", "%7")]));
+    let report = parse_session(&json!({"session": SESSION_A, "project": "p", "state": "waiting", "cwd": "/home/theo/IdeaProjects/dotfiles"}).to_string()).unwrap();
+    bench.registry.report_from(report, 500);
+    assert_eq!(bench.registry.sessions[SESSION_A].cwd, "");
+}
+
+#[test]
+fn the_sandbox_folder_is_where_the_first_process_outside_it_runs() {
+    struct Folders(Tree);
+    impl Processes for Folders {
+        fn pids(&self) -> Vec<String> { self.0.pids() }
+        fn comm(&self, pid: &str) -> String { self.0.comm(pid) }
+        fn command(&self, pid: &str) -> Vec<String> { self.0.command(pid) }
+        fn environment(&self, pid: &str) -> HashMap<String, String> { self.0.environment(pid) }
+        fn parent(&self, pid: &str) -> Option<String> { self.0.parent(pid) }
+        fn pid_namespace(&self, pid: &str) -> Option<String> { self.0.pid_namespace(pid) }
+        fn cwd(&self, pid: &str) -> Option<String> { Some(format!("/folder-of-{pid}")) }
+    }
+    let tree = Folders(Tree(vec![
+        ("50", Some("40"), "sandbox", environment(&[])),
+        ("40", Some("30"), "sandbox", environment(&[])),
+        ("30", Some("20"), "host", environment(&[])),
+        ("20", None, "host", environment(&[])),
+    ]));
+    assert_eq!(sandbox_directory(&tree, "50").as_deref(), Some("/folder-of-30"));
 }

@@ -19,7 +19,7 @@ fn guide(steps: Value, fields: Value) -> (PathBuf, &'static str) {
     fs::create_dir_all(root.join("guides")).unwrap();
     fs::create_dir_all(root.join("run")).unwrap();
     let id = "aaaaaaaaaaaa";
-    let mut guide = json!({"id": id, "title": "Key", "cwd": root, "requested_at": now(), "steps": steps});
+    let mut guide = json!({"id": id, "title": "Key", "cwd": root, "answers": "proj-a", "requested_at": now(), "steps": steps});
     for (key, value) in fields.as_object().unwrap() {
         guide[key] = value.clone();
     }
@@ -33,7 +33,7 @@ fn start(root: &Path, id: &str) -> Terminal {
 }
 
 fn result(root: &Path, id: &str) -> Value {
-    serde_json::from_str(&fs::read_to_string(root.join(format!("answers/guides/{id}.result"))).unwrap()).unwrap()
+    serde_json::from_str(&fs::read_to_string(root.join(format!("answers/proj-a/guides/{id}.result"))).unwrap()).unwrap()
 }
 
 #[test]
@@ -75,6 +75,7 @@ fn unusable_guides_are_refused() {
         (json!([{"text": "x"}]), json!({"requested_at": 1}), "older than two hours"),
         (json!([{"text": " "}]), json!({}), "a step without text"),
         (json!([{"text": "x", "run": ["rm", "-rf"]}]), json!({}), "a step field that is not text"),
+        (json!([{"text": "x"}]), json!({"answers": "../../elsewhere"}), "names no answers folder"),
     ] {
         let (root, id) = guide(steps, fields);
         let output = std::process::Command::new(env!("CARGO_BIN_EXE_claude-guide")).arg(id).env("CLAUDE_GUIDES_DIR", root.join("guides")).env("CLAUDE_ANSWERS_DIR", root.join("answers")).output().unwrap();

@@ -13,38 +13,40 @@ use cockpit::approval::{self, BOLD, BLUE, DIM, GREEN, RED, RESET, YELLOW};
 use cockpit::util::now_secs;
 use serde_json::{Value, json};
 use std::io::{self, BufRead, Write};
+use std::path::{Path, PathBuf};
 
 
 const MAX_AGE_S: i64 = 15 * 60;
 const LONG_COMMAND: usize = 600;
 
-/// The request, checked, or why it cannot be answered.
-fn read_request(id: &str) -> Result<Value, String> {
+/// The request, checked, with the answers folder it names, or why it cannot be answered.
+fn read_request(id: &str) -> Result<(Value, PathBuf), String> {
     if !approval::valid_id(id) {
         return Err("not a request id".into());
     }
-    let directory = approval::runs_dir();
-    if approval::answers_dir("runs").join(format!("{id}.result")).exists() {
+    let text = std::fs::read_to_string(approval::runs_dir().join(format!("{id}.request"))).map_err(|error| error.to_string())?;
+    let request: Value = serde_json::from_str(&text).map_err(|error| error.to_string())?;
+    let answers = approval::request_answers_dir(&request, "runs")
+        .ok_or("it names no answers folder (its session started before answers went per project: restart it)")?;
+    if answers.join(format!("{id}.result")).exists() {
         return Err("already answered".into());
     }
-    let text = std::fs::read_to_string(directory.join(format!("{id}.request"))).map_err(|error| error.to_string())?;
-    let request: Value = serde_json::from_str(&text).map_err(|error| error.to_string())?;
     if !request.get("command").and_then(Value::as_str).is_some_and(|command| !command.trim().is_empty()) {
         return Err("no command in the request".into());
     }
     if now_secs() - request.get("requested_at").and_then(Value::as_i64).unwrap_or(0) > MAX_AGE_S {
         return Err("older than 15 minutes".into());
     }
-    Ok(request)
+    Ok((request, answers))
 }
 
-fn write_result(id: &str, result: Value) {
-    let _ = approval::write_json(&approval::answers_dir("runs").join(format!("{id}.result")), &result);
+fn write_result(answers: &Path, id: &str, result: Value) {
+    let _ = approval::write_json(&answers.join(format!("{id}.result")), &result);
 }
 
 fn approve(id: &str) -> i32 {
-    let request = match read_request(id) {
-        Ok(request) => request,
+    let (request, answers) = match read_request(id) {
+        Ok(read) => read,
         Err(reason) => {
             println!("{RED}Cannot answer request {id}: {reason}.{RESET}");
             return 1;
@@ -57,7 +59,7 @@ fn approve(id: &str) -> i32 {
         .unwrap_or_else(|| cockpit::paths::home().to_string_lossy().into_owned());
     if let Err(error) = approval::enter_directory(&cwd) {
         eprintln!("{RED}cannot enter {cwd}: {error}{RESET}");
-        write_result(id, json!({"status": "declined"}));
+        write_result(&answers, id, json!({"status": "declined"}));
         return 1;
     }
     let project = approval::project_of(&cwd);
@@ -93,7 +95,7 @@ fn approve(id: &str) -> i32 {
     approval::send_host(&format!("notice-clear run-{id}"));
     if answer != "y" {
         approval::phase(id, "done");
-        write_result(id, json!({"status": "declined"}));
+        write_result(&answers, id, json!({"status": "declined"}));
         approval::log("INFO", &format!("declined {id} for {project}"));
         println!("Declined: Claude is told.");
         return 0;
@@ -116,10 +118,10 @@ fn approve(id: &str) -> i32 {
     let edited = if command != original { json!(command) } else { Value::Null };
     // The whole output stays readable by Claude in a file; the result carries it too, and ask-to-run
     // prints only its end.
-    let output_path = approval::answers_dir("runs").join(format!("{id}.output"));
+    let output_path = answers.join(format!("{id}.output"));
     let _ = std::fs::write(&output_path, approval::strip_ansi(&output));
     let step = failed_step.map(Value::from).unwrap_or(Value::Null);
-    write_result(id, json!({"status": "ran", "exit": exit_code, "output": output, "redacted": redacted, "edited_command": edited,
+    write_result(&answers, id, json!({"status": "ran", "exit": exit_code, "output": output, "redacted": redacted, "edited_command": edited,
                             "failed_step": step, "output_file": output_path.display().to_string()}));
     let _ = std::fs::remove_file(&log_path);
     approval::phase(id, "done");

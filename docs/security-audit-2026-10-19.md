@@ -62,6 +62,10 @@ without review, every sandbox can write `.git/config`, other projects' Claude me
   (1232) without `SAFE_PUSH_CONFIG`; `prs_window` (1106) runs `git remote get-url`; any host shell
   prompt or IDE running `git status` in the folder executes `core.fsmonitor`. `core.hooksPath`,
   `core.pager`, `include.path` also run code.
+- Correction (found while fixing): greywall 0.3.7 already mounts `.git/config` read-only in the folder
+  a session starts in (`getMandatoryDenyPaths`); what remains is a repository whose `.git` that mount
+  does not cover (a session started in a subfolder, a replaced `.git`), and host git calls without
+  safe settings.
 - Fix: denyWrite `.git/config`, `.git/info`, `.git/modules/*/config`; give every host git call in
   claude-sessions `SAFE_PUSH_CONFIG` plus `GIT_CONFIG_NOSYSTEM=1 -c include.path= -c core.fsmonitor=
   -c core.hooksPath=/dev/null`; fix the comment at 1204.
