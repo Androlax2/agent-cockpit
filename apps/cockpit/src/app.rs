@@ -50,9 +50,10 @@ const QUEUE_CHECK_S: f64 = 30.0;
 const RESTORE_CHECK_S: f64 = 30.0;
 const COSTS_LABEL: &str = "At API prices";
 const CLAUDE_LABEL: &str = "Claude";
-/// The Todo panel's tabs: the statuses each one shows.
-const TODO_TABS: [(&str, &str); 4] = [("Proposed", todo::PROPOSED), ("To do", "todo"), ("In progress", "doing"), ("Done", "done")];
-const TODO_TAB_TO_DO: usize = 1;
+/// The Todo panel's tabs: the statuses each one shows. Open merges everything not done yet.
+const TODO_TABS: [(&str, &[&str]); 5] = [("Open", &[todo::PROPOSED, "todo", "doing"]), ("Proposed", &[todo::PROPOSED]), ("To do", &["todo"]),
+                                         ("In progress", &["doing"]), ("Done", &["done"])];
+const TODO_TAB_TO_DO: usize = 2;
 /// What follows this line in the todo editor is help, left out of the item.
 const EDITOR_HELP_MARK: &str = "#── everything from this line on is left out ──";
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
@@ -417,7 +418,7 @@ pub struct App {
     pub(crate) prompts_sent: HashMap<String, i64>,
     /// craft app -> the project folder its running instance serves (sessions::craft_root).
     pub(crate) craft_roots: HashMap<String, String>,
-    pub(crate) todo_counts: [usize; 4],
+    pub(crate) todo_counts: [usize; 5],
     pub(crate) hit_lines: HashMap<u16, (usize, Option<usize>)>,
     pub(crate) hit_actions: HashMap<u16, (u16, u16, &'static str)>,
 }
@@ -431,7 +432,7 @@ impl App {
             help_open: false, message: String::new(), exiting: Vec::new(), labelled: Default::default(), menu: None, settings_menu: None, restore: Vec::new(),
             focus_waiting: false, held: Vec::new(), held_checked: 0.0, queue_checked: 0.0, gaming: util::gaming, restore_checked: 0.0, start_files: Vec::new(),
             width: DEFAULT_COLUMN_WIDTH, sessions: Vec::new(), windows: Vec::new(), review_rows: Vec::new(), todo_entries: Vec::new(),
-            todo_scope: String::new(), shown_session: String::new(), todo_tab: TODO_TAB_TO_DO, todo_counts: [0; 4], prompts_sent: HashMap::new(), craft_roots: HashMap::new(), hit_lines: HashMap::new(), hit_actions: HashMap::new(),
+            todo_scope: String::new(), shown_session: String::new(), todo_tab: TODO_TAB_TO_DO, todo_counts: [0; 5], prompts_sent: HashMap::new(), craft_roots: HashMap::new(), hit_lines: HashMap::new(), hit_actions: HashMap::new(),
         }
     }
 
@@ -1280,17 +1281,18 @@ impl App {
             entries.push(Entry::Issue { issue, status, priority });
         }
         entries.sort_by(todo::todo_order);
-        for (index, (_, status)) in TODO_TABS.iter().enumerate() {
-            self.todo_counts[index] = entries.iter().filter(|entry| entry.status() == *status).count();
+        for (index, (_, statuses)) in TODO_TABS.iter().enumerate() {
+            self.todo_counts[index] = entries.iter().filter(|entry| statuses.contains(&entry.status().as_str())).count();
         }
-        let shown_status = TODO_TABS[self.todo_tab].1;
-        entries.retain(|entry| entry.status() == shown_status);
+        let shown_statuses = TODO_TABS[self.todo_tab].1;
+        entries.retain(|entry| shown_statuses.contains(&entry.status().as_str()));
         let mut lines = Vec::new();
         if entries.is_empty() {
-            let empty = match shown_status {
-                todo::PROPOSED => "No idea from Claude waiting for you. ] next tab.",
-                "doing" => "Nothing in progress. ] next tab.",
-                "done" => "Nothing done in the last 7 days.",
+            let empty = match shown_statuses {
+                [_, _, ..] => "Nothing open. ] next tab.",
+                [todo::PROPOSED] => "No idea from Claude waiting for you. ] next tab.",
+                ["doing"] => "Nothing in progress. ] next tab.",
+                ["done"] => "Nothing done in the last 7 days.",
                 _ => "Nothing to do. t adds an item for the viewed project; [ ] switch tabs.",
             };
             lines.push(Line::new(vec![segment(0, empty, dim(FG_DARK))]));
@@ -1542,8 +1544,14 @@ impl App {
     }
 
     /// Each tab's keys, the one that moves its items along first.
+    /// In the Open tab, the selected item's status picks them.
     pub(crate) fn todo_hints(&self) -> Vec<(&'static str, &'static str)> {
-        match TODO_TABS[self.todo_tab].1 {
+        let selected_status = self.todo_entries.get(self.panels[3].selected).map(Entry::status);
+        let status = match TODO_TABS[self.todo_tab].1 {
+            [only] => *only,
+            _ => selected_status.as_deref().unwrap_or("todo"),
+        };
+        match status {
             todo::PROPOSED => vec![("y", "approve"), ("n", "decline"), ("⏎", "details"), ("e", "edit"), ("[ ]", "tabs")],
             "doing" => vec![("d", "done"), ("⏎", "details"), ("i", "back to to do"), ("e", "edit"), ("t", "add"), ("[ ]", "tabs")],
             "done" => vec![("⏎", "details"), ("d", "back to to do"), ("t", "add"), ("[ ]", "tabs")],
@@ -1561,7 +1569,7 @@ impl App {
                       ("P", "the pull requests window on the viewed session's repository (or your review requests)"), ("r", "refresh now"),
                       ("✓ ● ✗", "CI passing, running, failing"), ("approved", "review state: approved, changes (requested), review (required)")],
             _ => vec![("⏎", "the item's details: title, notes, why Claude proposed it, who filed it, when"),
-                      ("[ ]", "previous / next tab: Proposed · To do · In progress · Done"),
+                      ("[ ]", "previous / next tab: Open (Proposed, To do and In progress together) · Proposed · To do · In progress · Done"),
                       ("h", "hand the item to Claude: the session on screen if it is on the item's project (a parallel clone too), else the project's running session, or a new one"),
                       ("e", "edit the title and notes in your editor, in a popup (first line: the title)"),
                       ("y n", "approve or decline an idea Claude proposed; a declined idea is not proposed again"),

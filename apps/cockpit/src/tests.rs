@@ -1492,7 +1492,7 @@ fn a_quiet_session_starts_with_open() {
 fn each_todo_tab_starts_with_the_key_that_moves_its_items_along() {
     let fixture = Fixture::new();
     let mut app = fixture.app();
-    for (tab, first) in [(0, "y"), (1, "h"), (2, "d"), (3, "⏎")] {
+    for (tab, first) in [(1, "y"), (2, "h"), (3, "d"), (4, "⏎")] {
         app.todo_tab = tab;
         assert_eq!(app.todo_hints()[0].0, first, "tab {tab}");
     }
@@ -1576,6 +1576,35 @@ fn the_dotfiles_session_gets_a_blocked_report_framed_as_data() {
 fn propose(fixture: &Fixture, title: &str, why: &str) {
     let _ = fs::remove_file(crate::paths::todo_updates());
     queue_update(json!({"action": "propose", "text": title, "why": why, "notes": "line one\nline two", "session": "s1"}), &fixture.root);
+}
+
+#[test]
+fn the_open_tab_lists_proposed_to_do_and_in_progress_items_but_not_done_ones() {
+    let fixture = Fixture::new();
+    propose(&fixture, "proposed item", "why");
+    let mut app = fixture.app();
+    app.todos.apply_updates();
+    app.todos.add("p", "/p", "to do item");
+    let doing = app.todos.add("p", "/p", "doing item");
+    app.todos.set_status(&doing, "doing", "");
+    let done = app.todos.add("p", "/p", "done item");
+    app.todos.set_status(&done, "done", "");
+    app.todo_tab = 0;
+    app.build();
+    let mut shown: Vec<String> = app.todo_entries.iter().map(Entry::status).collect();
+    shown.sort();
+    assert_eq!(shown, ["doing", crate::todo::PROPOSED, "todo"]);
+}
+
+#[test]
+fn the_open_tab_hints_follow_the_selected_items_status() {
+    let fixture = Fixture::new();
+    propose(&fixture, "proposed item", "why");
+    let mut app = fixture.app();
+    app.todos.apply_updates();
+    app.todo_tab = 0;
+    app.build();
+    assert_eq!(app.todo_hints()[0].0, "y");
 }
 
 #[test]
