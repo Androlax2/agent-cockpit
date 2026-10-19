@@ -4,7 +4,11 @@
 //!     claude-todo start <id>          mark it in progress
 //!     claude-todo done <id>           mark it done
 //!     claude-todo todo <id>           back to to do
-//!     claude-todo add '<text>'        a new item for this directory's project
+//!     claude-todo add '<title>' [--notes '<details>']
+//!                                     a new item for this directory's project
+//!     claude-todo propose '<title>' --why '<reason>' [--notes '<details>']
+//!                                     an idea for Theo to approve or decline (the Proposed tab)
+//!     claude-todo show <id>           an item with its notes and, for a proposal, why
 //!
 //! An id is a typed item's 8 hex characters, or a GitHub issue as owner/repo#12. The list is read
 //! from ~/.local/state/claude-sessions/todo.json; the sandbox cannot write there, so changes are
@@ -23,7 +27,10 @@ const USAGE: &str = "    claude-todo list [--all]        the items of this direc
     claude-todo start <id>          mark it in progress
     claude-todo done <id>           mark it done
     claude-todo todo <id>           back to to do
-    claude-todo add '<text>'        a new item for this directory's project";
+    claude-todo add '<title>' [--notes '<details>']
+    claude-todo propose '<title>' --why '<reason>' [--notes '<details>']
+                                    an idea for Theo to approve or decline; one he declined is not filed again
+    claude-todo show <id>           an item with its notes";
 
 fn todo_path() -> PathBuf {
     std::env::var("CLAUDE_TODO_PATH").map(PathBuf::from).unwrap_or_else(|_| paths::todo())
@@ -47,12 +54,60 @@ fn append(mut update: serde_json::Map<String, Value>) -> std::io::Result<()> {
 }
 
 fn glyph(status: &str) -> &'static str {
-    match status { "doing" => "◐", "done" => "✓", _ => "•" }
+    match status { "doing" => "◐", "done" => "✓", "proposed" => "?", _ => "•" }
+}
+
+fn read_list() -> Value {
+    let data = fs::read_to_string(todo_path()).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()).unwrap_or(json!({}));
+    if data.is_array() { json!({"items": data, "issues": {}}) } else { data }
+}
+
+fn show(id: &str) -> i32 {
+    let data = read_list();
+    let Some(item) = data.get("items").and_then(Value::as_array).into_iter().flatten().find(|item| item.get("id").and_then(Value::as_str) == Some(id)) else {
+        eprintln!("claude-todo: no item {id}");
+        return 1;
+    };
+    let field = |key: &str| item.get(key).and_then(Value::as_str).unwrap_or("").to_string();
+    println!("{} {id}  {}  {}: {}", glyph(&field("status")), field("status"), field("project"), field("text"));
+    for (label, key) in [("Why", "why"), ("Notes", "notes")] {
+        let text = field(key);
+        if !text.is_empty() {
+            println!("\n{label}:\n{text}");
+        }
+    }
+    0
+}
+
+/// The value after `--flag` in the arguments, if any.
+fn option(arguments: &[&str], flag: &str) -> Option<String> {
+    arguments.iter().position(|word| *word == flag).and_then(|at| arguments.get(at + 1)).map(|value| value.to_string())
+}
+
+fn file(action: &str, title: &str, why: Option<String>, notes: Option<String>) -> i32 {
+    if action == "propose" && read_list().get("declined").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str)
+        .any(|declined| collapse(declined).to_lowercase() == collapse(title).to_lowercase()) {
+        println!("Theo already declined this idea; it is not filed again.");
+        return 0;
+    }
+    let mut update = serde_json::Map::new();
+    update.insert("action".into(), json!(action));
+    update.insert("text".into(), json!(collapse(title).chars().take(300).collect::<String>()));
+    update.insert("cwd".into(), json!(std::env::current_dir().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default()));
+    for (key, value) in [("why", why), ("notes", notes)] {
+        if let Some(value) = value {
+            update.insert(key.into(), json!(value.chars().take(4000).collect::<String>()));
+        }
+    }
+    match append(update) {
+        Ok(()) if action == "propose" => { println!("Proposed to Theo in {}'s list (he approves or declines it).", project()); 0 }
+        Ok(()) => { println!("Added to {}'s list.", project()); 0 }
+        Err(error) => { eprintln!("claude-todo: {error}"); 1 }
+    }
 }
 
 fn list(everything: bool) -> i32 {
-    let data = fs::read_to_string(todo_path()).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()).unwrap_or(json!({}));
-    let data = if data.is_array() { json!({"items": data, "issues": {}}) } else { data };
+    let data = read_list();
     let here = project();
     let mut shown = 0;
     for item in data.get("items").and_then(Value::as_array).into_iter().flatten() {
@@ -62,8 +117,9 @@ fn list(everything: bool) -> i32 {
         }
         let status = item.get("status").and_then(Value::as_str).map(str::to_string)
             .unwrap_or_else(|| if item.get("sent").and_then(Value::as_bool).unwrap_or(false) { "doing".into() } else { "todo".into() });
-        println!("{} {}  {status:<5}  {item_project}: {}", glyph(&status), item.get("id").and_then(Value::as_str).unwrap_or(""),
-                 item.get("text").and_then(Value::as_str).unwrap_or(""));
+        let has_notes = item.get("notes").and_then(Value::as_str).is_some_and(|notes| !notes.is_empty());
+        println!("{} {}  {status:<8}  {item_project}: {}{}", glyph(&status), item.get("id").and_then(Value::as_str).unwrap_or(""),
+                 item.get("text").and_then(Value::as_str).unwrap_or(""), if has_notes { "  (notes: claude-todo show)" } else { "" });
         shown += 1;
     }
     for (key, value) in data.get("issues").and_then(Value::as_object).into_iter().flatten() {
@@ -96,16 +152,12 @@ fn main() {
                 Err(error) => { eprintln!("claude-todo: {error}"); 1 }
             }
         }
-        ["add", text] if !text.trim().is_empty() => {
-            let mut update = serde_json::Map::new();
-            update.insert("action".into(), json!("add"));
-            update.insert("text".into(), json!(collapse(text).chars().take(300).collect::<String>()));
-            update.insert("cwd".into(), json!(std::env::current_dir().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default()));
-            match append(update) {
-                Ok(()) => { println!("Added to {}'s list.", project()); 0 }
-                Err(error) => { eprintln!("claude-todo: {error}"); 1 }
-            }
-        }
+        ["show", id] if key.is_match(id) => show(id),
+        ["add", title, rest @ ..] if !title.trim().is_empty() && (rest.is_empty() || (rest.len() == 2 && rest[0] == "--notes")) =>
+            file("add", title, None, option(rest, "--notes")),
+        ["propose", title, rest @ ..] if !title.trim().is_empty() && option(rest, "--why").is_some_and(|why| !why.trim().is_empty())
+                                         && rest.len() % 2 == 0 && rest.chunks(2).all(|pair| pair[0] == "--why" || pair[0] == "--notes") =>
+            file("propose", title, option(rest, "--why"), option(rest, "--notes")),
         _ => { eprintln!("{USAGE}"); 2 }
     };
     std::process::exit(status);

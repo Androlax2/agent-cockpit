@@ -695,7 +695,7 @@ fn the_list_is_ordered_by_priority_across_typed_items_and_issues() {
 }
 
 #[test]
-fn enter_sends_to_the_running_session_or_starts_one_and_marks_it_in_progress() {
+fn h_sends_to_the_running_session_or_starts_one_and_marks_it_in_progress() {
     let fixture = Fixture::new();
     fixture.snapshot(json!([session(SESSION_A, "waiting", "runway", "/r/runway", 1)]));
     let mut app = fixture.app();
@@ -703,13 +703,16 @@ fn enter_sends_to_the_running_session_or_starts_one_and_marks_it_in_progress() {
     let postgres = app.todos.add("homelab", "/r/homelab", "bump postgres");
     app.build();
     app.focus_panel(3);
-    for index in [0, 1] {
-        app.panels[3].selected = index;
-        app.handle(Key::Enter, &mut FakeScreen::default());
+    // An item handed over moves to In progress: the next one is the first row of To do.
+    for _ in 0..2 {
+        app.build();
+        app.panels[3].selected = 0;
+        app.handle(Key::Char('h'), &mut FakeScreen::default());
     }
-    let calls = fixture.wait_for_calls("claude-sessions", 2);
-    assert_eq!(calls[0], format!("claude-sessions say {SESSION_A} add a healthcheck (todo {healthcheck}: when this is done, run claude-todo done {healthcheck})"));
-    assert_eq!(calls[1], format!("claude-sessions new /r/homelab bump postgres (todo {postgres}: when this is done, run claude-todo done {postgres})"));
+    let mut calls = fixture.wait_for_calls("claude-sessions", 2);
+    calls.sort();
+    assert_eq!(calls, [format!("claude-sessions new /r/homelab bump postgres (todo {postgres}: when this is done, run claude-todo done {postgres})"),
+                       format!("claude-sessions say {SESSION_A} add a healthcheck (todo {healthcheck}: when this is done, run claude-todo done {healthcheck})")]);
     assert!(TodoList::load().items.iter().all(|item| item.status() == "doing"));
 }
 
@@ -795,7 +798,7 @@ fn an_issue_without_a_local_checkout_says_so() {
     app.reviews.set_issues(vec![Issue { repository: "elsewhere".into(), full_repository: "o/elsewhere".into(), ..issue(3, "x", &[]) }]);
     app.build();
     app.focus_panel(3);
-    app.handle(Key::Enter, &mut FakeScreen::default());
+    app.handle(Key::Char('h'), &mut FakeScreen::default());
     assert!(app.message.contains("no local checkout of elsewhere"));
     assert!(fixture.calls("claude-sessions").is_empty());
 }
@@ -1143,4 +1146,75 @@ fn a_card_shows_its_unpushed_commits() {
     let app = fixture.app();
     let badges: Vec<String> = app.panels[1].lines.iter().flat_map(|line| line.right.iter().map(|part| part.text.clone())).collect();
     assert_eq!(badges.iter().filter(|badge| badge.starts_with('↑')).collect::<Vec<_>>(), ["↑2 unpushed"]);
+}
+
+fn propose(fixture: &Fixture, title: &str, why: &str) {
+    let updates = crate::paths::todo_updates();
+    fs::create_dir_all(updates.parent().unwrap()).unwrap();
+    let line = json!({"action": "propose", "text": title, "why": why, "notes": "line one\nline two", "cwd": fixture.root.display().to_string(), "session": "s1"});
+    fs::write(&updates, format!("{line}\n")).unwrap();
+}
+
+#[test]
+fn a_proposal_waits_in_its_own_tab_until_approved() {
+    let fixture = Fixture::new();
+    propose(&fixture, "cache the usage fetch", "it runs every minute");
+    let mut app = fixture.app();
+    app.todos.apply_updates();
+    app.build();
+    app.focus_panel(3);
+    assert!(texts(&app, 3).iter().all(|line| !line.contains("cache the usage fetch")), "shown in To do before approval");
+    app.handle(Key::Char('['), &mut FakeScreen::default());
+    assert!(texts(&app, 3).iter().any(|line| line.contains("cache the usage fetch")));
+    app.handle(Key::Char('y'), &mut FakeScreen::default());
+    let item = TodoList::load().items.into_iter().find(|item| item.text() == "cache the usage fetch").unwrap();
+    assert_eq!((item.status().as_str(), item.why().as_str(), item.notes().as_str()), ("todo", "it runs every minute", "line one\nline two"));
+}
+
+#[test]
+fn a_declined_proposal_is_not_filed_again() {
+    let fixture = Fixture::new();
+    propose(&fixture, "Rewrite in Go", "faster");
+    let mut app = fixture.app();
+    app.todos.apply_updates();
+    app.build();
+    app.focus_panel(3);
+    app.handle(Key::Char('['), &mut FakeScreen::default());
+    app.handle(Key::Char('n'), &mut FakeScreen::default());
+    propose(&fixture, "rewrite  in go", "still faster");
+    app.todos.apply_updates();
+    assert!(TodoList::load().items.is_empty());
+}
+
+#[test]
+fn a_session_cannot_turn_a_proposal_into_work() {
+    let fixture = Fixture::new();
+    propose(&fixture, "add telemetry", "insight");
+    let mut todos = TodoList::load();
+    todos.apply_updates();
+    let id = todos.items[0].id();
+    assert!(!todos.set_status(&id, "doing", "s1"));
+}
+
+#[test]
+fn the_editor_file_gives_back_a_title_and_notes() {
+    let text = crate::app::editor_text("Old title", "old notes", "because");
+    assert!(text.contains("# Why Claude proposed it:\n# because"));
+    let edited = text.replacen("Old title", "New title", 1).replacen("old notes", "## Steps\n1. this\n2. that", 1);
+    assert_eq!(crate::app::parse_editor_text(&edited), Some(("New title".into(), "## Steps\n1. this\n2. that".into())));
+    assert_eq!(crate::app::parse_editor_text("\n\n"), None);
+}
+
+#[test]
+fn e_saves_what_was_written_in_the_editor() {
+    let fixture = Fixture::new();
+    // The popup's editor: it rewrites the file given last.
+    fixture.shim("tmux", r#"for last; do :; done; printf 'Better title\n\nfirst note\n' > "$last""#);
+    let mut app = fixture.app();
+    let id = app.todos.add("p", "/p", "draft");
+    app.build();
+    app.focus_panel(3);
+    app.handle(Key::Char('e'), &mut FakeScreen::default());
+    let item = TodoList::load().items.into_iter().find(|item| item.id() == id).unwrap();
+    assert_eq!((item.text().as_str(), item.notes().as_str()), ("Better title", "first note"));
 }

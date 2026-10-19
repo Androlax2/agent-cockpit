@@ -2,6 +2,10 @@
 //! (todo, doing, done), in ~/.local/state/claude-sessions/todo.json. Sessions cannot write there
 //! (greywall): claude-todo appends their changes to updates.jsonl, which apply_updates checks.
 //!
+//! An item has a title (its "text") and notes. A session can also propose one (claude-todo
+//! propose, with why): it waits as "proposed" until Theo approves it (to do) or declines it; a
+//! declined title is remembered, so the same idea is not proposed again.
+//!
 //! The queue: items Theo marked (Q) for Claude to take up on its own. When a session of the item's
 //! project has waited idle at its prompt for a while, the column sends it the project's first
 //! queued item (highest priority, then oldest), one at a time per session (App::dispatch_queue).
@@ -20,10 +24,25 @@ pub const PRIORITY_NORMAL: i64 = 2;
 pub const PRIORITY_HIGH: i64 = 3;
 pub const PRIORITY_MAX: i64 = PRIORITY_NORMAL + 4; // + up to four times: ! !! !!! !!!!
 const STATUSES: [&str; 3] = ["todo", "doing", "done"];
+pub const PROPOSED: &str = "proposed";
+const NOTES_MAX: usize = 4000;
+const WHY_MAX: usize = 600;
+const DECLINED_KEPT: usize = 200;
 const DONE_KEPT_DAYS: i64 = 7;
 
 fn typed_id() -> Regex { Regex::new(r"^[0-9a-f]{8}$").unwrap() }
 fn issue_key() -> Regex { Regex::new(r"^[\w.-]+/[\w.-]+#\d+$").unwrap() }
+
+/// Notes and reasons keep their line breaks; every other control character goes.
+pub fn multiline(text: &str, limit: usize) -> String {
+    let kept: String = text.chars().map(|c| if c == '\n' || !c.is_control() { c } else { ' ' }).collect();
+    kept.trim().chars().take(limit).collect()
+}
+
+/// How two titles compare for "already declined": case and spacing aside.
+fn normalized(title: &str) -> String {
+    util::collapse(title).to_lowercase()
+}
 
 /// From an issue's labels: P0/P1/urgent/critical/high are high, P3/P4/low are low.
 pub fn issue_priority(labels: &[String]) -> i64 {
@@ -64,6 +83,9 @@ impl Item {
     pub fn created(&self) -> i64 { self.0.get("created").and_then(Value::as_i64).unwrap_or(0) }
     /// Who filed it when not Theo: "session <id>" for claude-todo add.
     pub fn source(&self) -> String { self.text_of("source") }
+    pub fn notes(&self) -> String { self.text_of("notes") }
+    /// Why a session proposed it, in its own words.
+    pub fn why(&self) -> String { self.text_of("why") }
     fn updated(&self) -> i64 { self.0.get("updated").and_then(Value::as_i64).unwrap_or(0) }
 }
 
@@ -138,6 +160,8 @@ pub struct TodoList {
     /// Keys of the items and issues queued for Claude. Apart from the items: an issue's entry is
     /// rewritten whole on each status change.
     pub queued: BTreeSet<String>,
+    /// Titles Theo declined when a session proposed them, newest last.
+    pub declined: Vec<String>,
 }
 
 impl TodoList {
@@ -165,7 +189,8 @@ impl TodoList {
         }).unwrap_or_default();
         let queued = data.get("queued").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str)
             .filter(|key| typed_id().is_match(key) || issue_key().is_match(key)).map(str::to_string).collect();
-        Self { items, issues, queued }
+        let declined = data.get("declined").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect();
+        Self { items, issues, queued, declined }
     }
 
     /// Queues the item or issue, or takes it out of the queue; true when it is now queued.
@@ -199,7 +224,7 @@ impl TodoList {
             items.iter().any(|item| &item.id() == key && item.status() != "done")
         });
         let items: Vec<Value> = self.items.iter().map(|item| Value::Object(item.0.clone())).collect();
-        if let Err(error) = util::write_json(&paths::todo(), &json!({"items": items, "issues": self.issues, "queued": self.queued})) {
+        if let Err(error) = util::write_json(&paths::todo(), &json!({"items": items, "issues": self.issues, "queued": self.queued, "declined": self.declined})) {
             util::log_event("WARN", &format!("cannot save the todo list: {error}"));
         }
     }
@@ -216,6 +241,44 @@ impl TodoList {
         let item = json!({"id": id, "project": project, "cwd": cwd, "priority": PRIORITY_NORMAL, "text": text, "created": now_secs(), "status": "todo"});
         self.items.push(Item(item.as_object().unwrap().clone()));
         id
+    }
+
+    /// Title and notes, as Theo wrote them in his editor.
+    pub fn edit(&mut self, id: &str, title: &str, notes: &str) -> bool {
+        let title: String = util::collapse(&without_controls(title)).chars().take(300).collect();
+        if title.is_empty() {
+            return false;
+        }
+        let Some(item) = self.items.iter_mut().find(|item| item.id() == id) else { return false };
+        item.0.insert("text".into(), json!(title));
+        item.0.insert("notes".into(), json!(multiline(notes, NOTES_MAX)));
+        self.save();
+        true
+    }
+
+    /// A proposal Theo wants: it joins the list to do.
+    pub fn approve(&mut self, id: &str) -> bool {
+        let Some(item) = self.items.iter_mut().find(|item| item.id() == id && item.status() == PROPOSED) else { return false };
+        item.0.insert("status".into(), json!("todo"));
+        item.0.insert("updated".into(), json!(now_secs()));
+        self.save();
+        true
+    }
+
+    /// A proposal Theo does not want: gone, and its title remembered so it is not proposed again.
+    pub fn decline(&mut self, id: &str) -> bool {
+        let Some(position) = self.items.iter().position(|item| item.id() == id && item.status() == PROPOSED) else { return false };
+        let item = self.items.remove(position);
+        self.declined.push(item.text());
+        let excess = self.declined.len().saturating_sub(DECLINED_KEPT);
+        self.declined.drain(..excess);
+        self.save();
+        true
+    }
+
+    pub fn was_declined(&self, title: &str) -> bool {
+        let title = normalized(title);
+        self.declined.iter().any(|declined| normalized(declined) == title)
     }
 
     pub fn remove(&mut self, id: &str) {
@@ -246,7 +309,8 @@ impl TodoList {
         if issue_key().is_match(key) {
             self.issues.insert(key.into(), json!({"status": status, "updated": now_secs(), "session": session}));
         } else {
-            let Some(item) = self.items.iter_mut().find(|item| item.id() == key) else { return false };
+            // A proposal becomes work only through Theo's approval, never a session's status change.
+            let Some(item) = self.items.iter_mut().find(|item| item.id() == key && item.status() != PROPOSED) else { return false };
             let session = if session.is_empty() { item.text_of("session") } else { session.to_string() };
             item.0.insert("status".into(), json!(status));
             item.0.insert("updated".into(), json!(now_secs()));
@@ -274,18 +338,29 @@ impl TodoList {
             let Some(update) = update.as_object() else { continue };
             let action = update.get("action").and_then(Value::as_str).unwrap_or("");
             let session: String = update.get("session").and_then(Value::as_str).unwrap_or("").chars().take(40).collect();
-            if action == "add" {
+            if action == "add" || action == "propose" {
                 let text = update.get("text").and_then(Value::as_str).unwrap_or("").trim().to_string();
                 let cwd = update.get("cwd").and_then(Value::as_str).unwrap_or("").to_string();
+                let field = |key: &str, limit: usize| multiline(update.get(key).and_then(Value::as_str).unwrap_or(""), limit);
+                if action == "propose" && self.was_declined(&text) {
+                    util::log_event("INFO", &format!("todo proposal already declined, dropped: {}", text.chars().take(60).collect::<String>()));
+                    continue;
+                }
                 if !text.is_empty() && std::path::Path::new(&cwd).is_dir() {
-                    let id = self.add(&project_name(&repository_root(&cwd)), &cwd, &text);
+                    let id = self.add_unsaved(&project_name(&repository_root(&cwd)), &cwd, &text);
                     // Any sandbox can file an item under any project: the panel says it came from a
                     // session, so Theo reads it before handing it on.
                     if let Some(item) = self.items.iter_mut().find(|item| item.id() == id) {
                         item.0.insert("source".into(), json!(if session.is_empty() { "a session".to_string() } else { format!("session {session}") }));
+                        item.0.insert("notes".into(), json!(field("notes", NOTES_MAX)));
+                        if action == "propose" {
+                            item.0.insert("status".into(), json!(PROPOSED));
+                            item.0.insert("why".into(), json!(field("why", WHY_MAX)));
+                        }
                     }
                     self.save();
-                    util::log_event("INFO", &format!("todo {id} added by a session: {}", text.chars().take(60).collect::<String>()));
+                    util::log_event("INFO", &format!("todo {id} {} by a session: {}", if action == "propose" { "proposed" } else { "added" },
+                                                     text.chars().take(60).collect::<String>()));
                     applied += 1;
                 }
             } else if STATUSES.contains(&action) {
@@ -311,10 +386,15 @@ mod tests {
 
     #[test]
     fn control_characters_never_reach_a_session() {
-        let mut todos = TodoList { items: Vec::new(), issues: Map::new(), queued: BTreeSet::new() };
+        let mut todos = TodoList { items: Vec::new(), issues: Map::new(), queued: BTreeSet::new(), declined: Vec::new() };
         let id = todos.add_unsaved("p", "/p", "fix typo\x1b[Z\x03\x03 now");
         let text = todos.items.iter().find(|item| item.id() == id).unwrap().text();
         assert!(!text.chars().any(char::is_control), "{text:?}");
+    }
+
+    #[test]
+    fn notes_keep_their_lines_and_lose_other_controls() {
+        assert_eq!(multiline("first\nsecond\x1b[2J", 100), "first\nsecond [2J");
     }
 
     #[test]

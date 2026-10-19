@@ -16,6 +16,7 @@ use ratatui::buffer::Buffer;
 use ratatui::style::{Color, Modifier, Style};
 use std::collections::HashMap;
 use std::io::{self, BufRead, Write};
+use std::fs;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -44,6 +45,11 @@ const QUEUE_CHECK_S: f64 = 30.0;
 const RESTORE_CHECK_S: f64 = 30.0;
 const COSTS_LABEL: &str = "At API prices";
 const CLAUDE_LABEL: &str = "Claude";
+/// The Todo panel's tabs: the statuses each one shows.
+const TODO_TABS: [(&str, &str); 4] = [("Proposed", todo::PROPOSED), ("To do", "todo"), ("In progress", "doing"), ("Done", "done")];
+const TODO_TAB_TO_DO: usize = 1;
+/// What follows this line in the todo editor is help, left out of the item.
+const EDITOR_HELP_MARK: &str = "#── everything from this line on is left out ──";
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 pub const EFFORT_LEVELS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
 const PANEL_NAMES: [&str; 4] = ["Status", "Sessions", "Pull requests", "Todo"];
@@ -330,6 +336,9 @@ pub struct App {
     pub(crate) review_rows: Vec<Review>,
     pub todo_entries: Vec<Entry>,
     pub(crate) todo_scope: String,
+    /// The Todo tab shown (TODO_TABS), and how many entries each holds.
+    pub(crate) todo_tab: usize,
+    pub(crate) todo_counts: [usize; 4],
     pub(crate) hit_lines: HashMap<u16, (usize, Option<usize>)>,
     pub(crate) hit_actions: HashMap<u16, (u16, u16, &'static str)>,
 }
@@ -343,7 +352,7 @@ impl App {
             help_open: false, message: String::new(), labelled: Default::default(), menu: None, restore: Vec::new(),
             focus_waiting: false, held: Vec::new(), held_checked: 0.0, queue_checked: 0.0, gaming: util::gaming, restore_checked: 0.0, start_files: Vec::new(),
             width: DEFAULT_COLUMN_WIDTH, sessions: Vec::new(), windows: Vec::new(), review_rows: Vec::new(), todo_entries: Vec::new(),
-            todo_scope: String::new(), hit_lines: HashMap::new(), hit_actions: HashMap::new(),
+            todo_scope: String::new(), todo_tab: TODO_TAB_TO_DO, todo_counts: [0; 4], hit_lines: HashMap::new(), hit_actions: HashMap::new(),
         }
     }
 
@@ -1009,9 +1018,20 @@ impl App {
             entries.push(Entry::Issue { issue, status, priority });
         }
         entries.sort_by(todo::todo_order);
+        for (index, (_, status)) in TODO_TABS.iter().enumerate() {
+            self.todo_counts[index] = entries.iter().filter(|entry| entry.status() == *status).count();
+        }
+        let shown_status = TODO_TABS[self.todo_tab].1;
+        entries.retain(|entry| entry.status() == shown_status);
         let mut lines = Vec::new();
         if entries.is_empty() {
-            lines.push(Line::new(vec![segment(0, "Nothing to do. t adds an item for the viewed project.", dim(FG_DARK))]));
+            let empty = match shown_status {
+                todo::PROPOSED => "No idea from Claude waiting for you. ] next tab.",
+                "doing" => "Nothing in progress. ] next tab.",
+                "done" => "Nothing done in the last 7 days.",
+                _ => "Nothing to do. t adds an item for the viewed project; [ ] switch tabs.",
+            };
+            lines.push(Line::new(vec![segment(0, empty, dim(FG_DARK))]));
         }
         for (index, entry) in entries.iter().enumerate() {
             let status = entry.status();
@@ -1021,6 +1041,7 @@ impl App {
             let start = 2 + if mark.is_empty() { 0 } else { width_of(&mark) as u16 + 1 };
             let (glyph, glyph_style) = match status.as_str() {
                 "doing" => ("◐", bold(BLUE)),
+                todo::PROPOSED => ("?", bold(MAGENTA)),
                 "done" => ("✓", dim(GREEN)),
                 _ => ("•", bold(YELLOW)),
             };
@@ -1060,13 +1081,22 @@ impl App {
         panel.lines = lines;
     }
 
+    /// The project, then the tabs with their counts, the shown one in brackets.
     fn todo_subtitle(&self) -> String {
-        let doing = self.todo_entries.iter().filter(|e| e.status() == "doing").count();
-        let waiting = self.todo_entries.iter().filter(|e| e.status() == "todo").count();
-        let queued = self.todo_entries.iter().filter(|e| e.status() == "todo" && self.todos.is_queued(&e.key())).count();
         let scope = if self.todo_scope.is_empty() { "all projects" } else { self.todo_scope.as_str() };
+        let tabs: Vec<String> = TODO_TABS.iter().enumerate().map(|(index, (name, _))| {
+            let count = self.todo_counts[index];
+            if index == self.todo_tab { format!("[{name} {count}]") } else { format!("{name} {count}") }
+        }).collect();
+        let queued = self.todos.queued.len();
         let queue = if queued > 0 { format!(" · {queued} queued") } else { String::new() };
-        format!("{scope} · {doing} in progress · {waiting} to do{queue}")
+        format!("{scope} · {}{queue}", tabs.join(" · "))
+    }
+
+    fn switch_todo_tab(&mut self, step: isize) {
+        self.todo_tab = (self.todo_tab as isize + step).rem_euclid(TODO_TABS.len() as isize) as usize;
+        self.panels[3].selected = 0;
+        self.build_todo();
     }
 
     pub(crate) fn handle_todo(&mut self, key: Key, screen: &mut dyn Screen) -> String {
@@ -1082,14 +1112,52 @@ impl App {
                 if directory.is_empty() {
                     return String::new();
                 }
-                let text = input_line(screen, &format!("to do in {} (Enter adds, empty cancels)> ", project_name(&directory)));
-                if text.is_empty() {
-                    return String::new();
-                }
+                let Some((title, notes)) = edit_in_popup(&format!("to do in {}", project_name(&directory)), "", "", "") else {
+                    return "nothing added".into();
+                };
                 let project = viewed.map(|s| s.project).unwrap_or_else(|| project_name(&directory));
-                self.todos.add(&project, &directory, &text);
+                let id = self.todos.add(&project, &directory, &title);
+                if !notes.is_empty() {
+                    self.todos.edit(&id, &title, &notes);
+                }
+                self.todo_tab = TODO_TAB_TO_DO;
                 format!("added to {}", project_name(&directory))
             }
+            Key::Char('[') => {
+                self.switch_todo_tab(-1);
+                String::new()
+            }
+            Key::Char(']') => {
+                self.switch_todo_tab(1);
+                String::new()
+            }
+            Key::Char('e') => match entry {
+                Some(Entry::Typed(item)) => match edit_in_popup(&format!("edit · {}", item.project()), &item.text(), &item.notes(), &item.why()) {
+                    Some((title, notes)) if self.todos.edit(&item.id(), &title, &notes) => "saved".into(),
+                    _ => "unchanged".into(),
+                },
+                Some(Entry::Issue { .. }) => "an issue is edited on GitHub".into(),
+                None => String::new(),
+            },
+            Key::Char('y') => match entry {
+                Some(Entry::Typed(item)) if item.status() == todo::PROPOSED => {
+                    self.todos.approve(&item.id());
+                    "approved: it is in To do now".into()
+                }
+                _ => "y approves a proposal (Proposed tab)".into(),
+            },
+            Key::Char('n') => match entry {
+                Some(Entry::Typed(item)) if item.status() == todo::PROPOSED => {
+                    self.todos.decline(&item.id());
+                    "declined: Claude will not propose it again".into()
+                }
+                _ => "n declines a proposal (Proposed tab)".into(),
+            },
+            Key::Char('h') => match entry {
+                Some(entry) if entry.status() == todo::PROPOSED => "approve it first (y)".into(),
+                Some(entry) => self.hand_to_claude(&entry),
+                None => String::new(),
+            },
             Key::Char('x') => match entry {
                 Some(Entry::Typed(item)) => {
                     self.todos.remove(&item.id());
@@ -1119,7 +1187,10 @@ impl App {
                 None => String::new(),
             },
             Key::Enter => match entry {
-                Some(entry) => self.hand_to_claude(&entry),
+                Some(entry) => {
+                    show_in_popup(&todo_details(&entry));
+                    String::new()
+                }
                 None => String::new(),
             },
             Key::Char('Q') => match entry {
@@ -1169,7 +1240,8 @@ impl App {
             0 => vec![("⏎", "details"), ("r", "refetch"), ("o", "status page")],
             1 => self.sessions_hints(),
             2 => vec![("⏎", "open"), ("c", "Claude review"), ("P", "list"), ("r", "refresh")],
-            _ => vec![("⏎", "to Claude"), ("Q", "queue"), ("t", "add"), ("i", "in progress"), ("d", "done"), ("+", "priority"), ("x", "remove")],
+            _ if self.todo_tab == 0 => vec![("⏎", "details"), ("y", "approve"), ("n", "decline"), ("e", "edit"), ("[ ]", "tabs")],
+            _ => vec![("⏎", "details"), ("h", "to Claude"), ("e", "edit"), ("t", "add"), ("Q", "queue"), ("i", "doing"), ("d", "done"), ("[ ]", "tabs")],
         }
     }
 
@@ -1182,15 +1254,19 @@ impl App {
                       ("c", "a Claude session reviewing it, in its own clone of the repository"),
                       ("P", "the pull requests window on the viewed session's repository (or your review requests)"), ("r", "refresh now"),
                       ("✓ ● ✗", "CI passing, running, failing"), ("approved", "review state: approved, changes (requested), review (required)")],
-            _ => vec![("⏎", "hand the item to Claude: the project's running session, or a new one"),
+            _ => vec![("⏎", "the item's details: title, notes, why Claude proposed it, who filed it, when"),
+                      ("[ ]", "previous / next tab: Proposed · To do · In progress · Done"),
+                      ("h", "hand the item to Claude: the project's running session, or a new one"),
+                      ("e", "edit the title and notes in your editor, in a popup (first line: the title)"),
+                      ("y n", "approve or decline an idea Claude proposed; a declined idea is not proposed again"),
                       ("Q", "queue it (again: unqueue): a session of its project idle for 5 min at its prompt takes the first queued item, by priority, one at a time"),
-                      ("t", "add an item for the viewed session's project (or pick a project)"),
-                      ("i", "mark in progress (Enter does it too); i again: back to to do"),
+                      ("t", "add an item for the viewed session's project (or pick a project), title and notes in your editor"),
+                      ("i", "mark in progress (h does it too); i again: back to to do"),
                       ("d", "mark done, or back to to do; done items stay 7 days, dimmed at the bottom"),
                       ("+", "raise a typed item's priority: ! then !! up to !!!!"), ("-", "lower it"), ("x", "remove a typed item"),
                       ("! ↓", "raised and low priority; an issue's comes from its labels (P0/P1/urgent/high, P3/P4/low)"),
-                      ("• ◐ ✓", "to do · in progress · done; ◇ an open GitHub issue still to do"),
-                      ("", "Claude marks items itself with claude-todo: start, done, add")],
+                      ("? • ◐ ✓", "proposed · to do · in progress · done; ◇ an open GitHub issue still to do"),
+                      ("", "Claude marks items itself with claude-todo (start, done, add) and proposes ideas (propose)")],
         }
     }
 
@@ -1648,6 +1724,72 @@ fn pick_past_session(past: &[(PastSession, String)]) -> Option<String> {
 }
 
 /// A line typed in the plain terminal, outside the column's screen.
+/// The editor's file: the title on the first line, the notes below, then help (Claude's reason
+/// for a proposal included) that is left out when read back.
+pub(crate) fn editor_text(title: &str, notes: &str, why: &str) -> String {
+    let mut text = format!("{title}\n\n{notes}\n\n{EDITOR_HELP_MARK}\n# First line: the title. Below it: the notes, as long as needed.\n# Save and quit to keep it; an empty title cancels.\n");
+    if !why.is_empty() {
+        text.push_str(&format!("# Why Claude proposed it:\n# {}\n", why.replace('\n', "\n# ")));
+    }
+    text
+}
+
+/// Title and notes back from the editor's file; None for an empty title.
+pub(crate) fn parse_editor_text(text: &str) -> Option<(String, String)> {
+    let body = text.split(EDITOR_HELP_MARK).next().unwrap_or("");
+    let mut lines = body.lines().skip_while(|line| line.trim().is_empty());
+    let title = lines.next()?.trim().to_string();
+    if title.is_empty() {
+        return None;
+    }
+    let notes = lines.collect::<Vec<_>>().join("\n").trim().to_string();
+    Some((title, notes))
+}
+
+/// Theo's editor ($EDITOR, else nvim) in a tmux popup over the cockpit, on a file of the runtime
+/// folder; the column waits for it to close.
+fn edit_in_popup(heading: &str, title: &str, notes: &str, why: &str) -> Option<(String, String)> {
+    let path = crate::paths::runtime_dir().join(format!("claude-todo-{}.md", util::token_hex(4)));
+    fs::write(&path, editor_text(title, notes, why)).ok()?;
+    let _ = Command::new("tmux").args(["display-popup", "-E", "-w", "80%", "-h", "70%", "-T", &format!(" {heading} · save and quit keeps it ")])
+        .args(["sh", "-c", "exec \"${EDITOR:-nvim}\" \"$1\"", "sh"]).arg(&path).status();
+    let text = fs::read_to_string(&path).unwrap_or_default();
+    let _ = fs::remove_file(&path);
+    parse_editor_text(&text)
+}
+
+/// Read-only text in a tmux popup (less: q closes it).
+fn show_in_popup(text: &str) {
+    let path = crate::paths::runtime_dir().join(format!("claude-todo-{}.txt", util::token_hex(4)));
+    if fs::write(&path, text).is_err() {
+        return;
+    }
+    let _ = Command::new("tmux").args(["display-popup", "-E", "-w", "70%", "-h", "60%", "-T", " todo · q closes "])
+        .args(["less", "-R", "--quit-if-one-screen", "--no-init"]).arg(&path).status();
+    let _ = fs::remove_file(&path);
+}
+
+/// What Enter shows for an item or an issue.
+pub(crate) fn todo_details(entry: &Entry) -> String {
+    match entry {
+        Entry::Typed(item) => {
+            let status = match item.status().as_str() { todo::PROPOSED => "proposed by Claude", "doing" => "in progress", "done" => "done", _ => "to do" };
+            let created = chrono::DateTime::from_timestamp(item.created(), 0).map(|time| time.with_timezone(&chrono::Local).format("%d/%m %H:%M").to_string()).unwrap_or_default();
+            let filed = if item.source().is_empty() { "you".to_string() } else { format!("Claude ({})", item.source()) };
+            let mut text = format!("{}\n\n{} · {status} · filed by {filed} on {created}\n", item.text(), item.project());
+            if !item.why().is_empty() {
+                text.push_str(&format!("\nWhy Claude proposed it\n{}\n", item.why()));
+            }
+            let notes = item.notes();
+            text.push_str(&format!("\nNotes\n{}\n", if notes.is_empty() { "(none: e adds some)" } else { notes.as_str() }));
+            text.push_str(if item.status() == todo::PROPOSED { "\nIn the column: y approve · n decline · e edit\n" } else { "\nIn the column: e edit · h hand to Claude · d done\n" });
+            text
+        }
+        Entry::Issue { issue, status, .. } => format!("{}#{} {}\n\n{status} · labels: {}\n\n{}\n", issue.repository, issue.number, issue.title,
+                                                       issue.labels.join(", "), issue.url),
+    }
+}
+
 fn input_line(screen: &mut dyn Screen, prompt: &str) -> String {
     screen.outside(&mut || {
         print!("\n  {prompt}");

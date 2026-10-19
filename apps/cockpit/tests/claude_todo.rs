@@ -52,3 +52,28 @@ fn list_shows_the_items_of_this_directorys_repository() {
     let listed_all = stdout(&claude_todo(&sandbox, &["list", "--all"], &checkout));
     assert!(listed_all.contains("4567cdef"), "{listed_all}");
 }
+
+#[test]
+fn propose_files_an_idea_with_why_and_notes() {
+    let sandbox = Sandbox::new();
+    let output = claude_todo(&sandbox, &["propose", "Cache the usage fetch", "--why", "it runs every minute", "--notes", "use the ETag"], &sandbox.root);
+    assert_eq!(output.status.code(), Some(0));
+    let update = &updates(&sandbox)[0];
+    assert_eq!((update["action"].as_str(), update["why"].as_str(), update["notes"].as_str()),
+               (Some("propose"), Some("it runs every minute"), Some("use the ETag")));
+}
+
+#[test]
+fn propose_without_a_reason_is_refused() {
+    let sandbox = Sandbox::new();
+    assert_eq!(claude_todo(&sandbox, &["propose", "Cache it"], &sandbox.root).status.code(), Some(2));
+}
+
+#[test]
+fn an_idea_theo_declined_is_not_proposed_again() {
+    let sandbox = Sandbox::new();
+    fs::write(sandbox.state.join("todo.json"), json!({"items": [], "declined": ["Rewrite in Go"]}).to_string()).unwrap();
+    let output = claude_todo(&sandbox, &["propose", "rewrite in go", "--why", "faster"], &sandbox.root);
+    assert!(stdout(&output).contains("already declined"), "{}", stdout(&output));
+    assert!(!sandbox.root.join("updates.jsonl").exists());
+}
