@@ -52,7 +52,8 @@
 #                                colour the viewer's title line by the viewed session's state (the sidebar)
 #   claude-sessions focus-viewer move the cursor into the viewer pane (the sidebar's l / Right)
 #   claude-sessions prepare      create the manager's tmux session without a window (login autostart)
-#   claude-sessions reload       restart the sidebar in place (after editing it)
+#   claude-sessions reload       restart the sidebar in place (after editing it), and the OSD daemon
+#                                when it runs an older build than the one on disk
 #   claude-sessions layout       reapply the sidebar width
 #   claude-sessions reset        close the manager and forget every tracked session; running
 #                                Claude sessions themselves are left alone
@@ -833,6 +834,41 @@ launch_detached() { # dir claude-arguments...
         fish -ic 'claude $argv; or claude-sessions log manager ERROR "claude exited with status $status in $PWD"' -- "$@"
 }
 
+# The OSD daemon (osd.service) keeps running the build it started with: make cockpit replaces the
+# binary, not the process, so the daemon's fixes were not live after an apply until a manual
+# restart. reload restarts it when its build is older than the one on disk, once no approval is
+# open: a restart forgets the approval the daemon shows (its pane and window would stay), and the
+# apply itself often runs in one.
+OSD_BINARY="${CLAUDE_SESSIONS_OSD_BINARY:-$HOME/dotfiles/apps/target/release/osd}"
+
+osd_is_stale() {
+    local pid running_for built
+    pid=$(systemctl --user show -p MainPID --value osd.service 2>/dev/null)
+    [[ $pid =~ ^[1-9][0-9]*$ ]] || return 1
+    running_for=$(ps -o etimes= -p "$pid" 2>/dev/null | tr -d ' ')
+    built=$(stat -c %Y "$OSD_BINARY" 2>/dev/null)
+    [[ $running_for =~ ^[0-9]+$ && $built =~ ^[0-9]+$ ]] || return 1
+    (( built > $(date +%s) - running_for ))
+}
+
+restart_stale_osd() {
+    osd_is_stale || return 0
+    echo "The OSD daemon runs an older build: it restarts once no approval is open."
+    log_event INFO manager "osd.service runs a build older than $OSD_BINARY: restart once no approval is open"
+    setsid -f "$0" restart-osd-when-idle >/dev/null 2>&1
+}
+
+restart_osd_when_idle() {
+    while tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -q '^claude-run-'; do
+        sleep 2
+    done
+    if systemctl --user restart osd.service; then
+        log_event INFO manager "osd.service restarted on its new build"
+    else
+        log_event ERROR manager "osd.service did not restart: systemctl --user restart osd.service by hand"
+    fi
+}
+
 # The morning digest (the sidebar's D, and the first time the cockpit opens each day): yesterday's
 # sessions and cost, today so far, plan usage, who waits for you, the pull requests. Any key goes
 # back to the session that was in the pane.
@@ -1477,7 +1513,9 @@ case ${1:-attach} in
     reload)
         ensure_manager
         tmux respawn-pane -k -t "$(sidebar_pane)" claude-sessions-sidebar
+        restart_stale_osd
         ;;
+    restart-osd-when-idle) restart_osd_when_idle ;;
     focus-viewer) focus_viewer ;;
     layout) ensure_manager && apply_layout ;;
     reset)

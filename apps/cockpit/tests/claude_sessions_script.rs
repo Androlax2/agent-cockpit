@@ -1537,3 +1537,49 @@ fn apply_dotfiles_refuses_a_live_checkout_with_uncommitted_changes() {
     assert_eq!(output.status.code(), Some(1));
     assert!(stderr(&output).contains("uncommitted changes"));
 }
+
+/// A daemon that started `running_for` seconds ago, and a build on disk `built_ago` seconds old.
+fn osd_daemon(manager: &Manager, running_for: u64, built_ago: u64) -> String {
+    manager.sandbox.shim("systemctl", r#"[[ $* == *"show -p MainPID"* ]] && echo 4242; exit 0"#);
+    manager.sandbox.shim("ps", &format!("echo '  {running_for}'"));
+    let binary = manager.sandbox.root.join("osd-build");
+    fs::write(&binary, "").unwrap();
+    let built = std::time::SystemTime::now() - std::time::Duration::from_secs(built_ago);
+    fs::File::options().write(true).open(&binary).unwrap().set_modified(built).unwrap();
+    path_str(&binary)
+}
+
+#[test]
+fn reload_restarts_an_osd_daemon_older_than_its_build() {
+    let manager = Manager::new();
+    let binary = osd_daemon(&manager, 3600, 60);
+    let output = manager.run(&["reload"], &[("CLAUDE_SESSIONS_OSD_BINARY", &binary)]);
+    assert!(stdout(&output).contains("older build"), "{}", stdout(&output));
+    assert!(manager.calls("setsid").iter().any(|call| call.ends_with("restart-osd-when-idle")), "{:?}", manager.calls("setsid"));
+}
+
+#[test]
+fn reload_leaves_an_osd_daemon_on_its_build_alone() {
+    let manager = Manager::new();
+    let binary = osd_daemon(&manager, 60, 3600);
+    manager.run(&["reload"], &[("CLAUDE_SESSIONS_OSD_BINARY", &binary)]);
+    assert!(manager.calls("setsid").is_empty(), "{:?}", manager.calls("setsid"));
+}
+
+#[test]
+fn the_osd_daemon_restarts_only_once_no_approval_is_open() {
+    // A restart forgets the approval it shows: its pane and window would stay.
+    let manager = Manager::new();
+    osd_daemon(&manager, 3600, 60);
+    let approvals = manager.sandbox.root.join("approvals-left");
+    fs::write(&approvals, "2").unwrap();
+    // The fake tmux lists one approval for the first two looks, then none.
+    manager.sandbox.shim("tmux", &format!(r#"if [[ $1 == list-sessions ]]; then
+  left=$(cat {0}); if (( left > 0 )); then echo claude-run-0123456789ab; echo $(( left - 1 )) > {0}; fi; exit 0
+fi"#, approvals.display()));
+    let output = finish(manager.sandbox.command(bin().join("claude-sessions"), &[]).arg("restart-osd-when-idle")
+        .stdout(std::process::Stdio::piped()).spawn().unwrap(), std::time::Duration::from_secs(15));
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(manager.calls("tmux").iter().filter(|call| call.starts_with("tmux list-sessions")).count(), 3);
+    assert!(manager.calls("systemctl").iter().any(|call| call == "systemctl --user restart osd.service"), "{:?}", manager.calls("systemctl"));
+}
