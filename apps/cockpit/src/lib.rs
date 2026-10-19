@@ -5,6 +5,7 @@ pub mod approval;
 pub mod costs;
 pub mod errors;
 pub mod paths;
+pub mod prompts;
 pub mod reviews;
 pub mod sessions;
 pub mod status;

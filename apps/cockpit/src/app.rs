@@ -10,6 +10,7 @@ use crate::sessions::{self, CONTEXT_COMPACT_AT, FOCUS_STATES, History, PastSessi
 use crate::status::{self, ClaudeStatus};
 use crate::todo::{self, Entry, TodoList};
 use crate::usage::{self, BudgetAlerts, Refresher, Window};
+use crate::prompts;
 use crate::util::{self, age, current_session, manager, manager_in_background, money, now, project_name};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind};
 use ratatui::buffer::Buffer;
@@ -69,9 +70,10 @@ const GLOBAL_HELP: [(&str, &str); 17] = [
     ("l →  ←", "into the session from any panel; ← from the session comes back"),
     ("q ^C", "close the manager window; sessions keep running"),
 ];
-const LEGEND: [(&str, &str); 12] = [
+const LEGEND: [(&str, &str); 13] = [
     ("●", "working"), ("○", "waiting for you"), ("!", "needs you: permission or question"), ("·", "running, state unknown"),
     ("▌", "shown in the session pane"), ("⚲", "pinned"), ("⇅", "remote controlled"),
+    ("✉ 2 queued", "messages waiting for the end of its turn, sent one per turn (m, Alt+Q; M drops them)"),
     ("↑2 unpushed", "commits on no remote yet: U pushes the branch"),
     ("▭ terminal", "started with \"this terminal\": no ^R, restore, queue, error hand-off or ask-to-run"),
     ("⬆", "Claude updated itself: r restarts on the new version"),
@@ -338,6 +340,9 @@ pub struct App {
     pub(crate) todo_scope: String,
     /// The Todo tab shown (TODO_TABS), and how many entries each holds.
     pub(crate) todo_tab: usize,
+    /// session -> when the column last sent it a queued prompt: the next one waits for a turn that
+    /// ended after that.
+    pub(crate) prompts_sent: HashMap<String, i64>,
     pub(crate) todo_counts: [usize; 4],
     pub(crate) hit_lines: HashMap<u16, (usize, Option<usize>)>,
     pub(crate) hit_actions: HashMap<u16, (u16, u16, &'static str)>,
@@ -352,7 +357,7 @@ impl App {
             help_open: false, message: String::new(), labelled: Default::default(), menu: None, restore: Vec::new(),
             focus_waiting: false, held: Vec::new(), held_checked: 0.0, queue_checked: 0.0, gaming: util::gaming, restore_checked: 0.0, start_files: Vec::new(),
             width: DEFAULT_COLUMN_WIDTH, sessions: Vec::new(), windows: Vec::new(), review_rows: Vec::new(), todo_entries: Vec::new(),
-            todo_scope: String::new(), todo_tab: TODO_TAB_TO_DO, todo_counts: [0; 4], hit_lines: HashMap::new(), hit_actions: HashMap::new(),
+            todo_scope: String::new(), todo_tab: TODO_TAB_TO_DO, todo_counts: [0; 4], prompts_sent: HashMap::new(), hit_lines: HashMap::new(), hit_actions: HashMap::new(),
         }
     }
 
@@ -376,6 +381,26 @@ impl App {
         self.build();
         self.push_viewed_state();
         self.dispatch_queue();
+        self.dispatch_prompts();
+    }
+
+    /// Each session whose turn has ended gets its oldest queued prompt (prompts.rs), one per turn:
+    /// the next waits until the session worked and stopped again.
+    pub fn dispatch_prompts(&mut self) {
+        let ready: Vec<Session> = self.sessions.iter()
+            .filter(|session| session.state == "waiting" && session.since > self.prompts_sent.get(&session.session).copied().unwrap_or(0))
+            .cloned().collect();
+        for session in ready {
+            let Some((text, path)) = prompts::oldest(&session.session) else { continue };
+            let error = manager(&["say", &session.session, &text]);
+            if !error.is_empty() {
+                util::log_event("WARN", &format!("queued prompt for {} not sent yet: {error}", session.project));
+                continue;
+            }
+            let _ = std::fs::remove_file(&path);
+            self.prompts_sent.insert(session.session.clone(), util::now() as i64);
+            util::log_event("INFO", &format!("queued prompt sent to {} at the end of its turn", session.project));
+        }
     }
 
     /// Every half minute: a session idle at its prompt for QUEUE_IDLE_S, with nothing given to it
@@ -640,6 +665,10 @@ impl App {
             if session.terminal {
                 badges.push(part("▭ terminal", bold(MAGENTA)));
             }
+            let queued = prompts::count(&session.session);
+            if queued > 0 {
+                badges.push(part(format!("✉ {queued} queued"), bold(CYAN)));
+            }
             if session.unpushed > 0 {
                 badges.push(part(format!("↑{} unpushed", session.unpushed), bold(YELLOW)));
             }
@@ -720,6 +749,7 @@ impl App {
              ("R", "toggle Remote Control (phone / claude.ai/code)"), ("p", "pin on top"),
              ("e", "effort level: pick one, the session restarts on it (or click the level on the card)"),
              ("g", "lazygit on the session's repository, in a popup (q closes it)"),
+             ("M", "drop the messages queued for it"),
              ("U", "push the session's branch to origin with your SSH key, after a yes (lazygit's sandbox cannot)"),
              ("+", "another session on this repository, on its own branch in a separate clone"),
              ("C", "/compact in the session, when it waits (the /compact badge suggests it)"),
@@ -727,7 +757,7 @@ impl App {
              ("z", "the session over the whole window; Ctrl+Tab comes back"),
              ("f", "focus: only the sessions waiting on you; f again shows all"),
              ("Y N", "approve or decline the permission a card asks for, after a y/n confirmation"),
-             ("m", "a message for the session without opening it: sent at its prompt, queued while it works"),
+             ("m", "a message for the session without opening it: sent at its prompt; while it works, it waits and goes when the turn ends (Alt+Q in the session does the same)"),
              ("o", "open the Claude Design canvas a design session works on (◆ on its card)")]
     }
 
@@ -824,8 +854,15 @@ impl App {
                     if message.is_empty() {
                         return String::new();
                     }
+                    // While it works, the message waits for the end of the turn instead of cutting in.
+                    if s.state == "working" {
+                        return match prompts::add(&s.session, &message) {
+                            Ok(()) => format!("queued for {}: sent when its turn ends", s.project),
+                            Err(error) => error,
+                        };
+                    }
                     let error = manager(&["say", &s.session, &message]);
-                    if !error.is_empty() { error } else if s.state != "working" { format!("sent to {}", s.project) } else { format!("queued for {}", s.project) }
+                    if !error.is_empty() { error } else { format!("sent to {}", s.project) }
                 }
                 None => String::new(),
             },
@@ -840,6 +877,14 @@ impl App {
                     String::new()
                 }
                 None => String::new(),
+            },
+            Key::Char('M') => match session {
+                Some(s) if prompts::count(&s.session) == 0 => "no prompt queued for it".into(),
+                Some(s) if self.confirm(screen, &format!("drop the {} prompt(s) queued for {}?", prompts::count(&s.session), s.project)) => {
+                    prompts::clear(&s.session);
+                    "queued prompts dropped".into()
+                }
+                _ => String::new(),
             },
             Key::Char('U') => match session {
                 Some(s) if s.cwd.is_empty() => "no directory known for this session".into(),

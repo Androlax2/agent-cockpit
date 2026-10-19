@@ -1218,3 +1218,32 @@ fn e_saves_what_was_written_in_the_editor() {
     let item = TodoList::load().items.into_iter().find(|item| item.id() == id).unwrap();
     assert_eq!((item.text().as_str(), item.notes().as_str()), ("Better title", "first note"));
 }
+
+#[test]
+fn a_queued_prompt_waits_for_the_end_of_the_turn_one_per_turn() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "working", "runway", "/r/runway", 100)]));
+    let mut app = fixture.app();
+    crate::prompts::add(SESSION_A, "first thought").unwrap();
+    crate::prompts::add(SESSION_A, "second thought").unwrap();
+    app.dispatch_prompts();
+    assert!(fixture.calls("claude-sessions").is_empty(), "sent while it works");
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "runway", "/r/runway", 200)]));
+    app.build();
+    app.dispatch_prompts();
+    app.dispatch_prompts();
+    assert_eq!(fixture.calls("claude-sessions"), [format!("claude-sessions say {SESSION_A} first thought")]);
+    assert_eq!(crate::prompts::count(SESSION_A), 1);
+}
+
+#[test]
+fn m_queues_a_message_while_the_session_works() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "working", "runway", "/r/runway", 100)]));
+    let mut app = fixture.app();
+    app.focus_panel(1);
+    app.handle(Key::Char('m'), &mut FakeScreen::typing(&["also check the docs"]));
+    assert!(fixture.calls("claude-sessions").is_empty(), "cut into the turn");
+    assert_eq!(crate::prompts::count(SESSION_A), 1);
+    assert!(app.message.contains("queued for runway"), "{}", app.message);
+}

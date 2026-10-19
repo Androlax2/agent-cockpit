@@ -1134,3 +1134,19 @@ fn the_approval_pane_follows_theo_back_to_the_session_that_asked() {
     manager.run(&["view", SESSION_A], &[]);
     assert!(approval_shown(&manager), "not back under the session that asked");
 }
+
+#[test]
+fn alt_q_queues_a_prompt_for_the_session_in_that_pane() {
+    let manager = Manager::new();
+    manager.sandbox.run_with_input(bin().join("claude-sessions"), &["queue-prompt-ask", "%4"], &[], "check the docs too\n");
+    let folder = manager.sandbox.state.join(format!("claude-sessions/prompt-queue/{SESSION_A}"));
+    let queued: Vec<String> = fs::read_dir(&folder).unwrap().flatten().map(|entry| fs::read_to_string(entry.path()).unwrap()).collect();
+    assert_eq!(queued, ["check the docs too"]);
+}
+
+#[test]
+fn alt_q_outside_a_claude_session_queues_nothing() {
+    let manager = Manager::new();
+    manager.sandbox.run_with_input(bin().join("claude-sessions"), &["queue-prompt-ask", "%99"], &[], "lost\n");
+    assert!(!manager.sandbox.state.join("claude-sessions/prompt-queue").exists());
+}
