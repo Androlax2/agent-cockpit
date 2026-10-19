@@ -415,6 +415,14 @@ fn the_divider_is_orange_on_the_side_of_the_focused_pane() {
 }
 
 #[test]
+fn the_text_of_the_pane_without_the_focus_fades() {
+    let manager = Manager::new();
+    manager.run(&["view", SESSION_A], &[]);
+    let styles = manager.tmux_calls("set-option").into_iter().find(|call| call.contains("window-style")).expect("no window-style");
+    assert!(styles.contains("window-style fg=#565f89") && styles.contains("window-active-style fg=#c0caf5"), "{styles}");
+}
+
+#[test]
 fn the_approval_pane_opens_under_the_session_without_the_cursor_and_closes() {
     let manager = Manager::new();
     manager.run(&["approval-pane", "0123456789ab"], &[]);

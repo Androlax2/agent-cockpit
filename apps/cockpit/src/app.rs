@@ -1811,6 +1811,9 @@ impl App {
         if self.help_open {
             self.draw_help(buffer);
         }
+        if !self.has_pane_focus {
+            fade(buffer);
+        }
     }
 
     fn draw_panel(&mut self, buffer: &mut Buffer, index: usize, top: u16, height: u16, width: u16) {
@@ -2374,6 +2377,18 @@ fn input_line(screen: &mut dyn Screen, prompt: &str) -> String {
         let _ = crossterm::terminal::disable_raw_mode();
         (outcome == LineEdit::Done).then(|| line.trim().to_string())
     }).unwrap_or_default()
+}
+
+/// The column out of focus: every cell dim, and the filled ones (chips, highlights) on the grey
+/// highlight. tmux's window-style cannot do it, it only reaches cells in the default colours.
+fn fade(buffer: &mut Buffer) {
+    for cell in buffer.content.iter_mut() {
+        cell.modifier.insert(Modifier::DIM);
+        cell.modifier.remove(Modifier::BOLD);
+        if cell.bg != Color::Reset {
+            cell.bg = color(BG_HIGHLIGHT);
+        }
+    }
 }
 
 /// Reads the next key or click from the terminal, waiting up to `timeout` (forever for None).

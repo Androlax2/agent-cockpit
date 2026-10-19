@@ -1911,6 +1911,18 @@ fn the_focus_coming_back_lights_the_same_panel_again() {
 }
 
 #[test]
+fn the_whole_column_fades_while_the_focus_is_elsewhere() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    app.todos.add("p", "/p", "one item");
+    app.build();
+    app.handle(Key::FocusLost, &mut FakeScreen::default());
+    let buffer = render(&mut app, 120, 40);
+    assert!(buffer.content.iter().all(|cell| cell.modifier.contains(ratatui::style::Modifier::DIM)));
+    assert!(!buffer.content.iter().any(|cell| cell.bg == ratatui::style::Color::Indexed(crate::app::BLUE)), "a chip stays blue");
+}
+
+#[test]
 fn the_shown_todo_tab_is_drawn_as_a_chip() {
     let fixture = Fixture::new();
     let mut app = fixture.app();
