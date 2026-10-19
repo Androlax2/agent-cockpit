@@ -1,0 +1,17 @@
+#!/bin/sh
+# Keep this launcher separate from the binary replaced by vendor updates.
+agent=opencode
+# Sessions do not update opencode, for the reason the claude launcher gives for Claude Code.
+export OPENCODE_DISABLE_AUTOUPDATE=1
+. "$(dirname "$0")/launcher-common.sh"
+greywall_options="--auto-profile --profile opencode --proxy-user opencode $greywall_options"
+
+# Each Greywall launch has private network/PID namespaces and a private /tmp.
+# Sharing service.json across them makes unreachable servers replace each other.
+# Set only state inside the sandbox; keep the database, config and cache shared.
+# greywall_options is split on spaces on purpose: every path in it is under $HOME or
+# $XDG_RUNTIME_DIR, which have none.
+# shellcheck disable=SC2086
+exec "$HOME/.local/bin/greywall" $greywall_options -- \
+    env XDG_STATE_HOME=/tmp/opencode-greywall-state \
+    "$HOME/.opencode/bin/opencode" "$@"

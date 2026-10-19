@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# opencode's updates, done outside the sandbox (claude-update.timer), like claude-update for Claude
+# Code: sessions cannot write ~/.opencode (greywall profile opencode) and run with
+# OPENCODE_DISABLE_AUTOUPDATE=1, so a binary a session could plant there never replaces this one.
+# OPENCODE_BINARY overrides the binary (tests).
+set -uo pipefail
+opencode=${OPENCODE_BINARY:-$HOME/.opencode/bin/opencode}
+
+if [[ ! -x $opencode ]]; then
+    echo "opencode-update: no opencode at $opencode, nothing to update"
+    exit 0
+fi
+before=$("$opencode" --version 2>/dev/null)
+if ! output=$(timeout 300 "$opencode" upgrade 2>&1); then
+    claude-sessions log update WARN "opencode upgrade failed: $(tail -1 <<< "$output")" 2>/dev/null || true
+    echo "$output" >&2
+    exit 1
+fi
+after=$("$opencode" --version 2>/dev/null)
+if [[ $after != "$before" ]]; then
+    claude-sessions log update INFO "opencode now starts $after (was ${before:-nothing}); r on a card restarts it on the new version" 2>/dev/null || true
+fi
+echo "opencode-update: ${after:-?}"

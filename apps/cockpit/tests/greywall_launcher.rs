@@ -1,5 +1,5 @@
-//! The greywall launcher (config/bin/.local/bin/greywall-agents/claude): what it refuses before
-//! any sandbox starts.
+//! The greywall launchers (config/bin/.local/bin/greywall-agents/claude and opencode, sharing
+//! launcher-common.sh): what they refuse before any sandbox starts, and what they hand it.
 
 mod common;
 use common::sandbox::*;
@@ -8,17 +8,21 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+const AGENTS: [&str; 2] = ["claude", "opencode"];
+
 #[test]
 fn no_session_starts_in_the_live_dotfiles_checkout() {
     // Security audit C1: a session there could write code the host runs, unreviewed.
-    let sandbox = Sandbox::new();
-    let live = sandbox.home.join("dotfiles/apps");
-    fs::create_dir_all(&live).unwrap();
-    sandbox.shim("greywall", "");
-    let output = sandbox.command(bin().join("greywall-agents/claude"), &[]).current_dir(&live).output().unwrap();
-    assert_eq!(output.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&output.stderr).contains("IdeaProjects/dotfiles"));
-    assert!(sandbox.calls("greywall").is_empty());
+    for agent in AGENTS {
+        let sandbox = Sandbox::new();
+        let live = sandbox.home.join("dotfiles/apps");
+        fs::create_dir_all(&live).unwrap();
+        sandbox.shim("greywall", "");
+        let output = sandbox.command(bin().join("greywall-agents").join(agent), &[]).current_dir(&live).output().unwrap();
+        assert_eq!(output.status.code(), Some(1), "{agent}");
+        assert!(stderr(&output).contains(&format!("{agent} launcher:")) && stderr(&output).contains("IdeaProjects/dotfiles"), "{}", stderr(&output));
+        assert!(sandbox.calls("greywall").is_empty(), "{agent}");
+    }
 }
 
 /// A home where the launcher runs to its end: greywall is a fake that logs its arguments, DNS
@@ -42,7 +46,13 @@ impl Launch {
             fs::create_dir_all(file.parent().unwrap()).unwrap();
             fs::write(file, content).unwrap();
         }
-        write_executable(&sandbox.home.join(".local/bin/greywall"), "#!/bin/sh\necho \"greywall $* (api key: ${ANTHROPIC_API_KEY:-none})\" >> \"$SHIM_LOG\"\n");
+        // Logs its arguments, then runs the command after -- when it exists (the fake opencode).
+        write_executable(&sandbox.home.join(".local/bin/greywall"), "#!/bin/sh\necho \"greywall $* (api key: ${ANTHROPIC_API_KEY:-none})\" >> \"$SHIM_LOG\"\n\
+                                                                     while [ \"$1\" != -- ]; do shift; done; shift\n\
+                                                                     if [ \"$1\" = env ] || [ -x \"$1\" ]; then exec \"$@\"; fi\n");
+        // Records its arguments and the environment it got, one line each.
+        write_executable(&sandbox.home.join(".opencode/bin/opencode"), "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$HOME/opencode-arguments\"\n\
+                                                                         env > \"$HOME/opencode-environment\"\n");
         sandbox.shim("dig", "echo 127.0.0.1");
         sandbox.shim("secret-tool", r#"[ "$3" = agent-anthropic ] && [ -n "${SHIM_ANTHROPIC_KEY:-}" ] && echo "$SHIM_ANTHROPIC_KEY" || exit 1"#);
         sandbox.shim("pgrep", r#"[ -n "${SHIM_FIGCRAFT_PID:-}" ] && echo "$SHIM_FIGCRAFT_PID""#);
@@ -50,9 +60,19 @@ impl Launch {
     }
 
     fn run(&self, extra: &[(&str, &str)]) -> String {
-        let output = self.sandbox.command(bin().join("greywall-agents/claude"), extra).current_dir(&self.project).output().unwrap();
-        assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+        self.run_agent("claude", extra, &[])
+    }
+
+    /// The greywall call of one launch of `agent` with `arguments`.
+    fn run_agent(&self, agent: &str, extra: &[(&str, &str)], arguments: &[&str]) -> String {
+        let output = self.sandbox.command(bin().join("greywall-agents").join(agent), extra).args(arguments).current_dir(&self.project).output().unwrap();
+        assert_eq!(output.status.code(), Some(0), "{agent}: {}", stderr(&output));
         self.sandbox.calls("greywall").pop().expect("greywall did not start")
+    }
+
+    /// What the fake opencode recorded: "arguments" or "environment", one line each.
+    fn opencode_saw(&self, what: &str) -> Vec<String> {
+        fs::read_to_string(self.sandbox.home.join(format!("opencode-{what}"))).unwrap().lines().map(str::to_string).collect()
     }
 
     fn slug(path: &Path) -> String {
@@ -68,8 +88,14 @@ impl Launch {
 #[test]
 fn other_projects_claude_folders_are_read_only_and_its_own_is_not() {
     // Security audit H2: a session must not plant memory another project loads.
+    for agent in AGENTS {
+        other_projects_folders_are_read_only_for(agent);
+    }
+}
+
+fn other_projects_folders_are_read_only_for(agent: &str) {
     let launch = Launch::new();
-    let started = launch.run(&[]);
+    let started = launch.run_agent(agent, &[], &[]);
     assert!(started.contains("--settings "), "{started}");
     let denied: Vec<String> = launch.settings()["filesystem"]["denyWrite"].as_array().unwrap().iter()
         .map(|path| path.as_str().unwrap().to_string()).collect();
@@ -84,11 +110,13 @@ fn other_projects_claude_folders_are_read_only_and_its_own_is_not() {
 #[test]
 fn only_the_projects_own_answers_folder_is_mounted() {
     // Security audit M3: no session reads another project's command output.
-    let launch = Launch::new();
-    let started = launch.run(&[]);
-    let answers = launch.sandbox.runtime.join("claude-answers").join(Launch::slug(&launch.project));
-    assert!(started.contains(&format!("--allow-read-path {} ", answers.display())), "{started}");
-    assert!(answers.join("runs").is_dir() && answers.join("guides").is_dir());
+    for agent in AGENTS {
+        let launch = Launch::new();
+        let started = launch.run_agent(agent, &[], &[]);
+        let answers = launch.sandbox.runtime.join("claude-answers").join(Launch::slug(&launch.project));
+        assert!(started.contains(&format!("--allow-read-path {} ", answers.display())), "{started}");
+        assert!(answers.join("runs").is_dir() && answers.join("guides").is_dir(), "{agent}");
+    }
 }
 
 /// A process named like FigCraft, with the given command line.
@@ -135,6 +163,41 @@ fn a_subscription_session_gets_no_api_key_even_from_its_environment() {
 }
 
 #[test]
+fn an_opencode_session_never_gets_the_api_key_not_even_with_credits_asked() {
+    // opencode would bill the Console's credits with it, unnoticed: credits are a Claude session's.
+    let launch = Launch::new();
+    let started = launch.run_agent("opencode", &[("ANTHROPIC_API_KEY", "sk-ant-stray"), ("CLAUDE_SESSIONS_CREDITS", "1"), ("SHIM_ANTHROPIC_KEY", "sk-ant-test")], &[]);
+    assert!(!started.contains("ANTHROPIC_API_KEY") && started.contains("(api key: none)"), "{started}");
+}
+
+#[test]
+fn opencode_runs_in_its_own_profile_and_proxy_identity() {
+    let launch = Launch::new();
+    let started = launch.run_agent("opencode", &[], &[]);
+    assert!(started.contains("--auto-profile --profile opencode --proxy-user opencode "), "{started}");
+    assert!(!started.contains("--profile claude"), "{started}");
+}
+
+#[test]
+fn opencode_keeps_its_arguments_as_given() {
+    let launch = Launch::new();
+    let arguments = ["--session", "ses_1", "a prompt with spaces", "--prompt"];
+    launch.run_agent("opencode", &[], &arguments);
+    assert_eq!(launch.opencode_saw("arguments"), arguments);
+}
+
+#[test]
+fn opencodes_server_registration_stays_in_the_sandboxs_private_tmp() {
+    // Each greywall launch has its own network: a service.json shared between them makes
+    // unreachable servers replace each other. Data, config and cache stay shared.
+    let launch = Launch::new();
+    launch.run_agent("opencode", &[], &[]);
+    let environment = launch.opencode_saw("environment");
+    assert!(environment.contains(&"XDG_STATE_HOME=/tmp/opencode-greywall-state".to_string()), "{environment:?}");
+    assert!(environment.contains(&"OPENCODE_DISABLE_AUTOUPDATE=1".to_string()), "{environment:?}");
+}
+
+#[test]
 fn a_parallel_dotfiles_clone_reads_the_live_checkout_and_another_project_does_not() {
     let launch = Launch::new();
     let live = fs::canonicalize(launch.sandbox.home.join("dotfiles")).unwrap();
@@ -167,4 +230,21 @@ fn the_launcher_makes_the_report_sockets_folder_before_the_sandbox() {
     let launch = Launch::new();
     launch.run(&[]);
     assert!(launch.sandbox.runtime.join("claude-report").is_dir());
+}
+
+#[test]
+fn an_opencode_session_cannot_write_what_every_other_session_runs_or_reads() {
+    // The binary, plugins and config, shared instructions and gh's credentials serve every project:
+    // a session writing them would reach the others (the same rule keeps Claude's versions and hooks).
+    let text = fs::read_to_string(repo().join("config/greywall/.config/greywall/learned/opencode.json")).unwrap();
+    let json: String = text.lines().filter(|line| !line.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");
+    let profile: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let paths = |key: &str| -> Vec<String> {
+        profile["filesystem"][key].as_array().unwrap().iter().map(|path| path.as_str().unwrap().to_string()).collect()
+    };
+    let (writable, read_only) = (paths("allowWrite"), paths("denyWrite"));
+    for shared in ["~/.opencode", "~/.config/opencode", "~/.opencode.json", "~/AGENTS.md", "~/.skills", "~/.agents", "~/.config/gh", "~/.local/bin", ".git/hooks"] {
+        assert!(!writable.contains(&shared.to_string()), "{shared} is writable: {writable:?}");
+        assert!(read_only.contains(&shared.to_string()), "{shared} is not in denyWrite: {read_only:?}");
+    }
 }

@@ -1,5 +1,5 @@
 [Unit]
-Description=Update Claude Code every 6 hours (sessions cannot: greywall keeps the versions folder read-only)
+Description=Update Claude Code and opencode every 6 hours (sessions cannot: greywall keeps their binaries read-only)
 
 [Timer]
 OnBootSec=5min

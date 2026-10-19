@@ -39,3 +39,39 @@ fn a_failed_update_is_logged_and_fails() {
     assert_eq!(output.status.code(), Some(1));
     assert!(sandbox.calls("claude-sessions").iter().any(|call| call.contains("WARN") && call.contains("network unreachable")));
 }
+
+/// A fake opencode at 1.19.3; `upgrade` runs `upgrade_body`, which finds the version file in $version.
+fn sandbox_with_opencode(upgrade_body: &str) -> (Sandbox, String) {
+    let sandbox = Sandbox::new();
+    sandbox.shim("claude-sessions", "");
+    let binary = sandbox.root.join("opencode");
+    let version = sandbox.root.join("opencode-version");
+    std::fs::write(&version, "1.19.3\n").unwrap();
+    write_executable(&binary, &format!("#!/bin/sh\necho \"opencode $*\" >> \"$SHIM_LOG\"\nversion='{}'\n\
+                                         [ \"$1\" = --version ] && exec cat \"$version\"\n{upgrade_body}\n", version.display()));
+    (sandbox, binary.display().to_string())
+}
+
+#[test]
+fn the_installed_opencode_does_its_upgrade_and_says_which_version_starts_now() {
+    let (sandbox, binary) = sandbox_with_opencode("echo 1.20.0 > \"$version\"");
+    let output = sandbox.run(bin().join("opencode-update"), &[], &[("OPENCODE_BINARY", &binary)]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(sandbox.calls("opencode").contains(&"opencode upgrade".to_string()));
+    assert!(sandbox.calls("claude-sessions").iter().any(|call| call.contains("opencode now starts 1.20.0 (was 1.19.3)")), "{:?}", sandbox.calls("claude-sessions"));
+}
+
+#[test]
+fn a_failed_opencode_upgrade_is_logged_and_fails() {
+    let (sandbox, binary) = sandbox_with_opencode("echo 'network unreachable'; exit 1");
+    let output = sandbox.run(bin().join("opencode-update"), &[], &[("OPENCODE_BINARY", &binary)]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(sandbox.calls("claude-sessions").iter().any(|call| call.contains("WARN") && call.contains("network unreachable")));
+}
+
+#[test]
+fn no_opencode_installed_is_nothing_to_update() {
+    let sandbox = Sandbox::new();
+    let output = sandbox.run(bin().join("opencode-update"), &[], &[("OPENCODE_BINARY", "/nonexistent/opencode")]);
+    assert!(output.status.success(), "{}", stderr(&output));
+}

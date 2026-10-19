@@ -1,6 +1,8 @@
 [Unit]
-Description=Update Claude Code outside the sandbox, through the installed claude (~/.local/bin/claude-update)
+Description=Update Claude Code and opencode outside the sandbox, through the installed binaries (~/.local/bin/claude-update, opencode-update)
 
 [Service]
 Type=oneshot
+# Claude's update runs even when opencode's failed (logged as a WARN); the unit fails with Claude's.
+ExecStart=-%h/.local/bin/opencode-update
 ExecStart=%h/.local/bin/claude-update
