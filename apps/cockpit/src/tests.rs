@@ -1673,6 +1673,54 @@ fn a_proposal_waits_in_its_own_tab_until_approved() {
 }
 
 #[test]
+fn a_waiting_proposal_is_announced_on_the_to_do_tab() {
+    let fixture = Fixture::new();
+    propose(&fixture, "cache the usage fetch", "it runs every minute");
+    let mut app = fixture.app();
+    app.todos.apply_updates();
+    app.build();
+    assert_eq!(texts(&app, 3)[0], "?1 idea from Claude waits for you · ] Proposed");
+    assert_eq!(app.panels[3].lines[0].item, None, "the announcement is not a selectable item");
+}
+
+#[test]
+fn the_proposed_tab_does_not_announce_its_own_items() {
+    let fixture = Fixture::new();
+    propose(&fixture, "cache the usage fetch", "it runs every minute");
+    let mut app = fixture.app();
+    app.todos.apply_updates();
+    app.todo_tab = 1;
+    app.build();
+    assert!(texts(&app, 3).iter().all(|line| !line.contains("from Claude wait")));
+}
+
+#[test]
+fn the_header_counts_waiting_proposals() {
+    let fixture = Fixture::new();
+    propose(&fixture, "cache the usage fetch", "it runs every minute");
+    let mut app = fixture.app();
+    app.todos.apply_updates();
+    app.build();
+    let buffer = render(&mut app, 120, 40);
+    let header: String = (0..120).map(|x| buffer[(x, 0)].symbol().to_string()).collect();
+    assert!(header.contains("? 1 idea "), "{header}");
+}
+
+#[test]
+fn a_waiting_proposal_draws_its_tab_as_a_magenta_chip() {
+    let fixture = Fixture::new();
+    propose(&fixture, "cache the usage fetch", "it runs every minute");
+    let mut app = fixture.app();
+    app.todos.apply_updates();
+    app.build();
+    let buffer = render(&mut app, 160, 40);
+    let on_magenta: String = (0..40).flat_map(|y| (0..160).map(move |x| (x, y)))
+        .filter(|position| buffer[*position].bg == ratatui::style::Color::Indexed(crate::app::MAGENTA))
+        .map(|position| buffer[position].symbol().to_string()).collect();
+    assert_eq!(on_magenta, " Proposed 1 ");
+}
+
+#[test]
 fn a_declined_proposal_is_not_filed_again() {
     let fixture = Fixture::new();
     propose(&fixture, "Rewrite in Go", "faster");

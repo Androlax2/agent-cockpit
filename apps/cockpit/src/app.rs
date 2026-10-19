@@ -53,6 +53,7 @@ const CLAUDE_LABEL: &str = "Claude";
 /// The Todo panel's tabs: the statuses each one shows. Open merges everything not done yet.
 const TODO_TABS: [(&str, &[&str]); 5] = [("Open", &[todo::PROPOSED, "todo", "doing"]), ("Proposed", &[todo::PROPOSED]), ("To do", &["todo"]),
                                          ("In progress", &["doing"]), ("Done", &["done"])];
+const TODO_TAB_PROPOSED: usize = 1;
 const TODO_TAB_TO_DO: usize = 2;
 /// What follows this line in the todo editor is help, left out of the item.
 const EDITOR_HELP_MARK: &str = "#── everything from this line on is left out ──";
@@ -1442,6 +1443,12 @@ impl App {
         let shown_statuses = TODO_TABS[self.todo_tab].1;
         entries.retain(|entry| shown_statuses.contains(&entry.status().as_str()));
         let mut lines = Vec::new();
+        // The panel opens on To do, where proposals are hidden: without this line they wait unseen.
+        let proposed = self.todo_counts[TODO_TAB_PROPOSED];
+        if proposed > 0 && !shown_statuses.contains(&todo::PROPOSED) {
+            let ideas = if proposed == 1 { "1 idea from Claude waits".to_string() } else { format!("{proposed} ideas from Claude wait") };
+            lines.push(Line::new(vec![segment(0, "?", bold(MAGENTA)), segment(2, format!("{ideas} for you · ] Proposed"), bold(MAGENTA))]));
+        }
         if entries.is_empty() {
             let empty = match shown_statuses {
                 [_, _, ..] => "Nothing open. ] next tab.",
@@ -1839,6 +1846,13 @@ impl App {
                     let column = 2 + width_of(&label) as u16 + 3 + width_of(&subtitle[..open]) as u16;
                     put(buffer, top, column, &format!(" {} ", &subtitle[open + 1..close]), on(BLACK, BLUE).add_modifier(Modifier::BOLD));
                 }
+                let proposed = format!("Proposed {}", self.todo_counts[TODO_TAB_PROPOSED]);
+                if self.todo_counts[TODO_TAB_PROPOSED] > 0 && self.todo_tab != TODO_TAB_PROPOSED {
+                    if let Some(start) = subtitle.find(&format!(" {proposed} ")) {
+                        let column = 2 + width_of(&label) as u16 + 3 + width_of(&subtitle[..start]) as u16;
+                        put(buffer, top, column, &format!(" {proposed} "), on(BLACK, MAGENTA).add_modifier(Modifier::BOLD));
+                    }
+                }
             }
         }
         for offset in 0..inner_height {
@@ -1894,8 +1908,16 @@ impl App {
             put(buffer, 0, column, &text, bold(RED));
             column += text.len() as u16 + 2;
         }
+        let proposed = self.todos.items.iter().filter(|item| item.status() == todo::PROPOSED).count();
+        if proposed > 0 {
+            let text = format!("? {proposed} idea{}", if proposed == 1 { "" } else { "s" });
+            put(buffer, 0, column, &text, bold(MAGENTA));
+            column += width_of(&text) as u16 + 2;
+        }
         if !self.held.is_empty() {
-            put(buffer, 0, column, &format!("⛔ {}", self.held.len()), bold(YELLOW));
+            let text = format!("⛔ {}", self.held.len());
+            put(buffer, 0, column, &text, bold(YELLOW));
+            column += width_of(&text) as u16 + 2;
         }
         let stamp = chrono::Local::now().format("%H:%M  %a %d %b").to_string();
         put(buffer, 0, width.saturating_sub(2 + stamp.len() as u16).max(2), &stamp, style(FG_DARK));
@@ -1904,7 +1926,7 @@ impl App {
             let amount = format!("≈ {}", money(cost));
             let label = " today";
             let start = width as i64 - 2 - stamp.len() as i64 - 3 - width_of(&amount) as i64 - label.len() as i64;
-            if start > 2 + title.len() as i64 + if needing > 0 { 12 } else { 0 } + 2 {
+            if start > column as i64 {
                 put(buffer, 0, start as u16, &amount, bold(MAGENTA));
                 put(buffer, 0, start as u16 + width_of(&amount) as u16, label, dim(FG_DARK));
             }
