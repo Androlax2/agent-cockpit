@@ -6,7 +6,7 @@
 //!     claude-remote phones        the paired phones: id, name, last seen
 //!     claude-remote unpair [id]   forgets that phone, or every phone
 //!
-//! Run by claude-remote.service. Every request but /health and /pair/<code> needs a paired phone's secret (its
+//! Run by claude-remote.service. Every request but /health, /pair/<code> and /pair-code needs a paired phone's secret (its
 //! cookie); every POST also the X-Claude-Remote header, which another site cannot send.
 
 use cockpit::remote;
@@ -84,6 +84,22 @@ fn handle(mut request: Request) {
     // For the cockpit's Phone section: whether the server answers, nothing more.
     if method == Method::Get && path == "/health" {
         respond(request, 200, "text/plain", "ok".into(), &[]);
+        return;
+    }
+    // The 6-digit code typed into the Home Screen app; the page's header, as every POST.
+    if method == Method::Post && path == "/pair-code" {
+        if header_value(&request, "X-Claude-Remote").as_deref() != Some("1") {
+            respond(request, 403, "text/plain", "refused: not from the page".into(), &[]);
+            return;
+        }
+        let digits: String = body_json(&mut request).and_then(|body| body.get("code").and_then(Value::as_str).map(str::to_string))
+            .unwrap_or_default().chars().filter(|character| !character.is_whitespace()).collect();
+        let user_agent = header_value(&request, "User-Agent").unwrap_or_default();
+        match remote::redeem_digits(&digits, &user_agent) {
+            Ok(secret) => respond(request, 200, "application/json", json!({"ok": true, "message": "paired"}).to_string(),
+                                  &[header("Set-Cookie", &format!("{COOKIE}={secret}; Path=/; Max-Age=31536000; Secure; HttpOnly; SameSite=Strict"))]),
+            Err(message) => respond_json(request, 403, json!({"ok": false, "message": message})),
+        }
         return;
     }
     if let (Method::Get, Some(code)) = (&method, path.strip_prefix("/pair/")) {
@@ -248,8 +264,9 @@ fn watch_for_notifications() {
 }
 
 fn pair(name: &str) -> Result<(), String> {
-    let link = remote::pairing_link(name)?;
+    let (link, digits) = remote::pairing_link(name)?;
     println!("Open this on the phone within 10 minutes (once):\n\n  {link}\n");
+    println!("Or type this code in the Home Screen app within 2 minutes: {} {}\n", &digits[..3], &digits[3..]);
     let _ = Command::new("qrencode").args(["-t", "ANSIUTF8", &link]).status();
     Ok(())
 }

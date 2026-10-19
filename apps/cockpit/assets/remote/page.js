@@ -317,18 +317,29 @@ function renderPairing(message) {
   if (!box.hidden) return;
   box.hidden = false;
   const input = element("input");
-  input.placeholder = "Pairing code or link";
+  input.placeholder = "123 456";
+  input.inputMode = "numeric";
+  input.autocomplete = "one-time-code";
   input.autocapitalize = "off";
+  const hint = element("div", "task", "On the computer: S, Pair a phone. Type the 6 digits it shows (or paste a code from Safari).");
   const note = element("div", "note", message);
   const pair = element("button", "run", "Pair");
-  pair.onclick = () => {
-    const code = (input.value.trim().split("/pair/").pop() || "").trim();
-    if (!/^[0-9a-f]{32}$/.test(code)) { note.textContent = "A code is 32 characters, 0-9 and a-f."; return; }
+  pair.onclick = async () => {
+    const typed = input.value.replace(/\s/g, "");
+    if (/^[0-9]{6}$/.test(typed)) {
+      const response = await call("POST", "/pair-code", { code: typed });
+      const result = await response.json().catch(() => ({ message: "no answer" }));
+      if (result.ok) { window.location.reload(); return; }
+      note.textContent = result.message;
+      return;
+    }
+    const code = typed.split("/pair/").pop() || "";
+    if (!/^[0-9a-f]{32}$/.test(code)) { note.textContent = "Type the 6 digits the computer shows."; return; }
     window.location.href = `/pair/${code}`;
   };
   const buttons = element("div", "buttons");
   buttons.append(pair);
-  box.replaceChildren(element("h2", "", "Pair this phone"), input, buttons, note);
+  box.replaceChildren(element("h2", "", "Pair this phone"), hint, input, buttons, note);
 }
 
 // ---- Tabs: Sessions, Todo, Pull requests, Usage ----

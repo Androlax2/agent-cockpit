@@ -455,6 +455,7 @@ impl SettingsMenu {
 /// the phone opened it.
 pub(crate) struct Pairing {
     pub(crate) link: String,
+    pub(crate) digits: String,
     modules: Option<Vec<Vec<bool>>>,
     phones_before: usize,
     pub(crate) paired: Option<String>,
@@ -473,7 +474,14 @@ impl Pairing {
             put(buffer, row + 2, 2, "any key closes", on(FG_DARK, BG_HIGHLIGHT).add_modifier(Modifier::DIM));
             return;
         }
-        put(buffer, row, 2, "Pair a phone: scan within 10 minutes, once", on(MAGENTA, BG_HIGHLIGHT).add_modifier(Modifier::BOLD));
+        put(buffer, row, 2, "Pair a phone", on(MAGENTA, BG_HIGHLIGHT).add_modifier(Modifier::BOLD));
+        row += 2;
+        // A scanned link opens in Safari, never in the Home Screen app: that app takes the digits.
+        put(buffer, row, 2, "Home Screen app: type", on(FG, BG_HIGHLIGHT));
+        put(buffer, row, 24, &format!("{} {}", &self.digits[..3], &self.digits[3..]), on(YELLOW, BG_HIGHLIGHT).add_modifier(Modifier::BOLD));
+        put(buffer, row, 33, "(2 minutes, 5 tries)", on(FG_DARK, BG_HIGHLIGHT));
+        row += 1;
+        put(buffer, row, 2, "Browser: scan within 10 minutes, once", on(FG, BG_HIGHLIGHT));
         row += 2;
         let modules = self.modules.as_ref().filter(|modules| {
             modules[0].len() as u16 + 4 <= width && (modules.len() as u16).div_ceil(2) + row + 4 <= height
@@ -1459,8 +1467,8 @@ impl App {
     /// The QR code of a new one-time pairing link, over the column.
     fn start_pairing(&mut self) -> String {
         match remote::pairing_link("") {
-            Ok(link) => {
-                self.pairing = Some(Pairing { modules: remote::qr_modules(&link), link, phones_before: remote::phones().len(), paired: None });
+            Ok((link, digits)) => {
+                self.pairing = Some(Pairing { modules: remote::qr_modules(&link), link, digits, phones_before: remote::phones().len(), paired: None });
                 String::new()
             }
             Err(error) => format!("cannot pair a phone: {error}"),

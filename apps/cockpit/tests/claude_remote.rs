@@ -550,3 +550,68 @@ fn a_phone_watches_a_session_and_stops() {
     remote.post_json(&secret, &format!("/api/watch/{SESSION_A}"), json!({"on": false}));
     assert_eq!(remote.get_json(&secret, "/api/state")["watched"], json!([]));
 }
+
+// ---- Pairing with 6 digits (the Home Screen app) ----
+
+impl Remote {
+    /// The 6 digits `claude-remote pair` shows.
+    fn pairing_digits(&self) -> String {
+        let shown = self.remote(&["pair"]);
+        shown.split("within 2 minutes: ").nth(1).map(|rest| rest.chars().filter(char::is_ascii_digit).take(6).collect())
+            .unwrap_or_else(|| panic!("no digits in {shown}"))
+    }
+
+    fn type_digits(&self, digits: &str, from_page: bool) -> (u16, String, String) {
+        self.request("POST", "/pair-code", None, Some(json!({"code": digits})), from_page)
+    }
+}
+
+fn wrong(digits: &str) -> String {
+    format!("{:06}", (digits.parse::<u32>().unwrap() + 1) % 1_000_000)
+}
+
+#[test]
+fn the_six_digits_pair_the_home_screen_app_once() {
+    let remote = Remote::start();
+    let digits = remote.pairing_digits();
+    let (status, headers, body) = remote.type_digits(&format!("{} {}", &digits[..3], &digits[3..]), true);
+    assert_eq!(status, 200, "{body}");
+    let secret = headers.lines().find_map(|line| line.strip_prefix("Set-Cookie: claude_remote=")).unwrap().split(';').next().unwrap().to_string();
+    assert_eq!(remote.request("GET", "/api/state", Some(&secret), None, false).0, 200);
+    assert_eq!(remote.type_digits(&digits, true).0, 403, "used twice");
+}
+
+#[test]
+fn five_wrong_codes_cancel_the_digits() {
+    let remote = Remote::start();
+    let digits = remote.pairing_digits();
+    for tries_left in (1..5).rev() {
+        let (status, _, body) = remote.type_digits(&wrong(&digits), true);
+        assert_eq!(status, 403);
+        assert!(body.contains(&format!("{tries_left} tries left")), "{body}");
+    }
+    let (_, _, body) = remote.type_digits(&wrong(&digits), true);
+    assert!(body.contains("cancelled"), "{body}");
+    assert_eq!(remote.type_digits(&digits, true).0, 403, "the right code after the fifth wrong one");
+}
+
+#[test]
+fn the_digits_expire_after_two_minutes() {
+    let remote = Remote::start();
+    let digits = remote.pairing_digits();
+    let file = remote.sandbox.state.join("claude-remote/pairing.json");
+    let mut pairing: Value = serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
+    pairing["digits_until"] = json!(1);
+    fs::write(&file, pairing.to_string()).unwrap();
+    let (status, _, body) = remote.type_digits(&digits, true);
+    assert_eq!(status, 403);
+    assert!(body.contains("expired"), "{body}");
+}
+
+#[test]
+fn the_digits_need_the_pages_header() {
+    let remote = Remote::start();
+    let digits = remote.pairing_digits();
+    assert_eq!(remote.type_digits(&digits, false).0, 403);
+    assert_eq!(remote.type_digits(&digits, true).0, 200, "the refused post cost nothing");
+}

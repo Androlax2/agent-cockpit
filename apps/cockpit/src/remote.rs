@@ -23,6 +23,8 @@ use std::process::{Command, Stdio};
 
 pub const DEFAULT_ADDRESS: &str = "127.0.0.1:7380";
 const PAIRING_VALID_S: i64 = 600;
+const DIGITS_VALID_S: i64 = 120;
+const DIGITS_TRIES: i64 = 5;
 const MESSAGE_MAX: usize = 4000;
 const LAST_SEEN_STEP_S: i64 = 60;
 const PROJECTS_SHOWN: usize = 40;
@@ -51,11 +53,18 @@ pub(crate) fn read_private(name: &str) -> Value {
 }
 
 /// A new one-time pairing code for a phone called `name` (the previous code no longer works).
-pub fn new_pairing_code(name: &str) -> std::io::Result<String> {
+/// Also a 6-digit code for typing into the Home Screen app (scanned links open in Safari, which
+/// keeps cookies apart from it): valid 2 minutes, and 5 wrong tries cancel it.
+pub fn new_pairing_code(name: &str) -> std::io::Result<(String, String)> {
     let code = util::token_hex(16);
-    write_private("pairing.json", &json!({"sha256": audit::sha256_hex(code.as_bytes()), "until": util::now_secs() + PAIRING_VALID_S, "name": name}))?;
+    let digits = format!("{:06}", u32::from_str_radix(&util::token_hex(4), 16).unwrap_or(0) % 1_000_000);
+    let now = util::now_secs();
+    write_private("pairing.json", &json!({
+        "sha256": audit::sha256_hex(code.as_bytes()), "until": now + PAIRING_VALID_S, "name": name,
+        "digits_sha256": audit::sha256_hex(digits.as_bytes()), "digits_until": now + DIGITS_VALID_S, "digits_tries_left": DIGITS_TRIES,
+    }))?;
     audit::record("remote", "remote.pairing_started", "ok", json!({"name": name}));
-    Ok(code)
+    Ok((code, digits))
 }
 
 /// The tailnet name of this computer (tailscale status), for the pairing link.
@@ -64,14 +73,15 @@ fn tailnet_name() -> Option<String> {
     status.get("Self")?.get("DNSName")?.as_str().map(|name| name.trim_end_matches('.').to_string()).filter(|name| !name.is_empty())
 }
 
-/// A new one-time pairing link for a phone called `name` ("" lets the phone name itself).
-pub fn pairing_link(name: &str) -> Result<String, String> {
+/// A new one-time pairing link for a phone called `name` ("" lets the phone name itself), and its
+/// 6-digit code.
+pub fn pairing_link(name: &str) -> Result<(String, String), String> {
     if name.chars().count() > 32 || name.chars().any(char::is_control) {
         return Err("a phone's name is one line of at most 32 characters".into());
     }
     let host = tailnet_name().ok_or("tailscale status gives no name for this computer: is Tailscale up?")?;
-    let code = new_pairing_code(name).map_err(|error| format!("cannot keep the pairing code: {error}"))?;
-    Ok(format!("https://{host}/pair/{code}"))
+    let (code, digits) = new_pairing_code(name).map_err(|error| format!("cannot keep the pairing code: {error}"))?;
+    Ok((format!("https://{host}/pair/{code}"), digits))
 }
 
 /// The QR code of `text` as rows of modules (true is dark), quiet zone included, from qrencode.
@@ -135,10 +145,47 @@ pub fn redeem(code: &str, user_agent: &str) -> Option<String> {
         audit::record("remote", "remote.paired", "refused", json!({"reason": "a wrong, used or expired pairing code"}));
         return None;
     }
+    admit(&pairing, user_agent)
+}
+
+/// The phone's secret for the 6-digit code, or why not. A wrong code costs a try; the last one
+/// cancels the code (the link keeps working).
+pub fn redeem_digits(digits: &str, user_agent: &str) -> Result<String, String> {
+    let _guard = DEVICES.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut pairing = read_private("pairing.json");
+    let refuse = |reason: &str| {
+        audit::record("remote", "remote.paired_by_digits", "refused", json!({"reason": reason}));
+        Err(reason.to_string())
+    };
+    let (Some(expected), Some(until)) = (pairing.get("digits_sha256").and_then(Value::as_str), pairing.get("digits_until").and_then(Value::as_i64)) else {
+        return refuse("no code is waiting: pair a phone on the computer first (S, Pair a phone)");
+    };
+    if util::now_secs() > until {
+        return refuse("this code expired: pair a phone again on the computer");
+    }
+    if audit::sha256_hex(digits.as_bytes()) == expected {
+        return admit(&pairing, user_agent).ok_or_else(|| "cannot keep this phone".to_string());
+    }
+    let tries_left = pairing.get("digits_tries_left").and_then(Value::as_i64).unwrap_or(0) - 1;
+    if tries_left <= 0 {
+        for field in ["digits_sha256", "digits_until", "digits_tries_left"] {
+            pairing.as_object_mut().map(|fields| fields.remove(field));
+        }
+        let _ = write_private("pairing.json", &pairing);
+        return refuse("too many wrong codes: this one is cancelled, pair a phone again on the computer");
+    }
+    pairing["digits_tries_left"] = json!(tries_left);
+    let _ = write_private("pairing.json", &pairing);
+    refuse(&format!("wrong code: {tries_left} tries left"))
+}
+
+/// A new paired phone for a pairing just redeemed (link or digits): both codes are used up.
+/// The caller holds DEVICES.
+fn admit(pairing: &Value, user_agent: &str) -> Option<String> {
     let _ = fs::remove_file(state_dir().join("pairing.json"));
     let secret = util::token_hex(32);
     let mut known = devices();
-    let name = Some(text(&pairing, "name")).filter(|name| !name.is_empty())
+    let name = Some(text(pairing, "name")).filter(|name| !name.is_empty())
         .or_else(|| name_from_browser(user_agent).map(str::to_string))
         .unwrap_or_else(|| format!("Phone {}", known.len() + 1));
     let now = util::now_secs();
@@ -178,7 +225,7 @@ pub fn phones() -> Vec<Value> {
 pub fn pairing_code_from(phone: &str) -> Result<String, String> {
     let name = devices().iter().find(|device| device_id(device) == phone).map(|device| text(device, "name")).ok_or("no such phone")?;
     let home_screen_name: String = format!("{name} (Home Screen)").chars().take(32).collect();
-    let code = new_pairing_code(&home_screen_name).map_err(|error| error.to_string())?;
+    let (code, _) = new_pairing_code(&home_screen_name).map_err(|error| error.to_string())?;
     audit::record("remote", "remote.pairing_from_phone", "ok", json!({"phone": phone}));
     Ok(code)
 }

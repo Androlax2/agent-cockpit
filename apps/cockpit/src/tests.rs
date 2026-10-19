@@ -275,6 +275,10 @@ fn phone(name: &str, hash: &str) -> Value {
     json!({"sha256": hash, "name": name, "paired_at": 1, "last_seen": util::now_secs()})
 }
 
+fn pairing_digits(app: &App) -> String {
+    app.pairing.as_ref().unwrap().digits.clone()
+}
+
 fn open_settings_on(app: &mut App, index: usize) {
     app.handle(Key::Char('S'), &mut FakeScreen::default());
     for _ in 0..index {
@@ -305,6 +309,8 @@ fn enter_on_pair_a_phone_shows_a_one_time_link_and_its_qr_code() {
     assert!(pairing.link.starts_with("https://box.tail1234.ts.net/pair/"), "{}", pairing.link);
     let drawn = format!("{:?}", render(&mut app, 60, 40));
     assert!(drawn.contains("▀") && drawn.contains("scan within 10 minutes"), "no QR code drawn");
+    let digits = &pairing_digits(&app);
+    assert!(drawn.contains(&format!("{} {}", &digits[..3], &digits[3..])), "the 6 digits are not shown");
 }
 
 #[test]
