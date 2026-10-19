@@ -2,22 +2,55 @@
 # opencode's updates, done outside the sandbox (claude-update.timer), like claude-update for Claude
 # Code: sessions cannot write ~/.opencode (greywall profile opencode) and run with
 # OPENCODE_DISABLE_AUTOUPDATE=1, so a binary a session could plant there never replaces this one.
-# OPENCODE_BINARY overrides the binary (tests).
+# A new major version is held, never installed: 1.x to 2.x broke the cockpit's plugin (its API
+# changed). The newest version comes from the feed opencode 2's own installer reads
+# (opencode.ai/v2/install); GitHub's latest release is still 1.x, and installing it would go back.
+# OPENCODE_BINARY and OPENCODE_LATEST_URL override the binary and the feed (tests).
 set -uo pipefail
 opencode=${OPENCODE_BINARY:-$HOME/.opencode/bin/opencode}
+latest_url=${OPENCODE_LATEST_URL:-https://opencode.ai/update/api/latest/cli/npm}
 
 if [[ ! -x $opencode ]]; then
     echo "opencode-update: no opencode at $opencode, nothing to update"
     exit 0
 fi
-before=$("$opencode" --version 2>/dev/null)
-if ! output=$(timeout 300 "$opencode" upgrade 2>&1); then
+
+# "opencode v2.0.26" (or a bare 2.0.26) to 2.0.26.
+installed_version() {
+    local shown
+    shown=$("$opencode" --version 2>/dev/null) || return 1
+    shown=${shown##* }
+    printf '%s\n' "${shown#v}"
+}
+
+before=$(installed_version)
+if [[ ! $before =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    claude-sessions log update WARN "opencode-update: cannot read the installed version (got '${before}'), nothing updated" 2>/dev/null || true
+    echo "opencode-update: cannot read the installed version (got '${before}')" >&2
+    exit 1
+fi
+newest=$(curl -fsSL --max-time 20 "$latest_url" 2>/dev/null | jq -r '.version // empty' 2>/dev/null)
+if [[ ! $newest =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    claude-sessions log update WARN "opencode-update: no version from $latest_url (got '${newest}'), nothing updated" 2>/dev/null || true
+    echo "opencode-update: no version from $latest_url (got '${newest}')" >&2
+    exit 1
+fi
+if [[ ${newest%%.*} != "${before%%.*}" ]]; then
+    claude-sessions log update WARN "opencode $newest held: a major version change from $before; check the cockpit plugin against it, then: opencode upgrade $newest" 2>/dev/null || true
+    echo "opencode-update: $newest held (major change from $before)"
+    exit 0
+fi
+if [[ $newest == "$before" || $(printf '%s\n%s\n' "$before" "$newest" | sort -V | tail -1) == "$before" ]]; then
+    echo "opencode-update: $before"
+    exit 0
+fi
+if ! output=$(timeout 300 "$opencode" upgrade "$newest" 2>&1); then
     claude-sessions log update WARN "opencode upgrade failed: $(tail -1 <<< "$output")" 2>/dev/null || true
     echo "$output" >&2
     exit 1
 fi
-after=$("$opencode" --version 2>/dev/null)
+after=$(installed_version)
 if [[ $after != "$before" ]]; then
-    claude-sessions log update INFO "opencode now starts $after (was ${before:-nothing}); r on a card restarts it on the new version" 2>/dev/null || true
+    claude-sessions log update INFO "opencode now starts $after (was $before); r on a card restarts it on the new version" 2>/dev/null || true
 fi
 echo "opencode-update: ${after:-?}"

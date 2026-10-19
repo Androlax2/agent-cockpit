@@ -40,31 +40,66 @@ fn a_failed_update_is_logged_and_fails() {
     assert!(sandbox.calls("claude-sessions").iter().any(|call| call.contains("WARN") && call.contains("network unreachable")));
 }
 
-/// A fake opencode at 1.19.3; `upgrade` runs `upgrade_body`, which finds the version file in $version.
-fn sandbox_with_opencode(upgrade_body: &str) -> (Sandbox, String) {
+/// A fake opencode at 1.19.3; `upgrade <version>` runs `upgrade_body`, which finds the version file
+/// in $version and the requested version in $2. The feed says `newest` is the latest version.
+fn sandbox_with_opencode(newest: &str, upgrade_body: &str) -> (Sandbox, Vec<(&'static str, String)>) {
     let sandbox = Sandbox::new();
     sandbox.shim("claude-sessions", "");
     let binary = sandbox.root.join("opencode");
     let version = sandbox.root.join("opencode-version");
-    std::fs::write(&version, "1.19.3\n").unwrap();
+    std::fs::write(&version, "opencode v1.19.3\n").unwrap();
     write_executable(&binary, &format!("#!/bin/sh\necho \"opencode $*\" >> \"$SHIM_LOG\"\nversion='{}'\n\
                                          [ \"$1\" = --version ] && exec cat \"$version\"\n{upgrade_body}\n", version.display()));
-    (sandbox, binary.display().to_string())
+    let feed = sandbox.root.join("latest.json");
+    std::fs::write(&feed, format!(r#"{{"channel":"latest","name":"cli","version":"{newest}"}}"#)).unwrap();
+    let environment = vec![("OPENCODE_BINARY", binary.display().to_string()), ("OPENCODE_LATEST_URL", format!("file://{}", feed.display()))];
+    (sandbox, environment)
+}
+
+fn run_opencode_update(sandbox: &Sandbox, environment: &[(&str, String)]) -> std::process::Output {
+    let pairs: Vec<(&str, &str)> = environment.iter().map(|(name, value)| (*name, value.as_str())).collect();
+    sandbox.run(bin().join("opencode-update"), &[], &pairs)
 }
 
 #[test]
-fn the_installed_opencode_does_its_upgrade_and_says_which_version_starts_now() {
-    let (sandbox, binary) = sandbox_with_opencode("echo 1.20.0 > \"$version\"");
-    let output = sandbox.run(bin().join("opencode-update"), &[], &[("OPENCODE_BINARY", &binary)]);
+fn the_installed_opencode_upgrades_to_the_newest_version_of_its_major_and_says_which_starts_now() {
+    let (sandbox, environment) = sandbox_with_opencode("1.20.0", "echo \"opencode v$2\" > \"$version\"");
+    let output = run_opencode_update(&sandbox, &environment);
     assert!(output.status.success(), "{}", stderr(&output));
-    assert!(sandbox.calls("opencode").contains(&"opencode upgrade".to_string()));
+    assert!(sandbox.calls("opencode").contains(&"opencode upgrade 1.20.0".to_string()), "{:?}", sandbox.calls("opencode"));
     assert!(sandbox.calls("claude-sessions").iter().any(|call| call.contains("opencode now starts 1.20.0 (was 1.19.3)")), "{:?}", sandbox.calls("claude-sessions"));
 }
 
 #[test]
+fn a_new_major_version_is_held_and_logged() {
+    let (sandbox, environment) = sandbox_with_opencode("2.0.32", "echo \"opencode v$2\" > \"$version\"");
+    let output = run_opencode_update(&sandbox, &environment);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(!sandbox.calls("opencode").iter().any(|call| call.starts_with("opencode upgrade")), "{:?}", sandbox.calls("opencode"));
+    assert!(sandbox.calls("claude-sessions").iter().any(|call| call.contains("WARN") && call.contains("opencode 2.0.32 held")), "{:?}", sandbox.calls("claude-sessions"));
+}
+
+#[test]
+fn an_older_version_in_the_feed_is_never_installed() {
+    let (sandbox, environment) = sandbox_with_opencode("1.18.0", "echo \"opencode v$2\" > \"$version\"");
+    let output = run_opencode_update(&sandbox, &environment);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(!sandbox.calls("opencode").iter().any(|call| call.starts_with("opencode upgrade")), "{:?}", sandbox.calls("opencode"));
+}
+
+#[test]
+fn a_feed_without_a_version_is_logged_and_fails() {
+    let (sandbox, environment) = sandbox_with_opencode("not-a-version", "exit 0");
+    let output = run_opencode_update(&sandbox, &environment);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(!sandbox.calls("opencode").iter().any(|call| call.starts_with("opencode upgrade")));
+    assert!(sandbox.calls("claude-sessions").iter().any(|call| call.contains("WARN") && call.contains("no version from")), "{:?}", sandbox.calls("claude-sessions"));
+}
+
+#[test]
 fn a_failed_opencode_upgrade_is_logged_and_fails() {
-    let (sandbox, binary) = sandbox_with_opencode("echo 'network unreachable'; exit 1");
-    let output = sandbox.run(bin().join("opencode-update"), &[], &[("OPENCODE_BINARY", &binary)]);
+    let (sandbox, environment) = sandbox_with_opencode("1.20.0", "echo 'network unreachable'; exit 1");
+    let output = run_opencode_update(&sandbox, &environment);
     assert_eq!(output.status.code(), Some(1));
     assert!(sandbox.calls("claude-sessions").iter().any(|call| call.contains("WARN") && call.contains("network unreachable")));
 }
