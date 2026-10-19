@@ -209,15 +209,15 @@ fn insert_replies(transaction: &Transaction, rows: &[Reply]) -> rusqlite::Result
     Ok(changed)
 }
 
-/// One message of opencode's database as an archive row: an assistant reply that completed, with
-/// tokens, or None. Priced like a Claude reply from its tokens (opencode's own cost is 0 on a
-/// subscription); a model without a known price keeps opencode's cost when it has one.
-pub fn opencode_reply_row(id: &str, session: &str, data: &str) -> Option<Reply> {
+/// One assistant message of opencode 2's database (session_message.data) as an archive row: a reply
+/// that completed, with tokens, or None. Priced like a Claude reply from its tokens (opencode's own
+/// cost is 0 on a subscription); a model without a known price keeps opencode's cost when it has one.
+pub fn opencode_reply_row(id: &str, session: &str, data: &str, cwd: &str) -> Option<Reply> {
     let message: Value = serde_json::from_str(data).ok()?;
-    if message.get("role").and_then(Value::as_str) != Some("assistant") || message.pointer("/time/completed").is_none() {
+    if message.pointer("/time/completed").is_none() {
         return None;
     }
-    let model = message.get("modelID").and_then(Value::as_str).filter(|model| !model.is_empty())?;
+    let model = message.pointer("/model/id").and_then(Value::as_str).filter(|model| !model.is_empty())?;
     let created = chrono::DateTime::from_timestamp_millis(message.pointer("/time/created").and_then(Value::as_i64)?)?;
     let count = |pointer: &str| message.pointer(pointer).and_then(Value::as_i64).unwrap_or(0);
     let (input, output, cache_read, cache_write) =
@@ -228,7 +228,6 @@ pub fn opencode_reply_row(id: &str, session: &str, data: &str) -> Option<Reply> 
     let usage = serde_json::json!({"input_tokens": input, "output_tokens": output, "cache_read_input_tokens": cache_read,
                                    "cache_creation_input_tokens": cache_write});
     let cost = reply_cost(model, &usage).or_else(|| message.get("cost").and_then(Value::as_f64).filter(|cost| *cost > 0.0));
-    let cwd = message.pointer("/path/cwd").and_then(Value::as_str).unwrap_or("");
     let project = Path::new(cwd).file_name().map(|name| name.to_string_lossy().into_owned()).filter(|name| !name.is_empty()).unwrap_or("?".into());
     Some(Reply {
         key: format!("opencode:{id}"), day: created.with_timezone(&Local).date_naive().to_string(),
@@ -237,22 +236,24 @@ pub fn opencode_reply_row(id: &str, session: &str, data: &str) -> Option<Reply> 
     })
 }
 
-/// Copies opencode's replies into the archive: every message of its database, read-only (its
-/// sandboxes write it), the known ones only corrected. Nothing when opencode never ran. Returns
-/// how many rows changed.
+/// Copies opencode's replies into the archive: every assistant message of its database (opencode 2's
+/// session_message, the folder from session_v2), read-only (its sandboxes write it), the known ones
+/// only corrected. Nothing when opencode never ran. Returns how many rows changed.
 pub fn archive_opencode(archive: &mut Connection, database: &Path) -> rusqlite::Result<usize> {
     if !database.exists() {
         return Ok(0);
     }
     let source = Connection::open_with_flags(database, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     source.busy_timeout(std::time::Duration::from_secs(1))?;
-    let mut statement = source.prepare("select id, session_id, data from message")?;
-    let messages = statement.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?)))?;
+    let mut statement = source.prepare(
+        "select message.id, message.session_id, message.data, session.directory from session_message message
+         join session_v2 session on session.id = message.session_id where message.type = 'assistant'")?;
+    let messages = statement.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?)))?;
     let mut projects: HashMap<String, String> = HashMap::new();
     let mut rows = Vec::new();
     for message in messages {
-        let (id, session, data) = message?;
-        let Some(mut row) = opencode_reply_row(&id, &session, &data) else { continue };
+        let (id, session, data, cwd) = message?;
+        let Some(mut row) = opencode_reply_row(&id, &session, &data, &cwd) else { continue };
         if !row.cwd.is_empty() {
             row.project = projects.entry(row.cwd.clone()).or_insert_with(|| util::project_name(&util::repository_root(&row.cwd))).clone();
         }
@@ -629,9 +630,9 @@ mod tests {
         fs::remove_dir_all(directory).unwrap();
     }
 
-    /// An opencode assistant message as its database keeps it (message.data).
+    /// An opencode 2 assistant message as its database keeps it (session_message.data).
     fn opencode_message(created_ms: i64, model: &str, output: i64, cost: f64) -> String {
-        json!({"role": "assistant", "modelID": model, "providerID": "anthropic", "cost": cost, "path": {"cwd": "/x/shop", "root": "/x/shop"},
+        json!({"agent": "build", "model": {"id": model, "providerID": "anthropic"}, "content": [], "cost": cost,
                "tokens": {"input": 0, "output": output, "reasoning": 0, "cache": {"read": 0, "write": 0}},
                "time": {"created": created_ms, "completed": created_ms + 1000}}).to_string()
     }
@@ -639,27 +640,25 @@ mod tests {
     #[test]
     fn an_opencode_reply_is_priced_from_its_tokens_like_a_claude_one() {
         // On a subscription opencode's own cost is 0: the tokens say what it would cost.
-        let row = opencode_reply_row("msg_1", "ses_1", &opencode_message(1_760_781_600_000, "claude-opus-5-5", 1_000_000, 0.0)).unwrap();
+        let row = opencode_reply_row("msg_1", "ses_1", &opencode_message(1_760_781_600_000, "claude-opus-5-5", 1_000_000, 0.0), "/x/shop").unwrap();
         assert_eq!((row.key.as_str(), row.cost, row.project.as_str(), row.session.as_str()), ("opencode:msg_1", Some(20.0), "shop", "ses_1"));
         assert_eq!(row.at, "2025-10-18T10:00:00.000Z");
     }
 
     #[test]
     fn a_model_without_a_known_price_keeps_opencodes_cost() {
-        let row = opencode_reply_row("msg_1", "ses_1", &opencode_message(1_760_781_600_000, "gpt-7", 1000, 0.42)).unwrap();
+        let row = opencode_reply_row("msg_1", "ses_1", &opencode_message(1_760_781_600_000, "gpt-7", 1000, 0.42), "/x/shop").unwrap();
         assert_eq!(row.cost, Some(0.42));
-        let unpriced = opencode_reply_row("msg_2", "ses_1", &opencode_message(1_760_781_600_000, "gpt-7", 1000, 0.0)).unwrap();
+        let unpriced = opencode_reply_row("msg_2", "ses_1", &opencode_message(1_760_781_600_000, "gpt-7", 1000, 0.0), "/x/shop").unwrap();
         assert_eq!(unpriced.cost, None);
     }
 
     #[test]
-    fn only_completed_assistant_replies_with_tokens_are_archived() {
+    fn only_completed_replies_with_tokens_are_archived() {
         let mut streaming: Value = serde_json::from_str(&opencode_message(1, "claude-opus-5-5", 5, 0.0)).unwrap();
         streaming["time"].as_object_mut().unwrap().remove("completed");
-        let mut user: Value = serde_json::from_str(&opencode_message(1, "claude-opus-5-5", 5, 0.0)).unwrap();
-        user["role"] = json!("user");
-        for data in [streaming.to_string(), user.to_string(), opencode_message(1, "claude-opus-5-5", 0, 0.0), "not json".into()] {
-            assert!(opencode_reply_row("msg_1", "ses_1", &data).is_none(), "{data}");
+        for data in [streaming.to_string(), opencode_message(1, "claude-opus-5-5", 0, 0.0), "not json".into()] {
+            assert!(opencode_reply_row("msg_1", "ses_1", &data, "/x/shop").is_none(), "{data}");
         }
     }
 
@@ -669,11 +668,15 @@ mod tests {
         fs::create_dir_all(&directory).unwrap();
         let database = directory.join("opencode.db");
         let source = Connection::open(&database).unwrap();
-        source.execute_batch("create table message (id text primary key, session_id text not null, time_created integer, data text not null)").unwrap();
+        // opencode 2.0.26's tables (packages/core/src/session/sql.ts), the columns read here.
+        source.execute_batch("create table session_v2 (id text primary key, directory text not null);
+            create table session_message (id text primary key, session_id text not null, type text not null, seq integer not null, data text not null);
+            insert into session_v2 values ('ses_1', '/x/shop');
+            insert into session_message values ('msg_0', 'ses_1', 'user', 0, '{\"text\": \"hi\"}');").unwrap();
         let start = chrono::Local::now().timestamp_millis() - 600_000;
-        for (id, offset) in [("msg_1", 0), ("msg_2", 120_000)] {
-            source.execute("insert into message (id, session_id, data) values (?, 'ses_1', ?)",
-                           params![id, opencode_message(start + offset, "claude-opus-5-5", 1_000_000, 0.0)]).unwrap();
+        for (seq, (id, offset)) in [("msg_1", 0), ("msg_2", 120_000)].into_iter().enumerate() {
+            source.execute("insert into session_message values (?, 'ses_1', 'assistant', ?, ?)",
+                           params![id, seq as i64 + 1, opencode_message(start + offset, "claude-opus-5-5", 1_000_000, 0.0)]).unwrap();
         }
         drop(source);
         let mut archive = open_archive(&directory.join("usage.sqlite")).unwrap();

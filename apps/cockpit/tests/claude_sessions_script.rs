@@ -1992,7 +1992,13 @@ fn an_opencode_start_runs_its_launcher_in_a_tmux_session_the_viewer_attaches() {
     assert_eq!(result.status.code(), Some(0), "{}", stderr(&result));
     let starts = manager.opencode_starts();
     assert_eq!(starts.len(), 1, "{:?}", manager.calls("tmux"));
-    assert!(starts[0].contains(&format!("-c {} ", other.display())) && starts[0].ends_with(&format!("opencode {}", opencode_launcher(&manager))), "{}", starts[0]);
+    assert!(starts[0].contains(&format!("-c {} ", other.display())), "{}", starts[0]);
+    // Its own server, ending with it, and the id the card carries from the start, exported for
+    // ask-to-run and claude-todo.
+    let launch = Regex::new(&format!(r"CLAUDE_CODE_SESSION_ID=(ses_[0-9a-f]{{12}}[0-9A-Za-z]{{14}}) sh -c .* opencode {} --standalone --session (ses_\S+)$",
+                                     regex::escape(&opencode_launcher(&manager)))).unwrap();
+    let ids = launch.captures(&starts[0]).unwrap_or_else(|| panic!("{}", starts[0]));
+    assert_eq!(ids[1], ids[2]);
     let name = Regex::new(r"-s (claude-retry-opencode-\d+)").unwrap().captures(&starts[0]).unwrap()[1].to_string();
     assert!(manager.tmux_calls("respawn-pane").iter().any(|call| call.ends_with(&format!("attach-session -t ={name}"))), "{:?}", manager.tmux_calls("respawn-pane"));
     assert!(!manager.calls("tmux").iter().any(|call| call.contains("fish -ic")), "Claude was started");
@@ -2027,7 +2033,7 @@ fn a_parallel_opencode_session_gets_its_first_prompt_as_one() {
     assert_eq!(result.status.code(), Some(0), "{}", stderr(&result));
     let start = manager.opencode_starts().pop().expect("no opencode start");
     assert!(start.contains(&format!("-c {} ", clones.join("proj-a/todo-1").display())), "{start}");
-    assert!(start.ends_with("--prompt Task: -v fix the chip"), "{start}");
+    assert!(Regex::new(r"--standalone --session ses_\S+ --prompt Task: -v fix the chip$").unwrap().is_match(&start), "{start}");
 }
 
 #[test]
@@ -2035,7 +2041,8 @@ fn a_past_opencode_session_resumes_by_its_id() {
     let manager = Manager::new();
     manager.run(&["resume", &path_str(&manager.project), OPENCODE_SESSION], &[]);
     let start = manager.opencode_starts().pop().expect("no opencode start");
-    assert!(start.ends_with(&format!("--session {OPENCODE_SESSION}")), "{start}");
+    assert!(start.ends_with(&format!("--standalone --session {OPENCODE_SESSION}")), "{start}");
+    assert!(start.contains(&format!("CLAUDE_CODE_SESSION_ID={OPENCODE_SESSION} ")), "{start}");
 }
 
 #[test]
@@ -2118,4 +2125,19 @@ fn an_opencode_start_logs_its_agent_and_keeps_the_prompt_out() {
     let lines = manager.log_lines();
     assert!(lines.iter().any(|line| line.contains("new ") && line.contains("(agent opencode)")), "{lines:?}");
     assert!(!lines.iter().any(|line| line.contains("secret")), "{lines:?}");
+}
+
+#[test]
+fn each_new_opencode_session_gets_an_id_of_its_own_newest_first() {
+    // opencode lists sessions by id: its ids count time down, so the newest sorts first.
+    let manager = Manager::new();
+    let id_of = |call: &String| Regex::new(r"--session (ses_\S+)").unwrap().captures(call).unwrap()[1].to_string();
+    for project in ["proj-b", "proj-c"] {
+        let folder = manager.sandbox.root.join(project);
+        fs::create_dir(&folder).unwrap();
+        manager.run(&["--agent", "opencode", "new", &path_str(&folder)], &[]);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let ids: Vec<String> = manager.opencode_starts().iter().map(id_of).collect();
+    assert!(ids.len() == 2 && ids[1] < ids[0], "{ids:?}");
 }

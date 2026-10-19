@@ -366,18 +366,31 @@ detached_size() {
 # opencode in a tmux session of its own, named like claude-auto-retry's (which is Claude's alone)
 # so the manager views, exits and lists it like any other. A failed start is logged and stays on
 # screen until a key. Prints the tmux session's name.
+# --standalone: a server of its own, which ends with it (opencode 2 otherwise shares a background
+# server that outlives the session, and its cockpit plugin with it). --session: the id the card
+# carries from the start; opencode makes the session with it at the first prompt. ask-to-run and
+# claude-todo read it from CLAUDE_CODE_SESSION_ID, as in a Claude session.
 OPENCODE_LAUNCHER="${CLAUDE_SESSIONS_OPENCODE:-$HOME/.local/bin/greywall-agents/opencode}"
 OPENCODE_EPILOGUE='"$@" && exit; code=$?; claude-sessions log manager ERROR "opencode exited with status $code in $PWD"; printf "\n  ✗ opencode exited with status %s\n  any key closes this pane " "$code"; read -r _'
 
-start_opencode() { # dir opencode-arguments...
-    local directory=$1 name size
-    shift
+start_opencode() { # dir session-id opencode-arguments...
+    local directory=$1 session=$2 name size
+    shift 2
     require_plain_directory "$directory"
     name="claude-retry-opencode-$(date +%s%N)"
     size=$(detached_size)
     tmux new-session -d -s "$name" -x "${size% *}" -y "${size#* }" -c "$directory" \
-        env CLAUDE_SESSIONS_INSIDE=1 sh -c "$OPENCODE_EPILOGUE" opencode "$OPENCODE_LAUNCHER" "$@"
+        env CLAUDE_SESSIONS_INSIDE=1 CLAUDE_CODE_SESSION_ID="$session" \
+        sh -c "$OPENCODE_EPILOGUE" opencode "$OPENCODE_LAUNCHER" --standalone --session "$session" "$@"
     printf '%s\n' "$name"
+}
+
+# A new session id the way opencode makes them (packages/schema/src/identifier.ts): ses_, the time
+# counted down in 12 hex digits (newest first in its lists), then 14 random letters and digits.
+new_opencode_session_id() {
+    local countdown=$(( ~($(date +%s%3N) * 4096 + 1) & 0xFFFFFFFFFFFF )) letters
+    letters=$(LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 14)
+    printf 'ses_%012x%s\n' "$countdown" "$letters"
 }
 
 # Whether the next launch bills the Console's API credits (1) or the subscription (0): the launcher
@@ -401,7 +414,7 @@ new_session() {
     # No loading screen: opencode reports at its first prompt only (it makes its session then), and
     # its own screen is up in a second.
     if [[ $launch_agent == opencode ]]; then
-        view_session "$(start_opencode "$directory" "$@")"
+        view_session "$(start_opencode "$directory" "$(new_opencode_session_id)" "$@")"
         label_panes "$(basename "$directory")"
         return
     fi
@@ -523,7 +536,7 @@ resume_session() { # dir id [effort]
     require_plain_directory "$1"
     if is_opencode_session "$2"; then
         [[ -z ${3:-} ]] || { require_claude_session "$2" "effort"; return 1; }
-        view_session "$(start_opencode "$1" --session "$2")"
+        view_session "$(start_opencode "$1" "$2")"
         label_panes "$(basename "$1")"
         focus_viewer
         return
@@ -863,7 +876,7 @@ restore_sessions() { # dir id [dir id …]
             continue
         fi
         if is_opencode_session "$id"; then
-            start_opencode "$directory" --session "$id" >/dev/null
+            start_opencode "$directory" "$id" >/dev/null
             continue
         fi
         effort=$(jq -r '.effort // empty' "$HOME/.cache/claude/statusline-$id.json" 2>/dev/null || true)
@@ -896,10 +909,10 @@ restart_session() { # id [effort] [detached] [credits|subscription]
         [[ -z $billing ]] || { require_claude_session "$id" "billing"; return 1; }
         exit_session "$id" || return 1
         if [[ $detached == detached ]]; then
-            start_opencode "$directory" --session "$id" >/dev/null
+            start_opencode "$directory" "$id" >/dev/null
             return
         fi
-        view_session "$(start_opencode "$directory" --session "$id")"
+        view_session "$(start_opencode "$directory" "$id")"
         label_panes "$(basename "$directory")"
         return
     fi
@@ -1294,7 +1307,7 @@ parallel_session() { # dir branch [prompt: its first message, the Todo panel's N
     # Out of sight, as a card of its own: started in the session pane, it replaced the session on
     # screen and cleared it, and the Todo panel it was sent from lost its project (all projects shown).
     if [[ $launch_agent == opencode ]]; then
-        start_opencode "$clone" --prompt "$prompt" >/dev/null
+        start_opencode "$clone" "$(new_opencode_session_id)" --prompt "$prompt" >/dev/null
         return
     fi
     launch_detached "$clone" "$prompt"
