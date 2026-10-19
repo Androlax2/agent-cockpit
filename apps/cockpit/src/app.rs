@@ -1845,7 +1845,8 @@ impl App {
         }
     }
 
-    /// Fixed panels keep their size, collapsed ones their borders; of the flexible ones, the focused takes half the rest.
+    /// Fixed panels keep their size, collapsed ones their borders; of the flexible ones, the focused takes
+    /// at least half the rest, the others no more rows than their lines need.
     pub fn layout(&self, height: u16) -> Vec<u16> {
         let status_height = self.panels[0].lines.len() as i64 + 2;
         let collapsed: Vec<usize> = [2usize, 3].into_iter().filter(|index| self.is_collapsed(*index)).collect();
@@ -1856,9 +1857,10 @@ impl App {
         let others = minimum.max((available - minimum.max(available / 2)) / (flexible.len() as i64 - 1).max(1));
         let mut heights = vec![status_height as u16, 2, 2, 2];
         for &index in &flexible {
-            heights[index] = others as u16;
+            heights[index] = others.min(minimum.max(self.panels[index].lines.len() as i64 + 2)) as u16;
         }
-        heights[expanded] = minimum.max(available - others * (flexible.len() as i64 - 1)) as u16;
+        let taken: i64 = flexible.iter().filter(|index| **index != expanded).map(|index| heights[*index] as i64).sum();
+        heights[expanded] = minimum.max(available - taken) as u16;
         heights
     }
 

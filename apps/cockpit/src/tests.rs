@@ -606,7 +606,7 @@ fn a_collapsed_panel_opens_while_focused() {
     let fixture = Fixture::new();
     let mut app = fixture.app();
     app.focus = 3;
-    assert_eq!(app.layout(45), vec![4, 19, 2, 18]);
+    assert_eq!(app.layout(45), vec![4, 4, 2, 33]);
 }
 
 #[test]
@@ -620,16 +620,29 @@ fn done_items_alone_leave_the_todo_collapsed() {
 }
 
 #[test]
-fn the_focused_panel_takes_half_the_column_after_the_fixed_status() {
+fn an_unfocused_panel_takes_only_the_rows_its_lines_need() {
     let fixture = Fixture::new();
     let mut app = fixture.app();
     app.reviews.set_rows(vec![Review { title: "VAT".into(), repository: "shop".into(), ..Review::default() }]);
     app.todos.add("runway", "/r/runway", "add a healthcheck");
     app.build();
+    assert_eq!(app.layout(45), vec![4, 31, 4, 4]);
+}
+
+#[test]
+fn the_focused_panel_takes_half_the_column_after_the_fixed_status() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    app.reviews.set_rows((1..=20).map(|number| Review { number, title: "VAT".into(), repository: "shop".into(), ..Review::default() }).collect());
+    for number in 1..=20 {
+        app.todos.add("runway", "/r/runway", &format!("item {number}"));
+    }
+    app.build();
     // No usage cache: one explanatory line and the Claude status line, four with the borders.
     assert_eq!(app.layout(45), vec![4, 19, 10, 10]);
     app.focus = 3;
-    assert_eq!(app.layout(45), vec![4, 10, 10, 19]);
+    // No session: Sessions needs only its one line.
+    assert_eq!(app.layout(45), vec![4, 4, 10, 25]);
     app.focus = 0;
     assert_eq!(app.layout(45), vec![4, 19, 10, 10]);
     assert!(app.layout(12).iter().all(|height| *height >= 3));
