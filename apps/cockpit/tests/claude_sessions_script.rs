@@ -388,29 +388,6 @@ fn compact_is_typed_only_at_the_prompt() {
 }
 
 #[test]
-fn approve_presses_enter_only_on_an_open_dialog_at_yes() {
-    let manager = Manager::new();
-    assert_eq!(manager.run(&["answer", SESSION_A, "yes"], &[("SHIM_PANE_TEXT", DIALOG)]).status.code(), Some(0));
-    assert!(manager.calls("tmux").contains(&"tmux send-keys -t %4 Enter".to_string()));
-}
-
-#[test]
-fn nothing_is_sent_when_the_dialog_closed() {
-    let manager = Manager::new();
-    let result = manager.run(&["answer", SESSION_A, "yes"], &[("SHIM_PANE_TEXT", IDLE)]);
-    assert_eq!(result.status.code(), Some(1));
-    assert!(stderr(&result).contains("no permission dialog"));
-    assert!(manager.tmux_calls("send-keys").is_empty());
-}
-
-#[test]
-fn decline_presses_escape() {
-    let manager = Manager::new();
-    manager.run(&["answer", SESSION_A, "no"], &[("SHIM_PANE_TEXT", DIALOG)]);
-    assert!(manager.calls("tmux").contains(&"tmux send-keys -t %4 Escape".to_string()));
-}
-
-#[test]
 fn say_sends_at_the_prompt_and_queues_while_working() {
     let manager = Manager::new();
     manager.run(&["say", SESSION_A, "also update the README"], &[("SHIM_PANE_TEXT", IDLE)]);
@@ -567,13 +544,6 @@ fn a_background_session_gets_its_own_tmux_session_and_leaves_the_viewer_alone() 
 }
 
 #[test]
-fn zoom_toggles_the_viewer_pane() {
-    let manager = Manager::new();
-    manager.run(&["zoom"], &[]);
-    assert!(manager.calls("tmux").contains(&"tmux resize-pane -Z -t %11".to_string()));
-}
-
-#[test]
 fn restore_resumes_each_session_and_skips_a_gone_folder() {
     let manager = Manager::new();
     let result = manager.run(&["restore", &path_str(&manager.project), SESSION_A, "/no/such/dir", SESSION_B], &[]);
@@ -647,7 +617,6 @@ fn a_stale_hyprland_id_is_replaced_by_the_running_instance() {
         fs::File::open(&folder).unwrap().set_times(fs::FileTimes::new().set_accessed(when).set_modified(when)).unwrap();
     }
     manager.sandbox.shim("hyprctl", r#"echo "id=$HYPRLAND_INSTANCE_SIGNATURE" >> "$SHIM_LOG"; echo '{"id": 2}'"#);
-    manager.run(&["zoom"], &[("HYPRLAND_INSTANCE_SIGNATURE", "gone")]);
     manager.run(&["show"], &[("HYPRLAND_INSTANCE_SIGNATURE", "gone"), ("SHIM_WS", "2")]);
     let log = fs::read_to_string(&manager.sandbox.log).unwrap();
     assert!(log.contains("id=running_instance"));

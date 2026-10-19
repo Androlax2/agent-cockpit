@@ -440,7 +440,7 @@ pub struct App {
     /// The session cards' data as the last tick read it (gather_sessions); a key press redraws from
     /// it instead of reading tmux and the files again.
     gathered: Option<Gathered>,
-    /// claude-sessions commands a key started (open, view, zoom…), not waited for: the column stays
+    /// claude-sessions commands a key started (open, view, digest…), not waited for: the column stays
     /// responsive while they run; an error shows once one ends (collect_manager).
     pending: Vec<(String, std::process::Child)>,
     /// The plan's name (usage::plan, from the credentials file), read once a tick.

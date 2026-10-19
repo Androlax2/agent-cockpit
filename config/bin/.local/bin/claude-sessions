@@ -70,13 +70,10 @@
 #   claude-sessions restore <dir> <id> […]
 #                                resume those sessions one after the other (the sidebar's B after a reboot)
 #   claude-sessions compact <id> type /compact into a session waiting at its prompt (the sidebar's C)
-#   claude-sessions zoom         the session pane over the whole window, and back
 #   claude-sessions approval-pane <id>|close
 #                                show a run request's approval under the session pane (the daemon)
 #   claude-sessions say <id> <message>
 #                                send a session a message without opening it (the cockpit's queued prompts, and error hand-offs)
-#   claude-sessions answer <id> yes|no
-#                                answer its open permission dialog
 set -euo pipefail
 # Run from a tmux popup or binding, this gets the tmux server's PATH (/usr/local/bin:/usr/bin): the
 # helpers it calls (osd-show, osd, claude-sessions-sidebar) live in ~/.local/bin. Without it a U push
@@ -585,31 +582,6 @@ compact_session() { # id
     submit_to_pane "$pane" "/compact"
 }
 
-# Answer a session's permission dialog from the sidebar (Y approves, N declines). The pane is read
-# again right before: approve presses Enter only while the dialog is open with its cursor on
-# "1. Yes"; decline presses Escape, Claude's own "no". Nothing is sent when the dialog is gone.
-answer_permission() { # id yes|no
-    local id=$1 answer=$2 pane tail
-    pane=$(session_field "$id" tmux_pane)
-    [[ -n $pane ]] || { echo "claude-sessions: session $id has no tmux pane" >&2; return 1; }
-    tail=$(tmux capture-pane -p -t "$pane" -S -20 2>/dev/null)
-    if [[ $(osd classify <<<"$tail") != needs-you ]]; then
-        echo "claude-sessions: no permission dialog open in $(session_field "$id" project) any more" >&2
-        return 1
-    fi
-    case $answer in
-        yes)
-            if ! grep -qE '❯[[:space:]]*1\.[[:space:]]*Yes' <<<"$tail"; then
-                echo "claude-sessions: the dialog's cursor is not on \"1. Yes\"; answer it in the session" >&2
-                return 1
-            fi
-            tmux send-keys -t "$pane" Enter
-            ;;
-        no) tmux send-keys -t "$pane" Escape ;;
-        *) echo "usage: claude-sessions answer <session-id> yes|no" >&2; return 1 ;;
-    esac
-}
-
 # A message for a session without opening it: sent at its prompt, queued with
 # Claude's own Ctrl+X Enter while it works, refused while a dialog is open (it would answer it).
 say_to_session() { # id message
@@ -670,14 +642,6 @@ queue_prompt_ask() { # [pane]
     printf '%s' "$text" > "$folder/$(date +%s%N).txt"
     log_event INFO sessions "prompt queued for $(session_field "$session" project)"
     audit_event manager prompt.queued queued "session=$session" "fp:text=$text"
-}
-
-# The session pane over the whole window and back. Moving to the column with
-# Ctrl+Tab unzooms too: tmux leaves zoom when the active pane changes.
-zoom_viewer() {
-    ensure_manager
-    tmux select-pane -t "$(viewer_pane)"
-    tmux resize-pane -Z -t "$(viewer_pane)"
 }
 
 # Sessions the lock screen handed to Remote Control (handoff lock), taken back on unlock only.
@@ -1685,10 +1649,8 @@ case ${1:-attach} in
     idle) idle ;;
     usage) show_usage ;;
     compact) compact_session "${2:?usage: claude-sessions compact <session-id>}" ;;
-    zoom) zoom_viewer ;;
     approval-pane) approval_pane "${2:?usage: claude-sessions approval-pane <id> | close [id]}" "${3:-}" ;;
     say) say_to_session "${2:?usage: claude-sessions say <session-id> <message>}" "${3:?usage: claude-sessions say <session-id> <message>}" ;;
-    answer) answer_permission "${2:?usage: claude-sessions answer <session-id> yes|no}" "${3:?usage: claude-sessions answer <session-id> yes|no}" ;;
     logs) show_logs "${2:-80}" ;;
     log) log_event "${3:?usage: claude-sessions log <component> <INFO|WARN|ERROR> <message>}" "${2:?}" "${4:?}" ;;
     digest) show_digest ;;
