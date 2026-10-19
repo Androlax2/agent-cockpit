@@ -73,7 +73,7 @@ const GLOBAL_HELP: [(&str, &str); 14] = [
     ("⌘1 ⌘2 ⌘3", "focus a panel from inside the session (tmux)"), ("⇥ ⇧⇥", "next / previous panel"), ("j/k ↑↓", "move inside the panel"),
     (":", "every action, searchable; the rare ones have no key and are only there"), ("a", "new session in a project"),
     ("O", "new opencode session in a project: same sandbox, card and keys, but what only Claude Code does (effort, $, remote, /compact) is done in its pane"),
-    ("S", "settings, on or off: Remote Control on lock, the todo queue, errors handed to dotfiles, freezing sessions while gaming, the idle lock on workspace 6, the daily digest; and the phone page: its server, pairing a phone (QR code), forgetting one (x)"),
+    ("S", "settings, on or off: the phone on lock, the todo queue, errors handed to dotfiles, freezing sessions while gaming, the idle lock on workspace 6, the daily digest; and the phone page: its server, pairing a phone (QR code), forgetting one (x)"),
     ("P W G", "windows on top: pull requests, Claude on the web, greyproxy (also Super+Ctrl+P/A/G)"),
     ("≈ $", "today's Claude Code and opencode replies on this machine at API prices (the plan is flat); week and month in Status"),
     ("⌘⇥", "cursor between the column and the session (tmux)"),

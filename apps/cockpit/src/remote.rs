@@ -322,6 +322,16 @@ pub fn current_alerts() -> Vec<(String, Value)> {
     alerts(&snapshot_sessions(), &asking_approvals())
 }
 
+/// Whether a phone hears of an alert: everything while Theo is away (the lock screen's away on);
+/// at the desk only the turn ends of the sessions it watches, which it asked for by name.
+fn is_for_phone(notification: &Value, is_away: bool, watching: &[String]) -> bool {
+    if is_away {
+        return true;
+    }
+    let session = notification.get("session").and_then(Value::as_str).unwrap_or("");
+    notification.get("kind").and_then(Value::as_str) == Some("turn") && watching.iter().any(|watched| watched == session)
+}
+
 /// The VAPID subject: the page's own address, where the push service can reach whoever sends.
 fn push_contact() -> String {
     tailnet_name().map(|host| format!("https://{host}")).unwrap_or_else(|| "https://localhost".into())
@@ -345,11 +355,11 @@ pub fn send_test(phone: &str) -> Result<String, String> {
 /// stops taking them.
 pub fn notify(new_alerts: &[(String, Value)]) {
     let contact = push_contact();
+    let is_away = paths::phone_away().exists();
     for (phone, subscription) in push_targets() {
         let watching = watched(&phone);
         for (_, notification) in new_alerts {
-            let session = notification.get("session").and_then(Value::as_str).unwrap_or("");
-            if notification.get("kind").and_then(Value::as_str) == Some("turn") && !watching.iter().any(|watched| watched == session) {
+            if !is_for_phone(notification, is_away, &watching) {
                 continue;
             }
             let topic = notification.get("topic").and_then(Value::as_str).unwrap_or("");
@@ -736,6 +746,17 @@ mod tests {
         assert_eq!((first[0].1["title"].as_str(), first[0].1["body"].as_str(), first[0].1["kind"].as_str()),
                    (Some("proj-a finished"), Some("2 commits, tests pass"), Some("turn")));
         assert_ne!(first[0].0, alerts(&[waiting(200)], &[])[0].0);
+    }
+
+    #[test]
+    fn away_every_alert_reaches_the_phone_and_at_the_desk_only_a_watched_sessions_turn_end() {
+        let needs = json!({"session": "s1", "title": "proj-a needs you"});
+        let turn = |session: &str| json!({"session": session, "kind": "turn"});
+        let watching = vec!["s1".to_string()];
+        assert!(is_for_phone(&needs, true, &[]) && is_for_phone(&turn("s2"), true, &[]));
+        assert!(!is_for_phone(&needs, false, &watching));
+        assert!(is_for_phone(&turn("s1"), false, &watching));
+        assert!(!is_for_phone(&turn("s2"), false, &watching));
     }
 
     #[test]

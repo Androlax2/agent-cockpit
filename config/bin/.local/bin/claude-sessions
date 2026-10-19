@@ -59,12 +59,13 @@
 #                                Claude sessions themselves are left alone
 #   claude-sessions doctor       check every piece this depends on (daemon, FIFO, greywall paths,
 #                                hooks, bar, tmux, manager) and what the pane heuristics see
-#   claude-sessions handoff [on|off|lock|unlock]
+#   claude-sessions handoff [on|off]
 #                                hand every running session to Remote Control (Claude's /rc, driven
-#                                from the phone or claude.ai/code) before leaving, or take them back
-#                                (lock does nothing while the setting handoff-on-lock is off)
+#                                from claude.ai/code) before leaving, or take them back
+#   claude-sessions away on|off  the phone page (claude-remote) notifies while away: the lock screen
+#                                runs it (nothing while the setting phone-on-lock is off)
 #   claude-sessions setting <name> [on|off]
-#                                show or change a setting (the sidebar's S): handoff-on-lock,
+#                                show or change a setting (the sidebar's S): phone-on-lock,
 #                                todo-queue, error-handoff, freeze-while-gaming, idle-lock, daily-digest
 #   claude-sessions remote <id>  toggle Remote Control for one session (the remote action of the sidebar's : list)
 #   claude-sessions restore <dir> <id> […]
@@ -764,14 +765,14 @@ queue_prompt_ask() { # [pane]
     audit_event manager prompt.queued queued "session=$session" "fp:text=$text"
 }
 
-# Sessions the lock screen handed to Remote Control (handoff lock), taken back on unlock only.
-HANDED_OFF="${XDG_RUNTIME_DIR:-/tmp}/claude-sessions.handed-off"
+# While it exists, the phone page (claude-remote) notifies: set by the lock screen (away on).
+PHONE_AWAY="${XDG_RUNTIME_DIR:-/tmp}/claude-remote-away"
 
-# Theo's choices, on or off, kept across reboots ({"handoff-on-lock": false}). A setting missing
+# Theo's choices, on or off, kept across reboots ({"phone-on-lock": false}). A setting missing
 # from the file is on: what the setup did before it had settings. The cockpit's S menu lists the
 # same names (apps/cockpit/src/settings.rs).
 SETTINGS_FILE="${XDG_STATE_HOME:-$HOME/.local/state}/claude-sessions/settings.json"
-KNOWN_SETTINGS=(handoff-on-lock todo-queue error-handoff freeze-while-gaming idle-lock daily-digest)
+KNOWN_SETTINGS=(phone-on-lock todo-queue error-handoff freeze-while-gaming idle-lock daily-digest)
 
 setting_is_on() { # name
     [[ -f $SETTINGS_FILE ]] || return 0
@@ -807,43 +808,39 @@ setting() { # name [on|off]
     echo "$name: $wanted"
 }
 
-# on / off: every session. lock / unlock: what hypr/scripts/lock.sh does around the lock screen;
-# unlock takes back only the sessions lock handed off, so one put on Remote Control by hand stays.
-handoff() { # on|off|lock|unlock
+# on / off: every session to Remote Control (Super+Shift+C), or back.
+handoff() { # on|off
     local wanted=${1:-on} id pane count=0
-    case $wanted in on|off|lock|unlock) ;; *) echo "usage: claude-sessions handoff [on|off|lock|unlock]" >&2; return 1 ;; esac
+    case $wanted in on|off) ;; *) echo "usage: claude-sessions handoff [on|off]" >&2; return 1 ;; esac
     audit_event manager session.handoff "$wanted"
-    if [[ $wanted == lock ]] && ! setting_is_on handoff-on-lock; then
-        rm -f "$HANDED_OFF"
-        log_event INFO lock "handoff-on-lock is off: the sessions stay local"
-        echo "claude-sessions: handoff-on-lock is off, no session handed off"
-        return 0
-    fi
     if [[ ! -s $SNAPSHOT ]]; then
-        [[ $wanted == lock || $wanted == unlock ]] && { rm -f "$HANDED_OFF"; return 0; }
         echo "claude-sessions: no running session" >&2; return 1
     fi
-    [[ $wanted == lock ]] && : > "$HANDED_OFF"
     while IFS=$'\t' read -r id pane; do
         [[ -n $pane ]] || continue
-        case $wanted in
-            on|lock)
-                session_is_remote "$id" && continue
-                send_remote_toggle "$pane"; count=$((count + 1))
-                [[ $wanted == lock ]] && printf '%s\n' "$id" >> "$HANDED_OFF"
-                ;;
-            off)
-                session_is_remote "$id" || continue
-                send_remote_toggle "$pane"; count=$((count + 1))
-                ;;
-            unlock)
-                grep -qx "$id" "$HANDED_OFF" 2>/dev/null || continue
-                send_remote_toggle "$pane"; count=$((count + 1))
-                ;;
-        esac
+        if [[ $wanted == on ]]; then session_is_remote "$id" && continue; else session_is_remote "$id" || continue; fi
+        send_remote_toggle "$pane"; count=$((count + 1))
     done < <(jq -r '.sessions[] | select((.agent // "claude") == "claude") | [.session, (.tmux_pane // "")] | @tsv' "$SNAPSHOT")
-    [[ $wanted == unlock ]] && rm -f "$HANDED_OFF"
     echo "claude-sessions: remote control $wanted for $count session(s)"
+}
+
+# The lock screen's away on / off: while away, the phone page notifies (a session needs you, an
+# ask-to-run asks, a turn ends); at the desk it stays quiet. The setting phone-on-lock turns it off.
+away() { # on|off
+    case ${1:-} in
+        on)
+            if ! setting_is_on phone-on-lock; then
+                rm -f "$PHONE_AWAY"
+                log_event INFO lock "phone-on-lock is off: the phone stays quiet"
+                echo "claude-sessions: phone-on-lock is off, the phone stays quiet"
+                return 0
+            fi
+            : > "$PHONE_AWAY" ;;
+        off) rm -f "$PHONE_AWAY" ;;
+        *) echo "usage: claude-sessions away on|off" >&2; return 1 ;;
+    esac
+    audit_event manager phone.away "$1"
+    echo "claude-sessions: away $1"
 }
 
 # Claude writes a conversation's transcript only once something was said in it: a session nobody
@@ -1840,11 +1837,12 @@ case ${1:-attach} in
         ;;
     doctor) doctor ;;
     handoff) handoff "${2:-on}" ;;
+    away) away "${2:-}" ;;
     setting) setting "${2:?usage: claude-sessions setting <name> [on|off]}" "${3:-}" ;;
     remote) toggle_remote "${2:?usage: claude-sessions remote <session-id>}" ;;
     sweep) sweep_caches ;;
     *)
-        echo "usage: claude-sessions [attach|show [id]|view <id>|open <id>|new <dir>|resume <dir> <id>|exit <id>|restart <id>|billing <id> credits|subscription|handoff [on|off]|setting <name> [on|off]|remote <id>|prepare|idle|reload|reset|doctor|sweep]" >&2
+        echo "usage: claude-sessions [attach|show [id]|view <id>|open <id>|new <dir>|resume <dir> <id>|exit <id>|restart <id>|billing <id> credits|subscription|handoff [on|off]|away on|off|setting <name> [on|off]|remote <id>|prepare|idle|reload|reset|doctor|sweep]" >&2
         exit 2
         ;;
 esac

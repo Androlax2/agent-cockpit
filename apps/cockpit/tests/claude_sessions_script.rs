@@ -891,55 +891,45 @@ fn handoff_queues_rc_while_claude_works() {
 }
 
 #[test]
-fn unlock_takes_back_only_what_lock_handed_off() {
+fn away_on_and_off_set_and_clear_the_phone_flag() {
     let manager = Manager::new();
-    // Session A starts on Remote Control by hand; B is local.
-    let project = path_str(&manager.project);
-    fs::write(&manager.snapshot, json!({"sessions": [
-        {"session": SESSION_A, "state": "waiting", "project": "a", "cwd": project, "tmux_pane": "%4"},
-        {"session": SESSION_B, "state": "waiting", "project": "b", "cwd": project, "tmux_pane": "%5"}]}).to_string()).unwrap();
-    mark_remote(&manager, SESSION_A, true);
-    manager.run(&["handoff", "lock"], &[("SHIM_PANE_TEXT", IDLE)]);
-    let handed_off = manager.runtime_file("claude-sessions.handed-off");
-    assert_eq!(fs::read_to_string(&handed_off).unwrap().split_whitespace().collect::<Vec<_>>(), [SESSION_B]);
-    let locked = manager.tmux_calls("send-keys").len();
-    manager.run(&["handoff", "unlock"], &[("SHIM_PANE_TEXT", IDLE)]);
-    let unlocked = manager.tmux_calls("send-keys")[locked..].to_vec();
-    assert!(!unlocked.is_empty() && unlocked.iter().all(|call| call.contains("-t %5")), "{unlocked:?}");
-    assert!(!handed_off.exists());
+    let flag = manager.runtime_file("claude-remote-away");
+    assert!(manager.run(&["away", "on"], &[]).status.success());
+    assert!(flag.exists());
+    assert!(manager.run(&["away", "off"], &[]).status.success());
+    assert!(!flag.exists());
 }
 
 #[test]
-fn lock_hands_nothing_off_while_handoff_on_lock_is_off() {
+fn away_leaves_the_phone_quiet_while_phone_on_lock_is_off() {
     let manager = Manager::new();
-    assert!(manager.run(&["setting", "handoff-on-lock", "off"], &[]).status.success());
-    let result = manager.run(&["handoff", "lock"], &[("SHIM_PANE_TEXT", IDLE)]);
-    assert!(result.status.success());
+    assert!(manager.run(&["setting", "phone-on-lock", "off"], &[]).status.success());
+    assert!(manager.run(&["away", "on"], &[]).status.success());
+    assert!(!manager.runtime_file("claude-remote-away").exists());
+}
+
+#[test]
+fn the_lock_no_longer_hands_sessions_to_remote_control() {
+    // The phone page took over: the lock screen calls away, and handoff knows no lock.
+    let manager = Manager::new();
+    assert_eq!(manager.run(&["handoff", "lock"], &[("SHIM_PANE_TEXT", IDLE)]).status.code(), Some(1));
     assert!(manager.tmux_calls("send-keys").is_empty());
-    assert!(!manager.runtime_file("claude-sessions.handed-off").exists());
-}
-
-#[test]
-fn lock_hands_off_again_once_handoff_on_lock_is_back_on() {
-    let manager = Manager::new();
-    manager.run(&["setting", "handoff-on-lock", "off"], &[]);
-    manager.run(&["setting", "handoff-on-lock", "on"], &[]);
-    manager.run(&["handoff", "lock"], &[("SHIM_PANE_TEXT", IDLE)]);
-    assert_eq!(manager.tmux_calls("send-keys").first().map(String::as_str), Some("tmux send-keys -t %4 /rc"));
+    let lock = fs::read_to_string(repo().join("config/hyprland/.config/hypr/scripts/lock.sh")).unwrap();
+    assert!(lock.contains("claude-sessions away on") && lock.contains("claude-sessions away off") && !lock.contains("handoff"), "{lock}");
 }
 
 #[test]
 fn a_setting_is_on_until_turned_off() {
     let manager = Manager::new();
-    assert_eq!(stdout(&manager.run(&["setting", "handoff-on-lock"], &[])).trim(), "handoff-on-lock: on");
-    manager.run(&["setting", "handoff-on-lock", "off"], &[]);
-    assert_eq!(stdout(&manager.run(&["setting", "handoff-on-lock"], &[])).trim(), "handoff-on-lock: off");
+    assert_eq!(stdout(&manager.run(&["setting", "phone-on-lock"], &[])).trim(), "phone-on-lock: on");
+    manager.run(&["setting", "phone-on-lock", "off"], &[]);
+    assert_eq!(stdout(&manager.run(&["setting", "phone-on-lock"], &[])).trim(), "phone-on-lock: off");
 }
 
 #[test]
 fn setting_refuses_an_unknown_name_or_value() {
     let manager = Manager::new();
-    for arguments in [&["setting", "nope", "on"][..], &["setting", "handoff-on-lock", "maybe"][..]] {
+    for arguments in [&["setting", "nope", "on"][..], &["setting", "phone-on-lock", "maybe"][..]] {
         assert_eq!(manager.run(arguments, &[]).status.code(), Some(1), "{arguments:?}");
     }
 }
@@ -950,7 +940,7 @@ fn setting_leaves_a_broken_settings_file_alone() {
     let file = manager.sandbox.state.join("claude-sessions/settings.json");
     fs::create_dir_all(file.parent().unwrap()).unwrap();
     fs::write(&file, "not json").unwrap();
-    assert_eq!(manager.run(&["setting", "handoff-on-lock", "off"], &[]).status.code(), Some(1));
+    assert_eq!(manager.run(&["setting", "phone-on-lock", "off"], &[]).status.code(), Some(1));
     assert_eq!(fs::read_to_string(&file).unwrap(), "not json");
 }
 

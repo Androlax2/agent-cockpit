@@ -270,7 +270,7 @@ async function turnNotificationsOff(note) {
 
 function renderPhone() {
   const box = document.getElementById("phone");
-  const look = JSON.stringify([opened === null, state.push]);
+  const look = JSON.stringify([opened === null, state.push, state.away]);
   if (look === phoneLook) return;
   phoneLook = look;
   box.hidden = opened !== null;
@@ -278,7 +278,9 @@ function renderPhone() {
   const card = element("div", "card");
   const buttons = element("div", "buttons");
   if (canPush && (isHomeScreenApp || !/iPhone|iPad/.test(navigator.userAgent))) {
-    card.append(element("div", "task", state.push ? "Notifications are on: a session that needs you or a command that asks to run." : "Notifications are off."));
+    card.append(element("div", "task", state.push
+      ? `Notifications are on while the computer is locked: a session that needs you, a command that asks to run, a turn that ends. At the desk, only the sessions you ring.${state.away ? " (Locked now.)" : ""}`
+      : "Notifications are off."));
     if (state.push) {
       const test = element("button", "no", "Send a test");
       const off = element("button", "no", "Turn off");

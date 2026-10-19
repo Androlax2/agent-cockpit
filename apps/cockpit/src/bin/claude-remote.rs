@@ -138,6 +138,7 @@ fn handle(mut request: Request) {
             let mut state = remote::state();
             state["push"] = json!(remote::push_targets().iter().any(|(id, _)| *id == phone));
             state["watched"] = json!(remote::watched(&phone));
+            state["away"] = json!(cockpit::paths::phone_away().exists());
             respond_json(request, 200, state);
         }
         (Method::Get, ["api", "push", "key"]) => match cockpit::push::public_key() {

@@ -7,7 +7,7 @@ use crate::util::read_json;
 /// Every setting the S menu shows: its name in settings.json and claude-sessions (KNOWN_SETTINGS
 /// there), and what it does.
 pub const SETTINGS: [(&str, &str); 6] = [
-    ("handoff-on-lock", "Remote Control on lock"),
+    ("phone-on-lock", "Phone on lock"),
     ("todo-queue", "Todo queue (Q)"),
     ("error-handoff", "Errors to dotfiles"),
     ("freeze-while-gaming", "Freeze while gaming"),

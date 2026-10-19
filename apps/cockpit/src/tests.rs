@@ -240,7 +240,7 @@ fn the_effort_is_a_clickable_stamp_that_opens_the_menu() {
 
 #[test]
 fn enter_in_the_settings_menu_flips_the_setting_through_claude_sessions() {
-    for (stored, wanted) in [(None, "off"), (Some(r#"{"handoff-on-lock": false}"#), "on"), (Some("not json"), "off")] {
+    for (stored, wanted) in [(None, "off"), (Some(r#"{"phone-on-lock": false}"#), "on"), (Some("not json"), "off")] {
         let fixture = Fixture::new();
         if let Some(content) = stored {
             fixture.write("state/claude-sessions/settings.json", content);
@@ -248,8 +248,8 @@ fn enter_in_the_settings_menu_flips_the_setting_through_claude_sessions() {
         let mut app = fixture.app();
         app.handle(Key::Char('S'), &mut FakeScreen::default());
         app.handle(Key::Enter, &mut FakeScreen::default());
-        assert_eq!(fixture.calls("claude-sessions"), vec![format!("claude-sessions setting handoff-on-lock {wanted}")], "stored {stored:?}");
-        assert_eq!(app.message, format!("Remote Control on lock: {wanted}"));
+        assert_eq!(fixture.calls("claude-sessions"), vec![format!("claude-sessions setting phone-on-lock {wanted}")], "stored {stored:?}");
+        assert_eq!(app.message, format!("Phone on lock: {wanted}"));
     }
 }
 
