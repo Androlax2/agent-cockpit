@@ -23,6 +23,7 @@ use std::time::Duration;
 static ENVIRONMENT: Mutex<()> = Mutex::new(());
 const SESSION_A: &str = "aaaaaaaa-0000-4000-8000-000000000000";
 const SESSION_B: &str = "bbbbbbbb-0000-4000-8000-000000000000";
+const OPENCODE_SESSION: &str = "ses_3f2a9c0b1ffeQkTz8mWn4rJd2L";
 
 /// A scratch machine for one test. Tests run one at a time: they all change the environment.
 struct Fixture {
@@ -2305,4 +2306,90 @@ fn the_palette_pairs_a_phone() {
     let mut app = fixture.app();
     app.handle(Key::Char(':'), &mut FakeScreen::default());
     assert_eq!(fixture.wait_for_calls("claude-sessions", 1), vec!["claude-sessions pair-phone".to_string()]);
+}
+
+// ---- opencode sessions ----
+
+fn opencode_session(state: &str, project: &str, started: i64) -> Value {
+    let mut row = session(OPENCODE_SESSION, state, project, &format!("/r/{project}"), started);
+    row["agent"] = json!("opencode");
+    row
+}
+
+#[test]
+fn capital_o_starts_opencode_in_the_picked_project() {
+    let fixture = Fixture::new();
+    fs::create_dir_all(fixture.root.join("home/IdeaProjects/runway")).unwrap();
+    fixture.shim("fzf", "head -n 1");
+    let mut app = fixture.app();
+    app.handle(Key::Char('O'), &mut FakeScreen::default());
+    let project = fixture.root.join("home/IdeaProjects/runway");
+    assert_eq!(fixture.wait_for_calls("claude-sessions", 1), vec![format!("claude-sessions --agent opencode new {}", project.display())]);
+}
+
+#[test]
+fn an_opencode_session_wears_a_badge() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([opencode_session("waiting", "runway", 1), session(SESSION_B, "waiting", "opusline", "/o", 2)]));
+    let app = fixture.app();
+    let badged: Vec<String> = app.panels[1].lines.iter().filter(|line| line.right.iter().any(|part| part.text == "◇ opencode"))
+        .map(|line| line.texts()).collect();
+    assert!(badged.len() == 1 && badged[0].contains("runway"), "{badged:?}");
+}
+
+#[test]
+fn an_unreported_opencode_tmux_session_is_an_opencode_card() {
+    // opencode reports at its first prompt: until then its tmux session stands for it.
+    let fixture = Fixture::new();
+    fixture.shim("tmux", "printf 'claude-retry-opencode-7\\t%%5\\t/r/opusline\\topencode\\t100\\n'");
+    let app = fixture.app();
+    assert_eq!(app.sessions.iter().map(|s| (s.state.as_str(), s.agent.as_str())).collect::<Vec<_>>(), vec![("unknown", "opencode")]);
+}
+
+#[test]
+fn what_only_claude_code_does_is_not_offered_on_an_opencode_card() {
+    for key in ['e', '$', 'C'] {
+        let fixture = Fixture::new();
+        fixture.snapshot(json!([opencode_session("needs-you", "runway", 1)]));
+        let mut app = fixture.app();
+        app.handle(Key::Char(key), &mut FakeScreen::answering(&[Key::Char('y')]));
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(fixture.calls("claude-sessions").is_empty(), "{key}: {:?}", fixture.calls("claude-sessions"));
+        assert!(app.message.contains("runs opencode"), "{key}: {}", app.message);
+        assert!(app.sessions_hints().iter().all(|(hint, _)| !["e", "C"].contains(hint)), "{key}: {:?}", app.sessions_hints());
+    }
+}
+
+#[test]
+fn an_opencode_session_restarts_for_its_own_files_not_claudes() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([opencode_session("waiting", "runway", 1), session(SESSION_B, "waiting", "opusline", "/o", 2)]));
+    let mut app = fixture.app();
+    let restarts = |app: &App| -> Vec<(String, Vec<&'static str>)> {
+        app.sessions.iter().map(|s| (s.project.clone(), sessions::changed_since_start(s, &app.start_files))).collect()
+    };
+    app.start_files = vec![("settings", 50.0), ("opencode plugin", 50.0), ("shared launcher", 50.0)];
+    assert_eq!(restarts(&app), vec![("runway".to_string(), vec!["opencode plugin", "shared launcher"]),
+                                    ("opusline".to_string(), vec!["settings", "shared launcher"])]);
+}
+
+#[test]
+fn a_message_can_be_queued_for_an_opencode_session() {
+    let _fixture = Fixture::new();
+    crate::prompts::add(OPENCODE_SESSION, "and the README").unwrap();
+    assert_eq!(crate::prompts::count(OPENCODE_SESSION), 1);
+    assert!(crate::prompts::add("ses_../../x", "no").is_err());
+}
+
+#[test]
+fn the_palettes_remote_control_is_not_offered_to_an_opencode_session() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([opencode_session("waiting", "runway", 1)]));
+    fixture.shim("fzf", "grep 'toggle Remote Control'");
+    let mut app = fixture.app();
+    app.focus_panel(1);
+    app.handle(Key::Char(':'), &mut FakeScreen::default());
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(fixture.calls("claude-sessions").is_empty(), "{:?}", fixture.calls("claude-sessions"));
+    assert!(app.message.contains("runs opencode"), "{}", app.message);
 }

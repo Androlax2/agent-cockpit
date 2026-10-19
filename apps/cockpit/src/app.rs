@@ -65,10 +65,11 @@ const PANEL_NAMES: [&str; 4] = ["Status", "Sessions", "Pull requests", "Todo"];
 const PANEL_KEYS: [&str; 4] = ["0", "1", "2", "3"];
 const GLOBAL_HINTS: [(&str, &str); 5] = [("⇥", "panel"), (":", "actions"), ("a", "new"), ("?", "help"), ("q", "close")];
 /// ⌘ in key hints: the physical Command key, which keyd turns into Ctrl (system/etc/keyd).
-const GLOBAL_HELP: [(&str, &str); 13] = [
+const GLOBAL_HELP: [(&str, &str); 14] = [
     ("0-3", "focus a panel"), ("H", "resume a past session, searched by project and prompt"),
     ("⌘1 ⌘2 ⌘3", "focus a panel from inside the session (tmux)"), ("⇥ ⇧⇥", "next / previous panel"), ("j/k ↑↓", "move inside the panel"),
     (":", "every action, searchable; the rare ones have no key and are only there"), ("a", "new session in a project"),
+    ("O", "new opencode session in a project: same sandbox, card and keys, but what only Claude Code does (effort, $, remote, /compact) is done in its pane"),
     ("S", "settings, on or off: Remote Control on lock, the todo queue, errors handed to dotfiles, freezing sessions while gaming, the idle lock on workspace 6, the daily digest"),
     ("P W G", "windows on top: pull requests, Claude on the web, greyproxy (also Super+Ctrl+P/A/G)"),
     ("≈ $", "today's Claude Code replies on this machine at API prices (the plan is flat); week and month in Status"),
@@ -86,9 +87,9 @@ const PALETTE_ONLY: [(&str, &str, &str); 7] = [
     ("1", "drop-queued", "drop the messages queued for the selected session"),
     ("-", "pair-phone", "a QR code that pairs a phone with the phone page (claude-remote), once, within 10 minutes"),
 ];
-const LEGEND: [(&str, &str); 21] = [
+const LEGEND: [(&str, &str); 22] = [
     ("●", "working"), ("○", "waiting for you"), ("!", "needs you: permission or question"), ("·", "running, state unknown"),
-    ("▌", "shown in the session pane"), ("⚲", "pinned"), ("⇅", "remote controlled"),
+    ("▌", "shown in the session pane"), ("⚲", "pinned"), ("⇅", "remote controlled"), ("◇ opencode", "run by opencode instead of Claude Code (O starts one)"),
     ("◆ figcraft", "connected to FigCraft, which is open for this session's project (craft-open)"),
     ("◷ 2 agents + background", "background agents, and other background work (shells, monitors), still running when its turn ended"),
     ("✉ 2 queued", "messages waiting for the end of its turn, sent one per turn (m, Alt+Q; M drops them)"),
@@ -513,10 +514,10 @@ impl App {
             .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).spawn();
         match started {
             Ok(child) => {
-                self.pending.push((arguments[0].to_string(), child));
+                self.pending.push((command_name(arguments).to_string(), child));
                 String::new()
             }
-            Err(error) => format!("claude-sessions {}: {error}", arguments[0]),
+            Err(error) => format!("claude-sessions {}: {error}", command_name(arguments)),
         }
     }
 
@@ -986,6 +987,9 @@ impl App {
             if session.credits {
                 badges.push(part("$ credits", bold(YELLOW)));
             }
+            if session.is_opencode() {
+                badges.push(part("◇ opencode", bold(BLUE)));
+            }
             match session.role.as_str() {
                 "designer" => badges.push(part("✎ designer", bold(MAGENTA))),
                 "developer" => badges.push(part("⌨ developer", style(CYAN))),
@@ -1098,6 +1102,9 @@ impl App {
         hints.extend([("⏎", "open"), ("n", "peek"), ("e", "effort"), ("g", "git"), ("+", "another"), ("x", "exit")]);
         let mut seen = std::collections::HashSet::new();
         hints.retain(|(key, _)| seen.insert(*key));
+        if selected.is_opencode() {
+            hints.retain(|(key, _)| key.chars().next().and_then(|key| claude_only(Key::Char(key))).is_none());
+        }
         hints
     }
 
@@ -1118,6 +1125,9 @@ impl App {
 
     pub(crate) fn handle_sessions(&mut self, key: Key, screen: &mut dyn Screen) -> String {
         let session = self.selected_session();
+        if let (Some(s), Some(what)) = (session.as_ref().filter(|s| s.is_opencode()), claude_only(key)) {
+            return format!("{what} is Claude Code's: {} runs opencode, do it in its pane", s.project);
+        }
         let known = session.as_ref().filter(|s| s.state != "unknown").cloned();
         match key {
             Key::Enter => session.map(|s| self.manager_async(&["open", &s.session])).unwrap_or_default(),
@@ -2063,6 +2073,11 @@ impl App {
                     self.message = self.manager_async(&["new", &directory]);
                 }
             }
+            Key::Char('O') => {
+                if let Some(directory) = screen.outside(&mut || pick_project()).filter(|d| !d.is_empty()) {
+                    self.message = self.manager_async(&["--agent", "opencode", "new", &directory]);
+                }
+            }
             Key::Char('S') => self.settings_menu = Some(SettingsMenu::new()),
             Key::Char('H') => {
                 let past = self.past_sessions();
@@ -2136,6 +2151,7 @@ impl App {
                 "opening status.claude.com …".into()
             }
             "remote" => match known {
+                Some(s) if s.is_opencode() => format!("Remote Control is Claude Code's: {} runs opencode", s.project),
                 Some(s) => {
                     manager_in_background(&["remote", &s.session]);
                     format!("toggling remote control for {} …", s.project)
@@ -2237,6 +2253,25 @@ fn fzf(prompt: &str, lines: &[String], extra: &[&str]) -> Option<String> {
     let output = child.wait_with_output().ok()?;
     let chosen = String::from_utf8_lossy(&output.stdout).trim_end_matches('\n').to_string();
     (output.status.success() && !chosen.is_empty()).then_some(chosen)
+}
+
+/// The keys of what only Claude Code does, named, for an opencode card: its effort, billing and
+/// /compact are Claude's (claude-sessions refuses them for opencode too, and Remote Control).
+pub(crate) fn claude_only(key: Key) -> Option<&'static str> {
+    match key {
+        Key::Char('e') => Some("the effort level"),
+        Key::Char('$') => Some("billing to API credits"),
+        Key::Char('C') => Some("/compact"),
+        _ => None,
+    }
+}
+
+/// The claude-sessions command in `arguments`, past a leading --agent <name>.
+fn command_name<'a>(arguments: &[&'a str]) -> &'a str {
+    match arguments {
+        ["--agent", _, command, ..] => command,
+        _ => arguments[0],
+    }
 }
 
 fn pick_project() -> Option<String> {

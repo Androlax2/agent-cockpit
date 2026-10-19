@@ -9,8 +9,11 @@ use std::path::PathBuf;
 
 pub const PROMPT_MAX: usize = 4000;
 
+/// A Claude session's id (a UUID) or an opencode session's (ses_ and 12 to 40 letters or digits).
 fn valid_session(session: &str) -> bool {
-    session.len() == 36 && session.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
+    let is_claude = session.len() == 36 && session.chars().all(|c| c.is_ascii_hexdigit() || c == '-');
+    let is_opencode = session.strip_prefix("ses_").is_some_and(|rest| (12..=40).contains(&rest.len()) && rest.chars().all(|c| c.is_ascii_alphanumeric()));
+    is_claude || is_opencode
 }
 
 pub fn folder(session: &str) -> Option<PathBuf> {

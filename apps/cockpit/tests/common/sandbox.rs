@@ -14,6 +14,8 @@ use std::time::{Duration, Instant};
 
 pub const SESSION_A: &str = "aaaaaaaa-0000-4000-8000-000000000000";
 pub const SESSION_B: &str = "bbbbbbbb-0000-4000-8000-000000000000";
+/// An opencode session's id.
+pub const OPENCODE_SESSION: &str = "ses_3f2a9c0b1ffeQkTz8mWn4rJd2L";
 /// The answers folder the launcher names for the sandbox's project (CLAUDE_ANSWERS_KEY).
 pub const ANSWERS_KEY: &str = "-home-theo-IdeaProjects-proj-a";
 

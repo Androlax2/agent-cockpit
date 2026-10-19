@@ -74,6 +74,12 @@
 #                                show a run request's approval under the session pane (the daemon)
 #   claude-sessions say <id> <message>
 #                                send a session a message without opening it (the cockpit's queued prompts, and error hand-offs)
+#   claude-sessions --agent opencode new|parallel …
+#                                the same start with opencode instead of Claude (the cockpit's O):
+#                                opencode runs in a claude-retry-opencode-* tmux session, and its
+#                                plugin reports it like a Claude session; resume, restart, restore,
+#                                exit and say follow its id (ses_…), and what only Claude Code does
+#                                (compact, remote, effort, billing) is refused for it
 set -euo pipefail
 # Run from a tmux popup or binding, this gets the tmux server's PATH (/usr/local/bin:/usr/bin): the
 # helpers it calls (osd-show, osd, claude-sessions-sidebar) live in ~/.local/bin. Without it a U push
@@ -288,6 +294,8 @@ VIEWED_STARTS="${XDG_RUNTIME_DIR:-/tmp}/claude-sessions.viewed-starts"
 redraw_if_stale() { # target size-before id state started viewer-pane
     local id=$3 state=$4 started=$5 size_after is_stale=""
     [[ $state != needs-you ]] || return 0
+    # Ctrl+L is Claude's redraw; opencode redraws itself on a resize.
+    ! is_opencode_session "$id" || return 0
     size_after=$(tmux display-message -p -t "$6" '#{pane_width} #{pane_height}' 2>/dev/null || true)
     [[ -n $2 && $2 != "$size_after" ]] && is_stale=1
     if [[ -n $started ]] && ! grep -qxF "$id $started" "$VIEWED_STARTS" 2>/dev/null; then
@@ -320,8 +328,56 @@ focus_viewer() {
     tmux select-pane -t "$(viewer_pane)"
 }
 
-running_session_in() {
-    jq -r --arg cwd "$1" '.sessions[] | select(.cwd == $cwd) | .session' "$SNAPSHOT" 2>/dev/null | head -1
+running_session_in() { # dir agent
+    jq -r --arg cwd "$1" --arg agent "$2" '.sessions[] | select(.cwd == $cwd and (.agent // "claude") == $agent) | .session' "$SNAPSHOT" 2>/dev/null | head -1
+}
+
+# opencode's session ids start with ses_, Claude's are UUIDs; before its first report an opencode
+# session is its tmux session, claude-retry-opencode-*.
+is_opencode_session() { # id
+    [[ $1 == ses_* || $1 == claude-retry-opencode-* ]]
+}
+
+# What only Claude Code does (compact, remote, effort, billing, answering its dialogs) is refused
+# for an opencode session by name, rather than typed into a screen where it means something else.
+require_claude_session() { # id what
+    if is_opencode_session "$1"; then
+        echo "claude-sessions: $2 is Claude Code's; $(session_field "$1" project) runs opencode" >&2
+        return 1
+    fi
+}
+
+# The viewer pane's size, "<width> <height>": a session started out of sight at that size is shown
+# there later without a resize. Resized, Claude redrew and a resumed conversation sat above, out of
+# view (an empty pane). An approval pane open now takes rows the viewer gets back once it closes:
+# they count.
+detached_size() {
+    local size width=200 height=50 approval approval_height
+    size=$(tmux display-message -p -t "$(viewer_pane)" '#{pane_width} #{pane_height}' 2>/dev/null || true)
+    if [[ $size =~ ^([0-9]+)\ ([0-9]+)$ ]]; then width=${BASH_REMATCH[1]} height=${BASH_REMATCH[2]}; fi
+    approval=$(pane_by_role approval)
+    if [[ -n $approval ]]; then
+        approval_height=$(tmux display-message -p -t "$approval" '#{pane_height}' 2>/dev/null || true)
+        [[ $approval_height =~ ^[0-9]+$ ]] && height=$(( height + approval_height + 1 ))
+    fi
+    echo "$width $height"
+}
+
+# opencode in a tmux session of its own, named like claude-auto-retry's (which is Claude's alone)
+# so the manager views, exits and lists it like any other. A failed start is logged and stays on
+# screen until a key. Prints the tmux session's name.
+OPENCODE_LAUNCHER="${CLAUDE_SESSIONS_OPENCODE:-$HOME/.local/bin/greywall-agents/opencode}"
+OPENCODE_EPILOGUE='"$@" && exit; code=$?; claude-sessions log manager ERROR "opencode exited with status $code in $PWD"; printf "\n  ✗ opencode exited with status %s\n  any key closes this pane " "$code"; read -r _'
+
+start_opencode() { # dir opencode-arguments...
+    local directory=$1 name size
+    shift
+    require_plain_directory "$directory"
+    name="claude-retry-opencode-$(date +%s%N)"
+    size=$(detached_size)
+    tmux new-session -d -s "$name" -x "${size% *}" -y "${size#* }" -c "$directory" \
+        env CLAUDE_SESSIONS_INSIDE=1 sh -c "$OPENCODE_EPILOGUE" opencode "$OPENCODE_LAUNCHER" "$@"
+    printf '%s\n' "$name"
 }
 
 # Whether the next launch bills the Console's API credits (1) or the subscription (0): the launcher
@@ -333,14 +389,21 @@ new_session() {
     local directory=$1 existing
     shift
     require_plain_directory "$directory"
-    audit_event manager session.start ok "directory=$directory" "claude_arguments=$#"
+    audit_event manager session.start ok "directory=$directory" "agent=$launch_agent" "claude_arguments=$#"
     ensure_manager
     if (( $# == 0 )); then
-        existing=$(running_session_in "$directory")
+        existing=$(running_session_in "$directory" "$launch_agent")
         if [[ -n $existing ]]; then
             view_session "$existing"
             return
         fi
+    fi
+    # No loading screen: opencode reports at its first prompt only (it makes its session then), and
+    # its own screen is up in a second.
+    if [[ $launch_agent == opencode ]]; then
+        view_session "$(start_opencode "$directory" "$@")"
+        label_panes "$(basename "$directory")"
+        return
     fi
     # fish owns the `claude` function (greywall + claude-auto-retry). With no tmux variable left in
     # the environment the launcher creates the session's own tmux session and attaches it here;
@@ -458,6 +521,13 @@ show_loading() {
 
 resume_session() { # dir id [effort]
     require_plain_directory "$1"
+    if is_opencode_session "$2"; then
+        [[ -z ${3:-} ]] || { require_claude_session "$2" "effort"; return 1; }
+        view_session "$(start_opencode "$1" --session "$2")"
+        label_panes "$(basename "$1")"
+        focus_viewer
+        return
+    fi
     local effort_flags=()
     if [[ -n ${3:-} ]]; then
         require_effort "$3"
@@ -507,6 +577,10 @@ exit_session() {
         fi
         target=$(tmux display-message -p -t "$pane" '#{session_name}')
     fi
+    if is_opencode_session "$id"; then
+        exit_opencode "$target" "$pane"
+        return
+    fi
     # At the idle prompt /exit is the clean way out. Otherwise two Ctrl-C in quick succession: the
     # first interrupts the turn or clears typed input, the second must follow within Claude's short
     # "press again to exit" window. Two rounds, then the tmux session is killed.
@@ -526,6 +600,26 @@ exit_session() {
     done
     echo "claude-sessions: $id did not exit, killing its tmux session" >&2
     tmux kill-session -t "=$target"
+}
+
+# opencode: Escape twice interrupts a turn, Ctrl-C clears typed input, Ctrl-C at an empty prompt
+# exits. Two rounds, then the tmux session is killed.
+exit_opencode() { # tmux-session pane
+    local attempt
+    for attempt in 1 2; do
+        tmux send-keys -t "$2" Escape Escape
+        sleep 0.2
+        tmux send-keys -t "$2" C-c
+        sleep 0.3
+        tmux send-keys -t "$2" C-c
+        if claude_left "$1" "$2" 3; then
+            # A failed exit leaves the start's epilogue waiting for a key.
+            if tmux has-session -t "=$1" 2>/dev/null; then tmux kill-session -t "=$1" 2>/dev/null || true; fi
+            return 0
+        fi
+    done
+    echo "claude-sessions: opencode in $1 did not exit, killing its tmux session" >&2
+    tmux kill-session -t "=$1"
 }
 
 # A command typed at Claude's prompt and submitted. Text and Enter go in two send-keys calls with a
@@ -559,6 +653,7 @@ send_remote_toggle() { # pane
 
 toggle_remote() {
     local id=$1 pane
+    require_claude_session "$id" "Remote Control" || return 1
     pane=$(session_field "$id" tmux_pane)
     if [[ -z $pane ]]; then
         echo "claude-sessions: session $id has no tmux pane" >&2
@@ -571,6 +666,7 @@ toggle_remote() {
 # works: a compaction landing mid-task would summarise away what it is doing.
 compact_session() { # id
     local id=$1 pane
+    require_claude_session "$id" "/compact" || return 1
     pane=$(session_field "$id" tmux_pane)
     if [[ -z $pane ]]; then
         echo "claude-sessions: session $id has no tmux pane" >&2
@@ -597,6 +693,16 @@ say_to_session() { # id message
     if [[ $message == *[[:cntrl:]]* ]]; then
         echo "claude-sessions: a message cannot carry control characters" >&2
         return 1
+    fi
+    if is_opencode_session "$id"; then
+        # Its screen is not Claude's: the daemon's state, from its plugin, says whether it waits.
+        if [[ $(session_field "$id" state) != waiting ]]; then
+            echo "claude-sessions: $(session_field "$id" project) is not waiting at its prompt; m queues the message for its turn's end" >&2
+            return 1
+        fi
+        submit_to_pane "$pane" "$message"
+        audit_event manager say sent "session=$id" "project=$(session_field "$id" project)" "fp:message=$message"
+        return
     fi
     tail=$(tmux capture-pane -p -t "$pane" -S -20 2>/dev/null)
     if [[ $(osd classify <<<"$tail") == needs-you ]]; then
@@ -625,8 +731,8 @@ queue_prompt_ask() { # [pane]
     else
         session=$(jq -r --arg pane "$pane" '.sessions[] | select(.tmux_pane == $pane) | .session' "$SNAPSHOT" 2>/dev/null | head -1)
     fi
-    if [[ ! $session =~ ^[0-9a-f-]{36}$ ]]; then
-        read -r -p "No Claude session here. Enter closes. " _ || true
+    if [[ ! $session =~ ^([0-9a-f-]{36}|ses_[0-9A-Za-z]{12,40})$ ]]; then
+        read -r -p "No Claude or opencode session here. Enter closes. " _ || true
         return 1
     fi
     # Escape alone closes the popup; arrow keys (Escape then more within 30 ms) still edit the line.
@@ -722,7 +828,7 @@ handoff() { # on|off|lock|unlock
                 send_remote_toggle "$pane"; count=$((count + 1))
                 ;;
         esac
-    done < <(jq -r '.sessions[] | [.session, (.tmux_pane // "")] | @tsv' "$SNAPSHOT")
+    done < <(jq -r '.sessions[] | select((.agent // "claude") == "claude") | [.session, (.tmux_pane // "")] | @tsv' "$SNAPSHOT")
     [[ $wanted == unlock ]] && rm -f "$HANDED_OFF"
     echo "claude-sessions: remote control $wanted for $count session(s)"
 }
@@ -756,6 +862,10 @@ restore_sessions() { # dir id [dir id …]
             log_event WARN manager "restore: skipped $id ($directory is gone)"
             continue
         fi
+        if is_opencode_session "$id"; then
+            start_opencode "$directory" --session "$id" >/dev/null
+            continue
+        fi
         effort=$(jq -r '.effort // empty' "$HOME/.cache/claude/statusline-$id.json" 2>/dev/null || true)
         require_effort "$effort" 2>/dev/null || effort=""
         launch_credits=0
@@ -779,6 +889,19 @@ restart_session() { # id [effort] [detached] [credits|subscription]
     if [[ -z $directory ]]; then
         echo "claude-sessions: session $id has no directory to restart in" >&2
         return 1
+    fi
+    # opencode makes its session at the first prompt, so a session it reported has a conversation.
+    if is_opencode_session "$id"; then
+        [[ -z $effort ]] || { require_claude_session "$id" "effort"; return 1; }
+        [[ -z $billing ]] || { require_claude_session "$id" "billing"; return 1; }
+        exit_session "$id" || return 1
+        if [[ $detached == detached ]]; then
+            start_opencode "$directory" --session "$id" >/dev/null
+            return
+        fi
+        view_session "$(start_opencode "$directory" --session "$id")"
+        label_panes "$(basename "$directory")"
+        return
     fi
     if [[ -z $billing ]]; then
         billing=subscription
@@ -839,20 +962,11 @@ restart_sessions() { # id...
 # matches its tmux session (stripped, the card had no pane and the tmux session showed up as a
 # second, unknown card).
 launch_detached() { # dir claude-arguments...
-    local directory=$1 size width=200 height=50 approval approval_height
+    local directory=$1 size
     shift
     require_plain_directory "$directory"
-    # The viewer pane's size: shown there later without a resize, Claude keeps its screen. Resized,
-    # it redrew and the resumed conversation sat above, out of view (an empty pane). An approval pane
-    # open now takes rows the viewer gets back once it closes: they count.
-    size=$(tmux display-message -p -t "$(viewer_pane)" '#{pane_width} #{pane_height}' 2>/dev/null || true)
-    if [[ $size =~ ^([0-9]+)\ ([0-9]+)$ ]]; then width=${BASH_REMATCH[1]} height=${BASH_REMATCH[2]}; fi
-    approval=$(pane_by_role approval)
-    if [[ -n $approval ]]; then
-        approval_height=$(tmux display-message -p -t "$approval" '#{pane_height}' 2>/dev/null || true)
-        [[ $approval_height =~ ^[0-9]+$ ]] && height=$(( height + approval_height + 1 ))
-    fi
-    tmux new-session -d -s "claude-retry-restart-$(date +%s%N)" -x "$width" -y "$height" -c "$directory" \
+    size=$(detached_size)
+    tmux new-session -d -s "claude-retry-restart-$(date +%s%N)" -x "${size% *}" -y "${size#* }" -c "$directory" \
         env CLAUDE_SESSIONS_INSIDE=1 CLAUDE_SESSIONS_CREDITS="$launch_credits" \
         fish -ic 'claude $argv; or claude-sessions log manager ERROR "claude exited with status $status in $PWD"' -- "$@"
 }
@@ -1179,6 +1293,10 @@ parallel_session() { # dir branch [prompt: its first message, the Todo panel's N
     [[ $prompt == -* ]] && prompt="Task: $prompt" # never an option of claude's
     # Out of sight, as a card of its own: started in the session pane, it replaced the session on
     # screen and cleared it, and the Todo panel it was sent from lost its project (all projects shown).
+    if [[ $launch_agent == opencode ]]; then
+        start_opencode "$clone" --prompt "$prompt" >/dev/null
+        return
+    fi
     launch_detached "$clone" "$prompt"
 }
 
@@ -1617,6 +1735,17 @@ idle() {
 # placeholder) and the log commands themselves are left out. Run from the sidebar in the
 # background (CLAUDE_SESSIONS_LOG_STDERR), the error messages go to the log too, since nobody
 # sees that terminal.
+# The agent a start runs (new, parallel): claude, or opencode with --agent opencode before the
+# command. A running session is its own: resume, restart and restore go by its id.
+launch_agent=claude
+if [[ ${1:-} == --agent ]]; then
+    case ${2:-} in
+        claude|opencode) launch_agent=$2 ;;
+        *) echo "claude-sessions: --agent takes claude or opencode" >&2; exit 2 ;;
+    esac
+    shift 2
+fi
+
 log_command=${1:-attach}
 log_started=$(date +%s%N)
 log_arguments="${*:2}"
@@ -1631,6 +1760,7 @@ elif [[ $log_command == parallel ]]; then
     log_arguments="${2:-} ${3:-}"
     if (( $# > 3 )); then log_arguments+=" (prompt of ${#4} characters)"; fi
 fi
+[[ $launch_agent == claude ]] || log_arguments+=" (agent $launch_agent)"
 if [[ $log_command == label-state || $log_command == focus-viewer ]]; then
     # Called on every view change: only their failures are worth a line (40% of the log were these).
     trap 'log_status=$?; ((log_status)) && log_event ERROR manager "$log_command $log_arguments -> exit $log_status ($(( ($(date +%s%N) - log_started) / 1000000 )) ms)"' EXIT

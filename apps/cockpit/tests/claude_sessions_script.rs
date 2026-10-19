@@ -1961,3 +1961,161 @@ fn pair_phone_shows_the_pairing_qr_code_in_a_popup() {
     let popup = manager.tmux_calls("display-popup").pop().expect("no popup");
     assert!(popup.contains("/.local/bin/claude-remote\" pair"), "{popup}");
 }
+
+// ---- opencode sessions ----
+
+impl Manager {
+    /// Session A (Claude) and an opencode session in the same project, its pane %5.
+    fn with_opencode_session(&self, state: &str) {
+        fs::write(&self.snapshot, json!({"sessions": [
+            {"session": SESSION_A, "state": "waiting", "project": "proj-a", "cwd": path_str(&self.project), "tmux_pane": "%4"},
+            {"session": OPENCODE_SESSION, "state": state, "project": "proj-a", "cwd": path_str(&self.project), "tmux_pane": "%5", "agent": "opencode"},
+        ]}).to_string()).unwrap();
+    }
+
+    fn opencode_starts(&self) -> Vec<String> {
+        self.tmux_calls("new-session").into_iter().filter(|call| call.contains("-s claude-retry-opencode-")).collect()
+    }
+}
+
+/// The launcher a start runs, as the fake tmux logs it.
+fn opencode_launcher(manager: &Manager) -> String {
+    path_str(&manager.sandbox.home.join(".local/bin/greywall-agents/opencode"))
+}
+
+#[test]
+fn an_opencode_start_runs_its_launcher_in_a_tmux_session_the_viewer_attaches() {
+    let manager = Manager::new();
+    let other = manager.sandbox.root.join("proj-b");
+    fs::create_dir(&other).unwrap();
+    let result = manager.run(&["--agent", "opencode", "new", &path_str(&other)], &[]);
+    assert_eq!(result.status.code(), Some(0), "{}", stderr(&result));
+    let starts = manager.opencode_starts();
+    assert_eq!(starts.len(), 1, "{:?}", manager.calls("tmux"));
+    assert!(starts[0].contains(&format!("-c {} ", other.display())) && starts[0].ends_with(&format!("opencode {}", opencode_launcher(&manager))), "{}", starts[0]);
+    let name = Regex::new(r"-s (claude-retry-opencode-\d+)").unwrap().captures(&starts[0]).unwrap()[1].to_string();
+    assert!(manager.tmux_calls("respawn-pane").iter().any(|call| call.ends_with(&format!("attach-session -t ={name}"))), "{:?}", manager.tmux_calls("respawn-pane"));
+    assert!(!manager.calls("tmux").iter().any(|call| call.contains("fish -ic")), "Claude was started");
+}
+
+#[test]
+fn an_opencode_start_reuses_the_projects_opencode_session_never_its_claude_one() {
+    let manager = Manager::new();
+    manager.run(&["--agent", "opencode", "new", &path_str(&manager.project)], &[]);
+    assert_eq!(manager.opencode_starts().len(), 1, "a Claude session there is no opencode one");
+    manager.with_opencode_session("waiting");
+    manager.sandbox.reset_log();
+    manager.run(&["--agent", "opencode", "new", &path_str(&manager.project)], &[]);
+    assert!(manager.opencode_starts().is_empty());
+}
+
+#[test]
+fn an_unknown_agent_is_refused() {
+    let manager = Manager::new();
+    let result = manager.run(&["--agent", "codex", "new", &path_str(&manager.project)], &[]);
+    assert_eq!(result.status.code(), Some(2));
+    assert!(manager.calls("tmux").is_empty());
+}
+
+#[test]
+fn a_parallel_opencode_session_gets_its_first_prompt_as_one() {
+    let manager = Manager::new();
+    manager.git_repository();
+    let clones = manager.sandbox.root.join("clones");
+    let result = manager.run(&["--agent", "opencode", "parallel", &path_str(&manager.project), "todo-1", "-v fix the chip"],
+                             &[("CLAUDE_SESSIONS_CLONES", &path_str(&clones))]);
+    assert_eq!(result.status.code(), Some(0), "{}", stderr(&result));
+    let start = manager.opencode_starts().pop().expect("no opencode start");
+    assert!(start.contains(&format!("-c {} ", clones.join("proj-a/todo-1").display())), "{start}");
+    assert!(start.ends_with("--prompt Task: -v fix the chip"), "{start}");
+}
+
+#[test]
+fn a_past_opencode_session_resumes_by_its_id() {
+    let manager = Manager::new();
+    manager.run(&["resume", &path_str(&manager.project), OPENCODE_SESSION], &[]);
+    let start = manager.opencode_starts().pop().expect("no opencode start");
+    assert!(start.ends_with(&format!("--session {OPENCODE_SESSION}")), "{start}");
+}
+
+#[test]
+fn an_opencode_restart_exits_with_its_own_keys_then_resumes_it() {
+    let manager = Manager::new();
+    manager.with_opencode_session("waiting");
+    let result = manager.run(&["restart", OPENCODE_SESSION], &[("SHIM_CLAUDE_EXIT_AFTER", "2")]);
+    assert_eq!(result.status.code(), Some(0), "{}", stderr(&result));
+    assert_eq!(manager.tmux_calls("send-keys"), ["tmux send-keys -t %5 Escape Escape", "tmux send-keys -t %5 C-c", "tmux send-keys -t %5 C-c"]);
+    let start = manager.opencode_starts().pop().expect("no opencode start");
+    assert!(start.ends_with(&format!("--session {OPENCODE_SESSION}")), "{start}");
+}
+
+#[test]
+fn an_opencode_session_that_does_not_exit_is_killed() {
+    let manager = Manager::new();
+    manager.with_opencode_session("working");
+    let result = manager.run(&["exit", OPENCODE_SESSION], &[("SHIM_EXIT_AFTER", "99")]);
+    assert_eq!(manager.tmux_calls("kill-session"), ["tmux kill-session -t =claude-retry-9-9"]);
+    assert!(stderr(&result).contains("did not exit"), "{}", stderr(&result));
+    assert!(!manager.calls("tmux").iter().any(|call| call.contains("/exit")));
+}
+
+#[test]
+fn restore_brings_an_opencode_session_back_with_opencode() {
+    let manager = Manager::new();
+    manager.run(&["restore", &path_str(&manager.project), OPENCODE_SESSION], &[]);
+    let start = manager.opencode_starts().pop().expect("no opencode start");
+    assert!(start.ends_with(&format!("--session {OPENCODE_SESSION}")), "{start}");
+    assert!(!manager.tmux_calls("new-session").iter().any(|call| call.contains("claude-retry-restart-")));
+}
+
+#[test]
+fn what_only_claude_code_does_is_refused_for_an_opencode_session() {
+    let manager = Manager::new();
+    manager.with_opencode_session("needs-you");
+    for arguments in [vec!["compact", OPENCODE_SESSION], vec!["remote", OPENCODE_SESSION],
+                      vec!["billing", OPENCODE_SESSION, "credits"], vec!["restart", OPENCODE_SESSION, "max"]] {
+        let result = manager.run(&arguments, &[("SHIM_PANE_TEXT", DIALOG)]);
+        assert_eq!(result.status.code(), Some(1), "{arguments:?}");
+        assert!(stderr(&result).contains("runs opencode"), "{arguments:?}: {}", stderr(&result));
+    }
+    assert!(manager.tmux_calls("send-keys").is_empty(), "{:?}", manager.tmux_calls("send-keys"));
+}
+
+#[test]
+fn a_message_goes_to_an_opencode_session_only_while_it_waits() {
+    let manager = Manager::new();
+    manager.with_opencode_session("waiting");
+    assert_eq!(manager.run(&["say", OPENCODE_SESSION, "also the README"], &[]).status.code(), Some(0));
+    assert_eq!(manager.tmux_calls("send-keys"), ["tmux send-keys -t %5 -l -- also the README", "tmux send-keys -t %5 Enter"]);
+    manager.with_opencode_session("working");
+    manager.sandbox.reset_log();
+    let busy = manager.run(&["say", OPENCODE_SESSION, "and the changelog"], &[]);
+    assert_eq!(busy.status.code(), Some(1));
+    assert!(manager.tmux_calls("send-keys").is_empty());
+}
+
+#[test]
+fn handoff_leaves_opencode_sessions_alone() {
+    // /rc is Claude's Remote Control: typed into opencode it would be a prompt.
+    let manager = Manager::new();
+    manager.with_opencode_session("waiting");
+    manager.run(&["handoff"], &[("SHIM_PANE_TEXT", IDLE)]);
+    assert!(manager.tmux_calls("send-keys").iter().all(|call| call.contains("-t %4 ")), "{:?}", manager.tmux_calls("send-keys"));
+}
+
+#[test]
+fn alt_q_queues_a_prompt_for_an_opencode_session_too() {
+    let manager = Manager::new();
+    manager.with_opencode_session("working");
+    manager.sandbox.run_with_input(bin().join("claude-sessions"), &["queue-prompt-ask", "%5"], &[], "check the docs too\n");
+    assert!(manager.sandbox.state.join(format!("claude-sessions/prompt-queue/{OPENCODE_SESSION}")).is_dir());
+}
+
+#[test]
+fn an_opencode_start_logs_its_agent_and_keeps_the_prompt_out() {
+    let manager = Manager::new();
+    manager.run(&["--agent", "opencode", "new", &path_str(&manager.project), "--prompt", "the secret plan"], &[]);
+    let lines = manager.log_lines();
+    assert!(lines.iter().any(|line| line.contains("new ") && line.contains("(agent opencode)")), "{lines:?}");
+    assert!(!lines.iter().any(|line| line.contains("secret")), "{lines:?}");
+}
