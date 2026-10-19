@@ -54,7 +54,11 @@ impl Launch {
         write_executable(&sandbox.home.join(".opencode/bin/opencode"), "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$HOME/opencode-arguments\"\n\
                                                                          env > \"$HOME/opencode-environment\"\n");
         sandbox.shim("dig", "echo 127.0.0.1");
-        sandbox.shim("secret-tool", r#"[ "$3" = agent-anthropic ] && [ -n "${SHIM_ANTHROPIC_KEY:-}" ] && echo "$SHIM_ANTHROPIC_KEY" || exit 1"#);
+        sandbox.shim("secret-tool", r#"case "$3" in
+  agent-anthropic) [ -n "${SHIM_ANTHROPIC_KEY:-}" ] && echo "$SHIM_ANTHROPIC_KEY" || exit 1 ;;
+  agent-opencode-anthropic) [ -n "${SHIM_OPENCODE_KEY:-}" ] && echo "$SHIM_OPENCODE_KEY" || exit 1 ;;
+  *) exit 1 ;;
+esac"#);
         sandbox.shim("pgrep", r#"[ -n "${SHIM_FIGCRAFT_PID:-}" ] && echo "$SHIM_FIGCRAFT_PID""#);
         Launch { sandbox, project }
     }
@@ -163,10 +167,25 @@ fn a_subscription_session_gets_no_api_key_even_from_its_environment() {
 }
 
 #[test]
-fn an_opencode_session_never_gets_the_api_key_not_even_with_credits_asked() {
-    // opencode would bill the Console's credits with it, unnoticed: credits are a Claude session's.
+fn an_opencode_session_never_gets_the_credits_key_nor_a_stray_one() {
+    // The credits key is a Claude session's: opencode would bill it unnoticed.
     let launch = Launch::new();
     let started = launch.run_agent("opencode", &[("ANTHROPIC_API_KEY", "sk-ant-stray"), ("CLAUDE_SESSIONS_CREDITS", "1"), ("SHIM_ANTHROPIC_KEY", "sk-ant-test")], &[]);
+    assert!(!started.contains("ANTHROPIC_API_KEY") && started.contains("(api key: none)"), "{started}");
+}
+
+#[test]
+fn an_opencode_session_gets_its_own_key_as_a_placeholder() {
+    // opencode.db is open to every opencode session: the real key stays with greyproxy.
+    let launch = Launch::new();
+    let started = launch.run_agent("opencode", &[("SHIM_OPENCODE_KEY", "sk-ant-opencode"), ("SHIM_ANTHROPIC_KEY", "sk-ant-credits")], &[]);
+    assert!(started.contains("--secret ANTHROPIC_API_KEY") && started.contains("(api key: sk-ant-opencode)"), "{started}");
+}
+
+#[test]
+fn a_claude_session_never_gets_opencodes_key() {
+    let launch = Launch::new();
+    let started = launch.run(&[("SHIM_OPENCODE_KEY", "sk-ant-opencode")]);
     assert!(!started.contains("ANTHROPIC_API_KEY") && started.contains("(api key: none)"), "{started}");
 }
 

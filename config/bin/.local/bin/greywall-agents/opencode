@@ -6,6 +6,16 @@ export OPENCODE_DISABLE_AUTOUPDATE=1
 . "$(dirname "$0")/launcher-common.sh"
 greywall_options="--auto-profile --profile opencode --proxy-user opencode $greywall_options"
 
+# opencode's Anthropic API key, from the keyring (make agent-opencode-key): a greyproxy placeholder
+# inside the sandbox, which greyproxy swaps for the key on its way to api.anthropic.com, so no
+# session reads it (opencode's own credential store, opencode.db, is open to every opencode
+# session). Without one in the keyring, opencode uses what `opencode auth login` stored.
+opencode_key=$(secret-tool lookup service agent-opencode-anthropic 2>/dev/null || true)
+if [ -n "$opencode_key" ]; then
+    export ANTHROPIC_API_KEY="$opencode_key"
+    greywall_options="$greywall_options --secret ANTHROPIC_API_KEY"
+fi
+
 # Each Greywall launch has private network/PID namespaces and a private /tmp.
 # Sharing service.json across them makes unreachable servers replace each other.
 # Set only state inside the sandbox; keep the database, config and cache shared.
