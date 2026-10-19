@@ -77,3 +77,20 @@ fn an_idea_theo_declined_is_not_proposed_again() {
     assert!(stdout(&output).contains("already declined"), "{}", stdout(&output));
     assert!(!sandbox.root.join("updates.jsonl").exists());
 }
+
+#[test]
+fn design_marks_an_item_for_the_designer_session() {
+    let sandbox = Sandbox::new();
+    assert_eq!(claude_todo(&sandbox, &["add", "Empty state of the order list", "--design", "--notes", "no frame for 0 orders"], &sandbox.root).status.code(), Some(0));
+    assert_eq!(claude_todo(&sandbox, &["propose", "Error state", "--why", "the API fails often", "--design"], &sandbox.root).status.code(), Some(0));
+    let filed = updates(&sandbox);
+    assert_eq!(filed.iter().map(|update| update["kind"].as_str()).collect::<Vec<_>>(), [Some("design"), Some("design")]);
+    assert_eq!(filed[0]["notes"].as_str(), Some("no frame for 0 orders"));
+}
+
+#[test]
+fn an_item_without_design_has_no_kind() {
+    let sandbox = Sandbox::new();
+    claude_todo(&sandbox, &["add", "Bump the deps"], &sandbox.root);
+    assert_eq!(updates(&sandbox)[0].get("kind"), None);
+}

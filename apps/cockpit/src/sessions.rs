@@ -54,6 +54,14 @@ pub fn design_of(session_id: &str) -> Option<Design> {
     Some(Design { url, title })
 }
 
+pub fn role_of(session_id: &str) -> String {
+    let role = std::fs::read_to_string(paths::designs().join(format!("{session_id}.role"))).unwrap_or_default();
+    match role.trim() {
+        role @ ("designer" | "developer") => role.to_string(),
+        _ => String::new(),
+    }
+}
+
 /// The first message of a design session: link the card, watch the comments, then wait.
 pub fn design_prompt(url: &str) -> String {
     format!("This is a design session for the Claude Design canvas {url}. First read it with the Artifact tool, then run \
@@ -94,6 +102,8 @@ pub struct Session {
     pub apps: String,
     // Added by the column.
     pub design: Option<Design>,
+    /// "designer" or "developer", as the session declared it (claude-design role), or empty.
+    pub role: String,
     pub facts: Facts,
     pub title: String,
     pub pinned: bool,

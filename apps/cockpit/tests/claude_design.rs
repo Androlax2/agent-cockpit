@@ -45,3 +45,19 @@ fn unlink_removes_the_canvas_from_the_card() {
     design(&sandbox, &["unlink"]);
     assert_eq!(stdout(&design(&sandbox, &["show"])).trim(), "No canvas linked to this session.");
 }
+
+#[test]
+fn a_role_is_written_for_the_card_and_none_removes_it() {
+    let sandbox = Sandbox::new();
+    let role = sandbox.root.join(format!("designs/{SESSION_A}.role"));
+    assert_eq!(design(&sandbox, &["role", "designer"]).status.code(), Some(0));
+    assert_eq!(fs::read_to_string(&role).unwrap(), "designer");
+    assert_eq!(design(&sandbox, &["role", "none"]).status.code(), Some(0));
+    assert!(!role.exists());
+}
+
+#[test]
+fn an_unknown_role_is_refused() {
+    let sandbox = Sandbox::new();
+    assert_eq!(design(&sandbox, &["role", "boss"]).status.code(), Some(2));
+}

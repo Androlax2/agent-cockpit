@@ -794,6 +794,68 @@ fn h_sends_to_the_running_session_or_starts_one_and_marks_it_in_progress() {
     assert!(TodoList::load().items.iter().all(|item| item.status() == "doing"));
 }
 
+fn declare_role(fixture: &Fixture, session: &str, role: &str) {
+    fixture.write(&format!("home/.cache/claude/designs/{session}.role"), role);
+}
+
+fn design_item(app: &mut App, project: &str, cwd: &str, text: &str) -> String {
+    let id = app.todos.add(project, cwd, text);
+    app.todos.items.iter_mut().find(|item| item.id() == id).unwrap().0.insert("kind".into(), json!("design"));
+    id
+}
+
+fn hand_over_first_item(app: &mut App) {
+    app.build();
+    app.focus_panel(3);
+    app.panels[3].selected = 0;
+    app.handle(Key::Char('h'), &mut FakeScreen::default());
+}
+
+#[test]
+fn a_design_item_goes_to_the_projects_designer_session() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "opusline", "/r/opusline", 1), session(SESSION_B, "waiting", "opusline", "/r/opusline", 2)]));
+    declare_role(&fixture, SESSION_A, "developer");
+    declare_role(&fixture, SESSION_B, "designer");
+    let mut app = fixture.app();
+    design_item(&mut app, "opusline", "/r/opusline", "empty state of the order list");
+    hand_over_first_item(&mut app);
+    assert!(fixture.wait_for_calls("claude-sessions", 1)[0].starts_with(&format!("claude-sessions say {SESSION_B} empty state")));
+}
+
+#[test]
+fn an_ordinary_item_skips_the_designer_session() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "opusline", "/r/opusline", 1), session(SESSION_B, "waiting", "opusline", "/r/opusline", 2)]));
+    declare_role(&fixture, SESSION_A, "designer");
+    let mut app = fixture.app();
+    app.todos.add("opusline", "/r/opusline", "fix the login redirect");
+    hand_over_first_item(&mut app);
+    assert!(fixture.wait_for_calls("claude-sessions", 1)[0].starts_with(&format!("claude-sessions say {SESSION_B} fix the login")));
+}
+
+#[test]
+fn a_design_item_without_a_designer_starts_one_with_the_design_skill() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    design_item(&mut app, "opusline", "/r/opusline", "empty state");
+    hand_over_first_item(&mut app);
+    assert!(fixture.wait_for_calls("claude-sessions", 1)[0].starts_with("claude-sessions new /r/opusline Load the figcraft-design skill first. empty state"));
+}
+
+#[test]
+fn a_card_shows_its_role_and_a_design_item_its_mark() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "opusline", "/r/opusline", 1)]));
+    declare_role(&fixture, SESSION_A, "designer");
+    let mut app = fixture.app();
+    design_item(&mut app, "opusline", "/r/opusline", "empty state");
+    app.build();
+    let parts = |panel: usize| app.panels[panel].lines.iter().flat_map(|line| line.right.iter().map(|part| part.text.clone())).collect::<Vec<_>>();
+    assert!(parts(1).contains(&"✎ designer".to_string()), "{:?}", parts(1));
+    assert!(parts(3).contains(&"✎ design".to_string()), "{:?}", parts(3));
+}
+
 #[test]
 fn the_list_shows_only_the_viewed_sessions_project() {
     let fixture = Fixture::new();
@@ -1088,6 +1150,23 @@ fn an_idle_session_gets_its_projects_first_queued_item_by_priority() {
     let calls = fixture.wait_for_calls("claude-sessions", 1);
     assert_eq!(calls, [format!("claude-sessions say {SESSION_A} urgent job (todo {urgent}: when this is done, run claude-todo done {urgent})")]);
     assert_eq!(app.todos.status_of(&urgent), "doing");
+}
+
+#[test]
+fn the_queue_gives_design_items_to_the_designer_only() {
+    let (fixture, mut app) = queue_fixture("waiting", 600);
+    let design = design_item(&mut app, "runway", "/r/runway", "design the empty state");
+    let code = app.todos.add("runway", "/r/runway", "build the list");
+    app.todos.toggle_queued(&design);
+    app.todos.toggle_queued(&code);
+    app.dispatch_queue();
+    assert!(fixture.wait_for_calls("claude-sessions", 1)[0].contains("build the list"));
+    declare_role(&fixture, SESSION_A, "designer");
+    app.todos.set_status(&code, "done", "");
+    app.build();
+    app.queue_checked = 0.0;
+    app.dispatch_queue();
+    assert!(fixture.wait_for_calls("claude-sessions", 2)[1].contains("design the empty state"));
 }
 
 #[test]

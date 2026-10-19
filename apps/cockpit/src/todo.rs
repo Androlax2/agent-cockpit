@@ -86,6 +86,8 @@ impl Item {
     pub fn notes(&self) -> String { self.text_of("notes") }
     /// Why a session proposed it, in its own words.
     pub fn why(&self) -> String { self.text_of("why") }
+    /// Work for the project's designer session (claude-todo --design): a gap in the design.
+    pub fn is_design(&self) -> bool { self.text_of("kind") == "design" }
     fn updated(&self) -> i64 { self.0.get("updated").and_then(Value::as_i64).unwrap_or(0) }
 }
 
@@ -353,6 +355,9 @@ impl TodoList {
                     if let Some(item) = self.items.iter_mut().find(|item| item.id() == id) {
                         item.0.insert("source".into(), json!(if session.is_empty() { "a session".to_string() } else { format!("session {session}") }));
                         item.0.insert("notes".into(), json!(field("notes", NOTES_MAX)));
+                        if update.get("kind").and_then(Value::as_str) == Some("design") {
+                            item.0.insert("kind".into(), json!("design"));
+                        }
                         if action == "propose" {
                             item.0.insert("status".into(), json!(PROPOSED));
                             item.0.insert("why".into(), json!(field("why", WHY_MAX)));

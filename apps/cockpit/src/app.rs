@@ -74,13 +74,15 @@ const GLOBAL_HELP: [(&str, &str); 17] = [
     ("l →  ←", "into the session from any panel; ← from the session comes back"),
     ("q ⌘C", "close the manager window; sessions keep running"),
 ];
-const LEGEND: [(&str, &str); 14] = [
+const LEGEND: [(&str, &str); 16] = [
     ("●", "working"), ("○", "waiting for you"), ("!", "needs you: permission or question"), ("·", "running, state unknown"),
     ("▌", "shown in the session pane"), ("⚲", "pinned"), ("⇅", "remote controlled"),
     ("◆ figcraft", "connected to FigCraft, which is open for this session's project (craft-open)"),
     ("✉ 2 queued", "messages waiting for the end of its turn, sent one per turn (m, Alt+Q; M drops them)"),
     ("↑2 unpushed", "commits on no remote yet: U pushes the branch"),
     ("▭ terminal", "started with \"this terminal\": no ⌘R, restore, queue, error hand-off or ask-to-run"),
+    ("✎ designer ⌨ developer", "its role in a project designed in FigCraft (claude-design role): design to-dos go to the designer"),
+    ("✎ design", "a to-do for the designer session: a gap a developer found in the design (claude-todo --design)"),
     ("⬆", "Claude updated itself: r restarts on the new version"),
     ("/compact", "context over 90%: /compact in the session before it gets slow and costly"), ("high ▾", "effort level: click to change it"),
 ];
@@ -487,6 +489,7 @@ impl App {
         let root = util::repository_root(&session.cwd);
         let mut candidates: Vec<Entry> = self.todos.items.iter()
             .filter(|item| util::repository_root(&item.cwd()) == root && item.status() == "todo" && self.todos.is_queued(&item.id()))
+            .filter(|item| item.is_design() == (session.role == "designer"))
             .map(|item| Entry::Typed(item.clone())).collect();
         for issue in self.reviews.issues() {
             let key = issue.key();
@@ -658,6 +661,7 @@ impl App {
             }
             session.pinned = self.view.pinned.contains(&session.session);
             session.design = sessions::design_of(&session.session);
+            session.role = sessions::role_of(&session.session);
         }
         // A card keeps its place: pinned first, then in the order the sessions started.
         let running = sessions::grouped_by_project(running);
@@ -756,6 +760,11 @@ impl App {
             }
             if session.terminal {
                 badges.push(part("▭ terminal", bold(MAGENTA)));
+            }
+            match session.role.as_str() {
+                "designer" => badges.push(part("✎ designer", bold(MAGENTA))),
+                "developer" => badges.push(part("⌨ developer", style(CYAN))),
+                _ => {}
             }
             // Every session has the craft servers (craft-open): the badge marks only the sessions of
             // the project the running app serves, the ones that can work with it.
@@ -1214,9 +1223,12 @@ impl App {
             let faded = done.then(|| dim(FG_DARK));
             let queued = status == "todo" && self.todos.is_queued(&entry.key());
             let filed_by_claude = matches!(entry, Entry::Typed(item) if !item.source().is_empty());
-            let right = if status == "doing" { vec![part("in progress", style(BLUE))] }
+            let mut right = if status == "doing" { vec![part("in progress", style(BLUE))] }
                         else if queued { vec![part("queued", bold(CYAN))] }
                         else if filed_by_claude { vec![part("by Claude", style(YELLOW))] } else { vec![] };
+            if matches!(entry, Entry::Typed(item) if item.is_design()) {
+                right.insert(0, part("✎ design", faded.unwrap_or(bold(MAGENTA))));
+            }
             let line = match entry {
                 Entry::Typed(item) => Line {
                     segments: vec![segment(0, glyph, glyph_style), segment(2, &mark, mark_style),
@@ -1381,7 +1393,19 @@ impl App {
         }
         let key = entry.key();
         let text = todo::with_todo_note(&text, &key);
-        let running = self.sessions.iter().find(|s| s.cwd == directory && s.state != "unknown").cloned();
+        // A design to-do goes to the project's designer session, wherever its checkout is; any
+        // other item to a session of its folder that is not the designer.
+        let design_project = match entry {
+            Entry::Typed(item) if item.is_design() => Some(item.project()),
+            _ => None,
+        };
+        let is_design = design_project.is_some();
+        let running = if let Some(project) = design_project {
+            self.sessions.iter().find(|s| s.role == "designer" && s.project == project && s.state != "unknown").cloned()
+        } else {
+            self.sessions.iter().find(|s| s.cwd == directory && s.state != "unknown" && s.role != "designer").cloned()
+        };
+        let text = if is_design && running.is_none() { format!("Load the figcraft-design skill first. {text}") } else { text };
         let outcome = match &running {
             Some(session) => {
                 let error = manager(&["say", &session.session, &text]);

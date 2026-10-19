@@ -3,6 +3,11 @@
 //!     claude-design link <canvas url> '<canvas title>'
 //!     claude-design unlink
 //!     claude-design show
+//!     claude-design role designer|developer|none
+//!
+//! role: what the session does in a project with FigCraft designs (the figcraft-design and
+//! design-first skills set it at their start), in ~/.cache/claude/designs/<session id>.role: the
+//! card shows it and the column hands design to-dos (claude-todo --design) to the designer.
 //!
 //! Run by Claude inside the sandbox. The link goes to ~/.cache/claude/designs/<session id>.json
 //! (the session id from CLAUDE_CODE_SESSION_ID); the cockpit's column shows the title on the
@@ -16,7 +21,8 @@ use serde_json::{Value, json};
 
 const USAGE: &str = "    claude-design link <canvas url> '<canvas title>'
     claude-design unlink
-    claude-design show";
+    claude-design show
+    claude-design role designer|developer|none";
 
 fn main() {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
@@ -42,6 +48,17 @@ fn main() {
         ["unlink"] => {
             let _ = std::fs::remove_file(&path);
             println!("No canvas linked to this session.");
+            0
+        }
+        ["role", role @ ("designer" | "developer")] => {
+            match std::fs::create_dir_all(paths::designs()).and_then(|_| std::fs::write(paths::designs().join(format!("{session}.role")), role)) {
+                Ok(()) => { println!("This session's card now shows it as the {role}."); 0 }
+                Err(error) => { eprintln!("claude-design: {error}"); 1 }
+            }
+        }
+        ["role", "none"] => {
+            let _ = std::fs::remove_file(paths::designs().join(format!("{session}.role")));
+            println!("No role for this session.");
             0
         }
         ["show"] => {

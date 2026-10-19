@@ -4,10 +4,11 @@
 //!     claude-todo start <id>          mark it in progress
 //!     claude-todo done <id>           mark it done
 //!     claude-todo todo <id>           back to to do
-//!     claude-todo add '<title>' [--notes '<details>']
+//!     claude-todo add '<title>' [--notes '<details>'] [--design]
 //!                                     a new item for this directory's project
-//!     claude-todo propose '<title>' --why '<reason>' [--notes '<details>']
+//!     claude-todo propose '<title>' --why '<reason>' [--notes '<details>'] [--design]
 //!                                     an idea for Theo to approve or decline (the Proposed tab)
+//!                                     --design: work for the project's designer session
 //!     claude-todo show <id>           an item with its notes and, for a proposal, why
 //!
 //! An id is a typed item's 8 hex characters, or a GitHub issue as owner/repo#12. The list is read
@@ -27,9 +28,10 @@ const USAGE: &str = "    claude-todo list [--all]        the items of this direc
     claude-todo start <id>          mark it in progress
     claude-todo done <id>           mark it done
     claude-todo todo <id>           back to to do
-    claude-todo add '<title>' [--notes '<details>']
-    claude-todo propose '<title>' --why '<reason>' [--notes '<details>']
-                                    an idea for Theo to approve or decline; one he declined is not filed again
+    claude-todo add '<title>' [--notes '<details>'] [--design]
+    claude-todo propose '<title>' --why '<reason>' [--notes '<details>'] [--design]
+                                    an idea for Theo to approve or decline; one Theo declined is not filed again
+                                    --design: work for the project's designer session (a gap in the design)
     claude-todo show <id>           an item with its notes";
 
 fn todo_path() -> PathBuf {
@@ -84,7 +86,7 @@ fn option(arguments: &[&str], flag: &str) -> Option<String> {
     arguments.iter().position(|word| *word == flag).and_then(|at| arguments.get(at + 1)).map(|value| value.to_string())
 }
 
-fn file(action: &str, title: &str, why: Option<String>, notes: Option<String>) -> i32 {
+fn file(action: &str, title: &str, why: Option<String>, notes: Option<String>, is_design: bool) -> i32 {
     if action == "propose" && read_list().get("declined").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str)
         .any(|declined| collapse(declined).to_lowercase() == collapse(title).to_lowercase()) {
         println!("Theo already declined this idea; it is not filed again.");
@@ -94,13 +96,16 @@ fn file(action: &str, title: &str, why: Option<String>, notes: Option<String>) -
     update.insert("action".into(), json!(action));
     update.insert("text".into(), json!(collapse(title).chars().take(300).collect::<String>()));
     update.insert("cwd".into(), json!(std::env::current_dir().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default()));
+    if is_design {
+        update.insert("kind".into(), json!("design"));
+    }
     for (key, value) in [("why", why), ("notes", notes)] {
         if let Some(value) = value {
             update.insert(key.into(), json!(value.chars().take(4000).collect::<String>()));
         }
     }
     match append(update) {
-        Ok(()) if action == "propose" => { println!("Proposed to Theo in {}'s list (he approves or declines it).", project()); 0 }
+        Ok(()) if action == "propose" => { println!("Proposed to Theo in {}'s list (Theo approves or declines it).", project()); 0 }
         Ok(()) => { println!("Added to {}'s list.", project()); 0 }
         Err(error) => { eprintln!("claude-todo: {error}"); 1 }
     }
@@ -136,7 +141,8 @@ fn list(everything: bool) -> i32 {
 fn main() {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     let key = Regex::new(r"^(?:[0-9a-f]{8}|[\w.-]+/[\w.-]+#\d+)$").unwrap();
-    let words: Vec<&str> = arguments.iter().map(String::as_str).collect();
+    let is_design = arguments.iter().any(|word| word == "--design");
+    let words: Vec<&str> = arguments.iter().map(String::as_str).filter(|word| *word != "--design").collect();
     let status = match words.as_slice() {
         [] | ["list", ..] => list(words.contains(&"--all")),
         [action @ ("start" | "done" | "todo"), id] if key.is_match(id) => {
@@ -154,10 +160,10 @@ fn main() {
         }
         ["show", id] if key.is_match(id) => show(id),
         ["add", title, rest @ ..] if !title.trim().is_empty() && (rest.is_empty() || (rest.len() == 2 && rest[0] == "--notes")) =>
-            file("add", title, None, option(rest, "--notes")),
+            file("add", title, None, option(rest, "--notes"), is_design),
         ["propose", title, rest @ ..] if !title.trim().is_empty() && option(rest, "--why").is_some_and(|why| !why.trim().is_empty())
                                          && rest.len() % 2 == 0 && rest.chunks(2).all(|pair| pair[0] == "--why" || pair[0] == "--notes") =>
-            file("propose", title, option(rest, "--why"), option(rest, "--notes")),
+            file("propose", title, option(rest, "--why"), option(rest, "--notes"), is_design),
         _ => { eprintln!("{USAGE}"); 2 }
     };
     std::process::exit(status);
