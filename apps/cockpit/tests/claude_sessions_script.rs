@@ -264,6 +264,17 @@ fn exit_kills_the_tmux_session_as_a_last_resort() {
 }
 
 #[test]
+fn exit_gives_up_on_time_even_when_the_liveness_check_is_slow() {
+    // Counted in loop turns, a liveness check taking ~2 s made one restart wait 123 s.
+    let manager = Manager::new();
+    manager.sandbox.shim("osd", &format!(r#"if [[ $1 == liveness ]]; then /usr/bin/sleep 0.5; echo "by pane"; else exec {} "$@"; fi"#, bin().join("osd").display()));
+    let started = Instant::now();
+    let result = manager.run(&["exit", SESSION_A], &[("SHIM_PANE_TEXT", BUSY_WITHOUT_PROMPT), ("SHIM_EXIT_AFTER", "99")]);
+    assert!(started.elapsed() < Duration::from_secs(12), "took {:?}", started.elapsed());
+    assert!(stderr(&result).contains("did not exit"));
+}
+
+#[test]
 fn restart_exits_then_resumes_the_same_conversation() {
     let manager = Manager::new();
     manager.run(&["restart", SESSION_A], &[("SHIM_PANE_TEXT", IDLE), ("SHIM_EXIT_AFTER", "1")]);
