@@ -6,7 +6,7 @@ use crate::costs::Costs;
 use crate::errors::ErrorReporter;
 use crate::paths;
 use crate::reviews::{self, Review, Reviews};
-use crate::sessions::{self, CONTEXT_COMPACT_AT, FOCUS_STATES, History, PastSession, Restorable, Session, ViewState};
+use crate::sessions::{self, CONTEXT_COMPACT_AT, History, PastSession, Restorable, Session, ViewState};
 use crate::settings::{self, SETTINGS};
 use crate::status::{self, ClaudeStatus};
 use crate::todo::{self, Entry, TodoList};
@@ -63,22 +63,27 @@ const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 pub const EFFORT_LEVELS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
 const PANEL_NAMES: [&str; 4] = ["Status", "Sessions", "Pull requests", "Todo"];
 const PANEL_KEYS: [&str; 4] = ["0", "1", "2", "3"];
-const GLOBAL_HINTS: [(&str, &str); 6] = [("⇥", "panel"), ("/", "filter"), (":", "actions"), ("a", "new"), ("?", "help"), ("q", "close")];
+const GLOBAL_HINTS: [(&str, &str); 5] = [("⇥", "panel"), (":", "actions"), ("a", "new"), ("?", "help"), ("q", "close")];
 /// ⌘ in key hints: the physical Command key, which keyd turns into Ctrl (system/etc/keyd).
-const GLOBAL_HELP: [(&str, &str); 18] = [
+const GLOBAL_HELP: [(&str, &str); 13] = [
     ("0-3", "focus a panel"), ("H", "resume a past session, searched by project and prompt"),
     ("⌘1 ⌘2 ⌘3", "focus a panel from inside the session (tmux)"), ("⇥ ⇧⇥", "next / previous panel"), ("j/k ↑↓", "move inside the panel"),
-    ("/", "filter the focused panel, Esc clears"), (":", "every action, searchable"), ("a", "new session in a project"),
-    ("A", "new session on its own branch, in a separate clone (parallel work on one repository)"),
-    ("K", "the clones of A, + and reviews: delete those with no session, no uncommitted change and nothing unpushed"),
-    ("V", "a design session: a Claude Design canvas, worked on by a session in a project (link, then project)"),
-    ("D", "the digest: yesterday, today, plan usage, who waits, pull requests (also once a day by itself)"),
+    (":", "every action, searchable; the rare ones have no key and are only there"), ("a", "new session in a project"),
     ("S", "settings, on or off: Remote Control on lock, the todo queue, errors handed to dotfiles, freezing sessions while gaming, the idle lock on workspace 6, the daily digest"),
     ("P W G", "windows on top: pull requests, Claude on the web, greyproxy (also Super+Ctrl+P/A/G)"),
     ("≈ $", "today's Claude Code replies on this machine at API prices (the plan is flat); week and month in Status"),
     ("⌘⇥", "cursor between the column and the session (tmux)"),
     ("l →  ←", "into the session from any panel; ← from the session comes back"),
     ("q ⌘C", "close the manager window; sessions keep running"),
+];
+/// Rare actions with no key, only in the : list: the panel they run in ("-" for none), a name, a label.
+const PALETTE_ONLY: [(&str, &str, &str); 6] = [
+    ("-", "digest", "the digest: yesterday, today, plan usage, who waits, pull requests (also once a day by itself)"),
+    ("-", "design", "a design session: a Claude Design canvas, worked on by a session in a project (link, then project)"),
+    ("-", "clones", "the clones of + and reviews: delete those with no session, no uncommitted change and nothing unpushed (also once a day by itself)"),
+    ("0", "status-page", "open status.claude.com: Anthropic's incidents and each product's state"),
+    ("1", "remote", "toggle Remote Control (phone / claude.ai/code) for the selected session"),
+    ("1", "drop-queued", "drop the messages queued for the selected session"),
 ];
 const LEGEND: [(&str, &str); 21] = [
     ("●", "working"), ("○", "waiting for you"), ("!", "needs you: permission or question"), ("·", "running, state unknown"),
@@ -395,8 +400,6 @@ pub struct App {
     pub claude_status: ClaudeStatus,
     pub panels: [PanelState; 4],
     pub focus: usize,
-    pub query: String,
-    pub filtering: bool,
     pub help_open: bool,
     /// Whether tmux's focus is in the column: out of it, nothing there is drawn as focused.
     pub has_pane_focus: bool,
@@ -407,7 +410,6 @@ pub struct App {
     pub(crate) menu: Option<EffortMenu>,
     pub(crate) settings_menu: Option<SettingsMenu>,
     pub restore: Vec<Restorable>,
-    pub focus_waiting: bool,
     pub held: Vec<String>,
     pub(crate) held_checked: f64,
     pub(crate) queue_checked: f64,
@@ -468,9 +470,9 @@ impl App {
         Self {
             history: History::default(), view: ViewState::load(), usage: Refresher::new(), alerts: BudgetAlerts::new(util::send_notice),
             costs: Costs::default(), reviews: Reviews::default(), todos: TodoList::load(), errors: ErrorReporter::new(),
-            claude_status: ClaudeStatus::default(), panels: Default::default(), focus: 1, query: String::new(), filtering: false,
+            claude_status: ClaudeStatus::default(), panels: Default::default(), focus: 1,
             help_open: false, has_pane_focus: true, message: String::new(), exiting: Vec::new(), labelled: Default::default(), menu: None, settings_menu: None, restore: Vec::new(),
-            focus_waiting: false, held: Vec::new(), held_checked: 0.0, queue_checked: 0.0, gaming: util::gaming, restore_checked: 0.0, start_files: Vec::new(),
+            held: Vec::new(), held_checked: 0.0, queue_checked: 0.0, gaming: util::gaming, restore_checked: 0.0, start_files: Vec::new(),
             width: DEFAULT_COLUMN_WIDTH, sessions: Vec::new(), windows: Vec::new(), review_rows: Vec::new(), todo_entries: Vec::new(),
             todo_scope: String::new(), shown_session: String::new(), todo_tab: TODO_TAB_OPEN, todo_tabs: HashMap::new(), todo_counts: [0; 5], prompts_sent: HashMap::new(), craft_roots: HashMap::new(), hit_lines: HashMap::new(), hit_actions: HashMap::new(),
             gathered: None, pending: Vec::new(), plan: String::new(), craft_checked: 0.0, dotfiles_unpushed: 0, dotfiles_checked: 0.0,
@@ -772,21 +774,6 @@ impl App {
         if all_time > 0.0 { format!("{plan} · all time {}", money(all_time)).trim_start_matches([' ', '·']).to_string() } else { plan }
     }
 
-    pub(crate) fn handle_status(&mut self, key: Key) -> String {
-        match key {
-            Key::Enter => self.manager_async(&["usage"]),
-            Key::Char('r') => {
-                self.usage.tick(true);
-                "fetching usage …".into()
-            }
-            Key::Char('o') => {
-                let _ = Command::new("xdg-open").arg(status::PAGE).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
-                "opening status.claude.com …".into()
-            }
-            _ => String::new(),
-        }
-    }
-
     // ---- Sessions ----
 
     /// x on a card: a session in tmux leaves the list at once while `claude-sessions exit` runs.
@@ -885,10 +872,6 @@ impl App {
         let mut running: Vec<Session> = gathered.running.clone();
         self.settle_exits(&running);
         running.retain(|s| !self.exiting.iter().any(|exit| exit.session == s.session));
-        let mut running: Vec<Session> = running.into_iter()
-            .filter(|s| sessions::matches(&[&s.project, &s.task], &self.query))
-            .filter(|s| !self.focus_waiting || FOCUS_STATES.contains(&s.state.as_str()))
-            .collect();
         for session in &mut running {
             session.pinned = self.view.pinned.contains(&session.session);
         }
@@ -1074,7 +1057,7 @@ impl App {
             }
         }
         if running.is_empty() {
-            let empty = if self.focus_waiting { "Nothing waits on you." } else if !self.query.is_empty() { "Nothing matches." } else { "No running session." };
+            let empty = "No running session.";
             lines.push(Line::new(vec![segment(0, empty, dim(FG_DARK))]));
             lines.push(Line::new(vec![segment(0, "a  start one in a project", dim(FG_DARK))]));
         }
@@ -1095,9 +1078,6 @@ impl App {
     pub(crate) fn sessions_hints(&self) -> Vec<(&'static str, &'static str)> {
         let selected = self.selected_session().unwrap_or_default();
         let mut hints = Vec::new();
-        if selected.state == "needs-you" && !sessions::waiting_request(&selected).is_empty() {
-            hints.extend([("Y", "approve"), ("N", "decline")]);
-        }
         if selected.update {
             hints.push(("r", "restart to apply the update"));
         } else if !sessions::changed_since_start(&selected, &self.start_files).is_empty() {
@@ -1114,12 +1094,7 @@ impl App {
         } else if selected.unpushed > 0 {
             hints.push(("U", "push"));
         }
-        if prompts::count(&selected.session) > 0 {
-            hints.push(("M", "drop queued"));
-        } else if selected.state == "working" {
-            hints.push(("m", "message for the turn's end"));
-        }
-        hints.extend([("⏎", "open"), ("n", "peek"), ("e", "effort"), ("g", "git"), ("+", "another"), ("z", "zoom"), ("x", "exit")]);
+        hints.extend([("⏎", "open"), ("n", "peek"), ("e", "effort"), ("g", "git"), ("+", "another"), ("x", "exit")]);
         let mut seen = std::collections::HashSet::new();
         hints.retain(|(key, _)| seen.insert(*key));
         hints
@@ -1129,19 +1104,14 @@ impl App {
         vec![("⏎", "show the session and move the cursor into it"), ("n", "peek at the next session needing you"),
              ("x", "exit the session: Ctrl-C twice, then killed if it lingers"), ("r", "restart in place: same conversation, new process"),
              ("⌘R", "restart the sessions started before a change they lack (badge ⟳ restart), when they wait at their prompt; busy ones are named and left alone"),
-             ("R", "toggle Remote Control (phone / claude.ai/code)"), ("p", "pin on top"),
+             ("p", "pin on top"),
              ("e", "effort level: pick one, the session restarts on it (or click the level on the card)"),
              ("$", "bill the session to the Console's API credits, or back to the subscription: it restarts on the same conversation (badge $ credits)"),
              ("g", "lazygit on the session's repository, in a popup (q closes it)"),
-             ("M", "drop the messages queued for it"),
              ("U", "push the session's branch to origin with your SSH key, after a yes (lazygit's sandbox cannot)"),
              ("+", "another session on this repository, on its own branch in a separate clone"),
              ("C", "/compact in the session, when it waits (the /compact badge suggests it)"),
              ("B", "after a reboot: bring back the sessions that were running"),
-             ("z", "the session over the whole window; ⌘⇥ comes back"),
-             ("f", "focus: only the sessions waiting on you; f again shows all"),
-             ("Y N", "approve or decline the permission a card asks for, after a y/n confirmation"),
-             ("m", "a message for the session without opening it: sent at its prompt; while it works, it waits and goes when the turn ends (Alt+Q in the session does the same)"),
              ("o", "open the Claude Design canvas a design session works on (◆ on its card)")]
     }
 
@@ -1164,13 +1134,6 @@ impl App {
                 }
                 String::new()
             }
-            Key::Char('R') => match known {
-                Some(s) => {
-                    manager_in_background(&["remote", &s.session]);
-                    format!("toggling remote control for {} …", s.project)
-                }
-                None => String::new(),
-            },
             Key::Char('r') => match known {
                 Some(s) if self.confirm(screen, &format!("restart {}? same conversation, new process", s.project)) => {
                     manager_in_background(&["restart", &s.session]);
@@ -1223,49 +1186,13 @@ impl App {
                 }
                 None => String::new(),
             },
-            Key::Char('z') => self.manager_async(&["zoom"]),
             Key::Char('o') => match session.and_then(|s| s.design) {
                 Some(design) => {
                     let _ = Command::new("xdg-open").arg(&design.url).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
                     format!("opening {} …", design.title)
                 }
-                None => "no canvas: V starts a design session".into(),
+                None => "no canvas: the design action in the : list starts a design session".into(),
             },
-            Key::Char(answer @ ('Y' | 'N')) => match session.filter(|s| s.state == "needs-you") {
-                Some(s) => {
-                    let approve = answer == 'Y';
-                    let asks = sessions::waiting_request(&s);
-                    let asks: String = if asks.is_empty() { "its request".into() } else { asks.chars().take(60).collect() };
-                    if !self.confirm(screen, &format!("{} {}: {asks}?", if approve { "approve" } else { "decline" }, s.project)) {
-                        return String::new();
-                    }
-                    let error = manager(&["answer", &s.session, if approve { "yes" } else { "no" }]);
-                    if error.is_empty() { format!("{} for {}", if approve { "approved" } else { "declined" }, s.project) } else { error }
-                }
-                None => String::new(),
-            },
-            Key::Char('m') => match known {
-                Some(s) => {
-                    let message = input_line(screen, &format!("message for {} (Enter sends, empty cancels)> ", s.project));
-                    if message.is_empty() {
-                        return String::new();
-                    }
-                    // While it works, the message waits for the end of the turn instead of cutting in.
-                    if s.state == "working" {
-                        return match prompts::add(&s.session, &message) {
-                            Ok(()) => format!("queued for {}: sent when its turn ends", s.project),
-                            Err(error) => error,
-                        };
-                    }
-                    let error = manager(&["say", &s.session, &message]);
-                    if !error.is_empty() { error } else { format!("sent to {}", s.project) }
-                }
-                None => String::new(),
-            },
-            Key::Char('f') => {
-                self.focus_waiting = !self.focus_waiting;
-                if self.focus_waiting { "only the sessions waiting on you (f shows all)".into() } else { String::new() }
-            }
             Key::Char('g') => match session {
                 Some(s) if s.cwd.is_empty() => "no directory known for this session".into(),
                 Some(s) => {
@@ -1273,14 +1200,6 @@ impl App {
                     String::new()
                 }
                 None => String::new(),
-            },
-            Key::Char('M') => match session {
-                Some(s) if prompts::count(&s.session) == 0 => "no prompt queued for it".into(),
-                Some(s) if self.confirm(screen, &format!("drop the {} prompt(s) queued for {}?", prompts::count(&s.session), s.project)) => {
-                    prompts::clear(&s.session);
-                    "queued prompts dropped".into()
-                }
-                _ => String::new(),
             },
             Key::Char('U') => match session {
                 Some(s) if s.cwd.is_empty() => "no directory known for this session".into(),
@@ -1409,7 +1328,7 @@ impl App {
 
     fn build_reviews(&mut self) {
         let (rows, error, loading) = self.reviews.current();
-        self.review_rows = rows.into_iter().filter(|row| sessions::matches(&[&row.repository, &row.title], &self.query)).collect();
+        self.review_rows = rows;
         let mut lines = Vec::new();
         if !error.is_empty() {
             lines.push(Line::new(vec![segment(0, error, style(YELLOW))]));
@@ -1465,10 +1384,6 @@ impl App {
                 },
                 None => String::new(),
             },
-            Key::Char('r') => {
-                self.reviews.force_refresh();
-                "refreshing pull requests …".into()
-            }
             _ => String::new(),
         }
     }
@@ -1482,13 +1397,10 @@ impl App {
         self.todo_tab = self.todo_tabs.get(&viewed).copied().unwrap_or(TODO_TAB_OPEN);
         let scope = self.todo_scope.clone();
         let mut entries: Vec<Entry> = self.todos.items.iter()
-            .filter(|item| (scope.is_empty() || item.project() == scope) && sessions::matches(&[&item.project(), &item.text()], &self.query))
+            .filter(|item| scope.is_empty() || item.project() == scope)
             .map(|item| Entry::Typed(item.clone()))
             .collect();
         for issue in self.reviews.issues() {
-            if !sessions::matches(&[&issue.repository, &issue.title], &self.query) {
-                continue;
-            }
             let status = self.todos.status_of(&issue.key());
             let priority = todo::issue_priority(&issue.labels);
             entries.push(Entry::Issue { issue, status, priority });
@@ -1790,9 +1702,9 @@ impl App {
 
     fn panel_hints(&self, index: usize) -> Vec<(&'static str, &'static str)> {
         match index {
-            0 => vec![("⏎", "details"), ("r", "refetch"), ("o", "status page")],
+            0 => vec![],
             1 => self.sessions_hints(),
-            2 => vec![("⏎", "open"), ("c", "Claude review"), ("P", "list"), ("r", "refresh")],
+            2 => vec![("⏎", "open"), ("c", "Claude review"), ("P", "list")],
             _ => self.todo_hints(),
         }
     }
@@ -1815,12 +1727,11 @@ impl App {
 
     fn panel_help(index: usize) -> Vec<(&'static str, &'static str)> {
         match index {
-            0 => vec![("⏎", "the full usage report in the session pane"), ("r", "fetch the usage again now"),
-                      ("o", "open status.claude.com: Anthropic's incidents and each product's state")],
+            0 => vec![],
             1 => Self::sessions_help(),
             2 => vec![("⏎", "open the pull request in the pull requests window"),
                       ("c", "a Claude session reviewing it, in its own clone of the repository"),
-                      ("P", "the pull requests window on the viewed session's repository (or your review requests)"), ("r", "refresh now"),
+                      ("P", "the pull requests window on the viewed session's repository (or your review requests)"),
                       ("✓ ● ✗", "CI passing, running, failing"), ("approved", "review state: approved, changes (requested), review (required)")],
             _ => vec![("⏎", "the item's details: title, notes, why Claude proposed it, who filed it, when"),
                       ("[ ]", "previous / next tab: Open (Proposed, To do and In progress together) · Proposed · To do · In progress · Done"),
@@ -1842,7 +1753,7 @@ impl App {
     pub(crate) fn subtitle(&self, index: usize) -> String {
         match index {
             0 => self.status_subtitle(),
-            1 => if self.focus_waiting { "waiting on you · f shows all".into() } else { String::new() },
+            1 => String::new(),
             2 => self.reviews_subtitle(),
             _ => self.todo_subtitle(),
         }
@@ -2013,11 +1924,6 @@ impl App {
     }
 
     fn draw_footer(&self, buffer: &mut Buffer, row: u16, width: u16) {
-        if self.filtering {
-            put(buffer, row, 2, "/", bold(BLUE));
-            put(buffer, row, 4, &format!("{}▏", self.query), style(FG));
-            return;
-        }
         if !self.message.is_empty() {
             put(buffer, row, 2, &self.message, style(YELLOW));
             return;
@@ -2093,7 +1999,7 @@ impl App {
 
     fn handle_panel(&mut self, key: Key, screen: &mut dyn Screen) -> String {
         match self.focus {
-            0 => self.handle_status(key),
+            0 => String::new(),
             1 => self.handle_sessions(key, screen),
             2 => self.handle_reviews(key),
             _ => self.handle_todo(key, screen),
@@ -2119,21 +2025,7 @@ impl App {
             return;
         }
         if let Key::F(number @ 1..=3) = key {
-            self.focus_panel(number as usize); // F1..F3 from the tmux Ctrl+digit binds, even mid-filter
-            self.filtering = false;
-            return;
-        }
-        if self.filtering {
-            match key {
-                Key::Esc => {
-                    self.query.clear();
-                    self.filtering = false;
-                }
-                Key::Enter => self.filtering = false,
-                Key::Backspace => { self.query.pop(); }
-                Key::Char(character) => self.query.push(character),
-                _ => {}
-            }
+            self.focus_panel(number as usize); // F1..F3 from the tmux Ctrl+digit binds
             return;
         }
         match key {
@@ -2145,8 +2037,6 @@ impl App {
             Key::Char('k') | Key::Up => self.panels[self.focus].move_by(-1),
             // From any panel, as ← comes back from the session (tmux.conf).
             Key::Char('l') | Key::Right => { let _ = Command::new("claude-sessions").arg("focus-viewer").status(); }
-            Key::Char('/') => self.filtering = true,
-            Key::Esc => self.query.clear(),
             Key::Char('?') => self.help_open = true,
             Key::Char(':') => {
                 let entries = self.palette_entries();
@@ -2155,8 +2045,12 @@ impl App {
                         if let Ok(panel) = panel.parse::<usize>() {
                             self.focus_panel(panel);
                         }
-                        let key = if key == "⏎" { Key::Enter } else { key.chars().next().map(Key::Char).unwrap_or(Key::Esc) };
-                        self.handle(key, screen);
+                        if PALETTE_ONLY.iter().any(|(_, name, _)| *name == key) {
+                            self.message = self.run_palette_only(key, screen);
+                        } else {
+                            let key = if key == "⏎" { Key::Enter } else { key.chars().next().map(Key::Char).unwrap_or(Key::Esc) };
+                            self.handle(key, screen);
+                        }
                     }
                 }
             }
@@ -2165,9 +2059,7 @@ impl App {
                     self.message = self.manager_async(&["new", &directory]);
                 }
             }
-            Key::Char('D') => self.message = self.manager_async(&["digest"]),
             Key::Char('S') => self.settings_menu = Some(SettingsMenu::new()),
-            Key::Char('K') => manager_in_background(&["clones"]),
             Key::Char('H') => {
                 let past = self.past_sessions();
                 if let Some(index) = screen.outside(&mut || pick_past_session(&past)).and_then(|chosen| chosen.parse::<usize>().ok()) {
@@ -2175,17 +2067,6 @@ impl App {
                     self.message = self.manager_async(&["resume", &chosen.cwd, &chosen.session]);
                 }
             }
-            Key::Char('A') => {
-                let directory = screen.outside(&mut || pick_project()).unwrap_or_default();
-                if !directory.is_empty() {
-                    let branch = input_line(screen, "branch for the parallel session> ");
-                    if !branch.is_empty() {
-                        manager_in_background(&["parallel", &directory, &branch]);
-                        self.message = format!("cloning {} for {branch} …", project_name(&directory));
-                    }
-                }
-            }
-            Key::Char('V') => self.message = self.start_design_session(screen),
             Key::Char('P') => self.message = self.manager_async(&["prs"]),
             Key::Char('W') => self.message = open_in_scratchpad("claude", ""),
             Key::Char('G') => self.message = open_in_scratchpad("greyproxy", ""),
@@ -2198,7 +2079,7 @@ impl App {
         }
     }
 
-    /// V: the canvas link, then the project; the session links its card and watches the comments.
+    /// The design action of the : list: the canvas link, then the project; the session links its card and watches the comments.
     pub(crate) fn start_design_session(&mut self, screen: &mut dyn Screen) -> String {
         let typed = input_line(screen, "Claude Design canvas (its claude.ai link, empty cancels)> ");
         if typed.is_empty() {
@@ -2229,7 +2110,43 @@ impl App {
                 }
             }
         }
+        for (panel, name, label) in PALETTE_ONLY {
+            let scope = panel.parse::<usize>().map_or("everywhere", |index| PANEL_NAMES[index]);
+            entries.push(format!("{panel}\t{name}\t{scope:<13}    {label}"));
+        }
         entries
+    }
+
+    fn run_palette_only(&mut self, name: &str, screen: &mut dyn Screen) -> String {
+        let known = self.selected_session().filter(|s| s.state != "unknown");
+        match name {
+            "digest" => self.manager_async(&["digest"]),
+            "design" => self.start_design_session(screen),
+            "clones" => {
+                manager_in_background(&["clones"]);
+                String::new()
+            }
+            "status-page" => {
+                let _ = Command::new("xdg-open").arg(status::PAGE).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
+                "opening status.claude.com …".into()
+            }
+            "remote" => match known {
+                Some(s) => {
+                    manager_in_background(&["remote", &s.session]);
+                    format!("toggling remote control for {} …", s.project)
+                }
+                None => String::new(),
+            },
+            "drop-queued" => match known {
+                Some(s) if prompts::count(&s.session) == 0 => "no prompt queued for it".into(),
+                Some(s) if self.confirm(screen, &format!("drop the {} prompt(s) queued for {}?", prompts::count(&s.session), s.project)) => {
+                    prompts::clear(&s.session);
+                    "queued prompts dropped".into()
+                }
+                _ => String::new(),
+            },
+            _ => panic!("no palette action named {name}"),
+        }
     }
 
     /// Past sessions not running now, newest first, with their titles.

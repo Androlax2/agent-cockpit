@@ -277,13 +277,6 @@ impl Reviews {
         }
     }
 
-    pub fn force_refresh(&self) {
-        REMOTES.lock().unwrap().take();
-        if let Some(fetched) = self.state.lock().unwrap().by_scope.get_mut(&self.repositories) {
-            fetched.fetched_at = 0.0;
-        }
-    }
-
     /// The shown repositories' pull requests, the fetch error, and whether a fetch is under way.
     pub fn current(&self) -> (Vec<Review>, String, bool) {
         let state = self.state.lock().unwrap();

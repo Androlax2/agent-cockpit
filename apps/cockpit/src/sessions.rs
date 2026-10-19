@@ -10,7 +10,6 @@ use std::fs;
 use std::path::Path;
 
 pub const GLYPHS: [(&str, &str); 5] = [("working", "●"), ("waiting", "○"), ("needs-you", "!"), ("unknown", "·"), ("recent", "↻")];
-pub const FOCUS_STATES: [&str; 2] = ["needs-you", "waiting"];
 pub const CONTEXT_COMPACT_AT: f64 = 90.0;
 const TITLE_SCAN_BYTES: u64 = 2 * 1024 * 1024;
 /// ~/.claude/history.jsonl is Claude's, which every sandbox writes: read up to this much.
@@ -281,11 +280,6 @@ pub fn waiting_request(session: &Session) -> String {
         return String::new();
     }
     if !session.detail.is_empty() { session.detail.clone() } else { session.request.clone() }
-}
-
-pub fn matches(fields: &[&str], query: &str) -> bool {
-    let haystack = fields.join(" ").to_lowercase();
-    query.to_lowercase().split_whitespace().all(|word| haystack.contains(word))
 }
 
 pub fn next_attention_index(sessions: &[Session], selected: usize) -> Option<usize> {

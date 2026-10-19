@@ -1067,10 +1067,15 @@ impl Clones {
     }
 
     fn review(&self, answer: &str) -> String {
+        self.run(&["clones-review"], &[], answer)
+    }
+
+    fn run(&self, arguments: &[&str], extra: &[(&str, &str)], input: &str) -> String {
         let clones = self.manager.sandbox.root.join("clones").display().to_string();
         let greywall = self.manager.sandbox.shims.join("greywall").display().to_string();
-        let output = self.manager.sandbox.run_with_input(bin().join("claude-sessions"), &["clones-review"],
-            &[("CLAUDE_SESSIONS_CLONES", &clones), ("CLAUDE_SESSIONS_GREYWALL", &greywall)], answer);
+        let mut environment = vec![("CLAUDE_SESSIONS_CLONES", clones.as_str()), ("CLAUDE_SESSIONS_GREYWALL", greywall.as_str())];
+        environment.extend_from_slice(extra);
+        let output = self.manager.sandbox.run_with_input(bin().join("claude-sessions"), arguments, &environment, input);
         String::from_utf8_lossy(&output.stdout).into_owned()
     }
 }
@@ -1100,6 +1105,28 @@ fn without_a_yes_no_clone_is_deleted() {
     let clones = Clones::new();
     clones.review("\n");
     assert!(clones.root.join("clean").exists());
+}
+
+#[test]
+fn the_sweep_deletes_only_the_clones_holding_nothing_new_without_asking() {
+    let clones = Clones::new();
+    clones.run(&["clones-sweep"], &[], "");
+    assert!(!clones.root.join("clean").exists());
+    for name in ["dirty", "unpushed", "busy"] {
+        assert!(clones.root.join(name).exists(), "{name} was deleted");
+    }
+}
+
+#[test]
+fn the_first_show_of_the_day_sweeps_the_clones_in_the_background() {
+    let clones = Clones::new();
+    clones.manager.sandbox.shim("pkill", "");
+    clones.run(&["show"], &[("SHIM_WS", "2")], "");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while clones.root.join("clean").exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(!clones.root.join("clean").exists());
 }
 
 #[test]

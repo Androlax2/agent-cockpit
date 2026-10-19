@@ -163,16 +163,13 @@ fn session(id: &str, state: &str, project: &str, cwd: &str, started: i64) -> Val
 // ---- Sessions ----
 
 #[test]
-fn reported_and_unreported_tmux_sessions_are_listed_and_the_filter_narrows_them() {
+fn reported_and_unreported_tmux_sessions_are_listed() {
     let fixture = Fixture::new();
     fixture.snapshot(json!([session(SESSION_A, "waiting", "runway", "/r/runway", 1)]));
     fixture.shim("tmux", "printf 'claude-retry-7\\t%%5\\t/r/opusline\\t✳ Fix login\\t100\\nother\\t%%6\\t/x\\tsh\\t1\\n'");
     let mut app = fixture.app();
     assert_eq!(app.sessions.iter().map(|s| (s.project.as_str(), s.state.as_str())).collect::<Vec<_>>(), vec![("runway", "waiting"), ("opusline", "unknown")]);
     assert_eq!(app.sessions[1].task, "Fix login");
-    app.query = "login".into();
-    app.build();
-    assert_eq!(app.sessions.len(), 1);
 }
 
 #[test]
@@ -338,17 +335,6 @@ fn a_digit_picks_an_effort_level_directly() {
 }
 
 #[test]
-fn focus_keeps_only_the_sessions_waiting_on_you() {
-    let fixture = Fixture::new();
-    fixture.snapshot(json!([session(SESSION_A, "working", "runway", "/r", 1), session(SESSION_B, "needs-you", "homelab", "/h", 2)]));
-    let mut app = fixture.app();
-    app.handle(Key::Char('f'), &mut FakeScreen::default());
-    app.build();
-    assert_eq!(app.sessions.iter().map(|s| s.project.as_str()).collect::<Vec<_>>(), vec!["homelab"]);
-    assert_eq!(app.subtitle(1), "waiting on you · f shows all");
-}
-
-#[test]
 fn a_repository_with_several_sessions_gets_one_heading_and_railed_cards() {
     let fixture = Fixture::new();
     for (folder, branch) in [("opusline", "feat/report-sender"), ("clone", "feat/net-amounts")] {
@@ -478,9 +464,8 @@ fn tab_digits_and_function_keys_move_the_focus() {
     assert_eq!(app.focus, 0);
     app.handle(Key::BackTab, screen);
     assert_eq!(app.focus, 3);
-    app.handle(Key::Char('/'), screen);
     app.handle(Key::F(1), screen);
-    assert_eq!((app.focus, app.filtering), (1, false));
+    assert_eq!(app.focus, 1);
 }
 
 #[test]
@@ -511,12 +496,40 @@ fn right_moves_into_the_session_from_any_panel() {
 #[test]
 fn the_palette_runs_the_chosen_action_in_its_panel() {
     let fixture = Fixture::new();
-    fixture.shim("fzf", "grep 'fetch the usage'");
+    fixture.shim("fzf", "grep 'peek at the next session'");
     let mut app = fixture.app();
+    app.focus_panel(3);
     assert!(app.palette_entries().iter().any(|entry| entry.starts_with("2\tc\t")));
     app.handle(Key::Char(':'), &mut FakeScreen::default());
+    assert_eq!(app.focus, 1);
+    assert_eq!(app.message, "nothing needs you");
+}
+
+#[test]
+fn the_palette_runs_an_action_that_has_no_key() {
+    let fixture = Fixture::new();
+    fixture.shim("fzf", "grep 'status.claude.com'");
+    let mut app = fixture.app();
+    app.handle(Key::Char(':'), &mut FakeScreen::default());
     assert_eq!(app.focus, 0);
-    assert_eq!(app.message, "fetching usage …");
+    assert_eq!(fixture.wait_for_calls("xdg-open", 1), vec![format!("xdg-open {}", crate::status::PAGE)]);
+}
+
+#[test]
+fn the_rare_actions_are_left_without_a_key() {
+    // The audit of October 2026 took these off the keyboard: they live in the : list only.
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "needs-you", "runway", "/r/runway", 1)]));
+    crate::prompts::add(SESSION_A, "queued thought").unwrap();
+    let mut app = fixture.app();
+    for (panel, key) in [(1, 'R'), (1, 'M'), (1, 'Y'), (1, 'N'), (1, 'm'), (1, 'z'), (1, 'f'), (1, 'A'), (1, 'V'), (1, 'D'), (1, 'K'), (1, '/'), (0, 'o'), (0, 'r'), (2, 'r')] {
+        app.focus_panel(panel);
+        app.handle(Key::Char(key), &mut FakeScreen::answering(&[Key::Char('y')]));
+        assert_eq!(app.message, "", "{key} did something in panel {panel}");
+    }
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(fixture.calls("claude-sessions").is_empty() && fixture.calls("xdg-open").is_empty());
+    assert_eq!(crate::prompts::count(SESSION_A), 1);
 }
 
 #[test]
@@ -1288,11 +1301,11 @@ fn a_link_that_is_not_a_canvas_is_ignored_on_the_card() {
 }
 
 #[test]
-fn v_starts_a_design_session_on_the_canvas_in_the_chosen_project() {
+fn the_design_action_starts_a_design_session_on_the_canvas_in_the_chosen_project() {
     let fixture = Fixture::new();
     let mut app = fixture.app();
     let chat_link = "https://claude.ai/chat/7efffff6-0466-41ab-83d1-3f1d403d357d?artifact=d31175a3-dc24-4166-aa81-2ccdf5efe83a";
-    app.handle(Key::Char('V'), &mut FakeScreen::typing(&[chat_link, "/r/opusline"]));
+    app.handle(Key::Char(':'), &mut FakeScreen::typing(&["-\tdesign", chat_link, "/r/opusline"]));
     assert_eq!(app.message, "starting a design session in opusline …");
     let log = {
         fixture.wait_for_calls("claude-sessions", 1);
@@ -1303,10 +1316,10 @@ fn v_starts_a_design_session_on_the_canvas_in_the_chosen_project() {
 }
 
 #[test]
-fn v_refuses_a_link_that_is_not_a_canvas() {
+fn the_design_action_refuses_a_link_that_is_not_a_canvas() {
     let fixture = Fixture::new();
     let mut app = fixture.app();
-    app.handle(Key::Char('V'), &mut FakeScreen::typing(&["https://example.com/x"]));
+    app.handle(Key::Char(':'), &mut FakeScreen::typing(&["-\tdesign", "https://example.com/x"]));
     assert!(app.message.starts_with("not a canvas link"));
     std::thread::sleep(Duration::from_millis(200));
     assert!(fixture.calls("claude-sessions").is_empty());
@@ -1475,7 +1488,7 @@ fn no_pause_line_without_a_game() {
 fn the_clone_review_is_in_the_action_list() {
     let fixture = Fixture::new();
     let app = fixture.app();
-    assert!(app.palette_entries().iter().any(|entry| entry.starts_with("-\tK\t")), "{:?}", app.palette_entries());
+    assert!(app.palette_entries().iter().any(|entry| entry.starts_with("-\tclones\t")), "{:?}", app.palette_entries());
 }
 
 #[test]
@@ -1554,15 +1567,6 @@ fn first_hint_keys(app: &App, count: usize) -> Vec<&'static str> {
 }
 
 #[test]
-fn a_session_asking_permission_puts_approve_and_decline_first() {
-    let fixture = Fixture::new();
-    let mut row = session(SESSION_A, "needs-you", "runway", "/r", 1);
-    row["request"] = json!("Claude needs your permission to use Bash");
-    fixture.snapshot(json!([row]));
-    assert_eq!(first_hint_keys(&fixture.app(), 3), ["Y", "N", "⏎"]);
-}
-
-#[test]
 fn a_session_left_behind_by_a_change_puts_restart_first() {
     let fixture = Fixture::new();
     fixture.snapshot(json!([session(SESSION_A, "waiting", "dotfiles", "/r/dotfiles", 100)]));
@@ -1582,13 +1586,6 @@ fn every_need_of_a_session_shows_before_the_everyday_keys() {
     let app = fixture.app();
     assert_eq!(first_hint_keys(&app, 4), ["r", "C", "U", "⏎"]);
     assert_eq!(app.sessions_hints().iter().filter(|(key, _)| *key == "r").count(), 1);
-}
-
-#[test]
-fn a_working_session_offers_a_message_for_the_end_of_its_turn() {
-    let fixture = Fixture::new();
-    fixture.snapshot(json!([session(SESSION_A, "working", "runway", "/r", 1)]));
-    assert_eq!(first_hint_keys(&fixture.app(), 1), ["m"]);
 }
 
 #[test]
@@ -1873,18 +1870,6 @@ fn a_queued_prompt_waits_for_the_end_of_the_turn_one_per_turn() {
     app.dispatch_prompts();
     assert_eq!(fixture.calls("claude-sessions"), [format!("claude-sessions say {SESSION_A} first thought")]);
     assert_eq!(crate::prompts::count(SESSION_A), 1);
-}
-
-#[test]
-fn m_queues_a_message_while_the_session_works() {
-    let fixture = Fixture::new();
-    fixture.snapshot(json!([session(SESSION_A, "working", "runway", "/r/runway", 100)]));
-    let mut app = fixture.app();
-    app.focus_panel(1);
-    app.handle(Key::Char('m'), &mut FakeScreen::typing(&["also check the docs"]));
-    assert!(fixture.calls("claude-sessions").is_empty(), "cut into the turn");
-    assert_eq!(crate::prompts::count(SESSION_A), 1);
-    assert!(app.message.contains("queued for runway"), "{}", app.message);
 }
 
 #[test]

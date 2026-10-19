@@ -42,10 +42,10 @@
 #   claude-sessions push <dir>   push its branch to origin with Theo's SSH key, after a yes (the sidebar's U)
 #   claude-sessions prs          the pull requests window on the viewed session's repository (Super+Ctrl+P)
 #   claude-sessions digest       yesterday, today, usage, waiting sessions and pull requests in the viewer
-#                                (the sidebar's D; also the first time the cockpit opens each day)
+#                                (the digest action of the sidebar's : list; also the first time the cockpit opens each day)
 #   claude-sessions parallel <dir> <branch>
-#                                a new session on <branch> in its own clone of the repository (the sidebar's A)
-#   claude-sessions clones       the clones of + and of reviews, and delete those holding nothing new (the sidebar's K)
+#                                a new session on <branch> in its own clone of the repository (the sidebar's +)
+#   claude-sessions clones       the clones of + and of reviews, and delete those holding nothing new (also once a day by itself)
 #   claude-sessions review <dir> <pr-number>
 #                                a session reviewing that pull request in its own clone (the sidebar's c)
 #   claude-sessions label-state <state>
@@ -66,17 +66,17 @@
 #   claude-sessions setting <name> [on|off]
 #                                show or change a setting (the sidebar's S): handoff-on-lock,
 #                                todo-queue, error-handoff, freeze-while-gaming, idle-lock, daily-digest
-#   claude-sessions remote <id>  toggle Remote Control for one session (the sidebar's R)
+#   claude-sessions remote <id>  toggle Remote Control for one session (the remote action of the sidebar's : list)
 #   claude-sessions restore <dir> <id> […]
 #                                resume those sessions one after the other (the sidebar's B after a reboot)
 #   claude-sessions compact <id> type /compact into a session waiting at its prompt (the sidebar's C)
-#   claude-sessions zoom         the session pane over the whole window, and back (the sidebar's z)
+#   claude-sessions zoom         the session pane over the whole window, and back
 #   claude-sessions approval-pane <id>|close
 #                                show a run request's approval under the session pane (the daemon)
 #   claude-sessions say <id> <message>
-#                                send a session a message without opening it (the sidebar's m)
+#                                send a session a message without opening it (the cockpit's queued prompts, and error hand-offs)
 #   claude-sessions answer <id> yes|no
-#                                answer its open permission dialog (the sidebar's Y and N)
+#                                answer its open permission dialog
 set -euo pipefail
 # Run from a tmux popup or binding, this gets the tmux server's PATH (/usr/local/bin:/usr/bin): the
 # helpers it calls (osd-show, osd, claude-sessions-sidebar) live in ~/.local/bin. Without it a U push
@@ -610,7 +610,7 @@ answer_permission() { # id yes|no
     esac
 }
 
-# A message for a session without opening it (the sidebar's m): sent at its prompt, queued with
+# A message for a session without opening it: sent at its prompt, queued with
 # Claude's own Ctrl+X Enter while it works, refused while a dialog is open (it would answer it).
 say_to_session() { # id message
     local id=$1 message=$2 pane tail
@@ -672,7 +672,7 @@ queue_prompt_ask() { # [pane]
     audit_event manager prompt.queued queued "session=$session" "fp:text=$text"
 }
 
-# The session pane over the whole window and back (the sidebar's z). Moving to the column with
+# The session pane over the whole window and back. Moving to the column with
 # Ctrl+Tab unzooms too: tmux leaves zoom when the active pane changes.
 zoom_viewer() {
     ensure_manager
@@ -942,7 +942,7 @@ restart_osd_when_idle() {
     fi
 }
 
-# The morning digest (the sidebar's D, and the first time the cockpit opens each day): yesterday's
+# The morning digest (the digest action of the sidebar's : list, and the first time the cockpit opens each day): yesterday's
 # sessions and cost, today so far, plan usage, who waits for you, the pull requests. Any key goes
 # back to the session that was in the pane.
 DIGEST_DAY="${XDG_STATE_HOME:-$HOME/.local/state}/claude-sessions/digest-day"
@@ -963,6 +963,17 @@ digest_due() {
     [[ $(cat "$DIGEST_DAY" 2>/dev/null) != "$(date +%F)" ]]
 }
 
+# The clones holding nothing new go once a day, on the first show, in the background: checking
+# each one runs git in greywall, too slow to hold the cockpit back.
+CLONES_SWEEP_DAY="${XDG_STATE_HOME:-$HOME/.local/state}/claude-sessions/clones-sweep-day"
+
+sweep_clones_once_a_day() {
+    [[ $(cat "$CLONES_SWEEP_DAY" 2>/dev/null) != "$(date +%F)" ]] || return 0
+    mkdir -p "$(dirname "$CLONES_SWEEP_DAY")"
+    date +%F > "$CLONES_SWEEP_DAY"
+    ("$0" clones-sweep >/dev/null 2>&1 &)
+}
+
 show_manager() {
     ensure_manager
     if [[ -z ${1:-} ]] && "$ON_CLAUDE_WORKSPACE"; then
@@ -974,6 +985,7 @@ show_manager() {
     elif digest_due && setting_is_on daily-digest; then
         show_digest
     fi
+    sweep_clones_once_a_day
     # Hide the bar before the switch rather than after it, or it flashes over the cockpit.
     "$BAR_VISIBILITY" hide
     if hyprctl -j clients | jq -e --arg class "$WINDOW_CLASS" 'any(.[]; .class == $class)' >/dev/null; then
@@ -1173,7 +1185,7 @@ show_failure() { # message
     tmux respawn-pane -k -t "$(viewer_pane)" sh -c 'printf "\n  ✗ %s\n\n  any key closes this pane " "$1"; read -r _' sh "$1"
 }
 
-# A new session on its own branch, in its own clone of the repository (the sidebar's A).
+# A new session on its own branch, in its own clone of the repository (the sidebar's +).
 parallel_session() { # dir branch [prompt: its first message, the Todo panel's N]
     local directory=$1 branch=$2 prompt=${3:-} clone
     require_plain_directory "$directory"
@@ -1226,8 +1238,9 @@ review_session() { # dir number
     new_session "$clone" "Review pull request #$number of this repository (its head is checked out here): read the diff against its base branch, run the relevant tests, and report problems by severity with file and line. Do not push, and do not comment on GitHub."
 }
 
-# The clones left by + and by pull request reviews, in a popup (the sidebar's K): each one with no
-# session in it, no uncommitted change and no commit missing from its remote can go, after a y.
+# The clones left by + and by pull request reviews, in a popup (the clones action of the sidebar's
+# : list): each one with no session in it, no uncommitted change and no commit missing from its
+# remote can go, after a y. The daily sweep (clones-sweep) deletes the same ones without asking.
 clones_popup() {
     tmux display-popup -E -w 80% -h 70% -T " clones " "$0" clones-review
 }
@@ -1245,9 +1258,13 @@ clone_leftovers() { # clone
     fi
 }
 
-clones_review() {
-    local clones_root clone real in_use leftovers removable=() line
-    clones_root=$(realpath -e "$CLONES_DIR" 2>/dev/null) || { echo "No clones ($CLONES_DIR does not exist)."; read -r -p "Enter closes. " _; return 0; }
+clones_review() { # [sweep]
+    local sweep=${1:-} clones_root clone real in_use leftovers removable=() line answer
+    clones_root=$(realpath -e "$CLONES_DIR" 2>/dev/null) || {
+        echo "No clones ($CLONES_DIR does not exist)."
+        [[ -n $sweep ]] || read -r -p "Enter closes. " _
+        return 0
+    }
     in_use=$(jq -r '.sessions[]?.cwd // empty' "$SNAPSHOT" 2>/dev/null)
     echo "Clones in $CLONES_DIR"
     echo
@@ -1269,11 +1286,13 @@ clones_review() {
     done
     echo
     if (( ${#removable[@]} == 0 )); then
-        read -r -p "Nothing to delete. Enter closes. " _
+        [[ -n $sweep ]] || read -r -p "Nothing to delete. Enter closes. " _
         return 0
     fi
-    read -r -p "Delete the ${#removable[@]} clone(s) that can go? [y/N] " answer || answer=""
-    [[ $answer == y || $answer == Y ]] || { echo "Nothing deleted."; return 0; }
+    if [[ -z $sweep ]]; then
+        read -r -p "Delete the ${#removable[@]} clone(s) that can go? [y/N] " answer || answer=""
+        [[ $answer == y || $answer == Y ]] || { echo "Nothing deleted."; return 0; }
+    fi
     for clone in "${removable[@]}"; do
         # Only a folder two levels under the clones folder, reached without a symlink.
         real=$(realpath -e "$clone" 2>/dev/null) || continue
@@ -1281,8 +1300,8 @@ clones_review() {
         rm -rf -- "$real" && echo "  deleted $(basename "$(dirname "$real")")/$(basename "$real")"
         rmdir -- "$(dirname "$real")" 2>/dev/null || true
     done
-    log_event INFO sessions "clones: deleted ${#removable[@]}"
-    read -r -p "Enter closes. " _ || true
+    log_event INFO sessions "clones: deleted ${#removable[@]}${sweep:+ by the daily sweep}"
+    [[ -n $sweep ]] || read -r -p "Enter closes. " _ || true
 }
 
 # The pull requests window (Super+Ctrl+P, the sidebar's P), on the cockpit only: hidden again
@@ -1684,6 +1703,7 @@ case ${1:-attach} in
     review) review_session "${2:?usage: claude-sessions review <dir> <pr-number>}" "${3:?usage: claude-sessions review <dir> <pr-number>}" ;;
     clones) clones_popup ;;
     clones-review) clones_review ;;
+    clones-sweep) clones_review sweep ;;
     label-state) label_state "${2:?usage: claude-sessions label-state <state>}" ;;
     prepare) ensure_manager ;;
     reload)
