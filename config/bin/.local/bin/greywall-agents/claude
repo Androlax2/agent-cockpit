@@ -17,6 +17,8 @@ mkdir -p "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/claude-report"
 # The audit log (claude-audit; security audit 2026-10-19, M6): greywall.json hides it from the
 # sandbox, which greywall does only for a folder that exists when the sandbox starts.
 mkdir -p -m 700 "${XDG_STATE_HOME:-$HOME/.local/state}/claude-audit"
+# The phone page's paired devices (claude-remote): hidden the same way.
+mkdir -p -m 700 "${XDG_STATE_HOME:-$HOME/.local/state}/claude-remote"
 
 # ~/dotfiles is the live checkout: stowed into ~/.local/bin and ~/.config, built and run by the host.
 # A session writing there would run its code with Theo's rights, unreviewed (security audit

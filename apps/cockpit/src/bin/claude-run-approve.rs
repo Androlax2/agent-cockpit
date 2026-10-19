@@ -97,7 +97,14 @@ fn approve(id: &str) -> i32 {
         if command.chars().count() > LONG_COMMAND {
             println!("{YELLOW}Long command ({} characters): read all of it.{RESET}\n", command.chars().count());
         }
-        let answer = approval::choose("Run it?", &[("n", "Decline"), ("y", "Run it"), ("e", "Edit it first")], "n");
+        // The phone page (claude-remote) can answer too: it shows what this shows, from this file.
+        let _ = std::fs::create_dir_all(approval::log_dir());
+        let _ = std::fs::remove_file(approval::remote_answer(id));
+        let _ = approval::write_json(&approval::remote_asking(id), &json!({"id": id, "project": project, "cwd": cwd, "started_in": started_in,
+                                                                         "command": command, "why": why, "is_outside_its_folder": is_outside_its_folder}));
+        let answer = approval::choose_or_remote("Run it?", &[("n", "Decline"), ("y", "Run it"), ("e", "Edit it first")], "n",
+                                                Some(&approval::remote_answer(id)));
+        let _ = std::fs::remove_file(approval::remote_asking(id));
         if answer == "e" {
             if let Some(edited) = approval::edit(&command) {
                 command = edited;

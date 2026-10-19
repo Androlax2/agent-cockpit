@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#1a1b26">
+<title>Claude sessions</title>
+<style>
+  :root { color-scheme: dark; --bg: #1a1b26; --card: #24283b; --fg: #c0caf5; --dim: #7a82a8; --red: #f7768e; --yellow: #e0af68;
+          --green: #9ece6a; --blue: #7aa2f7; --cyan: #7dcfff; }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: env(safe-area-inset-top) 12px 24px; background: var(--bg); color: var(--fg);
+         font: 16px/1.4 system-ui, sans-serif; }
+  h1 { font-size: 18px; margin: 14px 0 10px; display: flex; justify-content: space-between; align-items: baseline; }
+  h1 small { font-size: 12px; color: var(--dim); font-weight: normal; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); margin: 18px 0 8px; }
+  .card { background: var(--card); border-radius: 10px; padding: 12px; margin-bottom: 10px; border-left: 4px solid var(--dim); }
+  .card.needs-you { border-left-color: var(--red); } .card.waiting { border-left-color: var(--yellow); }
+  .card.working { border-left-color: var(--blue); } .card.approval { border-left-color: var(--red); }
+  .row { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+  .project { font-weight: 600; } .state { font-size: 13px; color: var(--dim); }
+  .task, .request, .why { color: var(--dim); font-size: 14px; margin-top: 4px; overflow-wrap: anywhere; }
+  .request { color: var(--red); }
+  pre { background: #16161e; border-radius: 8px; padding: 10px; overflow-x: auto; white-space: pre-wrap; overflow-wrap: anywhere;
+        font: 13px/1.35 ui-monospace, monospace; margin: 8px 0; }
+  .command { color: var(--fg); font-weight: 600; }
+  .warning { color: var(--red); font-weight: 600; font-size: 14px; margin-top: 6px; }
+  .buttons { display: flex; gap: 8px; margin-top: 10px; }
+  button { flex: 1; min-height: 44px; border: 0; border-radius: 8px; font: inherit; font-weight: 600; background: #414868; color: var(--fg); }
+  button.run { background: var(--green); color: #1a1b26; } button.armed { background: var(--yellow); color: #1a1b26; }
+  button.no { background: #414868; }
+  textarea { width: 100%; min-height: 64px; border-radius: 8px; border: 1px solid #414868; background: #16161e; color: var(--fg);
+             font: inherit; padding: 8px; margin-top: 8px; }
+  .back { background: none; color: var(--blue); min-height: 36px; flex: 0 0 auto; padding: 0; text-align: left; }
+  .note { color: var(--dim); font-size: 13px; margin-top: 6px; min-height: 1em; }
+  .empty { color: var(--dim); font-size: 14px; }
+</style>
+</head>
+<body>
+<h1>Claude sessions <small id="updated"></small></h1>
+<div id="approvals"></div>
+<div id="list"></div>
+<div id="detail" hidden></div>
+<script src="/page.js"></script>
+</body>
+</html>

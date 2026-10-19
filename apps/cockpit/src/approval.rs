@@ -313,7 +313,33 @@ pub fn explanation(why: &str) -> String {
 /// An arrow-key menu (↑↓ or j/k, Enter), starting on `default`; the chosen option's key. Without
 /// a terminal (tests), a line of input: an option key, or empty for the default.
 pub fn choose(question: &str, options: &[(&str, &str)], default: &str) -> String {
+    choose_or_remote(question, options, default, None)
+}
+
+/// An approval asking from the phone page (claude-remote): `<id>.asking` holds what the approval
+/// shows while its menu waits, `<id>.remote` the answer the phone gave ("y" or "n"). Both in the
+/// run log folder, the runtime directory no sandbox sees; only claude-remote writes the answer, and
+/// only while the approval asks.
+pub fn remote_asking(id: &str) -> PathBuf {
+    log_dir().join(format!("{id}.asking"))
+}
+
+pub fn remote_answer(id: &str) -> PathBuf {
+    log_dir().join(format!("{id}.remote"))
+}
+
+const REMOTE_POLL: Duration = Duration::from_millis(250);
+
+/// choose, also answered by the phone: while the menu waits, an answer in `remote_answer` picks the
+/// option of that key (only one of `options`), as if typed here.
+pub fn choose_or_remote(question: &str, options: &[(&str, &str)], default: &str, remote_answer: Option<&Path>) -> String {
     let keys: Vec<&str> = options.iter().map(|(key, _)| *key).collect();
+    let remote_pick = || -> Option<String> {
+        let path = remote_answer?;
+        let answer = fs::read_to_string(path).ok()?.trim().to_string();
+        let _ = fs::remove_file(path);
+        keys.contains(&answer.as_str()).then_some(answer)
+    };
     if !io::stdin().is_terminal() {
         print!("{question} [{}] ", keys.join("/"));
         let _ = io::stdout().flush();
@@ -346,6 +372,12 @@ pub fn choose(question: &str, options: &[(&str, &str)], default: &str) -> String
     }
     let shown_at = Instant::now();
     let answer = loop {
+        if let Some(answer) = remote_pick() {
+            break answer;
+        }
+        if !event::poll(REMOTE_POLL).unwrap_or(false) {
+            continue;
+        }
         let Ok(Event::Key(key)) = event::read() else { continue };
         if key.kind == KeyEventKind::Release || shown_at.elapsed() < TYPE_AHEAD {
             continue;

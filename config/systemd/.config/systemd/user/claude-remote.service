@@ -1,0 +1,12 @@
+[Unit]
+Description=The phone page for the Claude sessions (claude-remote, apps/cockpit), on 127.0.0.1 for tailscale serve
+After=osd.service
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/claude-remote serve
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

@@ -45,6 +45,7 @@
       "~/.local/share/JetBrains/**",
       "~/.local/state/restic-backup/**",
       "~/.local/state/claude-audit",
+      "~/.local/state/claude-remote",
       "~/.config/Bitwarden/**",
       "~/.config/BraveSoftware/**",
       "~/.config/vivaldi/**",

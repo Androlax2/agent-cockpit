@@ -97,3 +97,24 @@ fn a_command_name_in_the_request_cannot_escape_its_folder() {
     let output = Command::new(env!("CARGO_BIN_EXE_claude-run-approve")).arg("../../etc").env("TMUX", "1").output().unwrap();
     assert!(String::from_utf8_lossy(&output.stdout).contains("not a request id"));
 }
+
+#[test]
+fn the_phone_page_answers_the_menu_and_the_command_runs() {
+    // claude-remote writes <id>.remote while <id>.asking says the menu waits: as if Run were chosen here.
+    let (root, id) = request("sh -c 'echo ran-from-the-phone'");
+    let mut terminal = Terminal::start(Path::new(env!("CARGO_BIN_EXE_claude-run-approve")), &[&id],
+                                       &[("CLAUDE_ANSWERS_DIR", &root.join("answers")), ("XDG_RUNTIME_DIR", &root.join("run")),
+                                         ("XDG_STATE_HOME", &root.join("state")), ("CLAUDE_AUDIT_JOURNAL", Path::new("off"))]);
+    terminal.pump(10.0, Some(b"Run it?"));
+    let asking: serde_json::Value = serde_json::from_str(&fs::read_to_string(root.join(format!("run/claude-runs/{id}.asking"))).unwrap()).unwrap();
+    assert_eq!(asking["command"].as_str(), Some("sh -c 'echo ran-from-the-phone'"));
+    fs::write(root.join(format!("run/claude-runs/{id}.remote")), "y").unwrap();
+    terminal.pump(10.0, Some(b"Send the output"));
+    terminal.pump(0.7, None);
+    terminal.type_keys(b"\r");
+    let _ = terminal.child.wait();
+    let result: serde_json::Value = serde_json::from_str(&fs::read_to_string(root.join(format!("answers/proj-a/runs/{id}.result"))).unwrap()).unwrap();
+    assert!(result["output"].as_str().unwrap().contains("ran-from-the-phone"), "{result}");
+    assert!(!root.join(format!("run/claude-runs/{id}.asking")).exists(), "still asking after the answer");
+    let _ = fs::remove_dir_all(root);
+}
