@@ -2154,16 +2154,20 @@ fn what_only_claude_code_does_is_refused_for_an_opencode_session() {
 }
 
 #[test]
-fn a_message_goes_to_an_opencode_session_only_while_it_waits() {
-    let manager = Manager::new();
-    manager.with_opencode_session("waiting");
-    assert_eq!(manager.run(&["say", OPENCODE_SESSION, "also the README"], &[]).status.code(), Some(0));
-    assert_eq!(manager.tmux_calls("send-keys"), ["tmux send-keys -t %5 -l -- also the README", "tmux send-keys -t %5 Enter"]);
-    manager.with_opencode_session("working");
-    manager.sandbox.reset_log();
-    let busy = manager.run(&["say", OPENCODE_SESSION, "and the changelog"], &[]);
-    assert_eq!(busy.status.code(), Some(1));
-    assert!(manager.tmux_calls("send-keys").is_empty());
+fn a_message_goes_to_an_opencode_session_waiting_or_working_never_into_its_question() {
+    // While it works opencode's inbox queues what is submitted, as Claude's Ctrl+X Enter does.
+    for state in ["waiting", "working"] {
+        let manager = Manager::new();
+        manager.with_opencode_session(state);
+        assert_eq!(manager.run(&["say", OPENCODE_SESSION, "also the README"], &[]).status.code(), Some(0), "{state}");
+        assert_eq!(manager.tmux_calls("send-keys"), ["tmux send-keys -t %5 -l -- also the README", "tmux send-keys -t %5 Enter"], "{state}");
+    }
+    for state in ["needs-you", "unknown"] {
+        let manager = Manager::new();
+        manager.with_opencode_session(state);
+        assert_eq!(manager.run(&["say", OPENCODE_SESSION, "and the changelog"], &[]).status.code(), Some(1), "{state}");
+        assert!(manager.tmux_calls("send-keys").is_empty(), "{state}");
+    }
 }
 
 #[test]

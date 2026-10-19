@@ -115,11 +115,19 @@ agent_opencode_exit() { # tmux-session pane id
     tmux kill-session -t "=$1"
 }
 
-# Its screen is not Claude's: the daemon's state, from its plugin, says whether it waits.
+# Its screen is not Claude's: the daemon's state, from its plugin, says what it does. At its
+# prompt the message is sent; while it works, opencode's inbox queues it for after the turn (as
+# Claude's Ctrl+X Enter). A permission question open (needs-you) refuses it: typed text would
+# go to the question.
 agent_opencode_say() { # id pane message
-    local id=$1 pane=$2 message=$3
-    if [[ $(session_field "$id" state) != waiting ]]; then
-        echo "claude-sessions: $(session_field "$id" project) is not waiting at its prompt; m queues the message for its turn's end" >&2
+    local id=$1 pane=$2 message=$3 state
+    state=$(session_field "$id" state)
+    if [[ $state == needs-you ]]; then
+        echo "claude-sessions: $(session_field "$id" project) has a question open; answer it in its pane first" >&2
+        return 1
+    fi
+    if [[ $state != waiting && $state != working ]]; then
+        echo "claude-sessions: $(session_field "$id" project) is not at its prompt (${state:-no state yet})" >&2
         return 1
     fi
     submit_to_pane "$pane" "$message"
