@@ -2,8 +2,9 @@
 //!
 //!     claude-remote serve     the page on 127.0.0.1:7380 (CLAUDE_REMOTE_ADDRESS), for `tailscale
 //!                             serve` to publish on the tailnet only; refuses any other address
-//!     claude-remote pair      a one-time link and its QR code, to open on the phone (10 minutes)
-//!     claude-remote unpair    forgets every phone
+//!     claude-remote pair [name]   a one-time link and its QR code, to open on the phone (10 minutes)
+//!     claude-remote phones        the paired phones: id, name, last seen
+//!     claude-remote unpair [id]   forgets that phone, or every phone
 //!
 //! Run by claude-remote.service. Every request but /health and /pair/<code> needs a paired phone's secret (its
 //! cookie); every POST also the X-Claude-Remote header, which another site cannot send.
@@ -85,7 +86,7 @@ fn handle(mut request: Request) {
         }
         return;
     }
-    if !cookie_secret(&request).is_some_and(|secret| remote::is_paired(&secret)) {
+    if cookie_secret(&request).and_then(|secret| remote::paired_phone(&secret)).is_none() {
         respond(request, 401, "text/plain", "This phone is not paired: run claude-remote pair on the computer and open its link here.".into(), &[]);
         return;
     }
@@ -163,8 +164,11 @@ fn tailnet_name() -> Option<String> {
     status.get("Self")?.get("DNSName")?.as_str().map(|name| name.trim_end_matches('.').to_string()).filter(|name| !name.is_empty())
 }
 
-fn pair() -> Result<(), String> {
-    let code = remote::new_pairing_code().map_err(|error| format!("cannot keep the pairing code: {error}"))?;
+fn pair(name: &str) -> Result<(), String> {
+    if name.chars().count() > 32 || name.chars().any(char::is_control) {
+        return Err("a phone's name is one line of at most 32 characters".into());
+    }
+    let code = remote::new_pairing_code(name).map_err(|error| format!("cannot keep the pairing code: {error}"))?;
     let host = tailnet_name().ok_or("tailscale status gives no name for this computer: is Tailscale up?")?;
     let link = format!("https://{host}/pair/{code}");
     println!("Open this on the phone within 10 minutes (once):\n\n  {link}\n");
@@ -172,13 +176,37 @@ fn pair() -> Result<(), String> {
     Ok(())
 }
 
+fn ago(seconds: Option<i64>) -> String {
+    let Some(seconds) = seconds else { return "never".into() };
+    let elapsed = cockpit::util::now_secs() - seconds;
+    match elapsed {
+        ..120 => "just now".into(),
+        ..7200 => format!("{} min ago", elapsed / 60),
+        ..172800 => format!("{} h ago", elapsed / 3600),
+        _ => format!("{} days ago", elapsed / 86400),
+    }
+}
+
+fn list_phones() {
+    let phones = remote::phones();
+    if phones.is_empty() {
+        println!("No phone is paired: claude-remote pair [name].");
+    }
+    for phone in phones {
+        println!("{}  {:<20} last seen {}", phone["id"].as_str().unwrap_or(""), phone["name"].as_str().unwrap_or(""), ago(phone["last_seen"].as_i64()));
+    }
+}
+
 fn main() {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     let result = match arguments.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
         ["serve"] => serve(),
-        ["pair"] => pair(),
+        ["pair"] => pair(""),
+        ["pair", name] => pair(name),
+        ["phones"] => Ok(list_phones()),
         ["unpair"] => remote::unpair_all().map(|()| println!("Every phone forgotten.")).map_err(|error| error.to_string()),
-        _ => Err("usage: claude-remote serve | pair | unpair".into()),
+        ["unpair", id] => remote::unpair(id).map(|name| println!("{name} forgotten.")),
+        _ => Err("usage: claude-remote serve | pair [name] | phones | unpair [id]".into()),
     };
     if let Err(error) = result {
         eprintln!("claude-remote: {error}");

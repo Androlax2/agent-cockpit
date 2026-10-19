@@ -4,7 +4,7 @@
 //! A phone gets in by pairing: `claude-remote pair` shows a one-time link (a QR code), valid 10
 //! minutes; opening it gives the phone's browser a long secret in a cookie. Only the SHA-256 of
 //! codes and secrets is kept, in ~/.local/state/claude-remote (0600; greywall hides it from every
-//! sandbox). `claude-remote unpair` forgets every phone.
+//! sandbox). `claude-remote phones` lists them; `claude-remote unpair [id]` forgets one, or all.
 //!
 //! From the phone: the session cards, a session's last screen, a message (queued while it works,
 //! as the column's m), an answer to a permission dialog, and Run or Decline for an approval that is
@@ -17,10 +17,12 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::PathBuf;
+use std::sync::Mutex;
 use std::process::{Command, Stdio};
 
 const PAIRING_VALID_S: i64 = 600;
 const MESSAGE_MAX: usize = 4000;
+const LAST_SEEN_STEP_S: i64 = 60;
 
 pub fn state_dir() -> PathBuf {
     std::env::var("CLAUDE_REMOTE_DIR").map(PathBuf::from).unwrap_or_else(|_| paths::state_home().join("claude-remote"))
@@ -39,16 +41,33 @@ fn read_private(name: &str) -> Value {
     fs::read_to_string(state_dir().join(name)).ok().and_then(|text| serde_json::from_str(&text).ok()).unwrap_or(json!({}))
 }
 
-/// A new one-time pairing code (the previous one no longer works).
-pub fn new_pairing_code() -> std::io::Result<String> {
+/// A new one-time pairing code for a phone called `name` (the previous code no longer works).
+pub fn new_pairing_code(name: &str) -> std::io::Result<String> {
     let code = util::token_hex(16);
-    write_private("pairing.json", &json!({"sha256": audit::sha256_hex(code.as_bytes()), "until": util::now_secs() + PAIRING_VALID_S}))?;
-    audit::record("remote", "remote.pairing_started", "ok", json!({}));
+    write_private("pairing.json", &json!({"sha256": audit::sha256_hex(code.as_bytes()), "until": util::now_secs() + PAIRING_VALID_S, "name": name}))?;
+    audit::record("remote", "remote.pairing_started", "ok", json!({"name": name}));
     Ok(code)
+}
+
+/// devices.json is read, changed and written back by several workers: one at a time.
+static DEVICES: Mutex<()> = Mutex::new(());
+
+fn devices() -> Vec<Value> {
+    read_private("devices.json").get("devices").and_then(Value::as_array).cloned().unwrap_or_default()
+}
+
+fn write_devices(devices: Vec<Value>) -> std::io::Result<()> {
+    write_private("devices.json", &json!({"devices": devices}))
+}
+
+/// The short id a phone is shown and forgotten by: the start of its secret's hash.
+fn device_id(device: &Value) -> String {
+    text(device, "sha256").chars().take(8).collect()
 }
 
 /// The phone's secret for a pairing code still valid, once: None for a wrong, used or old code.
 pub fn redeem(code: &str) -> Option<String> {
+    let _guard = DEVICES.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let pairing = read_private("pairing.json");
     let is_valid = pairing.get("sha256").and_then(Value::as_str) == Some(audit::sha256_hex(code.as_bytes()).as_str())
         && pairing.get("until").and_then(Value::as_i64).is_some_and(|until| util::now_secs() <= until);
@@ -58,29 +77,57 @@ pub fn redeem(code: &str) -> Option<String> {
     }
     let _ = fs::remove_file(state_dir().join("pairing.json"));
     let secret = util::token_hex(32);
-    let mut devices = read_private("devices.json");
-    let list = devices.as_object_mut()?.entry("devices").or_insert(json!([]));
-    list.as_array_mut()?.push(json!({"sha256": audit::sha256_hex(secret.as_bytes()), "paired_at": util::now_secs()}));
-    write_private("devices.json", &devices).ok()?;
-    audit::record("remote", "remote.paired", "ok", json!({}));
+    let mut known = devices();
+    let name = Some(text(&pairing, "name")).filter(|name| !name.is_empty()).unwrap_or_else(|| format!("Phone {}", known.len() + 1));
+    let now = util::now_secs();
+    known.push(json!({"sha256": audit::sha256_hex(secret.as_bytes()), "name": name, "paired_at": now, "last_seen": now}));
+    write_devices(known).ok()?;
+    audit::record("remote", "remote.paired", "ok", json!({"name": name}));
     Some(secret)
 }
 
-/// Whether a phone's secret is one of the paired ones.
-pub fn is_paired(secret: &str) -> bool {
+/// The paired phone a secret belongs to (its id), its last visit noted once a minute at most.
+pub fn paired_phone(secret: &str) -> Option<String> {
     if secret.len() < 32 {
-        return false;
+        return None;
     }
     let hash = audit::sha256_hex(secret.as_bytes());
-    read_private("devices.json").get("devices").and_then(Value::as_array).into_iter().flatten()
-        .any(|device| device.get("sha256").and_then(Value::as_str) == Some(hash.as_str()))
+    let _guard = DEVICES.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut known = devices();
+    let device = known.iter_mut().find(|device| device.get("sha256").and_then(Value::as_str) == Some(hash.as_str()))?;
+    let id = device_id(device);
+    let now = util::now_secs();
+    if device.get("last_seen").and_then(Value::as_i64).is_none_or(|seen| now - seen >= LAST_SEEN_STEP_S) {
+        device["last_seen"] = json!(now);
+        let _ = write_devices(known);
+    }
+    Some(id)
+}
+
+/// The paired phones: id, name, when paired, when last seen. No secret, no hash.
+pub fn phones() -> Vec<Value> {
+    devices().iter().map(|device| json!({
+        "id": device_id(device), "name": text(device, "name"), "paired_at": device.get("paired_at"), "last_seen": device.get("last_seen"),
+    })).collect()
+}
+
+/// One phone forgotten, by its id.
+pub fn unpair(id: &str) -> Result<String, String> {
+    let _guard = DEVICES.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let (forgotten, kept): (Vec<Value>, Vec<Value>) = devices().into_iter().partition(|device| !id.is_empty() && device_id(device) == id);
+    let Some(phone) = forgotten.first() else { return Err(format!("no paired phone {id}")) };
+    let name = text(phone, "name");
+    write_devices(kept).map_err(|error| error.to_string())?;
+    audit::record("remote", "remote.unpaired", "ok", json!({"id": id, "name": name}));
+    Ok(name)
 }
 
 /// Every phone forgotten.
 pub fn unpair_all() -> std::io::Result<()> {
-    write_private("devices.json", &json!({"devices": []}))?;
+    let _guard = DEVICES.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    write_devices(Vec::new())?;
     let _ = fs::remove_file(state_dir().join("pairing.json"));
-    audit::record("remote", "remote.unpaired", "ok", json!({}));
+    audit::record("remote", "remote.unpaired", "ok", json!({"id": "all"}));
     Ok(())
 }
 

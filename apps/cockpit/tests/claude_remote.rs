@@ -52,14 +52,22 @@ impl Remote {
 
     /// A one-time pairing code, from `claude-remote pair`'s link.
     fn pairing_code(&self) -> String {
-        let output = self.sandbox.run(bin().join("claude-remote"), &["pair"], &[]);
+        self.pairing_code_for(&[])
+    }
+
+    fn pairing_code_for(&self, name: &[&str]) -> String {
+        let output = self.sandbox.run(bin().join("claude-remote"), &[&["pair"], name].concat(), &[]);
         let shown = stdout(&output);
         shown.split("/pair/").nth(1).and_then(|rest| rest.split_whitespace().next()).unwrap_or_else(|| panic!("no link in {shown}")).to_string()
     }
 
     /// A paired phone's secret.
     fn paired(&self) -> String {
-        let (status, headers, _) = self.request("GET", &format!("/pair/{}", self.pairing_code()), None, None, false);
+        self.paired_as(&[])
+    }
+
+    fn paired_as(&self, name: &[&str]) -> String {
+        let (status, headers, _) = self.request("GET", &format!("/pair/{}", self.pairing_code_for(name)), None, None, false);
         assert_eq!(status, 303, "{headers}");
         headers.lines().find_map(|line| line.strip_prefix("Set-Cookie: claude_remote=")).unwrap().split(';').next().unwrap().to_string()
     }
@@ -76,6 +84,10 @@ impl Remote {
         fs::write(self.sandbox.runtime.join("claude-sessions.json"),
                   json!({"sessions": [{"session": SESSION_A, "state": "needs-you", "project": "proj-a", "tmux_pane": "%4"}]}).to_string()).unwrap();
         fs::write(self.sandbox.runtime.join("pane.txt"), pane).unwrap();
+    }
+
+    fn remote(&self, arguments: &[&str]) -> String {
+        stdout(&self.sandbox.run(bin().join("claude-remote"), arguments, &[]))
     }
 
     fn keys_pressed(&self) -> Vec<String> {
@@ -251,4 +263,34 @@ fn a_slow_request_does_not_stall_the_others() {
     assert_eq!(remote.request("GET", "/api/state", Some(&secret), None, false).0, 200);
     assert!(started.elapsed() < std::time::Duration::from_secs(1), "waited {:?} behind the slow request", started.elapsed());
     slow.join().unwrap();
+}
+
+#[test]
+fn phones_lists_each_phone_by_its_name_without_its_secret() {
+    let remote = Remote::start();
+    let secret = remote.paired_as(&["iPhone"]);
+    remote.paired();
+    let listed = remote.remote(&["phones"]);
+    assert!(listed.contains("iPhone") && listed.contains("Phone 2"), "{listed}");
+    assert!(!listed.contains(&secret), "{listed}");
+}
+
+#[test]
+fn unpair_with_an_id_forgets_that_phone_only() {
+    let remote = Remote::start();
+    let lost = remote.paired_as(&["lost"]);
+    let kept = remote.paired_as(&["kept"]);
+    let listed = remote.remote(&["phones"]);
+    let lost_id = listed.lines().find(|line| line.contains("lost")).unwrap().split_whitespace().next().unwrap().to_string();
+    assert!(remote.remote(&["unpair", &lost_id]).contains("lost forgotten"));
+    assert_eq!(remote.request("GET", "/api/state", Some(&lost), None, false).0, 401);
+    assert_eq!(remote.request("GET", "/api/state", Some(&kept), None, false).0, 200);
+}
+
+#[test]
+fn unpair_with_an_unknown_id_fails_loudly() {
+    let remote = Remote::start();
+    let output = remote.sandbox.run(bin().join("claude-remote"), &["unpair", "deadbeef"], &[]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(stderr(&output).contains("no paired phone deadbeef"), "{}", stderr(&output));
 }
