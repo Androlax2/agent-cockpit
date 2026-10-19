@@ -1517,6 +1517,26 @@ fn a_card_shows_its_unpushed_commits() {
 }
 
 #[test]
+fn a_card_shows_its_background_work_with_the_agents_counted() {
+    let fixture = Fixture::new();
+    let mut row = session(SESSION_A, "waiting", "runway", "/r/runway", 1);
+    row["agents"] = json!(3);
+    row["background"] = json!(1);
+    fixture.snapshot(json!([row, session(SESSION_B, "waiting", "dotfiles", "/r/dotfiles", 2)]));
+    let app = fixture.app();
+    let badges: Vec<String> = app.panels[1].lines.iter().flat_map(|line| line.right.iter().map(|part| part.text.clone())).collect();
+    assert_eq!(badges.iter().filter(|badge| badge.starts_with('◷')).collect::<Vec<_>>(), ["◷ 3 agents + background"]);
+}
+
+#[test]
+fn the_background_badge_names_what_runs() {
+    let badge = |agents, background| sessions::background_badge(&sessions::Session { agents, background, ..Default::default() });
+    assert_eq!(badge(0, 0), None);
+    assert_eq!(badge(1, 0).as_deref(), Some("◷ 1 agent"));
+    assert_eq!(badge(0, 2).as_deref(), Some("◷ background"));
+}
+
+#[test]
 fn a_dotfiles_clone_counts_unapplied_commits_and_u_applies_them() {
     let fixture = Fixture::new();
     let clone = fixture.root.join("home/IdeaProjects/.parallel/dotfiles/p1").display().to_string();

@@ -104,6 +104,10 @@ pub struct Session {
     pub credits: bool,
     /// Commits of its repository on no remote yet, as of its last start or turn end (or a U push).
     pub unpushed: u64,
+    /// Background agents, and other background work (shells, monitors, workflows), in flight when
+    /// its last turn ended.
+    pub agents: u64,
+    pub background: u64,
     /// Desktop apps it drives through an attached MCP server, as the hook saw them: "figcraft:on".
     pub apps: String,
     // Added by the column.
@@ -145,6 +149,8 @@ impl Session {
             terminal: row.get("terminal").and_then(Value::as_bool).unwrap_or(false),
             credits: row.get("credits").and_then(Value::as_bool).unwrap_or(false),
             unpushed: row.get("unpushed").and_then(Value::as_u64).unwrap_or(0),
+            agents: row.get("agents").and_then(Value::as_u64).unwrap_or(0),
+            background: row.get("background").and_then(Value::as_u64).unwrap_or(0),
             apps: text(row, "apps"),
             ..Session::default()
         })
@@ -246,6 +252,22 @@ pub fn is_dotfiles_clone(cwd: &str) -> bool {
 pub fn dotfiles_unpushed() -> usize {
     let live = paths::dotfiles().to_string_lossy().into_owned();
     util::output_of("git", &["-C", &live, "rev-list", "--count", "@{upstream}..HEAD"]).and_then(|count| count.trim().parse().ok()).unwrap_or(0)
+}
+
+/// The card's "◷ 3 agents + background": its background work, agents counted; None without any.
+pub fn background_badge(session: &Session) -> Option<String> {
+    let agents = match session.agents {
+        0 => None,
+        1 => Some("1 agent".to_string()),
+        count => Some(format!("{count} agents")),
+    };
+    let other = (session.background > 0).then_some("background");
+    match (agents, other) {
+        (None, None) => None,
+        (Some(agents), None) => Some(format!("◷ {agents}")),
+        (None, Some(other)) => Some(format!("◷ {other}")),
+        (Some(agents), Some(other)) => Some(format!("◷ {agents} + {other}")),
+    }
 }
 
 pub fn visible_task(session: &Session) -> String {

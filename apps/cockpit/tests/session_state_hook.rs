@@ -373,3 +373,30 @@ fn a_craft_app_that_is_closed_is_reported_off() {
     let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
     assert_eq!(apps_reported(port).as_deref(), Some("figcraft:off"));
 }
+
+/// The counts the hook reports for an event: (agents, background), absent when it says nothing.
+fn background_reported(payload: Value) -> (Option<u64>, Option<u64>) {
+    let mut test = HookTest::new();
+    let folder = test.sandbox.root.join("notes");
+    fs::create_dir(&folder).unwrap();
+    test.run_hook(with_session(payload, &folder.to_string_lossy()), &[]);
+    let report = test.received().last().unwrap().clone();
+    (report.get("agents").and_then(Value::as_u64), report.get("background").and_then(Value::as_u64))
+}
+
+#[test]
+fn a_finished_turn_counts_its_background_agents_apart_from_other_background_work() {
+    let tasks = json!([{"type": "subagent"}, {"type": "subagent"}, {"type": "teammate"}, {"type": "shell"}, {"type": "monitor"}, {"type": "dream"}]);
+    assert_eq!(background_reported(json!({"hook_event_name": "Stop", "background_tasks": tasks})), (Some(3), Some(2)));
+}
+
+#[test]
+fn a_finished_turn_without_a_task_list_reports_no_count() {
+    assert_eq!(background_reported(json!({"hook_event_name": "Stop"})), (None, None));
+}
+
+#[test]
+fn a_fresh_or_resumed_session_has_no_background_work_and_a_cleared_one_keeps_its_own() {
+    assert_eq!(background_reported(json!({"hook_event_name": "SessionStart", "source": "resume"})), (Some(0), Some(0)));
+    assert_eq!(background_reported(json!({"hook_event_name": "SessionStart", "source": "clear"})), (None, None));
+}

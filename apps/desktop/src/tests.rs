@@ -1201,6 +1201,24 @@ fn an_unpushed_count_must_be_a_count() {
 }
 
 #[test]
+fn background_counts_last_until_a_report_says_otherwise() {
+    let mut bench = Bench::new();
+    bench.report(SESSION_A, json!({"state": "waiting", "agents": 2, "background": 1}));
+    bench.report(SESSION_A, json!({"state": "working"}));
+    let counts = |bench: &Bench| { let row = &bench.snapshot()[0]; (row["agents"].as_u64().unwrap(), row["background"].as_u64().unwrap()) };
+    assert_eq!(counts(&bench), (2, 1), "a report without counts keeps the last ones");
+    bench.report(SESSION_A, json!({"state": "waiting", "agents": 0, "background": 0}));
+    assert_eq!(counts(&bench), (0, 0));
+}
+
+#[test]
+fn background_counts_must_be_counts() {
+    for key in ["agents", "background"] {
+        assert!(parse_session(&json!({"session": SESSION_A, "project": "p", key: "2; rm"}).to_string()).is_err(), "{key}");
+    }
+}
+
+#[test]
 fn a_session_says_which_craft_apps_it_drives() {
     let mut bench = Bench::new();
     bench.report(SESSION_A, json!({"state": "working", "apps": "figcraft:on"}));

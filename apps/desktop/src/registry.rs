@@ -144,6 +144,10 @@ pub struct Report {
     pub credits: Option<bool>,
     /// Commits of the session's repository on no remote yet (the hook counts them in the sandbox).
     pub unpushed: Option<u64>,
+    /// Background agents and other background work (shells, monitors, workflows) still in flight
+    /// when the turn ended. None when the report did not say (only Stop and a fresh start do).
+    pub agents: Option<u64>,
+    pub background: Option<u64>,
     /// The desktop apps the session drives through an attached MCP server: "figcraft:on wordcraft:off"
     /// (the hook checks inside the sandbox). None when the report did not say (the daemon's own updates).
     pub apps: Option<String>,
@@ -173,8 +177,10 @@ pub fn parse_session(raw: &str) -> Result<Report, String> {
     if report.get("credits").is_some_and(|value| !value.is_boolean()) {
         return Err("session.credits is not true or false".into());
     }
-    if report.get("unpushed").is_some_and(|value| !value.is_u64()) {
-        return Err("session.unpushed is not a count".into());
+    for key in ["unpushed", "agents", "background"] {
+        if report.get(key).is_some_and(|value| !value.is_u64()) {
+            return Err(format!("session.{key} is not a count"));
+        }
     }
     for key in ["cwd", "task", "message", "outcome"] {
         if report.get(key).is_some_and(|value| !value.is_string()) {
@@ -201,6 +207,8 @@ pub fn parse_session(raw: &str) -> Result<Report, String> {
         terminal: report.get("terminal").and_then(Value::as_bool).unwrap_or(false),
         credits: report.get("credits").and_then(Value::as_bool),
         unpushed: report.get("unpushed").and_then(Value::as_u64),
+        agents: report.get("agents").and_then(Value::as_u64),
+        background: report.get("background").and_then(Value::as_u64),
         apps: report.get("apps").and_then(Value::as_str).map(str::to_string), target,
     })
 }
@@ -823,6 +831,8 @@ pub struct Entry {
     pub terminal: bool,
     pub credits: bool,
     pub unpushed: u64,
+    pub agents: u64,
+    pub background: u64,
     pub apps: String,
 }
 
@@ -998,6 +1008,14 @@ impl Registry {
             entry.unpushed = unpushed;
             changed = true;
         }
+        if let Some(agents) = report.agents.filter(|count| *count != entry.agents) {
+            entry.agents = agents;
+            changed = true;
+        }
+        if let Some(background) = report.background.filter(|count| *count != entry.background) {
+            entry.background = background;
+            changed = true;
+        }
         if let Some(credits) = report.credits.filter(|credits| *credits != entry.credits) {
             entry.credits = credits;
             changed = true;
@@ -1170,7 +1188,8 @@ impl Registry {
             let mut row = json!({"session": session, "state": entry.state, "project": entry.project, "cwd": entry.cwd, "task": entry.task,
                                  "since": entry.since as i64, "started": entry.started as i64, "update": entry.update,
                                  "request": entry.request, "detail": entry.detail, "outcome": entry.outcome,
-                                 "terminal": entry.terminal, "credits": entry.credits, "unpushed": entry.unpushed, "apps": entry.apps});
+                                 "terminal": entry.terminal, "credits": entry.credits, "unpushed": entry.unpushed,
+                                 "agents": entry.agents, "background": entry.background, "apps": entry.apps});
             for (key, value) in &entry.target {
                 row[key] = json!(value);
             }
@@ -1245,7 +1264,9 @@ impl Registry {
                     update: row.get("update").and_then(Value::as_bool).unwrap_or(false),
                     terminal: row.get("terminal").and_then(Value::as_bool).unwrap_or(false),
                     credits: row.get("credits").and_then(Value::as_bool).unwrap_or(false),
-                    unpushed: row.get("unpushed").and_then(Value::as_u64).unwrap_or(0), ..Entry::default()
+                    unpushed: row.get("unpushed").and_then(Value::as_u64).unwrap_or(0),
+                    agents: row.get("agents").and_then(Value::as_u64).unwrap_or(0),
+                    background: row.get("background").and_then(Value::as_u64).unwrap_or(0), ..Entry::default()
                 }))
             })();
             match loaded {

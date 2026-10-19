@@ -79,10 +79,11 @@ const GLOBAL_HELP: [(&str, &str); 18] = [
     ("l →  ←", "into the session from any panel; ← from the session comes back"),
     ("q ⌘C", "close the manager window; sessions keep running"),
 ];
-const LEGEND: [(&str, &str); 20] = [
+const LEGEND: [(&str, &str); 21] = [
     ("●", "working"), ("○", "waiting for you"), ("!", "needs you: permission or question"), ("·", "running, state unknown"),
     ("▌", "shown in the session pane"), ("⚲", "pinned"), ("⇅", "remote controlled"),
     ("◆ figcraft", "connected to FigCraft, which is open for this session's project (craft-open)"),
+    ("◷ 2 agents + background", "background agents, and other background work (shells, monitors), still running when its turn ended"),
     ("✉ 2 queued", "messages waiting for the end of its turn, sent one per turn (m, Alt+Q; M drops them)"),
     ("↑2 unpushed", "commits on no remote yet: U pushes the branch"),
     ("⏱ 1h20 today · 34h", "time spent with Claude on the project, today and in all: the gaps under 5 minutes between its sessions' replies"),
@@ -1011,6 +1012,9 @@ impl App {
                 if serves_it {
                     badges.push(part(format!("◆ {name}"), bold(GREEN)));
                 }
+            }
+            if let Some(background) = sessions::background_badge(session) {
+                badges.push(part(background, bold(BLUE)));
             }
             let queued = prompts::count(&session.session);
             if queued > 0 {

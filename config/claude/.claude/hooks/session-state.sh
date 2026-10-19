@@ -154,11 +154,27 @@ craft_apps() {
     echo "${apps% }"
 }
 
+# Background work still in flight when a turn ends (the Stop payload's background_tasks), for the
+# card's "◷ 3 agents": agents (subagents, teammates, cloud sessions) apart from the rest (shells,
+# monitors, workflows, MCP tasks). Claude's own housekeeping (dream, auto-mode scan, memory import)
+# is not the session's work. Prints nothing when the payload has no list (an older Claude).
+AGENT_TASKS='["subagent", "teammate", "cloud session"]'
+HOUSEKEEPING_TASKS='["dream", "auto-mode scan", "memory import"]'
+background_of() { # payload: "<agents> <other work>"
+    jq -r --argjson agents "$AGENT_TASKS" --argjson housekeeping "$HOUSEKEEPING_TASKS" '
+        .background_tasks // empty
+        | [(map(select(.type | IN($agents[]))) | length),
+           (map(select(.type | IN(($agents + $housekeeping)[]) | not)) | length)]
+        | @tsv' <<<"$1"
+}
+
 state=
 task=
 message=
 outcome=
 unpushed=
+agents=
+background=
 sticky=false
 # Started with "this terminal" (the claude function's t): the cockpit keeps it out of what acts on
 # every session.
@@ -172,6 +188,11 @@ case $event in
     SessionStart)
         state=waiting
         unpushed=$(unpushed_of "$cwd")
+        # Background work dies with the process: a new or resumed one has none. /clear and
+        # /compact keep the process, and its work.
+        case $(jq -r '.source // ""' <<<"$payload") in
+            startup | resume) agents=0 background=0 ;;
+        esac
         ;;
     UserPromptSubmit)
         state=working
@@ -203,6 +224,7 @@ case $event in
         message="Finished, waiting for you"
         outcome=$(outcome_of_turn "$cwd")
         unpushed=$(unpushed_of "$cwd")
+        read -r agents background < <(background_of "$payload") || true
         checks=$(checks_of_turn "$(jq -r '.transcript_path // ""' <<<"$payload")")
         if [[ -n $checks ]]; then outcome="${outcome:+$outcome · }$checks"; fi
         ;;
@@ -218,13 +240,14 @@ esac
 
 report=$(jq -cn \
     --arg session "$session" --arg state "$state" --arg project "$project" --arg cwd "$cwd" \
-    --arg task "$task" --arg message "$message" --arg outcome "$outcome" --argjson sticky "$sticky" --argjson terminal "$terminal" --argjson credits "$credits" --arg unpushed "$unpushed" --arg apps "$(craft_apps)" \
+    --arg task "$task" --arg message "$message" --arg outcome "$outcome" --argjson sticky "$sticky" --argjson terminal "$terminal" --argjson credits "$credits" --arg unpushed "$unpushed" --arg agents "$agents" --arg background "$background" --arg apps "$(craft_apps)" \
     --arg kitty_pid "${KITTY_PID:-}" --arg kitty_window "${KITTY_WINDOW_ID:-}" \
     --arg kitty_listen "${KITTY_LISTEN_ON:-}" --arg tmux_pane "${TMUX_PANE:-}" \
     '{$session, $state, $project, $cwd, $task, $message, $outcome, $sticky, $terminal,
       $kitty_pid, $kitty_window, $kitty_listen, $tmux_pane}
      | with_entries(select(.value != "" and .value != false))
      | if $unpushed == "" then . else .unpushed = ($unpushed | tonumber) end
+     | if $agents == "" then . else .agents = ($agents | tonumber) | .background = ($background | tonumber) end
      | .apps = $apps | .credits = $credits')
 
 # One line per event in ~/.cache/claude/hook.log, the one place the sandbox lets the hook write:
