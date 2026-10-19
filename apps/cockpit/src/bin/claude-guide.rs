@@ -31,7 +31,7 @@ const MAX_AGE_S: i64 = 2 * 3600; // a guide can wait in the queue behind another
 const MAX_STEPS: usize = 60;
 const MAX_TEXT: usize = 2000;
 const STEP_FIELDS: [&str; 6] = ["text", "section", "open", "copy", "ask", "run"];
-const HINTS: [&str; 2] = ["⏎ next   ↑ back   ^O open   ^Y copy   ^R run", "^S stuck: send my note now   Esc close"];
+const HINTS: [&str; 2] = ["⏎ next   ↑ back   ⌘O open   ⌘Y copy   ⌘R run", "⌘S stuck: send my note now   Esc close"];
 const CYAN: u8 = 6;
 const BLUE: u8 = 4;
 const GREEN: u8 = 2;
@@ -200,8 +200,8 @@ fn render_step(guide: &Guide, width: usize) -> Vec<(String, Style)> {
         lines.push((String::new(), Style::default()));
         lines.push(("⚠ hidden characters, shown as \\uXXXX".into(), style(RED_INDEX).add_modifier(Modifier::BOLD)));
     }
-    let details: Vec<(&str, String, &str)> = [("link", link_of(guide.step()), "^O opens"), ("copy", guide.field("copy"), "^Y copies"),
-                                               ("run", guide.field("run"), "^R runs (⏎ too)")]
+    let details: Vec<(&str, String, &str)> = [("link", link_of(guide.step()), "⌘O opens"), ("copy", guide.field("copy"), "⌘Y copies"),
+                                               ("run", guide.field("run"), "⌘R runs (⏎ too)")]
         .into_iter().filter(|(_, value, _)| !value.is_empty()).collect();
     if !details.is_empty() {
         lines.push((String::new(), Style::default()));

@@ -57,9 +57,10 @@ pub const EFFORT_LEVELS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
 const PANEL_NAMES: [&str; 4] = ["Status", "Sessions", "Pull requests", "Todo"];
 const PANEL_KEYS: [&str; 4] = ["0", "1", "2", "3"];
 const GLOBAL_HINTS: [(&str, &str); 6] = [("⇥", "panel"), ("/", "filter"), (":", "actions"), ("a", "new"), ("?", "help"), ("q", "close")];
+/// ⌘ in key hints: the physical Command key, which keyd turns into Ctrl (system/etc/keyd).
 const GLOBAL_HELP: [(&str, &str); 17] = [
     ("0-3", "focus a panel"), ("H", "resume a past session, searched by project and prompt"),
-    ("^1 ^2 ^3", "focus a panel from inside the session (tmux)"), ("⇥ ⇧⇥", "next / previous panel"), ("j/k ↑↓", "move inside the panel"),
+    ("⌘1 ⌘2 ⌘3", "focus a panel from inside the session (tmux)"), ("⇥ ⇧⇥", "next / previous panel"), ("j/k ↑↓", "move inside the panel"),
     ("/", "filter the focused panel, Esc clears"), (":", "every action, searchable"), ("a", "new session in a project"),
     ("A", "new session on its own branch, in a separate clone (parallel work on one repository)"),
     ("K", "the clones of A, + and reviews: delete those with no session, no uncommitted change and nothing unpushed"),
@@ -67,16 +68,16 @@ const GLOBAL_HELP: [(&str, &str); 17] = [
     ("D", "the digest: yesterday, today, plan usage, who waits, pull requests (also once a day by itself)"),
     ("P W G", "windows on top: pull requests, Claude on the web, greyproxy (also Super+Ctrl+P/A/G)"),
     ("≈ $", "today's Claude Code replies on this machine at API prices (the plan is flat); week and month in Status"),
-    ("^⇥", "cursor between the column and the session (tmux)"),
+    ("⌘⇥", "cursor between the column and the session (tmux)"),
     ("l →  ←", "into the session from any panel; ← from the session comes back"),
-    ("q ^C", "close the manager window; sessions keep running"),
+    ("q ⌘C", "close the manager window; sessions keep running"),
 ];
 const LEGEND: [(&str, &str); 13] = [
     ("●", "working"), ("○", "waiting for you"), ("!", "needs you: permission or question"), ("·", "running, state unknown"),
     ("▌", "shown in the session pane"), ("⚲", "pinned"), ("⇅", "remote controlled"),
     ("✉ 2 queued", "messages waiting for the end of its turn, sent one per turn (m, Alt+Q; M drops them)"),
     ("↑2 unpushed", "commits on no remote yet: U pushes the branch"),
-    ("▭ terminal", "started with \"this terminal\": no ^R, restore, queue, error hand-off or ask-to-run"),
+    ("▭ terminal", "started with \"this terminal\": no ⌘R, restore, queue, error hand-off or ask-to-run"),
     ("⬆", "Claude updated itself: r restarts on the new version"),
     ("/compact", "context over 90%: /compact in the session before it gets slow and costly"), ("high ▾", "effort level: click to change it"),
 ];
@@ -608,7 +609,7 @@ impl App {
             changes.dedup();
             let count = format!("{} session{}", outdated.len(), if outdated.len() > 1 { "s" } else { "" });
             lines.push(Line::new(vec![segment(0, format!("⟳ {count} started before a change to {}", changes.join(", ")), bold(YELLOW))]));
-            lines.push(Line::new(vec![segment(2, "^R restarts the ones waiting at their prompt", dim(FG_DARK))]));
+            lines.push(Line::new(vec![segment(2, "⌘R restarts the ones waiting at their prompt", dim(FG_DARK))]));
             lines.push(Line::default());
         }
         if !self.held.is_empty() {
@@ -746,7 +747,7 @@ impl App {
     fn sessions_help() -> Vec<(&'static str, &'static str)> {
         vec![("⏎", "show the session and move the cursor into it"), ("n", "peek at the next session needing you"),
              ("x", "exit the session: Ctrl-C twice, then killed if it lingers"), ("r", "restart in place: same conversation, new process"),
-             ("^R", "restart every session that waits for you; working ones and pending permissions are left alone"),
+             ("⌘R", "restart every session that waits for you; working ones and pending permissions are left alone"),
              ("R", "toggle Remote Control (phone / claude.ai/code)"), ("p", "pin on top"),
              ("e", "effort level: pick one, the session restarts on it (or click the level on the card)"),
              ("g", "lazygit on the session's repository, in a popup (q closes it)"),
