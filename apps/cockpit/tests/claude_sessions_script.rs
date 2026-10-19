@@ -1862,9 +1862,22 @@ fn a_parallel_session_can_start_with_a_prompt_kept_out_of_the_log() {
     let clones = manager.sandbox.root.join("clones");
     let result = manager.run(&["parallel", &path_str(&manager.project), "todo-0123abcd", "add a healthcheck"], &[("CLAUDE_SESSIONS_CLONES", &path_str(&clones))]);
     assert_eq!(result.status.code(), Some(0), "{}", stderr(&result));
-    let start = manager.tmux_calls("respawn-pane").into_iter().find(|call| call.contains("claude $argv")).expect("no session started");
+    let start = manager.tmux_calls("new-session").into_iter().find(|call| call.contains("claude-retry-restart-")).expect("no session started");
     assert!(start.contains(&format!("-c {} ", clones.join("proj-a/todo-0123abcd").display())) && start.ends_with("add a healthcheck"), "{start}");
     assert!(manager.log_lines().iter().all(|line| !line.contains("healthcheck")), "{:?}", manager.log_lines());
+}
+
+#[test]
+fn a_todo_sent_to_a_new_session_leaves_the_session_on_screen_alone() {
+    // Started in the session pane, it replaced the session on screen and cleared it: the Todo panel
+    // it was sent from lost its project and showed every project's items.
+    let manager = Manager::new();
+    manager.git_repository();
+    fs::write(manager.runtime_file("claude-sessions.current"), format!("{SESSION_A}\n")).unwrap();
+    let clones = manager.sandbox.root.join("clones");
+    manager.run(&["parallel", &path_str(&manager.project), "todo-0123abcd", "add a healthcheck"], &[("CLAUDE_SESSIONS_CLONES", &path_str(&clones))]);
+    assert!(manager.tmux_calls("respawn-pane").is_empty(), "the session pane was taken: {:?}", manager.tmux_calls("respawn-pane"));
+    assert_eq!(fs::read_to_string(manager.runtime_file("claude-sessions.current")).unwrap().trim(), SESSION_A);
 }
 
 fn restarts(manager: &Manager) -> usize {

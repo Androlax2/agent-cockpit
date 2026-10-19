@@ -1741,7 +1741,9 @@ impl App {
                 format!("sent to {}", session.project)
             }
             None => {
-                manager_in_background(&["new", &directory, &text]);
+                // Out of sight, as a card of its own (claude-sessions background): in the session pane
+                // it replaced the session on screen, and the Todo panel lost its project.
+                manager_in_background(&["background", &directory, &text]);
                 format!("starting a session in {}", project_name(&directory))
             }
         };

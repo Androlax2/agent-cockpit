@@ -891,7 +891,7 @@ fn h_sends_to_the_running_session_or_starts_one_and_marks_it_in_progress() {
     }
     let mut calls = fixture.wait_for_calls("claude-sessions", 2);
     calls.sort();
-    assert_eq!(calls, [format!("claude-sessions new /r/homelab bump postgres (todo {postgres}: when this is done, run claude-todo done {postgres})"),
+    assert_eq!(calls, [format!("claude-sessions background /r/homelab bump postgres (todo {postgres}: when this is done, run claude-todo done {postgres})"),
                        format!("claude-sessions say {SESSION_A} add a healthcheck (todo {healthcheck}: when this is done, run claude-todo done {healthcheck})")]);
     assert!(TodoList::load().items.iter().all(|item| item.status() == "doing"));
 }
@@ -967,7 +967,7 @@ fn a_design_item_without_a_designer_starts_one_with_the_design_skill() {
     let mut app = fixture.app();
     design_item(&mut app, "opusline", "/r/opusline", "empty state");
     hand_over_first_item(&mut app);
-    assert!(fixture.wait_for_calls("claude-sessions", 1)[0].starts_with("claude-sessions new /r/opusline Load the figcraft-design skill first. empty state"));
+    assert!(fixture.wait_for_calls("claude-sessions", 1)[0].starts_with("claude-sessions background /r/opusline Load the figcraft-design skill first. empty state"));
 }
 
 #[test]

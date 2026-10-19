@@ -1191,7 +1191,9 @@ parallel_session() { # dir branch [prompt: its first message, the Todo panel's N
         return
     fi
     [[ $prompt == -* ]] && prompt="Task: $prompt" # never an option of claude's
-    new_session "$clone" "$prompt"
+    # Out of sight, as a card of its own: started in the session pane, it replaced the session on
+    # screen and cleared it, and the Todo panel it was sent from lost its project (all projects shown).
+    launch_detached "$clone" "$prompt"
 }
 
 git_in_sandbox() { # dir git-arguments...
