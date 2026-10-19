@@ -241,6 +241,13 @@ pub fn is_dotfiles_clone(cwd: &str) -> bool {
     cwd.starts_with(paths::dotfiles_work()) || cwd.starts_with(paths::clones_dir().join("dotfiles"))
 }
 
+/// Commits ~/dotfiles (the live checkout, which no session writes) holds and its GitHub upstream
+/// lacks: what U on a dotfiles card pushes after the apply. 0 when it tracks no upstream.
+pub fn dotfiles_unpushed() -> usize {
+    let live = paths::dotfiles().to_string_lossy().into_owned();
+    util::output_of("git", &["-C", &live, "rev-list", "--count", "@{upstream}..HEAD"]).and_then(|count| count.trim().parse().ok()).unwrap_or(0)
+}
+
 pub fn visible_task(session: &Session) -> String {
     let task = session.task.trim();
     if task.starts_with('<') { String::new() } else { task.to_string() }

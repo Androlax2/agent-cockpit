@@ -2027,3 +2027,28 @@ fn enter_opens_the_session_without_waiting_and_shows_a_failure_once_it_ends() {
     }
     assert_eq!(app.message, "claude-sessions: session has no tmux pane");
 }
+
+#[test]
+fn a_dotfiles_card_shows_what_the_live_checkout_has_not_pushed_and_u_pushes_it() {
+    // U on a dotfiles card pushes ~/dotfiles after the apply: its count belongs on the card.
+    let fixture = Fixture::new();
+    let live = crate::paths::dotfiles();
+    let git = |arguments: &[&str]| {
+        assert!(std::process::Command::new("git").arg("-C").arg(&live).args(["-c", "user.email=t@t", "-c", "user.name=t"]).args(arguments)
+            .output().unwrap().status.success(), "git {arguments:?}");
+    };
+    fs::create_dir_all(&live).unwrap();
+    git(&["init", "-q", "-b", "main"]);
+    git(&["commit", "-q", "--allow-empty", "-m", "on GitHub"]);
+    git(&["remote", "add", "origin", "git@github.com:o/dotfiles.git"]);
+    git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    git(&["branch", "-q", "--set-upstream-to=origin/main"]);
+    git(&["commit", "-q", "--allow-empty", "-m", "applied one"]);
+    git(&["commit", "-q", "--allow-empty", "-m", "applied two"]);
+    let work = crate::paths::dotfiles_work().display().to_string();
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "dotfiles", &work, 100)]));
+    let app = fixture.app();
+    let badges: Vec<String> = app.panels[1].lines[0].right.iter().map(|part| part.text.clone()).collect();
+    assert!(badges.contains(&"↑2 unpushed".to_string()), "{badges:?}");
+    assert!(app.sessions_hints().contains(&("U", "push")), "{:?}", app.sessions_hints());
+}

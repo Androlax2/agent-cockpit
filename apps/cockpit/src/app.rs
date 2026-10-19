@@ -77,13 +77,14 @@ const GLOBAL_HELP: [(&str, &str); 18] = [
     ("l →  ←", "into the session from any panel; ← from the session comes back"),
     ("q ⌘C", "close the manager window; sessions keep running"),
 ];
-const LEGEND: [(&str, &str); 18] = [
+const LEGEND: [(&str, &str); 19] = [
     ("●", "working"), ("○", "waiting for you"), ("!", "needs you: permission or question"), ("·", "running, state unknown"),
     ("▌", "shown in the session pane"), ("⚲", "pinned"), ("⇅", "remote controlled"),
     ("◆ figcraft", "connected to FigCraft, which is open for this session's project (craft-open)"),
     ("✉ 2 queued", "messages waiting for the end of its turn, sent one per turn (m, Alt+Q; M drops them)"),
     ("↑2 unpushed", "commits on no remote yet: U pushes the branch"),
     ("↑2 unapplied", "a dotfiles clone's commits ~/dotfiles lacks: U shows them and applies them after a yes"),
+    ("↑2 unpushed (dotfiles)", "on a dotfiles card, commits ~/dotfiles holds and GitHub lacks: U pushes them after a yes"),
     ("▭ terminal", "started with \"this terminal\": no ⌘R, restore, queue, error hand-off or ask-to-run"),
     ("✎ designer ⌨ developer", "its role in a project designed in FigCraft (claude-design role): design to-dos go to the designer"),
     ("✎ design", "a to-do for the designer session: a gap a developer found in the design (claude-todo --design)"),
@@ -432,6 +433,9 @@ pub struct App {
     plan: String,
     /// When craft_roots was last asked of pgrep (CRAFT_CHECK_S).
     craft_checked: f64,
+    /// Commits ~/dotfiles holds and GitHub lacks (sessions::dotfiles_unpushed), and when counted.
+    pub(crate) dotfiles_unpushed: usize,
+    dotfiles_checked: f64,
 }
 
 /// pgrep for the craft apps' project folders forked on every tick (4 a second); which project
@@ -442,6 +446,7 @@ const CRAFT_CHECK_S: f64 = 5.0;
 struct Gathered {
     running: Vec<Session>,
     paused: usize,
+    dotfiles_unpushed: usize,
     start_files: Vec<(&'static str, f64)>,
     craft_roots: HashMap<String, String>,
 }
@@ -456,7 +461,7 @@ impl App {
             focus_waiting: false, held: Vec::new(), held_checked: 0.0, queue_checked: 0.0, gaming: util::gaming, restore_checked: 0.0, start_files: Vec::new(),
             width: DEFAULT_COLUMN_WIDTH, sessions: Vec::new(), windows: Vec::new(), review_rows: Vec::new(), todo_entries: Vec::new(),
             todo_scope: String::new(), shown_session: String::new(), todo_tab: TODO_TAB_TO_DO, todo_counts: [0; 5], prompts_sent: HashMap::new(), craft_roots: HashMap::new(), hit_lines: HashMap::new(), hit_actions: HashMap::new(),
-            gathered: None, pending: Vec::new(), plan: String::new(), craft_checked: 0.0,
+            gathered: None, pending: Vec::new(), plan: String::new(), craft_checked: 0.0, dotfiles_unpushed: 0, dotfiles_checked: 0.0,
         }
     }
 
@@ -802,10 +807,22 @@ impl App {
             session.design = sessions::design_of(&session.session);
             session.role = sessions::role_of(&session.session);
         }
+        let has_dotfiles_card = running.iter().any(|s| sessions::is_dotfiles_clone(&s.cwd));
         Gathered {
             running,
             paused: std::fs::read_to_string(paths::game_frozen()).map(|list| list.lines().filter(|line| !line.trim().is_empty()).count()).unwrap_or(0),
             start_files: sessions::start_file_mtimes(),
+            // What ~/dotfiles holds and GitHub lacks: U on a dotfiles card pushes it (apply_run). Counted
+            // here, out of the sandbox, in the live checkout no session writes; only with a dotfiles
+            // card on screen, and like craft_roots at most every CRAFT_CHECK_S.
+            dotfiles_unpushed: if !has_dotfiles_card {
+                0
+            } else if now() - self.dotfiles_checked >= CRAFT_CHECK_S {
+                self.dotfiles_checked = now();
+                sessions::dotfiles_unpushed()
+            } else {
+                self.dotfiles_unpushed
+            },
             craft_roots: if now() - self.craft_checked >= CRAFT_CHECK_S {
                 self.craft_checked = now();
                 ["figcraft"].iter().filter_map(|app| Some((app.to_string(), sessions::craft_root(app)?))).collect()
@@ -866,6 +883,7 @@ impl App {
             lines.push(Line::default());
         }
         self.start_files = gathered.start_files.clone();
+        self.dotfiles_unpushed = gathered.dotfiles_unpushed;
         self.craft_roots = gathered.craft_roots.clone();
         self.gathered = Some(gathered);
         let outdated: Vec<&Session> = running.iter().filter(|s| !sessions::changed_since_start(s, &self.start_files).is_empty()).collect();
@@ -958,6 +976,9 @@ impl App {
                 let count = if sessions::is_dotfiles_clone(&session.cwd) { "unapplied" } else { "unpushed" };
                 badges.push(part(format!("↑{} {count}", session.unpushed), bold(YELLOW)));
             }
+            if sessions::is_dotfiles_clone(&session.cwd) && self.dotfiles_unpushed > 0 {
+                badges.push(part(format!("↑{} unpushed", self.dotfiles_unpushed), bold(YELLOW)));
+            }
             if session.pinned {
                 badges.push(part("⚲", style(YELLOW)));
             }
@@ -1031,8 +1052,10 @@ impl App {
         if selected.design.is_some() {
             hints.push(("o", "canvas"));
         }
-        if selected.unpushed > 0 {
-            hints.push(("U", if sessions::is_dotfiles_clone(&selected.cwd) { "apply" } else { "push" }));
+        if sessions::is_dotfiles_clone(&selected.cwd) && (selected.unpushed > 0 || self.dotfiles_unpushed > 0) {
+            hints.push(("U", if selected.unpushed > 0 { "apply" } else { "push" }));
+        } else if selected.unpushed > 0 {
+            hints.push(("U", "push"));
         }
         if prompts::count(&selected.session) > 0 {
             hints.push(("M", "drop queued"));
