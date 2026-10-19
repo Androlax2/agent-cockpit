@@ -677,7 +677,13 @@ mod tests {
             create table session_message (id text primary key, session_id text not null, type text not null, seq integer not null, data text not null);
             insert into session_v2 values ('ses_1', '/x/shop');
             insert into session_message values ('msg_0', 'ses_1', 'user', 0, '{\"text\": \"hi\"}');").unwrap();
-        let start = chrono::Local::now().timestamp_millis() - 600_000;
+        // Both replies on one day, and that day the one checked: ten minutes ago is yesterday just
+        // after midnight.
+        let day_of = |ms: i64| chrono::DateTime::from_timestamp_millis(ms).unwrap().with_timezone(&chrono::Local).date_naive();
+        let mut start = chrono::Local::now().timestamp_millis() - 600_000;
+        if day_of(start) != day_of(start + 120_000) {
+            start -= 300_000;
+        }
         for (seq, (id, offset)) in [("msg_1", 0), ("msg_2", 120_000)].into_iter().enumerate() {
             source.execute("insert into session_message values (?, 'ses_1', 'assistant', ?, ?)",
                            params![id, seq as i64 + 1, opencode_message(start + offset, "claude-opus-5-5", 1_000_000, 0.0)]).unwrap();
@@ -687,8 +693,8 @@ mod tests {
         assert_eq!(archive_opencode(&mut archive, &database).unwrap(), 2);
         assert_eq!(archive_opencode(&mut archive, &database).unwrap(), 0);
         assert_eq!(archived_costs(&archive).unwrap().2, 40.0);
-        let today = chrono::Local::now().date_naive().to_string();
-        assert_eq!(active_seconds(&archive, &today).unwrap().get("shop").map(|seconds| seconds.round()), Some(120.0));
+        let day = day_of(start).to_string();
+        assert_eq!(active_seconds(&archive, &day).unwrap().get("shop").map(|seconds| seconds.round()), Some(120.0));
         fs::remove_dir_all(directory).unwrap();
     }
 
