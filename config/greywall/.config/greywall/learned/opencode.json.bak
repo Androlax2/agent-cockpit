@@ -1,10 +1,28 @@
-// Built-in profile for "opencode"
-// Review and adjust paths as needed
+// Learned profile for "opencode"
+// Updated by greywall after profile drift resolution
 {
-  "schemaVersion": 1,
-  "generatedBy": "0.3.7",
   "network": {
     "rules": [
+      {
+        "destination": "api.openai.com",
+        "port": "443",
+        "action": "allow"
+      },
+      {
+        "destination": "*.frame.claudeusercontent.com",
+        "port": "443",
+        "action": "allow"
+      },
+      {
+        "destination": "assets-proxy.anthropic.com",
+        "port": "443",
+        "action": "allow"
+      },
+      {
+        "destination": "api.anthropic.com",
+        "port": "443",
+        "action": "allow"
+      },
       {
         "destination": "opencode.ai",
         "port": "443",
@@ -16,12 +34,32 @@
         "action": "allow"
       },
       {
-        "destination": "api.anthropic.com",
+        "destination": "github.com",
         "port": "443",
         "action": "allow"
       },
       {
-        "destination": "github.com",
+        "destination": "claude.ai",
+        "port": "443",
+        "action": "allow"
+      },
+      {
+        "destination": "*.claude.ai",
+        "port": "443",
+        "action": "allow"
+      },
+      {
+        "destination": "*.claudeusercontent.com",
+        "port": "443",
+        "action": "allow"
+      },
+      {
+        "destination": "fonts.googleapis.com",
+        "port": "443",
+        "action": "allow"
+      },
+      {
+        "destination": "fonts.gstatic.com",
         "port": "443",
         "action": "allow"
       },
@@ -47,6 +85,8 @@
       ".",
       "~/CLAUDE.md",
       "~/AGENTS.md",
+      "~/.claude/CLAUDE.md",
+      "~/.claude/hooks",
       "~/.gitconfig",
       "~/.gitignore",
       "~/.config/git",
@@ -62,30 +102,29 @@
       "~/.opencode",
       "~/.opencode.json",
       "~/.config/opencode",
-      "~/dotfiles/config/opencode",
       "~/.cache/opencode",
       "~/.local/share/opencode",
       "~/.local/share/opentui",
       "~/.local/state/opencode",
-      "~/.config/github-copilot"
+      "~/.config/github-copilot",
+      "~/dotfiles/config/opencode"
+    ],
+    "denyRead": [
+      "~/.ssh/id_*",
+      "~/.gnupg/**",
+      ".env",
+      ".env.*"
     ],
     "allowWrite": [
       ".",
-      "~/.skills",
-      "~/.agents",
-      "~/AGENTS.md",
-      "~/.config/gh",
       "~/.cache/gh",
-      "~/.local/share/gh",
       "~/.local/state/gh",
       "~/.ssh/known_hosts",
-      "~/.opencode",
-      "~/.opencode.json",
-      "~/.config/opencode",
       "~/.cache/opencode",
       "~/.local/share/opencode",
       "~/.local/share/opentui",
-      "~/.local/state/opencode"
+      "~/.local/state/opencode",
+      "~/.cache/claude"
     ],
     "denyWrite": [
       "~/.bashrc",
@@ -94,13 +133,48 @@
       "~/.zprofile",
       "~/.profile",
       "~/.ssh",
-      "~/.gnupg"
-    ],
-    "denyRead": [
-      "~/.ssh/id_*",
-      "~/.gnupg/**",
-      ".env",
-      ".env.*"
+      "~/.gnupg",
+      "~/.config/fish",
+      "~/.local/bin",
+      "~/.config/greywall",
+      "~/dotfiles/config/greywall",
+      "~/.config/systemd",
+      "~/.config/autostart",
+      "~/.gitconfig",
+      ".git/hooks",
+      "~/.skills",
+      "~/.agents",
+      "~/AGENTS.md",
+      "~/.config/gh",
+      "~/.local/share/gh",
+      "~/.opencode",
+      "~/.opencode.json",
+      "~/.config/opencode",
+      "~/.claude/hooks"
     ]
-  }
+  },
+  "command": {
+    "deny": [
+      "sudo",
+      "git push --force",
+      "git push -f",
+      "git push origin main",
+      "npm publish",
+      "pnpm publish",
+      "gh pr merge",
+      "gh repo delete",
+      "gh secret"
+    ],
+    "allow": null,
+    "useDefaults": true
+  },
+  "ssh": {
+    "allowedHosts": null,
+    "deniedHosts": null,
+    "allowedCommands": null,
+    "deniedCommands": null
+  },
+  "credentials": {},
+  "schemaVersion": 1,
+  "generatedBy": "0.3.7"
 }
