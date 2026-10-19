@@ -133,6 +133,23 @@ if [ -n "$project_board_token" ]; then
     greywall_options="$greywall_options --secret GH_PROJECT_TOKEN"
 fi
 
+# A credits session (the cockpit's $ sets CLAUDE_SESSIONS_CREDITS=1) bills the Console's API
+# credits instead of the subscription: Claude prefers ANTHROPIC_API_KEY over its login. The key
+# stays a greyproxy placeholder inside the sandbox. Without a key in the keyring the session does
+# not start, rather than running on the subscription unnoticed; every other session gets no key,
+# whatever the calling environment holds.
+if [ "${CLAUDE_SESSIONS_CREDITS:-}" = 1 ]; then
+    anthropic_key=$(secret-tool lookup service agent-anthropic 2>/dev/null || true)
+    if [ -z "$anthropic_key" ]; then
+        echo "claude launcher: no API key in the keyring for a credits session (make -C ~/dotfiles agent-anthropic-key), not starting." >&2
+        exit 1
+    fi
+    export ANTHROPIC_API_KEY="$anthropic_key"
+    greywall_options="$greywall_options --secret ANTHROPIC_API_KEY"
+else
+    unset ANTHROPIC_API_KEY
+fi
+
 # A project with its own isolated Docker daemon (make agent-docker-add PROJECT=<name>) has its
 # socket at the project root. Started in a subfolder, greywall mounts only that folder, so the
 # socket needs a mount of its own; at the project root the folder mount already includes it and

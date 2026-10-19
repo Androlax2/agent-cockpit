@@ -148,6 +148,10 @@ sticky=false
 # every session.
 terminal=false
 [[ ${CLAUDE_SESSIONS_TERMINAL:-} == 1 ]] && terminal=true
+# Billed to the Console's API credits (the cockpit's $): always reported, false included, so the
+# card follows a switch back to the subscription.
+credits=false
+[[ ${CLAUDE_SESSIONS_CREDITS:-} == 1 ]] && credits=true
 case $event in
     SessionStart)
         state=waiting
@@ -198,14 +202,14 @@ esac
 
 report=$(jq -cn \
     --arg session "$session" --arg state "$state" --arg project "$project" --arg cwd "$cwd" \
-    --arg task "$task" --arg message "$message" --arg outcome "$outcome" --argjson sticky "$sticky" --argjson terminal "$terminal" --arg unpushed "$unpushed" --arg apps "$(craft_apps)" \
+    --arg task "$task" --arg message "$message" --arg outcome "$outcome" --argjson sticky "$sticky" --argjson terminal "$terminal" --argjson credits "$credits" --arg unpushed "$unpushed" --arg apps "$(craft_apps)" \
     --arg kitty_pid "${KITTY_PID:-}" --arg kitty_window "${KITTY_WINDOW_ID:-}" \
     --arg kitty_listen "${KITTY_LISTEN_ON:-}" --arg tmux_pane "${TMUX_PANE:-}" \
     '{$session, $state, $project, $cwd, $task, $message, $outcome, $sticky, $terminal,
       $kitty_pid, $kitty_window, $kitty_listen, $tmux_pane}
      | with_entries(select(.value != "" and .value != false))
      | if $unpushed == "" then . else .unpushed = ($unpushed | tonumber) end
-     | .apps = $apps')
+     | .apps = $apps | .credits = $credits')
 
 # One line per event in ~/.cache/claude/hook.log, the one place the sandbox lets the hook write:
 # the event, the session, the state and where the report went, never prompt text. 512 KB, then

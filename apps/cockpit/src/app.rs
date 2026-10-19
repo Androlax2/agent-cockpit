@@ -824,6 +824,9 @@ impl App {
             if session.terminal {
                 badges.push(part("▭ terminal", bold(MAGENTA)));
             }
+            if session.credits {
+                badges.push(part("$ credits", bold(YELLOW)));
+            }
             match session.role.as_str() {
                 "designer" => badges.push(part("✎ designer", bold(MAGENTA))),
                 "developer" => badges.push(part("⌨ developer", style(CYAN))),
@@ -938,6 +941,7 @@ impl App {
              ("⌘R", "restart the sessions started before a change they lack (badge ⟳ restart), when they wait at their prompt; busy ones are named and left alone"),
              ("R", "toggle Remote Control (phone / claude.ai/code)"), ("p", "pin on top"),
              ("e", "effort level: pick one, the session restarts on it (or click the level on the card)"),
+             ("$", "bill the session to the Console's API credits, or back to the subscription: it restarts on the same conversation (badge $ credits)"),
              ("g", "lazygit on the session's repository, in a popup (q closes it)"),
              ("M", "drop the messages queued for it"),
              ("U", "push the session's branch to origin with your SSH key, after a yes (lazygit's sandbox cannot)"),
@@ -986,6 +990,17 @@ impl App {
             Key::Ctrl('r') => self.restart_all(screen),
             Key::Char('e') => match session {
                 Some(s) => self.open_effort_menu(s, None),
+                None => String::new(),
+            },
+            Key::Char('$') => match known {
+                Some(s) => {
+                    let (billing, label) = if s.credits { ("subscription", "the subscription") } else { ("credits", "API credits") };
+                    if !self.confirm(screen, &format!("restart {} on {label}? same conversation", s.project)) {
+                        return String::new();
+                    }
+                    manager_in_background(&["billing", &s.session, billing]);
+                    format!("restarting {} on {label} …", s.project)
+                }
                 None => String::new(),
             },
             Key::Char('B') if !self.restore.is_empty() => {

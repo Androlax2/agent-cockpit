@@ -283,6 +283,17 @@ fn a_session_started_in_its_own_terminal_says_so() {
 }
 
 #[test]
+fn every_report_says_whether_the_session_bills_api_credits() {
+    let mut test = HookTest::new();
+    let folder = test.sandbox.root.join("notes");
+    fs::create_dir(&folder).unwrap();
+    test.run_hook(with_session(json!({"hook_event_name": "SessionStart"}), &folder.to_string_lossy()), &[("CLAUDE_SESSIONS_CREDITS", "1")]);
+    test.run_hook(with_session(json!({"hook_event_name": "SessionStart"}), &folder.to_string_lossy()), &[]);
+    let reports = test.received();
+    assert_eq!((&reports[0]["credits"], &reports[1]["credits"]), (&json!(true), &json!(false)));
+}
+
+#[test]
 fn a_finished_turn_counts_the_commits_not_on_a_remote() {
     let mut test = HookTest::new();
     let remote = test.sandbox.root.join("remote.git");

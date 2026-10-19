@@ -42,9 +42,9 @@ impl Launch {
             fs::create_dir_all(file.parent().unwrap()).unwrap();
             fs::write(file, content).unwrap();
         }
-        write_executable(&sandbox.home.join(".local/bin/greywall"), "#!/bin/sh\necho \"greywall $*\" >> \"$SHIM_LOG\"\n");
+        write_executable(&sandbox.home.join(".local/bin/greywall"), "#!/bin/sh\necho \"greywall $* (api key: ${ANTHROPIC_API_KEY:-none})\" >> \"$SHIM_LOG\"\n");
         sandbox.shim("dig", "echo 127.0.0.1");
-        sandbox.shim("secret-tool", "exit 1");
+        sandbox.shim("secret-tool", r#"[ "$3" = agent-anthropic ] && [ -n "${SHIM_ANTHROPIC_KEY:-}" ] && echo "$SHIM_ANTHROPIC_KEY" || exit 1"#);
         sandbox.shim("pgrep", r#"[ -n "${SHIM_FIGCRAFT_PID:-}" ] && echo "$SHIM_FIGCRAFT_PID""#);
         Launch { sandbox, project }
     }
@@ -109,4 +109,27 @@ fn figcrafts_port_reaches_only_the_project_it_serves() {
         assert_eq!(started.contains("--forward 7979"), is_forwarded, "serving {served}: {started}");
     }
     assert!(!launch.run(&[]).contains("--forward 7979"), "forwarded with no FigCraft open");
+}
+
+#[test]
+fn a_credits_session_gets_the_api_key_as_a_placeholder() {
+    let launch = Launch::new();
+    let started = launch.run(&[("CLAUDE_SESSIONS_CREDITS", "1"), ("SHIM_ANTHROPIC_KEY", "sk-ant-test")]);
+    assert!(started.contains("--secret ANTHROPIC_API_KEY") && started.contains("(api key: sk-ant-test)"), "{started}");
+}
+
+#[test]
+fn a_credits_session_without_a_key_does_not_start_on_the_subscription() {
+    let launch = Launch::new();
+    let output = launch.sandbox.command(bin().join("greywall-agents/claude"), &[("CLAUDE_SESSIONS_CREDITS", "1")]).current_dir(&launch.project).output().unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(stderr(&output).contains("agent-anthropic-key"), "{}", stderr(&output));
+    assert!(launch.sandbox.calls("greywall").is_empty());
+}
+
+#[test]
+fn a_subscription_session_gets_no_api_key_even_from_its_environment() {
+    let launch = Launch::new();
+    let started = launch.run(&[("ANTHROPIC_API_KEY", "sk-ant-stray"), ("SHIM_ANTHROPIC_KEY", "sk-ant-test")]);
+    assert!(!started.contains("ANTHROPIC_API_KEY") && started.contains("(api key: none)"), "{started}");
 }

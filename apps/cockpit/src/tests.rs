@@ -278,6 +278,40 @@ fn choosing_another_effort_restarts_the_session_on_it() {
 }
 
 #[test]
+fn dollar_switches_a_session_to_the_other_billing_after_a_yes() {
+    for (credits, billing) in [(false, "credits"), (true, "subscription")] {
+        let fixture = Fixture::new();
+        let mut row = session(SESSION_A, "waiting", "runway", "/r", 1);
+        row["credits"] = json!(credits);
+        fixture.snapshot(json!([row]));
+        let mut app = fixture.app();
+        app.handle(Key::Char('$'), &mut FakeScreen::answering(&[Key::Char('y')]));
+        assert_eq!(fixture.wait_for_calls("claude-sessions", 1), vec![format!("claude-sessions billing {SESSION_A} {billing}")]);
+    }
+}
+
+#[test]
+fn dollar_without_a_yes_restarts_nothing() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "runway", "/r", 1)]));
+    let mut app = fixture.app();
+    app.handle(Key::Char('$'), &mut FakeScreen::answering(&[Key::Char('n')]));
+    assert!(fixture.calls("claude-sessions").is_empty());
+}
+
+#[test]
+fn a_credits_session_wears_a_badge() {
+    let fixture = Fixture::new();
+    let mut row = session(SESSION_A, "waiting", "runway", "/r", 1);
+    row["credits"] = json!(true);
+    fixture.snapshot(json!([row, session(SESSION_B, "waiting", "opusline", "/o", 2)]));
+    let app = fixture.app();
+    let badged: Vec<String> = app.panels[1].lines.iter().filter(|line| line.right.iter().any(|part| part.text == "$ credits"))
+        .map(|line| line.texts()).collect();
+    assert!(badged.len() == 1 && badged[0].contains("runway"), "{badged:?}");
+}
+
+#[test]
 fn the_current_effort_or_escape_restarts_nothing() {
     let fixture = Fixture::new();
     fixture.snapshot(json!([session(SESSION_A, "waiting", "runway", "/r", 1)]));

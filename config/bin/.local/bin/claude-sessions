@@ -300,6 +300,11 @@ running_session_in() {
     jq -r --arg cwd "$1" '.sessions[] | select(.cwd == $cwd) | .session' "$SNAPSHOT" 2>/dev/null | head -1
 }
 
+# Whether the next launch bills the Console's API credits (1) or the subscription (0): the launcher
+# reads CLAUDE_SESSIONS_CREDITS. Every launch sets it, so none inherits it from this environment.
+# restart, billing and restore set it from the session; everything else starts on the subscription.
+launch_credits=0
+
 new_session() {
     local directory=$1 existing
     shift
@@ -321,7 +326,7 @@ new_session() {
     # until Claude's own screen takes over.
     loading_overlay "Starting Claude in $(basename "$directory") …" "$directory"
     tmux respawn-pane -k -t "$(viewer_pane)" -c "$directory" \
-        env -u TMUX -u TMUX_PANE CLAUDE_SESSIONS_INSIDE=1 \
+        env -u TMUX -u TMUX_PANE CLAUDE_SESSIONS_INSIDE=1 CLAUDE_SESSIONS_CREDITS="$launch_credits" \
         fish -ic 'echo; echo "  ⟳ Starting Claude in $PWD …"; echo; claude $argv'"$LAUNCH_EPILOGUE" -- "$@"
     : > "$CURRENT"
     label_panes "$(basename "$directory")"
@@ -336,7 +341,7 @@ background_session() { # dir prompt
     local prompt=$2
     [[ $prompt == -* ]] && prompt="Task: $prompt" # never an option of claude's
     tmux new-session -d -s "claude-retry-bg-$(date +%s)" -x 200 -y 50 -c "$1" \
-        env CLAUDE_SESSIONS_INSIDE=1 fish -ic 'claude $argv' -- "$prompt"
+        env CLAUDE_SESSIONS_INSIDE=1 CLAUDE_SESSIONS_CREDITS="$launch_credits" fish -ic 'claude $argv' -- "$prompt"
 }
 
 # Every `fish -ic '…' -- args` keeps the --: without it fish takes an argument such as --resume or
@@ -437,7 +442,7 @@ resume_session() { # dir id [effort]
     ensure_manager
     loading_overlay "Resuming $(basename "$1")${3:+ · effort $3} …" "$1" "$2"
     tmux respawn-pane -k -t "$(viewer_pane)" -c "$1" \
-        env -u TMUX -u TMUX_PANE CLAUDE_SESSIONS_INSIDE=1 \
+        env -u TMUX -u TMUX_PANE CLAUDE_SESSIONS_INSIDE=1 CLAUDE_SESSIONS_CREDITS="$launch_credits" \
         fish -ic 'echo; echo "  ⟳ Resuming the conversation in $PWD …"; echo; claude --resume $argv'"$LAUNCH_EPILOGUE" -- "$2" "${effort_flags[@]}"
     : > "$CURRENT"
     label_panes "$(basename "$1")"
@@ -744,6 +749,8 @@ has_conversation() { # id
 # Sessions ended on purpose (exit, the sidebar's x): not offered back after a reboot.
 ENDED_SESSIONS="${XDG_STATE_HOME:-$HOME/.local/state}/claude-sessions/ended-sessions"
 RESTORE_WAIT_S=${CLAUDE_SESSIONS_RESTORE_WAIT:-25}
+# The OSD daemon's record of the sessions that ran, for the restore: their billing among the rest.
+RECENT_SESSIONS="${XDG_STATE_HOME:-$HOME/.local/state}/claude-sessions/recent-sessions.json"
 
 # Bring back each <dir> <id> pair, each in a tmux session of its own (launch_detached), so none
 # depends on the viewer pane: a conversation is resumed; a session nobody typed in yet has none,
@@ -760,6 +767,8 @@ restore_sessions() { # dir id [dir id …]
         fi
         effort=$(jq -r '.effort // empty' "$HOME/.cache/claude/statusline-$id.json" 2>/dev/null || true)
         require_effort "$effort" 2>/dev/null || effort=""
+        launch_credits=0
+        [[ $(jq -r --arg id "$id" '.[$id].credits // false' "$RECENT_SESSIONS" 2>/dev/null) == true ]] && launch_credits=1
         if has_conversation "$id"; then
             launch_detached "$directory" --resume "$id" ${effort:+--effort "$effort"}
         else
@@ -771,14 +780,21 @@ restore_sessions() { # dir id [dir id …]
 
 # A restart keeps the session's effort unless a new one is given: the level the status line last
 # reported (statusline-command.sh copies CLAUDE_EFFORT, which Claude exports to its children).
-restart_session() { # id [effort] [detached]
-    local id=$1 effort=${2:-} detached=${3:-} directory
+# Its billing too, unless one is given (billing): API credits when the session reports it.
+restart_session() { # id [effort] [detached] [credits|subscription]
+    local id=$1 effort=${2:-} detached=${3:-} billing=${4:-} directory
     directory=$(session_field "$id" cwd)
     audit_event manager session.restart asked "session=$id" "directory=$directory"
     if [[ -z $directory ]]; then
         echo "claude-sessions: session $id has no directory to restart in" >&2
         return 1
     fi
+    if [[ -z $billing ]]; then
+        billing=subscription
+        [[ $(session_field "$id" credits) == true ]] && billing=credits
+    fi
+    launch_credits=0
+    [[ $billing == credits ]] && launch_credits=1
     if [[ -n $effort ]]; then
         require_effort "$effort" || return 1
     else
@@ -794,7 +810,7 @@ restart_session() { # id [effort] [detached]
         fi
         return
     fi
-    loading_overlay "Restarting $(basename "$directory")${effort:+ · effort $effort} …" "$directory" "$id"
+    loading_overlay "Restarting $(basename "$directory")${effort:+ · effort $effort}${4:+ · $billing} …" "$directory" "$id"
     exit_session "$id" || return 1
     if ! has_conversation "$id"; then
         # Nothing said yet: a fresh session in the same directory is the same thing.
@@ -846,7 +862,7 @@ launch_detached() { # dir claude-arguments...
         [[ $approval_height =~ ^[0-9]+$ ]] && height=$(( height + approval_height + 1 ))
     fi
     tmux new-session -d -s "claude-retry-restart-$(date +%s%N)" -x "$width" -y "$height" -c "$directory" \
-        env CLAUDE_SESSIONS_INSIDE=1 \
+        env CLAUDE_SESSIONS_INSIDE=1 CLAUDE_SESSIONS_CREDITS="$launch_credits" \
         fish -ic 'claude $argv; or claude-sessions log manager ERROR "claude exited with status $status in $PWD"' -- "$@"
 }
 
@@ -1512,6 +1528,11 @@ case ${1:-attach} in
     background) background_session "${2:?usage: claude-sessions background <dir> <prompt>}" "${3:?usage: claude-sessions background <dir> <prompt>}" ;;
     loading-screen) show_loading ;;
     restart) restart_session "${2:?usage: claude-sessions restart <session-id> [effort] [detached]}" "${3:-}" "${4:-}" ;;
+    billing)
+        # The session restarts on the same conversation, billed the other way.
+        [[ ${3:-} == credits || ${3:-} == subscription ]] || { echo "usage: claude-sessions billing <session-id> credits|subscription" >&2; exit 2; }
+        restart_session "${2:?usage: claude-sessions billing <session-id> credits|subscription}" "" "" "$3"
+        ;;
     idle) idle ;;
     usage) show_usage ;;
     compact) compact_session "${2:?usage: claude-sessions compact <session-id>}" ;;
@@ -1553,7 +1574,7 @@ case ${1:-attach} in
     remote) toggle_remote "${2:?usage: claude-sessions remote <session-id>}" ;;
     sweep) sweep_caches ;;
     *)
-        echo "usage: claude-sessions [attach|show [id]|view <id>|open <id>|new <dir>|resume <dir> <id>|exit <id>|restart <id>|handoff [on|off]|setting <name> [on|off]|remote <id>|prepare|idle|reload|reset|doctor|sweep]" >&2
+        echo "usage: claude-sessions [attach|show [id]|view <id>|open <id>|new <dir>|resume <dir> <id>|exit <id>|restart <id>|billing <id> credits|subscription|handoff [on|off]|setting <name> [on|off]|remote <id>|prepare|idle|reload|reset|doctor|sweep]" >&2
         exit 2
         ;;
 esac

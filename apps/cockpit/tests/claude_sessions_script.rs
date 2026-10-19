@@ -300,6 +300,51 @@ fn restart_keeps_the_effort_the_status_line_reported() {
     assert!(manager.resume_call().ends_with(&format!("{SESSION_A} --effort xhigh")));
 }
 
+impl Manager {
+    /// Session A as the daemon reports it, billed to API credits or not.
+    fn report_credits(&self, credits: bool) {
+        fs::write(&self.snapshot, json!({"sessions": [
+            {"session": SESSION_A, "state": "waiting", "project": "proj-a", "cwd": path_str(&self.project), "tmux_pane": "%4", "credits": credits}]}).to_string()).unwrap();
+    }
+}
+
+#[test]
+fn restart_keeps_a_session_on_api_credits() {
+    let manager = Manager::new();
+    manager.report_credits(true);
+    manager.run(&["restart", SESSION_A], &[("SHIM_PANE_TEXT", IDLE), ("SHIM_EXIT_AFTER", "1")]);
+    assert!(manager.resume_call().contains("CLAUDE_SESSIONS_CREDITS=1"), "{}", manager.resume_call());
+}
+
+#[test]
+fn billing_restarts_the_session_on_the_other_billing() {
+    for (reported, billing, expected) in [(false, "credits", "CLAUDE_SESSIONS_CREDITS=1"), (true, "subscription", "CLAUDE_SESSIONS_CREDITS=0")] {
+        let manager = Manager::new();
+        manager.report_credits(reported);
+        let result = manager.run(&["billing", SESSION_A, billing], &[("SHIM_PANE_TEXT", IDLE), ("SHIM_EXIT_AFTER", "1")]);
+        assert_eq!(result.status.code(), Some(0), "{}", stderr(&result));
+        assert!(manager.resume_call().contains(expected) && manager.resume_call().ends_with(SESSION_A), "{billing}: {}", manager.resume_call());
+    }
+}
+
+#[test]
+fn billing_refuses_an_unknown_billing_before_touching_the_session() {
+    let manager = Manager::new();
+    let result = manager.run(&["billing", SESSION_A, "free"], &[]);
+    assert_eq!(result.status.code(), Some(2));
+    assert!(manager.tmux_calls("send-keys").is_empty());
+}
+
+#[test]
+fn a_new_session_starts_on_the_subscription_whatever_the_environment_says() {
+    let manager = Manager::new();
+    let other = manager.sandbox.root.join("proj-b");
+    fs::create_dir(&other).unwrap();
+    manager.run(&["new", &path_str(&other)], &[("CLAUDE_SESSIONS_CREDITS", "1")]);
+    let launch = manager.tmux_calls("respawn-pane").into_iter().find(|call| call.contains("claude $argv")).expect("no launch");
+    assert!(launch.contains("CLAUDE_SESSIONS_CREDITS=0"), "{launch}");
+}
+
 #[test]
 fn restart_of_a_session_nobody_typed_in_starts_a_fresh_one() {
     let manager = Manager::new();
@@ -529,6 +574,18 @@ fn restore_resumes_each_session_and_skips_a_gone_folder() {
     assert_eq!(launches.len(), 1, "{launches:?}");
     assert!(launches[0].contains(&format!("-- --resume {SESSION_A}")), "{}", launches[0]);
     assert!(manager.tmux_calls("respawn-pane").iter().all(|call| !call.contains("claude")), "restore launched in the viewer pane");
+}
+
+#[test]
+fn restore_brings_a_credits_session_back_on_credits() {
+    let manager = Manager::new();
+    let recent = manager.sandbox.state.join("claude-sessions/recent-sessions.json");
+    fs::create_dir_all(recent.parent().unwrap()).unwrap();
+    fs::write(&recent, json!({SESSION_A: {"cwd": path_str(&manager.project), "credits": true}, SESSION_B: {"cwd": path_str(&manager.project)}}).to_string()).unwrap();
+    manager.run(&["restore", &path_str(&manager.project), SESSION_A, &path_str(&manager.project), SESSION_B], &[]);
+    let launches: Vec<String> = manager.tmux_calls("new-session").into_iter().filter(|call| call.contains("claude-retry-restart-")).collect();
+    let credits: Vec<bool> = launches.iter().map(|call| call.contains("CLAUDE_SESSIONS_CREDITS=1")).collect();
+    assert_eq!(credits, [true, false], "{launches:?}");
 }
 
 #[test]

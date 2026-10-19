@@ -1133,6 +1133,19 @@ fn a_terminal_session_is_marked_in_the_snapshot_and_the_reboot_record() {
 }
 
 #[test]
+fn a_credits_session_is_marked_in_the_snapshot_and_the_reboot_record_until_it_switches_back() {
+    let mut bench = Bench::new();
+    bench.report(SESSION_A, json!({"state": "waiting", "cwd": "/a", "credits": true}));
+    bench.report(SESSION_A, json!({"state": "working"}));
+    let credits = |bench: &Bench| bench.snapshot().iter().find(|row| row["session"] == SESSION_A).unwrap()["credits"].clone();
+    assert_eq!(credits(&bench), true, "a report without the field keeps it");
+    let recent: Value = serde_json::from_str(&fs::read_to_string(cockpit::paths::recent_sessions()).unwrap()).unwrap();
+    assert_eq!(recent[SESSION_A]["credits"], true);
+    bench.report(SESSION_A, json!({"state": "waiting", "credits": false}));
+    assert_eq!(credits(&bench), false);
+}
+
+#[test]
 fn unpushed_commits_are_counted_and_cleared_by_a_push() {
     let mut bench = Bench::new();
     bench.report(SESSION_A, json!({"state": "waiting", "cwd": "/r/dotfiles", "unpushed": 3}));

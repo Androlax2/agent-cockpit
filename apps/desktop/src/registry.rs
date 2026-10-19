@@ -137,6 +137,9 @@ pub struct Report {
     /// Started with "this terminal" (the claude function's t): the cockpit shows it but leaves it out
     /// of what acts on every session (restart-all, the reboot restore, the queue, the hand-off).
     pub terminal: bool,
+    /// Billed to the Console's API credits, not the subscription (the cockpit's $). None when the
+    /// report did not say (the daemon's own updates).
+    pub credits: Option<bool>,
     /// Commits of the session's repository on no remote yet (the hook counts them in the sandbox).
     pub unpushed: Option<u64>,
     /// The desktop apps the session drives through an attached MCP server: "figcraft:on wordcraft:off"
@@ -165,6 +168,9 @@ pub fn parse_session(raw: &str) -> Result<Report, String> {
             return Err("session.apps is not a list of app:on|off".into());
         }
     }
+    if report.get("credits").is_some_and(|value| !value.is_boolean()) {
+        return Err("session.credits is not true or false".into());
+    }
     if report.get("unpushed").is_some_and(|value| !value.is_u64()) {
         return Err("session.unpushed is not a count".into());
     }
@@ -191,6 +197,7 @@ pub fn parse_session(raw: &str) -> Result<Report, String> {
         session, project: report["project"].as_str().unwrap().to_string(), state: text("state"), cwd: text("cwd"),
         task: text("task"), message: text("message"), outcome: text("outcome"), sticky: report.get("sticky").is_some_and(|s| s.as_bool().unwrap_or(!s.is_null())),
         terminal: report.get("terminal").and_then(Value::as_bool).unwrap_or(false),
+        credits: report.get("credits").and_then(Value::as_bool),
         unpushed: report.get("unpushed").and_then(Value::as_u64),
         apps: report.get("apps").and_then(Value::as_str).map(str::to_string), target,
     })
@@ -797,6 +804,7 @@ pub struct Entry {
     pub detail: String,
     pub outcome: String,
     pub terminal: bool,
+    pub credits: bool,
     pub unpushed: u64,
     pub apps: String,
 }
@@ -973,6 +981,10 @@ impl Registry {
             entry.unpushed = unpushed;
             changed = true;
         }
+        if let Some(credits) = report.credits.filter(|credits| *credits != entry.credits) {
+            entry.credits = credits;
+            changed = true;
+        }
         if report.terminal && !entry.terminal {
             entry.terminal = true;
             changed = true;
@@ -1141,7 +1153,7 @@ impl Registry {
             let mut row = json!({"session": session, "state": entry.state, "project": entry.project, "cwd": entry.cwd, "task": entry.task,
                                  "since": entry.since as i64, "started": entry.started as i64, "update": entry.update,
                                  "request": entry.request, "detail": entry.detail, "outcome": entry.outcome,
-                                 "terminal": entry.terminal, "unpushed": entry.unpushed, "apps": entry.apps});
+                                 "terminal": entry.terminal, "credits": entry.credits, "unpushed": entry.unpushed, "apps": entry.apps});
             for (key, value) in &entry.target {
                 row[key] = json!(value);
             }
@@ -1176,7 +1188,8 @@ impl Registry {
         let time = now();
         for id in &ids {
             let entry = &self.sessions[id];
-            recent.insert(id.clone(), json!({"project": entry.project, "cwd": entry.cwd, "last_seen": time as i64, "terminal": entry.terminal}));
+            recent.insert(id.clone(), json!({"project": entry.project, "cwd": entry.cwd, "last_seen": time as i64, "terminal": entry.terminal,
+                                     "credits": entry.credits}));
         }
         let oldest = time - RECENT_SESSIONS_DAYS * 86400.0;
         recent.retain(|_, row| row.get("last_seen").and_then(Value::as_f64).unwrap_or(0.0) >= oldest);
@@ -1214,6 +1227,7 @@ impl Registry {
                     target: target.into_iter().map(|(k, v)| (k, v.as_str().unwrap_or("").to_string())).collect(),
                     update: row.get("update").and_then(Value::as_bool).unwrap_or(false),
                     terminal: row.get("terminal").and_then(Value::as_bool).unwrap_or(false),
+                    credits: row.get("credits").and_then(Value::as_bool).unwrap_or(false),
                     unpushed: row.get("unpushed").and_then(Value::as_u64).unwrap_or(0), ..Entry::default()
                 }))
             })();
