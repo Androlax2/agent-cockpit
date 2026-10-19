@@ -22,11 +22,24 @@ usage() {
     exit 2
 }
 
+# An id one of the agents reports (agent_<name>_is_session_id, claude-sessions-agents/): Claude
+# Code's UUIDs, opencode's ses_…. It names files below, so nothing else passes.
+is_agent_session_id() { # id
+    local agent_file agents_dir
+    agents_dir=${CLAUDE_SESSIONS_AGENTS_DIR:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/claude-sessions-agents}
+    for agent_file in "$agents_dir"/*.sh; do
+        # shellcheck source=/dev/null
+        source "$agent_file"
+        "agent_$(basename "$agent_file" .sh)_is_session_id" "$1" && return 0
+    done
+    return 1
+}
+
 [[ ${1:-} == figcraft ]] || usage
 session=""
 if (( $# == 3 )) && [[ $2 == --session ]]; then
     session=$3
-    [[ $session =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || { echo "craft-open: not a session id: $session" >&2; exit 2; }
+    is_agent_session_id "$session" || { echo "craft-open: not a session id: $session" >&2; exit 2; }
 elif (( $# != 1 )); then
     usage
 fi

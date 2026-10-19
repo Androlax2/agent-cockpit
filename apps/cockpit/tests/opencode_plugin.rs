@@ -185,3 +185,26 @@ fn a_failing_hook_is_logged_not_swallowed() {
     let run = run(json!([created(ROOT, None)]), "echo 'jq: not found' >&2; exit 1");
     assert!(run.stderr.contains("session-state.sh SessionStart exited 1: jq: not found"), "{}", run.stderr);
 }
+
+/// opencode.jsonc as JSON: its whole-line // comments left out.
+fn opencode_config() -> Value {
+    let text = fs::read_to_string(repo().join("config/opencode/.config/opencode/opencode.jsonc")).unwrap();
+    let json: String = text.lines().filter(|line| !line.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");
+    serde_json::from_str(&json).expect("opencode.jsonc is JSON once its comment lines are left out")
+}
+
+#[test]
+fn opencode_registers_figcraft_app_on_the_port_the_launcher_forwards() {
+    // As Claude Code's figcraft-app: the launcher forwards 7979 only into the project FigCraft
+    // serves, and session-state.sh tells FigCraft on from a `figcraft-cli mcp --attach` process.
+    let server = &opencode_config()["mcp"]["figcraft-app"];
+    assert_eq!(server["type"], "local");
+    assert_eq!(server["command"], json!(["figcraft-cli", "mcp", "--attach", "7979"]));
+    let launcher = fs::read_to_string(bin().join("greywall-agents/launcher-common.sh")).unwrap();
+    assert!(launcher.contains("--forward 7979"), "the launcher no longer forwards 7979");
+}
+
+#[test]
+fn opencode_leaves_updates_to_opencode_update() {
+    assert_eq!(opencode_config()["autoupdate"], json!(false));
+}

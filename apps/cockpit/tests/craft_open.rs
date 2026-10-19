@@ -76,20 +76,28 @@ fn a_figcraft_already_serving_the_project_is_reused() {
 
 #[test]
 fn with_a_session_it_schedules_a_restart_and_a_message_to_carry_on() {
-    let craft = Craft::new();
-    craft.run(&["figcraft", "--session", SESSION_A], &[]);
-    let state = craft.sandbox.state.join("claude-sessions");
-    assert!(state.join("restart-when-idle").join(SESSION_A).exists());
-    let queued: Vec<String> = fs::read_dir(state.join("prompt-queue").join(SESSION_A)).unwrap().flatten()
-        .map(|entry| fs::read_to_string(entry.path()).unwrap()).collect();
-    assert!(queued[0].contains("FigCraft is connected"), "{queued:?}");
+    // A Claude Code session and an opencode one alike: the cockpit restarts either at its turn's end.
+    for session in [SESSION_A, OPENCODE_SESSION] {
+        let craft = Craft::new();
+        let output = craft.run(&["figcraft", "--session", session], &[]);
+        assert_eq!(output.status.code(), Some(0), "{session}: {}", stderr(&output));
+        let state = craft.sandbox.state.join("claude-sessions");
+        assert!(state.join("restart-when-idle").join(session).exists(), "{session}");
+        let queued: Vec<String> = fs::read_dir(state.join("prompt-queue").join(session)).unwrap().flatten()
+            .map(|entry| fs::read_to_string(entry.path()).unwrap()).collect();
+        assert!(queued[0].contains("FigCraft is connected"), "{queued:?}");
+    }
 }
 
 #[test]
 fn an_unknown_app_or_session_is_refused() {
     let craft = Craft::new();
     assert_eq!(craft.run(&["photoshop"], &[]).status.code(), Some(2));
-    assert_eq!(craft.run(&["figcraft", "--session", "../x"], &[]).status.code(), Some(2));
+    // The id names files: nothing but an agent's id passes, an opencode-looking path neither.
+    for session in ["../x", "ses_../../../../tmp/x", "ses_short", "ses_3f2a9c0b1ffeQkTz8mWn4rJd2L\n../x"] {
+        assert_eq!(craft.run(&["figcraft", "--session", session], &[]).status.code(), Some(2), "{session}");
+    }
+    assert!(!craft.sandbox.state.join("claude-sessions/restart-when-idle").exists());
 }
 
 #[test]
