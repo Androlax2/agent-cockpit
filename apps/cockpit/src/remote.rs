@@ -471,6 +471,7 @@ pub fn state() -> Value {
         "queued": prompts::count(&text(row, "session")),
         "remote_control": has_remote_control(row),
         "agent": Some(text(row, "agent")).filter(|agent| !agent.is_empty()).unwrap_or_else(|| agents::DEFAULT.into()),
+        "features": agents::get(&text(row, "agent")).feature_names(),
     })).collect();
     json!({"sessions": cards, "approvals": asking_approvals()})
 }
@@ -572,13 +573,18 @@ pub fn answer(id: &str, is_yes: bool) -> Result<String, String> {
     Ok(if is_yes { "approved".into() } else { "declined".into() })
 }
 
-/// Escape for a session that works: Claude stops its turn, as the key does in the session.
+/// The keys that stop a working session's turn (its agent's interrupt_keys), as in its pane.
 pub fn interrupt(id: &str) -> Result<String, String> {
     let row = require_feature(id, Feature::Interrupt, "Interrupt")?;
     if text(&row, "state") != "working" {
         return Err("this session is not working".into());
     }
-    press(&session_pane(id)?, "Escape")?;
+    let pane = session_pane(id)?;
+    let keys = agents::get(&text(&row, "agent")).interrupt_keys;
+    let pressed = Command::new("tmux").args(["send-keys", "-t", &pane]).args(keys).stdin(Stdio::null()).status();
+    if !pressed.is_ok_and(|status| status.success()) {
+        return Err("tmux could not press the keys".into());
+    }
     audit::record("remote", "remote.interrupt", "ok", json!({"session": id}));
     Ok("interrupted".into())
 }
@@ -596,6 +602,11 @@ pub fn toggle_remote_control(id: &str) -> Result<String, String> {
 }
 
 // ---- Work from the phone: new sessions, the todo list, pull requests, usage ----
+
+/// The agents a new session can run (the column's agent pick): name and label.
+pub fn agent_choices() -> Vec<Value> {
+    agents::AGENTS.iter().map(|agent| json!({"name": agent.name, "label": agent.label})).collect()
+}
 
 /// The projects a session can start in (the column's a picker): path and name.
 pub fn projects() -> Vec<Value> {

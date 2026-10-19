@@ -45,13 +45,34 @@ pub struct Agent {
     /// Claude, whose process tree the daemon knows (claude_processes).
     pub process: Option<&'static str>,
     pub features: &'static [Feature],
+    /// The tmux keys that stop its turn (Feature::Interrupt), in one send-keys.
+    pub interrupt_keys: &'static [&'static str],
     /// The sessions::START_FILES it reads when it starts.
     pub start_files: &'static [&'static str],
+}
+
+impl Feature {
+    /// Its name for the phone page, which shows a session's controls by its features.
+    pub fn name(self) -> &'static str {
+        match self {
+            Feature::Effort => "effort",
+            Feature::Billing => "billing",
+            Feature::Compact => "compact",
+            Feature::RemoteControl => "remote_control",
+            Feature::Dialogs => "dialogs",
+            Feature::Interrupt => "interrupt",
+            Feature::ScreenStates => "screen_states",
+        }
+    }
 }
 
 impl Agent {
     pub fn can(&self, feature: Feature) -> bool {
         self.features.contains(&feature)
+    }
+
+    pub fn feature_names(&self) -> Vec<&'static str> {
+        self.features.iter().map(|feature| feature.name()).collect()
     }
 }
 
@@ -68,6 +89,7 @@ pub static AGENTS: [Agent; 2] = [
         process: None,
         features: &[Feature::Effort, Feature::Billing, Feature::Compact, Feature::RemoteControl, Feature::Dialogs,
                     Feature::Interrupt, Feature::ScreenStates],
+        interrupt_keys: &["Escape"],
         start_files: &["CLAUDE.md", "settings", "plugins", "ADHD mode", "session hook", "sandbox", "sandbox profile",
                        "launcher", "shared launcher"],
     },
@@ -78,7 +100,10 @@ pub static AGENTS: [Agent; 2] = [
         tmux_prefix: "claude-retry-opencode-",
         id_pattern: r"^ses_[0-9A-Za-z]{12,40}$",
         process: Some("opencode"),
-        features: &[],
+        // Escape twice stops its turn (the first only says "esc again to interrupt"). Its permission
+        // questions are not Claude's yes/no menu: no Dialogs.
+        features: &[Feature::Interrupt],
+        interrupt_keys: &["Escape", "Escape"],
         start_files: &["CLAUDE.md", "sandbox", "shared launcher", "opencode config", "opencode plugin", "opencode profile",
                        "opencode launcher"],
     },

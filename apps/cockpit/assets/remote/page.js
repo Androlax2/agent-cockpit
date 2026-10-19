@@ -186,11 +186,12 @@ function renderDetail() {
   screen.id = "screen";
   shownScreen = "";
   const note = element("div", "note");
-  const isClaude = session.agent !== "opencode";
+  // What its agent can do (cockpit::agents): the server refuses the rest anyway.
+  const can = (feature) => (session.features || []).includes(feature);
   const controls = element("div", "buttons");
-  if (session.state === "working" && isClaude) {
+  if (session.state === "working" && can("interrupt")) {
     const isArmed = armed === session.session;
-    const interrupt = element("button", isArmed ? "armed" : "no", isArmed ? "Tap again to interrupt" : "Interrupt (Esc)");
+    const interrupt = element("button", isArmed ? "armed" : "no", isArmed ? "Tap again to interrupt" : "Interrupt");
     interrupt.onclick = () => {
       if (armed !== session.session) { armed = session.session; renderDetail(); loadScreen(); return; }
       armed = null;
@@ -198,7 +199,7 @@ function renderDetail() {
     };
     controls.append(interrupt);
   }
-  if (isClaude) {
+  if (can("remote_control")) {
     const remoteControl = element("button", "no", session.remote_control ? "Remote Control: on" : "Remote Control: off");
     remoteControl.onclick = () => post(`/api/remote-control/${session.session}`, {}, note);
     controls.append(remoteControl);
@@ -212,8 +213,8 @@ function renderDetail() {
     watching.append(watch);
     card.append(watching);
   }
-  if (!isClaude) card.append(element("div", "task", "opencode: answer and interrupt it in its pane on the computer."));
-  if (session.state === "needs-you" && isClaude) {
+  if (!can("dialogs")) card.append(element("div", "task", `${session.agent}: answer its questions in its pane on the computer.`));
+  if (session.state === "needs-you" && can("dialogs")) {
     card.append(element("div", "request", session.detail || session.request));
     const buttons = element("div", "buttons");
     const no = element("button", "no", "No");
@@ -361,15 +362,12 @@ async function projects() {
   return projectChoices;
 }
 
-// The agents a new session can run: the column's AGENTS (apps/cockpit/src/app.rs), which the
-// server checks.
-const AGENTS = [["claude", "Claude Code"], ["opencode", "opencode"]];
-
-function agentPicker() {
+// The agents a new session can run (cockpit::agents, from /api/agents), which the server checks.
+function agentPicker(choices) {
   const picker = element("select");
-  for (const [value, label] of AGENTS) {
-    const option = element("option", "", label);
-    option.value = value;
+  for (const agent of choices) {
+    const option = element("option", "", agent.label);
+    option.value = agent.name;
     picker.append(option);
   }
   return picker;
@@ -418,8 +416,9 @@ async function renderStarter() {
     box.replaceChildren(open);
     return;
   }
-  const picker = projectPicker(await projects());
-  const agent = agentPicker();
+  const [projectList, agentChoices] = await Promise.all([projects(), getJson("/api/agents")]);
+  const picker = projectPicker(projectList);
+  const agent = agentPicker(agentChoices);
   const prompt = element("textarea");
   prompt.placeholder = "What should the session do?";
   const inClone = element("input");
@@ -441,7 +440,7 @@ async function renderStarter() {
 }
 
 async function renderTodos(box) {
-  const [todos, choices] = await Promise.all([getJson("/api/todos"), projects()]);
+  const [todos, choices, agentChoices] = await Promise.all([getJson("/api/todos"), projects(), getJson("/api/agents")]);
   const picker = projectPicker(choices);
   const text = element("input");
   text.placeholder = "A new item";
@@ -469,7 +468,7 @@ async function renderTodos(box) {
     details.hidden = true;
     if (item.notes) details.append(element("div", "notes", item.notes));
     const itemNote = element("div", "note");
-    const agent = agentPicker();
+    const agent = agentPicker(agentChoices);
     agent.onclick = (event) => event.stopPropagation();
     const start = element("button", "run", "Start in a new session");
     start.onclick = async (event) => {

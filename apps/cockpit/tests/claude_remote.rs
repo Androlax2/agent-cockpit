@@ -322,6 +322,33 @@ fn interrupt_presses_escape_in_a_session_that_works_only() {
 }
 
 #[test]
+fn interrupt_presses_an_opencode_sessions_own_keys() {
+    // Escape twice: the first only says "esc again to interrupt".
+    let remote = Remote::start();
+    let secret = remote.paired();
+    fs::write(remote.sandbox.runtime.join("claude-sessions.json"),
+              json!({"sessions": [{"session": OPENCODE_SESSION, "state": "working", "project": "proj-a", "tmux_pane": "%4", "agent": "opencode"}]}).to_string()).unwrap();
+    let (status, _, body) = remote.request("POST", &format!("/api/interrupt/{OPENCODE_SESSION}"), Some(&secret), Some(json!({})), true);
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(remote.keys_pressed(), ["tmux send-keys -t %4 Escape Escape"]);
+}
+
+#[test]
+fn each_card_carries_what_its_agent_can_do_and_the_agents_are_listed() {
+    let remote = Remote::start();
+    let secret = remote.paired();
+    fs::write(remote.sandbox.runtime.join("claude-sessions.json"), json!({"sessions": [
+        {"session": SESSION_A, "state": "waiting", "project": "proj-a", "tmux_pane": "%4"},
+        {"session": OPENCODE_SESSION, "state": "waiting", "project": "proj-b", "tmux_pane": "%5", "agent": "opencode"}]}).to_string()).unwrap();
+    let cards = remote.get_json(&secret, "/api/state");
+    let features = |id: &str| cards["sessions"].as_array().unwrap().iter().find(|card| card["session"] == id).unwrap()["features"].clone();
+    assert!(features(SESSION_A).as_array().unwrap().contains(&json!("dialogs")), "{cards}");
+    assert_eq!(features(OPENCODE_SESSION), json!(["interrupt"]));
+    let agents = remote.get_json(&secret, "/api/agents");
+    assert_eq!(agents, json!([{"name": "claude", "label": "Claude Code"}, {"name": "opencode", "label": "opencode"}]));
+}
+
+#[test]
 fn remote_control_from_the_phone_goes_through_claude_sessions() {
     let remote = Remote::start();
     let secret = remote.paired();
@@ -397,8 +424,9 @@ fn a_paired_phone_gets_a_code_that_pairs_its_home_screen_app_once() {
 }
 
 #[test]
-fn yes_no_and_interrupt_refuse_an_opencode_session() {
-    for (path, state, body) in [("answer", "needs-you", json!({"yes": true})), ("interrupt", "working", json!({}))] {
+fn yes_and_no_refuse_an_opencode_session() {
+    // Its permission questions are not Claude's yes/no menu: Enter or Escape could pick another answer.
+    for (path, state, body) in [("answer", "needs-you", json!({"yes": true}))] {
         let remote = Remote::start();
         let secret = remote.paired();
         fs::write(remote.sandbox.runtime.join("claude-sessions.json"),

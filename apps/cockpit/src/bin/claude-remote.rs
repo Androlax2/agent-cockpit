@@ -56,8 +56,9 @@ fn cookie_secret(request: &Request) -> Option<String> {
         .find_map(|pair| pair.strip_prefix(&format!("{COOKIE}=")).map(str::to_string))
 }
 
+/// An id one of the agents reports (cockpit::agents): Claude Code's UUIDs, opencode's ses_….
 fn is_session_id(id: &str) -> bool {
-    id.len() == 36 && id.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
+    cockpit::agents::is_session_id(id)
 }
 
 fn is_todo_id(id: &str) -> bool {
@@ -161,6 +162,7 @@ fn handle(mut request: Request) {
             }
         }
         (Method::Get, ["api", "projects"]) => respond_json(request, 200, json!(remote::projects())),
+        (Method::Get, ["api", "agents"]) => respond_json(request, 200, json!(remote::agent_choices())),
         (Method::Post, ["api", "sessions"]) => {
             let body = body_json(&mut request).unwrap_or(json!({}));
             let field = |name: &str| body.get(name).and_then(Value::as_str).unwrap_or("").to_string();
