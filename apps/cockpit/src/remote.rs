@@ -6,8 +6,9 @@
 //! codes and secrets is kept, in ~/.local/state/claude-remote (0600; greywall hides it from every
 //! sandbox). `claude-remote phones` lists them; `claude-remote unpair [id]` forgets one, or all.
 //!
-//! From the phone: the session cards, a session's last screen, a message (queued while it works,
-//! as the column's m), an answer to a permission dialog, and Run or Decline for an approval that is
+//! From the phone: the session cards, a session's last screen (in colour), a message (queued while
+//! it works, as the column's m), an answer to a permission dialog, Escape for a session that works,
+//! Remote Control on or off, and Run or Decline for an approval that is
 //! asking (claude-run-approve shows the same command from `<id>.asking` and takes the answer from
 //! `<id>.remote`). Every action is an audit event (component "remote").
 
@@ -198,6 +199,11 @@ fn session_row(id: &str) -> Option<Value> {
     snapshot_sessions().into_iter().find(|row| row.get("session").and_then(Value::as_str) == Some(id))
 }
 
+/// The snapshot's "remote": true, or the Remote Control link (as sessions.rs reads it).
+fn has_remote_control(row: &Value) -> bool {
+    row.get("remote").is_some_and(|remote| remote.as_bool().unwrap_or(!remote.is_null()))
+}
+
 fn text(row: &Value, key: &str) -> String {
     row.get(key).and_then(Value::as_str).unwrap_or("").to_string()
 }
@@ -220,6 +226,7 @@ pub fn state() -> Value {
         "session": text(row, "session"), "project": text(row, "project"), "state": text(row, "state"), "task": text(row, "task"),
         "request": text(row, "request"), "detail": text(row, "detail"), "since": row.get("since"),
         "queued": prompts::count(&text(row, "session")),
+        "remote_control": has_remote_control(row),
     })).collect();
     json!({"sessions": cards, "approvals": asking_approvals()})
 }
@@ -252,9 +259,23 @@ fn press(pane: &str, key: &str) -> Result<(), String> {
     if pressed.is_ok_and(|status| status.success()) { Ok(()) } else { Err("tmux could not press the key".into()) }
 }
 
-/// The last lines a session's pane shows, as text.
+/// The last lines a session's pane shows, with its colours: of the terminal's escape sequences only
+/// the colour and weight ones (SGR, `ESC [ … m`) are kept, the page draws them; every other one is
+/// dropped, and so is any other control character but the line break and the tab.
 pub fn screen(id: &str) -> Result<String, String> {
-    Ok(approval::strip_ansi(&pane_lines(&session_pane(id)?, 80)?))
+    let pane = session_pane(id)?;
+    let shown = util::output_of("tmux", &["capture-pane", "-p", "-e", "-t", &pane, "-S", "-80"]).ok_or("tmux could not read its pane")?;
+    Ok(colours_only(&shown))
+}
+
+pub fn colours_only(text: &str) -> String {
+    let escape = regex::Regex::new(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b.?").unwrap();
+    let colour = regex::Regex::new(r"^\x1b\[[0-9;]*m$").unwrap();
+    let kept = escape.replace_all(text, |found: &regex::Captures| {
+        let sequence = &found[0];
+        if colour.is_match(sequence) { sequence.to_string() } else { String::new() }
+    });
+    kept.chars().filter(|character| !character.is_control() || matches!(character, '\n' | '\t' | '\x1b')).collect()
 }
 
 /// A message for a session: said at its prompt now, or queued for the end of its turn while it
@@ -294,6 +315,29 @@ pub fn answer(id: &str, is_yes: bool) -> Result<String, String> {
     press(&pane, if is_yes { "Enter" } else { "Escape" })?;
     audit::record("remote", "remote.answer", if is_yes { "yes" } else { "no" }, json!({"session": id}));
     Ok(if is_yes { "approved".into() } else { "declined".into() })
+}
+
+/// Escape for a session that works: Claude stops its turn, as the key does in the session.
+pub fn interrupt(id: &str) -> Result<String, String> {
+    let row = session_row(id).ok_or("no such session")?;
+    if text(&row, "state") != "working" {
+        return Err("this session is not working".into());
+    }
+    press(&session_pane(id)?, "Escape")?;
+    audit::record("remote", "remote.interrupt", "ok", json!({"session": id}));
+    Ok("interrupted".into())
+}
+
+/// Remote Control on or off for a session (as the column's : remote): claude-sessions restarts it.
+pub fn toggle_remote_control(id: &str) -> Result<String, String> {
+    let row = session_row(id).ok_or("no such session")?;
+    let error = util::manager(&["remote", id]);
+    if !error.is_empty() {
+        return Err(error);
+    }
+    let was_on = has_remote_control(&row);
+    audit::record("remote", "remote.remote_control", if was_on { "off" } else { "on" }, json!({"session": id}));
+    Ok(if was_on { "Remote Control off".into() } else { "Remote Control on".into() })
 }
 
 /// Run or Decline for an approval that is asking now: its menu takes the answer (claude-run-approve

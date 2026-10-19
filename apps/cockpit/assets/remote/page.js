@@ -5,7 +5,8 @@
 const GLYPHS = { "needs-you": "●", waiting: "◐", working: "◌", unknown: "?" };
 let state = { sessions: [], approvals: [] };
 let opened = null; // the session shown in detail
-let armed = null;  // the approval whose Run waits for its second tap
+let armed = null;  // the approval whose Run, or the session whose Interrupt, waits for its second tap
+let shownScreen = ""; // the screen as last fetched, escapes included
 
 function element(tag, className, text) {
   const node = document.createElement(tag);
@@ -60,12 +61,8 @@ function renderApprovals() {
   }
 }
 
-async function decide(approval, run, note) {
-  note.textContent = run ? "running…" : "declining…";
-  const response = await call("POST", `/api/decide/${approval.id}`, { run, command: approval.command });
-  const result = await response.json().catch(() => ({ message: "no answer" }));
-  note.textContent = result.message;
-  refresh();
+function decide(approval, run, note) {
+  return post(`/api/decide/${approval.id}`, { run, command: approval.command }, note);
 }
 
 function renderList() {
@@ -88,6 +85,69 @@ function renderList() {
   }
 }
 
+// The terminal's 16 colours (Tokyo Night, as kitty's), then the 256-colour cube and greys.
+const PALETTE = ["#15161e", "#f7768e", "#9ece6a", "#e0af68", "#7aa2f7", "#bb9af7", "#7dcfff", "#a9b1d6",
+                 "#414868", "#f7768e", "#9ece6a", "#e0af68", "#7aa2f7", "#bb9af7", "#7dcfff", "#c0caf5"];
+
+function colour256(index) {
+  if (index < 16) return PALETTE[index];
+  if (index >= 232) { const grey = 8 + (index - 232) * 10; return `rgb(${grey},${grey},${grey})`; }
+  const cube = index - 16, step = (value) => (value === 0 ? 0 : 55 + value * 40);
+  return `rgb(${step(Math.floor(cube / 36))},${step(Math.floor(cube / 6) % 6)},${step(cube % 6)})`;
+}
+
+// One SGR sequence's numbers applied to the running style. Only numbers become CSS values: nothing
+// of the screen's text ever reaches a style or the markup.
+function applySgr(codes, look) {
+  for (let i = 0; i < codes.length; i++) {
+    const code = codes[i];
+    if (code === 0) Object.assign(look, { fg: null, bg: null, bold: false, dim: false, italic: false, underline: false, inverse: false });
+    else if (code === 1) look.bold = true;
+    else if (code === 2) look.dim = true;
+    else if (code === 3) look.italic = true;
+    else if (code === 4) look.underline = true;
+    else if (code === 7) look.inverse = true;
+    else if (code === 22) { look.bold = false; look.dim = false; }
+    else if (code === 23) look.italic = false;
+    else if (code === 24) look.underline = false;
+    else if (code === 27) look.inverse = false;
+    else if (code >= 30 && code <= 37) look.fg = PALETTE[code - 30];
+    else if (code >= 90 && code <= 97) look.fg = PALETTE[code - 90 + 8];
+    else if (code === 39) look.fg = null;
+    else if (code >= 40 && code <= 47) look.bg = PALETTE[code - 40];
+    else if (code >= 100 && code <= 107) look.bg = PALETTE[code - 100 + 8];
+    else if (code === 49) look.bg = null;
+    else if ((code === 38 || code === 48) && codes[i + 1] === 5) {
+      look[code === 38 ? "fg" : "bg"] = colour256((codes[i + 2] || 0) & 255);
+      i += 2;
+    } else if ((code === 38 || code === 48) && codes[i + 1] === 2) {
+      const [r, g, b] = codes.slice(i + 2, i + 5).map((value) => (value || 0) & 255);
+      look[code === 38 ? "fg" : "bg"] = `rgb(${r},${g},${b})`;
+      i += 4;
+    }
+  }
+}
+
+function colouredNodes(text) {
+  const nodes = [];
+  const look = {};
+  applySgr([0], look);
+  for (const [index, part] of text.split(/\x1b\[([0-9;]*)m/).entries()) {
+    if (index % 2 === 1) { applySgr(part === "" ? [0] : part.split(";").map(Number), look); continue; }
+    if (part === "") continue;
+    const span = element("span", "", part);
+    const [fg, bg] = look.inverse ? [look.bg || "var(--bg)", look.fg || "var(--fg)"] : [look.fg, look.bg];
+    if (fg) span.style.color = fg;
+    if (bg) span.style.backgroundColor = bg;
+    if (look.bold) span.style.fontWeight = "700";
+    if (look.dim) span.style.opacity = "0.6";
+    if (look.italic) span.style.fontStyle = "italic";
+    if (look.underline) span.style.textDecoration = "underline";
+    nodes.push(span);
+  }
+  return nodes;
+}
+
 // The session's screen, kept live: redrawn only when it changed, and following its newest lines
 // unless Theo scrolled up to read.
 async function loadScreen() {
@@ -95,10 +155,20 @@ async function loadScreen() {
   if (!screen || !opened) return;
   const response = await call("GET", `/api/screen/${opened}`);
   const text = (await response.text()).replace(/\s+$/, "");
-  if (text === screen.textContent) return;
-  const isFollowing = screen.scrollTop + screen.clientHeight >= screen.scrollHeight - 24 || screen.textContent === "…";
-  screen.textContent = text;
+  if (text === shownScreen) return;
+  const isFollowing = screen.scrollTop + screen.clientHeight >= screen.scrollHeight - 24 || shownScreen === "";
+  shownScreen = text;
+  screen.replaceChildren(...colouredNodes(text));
   if (isFollowing) screen.scrollTop = screen.scrollHeight;
+}
+
+async function post(path, body, note) {
+  note.textContent = "…";
+  const response = await call("POST", path, body);
+  const result = await response.json().catch(() => ({ message: "no answer" }));
+  note.textContent = result.message;
+  refresh();
+  return result;
 }
 
 function renderDetail() {
@@ -113,39 +183,45 @@ function renderDetail() {
   if (session.task) card.append(element("div", "task", session.task));
   const screen = element("pre", "", "…");
   screen.id = "screen";
+  shownScreen = "";
   const note = element("div", "note");
+  const controls = element("div", "buttons");
+  if (session.state === "working") {
+    const isArmed = armed === session.session;
+    const interrupt = element("button", isArmed ? "armed" : "no", isArmed ? "Tap again to interrupt" : "Interrupt (Esc)");
+    interrupt.onclick = () => {
+      if (armed !== session.session) { armed = session.session; renderDetail(); loadScreen(); return; }
+      armed = null;
+      post(`/api/interrupt/${session.session}`, {}, note);
+    };
+    controls.append(interrupt);
+  }
+  const remoteControl = element("button", "no", session.remote_control ? "Remote Control: on" : "Remote Control: off");
+  remoteControl.onclick = () => post(`/api/remote-control/${session.session}`, {}, note);
+  controls.append(remoteControl);
+  card.append(controls);
   if (session.state === "needs-you") {
     card.append(element("div", "request", session.detail || session.request));
     const buttons = element("div", "buttons");
     const no = element("button", "no", "No");
     const yes = element("button", "run", "Yes");
-    no.onclick = () => answer(session, false, note);
-    yes.onclick = () => answer(session, true, note);
+    no.onclick = () => post(`/api/answer/${session.session}`, { yes: false }, note);
+    yes.onclick = () => post(`/api/answer/${session.session}`, { yes: true }, note);
     buttons.append(no, yes);
     card.append(buttons);
   }
+  const typed = box.querySelector("textarea")?.value || "";
   const message = element("textarea");
+  message.value = typed;
   message.placeholder = session.state === "working" ? "A message for the end of its turn" : "A message for Claude";
   const send = element("button", "run", session.state === "working" ? "Queue it" : "Send");
   send.onclick = async () => {
-    note.textContent = "…";
-    const response = await call("POST", `/api/message/${session.session}`, { text: message.value });
-    const result = await response.json().catch(() => ({ message: "no answer" }));
-    note.textContent = result.message;
+    const result = await post(`/api/message/${session.session}`, { text: message.value }, note);
     if (result.ok) message.value = "";
-    refresh();
   };
   const sending = element("div", "buttons");
   sending.append(send);
   box.replaceChildren(back, card, screen, message, sending, note);
-}
-
-async function answer(session, yes, note) {
-  note.textContent = "…";
-  const response = await call("POST", `/api/answer/${session.session}`, { yes });
-  const result = await response.json().catch(() => ({ message: "no answer" }));
-  note.textContent = result.message;
-  refresh();
 }
 
 function render() {
@@ -156,15 +232,23 @@ function render() {
   if (!detail) renderList();
 }
 
+// What the detail view's card and buttons depend on, to tell when they need redrawing.
+function detailLook() {
+  const session = state.sessions.find((s) => s.session === opened);
+  return session ? JSON.stringify([session.state, session.request, session.detail, session.remote_control, session.task]) : "";
+}
+
 async function refresh() {
   try {
     const response = await call("GET", "/api/state");
     if (response.status === 401) { document.body.textContent = await response.text(); return; }
+    const before = detailLook();
     state = await response.json();
     document.getElementById("updated").textContent = new Date().toLocaleTimeString();
-    // The detail view keeps what is typed: only the list and the approvals redraw on a poll.
+    // The detail view redraws only when what it shows changed, keeping what is typed.
     renderApprovals();
     if (opened === null) renderList();
+    else if (detailLook() !== before) { renderDetail(); loadScreen(); }
   } catch (error) {
     document.getElementById("updated").textContent = "offline";
   }

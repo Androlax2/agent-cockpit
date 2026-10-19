@@ -114,6 +114,14 @@ fn handle(mut request: Request) {
                 None => respond_json(request, 400, json!({"ok": false, "message": "yes or no?"})),
             }
         }
+        (Method::Post, ["api", "interrupt", id]) if is_session_id(id) => {
+            let id = id.to_string();
+            outcome(request, remote::interrupt(&id));
+        }
+        (Method::Post, ["api", "remote-control", id]) if is_session_id(id) => {
+            let id = id.to_string();
+            outcome(request, remote::toggle_remote_control(&id));
+        }
         (Method::Post, ["api", "decide", id]) => {
             let id = id.to_string();
             let body = body_json(&mut request).unwrap_or(json!({}));

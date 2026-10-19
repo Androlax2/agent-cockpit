@@ -81,8 +81,12 @@ impl Remote {
 
     /// Session A in the snapshot, its pane %4 showing `pane`.
     fn session_showing(&self, pane: &str) {
+        self.session_in("needs-you", pane);
+    }
+
+    fn session_in(&self, state: &str, pane: &str) {
         fs::write(self.sandbox.runtime.join("claude-sessions.json"),
-                  json!({"sessions": [{"session": SESSION_A, "state": "needs-you", "project": "proj-a", "tmux_pane": "%4"}]}).to_string()).unwrap();
+                  json!({"sessions": [{"session": SESSION_A, "state": state, "project": "proj-a", "tmux_pane": "%4"}]}).to_string()).unwrap();
         fs::write(self.sandbox.runtime.join("pane.txt"), pane).unwrap();
     }
 
@@ -293,4 +297,38 @@ fn unpair_with_an_unknown_id_fails_loudly() {
     let output = remote.sandbox.run(bin().join("claude-remote"), &["unpair", "deadbeef"], &[]);
     assert_eq!(output.status.code(), Some(1));
     assert!(stderr(&output).contains("no paired phone deadbeef"), "{}", stderr(&output));
+}
+
+#[test]
+fn interrupt_presses_escape_in_a_session_that_works_only() {
+    for (state, status, pressed) in [("working", 200, vec!["tmux send-keys -t %4 Escape".to_string()]), ("waiting", 409, vec![])] {
+        let remote = Remote::start();
+        let secret = remote.paired();
+        remote.session_in(state, IDLE);
+        let (answered, _, body) = remote.request("POST", &format!("/api/interrupt/{SESSION_A}"), Some(&secret), Some(json!({})), true);
+        assert_eq!(answered, status, "{state}: {body}");
+        assert_eq!(remote.keys_pressed(), pressed, "{state}");
+    }
+}
+
+#[test]
+fn remote_control_from_the_phone_goes_through_claude_sessions() {
+    let remote = Remote::start();
+    let secret = remote.paired();
+    remote.sandbox.shim("claude-sessions", "exit 0");
+    remote.session_in("waiting", IDLE);
+    let (status, _, body) = remote.request("POST", &format!("/api/remote-control/{SESSION_A}"), Some(&secret), Some(json!({})), true);
+    assert_eq!(status, 200, "{body}");
+    assert!(body.contains("Remote Control on"), "{body}");
+    assert_eq!(remote.sandbox.calls("claude-sessions"), [format!("claude-sessions remote {SESSION_A}")]);
+}
+
+#[test]
+fn the_screen_keeps_its_colours_and_drops_every_other_escape() {
+    let remote = Remote::start();
+    let secret = remote.paired();
+    remote.session_in("waiting", "\x1b[1;32mdone\x1b[0m\x1b]0;title\x07\x1b[2J\x1b[?25l\rnext\x07\n");
+    let (status, _, body) = remote.request("GET", &format!("/api/screen/{SESSION_A}"), Some(&secret), None, false);
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body, "\x1b[1;32mdone\x1b[0mnext\n");
 }
