@@ -878,6 +878,16 @@ impl Registry {
         }
     }
 
+    /// Theo looked at the session: its banner (sticky ones too, and one held for a game or a
+    /// meeting) has said what it had to say.
+    pub fn seen(&mut self, session: &str) {
+        if !SESSION_ID.is_match(session) {
+            return;
+        }
+        self.held.remove(session);
+        self.banners.drop_banner(session);
+    }
+
     pub fn remove(&mut self, session: &str) {
         self.held.remove(session);
         let Some(entry) = self.sessions.remove(session) else { return };

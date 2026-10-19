@@ -1034,3 +1034,10 @@ fn the_loading_screen_works_without_a_terminal_type() {
     assert_eq!(manager.run(&["loading-screen"], &[("TERM", "")]).status.code(), Some(0));
     assert!(!loading.exists());
 }
+
+#[test]
+fn viewing_a_session_tells_the_daemon_it_was_seen() {
+    let manager = Manager::new();
+    manager.run(&["view", SESSION_A], &[]);
+    assert!(manager.calls("osd-show").contains(&format!("osd-show session-seen {SESSION_A}")), "{:?}", manager.calls("osd-show"));
+}

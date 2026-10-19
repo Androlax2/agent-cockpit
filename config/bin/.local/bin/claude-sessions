@@ -207,6 +207,8 @@ view_session() {
     # Nested on purpose: the inner client is the real, interactive session.
     tmux respawn-pane -k -t "$(viewer_pane)" env -u TMUX tmux attach-session -t "=$target"
     printf '%s\n' "$id" > "$CURRENT"
+    # Its banner ("waiting for your input") has been read now that the session is on screen.
+    osd-show session-seen "$id" 2>/dev/null || true
     label_panes "$(session_field "$id" project)"
 }
 

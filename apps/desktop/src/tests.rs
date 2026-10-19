@@ -1061,3 +1061,20 @@ fn a_report_from_an_unplaceable_sender_is_refused() {
     bench.registry.report_from(report, 777);
     assert!(bench.registry.sessions.is_empty());
 }
+
+#[test]
+fn a_session_theo_looked_at_loses_its_sticky_banner() {
+    let mut bench = Bench::new();
+    bench.report(SESSION_A, json!({"state": "waiting", "message": "Claude is waiting for your input", "sticky": true}));
+    bench.report(SESSION_B, json!({"state": "waiting", "message": "Claude is waiting for your input", "sticky": true}));
+    bench.registry.seen(SESSION_A);
+    assert!(bench.dropped().contains(&SESSION_A.to_string()));
+    assert!(!bench.dropped().contains(&SESSION_B.to_string()), "only the session looked at");
+}
+
+#[test]
+fn seen_ignores_what_is_not_a_session_id() {
+    let mut bench = Bench::new();
+    bench.registry.seen("notice:budget");
+    assert!(bench.dropped().is_empty());
+}
