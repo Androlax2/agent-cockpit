@@ -430,6 +430,14 @@ fn say_refuses_while_a_dialog_is_open_and_keeps_the_text_out_of_the_log() {
 }
 
 #[test]
+fn the_divider_is_orange_on_the_side_of_the_focused_pane() {
+    let manager = Manager::new();
+    manager.run(&["view", SESSION_A], &[]);
+    let borders = manager.tmux_calls("set-option").into_iter().find(|call| call.contains("pane-border-indicators")).expect("no pane-border-indicators");
+    assert!(borders.contains("pane-border-indicators colour") && borders.contains("pane-active-border-style fg=#ff9e64"), "{borders}");
+}
+
+#[test]
 fn the_approval_pane_opens_under_the_session_without_the_cursor_and_closes() {
     let manager = Manager::new();
     manager.run(&["approval-pane", "0123456789ab"], &[]);
