@@ -46,6 +46,11 @@ pub fn osd_report_socket() -> PathBuf { runtime_dir().join("claude-report/osd-re
 pub fn game_frozen() -> PathBuf { runtime_dir().join("game-performance.frozen") }
 pub fn history() -> PathBuf { from_env("CLAUDE_SESSIONS_HISTORY", home().join(".claude/history.jsonl")) }
 pub fn transcripts() -> PathBuf { from_env("CLAUDE_SESSIONS_TRANSCRIPTS", home().join(".claude/projects")) }
+/// opencode's sessions and messages ($XDG_DATA_HOME/opencode/opencode.db), which its sandboxes write.
+pub fn opencode_database() -> PathBuf {
+    let data_home = env::var("XDG_DATA_HOME").map(PathBuf::from).unwrap_or_else(|_| home().join(".local/share"));
+    from_env("CLAUDE_SESSIONS_OPENCODE_DB", data_home.join("opencode/opencode.db"))
+}
 pub fn statusline_dir() -> PathBuf { home().join(".cache/claude") }
 pub fn usage_script() -> PathBuf { home().join(".config/waybar/scripts/claude-usage.sh") }
 pub fn credentials() -> PathBuf { home().join(".claude/.credentials.json") }

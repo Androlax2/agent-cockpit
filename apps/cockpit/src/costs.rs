@@ -1,6 +1,7 @@
 //! What Claude Code's replies would cost at API prices (the plan is flat): every reply of the
 //! transcripts archived in usage.sqlite, which keeps them after Claude Code deletes old
-//! transcripts. Same schema and keys as the Python column, so the archive carries over.
+//! transcripts. Same schema and keys as the Python column, so the archive carries over. opencode's
+//! replies join them from its database (archive_opencode), keyed "opencode:<message id>".
 
 use crate::paths;
 use crate::reviews;
@@ -8,7 +9,7 @@ use crate::sessions;
 use crate::usage;
 use crate::util::{self, money, now, parse_time};
 use chrono::{Datelike, Duration, Local, NaiveDate};
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OpenFlags, Transaction, params};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
@@ -190,17 +191,77 @@ pub fn archive_transcripts(archive: &mut Connection, transcripts: &Path) -> rusq
             line.clear();
         }
         let transaction = archive.transaction()?;
-        {
-            let mut insert = transaction.prepare("insert into replies values (?,?,?,?,?,?,?,?,?,?,?,?,?) on conflict(key) do update set project = excluded.project where project != excluded.project")?;
-            for row in &rows {
-                added += insert.execute(params![row.key, row.day, row.at, row.model, row.project, row.session, row.input, row.output,
-                                                row.cache_read, row.write_5m, row.write_1h, row.speed, row.cost])?;
-            }
-            transaction.execute("insert or replace into files values (?,?,?)", params![key, mtime, size])?;
-        }
+        added += insert_replies(&transaction, &rows)?;
+        transaction.execute("insert or replace into files values (?,?,?)", params![key, mtime, size])?;
         transaction.commit()?;
     }
     Ok(added)
+}
+
+/// New replies added, a known one's project corrected; returns how many rows changed.
+fn insert_replies(transaction: &Transaction, rows: &[Reply]) -> rusqlite::Result<usize> {
+    let mut insert = transaction.prepare("insert into replies values (?,?,?,?,?,?,?,?,?,?,?,?,?) on conflict(key) do update set project = excluded.project where project != excluded.project")?;
+    let mut changed = 0;
+    for row in rows {
+        changed += insert.execute(params![row.key, row.day, row.at, row.model, row.project, row.session, row.input, row.output,
+                                          row.cache_read, row.write_5m, row.write_1h, row.speed, row.cost])?;
+    }
+    Ok(changed)
+}
+
+/// One message of opencode's database as an archive row: an assistant reply that completed, with
+/// tokens, or None. Priced like a Claude reply from its tokens (opencode's own cost is 0 on a
+/// subscription); a model without a known price keeps opencode's cost when it has one.
+pub fn opencode_reply_row(id: &str, session: &str, data: &str) -> Option<Reply> {
+    let message: Value = serde_json::from_str(data).ok()?;
+    if message.get("role").and_then(Value::as_str) != Some("assistant") || message.pointer("/time/completed").is_none() {
+        return None;
+    }
+    let model = message.get("modelID").and_then(Value::as_str).filter(|model| !model.is_empty())?;
+    let created = chrono::DateTime::from_timestamp_millis(message.pointer("/time/created").and_then(Value::as_i64)?)?;
+    let count = |pointer: &str| message.pointer(pointer).and_then(Value::as_i64).unwrap_or(0);
+    let (input, output, cache_read, cache_write) =
+        (count("/tokens/input"), count("/tokens/output") + count("/tokens/reasoning"), count("/tokens/cache/read"), count("/tokens/cache/write"));
+    if input + output + cache_read + cache_write == 0 {
+        return None;
+    }
+    let usage = serde_json::json!({"input_tokens": input, "output_tokens": output, "cache_read_input_tokens": cache_read,
+                                   "cache_creation_input_tokens": cache_write});
+    let cost = reply_cost(model, &usage).or_else(|| message.get("cost").and_then(Value::as_f64).filter(|cost| *cost > 0.0));
+    let cwd = message.pointer("/path/cwd").and_then(Value::as_str).unwrap_or("");
+    let project = Path::new(cwd).file_name().map(|name| name.to_string_lossy().into_owned()).filter(|name| !name.is_empty()).unwrap_or("?".into());
+    Some(Reply {
+        key: format!("opencode:{id}"), day: created.with_timezone(&Local).date_naive().to_string(),
+        at: created.to_rfc3339_opts(chrono::SecondsFormat::Millis, true), model: model.into(), project, session: session.into(),
+        input, output, cache_read, write_5m: cache_write, write_1h: 0, speed: "standard".into(), cost, cwd: cwd.into(),
+    })
+}
+
+/// Copies opencode's replies into the archive: every message of its database, read-only (its
+/// sandboxes write it), the known ones only corrected. Nothing when opencode never ran. Returns
+/// how many rows changed.
+pub fn archive_opencode(archive: &mut Connection, database: &Path) -> rusqlite::Result<usize> {
+    if !database.exists() {
+        return Ok(0);
+    }
+    let source = Connection::open_with_flags(database, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    source.busy_timeout(std::time::Duration::from_secs(1))?;
+    let mut statement = source.prepare("select id, session_id, data from message")?;
+    let messages = statement.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?)))?;
+    let mut projects: HashMap<String, String> = HashMap::new();
+    let mut rows = Vec::new();
+    for message in messages {
+        let (id, session, data) = message?;
+        let Some(mut row) = opencode_reply_row(&id, &session, &data) else { continue };
+        if !row.cwd.is_empty() {
+            row.project = projects.entry(row.cwd.clone()).or_insert_with(|| util::project_name(&util::repository_root(&row.cwd))).clone();
+        }
+        rows.push(row);
+    }
+    let transaction = archive.transaction()?;
+    let changed = insert_replies(&transaction, &rows)?;
+    transaction.commit()?;
+    Ok(changed)
 }
 
 /// A gap between two replies of a session counts as time spent only under this: longer, the
@@ -270,6 +331,8 @@ struct State {
     /// Seconds with Claude, all sessions together (time_with_claude): today, this week, this month.
     time_together: [f64; 3],
     error: String,
+    /// The last failure to read opencode's database, logged once: it never holds Claude's totals back.
+    opencode_error: String,
     scanned_at: f64,
     scanning: bool,
 }
@@ -307,12 +370,20 @@ impl Costs {
             let path = paths::usage_archive();
             let today = Local::now().date_naive().to_string();
             let starts = period_starts();
+            let mut opencode_error = String::new();
             let result = open_archive(&path).and_then(|mut archive| {
                 archive_transcripts(&mut archive, &paths::transcripts())?;
+                if let Err(error) = archive_opencode(&mut archive, &paths::opencode_database()) {
+                    opencode_error = error.to_string();
+                }
                 Ok((archived_costs(&archive)?, active_seconds(&archive, &today)?, active_seconds(&archive, "0000-00-00")?,
                     time_with_claude(&archive, &starts)?))
             });
             let mut state = shared.lock().unwrap();
+            if opencode_error != state.opencode_error && !opencode_error.is_empty() {
+                util::log_event("ERROR", &format!("usage archive: opencode's {}: {opencode_error}", paths::opencode_database().display()));
+            }
+            state.opencode_error = opencode_error;
             match result {
                 Ok(((days, _, all_time), active_today, active_all_time, together)) => {
                     state.time_together = [together[0], together[1], together[2]];
@@ -381,6 +452,7 @@ fn write_out(text: &str) {
 pub fn print_costs() -> rusqlite::Result<()> {
     let mut archive = open_archive(&paths::usage_archive())?;
     archive_transcripts(&mut archive, &paths::transcripts())?;
+    let opencode = archive_opencode(&mut archive, &paths::opencode_database()).err();
     let (days, unpriced, all_time) = archived_costs(&archive)?;
     let first = Local::now().date_naive().with_day(1).unwrap().to_string();
     let mut out = String::new();
@@ -414,6 +486,9 @@ pub fn print_costs() -> rusqlite::Result<()> {
     unpriced.sort();
     for (model, output) in unpriced {
         out.push_str(&format!("no price for {model}: {output} output tokens left out\n"));
+    }
+    if let Some(error) = opencode {
+        out.push_str(&format!("opencode's replies left out: {error}\n"));
     }
     write_out(&out);
     Ok(())
@@ -505,6 +580,9 @@ pub fn digest_lines(archive: &Connection, sessions: &[sessions::Session], review
 pub fn print_digest() -> rusqlite::Result<()> {
     let mut archive = open_archive(&paths::usage_archive())?;
     archive_transcripts(&mut archive, &paths::transcripts())?;
+    if let Err(error) = archive_opencode(&mut archive, &paths::opencode_database()) {
+        util::log_event("ERROR", &format!("digest: opencode's replies left out: {error}"));
+    }
     let repositories: Vec<String> = reviews::session_checkouts("").into_keys().collect();
     let (rows, _) = reviews::fetch_reviews(&repositories);
     let lines = digest_lines(&archive, &sessions::reported(), &rows, Local::now().date_naive())?;
@@ -548,6 +626,70 @@ mod tests {
         assert_eq!(archive_transcripts(&mut archive, &directory).unwrap(), 0);
         let (days, _, all_time) = archived_costs(&archive).unwrap();
         assert_eq!((days.len(), all_time), (1, 20.0));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    /// An opencode assistant message as its database keeps it (message.data).
+    fn opencode_message(created_ms: i64, model: &str, output: i64, cost: f64) -> String {
+        json!({"role": "assistant", "modelID": model, "providerID": "anthropic", "cost": cost, "path": {"cwd": "/x/shop", "root": "/x/shop"},
+               "tokens": {"input": 0, "output": output, "reasoning": 0, "cache": {"read": 0, "write": 0}},
+               "time": {"created": created_ms, "completed": created_ms + 1000}}).to_string()
+    }
+
+    #[test]
+    fn an_opencode_reply_is_priced_from_its_tokens_like_a_claude_one() {
+        // On a subscription opencode's own cost is 0: the tokens say what it would cost.
+        let row = opencode_reply_row("msg_1", "ses_1", &opencode_message(1_760_781_600_000, "claude-opus-5-5", 1_000_000, 0.0)).unwrap();
+        assert_eq!((row.key.as_str(), row.cost, row.project.as_str(), row.session.as_str()), ("opencode:msg_1", Some(20.0), "shop", "ses_1"));
+        assert_eq!(row.at, "2025-10-18T10:00:00.000Z");
+    }
+
+    #[test]
+    fn a_model_without_a_known_price_keeps_opencodes_cost() {
+        let row = opencode_reply_row("msg_1", "ses_1", &opencode_message(1_760_781_600_000, "gpt-7", 1000, 0.42)).unwrap();
+        assert_eq!(row.cost, Some(0.42));
+        let unpriced = opencode_reply_row("msg_2", "ses_1", &opencode_message(1_760_781_600_000, "gpt-7", 1000, 0.0)).unwrap();
+        assert_eq!(unpriced.cost, None);
+    }
+
+    #[test]
+    fn only_completed_assistant_replies_with_tokens_are_archived() {
+        let mut streaming: Value = serde_json::from_str(&opencode_message(1, "claude-opus-5-5", 5, 0.0)).unwrap();
+        streaming["time"].as_object_mut().unwrap().remove("completed");
+        let mut user: Value = serde_json::from_str(&opencode_message(1, "claude-opus-5-5", 5, 0.0)).unwrap();
+        user["role"] = json!("user");
+        for data in [streaming.to_string(), user.to_string(), opencode_message(1, "claude-opus-5-5", 0, 0.0), "not json".into()] {
+            assert!(opencode_reply_row("msg_1", "ses_1", &data).is_none(), "{data}");
+        }
+    }
+
+    #[test]
+    fn opencodes_replies_join_the_archive_once_and_count_as_time_spent() {
+        let directory = std::env::temp_dir().join(format!("costs-test-{}", util::token_hex(4)));
+        fs::create_dir_all(&directory).unwrap();
+        let database = directory.join("opencode.db");
+        let source = Connection::open(&database).unwrap();
+        source.execute_batch("create table message (id text primary key, session_id text not null, time_created integer, data text not null)").unwrap();
+        let start = chrono::Local::now().timestamp_millis() - 600_000;
+        for (id, offset) in [("msg_1", 0), ("msg_2", 120_000)] {
+            source.execute("insert into message (id, session_id, data) values (?, 'ses_1', ?)",
+                           params![id, opencode_message(start + offset, "claude-opus-5-5", 1_000_000, 0.0)]).unwrap();
+        }
+        drop(source);
+        let mut archive = open_archive(&directory.join("usage.sqlite")).unwrap();
+        assert_eq!(archive_opencode(&mut archive, &database).unwrap(), 2);
+        assert_eq!(archive_opencode(&mut archive, &database).unwrap(), 0);
+        assert_eq!(archived_costs(&archive).unwrap().2, 40.0);
+        let today = chrono::Local::now().date_naive().to_string();
+        assert_eq!(active_seconds(&archive, &today).unwrap().get("shop").map(|seconds| seconds.round()), Some(120.0));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn no_opencode_database_is_nothing_to_archive() {
+        let directory = std::env::temp_dir().join(format!("costs-test-{}", util::token_hex(4)));
+        let mut archive = open_archive(&directory.join("usage.sqlite")).unwrap();
+        assert_eq!(archive_opencode(&mut archive, &directory.join("opencode.db")).unwrap(), 0);
         fs::remove_dir_all(directory).unwrap();
     }
 }
