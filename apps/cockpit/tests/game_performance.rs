@@ -107,6 +107,26 @@ fn a_game_end_puts_priorities_back_and_leaves_game_mode() {
 }
 
 #[test]
+fn a_game_end_tells_the_running_hyprland_when_gamemodes_signature_is_a_past_ones() {
+    // GameMode's service outlives a Hyprland restart and keeps the old instance's signature.
+    let sandbox = sandbox();
+    sandbox.shim("hyprctl", r#"echo "hyprctl-instance $HYPRLAND_INSTANCE_SIGNATURE" >> "$SHIM_LOG""#);
+    fs::create_dir_all(sandbox.runtime.join("hypr/live_instance")).unwrap();
+    fs::write(sandbox.runtime.join("hypr/live_instance/.socket.sock"), "").unwrap();
+    sandbox.run(bin().join("game-performance"), &["off"], &[("HYPRLAND_INSTANCE_SIGNATURE", "gone_instance")]);
+    assert_eq!(sandbox.calls("hyprctl-instance"), ["hyprctl-instance live_instance"]);
+}
+
+#[test]
+fn a_game_end_that_cannot_reach_hyprland_says_so_in_the_log() {
+    let sandbox = sandbox();
+    sandbox.shim("hyprctl", "exit 1");
+    run(&sandbox, "off", "");
+    assert!(sandbox.calls("claude-sessions").iter().any(|call| call.contains("game WARN") && call.contains("could not be told to leave game mode")),
+            "{:?}", sandbox.calls("claude-sessions"));
+}
+
+#[test]
 fn a_game_end_without_a_start_restarts_nothing() {
     let sandbox = sandbox();
     let output = run(&sandbox, "off", "");
