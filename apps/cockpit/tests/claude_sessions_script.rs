@@ -1203,6 +1203,9 @@ fn run_with_the_tmux_servers_short_path_it_still_finds_its_helpers() {
     fs::create_dir_all(&helpers).unwrap();
     let log = manager.sandbox.root.join("helper.log");
     let helper = helpers.join("osd-show");
+    // The test home links the repository's real osd-show here: replace the link, never write
+    // through it (that overwrote the real script once).
+    fs::remove_file(&helper).unwrap();
     fs::write(&helper, format!("#!/bin/sh\necho \"$*\" >> {}\n", log.display())).unwrap();
     Command::new("chmod").arg("755").arg(&helper).status().unwrap();
     let path = format!("{}:/usr/bin:/bin", manager.sandbox.shims.display());

@@ -303,6 +303,7 @@ require_effort() {
 # snapshot), after LOADING_TIMEOUT_S (logged), or on Escape. A second call while it shows only
 # changes its text. Nothing when no terminal shows the manager.
 LOADING_STATE="${XDG_RUNTIME_DIR:-/tmp}/claude-sessions-loading"
+LOADING_PID="${XDG_RUNTIME_DIR:-/tmp}/claude-sessions-loading.pid"
 LOADING_TIMEOUT_S=${CLAUDE_SESSIONS_LOADING_TIMEOUT_S:-60}
 
 loading_overlay() { # label directory [session-id] [start|gone]
@@ -310,7 +311,8 @@ loading_overlay() { # label directory [session-id] [start|gone]
     printf '%s\n%s\n%s\n%s\n%s\n' "$1" "$2" "${3:-}" "$(date +%s)" "${4:-start}" > "$LOADING_STATE"
     client=$(tmux list-clients -t "=$MANAGER" -F '#{client_name}' 2>/dev/null | head -n 1)
     [[ -n $client ]] || return 0
-    pgrep -f "claude-sessions loading-screen" >/dev/null && return 0
+    # One loading screen at a time, this cockpit's own (its runtime folder), not any on the machine.
+    kill -0 "$(cat "$LOADING_PID" 2>/dev/null)" 2>/dev/null && return 0
     pane=$(viewer_pane)
     size=$(tmux display-message -p -t "$pane" '#{pane_width} #{pane_height}')
     # display-popup waits for the popup to close: started in the background.
@@ -338,6 +340,7 @@ viewer_shows_prompt() {
 }
 
 show_loading() {
+    printf '%s\n' "$$" > "$LOADING_PID"
     local frames=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏) tick=0 label directory session since mode rows columns
     # No TERM (the tests run from a systemd unit by the health check): no cursor to hide, and no
     # reason to stop.
@@ -362,7 +365,7 @@ show_loading() {
         tick=$(( tick + 1 ))
         sleep 0.15
     done
-    rm -f "$LOADING_STATE"
+    rm -f "$LOADING_STATE" "$LOADING_PID"
 }
 
 resume_session() { # dir id [effort]

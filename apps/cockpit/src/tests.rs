@@ -1209,7 +1209,7 @@ fn the_editor_file_gives_back_a_title_and_notes() {
 fn e_saves_what_was_written_in_the_editor() {
     let fixture = Fixture::new();
     // The popup's editor: it rewrites the file given last.
-    fixture.shim("tmux", r#"for last; do :; done; printf 'Better title\n\nfirst note\n' > "$last""#);
+    fixture.shim("tmux", r#"[[ $1 == display-popup ]] || exit 0; for last; do :; done; printf 'Better title\n\nfirst note\n' > "$last""#);
     let mut app = fixture.app();
     let id = app.todos.add("p", "/p", "draft");
     app.build();
