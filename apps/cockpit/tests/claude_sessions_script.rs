@@ -376,6 +376,57 @@ fn doctor_flags_a_claude_link_behind_the_newest_download() {
     assert!(manager.doctor_line("newest version", &env).trim().starts_with("ok"));
 }
 
+/// The doctor's environment for its opencode section: a fake opencode 2.0.26 and the data folder.
+fn opencode_doctor_env(manager: &Manager) -> Vec<(&'static str, String)> {
+    let binary = manager.sandbox.root.join("opencode");
+    write_executable(&binary, "#!/bin/sh\necho 'opencode v2.0.26'\n");
+    vec![("OPENCODE_BINARY", path_str(&binary)), ("XDG_DATA_HOME", path_str(&manager.sandbox.root.join("data")))]
+}
+
+fn doctor_line_with(manager: &Manager, needle: &str, env: &[(&'static str, String)]) -> String {
+    let pairs: Vec<(&str, &str)> = env.iter().map(|(name, value)| (*name, value.as_str())).collect();
+    manager.doctor_line(needle, &pairs)
+}
+
+#[test]
+fn doctor_shows_the_opencode_keys_shape_never_the_key() {
+    let key = format!("sk-ant-api03-{}", "Q".repeat(95));
+    for (stored, expected) in [(key.as_str(), "ok    API key in the keyring: sk-ant-api03-… (108 characters)"),
+                               ("sk-proj-abc123", "FAIL  the keyring's opencode key does not look like an Anthropic API key (14 characters)")] {
+        let manager = Manager::new();
+        manager.sandbox.shim("secret-tool", &format!("echo '{stored}'"));
+        let env = opencode_doctor_env(&manager);
+        let output = stdout(&manager.run(&["doctor"], &env.iter().map(|(name, value)| (*name, value.as_str())).collect::<Vec<_>>()));
+        assert!(output.lines().any(|line| line.trim() == expected), "{output}");
+        assert!(!output.contains(stored), "the doctor printed the key");
+    }
+}
+
+#[test]
+fn doctor_tells_whether_the_cockpit_plugin_loaded_in_opencodes_last_run() {
+    for (logged, verdict) in [("id=/home/theo/.config/opencode/plugins/cockpit.ts entrypoint=file:///x", "ok"), ("id=@ex-machina/opencode-anthropic-auth@next", "FAIL")] {
+        let manager = Manager::new();
+        let env = opencode_doctor_env(&manager);
+        let logs = manager.sandbox.root.join("data/opencode/log");
+        fs::create_dir_all(&logs).unwrap();
+        fs::write(logs.join("2026-10-19T194506.log"), format!("timestamp=2026-10-19T19:45:06Z level=INFO msg=\"loading plugin\" {logged}\n")).unwrap();
+        assert!(doctor_line_with(&manager, "plugin", &env).trim().starts_with(verdict), "{logged}");
+    }
+}
+
+#[test]
+fn doctor_flags_an_opencode_sandbox_that_hides_its_own_data() {
+    let manager = Manager::new();
+    let env = opencode_doctor_env(&manager);
+    let settings = manager.sandbox.runtime.join("greywall-agents/proj-a.opencode.json");
+    fs::create_dir_all(settings.parent().unwrap()).unwrap();
+    fs::write(&settings, json!({"filesystem": {"denyRead": ["~/.ssh/**", "~/.local/share/opencode/**"]}}).to_string()).unwrap();
+    let line = doctor_line_with(&manager, "own data", &env);
+    assert!(line.trim().starts_with("FAIL") && line.contains("~/.local/share/opencode/**"), "{line}");
+    fs::write(&settings, json!({"filesystem": {"denyRead": ["~/.ssh/**"]}}).to_string()).unwrap();
+    assert!(doctor_line_with(&manager, "own data", &env).trim().starts_with("ok"));
+}
+
 #[test]
 fn compact_is_typed_only_at_the_prompt() {
     let manager = Manager::new();

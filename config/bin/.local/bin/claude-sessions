@@ -1095,6 +1095,55 @@ sweep_caches() {
     find "$HOME/.cache/claude/guides" -maxdepth 1 -type f -mtime +7 -delete 2>/dev/null || true
 }
 
+# The doctor's opencode section; report and failures are the doctor's. The key's shape is checked
+# (its prefix and length), never shown.
+doctor_opencode() {
+    local binary=${OPENCODE_BINARY:-$HOME/.opencode/bin/opencode} version key key_kind newest_log settings own_folders folder hidden=""
+    local -a folders
+    echo "opencode"
+    if [[ ! -x $binary ]]; then
+        report fail "opencode not installed at $binary (the cockpit offers it as an agent)" "curl -fsSL https://opencode.ai/v2/install | bash"
+        return
+    fi
+    version=$("$binary" --version 2>/dev/null || true)
+    report ok "installed: ${version:-version unknown}"
+    # The newest log that loaded any plugin says whether the cockpit's was among them.
+    newest_log=$(grep -l 'msg="loading plugin"' "${XDG_DATA_HOME:-$HOME/.local/share}"/opencode/log/*.log 2>/dev/null | xargs -r ls -t 2>/dev/null | head -1 || true)
+    if [[ -z $newest_log ]]; then
+        report ok "plugin: no opencode run logged yet"
+    elif grep -q 'msg="loading plugin" id=[^ ]*/plugins/cockpit\.ts' "$newest_log"; then
+        report ok "the cockpit plugin loaded in its last run ($(basename "$newest_log"))"
+    else
+        report fail "the cockpit plugin did not load in opencode's last run ($newest_log)" "ls -l ~/.config/opencode/plugins (cd ~/dotfiles/config && stow -t ~ --restow opencode)"
+    fi
+    key=$(secret-tool lookup service agent-opencode-anthropic 2>/dev/null || true)
+    if [[ -z $key ]]; then
+        report fail "no Anthropic API key for opencode in the keyring" "make -C ~/dotfiles agent-opencode-key"
+    elif [[ $key =~ ^(sk-ant-[a-z]+[0-9]*)-[A-Za-z0-9_-]+$ ]] && (( ${#key} >= 80 )); then
+        key_kind=${BASH_REMATCH[1]}
+        report ok "API key in the keyring: $key_kind-… (${#key} characters)"
+    else
+        report fail "the keyring's opencode key does not look like an Anthropic API key (${#key} characters)" "make -C ~/dotfiles agent-opencode-key"
+    fi
+    unset key
+    # Its own folders, from its launcher, must have left denyRead in its newest settings file.
+    settings=$(ls -t "${XDG_RUNTIME_DIR:-/tmp}"/greywall-agents/*.opencode.json 2>/dev/null | head -1 || true)
+    local launcher
+    launcher="$(dirname "$(readlink -f "$0")")/greywall-agents/opencode"
+    own_folders=$(sed -n 's/^own_folders="\(.*\)"$/\1/p' "$launcher" 2>/dev/null)
+    if [[ -z $settings ]]; then
+        report ok "sandbox: no opencode session started since boot"
+    elif [[ -z $own_folders ]]; then
+        report fail "no own_folders in $launcher" "cd ~/dotfiles/config && stow -t ~ --restow bin"
+    else
+        read -ra folders <<< "$own_folders" # no glob: the entries are greywall's patterns, ** included
+        for folder in "${folders[@]}"; do
+            jq -e --arg folder "$folder" '.filesystem.denyRead | index($folder)' "$settings" >/dev/null 2>&1 && hidden+=" $folder"
+        done
+        if [[ -z $hidden ]]; then report ok "its sandbox sees its own data ($(basename "$settings"))"; else report fail "its sandbox hides its own data:$hidden ($settings)" "restart the opencode session (r): its launcher writes the settings again"; fi
+    fi
+}
+
 doctor() {
     local failures=0 daemon_pid fifo="${XDG_RUNTIME_DIR:-/tmp}/osd.fifo"
     report() { # ok|fail  what  [fix]
@@ -1175,6 +1224,7 @@ doctor() {
     if command -v ask-to-run >/dev/null && command -v claude-run-approve >/dev/null; then report ok "ask-to-run and claude-run-approve resolve"; else report fail "ask-to-run or claude-run-approve not on PATH" "cd ~/dotfiles/config && stow -t ~ --restow bin"; fi
     if command -v ask-to-guide >/dev/null && command -v claude-guide >/dev/null && command -v kitten >/dev/null; then report ok "ask-to-guide, claude-guide and kitten resolve"; else report fail "ask-to-guide, claude-guide or kitten not on PATH" "cd ~/dotfiles/config && stow -t ~ --restow bin"; fi
     if grep -qs "this terminal" "$HOME/.config/fish/config.fish"; then report ok "claude asks manager or terminal"; else report fail "fish claude function is the old one" "install .handoff/fish/config.fish"; fi
+    doctor_opencode
     echo "logs"
     local since errors last_error
     since=$(date -d '24 hours ago' -Iseconds)
