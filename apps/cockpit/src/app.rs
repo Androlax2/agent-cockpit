@@ -78,12 +78,13 @@ const GLOBAL_HELP: [(&str, &str); 18] = [
     ("l →  ←", "into the session from any panel; ← from the session comes back"),
     ("q ⌘C", "close the manager window; sessions keep running"),
 ];
-const LEGEND: [(&str, &str); 19] = [
+const LEGEND: [(&str, &str); 20] = [
     ("●", "working"), ("○", "waiting for you"), ("!", "needs you: permission or question"), ("·", "running, state unknown"),
     ("▌", "shown in the session pane"), ("⚲", "pinned"), ("⇅", "remote controlled"),
     ("◆ figcraft", "connected to FigCraft, which is open for this session's project (craft-open)"),
     ("✉ 2 queued", "messages waiting for the end of its turn, sent one per turn (m, Alt+Q; M drops them)"),
     ("↑2 unpushed", "commits on no remote yet: U pushes the branch"),
+    ("⏱ 1h20 today · 34h", "time spent with Claude on the project, today and in all: the gaps under 5 minutes between its sessions' replies"),
     ("↑2 unapplied", "a dotfiles clone's commits ~/dotfiles lacks: U shows them and applies them after a yes"),
     ("↑2 unpushed (dotfiles)", "on a dotfiles card, commits ~/dotfiles holds and GitHub lacks: U pushes them after a yes"),
     ("▭ terminal", "started with \"this terminal\": no ⌘R, restore, queue, error hand-off or ask-to-run"),
@@ -662,7 +663,24 @@ impl App {
         self.build_todo();
     }
 
-    /// The viewed session's state goes to the manager (its title line's colour) when it changes.
+    /// Time spent with Claude on a project (Costs::time_spent), "⏱ 34h" or "⏱ 1h20 today · 34h"; None
+/// under a minute in all.
+pub(crate) fn time_spent_text((today, all_time): (f64, f64)) -> Option<String> {
+    let short = |seconds: f64| {
+        let minutes = (seconds / 60.0).round() as i64;
+        match minutes {
+            0..=59 => format!("{minutes}m"),
+            60..=599 => format!("{}h{:02}", minutes / 60, minutes % 60),
+            _ => format!("{}h", minutes / 60),
+        }
+    };
+    if all_time < 60.0 {
+        return None;
+    }
+    Some(if today >= 60.0 { format!("⏱ {} today · {}", short(today), short(all_time)) } else { format!("⏱ {}", short(all_time)) })
+}
+
+/// The viewed session's state goes to the manager (its title line's colour) when it changes.
     fn push_viewed_state(&mut self) {
         let viewed = current_session();
         let state = self.sessions.iter().find(|s| s.session == viewed).map(|s| s.state.clone()).unwrap_or_default();
@@ -921,9 +939,12 @@ impl App {
             // named by its branch, with no gap between them.
             let indent: u16 = if grouped { 2 } else { 0 };
             let rail = if grouped { vec![segment(0, "│", dim(project_color(&session.project)))] } else { vec![] };
+            let time_spent = Self::time_spent_text(self.costs.time_spent(&session.project));
             if grouped && session.group_position == 0 {
-                lines.push(Line::new(vec![segment(0, &session.project, bold(project_color(&session.project))),
-                                          segment(width_of(&session.project) as u16 + 1, format!("· {} sessions", session.group_size), dim(FG_DARK))]));
+                let mut heading = Line::new(vec![segment(0, &session.project, bold(project_color(&session.project))),
+                                                 segment(width_of(&session.project) as u16 + 1, format!("· {} sessions", session.group_size), dim(FG_DARK))]);
+                heading.right = time_spent.iter().map(|text| part(text, dim(FG_DARK))).collect();
+                lines.push(heading);
             }
             let segments = if grouped {
                 let name = if branch.is_empty() { session.project.clone() } else { branch.clone() };
@@ -982,6 +1003,12 @@ impl App {
             }
             if session.pinned {
                 badges.push(part("⚲", style(YELLOW)));
+            }
+            // A project's time once: on its heading when it has several sessions, else on its card.
+            if !grouped {
+                if let Some(text) = &time_spent {
+                    badges.push(part(text, dim(FG_DARK)));
+                }
             }
             badges.push(part(age(session.since), tint));
             lines.push(Line { segments, right: badges, item: Some(index), accent });

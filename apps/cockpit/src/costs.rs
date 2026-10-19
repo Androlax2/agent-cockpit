@@ -88,6 +88,8 @@ pub fn reply_cost(model: &str, usage: &Value) -> Option<f64> {
 pub struct Reply {
     key: String, day: String, at: String, model: String, project: String, session: String,
     input: i64, output: i64, cache_read: i64, write_5m: i64, write_1h: i64, speed: String, cost: Option<f64>,
+    /// Where the session ran: archive_transcripts names the project from it as the cards do.
+    cwd: String,
 }
 
 /// The archive row of one transcript line (with its newline, as the key hashes it), or None.
@@ -115,7 +117,7 @@ pub fn reply_row(line: &[u8]) -> Option<Reply> {
     let project = Path::new(cwd).file_name().map(|name| name.to_string_lossy().into_owned()).filter(|name| !name.is_empty()).unwrap_or("?".into());
     let (write_5m, write_1h) = cache_writes(usage);
     Some(Reply {
-        key, day, at: timestamp.into(), model: model.into(), project,
+        key, day, at: timestamp.into(), model: model.into(), project, cwd: cwd.into(),
         session: record.get("sessionId").and_then(Value::as_str).unwrap_or("").into(),
         input: tokens(usage, "input_tokens"), output: tokens(usage, "output_tokens"), cache_read: tokens(usage, "cache_read_input_tokens"),
         write_5m, write_1h, speed: usage.get("speed").and_then(Value::as_str).unwrap_or("standard").into(), cost: reply_cost(model, usage),
@@ -129,6 +131,12 @@ pub fn open_archive(path: &Path) -> rusqlite::Result<Connection> {
     let archive = Connection::open(path)?;
     archive.busy_timeout(std::time::Duration::from_secs(10))?;
     archive.execute_batch(SCHEMA)?;
+    // Version 2 names a reply's project as the cards do (the repository, a parallel clone's
+    // included), not after the folder Claude ran in: every transcript is read once more so the
+    // rows already archived get it too.
+    if archive.query_row("pragma user_version", [], |row| row.get::<_, i64>(0))? < 2 {
+        archive.execute_batch("delete from files; pragma user_version = 2;")?;
+    }
     Ok(archive)
 }
 
@@ -159,6 +167,7 @@ pub fn archive_transcripts(archive: &mut Connection, transcripts: &Path) -> rusq
     let mut files = Vec::new();
     transcript_files(transcripts, &mut files);
     let mut added = 0;
+    let mut projects: HashMap<String, String> = HashMap::new();
     for path in files {
         let Ok(metadata) = fs::metadata(&path) else { continue };
         let mtime = metadata.modified().ok().and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs_f64()).unwrap_or(0.0);
@@ -172,14 +181,17 @@ pub fn archive_transcripts(archive: &mut Connection, transcripts: &Path) -> rusq
         let mut rows = Vec::new();
         let mut line = Vec::new();
         while reader.read_until(b'\n', &mut line).unwrap_or(0) > 0 {
-            if let Some(row) = reply_row(&line) {
+            if let Some(mut row) = reply_row(&line) {
+                if !row.cwd.is_empty() {
+                    row.project = projects.entry(row.cwd.clone()).or_insert_with(|| util::project_name(&util::repository_root(&row.cwd))).clone();
+                }
                 rows.push(row);
             }
             line.clear();
         }
         let transaction = archive.transaction()?;
         {
-            let mut insert = transaction.prepare("insert or ignore into replies values (?,?,?,?,?,?,?,?,?,?,?,?,?)")?;
+            let mut insert = transaction.prepare("insert into replies values (?,?,?,?,?,?,?,?,?,?,?,?,?) on conflict(key) do update set project = excluded.project where project != excluded.project")?;
             for row in &rows {
                 added += insert.execute(params![row.key, row.day, row.at, row.model, row.project, row.session, row.input, row.output,
                                                 row.cache_read, row.write_5m, row.write_1h, row.speed, row.cost])?;
@@ -189,6 +201,22 @@ pub fn archive_transcripts(archive: &mut Connection, transcripts: &Path) -> rusq
         transaction.commit()?;
     }
     Ok(added)
+}
+
+/// A gap between two replies of a session counts as time spent only under this: longer, the
+/// session sat waiting (a night, a meeting), and that is not time with Claude.
+const ACTIVE_GAP_S: f64 = 300.0;
+
+/// Seconds spent with Claude per project since `first_day` (YYYY-MM-DD): the gaps between
+/// consecutive replies of each session, each counted when under ACTIVE_GAP_S.
+pub fn active_seconds(archive: &Connection, first_day: &str) -> rusqlite::Result<HashMap<String, f64>> {
+    let mut statement = archive.prepare(
+        "select project, sum(case when gap < ?2 then gap else 0 end) from (
+             select project, (julianday(at) - julianday(lag(at) over (partition by session order by at))) * 86400.0 as gap
+             from replies where day >= ?1
+         ) group by project")?;
+    let rows = statement.query_map(params![first_day, ACTIVE_GAP_S], |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<f64>>(1)?.unwrap_or(0.0))))?;
+    rows.collect()
 }
 
 /// Cost per day, output tokens of replies without a known price per model, and the all-time cost.
@@ -213,6 +241,9 @@ pub fn archived_costs(archive: &Connection) -> rusqlite::Result<(HashMap<String,
 struct State {
     days: HashMap<String, f64>,
     all_time: f64,
+    /// Seconds spent with Claude per project (active_seconds): today, and all the archive holds.
+    active_today: HashMap<String, f64>,
+    active_all_time: HashMap<String, f64>,
     error: String,
     scanned_at: f64,
     scanning: bool,
@@ -242,15 +273,18 @@ impl Costs {
         let shared = self.state.clone();
         std::thread::spawn(move || {
             let path = paths::usage_archive();
+            let today = Local::now().date_naive().to_string();
             let result = open_archive(&path).and_then(|mut archive| {
                 archive_transcripts(&mut archive, &paths::transcripts())?;
-                archived_costs(&archive)
+                Ok((archived_costs(&archive)?, active_seconds(&archive, &today)?, active_seconds(&archive, "0000-00-00")?))
             });
             let mut state = shared.lock().unwrap();
             match result {
-                Ok((days, _, all_time)) => {
+                Ok(((days, _, all_time), active_today, active_all_time)) => {
                     state.days = days;
                     state.all_time = all_time;
+                    state.active_today = active_today;
+                    state.active_all_time = active_all_time;
                     state.error.clear();
                 }
                 Err(error) => {
@@ -282,6 +316,12 @@ impl Costs {
 
     pub fn all_time(&self) -> f64 {
         self.state.lock().unwrap().all_time
+    }
+
+    /// Seconds spent with Claude on a project (active_seconds): today, and in all.
+    pub fn time_spent(&self, project: &str) -> (f64, f64) {
+        let state = self.state.lock().unwrap();
+        (state.active_today.get(project).copied().unwrap_or(0.0), state.active_all_time.get(project).copied().unwrap_or(0.0))
     }
 
     pub fn error(&self) -> String {

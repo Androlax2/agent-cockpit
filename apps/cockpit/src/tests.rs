@@ -2117,3 +2117,59 @@ fn n_hands_the_item_to_a_new_session_in_a_clone_even_with_one_running() {
     assert!(!call.contains(" say "), "sent to the running session: {call}");
     assert_eq!(app.todos.status_of(&healthcheck), "doing");
 }
+
+/// A transcript of replies at these minutes past 10:00 (and seconds), in session `session` run in `cwd`.
+fn replies_at(fixture: &Fixture, session: &str, cwd: &str, seconds: &[i64]) {
+    let lines: Vec<String> = seconds.iter().enumerate().map(|(index, offset)| {
+        let at = chrono::NaiveDate::from_ymd_opt(2026, 10, 18).unwrap().and_hms_opt(10, 0, 0).unwrap() + chrono::Duration::seconds(*offset);
+        json!({"timestamp": format!("{}Z", at.format("%Y-%m-%dT%H:%M:%S")), "requestId": format!("{session}-r{index}"), "sessionId": session,
+               "cwd": cwd, "message": {"id": format!("{session}-m{index}"), "model": "claude-opus-5-5", "usage": {"output_tokens": 10}}}).to_string()
+    }).collect();
+    fixture.write(&format!("home/.claude/projects/p/{session}.jsonl"), &(lines.join("\n") + "\n"));
+}
+
+fn archived(fixture: &Fixture) -> rusqlite::Connection {
+    let mut archive = costs::open_archive(&fixture.path("state/usage.sqlite")).unwrap();
+    costs::archive_transcripts(&mut archive, &fixture.path("home/.claude/projects")).unwrap();
+    archive
+}
+
+#[test]
+fn time_spent_counts_the_gaps_between_replies_under_five_minutes_per_session() {
+    let fixture = Fixture::new();
+    // 60 + 60 + 60 s, then an hour away (not counted), then 30 s; a second session's 90 s apart.
+    replies_at(&fixture, "s1", "/x/shop", &[0, 60, 120, 180, 3780, 3810]);
+    replies_at(&fixture, "s2", "/x/shop", &[30, 120]);
+    let spent = costs::active_seconds(&archived(&fixture), "2026-10-18").unwrap();
+    assert_eq!(spent.get("shop").map(|seconds| seconds.round()), Some(300.0));
+}
+
+#[test]
+fn a_parallel_clones_time_counts_for_its_repository() {
+    // The card names a clone's session after its repository: so does the archive.
+    let fixture = Fixture::new();
+    let clone = crate::paths::clones_dir().join("dotfiles/todo-0123abcd/apps");
+    replies_at(&fixture, "s1", &clone.display().to_string(), &[0, 60]);
+    let spent = costs::active_seconds(&archived(&fixture), "2026-10-18").unwrap();
+    assert_eq!(spent.keys().collect::<Vec<_>>(), ["dotfiles"]);
+}
+
+#[test]
+fn an_archive_from_before_version_2_reads_every_transcript_again() {
+    let fixture = Fixture::new();
+    replies_at(&fixture, "s1", "/x/shop", &[0, 60]);
+    {
+        let archive = archived(&fixture);
+        archive.execute_batch("update replies set project = 'old-name'; pragma user_version = 1;").unwrap();
+    }
+    let spent = costs::active_seconds(&archived(&fixture), "2026-10-18").unwrap();
+    assert_eq!(spent.keys().collect::<Vec<_>>(), ["shop"]);
+}
+
+#[test]
+fn time_spent_reads_in_minutes_then_hours() {
+    for ((today, all_time), expected) in [((0.0, 30.0), None), ((0.0, 2040.0), Some("⏱ 34m")), ((4800.0, 122_400.0), Some("⏱ 1h20 today · 34h")),
+                                          ((0.0, 11_100.0), Some("⏱ 3h05"))] {
+        assert_eq!(App::time_spent_text((today, all_time)).as_deref(), expected, "{today} {all_time}");
+    }
+}
