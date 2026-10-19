@@ -258,7 +258,7 @@ new_session() {
     loading_overlay "Starting Claude in $(basename "$directory") …" "$directory"
     tmux respawn-pane -k -t "$(viewer_pane)" -c "$directory" \
         env -u TMUX -u TMUX_PANE CLAUDE_SESSIONS_INSIDE=1 \
-        fish -ic 'echo; echo "  ⟳ Starting Claude in $PWD …"; echo; claude $argv'"$LAUNCH_EPILOGUE" "$@"
+        fish -ic 'echo; echo "  ⟳ Starting Claude in $PWD …"; echo; claude $argv'"$LAUNCH_EPILOGUE" -- "$@"
     : > "$CURRENT"
     label_panes "$(basename "$directory")"
 }
@@ -272,9 +272,11 @@ background_session() { # dir prompt
     local prompt=$2
     [[ $prompt == -* ]] && prompt="Task: $prompt" # never an option of claude's
     tmux new-session -d -s "claude-retry-bg-$(date +%s)" -x 200 -y 50 -c "$1" \
-        env -u TMUX_PANE CLAUDE_SESSIONS_INSIDE=1 fish -ic 'claude $argv' "$prompt"
+        env -u TMUX_PANE CLAUDE_SESSIONS_INSIDE=1 fish -ic 'claude $argv' -- "$prompt"
 }
 
+# Every `fish -ic '…' -- args` keeps the --: without it fish takes an argument such as --resume or
+# --effort as its own option and exits ("unknown option") before Claude starts.
 # Appended to every launch in the viewer pane: a start that fails says so and stays on screen,
 # instead of leaving a bare "Pane is dead (status 1)". Claude itself runs in its own tmux session
 # (claude-auto-retry), so its error may be there; the epilogue lists those sessions.
@@ -369,7 +371,7 @@ resume_session() { # dir id [effort]
     loading_overlay "Resuming $(basename "$1")${3:+ · effort $3} …" "$1" "$2"
     tmux respawn-pane -k -t "$(viewer_pane)" -c "$1" \
         env -u TMUX -u TMUX_PANE CLAUDE_SESSIONS_INSIDE=1 \
-        fish -ic 'echo; echo "  ⟳ Resuming the conversation in $PWD …"; echo; claude --resume $argv'"$LAUNCH_EPILOGUE" "$2" "${effort_flags[@]}"
+        fish -ic 'echo; echo "  ⟳ Resuming the conversation in $PWD …"; echo; claude --resume $argv'"$LAUNCH_EPILOGUE" -- "$2" "${effort_flags[@]}"
     : > "$CURRENT"
     label_panes "$(basename "$1")"
     focus_viewer
@@ -678,7 +680,7 @@ launch_detached() { # dir claude-arguments...
     shift
     tmux new-session -d -s "claude-retry-restart-$(date +%s%N)" -x 200 -y 50 -c "$directory" \
         env -u TMUX_PANE CLAUDE_SESSIONS_INSIDE=1 \
-        fish -ic 'claude $argv; or claude-sessions log manager ERROR "claude exited with status $status in $PWD"' "$@"
+        fish -ic 'claude $argv; or claude-sessions log manager ERROR "claude exited with status $status in $PWD"' -- "$@"
 }
 
 # The morning digest (the sidebar's D, and the first time the cockpit opens each day): yesterday's

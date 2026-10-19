@@ -480,7 +480,7 @@ fn a_background_session_gets_its_own_tmux_session_and_leaves_the_viewer_alone() 
     assert_eq!(manager.run(&["background", &path_str(&manager.project), "fix this"], &[]).status.code(), Some(0));
     let started = manager.tmux_calls("new-session").pop().expect("no new-session");
     assert!(Regex::new(r"new-session -d -s claude-retry-bg-\d+ ").unwrap().is_match(&started), "{started}");
-    assert!(started.ends_with("fish -ic claude $argv fix this"));
+    assert!(started.ends_with("fish -ic claude $argv -- fix this"), "{started}");
     assert!(manager.tmux_calls("respawn-pane").is_empty());
 }
 
@@ -1053,4 +1053,36 @@ fn the_doctor_does_not_count_the_health_checks_own_failure() {
     let result = manager.run(&["doctor"], &[]);
     let output = stdout(&result);
     assert!(output.contains("no error logged in 24 h"), "{}\n---stderr\n{}", &output[output.len().saturating_sub(800)..], stderr(&result));
+}
+
+/// What a launch hands fish after its script, from the `--` that ends fish's own options (the fake
+/// tmux logs calls without their quotes, so the script cannot be told apart otherwise).
+fn fish_arguments(call: &str) -> String {
+    let at = call.find(" -- ").unwrap_or_else(|| panic!("no -- before Claude's arguments: {call}"));
+    call[at + 1..].to_string()
+}
+
+/// fish, as the launch runs it: with an option-like first argument and no --, fish refused it as
+/// its own option and Claude never started (restart-all brought nothing back).
+fn fish_accepts(arguments: &str) -> bool {
+    let words: Vec<&str> = arguments.split_whitespace().collect();
+    Command::new("fish").args(["--no-config", "-c", "true"]).args(&words).status().map(|status| status.success()).unwrap_or(false)
+}
+
+#[test]
+fn restart_all_hands_its_resume_arguments_to_claude_not_to_fish() {
+    let manager = Manager::new();
+    manager.run(&["restart-all", SESSION_A], &[("SHIM_PANE_TEXT", IDLE), ("SHIM_EXIT_AFTER", "1"), ("CLAUDE_SESSIONS_RESTORE_WAIT", "0")]);
+    let launch = manager.calls("tmux").into_iter().find(|call| call.contains("claude-retry-restart-")).expect("no launch");
+    let arguments = fish_arguments(&launch);
+    assert!(arguments.starts_with("-- --resume"), "{arguments}");
+    assert!(fish_accepts(&arguments), "fish refuses: {arguments}");
+}
+
+#[test]
+fn a_new_session_with_an_effort_hands_it_to_claude_not_to_fish() {
+    let manager = Manager::new();
+    manager.run(&["new", &path_str(&manager.project), "--effort", "max"], &[]);
+    let launch = manager.tmux_calls("respawn-pane").into_iter().find(|call| call.contains("claude $argv")).expect("no launch");
+    assert!(fish_accepts(&fish_arguments(&launch)), "fish refuses: {launch}");
 }
