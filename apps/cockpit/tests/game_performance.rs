@@ -16,10 +16,12 @@ fn sandbox() -> Sandbox {
     sandbox.shim("systemctl", FAKE_SYSTEMCTL);
     sandbox.shim("hyprctl", "");
     sandbox.shim("claude-sessions", "");
-    // Two Claude sessions in their tmux scopes, one of them with two processes (launcher, session).
+    // Three greywall sandboxes: two in tmux scopes, one of those with two processes, and one in a
+    // kitty window's scope.
     sandbox.shim("ps", r#"printf '%s\n' "0::/user.slice/user-1000.slice/user@1000.service/app.slice/tmux-spawn-aaa.scope" \
         "0::/user.slice/user-1000.slice/user@1000.service/app.slice/tmux-spawn-aaa.scope" \
-        "0::/user.slice/user-1000.slice/user@1000.service/app.slice/tmux-spawn-bbb.scope""#);
+        "0::/user.slice/user-1000.slice/user@1000.service/app.slice/tmux-spawn-bbb.scope" \
+        "0::/user.slice/user-1000.slice/user@1000.service/kitty-526640-0.scope""#);
     sandbox
 }
 
@@ -44,11 +46,23 @@ fn a_game_start_leaves_the_sessions_running_while_freeze_while_gaming_is_off() {
 }
 
 #[test]
-fn a_game_start_pauses_each_claude_sessions_scope_once() {
+fn a_game_start_pauses_each_sandboxs_scope_once() {
     let sandbox = sandbox();
     run(&sandbox, "on", "");
     let frozen: Vec<String> = sandbox.calls("systemctl").into_iter().filter(|call| call.contains(" freeze ")).collect();
-    assert_eq!(frozen, ["systemctl --user freeze tmux-spawn-aaa.scope", "systemctl --user freeze tmux-spawn-bbb.scope"]);
+    assert_eq!(frozen, [
+        "systemctl --user freeze kitty-526640-0.scope",
+        "systemctl --user freeze tmux-spawn-aaa.scope",
+        "systemctl --user freeze tmux-spawn-bbb.scope",
+    ]);
+}
+
+/// Every agent runs under greywall: looking for greywall, not one agent's binary, freezes them all.
+#[test]
+fn a_game_start_looks_for_the_greywall_sandboxes_not_one_agent() {
+    let sandbox = sandbox();
+    run(&sandbox, "on", "");
+    assert_eq!(sandbox.calls("ps"), ["ps -C greywall -o cgroup="]);
 }
 
 #[test]
@@ -65,7 +79,11 @@ fn a_game_end_resumes_the_sessions_it_paused() {
     sandbox.reset_log();
     run(&sandbox, "off", "");
     let thawed: Vec<String> = sandbox.calls("systemctl").into_iter().filter(|call| call.contains(" thaw ")).collect();
-    assert_eq!(thawed, ["systemctl --user thaw tmux-spawn-aaa.scope", "systemctl --user thaw tmux-spawn-bbb.scope"]);
+    assert_eq!(thawed, [
+        "systemctl --user thaw kitty-526640-0.scope",
+        "systemctl --user thaw tmux-spawn-aaa.scope",
+        "systemctl --user thaw tmux-spawn-bbb.scope",
+    ]);
     assert!(!sandbox.runtime.join("game-performance.frozen").exists());
 }
 

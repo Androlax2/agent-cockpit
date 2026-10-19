@@ -975,7 +975,7 @@ doctor() {
     local unit
     # Sessions frozen by game-performance during a game; still listed with no game means a missed thaw.
     if [[ -s ${XDG_RUNTIME_DIR:-/tmp}/game-performance.frozen ]] && ! pgrep -x gamemoded >/dev/null; then
-        report fail "Claude sessions still paused after a game" "game-performance off"
+        report fail "agent sandboxes still paused after a game" "game-performance off"
     fi
     for unit in claude-update.timer elephant.service walker.service; do
         if [[ $(systemctl --user is-active "$unit" 2>/dev/null) == active ]]; then report ok "$unit active"; else report fail "$unit not active" "systemctl --user enable --now $unit (units in .handoff/systemd-user until installed)"; fi
