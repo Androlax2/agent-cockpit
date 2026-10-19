@@ -1214,3 +1214,15 @@ fn run_with_the_tmux_servers_short_path_it_still_finds_its_helpers() {
     manager.run(&["view", SESSION_A], &[("PATH", &path)]);
     assert!(fs::read_to_string(&log).unwrap_or_default().contains("session-seen"), "osd-show not found");
 }
+
+#[test]
+fn sessions_launched_in_their_own_tmux_session_keep_their_pane_id() {
+    // Stripped, the session reported no pane: its card could not be opened, and its tmux session
+    // showed up as a second, unknown card.
+    let manager = Manager::new();
+    manager.run(&["restart-all", SESSION_A], &[("SHIM_PANE_TEXT", IDLE), ("SHIM_EXIT_AFTER", "1"), ("CLAUDE_SESSIONS_RESTORE_WAIT", "0")]);
+    manager.run(&["background", &path_str(&manager.project), "fix this"], &[]);
+    let launches: Vec<String> = manager.tmux_calls("new-session").into_iter().filter(|call| call.contains("claude $argv")).collect();
+    assert_eq!(launches.len(), 2, "{launches:?}");
+    assert!(launches.iter().all(|call| !call.contains("TMUX_PANE")), "{launches:?}");
+}
