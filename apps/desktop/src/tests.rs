@@ -935,6 +935,43 @@ fn after_an_answer_the_window_stays_until_the_command_ends() {
 }
 
 #[test]
+fn a_window_theo_closes_stays_closed_while_it_asks() {
+    let mut bench = Bench::new();
+    bench.registry.run_request(RUN_A).unwrap();
+    bench.windows()[0].borrow_mut().closed = true;
+    bench.registry.tick_queues();
+    bench.registry.tick_queues();
+    assert_eq!(bench.windows().len(), 1, "reopened after Theo closed it");
+}
+
+#[test]
+fn a_window_theo_closed_comes_back_for_the_next_question() {
+    let mut bench = Bench::new();
+    bench.registry.run_request(RUN_A).unwrap();
+    bench.windows()[0].borrow_mut().closed = true;
+    bench.registry.tick_queues();
+    bench.registry.run_phase(RUN_A, "running");
+    bench.registry.run_phase(RUN_A, "input");
+    assert_eq!(bench.windows().len(), 2);
+    assert!(!bench.windows()[1].borrow().closed);
+}
+
+#[test]
+fn after_an_answer_a_window_closed_on_the_cockpit_does_not_follow_theo_elsewhere() {
+    let mut bench = Bench::new();
+    bench.registry.run_request(RUN_A).unwrap();
+    bench.registry.run_phase(RUN_A, "running");
+    bench.registry.run_phase(RUN_A, "input");
+    bench.registry.run_phase(RUN_A, "running");
+    bench.world.borrow_mut().on_cockpit = true;
+    bench.registry.tick_queues();
+    bench.world.borrow_mut().on_cockpit = false;
+    bench.registry.tick_queues();
+    assert_eq!(bench.windows().len(), 2, "reopened on the next workspace");
+    assert!(bench.windows()[1].borrow().closed);
+}
+
+#[test]
 fn a_command_that_never_asks_for_input_runs_without_its_window() {
     let mut bench = Bench::new();
     bench.registry.run_request(RUN_A).unwrap();

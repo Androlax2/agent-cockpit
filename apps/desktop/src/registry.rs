@@ -503,6 +503,8 @@ pub struct RunRequests {
     pub phase: String,
     /// The current command asked for input once: Theo is following it, the window stays to its end.
     asked_input: bool,
+    /// Theo closed the window himself: it stays closed until the command asks him something new.
+    dismissed: bool,
     window: Option<Box<dyn Window>>,
 }
 
@@ -625,6 +627,7 @@ impl RunRequests {
             self.current = id.clone();
             self.phase = "asking".into();
             self.asked_input = false;
+            self.dismissed = false;
             system.run(&["claude-sessions", "approval-pane", &id], &[0]);
             self.show(system);
             return;
@@ -634,6 +637,9 @@ impl RunRequests {
     pub fn phase_changed(&mut self, system: &mut dyn System, banners: &mut dyn Banners, id: &str, phase: &str) {
         if id != self.current || !RUN_PHASES.contains(&phase) {
             return;
+        }
+        if phase == "input" && self.phase != "input" {
+            self.dismissed = false;
         }
         self.phase = phase.into();
         self.asked_input |= phase == "input";
@@ -648,10 +654,18 @@ impl RunRequests {
 
     /// The floating window while the approval needs Theo (his yes, or input the running command
     /// asks for), he is off the cockpit, and not gaming. Once he approved, it closes while the
-    /// command just runs; the pane under the cockpit's session keeps showing the output.
+    /// command just runs; the pane under the cockpit's session keeps showing the output. A window
+    /// open when he answered input stays to the command's end, but one closed meanwhile (the
+    /// cockpit's workspace, or Theo) is not opened again: reopened, it followed him to every
+    /// workspace he went to. One Theo closes while it asks stays closed until the next question.
     fn show(&mut self, system: &mut dyn System) {
         let open_now = self.window.as_mut().is_some_and(|window| window.running());
-        let needs_theo = self.phase == "asking" || self.phase == "input" || self.asked_input;
+        if self.window.is_some() && !open_now {
+            self.window = None;
+            self.dismissed = true;
+        }
+        let asks_now = self.phase == "asking" || self.phase == "input";
+        let needs_theo = if open_now { asks_now || self.asked_input } else { asks_now && !self.dismissed };
         let wanted = needs_theo && !system.claude_workspace_active() && !system.quiet();
         if wanted && !open_now {
             let target = format!("={}", run_session(&self.current));
@@ -677,6 +691,7 @@ impl RunRequests {
         self.current.clear();
         self.phase.clear();
         self.asked_input = false;
+        self.dismissed = false;
         self.next(system);
     }
 
