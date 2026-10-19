@@ -239,6 +239,31 @@ fn the_effort_is_a_clickable_stamp_that_opens_the_menu() {
 }
 
 #[test]
+fn enter_in_the_settings_menu_flips_the_setting_through_claude_sessions() {
+    for (stored, wanted) in [(None, "off"), (Some(r#"{"handoff-on-lock": false}"#), "on"), (Some("not json"), "off")] {
+        let fixture = Fixture::new();
+        if let Some(content) = stored {
+            fixture.write("state/claude-sessions/settings.json", content);
+        }
+        let mut app = fixture.app();
+        app.handle(Key::Char('S'), &mut FakeScreen::default());
+        app.handle(Key::Enter, &mut FakeScreen::default());
+        assert_eq!(fixture.calls("claude-sessions"), vec![format!("claude-sessions setting handoff-on-lock {wanted}")], "stored {stored:?}");
+        assert_eq!(app.message, format!("Remote Control on lock: {wanted}"));
+    }
+}
+
+#[test]
+fn any_other_key_closes_the_settings_menu_without_changing_anything() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    app.handle(Key::Char('S'), &mut FakeScreen::default());
+    app.handle(Key::Esc, &mut FakeScreen::default());
+    assert!(app.settings_menu.is_none());
+    assert!(fixture.calls("claude-sessions").is_empty());
+}
+
+#[test]
 fn choosing_another_effort_restarts_the_session_on_it() {
     let fixture = Fixture::new();
     fixture.snapshot(json!([session(SESSION_A, "waiting", "runway", "/r", 1)]));

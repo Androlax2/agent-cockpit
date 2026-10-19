@@ -1,5 +1,5 @@
 //! The column itself: four stacked panels (Status, Sessions, Pull requests, Todo), the header and
-//! the footer, the effort menu, the help, and every key. The focused panel takes half the column;
+//! the footer, the effort and settings menus, the help, and every key. The focused panel takes half the column;
 //! Status keeps its size.
 
 use crate::costs::Costs;
@@ -7,6 +7,7 @@ use crate::errors::ErrorReporter;
 use crate::paths;
 use crate::reviews::{self, Review, Reviews};
 use crate::sessions::{self, CONTEXT_COMPACT_AT, FOCUS_STATES, History, PastSession, Restorable, Session, ViewState};
+use crate::settings::{self, SETTINGS};
 use crate::status::{self, ClaudeStatus};
 use crate::todo::{self, Entry, TodoList};
 use crate::usage::{self, BudgetAlerts, Refresher, Window};
@@ -60,7 +61,7 @@ const PANEL_NAMES: [&str; 4] = ["Status", "Sessions", "Pull requests", "Todo"];
 const PANEL_KEYS: [&str; 4] = ["0", "1", "2", "3"];
 const GLOBAL_HINTS: [(&str, &str); 6] = [("⇥", "panel"), ("/", "filter"), (":", "actions"), ("a", "new"), ("?", "help"), ("q", "close")];
 /// ⌘ in key hints: the physical Command key, which keyd turns into Ctrl (system/etc/keyd).
-const GLOBAL_HELP: [(&str, &str); 17] = [
+const GLOBAL_HELP: [(&str, &str); 18] = [
     ("0-3", "focus a panel"), ("H", "resume a past session, searched by project and prompt"),
     ("⌘1 ⌘2 ⌘3", "focus a panel from inside the session (tmux)"), ("⇥ ⇧⇥", "next / previous panel"), ("j/k ↑↓", "move inside the panel"),
     ("/", "filter the focused panel, Esc clears"), (":", "every action, searchable"), ("a", "new session in a project"),
@@ -68,6 +69,7 @@ const GLOBAL_HELP: [(&str, &str); 17] = [
     ("K", "the clones of A, + and reviews: delete those with no session, no uncommitted change and nothing unpushed"),
     ("V", "a design session: a Claude Design canvas, worked on by a session in a project (link, then project)"),
     ("D", "the digest: yesterday, today, plan usage, who waits, pull requests (also once a day by itself)"),
+    ("S", "settings, on or off: Remote Control when the screen locks"),
     ("P W G", "windows on top: pull requests, Claude on the web, greyproxy (also Super+Ctrl+P/A/G)"),
     ("≈ $", "today's Claude Code replies on this machine at API prices (the plan is flat); week and month in Status"),
     ("⌘⇥", "cursor between the column and the session (tmux)"),
@@ -306,6 +308,55 @@ impl EffortMenu {
     }
 }
 
+/// The settings, each on or off, in the column's top right corner (S).
+pub struct SettingsMenu {
+    pub(crate) selected: usize,
+    rows: HashMap<u16, usize>,
+    area: (u16, u16, u16, u16), // top, left, bottom, right
+}
+
+impl SettingsMenu {
+    fn new() -> Self {
+        Self { selected: 0, rows: HashMap::new(), area: (0, 0, 0, 0) }
+    }
+
+    fn draw(&mut self, buffer: &mut Buffer) {
+        let width = buffer.area.width;
+        let box_height = SETTINGS.len() as u16 + 3;
+        let top = HEADER_LINES;
+        let left = width.saturating_sub(3 + MENU_WIDTH).max(1);
+        let right = left + MENU_WIDTH - 1;
+        self.area = (top, left, top + box_height - 1, right);
+        let frame = on(BLUE, BG_HIGHLIGHT).add_modifier(Modifier::BOLD);
+        let ground = on(FG, BG_HIGHLIGHT);
+        let inner = (MENU_WIDTH - 2) as usize;
+        put(buffer, top, left, &format!("╭{}╮", "─".repeat(inner)), frame);
+        put(buffer, top, left + 2, " Settings ", frame);
+        self.rows.clear();
+        for (index, (name, label)) in SETTINGS.iter().enumerate() {
+            let row = top + 1 + index as u16;
+            let chosen = index == self.selected;
+            let is_on = settings::is_on(name);
+            put(buffer, row, left, &format!("│{}│", " ".repeat(inner)), frame);
+            put(buffer, row, left + 1, &" ".repeat(inner), if chosen { on(BG_HIGHLIGHT, BLUE) } else { ground });
+            let text_style = if chosen { on(BG_HIGHLIGHT, BLUE).add_modifier(Modifier::BOLD) } else { ground };
+            put(buffer, row, left + 2, &fit(label, inner - 6), text_style);
+            let state_style = if chosen { on(BG_HIGHLIGHT, BLUE) } else if is_on { on(GREEN, BG_HIGHLIGHT).add_modifier(Modifier::BOLD) } else { on(FG_DARK, BG_HIGHLIGHT) };
+            put(buffer, row, right - 4, if is_on { " on" } else { "off" }, state_style);
+            self.rows.insert(row, index);
+        }
+        let note_row = top + 1 + SETTINGS.len() as u16;
+        put(buffer, note_row, left, &format!("│{}│", " ".repeat(inner)), frame);
+        put(buffer, note_row, left + 2, "⏎ toggles  esc", on(FG_DARK, BG_HIGHLIGHT).add_modifier(Modifier::DIM));
+        put(buffer, note_row + 1, left, &format!("╰{}╯", "─".repeat(inner)), frame);
+    }
+
+    fn contains(&self, x: u16, y: u16) -> bool {
+        let (top, left, bottom, right) = self.area;
+        (top..=bottom).contains(&y) && (left..=right).contains(&x)
+    }
+}
+
 /// What the terminal does for the app: draw it, read keys, and lend the terminal to fzf or a prompt.
 pub trait Screen {
     fn draw(&mut self, app: &mut App);
@@ -341,6 +392,7 @@ pub struct App {
     pub(crate) exiting: Vec<Exiting>,
     pub(crate) labelled: (String, String),
     pub(crate) menu: Option<EffortMenu>,
+    pub(crate) settings_menu: Option<SettingsMenu>,
     pub restore: Vec<Restorable>,
     pub focus_waiting: bool,
     pub held: Vec<String>,
@@ -376,7 +428,7 @@ impl App {
             history: History::default(), view: ViewState::load(), usage: Refresher::new(), alerts: BudgetAlerts::new(util::send_notice),
             costs: Costs::default(), reviews: Reviews::default(), todos: TodoList::load(), errors: ErrorReporter::new(),
             claude_status: ClaudeStatus::default(), panels: Default::default(), focus: 1, query: String::new(), filtering: false,
-            help_open: false, message: String::new(), exiting: Vec::new(), labelled: Default::default(), menu: None, restore: Vec::new(),
+            help_open: false, message: String::new(), exiting: Vec::new(), labelled: Default::default(), menu: None, settings_menu: None, restore: Vec::new(),
             focus_waiting: false, held: Vec::new(), held_checked: 0.0, queue_checked: 0.0, gaming: util::gaming, restore_checked: 0.0, start_files: Vec::new(),
             width: DEFAULT_COLUMN_WIDTH, sessions: Vec::new(), windows: Vec::new(), review_rows: Vec::new(), todo_entries: Vec::new(),
             todo_scope: String::new(), shown_session: String::new(), todo_tab: TODO_TAB_TO_DO, todo_counts: [0; 4], prompts_sent: HashMap::new(), craft_roots: HashMap::new(), hit_lines: HashMap::new(), hit_actions: HashMap::new(),
@@ -1106,6 +1158,37 @@ impl App {
         String::new()
     }
 
+    fn toggle_setting(&mut self, index: usize) -> String {
+        let (name, label) = SETTINGS[index];
+        let wanted = if settings::is_on(name) { "off" } else { "on" };
+        let failure = manager(&["setting", name, wanted]);
+        if failure.is_empty() { format!("{label}: {wanted}") } else { failure }
+    }
+
+    /// Keys and clicks while the settings menu is open; anything else closes it.
+    fn handle_settings_menu(&mut self, key: Key) -> String {
+        let Some(menu) = self.settings_menu.as_mut() else { return String::new() };
+        match key {
+            Key::Click { x, y, .. } => {
+                if let Some(index) = menu.rows.get(&y).copied() {
+                    menu.selected = index;
+                    return self.toggle_setting(index);
+                }
+                if !menu.contains(x, y) {
+                    self.settings_menu = None;
+                }
+            }
+            Key::Char('j') | Key::Down => menu.selected = (menu.selected + 1).min(SETTINGS.len() - 1),
+            Key::Char('k') | Key::Up => menu.selected = menu.selected.saturating_sub(1),
+            Key::Enter | Key::Char(' ') => {
+                let index = menu.selected;
+                return self.toggle_setting(index);
+            }
+            _ => self.settings_menu = None,
+        }
+        String::new()
+    }
+
     // ---- Pull requests ----
 
     fn build_reviews(&mut self) {
@@ -1515,6 +1598,9 @@ impl App {
         if let Some(menu) = self.menu.as_mut() {
             menu.draw(buffer);
         }
+        if let Some(menu) = self.settings_menu.as_mut() {
+            menu.draw(buffer);
+        }
         if self.help_open {
             self.draw_help(buffer);
         }
@@ -1709,6 +1795,10 @@ impl App {
             self.message = self.handle_menu(key, screen);
             return;
         }
+        if self.settings_menu.is_some() {
+            self.message = self.handle_settings_menu(key);
+            return;
+        }
         if self.help_open {
             self.help_open = false;
             return;
@@ -1761,6 +1851,7 @@ impl App {
                 }
             }
             Key::Char('D') => self.message = manager(&["digest"]),
+            Key::Char('S') => self.settings_menu = Some(SettingsMenu::new()),
             Key::Char('K') => manager_in_background(&["clones"]),
             Key::Char('H') => {
                 let past = self.past_sessions();

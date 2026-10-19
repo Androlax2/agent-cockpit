@@ -8,6 +8,7 @@ pub mod paths;
 pub mod prompts;
 pub mod reviews;
 pub mod sessions;
+pub mod settings;
 pub mod status;
 pub mod todo;
 pub mod usage;

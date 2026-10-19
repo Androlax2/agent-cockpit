@@ -842,6 +842,51 @@ fn unlock_takes_back_only_what_lock_handed_off() {
 }
 
 #[test]
+fn lock_hands_nothing_off_while_handoff_on_lock_is_off() {
+    let manager = Manager::new();
+    assert!(manager.run(&["setting", "handoff-on-lock", "off"], &[]).status.success());
+    let result = manager.run(&["handoff", "lock"], &[("SHIM_PANE_TEXT", IDLE)]);
+    assert!(result.status.success());
+    assert!(manager.tmux_calls("send-keys").is_empty());
+    assert!(!manager.runtime_file("claude-sessions.handed-off").exists());
+}
+
+#[test]
+fn lock_hands_off_again_once_handoff_on_lock_is_back_on() {
+    let manager = Manager::new();
+    manager.run(&["setting", "handoff-on-lock", "off"], &[]);
+    manager.run(&["setting", "handoff-on-lock", "on"], &[]);
+    manager.run(&["handoff", "lock"], &[("SHIM_PANE_TEXT", IDLE)]);
+    assert_eq!(manager.tmux_calls("send-keys").first().map(String::as_str), Some("tmux send-keys -t %4 /rc"));
+}
+
+#[test]
+fn a_setting_is_on_until_turned_off() {
+    let manager = Manager::new();
+    assert_eq!(stdout(&manager.run(&["setting", "handoff-on-lock"], &[])).trim(), "handoff-on-lock: on");
+    manager.run(&["setting", "handoff-on-lock", "off"], &[]);
+    assert_eq!(stdout(&manager.run(&["setting", "handoff-on-lock"], &[])).trim(), "handoff-on-lock: off");
+}
+
+#[test]
+fn setting_refuses_an_unknown_name_or_value() {
+    let manager = Manager::new();
+    for arguments in [&["setting", "nope", "on"][..], &["setting", "handoff-on-lock", "maybe"][..]] {
+        assert_eq!(manager.run(arguments, &[]).status.code(), Some(1), "{arguments:?}");
+    }
+}
+
+#[test]
+fn setting_leaves_a_broken_settings_file_alone() {
+    let manager = Manager::new();
+    let file = manager.sandbox.state.join("claude-sessions/settings.json");
+    fs::create_dir_all(file.parent().unwrap()).unwrap();
+    fs::write(&file, "not json").unwrap();
+    assert_eq!(manager.run(&["setting", "handoff-on-lock", "off"], &[]).status.code(), Some(1));
+    assert_eq!(fs::read_to_string(&file).unwrap(), "not json");
+}
+
+#[test]
 fn handoff_refuses_an_unknown_mode() {
     let manager = Manager::new();
     assert_eq!(manager.run(&["handoff", "sideways"], &[]).status.code(), Some(1));

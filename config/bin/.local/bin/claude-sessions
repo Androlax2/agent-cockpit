@@ -61,6 +61,9 @@
 #   claude-sessions handoff [on|off|lock|unlock]
 #                                hand every running session to Remote Control (Claude's /rc, driven
 #                                from the phone or claude.ai/code) before leaving, or take them back
+#                                (lock does nothing while the setting handoff-on-lock is off)
+#   claude-sessions setting <name> [on|off]
+#                                show or change a setting (the sidebar's S): handoff-on-lock
 #   claude-sessions remote <id>  toggle Remote Control for one session (the sidebar's R)
 #   claude-sessions restore <dir> <id> […]
 #                                resume those sessions one after the other (the sidebar's B after a reboot)
@@ -618,11 +621,57 @@ zoom_viewer() {
 # Sessions the lock screen handed to Remote Control (handoff lock), taken back on unlock only.
 HANDED_OFF="${XDG_RUNTIME_DIR:-/tmp}/claude-sessions.handed-off"
 
+# Theo's choices, on or off, kept across reboots ({"handoff-on-lock": false}). A setting missing
+# from the file is on: what the setup did before it had settings. The cockpit's S menu lists the
+# same names (apps/cockpit/src/settings.rs).
+SETTINGS_FILE="${XDG_STATE_HOME:-$HOME/.local/state}/claude-sessions/settings.json"
+KNOWN_SETTINGS=(handoff-on-lock)
+
+setting_is_on() { # name
+    [[ -f $SETTINGS_FILE ]] || return 0
+    local value
+    if ! value=$(jq -r --arg name "$1" '.[$name] | if . == null then true else . end' "$SETTINGS_FILE" 2>/dev/null); then
+        log_event WARN manager "$SETTINGS_FILE is not valid JSON: $1 taken as on"
+        return 0
+    fi
+    [[ $value != false ]]
+}
+
+setting() { # name [on|off]
+    local name=$1 wanted=${2:-} known current
+    for known in "${KNOWN_SETTINGS[@]}"; do [[ $known == "$name" ]] && break; known=; done
+    if [[ -z $known ]]; then
+        echo "claude-sessions: unknown setting $name (known: ${KNOWN_SETTINGS[*]})" >&2; return 1
+    fi
+    case $wanted in
+        '') if setting_is_on "$name"; then echo "$name: on"; else echo "$name: off"; fi; return 0 ;;
+        on|off) ;;
+        *) echo "usage: claude-sessions setting <name> [on|off]" >&2; return 1 ;;
+    esac
+    mkdir -p "$(dirname "$SETTINGS_FILE")"
+    current='{}'
+    [[ -s $SETTINGS_FILE ]] && current=$(<"$SETTINGS_FILE")
+    if ! jq --arg name "$name" --argjson value "$([[ $wanted == on ]] && echo true || echo false)" '.[$name] = $value' \
+            <<< "$current" > "$SETTINGS_FILE.new" 2>/dev/null; then
+        rm -f "$SETTINGS_FILE.new"
+        echo "claude-sessions: $SETTINGS_FILE is not valid JSON, left as it is" >&2; return 1
+    fi
+    mv -f "$SETTINGS_FILE.new" "$SETTINGS_FILE"
+    log_event INFO manager "setting $name $wanted"
+    echo "$name: $wanted"
+}
+
 # on / off: every session. lock / unlock: what hypr/scripts/lock.sh does around the lock screen;
 # unlock takes back only the sessions lock handed off, so one put on Remote Control by hand stays.
 handoff() { # on|off|lock|unlock
     local wanted=${1:-on} id pane count=0
     case $wanted in on|off|lock|unlock) ;; *) echo "usage: claude-sessions handoff [on|off|lock|unlock]" >&2; return 1 ;; esac
+    if [[ $wanted == lock ]] && ! setting_is_on handoff-on-lock; then
+        rm -f "$HANDED_OFF"
+        log_event INFO lock "handoff-on-lock is off: the sessions stay local"
+        echo "claude-sessions: handoff-on-lock is off, no session handed off"
+        return 0
+    fi
     if [[ ! -s $SNAPSHOT ]]; then
         [[ $wanted == lock || $wanted == unlock ]] && { rm -f "$HANDED_OFF"; return 0; }
         echo "claude-sessions: no running session" >&2; return 1
@@ -1398,10 +1447,11 @@ case ${1:-attach} in
         ;;
     doctor) doctor ;;
     handoff) handoff "${2:-on}" ;;
+    setting) setting "${2:?usage: claude-sessions setting <name> [on|off]}" "${3:-}" ;;
     remote) toggle_remote "${2:?usage: claude-sessions remote <session-id>}" ;;
     sweep) sweep_caches ;;
     *)
-        echo "usage: claude-sessions [attach|show [id]|view <id>|open <id>|new <dir>|resume <dir> <id>|exit <id>|restart <id>|handoff [on|off]|remote <id>|prepare|idle|reload|reset|doctor|sweep]" >&2
+        echo "usage: claude-sessions [attach|show [id]|view <id>|open <id>|new <dir>|resume <dir> <id>|exit <id>|restart <id>|handoff [on|off]|setting <name> [on|off]|remote <id>|prepare|idle|reload|reset|doctor|sweep]" >&2
         exit 2
         ;;
 esac

@@ -52,6 +52,7 @@ pub fn usage_archive() -> PathBuf { state_dir().join("usage.sqlite") }
 pub fn alerts() -> PathBuf { state_dir().join("alerts.json") }
 pub fn log() -> PathBuf { state_dir().join("log") }
 pub fn todo() -> PathBuf { state_dir().join("todo.json") }
+pub fn settings() -> PathBuf { state_dir().join("settings.json") }
 pub fn todo_updates() -> PathBuf { from_env("CLAUDE_TODO_UPDATES", home().join(".cache/claude/todo/updates.jsonl")) }
 pub fn error_reports() -> PathBuf { state_dir().join("error-reports.json") }
 pub fn error_report_dir() -> PathBuf { state_dir().join("error-reports") }
