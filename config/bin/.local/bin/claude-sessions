@@ -908,6 +908,15 @@ restart_osd_when_idle() {
     fi
 }
 
+# The phone page's pairing QR code (claude-remote pair), in a popup over the manager (the : list's
+# pair-phone): scanned within 10 minutes, once. The full path: the tmux server's PATH has no
+# ~/.local/bin.
+pair_phone_popup() {
+    ensure_manager
+    tmux display-popup -E -w 90 -h 56 -T " pair a phone · scan it within 10 minutes, once " \
+        bash -c '"$HOME/.local/bin/claude-remote" pair; read -r -p "Enter closes. " _'
+}
+
 # The morning digest (the digest action of the sidebar's : list, and the first time the cockpit opens each day): yesterday's
 # sessions and cost, today so far, plan usage, who waits for you, the pull requests. Any key goes
 # back to the session that was in the pane.
@@ -1656,6 +1665,7 @@ case ${1:-attach} in
     logs) show_logs "${2:-80}" ;;
     log) log_event "${3:?usage: claude-sessions log <component> <INFO|WARN|ERROR> <message>}" "${2:?}" "${4:?}" ;;
     digest) show_digest ;;
+    pair-phone) pair_phone_popup ;;
     prs) prs_window ;;
     git) git_popup "${2:?usage: claude-sessions git <dir>}" ;;
     push) push_popup "${2:?usage: claude-sessions push <dir>}" ;;

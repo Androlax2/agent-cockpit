@@ -2297,3 +2297,12 @@ fn time_with_claude_counts_overlapping_sessions_once() {
     let together = costs::time_with_claude(&archived(&fixture), &[start, start + 60.0]).unwrap();
     assert_eq!(together.iter().map(|seconds| seconds.round()).collect::<Vec<_>>(), [120.0, 60.0]);
 }
+
+#[test]
+fn the_palette_pairs_a_phone() {
+    let fixture = Fixture::new();
+    fixture.shim("fzf", "grep 'pairs a phone'");
+    let mut app = fixture.app();
+    app.handle(Key::Char(':'), &mut FakeScreen::default());
+    assert_eq!(fixture.wait_for_calls("claude-sessions", 1), vec!["claude-sessions pair-phone".to_string()]);
+}

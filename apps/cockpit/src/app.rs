@@ -77,13 +77,14 @@ const GLOBAL_HELP: [(&str, &str); 13] = [
     ("q ⌘C", "close the manager window; sessions keep running"),
 ];
 /// Rare actions with no key, only in the : list: the panel they run in ("-" for none), a name, a label.
-const PALETTE_ONLY: [(&str, &str, &str); 6] = [
+const PALETTE_ONLY: [(&str, &str, &str); 7] = [
     ("-", "digest", "the digest: yesterday, today, plan usage, who waits, pull requests (also once a day by itself)"),
     ("-", "design", "a design session: a Claude Design canvas, worked on by a session in a project (link, then project)"),
     ("-", "clones", "the clones of + and reviews: delete those with no session, no uncommitted change and nothing unpushed (also once a day by itself)"),
     ("0", "status-page", "open status.claude.com: Anthropic's incidents and each product's state"),
     ("1", "remote", "toggle Remote Control (phone / claude.ai/code) for the selected session"),
     ("1", "drop-queued", "drop the messages queued for the selected session"),
+    ("-", "pair-phone", "a QR code that pairs a phone with the phone page (claude-remote), once, within 10 minutes"),
 ];
 const LEGEND: [(&str, &str); 21] = [
     ("●", "working"), ("○", "waiting for you"), ("!", "needs you: permission or question"), ("·", "running, state unknown"),
@@ -2124,6 +2125,7 @@ impl App {
         let known = self.selected_session().filter(|s| s.state != "unknown");
         match name {
             "digest" => self.manager_async(&["digest"]),
+            "pair-phone" => self.manager_async(&["pair-phone"]),
             "design" => self.start_design_session(screen),
             "clones" => {
                 manager_in_background(&["clones"]);

@@ -88,11 +88,17 @@ function renderList() {
   }
 }
 
+// The session's screen, kept live: redrawn only when it changed, and following its newest lines
+// unless Theo scrolled up to read.
 async function loadScreen() {
   const screen = document.getElementById("screen");
   if (!screen || !opened) return;
   const response = await call("GET", `/api/screen/${opened}`);
-  screen.textContent = await response.text();
+  const text = (await response.text()).replace(/\s+$/, "");
+  if (text === screen.textContent) return;
+  const isFollowing = screen.scrollTop + screen.clientHeight >= screen.scrollHeight - 24 || screen.textContent === "…";
+  screen.textContent = text;
+  if (isFollowing) screen.scrollTop = screen.scrollHeight;
 }
 
 function renderDetail() {
@@ -166,4 +172,4 @@ async function refresh() {
 
 refresh().then(render);
 setInterval(refresh, 3000);
-setInterval(() => { if (opened) loadScreen(); }, 5000);
+setInterval(() => { if (opened) loadScreen(); }, 1500);
