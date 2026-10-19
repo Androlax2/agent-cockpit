@@ -122,12 +122,16 @@ log_event() { # LEVEL component message
     # terminal `claude-sessions logs` prints to (security audit 2026-10-19, M6).
     local message=${3//$'\n'/ }
     message=${message//[[:cntrl:]]/}
+    local stamp
+    # The clock from bash itself, +0200 made +02:00 as date -Iseconds wrote it: one fork less per line.
+    printf -v stamp '%(%Y-%m-%dT%H:%M:%S%z)T' -1
+    stamp="${stamp:0:${#stamp}-2}:${stamp:${#stamp}-2}"
     {
-        mkdir -p "$(dirname "$LOG_FILE")"
+        [[ -d ${LOG_FILE%/*} ]] || mkdir -p "${LOG_FILE%/*}"
         if (( $(stat -c %s "$LOG_FILE" 2>/dev/null || echo 0) > LOG_MAX_BYTES )); then
             mv -f "$LOG_FILE" "$LOG_FILE.1"
         fi
-        printf '%s %s %s: %s\n' "$(date -Iseconds)" "$1" "$2" "${message:0:$LOG_LINE_MAX}" >> "$LOG_FILE"
+        printf '%s %s %s: %s\n' "$stamp" "$1" "$2" "${message:0:$LOG_LINE_MAX}" >> "$LOG_FILE"
     } 2>/dev/null || true  # a read-only state dir (inside greywall) must not break the command
 }
 
@@ -168,6 +172,20 @@ pane_by_role() {
     tmux list-panes -t "$MANAGER_WINDOW" -F '#{pane_id} #{@role}' 2>/dev/null | awk -v role="$1" '$2 == role { print $1; exit }'
 }
 
+# The manager window's panes in one tmux call (open ran 21 tmux clients, 42 ms; security audit
+# 2026-10-19, performance 3): sets the caller's locals sidebar, viewer, approval and sidebar_dead.
+read_manager_panes() {
+    local pane_id role dead
+    sidebar="" viewer="" approval="" sidebar_dead=""
+    while read -r pane_id role dead; do
+        case $role in
+            sidebar) sidebar=$pane_id sidebar_dead=$dead ;;
+            viewer) viewer=$pane_id ;;
+            approval) approval=$pane_id ;;
+        esac
+    done <<< "$(tmux list-panes -t "$MANAGER_WINDOW" -F '#{pane_id} #{@role} #{pane_dead}' 2>/dev/null)"
+}
+
 sidebar_pane() { pane_by_role sidebar; }
 viewer_pane() { pane_by_role viewer; }
 
@@ -176,7 +194,7 @@ tag_pane() { # pane role
 }
 
 ensure_manager() {
-    local sidebar viewer
+    local sidebar viewer approval sidebar_dead
     if ! tmux has-session -t "=$MANAGER" 2>/dev/null; then
         tmux new-session -d -s "$MANAGER" -n manager -x 240 -y 60 claude-sessions-sidebar
         # A pane whose command ends (a viewed session exits, the sidebar crashes) stays as a dead
@@ -186,36 +204,37 @@ ensure_manager() {
         tmux set-option -t "$MANAGER" set-titles-string 'Claude · #{pane_title}'
         tag_pane "$(tmux display-message -p -t "$MANAGER_WINDOW" '#{pane_id}')" sidebar
     fi
-    sidebar=$(sidebar_pane)
+    read_manager_panes
     if [[ -z $sidebar ]]; then
         echo "claude-sessions: the manager predates pane roles; run: tmux kill-session -t $MANAGER" >&2
         return 1
     fi
     # A title line over the session pane names the project and Claude's own title for it, so the
     # session you are typing in is never a guess; the sidebar's own top border stays blank.
-    tmux set-option -w -t "$MANAGER_WINDOW" pane-border-status top
     # @state (label_state, pushed by the sidebar) colours the title: red needs you, yellow waiting.
-    tmux set-option -w -t "$MANAGER_WINDOW" pane-border-format \
+    tmux set-option -w -t "$MANAGER_WINDOW" pane-border-status top ";" set-option -w -t "$MANAGER_WINDOW" pane-border-format \
         '#{?#{==:#{@role},viewer},#{?#{@project},#{?#{==:#{@state},needs-you},#[fg=red],#{?#{==:#{@state},waiting},#[fg=yellow],#[fg=blue]}} #[bold]#{@project}#[nobold] · #{pane_title} #[default], no session },}'
-    viewer=$(viewer_pane)
     if [[ -z $viewer ]]; then
         viewer=$(tmux split-window -h -t "$sidebar" -l 70% -P -F '#{pane_id}' claude-sessions idle)
         tag_pane "$viewer" viewer
         tmux resize-pane -t "$sidebar" -x "$SIDEBAR_WIDTH"
         tmux select-pane -t "$sidebar"
     fi
-    if [[ $(tmux display-message -p -t "$sidebar" '#{pane_dead}') == 1 ]]; then
+    if [[ $sidebar_dead == 1 ]]; then
         tmux respawn-pane -k -t "$sidebar" claude-sessions-sidebar
     fi
 }
 
 view_session() {
-    local id=$1 pane target
+    local id=$1 pane="" state="" started="" project="" target
     if [[ $id == claude-retry-* ]]; then
         [[ $id == *"#"* ]] && { echo "claude-sessions: refusing session name $id" >&2; return 1; }
         target=$id
     else
-        pane=$(jq -r --arg id "$id" '.sessions[] | select(.session == $id) | .tmux_pane // empty' "$SNAPSHOT")
+        # The session's fields in one jq pass, separated by \x1f: a tab would merge empty fields.
+        IFS=$'\x1f' read -r pane state started project < <(jq -r --arg id "$id" \
+            'first(.sessions[] | select(.session == $id)) | [.tmux_pane // "", .state // "", (.started // "" | tostring), .project // ""] | join("\u001f")' \
+            "$SNAPSHOT" 2>/dev/null) || true
         if [[ -z $pane ]]; then
             echo "claude-sessions: session $id has no tmux pane" >&2
             return 1
@@ -225,9 +244,8 @@ view_session() {
     ensure_manager
     # The session and its approval pane change in one tmux command: tmux redraws once, after both.
     # In two steps the session showed a moment at full height before the pane appeared or went.
-    local viewer approval run new_pane
-    viewer=$(viewer_pane)
-    approval=$(pane_by_role approval)
+    local sidebar viewer approval sidebar_dead run new_pane
+    read_manager_panes
     run=$(approval_for "$id")
     local size_before
     size_before=$(tmux display-message -p -t "=$target:" '#{window_width} #{window_height}' 2>/dev/null || true)
@@ -243,11 +261,11 @@ view_session() {
         tag_pane "$new_pane" approval
         tmux set-option -p -t "$new_pane" remain-on-exit off
     fi
-    redraw_if_stale "$target" "$size_before" "$id"
+    redraw_if_stale "$target" "$size_before" "$id" "$state" "$started" "$viewer"
     printf '%s\n' "$id" > "$CURRENT"
     # Its banner ("waiting for your input") has been read now that the session is on screen.
     osd-show session-seen "$id" 2>/dev/null || true
-    label_panes "$(session_field "$id" project)"
+    label_panes "$project" "$sidebar" "$viewer"
 }
 
 # A session whose window the viewer resizes as it attaches can stay blank: Claude Code does not
@@ -260,12 +278,11 @@ view_session() {
 # background, once the nested client has attached and resized it.
 VIEWED_STARTS="${XDG_RUNTIME_DIR:-/tmp}/claude-sessions.viewed-starts"
 
-redraw_if_stale() { # target size-before id
-    local id=$3 size_after started is_stale=""
-    [[ $(session_field "$id" state) != needs-you ]] || return 0
-    size_after=$(tmux display-message -p -t "$(viewer_pane)" '#{pane_width} #{pane_height}' 2>/dev/null || true)
+redraw_if_stale() { # target size-before id state started viewer-pane
+    local id=$3 state=$4 started=$5 size_after is_stale=""
+    [[ $state != needs-you ]] || return 0
+    size_after=$(tmux display-message -p -t "$6" '#{pane_width} #{pane_height}' 2>/dev/null || true)
     [[ -n $2 && $2 != "$size_after" ]] && is_stale=1
-    started=$(session_field "$id" started)
     if [[ -n $started ]] && ! grep -qxF "$id $started" "$VIEWED_STARTS" 2>/dev/null; then
         printf '%s %s\n' "$id" "$started" >> "$VIEWED_STARTS"
         is_stale=1
@@ -276,10 +293,10 @@ redraw_if_stale() { # target size-before id
 }
 
 # The kitty window title (sidebar pane title) and the session pane's title line both carry the project.
-label_panes() {
-    tmux select-pane -t "$(sidebar_pane)" -T "${1:-sessions}"
-    tmux set-option -p -t "$(viewer_pane)" @project "${1:-}"
-    tmux set-option -p -t "$(viewer_pane)" @state ""
+label_panes() { # project [sidebar-pane viewer-pane]
+    local sidebar=${2:-} viewer=${3:-} approval sidebar_dead
+    [[ -n $sidebar && -n $viewer ]] || read_manager_panes
+    tmux select-pane -t "$sidebar" -T "${1:-sessions}" ";" set-option -p -t "$viewer" @project "${1:-}" ";" set-option -p -t "$viewer" @state ""
 }
 
 # The viewed session's state for the title line's colour (the sidebar calls this when it changes).

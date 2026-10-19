@@ -70,7 +70,13 @@ fn run() -> io::Result<()> {
         }
         if let Some(key) = screen.next_key(Some(app::VIEW_CHECK_INTERVAL)) {
             app.handle(key, &mut screen);
-            last_tick = None;
+            // Drawn from what the last tick read; the next tick, within POLL_INTERVAL, reads again.
+            app.redraw();
+            screen.draw(&mut app);
+        }
+        if app.collect_manager() {
+            app.redraw();
+            screen.draw(&mut app);
         }
     }
 }

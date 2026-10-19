@@ -19,7 +19,8 @@ const CONTEXT_LINES: usize = 40;
 
 /// The error without its time and with ids and numbers masked: the same failure, whichever session.
 pub fn signature(line: &str) -> String {
-    let masked = Regex::new(r"[0-9a-f]{8}-[0-9a-f-]{27}|[0-9a-f]{12,}|\d+").unwrap();
+    static VARYING: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| Regex::new(r"[0-9a-f]{8}-[0-9a-f-]{27}|[0-9a-f]{12,}|\d+").unwrap());
+    let masked = &*VARYING;
     let message = if line.get(..4).is_some_and(|start| start.chars().all(|c| c.is_ascii_digit())) && line.contains(' ') {
         line.split_once(' ').map(|(_, rest)| rest).unwrap_or(line)
     } else {
@@ -113,10 +114,12 @@ impl ErrorReporter {
         time - sent.get(signature).and_then(Value::as_f64).unwrap_or(0.0) >= REPEAT_S && today < PER_DAY
     }
 
-    pub fn tick(&mut self, sessions: &[Session]) {
+    /// `sessions` is asked only when the check is due: the snapshot is not parsed on every tick.
+    pub fn tick(&mut self, sessions: impl FnOnce() -> Vec<Session>) {
         if now() - self.checked_at < POLL_S {
             return;
         }
+        let sessions = &sessions();
         self.checked_at = now();
         let mut pending: Vec<Value> = self.state.get("pending").and_then(Value::as_array).cloned().unwrap_or_default();
         pending.extend(self.new_errors().into_iter().map(|(error, context)| json!({"error": error, "context": context})));

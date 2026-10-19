@@ -144,7 +144,11 @@ impl Banners for GtkBanners {
         let session = banner.session.clone();
         let this = self.clone();
         self.add(&session.clone(), banner_row(&banner.title, &banner.message, banner.sticky), move || {
-            let _ = std::process::Command::new("claude-sessions").args(["show", &session]).status();
+            // show takes about 60 ms: waited for on a thread of its own, the banner goes at once.
+            let shown = session.clone();
+            std::thread::spawn(move || {
+                let _ = std::process::Command::new("claude-sessions").args(["show", &shown]).status();
+            });
             this.remove(&session);
         });
         if !banner.sticky {

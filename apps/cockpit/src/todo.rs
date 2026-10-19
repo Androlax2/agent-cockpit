@@ -36,8 +36,10 @@ const BLOCKED_DAILY_MAX: usize = 5;
 /// Updates read per apply: the rest of a flood is dropped, and logged.
 const APPLY_MAX_LINES: usize = 200;
 
-fn typed_id() -> Regex { Regex::new(r"^[0-9a-f]{8}$").unwrap() }
-fn issue_key() -> Regex { Regex::new(r"^[\w.-]+/[\w.-]+#\d+$").unwrap() }
+static TYPED_ID: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| Regex::new(r"^[0-9a-f]{8}$").unwrap());
+static ISSUE_KEY: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| Regex::new(r"^[\w.-]+/[\w.-]+#\d+$").unwrap());
+fn typed_id() -> &'static Regex { &TYPED_ID }
+fn issue_key() -> &'static Regex { &ISSUE_KEY }
 
 /// Notes and reasons keep their line breaks; every other control character goes.
 pub fn multiline(text: &str, limit: usize) -> String {

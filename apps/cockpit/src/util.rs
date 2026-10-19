@@ -319,7 +319,9 @@ pub fn gaming() -> bool {
 
 /// The focused window's title (its class when untitled) when that window is a game.
 pub fn active_game() -> Option<String> {
-    let game_class = regex::Regex::new(r"^(steam_app_[0-9]+|Star Citizen|Dofus\.x64|retroarch)$").unwrap();
+    static GAME_CLASS: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"^(steam_app_[0-9]+|Star Citizen|Dofus\.x64|retroarch)$").unwrap());
+    let game_class = &*GAME_CLASS;
     let window: Value = serde_json::from_str(&output_of("hyprctl", &["-j", "activewindow"])?).ok()?;
     let class = window.get("class").and_then(Value::as_str)?;
     let title = window.get("title").and_then(Value::as_str).map(str::trim).filter(|title| !title.is_empty());

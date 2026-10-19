@@ -528,7 +528,7 @@ fn h_resumes_the_past_session_picked() {
     fixture.shim("fzf", "head -n 1");
     let mut app = fixture.app();
     app.handle(Key::Char('H'), &mut FakeScreen::default());
-    assert_eq!(fixture.calls("claude-sessions"), vec!["claude-sessions resume /r/runway past-1".to_string()]);
+    assert_eq!(fixture.wait_for_calls("claude-sessions", 1), vec!["claude-sessions resume /r/runway past-1".to_string()]);
 }
 
 #[test]
@@ -1108,7 +1108,7 @@ fn a_new_error_starts_a_dotfiles_session_with_the_log_before_it() {
     let fixture = Fixture::new();
     let mut reporter = reporter(&fixture);
     append_log(&fixture, &["2026-10-18T13:00:00+02:00 INFO manager: restart abc", "2026-10-18T13:00:01+02:00 ERROR manager: it broke"]);
-    reporter.tick(&[]);
+    reporter.tick(Vec::new);
     let calls = fixture.wait_for_calls("claude-sessions", 1);
     assert!(calls[0].starts_with(&format!("claude-sessions background {}/home/IdeaProjects/dotfiles", fixture.root.display())));
     let log = fs::read_to_string(fixture.path("calls.log")).unwrap();
@@ -1122,11 +1122,11 @@ fn an_error_starts_no_session_while_error_handoff_is_off_and_is_not_sent_later()
     fixture.write("state/claude-sessions/settings.json", r#"{"error-handoff": false}"#);
     let mut reporter = reporter(&fixture);
     append_log(&fixture, &["2026-10-18T13:00:01+02:00 ERROR manager: it broke"]);
-    reporter.tick(&[]);
+    reporter.tick(Vec::new);
     fixture.write("state/claude-sessions/settings.json", r#"{"error-handoff": true}"#);
     reporter = ErrorReporter::new();
     reporter.gaming = || false;
-    reporter.tick(&[]);
+    reporter.tick(Vec::new);
     std::thread::sleep(Duration::from_millis(200));
     assert!(fixture.calls("claude-sessions").iter().all(|call| !call.starts_with("claude-sessions background")), "{:?}", fixture.calls("claude-sessions"));
 }
@@ -1147,7 +1147,7 @@ fn a_waiting_dotfiles_session_gets_it_as_a_message_with_the_report_in_a_file() {
     append_log(&fixture, &["2026-10-18T13:00:01+02:00 ERROR manager: it broke"]);
     let dotfiles = sessions::Session { session: "s1".into(), state: "waiting".into(), project: "dotfiles".into(),
                                        cwd: crate::paths::dotfiles_work().to_string_lossy().into_owned(), ..Default::default() };
-    reporter.tick(&[dotfiles]);
+    reporter.tick(|| vec![dotfiles.clone()]);
     let calls = fixture.calls("claude-sessions");
     assert!(calls[0].starts_with("claude-sessions say s1 "));
     let report = calls[0].rsplit(' ').next().unwrap();
@@ -1161,7 +1161,7 @@ fn a_session_calling_itself_dotfiles_elsewhere_gets_no_error_report() {
     let mut reporter = reporter(&fixture);
     append_log(&fixture, &["2026-10-18T13:00:01+02:00 ERROR manager: it broke"]);
     let impostor = sessions::Session { session: "s9".into(), state: "waiting".into(), project: "dotfiles".into(), cwd: "/r/elsewhere".into(), ..Default::default() };
-    reporter.tick(&[impostor]);
+    reporter.tick(|| vec![impostor.clone()]);
     let calls = fixture.wait_for_calls("claude-sessions", 1);
     assert!(!calls.iter().any(|call| call.starts_with("claude-sessions say s9")), "{calls:?}");
 }
@@ -1171,7 +1171,7 @@ fn an_info_line_quoting_an_error_is_not_handed_off() {
     let fixture = Fixture::new();
     let mut reporter = reporter(&fixture);
     append_log(&fixture, &["2026-10-18T13:00:01+02:00 INFO run: error hand-off said ERROR manager: x"]);
-    reporter.tick(&[]);
+    reporter.tick(Vec::new);
     std::thread::sleep(Duration::from_millis(200));
     assert!(fixture.calls("claude-sessions").is_empty());
 }
@@ -1182,7 +1182,7 @@ fn the_same_error_goes_once_a_day_and_three_errors_at_most() {
     let mut reporter = reporter(&fixture);
     let lines: Vec<String> = ["a", "a", "b", "c", "d", "e"].iter().enumerate().map(|(i, letter)| format!("2026-10-18T13:00:0{i}+02:00 ERROR manager: failure {letter}")).collect();
     append_log(&fixture, &lines.iter().map(String::as_str).collect::<Vec<_>>());
-    reporter.tick(&[]);
+    reporter.tick(Vec::new);
     assert_eq!(fixture.wait_for_calls("claude-sessions", 3).len(), 3);
     std::thread::sleep(Duration::from_millis(200));
     assert_eq!(fixture.calls("claude-sessions").len(), 3);
@@ -1194,12 +1194,12 @@ fn errors_wait_while_gaming() {
     let mut reporter = reporter(&fixture);
     reporter.gaming = || true;
     append_log(&fixture, &["2026-10-18T13:00:01+02:00 ERROR manager: it broke"]);
-    reporter.tick(&[]);
+    reporter.tick(Vec::new);
     std::thread::sleep(Duration::from_millis(200));
     assert!(fixture.calls("claude-sessions").is_empty());
     let mut later = ErrorReporter::new();
     later.gaming = || false;
-    later.tick(&[]);
+    later.tick(Vec::new);
     assert_eq!(fixture.wait_for_calls("claude-sessions", 1).len(), 1);
 }
 
@@ -1980,4 +1980,37 @@ fn the_debug_log_keeps_no_control_character() {
     util::log_event("INFO", "todo from a session: \x1b]52;c;cGF5bG9hZA==\x07 done");
     let log = fs::read_to_string(crate::paths::log()).unwrap();
     assert!(!log.contains('\x1b') && !log.contains('\x07'), "{log:?}");
+}
+
+#[test]
+fn a_key_press_redraws_without_asking_tmux_or_pgrep() {
+    // Performance 1: a full tick per j/k cost 15 to 40 ms.
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "runway", "/r/runway", 100), session(SESSION_B, "waiting", "homelab", "/r/homelab", 100)]));
+    fixture.shim("pgrep", "exit 1");
+    let mut app = fixture.app();
+    let reads = |fixture: &Fixture| fixture.calls("tmux").len() + fixture.calls("pgrep").len();
+    let before = reads(&fixture);
+    app.handle(Key::Down, &mut FakeScreen::default());
+    app.redraw();
+    assert_eq!(reads(&fixture), before);
+    assert_eq!(app.panels[1].selected, 1);
+}
+
+#[test]
+fn enter_opens_the_session_without_waiting_and_shows_a_failure_once_it_ends() {
+    // Performance 2: open took 42 ms (up to 500) with the column frozen.
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "runway", "/r/runway", 100)]));
+    fixture.shim("claude-sessions", "sleep 0.3; echo 'claude-sessions: session has no tmux pane' >&2; exit 1");
+    let mut app = fixture.app();
+    let started = std::time::Instant::now();
+    app.handle(Key::Enter, &mut FakeScreen::default());
+    assert!(started.elapsed() < Duration::from_millis(200), "waited {:?}", started.elapsed());
+    assert!(app.message.is_empty());
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while !app.collect_manager() && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(app.message, "claude-sessions: session has no tmux pane");
 }

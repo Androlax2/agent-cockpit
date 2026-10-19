@@ -1668,3 +1668,17 @@ fn a_successful_label_or_focus_leaves_no_log_line() {
     manager.run(&["focus-viewer"], &[]);
     assert!(manager.log_lines().iter().all(|line| !line.contains("focus-viewer")), "{:?}", manager.log_lines());
 }
+
+#[test]
+fn opening_a_session_costs_few_tmux_clients() {
+    // Performance 3: open ran 21 tmux clients and 4 jq passes, 42 ms at p50.
+    let manager = Manager::new();
+    let real_jq = String::from_utf8(std::process::Command::new("sh").args(["-c", "command -v jq"]).output().unwrap().stdout).unwrap();
+    manager.sandbox.shim("jq", &format!("exec {} \"$@\"", real_jq.trim()));
+    manager.sandbox.reset_log();
+    manager.run(&["open", SESSION_A], &[]);
+    let tmux = manager.calls("tmux").len();
+    let jq_passes = manager.calls("jq").len();
+    assert!(tmux <= 11, "{tmux} tmux clients: {:#?}", manager.calls("tmux"));
+    assert!(jq_passes <= 1, "{jq_passes} jq passes");
+}

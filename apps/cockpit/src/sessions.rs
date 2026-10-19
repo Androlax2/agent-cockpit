@@ -43,9 +43,11 @@ pub struct Design {
 /// None for anything else. Same rule as claude-design.
 pub fn canvas_address(text: &str) -> Option<String> {
     let text = text.trim();
-    let canvas = regex::Regex::new(r"^https://claude\.ai/(?:code/)?artifact/([A-Za-z0-9-]{8,64})/?$").unwrap();
-    let chat = regex::Regex::new(r"^https://claude\.ai/chat/[A-Za-z0-9-]+\?(?:.*&)?artifact=([A-Za-z0-9-]{8,64})(?:&.*)?$").unwrap();
-    let id = canvas.captures(text).or_else(|| chat.captures(text))?.get(1)?.as_str().to_string();
+    static CANVAS: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"^https://claude\.ai/(?:code/)?artifact/([A-Za-z0-9-]{8,64})/?$").unwrap());
+    static CHAT: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"^https://claude\.ai/chat/[A-Za-z0-9-]+\?(?:.*&)?artifact=([A-Za-z0-9-]{8,64})(?:&.*)?$").unwrap());
+    let id = CANVAS.captures(text).or_else(|| CHAT.captures(text))?.get(1)?.as_str().to_string();
     Some(format!("https://claude.ai/artifact/{id}"))
 }
 

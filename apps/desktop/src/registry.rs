@@ -62,6 +62,8 @@ static CHOICE_MENU: LazyLock<Regex> = LazyLock::new(|| regex(r"(?m)^[\s│]*❯[
 /// Claude pads its prompt with a no-break space.
 static PROMPT_LINE: LazyLock<Regex> = LazyLock::new(|| regex(r"(?m)^\s*❯[ \x{a0}]"));
 static UPDATE_READY: LazyLock<Regex> = LazyLock::new(|| regex(r"Update installed\s*·\s*Restart to update"));
+/// The session binary's process name: Claude Code's version.
+static CLAUDE_VERSION_NAME: LazyLock<Regex> = LazyLock::new(|| regex(r"^\d+\.\d+\.\d+$"));
 static SESSION_ID: LazyLock<Regex> = LazyLock::new(|| regex(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"));
 static TMUX_PANE: LazyLock<Regex> = LazyLock::new(|| regex(r"^%[0-9]{1,10}$"));
 static KITTY_LISTEN: LazyLock<Regex> = LazyLock::new(|| regex(r"^unix:[@/][A-Za-z0-9_./@-]{1,200}$"));
@@ -1370,12 +1372,32 @@ impl Registry {
 
 pub struct RealSystem {
     gaming_cache: (Option<Instant>, bool),
-    meeting_cache: (Option<Instant>, bool),
+    /// When khal was last asked, and its answer so far: khal runs on a thread of its own, never on
+    /// the GTK loop (it takes a few hundred ms to start; security audit 2026-10-19, performance 4).
+    meeting_cache: (Option<Instant>, std::sync::Arc<std::sync::atomic::AtomicBool>),
+    /// One /proc scan for both live_session_ids and claude_panes within PROCESS_SCAN_FRESH: each
+    /// walked every process on its own, twice every PRUNE_INTERVAL_S.
+    process_scan: Option<(Instant, HashSet<String>, HashSet<String>)>,
 }
+
+const PROCESS_SCAN_FRESH: Duration = Duration::from_millis(500);
 
 impl RealSystem {
     pub fn new() -> Self {
-        RealSystem { gaming_cache: (None, false), meeting_cache: (None, false) }
+        RealSystem { gaming_cache: (None, false), meeting_cache: (None, Default::default()), process_scan: None }
+    }
+
+    /// The live session ids and the Claude panes, from one /proc scan.
+    fn scanned(&mut self) -> (HashSet<String>, HashSet<String>) {
+        if let Some((at, ids, panes)) = &self.process_scan {
+            if at.elapsed() < PROCESS_SCAN_FRESH {
+                return (ids.clone(), panes.clone());
+            }
+        }
+        let processes = claude_processes(&Proc);
+        let (ids, panes) = (session_ids_of(&Proc, &processes), panes_of(&Proc, &processes));
+        self.process_scan = Some((Instant::now(), ids.clone(), panes.clone()));
+        (ids, panes)
     }
 }
 
@@ -1502,7 +1524,7 @@ impl Processes for Proc {
 /// outlives the launcher), a `bg-pty-host`, and the session binary named after the version with
 /// `--session-id <id>`; only the launcher and the session count.
 pub fn claude_processes(table: &dyn Processes) -> Vec<String> {
-    let version = regex(r"^\d+\.\d+\.\d+$");
+    let version = &*CLAUDE_VERSION_NAME;
     let infrastructure = ["daemon", "bg-pty-host", "bg-spare"];
     let mut found: Vec<String> = table.pids().into_iter().filter(|pid| {
         let name = table.comm(pid);
@@ -1521,7 +1543,11 @@ pub fn claude_processes(table: &dyn Processes) -> Vec<String> {
 
 /// The session ids on the command lines of the running session binaries.
 pub fn live_session_ids_in(table: &dyn Processes) -> HashSet<String> {
-    claude_processes(table).iter().flat_map(|pid| {
+    session_ids_of(table, &claude_processes(table))
+}
+
+fn session_ids_of(table: &dyn Processes, processes: &[String]) -> HashSet<String> {
+    processes.iter().flat_map(|pid| {
         let command = table.command(pid);
         command.windows(2).filter(|pair| pair[0] == "--session-id" && SESSION_ID.is_match(&pair[1])).map(|pair| pair[1].clone()).collect::<Vec<_>>()
     }).collect()
@@ -1530,7 +1556,11 @@ pub fn live_session_ids_in(table: &dyn Processes) -> HashSet<String> {
 /// The tmux panes in which a Claude process runs, from its environment: the rule for sessions
 /// whose id is not on a command line (older Claude versions).
 pub fn claude_panes_in(table: &dyn Processes) -> HashSet<String> {
-    claude_processes(table).iter().filter_map(|pid| table.environment(pid).get("TMUX_PANE").cloned()).collect()
+    panes_of(table, &claude_processes(table))
+}
+
+fn panes_of(table: &dyn Processes, processes: &[String]) -> HashSet<String> {
+    processes.iter().filter_map(|pid| table.environment(pid).get("TMUX_PANE").cloned()).collect()
 }
 
 pub fn live_session_ids() -> HashSet<String> {
@@ -1603,26 +1633,31 @@ impl System for RealSystem {
         now
     }
 
-    /// Whether the calendar shows a meeting now; khal is asked at most once a minute.
+    /// Whether the calendar shows a meeting, as khal last said: asked at most once a minute, on a
+    /// thread of its own, so the answer can be up to a minute and a khal run late.
     fn in_meeting(&mut self) -> bool {
-        if self.meeting_cache.0.is_some_and(|checked| checked.elapsed() < Duration::from_secs(60)) {
-            return self.meeting_cache.1;
+        use std::sync::atomic::Ordering;
+        let answer = self.meeting_cache.1.clone();
+        if self.meeting_cache.0.is_none_or(|checked| checked.elapsed() >= Duration::from_secs(60)) {
+            self.meeting_cache.0 = Some(Instant::now());
+            let answer = answer.clone();
+            std::thread::spawn(move || {
+                let now = output_within(&["khal", "list", "now", "1m", "--format", "{start}|{end}|{title}"], COMMAND_TIMEOUT)
+                    .filter(|(code, _, _)| *code == 0).is_some_and(|(_, out, _)| events_now(&out, self::now()));
+                if answer.swap(now, Ordering::SeqCst) != now {
+                    log(if now { "meeting under way: Claude banners held until it ends" } else { "no meeting: banners shown again" });
+                }
+            });
         }
-        let now = output_within(&["khal", "list", "now", "1m", "--format", "{start}|{end}|{title}"], COMMAND_TIMEOUT)
-            .filter(|(code, _, _)| *code == 0).is_some_and(|(_, out, _)| events_now(&out, self::now()));
-        if now != self.meeting_cache.1 {
-            log(if now { "meeting under way: Claude banners held until it ends" } else { "no meeting: banners shown again" });
-        }
-        self.meeting_cache = (Some(Instant::now()), now);
-        now
+        answer.load(Ordering::SeqCst)
     }
 
     fn live_session_ids(&mut self) -> HashSet<String> {
-        live_session_ids()
+        self.scanned().0
     }
 
     fn claude_panes(&mut self) -> HashSet<String> {
-        claude_panes()
+        self.scanned().1
     }
 
     fn process_environment(&mut self, pid: &str) -> HashMap<String, String> {

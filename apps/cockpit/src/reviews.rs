@@ -192,7 +192,9 @@ fn origin_of(directory: &str) -> Option<String> {
 /// owner/repo -> local directory, for every running session whose directory has a github.com
 /// origin, or for the one session given (the one in the session pane) when it is known.
 pub fn session_checkouts(only_session: &str) -> BTreeMap<String, String> {
-    let remote = Regex::new(r"(?:https://github\.com/|git@github\.com:)([\w.-]+/[\w.-]+?)(?:\.git)?$").unwrap();
+    static GITHUB_REMOTE: std::sync::LazyLock<Regex> =
+        std::sync::LazyLock::new(|| Regex::new(r"(?:https://github\.com/|git@github\.com:)([\w.-]+/[\w.-]+?)(?:\.git)?$").unwrap());
+    let remote = &*GITHUB_REMOTE;
     let Some(snapshot) = util::read_json(&paths::snapshot()) else { return BTreeMap::new() };
     let sessions = snapshot.get("sessions").and_then(Value::as_array).cloned().unwrap_or_default();
     let viewed: Vec<_> = sessions.iter().filter(|s| !only_session.is_empty() && s.get("session").and_then(Value::as_str) == Some(only_session)).cloned().collect();

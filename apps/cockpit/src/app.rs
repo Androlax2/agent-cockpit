@@ -421,6 +421,28 @@ pub struct App {
     pub(crate) todo_counts: [usize; 5],
     pub(crate) hit_lines: HashMap<u16, (usize, Option<usize>)>,
     pub(crate) hit_actions: HashMap<u16, (u16, u16, &'static str)>,
+    /// The session cards' data as the last tick read it (gather_sessions); a key press redraws from
+    /// it instead of reading tmux and the files again.
+    gathered: Option<Gathered>,
+    /// claude-sessions commands a key started (open, view, zoom…), not waited for: the column stays
+    /// responsive while they run; an error shows once one ends (collect_manager).
+    pending: Vec<(String, std::process::Child)>,
+    /// The plan's name (usage::plan, from the credentials file), read once a tick.
+    plan: String,
+    /// When craft_roots was last asked of pgrep (CRAFT_CHECK_S).
+    craft_checked: f64,
+}
+
+/// pgrep for the craft apps' project folders forked on every tick (4 a second); which project
+/// FigCraft serves changes when Theo opens it.
+const CRAFT_CHECK_S: f64 = 5.0;
+
+/// What the session cards are drawn from (App::gather_sessions).
+struct Gathered {
+    running: Vec<Session>,
+    paused: usize,
+    start_files: Vec<(&'static str, f64)>,
+    craft_roots: HashMap<String, String>,
 }
 
 impl App {
@@ -433,6 +455,7 @@ impl App {
             focus_waiting: false, held: Vec::new(), held_checked: 0.0, queue_checked: 0.0, gaming: util::gaming, restore_checked: 0.0, start_files: Vec::new(),
             width: DEFAULT_COLUMN_WIDTH, sessions: Vec::new(), windows: Vec::new(), review_rows: Vec::new(), todo_entries: Vec::new(),
             todo_scope: String::new(), shown_session: String::new(), todo_tab: TODO_TAB_TO_DO, todo_counts: [0; 5], prompts_sent: HashMap::new(), craft_roots: HashMap::new(), hit_lines: HashMap::new(), hit_actions: HashMap::new(),
+            gathered: None, pending: Vec::new(), plan: String::new(), craft_checked: 0.0,
         }
     }
 
@@ -447,17 +470,63 @@ impl App {
 
     pub fn tick(&mut self) {
         self.shown_session = current_session();
+        self.refresh();
         self.todos.apply_updates();
-        self.errors.tick(&sessions::reported());
+        self.errors.tick(sessions::reported);
         self.claude_status.tick();
         self.usage.tick(false);
-        self.alerts.check(&usage::windows());
+        self.alerts.check(&self.windows);
         self.costs.tick();
         self.reviews.tick();
-        self.build();
+        self.redraw();
         self.push_viewed_state();
         self.dispatch_queue();
         self.dispatch_prompts();
+    }
+
+    /// A claude-sessions command a key asked for, started and not waited for (it takes 40 to 60 ms,
+    /// up to 500): the column keeps answering keys meanwhile (security audit 2026-10-19,
+    /// performance 2). Its error, if any, shows once it ends (collect_manager).
+    pub(crate) fn manager_async(&mut self, arguments: &[&str]) -> String {
+        let started = Command::new("claude-sessions").args(arguments).env("CLAUDE_SESSIONS_LOG_STDERR", "1")
+            .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).spawn();
+        match started {
+            Ok(child) => {
+                self.pending.push((arguments[0].to_string(), child));
+                String::new()
+            }
+            Err(error) => format!("claude-sessions {}: {error}", arguments[0]),
+        }
+    }
+
+    /// The commands manager_async started that have ended; a failure's last error line becomes the
+    /// message. True when one ended (the column redraws).
+    pub fn collect_manager(&mut self) -> bool {
+        use std::io::Read;
+        let mut has_ended = false;
+        for (command, mut child) in std::mem::take(&mut self.pending) {
+            match child.try_wait() {
+                Ok(None) => self.pending.push((command, child)),
+                Ok(Some(status)) => {
+                    has_ended = true;
+                    if status.success() {
+                        continue;
+                    }
+                    let mut errors = String::new();
+                    if let Some(mut stderr) = child.stderr.take() {
+                        let _ = stderr.read_to_string(&mut errors);
+                    }
+                    let last = errors.trim().lines().last().unwrap_or("").to_string();
+                    util::log_event("ERROR", &format!("claude-sessions {command}: {}", if last.is_empty() { "failed" } else { &last }));
+                    self.message = if last.is_empty() { format!("claude-sessions {command} failed") } else { last };
+                }
+                Err(error) => {
+                    has_ended = true;
+                    self.message = format!("claude-sessions {command}: {error}");
+                }
+            }
+        }
+        has_ended
     }
 
     /// A session craft-open asked to restart (its figcraft-app server had exited at its start) is
@@ -563,7 +632,23 @@ impl App {
         candidates.into_iter().next()
     }
 
+    /// Everything read again (sessions, usage, plan), then drawn.
     pub fn build(&mut self) {
+        self.refresh();
+        self.redraw();
+    }
+
+    /// What the panels are drawn from, read again: the session cards' data (gather_sessions, on the
+    /// next draw), the usage windows and the plan. Once a tick, never on a key press.
+    fn refresh(&mut self) {
+        self.gathered = None;
+        self.windows = usage::windows();
+        self.plan = usage::plan();
+    }
+
+    /// The panels drawn from what the last refresh read: a key press costs no tmux, pgrep or file
+    /// read (15 to 40 ms each time it did; security audit 2026-10-19, performance 1).
+    pub fn redraw(&mut self) {
         self.build_status();
         self.build_sessions();
         self.build_reviews();
@@ -586,7 +671,6 @@ impl App {
     // ---- Status ----
 
     fn build_status(&mut self) {
-        self.windows = usage::windows();
         let windows = &self.windows;
         // Every row's label shares the column, the cost and Claude rows too: sized on the usage rows
         // alone, it shrank to nothing before the first usage fetch and the values covered the labels.
@@ -632,14 +716,14 @@ impl App {
     }
 
     fn status_subtitle(&self) -> String {
-        let plan = usage::plan();
+        let plan = self.plan.clone();
         let all_time = self.costs.all_time();
         if all_time > 0.0 { format!("{plan} · all time {}", money(all_time)).trim_start_matches([' ', '·']).to_string() } else { plan }
     }
 
     pub(crate) fn handle_status(&mut self, key: Key) -> String {
         match key {
-            Key::Enter => manager(&["usage"]),
+            Key::Enter => self.manager_async(&["usage"]),
             Key::Char('r') => {
                 self.usage.tick(true);
                 "fetching usage …".into()
@@ -703,14 +787,10 @@ impl App {
         }
     }
 
-    fn build_sessions(&mut self) {
+    /// What the session cards are drawn from, read from tmux, pgrep and the per-session files: once
+    /// per tick, never on a key press (security audit 2026-10-19, performance 1).
+    fn gather_sessions(&mut self) -> Gathered {
         let mut running: Vec<Session> = sessions::running();
-        self.settle_exits(&running);
-        running.retain(|s| !self.exiting.iter().any(|exit| exit.session == s.session));
-        let mut running: Vec<Session> = running.into_iter()
-            .filter(|s| sessions::matches(&[&s.project, &s.task], &self.query))
-            .filter(|s| !self.focus_waiting || FOCUS_STATES.contains(&s.state.as_str()))
-            .collect();
         let known: Vec<String> = running.iter().filter(|s| s.state != "unknown").map(|s| s.session.clone()).collect();
         self.history.load_titles(&known, TITLES_PER_TICK);
         for session in &mut running {
@@ -718,9 +798,36 @@ impl App {
                 session.facts = sessions::statusline_facts(&session.session);
                 session.title = self.history.title(&session.session);
             }
-            session.pinned = self.view.pinned.contains(&session.session);
             session.design = sessions::design_of(&session.session);
             session.role = sessions::role_of(&session.session);
+        }
+        Gathered {
+            running,
+            paused: std::fs::read_to_string(paths::game_frozen()).map(|list| list.lines().filter(|line| !line.trim().is_empty()).count()).unwrap_or(0),
+            start_files: sessions::start_file_mtimes(),
+            craft_roots: if now() - self.craft_checked >= CRAFT_CHECK_S {
+                self.craft_checked = now();
+                ["figcraft"].iter().filter_map(|app| Some((app.to_string(), sessions::craft_root(app)?))).collect()
+            } else {
+                self.craft_roots.clone()
+            },
+        }
+    }
+
+    fn build_sessions(&mut self) {
+        let gathered = match self.gathered.take() {
+            Some(gathered) => gathered,
+            None => self.gather_sessions(),
+        };
+        let mut running: Vec<Session> = gathered.running.clone();
+        self.settle_exits(&running);
+        running.retain(|s| !self.exiting.iter().any(|exit| exit.session == s.session));
+        let mut running: Vec<Session> = running.into_iter()
+            .filter(|s| sessions::matches(&[&s.project, &s.task], &self.query))
+            .filter(|s| !self.focus_waiting || FOCUS_STATES.contains(&s.state.as_str()))
+            .collect();
+        for session in &mut running {
+            session.pinned = self.view.pinned.contains(&session.session);
         }
         // A card keeps its place: pinned first, then in the order the sessions started.
         let running = sessions::grouped_by_project(running);
@@ -751,14 +858,15 @@ impl App {
             lines.push(Line::default());
         }
         // game-performance froze the sessions for a game: their cards stand still until it ends.
-        let paused = std::fs::read_to_string(paths::game_frozen()).map(|list| list.lines().filter(|line| !line.trim().is_empty()).count()).unwrap_or(0);
+        let paused = gathered.paused;
         if paused > 0 {
             lines.push(Line::new(vec![segment(0, format!("⏸ {paused} session{} paused while you game", if paused > 1 { "s" } else { "" }), bold(BLUE))]));
             lines.push(Line::new(vec![segment(2, "they resume where they stopped when the game ends", dim(FG_DARK))]));
             lines.push(Line::default());
         }
-        self.start_files = sessions::start_file_mtimes();
-        self.craft_roots = ["figcraft"].iter().filter_map(|app| Some((app.to_string(), sessions::craft_root(app)?))).collect();
+        self.start_files = gathered.start_files.clone();
+        self.craft_roots = gathered.craft_roots.clone();
+        self.gathered = Some(gathered);
         let outdated: Vec<&Session> = running.iter().filter(|s| !sessions::changed_since_start(s, &self.start_files).is_empty()).collect();
         if !outdated.is_empty() {
             let mut changes: Vec<&str> = outdated.iter().flat_map(|s| sessions::changed_since_start(s, &self.start_files)).collect();
@@ -959,12 +1067,13 @@ impl App {
         let session = self.selected_session();
         let known = session.as_ref().filter(|s| s.state != "unknown").cloned();
         match key {
-            Key::Enter => session.map(|s| manager(&["open", &s.session])).unwrap_or_default(),
+            Key::Enter => session.map(|s| self.manager_async(&["open", &s.session])).unwrap_or_default(),
             Key::Char('n') => match sessions::next_attention_index(&self.sessions, self.panels[1].selected) {
                 None => "nothing needs you".into(),
                 Some(index) => {
                     self.panels[1].selected = index;
-                    manager(&["view", &self.sessions[index].session])
+                    let viewed = self.sessions[index].session.clone();
+                    self.manager_async(&["view", &viewed])
                 }
             },
             Key::Char('p') => {
@@ -1032,7 +1141,7 @@ impl App {
                 }
                 None => String::new(),
             },
-            Key::Char('z') => manager(&["zoom"]),
+            Key::Char('z') => self.manager_async(&["zoom"]),
             Key::Char('o') => match session.and_then(|s| s.design) {
                 Some(design) => {
                     let _ = Command::new("xdg-open").arg(&design.url).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
@@ -1894,17 +2003,17 @@ impl App {
             }
             Key::Char('a') => {
                 if let Some(directory) = screen.outside(&mut || pick_project()).filter(|d| !d.is_empty()) {
-                    self.message = manager(&["new", &directory]);
+                    self.message = self.manager_async(&["new", &directory]);
                 }
             }
-            Key::Char('D') => self.message = manager(&["digest"]),
+            Key::Char('D') => self.message = self.manager_async(&["digest"]),
             Key::Char('S') => self.settings_menu = Some(SettingsMenu::new()),
             Key::Char('K') => manager_in_background(&["clones"]),
             Key::Char('H') => {
                 let past = self.past_sessions();
                 if let Some(index) = screen.outside(&mut || pick_past_session(&past)).and_then(|chosen| chosen.parse::<usize>().ok()) {
                     let chosen = &past[index].0;
-                    self.message = manager(&["resume", &chosen.cwd, &chosen.session]);
+                    self.message = self.manager_async(&["resume", &chosen.cwd, &chosen.session]);
                 }
             }
             Key::Char('A') => {
@@ -1918,7 +2027,7 @@ impl App {
                 }
             }
             Key::Char('V') => self.message = self.start_design_session(screen),
-            Key::Char('P') => self.message = manager(&["prs"]),
+            Key::Char('P') => self.message = self.manager_async(&["prs"]),
             Key::Char('W') => self.message = open_in_scratchpad("claude", ""),
             Key::Char('G') => self.message = open_in_scratchpad("greyproxy", ""),
             Key::Char('q') | Key::Ctrl('c') => {
