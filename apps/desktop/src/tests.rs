@@ -887,8 +887,27 @@ fn the_window_comes_back_when_the_command_asks_for_input() {
     bench.registry.run_phase(RUN_A, "input");
     assert_eq!(bench.windows().len(), 2);
     assert!(!bench.windows()[1].borrow().closed);
+}
+
+#[test]
+fn after_an_answer_the_window_stays_until_the_command_ends() {
+    // Typing "y" at an install prompt closed it at once: Theo lost what the answer did.
+    let mut bench = Bench::new();
+    bench.registry.run_request(RUN_A).unwrap();
     bench.registry.run_phase(RUN_A, "running");
+    bench.registry.run_phase(RUN_A, "input");
+    bench.registry.run_phase(RUN_A, "running");
+    assert!(!bench.windows()[1].borrow().closed);
+    bench.registry.run_phase(RUN_A, "done");
     assert!(bench.windows()[1].borrow().closed);
+}
+
+#[test]
+fn a_command_that_never_asks_for_input_runs_without_its_window() {
+    let mut bench = Bench::new();
+    bench.registry.run_request(RUN_A).unwrap();
+    bench.registry.run_phase(RUN_A, "running");
+    assert!(bench.windows()[0].borrow().closed);
 }
 
 #[test]

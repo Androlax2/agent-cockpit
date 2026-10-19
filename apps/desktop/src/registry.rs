@@ -435,12 +435,15 @@ pub fn project_of(cache: &mut HashMap<String, String>, cwd: &str, fallback: &str
 /// itself: each request gets claude-run-approve in a tmux session of its own (claude-run-<id>), one
 /// at a time, shown in a pane under the cockpit's session pane and in a floating window on the
 /// current workspace while it needs Theo: before he answers, and again when the command he approved
-/// waits for input (sudo, a passphrase); closed while it just runs, and never while he games.
+/// waits for input (sudo, a passphrase), then until it ends (what the answer does, the next prompt);
+/// closed while a command that never asked for input runs, and never while he games.
 #[derive(Default)]
 pub struct RunRequests {
     pub queue: Vec<String>,
     pub current: String,
     pub phase: String,
+    /// The current command asked for input once: Theo is following it, the window stays to its end.
+    asked_input: bool,
     window: Option<Box<dyn Window>>,
 }
 
@@ -508,6 +511,7 @@ impl RunRequests {
             }
             self.current = id.clone();
             self.phase = "asking".into();
+            self.asked_input = false;
             system.run(&["claude-sessions", "approval-pane", &id], &[0]);
             self.show(system);
             return;
@@ -519,6 +523,7 @@ impl RunRequests {
             return;
         }
         self.phase = phase.into();
+        self.asked_input |= phase == "input";
         let input_notice = format!("run-input-{id}");
         if phase == "input" && !system.quiet() {
             banners.raise_notice(&Notice { id: input_notice, title: "Command waiting".into(), message: "it asks for your input".into() });
@@ -533,7 +538,7 @@ impl RunRequests {
     /// command just runs; the pane under the cockpit's session keeps showing the output.
     fn show(&mut self, system: &mut dyn System) {
         let open_now = self.window.as_mut().is_some_and(|window| window.running());
-        let needs_theo = self.phase == "asking" || self.phase == "input";
+        let needs_theo = self.phase == "asking" || self.phase == "input" || self.asked_input;
         let wanted = needs_theo && !system.claude_workspace_active() && !system.quiet();
         if wanted && !open_now {
             let target = format!("={}", run_session(&self.current));
@@ -558,6 +563,7 @@ impl RunRequests {
         system.run(&["claude-sessions", "approval-pane", "close"], &[0]);
         self.current.clear();
         self.phase.clear();
+        self.asked_input = false;
         self.next(system);
     }
 
