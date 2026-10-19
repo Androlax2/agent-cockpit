@@ -15,6 +15,14 @@ use serde_json::json;
 // The manager's panes are found by their @role tag; the fake keeps those tags in $SHIM_ROLES.
 const FAKE_TMUX: &str = r#"
 roles="${SHIM_ROLES:-/dev/null}"
+# Commands chained with ";" (one tmux invocation), each run in turn as tmux does.
+if [[ " $* " == *" ; "* ]]; then
+  part=()
+  for word in "$@"; do
+    if [[ $word == ";" ]]; then SHIM_LOG=/dev/null "$0" "${part[@]}"; part=(); else part+=("$word"); fi
+  done
+  SHIM_LOG=/dev/null exec "$0" "${part[@]}"
+fi
 case $1 in
   list-panes)
     if [[ $2 == -t && $3 == =claude-retry-* ]]; then echo "%4"
@@ -1225,4 +1233,22 @@ fn sessions_launched_in_their_own_tmux_session_keep_their_pane_id() {
     let launches: Vec<String> = manager.tmux_calls("new-session").into_iter().filter(|call| call.contains("claude $argv")).collect();
     assert_eq!(launches.len(), 2, "{launches:?}");
     assert!(launches.iter().all(|call| !call.contains("TMUX_PANE")), "{launches:?}");
+}
+
+#[test]
+fn switching_sessions_changes_the_approval_pane_in_the_same_tmux_command() {
+    // Two commands drew the session at full height a moment before the pane came or went.
+    let manager = Manager::new();
+    let runs = file_request(&manager, "0123456789ab", SESSION_A);
+    fs::write(manager.runtime_file("claude-sessions.current"), format!("{SESSION_A}\n")).unwrap();
+    manager.run(&["approval-pane", "0123456789ab"], &[("CLAUDE_RUNS_DIR", &runs)]);
+    fs::write(&manager.snapshot, json!({"sessions": [
+        {"session": SESSION_A, "state": "waiting", "project": "proj-a", "cwd": path_str(&manager.project), "tmux_pane": "%4"},
+        {"session": SESSION_B, "state": "waiting", "project": "proj-b", "cwd": path_str(&manager.project), "tmux_pane": "%5"}]}).to_string()).unwrap();
+    manager.run(&["view", SESSION_B], &[]);
+    let switch = manager.tmux_calls("respawn-pane").pop().expect("no switch");
+    assert!(switch.contains(" ; kill-pane -t "), "{switch}");
+    manager.run(&["view", SESSION_A], &[]);
+    let back = manager.tmux_calls("respawn-pane").pop().expect("no switch back");
+    assert!(back.contains(" ; split-window ") && back.ends_with("attach-session -t =claude-run-0123456789ab"), "{back}");
 }

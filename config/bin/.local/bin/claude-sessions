@@ -208,10 +208,25 @@ view_session() {
         target=$(tmux display-message -p -t "$pane" '#{session_name}')
     fi
     ensure_manager
+    # The session and its approval pane change in one tmux command: tmux redraws once, after both.
+    # In two steps the session showed a moment at full height before the pane appeared or went.
+    local viewer approval run new_pane
+    viewer=$(viewer_pane)
+    approval=$(pane_by_role approval)
+    run=$(approval_for "$id")
     # Nested on purpose: the inner client is the real, interactive session.
-    tmux respawn-pane -k -t "$(viewer_pane)" env -u TMUX tmux attach-session -t "=$target"
+    local commands=(respawn-pane -k -t "$viewer" env -u TMUX tmux attach-session -t "=$target")
+    if [[ -n $approval && -z $run ]]; then
+        commands+=(";" kill-pane -t "$approval")
+    elif [[ -z $approval && -n $run ]]; then
+        commands+=(";" split-window -v -d -l 40% -t "$viewer" -P -F '#{pane_id}' env -u TMUX tmux attach-session -t "=claude-run-$run")
+    fi
+    new_pane=$(tmux "${commands[@]}")
+    if [[ -n $new_pane ]]; then
+        tag_pane "$new_pane" approval
+        tmux set-option -p -t "$new_pane" remain-on-exit off
+    fi
     printf '%s\n' "$id" > "$CURRENT"
-    place_approval
     # Its banner ("waiting for your input") has been read now that the session is on screen.
     osd-show session-seen "$id" 2>/dev/null || true
     label_panes "$(session_field "$id" project)"
@@ -1105,6 +1120,16 @@ hide_approval() {
     local pane
     pane=$(pane_by_role approval)
     if [[ -n $pane ]]; then tmux kill-pane -t "$pane" 2>/dev/null || true; fi
+}
+
+# The approval request to show under session <id>: the active one when that session asked it (or
+# it names none); nothing otherwise, or when its approval has ended.
+approval_for() { # id
+    local run session
+    read -r run session < "$APPROVAL_STATE" 2>/dev/null || return 0
+    tmux has-session -t "=claude-run-$run" 2>/dev/null || return 0
+    [[ -z $session || $session == "$1" ]] && echo "$run"
+    return 0
 }
 
 # The approval pane under the session pane while the session shown is the one that asked (or the
