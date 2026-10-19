@@ -19,8 +19,8 @@ const RESTORE_WINDOW_S: i64 = 600;
 const RESTORE_OFFER_HOURS: i64 = 6;
 const GREYPROXY_RECENT_MINUTES: i64 = 10;
 /// What a session reads only when it starts: after a change, the sessions started before it run
-/// on the old version until they restart. Label -> path (a missing file is skipped). The labels
-/// starting with "opencode" are opencode's alone; OPENCODE_START_FILES are the ones it reads.
+/// on the old version until they restart. Label -> path (a missing file is skipped). Each agent
+/// lists the ones it reads (agents::Agent::start_files).
 pub const START_FILES: [(&str, &str); 13] = [
     ("CLAUDE.md", "~/.claude/CLAUDE.md"), ("settings", "~/.claude/settings.json"),
     ("plugins", "~/.claude/plugins/installed_plugins.json"), ("ADHD mode", "~/.claude/.i-have-adhd-always"),
@@ -30,9 +30,6 @@ pub const START_FILES: [(&str, &str); 13] = [
     ("opencode config", "~/.config/opencode/opencode.jsonc"), ("opencode plugin", "~/.config/opencode/plugins/cockpit.ts"),
     ("opencode profile", "~/.config/greywall/learned/opencode.json"), ("opencode launcher", "~/.local/bin/greywall-agents/opencode"),
 ];
-/// The start files an opencode session reads: its own, and the global CLAUDE.md, sandbox and
-/// shared launcher it has in common with Claude.
-const OPENCODE_START_FILES: [&str; 3] = ["CLAUDE.md", "sandbox", "shared launcher"];
 
 pub fn glyph(state: &str) -> &'static str {
     GLYPHS.iter().find(|(name, _)| *name == state).map(|(_, glyph)| *glyph).unwrap_or("·")
@@ -116,7 +113,7 @@ pub struct Session {
     pub background: u64,
     /// Desktop apps it drives through an attached MCP server, as the hook saw them: "figcraft:on".
     pub apps: String,
-    /// "claude" or "opencode": the agent that runs it.
+    /// The name of the agent that runs it (agents::AGENTS).
     pub agent: String,
     // Added by the column.
     pub design: Option<Design>,
@@ -160,13 +157,14 @@ impl Session {
             agents: row.get("agents").and_then(Value::as_u64).unwrap_or(0),
             background: row.get("background").and_then(Value::as_u64).unwrap_or(0),
             apps: text(row, "apps"),
-            agent: row.get("agent").and_then(Value::as_str).unwrap_or("claude").into(),
+            agent: row.get("agent").and_then(Value::as_str).unwrap_or(crate::agents::DEFAULT).into(),
             ..Session::default()
         })
     }
 
-    pub fn is_opencode(&self) -> bool {
-        self.agent == "opencode"
+    /// The agent that runs it (its row in agents::AGENTS).
+    pub fn agent(&self) -> &'static crate::agents::Agent {
+        crate::agents::get(&self.agent)
     }
 }
 
@@ -206,7 +204,7 @@ pub fn running() -> Vec<Session> {
             continue;
         }
         let created = created.parse::<i64>().unwrap_or_else(|_| now_secs());
-        let agent = if name.starts_with("claude-retry-opencode-") { "opencode" } else { "claude" };
+        let agent = crate::agents::of_tmux_session(&name).map_or(crate::agents::DEFAULT, |agent| agent.name);
         sessions.push(Session {
             session: name, state: "unknown".into(), project: project_name(&path),
             task: title.trim_start_matches(['✳', '◐', '◑', ' ']).to_string(), since: created, started: Some(created),
@@ -514,7 +512,7 @@ pub fn start_file_mtimes() -> Vec<(&'static str, f64)> {
 /// What changed after the session started, so it does not have it yet; none without a start time.
 pub fn changed_since_start(session: &Session, mtimes: &[(&'static str, f64)]) -> Vec<&'static str> {
     let Some(started) = session.started else { return Vec::new() };
-    let reads = |label: &str| if session.is_opencode() { label.starts_with("opencode") || OPENCODE_START_FILES.contains(&label) } else { !label.starts_with("opencode") };
+    let reads = |label: &str| session.agent().start_files.contains(&label);
     mtimes.iter().filter(|(label, mtime)| *mtime > started as f64 && reads(label)).map(|(label, _)| *label).collect()
 }
 

@@ -2,7 +2,8 @@
 //! and state folder, stand-ins on PATH that log their calls (claude-sessions, tmux, gh, fzf,
 //! hyprctl, osd-show), and a screen that answers questions from a script.
 
-use crate::app::{AGENTS, App, Key, Screen};
+use crate::agents;
+use crate::app::{App, Key, Screen};
 use crate::costs;
 use crate::errors::ErrorReporter;
 use crate::reviews::{self, Issue, Review};
@@ -2140,7 +2141,7 @@ fn ctrl_r_leaves_a_session_started_after_the_change_alone() {
     let fixture = Fixture::new();
     fixture.snapshot(json!([session(SESSION_A, "waiting", "runway", "/r", 1), session(SESSION_B, "waiting", "opusline", "/o", 100)]));
     let mut app = fixture.app();
-    app.start_files = vec![("the launcher", 50.0)];
+    app.start_files = vec![("launcher", 50.0)];
     app.handle(Key::Ctrl('r'), &mut FakeScreen::answering(&[Key::Char('y')]));
     assert_eq!(fixture.wait_for_calls("claude-sessions", 1), vec![format!("claude-sessions restart-all {SESSION_A}")]);
 }
@@ -2428,7 +2429,7 @@ fn capital_o_starts_opencode_in_the_picked_project() {
 
 #[test]
 fn a_asks_for_the_agent_after_the_project() {
-    for agent in AGENTS {
+    for agent in agents::names() {
         let fixture = Fixture::new();
         let project = fixture.root.join("home/IdeaProjects/runway");
         fs::create_dir_all(&project).unwrap();

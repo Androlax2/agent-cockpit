@@ -20,6 +20,7 @@
 //! permission dialog, choice menus, spinner and idle prompt. Also the run and guide queues
 //! (ask-to-run, ask-to-guide).
 
+use cockpit::agents::{self, Feature};
 use cockpit::paths;
 use regex::Regex;
 use serde_json::{Map, Value, json};
@@ -64,10 +65,6 @@ static PROMPT_LINE: LazyLock<Regex> = LazyLock::new(|| regex(r"(?m)^\s*❯[ \x{a
 static UPDATE_READY: LazyLock<Regex> = LazyLock::new(|| regex(r"Update installed\s*·\s*Restart to update"));
 /// The session binary's process name: Claude Code's version.
 static CLAUDE_VERSION_NAME: LazyLock<Regex> = LazyLock::new(|| regex(r"^\d+\.\d+\.\d+$"));
-/// A Claude session's id (a UUID) or an opencode session's (ses_ and base62).
-static SESSION_ID: LazyLock<Regex> = LazyLock::new(|| regex(r"^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|ses_[0-9A-Za-z]{12,40})$"));
-/// The agents a session runs: Claude Code, or opencode (its plugin reports through the same hook).
-pub const AGENTS: [&str; 2] = ["claude", "opencode"];
 static TMUX_PANE: LazyLock<Regex> = LazyLock::new(|| regex(r"^%[0-9]{1,10}$"));
 static KITTY_LISTEN: LazyLock<Regex> = LazyLock::new(|| regex(r"^unix:[@/][A-Za-z0-9_./@-]{1,200}$"));
 static NUMBER: LazyLock<Regex> = LazyLock::new(|| regex(r"^[0-9]{1,10}$"));
@@ -154,7 +151,7 @@ pub struct Report {
     /// The desktop apps the session drives through an attached MCP server: "figcraft:on wordcraft:off"
     /// (the hook checks inside the sandbox). None when the report did not say (the daemon's own updates).
     pub apps: Option<String>,
-    /// Which agent runs the session (AGENTS). None when the report did not say: Claude.
+    /// Which agent runs the session (cockpit::agents). None when the report did not say: Claude.
     pub agent: Option<String>,
     pub target: BTreeMap<String, String>,
 }
@@ -182,8 +179,8 @@ pub fn parse_session(raw: &str) -> Result<Report, String> {
     if report.get("credits").is_some_and(|value| !value.is_boolean()) {
         return Err("session.credits is not true or false".into());
     }
-    if report.get("agent").is_some_and(|agent| !agent.as_str().is_some_and(|agent| AGENTS.contains(&agent))) {
-        return Err(format!("session.agent is not one of {AGENTS:?}"));
+    if report.get("agent").is_some_and(|agent| !agent.as_str().is_some_and(|agent| agents::find(agent).is_some())) {
+        return Err(format!("session.agent is not one of {:?}", agents::names()));
     }
     for key in ["unpushed", "agents", "background"] {
         if report.get(key).is_some_and(|value| !value.is_u64()) {
@@ -196,8 +193,8 @@ pub fn parse_session(raw: &str) -> Result<Report, String> {
         }
     }
     let session = report["session"].as_str().unwrap().to_string();
-    if !SESSION_ID.is_match(&session) {
-        return Err("session is not a Claude or opencode session id".into());
+    if !agents::is_session_id(&session) {
+        return Err(format!("session is not an id of one of the agents {:?}", agents::names()));
     }
     for key in ["session", "project", "cwd", "task", "message", "outcome"] {
         if let Some(text) = report.get(key).and_then(Value::as_str) {
@@ -907,7 +904,7 @@ pub struct Entry {
     pub agents: u64,
     pub background: u64,
     pub apps: String,
-    /// "claude" or "opencode" (AGENTS).
+    /// The name of the agent that runs it (cockpit::agents).
     pub agent: String,
 }
 
@@ -1040,7 +1037,7 @@ impl Registry {
         if previous_state.is_none() {
             let time = now();
             self.sessions.insert(session.clone(), Entry { state: report.state.clone().unwrap_or("waiting".into()), project: report.project.clone(),
-                                                          since: time, started: time, agent: "claude".into(), ..Entry::default() });
+                                                          since: time, started: time, agent: agents::DEFAULT.into(), ..Entry::default() });
             changed = true;
         }
         let mut entry = self.sessions.remove(&session).unwrap();
@@ -1234,7 +1231,7 @@ impl Registry {
     /// Theo looked at the session: its banner (sticky ones too, and one held for a game or a
     /// meeting) has said what it had to say.
     pub fn seen(&mut self, session: &str) {
-        if !SESSION_ID.is_match(session) {
+        if !agents::is_session_id(session) {
             return;
         }
         self.held.remove(session);
@@ -1346,7 +1343,7 @@ impl Registry {
                     unpushed: row.get("unpushed").and_then(Value::as_u64).unwrap_or(0),
                     agents: row.get("agents").and_then(Value::as_u64).unwrap_or(0),
                     background: row.get("background").and_then(Value::as_u64).unwrap_or(0),
-                    agent: row.get("agent").and_then(Value::as_str).filter(|agent| AGENTS.contains(agent)).unwrap_or("claude").into(),
+                    agent: row.get("agent").and_then(Value::as_str).filter(|agent| agents::find(agent).is_some()).unwrap_or(agents::DEFAULT).into(),
                     ..Entry::default()
                 }))
             })();
@@ -1424,9 +1421,9 @@ impl Registry {
     }
 
     /// The pane's last lines say what Claude is doing now; they win over stale hook states. Only
-    /// Claude's: the patterns are Claude Code's screen, which opencode's does not look like.
+    /// for the agents whose screen the patterns know (Feature::ScreenStates): Claude Code's.
     pub fn reconcile_with_panes(&mut self) {
-        let sessions: Vec<(String, String)> = self.sessions.iter().filter(|(_, entry)| entry.agent == "claude")
+        let sessions: Vec<(String, String)> = self.sessions.iter().filter(|(_, entry)| agents::get(&entry.agent).can(Feature::ScreenStates))
             .filter_map(|(id, entry)| entry.target.get("tmux_pane").map(|pane| (id.clone(), pane.clone()))).collect();
         for (session, pane) in sessions {
             let tail = self.system.tmux(&["capture-pane", "-p", "-t", &pane, "-S", &format!("-{PANE_TAIL_LINES}")]).unwrap_or_default();
@@ -1633,7 +1630,7 @@ pub fn claude_processes(table: &dyn Processes) -> Vec<String> {
     let infrastructure = ["daemon", "bg-pty-host", "bg-spare"];
     let mut found: Vec<String> = table.pids().into_iter().filter(|pid| {
         let name = table.comm(pid);
-        if name == "opencode" {
+        if agents::AGENTS.iter().any(|agent| agent.process == Some(name.as_str())) {
             return true;
         }
         if name != "claude" && !version.is_match(&name) {
@@ -1657,7 +1654,7 @@ pub fn live_session_ids_in(table: &dyn Processes) -> HashSet<String> {
 fn session_ids_of(table: &dyn Processes, processes: &[String]) -> HashSet<String> {
     processes.iter().flat_map(|pid| {
         let command = table.command(pid);
-        command.windows(2).filter(|pair| pair[0] == "--session-id" && SESSION_ID.is_match(&pair[1])).map(|pair| pair[1].clone()).collect::<Vec<_>>()
+        command.windows(2).filter(|pair| pair[0] == "--session-id" && agents::is_session_id(&pair[1])).map(|pair| pair[1].clone()).collect::<Vec<_>>()
     }).collect()
 }
 

@@ -1,5 +1,6 @@
 //! The Claude cockpit: the code its programs share (paths, sessions, usage, the column's app).
 
+pub mod agents;
 pub mod app;
 pub mod approval;
 pub mod audit;

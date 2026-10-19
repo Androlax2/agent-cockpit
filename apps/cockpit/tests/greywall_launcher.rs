@@ -8,12 +8,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const AGENTS: [&str; 2] = ["claude", "opencode"];
+/// Every agent runs in its own launcher (cockpit::agents; tests/agents.rs checks each has one).
+static AGENTS: std::sync::LazyLock<Vec<&'static str>> = std::sync::LazyLock::new(cockpit::agents::names);
 
 #[test]
 fn no_session_starts_in_the_live_dotfiles_checkout() {
     // Security audit C1: a session there could write code the host runs, unreviewed.
-    for agent in AGENTS {
+    for &agent in AGENTS.iter() {
         let sandbox = Sandbox::new();
         let live = sandbox.home.join("dotfiles/apps");
         fs::create_dir_all(&live).unwrap();
@@ -96,7 +97,7 @@ esac"#);
 #[test]
 fn other_projects_claude_folders_are_read_only_and_its_own_is_not() {
     // Security audit H2: a session must not plant memory another project loads.
-    for agent in AGENTS {
+    for &agent in AGENTS.iter() {
         other_projects_folders_are_read_only_for(agent);
     }
 }
@@ -118,7 +119,7 @@ fn other_projects_folders_are_read_only_for(agent: &str) {
 #[test]
 fn only_the_projects_own_answers_folder_is_mounted() {
     // Security audit M3: no session reads another project's command output.
-    for agent in AGENTS {
+    for &agent in AGENTS.iter() {
         let launch = Launch::new();
         let started = launch.run_agent(agent, &[], &[]);
         let answers = launch.sandbox.runtime.join("claude-answers").join(Launch::slug(&launch.project));
@@ -332,7 +333,7 @@ fn opencode_sees_its_own_data_and_claude_does_not() {
 fn each_agent_starts_on_a_settings_file_of_its_own() {
     // One file per folder was rewritten by whichever agent started there last.
     let launch = Launch::new();
-    for agent in AGENTS {
+    for &agent in AGENTS.iter() {
         let started = launch.run_agent(agent, &[], &[]);
         assert!(started.contains(&format!(".{agent}.json ")), "{started}");
     }

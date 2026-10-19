@@ -12,6 +12,7 @@
 //! asking (claude-run-approve shows the same command from `<id>.asking` and takes the answer from
 //! `<id>.remote`). Every action is an audit event (component "remote").
 
+use crate::agents::{self, Feature};
 use crate::{approval, audit, costs, paths, prompts, push, reviews, sessions, todo, usage, util};
 use serde_json::{Value, json};
 use std::fs::{self, OpenOptions};
@@ -469,17 +470,17 @@ pub fn state() -> Value {
         "request": text(row, "request"), "detail": text(row, "detail"), "since": row.get("since"), "outcome": text(row, "outcome"),
         "queued": prompts::count(&text(row, "session")),
         "remote_control": has_remote_control(row),
-        "agent": Some(text(row, "agent")).filter(|agent| !agent.is_empty()).unwrap_or_else(|| "claude".into()),
+        "agent": Some(text(row, "agent")).filter(|agent| !agent.is_empty()).unwrap_or_else(|| agents::DEFAULT.into()),
     })).collect();
     json!({"sessions": cards, "approvals": asking_approvals()})
 }
 
-/// A session's row when it runs Claude Code: its dialogs and keys are what these actions know
-/// (as claude-sessions' require_claude_session).
-fn require_claude(id: &str, what: &str) -> Result<Value, String> {
+/// A session's row when its agent has `feature` (as claude-sessions' require_feature).
+fn require_feature(id: &str, feature: Feature, what: &str) -> Result<Value, String> {
     let row = session_row(id).ok_or("no such session")?;
-    if text(&row, "agent") == "opencode" {
-        return Err(format!("{what} is Claude Code's; {} runs opencode: do it in its pane", text(&row, "project")));
+    let agent = agents::get(&text(&row, "agent"));
+    if !agent.can(feature) {
+        return Err(format!("{what} is not {}'s to do; {} runs {}: do it in its pane", agent.label, text(&row, "project"), agent.name));
     }
     Ok(row)
 }
@@ -557,7 +558,7 @@ pub fn message(id: &str, message: &str) -> Result<String, String> {
 /// presses Enter only while the dialog is open with its cursor on "1. Yes"; No presses Escape,
 /// Claude's own "no".
 pub fn answer(id: &str, is_yes: bool) -> Result<String, String> {
-    require_claude(id, "Yes and No")?;
+    require_feature(id, Feature::Dialogs, "Yes and No")?;
     let pane = session_pane(id)?;
     let tail = pane_lines(&pane, 20)?;
     if pane_state(&tail) != "needs-you" {
@@ -573,7 +574,7 @@ pub fn answer(id: &str, is_yes: bool) -> Result<String, String> {
 
 /// Escape for a session that works: Claude stops its turn, as the key does in the session.
 pub fn interrupt(id: &str) -> Result<String, String> {
-    let row = require_claude(id, "Interrupt")?;
+    let row = require_feature(id, Feature::Interrupt, "Interrupt")?;
     if text(&row, "state") != "working" {
         return Err("this session is not working".into());
     }
@@ -614,9 +615,9 @@ fn one_line(text: &str, what: &str) -> Result<String, String> {
     Ok(text.to_string())
 }
 
-/// One of the agents the column's pick offers; anything else, an absent one included, is refused.
+/// One of the agents (agents::AGENTS); anything else, an absent one included, is refused.
 fn known_agent(agent: &str) -> Result<&'static str, String> {
-    crate::app::AGENTS.into_iter().find(|known| *known == agent).ok_or_else(|| format!("which agent? one of {}", crate::app::AGENTS.join(", ")))
+    agents::find(agent).map(|known| known.name).ok_or_else(|| format!("which agent? one of {}", agents::names().join(", ")))
 }
 
 /// A new session in a project, out of sight, with its first message: in its own clone on a

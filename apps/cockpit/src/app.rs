@@ -2,6 +2,7 @@
 //! the footer, the effort and settings menus, the help, and every key. The focused panel takes half the column;
 //! Status keeps its size.
 
+use crate::agents::{self, Feature};
 use crate::costs::Costs;
 use crate::errors::ErrorReporter;
 use crate::paths;
@@ -1127,8 +1128,8 @@ impl App {
             if session.credits {
                 badges.push(part("$ credits", bold(YELLOW)));
             }
-            if session.is_opencode() {
-                badges.push(part("◇ opencode", bold(BLUE)));
+            if let Some(badge) = session.agent().badge {
+                badges.push(part(badge, bold(BLUE)));
             }
             match session.role.as_str() {
                 "designer" => badges.push(part("✎ designer", bold(MAGENTA))),
@@ -1242,9 +1243,8 @@ impl App {
         hints.extend([("⏎", "open"), ("n", "peek"), ("e", "effort"), ("g", "git"), ("+", "another"), ("x", "exit")]);
         let mut seen = std::collections::HashSet::new();
         hints.retain(|(key, _)| seen.insert(*key));
-        if selected.is_opencode() {
-            hints.retain(|(key, _)| key.chars().next().and_then(|key| claude_only(Key::Char(key))).is_none());
-        }
+        let agent = selected.agent();
+        hints.retain(|(key, _)| key.chars().next().and_then(|key| key_feature(Key::Char(key))).is_none_or(|(feature, _)| agent.can(feature)));
         hints
     }
 
@@ -1265,8 +1265,11 @@ impl App {
 
     pub(crate) fn handle_sessions(&mut self, key: Key, screen: &mut dyn Screen) -> String {
         let session = self.selected_session();
-        if let (Some(s), Some(what)) = (session.as_ref().filter(|s| s.is_opencode()), claude_only(key)) {
-            return format!("{what} is Claude Code's: {} runs opencode, do it in its pane", s.project);
+        if let (Some(s), Some((feature, what))) = (session.as_ref(), key_feature(key)) {
+            let agent = s.agent();
+            if !agent.can(feature) {
+                return format!("{what} is not {}'s to do: {} runs {}, do it in its pane", agent.label, s.project, agent.name);
+            }
         }
         let known = session.as_ref().filter(|s| s.state != "unknown").cloned();
         match key {
@@ -2354,7 +2357,7 @@ impl App {
                 "opening status.claude.com …".into()
             }
             "remote" => match known {
-                Some(s) if s.is_opencode() => format!("Remote Control is Claude Code's: {} runs opencode", s.project),
+                Some(s) if !s.agent().can(Feature::RemoteControl) => format!("Remote Control is not {}'s to do: {} runs {}", s.agent().label, s.project, s.agent().name),
                 Some(s) => {
                     manager_in_background(&["remote", &s.session]);
                     format!("toggling remote control for {} …", s.project)
@@ -2458,13 +2461,13 @@ fn fzf(prompt: &str, lines: &[String], extra: &[&str]) -> Option<String> {
     (output.status.success() && !chosen.is_empty()).then_some(chosen)
 }
 
-/// The keys of what only Claude Code does, named, for an opencode card: its effort, billing and
-/// /compact are Claude's (claude-sessions refuses them for opencode too, and Remote Control).
-pub(crate) fn claude_only(key: Key) -> Option<&'static str> {
+/// The card keys that need a feature of the session's agent, and what they do, named for a
+/// refusal (claude-sessions refuses them too, and Remote Control).
+pub(crate) fn key_feature(key: Key) -> Option<(Feature, &'static str)> {
     match key {
-        Key::Char('e') => Some("the effort level"),
-        Key::Char('$') => Some("billing to API credits"),
-        Key::Char('C') => Some("/compact"),
+        Key::Char('e') => Some((Feature::Effort, "the effort level")),
+        Key::Char('$') => Some((Feature::Billing, "billing to API credits")),
+        Key::Char('C') => Some((Feature::Compact, "/compact")),
         _ => None,
     }
 }
@@ -2481,13 +2484,11 @@ fn pick_project() -> Option<String> {
     fzf("project> ", &sessions::project_choices(), &[])
 }
 
-/// The agents a new session can run, by their claude-sessions --agent names: the two tested end to
-/// end in the cockpit (codex later).
-pub(crate) const AGENTS: [&str; 2] = ["claude", "opencode"];
-
-/// The agent a new session runs; None when the pick is cancelled, and then nothing starts.
+/// The agent a new session runs (agents::AGENTS); None when the pick is cancelled, and then
+/// nothing starts.
 fn pick_agent() -> Option<String> {
-    fzf("agent> ", &AGENTS.map(String::from), &[]).filter(|agent| AGENTS.contains(&agent.as_str()))
+    let names: Vec<String> = agents::names().into_iter().map(String::from).collect();
+    fzf("agent> ", &names, &[]).filter(|agent| agents::find(agent).is_some())
 }
 
 /// "panel\tkey" of the chosen action.
