@@ -66,9 +66,18 @@ describe_image_paste() {
     fi
 }
 
+# Designs in FigCraft: the interface is designed before it is built (the design-first skill).
+describe_design() {
+    local designs
+    designs=$(git -C "$project_root" ls-files --cached --others --exclude-standard -- '*.figcraft' 2>/dev/null | head -3 | paste -sd ',' | sed 's/,/, /g')
+    [[ -n $designs ]] || return 0
+    echo "- Design: FigCraft files (${designs}). Before implementing or changing any interface, load the design-first skill; design work in FigCraft itself starts with figcraft-design."
+}
+
 echo "Sandbox status for ${project_name} (from ~/.claude/hooks/agent-environment.sh):"
 describe_sandbox
 describe_docker
 describe_github
 describe_image_paste
+describe_design
 exit 0
