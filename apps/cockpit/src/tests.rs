@@ -1259,3 +1259,16 @@ fn enter_shows_the_details_in_a_popup_that_stays_open() {
     let popup = fixture.calls("tmux").into_iter().find(|call| call.contains("display-popup")).expect("no popup");
     assert!(popup.contains(" less ") && !popup.contains("quit-if-one-screen"), "{popup}");
 }
+
+#[test]
+fn the_shown_todo_tab_is_drawn_as_a_chip() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    app.todos.add("p", "/p", "one item");
+    app.build();
+    let buffer = render(&mut app, 120, 40);
+    let chip: String = (0..120).filter_map(|x| (0..40).find(|y| buffer[(x, *y)].symbol() == "T" && buffer[(x, *y)].bg == ratatui::style::Color::Indexed(crate::app::BLUE)).map(|_| "T")).collect();
+    assert!(!chip.is_empty(), "no tab drawn on blue");
+    let rows: Vec<String> = (0..40).map(|y| (0..120).map(|x| buffer[(x, y)].symbol().to_string()).collect()).collect();
+    assert!(rows.iter().any(|row| row.contains(" To do 1 ") && !row.contains("[To do")), "{rows:#?}");
+}

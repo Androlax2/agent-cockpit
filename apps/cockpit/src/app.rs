@@ -23,6 +23,7 @@ use std::time::{Duration, Instant};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 // kitty's 16-colour palette is Tokyo Night, so plain colour indexes match the rest of the desktop.
+pub const BLACK: u8 = 0;
 pub const RED: u8 = 1;
 pub const GREEN: u8 = 2;
 pub const YELLOW: u8 = 3;
@@ -1377,6 +1378,13 @@ impl App {
         let subtitle = fit(&subtitle_text, (width as usize).saturating_sub(8 + width_of(&label)));
         if !subtitle.is_empty() {
             put(buffer, top, 2 + width_of(&label) as u16, &format!(" · {subtitle} "), dim(FG_DARK));
+            // The Todo tab shown: a chip over its "[name count]", readable at a glance.
+            if index == 3 {
+                if let (Some(open), Some(close)) = (subtitle.find('['), subtitle.find(']')) {
+                    let column = 2 + width_of(&label) as u16 + 3 + width_of(&subtitle[..open]) as u16;
+                    put(buffer, top, column, &format!(" {} ", &subtitle[open + 1..close]), on(BLACK, BLUE).add_modifier(Modifier::BOLD));
+                }
+            }
         }
         for offset in 0..inner_height {
             let row = top + 1 + offset as u16;
