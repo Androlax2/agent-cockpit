@@ -1150,3 +1150,15 @@ fn alt_q_outside_a_claude_session_queues_nothing() {
     manager.sandbox.run_with_input(bin().join("claude-sessions"), &["queue-prompt-ask", "%99"], &[], "lost\n");
     assert!(!manager.sandbox.state.join("claude-sessions/prompt-queue").exists());
 }
+
+#[test]
+fn tmux_bindings_name_claude_sessions_by_its_full_path() {
+    // The tmux server runs popups with PATH=/usr/local/bin:/usr/bin: a bare claude-sessions is not
+    // found there, and the Alt+Q popup closed the moment it opened.
+    let conf = fs::read_to_string(repo().join("config/tmux/.config/tmux/tmux.conf")).unwrap();
+    for line in conf.lines().filter(|line| !line.trim_start().starts_with('#')) {
+        for (at, _) in line.match_indices("claude-sessions ") {
+            assert!(line[..at].ends_with("/.local/bin/"), "bare claude-sessions in: {line}");
+        }
+    }
+}

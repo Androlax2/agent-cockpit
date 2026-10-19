@@ -1810,7 +1810,8 @@ fn show_in_popup(text: &str) {
         return;
     }
     let _ = Command::new("tmux").args(["display-popup", "-E", "-w", "70%", "-h", "60%", "-T", " todo · q closes "])
-        .args(["less", "-R", "--quit-if-one-screen", "--no-init"]).arg(&path).status();
+        // No --quit-if-one-screen: a short text would close the popup the moment it opened.
+        .args(["less", "-R", "--no-init"]).arg(&path).status();
     let _ = fs::remove_file(&path);
 }
 

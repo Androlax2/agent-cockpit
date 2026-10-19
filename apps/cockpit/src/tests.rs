@@ -1247,3 +1247,15 @@ fn m_queues_a_message_while_the_session_works() {
     assert_eq!(crate::prompts::count(SESSION_A), 1);
     assert!(app.message.contains("queued for runway"), "{}", app.message);
 }
+
+#[test]
+fn enter_shows_the_details_in_a_popup_that_stays_open() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    app.todos.add("p", "/p", "short item");
+    app.build();
+    app.focus_panel(3);
+    app.handle(Key::Enter, &mut FakeScreen::default());
+    let popup = fixture.calls("tmux").into_iter().find(|call| call.contains("display-popup")).expect("no popup");
+    assert!(popup.contains(" less ") && !popup.contains("quit-if-one-screen"), "{popup}");
+}
