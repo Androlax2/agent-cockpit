@@ -1078,3 +1078,16 @@ fn seen_ignores_what_is_not_a_session_id() {
     bench.registry.seen("notice:budget");
     assert!(bench.dropped().is_empty());
 }
+
+#[test]
+fn a_terminal_session_is_marked_in_the_snapshot_and_the_reboot_record() {
+    let mut bench = Bench::new();
+    bench.report(SESSION_A, json!({"state": "waiting", "cwd": "/a", "terminal": true}));
+    bench.report(SESSION_A, json!({"state": "working"}));
+    bench.report(SESSION_B, json!({"state": "waiting", "cwd": "/b"}));
+    let terminal: Vec<bool> = [SESSION_A, SESSION_B].iter()
+        .map(|id| bench.snapshot().iter().find(|row| row["session"] == *id).unwrap()["terminal"].as_bool().unwrap()).collect();
+    assert_eq!(terminal, [true, false], "a later report without the flag keeps it");
+    let recent: Value = serde_json::from_str(&fs::read_to_string(cockpit::paths::recent_sessions()).unwrap()).unwrap();
+    assert_eq!(recent[SESSION_A]["terminal"], true);
+}

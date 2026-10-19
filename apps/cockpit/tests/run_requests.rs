@@ -396,3 +396,13 @@ fn a_result_planted_in_the_shared_runs_folder_is_ignored() {
     assert!(shown.contains("Run it?"), "the approval was skipped: {shown}");
     assert_eq!(fixture.result(&request_id), Some(json!({"status": "declined"})));
 }
+
+#[test]
+fn a_terminal_session_gets_no_approval_and_falls_back() {
+    let fixture = AskToRun::new();
+    let runs = fixture.runs.display().to_string();
+    let output = finish(fixture.sandbox.command(bin().join("ask-to-run"), &[("CLAUDE_RUNS_DIR", &runs), ("CLAUDE_SESSIONS_TERMINAL", "1")])
+        .args(["--why", "x", "true"]).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap(), TIMEOUT);
+    assert_eq!(output.status.code(), Some(126));
+    assert!(files_with_extension(&fixture.runs, "request").is_empty(), "a request was filed");
+}

@@ -269,3 +269,15 @@ fn a_test_command_only_mentioned_in_text_does_not_count() {
     let outcome = stop_outcome(&[("write the test", &[("cat >> t.rs <<'X'\nstop_outcome(&[(\"make test\", true), (\"claude-todo done 1\", false)]);\nX", false)])]);
     assert_eq!(outcome, None);
 }
+
+#[test]
+fn a_session_started_in_its_own_terminal_says_so() {
+    let mut test = HookTest::new();
+    let folder = test.sandbox.root.join("notes");
+    fs::create_dir(&folder).unwrap();
+    test.run_hook(with_session(json!({"hook_event_name": "SessionStart"}), &folder.to_string_lossy()), &[("CLAUDE_SESSIONS_TERMINAL", "1")]);
+    test.run_hook(with_session(json!({"hook_event_name": "SessionStart"}), &folder.to_string_lossy()), &[]);
+    let reports = test.received();
+    assert_eq!(reports[0]["terminal"], true);
+    assert!(reports[1].get("terminal").is_none(), "a cockpit session carries no flag");
+}

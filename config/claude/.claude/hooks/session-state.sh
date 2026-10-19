@@ -121,6 +121,10 @@ task=
 message=
 outcome=
 sticky=false
+# Started with "this terminal" (the claude function's t): the cockpit keeps it out of what acts on
+# every session.
+terminal=false
+[[ ${CLAUDE_SESSIONS_TERMINAL:-} == 1 ]] && terminal=true
 case $event in
     SessionStart)
         state=waiting
@@ -169,10 +173,10 @@ esac
 
 report=$(jq -cn \
     --arg session "$session" --arg state "$state" --arg project "$project" --arg cwd "$cwd" \
-    --arg task "$task" --arg message "$message" --arg outcome "$outcome" --argjson sticky "$sticky" \
+    --arg task "$task" --arg message "$message" --arg outcome "$outcome" --argjson sticky "$sticky" --argjson terminal "$terminal" \
     --arg kitty_pid "${KITTY_PID:-}" --arg kitty_window "${KITTY_WINDOW_ID:-}" \
     --arg kitty_listen "${KITTY_LISTEN_ON:-}" --arg tmux_pane "${TMUX_PANE:-}" \
-    '{$session, $state, $project, $cwd, $task, $message, $outcome, $sticky,
+    '{$session, $state, $project, $cwd, $task, $message, $outcome, $sticky, $terminal,
       $kitty_pid, $kitty_window, $kitty_listen, $tmux_pane}
      | with_entries(select(.value != "" and .value != false))')
 

@@ -86,6 +86,8 @@ pub struct Session {
     pub detail: String,
     pub outcome: String,
     pub update: bool,
+    /// Started with "this terminal": shown and usable here, left out of what acts on every session.
+    pub terminal: bool,
     // Added by the column.
     pub design: Option<Design>,
     pub facts: Facts,
@@ -120,6 +122,7 @@ impl Session {
             detail: text(row, "detail"),
             outcome: text(row, "outcome"),
             update: row.get("update").and_then(Value::as_bool).unwrap_or(false),
+            terminal: row.get("terminal").and_then(Value::as_bool).unwrap_or(false),
             ..Session::default()
         })
     }
@@ -382,7 +385,8 @@ pub struct Restorable {
 /// The sessions still alive when the machine went down: seen before this boot, within
 /// RESTORE_WINDOW_S of the last one seen, not ended on purpose, not running now. One nobody typed in
 /// yet comes back too, as a fresh session in its folder (claude-sessions restore): leaving it out
-/// made sessions opened and not used yet vanish at each reboot.
+/// made sessions opened and not used yet vanish at each reboot. One started in a terminal of its
+/// own ("this terminal") is that terminal's to bring back, not the cockpit's.
 pub fn sessions_to_restore(recent: &Value, ended: &HashSet<String>, running: &HashSet<String>, boot: i64) -> Vec<Restorable> {
     let Some(recent) = recent.as_object() else { return Vec::new() };
     let before: Vec<(&String, &Value)> = recent.iter()
@@ -391,7 +395,8 @@ pub fn sessions_to_restore(recent: &Value, ended: &HashSet<String>, running: &Ha
     let Some(last) = before.iter().filter_map(|(_, row)| row.get("last_seen").and_then(Value::as_i64)).max() else { return Vec::new() };
     let mut rows: Vec<Restorable> = before.into_iter()
         .filter(|(session, row)| row.get("last_seen").and_then(Value::as_i64).unwrap_or(0) >= last - RESTORE_WINDOW_S
-                && !ended.contains(*session) && !running.contains(*session))
+                && !ended.contains(*session) && !running.contains(*session)
+                && !row.get("terminal").and_then(Value::as_bool).unwrap_or(false))
         .map(|(session, row)| Restorable {
             session: session.clone(),
             cwd: row.get("cwd").and_then(Value::as_str).unwrap_or("").into(),
@@ -500,7 +505,8 @@ mod tests {
     #[test]
     fn sessions_alive_at_shutdown_are_offered_back() {
         let recent = json!({"a": {"cwd": "/a", "project": "a", "last_seen": 1000}, "b": {"cwd": "/b", "project": "b", "last_seen": 100},
-                            "c": {"cwd": "/c", "project": "c", "last_seen": 990}, "d": {"cwd": "/d", "project": "d", "last_seen": 995}});
+                            "c": {"cwd": "/c", "project": "c", "last_seen": 990}, "d": {"cwd": "/d", "project": "d", "last_seen": 995},
+                            "e": {"cwd": "/e", "project": "e", "last_seen": 998, "terminal": true}});
         let ended: HashSet<String> = ["c".to_string()].into();
         let offered = sessions_to_restore(&recent, &ended, &HashSet::new(), 2000);
         assert_eq!(offered.iter().map(|r| r.session.as_str()).collect::<Vec<_>>(), vec!["a", "d"]);

@@ -63,9 +63,10 @@ const GLOBAL_HELP: [(&str, &str); 17] = [
     ("l →  ←", "into the session from any panel; ← from the session comes back"),
     ("q ^C", "close the manager window; sessions keep running"),
 ];
-const LEGEND: [(&str, &str); 10] = [
+const LEGEND: [(&str, &str); 11] = [
     ("●", "working"), ("○", "waiting for you"), ("!", "needs you: permission or question"), ("·", "running, state unknown"),
     ("▌", "shown in the session pane"), ("⚲", "pinned"), ("⇅", "remote controlled"),
+    ("▭ terminal", "started with \"this terminal\": no ^R, restore, queue, error hand-off or ask-to-run"),
     ("⬆", "Claude updated itself: r restarts on the new version"),
     ("/compact", "context over 90%: /compact in the session before it gets slow and costly"), ("high ▾", "effort level: click to change it"),
 ];
@@ -384,7 +385,7 @@ impl App {
         let viewed = current_session();
         let watched = !viewed.is_empty() && util::claude_workspace_active();
         let idle: Vec<Session> = self.sessions.iter()
-            .filter(|session| session.state == "waiting" && !session.cwd.is_empty() && now as i64 - session.since >= QUEUE_IDLE_S)
+            .filter(|session| session.state == "waiting" && !session.terminal && !session.cwd.is_empty() && now as i64 - session.since >= QUEUE_IDLE_S)
             .filter(|session| !(watched && session.session == viewed) && !self.todos.busy(&session.session))
             .cloned().collect();
         for session in idle {
@@ -626,6 +627,9 @@ impl App {
             if facts.remote {
                 badges.push(part("⇅ remote", bold(CYAN)));
             }
+            if session.terminal {
+                badges.push(part("▭ terminal", bold(MAGENTA)));
+            }
             if session.pinned {
                 badges.push(part("⚲", style(YELLOW)));
             }
@@ -843,8 +847,9 @@ impl App {
     /// Restart every session sitting at its prompt: one that works or asks for a permission would
     /// lose its turn, so it is skipped and named.
     pub(crate) fn restart_all(&mut self, screen: &mut dyn Screen) -> String {
-        let ready: Vec<Session> = self.sessions.iter().filter(|s| s.state == "waiting").cloned().collect();
-        let busy: Vec<Session> = self.sessions.iter().filter(|s| s.state == "working" || s.state == "needs-you").cloned().collect();
+        // A terminal session is its terminal's: restart-all leaves it alone.
+        let ready: Vec<Session> = self.sessions.iter().filter(|s| s.state == "waiting" && !s.terminal).cloned().collect();
+        let busy: Vec<Session> = self.sessions.iter().filter(|s| (s.state == "working" || s.state == "needs-you") && !s.terminal).cloned().collect();
         if ready.is_empty() {
             return if busy.is_empty() { "no session to restart".into() } else { "nothing to restart: every session is busy".into() };
         }

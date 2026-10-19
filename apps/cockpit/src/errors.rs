@@ -143,7 +143,7 @@ impl ErrorReporter {
         let short: String = signature(error).chars().take(120).collect();
         // By folder: any session can name its project "dotfiles".
         let dotfiles = paths::dotfiles().to_string_lossy().into_owned();
-        if let Some(waiting) = sessions.iter().find(|session| util::repository_root(&session.cwd) == dotfiles && session.state == "waiting") {
+        if let Some(waiting) = sessions.iter().find(|session| util::repository_root(&session.cwd) == dotfiles && session.state == "waiting" && !session.terminal) {
             let problem = match write_report(&prompt) {
                 Ok(path) => util::manager(&["say", &waiting.session, &message(&path)]),
                 Err(error) => format!("report not written: {error}"),

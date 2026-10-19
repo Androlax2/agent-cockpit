@@ -25,6 +25,13 @@ const TYPE_AHEAD: Duration = Duration::from_millis(500);
 /// Output stopped mid-line this long: the command waits for input (sudo, [y/N]).
 const PROMPT_IDLE: Duration = Duration::from_millis(1500);
 
+/// A session started with "this terminal" (the claude function's t sets CLAUDE_SESSIONS_TERMINAL):
+/// Theo wanted it apart from the cockpit, so ask-to-run and ask-to-guide stay out of it and Claude
+/// falls back to giving him the command or the steps.
+pub fn in_terminal_session() -> bool {
+    std::env::var("CLAUDE_SESSIONS_TERMINAL").is_ok_and(|value| value == "1")
+}
+
 pub fn runs_dir() -> PathBuf {
     std::env::var("CLAUDE_RUNS_DIR").map(PathBuf::from).unwrap_or_else(|_| paths::home().join(".cache/claude/runs"))
 }

@@ -1122,3 +1122,14 @@ fn before_the_first_usage_fetch_the_status_labels_stay_whole() {
     let rows: Vec<String> = (0..30).map(|y| (0..60).map(|x| buffer[(x, y)].symbol().to_string()).collect()).collect();
     assert!(rows.iter().any(|row| row.contains("Claude") && row.contains("● All Systems Operational")), "{rows:#?}");
 }
+
+#[test]
+fn restart_all_leaves_terminal_sessions_alone() {
+    let fixture = Fixture::new();
+    let mut terminal = session("bbbbbbbb-0000-4000-8000-000000000000", "waiting", "crema", "/r/crema", 100);
+    terminal["terminal"] = json!(true);
+    fixture.snapshot(json!([session("aaaaaaaa-0000-4000-8000-000000000000", "waiting", "dotfiles", "/r/dotfiles", 100), terminal]));
+    let mut app = fixture.app();
+    app.handle(Key::Ctrl('r'), &mut FakeScreen::answering(&[Key::Char('y')]));
+    assert_eq!(fixture.wait_for_calls("claude-sessions", 1), vec!["claude-sessions restart-all aaaaaaaa-0000-4000-8000-000000000000".to_string()]);
+}

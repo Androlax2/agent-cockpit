@@ -150,6 +150,10 @@ fn wait_for_result(id: &str) -> i32 {
 }
 
 fn main() {
+    if approval::in_terminal_session() {
+        println!("Not available in a session started with \"this terminal\": list the steps in the chat instead.");
+        std::process::exit(NO_DAEMON);
+    }
     let mut arguments: Vec<String> = std::env::args().skip(1).collect();
     if arguments.len() == 2 && arguments[0] == "--wait" && approval::valid_id(&arguments[1]) {
         std::process::exit(wait_for_result(&arguments[1]));

@@ -133,6 +133,9 @@ pub struct Report {
     /// What the turn left in the repository, from the hook (it runs git inside the sandbox).
     pub outcome: Option<String>,
     pub sticky: bool,
+    /// Started with "this terminal" (the claude function's t): the cockpit shows it but leaves it out
+    /// of what acts on every session (restart-all, the reboot restore, the queue, the hand-off).
+    pub terminal: bool,
     pub target: BTreeMap<String, String>,
 }
 
@@ -179,7 +182,8 @@ pub fn parse_session(raw: &str) -> Result<Report, String> {
     }).collect();
     Ok(Report {
         session, project: report["project"].as_str().unwrap().to_string(), state: text("state"), cwd: text("cwd"),
-        task: text("task"), message: text("message"), outcome: text("outcome"), sticky: report.get("sticky").is_some_and(|s| s.as_bool().unwrap_or(!s.is_null())), target,
+        task: text("task"), message: text("message"), outcome: text("outcome"), sticky: report.get("sticky").is_some_and(|s| s.as_bool().unwrap_or(!s.is_null())),
+        terminal: report.get("terminal").and_then(Value::as_bool).unwrap_or(false), target,
     })
 }
 
@@ -655,6 +659,7 @@ pub struct Entry {
     pub request: String,
     pub detail: String,
     pub outcome: String,
+    pub terminal: bool,
 }
 
 pub struct Registry {
@@ -765,6 +770,10 @@ impl Registry {
                 entry.project = self.project_of(cwd, &report.project);
                 changed = true;
             }
+        }
+        if report.terminal && !entry.terminal {
+            entry.terminal = true;
+            changed = true;
         }
         let previous_pid = entry.target.get("kitty_pid").cloned();
         let mut target = entry.target.clone();
@@ -913,7 +922,8 @@ impl Registry {
         let mut rows: Vec<Value> = self.sessions.iter().map(|(session, entry)| {
             let mut row = json!({"session": session, "state": entry.state, "project": entry.project, "cwd": entry.cwd, "task": entry.task,
                                  "since": entry.since as i64, "started": entry.started as i64, "update": entry.update,
-                                 "request": entry.request, "detail": entry.detail, "outcome": entry.outcome});
+                                 "request": entry.request, "detail": entry.detail, "outcome": entry.outcome,
+                                 "terminal": entry.terminal});
             for (key, value) in &entry.target {
                 row[key] = json!(value);
             }
@@ -948,7 +958,7 @@ impl Registry {
         let time = now();
         for id in &ids {
             let entry = &self.sessions[id];
-            recent.insert(id.clone(), json!({"project": entry.project, "cwd": entry.cwd, "last_seen": time as i64}));
+            recent.insert(id.clone(), json!({"project": entry.project, "cwd": entry.cwd, "last_seen": time as i64, "terminal": entry.terminal}));
         }
         let oldest = time - RECENT_SESSIONS_DAYS * 86400.0;
         recent.retain(|_, row| row.get("last_seen").and_then(Value::as_f64).unwrap_or(0.0) >= oldest);
@@ -984,7 +994,8 @@ impl Registry {
                     state, project: project.into(), cwd, task: row.get("task").and_then(Value::as_str).unwrap_or("").into(), since,
                     started: row.get("started").and_then(Value::as_f64).unwrap_or(since),
                     target: target.into_iter().map(|(k, v)| (k, v.as_str().unwrap_or("").to_string())).collect(),
-                    update: row.get("update").and_then(Value::as_bool).unwrap_or(false), ..Entry::default()
+                    update: row.get("update").and_then(Value::as_bool).unwrap_or(false),
+                    terminal: row.get("terminal").and_then(Value::as_bool).unwrap_or(false), ..Entry::default()
                 }))
             })();
             match loaded {
