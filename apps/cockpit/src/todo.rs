@@ -32,6 +32,9 @@ const DONE_KEPT_DAYS: i64 = 7;
 /// Open "blocked" reports one project may have in the dotfiles list at once: a session stuck in a
 /// loop must not flood it.
 const BLOCKED_OPEN_MAX: usize = 3;
+const BLOCKED_DAILY_MAX: usize = 5;
+/// Updates read per apply: the rest of a flood is dropped, and logged.
+const APPLY_MAX_LINES: usize = 200;
 
 fn typed_id() -> Regex { Regex::new(r"^[0-9a-f]{8}$").unwrap() }
 fn issue_key() -> Regex { Regex::new(r"^[\w.-]+/[\w.-]+#\d+$").unwrap() }
@@ -354,30 +357,32 @@ impl TodoList {
     }
 
     /// A blocked report (claude-todo blocked) from a session of any project: an item of the dotfiles,
-    /// queued so the dotfiles session takes it when idle. The same open report is filed once, and a
-    /// project has at most BLOCKED_OPEN_MAX open.
-    fn file_blocked_report(&mut self, update: &Map<String, Value>, session: &str) -> bool {
+    /// queued so the dotfiles session takes it when idle. The reporter is the project of the folder
+    /// the sender's sandbox started in. The same open report is filed once; a project has at most
+    /// BLOCKED_OPEN_MAX open and files at most BLOCKED_DAILY_MAX a day.
+    fn file_blocked_report(&mut self, update: &Map<String, Value>, session: &str, started_in: &str, reporter: &str) -> Result<(), String> {
         let field = |key: &str, limit: usize| multiline(update.get(key).and_then(Value::as_str).unwrap_or(""), limit);
-        let cwd = update.get("cwd").and_then(Value::as_str).unwrap_or("").to_string();
         let what = util::collapse(&field("text", 300));
-        if what.is_empty() || !std::path::Path::new(&cwd).is_dir() {
-            return false;
+        if what.is_empty() {
+            return Err(format!("blocked report without what stopped {reporter}"));
         }
-        let reporter = project_name(&repository_root(&cwd));
         let title: String = format!("{reporter}: {what}").chars().take(300).collect();
-        let open_reports: Vec<&Item> = self.items.iter()
-            .filter(|item| item.is_blocked_report() && item.reporter() == reporter && item.status() != "done").collect();
+        let reports_of_reporter: Vec<&Item> = self.items.iter().filter(|item| item.is_blocked_report() && item.reporter() == reporter).collect();
+        let open_reports: Vec<&&Item> = reports_of_reporter.iter().filter(|item| item.status() != "done").collect();
         if open_reports.iter().any(|item| item.text() == util::collapse(&without_controls(&title))) {
-            return false;
+            return Ok(());
         }
         if open_reports.len() >= BLOCKED_OPEN_MAX {
-            util::log_event("WARN", &format!("blocked report from {reporter} dropped: {BLOCKED_OPEN_MAX} already open"));
-            return false;
+            return Err(format!("blocked report from {reporter} dropped: {BLOCKED_OPEN_MAX} already open"));
+        }
+        let filed_today = reports_of_reporter.iter().filter(|item| now_secs() - item.created() < 86_400).count();
+        if filed_today >= BLOCKED_DAILY_MAX {
+            return Err(format!("blocked report from {reporter} dropped: {BLOCKED_DAILY_MAX} filed in the last day"));
         }
         let dotfiles = paths::dotfiles_work().to_string_lossy().into_owned();
         let id = self.add_unsaved("dotfiles", &dotfiles, &title);
         if let Some(item) = self.items.iter_mut().find(|item| item.id() == id) {
-            let notes = format!("{}\n\nReported from {cwd}.", field("notes", NOTES_MAX));
+            let notes = format!("{}\n\nReported from a session started in {started_in}.", field("notes", NOTES_MAX));
             item.0.insert("kind".into(), json!("blocked"));
             item.0.insert("reporter".into(), json!(reporter));
             item.0.insert("why".into(), json!(field("why", WHY_MAX)));
@@ -387,10 +392,12 @@ impl TodoList {
         self.queued.insert(id.clone());
         self.save();
         util::log_event("INFO", &format!("todo {id}: {reporter} reported being blocked, queued for dotfiles: {}", what.chars().take(60).collect::<String>()));
-        true
+        Ok(())
     }
 
-    /// The changes sessions asked for (claude-todo), each checked; returns how many applied.
+    /// The changes sessions asked for (claude-todo), each checked; returns how many applied. The
+    /// OSD daemon queued each with `started_in`, the folder the sender's sandbox started in: its
+    /// project is the only one the update touches (security audit 2026-10-19, M4). Refusals are logged.
     pub fn apply_updates(&mut self) -> usize {
         let path = paths::todo_updates();
         if !path.exists() {
@@ -402,53 +409,86 @@ impl TodoList {
             Err(_) => return 0,
         };
         let _ = fs::remove_file(&taken);
+        let line_count = lines.lines().count();
+        if line_count > APPLY_MAX_LINES {
+            util::log_event("WARN", &format!("todo: {} queued updates dropped past the first {APPLY_MAX_LINES}", line_count - APPLY_MAX_LINES));
+        }
         let mut applied = 0;
-        for line in lines.lines() {
-            let Ok(update) = serde_json::from_str::<Value>(line) else { continue };
-            let Some(update) = update.as_object() else { continue };
-            let action = update.get("action").and_then(Value::as_str).unwrap_or("");
-            let session: String = update.get("session").and_then(Value::as_str).unwrap_or("").chars().take(40).collect();
-            if action == "add" || action == "propose" {
-                let text = update.get("text").and_then(Value::as_str).unwrap_or("").trim().to_string();
-                let cwd = update.get("cwd").and_then(Value::as_str).unwrap_or("").to_string();
-                let field = |key: &str, limit: usize| multiline(update.get(key).and_then(Value::as_str).unwrap_or(""), limit);
-                if action == "propose" && self.was_declined(&text) {
-                    util::log_event("INFO", &format!("todo proposal already declined, dropped: {}", text.chars().take(60).collect::<String>()));
-                    continue;
-                }
-                if !text.is_empty() && std::path::Path::new(&cwd).is_dir() {
-                    let id = self.add_unsaved(&project_name(&repository_root(&cwd)), &cwd, &text);
-                    // Any sandbox can file an item under any project: the panel says it came from a
-                    // session, so Theo reads it before handing it on.
-                    if let Some(item) = self.items.iter_mut().find(|item| item.id() == id) {
-                        item.0.insert("source".into(), json!(if session.is_empty() { "a session".to_string() } else { format!("session {session}") }));
-                        item.0.insert("notes".into(), json!(field("notes", NOTES_MAX)));
-                        if update.get("kind").and_then(Value::as_str) == Some("design") {
-                            item.0.insert("kind".into(), json!("design"));
-                        }
-                        if action == "propose" {
-                            item.0.insert("status".into(), json!(PROPOSED));
-                            item.0.insert("why".into(), json!(field("why", WHY_MAX)));
-                        }
-                    }
-                    self.save();
-                    util::log_event("INFO", &format!("todo {id} {} by a session: {}", if action == "propose" { "proposed" } else { "added" },
-                                                     text.chars().take(60).collect::<String>()));
-                    applied += 1;
-                }
-            } else if action == "blocked" {
-                if self.file_blocked_report(update, &session) {
-                    applied += 1;
-                }
-            } else if STATUSES.contains(&action) {
-                let id = update.get("id").and_then(Value::as_str).unwrap_or("");
-                if self.set_status(id, action, &session) {
-                    util::log_event("INFO", &format!("todo {id} marked {action} by a session"));
-                    applied += 1;
-                }
+        for line in lines.lines().take(APPLY_MAX_LINES) {
+            match self.apply_update(line) {
+                Ok(()) => applied += 1,
+                Err(reason) => util::log_event("WARN", &format!("todo update refused: {reason}")),
             }
         }
         applied
+    }
+
+    fn apply_update(&mut self, line: &str) -> Result<(), String> {
+        let update: Map<String, Value> = match serde_json::from_str(line) {
+            Ok(Value::Object(update)) => update,
+            _ => return Err("not a JSON object".into()),
+        };
+        let started_in = update.get("started_in").and_then(Value::as_str).filter(|folder| std::path::Path::new(folder).is_dir())
+            .ok_or("no folder its sandbox started in")?.to_string();
+        let sender_project = project_name(&repository_root(&started_in));
+        let action = update.get("action").and_then(Value::as_str).unwrap_or("");
+        let session: String = update.get("session").and_then(Value::as_str).unwrap_or("").chars().take(40).collect();
+        if action == "add" || action == "propose" {
+            let text = update.get("text").and_then(Value::as_str).unwrap_or("").trim().to_string();
+            // Where h hands the item: the folder the session named, when it is the session's own.
+            let claimed_cwd = update.get("cwd").and_then(Value::as_str).unwrap_or("");
+            let cwd = if std::path::Path::new(claimed_cwd).starts_with(&started_in) && std::path::Path::new(claimed_cwd).is_dir() {
+                claimed_cwd.to_string()
+            } else {
+                started_in.clone()
+            };
+            let field = |key: &str, limit: usize| multiline(update.get(key).and_then(Value::as_str).unwrap_or(""), limit);
+            if text.is_empty() {
+                return Err(format!("{action} without a title from {sender_project}"));
+            }
+            if action == "propose" && self.was_declined(&text) {
+                util::log_event("INFO", &format!("todo proposal already declined, dropped: {}", text.chars().take(60).collect::<String>()));
+                return Ok(());
+            }
+            let id = self.add_unsaved(&sender_project, &cwd, &text);
+            if let Some(item) = self.items.iter_mut().find(|item| item.id() == id) {
+                item.0.insert("source".into(), json!(if session.is_empty() { "a session".to_string() } else { format!("session {session}") }));
+                item.0.insert("notes".into(), json!(field("notes", NOTES_MAX)));
+                if update.get("kind").and_then(Value::as_str) == Some("design") {
+                    item.0.insert("kind".into(), json!("design"));
+                }
+                if action == "propose" {
+                    item.0.insert("status".into(), json!(PROPOSED));
+                    item.0.insert("why".into(), json!(field("why", WHY_MAX)));
+                }
+            }
+            self.save();
+            util::log_event("INFO", &format!("todo {id} {} by a session of {sender_project}: {}", if action == "propose" { "proposed" } else { "added" },
+                                             text.chars().take(60).collect::<String>()));
+            Ok(())
+        } else if action == "blocked" {
+            self.file_blocked_report(&update, &session, &started_in, &sender_project)
+        } else if STATUSES.contains(&action) {
+            let id = update.get("id").and_then(Value::as_str).unwrap_or("");
+            if !self.belongs_to(id, &sender_project) {
+                return Err(format!("{id} marked {action} by a session of {sender_project}, which it does not belong to"));
+            }
+            if !self.set_status(id, action, &session) {
+                return Err(format!("{id} cannot be marked {action}"));
+            }
+            util::log_event("INFO", &format!("todo {id} marked {action} by a session of {sender_project}"));
+            Ok(())
+        } else {
+            Err(format!("unknown action {action:?} from {sender_project}"))
+        }
+    }
+
+    /// Whether an item or a GitHub issue (owner/repo#n) is the project's.
+    fn belongs_to(&self, key: &str, project: &str) -> bool {
+        if issue_key().is_match(key) {
+            return key.split_once('#').and_then(|(repository, _)| repository.split_once('/')).is_some_and(|(_, name)| name == project);
+        }
+        self.items.iter().any(|item| item.id() == key && item.project() == project)
     }
 }
 

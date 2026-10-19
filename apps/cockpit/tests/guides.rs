@@ -8,7 +8,7 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 const TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -44,8 +44,9 @@ impl AskToGuide {
         AskToGuide { sandbox, guides }
     }
 
-    fn listen(&self) -> Listener {
-        Listener::start(&self.sandbox.runtime.join("osd.fifo"))
+    /// The daemon's report socket, answering every guide "ok".
+    fn listen(&self) -> ReportSocket {
+        ReportSocket::start(&self.sandbox.runtime.join("osd-report.sock"), "ok")
     }
 
     fn ask(&self, steps: &str, wait: &str) -> Child {
@@ -57,15 +58,11 @@ impl AskToGuide {
         asking
     }
 
-    fn filed(&self) -> Value {
-        let deadline = Instant::now() + Duration::from_secs(3);
-        while Instant::now() < deadline {
-            if let Some(found) = guide_files(&self.guides).first() {
-                return serde_json::from_str(&fs::read_to_string(found).unwrap()).unwrap();
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        }
-        panic!("no guide filed");
+    /// The guide the daemon received, whole, on its report socket.
+    fn filed(daemon: &ReportSocket) -> Value {
+        let lines = daemon.received(Duration::from_secs(3));
+        let line = lines.first().expect("no guide filed");
+        serde_json::from_str(line.strip_prefix("guide-request ").unwrap_or_else(|| panic!("not a guide request: {line}"))).unwrap()
     }
 
     fn write_beside(&self, guide: &Value, extension: &str, content: Value) {
@@ -78,9 +75,9 @@ impl AskToGuide {
 #[test]
 fn a_guide_is_filed_announced_and_its_answers_come_back() {
     let fixture = AskToGuide::new();
-    let mut listener = fixture.listen();
+    let daemon = fixture.listen();
     let asking = fixture.ask(STEPS, "5");
-    let guide = fixture.filed();
+    let guide = AskToGuide::filed(&daemon);
     assert_eq!((guide["title"].as_str(), guide["steps"].as_array().map(Vec::len), guide["cwd"].as_str()),
                (Some("Search Console key"), Some(5), Some(fixture.sandbox.root.to_str().unwrap())));
     fixture.write_beside(&guide, "result", json!({
@@ -91,15 +88,15 @@ fn a_guide_is_filed_announced_and_its_answers_come_back() {
     let shown = stdout(&output);
     assert!(shown.contains("Theo answered: a@b"), "{shown}");
     assert!(shown.contains("ok\n[exit 0]"), "{shown:?}");
-    assert_eq!(listener.received().trim(), format!("guide-request {}", guide["id"].as_str().unwrap()));
+    assert!(guide_files(&fixture.guides).is_empty(), "a guide file was left where every sandbox writes");
 }
 
 #[test]
 fn stuck_exits_3_with_the_note() {
     let fixture = AskToGuide::new();
-    let _listener = fixture.listen();
+    let daemon = fixture.listen();
     let asking = fixture.ask(STEPS, "5");
-    let guide = fixture.filed();
+    let guide = AskToGuide::filed(&daemon);
     fixture.write_beside(&guide, "result",
                          json!({"status": "stuck", "step": 2, "total": 5, "step_text": "Enable the API", "note": "403 on enable"}));
     let output = finish(asking, TIMEOUT);
@@ -112,9 +109,9 @@ fn stuck_exits_3_with_the_note() {
 #[test]
 fn the_wait_running_out_says_where_theo_is() {
     let fixture = AskToGuide::new();
-    let _listener = fixture.listen();
+    let daemon = fixture.listen();
     let asking = fixture.ask(STEPS, "1");
-    let guide = fixture.filed();
+    let guide = AskToGuide::filed(&daemon);
     fixture.write_beside(&guide, "progress", json!({"step": 3, "total": 5, "done": 2}));
     let output = finish(asking, TIMEOUT);
     assert_eq!(output.status.code(), Some(124));
@@ -128,7 +125,15 @@ fn without_a_daemon_it_exits_126_and_leaves_no_guide() {
     let fixture = AskToGuide::new();
     let output = finish(fixture.ask(STEPS, "5"), TIMEOUT);
     assert_eq!(output.status.code(), Some(126));
-    assert_eq!(guide_files(&fixture.guides), Vec::<PathBuf>::new());
+}
+
+#[test]
+fn a_guide_the_daemon_refuses_says_why() {
+    let fixture = AskToGuide::new();
+    let _daemon = ReportSocket::start(&fixture.sandbox.runtime.join("osd-report.sock"), "refused: no valid id");
+    let output = finish(fixture.ask(STEPS, "5"), TIMEOUT);
+    assert_eq!(output.status.code(), Some(2));
+    assert!(stdout(&output).contains("refused the guide: no valid id"), "{}", stdout(&output));
 }
 
 #[test]
@@ -141,12 +146,12 @@ fn no_steps_exits_2() {
 #[test]
 fn a_terminal_session_gets_no_guide_window_and_falls_back() {
     let fixture = AskToGuide::new();
-    let _daemon = fixture.listen();
+    let daemon = fixture.listen();
     let guides = fixture.guides.display().to_string();
     let mut asking = fixture.sandbox.command(bin().join("ask-to-guide"), &[("CLAUDE_GUIDES_DIR", &guides), ("CLAUDE_SESSIONS_TERMINAL", "1")])
         .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
     let _ = asking.stdin.take().unwrap().write_all(STEPS.as_bytes());
     let output = finish(asking, TIMEOUT);
     assert_eq!(output.status.code(), Some(126));
-    assert_eq!(guide_files(&fixture.guides), Vec::<PathBuf>::new());
+    assert!(daemon.received(Duration::from_millis(200)).is_empty(), "a guide was filed");
 }

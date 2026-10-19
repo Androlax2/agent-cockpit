@@ -169,7 +169,7 @@ pub fn resets_in(window: &Window) -> String {
 }
 
 pub fn plan() -> String {
-    read_json(&paths::credentials())
+    util::read_untrusted_json(&paths::credentials())
         .and_then(|credentials| credentials.get("claudeAiOauth")?.get("subscriptionType")?.as_str().map(capitalize))
         .unwrap_or_default()
 }

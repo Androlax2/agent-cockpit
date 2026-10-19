@@ -3,8 +3,9 @@
 //!     ask-to-run [--cwd DIR] --why '<what it does and why>' '<command>'
 //!     ask-to-run --wait <id>          keep waiting for an earlier request
 //!
-//! Run by Claude inside greywall. The request goes to ~/.cache/claude/runs/<id>.request and the OSD
-//! daemon opens an approval terminal outside the sandbox (claude-run-approve). Nothing runs until
+//! Run by Claude inside greywall. The request goes whole to the OSD daemon on its report socket; the
+//! daemon keeps a copy out of the sandbox's reach and opens an approval terminal outside the sandbox
+//! (claude-run-approve). Nothing runs until
 //! Theo reads the command there and answers y. --why is required: a few plain sentences shown under
 //! the command, saying what it does, why it is needed and what to expect. Prints the command's
 //! output and exits with its status; 125 when Theo declines, 124 when the wait runs out (9 minutes,
@@ -32,6 +33,9 @@ fn wait_seconds() -> u64 {
 }
 
 fn touch(path: &std::path::Path) {
+    if let Some(folder) = path.parent() {
+        let _ = std::fs::create_dir_all(folder);
+    }
     if let Err(error) = std::fs::write(path, now_secs().to_string()) {
         eprintln!("ask-to-run: cannot write {}: {error}", path.display());
     }
@@ -123,17 +127,20 @@ fn main() {
     let request = json!({"id": id, "command": arguments[0], "why": why, "cwd": cwd, "project": approval::project_of(&cwd),
                          "session": std::env::var("CLAUDE_CODE_SESSION_ID").unwrap_or_default(), "answers": answers_key,
                          "requested_at": now_secs()});
-    let path = approval::runs_dir().join(format!("{id}.request"));
-    if let Err(error) = approval::write_json(&path, &request) {
-        eprintln!("ask-to-run: cannot file the request: {error}");
-        std::process::exit(1);
-    }
-    touch(&approval::runs_dir().join(format!("{id}.waiting")));
-    if !approval::send(&format!("run-request {id}")) {
-        let _ = std::fs::remove_file(&path);
-        let _ = std::fs::remove_file(approval::runs_dir().join(format!("{id}.waiting")));
-        println!("No OSD daemon reads the requests (osd.service down?). Give Theo the command as a fish block instead.");
-        std::process::exit(NO_DAEMON);
+    let heartbeat = approval::runs_dir().join(format!("{id}.waiting"));
+    touch(&heartbeat);
+    match approval::file_request("run-request", &request) {
+        Ok(()) => {}
+        Err(approval::Refusal::NoDaemon) => {
+            let _ = std::fs::remove_file(&heartbeat);
+            println!("No OSD daemon reads the requests (osd.service down?). Give Theo the command as a fish block instead.");
+            std::process::exit(NO_DAEMON);
+        }
+        Err(approval::Refusal::Refused(reason)) => {
+            let _ = std::fs::remove_file(&heartbeat);
+            println!("The OSD daemon refused the request: {reason}");
+            std::process::exit(1);
+        }
     }
     eprintln!("Asked Theo to run it (request {id}); waiting for his answer.");
     std::process::exit(wait_for_result(&answers_key, &id));

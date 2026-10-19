@@ -16,8 +16,11 @@ fn request(command: &str) -> (PathBuf, String) {
     fs::create_dir_all(root.join("run")).unwrap();
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
     let id = "0123456789ab".to_string();
-    let request = serde_json::json!({"id": id, "command": command, "why": "A test.", "cwd": root, "answers": "proj-a", "requested_at": now});
-    fs::write(root.join(format!("runs/{id}.request")), request.to_string()).unwrap();
+    // As the daemon holds it (approval::held_request), with the folder the session started in.
+    let request = serde_json::json!({"id": id, "command": command, "why": "A test.", "cwd": root, "started_in": root, "project": "proj-a",
+                                     "answers": "proj-a", "requested_at": now});
+    fs::create_dir_all(root.join("run/claude-requests")).unwrap();
+    fs::write(root.join(format!("run/claude-requests/{id}.request")), request.to_string()).unwrap();
     (root, id)
 }
 

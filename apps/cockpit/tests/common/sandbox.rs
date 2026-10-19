@@ -220,3 +220,43 @@ impl Drop for Listener {
         }
     }
 }
+
+/// A stand-in for the OSD daemon's report socket: it reads each connection to its end, keeps the
+/// lines, and answers `reply` ("ok", or "refused: <reason>") as the daemon does to a request.
+pub struct ReportSocket {
+    path: PathBuf,
+    lines: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+impl ReportSocket {
+    pub fn start(path: &Path, reply: &str) -> ReportSocket {
+        use std::io::{Read, Write};
+        let listener = std::os::unix::net::UnixListener::bind(path).unwrap();
+        let lines = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (kept, reply) = (lines.clone(), format!("{reply}\n"));
+        std::thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                let mut text = String::new();
+                let _ = stream.read_to_string(&mut text);
+                kept.lock().unwrap().extend(text.lines().map(str::to_string));
+                let _ = stream.write_all(reply.as_bytes());
+            }
+        });
+        ReportSocket { path: path.to_path_buf(), lines }
+    }
+
+    /// The lines received so far, waiting up to `timeout` for the first one.
+    pub fn received(&self, timeout: Duration) -> Vec<String> {
+        let deadline = Instant::now() + timeout;
+        while self.lines.lock().unwrap().is_empty() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        self.lines.lock().unwrap().clone()
+    }
+}
+
+impl Drop for ReportSocket {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}

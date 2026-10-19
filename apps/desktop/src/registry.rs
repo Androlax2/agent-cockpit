@@ -145,14 +145,6 @@ pub struct Report {
     pub target: BTreeMap<String, String>,
 }
 
-/// What a sandbox may send (osd.fifo): its own session's reports and its requests to Theo. The
-/// rest (banners, focus, clearing, phases, volume) only comes through osd-host.fifo, which no
-/// sandbox can open: a session must not wipe the column, raise banners or close approvals.
-pub fn allowed_from_sandbox(command: &str) -> bool {
-    // Session reports come through the report socket, never the FIFO: there the sender is known.
-    matches!(command, "run-request" | "guide-request")
-}
-
 pub fn parse_session(raw: &str) -> Result<Report, String> {
     let value: Value = serde_json::from_str(raw).map_err(|error| error.to_string())?;
     let report = value.as_object().ok_or("session report is not an object")?;
@@ -353,20 +345,78 @@ pub fn runs_dir() -> PathBuf {
     std::env::var("CLAUDE_RUNS_DIR").map(PathBuf::from).unwrap_or_else(|_| paths::home().join(".cache/claude/runs"))
 }
 
-pub fn guides_dir() -> PathBuf {
-    std::env::var("CLAUDE_GUIDES_DIR").map(PathBuf::from).unwrap_or_else(|_| paths::home().join(".cache/claude/guides"))
+/// The project of a held request: the daemon set it from the folder the sender's sandbox started in.
+fn project_from_request(path: &Path) -> String {
+    fs::read_to_string(path).ok().and_then(|text| serde_json::from_str::<Value>(&text).ok())
+        .and_then(|request| request.get("project").and_then(Value::as_str).map(str::to_string)).unwrap_or_else(|| "?".into())
 }
 
-/// The project of a request's directory, from the directory itself: the request's own label is
-/// not trusted.
-fn project_from_request(path: &Path, project_cache: &mut HashMap<String, String>) -> String {
-    let cwd = fs::read_to_string(path).ok().and_then(|text| serde_json::from_str::<Value>(&text).ok())
-        .and_then(|request| request.get("cwd").and_then(Value::as_str).map(str::to_string)).unwrap_or_default();
-    if cwd.is_empty() || !Path::new(&cwd).is_dir() {
-        return "?".into();
+/// The answers folder name of a sandbox started in `started_in`: the launcher's CLAUDE_ANSWERS_KEY,
+/// the path of the repository's top folder (or of the folder itself, outside one) with every
+/// character but a letter or a digit turned into "-". The .git entry is only looked at, never run.
+pub fn answers_key_of(started_in: &Path) -> String {
+    let root = started_in.ancestors().find(|folder| fs::symlink_metadata(folder.join(".git")).is_ok()).unwrap_or(started_in);
+    root.to_string_lossy().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect()
+}
+
+/// Requests one sandbox folder can have waiting for Theo: more is a flood (security audit M5).
+const WAITING_PER_FOLDER_MAX: usize = 3;
+const TODO_UPDATE_MAX_BYTES: usize = 65_536;
+const TODO_QUEUE_MAX_BYTES: u64 = 1 << 20;
+
+/// A claude-todo change as a sandbox sent it on the report socket, queued for the column
+/// (cockpit::todo::Todo::apply_updates) in the runtime directory, where no sandbox reaches, with the
+/// folder its sandbox started in: that folder, never one the update names, decides the project
+/// (security audit 2026-10-19, M4). The queue has a size cap: a session cannot flood the list.
+pub fn queue_todo_update(raw: &str, started_in: &str) -> Result<(), String> {
+    use std::io::Write;
+    if raw.len() > TODO_UPDATE_MAX_BYTES {
+        return Err(format!("longer than {TODO_UPDATE_MAX_BYTES} bytes"));
     }
-    let project = project_of(project_cache, &cwd, "?");
-    if validate_text("project", &project).is_ok() { project } else { "?".into() }
+    let mut update: Map<String, Value> = match serde_json::from_str(raw) {
+        Ok(Value::Object(update)) => update,
+        _ => return Err("not a JSON object".into()),
+    };
+    update.insert("started_in".into(), json!(started_in));
+    let path = paths::todo_updates();
+    if fs::metadata(&path).is_ok_and(|metadata| metadata.len() > TODO_QUEUE_MAX_BYTES) {
+        return Err("the todo queue is full: the column has not applied it (is the cockpit running?)".into());
+    }
+    let mut file = fs::OpenOptions::new().create(true).append(true).open(&path).map_err(|error| format!("cannot queue it: {error}"))?;
+    writeln!(file, "{}", Value::Object(update)).map_err(|error| format!("cannot queue it: {error}"))
+}
+
+/// A run or guide request as a sandbox sent it on the report socket (`kind` "run-request" or
+/// "guide-request"), kept as the daemon's own copy (cockpit::approval::held_request) before anything
+/// else: the approval and the guide window read only that copy, which no sandbox reaches, so no other
+/// session can rewrite it before Theo reads it (security audit 2026-10-19, H3). The copy carries
+/// what the sandbox cannot choose: the folder its sandbox started in, that folder's project, and the
+/// answers folder of that project.
+pub fn hold_request(cache: &mut HashMap<String, String>, kind: &str, raw: &str, started_in: &str) -> Result<String, String> {
+    let extension = match kind {
+        "run-request" => "request",
+        "guide-request" => "guide",
+        _ => return Err(format!("not a request kind: {kind}")),
+    };
+    let mut request: Map<String, Value> = match serde_json::from_str(raw) {
+        Ok(Value::Object(request)) => request,
+        _ => return Err("not a JSON object".into()),
+    };
+    let id = request.get("id").and_then(Value::as_str).filter(|id| RUN_ID.is_match(id)).ok_or("no valid id")?.to_string();
+    let answers = answers_key_of(Path::new(started_in));
+    // ask-to-run waits on the folder the launcher named: a different one here would leave it waiting.
+    if request.get("answers").and_then(Value::as_str) != Some(answers.as_str()) {
+        return Err(format!("its answers folder is not {answers}, the one of the folder its sandbox started in (restart the session)"));
+    }
+    let path = cockpit::approval::held_request(&id, extension);
+    if path.exists() {
+        return Err(format!("{id} is already filed"));
+    }
+    request.insert("started_in".into(), json!(started_in));
+    request.insert("project".into(), json!(project_of(cache, started_in, "?")));
+    request.insert("answers".into(), json!(answers));
+    cockpit::util::write_json(&path, &Value::Object(request)).map_err(|error| format!("cannot keep {}: {error}", path.display()))?;
+    Ok(id)
 }
 
 /// The git directory shared by every checkout of the repository `directory` is in (a worktree's
@@ -380,10 +430,10 @@ fn common_git_dir(directory: &Path) -> Option<PathBuf> {
         if metadata.is_dir() {
             return Some(entry);
         }
-        let text = fs::read_to_string(&entry).ok()?;
+        let text = cockpit::util::read_untrusted_text(&entry, 4096).ok()?;
         let pointed = folder.join(text.trim().strip_prefix("gitdir:")?.trim());
         // A worktree's own git directory names the shared one in its commondir file.
-        return Some(match fs::read_to_string(pointed.join("commondir")) {
+        return Some(match cockpit::util::read_untrusted_text(&pointed.join("commondir"), 4096) {
             Ok(common) => pointed.join(common.trim()),
             Err(_) => pointed,
         });
@@ -457,21 +507,21 @@ fn run_session(id: &str) -> String {
 /// its filing when ask-to-run has not written one yet; with neither file there is nothing to judge
 /// by, and the request is kept.
 fn is_abandoned(id: &str) -> bool {
-    let touched = |extension: &str| fs::metadata(runs_dir().join(format!("{id}.{extension}"))).and_then(|metadata| metadata.modified()).ok();
-    touched("waiting").or_else(|| touched("request"))
+    let touched = |path: PathBuf| fs::metadata(path).and_then(|metadata| metadata.modified()).ok();
+    touched(runs_dir().join(format!("{id}.waiting"))).or_else(|| touched(cockpit::approval::held_request(id, "request")))
         .and_then(|time| time.elapsed().ok())
         .is_some_and(|age| age > ABANDONED_AFTER)
 }
 
-/// The answers folder a run or guide request names (cockpit::approval::request_answers_dir); None
-/// when the request is gone or names none (its session started before answers went per project).
+/// The answers folder a held run or guide request names (cockpit::approval::request_answers_dir);
+/// None when the request is gone.
 fn answers_named_by(request: &Path, kind: &str) -> Option<PathBuf> {
     let request: Value = fs::read_to_string(request).ok().and_then(|text| serde_json::from_str(&text).ok())?;
     cockpit::approval::request_answers_dir(&request, kind)
 }
 
 fn run_result(id: &str) -> Option<PathBuf> {
-    answers_named_by(&runs_dir().join(format!("{id}.request")), "runs").map(|answers| answers.join(format!("{id}.result")))
+    answers_named_by(&cockpit::approval::held_request(id, "request"), "runs").map(|answers| answers.join(format!("{id}.result")))
 }
 
 /// The answer ask-to-run --wait finds for a dropped request.
@@ -489,14 +539,14 @@ fn write_abandoned(id: &str) {
 }
 
 impl RunRequests {
-    pub fn request(&mut self, system: &mut dyn System, banners: &mut dyn Banners, cache: &mut HashMap<String, String>, id: &str) -> Result<(), String> {
+    pub fn request(&mut self, system: &mut dyn System, banners: &mut dyn Banners, id: &str) -> Result<(), String> {
         if !RUN_ID.is_match(id) {
             return Err("not a request id".into());
         }
         if self.queue.iter().any(|queued| queued == id) || self.current == id {
             return Ok(());
         }
-        let project = project_from_request(&runs_dir().join(format!("{id}.request")), cache);
+        let project = project_from_request(&cockpit::approval::held_request(id, "request"));
         if !system.quiet() {
             banners.raise_notice(&Notice { id: format!("run-{id}"), title: format!("Claude · {project}"), message: "asks you to run a command".into() });
         }
@@ -624,14 +674,14 @@ pub struct GuideRequests {
 }
 
 impl GuideRequests {
-    pub fn request(&mut self, system: &mut dyn System, banners: &mut dyn Banners, cache: &mut HashMap<String, String>, id: &str) -> Result<(), String> {
+    pub fn request(&mut self, system: &mut dyn System, banners: &mut dyn Banners, id: &str) -> Result<(), String> {
         if !RUN_ID.is_match(id) {
             return Err("not a guide id".into());
         }
         if self.queue.iter().any(|queued| queued == id) || self.current == id {
             return Ok(());
         }
-        let project = project_from_request(&guides_dir().join(format!("{id}.guide")), cache);
+        let project = project_from_request(&cockpit::approval::held_request(id, "guide"));
         if !system.gaming() {
             banners.raise_notice(&Notice { id: format!("guide-{id}"), title: format!("Claude · {project}"), message: "steps for you to do by hand".into() });
         }
@@ -647,7 +697,7 @@ impl GuideRequests {
         }
         while !self.queue.is_empty() {
             let id = self.queue.remove(0);
-            let Some(answers) = answers_named_by(&guides_dir().join(format!("{id}.guide")), "guides") else {
+            let Some(answers) = answers_named_by(&cockpit::approval::held_request(&id, "guide"), "guides") else {
                 log(&format!("guide {id} dropped: it names no answers folder (its session started before answers went per project)"));
                 continue;
             };
@@ -744,7 +794,32 @@ impl Registry {
     }
 
     pub fn run_request(&mut self, id: &str) -> Result<(), String> {
-        self.runs.request(self.system.as_mut(), self.banners.as_mut(), &mut self.project_cache, id)
+        self.runs.request(self.system.as_mut(), self.banners.as_mut(), id)
+    }
+
+    /// The run and guide requests waiting (queued or shown) from sandboxes started in `started_in`.
+    fn waiting_from(&self, started_in: &str) -> usize {
+        let runs = self.runs.queue.iter().chain(std::iter::once(&self.runs.current)).map(|id| cockpit::approval::held_request(id, "request"));
+        let guides = self.guides.queue.iter().chain(std::iter::once(&self.guides.current)).map(|id| cockpit::approval::held_request(id, "guide"));
+        runs.chain(guides).filter(|path| {
+            fs::read_to_string(path).ok().and_then(|text| serde_json::from_str::<Value>(&text).ok())
+                .is_some_and(|request| request.get("started_in").and_then(Value::as_str) == Some(started_in))
+        }).count()
+    }
+
+    /// A run or guide request, or a todo update, from the report socket: held (hold_request) or
+    /// queued (queue_todo_update) with the folder the sender's sandbox started in.
+    pub fn request_from(&mut self, kind: &str, raw: &str, sender: u32) -> Result<(), String> {
+        let started_in = self.system.sender_directory(sender).ok_or("its sender has no process outside the sandbox")?;
+        if kind == "todo-update" {
+            return queue_todo_update(raw, &started_in);
+        }
+        if self.waiting_from(&started_in) >= WAITING_PER_FOLDER_MAX {
+            return Err(format!("{WAITING_PER_FOLDER_MAX} requests from this session's folder already wait for Theo"));
+        }
+        let id = hold_request(&mut self.project_cache, kind, raw, &started_in)?;
+        log(&format!("{kind} {id} held, from a sandbox started in {started_in}"));
+        if kind == "run-request" { self.run_request(&id) } else { self.guide_request(&id) }
     }
 
     pub fn run_phase(&mut self, id: &str, phase: &str) {
@@ -752,7 +827,7 @@ impl Registry {
     }
 
     pub fn guide_request(&mut self, id: &str) -> Result<(), String> {
-        self.guides.request(self.system.as_mut(), self.banners.as_mut(), &mut self.project_cache, id)
+        self.guides.request(self.system.as_mut(), self.banners.as_mut(), id)
     }
 
     /// Every second: the run and guide queues follow the workspace, the games and closed windows.

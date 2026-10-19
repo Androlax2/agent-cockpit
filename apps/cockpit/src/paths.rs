@@ -53,7 +53,9 @@ pub fn alerts() -> PathBuf { state_dir().join("alerts.json") }
 pub fn log() -> PathBuf { state_dir().join("log") }
 pub fn todo() -> PathBuf { state_dir().join("todo.json") }
 pub fn settings() -> PathBuf { state_dir().join("settings.json") }
-pub fn todo_updates() -> PathBuf { from_env("CLAUDE_TODO_UPDATES", home().join(".cache/claude/todo/updates.jsonl")) }
+/// claude-todo's changes, queued by the OSD daemon with the sender's verified folder: the runtime
+/// directory, which no sandbox sees (security audit 2026-10-19, M4).
+pub fn todo_updates() -> PathBuf { from_env("CLAUDE_TODO_UPDATES", runtime_dir().join("claude-todo-updates.jsonl")) }
 pub fn error_reports() -> PathBuf { state_dir().join("error-reports.json") }
 pub fn error_report_dir() -> PathBuf { state_dir().join("error-reports") }
 pub fn recent_sessions() -> PathBuf { state_dir().join("recent-sessions.json") }

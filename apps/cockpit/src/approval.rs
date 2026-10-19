@@ -8,7 +8,7 @@ use regex::Regex;
 use std::sync::LazyLock;
 use serde_json::Value;
 use std::fs::{self, OpenOptions};
-use std::io::{self, BufRead, IsTerminal, Write};
+use std::io::{self, BufRead, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -24,6 +24,7 @@ pub const RESET: &str = "\x1b[0m";
 const TYPE_AHEAD: Duration = Duration::from_millis(500);
 /// Output stopped mid-line this long: the command waits for input (sudo, [y/N]).
 const PROMPT_IDLE: Duration = Duration::from_millis(1500);
+const REQUEST_REPLY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// A session started with "this terminal" (the claude function's t sets CLAUDE_SESSIONS_TERMINAL):
 /// Theo wanted it apart from the cockpit, so ask-to-run and ask-to-guide stay out of it and Claude
@@ -34,10 +35,6 @@ pub fn in_terminal_session() -> bool {
 
 pub fn runs_dir() -> PathBuf {
     std::env::var("CLAUDE_RUNS_DIR").map(PathBuf::from).unwrap_or_else(|_| paths::home().join(".cache/claude/runs"))
-}
-
-pub fn guides_dir() -> PathBuf {
-    std::env::var("CLAUDE_GUIDES_DIR").map(PathBuf::from).unwrap_or_else(|_| paths::home().join(".cache/claude/guides"))
 }
 
 /// Where Theo's answers go: the results of runs and guides, and a guide's progress. Every sandbox
@@ -90,10 +87,38 @@ fn send_to(path: &Path, line: &str) -> bool {
     fifo.write_all(format!("{line}\n").as_bytes()).is_ok()
 }
 
-/// A request to the OSD daemon from inside a sandbox (run-request, guide-request); false when no
-/// daemon reads the FIFO.
-pub fn send(line: &str) -> bool {
-    send_to(&paths::osd_fifo(), line)
+/// Why the daemon did not take a request.
+pub enum Refusal {
+    /// Nothing answers on the report socket (osd.service down?).
+    NoDaemon,
+    /// The daemon read it and said why not.
+    Refused(String),
+}
+
+/// A run or guide request handed to the OSD daemon from inside a sandbox, whole, on the report
+/// socket (`kind` is "run-request" or "guide-request"). There the kernel names the sender, and the
+/// daemon keeps its own copy at once, where no sandbox reaches: no other session can rewrite it
+/// before Theo reads it (security audit 2026-10-19, H3).
+pub fn file_request(kind: &str, request: &Value) -> Result<(), Refusal> {
+    use std::net::Shutdown;
+    use std::os::unix::net::UnixStream;
+    let mut stream = UnixStream::connect(paths::osd_report_socket()).map_err(|_| Refusal::NoDaemon)?;
+    let _ = stream.set_read_timeout(Some(REQUEST_REPLY_TIMEOUT));
+    stream.write_all(format!("{kind} {request}\n").as_bytes()).map_err(|_| Refusal::NoDaemon)?;
+    let _ = stream.shutdown(Shutdown::Write);
+    let mut reply = String::new();
+    let _ = (&mut stream).take(4096).read_to_string(&mut reply);
+    match reply.trim() {
+        "ok" => Ok(()),
+        "" => Err(Refusal::NoDaemon),
+        other => Err(Refusal::Refused(other.strip_prefix("refused: ").unwrap_or(other).to_string())),
+    }
+}
+
+/// The daemon's copy of a run request (`extension` "request") or a guide ("guide"), in the
+/// runtime directory no sandbox sees: what the approval and the guide window read.
+pub fn held_request(id: &str, extension: &str) -> PathBuf {
+    paths::runtime_dir().join("claude-requests").join(format!("{id}.{extension}"))
 }
 
 /// A command only programs outside the sandbox may give (phases, banners, notice-clear).

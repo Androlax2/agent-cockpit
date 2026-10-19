@@ -14,9 +14,10 @@
 //!     focus-next              show the most urgent Claude session in the manager
 //!     session-seen <id>       Theo looked at that session (claude-sessions view): its banner goes
 //!     session-pushed <dir>    claude-sessions pushed the branch of the sessions started there
-//!     run-request <id>        Claude asks to run a command outside the sandbox (ask-to-run)
+//!     run-request <json>      Claude asks to run a command outside the sandbox (ask-to-run; report socket)
 //!     run-phase <id> <phase>  claude-run-approve's asking / running / done
-//!     guide-request <id>      steps for Theo to do by hand (ask-to-guide)
+//!     guide-request <json>    steps for Theo to do by hand (ask-to-guide; report socket)
+//!     todo-update <json>      a claude-todo change, queued for the column (report socket)
 //!     notice-clear <id>       drop the banner a notice raised
 //!     notice <json>           a sticky banner of its own ({"id", "title", "message"}); a click
 //!                             dismisses it (the column's budget alerts)
@@ -50,6 +51,11 @@ const BANNER_HIDE_AFTER: Duration = Duration::from_secs(6);
 const BANNER_MAX_CHARS: i32 = 64;
 const BANNER_SPACING: i32 = 8;
 const BANNER_ICON_SIZE: i32 = 22;
+const REPORT_READ_DEADLINE: Duration = Duration::from_secs(2);
+const REPORT_MAX_BYTES: usize = 1 << 20;
+const REPORT_READERS_MAX: usize = 16;
+/// A FIFO line longer than this is no command: dropped, so a writer cannot grow the buffer forever.
+const FIFO_LINE_MAX: usize = 65_536;
 
 fn icon_dir() -> PathBuf {
     cockpit::paths::home().join(".config/waybar/icons")
@@ -242,8 +248,11 @@ fn show_island(island: &Rc<RefCell<Island>>, kind: &str, icon_file: &str, fracti
 fn handle(line: &str, from_host: bool, registry: &Rc<RefCell<Registry>>, island: &Rc<RefCell<Island>>) {
     let (command, rest) = line.split_once(' ').unwrap_or((line, ""));
     let rest = rest.trim();
-    if !from_host && !command.is_empty() && !registry::allowed_from_sandbox(command) {
-        eprintln!("osd: {command:?} refused on the sandboxes' FIFO");
+    // Sandboxes send their reports and requests on the report socket, where the kernel names the
+    // sender (security audit 2026-10-19, H3); on osd.fifo nothing of theirs is taken any more. The
+    // FIFO stays because the health checks look for the daemon holding it.
+    if !from_host && !command.is_empty() {
+        eprintln!("osd: {command:?} refused on the sandboxes' FIFO: sandboxes use the report socket");
         return;
     }
     match command {
@@ -266,16 +275,6 @@ fn handle(line: &str, from_host: bool, registry: &Rc<RefCell<Registry>>, island:
             let parts: Vec<&str> = rest.split_whitespace().collect();
             if parts.len() == 2 {
                 registry.borrow_mut().run_phase(parts[0], parts[1]);
-            }
-        }
-        "guide-request" => {
-            if let Err(error) = registry.borrow_mut().guide_request(rest) {
-                eprintln!("osd: bad guide request {rest:?}: {error}");
-            }
-        }
-        "run-request" => {
-            if let Err(error) = registry.borrow_mut().run_request(rest) {
-                eprintln!("osd: bad run request {rest:?}: {error}");
             }
         }
         "volume" | "mute" | "brightness" => {
@@ -315,6 +314,10 @@ fn listen(path: &std::path::Path, from_host: bool, registry: &Rc<RefCell<Registr
         if let Ok(count) = reader.read(&mut chunk) {
             buffer.extend_from_slice(&chunk[..count]);
         }
+        if buffer.len() > FIFO_LINE_MAX && !buffer.contains(&b'\n') {
+            eprintln!("osd: a line of more than {FIFO_LINE_MAX} bytes on {}, dropped", if from_host { "the host FIFO" } else { "osd.fifo" });
+            buffer.clear();
+        }
         while let Some(end) = buffer.iter().position(|byte| *byte == b'\n') {
             let line: Vec<u8> = buffer.drain(..=end).collect();
             handle(String::from_utf8_lossy(&line).trim(), from_host, &registry, &island);
@@ -338,8 +341,45 @@ fn report_listener() -> std::io::Result<std::os::unix::net::UnixListener> {
     std::os::unix::net::UnixListener::bind(&path)
 }
 
-/// One `session <json>` line per connection; its focus target comes from the sender's ancestry.
+/// What one connection to the report socket sent, read off the main thread (fifo::read_message): a
+/// sandbox that sends slowly, or never stops, holds only its own reader thread, never the GTK loop
+/// (security audit 2026-10-19, M5).
+struct Received {
+    stream: std::os::unix::net::UnixStream,
+    sender: u32,
+    text: String,
+}
+
+/// One line per message: `session <json>` reports, whose focus target comes from the sender's
+/// ancestry, and run, guide and todo requests, answered "ok" or "refused: <why>".
+fn handle_connection(received: Received, registry: &Rc<RefCell<Registry>>) {
+    let Received { mut stream, sender, text } = received;
+    for line in text.lines() {
+        let (kind, rest) = line.split_once(' ').unwrap_or((line, ""));
+        match kind {
+            "session" => match registry::parse_session(rest) {
+                Ok(report) => registry.borrow_mut().report_from(report, sender),
+                Err(error) => eprintln!("osd: bad session report: {error}"),
+            },
+            // ask-to-run, ask-to-guide and claude-todo wait for this answer: refused, they say why.
+            "run-request" | "guide-request" | "todo-update" => {
+                let reply = match registry.borrow_mut().request_from(kind, rest, sender) {
+                    Ok(()) => "ok".to_string(),
+                    Err(reason) => {
+                        eprintln!("osd: {kind} refused: {reason}");
+                        format!("refused: {reason}")
+                    }
+                };
+                let _ = std::io::Write::write_all(&mut stream, format!("{reply}\n").as_bytes());
+            }
+            _ => eprintln!("osd: {kind:?} is not taken on the report socket"),
+        }
+    }
+}
+
 fn listen_for_reports(registry: &Rc<RefCell<Registry>>) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
     let listener = match report_listener() {
         Ok(listener) => listener,
         Err(error) => {
@@ -349,21 +389,53 @@ fn listen_for_reports(registry: &Rc<RefCell<Registry>>) {
     };
     let _ = listener.set_nonblocking(true);
     let raw = listener.as_raw_fd();
-    let registry = registry.clone();
-    glib_unix::unix_fd_add_local(raw, glib::IOCondition::IN, move |_, _| {
-        while let Ok((mut stream, _)) = listener.accept() {
-            let Some(sender) = desktop::fifo::peer_pid(&stream) else { continue };
-            let _ = stream.set_nonblocking(false);
-            let _ = stream.set_read_timeout(Some(Duration::from_millis(300)));
-            let mut text = String::new();
-            let _ = (&mut stream).take(65_536).read_to_string(&mut text);
-            for line in text.lines() {
-                let Some(raw_report) = line.strip_prefix("session ") else { continue };
-                match registry::parse_session(raw_report) {
-                    Ok(report) => registry.borrow_mut().report_from(report, sender),
-                    Err(error) => eprintln!("osd: bad session report: {error}"),
+    let finished: Arc<Mutex<Vec<Received>>> = Arc::default();
+    let readers = Arc::new(AtomicUsize::new(0));
+    // A reader thread writes a byte here once its message is in `finished`: the main loop wakes on it.
+    let (wake_reader, wake_writer) = match std::os::unix::net::UnixStream::pair() {
+        Ok(pair) => pair,
+        Err(error) => {
+            eprintln!("osd: no wake-up pair for the report socket: {error}");
+            return;
+        }
+    };
+    let _ = wake_reader.set_nonblocking(true);
+    {
+        let finished = finished.clone();
+        glib_unix::unix_fd_add_local(raw, glib::IOCondition::IN, move |_, _| {
+            while let Ok((stream, _)) = listener.accept() {
+                let Some(sender) = desktop::fifo::peer_pid(&stream) else { continue };
+                if readers.load(Ordering::SeqCst) >= REPORT_READERS_MAX {
+                    eprintln!("osd: {REPORT_READERS_MAX} report connections already being read, one from pid {sender} dropped");
+                    continue;
                 }
+                let (finished, readers) = (finished.clone(), readers.clone());
+                let Ok(wake) = wake_writer.try_clone() else { continue };
+                readers.fetch_add(1, Ordering::SeqCst);
+                std::thread::spawn(move || {
+                    let reply_end = stream.try_clone();
+                    let message = desktop::fifo::read_message(stream, REPORT_READ_DEADLINE, REPORT_MAX_BYTES);
+                    if let Err(reason) = &message {
+                        eprintln!("osd: a report connection from pid {sender} dropped: {reason}");
+                    }
+                    if let (Ok(text), Ok(stream)) = (message, reply_end) {
+                        finished.lock().unwrap().push(Received { stream, sender, text });
+                        let _ = std::io::Write::write_all(&mut &wake, &[1]);
+                    }
+                    readers.fetch_sub(1, Ordering::SeqCst);
+                });
             }
+            glib::ControlFlow::Continue
+        });
+    }
+    let registry = registry.clone();
+    let wake_fd = wake_reader.as_raw_fd();
+    glib_unix::unix_fd_add_local(wake_fd, glib::IOCondition::IN, move |_, _| {
+        let mut drained = [0u8; 256];
+        while (&wake_reader).read(&mut drained).is_ok_and(|count| count > 0) {}
+        let ready: Vec<Received> = std::mem::take(&mut *finished.lock().unwrap());
+        for received in ready {
+            handle_connection(received, &registry);
         }
         glib::ControlFlow::Continue
     });

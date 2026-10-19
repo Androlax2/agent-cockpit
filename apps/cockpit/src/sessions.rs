@@ -12,7 +12,9 @@ use std::path::Path;
 pub const GLYPHS: [(&str, &str); 5] = [("working", "●"), ("waiting", "○"), ("needs-you", "!"), ("unknown", "·"), ("recent", "↻")];
 pub const FOCUS_STATES: [&str; 2] = ["needs-you", "waiting"];
 pub const CONTEXT_COMPACT_AT: f64 = 90.0;
-const TITLE_SCAN_BYTES: usize = 2 * 1024 * 1024;
+const TITLE_SCAN_BYTES: u64 = 2 * 1024 * 1024;
+/// ~/.claude/history.jsonl is Claude's, which every sandbox writes: read up to this much.
+const HISTORY_MAX: u64 = 64 * 1024 * 1024;
 const TITLE_RETRY_S: f64 = 30.0;
 const RESTORE_WINDOW_S: i64 = 600;
 const RESTORE_OFFER_HOURS: i64 = 6;
@@ -48,14 +50,14 @@ pub fn canvas_address(text: &str) -> Option<String> {
 }
 
 pub fn design_of(session_id: &str) -> Option<Design> {
-    let link = read_json(&paths::designs().join(format!("{session_id}.json")))?;
+    let link = util::read_untrusted_json(&paths::designs().join(format!("{session_id}.json")))?;
     let url = canvas_address(link.get("url")?.as_str()?)?;
     let title = link.get("title").and_then(Value::as_str).unwrap_or("canvas").to_string();
     Some(Design { url, title })
 }
 
 pub fn role_of(session_id: &str) -> String {
-    let role = std::fs::read_to_string(paths::designs().join(format!("{session_id}.role"))).unwrap_or_default();
+    let role = util::read_untrusted_text(&paths::designs().join(format!("{session_id}.role")), 64).unwrap_or_default();
     match role.trim() {
         role @ ("designer" | "developer") => role.to_string(),
         _ => String::new(),
@@ -256,8 +258,7 @@ pub fn next_attention_index(sessions: &[Session], selected: usize) -> Option<usi
 /// The transcript's generated title ("ai-title" record), or empty.
 pub fn read_title(session_id: &str) -> String {
     let Some(path) = transcript_of(session_id) else { return String::new() };
-    let Ok(bytes) = fs::read(&path) else { return String::new() };
-    let head = &bytes[..bytes.len().min(TITLE_SCAN_BYTES)];
+    let Ok(head) = util::read_untrusted(&path, TITLE_SCAN_BYTES) else { return String::new() };
     let mut title = String::new();
     for line in head.split(|byte| *byte == b'\n') {
         if !line.windows(8).any(|window| window == b"ai-title") {
@@ -310,7 +311,7 @@ impl History {
         }
         self.mtime = Some(mtime);
         let mut latest: HashMap<String, PastSession> = HashMap::new();
-        for line in fs::read_to_string(paths::history()).unwrap_or_default().lines() {
+        for line in util::read_untrusted_text(&paths::history(), HISTORY_MAX).unwrap_or_default().lines() {
             let Ok(row) = serde_json::from_str::<Value>(line) else { continue };
             let (Some(session), Some(project)) = (row.get("sessionId").and_then(Value::as_str), row.get("project").and_then(Value::as_str)) else { continue };
             if session.is_empty() || project.is_empty() {
@@ -469,7 +470,7 @@ pub fn changed_since_start(session: &Session, mtimes: &[(&'static str, f64)]) ->
 /// Project directories from Claude's history, most recently used first.
 fn recent_projects() -> Vec<String> {
     let mut last_used: HashMap<String, f64> = HashMap::new();
-    for line in fs::read_to_string(paths::history()).unwrap_or_default().lines() {
+    for line in util::read_untrusted_text(&paths::history(), HISTORY_MAX).unwrap_or_default().lines() {
         let Ok(entry) = serde_json::from_str::<Value>(line) else { continue };
         if let (Some(project), Some(stamp)) = (entry.get("project").and_then(Value::as_str), entry.get("timestamp").and_then(Value::as_f64)) {
             let used = last_used.entry(project.to_string()).or_insert(0.0);

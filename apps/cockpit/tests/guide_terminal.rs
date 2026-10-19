@@ -23,7 +23,8 @@ fn guide(steps: Value, fields: Value) -> (PathBuf, &'static str) {
     for (key, value) in fields.as_object().unwrap() {
         guide[key] = value.clone();
     }
-    fs::write(root.join(format!("guides/{id}.guide")), guide.to_string()).unwrap();
+    fs::create_dir_all(root.join("run/claude-requests")).unwrap();
+    fs::write(root.join(format!("run/claude-requests/{id}.guide")), guide.to_string()).unwrap();
     (root, id)
 }
 
@@ -78,7 +79,7 @@ fn unusable_guides_are_refused() {
         (json!([{"text": "x"}]), json!({"answers": "../../elsewhere"}), "names no answers folder"),
     ] {
         let (root, id) = guide(steps, fields);
-        let output = std::process::Command::new(env!("CARGO_BIN_EXE_claude-guide")).arg(id).env("CLAUDE_GUIDES_DIR", root.join("guides")).env("CLAUDE_ANSWERS_DIR", root.join("answers")).output().unwrap();
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_claude-guide")).arg(id).env("XDG_RUNTIME_DIR", root.join("run")).env("CLAUDE_ANSWERS_DIR", root.join("answers")).output().unwrap();
         assert!(String::from_utf8_lossy(&output.stdout).contains(reason), "{reason}");
         let _ = fs::remove_dir_all(root);
     }

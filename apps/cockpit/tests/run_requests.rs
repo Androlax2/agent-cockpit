@@ -8,7 +8,7 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -29,15 +29,20 @@ fn files_with_extension(directory: &Path, extension: &str) -> Vec<PathBuf> {
 struct AskToRun {
     sandbox: Sandbox,
     runs: PathBuf,
-    listener: Option<Listener>,
+    daemon: Option<ReportSocket>,
 }
 
 impl AskToRun {
     fn new() -> AskToRun {
+        AskToRun::answering("ok")
+    }
+
+    /// With a daemon that answers every request `reply`.
+    fn answering(reply: &str) -> AskToRun {
         let sandbox = Sandbox::new();
         let runs = sandbox.root.join("runs");
-        let listener = Some(Listener::start(&sandbox.runtime.join("osd.fifo")));
-        AskToRun { sandbox, runs, listener }
+        let daemon = Some(ReportSocket::start(&sandbox.runtime.join("osd-report.sock"), reply));
+        AskToRun { sandbox, runs, daemon }
     }
 
     fn ask(&self, arguments: &[&str], wait: &str) -> Child {
@@ -46,15 +51,11 @@ impl AskToRun {
             .args(arguments).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap()
     }
 
+    /// The request the daemon received, whole, on its report socket.
     fn request(&self) -> Value {
-        let deadline = Instant::now() + Duration::from_secs(3);
-        while Instant::now() < deadline {
-            if let Some(found) = files_with_extension(&self.runs, "request").first() {
-                return serde_json::from_str(&fs::read_to_string(found).unwrap()).unwrap();
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        }
-        panic!("no request filed");
+        let lines = self.daemon.as_ref().unwrap().received(Duration::from_secs(3));
+        let line = lines.first().expect("no request filed");
+        serde_json::from_str(line.strip_prefix("run-request ").unwrap_or_else(|| panic!("not a run request: {line}"))).unwrap()
     }
 
     fn answer(&self, request: &Value, result: Value) {
@@ -64,7 +65,7 @@ impl AskToRun {
 
 #[test]
 fn a_request_is_filed_announced_and_answered_with_the_output() {
-    let mut fixture = AskToRun::new();
+    let fixture = AskToRun::new();
     let root = fixture.sandbox.root.display().to_string();
     let asking = fixture.ask(&["--cwd", &root, "--why", "The kernel version, to pick the right headers.", "uname -r"], "5");
     let request = fixture.request();
@@ -77,8 +78,25 @@ fn a_request_is_filed_announced_and_answered_with_the_output() {
     assert!(shown.contains("6.17.1-arch"), "{shown}");
     assert!(!shown.contains('\x1b'), "{shown:?}");
     assert!(shown.contains("[exit 3]"), "{shown}");
-    let announced = fixture.listener.as_mut().unwrap().received();
-    assert_eq!(announced.trim(), format!("run-request {}", request["id"].as_str().unwrap()));
+}
+
+#[test]
+fn nothing_is_left_in_the_folder_every_sandbox_writes() {
+    // Security audit H3: the request goes whole to the daemon; a file there could be rewritten.
+    let fixture = AskToRun::new();
+    let asking = fixture.ask(&["--why", "x", "true"], "5");
+    let request = fixture.request();
+    assert!(files_with_extension(&fixture.runs, "request").is_empty());
+    fixture.answer(&request, json!({"status": "declined"}));
+    finish(asking, TIMEOUT);
+}
+
+#[test]
+fn a_request_the_daemon_refuses_says_why() {
+    let fixture = AskToRun::answering("refused: its answers folder is not x");
+    let output = finish(fixture.ask(&["--why", "x", "true"], "5"), TIMEOUT);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(stdout(&output).contains("refused the request: its answers folder is not x"), "{}", stdout(&output));
 }
 
 #[test]
@@ -130,7 +148,7 @@ fn while_waiting_it_keeps_a_heartbeat_for_the_daemon() {
     let asking = fixture.ask(&["--why", "x", "true"], "5");
     let request = fixture.request();
     let heartbeat = fixture.runs.join(format!("{}.waiting", request["id"].as_str().unwrap()));
-    assert!(heartbeat.exists(), "no heartbeat beside the request");
+    assert!(heartbeat.exists(), "no heartbeat");
     fixture.answer(&request, json!({"status": "declined"}));
     finish(asking, TIMEOUT);
     assert!(!heartbeat.exists(), "heartbeat left after the answer");
@@ -149,11 +167,10 @@ fn waiting_on_a_dropped_request_says_to_ask_again() {
 #[test]
 fn without_a_daemon_it_says_to_fall_back() {
     let mut fixture = AskToRun::new();
-    fixture.listener = None;
-    fs::remove_file(fixture.sandbox.runtime.join("osd.fifo")).unwrap();
+    fixture.daemon = None;
     let output = finish(fixture.ask(&["--why", "x", "true"], "5"), TIMEOUT);
     assert_eq!(output.status.code(), Some(126));
-    assert_eq!(files_with_extension(&fixture.runs, "request"), Vec::<PathBuf>::new());
+    assert_eq!(files_with_extension(&fixture.runs, "waiting"), Vec::<PathBuf>::new());
 }
 
 #[test]
@@ -163,32 +180,33 @@ fn a_command_without_why_is_refused_before_anything_is_filed() {
     let output = finish(fixture.ask(&["--cwd", &root, "uname -r"], "5"), TIMEOUT);
     assert_eq!(output.status.code(), Some(2));
     assert!(stderr(&output).contains("--why is required"), "{}", stderr(&output));
-    assert!(files_with_extension(&fixture.runs, "request").is_empty());
+    assert!(fixture.daemon.as_ref().unwrap().received(Duration::from_millis(200)).is_empty(), "a request was filed");
 }
 
 struct Approve {
     sandbox: Sandbox,
-    runs: PathBuf,
+    /// The daemon's copies of the requests (cockpit::approval::held_request).
+    held: PathBuf,
     editor: PathBuf,
 }
 
 impl Approve {
     fn new() -> Approve {
         let sandbox = Sandbox::new();
-        let runs = sandbox.root.join("runs");
-        fs::create_dir(&runs).unwrap();
+        let held = sandbox.runtime.join("claude-requests");
+        fs::create_dir(&held).unwrap();
         // script -qfec "<command>" <log>: record what would run, then exit with SHIM_EXIT.
         sandbox.shim("script", r#"printf "ran: %s\n" "$2" > "$3"; exit "${SHIM_EXIT:-0}""#);
         sandbox.shim("claude-sessions", "");
         let editor = sandbox.shims.join("edit-command");
         write_executable(&editor, "#!/bin/sh\necho 'echo edited' > \"$1\"\n");
-        Approve { sandbox, runs, editor }
+        Approve { sandbox, held, editor }
     }
 
     fn file(&self, command: &str, age: i64, request_id: &str, why: &str) -> String {
-        let request = json!({"id": request_id, "command": command, "why": why, "cwd": self.sandbox.root, "project": "dotfiles",
-                             "answers": ANSWERS_KEY, "requested_at": now() - age});
-        fs::write(self.runs.join(format!("{request_id}.request")), request.to_string()).unwrap();
+        let request = json!({"id": request_id, "command": command, "why": why, "cwd": self.sandbox.root, "started_in": self.sandbox.root,
+                             "project": "proj-a", "answers": ANSWERS_KEY, "requested_at": now() - age});
+        fs::write(self.held.join(format!("{request_id}.request")), request.to_string()).unwrap();
         request_id.to_string()
     }
 
@@ -199,9 +217,8 @@ impl Approve {
     /// Runs claude-run-approve with `keys` on stdin; `before_answer` runs half a second in, before
     /// any key arrives. Returns what it showed.
     fn approve_with(&self, request_id: &str, keys: &str, before_answer: impl FnOnce(), extra: &[(&str, &str)]) -> String {
-        let runs = self.runs.display().to_string();
         let editor = self.editor.display().to_string();
-        let mut process = self.sandbox.command(bin().join("claude-run-approve"), &[("CLAUDE_RUNS_DIR", &runs), ("EDITOR", &editor)])
+        let mut process = self.sandbox.command(bin().join("claude-run-approve"), &[("EDITOR", &editor)])
             .envs(extra.iter().copied()).arg(request_id)
             .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
         before_answer();
@@ -308,16 +325,25 @@ fn a_request_without_explanation_says_to_ask_claude() {
 }
 
 #[test]
-fn the_project_comes_from_the_directory_not_the_request() {
+fn the_project_shown_is_the_one_the_daemon_found() {
     let fixture = Approve::new();
-    let root = &fixture.sandbox.root;
-    fs::create_dir(root.join(".git")).unwrap();
-    let request = json!({"id": "0123456789ab", "command": "true", "cwd": root, "project": "dotfiles", "answers": ANSWERS_KEY, "requested_at": now()});
-    fs::write(fixture.runs.join("0123456789ab.request"), request.to_string()).unwrap();
-    let shown = fixture.approve("0123456789ab", "\n\n");
-    let directory_name = root.file_name().unwrap().to_str().unwrap();
-    assert!(shown.contains(&format!("Claude · {directory_name}")), "{shown}");
-    assert!(!shown.contains("Claude · dotfiles"), "{shown}");
+    let shown = fixture.approve(&fixture.file_default(), "\n\n");
+    assert!(shown.contains("Claude · proj-a"), "{shown}");
+}
+
+#[test]
+fn a_command_outside_the_sessions_folder_is_flagged() {
+    // Security audit H3: a request for another project's folder must not look like the session's own.
+    let fixture = Approve::new();
+    for (cwd, is_flagged) in [(fixture.sandbox.root.join("apps"), false), (std::env::temp_dir(), true)] {
+        fs::create_dir_all(&cwd).unwrap();
+        let request = json!({"id": "0123456789ab", "command": "make", "why": "x", "cwd": cwd, "started_in": fixture.sandbox.root,
+                             "project": "proj-a", "answers": ANSWERS_KEY, "requested_at": now()});
+        fs::write(fixture.held.join("0123456789ab.request"), request.to_string()).unwrap();
+        let _ = fs::remove_file(answers(&fixture.sandbox).join("0123456789ab.result"));
+        let shown = fixture.approve("0123456789ab", "\n");
+        assert_eq!(shown.contains("outside the folder the session works in"), is_flagged, "{}: {shown}", cwd.display());
+    }
 }
 
 #[test]
@@ -376,8 +402,9 @@ fn a_folder_name_with_escape_codes_is_shown_escaped() {
     let fixture = Approve::new();
     let folder = fixture.sandbox.root.join("x\x1b[8mhidden");
     fs::create_dir(&folder).unwrap();
-    let request = json!({"id": "0123456789ab", "command": "true", "why": "x", "cwd": folder, "project": "p", "answers": ANSWERS_KEY, "requested_at": now()});
-    fs::write(fixture.runs.join("0123456789ab.request"), request.to_string()).unwrap();
+    let request = json!({"id": "0123456789ab", "command": "true", "why": "x", "cwd": folder, "started_in": fixture.sandbox.root,
+                         "project": "p", "answers": ANSWERS_KEY, "requested_at": now()});
+    fs::write(fixture.held.join("0123456789ab.request"), request.to_string()).unwrap();
     let shown = fixture.approve("0123456789ab", "\n");
     assert!(!shown.contains("\x1b[8m"), "{shown:?}");
     assert!(shown.contains("\\u001b"), "{shown:?}");
@@ -389,7 +416,9 @@ fn a_result_planted_in_the_shared_runs_folder_is_ignored() {
     // request nor be taken as Theo's answer. Answers live in claude-answers, which only he writes.
     let fixture = Approve::new();
     let request_id = fixture.file_default();
-    fs::write(fixture.runs.join(format!("{request_id}.result")), json!({"status": "ran", "exit": 0, "output": "forged"}).to_string()).unwrap();
+    let shared_runs = fixture.sandbox.root.join("runs");
+    fs::create_dir_all(&shared_runs).unwrap();
+    fs::write(shared_runs.join(format!("{request_id}.result")), json!({"status": "ran", "exit": 0, "output": "forged"}).to_string()).unwrap();
     let shown = fixture.approve(&request_id, "\n");
     assert!(shown.contains("Run it?"), "the approval was skipped: {shown}");
     assert_eq!(fixture.result(&request_id), Some(json!({"status": "declined"})));
@@ -402,7 +431,7 @@ fn a_terminal_session_gets_no_approval_and_falls_back() {
     let output = finish(fixture.sandbox.command(bin().join("ask-to-run"), &[("CLAUDE_RUNS_DIR", &runs), ("CLAUDE_SESSIONS_TERMINAL", "1")])
         .args(["--why", "x", "true"]).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap(), TIMEOUT);
     assert_eq!(output.status.code(), Some(126));
-    assert!(files_with_extension(&fixture.runs, "request").is_empty(), "a request was filed");
+    assert!(fixture.daemon.as_ref().unwrap().received(Duration::from_millis(200)).is_empty(), "a request was filed");
 }
 
 #[test]
@@ -414,7 +443,7 @@ fn a_session_the_launcher_gave_no_answers_folder_falls_back() {
         .args(["--why", "x", "true"]).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap(), TIMEOUT);
     assert_eq!(output.status.code(), Some(126));
     assert!(stdout(&output).contains("restart it"), "{}", stdout(&output));
-    assert!(files_with_extension(&fixture.runs, "request").is_empty(), "a request was filed");
+    assert!(fixture.daemon.as_ref().unwrap().received(Duration::from_millis(200)).is_empty(), "a request was filed");
 }
 
 #[test]
@@ -433,7 +462,7 @@ fn a_request_naming_no_answers_folder_or_a_path_is_refused() {
         let request_id = "0123456789ab";
         let request = json!({"id": request_id, "command": "echo hi", "why": "Says hi.", "cwd": fixture.sandbox.root, "answers": answers,
                              "requested_at": now()});
-        fs::write(fixture.runs.join(format!("{request_id}.request")), request.to_string()).unwrap();
+        fs::write(fixture.held.join(format!("{request_id}.request")), request.to_string()).unwrap();
         let shown = fixture.approve(request_id, "y\n");
         assert!(shown.contains("names no answers folder"), "{answers}: {shown}");
     }

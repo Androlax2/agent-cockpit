@@ -50,6 +50,26 @@ pub fn peer_pid(stream: &std::os::unix::net::UnixStream) -> Option<u32> {
     (result == 0 && credentials.pid > 0).then_some(credentials.pid as u32)
 }
 
+/// A connection's whole message: everything up to the sender's end of writing, within `deadline`
+/// and `max_bytes`, else why not.
+pub fn read_message(mut stream: std::os::unix::net::UnixStream, deadline: std::time::Duration, max_bytes: usize) -> Result<String, String> {
+    use std::io::Read;
+    let until = std::time::Instant::now() + deadline;
+    let _ = stream.set_nonblocking(false);
+    let mut bytes = Vec::new();
+    let mut chunk = [0u8; 8192];
+    loop {
+        let left = until.checked_duration_since(std::time::Instant::now()).ok_or(format!("not finished within {deadline:?}"))?;
+        let _ = stream.set_read_timeout(Some(left.max(std::time::Duration::from_millis(1))));
+        match stream.read(&mut chunk) {
+            Ok(0) => return Ok(String::from_utf8_lossy(&bytes).into_owned()),
+            Ok(count) if bytes.len() + count <= max_bytes => bytes.extend_from_slice(&chunk[..count]),
+            Ok(_) => return Err(format!("more than {max_bytes} bytes")),
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(_) => return Err(format!("not finished within {deadline:?}")),
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -61,5 +81,39 @@ mod tests {
         let (accepted, _) = listener.accept().unwrap();
         assert_eq!(super::peer_pid(&accepted), Some(std::process::id()));
         std::fs::remove_file(path).unwrap();
+    }
+
+    /// What read_message makes of a sender writing like `writing`, and how long the read took.
+    fn message_after(writing: impl FnOnce(&mut std::os::unix::net::UnixStream) + Send + 'static) -> (Result<String, String>, std::time::Duration) {
+        let (reading, mut sending) = std::os::unix::net::UnixStream::pair().unwrap();
+        let writer = std::thread::spawn(move || writing(&mut sending));
+        let started = std::time::Instant::now();
+        let message = super::read_message(reading, std::time::Duration::from_millis(300), 16);
+        let took = started.elapsed();
+        let _ = writer.join();
+        (message, took)
+    }
+
+    #[test]
+    fn a_message_is_everything_until_the_sender_stops_writing() {
+        use std::io::Write;
+        let (message, _) = message_after(|stream| { stream.write_all(b"session {}\n").unwrap(); stream.shutdown(std::net::Shutdown::Write).unwrap(); });
+        assert_eq!(message, Ok("session {}\n".to_string()));
+    }
+
+    #[test]
+    fn a_sender_that_never_finishes_is_dropped_at_the_deadline() {
+        // Security audit M5: one slow sandbox must not hold the daemon.
+        use std::io::Write;
+        let (message, took) = message_after(|stream| { stream.write_all(b"sess").unwrap(); std::thread::sleep(std::time::Duration::from_millis(600)); });
+        assert!(message.is_err());
+        assert!(took < std::time::Duration::from_millis(550), "waited {took:?}");
+    }
+
+    #[test]
+    fn a_message_past_the_size_cap_is_dropped() {
+        use std::io::Write;
+        let (message, _) = message_after(|stream| { let _ = stream.write_all(&[b'x'; 64]); let _ = stream.shutdown(std::net::Shutdown::Write); });
+        assert!(message.is_err());
     }
 }

@@ -1,13 +1,13 @@
 //! claude-guide <id>: steps Claude handed Theo to do by hand (ask-to-guide), one at a time.
 //!
 //! Started by the OSD daemon outside the sandbox, in a floating kitty window of its own (class
-//! claude-guide) that Theo moves wherever he needs it. The guide file comes from the sandbox, so it
-//! is read once and checked; hidden characters are shown escaped; links open only on Ctrl+O, values
+//! claude-guide) that Theo moves wherever he needs it. The guide comes from the sandbox: it is read
+//! once, from the daemon's copy (approval::held_request), which no sandbox reaches, and checked; hidden characters are shown escaped; links open only on Ctrl+O, values
 //! are copied only on Ctrl+Y; a run: step goes through the same approval as ask-to-run: nothing runs
 //! without Theo's "Run it". The text box under the step is always open: the answer when the step
 //! asks something, else a note to Claude. When every step is done, or Theo is stuck or closes the
 //! guide, the result goes back to Claude; <id>.progress tells a waiting Claude where Theo is.
-//! CLAUDE_GUIDES_DIR overrides the folder (tests).
+//! XDG_RUNTIME_DIR moves the daemon's copies (tests).
 
 use cockpit::app::{put, style, width_of};
 use cockpit::approval::{self, BOLD, DIM, RED, RESET, YELLOW};
@@ -42,7 +42,7 @@ fn read_guide(id: &str) -> Result<(Value, PathBuf), String> {
     if !approval::valid_id(id) {
         return Err("not a guide id".into());
     }
-    let text = std::fs::read_to_string(approval::guides_dir().join(format!("{id}.guide"))).map_err(|error| error.to_string())?;
+    let text = std::fs::read_to_string(approval::held_request(id, "guide")).map_err(|error| error.to_string())?;
     let guide: Value = serde_json::from_str(&text).map_err(|error| error.to_string())?;
     let answers_folder = approval::request_answers_dir(&guide, "guides")
         .ok_or("it names no answers folder (its session started before answers went per project: restart it)")?;
@@ -111,7 +111,9 @@ impl Guide {
         let cwd = guide.get("cwd").and_then(Value::as_str).and_then(approval::resolved_directory)
             .unwrap_or_else(|| cockpit::paths::home().to_string_lossy().into_owned());
         let title = guide.get("title").and_then(Value::as_str).filter(|t| !t.is_empty()).unwrap_or("Steps from Claude").to_string();
-        Guide { id: id.into(), title, steps, project: approval::project_of(&cwd), cwd, answers_folder, position: 0, done: BTreeSet::new(),
+        // The project comes from the daemon's copy: the one of the folder the session's sandbox started in.
+        let project = guide.get("project").and_then(Value::as_str).unwrap_or("?").to_string();
+        Guide { id: id.into(), title, steps, project, cwd, answers_folder, position: 0, done: BTreeSet::new(),
                 answers: BTreeMap::new(), notes: BTreeMap::new(), runs: BTreeMap::new() }
     }
 

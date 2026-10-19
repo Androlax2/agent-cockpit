@@ -167,7 +167,7 @@ pub fn archive_transcripts(archive: &mut Connection, transcripts: &Path) -> rusq
         if known.get(&key) == Some(&(mtime, size)) {
             continue;
         }
-        let Ok(file) = fs::File::open(&path) else { continue };
+        let Ok(file) = util::open_untrusted(&path) else { continue };
         let mut reader = BufReader::new(file);
         let mut rows = Vec::new();
         let mut line = Vec::new();

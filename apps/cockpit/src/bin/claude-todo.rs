@@ -16,16 +16,15 @@
 //!     claude-todo show <id>           an item with its notes and, for a proposal, why
 //!
 //! An id is a typed item's 8 hex characters, or a GitHub issue as owner/repo#12. The list is read
-//! from ~/.local/state/claude-sessions/todo.json; the sandbox cannot write there, so changes are
-//! appended to ~/.cache/claude/todo/updates.jsonl and the cockpit's column applies them.
-//! CLAUDE_TODO_PATH and CLAUDE_TODO_UPDATES override both paths (tests).
+//! from ~/.local/state/claude-sessions/todo.json; the sandbox cannot write there, so changes go to
+//! the OSD daemon on its report socket, which queues them with the folder the session's sandbox
+//! started in, and the cockpit's column applies them. CLAUDE_TODO_PATH overrides the list (tests).
 
-use cockpit::paths;
+use cockpit::{approval, paths};
 use cockpit::util::{collapse, now_secs, project_name, repository_root};
 use regex::Regex;
 use serde_json::{Value, json};
-use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::fs;
 use std::path::PathBuf;
 
 const USAGE: &str = "    claude-todo list [--all]        the items of this directory's project (--all: every project)
@@ -51,15 +50,15 @@ fn project() -> String {
     project_name(&repository_root(&cwd))
 }
 
-fn append(mut update: serde_json::Map<String, Value>) -> std::io::Result<()> {
-    let path = paths::todo_updates();
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
+/// The change, handed to the OSD daemon on its report socket: it adds the folder this session's
+/// sandbox started in, which decides the project (security audit 2026-10-19, M4).
+fn append(mut update: serde_json::Map<String, Value>) -> Result<(), String> {
     update.insert("session".into(), json!(std::env::var("CLAUDE_CODE_SESSION_ID").unwrap_or_default()));
     update.insert("at".into(), json!(now_secs()));
-    let mut file = OpenOptions::new().create(true).append(true).open(path)?;
-    writeln!(file, "{}", Value::Object(update))
+    approval::file_request("todo-update", &Value::Object(update)).map_err(|refusal| match refusal {
+        approval::Refusal::NoDaemon => "no OSD daemon reads the report socket (osd.service down?): tell Theo".to_string(),
+        approval::Refusal::Refused(reason) => format!("the OSD daemon refused it: {reason}"),
+    })
 }
 
 fn glyph(status: &str) -> &'static str {

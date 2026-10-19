@@ -4,8 +4,9 @@
 //!     ask-to-guide [--title TITLE] < steps
 //!     ask-to-guide --wait <id>        keep waiting for an earlier guide
 //!
-//! Run by Claude inside greywall. The steps go to ~/.cache/claude/guides/<id>.guide and the OSD
-//! daemon opens claude-guide outside the sandbox, in a floating window. The steps, from stdin:
+//! Run by Claude inside greywall. The steps go whole to the OSD daemon on its report socket, which
+//! keeps a copy out of the sandbox's reach and opens claude-guide outside it, in a floating
+//! window. The steps, from stdin:
 //!
 //!     # Title                                  (or --title)
 //!     ## Turn on the API                       a section heading
@@ -20,7 +21,7 @@
 //! or where he got stuck and why. Exits 0 when every step is done, 3 when he is stuck, 125 when he
 //! closed the guide, 124 when the wait runs out (9 minutes; ask-to-guide --wait <id> resumes), 126
 //! when no daemon reads the requests (list the steps in the chat then), 2 for unusable steps.
-//! CLAUDE_GUIDES_DIR and ASK_TO_GUIDE_WAIT_S override the folder and the wait (tests).
+//! ASK_TO_GUIDE_WAIT_S overrides the wait (tests).
 
 use cockpit::approval;
 use cockpit::util::{now_secs, token_hex};
@@ -186,15 +187,16 @@ fn main() {
     let guide = json!({"id": id, "title": title, "steps": steps, "cwd": cwd, "project": approval::project_of(&cwd),
                        "session": std::env::var("CLAUDE_CODE_SESSION_ID").unwrap_or_default(), "answers": answers_key,
                        "requested_at": now_secs()});
-    let path = approval::guides_dir().join(format!("{id}.guide"));
-    if let Err(error) = approval::write_json(&path, &guide) {
-        eprintln!("ask-to-guide: cannot file the guide: {error}");
-        std::process::exit(1);
-    }
-    if !approval::send(&format!("guide-request {id}")) {
-        let _ = std::fs::remove_file(&path);
-        println!("No OSD daemon reads the requests (osd.service down?). List the steps in the chat instead.");
-        std::process::exit(NO_DAEMON);
+    match approval::file_request("guide-request", &guide) {
+        Ok(()) => {}
+        Err(approval::Refusal::NoDaemon) => {
+            println!("No OSD daemon reads the requests (osd.service down?). List the steps in the chat instead.");
+            std::process::exit(NO_DAEMON);
+        }
+        Err(approval::Refusal::Refused(reason)) => {
+            println!("The OSD daemon refused the guide: {reason}");
+            std::process::exit(UNUSABLE);
+        }
     }
     eprintln!("Guide {id} is on Theo's screen ({} steps); waiting for him.", steps.len());
     std::process::exit(wait_for_result(&answers_key, &id));

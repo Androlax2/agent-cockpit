@@ -99,6 +99,39 @@ pub fn read_json(path: &Path) -> Option<Value> {
     serde_json::from_str(&fs::read_to_string(path).ok()?).ok()
 }
 
+/// A file a sandbox can write (its project, ~/.claude, ~/.cache/claude), opened without following a
+/// final symlink and without blocking on a FIFO planted there, and only when it is a regular file:
+/// a FIFO, /dev/zero or a socket must not freeze the column or the daemon (security audit
+/// 2026-10-19, M5).
+pub fn open_untrusted(path: &Path) -> std::io::Result<fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    const O_NOFOLLOW: i32 = 0o400000;
+    const O_NONBLOCK: i32 = 0o4000;
+    let file = fs::OpenOptions::new().read(true).custom_flags(O_NOFOLLOW | O_NONBLOCK).open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(std::io::Error::other(format!("{} is not a regular file", path.display())));
+    }
+    Ok(file)
+}
+
+/// At most `limit` bytes of a file a sandbox can write (open_untrusted): a huge file costs no more.
+pub fn read_untrusted(path: &Path, limit: u64) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    open_untrusted(path)?.take(limit).read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
+/// read_untrusted as text, invalid UTF-8 replaced.
+pub fn read_untrusted_text(path: &Path, limit: u64) -> std::io::Result<String> {
+    read_untrusted(path, limit).map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// A small JSON file a sandbox can write; None when it is not one (or past 1 MiB).
+pub fn read_untrusted_json(path: &Path) -> Option<Value> {
+    serde_json::from_slice(&read_untrusted(path, 1 << 20).ok()?).ok()
+}
+
 /// Written to a new file beside it, then renamed over it. Several of these folders are the
 /// sandbox's to write (runs, guides): a symlink planted at the path or at a predictable temporary
 /// name must not make Theo's programs write through it, so the temporary file has a random name
@@ -166,13 +199,16 @@ pub fn project_name(path: &str) -> String {
     }
 }
 
+/// A .git file or a HEAD is a line: anything longer is not one.
+const GIT_FILE_MAX: u64 = 4096;
+
 /// The HEAD file of the repository at cwd, through a worktree's gitdir file.
 fn git_head_path(cwd: &str) -> Option<PathBuf> {
     let dot_git = Path::new(cwd).join(".git");
     if dot_git.is_dir() {
         return Some(dot_git.join("HEAD"));
     }
-    let first = fs::read_to_string(&dot_git).ok()?;
+    let first = read_untrusted_text(&dot_git, GIT_FILE_MAX).ok()?;
     let gitdir = first.lines().next()?.trim().strip_prefix("gitdir:")?.trim().to_string();
     let gitdir = Path::new(&gitdir);
     Some(if gitdir.is_absolute() { gitdir.join("HEAD") } else { Path::new(cwd).join(gitdir).join("HEAD") })
@@ -195,7 +231,7 @@ pub fn git_branch(cwd: &str) -> String {
             return branch.clone();
         }
     }
-    let Ok(content) = fs::read_to_string(&head) else { return String::new() };
+    let Ok(content) = read_untrusted_text(&head, GIT_FILE_MAX) else { return String::new() };
     let content = content.trim();
     let branch = match content.strip_prefix("ref: refs/heads/") {
         Some(branch) => branch.to_string(),

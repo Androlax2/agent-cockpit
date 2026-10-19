@@ -3,11 +3,11 @@
 //! Started by the OSD daemon outside the sandbox, in a tmux session of its own (claude-run-<id>),
 //! shown in the cockpit and, while it needs Theo, in a floating window; it reports asking /
 //! running / done. Runs with Theo's rights, so nothing happens without his "y". The request is read
-//! once, here: the sandbox can rewrite the file, so what is shown is what runs. "e" edits the
-//! command first; the edited command is what runs and what Claude is told. The command runs in a
-//! real terminal through `script`, so sudo passwords and prompts work, and its output is recorded
+//! once, here, from the daemon's copy (approval::held_request), which no sandbox reaches. "e" edits
+//! the command first; the edited command is what runs and what Claude is told. The command runs in
+//! a real terminal through `script`, so sudo passwords and prompts work, and its output is recorded
 //! in the runtime directory, which the sandbox cannot read; it reaches Claude only after "send the
-//! output to Claude?". CLAUDE_RUNS_DIR overrides the requests folder (tests).
+//! output to Claude?". XDG_RUNTIME_DIR moves the daemon's copies and the log (tests).
 
 use cockpit::approval::{self, BOLD, BLUE, DIM, GREEN, RED, RESET, YELLOW};
 use cockpit::util::now_secs;
@@ -24,7 +24,7 @@ fn read_request(id: &str) -> Result<(Value, PathBuf), String> {
     if !approval::valid_id(id) {
         return Err("not a request id".into());
     }
-    let text = std::fs::read_to_string(approval::runs_dir().join(format!("{id}.request"))).map_err(|error| error.to_string())?;
+    let text = std::fs::read_to_string(approval::held_request(id, "request")).map_err(|error| error.to_string())?;
     let request: Value = serde_json::from_str(&text).map_err(|error| error.to_string())?;
     let answers = approval::request_answers_dir(&request, "runs")
         .ok_or("it names no answers folder (its session started before answers went per project: restart it)")?;
@@ -62,7 +62,11 @@ fn approve(id: &str) -> i32 {
         write_result(&answers, id, json!({"status": "declined"}));
         return 1;
     }
-    let project = approval::project_of(&cwd);
+    // Both come from the daemon's copy, out of the sandbox's reach: the folder the asking session's
+    // sandbox started in, and its project.
+    let started_in = request.get("started_in").and_then(Value::as_str).unwrap_or("").to_string();
+    let project = request.get("project").and_then(Value::as_str).unwrap_or("?").to_string();
+    let is_outside_its_folder = !std::path::Path::new(&cwd).starts_with(&started_in) || started_in.is_empty();
     approval::phase(id, "asking");
     let answer = loop {
         let (shown, hiding) = approval::visible_command(&command);
@@ -72,6 +76,11 @@ fn approve(id: &str) -> i32 {
         println!("\n{BOLD}{BLUE}Claude · {shown_project}{RESET} asks you to run, in {DIM}{shown_cwd}{RESET}:\n");
         println!("{}\n", shown.split('\n').map(|line| format!("  {BOLD}{line}{RESET}")).collect::<Vec<_>>().join("\n"));
         println!("{}\n", approval::explanation(&why));
+        if is_outside_its_folder {
+            let shown_started_in = approval::escape_hiding(&started_in, RED, &format!("{RESET}{RED}{BOLD}"));
+            println!("{RED}{BOLD}This runs outside the folder the session works in ({shown_started_in}). \
+                      Decline unless you expected that folder.{RESET}\n");
+        }
         if hiding {
             println!("{RED}{BOLD}This command contains hidden characters or blank-line padding (shown in red). \
                       They can make a command look different from what runs. Decline unless you know why.{RESET}\n");
