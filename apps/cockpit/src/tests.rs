@@ -1146,6 +1146,65 @@ fn a_card_shows_its_unpushed_commits() {
     assert_eq!(badges.iter().filter(|badge| badge.starts_with('↑')).collect::<Vec<_>>(), ["↑2 unpushed"]);
 }
 
+fn first_hint_keys(app: &App, count: usize) -> Vec<&'static str> {
+    app.sessions_hints().into_iter().take(count).map(|(key, _)| key).collect()
+}
+
+#[test]
+fn a_session_asking_permission_puts_approve_and_decline_first() {
+    let fixture = Fixture::new();
+    let mut row = session(SESSION_A, "needs-you", "runway", "/r", 1);
+    row["request"] = json!("Claude needs your permission to use Bash");
+    fixture.snapshot(json!([row]));
+    assert_eq!(first_hint_keys(&fixture.app(), 3), ["Y", "N", "⏎"]);
+}
+
+#[test]
+fn a_session_left_behind_by_a_change_puts_restart_first() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "dotfiles", "/r/dotfiles", 100)]));
+    let mut app = fixture.app();
+    app.start_files = vec![("CLAUDE.md", 500.0)];
+    assert_eq!(app.sessions_hints()[0], ("r", "restart to pick up the change"));
+}
+
+#[test]
+fn every_need_of_a_session_shows_before_the_everyday_keys() {
+    let fixture = Fixture::new();
+    let mut row = session(SESSION_A, "waiting", "dotfiles", "/r/dotfiles", 1);
+    row["unpushed"] = json!(2);
+    row["update"] = json!(true);
+    fixture.snapshot(json!([row]));
+    fixture.write(&format!("home/.cache/claude/statusline-{SESSION_A}.json"), r#"{"context": 93}"#);
+    let app = fixture.app();
+    assert_eq!(first_hint_keys(&app, 4), ["r", "C", "U", "⏎"]);
+    assert_eq!(app.sessions_hints().iter().filter(|(key, _)| *key == "r").count(), 1);
+}
+
+#[test]
+fn a_working_session_offers_a_message_for_the_end_of_its_turn() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "working", "runway", "/r", 1)]));
+    assert_eq!(first_hint_keys(&fixture.app(), 1), ["m"]);
+}
+
+#[test]
+fn a_quiet_session_starts_with_open() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "runway", "/r", 1)]));
+    assert_eq!(first_hint_keys(&fixture.app(), 1), ["⏎"]);
+}
+
+#[test]
+fn each_todo_tab_starts_with_the_key_that_moves_its_items_along() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    for (tab, first) in [(0, "y"), (1, "h"), (2, "d"), (3, "⏎")] {
+        app.todo_tab = tab;
+        assert_eq!(app.todo_hints()[0].0, first, "tab {tab}");
+    }
+}
+
 fn propose(fixture: &Fixture, title: &str, why: &str) {
     let updates = crate::paths::todo_updates();
     fs::create_dir_all(updates.parent().unwrap()).unwrap();

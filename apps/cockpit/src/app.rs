@@ -759,21 +759,38 @@ impl App {
         self.sessions.get(self.panels[1].selected).cloned()
     }
 
+    /// The selected session's keys, most pressing first: what its card asks for (an approval, a
+    /// restart, /compact, a push…), then the everyday keys. The footer cuts the end of the list
+    /// when the column is narrow, so the order is what keeps the useful keys on screen.
     pub(crate) fn sessions_hints(&self) -> Vec<(&'static str, &'static str)> {
         let selected = self.selected_session().unwrap_or_default();
+        let mut hints = Vec::new();
         if selected.state == "needs-you" && !sessions::waiting_request(&selected).is_empty() {
-            return vec![("⏎", "open"), ("Y", "approve"), ("N", "decline"), ("n", "next"), ("g", "git"), ("z", "zoom")];
-        }
-        if selected.facts.context.is_some_and(|c| c >= CONTEXT_COMPACT_AT) {
-            return vec![("⏎", "open"), ("C", "/compact"), ("e", "effort"), ("g", "git"), ("z", "zoom"), ("x", "exit")];
+            hints.extend([("Y", "approve"), ("N", "decline")]);
         }
         if selected.update {
-            return vec![("⏎", "open"), ("r", "restart to apply the update"), ("e", "effort"), ("g", "git"), ("x", "exit")];
+            hints.push(("r", "restart to apply the update"));
+        } else if !sessions::changed_since_start(&selected, &self.start_files).is_empty() {
+            hints.push(("r", "restart to pick up the change"));
+        }
+        if selected.facts.context.is_some_and(|c| c >= CONTEXT_COMPACT_AT) {
+            hints.push(("C", "/compact"));
         }
         if selected.design.is_some() {
-            return vec![("⏎", "open"), ("o", "canvas"), ("n", "peek"), ("e", "effort"), ("g", "git"), ("x", "exit")];
+            hints.push(("o", "canvas"));
         }
-        vec![("⏎", "open"), ("n", "peek"), ("+", "another"), ("e", "effort"), ("g", "git"), ("z", "zoom"), ("x", "exit")]
+        if selected.unpushed > 0 {
+            hints.push(("U", "push"));
+        }
+        if prompts::count(&selected.session) > 0 {
+            hints.push(("M", "drop queued"));
+        } else if selected.state == "working" {
+            hints.push(("m", "message for the turn's end"));
+        }
+        hints.extend([("⏎", "open"), ("n", "peek"), ("e", "effort"), ("g", "git"), ("+", "another"), ("z", "zoom"), ("x", "exit")]);
+        let mut seen = std::collections::HashSet::new();
+        hints.retain(|(key, _)| seen.insert(*key));
+        hints
     }
 
     fn sessions_help() -> Vec<(&'static str, &'static str)> {
@@ -1322,8 +1339,17 @@ impl App {
             0 => vec![("⏎", "details"), ("r", "refetch"), ("o", "status page")],
             1 => self.sessions_hints(),
             2 => vec![("⏎", "open"), ("c", "Claude review"), ("P", "list"), ("r", "refresh")],
-            _ if self.todo_tab == 0 => vec![("⏎", "details"), ("y", "approve"), ("n", "decline"), ("e", "edit"), ("[ ]", "tabs")],
-            _ => vec![("⏎", "details"), ("h", "to Claude"), ("e", "edit"), ("t", "add"), ("Q", "queue"), ("i", "doing"), ("d", "done"), ("[ ]", "tabs")],
+            _ => self.todo_hints(),
+        }
+    }
+
+    /// Each tab's keys, the one that moves its items along first.
+    pub(crate) fn todo_hints(&self) -> Vec<(&'static str, &'static str)> {
+        match TODO_TABS[self.todo_tab].1 {
+            todo::PROPOSED => vec![("y", "approve"), ("n", "decline"), ("⏎", "details"), ("e", "edit"), ("[ ]", "tabs")],
+            "doing" => vec![("d", "done"), ("⏎", "details"), ("i", "back to to do"), ("e", "edit"), ("t", "add"), ("[ ]", "tabs")],
+            "done" => vec![("⏎", "details"), ("d", "back to to do"), ("t", "add"), ("[ ]", "tabs")],
+            _ => vec![("h", "to Claude"), ("⏎", "details"), ("Q", "queue"), ("i", "doing"), ("d", "done"), ("e", "edit"), ("t", "add"), ("[ ]", "tabs")],
         }
     }
 
