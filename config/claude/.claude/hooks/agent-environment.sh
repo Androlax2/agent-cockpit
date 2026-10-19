@@ -74,10 +74,23 @@ describe_design() {
     echo "- Design: FigCraft files (${designs}). Before implementing or changing any interface, load the design-first skill; design work in FigCraft itself starts with figcraft-design."
 }
 
+# Whether ask-to-run (and ask-to-guide, claude-todo) can reach Theo from this sandbox: a session
+# that cannot finds out now, with the reason and its fix, not when a command is waiting.
+describe_ask_to_run() {
+    local check
+    command -v ask-to-run >/dev/null || { echo "- ask-to-run: not on PATH. Tell Theo; give him commands as fish blocks meanwhile."; return; }
+    if check=$(timeout 5 ask-to-run --check 2>&1); then
+        echo "- ask-to-run: ready."
+    else
+        echo "- ask-to-run: NOT WORKING. ${check:-no answer within 5 s.} Tell Theo now, with that fix."
+    fi
+}
+
 echo "Sandbox status for ${project_name} (from ~/.claude/hooks/agent-environment.sh):"
 describe_sandbox
 describe_docker
 describe_github
 describe_image_paste
 describe_design
+describe_ask_to_run
 exit 0

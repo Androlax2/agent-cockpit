@@ -89,10 +89,54 @@ fn send_to(path: &Path, line: &str) -> bool {
 
 /// Why the daemon did not take a request.
 pub enum Refusal {
-    /// Nothing answers on the report socket (osd.service down?).
-    NoDaemon,
+    /// The daemon could not be reached: why, and what fixes it (unreachable_reason), for Claude to
+    /// say to Theo at once instead of guessing.
+    Unreachable(String),
     /// The daemon read it and said why not.
     Refused(String),
+}
+
+/// What a failed connection to the report socket means, and what fixes it.
+fn unreachable_reason(socket: &Path, error: &io::Error) -> String {
+    match error.kind() {
+        io::ErrorKind::NotFound => format!(
+            "this session's sandbox has no report socket at {}: it started before the socket moved into its folder, or greywall did not \
+             mount the folder. Ask Theo to restart this session (r on its card in the column).", socket.display()),
+        io::ErrorKind::ConnectionRefused => format!(
+            "nothing listens on the report socket {}: the OSD daemon and its socket are down. Ask Theo to run \
+             `systemctl --user restart osd-report.socket osd.service` (with ask-to-run unavailable, as a fish block).", socket.display()),
+        _ => format!("the report socket {} cannot be reached ({error}). Ask Theo to run `claude-sessions doctor`.", socket.display()),
+    }
+}
+
+const NO_ANSWER: &str = "the OSD daemon took the request but did not answer: it may run a build older than this command. \
+                         Ask Theo to run `claude-sessions reload` (it restarts the daemon on its new build).";
+
+/// One message to the daemon on the report socket, and its one-line answer.
+fn ask_daemon(line: &str, timeout: Duration) -> Result<String, Refusal> {
+    use std::net::Shutdown;
+    use std::os::unix::net::UnixStream;
+    let socket = paths::osd_report_socket();
+    let mut stream = UnixStream::connect(&socket).map_err(|error| Refusal::Unreachable(unreachable_reason(&socket, &error)))?;
+    let _ = stream.set_read_timeout(Some(timeout));
+    stream.write_all(format!("{line}\n").as_bytes()).map_err(|error| Refusal::Unreachable(unreachable_reason(&socket, &error)))?;
+    let _ = stream.shutdown(Shutdown::Write);
+    let mut reply = String::new();
+    let _ = (&mut stream).take(4096).read_to_string(&mut reply);
+    match reply.trim() {
+        "" => Err(Refusal::Unreachable(NO_ANSWER.into())),
+        answer => Ok(answer.to_string()),
+    }
+}
+
+/// Whether ask-to-run can work from here: the daemon answers a ping on the report socket. The
+/// session-start hook asks it (ask-to-run --check), so a session knows before it needs it.
+pub fn check_daemon() -> Result<(), String> {
+    match ask_daemon("ping", Duration::from_secs(2)) {
+        Ok(answer) if answer == "ok" => Ok(()),
+        Ok(_) => Err(NO_ANSWER.into()),
+        Err(Refusal::Unreachable(reason) | Refusal::Refused(reason)) => Err(reason),
+    }
 }
 
 /// A run or guide request handed to the OSD daemon from inside a sandbox, whole, on the report
@@ -100,17 +144,8 @@ pub enum Refusal {
 /// daemon keeps its own copy at once, where no sandbox reaches: no other session can rewrite it
 /// before Theo reads it (security audit 2026-10-19, H3).
 pub fn file_request(kind: &str, request: &Value) -> Result<(), Refusal> {
-    use std::net::Shutdown;
-    use std::os::unix::net::UnixStream;
-    let mut stream = UnixStream::connect(paths::osd_report_socket()).map_err(|_| Refusal::NoDaemon)?;
-    let _ = stream.set_read_timeout(Some(REQUEST_REPLY_TIMEOUT));
-    stream.write_all(format!("{kind} {request}\n").as_bytes()).map_err(|_| Refusal::NoDaemon)?;
-    let _ = stream.shutdown(Shutdown::Write);
-    let mut reply = String::new();
-    let _ = (&mut stream).take(4096).read_to_string(&mut reply);
-    match reply.trim() {
+    match ask_daemon(&format!("{kind} {request}"), REQUEST_REPLY_TIMEOUT)?.as_str() {
         "ok" => Ok(()),
-        "" => Err(Refusal::NoDaemon),
         other => Err(Refusal::Refused(other.strip_prefix("refused: ").unwrap_or(other).to_string())),
     }
 }

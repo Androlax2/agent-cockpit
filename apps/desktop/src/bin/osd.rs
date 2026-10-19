@@ -379,6 +379,10 @@ fn handle_connection(received: Received, registry: &Rc<RefCell<Registry>>) {
                 };
                 let _ = std::io::Write::write_all(&mut stream, format!("{reply}\n").as_bytes());
             }
+            // ask-to-run --check: whether a session can reach the daemon at all.
+            "ping" => {
+                let _ = std::io::Write::write_all(&mut stream, b"ok\n");
+            }
             _ => eprintln!("osd: {kind:?} is not taken on the report socket"),
         }
     }

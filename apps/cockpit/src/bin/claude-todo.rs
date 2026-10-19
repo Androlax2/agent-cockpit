@@ -56,7 +56,7 @@ fn append(mut update: serde_json::Map<String, Value>) -> Result<(), String> {
     update.insert("session".into(), json!(std::env::var("CLAUDE_CODE_SESSION_ID").unwrap_or_default()));
     update.insert("at".into(), json!(now_secs()));
     approval::file_request("todo-update", &Value::Object(update)).map_err(|refusal| match refusal {
-        approval::Refusal::NoDaemon => "no OSD daemon reads the report socket (osd.service down?): tell Theo".to_string(),
+        approval::Refusal::Unreachable(reason) => format!("cannot reach the OSD daemon: {reason}"),
         approval::Refusal::Refused(reason) => format!("the OSD daemon refused it: {reason}"),
     })
 }

@@ -467,3 +467,46 @@ fn a_request_naming_no_answers_folder_or_a_path_is_refused() {
         assert!(shown.contains("names no answers folder"), "{answers}: {shown}");
     }
 }
+
+/// What `ask-to-run --check` says, and its exit code.
+fn check(sandbox: &Sandbox) -> (Option<i32>, String) {
+    let output = sandbox.run(bin().join("ask-to-run"), &["--check"], &[]);
+    (output.status.code(), stdout(&output))
+}
+
+#[test]
+fn check_says_ask_to_run_works_when_the_daemon_answers() {
+    let fixture = AskToRun::new();
+    let (code, shown) = check(&fixture.sandbox);
+    assert_eq!(code, Some(0), "{shown}");
+}
+
+#[test]
+fn check_names_a_missing_socket_and_says_to_restart_the_session() {
+    // The sandbox of a session started before the socket moved has none: a restart mounts it.
+    let mut fixture = AskToRun::new();
+    fixture.daemon = None;
+    let (code, shown) = check(&fixture.sandbox);
+    assert_eq!(code, Some(126));
+    assert!(shown.contains("has no report socket") && shown.contains("restart this session"), "{shown}");
+}
+
+#[test]
+fn check_names_a_socket_nobody_listens_on_and_the_command_that_brings_it_back() {
+    let mut fixture = AskToRun::new();
+    fixture.daemon = None;
+    let socket = fixture.sandbox.runtime.join("claude-report/osd-report.sock");
+    fs::create_dir_all(socket.parent().unwrap()).unwrap();
+    drop(std::os::unix::net::UnixListener::bind(&socket).unwrap()); // the file stays, nobody listens
+    let (code, shown) = check(&fixture.sandbox);
+    assert_eq!(code, Some(126));
+    assert!(shown.contains("nothing listens") && shown.contains("systemctl --user restart osd-report.socket osd.service"), "{shown}");
+}
+
+#[test]
+fn a_daemon_that_never_answers_points_at_an_old_build() {
+    let fixture = AskToRun::answering("");
+    let output = finish(fixture.ask(&["--why", "x", "true"], "5"), TIMEOUT);
+    assert_eq!(output.status.code(), Some(126));
+    assert!(stdout(&output).contains("claude-sessions reload"), "{}", stdout(&output));
+}

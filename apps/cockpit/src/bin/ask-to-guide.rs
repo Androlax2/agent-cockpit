@@ -189,8 +189,8 @@ fn main() {
                        "requested_at": now_secs()});
     match approval::file_request("guide-request", &guide) {
         Ok(()) => {}
-        Err(approval::Refusal::NoDaemon) => {
-            println!("No OSD daemon reads the requests (osd.service down?). List the steps in the chat instead.");
+        Err(approval::Refusal::Unreachable(reason)) => {
+            println!("ask-to-guide cannot reach Theo: {reason}\nMeanwhile list the steps in the chat.");
             std::process::exit(NO_DAEMON);
         }
         Err(approval::Refusal::Refused(reason)) => {

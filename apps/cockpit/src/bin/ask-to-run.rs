@@ -2,6 +2,7 @@
 //!
 //!     ask-to-run [--cwd DIR] --why '<what it does and why>' '<command>'
 //!     ask-to-run --wait <id>          keep waiting for an earlier request
+//!     ask-to-run --check              whether it can reach Theo now; if not, why and what fixes it
 //!
 //! Run by Claude inside greywall. The request goes whole to the OSD daemon on its report socket; the
 //! daemon keeps a copy out of the sandbox's reach and opens an approval terminal outside the sandbox
@@ -22,7 +23,7 @@ use std::time::{Duration, Instant};
 /// The end of the output, where errors and test summaries are; the rest is in the output file.
 const OUTPUT_LINES: usize = 120;
 const WHY_MAX: usize = 1000;
-const USAGE: &str = "usage: ask-to-run [--cwd DIR] --why '<what it does and why>' '<command>' | ask-to-run --wait <id>";
+const USAGE: &str = "usage: ask-to-run [--cwd DIR] --why '<what it does and why>' '<command>' | ask-to-run --wait <id> | ask-to-run --check";
 const DECLINED: i32 = 125;
 const TIMED_OUT: i32 = 124;
 const NO_DAEMON: i32 = 126;
@@ -100,6 +101,16 @@ fn main() {
         std::process::exit(NO_DAEMON);
     };
     let mut arguments: Vec<String> = std::env::args().skip(1).collect();
+    if arguments == ["--check"] {
+        match approval::check_daemon() {
+            Ok(()) => println!("ask-to-run works: the OSD daemon answers."),
+            Err(reason) => {
+                println!("ask-to-run cannot reach Theo: {reason}");
+                std::process::exit(NO_DAEMON);
+            }
+        }
+        return;
+    }
     if arguments.len() == 2 && arguments[0] == "--wait" && approval::valid_id(&arguments[1]) {
         std::process::exit(wait_for_result(&answers_key, &arguments[1]));
     }
@@ -131,9 +142,9 @@ fn main() {
     touch(&heartbeat);
     match approval::file_request("run-request", &request) {
         Ok(()) => {}
-        Err(approval::Refusal::NoDaemon) => {
+        Err(approval::Refusal::Unreachable(reason)) => {
             let _ = std::fs::remove_file(&heartbeat);
-            println!("No OSD daemon reads the requests (osd.service down?). Give Theo the command as a fish block instead.");
+            println!("ask-to-run cannot reach Theo: {reason}\nMeanwhile give Theo the command as a fish block.");
             std::process::exit(NO_DAEMON);
         }
         Err(approval::Refusal::Refused(reason)) => {
