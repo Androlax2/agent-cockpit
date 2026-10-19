@@ -1504,6 +1504,18 @@ push_run() { # dir
 DOTFILES_LIVE="${CLAUDE_DOTFILES_LIVE:-$HOME/dotfiles}"
 DOTFILES_WORK="${CLAUDE_DOTFILES_WORK:-$HOME/IdeaProjects/dotfiles}"
 
+# Whether the patches apply one after the other, as git am takes them: each on top of the ones
+# before, in a scratch index, so the live checkout's files and index stay as they are. One
+# `git apply --check` of them all held each patch against the unchanged tree and refused a series
+# whose later commits edit what earlier ones changed.
+patches_apply_in_order() { # folder-of-patches
+    local patch scratch_index="$1/check.index"
+    GIT_INDEX_FILE="$scratch_index" git -C "$DOTFILES_LIVE" read-tree HEAD || return 1
+    for patch in "$1"/*.patch; do
+        GIT_INDEX_FILE="$scratch_index" git -C "$DOTFILES_LIVE" apply --cached "$patch" || return 1
+    done
+}
+
 apply_dotfiles() { # [clone]
     local clone outgoing copies patch subjects answer count before
     if ! clone=$(dotfiles_clone_root "${1:-$DOTFILES_WORK}"); then
@@ -1539,7 +1551,8 @@ apply_dotfiles() { # [clone]
     echo "$count commit(s) for $DOTFILES_LIVE, the live checkout the host runs:"
     sed 's/^/  /' <<< "$subjects"
     echo
-    if ! git -C "$DOTFILES_LIVE" apply --check --stat "$copies"/*.patch; then
+    git -C "$DOTFILES_LIVE" apply --stat "$copies"/*.patch
+    if ! patches_apply_in_order "$copies"; then
         echo "They do not apply to $DOTFILES_LIVE as it is: rebase the clone on origin/main and export again." >&2
         return 1
     fi

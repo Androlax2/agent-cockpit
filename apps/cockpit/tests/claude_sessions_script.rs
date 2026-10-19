@@ -1572,6 +1572,34 @@ fn apply_dotfiles_still_asks_after_the_pager_quits_early() {
 }
 
 #[test]
+fn apply_dotfiles_takes_a_series_whose_later_commits_edit_what_earlier_ones_changed() {
+    // Checked all at once against the unchanged tree, the second patch did not apply.
+    let manager = Manager::new();
+    let (live, work) = dotfiles_pair(&manager);
+    fs::write(work.join("README"), "x\ny\nz\n").unwrap();
+    for arguments in [&["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qam", "Add z"][..], &["format-patch", "-q", "origin/main", "-o", ".outgoing"]] {
+        assert!(Command::new("git").arg("-C").arg(&work).args(arguments).status().unwrap().success());
+    }
+    let output = apply_dotfiles(&manager, &live, &work, "y\n");
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(git_output(&live, &["log", "--format=%s", "-2"]), "Add z\nAdd y");
+    assert!(git_output(&live, &["status", "--porcelain"]).is_empty());
+}
+
+#[test]
+fn apply_dotfiles_refuses_patches_that_do_not_apply_and_leaves_the_checkout_alone() {
+    let manager = Manager::new();
+    let (live, work) = dotfiles_pair(&manager);
+    fs::write(live.join("README"), "changed in the live checkout\n").unwrap();
+    assert!(Command::new("git").arg("-C").arg(&live).args(["commit", "-qam", "Live change"]).status().unwrap().success());
+    let output = apply_dotfiles(&manager, &live, &work, "y\n");
+    assert_eq!(output.status.code(), Some(1));
+    assert!(stderr(&output).contains("do not apply"), "{}", stderr(&output));
+    assert_eq!(git_output(&live, &["log", "-1", "--format=%s"]), "Live change");
+    assert!(git_output(&live, &["status", "--porcelain"]).is_empty());
+}
+
+#[test]
 fn apply_dotfiles_applies_nothing_without_a_yes() {
     let manager = Manager::new();
     let (live, work) = dotfiles_pair(&manager);
