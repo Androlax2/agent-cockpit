@@ -54,6 +54,7 @@ const TIME_LABEL: &str = "Time with Claude";
 /// The Todo panel's tabs: the statuses each one shows. Open merges everything not done yet.
 const TODO_TABS: [(&str, &[&str]); 5] = [("Open", &[todo::PROPOSED, "todo", "doing"]), ("Proposed", &[todo::PROPOSED]), ("To do", &["todo"]),
                                          ("In progress", &["doing"]), ("Done", &["done"])];
+const TODO_TAB_OPEN: usize = 0;
 const TODO_TAB_PROPOSED: usize = 1;
 const TODO_TAB_TO_DO: usize = 2;
 /// What follows this line in the todo editor is help, left out of the item.
@@ -424,6 +425,8 @@ pub struct App {
     shown_session: String,
     /// The Todo tab shown (TODO_TABS), and how many entries each holds.
     pub(crate) todo_tab: usize,
+    /// session -> the Todo tab it last showed: a session not in it shows Open.
+    todo_tabs: HashMap<String, usize>,
     /// session -> when the column last sent it a queued prompt: the next one waits for a turn that
     /// ended after that.
     pub(crate) prompts_sent: HashMap<String, i64>,
@@ -469,7 +472,7 @@ impl App {
             help_open: false, has_pane_focus: true, message: String::new(), exiting: Vec::new(), labelled: Default::default(), menu: None, settings_menu: None, restore: Vec::new(),
             focus_waiting: false, held: Vec::new(), held_checked: 0.0, queue_checked: 0.0, gaming: util::gaming, restore_checked: 0.0, start_files: Vec::new(),
             width: DEFAULT_COLUMN_WIDTH, sessions: Vec::new(), windows: Vec::new(), review_rows: Vec::new(), todo_entries: Vec::new(),
-            todo_scope: String::new(), shown_session: String::new(), todo_tab: TODO_TAB_TO_DO, todo_counts: [0; 5], prompts_sent: HashMap::new(), craft_roots: HashMap::new(), hit_lines: HashMap::new(), hit_actions: HashMap::new(),
+            todo_scope: String::new(), shown_session: String::new(), todo_tab: TODO_TAB_OPEN, todo_tabs: HashMap::new(), todo_counts: [0; 5], prompts_sent: HashMap::new(), craft_roots: HashMap::new(), hit_lines: HashMap::new(), hit_actions: HashMap::new(),
             gathered: None, pending: Vec::new(), plan: String::new(), craft_checked: 0.0, dotfiles_unpushed: 0, dotfiles_checked: 0.0,
         }
     }
@@ -1476,6 +1479,7 @@ impl App {
         // Like the issues: the viewed session's project only, every project when none is viewed.
         let viewed = current_session();
         self.todo_scope = self.sessions.iter().find(|s| s.session == viewed).map(|s| s.project.clone()).unwrap_or_default();
+        self.todo_tab = self.todo_tabs.get(&viewed).copied().unwrap_or(TODO_TAB_OPEN);
         let scope = self.todo_scope.clone();
         let mut entries: Vec<Entry> = self.todos.items.iter()
             .filter(|item| (scope.is_empty() || item.project() == scope) && sessions::matches(&[&item.project(), &item.text()], &self.query))
@@ -1496,7 +1500,7 @@ impl App {
         let shown_statuses = TODO_TABS[self.todo_tab].1;
         entries.retain(|entry| shown_statuses.contains(&entry.status().as_str()));
         let mut lines = Vec::new();
-        // The panel opens on To do, where proposals are hidden: without this line they wait unseen.
+        // The tabs past Proposed hide proposals: without this line they wait unseen there.
         let proposed = self.todo_counts[TODO_TAB_PROPOSED];
         if proposed > 0 && !shown_statuses.contains(&todo::PROPOSED) {
             let ideas = if proposed == 1 { "1 idea from Claude waits".to_string() } else { format!("{proposed} ideas from Claude wait") };
@@ -1580,8 +1584,13 @@ impl App {
         format!("{scope} · {}{queue}", tabs.join(" · "))
     }
 
+    fn show_todo_tab(&mut self, tab: usize) {
+        self.todo_tab = tab;
+        self.todo_tabs.insert(current_session(), tab);
+    }
+
     fn switch_todo_tab(&mut self, step: isize) {
-        self.todo_tab = (self.todo_tab as isize + step).rem_euclid(TODO_TABS.len() as isize) as usize;
+        self.show_todo_tab((self.todo_tab as isize + step).rem_euclid(TODO_TABS.len() as isize) as usize);
         self.panels[3].selected = 0;
         self.build_todo();
     }
@@ -1607,7 +1616,7 @@ impl App {
                 if !notes.is_empty() {
                     self.todos.edit(&id, &title, &notes);
                 }
-                self.todo_tab = TODO_TAB_TO_DO;
+                self.show_todo_tab(TODO_TAB_TO_DO);
                 format!("added to {}", project_name(&directory))
             }
             Key::Char('[') => {

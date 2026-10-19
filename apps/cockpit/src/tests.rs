@@ -882,7 +882,7 @@ fn h_sends_to_the_running_session_or_starts_one_and_marks_it_in_progress() {
     let healthcheck = app.todos.add("runway", "/r/runway", "add a healthcheck");
     let postgres = app.todos.add("homelab", "/r/homelab", "bump postgres");
     app.build();
-    app.focus_panel(3);
+    show_to_do_tab(&mut app);
     // An item handed over moves to In progress: the next one is the first row of To do.
     for _ in 0..2 {
         app.build();
@@ -1608,6 +1608,36 @@ fn each_todo_tab_starts_with_the_key_that_moves_its_items_along() {
     }
 }
 
+#[test]
+fn the_todo_panel_opens_on_the_open_tab() {
+    let fixture = Fixture::new();
+    assert_eq!(fixture.app().todo_tab, 0);
+}
+
+#[test]
+fn each_session_keeps_the_todo_tab_it_last_showed() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "runway", "/r", 1), session(SESSION_B, "waiting", "dotfiles", "/d", 2)]));
+    fixture.view(SESSION_A);
+    let mut app = fixture.app();
+    app.focus_panel(3);
+    app.handle(Key::Char(']'), &mut FakeScreen::default());
+    fixture.view(SESSION_B);
+    app.build();
+    assert_eq!(app.todo_tab, 0, "a session not switched yet shows Open");
+    fixture.view(SESSION_A);
+    app.build();
+    assert_eq!(app.todo_tab, 1);
+}
+
+/// The Todo panel opens on Open: two tabs further is To do.
+fn show_to_do_tab(app: &mut App) {
+    app.focus_panel(3);
+    for _ in 0..2 {
+        app.handle(Key::Char(']'), &mut FakeScreen::default());
+    }
+}
+
 fn report_blocked(fixture: &Fixture, project: &str, what: &str) {
     let reporter = fixture.root.join(project);
     fs::create_dir_all(&reporter).unwrap();
@@ -1699,7 +1729,6 @@ fn the_open_tab_lists_proposed_to_do_and_in_progress_items_but_not_done_ones() {
     app.todos.set_status(&doing, "doing", "");
     let done = app.todos.add("p", "/p", "done item");
     app.todos.set_status(&done, "done", "");
-    app.todo_tab = 0;
     app.build();
     let mut shown: Vec<String> = app.todo_entries.iter().map(Entry::status).collect();
     shown.sort();
@@ -1712,7 +1741,6 @@ fn the_open_tab_hints_follow_the_selected_items_status() {
     propose(&fixture, "proposed item", "why");
     let mut app = fixture.app();
     app.todos.apply_updates();
-    app.todo_tab = 0;
     app.build();
     assert_eq!(app.todo_hints()[0].0, "y");
 }
@@ -1724,7 +1752,7 @@ fn a_proposal_waits_in_its_own_tab_until_approved() {
     let mut app = fixture.app();
     app.todos.apply_updates();
     app.build();
-    app.focus_panel(3);
+    show_to_do_tab(&mut app);
     assert!(texts(&app, 3).iter().all(|line| !line.contains("cache the usage fetch")), "shown in To do before approval");
     app.handle(Key::Char('['), &mut FakeScreen::default());
     assert!(texts(&app, 3).iter().any(|line| line.contains("cache the usage fetch")));
@@ -1739,7 +1767,7 @@ fn a_waiting_proposal_is_announced_on_the_to_do_tab() {
     propose(&fixture, "cache the usage fetch", "it runs every minute");
     let mut app = fixture.app();
     app.todos.apply_updates();
-    app.build();
+    show_to_do_tab(&mut app);
     assert_eq!(texts(&app, 3)[0], "?1 idea from Claude waits for you · ] Proposed");
     assert_eq!(app.panels[3].lines[0].item, None, "the announcement is not a selectable item");
 }
@@ -1750,8 +1778,9 @@ fn the_proposed_tab_does_not_announce_its_own_items() {
     propose(&fixture, "cache the usage fetch", "it runs every minute");
     let mut app = fixture.app();
     app.todos.apply_updates();
-    app.todo_tab = 1;
-    app.build();
+    app.focus_panel(3);
+    app.handle(Key::Char(']'), &mut FakeScreen::default());
+    assert_eq!(app.todo_tab, 1);
     assert!(texts(&app, 3).iter().all(|line| !line.contains("from Claude wait")));
 }
 
@@ -1788,7 +1817,7 @@ fn a_declined_proposal_is_not_filed_again() {
     let mut app = fixture.app();
     app.todos.apply_updates();
     app.build();
-    app.focus_panel(3);
+    show_to_do_tab(&mut app);
     app.handle(Key::Char('['), &mut FakeScreen::default());
     app.handle(Key::Char('n'), &mut FakeScreen::default());
     propose(&fixture, "rewrite  in go", "still faster");
@@ -1901,7 +1930,7 @@ fn the_shown_todo_tab_is_drawn_as_a_chip() {
     let fixture = Fixture::new();
     let mut app = fixture.app();
     app.todos.add("p", "/p", "one item");
-    app.build();
+    show_to_do_tab(&mut app);
     let buffer = render(&mut app, 120, 40);
     let chip: String = (0..120).filter_map(|x| (0..40).find(|y| buffer[(x, *y)].symbol() == "T" && buffer[(x, *y)].bg == ratatui::style::Color::Indexed(crate::app::BLUE)).map(|_| "T")).collect();
     assert!(!chip.is_empty(), "no tab drawn on blue");
