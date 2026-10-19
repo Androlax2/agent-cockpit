@@ -182,6 +182,8 @@ fn finish(guide: &Guide, status: &str, note: &str) {
     approval::send_host(&format!("notice-clear guide-{}", guide.id));
     let note_part = if note.is_empty() { String::new() } else { format!(" ({})", note.chars().take(80).collect::<String>()) };
     approval::log("INFO", &format!("guide {} for {}: {status} at step {}/{}{note_part}", guide.id, guide.project, guide.position + 1, guide.steps.len()));
+    cockpit::audit::record("guide", "guide.finished", status, json!({"id": guide.id, "project": guide.project, "step": guide.position + 1,
+                                                                   "total": guide.steps.len(), "note": cockpit::audit::fingerprint(note)}));
 }
 
 /// The step on screen as (text, style) lines: its section, its text, its link, value and command
@@ -298,13 +300,19 @@ fn run_step(guide: &mut Guide) {
     let mut run = Map::new();
     run.insert("command".into(), json!(original));
     run.insert("edited_command".into(), edited);
+    let step_id = format!("{}-step{}", guide.id, guide.position + 1);
     if answer != "y" {
+        cockpit::audit::record("guide", "guide.run_declined", "declined", json!({"id": step_id, "project": guide.project, "command": cockpit::audit::fingerprint(&command)}));
         run.insert("status".into(), json!("declined"));
         guide.runs.insert(guide.position, run);
         return;
     }
+    cockpit::audit::keep_command(&step_id, &original, &command);
+    cockpit::audit::record("guide", "guide.run_approved", "approved", json!({"id": step_id, "project": guide.project, "cwd": guide.cwd,
+                                                                            "edited": command != original, "command": cockpit::audit::fingerprint(&command)}));
     let log_path = approval::log_dir().join(format!("guide-{}-{}.log", guide.id, guide.position + 1));
     let exit_code = approval::run(&command, "", &log_path, None);
+    cockpit::audit::record("guide", "guide.run_ran", if exit_code == 0 { "ok" } else { "failed" }, json!({"id": step_id, "project": guide.project, "exit": exit_code}));
     println!("{DIM}─── {RESET}exit {exit_code}");
     // Like ask-to-run: the output always goes back, secrets taken out first.
     let (output, redacted) = approval::redact_secrets(&approval::recorded_output(&log_path));

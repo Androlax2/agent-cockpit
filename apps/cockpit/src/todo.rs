@@ -392,6 +392,8 @@ impl TodoList {
         self.queued.insert(id.clone());
         self.save();
         util::log_event("INFO", &format!("todo {id}: {reporter} reported being blocked, queued for dotfiles: {}", what.chars().take(60).collect::<String>()));
+        crate::audit::record("column", "blocked.filed", "queued", json!({"id": id, "reporter": reporter, "started_in": started_in,
+                                                                      "text": crate::audit::fingerprint(&what)}));
         Ok(())
     }
 
@@ -415,9 +417,19 @@ impl TodoList {
         }
         let mut applied = 0;
         for line in lines.lines().take(APPLY_MAX_LINES) {
+            let update: Value = serde_json::from_str(line).unwrap_or(Value::Null);
+            let mut fields = json!({"update": crate::audit::fingerprint(line), "action": update.get("action"), "id": update.get("id"),
+                                    "started_in": update.get("started_in"), "claimed_session": update.get("session")});
             match self.apply_update(line) {
-                Ok(()) => applied += 1,
-                Err(reason) => util::log_event("WARN", &format!("todo update refused: {reason}")),
+                Ok(()) => {
+                    applied += 1;
+                    crate::audit::record("column", "todo.applied", "ok", fields);
+                }
+                Err(reason) => {
+                    util::log_event("WARN", &format!("todo update refused: {reason}"));
+                    fields["reason"] = json!(reason);
+                    crate::audit::record("column", "todo.rejected", "refused", fields);
+                }
             }
         }
         applied

@@ -159,12 +159,14 @@ impl ErrorReporter {
             let id: String = waiting.session.chars().take(8).collect();
             if problem.is_empty() {
                 util::log_event("INFO", &format!("error handed to dotfiles session {id}: {short}"));
+                crate::audit::record("column", "error.handoff", "said", json!({"session": waiting.session, "error": crate::audit::fingerprint(error)}));
                 return;
             }
             util::log_event("WARN", &format!("error hand-off to dotfiles session {id} failed ({problem}); starting a new session"));
         }
         util::manager_in_background(&["background", &paths::dotfiles_work().to_string_lossy(), &prompt]);
         util::log_event("INFO", &format!("error handed to a new dotfiles session: {short}"));
+        crate::audit::record("column", "error.handoff", "new-session", json!({"error": crate::audit::fingerprint(error)}));
     }
 
     fn save(&mut self) {

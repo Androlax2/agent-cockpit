@@ -46,7 +46,9 @@ pub fn log_as(component: &str, level: &str, message: &str) {
             rotated.push(".1");
             fs::rename(&path, rotated)?;
         }
-        let line: String = collapse(message).chars().take(LOG_LINE_MAX).collect();
+        // No control character reaches the log: a session's text in it could carry escape codes to
+        // the terminal `claude-sessions logs` prints to (security audit 2026-10-19, M6).
+        let line: String = collapse(message).chars().filter(|c| !c.is_control()).take(LOG_LINE_MAX).collect();
         let stamp = Local::now().format("%Y-%m-%dT%H:%M:%S%:z");
         let mut file = OpenOptions::new().create(true).append(true).open(&path)?;
         writeln!(file, "{stamp} {level} {component}: {line}")

@@ -83,7 +83,7 @@ impl Sandbox {
         }
         let local_bin = home.join(".local/bin");
         fs::create_dir_all(&local_bin).unwrap();
-        for name in ["claude-sessions", "claude-sessions-sidebar", "osd", "osd-show"] {
+        for name in ["claude-sessions", "claude-sessions-sidebar", "osd", "osd-show", "claude-audit"] {
             symlink(bin().join(name), local_bin.join(name)).unwrap();
         }
         let path = format!("{}:{}:{}", shims.display(), local_bin.display(), std::env::var("PATH").unwrap_or_default());
@@ -95,6 +95,7 @@ impl Sandbox {
             ("SHIM_LOG".into(), log.display().to_string()),
             ("CLAUDE_STATUS_URL".into(), String::new()), // no network: status.claude.com is not fetched
             ("CLAUDE_ANSWERS_KEY".into(), ANSWERS_KEY.to_string()),
+            ("CLAUDE_AUDIT_JOURNAL".into(), "off".to_string()),
         ]);
         Sandbox { root, home, runtime, state, shims, log, env }
     }

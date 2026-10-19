@@ -495,6 +495,8 @@ impl App {
             let _ = std::fs::remove_file(&path);
             self.prompts_sent.insert(session.session.clone(), util::now() as i64);
             util::log_event("INFO", &format!("queued prompt sent to {} at the end of its turn", session.project));
+            crate::audit::record("column", "prompt.sent", "ok", serde_json::json!({"session": session.session, "project": session.project,
+                                                                     "text": crate::audit::fingerprint(&text)}));
         }
     }
 
@@ -730,7 +732,11 @@ impl App {
         }
         if now() - self.held_checked > GREYPROXY_POLL_S {
             self.held_checked = now();
-            self.held = sessions::greyproxy_held(&paths::greyproxy_db());
+            let held = sessions::greyproxy_held(&paths::greyproxy_db());
+            for host in held.iter().filter(|host| !self.held.contains(host)) {
+                crate::audit::record("column", "greyproxy.held", "waiting", serde_json::json!({"destination": host}));
+            }
+            self.held = held;
         }
         let (claude, _) = self.claude_status.snapshot();
         if let Some(claude) = claude.filter(|c| !c.indicator.is_empty() && c.indicator != "none") {

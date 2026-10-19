@@ -1583,3 +1583,31 @@ fi"#, approvals.display()));
     assert_eq!(manager.calls("tmux").iter().filter(|call| call.starts_with("tmux list-sessions")).count(), 3);
     assert!(manager.calls("systemctl").iter().any(|call| call == "systemctl --user restart osd.service"), "{:?}", manager.calls("systemctl"));
 }
+
+#[test]
+fn a_message_said_to_a_session_is_audited_by_its_hash() {
+    // Security audit M6: what reached a session is on record, its text kept out of the log.
+    let manager = Manager::new();
+    manager.run(&["say", SESSION_A, "run the tests"], &[("SHIM_PANE_TEXT", IDLE)]);
+    let folder = manager.sandbox.state.join("claude-audit");
+    let day = fs::read_dir(&folder).unwrap().flatten().find(|entry| entry.file_name().to_string_lossy().starts_with("audit-")).expect("no audit log").path();
+    let line: serde_json::Value = serde_json::from_str(fs::read_to_string(day).unwrap().lines().last().unwrap()).unwrap();
+    assert_eq!((line["event"].as_str(), line["session"].as_str(), line["message"]["len"].as_u64()), (Some("say"), Some(SESSION_A), Some(13)));
+}
+
+#[test]
+fn the_shared_log_keeps_no_control_character() {
+    let manager = Manager::new();
+    manager.run(&["log", "todo", "INFO", "from a session: \x1b]52;c;cGF5\x07 done"], &[]);
+    manager.run(&["log", "todo", "INFO", "from a session: \u{1b}[2J"], &[]);
+    let log = fs::read_to_string(manager.sandbox.state.join("claude-sessions/log")).unwrap();
+    assert!(!log.contains('\u{1b}') && !log.contains('\u{7}'), "{log:?}");
+}
+
+#[test]
+fn a_successful_label_or_focus_leaves_no_log_line() {
+    // They run on every view change: 40% of the log were their successes.
+    let manager = Manager::new();
+    manager.run(&["focus-viewer"], &[]);
+    assert!(manager.log_lines().iter().all(|line| !line.contains("focus-viewer")), "{:?}", manager.log_lines());
+}

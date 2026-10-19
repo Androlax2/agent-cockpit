@@ -11,6 +11,9 @@ export DISABLE_AUTOUPDATER=1
 # DISABLE_ERROR_REPORTING alone did not help). This also turns off /bug inside sessions.
 export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
 mkdir -p "$CHROME_CONFIG_HOME"
+# The audit log (claude-audit; security audit 2026-10-19, M6): greywall.json hides it from the
+# sandbox, which greywall does only for a folder that exists when the sandbox starts.
+mkdir -p -m 700 "${XDG_STATE_HOME:-$HOME/.local/state}/claude-audit"
 
 # ~/dotfiles is the live checkout: stowed into ~/.local/bin and ~/.config, built and run by the host.
 # A session writing there would run its code with Theo's rights, unreviewed (security audit

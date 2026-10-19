@@ -524,8 +524,44 @@ fn run_result(id: &str) -> Option<PathBuf> {
     answers_named_by(&cockpit::approval::held_request(id, "request"), "runs").map(|answers| answers.join(format!("{id}.result")))
 }
 
+/// A report the daemon refused or corrected; `reason` says why.
+fn audit_report(report: &Report, sender: u32, event: &str, outcome: &str, reason: &str) {
+    cockpit::audit::record("daemon", event, outcome, json!({"claimed_session": report.session, "claimed_project": report.project,
+                                                           "sender_pid": sender, "reason": reason}));
+}
+
+/// A run or guide request or a todo update from the report socket, held or refused. What the
+/// sandbox wrote goes in as claimed_* or as a fingerprint (the command, a title, a todo text).
+fn audit_request(kind: &str, raw: &str, started_in: Option<&str>, sender: u32, result: &Result<(), String>) {
+    let request: Value = serde_json::from_str(raw).unwrap_or(Value::Null);
+    let text = |key: &str| request.get(key).and_then(Value::as_str).map(cockpit::audit::fingerprint);
+    let (event, held) = match kind {
+        "run-request" => ("run", "held"),
+        "guide-request" => ("guide", "held"),
+        _ => ("todo", "queued"),
+    };
+    let mut fields = json!({"started_in": started_in, "sender_pid": sender, "request": cockpit::audit::fingerprint(raw),
+                            "claimed_id": request.get("id"), "claimed_session": request.get("session"), "claimed_cwd": request.get("cwd")});
+    for (key, value) in [("command", text("command")), ("title", text("title")), ("text", text("text"))] {
+        if let Some(value) = value {
+            fields[key] = value;
+        }
+    }
+    if let Some(action) = request.get("action") {
+        fields["action"] = action.clone();
+    }
+    match result {
+        Ok(()) => cockpit::audit::record("daemon", &format!("{event}.{held}"), "ok", fields),
+        Err(reason) => {
+            fields["reason"] = json!(reason);
+            cockpit::audit::record("daemon", &format!("{event}.refused"), "refused", fields);
+        }
+    }
+}
+
 /// The answer ask-to-run --wait finds for a dropped request.
 fn write_abandoned(id: &str) {
+    cockpit::audit::record("daemon", "run.abandoned", "dropped", json!({"id": id, "reason": "nobody waited for its answer any more"}));
     let Some(path) = run_result(id) else {
         log(&format!("run request {id} dropped without an answer: it names no answers folder"));
         return;
@@ -810,7 +846,17 @@ impl Registry {
     /// A run or guide request, or a todo update, from the report socket: held (hold_request) or
     /// queued (queue_todo_update) with the folder the sender's sandbox started in.
     pub fn request_from(&mut self, kind: &str, raw: &str, sender: u32) -> Result<(), String> {
-        let started_in = self.system.sender_directory(sender).ok_or("its sender has no process outside the sandbox")?;
+        let started_in = self.system.sender_directory(sender);
+        let result = match &started_in {
+            Some(started_in) => self.take_request(kind, raw, started_in),
+            None => Err("its sender has no process outside the sandbox".into()),
+        };
+        audit_request(kind, raw, started_in.as_deref(), sender, &result);
+        result
+    }
+
+    fn take_request(&mut self, kind: &str, raw: &str, started_in: &str) -> Result<(), String> {
+        let started_in = started_in.to_string();
         if kind == "todo-update" {
             return queue_todo_update(raw, &started_in);
         }
@@ -841,11 +887,13 @@ impl Registry {
     pub fn report_from(&mut self, mut report: Report, sender: u32) {
         let Some(target) = self.system.sender_target(sender) else {
             log(&format!("report for {} refused: its sender (pid {sender}) has no process outside the sandbox", &report.session[..8]));
+            audit_report(&report, sender, "report.rejected", "refused", "its sender has no process outside the sandbox");
             return;
         };
         if let Some(known) = self.sessions.get(&report.session).and_then(|entry| entry.target.get("tmux_pane")).cloned() {
             if target.get("tmux_pane") != Some(&known) && self.system.claude_panes().contains(&known) {
                 log(&format!("report for {} refused: it claims a pane other than {known}, where that session still runs", &report.session[..8]));
+                audit_report(&report, sender, "report.rejected", "refused", &format!("it claims a pane other than {known}, where that session still runs"));
                 return;
             }
         }
@@ -858,8 +906,15 @@ impl Registry {
             if !started_in.as_ref().is_some_and(|started_in| Path::new(&claimed).starts_with(started_in)) {
                 log(&format!("report for {} claims the folder {claimed:?}, outside {started_in:?} where its sandbox started: that one is kept",
                              &report.session[..8]));
+                audit_report(&report, sender, "report.folder_corrected", "corrected",
+                             &format!("claimed {claimed:?}, outside {started_in:?} where its sandbox started"));
             }
             report.cwd = started_in;
+        }
+        if !self.sessions.contains_key(&report.session) {
+            cockpit::audit::record("daemon", "session.first_report", "ok", json!({
+                "session": report.session, "claimed_project": report.project, "started_in": report.cwd, "sender_pid": sender,
+                "tmux_pane": report.target.get("tmux_pane")}));
         }
         self.update(report);
     }

@@ -36,6 +36,8 @@ impl Fixture {
             std::env::set_var("HOME", root.join("home"));
             std::env::set_var("XDG_RUNTIME_DIR", root.join("run"));
             std::env::set_var("XDG_STATE_HOME", root.join("state"));
+            // The audit log goes under state/; never into the real journal.
+            std::env::set_var("CLAUDE_AUDIT_JOURNAL", "off");
             std::env::set_var("CLAUDE_RUNS_DIR", root.join("queue"));
             std::env::set_var("CLAUDE_ANSWERS_DIR", root.join("answers"));
             for name in ["CLAUDE_SESSIONS_CLONES", "HYPRLAND_INSTANCE_SIGNATURE"] {
@@ -1308,4 +1310,20 @@ fn a_sandbox_folder_has_at_most_three_requests_waiting() {
         .map(|id| bench.registry.request_from("run-request", &json!({"id": id, "command": "true", "answers": key}).to_string(), 500).is_ok())
         .collect();
     assert_eq!(outcomes, [true, true, true, false]);
+}
+
+#[test]
+fn a_request_held_or_refused_is_audited_without_its_command() {
+    // Security audit M6: who asked what, from which sandbox folder; the command only as its hash.
+    let mut bench = Bench::new();
+    let (folder, key) = project_folder(&bench);
+    bench.world.borrow_mut().sender_directories.insert(500, folder.clone());
+    bench.registry.request_from("run-request", &json!({"id": NEW_RUN, "command": "make secret-step", "answers": key}).to_string(), 500).unwrap();
+    let _ = bench.registry.request_from("run-request", &json!({"id": "bad"}).to_string(), 500);
+    let day = cockpit::audit::dir().join(format!("audit-{}.jsonl", chrono::Local::now().format("%Y-%m-%d")));
+    let lines: Vec<Value> = fs::read_to_string(day).unwrap().lines().map(|line| serde_json::from_str(line).unwrap()).collect();
+    let events: Vec<(&str, &str)> = lines.iter().map(|line| (line["event"].as_str().unwrap(), line["outcome"].as_str().unwrap())).collect();
+    assert_eq!(events, [("run.held", "ok"), ("run.refused", "refused")]);
+    assert_eq!(lines[0]["started_in"].as_str(), Some(folder.as_str()));
+    assert!(!lines[0].to_string().contains("secret-step"));
 }

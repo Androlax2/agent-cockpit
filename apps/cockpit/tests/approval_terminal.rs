@@ -28,7 +28,8 @@ fn request(command: &str) -> (PathBuf, String) {
 fn approve_in_terminal(command: &str) -> (Terminal, PathBuf, String) {
     let (root, id) = request(command);
     let mut terminal = Terminal::start(Path::new(env!("CARGO_BIN_EXE_claude-run-approve")), &[&id],
-                                       &[("CLAUDE_RUNS_DIR", &root.join("runs")), ("CLAUDE_ANSWERS_DIR", &root.join("answers")), ("XDG_RUNTIME_DIR", &root.join("run"))]);
+                                       &[("CLAUDE_RUNS_DIR", &root.join("runs")), ("CLAUDE_ANSWERS_DIR", &root.join("answers")), ("XDG_RUNTIME_DIR", &root.join("run")),
+                                         ("XDG_STATE_HOME", &root.join("state")), ("CLAUDE_AUDIT_JOURNAL", Path::new("off"))]);
     terminal.pump(10.0, Some(b"Run it?"));
     terminal.pump(0.7, None);
     terminal.type_keys(b"\x1b[B");

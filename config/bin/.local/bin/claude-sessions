@@ -118,7 +118,10 @@ refresh_hyprland_instance() {
 refresh_hyprland_instance
 
 log_event() { # LEVEL component message
+    # No control character reaches the log: a session's text in it could carry escape codes to the
+    # terminal `claude-sessions logs` prints to (security audit 2026-10-19, M6).
     local message=${3//$'\n'/ }
+    message=${message//[[:cntrl:]]/}
     {
         mkdir -p "$(dirname "$LOG_FILE")"
         if (( $(stat -c %s "$LOG_FILE" 2>/dev/null || echo 0) > LOG_MAX_BYTES )); then
@@ -126,6 +129,12 @@ log_event() { # LEVEL component message
         fi
         printf '%s %s %s: %s\n' "$(date -Iseconds)" "$1" "$2" "${message:0:$LOG_LINE_MAX}" >> "$LOG_FILE"
     } 2>/dev/null || true  # a read-only state dir (inside greywall) must not break the command
+}
+
+# An event in the audit log (claude-audit; security audit 2026-10-19, M6): key=value fields, and
+# fp:key=value for a text kept only as its hash and length. Never fails the command.
+audit_event() { # component event outcome [key=value | fp:key=value]...
+    claude-audit record "$@" >/dev/null 2>&1 || log_event WARN audit "event $2 not written (is claude-audit on PATH?)"
 }
 
 show_logs() { # [lines]
@@ -148,6 +157,7 @@ require_plain_directory() {
     local directory=$1
     if [[ $directory == *"#"* || ! -d $directory ]]; then
         echo "claude-sessions: refusing directory $directory" >&2
+        audit_event manager validation.refused refused "claimed_directory=$directory" "reason=a # in it, or not a directory"
         exit 1
     fi
 }
@@ -294,6 +304,7 @@ new_session() {
     local directory=$1 existing
     shift
     require_plain_directory "$directory"
+    audit_event manager session.start ok "directory=$directory" "claude_arguments=$#"
     ensure_manager
     if (( $# == 0 )); then
         existing=$(running_session_in "$directory")
@@ -454,6 +465,7 @@ claude_left() { # tmux-session pane timeout-seconds
 
 exit_session() {
     local id=$1 pane target attempt
+    audit_event manager session.exit asked "session=$id"
     if [[ $id == claude-retry-* ]]; then
         [[ $id == *"#"* ]] && { echo "claude-sessions: refusing session name $id" >&2; return 1; }
         target=$id
@@ -593,6 +605,7 @@ say_to_session() { # id message
     else
         tmux send-keys -t "$pane" C-x Enter
     fi
+    audit_event manager say sent "session=$id" "project=$(session_field "$id" project)" "fp:message=$message"
 }
 
 # A prompt for the end of the session's turn (Alt+Q, tmux.conf): it waits in the queue the column
@@ -625,6 +638,7 @@ queue_prompt_ask() { # [pane]
     mkdir -p "$folder"
     printf '%s' "$text" > "$folder/$(date +%s%N).txt"
     log_event INFO sessions "prompt queued for $(session_field "$session" project)"
+    audit_event manager prompt.queued queued "session=$session" "fp:text=$text"
 }
 
 # The session pane over the whole window and back (the sidebar's z). Moving to the column with
@@ -683,6 +697,7 @@ setting() { # name [on|off]
 handoff() { # on|off|lock|unlock
     local wanted=${1:-on} id pane count=0
     case $wanted in on|off|lock|unlock) ;; *) echo "usage: claude-sessions handoff [on|off|lock|unlock]" >&2; return 1 ;; esac
+    audit_event manager session.handoff "$wanted"
     if [[ $wanted == lock ]] && ! setting_is_on handoff-on-lock; then
         rm -f "$HANDED_OFF"
         log_event INFO lock "handoff-on-lock is off: the sessions stay local"
@@ -759,6 +774,7 @@ restore_sessions() { # dir id [dir id …]
 restart_session() { # id [effort] [detached]
     local id=$1 effort=${2:-} detached=${3:-} directory
     directory=$(session_field "$id" cwd)
+    audit_event manager session.restart asked "session=$id" "directory=$directory"
     if [[ -z $directory ]]; then
         echo "claude-sessions: session $id has no directory to restart in" >&2
         return 1
@@ -1356,12 +1372,14 @@ push_run() { # dir
     [[ $answer == y || $answer == Y ]] || { echo "Not pushed."; sleep 1; return 0; }
     if git "${SAFE_GIT_CONFIG[@]}" push --set-upstream origin "refs/heads/$branch:refs/heads/$branch"; then
         log_event INFO sessions "pushed $branch of $(basename "$1")"
+        audit_event push push.done ok "directory=$1" "branch=$branch" "url=$url"
         # The card's "↑N unpushed" clears now, not at the session's next turn.
         osd-show session-pushed "$1" 2>/dev/null || true
         echo "Pushed."
         read -r -p "Enter closes. " _ || true
     else
         log_event WARN sessions "push of $branch of $(basename "$1") failed"
+        audit_event push push.failed failed "directory=$1" "branch=$branch" "url=$url"
         echo "The push failed (above)."
         read -r -p "Enter closes. " _ || true
         return 1
@@ -1419,16 +1437,19 @@ apply_dotfiles() {
     if [[ $answer != y && $answer != Y ]]; then
         echo "Not applied."
         log_event INFO apply "declined $count patch(es): ${subjects//$'\n'/ | }"
+        audit_event apply dotfiles.declined declined "patches=$count" "subjects=${subjects//$'\n'/ | }"
         return 0
     fi
     if ! git -C "$DOTFILES_LIVE" am --quiet "$copies"/*.patch; then
         git -C "$DOTFILES_LIVE" am --abort 2>/dev/null || true
         echo "git am failed: nothing applied." >&2
         log_event WARN apply "git am failed for $count patch(es)"
+        audit_event apply dotfiles.failed failed "patches=$count" "subjects=${subjects//$'\n'/ | }"
         return 1
     fi
     find "$outgoing" -maxdepth 1 -type f -name '*.patch' -delete
     log_event INFO apply "applied $count patch(es) to $DOTFILES_LIVE: ${subjects//$'\n'/ | }"
+    audit_event apply dotfiles.applied ok "patches=$count" "head=$(git -C "$DOTFILES_LIVE" rev-parse HEAD 2>/dev/null)" "subjects=${subjects//$'\n'/ | }"
     echo "Applied. Next: make cockpit and make test in $DOTFILES_LIVE, then claude-sessions reload."
 }
 
@@ -1458,7 +1479,10 @@ elif [[ $log_command == new ]]; then
     log_arguments="${2:-}"
     if (( $# > 2 )); then log_arguments+=" (+$(( $# - 2 )) claude arguments)"; fi
 fi
-if [[ $log_command != idle && $log_command != log && $log_command != logs ]]; then
+if [[ $log_command == label-state || $log_command == focus-viewer ]]; then
+    # Called on every view change: only their failures are worth a line (40% of the log were these).
+    trap 'log_status=$?; ((log_status)) && log_event ERROR manager "$log_command $log_arguments -> exit $log_status ($(( ($(date +%s%N) - log_started) / 1000000 )) ms)"' EXIT
+elif [[ $log_command != idle && $log_command != log && $log_command != logs ]]; then
     trap 'log_status=$?; log_event "$( ((log_status)) && echo ERROR || echo INFO)" manager "$log_command $log_arguments -> exit $log_status ($(( ($(date +%s%N) - log_started) / 1000000 )) ms)"' EXIT
 fi
 if [[ -n ${CLAUDE_SESSIONS_LOG_STDERR:-} ]]; then

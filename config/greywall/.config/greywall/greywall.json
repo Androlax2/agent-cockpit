@@ -44,6 +44,7 @@
       "~/.local/share/Trash/**",
       "~/.local/share/JetBrains/**",
       "~/.local/state/restic-backup/**",
+      "~/.local/state/claude-audit",
       "~/.config/Bitwarden/**",
       "~/.config/BraveSoftware/**",
       "~/.config/vivaldi/**",

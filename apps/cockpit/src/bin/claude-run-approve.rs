@@ -10,6 +10,7 @@
 //! output to Claude?". XDG_RUNTIME_DIR moves the daemon's copies and the log (tests).
 
 use cockpit::approval::{self, BOLD, BLUE, DIM, GREEN, RED, RESET, YELLOW};
+use cockpit::audit;
 use cockpit::util::now_secs;
 use serde_json::{Value, json};
 use std::io::{self, BufRead, Write};
@@ -67,6 +68,10 @@ fn approve(id: &str) -> i32 {
     let started_in = request.get("started_in").and_then(Value::as_str).unwrap_or("").to_string();
     let project = request.get("project").and_then(Value::as_str).unwrap_or("?").to_string();
     let is_outside_its_folder = !std::path::Path::new(&cwd).starts_with(&started_in) || started_in.is_empty();
+    let session = request.get("session").and_then(Value::as_str).unwrap_or("").to_string();
+    audit::record("run", "run.shown", "asking", json!({"id": id, "project": project, "started_in": started_in, "cwd": cwd,
+                                                      "claimed_session": session, "command": audit::fingerprint(&original),
+                                                      "is_outside_its_folder": is_outside_its_folder}));
     approval::phase(id, "asking");
     let answer = loop {
         let (shown, hiding) = approval::visible_command(&command);
@@ -106,9 +111,13 @@ fn approve(id: &str) -> i32 {
         approval::phase(id, "done");
         write_result(&answers, id, json!({"status": "declined"}));
         approval::log("INFO", &format!("declined {id} for {project}"));
+        audit::record("run", "run.declined", "declined", json!({"id": id, "project": project, "command": audit::fingerprint(&command)}));
         println!("Declined: Claude is told.");
         return 0;
     }
+    audit::keep_command(id, &original, &command);
+    audit::record("run", "run.approved", "approved", json!({"id": id, "project": project, "cwd": cwd, "edited": command != original,
+                                                          "command": audit::fingerprint(&command)}));
     let log_path = approval::log_dir().join(format!("{id}.log"));
     println!("{DIM}─── running ───{RESET}");
     approval::phase(id, "running");
@@ -134,6 +143,8 @@ fn approve(id: &str) -> i32 {
                             "failed_step": step, "output_file": output_path.display().to_string()}));
     let _ = std::fs::remove_file(&log_path);
     approval::phase(id, "done");
+    audit::record("run", "run.ran", if exit_code == 0 { "ok" } else { "failed" },
+                  json!({"id": id, "project": project, "exit": exit_code, "redacted": redacted, "output": audit::fingerprint(&output)}));
     approval::log("INFO", &format!("ran {id} for {project}: exit {exit_code}{}{}", if command != original { ", edited" } else { "" },
                                    if redacted > 0 { format!(", {redacted} secret(s) redacted") } else { String::new() }));
     0

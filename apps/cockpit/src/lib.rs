@@ -2,6 +2,7 @@
 
 pub mod app;
 pub mod approval;
+pub mod audit;
 pub mod costs;
 pub mod errors;
 pub mod paths;

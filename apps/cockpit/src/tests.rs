@@ -43,6 +43,8 @@ impl Fixture {
             std::env::set_var("HOME", root.join("home"));
             std::env::set_var("XDG_RUNTIME_DIR", root.join("run"));
             std::env::set_var("XDG_STATE_HOME", root.join("state"));
+            // The audit log goes under state/; never into the real journal.
+            std::env::set_var("CLAUDE_AUDIT_JOURNAL", "off");
             std::env::set_var("PATH", path);
             std::env::set_var("CLAUDE_STATUS_URL", "");
             for name in ["CLAUDE_SESSIONS_HISTORY", "CLAUDE_SESSIONS_TRANSCRIPTS", "CLAUDE_TODO_UPDATES", "CLAUDE_REVIEWS_FIXTURE",
@@ -1860,4 +1862,88 @@ fn an_untrusted_read_stops_at_its_limit() {
     let fixture = Fixture::new();
     fixture.write("big.jsonl", &"x".repeat(10_000));
     assert_eq!(util::read_untrusted(&fixture.path("big.jsonl"), 100).unwrap().len(), 100);
+}
+
+fn audit_day_file() -> PathBuf {
+    crate::audit::dir().join(format!("audit-{}.jsonl", chrono::Local::now().format("%Y-%m-%d")))
+}
+
+fn record_three_events() {
+    for event in ["run.held", "run.shown", "run.ran"] {
+        crate::audit::record("test", event, "ok", json!({"id": "0123456789ab"}));
+    }
+}
+
+#[test]
+fn audit_events_form_a_chain_that_verifies() {
+    // Security audit M6: each line names the hash of the one before it.
+    let _fixture = Fixture::new();
+    record_three_events();
+    assert_eq!(crate::audit::verify(), Ok(3));
+    let lines: Vec<Value> = fs::read_to_string(audit_day_file()).unwrap().lines().map(|line| serde_json::from_str(line).unwrap()).collect();
+    assert_eq!(lines.iter().map(|line| line["seq"].as_u64().unwrap()).collect::<Vec<_>>(), [1, 2, 3]);
+    assert_eq!(lines[2]["event"], "run.ran");
+}
+
+#[test]
+fn an_audit_line_changed_afterwards_breaks_the_chain() {
+    let _fixture = Fixture::new();
+    record_three_events();
+    let text = fs::read_to_string(audit_day_file()).unwrap().replacen("run.shown", "run.nothing", 1);
+    fs::write(audit_day_file(), text).unwrap();
+    assert!(crate::audit::verify().unwrap_err().contains("seq 3"), "{:?}", crate::audit::verify());
+}
+
+#[test]
+fn an_audit_line_removed_breaks_the_chain() {
+    let _fixture = Fixture::new();
+    record_three_events();
+    let lines: Vec<String> = fs::read_to_string(audit_day_file()).unwrap().lines().map(str::to_string).collect();
+    fs::write(audit_day_file(), format!("{}\n{}\n", lines[0], lines[2])).unwrap();
+    assert!(crate::audit::verify().unwrap_err().contains("missing"), "{:?}", crate::audit::verify());
+}
+
+#[test]
+fn audit_lines_cut_from_the_end_are_noticed() {
+    let _fixture = Fixture::new();
+    record_three_events();
+    let lines: Vec<String> = fs::read_to_string(audit_day_file()).unwrap().lines().map(str::to_string).collect();
+    fs::write(audit_day_file(), format!("{}\n", lines[0])).unwrap();
+    assert!(crate::audit::verify().unwrap_err().contains("removed at the end"), "{:?}", crate::audit::verify());
+}
+
+#[test]
+fn the_audit_log_is_readable_by_theo_alone() {
+    use std::os::unix::fs::PermissionsExt;
+    let _fixture = Fixture::new();
+    record_three_events();
+    crate::audit::keep_command("0123456789ab", "make", "make check");
+    for path in [audit_day_file(), crate::audit::dir().join("runs/0123456789ab.json")] {
+        assert_eq!(fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600, "{}", path.display());
+    }
+    assert_eq!(fs::metadata(crate::audit::dir()).unwrap().permissions().mode() & 0o777, 0o700);
+}
+
+#[test]
+fn old_audit_days_are_gzipped_and_expired_ones_deleted() {
+    let _fixture = Fixture::new();
+    let folder = crate::audit::dir();
+    fs::create_dir_all(&folder).unwrap();
+    let day = |days_ago: i64| (chrono::Local::now().date_naive() - chrono::Duration::days(days_ago)).format("%Y-%m-%d").to_string();
+    fs::write(folder.join(format!("audit-{}.jsonl", day(10))), "{}\n").unwrap();
+    fs::write(folder.join(format!("audit-{}.jsonl", day(100))), "{}\n").unwrap();
+    fs::write(folder.join(format!("audit-{}.jsonl", day(3))), "{}\n").unwrap();
+    record_three_events();
+    assert!(folder.join(format!("audit-{}.jsonl.gz", day(10))).exists(), "ten days old, not gzipped");
+    assert!(!folder.join(format!("audit-{}.jsonl", day(100))).exists(), "past 90 days, still there");
+    assert!(folder.join(format!("audit-{}.jsonl", day(3))).exists(), "three days old, touched");
+}
+
+#[test]
+fn the_debug_log_keeps_no_control_character() {
+    // Security audit M6: `claude-sessions logs` prints it raw to a terminal.
+    let _fixture = Fixture::new();
+    util::log_event("INFO", "todo from a session: \x1b]52;c;cGF5bG9hZA==\x07 done");
+    let log = fs::read_to_string(crate::paths::log()).unwrap();
+    assert!(!log.contains('\x1b') && !log.contains('\x07'), "{log:?}");
 }
