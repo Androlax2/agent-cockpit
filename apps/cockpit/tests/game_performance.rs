@@ -36,6 +36,14 @@ fn a_game_start_pauses_only_the_timers_that_were_running() {
 }
 
 #[test]
+fn a_game_start_leaves_the_sessions_running_while_freeze_while_gaming_is_off() {
+    let sandbox = sandbox();
+    sandbox.shim("claude-sessions", r#"[[ $1 == setting ]] && echo "$2: off"; exit 0"#);
+    run(&sandbox, "on", "");
+    assert!(sandbox.calls("systemctl").iter().all(|call| !call.contains(" freeze ")));
+}
+
+#[test]
 fn a_game_start_pauses_each_claude_sessions_scope_once() {
     let sandbox = sandbox();
     run(&sandbox, "on", "");

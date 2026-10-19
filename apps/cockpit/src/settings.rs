@@ -6,8 +6,13 @@ use crate::util::read_json;
 
 /// Every setting the S menu shows: its name in settings.json and claude-sessions (KNOWN_SETTINGS
 /// there), and what it does.
-pub const SETTINGS: [(&str, &str); 1] = [
+pub const SETTINGS: [(&str, &str); 6] = [
     ("handoff-on-lock", "Remote Control on lock"),
+    ("todo-queue", "Todo queue (Q)"),
+    ("error-handoff", "Errors to dotfiles"),
+    ("freeze-while-gaming", "Freeze while gaming"),
+    ("idle-lock", "Lock workspace 6 idle"),
+    ("daily-digest", "Daily digest"),
 ];
 
 pub fn is_on(name: &str) -> bool {

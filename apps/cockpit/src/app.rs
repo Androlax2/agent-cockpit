@@ -69,7 +69,7 @@ const GLOBAL_HELP: [(&str, &str); 18] = [
     ("K", "the clones of A, + and reviews: delete those with no session, no uncommitted change and nothing unpushed"),
     ("V", "a design session: a Claude Design canvas, worked on by a session in a project (link, then project)"),
     ("D", "the digest: yesterday, today, plan usage, who waits, pull requests (also once a day by itself)"),
-    ("S", "settings, on or off: Remote Control when the screen locks"),
+    ("S", "settings, on or off: Remote Control on lock, the todo queue, errors handed to dotfiles, freezing sessions while gaming, the idle lock on workspace 6, the daily digest"),
     ("P W G", "windows on top: pull requests, Claude on the web, greyproxy (also Super+Ctrl+P/A/G)"),
     ("≈ $", "today's Claude Code replies on this machine at API prices (the plan is flat); week and month in Status"),
     ("⌘⇥", "cursor between the column and the session (tmux)"),
@@ -506,6 +506,9 @@ impl App {
             return;
         }
         self.queue_checked = now;
+        if !settings::is_on("todo-queue") {
+            return;
+        }
         // No new work while Theo plays: it would compete with the game (game-performance lowers
         // the sessions' priority, it does not stop them).
         if (self.gaming)() {

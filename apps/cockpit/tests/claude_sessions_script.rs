@@ -785,6 +785,15 @@ fn the_first_show_of_the_day_opens_the_digest_once() {
 }
 
 #[test]
+fn the_digest_stays_closed_while_daily_digest_is_off() {
+    let manager = Manager::new();
+    manager.sandbox.shim("pkill", "");
+    manager.run(&["setting", "daily-digest", "off"], &[]);
+    manager.run(&["show"], &[("SHIM_WS", "2")]);
+    assert!(manager.tmux_calls("respawn-pane").iter().all(|call| !call.contains("claude-sessions-sidebar digest")));
+}
+
+#[test]
 fn reset_clears_the_daemon_and_the_caches() {
     let manager = Manager::new();
     let cache = manager.statusline_cache();

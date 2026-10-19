@@ -102,6 +102,17 @@ fn on_the_claude_workspace_an_unanswered_screen_locks() {
 }
 
 #[test]
+fn the_screen_stays_away_while_idle_lock_is_off() {
+    let test = IdleTest::new();
+    test.on_workspace(6);
+    test.sandbox.shim("claude-sessions", r#"[[ $1 == setting ]] && echo "$2: off"; exit 0"#);
+    test.screen(r#"echo "shown $1" > "$HOME/shown"; exit 1"#);
+    test.run_script("prompt");
+    assert!(!test.shown().exists());
+    assert_eq!(test.sandbox.calls("loginctl"), Vec::<String>::new());
+}
+
+#[test]
 fn an_answered_screen_keeps_the_session_unlocked() {
     let test = IdleTest::new();
     test.on_workspace(6);

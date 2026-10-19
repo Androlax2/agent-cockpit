@@ -5,6 +5,7 @@
 
 use crate::paths;
 use crate::sessions::Session;
+use crate::settings;
 use crate::util::{self, now};
 use regex::Regex;
 use serde_json::{Value, json};
@@ -119,6 +120,13 @@ impl ErrorReporter {
         self.checked_at = now();
         let mut pending: Vec<Value> = self.state.get("pending").and_then(Value::as_array).cloned().unwrap_or_default();
         pending.extend(self.new_errors().into_iter().map(|(error, context)| json!({"error": error, "context": context})));
+        // Dropped, not kept for later: turning it back on must not start a burst of old reports.
+        if !pending.is_empty() && !settings::is_on("error-handoff") {
+            util::log_event("INFO", &format!("error-handoff is off: {} error(s) not handed over", pending.len()));
+            self.state["pending"] = json!([]);
+            self.save();
+            return;
+        }
         if pending.is_empty() || (self.gaming)() {
             self.state["pending"] = json!(pending);
             self.save();

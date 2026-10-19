@@ -63,7 +63,8 @@
 #                                from the phone or claude.ai/code) before leaving, or take them back
 #                                (lock does nothing while the setting handoff-on-lock is off)
 #   claude-sessions setting <name> [on|off]
-#                                show or change a setting (the sidebar's S): handoff-on-lock
+#                                show or change a setting (the sidebar's S): handoff-on-lock,
+#                                todo-queue, error-handoff, freeze-while-gaming, idle-lock, daily-digest
 #   claude-sessions remote <id>  toggle Remote Control for one session (the sidebar's R)
 #   claude-sessions restore <dir> <id> […]
 #                                resume those sessions one after the other (the sidebar's B after a reboot)
@@ -625,7 +626,7 @@ HANDED_OFF="${XDG_RUNTIME_DIR:-/tmp}/claude-sessions.handed-off"
 # from the file is on: what the setup did before it had settings. The cockpit's S menu lists the
 # same names (apps/cockpit/src/settings.rs).
 SETTINGS_FILE="${XDG_STATE_HOME:-$HOME/.local/state}/claude-sessions/settings.json"
-KNOWN_SETTINGS=(handoff-on-lock)
+KNOWN_SETTINGS=(handoff-on-lock todo-queue error-handoff freeze-while-gaming idle-lock daily-digest)
 
 setting_is_on() { # name
     [[ -f $SETTINGS_FILE ]] || return 0
@@ -845,7 +846,7 @@ show_manager() {
     fi
     if [[ -n ${1:-} ]]; then
         view_session "$1" && focus_viewer
-    elif digest_due; then
+    elif digest_due && setting_is_on daily-digest; then
         show_digest
     fi
     # Hide the bar before the switch rather than after it, or it flashes over the cockpit.
