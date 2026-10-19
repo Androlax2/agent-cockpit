@@ -356,18 +356,13 @@ fn exit_goes_through_the_manager_when_there_is_a_pane() {
 }
 
 #[test]
-fn exit_closes_the_window_of_a_session_without_a_pane_or_forgets_it() {
+fn exit_closes_the_window_of_a_session_without_a_pane() {
+    // One with neither a pane nor a window gets no card at all (a_session_with_nothing_to_open_gets_no_card).
     let fixture = Fixture::new();
-    let mut windowed = json!({"session": SESSION_A, "state": "waiting", "project": "runway", "since": 1, "kitty_pid": "4242"});
-    fixture.snapshot(json!([windowed.clone()]));
+    fixture.snapshot(json!([{"session": SESSION_A, "state": "waiting", "project": "runway", "since": 1, "kitty_pid": "4242"}]));
     let mut app = fixture.app();
     app.handle(Key::Char('x'), &mut FakeScreen::answering(&[Key::Char('y')]));
     assert!(fixture.calls("hyprctl")[0].contains("pid:4242"));
-    windowed.as_object_mut().unwrap().remove("kitty_pid");
-    fixture.snapshot(json!([windowed]));
-    app.build();
-    app.handle(Key::Char('x'), &mut FakeScreen::answering(&[Key::Char('y')]));
-    assert!(fixture.calls("osd-show")[0].contains(r#""state":"gone""#));
 }
 
 #[test]
@@ -1271,4 +1266,15 @@ fn the_shown_todo_tab_is_drawn_as_a_chip() {
     assert!(!chip.is_empty(), "no tab drawn on blue");
     let rows: Vec<String> = (0..40).map(|y| (0..120).map(|x| buffer[(x, y)].symbol().to_string()).collect()).collect();
     assert!(rows.iter().any(|row| row.contains(" To do 1 ") && !row.contains("[To do")), "{rows:#?}");
+}
+
+#[test]
+fn a_session_with_nothing_to_open_gets_no_card() {
+    let fixture = Fixture::new();
+    let mut lost = session(SESSION_B, "waiting", "dotfiles", "/r/dotfiles", 2);
+    lost["tmux_pane"] = json!("");
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "runway", "/r/runway", 1), lost]));
+    let running: Vec<String> = sessions::running().into_iter().map(|s| s.session).collect();
+    assert!(running.contains(&SESSION_A.to_string()));
+    assert!(!running.contains(&SESSION_B.to_string()), "a card nothing can open");
 }

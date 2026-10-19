@@ -155,9 +155,12 @@ fn tmux_claude_panes() -> Vec<[String; 5]> {
         .collect()
 }
 
-/// Reported sessions first, then tmux sessions the daemon does not know about.
+/// Reported sessions first, then tmux sessions the daemon does not know about. A reported session
+/// with neither a tmux pane nor a kitty window is left out: nothing could open, restart or message
+/// it, and its tmux session, if it has one, shows as a card of its own that does.
 pub fn running() -> Vec<Session> {
     let mut sessions = reported();
+    sessions.retain(|session| !session.tmux_pane.is_empty() || !session.kitty_pid.is_empty());
     let known: HashSet<String> = sessions.iter().map(|session| session.tmux_pane.clone()).collect();
     for [name, pane, path, title, created] in tmux_claude_panes() {
         if known.contains(&pane) {
