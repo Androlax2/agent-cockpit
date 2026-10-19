@@ -1262,7 +1262,9 @@ approval_pane() { # id | close [id]
     # show in the pane.
     local session
     session=$(jq -r '.session // empty' "${XDG_RUNTIME_DIR:-/tmp}/claude-requests/$1.request" 2>/dev/null || true)
-    [[ $session =~ ^[0-9a-f-]{36}$ ]] || session=""
+    # Any agent's id: an opencode session's request recorded with none showed under every session
+    # (and a window started meanwhile at the viewer's height plus this pane's showed taller).
+    is_session_id "$session" || session=""
     forget_approval "$1"
     printf '%s %s\n' "$1" "$session" >> "$APPROVAL_STATE"
     place_approval focus

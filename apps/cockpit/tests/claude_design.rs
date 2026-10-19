@@ -8,8 +8,20 @@ use std::fs;
 use std::process::Output;
 
 fn design(sandbox: &Sandbox, arguments: &[&str]) -> Output {
+    design_as(sandbox, SESSION_A, arguments)
+}
+
+fn design_as(sandbox: &Sandbox, session: &str, arguments: &[&str]) -> Output {
     let designs = sandbox.root.join("designs").display().to_string();
-    sandbox.run(bin().join("claude-design"), arguments, &[("CLAUDE_DESIGNS_DIR", &designs), ("CLAUDE_CODE_SESSION_ID", SESSION_A)])
+    sandbox.run(bin().join("claude-design"), arguments, &[("CLAUDE_DESIGNS_DIR", &designs), ("CLAUDE_CODE_SESSION_ID", session)])
+}
+
+#[test]
+fn an_opencode_session_takes_a_role_too_and_a_path_is_no_session() {
+    let sandbox = Sandbox::new();
+    assert_eq!(design_as(&sandbox, OPENCODE_SESSION, &["role", "designer"]).status.code(), Some(0));
+    assert_eq!(fs::read_to_string(sandbox.root.join(format!("designs/{OPENCODE_SESSION}.role"))).unwrap(), "designer");
+    assert_eq!(design_as(&sandbox, "ses_../../x", &["role", "designer"]).status.code(), Some(2));
 }
 
 #[test]

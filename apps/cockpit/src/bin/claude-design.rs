@@ -27,9 +27,9 @@ const USAGE: &str = "    claude-design link <canvas url> '<canvas title>'
 fn main() {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     let session = std::env::var("CLAUDE_CODE_SESSION_ID").unwrap_or_default();
-    let valid_session = session.len() == 36 && session.chars().all(|c| c.is_ascii_hexdigit() || c == '-');
-    if !valid_session {
-        eprintln!("claude-design: no session id (CLAUDE_CODE_SESSION_ID); run it from a Claude session");
+    // Any agent's id (it names the card's files): an opencode design session needs its role too.
+    if !cockpit::agents::is_session_id(&session) {
+        eprintln!("claude-design: no session id (CLAUDE_CODE_SESSION_ID); run it from a session of the cockpit");
         std::process::exit(2);
     }
     let path = paths::designs().join(format!("{session}.json"));

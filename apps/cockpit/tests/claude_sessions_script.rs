@@ -1995,6 +1995,16 @@ fn each_session_shows_its_own_approval_when_several_run() {
     assert_eq!(state.trim(), format!("aaaaaaaaaaaa {SESSION_A}"));
 }
 
+#[test]
+fn an_opencode_sessions_approval_shows_under_that_session_only() {
+    // Recorded without its session, it showed under every session on screen.
+    let manager = Manager::new();
+    file_request(&manager, "cccccccccccc", OPENCODE_SESSION);
+    manager.run(&["approval-pane", "cccccccccccc"], &[]);
+    let state = fs::read_to_string(manager.runtime_file("claude-sessions-approval")).unwrap();
+    assert_eq!(state.trim(), format!("cccccccccccc {OPENCODE_SESSION}"));
+}
+
 // ---- opencode sessions ----
 
 impl Manager {
