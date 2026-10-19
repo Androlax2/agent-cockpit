@@ -75,11 +75,24 @@ struct BarVisibility {
 impl BarVisibility {
     fn new() -> BarVisibility {
         let sandbox = Sandbox::new();
-        sandbox.shim("hyprctl", r#"[[ $1 == -j && $2 == activeworkspace ]] && echo "{\"id\": $(cat "$SHIM_WS_FILE")}"; exit 0"#);
-        sandbox.shim("pkill", "");
+        // Hyprland lists the bar on the top layer while shown and on the bottom one while hidden;
+        // waybar's SIGUSR1 moves it from one to the other.
+        sandbox.shim("hyprctl", r#"[[ $1 == -j && $2 == activeworkspace ]] && echo "{\"id\": $(cat "$SHIM_WS_FILE")}"
+[[ $1 == layers && -s $SHIM_LAYER_FILE ]] && printf '\tLayer level %s (x):\n\t\tLayer 1: xywh: 0 0 10 10, a: 1, namespace: waybar, pid: 1\n' "$(cat "$SHIM_LAYER_FILE")"
+exit 0"#);
+        sandbox.shim("pkill", r#"[[ -s $SHIM_LAYER_FILE ]] && { [[ $(cat "$SHIM_LAYER_FILE") == 2 ]] && echo 1 > "$SHIM_LAYER_FILE" || echo 2 > "$SHIM_LAYER_FILE"; }; exit 0"#);
         let workspace = sandbox.root.join("ws");
         fs::write(&workspace, "2\n").unwrap();
+        fs::write(sandbox.root.join("layer"), "2\n").unwrap();
         BarVisibility { sandbox, workspace }
+    }
+
+    fn layer(&self) -> String {
+        fs::read_to_string(self.sandbox.root.join("layer")).unwrap().trim().to_string()
+    }
+
+    fn set_layer(&self, level: &str) {
+        fs::write(self.sandbox.root.join("layer"), format!("{level}\n")).unwrap();
     }
 
     fn on_workspace(&self, workspace: u32) {
@@ -87,7 +100,9 @@ impl BarVisibility {
     }
 
     fn visibility(&self, command: &str) {
-        let output = self.sandbox.run(waybar_scripts().join("waybar-visibility.sh"), &[command], &[("SHIM_WS_FILE", self.workspace.to_str().unwrap())]);
+        let layer = self.sandbox.root.join("layer");
+        let output = self.sandbox.run(waybar_scripts().join("waybar-visibility.sh"), &[command],
+                                      &[("SHIM_WS_FILE", self.workspace.to_str().unwrap()), ("SHIM_LAYER_FILE", layer.to_str().unwrap())]);
         assert!(output.status.success(), "waybar-visibility.sh {command}: {}", stderr(&output));
     }
 
@@ -120,4 +135,31 @@ fn a_pre_hide_is_not_toggled_twice_by_the_following_event() {
     bar.visibility("sync");
     assert_eq!(bar.toggles(), 1);
     assert_eq!(bar.sandbox.calls("pkill"), ["pkill -x -USR1 waybar"]);
+}
+
+#[test]
+fn a_lost_toggle_does_not_leave_the_bar_inverted() {
+    // At boot a toggle can reach waybar before it listens: the stored state then says hidden while
+    // the bar shows, and every later switch flipped it the wrong way.
+    let bar = BarVisibility::new();
+    bar.visibility("reset");
+    bar.visibility("hide");
+    bar.set_layer("2");
+    bar.on_workspace(3);
+    bar.visibility("sync");
+    assert_eq!(bar.layer(), "2", "hidden off the Claude workspace");
+    bar.on_workspace(6);
+    bar.visibility("sync");
+    assert_eq!(bar.layer(), "1", "shown on the Claude workspace");
+}
+
+#[test]
+fn without_hyprland_the_stored_state_decides() {
+    let bar = BarVisibility::new();
+    fs::write(bar.sandbox.root.join("layer"), "").unwrap();
+    bar.visibility("reset");
+    bar.on_workspace(6);
+    bar.visibility("sync");
+    bar.visibility("sync");
+    assert_eq!(bar.toggles(), 1);
 }

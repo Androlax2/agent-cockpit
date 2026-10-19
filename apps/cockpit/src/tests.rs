@@ -1107,3 +1107,18 @@ fn the_clone_review_is_in_the_action_list() {
     let app = fixture.app();
     assert!(app.palette_entries().iter().any(|entry| entry.starts_with("-\tK\t")), "{:?}", app.palette_entries());
 }
+
+#[test]
+fn before_the_first_usage_fetch_the_status_labels_stay_whole() {
+    // The label column was sized on the usage rows alone: with none yet, the values covered
+    // "At API prices" and "Claude".
+    let fixture = Fixture::new();
+    let summary = fixture.write("status.json", &json!({"status": {"indicator": "none", "description": "All Systems Operational"}}).to_string());
+    unsafe { std::env::set_var("CLAUDE_STATUS_URL", format!("file://{}", summary.display())) };
+    let mut app = fixture.app();
+    app.claude_status.fetch_now();
+    app.build();
+    let buffer = render(&mut app, 60, 30);
+    let rows: Vec<String> = (0..30).map(|y| (0..60).map(|x| buffer[(x, y)].symbol().to_string()).collect()).collect();
+    assert!(rows.iter().any(|row| row.contains("Claude") && row.contains("● All Systems Operational")), "{rows:#?}");
+}

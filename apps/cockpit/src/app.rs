@@ -42,6 +42,8 @@ const GREYPROXY_POLL_S: f64 = 10.0;
 const QUEUE_IDLE_S: i64 = 5 * 60;
 const QUEUE_CHECK_S: f64 = 30.0;
 const RESTORE_CHECK_S: f64 = 30.0;
+const COSTS_LABEL: &str = "At API prices";
+const CLAUDE_LABEL: &str = "Claude";
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 pub const EFFORT_LEVELS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
 const PANEL_NAMES: [&str; 4] = ["Status", "Sessions", "Pull requests", "Todo"];
@@ -449,7 +451,9 @@ impl App {
     fn build_status(&mut self) {
         self.windows = usage::windows();
         let windows = &self.windows;
-        let label_width = windows.iter().map(|w| width_of(&w.label)).max().unwrap_or(0) as u16;
+        // Every row's label shares the column, the cost and Claude rows too: sized on the usage rows
+        // alone, it shrank to nothing before the first usage fetch and the values covered the labels.
+        let label_width = windows.iter().map(|w| width_of(&w.label)).chain([width_of(COSTS_LABEL), width_of(CLAUDE_LABEL)]).max().unwrap_or(0) as u16;
         let resets: Vec<String> = windows.iter().map(usage::resets_short).collect();
         let resets_width = resets.iter().map(|r| width_of(r)).max().unwrap_or(0);
         let budget = self.width as i64 - 4 - label_width as i64 - 2 - 5 - if resets_width > 0 { resets_width as i64 + 2 } else { 0 };
@@ -469,7 +473,7 @@ impl App {
         }
         let totals = self.costs.totals();
         if totals.today > 0.0 || totals.week > 0.0 || totals.month > 0.0 {
-            let mut segments = vec![segment(0, "At API prices", style(FG))];
+            let mut segments = vec![segment(0, COSTS_LABEL, style(FG))];
             let mut column = label_width + 2;
             for (label, amount) in [("today", totals.today), ("week", totals.week), ("month", totals.month)] {
                 let amount = money(amount);
@@ -1540,10 +1544,10 @@ fn claude_status_lines(claude_status: &ClaudeStatus, label_width: u16) -> Vec<Li
     let (current, error) = claude_status.snapshot();
     let Some(current) = current else {
         let text = if !error.is_empty() { error } else if paths::claude_status_url().is_empty() { "not checked".into() } else { "checking status.claude.com …".into() };
-        return vec![Line::new(vec![segment(0, "Claude", style(FG)), segment(label_width + 2, text, dim(FG_DARK))])];
+        return vec![Line::new(vec![segment(0, CLAUDE_LABEL, style(FG)), segment(label_width + 2, text, dim(FG_DARK))])];
     };
     let tint = bold(claude_status_color(&current.indicator));
-    let mut first = Line::new(vec![segment(0, "Claude", style(FG)), segment(label_width + 2, format!("● {}", current.description), tint)]);
+    let mut first = Line::new(vec![segment(0, CLAUDE_LABEL, style(FG)), segment(label_width + 2, format!("● {}", current.description), tint)]);
     if !error.is_empty() {
         first.right = vec![part("stale", style(YELLOW))];
     }
