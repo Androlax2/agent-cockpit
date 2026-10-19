@@ -65,7 +65,7 @@ fn run(steps: Value, hook_body: &str) -> Run {
 
 fn run_with(steps: Value, hook_body: &str, extra: &[(&str, &str)]) -> Run {
     let sandbox = Sandbox::new();
-    write_executable(&sandbox.home.join(".claude/hooks/session-state.sh"),
+    write_executable(&sandbox.home.join("dotfiles/config/claude/.claude/hooks/session-state.sh"),
                      &format!("#!/usr/bin/env bash\n{{ cat; echo; }} >> \"$HOME/payloads\"\necho \"$CLAUDE_SESSIONS_AGENT\" >> \"$HOME/agents\"\n{hook_body}\n"));
     let harness = sandbox.root.join("harness.mjs");
     fs::write(&harness, HARNESS).unwrap();

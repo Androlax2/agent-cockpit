@@ -1,5 +1,5 @@
 // An opencode session on the cockpit's column, like a Claude one: its events go to the same hook
-// as Claude's (~/.claude/hooks/session-state.sh), as the payloads Claude Code sends, with
+// as Claude's (session-state.sh), as the payloads Claude Code sends, with
 // CLAUDE_SESSIONS_AGENT=opencode. The hook works out the turn's outcome inside the sandbox and
 // reports to the OSD daemon.
 //
@@ -11,7 +11,9 @@
 import { spawn } from "node:child_process"
 import { homedir } from "node:os"
 
-const HOOK = `${homedir()}/.claude/hooks/session-state.sh`
+// Where ~/.claude/hooks points: inside an opencode sandbox ~/.claude stays hidden, and greywall makes
+// no link there, only the folder the link points to.
+const HOOK = `${homedir()}/dotfiles/config/claude/.claude/hooks/session-state.sh`
 
 type HookPayload = { hook_event_name: string } & Record<string, unknown>
 

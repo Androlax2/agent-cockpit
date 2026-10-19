@@ -268,12 +268,41 @@ fn an_opencode_session_cannot_write_what_every_other_session_runs_or_reads() {
     }
 }
 
-#[test]
-fn an_opencode_session_reaches_the_hook_its_plugin_reports_through() {
-    // cockpit.ts runs ~/.claude/hooks/session-state.sh, which keeps its turn files and log in ~/.cache/claude.
+fn opencode_profile() -> serde_json::Value {
     let text = fs::read_to_string(repo().join("config/greywall/.config/greywall/learned/opencode.json")).unwrap();
     let json: String = text.lines().filter(|line| !line.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");
-    let profile: serde_json::Value = serde_json::from_str(&json).unwrap();
+    serde_json::from_str(&json).unwrap()
+}
+
+#[test]
+fn an_opencode_session_reaches_the_hook_its_plugin_reports_through() {
+    // cockpit.ts runs session-state.sh where ~/.claude/hooks points (greywall makes no link in the
+    // hidden ~/.claude: tried on 2026-10-19, "No such file or directory"); the hook keeps its turn
+    // files and log in ~/.cache/claude.
+    let profile = opencode_profile();
     let has = |key: &str, path: &str| profile["filesystem"][key].as_array().unwrap().iter().any(|entry| entry == path);
-    assert!(has("allowRead", "~/.claude/hooks") && has("allowWrite", "~/.cache/claude"));
+    assert!(has("allowRead", "~/dotfiles/config/claude/.claude/hooks") && has("allowWrite", "~/.cache/claude"));
+    let plugin = fs::read_to_string(repo().join("config/opencode/.config/opencode/plugins/cockpit.ts")).unwrap();
+    assert!(plugin.contains("`${homedir()}/dotfiles/config/claude/.claude/hooks/session-state.sh`"), "the plugin runs another hook path");
+}
+
+#[test]
+fn opencode_reads_theos_rules_from_its_own_agents_md() {
+    // opencode 2 reads ~/.config/opencode/AGENTS.md, never ~/.claude/CLAUDE.md: the stowed AGENTS.md is
+    // the same file, which its profile can read where it lives.
+    let agents = repo().join("config/opencode/.config/opencode/AGENTS.md");
+    assert_eq!(fs::read_link(&agents).unwrap(), Path::new("../../../claude/.claude/CLAUDE.md"));
+    assert_eq!(fs::read_to_string(&agents).unwrap(), fs::read_to_string(repo().join("config/claude/.claude/CLAUDE.md")).unwrap());
+    let readable = opencode_profile()["filesystem"]["allowRead"].clone();
+    assert!(readable.as_array().unwrap().iter().any(|entry| entry == "~/dotfiles/config/claude/.claude/CLAUDE.md"), "{readable}");
+}
+
+#[test]
+fn the_opencode_profile_names_no_link_in_the_hidden_claude_folder() {
+    // ~/.claude/CLAUDE.md and ~/.claude/hooks are stow links: in the sandbox they do not exist, and
+    // an entry for them looks allowed while it reads nothing (~/.claude/skills is a real folder).
+    let readable = opencode_profile()["filesystem"]["allowRead"].clone();
+    for link in ["~/.claude/CLAUDE.md", "~/.claude/hooks"] {
+        assert!(!readable.as_array().unwrap().iter().any(|entry| entry == link), "{link}: {readable}");
+    }
 }
