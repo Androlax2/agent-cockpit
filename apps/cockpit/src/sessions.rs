@@ -90,6 +90,8 @@ pub struct Session {
     pub terminal: bool,
     /// Commits of its repository on no remote yet, as of its last start or turn end (or a U push).
     pub unpushed: u64,
+    /// Desktop apps it drives through an attached MCP server, as the hook saw them: "figcraft:on".
+    pub apps: String,
     // Added by the column.
     pub design: Option<Design>,
     pub facts: Facts,
@@ -126,6 +128,7 @@ impl Session {
             update: row.get("update").and_then(Value::as_bool).unwrap_or(false),
             terminal: row.get("terminal").and_then(Value::as_bool).unwrap_or(false),
             unpushed: row.get("unpushed").and_then(Value::as_u64).unwrap_or(0),
+            apps: text(row, "apps"),
             ..Session::default()
         })
     }

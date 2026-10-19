@@ -1109,3 +1109,18 @@ fn unpushed_commits_are_counted_and_cleared_by_a_push() {
 fn an_unpushed_count_must_be_a_count() {
     assert!(parse_session(&json!({"session": SESSION_A, "project": "p", "unpushed": "3; rm"}).to_string()).is_err());
 }
+
+#[test]
+fn a_session_says_which_craft_apps_it_drives() {
+    let mut bench = Bench::new();
+    bench.report(SESSION_A, json!({"state": "working", "apps": "figcraft:on"}));
+    bench.report(SESSION_A, json!({"state": "waiting"}));
+    assert_eq!(bench.snapshot()[0]["apps"], "figcraft:on", "a report without the field keeps it");
+    bench.report(SESSION_A, json!({"state": "working", "apps": ""}));
+    assert_eq!(bench.snapshot()[0]["apps"], "");
+}
+
+#[test]
+fn an_apps_field_that_is_not_a_list_of_apps_is_refused() {
+    assert!(parse_session(&json!({"session": SESSION_A, "project": "p", "apps": "figcraft:on; rm -rf"}).to_string()).is_err());
+}

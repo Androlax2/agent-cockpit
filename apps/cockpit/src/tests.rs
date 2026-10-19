@@ -1278,3 +1278,14 @@ fn a_session_with_nothing_to_open_gets_no_card() {
     assert!(running.contains(&SESSION_A.to_string()));
     assert!(!running.contains(&SESSION_B.to_string()), "a card nothing can open");
 }
+
+#[test]
+fn a_card_shows_the_craft_apps_its_session_drives() {
+    let fixture = Fixture::new();
+    let mut row = session(SESSION_A, "waiting", "opusline", "/r/opusline", 1);
+    row["apps"] = json!("figcraft:on wordcraft:off");
+    fixture.snapshot(json!([row]));
+    let app = fixture.app();
+    let badges: Vec<String> = app.panels[1].lines.iter().flat_map(|line| line.right.iter().map(|part| part.text.clone())).collect();
+    assert_eq!(badges.iter().filter(|badge| badge.starts_with('◆')).collect::<Vec<_>>(), ["◆ figcraft", "◆ wordcraft off"]);
+}

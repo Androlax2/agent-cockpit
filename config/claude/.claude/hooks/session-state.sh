@@ -123,6 +123,21 @@ unpushed_of() { # cwd
     git -C "$1" rev-list --count HEAD --not --remotes 2>/dev/null || true
 }
 
+# The desktop apps this session drives through an MCP server attached to them (`figcraft-cli mcp
+# --attach PORT`, same for the other *craft apps), each "on" when its port answers: "figcraft:on".
+# ps sees this sandbox's processes only, so these are this session's servers.
+craft_apps() {
+    local line app port apps=""
+    while read -r line; do
+        app=${line%%-cli *}
+        app=${app##*/}
+        port=$(grep -oE -- '--attach [0-9]+' <<<"$line" | grep -oE '[0-9]+$')
+        [[ $app =~ ^[a-z]+craft$ && -n $port ]] || continue
+        if (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null; then apps+="$app:on "; else apps+="$app:off "; fi
+    done < <(ps -eo args= 2>/dev/null | grep -E '[a-z]+craft-cli mcp --attach [0-9]+' || true)
+    echo "${apps% }"
+}
+
 state=
 task=
 message=
@@ -183,13 +198,14 @@ esac
 
 report=$(jq -cn \
     --arg session "$session" --arg state "$state" --arg project "$project" --arg cwd "$cwd" \
-    --arg task "$task" --arg message "$message" --arg outcome "$outcome" --argjson sticky "$sticky" --argjson terminal "$terminal" --arg unpushed "$unpushed" \
+    --arg task "$task" --arg message "$message" --arg outcome "$outcome" --argjson sticky "$sticky" --argjson terminal "$terminal" --arg unpushed "$unpushed" --arg apps "$(craft_apps)" \
     --arg kitty_pid "${KITTY_PID:-}" --arg kitty_window "${KITTY_WINDOW_ID:-}" \
     --arg kitty_listen "${KITTY_LISTEN_ON:-}" --arg tmux_pane "${TMUX_PANE:-}" \
     '{$session, $state, $project, $cwd, $task, $message, $outcome, $sticky, $terminal,
       $kitty_pid, $kitty_window, $kitty_listen, $tmux_pane}
      | with_entries(select(.value != "" and .value != false))
-     | if $unpushed == "" then . else .unpushed = ($unpushed | tonumber) end')
+     | if $unpushed == "" then . else .unpushed = ($unpushed | tonumber) end
+     | .apps = $apps')
 
 # One line per event in ~/.cache/claude/hook.log, the one place the sandbox lets the hook write:
 # the event, the session, the state and where the report went, never prompt text. 512 KB, then

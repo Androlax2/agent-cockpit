@@ -72,9 +72,10 @@ const GLOBAL_HELP: [(&str, &str); 17] = [
     ("l →  ←", "into the session from any panel; ← from the session comes back"),
     ("q ⌘C", "close the manager window; sessions keep running"),
 ];
-const LEGEND: [(&str, &str); 13] = [
+const LEGEND: [(&str, &str); 14] = [
     ("●", "working"), ("○", "waiting for you"), ("!", "needs you: permission or question"), ("·", "running, state unknown"),
     ("▌", "shown in the session pane"), ("⚲", "pinned"), ("⇅", "remote controlled"),
+    ("◆ figcraft", "drives that app through its MCP server: green connected, red \"off\" when the app does not answer"),
     ("✉ 2 queued", "messages waiting for the end of its turn, sent one per turn (m, Alt+Q; M drops them)"),
     ("↑2 unpushed", "commits on no remote yet: U pushes the branch"),
     ("▭ terminal", "started with \"this terminal\": no ⌘R, restore, queue, error hand-off or ask-to-run"),
@@ -666,6 +667,13 @@ impl App {
             }
             if session.terminal {
                 badges.push(part("▭ terminal", bold(MAGENTA)));
+            }
+            for app in session.apps.split_whitespace() {
+                match app.split_once(':') {
+                    Some((name, "on")) => badges.push(part(format!("◆ {name}"), bold(GREEN))),
+                    Some((name, _)) => badges.push(part(format!("◆ {name} off"), bold(RED))),
+                    None => {}
+                }
             }
             let queued = prompts::count(&session.session);
             if queued > 0 {

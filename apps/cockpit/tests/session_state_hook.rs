@@ -314,3 +314,24 @@ fn a_repository_without_a_remote_reports_no_count() {
     test.run_hook(with_session(json!({"hook_event_name": "Stop"}), &repository.to_string_lossy()), &[]);
     assert!(test.received().last().unwrap().get("unpushed").is_none());
 }
+
+fn apps_reported(port: u16) -> Option<String> {
+    let mut test = HookTest::new();
+    test.sandbox.shim("ps", &format!("echo 'figcraft-cli mcp --attach {port}'"));
+    let folder = test.sandbox.root.join("notes");
+    fs::create_dir(&folder).unwrap();
+    test.run_hook(with_session(json!({"hook_event_name": "PostToolUse"}), &folder.to_string_lossy()), &[]);
+    test.received().last().unwrap().get("apps").and_then(Value::as_str).map(str::to_string)
+}
+
+#[test]
+fn a_craft_app_that_answers_is_reported_on() {
+    let app = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    assert_eq!(apps_reported(app.local_addr().unwrap().port()).as_deref(), Some("figcraft:on"));
+}
+
+#[test]
+fn a_craft_app_that_is_closed_is_reported_off() {
+    let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    assert_eq!(apps_reported(port).as_deref(), Some("figcraft:off"));
+}

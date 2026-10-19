@@ -67,6 +67,7 @@ static TMUX_PANE: LazyLock<Regex> = LazyLock::new(|| regex(r"^%[0-9]{1,10}$"));
 static KITTY_LISTEN: LazyLock<Regex> = LazyLock::new(|| regex(r"^unix:[@/][A-Za-z0-9_./@-]{1,200}$"));
 static NUMBER: LazyLock<Regex> = LazyLock::new(|| regex(r"^[0-9]{1,10}$"));
 pub static NOTICE_ID: LazyLock<Regex> = LazyLock::new(|| regex(r"^[a-z][a-z0-9:-]{0,63}$"));
+static CRAFT_APP: LazyLock<Regex> = LazyLock::new(|| regex(r"^[a-z]{1,20}craft:(on|off)$"));
 pub static RUN_ID: LazyLock<Regex> = LazyLock::new(|| regex(r"^[0-9a-f]{12}$"));
 static PROCEED_LINE: LazyLock<Regex> = LazyLock::new(|| regex(r"^[\s│]*Do you want to proceed\?[\s│]*$"));
 static BOX_LINE: LazyLock<Regex> = LazyLock::new(|| regex(r"^[\s│]*[╭╰─┌└━]"));
@@ -138,6 +139,9 @@ pub struct Report {
     pub terminal: bool,
     /// Commits of the session's repository on no remote yet (the hook counts them in the sandbox).
     pub unpushed: Option<u64>,
+    /// The desktop apps the session drives through an attached MCP server: "figcraft:on wordcraft:off"
+    /// (the hook checks inside the sandbox). None when the report did not say (the daemon's own updates).
+    pub apps: Option<String>,
     pub target: BTreeMap<String, String>,
 }
 
@@ -161,6 +165,12 @@ pub fn parse_session(raw: &str) -> Result<Report, String> {
         let state = state.as_str().unwrap_or("");
         if urgency(state) < 0 && state != "gone" {
             return Err(format!("session.state {state:?} unknown"));
+        }
+    }
+    if let Some(apps) = report.get("apps") {
+        let valid = apps.as_str().is_some_and(|apps| apps.len() <= 200 && apps.split_whitespace().all(|app| CRAFT_APP.is_match(app)));
+        if !valid {
+            return Err("session.apps is not a list of app:on|off".into());
         }
     }
     if report.get("unpushed").is_some_and(|value| !value.is_u64()) {
@@ -189,7 +199,8 @@ pub fn parse_session(raw: &str) -> Result<Report, String> {
         session, project: report["project"].as_str().unwrap().to_string(), state: text("state"), cwd: text("cwd"),
         task: text("task"), message: text("message"), outcome: text("outcome"), sticky: report.get("sticky").is_some_and(|s| s.as_bool().unwrap_or(!s.is_null())),
         terminal: report.get("terminal").and_then(Value::as_bool).unwrap_or(false),
-        unpushed: report.get("unpushed").and_then(Value::as_u64), target,
+        unpushed: report.get("unpushed").and_then(Value::as_u64),
+        apps: report.get("apps").and_then(Value::as_str).map(str::to_string), target,
     })
 }
 
@@ -667,6 +678,7 @@ pub struct Entry {
     pub outcome: String,
     pub terminal: bool,
     pub unpushed: u64,
+    pub apps: String,
 }
 
 pub struct Registry {
@@ -777,6 +789,10 @@ impl Registry {
                 entry.project = self.project_of(cwd, &report.project);
                 changed = true;
             }
+        }
+        if let Some(apps) = report.apps.as_ref().filter(|apps| **apps != entry.apps) {
+            entry.apps = apps.clone();
+            changed = true;
         }
         if let Some(unpushed) = report.unpushed.filter(|count| *count != entry.unpushed) {
             entry.unpushed = unpushed;
@@ -950,7 +966,7 @@ impl Registry {
             let mut row = json!({"session": session, "state": entry.state, "project": entry.project, "cwd": entry.cwd, "task": entry.task,
                                  "since": entry.since as i64, "started": entry.started as i64, "update": entry.update,
                                  "request": entry.request, "detail": entry.detail, "outcome": entry.outcome,
-                                 "terminal": entry.terminal, "unpushed": entry.unpushed});
+                                 "terminal": entry.terminal, "unpushed": entry.unpushed, "apps": entry.apps});
             for (key, value) in &entry.target {
                 row[key] = json!(value);
             }
