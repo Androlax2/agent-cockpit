@@ -42,3 +42,15 @@ fn left_off_the_prompt_line_reaches_claude() {
         assert_eq!(left_with(line, cursor_x), ["tmux send-keys -t %11 Left"], "{line:?}");
     }
 }
+
+#[test]
+fn left_on_an_empty_opencode_prompt_goes_back_to_the_column() {
+    // As tmux showed it: the input box's ┃, two spaces, then the cursor on the dim placeholder.
+    let line = format!("{}┃  Ask anything… \"Fix a TODO in the codebase\"", " ".repeat(86));
+    assert_eq!(left_with(&line, 89), ["tmux select-pane -L -t %11"]);
+}
+
+#[test]
+fn left_inside_opencode_text_reaches_opencode() {
+    assert_eq!(left_with("  ┃  fix the login", 10), ["tmux send-keys -t %11 Left"]);
+}
