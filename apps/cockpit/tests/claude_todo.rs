@@ -94,3 +94,18 @@ fn an_item_without_design_has_no_kind() {
     claude_todo(&sandbox, &["add", "Bump the deps"], &sandbox.root);
     assert_eq!(updates(&sandbox)[0].get("kind"), None);
 }
+
+#[test]
+fn blocked_files_a_report_with_what_stopped_the_session() {
+    let sandbox = Sandbox::new();
+    let output = claude_todo(&sandbox, &["blocked", "Push the release tag", "--why", "greywall hides ~/.ssh"], &sandbox.root);
+    assert_eq!(output.status.code(), Some(0));
+    let update = &updates(&sandbox)[0];
+    assert_eq!((update["action"].as_str(), update["why"].as_str()), (Some("blocked"), Some("greywall hides ~/.ssh")));
+}
+
+#[test]
+fn blocked_without_what_stopped_it_is_refused() {
+    let sandbox = Sandbox::new();
+    assert_eq!(claude_todo(&sandbox, &["blocked", "Push the release tag"], &sandbox.root).status.code(), Some(2));
+}

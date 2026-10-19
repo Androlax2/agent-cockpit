@@ -9,6 +9,10 @@
 //!     claude-todo propose '<title>' --why '<reason>' [--notes '<details>'] [--design]
 //!                                     an idea for Theo to approve or decline (the Proposed tab)
 //!                                     --design: work for the project's designer session
+//!     claude-todo blocked '<what you could not do>' --why '<what stopped you>' [--notes '<details>']
+//!                                     from any project: greywall, claude-sessions, the launcher or
+//!                                     another part of Theo's setup kept you from doing something;
+//!                                     filed in the dotfiles list and queued for its session
 //!     claude-todo show <id>           an item with its notes and, for a proposal, why
 //!
 //! An id is a typed item's 8 hex characters, or a GitHub issue as owner/repo#12. The list is read
@@ -32,6 +36,9 @@ const USAGE: &str = "    claude-todo list [--all]        the items of this direc
     claude-todo propose '<title>' --why '<reason>' [--notes '<details>'] [--design]
                                     an idea for Theo to approve or decline; one Theo declined is not filed again
                                     --design: work for the project's designer session (a gap in the design)
+    claude-todo blocked '<what you could not do>' --why '<what stopped you>' [--notes '<details>']
+                                    the setup (greywall, claude-sessions, the launcher…) blocked you:
+                                    filed in the dotfiles list and queued for its session
     claude-todo show <id>           an item with its notes";
 
 fn todo_path() -> PathBuf {
@@ -106,6 +113,7 @@ fn file(action: &str, title: &str, why: Option<String>, notes: Option<String>, i
     }
     match append(update) {
         Ok(()) if action == "propose" => { println!("Proposed to Theo in {}'s list (Theo approves or declines it).", project()); 0 }
+        Ok(()) if action == "blocked" => { println!("Reported in the dotfiles list and queued for its session. Tell Theo what you could not do; don't work around it."); 0 }
         Ok(()) => { println!("Added to {}'s list.", project()); 0 }
         Err(error) => { eprintln!("claude-todo: {error}"); 1 }
     }
@@ -164,6 +172,9 @@ fn main() {
         ["propose", title, rest @ ..] if !title.trim().is_empty() && option(rest, "--why").is_some_and(|why| !why.trim().is_empty())
                                          && rest.len() % 2 == 0 && rest.chunks(2).all(|pair| pair[0] == "--why" || pair[0] == "--notes") =>
             file("propose", title, option(rest, "--why"), option(rest, "--notes"), is_design),
+        ["blocked", what, rest @ ..] if !what.trim().is_empty() && option(rest, "--why").is_some_and(|why| !why.trim().is_empty())
+                                        && rest.len() % 2 == 0 && rest.chunks(2).all(|pair| pair[0] == "--why" || pair[0] == "--notes") =>
+            file("blocked", what, option(rest, "--why"), option(rest, "--notes"), false),
         _ => { eprintln!("{USAGE}"); 2 }
     };
     std::process::exit(status);

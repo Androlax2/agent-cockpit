@@ -74,7 +74,7 @@ const GLOBAL_HELP: [(&str, &str); 17] = [
     ("l →  ←", "into the session from any panel; ← from the session comes back"),
     ("q ⌘C", "close the manager window; sessions keep running"),
 ];
-const LEGEND: [(&str, &str); 16] = [
+const LEGEND: [(&str, &str); 17] = [
     ("●", "working"), ("○", "waiting for you"), ("!", "needs you: permission or question"), ("·", "running, state unknown"),
     ("▌", "shown in the session pane"), ("⚲", "pinned"), ("⇅", "remote controlled"),
     ("◆ figcraft", "connected to FigCraft, which is open for this session's project (craft-open)"),
@@ -83,6 +83,7 @@ const LEGEND: [(&str, &str); 16] = [
     ("▭ terminal", "started with \"this terminal\": no ⌘R, restore, queue, error hand-off or ask-to-run"),
     ("✎ designer ⌨ developer", "its role in a project designed in FigCraft (claude-design role): design to-dos go to the designer"),
     ("✎ design", "a to-do for the designer session: a gap a developer found in the design (claude-todo --design)"),
+    ("⛔ opusline", "a session of that project was blocked by the setup (claude-todo blocked): queued for dotfiles"),
     ("⬆", "Claude updated itself: r restarts on the new version"),
     ("/compact", "context over 90%: /compact in the session before it gets slow and costly"), ("high ▾", "effort level: click to change it"),
 ];
@@ -467,8 +468,8 @@ impl App {
         for session in idle {
             let Some(entry) = self.next_queued(&session) else { continue };
             let (key, text) = match &entry {
-                Entry::Typed(item) => (item.id(), item.text()),
-                Entry::Issue { issue, .. } => (issue.key(), todo::issue_prompt(issue)),
+                Entry::Typed(item) => (item.id(), todo::prompt_of(&entry)),
+                Entry::Issue { issue, .. } => (issue.key(), todo::prompt_of(&entry)),
             };
             let error = manager(&["say", &session.session, &todo::with_todo_note(&text, &key)]);
             if !error.is_empty() {
@@ -1226,8 +1227,13 @@ impl App {
             let mut right = if status == "doing" { vec![part("in progress", style(BLUE))] }
                         else if queued { vec![part("queued", bold(CYAN))] }
                         else if filed_by_claude { vec![part("by Claude", style(YELLOW))] } else { vec![] };
-            if matches!(entry, Entry::Typed(item) if item.is_design()) {
-                right.insert(0, part("✎ design", faded.unwrap_or(bold(MAGENTA))));
+            if let Entry::Typed(item) = entry {
+                if item.is_design() {
+                    right.insert(0, part("✎ design", faded.unwrap_or(bold(MAGENTA))));
+                }
+                if item.is_blocked_report() {
+                    right.insert(0, part(format!("⛔ {}", item.reporter()), faded.unwrap_or(bold(RED))));
+                }
             }
             let line = match entry {
                 Entry::Typed(item) => Line {
@@ -1385,8 +1391,8 @@ impl App {
     /// The item to the project's running session, or to a new one; then it is in progress.
     pub fn hand_to_claude(&mut self, entry: &Entry) -> String {
         let (directory, text, repository) = match entry {
-            Entry::Typed(item) => (item.cwd(), item.text(), String::new()),
-            Entry::Issue { issue, .. } => (self.reviews.checkouts.get(&issue.full_repository).cloned().unwrap_or_default(), todo::issue_prompt(issue), issue.repository.clone()),
+            Entry::Typed(item) => (item.cwd(), todo::prompt_of(entry), String::new()),
+            Entry::Issue { issue, .. } => (self.reviews.checkouts.get(&issue.full_repository).cloned().unwrap_or_default(), todo::prompt_of(entry), issue.repository.clone()),
         };
         if directory.is_empty() {
             return format!("no local checkout of {}: start a session there first", if repository.is_empty() { "?" } else { &repository });
