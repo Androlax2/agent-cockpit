@@ -6,6 +6,10 @@ export CHROME_CONFIG_HOME="$HOME/.cache/chrome-sandbox"
 # and a file planted there must never be run with Theo's rights. claude-update.timer updates it
 # outside the sandbox through the installed claude.
 export DISABLE_AUTOUPDATER=1
+# Telemetry and error reports go to Datadog, which greyproxy denies: Claude waited on it before
+# showing its prompt, 2.3 s of a 3.9 s start (measured 2026-10-19; DISABLE_TELEMETRY and
+# DISABLE_ERROR_REPORTING alone did not help). This also turns off /bug inside sessions.
+export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
 # Theo's answers to ask-to-run and ask-to-guide (greywall.json allowRead, never allowWrite): it must
 # exist before greywall starts, or the sandbox does not get it.
 mkdir -p "$HOME/.cache/claude-answers/runs" "$HOME/.cache/claude-answers/guides"
