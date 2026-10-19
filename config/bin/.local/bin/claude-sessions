@@ -799,14 +799,15 @@ doctor() {
         if [[ $(systemctl --user is-active "$unit" 2>/dev/null) == active ]]; then report ok "$unit active"; else report fail "$unit not active" "systemctl --user enable --now $unit (units in .handoff/systemd-user until installed)"; fi
     done
     local versions_dir=${CLAUDE_VERSIONS_DIR:-$HOME/.local/share/claude/versions} link=${CLAUDE_LINK:-$HOME/.local/bin/claude} newest linked
-    newest=$(find "$versions_dir" -maxdepth 1 -type f -executable -printf '%f\n' 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
+    # || true: no version there (grep matches nothing) must not stop the doctor half-way (pipefail).
+    newest=$(find "$versions_dir" -maxdepth 1 -type f -executable -printf '%f\n' 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1 || true)
     linked=$(basename "$(readlink "$link" 2>/dev/null || true)")
     if [[ -z $newest || $linked == "$newest" ]]; then report ok "claude starts the newest version (${linked:-none})"; else report fail "claude starts $linked, $newest is in the versions folder" "claude-update (claude-update.timer runs it every 6 h)"; fi
     local archive="${XDG_STATE_HOME:-$HOME/.local/state}/claude-sessions/usage.sqlite" newest_transcript
-    newest_transcript=$(find "${CLAUDE_SESSIONS_TRANSCRIPTS:-$HOME/.claude/projects}" -name '*.jsonl' -printf '%T@\n' 2>/dev/null | sort -n | tail -1)
-    if [[ -f $archive ]] && (( $(stat -c %Y "$archive") + 600 >= ${newest_transcript%.*} )); then report ok "usage archive up to date"; else report fail "usage archive missing or behind the transcripts" "claude-sessions reload (the sidebar keeps it), or claude-sessions-sidebar costs"; fi
+    newest_transcript=$(find "${CLAUDE_SESSIONS_TRANSCRIPTS:-$HOME/.claude/projects}" -name '*.jsonl' -printf '%T@\n' 2>/dev/null | sort -n | tail -1 || true)
+    if [[ -f $archive ]] && (( $(stat -c %Y "$archive") + 600 >= ${newest_transcript%.*:-0} )); then report ok "usage archive up to date"; else report fail "usage archive missing or behind the transcripts" "claude-sessions reload (the sidebar keeps it), or claude-sessions-sidebar costs"; fi
     local recent_facts
-    recent_facts=$(find "$HOME/.cache/claude" -maxdepth 1 -name 'statusline-*.json' -mmin -60 2>/dev/null)
+    recent_facts=$(find "$HOME/.cache/claude" -maxdepth 1 -name 'statusline-*.json' -mmin -60 2>/dev/null || true)
     if [[ -z $recent_facts ]] || jq -e 'select(.effort != null)' $recent_facts >/dev/null 2>&1; then report ok "status line reports the effort"; else report fail "status line reports no effort" "install .handoff/claude/statusline-command.sh"; fi
     if command -v ask-to-run >/dev/null && command -v claude-run-approve >/dev/null; then report ok "ask-to-run and claude-run-approve resolve"; else report fail "ask-to-run or claude-run-approve not on PATH" "cd ~/dotfiles/config && stow -t ~ --restow bin"; fi
     if command -v ask-to-guide >/dev/null && command -v claude-guide >/dev/null && command -v kitten >/dev/null; then report ok "ask-to-guide, claude-guide and kitten resolve"; else report fail "ask-to-guide, claude-guide or kitten not on PATH" "cd ~/dotfiles/config && stow -t ~ --restow bin"; fi
@@ -814,8 +815,10 @@ doctor() {
     echo "logs"
     local since errors last_error
     since=$(date -d '24 hours ago' -Iseconds)
-    errors=$(awk -v since="$since" '$1 >= since && $2 == "ERROR"' "$LOG_FILE" 2>/dev/null | wc -l)
-    last_error=$(awk -v since="$since" '$1 >= since && $2 == "ERROR"' "$LOG_FILE" 2>/dev/null | tail -1)
+    # The health check's own result is left out: it runs this doctor, and its last failure would
+    # fail the next run for a day.
+    errors=$(awk -v since="$since" '$1 >= since && $2 == "ERROR" && $3 != "health:"' "$LOG_FILE" 2>/dev/null | wc -l)
+    last_error=$(awk -v since="$since" '$1 >= since && $2 == "ERROR" && $3 != "health:"' "$LOG_FILE" 2>/dev/null | tail -1)
     if (( errors == 0 )); then report ok "no error logged in 24 h ($LOG_FILE)"; else report fail "$errors error(s) logged in 24 h, the last: ${last_error:0:160}" "claude-sessions logs"; fi
     echo "pane heuristics (what the daemon sees for each running session, and the process that keeps it alive)"
     if [[ -s $SNAPSHOT ]]; then

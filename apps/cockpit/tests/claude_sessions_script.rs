@@ -1041,3 +1041,16 @@ fn viewing_a_session_tells_the_daemon_it_was_seen() {
     manager.run(&["view", SESSION_A], &[]);
     assert!(manager.calls("osd-show").contains(&format!("osd-show session-seen {SESSION_A}")), "{:?}", manager.calls("osd-show"));
 }
+
+#[test]
+fn the_doctor_does_not_count_the_health_checks_own_failure() {
+    // The health check runs the doctor: its failure line would fail the next check for a day.
+    let manager = Manager::new();
+    let log = manager.sandbox.state.join("claude-sessions/log");
+    fs::create_dir_all(log.parent().unwrap()).unwrap();
+    let now = stdout(&Command::new("date").arg("-Iseconds").output().unwrap());
+    fs::write(&log, format!("{} ERROR health: weekly check: 1 problem(s)\n", now.trim())).unwrap();
+    let result = manager.run(&["doctor"], &[]);
+    let output = stdout(&result);
+    assert!(output.contains("no error logged in 24 h"), "{}\n---stderr\n{}", &output[output.len().saturating_sub(800)..], stderr(&result));
+}
