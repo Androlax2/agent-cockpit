@@ -219,11 +219,11 @@ ensure_manager() {
     # @state (label_state, pushed by the sidebar) colours the title: red needs you, yellow waiting.
     # While the session pane has the focus the title is a filled bar of that colour (reverse); the
     # column greys its own panel then, so the lit side is the one the keys go to. The divider between
-    # them is orange on the active pane's half. The pane without the focus fades: the column fades
+    # them is orange along its full height. The pane without the focus fades: the column fades
     # itself, the session through claude-fade (view_session); tmux's window-style cannot.
     tmux set-option -w -t "$MANAGER_WINDOW" pane-border-status top ";" set-option -w -t "$MANAGER_WINDOW" pane-border-format \
         '#{?#{==:#{@role},viewer},#{?pane_active,#[reverse],}#{?#{@project},#{?#{==:#{@state},needs-you},#[fg=red],#{?#{==:#{@state},waiting},#[fg=yellow],#[fg=blue]}} #[bold]#{@project}#[nobold] · #{pane_title} #[default], no session #[default]},}' \
-        ";" set-option -w -t "$MANAGER_WINDOW" pane-border-indicators colour \
+        ";" set-option -w -t "$MANAGER_WINDOW" pane-border-indicators off \
         ";" set-option -w -t "$MANAGER_WINDOW" pane-active-border-style 'fg=#ff9e64'
     if [[ -z $viewer ]]; then
         viewer=$(tmux split-window -h -t "$sidebar" -l 70% -P -F '#{pane_id}' claude-sessions idle)

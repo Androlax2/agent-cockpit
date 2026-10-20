@@ -458,11 +458,11 @@ fn say_refuses_while_a_dialog_is_open_and_keeps_the_text_out_of_the_log() {
 }
 
 #[test]
-fn the_divider_is_orange_on_the_side_of_the_focused_pane() {
+fn the_focused_pane_has_a_full_height_orange_divider() {
     let manager = Manager::new();
     manager.run(&["view", SESSION_A], &[]);
     let borders = manager.tmux_calls("set-option").into_iter().find(|call| call.contains("pane-border-indicators")).expect("no pane-border-indicators");
-    assert!(borders.contains("pane-border-indicators colour") && borders.contains("pane-active-border-style fg=#ff9e64"), "{borders}");
+    assert!(borders.contains("pane-border-indicators off") && borders.contains("pane-active-border-style fg=#ff9e64"), "{borders}");
 }
 
 #[test]
