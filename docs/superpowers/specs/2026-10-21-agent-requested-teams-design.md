@@ -110,5 +110,7 @@ yes the team exists and works without Theo relaying anything.
 Agents are told **when** to ask, not only how: the global agent instructions in dotfiles
 (`config/claude/.claude/CLAUDE.md` for Claude, `config/opencode/.config/opencode/AGENTS.md` for
 OpenCode) gain a short rule set, for example: a UI change with no FigCraft design → ask for a Designer
-before writing UI code; finished, tested work → hand off so QA reviews it. The exact wording is the
+before writing UI code; a Designer whose design is approved and who has no Developer → ask for a
+Developer (its brief: build from the approved frames); finished, tested work → hand off so QA reviews
+it. The exact wording is the
 builder's, kept short, and it only ever leads to a request Theo approves.
