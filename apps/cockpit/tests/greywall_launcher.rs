@@ -148,6 +148,22 @@ fn other_projects_folders_are_read_only_for(agent: &str) {
 }
 
 #[test]
+fn go_build_cache_stays_in_the_sandbox_instead_of_the_host_home() {
+    for &agent in AGENTS.iter() {
+        for inherited_cache in ["", "/host/custom-go-cache"] {
+            let launch = Launch::new();
+            let started = launch.run_agent(agent, &[("GOCACHE", inherited_cache)], &[]);
+            let environment = fs::read_to_string(launch.sandbox.home.join(format!("{agent}-environment"))).unwrap();
+            assert!(environment.lines().any(|line| line == "GOCACHE=/tmp/greywall-go-build"),
+                "{agent} did not redirect the Go build cache (inherited {inherited_cache:?})");
+            assert!(!started.contains("--allow-path /tmp/greywall-go-build"), "{started}");
+            assert!(!started.contains("go-build"), "a host cache must not be mounted writable: {started}");
+            assert!(!launch.sandbox.home.join(".cache/go-build").exists());
+        }
+    }
+}
+
+#[test]
 fn only_the_projects_own_answers_folder_is_mounted() {
     // Security audit M3: no session reads another project's command output.
     for &agent in AGENTS.iter() {
