@@ -379,6 +379,41 @@ fn settings_values_share_one_column_across_sections() {
 }
 
 #[test]
+fn settings_sections_have_a_blank_line_between_groups() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    app.handle(Key::Char('S'), &mut FakeScreen::default());
+    let buffer = render(&mut app, 60, 40);
+    let rows = settings_screen_rows(&buffer);
+    for section in ["Automation", "Phone"] {
+        let row = rows.iter().position(|row| row.contains(section)).unwrap();
+        let content: String = (4..56).map(|column| buffer[(column, row as u16 - 1)].symbol()).collect();
+        assert!(content.trim().is_empty(), "no space above {section}: {content:?}");
+    }
+}
+
+#[test]
+fn settings_distinguish_selected_values_enabled_and_disabled_toggles_by_color() {
+    let fixture = Fixture::new();
+    fixture.write("state/claude-sessions/settings.json", r#"{"default-agent":"opencode","opencode-model":"openai/gpt-6.1-sol","opencode-effort":"medium","todo-queue":false}"#);
+    let mut app = fixture.app();
+    app.handle(Key::Char('S'), &mut FakeScreen::default());
+    let buffer = render(&mut app, 60, 40);
+    let rows = settings_screen_rows(&buffer);
+    for (label, value, color) in [
+        ("Default agent", "opencode", crate::app::CYAN),
+        ("OpenCode model", "openai/gpt-6.1-sol", crate::app::CYAN),
+        ("OpenCode effort", "medium", crate::app::CYAN),
+        ("Errors to dotfiles", "on", crate::app::GREEN),
+        ("Todo queue", "off", crate::app::FG_DARK),
+    ] {
+        let row = rows.iter().position(|row| row.contains(label)).unwrap();
+        let column = rows[row].chars().collect::<Vec<_>>().windows(value.chars().count()).position(|characters| characters.iter().collect::<String>() == value).unwrap();
+        assert_eq!(buffer[(column as u16, row as u16)].fg, ratatui::style::Color::Indexed(color), "{label}");
+    }
+}
+
+#[test]
 fn short_settings_panels_scroll_the_selected_phone_into_view() {
     for (width, height) in [(32, 12), (60, 20)] {
         let fixture = Fixture::new();

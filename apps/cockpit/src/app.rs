@@ -362,6 +362,7 @@ pub(crate) enum SettingsRow {
 }
 
 enum SettingsLine {
+    Space,
     Section(&'static str),
     Health,
     Choice(usize),
@@ -413,8 +414,12 @@ impl SettingsMenu {
         for index in 0..self.row_count() {
             match self.row(index) {
                 SettingsRow::Launch(0) => lines.push(SettingsLine::Section("Sessions")),
-                SettingsRow::Setting(1) => lines.push(SettingsLine::Section("Automation")),
+                SettingsRow::Setting(1) => {
+                    lines.push(SettingsLine::Space);
+                    lines.push(SettingsLine::Section("Automation"));
+                }
                 SettingsRow::Setting(0) => {
+                    lines.push(SettingsLine::Space);
                     lines.push(SettingsLine::Section("Phone"));
                     lines.push(SettingsLine::Health);
                 }
@@ -452,6 +457,7 @@ impl SettingsMenu {
                     row += 1;
                     continue;
                 }
+                SettingsLine::Space => { row += 1; continue; }
                 SettingsLine::Health => {
                     let (health, color) = self.health_line();
                     put(buffer, row, left + 4, &fit(&health, inner - 4), on(color, BLACK));
@@ -470,18 +476,19 @@ impl SettingsMenu {
                     let (name, label) = SETTINGS[setting];
                     let is_on = settings::is_on(name);
                     put(buffer, row, left + 4, &fit(label, label_width), text_style);
-                    let state_style = if chosen { on(BLUE, background).add_modifier(Modifier::BOLD) } else { on(if is_on { FG } else { FG_DARK }, background) };
+                    let state_color = if is_on { GREEN } else if chosen { FG } else { FG_DARK };
+                    let state_style = on(state_color, background).add_modifier(if is_on || chosen { Modifier::BOLD } else { Modifier::empty() });
                     put(buffer, row, value_left, if is_on { "on" } else { "off" }, state_style);
                 }
                 SettingsRow::Launch(setting) => {
                     let (name, label) = LAUNCH_SETTINGS[setting];
-                    let value = match settings::launch_value(name) {
-                        Ok(value) if value.is_empty() => "OpenCode default".into(),
-                        Ok(value) => value,
-                        Err(error) => error,
+                    let (value, color) = match settings::launch_value(name) {
+                        Ok(value) if value.is_empty() => ("OpenCode default".into(), FG_DARK),
+                        Ok(value) => (value, CYAN),
+                        Err(error) => (error, RED),
                     };
                     put(buffer, row, left + 4, &fit(label, label_width), text_style);
-                    put(buffer, row, value_left, &fit(&value, value_width), if chosen { on(BLUE, background).add_modifier(Modifier::BOLD) } else { ground });
+                    put(buffer, row, value_left, &fit(&value, value_width), on(color, background).add_modifier(Modifier::BOLD));
                     put(buffer, row, right - 2, "▾", on(FG_DARK, background));
                 }
                 SettingsRow::PairPhone => put(buffer, row, left + 4, &fit("Pair a phone (QR code)", inner - 4), text_style),
