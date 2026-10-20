@@ -10,6 +10,7 @@ pub mod errors;
 pub mod paths;
 pub mod prompts;
 pub mod push;
+pub mod queue;
 pub mod remote;
 pub mod reviews;
 pub mod sessions;

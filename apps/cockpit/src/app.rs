@@ -15,6 +15,7 @@ use crate::todo::{self, Entry, TodoList};
 use crate::todo_composer::{TodoComposer, Outcome};
 use crate::usage::{self, BudgetAlerts, Refresher, Window};
 use crate::prompts;
+use crate::queue::{self, QUEUE_CHECK_S};
 use crate::{approval, remote};
 use crate::util::{self, age, current_session, manager, manager_in_background, money, now, project_name};
 use serde_json::Value;
@@ -50,10 +51,6 @@ const EXIT_SETTLE_S: f64 = 15.0;
 const DEFAULT_COLUMN_WIDTH: u16 = 60;
 const TITLES_PER_TICK: usize = 8;
 const GREYPROXY_POLL_S: f64 = 10.0;
-/// How long a session waits idle at its prompt before the queue gives it work, and how often the
-/// queue looks: long enough that Theo, reading what it just did, is not cut off.
-const QUEUE_IDLE_S: i64 = 5 * 60;
-const QUEUE_CHECK_S: f64 = 30.0;
 const RESTORE_CHECK_S: f64 = 30.0;
 const COSTS_LABEL: &str = "Cost";
 const TIME_LABEL: &str = "Active time";
@@ -83,7 +80,8 @@ const GLOBAL_HELP: [(&str, &str); 14] = [
     ("q ⌘C", "close the manager window; sessions keep running"),
 ];
 /// Rare actions with no key, only in the : list: the panel they run in ("-" for none), a name, a label.
-const PALETTE_ONLY: [(&str, &str, &str); 13] = [
+const PALETTE_ONLY: [(&str, &str, &str); 14] = [
+    ("-", "queue", "explain queued work and what each session is waiting for"),
     ("-", "updates", "unseen results, questions and archived return notes"),
     ("1", "reviewed", "mark the selected session's currently displayed updates reviewed (not answered)"),
     ("1", "return-note", "write your session return note (never sent to the agent)"),
@@ -945,20 +943,10 @@ impl App {
             return;
         }
         self.queue_checked = now;
-        if !settings::is_on("todo-queue") {
-            return;
-        }
-        // No new work while Theo plays: it would compete with the game (game-performance lowers
-        // the sessions' priority, it does not stop them).
-        if (self.gaming)() {
-            return;
-        }
-        let viewed = current_session();
-        let watched = !viewed.is_empty() && util::claude_workspace_active();
-        let idle: Vec<Session> = self.sessions.iter()
-            .filter(|session| !session.is_external() && session.state == "waiting" && !session.terminal && !session.cwd.is_empty() && now as i64 - session.since >= QUEUE_IDLE_S)
-            .filter(|session| !(watched && session.session == viewed) && !self.todos.busy(&session.session))
-            .cloned().collect();
+        let context = self.queue_context();
+        let idle: Vec<Session> = self.all_sessions().into_iter()
+            .filter(|session| queue::block(session, &context, self.todos.busy(&session.session), prompts::count(&session.session) > 0).is_none())
+            .collect();
         for session in idle {
             let Some(entry) = self.next_queued(&session) else { continue };
             let (key, text) = match &entry {
@@ -980,24 +968,7 @@ impl App {
     /// The project's first queued item still to do: typed items of its project, issues of its
     /// repository.
     fn next_queued(&self, session: &Session) -> Option<Entry> {
-        // Derive the project from its checkout, not the session's label. Parallel clones share
-        // their source project's queue, just as they share its TODO panel.
-        let project = util::project_name(&util::repository_root(&session.cwd));
-        let mut candidates: Vec<Entry> = self.todos.items.iter()
-            .filter(|item| util::project_name(&util::repository_root(&item.cwd())) == project && item.status() == "todo" && self.todos.is_queued(&item.id()))
-            .filter(|item| item.is_design() == (session.role == "designer"))
-            .map(|item| Entry::Typed(item.clone())).collect();
-        for issue in self.reviews.issues() {
-            let key = issue.key();
-            let checkout = self.reviews.checkouts.get(&issue.full_repository);
-            if self.todos.is_queued(&key) && self.todos.status_of(&key) == "todo"
-                && checkout.is_some_and(|checkout| util::project_name(&util::repository_root(checkout)) == project) {
-                let priority = todo::issue_priority(&issue.labels);
-                candidates.push(Entry::Issue { issue, status: "todo".into(), priority });
-            }
-        }
-        candidates.sort_by(todo::queue_order);
-        candidates.into_iter().next()
+        queue::candidates(session, &self.todos, &self.reviews.issues(), &self.reviews.checkouts).into_iter().next()
     }
 
     /// Everything read again (sessions, usage, plan), then drawn.
@@ -3123,7 +3094,7 @@ impl App {
     fn run_palette_only(&mut self, name: &str, screen: &mut dyn Screen) -> String {
         let known = self.selected_session().filter(|s| s.state != "unknown");
         match name {
-            "return-note" | "clear-return-note" | "updates" | "reviewed" => self.run_continuity_action(name, screen),
+            "return-note" | "clear-return-note" | "updates" | "reviewed" | "queue" => self.run_continuity_action(name, screen),
             "new-with-agent" => {
                 let Some(directory) = screen.outside(&mut || pick_project()).filter(|directory| !directory.is_empty()) else { return String::new() };
                 let Some(agent) = screen.outside(&mut || pick_agent()) else { return String::new() };

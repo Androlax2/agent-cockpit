@@ -2,6 +2,7 @@ use super::*;
 
 impl App {
     pub(super) fn run_continuity_action(&mut self, name: &str, screen: &mut dyn Screen) -> String {
+        if name == "queue" { return self.open_queue(); }
         if let Err(error) = &self.continuity { return format!("Continuity unavailable: {error}"); }
         if name == "updates" { return self.open_updates(screen); }
         let Some(session) = self.selected_session() else { return "select a session first".into() };
@@ -33,6 +34,58 @@ impl App {
                 error
             }
         }
+    }
+
+    pub(super) fn all_sessions(&self) -> Vec<Session> {
+        self.gathered.as_ref().map(|gathered| gathered.running.clone()).unwrap_or_else(|| self.sessions.clone())
+    }
+
+    pub(super) fn queue_context(&self) -> queue::QueueContext {
+        queue::QueueContext { now: util::now_secs(), enabled: settings::is_on("todo-queue"), gaming: (self.gaming)(),
+            viewed: current_session(), workspace_active: util::claude_workspace_active() }
+    }
+
+    pub(super) fn open_queue(&mut self) -> String {
+        let context = self.queue_context();
+        let sessions = self.all_sessions();
+        let issues = self.reviews.issues();
+        let mut entries: Vec<_> = self.todos.items.iter()
+            .filter(|item| self.todos.is_queued(&item.id()) && (self.todo_scope.is_empty() || item.project() == self.todo_scope))
+            .map(|item| Entry::Typed(item.clone())).collect();
+        entries.extend(issues.iter().filter(|issue| self.todos.is_queued(&issue.key())).map(|issue|
+            Entry::Issue { issue: issue.clone(), status: self.todos.status_of(&issue.key()), priority: todo::issue_priority(&issue.labels) }));
+        entries.sort_by(todo::queue_order);
+        let mut text = format!("Queue · {}\n\n", if self.todo_scope.is_empty() { "all projects" } else { &self.todo_scope });
+        if !context.enabled { text += "queue disabled\n\n"; }
+        if context.gaming { text += "paused while gaming\n\n"; }
+        for entry in &entries {
+            let title = match entry { Entry::Typed(item) => item.text(), Entry::Issue { issue, .. } => issue.title.clone() };
+            let role = if matches!(entry, Entry::Typed(item) if item.is_design()) { "designer" } else { "developer" };
+            text += &format!("{title} · {role} · {}\n", entry.status());
+            if entry.status() != "todo" { text += "  not To do; cannot dispatch\n\n"; continue; }
+            let matching: Vec<_> = sessions.iter().filter(|session|
+                queue::candidates(session, &self.todos, &issues, &self.reviews.checkouts).iter().any(|candidate| candidate.key() == entry.key())).collect();
+            if matching.is_empty() { text += "  no matching session\n"; }
+            for session in matching {
+                let first = queue::candidates(session, &self.todos, &issues, &self.reviews.checkouts).into_iter().next();
+                let reason = if let Some(block) = queue::block(session, &context, self.todos.busy(&session.session), prompts::count(&session.session) > 0) {
+                    block.to_string()
+                } else if let Some(first) = first.filter(|first| first.key() != entry.key()) {
+                    format!("queued behind {}", match first { Entry::Typed(item) => item.text(), Entry::Issue { issue, .. } => issue.title })
+                } else { "ready for the next dispatch check (every 30s)".into() };
+                text += &format!("  {}: {reason}\n", if session.label.is_empty() { &session.session } else { &session.label });
+            }
+            text += "\n";
+        }
+        if entries.is_empty() { text += "No known queued items in this scope.\n"; }
+        let (_, error, loading) = self.reviews.current();
+        if !error.is_empty() { text += &format!("\nIssue data unavailable: {error}\n"); }
+        if loading { text += "\nIssue data loading; explanation uses the last fetched items.\n"; }
+        if self.todos.queued.iter().any(|key| key.contains('#') && !issues.iter().any(|issue| issue.key() == *key)) {
+            text += "\nQueued issue data unavailable: not loaded, stale, or closed.\n";
+        }
+        self.session_details = Some(SessionDetails { title: "Queue".into(), text, scroll: 0, actions: Vec::new() });
+        String::new()
     }
 
     fn review_updates(&mut self, session: &str, identities: &Vec<String>) -> String {

@@ -4414,6 +4414,85 @@ fn queue_fixture(state: &str, idle_s: i64) -> (Fixture, App) {
 }
 
 #[test]
+fn continuity_queue_explanation_and_dispatch_agree_about_blocked_capacity() {
+    for (case, expected, can_dispatch) in [
+        ("ready", "ready for the next dispatch check", true),
+        ("question", "awaiting your answer", false),
+        ("approval", "awaiting your answer", false),
+        ("input", "awaiting your answer", false),
+        ("running", "approved command is running", false),
+        ("working", "still working", false),
+        ("unknown", "unknown state", false),
+        ("terminal", "terminal-managed session", false),
+        ("external", "no terminal target", false),
+        ("disabled", "queue disabled", false),
+        ("gaming", "paused while gaming", false),
+        ("busy", "assigned todo still in progress", false),
+        ("pending", "manual message queued", false),
+        ("viewed", "viewed on the active cockpit workspace", false),
+        ("fresh", "idle window", false),
+    ] {
+        let (fixture, mut app) = queue_fixture("waiting", if case == "fresh" { 0 } else { 600 });
+        let mut row = session(SESSION_A, "waiting", "runway", "/r/runway", util::now_secs() - if case == "fresh" { 0 } else { 600 });
+        match case {
+            "question" => { row["needs_input"] = json!(true); row["request"] = json!("Which provider?"); }
+            "approval" => row["ask_to_run"] = json!("approval"),
+            "input" => row["ask_to_run"] = json!("input"),
+            "running" => row["ask_to_run"] = json!("running"),
+            "working" | "unknown" => row["state"] = json!(case),
+            "terminal" => row["terminal"] = json!(true),
+            "external" => row["tmux_pane"] = Value::Null,
+            "disabled" => { fixture.write("state/claude-sessions/settings.json", "{\"todo-queue\":false}"); }
+            "gaming" => app.gaming = || true,
+            "busy" => { let id = app.todos.add("runway", "/r/runway", "already working"); app.todos.set_status(&id, "doing", SESSION_A); }
+            "pending" => crate::prompts::add(SESSION_A, "My manual follow-up").unwrap(),
+            "viewed" => { fixture.view(SESSION_A); fixture.shim("hyprctl", "echo '{\"id\":6}'"); }
+            _ => {},
+        }
+        fixture.snapshot(json!([row]));
+        app.build();
+        let key = app.todos.add("runway", "/r/runway", "next job");
+        app.todos.toggle_queued(&key);
+        continuity_action(&mut app, "-\tqueue", &[]);
+        let rows = buffer_rows(&render(&mut app, 110, 45)).join("\n");
+        assert!(rows.contains(expected), "{case}: {rows}");
+        assert_eq!(app.todos.status_of(&key), "todo");
+        app.dispatch_queue();
+        assert_eq!(app.todos.status_of(&key) == "doing", can_dispatch, "{case}");
+        assert_eq!(fixture.calls("claude-sessions").iter().any(|call| call.contains(" say ")), can_dispatch, "{case}");
+    }
+}
+
+#[test]
+fn continuity_queue_view_keeps_priority_and_designer_routes_without_network_calls() {
+    let (fixture, mut app) = queue_fixture("waiting", 600);
+    let normal = app.todos.add("runway", "/r/runway", "normal job");
+    let urgent = app.todos.add("runway", "/r/runway", "urgent job");
+    app.todos.change_priority(&urgent, 1);
+    let design = design_item(&mut app, "runway", "/r/runway", "design job");
+    for key in [&normal, &urgent, &design] { app.todos.toggle_queued(key); }
+    continuity_action(&mut app, "-\tqueue", &[]);
+    let rows = buffer_rows(&render(&mut app, 110, 45)).join("\n");
+    assert!(rows.find("urgent job").unwrap() < rows.find("normal job").unwrap(), "{rows}");
+    assert!(rows.contains("queued behind"), "{rows}");
+    assert!(rows.contains("design job") && rows.contains("no matching session"), "{rows}");
+    assert!(fixture.calls("gh").is_empty());
+    assert!(fixture.calls("git").is_empty());
+    assert!(fixture.calls("claude-sessions").is_empty());
+}
+
+#[test]
+fn continuity_queue_idle_boundary_is_exactly_five_minutes() {
+    let fixture = Fixture::new();
+    let context = crate::queue::QueueContext { now: 1000, enabled: true, gaming: false, viewed: String::new(), workspace_active: false };
+    for (since, remaining) in [(701, Some(1)), (700, None), (699, None)] {
+        let reported = sessions::Session::from_value(&session(SESSION_A, "waiting", "runway", "/r/runway", since)).unwrap();
+        assert_eq!(crate::queue::block(&reported, &context, false, false), remaining.map(|remaining| crate::queue::QueueBlock::Idle { remaining }));
+    }
+    assert!(fixture.calls("claude-sessions").is_empty());
+}
+
+#[test]
 fn the_queue_waits_while_theo_games() {
     let (fixture, mut app) = queue_fixture("waiting", 600);
     app.gaming = || true;
