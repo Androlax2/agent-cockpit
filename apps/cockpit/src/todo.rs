@@ -297,6 +297,12 @@ impl TodoList {
     }
 
     pub fn save(&mut self) {
+        if let Err(error) = self.try_save() {
+            util::log_event("WARN", &format!("cannot save the todo list: {error}"));
+        }
+    }
+
+    pub(crate) fn try_save(&mut self) -> std::io::Result<()> {
         let oldest = now_secs() - DONE_KEPT_DAYS * 86400;
         self.items.retain(|item| item.status() != "done" || item.updated() >= oldest);
         self.issues.retain(|_, value| value.get("status").and_then(Value::as_str) != Some("done")
@@ -309,9 +315,51 @@ impl TodoList {
             items.iter().any(|item| &item.id() == key && item.status() != "done")
         });
         let items: Vec<Value> = self.items.iter().map(|item| Value::Object(item.0.clone())).collect();
-        if let Err(error) = util::write_json(&paths::todo(), &json!({"items": items, "issues": self.issues, "queued": self.queued, "declined": self.declined})) {
-            util::log_event("WARN", &format!("cannot save the todo list: {error}"));
+        util::write_json(&paths::todo(), &json!({"items": items, "issues": self.issues, "queued": self.queued, "declined": self.declined}))
+    }
+
+    pub(crate) fn save_editor(&mut self, draft: &crate::todo_editor::Draft, title: &str, notes: &str) -> std::io::Result<()> {
+        use std::io::{Error, ErrorKind};
+        let title: String = util::collapse(&without_controls(title)).chars().take(300).collect();
+        if title.is_empty() {
+            return Err(Error::new(ErrorKind::InvalidInput, "empty TODO title"));
         }
+        let previous_items = self.items.clone();
+        let item = if let Some(item) = self.items.iter_mut().find(|item| item.id() == draft.id) {
+            if item.project() != draft.project || item.cwd() != draft.cwd {
+                return Err(Error::new(ErrorKind::InvalidData, "draft destination does not match its TODO"));
+            }
+            if item.0.get("editor_draft").and_then(Value::as_str) == Some(&draft.token) {
+                return Ok(());
+            }
+            if !draft.is_edit || item.0.get("editor_draft").and_then(Value::as_str) != draft.previous_draft.as_deref() {
+                return Err(Error::new(ErrorKind::InvalidData, "TODO changed since this draft was opened"));
+            }
+            item
+        } else {
+            if draft.is_edit {
+                return Err(Error::new(ErrorKind::NotFound, "the edited TODO no longer exists"));
+            }
+            self.items.push(Item(json!({"id": draft.id, "project": draft.project, "cwd": draft.cwd,
+                "priority": PRIORITY_NORMAL, "created": now_secs(), "status": "todo"}).as_object().unwrap().clone()));
+            self.items.last_mut().unwrap()
+        };
+        item.0.insert("text".into(), json!(title));
+        item.0.insert("notes".into(), json!(multiline(notes, NOTES_MAX)));
+        item.0.insert("editor_draft".into(), json!(draft.token));
+        if let Some(category) = &draft.category {
+            if Category::parse(category).is_none() {
+                self.items = previous_items;
+                return Err(Error::new(ErrorKind::InvalidData, "invalid draft category"));
+            }
+            item.0.insert("category".into(), json!(category));
+        }
+        item.0.insert("updated".into(), json!(now_secs()));
+        if let Err(error) = self.try_save() {
+            self.items = previous_items;
+            return Err(error);
+        }
+        Ok(())
     }
 
     pub fn add(&mut self, project: &str, cwd: &str, text: &str) -> String {

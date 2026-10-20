@@ -715,6 +715,7 @@ pub struct App {
     /// session -> the Todo tab it last showed: a session not in it shows Open.
     todo_tabs: HashMap<String, usize>,
     todo_categories: HashMap<String, Option<todo::Category>>,
+    todo_recovery_pending: bool,
     /// session -> when the column last sent it a queued prompt: the next one waits for a turn that
     /// ended after that.
     pub(crate) prompts_sent: HashMap<String, i64>,
@@ -756,17 +757,24 @@ struct Gathered {
 
 impl App {
     pub fn new() -> Self {
+        let mut todos = TodoList::load();
+        let (message, todo_recovery_pending) = match crate::todo_editor::recover(&mut todos) {
+            Ok(Some(0)) => (String::new(), false),
+            Ok(Some(count)) => (format!("recovered {count} TODO draft(s) in their original projects"), false),
+            Ok(None) => (String::new(), true),
+            Err(error) => (format!("TODO draft recovery failed; drafts kept: {error}"), false),
+        };
         Self {
             history: History::default(), view: ViewState::load(), usage: Refresher::new(), alerts: BudgetAlerts::new(util::send_notice),
-            costs: Costs::default(), reviews: Reviews::default(), todos: TodoList::load(), errors: ErrorReporter::new(),
+            costs: Costs::default(), reviews: Reviews::default(), todos, errors: ErrorReporter::new(),
             claude_status: ProviderStatus::default(), codex_status: ProviderStatus::new(Provider::Codex), panels: Default::default(), focus: 1, previous_panel: 1,
-            help_open: false, has_pane_focus: true, message: String::new(), exiting: Vec::new(), labelled: Default::default(), menu: None, session_details: None, settings_menu: None, pairing: None, restore: Vec::new(),
+            help_open: false, has_pane_focus: true, message, exiting: Vec::new(), labelled: Default::default(), menu: None, session_details: None, settings_menu: None, pairing: None, restore: Vec::new(),
             held: Vec::new(), held_checked: 0.0, queue_checked: 0.0, gaming: util::gaming, restore_checked: 0.0, start_files: Vec::new(),
             width: DEFAULT_COLUMN_WIDTH, sessions: Vec::new(), windows: Vec::new(), quota_rows: Vec::new(), review_rows: Vec::new(), todo_entries: Vec::new(),
             session_task_titles: HashMap::new(), session_branches: HashMap::new(),
             session_queued: HashMap::new(), session_roots: HashMap::new(),
             todo_scope: String::new(), shown_session: String::new(), todo_tab: TODO_TAB_OPEN, todo_tabs: HashMap::new(), todo_categories: HashMap::new(), todo_counts: [0; 5], prompts_sent: HashMap::new(), craft_roots: HashMap::new(), hit_lines: HashMap::new(), hit_actions: HashMap::new(),
-            gathered: None, pending: Vec::new(), plan: String::new(), craft_checked: 0.0, dotfiles_unpushed: 0, dotfiles_checked: 0.0,
+            gathered: None, pending: Vec::new(), plan: String::new(), craft_checked: 0.0, dotfiles_unpushed: 0, dotfiles_checked: 0.0, todo_recovery_pending,
         }
     }
 
@@ -783,6 +791,19 @@ impl App {
     }
 
     pub fn tick(&mut self) {
+        if self.todo_recovery_pending {
+            match crate::todo_editor::recover(&mut self.todos) {
+                Ok(None) => (),
+                Ok(Some(count)) => {
+                    self.todo_recovery_pending = false;
+                    if count > 0 { self.message = format!("recovered {count} TODO draft(s) in their original projects"); }
+                }
+                Err(error) => {
+                    self.todo_recovery_pending = false;
+                    self.message = format!("TODO draft recovery failed; drafts kept: {error}");
+                }
+            }
+        }
         self.shown_session = current_session();
         self.refresh();
         self.todos.apply_updates();
@@ -2178,6 +2199,12 @@ impl App {
     }
 
     pub(crate) fn handle_todo(&mut self, key: Key, screen: &mut dyn Screen) -> String {
+        let _editor_lock = if matches!(key, Key::Char('t' | 'e')) {
+            match crate::todo_editor::lock() {
+                Ok(lock) => Some(lock),
+                Err(error) => return format!("cannot protect the TODO editor: {error}"),
+            }
+        } else { None };
         let entry = self.todo_entries.get(self.panels[3].selected).cloned();
         let viewed = current_session();
         match key {
@@ -2190,17 +2217,12 @@ impl App {
                 if directory.is_empty() {
                     return String::new();
                 }
-                let Some((title, notes)) = edit_in_popup(&format!("to do in {}", project_name(&directory)), "", "", "") else {
-                    return "nothing added".into();
-                };
-                let Some(chosen) = screen.outside(&mut || pick_todo_kind(Some(todo::Category::Task), false)) else { return "nothing added".into() };
-                let Some(category) = todo::Category::parse(&chosen.to_lowercase()) else { return "nothing added: invalid kind".into() };
                 let project = viewed.map(|s| s.project).unwrap_or_else(|| project_name(&directory));
-                let id = self.todos.add(&project, &directory, &title);
-                if !notes.is_empty() {
-                    self.todos.edit(&id, &title, &notes);
-                }
-                self.todos.set_category(&id, category);
+                let id = match self.edit_todo(&format!("to do in {project}"), &project, &directory, None, screen) {
+                    Ok(Some(id)) => id,
+                    Ok(None) => return "nothing added".into(),
+                    Err(error) => return error,
+                };
                 self.show_todo_tab(TODO_TAB_TO_DO);
                 self.reveal_todo(&id);
                 format!("added to {}", project_name(&directory))
@@ -2215,13 +2237,11 @@ impl App {
             }
             Key::Char('e') => match entry {
                 Some(Entry::Typed(item)) => {
-                    let Some((title, notes)) = edit_in_popup(&format!("edit · {}", item.project()), &item.text(), &item.notes(), &item.why()) else { return "unchanged".into() };
-                    let Some(chosen) = screen.outside(&mut || pick_todo_kind(item.category(), false)) else { return "unchanged".into() };
-                    let Some(category) = todo::Category::parse(&chosen.to_lowercase()) else { return "unchanged: invalid kind".into() };
-                    if !self.todos.edit(&item.id(), &title, &notes) { return "unchanged".into() }
-                    self.todos.set_category(&item.id(), category);
-                    self.reveal_todo(&item.id());
-                    "saved".into()
+                    match self.edit_todo(&format!("edit · {}", item.project()), &item.project(), &item.cwd(), Some(&item), screen) {
+                        Ok(Some(id)) => { self.reveal_todo(&id); "saved".into() },
+                        Ok(None) => "unchanged".into(),
+                        Err(error) => error,
+                    }
                 }
                 Some(Entry::Issue { .. }) => "an issue is edited on GitHub".into(),
                 None => String::new(),
@@ -3194,7 +3214,7 @@ pub(crate) fn editor_text(title: &str, notes: &str, why: &str) -> String {
 /// Title and notes back from the editor's file; None for an empty title.
 pub(crate) fn parse_editor_text(text: &str) -> Option<(String, String)> {
     let body = text.split(EDITOR_HELP_MARK).next().unwrap_or("");
-    let mut lines = body.lines().skip_while(|line| line.trim().is_empty());
+    let mut lines = body.lines();
     let title = lines.next()?.trim().to_string();
     if title.is_empty() {
         return None;
@@ -3203,16 +3223,25 @@ pub(crate) fn parse_editor_text(text: &str) -> Option<(String, String)> {
     Some((title, notes))
 }
 
-/// Theo's editor ($EDITOR, else nvim) in a tmux popup over the cockpit, on a file of the runtime
-/// folder; the column waits for it to close.
-fn edit_in_popup(heading: &str, title: &str, notes: &str, why: &str) -> Option<(String, String)> {
-    let path = crate::paths::runtime_dir().join(format!("claude-todo-{}.md", util::token_hex(4)));
-    fs::write(&path, editor_text(title, notes, why)).ok()?;
-    let _ = Command::new("tmux").args(["display-popup", "-E", "-w", "80%", "-h", "70%", "-T", &format!(" {heading} · save and quit keeps it ")])
-        .args(["sh", "-c", "exec \"${EDITOR:-nvim}\" \"$1\"", "sh"]).arg(&path).status();
-    let text = fs::read_to_string(&path).unwrap_or_default();
-    let _ = fs::remove_file(&path);
-    parse_editor_text(&text)
+impl App {
+    fn edit_todo(&mut self, heading: &str, project: &str, cwd: &str, item: Option<&todo::Item>, screen: &mut dyn Screen) -> Result<Option<String>, String> {
+        let mut draft = crate::todo_editor::Draft::create(project, cwd, item)
+            .map_err(|error| format!("cannot create TODO draft: {error}"))?;
+        (|| -> io::Result<Option<String>> {
+            draft.edit(heading)?;
+            if !draft.has_title()? { draft.discard()?; return Ok(None) }
+            let initial_category = item.map(todo::Item::category).unwrap_or(Some(todo::Category::Task));
+            let Some(chosen) = screen.outside(&mut || pick_todo_kind(initial_category, false)) else {
+                draft.discard()?;
+                return Ok(None);
+            };
+            let category = todo::Category::parse(&chosen.to_lowercase()).ok_or_else(|| io::Error::other("invalid TODO kind"))?;
+            draft.category = Some(category.as_str().into());
+            draft.persist()?;
+            draft.finish(&mut self.todos)?;
+            Ok(Some(draft.id.clone()))
+        })().map_err(|error| format!("TODO draft kept for recovery: {error}"))
+    }
 }
 
 /// Read-only text in a tmux popup (less: q closes it).

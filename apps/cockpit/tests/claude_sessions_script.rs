@@ -47,6 +47,21 @@ const BUSY_WITHOUT_PROMPT: &str = "✻ Flowing… (11s)\n";
 const DIALOG: &str = " Bash command\n   npm test\n Do you want to proceed?\n ❯ 1. Yes\n   2. No\n";
 
 #[test]
+fn reload_waits_for_the_todo_editor_before_replacing_the_sidebar() {
+    let manager = Manager::new();
+    let lock = fs::File::create(manager.runtime_file("claude-todo-editor.lock")).unwrap();
+    lock.lock_shared().unwrap();
+    let mut child = manager.sandbox.command(bin().join("claude-sessions"), &[]).arg("reload").spawn().unwrap();
+    std::thread::sleep(Duration::from_millis(250));
+    let respawned_while_editing = manager.tmux_calls("respawn-pane").iter().any(|call| call.contains("claude-sessions-sidebar"));
+    let exited_while_editing = child.try_wait().unwrap().is_some();
+    drop(lock);
+    assert!(child.wait().unwrap().success());
+    assert!(!respawned_while_editing && !exited_while_editing, "reload interrupted the editor");
+    assert!(manager.tmux_calls("respawn-pane").iter().any(|call| call.contains("claude-sessions-sidebar")));
+}
+
+#[test]
 fn design_review_targets_the_existing_agent_not_the_cockpit() {
     for (id, target) in [(SESSION_A, "claude-retry-9-9"), (OPENCODE_SESSION, "claude-retry-opencode-19")] {
         let manager = Manager::new();

@@ -4013,6 +4013,264 @@ fn a_session_cannot_turn_a_proposal_into_work() {
 }
 
 #[test]
+fn todo_drafts_recover_an_interrupted_addition_in_its_original_project_once() {
+    let fixture = Fixture::new();
+    fixture.view(SESSION_A);
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "runway", "/r/runway", 100)]));
+    fixture.shim("tmux", r#"[ "$1" = display-popup ] || exit 0; for last; do :; done; printf 'Original draft\n\nKeep these notes\n' > "$last"; exit 7"#);
+    let mut app = fixture.app();
+    app.focus_panel(3);
+    app.handle(Key::Char('t'), &mut FakeScreen::default());
+    assert!(TodoList::load().items.is_empty(), "an editor failure must retain a draft, not claim a save");
+    fixture.view(SESSION_B);
+    fixture.snapshot(json!([session(SESSION_B, "waiting", "opusline", "/r/opusline", 100)]));
+    let recovered = fixture.app();
+    assert_eq!(recovered.todos.items.len(), 1);
+    let item = &recovered.todos.items[0];
+    assert_eq!((item.text(), item.notes(), item.project(), item.cwd()),
+               ("Original draft".into(), "Keep these notes".into(), "runway".into(), "/r/runway".into()));
+    assert!(recovered.message.contains("recovered"), "{}", recovered.message);
+    assert_eq!(fixture.app().todos.items.len(), 1, "recovery duplicated the draft");
+}
+
+#[test]
+fn todo_drafts_recover_edits_without_changing_identity_or_status() {
+    let fixture = Fixture::new();
+    fixture.shim("tmux", r#"[ "$1" = display-popup ] || exit 0; for last; do :; done; printf 'Recovered edit\n\nNew notes\n' > "$last"; exit 7"#);
+    let mut app = fixture.app();
+    let id = app.todos.add("runway", "/r/runway", "Original");
+    app.todos.set_status(&id, "doing", SESSION_A);
+    app.build();
+    app.focus_panel(3);
+    app.handle(Key::Char('e'), &mut FakeScreen::default());
+    assert_eq!(TodoList::load().items[0].text(), "Original");
+    let recovered = fixture.app();
+    assert_eq!(recovered.todos.items.len(), 1);
+    let item = &recovered.todos.items[0];
+    assert_eq!((item.id(), item.text(), item.notes(), item.status()),
+               (id, "Recovered edit".into(), "New notes".into(), "doing".into()));
+}
+
+#[test]
+fn todo_drafts_survive_a_failed_list_save_and_recover_after_it_is_fixed() {
+    let fixture = Fixture::new();
+    fixture.view(SESSION_A);
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "runway", "/r/runway", 100)]));
+    fixture.shim("tmux", r#"[ "$1" = display-popup ] || exit 0; for last; do :; done; printf 'Do not lose me\n' > "$last""#);
+    let mut app = fixture.app();
+    fs::create_dir_all(fixture.path("state/claude-sessions/todo.json")).unwrap();
+    app.focus_panel(3);
+    app.handle(Key::Char('t'), &mut FakeScreen::typing(&["Bug"]));
+    assert!(app.message.contains("draft") && !app.message.starts_with("added"), "{}", app.message);
+    assert!(fixture.app().message.contains("draft"), "startup should report the failed recovery");
+    fs::remove_dir(fixture.path("state/claude-sessions/todo.json")).unwrap();
+    let recovered = fixture.app();
+    assert_eq!(recovered.todos.items[0].text(), "Do not lose me");
+    assert_eq!(recovered.todos.items[0].category(), Some(crate::todo::Category::Bug));
+}
+
+#[test]
+fn todo_drafts_are_not_recovered_while_an_editor_is_active() {
+    let fixture = Fixture::new();
+    fixture.view(SESSION_A);
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "runway", "/r/runway", 100)]));
+    fixture.shim("tmux", r#"[ "$1" = display-popup ] || exit 0; for last; do :; done; printf 'Still editing\n' > "$last"; exit 7"#);
+    let mut app = fixture.app();
+    app.focus_panel(3);
+    app.handle(Key::Char('t'), &mut FakeScreen::default());
+    let lock = fs::File::open(fixture.path("run/claude-todo-editor.lock")).unwrap();
+    lock.lock_shared().unwrap();
+    let mut restarted = fixture.app();
+    assert!(restarted.todos.items.is_empty());
+    drop(lock);
+    restarted.tick();
+    assert_eq!(restarted.todos.items[0].text(), "Still editing");
+}
+
+#[test]
+fn todo_drafts_cancel_a_blank_first_line_without_promoting_notes_to_the_title() {
+    for is_interrupted in [false, true] {
+        let fixture = Fixture::new();
+        fixture.shim("tmux", &format!(r#"[ "$1" = display-popup ] || exit 0; for last; do :; done; printf '\n\nExisting notes\n' > "$last"; exit {}"#,
+            if is_interrupted { 7 } else { 0 }));
+        let mut app = fixture.app();
+        let id = app.todos.add("runway", "/r/runway", "Original title");
+        app.todos.edit(&id, "Original title", "Existing notes");
+        app.build();
+        app.focus_panel(3);
+        app.handle(Key::Char('e'), &mut FakeScreen::default());
+        let recovered = fixture.app();
+        assert_eq!((recovered.todos.items[0].text(), recovered.todos.items[0].notes()),
+                   ("Original title".into(), "Existing notes".into()));
+        assert_eq!(fs::read_dir(fixture.path("state/claude-sessions/todo-drafts")).unwrap().count(), 0);
+    }
+}
+
+#[test]
+fn todo_drafts_do_not_reopen_a_buffer_recovered_before_the_popup_acquired_its_lock() {
+    let fixture = Fixture::new();
+    fixture.view(SESSION_A);
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "runway", "/r/runway", 100)]));
+    fixture.shim("test-todo-editor", r#"printf opened > "$XDG_RUNTIME_DIR/editor-opened"; printf 'Orphaned input\n' > "$1""#);
+    fixture.shim("delayed-popup", r#"
+        printf waiting > "$XDG_RUNTIME_DIR/popup-waiting"
+        while [ ! -f "$XDG_RUNTIME_DIR/popup-release" ]; do sleep 0.01; done
+        EDITOR=test-todo-editor "$@"
+        printf done > "$XDG_RUNTIME_DIR/popup-done"
+    "#);
+    fixture.shim("tmux", r#"
+        [ "$1" = display-popup ] || exit 0
+        while [ "$1" != sh ]; do shift; done
+        timeout 5 delayed-popup "$@" >/dev/null 2>&1 &
+        exit 7
+    "#);
+    let mut app = fixture.app();
+    app.focus_panel(3);
+    app.handle(Key::Char('t'), &mut FakeScreen::default());
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    while !fixture.path("run/popup-waiting").exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(fixture.path("run/popup-waiting").exists());
+    assert!(fixture.app().todos.items.is_empty());
+    fixture.write("run/popup-release", "continue");
+    while !fixture.path("run/popup-done").exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(fixture.path("run/popup-done").exists());
+    assert!(!fixture.path("run/editor-opened").exists(), "late popup reopened a retired buffer and could orphan new input");
+    assert_eq!(fs::read_dir(fixture.path("state/claude-sessions/todo-drafts")).unwrap().count(), 0);
+}
+
+#[test]
+fn todo_drafts_wait_for_the_popup_process_after_the_sidebar_stops_waiting() {
+    let fixture = Fixture::new();
+    fixture.view(SESSION_A);
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "runway", "/r/runway", 100)]));
+    fixture.shim("test-todo-editor", r#"
+        printf ready > "$XDG_RUNTIME_DIR/editor-ready"
+        while [ ! -f "$XDG_RUNTIME_DIR/editor-release" ]; do sleep 0.01; done
+        printf 'Finished after sidebar restart\n' > "$1"
+    "#);
+    fixture.shim("tmux", r#"
+        [ "$1" = display-popup ] || exit 0
+        while [ "$1" != sh ]; do shift; done
+        EDITOR=test-todo-editor timeout 5 "$@" >/dev/null 2>&1 &
+        exit 7
+    "#);
+    let mut app = fixture.app();
+    app.focus_panel(3);
+    app.handle(Key::Char('t'), &mut FakeScreen::default());
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    while !fixture.path("run/editor-ready").exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(fixture.path("run/editor-ready").exists(), "popup editor did not start");
+    let lock = fs::File::open(fixture.path("run/claude-todo-editor.lock")).unwrap();
+    let is_protected = lock.try_lock().is_err();
+    let mut restarted = fixture.app();
+    let recovered_too_early = !restarted.todos.items.is_empty();
+    fixture.write("run/editor-release", "finish");
+    while restarted.todos.items.is_empty() && std::time::Instant::now() < deadline {
+        restarted.tick();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(is_protected, "the editor subprocess did not hold the reload lock");
+    assert!(!recovered_too_early, "startup read the buffer before its editor finished");
+    assert_eq!(restarted.todos.items[0].text(), "Finished after sidebar restart");
+}
+
+#[test]
+fn todo_drafts_left_after_a_successful_save_do_not_create_duplicates() {
+    for is_edit in [false, true] {
+        let fixture = Fixture::new();
+        fixture.view(SESSION_A);
+        fixture.snapshot(json!([session(SESSION_A, "waiting", "runway", "/r/runway", 100)]));
+        fixture.shim("tmux", r#"
+            [ "$1" = display-popup ] || exit 0
+            for last; do :; done
+            printf 'Saved before crash\n\nImportant notes\n' > "$last"
+            cp -r "$(dirname "$last")" "$XDG_RUNTIME_DIR/draft-backup"
+        "#);
+        let mut app = fixture.app();
+        if is_edit {
+            app.todos.add("runway", "/r/runway", "Old title");
+            app.build();
+        }
+        app.focus_panel(3);
+        app.handle(Key::Char(if is_edit { 'e' } else { 't' }), &mut FakeScreen::typing(&["Task"]));
+        let saved_id = TodoList::load().items[0].id();
+        for entry in fs::read_dir(fixture.path("run/draft-backup")).unwrap() {
+            let entry = entry.unwrap();
+            fs::copy(entry.path(), fixture.path("state/claude-sessions/todo-drafts").join(entry.file_name())).unwrap();
+        }
+        let recovered = fixture.app();
+        assert_eq!(recovered.todos.items.len(), 1);
+        assert_eq!(recovered.todos.items[0].id(), saved_id);
+        assert_eq!(recovered.todos.items[0].notes(), "Important notes");
+    }
+}
+
+#[test]
+fn todo_drafts_report_editor_startup_failure_without_losing_existing_text() {
+    let fixture = Fixture::new();
+    fixture.shim("tmux", "exit 127");
+    let mut app = fixture.app();
+    app.todos.add("runway", "/r/runway", "Keep my existing text");
+    app.build();
+    app.focus_panel(3);
+    app.handle(Key::Char('e'), &mut FakeScreen::default());
+    assert!(app.message.contains("draft kept"), "{}", app.message);
+    assert_eq!(TodoList::load().items[0].text(), "Keep my existing text");
+    assert_eq!(fixture.app().todos.items[0].text(), "Keep my existing text");
+}
+
+#[test]
+fn todo_drafts_cancel_empty_titles_and_leave_untracked_legacy_text_alone() {
+    let fixture = Fixture::new();
+    fixture.view(SESSION_A);
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "runway", "/r/runway", 100)]));
+    fixture.write("run/claude-todo-old.md", "Legacy draft without a project\n");
+    fixture.shim("tmux", r#"[ "$1" = display-popup ] || exit 0; for last; do :; done; printf '\n' > "$last""#);
+    let mut app = fixture.app();
+    app.focus_panel(3);
+    app.handle(Key::Char('t'), &mut FakeScreen::default());
+    assert!(fixture.app().todos.items.is_empty());
+    assert!(fixture.path("run/claude-todo-old.md").exists());
+    let drafts = fixture.path("state/claude-sessions/todo-drafts");
+    assert!(drafts.is_dir(), "editor did not create a persistent draft");
+    assert_eq!(fs::read_dir(drafts).unwrap().count(), 0);
+}
+
+#[test]
+fn todo_editor_holds_the_reload_lock_for_additions_and_edits() {
+    for is_edit in [false, true] {
+        let fixture = Fixture::new();
+        fixture.view(SESSION_A);
+        fixture.snapshot(json!([session(SESSION_A, "waiting", "runway", "/r/runway", 100)]));
+        fixture.shim("tmux", r#"
+            [ "$1" = display-popup ] || exit 0
+            if flock -n "$XDG_RUNTIME_DIR/claude-todo-editor.lock" true; then
+                printf 'reload was allowed during editing' > "$XDG_RUNTIME_DIR/unprotected"
+            fi
+            for last; do :; done
+            printf 'Saved title\n\nSaved notes\n' > "$last"
+        "#);
+        let mut app = fixture.app();
+        if is_edit {
+            app.todos.add("runway", "/r/runway", "Original title");
+            app.build();
+        }
+        app.focus_panel(3);
+        app.handle(Key::Char(if is_edit { 'e' } else { 't' }), &mut FakeScreen::typing(&["Task"]));
+        assert!(!fixture.path("run/unprotected").exists(), "editor ran without the reload lock");
+        assert_eq!(TodoList::load().items[0].text(), "Saved title");
+        let lock = fs::File::open(fixture.path("run/claude-todo-editor.lock")).unwrap();
+        assert!(lock.try_lock().is_ok(), "lock leaked after saving");
+    }
+}
+
+#[test]
 fn the_editor_file_gives_back_a_title_and_notes() {
     let text = crate::app::editor_text("Old title", "old notes", "because");
     assert!(text.contains("# Why Claude proposed it:\n# because"));

@@ -15,6 +15,7 @@ pub mod sessions;
 pub mod settings;
 pub mod status;
 pub mod todo;
+mod todo_editor;
 pub mod usage;
 pub mod util;
 

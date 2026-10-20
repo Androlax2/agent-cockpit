@@ -1867,8 +1867,12 @@ case ${1:-attach} in
     label-state) label_state "${2:?usage: claude-sessions label-state <state> [session-id]}" "${3:-}" ;;
     prepare) ensure_manager ;;
     reload)
+        # The editor owns a shared lock until its text reaches todo.json, not just until it closes.
+        exec {todo_editor_lock}>"${XDG_RUNTIME_DIR:-/tmp}/claude-todo-editor.lock"
+        flock "$todo_editor_lock"
         ensure_manager
         tmux respawn-pane -k -t "$(sidebar_pane)" claude-sessions-sidebar
+        exec {todo_editor_lock}>&-
         restart_stale_osd
         ;;
     restart-osd-when-idle) restart_osd_when_idle ;;
