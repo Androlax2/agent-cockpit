@@ -8,9 +8,12 @@
 #   claude-sessions show [id]    open or focus the manager window (kitty, workspace 6), view id;
 #                                without id, from the Claude workspace itself, go back to the
 #                                previous workspace instead (ALT + C toggles)
-#   claude-sessions view <id>    show a session in the viewer pane (the sidebar's n); id is the
+#   claude-sessions view <id>    show a session in the viewer pane; id is the
 #                                daemon's session id or a claude-retry-* tmux session name
 #   claude-sessions open <id>    view it and put the cursor in it (the sidebar's Enter)
+#   claude-sessions attend <id>  focus its approval or question, return after answering (the sidebar's n)
+#   claude-sessions attention-answered <run-id>
+#                                return from command input without closing its output (the daemon)
 #   claude-sessions new <dir> [claude args…]
 #                                start `claude` in <dir> inside the viewer pane (the sidebar's a,
 #                                and the fish `claude` function from any terminal). Without claude
@@ -102,6 +105,7 @@ LOG_MAX_BYTES=1048576
 LOG_LINE_MAX=300
 HOOK_LOG_FILE="$HOME/.cache/claude/hook.log"
 CURRENT="${XDG_RUNTIME_DIR:-/tmp}/claude-sessions.current"
+ATTENTION="${XDG_RUNTIME_DIR:-/tmp}/claude-sessions.attention"
 SIDEBAR_WIDTH=60   # columns; the rest is the session
 WINDOW_CLASS=claude-sessions
 KITTY_CONFIG="$HOME/.config/kitty/kitty.conf"
@@ -259,6 +263,7 @@ view_session() {
         target=$(tmux display-message -p -t "$pane" '#{session_name}')
     fi
     ensure_manager
+    rm -f "$ATTENTION"
     # The session and its approval pane change in one tmux command: tmux redraws once, after both.
     # In two steps the session showed a moment at full height before the pane appeared or went.
     local sidebar viewer approval approval_run sidebar_dead run new_pane
@@ -328,13 +333,55 @@ label_state() {
         working|waiting|needs-you|unknown) ;;
         *) echo "claude-sessions: unknown state $state" >&2; return 1 ;;
     esac
+    [[ -z ${2:-} || $2 == "$(cat "$CURRENT" 2>/dev/null)" ]] || return 0
     tmux set-option -p -t "$(viewer_pane)" @state "$state"
+    local attended initial run
+    if [[ -f $ATTENTION ]]; then
+        read -r attended initial run < "$ATTENTION"
+        if [[ -z $run && ( $state == working || ( $initial == needs-you && $state == waiting ) ) ]]; then
+            finish_attention
+        fi
+    fi
 }
 
 focus_viewer() {
+    rm -f "$ATTENTION"
     local sidebar viewer approval approval_run sidebar_dead
     read_manager_panes
     tmux select-pane -t "${approval:-$viewer}"
+}
+
+attend_session() {
+    view_session "$1" || return
+    local run pane state
+    run=$(approval_for "$1")
+    pane=$(pane_by_role approval)
+    [[ -n $pane ]] || pane=$(viewer_pane)
+    state=$(session_field "$1" state)
+    if [[ $(session_field "$1" needs_input) == true ]]; then state=needs-you; fi
+    printf '%s %s %s\n' "$1" "$state" "$run" > "$ATTENTION"
+    tmux select-pane -t "$pane"
+}
+
+finish_attention() {
+    [[ -f $ATTENTION ]] || return 0
+    local attended initial run pane="" sidebar active
+    read -r attended initial run < "$ATTENTION"
+    rm -f "$ATTENTION"
+    [[ $attended == "$(cat "$CURRENT" 2>/dev/null)" ]] || return 0
+    if [[ -n $run ]]; then pane=$(pane_by_role approval); fi
+    [[ -n $pane ]] || pane=$(viewer_pane)
+    active=$(tmux display-message -p -t "$pane" '#{pane_active}')
+    [[ $active == 1 ]] || return 0
+    sidebar=$(pane_by_role sidebar)
+    tmux select-pane -t "$sidebar" ";" send-keys -t "$sidebar" F1
+}
+
+attention_answered() { # run id (empty when all approvals close)
+    [[ -f $ATTENTION ]] || return 0
+    local attended initial run
+    read -r attended initial run < "$ATTENTION"
+    if [[ -n $run && ( -z $1 || $1 == "$run" ) ]]; then finish_attention; fi
 }
 
 running_session_in() { # dir agent
@@ -1035,6 +1082,20 @@ doctor() {
     local wanted=1; "$ON_CLAUDE_WORKSPACE" && wanted=0
     if [[ $(cat "${XDG_RUNTIME_DIR:-/tmp}/waybar-visible" 2>/dev/null || echo 1) == "$wanted" ]]; then report ok "bar visibility matches the workspace"; else report fail "bar visibility state out of step" "$HOME/.config/waybar/scripts/waybar-visibility.sh sync"; fi
     echo "tmux"
+    # pacman can replace the local patch without changing tmux's reported version.
+    local fingerprint="$HOME/.config/tmux/border-junction.sha256" expected_digest actual_digest tmux_binary
+    expected_digest=$(cat "$fingerprint" 2>/dev/null) || expected_digest=""
+    if [[ ! $expected_digest =~ ^[0-9a-f]{64}$ ]]; then
+        report fail "tmux border-junction fix: fingerprint missing or invalid" "restore $fingerprint from the reviewed dotfiles"
+    else
+        tmux_binary=$(type -P tmux) || tmux_binary=""
+        actual_digest=$(sha256sum -- "$tmux_binary" 2>/dev/null) || actual_digest=""
+        if [[ ${actual_digest%% *} == "$expected_digest" ]]; then
+            report ok "tmux border-junction fix verified"
+        else
+            report fail "tmux border-junction fix: binary replaced or unreadable" "review packages/tmux/top-border-junction.patch and reinstall patched tmux; update $fingerprint only after verifying the fix"
+        fi
+    fi
     if [[ $(tmux show -gv window-size 2>/dev/null) == latest ]]; then report ok "window-size latest"; else report fail "tmux window-size is not latest" "tmux source ~/.config/tmux/tmux.conf"; fi
     if [[ $(tmux show -sv set-clipboard 2>/dev/null) == on ]]; then report ok "set-clipboard on (opencode's copy reaches the clipboard)"; else report fail "tmux set-clipboard is not on: opencode's copy reaches no clipboard" "tmux source ~/.config/tmux/tmux.conf"; fi
     if tmux list-keys -T root 2>/dev/null | grep -q ' root *Left .*claude-sessions-left'; then report ok "Left goes to the column from the start of the prompt only"; else report fail "Left in the session pane is not claude-sessions-left's" "tmux source ~/.config/tmux/tmux.conf"; fi
@@ -1329,6 +1390,7 @@ APPROVAL_STATE="${XDG_RUNTIME_DIR:-/tmp}/claude-sessions-approval"
 approval_pane() { # id | close [id]
     tmux has-session -t "=$MANAGER" 2>/dev/null || return 0
     if [[ $1 == close ]]; then
+        attention_answered "${2:-}"
         if [[ -n ${2:-} ]]; then forget_approval "$2"; else rm -f "$APPROVAL_STATE"; fi
         place_approval
         return 0
@@ -1655,7 +1717,7 @@ clear_exited_viewer() { # session-id
 }
 
 idle() {
-    printf '\n  No session selected.\n\n  In the column: j/k move   Enter open   n peek at the next one needing you   a new   ? every key\n  ⌘Tab moves between the column and this pane; ⌘1/2/3 jump to a panel from here.\n'
+    printf '\n  No session selected.\n\n  In the column: j/k move   Enter open   n answer the next one needing you   a new   ? every key\n  ⌘Tab moves between the column and this pane; ⌘1/2/3 jump to a panel from here.\n'
     exec sleep infinity
 }
 
@@ -1749,6 +1811,8 @@ case ${1:-attach} in
         ;;
     show) show_manager "${2:-}" ;;
     view) view_session "${2:?usage: claude-sessions view <session-id>}" ;;
+    attend) attend_session "${2:?usage: claude-sessions attend <session-id>}" ;;
+    attention-answered) attention_answered "${2:?usage: claude-sessions attention-answered <run-id>}" ;;
     open) view_session "${2:?usage: claude-sessions open <session-id>}" && focus_viewer ;;
     new) shift; new_session "${1:?usage: claude-sessions new <dir> [claude args]}" "${@:2}" ;;
     terminal)
@@ -1795,7 +1859,7 @@ case ${1:-attach} in
     clones) clones_popup ;;
     clones-review) clones_review ;;
     clones-sweep) clones_review sweep ;;
-    label-state) label_state "${2:?usage: claude-sessions label-state <state>}" ;;
+    label-state) label_state "${2:?usage: claude-sessions label-state <state> [session-id]}" "${3:-}" ;;
     prepare) ensure_manager ;;
     reload)
         ensure_manager

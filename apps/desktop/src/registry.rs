@@ -745,6 +745,7 @@ impl RunRequests {
                 "running" if self.current != id || !self.asked_input => {
                     system.run(&["claude-sessions", "approval-pane", "close", id], &[0]);
                 }
+                "running" => { system.run(&["claude-sessions", "attention-answered", id], &[0]); }
                 "input" => { system.run(&["claude-sessions", "approval-pane", id], &[0]); }
                 _ => {}
             }

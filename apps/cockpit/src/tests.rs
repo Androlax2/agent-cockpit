@@ -234,7 +234,7 @@ fn attention_navigation_targets_requests_without_reordering_sessions() {
     for (count, expected) in [SESSION_B, OPENCODE_SESSION, SESSION_B].into_iter().enumerate() {
         app.handle(Key::Char('n'), &mut FakeScreen::default());
         assert_eq!(app.sessions[app.panels[1].selected].session, expected);
-        assert_eq!(fixture.wait_for_calls("claude-sessions", count + 1)[count], format!("claude-sessions view {expected}"));
+        assert_eq!(fixture.wait_for_calls("claude-sessions", count + 1)[count], format!("claude-sessions attend {expected}"));
     }
     assert_eq!(app.sessions.iter().map(|session| session.session.clone()).collect::<Vec<_>>(), order);
 }
@@ -1014,7 +1014,7 @@ fn attention_summary_counts_sessions_once_by_their_current_activity() {
 }
 
 #[test]
-fn fixed_next_needing_me_click_only_previews_the_next_request() {
+fn fixed_next_needing_me_click_focuses_the_next_request() {
     let fixture = Fixture::new();
     fixture.snapshot(json!([session(SESSION_A, "working", "dotfiles", "/r/dotfiles", 1), session(SESSION_B, "needs-you", "dotfiles", "/r/dotfiles", 2)]));
     let mut app = fixture.app();
@@ -1022,7 +1022,7 @@ fn fixed_next_needing_me_click_only_previews_the_next_request() {
     let (&row, &(start, _, _)) = app.hit_actions.iter().find(|(_, (_, _, action))| *action == "next-attention").expect("clickable attention shortcut");
     app.handle(Key::Click { x: start, y: row, double: true }, &mut FakeScreen::default());
     assert_eq!(app.sessions[app.panels[1].selected].session, SESSION_B);
-    assert_eq!(fixture.wait_for_calls("claude-sessions", 1), [format!("claude-sessions view {SESSION_B}")]);
+    assert_eq!(fixture.wait_for_calls("claude-sessions", 1), [format!("claude-sessions attend {SESSION_B}")]);
 }
 
 #[test]
@@ -1416,6 +1416,25 @@ fn the_viewed_sessions_state_is_pushed_only_when_it_changes() {
     app.tick();
     app.tick();
     assert_eq!(fixture.wait_for_calls("claude-sessions label-state", 1).len(), 1);
+}
+
+#[test]
+fn answering_an_explicit_chat_question_updates_the_viewed_state() {
+    let fixture = Fixture::new();
+    let mut row = session(SESSION_A, "waiting", "runway", "/r", 1);
+    row["needs_input"] = json!(true);
+    fixture.snapshot(json!([row.clone()]));
+    fixture.view(SESSION_A);
+    let mut app = fixture.app();
+    app.handle(Key::Char('n'), &mut FakeScreen::default());
+    assert_eq!(fixture.wait_for_calls("claude-sessions attend", 1), [format!("claude-sessions attend {SESSION_A}")]);
+    app.tick();
+    assert_eq!(fixture.wait_for_calls("claude-sessions label-state", 1), [format!("claude-sessions label-state needs-you {SESSION_A}")]);
+    row["needs_input"] = json!(false);
+    fixture.snapshot(json!([row]));
+    app.build();
+    app.tick();
+    assert_eq!(fixture.wait_for_calls("claude-sessions label-state", 2).last(), Some(&format!("claude-sessions label-state waiting {SESSION_A}")));
 }
 
 #[test]
@@ -2222,6 +2241,14 @@ fn pull_requests_come_from_gh_without_bots_and_open_in_the_cockpit_window() {
     app.focus_panel(2);
     app.handle(Key::Enter, &mut FakeScreen::default());
     assert_eq!(fixture.calls("hyprctl"), vec![r#"hyprctl eval OPEN_IN_SCRATCHPAD("prs", "https://github.com/o/r/pull/3")"#.to_string()]);
+}
+
+#[test]
+fn g_opens_pending_requests_in_the_greyproxy_window() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    app.handle(Key::Char('G'), &mut FakeScreen::default());
+    assert_eq!(fixture.calls("hyprctl"), vec![r#"hyprctl eval OPEN_IN_SCRATCHPAD("greyproxy", "http://localhost:43080/pending")"#.to_string()]);
 }
 
 #[test]
@@ -3501,7 +3528,7 @@ fn external_sessions_are_skipped_when_peeking_at_sessions_needing_attention() {
     let mut app = fixture.app();
     assert_eq!(app.sessions.len(), 2);
     app.handle(Key::Char('n'), &mut FakeScreen::default());
-    assert_eq!(fixture.wait_for_calls("claude-sessions", 1), [format!("claude-sessions view {SESSION_B}")]);
+    assert_eq!(fixture.wait_for_calls("claude-sessions", 1), [format!("claude-sessions attend {SESSION_B}")]);
 }
 
 #[test]

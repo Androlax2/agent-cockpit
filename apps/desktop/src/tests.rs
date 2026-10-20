@@ -1185,6 +1185,16 @@ fn a_finished_request_closes_the_pane_and_starts_the_next() {
 }
 
 #[test]
+fn answering_command_input_returns_attention_without_closing_its_output() {
+    let mut bench = Bench::new();
+    bench.registry.run_request(RUN_A).unwrap();
+    bench.registry.run_phase(RUN_A, "input");
+    bench.registry.run_phase(RUN_A, "running");
+    assert!(bench.commands().contains(&vec!["claude-sessions".into(), "attention-answered".into(), RUN_A.into()]));
+    assert!(!bench.commands().contains(&vec!["claude-sessions".into(), "approval-pane".into(), "close".into(), RUN_A.into()]));
+}
+
+#[test]
 fn an_answered_request_in_the_queue_is_skipped() {
     let mut bench = Bench::new();
     bench.registry.run_request(RUN_A).unwrap();

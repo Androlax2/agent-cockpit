@@ -243,6 +243,110 @@ fn answering_an_approval_does_not_take_focus_from_the_column() {
 }
 
 #[test]
+fn attending_a_question_focuses_the_viewer_then_returns_when_answered() {
+    let manager = Manager::new();
+    assert!(manager.run(&["attend", SESSION_A], &[]).status.success());
+    assert_eq!(manager.tmux_calls("select-pane").last().unwrap(), "tmux select-pane -t %11");
+    manager.run(&["label-state", "waiting", SESSION_A], &[]);
+    assert!(!manager.calls("tmux").iter().any(|call| call.contains("send-keys -t %10 F1")));
+    manager.run(&["label-state", "working", SESSION_A], &[("SHIM_VIEWER_ACTIVE", "1")]);
+    assert!(manager.calls("tmux").iter().any(|call| call.contains("select-pane -t %10 ; send-keys -t %10 F1")));
+}
+
+#[test]
+fn attending_an_approval_focuses_its_pane_then_returns_when_closed() {
+    let manager = Manager::new();
+    manager.run(&["approval-pane", "0123456789ab"], &[]);
+    assert!(manager.run(&["attend", SESSION_A], &[]).status.success());
+    let approval = fs::read_to_string(&manager.roles).unwrap().lines()
+        .find(|line| line.ends_with(" approval")).unwrap().split_whitespace().next().unwrap().to_string();
+    assert_eq!(manager.tmux_calls("select-pane").last().unwrap(), &format!("tmux select-pane -t {approval}"));
+    manager.run(&["approval-pane", "close", "0123456789ab"], &[("SHIM_APPROVAL_ACTIVE", "1")]);
+    assert!(manager.calls("tmux").iter().any(|call| call.contains("select-pane -t %10 ; send-keys -t %10 F1")));
+}
+
+#[test]
+fn closing_another_approval_does_not_end_the_attention_visit() {
+    let manager = Manager::new();
+    manager.run(&["approval-pane", "0123456789ab"], &[]);
+    assert!(manager.run(&["attend", SESSION_A], &[]).status.success());
+    manager.run(&["approval-pane", "close", "ffffffffffff"], &[("SHIM_APPROVAL_ACTIVE", "1")]);
+    assert!(!manager.calls("tmux").iter().any(|call| call.contains("send-keys -t %10 F1")));
+}
+
+#[test]
+fn answering_command_input_returns_focus_without_closing_the_output() {
+    let manager = Manager::new();
+    manager.run(&["approval-pane", "0123456789ab"], &[]);
+    assert!(manager.run(&["attend", SESSION_A], &[]).status.success());
+    assert!(manager.run(&["attention-answered", "0123456789ab"], &[("SHIM_APPROVAL_ACTIVE", "1")]).status.success());
+    assert!(manager.calls("tmux").iter().any(|call| call.contains("select-pane -t %10 ; send-keys -t %10 F1")));
+    assert!(manager.tmux_calls("kill-pane").is_empty());
+}
+
+#[test]
+fn an_attention_approval_that_already_closed_still_returns_focus() {
+    let manager = Manager::new();
+    manager.run(&["approval-pane", "0123456789ab"], &[]);
+    assert!(manager.run(&["attend", SESSION_A], &[]).status.success());
+    fs::write(&manager.roles, "%10 sidebar\n%11 viewer\n").unwrap();
+    manager.run(&["approval-pane", "close", "0123456789ab"], &[("SHIM_VIEWER_ACTIVE", "1")]);
+    assert!(manager.calls("tmux").iter().any(|call| call.contains("select-pane -t %10 ; send-keys -t %10 F1")));
+}
+
+#[test]
+fn dismissing_a_permission_question_returns_to_active_sessions() {
+    let manager = Manager::new();
+    fs::write(&manager.snapshot, json!({"sessions": [
+        {"session": SESSION_A, "state": "needs-you", "project": "proj-a", "tmux_pane": "%4"}]}).to_string()).unwrap();
+    assert!(manager.run(&["attend", SESSION_A], &[]).status.success());
+    manager.run(&["label-state", "waiting", SESSION_A], &[("SHIM_VIEWER_ACTIVE", "1")]);
+    assert!(manager.calls("tmux").iter().any(|call| call.contains("select-pane -t %10 ; send-keys -t %10 F1")));
+}
+
+#[test]
+fn answering_an_explicit_chat_question_returns_to_active_sessions() {
+    let manager = Manager::new();
+    fs::write(&manager.snapshot, json!({"sessions": [
+        {"session": SESSION_A, "state": "waiting", "needs_input": true, "project": "proj-a", "tmux_pane": "%4"}]}).to_string()).unwrap();
+    assert!(manager.run(&["attend", SESSION_A], &[]).status.success());
+    manager.run(&["label-state", "needs-you", SESSION_A], &[("SHIM_VIEWER_ACTIVE", "1")]);
+    assert!(!manager.calls("tmux").iter().any(|call| call.contains("send-keys -t %10 F1")));
+    manager.run(&["label-state", "waiting", SESSION_A], &[("SHIM_VIEWER_ACTIVE", "1")]);
+    assert!(manager.calls("tmux").iter().any(|call| call.contains("select-pane -t %10 ; send-keys -t %10 F1")));
+}
+
+#[test]
+fn manual_open_does_not_return_to_the_sidebar_after_answering() {
+    let manager = Manager::new();
+    manager.run(&["attend", SESSION_A], &[]);
+    manager.run(&["open", SESSION_A], &[]);
+    manager.run(&["label-state", "working", SESSION_A], &[("SHIM_VIEWER_ACTIVE", "1")]);
+    assert!(!manager.calls("tmux").iter().any(|call| call.contains("send-keys -t %10 F1")));
+}
+
+#[test]
+fn answering_after_leaving_the_attention_pane_does_not_steal_focus() {
+    let manager = Manager::new();
+    manager.run(&["attend", SESSION_A], &[]);
+    manager.run(&["label-state", "working", SESSION_A], &[]);
+    assert!(!manager.calls("tmux").iter().any(|call| call.contains("send-keys -t %10 F1")));
+    manager.run(&["label-state", "waiting", SESSION_A], &[]);
+    manager.run(&["label-state", "working", SESSION_A], &[("SHIM_VIEWER_ACTIVE", "1")]);
+    assert!(!manager.calls("tmux").iter().any(|call| call.contains("send-keys -t %10 F1")));
+}
+
+#[test]
+fn an_old_sessions_state_cannot_end_the_current_attention_visit() {
+    let manager = Manager::new();
+    manager.run(&["attend", SESSION_A], &[]);
+    manager.run(&["label-state", "working", SESSION_B], &[("SHIM_VIEWER_ACTIVE", "1")]);
+    assert!(!manager.calls("tmux").iter().any(|call| call.contains("send-keys -t %10 F1")));
+    manager.run(&["label-state", "working", SESSION_A], &[("SHIM_VIEWER_ACTIVE", "1")]);
+    assert!(manager.calls("tmux").iter().any(|call| call.contains("send-keys -t %10 F1")));
+}
+
+#[test]
 fn plain_new_reuses_the_projects_running_session() {
     let manager = Manager::new();
     manager.run(&["new", &path_str(&manager.project)], &[]);
@@ -1448,6 +1552,46 @@ fn the_doctor_does_not_count_the_health_checks_own_failure() {
     let result = manager.run(&["doctor"], &[]);
     let output = stdout(&result);
     assert!(output.contains("no error logged in 24 h"), "{}\n---stderr\n{}", &output[output.len().saturating_sub(800)..], stderr(&result));
+}
+
+fn record_tmux_fingerprint(manager: &Manager) -> PathBuf {
+    let baseline = manager.sandbox.home.join(".config/tmux/border-junction.sha256");
+    fs::create_dir_all(baseline.parent().unwrap()).unwrap();
+    let digest = Command::new("sha256sum").arg(manager.sandbox.shims.join("tmux")).output().unwrap();
+    fs::write(&baseline, stdout(&digest).split_whitespace().next().unwrap()).unwrap();
+    baseline
+}
+
+#[test]
+fn the_doctor_accepts_the_reviewed_tmux_binary() {
+    let manager = Manager::new();
+    record_tmux_fingerprint(&manager);
+    let output = stdout(&manager.run(&["doctor"], &[]));
+    assert!(output.contains("ok    tmux border-junction fix verified"), "{output}");
+}
+
+#[test]
+fn the_doctor_detects_a_tmux_replacement_even_with_the_same_version() {
+    let manager = Manager::new();
+    record_tmux_fingerprint(&manager);
+    manager.sandbox.shim("tmux", &format!("{FAKE_TMUX}\n# replacement package, same version\n"));
+    let result = manager.run(&["doctor"], &[]);
+    assert!(!result.status.success());
+    let output = stdout(&result);
+    assert!(output.contains("FAIL  tmux border-junction fix: binary replaced or unreadable"), "{output}");
+}
+
+#[test]
+fn the_doctor_requires_a_valid_reviewed_tmux_fingerprint() {
+    for baseline in [None, Some(""), Some("not-a-sha256")] {
+        let manager = Manager::new();
+        if let Some(contents) = baseline {
+            let path = record_tmux_fingerprint(&manager);
+            fs::write(path, contents).unwrap();
+        }
+        let output = stdout(&manager.run(&["doctor"], &[]));
+        assert!(output.contains("FAIL  tmux border-junction fix: fingerprint missing or invalid"), "{baseline:?}: {output}");
+    }
 }
 
 /// What a launch hands fish after its script, from the `--` that ends fish's own options (the fake
