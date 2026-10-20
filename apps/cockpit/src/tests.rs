@@ -2391,6 +2391,24 @@ fn the_team_view_lives_in_the_palette_without_a_key() {
 }
 
 #[test]
+fn typing_a_palette_actions_name_puts_it_first() {
+    // Theo typed "team" in : and the Team view sat two thirds down an unsorted fuzzy list.
+    use std::io::Write;
+    let fixture = Fixture::new();
+    let app = fixture.app();
+    // The fixture's PATH has a stand-in fzf: rank with the real one.
+    let real_fzf = ["/usr/bin/fzf", "/usr/local/bin/fzf"].into_iter().find(|path| Path::new(path).exists()).expect("fzf is installed");
+    for name in ["team", "digest", "clones"] {
+        let mut fzf = std::process::Command::new(real_fzf).args(crate::app::fzf_arguments("action> ", &crate::app::PALETTE_FZF_OPTIONS)).args(["--filter", name])
+            .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).spawn().expect("fzf is installed");
+        fzf.stdin.take().unwrap().write_all(app.palette_entries().join("\n").as_bytes()).unwrap();
+        let ranked = String::from_utf8(fzf.wait_with_output().unwrap().stdout).unwrap();
+        let first = ranked.lines().next().unwrap_or("");
+        assert_eq!(first.split('\t').nth(1), Some(name), "{name}: {first}");
+    }
+}
+
+#[test]
 fn approving_sends_exactly_the_displayed_revision_and_mapping() {
     let fixture = Fixture::new();
     let requests = team_host(&fixture, team_snapshot(), vec![]);

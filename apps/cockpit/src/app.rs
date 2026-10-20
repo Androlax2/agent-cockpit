@@ -3559,8 +3559,13 @@ fn draw_team_view(view: &crate::teams::view::TeamView, buffer: &mut Buffer) {
     put(buffer, bottom, 1, &format!("└{}┘", "─".repeat(inner)), style(BLUE));
 }
 
+/// Every picker keeps its list's order unless `extra` turns sorting back on (a later --sort wins).
+pub(crate) fn fzf_arguments<'a>(prompt: &'a str, extra: &[&'a str]) -> Vec<&'a str> {
+    ["--prompt", prompt, "--height", "100%", "--no-sort"].into_iter().chain(extra.iter().copied()).collect()
+}
+
 fn fzf(prompt: &str, lines: &[String], extra: &[&str]) -> Option<String> {
-    let mut child = Command::new("fzf").args(["--prompt", prompt, "--height", "100%", "--no-sort"]).args(extra)
+    let mut child = Command::new("fzf").args(fzf_arguments(prompt, extra))
         .stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().ok()?;
     if let Some(mut stdin) = child.stdin.take() {
         let _ = stdin.write_all(lines.join("\n").as_bytes());
@@ -3617,8 +3622,11 @@ fn pick_agent() -> Option<String> {
 }
 
 /// "panel\tkey" of the chosen action.
+/// Ranked by match (fzf() turns sorting off for the lists whose order matters), on the shown text.
+pub(crate) const PALETTE_FZF_OPTIONS: [&str; 5] = ["--sort", "--delimiter", "\t", "--with-nth", "3.."];
+
 fn pick_action(entries: &[String]) -> Option<String> {
-    let chosen = fzf("action> ", entries, &["--delimiter", "\t", "--with-nth", "3.."])?;
+    let chosen = fzf("action> ", entries, &PALETTE_FZF_OPTIONS)?;
     let mut fields = chosen.splitn(3, '\t');
     Some(format!("{}\t{}", fields.next()?, fields.next()?))
 }
