@@ -780,6 +780,22 @@ fn quota_rows_distinguish_available_low_exhausted_and_invalid_percentages() {
 }
 
 #[test]
+fn quota_colors_follow_remaining_capacity_for_both_providers() {
+    use crate::app::{GREEN, RED, YELLOW};
+    use ratatui::style::Color;
+
+    let fixture = Fixture::new();
+    for (remaining, color) in [(100, GREEN), (51, GREEN), (50, YELLOW), (21, YELLOW), (20, RED), (1, RED), (0, RED)] {
+        fixture.write("run/claude-usage.json", &json!({"five_hour": {"utilization": 100 - remaining}}).to_string());
+        fixture.write("run/codex-usage.json", &json!({"rate_limit": {"primary_window": {"used_percent": 100 - remaining, "limit_window_seconds": 18000}}}).to_string());
+        let app = fixture.app();
+        for row in &app.panels[0].lines[..2] {
+            assert_eq!(row.segments[1].2.fg, Some(Color::Indexed(color)), "{}: {remaining}% left", row.segments[0].1);
+        }
+    }
+}
+
+#[test]
 fn quota_rows_keep_missing_providers_visible_as_unknown() {
     let fixture = Fixture::new();
     let rows = texts(&fixture.app(), 0);

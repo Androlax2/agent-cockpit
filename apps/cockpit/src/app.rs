@@ -858,8 +858,10 @@ impl App {
         let mut lines = Vec::new();
         for (index, quota) in self.quota_rows.iter().enumerate() {
             let tint = bold(match quota.state.as_str() {
+                "Available" if quota.remaining.is_some_and(|remaining| remaining <= 50) => YELLOW,
                 "Available" => GREEN,
-                "Low" | "Stale" => YELLOW,
+                "Stale" => YELLOW,
+                "Low" => RED,
                 "Exhausted" | "Blocked" => RED,
                 _ => FG_DARK,
             });
