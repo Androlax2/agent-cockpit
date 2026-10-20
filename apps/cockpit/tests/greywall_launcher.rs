@@ -598,6 +598,41 @@ fn a_parallel_dotfiles_clone_reads_the_live_checkout_and_another_project_does_no
     assert!(!launch.run(&[]).contains(&read_live), "proj-a reads the live checkout");
 }
 
+/// The greywall call and the environment claude got, started in `folder` under the test's home.
+fn start_claude_in(launch: &Launch, folder: &str) -> (String, Vec<String>) {
+    let project = launch.sandbox.home.join(folder);
+    fs::create_dir_all(&project).unwrap();
+    assert!(Command::new("git").args(["init", "-q"]).arg(&project).status().unwrap().success());
+    let output = launch.sandbox.command(bin().join("greywall-agents/claude"), &[]).current_dir(&project).output().unwrap();
+    assert_eq!(output.status.code(), Some(0), "{folder}: {}", stderr(&output));
+    let environment = fs::read_to_string(launch.sandbox.home.join("claude-environment")).unwrap();
+    (launch.sandbox.calls("greywall").pop().unwrap(), environment.lines().map(str::to_string).collect())
+}
+
+#[test]
+fn dotfiles_clones_share_one_cargo_build_folder() {
+    // Each clone's apps/target grew to 6-20G of the same dependencies built again.
+    for folder in ["IdeaProjects/dotfiles", "IdeaProjects/.parallel/dotfiles/p1"] {
+        let launch = Launch::new();
+        let shared = launch.sandbox.home.join(".cache/dotfiles-cargo-build");
+        let (started, environment) = start_claude_in(&launch, folder);
+        assert!(environment.contains(&format!("CARGO_BUILD_BUILD_DIR={}", shared.display())), "{folder}: {environment:?}");
+        assert!(started.contains(&format!("--allow-path {} ", shared.display())), "{folder}: {started}");
+        assert!(shared.is_dir(), "{folder}: greywall mounts only what exists when it starts");
+    }
+}
+
+#[test]
+fn other_projects_and_pull_request_clones_keep_their_own_cargo_build_folder() {
+    // A pull request's clone runs someone else's build scripts; another project has no business there.
+    for folder in ["IdeaProjects/proj-c", "IdeaProjects/.parallel/dotfiles/pr-12", "IdeaProjects/.parallel/proj-a/p1"] {
+        let launch = Launch::new();
+        let (started, environment) = start_claude_in(&launch, folder);
+        assert!(!environment.iter().any(|line| line.starts_with("CARGO_BUILD_BUILD_DIR=")), "{folder}: {environment:?}");
+        assert!(!started.contains("dotfiles-cargo-build"), "{folder}: {started}");
+    }
+}
+
 #[test]
 fn sessions_can_read_the_stowed_label_helper_without_exposing_the_bin_directory() {
     let launch = Launch::new();

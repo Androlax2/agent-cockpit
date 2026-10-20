@@ -110,6 +110,22 @@ if [ -n "$live_dotfiles" ] && "$is_dotfiles_clone"; then
     greywall_options="$greywall_options --allow-read-path $live_dotfiles"
 fi
 
+# Each clone's apps/target grew to 6-20G, mostly the same dependencies built again. The clones
+# share Cargo's build folder (dependencies, build scripts, incremental data); the binaries still
+# land in each clone's apps/target/release, where the wrappers in config/bin run them. Cargo locks
+# the folder, so two clones building at once take turns. A pull request's clone (pr-*) runs someone
+# else's build scripts and keeps its own. The live checkout never uses it: the host runs what it builds.
+case "$project_root" in
+    "$clones_dir"/dotfiles/pr-*) shares_cargo_build=false ;;
+    *) shares_cargo_build=$is_dotfiles_clone ;;
+esac
+if "$shares_cargo_build"; then
+    cargo_build_dir="$HOME/.cache/dotfiles-cargo-build"
+    mkdir -p "$cargo_build_dir"
+    export CARGO_BUILD_BUILD_DIR="$cargo_build_dir"
+    greywall_options="$greywall_options --allow-path $cargo_build_dir"
+fi
+
 # Greyproxy re-signs HTTPS with a CA the system deliberately does not trust. Greywall hands the
 # sandbox that CA alone (SSL_CERT_FILE), which git, curl, cargo and PHP ignore, so they get a bundle of
 # the system roots plus Greyproxy's CA. Rebuilt on every start so a regenerated CA is picked up;
