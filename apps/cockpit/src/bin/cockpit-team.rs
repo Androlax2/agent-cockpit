@@ -23,6 +23,28 @@ fn action(name: &str) -> Result<AgentAction, String> {
     Ok(action)
 }
 
+/// Claude's Stop hook, once the turn end is reported: the next approved message, if any, as the
+/// hook's decision to continue. Printed before the receipt, so a crash in between leaves the
+/// delivery uncertain, never falsely received. Prints nothing when there is none.
+fn turn_end() {
+    use cockpit::teams::{AgentAction, TransportOutcome};
+    let delivery = match client::request(&AgentAction::Receive).and_then(|reply| reply.result) {
+        Ok(delivery) => delivery,
+        Err(error) => {
+            eprintln!("cockpit-team turn-end: no team delivery: {}", escape_hiding(&error.to_string(), "", ""));
+            return;
+        },
+    };
+    let Some(dispatch_id) = delivery.get("dispatch_id").and_then(serde_json::Value::as_str) else { return };
+    println!("{}", serde_json::json!({"decision": "block", "reason": delivery["text"]}));
+    let _ = std::io::Write::flush(&mut std::io::stdout());
+    let receipt = AgentAction::Receipt { dispatch_id: dispatch_id.into(),
+        outcome: TransportOutcome::Received { native_id: format!("claude-stop:{dispatch_id}") } };
+    if let Err(error) = client::request(&receipt).and_then(|reply| reply.result) {
+        eprintln!("cockpit-team turn-end: team receipt not recorded: {}", escape_hiding(&error.to_string(), "", ""));
+    }
+}
+
 fn main() {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     if arguments == ["prepare"] {
@@ -32,11 +54,8 @@ fn main() {
         }
         return;
     }
-    if arguments == ["channel"] {
-        if let Err(error) = cockpit::teams::channel::run() {
-            eprintln!("cockpit-team channel: {error}");
-            std::process::exit(1);
-        }
+    if arguments == ["turn-end"] {
+        turn_end();
         return;
     }
     if arguments == ["--help"] || arguments.is_empty() {

@@ -381,6 +381,17 @@ send_to_osd() {
 
 if send_to_osd "session $report"; then
     hook_log "sent to the osd daemon"
+    # A linked Claude session takes its next approved team message at a turn end the daemon has
+    # just seen idle; the printed decision makes Claude continue with it. opencode takes its own in
+    # its plugin.
+    if [[ $event == Stop && -z $agent && $state == waiting ]] && command -v cockpit-team >/dev/null; then
+        delivery=$(cockpit-team turn-end) || delivery=
+        if [[ -n $delivery ]]; then
+            hook_log "continues with a team message"
+            send_to_osd "session $(jq -c '.state = "working" | del(.message, .turn_complete, .turn_id)' <<<"$report")" || true
+            printf '%s\n' "$delivery"
+        fi
+    fi
     exit 0
 fi
 hook_log "osd daemon not reading $report_socket"

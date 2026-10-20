@@ -24,7 +24,7 @@ fn snapshot() -> Value {
         "messages": [{"seq": 1, "message_id": "m1", "envelope": envelope, "state": "uncertain", "attempts": 1, "next_at": 0, "error": "no receipt"}],
         "escalations": [{"thread_id": "t1", "reason": "three clarification rounds ended unresolved", "status": "open", "note": "", "created_at": 0}],
         "sessions": [{"session_id": DESIGNER, "agent": "claude", "project": PROJECT, "project_name": "project-a", "label": "Design review",
-            "state": "waiting", "needs_team_channel": true}],
+            "state": "waiting"}],
     })
 }
 
@@ -37,7 +37,6 @@ fn pending_requests_show_the_full_exact_mapping_before_approval() {
                      "Revision 2", "Review this task", "grants no tool, scope, install or Git permission"] {
         assert!(detail.contains(expected), "missing {expected:?} in\n{detail}");
     }
-    assert!(detail.contains("needs a restart into the team channel"), "{detail}");
 }
 
 #[test]

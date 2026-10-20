@@ -2369,9 +2369,9 @@ fn team_snapshot() -> Value {
             "revision": 2, "status": "pending", "reason": "Review this task", "sender": OPENCODE_SESSION, "created_by": "agent", "parent_id": null}],
         "members": [{"session_id": SESSION_B, "role": "qa", "agent": "claude", "project": TEAM_PROJECT, "task_id": "0123abcd", "runtime": "r", "epoch": "e"}],
         "messages": [], "escalations": [],
-        "sessions": [{"session_id": SESSION_A, "agent": "claude", "project": TEAM_PROJECT, "project_name": "project-a", "label": "", "state": "waiting", "needs_team_channel": true},
-            {"session_id": OPENCODE_SESSION, "agent": "opencode", "project": TEAM_PROJECT, "project_name": "project-a", "label": "", "state": "waiting", "needs_team_channel": false},
-            {"session_id": SESSION_B, "agent": "claude", "project": TEAM_PROJECT, "project_name": "project-a", "label": "", "state": "waiting", "needs_team_channel": false}]})
+        "sessions": [{"session_id": SESSION_A, "agent": "claude", "project": TEAM_PROJECT, "project_name": "project-a", "label": "", "state": "waiting"},
+            {"session_id": OPENCODE_SESSION, "agent": "opencode", "project": TEAM_PROJECT, "project_name": "project-a", "label": "", "state": "waiting"},
+            {"session_id": SESSION_B, "agent": "claude", "project": TEAM_PROJECT, "project_name": "project-a", "label": "", "state": "waiting"}]})
 }
 
 fn open_team_view(app: &mut App) {
@@ -2427,20 +2427,6 @@ fn declining_the_confirmation_approves_nothing() {
     open_team_view(&mut app);
     app.handle(Key::Char('a'), &mut FakeScreen::answering(&[Key::Char('n')]));
     assert!(controls(&requests).is_empty());
-}
-
-#[test]
-fn claude_members_are_restarted_into_the_team_channel_only_after_a_yes() {
-    let fixture = Fixture::new();
-    let refusal = json!({"Err": {"code": "conflict", "message": format!("Claude members must first restart into the team channel (claude-sessions team-channel {SESSION_A}), then review the request again")}});
-    team_host(&fixture, team_snapshot(), vec![refusal.clone(), refusal]);
-    let mut app = fixture.app();
-    open_team_view(&mut app);
-    app.handle(Key::Char('a'), &mut FakeScreen::answering(&[Key::Char('y'), Key::Char('n')]));
-    std::thread::sleep(Duration::from_millis(100));
-    assert!(fixture.calls("claude-sessions").is_empty());
-    app.handle(Key::Char('a'), &mut FakeScreen::answering(&[Key::Char('y'), Key::Char('y')]));
-    assert_eq!(fixture.wait_for_calls("claude-sessions", 1), [format!("claude-sessions team-channel {SESSION_A}")]);
 }
 
 #[test]

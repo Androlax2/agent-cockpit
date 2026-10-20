@@ -131,11 +131,10 @@ pub fn host_snapshot(registry: &mut Registry) -> Result<Value, TeamError> {
     let live = live_sessions(registry)?;
     let mut sessions = Vec::new();
     for session in &live {
-        let needs_channel = session.agent == "claude" && !registry.system.runtime_has_team_channel(&session.runtime);
         let entry = registry.sessions.get(&session.session_id);
         sessions.push(json!({"session_id": session.session_id, "agent": session.agent, "project": session.project,
             "project_name": entry.map(|entry| entry.project.as_str()).unwrap_or(""), "label": entry.map(|entry| entry.label.as_str()).unwrap_or(""),
-            "state": entry.map(|entry| entry.state.as_str()).unwrap_or(""), "needs_team_channel": needs_channel}));
+            "state": entry.map(|entry| entry.state.as_str()).unwrap_or("")}));
     }
     let mut state = store::snapshot(database(registry, &live)?, None, None, 100)?;
     state["sessions"] = json!(sessions);
@@ -152,17 +151,6 @@ pub fn host(registry: &mut Registry, request: cockpit::teams::HostRequest) -> Re
 /// Host UI only: reached through a socket no sandbox can open.
 pub fn host_control(registry: &mut Registry, action: &HostAction) -> Result<TeamReply, TeamError> {
     let live = live_sessions(registry)?;
-    if let HostAction::Approve { proposal_id, .. } = action {
-        let members = store::proposal_members(database(registry, &live)?, proposal_id)?;
-        let missing: Vec<String> = members.into_iter()
-            .filter(|(_, agent, runtime)| agent == "claude" && !registry.system.runtime_has_team_channel(runtime))
-            .map(|(session, _, _)| session).collect();
-        if !missing.is_empty() {
-            let commands: Vec<String> = missing.iter().map(|session| format!("claude-sessions team-channel {session}")).collect();
-            return Err(TeamError::new(ErrorCode::Conflict, format!(
-                "Claude members must first restart into the team channel ({}), then review the request again", commands.join("; "))));
-        }
-    }
     let result = database(registry, &live).and_then(|connection| store::control(connection, action, &live, now_ms()));
     record("host_control", None, result.as_ref().is_ok_and(|reply| reply.result.is_ok()));
     result

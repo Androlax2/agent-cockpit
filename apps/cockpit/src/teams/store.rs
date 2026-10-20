@@ -510,14 +510,6 @@ pub fn member_runtime(connection: &Connection, session: &str) -> Result<Option<S
     Ok(connection.query_row("SELECT runtime FROM members WHERE session_id=?1", [session], |row| row.get(0)).optional()?)
 }
 
-/// The bound members of a request: (session, agent, runtime), for host-side checks before approval.
-pub fn proposal_members(connection: &Connection, proposal_id: &str) -> Result<Vec<(String, String, String)>, TeamError> {
-    let mapping: Option<String> = connection.query_row("SELECT mapping FROM proposals WHERE id=?1", [proposal_id], |row| row.get(0)).optional()?;
-    let mapping = mapping.ok_or_else(|| TeamError::new(ErrorCode::NotFound, "team request not found"))?;
-    let members: Vec<BoundMember> = serde_json::from_str(&mapping)?;
-    Ok(members.into_iter().map(|member| (member.session_id, member.agent, member.runtime)).collect())
-}
-
 /// The caller's own approved team only; never lists unrelated live sessions.
 pub fn context(connection: &Connection, sender: &VerifiedSession) -> Result<Value, TeamError> {
     let task_key: Option<String> = connection.query_row("SELECT task_key FROM members WHERE session_id=?1 AND runtime=?2 AND agent=?3",

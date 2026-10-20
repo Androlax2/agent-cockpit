@@ -17,8 +17,9 @@ pieces. `apps/cockpit/tests/agents.rs` checks that each piece exists for every a
    `cockpit-codex-hook` (`config/codex/.codex/hooks.json`), which reports namespaced `cdx_` ids.
 
 Linked sessions add a fifth piece: a way to take an approved team message natively, never by
-typing into the agent's screen (Claude: the `cockpit-team channel` MCP server; opencode: its
-plugin's `session.synthetic`; Codex: its Stop hook). An agent without one refuses `say`.
+typing into the agent's screen (Claude: `session-state.sh` runs `cockpit-team turn-end` at its
+Stop; opencode: its plugin's `session.synthetic`; Codex: its Stop hook). An agent without one
+refuses `say`.
 
 ## The verbs
 

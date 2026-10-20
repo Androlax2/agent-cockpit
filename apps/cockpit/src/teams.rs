@@ -1,7 +1,6 @@
 //! Task-scoped collaboration. Only host controls can grant or revoke membership.
 
 pub mod store;
-pub mod channel;
 pub mod client;
 pub mod view;
 

@@ -316,21 +316,12 @@ fn claudes_mcp_override_connects_to_the_port_its_launcher_forwards() {
 }
 
 #[test]
-fn claude_loads_only_the_named_cockpit_team_channel_and_only_for_team_sessions() {
+fn claude_never_loads_a_development_channel() {
+    // Team messages reach Claude through its Stop hook; no launch lifts Claude's channel allowlist.
     let launch = Launch::new();
-    launch.run(&[]);
-    let plain = fs::read_to_string(launch.sandbox.home.join("claude-arguments")).unwrap();
-    assert!(!plain.contains("channels") && !plain.contains("cockpit-team"), "{plain}");
     launch.run(&[("CLAUDE_SESSIONS_TEAM_CHANNEL", "1")]);
     let arguments = fs::read_to_string(launch.sandbox.home.join("claude-arguments")).unwrap();
-    let arguments: Vec<_> = arguments.lines().collect();
-    let flag = arguments.iter().position(|argument| *argument == "--dangerously-load-development-channels").expect("no channel flag");
-    assert_eq!(arguments[flag + 1], "server:cockpit-team");
-    assert!(!arguments.iter().any(|argument| argument.contains("skip-permissions") || *argument == "--channels"), "{arguments:?}");
-    let index = arguments.iter().position(|argument| *argument == "--mcp-config").unwrap();
-    let config: serde_json::Value = serde_json::from_str(arguments[index + 1]).unwrap();
-    assert_eq!(config["mcpServers"]["cockpit-team"], serde_json::json!({"command": "cockpit-team", "args": ["channel"]}));
-    assert!(config["mcpServers"]["figcraft-app"].is_object());
+    assert!(!arguments.contains("channels") && !arguments.contains("cockpit-team"), "{arguments}");
 }
 
 #[test]

@@ -51,10 +51,6 @@ impl TeamView {
         serde_json::from_str(self.proposal(index)["mapping"].as_str().unwrap_or("[]")).unwrap_or_default()
     }
 
-    fn session(&self, id: &str) -> Option<&Value> {
-        self.sessions().iter().find(|session| session["session_id"] == id)
-    }
-
     pub fn rows(&self) -> Vec<Row> {
         if self.is_history {
             return (0..self.list("messages").len()).rev().map(Row::Message).collect();
@@ -125,10 +121,7 @@ impl TeamView {
                 let mut lines = vec![format!("Task: {} / {}", shown(&proposal["project"]), shown(&proposal["task_id"])),
                     format!("Revision {} · reason: {}", proposal["revision"], shown(&proposal["reason"]))];
                 for member in self.mapping(index) {
-                    let id = member["session_id"].as_str().unwrap_or("");
-                    let channel = if self.session(id).is_some_and(|session| session["needs_team_channel"] == true) {
-                        " — needs a restart into the team channel" } else { "" };
-                    lines.push(format!("{}: {} ({}){channel}", shown(&member["role"]), shown(&member["session_id"]), shown(&member["agent"])));
+                    lines.push(format!("{}: {} ({})", shown(&member["role"]), shown(&member["session_id"]), shown(&member["agent"])));
                 }
                 lines.push("Approving lets only these sessions message each other about this task. It grants no tool, scope, install or Git permission.".into());
                 lines.push("a approve exactly this · e edit · x reject".into());

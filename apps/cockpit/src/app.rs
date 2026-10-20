@@ -3321,9 +3321,6 @@ impl App {
         let view = self.team_view.as_ref().expect("the Team view is open");
         let proposal = view.proposal(index).clone();
         let mapping = view.mapping(index);
-        let needs_channel: Vec<String> = mapping.iter().filter_map(|member| member["session_id"].as_str())
-            .filter(|id| view.sessions().iter().any(|session| session["session_id"] == *id && session["needs_team_channel"] == true))
-            .map(str::to_string).collect();
         let text = |key: &str| proposal[key].as_str().unwrap_or("").to_string();
         if !self.confirm(screen, "approve exactly the request shown?") { return String::new() }
         let approval = HostAction::Approve { request_id: format!("cockpit-{}", util::token_hex(8)), proposal_id: text("proposal_id"),
@@ -3332,15 +3329,6 @@ impl App {
             Ok(_) => {
                 self.refresh_team_view(false);
                 "team approved: only these sessions can message each other about this task".into()
-            },
-            Err(error) if error.message.contains("claude-sessions team-channel") && !needs_channel.is_empty() => {
-                if !self.confirm(screen, &format!("restart {} Claude member(s) into the team channel? conversations are kept", needs_channel.len())) {
-                    return String::new();
-                }
-                for id in &needs_channel {
-                    manager_in_background(&["team-channel", id]);
-                }
-                "restarting into the team channel; once they are back, r refreshes and a approves".into()
             },
             Err(error) if error.message.contains("runtime changed") => {
                 // Restarted members: the same task, sessions and roles, bound to their new launches.
