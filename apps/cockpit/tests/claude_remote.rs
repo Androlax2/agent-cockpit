@@ -464,6 +464,19 @@ fn yes_and_no_refuse_an_opencode_session() {
     }
 }
 
+#[test]
+fn a_phone_answers_an_opencode_chat_question_through_the_real_manager() {
+    let remote = Remote::start();
+    let secret = remote.paired();
+    fs::write(remote.sandbox.runtime.join("claude-sessions.json"), json!({"sessions": [{
+        "session": OPENCODE_SESSION, "agent": "opencode", "state": "needs-you", "needs_input": true,
+        "project": "proj-a", "tmux_pane": "%5"}]}).to_string()).unwrap();
+    let (status, _, body) = remote.request("POST", &format!("/api/message/{OPENCODE_SESSION}"),
+        Some(&secret), Some(json!({"text": "Use option A"})), true);
+    assert_eq!(status, 200, "{body}");
+    assert!(remote.sandbox.calls("tmux").contains(&"tmux send-keys -t %5 -l -- Use option A".into()));
+}
+
 // ---- Work from the phone ----
 
 impl Remote {

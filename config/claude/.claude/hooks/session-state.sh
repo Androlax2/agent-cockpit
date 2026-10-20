@@ -250,7 +250,7 @@ case $event in
         # anything informational (auth, quota, computer use, plugins) shows its message and keeps the state.
         case $(jq -r '.notification_type // ""' <<<"$payload") in
             permission_prompt | worker_permission_prompt | elicitation_dialog | elicitation_url_dialog | agent_needs_input)
-                state=needs-you; sticky=true ;;
+                state=needs-you; sticky=true; needs_input=false ;;
             idle_prompt) state=waiting; sticky=true ;;
             agent_completed | push_notification) state=waiting ;;
             *) state= ;;
@@ -282,7 +282,8 @@ esac
 case $event in
     NeedsInput | PostToolUse | Stop | Notification | UserPromptSubmit)
         [[ $event == Notification ]] || needs_input=false
-        if [[ -f $input_file ]]; then
+        # A real dialog supersedes a saved chat question; restore it after the dialog/turn ends.
+        if [[ -f $input_file && ! ( $event == Notification && $needs_input == false ) ]]; then
             message=$(<"$input_file")
             state=needs-you
             sticky=true

@@ -226,6 +226,22 @@ fn a_pending_question_does_not_delay_a_permission_prompt() {
 }
 
 #[test]
+fn a_real_dialog_overrides_an_already_published_chat_question() {
+    for notification in ["permission_prompt", "worker_permission_prompt", "elicitation_dialog", "elicitation_url_dialog", "agent_needs_input"] {
+        let mut test = HookTest::new();
+        for payload in [json!({"hook_event_name": "NeedsInput", "message": "Which option?"}),
+            json!({"hook_event_name": "Stop"}),
+            json!({"hook_event_name": "Notification", "notification_type": notification, "message": "Allow tool?"})] {
+            let result = test.run_hook(with_session(payload, "/x/proj"), &[]);
+            assert!(result.status.success(), "{}", stderr(&result));
+        }
+        let lines = test.received();
+        assert_eq!(lines[2]["needs_input"], false, "{notification}: {}", lines[2]);
+        assert_eq!(lines[2]["message"], "Allow tool?");
+    }
+}
+
+#[test]
 fn lifecycle_resets_clear_an_explicit_question() {
     for event in ["UserPromptSubmit", "SessionStart", "SessionEnd"] {
         for has_finished in [false, true] {

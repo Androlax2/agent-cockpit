@@ -188,16 +188,16 @@ agent_opencode_exit() { # tmux-session pane id
 
 # Its screen is not Claude's: the daemon's state, from its plugin, says what it does. At its
 # prompt the message is sent; while it works, opencode's inbox queues it for after the turn (as
-# Claude's Ctrl+X Enter). A permission question open (needs-you) refuses it: typed text would
-# go to the question.
+# Claude's Ctrl+X Enter). Only an explicit chat question accepts text in needs-you;
+# real permission and form dialogs must never receive a chat message.
 agent_opencode_say() { # id pane message
     local id=$1 pane=$2 message=$3 state
     state=$(session_field "$id" state)
-    if [[ $state == needs-you ]]; then
+    if [[ $state == needs-you && $(session_field "$id" needs_input) != true ]]; then
         echo "claude-sessions: $(session_field "$id" project) has a question open; answer it in its pane first" >&2
         return 1
     fi
-    if [[ $state != waiting && $state != working ]]; then
+    if [[ $state != waiting && $state != working && $state != needs-you ]]; then
         echo "claude-sessions: $(session_field "$id" project) is not at its prompt (${state:-no state yet})" >&2
         return 1
     fi

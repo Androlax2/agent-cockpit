@@ -799,6 +799,31 @@ fn say_refuses_while_a_dialog_is_open_and_keeps_the_text_out_of_the_log() {
 }
 
 #[test]
+fn opencode_accepts_an_answer_to_an_explicit_chat_question() {
+    let manager = Manager::new();
+    fs::write(&manager.snapshot, json!({"sessions": [{"session": OPENCODE_SESSION,
+        "agent": "opencode", "state": "needs-you", "needs_input": true,
+        "project": "proj-a", "tmux_pane": "%5"}]}).to_string()).unwrap();
+    let result = manager.run(&["say", OPENCODE_SESSION, "Use option A"], &[]);
+    assert!(result.status.success(), "{}", stderr(&result));
+    assert_eq!(manager.tmux_calls("send-keys"), [
+        "tmux send-keys -t %5 -l -- Use option A", "tmux send-keys -t %5 Enter"]);
+}
+
+#[test]
+fn opencode_keeps_chat_text_out_of_real_dialogs() {
+    for needs_input in [None, Some(false)] {
+        let manager = Manager::new();
+        fs::write(&manager.snapshot, json!({"sessions": [{"session": OPENCODE_SESSION,
+            "agent": "opencode", "state": "needs-you", "needs_input": needs_input,
+            "project": "proj-a", "tmux_pane": "%5"}]}).to_string()).unwrap();
+        let result = manager.run(&["say", OPENCODE_SESSION, "Use option A"], &[]);
+        assert!(!result.status.success());
+        assert!(manager.tmux_calls("send-keys").is_empty());
+    }
+}
+
+#[test]
 fn the_focused_pane_has_a_full_height_orange_divider() {
     let manager = Manager::new();
     manager.run(&["view", SESSION_A], &[]);
