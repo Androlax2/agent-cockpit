@@ -64,6 +64,11 @@ event=$(jq -r '.hook_event_name' <<<"$payload")
 session=$(jq -r '.session_id' <<<"$payload")
 cwd=$(jq -r '.cwd // ""' <<<"$payload")
 project=$(basename "$cwd")
+if [[ ! $session =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ && ! $session =~ ^ses_[0-9A-Za-z]{12,40}$ ]]; then
+    echo "session-state.sh: missing or invalid session id" >&2
+    exit 2
+fi
+input_file="$HOME/.cache/claude/input-$session.question"
 # A socket, not the FIFO: the daemon learns which process sent the report and takes the tmux pane
 # from where it really runs (a sandbox could otherwise claim another session's pane).
 report_socket="${XDG_RUNTIME_DIR:-/tmp}/claude-report/osd-report.sock"
@@ -189,8 +194,20 @@ credits=false
 [[ ${CLAUDE_SESSIONS_CREDITS:-} == 1 ]] && credits=true
 # opencode's plugin says so; Claude's hooks say nothing, which the daemon takes for claude.
 agent=${CLAUDE_SESSIONS_AGENT:-}
+needs_input=
 case $event in
+    NeedsInput)
+        if ! jq -e '.message | type == "string" and (length > 0 and length <= 300) and test("\\S") and
+            (test("[\\x00-\\x1f\\x7f]") | not) and (contains("#(") | not) and (contains("#{") | not)' <<<"$payload" >/dev/null; then
+            echo "session-state.sh: question must be 1–300 characters, not blank, without controls or tmux formats" >&2
+            exit 2
+        fi
+        mkdir -p "$(dirname "$input_file")"
+        jq -r '.message' <<<"$payload" > "$input_file"
+        ;;
     SessionStart)
+        rm -f "$input_file"
+        needs_input=false
         state=waiting
         unpushed=$(unpushed_of "$cwd")
         # Background work dies with the process: a new or resumed one has none. /clear and
@@ -206,6 +223,8 @@ case $event in
         # Only what you typed names the task: prompts from the system (task notifications, loop
         # wake-ups) say nothing about it.
         if [[ $(jq -r '.source // "user"' <<<"$payload") == user ]]; then
+            rm -f "$input_file"
+            needs_input=false
             task=$(jq -r '.prompt // "" | split("\n")[0] | gsub("\\s+"; " ") | .[:60]' <<<"$payload")
         fi
         ;;
@@ -234,6 +253,8 @@ case $event in
         if [[ -n $checks ]]; then outcome="${outcome:+$outcome · }$checks"; fi
         ;;
     SessionEnd)
+        rm -f "$input_file"
+        needs_input=false
         state=gone
         rm -f "$turn_head_file"
         ;;
@@ -243,10 +264,22 @@ case $event in
         ;;
 esac
 
+case $event in
+    NeedsInput | PostToolUse | Stop | Notification | UserPromptSubmit)
+        [[ $event == Notification ]] || needs_input=false
+        if [[ -f $input_file ]]; then
+            message=$(<"$input_file")
+            state=needs-you
+            sticky=true
+            needs_input=true
+        fi
+        ;;
+esac
+
 report=$(jq -cn \
     --arg session "$session" --arg state "$state" --arg project "$project" --arg cwd "$cwd" \
     --arg task "$task" --arg message "$message" --arg outcome "$outcome" --argjson sticky "$sticky" --argjson terminal "$terminal" --argjson credits "$credits" --arg unpushed "$unpushed" --arg agents "$agents" --arg background "$background" --arg apps "$(craft_apps)" --arg agent "$agent" \
-    --arg kitty_pid "${KITTY_PID:-}" --arg kitty_window "${KITTY_WINDOW_ID:-}" \
+    --arg needs_input "$needs_input" --arg kitty_pid "${KITTY_PID:-}" --arg kitty_window "${KITTY_WINDOW_ID:-}" \
     --arg kitty_listen "${KITTY_LISTEN_ON:-}" --arg tmux_pane "${TMUX_PANE:-}" \
     '{$session, $state, $project, $cwd, $task, $message, $outcome, $sticky, $terminal,
       $kitty_pid, $kitty_window, $kitty_listen, $tmux_pane}
@@ -254,6 +287,7 @@ report=$(jq -cn \
      | if $unpushed == "" then . else .unpushed = ($unpushed | tonumber) end
      | if $agents == "" then . else .agents = ($agents | tonumber) | .background = ($background | tonumber) end
      | if $agent == "" then . else .agent = $agent end
+     | if $needs_input == "" then . else .needs_input = ($needs_input == "true") end
      | .apps = $apps | .credits = $credits')
 
 # One line per event in ~/.cache/claude/hook.log, the one place the sandbox lets the hook write:
@@ -271,9 +305,16 @@ hook_log() { # message
 # A daemon that does not answer must not hold the hook: give up after a second.
 send_to_osd() {
     [[ -S $report_socket ]] || return 1
-    printf '%s\n' "$1" | timeout 1 socat -t1 - "UNIX-CONNECT:$report_socket" >/dev/null 2>&1 && return 0
-    echo "session-state.sh: osd report socket not answering, is osd running?" >&2
-    return 1
+    local request=$1 reply
+    [[ $event != NeedsInput ]] || request="session-request $report"
+    if ! reply=$(printf '%s\n' "$request" | timeout 1 socat -t1 - "UNIX-CONNECT:$report_socket" 2>/dev/null); then
+        echo "session-state.sh: osd report socket not answering, is osd running?" >&2
+        return 1
+    fi
+    if [[ $event == NeedsInput && $reply != ok ]]; then
+        echo "session-state.sh: osd did not accept the question: ${reply:-no acknowledgement}" >&2
+        return 1
+    fi
 }
 
 if send_to_osd "session $report"; then
@@ -281,6 +322,10 @@ if send_to_osd "session $report"; then
     exit 0
 fi
 hook_log "osd daemon not reading $report_socket: falling back to a toast"
+if [[ $event == NeedsInput ]]; then
+    echo "session-state.sh: cannot flag the question: osd is not reading $report_socket" >&2
+    exit 1
+fi
 
 # Fallback: swaync toasts, closed again once the session reports without a message.
 if [[ -n $message ]]; then

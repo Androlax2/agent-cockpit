@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if (( $# != 1 )); then
+    echo "usage: claude-needs-input '<question>'" >&2
+    exit 2
+fi
+session=${CLAUDE_CODE_SESSION_ID:-}
+agent=claude
+[[ $session != ses_* ]] || agent=opencode
+here=$(dirname "$(readlink -f "$0")")
+jq -cn --arg session "$session" --arg question "$1" --arg cwd "$PWD" \
+    '{hook_event_name: "NeedsInput", session_id: $session, message: $question, cwd: $cwd}' |
+    CLAUDE_SESSIONS_AGENT="$agent" bash "$here/../../../claude/.claude/hooks/session-state.sh"

@@ -1,0 +1,26 @@
+# Execution ledger — plan: 2026-10-20-explicit-session-input.md
+
+- Pre-flight: Task 2 exposes and documents Task 1's command; names and lifecycle agree.
+- Spec: approved scope is recorded in the conversation and plan.
+- Setup: existing isolated branch `parallel-1347`, rebased onto applied `origin/main`.
+- Plan helper failed because its companion skill scripts are missing; reported through `claude-todo blocked`. Progress is recorded here.
+- OpenCode's AGENTS.md is already a symlink to the shared CLAUDE.md; no OpenCode config change is needed.
+- Task 1 RED: hook tests failed on absent command and unsupported NeedsInput event; registry tests failed on screen reconciliation clearing needs-you and accepting nonboolean flags.
+- Task 1 GREEN: all new command/hook regressions pass, including turn completion and prompt/start/end resets for both agents. Registry suite: `test result: ok. 134 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.60s`.
+- Ruling: preserve explicit questions through idle notifications and daemon restarts too — both would otherwise silently clear unanswered questions — cost is persisting one boolean and the already displayed request.
+- Existing hook-suite failure remains: `a_session_started_from_a_shell_reports_even_under_the_daemon`; inherited OpenCode process markers are already tracked in the project's todos. Result: `test result: FAILED. 30 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.04s`.
+- Test invocation removes inherited CLAUDE_SESSIONS_STATE_HOME so fixtures use their temporary state directory, not the host's read-only directory.
+- Additional RED→GREEN regressions: explicit input replaces stale permission detail; changing only the protection flag publishes the new snapshot.
+- Latest registry suite: `test result: ok. 136 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.60s`.
+- Task 2 implementation: executable shell command allowed in the sandbox; shared instructions require it only for blocking questions; README explains lifecycle and session restart.
+- Bash syntax, greywall JSON validation and `git diff --check` pass.
+- Debug full suite stopped at existing release-only wrapper prerequisites: `a_recorded_text_marked_fp_is_kept_only_as_its_hash` and `verify_says_whether_the_chain_holds` failed; first error: `claude-audit is not built yet: make -C ~/dotfiles cockpit`. The repository's release test mode is now running with `--no-fail-fast` to collect every target's outcome.
+- A fresh read-only reviewer is checking the whole change before commit and apply.
+- Final review: two important findings, both fixed with RED→GREEN regressions. System-generated prompts preserve the question; only user prompts clear it. Explicit question reports use `session-request`, with the existing sender authentication and an `ok`/`refused` reply; the command fails on refusal or absent acknowledgement.
+- Task 1 complete: latest hook suite `test result: ok. 33 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.41s`; registry suite `test result: ok. 138 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.60s`.
+- Full final verification: `env -u CLAUDE_SESSIONS_STATE_HOME -u OPENCODE -u CLAUDECODE cargo test --release --no-fail-fast` → 1,054 passed, 8 failed. Full output: `/tmp/opencode/parallel-1347-verified-tests.log`.
+- Baseline verification: exported unchanged HEAD to `/tmp/opencode/parallel-1347-baseline` and ran both failing test targets there. All eight failures reproduce without this change. Baseline output: `/tmp/opencode/parallel-1347-baseline-tests.log`.
+- Verbatim failed targets: `test result: FAILED. 42 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.03s` (`claude_remote`); `test result: FAILED. 166 passed; 7 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.50s` (`claude_sessions_script`).
+- Existing failing tests: `yes_and_no_from_the_phone_press_the_dialog_keys`, `compact_is_typed_only_at_the_prompt`, `exit_types_slash_exit_at_an_idle_prompt`, `handoff_types_rc_at_an_idle_prompt`, `prompt_commands_pause_between_the_text_and_its_enter`, `restart_exits_then_resumes_the_same_conversation`, `say_refuses_while_a_dialog_is_open_and_keeps_the_text_out_of_the_log`, `say_sends_at_the_prompt_and_queues_while_working`.
+- Task 2 verification complete with baseline failures explicitly disclosed; live apply awaits the existing host review/approval. No tests disabled; no dependency manifests changed.
+- First live-apply preflight refused the patch because concurrent changes had reached live main; nothing was applied. Rebased onto `aa8f69e`, preserving both independently added test blocks in the sole conflict. Re-ran the full release suite: 1,078 passed, the same 8 failures; output `/tmp/opencode/parallel-1347-rebased-tests.log`.

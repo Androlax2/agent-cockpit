@@ -478,6 +478,97 @@ fn fixture_state_does_not_escape_into_an_inherited_host_state_folder() {
 }
 
 #[test]
+fn an_explicit_question_survives_idle_and_working_pane_reconciliation() {
+    let mut bench = Bench::new();
+    bench.report(SESSION_A, json!({"state": "needs-you", "message": "Which option?", "needs_input": true, "tmux_pane": "%5"}));
+    for tail in ["❯ \n", "✻ Flowing… (2s)\n"] {
+        bench.world.borrow_mut().pane_tails.insert("%5".into(), tail.into());
+        bench.registry.reconcile_with_panes();
+        assert_eq!(bench.snapshot()[0]["state"], "needs-you");
+        assert_eq!(bench.snapshot()[0]["request"], "Which option?");
+    }
+}
+
+#[test]
+fn a_prompt_releases_explicit_question_protection() {
+    let mut bench = Bench::new();
+    bench.report(SESSION_A, json!({"state": "needs-you", "message": "Which option?", "needs_input": true, "tmux_pane": "%5"}));
+    bench.report(SESSION_A, json!({"state": "working", "needs_input": false}));
+    bench.world.borrow_mut().pane_tails.insert("%5".into(), "❯ \n".into());
+    bench.registry.reconcile_with_panes();
+    assert_eq!(bench.snapshot()[0]["state"], "waiting");
+    assert_eq!(bench.snapshot()[0]["request"], "");
+}
+
+#[test]
+fn reports_without_an_input_flag_preserve_question_protection() {
+    let mut bench = Bench::new();
+    bench.report(SESSION_A, json!({"state": "needs-you", "message": "Which option?", "needs_input": true, "tmux_pane": "%5"}));
+    bench.report(SESSION_A, json!({"apps": "figcraft:on"}));
+    bench.world.borrow_mut().pane_tails.insert("%5".into(), "❯ \n".into());
+    bench.registry.reconcile_with_panes();
+    assert_eq!(bench.snapshot()[0]["state"], "needs-you");
+}
+
+#[test]
+fn a_daemon_restart_preserves_an_explicit_question() {
+    let mut bench = Bench::new();
+    bench.report(SESSION_A, json!({"state": "needs-you", "message": "Which option?", "needs_input": true, "tmux_pane": "%5"}));
+    bench.world.borrow_mut().live_ids.insert(SESSION_A.into());
+    let mut restored = Registry::new(Box::new(FakeSystem(bench.world.clone())), Box::new(FakeBanners(bench.shown.clone())));
+    bench.world.borrow_mut().pane_tails.insert("%5".into(), "❯ \n".into());
+    restored.reconcile_with_panes();
+    assert_eq!(restored.snapshot_rows()[0]["state"], "needs-you");
+    assert_eq!(restored.snapshot_rows()[0]["request"], "Which option?");
+}
+
+#[test]
+fn an_explicit_question_replaces_stale_permission_detail() {
+    let mut bench = Bench::new();
+    bench.report(SESSION_A, json!({"state": "needs-you", "message": "Permission?", "tmux_pane": "%5"}));
+    bench.world.borrow_mut().pane_tails.insert("%5".into(), " Bash command\n   npm test\n Do you want to proceed?\n ❯ 1. Yes\n".into());
+    bench.registry.reconcile_with_panes();
+    assert_eq!(bench.snapshot()[0]["detail"], "Bash command · npm test");
+    bench.report(SESSION_A, json!({"state": "needs-you", "message": "Which option?", "needs_input": true}));
+    assert_eq!(bench.snapshot()[0]["detail"], "");
+    assert_eq!(bench.snapshot()[0]["request"], "Which option?");
+}
+
+#[test]
+fn an_input_flag_change_is_published_even_when_the_question_did_not_change() {
+    let mut bench = Bench::new();
+    bench.report(SESSION_A, json!({"state": "needs-you", "message": "Which option?"}));
+    bench.report(SESSION_A, json!({"needs_input": true}));
+    assert_eq!(bench.snapshot()[0]["needs_input"], true);
+}
+
+#[test]
+fn an_input_flag_must_be_boolean() {
+    for flag in [json!("true"), json!(1), Value::Null] {
+        let result = parse_session(&json!({"session": SESSION_A, "project": "p", "needs_input": flag}).to_string());
+        assert!(result.is_err(), "{result:?}");
+    }
+}
+
+#[test]
+fn an_acknowledged_session_report_updates_its_authenticated_card() {
+    let mut bench = Bench::new();
+    bench.world.borrow_mut().sender_targets.insert(500, target(&[("tmux_pane", "%7")]));
+    let payload = json!({"session": SESSION_A, "project": "p", "state": "needs-you", "message": "Which option?", "needs_input": true});
+    assert!(bench.registry.request_from("session-request", &payload.to_string(), 500).is_ok());
+    assert_eq!(bench.snapshot()[0]["request"], "Which option?");
+    assert_eq!(bench.snapshot()[0]["tmux_pane"], "%7");
+}
+
+#[test]
+fn an_acknowledged_session_report_is_refused_without_a_trusted_sender() {
+    let mut bench = Bench::new();
+    let payload = json!({"session": SESSION_A, "project": "p", "state": "needs-you", "message": "Which option?", "needs_input": true});
+    assert!(bench.registry.request_from("session-request", &payload.to_string(), 777).is_err());
+    assert!(bench.registry.sessions.is_empty());
+}
+
+#[test]
 fn the_daemon_writes_its_messages_to_the_shared_log() {
     let fixture = Fixture::new();
     log("session aaaaaaaa (runway) is gone, dropping it");
@@ -1336,7 +1427,7 @@ fn a_report_gets_its_senders_pane_not_the_one_it_claims() {
     let mut bench = Bench::new();
     bench.world.borrow_mut().sender_targets.insert(500, target(&[("tmux_pane", "%7")]));
     let report = parse_session(&json!({"session": SESSION_A, "project": "p", "state": "working", "tmux_pane": "%1"}).to_string()).unwrap();
-    bench.registry.report_from(report, 500);
+    bench.registry.report_from(report, 500).unwrap();
     assert_eq!(bench.registry.sessions[SESSION_A].target.get("tmux_pane").map(String::as_str), Some("%7"));
 }
 
@@ -1351,8 +1442,8 @@ fn a_session_cannot_be_moved_off_a_pane_where_it_still_runs() {
         world.claude_panes = set(&["%1", "%9"]);
     }
     let report = |state: &str| parse_session(&json!({"session": SESSION_A, "project": "p", "state": state}).to_string()).unwrap();
-    bench.registry.report_from(report("waiting"), 500);
-    bench.registry.report_from(report("needs-you"), 600);
+    bench.registry.report_from(report("waiting"), 500).unwrap();
+    assert!(bench.registry.report_from(report("needs-you"), 600).is_err());
     let entry = &bench.registry.sessions[SESSION_A];
     assert_eq!((entry.target.get("tmux_pane").map(String::as_str), entry.state.as_str()), (Some("%1"), "waiting"));
 }
@@ -1361,7 +1452,7 @@ fn a_session_cannot_be_moved_off_a_pane_where_it_still_runs() {
 fn a_report_from_an_unplaceable_sender_is_refused() {
     let mut bench = Bench::new();
     let report = parse_session(&json!({"session": SESSION_A, "project": "p", "state": "working"}).to_string()).unwrap();
-    bench.registry.report_from(report, 777);
+    assert!(bench.registry.report_from(report, 777).is_err());
     assert!(bench.registry.sessions.is_empty());
 }
 
@@ -1469,7 +1560,7 @@ fn a_reported_folder_gives_way_to_the_one_its_sandbox_started_in() {
         world.sender_directories.insert(500, "/home/theo/IdeaProjects/opusline".into());
     }
     let report = parse_session(&json!({"session": SESSION_A, "project": "p", "state": "waiting", "cwd": "/home/theo/IdeaProjects/dotfiles"}).to_string()).unwrap();
-    bench.registry.report_from(report, 500);
+    bench.registry.report_from(report, 500).unwrap();
     assert_eq!(bench.registry.sessions[SESSION_A].cwd, "/home/theo/IdeaProjects/opusline");
 }
 
@@ -1478,7 +1569,7 @@ fn a_session_whose_sandbox_folder_is_unknown_gets_no_folder() {
     let mut bench = Bench::new();
     bench.world.borrow_mut().sender_targets.insert(500, target(&[("tmux_pane", "%7")]));
     let report = parse_session(&json!({"session": SESSION_A, "project": "p", "state": "waiting", "cwd": "/home/theo/IdeaProjects/dotfiles"}).to_string()).unwrap();
-    bench.registry.report_from(report, 500);
+    bench.registry.report_from(report, 500).unwrap();
     assert_eq!(bench.registry.sessions[SESSION_A].cwd, "");
 }
 

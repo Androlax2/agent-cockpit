@@ -136,6 +136,8 @@ pub struct Report {
     /// What the turn left in the repository, from the hook (it runs git inside the sandbox).
     pub outcome: Option<String>,
     pub sticky: bool,
+    /// An explicit blocking chat question, independent of the agent's on-screen dialog state.
+    pub needs_input: Option<bool>,
     /// Started with "this terminal" (the claude function's t): the cockpit shows it but leaves it out
     /// of what acts on every session (restart-all, the reboot restore, the queue, the hand-off).
     pub terminal: bool,
@@ -179,6 +181,9 @@ pub fn parse_session(raw: &str) -> Result<Report, String> {
     if report.get("credits").is_some_and(|value| !value.is_boolean()) {
         return Err("session.credits is not true or false".into());
     }
+    if report.get("needs_input").is_some_and(|value| !value.is_boolean()) {
+        return Err("session.needs_input is not true or false".into());
+    }
     if report.get("agent").is_some_and(|agent| !agent.as_str().is_some_and(|agent| agents::find(agent).is_some())) {
         return Err(format!("session.agent is not one of {:?}", agents::names()));
     }
@@ -211,6 +216,7 @@ pub fn parse_session(raw: &str) -> Result<Report, String> {
         task: text("task"), message: text("message"), outcome: text("outcome"), sticky: report.get("sticky").is_some_and(|s| s.as_bool().unwrap_or(!s.is_null())),
         terminal: report.get("terminal").and_then(Value::as_bool).unwrap_or(false),
         credits: report.get("credits").and_then(Value::as_bool),
+        needs_input: report.get("needs_input").and_then(Value::as_bool),
         unpushed: report.get("unpushed").and_then(Value::as_u64),
         agents: report.get("agents").and_then(Value::as_u64),
         background: report.get("background").and_then(Value::as_u64),
@@ -951,6 +957,7 @@ impl GuideRequests {
 #[derive(Clone, Debug, Default)]
 pub struct Entry {
     pub state: String,
+    pub needs_input: bool,
     pub project: String,
     pub cwd: String,
     pub task: String,
@@ -1018,6 +1025,9 @@ impl Registry {
     /// A run or guide request, or a todo update, from the report socket: held (hold_request) or
     /// queued (queue_todo_update) with the folder the sender's sandbox started in.
     pub fn request_from(&mut self, kind: &str, raw: &str, sender: u32) -> Result<(), String> {
+        if kind == "session-request" {
+            return self.report_from(parse_session(raw)?, sender);
+        }
         let started_in = self.system.sender_directory(sender);
         let result = match &started_in {
             Some(started_in) => self.take_request(kind, raw, started_in),
@@ -1061,17 +1071,17 @@ impl Registry {
 
     /// A report from the report socket: its focus target comes from where the sender really runs,
     /// never from the report, and a session cannot be moved off a pane where its Claude still runs.
-    pub fn report_from(&mut self, mut report: Report, sender: u32) {
+    pub fn report_from(&mut self, mut report: Report, sender: u32) -> Result<(), String> {
         let Some(target) = self.system.sender_target(sender) else {
             log(&format!("report for {} refused: its sender (pid {sender}) has no process outside the sandbox", &report.session[..8]));
             audit_report(&report, sender, "report.rejected", "refused", "its sender has no process outside the sandbox");
-            return;
+            return Err("sender has no process outside the sandbox".into());
         };
         if let Some(known) = self.sessions.get(&report.session).and_then(|entry| entry.target.get("tmux_pane")).cloned() {
             if target.get("tmux_pane") != Some(&known) && self.system.claude_panes().contains(&known) {
                 log(&format!("report for {} refused: it claims a pane other than {known}, where that session still runs", &report.session[..8]));
                 audit_report(&report, sender, "report.rejected", "refused", &format!("it claims a pane other than {known}, where that session still runs"));
-                return;
+                return Err(format!("session already runs in pane {known}"));
             }
         }
         report.target = target;
@@ -1094,6 +1104,7 @@ impl Registry {
                 "tmux_pane": report.target.get("tmux_pane")}));
         }
         self.update(report);
+        Ok(())
     }
 
     pub fn update(&mut self, report: Report) {
@@ -1111,6 +1122,14 @@ impl Registry {
             changed = true;
         }
         let mut entry = self.sessions.remove(&session).unwrap();
+        if let Some(needs_input) = report.needs_input.filter(|needs_input| *needs_input != entry.needs_input) {
+            entry.needs_input = needs_input;
+            changed = true;
+        }
+        if entry.needs_input && !entry.detail.is_empty() {
+            entry.detail.clear();
+            changed = true;
+        }
         if let Some(state) = &report.state {
             if &entry.state != state {
                 entry.state = state.clone();
@@ -1334,7 +1353,7 @@ impl Registry {
         let mut rows: Vec<Value> = self.sessions.iter().map(|(session, entry)| {
             let mut row = json!({"session": session, "state": entry.state, "project": entry.project, "cwd": entry.cwd, "task": entry.task,
                                  "since": entry.since as i64, "started": entry.started as i64, "update": entry.update,
-                                 "request": entry.request, "detail": entry.detail, "outcome": entry.outcome,
+                                 "request": entry.request, "detail": entry.detail, "outcome": entry.outcome, "needs_input": entry.needs_input,
                                  "terminal": entry.terminal, "credits": entry.credits, "unpushed": entry.unpushed,
                                   "agents": entry.agents, "background": entry.background, "apps": entry.apps, "agent": entry.agent,
                                   "ask_to_run": run_phases.get(session).copied().unwrap_or("")});
@@ -1405,8 +1424,12 @@ impl Registry {
                 let cwd = row.get("cwd").and_then(Value::as_str).unwrap_or("").to_string();
                 let project = row.get("project").and_then(Value::as_str).ok_or("no project")?;
                 let since = row.get("since").and_then(Value::as_f64).unwrap_or_else(now);
+                let request = row.get("request").and_then(Value::as_str).unwrap_or("");
+                validate_text("request", request)?;
                 Ok((session, Entry {
                     state, project: project.into(), cwd, task: row.get("task").and_then(Value::as_str).unwrap_or("").into(), since,
+                    needs_input: row.get("needs_input").and_then(Value::as_bool).unwrap_or(false),
+                    request: request.into(),
                     started: row.get("started").and_then(Value::as_f64).unwrap_or(since),
                     target: target.into_iter().map(|(k, v)| (k, v.as_str().unwrap_or("").to_string())).collect(),
                     update: row.get("update").and_then(Value::as_bool).unwrap_or(false),
@@ -1506,6 +1529,8 @@ impl Registry {
                 self.publish();
             }
             let Some(entry) = self.sessions.get(&session) else { continue };
+            // Plain chat questions have no dialog on screen; only the next prompt releases them.
+            if entry.needs_input { continue; }
             if let Some(observed) = pane_state(&tail).filter(|observed| *observed != entry.state) {
                 let project = entry.project.clone();
                 self.update(Report { session: session.clone(), project, state: Some(observed.into()), ..Report::default() });

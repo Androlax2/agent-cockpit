@@ -6,7 +6,7 @@ use common::sandbox::*;
 
 use serde_json::{Value, json};
 use std::fs;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -32,6 +32,9 @@ impl HookTest {
             for mut stream in listener.incoming().flatten() {
                 let mut text = String::new();
                 let _ = stream.read_to_string(&mut text);
+                if text.starts_with("session-request ") {
+                    let _ = stream.write_all(b"ok\n");
+                }
                 collected.lock().unwrap().extend(text.lines().map(str::to_string));
             }
         });
@@ -49,7 +52,7 @@ impl HookTest {
     fn received(&mut self) -> Vec<Value> {
         std::thread::sleep(Duration::from_millis(300));
         self.lines.lock().unwrap().iter()
-            .filter_map(|line| line.strip_prefix("session "))
+            .filter_map(|line| line.strip_prefix("session ").or_else(|| line.strip_prefix("session-request ")))
             .map(|payload| serde_json::from_str(payload).unwrap())
             .collect()
     }
@@ -113,6 +116,118 @@ fn informational_notification_carries_no_state() {
     let line = test.received().remove(0);
     assert!(line.get("state").is_none(), "{line}");
     assert_eq!(line["message"], "ok");
+}
+
+#[test]
+fn an_explicit_question_survives_tools_and_turn_end_for_both_agents() {
+    for session in [SESSION_A, OPENCODE_SESSION] {
+        let mut test = HookTest::new();
+        let result = test.sandbox.run("bash", &[bin().join("claude-needs-input").to_str().unwrap(), "Which option should I use?"],
+            &[("CLAUDE_CODE_SESSION_ID", session)]);
+        assert!(result.status.success(), "{}", stderr(&result));
+        for event in ["PostToolUse", "Stop"] {
+            let mut payload = with_session(json!({"hook_event_name": event}), "/x/proj");
+            payload["session_id"] = json!(session);
+            let result = test.run_hook(payload, &[("CLAUDE_SESSIONS_AGENT", if session == SESSION_A { "claude" } else { "opencode" })]);
+            assert!(result.status.success(), "{}", stderr(&result));
+        }
+        let lines = test.received();
+        assert_eq!(lines.len(), 3);
+        for line in lines {
+            assert_eq!(line["state"], "needs-you");
+            assert_eq!(line["message"], "Which option should I use?");
+            assert_eq!(line["needs_input"], true);
+            assert_eq!(line["agent"].as_str().unwrap_or("claude"), if session == SESSION_A { "claude" } else { "opencode" });
+        }
+    }
+}
+
+#[test]
+fn lifecycle_resets_clear_an_explicit_question() {
+    for event in ["UserPromptSubmit", "SessionStart", "SessionEnd"] {
+        let mut test = HookTest::new();
+        let result = test.run_hook(with_session(json!({"hook_event_name": "NeedsInput", "message": "Which option?"}), "/x/proj"), &[]);
+        assert!(result.status.success(), "{}", stderr(&result));
+        for payload in [json!({"hook_event_name": event, "prompt": "Use option A"}), json!({"hook_event_name": "Stop"})] {
+            let result = test.run_hook(with_session(payload, "/x/proj"), &[]);
+            assert!(result.status.success(), "{event}: {}", stderr(&result));
+        }
+        let lines = test.received();
+        assert_eq!(lines[1]["needs_input"], false, "{event}");
+        assert_eq!(lines[2]["state"], "waiting", "{event}");
+        assert_eq!(lines[2]["needs_input"], false, "{event}");
+    }
+}
+
+#[test]
+fn an_explicit_question_does_not_leak_to_another_session() {
+    let mut test = HookTest::new();
+    test.run_hook(with_session(json!({"hook_event_name": "NeedsInput", "message": "Which option?"}), "/x/proj"), &[]);
+    let mut payload = with_session(json!({"hook_event_name": "Stop"}), "/x/proj");
+    payload["session_id"] = json!(SESSION_B);
+    test.run_hook(payload, &[]);
+    let lines = test.received();
+    assert_eq!(lines.len(), 2);
+    assert_eq!(lines[1]["state"], "waiting");
+    assert_eq!(lines[1]["needs_input"], false);
+}
+
+#[test]
+fn an_idle_notification_does_not_clear_an_explicit_question() {
+    let mut test = HookTest::new();
+    test.run_hook(with_session(json!({"hook_event_name": "NeedsInput", "message": "Which option?"}), "/x/proj"), &[]);
+    test.run_hook(with_session(json!({"hook_event_name": "Notification", "notification_type": "idle_prompt", "message": "idle"}), "/x/proj"), &[]);
+    let lines = test.received();
+    assert_eq!(lines[1]["state"], "needs-you");
+    assert_eq!(lines[1]["message"], "Which option?");
+}
+
+#[test]
+fn a_system_prompt_does_not_answer_an_explicit_question() {
+    let mut test = HookTest::new();
+    for payload in [json!({"hook_event_name": "NeedsInput", "message": "Which option?"}),
+        json!({"hook_event_name": "UserPromptSubmit", "source": "system", "prompt": "Background task finished"}),
+        json!({"hook_event_name": "Stop"})] {
+        let result = test.run_hook(with_session(payload, "/x/proj"), &[]);
+        assert!(result.status.success(), "{}", stderr(&result));
+    }
+    for line in test.received() {
+        assert_eq!(line["state"], "needs-you");
+        assert_eq!(line["message"], "Which option?");
+    }
+}
+
+#[test]
+fn the_question_command_requires_the_daemons_acceptance() {
+    let test = HookTest::new();
+    for reply in ["", "refused: session.cwd contains a tmux format sequence"] {
+        test.sandbox.shim("socat", &format!("cat >/dev/null\nprintf '%s\\n' '{reply}'"));
+        let result = test.sandbox.run("bash", &[bin().join("claude-needs-input").to_str().unwrap(), "Which option?"],
+            &[("CLAUDE_CODE_SESSION_ID", SESSION_A)]);
+        assert_eq!(result.status.code(), Some(1), "{}", stderr(&result));
+    }
+}
+
+#[test]
+fn the_question_command_rejects_invalid_input() {
+    let test = HookTest::new();
+    let long_question = "a".repeat(301);
+    for (session, question) in [("", "Which option?"), ("../../other", "Which option?"), (SESSION_A, "  "),
+        (SESSION_A, "line\nbreak"), (SESSION_A, "#{pane_id}"), (SESSION_A, long_question.as_str())] {
+        let result = test.sandbox.run("bash", &[bin().join("claude-needs-input").to_str().unwrap(), question],
+            &[("CLAUDE_CODE_SESSION_ID", session)]);
+        assert_eq!(result.status.code(), Some(2), "{}", stderr(&result));
+    }
+}
+
+#[test]
+fn the_question_command_reports_a_missing_daemon() {
+    let test = HookTest::new();
+    fs::remove_file(&test.socket).unwrap();
+    let result = test.sandbox.run("bash", &[bin().join("claude-needs-input").to_str().unwrap(), "Which option?"],
+        &[("CLAUDE_CODE_SESSION_ID", SESSION_A)]);
+    assert_eq!(result.status.code(), Some(1), "{}", stderr(&result));
+    assert!(stderr(&result).contains("osd"), "{}", stderr(&result));
 }
 
 #[test]

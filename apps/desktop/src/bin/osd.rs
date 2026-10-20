@@ -358,18 +358,18 @@ struct Received {
 }
 
 /// One line per message: `session <json>` reports, whose focus target comes from the sender's
-/// ancestry, and run, guide and todo requests, answered "ok" or "refused: <why>".
+/// ancestry, and session, run, guide and todo requests, answered "ok" or "refused: <why>".
 fn handle_connection(received: Received, registry: &Rc<RefCell<Registry>>) {
     let Received { mut stream, sender, text } = received;
     for line in text.lines() {
         let (kind, rest) = line.split_once(' ').unwrap_or((line, ""));
         match kind {
             "session" => match registry::parse_session(rest) {
-                Ok(report) => registry.borrow_mut().report_from(report, sender),
+                Ok(report) => { let _ = registry.borrow_mut().report_from(report, sender); }
                 Err(error) => eprintln!("osd: bad session report: {error}"),
             },
-            // ask-to-run, ask-to-guide and claude-todo wait for this answer: refused, they say why.
-            "run-request" | "guide-request" | "todo-update" => {
+            // Explicit requests wait for acceptance; transport success alone says nothing about it.
+            "run-request" | "guide-request" | "todo-update" | "session-request" => {
                 let reply = match registry.borrow_mut().request_from(kind, rest, sender) {
                     Ok(()) => "ok".to_string(),
                     Err(reason) => {
