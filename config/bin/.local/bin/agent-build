@@ -1,0 +1,59 @@
+#!/usr/bin/env python3
+"""Keep background build tools on a shared CPU set, below interactive work."""
+
+import os
+from pathlib import Path
+import re
+import shutil
+import sys
+
+
+def default_cpus():
+    available_cpus = sorted(os.sched_getaffinity(0))
+    return available_cpus[:max(1, len(available_cpus) // 2)]
+
+
+def main():
+    invoked_name = Path(sys.argv[0]).name
+    is_shim = invoked_name != "agent-build"
+    arguments = [invoked_name, *sys.argv[1:]] if is_shim else sys.argv[1:]
+    if not is_shim and arguments == ["--cpu-list"]:
+        print(",".join(map(str, default_cpus())))
+        return 0
+    if not arguments:
+        print("usage: agent-build COMMAND [ARGUMENTS...]", file=sys.stderr)
+        return 2
+
+    configured_cpus = os.environ.get("AGENT_BUILD_CPUS")
+    if configured_cpus is None:
+        build_cpus = set(default_cpus())
+    else:
+        if not re.fullmatch(r"[0-9]+(?:,[0-9]+)*", configured_cpus):
+            raise ValueError("AGENT_BUILD_CPUS must be a nonempty comma-separated CPU list")
+        build_cpus = {int(cpu) for cpu in configured_cpus.split(",")}
+        if not build_cpus <= os.sched_getaffinity(0):
+            raise ValueError("AGENT_BUILD_CPUS includes unavailable CPU threads")
+
+    search_path = os.environ.get("PATH", os.defpath)
+    if is_shim:
+        # Keep the shims on the child's PATH: make must still find the cargo shim.
+        shim_directory = Path(sys.argv[0]).absolute().parent
+        search_path = os.pathsep.join(directory for directory in search_path.split(os.pathsep)
+                                      if Path(directory).absolute() != shim_directory)
+    executable = shutil.which(arguments[0], path=search_path)
+    if executable is None:
+        print(f"agent-build: command not found: {arguments[0]}", file=sys.stderr)
+        return 127
+
+    os.sched_setaffinity(0, build_cpus)
+    os.setpriority(os.PRIO_PROCESS, 0, max(10, os.getpriority(os.PRIO_PROCESS, 0)))
+    os.environ["AGENT_BUILD_CPUS"] = ",".join(map(str, sorted(build_cpus)))
+    os.execv(executable, arguments)
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except (OSError, ValueError) as error:
+        print(f"agent-build: {error}", file=sys.stderr)
+        sys.exit(126)

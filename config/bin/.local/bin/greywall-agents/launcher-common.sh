@@ -125,6 +125,23 @@ mkdir -p "$shims_dir"
 cp "$HOME/.local/share/agent-shims/bin/wl-paste" "$shims_dir/wl-paste.new"
 chmod 755 "$shims_dir/wl-paste.new"
 mv "$shims_dir/wl-paste.new" "$shims_dir/wl-paste"
+# Only build tools inherit this affinity; the agent itself keeps every available CPU thread.
+# All sessions choose the same half, so more parallel builds do not multiply their CPU budget.
+if ! AGENT_BUILD_CPUS=$(python3 "$HOME/.local/bin/agent-build" --cpu-list); then
+    echo "$agent launcher: cannot determine the shared build CPU budget, not starting." >&2
+    exit 1
+fi
+export AGENT_BUILD_CPUS
+build_runner_copy=$(mktemp "$shims_dir/agent-build.XXXXXX") || exit 1
+if ! cp "$HOME/.local/bin/agent-build" "$build_runner_copy" || ! chmod 755 "$build_runner_copy" ||
+        ! mv "$build_runner_copy" "$shims_dir/agent-build"; then
+    rm -f "$build_runner_copy"
+    echo "$agent launcher: cannot install the build CPU guard, not starting." >&2
+    exit 1
+fi
+for build_tool in cargo make npm pnpm go composer pytest; do
+    ln -sfn agent-build "$shims_dir/$build_tool" || exit 1
+done
 export PATH="$shims_dir:$PATH"
 clipboard_dir="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/clipboard-image"
 if [ -d "$clipboard_dir" ]; then

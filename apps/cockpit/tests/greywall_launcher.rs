@@ -50,6 +50,7 @@ impl Launch {
             fs::create_dir_all(file.parent().unwrap()).unwrap();
             fs::write(file, content).unwrap();
         }
+        copy_executable(&bin().join("agent-build"), &sandbox.home.join(".local/bin/agent-build"));
         // Logs its arguments, then runs the command after -- when it exists (the fake opencode).
         write_executable(&sandbox.home.join(".local/bin/greywall"), "#!/bin/sh\nprintf 'greywall %s (api key: %s)\\n' \"$(printf '%s' \"$*\" | tr '\\n' ' ')\" \"${ANTHROPIC_API_KEY:-none}\" >> \"$SHIM_LOG\"\n\
                                                                      while [ \"$1\" != -- ]; do shift; done; shift\n\
@@ -96,6 +97,31 @@ esac"#);
     fn settings_of(&self, agent: &str) -> serde_json::Value {
         let path = self.sandbox.runtime.join("greywall-agents").join(format!("{}.{agent}.json", Launch::slug(&self.project)));
         serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap()
+    }
+}
+
+#[test]
+fn build_tools_share_a_budget_without_restricting_the_interactive_agent() {
+    for &agent in AGENTS.iter() {
+        let launch = Launch::new();
+        let available_cpus = unsafe {
+            let mut affinity: libc::cpu_set_t = std::mem::zeroed();
+            assert_eq!(libc::sched_getaffinity(0, std::mem::size_of_val(&affinity), &mut affinity), 0);
+            (0..libc::CPU_SETSIZE as usize).filter(|cpu| libc::CPU_ISSET(*cpu, &affinity)).collect::<Vec<_>>()
+        };
+        let expected_cpus = &available_cpus[..(available_cpus.len() / 2).max(1)];
+        let probe = "#!/usr/bin/env python3\nimport json, os, subprocess\n\
+                     print(json.dumps({'cpus': sorted(os.sched_getaffinity(0)), 'build': json.loads(subprocess.check_output(['cargo', 'test'], text=True))}))\n";
+        let agent_path = if agent == "opencode" { ".opencode/bin/opencode" } else { ".local/bin/claude" };
+        write_executable(&launch.sandbox.home.join(agent_path), probe);
+        launch.sandbox.shim("cargo", "python3 -c 'import json, os; print(json.dumps({\"cpus\": sorted(os.sched_getaffinity(0)), \"nice\": os.getpriority(os.PRIO_PROCESS, 0)}))'");
+        let output = launch.sandbox.command(bin().join("greywall-agents").join(agent), &[])
+            .current_dir(&launch.project).output().unwrap();
+        assert!(output.status.success(), "{agent}: {}", stderr(&output));
+        let observed: serde_json::Value = serde_json::from_str(&stdout(&output)).unwrap();
+        assert_eq!(observed["cpus"], serde_json::json!(available_cpus), "{agent}: interactive agent was restricted");
+        assert_eq!(observed["build"]["cpus"], serde_json::json!(expected_cpus), "{agent}: build was not restricted");
+        assert!(observed["build"]["nice"].as_i64().unwrap() >= 10, "{agent}: {observed}");
     }
 }
 
