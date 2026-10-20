@@ -270,6 +270,18 @@ impl App {
         }
     }
 
+    /// Opening a session shows its latest turn, so its result counts as seen; a question still waits for an answer.
+    /// Returns the save error, if any.
+    pub(super) fn mark_result_seen(&mut self, session: &str) -> Option<String> {
+        let state = self.continuity.as_ref().ok()?;
+        let identities: Vec<String> = state.updates().into_iter()
+            .filter(|update| update.session == session && update.kind == crate::continuity::UpdateKind::Result)
+            .map(|update| update.identity).collect();
+        if identities.is_empty() { return None; }
+        let message = self.review_updates(session, &identities);
+        self.continuity_error.is_some().then_some(message)
+    }
+
     pub(super) fn open_updates(&mut self, screen: &mut dyn Screen) -> String {
         let state = self.continuity.as_ref().unwrap();
         let updates = state.updates();
@@ -323,7 +335,8 @@ impl App {
             Some(DetailAction::OpenSession(session)) => {
                 if !self.all_sessions().iter().any(|candidate| candidate.session == *session && !candidate.is_external()) { return "session has exited".into(); }
                 self.session_details = None;
-                self.manager_async(&["view", session])
+                let viewed = self.manager_async(&["view", session]);
+                self.mark_result_seen(session).unwrap_or(viewed)
             }
             Some(DetailAction::OpenTask(key)) => self.open_trail_task(key),
             Some(DetailAction::OpenPr(key)) => {

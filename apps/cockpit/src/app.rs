@@ -1739,7 +1739,10 @@ impl App {
         }
         let known = session.as_ref().filter(|s| s.state != "unknown").cloned();
         match key {
-            Key::Enter => session.map(|s| self.manager_async(&["open", &s.session])).unwrap_or_default(),
+            Key::Enter => session.map(|s| {
+                let opened = self.manager_async(&["open", &s.session]);
+                self.mark_result_seen(&s.session).unwrap_or(opened)
+            }).unwrap_or_default(),
             Key::Char('/') => self.find_session(screen),
             Key::Char('i') => { self.open_session_details(); String::new() }
             Key::Char('n') => match {
@@ -1750,7 +1753,8 @@ impl App {
                 Some(index) => {
                     self.panels[1].selected = index;
                     let viewed = self.sessions[index].session.clone();
-                    self.manager_async(&["attend", &viewed])
+                    let attended = self.manager_async(&["attend", &viewed]);
+                    self.mark_result_seen(&viewed).unwrap_or(attended)
                 }
             },
             Key::Char('p') => {

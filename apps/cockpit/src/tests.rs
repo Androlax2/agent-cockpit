@@ -212,7 +212,7 @@ fn continuity_result_row(turn: &str, state: &str) -> Value {
 }
 
 #[test]
-fn continuity_results_stay_unseen_until_explicitly_reviewed() {
+fn continuity_opening_a_session_marks_its_result_seen() {
     let fixture = Fixture::new();
     fixture.snapshot(json!([continuity_result_row("11111111111111111111111111111111", "waiting")]));
     let mut app = fixture.app();
@@ -220,7 +220,28 @@ fn continuity_results_stay_unseen_until_explicitly_reviewed() {
     app.handle(Key::FocusLost, &mut FakeScreen::default());
     app.handle(Key::Enter, &mut FakeScreen::default());
     app.build();
-    assert!(texts(&app, 1).join("\n").contains("unseen result"));
+    assert!(!texts(&fixture.app(), 1).join("\n").contains("unseen result"));
+}
+
+#[test]
+fn continuity_opening_a_session_leaves_its_question_unanswered() {
+    let fixture = Fixture::new();
+    let mut row = continuity_result_row("11111111111111111111111111111111", "needs-you");
+    row["needs_input"] = json!(true);
+    row["full_request"] = json!("Which provider should we use?");
+    fixture.snapshot(json!([row]));
+    let mut app = fixture.app();
+    app.handle(Key::FocusLost, &mut FakeScreen::default());
+    app.handle(Key::Enter, &mut FakeScreen::default());
+    app.build();
+    assert!(texts(&app, 1).join("\n").contains("new question"));
+}
+
+#[test]
+fn continuity_a_reviewed_result_is_unseen_again_after_the_next_turn() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([continuity_result_row("11111111111111111111111111111111", "waiting")]));
+    let mut app = fixture.app();
     continuity_action(&mut app, "1\treviewed", &[]);
     assert!(!texts(&fixture.app(), 1).join("\n").contains("unseen result"));
     fixture.snapshot(json!([continuity_result_row("22222222222222222222222222222222", "working")]));
