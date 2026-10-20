@@ -55,6 +55,8 @@
 #   claude-sessions reload       restart the sidebar in place (after editing it), and the OSD daemon
 #                                when it runs an older build than the one on disk
 #   claude-sessions layout       reapply the sidebar width
+#   claude-sessions design-review start|stop
+#                                approved host-only FigCraft/cockpit arrangement; no shortcut
 #   claude-sessions reset        close the manager and forget every tracked session; running
 #                                Claude sessions themselves are left alone
 #   claude-sessions doctor       check every piece this depends on (daemon, FIFO, greywall paths,
@@ -1781,6 +1783,13 @@ case ${1:-attach} in
     restart-osd-when-idle) restart_osd_when_idle ;;
     focus-viewer) focus_viewer ;;
     layout) ensure_manager && apply_layout ;;
+    design-review)
+        if (( $# != 2 )) || [[ $2 != start && $2 != stop ]]; then
+            echo "usage: claude-sessions design-review start|stop" >&2
+            exit 2
+        fi
+        hyprctl eval "require(\"figcraft-review\").$2()"
+        ;;
     reset)
         tmux kill-session -t "=$MANAGER" 2>/dev/null || true
         osd-show sessions-clear

@@ -45,6 +45,39 @@ const BUSY: &str = "✻ Flowing… (11s)\n❯ \n";
 const BUSY_WITHOUT_PROMPT: &str = "✻ Flowing… (11s)\n";
 const DIALOG: &str = " Bash command\n   npm test\n Do you want to proceed?\n ❯ 1. Yes\n   2. No\n";
 
+#[test]
+fn design_review_dispatches_only_the_explicit_host_layout_action() {
+    for action in ["start", "stop"] {
+        let manager = Manager::new();
+        let result = manager.run(&["design-review", action], &[]);
+        assert!(result.status.success(), "{}", stderr(&result));
+        assert_eq!(manager.calls("hyprctl"), [format!("hyprctl eval require(\"figcraft-review\").{action}()")]);
+        assert!(manager.calls("tmux").is_empty());
+        assert!(manager.calls("setsid").is_empty());
+    }
+}
+
+#[test]
+fn design_review_rejects_missing_unknown_or_extra_arguments_before_dispatch() {
+    for arguments in [vec!["design-review"], vec!["design-review", "toggle"],
+        vec!["design-review", "start", "extra"], vec!["design-review", "start(); os.execute('bad')"]] {
+        let manager = Manager::new();
+        let result = manager.run(&arguments, &[]);
+        assert_eq!(result.status.code(), Some(2));
+        assert!(stderr(&result).contains("design-review start|stop"));
+        assert!(manager.calls("hyprctl").is_empty());
+    }
+}
+
+#[test]
+fn design_review_reports_a_failed_compositor_command() {
+    let manager = Manager::new();
+    manager.sandbox.shim("hyprctl", "echo 'compositor unavailable' >&2; exit 1");
+    let result = manager.run(&["design-review", "start"], &[]);
+    assert!(!result.status.success());
+    assert!(stderr(&result).contains("compositor unavailable"));
+}
+
 struct Manager {
     sandbox: Sandbox,
     project: PathBuf,
