@@ -393,6 +393,140 @@ fn delivered_text_labels_collaborator_provenance_and_denies_authority() {
     assert!(text.contains("not authorization from Theo"), "{text}");
 }
 
+fn ask(connection: &mut rusqlite::Connection, key: &str, thread: Option<&str>) -> Result<Value, cockpit::teams::TeamError> {
+    let message = Submission { task: task(), submission_key: key.into(), recipient: DESIGNER.into(), kind: MessageKind::Clarification,
+        body: "Which frame is approved?".into(), thread_id: thread.map(str::to_string), handoff_id: None };
+    store::accept(connection, &live()[1], &AgentAction::Send { message }, 3000).and_then(|reply| reply.result)
+}
+
+fn answer(connection: &mut rusqlite::Connection, key: &str, thread: &str) -> Result<Value, cockpit::teams::TeamError> {
+    let message = Submission { task: task(), submission_key: key.into(), recipient: DEVELOPER.into(), kind: MessageKind::Reply,
+        body: "Frame 12.".into(), thread_id: Some(thread.into()), handoff_id: None };
+    store::accept(connection, &live()[0], &AgentAction::Send { message }, 3000).and_then(|reply| reply.result)
+}
+
+fn assess(connection: &mut rusqlite::Connection, thread: &str, is_resolved: bool) -> Result<Value, cockpit::teams::TeamError> {
+    store::assess(connection, &live()[1], &AgentAction::Assess { task: task(), thread_id: thread.into(), resolved: is_resolved }, 3000)
+        .and_then(|reply| reply.result)
+}
+
+fn escalations(connection: &rusqlite::Connection) -> Vec<Value> {
+    store::snapshot(connection, Some(&task()), None, 100).unwrap()["escalations"].as_array().unwrap().clone()
+}
+
+#[test]
+fn third_unresolved_round_escalates_once_after_the_asker_assesses_it() {
+    let sandbox = Sandbox::new();
+    let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+    linked(&mut connection);
+    let thread = ask(&mut connection, "q1", None).unwrap()["thread_id"].as_str().unwrap().to_string();
+    for round in 1..=3 {
+        if round > 1 { assert_eq!(ask(&mut connection, &format!("q{round}"), Some(&thread)).unwrap()["round"], round); }
+        answer(&mut connection, &format!("a{round}"), &thread).unwrap();
+        if round < 3 { assert_eq!(assess(&mut connection, &thread, false).unwrap()["status"], "awaiting_followup"); }
+    }
+    assert!(escalations(&connection).is_empty(), "the third reply must first be assessed");
+    assert_eq!(assess(&mut connection, &thread, false).unwrap()["status"], "escalated");
+    assert_eq!(escalations(&connection).len(), 1);
+    assert!(assess(&mut connection, &thread, false).is_err());
+    assert_eq!(escalations(&connection).len(), 1);
+}
+
+#[test]
+fn a_fourth_request_is_refused_and_escalates_once() {
+    let sandbox = Sandbox::new();
+    let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+    linked(&mut connection);
+    let thread = ask(&mut connection, "q1", None).unwrap()["thread_id"].as_str().unwrap().to_string();
+    for round in 1..=3 {
+        if round > 1 { ask(&mut connection, &format!("q{round}"), Some(&thread)).unwrap(); }
+        answer(&mut connection, &format!("a{round}"), &thread).unwrap();
+        if round < 3 { assess(&mut connection, &thread, false).unwrap(); }
+    }
+    assert!(ask(&mut connection, "q4", Some(&thread)).is_err());
+    assert!(ask(&mut connection, "q5", Some(&thread)).is_err());
+    assert_eq!(escalations(&connection).len(), 1);
+}
+
+#[test]
+fn a_resolved_thread_does_not_escalate_or_accept_more_requests() {
+    let sandbox = Sandbox::new();
+    let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+    linked(&mut connection);
+    let thread = ask(&mut connection, "q1", None).unwrap()["thread_id"].as_str().unwrap().to_string();
+    answer(&mut connection, "a1", &thread).unwrap();
+    assert_eq!(assess(&mut connection, &thread, true).unwrap()["status"], "resolved");
+    assert!(ask(&mut connection, "q2", Some(&thread)).is_err());
+    assert!(escalations(&connection).is_empty());
+}
+
+#[test]
+fn duplicate_replies_and_transport_retries_do_not_advance_rounds() {
+    let sandbox = Sandbox::new();
+    let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+    linked(&mut connection);
+    let thread = ask(&mut connection, "q1", None).unwrap()["thread_id"].as_str().unwrap().to_string();
+    let dispatch = store::claim(&mut connection, &live()[0], "idle-1", 3000).unwrap().unwrap();
+    store::finish(&mut connection, &dispatch.id, &TransportOutcome::NotSubmitted { reason: "busy".into() }, 3000).unwrap();
+    answer(&mut connection, "a1", &thread).unwrap();
+    answer(&mut connection, "a1", &thread).unwrap();
+    assess(&mut connection, &thread, false).unwrap();
+    assert_eq!(ask(&mut connection, "q2", Some(&thread)).unwrap()["round"], 2);
+}
+
+#[test]
+fn a_delivered_clarification_names_its_thread_and_round() {
+    let sandbox = Sandbox::new();
+    let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+    linked(&mut connection);
+    let thread = ask(&mut connection, "q1", None).unwrap()["thread_id"].as_str().unwrap().to_string();
+    let dispatch = store::claim(&mut connection, &live()[0], "idle-1", 3000).unwrap().unwrap();
+    let text = cockpit::teams::envelope_text(&dispatch.envelope);
+    assert!(text.contains(&format!("Thread: {thread} (round 1 of 3)")), "{text}");
+}
+
+#[test]
+fn independent_questions_have_independent_round_counters() {
+    let sandbox = Sandbox::new();
+    let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+    linked(&mut connection);
+    let first = ask(&mut connection, "q1", None).unwrap();
+    let second = ask(&mut connection, "q2", None).unwrap();
+    assert_ne!(first["thread_id"], second["thread_id"]);
+    assert_eq!(second["round"], 1);
+}
+
+#[test]
+fn only_the_answerer_replies_and_only_the_asker_assesses() {
+    let sandbox = Sandbox::new();
+    let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+    linked(&mut connection);
+    let thread = ask(&mut connection, "q1", None).unwrap()["thread_id"].as_str().unwrap().to_string();
+    let forged = Submission { task: task(), submission_key: "forged".into(), recipient: DESIGNER.into(), kind: MessageKind::Reply,
+        body: "self answer".into(), thread_id: Some(thread.clone()), handoff_id: None };
+    assert!(store::accept(&mut connection, &live()[1], &AgentAction::Send { message: forged }, 3000).is_err());
+    answer(&mut connection, "a1", &thread).unwrap();
+    let by_answerer = AgentAction::Assess { task: task(), thread_id: thread.clone(), resolved: true };
+    assert!(store::assess(&mut connection, &live()[0], &by_answerer, 3000).is_err());
+}
+
+#[test]
+fn only_theo_can_close_an_escalation() {
+    let sandbox = Sandbox::new();
+    let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+    linked(&mut connection);
+    let thread = ask(&mut connection, "q1", None).unwrap()["thread_id"].as_str().unwrap().to_string();
+    for round in 1..=3 {
+        if round > 1 { ask(&mut connection, &format!("q{round}"), Some(&thread)).unwrap(); }
+        answer(&mut connection, &format!("a{round}"), &thread).unwrap();
+        assess(&mut connection, &thread, false).unwrap();
+    }
+    assert!(serde_json::from_value::<AgentAction>(serde_json::json!({"action": "resolve", "thread_id": thread})).is_err());
+    store::control(&mut connection, &HostAction::Resolve { request_id: "resolve-1".into(), thread_id: thread.clone(),
+        note: "Use frame 12.".into() }, &live(), 4000).unwrap();
+    assert_eq!(escalations(&connection)[0]["status"], "resolved");
+}
+
 #[test]
 fn replaced_sender_runtime_invalidates_pending_messages() {
     let sandbox = Sandbox::new();

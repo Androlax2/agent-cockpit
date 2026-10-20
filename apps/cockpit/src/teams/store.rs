@@ -68,6 +68,10 @@ pub fn open(path: &Path) -> Result<Connection, TeamError> {
         CREATE TABLE IF NOT EXISTS attempts (id TEXT PRIMARY KEY, message_id TEXT NOT NULL REFERENCES messages(id),
             number INTEGER NOT NULL, state TEXT NOT NULL, native_id TEXT, finished_at INTEGER, started_at INTEGER NOT NULL DEFAULT 0,
             UNIQUE(message_id,number));
+        CREATE TABLE IF NOT EXISTS threads (id TEXT PRIMARY KEY, task_key TEXT NOT NULL, asker TEXT NOT NULL, answerer TEXT NOT NULL,
+            round INTEGER NOT NULL, status TEXT NOT NULL, created_at INTEGER NOT NULL);
+        CREATE TABLE IF NOT EXISTS escalations (thread_id TEXT PRIMARY KEY REFERENCES threads(id), task_key TEXT NOT NULL, reason TEXT NOT NULL,
+            status TEXT NOT NULL, note TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL, resolved_at INTEGER);
         CREATE UNIQUE INDEX IF NOT EXISTS one_inflight_delivery ON messages(recipient,recipient_epoch) WHERE state='submitting';
         PRAGMA user_version=1;")?;
     Ok(connection)
@@ -134,7 +138,7 @@ pub fn propose(connection: &mut Connection, sender: &VerifiedSession, proposal: 
 pub fn control(connection: &mut Connection, action: &HostAction, live: &[VerifiedSession], now_ms: i64) -> Result<TeamReply, TeamError> {
     let request_id = match action {
         HostAction::Approve { request_id, .. } | HostAction::Edit { request_id, .. }
-        | HostAction::Reject { request_id, .. } | HostAction::Unlink { request_id, .. } => request_id,
+        | HostAction::Reject { request_id, .. } | HostAction::Unlink { request_id, .. } | HostAction::Resolve { request_id, .. } => request_id,
     };
     let fingerprint = audit::sha256_hex(serde_json::to_string(action)?.as_bytes());
     let transaction = connection.transaction()?;
@@ -172,6 +176,16 @@ pub fn control(connection: &mut Connection, action: &HostAction, live: &[Verifie
             transaction.execute("DELETE FROM members WHERE task_key=?1 AND session_id=?2", params![task_key,session_id])?;
             transaction.execute("UPDATE teams SET revision=revision+1 WHERE task_key=?1", [&task_key])?;
             json!({"session_id":session_id,"status":"unlinked"})
+        },
+        HostAction::Resolve { thread_id, note, .. } => {
+            if note.trim().is_empty() || note.chars().count() > 1000 || note.chars().any(|character| character.is_control() && character != '\n') {
+                return Err(TeamError::new(ErrorCode::Invalid, "a resolution note is 1–1000 characters without controls"));
+            }
+            let changed = transaction.execute("UPDATE escalations SET status='resolved', note=?2, resolved_at=?3 WHERE thread_id=?1 AND status='open'",
+                params![thread_id, note, now_ms])?;
+            if changed != 1 { return Err(TeamError::new(ErrorCode::Conflict, "no open escalation for this thread")); }
+            transaction.execute("UPDATE threads SET status='resolved' WHERE id=?1", [thread_id])?;
+            json!({"thread_id": thread_id, "status": "resolved"})
         },
     };
     transaction.execute("INSERT INTO host_actions VALUES (?1,?2,?3)", params![request_id, fingerprint, response.to_string()])?;
@@ -225,7 +239,11 @@ pub fn snapshot(connection: &Connection, task: Option<&TaskKey>, after: Option<i
     let mut messages = connection.prepare("SELECT seq,id,envelope,state,attempts,next_at,last_error FROM messages WHERE (?1 IS NULL OR task_key=?1) AND (?2 IS NULL OR seq>?2) ORDER BY seq LIMIT ?3")?;
     let messages = messages.query_map(params![task_key, after, limit.min(100) as i64], |row| Ok(json!({"seq":row.get::<_,i64>(0)?,"message_id":row.get::<_,String>(1)?,
         "envelope":row.get::<_,String>(2)?,"state":row.get::<_,String>(3)?,"attempts":row.get::<_,i64>(4)?,"next_at":row.get::<_,i64>(5)?,"error":row.get::<_,String>(6)?})))?.collect::<Result<Vec<_>,_>>()?;
-    Ok(json!({"members":members,"proposals":proposals,"messages":messages}))
+    let mut escalations = connection.prepare("SELECT thread_id,reason,status,note,created_at FROM escalations WHERE (?1 IS NULL OR task_key=?1) ORDER BY created_at LIMIT ?2")?;
+    let escalations = escalations.query_map(params![task_key, limit.min(100) as i64], |row| Ok(json!({"thread_id":row.get::<_,String>(0)?,
+        "reason":row.get::<_,String>(1)?,"status":row.get::<_,String>(2)?,"note":row.get::<_,String>(3)?,"created_at":row.get::<_,i64>(4)?})))?
+        .collect::<Result<Vec<_>,_>>()?;
+    Ok(json!({"members":members,"proposals":proposals,"messages":messages,"escalations":escalations}))
 }
 
 fn cancel_member_messages(connection: &Connection, task_key: &str, session: &str) -> Result<(), TeamError> {
@@ -244,7 +262,8 @@ pub fn accept(connection: &mut Connection, sender: &VerifiedSession, action: &Ag
     let AgentAction::Send { message } = action else {
         return Err(TeamError::new(ErrorCode::Invalid, "this action requires the authenticated daemon context"));
     };
-    if message.kind != MessageKind::Notice || message.thread_id.is_some() || message.handoff_id.is_some() {
+    if message.handoff_id.is_some() || matches!(message.kind, MessageKind::Handoff | MessageKind::QaRequest | MessageKind::Findings)
+        || (message.kind == MessageKind::Notice && message.thread_id.is_some()) {
         return Err(TeamError::new(ErrorCode::Invalid, "this message requires its structured collaboration action"));
     }
     if message.body.trim().is_empty() || message.body.chars().count() > 4000
@@ -268,15 +287,97 @@ pub fn accept(connection: &mut Connection, sender: &VerifiedSession, action: &Ag
     let pending: i64 = transaction.query_row("SELECT count(*) FROM messages WHERE task_key=?1 AND state IN ('queued','ready','submitting','uncertain')", [&task_key], |row| row.get(0))?;
     let recent: i64 = transaction.query_row("SELECT (SELECT count(*) FROM messages WHERE sender=?1 AND created_at>?2)+(SELECT count(*) FROM proposals WHERE sender=?1 AND created_at>?2)", params![sender.session_id,now_ms-60_000], |row| row.get(0))?;
     if pending >= 100 || recent >= 10 { return Err(TeamError::new(ErrorCode::Limit, "collaboration queue or rate limit reached")); }
+    let thread = match message.kind {
+        MessageKind::Clarification => match thread_request(&transaction, &task_key, sender, message, now_ms)? {
+            ThreadStep::Proceed(thread_id, round) => Some((thread_id, round)),
+            ThreadStep::Escalated => {
+                transaction.commit()?;
+                return Err(TeamError::new(ErrorCode::Limit, "three clarification rounds are used up; this question is escalated to Theo"));
+            },
+        },
+        MessageKind::Reply => Some(thread_reply(&transaction, &task_key, sender, message)?),
+        _ => None,
+    };
+    let (thread_id, round) = thread.map_or((None, None), |(thread_id, round)| (Some(thread_id), Some(round)));
     let id = identifier()?;
-    let envelope = json!({"message_id":id,"task":message.task,"kind":message.kind,"body":message.body,
+    let envelope = json!({"message_id":id,"task":message.task,"kind":message.kind,"body":message.body,"thread_id":thread_id,"round":round,
         "sender":{"session_id":sender.session_id,"role":source.role,"agent":sender.agent},
         "recipient":{"session_id":message.recipient,"role":target.role,"agent":target.agent},
         "authorization":"collaborator_content_not_user_authorization"});
     transaction.execute("INSERT INTO messages (id,task_key,sender,recipient,sender_epoch,recipient_epoch,submission_key,fingerprint,envelope,state,next_at,created_at,recipient_runtime) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,'queued',?10,?10,?11)",
         params![id,task_key,sender.session_id,message.recipient,source.epoch,target.epoch,message.submission_key,fingerprint,envelope.to_string(),now_ms,target.runtime])?;
     transaction.commit()?;
-    Ok(TeamReply { request_id:message.submission_key.clone(),result:Ok(json!({"message_id":id})) })
+    Ok(TeamReply { request_id:message.submission_key.clone(),result:Ok(json!({"message_id":id,"thread_id":thread_id,"round":round})) })
+}
+
+enum ThreadStep { Proceed(String, i64), Escalated }
+
+/// Each question is a thread of at most three request/reply rounds; transport retries never count.
+fn thread_request(transaction: &Connection, task_key: &str, sender: &VerifiedSession, message: &super::Submission, now_ms: i64) -> Result<ThreadStep, TeamError> {
+    let Some(thread_id) = &message.thread_id else {
+        let thread_id = identifier()?;
+        transaction.execute("INSERT INTO threads VALUES (?1,?2,?3,?4,1,'awaiting_reply',?5)", params![thread_id, task_key, sender.session_id, message.recipient, now_ms])?;
+        return Ok(ThreadStep::Proceed(thread_id, 1));
+    };
+    let thread: Option<(String, String, i64, String)> = transaction.query_row("SELECT asker,answerer,round,status FROM threads WHERE id=?1 AND task_key=?2",
+        params![thread_id, task_key], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))).optional()?;
+    let Some((asker, answerer, round, status)) = thread else { return Err(TeamError::new(ErrorCode::NotFound, "clarification thread not found")) };
+    if asker != sender.session_id || answerer != message.recipient {
+        return Err(TeamError::new(ErrorCode::Unauthorized, "only the asker continues a clarification, with the same collaborator"));
+    }
+    if round >= 3 && status != "resolved" {
+        escalate(transaction, thread_id, task_key, "a fourth clarification request was refused", now_ms)?;
+        return Ok(ThreadStep::Escalated);
+    }
+    if status != "awaiting_followup" {
+        return Err(TeamError::new(ErrorCode::Conflict, format!("this clarification is {status}, not awaiting a follow-up")));
+    }
+    transaction.execute("UPDATE threads SET round=round+1, status='awaiting_reply' WHERE id=?1", [thread_id])?;
+    Ok(ThreadStep::Proceed(thread_id.clone(), round + 1))
+}
+
+fn thread_reply(transaction: &Connection, task_key: &str, sender: &VerifiedSession, message: &super::Submission) -> Result<(String, i64), TeamError> {
+    let Some(thread_id) = &message.thread_id else { return Err(TeamError::new(ErrorCode::Invalid, "a reply names its clarification thread")) };
+    let thread: Option<(String, String, i64, String)> = transaction.query_row("SELECT asker,answerer,round,status FROM threads WHERE id=?1 AND task_key=?2",
+        params![thread_id, task_key], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))).optional()?;
+    let Some((asker, answerer, round, status)) = thread else { return Err(TeamError::new(ErrorCode::NotFound, "clarification thread not found")) };
+    if answerer != sender.session_id || asker != message.recipient {
+        return Err(TeamError::new(ErrorCode::Unauthorized, "only the asked collaborator replies, to the asker"));
+    }
+    if status != "awaiting_reply" {
+        return Err(TeamError::new(ErrorCode::Conflict, format!("this clarification is {status}, not awaiting a reply")));
+    }
+    transaction.execute("UPDATE threads SET status='awaiting_assessment' WHERE id=?1", [thread_id])?;
+    Ok((thread_id.clone(), round))
+}
+
+/// At most one escalation per thread, however many times its limit is hit.
+fn escalate(transaction: &Connection, thread_id: &str, task_key: &str, reason: &str, now_ms: i64) -> Result<(), TeamError> {
+    transaction.execute("INSERT OR IGNORE INTO escalations (thread_id,task_key,reason,status,created_at) VALUES (?1,?2,?3,'open',?4)",
+        params![thread_id, task_key, reason, now_ms])?;
+    transaction.execute("UPDATE threads SET status='escalated' WHERE id=?1", [thread_id])?;
+    Ok(())
+}
+
+pub fn assess(connection: &mut Connection, sender: &VerifiedSession, action: &AgentAction, now_ms: i64) -> Result<TeamReply, TeamError> {
+    let AgentAction::Assess { task, thread_id, resolved } = action else { return Err(TeamError::new(ErrorCode::Invalid, "not an assessment")) };
+    let task_key = serde_json::to_string(task)?;
+    let transaction = connection.transaction()?;
+    member(&transaction, &task_key, &sender.session_id)?.filter(|member| member.runtime == sender.runtime && member.agent == sender.agent)
+        .ok_or_else(|| TeamError::new(ErrorCode::Unauthorized, "no approved task messaging link"))?;
+    let thread: Option<(String, i64, String)> = transaction.query_row("SELECT asker,round,status FROM threads WHERE id=?1 AND task_key=?2",
+        params![thread_id, task_key], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).optional()?;
+    let Some((asker, round, status)) = thread else { return Err(TeamError::new(ErrorCode::NotFound, "clarification thread not found")) };
+    if asker != sender.session_id { return Err(TeamError::new(ErrorCode::Unauthorized, "only the asker assesses its clarification")); }
+    if status != "awaiting_assessment" { return Err(TeamError::new(ErrorCode::Conflict, format!("this clarification is {status}, not awaiting assessment"))); }
+    let next = if *resolved { "resolved" } else if round < 3 { "awaiting_followup" } else { "escalated" };
+    if next == "escalated" {
+        escalate(&transaction, thread_id, &task_key, "three clarification rounds ended unresolved", now_ms)?;
+    } else {
+        transaction.execute("UPDATE threads SET status=?2 WHERE id=?1", params![thread_id, next])?;
+    }
+    transaction.commit()?;
+    Ok(TeamReply { request_id: thread_id.clone(), result: Ok(json!({"thread_id": thread_id, "status": next, "round": round})) })
 }
 
 /// The bound members of a request: (session, agent, runtime), for host-side checks before approval.

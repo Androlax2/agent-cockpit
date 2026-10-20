@@ -127,7 +127,7 @@ pub fn request(registry: &mut Registry, peer: u32, action: AgentAction) -> Resul
     };
     let kind = match &action {
         AgentAction::Context => "context", AgentAction::Propose { .. } => "propose", AgentAction::Send { .. } => "send",
-        AgentAction::Receive => "receive", AgentAction::Receipt { .. } => "receipt",
+        AgentAction::Receive => "receive", AgentAction::Receipt { .. } => "receipt", AgentAction::Assess { .. } => "assess",
     };
     // The daemon's own view of the recipient decides whether it may be woken: never the adapter's claim.
     let turn = registry.sessions.get(&sender.session_id)
@@ -145,6 +145,7 @@ pub fn request(registry: &mut Registry, peer: u32, action: AgentAction) -> Resul
                 "dispatch_id": dispatch.id, "message_id": dispatch.message_id,
                 "text": cockpit::teams::envelope_text(&dispatch.envelope), "envelope": dispatch.envelope}))) })
         },
+        AgentAction::Assess { .. } => store::assess(connection, &sender, &action, now_ms()),
         AgentAction::Receipt { dispatch_id, outcome } => {
             store::finish_for(connection, &sender, dispatch_id, outcome, now_ms())?;
             Ok(TeamReply { request_id: dispatch_id.clone(), result: Ok(json!({"status": "recorded"})) })
