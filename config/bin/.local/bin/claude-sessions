@@ -1252,7 +1252,7 @@ parallel_session() { # dir branch [prompt: its first message, the Todo panel's N
     # inside greywall there, as for lazygit.
     git_in_sandbox "$clone" switch --quiet -c "$branch" 2>/dev/null || git_in_sandbox "$clone" switch --quiet "$branch"
     if [[ -z $prompt ]]; then
-        new_session "$clone"
+        new_session "$clone" && focus_viewer
         return
     fi
     [[ $prompt == -* ]] && prompt="Task: $prompt" # never an option of the agent's

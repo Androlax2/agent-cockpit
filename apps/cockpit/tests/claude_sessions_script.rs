@@ -1163,6 +1163,15 @@ fn parallel_session_gets_its_own_clone_on_its_branch() {
 }
 
 #[test]
+fn a_parallel_session_takes_the_focus_once_it_starts() {
+    let manager = Manager::new();
+    manager.git_repository();
+    let clones = manager.sandbox.root.join("clones");
+    manager.run(&["parallel", &path_str(&manager.project), "feat"], &[("CLAUDE_SESSIONS_CLONES", &path_str(&clones))]);
+    assert_eq!(manager.tmux_calls("select-pane").last().map(String::as_str), Some("tmux select-pane -t %11"));
+}
+
+#[test]
 fn a_clone_of_a_clone_is_filed_under_the_first_repository() {
     let manager = Manager::new();
     manager.git_repository();
