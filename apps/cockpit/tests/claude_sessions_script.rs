@@ -1588,6 +1588,44 @@ fn apply_dotfiles_takes_the_clones_commits_after_a_yes() {
     assert_eq!(fs::read_dir(work.join(".outgoing")).unwrap().count(), 0);
 }
 
+fn export_a_new_command(work: &Path) {
+    write_executable(&work.join("config/bin/.local/bin/new-command"), "#!/bin/sh\necho installed\n");
+    for patch in fs::read_dir(work.join(".outgoing")).unwrap() {
+        fs::remove_file(patch.unwrap().path()).unwrap();
+    }
+    for arguments in [&["add", "config/bin"][..], &["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "Add a command"],
+        &["format-patch", "-q", "origin/main", "-o", ".outgoing"]] {
+        assert!(Command::new("git").arg("-C").arg(work).args(arguments).status().unwrap().success());
+    }
+}
+
+#[test]
+fn applying_a_new_command_installs_it_on_the_users_path() {
+    let manager = Manager::new();
+    let (live, work) = dotfiles_pair(&manager);
+    export_a_new_command(&work);
+    let output = apply_dotfiles(&manager, &live, &work, "y\n");
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let command = manager.sandbox.home.join(".local/bin/new-command");
+    assert!(command.is_symlink(), "the applied command has no PATH symlink");
+    let output = manager.sandbox.run(&command, &[], &[]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(stdout(&output).trim(), "installed");
+}
+
+#[test]
+fn applying_a_command_refuses_to_overwrite_a_personal_file() {
+    let manager = Manager::new();
+    let (live, work) = dotfiles_pair(&manager);
+    export_a_new_command(&work);
+    let command = manager.sandbox.home.join(".local/bin/new-command");
+    fs::write(&command, "personal content\n").unwrap();
+    let output = apply_dotfiles(&manager, &live, &work, "y\n");
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    assert_eq!(fs::read_to_string(command).unwrap(), "personal content\n");
+    assert!(stderr(&output).contains("command links"), "{}", stderr(&output));
+}
+
 #[test]
 fn apply_dotfiles_still_asks_after_the_pager_quits_early() {
     // q in less before the end of a long patch: the pipe into less broke, and pipefail ended the
