@@ -2755,7 +2755,7 @@ impl App {
             }
             Key::Char('P') => self.message = self.manager_async(&["prs"]),
             Key::Char('W') => self.message = open_in_scratchpad("claude", ""),
-            Key::Char('G') => self.message = open_in_scratchpad("greyproxy", ""),
+            Key::Char('G') => self.message = open_in_scratchpad("greyproxy", "http://localhost:43080/pending"),
             Key::Char('q') | Key::Ctrl('c') => {
                 if self.confirm(screen, "close the manager window? sessions keep running") {
                     let _ = Command::new("tmux").arg("detach-client").status();

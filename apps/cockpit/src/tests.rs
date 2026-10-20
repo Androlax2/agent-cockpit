@@ -2244,6 +2244,14 @@ fn pull_requests_come_from_gh_without_bots_and_open_in_the_cockpit_window() {
 }
 
 #[test]
+fn g_opens_pending_requests_in_the_greyproxy_window() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    app.handle(Key::Char('G'), &mut FakeScreen::default());
+    assert_eq!(fixture.calls("hyprctl"), vec![r#"hyprctl eval OPEN_IN_SCRATCHPAD("greyproxy", "http://localhost:43080/pending")"#.to_string()]);
+}
+
+#[test]
 fn bad_json_from_gh_gives_no_rows() {
     assert!(reviews::parse_reviews("not json", "o/r").is_empty());
     assert!(reviews::parse_issues("{}", "o/r").is_empty());
