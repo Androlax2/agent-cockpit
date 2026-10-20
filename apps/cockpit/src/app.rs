@@ -694,7 +694,7 @@ impl App {
     /// the restarted session. A terminal session is its terminal's: it is only told in the log.
     fn dispatch_restarts(&mut self) {
         let ready: Vec<Session> = self.sessions.iter()
-            .filter(|session| session.state == "waiting" && prompts::restart_wanted(&session.session)).cloned().collect();
+            .filter(|session| !session.is_external() && session.state == "waiting" && prompts::restart_wanted(&session.session)).cloned().collect();
         for session in ready {
             prompts::restart_done(&session.session);
             if session.terminal {
@@ -712,7 +712,7 @@ impl App {
     pub fn dispatch_prompts(&mut self) {
         self.dispatch_restarts();
         let ready: Vec<Session> = self.sessions.iter()
-            .filter(|session| session.state == "waiting" && session.since > self.prompts_sent.get(&session.session).copied().unwrap_or(0))
+            .filter(|session| !session.is_external() && session.state == "waiting" && session.since > self.prompts_sent.get(&session.session).copied().unwrap_or(0))
             .cloned().collect();
         for session in ready {
             let Some((text, path)) = prompts::oldest(&session.session) else { continue };
@@ -749,7 +749,7 @@ impl App {
         let viewed = current_session();
         let watched = !viewed.is_empty() && util::claude_workspace_active();
         let idle: Vec<Session> = self.sessions.iter()
-            .filter(|session| session.state == "waiting" && !session.terminal && !session.cwd.is_empty() && now as i64 - session.since >= QUEUE_IDLE_S)
+            .filter(|session| !session.is_external() && session.state == "waiting" && !session.terminal && !session.cwd.is_empty() && now as i64 - session.since >= QUEUE_IDLE_S)
             .filter(|session| !(watched && session.session == viewed) && !self.todos.busy(&session.session))
             .cloned().collect();
         for session in idle {
@@ -1057,7 +1057,7 @@ impl App {
         self.dotfiles_unpushed = gathered.dotfiles_unpushed;
         self.craft_roots = gathered.craft_roots.clone();
         self.gathered = Some(gathered);
-        let outdated: Vec<&Session> = running.iter().filter(|s| !sessions::changed_since_start(s, &self.start_files).is_empty()).collect();
+        let outdated: Vec<&Session> = running.iter().filter(|s| !s.is_external() && !sessions::changed_since_start(s, &self.start_files).is_empty()).collect();
         if !outdated.is_empty() {
             let mut changes: Vec<&str> = outdated.iter().flat_map(|s| sessions::changed_since_start(s, &self.start_files)).collect();
             changes.sort();
@@ -1110,13 +1110,16 @@ impl App {
             };
             let facts = &session.facts;
             let mut badges = Vec::new();
-            if facts.context.is_some_and(|context| context >= CONTEXT_COMPACT_AT) {
+            if session.is_external() {
+                badges.push(part("external", bold(CYAN)));
+            }
+            if !session.is_external() && facts.context.is_some_and(|context| context >= CONTEXT_COMPACT_AT) {
                 badges.push(part("/compact", bold(YELLOW)));
             }
             if session.update {
                 badges.push(part("⬆ update", bold(GREEN)));
             }
-            if !sessions::changed_since_start(session, &self.start_files).is_empty() {
+            if !session.is_external() && !sessions::changed_since_start(session, &self.start_files).is_empty() {
                 badges.push(part("⟳ restart", bold(YELLOW)));
             }
             if facts.remote {
@@ -1174,8 +1177,10 @@ impl App {
             let mut right = Vec::new();
             if session.state != "unknown" {
                 right.push(part(&facts.model, dim(FG_DARK)));
-                let effort = if facts.effort.is_empty() { "effort" } else { facts.effort.as_str() };
-                right.push(Part { text: format!("{effort} ▾"), style: style(CYAN), action: Some("effort") });
+                if !session.is_external() {
+                    let effort = if facts.effort.is_empty() { "effort" } else { facts.effort.as_str() };
+                    right.push(Part { text: format!("{effort} ▾"), style: style(CYAN), action: Some("effort") });
+                }
                 right.push(part(facts.context.map(|c| format!("{}%", c.round())).unwrap_or_default(), bold(context_color(facts.context))));
             }
             right.retain(|p| !p.text.is_empty());
@@ -1241,6 +1246,12 @@ impl App {
             hints.push(("U", "push"));
         }
         hints.extend([("⏎", "open"), ("n", "peek"), ("e", "effort"), ("g", "git"), ("+", "another"), ("x", "exit")]);
+        if !selected.session.is_empty() && selected.is_external() {
+            hints.retain(|(key, _)| !session_key_requires_terminal(if *key == "⏎" { Key::Enter } else { Key::Char(key.chars().next().unwrap()) }));
+            if sessions::next_attention_index(&self.sessions, self.panels[1].selected).is_none() {
+                hints.retain(|(key, _)| *key != "n");
+            }
+        }
         let mut seen = std::collections::HashSet::new();
         hints.retain(|(key, _)| seen.insert(*key));
         let agent = selected.agent();
@@ -1265,6 +1276,9 @@ impl App {
 
     pub(crate) fn handle_sessions(&mut self, key: Key, screen: &mut dyn Screen) -> String {
         let session = self.selected_session();
+        if session.as_ref().is_some_and(|session| session.is_external()) && session_key_requires_terminal(key) {
+            return "external session: no terminal target; use its own window".into();
+        }
         if let (Some(s), Some((feature, what))) = (session.as_ref(), key_feature(key)) {
             let agent = s.agent();
             if !agent.can(feature) {
@@ -1378,7 +1392,7 @@ impl App {
         // Only the sessions started before a change they do not have yet (the "⟳ restart" badge);
         // a terminal session is its terminal's and is left alone.
         let stale: Vec<&Session> = self.sessions.iter()
-            .filter(|s| !s.terminal && !sessions::changed_since_start(s, &self.start_files).is_empty()).collect();
+            .filter(|s| !s.is_external() && !s.terminal && !sessions::changed_since_start(s, &self.start_files).is_empty()).collect();
         let ready: Vec<Session> = stale.iter().filter(|s| s.state == "waiting").map(|s| (*s).clone()).collect();
         let busy: Vec<Session> = stale.iter().filter(|s| s.state == "working" || s.state == "needs-you").map(|s| (*s).clone()).collect();
         if ready.is_empty() {
@@ -1397,6 +1411,9 @@ impl App {
     }
 
     pub(crate) fn open_effort_menu(&mut self, session: Session, anchor_row: Option<u16>) -> String {
+        if session.is_external() {
+            return "external session: no terminal target; use its own window".into();
+        }
         if session.state == "unknown" {
             return "no effort for a session the daemon does not know".into();
         }
@@ -1848,11 +1865,14 @@ impl App {
             _ => None,
         };
         let is_design = design_project.is_some();
-        let running = if let Some(project) = design_project {
-            self.sessions.iter().find(|s| s.role == "designer" && s.project == project && s.state != "unknown").cloned()
-        } else {
-            self.viewed_session_for(entry)
-                .or_else(|| self.sessions.iter().find(|s| s.cwd == directory && s.state != "unknown" && s.role != "designer").cloned())
+        let mut candidates = self.sessions.iter().filter(|session| session.state != "unknown" && match &design_project {
+            Some(project) => session.role == "designer" && session.project == *project,
+            None => session.cwd == directory && session.role != "designer",
+        });
+        let viewed = if is_design { None } else { self.viewed_session_for(entry) };
+        let running = viewed.or_else(|| candidates.clone().find(|session| !session.is_external()).cloned());
+        if running.is_none() && candidates.any(|session| session.is_external()) {
+            return "external session: no terminal target; use its own window".into();
         };
         let text = if is_design && running.is_none() { format!("Load the figcraft-design skill first. {text}") } else { text };
         let outcome = match &running {
@@ -1898,7 +1918,7 @@ impl App {
     /// on the item's project (by name, as the Todo list is narrowed) or the issue's repository.
     fn viewed_session_for(&self, entry: &Entry) -> Option<Session> {
         let viewed = current_session();
-        let session = self.sessions.iter().find(|s| s.session == viewed && s.state != "unknown" && s.role != "designer")?;
+        let session = self.sessions.iter().find(|s| !s.is_external() && s.session == viewed && s.state != "unknown" && s.role != "designer")?;
         let belongs = match entry {
             Entry::Typed(item) => item.project() == session.project,
             Entry::Issue { issue, .. } => self.reviews.repositories.contains(&issue.full_repository),
@@ -2324,18 +2344,26 @@ impl App {
     /// Every single-key action from the help tables: "panel\tkey\tlabel" lines for fzf
     /// ("-" for anywhere).
     pub(crate) fn palette_entries(&self) -> Vec<String> {
+        let is_external = self.selected_session().is_some_and(|session| session.is_external());
         let mut entries: Vec<String> = GLOBAL_HELP.iter()
             .filter(|(key, _)| key.chars().count() == 1 && !":?".contains(*key))
             .map(|(key, label)| format!("-\t{key}\t{:<13} {key:<2} {label}", "everywhere"))
             .collect();
         for index in 0..4 {
             for (key, label) in Self::panel_help(index) {
+                if index == 1 && is_external
+                    && session_key_requires_terminal(if key == "⏎" { Key::Enter } else { Key::Char(key.chars().next().unwrap()) }) {
+                    continue;
+                }
                 if key.chars().count() == 1 || key == "⏎" {
                     entries.push(format!("{index}\t{key}\t{:<13} {key:<2} {label}", PANEL_NAMES[index]));
                 }
             }
         }
         for (panel, name, label) in PALETTE_ONLY {
+            if name == "remote" && is_external {
+                continue;
+            }
             let scope = panel.parse::<usize>().map_or("everywhere", |index| PANEL_NAMES[index]);
             entries.push(format!("{panel}\t{name}\t{scope:<13}    {label}"));
         }
@@ -2357,6 +2385,7 @@ impl App {
                 "opening status.claude.com …".into()
             }
             "remote" => match known {
+                Some(s) if s.is_external() => "external session: no terminal target; use its own window".into(),
                 Some(s) if !s.agent().can(Feature::RemoteControl) => format!("Remote Control is not {}'s to do: {} runs {}", s.agent().label, s.project, s.agent().name),
                 Some(s) => {
                     manager_in_background(&["remote", &s.session]);
@@ -2465,6 +2494,10 @@ fn fzf(prompt: &str, lines: &[String], extra: &[&str]) -> Option<String> {
     let output = child.wait_with_output().ok()?;
     let chosen = String::from_utf8_lossy(&output.stdout).trim_end_matches('\n').to_string();
     (output.status.success() && !chosen.is_empty()).then_some(chosen)
+}
+
+fn session_key_requires_terminal(key: Key) -> bool {
+    matches!(key, Key::Enter | Key::Char('r' | 'e' | '$' | 'C' | 'x'))
 }
 
 /// The card keys that need a feature of the session's agent, and what they do, named for a

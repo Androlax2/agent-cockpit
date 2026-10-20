@@ -135,6 +135,10 @@ fn text(row: &Value, key: &str) -> String {
 }
 
 impl Session {
+    pub fn is_external(&self) -> bool {
+        self.tmux_pane.is_empty() && self.kitty_pid.is_empty()
+    }
+
     pub fn from_value(row: &Value) -> Option<Session> {
         let session = row.get("session")?.as_str()?.to_string();
         Some(Session {
@@ -192,12 +196,10 @@ fn tmux_claude_panes() -> Vec<[String; 5]> {
         .collect()
 }
 
-/// Reported sessions first, then tmux sessions the daemon does not know about. A reported session
-/// with neither a tmux pane nor a kitty window is left out: nothing could open, restart or message
-/// it, and its tmux session, if it has one, shows as a card of its own that does.
+/// Reported sessions first, then tmux sessions the daemon does not know about. Sessions without a
+/// known terminal target stay visible; their cards cannot control them.
 pub fn running() -> Vec<Session> {
     let mut sessions = reported();
-    sessions.retain(|session| !session.tmux_pane.is_empty() || !session.kitty_pid.is_empty());
     let known: HashSet<String> = sessions.iter().map(|session| session.tmux_pane.clone()).collect();
     for [name, pane, path, title, created] in tmux_claude_panes() {
         if known.contains(&pane) {
@@ -297,7 +299,7 @@ pub fn waiting_request(session: &Session) -> String {
 
 pub fn next_attention_index(sessions: &[Session], selected: usize) -> Option<usize> {
     let candidates: Vec<usize> = sessions.iter().enumerate()
-        .filter(|(_, session)| session.state != "working" && session.state != "recent")
+        .filter(|(_, session)| !session.is_external() && session.state != "working" && session.state != "recent")
         .map(|(index, _)| index)
         .collect();
     candidates.iter().find(|index| **index > selected).or(candidates.first()).copied()
@@ -604,7 +606,7 @@ mod tests {
     #[test]
     fn next_attention_wraps_to_the_first_waiting_one() {
         let rows: Vec<Session> = ["working", "waiting", "working", "needs-you"].iter()
-            .map(|state| Session { state: state.to_string(), ..Session::default() }).collect();
+            .map(|state| Session { state: state.to_string(), tmux_pane: "%1".into(), ..Session::default() }).collect();
         assert_eq!(next_attention_index(&rows, 1), Some(3));
         assert_eq!(next_attention_index(&rows, 3), Some(1));
     }

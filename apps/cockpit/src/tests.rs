@@ -168,6 +168,13 @@ fn session(id: &str, state: &str, project: &str, cwd: &str, started: i64) -> Val
     json!({"session": id, "state": state, "project": project, "cwd": cwd, "since": started, "started": started, "tmux_pane": format!("%{}", started % 90)})
 }
 
+fn external_session(id: &str, state: &str, project: &str, cwd: &str, started: i64) -> Value {
+    let mut row = session(id, state, project, cwd, started);
+    row["tmux_pane"] = Value::Null;
+    row["agent"] = json!("opencode");
+    row
+}
+
 // ---- Sessions ----
 
 #[test]
@@ -529,7 +536,6 @@ fn a_failed_exit_brings_the_card_back_and_says_so() {
 
 #[test]
 fn exit_closes_the_window_of_a_session_without_a_pane() {
-    // One with neither a pane nor a window gets no card at all (a_session_with_nothing_to_open_gets_no_card).
     let fixture = Fixture::new();
     fixture.snapshot(json!([{"session": SESSION_A, "state": "waiting", "project": "runway", "since": 1, "kitty_pid": "4242"}]));
     let mut app = fixture.app();
@@ -2238,14 +2244,154 @@ fn the_shown_todo_tab_is_drawn_as_a_chip() {
 }
 
 #[test]
-fn a_session_with_nothing_to_open_gets_no_card() {
+fn external_sessions_remain_visible_without_a_terminal_target() {
     let fixture = Fixture::new();
-    let mut lost = session(SESSION_B, "waiting", "dotfiles", "/r/dotfiles", 2);
-    lost["tmux_pane"] = json!("");
-    fixture.snapshot(json!([session(SESSION_A, "waiting", "runway", "/r/runway", 1), lost]));
-    let running: Vec<String> = sessions::running().into_iter().map(|s| s.session).collect();
-    assert!(running.contains(&SESSION_A.to_string()));
-    assert!(!running.contains(&SESSION_B.to_string()), "a card nothing can open");
+    for state in ["working", "waiting", "needs-you"] {
+        fixture.snapshot(json!([session(SESSION_A, "waiting", "runway", "/r/runway", 1),
+            external_session(OPENCODE_SESSION, state, "crema", "/r/crema", 2)]));
+        let mut app = fixture.app();
+        let external = app.sessions.iter().find(|session| session.session == OPENCODE_SESSION).expect("external session hidden");
+        assert_eq!(external.state, state);
+        let buffer = render(&mut app, 100, 45);
+        let rows: Vec<String> = (0..45).map(|y| (0..100).map(|x| buffer[(x, y)].symbol()).collect()).collect();
+        assert!(rows.iter().any(|row| row.contains("crema") && row.contains("external")), "{rows:?}");
+    }
+}
+
+#[test]
+fn external_sessions_reject_terminal_controls_without_running_commands() {
+    let fixture = Fixture::new();
+    for agent in ["claude", "opencode"] {
+        let mut row = external_session(SESSION_A, "waiting", "crema", "/r/crema", 1);
+        row["agent"] = json!(agent);
+        fixture.snapshot(json!([row]));
+        let mut app = fixture.app();
+        assert_eq!(app.sessions.len(), 1);
+        for key in [Key::Enter, Key::Char('r'), Key::Char('e'), Key::Char('$'), Key::Char('C'), Key::Char('x')] {
+            app.handle(key, &mut FakeScreen::answering(&[Key::Char('y')]));
+            assert!(app.message.contains("external") && app.message.contains("terminal"), "{agent}: {key:?}: {}", app.message);
+            assert!(app.menu.is_none());
+        }
+    }
+    assert!(fixture.calls("claude-sessions").is_empty());
+    assert!(fixture.calls("osd-show").is_empty());
+    assert!(fixture.calls("hyprctl").is_empty());
+}
+
+#[test]
+fn external_sessions_do_not_advertise_or_expose_terminal_controls() {
+    let fixture = Fixture::new();
+    let mut row = external_session(SESSION_A, "waiting", "crema", "/r/crema", 1);
+    row["agent"] = json!("claude");
+    row["update"] = json!(true);
+    fixture.snapshot(json!([row]));
+    fixture.write(&format!("home/.cache/claude/statusline-{SESSION_A}.json"), r#"{"effort":"high","context":95}"#);
+    let mut app = fixture.app();
+    assert_eq!(app.sessions.len(), 1);
+    let hints = app.sessions_hints();
+    assert!(hints.iter().all(|(key, _)| !["⏎", "r", "e", "C", "x", "n"].contains(key)), "{hints:?}");
+    assert!(hints.contains(&("g", "git")), "repository actions must stay available");
+    render(&mut app, 100, 45);
+    assert!(app.hit_actions.is_empty(), "external effort still clickable");
+}
+
+#[test]
+fn external_sessions_become_controllable_when_a_terminal_target_is_known() {
+    let fixture = Fixture::new();
+    let mut row = external_session(OPENCODE_SESSION, "waiting", "crema", "/r/crema", 1);
+    fixture.snapshot(json!([row]));
+    let mut app = fixture.app();
+    assert_eq!(app.sessions.len(), 1);
+    row["tmux_pane"] = json!("%9");
+    fixture.snapshot(json!([row]));
+    app.build();
+    assert_eq!(app.sessions.len(), 1);
+    assert!(!app.panels[1].lines.iter().any(|line| line.right.iter().any(|part| part.text == "external")));
+    app.handle(Key::Enter, &mut FakeScreen::default());
+    assert_eq!(fixture.wait_for_calls("claude-sessions", 1), [format!("claude-sessions open {OPENCODE_SESSION}")]);
+}
+
+#[test]
+fn external_sessions_are_skipped_when_peeking_at_sessions_needing_attention() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "working", "runway", "/r/runway", 1),
+        external_session(OPENCODE_SESSION, "needs-you", "crema", "/r/crema", 2),
+        session(SESSION_B, "waiting", "opusline", "/r/opusline", 3)]));
+    let mut app = fixture.app();
+    assert_eq!(app.sessions.len(), 3);
+    app.handle(Key::Char('n'), &mut FakeScreen::default());
+    assert_eq!(fixture.wait_for_calls("claude-sessions", 1), [format!("claude-sessions view {SESSION_B}")]);
+}
+
+#[test]
+fn external_sessions_keep_queued_prompts_pending_without_dispatching_them() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([external_session(OPENCODE_SESSION, "waiting", "crema", "/r/crema", 100)]));
+    let mut app = fixture.app();
+    assert_eq!(app.sessions.len(), 1);
+    crate::prompts::add(OPENCODE_SESSION, "next thought").unwrap();
+    app.dispatch_prompts();
+    assert_eq!(crate::prompts::count(OPENCODE_SESSION), 1);
+    assert!(fixture.calls("claude-sessions").is_empty());
+}
+
+#[test]
+fn external_sessions_do_not_receive_automatic_todo_assignments() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([external_session(OPENCODE_SESSION, "waiting", "crema", "/r/crema", util::now_secs() - 600)]));
+    let mut app = fixture.app();
+    app.gaming = || false;
+    assert_eq!(app.sessions.len(), 1);
+    let id = app.todos.add("crema", "/r/crema", "fix the header");
+    app.todos.toggle_queued(&id);
+    app.dispatch_queue();
+    assert_ne!(app.todos.status_of(&id), "doing");
+    assert!(fixture.calls("claude-sessions").is_empty());
+}
+
+#[test]
+fn external_sessions_are_not_restarted_by_bulk_or_deferred_restarts() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([external_session(OPENCODE_SESSION, "waiting", "crema", "/r/crema", 100)]));
+    let mut app = fixture.app();
+    assert_eq!(app.sessions.len(), 1);
+    app.start_files = vec![("opencode plugin", 500.0)];
+    app.handle(Key::Ctrl('r'), &mut FakeScreen::answering(&[Key::Char('y')]));
+    want_restart(OPENCODE_SESSION);
+    app.dispatch_prompts();
+    assert!(crate::prompts::restart_wanted(OPENCODE_SESSION));
+    assert!(fixture.calls("claude-sessions").is_empty());
+}
+
+#[test]
+fn external_sessions_refuse_todo_handoffs_without_marking_items_in_progress() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([external_session(OPENCODE_SESSION, "waiting", "crema", "/r/crema", 100)]));
+    let mut app = fixture.app();
+    assert_eq!(app.sessions.len(), 1);
+    let id = app.todos.add("crema", "/r/crema", "fix the header");
+    app.build();
+    let entry = app.todo_entries.iter().find(|entry| entry.key() == id).unwrap().clone();
+    let message = app.hand_to_claude(&entry, &mut FakeScreen::default());
+    assert!(message.contains("external"), "{message}");
+    assert_ne!(app.todos.status_of(&id), "doing");
+    assert!(fixture.calls("claude-sessions").is_empty());
+}
+
+#[test]
+fn external_sessions_do_not_block_handoffs_to_a_controllable_session_of_the_same_project() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([external_session(OPENCODE_SESSION, "waiting", "crema", "/r/crema", 100),
+        session(SESSION_A, "waiting", "crema", "/r/crema", 200)]));
+    let mut app = fixture.app();
+    assert_eq!(app.sessions.len(), 2);
+    let id = app.todos.add("crema", "/r/crema", "fix the header");
+    app.build();
+    let entry = app.todo_entries.iter().find(|entry| entry.key() == id).unwrap().clone();
+    let message = app.hand_to_claude(&entry, &mut FakeScreen::default());
+    assert_eq!(message, "sent to crema");
+    assert!(fixture.calls("claude-sessions")[0].starts_with(&format!("claude-sessions say {SESSION_A} ")));
+    assert_eq!(app.todos.status_of(&id), "doing");
 }
 
 fn craft_badges(app: &App) -> Vec<String> {
