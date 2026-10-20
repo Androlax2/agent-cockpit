@@ -41,6 +41,22 @@ pub fn request(action: &AgentAction) -> Result<TeamReply, TeamError> {
     serde_json::from_slice(&reply).map_err(|error| TeamError::new(ErrorCode::Unavailable, format!("invalid team reply ({error}); resubmit only with the same submission key")))
 }
 
+pub const HOST_REPLY_MAX: usize = 1 << 20;
+
+/// The cockpit's host request; a missing or slow daemon is an error, never an optimistic grant.
+pub fn host_request(request: &super::HostRequest) -> Result<TeamReply, TeamError> {
+    let path = paths::team_host_socket();
+    let mut stream = UnixStream::connect(&path).map_err(|error| TeamError::new(ErrorCode::Unavailable, format!("team service unavailable ({error}); is the OSD daemon running?")))?;
+    stream.set_read_timeout(Some(Duration::from_secs(3)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(3)))?;
+    stream.write_all(&serde_json::to_vec(request)?)?;
+    stream.shutdown(Shutdown::Write)?;
+    let mut reply = Vec::new();
+    (&mut stream).take(HOST_REPLY_MAX as u64 + 1).read_to_end(&mut reply)
+        .map_err(|error| TeamError::new(ErrorCode::Unavailable, format!("team service did not answer: {error}")))?;
+    serde_json::from_slice(&reply).map_err(|error| TeamError::new(ErrorCode::Unavailable, format!("invalid team service reply: {error}")))
+}
+
 /// A hard link preserves the host listener inode; no writable global socket path is followed.
 pub fn publish_socket(source: &Path, answers_root: &Path) -> Result<(), TeamError> {
     if !fs::symlink_metadata(source)?.file_type().is_socket() {

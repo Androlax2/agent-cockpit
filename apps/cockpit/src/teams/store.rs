@@ -141,7 +141,8 @@ pub fn propose(connection: &mut Connection, sender: &VerifiedSession, proposal: 
 pub fn control(connection: &mut Connection, action: &HostAction, live: &[VerifiedSession], now_ms: i64) -> Result<TeamReply, TeamError> {
     let request_id = match action {
         HostAction::Approve { request_id, .. } | HostAction::Edit { request_id, .. }
-        | HostAction::Reject { request_id, .. } | HostAction::Unlink { request_id, .. } | HostAction::Resolve { request_id, .. } => request_id,
+        | HostAction::Reject { request_id, .. } | HostAction::Unlink { request_id, .. } | HostAction::Resolve { request_id, .. }
+        | HostAction::Propose { request_id, .. } | HostAction::Reconcile { request_id, .. } => request_id,
     };
     let fingerprint = audit::sha256_hex(serde_json::to_string(action)?.as_bytes());
     let transaction = connection.transaction()?;
@@ -189,6 +190,26 @@ pub fn control(connection: &mut Connection, action: &HostAction, live: &[Verifie
             if changed != 1 { return Err(TeamError::new(ErrorCode::Conflict, "no open escalation for this thread")); }
             transaction.execute("UPDATE threads SET status='resolved' WHERE id=?1", [thread_id])?;
             json!({"thread_id": thread_id, "status": "resolved"})
+        },
+        HostAction::Propose { proposal, .. } => {
+            let mapping = serde_json::to_string(&bind(proposal, live)?)?;
+            let task_key = serde_json::to_string(&proposal.task)?;
+            let mapping_hash = audit::sha256_hex(format!("{task_key}\n{mapping}").as_bytes());
+            let id = identifier()?;
+            transaction.execute("INSERT INTO proposals VALUES (?1,'host',?2,?3,?4,?5,?6,?7,?8,?9,1,'pending',?10,NULL,'host')",
+                params![id, format!("host-{id}"), fingerprint, task_key, proposal.task.project, proposal.task.task_id, mapping, mapping_hash, proposal.reason, now_ms])?;
+            json!({"proposal_id": id, "revision": 1, "mapping_hash": mapping_hash})
+        },
+        HostAction::Reconcile { message_id, decision, .. } => {
+            let state = match decision.as_str() { "handled" => "received", "cancel" => "cancelled", _ => {
+                return Err(TeamError::new(ErrorCode::Invalid, "reconcile with handled or cancel"));
+            } };
+            let changed = transaction.execute("UPDATE messages SET state=?2, last_error='reconciled by Theo' WHERE id=?1 AND state='uncertain'",
+                params![message_id, state])?;
+            if changed != 1 { return Err(TeamError::new(ErrorCode::Conflict, "only an uncertain delivery can be reconciled")); }
+            transaction.execute("UPDATE attempts SET state=?2, finished_at=?3 WHERE message_id=?1 AND state='uncertain'",
+                params![message_id, if state == "received" { "received" } else { "not_submitted" }, now_ms])?;
+            json!({"message_id": message_id, "state": state})
         },
     };
     transaction.execute("INSERT INTO host_actions VALUES (?1,?2,?3)", params![request_id, fingerprint, response.to_string()])?;

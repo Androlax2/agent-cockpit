@@ -52,6 +52,18 @@ pub enum HostAction {
     Unlink { request_id: String, task: TaskKey, session_id: String },
     /// Theo closes an escalated clarification; no agent action can.
     Resolve { request_id: String, thread_id: String, note: String },
+    /// Theo's own team request: pending until he approves its exact mapping like any other.
+    Propose { request_id: String, proposal: Proposal },
+    /// An uncertain delivery: "handled" (Theo confirmed it arrived) or "cancel". Never a resend.
+    Reconcile { request_id: String, message_id: String, decision: String },
+}
+
+/// What only programs outside the sandbox send, on the host socket no sandbox can reach.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "request", rename_all = "snake_case", deny_unknown_fields)]
+pub enum HostRequest {
+    Control { action: HostAction },
+    Snapshot,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -669,6 +669,44 @@ fn unlinking_qa_cancels_its_pending_review_request() {
 }
 
 #[test]
+fn a_request_theo_creates_still_needs_its_exact_approval() {
+    let sandbox = Sandbox::new();
+    let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+    let created = store::control(&mut connection, &HostAction::Propose { request_id: "host-create".into(), proposal: proposal() }, &live(), 1000)
+        .unwrap().result.unwrap();
+    assert!(store::snapshot(&connection, Some(&task()), None, 100).unwrap()["members"].as_array().unwrap().is_empty());
+    assert_eq!(store::snapshot(&connection, Some(&task()), None, 100).unwrap()["proposals"][0]["created_by"], "host");
+    approve(&mut connection, &created).unwrap();
+    assert_eq!(store::snapshot(&connection, Some(&task()), None, 100).unwrap()["members"].as_array().unwrap().len(), 3);
+}
+
+#[test]
+fn reconciling_an_uncertain_delivery_never_resends_it() {
+    for (decision, state) in [("handled", "received"), ("cancel", "cancelled")] {
+        let sandbox = Sandbox::new();
+        let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+        linked(&mut connection);
+        let message = store::accept(&mut connection, &live()[1], &message("notice-1"), 3000).unwrap().result.unwrap();
+        let dispatch = store::claim(&mut connection, &live()[0], "idle-1", 3000).unwrap().unwrap();
+        store::finish(&mut connection, &dispatch.id, &TransportOutcome::Uncertain { reason: "no receipt".into() }, 3001).unwrap();
+        store::control(&mut connection, &HostAction::Reconcile { request_id: format!("reconcile-{decision}"),
+            message_id: message["message_id"].as_str().unwrap().into(), decision: decision.into() }, &live(), 3002).unwrap();
+        assert_eq!(store::snapshot(&connection, Some(&task()), None, 100).unwrap()["messages"][0]["state"], state);
+        assert!(store::claim(&mut connection, &live()[0], "idle-2", 500_000).unwrap().is_none(), "{decision}");
+    }
+}
+
+#[test]
+fn only_uncertain_deliveries_can_be_reconciled() {
+    let sandbox = Sandbox::new();
+    let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+    linked(&mut connection);
+    let message = store::accept(&mut connection, &live()[1], &message("notice-1"), 3000).unwrap().result.unwrap();
+    assert!(store::control(&mut connection, &HostAction::Reconcile { request_id: "reconcile".into(),
+        message_id: message["message_id"].as_str().unwrap().into(), decision: "handled".into() }, &live(), 3001).is_err());
+}
+
+#[test]
 fn replaced_sender_runtime_invalidates_pending_messages() {
     let sandbox = Sandbox::new();
     let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();

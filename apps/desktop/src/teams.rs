@@ -159,6 +159,35 @@ pub fn request(registry: &mut Registry, peer: u32, action: AgentAction) -> Resul
     result
 }
 
+/// The host socket is for programs in the daemon's own PID namespace: every sandbox has its own.
+pub fn host_peer_allowed(table: &dyn crate::registry::Processes, pid: &str) -> bool {
+    let own = table.pid_namespace("self");
+    own.is_some() && table.pid_namespace(pid) == own
+}
+
+/// What the cockpit's Team view shows: the store's state plus the verified live sessions to pick.
+pub fn host_snapshot(registry: &mut Registry) -> Result<Value, TeamError> {
+    let live = live_sessions(registry);
+    let mut sessions = Vec::new();
+    for session in &live {
+        let needs_channel = session.agent == "claude" && !registry.system.runtime_has_team_channel(&session.runtime);
+        let entry = registry.sessions.get(&session.session_id);
+        sessions.push(json!({"session_id": session.session_id, "agent": session.agent, "project": session.project,
+            "project_name": entry.map(|entry| entry.project.as_str()).unwrap_or(""), "label": entry.map(|entry| entry.label.as_str()).unwrap_or(""),
+            "state": entry.map(|entry| entry.state.as_str()).unwrap_or(""), "needs_team_channel": needs_channel}));
+    }
+    let mut state = store::snapshot(database(registry, &live)?, None, None, 100)?;
+    state["sessions"] = json!(sessions);
+    Ok(state)
+}
+
+pub fn host(registry: &mut Registry, request: cockpit::teams::HostRequest) -> Result<TeamReply, TeamError> {
+    match request {
+        cockpit::teams::HostRequest::Control { action } => host_control(registry, &action),
+        cockpit::teams::HostRequest::Snapshot => Ok(TeamReply { request_id: "snapshot".into(), result: Ok(host_snapshot(registry)?) }),
+    }
+}
+
 /// Host UI only: reached through a socket no sandbox can open.
 pub fn host_control(registry: &mut Registry, action: &HostAction) -> Result<TeamReply, TeamError> {
     let live = live_sessions(registry);

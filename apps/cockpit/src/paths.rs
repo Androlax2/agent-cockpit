@@ -69,6 +69,8 @@ pub fn log() -> PathBuf { state_dir().join("log") }
 pub fn todo() -> PathBuf { state_dir().join("todo.json") }
 pub fn team_database() -> PathBuf { crate::audit::dir().join("teams.sqlite") }
 pub fn team_agent_socket() -> PathBuf { runtime_dir().join("claude-team-host/agent.sock") }
+/// Approvals, edits, unlinks: never linked into any sandbox, and the daemon refuses sandboxed peers.
+pub fn team_host_socket() -> PathBuf { runtime_dir().join("claude-team-host/host.sock") }
 pub fn settings() -> PathBuf { state_dir().join("settings.json") }
 /// claude-todo's changes, queued by the OSD daemon with the sender's verified folder: the runtime
 /// directory, which no sandbox sees (security audit 2026-10-19, M4).

@@ -36,6 +36,28 @@ fn prefilled_requests_use_the_read_only_answers_socket_and_never_self_approve() 
 }
 
 #[test]
+fn host_requests_use_the_host_only_socket() {
+    let sandbox = Sandbox::new();
+    let folder = sandbox.runtime.join("claude-team-host");
+    std::fs::create_dir_all(&folder).unwrap();
+    let listener = UnixListener::bind(folder.join("host.sock")).unwrap();
+    let receiver = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = String::new();
+        stream.read_to_string(&mut request).unwrap();
+        stream.write_all(b"{\"request_id\":\"snapshot\",\"result\":{\"Ok\":{\"proposals\":[]}}}").unwrap();
+        request
+    });
+    let reply = std::thread::scope(|_| {
+        // SAFETY: this test binary's other tests do not read XDG_RUNTIME_DIR concurrently with this one.
+        unsafe { std::env::set_var("XDG_RUNTIME_DIR", &sandbox.runtime); }
+        client::host_request(&cockpit::teams::HostRequest::Snapshot)
+    }).unwrap();
+    assert_eq!(reply.result.unwrap()["proposals"], json!([]));
+    assert_eq!(serde_json::from_str::<Value>(&receiver.join().unwrap()).unwrap(), json!({"request": "snapshot"}));
+}
+
+#[test]
 fn agent_cli_rejects_host_controls_before_transport() {
     let sandbox = Sandbox::new();
     let output = sandbox.command(env!("CARGO_BIN_EXE_cockpit-team"), &[]).arg("approve").output().unwrap();

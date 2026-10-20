@@ -262,6 +262,28 @@ fn a_claude_member_must_run_the_team_channel_before_approval_binds_it() {
 }
 
 #[test]
+fn only_host_processes_may_use_the_team_host_socket() {
+    let tree = Tree(vec![("50", Some("30"), "sandbox", environment(&[])), ("30", None, "host", environment(&[]))]);
+    assert!(crate::teams::host_peer_allowed(&tree, "30"));
+    assert!(!crate::teams::host_peer_allowed(&tree, "50"));
+    assert!(!crate::teams::host_peer_allowed(&tree, "999"));
+}
+
+#[test]
+fn the_host_snapshot_lists_verified_sessions_and_who_needs_the_team_channel() {
+    let mut bench = team_bench();
+    bench.world.borrow_mut().team_channels.remove("runtime-10");
+    let snapshot = crate::teams::host(&mut bench.registry, cockpit::teams::HostRequest::Snapshot).unwrap().result.unwrap();
+    let sessions = snapshot["sessions"].as_array().unwrap();
+    assert_eq!(sessions.len(), 3);
+    let row = |id: &str| sessions.iter().find(|row| row["session_id"] == id).unwrap().clone();
+    assert_eq!(row(SESSION_A)["needs_team_channel"], true);
+    assert_eq!(row(SESSION_B)["needs_team_channel"], false);
+    assert_eq!(row(OPENCODE_SESSION)["needs_team_channel"], false);
+    assert_eq!(row(SESSION_A)["project_name"], "project-a");
+}
+
+#[test]
 fn a_recipient_pulls_one_message_per_observed_turn_state() {
     let mut bench = linked_team_bench();
     send_to_designer(&mut bench, "notice-1");

@@ -408,6 +408,31 @@ fn handle_team_connection(received: Received, registry: &Rc<RefCell<Registry>>) 
     let _ = std::io::Write::write_all(&mut stream, format!("{}\n", serde_json::to_string(&reply).unwrap_or_default()).as_bytes());
 }
 
+/// The cockpit's approvals and views: refused for any peer outside the daemon's PID namespace.
+fn handle_team_host_connection(received: Received, registry: &Rc<RefCell<Registry>>) {
+    use cockpit::teams::{ErrorCode, HostRequest, TeamError, TeamReply};
+    let Received { mut stream, sender, text } = received;
+    let reply = if !desktop::teams::host_peer_allowed(&registry::Proc, &sender.to_string()) {
+        Err(TeamError::new(ErrorCode::Unauthorized, "team host controls are for the cockpit outside the sandbox"))
+    } else {
+        match serde_json::from_str::<HostRequest>(&text) {
+            Ok(request) => desktop::teams::host(&mut registry.borrow_mut(), request),
+            Err(error) => Err(TeamError::new(ErrorCode::Invalid, format!("invalid team host request: {error}"))),
+        }
+    };
+    let reply = reply.unwrap_or_else(|error| TeamReply { request_id: String::new(), result: Err(error) });
+    let _ = std::io::Write::write_all(&mut stream, serde_json::to_string(&reply).unwrap_or_default().as_bytes());
+}
+
+fn listen_for_team_host(registry: &Rc<RefCell<Registry>>) {
+    let path = cockpit::paths::team_host_socket();
+    let _ = std::fs::remove_file(&path);
+    match std::os::unix::net::UnixListener::bind(&path) {
+        Ok(listener) => serve(listener, registry, 65_536, handle_team_host_connection),
+        Err(error) => eprintln!("osd: no team host socket, team approvals unavailable: {error}"),
+    }
+}
+
 /// The team socket lives in a 0700 host folder; each project's sandbox reaches it only through a
 /// hard link in its own read-only answers mount (cockpit::teams::client::publish_socket).
 fn listen_for_teams(registry: &Rc<RefCell<Registry>>) {
@@ -507,6 +532,7 @@ fn activate(app: &Application) {
     listen(&cockpit::paths::osd_host_fifo(), true, &registry, &island);
     listen_for_reports(&registry);
     listen_for_teams(&registry);
+    listen_for_team_host(&registry);
     {
         let registry = registry.clone();
         glib::timeout_add_seconds_local(1, move || {
