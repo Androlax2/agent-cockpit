@@ -4,6 +4,8 @@ mod common;
 use common::sandbox::*;
 
 use std::fs;
+use std::io::Read;
+use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -19,7 +21,7 @@ impl Craft {
         fs::create_dir_all(&project).unwrap();
         // The real process exposes NUL-separated arguments and binds its own TCP listener;
         // only the desktop renderer is replaced. pgrep discovers just this fixture's processes.
-        sandbox.shim("setsid", "shift; \"$@\" >/dev/null 2>&1 &");
+        sandbox.shim("setsid", "shift; \"$@\" &");
         sandbox.shim("figcraft", r#"printf '%s\n' "${XDG_CONFIG_HOME:-}" >> "$HOME/config-homes"
 exec python3 -c '
 import os, socket, sys, time
@@ -66,6 +68,101 @@ impl Drop for Craft {
             let _ = Command::new("kill").arg(pid).status();
         }
     }
+}
+
+fn time_wait_port() -> u16 {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+    let port = client.local_addr().unwrap().port();
+    let (mut peer, _) = listener.accept().unwrap();
+    // Close the client first so its local port stays unbindable after both peers exit.
+    drop(client);
+    assert_eq!(peer.read(&mut [0]).unwrap(), 0);
+    drop(peer);
+    drop(listener);
+    assert!(TcpStream::connect(("127.0.0.1", port)).is_err());
+    assert_eq!(TcpListener::bind(("127.0.0.1", port)).unwrap_err().kind(), std::io::ErrorKind::AddrInUse);
+    port
+}
+
+#[test]
+fn allocation_skips_ports_that_refuse_connections_but_cannot_be_bound() {
+    let craft = Craft::new();
+    let blocked_port = time_wait_port();
+    craft.sandbox.shim("shuf", &format!(r#"if [[ ! -e $HOME/first-candidate-used ]]; then
+    : > "$HOME/first-candidate-used"
+    echo {blocked_port}
+else
+    PATH="${{PATH#*:}}" shuf "$@"
+fi"#));
+    let output = craft.run(&["figcraft"], &[]);
+    assert!(output.status.success(), "{}{}", stdout(&output), stderr(&output));
+    assert_ne!(craft.started_port(0), blocked_port);
+    assert!(!craft.sandbox.home.join(format!(".config/greywall-agents/figcraft/ports/{blocked_port}")).exists());
+}
+
+#[test]
+fn new_ports_stay_out_of_the_kernels_ephemeral_range() {
+    let craft = Craft::new();
+    let range = fs::read_to_string("/proc/sys/net/ipv4/ip_local_port_range").unwrap();
+    let bounds: Vec<u16> = range.split_whitespace().map(|bound| bound.parse().unwrap()).collect();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let ephemeral_port = listener.local_addr().unwrap().port();
+    assert!((bounds[0]..=bounds[1]).contains(&ephemeral_port));
+    drop(listener);
+    craft.sandbox.shim("shuf", &format!(r#"if [[ ! -e $HOME/first-candidate-used ]]; then
+    : > "$HOME/first-candidate-used"
+    echo {ephemeral_port}
+else
+    PATH="${{PATH#*:}}" shuf "$@"
+fi"#));
+    let output = craft.run(&["figcraft"], &[]);
+    assert!(output.status.success(), "{}{}", stdout(&output), stderr(&output));
+    assert!(!(bounds[0]..=bounds[1]).contains(&craft.started_port(0)));
+    assert!(!craft.sandbox.home.join(format!(".config/greywall-agents/figcraft/ports/{ephemeral_port}")).exists());
+}
+
+#[test]
+fn an_unbindable_fixed_port_is_rejected_without_starting_or_reconnecting() {
+    for is_reserved in [false, true] {
+        let craft = Craft::new();
+        let blocked_port = time_wait_port().to_string();
+        let reservation = craft.sandbox.home.join(".config/greywall-agents/figcraft/ports").join(&blocked_port);
+        if is_reserved {
+            fs::create_dir_all(reservation.parent().unwrap()).unwrap();
+            fs::write(&reservation, format!("{}\n", craft.project.display())).unwrap();
+        }
+        let extra = if is_reserved { vec![] } else { vec![("CRAFT_OPEN_PORT", blocked_port.as_str())] };
+        let output = craft.run(&["figcraft", "--session", SESSION_A], &extra);
+        assert_eq!(output.status.code(), Some(3), "reserved={is_reserved}: {}{}", stdout(&output), stderr(&output));
+        assert!(stderr(&output).contains("cannot be bound"), "{}", stderr(&output));
+        assert!(craft.sandbox.calls("figcraft").is_empty());
+        assert!(!craft.sandbox.state.join("claude-sessions/restart-when-idle").exists());
+        if is_reserved {
+            assert_eq!(fs::read_to_string(reservation).unwrap(), format!("{}\n", craft.project.display()));
+        }
+    }
+}
+
+#[test]
+fn a_failed_bind_probe_is_reported_without_starting_a_window() {
+    let craft = Craft::new();
+    craft.sandbox.shim("python3", "exit 127");
+    let output = craft.run(&["figcraft"], &[]);
+    assert_eq!(output.status.code(), Some(1), "{}{}", stdout(&output), stderr(&output));
+    assert!(stderr(&output).contains("bind check failed"), "{}", stderr(&output));
+    assert!(craft.sandbox.calls("figcraft").is_empty());
+}
+
+#[test]
+fn a_failed_start_reports_the_private_log_containing_the_child_error() {
+    let craft = Craft::new();
+    craft.sandbox.shim("figcraft", "echo 'fixture startup failed' >&2; exit 1");
+    let output = craft.run(&["figcraft"], &[]);
+    assert_eq!(output.status.code(), Some(1), "{}{}", stdout(&output), stderr(&output));
+    let log = craft.sandbox.home.join(format!(".config/greywall-agents/figcraft/instances/{}/config/startup.log", craft.started_port(0)));
+    assert!(stderr(&output).contains(log.to_str().unwrap()), "{}", stderr(&output));
+    assert!(fs::read_to_string(log).unwrap().contains("fixture startup failed"));
 }
 
 #[test]

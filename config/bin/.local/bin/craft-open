@@ -57,6 +57,32 @@ answers() {
     (exec 3<>"/dev/tcp/127.0.0.1/$PORT") 2>/dev/null
 }
 
+can_bind() {
+    local status
+    # A refused connection does not rule out TIME_WAIT or a bound, non-listening socket.
+    if python3 - "$PORT" <<'PY'
+import errno
+import socket
+import sys
+
+with socket.socket() as listener:
+    try:
+        listener.bind(("127.0.0.1", int(sys.argv[1])))
+    except OSError as error:
+        if error.errno == errno.EADDRINUSE:
+            sys.exit(10)
+        raise
+PY
+    then
+        return 0
+    else
+        status=$?
+    fi
+    [[ $status == 10 ]] && return 1
+    echo "craft-open: bind check failed for port $PORT; Python 3 is required." >&2
+    exit 1
+}
+
 # Serialise allocation and startup, including the readiness check. The child must not inherit
 # the lock, or its whole lifetime would block the next checkout's window.
 mkdir -p -m 700 "$figcraft_home/ports"
@@ -75,10 +101,16 @@ if [[ -n ${CRAFT_OPEN_PORT:-} ]]; then
     PORT=$CRAFT_OPEN_PORT
 fi
 if [[ -z $PORT ]]; then
+    read -r ephemeral_first ephemeral_last < /proc/sys/net/ipv4/ip_local_port_range
     for (( attempt=0; attempt < 200; attempt++ )); do
         PORT=$(shuf -i 20000-60000 -n 1)
+        # Outgoing readiness probes must not claim a candidate between its bind check and startup.
+        if (( PORT >= ephemeral_first && PORT <= ephemeral_last )); then
+            PORT=""
+            continue
+        fi
         [[ ! -e $figcraft_home/ports/$PORT ]] || { PORT=""; continue; }
-        if answers || [[ -n $(figcraft_foreign_holders "$PORT" "$root") ]]; then
+        if ! can_bind || [[ -n $(figcraft_foreign_holders "$PORT" "$root") ]]; then
             PORT=""
             continue
         fi
@@ -103,15 +135,20 @@ else
         echo "craft-open: port $PORT is occupied by an unverified listener; no window started" >&2
         exit 3
     fi
+    if ! can_bind; then
+        echo "craft-open: port $PORT cannot be bound; no window started" >&2
+        exit 3
+    fi
     config_home="$figcraft_home/instances/$PORT/config"
     mkdir -p -m 700 "$config_home"
-    XDG_CONFIG_HOME="$config_home" setsid -f figcraft --control "$PORT" --automation-read-root "$root" --automation-write-root "$root" 9>&- >/dev/null 2>&1
+    XDG_CONFIG_HOME="$config_home" setsid -f figcraft --control "$PORT" --automation-read-root "$root" --automation-write-root "$root" 9>&- >"$config_home/startup.log" 2>&1
     for (( waited = 0; waited < WAIT_S * 10; waited++ )); do
         [[ $(figcraft_port_for_root "$root") == "$PORT" ]] && answers && break
         sleep 0.1
     done
     if [[ $(figcraft_port_for_root "$root") != "$PORT" ]] || ! answers; then
         echo "FigCraft did not start listening on port $PORT within ${WAIT_S}s." >&2
+        echo "Startup output: $config_home/startup.log" >&2
         exit 1
     fi
     echo "FigCraft started for $root, listening on port $PORT."
