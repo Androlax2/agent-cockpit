@@ -2561,6 +2561,71 @@ fn repositories_come_from_the_sessions_git_origins_and_the_viewed_one_narrows_th
     assert_eq!(reviews::session_checkouts(SESSION_A).into_keys().collect::<Vec<_>>(), vec!["acme/shop".to_string()]);
 }
 
+/// A session working in a checkout of acme/shop, its pull requests fetched once (gh answering none).
+fn reviews_fetched_while_a_shop_session_works(fixture: &Fixture) -> App {
+    let shop = fixture.path("repos/shop");
+    fs::create_dir_all(&shop).unwrap();
+    std::process::Command::new("git").args(["init", "-q"]).arg(&shop).status().unwrap();
+    std::process::Command::new("git").arg("-C").arg(&shop).args(["remote", "add", "origin", "https://github.com/acme/shop.git"]).status().unwrap();
+    fixture.shim("gh", "echo '[]'");
+    fixture.snapshot(json!([session(SESSION_A, "working", "shop", &shop.display().to_string(), 1)]));
+    fixture.view(SESSION_A);
+    let mut app = fixture.app();
+    app.reviews.tick();
+    wait_for_fetch(fixture, &app, 1);
+    app
+}
+
+/// Waits until gh has listed pull requests `count` times and the fetch is over.
+fn wait_for_fetch(fixture: &Fixture, app: &App, count: usize) -> usize {
+    for _ in 0..150 {
+        let listed = fixture.calls("gh").iter().filter(|call| call.starts_with("gh pr list")).count();
+        if listed >= count && !app.reviews.current().2 { return listed; }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    fixture.calls("gh").iter().filter(|call| call.starts_with("gh pr list")).count()
+}
+
+fn end_the_shop_sessions_turn(fixture: &Fixture) {
+    // A new modification time: the column re-reads the snapshot only when it changes.
+    std::thread::sleep(Duration::from_millis(20));
+    let shop = fixture.path("repos/shop").display().to_string();
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "shop", &shop, 1)]));
+}
+
+#[test]
+fn a_turn_ending_in_the_panes_repository_fetches_its_pull_requests_again() {
+    let fixture = Fixture::new();
+    let mut app = reviews_fetched_while_a_shop_session_works(&fixture);
+    app.reviews.age_fetch(31.0);
+    end_the_shop_sessions_turn(&fixture);
+    app.reviews.tick();
+    assert_eq!(wait_for_fetch(&fixture, &app, 2), 2);
+}
+
+#[test]
+fn a_turn_ending_right_after_a_fetch_refetches_once_the_fetch_is_30_seconds_old() {
+    let fixture = Fixture::new();
+    let mut app = reviews_fetched_while_a_shop_session_works(&fixture);
+    end_the_shop_sessions_turn(&fixture);
+    app.reviews.tick();
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(wait_for_fetch(&fixture, &app, 1), 1);
+    app.reviews.age_fetch(31.0);
+    app.reviews.tick();
+    assert_eq!(wait_for_fetch(&fixture, &app, 2), 2);
+}
+
+#[test]
+fn without_a_turn_ending_the_pull_requests_wait_for_the_five_minute_refresh() {
+    let fixture = Fixture::new();
+    let mut app = reviews_fetched_while_a_shop_session_works(&fixture);
+    app.reviews.age_fetch(31.0);
+    app.reviews.tick();
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(wait_for_fetch(&fixture, &app, 1), 1);
+}
+
 /// gh answering one pull request for any repository, after `slow_seconds` for o/a.
 fn shim_gh_slow_for_a(fixture: &Fixture, slow_seconds: &str) {
     let recent = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();

@@ -11,6 +11,9 @@ use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 
 const REFRESH_S: f64 = 300.0;
+/// A turn's end refetches, but never sooner than this after the last fetch: sessions ending turns
+/// one after another would otherwise call gh for each.
+const TURN_END_REFETCH_S: f64 = 30.0;
 const LIMIT: usize = 30;
 const RECENT_DAYS: i64 = 180; // older pull requests are dead repositories, not work
 const ISSUES_PER_REPOSITORY: &str = "20";
@@ -189,14 +192,31 @@ fn origin_of(directory: &str) -> Option<String> {
         .clone()
 }
 
+/// owner/repo of the directory's github.com origin.
+fn github_repository(directory: &str) -> Option<String> {
+    static GITHUB_REMOTE: std::sync::LazyLock<Regex> =
+        std::sync::LazyLock::new(|| Regex::new(r"(?:https://github\.com/|git@github\.com:)([\w.-]+/[\w.-]+?)(?:\.git)?$").unwrap());
+    let url = origin_of(directory)?;
+    GITHUB_REMOTE.captures(&url).map(|found| found[1].to_string())
+}
+
+fn snapshot_sessions() -> Vec<Value> {
+    util::read_json(&paths::snapshot()).and_then(|snapshot| snapshot.get("sessions").and_then(Value::as_array).cloned()).unwrap_or_default()
+}
+
+/// Each session working now -> its repository: a pull request opened during its turn is on
+/// GitHub once the turn ends.
+fn working_sessions() -> HashMap<String, String> {
+    snapshot_sessions().iter()
+        .filter(|s| s.get("state").and_then(Value::as_str) == Some("working"))
+        .filter_map(|s| Some((s.get("session")?.as_str()?.to_string(), github_repository(s.get("cwd")?.as_str()?)?)))
+        .collect()
+}
+
 /// owner/repo -> local directory, for every running session whose directory has a github.com
 /// origin, or for the one session given (the one in the session pane) when it is known.
 pub fn session_checkouts(only_session: &str) -> BTreeMap<String, String> {
-    static GITHUB_REMOTE: std::sync::LazyLock<Regex> =
-        std::sync::LazyLock::new(|| Regex::new(r"(?:https://github\.com/|git@github\.com:)([\w.-]+/[\w.-]+?)(?:\.git)?$").unwrap());
-    let remote = &*GITHUB_REMOTE;
-    let Some(snapshot) = util::read_json(&paths::snapshot()) else { return BTreeMap::new() };
-    let sessions = snapshot.get("sessions").and_then(Value::as_array).cloned().unwrap_or_default();
+    let sessions = snapshot_sessions();
     let viewed: Vec<_> = sessions.iter().filter(|s| !only_session.is_empty() && s.get("session").and_then(Value::as_str) == Some(only_session)).cloned().collect();
     let chosen = if viewed.is_empty() { sessions } else { viewed };
     let mut directories: Vec<String> = chosen.iter().filter_map(|s| s.get("cwd").and_then(Value::as_str)).filter(|cwd| !cwd.is_empty()).map(str::to_string).collect();
@@ -204,9 +224,8 @@ pub fn session_checkouts(only_session: &str) -> BTreeMap<String, String> {
     directories.dedup();
     let mut checkouts = BTreeMap::new();
     for directory in directories {
-        let Some(url) = origin_of(&directory) else { continue };
-        if let Some(found) = remote.captures(&url) {
-            checkouts.entry(found[1].to_string()).or_insert(directory);
+        if let Some(repository) = github_repository(&directory) {
+            checkouts.entry(repository).or_insert(directory);
         }
     }
     checkouts
@@ -235,13 +254,16 @@ pub struct Reviews {
     pub repositories: Vec<String>,
     pub checkouts: BTreeMap<String, String>,
     scope_key: Option<(Option<std::time::SystemTime>, String)>,
+    working: HashMap<String, String>,
+    turn_ended: bool,
 }
 
 impl Reviews {
-    pub fn refresh(&self) {
+    /// Whether a fetch started (false: one is already under way for these repositories).
+    pub fn refresh(&self) -> bool {
         let scope = self.repositories.clone();
         if !self.state.lock().unwrap().loading.insert(scope.clone()) {
-            return;
+            return false;
         }
         let shared = self.state.clone();
         std::thread::spawn(move || {
@@ -258,10 +280,13 @@ impl Reviews {
             state.loading.remove(&scope);
             state.by_scope.insert(scope, Fetched { rows, issues, error, fetched_at: now() });
         });
+        true
     }
 
     /// Re-reads the repositories when the snapshot or the viewed session changes; refetches when
-    /// they were never fetched or have aged. In a session, only its repository; otherwise every running one.
+    /// they were never fetched or have aged, or when a session in them ended a turn (the pull
+    /// request it opened shows then, not minutes later). In a session, only its repository;
+    /// otherwise every running one.
     pub fn tick(&mut self) {
         let viewed = current_session();
         let mtime = std::fs::metadata(paths::snapshot()).and_then(|m| m.modified()).ok();
@@ -270,10 +295,16 @@ impl Reviews {
             self.scope_key = Some(key);
             self.checkouts = session_checkouts("");
             self.repositories = session_checkouts(&viewed).into_keys().collect();
+            let working = working_sessions();
+            self.turn_ended |= self.working.iter()
+                .any(|(session, repository)| !working.contains_key(session) && self.repositories.contains(repository));
+            self.working = working;
         }
         let fetched_at = self.state.lock().unwrap().by_scope.get(&self.repositories).map_or(0.0, |fetched| fetched.fetched_at);
-        if now() - fetched_at > REFRESH_S {
-            self.refresh();
+        let age = now() - fetched_at;
+        let is_due = age > REFRESH_S || (self.turn_ended && age > TURN_END_REFETCH_S);
+        if is_due && self.refresh() {
+            self.turn_ended = false;
         }
     }
 
@@ -286,6 +317,13 @@ impl Reviews {
 
     pub fn issues(&self) -> Vec<Issue> {
         self.state.lock().unwrap().by_scope.get(&self.repositories).map(|fetched| fetched.issues.clone()).unwrap_or_default()
+    }
+
+    #[cfg(test)]
+    pub fn age_fetch(&self, seconds: f64) {
+        if let Some(fetched) = self.state.lock().unwrap().by_scope.get_mut(&self.repositories) {
+            fetched.fetched_at -= seconds;
+        }
     }
 
     #[cfg(test)]
