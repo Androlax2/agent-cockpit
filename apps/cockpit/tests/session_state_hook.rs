@@ -169,6 +169,7 @@ fn an_opencode_session_started_from_a_shell_reports_its_agent() {
 fn a_session_started_from_a_shell_reports_even_under_the_daemon() {
     use std::io::Write;
     let mut test = HookTest::new();
+    test.sandbox.env.insert("OPENCODE".into(), "1".into());
     // Since Claude Code 2.1.300 a session sits under processes named claude (launcher, daemon)
     // that carry no CLAUDECODE mark: two of them must not look like nesting.
     let fake = fake_claude(&test.sandbox.root);
@@ -179,6 +180,7 @@ fn a_session_started_from_a_shell_reports_even_under_the_daemon() {
         .sandbox
         .command(&fake, &[("TMUX_PANE", "%9"), ("KITTY_PID", "4242")])
         .env_remove("CLAUDECODE")
+        .env_remove("OPENCODE")
         .args(["-c", &script])
         .stdin(Stdio::piped())
         .spawn()

@@ -37,6 +37,7 @@ impl Fixture {
             std::env::set_var("HOME", root.join("home"));
             std::env::set_var("XDG_RUNTIME_DIR", root.join("run"));
             std::env::set_var("XDG_STATE_HOME", root.join("state"));
+            std::env::set_var("CLAUDE_SESSIONS_STATE_HOME", root.join("state"));
             // The audit log goes under state/; never into the real journal.
             std::env::set_var("CLAUDE_AUDIT_JOURNAL", "off");
             std::env::set_var("CLAUDE_RUNS_DIR", root.join("queue"));
@@ -462,6 +463,19 @@ fn an_opencode_process_keeps_its_pane_alive() {
 }
 
 // ---- The registry ----
+
+#[test]
+fn fixture_state_does_not_escape_into_an_inherited_host_state_folder() {
+    let outside = std::env::temp_dir().join(format!("osd-host-state-{}", cockpit::util::token_hex(6)));
+    fs::create_dir(&outside).unwrap();
+    let result = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "tests::sessions_are_remembered_across_reboots"])
+        .env("CLAUDE_SESSIONS_STATE_HOME", &outside).output().unwrap();
+    let leaked = fs::read_dir(&outside).unwrap().next().is_some();
+    fs::remove_dir_all(&outside).unwrap();
+    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stdout));
+    assert!(!leaked, "the fixture wrote into the inherited host state folder");
+}
 
 #[test]
 fn the_daemon_writes_its_messages_to_the_shared_log() {
