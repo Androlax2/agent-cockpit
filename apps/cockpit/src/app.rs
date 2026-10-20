@@ -600,6 +600,7 @@ pub trait Screen {
 /// A session told to exit, and the `claude-sessions exit` doing it.
 pub(crate) struct Exiting {
     pub(crate) session: String,
+    tmux_pane: String,
     project: String,
     child: std::process::Child,
     ended_at: Option<f64>,
@@ -1021,7 +1022,7 @@ impl App {
         }
         match util::manager_child(&["exit", &session.session]) {
             Ok(child) => {
-                self.exiting.push(Exiting { session: session.session.clone(), project: session.project.clone(), child, ended_at: None });
+                self.exiting.push(Exiting { session: session.session.clone(), tmux_pane: session.tmux_pane.clone(), project: session.project.clone(), child, ended_at: None });
                 format!("exiting {} …", session.project)
             }
             Err(error) => format!("⚠ cannot exit {}: {error}", session.project),
@@ -1035,7 +1036,8 @@ impl App {
         let now = now();
         let mut warnings = Vec::new();
         self.exiting.retain_mut(|exit| {
-            if !running.iter().any(|s| s.session == exit.session) {
+            // The hook can disappear before tmux closes, leaving a fallback card with a new ID.
+            if !running.iter().any(|s| s.session == exit.session || s.tmux_pane == exit.tmux_pane) {
                 return false;
             }
             if exit.ended_at.is_none() {
@@ -1117,7 +1119,7 @@ impl App {
         self.session_queued = gathered.queued.clone();
         self.session_roots = gathered.roots.clone();
         self.settle_exits(&running);
-        running.retain(|s| !s.is_external() && !self.exiting.iter().any(|exit| exit.session == s.session));
+        running.retain(|s| !s.is_external() && !self.exiting.iter().any(|exit| exit.session == s.session || exit.tmux_pane == s.tmux_pane));
         for session in &mut running {
             session.pinned = self.view.pinned.contains(&session.session);
         }

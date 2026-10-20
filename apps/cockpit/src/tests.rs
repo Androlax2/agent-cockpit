@@ -1185,6 +1185,26 @@ fn an_exiting_session_leaves_the_list_at_once() {
 }
 
 #[test]
+fn an_exiting_session_stays_hidden_when_its_pane_gets_a_fallback_card() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "runway", "/r", 1), session(SESSION_B, "waiting", "opusline", "/o", 2)]));
+    fixture.shim("claude-sessions", "sleep 2");
+    fixture.shim("tmux", "if [ \"$1\" = list-panes ]; then printf 'claude-retry-runway\t%%1\t/r\trunway\t1\n'; fi");
+    let mut app = fixture.app();
+    app.handle(Key::Char('x'), &mut FakeScreen::answering(&[Key::Char('y')]));
+    app.build();
+    assert_eq!(app.sessions.iter().map(|s| s.project.as_str()).collect::<Vec<_>>(), ["opusline"]);
+
+    fixture.snapshot(json!([session(SESSION_B, "waiting", "opusline", "/o", 2)]));
+    app.build();
+    assert_eq!(app.sessions.iter().map(|s| s.project.as_str()).collect::<Vec<_>>(), ["opusline"]);
+
+    fixture.shim("tmux", "");
+    app.build();
+    assert_eq!(app.sessions.iter().map(|s| s.project.as_str()).collect::<Vec<_>>(), ["opusline"]);
+}
+
+#[test]
 fn a_failed_exit_brings_the_card_back_and_says_so() {
     let fixture = Fixture::new();
     fixture.snapshot(json!([session(SESSION_A, "waiting", "runway", "/r", 1)]));
