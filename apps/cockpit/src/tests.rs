@@ -1052,7 +1052,7 @@ fn selected_session_identity_survives_new_sessions_pins_and_state_changes() {
     let text = buffer_rows(&render(&mut app, 120, 40)).join("\n");
     assert_eq!(app.panels[1].selected, 0);
     assert!(!text.contains("An answer or permission is needed"));
-    assert!(fixture.calls("claude-sessions").is_empty());
+    assert_eq!(fixture.wait_for_calls("claude-sessions", 1), vec![format!("claude-sessions view {SESSION_A}")]);
 }
 
 #[test]
@@ -1202,6 +1202,42 @@ fn an_exiting_session_stays_hidden_when_its_pane_gets_a_fallback_card() {
     fixture.shim("tmux", "");
     app.build();
     assert_eq!(app.sessions.iter().map(|s| s.project.as_str()).collect::<Vec<_>>(), ["opusline"]);
+}
+
+#[test]
+fn exiting_the_selected_session_previews_its_replacement_once() {
+    for selected in [0, 1] {
+        let fixture = Fixture::new();
+        fixture.snapshot(json!([session(SESSION_A, "waiting", "runway", "/r", 1), session(SESSION_B, "waiting", "opusline", "/o", 2)]));
+        fixture.shim("claude-sessions", "sleep 2");
+        let mut app = fixture.app();
+        app.panels[1].selected = selected;
+        let exiting = app.sessions[selected].session.clone();
+        let replacement = if selected == 0 { SESSION_B } else { SESSION_A };
+
+        app.handle(Key::Char('x'), &mut FakeScreen::answering(&[Key::Char('y')]));
+        app.redraw();
+        app.redraw();
+
+        assert_eq!(app.sessions[app.panels[1].selected].session, replacement);
+        let mut calls = fixture.wait_for_calls("claude-sessions", 2);
+        calls.sort();
+        assert_eq!(calls, vec![format!("claude-sessions exit {exiting}"), format!("claude-sessions view {replacement}")]);
+    }
+}
+
+#[test]
+fn exiting_the_last_session_does_not_try_to_preview_a_replacement() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "runway", "/r", 1)]));
+    fixture.shim("claude-sessions", "sleep 2");
+    let mut app = fixture.app();
+
+    app.handle(Key::Char('x'), &mut FakeScreen::answering(&[Key::Char('y')]));
+    app.redraw();
+
+    assert!(app.sessions.is_empty());
+    assert_eq!(fixture.wait_for_calls("claude-sessions", 1), vec![format!("claude-sessions exit {SESSION_A}")]);
 }
 
 #[test]

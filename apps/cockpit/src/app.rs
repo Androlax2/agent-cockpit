@@ -1224,7 +1224,8 @@ impl App {
         }
         self.sessions = running;
         let panel = &mut self.panels[1];
-        if let Some(index) = selected_id.and_then(|id| self.sessions.iter().position(|session| session.session == id)) {
+        let selected_index = selected_id.as_ref().and_then(|id| self.sessions.iter().position(|session| &session.session == id));
+        if let Some(index) = selected_index {
             panel.selected = index;
         }
         panel.items = self.sessions.len();
@@ -1232,6 +1233,14 @@ impl App {
         panel.lines = lines;
         self.panels[1].fixed_top = self.session_summary_lines();
         self.panels[1].fixed_bottom = self.selected_session_detail_lines();
+        if selected_id.is_some() && selected_index.is_none() {
+            if let Some(session) = self.selected_session() {
+                let error = self.manager_async(&["view", &session.session]);
+                if !error.is_empty() {
+                    self.message = error;
+                }
+            }
+        }
     }
 
     fn session_task_title(&self, session: &Session, branch: &str) -> String {
