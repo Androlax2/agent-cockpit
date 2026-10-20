@@ -50,7 +50,6 @@ if [[ $(jq -r '.type // empty' <<< "$auth") == oauth ]]; then
     if ! jq -e --argjson now "$(date +%s%3N)" '(.expires | type == "number") and .expires > $now' <<< "$auth" >/dev/null; then
         fail "OpenCode OAuth expired; use OpenCode to refresh it"
     fi
-    [[ $is_v2 == false || -n $account ]] || fail "OpenCode account identifier unavailable"
 elif [[ $is_v2 == true && $auth != null ]]; then
     fail "Active OpenAI account is not a subscription sign-in"
 fi

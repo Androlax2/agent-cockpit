@@ -279,6 +279,23 @@ fn codex_quota_honors_the_configured_v2_database_path() {
 }
 
 #[test]
+fn codex_quota_supports_token_sharing_sign_ins_without_an_account_identifier() {
+    let sandbox = codex_sandbox();
+    opencode_credentials(&sandbox, &[("current", Some(true), 1, json!({"type":"oauth", "methodID":"chatgpt-token-sharing",
+        "access":"secret-test-token", "refresh":"secret-test-refresh", "expires":4102444800000i64,
+        "metadata":{"clientID":"test-client", "scopes":["test-scope"]}}))]);
+    sandbox.shim("curl", r#"
+headers=$(cat)
+[[ $headers == *'Authorization: Bearer secret-test-token'* && $headers != *'ChatGPT-Account-Id:'* ]] || exit 2
+cat "$HOME/response.json"
+"#);
+    let output = fetch_codex(&sandbox, false);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(sandbox.runtime.join("codex-usage.json").exists(), "quota polling must not require an optional account id");
+    assert!(!sandbox.runtime.join("codex-usage-error.json").exists());
+}
+
+#[test]
 fn claude_forced_refresh_updates_recent_cache_and_clears_the_error() {
     let sandbox = Sandbox::new();
     fs::create_dir_all(sandbox.home.join(".claude")).unwrap();
