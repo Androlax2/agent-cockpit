@@ -189,6 +189,31 @@ fn an_approval_that_asks_nothing_takes_no_answer() {
 }
 
 #[test]
+fn an_ended_approval_is_not_listed_even_when_its_asking_file_remains() {
+    let remote = Remote::start();
+    let secret = remote.paired();
+    remote.approval_asking("0123456789ab", "make test");
+    remote.sandbox.shim("tmux", "exit 1");
+    let state = remote.get_json(&secret, "/api/state");
+    assert_eq!(state["approvals"], json!([]));
+    assert!(remote.sandbox.runtime.join("claude-runs/0123456789ab.asking").exists());
+}
+
+#[test]
+fn an_approval_that_ends_after_loading_disappears_after_a_refused_action() {
+    let remote = Remote::start();
+    let secret = remote.paired();
+    remote.approval_asking("0123456789ab", "make test");
+    assert_eq!(remote.get_json(&secret, "/api/state")["approvals"].as_array().unwrap().len(), 1);
+    remote.sandbox.shim("tmux", "exit 1");
+    let (status, answer) = remote.post_json(&secret, "/api/decide/0123456789ab", json!({"run": true, "command": "make test"}));
+    assert_eq!(status, 409, "{answer}");
+    assert_eq!(answer["message"], "this approval ended");
+    assert_eq!(remote.get_json(&secret, "/api/state")["approvals"], json!([]));
+    assert!(!remote.sandbox.runtime.join("claude-runs/0123456789ab.remote").exists());
+}
+
+#[test]
 fn unpair_forgets_every_phone() {
     let remote = Remote::start();
     let secret = remote.paired();

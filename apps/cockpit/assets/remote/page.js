@@ -3,6 +3,7 @@
 "use strict";
 
 const GLYPHS = { "needs-you": "●", waiting: "◐", working: "◌", unknown: "?" };
+const STATE_LABELS = { "needs-you": "Needs you", waiting: "Waiting", working: "Working", unknown: "Unknown" };
 let state = { sessions: [], approvals: [] };
 let isPaired = false;
 let opened = null; // the session shown in detail
@@ -10,12 +11,25 @@ let armed = null;  // the approval whose Run, or the session whose Interrupt, wa
 let shownScreen = ""; // the screen as last fetched, escapes included
 let approvalsLook = null;
 const pendingPosts = new Set();
+let controlSequence = 0;
 
 function element(tag, className, text) {
   const node = document.createElement(tag);
   if (className) node.className = className;
   if (text !== undefined) node.textContent = text;
+  if (tag === "button") node.type = "button";
+  if (className === "note") node.setAttribute("role", "status");
+  if (className === "warning") node.setAttribute("role", "alert");
   return node;
+}
+
+function labelControl(label, control) {
+  const field = element("div", "field");
+  const caption = element("label", "field-label", label);
+  control.id = `field-${++controlSequence}`;
+  caption.htmlFor = control.id;
+  field.append(caption, control);
+  return field;
 }
 
 async function call(method, path, body) {
@@ -78,19 +92,23 @@ function decide(approval, run, note) {
 function renderList() {
   const box = document.getElementById("list");
   box.replaceChildren(element("h2", "", "Sessions"));
-  if (state.sessions.length === 0) box.append(element("div", "empty", "No session runs."));
+  if (state.sessions.length === 0) box.append(element("div", "empty", "No active sessions. Start a new session above to get going."));
+  else {
+    const needsYou = state.sessions.filter((session) => session.state === "needs-you").length;
+    box.append(element("p", "overview", `${state.sessions.length} active · ${needsYou ? `${needsYou} need you` : "Nothing needs your attention"}`));
+  }
   const order = { "needs-you": 0, waiting: 1, working: 2 };
   const sessions = [...state.sessions].sort((a, b) => (order[a.state] ?? 3) - (order[b.state] ?? 3));
   for (const session of sessions) {
-    const card = element("div", `card ${session.state}`);
-    const row = element("div", "row");
+    const card = element("button", `card session-card ${session.state}`);
+    const row = element("span", "row");
     row.append(element("span", "project", `${GLYPHS[session.state] || "·"} ${session.project}`));
-    row.append(element("span", "state", `${session.state} ${age(session.since)}`));
+    row.append(element("span", "state", `${STATE_LABELS[session.state] || session.state} ${age(session.since)}`));
     card.append(row);
-    if (session.task) card.append(element("div", "task", session.task));
-    if (session.request) card.append(element("div", "request", session.detail || session.request));
-    if (session.queued) card.append(element("div", "task", `✉ ${session.queued} queued`));
-    if (session.state === "waiting" && session.outcome) card.append(element("div", "outcome", `✓ ${session.outcome}`));
+    if (session.task) card.append(element("span", "task", session.task));
+    if (session.request) card.append(element("span", "request", session.detail || session.request));
+    if (session.queued) card.append(element("span", "task", `${session.queued} message${session.queued === 1 ? "" : "s"} queued`));
+    if (session.state === "waiting" && session.outcome) card.append(element("span", "outcome", session.outcome));
     card.onclick = () => { opened = session.session; render(); };
     box.append(card);
   }
@@ -185,6 +203,7 @@ async function post(path, body, note) {
   if (pendingPosts.has(path)) return { ok: false, message: "This action is still pending." };
   pendingPosts.add(path);
   note.textContent = "…";
+  note.dataset.kind = "pending";
   try {
     const response = await call("POST", path, body);
     if (response.status === 401) {
@@ -196,11 +215,13 @@ async function post(path, body, note) {
     const result = await response.json();
     if (!response.ok) result.ok = false;
     note.textContent = result.message;
+    note.dataset.kind = result.ok ? "success" : "error";
     refresh();
     return result;
   } catch (error) {
     const message = `Failed to complete the action: ${error.message || error}. Check the connection before trying again.`;
     note.textContent = message;
+    note.dataset.kind = "error";
     return { ok: false, message };
   } finally {
     pendingPosts.delete(path);
@@ -215,10 +236,13 @@ function renderDetail() {
   const back = element("button", "back", "‹ Sessions");
   back.onclick = () => { opened = null; render(); };
   const card = element("div", `card ${session.state}`);
-  card.append(element("div", "project", `${session.project} · ${session.state}`));
+  card.append(element("div", "project", session.project));
+  card.append(element("div", "state", STATE_LABELS[session.state] || session.state));
   if (session.task) card.append(element("div", "task", session.task));
   const screen = element("pre", "", "…");
   screen.id = "screen";
+  screen.setAttribute("aria-label", "Session terminal output");
+  screen.tabIndex = 0;
   const screenNote = element("div", "note");
   screenNote.id = "screen-note";
   shownScreen = "";
@@ -273,7 +297,12 @@ function renderDetail() {
   };
   const sending = element("div", "buttons");
   sending.append(send);
-  box.replaceChildren(back, card, screen, screenNote, message, sending, note);
+  const terminalHeading = element("div", "terminal-heading");
+  const refreshTerminal = element("button", "", "Refresh terminal");
+  refreshTerminal.onclick = loadScreen;
+  terminalHeading.append(element("h2", "", "Live terminal"), refreshTerminal);
+  box.replaceChildren(back, card, terminalHeading, screen, screenNote, labelControl("Message", message),
+                      element("div", "task", session.state === "working" ? "One line. Queued until the current turn ends." : "One line. Sent directly to this session."), sending, note);
 }
 
 // ---- This phone: notifications, and pairing the Home Screen app ----
@@ -308,11 +337,11 @@ async function turnNotificationsOff(note) {
 }
 
 function renderPhone() {
-  const box = document.getElementById("phone");
+  const box = document.getElementById("phone-content");
   const look = JSON.stringify([opened === null, state.push, state.away]);
   if (look === phoneLook) return;
   phoneLook = look;
-  box.hidden = opened !== null;
+  document.getElementById("phone").hidden = opened !== null;
   const note = element("div", "note");
   const card = element("div", "card");
   const buttons = element("div", "buttons");
@@ -379,7 +408,7 @@ function renderPairing(message) {
   };
   const buttons = element("div", "buttons");
   buttons.append(pair);
-  box.replaceChildren(element("h2", "", "Pair this phone"), hint, input, buttons, note);
+  box.replaceChildren(element("h2", "", "Pair this phone"), hint, labelControl("Pairing code", input), buttons, note);
 }
 
 // ---- Tabs: Sessions, Todo, Pull requests, Usage ----
@@ -422,8 +451,10 @@ function projectPicker(choices) {
 
 function renderTabs() {
   const bar = document.getElementById("tabs");
+  document.getElementById("view-title").textContent = TABS.find(([name]) => name === tab)[1];
   bar.replaceChildren(...TABS.map(([name, label]) => {
     const button = element("button", name === tab ? "tab active" : "tab", label);
+    if (name === tab) button.setAttribute("aria-current", "page");
     button.onclick = () => showTab(name);
     return button;
   }));
@@ -440,9 +471,14 @@ function showTab(name) {
   if (isSessions) { phoneLook = null; render(); return; }
   const box = element("div");
   document.getElementById("work").replaceChildren(box);
-  box.replaceChildren(element("div", "empty", "…"));
+  box.setAttribute("aria-busy", "true");
+  box.replaceChildren(element("div", "loading", `Loading ${TABS.find(([key]) => key === name)[1].toLowerCase()}…`));
   const views = { todo: renderTodos, pulls: renderPulls, usage: renderUsage };
-  views[name](box).catch((error) => box.replaceChildren(element("div", "warning", String(error.message || error))));
+  views[name](box).catch((error) => {
+    const retry = element("button", "no", "Retry");
+    retry.onclick = () => showTab(name);
+    box.replaceChildren(element("div", "warning", String(error.message || error)), retry);
+  }).finally(() => box.removeAttribute("aria-busy"));
 }
 
 // A new session, out of sight on the computer, with its first message.
@@ -477,7 +513,8 @@ async function renderStarter() {
   close.onclick = () => { box.dataset.open = ""; renderStarter(); };
   const buttons = element("div", "buttons");
   buttons.append(close, start);
-  box.replaceChildren(element("h2", "", "New session"), picker, agent, prompt, label, buttons, note);
+  box.replaceChildren(element("h2", "", "New session"), labelControl("Project", picker), labelControl("Agent", agent),
+                      labelControl("First message", prompt), label, buttons, note);
 }
 
 async function renderTodos(box) {
@@ -495,22 +532,23 @@ async function renderTodos(box) {
   };
   const adding = element("div", "buttons");
   adding.append(add);
-  const nodes = [element("h2", "", "Add"), picker, text, notes, adding, note];
+  const nodes = [element("h2", "", "Add a task"), labelControl("Project", picker), labelControl("Task", text),
+                 labelControl("Notes (optional)", notes), adding, note];
   let shownProject = null;
-  if (todos.length === 0) nodes.push(element("div", "empty", "Nothing to do."));
+  if (todos.length === 0) nodes.push(element("div", "empty", "Nothing to do. Add a task above, then start it in a session."));
   for (const item of [...todos].sort((a, b) => a.project.localeCompare(b.project))) {
     if (item.project !== shownProject) { shownProject = item.project; nodes.push(element("h2", "", item.project)); }
-    const card = element("div", `card ${item.status === "doing" ? "working" : ""}`);
-    const row = element("div", "row");
+    const card = element("details", `card ${item.status === "doing" ? "working" : ""}`);
+    const summary = element("summary");
+    const row = element("span", "row");
     row.append(element("span", "project", `${"!".repeat(Math.max(0, item.priority - 2))} ${item.text}`.trim()));
     row.append(element("span", "state", item.status === "doing" ? "in progress" : ""));
-    card.append(row);
+    summary.append(row);
+    card.append(summary);
     const details = element("div");
-    details.hidden = true;
     if (item.notes) details.append(element("div", "notes", item.notes));
     const itemNote = element("div", "note");
     const agent = agentPicker(agentChoices);
-    agent.onclick = (event) => event.stopPropagation();
     const start = element("button", "run", "Start in a new session");
     start.onclick = async (event) => {
       event.stopPropagation();
@@ -519,9 +557,8 @@ async function renderTodos(box) {
     };
     const buttons = element("div", "buttons");
     buttons.append(start);
-    details.append(agent, buttons, itemNote);
+    details.append(labelControl("Agent", agent), buttons, itemNote);
     card.append(details);
-    card.onclick = () => { details.hidden = !details.hidden; };
     nodes.push(card);
   }
   box.replaceChildren(...nodes);
@@ -609,6 +646,7 @@ function render() {
   if (tab !== "sessions") return;
   renderPhone();
   const detail = opened !== null;
+  document.getElementById("view-title").textContent = detail ? state.sessions.find((session) => session.session === opened).project : "Sessions";
   document.getElementById("starter").hidden = detail;
   document.getElementById("list").hidden = detail;
   if (detail) { renderDetail(); loadScreen(); } else document.getElementById("detail").hidden = true;
@@ -631,7 +669,8 @@ async function refresh() {
     state = await response.json();
     const wasPaired = isPaired;
     isPaired = true;
-    document.getElementById("updated").textContent = new Date().toLocaleTimeString();
+    document.getElementById("updated").textContent = `Updated ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
+    document.getElementById("updated").dataset.state = "online";
     if (!wasPaired) {
       document.getElementById("pairing").hidden = true;
       document.getElementById("tabs").hidden = false;
@@ -649,6 +688,7 @@ async function refresh() {
     else if (detailLook() !== before) { render(); }
   } catch (error) {
     document.getElementById("updated").textContent = "offline";
+    document.getElementById("updated").dataset.state = "offline";
   }
 }
 
@@ -665,6 +705,11 @@ navigator.serviceWorker?.addEventListener("message", (event) => openSession(even
 if (canPush) navigator.serviceWorker.register("/sw.js").catch(() => {});
 
 renderTabs();
+document.getElementById("refresh-view").onclick = () => {
+  refresh();
+  if (tab === "sessions") { if (opened) loadScreen(); }
+  else showTab(tab);
+};
 refresh();
 setInterval(refresh, 3000);
 setInterval(() => { if (opened) loadScreen(); }, 1500);

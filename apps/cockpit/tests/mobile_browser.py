@@ -393,6 +393,63 @@ class MobileBrowserTests(unittest.TestCase):
         expect(self.page.locator("#pairing .note")).to_contain_text("Failed")
         self.assertEqual(self.errors, [])
 
+    def test_an_ended_approval_disappears_after_its_action(self):
+        runs = self.runtime / "claude-runs"
+        runs.mkdir()
+        (runs / "0123456789ab.asking").write_text(json.dumps({"id": "0123456789ab", "project": "shop",
+                                                                  "cwd": str(self.project), "command": "echo hello"}))
+        self.open_paired()
+        self.shim("tmux", 'if [ "$1" = has-session ]; then exit 1; fi')
+        self.page.get_by_role("button", name="Decline", exact=True).tap()
+        expect(self.page.locator("#approvals .card")).to_have_count(0)
+        self.assertFalse((runs / "0123456789ab.remote").exists())
+
+    def test_session_cards_are_keyboard_accessible(self):
+        self.open_paired()
+        session = self.page.get_by_role("button", name=re.compile("shop.*Waiting", re.S))
+        session.focus()
+        self.page.keyboard.press("Enter")
+        expect(self.page.locator("#screen")).to_contain_text("Ready")
+
+    def test_new_session_fields_have_visible_labels(self):
+        self.open_paired()
+        self.page.get_by_role("button", name="+ New session").tap()
+        expect(self.page.get_by_label("Project", exact=True)).to_be_visible()
+        expect(self.page.get_by_label("Agent", exact=True)).to_be_visible()
+        expect(self.page.get_by_label("First message", exact=True)).to_be_visible()
+
+    def test_navigation_marks_the_current_section(self):
+        self.open_paired()
+        self.page.get_by_role("button", name="Todo", exact=True).tap()
+        expect(self.page.get_by_role("button", name="Todo", exact=True)).to_have_attribute("aria-current", "page")
+        expect(self.page.get_by_role("button", name="Sessions", exact=True)).not_to_have_attribute("aria-current", "page")
+
+    def test_failed_work_tab_can_be_retried(self):
+        self.open_paired()
+        self.page.route("**/api/usage", lambda route: route.abort())
+        self.page.get_by_role("button", name="Usage", exact=True).tap()
+        expect(self.page.locator("#work")).to_contain_text("Failed")
+        self.page.unroute("**/api/usage")
+        self.page.get_by_role("button", name="Retry", exact=True).tap()
+        expect(self.page.locator("#work")).to_contain_text("Cost estimate (API prices)")
+
+    def test_todo_expansion_is_keyboard_accessible(self):
+        todo = self.state / "claude-sessions/todo.json"
+        todo.parent.mkdir(parents=True)
+        todo.write_text(json.dumps({"items": [{"id": "aaaa1111", "project": "shop", "cwd": str(self.project),
+                                                "text": "Fix cart", "notes": "Use the phone", "status": "todo", "created": 1}]}))
+        self.open_paired()
+        self.page.get_by_role("button", name="Todo", exact=True).tap()
+        summary = self.page.locator("#work summary")
+        summary.focus()
+        self.page.keyboard.press("Enter")
+        expect(self.page.get_by_role("button", name="Start in a new session")).to_be_visible()
+
+    def test_header_refresh_is_available_without_changing_the_tab(self):
+        self.open_paired()
+        self.page.get_by_role("button", name="Refresh view", exact=True).tap()
+        expect(self.page.locator("#list .card")).to_have_count(1)
+
     def test_polling_recovers_after_a_connection_failure(self):
         self.open_paired()
         self.page.route("**/api/state", lambda route: route.abort())
@@ -435,6 +492,20 @@ class MobileBrowserTests(unittest.TestCase):
         if folder:
             Path(folder).mkdir(parents=True, exist_ok=True)
             self.page.screenshot(path=str(Path(folder) / "sessions.png"), full_page=True)
+            self.page.get_by_role("button", name="+ New session").tap()
+            expect(self.page.get_by_label("First message", exact=True)).to_be_visible()
+            self.page.screenshot(path=str(Path(folder) / "new-session.png"), full_page=True)
+            self.page.get_by_role("button", name="Close", exact=True).tap()
+            runs = self.runtime / "claude-runs"
+            runs.mkdir()
+            asking = runs / "0123456789ab.asking"
+            asking.write_text(json.dumps({"id": "0123456789ab", "project": "shop", "cwd": str(self.project),
+                                          "command": "make test", "why": "Check the checkout changes before applying them."}))
+            self.refresh()
+            expect(self.page.locator("#approvals .card")).to_be_visible()
+            self.page.screenshot(path=str(Path(folder) / "approval.png"), full_page=True)
+            asking.unlink()
+            self.refresh()
             self.page.locator("#list .card").tap()
             expect(self.page.locator("#screen")).to_contain_text("Ready")
             self.page.screenshot(path=str(Path(folder) / "detail.png"), full_page=True)

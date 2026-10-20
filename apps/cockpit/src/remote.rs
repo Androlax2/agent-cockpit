@@ -451,6 +451,11 @@ fn text(row: &Value, key: &str) -> String {
     row.get(key).and_then(Value::as_str).unwrap_or("").to_string()
 }
 
+fn approval_has_ended(id: &str) -> bool {
+    Command::new("tmux").args(["has-session", "-t", &format!("=claude-run-{id}")])
+        .status().is_ok_and(|status| !status.success())
+}
+
 /// The approvals asking now: the ones whose menu is up (`<id>.asking`), with what they show.
 pub fn asking_approvals() -> Vec<Value> {
     let Ok(entries) = fs::read_dir(approval::log_dir()) else { return Vec::new() };
@@ -458,6 +463,7 @@ pub fn asking_approvals() -> Vec<Value> {
         .filter(|path| path.extension().is_some_and(|extension| extension == "asking"))
         .filter_map(|path| util::read_json(&path))
         .filter(|approval| approval.get("id").and_then(Value::as_str).is_some_and(approval::valid_id))
+        .filter(|approval| !approval_has_ended(&text(approval, "id")))
         .collect();
     asking.sort_by_key(|approval| text(approval, "id"));
     asking
@@ -756,7 +762,7 @@ pub fn decide(id: &str, is_run: bool, shown_command: &str) -> Result<String, Str
     if command != shown_command {
         return Err("the command changed since the page showed it: look again".into());
     }
-    if Command::new("tmux").args(["has-session", "-t", &format!("=claude-run-{id}")]).status().is_ok_and(|status| !status.success()) {
+    if approval_has_ended(id) {
         return Err("this approval ended".into());
     }
     fs::write(approval::remote_answer(id), if is_run { "y" } else { "n" }).map_err(|error| error.to_string())?;
