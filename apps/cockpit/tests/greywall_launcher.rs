@@ -525,6 +525,24 @@ fn a_parallel_dotfiles_clone_reads_the_live_checkout_and_another_project_does_no
 }
 
 #[test]
+fn sessions_can_read_the_stowed_label_helper_without_exposing_the_bin_directory() {
+    let launch = Launch::new();
+    fs::copy(repo().join("config/greywall/.config/greywall/greywall.json"),
+             launch.sandbox.home.join(".config/greywall/greywall.json")).unwrap();
+    for &agent in AGENTS.iter() {
+        launch.run_agent(agent, &[], &[]);
+        let settings = launch.settings_of(agent);
+        let readable = settings["filesystem"]["allowRead"].as_array().unwrap();
+        assert!(readable.iter().any(|path| path == "~/dotfiles/config/bin/.local/bin/claude-session-label"),
+                "{agent}: the stowed label helper's target is hidden");
+        for directory in ["~/dotfiles", "~/dotfiles/config/bin", "~/dotfiles/config/bin/.local/bin"] {
+            assert!(!readable.iter().any(|path| path == directory), "{agent}: exposed {directory}");
+        }
+        assert!(settings["filesystem"]["denyWrite"].as_array().unwrap().iter().any(|path| path == "~/.local/bin"));
+    }
+}
+
+#[test]
 fn sandboxes_mount_the_report_sockets_folder_never_the_socket_alone() {
     // A socket file mounted alone stays the old one in every running sandbox once the socket is made
     // again: on 2026-10-19 a socket restart cut every session off the daemon.
