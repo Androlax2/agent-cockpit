@@ -1033,6 +1033,8 @@ pub struct Entry {
     pub repository: String,
     pub branch: String,
     pub last_result: Option<cockpit::sessions::TurnResult>,
+    /// Its hook reports repositories and turn ids, so a missing result is not an outdated hook.
+    pub reports_turns: bool,
     pub terminal: bool,
     pub credits: bool,
     pub unpushed: u64,
@@ -1286,6 +1288,10 @@ impl Registry {
         if entry.state == "working" && previous_state.as_deref() != Some("working") {
             entry.outcome.clear();
         }
+        if !entry.reports_turns && (report.repository.is_some() || report.turn_id.is_some()) {
+            entry.reports_turns = true;
+            changed = true;
+        }
         if let Some(repository) = report.repository.as_ref().filter(|repository| **repository != entry.repository) {
             entry.repository = repository.clone();
             changed = true;
@@ -1459,7 +1465,7 @@ impl Registry {
             let mut row = json!({"session": session, "state": entry.state, "project": entry.project, "cwd": entry.cwd, "task": entry.task, "label": entry.label,
                                  "since": entry.since as i64, "started": entry.started as i64, "update": entry.update,
                                   "request": entry.request, "detail": entry.detail, "full_request": entry.full_request, "outcome": entry.outcome, "needs_input": entry.needs_input,
-                                  "repository": entry.repository, "branch": entry.branch, "last_result": entry.last_result,
+                                  "repository": entry.repository, "branch": entry.branch, "last_result": entry.last_result, "reports_turns": entry.reports_turns,
                                  "terminal": entry.terminal, "credits": entry.credits, "unpushed": entry.unpushed,
                                   "agents": entry.agents, "background": entry.background, "apps": entry.apps, "agent": entry.agent,
                                   "ask_to_run": run_phases.get(session).copied().unwrap_or("")});
@@ -1552,6 +1558,7 @@ impl Registry {
                     needs_input: row.get("needs_input").and_then(Value::as_bool).unwrap_or(false),
                     label,
                     repository: repository.into(), branch: branch.into(), last_result,
+                    reports_turns: row.get("reports_turns").and_then(Value::as_bool).unwrap_or(false),
                     request: request.into(),
                     full_request: full_request.into(),
                     started: row.get("started").and_then(Value::as_f64).unwrap_or(since),

@@ -388,6 +388,19 @@ fn continuity_old_and_malformed_reports_fail_conservatively() {
 }
 
 #[test]
+fn continuity_a_session_whose_hook_reports_repositories_is_marked_as_reporting_turns() {
+    let mut bench = Bench::new();
+    bench.report(SESSION_A, json!({"state": "waiting"}));
+    assert_eq!(bench.snapshot()[0]["reports_turns"], false, "an old hook never sends repository");
+    bench.report(SESSION_A, json!({"state": "waiting", "repository": "", "branch": ""}));
+    assert_eq!(bench.snapshot()[0]["reports_turns"], true);
+    bench.report(SESSION_A, json!({"state": "working"}));
+    assert_eq!(bench.snapshot()[0]["reports_turns"], true);
+    let restored = Registry::new(Box::new(FakeSystem(bench.world.clone())), Box::new(FakeBanners(bench.shown.clone())));
+    assert_eq!(restored.snapshot_rows()[0]["reports_turns"], true);
+}
+
+#[test]
 fn continuity_completion_without_an_outcome_does_not_fabricate_a_result() {
     let mut bench = Bench::new();
     bench.report(SESSION_A, json!({"state": "waiting", "turn_id": "11111111111111111111111111111111", "turn_complete": true}));

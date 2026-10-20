@@ -158,6 +158,8 @@ pub struct Session {
     pub repository: String,
     pub branch: String,
     pub last_result: Option<TurnResult>,
+    /// The daemon saw this session's hook report turns; without it a missing result means an old hook.
+    pub reports_turns: bool,
     pub update: bool,
     /// Started with "this terminal": shown and usable here, left out of what acts on every session.
     pub terminal: bool,
@@ -226,6 +228,7 @@ impl Session {
             branch: text(row, "branch"),
             last_result: row.get("last_result").filter(|value| !value.is_null())
                 .and_then(|value| TurnResult::from_value(value).map_err(|error| util::log_event("WARN", &error)).ok()),
+            reports_turns: row.get("reports_turns").and_then(Value::as_bool).unwrap_or(false),
             update: row.get("update").and_then(Value::as_bool).unwrap_or(false),
             terminal: row.get("terminal").and_then(Value::as_bool).unwrap_or(false),
             credits: row.get("credits").and_then(Value::as_bool).unwrap_or(false),

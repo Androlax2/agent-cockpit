@@ -1648,7 +1648,7 @@ impl App {
         if !session.outcome.is_empty() {
             text += &format!("Last turn:\n{}\n\n", session.outcome);
         }
-        if session.last_result.is_none() { text += "Result tracking unavailable; restart to enable\n\n"; }
+        if session.last_result.is_none() && !session.reports_turns { text += "Result tracking unavailable; restart to enable\n\n"; }
         for line in self.selected_session_detail_lines() {
             for part in line.right {
                 if part.action != Some("session-details") && !part.text.is_empty() {

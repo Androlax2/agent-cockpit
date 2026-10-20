@@ -266,6 +266,18 @@ fn continuity_old_producers_do_not_invent_result_updates() {
 }
 
 #[test]
+fn continuity_a_current_session_without_a_result_yet_is_not_told_to_restart() {
+    let fixture = Fixture::new();
+    let mut row = session(SESSION_A, "waiting", "notes", "/r/notes", 1);
+    row["reports_turns"] = json!(true);
+    fixture.snapshot(json!([row]));
+    let mut app = fixture.app();
+    app.handle(Key::Char('i'), &mut FakeScreen::default());
+    let rows = buffer_rows(&render(&mut app, 100, 40)).join("\n");
+    assert!(!rows.contains("Result tracking unavailable"), "{rows}");
+}
+
+#[test]
 fn continuity_archived_results_can_be_reviewed_without_opening_an_exited_session() {
     let fixture = Fixture::new();
     fixture.snapshot(json!([continuity_result_row("11111111111111111111111111111111", "waiting")]));
