@@ -43,6 +43,7 @@ pub struct QuotaRow {
     pub state: String,
     pub remaining: Option<i64>,
     pub resets: String,
+    pub forecast: String,
 }
 
 impl QuotaRow {
@@ -63,7 +64,12 @@ pub fn quota_rows() -> Vec<QuotaRow> {
             "seven_day" | "weekly_all" => "week".into(),
             _ => window.label,
         };
-        window
+        let seconds = match window.key.as_str() {
+            "five_hour" | "session" => Some(18000),
+            "seven_day" | "weekly_all" => Some(604800),
+            _ => None,
+        };
+        (window, seconds)
     }).collect();
     let mut rows = provider_quota_rows("Claude", claude, &paths::usage_cache(), false);
     let codex = read_json(&paths::codex_usage_cache()).unwrap_or(Value::Null);
@@ -79,15 +85,15 @@ pub fn quota_rows() -> Vec<QuotaRow> {
             _ => key.trim_end_matches("_window").into(),
         };
         let resets_at = window["reset_at"].as_i64().and_then(|stamp| chrono::DateTime::from_timestamp(stamp, 0)).map(|moment| moment.to_rfc3339());
-        Some(Window { key: key.into(), label, percentage: rounded(window.get("used_percent")), resets: reset_time(resets_at.as_deref()),
-                      resets_at, note: String::new() })
+        Some((Window { key: key.into(), label, percentage: rounded(window.get("used_percent")), resets: reset_time(resets_at.as_deref()),
+                       resets_at, note: String::new() }, window["limit_window_seconds"].as_i64()))
     }).collect();
     let blocked = limits["allowed"].as_bool() == Some(false) || limits["limit_reached"].as_bool() == Some(true);
     rows.extend(provider_quota_rows("Codex", windows, &paths::codex_usage_cache(), blocked));
     rows
 }
 
-fn provider_quota_rows(provider: &str, windows: Vec<Window>, cache: &std::path::Path, blocked: bool) -> Vec<QuotaRow> {
+fn provider_quota_rows(provider: &str, windows: Vec<(Window, Option<i64>)>, cache: &std::path::Path, blocked: bool) -> Vec<QuotaRow> {
     let fetched = fs::metadata(cache).and_then(|metadata| metadata.modified()).ok();
     let failed = fs::metadata(cache.with_file_name(format!("{}-usage-error.json", provider.to_lowercase())))
         .and_then(|metadata| metadata.modified()).ok();
@@ -95,9 +101,9 @@ fn provider_quota_rows(provider: &str, windows: Vec<Window>, cache: &std::path::
         || failed.is_some_and(|error| fetched.is_none_or(|stamp| error >= stamp));
     if windows.is_empty() {
         return vec![QuotaRow { label: provider.into(), state: if blocked && !stale { "Blocked" } else { "Unknown" }.into(),
-                              remaining: None, resets: String::new() }];
+                              remaining: None, resets: String::new(), forecast: String::new() }];
     }
-    windows.into_iter().map(|window| {
+    windows.into_iter().map(|(window, seconds)| {
         let remaining = window.percentage.map(|used| 100 - used);
         let reset_passed = window.resets_at.as_deref().and_then(parse_time).is_some_and(|reset| reset <= Utc::now());
         let state = match remaining {
@@ -113,8 +119,42 @@ fn provider_quota_rows(provider: &str, windows: Vec<Window>, cache: &std::path::
             "now" => "reset pending".into(),
             left => format!("resets in {left}"),
         };
-        QuotaRow { label: format!("{provider} · {}", window.label), state: state.into(), remaining, resets }
+        let forecast = if matches!(state, "Available" | "Low") {
+            window_forecast(&window, seconds, fetched)
+        } else {
+            String::new()
+        };
+        QuotaRow { label: format!("{provider} · {}", window.label), state: state.into(), remaining, resets, forecast }
     }).collect()
+}
+
+fn window_forecast(window: &Window, seconds: Option<i64>, fetched: Option<std::time::SystemTime>) -> String {
+    let Some(used) = window.percentage else { return String::new() };
+    let Some(seconds) = seconds else { return String::new() };
+    let Some(reset) = window.resets_at.as_deref().and_then(parse_time) else { return String::new() };
+    let Some(fetched) = fetched.map(chrono::DateTime::<Utc>::from) else { return String::new() };
+    let elapsed = seconds as f64 - (reset - fetched).num_milliseconds() as f64 / 1000.0;
+    if !(1..100).contains(&used) || seconds <= 0 || elapsed <= 0.0 || elapsed >= seconds as f64 {
+        return String::new();
+    }
+    // Anchor the pace to the fetch, not the redraw: an unchanged cache is not new usage evidence.
+    let current = Utc::now();
+    let left = elapsed * (100 - used) as f64 / used as f64 - (current - fetched).num_milliseconds() as f64 / 1000.0;
+    if left >= (reset - current).num_milliseconds() as f64 / 1000.0 {
+        return "should last until reset · window avg".into();
+    }
+    if left <= 0.0 {
+        return "may run out now · window avg".into();
+    }
+    let minutes = (left / 60.0).round().max(1.0) as i64;
+    let duration = if minutes >= 2880 {
+        format!("{}d {}h", minutes / 1440, minutes / 60 % 24)
+    } else if minutes >= 60 {
+        format!("{}h {:02}m", minutes / 60, minutes % 60)
+    } else {
+        format!("{minutes}m")
+    };
+    format!("~{duration} left at this pace · window avg")
 }
 
 /// Every limit in the cache, as the usage page lists them.

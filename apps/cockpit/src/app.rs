@@ -1033,6 +1033,12 @@ impl App {
                 right: if show_reset { vec![part(&quota.resets, dim(FG_DARK))] } else { Vec::new() },
                 item: Some(index), accent: None,
             });
+            if !quota.forecast.is_empty() {
+                lines.push(Line {
+                    segments: vec![segment(2, fit(&quota.forecast, room.saturating_sub(2)), dim(FG_DARK))],
+                    right: Vec::new(), item: Some(index), accent: None,
+                });
+            }
         }
         let totals = self.costs.totals();
         if totals.today > 0.0 || totals.week > 0.0 || totals.month > 0.0 {

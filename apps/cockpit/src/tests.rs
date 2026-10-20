@@ -1765,6 +1765,110 @@ fn the_status_panel_lists_remaining_capacity_with_its_reset() {
 }
 
 #[test]
+fn quota_forecasts_use_each_providers_current_and_weekly_window_average() {
+    let fixture = Fixture::new();
+    let checked = chrono::Utc::now();
+    let session_reset = checked + chrono::Duration::hours(3);
+    let week_reset = checked + chrono::Duration::days(5);
+    fixture.write("run/claude-usage.json", &json!({"limits": [
+        {"kind": "session", "percent": 80, "resets_at": session_reset.to_rfc3339()},
+        {"kind": "weekly_all", "percent": 80, "resets_at": week_reset.to_rfc3339()}
+    ]}).to_string());
+    fixture.write("run/codex-usage.json", &json!({"rate_limit": {
+        "primary_window": {"used_percent": 80, "limit_window_seconds": 18000, "reset_at": session_reset.timestamp()},
+        "secondary_window": {"used_percent": 80, "limit_window_seconds": 604800, "reset_at": week_reset.timestamp()}
+    }}).to_string());
+    let mut app = fixture.app();
+    app.width = 60;
+    app.redraw();
+    for (label, expected) in [("Claude · 5h", "~30m left"), ("Claude · week", "~12h 00m left"),
+                              ("Codex · 5h", "~30m left"), ("Codex · week", "~12h 00m left")] {
+        let rows = texts(&app, 0);
+        let index = rows.iter().position(|row| row.starts_with(label)).unwrap();
+        assert!(rows[index + 1].contains(expected) && rows[index + 1].contains("window avg"), "{rows:?}");
+    }
+    app.focus_panel(0);
+    let buffer = render(&mut app, 60, 45);
+    let rows: Vec<_> = (0..45).map(|y| (0..60).map(|x| buffer[(x, y)].symbol()).collect::<String>()).collect();
+    assert!(rows.iter().any(|row| row.contains("~30m left")), "{rows:?}");
+    assert!(rows.iter().any(|row| row.contains("~12h 00m left")), "{rows:?}");
+}
+
+#[test]
+fn quota_forecasts_show_when_capacity_should_last_until_reset() {
+    let fixture = Fixture::new();
+    let reset = chrono::Utc::now() + chrono::Duration::hours(1);
+    fixture.write("run/claude-usage.json", &json!({"five_hour": {"utilization": 20, "resets_at": reset.to_rfc3339()}}).to_string());
+    fixture.write("run/codex-usage.json", &json!({"rate_limit": {
+        "primary_window": {"used_percent": 20, "limit_window_seconds": 7200, "reset_at": reset.timestamp()}
+    }}).to_string());
+    let rows = texts(&fixture.app(), 0);
+    for label in ["Claude · 5h", "Codex · 2h"] {
+        let index = rows.iter().position(|row| row.starts_with(label)).unwrap();
+        assert!(rows[index + 1].contains("should last until reset"), "{rows:?}");
+    }
+}
+
+#[test]
+fn quota_forecasts_do_not_predict_from_unusable_or_unconfirmed_data() {
+    let fixture = Fixture::new();
+    let reset = chrono::Utc::now() + chrono::Duration::hours(3);
+    for (used, resets_at, failed) in [
+        (json!(0), Some(reset), false), (json!(100), Some(reset), false),
+        (json!(null), Some(reset), false), (json!(80), None, false),
+        (json!(80), Some(reset + chrono::Duration::days(1)), false),
+        (json!(80), Some(reset - chrono::Duration::days(1)), false),
+        (json!(80), Some(reset), true),
+    ] {
+        fixture.write("run/claude-usage.json", &json!({"five_hour": {"utilization": used, "resets_at": resets_at.map(|stamp| stamp.to_rfc3339())}}).to_string());
+        fixture.write("run/codex-usage.json", &json!({"rate_limit": {
+            "primary_window": {"used_percent": used, "limit_window_seconds": 18000, "reset_at": resets_at.map(|stamp| stamp.timestamp())}
+        }}).to_string());
+        if failed {
+            for provider in ["claude", "codex"] {
+                fixture.write(&format!("run/{provider}-usage-error.json"), r#"{"error":"failed"}"#);
+            }
+        }
+        let rows = texts(&fixture.app(), 0);
+        assert!(!rows.iter().any(|row| row.contains("window avg")), "{rows:?}");
+    }
+}
+
+#[test]
+fn quota_forecasts_keep_the_sampled_pace_between_fetches() {
+    let fixture = Fixture::new();
+    let fetched = std::time::SystemTime::now() - Duration::from_secs(300);
+    let reset = chrono::DateTime::<chrono::Utc>::from(fetched) + chrono::Duration::hours(3);
+    let cache = fixture.write("run/claude-usage.json", &json!({"five_hour": {"utilization": 80, "resets_at": reset.to_rfc3339()}}).to_string());
+    fs::File::options().write(true).open(&cache).unwrap().set_modified(fetched).unwrap();
+    let rows = texts(&fixture.app(), 0);
+    assert!(rows[1].contains("~25m left"), "{rows:?}");
+    fs::File::options().write(true).open(&cache).unwrap().set_modified(fetched - Duration::from_secs(301)).unwrap();
+    let rows = texts(&fixture.app(), 0);
+    assert!(!rows.iter().any(|row| row.contains("window avg")), "{rows:?}");
+}
+
+#[test]
+fn quota_forecasts_show_days_for_a_weekly_limit_with_several_days_left() {
+    let fixture = Fixture::new();
+    let reset = chrono::Utc::now() + chrono::Duration::days(5);
+    fixture.write("run/claude-usage.json", &json!({"seven_day": {"utilization": 40, "resets_at": reset.to_rfc3339()}}).to_string());
+    let rows = texts(&fixture.app(), 0);
+    assert!(rows[1].contains("~3d 0h left"), "{rows:?}");
+}
+
+#[test]
+fn quota_forecasts_do_not_suggest_remaining_time_when_codex_is_blocked() {
+    let fixture = Fixture::new();
+    let reset = chrono::Utc::now() + chrono::Duration::hours(3);
+    fixture.write("run/codex-usage.json", &json!({"rate_limit": {"allowed": false,
+        "primary_window": {"used_percent": 80, "limit_window_seconds": 18000, "reset_at": reset.timestamp()}
+    }}).to_string());
+    let rows = texts(&fixture.app(), 0);
+    assert!(!rows.iter().any(|row| row.contains("window avg")), "{rows:?}");
+}
+
+#[test]
 fn quota_rows_show_both_providers_with_separate_windows_and_remaining_capacity() {
     let fixture = Fixture::new();
     fixture.write("run/claude-usage.json", r#"{"five_hour":{"utilization":28},"seven_day":{"utilization":86}}"#);
