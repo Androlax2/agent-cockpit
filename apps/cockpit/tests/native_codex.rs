@@ -262,6 +262,44 @@ fn native_codex_question_becomes_answerable_only_after_the_turn_ends() {
     assert_eq!(last["message"], "Which task should QA review?");
 }
 
+fn stop_hook(sandbox: &Sandbox) -> std::process::Output {
+    let mut child = sandbox.command(env!("CARGO_BIN_EXE_cockpit-codex-hook"), &[])
+        .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    child.stdin.take().unwrap().write_all(json!({"hook_event_name": "Stop", "session_id": NATIVE_THREAD,
+        "cwd": sandbox.root}).to_string().as_bytes()).unwrap();
+    child.wait_with_output().unwrap()
+}
+
+#[test]
+fn a_finished_codex_turn_continues_with_the_next_approved_team_message() {
+    let sandbox = Sandbox::new();
+    let reports = common::sandbox::ReportSocket::start(&sandbox.runtime.join("claude-report/osd-report.sock"), "ok");
+    let team = sandbox.team_socket(json!({"dispatch_id": "d1", "message_id": "m1", "text": "[Cockpit team message m1] The frame is ready."}));
+    let output = stop_hook(&sandbox);
+    assert!(output.status.success(), "{}", common::sandbox::stderr(&output));
+    let printed: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(printed["decision"], "block");
+    assert!(printed["reason"].as_str().unwrap().contains("The frame is ready."));
+    let report: serde_json::Value = serde_json::from_str(reports.received(std::time::Duration::from_secs(1))[0].strip_prefix("session-request ").unwrap()).unwrap();
+    assert_eq!(report["state"], "working");
+    let requests = team.lock().unwrap().clone();
+    assert_eq!(requests.last().unwrap()["action"], "receipt");
+    assert_eq!(requests.last().unwrap()["outcome"]["outcome"], "received");
+    assert_eq!(requests.last().unwrap()["dispatch_id"], "d1");
+}
+
+#[test]
+fn a_finished_codex_turn_without_team_messages_stays_idle() {
+    let sandbox = Sandbox::new();
+    let reports = common::sandbox::ReportSocket::start(&sandbox.runtime.join("claude-report/osd-report.sock"), "ok");
+    let _team = sandbox.team_socket(serde_json::Value::Null);
+    let output = stop_hook(&sandbox);
+    assert!(output.status.success(), "{}", common::sandbox::stderr(&output));
+    assert_eq!(serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap(), json!({}));
+    let report: serde_json::Value = serde_json::from_str(reports.received(std::time::Duration::from_secs(1))[0].strip_prefix("session-request ").unwrap()).unwrap();
+    assert_eq!(report["state"], "waiting");
+}
+
 #[test]
 fn failed_native_codex_restart_does_not_focus_an_unknown_session() {
     let sandbox = Sandbox::new();

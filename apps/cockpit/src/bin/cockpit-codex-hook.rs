@@ -1,6 +1,6 @@
 //! Native Codex lifecycle → authenticated cockpit reports. Never decides permissions.
 
-use cockpit::{approval, codex, paths};
+use cockpit::{approval, codex, paths, teams};
 use serde_json::{Value, json};
 use std::fs;
 use std::io::{self, Read};
@@ -63,27 +63,55 @@ fn update_question(payload: &Value, report: &mut Value) -> Result<(), String> {
     Ok(())
 }
 
-fn report() -> Result<(), String> {
+/// At the end of an idle-bound turn, the next approved team message, if the daemon allows one now.
+/// Team messaging being unavailable never breaks lifecycle reporting.
+fn team_delivery() -> Option<Value> {
+    match teams::client::request(&teams::AgentAction::Receive).and_then(|reply| reply.result) {
+        Ok(delivery) if delivery.get("dispatch_id").and_then(Value::as_str).is_some() => Some(delivery),
+        Ok(_) => None,
+        Err(error) => {
+            eprintln!("cockpit-codex-hook: no team delivery: {error}");
+            None
+        },
+    }
+}
+
+fn report() -> Result<Option<Value>, String> {
     let mut input = Vec::new();
     io::stdin().take(HOOK_MAX_BYTES + 1).read_to_end(&mut input).map_err(|error| error.to_string())?;
     if input.len() as u64 > HOOK_MAX_BYTES {
         return Err("Codex hook payload exceeds 64 KiB".into());
     }
     let payload = serde_json::from_slice(&input).map_err(|error| format!("invalid Codex hook JSON: {error}"))?;
-    if let Some(mut report) = codex::translate_hook(&payload)? {
-        update_question(&payload, &mut report)?;
-        report["terminal"] = serde_json::json!(std::env::var("CLAUDE_SESSIONS_TERMINAL").is_ok_and(|value| value == "1"));
-        approval::file_request("session-request", &report).map_err(|refusal| {
-            let (approval::Refusal::Unreachable(reason) | approval::Refusal::Refused(reason)) = refusal;
-            format!("cannot report Codex lifecycle: {reason}")
-        })?;
+    let Some(mut report) = codex::translate_hook(&payload)? else { return Ok(None) };
+    update_question(&payload, &mut report)?;
+    let delivery = (payload["hook_event_name"] == "Stop" && report["state"] == "waiting").then(team_delivery).flatten();
+    if delivery.is_some() {
+        report["state"] = json!("working");
     }
-    Ok(())
+    report["terminal"] = json!(std::env::var("CLAUDE_SESSIONS_TERMINAL").is_ok_and(|value| value == "1"));
+    approval::file_request("session-request", &report).map_err(|refusal| {
+        let (approval::Refusal::Unreachable(reason) | approval::Refusal::Refused(reason)) = refusal;
+        format!("cannot report Codex lifecycle: {reason}")
+    })?;
+    Ok(delivery)
 }
 
 fn main() {
     match report() {
-        Ok(()) => println!("{{}}"),
+        Ok(None) => println!("{{}}"),
+        Ok(Some(delivery)) => {
+            // Codex continues the turn with `reason` as its next prompt: printed before the receipt,
+            // so a crash in between leaves the delivery uncertain, never falsely received.
+            println!("{}", json!({"decision": "block", "reason": delivery["text"]}));
+            let _ = io::Write::flush(&mut io::stdout());
+            let dispatch_id = delivery["dispatch_id"].as_str().unwrap_or_default().to_string();
+            let receipt = teams::AgentAction::Receipt { dispatch_id: dispatch_id.clone(),
+                outcome: teams::TransportOutcome::Received { native_id: format!("codex-stop:{dispatch_id}") } };
+            if let Err(error) = teams::client::request(&receipt).and_then(|reply| reply.result) {
+                eprintln!("cockpit-codex-hook: team receipt not recorded: {error}");
+            }
+        },
         Err(error) => {
             eprintln!("cockpit-codex-hook: {error}");
             std::process::exit(1);

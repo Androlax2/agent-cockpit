@@ -2,7 +2,7 @@
 
 use crate::registry::Registry;
 use cockpit::teams::{AgentAction, ErrorCode, HostAction, TeamError, TeamReply, VerifiedSession, store};
-use serde_json::json;
+use serde_json::{Value, json};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -125,13 +125,32 @@ pub fn request(registry: &mut Registry, peer: u32, action: AgentAction) -> Resul
             return Err(error);
         }
     };
-    let kind = match &action { AgentAction::Context => "context", AgentAction::Propose { .. } => "propose", AgentAction::Send { .. } => "send" };
+    let kind = match &action {
+        AgentAction::Context => "context", AgentAction::Propose { .. } => "propose", AgentAction::Send { .. } => "send",
+        AgentAction::Receive => "receive", AgentAction::Receipt { .. } => "receipt",
+    };
+    // The daemon's own view of the recipient decides whether it may be woken: never the adapter's claim.
+    let turn = registry.sessions.get(&sender.session_id)
+        .filter(|entry| !entry.needs_input && entry.state != "needs-you")
+        .map(|entry| format!("{}:{}", entry.state, entry.since));
     let result = database(registry, &live).and_then(|connection| match &action {
         AgentAction::Context => Ok(TeamReply { request_id: "context".into(), result: Ok(store::context(connection, &sender)?) }),
         AgentAction::Propose { proposal } => store::propose(connection, &sender, proposal, &live, now_ms()),
         AgentAction::Send { .. } => store::accept(connection, &sender, &action, now_ms()),
+        AgentAction::Receive => {
+            store::expire(connection, now_ms())?;
+            let Some(turn) = turn else { return Ok(TeamReply { request_id: "receive".into(), result: Ok(Value::Null) }) };
+            let dispatch = store::claim(connection, &sender, &turn, now_ms())?;
+            Ok(TeamReply { request_id: "receive".into(), result: Ok(dispatch.map_or(Value::Null, |dispatch| json!({
+                "dispatch_id": dispatch.id, "message_id": dispatch.message_id,
+                "text": cockpit::teams::envelope_text(&dispatch.envelope), "envelope": dispatch.envelope}))) })
+        },
+        AgentAction::Receipt { dispatch_id, outcome } => {
+            store::finish_for(connection, &sender, dispatch_id, outcome, now_ms())?;
+            Ok(TeamReply { request_id: dispatch_id.clone(), result: Ok(json!({"status": "recorded"})) })
+        },
     });
-    if kind != "context" {
+    if !matches!(kind, "context" | "receive") || result.as_ref().is_ok_and(|reply| reply.result.as_ref().is_ok_and(|value| !value.is_null())) {
         record(kind, Some(&sender), result.as_ref().is_ok_and(|reply| reply.result.is_ok()));
     }
     result

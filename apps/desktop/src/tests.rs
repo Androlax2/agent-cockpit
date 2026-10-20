@@ -216,6 +216,62 @@ fn agent_team_proposals_remain_pending_until_the_host_approves_the_exact_mapping
     assert_eq!(own["members"].as_array().unwrap().len(), 2);
 }
 
+fn linked_team_bench() -> Bench {
+    use cockpit::teams::{AgentAction,HostAction,Member,Proposal,Role,TaskKey};
+    let mut bench = team_bench();
+    let own = crate::teams::request(&mut bench.registry, 10, AgentAction::Context).unwrap().result.unwrap();
+    let task = TaskKey { project: own["project"].as_str().unwrap().into(), task_id: "1d3fd318".into() };
+    let proposal = Proposal { submission_key: "link-1".into(), task, members: vec![Member { session_id: SESSION_A.into(), role: Role::Designer },
+        Member { session_id: OPENCODE_SESSION.into(), role: Role::Developer }], reason: "Review this task".into() };
+    let pending = crate::teams::request(&mut bench.registry, 10, AgentAction::Propose { proposal }).unwrap().result.unwrap();
+    crate::teams::host_control(&mut bench.registry, &HostAction::Approve { request_id: "host-approval".into(),
+        proposal_id: pending["proposal_id"].as_str().unwrap().into(), expected_revision: 1,
+        mapping_hash: pending["mapping_hash"].as_str().unwrap().into() }).unwrap();
+    bench
+}
+
+fn send_to_designer(bench: &mut Bench, key: &str) {
+    use cockpit::teams::{AgentAction, MessageKind, Submission, TaskKey};
+    let own = crate::teams::request(&mut bench.registry, 20, AgentAction::Context).unwrap().result.unwrap();
+    let task: TaskKey = serde_json::from_value(own["task"].clone()).unwrap();
+    let message = Submission { task, submission_key: key.into(), recipient: SESSION_A.into(), kind: MessageKind::Notice,
+        body: "The frame is ready.".into(), thread_id: None, handoff_id: None };
+    crate::teams::request(&mut bench.registry, 20, AgentAction::Send { message }).unwrap().result.unwrap();
+}
+
+#[test]
+fn a_recipient_pulls_one_message_per_observed_turn_state() {
+    let mut bench = linked_team_bench();
+    send_to_designer(&mut bench, "notice-1");
+    send_to_designer(&mut bench, "notice-2");
+    let first = crate::teams::request(&mut bench.registry, 10, cockpit::teams::AgentAction::Receive).unwrap().result.unwrap();
+    assert!(first["text"].as_str().unwrap().contains("The frame is ready."));
+    assert!(!first["dispatch_id"].as_str().unwrap().is_empty());
+    let again = crate::teams::request(&mut bench.registry, 10, cockpit::teams::AgentAction::Receive).unwrap().result.unwrap();
+    assert!(again.is_null());
+}
+
+#[test]
+fn only_the_recipient_session_can_acknowledge_its_delivery() {
+    use cockpit::teams::{AgentAction, TransportOutcome};
+    let mut bench = linked_team_bench();
+    send_to_designer(&mut bench, "notice-1");
+    let dispatch = crate::teams::request(&mut bench.registry, 10, AgentAction::Receive).unwrap().result.unwrap();
+    let receipt = AgentAction::Receipt { dispatch_id: dispatch["dispatch_id"].as_str().unwrap().into(),
+        outcome: TransportOutcome::Received { native_id: "native-1".into() } };
+    assert!(crate::teams::request(&mut bench.registry, 20, receipt.clone()).and_then(|reply| reply.result).is_err());
+    crate::teams::request(&mut bench.registry, 10, receipt).unwrap().result.unwrap();
+}
+
+#[test]
+fn a_session_waiting_for_theo_is_not_woken_by_collaborators() {
+    let mut bench = linked_team_bench();
+    send_to_designer(&mut bench, "notice-1");
+    bench.registry.sessions.get_mut(SESSION_A).unwrap().needs_input = true;
+    let result = crate::teams::request(&mut bench.registry, 10, cockpit::teams::AgentAction::Receive).unwrap().result.unwrap();
+    assert!(result.is_null());
+}
+
 #[test]
 fn different_repositories_with_the_same_directory_name_have_distinct_team_identities() {
     let bench = Bench::new();

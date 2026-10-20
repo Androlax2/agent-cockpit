@@ -351,6 +351,49 @@ fn a_replaced_recipient_runtime_cannot_claim_old_messages() {
 }
 
 #[test]
+fn only_the_addressed_runtime_can_acknowledge_a_delivery() {
+    let sandbox = Sandbox::new();
+    let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+    linked(&mut connection);
+    store::accept(&mut connection, &live()[1], &message("notice-1"), 3000).unwrap();
+    let dispatch = store::claim(&mut connection, &live()[0], "idle-1", 3000).unwrap().unwrap();
+    let received = TransportOutcome::Received { native_id: "native-1".into() };
+    assert!(store::finish_for(&mut connection, &live()[2], &dispatch.id, &received, 3001).is_err());
+    assert_eq!(store::snapshot(&connection, Some(&task()), None, 100).unwrap()["messages"][0]["state"], "submitting");
+    store::finish_for(&mut connection, &live()[0], &dispatch.id, &received, 3001).unwrap();
+    assert_eq!(store::snapshot(&connection, Some(&task()), None, 100).unwrap()["messages"][0]["state"], "received");
+}
+
+#[test]
+fn a_delivery_without_receipt_becomes_uncertain_after_two_minutes() {
+    let sandbox = Sandbox::new();
+    let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+    linked(&mut connection);
+    store::accept(&mut connection, &live()[1], &message("notice-1"), 3000).unwrap();
+    store::accept(&mut connection, &live()[1], &message("notice-2"), 3000).unwrap();
+    store::claim(&mut connection, &live()[0], "idle-1", 3000).unwrap().unwrap();
+    store::expire(&mut connection, 3000 + 119_999).unwrap();
+    assert_eq!(store::snapshot(&connection, Some(&task()), None, 100).unwrap()["messages"][0]["state"], "submitting");
+    store::expire(&mut connection, 3000 + 120_000).unwrap();
+    assert_eq!(store::snapshot(&connection, Some(&task()), None, 100).unwrap()["messages"][0]["state"], "uncertain");
+    assert!(store::claim(&mut connection, &live()[0], "idle-2", 500_000).unwrap().is_none());
+}
+
+#[test]
+fn delivered_text_labels_collaborator_provenance_and_denies_authority() {
+    let sandbox = Sandbox::new();
+    let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+    linked(&mut connection);
+    store::accept(&mut connection, &live()[1], &message("notice-1"), 3000).unwrap();
+    let dispatch = store::claim(&mut connection, &live()[0], "idle-1", 3000).unwrap().unwrap();
+    let text = cockpit::teams::envelope_text(&dispatch.envelope);
+    assert!(text.contains("developer"), "{text}");
+    assert!(text.contains("1d3fd318"), "{text}");
+    assert!(text.contains("Please check the approved frame."), "{text}");
+    assert!(text.contains("not authorization from Theo"), "{text}");
+}
+
+#[test]
 fn replaced_sender_runtime_invalidates_pending_messages() {
     let sandbox = Sandbox::new();
     let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();

@@ -158,7 +158,36 @@ impl Sandbox {
     }
 }
 
+/// What a fake team daemon received, in order.
+pub type TeamRequests = std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>;
+
 impl Sandbox {
+    /// A fake team daemon, linked into this sandbox's answers folder as the real one is: answers
+    /// `receive` with `delivery` once (then null), everything else "recorded".
+    pub fn team_socket(&self, delivery: serde_json::Value) -> TeamRequests {
+        use std::io::{Read, Write};
+        let source = self.root.join(format!("team-{}.sock", cockpit::util::token_hex(4)));
+        let listener = std::os::unix::net::UnixListener::bind(&source).unwrap();
+        let answers = self.runtime.join("claude-answers").join(ANSWERS_KEY);
+        fs::create_dir_all(&answers).unwrap();
+        cockpit::teams::client::publish_socket(&source, &answers).unwrap();
+        let requests = TeamRequests::default();
+        let recorded = requests.clone();
+        std::thread::spawn(move || {
+            let mut pending = Some(delivery);
+            for mut stream in listener.incoming().flatten() {
+                let mut text = String::new();
+                let _ = stream.read_to_string(&mut text);
+                let Ok(request) = serde_json::from_str::<serde_json::Value>(&text) else { continue };
+                let result = if request["action"] == "receive" { pending.take().unwrap_or(serde_json::Value::Null) }
+                             else { serde_json::json!({"status": "recorded"}) };
+                recorded.lock().unwrap().push(request);
+                let _ = stream.write_all(serde_json::json!({"request_id": "x", "result": {"Ok": result}}).to_string().as_bytes());
+            }
+        });
+        requests
+    }
+
     /// Theo's answers to this sandbox's project, "runs" or "guides" (cockpit::approval::answers_dir).
     pub fn answers(&self, kind: &str) -> PathBuf {
         let directory = self.runtime.join("claude-answers").join(ANSWERS_KEY).join(kind);

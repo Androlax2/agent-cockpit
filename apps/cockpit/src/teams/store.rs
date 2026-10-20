@@ -66,7 +66,8 @@ pub fn open(path: &Path) -> Result<Connection, TeamError> {
             attempts INTEGER NOT NULL DEFAULT 0, next_at INTEGER NOT NULL, created_at INTEGER NOT NULL,
             last_error TEXT NOT NULL DEFAULT '', idle_turn TEXT, recipient_runtime TEXT NOT NULL, UNIQUE(sender,submission_key));
         CREATE TABLE IF NOT EXISTS attempts (id TEXT PRIMARY KEY, message_id TEXT NOT NULL REFERENCES messages(id),
-            number INTEGER NOT NULL, state TEXT NOT NULL, native_id TEXT, finished_at INTEGER, UNIQUE(message_id,number));
+            number INTEGER NOT NULL, state TEXT NOT NULL, native_id TEXT, finished_at INTEGER, started_at INTEGER NOT NULL DEFAULT 0,
+            UNIQUE(message_id,number));
         CREATE UNIQUE INDEX IF NOT EXISTS one_inflight_delivery ON messages(recipient,recipient_epoch) WHERE state='submitting';
         PRAGMA user_version=1;")?;
     Ok(connection)
@@ -312,10 +313,32 @@ pub fn claim(connection: &mut Connection, recipient: &VerifiedSession, idle_turn
     let attempt_id = identifier()?;
     // Commit before the irreversible native submission. Recovery must never blindly replay it.
     transaction.execute("UPDATE messages SET state='submitting',attempts=attempts+1,idle_turn=?2 WHERE id=?1", params![message_id,idle_turn])?;
-    transaction.execute("INSERT INTO attempts (id,message_id,number,state) VALUES (?1,?2,?3,'submitting')", params![attempt_id,message_id,attempts+1])?;
+    transaction.execute("INSERT INTO attempts (id,message_id,number,state,started_at) VALUES (?1,?2,?3,'submitting',?4)", params![attempt_id,message_id,attempts+1,now_ms])?;
     transaction.execute("UPDATE members SET last_idle_turn=?2 WHERE session_id=?1", params![recipient.session_id,idle_turn])?;
     transaction.commit()?;
     Ok(Some(Dispatch { id:attempt_id,message_id,envelope:serde_json::from_str(&envelope)? }))
+}
+
+/// A native adapter reporting on its own delivery; another session's receipt is refused.
+pub fn finish_for(connection: &mut Connection, recipient: &VerifiedSession, dispatch_id: &str, outcome: &TransportOutcome, now_ms: i64) -> Result<(), TeamError> {
+    let owner: Option<(String, String)> = connection.query_row("SELECT m.recipient, m.recipient_runtime FROM attempts a JOIN messages m ON m.id=a.message_id WHERE a.id=?1",
+        [dispatch_id], |row| Ok((row.get(0)?, row.get(1)?))).optional()?;
+    if owner != Some((recipient.session_id.clone(), recipient.runtime.clone())) {
+        return Err(TeamError::new(ErrorCode::NotFound, "delivery attempt not found"));
+    }
+    finish(connection, dispatch_id, outcome, now_ms)
+}
+
+/// Native UIs that admit a message without acknowledging it leave it uncertain, never resent.
+pub const RECEIPT_TIMEOUT_MS: i64 = 120_000;
+
+pub fn expire(connection: &mut Connection, now_ms: i64) -> Result<(), TeamError> {
+    let transaction = connection.transaction()?;
+    transaction.execute("UPDATE messages SET state='uncertain', last_error='no receipt from the recipient within two minutes; reconcile before proceeding'
+        WHERE id IN (SELECT message_id FROM attempts WHERE state='submitting' AND started_at<=?1)", [now_ms - RECEIPT_TIMEOUT_MS])?;
+    transaction.execute("UPDATE attempts SET state='uncertain', finished_at=?2 WHERE state='submitting' AND started_at<=?1", params![now_ms - RECEIPT_TIMEOUT_MS, now_ms])?;
+    transaction.commit()?;
+    Ok(())
 }
 
 pub fn finish(connection: &mut Connection, dispatch_id: &str, outcome: &TransportOutcome, now_ms: i64) -> Result<(), TeamError> {

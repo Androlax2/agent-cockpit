@@ -102,6 +102,65 @@ export default {
       report(input.sessionID, { hook_event_name: "PostToolUse", tool_name: input.tool })
     })
 
+    // Linked sessions: pull this session's next approved team message and admit it natively,
+    // queued behind the current turn. The stable inbox id makes a repeated admission return the
+    // original instead of a second turn. Only the cockpit's own root session takes them.
+    const runTeam = (args: string[], input?: unknown) =>
+      new Promise<string>((resolve, reject) => {
+        const child = spawn("cockpit-team", args, { stdio: ["pipe", "pipe", "pipe"] })
+        let output = ""
+        let error = ""
+        child.stdout.on("data", (chunk) => (output += chunk))
+        child.stderr.on("data", (chunk) => (error += chunk))
+        child.on("error", reject)
+        child.on("close", (code) => (code === 0 ? resolve(output) : reject(new Error(error.trim() || `cockpit-team ${args[0]} exited ${code}`))))
+        // A command that exits without reading its input must not crash opencode's server (EPIPE).
+        child.stdin.on("error", (stdinError: NodeJS.ErrnoException) => {
+          if (stdinError.code !== "EPIPE") reject(stdinError)
+        })
+        if (input === undefined) child.stdin.end()
+        else child.stdin.end(JSON.stringify(input))
+      })
+    const receipt = (dispatchID: string, outcome: Record<string, string>) =>
+      runTeam(["receipt"], { action: "receipt", dispatch_id: dispatchID, outcome }).catch((error) =>
+        console.error("cockpit plugin: team receipt not recorded", error),
+      )
+    const deliverTeamMessage = async () => {
+      const delivery = JSON.parse((await runTeam(["receive"])).trim() || "null")
+      if (!delivery?.dispatch_id) return
+      const inboxID = `msg_cockpit${delivery.message_id}`
+      try {
+        const admitted = await ctx.session.synthetic({
+          sessionID: cockpitSession,
+          id: inboxID,
+          text: delivery.text,
+          description: "Cockpit team message",
+          metadata: { cockpit_team: { message_id: delivery.message_id, dispatch_id: delivery.dispatch_id } },
+          delivery: "queue",
+          resume: true,
+        })
+        await receipt(delivery.dispatch_id, { outcome: "received", native_id: admitted?.id ?? inboxID })
+      } catch (error) {
+        // The inbox may have taken it before failing: never resend, let Theo reconcile.
+        await receipt(delivery.dispatch_id, { outcome: "uncertain", reason: String(error).slice(0, 300) })
+      }
+    }
+    const teamPoll = Number(process.env.COCKPIT_TEAM_POLL_MS ?? 3000)
+    let teamBusy = false
+    let teamStopped = false
+    const teamTimer = cockpitSession?.startsWith("ses")
+      ? setInterval(() => {
+          if (teamBusy || teamStopped) return
+          teamBusy = true
+          deliverTeamMessage()
+            .catch((error) => {
+              if ((error as NodeJS.ErrnoException)?.code === "ENOENT") teamStopped = true
+              else console.error("cockpit plugin: team delivery unavailable", error)
+            })
+            .finally(() => (teamBusy = false))
+        }, teamPoll)
+      : undefined
+
     // Not awaited: setup must return for opencode to take prompts.
     const subscription = new AbortController()
     void (async () => {
@@ -109,6 +168,9 @@ export default {
     })().catch((error: unknown) => {
       if (!subscription.signal.aborted) console.error("cockpit plugin: event stream ended", error)
     })
-    return () => subscription.abort()
+    return () => {
+      subscription.abort()
+      if (teamTimer) clearInterval(teamTimer)
+    }
   },
 }
