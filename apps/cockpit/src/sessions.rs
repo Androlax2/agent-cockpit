@@ -5,6 +5,7 @@
 use crate::paths;
 use crate::util::{self, collapse, now, now_secs, project_name, read_json};
 use serde_json::{Value, json};
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
@@ -86,6 +87,55 @@ pub struct Facts {
     pub remote: bool,
 }
 
+pub fn github_repository(remote: &str) -> Option<String> {
+    let repository = remote.strip_prefix("https://github.com/")
+        .or_else(|| remote.strip_prefix("git@github.com:"))
+        .or_else(|| remote.strip_prefix("ssh://git@github.com/"))?;
+    let repository = repository.strip_suffix(".git").unwrap_or(repository).to_lowercase();
+    valid_repository(&repository).then_some(repository)
+}
+
+pub fn valid_repository(repository: &str) -> bool {
+    let parts: Vec<_> = repository.split('/').collect();
+    repository.len() <= 200 && parts.len() == 2 && parts.iter().all(|part| !part.is_empty()
+        && *part != "." && *part != ".." && part.bytes().all(|character| character.is_ascii_lowercase()
+            || character.is_ascii_digit() || b"_.-".contains(&character)))
+}
+
+pub fn valid_turn_id(id: &str) -> bool {
+    id.len() == 32 && id.bytes().all(|character| character.is_ascii_digit() || (b'a'..=b'f').contains(&character))
+}
+
+pub fn valid_metadata_text(text: &str, limit: usize) -> bool {
+    text.chars().count() <= limit && !text.chars().any(char::is_control) && !text.contains("#(") && !text.contains("#{")
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TurnResult {
+    pub id: String,
+    pub completed_at: i64,
+    pub outcome: String,
+    pub repository: String,
+    pub branch: String,
+}
+
+impl TurnResult {
+    pub fn validate(&self) -> Result<(), String> {
+        if !valid_turn_id(&self.id) || self.completed_at <= 0
+            || !valid_metadata_text(&self.outcome, 300) || !valid_metadata_text(&self.branch, 300)
+            || !(self.repository.is_empty() || valid_repository(&self.repository)) {
+            return Err("invalid turn result metadata".into());
+        }
+        Ok(())
+    }
+
+    pub fn from_value(value: &Value) -> Result<Self, String> {
+        let result: Self = serde_json::from_value(value.clone()).map_err(|error| error.to_string())?;
+        result.validate()?;
+        Ok(result)
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Session {
     pub session: String,
@@ -103,6 +153,9 @@ pub struct Session {
     pub full_request: String,
     pub detail: String,
     pub outcome: String,
+    pub repository: String,
+    pub branch: String,
+    pub last_result: Option<TurnResult>,
     pub update: bool,
     /// Started with "this terminal": shown and usable here, left out of what acts on every session.
     pub terminal: bool,
@@ -167,6 +220,10 @@ impl Session {
             full_request: text(row, "full_request"),
             detail: text(row, "detail"),
             outcome: text(row, "outcome"),
+            repository: text(row, "repository"),
+            branch: text(row, "branch"),
+            last_result: row.get("last_result").filter(|value| !value.is_null())
+                .and_then(|value| TurnResult::from_value(value).map_err(|error| util::log_event("WARN", &error)).ok()),
             update: row.get("update").and_then(Value::as_bool).unwrap_or(false),
             terminal: row.get("terminal").and_then(Value::as_bool).unwrap_or(false),
             credits: row.get("credits").and_then(Value::as_bool).unwrap_or(false),

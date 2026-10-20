@@ -338,6 +338,63 @@ fn a_request_cannot_carry_a_tmux_format() {
 // ---- Reports ----
 
 #[test]
+fn continuity_results_survive_new_work_and_daemon_reload() {
+    let mut bench = Bench::new();
+    bench.report(SESSION_A, json!({"state": "needs-you", "needs_input": true, "message": "Which provider?", "turn_id": "11111111111111111111111111111111", "turn_complete": true, "outcome": "tests passed", "repository": "acme/shop", "branch": "todo-aabbccdd"}));
+    let result = bench.snapshot()[0]["last_result"].clone();
+    assert_eq!(result["outcome"], "tests passed");
+    assert_eq!(result["repository"], "acme/shop");
+    bench.report(SESSION_A, json!({"state": "working", "needs_input": false}));
+    assert_eq!(bench.snapshot()[0]["last_result"], result);
+    assert_eq!(bench.snapshot()[0]["outcome"], "");
+    let restored = Registry::new(Box::new(FakeSystem(bench.world.clone())), Box::new(FakeBanners(bench.shown.clone())));
+    assert_eq!(restored.snapshot_rows()[0]["last_result"], result);
+}
+
+#[test]
+fn continuity_duplicate_completion_preserves_the_first_result_timestamp() {
+    let mut bench = Bench::new();
+    let report = json!({"state": "waiting", "turn_id": "11111111111111111111111111111111", "turn_complete": true, "outcome": "tests passed"});
+    bench.report(SESSION_A, report.clone());
+    let first = bench.snapshot()[0]["last_result"].clone();
+    assert!(first["completed_at"].as_i64().is_some_and(|time| time > 0));
+    bench.report(SESSION_A, report);
+    assert_eq!(bench.snapshot()[0]["last_result"], first);
+    bench.report(SESSION_A, json!({"state": "waiting", "turn_id": "22222222222222222222222222222222", "turn_complete": true, "outcome": "tests passed"}));
+    assert_ne!(bench.snapshot()[0]["last_result"]["id"], first["id"]);
+}
+
+#[test]
+fn continuity_metadata_cannot_change_authenticated_sender_routing() {
+    let mut bench = Bench::new();
+    bench.world.borrow_mut().sender_targets.insert(500, target(&[("tmux_pane", "%7")]));
+    let report = parse_session(&json!({"session": SESSION_A, "project": "other", "state": "working", "tmux_pane": "%1", "repository": "acme/other", "branch": "main"}).to_string()).unwrap();
+    bench.registry.report_from(report, 500).unwrap();
+    let row = &bench.snapshot()[0];
+    assert_eq!(row["tmux_pane"], "%7");
+    assert_eq!(row["repository"], "acme/other");
+}
+
+#[test]
+fn continuity_old_and_malformed_reports_fail_conservatively() {
+    let mut bench = Bench::new();
+    bench.report(SESSION_A, json!({"state": "waiting", "message": "Finished, waiting for you", "outcome": "tests passed"}));
+    assert!(bench.snapshot()[0]["last_result"].is_null());
+    for fields in [json!({"turn_id": "bad", "turn_complete": true, "outcome": "ok"}), json!({"turn_complete": true, "outcome": "ok"}), json!({"turn_complete": "yes"}), json!({"repository": "acme/other\n"}), json!({"branch": "#{pane}"}), json!({"turn_id": "11111111111111111111111111111111", "turn_complete": true, "outcome": false})] {
+        let mut report = json!({"session": SESSION_A, "project": "p", "state": "waiting"});
+        report.as_object_mut().unwrap().extend(fields.as_object().unwrap().clone());
+        assert!(parse_session(&report.to_string()).is_err(), "accepted invalid metadata: {fields}");
+    }
+}
+
+#[test]
+fn continuity_completion_without_an_outcome_does_not_fabricate_a_result() {
+    let mut bench = Bench::new();
+    bench.report(SESSION_A, json!({"state": "waiting", "turn_id": "11111111111111111111111111111111", "turn_complete": true}));
+    assert!(bench.snapshot()[0]["last_result"].is_null());
+}
+
+#[test]
 fn label_updates_publish_without_changing_activity_or_pending_questions() {
     let mut bench = Bench::new();
     bench.report(SESSION_A, json!({"state": "needs-you", "task": "Original user request", "message": "Which option?", "needs_input": true, "sticky": true}));

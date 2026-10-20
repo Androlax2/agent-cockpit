@@ -138,6 +138,10 @@ pub struct Report {
     pub message: Option<String>,
     /// What the turn left in the repository, from the hook (it runs git inside the sandbox).
     pub outcome: Option<String>,
+    pub repository: Option<String>,
+    pub branch: Option<String>,
+    pub turn_id: Option<String>,
+    pub turn_complete: bool,
     pub sticky: bool,
     /// An explicit blocking chat question, independent of the agent's on-screen dialog state.
     pub needs_input: Option<bool>,
@@ -187,6 +191,22 @@ pub fn parse_session(raw: &str) -> Result<Report, String> {
     if report.get("needs_input").is_some_and(|value| !value.is_boolean()) {
         return Err("session.needs_input is not true or false".into());
     }
+    if report.get("turn_complete").is_some_and(|value| !value.is_boolean()) {
+        return Err("session.turn_complete is not true or false".into());
+    }
+    if let Some(id) = report.get("turn_id") {
+        if !id.as_str().is_some_and(cockpit::sessions::valid_turn_id) {
+            return Err("session.turn_id is not a 32-character hexadecimal id".into());
+        }
+    }
+    let turn_complete = report.get("turn_complete").and_then(Value::as_bool).unwrap_or(false);
+    if turn_complete && !report.contains_key("turn_id") {
+        return Err("session completion requires turn_id".into());
+    }
+    if report.get("repository").is_some_and(|value| !value.as_str().is_some_and(|repository|
+        repository.is_empty() || cockpit::sessions::valid_repository(repository))) {
+        return Err("session.repository is not a canonical GitHub repository".into());
+    }
     if report.get("agent").is_some_and(|agent| !agent.as_str().is_some_and(|agent| agents::find(agent).is_some())) {
         return Err(format!("session.agent is not one of {:?}", agents::names()));
     }
@@ -195,7 +215,7 @@ pub fn parse_session(raw: &str) -> Result<Report, String> {
             return Err(format!("session.{key} is not a count"));
         }
     }
-    for key in ["cwd", "task", "message", "outcome", "label"] {
+    for key in ["cwd", "task", "message", "outcome", "label", "branch"] {
         if report.get(key).is_some_and(|value| !value.is_string()) {
             return Err(format!("session.{key} is not a string"));
         }
@@ -204,7 +224,7 @@ pub fn parse_session(raw: &str) -> Result<Report, String> {
     if !agents::is_session_id(&session) {
         return Err(format!("session is not an id of one of the agents {:?}", agents::names()));
     }
-    for key in ["session", "project", "cwd", "task", "message", "outcome", "label"] {
+    for key in ["session", "project", "cwd", "task", "message", "outcome", "label", "branch"] {
         if let Some(text) = report.get(key).and_then(Value::as_str) {
             validate_text(key, text)?;
         }
@@ -217,6 +237,7 @@ pub fn parse_session(raw: &str) -> Result<Report, String> {
     Ok(Report {
         session, project: report["project"].as_str().unwrap().to_string(), state: text("state"), cwd: text("cwd"),
         task: text("task"), message: text("message"), outcome: text("outcome"), sticky: report.get("sticky").is_some_and(|s| s.as_bool().unwrap_or(!s.is_null())),
+        repository: text("repository"), branch: text("branch"), turn_id: text("turn_id"), turn_complete,
         label: text("label").map(|label| cockpit::sessions::validate_task_label(&label)).transpose()?,
         terminal: report.get("terminal").and_then(Value::as_bool).unwrap_or(false),
         credits: report.get("credits").and_then(Value::as_bool),
@@ -1009,6 +1030,9 @@ pub struct Entry {
     pub detail: String,
     pub full_request: String,
     pub outcome: String,
+    pub repository: String,
+    pub branch: String,
+    pub last_result: Option<cockpit::sessions::TurnResult>,
     pub terminal: bool,
     pub credits: bool,
     pub unpushed: u64,
@@ -1262,6 +1286,24 @@ impl Registry {
         if entry.state == "working" && previous_state.as_deref() != Some("working") {
             entry.outcome.clear();
         }
+        if let Some(repository) = report.repository.as_ref().filter(|repository| **repository != entry.repository) {
+            entry.repository = repository.clone();
+            changed = true;
+        }
+        if let Some(branch) = report.branch.as_ref().filter(|branch| **branch != entry.branch) {
+            entry.branch = branch.clone();
+            changed = true;
+        }
+        if report.turn_complete && report.outcome.as_ref().is_some_and(|outcome| !outcome.is_empty()) {
+            if let Some(id) = report.turn_id.as_ref().filter(|id| entry.last_result.as_ref().is_none_or(|result| result.id != **id)) {
+                entry.last_result = Some(cockpit::sessions::TurnResult {
+                    id: id.clone(), completed_at: now() as i64,
+                    outcome: report.outcome.clone().unwrap_or_default(),
+                    repository: entry.repository.clone(), branch: entry.branch.clone(),
+                });
+                changed = true;
+            }
+        }
         let mut message = report.message.clone();
         if message.as_deref() == Some(FINISHED_MESSAGE) {
             entry.outcome = report.outcome.clone().unwrap_or_default();
@@ -1415,7 +1457,8 @@ impl Registry {
         let mut rows: Vec<Value> = self.sessions.iter().map(|(session, entry)| {
             let mut row = json!({"session": session, "state": entry.state, "project": entry.project, "cwd": entry.cwd, "task": entry.task, "label": entry.label,
                                  "since": entry.since as i64, "started": entry.started as i64, "update": entry.update,
-                                 "request": entry.request, "detail": entry.detail, "full_request": entry.full_request, "outcome": entry.outcome, "needs_input": entry.needs_input,
+                                  "request": entry.request, "detail": entry.detail, "full_request": entry.full_request, "outcome": entry.outcome, "needs_input": entry.needs_input,
+                                  "repository": entry.repository, "branch": entry.branch, "last_result": entry.last_result,
                                  "terminal": entry.terminal, "credits": entry.credits, "unpushed": entry.unpushed,
                                   "agents": entry.agents, "background": entry.background, "apps": entry.apps, "agent": entry.agent,
                                   "ask_to_run": run_phases.get(session).copied().unwrap_or("")});
@@ -1495,10 +1538,19 @@ impl Registry {
                 }
                 let label = row.get("label").and_then(Value::as_str).filter(|label| !label.is_empty())
                     .map(cockpit::sessions::validate_task_label).transpose()?.unwrap_or_default();
+                let repository = row.get("repository").and_then(Value::as_str).unwrap_or("");
+                if !repository.is_empty() && !cockpit::sessions::valid_repository(repository) {
+                    return Err("invalid repository in snapshot".into());
+                }
+                let branch = row.get("branch").and_then(Value::as_str).unwrap_or("");
+                validate_text("branch", branch)?;
+                let last_result = row.get("last_result").filter(|value| !value.is_null())
+                    .map(cockpit::sessions::TurnResult::from_value).transpose()?;
                 Ok((session, Entry {
                     state, project: project.into(), cwd, task: row.get("task").and_then(Value::as_str).unwrap_or("").into(), since,
                     needs_input: row.get("needs_input").and_then(Value::as_bool).unwrap_or(false),
                     label,
+                    repository: repository.into(), branch: branch.into(), last_result,
                     request: request.into(),
                     full_request: full_request.into(),
                     started: row.get("started").and_then(Value::as_f64).unwrap_or(since),

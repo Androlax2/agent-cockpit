@@ -87,6 +87,62 @@ fn fake_agent(root: &Path, name: &str) -> PathBuf {
 }
 
 #[test]
+fn continuity_stop_reuses_its_turn_id_but_a_new_prompt_gets_another() {
+    for session in [SESSION_A, OPENCODE_SESSION] {
+        let mut test = HookTest::new();
+        for event in ["UserPromptSubmit", "Stop", "Stop", "UserPromptSubmit", "Stop"] {
+            let mut payload = with_session(json!({"hook_event_name": event, "prompt": "work"}), "/x/proj");
+            payload["session_id"] = json!(session);
+            assert!(test.run_hook(payload, &[]).status.success());
+        }
+        let reports = test.received();
+        let first = reports[1]["turn_id"].as_str().expect("completion has a stable turn id");
+        assert_eq!(first.len(), 32);
+        assert!(first.chars().all(|character| character.is_ascii_hexdigit() && !character.is_ascii_uppercase()));
+        assert_eq!(reports[2]["turn_id"], first);
+        assert_ne!(reports[4]["turn_id"], first);
+        assert_eq!(reports[1]["turn_complete"], true);
+        assert!(reports[0].get("turn_complete").is_none());
+    }
+}
+
+#[test]
+fn continuity_a_stop_question_still_reports_completion() {
+    let mut test = HookTest::new();
+    for payload in [json!({"hook_event_name": "NeedsInput", "message": "Which provider?"}), json!({"hook_event_name": "Stop"})] {
+        assert!(test.run_hook(with_session(payload, "/x/proj"), &[]).status.success());
+    }
+    let reports = test.received();
+    assert_eq!(reports[1]["needs_input"], true);
+    assert_eq!(reports[1]["turn_complete"], true);
+    assert!(reports[1]["turn_id"].is_string());
+}
+
+#[test]
+fn continuity_fallback_completion_does_not_reuse_a_prior_turn() {
+    let mut test = HookTest::new();
+    for event in ["Stop", "Stop", "PostToolUse", "Stop"] {
+        assert!(test.run_hook(with_session(json!({"hook_event_name": event}), "/x/proj"), &[]).status.success());
+    }
+    let reports = test.received();
+    assert!(reports[0]["turn_id"].is_string());
+    assert_eq!(reports[0]["turn_id"], reports[1]["turn_id"]);
+    assert_ne!(reports[0]["turn_id"], reports[3]["turn_id"]);
+}
+
+#[test]
+fn continuity_repository_and_branch_are_read_inside_the_sandbox() {
+    for (origin, expected) in [("git@github.com:Acme/Shop.git", "acme/shop"), ("https://github.com/Acme/Shop.git", "acme/shop"), ("ssh://git@github.com/Acme/Shop.git", "acme/shop"), ("/local/shop", "")] {
+        let mut test = HookTest::new();
+        test.sandbox.shim("git", &format!("case \"$*\" in *'remote get-url origin') echo '{origin}';; *'symbolic-ref --quiet --short HEAD') echo 'todo-aabbccdd';; esac"));
+        assert!(test.run_hook(with_session(json!({"hook_event_name": "SessionStart", "source": "startup"}), "/x/proj"), &[]).status.success());
+        let report = &test.received()[0];
+        assert_eq!(report["repository"], expected);
+        assert_eq!(report["branch"], "todo-aabbccdd");
+    }
+}
+
+#[test]
 fn events_map_to_states() {
     let mut test = HookTest::new();
     let cases = [
