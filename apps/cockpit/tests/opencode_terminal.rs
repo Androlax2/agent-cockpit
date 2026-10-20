@@ -32,6 +32,7 @@ case $1 in
       case $1 in
         -s) name=$2; shift 2 ;;
         -c) directory=$2; shift 2 ;;
+        -e) export "$2"; shift 2 ;;
         -x|-y) shift 2 ;;
         -d) shift ;;
         env) break ;;

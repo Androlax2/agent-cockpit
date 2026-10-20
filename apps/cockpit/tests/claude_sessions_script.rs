@@ -2296,6 +2296,15 @@ fn an_opencode_start_reuses_the_projects_opencode_session_never_its_claude_one()
 }
 
 #[test]
+fn an_opencode_resume_exposes_its_conversation_id_before_the_plugin_reports() {
+    let manager = Manager::new();
+    let result = manager.run(&["resume", &path_str(&manager.project), OPENCODE_SESSION], &[]);
+    assert!(result.status.success(), "{}", stderr(&result));
+    let start = manager.opencode_starts().pop().expect("no opencode start");
+    assert!(start.contains(&format!("-e CLAUDE_CODE_SESSION_ID={OPENCODE_SESSION} ")), "{start}");
+}
+
+#[test]
 fn an_unknown_agent_is_refused() {
     let manager = Manager::new();
     let result = manager.run(&["--agent", "codex", "new", &path_str(&manager.project)], &[]);

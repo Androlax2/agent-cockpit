@@ -3770,6 +3770,55 @@ fn an_unreported_opencode_tmux_session_is_an_opencode_card() {
 }
 
 #[test]
+fn a_restarting_opencode_card_keeps_its_title_before_its_first_report() {
+    let fixture = Fixture::new();
+    fixture.write("repos/clone/.git/HEAD", "ref: refs/heads/parallel-1249\n");
+    let clone = fixture.path("repos/clone").display().to_string();
+    opencode_database_with(&fixture, &[(OPENCODE_SESSION, &clone, "Improve invoice layout", None, 2_000_000, None)]);
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "clone", "/r/clone", 1)]));
+    fixture.shim("tmux", &format!("printf 'claude-retry-opencode-7\\t%%5\\t{clone}\\tarchlinux\\t100\\t{OPENCODE_SESSION}\\n'"));
+    let app = fixture.app();
+    let lines = texts(&app, 1);
+    assert!(lines.contains(&"│·Improve invoice layout".to_string()), "{lines:?}");
+}
+
+#[test]
+fn a_restarting_opencode_card_replaces_its_old_pane_without_a_duplicate() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([opencode_session("waiting", "runway", 1)]));
+    fixture.shim("tmux", &format!("printf 'claude-retry-opencode-7\\t%%99\\t/r/runway\\tarchlinux\\t100\\t{OPENCODE_SESSION}\\n'"));
+    let app = fixture.app();
+    assert_eq!(app.sessions.iter().map(|session| (session.session.as_str(), session.tmux_pane.as_str(), session.state.as_str())).collect::<Vec<_>>(),
+               vec![("claude-retry-opencode-7", "%99", "unknown")]);
+}
+
+#[test]
+fn an_unreported_pane_rejects_a_session_identity_from_another_agent() {
+    let fixture = Fixture::new();
+    fixture.shim("tmux", &format!("printf 'claude-retry-opencode-7\\t%%5\\t/r/runway\\topencode\\t100\\t{SESSION_A}\\n'"));
+    let app = fixture.app();
+    assert_eq!(app.sessions[0].session, "claude-retry-opencode-7");
+}
+
+#[test]
+fn a_second_live_pane_for_the_same_conversation_does_not_hide_the_reported_one() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([opencode_session("waiting", "runway", 1)]));
+    fixture.shim("tmux", &format!("printf 'claude-retry-opencode-6\\t%%1\\t/r/runway\\topencode\\t90\\t{OPENCODE_SESSION}\\nclaude-retry-opencode-7\\t%%99\\t/r/runway\\tarchlinux\\t100\\t{OPENCODE_SESSION}\\n'"));
+    let app = fixture.app();
+    assert_eq!(app.sessions.iter().map(|session| session.tmux_pane.as_str()).collect::<Vec<_>>(), vec!["%1", "%99"]);
+}
+
+#[test]
+fn an_unreported_pane_does_not_hide_an_external_session_of_the_same_conversation() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([external_session(OPENCODE_SESSION, "working", "runway", "/r/runway", 1)]));
+    fixture.shim("tmux", &format!("printf 'claude-retry-opencode-7\\t%%99\\t/r/runway\\tarchlinux\\t100\\t{OPENCODE_SESSION}\\n'"));
+    let running = sessions::running();
+    assert_eq!(running.iter().map(|session| session.tmux_pane.as_str()).collect::<Vec<_>>(), vec!["", "%99"]);
+}
+
+#[test]
 fn what_only_claude_code_does_is_not_offered_on_an_opencode_card() {
     for key in ['e', '$', 'C'] {
         let fixture = Fixture::new();

@@ -116,6 +116,8 @@ pub struct Session {
     pub apps: String,
     /// The name of the agent that runs it (agents::AGENTS).
     pub agent: String,
+    /// A conversation known before its first report; the card still targets its tmux session.
+    pub conversation: Option<String>,
     // Added by the column.
     pub design: Option<Design>,
     /// "designer" or "developer", as the session declared it (claude-design role), or empty.
@@ -188,15 +190,15 @@ pub fn reported() -> Vec<Session> {
 }
 
 /// One row per claude-retry-* tmux session: the pane claude runs in, its path and title.
-fn tmux_claude_panes() -> Vec<[String; 5]> {
-    let format = "#{session_name}\t#{pane_id}\t#{pane_current_path}\t#{pane_title}\t#{session_created}";
+fn tmux_claude_panes() -> Vec<[String; 6]> {
+    let format = "#{session_name}\t#{pane_id}\t#{pane_current_path}\t#{pane_title}\t#{session_created}\t#{CLAUDE_CODE_SESSION_ID}";
     util::output_of("tmux", &["list-panes", "-a", "-F", format])
         .unwrap_or_default()
         .lines()
         .filter_map(|line| {
             let mut parts = line.split('\t').map(str::to_string);
             let row = [parts.next()?, parts.next().unwrap_or_default(), parts.next().unwrap_or_default(),
-                       parts.next().unwrap_or_default(), parts.next().unwrap_or_default()];
+                        parts.next().unwrap_or_default(), parts.next().unwrap_or_default(), parts.next().unwrap_or_default()];
             row[0].starts_with("claude-retry-").then_some(row)
         })
         .collect()
@@ -207,14 +209,26 @@ fn tmux_claude_panes() -> Vec<[String; 5]> {
 pub fn running() -> Vec<Session> {
     let mut sessions = reported();
     let known: HashSet<String> = sessions.iter().map(|session| session.tmux_pane.clone()).collect();
-    for [name, pane, path, title, created] in tmux_claude_panes() {
+    let panes = tmux_claude_panes();
+    let current_panes: HashSet<String> = panes.iter().map(|row| row[1].clone()).collect();
+    for [name, pane, path, title, created, conversation] in panes {
         if known.contains(&pane) {
             continue;
         }
         let created = created.parse::<i64>().unwrap_or_else(|_| now_secs());
         let agent = crate::agents::of_tmux_session(&name).map_or(crate::agents::DEFAULT, |agent| agent.name);
+        // OpenCode knows its conversation before the plugin reports, so a restart can keep
+        // its title instead of briefly showing the clone's branch.
+        let conversation = if agent == "opencode" && crate::agents::of_session_id(&conversation).is_some_and(|agent| agent.name == "opencode") {
+            Some(conversation)
+        } else {
+            None
+        };
+        if let Some(conversation) = &conversation {
+            sessions.retain(|session| session.session != *conversation || session.tmux_pane.is_empty() || current_panes.contains(&session.tmux_pane));
+        }
         sessions.push(Session {
-            session: name, state: "unknown".into(), project: project_name(&path),
+            session: name, conversation, state: "unknown".into(), project: project_name(&path),
             task: title.trim_start_matches(['✳', '◐', '◑', ' ']).to_string(), since: created, started: Some(created),
             agent: agent.into(), tmux_pane: pane, cwd: path, ..Session::default()
         });

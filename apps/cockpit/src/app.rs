@@ -1067,13 +1067,14 @@ impl App {
     /// per tick, never on a key press (security audit 2026-10-19, performance 1).
     fn gather_sessions(&mut self) -> Gathered {
         let mut running: Vec<Session> = sessions::running();
-        let known: Vec<String> = running.iter().filter(|s| s.state != "unknown").map(|s| s.session.clone()).collect();
+        let known: Vec<String> = running.iter().map(|session| session.conversation.as_ref().unwrap_or(&session.session))
+            .filter(|session_id| agents::is_session_id(session_id)).cloned().collect();
         self.history.load_titles(&known, TITLES_PER_TICK);
         for session in &mut running {
             if session.state != "unknown" {
                 session.facts = sessions::statusline_facts(&session.session);
-                session.title = self.history.title(&session.session);
             }
+            session.title = self.history.title(session.conversation.as_deref().unwrap_or(&session.session));
             session.design = sessions::design_of(&session.session);
             session.role = sessions::role_of(&session.session);
         }
