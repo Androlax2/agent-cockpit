@@ -313,7 +313,8 @@ pub fn accept(connection: &mut Connection, sender: &VerifiedSession, action: &Ag
     let transaction = connection.transaction()?;
     let source = member(&transaction, &task_key, &sender.session_id)?.filter(|member| member.runtime == sender.runtime && member.agent == sender.agent)
         .ok_or_else(|| TeamError::new(ErrorCode::Unauthorized, "no approved task messaging link"))?;
-    let target = member(&transaction, &task_key, &message.recipient)?.ok_or_else(|| TeamError::new(ErrorCode::Unauthorized, "no approved task messaging link"))?;
+    let target = member(&transaction, &task_key, &message.recipient)?.ok_or_else(|| TeamError::new(ErrorCode::Unauthorized,
+        "the recipient is not a member of this task's team: use its session_id from `cockpit-team context`, not a role"))?;
     let handoff = match &message.handoff_id {
         Some(handoff_id) => {
             if source.role != "qa" || !matches!(target.role.as_str(), "developer" | "designer") {

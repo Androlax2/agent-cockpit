@@ -474,6 +474,47 @@ fn duplicate_replies_and_transport_retries_do_not_advance_rounds() {
     assert_eq!(ask(&mut connection, "q2", Some(&thread)).unwrap()["round"], 2);
 }
 
+/// The reply command a delivered message carries, parsed as the action it would send.
+fn reply_action(text: &str) -> AgentAction {
+    let start = text.find("printf '%s' '").expect("no reply command") + "printf '%s' '".len();
+    let end = start + text[start..].find("' | cockpit-team send").expect("no reply command end");
+    serde_json::from_str(&text[start..end]).unwrap()
+}
+
+#[test]
+fn a_delivered_notice_carries_a_reply_command_addressed_to_its_sender() {
+    // Live smoke test 2026-10-21: Claude could not guess the send JSON and addressed "developer".
+    let sandbox = Sandbox::new();
+    let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+    linked(&mut connection);
+    store::accept(&mut connection, &live()[1], &message("notice-1"), 3000).unwrap();
+    let dispatch = store::claim(&mut connection, &live()[0], "idle-1", 3000).unwrap().unwrap();
+    let AgentAction::Send { message } = reply_action(&cockpit::teams::envelope_text(&dispatch.envelope)) else { panic!("not a send") };
+    assert_eq!((message.recipient.as_str(), message.kind, message.task.task_id.as_str()), (DEVELOPER, MessageKind::Notice, task().task_id.as_str()));
+}
+
+#[test]
+fn a_delivered_clarification_offers_a_reply_in_its_thread() {
+    let sandbox = Sandbox::new();
+    let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+    linked(&mut connection);
+    let thread = ask(&mut connection, "q1", None).unwrap()["thread_id"].as_str().unwrap().to_string();
+    let dispatch = store::claim(&mut connection, &live()[0], "idle-1", 3000).unwrap().unwrap();
+    let AgentAction::Send { message } = reply_action(&cockpit::teams::envelope_text(&dispatch.envelope)) else { panic!("not a send") };
+    assert_eq!((message.kind, message.thread_id, message.recipient.as_str()), (MessageKind::Reply, Some(thread), DEVELOPER));
+}
+
+#[test]
+fn a_role_name_as_recipient_is_refused_with_what_to_use_instead() {
+    let sandbox = Sandbox::new();
+    let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+    linked(&mut connection);
+    let AgentAction::Send { mut message } = message("notice-1") else { unreachable!() };
+    message.recipient = "designer".into();
+    let refused = store::accept(&mut connection, &live()[1], &AgentAction::Send { message }, 3000).unwrap_err();
+    assert!(refused.message.contains("session_id"), "{}", refused.message);
+}
+
 #[test]
 fn a_delivered_clarification_names_its_thread_and_round() {
     let sandbox = Sandbox::new();

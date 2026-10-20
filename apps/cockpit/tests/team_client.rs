@@ -58,6 +58,19 @@ fn host_requests_use_the_host_only_socket() {
 }
 
 #[test]
+fn help_shows_send_examples_that_parse_as_actions() {
+    let sandbox = Sandbox::new();
+    let output = sandbox.command(env!("CARGO_BIN_EXE_cockpit-team"), &[]).arg("--help").output().unwrap();
+    assert!(output.status.success());
+    let help = String::from_utf8(output.stdout).unwrap();
+    let examples: Vec<&str> = help.lines().map(str::trim).filter(|line| line.starts_with("{\"action\"")).collect();
+    assert!(examples.len() >= 3, "{help}");
+    for example in examples {
+        serde_json::from_str::<cockpit::teams::AgentAction>(example).unwrap_or_else(|error| panic!("{example}: {error}"));
+    }
+}
+
+#[test]
 fn agent_cli_rejects_host_controls_before_transport() {
     let sandbox = Sandbox::new();
     let output = sandbox.command(env!("CARGO_BIN_EXE_cockpit-team"), &[]).arg("approve").output().unwrap();

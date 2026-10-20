@@ -4,6 +4,24 @@ use cockpit::teams::{AgentAction, client};
 use cockpit::approval::escape_hiding;
 use std::io::{self, Read};
 
+const HELP: &str = r#"cockpit-team context            your task, your role and your teammates' session ids
+cockpit-team <action> < action.json   propose, send, assess or handoff; the JSON's "action" names the same one
+
+Recipients are session ids from `context`, never role names. Use each submission_key once
+(letters, digits, - or _): resending the same one is a no-op. Task is the object `context` shows.
+
+A notice:
+  {"action":"send","message":{"task":{"project":"path:/home/theo/IdeaProjects/app","task_id":"5e1f7e57"},"submission_key":"note-1","recipient":"ses_3f2a9c0b1ffeQkTz8mWn4rJd2L","kind":"notice","body":"The frame is ready."}}
+A clarification (at most three rounds; answer with kind "reply" and the thread_id you got):
+  {"action":"send","message":{"task":{"project":"path:/home/theo/IdeaProjects/app","task_id":"5e1f7e57"},"submission_key":"ask-1","recipient":"aaaaaaaa-0000-4000-8000-000000000000","kind":"clarification","body":"Which frame is approved?"}}
+Whether the reply resolved your question:
+  {"action":"assess","task":{"project":"path:/home/theo/IdeaProjects/app","task_id":"5e1f7e57"},"thread_id":"<thread_id>","resolved":true}
+The Developer's finished work (requests QA once):
+  {"action":"handoff","handoff":{"task":{"project":"path:/home/theo/IdeaProjects/app","task_id":"5e1f7e57"},"submission_key":"handoff-1","branch":"feature/x","commit":"<full 40-character commit id>","checkout":"/home/theo/IdeaProjects/app","summary":"What changed.","tests":"cargo test: 57 passed","figcraft":[]}}
+
+Link requests require Theo's approval. Collaboration never grants tool or scope permissions.
+"#;
+
 fn action(name: &str) -> Result<AgentAction, String> {
     if name == "context" { return Ok(AgentAction::Context); }
     if name == "receive" { return Ok(AgentAction::Receive); }
@@ -59,7 +77,7 @@ fn main() {
         return;
     }
     if arguments == ["--help"] || arguments.is_empty() {
-        println!("cockpit-team context\ncockpit-team propose|send < tagged-action.json\nLink requests require Theo's approval. Collaboration never grants tool or scope permissions.");
+        print!("{HELP}");
         return;
     }
     if arguments.len() != 1 {
