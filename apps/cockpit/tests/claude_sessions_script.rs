@@ -37,6 +37,7 @@ case $1 in
   capture-pane) printf '%b' "$SHIM_PANE_TEXT" ;;
   list-clients) echo "/dev/pts/9" ;;
   kill-pane) if [[ -n $SHIM_PANE_GONE ]]; then echo "can't find pane: $3" >&2; exit 1; fi; [[ -f $roles ]] && sed -i "/^$3 /d" "$roles" ;;
+  if-shell) if grep -q "^${6##* } " "$roles"; then read -ra command <<< "$6"; exec "$0" "${command[@]}"; fi ;;
 esac
 "#;
 
@@ -749,6 +750,77 @@ fn viewing_a_session_with_no_approval_ever_asked_logs_no_error() {
     let result = manager.run(&["view", SESSION_A], &[]);
     assert_eq!(result.status.code(), Some(0));
     assert!(!stderr(&result).contains("claude-sessions-approval"), "{}", stderr(&result));
+}
+
+struct PrivateTmux<'a> {
+    manager: &'a Manager,
+    socket: String,
+}
+
+impl<'a> PrivateTmux<'a> {
+    fn new(manager: &'a Manager) -> Self {
+        Self { manager, socket: path_str(&manager.sandbox.root.join("tmux.sock")) }
+    }
+
+    fn run(&self, arguments: &[&str]) -> String {
+        let output = self.manager.sandbox.command("/usr/bin/tmux", &[])
+            .env_remove("TMUX").args(["-S", &self.socket, "-f", "/dev/null"])
+            .args(arguments).output().unwrap();
+        assert!(output.status.success(), "{arguments:?}: {}", stderr(&output));
+        stdout(&output).trim().to_string()
+    }
+}
+
+impl Drop for PrivateTmux<'_> {
+    fn drop(&mut self) {
+        let _ = self.manager.sandbox.command("/usr/bin/tmux", &[])
+            .args(["-S", &self.socket, "kill-server"]).output();
+    }
+}
+
+#[test]
+fn switching_sessions_tolerates_an_approval_disappearing_after_the_pane_snapshot() {
+    for disappears in [false, true] {
+        for replacement in [false, true] {
+            let manager = Manager::new();
+            let tmux = PrivateTmux::new(&manager);
+            let sidebar = tmux.run(&["new-session", "-d", "-s", "claude-manager", "-n", "manager", "-x", "240", "-y", "60", "-P", "-F", "#{pane_id}", "sleep 60"]);
+            tmux.run(&["set-option", "-g", "default-shell", "/bin/bash"]);
+            tmux.run(&["set-environment", "-g", "SHIM_SOCKET", &tmux.socket]);
+            tmux.run(&["set-option", "-p", "-t", &sidebar, "@role", "sidebar"]);
+            let viewer = tmux.run(&["split-window", "-h", "-t", &sidebar, "-P", "-F", "#{pane_id}", "sleep 60"]);
+            tmux.run(&["set-option", "-p", "-t", &viewer, "@role", "viewer"]);
+            let approval = tmux.run(&["split-window", "-v", "-t", &viewer, "-P", "-F", "#{pane_id}", "sleep 60"]);
+            tmux.run(&["set-option", "-p", "-t", &approval, "@role", "approval"]);
+            tmux.run(&["set-option", "-p", "-t", &approval, "@run", "aaaaaaaaaaaa"]);
+            let target = tmux.run(&["new-session", "-d", "-s", "claude-retry-test", "-P", "-F", "#{pane_id}", "sleep 60"]);
+            fs::write(&manager.snapshot, json!({"sessions": [
+                {"session": SESSION_A, "state": "waiting", "project": "proj-a", "tmux_pane": target}
+            ]}).to_string()).unwrap();
+            if replacement {
+                tmux.run(&["new-session", "-d", "-s", "claude-run-bbbbbbbbbbbb", "sleep 60"]);
+                fs::write(manager.runtime_file("claude-sessions-approval"), format!("bbbbbbbbbbbb {SESSION_A}\n")).unwrap();
+            }
+            manager.sandbox.shim("claude-fade", "exec sleep 60");
+            // Force the pane's natural exit between discovery and the batched view command.
+            manager.sandbox.shim("tmux", r#"
+if [[ $1 == respawn-pane && $SHIM_APPROVAL_DISAPPEARS == 1 ]]; then
+  /usr/bin/tmux -S "$SHIM_SOCKET" kill-pane -t "$SHIM_APPROVAL"
+fi
+exec /usr/bin/tmux -S "$SHIM_SOCKET" "$@"
+"#);
+            let output = manager.run(&["view", SESSION_A], &[
+                ("SHIM_SOCKET", &tmux.socket), ("SHIM_APPROVAL", &approval),
+                ("SHIM_APPROVAL_DISAPPEARS", if disappears { "1" } else { "0" }),
+            ]);
+            assert!(output.status.success(), "disappears={disappears}, replacement={replacement}: {}", stderr(&output));
+            assert!(stderr(&output).is_empty(), "disappears={disappears}, replacement={replacement}: {}", stderr(&output));
+            let panes = tmux.run(&["list-panes", "-t", "claude-manager:manager", "-F", "#{pane_id} #{@role} #{@run}"]);
+            assert!(!panes.lines().any(|line| line.starts_with(&format!("{approval} "))), "{panes}");
+            assert_eq!(panes.lines().any(|line| line.ends_with("approval bbbbbbbbbbbb")), replacement, "{panes}");
+            assert_eq!(fs::read_to_string(manager.runtime_file("claude-sessions.current")).unwrap().trim(), SESSION_A);
+        }
+    }
 }
 
 #[test]
@@ -1767,7 +1839,7 @@ fn switching_sessions_changes_the_approval_pane_in_the_same_tmux_command() {
         {"session": SESSION_B, "state": "waiting", "project": "proj-b", "cwd": path_str(&manager.project), "tmux_pane": "%5"}]}).to_string()).unwrap();
     manager.run(&["view", SESSION_B], &[]);
     let switch = manager.tmux_calls("respawn-pane").pop().expect("no switch");
-    assert!(switch.contains(" ; kill-pane -t "), "{switch}");
+    assert!(switch.contains(" ; if-shell ") && switch.contains("kill-pane -t "), "{switch}");
     manager.run(&["view", SESSION_A], &[]);
     let back = manager.tmux_calls("respawn-pane").pop().expect("no switch back");
     assert!(back.contains(" ; split-window ") && back.ends_with("attach-session -t =claude-run-0123456789ab"), "{back}");

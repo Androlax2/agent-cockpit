@@ -276,7 +276,9 @@ view_session() {
     local commands=(respawn-pane -k -t "$viewer" claude-fade env -u TMUX tmux attach-session -t "=$target")
     # The pane shows this session's own approval: another session's goes, this one's comes.
     if [[ -n $approval && ( -z $run || $approval_run != "$run" ) ]]; then
-        commands+=(";" kill-pane -t "$approval")
+        # It can exit after read_manager_panes. Test membership inside tmux's command queue;
+        # delimit IDs so %77 cannot match %775, and keep unrelated tmux errors visible.
+        commands+=(";" if-shell -t "$viewer" -F "#{m:*|$approval|*,#{P:|#{pane_id}|}}" "kill-pane -t $approval")
         approval=""
     fi
     if [[ -z $approval && -n $run ]]; then
