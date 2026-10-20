@@ -40,6 +40,8 @@ const CLAUDE_WORKSPACE: i64 = 6;
 const PANE_TAIL_LINES: usize = 20;
 const MAX_TEXT_LENGTH: usize = 300;
 const REQUEST_MAX_LENGTH: usize = 140;
+const FULL_REQUEST_MAX_LENGTH: usize = 16384;
+const DIALOG_CAPTURE_LINES: usize = 2000;
 const FINISHED_MESSAGE: &str = "Finished, waiting for you"; // the hook's Stop message
 const RUN_PHASES: [&str; 4] = ["asking", "running", "input", "done"];
 /// ask-to-run touches <id>.waiting every few seconds while it waits; this long without it, nobody
@@ -132,6 +134,7 @@ pub struct Report {
     pub state: Option<String>,
     pub cwd: Option<String>,
     pub task: Option<String>,
+    pub label: Option<String>,
     pub message: Option<String>,
     /// What the turn left in the repository, from the hook (it runs git inside the sandbox).
     pub outcome: Option<String>,
@@ -192,7 +195,7 @@ pub fn parse_session(raw: &str) -> Result<Report, String> {
             return Err(format!("session.{key} is not a count"));
         }
     }
-    for key in ["cwd", "task", "message", "outcome"] {
+    for key in ["cwd", "task", "message", "outcome", "label"] {
         if report.get(key).is_some_and(|value| !value.is_string()) {
             return Err(format!("session.{key} is not a string"));
         }
@@ -201,7 +204,7 @@ pub fn parse_session(raw: &str) -> Result<Report, String> {
     if !agents::is_session_id(&session) {
         return Err(format!("session is not an id of one of the agents {:?}", agents::names()));
     }
-    for key in ["session", "project", "cwd", "task", "message", "outcome"] {
+    for key in ["session", "project", "cwd", "task", "message", "outcome", "label"] {
         if let Some(text) = report.get(key).and_then(Value::as_str) {
             validate_text(key, text)?;
         }
@@ -214,6 +217,7 @@ pub fn parse_session(raw: &str) -> Result<Report, String> {
     Ok(Report {
         session, project: report["project"].as_str().unwrap().to_string(), state: text("state"), cwd: text("cwd"),
         task: text("task"), message: text("message"), outcome: text("outcome"), sticky: report.get("sticky").is_some_and(|s| s.as_bool().unwrap_or(!s.is_null())),
+        label: text("label").map(|label| cockpit::sessions::validate_task_label(&label)).transpose()?,
         terminal: report.get("terminal").and_then(Value::as_bool).unwrap_or(false),
         credits: report.get("credits").and_then(Value::as_bool),
         needs_input: report.get("needs_input").and_then(Value::as_bool),
@@ -280,6 +284,28 @@ pub fn permission_request(tail: &str) -> String {
     let request: String = block.iter().take(2).cloned().collect::<Vec<_>>().join(" · ")
         .chars().filter(|c| *c as u32 >= 32 && *c as u32 != 127).collect();
     request.replace("#{", "#\u{200b}{").replace("#(", "#\u{200b}(").chars().take(REQUEST_MAX_LENGTH).collect()
+}
+
+fn permission_request_full(tail: &str) -> String {
+    let lines: Vec<_> = tail.lines().collect();
+    let Some(ask) = (0..lines.len()).rev().find(|index| PROCEED_LINE.is_match(lines[*index])) else { return String::new() };
+    let edge = (0..ask).rev().find(|index| lines[*index].trim_start().starts_with(['╭', '┌']));
+    let mut request = if edge.is_none() { "Captured dialog context (the opening boundary was not found):\n".into() } else { String::new() };
+    for line in &lines[edge.map_or(0, |edge| edge + 1)..ask] {
+        let frame = line.trim_start();
+        let text = if let Some(content) = frame.strip_prefix('│') {
+            let content = content.trim_end().strip_suffix('│').unwrap_or(content.trim_end());
+            content.strip_prefix(' ').unwrap_or(content)
+        } else { line };
+        request.extend(text.chars().filter(|character| !character.is_control()));
+        request.push('\n');
+    }
+    request = request.replace("#{", "#\u{200b}{").replace("#(", "#\u{200b}(");
+    if request.chars().count() > FULL_REQUEST_MAX_LENGTH {
+        let note = "\n[Capture limit reached; inspect the session for the remaining request.]";
+        request = request.chars().take(FULL_REQUEST_MAX_LENGTH - note.chars().count()).collect::<String>() + note;
+    }
+    request.trim_end().into()
 }
 
 /// A timed khal event under way now (or starting within the minute). All-day events (a bare date)
@@ -971,12 +997,14 @@ pub struct Entry {
     pub project: String,
     pub cwd: String,
     pub task: String,
+    pub label: String,
     pub since: f64,
     pub started: f64,
     pub target: BTreeMap<String, String>,
     pub update: bool,
     pub request: String,
     pub detail: String,
+    pub full_request: String,
     pub outcome: String,
     pub terminal: bool,
     pub credits: bool,
@@ -1136,8 +1164,9 @@ impl Registry {
             entry.needs_input = needs_input;
             changed = true;
         }
-        if entry.needs_input && !entry.detail.is_empty() {
+        if entry.needs_input && (!entry.detail.is_empty() || !entry.full_request.is_empty()) {
             entry.detail.clear();
+            entry.full_request.clear();
             changed = true;
         }
         if let Some(state) = &report.state {
@@ -1152,14 +1181,21 @@ impl Registry {
                 changed = true;
             }
         }
+        if let Some(label) = report.label.as_ref().filter(|label| **label != entry.label) {
+            entry.label = label.clone();
+            changed = true;
+        }
         // What a session waiting on you asks: the hook's sentence, and the pane's detail once the
         // next reconcile reads the dialog. Gone with the wait.
         if entry.state == "needs-you" && report.message.as_ref().is_some_and(|m| !m.is_empty() && *m != entry.request) {
             entry.request = report.message.clone().unwrap();
+            entry.detail.clear();
+            entry.full_request.clear();
             changed = true;
-        } else if entry.state != "needs-you" && (!entry.request.is_empty() || !entry.detail.is_empty()) {
+        } else if entry.state != "needs-you" && (!entry.request.is_empty() || !entry.detail.is_empty() || !entry.full_request.is_empty()) {
             entry.request.clear();
             entry.detail.clear();
+            entry.full_request.clear();
             changed = true;
         }
         // The directory the session started in, and its project: later reports carry Claude's
@@ -1230,6 +1266,7 @@ impl Registry {
         self.drop_pane_predecessors(&session, tmux_pane.as_deref());
 
         match message {
+            None if report.label.is_some() => {}
             None => {
                 self.banners.drop_banner(&session);
                 self.held.remove(&session);
@@ -1365,9 +1402,9 @@ impl Registry {
     pub fn snapshot_rows(&self) -> Vec<Value> {
         let run_phases = self.runs.session_phases();
         let mut rows: Vec<Value> = self.sessions.iter().map(|(session, entry)| {
-            let mut row = json!({"session": session, "state": entry.state, "project": entry.project, "cwd": entry.cwd, "task": entry.task,
+            let mut row = json!({"session": session, "state": entry.state, "project": entry.project, "cwd": entry.cwd, "task": entry.task, "label": entry.label,
                                  "since": entry.since as i64, "started": entry.started as i64, "update": entry.update,
-                                 "request": entry.request, "detail": entry.detail, "outcome": entry.outcome, "needs_input": entry.needs_input,
+                                 "request": entry.request, "detail": entry.detail, "full_request": entry.full_request, "outcome": entry.outcome, "needs_input": entry.needs_input,
                                  "terminal": entry.terminal, "credits": entry.credits, "unpushed": entry.unpushed,
                                   "agents": entry.agents, "background": entry.background, "apps": entry.apps, "agent": entry.agent,
                                   "ask_to_run": run_phases.get(session).copied().unwrap_or("")});
@@ -1440,10 +1477,19 @@ impl Registry {
                 let since = row.get("since").and_then(Value::as_f64).unwrap_or_else(now);
                 let request = row.get("request").and_then(Value::as_str).unwrap_or("");
                 validate_text("request", request)?;
+                let full_request = row.get("full_request").and_then(Value::as_str).unwrap_or("");
+                if full_request.chars().count() > FULL_REQUEST_MAX_LENGTH || full_request.chars().any(|character| character.is_control() && character != '\n')
+                    || full_request.contains("#(") || full_request.contains("#{") {
+                    return Err("invalid full request in snapshot".into());
+                }
+                let label = row.get("label").and_then(Value::as_str).filter(|label| !label.is_empty())
+                    .map(cockpit::sessions::validate_task_label).transpose()?.unwrap_or_default();
                 Ok((session, Entry {
                     state, project: project.into(), cwd, task: row.get("task").and_then(Value::as_str).unwrap_or("").into(), since,
                     needs_input: row.get("needs_input").and_then(Value::as_bool).unwrap_or(false),
+                    label,
                     request: request.into(),
+                    full_request: full_request.into(),
                     started: row.get("started").and_then(Value::as_f64).unwrap_or(since),
                     target: target.into_iter().map(|(k, v)| (k, v.as_str().unwrap_or("").to_string())).collect(),
                     update: row.get("update").and_then(Value::as_bool).unwrap_or(false),
@@ -1535,7 +1581,8 @@ impl Registry {
         let sessions: Vec<(String, String)> = self.sessions.iter().filter(|(_, entry)| agents::get(&entry.agent).can(Feature::ScreenStates))
             .filter_map(|(id, entry)| entry.target.get("tmux_pane").map(|pane| (id.clone(), pane.clone()))).collect();
         for (session, pane) in sessions {
-            let tail = self.system.tmux(&["capture-pane", "-p", "-t", &pane, "-S", &format!("-{PANE_TAIL_LINES}")]).unwrap_or_default();
+            let capture_lines = if self.sessions.get(&session).is_some_and(|entry| entry.state == "needs-you" && !entry.needs_input) { DIALOG_CAPTURE_LINES } else { PANE_TAIL_LINES };
+            let tail = self.system.tmux(&["capture-pane", "-p", "-t", &pane, "-S", &format!("-{capture_lines}")]).unwrap_or_default();
             let update_ready = UPDATE_READY.is_match(&tail);
             let Some(entry) = self.sessions.get_mut(&session) else { continue };
             if update_ready != entry.update {
@@ -1551,8 +1598,10 @@ impl Registry {
             }
             let Some(entry) = self.sessions.get_mut(&session) else { continue };
             let detail = if entry.state == "needs-you" { permission_request(&tail) } else { String::new() };
-            if detail != entry.detail {
+            let full_request = if entry.state == "needs-you" { permission_request_full(&tail) } else { String::new() };
+            if detail != entry.detail || full_request != entry.full_request {
                 entry.detail = detail;
+                entry.full_request = full_request;
                 self.publish();
             }
         }

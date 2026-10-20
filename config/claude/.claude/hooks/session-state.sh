@@ -179,6 +179,7 @@ background_of() { # payload: "<agents> <other work>"
 
 state=
 task=
+label=
 message=
 outcome=
 unpushed=
@@ -197,6 +198,15 @@ credits=false
 agent=${CLAUDE_SESSIONS_AGENT:-}
 needs_input=
 case $event in
+    TaskLabel)
+        if ! label=$(jq -er '.label | select(type == "string")
+            | select((test("[\\x00-\\x1f\\x7f-\\x9f]") | not) and (contains("#(") | not) and (contains("#{") | not))
+            | gsub("\\s+"; " ") | sub("^ +"; "") | sub(" +$"; "")
+            | select(length <= 60 and (split(" ") | length >= 3 and length <= 6))' <<<"$payload"); then
+            echo "session-state.sh: task label must be 3–6 words, at most 60 characters, without controls or tmux formats" >&2
+            exit 2
+        fi
+        ;;
     NeedsInput)
         if ! jq -e '.message | type == "string" and (length > 0 and length <= 300) and test("\\S") and
             (test("[\\x00-\\x1f\\x7f]") | not) and (contains("#(") | not) and (contains("#{") | not)' <<<"$payload" >/dev/null; then
@@ -283,10 +293,10 @@ esac
 
 report=$(jq -cn \
     --arg session "$session" --arg state "$state" --arg project "$project" --arg cwd "$cwd" \
-    --arg task "$task" --arg message "$message" --arg outcome "$outcome" --argjson sticky "$sticky" --argjson terminal "$terminal" --argjson credits "$credits" --arg unpushed "$unpushed" --arg agents "$agents" --arg background "$background" --arg apps "$(craft_apps)" --arg agent "$agent" \
+    --arg task "$task" --arg label "$label" --arg message "$message" --arg outcome "$outcome" --argjson sticky "$sticky" --argjson terminal "$terminal" --argjson credits "$credits" --arg unpushed "$unpushed" --arg agents "$agents" --arg background "$background" --arg apps "$(craft_apps)" --arg agent "$agent" \
     --arg needs_input "$needs_input" --arg kitty_pid "${KITTY_PID:-}" --arg kitty_window "${KITTY_WINDOW_ID:-}" \
     --arg kitty_listen "${KITTY_LISTEN_ON:-}" --arg tmux_pane "${TMUX_PANE:-}" \
-    '{$session, $state, $project, $cwd, $task, $message, $outcome, $sticky, $terminal,
+    '{$session, $state, $project, $cwd, $task, $label, $message, $outcome, $sticky, $terminal,
       $kitty_pid, $kitty_window, $kitty_listen, $tmux_pane}
      | with_entries(select(.value != "" and .value != false))
      | if $unpushed == "" then . else .unpushed = ($unpushed | tonumber) end
@@ -311,26 +321,35 @@ hook_log() { # message
 send_to_osd() {
     [[ -S $report_socket ]] || return 1
     local request=$1 reply
-    [[ $event != NeedsInput ]] || request="session-request $report"
+    case $event in NeedsInput | TaskLabel) request="session-request $report" ;; esac
     if ! reply=$(printf '%s\n' "$request" | timeout 1 socat -t1 - "UNIX-CONNECT:$report_socket" 2>/dev/null); then
         echo "session-state.sh: osd report socket not answering, is osd running?" >&2
         return 1
     fi
-    if [[ $event == NeedsInput && $reply != ok ]]; then
-        echo "session-state.sh: osd did not accept the question: ${reply:-no acknowledgement}" >&2
-        return 1
-    fi
+    case $event in
+        NeedsInput | TaskLabel)
+            if [[ $reply != ok ]]; then
+                echo "session-state.sh: osd did not accept $event: ${reply:-no acknowledgement}" >&2
+                return 1
+            fi
+            ;;
+    esac
 }
 
 if send_to_osd "session $report"; then
     hook_log "sent to the osd daemon"
     exit 0
 fi
-hook_log "osd daemon not reading $report_socket: falling back to a toast"
+hook_log "osd daemon not reading $report_socket"
 if [[ $event == NeedsInput ]]; then
     echo "session-state.sh: cannot flag the question: osd is not reading $report_socket" >&2
     exit 1
 fi
+if [[ $event == TaskLabel ]]; then
+    echo "session-state.sh: cannot publish the task label: osd is not reading $report_socket" >&2
+    exit 1
+fi
+hook_log "falling back to a toast"
 
 # Fallback: swaync toasts, closed again once the session reports without a message.
 if [[ -n $message ]]; then

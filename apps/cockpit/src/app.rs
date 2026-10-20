@@ -277,6 +277,65 @@ pub enum Key {
     FocusLost,
 }
 
+/// Keep the inspected text stable even if the source session changes or disappears.
+struct SessionDetails {
+    text: String,
+    scroll: usize,
+}
+
+impl SessionDetails {
+    fn draw(&mut self, buffer: &mut Buffer) {
+        let (width, height) = (buffer.area.width, buffer.area.height);
+        if width < 8 || height < 6 { return; }
+        let top = HEADER_LINES;
+        let bottom = height - 2;
+        let inner = width.saturating_sub(4) as usize;
+        let body_width = inner.saturating_sub(2).max(2);
+        let body_height = (bottom.saturating_sub(top + 3) as usize).max(1);
+        let wrapped = wrap_detail_text(&self.text, body_width);
+        self.scroll = self.scroll.min(wrapped.len().saturating_sub(body_height));
+        for row in top..=bottom {
+            put(buffer, row, 1, &" ".repeat((width - 2) as usize), on(FG, BLACK));
+            put(buffer, row, 1, "│", style(BLUE));
+            put(buffer, row, width - 2, "│", style(BLUE));
+        }
+        put(buffer, top, 1, &format!("┌{}┐", "─".repeat(inner)), style(BLUE));
+        put(buffer, top, 3, &fit("Session details", inner.saturating_sub(2)), bold(BLUE));
+        for (offset, line) in wrapped.iter().skip(self.scroll).take(body_height).enumerate() {
+            put(buffer, top + 1 + offset as u16, 3, line, style(FG));
+        }
+        let progress = format!("{}–{} / {}", self.scroll + 1, (self.scroll + body_height).min(wrapped.len()), wrapped.len());
+        if bottom - 2 > top + body_height as u16 {
+            put(buffer, bottom - 2, 3, &fit(&progress, body_width), dim(FG_DARK));
+        }
+        put(buffer, bottom - 1, 3, &fit("↑↓ scroll  g/G top/end  Esc close", body_width), dim(FG_DARK));
+        put(buffer, bottom, 1, &format!("└{}┘", "─".repeat(inner)), style(BLUE));
+    }
+}
+
+fn wrap_detail_text(text: &str, width: usize) -> Vec<String> {
+    let mut wrapped = Vec::new();
+    for paragraph in text.split('\n') {
+        if paragraph.is_empty() {
+            wrapped.push(String::new());
+            continue;
+        }
+        for line in approval::wrap(paragraph, width) {
+            let mut piece = String::new();
+            for character in line.chars() {
+                let mut candidate = piece.clone();
+                candidate.push(character);
+                if !piece.is_empty() && width_of(&candidate) > width {
+                    wrapped.push(std::mem::take(&mut piece));
+                }
+                piece.push(character);
+            }
+            wrapped.push(piece);
+        }
+    }
+    wrapped
+}
+
 /// The effort picker over a session card. Choosing another level restarts the session on it.
 pub struct EffortMenu {
     pub(crate) session: Session,
@@ -627,6 +686,7 @@ pub struct App {
     pub(crate) exiting: Vec<Exiting>,
     pub(crate) labelled: (String, String),
     pub(crate) menu: Option<EffortMenu>,
+    session_details: Option<SessionDetails>,
     pub(crate) settings_menu: Option<SettingsMenu>,
     pub(crate) pairing: Option<Pairing>,
     pub restore: Vec<Restorable>,
@@ -699,7 +759,7 @@ impl App {
             history: History::default(), view: ViewState::load(), usage: Refresher::new(), alerts: BudgetAlerts::new(util::send_notice),
             costs: Costs::default(), reviews: Reviews::default(), todos: TodoList::load(), errors: ErrorReporter::new(),
             claude_status: ProviderStatus::default(), codex_status: ProviderStatus::new(Provider::Codex), panels: Default::default(), focus: 1, previous_panel: 1,
-            help_open: false, has_pane_focus: true, message: String::new(), exiting: Vec::new(), labelled: Default::default(), menu: None, settings_menu: None, pairing: None, restore: Vec::new(),
+            help_open: false, has_pane_focus: true, message: String::new(), exiting: Vec::new(), labelled: Default::default(), menu: None, session_details: None, settings_menu: None, pairing: None, restore: Vec::new(),
             held: Vec::new(), held_checked: 0.0, queue_checked: 0.0, gaming: util::gaming, restore_checked: 0.0, start_files: Vec::new(),
             width: DEFAULT_COLUMN_WIDTH, sessions: Vec::new(), windows: Vec::new(), quota_rows: Vec::new(), review_rows: Vec::new(), todo_entries: Vec::new(),
             session_task_titles: HashMap::new(), session_branches: HashMap::new(),
@@ -1210,10 +1270,11 @@ impl App {
             }
             let task_title = self.session_task_title(session, branch);
             self.session_task_titles.insert(session.session.clone(), task_title.clone());
+            let display_title = self.session_display_title(session);
             let segments = if grouped {
-                [rail.clone(), vec![segment(2, glyph, tint), segment(4, &task_title, bold(FG))]].concat()
+                [rail.clone(), vec![segment(2, glyph, tint), segment(4, display_title, bold(FG))]].concat()
             } else {
-                vec![segment(0, glyph, tint), segment(2, &task_title, bold(FG))]
+                vec![segment(0, glyph, tint), segment(2, display_title, bold(FG))]
             };
             lines.push(Line { segments, right: vec![part(sessions::activity_label(session), tint)], item: Some(index), accent });
             lines.push(Line { segments: [rail, vec![segment(2 + indent, sessions::activity_text(session), if needs_attention { style(YELLOW) } else { dim(FG_DARK) })]].concat(), right: vec![], item: Some(index), accent });
@@ -1257,6 +1318,13 @@ impl App {
             return title;
         }
         if branch.is_empty() { session.project.clone() } else { branch.into() }
+    }
+
+    fn session_display_title<'a>(&'a self, session: &'a Session) -> &'a str {
+        if !session.label.is_empty() {
+            return &session.label;
+        }
+        self.session_task_titles.get(&session.session).map(String::as_str).unwrap_or(&session.project)
     }
 
     fn selected_session_detail_lines(&self) -> Vec<Line> {
@@ -1336,7 +1404,7 @@ impl App {
             right.push(part(facts.context.map(|c| format!("{}%", c.round())).unwrap_or_default(), bold(context_color(facts.context))));
         }
         right.retain(|p| !p.text.is_empty());
-        lines.push(Line::new(vec![segment(0, format!("Selected: {task_title}"), bold(BLUE))]));
+        lines.push(Line { segments: vec![segment(0, format!("Selected: {task_title}"), bold(BLUE))], right: vec![Part { text: "i Full details".into(), style: style(CYAN), action: Some("session-details") }], ..Line::default() });
         let location = if branch.is_empty() { session.project.clone() } else { format!("{} / {branch}", session.project) };
         lines.push(Line { segments: vec![segment(0, location, dim(FG_DARK))], right, ..Line::default() });
         if let Some(design) = &session.design {
@@ -1349,7 +1417,15 @@ impl App {
         } else {
             String::new()
         };
-        lines.push(Line { segments: vec![segment(0, extra, if needs_attention { style(YELLOW) } else { dim(FG_DARK) })], right: badges, ..Line::default() });
+        let wrapped = wrap_detail_text(&extra, (self.width as usize).saturating_sub(5).max(2));
+        for index in 0..2 {
+            let mut text = wrapped.get(index).cloned().unwrap_or_default();
+            if index == 1 && wrapped.len() > 2 {
+                text = format!("{}…", fit(&text, (self.width as usize).saturating_sub(6)));
+            }
+            lines.push(Line::new(vec![segment(0, text, if needs_attention { style(YELLOW) } else { dim(FG_DARK) })]));
+        }
+        lines.push(Line { right: badges, ..Line::default() });
         lines
     }
 
@@ -1381,7 +1457,7 @@ impl App {
         let entries: Vec<String> = self.sessions.iter().map(|session| {
             let title = self.session_task_titles.get(&session.session).map(String::as_str).unwrap_or(&session.project);
             let branch = self.session_branches.get(&session.session).map(String::as_str).unwrap_or("");
-            format!("{}\t{}\t{title}\t{branch}", session.session, util::collapse(&session.project))
+            format!("{}\t{}\t{}\t{title}\t{branch}", session.session, util::collapse(&session.project), self.session_display_title(session))
         }).collect();
         if let Some(chosen) = screen.outside(&mut || fzf("find session> ", &entries, &["--delimiter", "\t", "--with-nth", "2.."])) {
             if let Some(id) = chosen.split('\t').next() {
@@ -1391,6 +1467,31 @@ impl App {
             }
         }
         String::new()
+    }
+
+    fn open_session_details(&mut self) {
+        let Some(session) = self.sessions.get(self.panels[1].selected) else { return };
+        let title = self.session_task_titles.get(&session.session).map(String::as_str).unwrap_or(&session.project);
+        let branch = self.session_branches.get(&session.session).map(String::as_str).unwrap_or("");
+        let mut text = format!("Task: {}\nOriginal title: {title}\nProject: {} / {branch}\nActivity: {}\n\n",
+                               self.session_display_title(session), session.project, sessions::activity_label(session));
+        if session.needs_attention() {
+            let request = if !session.full_request.is_empty() { session.full_request.clone() }
+                else if !session.request.is_empty() { session.request.clone() }
+                else { sessions::activity_text(session) };
+            text += &format!("Request:\n{request}\n\n");
+        }
+        if !session.outcome.is_empty() {
+            text += &format!("Last turn:\n{}\n\n", session.outcome);
+        }
+        for line in self.selected_session_detail_lines() {
+            for part in line.right {
+                if part.action != Some("session-details") && !part.text.is_empty() {
+                    text += &format!("{}\n", part.text);
+                }
+            }
+        }
+        self.session_details = Some(SessionDetails { text, scroll: 0 });
     }
 
     /// The selected session's keys, most pressing first: what its card asks for (an approval, a
@@ -1415,7 +1516,7 @@ impl App {
         } else if selected.unpushed > 0 {
             hints.push(("U", "push"));
         }
-        hints.extend([("⏎", "open"), ("n", "Next needing me"), ("/", "find"), ("e", "effort"), ("g", "git"), ("+", "another"), ("x", "exit")]);
+        hints.extend([("⏎", "open"), ("n", "Next needing me"), ("/", "find"), ("i", "details"), ("e", "effort"), ("g", "git"), ("+", "another"), ("x", "exit")]);
         if !selected.session.is_empty() && selected.is_external() {
             hints.retain(|(key, _)| !session_key_requires_terminal(if *key == "⏎" { Key::Enter } else { Key::Char(key.chars().next().unwrap()) }));
             if sessions::next_attention_index(&self.sessions, self.panels[1].selected).is_none() {
@@ -1432,6 +1533,7 @@ impl App {
     fn sessions_help() -> Vec<(&'static str, &'static str)> {
         vec![("⏎", "show the session and move the cursor into it"), ("n", "Next needing me: preview the next approval, input request or answer needed"),
              ("/", "find a session by project or task without opening it or changing list order"),
+             ("i", "read the complete task, request and metadata; arrows scroll and Escape closes"),
              ("x", "exit the session: Ctrl-C twice, then killed if it lingers"), ("r", "restart in place: same conversation, new process"),
              ("⌘R", "restart the sessions started before a change they lack (badge ⟳ restart), when they wait at their prompt; busy ones are named and left alone"),
              ("p", "pin on top"),
@@ -1460,6 +1562,7 @@ impl App {
         match key {
             Key::Enter => session.map(|s| self.manager_async(&["open", &s.session])).unwrap_or_default(),
             Key::Char('/') => self.find_session(screen),
+            Key::Char('i') => { self.open_session_details(); String::new() }
             Key::Char('n') => match sessions::next_attention_index(&self.sessions, self.panels[1].selected) {
                 None => "nothing needs you".into(),
                 Some(index) => {
@@ -2286,6 +2389,11 @@ impl App {
         if self.help_open {
             self.draw_help(buffer);
         }
+        if let Some(details) = self.session_details.as_mut() {
+            details.draw(buffer);
+            self.hit_lines.clear();
+            self.hit_actions.clear();
+        }
         if !self.has_pane_focus {
             fade(buffer);
         }
@@ -2301,7 +2409,7 @@ impl App {
         let subtitle_text = self.subtitle(index);
         let panel = &mut self.panels[index];
         let fixed_top_height = panel.fixed_top.len().min(if inner_height >= 4 { 2 } else if inner_height >= 2 { 1 } else { 0 });
-        let fixed_bottom_height = if inner_height >= fixed_top_height + 5 { panel.fixed_bottom.len() } else { 0 };
+        let fixed_bottom_height = if inner_height >= fixed_top_height + panel.fixed_bottom.len() + 2 { panel.fixed_bottom.len() } else { 0 };
         let scrolling_height = inner_height.saturating_sub(fixed_top_height + fixed_bottom_height);
         panel.keep_selected_visible(scrolling_height);
         let inner = (width - 3) as usize;
@@ -2518,10 +2626,10 @@ impl App {
     }
 
     fn handle_click(&mut self, x: u16, y: u16, double: bool, screen: &mut dyn Screen) {
-        if let Some((start, end, "next-attention")) = self.hit_actions.get(&y).copied() {
+        if let Some((start, end, action @ ("next-attention" | "session-details"))) = self.hit_actions.get(&y).copied() {
             if (start..end).contains(&x) {
                 self.focus_panel(1);
-                self.message = self.handle_sessions(Key::Char('n'), screen);
+                self.message = self.handle_sessions(Key::Char(if action == "next-attention" { 'n' } else { 'i' }), screen);
                 return;
             }
         }
@@ -2564,6 +2672,17 @@ impl App {
             return;
         }
         self.message.clear();
+        if let Some(details) = self.session_details.as_mut() {
+            match key {
+                Key::Down | Key::Char('j') => details.scroll = details.scroll.saturating_add(1),
+                Key::Up | Key::Char('k') => details.scroll = details.scroll.saturating_sub(1),
+                Key::Char('g') => details.scroll = 0,
+                Key::Char('G') => details.scroll = usize::MAX,
+                Key::Esc | Key::Enter | Key::Char('i') => self.session_details = None,
+                _ => {}
+            }
+            return;
+        }
         if self.menu.is_some() {
             self.message = self.handle_menu(key, screen);
             return;

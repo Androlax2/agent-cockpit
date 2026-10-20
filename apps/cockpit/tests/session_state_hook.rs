@@ -22,18 +22,23 @@ struct HookTest {
 impl HookTest {
     /// A stand-in for the daemon's report socket: every line any connection sends is kept.
     fn new() -> HookTest {
+        Self::with_reply("ok")
+    }
+
+    fn with_reply(reply: &str) -> HookTest {
         let sandbox = Sandbox::new();
         let socket = sandbox.runtime.join("claude-report/osd-report.sock");
         std::fs::create_dir_all(socket.parent().unwrap()).unwrap();
         let listener = UnixListener::bind(&socket).unwrap();
         let lines = Arc::new(Mutex::new(Vec::new()));
         let collected = lines.clone();
+        let reply = format!("{reply}\n");
         std::thread::spawn(move || {
             for mut stream in listener.incoming().flatten() {
                 let mut text = String::new();
                 let _ = stream.read_to_string(&mut text);
                 if text.starts_with("session-request ") {
-                    let _ = stream.write_all(b"ok\n");
+                    let _ = stream.write_all(reply.as_bytes());
                 }
                 collected.lock().unwrap().extend(text.lines().map(str::to_string));
             }
@@ -104,6 +109,63 @@ fn events_map_to_states() {
     assert_eq!(stickies, cases.iter().map(|(_, _, sticky)| *sticky).collect::<Vec<_>>());
     assert_eq!(lines[1]["task"], "add the chip");
     assert_eq!(lines[0]["tmux_pane"], "%3");
+}
+
+#[test]
+fn task_label_wrapper_reports_only_session_metadata_for_both_agents() {
+    for session in [SESSION_A, OPENCODE_SESSION] {
+        let mut test = HookTest::new();
+        let output = test.sandbox.run("bash", &[bin().join("claude-session-label").to_str().unwrap(), "  Free   disk space  "], &[("CLAUDE_CODE_SESSION_ID", session)]);
+        assert!(output.status.success(), "{}", stderr(&output));
+        let report = test.received().remove(0);
+        assert_eq!(report["label"], "Free disk space");
+        assert_eq!(report["session"], session);
+        for field in ["state", "message", "task", "needs_input"] {
+            assert!(report.get(field).is_none(), "label overwrites {field}: {report}");
+        }
+    }
+}
+
+#[test]
+fn task_label_reports_reject_invalid_names_without_sending_anything() {
+    let mut test = HookTest::new();
+    for label in ["Two words".into(), "one two three four five six seven".into(), "a".repeat(57) + " b c", "Free\ndisk space".into(), "Read #(id) output".into()] {
+        let output = test.run_hook(with_session(json!({"hook_event_name": "TaskLabel", "label": label}), "/x/proj"), &[]);
+        assert_eq!(output.status.code(), Some(2));
+    }
+    assert!(test.received().is_empty());
+}
+
+#[test]
+fn task_label_reporting_does_not_clear_a_pending_question() {
+    let mut test = HookTest::new();
+    for payload in [json!({"hook_event_name": "NeedsInput", "message": "Which option?"}),
+                    json!({"hook_event_name": "TaskLabel", "label": "Fix session navigation"}),
+                    json!({"hook_event_name": "Stop"})] {
+        let output = test.run_hook(with_session(payload, "/x/proj"), &[]);
+        assert!(output.status.success(), "{}", stderr(&output));
+    }
+    let reports = test.received();
+    assert_eq!(reports[1]["label"], "Fix session navigation");
+    assert!(reports[1].get("needs_input").is_none());
+    assert_eq!(reports[2]["needs_input"], true);
+    assert_eq!(reports[2]["message"], "Which option?");
+}
+
+#[test]
+fn task_label_rejections_fail_without_touching_existing_question_toasts() {
+    for daemon_missing in [false, true] {
+        let test = HookTest::with_reply("refused: no session target");
+        if daemon_missing { fs::remove_file(&test.socket).unwrap(); }
+        let toast = test.sandbox.home.join(format!(".cache/claude/toast-{SESSION_A}.id"));
+        fs::create_dir_all(toast.parent().unwrap()).unwrap();
+        fs::write(&toast, "42").unwrap();
+        let output = test.sandbox.run("bash", &[bin().join("claude-session-label").to_str().unwrap(), "Fix session navigation"], &[("CLAUDE_CODE_SESSION_ID", SESSION_A)]);
+        assert!(!output.status.success(), "label publication falsely succeeded");
+        assert_eq!(fs::read_to_string(&toast).unwrap(), "42");
+        assert!(test.sandbox.calls("gdbus").is_empty());
+        assert!(test.sandbox.calls("notify-send").is_empty());
+    }
 }
 
 #[test]

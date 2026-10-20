@@ -301,6 +301,26 @@ fn the_permission_request_is_read_from_the_dialog_above_the_question() {
 }
 
 #[test]
+fn native_permission_full_request_is_preserved_beyond_the_card_summary() {
+    let mut bench = Bench::new();
+    let lines: String = (0..35).map(|index| format!("│   command-part-{index}\n")).collect();
+    let dialog = format!("unrelated history\n╭─────────────────╮\n│ Bash command\n{lines}│ ENDOFCOMMAND\n│ Do you want to proceed?\n│ ❯ 1. Yes\n╰─────────────────╯\n");
+    bench.world.borrow_mut().pane_tails.insert("%5".into(), dialog);
+    bench.world.borrow_mut().claude_panes.insert("%5".into());
+    bench.report(SESSION_A, json!({"state": "needs-you", "message": "Permission needed", "tmux_pane": "%5"}));
+    bench.registry.reconcile_with_panes();
+    let captured = bench.snapshot().remove(0);
+    let complete = captured["full_request"].as_str().expect("complete native dialog missing");
+    assert!(complete.contains("command-part-0") && complete.contains("command-part-34"));
+    assert!(complete.contains("ENDOFCOMMAND") && !complete.contains("unrelated history"));
+    assert!(captured["detail"].as_str().unwrap().chars().count() <= 140);
+    let restored = Registry::new(Box::new(FakeSystem(bench.world.clone())), Box::new(FakeBanners(bench.shown.clone())));
+    assert_eq!(restored.snapshot_rows()[0]["full_request"], captured["full_request"]);
+    bench.report(SESSION_A, json!({"state": "working"}));
+    assert_eq!(bench.snapshot()[0]["full_request"], "");
+}
+
+#[test]
 fn an_unboxed_dialog_gives_the_two_lines_above_it() {
     assert_eq!(permission_request("done\n Edit file\n src/app.ts\n Do you want to proceed?\n ❯ 1. Yes\n"), "done · Edit file");
 }
@@ -316,6 +336,61 @@ fn a_request_cannot_carry_a_tmux_format() {
 }
 
 // ---- Reports ----
+
+#[test]
+fn label_updates_publish_without_changing_activity_or_pending_questions() {
+    let mut bench = Bench::new();
+    bench.report(SESSION_A, json!({"state": "needs-you", "task": "Original user request", "message": "Which option?", "needs_input": true, "sticky": true}));
+    let before = bench.snapshot().remove(0);
+    let dropped = bench.dropped();
+    bench.report(SESSION_A, json!({"label": "Fix session navigation"}));
+    let after = bench.snapshot().remove(0);
+    assert_eq!(after["label"], "Fix session navigation");
+    for key in ["state", "since", "task", "request", "needs_input"] {
+        assert_eq!(after[key], before[key], "metadata changed {key}");
+    }
+    assert_eq!(bench.dropped(), dropped, "label metadata must not dismiss a question banner");
+}
+
+#[test]
+fn labels_survive_reports_without_labels_and_daemon_restarts() {
+    let mut bench = Bench::new();
+    bench.report(SESSION_A, json!({"state": "working", "label": "Free disk space"}));
+    bench.report(SESSION_A, json!({"state": "waiting"}));
+    assert_eq!(bench.snapshot()[0]["label"], "Free disk space");
+    let restored = Registry::new(Box::new(FakeSystem(bench.world.clone())), Box::new(FakeBanners(bench.shown.clone())));
+    assert_eq!(restored.snapshot_rows()[0]["label"], "Free disk space");
+}
+
+#[test]
+fn label_reports_reject_malformed_or_unsafe_names() {
+    for label in [json!(false), json!(null), json!(""), json!("Two words"), json!("one two three four five six seven"),
+                  json!("a".repeat(57) + " b c"), json!("Free\ndisk space"), json!("Free\u{1b} disk space"), json!("Read #(id) output"), json!("Read #{pane} output")] {
+        assert!(parse_session(&json!({"session": SESSION_A, "project": "p", "label": label}).to_string()).is_err(), "accepted {label}");
+    }
+}
+
+#[test]
+fn labels_are_normalized_before_they_are_published() {
+    let mut bench = Bench::new();
+    bench.report(SESSION_A, json!({"label": "  Free   disk space  "}));
+    assert_eq!(bench.snapshot()[0]["label"], "Free disk space");
+}
+
+#[test]
+fn label_reports_cannot_rename_another_panes_session() {
+    let mut bench = Bench::new();
+    {
+        let mut world = bench.world.borrow_mut();
+        world.sender_targets.insert(500, target(&[("tmux_pane", "%1")]));
+        world.sender_targets.insert(600, target(&[("tmux_pane", "%9")]));
+        world.claude_panes = set(&["%1", "%9"]);
+    }
+    let report = |label| parse_session(&json!({"session": SESSION_A, "project": "p", "label": label}).to_string()).unwrap();
+    bench.registry.report_from(report("Fix session navigation"), 500).unwrap();
+    assert!(bench.registry.report_from(report("Replace another task"), 600).is_err());
+    assert_eq!(bench.snapshot()[0]["label"], "Fix session navigation");
+}
 
 #[test]
 fn a_full_report_is_accepted() {

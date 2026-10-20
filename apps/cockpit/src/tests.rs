@@ -887,6 +887,46 @@ fn native_titles_identify_tasks_before_long_todo_prompts() {
 }
 
 #[test]
+fn short_labels_keep_the_original_task_title_in_details_and_search() {
+    let fixture = Fixture::new();
+    let original = "Finding disk space hogs and freeing storage without removing project data";
+    opencode_database_with(&fixture, &[(OPENCODE_SESSION, "/r/dotfiles", original, None, 2_000_000, None)]);
+    let mut row = opencode_session("working", "dotfiles", 1);
+    row["label"] = json!("Free disk space");
+    row["task"] = json!("Yes");
+    fixture.snapshot(json!([row]));
+    fixture.shim("fzf", &format!("cat > '{}'", fixture.path("picker-input").display()));
+    let mut app = fixture.app();
+    let first = app.panels[1].lines.iter().find(|line| line.item == Some(0)).unwrap();
+    assert!(first.texts().contains("Free disk space"));
+    assert!(!first.texts().contains("Finding disk"));
+    assert_eq!(app.session_task_titles[OPENCODE_SESSION], original);
+    assert!(app.panels[1].fixed_bottom.iter().any(|line| line.texts().contains(original)));
+    app.handle(Key::Char('/'), &mut FakeScreen::default());
+    let search = fs::read_to_string(fixture.path("picker-input")).unwrap();
+    assert!(search.contains("Free disk space") && search.contains(original));
+}
+
+#[test]
+fn generic_activity_filler_is_absent_without_shifting_session_rows() {
+    let fixture = Fixture::new();
+    let mut expected_rows = None;
+    for state in ["working", "waiting", "needs-you", "working"] {
+        let mut row = session(SESSION_A, state, "dotfiles", "/r/dotfiles", 1);
+        row["label"] = json!("Fix session navigation");
+        row["request"] = json!("Which layout do you prefer?");
+        fixture.snapshot(json!([row, session(SESSION_B, "working", "other", "/r/other", 2)]));
+        let app = fixture.app();
+        let content = texts(&app, 1).join("\n");
+        assert!(!content.contains("The agent is working") && !content.contains("Ready for your next instruction"));
+        let positions: Vec<_> = app.panels[1].lines.iter().enumerate().filter_map(|(position, line)| line.item.map(|item| (position, item))).collect();
+        if let Some(expected) = &expected_rows { assert_eq!(&positions, expected); } else { expected_rows = Some(positions); }
+        assert!(app.panels[1].lines.iter().find(|line| line.item == Some(0)).unwrap().texts().contains("Fix session navigation"));
+        if state == "needs-you" { assert!(content.contains("Which layout do you prefer?")); }
+    }
+}
+
+#[test]
 fn compact_session_cards_separate_task_identity_from_reported_activity() {
     let fixture = Fixture::new();
     let mut row = session(SESSION_A, "working", "dotfiles", "/r/dotfiles", 1);
@@ -897,7 +937,7 @@ fn compact_session_cards_separate_task_identity_from_reported_activity() {
     let rows: Vec<_> = app.panels[1].lines.iter().filter(|line| line.item == Some(1)).collect();
     assert_eq!(rows.len(), 2);
     assert!(rows[0].texts().contains("other"));
-    assert!(rows[1].texts().contains("Ready for your next instruction"));
+    assert!(rows[1].texts().is_empty(), "ordinary ready sessions reserve a quiet second row");
     assert!(rows[0].right.iter().all(|part| part.text == "Ready"));
     assert!(!texts(&app, 1).iter().any(|line| line.contains("Proceed")));
 }
@@ -1099,6 +1139,109 @@ fn keypress_redraw_uses_cached_session_branches() {
     assert_eq!(app.session_task_titles[SESSION_A], "initial-branch");
     app.build();
     assert_eq!(app.session_task_titles[SESSION_A], "changed-branch");
+}
+
+#[test]
+fn request_detail_popup_reveals_the_complete_request_without_session_actions() {
+    let fixture = Fixture::new();
+    let request = format!("Choose the final layout: {} FINAL REQUEST MARKER", (0..90).map(|index| format!("requirement{index}")).collect::<Vec<_>>().join(" "));
+    let mut row = session(SESSION_A, "needs-you", "dotfiles", "/r/dotfiles", 1);
+    row["request"] = json!(request);
+    fixture.snapshot(json!([row, session(SESSION_B, "working", "other", "/r/other", 2)]));
+    for width in [40, 80] {
+        let mut app = fixture.app();
+        app.handle(Key::Char('i'), &mut FakeScreen::default());
+        let beginning = buffer_rows(&render(&mut app, width, 16)).join("\n");
+        assert!(beginning.contains("Session details"), "details did not open: {beginning}");
+        let mut seen = String::new();
+        for _ in 0..160 {
+            app.handle(Key::Down, &mut FakeScreen::default());
+            seen += &buffer_rows(&render(&mut app, width, 16)).join("\n");
+        }
+        for word in ["FINAL", "REQUEST", "MARKER"] {
+            assert!(seen.contains(word), "request tail is missing {word}");
+        }
+        assert_eq!(app.sessions[app.panels[1].selected].session, SESSION_A);
+        app.handle(Key::Enter, &mut FakeScreen::default());
+        assert!(!buffer_rows(&render(&mut app, width, 16)).join("\n").contains("Session details"));
+    }
+    assert!(fixture.calls("claude-sessions").is_empty());
+}
+
+#[test]
+fn request_detail_has_wrapped_space_instead_of_sharing_the_badge_row() {
+    let fixture = Fixture::new();
+    let request = "Should I prepare the design handoff and export the tokens without changing any product code?";
+    let mut row = session(SESSION_A, "needs-you", "dotfiles", "/r/dotfiles", 1);
+    row["request"] = json!(request);
+    row["unpushed"] = json!(12);
+    fixture.snapshot(json!([row]));
+    let mut app = fixture.app();
+    render(&mut app, 60, 40);
+    let request_lines: Vec<_> = app.panels[1].fixed_bottom.iter().filter(|line| line.texts().contains("Should I") || line.texts().contains("product code")).collect();
+    assert!(request_lines.len() >= 2, "request should wrap into a reserved area");
+    assert!(request_lines.iter().all(|line| line.right.is_empty()), "badges must not crowd request text");
+}
+
+#[test]
+fn request_detail_popup_ignores_underlying_clicks_and_retains_its_original_text() {
+    let fixture = Fixture::new();
+    let mut row = session(SESSION_A, "needs-you", "dotfiles", "/r/dotfiles", 1);
+    row["request"] = json!("Which design should I use?");
+    fixture.snapshot(json!([row]));
+    let mut app = fixture.app();
+    render(&mut app, 100, 40);
+    let (&row, &(column, _, _)) = app.hit_actions.iter().find(|(_, (_, _, action))| *action == "effort").unwrap();
+    app.handle(Key::Char('i'), &mut FakeScreen::default());
+    render(&mut app, 100, 40);
+    assert!(app.hit_actions.is_empty() && app.hit_lines.is_empty());
+    app.handle(Key::Click { x: column, y: row, double: true }, &mut FakeScreen::default());
+    assert!(app.menu.is_none());
+    fixture.snapshot(json!([]));
+    app.build();
+    assert!(buffer_rows(&render(&mut app, 100, 40)).join("\n").contains("Which design should I use?"));
+    app.handle(Key::Esc, &mut FakeScreen::default());
+    assert!(app.sessions.is_empty());
+    assert!(fixture.calls("claude-sessions").is_empty());
+}
+
+#[test]
+fn request_detail_popup_wraps_long_unicode_tokens_and_stays_readable_when_short() {
+    let fixture = Fixture::new();
+    let mut row = session(SESSION_A, "needs-you", "dotfiles", "/r/dotfiles", 1);
+    row["request"] = json!(format!("{} ENDOFREQUEST", "设计确认".repeat(30)));
+    fixture.snapshot(json!([row]));
+    for (width, height) in [(24, 12), (40, 16), (80, 24)] {
+        let mut app = fixture.app();
+        app.handle(Key::Char('i'), &mut FakeScreen::default());
+        let mut seen = String::new();
+        for _ in 0..100 {
+            let rows = buffer_rows(&render(&mut app, width, height));
+            seen += &rows.join("\n");
+            app.handle(Key::Down, &mut FakeScreen::default());
+        }
+        assert!(seen.contains('设') && seen.contains('认') && seen.contains("ENDOFREQUEST"));
+        assert!(!seen.contains('\u{fffd}'));
+        app.handle(Key::Char('g'), &mut FakeScreen::default());
+        assert!(buffer_rows(&render(&mut app, width, height)).iter().any(|line| line.contains("Task:")));
+    }
+    assert!(fixture.calls("claude-sessions").is_empty());
+}
+
+#[test]
+fn request_detail_popup_uses_the_complete_capture_not_the_card_summary() {
+    let fixture = Fixture::new();
+    let mut row = session(SESSION_A, "needs-you", "dotfiles", "/r/dotfiles", 1);
+    row["request"] = json!("Permission needed");
+    row["detail"] = json!("Bash command · short preview");
+    row["full_request"] = json!(format!("Bash command\n{}\nCOMPLETE_REQUEST_END", "command argument ".repeat(40)));
+    fixture.snapshot(json!([row]));
+    let mut app = fixture.app();
+    app.handle(Key::Char('i'), &mut FakeScreen::default());
+    app.handle(Key::Char('G'), &mut FakeScreen::default());
+    let rendered = buffer_rows(&render(&mut app, 80, 20)).join("\n");
+    assert!(rendered.contains("COMPLETE_REQUEST_END"));
+    assert!(fixture.calls("claude-sessions").is_empty());
 }
 
 #[test]

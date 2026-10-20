@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if (( $# != 1 )); then
+    echo "usage: claude-session-label '<3–6 word task label>'" >&2
+    exit 2
+fi
+session=${CLAUDE_CODE_SESSION_ID:-}
+agent=claude
+[[ $session != ses_* ]] || agent=opencode
+here=$(dirname "$(readlink -f "$0")")
+jq -cn --arg session "$session" --arg label "$1" --arg cwd "$PWD" \
+    '{hook_event_name: "TaskLabel", session_id: $session, label: $label, cwd: $cwd}' |
+    CLAUDE_SESSIONS_AGENT="$agent" bash "$here/../../../claude/.claude/hooks/session-state.sh"

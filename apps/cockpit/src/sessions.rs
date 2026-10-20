@@ -93,11 +93,13 @@ pub struct Session {
     pub project: String,
     pub cwd: String,
     pub task: String,
+    pub label: String,
     pub since: i64,
     pub started: Option<i64>,
     pub tmux_pane: String,
     pub kitty_pid: String,
     pub request: String,
+    pub full_request: String,
     pub detail: String,
     pub outcome: String,
     pub update: bool,
@@ -154,11 +156,13 @@ impl Session {
             project: row.get("project").and_then(Value::as_str).unwrap_or("?").into(),
             cwd: text(row, "cwd"),
             task: text(row, "task"),
+            label: text(row, "label"),
             since: row.get("since").and_then(Value::as_f64).map(|since| since as i64).unwrap_or_else(now_secs),
             started: row.get("started").and_then(Value::as_f64).map(|started| started as i64),
             tmux_pane: text(row, "tmux_pane"),
             kitty_pid: text(row, "kitty_pid"),
             request: text(row, "request"),
+            full_request: text(row, "full_request"),
             detail: text(row, "detail"),
             outcome: text(row, "outcome"),
             update: row.get("update").and_then(Value::as_bool).unwrap_or(false),
@@ -309,6 +313,18 @@ pub fn visible_task(session: &Session) -> String {
     if task.starts_with('<') { String::new() } else { task.to_string() }
 }
 
+pub fn validate_task_label(label: &str) -> Result<String, String> {
+    if label.chars().any(char::is_control) || label.contains("#(") || label.contains("#{") {
+        return Err("task label contains controls or tmux formats".into());
+    }
+    let words: Vec<_> = label.split_whitespace().collect();
+    let normalized = words.join(" ");
+    if !(3..=6).contains(&words.len()) || normalized.chars().count() > 60 {
+        return Err("task label must be 3–6 words and at most 60 characters".into());
+    }
+    Ok(normalized)
+}
+
 /// What a session needing you asks: the dialog's lines from its pane, else the hook's sentence.
 pub fn waiting_request(session: &Session) -> String {
     if session.state != "needs-you" {
@@ -346,9 +362,7 @@ pub fn activity_text(session: &Session) -> String {
         "Input needed" => "A running command needs your input",
         "Needs you" => "An answer or permission is needed",
         "Command running" => "An approved command is running",
-        "Working" => "The agent is working",
-        "Ready" => "Ready for your next instruction",
-        _ => "No current activity report",
+        _ => "",
     }.into()
 }
 
