@@ -10,6 +10,7 @@ use crate::sessions::{self, CONTEXT_COMPACT_AT, History, PastSession, Restorable
 use crate::settings::{self, LAUNCH_SETTINGS, SETTINGS};
 use crate::status::{self, Provider, ProviderStatus};
 use crate::todo::{self, Entry, TodoList};
+use crate::todo_composer::{TodoComposer, Outcome};
 use crate::usage::{self, BudgetAlerts, Refresher, Window};
 use crate::prompts;
 use crate::{approval, remote};
@@ -60,7 +61,6 @@ const TODO_TABS: [(&str, &[&str]); 5] = [("Open", &[todo::PROPOSED, "todo", "doi
 const TODO_TAB_OPEN: usize = 0;
 const TODO_TAB_PROPOSED: usize = 1;
 const TODO_TAB_TO_DO: usize = 2;
-/// What follows this line in the todo editor is help, left out of the item.
 const EDITOR_HELP_MARK: &str = "#── everything from this line on is left out ──";
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 pub const EFFORT_LEVELS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
@@ -257,9 +257,11 @@ impl PanelState {
 }
 
 /// A key or a click, from crossterm.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Key {
     Char(char),
+    /// Bracketed paste characters must never become panel or form shortcuts.
+    Paste(String),
     Ctrl(char),
     Enter,
     Tab,
@@ -664,6 +666,13 @@ pub(crate) struct Exiting {
     ended_at: Option<f64>,
 }
 
+/// A saved draft stays visible without moving the session pane or borrowing its preferences.
+struct SavedTodoScope {
+    viewed_session: String,
+    owner_session: String,
+    project: String,
+}
+
 pub struct App {
     pub history: History,
     pub view: ViewState,
@@ -687,6 +696,7 @@ pub struct App {
     pub(crate) labelled: (String, String),
     pub(crate) menu: Option<EffortMenu>,
     session_details: Option<SessionDetails>,
+    todo_composer: Option<TodoComposer>,
     pub(crate) settings_menu: Option<SettingsMenu>,
     pub(crate) pairing: Option<Pairing>,
     pub restore: Vec<Restorable>,
@@ -716,6 +726,7 @@ pub struct App {
     todo_tabs: HashMap<String, usize>,
     todo_categories: HashMap<String, Option<todo::Category>>,
     todo_recovery_pending: bool,
+    saved_todo_scope: Option<SavedTodoScope>,
     /// session -> when the column last sent it a queued prompt: the next one waits for a turn that
     /// ended after that.
     pub(crate) prompts_sent: HashMap<String, i64>,
@@ -768,12 +779,12 @@ impl App {
             history: History::default(), view: ViewState::load(), usage: Refresher::new(), alerts: BudgetAlerts::new(util::send_notice),
             costs: Costs::default(), reviews: Reviews::default(), todos, errors: ErrorReporter::new(),
             claude_status: ProviderStatus::default(), codex_status: ProviderStatus::new(Provider::Codex), panels: Default::default(), focus: 1, previous_panel: 1,
-            help_open: false, has_pane_focus: true, message, exiting: Vec::new(), labelled: Default::default(), menu: None, session_details: None, settings_menu: None, pairing: None, restore: Vec::new(),
+            help_open: false, has_pane_focus: true, message, exiting: Vec::new(), labelled: Default::default(), menu: None, session_details: None, todo_composer: None, settings_menu: None, pairing: None, restore: Vec::new(),
             held: Vec::new(), held_checked: 0.0, queue_checked: 0.0, gaming: util::gaming, restore_checked: 0.0, start_files: Vec::new(),
             width: DEFAULT_COLUMN_WIDTH, sessions: Vec::new(), windows: Vec::new(), quota_rows: Vec::new(), review_rows: Vec::new(), todo_entries: Vec::new(),
             session_task_titles: HashMap::new(), session_branches: HashMap::new(),
             session_queued: HashMap::new(), session_roots: HashMap::new(),
-            todo_scope: String::new(), shown_session: String::new(), todo_tab: TODO_TAB_OPEN, todo_tabs: HashMap::new(), todo_categories: HashMap::new(), todo_counts: [0; 5], prompts_sent: HashMap::new(), craft_roots: HashMap::new(), hit_lines: HashMap::new(), hit_actions: HashMap::new(),
+            todo_scope: String::new(), shown_session: String::new(), todo_tab: TODO_TAB_OPEN, todo_tabs: HashMap::new(), todo_categories: HashMap::new(), saved_todo_scope: None, todo_counts: [0; 5], prompts_sent: HashMap::new(), craft_roots: HashMap::new(), hit_lines: HashMap::new(), hit_actions: HashMap::new(),
             gathered: None, pending: Vec::new(), plan: String::new(), craft_checked: 0.0, dotfiles_unpushed: 0, dotfiles_checked: 0.0, todo_recovery_pending,
         }
     }
@@ -1654,10 +1665,10 @@ impl App {
 
     pub(crate) fn handle_sessions(&mut self, key: Key, screen: &mut dyn Screen) -> String {
         let session = self.selected_session();
-        if session.as_ref().is_some_and(|session| session.is_external()) && session_key_requires_terminal(key) {
+        if session.as_ref().is_some_and(|session| session.is_external()) && session_key_requires_terminal(key.clone()) {
             return "external session: no terminal target; use its own window".into();
         }
-        if let Some(s) = session.as_ref() && let Some((feature, what)) = key_feature(key, s.agent()) {
+        if let Some(s) = session.as_ref() && let Some((feature, what)) = key_feature(key.clone(), s.agent()) {
             let agent = s.agent();
             if !agent.can(feature) {
                 return format!("{what} is not {}'s to do: {} runs {}, do it in its pane", agent.label, s.project, agent.name);
@@ -2059,14 +2070,19 @@ impl App {
     fn build_todo(&mut self) {
         // Like the issues: the viewed session's project only, every project when none is viewed.
         let viewed = current_session();
-        self.todo_scope = self.sessions.iter().find(|s| s.session == viewed).map(|s| s.project.clone()).unwrap_or_default();
-        self.todo_tab = self.todo_tabs.get(&viewed).copied().unwrap_or(TODO_TAB_OPEN);
+        if self.saved_todo_scope.as_ref().is_some_and(|scope| scope.viewed_session != viewed) {
+            self.saved_todo_scope = None;
+        }
+        self.todo_scope = self.saved_todo_scope.as_ref().map(|scope| scope.project.clone())
+            .unwrap_or_else(|| self.sessions.iter().find(|s| s.session == viewed).map(|s| s.project.clone()).unwrap_or_default());
+        self.todo_tab = self.todo_tabs.get(&self.todo_owner()).copied().unwrap_or(TODO_TAB_OPEN);
         let scope = self.todo_scope.clone();
         let mut entries: Vec<Entry> = self.todos.items.iter()
             .filter(|item| scope.is_empty() || item.project() == scope)
             .map(|item| Entry::Typed(item.clone()))
             .collect();
         for issue in self.reviews.issues() {
+            if self.saved_todo_scope.is_some() && issue.repository != scope { continue; }
             let status = self.todos.status_of(&issue.key());
             let priority = todo::issue_priority(&issue.labels);
             entries.push(Entry::Issue { issue, status, priority });
@@ -2080,6 +2096,9 @@ impl App {
         }
         let shown_statuses = TODO_TABS[self.todo_tab].1;
         entries.retain(|entry| shown_statuses.contains(&entry.status().as_str()));
+        if self.todo_tab == TODO_TAB_OPEN {
+            entries.sort_by_key(|entry| match entry.status().as_str() { "doing" => 0, todo::PROPOSED => 1, _ => 2 });
+        }
         let mut lines = Vec::new();
         // The tabs past Proposed hide proposals: without this line they wait unseen there.
         let proposed = self.todo_counts[TODO_TAB_PROPOSED];
@@ -2101,10 +2120,14 @@ impl App {
         }
         for (index, entry) in entries.iter().enumerate() {
             let status = entry.status();
+            if self.todo_tab == TODO_TAB_OPEN && (index == 0 || entries[index - 1].status() != status) {
+                let heading = match status.as_str() { "doing" => "In progress", todo::PROPOSED => "Proposed", _ => "To do" };
+                lines.push(Line::new(vec![segment(0, heading, bold(FG_DARK))]));
+            }
             let done = status == "done";
             let mark = if done { String::new() } else { todo::priority_mark(entry.priority()) };
             let mark_style = if entry.priority() > todo::PRIORITY_NORMAL { bold(RED) } else { dim(FG_DARK) };
-            let start = 2 + if mark.is_empty() { 0 } else { width_of(&mark) as u16 + 1 };
+            let start = 19;
             let (glyph, glyph_style) = match status.as_str() {
                 "doing" => ("◐", bold(BLUE)),
                 todo::PROPOSED => ("?", bold(MAGENTA)),
@@ -2113,26 +2136,20 @@ impl App {
             };
             let faded = done.then(|| dim(FG_DARK));
             let queued = status == "todo" && self.todos.is_queued(&entry.key());
-            let filed_by_claude = matches!(entry, Entry::Typed(item) if !item.source().is_empty());
-            let mut right = if status == "doing" { vec![part("in progress", style(BLUE))] }
-                        else if queued { vec![part("queued", bold(CYAN))] }
-                        else if filed_by_claude { vec![part("by Claude", style(YELLOW))] } else { vec![] };
+            let mut right = if queued { vec![part("Q", bold(CYAN))] } else { vec![] };
             if let Entry::Typed(item) = entry {
                 if item.is_design() {
-                    right.insert(0, part("✎ design", faded.unwrap_or(bold(MAGENTA))));
+                    right = vec![part(if queued { "✎Q" } else { "✎" }, faded.unwrap_or(bold(MAGENTA)))];
                 }
                 if item.is_blocked_report() {
-                    right.insert(0, part(format!("⛔ {}", item.reporter()), faded.unwrap_or(bold(RED))));
+                    right = vec![part(if queued { "⛔Q" } else { "⛔" }, faded.unwrap_or(bold(RED)))];
                 }
-                let label = item.category().map(todo::Category::label).unwrap_or("Unknown kind");
-                let color = if item.category() == Some(todo::Category::Bug) { RED } else { FG_DARK };
-                right.insert(0, part(label, faded.unwrap_or(style(color))));
             }
             let line = match entry {
                 Entry::Typed(item) => Line {
                     segments: vec![segment(0, glyph, glyph_style), segment(2, &mark, mark_style),
-                                   segment(start, item.project(), faded.unwrap_or(bold(project_color(&item.project())))),
-                                   segment(start + 1 + width_of(&item.project()) as u16, item.text(), faded.unwrap_or(style(FG)))],
+                                   segment(7, match item.category() { Some(todo::Category::Task) => "", Some(category) => category.label(), None => "Unknown ?" }, faded.unwrap_or(style(if item.category() == Some(todo::Category::Bug) { RED } else { FG_DARK }))),
+                                   segment(start, if scope.is_empty() { format!("{} {}", fit(&item.project(), 9), item.text()) } else { item.text() }, faded.unwrap_or(style(FG)))],
                     right, item: Some(index), accent: None,
                 },
                 Entry::Issue { issue, .. } => {
@@ -2140,11 +2157,11 @@ impl App {
                     let labels = issue.labels.iter().take(2).cloned().collect::<Vec<_>>().join(", ");
                     let (glyph, glyph_style) = if status == "todo" { ("◇", style(MAGENTA)) } else { (glyph, glyph_style) };
                     let right = if !right.is_empty() { right } else if !labels.is_empty() { vec![part(labels, dim(FG_DARK))] } else { vec![] };
-                    let right = if queued && status == "todo" { vec![part("queued", bold(CYAN))] } else { right };
+                    let right = if queued && status == "todo" { vec![part("Q", bold(CYAN))] } else { right };
                     Line {
                         segments: vec![segment(0, glyph, glyph_style), segment(2, &mark, mark_style),
-                                       segment(start, &label, faded.unwrap_or(bold(MAGENTA))),
-                                       segment(start + 1 + width_of(&label) as u16, &issue.title, faded.unwrap_or(style(FG_DARK)))],
+                                       segment(7, &label, faded.unwrap_or(bold(MAGENTA))),
+                                       segment(8 + width_of(&label) as u16, &issue.title, faded.unwrap_or(style(FG_DARK)))],
                         right, item: Some(index), accent: None,
                     }
                 }
@@ -2158,27 +2175,58 @@ impl App {
         panel.lines = lines;
     }
 
-    /// The project, then the tabs with their counts, the shown one in brackets.
+    fn todo_fixed_lines(&mut self, height: u16) {
+        let mut tabs = Vec::new();
+        let mut column = 0;
+        if let Some(scope) = &self.saved_todo_scope {
+            let active_width = width_of(&format!(" {} {} ", TODO_TABS[self.todo_tab].0, self.todo_counts[self.todo_tab]));
+            let project_room = (self.width as usize).saturating_sub(4 + 10 + active_width + 1);
+            let context = format!("saved: {} · ", fit(&scope.project, project_room));
+            column = width_of(&context) as u16;
+            tabs.push(segment(0, context, bold(CYAN)));
+        }
+        for index in std::iter::once(self.todo_tab).chain((0..TODO_TABS.len()).filter(|index| *index != self.todo_tab)) {
+            let text = format!(" {} {} ", TODO_TABS[index].0, self.todo_counts[index]);
+            let tint = if index == self.todo_tab { on(BLACK, BLUE) }
+                else if index == TODO_TAB_PROPOSED && self.todo_counts[index] > 0 { on(BLACK, MAGENTA) } else { dim(FG_DARK) };
+            tabs.push(segment(column, &text, tint));
+            column += width_of(&text) as u16 + 1;
+        }
+        self.panels[3].fixed_top = vec![Line::new(tabs), Line::new(vec![segment(0, "t Add  e Edit  K Kind  f Filter  Enter Details", dim(FG_DARK))])];
+        self.panels[3].fixed_bottom.clear();
+        if self.focus != 3 || height < 11 { return; }
+        let Some(entry) = self.todo_entries.get(self.panels[3].selected) else { return; };
+        let (title, context, notes) = match entry {
+            Entry::Typed(item) => (item.text(), todo_context(item), item.notes().lines().find(|line| !line.trim().is_empty()).unwrap_or("No notes · e Edit · Enter Details").to_string()),
+            Entry::Issue { issue, status, .. } => (issue.title.clone(), format!("GitHub · {status} · {}#{}", issue.repository, issue.number), issue.url.clone()),
+        };
+        self.panels[3].fixed_bottom = vec![Line::new(vec![segment(0, title, bold(FG))]), Line::new(vec![segment(0, context, dim(FG_DARK))]), Line::new(vec![segment(0, notes, dim(FG_DARK))])];
+    }
+
+    /// Keep the filter ahead of the scope: long project names must not hide it.
     fn todo_subtitle(&self) -> String {
         let scope = if self.todo_scope.is_empty() { "all projects" } else { self.todo_scope.as_str() };
-        let tabs: Vec<String> = TODO_TABS.iter().enumerate().map(|(index, (name, _))| {
-            let count = self.todo_counts[index];
-            if index == self.todo_tab { format!("[{name} {count}]") } else { format!("{name} {count}") }
-        }).collect();
         let queued = self.todos.queued.len();
         let queue = if queued > 0 { format!(" · {queued} queued") } else { String::new() };
         let category = self.todo_category_filter().map(|category| format!("kind: {} · ", category.label())).unwrap_or_default();
-        format!("{category}{scope} · {}{queue}", tabs.join(" · "))
+        let saved = if self.saved_todo_scope.is_some() { "saved: " } else { "" };
+        format!("{category}{saved}{scope}{queue}")
+    }
+
+    fn todo_owner(&self) -> String {
+        let viewed = current_session();
+        self.saved_todo_scope.as_ref().filter(|scope| scope.viewed_session == viewed)
+            .map_or(viewed, |scope| scope.owner_session.clone())
     }
 
     fn todo_category_filter(&self) -> Option<todo::Category> {
-        self.todo_categories.get(&current_session()).copied().flatten()
+        self.todo_categories.get(&self.todo_owner()).copied().flatten()
     }
 
     fn reveal_todo(&mut self, id: &str) {
         if let Some(category) = self.todo_category_filter() {
             if self.todos.items.iter().any(|item| item.id() == id && item.category() != Some(category)) {
-                self.todo_categories.insert(current_session(), None);
+                self.todo_categories.insert(self.todo_owner(), None);
             }
         }
         self.build_todo();
@@ -2189,7 +2237,7 @@ impl App {
 
     fn show_todo_tab(&mut self, tab: usize) {
         self.todo_tab = tab;
-        self.todo_tabs.insert(current_session(), tab);
+        self.todo_tabs.insert(self.todo_owner(), tab);
     }
 
     fn switch_todo_tab(&mut self, step: isize) {
@@ -2199,15 +2247,14 @@ impl App {
     }
 
     pub(crate) fn handle_todo(&mut self, key: Key, screen: &mut dyn Screen) -> String {
-        let _editor_lock = if matches!(key, Key::Char('t' | 'e')) {
-            match crate::todo_editor::lock() {
-                Ok(lock) => Some(lock),
-                Err(error) => return format!("cannot protect the TODO editor: {error}"),
-            }
-        } else { None };
         let entry = self.todo_entries.get(self.panels[3].selected).cloned();
         let viewed = current_session();
         match key {
+            Key::Esc if self.saved_todo_scope.is_some() => {
+                self.saved_todo_scope = None;
+                self.build_todo();
+                String::new()
+            }
             Key::Char('t') => {
                 let viewed = self.sessions.iter().find(|s| s.session == viewed && !s.cwd.is_empty()).cloned();
                 let directory = match &viewed {
@@ -2218,14 +2265,11 @@ impl App {
                     return String::new();
                 }
                 let project = viewed.map(|s| s.project).unwrap_or_else(|| project_name(&directory));
-                let id = match self.edit_todo(&format!("to do in {project}"), &project, &directory, None, screen) {
-                    Ok(Some(id)) => id,
-                    Ok(None) => return "nothing added".into(),
-                    Err(error) => return error,
-                };
-                self.show_todo_tab(TODO_TAB_TO_DO);
-                self.reveal_todo(&id);
-                format!("added to {}", project_name(&directory))
+                match TodoComposer::new(project, directory, current_session(), None) {
+                    Ok(composer) => self.todo_composer = Some(composer),
+                    Err(error) => return format!("cannot protect the TODO draft: {error}"),
+                }
+                String::new()
             }
             Key::Char('[') => {
                 self.switch_todo_tab(-1);
@@ -2237,11 +2281,11 @@ impl App {
             }
             Key::Char('e') => match entry {
                 Some(Entry::Typed(item)) => {
-                    match self.edit_todo(&format!("edit · {}", item.project()), &item.project(), &item.cwd(), Some(&item), screen) {
-                        Ok(Some(id)) => { self.reveal_todo(&id); "saved".into() },
-                        Ok(None) => "unchanged".into(),
-                        Err(error) => error,
+                    match TodoComposer::new(item.project(), item.cwd(), self.todo_owner(), Some(&item)) {
+                        Ok(composer) => self.todo_composer = Some(composer),
+                        Err(error) => return format!("cannot protect the TODO draft: {error}"),
                     }
+                    String::new()
                 }
                 Some(Entry::Issue { .. }) => "an issue is edited on GitHub".into(),
                 None => String::new(),
@@ -2263,7 +2307,7 @@ impl App {
                     let Some(category) = todo::Category::parse(&chosen.to_lowercase()) else { return "invalid kind filter".into() };
                     Some(category)
                 };
-                self.todo_categories.insert(viewed, category);
+                self.todo_categories.insert(self.todo_owner(), category);
                 self.panels[3].selected = 0;
                 self.build_todo();
                 String::new()
@@ -2460,12 +2504,12 @@ impl App {
                       ("[ ]", "previous / next tab: Open (Proposed, To do and In progress together) · Proposed · To do · In progress · Done"),
                       ("h", "hand the item over: the session on screen if it is on the item's project (a parallel clone too), Claude Code or opencode alike, else the project's running session, or a new one using the default agent"),
                       ("N", "hand the item to a new session using the default agent, in a parallel clone of its repository on a branch named after it (todo-<id>, issue-<n>), never to a running one"),
-                      ("e", "edit the title and notes in your editor, then choose the kind; cancelling saves nothing"),
+                      ("e", "edit Kind, Title and Notes in one form; Tab / Shift+Tab fields, arrows choose Kind; CMD+S saves, Esc cancels"),
                       ("K", "change kind: Task, Feature, Bug, Improvement, Chore, Research; Design/Blocked routing stays unchanged"),
                       ("f", "filter by kind, or All (including GitHub issues); each viewed session keeps its filter"),
                       ("y n", "approve or decline an idea Claude proposed; a declined idea is not proposed again"),
                       ("Q", "queue it (again: unqueue): a session of its project idle for 5 min at its prompt takes the first queued item, by priority, one at a time"),
-                      ("t", "add an item for the viewed session's project (or pick a project), title and notes in your editor"),
+                      ("t", "add an item for the viewed session's project (or pick a project): Kind, Title and Notes; CMD+S saves, Esc cancels"),
                       ("i", "mark in progress (h does it too); i again: back to to do"),
                       ("d", "mark done, or back to to do; done items stay 7 days, dimmed at the bottom"),
                       ("+", "raise a typed item's priority: ! then !! up to !!!!"), ("-", "lower it"), ("x", "remove a typed item"),
@@ -2534,6 +2578,7 @@ impl App {
         self.width = width;
         self.panels[1].fixed_top = self.session_summary_lines();
         self.panels[1].fixed_bottom = self.selected_session_detail_lines();
+        self.todo_fixed_lines(self.layout(height)[3]);
         self.draw_header(buffer, width);
         let mut top = HEADER_LINES;
         for (index, panel_height) in self.layout(height).into_iter().enumerate() {
@@ -2558,6 +2603,11 @@ impl App {
             self.hit_lines.clear();
             self.hit_actions.clear();
         }
+        if let Some(composer) = self.todo_composer.as_ref() {
+            composer.draw(buffer);
+            self.hit_lines.clear();
+            self.hit_actions.clear();
+        }
         if !self.has_pane_focus {
             fade(buffer);
         }
@@ -2573,7 +2623,7 @@ impl App {
         let subtitle_text = self.subtitle(index);
         let panel = &mut self.panels[index];
         let fixed_top_height = panel.fixed_top.len().min(if inner_height >= 4 { 2 } else if inner_height >= 2 { 1 } else { 0 });
-        let fixed_bottom_height = if inner_height >= fixed_top_height + panel.fixed_bottom.len() + 2 { panel.fixed_bottom.len() } else { 0 };
+        let fixed_bottom_height = if inner_height >= fixed_top_height + panel.fixed_bottom.len() + if index == 3 { 4 } else { 2 } { panel.fixed_bottom.len() } else { 0 };
         let scrolling_height = inner_height.saturating_sub(fixed_top_height + fixed_bottom_height);
         panel.keep_selected_visible(scrolling_height);
         let inner = (width - 3) as usize;
@@ -2583,20 +2633,6 @@ impl App {
         let subtitle = fit(&subtitle_text, (width as usize).saturating_sub(8 + width_of(&label)));
         if !subtitle.is_empty() {
             put(buffer, top, 2 + width_of(&label) as u16, &format!(" · {subtitle} "), dim(FG_DARK));
-            // The Todo tab shown: a chip over its "[name count]", readable at a glance.
-            if index == 3 {
-                if let (Some(open), Some(close)) = (subtitle.find('['), subtitle.find(']')) {
-                    let column = 2 + width_of(&label) as u16 + 3 + width_of(&subtitle[..open]) as u16;
-                    put(buffer, top, column, &format!(" {} ", &subtitle[open + 1..close]), on(BLACK, BLUE).add_modifier(Modifier::BOLD));
-                }
-                let proposed = format!("Proposed {}", self.todo_counts[TODO_TAB_PROPOSED]);
-                if self.todo_counts[TODO_TAB_PROPOSED] > 0 && self.todo_tab != TODO_TAB_PROPOSED {
-                    if let Some(start) = subtitle.find(&format!(" {proposed} ")) {
-                        let column = 2 + width_of(&label) as u16 + 3 + width_of(&subtitle[..start]) as u16;
-                        put(buffer, top, column, &format!(" {proposed} "), on(BLACK, MAGENTA).add_modifier(Modifier::BOLD));
-                    }
-                }
-            }
         }
         for offset in 0..inner_height {
             let row = top + 1 + offset as u16;
@@ -2610,6 +2646,18 @@ impl App {
                 panel.lines.get(panel.scroll + offset - fixed_top_height)
             };
             let Some(line) = line else { continue };
+            let mut issue_line;
+            let line = if index == 3 && let Some(Entry::Issue { issue, .. }) = line.item.and_then(|item| self.todo_entries.get(item)) {
+                // Reserve a title excerpt and Q before allocating repository identity space.
+                let marker_room = if line.right.iter().any(|part| part.text == "Q") { 3 } else { 0 };
+                let identity_room = (width as usize).saturating_sub(4 + 7 + 1 + 12 + marker_room);
+                let number = format!("#{}", issue.number);
+                let identity = format!("{}{}", fit(&issue.repository, identity_room.saturating_sub(width_of(&number))), number);
+                issue_line = line.clone();
+                issue_line.segments[2].1 = identity.clone();
+                issue_line.segments[3].0 = 8 + width_of(&identity) as u16;
+                &issue_line
+            } else { line };
             let highlighted = focused && line.item.is_some() && line.item == Some(panel.selected);
             let recolor = |style: Style, fg: u8| -> Style {
                 if !highlighted { return style; }
@@ -2639,8 +2687,9 @@ impl App {
                 right_width += needed;
                 true
             }).collect();
-            for (column, text, tint) in &line.segments {
+            for (position, (column, text, tint)) in line.segments.iter().enumerate() {
                 let room = (width as i64 - 4 - *column as i64 - if right_width > 0 { right_width as i64 + 2 } else { 0 }).max(0) as usize;
+                let room = line.segments.get(position + 1).map_or(room, |next| room.min(next.0.saturating_sub(*column) as usize));
                 put(buffer, row, 2 + column, &fit(text, room), recolor(*tint, FG));
             }
             let mut column = (width as i64 - 3 - right_width as i64).max(2) as u16;
@@ -2743,7 +2792,9 @@ impl App {
             return;
         }
         let mut column = 2u16;
-        for (key, label) in self.panel_hints(self.focus).into_iter().chain(GLOBAL_HINTS) {
+        let details = if self.focus == 3 && self.saved_todo_scope.is_some() { vec![("Esc", "viewed project"), ("Enter", "Details")] }
+            else if self.focus == 3 { vec![("Enter", "Details")] } else { Vec::new() };
+        for (key, label) in details.into_iter().chain(self.panel_hints(self.focus)).chain(GLOBAL_HINTS) {
             if column as usize + width_of(key) + width_of(label) + 3 > width as usize {
                 break;
             }
@@ -2793,6 +2844,37 @@ impl App {
         answer == Some(Key::Char('y'))
     }
 
+    fn handle_composer(&mut self, key: Key) {
+        if let Some(mut composer) = self.todo_composer.take() {
+            match composer.handle(key) {
+                Outcome::Editing => {
+                    if let Err(error) = composer.checkpoint() { composer.error = format!("Draft checkpoint failed: {error}"); }
+                    self.todo_composer = Some(composer);
+                }
+                Outcome::Cancel => {
+                    if let Err(error) = composer.cancel() {
+                        composer.error = format!("Cannot discard draft: {error}");
+                        self.todo_composer = Some(composer);
+                    }
+                },
+                Outcome::Save => {
+                    match composer.save(&mut self.todos) {
+                        Ok(id) => {
+                            let viewed = current_session();
+                            self.saved_todo_scope = (composer.owner_session != viewed).then(|| SavedTodoScope {
+                                viewed_session: viewed, owner_session: composer.owner_session.clone(), project: composer.project.clone(),
+                            });
+                            if composer.id.is_none() { self.show_todo_tab(TODO_TAB_TO_DO); }
+                            self.reveal_todo(&id);
+                            self.message = if self.saved_todo_scope.is_some() { "saved · Esc returns to viewed project" } else { "saved" }.into();
+                        }
+                        Err(error) => { composer.error = error; self.todo_composer = Some(composer); }
+                    }
+                }
+            }
+        }
+    }
+
     fn handle_click(&mut self, x: u16, y: u16, double: bool, screen: &mut dyn Screen) {
         if let Some((start, end, action @ ("next-attention" | "session-details"))) = self.hit_actions.get(&y).copied() {
             if (start..end).contains(&x) {
@@ -2840,6 +2922,11 @@ impl App {
             return;
         }
         self.message.clear();
+        if self.todo_composer.is_some() {
+            self.handle_composer(key);
+            return;
+        }
+        if matches!(key, Key::Paste(_)) { return; }
         if let Some(details) = self.session_details.as_mut() {
             match key {
                 Key::Down | Key::Char('j') => details.scroll = details.scroll.saturating_add(1),
@@ -3223,27 +3310,6 @@ pub(crate) fn parse_editor_text(text: &str) -> Option<(String, String)> {
     Some((title, notes))
 }
 
-impl App {
-    fn edit_todo(&mut self, heading: &str, project: &str, cwd: &str, item: Option<&todo::Item>, screen: &mut dyn Screen) -> Result<Option<String>, String> {
-        let mut draft = crate::todo_editor::Draft::create(project, cwd, item)
-            .map_err(|error| format!("cannot create TODO draft: {error}"))?;
-        (|| -> io::Result<Option<String>> {
-            draft.edit(heading)?;
-            if !draft.has_title()? { draft.discard()?; return Ok(None) }
-            let initial_category = item.map(todo::Item::category).unwrap_or(Some(todo::Category::Task));
-            let Some(chosen) = screen.outside(&mut || pick_todo_kind(initial_category, false)) else {
-                draft.discard()?;
-                return Ok(None);
-            };
-            let category = todo::Category::parse(&chosen.to_lowercase()).ok_or_else(|| io::Error::other("invalid TODO kind"))?;
-            draft.category = Some(category.as_str().into());
-            draft.persist()?;
-            draft.finish(&mut self.todos)?;
-            Ok(Some(draft.id.clone()))
-        })().map_err(|error| format!("TODO draft kept for recovery: {error}"))
-    }
-}
-
 /// Read-only text in a tmux popup (less: q closes it).
 fn show_in_popup(text: &str) {
     let path = crate::paths::runtime_dir().join(format!("claude-todo-{}.txt", util::token_hex(4)));
@@ -3254,6 +3320,13 @@ fn show_in_popup(text: &str) {
         // No --quit-if-one-screen: a short text would close the popup the moment it opened.
         .args(["less", "-R", "--no-init"]).arg(&path).status();
     let _ = fs::remove_file(&path);
+}
+
+fn todo_context(item: &todo::Item) -> String {
+    let category = item.category().map(|category| category.label().to_string()).unwrap_or_else(|| format!("Unknown: {}", item.0["category"]));
+    let source = if item.source().is_empty() { "you" } else { "Claude" };
+    let routing = if item.is_design() { " · Design".to_string() } else if item.is_blocked_report() { format!(" · setup report from {}", item.reporter()) } else { " · standard routing".to_string() };
+    format!("{category} · {} · {source}{routing}", item.status())
 }
 
 /// What Enter shows for an item or an issue.
@@ -3267,6 +3340,7 @@ pub(crate) fn todo_details(entry: &Entry) -> String {
             let category = item.category().map(|category| category.label().to_string())
                 .unwrap_or_else(|| format!("Unknown: {}", item.0["category"]));
             text.push_str(&format!("Kind: {category}\n"));
+            text.push_str(&format!("{}\n", todo_context(item)));
             if !item.why().is_empty() {
                 text.push_str(&format!("\nWhy Claude proposed it\n{}\n", item.why()));
             }
@@ -3384,6 +3458,7 @@ pub fn read_key(timeout: Option<Duration>, last_click: &mut Option<(Instant, u16
                 return Some(Key::Click { x: mouse.column, y: mouse.row, double });
             }
             Event::FocusGained => return Some(Key::FocusGained),
+            Event::Paste(text) => return Some(Key::Paste(text)),
             Event::FocusLost => return Some(Key::FocusLost),
             Event::Resize(..) => return None,
             _ => continue,

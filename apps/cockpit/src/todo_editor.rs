@@ -18,6 +18,12 @@ pub(crate) fn lock() -> io::Result<fs::File> {
 }
 
 #[derive(Serialize, Deserialize)]
+pub(crate) struct NativeText {
+    pub title: String,
+    pub notes: String,
+}
+
+#[derive(Serialize, Deserialize)]
 pub(crate) struct Draft {
     pub token: String,
     pub id: String,
@@ -27,6 +33,10 @@ pub(crate) struct Draft {
     pub previous_draft: Option<String>,
     #[serde(default)]
     pub category: Option<String>,
+    #[serde(default)]
+    pub native: Option<NativeText>,
+    #[serde(default)]
+    pub cancelled: bool,
 }
 
 fn directory() -> PathBuf { paths::state_dir().join("todo-drafts") }
@@ -36,7 +46,7 @@ impl Draft {
         let draft = Self { token: util::token_hex(6), id: item.map(Item::id).unwrap_or_else(|| util::token_hex(4)),
             project: project.into(), cwd: cwd.into(), is_edit: item.is_some(),
             previous_draft: item.and_then(|item| item.0.get("editor_draft")).and_then(|value| value.as_str()).map(str::to_string),
-            category: item.map(Item::category).unwrap_or(Some(crate::todo::Category::Task)).map(|category| category.as_str().into()) };
+            category: item.map(Item::category).unwrap_or(Some(crate::todo::Category::Task)).map(|category| category.as_str().into()), native: None, cancelled: false };
         fs::create_dir_all(directory())?;
         let (title, notes, why) = item.map(|item| (item.text(), item.notes(), item.why())).unwrap_or_default();
         fs::write(draft.path("md"), app::editor_text(&title, &notes, &why))?;
@@ -50,13 +60,42 @@ impl Draft {
         util::write_json(&self.path("json"), &serde_json::to_value(self)?)
     }
 
+    pub fn checkpoint(&mut self, title: &str, notes: &str, category: Option<crate::todo::Category>) -> io::Result<()> {
+        if self.cancelled { return Err(io::Error::other("cancelled draft only permits cleanup")); }
+        let category = category.map(|category| category.as_str().to_string());
+        if self.category == category && self.native.as_ref().is_some_and(|text| text.title == title && text.notes == notes) {
+            return Ok(());
+        }
+        let previous_text = self.native.replace(NativeText { title: title.into(), notes: notes.into() });
+        let previous_category = std::mem::replace(&mut self.category, category);
+        if let Err(error) = self.persist() {
+            self.native = previous_text;
+            self.category = previous_category;
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    pub fn cancel(&mut self) -> io::Result<()> {
+        self.cancelled = true;
+        self.persist()?;
+        // A durable tombstone prevents recovery even if cleanup is interrupted.
+        self.discard()
+    }
+
     pub fn has_title(&self) -> io::Result<bool> {
         Ok(app::parse_editor_text(&fs::read_to_string(self.path("md"))?).is_some())
     }
 
     pub fn discard(&self) -> io::Result<()> {
-        fs::remove_file(self.path("json"))?;
-        fs::remove_file(self.path("md"))
+        for extension in ["json", "md"] {
+            match fs::remove_file(self.path(extension)) {
+                Ok(()) => (),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => (),
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(())
     }
 
     pub fn edit(&self, heading: &str) -> io::Result<()> {
@@ -72,13 +111,21 @@ impl Draft {
     }
 
     pub fn finish(&self, todos: &mut TodoList) -> io::Result<bool> {
-        let text = fs::read_to_string(self.path("md"))?;
-        let saved = if let Some((title, notes)) = app::parse_editor_text(&text) {
+        let contents = if self.cancelled { None }
+            else if let Some(text) = &self.native {
+                (!util::collapse(&crate::todo::without_controls(&text.title)).is_empty()).then(|| (text.title.clone(), text.notes.clone()))
+            } else { app::parse_editor_text(&fs::read_to_string(self.path("md"))?) };
+        let saved = if let Some((title, notes)) = contents {
             todos.save_editor(self, &title, &notes)?;
             true
         } else { false };
         // Remove metadata first: an untracked buffer cannot be imported a second time.
-        self.discard()?;
+        if let Err(error) = self.discard() {
+            if saved && self.native.is_some() {
+                // The token is consumed: keeping the form editable would silently ignore new text.
+                util::log_event("WARN", &format!("TODO {} saved; draft cleanup failed: {error}", self.id));
+            } else { return Err(error); }
+        }
         Ok(saved)
     }
 }

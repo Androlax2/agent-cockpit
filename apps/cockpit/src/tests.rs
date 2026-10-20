@@ -134,7 +134,7 @@ struct FakeScreen {
 
 impl FakeScreen {
     fn answering(keys: &[Key]) -> Self {
-        Self { keys: keys.iter().copied().collect(), ..Self::default() }
+        Self { keys: keys.iter().cloned().collect(), ..Self::default() }
     }
 
     fn typing(text: &[&str]) -> Self {
@@ -769,7 +769,7 @@ fn x_on_a_phone_forgets_it_after_a_yes_only() {
         phone_page(&fixture, json!([phone("iPhone", "aa11aa11ff"), phone("iPad", "bb22bb22ff")]));
         let mut app = fixture.app();
         open_settings_row(&mut app, SettingsRow::Phone(0));
-        app.handle(Key::Char('x'), &mut FakeScreen::answering(&[answer]));
+        app.handle(Key::Char('x'), &mut FakeScreen::answering(&[answer.clone()]));
         let names: Vec<String> = crate::remote::phones().iter().map(|phone| phone["name"].as_str().unwrap().to_string()).collect();
         assert_eq!(names, kept, "answered {answer:?}");
     }
@@ -2651,6 +2651,679 @@ fn bad_json_from_gh_gives_no_rows() {
 
 // ---- Todo ----
 
+#[test]
+fn integrated_native_form_holds_the_reload_lock_until_save_or_cancel() {
+    let fixture = Fixture::new();
+    fixture.view(SESSION_A);
+    fixture.snapshot(json!([session(SESSION_A, "working", "runway", "/r/runway", 1)]));
+    let mut app = fixture.app();
+    app.focus_panel(3);
+    for edit in [false, true] {
+        app.handle(Key::Char(if edit { 'e' } else { 't' }), &mut FakeScreen::default());
+        let lock = fs::File::open(fixture.path("run/claude-todo-editor.lock")).unwrap();
+        assert!(lock.try_lock().is_err(), "reload must wait for the entire native draft lifetime");
+        type_in_app(&mut app, "kept title");
+        if edit { app.handle(Key::Esc, &mut FakeScreen::default()); }
+        else { app.handle(Key::Ctrl('s'), &mut FakeScreen::default()); }
+        assert!(lock.try_lock().is_ok(), "finished draft leaked the reload lock");
+    }
+}
+
+#[test]
+fn integrated_native_drafts_recover_add_and_edit_with_original_metadata_once() {
+    let fixture = Fixture::new();
+    fixture.view(SESSION_A);
+    fixture.snapshot(json!([session(SESSION_A, "working", "runway", "/r/runway", 1)]));
+    let mut app = fixture.app();
+    app.focus_panel(3);
+    app.handle(Key::Char('t'), &mut FakeScreen::default());
+    type_in_app(&mut app, "Recovered 界 draft");
+    for key in [Key::BackTab, Key::Right, Key::Right, Key::Tab, Key::Tab] { app.handle(key, &mut FakeScreen::default()); }
+    type_in_app(&mut app, "first\nsecond");
+    assert!(TodoList::load().items.is_empty());
+    drop(app);
+    fixture.view(SESSION_B);
+    let mut recovered = fixture.app();
+    assert_eq!(recovered.todos.items.len(), 1, "native typing was not checkpointed for recovery");
+    let item = &recovered.todos.items[0];
+    let id = item.id();
+    assert_eq!((item.project(), item.cwd(), item.text(), item.notes(), item.category()), ("runway".into(), "/r/runway".into(), "Recovered 界 draft".into(), "first\nsecond".into(), Some(crate::todo::Category::Bug)));
+    recovered.todos.items[0].0.insert("category".into(), json!("future-kind"));
+    recovered.todos.items[0].0.insert("status".into(), json!("proposed"));
+    recovered.todos.items[0].0.insert("kind".into(), json!("design"));
+    recovered.todos.items[0].0.insert("source".into(), json!("session origin"));
+    recovered.todos.items[0].0.insert("why".into(), json!("keep reason"));
+    recovered.todos.save();
+    recovered.build();
+    recovered.focus_panel(3);
+    recovered.handle(Key::Char('e'), &mut FakeScreen::default());
+    type_in_app(&mut recovered, " edited");
+    drop(recovered);
+    let reloaded = fixture.app();
+    assert_eq!(reloaded.todos.items.len(), 1);
+    let item = &reloaded.todos.items[0];
+    assert_eq!((item.id(), item.text(), item.status(), item.source(), item.why()), (id, "Recovered 界 draft edited".into(), "proposed".into(), "session origin".into(), "keep reason".into()));
+    assert_eq!(item.0["category"], "future-kind");
+    assert!(item.is_design());
+    assert_eq!(fixture.app().todos.items.len(), 1);
+}
+
+#[test]
+fn integrated_native_cancelled_drafts_are_not_recovered_after_restart() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    app.focus_panel(3);
+    app.handle(Key::Char('t'), &mut FakeScreen::typing(&["/p"]));
+    type_in_app(&mut app, "must never become a TODO");
+    let drafts = fixture.path("state/claude-sessions/todo-drafts");
+    assert!(drafts.is_dir() && fs::read_dir(&drafts).unwrap().count() > 0, "native draft lacks a durable checkpoint");
+    app.handle(Key::Esc, &mut FakeScreen::default());
+    drop(app);
+    assert!(fixture.app().todos.items.is_empty());
+    assert_eq!(fs::read_dir(drafts).unwrap().count(), 0);
+}
+
+#[test]
+fn reviewed_cancellation_cleanup_failure_cannot_reactivate_add_or_edit_after_input() {
+    for edit in [true, false] {
+        let fixture = Fixture::new();
+        let mut app = fixture.app();
+        if edit {
+            app.todos.add("p", "/p", "original title");
+            app.build();
+        }
+        app.focus_panel(3);
+        app.handle(Key::Char(if edit { 'e' } else { 't' }), &mut FakeScreen::typing(&["/p"]));
+        type_in_app(&mut app, " cancelled text");
+        let directory = fixture.path("state/claude-sessions/todo-drafts");
+        let buffer = fs::read_dir(&directory).unwrap().map(|entry| entry.unwrap().path()).find(|path| path.extension().is_some_and(|extension| extension == "md")).unwrap();
+        fs::remove_file(&buffer).unwrap();
+        fs::create_dir(&buffer).unwrap();
+        let before = TodoList::load().items;
+        app.handle(Key::Esc, &mut FakeScreen::default());
+        assert!(buffer_text(&render(&mut app, 60, 30)).contains("Cannot discard draft"));
+        for key in [Key::Tab, Key::BackTab, Key::Left, Key::Right, Key::Up, Key::Down] {
+            app.handle(key, &mut FakeScreen::default());
+        }
+        type_in_app(&mut app, " must stay cancelled");
+        app.handle(Key::Paste("pasted after cancel".into()), &mut FakeScreen::default());
+        drop(app);
+        let restarted = fixture.app();
+        assert_eq!(restarted.todos.items, before, "cancelled {} was recovered after ordinary input", if edit { "edit" } else { "addition" });
+    }
+}
+
+#[test]
+fn reviewed_cancellation_cleanup_allows_only_esc_retry_for_add_and_edit() {
+    for edit in [true, false] {
+        let fixture = Fixture::new();
+        let mut app = fixture.app();
+        if edit {
+            app.todos.add("p", "/p", "original title");
+            app.build();
+        }
+        app.focus_panel(3);
+        app.handle(Key::Char(if edit { 'e' } else { 't' }), &mut FakeScreen::typing(&["/p"]));
+        type_in_app(&mut app, " cancelled text");
+        let directory = fixture.path("state/claude-sessions/todo-drafts");
+        let buffer = fs::read_dir(&directory).unwrap().map(|entry| entry.unwrap().path()).find(|path| path.extension().is_some_and(|extension| extension == "md")).unwrap();
+        fs::remove_file(&buffer).unwrap();
+        fs::create_dir(&buffer).unwrap();
+        let before = TodoList::load().items;
+        app.handle(Key::Esc, &mut FakeScreen::default());
+        for key in [Key::Tab, Key::Right, Key::Char('x'), Key::Ctrl('s'), Key::Enter] {
+            app.handle(key, &mut FakeScreen::default());
+        }
+        assert_eq!(TodoList::load().items, before, "save must not consume a cancelled draft");
+        let lock = fs::File::open(fixture.path("run/claude-todo-editor.lock")).unwrap();
+        assert!(lock.try_lock().is_err(), "cleanup still owns the reload guard");
+        fs::remove_dir(&buffer).unwrap();
+        app.handle(Key::Esc, &mut FakeScreen::default());
+        assert!(lock.try_lock().is_ok(), "Esc retry did not finish cleanup after removing the obstruction");
+        assert_eq!(fs::read_dir(&directory).unwrap().count(), 0);
+        drop(lock);
+        drop(app);
+        assert_eq!(fixture.app().todos.items, before);
+    }
+}
+
+#[test]
+fn integrated_native_checkpoint_failures_keep_the_latest_text_for_retry() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    app.focus_panel(3);
+    app.handle(Key::Char('t'), &mut FakeScreen::typing(&["/p"]));
+    type_in_app(&mut app, "first");
+    let metadata = fs::read_dir(fixture.path("state/claude-sessions/todo-drafts")).unwrap().map(|entry| entry.unwrap().path()).find(|path| path.extension().is_some_and(|extension| extension == "json")).unwrap();
+    let backup = metadata.with_extension("backup");
+    fs::rename(&metadata, &backup).unwrap();
+    fs::create_dir(&metadata).unwrap();
+    type_in_app(&mut app, " latest");
+    app.handle(Key::Ctrl('s'), &mut FakeScreen::default());
+    assert!(TodoList::load().items.is_empty());
+    assert!(buffer_text(&render(&mut app, 60, 30)).contains("first latest"));
+    fs::remove_dir(&metadata).unwrap();
+    fs::rename(backup, metadata).unwrap();
+    app.handle(Key::Ctrl('s'), &mut FakeScreen::default());
+    assert_eq!(TodoList::load().items[0].text(), "first latest");
+}
+
+#[test]
+fn integrated_native_durable_save_closes_even_if_retired_buffer_cleanup_fails() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    app.focus_panel(3);
+    app.handle(Key::Char('t'), &mut FakeScreen::typing(&["/p"]));
+    type_in_app(&mut app, "durably saved");
+    let buffer = fs::read_dir(fixture.path("state/claude-sessions/todo-drafts")).unwrap().map(|entry| entry.unwrap().path()).find(|path| path.extension().is_some_and(|extension| extension == "md")).unwrap();
+    fs::remove_file(&buffer).unwrap();
+    fs::create_dir(&buffer).unwrap();
+    app.handle(Key::Ctrl('s'), &mut FakeScreen::default());
+    assert_eq!(TodoList::load().items[0].text(), "durably saved");
+    let lock = fs::File::open(fixture.path("run/claude-todo-editor.lock")).unwrap();
+    assert!(lock.try_lock().is_ok(), "durable save left an editable draft under an already-consumed token");
+    drop(lock);
+    assert_eq!(app.todo_entries[app.panels[3].selected].key(), TodoList::load().items[0].id());
+    assert_eq!(fixture.app().todos.items.len(), 1);
+}
+
+#[test]
+fn integrated_failed_native_save_keeps_all_in_memory_list_state_for_retry() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    app.todos.issues.insert("owner/project#1".into(), json!({"status": "done", "updated": 0}));
+    app.todos.queued.insert("owner/project#1".into());
+    let before = app.todos.clone();
+    app.focus_panel(3);
+    app.handle(Key::Char('t'), &mut FakeScreen::typing(&["/p"]));
+    type_in_app(&mut app, "retry safely");
+    fs::create_dir_all(crate::paths::todo()).unwrap();
+    app.handle(Key::Ctrl('s'), &mut FakeScreen::default());
+    assert_eq!(app.todos.items, before.items);
+    assert_eq!(app.todos.issues, before.issues, "failed persistence pruned live issue state");
+    assert_eq!(app.todos.queued, before.queued, "failed persistence pruned the queue");
+}
+
+#[test]
+fn integrated_recovery_keeps_stale_edits_instead_of_overwriting_a_newer_draft() {
+    let fixture = Fixture::new();
+    let mut first = fixture.app();
+    first.todos.add("p", "/p", "original");
+    first.build();
+    first.focus_panel(3);
+    first.handle(Key::Char('e'), &mut FakeScreen::default());
+    type_in_app(&mut first, " stale");
+    let mut second = fixture.app();
+    second.focus_panel(3);
+    second.handle(Key::Char('e'), &mut FakeScreen::default());
+    type_in_app(&mut second, " accepted");
+    second.handle(Key::Ctrl('s'), &mut FakeScreen::default());
+    drop(first);
+    drop(second);
+    let recovered = fixture.app();
+    assert_eq!(recovered.todos.items[0].text(), "original accepted");
+    assert!(recovered.message.contains("drafts kept"));
+    assert!(fs::read_dir(fixture.path("state/claude-sessions/todo-drafts")).unwrap().count() > 0);
+}
+
+#[test]
+fn integrated_recovery_reads_legacy_metadata_and_ignores_cancelled_native_residue() {
+    let fixture = Fixture::new();
+    let draft = crate::todo_editor::Draft::create("legacy-project", "/legacy", None).unwrap();
+    let directory = fixture.path("state/claude-sessions/todo-drafts");
+    let metadata_path = directory.join(format!("{}.json", draft.token));
+    let mut metadata: Value = serde_json::from_slice(&fs::read(&metadata_path).unwrap()).unwrap();
+    metadata.as_object_mut().unwrap().remove("native");
+    metadata.as_object_mut().unwrap().remove("cancelled");
+    fs::write(&metadata_path, metadata.to_string()).unwrap();
+    fs::write(directory.join(format!("{}.md", draft.token)), "Legacy title\n\nLegacy notes\n").unwrap();
+    assert!(draft.has_title().unwrap());
+    let mut recovered = fixture.app();
+    assert_eq!((recovered.todos.items[0].project(), recovered.todos.items[0].text(), recovered.todos.items[0].notes()), ("legacy-project".into(), "Legacy title".into(), "Legacy notes".into()));
+    recovered.focus_panel(3);
+    recovered.handle(Key::Char('t'), &mut FakeScreen::typing(&["/p"]));
+    type_in_app(&mut recovered, "cancelled residue");
+    drop(recovered);
+    let path = fs::read_dir(&directory).unwrap().map(|entry| entry.unwrap().path()).find(|path| path.extension().is_some_and(|extension| extension == "json")).unwrap();
+    let mut metadata: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    metadata["cancelled"] = json!(true);
+    fs::write(path, metadata.to_string()).unwrap();
+    assert_eq!(fixture.app().todos.items.len(), 1);
+    assert_eq!(fs::read_dir(directory).unwrap().count(), 0);
+}
+
+#[test]
+fn reviewed_github_rows_keep_identity_title_and_queue_marker_at_narrow_widths() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    for repository in ["a", "example-project-with-a-long-name"] {
+        let mut issue = issue(123, "Recognizable issue title", &[]);
+        issue.repository = repository.into();
+        issue.full_repository = format!("owner/{repository}");
+        let key = issue.key();
+        app.reviews.set_issues(vec![issue]);
+        app.todos.queued.insert(key.clone());
+        app.build();
+        app.focus_panel(3);
+        for width in [40, 60] {
+            let buffer = render(&mut app, width, 40);
+            let row = *app.hit_lines.iter().find(|(_, value)| **value == (3, Some(0))).unwrap().0;
+            let rendered: String = (0..width).map(|column| buffer[(column, row)].symbol()).collect();
+            assert!(rendered.contains("#123") && rendered.contains("Recogniz") && rendered.contains('Q'), "{repository} at {width}: {rendered}");
+        }
+    }
+}
+
+#[test]
+fn reviewed_cross_session_saves_preserve_viewed_preferences_and_reveal_the_original_project() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "working", "project-a", "/r/a", 1), session(SESSION_B, "working", "project-b", "/r/b", 2)]));
+    for (edit, escape) in [(false, false), (false, true), (true, false), (true, true)] {
+        fixture.view(SESSION_B);
+        let mut app = fixture.app();
+        app.focus_panel(3);
+        app.handle(Key::Char('f'), &mut FakeScreen::typing(&["Bug"]));
+        for _ in 0..3 { app.handle(Key::Char(']'), &mut FakeScreen::default()); }
+        fixture.view(SESSION_A);
+        app.build();
+        app.handle(Key::Char('f'), &mut FakeScreen::typing(&["Feature"]));
+        let original = app.todos.add("project-a", "/r/a", "original title");
+        app.todos.set_category(&original, crate::todo::Category::Feature);
+        app.todos.set_status(&original, "doing", "");
+        app.build();
+        app.handle(Key::Char(if edit { 'e' } else { 't' }), &mut FakeScreen::default());
+        type_in_app(&mut app, " saved draft");
+        if !edit {
+            // Initial Task differs from A's Feature filter and B's Bug filter.
+            assert!(app.subtitle(3).contains("kind: Feature"));
+        }
+        fixture.view(SESSION_B);
+        app.build();
+        let mut other_issue = issue(42, "unrelated B issue", &[]);
+        other_issue.repository = "project-b".into();
+        other_issue.full_repository = "owner/project-b".into();
+        app.reviews.set_issues(vec![other_issue]);
+        app.handle(Key::Ctrl('s'), &mut FakeScreen::default());
+        assert_eq!(util::current_session(), SESSION_B, "save must not switch the viewed session");
+        assert_eq!(app.todo_scope, "project-a");
+        assert!(app.todo_entries.iter().all(|entry| matches!(entry, Entry::Typed(item) if item.project() == "project-a")), "the temporary project must not borrow B's GitHub rows");
+        let saved = &app.todo_entries[app.panels[3].selected];
+        assert!(matches!(saved, Entry::Typed(item) if item.project() == "project-a" && item.text().ends_with("saved draft")));
+        assert_eq!(app.todo_tab, if edit { 0 } else { 2 });
+        assert!(app.subtitle(3).contains("saved: project-a"), "{}", app.subtitle(3));
+        let narrow = buffer_text(&render(&mut app, 40, 40));
+        assert!(narrow.contains("saved: project-a"), "temporary project must remain explicit at 40 columns: {narrow}");
+        render(&mut app, 60, 40);
+        app.build();
+        assert_eq!(app.todo_scope, "project-a", "ordinary refresh must retain the saved-item scope");
+        // Esc explicitly returns to B without changing B's tab/filter.
+        if escape {
+            app.handle(Key::Esc, &mut FakeScreen::default());
+            assert_eq!((app.todo_scope.as_str(), app.todo_tab), ("project-b", 3));
+            assert!(app.subtitle(3).contains("kind: Bug"));
+        }
+        assert!(fixture.calls("tmux").iter().all(|call| !call.contains("select-pane") && !call.contains("switch-client") && !call.contains("select-window")));
+        // A subsequent deliberate view change must also expire any temporary scope.
+        fixture.view(SESSION_A);
+        app.build();
+        assert_eq!(app.todo_tab, if edit { 0 } else { 2 });
+        assert_eq!(app.subtitle(3).contains("kind: Feature"), edit);
+        assert!(!app.subtitle(3).contains("saved:"));
+        fixture.view(SESSION_B);
+        app.build();
+        assert_eq!(app.todo_tab, 3);
+        assert!(app.subtitle(3).contains("kind: Bug"));
+    }
+}
+
+#[test]
+fn reviewed_saved_project_scope_does_not_change_queue_dispatch() {
+    let (fixture, mut app) = queue_fixture("waiting", 600);
+    fixture.snapshot(json!([
+        session(SESSION_A, "waiting", "runway", "/r/runway", util::now() as i64 - 600),
+        session(SESSION_B, "working", "other-project", "/r/other", 2)
+    ]));
+    let queued = app.todos.add("runway", "/r/runway", "queued runway work");
+    app.todos.toggle_queued(&queued);
+    fixture.view(SESSION_B);
+    app.build();
+    app.focus_panel(3);
+    app.handle(Key::Char('t'), &mut FakeScreen::default());
+    type_in_app(&mut app, "other project draft");
+    fixture.view(SESSION_A);
+    app.build();
+    app.handle(Key::Ctrl('s'), &mut FakeScreen::default());
+    assert_eq!(app.todo_scope, "other-project");
+    assert!(!app.todo_entries.iter().any(|entry| entry.key() == queued));
+    app.dispatch_queue();
+    assert!(fixture.wait_for_calls("claude-sessions", 1)[0].contains("queued runway work"));
+    assert_eq!(TodoList::load().status_of(&queued), "doing");
+}
+
+fn type_in_app(app: &mut App, text: &str) {
+    for character in text.chars() { app.handle(Key::Char(character), &mut FakeScreen::default()); }
+}
+
+fn buffer_text(buffer: &Buffer) -> String {
+    (0..buffer.area.height).map(|row| (0..buffer.area.width).map(|column| buffer[(column, row)].symbol()).collect::<String>()).collect::<Vec<_>>().join("\n")
+}
+
+#[test]
+fn todo_composer_add_saves_one_complete_item_without_external_editor_or_picker() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "working", "runway", "/r/runway", 1)]));
+    fixture.view(SESSION_A);
+    let mut app = fixture.app();
+    app.focus_panel(3);
+    let screen = &mut FakeScreen::default();
+    app.handle(Key::Char('t'), screen);
+    let form = buffer_text(&render(&mut app, 60, 30));
+    assert!(form.contains("Kind") && form.contains("Title") && form.contains("Notes") && form.contains("Add TODO"), "{form}");
+    assert!(TodoList::load().items.is_empty());
+    type_in_app(&mut app, "Fix café 界 qtdjk123?");
+    app.handle(Key::BackTab, screen);
+    app.handle(Key::Right, screen);
+    app.handle(Key::Right, screen);
+    app.handle(Key::Tab, screen);
+    app.handle(Key::Tab, screen);
+    type_in_app(&mut app, "first");
+    app.handle(Key::Enter, screen);
+    type_in_app(&mut app, "second");
+    app.build();
+    render(&mut app, 40, 12);
+    render(&mut app, 100, 40);
+    assert!(TodoList::load().items.is_empty(), "refresh must not persist a draft");
+    app.handle(Key::Ctrl('s'), screen);
+    app.handle(Key::Ctrl('s'), screen);
+    let items = TodoList::load().items;
+    assert_eq!(items.len(), 1);
+    assert_eq!((items[0].text(), items[0].notes(), items[0].category()), ("Fix café 界 qtdjk123?".into(), "first\nsecond".into(), Some(crate::todo::Category::Bug)));
+    assert_eq!(app.todo_entries[app.panels[3].selected].key(), items[0].id());
+    assert_eq!(app.todo_tab, 2);
+    assert!(fixture.calls("tmux").iter().all(|call| !call.contains("display-popup")));
+    assert!(fixture.calls("fzf").is_empty());
+}
+
+#[test]
+fn todo_composer_cancel_preserves_disk_filters_queue_and_proposal_metadata() {
+    let fixture = Fixture::new();
+    fixture.write("state/claude-sessions/todo.json", &json!({"items": [
+        {"id": "0123abcd", "text": "original", "project": "p", "category": "future-kind", "status": "proposed", "kind": "design", "why": "reason", "source": "session s1", "notes": "old"}
+    ], "queued": ["0123abcd"]}).to_string());
+    let mut app = fixture.app();
+    app.focus_panel(3);
+    let screen = &mut FakeScreen::default();
+    let before = fs::read(crate::paths::todo()).unwrap();
+    app.handle(Key::Char('e'), screen);
+    type_in_app(&mut app, " changed");
+    app.handle(Key::Esc, screen);
+    assert_eq!(fs::read(crate::paths::todo()).unwrap(), before);
+    app.handle(Key::Char('e'), screen);
+    type_in_app(&mut app, " edited");
+    app.handle(Key::Ctrl('s'), screen);
+    let item = &TodoList::load().items[0];
+    assert_eq!(item.text(), "original edited");
+    assert_eq!(item.0["category"], "future-kind");
+    assert_eq!((item.status(), item.why(), item.source(), item.notes()), ("proposed".into(), "reason".into(), "session s1".into(), "old".into()));
+    assert!(item.is_design() && TodoList::load().is_queued("0123abcd"));
+    app.handle(Key::Char('f'), &mut FakeScreen::typing(&["Bug"]));
+    app.handle(Key::Char('t'), &mut FakeScreen::typing(&["/p"]));
+    type_in_app(&mut app, "unsaved");
+    app.handle(Key::Esc, screen);
+    assert!(app.subtitle(3).contains("kind: Bug"));
+    assert_eq!(TodoList::load().items.len(), 1);
+}
+
+#[test]
+fn todo_composer_validates_title_and_edits_unicode_at_the_cursor() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    app.focus_panel(3);
+    app.handle(Key::Char('t'), &mut FakeScreen::typing(&["/p"]));
+    let screen = &mut FakeScreen::default();
+    app.handle(Key::Ctrl('s'), screen);
+    let form = buffer_text(&render(&mut app, 60, 30));
+    assert!(form.contains("Title is required"), "{form}");
+    assert!(TodoList::load().items.is_empty());
+    type_in_app(&mut app, "a界b");
+    app.handle(Key::Left, screen);
+    app.handle(Key::Backspace, screen);
+    type_in_app(&mut app, "é");
+    app.handle(Key::Tab, screen);
+    type_in_app(&mut app, "one\ntwo");
+    app.handle(Key::Tab, screen);
+    app.handle(Key::Enter, screen);
+    let item = &TodoList::load().items[0];
+    assert_eq!((item.text(), item.notes()), ("aéb".into(), "one\ntwo".into()));
+}
+
+#[test]
+fn todo_composer_paste_is_text_even_when_it_contains_shortcuts_and_controls() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    app.focus_panel(3);
+    app.handle(Key::Char('t'), &mut FakeScreen::typing(&["/p"]));
+    app.handle(Key::Paste("qtdjk123\n界\tfin".into()), &mut FakeScreen::default());
+    app.handle(Key::Tab, &mut FakeScreen::default());
+    app.handle(Key::Paste("first\nsecond\tlast\u{1b}\u{13}".into()), &mut FakeScreen::default());
+    assert!(TodoList::load().items.is_empty());
+    app.handle(Key::Ctrl('s'), &mut FakeScreen::default());
+    let item = &TodoList::load().items[0];
+    assert_eq!((item.text(), item.notes()), ("qtdjk123 界 fin".into(), "first\nsecond last".into()));
+}
+
+#[test]
+fn todo_composer_keeps_focus_and_draft_at_all_terminal_sizes() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    app.focus_panel(3);
+    app.handle(Key::Char('t'), &mut FakeScreen::typing(&["/p"]));
+    type_in_app(&mut app, &"Long 界 title ".repeat(30));
+    app.handle(Key::Tab, &mut FakeScreen::default());
+    type_in_app(&mut app, &"long note 界\n".repeat(80));
+    for (width, height) in [(40, 14), (60, 30), (100, 40), (130, 50), (20, 8), (1, 1), (0, 0)] {
+        let buffer = render(&mut app, width, height);
+        if width >= 32 {
+            let cursor_cells: Vec<_> = buffer.content.iter().filter(|cell| cell.bg == crate::app::color(crate::app::BLUE)).collect();
+            assert_eq!(cursor_cells.len(), 1, "cursor missing or outside field at {width}x{height}");
+        } else if width == 20 {
+            assert!(buffer_text(&buffer).contains("Resize"));
+        }
+        app.build();
+    }
+    app.handle(Key::Ctrl('s'), &mut FakeScreen::default());
+    let item = &TodoList::load().items[0];
+    assert_eq!(item.text().chars().count(), 300);
+    assert!(item.notes().contains("long note 界\nlong note 界"));
+}
+
+#[test]
+fn compact_todo_keeps_core_actions_visible_and_long_project_names_off_titles() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    app.todos.add("a-very-long-project-name", "/p", "Readable title");
+    app.build();
+    app.focus_panel(3);
+    let buffer = render(&mut app, 60, 40);
+    let fixed = app.panels[3].fixed_top.iter().map(|line| line.texts()).collect::<Vec<_>>().join(" ");
+    for action in ["t Add", "e Edit", "K Kind", "f Filter", "Details"] { assert!(fixed.contains(action), "{fixed}"); }
+    let item_row = *app.hit_lines.iter().find(|(_, value)| **value == (3, Some(0))).unwrap().0;
+    let row: String = (0..60).map(|column| buffer[(column, item_row)].symbol()).collect();
+    assert!(row.contains("Readable title"), "{row}");
+}
+
+#[test]
+fn compact_todo_retains_queue_and_routing_markers_in_a_forty_column_row() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "working", "runway", "/r/runway", 1)]));
+    fixture.view(SESSION_A);
+    let mut app = fixture.app();
+    let id = design_item(&mut app, "runway", "/r/runway", "Readable title");
+    app.todos.set_category(&id, crate::todo::Category::Improvement);
+    app.todos.change_priority(&id, 4);
+    app.todos.toggle_queued(&id);
+    app.build();
+    app.focus_panel(3);
+    let buffer = render(&mut app, 40, 40);
+    let item_row = *app.hit_lines.iter().find(|(_, value)| **value == (3, Some(0))).unwrap().0;
+    let row: String = (0..40).map(|column| buffer[(column, item_row)].symbol()).collect();
+    assert!(row.contains("✎Q") && row.contains("!!!!") && row.contains("Readable"), "{row}");
+    let footer: String = (0..40).map(|column| buffer[(column, 39)].symbol()).collect();
+    assert!(footer.contains("Enter Details"), "{footer}");
+}
+
+#[test]
+fn compact_todo_summary_keeps_design_routing_visible_ahead_of_long_source_ids() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    let id = design_item(&mut app, "p", "/p", "design title");
+    app.todos.items.iter_mut().find(|item| item.id() == id).unwrap().0.insert("source".into(), json!(format!("session {SESSION_A}")));
+    app.todos.save();
+    app.build();
+    app.focus_panel(3);
+    let buffer = render(&mut app, 40, 40);
+    assert!(buffer_text(&buffer).lines().any(|line| line.contains("Task") && line.contains("Claude") && line.contains("Design")));
+    assert!(crate::app::todo_details(&app.todo_entries[0]).contains(SESSION_A));
+}
+
+#[test]
+fn compact_todo_scrolls_selection_past_headings_and_filters_without_index_drift() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    let doing = app.todos.add("p", "/p", "working");
+    app.todos.set_status(&doing, "doing", "");
+    let mut ids = Vec::new();
+    for index in 0..15 {
+        let id = app.todos.add("p", "/p", &format!("task {index:02}"));
+        app.todos.set_category(&id, crate::todo::Category::Bug);
+        ids.push(id);
+    }
+    app.build();
+    app.focus_panel(3);
+    let screen = &mut FakeScreen::default();
+    for _ in 0..15 { app.handle(Key::Down, screen); }
+    render(&mut app, 60, 16);
+    assert_eq!(app.todo_entries[app.panels[3].selected].key(), ids[14]);
+    assert!(app.hit_lines.values().any(|value| *value == (3, Some(15))));
+    app.handle(Key::Char('f'), &mut FakeScreen::typing(&["Bug"]));
+    for _ in 0..14 { app.handle(Key::Down, screen); }
+    render(&mut app, 60, 16);
+    let selected = app.todo_entries[app.panels[3].selected].key();
+    assert_eq!(selected, ids[14]);
+    app.handle(Key::Char('x'), screen);
+    assert!(!TodoList::load().items.iter().any(|item| item.id() == selected));
+    assert_eq!(TodoList::load().status_of(&doing), "doing");
+}
+
+#[test]
+fn todo_composer_can_retry_a_failed_write_without_mutating_the_list() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    app.focus_panel(3);
+    app.handle(Key::Char('t'), &mut FakeScreen::typing(&["/p"]));
+    type_in_app(&mut app, "retry title");
+    fs::create_dir_all(crate::paths::todo()).unwrap();
+    app.handle(Key::Ctrl('s'), &mut FakeScreen::default());
+    assert!(app.todos.items.is_empty());
+    assert!(buffer_text(&render(&mut app, 60, 30)).contains("retry title"));
+    fs::remove_dir(crate::paths::todo()).unwrap();
+    app.handle(Key::Ctrl('s'), &mut FakeScreen::default());
+    assert_eq!(TodoList::load().items.len(), 1);
+    assert_eq!(TodoList::load().items[0].text(), "retry title");
+}
+
+#[test]
+fn todo_composer_cycles_all_six_kinds_and_reveals_saved_items_after_filtering() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    app.focus_panel(3);
+    for (steps, expected) in ["task", "feature", "bug", "improvement", "chore", "research"].into_iter().enumerate() {
+        app.handle(Key::Char('f'), &mut FakeScreen::typing(&["Bug"]));
+        app.handle(Key::Char('t'), &mut FakeScreen::typing(&["/p"]));
+        type_in_app(&mut app, expected);
+        let screen = &mut FakeScreen::default();
+        app.handle(Key::BackTab, screen);
+        for _ in 0..steps { app.handle(Key::Right, screen); }
+        app.handle(Key::Ctrl('s'), screen);
+        let items = TodoList::load().items;
+        let item = items.iter().find(|item| item.text() == expected).unwrap();
+        assert_eq!(item.0["category"], expected);
+        assert_eq!(app.todo_entries[app.panels[3].selected].key(), item.id());
+        assert_eq!(app.subtitle(3).contains("kind: Bug"), expected == "bug");
+    }
+}
+
+#[test]
+fn todo_composer_multiline_arrows_keep_the_edit_on_the_intended_line() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    app.focus_panel(3);
+    app.handle(Key::Char('t'), &mut FakeScreen::typing(&["/p"]));
+    type_in_app(&mut app, "title");
+    let screen = &mut FakeScreen::default();
+    app.handle(Key::Tab, screen);
+    app.handle(Key::Paste("a界b\nxéz".into()), screen);
+    app.handle(Key::Left, screen);
+    app.handle(Key::Up, screen);
+    app.handle(Key::Backspace, screen);
+    type_in_app(&mut app, "c");
+    app.handle(Key::Down, screen);
+    app.handle(Key::Right, screen);
+    type_in_app(&mut app, "!");
+    app.handle(Key::Ctrl('s'), screen);
+    assert_eq!(TodoList::load().items[0].notes(), "acb\nxéz!");
+}
+
+#[test]
+fn compact_todo_groups_keep_actions_and_clicks_on_the_displayed_item() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "working", "runway", "/r/runway", 1)]));
+    fixture.view(SESSION_A);
+    let mut app = fixture.app();
+    let waiting = app.todos.add("runway", "/r", "waiting title");
+    app.todos.change_priority(&waiting, 4);
+    let doing = app.todos.add("runway", "/r", "working title");
+    app.todos.set_status(&doing, "doing", "");
+    app.build();
+    app.focus_panel(3);
+    render(&mut app, 60, 40);
+    assert_eq!(app.todo_entries.iter().map(Entry::key).collect::<Vec<_>>(), [doing.clone(), waiting.clone()]);
+    let headings: Vec<_> = app.panels[3].lines.iter().filter(|line| line.item.is_none()).map(|line| line.texts()).collect();
+    assert_eq!(headings, ["In progress", "To do"]);
+    let rows: Vec<_> = app.panels[3].lines.iter().filter(|line| line.item.is_some()).collect();
+    assert!(rows.iter().all(|line| !line.texts().contains("runway") && !line.texts().contains("Task")));
+    assert_eq!(rows[0].segments.last().unwrap().0, rows[1].segments.last().unwrap().0);
+    let click_row = *app.hit_lines.iter().find(|(_, value)| **value == (3, Some(1))).unwrap().0;
+    app.handle(Key::Click { x: 5, y: click_row, double: false }, &mut FakeScreen::default());
+    app.handle(Key::Char('Q'), &mut FakeScreen::default());
+    assert!(TodoList::load().is_queued(&waiting));
+    assert!(!TodoList::load().is_queued(&doing));
+    app.handle(Key::Up, &mut FakeScreen::default());
+    app.handle(Key::Char('d'), &mut FakeScreen::default());
+    assert_eq!(TodoList::load().status_of(&doing), "done");
+}
+
+#[test]
+fn compact_todo_summary_follows_selection_and_yields_to_short_heights() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    let id = app.todos.add("p", "/p", "selected full title");
+    app.todos.edit(&id, "selected full title", "\nfirst note\nsecond note");
+    app.build();
+    app.focus_panel(3);
+    render(&mut app, 60, 40);
+    assert_eq!(app.panels[3].fixed_bottom.len(), 3);
+    assert!(app.panels[3].fixed_bottom[0].texts().contains("selected full title"));
+    assert_eq!(app.panels[3].fixed_bottom[2].texts(), "first note");
+    assert!(!app.panels[3].fixed_top.is_empty());
+    app.focus_panel(1);
+    render(&mut app, 60, 40);
+    assert!(app.panels[3].fixed_bottom.is_empty());
+    app.focus_panel(3);
+    render(&mut app, 40, 12);
+    assert!(app.panels[3].fixed_bottom.is_empty());
+}
+
 fn issue(number: i64, title: &str, labels: &[&str]) -> Issue {
     Issue { number, title: title.into(), url: String::new(), repository: "runway".into(), full_repository: "o/runway".into(),
             updated: format!("2026-10-1{number}T00:00:00Z"), labels: labels.iter().map(|l| l.to_string()).collect() }
@@ -2795,7 +3468,7 @@ fn a_card_shows_its_role_and_a_design_item_its_mark() {
     app.build();
     let parts = |panel: usize| app.panels[panel].lines.iter().chain(&app.panels[panel].fixed_bottom).flat_map(|line| line.right.iter().map(|part| part.text.clone())).collect::<Vec<_>>();
     assert!(parts(1).contains(&"✎ designer".to_string()), "{:?}", parts(1));
-    assert!(parts(3).contains(&"✎ design".to_string()), "{:?}", parts(3));
+    assert!(parts(3).contains(&"✎".to_string()), "{:?}", parts(3));
 }
 
 #[test]
@@ -2954,7 +3627,8 @@ fn todo_rows_and_details_show_the_kind_alongside_design_routing() {
     app.todos.add("runway", "/r/runway", "old task");
     app.build();
     let badges: Vec<_> = app.panels[3].lines.iter().flat_map(|line| &line.right).map(|part| part.text.as_str()).collect();
-    assert!(badges.contains(&"Feature") && badges.contains(&"Task") && badges.contains(&"✎ design"), "{badges:?}");
+    assert!(badges.contains(&"✎") && !badges.contains(&"Task"), "{badges:?}");
+    assert!(app.panels[3].lines.iter().any(|line| line.texts().contains("Feature")));
     let details = crate::app::todo_details(app.todo_entries.iter().find(|entry| entry.key() == id).unwrap());
     assert!(details.contains("Kind: Feature"), "{details}");
 }
@@ -3066,31 +3740,45 @@ fn add_and_edit_choose_a_kind_before_saving() {
     let fixture = Fixture::new();
     fixture.snapshot(json!([session(SESSION_A, "working", "runway", "/r/runway", 1)]));
     fixture.view(SESSION_A);
-    fixture.shim("tmux", r#"[ "$1" = display-popup ] || exit 0; for last; do :; done; printf 'New title\n\nNew notes\n' > "$last""#);
     let mut app = fixture.app();
     app.focus_panel(3);
-    app.handle(Key::Char('t'), &mut FakeScreen::typing(&["Feature"]));
+    let screen = &mut FakeScreen::default();
+    app.handle(Key::Char('t'), screen);
+    type_in_app(&mut app, "New title");
+    app.handle(Key::BackTab, screen);
+    app.handle(Key::Right, screen);
+    app.handle(Key::Tab, screen);
+    app.handle(Key::Tab, screen);
+    type_in_app(&mut app, "New notes");
+    app.handle(Key::Ctrl('s'), screen);
     let items = TodoList::load().items;
     assert_eq!(items.len(), 1);
     assert_eq!(items[0].category(), Some(crate::todo::Category::Feature));
-    app.handle(Key::Char('e'), &mut FakeScreen::typing(&["Research"]));
+    app.handle(Key::Char('e'), screen);
+    app.handle(Key::BackTab, screen);
+    app.handle(Key::Left, screen);
+    app.handle(Key::Left, screen);
+    app.handle(Key::Ctrl('s'), screen);
     let item = &TodoList::load().items[0];
     assert_eq!((item.text(), item.notes(), item.category()), ("New title".into(), "New notes".into(), Some(crate::todo::Category::Research)));
 }
 
 #[test]
-fn cancelling_add_or_edit_kind_picker_discards_editor_changes() {
+fn cancelling_add_or_edit_form_discards_all_draft_changes() {
     let fixture = Fixture::new();
     fixture.snapshot(json!([session(SESSION_A, "working", "runway", "/r/runway", 1)]));
     fixture.view(SESSION_A);
-    fixture.shim("tmux", r#"[ "$1" = display-popup ] || exit 0; for last; do :; done; printf 'Changed title\n\nChanged notes\n' > "$last""#);
     let mut app = fixture.app();
     app.focus_panel(3);
     app.handle(Key::Char('t'), &mut FakeScreen::default());
+    type_in_app(&mut app, "Changed title");
+    app.handle(Key::Esc, &mut FakeScreen::default());
     assert!(TodoList::load().items.is_empty());
     app.todos.add("runway", "/r", "original");
     app.build();
     app.handle(Key::Char('e'), &mut FakeScreen::default());
+    type_in_app(&mut app, "Changed title");
+    app.handle(Key::Esc, &mut FakeScreen::default());
     assert_eq!(TodoList::load().items[0].text(), "original");
 }
 
@@ -4017,11 +4705,14 @@ fn todo_drafts_recover_an_interrupted_addition_in_its_original_project_once() {
     let fixture = Fixture::new();
     fixture.view(SESSION_A);
     fixture.snapshot(json!([session(SESSION_A, "waiting", "runway", "/r/runway", 100)]));
-    fixture.shim("tmux", r#"[ "$1" = display-popup ] || exit 0; for last; do :; done; printf 'Original draft\n\nKeep these notes\n' > "$last"; exit 7"#);
     let mut app = fixture.app();
     app.focus_panel(3);
     app.handle(Key::Char('t'), &mut FakeScreen::default());
+    type_in_app(&mut app, "Original draft");
+    app.handle(Key::Tab, &mut FakeScreen::default());
+    type_in_app(&mut app, "Keep these notes");
     assert!(TodoList::load().items.is_empty(), "an editor failure must retain a draft, not claim a save");
+    drop(app);
     fixture.view(SESSION_B);
     fixture.snapshot(json!([session(SESSION_B, "waiting", "opusline", "/r/opusline", 100)]));
     let recovered = fixture.app();
@@ -4036,14 +4727,18 @@ fn todo_drafts_recover_an_interrupted_addition_in_its_original_project_once() {
 #[test]
 fn todo_drafts_recover_edits_without_changing_identity_or_status() {
     let fixture = Fixture::new();
-    fixture.shim("tmux", r#"[ "$1" = display-popup ] || exit 0; for last; do :; done; printf 'Recovered edit\n\nNew notes\n' > "$last"; exit 7"#);
     let mut app = fixture.app();
     let id = app.todos.add("runway", "/r/runway", "Original");
     app.todos.set_status(&id, "doing", SESSION_A);
     app.build();
     app.focus_panel(3);
     app.handle(Key::Char('e'), &mut FakeScreen::default());
+    for _ in 0..8 { app.handle(Key::Backspace, &mut FakeScreen::default()); }
+    type_in_app(&mut app, "Recovered edit");
+    app.handle(Key::Tab, &mut FakeScreen::default());
+    type_in_app(&mut app, "New notes");
     assert_eq!(TodoList::load().items[0].text(), "Original");
+    drop(app);
     let recovered = fixture.app();
     assert_eq!(recovered.todos.items.len(), 1);
     let item = &recovered.todos.items[0];
@@ -4056,11 +4751,16 @@ fn todo_drafts_survive_a_failed_list_save_and_recover_after_it_is_fixed() {
     let fixture = Fixture::new();
     fixture.view(SESSION_A);
     fixture.snapshot(json!([session(SESSION_A, "waiting", "runway", "/r/runway", 100)]));
-    fixture.shim("tmux", r#"[ "$1" = display-popup ] || exit 0; for last; do :; done; printf 'Do not lose me\n' > "$last""#);
     let mut app = fixture.app();
     fs::create_dir_all(fixture.path("state/claude-sessions/todo.json")).unwrap();
     app.focus_panel(3);
-    app.handle(Key::Char('t'), &mut FakeScreen::typing(&["Bug"]));
+    app.handle(Key::Char('t'), &mut FakeScreen::default());
+    type_in_app(&mut app, "Do not lose me");
+    for key in [Key::BackTab, Key::Right, Key::Right] { app.handle(key, &mut FakeScreen::default()); }
+    app.handle(Key::Ctrl('s'), &mut FakeScreen::default());
+    assert!(buffer_text(&render(&mut app, 60, 30)).contains("draft kept"));
+    drop(app);
+    let app = fixture.app();
     assert!(app.message.contains("draft") && !app.message.starts_with("added"), "{}", app.message);
     assert!(fixture.app().message.contains("draft"), "startup should report the failed recovery");
     fs::remove_dir(fixture.path("state/claude-sessions/todo.json")).unwrap();
@@ -4074,14 +4774,15 @@ fn todo_drafts_are_not_recovered_while_an_editor_is_active() {
     let fixture = Fixture::new();
     fixture.view(SESSION_A);
     fixture.snapshot(json!([session(SESSION_A, "waiting", "runway", "/r/runway", 100)]));
-    fixture.shim("tmux", r#"[ "$1" = display-popup ] || exit 0; for last; do :; done; printf 'Still editing\n' > "$last"; exit 7"#);
     let mut app = fixture.app();
     app.focus_panel(3);
     app.handle(Key::Char('t'), &mut FakeScreen::default());
+    type_in_app(&mut app, "Still editing");
     let lock = fs::File::open(fixture.path("run/claude-todo-editor.lock")).unwrap();
     lock.lock_shared().unwrap();
     let mut restarted = fixture.app();
     assert!(restarted.todos.items.is_empty());
+    drop(app);
     drop(lock);
     restarted.tick();
     assert_eq!(restarted.todos.items[0].text(), "Still editing");
@@ -4091,14 +4792,15 @@ fn todo_drafts_are_not_recovered_while_an_editor_is_active() {
 fn todo_drafts_cancel_a_blank_first_line_without_promoting_notes_to_the_title() {
     for is_interrupted in [false, true] {
         let fixture = Fixture::new();
-        fixture.shim("tmux", &format!(r#"[ "$1" = display-popup ] || exit 0; for last; do :; done; printf '\n\nExisting notes\n' > "$last"; exit {}"#,
-            if is_interrupted { 7 } else { 0 }));
         let mut app = fixture.app();
         let id = app.todos.add("runway", "/r/runway", "Original title");
         app.todos.edit(&id, "Original title", "Existing notes");
         app.build();
         app.focus_panel(3);
         app.handle(Key::Char('e'), &mut FakeScreen::default());
+        for _ in 0..14 { app.handle(Key::Backspace, &mut FakeScreen::default()); }
+        if !is_interrupted { app.handle(Key::Esc, &mut FakeScreen::default()); }
+        drop(app);
         let recovered = fixture.app();
         assert_eq!((recovered.todos.items[0].text(), recovered.todos.items[0].notes()),
                    ("Original title".into(), "Existing notes".into()));
@@ -4126,7 +4828,10 @@ fn todo_drafts_do_not_reopen_a_buffer_recovered_before_the_popup_acquired_its_lo
     "#);
     let mut app = fixture.app();
     app.focus_panel(3);
-    app.handle(Key::Char('t'), &mut FakeScreen::default());
+    let editor_lock = crate::todo_editor::lock().unwrap();
+    let draft = crate::todo_editor::Draft::create("runway", "/r/runway", None).unwrap();
+    assert!(draft.edit("legacy delayed popup").is_err());
+    drop(editor_lock);
     let deadline = std::time::Instant::now() + Duration::from_secs(3);
     while !fixture.path("run/popup-waiting").exists() && std::time::Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(10));
@@ -4160,7 +4865,10 @@ fn todo_drafts_wait_for_the_popup_process_after_the_sidebar_stops_waiting() {
     "#);
     let mut app = fixture.app();
     app.focus_panel(3);
-    app.handle(Key::Char('t'), &mut FakeScreen::default());
+    let editor_lock = crate::todo_editor::lock().unwrap();
+    let draft = crate::todo_editor::Draft::create("runway", "/r/runway", None).unwrap();
+    assert!(draft.edit("legacy active popup").is_err());
+    drop(editor_lock);
     let deadline = std::time::Instant::now() + Duration::from_secs(3);
     while !fixture.path("run/editor-ready").exists() && std::time::Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(10));
@@ -4186,24 +4894,25 @@ fn todo_drafts_left_after_a_successful_save_do_not_create_duplicates() {
         let fixture = Fixture::new();
         fixture.view(SESSION_A);
         fixture.snapshot(json!([session(SESSION_A, "waiting", "runway", "/r/runway", 100)]));
-        fixture.shim("tmux", r#"
-            [ "$1" = display-popup ] || exit 0
-            for last; do :; done
-            printf 'Saved before crash\n\nImportant notes\n' > "$last"
-            cp -r "$(dirname "$last")" "$XDG_RUNTIME_DIR/draft-backup"
-        "#);
         let mut app = fixture.app();
         if is_edit {
             app.todos.add("runway", "/r/runway", "Old title");
             app.build();
         }
         app.focus_panel(3);
-        app.handle(Key::Char(if is_edit { 'e' } else { 't' }), &mut FakeScreen::typing(&["Task"]));
-        let saved_id = TodoList::load().items[0].id();
-        for entry in fs::read_dir(fixture.path("run/draft-backup")).unwrap() {
+        app.handle(Key::Char(if is_edit { 'e' } else { 't' }), &mut FakeScreen::default());
+        if is_edit { for _ in 0..9 { app.handle(Key::Backspace, &mut FakeScreen::default()); } }
+        type_in_app(&mut app, "Saved before crash");
+        app.handle(Key::Tab, &mut FakeScreen::default());
+        type_in_app(&mut app, "Important notes");
+        let drafts = fixture.path("state/claude-sessions/todo-drafts");
+        let backup: Vec<_> = fs::read_dir(&drafts).unwrap().map(|entry| {
             let entry = entry.unwrap();
-            fs::copy(entry.path(), fixture.path("state/claude-sessions/todo-drafts").join(entry.file_name())).unwrap();
-        }
+            (entry.file_name(), fs::read(entry.path()).unwrap())
+        }).collect();
+        app.handle(Key::Ctrl('s'), &mut FakeScreen::default());
+        let saved_id = TodoList::load().items[0].id();
+        for (name, contents) in backup { fs::write(drafts.join(name), contents).unwrap(); }
         let recovered = fixture.app();
         assert_eq!(recovered.todos.items.len(), 1);
         assert_eq!(recovered.todos.items[0].id(), saved_id);
@@ -4212,15 +4921,15 @@ fn todo_drafts_left_after_a_successful_save_do_not_create_duplicates() {
 }
 
 #[test]
-fn todo_drafts_report_editor_startup_failure_without_losing_existing_text() {
+fn todo_drafts_report_native_startup_failure_without_losing_existing_text() {
     let fixture = Fixture::new();
-    fixture.shim("tmux", "exit 127");
     let mut app = fixture.app();
     app.todos.add("runway", "/r/runway", "Keep my existing text");
     app.build();
     app.focus_panel(3);
+    fixture.write("state/claude-sessions/todo-drafts", "not a writable draft directory");
     app.handle(Key::Char('e'), &mut FakeScreen::default());
-    assert!(app.message.contains("draft kept"), "{}", app.message);
+    assert!(app.message.contains("cannot protect the TODO draft"), "{}", app.message);
     assert_eq!(TodoList::load().items[0].text(), "Keep my existing text");
     assert_eq!(fixture.app().todos.items[0].text(), "Keep my existing text");
 }
@@ -4231,10 +4940,10 @@ fn todo_drafts_cancel_empty_titles_and_leave_untracked_legacy_text_alone() {
     fixture.view(SESSION_A);
     fixture.snapshot(json!([session(SESSION_A, "waiting", "runway", "/r/runway", 100)]));
     fixture.write("run/claude-todo-old.md", "Legacy draft without a project\n");
-    fixture.shim("tmux", r#"[ "$1" = display-popup ] || exit 0; for last; do :; done; printf '\n' > "$last""#);
     let mut app = fixture.app();
     app.focus_panel(3);
     app.handle(Key::Char('t'), &mut FakeScreen::default());
+    app.handle(Key::Esc, &mut FakeScreen::default());
     assert!(fixture.app().todos.items.is_empty());
     assert!(fixture.path("run/claude-todo-old.md").exists());
     let drafts = fixture.path("state/claude-sessions/todo-drafts");
@@ -4248,24 +4957,21 @@ fn todo_editor_holds_the_reload_lock_for_additions_and_edits() {
         let fixture = Fixture::new();
         fixture.view(SESSION_A);
         fixture.snapshot(json!([session(SESSION_A, "waiting", "runway", "/r/runway", 100)]));
-        fixture.shim("tmux", r#"
-            [ "$1" = display-popup ] || exit 0
-            if flock -n "$XDG_RUNTIME_DIR/claude-todo-editor.lock" true; then
-                printf 'reload was allowed during editing' > "$XDG_RUNTIME_DIR/unprotected"
-            fi
-            for last; do :; done
-            printf 'Saved title\n\nSaved notes\n' > "$last"
-        "#);
         let mut app = fixture.app();
         if is_edit {
             app.todos.add("runway", "/r/runway", "Original title");
             app.build();
         }
         app.focus_panel(3);
-        app.handle(Key::Char(if is_edit { 'e' } else { 't' }), &mut FakeScreen::typing(&["Task"]));
-        assert!(!fixture.path("run/unprotected").exists(), "editor ran without the reload lock");
-        assert_eq!(TodoList::load().items[0].text(), "Saved title");
+        app.handle(Key::Char(if is_edit { 'e' } else { 't' }), &mut FakeScreen::default());
         let lock = fs::File::open(fixture.path("run/claude-todo-editor.lock")).unwrap();
+        assert!(lock.try_lock().is_err(), "native form released the reload lock before saving");
+        if is_edit { for _ in 0..14 { app.handle(Key::Backspace, &mut FakeScreen::default()); } }
+        type_in_app(&mut app, "Saved title");
+        app.handle(Key::Tab, &mut FakeScreen::default());
+        type_in_app(&mut app, "Saved notes");
+        app.handle(Key::Ctrl('s'), &mut FakeScreen::default());
+        assert_eq!(TodoList::load().items[0].text(), "Saved title");
         assert!(lock.try_lock().is_ok(), "lock leaked after saving");
     }
 }
@@ -4280,15 +4986,35 @@ fn the_editor_file_gives_back_a_title_and_notes() {
 }
 
 #[test]
-fn e_saves_what_was_written_in_the_editor() {
+fn the_form_saves_multiline_notes_and_sanitizes_control_characters() {
     let fixture = Fixture::new();
-    // The popup's editor: it rewrites the file given last.
-    fixture.shim("tmux", r#"[[ $1 == display-popup ]] || exit 0; for last; do :; done; printf 'Better title\n\nfirst note\n' > "$last""#);
+    let mut app = fixture.app();
+    app.focus_panel(3);
+    app.handle(Key::Char('t'), &mut FakeScreen::typing(&["/p"]));
+    app.handle(Key::Paste(" New\n title ".into()), &mut FakeScreen::default());
+    app.handle(Key::Tab, &mut FakeScreen::default());
+    app.handle(Key::Paste(format!("## Steps\n1. this\n2. that\n{}", "界".repeat(4100))), &mut FakeScreen::default());
+    app.handle(Key::Ctrl('s'), &mut FakeScreen::default());
+    let item = &TodoList::load().items[0];
+    assert_eq!(item.text(), "New title");
+    assert!(item.notes().starts_with("## Steps\n1. this\n2. that\n"));
+    assert_eq!(item.notes().chars().count(), 4000);
+}
+
+#[test]
+fn e_saves_what_was_written_in_the_native_form() {
+    let fixture = Fixture::new();
     let mut app = fixture.app();
     let id = app.todos.add("p", "/p", "draft");
     app.build();
     app.focus_panel(3);
-    app.handle(Key::Char('e'), &mut FakeScreen::typing(&["Task"]));
+    let screen = &mut FakeScreen::default();
+    app.handle(Key::Char('e'), screen);
+    for _ in 0..5 { app.handle(Key::Backspace, screen); }
+    type_in_app(&mut app, "Better title");
+    app.handle(Key::Tab, screen);
+    type_in_app(&mut app, "first note");
+    app.handle(Key::Ctrl('s'), screen);
     let item = TodoList::load().items.into_iter().find(|item| item.id() == id).unwrap();
     assert_eq!((item.text().as_str(), item.notes().as_str()), ("Better title", "first note"));
 }
@@ -4399,7 +5125,7 @@ fn external_sessions_reject_terminal_controls_without_running_commands() {
         app.sessions = sessions::reported();
         assert_eq!(app.sessions.len(), 1);
         for key in [Key::Enter, Key::Char('r'), Key::Char('e'), Key::Char('$'), Key::Char('C'), Key::Char('x')] {
-            app.handle(key, &mut FakeScreen::answering(&[Key::Char('y')]));
+            app.handle(key.clone(), &mut FakeScreen::answering(&[Key::Char('y')]));
             assert!(app.message.contains("external") && app.message.contains("terminal"), "{agent}: {key:?}: {}", app.message);
             assert!(app.menu.is_none());
         }

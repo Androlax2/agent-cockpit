@@ -231,6 +231,7 @@ pub fn without_controls(text: &str) -> String {
     text.chars().map(|c| if c.is_control() && c != '\n' { ' ' } else { c }).collect()
 }
 
+#[derive(Clone)]
 pub struct TodoList {
     pub items: Vec<Item>,
     pub issues: Map<String, Value>, // "owner/repo#12" -> {"status", "updated", "session"}
@@ -324,7 +325,7 @@ impl TodoList {
         if title.is_empty() {
             return Err(Error::new(ErrorKind::InvalidInput, "empty TODO title"));
         }
-        let previous_items = self.items.clone();
+        let previous = self.clone();
         let item = if let Some(item) = self.items.iter_mut().find(|item| item.id() == draft.id) {
             if item.project() != draft.project || item.cwd() != draft.cwd {
                 return Err(Error::new(ErrorKind::InvalidData, "draft destination does not match its TODO"));
@@ -349,14 +350,14 @@ impl TodoList {
         item.0.insert("editor_draft".into(), json!(draft.token));
         if let Some(category) = &draft.category {
             if Category::parse(category).is_none() {
-                self.items = previous_items;
+                *self = previous;
                 return Err(Error::new(ErrorKind::InvalidData, "invalid draft category"));
             }
             item.0.insert("category".into(), json!(category));
         }
         item.0.insert("updated".into(), json!(now_secs()));
         if let Err(error) = self.try_save() {
-            self.items = previous_items;
+            *self = previous;
             return Err(error);
         }
         Ok(())
