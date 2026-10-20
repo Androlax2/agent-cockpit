@@ -2360,6 +2360,64 @@ fi"#, approvals.display()));
     assert!(manager.calls("systemctl").iter().any(|call| call == "systemctl --user restart osd.service"), "{:?}", manager.calls("systemctl"));
 }
 
+/// The fake tmux lists one approval, claude-run-0123456789ab, for as long as the test runs.
+fn approval_stays_open(manager: &Manager) {
+    manager.sandbox.shim("tmux", r#"[[ $1 == list-sessions ]] && echo claude-run-0123456789ab; exit 0"#);
+}
+
+/// ask-to-run's heartbeat for the open approval, last written `age` ago.
+fn heartbeat(manager: &Manager, age: std::time::Duration) -> PathBuf {
+    let runs = manager.sandbox.home.join(".cache/claude/runs");
+    fs::create_dir_all(&runs).unwrap();
+    let path = runs.join("0123456789ab.waiting");
+    fs::write(&path, "").unwrap();
+    fs::File::options().write(true).open(&path).unwrap().set_modified(std::time::SystemTime::now() - age).unwrap();
+    path
+}
+
+#[test]
+fn an_approval_nobody_waits_for_holds_no_restart_back() {
+    // A command hung on a prompt after its ask-to-run gave up kept the old daemon for hours (2026-10-20).
+    let manager = Manager::new();
+    let binary = osd_daemon(&manager, 3600, 60);
+    approval_stays_open(&manager);
+    heartbeat(&manager, std::time::Duration::from_secs(600));
+    let waiter = manager.sandbox.command(bin().join("claude-sessions"), &[("CLAUDE_SESSIONS_OSD_BINARY", &binary)])
+        .arg("restart-osd-when-idle").stdout(std::process::Stdio::null()).spawn().unwrap();
+    finish(waiter, std::time::Duration::from_secs(10));
+    assert_eq!(restarts(&manager), 1);
+}
+
+#[test]
+fn an_approval_ask_to_run_still_waits_for_holds_the_restart() {
+    let manager = Manager::new();
+    let binary = osd_daemon(&manager, 3600, 60);
+    approval_stays_open(&manager);
+    let beat = heartbeat(&manager, std::time::Duration::from_secs(5));
+    let waiter = manager.sandbox.command(bin().join("claude-sessions"), &[("CLAUDE_SESSIONS_OSD_BINARY", &binary)])
+        .arg("restart-osd-when-idle").stdout(std::process::Stdio::null()).spawn().unwrap();
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    assert_eq!(restarts(&manager), 0);
+    fs::File::options().write(true).open(&beat).unwrap().set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(600)).unwrap();
+    finish(waiter, std::time::Duration::from_secs(10));
+    assert_eq!(restarts(&manager), 1);
+}
+
+#[test]
+fn a_waiting_restart_names_the_approval_it_waits_on() {
+    let manager = Manager::new();
+    let binary = osd_daemon(&manager, 3600, 60);
+    let approvals = manager.sandbox.root.join("approvals-left");
+    fs::write(&approvals, "1").unwrap();
+    manager.sandbox.shim("tmux", &format!(r#"if [[ $1 == list-sessions ]]; then
+  left=$(cat {0}); if (( left > 0 )); then echo claude-run-0123456789ab; echo $(( left - 1 )) > {0}; fi; exit 0
+fi"#, approvals.display()));
+    let waiter = manager.sandbox.command(bin().join("claude-sessions"), &[("CLAUDE_SESSIONS_OSD_BINARY", &binary)])
+        .arg("restart-osd-when-idle").stdout(std::process::Stdio::null()).spawn().unwrap();
+    finish(waiter, std::time::Duration::from_secs(10));
+    assert!(manager.log_lines().iter().any(|line| line.ends_with("osd.service restart waits on claude-run-0123456789ab")), "{:?}", manager.log_lines());
+}
+
 /// The work clone's export replaced by one commit that changes apps/.
 fn export_an_apps_change(work: &Path) {
     fs::create_dir(work.join("apps")).unwrap();

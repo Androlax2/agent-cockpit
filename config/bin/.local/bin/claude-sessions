@@ -956,13 +956,39 @@ restart_stale_osd() {
 # that the daemon still runs an older build before it restarts it.
 OSD_RESTART_LOCK="${XDG_RUNTIME_DIR:-/tmp}/claude-sessions.osd-restart.lock"
 
+# The daemon's ABANDONED_AFTER: an approval nobody waited for this long holds no restart back. A
+# command that hung on a prompt after its ask-to-run gave up (2026-10-20 16:03) kept the old daemon
+# running for hours; its pane and window still close by themselves when it ends.
+OSD_APPROVAL_ABANDONED_S=300
+
+# The approvals (claude-run-<id> tmux sessions) someone still waits for: ask-to-run's heartbeat, or
+# before its first beat the daemon's copy of the request, is recent. With neither file there is
+# nothing to judge by, and the approval counts, as in the daemon.
+awaited_approvals() {
+    local name id stamp touched
+    while read -r name; do
+        id=${name#claude-run-}
+        stamp="$HOME/.cache/claude/runs/$id.waiting"
+        [[ -e $stamp ]] || stamp="${XDG_RUNTIME_DIR:-/tmp}/claude-requests/$id.request"
+        if touched=$(stat -c %Y "$stamp" 2>/dev/null) && (( $(date +%s) - touched > OSD_APPROVAL_ABANDONED_S )); then
+            continue
+        fi
+        echo "$name"
+    done < <(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep '^claude-run-[0-9a-f]\{12\}$')
+}
+
 restart_osd_when_idle() {
     exec {lock}>"$OSD_RESTART_LOCK"
     if ! flock -n "$lock"; then
         log_event INFO manager "osd.service restart already waiting: this one leaves"
         return 0
     fi
-    while tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -q '^claude-run-'; do
+    local awaited reported=""
+    while awaited=$(awaited_approvals) && [[ -n $awaited ]]; do
+        if [[ $awaited != "$reported" ]]; then
+            log_event INFO manager "osd.service restart waits on $(paste -sd ' ' <<< "$awaited")"
+            reported=$awaited
+        fi
         sleep 2
     done
     if ! osd_is_stale; then
