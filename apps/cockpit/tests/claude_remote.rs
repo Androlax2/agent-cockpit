@@ -370,7 +370,7 @@ fn each_card_carries_what_its_agent_can_do_and_the_agents_are_listed() {
     assert!(features(SESSION_A).as_array().unwrap().contains(&json!("dialogs")), "{cards}");
     assert_eq!(features(OPENCODE_SESSION), json!(["interrupt", "variants"]));
     let agents = remote.get_json(&secret, "/api/agents");
-    assert_eq!(agents, json!([{"name": "claude", "label": "Claude Code"}, {"name": "opencode", "label": "opencode"}]));
+    assert_eq!(agents, json!([{"name": "claude", "label": "Claude Code"}, {"name": "opencode", "label": "opencode"}, {"name": "codex", "label": "Codex CLI"}]));
 }
 
 #[test]
@@ -685,7 +685,7 @@ fn a_session_starts_only_in_a_listed_project() {
 
 #[test]
 fn a_session_starts_only_with_an_agent_the_column_offers() {
-    for body in [json!({"agent": "codex"}), json!({})] {
+    for body in [json!({"agent": "unknown-agent"}), json!({})] {
         let remote = Remote::start();
         let secret = remote.paired();
         remote.sandbox.shim("claude-sessions", "exit 0");
