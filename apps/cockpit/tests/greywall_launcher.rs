@@ -53,7 +53,9 @@ impl Launch {
                                                                      if [ \"$1\" = env ] || [ -x \"$1\" ]; then exec \"$@\"; fi\n");
         // Records its arguments and the environment it got, one line each.
         write_executable(&sandbox.home.join(".opencode/bin/opencode"), "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$HOME/opencode-arguments\"\n\
-                                                                         env > \"$HOME/opencode-environment\"\n");
+                                                                          env > \"$HOME/opencode-environment\"\n");
+        write_executable(&sandbox.home.join(".local/bin/claude"), "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$HOME/claude-arguments\"\n\
+                                                                         env > \"$HOME/claude-environment\"\n");
         sandbox.shim("dig", "echo 127.0.0.1");
         sandbox.shim("secret-tool", r#"case "$3" in
   agent-anthropic) [ -n "${SHIM_ANTHROPIC_KEY:-}" ] && echo "$SHIM_ANTHROPIC_KEY" || exit 1 ;;
@@ -128,24 +130,121 @@ fn only_the_projects_own_answers_folder_is_mounted() {
     }
 }
 
-/// A process named like FigCraft, with the given command line.
-fn fake_figcraft(command_line: &str) -> std::process::Child {
-    Command::new("bash").args(["-c", &format!("exec -a '{command_line}' sleep 30")]).spawn().unwrap()
+fn managed_figcraft(launch: &Launch, port: &str, root: &str, additional_roots: &[&str]) -> WaitingProcess {
+    let storage = launch.sandbox.home.join(".config/greywall-agents/figcraft");
+    fs::create_dir_all(storage.join("ports")).unwrap();
+    fs::write(storage.join("ports").join(port), format!("{root}\n")).unwrap();
+    let config = storage.join(format!("instances/{port}/config"));
+    fs::create_dir_all(&config).unwrap();
+    let mut arguments = vec!["--control", port, "--automation-read-root", root, "--automation-write-root", root];
+    arguments.extend_from_slice(additional_roots);
+    WaitingProcess::with_environment("figcraft", &arguments, &launch.project, &[("XDG_CONFIG_HOME", config.to_str().unwrap())])
 }
 
 #[test]
 fn figcrafts_port_reaches_only_the_project_it_serves() {
-    // Security audit M2: whoever reaches the port reads and writes that project's designs.
     let launch = Launch::new();
     let root = fs::canonicalize(&launch.project).unwrap().display().to_string();
     let other = fs::canonicalize(launch.sandbox.home.join("IdeaProjects/proj-b")).unwrap().display().to_string();
-    for (served, is_forwarded) in [(&root, true), (&other, false)] {
-        let mut figcraft = fake_figcraft(&format!("figcraft --control 7979 --automation-read-root {served} --automation-write-root {served}"));
-        let started = launch.run(&[("SHIM_FIGCRAFT_PID", &figcraft.id().to_string())]);
-        let _ = figcraft.kill();
-        assert_eq!(started.contains("--forward 7979"), is_forwarded, "serving {served}: {started}");
+    let own = managed_figcraft(&launch, "17979", &root, &[]);
+    let foreign = managed_figcraft(&launch, "17980", &other, &[]);
+    let process_ids = format!("{}\n{}", foreign.id(), own.id());
+    for &agent in AGENTS.iter() {
+        let started = launch.run_agent(agent, &[("SHIM_FIGCRAFT_PID", &process_ids)], &[]);
+        assert!(started.contains("--forward 17979"), "{agent}: {started}");
+        assert!(!started.contains("--forward 17980"), "{agent}: {started}");
+        assert!(!started.contains("--forward 7979"), "{agent}: {started}");
     }
-    assert!(!launch.run(&[]).contains("--forward 7979"), "forwarded with no FigCraft open");
+    assert!(!launch.run(&[]).contains("--forward 17979"), "forwarded with no FigCraft open");
+}
+
+#[test]
+fn extra_automation_roots_never_grant_a_figcraft_forward() {
+    let launch = Launch::new();
+    let root = launch.project.to_str().unwrap();
+    for additional in [vec!["--automation-read-root", "/elsewhere"], vec!["--automation-write-root", "/elsewhere"],
+                       vec!["--automation-write-root", root]] {
+        let open = managed_figcraft(&launch, "17979", root, &additional);
+        for &agent in AGENTS.iter() {
+            let started = launch.run_agent(agent, &[("SHIM_FIGCRAFT_PID", &open.id())], &[]);
+            assert!(!started.contains("--forward 17979"), "{additional:?}: {started}");
+        }
+    }
+}
+
+#[test]
+fn a_root_prefix_or_an_unowned_port_never_grants_a_figcraft_forward() {
+    let launch = Launch::new();
+    let root_prefix = format!("{}-other", launch.project.display());
+    let open = managed_figcraft(&launch, "17979", &root_prefix, &[]);
+    for &agent in AGENTS.iter() {
+        assert!(!launch.run_agent(agent, &[("SHIM_FIGCRAFT_PID", &open.id())], &[]).contains("--forward 17979"));
+    }
+    // Even correct process arguments cannot claim a port reserved for another checkout.
+    let own = managed_figcraft(&launch, "17980", launch.project.to_str().unwrap(), &[]);
+    fs::write(launch.sandbox.home.join(".config/greywall-agents/figcraft/ports/17980"), &root_prefix).unwrap();
+    for &agent in AGENTS.iter() {
+        assert!(!launch.run_agent(agent, &[("SHIM_FIGCRAFT_PID", &own.id())], &[]).contains("--forward 17980"));
+    }
+}
+
+#[test]
+fn disconnected_launches_clear_inherited_control_ports() {
+    let launch = Launch::new();
+    for &agent in AGENTS.iter() {
+        let started = launch.run_agent(agent, &[("FIGCRAFT_CONTROL_PORT", "17980")], &[]);
+        assert!(!started.contains("--forward 17980"));
+        let environment = fs::read_to_string(launch.sandbox.home.join(format!("{agent}-environment"))).unwrap();
+        assert!(!environment.lines().any(|line| line == "FIGCRAFT_CONTROL_PORT=17980"), "{agent} inherited a foreign control port");
+    }
+}
+
+#[test]
+fn figcraft_reservations_are_hidden_even_before_the_first_window_starts() {
+    let launch = Launch::new();
+    launch.run(&[]);
+    let storage = launch.sandbox.home.join(".config/greywall-agents/figcraft");
+    assert!(storage.is_dir());
+    let settings = launch.settings();
+    assert!(settings["filesystem"]["denyRead"].as_array().unwrap().iter()
+        .any(|entry| entry == "~/.config/greywall-agents/figcraft" || entry == &storage.display().to_string()));
+    assert!(settings["filesystem"]["denyWrite"].as_array().unwrap().iter()
+        .any(|entry| entry == "~/.config/greywall-agents/figcraft" || entry == &storage.display().to_string()));
+}
+
+#[test]
+fn claudes_mcp_override_connects_to_the_port_its_launcher_forwards() {
+    let launch = Launch::new();
+    let open = managed_figcraft(&launch, "17979", launch.project.to_str().unwrap(), &[]);
+    launch.run(&[("SHIM_FIGCRAFT_PID", &open.id())]);
+    let arguments = fs::read_to_string(launch.sandbox.home.join("claude-arguments")).unwrap();
+    let arguments: Vec<_> = arguments.lines().collect();
+    let index = arguments.iter().position(|argument| *argument == "--mcp-config").expect("no MCP override");
+    assert!(!arguments.contains(&"--strict-mcp-config"));
+    let config: serde_json::Value = serde_json::from_str(arguments[index + 1]).unwrap();
+    let server = &config["mcpServers"]["figcraft-app"];
+    launch.sandbox.shim("figcraft-cli", "exit 0");
+    let mut command = launch.sandbox.command(server["command"].as_str().unwrap(), &[("FIGCRAFT_CONTROL_PORT", "17979")]);
+    for argument in server["args"].as_array().unwrap() { command.arg(argument.as_str().unwrap()); }
+    assert!(command.output().unwrap().status.success());
+    assert_eq!(launch.sandbox.calls("figcraft-cli"), ["figcraft-cli mcp --attach 17979"]);
+}
+
+#[test]
+fn generic_port_grants_cannot_forward_another_checkouts_reserved_figcraft_port() {
+    let launch = Launch::new();
+    let foreign = launch.sandbox.home.join("IdeaProjects/proj-b");
+    let _open = managed_figcraft(&launch, "17980", foreign.to_str().unwrap(), &[]);
+    let grants = launch.sandbox.home.join(".config/greywall-agents/forward");
+    fs::create_dir_all(&grants).unwrap();
+    fs::write(grants.join("proj-a"), "4102444800 17980\n").unwrap();
+    for &agent in AGENTS.iter() {
+        let output = launch.sandbox.command(bin().join("greywall-agents").join(agent), &[])
+            .current_dir(&launch.project).output().unwrap();
+        assert_eq!(output.status.code(), Some(1), "{agent}: {}{}", stdout(&output), stderr(&output));
+        assert!(stderr(&output).contains("reserved"), "{}", stderr(&output));
+    }
+    assert!(launch.sandbox.calls("greywall").is_empty());
 }
 
 #[test]
@@ -336,7 +435,7 @@ fn opencode_sees_its_own_data_and_claude_does_not() {
     launch.run_agent("claude", &[], &[]);
     let opencode = denied_reads(&launch.settings_of("opencode"));
     let claude = denied_reads(&launch.settings_of("claude"));
-    assert_eq!(opencode, ["~/.ssh/id_*"], "every other rule stays");
+    assert_eq!(opencode, ["~/.config/greywall-agents/figcraft", "~/.ssh/id_*"], "host-only FigCraft storage and every other rule stay hidden");
     assert!(claude.contains(&"~/.local/share/opencode/**".to_string()) && claude.contains(&"~/.config/opencode/**".to_string()), "{claude:?}");
 }
 

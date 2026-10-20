@@ -14,6 +14,8 @@ mkdir -p "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/claude-report"
 mkdir -p -m 700 "${XDG_STATE_HOME:-$HOME/.local/state}/claude-audit"
 # The phone page's paired devices (claude-remote): hidden the same way.
 mkdir -p -m 700 "${XDG_STATE_HOME:-$HOME/.local/state}/claude-remote"
+# Created before the sandbox mounts its denyRead entries, even when no FigCraft has started yet.
+mkdir -p -m 700 "$HOME/.config/greywall-agents/figcraft"
 
 # ~/dotfiles is the live checkout: stowed into ~/.local/bin and ~/.config, built and run by the host.
 # A session writing there would run its code with Theo's rights, unreviewed (security audit
@@ -28,6 +30,7 @@ case "$(pwd -P)/" in
 esac
 
 project_root=$(git rev-parse --show-toplevel 2>/dev/null || pwd -P)
+project_root=$(realpath -e -- "$project_root") || exit 1
 # A parallel clone (claude-sessions' +, <clones>/<repo>/<name>) is its repository's project: same
 # GitHub token, same name everywhere.
 clones_dir="${CLAUDE_SESSIONS_CLONES:-$HOME/IdeaProjects/.parallel}"
@@ -67,7 +70,9 @@ mkdir -p "$settings_dir"
 # 2026-10-19): its own entries leave denyRead in its settings.
 if ! jq --arg others "$other_projects" --arg own "${own_folders:-}" \
         '.filesystem.denyWrite += ($others | split("\n") | map(select(. != "")))
-         | .filesystem.denyRead -= ($own | split(" ") | map(select(. != "")))' \
+         | .filesystem.denyWrite = ((.filesystem.denyWrite + ["~/.config/greywall-agents/figcraft"]) | unique)
+         | .filesystem.denyRead -= ($own | split(" ") | map(select(. != "")))
+         | .filesystem.denyRead = ((.filesystem.denyRead + ["~/.config/greywall-agents/figcraft"]) | unique)' \
         "$HOME/.config/greywall/greywall.json" > "$settings.new"; then
     echo "$agent launcher: cannot write $settings from ~/.config/greywall/greywall.json, not starting." >&2
     exit 1
@@ -187,20 +192,15 @@ wait_for_greyproxy_dns() {
 
 wait_for_greyproxy_dns
 
-# FigCraft's control port, only into the project FigCraft serves: the figcraft-app MCP server
-# (registered for every project) attaches to it, and whoever reaches the port reads and writes that
-# project's design files (security audit 2026-10-19, M2). The running FigCraft's own command line
-# says which project (craft-open starts it with --automation-write-root <project>); a session that
-# started without the port gets it when craft-open --session restarts it.
-figcraft_pid=$(pgrep -x figcraft | head -1)
-if [ -n "$figcraft_pid" ]; then
-    figcraft_command=" $(tr '\0' ' ' < "/proc/$figcraft_pid/cmdline" 2>/dev/null)"
-    case "$figcraft_command" in
-        *" --control 7979 "*)
-            case "$figcraft_command" in
-                *" --automation-write-root $project_root "*) greywall_options="$greywall_options --forward 7979" ;;
-            esac ;;
-    esac
+# Never inherit another checkout's connection. The host reservation, exact automation roots and
+# private recovery directory must all agree before any port enters the sandbox (audit M2).
+if ! FIGCRAFT_CONTROL_PORT=$(bash "$(dirname "$0")/figcraft.sh" "$project_root"); then
+    echo "$agent launcher: cannot determine this checkout's FigCraft connection" >&2
+    exit 1
+fi
+export FIGCRAFT_CONTROL_PORT
+if [ -n "$FIGCRAFT_CONTROL_PORT" ]; then
+    greywall_options="$greywall_options --forward $FIGCRAFT_CONTROL_PORT"
 fi
 
 # Host ports forwarded into this project's sandboxes, for a limited time.
@@ -215,8 +215,13 @@ if [ -r "$forward_file" ]; then
     read -r forward_until forward_ports < "$forward_file"
     if [ "$(date +%s)" -lt "$forward_until" ]; then
         for port in $forward_ports; do
+            reservation="$HOME/.config/greywall-agents/figcraft/ports/$port"
+            if [ -f "$reservation" ] && [ "$(cat "$reservation")" != "$project_root" ]; then
+                echo "$agent launcher: port $port in $forward_file is reserved for another checkout's FigCraft; remove that grant before restarting." >&2
+                exit 1
+            fi
             case " $greywall_options " in
-                *" --forward $port "*) ;;  # already forwarded (7979, above)
+                *" --forward $port "*) ;;  # already forwarded above
                 *) greywall_options="$greywall_options --forward $port" ;;
             esac
         done

@@ -1,21 +1,18 @@
 #!/usr/bin/env bash
 # craft-open figcraft [--session <id>]: FigCraft for the project of the current folder, driven by
-# the session's figcraft-app MCP server (figcraft-cli mcp --attach 7979, registered for every
-# project; the launcher forwards 7979 only into the sandboxes of the project FigCraft serves). Run
+# the session's figcraft-app MCP server, on a port reserved for this checkout. Run
 # outside the sandbox, through ask-to-run, when Theo asks a session to connect to FigCraft.
 #
-# FigCraft starts with --control 7979 and its file reads and writes limited to the project. An
-# open FigCraft is never closed (it may hold unsaved work): one already serving this project is
-# fine, any other is refused, and so is a new one while a sandbox of another project still has the
-# port (exit 3 for both).
+# Existing windows are never closed. Each checkout has separate preferences/recovery storage,
+# and its port is never reassigned to another checkout (old sandboxes retain their forwards).
 #
 # --session <id>: that session's figcraft-app server exited at its start (FigCraft was closed);
 # the cockpit restarts it once its turn ends (the conversation is kept) and tells it to carry on.
 set -euo pipefail
 
-PORT=${CRAFT_OPEN_PORT:-7979}
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/claude-sessions"
 WAIT_S=${CRAFT_OPEN_WAIT_S:-15}
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/greywall-agents/figcraft.sh"
 
 usage() {
     echo "usage: craft-open figcraft [--session <session-id>]" >&2
@@ -50,51 +47,76 @@ if [[ $root != "$HOME"/* ]]; then
     echo "craft-open: $root is not a project under your home folder" >&2
     exit 2
 fi
+if [[ $root =~ [[:cntrl:]] ]]; then
+    echo "craft-open: control characters in a project path are not supported" >&2
+    exit 2
+fi
 
 answers() {
     (exec 3<>"/dev/tcp/127.0.0.1/$PORT") 2>/dev/null
 }
 
-# A sandbox keeps its port forwards until it exits: one started while FigCraft served another
-# project would reach this project's design files too (security audit 2026-10-19, M2). Prints the
-# folder each such sandbox started in.
-sandboxes_of_other_projects_with_the_port() {
-    local sandbox command_line directory
-    for sandbox in $(pgrep -x greywall || true); do
-        command_line=" $(tr '\0' ' ' < "/proc/$sandbox/cmdline" 2>/dev/null) "
-        [[ $command_line == *" --forward $PORT "* ]] || continue
-        directory=$(readlink "/proc/$sandbox/cwd" 2>/dev/null) || continue
-        [[ $directory == "$root" || $directory == "$root"/* ]] || echo "$directory"
-    done
-}
-
-pid=$(pgrep -x figcraft | head -1 || true)
-if [[ -n $pid ]]; then
-    command_line=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)
-    if [[ $command_line != *"--control $PORT "* || $command_line != *"--automation-write-root $root "* ]]; then
-        echo "FigCraft is already open, for another folder or without --control $PORT: save and close it, then ask again."
+# Serialise allocation and startup, including the readiness check. The child must not inherit
+# the lock, or its whole lifetime would block the next checkout's window.
+mkdir -p -m 700 "$figcraft_home/ports"
+exec 9>"$figcraft_home/lock"
+flock 9
+PORT=$(figcraft_reserved_port "$root" || true)
+if [[ -n ${CRAFT_OPEN_PORT:-} ]]; then
+    if [[ ! $CRAFT_OPEN_PORT =~ ^[1-9][0-9]{0,4}$ ]] || (( CRAFT_OPEN_PORT > 65535 )); then
+        echo "craft-open: invalid control port: $CRAFT_OPEN_PORT" >&2
+        exit 2
+    fi
+    if [[ -n $PORT && $PORT != "$CRAFT_OPEN_PORT" ]]; then
+        echo "craft-open: this checkout already owns port $PORT" >&2
         exit 3
     fi
+    PORT=$CRAFT_OPEN_PORT
+fi
+if [[ -z $PORT ]]; then
+    for (( attempt=0; attempt < 200; attempt++ )); do
+        PORT=$(shuf -i 20000-60000 -n 1)
+        [[ ! -e $figcraft_home/ports/$PORT ]] || { PORT=""; continue; }
+        if answers || [[ -n $(figcraft_foreign_holders "$PORT" "$root") ]]; then
+            PORT=""
+            continue
+        fi
+        break
+    done
+    [[ -n $PORT ]] || { echo "craft-open: no safe control port available" >&2; exit 3; }
+fi
+if [[ -e $figcraft_home/ports/$PORT && $(cat "$figcraft_home/ports/$PORT") != "$root" ]]; then
+    echo "craft-open: port $PORT is permanently reserved for another checkout" >&2
+    exit 3
+fi
+holders=$(figcraft_foreign_holders "$PORT" "$root")
+if [[ -n $holders ]]; then
+    printf 'Other checkouts still reach port %s:\n%s\nRestart those sessions before reusing this port.\n' "$PORT" "$holders" >&2
+    exit 3
+fi
+printf '%s\n' "$root" > "$figcraft_home/ports/$PORT"
+if [[ $(figcraft_port_for_root "$root") == "$PORT" ]] && answers; then
     echo "FigCraft already serves $root on port $PORT."
 else
-    holders=$(sandboxes_of_other_projects_with_the_port)
-    if [[ -n $holders ]]; then
-        echo "Sessions of another project still reach FigCraft's port, from when it served them:"
-        printf '  %s\n' $holders
-        echo "Exit or restart them (r in the column), then ask again."
+    if answers; then
+        echo "craft-open: port $PORT is occupied by an unverified listener; no window started" >&2
         exit 3
     fi
-    setsid -f figcraft --control "$PORT" --automation-read-root "$root" --automation-write-root "$root" >/dev/null 2>&1
+    config_home="$figcraft_home/instances/$PORT/config"
+    mkdir -p -m 700 "$config_home"
+    XDG_CONFIG_HOME="$config_home" setsid -f figcraft --control "$PORT" --automation-read-root "$root" --automation-write-root "$root" 9>&- >/dev/null 2>&1
     for (( waited = 0; waited < WAIT_S * 10; waited++ )); do
-        answers && break
+        [[ $(figcraft_port_for_root "$root") == "$PORT" ]] && answers && break
         sleep 0.1
     done
-    if ! answers; then
+    if [[ $(figcraft_port_for_root "$root") != "$PORT" ]] || ! answers; then
         echo "FigCraft did not start listening on port $PORT within ${WAIT_S}s." >&2
         exit 1
     fi
     echo "FigCraft started for $root, listening on port $PORT."
 fi
+flock -u 9
+exec 9>&-
 
 if [[ -n $session ]]; then
     mkdir -p "$STATE_DIR/restart-when-idle" "$STATE_DIR/prompt-queue/$session"

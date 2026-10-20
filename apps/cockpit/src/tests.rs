@@ -2398,10 +2398,29 @@ fn craft_badges(app: &App) -> Vec<String> {
     app.panels[1].lines.iter().flat_map(|line| line.right.iter().map(|part| part.text.clone())).filter(|badge| badge.starts_with('◆')).collect()
 }
 
+struct CraftProcess(std::process::Child);
+
+impl CraftProcess {
+    fn new(root: &str) -> Self {
+        Self(std::process::Command::new("bash").args(["-c", "read -r -t 60", "figcraft", "--control", "17979",
+            "--automation-read-root", root, "--automation-write-root", root]).stdin(std::process::Stdio::piped()).spawn().unwrap())
+    }
+
+    fn id(&self) -> u32 { self.0.id() }
+}
+
+impl Drop for CraftProcess {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
 #[test]
 fn only_the_sessions_of_the_project_figcraft_serves_show_it() {
     let fixture = Fixture::new();
-    fixture.shim("pgrep", "echo '4242 figcraft --control 7979 --automation-read-root /r/opusline --automation-write-root /r/opusline'");
+    let open = CraftProcess::new("/r/opusline");
+    fixture.shim("pgrep", &format!("echo {}", open.id()));
     let mut opusline = session(SESSION_A, "waiting", "opusline", "/r/opusline", 1);
     opusline["apps"] = json!("figcraft:on");
     let mut dotfiles = session(SESSION_B, "waiting", "dotfiles", "/r/dotfiles", 2);
@@ -2409,6 +2428,20 @@ fn only_the_sessions_of_the_project_figcraft_serves_show_it() {
     fixture.snapshot(json!([opusline, dotfiles]));
     let app = fixture.app();
     assert_eq!(craft_badges(&app), ["◆ figcraft"], "shown on dotfiles, which FigCraft does not serve");
+}
+
+#[test]
+fn independent_figcraft_instances_show_on_both_served_checkouts_only() {
+    let fixture = Fixture::new();
+    let first = CraftProcess::new("/r/opusline");
+    let second = CraftProcess::new("/r/a project");
+    fixture.shim("pgrep", &format!("printf '%s\\n' {} {}", first.id(), second.id()));
+    let mut rows = vec![session(SESSION_A, "waiting", "opusline", "/r/opusline", 1),
+        session(SESSION_B, "waiting", "project", "/r/a project", 2),
+        session(OPENCODE_SESSION, "waiting", "other", "/r/other", 3)];
+    for row in &mut rows { row["apps"] = json!("figcraft:on"); }
+    fixture.snapshot(json!(rows));
+    assert_eq!(craft_badges(&fixture.app()), ["◆ figcraft", "◆ figcraft"]);
 }
 
 #[test]
@@ -2422,8 +2455,10 @@ fn a_craft_app_that_does_not_answer_shows_no_badge() {
 
 #[test]
 fn the_folder_figcraft_serves_comes_from_its_command_line() {
-    assert_eq!(sessions::write_root("4242 figcraft --control 7979 --automation-write-root /r/opusline"), Some("/r/opusline".into()));
-    assert_eq!(sessions::write_root("4242 figcraft"), None);
+    let fixture = Fixture::new();
+    let open = CraftProcess::new("/r/a project");
+    fixture.shim("pgrep", &format!("echo {}", open.id()));
+    assert_eq!(sessions::craft_roots("figcraft"), Some(["/r/a project".to_string()].into()));
 }
 
 #[test]

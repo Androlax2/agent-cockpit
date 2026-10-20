@@ -195,13 +195,20 @@ fn opencode_config() -> Value {
 
 #[test]
 fn opencode_registers_figcraft_app_on_the_port_the_launcher_forwards() {
-    // As Claude Code's figcraft-app: the launcher forwards 7979 only into the project FigCraft
-    // serves, and session-state.sh tells FigCraft on from a `figcraft-cli mcp --attach` process.
     let server = &opencode_config()["mcp"]["figcraft-app"];
-    assert_eq!(server["type"], "local");
-    assert_eq!(server["command"], json!(["figcraft-cli", "mcp", "--attach", "7979"]));
-    let launcher = fs::read_to_string(bin().join("greywall-agents/launcher-common.sh")).unwrap();
-    assert!(launcher.contains("--forward 7979"), "the launcher no longer forwards 7979");
+    let sandbox = Sandbox::new();
+    sandbox.shim("figcraft-cli", "exit 0");
+    for port in ["17979", "17980"] {
+        let arguments = server["command"].as_array().unwrap();
+        let mut command = sandbox.command(arguments[0].as_str().unwrap(), &[("FIGCRAFT_CONTROL_PORT", port)]);
+        for argument in &arguments[1..] { command.arg(argument.as_str().unwrap()); }
+        assert!(command.output().unwrap().status.success());
+        assert_eq!(sandbox.calls("figcraft-cli").last().unwrap(), &format!("figcraft-cli mcp --attach {port}"));
+    }
+    let arguments = server["command"].as_array().unwrap();
+    let mut command = sandbox.command(arguments[0].as_str().unwrap(), &[("FIGCRAFT_CONTROL_PORT", "")]);
+    for argument in &arguments[1..] { command.arg(argument.as_str().unwrap()); }
+    assert!(!command.output().unwrap().status.success(), "connected to an implicit default port");
 }
 
 #[test]

@@ -177,6 +177,33 @@ pub fn stderr(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
 }
 
+/// A live process with real argument boundaries for /proc discovery tests. Its pipe stays open
+/// so Bash's builtin read waits without leaving a sleep child behind when the test ends.
+pub struct WaitingProcess(Child);
+
+impl WaitingProcess {
+    pub fn new(name: &str, arguments: &[&str], directory: &Path) -> Self {
+        Self::with_environment(name, arguments, directory, &[])
+    }
+
+    pub fn with_environment(name: &str, arguments: &[&str], directory: &Path, environment: &[(&str, &str)]) -> Self {
+        let child = Command::new("bash").args(["-c", "read -r -t 60", name]).args(arguments)
+            .current_dir(directory).envs(environment.iter().copied()).stdin(Stdio::piped()).spawn().unwrap();
+        Self(child)
+    }
+
+    pub fn id(&self) -> String { self.0.id().to_string() }
+
+    pub fn is_alive(&mut self) -> bool { self.0.try_wait().unwrap().is_none() }
+}
+
+impl Drop for WaitingProcess {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
 /// Waits for `child` to exit and collects its output; kills it and fails past `timeout`.
 pub fn finish(child: Child, timeout: Duration) -> Output {
     let pid = child.id() as libc::pid_t;

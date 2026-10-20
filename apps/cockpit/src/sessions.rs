@@ -619,15 +619,20 @@ mod tests {
     }
 }
 
-/// The folder a running craft app was opened for: the `--automation-write-root` craft-open starts
-/// it with, from its command line (`pgrep -a -x figcraft`). None when it is not running or was
-/// started without one.
-pub fn craft_root(app: &str) -> Option<String> {
-    write_root(&util::output_of("pgrep", &["-a", "-x", app])?)
+/// All checkout roots served by the running instances. /proc preserves argument boundaries,
+/// unlike pgrep -a, where a root containing spaces is indistinguishable from extra arguments.
+pub fn craft_roots(app: &str) -> Option<HashSet<String>> {
+    let processes = util::output_of("pgrep", &["-x", app])?;
+    Some(processes.split_whitespace().filter_map(|pid| {
+        let pid = pid.parse::<u32>().ok()?;
+        write_root(&fs::read(format!("/proc/{pid}/cmdline")).ok()?)
+    }).collect())
 }
 
-pub fn write_root(command_line: &str) -> Option<String> {
-    let mut words = command_line.split_whitespace();
-    words.by_ref().find(|word| *word == "--automation-write-root")?;
-    words.next().map(str::to_string)
+fn write_root(command_line: &[u8]) -> Option<String> {
+    let arguments: Vec<_> = command_line.split(|byte| *byte == 0).collect();
+    let mut roots = arguments.windows(2).filter(|pair| pair[0] == b"--automation-write-root");
+    let root = std::str::from_utf8(roots.next()?[1]).ok()?;
+    if root.is_empty() || roots.next().is_some() { return None; }
+    Some(root.to_string())
 }

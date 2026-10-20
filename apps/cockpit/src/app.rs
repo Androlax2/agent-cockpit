@@ -19,7 +19,7 @@ use serde_json::Value;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind};
 use ratatui::buffer::Buffer;
 use ratatui::style::{Color, Modifier, Style};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{self, Write};
 use std::fs;
 use std::process::{Command, Stdio};
@@ -571,8 +571,8 @@ pub struct App {
     /// session -> when the column last sent it a queued prompt: the next one waits for a turn that
     /// ended after that.
     pub(crate) prompts_sent: HashMap<String, i64>,
-    /// craft app -> the project folder its running instance serves (sessions::craft_root).
-    pub(crate) craft_roots: HashMap<String, String>,
+    /// craft app -> the checkout folders its running instances serve (sessions::craft_roots).
+    pub(crate) craft_roots: HashMap<String, HashSet<String>>,
     pub(crate) todo_counts: [usize; 5],
     pub(crate) hit_lines: HashMap<u16, (usize, Option<usize>)>,
     pub(crate) hit_actions: HashMap<u16, (u16, u16, &'static str)>,
@@ -601,7 +601,7 @@ struct Gathered {
     paused: usize,
     dotfiles_unpushed: usize,
     start_files: Vec<(&'static str, f64)>,
-    craft_roots: HashMap<String, String>,
+    craft_roots: HashMap<String, HashSet<String>>,
 }
 
 impl App {
@@ -1000,7 +1000,7 @@ impl App {
             },
             craft_roots: if now() - self.craft_checked >= CRAFT_CHECK_S {
                 self.craft_checked = now();
-                ["figcraft"].iter().filter_map(|app| Some((app.to_string(), sessions::craft_root(app)?))).collect()
+                ["figcraft"].iter().filter_map(|app| Some((app.to_string(), sessions::craft_roots(app)?))).collect()
             } else {
                 self.craft_roots.clone()
             },
@@ -1140,10 +1140,10 @@ impl App {
                 _ => {}
             }
             // Every session has the craft servers (craft-open): the badge marks only the sessions of
-            // the project the running app serves, the ones that can work with it.
+            // the checkouts the running instances serve, the ones that can work with them.
             for app in session.apps.split_whitespace() {
                 let Some((name, "on")) = app.split_once(':') else { continue };
-                let serves_it = self.craft_roots.get(name).is_none_or(|root| *root == util::repository_root(&session.cwd));
+                let serves_it = self.craft_roots.get(name).is_none_or(|roots| roots.contains(&util::repository_root(&session.cwd)));
                 if serves_it {
                     badges.push(part(format!("◆ {name}"), bold(GREEN)));
                 }
