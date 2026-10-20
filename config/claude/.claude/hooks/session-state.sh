@@ -305,10 +305,16 @@ if [[ $event == SessionStart || $event == Stop ]]; then
     repository_reported=true
     origin=$(git -C "$cwd" remote get-url origin 2>/dev/null || true)
     origin=${origin%.git}
-    if [[ $origin =~ ^(https://github\.com/|git@github\.com:|ssh://git@github\.com/)([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)$ ]]; then
-        repository=${BASH_REMATCH[2],,}
+    if [[ $origin =~ ^(https://github\.com/|git@github\.com:|ssh://git@github\.com/)([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)$ ]] \
+        && [[ ${BASH_REMATCH[2]} != . && ${BASH_REMATCH[2]} != .. && ${BASH_REMATCH[3]} != . && ${BASH_REMATCH[3]} != .. ]]; then
+        repository="${BASH_REMATCH[2],,}/${BASH_REMATCH[3],,}"
+        (( ${#repository} <= 200 )) || repository=
     fi
     branch=$(git -C "$cwd" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
+    # Git allows names the daemon refuses as text; one would drop the whole report, Stop included.
+    if [[ $branch == *'#{'* || $branch == *'#('* ]] || (( ${#branch} > 300 )); then
+        branch=
+    fi
 fi
 
 case $event in

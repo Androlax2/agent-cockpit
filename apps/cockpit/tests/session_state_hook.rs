@@ -143,6 +143,22 @@ fn continuity_repository_and_branch_are_read_inside_the_sandbox() {
 }
 
 #[test]
+fn continuity_a_branch_or_origin_the_daemon_would_refuse_is_left_out_of_the_report() {
+    let long_branch = "b".repeat(301);
+    for (origin, branch) in [("https://github.com/acme/shop", "feat#{x}"), ("https://github.com/acme/shop", "feat#(x)"), ("https://github.com/acme/shop", long_branch.as_str()),
+                             ("https://github.com/../shop", "main"), ("https://github.com/acme/..", "main")] {
+        let mut test = HookTest::new();
+        test.sandbox.shim("git", &format!("case \"$*\" in *'remote get-url origin') echo '{origin}';; *'symbolic-ref --quiet --short HEAD') echo '{branch}';; esac"));
+        assert!(test.run_hook(with_session(json!({"hook_event_name": "Stop"}), "/x/proj"), &[]).status.success());
+        let report = &test.received()[0];
+        assert_eq!(report["turn_complete"], true, "{origin} {branch}");
+        let expected_repository = if origin.contains("..") { "" } else { "acme/shop" };
+        let expected_branch = if branch == "main" { "main" } else { "" };
+        assert_eq!((report["repository"].as_str(), report["branch"].as_str()), (Some(expected_repository), Some(expected_branch)), "{origin} {branch}");
+    }
+}
+
+#[test]
 fn events_map_to_states() {
     let mut test = HookTest::new();
     let cases = [
