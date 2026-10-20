@@ -1561,7 +1561,7 @@ idle() {
 # sees that terminal.
 # The agents: one file each in claude-sessions-agents/, named after the agent, defining every verb
 # of AGENT_VERBS as agent_<name>_<verb> (README.md there says what each one does). A file missing
-# a verb stops every command here, so a half-written agent is never run. Optional verbs: doctor.
+# a verb stops every command here, so a half-written agent is never run. Optional verbs: doctor, terminal.
 # CLAUDE_SESSIONS_AGENTS_DIR overrides the folder (tests).
 AGENT_VERBS=(label is_session_id tmux_prefix can new new_with_prompt background detached resume restart restore exit say prompt_start)
 AGENTS_DIR=${CLAUDE_SESSIONS_AGENTS_DIR:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/claude-sessions-agents}
@@ -1634,6 +1634,13 @@ case ${1:-attach} in
     view) view_session "${2:?usage: claude-sessions view <session-id>}" ;;
     open) view_session "${2:?usage: claude-sessions open <session-id>}" && focus_viewer ;;
     new) shift; new_session "${1:?usage: claude-sessions new <dir> [claude args]}" "${@:2}" ;;
+    terminal)
+        if ! declare -F "agent_${launch_agent}_terminal" >/dev/null; then
+            echo "claude-sessions: $launch_agent does not support terminal attachment" >&2
+            exit 1
+        fi
+        "agent_${launch_agent}_terminal" "${2:?usage: claude-sessions --agent opencode terminal <dir>}"
+        ;;
     resume) resume_session "${2:?usage: claude-sessions resume <dir> <session-id>}" "${3:?usage: claude-sessions resume <dir> <session-id>}" ;;
     exit)
         # The session in the pane: a "Closing" screen until it is gone, as for a start.

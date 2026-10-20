@@ -33,15 +33,59 @@ OPENCODE_EPILOGUE='"$@" && exit; code=$?; claude-sessions log manager ERROR "ope
 
 start_opencode() { # dir session-id opencode-arguments...
     local directory=$1 session=$2 name size
+    local -a terminal_environment=()
     shift 2
     require_plain_directory "$directory"
     name="$OPENCODE_TMUX_PREFIX$(date +%s%N)"
     size=$(detached_size)
+    if [[ -n ${CLAUDE_SESSIONS_TERMINAL:-} ]]; then
+        terminal_environment=(CLAUDE_SESSIONS_TERMINAL="$CLAUDE_SESSIONS_TERMINAL")
+    fi
     tmux new-session -d -s "$name" -x "${size% *}" -y "${size#* }" -c "$directory" \
-        env CLAUDE_SESSIONS_INSIDE=1 CLAUDE_CODE_SESSION_ID="$session" \
-        sh -c "$OPENCODE_EPILOGUE" opencode "$OPENCODE_LAUNCHER" --standalone --session "$session" "$@"
+        env CLAUDE_SESSIONS_INSIDE=1 CLAUDE_CODE_SESSION_ID="$session" "${terminal_environment[@]}" \
+        sh -c "$OPENCODE_EPILOGUE" opencode "$OPENCODE_LAUNCHER" --standalone --session "$session" "$@" || return
     printf '%s\n' "$name"
 }
+
+# Use tmux's own pane inventory, as the cockpit does before the first plugin report, not a
+# reported id's claimed pane. Never change a reused session's terminal/automation ownership.
+agent_opencode_terminal() ( # dir
+    local directory=$1 name pane folder dead target="" choice index lock_key
+    local -a matches=()
+    directory=$(CDPATH= cd -- "$directory" && pwd -P) || return
+    require_plain_directory "$directory"
+    if [[ -n ${CLAUDE_SESSIONS_INSIDE:-} ]]; then
+        echo "claude-sessions: already inside a managed session" >&2
+        return 1
+    fi
+    # Two terminals arriving before the first plugin report must still create only one process.
+    lock_key=$(printf '%s' "$directory" | sha256sum)
+    exec 9>"${XDG_RUNTIME_DIR:-/tmp}/claude-sessions-opencode-${lock_key%% *}.lock"
+    flock 9
+    while IFS=$'\t' read -r name pane folder dead; do
+        [[ $name =~ ^claude-retry-opencode-[0-9]+$ && $pane =~ ^%[0-9]+$ && $folder == "$directory" && $dead == 0 ]] || continue
+        [[ " ${matches[*]} " == *" $name "* ]] || matches+=("$name")
+    done < <(tmux list-panes -a -F '#{session_name}	#{pane_id}	#{pane_current_path}	#{pane_dead}' 9>&-)
+    case ${#matches[@]} in
+        0) target=$(CLAUDE_SESSIONS_TERMINAL=1 start_opencode "$directory" "$(new_opencode_session_id)" 9>&-) ;;
+        1) target=${matches[0]} ;;
+        *)
+            for index in "${!matches[@]}"; do printf '%s) %s\n' "$((index + 1))" "${matches[index]}" >&2; done
+            printf 'OpenCode session (number, Enter cancels): ' >&2
+            IFS= read -r choice || return 130
+            [[ $choice =~ ^[1-9][0-9]{0,5}$ ]] || return 1
+            (( choice <= ${#matches[@]} )) || return 1
+            target=${matches[choice-1]}
+            ;;
+    esac
+    flock -u 9
+    exec 9>&-
+    if [[ -n ${TMUX:-} ]]; then
+        tmux switch-client -t "=$target"
+    else
+        tmux attach-session -t "=$target"
+    fi
+)
 
 # A new session id the way opencode makes them (packages/schema/src/identifier.ts): ses_, the time
 # counted down in 12 hex digits (newest first in its lists), then 14 random letters and digits.
