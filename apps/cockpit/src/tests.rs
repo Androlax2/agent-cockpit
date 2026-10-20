@@ -3876,7 +3876,7 @@ fn an_unreported_pane_does_not_hide_an_external_session_of_the_same_conversation
 
 #[test]
 fn what_only_claude_code_does_is_not_offered_on_an_opencode_card() {
-    for key in ['e', '$', 'C'] {
+    for key in ['$', 'C'] {
         let fixture = Fixture::new();
         fixture.snapshot(json!([opencode_session("needs-you", "runway", 1)]));
         let mut app = fixture.app();
@@ -3884,7 +3884,20 @@ fn what_only_claude_code_does_is_not_offered_on_an_opencode_card() {
         std::thread::sleep(Duration::from_millis(100));
         assert!(fixture.calls("claude-sessions").is_empty(), "{key}: {:?}", fixture.calls("claude-sessions"));
         assert!(app.message.contains("runs opencode"), "{key}: {}", app.message);
-        assert!(app.sessions_hints().iter().all(|(hint, _)| !["e", "C"].contains(hint)), "{key}: {:?}", app.sessions_hints());
+        assert!(app.sessions_hints().iter().all(|(hint, _)| *hint != "C"), "{key}: {:?}", app.sessions_hints());
+    }
+}
+
+#[test]
+fn effort_opens_opencodes_native_picker_without_restarting() {
+    for state in ["waiting", "working"] {
+        let fixture = Fixture::new();
+        fixture.snapshot(json!([opencode_session(state, "runway", 1)]));
+        let mut app = fixture.app();
+        assert!(app.sessions_hints().contains(&("e", "effort")));
+        app.handle(Key::Char('e'), &mut FakeScreen::default());
+        assert_eq!(fixture.wait_for_calls("claude-sessions", 1), [format!("claude-sessions variants {OPENCODE_SESSION}")]);
+        assert!(app.menu.is_none());
     }
 }
 

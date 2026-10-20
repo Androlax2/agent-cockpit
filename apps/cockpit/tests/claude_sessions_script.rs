@@ -2517,6 +2517,45 @@ fn what_only_claude_code_does_is_refused_for_an_opencode_session() {
 }
 
 #[test]
+fn variants_opens_opencodes_native_picker_in_its_pane_without_restarting() {
+    for state in ["waiting", "working"] {
+        let manager = Manager::new();
+        manager.with_opencode_session(state);
+        let result = manager.run(&["variants", OPENCODE_SESSION], &[]);
+        assert!(result.status.success(), "{}", stderr(&result));
+        assert_eq!(manager.tmux_calls("send-keys"), ["tmux send-keys -t %5 C-M-e"]);
+        assert!(manager.calls("tmux").iter().any(|call| call == "tmux select-pane -t %11"));
+        assert!(manager.opencode_starts().is_empty());
+        assert!(manager.tmux_calls("kill-session").is_empty());
+    }
+}
+
+#[test]
+fn variants_refuses_questions_unknown_states_and_missing_panes() {
+    for state in ["needs-you", "unknown", ""] {
+        let manager = Manager::new();
+        manager.with_opencode_session(state);
+        if state.is_empty() {
+            let mut snapshot: serde_json::Value = serde_json::from_str(&fs::read_to_string(&manager.snapshot).unwrap()).unwrap();
+            snapshot["sessions"][1]["tmux_pane"] = json!("");
+            fs::write(&manager.snapshot, snapshot.to_string()).unwrap();
+        }
+        let result = manager.run(&["variants", OPENCODE_SESSION], &[]);
+        assert_eq!(result.status.code(), Some(1), "{state}");
+        assert!(manager.tmux_calls("send-keys").is_empty(), "{state}");
+        assert!(!stderr(&result).is_empty());
+    }
+}
+
+#[test]
+fn variants_does_not_send_opencode_keys_to_claude() {
+    let manager = Manager::new();
+    let result = manager.run(&["variants", SESSION_A], &[]);
+    assert_eq!(result.status.code(), Some(1));
+    assert!(manager.tmux_calls("send-keys").is_empty());
+}
+
+#[test]
 fn a_message_goes_to_an_opencode_session_waiting_or_working_never_into_its_question() {
     // While it works opencode's inbox queues what is submitted, as Claude's Ctrl+X Enter does.
     for state in ["waiting", "working"] {

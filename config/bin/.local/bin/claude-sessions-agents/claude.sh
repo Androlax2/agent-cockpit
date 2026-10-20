@@ -15,9 +15,11 @@ agent_claude_is_session_id() { # id
 # claude-retry-restart-*): every claude-retry-* that no other agent's longer prefix claims.
 agent_claude_tmux_prefix() { echo "claude-retry-"; }
 
-# Claude Code has every feature the manager knows: effort, billing, compact, remote, redraw.
 agent_claude_can() { # feature
-    return 0
+    case $1 in
+        effort|billing|compact|remote|redraw) return 0 ;;
+        *) return 1 ;;
+    esac
 }
 
 # Every `fish -ic '…' -- args` keeps the --: without it fish takes an argument such as --resume or

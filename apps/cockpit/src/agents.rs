@@ -16,6 +16,8 @@ use std::sync::LazyLock;
 pub enum Feature {
     /// claude-sessions restarts it on another effort level.
     Effort,
+    /// Open its native model variant picker without restarting.
+    Variants,
     /// It bills the Console's API credits or the subscription.
     Billing,
     /// /compact.
@@ -56,6 +58,7 @@ impl Feature {
     pub fn name(self) -> &'static str {
         match self {
             Feature::Effort => "effort",
+            Feature::Variants => "variants",
             Feature::Billing => "billing",
             Feature::Compact => "compact",
             Feature::RemoteControl => "remote_control",
@@ -102,7 +105,7 @@ pub static AGENTS: [Agent; 2] = [
         process: Some("opencode"),
         // Escape twice stops its turn (the first only says "esc again to interrupt"). Its permission
         // questions are not Claude's yes/no menu: no Dialogs.
-        features: &[Feature::Interrupt],
+        features: &[Feature::Interrupt, Feature::Variants],
         interrupt_keys: &["Escape", "Escape"],
         start_files: &["CLAUDE.md", "sandbox", "shared launcher", "opencode config", "opencode plugin", "opencode profile",
                        "opencode launcher"],

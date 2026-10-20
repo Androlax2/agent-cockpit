@@ -343,7 +343,7 @@ fn each_card_carries_what_its_agent_can_do_and_the_agents_are_listed() {
     let cards = remote.get_json(&secret, "/api/state");
     let features = |id: &str| cards["sessions"].as_array().unwrap().iter().find(|card| card["session"] == id).unwrap()["features"].clone();
     assert!(features(SESSION_A).as_array().unwrap().contains(&json!("dialogs")), "{cards}");
-    assert_eq!(features(OPENCODE_SESSION), json!(["interrupt"]));
+    assert_eq!(features(OPENCODE_SESSION), json!(["interrupt", "variants"]));
     let agents = remote.get_json(&secret, "/api/agents");
     assert_eq!(agents, json!([{"name": "claude", "label": "Claude Code"}, {"name": "opencode", "label": "opencode"}]));
 }

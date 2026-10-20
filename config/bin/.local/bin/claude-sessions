@@ -73,6 +73,8 @@
 #   claude-sessions restore <dir> <id> […]
 #                                resume those sessions one after the other (the sidebar's B after a reboot)
 #   claude-sessions compact <id> type /compact into a session waiting at its prompt (the sidebar's C)
+#   claude-sessions variants <id>
+#                                open opencode's native effort picker and focus its pane (the sidebar's e)
 #   claude-sessions approval-pane <id>|close
 #                                show a run request's approval under the session pane (the daemon)
 #   claude-sessions say <id> <message>
@@ -609,6 +611,25 @@ compact_session() { # id
         return 1
     fi
     submit_to_pane "$pane" "/compact"
+}
+
+open_variants() { # id
+    local id=$1 pane state
+    require_feature "$id" variants "the model variant picker" || return 1
+    pane=$(session_field "$id" tmux_pane)
+    if [[ -z $pane ]]; then
+        echo "claude-sessions: session $id has no tmux pane" >&2
+        return 1
+    fi
+    state=$(session_field "$id" state)
+    if [[ $state != waiting && $state != working ]]; then
+        echo "claude-sessions: open the variant picker when the session waits or works (${state:-no state yet})" >&2
+        return 1
+    fi
+    view_session "$id" || return 1
+    # Dedicated binding in opencode/cli.json: no prompt text or Enter that could submit a draft.
+    tmux send-keys -t "$pane" C-M-e || return 1
+    focus_viewer
 }
 
 # A message for a session without opening it; each agent says when it takes one (agent_*_say).
@@ -1756,6 +1777,7 @@ case ${1:-attach} in
     idle) idle ;;
     usage) show_usage ;;
     compact) compact_session "${2:?usage: claude-sessions compact <session-id>}" ;;
+    variants) open_variants "${2:?usage: claude-sessions variants <session-id>}" ;;
     approval-pane) approval_pane "${2:?usage: claude-sessions approval-pane <id> | close [id]}" "${3:-}" ;;
     say) say_to_session "${2:?usage: claude-sessions say <session-id> <message>}" "${3:?usage: claude-sessions say <session-id> <message>}" ;;
     logs) show_logs "${2:-80}" ;;

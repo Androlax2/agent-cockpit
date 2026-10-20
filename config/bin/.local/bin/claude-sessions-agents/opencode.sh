@@ -15,10 +15,10 @@ agent_opencode_is_session_id() { # id
 OPENCODE_TMUX_PREFIX=claude-retry-opencode-
 agent_opencode_tmux_prefix() { echo "$OPENCODE_TMUX_PREFIX"; }
 
-# None of Claude Code's features: effort, billing, /compact and Remote Control are Claude's, and
-# opencode redraws itself on a resize (no Ctrl+L redraw).
+# Effort restarts, billing, /compact and Remote Control are Claude's. OpenCode changes effort
+# through its native variant picker and redraws itself on a resize (no Ctrl+L redraw).
 agent_opencode_can() { # feature
-    return 1
+    [[ $1 == variants ]]
 }
 
 # opencode in a tmux session of its own, named like claude-auto-retry's (which is Claude's alone)

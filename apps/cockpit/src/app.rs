@@ -73,7 +73,7 @@ const GLOBAL_HELP: [(&str, &str); 14] = [
     ("0-3", "focus a panel"), ("H", "resume a past session, searched by project and prompt"),
     ("⌘1 ⌘2 ⌘3", "focus a panel from inside the session (tmux)"), ("⇥ ⇧⇥", "next / previous panel"), ("j/k ↑↓", "move inside the panel"),
     (":", "every action, searchable; includes new-with-agent to override the default"), ("a", "new session in a project using the default agent from Settings (S)"),
-    ("O", "new opencode session in a project, overriding the default agent: same sandbox, card and keys, but what only Claude Code does (effort, $, remote, /compact) is done in its pane"),
+    ("O", "new opencode session in a project, overriding the default agent: same sandbox, card and keys; e opens its native effort picker, while $, remote and /compact stay Claude-only"),
     ("S", "settings: default agent, OpenCode model and model-specific effort; on/off choices; and the phone page, pairing (QR code), forgetting a phone (x)"),
     ("P W G", "windows on top: pull requests, Claude on the web, greyproxy (also Super+Ctrl+P/A/G)"),
     ("≈ $", "today's Claude Code and opencode replies on this machine at API prices (the plan is flat); week and month in Status"),
@@ -1422,7 +1422,7 @@ impl App {
         let mut seen = std::collections::HashSet::new();
         hints.retain(|(key, _)| seen.insert(*key));
         let agent = selected.agent();
-        hints.retain(|(key, _)| key.chars().next().and_then(|key| key_feature(Key::Char(key))).is_none_or(|(feature, _)| agent.can(feature)));
+        hints.retain(|(key, _)| key.chars().next().and_then(|key| key_feature(Key::Char(key), agent)).is_none_or(|(feature, _)| agent.can(feature)));
         hints
     }
 
@@ -1432,7 +1432,7 @@ impl App {
              ("x", "exit the session: Ctrl-C twice, then killed if it lingers"), ("r", "restart in place: same conversation, new process"),
              ("⌘R", "restart the sessions started before a change they lack (badge ⟳ restart), when they wait at their prompt; busy ones are named and left alone"),
              ("p", "pin on top"),
-             ("e", "effort level: pick one, the session restarts on it (or click the level on the card)"),
+             ("e", "effort level: Claude restarts on it (or click the card's level); opencode opens its native picker without restarting"),
              ("$", "bill the session to the Console's API credits, or back to the subscription: it restarts on the same conversation (badge $ credits)"),
              ("g", "lazygit on the session's repository, in a popup (q closes it)"),
              ("U", "push the session's branch to origin with your SSH key, after a yes (lazygit's sandbox cannot)"),
@@ -1447,7 +1447,7 @@ impl App {
         if session.as_ref().is_some_and(|session| session.is_external()) && session_key_requires_terminal(key) {
             return "external session: no terminal target; use its own window".into();
         }
-        if let (Some(s), Some((feature, what))) = (session.as_ref(), key_feature(key)) {
+        if let Some(s) = session.as_ref() && let Some((feature, what)) = key_feature(key, s.agent()) {
             let agent = s.agent();
             if !agent.can(feature) {
                 return format!("{what} is not {}'s to do: {} runs {}, do it in its pane", agent.label, s.project, agent.name);
@@ -1480,6 +1480,7 @@ impl App {
             },
             Key::Ctrl('r') => self.restart_all(screen),
             Key::Char('e') => match session {
+                Some(s) if s.agent().can(Feature::Variants) => self.manager_async(&["variants", &s.session]),
                 Some(s) => self.open_effort_menu(s, None),
                 None => String::new(),
             },
@@ -2791,8 +2792,9 @@ fn session_key_requires_terminal(key: Key) -> bool {
 
 /// The card keys that need a feature of the session's agent, and what they do, named for a
 /// refusal (claude-sessions refuses them too, and Remote Control).
-pub(crate) fn key_feature(key: Key) -> Option<(Feature, &'static str)> {
+fn key_feature(key: Key, agent: &agents::Agent) -> Option<(Feature, &'static str)> {
     match key {
+        Key::Char('e') if agent.can(Feature::Variants) => Some((Feature::Variants, "the model variant picker")),
         Key::Char('e') => Some((Feature::Effort, "the effort level")),
         Key::Char('$') => Some((Feature::Billing, "billing to API credits")),
         Key::Char('C') => Some((Feature::Compact, "/compact")),
