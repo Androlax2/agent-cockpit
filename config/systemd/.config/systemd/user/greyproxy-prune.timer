@@ -1,0 +1,10 @@
+[Unit]
+Description=Keep greyproxy.db bounded daily (greyproxy 0.4.5 has no retention of its own)
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=1h
+
+[Install]
+WantedBy=timers.target

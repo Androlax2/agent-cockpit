@@ -1,0 +1,18 @@
+[Unit]
+Description=Delete greyproxy traffic history older than 14 days or beyond 4 GB (~/.local/bin/greyproxy-prune)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 %h/.local/bin/greyproxy-prune --max-age-days 14 --max-gb 4
+ReadWritePaths=%h/.local/share/greyproxy
+UMask=0077
+TimeoutStartSec=1h
+Nice=19
+IOSchedulingClass=idle
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+PrivateNetwork=true
+StandardOutput=journal
+StandardError=journal
