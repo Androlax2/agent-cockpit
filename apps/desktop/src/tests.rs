@@ -678,6 +678,24 @@ fn an_acknowledged_session_report_is_refused_without_a_trusted_sender() {
 }
 
 #[test]
+fn command_chat_ownership_comes_from_the_authenticated_pane_not_the_claim() {
+    for (pane, expected) in [("%7", json!(SESSION_A)), ("%8", Value::Null)] {
+        let mut bench = Bench::new();
+        bench.report(SESSION_A, json!({"state": "waiting", "tmux_pane": "%7"}));
+        bench.world.borrow_mut().sender_targets.insert(500, target(&[("tmux_pane", pane)]));
+        let folder = bench.fixture.root.join("project");
+        fs::create_dir_all(&folder).unwrap();
+        let key = answers_key_of(&folder);
+        bench.world.borrow_mut().sender_directories.insert(500, folder.display().to_string());
+        let raw = json!({"id": "1123456789ab", "session": SESSION_A, "verified_session": SESSION_A,
+            "command": "true", "answers": key}).to_string();
+        bench.registry.request_from("run-request", &raw, 500).unwrap();
+        let held = cockpit::util::read_json(&cockpit::approval::held_request("1123456789ab", "request")).unwrap();
+        assert_eq!(held["verified_session"], expected, "pane {pane}");
+    }
+}
+
+#[test]
 fn the_daemon_writes_its_messages_to_the_shared_log() {
     let fixture = Fixture::new();
     log("session aaaaaaaa (runway) is gone, dropping it");

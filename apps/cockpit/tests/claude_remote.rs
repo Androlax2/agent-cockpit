@@ -435,7 +435,7 @@ fn conversation_access_requires_pairing_and_an_active_session() {
 
 #[test]
 fn unavailable_conversation_history_is_an_explicit_error() {
-    for content in [None, Some("not json\n")] {
+    for content in [None, Some("not json\n"), Some("not json")] {
         let remote = Remote::start();
         let secret = remote.paired();
         remote.session_in("waiting", IDLE);

@@ -100,6 +100,12 @@ try {
   await evaluate("refresh().then(loadConversation)");
   assert.equal(await evaluate('document.querySelector("#conversation").scrollTop'), 25);
   assert.equal(await evaluate('document.activeElement.id'), "chat-reply");
+  await evaluate('const reading = document.querySelector("#conversation"); reading.scrollTop = reading.children[10].offsetTop - reading.offsetTop + 20');
+  const anchorBefore = await evaluate('document.querySelector("#conversation").children[10].getBoundingClientRect().top');
+  history = { messages: history.messages.slice(5).concat([{ id: "new", role: "assistant", text: "New reply" }]), truncated: true };
+  await evaluate("loadConversation()");
+  const anchorAfter = await evaluate('Array.from(document.querySelector("#conversation").children).find(turn => turn.textContent.includes("Message 10:")).getBoundingClientRect().top');
+  assert.ok(Math.abs(anchorAfter - anchorBefore) < 2, `Rolling history moved the visible message: ${anchorBefore} -> ${anchorAfter}`);
   await cdp("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
   await evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
   const screenshot = await cdp("Page.captureScreenshot", { format: "png" });

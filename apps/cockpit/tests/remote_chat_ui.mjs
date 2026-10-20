@@ -6,8 +6,12 @@ class Element {
   constructor(tag = "div") { this.tagName = tag; this.children = []; this.attributes = {}; this.dataset = {}; this.style = {}; this.hidden = false; this.value = ""; this.scrollTop = 0; this.clientHeight = 100; this.scrollHeight = 500; }
   set textContent(value) { this.content = value; this.children = []; }
   get textContent() { return (this.content || "") + this.children.map(child => child.textContent).join(""); }
-  append(...children) { this.children.push(...children); }
-  replaceChildren(...children) { this.content = ""; this.children = children; }
+  append(...children) { for (const child of children) child.parent = this; this.children.push(...children); }
+  replaceChildren(...children) { this.content = ""; this.children = []; this.append(...children); }
+  getBoundingClientRect() {
+    const top = this.parent ? this.parent.children.indexOf(this) * 100 - this.parent.scrollTop : 0;
+    return { top, bottom: top + 100 };
+  }
   setAttribute(name, value) { this.attributes[name] = String(value); }
   getAttribute(name) { return this.attributes[name]; }
   querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
@@ -131,4 +135,14 @@ assert.equal(document.getElementById("chat-send").disabled, true, "real dialogs 
 current.sessions[0].needs_input = true;
 await run("refresh()");
 assert.equal(document.getElementById("chat-send").disabled, false, "ordinary questions accept replies");
+await run("loadConversation()");
+let releaseSlow;
+delayHistory = new Promise(resolve => { releaseSlow = resolve; });
+const beforeSlow = requests.filter(request => request.path === "/api/conversation/s1").length;
+const slowPoll = run("loadConversation()");
+const redundantPoll = run("loadConversation()");
+history.messages.push({ id: "slow-update", role: "assistant", text: "Slow network reply arrived" });
+releaseSlow(); await Promise.all([slowPoll, redundantPoll]); delayHistory = null;
+assert.match(document.getElementById("conversation").textContent, /Slow network reply arrived/, "slow responses must render even when another poll ticks");
+assert.equal(requests.filter(request => request.path === "/api/conversation/s1").length, beforeSlow + 1, "only one poll per conversation may be in flight");
 console.log("mobile chat: messages, safe text, scoped approvals, drafts, focus, scroll, stale responses, offline retry and duplicate submission passed");

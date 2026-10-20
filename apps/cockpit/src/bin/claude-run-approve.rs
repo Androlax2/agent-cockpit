@@ -69,6 +69,7 @@ fn approve(id: &str) -> i32 {
     let project = request.get("project").and_then(Value::as_str).unwrap_or("?").to_string();
     let is_outside_its_folder = !std::path::Path::new(&cwd).starts_with(&started_in) || started_in.is_empty();
     let session = request.get("session").and_then(Value::as_str).unwrap_or("").to_string();
+    let verified_session = request.get("verified_session").and_then(Value::as_str).unwrap_or("");
     audit::record("run", "run.shown", "asking", json!({"id": id, "project": project, "started_in": started_in, "cwd": cwd,
                                                       "claimed_session": session, "command": audit::fingerprint(&original),
                                                       "is_outside_its_folder": is_outside_its_folder}));
@@ -100,7 +101,7 @@ fn approve(id: &str) -> i32 {
         // The phone page (claude-remote) can answer too: it shows what this shows, from this file.
         let _ = std::fs::create_dir_all(approval::log_dir());
         let _ = std::fs::remove_file(approval::remote_answer(id));
-        let _ = approval::write_json(&approval::remote_asking(id), &json!({"id": id, "session": session, "project": project, "cwd": cwd, "started_in": started_in,
+        let _ = approval::write_json(&approval::remote_asking(id), &json!({"id": id, "session": verified_session, "project": project, "cwd": cwd, "started_in": started_in,
                                                                          "command": command, "why": why, "is_outside_its_folder": is_outside_its_folder}));
         let answer = approval::choose_or_remote("Run it?", &[("n", "Decline"), ("y", "Run it"), ("e", "Edit it first")], "n",
                                                 Some(&approval::remote_answer(id)));

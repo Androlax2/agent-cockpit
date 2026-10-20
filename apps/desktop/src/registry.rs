@@ -447,7 +447,7 @@ pub fn queue_todo_update(raw: &str, started_in: &str) -> Result<(), String> {
 /// session can rewrite it before Theo reads it (security audit 2026-10-19, H3). The copy carries
 /// what the sandbox cannot choose: the folder its sandbox started in, that folder's project, and the
 /// answers folder of that project.
-pub fn hold_request(cache: &mut HashMap<String, String>, kind: &str, raw: &str, started_in: &str) -> Result<String, String> {
+pub fn hold_request(cache: &mut HashMap<String, String>, kind: &str, raw: &str, started_in: &str, verified_session: Option<&str>) -> Result<String, String> {
     let extension = match kind {
         "run-request" => "request",
         "guide-request" => "guide",
@@ -470,6 +470,8 @@ pub fn hold_request(cache: &mut HashMap<String, String>, kind: &str, raw: &str, 
     request.insert("started_in".into(), json!(started_in));
     request.insert("project".into(), json!(project_of(cache, started_in, "?")));
     request.insert("answers".into(), json!(answers));
+    request.remove("verified_session");
+    if let Some(session) = verified_session { request.insert("verified_session".into(), json!(session)); }
     cockpit::util::write_json(&path, &Value::Object(request)).map_err(|error| format!("cannot keep {}: {error}", path.display()))?;
     Ok(id)
 }
@@ -1069,14 +1071,14 @@ impl Registry {
         }
         let started_in = self.system.sender_directory(sender);
         let result = match &started_in {
-            Some(started_in) => self.take_request(kind, raw, started_in),
+            Some(started_in) => self.take_request(kind, raw, started_in, sender),
             None => Err("its sender has no process outside the sandbox".into()),
         };
         audit_request(kind, raw, started_in.as_deref(), sender, &result);
         result
     }
 
-    fn take_request(&mut self, kind: &str, raw: &str, started_in: &str) -> Result<(), String> {
+    fn take_request(&mut self, kind: &str, raw: &str, started_in: &str, sender: u32) -> Result<(), String> {
         let started_in = started_in.to_string();
         if kind == "todo-update" {
             return queue_todo_update(raw, &started_in);
@@ -1084,7 +1086,15 @@ impl Registry {
         if self.waiting_from(&started_in) >= WAITING_PER_FOLDER_MAX {
             return Err(format!("{WAITING_PER_FOLDER_MAX} requests from this session's folder already wait for Theo"));
         }
-        let id = hold_request(&mut self.project_cache, kind, raw, &started_in)?;
+        let claimed = serde_json::from_str::<Value>(raw).ok()
+            .and_then(|request| request.get("session").and_then(Value::as_str).map(str::to_string));
+        let verified_session = self.system.sender_target(sender).and_then(|target| {
+            let pane = target.get("tmux_pane").filter(|pane| !pane.is_empty())?;
+            let session = claimed.as_deref()?;
+            let entry = self.sessions.get(session)?;
+            (entry.state != "gone" && entry.target.get("tmux_pane") == Some(pane)).then_some(session)
+        });
+        let id = hold_request(&mut self.project_cache, kind, raw, &started_in, verified_session)?;
         log(&format!("{kind} {id} held, from a sandbox started in {started_in}"));
         if kind == "run-request" { self.run_request(&id) } else { self.guide_request(&id) }
     }

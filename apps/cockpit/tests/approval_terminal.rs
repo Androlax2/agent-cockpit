@@ -18,7 +18,8 @@ fn request(command: &str) -> (PathBuf, String) {
     let id = "0123456789ab".to_string();
     // As the daemon holds it (approval::held_request), with the folder the session started in.
     let request = serde_json::json!({"id": id, "command": command, "why": "A test.", "cwd": root, "started_in": root, "project": "proj-a",
-                                      "answers": "proj-a", "requested_at": now, "session": "aaaaaaaa-0000-4000-8000-000000000000"});
+                                      "answers": "proj-a", "requested_at": now, "session": "aaaaaaaa-0000-4000-8000-000000000000",
+                                      "verified_session": "aaaaaaaa-0000-4000-8000-000000000000"});
     fs::create_dir_all(root.join("run/claude-requests")).unwrap();
     fs::write(root.join(format!("run/claude-requests/{id}.request")), request.to_string()).unwrap();
     (root, id)
@@ -117,5 +118,24 @@ fn the_phone_page_answers_the_menu_and_the_command_runs() {
     let result: serde_json::Value = serde_json::from_str(&fs::read_to_string(root.join(format!("answers/proj-a/runs/{id}.result"))).unwrap()).unwrap();
     assert!(result["output"].as_str().unwrap().contains("ran-from-the-phone"), "{result}");
     assert!(!root.join(format!("run/claude-runs/{id}.asking")).exists(), "still asking after the answer");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn unverified_session_claims_do_not_associate_commands_with_a_mobile_chat() {
+    let (root, id) = request("true");
+    let path = root.join(format!("run/claude-requests/{id}.request"));
+    let mut held: serde_json::Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    held.as_object_mut().unwrap().remove("verified_session");
+    fs::write(path, held.to_string()).unwrap();
+    let mut terminal = Terminal::start(Path::new(env!("CARGO_BIN_EXE_claude-run-approve")), &[&id],
+        &[("CLAUDE_ANSWERS_DIR", &root.join("answers")), ("XDG_RUNTIME_DIR", &root.join("run")),
+            ("XDG_STATE_HOME", &root.join("state")), ("CLAUDE_SESSIONS_STATE_HOME", &root.join("state")), ("CLAUDE_AUDIT_JOURNAL", Path::new("off"))]);
+    terminal.pump(10.0, Some(b"Run it?"));
+    let asking: serde_json::Value = serde_json::from_str(&fs::read_to_string(root.join(format!("run/claude-runs/{id}.asking"))).unwrap()).unwrap();
+    assert_eq!(asking["session"], "");
+    fs::write(root.join(format!("run/claude-runs/{id}.remote")), "n").unwrap();
+    terminal.pump(5.0, Some(b"Declined"));
+    let _ = terminal.child.wait();
     let _ = fs::remove_dir_all(root);
 }

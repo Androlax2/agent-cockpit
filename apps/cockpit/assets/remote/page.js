@@ -16,6 +16,7 @@ const drafts = new Map();
 const sendingMessages = new Set();
 let shownConversation = "";
 let conversationRequest = 0;
+const loadingConversations = new WeakMap();
 
 function statusLabel(session) {
   if (session.needs_input) return "Your reply needed";
@@ -229,31 +230,50 @@ async function loadConversation() {
   const session = opened;
   const conversation = document.getElementById("conversation");
   if (!session || !conversation || tab !== "sessions") return;
-  const request = ++conversationRequest;
-  try {
-    const response = await call("GET", `/api/conversation/${session}`);
-    const history = await response.json();
-    if (request !== conversationRequest || session !== opened || conversation !== document.getElementById("conversation")) return;
-    if (!response.ok) throw new Error(history.message || "Conversation unavailable. Open Terminal details below.");
-    const signature = JSON.stringify(history);
-    document.getElementById("conversation-error").textContent = "";
-    if (signature === shownConversation) return;
-    const isFollowing = shownConversation === "" || conversation.scrollTop + conversation.clientHeight >= conversation.scrollHeight - 32;
-    shownConversation = signature;
-    const turns = history.messages.map(message => {
-      const turn = element("article", `chat-turn ${message.role === "user" ? "from-you" : "from-agent"}`);
-      turn.append(element("div", "speaker", message.role === "user" ? "You" : "Agent"), element("div", "message-text", message.text));
-      return turn;
-    });
-    if (history.truncated) turns.unshift(element("p", "note", "Showing recent messages."));
-    if (turns.length === 0) turns.push(element("p", "empty", "No messages yet. Start the conversation below."));
-    conversation.replaceChildren(...turns);
-    if (isFollowing) conversation.scrollTop = conversation.scrollHeight;
-  } catch (error) {
-    if (request !== conversationRequest || session !== opened || conversation !== document.getElementById("conversation")) return;
-    const warning = document.getElementById("conversation-error");
-    warning.textContent = `${error.message} Try again, or open Terminal details.`;
-  }
+  if (loadingConversations.has(conversation)) return loadingConversations.get(conversation);
+  const loading = (async () => {
+    const request = ++conversationRequest;
+    try {
+      const response = await call("GET", `/api/conversation/${session}`);
+      const history = await response.json();
+      if (request !== conversationRequest || session !== opened || conversation !== document.getElementById("conversation")) return;
+      if (!response.ok) throw new Error(history.message || "Conversation unavailable. Open Terminal details below.");
+      const signature = JSON.stringify(history);
+      document.getElementById("conversation-error").textContent = "";
+      if (signature === shownConversation) return;
+      const isFollowing = shownConversation === "" || conversation.scrollTop + conversation.clientHeight >= conversation.scrollHeight - 32;
+      const anchor = isFollowing ? null : Array.from(conversation.children).find(turn => turn.dataset.messageId
+        && turn.getBoundingClientRect().bottom > conversation.getBoundingClientRect().top);
+      const anchorTop = anchor?.getBoundingClientRect().top;
+      shownConversation = signature;
+      const turns = history.messages.map(message => {
+        const turn = element("article", `chat-turn ${message.role === "user" ? "from-you" : "from-agent"}`);
+        turn.dataset.messageId = message.id;
+        turn.append(element("div", "speaker", message.role === "user" ? "You" : "Agent"), element("div", "message-text", message.text));
+        return turn;
+      });
+      if (history.truncated) turns.unshift(element("p", "note", "Showing recent messages."));
+      if (turns.length === 0) turns.push(element("p", "empty", "No messages yet. Start the conversation below."));
+      conversation.replaceChildren(...turns);
+      if (isFollowing) conversation.scrollTop = conversation.scrollHeight;
+      else if (anchor) {
+        const restored = turns.find(turn => turn.dataset.messageId === anchor.dataset.messageId);
+        if (restored) conversation.scrollTop += restored.getBoundingClientRect().top - anchorTop;
+        else {
+          conversation.scrollTop = 0;
+          document.getElementById("conversation-error").textContent = "The message you were reading is outside the recent history window.";
+        }
+      }
+    } catch (error) {
+      if (request !== conversationRequest || session !== opened || conversation !== document.getElementById("conversation")) return;
+      const warning = document.getElementById("conversation-error");
+      warning.textContent = `${error.message} Try again, or open Terminal details.`;
+    } finally {
+      loadingConversations.delete(conversation);
+    }
+  })();
+  loadingConversations.set(conversation, loading);
+  return loading;
 }
 
 async function post(path, body, note) {

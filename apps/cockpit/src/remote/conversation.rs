@@ -17,7 +17,7 @@ pub fn conversation(id: &str) -> Result<Value, String> {
     if !agents::is_session_id(id) { return Err("no such session".into()); }
     let row = session_row(id).ok_or("no such session")?;
     let (messages, truncated) = match agents::get(&text(&row, "agent")).name {
-        "claude" => claude_messages(id),
+        "claude" => claude_messages(id, text(&row, "state") == "working"),
         "opencode" => opencode_messages(id),
         _ => Err("conversation history is not supported for this agent".into()),
     }?;
@@ -51,7 +51,7 @@ fn visible_text(content: &Value) -> String {
         .collect::<Vec<_>>().join("\n\n")).unwrap_or_default()
 }
 
-fn claude_messages(id: &str) -> Result<(Vec<Value>, bool), String> {
+fn claude_messages(id: &str, is_working: bool) -> Result<(Vec<Value>, bool), String> {
     let root = paths::transcripts();
     let entries = fs::read_dir(&root).map_err(|_| "conversation history is unavailable")?;
     let path = entries.filter_map(Result::ok)
@@ -76,7 +76,7 @@ fn claude_messages(id: &str) -> Result<(Vec<Value>, bool), String> {
         // A currently streaming JSONL record can end halfway through a write.
         let record: Value = match serde_json::from_slice(line) {
             Ok(record) => record,
-            Err(_) if !bytes.ends_with(b"\n") && bytes.ends_with(line) => break,
+            Err(error) if is_working && error.is_eof() && !bytes.ends_with(b"\n") && bytes.ends_with(line) => break,
             Err(_) => return Err("conversation history contains an invalid record".into()),
         };
         let role = record.get("type").and_then(Value::as_str).unwrap_or("");
