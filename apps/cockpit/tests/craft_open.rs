@@ -240,6 +240,19 @@ fn a_window_that_does_not_become_ready_does_not_restart_the_session() {
 }
 
 #[test]
+fn opening_without_a_session_explains_that_existing_connections_are_unchanged() {
+    let craft = Craft::new();
+    for _ in 0..2 {
+        let output = craft.run(&["figcraft"], &[]);
+        assert!(output.status.success(), "{}{}", stdout(&output), stderr(&output));
+        let message = stdout(&output);
+        assert!(message.contains("Existing sessions were not reconnected"), "{message}");
+        assert!(message.contains("craft-open figcraft --session <session-id>"), "{message}");
+    }
+    assert!(!craft.sandbox.state.join("claude-sessions/restart-when-idle").exists());
+}
+
+#[test]
 fn with_a_session_it_schedules_a_restart_and_a_message_to_carry_on() {
     for session in [SESSION_A, OPENCODE_SESSION] {
         let craft = Craft::new();

@@ -6,8 +6,9 @@
 # Existing windows are never closed. Each checkout has separate preferences/recovery storage,
 # and its port is never reassigned to another checkout (old sandboxes retain their forwards).
 #
-# --session <id>: that session's figcraft-app server exited at its start (FigCraft was closed);
-# the cockpit restarts it once its turn ends (the conversation is kept) and tells it to carry on.
+# --session <id>: reconnect that session even if its tools are still listed: its sandbox and MCP
+# connection may predate this checkout's port. The cockpit restarts it once its turn ends
+# (the conversation is kept) and tells it to carry on.
 set -euo pipefail
 
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/claude-sessions"
@@ -124,4 +125,7 @@ if [[ -n $session ]]; then
     printf '%s' "FigCraft is connected now (figcraft-app). Carry on with what you were doing." \
         > "$STATE_DIR/prompt-queue/$session/$(date +%s%N).txt"
     echo "The session restarts when its turn ends (its conversation is kept), then carries on."
+else
+    echo "Existing sessions were not reconnected: their sandbox forwards and MCP connections are unchanged."
+    echo "To reconnect a cockpit session, run: craft-open figcraft --session <session-id>"
 fi
