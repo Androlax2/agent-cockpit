@@ -8,7 +8,7 @@ use std::{collections::BTreeMap, fs, io::{self, Write}, os::unix::fs::OpenOption
 const MAX_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_RECORDS: usize = 10_000;
 mod tasks;
-pub use tasks::{TaskSnapshot, TaskAssignment, TaskRecord, PullRequestMemory, TrailTarget};
+pub use tasks::{TaskSnapshot, TaskAssignment, TaskRecord, PullRequestMemory, TrailTarget, task_key};
 mod deferrals;
 pub use deferrals::{DeferralTarget, Deferral};
 
@@ -30,6 +30,25 @@ pub struct SessionMemory {
     reviewed_question: Option<String>,
     #[serde(flatten)]
     extra: Map<String, Value>,
+}
+
+impl SessionMemory {
+    /// A path that cannot be kept verbatim is dropped (no resume offered) rather than altered.
+    fn remember(&mut self, session: &Session) {
+        self.title = display_text(&util::collapse(if session.label.is_empty() { &session.title } else { &session.label }), 300);
+        self.cwd = if valid_metadata_text(&session.cwd, 300) { session.cwd.clone() } else { String::new() };
+    }
+}
+
+/// Display text from sources that allow anything (transcript titles, task notes, GitHub titles),
+/// made storable: the saved file is still checked strictly when it is loaded.
+pub(crate) fn display_text(text: &str, limit: usize) -> String {
+    display_lines(text, limit).replace('\n', " ")
+}
+
+pub(crate) fn display_lines(text: &str, limit: usize) -> String {
+    text.replace("#{", "# {").replace("#(", "# (").chars()
+        .map(|character| if character.is_control() && character != '\n' { ' ' } else { character }).take(limit).collect()
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -145,8 +164,7 @@ impl Continuity {
             for session in sessions.iter().filter(|session| agents::is_session_id(&session.session)) {
                 if session.last_result.is_none() && question_text(session).is_none() && !state.sessions.contains_key(&session.session) { continue; }
                 let memory = state.sessions.entry(session.session.clone()).or_default();
-                memory.title = util::collapse(if session.label.is_empty() { &session.title } else { &session.label });
-                memory.cwd = session.cwd.clone();
+                memory.remember(session);
                 if let Some(result) = &session.last_result { memory.result = Some(result.clone()); }
                 if let Some(text) = question_text(session) {
                     let identity = question_identity(session).unwrap();
@@ -197,8 +215,7 @@ impl Continuity {
         if let Some(note) = note { validate_note(note)?; }
         self.change(|state| {
             let memory = state.sessions.entry(session.session.clone()).or_default();
-            memory.title = util::collapse(if session.label.is_empty() { &session.title } else { &session.label });
-            memory.cwd = session.cwd.clone();
+            memory.remember(session);
             memory.note = note.map(str::to_string);
             Ok(())
         })

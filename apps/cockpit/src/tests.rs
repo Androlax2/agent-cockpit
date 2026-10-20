@@ -605,6 +605,54 @@ fn continuity_the_attention_filter_hands_a_task_to_the_hidden_viewed_session() {
     assert!(!calls.iter().any(|call| call.contains(" background ")), "{calls:?}");
 }
 
+#[test]
+fn continuity_a_session_title_with_a_tmux_sequence_still_records_its_result() {
+    let fixture = Fixture::new();
+    fixture.write(&format!("home/.claude/projects/p/{SESSION_A}.jsonl"), &format!("{{\"type\":\"ai-title\",\"aiTitle\":\"Fix #{{pane_title}} {}\"}}\n", "x".repeat(400)));
+    fixture.snapshot(json!([continuity_result_row("11111111111111111111111111111111", "waiting")]));
+    let mut app = fixture.app();
+    app.build();
+    app.build();
+    let rows = buffer_rows(&render(&mut app, 110, 45)).join("\n");
+    assert!(!rows.contains("Continuity unavailable"), "{rows}");
+    let saved = continuity_saved(&fixture);
+    assert_eq!(saved["sessions"][SESSION_A]["result"]["id"], "11111111111111111111111111111111");
+}
+
+#[test]
+fn continuity_a_task_note_with_a_tmux_sequence_still_links_its_session() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([continuity_result_row("11111111111111111111111111111111", "waiting")]));
+    fixture.view(SESSION_A);
+    let mut app = fixture.app();
+    let key = app.todos.add("shop", "/r/shop", "Interpolate #{name}");
+    app.todos.items[0].0.insert("notes".into(), json!("use \"#{x}\" here"));
+    app.build();
+    app.focus_panel(3);
+    app.handle(Key::Char('h'), &mut FakeScreen::default());
+    app.build();
+    let rows = buffer_rows(&render(&mut app, 110, 45)).join("\n");
+    assert!(!rows.contains("Continuity unavailable"), "{rows}");
+    assert_eq!(continuity_saved(&fixture)["tasks"][&key]["assignments"][0]["session"], SESSION_A);
+}
+
+#[test]
+fn continuity_an_issue_of_a_mixed_case_repository_links_its_session() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([continuity_result_row("11111111111111111111111111111111", "waiting")]));
+    fixture.view(SESSION_A);
+    let mut app = fixture.app();
+    app.reviews.checkouts.insert("Acme/Shop".into(), "/r/shop".into());
+    app.reviews.set_issues(vec![Issue { number: 12, title: "Broken VAT".into(), url: String::new(), repository: "Shop".into(),
+        full_repository: "Acme/Shop".into(), updated: "2026-10-19T00:00:00Z".into(), labels: Vec::new() }]);
+    hand_over_first_item(&mut app);
+    app.build();
+    let rows = buffer_rows(&render(&mut app, 110, 45)).join("\n");
+    assert!(!rows.contains("Continuity unavailable"), "{rows}");
+    assert_eq!(app.todos.status_of("Acme/Shop#12"), "doing");
+    assert_eq!(continuity_saved(&fixture)["tasks"]["acme/shop#12"]["assignments"][0]["session"], SESSION_A);
+}
+
 fn continuity_question_row(id: &str, question: &str) -> Value {
     let mut row = session(id, "needs-you", "shop", "/r/shop", if id == SESSION_A { 1 } else { 2 });
     row["needs_input"] = json!(true);
@@ -6624,6 +6672,18 @@ fn c_reviews_a_pull_request_with_the_saved_default() {
     app.panels[2].selected = 0;
     app.handle(Key::Char('c'), &mut FakeScreen::default());
     assert_eq!(fixture.wait_for_calls("claude-sessions", 1), vec!["claude-sessions --agent opencode review /r/shop 42".to_string()]);
+}
+
+#[test]
+fn c_reviews_a_pull_request_of_a_mixed_case_repository_in_its_checkout() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    app.reviews.checkouts.insert("Acme/Shop".into(), "/r/shop".into());
+    app.review_rows = reviews::parse_reviews(r#"[{"number": 61, "title": "VAT", "url": "https://github.com/Acme/Shop/pull/61"}]"#, "Acme/Shop");
+    app.focus_panel(2);
+    app.panels[2].selected = 0;
+    app.handle(Key::Char('c'), &mut FakeScreen::default());
+    assert_eq!(fixture.wait_for_calls("claude-sessions", 1), vec!["claude-sessions --agent claude review /r/shop 61".to_string()]);
 }
 
 #[test]

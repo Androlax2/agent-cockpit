@@ -2108,7 +2108,7 @@ impl App {
         match key {
             Key::Enter => row.map(|row| open_in_scratchpad("prs", &row.url)).unwrap_or_default(),
             Key::Char('c') => match row {
-                Some(row) => match self.reviews.checkouts.get(&row.full_repository) {
+                Some(row) => match self.reviews.checkouts.iter().find(|(repository, _)| repository.eq_ignore_ascii_case(&row.full_repository)).map(|(_, checkout)| checkout) {
                     None => format!("no local checkout of {}: start a session there first", row.repository),
                     Some(checkout) => {
                         let agent = match settings::launch_agent() { Ok(agent) => agent, Err(error) => return error };

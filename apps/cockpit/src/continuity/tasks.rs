@@ -16,7 +16,17 @@ pub struct TaskSnapshot {
 impl TaskSnapshot {
     pub fn from_entry(entry: &Entry, repository: &str) -> Self {
         let (title, notes) = match entry { Entry::Typed(item) => (item.text(), item.notes()), Entry::Issue { issue, .. } => (issue.title.clone(), String::new()) };
-        Self { key: entry.key(), repository: repository.into(), title, notes, status: entry.status(), extra: Map::new() }
+        Self { key: task_key(entry), repository: repository.into(), title: display_text(&title, 300), notes: display_lines(&notes, 4000),
+               status: entry.status(), extra: Map::new() }
+    }
+}
+
+/// Continuity's key for a task: an issue's repository is lowercased, as GitHub names are
+/// case-insensitive; the Todo list keeps the key it stored the status under.
+pub fn task_key(entry: &Entry) -> String {
+    match entry {
+        Entry::Typed(item) => item.id(),
+        Entry::Issue { issue, .. } => format!("{}#{}", issue.full_repository.to_lowercase(), issue.number),
     }
 }
 
@@ -131,8 +141,7 @@ impl State {
                 active, result: None, prs: BTreeSet::new(), extra: Map::new() });
         }
         let memory = self.sessions.entry(session.session.clone()).or_default();
-        memory.cwd = session.cwd.clone();
-        memory.title = util::collapse(if session.label.is_empty() { &session.title } else { &session.label });
+        memory.remember(session);
     }
 }
 
@@ -186,8 +195,10 @@ impl Continuity {
                     for session in linked { incoming.entry(session.session.clone()).or_default().push(snapshot.clone()); }
                 }
             }
-            for (key, status) in &todos.issues {
-                let Some((repository, number)) = key.rsplit_once('#') else { continue };
+            for (stored_key, status) in &todos.issues {
+                let Some((repository, number)) = stored_key.rsplit_once('#') else { continue };
+                let repository = repository.to_lowercase();
+                let key = &format!("{repository}#{number}");
                 let session_id = status.get("session").and_then(Value::as_str).unwrap_or("");
                 let linked = sessions.iter().filter(|session| session.repository == repository
                     && (session.session == session_id || session.branch == format!("issue-{number}")));
@@ -196,7 +207,7 @@ impl Continuity {
                 if current_status == "doing" {
                     for session in linked {
                         let snapshot = state.tasks.get(key).map(|record| record.snapshot.clone()).unwrap_or_else(|| TaskSnapshot {
-                            key: key.clone(), repository: repository.into(), title: key.clone(), notes: String::new(), status: current_status.into(), extra: Map::new(),
+                            key: key.clone(), repository: repository.clone(), title: key.clone(), notes: String::new(), status: current_status.into(), extra: Map::new(),
                         });
                         incoming.entry(session.session.clone()).or_default().push(snapshot);
                     }
@@ -227,6 +238,7 @@ impl Continuity {
             }
             for review in reviews {
                 if !valid_repository(&review.full_repository) || review.number <= 0 || review.head_branch.is_empty()
+                    || !valid_metadata_text(&review.head_branch, 300) || !valid_metadata_text(&review.head_oid, 64) || !valid_metadata_text(&review.review, 40)
                     || (!review.url.is_empty() && !valid_pr_url(&review.full_repository, review.number, &review.url)) { continue; }
                 let key = format!("{}#{}", review.full_repository, review.number);
                 let mut linked = false;
@@ -238,10 +250,10 @@ impl Continuity {
                 } }
                 if linked {
                     let previous = state.prs.get(&key);
-                    let last_seen = previous.filter(|pr| pr.head_oid == review.head_oid && pr.decision == review.review && pr.title == review.title)
+                    let last_seen = previous.filter(|pr| pr.head_oid == review.head_oid && pr.decision == review.review && pr.title == display_text(&review.title, 300))
                         .map(|pr| pr.last_seen).unwrap_or(now);
                     state.prs.insert(key, PullRequestMemory { repository: review.full_repository.clone(), number: review.number,
-                        title: review.title.clone(), url: review.url.clone(), branch: review.head_branch.clone(), head_oid: review.head_oid.clone(), decision: review.review.clone(), last_seen,
+                        title: display_text(&review.title, 300), url: review.url.clone(), branch: review.head_branch.clone(), head_oid: review.head_oid.clone(), decision: review.review.clone(), last_seen,
                         extra: previous.map(|pr| pr.extra.clone()).unwrap_or_default() });
                 }
             }

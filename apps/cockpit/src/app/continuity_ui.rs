@@ -1,5 +1,5 @@
 use super::*;
-use crate::continuity::{TaskSnapshot, TrailTarget, DeferralTarget};
+use crate::continuity::{TaskSnapshot, TrailTarget, DeferralTarget, task_key};
 
 impl App {
     pub(super) fn run_continuity_action(&mut self, name: &str, screen: &mut dyn Screen) -> String {
@@ -10,7 +10,7 @@ impl App {
         if name == "defer-20m" || name == "bring-back" { return self.change_deferral(name); }
         if name == "task-trail" {
             let target = match self.focus {
-                3 => self.todo_entries.get(self.panels[3].selected).map(|entry| TrailTarget::Task(entry.key())),
+                3 => self.todo_entries.get(self.panels[3].selected).map(|entry| TrailTarget::Task(task_key(entry))),
                 2 => self.review_rows.get(self.panels[2].selected).map(|review| TrailTarget::PullRequest { repository: review.full_repository.clone(), number: review.number }),
                 _ => self.selected_session().map(|session| TrailTarget::Session(session.session)),
             };
@@ -138,7 +138,7 @@ impl App {
         if keys.is_empty() {
             let mut text = "No linked session or task recorded.\nNo result recorded.\nNo linked PR.\n".to_string();
             if let TrailTarget::Task(key) = &target {
-                if let Some(entry) = self.todo_entries.iter().find(|entry| entry.key() == *key) { text = format!("{}\n\n{text}", todo_details(entry)); }
+                if let Some(entry) = self.todo_entries.iter().find(|entry| task_key(entry) == *key) { text = format!("{}\n\n{text}", todo_details(entry)); }
             }
             self.session_details = Some(SessionDetails { title: "Task trail".into(), text, scroll: 0, actions: Vec::new() });
             return String::new();
@@ -194,13 +194,13 @@ impl App {
 
     fn open_trail_task(&mut self, key: &str) -> String {
         let entry = self.todos.items.iter().find(|item| item.id() == key).map(|item| Entry::Typed(item.clone()))
-            .or_else(|| self.reviews.issues().into_iter().find(|issue| issue.key() == key).map(|issue|
-                Entry::Issue { status: self.todos.status_of(key), priority: todo::issue_priority(&issue.labels), issue }));
+            .or_else(|| self.reviews.issues().into_iter().find(|issue| issue.key().eq_ignore_ascii_case(key)).map(|issue|
+                Entry::Issue { status: self.todos.status_of(&issue.key()), priority: todo::issue_priority(&issue.labels), issue }));
         if let Some(entry) = entry {
             self.todo_jump = Some((current_session(), key.into()));
             self.show_todo_tab(match entry.status().as_str() { "doing" => 3, "done" => 4, "proposed" => 1, _ => 2 });
             self.build_todo();
-            if let Some(index) = self.todo_entries.iter().position(|entry| entry.key() == key) { self.panels[3].selected = index; }
+            if let Some(index) = self.todo_entries.iter().position(|entry| task_key(entry) == key) { self.panels[3].selected = index; }
             self.focus_panel(3);
             self.session_details = None;
         } else if let Some(record) = self.continuity.as_ref().ok().and_then(|state| state.tasks().get(key)) {
