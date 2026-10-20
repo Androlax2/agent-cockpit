@@ -8,7 +8,7 @@ use crate::errors::ErrorReporter;
 use crate::paths;
 use crate::reviews::{self, Review, Reviews};
 use crate::sessions::{self, CONTEXT_COMPACT_AT, History, PastSession, Restorable, Session, ViewState};
-use crate::settings::{self, SETTINGS};
+use crate::settings::{self, LAUNCH_SETTINGS, SETTINGS};
 use crate::status::{self, ClaudeStatus};
 use crate::todo::{self, Entry, TodoList};
 use crate::usage::{self, BudgetAlerts, Refresher, Window};
@@ -72,9 +72,9 @@ const GLOBAL_HINTS: [(&str, &str); 5] = [("⇥", "panel"), (":", "actions"), ("a
 const GLOBAL_HELP: [(&str, &str); 14] = [
     ("0-3", "focus a panel"), ("H", "resume a past session, searched by project and prompt"),
     ("⌘1 ⌘2 ⌘3", "focus a panel from inside the session (tmux)"), ("⇥ ⇧⇥", "next / previous panel"), ("j/k ↑↓", "move inside the panel"),
-    (":", "every action, searchable; the rare ones have no key and are only there"), ("a", "new session in a project: pick the project, then the agent (Claude Code or opencode)"),
-    ("O", "new opencode session in a project, without the agent pick: same sandbox, card and keys, but what only Claude Code does (effort, $, remote, /compact) is done in its pane"),
-    ("S", "settings, on or off: the phone on lock, the todo queue, errors handed to dotfiles, freezing sessions while gaming, the idle lock on workspace 6, the daily digest; and the phone page: its server, pairing a phone (QR code), forgetting one (x)"),
+    (":", "every action, searchable; includes new-with-agent to override the default"), ("a", "new session in a project using the default agent from Settings (S)"),
+    ("O", "new opencode session in a project, overriding the default agent: same sandbox, card and keys, but what only Claude Code does (effort, $, remote, /compact) is done in its pane"),
+    ("S", "settings: default agent, OpenCode model and model-specific effort; on/off choices; and the phone page, pairing (QR code), forgetting a phone (x)"),
     ("P W G", "windows on top: pull requests, Claude on the web, greyproxy (also Super+Ctrl+P/A/G)"),
     ("≈ $", "today's Claude Code and opencode replies on this machine at API prices (the plan is flat); week and month in Status"),
     ("⌘⇥", "cursor between the column and the session (tmux)"),
@@ -82,7 +82,8 @@ const GLOBAL_HELP: [(&str, &str); 14] = [
     ("q ⌘C", "close the manager window; sessions keep running"),
 ];
 /// Rare actions with no key, only in the : list: the panel they run in ("-" for none), a name, a label.
-const PALETTE_ONLY: [(&str, &str, &str); 7] = [
+const PALETTE_ONLY: [(&str, &str, &str); 8] = [
+    ("-", "new-with-agent", "new session with an explicit agent: pick a project, then Claude Code or opencode"),
     ("-", "digest", "the digest: yesterday, today, plan usage, who waits, pull requests (also once a day by itself)"),
     ("-", "design", "a design session: a Claude Design canvas, worked on by a session in a project (link, then project)"),
     ("-", "clones", "the clones of + and reviews: delete those with no session, no uncommitted change and nothing unpushed (also once a day by itself)"),
@@ -333,7 +334,7 @@ impl EffortMenu {
     }
 }
 
-/// The settings, each on or off, in the column's top right corner (S), and below them the phone
+/// The settings and new-session defaults in the column's top right corner (S), and below them the phone
 /// page (claude-remote): whether its server answers and the tailnet publishes it, a row that pairs
 /// a phone, and the paired phones.
 pub struct SettingsMenu {
@@ -342,16 +343,19 @@ pub struct SettingsMenu {
     area: (u16, u16, u16, u16), // top, left, bottom, right
     pub(crate) phones: Vec<Value>,
     phone_health: Arc<Mutex<Option<PhoneHealth>>>,
+    catalog: Option<ModelCatalog>,
 }
 
 /// Whether the phone page's server answers, and whether tailscale serve publishes it (None: Tailscale
 /// did not say); checked once the menu opens.
 type PhoneHealth = (bool, Option<bool>);
+type ModelCatalog = Arc<Mutex<Option<Result<Vec<settings::ModelChoice>, String>>>>;
 
 /// What a row of the settings menu does.
 #[derive(Debug, PartialEq)]
 pub(crate) enum SettingsRow {
     Setting(usize),
+    Launch(usize),
     PairPhone,
     Phone(usize),
 }
@@ -365,18 +369,19 @@ impl SettingsMenu {
             let health = (remote::server_answers(), remote::is_published());
             *shared.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(health);
         });
-        Self { selected: 0, rows: HashMap::new(), area: (0, 0, 0, 0), phones: remote::phones(), phone_health }
+        Self { selected: 0, rows: HashMap::new(), area: (0, 0, 0, 0), phones: remote::phones(), phone_health, catalog: None }
     }
 
     fn row_count(&self) -> usize {
-        SETTINGS.len() + 1 + self.phones.len()
+        SETTINGS.len() + LAUNCH_SETTINGS.len() + 1 + self.phones.len()
     }
 
     pub(crate) fn row(&self, index: usize) -> SettingsRow {
         match index {
             index if index < SETTINGS.len() => SettingsRow::Setting(index),
-            index if index == SETTINGS.len() => SettingsRow::PairPhone,
-            index => SettingsRow::Phone(index - SETTINGS.len() - 1),
+            index if index < SETTINGS.len() + LAUNCH_SETTINGS.len() => SettingsRow::Launch(index - SETTINGS.len()),
+            index if index == SETTINGS.len() + LAUNCH_SETTINGS.len() => SettingsRow::PairPhone,
+            index => SettingsRow::Phone(index - SETTINGS.len() - LAUNCH_SETTINGS.len() - 1),
         }
     }
 
@@ -394,20 +399,21 @@ impl SettingsMenu {
         let width = buffer.area.width;
         let box_height = self.row_count() as u16 + 5;
         let top = HEADER_LINES;
-        let left = width.saturating_sub(3 + MENU_WIDTH).max(1);
-        let right = left + MENU_WIDTH - 1;
+        let menu_width = width.saturating_sub(4).min(54);
+        let left = width.saturating_sub(3 + menu_width).max(1);
+        let right = left + menu_width - 1;
         self.area = (top, left, top + box_height - 1, right);
         let frame = on(BLUE, BG_HIGHLIGHT).add_modifier(Modifier::BOLD);
         let ground = on(FG, BG_HIGHLIGHT);
         let dim = on(FG_DARK, BG_HIGHLIGHT);
-        let inner = (MENU_WIDTH - 2) as usize;
+        let inner = menu_width.saturating_sub(2) as usize;
         let blank = |buffer: &mut Buffer, row: u16| put(buffer, row, left, &format!("│{}│", " ".repeat(inner)), frame);
         put(buffer, top, left, &format!("╭{}╮", "─".repeat(inner)), frame);
         put(buffer, top, left + 2, " Settings ", frame);
         self.rows.clear();
         let mut row = top + 1;
         for index in 0..self.row_count() {
-            if index == SETTINGS.len() {
+            if index == SETTINGS.len() + LAUNCH_SETTINGS.len() {
                 put(buffer, row, left, &format!("├{}┤", "─".repeat(inner)), frame);
                 put(buffer, row, left + 2, " Phone ", frame);
                 blank(buffer, row + 1);
@@ -427,6 +433,15 @@ impl SettingsMenu {
                     let state_style = if chosen { on(BG_HIGHLIGHT, BLUE) } else if is_on { on(GREEN, BG_HIGHLIGHT).add_modifier(Modifier::BOLD) } else { dim };
                     put(buffer, row, right - 4, if is_on { " on" } else { "off" }, state_style);
                 }
+                SettingsRow::Launch(setting) => {
+                    let (name, label) = LAUNCH_SETTINGS[setting];
+                    let value = match settings::launch_value(name) {
+                        Ok(value) if value.is_empty() => "OpenCode default".into(),
+                        Ok(value) => value,
+                        Err(error) => error,
+                    };
+                    put(buffer, row, left + 2, &fit(&format!("{label}: {value}"), inner - 2), text_style);
+                }
                 SettingsRow::PairPhone => put(buffer, row, left + 2, "Pair a phone (QR code)", text_style),
                 SettingsRow::Phone(phone) => {
                     let phone = &self.phones[phone];
@@ -439,7 +454,11 @@ impl SettingsMenu {
             row += 1;
         }
         blank(buffer, row);
-        let keys = if matches!(self.row(self.selected), SettingsRow::Phone(_)) { "x forgets this phone  esc" } else { "⏎ toggles or pairs  esc" };
+        let keys = match self.row(self.selected) {
+            SettingsRow::Phone(_) => "x forgets this phone  esc",
+            SettingsRow::Launch(1 | 2) => "⏎ chooses  d OpenCode default  esc",
+            _ => "⏎ changes or pairs  esc",
+        };
         put(buffer, row, left + 2, keys, dim.add_modifier(Modifier::DIM));
         put(buffer, row + 1, left, &format!("╰{}╯", "─".repeat(inner)), frame);
     }
@@ -1288,7 +1307,7 @@ impl App {
              ("$", "bill the session to the Console's API credits, or back to the subscription: it restarts on the same conversation (badge $ credits)"),
              ("g", "lazygit on the session's repository, in a popup (q closes it)"),
              ("U", "push the session's branch to origin with your SSH key, after a yes (lazygit's sandbox cannot)"),
-             ("+", "another session on this repository, on its own branch in a separate clone; it asks for the agent"),
+             ("+", "another session on this repository, on its own branch in a separate clone, using the default agent"),
              ("C", "/compact in the session, when it waits (the /compact badge suggests it)"),
              ("B", "after a reboot: bring back the sessions that were running"),
              ("o", "open the Claude Design canvas a design session works on (◆ on its card)")]
@@ -1362,7 +1381,7 @@ impl App {
                     let suggested = chrono::Local::now().format("parallel-%H%M").to_string();
                     let typed = input_line(screen, &format!("branch for another {} session (Enter: {suggested})> ", s.project));
                     let branch = if typed.is_empty() { suggested } else { typed };
-                    let Some(agent) = screen.outside(&mut || pick_agent()) else { return "cancelled: no agent picked".into() };
+                    let agent = match settings::launch_agent() { Ok(agent) => agent, Err(error) => return error };
                     manager_in_background(&["--agent", &agent, "parallel", &s.cwd, &branch]);
                     format!("cloning {} for {branch} …", s.project)
                 }
@@ -1493,16 +1512,66 @@ impl App {
     }
 
     /// What Enter or a click does on a row of the settings menu.
-    fn choose_settings_row(&mut self, index: usize) -> String {
+    fn choose_settings_row(&mut self, index: usize, screen: &mut dyn Screen) -> String {
         let Some(menu) = self.settings_menu.as_ref() else { return String::new() };
         match menu.row(index) {
             SettingsRow::Setting(setting) => self.toggle_setting(setting),
+            SettingsRow::Launch(setting) => self.choose_launch_setting(setting, screen),
             SettingsRow::PairPhone => {
                 self.settings_menu = None;
                 self.start_pairing()
             }
             SettingsRow::Phone(_) => String::new(),
         }
+    }
+
+    fn choose_launch_setting(&mut self, index: usize, screen: &mut dyn Screen) -> String {
+        let (name, label) = LAUNCH_SETTINGS[index];
+        if name == "default-agent" {
+            let Some(agent) = screen.outside(&mut || pick_agent()) else { return String::new() };
+            if agents::find(&agent).is_none() { return format!("invalid default-agent: {agent}"); }
+            let error = manager(&["setting", name, &agent]);
+            return if error.is_empty() { format!("{label}: {agent}") } else { error };
+        }
+        let selected_model = if name == "opencode-effort" {
+            match settings::launch_value("opencode-model") { Ok(model) => model, Err(error) => return error }
+        } else { String::new() };
+        if name == "opencode-effort" && selected_model.is_empty() { return "pick an OpenCode model before its effort".into(); }
+        let menu = self.settings_menu.as_ref().expect("the settings menu is open");
+        let Some(catalog) = &menu.catalog else {
+            let viewed = current_session();
+            let directory = self.sessions.iter().find(|session| session.session == viewed).map(|session| session.cwd.clone())
+                .or_else(|| self.selected_session().map(|session| session.cwd)).filter(|directory| !directory.is_empty());
+            let Some(directory) = directory.or_else(|| screen.outside(&mut || pick_project()).filter(|directory| !directory.is_empty())) else { return String::new() };
+            let catalog = Arc::new(Mutex::new(None));
+            let shared = catalog.clone();
+            std::thread::spawn(move || {
+                let result = settings::load_models(&directory);
+                *shared.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(result);
+            });
+            self.settings_menu.as_mut().expect("the settings menu is open").catalog = Some(catalog);
+            return "loading OpenCode models … press Enter again when ready".into();
+        };
+        let result = catalog.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
+        let models = match result {
+            None => return "loading OpenCode models … press Enter again when ready".into(),
+            Some(Err(error)) => return format!("cannot load OpenCode models: {error}"),
+            Some(Ok(models)) => models,
+        };
+        let mut choices = vec!["OpenCode default".to_string()];
+        if name == "opencode-model" {
+            choices.extend(models.iter().map(settings::ModelChoice::reference));
+        } else {
+            let Some(model) = models.iter().find(|model| model.reference() == selected_model) else {
+                return format!("OpenCode model unavailable in this project: {selected_model}");
+            };
+            choices.extend(model.variants.iter().map(|variant| variant.id.clone()));
+        }
+        let Some(choice) = screen.outside(&mut || fzf(&format!("{label}> "), &choices, &[])) else { return String::new() };
+        if !choices.contains(&choice) { return format!("invalid {label}: {choice}"); }
+        let value = if choice == "OpenCode default" { "" } else { &choice };
+        let error = manager(&["setting", name, value]);
+        if error.is_empty() { format!("{label}: {choice}") } else { error }
     }
 
     /// The QR code of a new one-time pairing link, over the column.
@@ -1540,7 +1609,7 @@ impl App {
             Key::Click { x, y, .. } => {
                 if let Some(index) = menu.rows.get(&y).copied() {
                     menu.selected = index;
-                    return self.choose_settings_row(index);
+                    return self.choose_settings_row(index, screen);
                 }
                 if !menu.contains(x, y) {
                     self.settings_menu = None;
@@ -1550,11 +1619,18 @@ impl App {
             Key::Char('k') | Key::Up => menu.selected = menu.selected.saturating_sub(1),
             Key::Enter | Key::Char(' ') => {
                 let index = menu.selected;
-                return self.choose_settings_row(index);
+                return self.choose_settings_row(index, screen);
             }
             Key::Char('x') => {
                 if let SettingsRow::Phone(phone) = menu.row(menu.selected) {
                     return self.forget_phone(phone, screen);
+                }
+            }
+            Key::Char('d') => {
+                if let SettingsRow::Launch(setting @ (1 | 2)) = menu.row(menu.selected) {
+                    let (name, label) = LAUNCH_SETTINGS[setting];
+                    let error = manager(&["setting", name, ""]);
+                    return if error.is_empty() { format!("{label}: OpenCode default") } else { error };
                 }
             }
             _ => self.settings_menu = None,
@@ -1617,7 +1693,7 @@ impl App {
         scope + if self.reviews.current().2 { "  ⟳" } else { "" }
     }
 
-    pub(crate) fn handle_reviews(&mut self, key: Key, screen: &mut dyn Screen) -> String {
+    pub(crate) fn handle_reviews(&mut self, key: Key, _screen: &mut dyn Screen) -> String {
         let row = self.review_rows.get(self.panels[2].selected).cloned();
         match key {
             Key::Enter => row.map(|row| open_in_scratchpad("prs", &row.url)).unwrap_or_default(),
@@ -1625,7 +1701,7 @@ impl App {
                 Some(row) => match self.reviews.checkouts.get(&row.full_repository) {
                     None => format!("no local checkout of {}: start a session there first", row.repository),
                     Some(checkout) => {
-                        let Some(agent) = screen.outside(&mut || pick_agent()) else { return "cancelled: no agent picked".into() };
+                        let agent = match settings::launch_agent() { Ok(agent) => agent, Err(error) => return error };
                         manager_in_background(&["--agent", &agent, "review", checkout, &row.number.to_string()]);
                         format!("preparing a review of {}#{} …", row.repository, row.number)
                     }
@@ -1866,7 +1942,7 @@ impl App {
     }
 
     /// The item to the project's running session, or to a new one; then it is in progress.
-    pub fn hand_to_claude(&mut self, entry: &Entry, screen: &mut dyn Screen) -> String {
+    pub fn hand_to_claude(&mut self, entry: &Entry, _screen: &mut dyn Screen) -> String {
         let (directory, text, repository) = match entry {
             Entry::Typed(item) => (item.cwd(), todo::prompt_of(entry), String::new()),
             Entry::Issue { issue, .. } => (self.reviews.checkouts.get(&issue.full_repository).cloned().unwrap_or_default(), todo::prompt_of(entry), issue.repository.clone()),
@@ -1904,7 +1980,7 @@ impl App {
                 format!("sent to {}", session.project)
             }
             None => {
-                let Some(agent) = screen.outside(&mut || pick_agent()) else { return "cancelled: no agent picked".into() };
+                let agent = match settings::launch_agent() { Ok(agent) => agent, Err(error) => return error };
                 // Out of sight, as a card of its own (claude-sessions background): in the session pane
                 // it replaced the session on screen, and the Todo panel lost its project.
                 manager_in_background(&["--agent", &agent, "background", &directory, &text]);
@@ -1918,7 +1994,7 @@ impl App {
     /// The item to a new session in a parallel clone of its repository, on a branch named after it
     /// (claude-sessions parallel), never to a running one: it does not touch the files a session
     /// already works on. Then it is in progress.
-    pub fn hand_to_new_session(&mut self, entry: &Entry, screen: &mut dyn Screen) -> String {
+    pub fn hand_to_new_session(&mut self, entry: &Entry, _screen: &mut dyn Screen) -> String {
         let directory = match entry {
             Entry::Typed(item) => item.cwd(),
             Entry::Issue { issue, .. } => self.reviews.checkouts.get(&issue.full_repository).cloned().unwrap_or_default(),
@@ -1926,7 +2002,7 @@ impl App {
         if directory.is_empty() {
             return "no local checkout of this issue's repository: clone it first".into();
         }
-        let Some(agent) = screen.outside(&mut || pick_agent()) else { return "cancelled: no agent picked".into() };
+        let agent = match settings::launch_agent() { Ok(agent) => agent, Err(error) => return error };
         let key = entry.key();
         let (branch, text) = todo::handoff_of(entry);
         manager_in_background(&["--agent", &agent, "parallel", &directory, &branch, &text]);
@@ -1978,13 +2054,13 @@ impl App {
             0 => vec![],
             1 => Self::sessions_help(),
             2 => vec![("⏎", "open the pull request in the pull requests window"),
-                      ("c", "a session reviewing it, in its own clone of the repository; it asks for the agent"),
+                      ("c", "a session reviewing it, in its own clone of the repository, using the default agent"),
                       ("P", "the pull requests window on the viewed session's repository (or your review requests)"),
                       ("✓ ● ✗", "CI passing, running, failing"), ("approved", "review state: approved, changes (requested), review (required)")],
             _ => vec![("⏎", "the item's details: title, notes, why Claude proposed it, who filed it, when"),
                       ("[ ]", "previous / next tab: Open (Proposed, To do and In progress together) · Proposed · To do · In progress · Done"),
-                      ("h", "hand the item over: the session on screen if it is on the item's project (a parallel clone too), Claude Code or opencode alike, else the project's running session, or a new one, asking for its agent"),
-                      ("N", "hand the item to a new session (it asks for the agent), in a parallel clone of its repository on a branch named after it (todo-<id>, issue-<n>), never to a running one"),
+                      ("h", "hand the item over: the session on screen if it is on the item's project (a parallel clone too), Claude Code or opencode alike, else the project's running session, or a new one using the default agent"),
+                      ("N", "hand the item to a new session using the default agent, in a parallel clone of its repository on a branch named after it (todo-<id>, issue-<n>), never to a running one"),
                       ("e", "edit the title and notes in your editor, in a popup (first line: the title)"),
                       ("y n", "approve or decline an idea Claude proposed; a declined idea is not proposed again"),
                       ("Q", "queue it (again: unqueue): a session of its project idle for 5 min at its prompt takes the first queued item, by priority, one at a time"),
@@ -2318,9 +2394,10 @@ impl App {
             }
             Key::Char('a') => {
                 if let Some(directory) = screen.outside(&mut || pick_project()).filter(|d| !d.is_empty()) {
-                    if let Some(agent) = screen.outside(&mut || pick_agent()) {
-                        self.message = self.manager_async(&["--agent", &agent, "new", &directory]);
-                    }
+                    self.message = match settings::launch_agent() {
+                        Ok(agent) => self.manager_async(&["--agent", &agent, "new", &directory]),
+                        Err(error) => error,
+                    };
                 }
             }
             Key::Char('O') => {
@@ -2397,6 +2474,11 @@ impl App {
     fn run_palette_only(&mut self, name: &str, screen: &mut dyn Screen) -> String {
         let known = self.selected_session().filter(|s| s.state != "unknown");
         match name {
+            "new-with-agent" => {
+                let Some(directory) = screen.outside(&mut || pick_project()).filter(|directory| !directory.is_empty()) else { return String::new() };
+                let Some(agent) = screen.outside(&mut || pick_agent()) else { return String::new() };
+                self.manager_async(&["--agent", &agent, "new", &directory])
+            }
             "digest" => self.manager_async(&["digest"]),
             "pair-phone" => self.start_pairing(),
             "design" => self.start_design_session(screen),

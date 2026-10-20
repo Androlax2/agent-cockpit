@@ -31,20 +31,42 @@ agent_opencode_can() { # feature
 OPENCODE_LAUNCHER="${CLAUDE_SESSIONS_OPENCODE:-$HOME/.local/bin/greywall-agents/opencode}"
 OPENCODE_EPILOGUE='"$@" && exit; code=$?; claude-sessions log manager ERROR "opencode exited with status $code in $PWD"; printf "\n  ✗ opencode exited with status %s\n  any key closes this pane " "$code"; read -r _'
 
-start_opencode() { # dir session-id opencode-arguments...
-    local directory=$1 session=$2 name size
+start_opencode() { # dir session-id model-ref opencode-arguments...
+    local directory=$1 session=$2 model=$3 name size
     local -a terminal_environment=()
-    shift 2
+    shift 3
     require_plain_directory "$directory"
     name="$OPENCODE_TMUX_PREFIX$(date +%s%N)"
     size=$(detached_size)
     if [[ -n ${CLAUDE_SESSIONS_TERMINAL:-} ]]; then
         terminal_environment=(CLAUDE_SESSIONS_TERMINAL="$CLAUDE_SESSIONS_TERMINAL")
     fi
+    if [[ -n $model ]]; then terminal_environment+=(CLAUDE_SESSIONS_OPENCODE_MODEL="$model"); fi
     tmux new-session -d -s "$name" -x "${size% *}" -y "${size#* }" -c "$directory" \
-        env CLAUDE_SESSIONS_INSIDE=1 CLAUDE_CODE_SESSION_ID="$session" "${terminal_environment[@]}" \
+        env -u CLAUDE_SESSIONS_OPENCODE_MODEL CLAUDE_SESSIONS_INSIDE=1 CLAUDE_CODE_SESSION_ID="$session" "${terminal_environment[@]}" \
         sh -c "$OPENCODE_EPILOGUE" opencode "$OPENCODE_LAUNCHER" --standalone --session "$session" "$@" || return
     printf '%s\n' "$name"
+}
+
+opencode_default_model() {
+    local model effort
+    model=$(launch_setting_value opencode-model) || return
+    effort=$(launch_setting_value opencode-effort) || return
+    validate_launch_setting opencode-model "$model" || return
+    validate_launch_setting opencode-effort "$effort" || return
+    if [[ -z $model && -n $effort ]]; then
+        echo "claude-sessions: pick an opencode-model before its effort" >&2; return 1
+    fi
+    printf '%s' "$model"
+    [[ -z $effort ]] || printf '#%s' "$effort"
+    return 0
+}
+
+start_new_opencode() { # dir opencode-arguments...
+    local directory=$1 model
+    shift
+    model=$(opencode_default_model) || return
+    start_opencode "$directory" "$(new_opencode_session_id)" "$model" "$@"
 }
 
 # Use tmux's own pane inventory, as the cockpit does before the first plugin report, not a
@@ -67,7 +89,7 @@ agent_opencode_terminal() ( # dir
         [[ " ${matches[*]} " == *" $name "* ]] || matches+=("$name")
     done < <(tmux list-panes -a -F '#{session_name}	#{pane_id}	#{pane_current_path}	#{pane_dead}' 9>&-)
     case ${#matches[@]} in
-        0) target=$(CLAUDE_SESSIONS_TERMINAL=1 start_opencode "$directory" "$(new_opencode_session_id)" 9>&-) ;;
+        0) target=$(CLAUDE_SESSIONS_TERMINAL=1 start_new_opencode "$directory" 9>&-) || return ;;
         1) target=${matches[0]} ;;
         *)
             for index in "${!matches[@]}"; do printf '%s) %s\n' "$((index + 1))" "${matches[index]}" >&2; done
@@ -98,9 +120,10 @@ new_opencode_session_id() {
 # No loading screen: opencode reports at its first prompt only (it makes its session then), and
 # its own screen is up in a second.
 agent_opencode_new() { # dir [opencode arguments]
-    local directory=$1
+    local directory=$1 target
     shift
-    view_session "$(start_opencode "$directory" "$(new_opencode_session_id)" "$@")"
+    target=$(start_new_opencode "$directory" "$@") || return
+    view_session "$target"
     label_panes "$(basename "$directory")"
 }
 
@@ -110,15 +133,15 @@ agent_opencode_new_with_prompt() { # dir prompt
 }
 
 agent_opencode_background() { # dir prompt
-    start_opencode "$1" "$(new_opencode_session_id)" --prompt "$2" >/dev/null
+    start_new_opencode "$1" --prompt "$2" >/dev/null
 }
 
 agent_opencode_detached() { # dir prompt
-    start_opencode "$1" "$(new_opencode_session_id)" --prompt "$2" >/dev/null
+    start_new_opencode "$1" --prompt "$2" >/dev/null
 }
 
 agent_opencode_resume() { # dir id
-    view_session "$(start_opencode "$1" "$2")"
+    view_session "$(start_opencode "$1" "$2" "")"
     label_panes "$(basename "$1")"
     focus_viewer
 }
@@ -128,15 +151,15 @@ agent_opencode_restart() { # id dir [effort] [detached]
     local id=$1 directory=$2 detached=${4:-}
     exit_session "$id" || return 1
     if [[ $detached == detached ]]; then
-        start_opencode "$directory" "$id" >/dev/null
+        start_opencode "$directory" "$id" "" >/dev/null
         return
     fi
-    view_session "$(start_opencode "$directory" "$id")"
+    view_session "$(start_opencode "$directory" "$id" "")"
     label_panes "$(basename "$directory")"
 }
 
 agent_opencode_restore() { # dir id
-    start_opencode "$1" "$2" >/dev/null
+    start_opencode "$1" "$2" "" >/dev/null
 }
 
 # Escape twice interrupts a turn, Ctrl-C clears typed input, Ctrl-C at an empty prompt exits. Two

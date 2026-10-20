@@ -2007,6 +2007,115 @@ fn an_opencode_sessions_approval_shows_under_that_session_only() {
 
 // ---- opencode sessions ----
 
+#[test]
+fn the_saved_launch_agent_is_used_without_changing_explicit_choices() {
+    for (explicit, expected) in [(None, "opencode"), (Some("claude"), "claude"), (Some("opencode"), "opencode")] {
+        let manager = Manager::new();
+        let saved = manager.run(&["setting", "default-agent", "opencode"], &[]);
+        assert!(saved.status.success(), "{}", stderr(&saved));
+        let mut arguments = Vec::new();
+        if let Some(agent) = explicit { arguments.extend(["--agent", agent]); }
+        arguments.extend(["background", manager.project.to_str().unwrap(), "hello"]);
+        let result = manager.run(&arguments, &[]);
+        assert!(result.status.success(), "{}", stderr(&result));
+        assert_eq!(!manager.opencode_starts().is_empty(), expected == "opencode");
+    }
+}
+
+#[test]
+fn launch_preferences_validate_values_and_preserve_other_settings() {
+    let manager = Manager::new();
+    for arguments in [
+        ["setting", "phone-on-lock", "off"],
+        ["setting", "default-agent", "opencode"],
+        ["setting", "opencode-model", "openai/gpt-6.1-sol"],
+        ["setting", "opencode-effort", "high"],
+    ] {
+        let result = manager.run(&arguments, &[]);
+        assert!(result.status.success(), "{}", stderr(&result));
+    }
+    let file = manager.sandbox.state.join("claude-sessions/settings.json");
+    let before = fs::read_to_string(&file).unwrap();
+    for (name, value) in [("default-agent", "unknown"), ("opencode-model", "no-provider"), ("opencode-model", "openai/model#high"), ("opencode-effort", "high\nlow")] {
+        assert!(!manager.run(&["setting", name, value], &[]).status.success());
+        assert_eq!(fs::read_to_string(&file).unwrap(), before);
+    }
+    assert_eq!(stdout(&manager.run(&["setting", "phone-on-lock"], &[])).trim(), "phone-on-lock: off");
+    assert!(manager.run(&["setting", "opencode-model", "openai/another"], &[]).status.success());
+    let settings: serde_json::Value = serde_json::from_str(&fs::read_to_string(file).unwrap()).unwrap();
+    assert_eq!(settings["opencode-effort"], "");
+}
+
+#[test]
+fn an_invalid_saved_agent_blocks_launches_but_not_preference_repair() {
+    let manager = Manager::new();
+    let file = manager.sandbox.state.join("claude-sessions/settings.json");
+    fs::create_dir_all(file.parent().unwrap()).unwrap();
+    fs::write(&file, r#"{"default-agent":"unknown"}"#).unwrap();
+    let result = manager.run(&["background", manager.project.to_str().unwrap(), "hello"], &[]);
+    assert!(!result.status.success());
+    assert!(manager.tmux_calls("new-session").is_empty());
+    assert!(manager.run(&["setting", "default-agent", "claude"], &[]).status.success());
+}
+
+#[test]
+fn opencode_launch_preferences_are_passed_only_to_new_conversations() {
+    let manager = Manager::new();
+    for (name, value) in [("opencode-model", "openai/gpt-6.1-sol"), ("opencode-effort", "high")] {
+        let result = manager.run(&["setting", name, value], &[]);
+        assert!(result.status.success(), "{}", stderr(&result));
+    }
+    let result = manager.run(&["--agent", "opencode", "background", manager.project.to_str().unwrap(), "hello"], &[]);
+    assert!(result.status.success(), "{}", stderr(&result));
+    assert!(manager.opencode_starts()[0].contains("CLAUDE_SESSIONS_OPENCODE_MODEL=openai/gpt-6.1-sol#high"));
+    manager.sandbox.reset_log();
+    let result = manager.run(&["resume", manager.project.to_str().unwrap(), OPENCODE_SESSION], &[]);
+    assert!(result.status.success(), "{}", stderr(&result));
+    assert!(!manager.opencode_starts()[0].contains("CLAUDE_SESSIONS_OPENCODE_MODEL="));
+}
+
+#[test]
+fn the_model_catalog_uses_the_project_sandbox_without_a_managed_session_identity() {
+    let manager = Manager::new();
+    manager.sandbox.shim("opencode-catalog", r#"
+[[ -z ${CLAUDE_CODE_SESSION_ID:-} && -z ${CLAUDE_SESSIONS_OPENCODE_MODEL:-} ]] || exit 9
+printf '{"location":{"directory":"%s"},"data":[]}\n' "$PWD"
+"#);
+    let launcher = manager.sandbox.shims.join("opencode-catalog");
+    let output = manager.run(&["opencode-models", manager.project.to_str().unwrap()], &[
+        ("CLAUDE_SESSIONS_OPENCODE", launcher.to_str().unwrap()),
+        ("CLAUDE_CODE_SESSION_ID", OPENCODE_SESSION), ("CLAUDE_SESSIONS_OPENCODE_MODEL", "openai/gpt-6.1-sol#high"),
+    ]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let catalog: serde_json::Value = serde_json::from_str(&stdout(&output)).unwrap();
+    assert_eq!(catalog["location"]["directory"], manager.project.to_str().unwrap());
+    assert_eq!(manager.calls("opencode-catalog"), ["opencode-catalog api --standalone get /api/model"]);
+    assert!(manager.tmux_calls("new-session").is_empty());
+}
+
+#[test]
+fn malformed_launch_settings_stop_creation_without_overwriting_the_file() {
+    for contents in ["not json", "[]", r#"{"default-agent":false}"#, r#"{"default-agent":null}"#] {
+        let manager = Manager::new();
+        let file = manager.sandbox.state.join("claude-sessions/settings.json");
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(&file, contents).unwrap();
+        assert!(!manager.run(&["background", manager.project.to_str().unwrap(), "hello"], &[]).status.success());
+        assert!(manager.tmux_calls("new-session").is_empty());
+        assert_eq!(fs::read_to_string(file).unwrap(), contents);
+    }
+}
+
+#[test]
+fn launching_from_opencode_reads_the_same_global_preferences_as_the_cockpit() {
+    let manager = Manager::new();
+    assert!(manager.run(&["setting", "default-agent", "opencode"], &[]).status.success());
+    let private_state = manager.sandbox.root.join("private-state");
+    let result = manager.run(&["background", manager.project.to_str().unwrap(), "hello"], &[("XDG_STATE_HOME", private_state.to_str().unwrap())]);
+    assert!(result.status.success(), "{}", stderr(&result));
+    assert_eq!(manager.opencode_starts().len(), 1);
+}
+
 impl Manager {
     /// Session A (Claude) and an opencode session in the same project, its pane %5.
     fn with_opencode_session(&self, state: &str) {

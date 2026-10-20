@@ -81,6 +81,19 @@ esac
 }
 
 #[test]
+fn typing_claude_explicitly_keeps_claude_when_the_global_default_changes() {
+    let terminal = Terminal::new();
+    terminal.sandbox.shim("claude-sessions", "");
+    fs::remove_file(terminal.sandbox.home.join(".local/bin/claude-sessions")).unwrap();
+    std::os::unix::fs::symlink(terminal.sandbox.shims.join("claude-sessions"), terminal.sandbox.home.join(".local/bin/claude-sessions")).unwrap();
+    let script = format!("source '{}'; function isatty; return 0; end; claude", repo().join("config/fish/.config/fish/config.fish").display());
+    let output = terminal.sandbox.run_with_input("fish", &["--no-config", "-c", &script], &[], "\n");
+    assert!(output.status.success(), "{}", stderr(&output));
+    let calls = terminal.sandbox.calls("claude-sessions");
+    assert!(calls[0].starts_with("claude-sessions --agent claude new "), "{calls:?}");
+}
+
+#[test]
 fn fish_terminal_choice_attaches_the_existing_process_without_changing_ownership() {
     let terminal = Terminal::new();
     terminal.panes(&["claude-retry-opencode-123"]);

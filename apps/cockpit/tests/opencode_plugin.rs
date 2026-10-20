@@ -21,6 +21,7 @@ fn plugin() -> PathBuf {
 /// steps in order: {"event": …} on ctx.event.subscribe's stream, {"tool": …} through the
 /// execute.after hook it registered. Logs go to stderr.
 const HARNESS: &str = r#"
+import { appendFileSync } from 'node:fs'
 const [plugin, directory, steps] = process.argv.slice(2)
 const { default: definition } = await import(plugin)
 if (typeof definition?.id !== "string" || typeof definition?.setup !== "function") throw new Error("no {id, setup} default export")
@@ -39,6 +40,14 @@ const ctx = {
   location: { directory },
   event: { subscribe: () => stream() },
   tool: { hook: async (name, callback) => { if (name === "execute.after") toolHooks.push(callback); return { dispose: async () => {} } } },
+  session: {
+    get: async ({sessionID}) => {
+      if (process.env.SHIM_SESSION_ERROR) throw new Error('database unreadable')
+      if (process.env.SHIM_EXISTING_MODEL) return {id: sessionID, model: {providerID: 'anthropic', id: 'existing'}}
+      throw {_tag: process.env.SHIM_NOT_FOUND_TAG || 'SessionNotFoundError', sessionID}
+    },
+    create: async (input) => { appendFileSync(`${process.env.HOME}/created`, JSON.stringify(input) + '\n'); return input },
+  },
 }
 const cleanup = await definition.setup(ctx)
 const settle = () => new Promise((resolve) => setTimeout(resolve, 10))
@@ -57,6 +66,7 @@ struct Run {
     payloads: Vec<Value>,
     agents: Vec<String>,
     stderr: String,
+    created: Vec<Value>,
 }
 
 fn run(steps: Value, hook_body: &str) -> Run {
@@ -69,7 +79,7 @@ fn run_with(steps: Value, hook_body: &str, extra: &[(&str, &str)]) -> Run {
                      &format!("#!/usr/bin/env bash\n{{ cat; echo; }} >> \"$HOME/payloads\"\necho \"$CLAUDE_SESSIONS_AGENT\" >> \"$HOME/agents\"\n{hook_body}\n"));
     let harness = sandbox.root.join("harness.mjs");
     fs::write(&harness, HARNESS).unwrap();
-    let output = sandbox.command("node", extra).env_remove("CLAUDE_CODE_SESSION_ID").envs(extra.iter().copied())
+    let output = sandbox.command("node", extra).env_remove("CLAUDE_CODE_SESSION_ID").env_remove("CLAUDE_SESSIONS_OPENCODE_MODEL").envs(extra.iter().copied())
         .arg(&harness).arg(plugin()).arg("/x/proj").arg(steps.to_string()).output()
         .expect("node runs the plugin's tests (pacman -S nodejs)");
     assert!(output.status.success(), "{}", stderr(&output));
@@ -78,6 +88,7 @@ fn run_with(steps: Value, hook_body: &str, extra: &[(&str, &str)]) -> Run {
         payloads: read("payloads").lines().map(|line| serde_json::from_str(line).unwrap()).collect(),
         agents: read("agents").lines().map(str::to_string).collect(),
         stderr: stderr(&output),
+        created: read("created").lines().map(|line| serde_json::from_str(line).unwrap()).collect(),
     }
 }
 
@@ -172,6 +183,40 @@ fn the_cockpits_session_shows_from_the_start() {
     let run = run_with(json!([prompt(ROOT, "hello")]), "", &[("CLAUDE_CODE_SESSION_ID", ROOT)]);
     assert_eq!(events_of(&run)[0], ("SessionStart".to_string(), ROOT.to_string()));
     assert_eq!(names(&run), ["SessionStart", "UserPromptSubmit"]);
+}
+
+#[test]
+fn a_new_managed_conversation_starts_with_its_selected_model_and_effort() {
+    for (reference, expected) in [
+        ("openai/gpt-6.1-sol#high", json!({"providerID":"openai", "id":"gpt-6.1-sol", "variant":"high"})),
+        ("openrouter/anthropic/claude-sonnet-4.5", json!({"providerID":"openrouter", "id":"anthropic/claude-sonnet-4.5"})),
+    ] {
+        let run = run_with(json!([]), "", &[("CLAUDE_CODE_SESSION_ID", ROOT), ("CLAUDE_SESSIONS_OPENCODE_MODEL", reference)]);
+        assert_eq!(run.created, vec![json!({"id": ROOT, "model": expected})]);
+    }
+}
+
+#[test]
+fn reloading_the_plugin_preserves_an_existing_conversations_model() {
+    let run = run_with(json!([]), "", &[
+        ("CLAUDE_CODE_SESSION_ID", ROOT), ("CLAUDE_SESSIONS_OPENCODE_MODEL", "openai/gpt-6.1-sol#high"), ("SHIM_EXISTING_MODEL", "1"),
+    ]);
+    assert!(run.created.is_empty());
+}
+
+#[test]
+fn no_model_preference_leaves_opencodes_session_creation_alone() {
+    let run = run_with(json!([]), "", &[("CLAUDE_CODE_SESSION_ID", ROOT)]);
+    assert!(run.created.is_empty());
+}
+
+#[test]
+fn the_plugin_contexts_internal_not_found_error_creates_the_new_conversation() {
+    let run = run_with(json!([]), "", &[
+        ("CLAUDE_CODE_SESSION_ID", ROOT), ("CLAUDE_SESSIONS_OPENCODE_MODEL", "openai/gpt-6.1-sol#high"),
+        ("SHIM_NOT_FOUND_TAG", "Session.NotFoundError"),
+    ]);
+    assert_eq!(run.created, [json!({"id":ROOT, "model":{"providerID":"openai", "id":"gpt-6.1-sol", "variant":"high"}})]);
 }
 
 #[test]

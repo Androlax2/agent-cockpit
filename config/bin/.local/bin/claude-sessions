@@ -662,8 +662,58 @@ PHONE_AWAY="${XDG_RUNTIME_DIR:-/tmp}/claude-remote-away"
 # Theo's choices, on or off, kept across reboots ({"phone-on-lock": false}). A setting missing
 # from the file is on: what the setup did before it had settings. The cockpit's S menu lists the
 # same names (apps/cockpit/src/settings.rs).
-SETTINGS_FILE="${XDG_STATE_HOME:-$HOME/.local/state}/claude-sessions/settings.json"
+SETTINGS_FILE="${CLAUDE_SESSIONS_STATE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}}/claude-sessions/settings.json"
 KNOWN_SETTINGS=(phone-on-lock todo-queue error-handoff freeze-while-gaming idle-lock daily-digest)
+LAUNCH_SETTINGS=(default-agent opencode-model opencode-effort)
+
+launch_setting_value() { # name
+    local fallback=""
+    [[ $1 == default-agent ]] && fallback=claude
+    if [[ ! -e $SETTINGS_FILE ]]; then printf '%s\n' "$fallback"; return; fi
+    jq -er --arg name "$1" --arg fallback "$fallback" '
+        if type != "object" then error("settings must be an object")
+        elif has($name) then .[$name] | if type == "string" then . else error("setting must be a string") end
+        else $fallback end' "$SETTINGS_FILE" || {
+        echo "claude-sessions: cannot read $1 from $SETTINGS_FILE" >&2; return 1;
+    }
+}
+
+validate_launch_setting() { # name value
+    case $1 in
+        default-agent) [[ -n $2 && " ${AGENTS[*]} " == *" $2 "* ]] ;;
+        opencode-model) [[ -z $2 || $2 =~ ^[^/#[:space:][:cntrl:]]+/[^#[:space:][:cntrl:]]+$ ]] ;;
+        opencode-effort) [[ -z $2 || $2 =~ ^[^/#[:space:][:cntrl:]]+$ ]] ;;
+    esac || { echo "claude-sessions: invalid $1: $2" >&2; return 1; }
+}
+
+launch_setting() { # name [value]
+    local name=$1 value current
+    if (( $# == 1 )); then
+        value=$(launch_setting_value "$name") || return
+        printf '%s: %s\n' "$name" "$value"
+        return
+    fi
+    value=$2
+    validate_launch_setting "$name" "$value" || return
+    if [[ $name == opencode-effort && -n $value ]]; then
+        local model
+        model=$(launch_setting_value opencode-model) || return
+        [[ -n $model ]] || { echo "claude-sessions: pick an opencode-model before its effort" >&2; return 1; }
+    fi
+    mkdir -p "$(dirname "$SETTINGS_FILE")"
+    current='{}'
+    [[ -e $SETTINGS_FILE ]] && current=$(<"$SETTINGS_FILE")
+    if ! jq -e --arg name "$name" --arg value "$value" '
+        if type != "object" then error("settings must be an object") else
+            (if $name == "opencode-model" and .[$name] != $value then .["opencode-effort"] = "" else . end)
+            | .[$name] = $value end' <<< "$current" > "$SETTINGS_FILE.new"; then
+        rm -f "$SETTINGS_FILE.new"
+        echo "claude-sessions: $SETTINGS_FILE is not valid settings, left as it is" >&2; return 1
+    fi
+    mv -f "$SETTINGS_FILE.new" "$SETTINGS_FILE"
+    log_event INFO manager "setting $name $value"
+    printf '%s: %s\n' "$name" "$value"
+}
 
 setting_is_on() { # name
     [[ -f $SETTINGS_FILE ]] || return 0
@@ -676,6 +726,7 @@ setting_is_on() { # name
 }
 
 setting() { # name [on|off]
+    if [[ " ${LAUNCH_SETTINGS[*]} " == *" $1 "* ]]; then launch_setting "$@"; return; fi
     local name=$1 wanted=${2:-} known current
     for known in "${KNOWN_SETTINGS[@]}"; do [[ $known == "$name" ]] && break; known=; done
     if [[ -z $known ]]; then
@@ -1598,6 +1649,13 @@ if [[ ${1:-} == --agent ]]; then
     fi
     launch_agent=$2
     shift 2
+else
+    case ${1:-attach} in
+        new|parallel|background|review|terminal)
+            launch_agent=$(launch_setting_value default-agent) || exit 1
+            validate_launch_setting default-agent "$launch_agent" || exit 2
+            ;;
+    esac
 fi
 
 log_command=${1:-attach}
@@ -1626,6 +1684,12 @@ if [[ -n ${CLAUDE_SESSIONS_LOG_STDERR:-} ]]; then
 fi
 
 case ${1:-attach} in
+    opencode-models)
+        require_plain_directory "${2:?usage: claude-sessions opencode-models <dir>}"
+        cd -- "$2"
+        env -u CLAUDE_CODE_SESSION_ID -u CLAUDE_SESSIONS_OPENCODE_MODEL \
+            timeout 20 "$OPENCODE_LAUNCHER" api --standalone get /api/model
+        ;;
     attach)
         ensure_manager
         exec env -u TMUX tmux attach-session -t "=$MANAGER"

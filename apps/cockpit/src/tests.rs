@@ -331,6 +331,159 @@ fn any_other_key_closes_the_settings_menu_without_changing_anything() {
     assert!(fixture.calls("claude-sessions").is_empty());
 }
 
+#[test]
+fn settings_can_save_a_default_agent_with_keyboard_or_mouse() {
+    for click in [false, true] {
+        let fixture = Fixture::new();
+        let mut app = fixture.app();
+        open_settings_on(&mut app, crate::settings::SETTINGS.len());
+        if click {
+            let drawn = render(&mut app, 60, 40);
+            let row = (0..40).find(|row| {
+                (0..60).map(|column| drawn[(column, *row)].symbol()).collect::<String>().contains("Default agent")
+            }).expect("no default agent row");
+            app.handle(Key::Click { x: 20, y: row, double: false }, &mut FakeScreen::typing(&["opencode"]));
+        } else {
+            app.handle(Key::Enter, &mut FakeScreen::typing(&["opencode"]));
+        }
+        assert_eq!(fixture.calls("claude-sessions"), ["claude-sessions setting default-agent opencode"]);
+    }
+}
+
+#[test]
+fn cancelling_a_default_agent_change_writes_nothing() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    open_settings_on(&mut app, crate::settings::SETTINGS.len());
+    app.handle(Key::Enter, &mut FakeScreen::default());
+    assert!(fixture.calls("claude-sessions").is_empty());
+}
+
+#[test]
+fn settings_show_the_saved_launch_preferences() {
+    let fixture = Fixture::new();
+    fixture.write("state/claude-sessions/settings.json", r#"{"default-agent":"opencode","opencode-model":"openai/gpt-6.1-sol","opencode-effort":"high"}"#);
+    let mut app = fixture.app();
+    app.handle(Key::Char('S'), &mut FakeScreen::default());
+    let drawn = format!("{:?}", render(&mut app, 60, 40));
+    for text in ["Default agent", "opencode", "OpenCode model", "openai/gpt-6.1-sol", "OpenCode effort", "high"] {
+        assert!(drawn.contains(text), "missing {text}");
+    }
+}
+
+fn model_catalog(fixture: &Fixture, variants: Value) {
+    let response = json!({"location":{"directory":"/r/runway"},"data":[{
+        "providerID":"openai", "id":"gpt-6.1-sol", "modelID":"gpt-6.1-sol", "name":"GPT-6.1 Sol",
+        "capabilities":{"tools":true}, "variants":variants, "time":{"released":0}, "cost":[],
+        "status":"active", "enabled":true, "limit":{"context":200000,"output":32000}
+    }]});
+    fixture.shim("claude-sessions", &format!("if [[ $1 == opencode-models ]]; then echo '{}'; fi", response));
+}
+
+fn choose_loaded_preference(app: &mut App, fixture: &Fixture, selection: &str) {
+    for _ in 0..100 {
+        let mut screen = if selection.is_empty() { FakeScreen::default() } else { FakeScreen::typing(&[selection]) };
+        app.handle(Key::Enter, &mut screen);
+        if fixture.calls("claude-sessions").iter().any(|call| call.contains(" setting ")) { return; }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    panic!("preference was never saved: {}", app.message);
+}
+
+#[test]
+fn the_model_picker_loads_the_active_projects_catalog_and_saves_the_choice() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "runway", "/r/runway", 1)]));
+    model_catalog(&fixture, json!([{"id":"high"}]));
+    let mut app = fixture.app();
+    open_settings_on(&mut app, crate::settings::SETTINGS.len() + 1);
+    choose_loaded_preference(&mut app, &fixture, "openai/gpt-6.1-sol");
+    assert_eq!(fixture.calls("claude-sessions"), [
+        "claude-sessions opencode-models /r/runway", "claude-sessions setting opencode-model openai/gpt-6.1-sol",
+    ]);
+}
+
+#[test]
+fn effort_choices_come_from_the_selected_models_variants() {
+    for variants in [json!([{"id":"high"}]), json!([])] {
+        let fixture = Fixture::new();
+        fixture.snapshot(json!([session(SESSION_A, "waiting", "runway", "/r/runway", 1)]));
+        fixture.write("state/claude-sessions/settings.json", r#"{"opencode-model":"openai/gpt-6.1-sol"}"#);
+        model_catalog(&fixture, variants.clone());
+        fixture.shim("fzf", &format!("cat > '{}'\nhead -n 1 '{}'", fixture.root.join("choices").display(), fixture.root.join("choices").display()));
+        let mut app = fixture.app();
+        open_settings_on(&mut app, crate::settings::SETTINGS.len() + 2);
+        choose_loaded_preference(&mut app, &fixture, "");
+        let choices = fs::read_to_string(fixture.root.join("choices")).unwrap();
+        assert_eq!(choices.contains("high"), !variants.as_array().unwrap().is_empty());
+        assert!(!choices.contains("low") && !choices.contains("max"), "invented variants: {choices}");
+    }
+}
+
+#[test]
+fn catalog_errors_are_visible_and_do_not_write_preferences() {
+    for body in ["echo 'catalog unavailable' >&2; exit 1", "echo 'not json'"] {
+        let fixture = Fixture::new();
+        fixture.snapshot(json!([session(SESSION_A, "waiting", "runway", "/r/runway", 1)]));
+        fixture.shim("claude-sessions", body);
+        let mut app = fixture.app();
+        open_settings_on(&mut app, crate::settings::SETTINGS.len() + 1);
+        for _ in 0..100 {
+            app.handle(Key::Enter, &mut FakeScreen::default());
+            if app.message.starts_with("cannot load OpenCode models:") { break; }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(app.message.starts_with("cannot load OpenCode models:"), "{}", app.message);
+        assert!(!fixture.calls("claude-sessions").iter().any(|call| call.contains(" setting ")));
+    }
+}
+
+#[test]
+fn a_malformed_model_preference_can_be_replaced_in_settings() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "runway", "/r/runway", 1)]));
+    fixture.write("state/claude-sessions/settings.json", r#"{"opencode-model":false}"#);
+    model_catalog(&fixture, json!([]));
+    let mut app = fixture.app();
+    open_settings_on(&mut app, crate::settings::SETTINGS.len() + 1);
+    choose_loaded_preference(&mut app, &fixture, "openai/gpt-6.1-sol");
+    assert!(fixture.calls("claude-sessions").contains(&"claude-sessions setting opencode-model openai/gpt-6.1-sol".into()));
+}
+
+#[test]
+fn model_and_effort_overrides_can_be_reset_without_loading_a_catalog() {
+    for (index, name) in [(1, "opencode-model"), (2, "opencode-effort")] {
+        let fixture = Fixture::new();
+        fixture.write("state/claude-sessions/settings.json", r#"{"opencode-model":false,"opencode-effort":false}"#);
+        fixture.shim("claude-sessions", "if [ \"$1\" = opencode-models ]; then exit 1; fi");
+        let mut app = fixture.app();
+        open_settings_on(&mut app, crate::settings::SETTINGS.len() + index);
+        app.handle(Key::Char('d'), &mut FakeScreen::default());
+        assert_eq!(fixture.calls("claude-sessions"), [format!("claude-sessions setting {name} ")]);
+    }
+}
+
+#[test]
+fn failed_catalogs_and_unavailable_models_do_not_prevent_resetting_effort() {
+    for unavailable in [false, true] {
+        let fixture = Fixture::new();
+        fixture.snapshot(json!([session(SESSION_A, "waiting", "runway", "/r/runway", 1)]));
+        fixture.write("state/claude-sessions/settings.json", r#"{"opencode-model":"removed/model","opencode-effort":"high"}"#);
+        if unavailable { model_catalog(&fixture, json!([])); }
+        else { fixture.shim("claude-sessions", "if [ \"$1\" = opencode-models ]; then echo 'unavailable' >&2; exit 1; fi"); }
+        let mut app = fixture.app();
+        open_settings_on(&mut app, crate::settings::SETTINGS.len() + 2);
+        for _ in 0..100 {
+            app.handle(Key::Enter, &mut FakeScreen::default());
+            if app.message.contains("cannot load") || app.message.contains("model unavailable") { break; }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(app.message.contains("cannot load") || app.message.contains("model unavailable"), "{}", app.message);
+        app.handle(Key::Char('d'), &mut FakeScreen::default());
+        assert!(fixture.calls("claude-sessions").contains(&"claude-sessions setting opencode-effort ".into()));
+    }
+}
+
 /// The phone page as the column sees it: Tailscale names the computer, qrencode draws a 2×2 code,
 /// and devices.json holds `phones`.
 fn phone_page(fixture: &Fixture, phones: Value) {
@@ -371,7 +524,7 @@ fn enter_on_pair_a_phone_shows_a_one_time_link_and_its_qr_code() {
     let fixture = Fixture::new();
     phone_page(&fixture, json!([]));
     let mut app = fixture.app();
-    open_settings_on(&mut app, crate::settings::SETTINGS.len());
+    open_settings_on(&mut app, crate::settings::SETTINGS.len() + crate::settings::LAUNCH_SETTINGS.len());
     app.handle(Key::Enter, &mut FakeScreen::default());
     let pairing = app.pairing.as_ref().expect("no pairing shown");
     assert!(pairing.link.starts_with("https://box.tail1234.ts.net/pair/"), "{}", pairing.link);
@@ -400,7 +553,7 @@ fn pairing_without_tailscale_says_why_and_shows_nothing() {
     phone_page(&fixture, json!([]));
     fixture.shim("tailscale", "exit 1");
     let mut app = fixture.app();
-    open_settings_on(&mut app, crate::settings::SETTINGS.len());
+    open_settings_on(&mut app, crate::settings::SETTINGS.len() + crate::settings::LAUNCH_SETTINGS.len());
     app.handle(Key::Enter, &mut FakeScreen::default());
     assert!(app.pairing.is_none());
     assert!(app.message.contains("is Tailscale up?"), "{}", app.message);
@@ -412,7 +565,7 @@ fn x_on_a_phone_forgets_it_after_a_yes_only() {
         let fixture = Fixture::new();
         phone_page(&fixture, json!([phone("iPhone", "aa11aa11ff"), phone("iPad", "bb22bb22ff")]));
         let mut app = fixture.app();
-        open_settings_on(&mut app, crate::settings::SETTINGS.len() + 1);
+        open_settings_on(&mut app, crate::settings::SETTINGS.len() + crate::settings::LAUNCH_SETTINGS.len() + 1);
         app.handle(Key::Char('x'), &mut FakeScreen::answering(&[answer]));
         let names: Vec<String> = crate::remote::phones().iter().map(|phone| phone["name"].as_str().unwrap().to_string()).collect();
         assert_eq!(names, kept, "answered {answer:?}");
@@ -2923,25 +3076,25 @@ fn capital_o_starts_opencode_in_the_picked_project() {
 }
 
 #[test]
-fn a_asks_for_the_agent_after_the_project() {
+fn a_uses_the_saved_default_without_an_agent_prompt() {
     for agent in agents::names() {
         let fixture = Fixture::new();
         let project = fixture.root.join("home/IdeaProjects/runway");
         fs::create_dir_all(&project).unwrap();
+        fixture.write("state/claude-sessions/settings.json", &json!({"default-agent":agent}).to_string());
         let mut app = fixture.app();
-        app.handle(Key::Char('a'), &mut FakeScreen::typing(&[&project.display().to_string(), agent]));
+        app.handle(Key::Char('a'), &mut FakeScreen::typing(&[&project.display().to_string()]));
         assert_eq!(fixture.wait_for_calls("claude-sessions", 1), vec![format!("claude-sessions --agent {agent} new {}", project.display())]);
     }
 }
 
 #[test]
-fn a_cancelled_agent_pick_starts_nothing() {
+fn an_explicit_agent_pick_can_be_cancelled_without_starting_a_session() {
     let fixture = Fixture::new();
     let project = fixture.root.join("home/IdeaProjects/runway");
     fs::create_dir_all(&project).unwrap();
     let mut app = fixture.app();
-    // The fzf stand-in prints nothing: the agent pick is cancelled.
-    app.handle(Key::Char('a'), &mut FakeScreen::typing(&[&project.display().to_string()]));
+    app.handle(Key::Char(':'), &mut FakeScreen::typing(&["-\tnew-with-agent\tnew with an explicit agent", &project.display().to_string()]));
     std::thread::sleep(Duration::from_millis(200));
     assert!(fixture.calls("claude-sessions").is_empty(), "{:?}", fixture.calls("claude-sessions"));
 }
@@ -2958,48 +3111,52 @@ fn h_sends_to_the_running_opencode_session_like_to_claude() {
 }
 
 #[test]
-fn h_starts_opencode_when_it_is_the_agent_picked() {
+fn h_starts_opencode_when_it_is_the_saved_default() {
     let fixture = Fixture::new();
+    fixture.write("state/claude-sessions/settings.json", r#"{"default-agent":"opencode"}"#);
     let mut app = fixture.app();
     app.todos.add("runway", "/r/runway", "add a healthcheck");
     app.build();
     app.focus_panel(3);
     app.panels[3].selected = 0;
-    app.handle(Key::Char('h'), &mut FakeScreen::typing(&["opencode"]));
+    app.handle(Key::Char('h'), &mut FakeScreen::default());
     assert!(fixture.wait_for_calls("claude-sessions", 1)[0].starts_with("claude-sessions --agent opencode background /r/runway add a healthcheck"));
 }
 
 #[test]
-fn h_with_the_agent_pick_cancelled_leaves_the_item_to_do() {
+fn h_with_invalid_defaults_leaves_the_item_to_do() {
     let fixture = Fixture::new();
+    fixture.write("state/claude-sessions/settings.json", r#"{"default-agent":"unknown"}"#);
     let mut app = fixture.app();
     let healthcheck = app.todos.add("runway", "/r/runway", "add a healthcheck");
     hand_over_first_item_with(&mut app, &[]);
-    assert_eq!(app.message, "cancelled: no agent picked");
+    assert!(app.message.contains("invalid default-agent"), "{}", app.message);
     assert_eq!(app.todos.status_of(&healthcheck), "todo");
 }
 
 #[test]
-fn n_starts_opencode_in_a_clone_when_it_is_the_agent_picked() {
+fn n_starts_opencode_in_a_clone_when_it_is_the_saved_default() {
     let fixture = Fixture::new();
+    fixture.write("state/claude-sessions/settings.json", r#"{"default-agent":"opencode"}"#);
     let mut app = fixture.app();
     let healthcheck = app.todos.add("runway", "/r/runway", "add a healthcheck");
     app.build();
     app.focus_panel(3);
     app.panels[3].selected = 0;
-    app.handle(Key::Char('N'), &mut FakeScreen::typing(&["opencode"]));
+    app.handle(Key::Char('N'), &mut FakeScreen::default());
     assert!(fixture.wait_for_calls("claude-sessions", 1)[0].starts_with(&format!("claude-sessions --agent opencode parallel /r/runway todo-{healthcheck} ")));
 }
 
 #[test]
-fn c_reviews_a_pull_request_with_the_agent_picked() {
+fn c_reviews_a_pull_request_with_the_saved_default() {
     let fixture = Fixture::new();
+    fixture.write("state/claude-sessions/settings.json", r#"{"default-agent":"opencode"}"#);
     let mut app = fixture.app();
     app.reviews.checkouts.insert("acme/shop".into(), "/r/shop".into());
     app.review_rows = vec![Review { number: 42, repository: "shop".into(), full_repository: "acme/shop".into(), ..Default::default() }];
     app.focus_panel(2);
     app.panels[2].selected = 0;
-    app.handle(Key::Char('c'), &mut FakeScreen::typing(&["opencode"]));
+    app.handle(Key::Char('c'), &mut FakeScreen::default());
     assert_eq!(fixture.wait_for_calls("claude-sessions", 1), vec!["claude-sessions --agent opencode review /r/shop 42".to_string()]);
 }
 

@@ -21,6 +21,24 @@ export default {
   id: "cockpit",
   setup: async (ctx: any) => {
     const directory: string = ctx.location?.directory ?? process.cwd()
+    const cockpitSession = process.env.CLAUDE_CODE_SESSION_ID
+    const selectedModel = process.env.CLAUDE_SESSIONS_OPENCODE_MODEL
+    // V2's full TUI has no --model flag and the root config drops variants. Create only the
+    // new managed conversation here, before its first prompt; reloads keep its current model.
+    if (cockpitSession && selectedModel) {
+      const reference = /^([^/#\s]+)\/([^#\s]+)(?:#([^/#\s]+))?$/.exec(selectedModel)
+      if (!reference) throw new Error(`cockpit: invalid model reference ${selectedModel}`)
+      const [, providerID, id, variant] = reference
+      let exists = true
+      try {
+        await ctx.session.get({ sessionID: cockpitSession })
+      } catch (error: any) {
+        // The plugin context uses the internal tag; HTTP clients see the encoded error tag.
+        if (error?._tag !== "Session.NotFoundError" && error?._tag !== "SessionNotFoundError") throw error
+        exists = false
+      }
+      if (!exists) await ctx.session.create({ id: cockpitSession, model: { providerID, id, ...(variant ? { variant } : {}) } })
+    }
     // A subagent runs in a session of its own, with a parent: what it asks shows on its root's card.
     const parentOf = new Map<string, string>()
     const started = new Set<string>()
@@ -61,7 +79,6 @@ export default {
       send(root, payload)
     }
 
-    const cockpitSession = process.env.CLAUDE_CODE_SESSION_ID
     if (cockpitSession?.startsWith("ses")) report(cockpitSession, { hook_event_name: "SessionStart" })
 
     const isTopLevel = (sessionID: string) => !parentOf.has(sessionID)
