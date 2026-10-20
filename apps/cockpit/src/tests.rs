@@ -156,7 +156,11 @@ impl Screen for FakeScreen {
 }
 
 fn texts(app: &App, panel: usize) -> Vec<String> {
-    app.panels[panel].lines.iter().map(|line| line.texts()).collect()
+    app.panels[panel].lines.iter().chain(&app.panels[panel].fixed_bottom).map(|line| line.texts()).collect()
+}
+
+fn selected_session_badges(app: &App) -> Vec<String> {
+    app.panels[1].fixed_bottom.iter().flat_map(|line| line.right.iter().map(|part| part.text.clone())).collect()
 }
 
 fn render(app: &mut App, width: u16, height: u16) -> Buffer {
@@ -177,6 +181,76 @@ fn external_session(id: &str, state: &str, project: &str, cwd: &str, started: i6
 }
 
 // ---- Sessions ----
+
+#[test]
+fn activity_labels_follow_reported_state_without_guessing() {
+    for (state, phase, expected) in [
+        ("working", "approval", "Approval needed"),
+        ("working", "input", "Input needed"),
+        ("needs-you", "running", "Needs you"),
+        ("waiting", "running", "Command running"),
+        ("working", "", "Working"),
+        ("waiting", "", "Ready"),
+        ("unknown", "", "Status unknown"),
+        ("recent", "", "Status unknown"),
+        ("working", "unrecognized", "Working"),
+    ] {
+        let mut row = session(SESSION_A, state, "dotfiles", "/r/dotfiles", 1);
+        row["ask_to_run"] = json!(phase);
+        let reported = sessions::Session::from_value(&row).unwrap();
+        assert_eq!(sessions::activity_label(&reported), expected);
+    }
+}
+
+#[test]
+fn activity_text_does_not_reuse_stale_requests_or_completed_outcomes() {
+    for state in ["working", "waiting", "unknown"] {
+        let mut row = session(SESSION_A, state, "dotfiles", "/r/dotfiles", 1);
+        row["detail"] = json!("old permission question");
+        row["outcome"] = json!("tests passed");
+        let reported = sessions::Session::from_value(&row).unwrap();
+        let activity = sessions::activity_text(&reported);
+        assert!(!activity.contains("old permission question") && !activity.contains("tests passed"));
+    }
+    let mut row = session(SESSION_A, "needs-you", "dotfiles", "/r/dotfiles", 1);
+    row["detail"] = json!("Choose\n  a wireframe");
+    assert_eq!(sessions::activity_text(&sessions::Session::from_value(&row).unwrap()), "Choose a wireframe");
+}
+
+#[test]
+fn attention_navigation_targets_requests_without_reordering_sessions() {
+    let fixture = Fixture::new();
+    let mut approval = session(SESSION_B, "working", "dotfiles", "/r/dotfiles", 2);
+    approval["ask_to_run"] = json!("approval");
+    fixture.snapshot(json!([
+        session(SESSION_A, "waiting", "dotfiles", "/r/dotfiles", 1),
+        approval,
+        session("cccccccc-0000-4000-8000-000000000000", "working", "dotfiles", "/r/dotfiles", 3),
+        session(OPENCODE_SESSION, "needs-you", "dotfiles", "/r/dotfiles", 4),
+        external_session("dddddddd-0000-4000-8000-000000000000", "needs-you", "dotfiles", "/r/dotfiles", 5),
+    ]));
+    let mut app = fixture.app();
+    let order: Vec<_> = app.sessions.iter().map(|session| session.session.clone()).collect();
+    for (count, expected) in [SESSION_B, OPENCODE_SESSION, SESSION_B].into_iter().enumerate() {
+        app.handle(Key::Char('n'), &mut FakeScreen::default());
+        assert_eq!(app.sessions[app.panels[1].selected].session, expected);
+        assert_eq!(fixture.wait_for_calls("claude-sessions", count + 1)[count], format!("claude-sessions view {expected}"));
+    }
+    assert_eq!(app.sessions.iter().map(|session| session.session.clone()).collect::<Vec<_>>(), order);
+}
+
+#[test]
+fn attention_navigation_does_nothing_when_sessions_are_only_ready_or_unknown() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([
+        session(SESSION_A, "waiting", "dotfiles", "/r/dotfiles", 1),
+        session(SESSION_B, "unknown", "dotfiles", "/r/dotfiles", 2),
+    ]));
+    let mut app = fixture.app();
+    app.handle(Key::Char('n'), &mut FakeScreen::default());
+    assert_eq!(app.message, "nothing needs you");
+    assert!(fixture.calls("claude-sessions").is_empty());
+}
 
 #[test]
 fn reported_and_unreported_tmux_sessions_are_listed() {
@@ -215,7 +289,7 @@ fn an_updated_session_shows_its_badge_and_the_restart_hint() {
     row["update"] = json!(true);
     fixture.snapshot(json!([row]));
     let app = fixture.app();
-    assert!(app.panels[1].lines[0].right.iter().any(|part| part.text == "⬆ update"));
+    assert!(app.panels[1].fixed_bottom.iter().flat_map(|line| &line.right).any(|part| part.text == "⬆ update"));
     assert!(app.sessions_hints().contains(&("r", "restart to apply the update")));
 }
 
@@ -225,7 +299,7 @@ fn a_full_context_suggests_compact_on_the_card() {
     fixture.snapshot(json!([session(SESSION_A, "waiting", "runway", "/r", 1)]));
     fixture.write(&format!("home/.cache/claude/statusline-{SESSION_A}.json"), r#"{"model": "Opus 5.5", "effort": "high", "context": 93}"#);
     let app = fixture.app();
-    assert!(app.panels[1].lines[0].right.iter().any(|part| part.text == "/compact"));
+    assert!(app.panels[1].fixed_bottom.iter().flat_map(|line| &line.right).any(|part| part.text == "/compact"));
     assert!(app.sessions_hints().contains(&("C", "/compact")));
 }
 
@@ -237,12 +311,12 @@ fn a_card_needing_you_says_what_it_asks() {
     row["detail"] = json!("Bash command · npm test");
     fixture.snapshot(json!([row]));
     let app = fixture.app();
-    assert!(texts(&app, 1).contains(&"⚠ Bash command · npm test".to_string()));
+    assert!(texts(&app, 1).iter().any(|line| line.contains("Bash command · npm test")));
 }
 
 #[test]
-fn sessions_needing_attention_keep_red_markers_even_when_selected() {
-    use crate::app::{RED, color};
+fn sessions_needing_attention_keep_amber_markers_even_when_selected() {
+    use crate::app::{YELLOW, color};
     use ratatui::style::Modifier;
     let fixture = Fixture::new();
     for (state, phase) in [("needs-you", ""), ("working", "approval"), ("working", "input")] {
@@ -263,15 +337,16 @@ fn sessions_needing_attention_keep_red_markers_even_when_selected() {
                 let first = *card_rows.iter().min().unwrap();
                 for row in card_rows {
                     assert_eq!(buffer[(1, row)].symbol(), "▌", "{state}/{phase}: missing attention rail");
-                    assert_eq!(buffer[(1, row)].fg, color(RED));
+                    assert_eq!(buffer[(1, row)].fg, color(YELLOW));
                 }
                 let marker_column = if grouped { 4 } else { 2 };
                 assert_eq!(buffer[(marker_column, first)].symbol(), "!");
-                assert_eq!(buffer[(marker_column, first)].fg, color(RED));
+                assert_eq!(buffer[(marker_column, first)].fg, color(YELLOW));
                 let text: String = (0..width).map(|column| buffer[(column, first)].symbol()).collect();
-                assert!(text.contains("Needs you"), "{state}/{phase}: {text}");
-                let label_start = (0..width).find(|column| buffer[(*column, first)].symbol() == "N").unwrap();
-                assert_eq!(buffer[(label_start, first)].fg, color(RED));
+                let expected_label = match phase { "approval" => "Approval needed", "input" => "Input needed", _ => "Needs you" };
+                assert!(text.contains(expected_label), "{state}/{phase}: {text}");
+                let label_start = (0..width).find(|column| buffer[(*column, first)].symbol() == &expected_label[..1]).unwrap();
+                assert_eq!(buffer[(label_start, first)].fg, color(YELLOW));
                 assert!(buffer[(label_start, first)].modifier.contains(Modifier::BOLD));
                 assert_eq!(app.sessions[0].state, state, "attention must not replace the agent's state");
             }
@@ -292,6 +367,19 @@ fn running_commands_do_not_ask_for_attention() {
     assert!(!text.contains("Needs you"));
     let marker = (0..45).find(|row| buffer[(2, *row)].symbol() == "●").unwrap();
     assert_eq!(buffer[(2, marker)].fg, crate::app::color(crate::app::BLUE));
+}
+
+#[test]
+fn running_commands_use_a_working_marker_even_when_the_agent_is_ready() {
+    let fixture = Fixture::new();
+    let mut row = session(SESSION_A, "waiting", "dotfiles", "/r/dotfiles", 1);
+    row["ask_to_run"] = json!("running");
+    fixture.snapshot(json!([row]));
+    let mut app = fixture.app();
+    let buffer = render(&mut app, 100, 40);
+    let row = app.hit_lines.iter().filter(|(_, (panel, item))| *panel == 1 && *item == Some(0)).map(|(row, _)| *row).min().unwrap();
+    assert_eq!(buffer[(2, row)].symbol(), "●");
+    assert_eq!(buffer[(2, row)].fg, crate::app::color(crate::app::BLUE));
 }
 
 #[test]
@@ -715,9 +803,8 @@ fn a_credits_session_wears_a_badge() {
     row["credits"] = json!(true);
     fixture.snapshot(json!([row, session(SESSION_B, "waiting", "opusline", "/o", 2)]));
     let app = fixture.app();
-    let badged: Vec<String> = app.panels[1].lines.iter().filter(|line| line.right.iter().any(|part| part.text == "$ credits"))
-        .map(|line| line.texts()).collect();
-    assert!(badged.len() == 1 && badged[0].contains("runway"), "{badged:?}");
+    assert!(selected_session_badges(&app).contains(&"$ credits".into()));
+    assert_eq!(app.sessions[app.panels[1].selected].project, "runway");
 }
 
 #[test]
@@ -759,7 +846,8 @@ fn a_repository_with_several_sessions_gets_one_heading_and_railed_cards() {
     let lines = texts(&app, 1);
     assert_eq!(lines[0], "opusline· 2 sessions");
     assert!(lines.contains(&"│●feat/net-amounts".to_string()));
-    assert!(!lines[..lines.len() - 1].contains(&String::new()), "no gap between the cards of one repository");
+    let last_card = app.panels[1].lines.iter().rposition(|line| line.item.is_some()).unwrap();
+    assert!(!lines[..=last_card].contains(&String::new()), "no gap between the cards of one repository");
 }
 
 #[test]
@@ -778,6 +866,240 @@ fn grouped_todo_cards_keep_the_task_title_after_short_replies() {
     assert!(lines.contains(&"│○Fix FigCraft reconnect".to_string()), "{lines:?}");
     assert!(lines.iter().any(|line| line.contains("todo-1234abcd")), "{lines:?}");
     assert!(!lines.contains(&"│Yes".to_string()), "{lines:?}");
+}
+
+#[test]
+fn native_titles_identify_tasks_before_long_todo_prompts() {
+    let fixture = Fixture::new();
+    fixture.write("repos/clone/.git/HEAD", "ref: refs/heads/todo-1234abcd\n");
+    let clone = fixture.path("repos/clone").display().to_string();
+    fixture.write("state/claude-sessions/todo.json", &json!({"items": [{
+        "id": "1234abcd", "project": "dotfiles", "text": "Find out which of the many disk caches are safe to delete", "status": "doing"
+    }]}).to_string());
+    opencode_database_with(&fixture, &[(OPENCODE_SESSION, &clone, "Free disk space", None, 2_000_000, None)]);
+    let mut row = opencode_session("working", "dotfiles", 1);
+    row["cwd"] = json!(clone);
+    row["task"] = json!("Yes");
+    fixture.snapshot(json!([row]));
+    let app = fixture.app();
+    let first_card = app.panels[1].lines.iter().find(|line| line.item == Some(0)).unwrap();
+    assert!(first_card.texts().contains("Free disk space"), "{}", first_card.texts());
+    assert!(!texts(&app, 1).iter().any(|line| line.contains("Yes")));
+}
+
+#[test]
+fn compact_session_cards_separate_task_identity_from_reported_activity() {
+    let fixture = Fixture::new();
+    let mut row = session(SESSION_A, "working", "dotfiles", "/r/dotfiles", 1);
+    row["task"] = json!("Proceed");
+    row["agents"] = json!(3);
+    fixture.snapshot(json!([row, session(SESSION_B, "waiting", "other", "/r/other", 2)]));
+    let app = fixture.app();
+    let rows: Vec<_> = app.panels[1].lines.iter().filter(|line| line.item == Some(1)).collect();
+    assert_eq!(rows.len(), 2);
+    assert!(rows[0].texts().contains("other"));
+    assert!(rows[1].texts().contains("Ready for your next instruction"));
+    assert!(rows[0].right.iter().all(|part| part.text == "Ready"));
+    assert!(!texts(&app, 1).iter().any(|line| line.contains("Proceed")));
+}
+
+fn buffer_rows(buffer: &Buffer) -> Vec<String> {
+    (0..buffer.area.height).map(|row| (0..buffer.area.width).map(|column| buffer[(column, row)].symbol()).collect()).collect()
+}
+
+#[test]
+fn attention_summary_stays_visible_while_session_cards_scroll() {
+    let fixture = Fixture::new();
+    let rows: Vec<_> = (0..20).map(|index| session(&format!("session-{index}"), if index < 2 { "needs-you" } else { "working" }, "dotfiles", "/r/dotfiles", index + 1)).collect();
+    fixture.snapshot(json!(rows));
+    for (width, height) in [(120, 40), (80, 24), (40, 12)] {
+        let mut app = fixture.app();
+        let before = buffer_rows(&render(&mut app, width, height));
+        let summary_row = before.iter().position(|row| row.contains("2 need you")).expect("fixed attention summary");
+        app.panels[1].selected = 19;
+        let after = buffer_rows(&render(&mut app, width, height));
+        assert!(app.panels[1].scroll > 0);
+        assert!(after[summary_row].contains("2 need you"));
+        assert!(app.hit_lines.values().any(|(panel, item)| *panel == 1 && *item == Some(19)), "selected session must remain visible at {width}x{height}");
+    }
+}
+
+#[test]
+fn short_terminal_layout_keeps_the_focused_status_content_visible() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    app.focus_panel(0);
+    let heights = app.layout(12);
+    assert!(heights[0] >= 5, "focused status needs its content rows: {heights:?}");
+    assert!(heights.iter().sum::<u16>() <= 10);
+    let rendered = buffer_rows(&render(&mut app, 80, 12)).join("\n");
+    assert!(rendered.contains("Claude") && rendered.contains("Codex"), "{rendered}");
+}
+
+#[test]
+fn narrow_attention_cards_keep_the_marker_and_distinct_task_names() {
+    let fixture = Fixture::new();
+    let mut rows = Vec::new();
+    for (index, (id, branch)) in [(SESSION_A, "Cache-cleanup"), (SESSION_B, "Model-defaults")].into_iter().enumerate() {
+        fixture.write(&format!("repos/{index}/.git/HEAD"), &format!("ref: refs/heads/{branch}\n"));
+        let cwd = fixture.path(&format!("repos/{index}")).display().to_string();
+        let mut row = session(id, "working", "dotfiles", &cwd, index as i64 + 1);
+        row["ask_to_run"] = json!("approval");
+        rows.push(row);
+    }
+    fixture.snapshot(json!(rows));
+    for width in [24, 26, 30, 40] {
+        let mut app = fixture.app();
+        for (selected, expected) in [(0, "Cach"), (1, "Mode")] {
+            app.panels[1].selected = selected;
+            let buffer = render(&mut app, width, 12);
+            let row = app.hit_lines.iter().filter(|(_, (panel, item))| *panel == 1 && *item == Some(selected)).map(|(row, _)| *row).min().unwrap();
+            let text: String = (0..width).map(|column| buffer[(column, row)].symbol()).collect();
+            assert!(text.contains('!') && text.contains(expected), "{width} columns: {text}");
+        }
+    }
+}
+
+#[test]
+fn attention_summary_counts_sessions_once_by_their_current_activity() {
+    let fixture = Fixture::new();
+    let mut rows: Vec<_> = (0..9).map(|index| session(&format!("session-{index}"), if index < 2 { "needs-you" } else if index < 6 { "working" } else { "waiting" }, "dotfiles", "/r/dotfiles", index + 1)).collect();
+    rows[0]["ask_to_run"] = json!("approval");
+    fixture.snapshot(json!(rows));
+    let mut app = fixture.app();
+    let rendered = buffer_rows(&render(&mut app, 120, 40)).join("\n");
+    assert!(rendered.contains("2 need you"));
+    assert!(rendered.contains("4 working"));
+    assert!(rendered.contains("3 ready"));
+    assert!(!rendered.contains("question"));
+}
+
+#[test]
+fn fixed_next_needing_me_click_only_previews_the_next_request() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "working", "dotfiles", "/r/dotfiles", 1), session(SESSION_B, "needs-you", "dotfiles", "/r/dotfiles", 2)]));
+    let mut app = fixture.app();
+    render(&mut app, 100, 40);
+    let (&row, &(start, _, _)) = app.hit_actions.iter().find(|(_, (_, _, action))| *action == "next-attention").expect("clickable attention shortcut");
+    app.handle(Key::Click { x: start, y: row, double: true }, &mut FakeScreen::default());
+    assert_eq!(app.sessions[app.panels[1].selected].session, SESSION_B);
+    assert_eq!(fixture.wait_for_calls("claude-sessions", 1), [format!("claude-sessions view {SESSION_B}")]);
+}
+
+#[test]
+fn routine_session_details_belong_only_to_the_selected_task() {
+    let fixture = Fixture::new();
+    let mut first = session(SESSION_A, "waiting", "dotfiles", "/r/dotfiles", 1);
+    first["unpushed"] = json!(8);
+    let mut second = session(SESSION_B, "working", "dotfiles", "/r/dotfiles", 2);
+    second["unpushed"] = json!(3);
+    fixture.snapshot(json!([first, second]));
+    let mut app = fixture.app();
+    let first_render = buffer_rows(&render(&mut app, 140, 40)).join("\n");
+    assert!(first_render.contains("↑8 unpushed"));
+    assert!(!first_render.contains("↑3 unpushed"));
+    app.panels[1].selected = 1;
+    let second_render = buffer_rows(&render(&mut app, 140, 40)).join("\n");
+    assert!(second_render.contains("↑3 unpushed"));
+    assert!(!second_render.contains("↑8 unpushed"));
+    assert!(app.panels[1].lines.iter().all(|line| line.right.iter().all(|part| !part.text.contains("unpushed"))));
+}
+
+#[test]
+fn finding_a_session_selects_its_id_without_opening_it() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "dotfiles", "/r/first", 1), session(SESSION_B, "waiting", "dotfiles", "/r/second", 2)]));
+    fixture.shim("fzf", &format!("cat > '{}'; printf '{SESSION_B}\\tdotfiles\\tSame task\\n'", fixture.path("picker-input").display()));
+    let mut app = fixture.app();
+    let order: Vec<_> = app.sessions.iter().map(|session| session.session.clone()).collect();
+    app.handle(Key::Char('/'), &mut FakeScreen::default());
+    assert_eq!(app.sessions[app.panels[1].selected].session, SESSION_B);
+    assert!(fixture.calls("claude-sessions").is_empty());
+    let picker_input = fs::read_to_string(fixture.path("picker-input")).unwrap();
+    assert!(picker_input.contains(SESSION_A) && picker_input.contains(SESSION_B) && picker_input.contains("dotfiles"));
+    assert_eq!(app.sessions.iter().map(|session| session.session.clone()).collect::<Vec<_>>(), order);
+}
+
+#[test]
+fn cancelling_session_search_keeps_the_selection_and_list_order() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "dotfiles", "/r/first", 1), session(SESSION_B, "waiting", "dotfiles", "/r/second", 2)]));
+    let mut app = fixture.app();
+    app.panels[1].selected = 1;
+    app.handle(Key::Char('/'), &mut FakeScreen::default());
+    assert_eq!(app.sessions[app.panels[1].selected].session, SESSION_B);
+    assert!(fixture.calls("claude-sessions").is_empty());
+}
+
+#[test]
+fn selected_session_identity_survives_new_sessions_pins_and_state_changes() {
+    let fixture = Fixture::new();
+    let first = session(SESSION_A, "waiting", "dotfiles", "/r/first", 2);
+    let second = session(SESSION_B, "working", "dotfiles", "/r/second", 3);
+    fixture.snapshot(json!([first.clone(), second.clone()]));
+    let mut app = fixture.app();
+    app.panels[1].selected = 1;
+    let mut updated = second;
+    updated["state"] = json!("needs-you");
+    fixture.snapshot(json!([session(OPENCODE_SESSION, "working", "dotfiles", "/r/third", 1), first.clone(), updated.clone()]));
+    app.build();
+    assert_eq!(app.sessions[app.panels[1].selected].session, SESSION_B);
+    app.view.toggle_pin(SESSION_A);
+    app.redraw();
+    assert_eq!(app.sessions[app.panels[1].selected].session, SESSION_B);
+    fixture.snapshot(json!([first]));
+    app.build();
+    let text = buffer_rows(&render(&mut app, 120, 40)).join("\n");
+    assert_eq!(app.panels[1].selected, 0);
+    assert!(!text.contains("An answer or permission is needed"));
+    assert!(fixture.calls("claude-sessions").is_empty());
+}
+
+#[test]
+fn unknown_and_empty_session_summaries_do_not_claim_readiness() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "unknown", "dotfiles", "/r/dotfiles", 1)]));
+    let mut app = fixture.app();
+    let unknown = buffer_rows(&render(&mut app, 100, 40)).join("\n");
+    assert!(unknown.contains("1 unknown") && unknown.contains("Status unknown"));
+    assert!(unknown.contains("0 ready") && unknown.contains("Nothing needs you"));
+    fixture.snapshot(json!([]));
+    app.build();
+    let empty = buffer_rows(&render(&mut app, 100, 40)).join("\n");
+    assert!(empty.contains("No running session."));
+    assert!(app.panels[1].fixed_bottom.is_empty());
+    assert!(app.hit_actions.is_empty());
+}
+
+#[test]
+fn long_unicode_task_titles_stay_complete_in_selected_detail() {
+    let fixture = Fixture::new();
+    let title = "清理磁盘缓存 e\u{301} — Preserve all project data while removing unused download caches";
+    opencode_database_with(&fixture, &[(OPENCODE_SESSION, "/r/dotfiles", title, None, 2_000_000, None)]);
+    fixture.snapshot(json!([opencode_session("working", "dotfiles", 1)]));
+    let mut app = fixture.app();
+    for width in [40, 80, 140] {
+        let rendered = buffer_rows(&render(&mut app, width, 40)).join("\n");
+        assert!(!rendered.contains('\u{fffd}'));
+        assert!(rendered.contains('清') && rendered.contains('盘'));
+        assert_eq!(app.session_task_titles[OPENCODE_SESSION], title);
+        assert!(app.panels[1].fixed_bottom[0].texts().contains(title));
+    }
+}
+
+#[test]
+fn keypress_redraw_uses_cached_session_branches() {
+    let fixture = Fixture::new();
+    fixture.write("repos/clone/.git/HEAD", "ref: refs/heads/initial-branch\n");
+    let clone = fixture.path("repos/clone").display().to_string();
+    fixture.snapshot(json!([session(SESSION_A, "working", "dotfiles", &clone, 1)]));
+    let mut app = fixture.app();
+    fixture.write("repos/clone/.git/HEAD", "ref: refs/heads/changed-branch\n");
+    app.handle(Key::Down, &mut FakeScreen::default());
+    app.redraw();
+    assert_eq!(app.session_task_titles[SESSION_A], "initial-branch");
+    app.build();
+    assert_eq!(app.session_task_titles[SESSION_A], "changed-branch");
 }
 
 #[test]
@@ -805,9 +1127,9 @@ fn sessions_started_before_a_global_change_are_told_to_restart() {
         .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
     fixture.snapshot(json!([session(SESSION_A, "waiting", "runway", "/r", changed - 100), session(SESSION_B, "waiting", "homelab", "/h", changed + 100)]));
     let app = fixture.app();
-    assert_eq!(texts(&app, 1)[0], "⟳ 1 session started before a change to CLAUDE.md");
-    let badged: Vec<_> = app.panels[1].lines.iter().filter(|line| line.right.iter().any(|p| p.text == "⟳ restart")).filter_map(|line| line.item).collect();
-    assert_eq!(badged, vec![0]);
+    assert!(app.panels[1].fixed_top.iter().any(|line| line.texts().contains("1 restart available")));
+    assert!(selected_session_badges(&app).contains(&"⟳ restart".into()));
+    assert!(sessions::changed_since_start(&app.sessions[1], &app.start_files).is_empty());
 }
 
 #[test]
@@ -942,7 +1264,7 @@ fn right_moves_into_the_session_from_any_panel() {
 #[test]
 fn the_palette_runs_the_chosen_action_in_its_panel() {
     let fixture = Fixture::new();
-    fixture.shim("fzf", "grep 'peek at the next session'");
+    fixture.shim("fzf", "grep 'Next needing me'");
     let mut app = fixture.app();
     app.focus_panel(3);
     assert!(app.palette_entries().iter().any(|entry| entry.starts_with("2\tc\t")));
@@ -1292,7 +1614,7 @@ fn a_collapsed_panel_opens_while_focused() {
     let fixture = Fixture::new();
     let mut app = fixture.app();
     app.focus = 3;
-    assert_eq!(app.layout(45), vec![6, 4, 2, 31]);
+    assert_eq!(app.layout(45), vec![6, 6, 2, 29]);
 }
 
 #[test]
@@ -1327,11 +1649,11 @@ fn an_unfocused_panel_takes_at_most_a_quarter_of_the_column_after_the_fixed_stat
     // Two unknown quotas and two provider statuses, six with the borders.
     assert_eq!(app.layout(45), vec![6, 19, 9, 9]);
     app.focus = 3;
-    // No session: Sessions needs only its one line.
-    assert_eq!(app.layout(45), vec![6, 4, 9, 24]);
+    // Empty sessions still show the fixed attention summary.
+    assert_eq!(app.layout(45), vec![6, 6, 9, 22]);
     app.focus = 0;
     assert_eq!(app.layout(45), vec![6, 19, 9, 9]);
-    assert!(app.layout(12).iter().all(|height| *height >= 3));
+    assert!(app.layout(12).iter().sum::<u16>() <= 10, "short layouts must leave room for header/footer");
 }
 
 #[test]
@@ -1731,7 +2053,7 @@ fn a_card_shows_its_role_and_a_design_item_its_mark() {
     let mut app = fixture.app();
     design_item(&mut app, "opusline", "/r/opusline", "empty state");
     app.build();
-    let parts = |panel: usize| app.panels[panel].lines.iter().flat_map(|line| line.right.iter().map(|part| part.text.clone())).collect::<Vec<_>>();
+    let parts = |panel: usize| app.panels[panel].lines.iter().chain(&app.panels[panel].fixed_bottom).flat_map(|line| line.right.iter().map(|part| part.text.clone())).collect::<Vec<_>>();
     assert!(parts(1).contains(&"✎ designer".to_string()), "{:?}", parts(1));
     assert!(parts(3).contains(&"✎ design".to_string()), "{:?}", parts(3));
 }
@@ -2025,7 +2347,7 @@ fn a_design_session_shows_its_canvas_and_o_opens_it() {
     fixture.snapshot(json!([session(SESSION_A, "waiting", "opusline", "/r/opusline", 1)]));
     fixture.write(&format!("home/.cache/claude/designs/{SESSION_A}.json"), &json!({"url": CANVAS, "title": "Checkout redesign"}).to_string());
     let mut app = fixture.app();
-    assert!(texts(&app, 1).contains(&"◆ Checkout redesign".to_string()));
+    assert!(selected_session_badges(&app).contains(&"◆ Checkout redesign".into()));
     assert!(app.sessions_hints().contains(&("o", "canvas")));
     app.handle(Key::Char('o'), &mut FakeScreen::default());
     assert_eq!(fixture.wait_for_calls("xdg-open", 1), vec![format!("xdg-open {CANVAS}")]);
@@ -2350,7 +2672,7 @@ fn a_card_shows_its_unpushed_commits() {
     row["unpushed"] = json!(2);
     fixture.snapshot(json!([row, session(SESSION_B, "waiting", "runway", "/r/runway", 2)]));
     let app = fixture.app();
-    let badges: Vec<String> = app.panels[1].lines.iter().flat_map(|line| line.right.iter().map(|part| part.text.clone())).collect();
+    let badges = selected_session_badges(&app);
     assert_eq!(badges.iter().filter(|badge| badge.starts_with('↑')).collect::<Vec<_>>(), ["↑2 unpushed"]);
 }
 
@@ -2362,7 +2684,7 @@ fn a_card_shows_its_background_work_with_the_agents_counted() {
     row["background"] = json!(1);
     fixture.snapshot(json!([row, session(SESSION_B, "waiting", "dotfiles", "/r/dotfiles", 2)]));
     let app = fixture.app();
-    let badges: Vec<String> = app.panels[1].lines.iter().flat_map(|line| line.right.iter().map(|part| part.text.clone())).collect();
+    let badges = selected_session_badges(&app);
     assert_eq!(badges.iter().filter(|badge| badge.starts_with('◷')).collect::<Vec<_>>(), ["◷ 3 agents + background"]);
 }
 
@@ -2373,12 +2695,13 @@ fn ask_to_run_badges_stay_on_their_session_and_clear_when_finished() {
         let mut row = session(SESSION_A, "working", "runway", "/r/runway", 1);
         row["ask_to_run"] = json!(phase);
         fixture.snapshot(json!([row, session(SESSION_B, "working", "runway", "/r/runway-clone", 2)]));
-        let app = fixture.app();
-        for (index, session) in app.sessions.iter().enumerate() {
-            let badges: Vec<_> = app.panels[1].lines.iter().filter(|line| line.item == Some(index))
-                .flat_map(|line| &line.right).filter(|part| part.text.starts_with("ask-to-run:")).map(|part| part.text.as_str()).collect();
-            let expected = if session.session == SESSION_A && !phase.is_empty() { vec![format!("ask-to-run: {phase}")] } else { vec![] };
-            assert_eq!(badges, expected, "session {} in phase {phase}", session.session);
+        let mut app = fixture.app();
+        for index in 0..app.sessions.len() {
+            app.panels[1].selected = index;
+            render(&mut app, 140, 45);
+            let badges: Vec<_> = selected_session_badges(&app).into_iter().filter(|part| part.starts_with("ask-to-run:")).collect();
+            let expected = if app.sessions[index].session == SESSION_A && !phase.is_empty() { vec![format!("ask-to-run: {phase}")] } else { vec![] };
+            assert_eq!(badges, expected, "session {} in phase {phase}", app.sessions[index].session);
         }
     }
 }
@@ -2399,7 +2722,7 @@ fn a_dotfiles_clone_counts_unapplied_commits_and_u_applies_them() {
     row["unpushed"] = json!(3);
     fixture.snapshot(json!([row]));
     let app = fixture.app();
-    let badges: Vec<String> = app.panels[1].lines.iter().flat_map(|line| line.right.iter().map(|part| part.text.clone())).collect();
+    let badges = selected_session_badges(&app);
     assert_eq!(badges.iter().filter(|badge| badge.starts_with('↑')).collect::<Vec<_>>(), ["↑3 unapplied"]);
     assert!(app.sessions_hints().contains(&("U", "apply")));
 }
@@ -2852,7 +3175,7 @@ fn external_sessions_are_skipped_when_peeking_at_sessions_needing_attention() {
     let fixture = Fixture::new();
     fixture.snapshot(json!([session(SESSION_A, "working", "runway", "/r/runway", 1),
         external_session(OPENCODE_SESSION, "needs-you", "crema", "/r/crema", 2),
-        session(SESSION_B, "waiting", "opusline", "/r/opusline", 3)]));
+        session(SESSION_B, "needs-you", "opusline", "/r/opusline", 3)]));
     let mut app = fixture.app();
     assert_eq!(app.sessions.len(), 2);
     app.handle(Key::Char('n'), &mut FakeScreen::default());
@@ -2931,8 +3254,14 @@ fn external_sessions_do_not_block_handoffs_to_a_controllable_session_of_the_same
     assert_eq!(app.todos.status_of(&id), "doing");
 }
 
-fn craft_badges(app: &App) -> Vec<String> {
-    app.panels[1].lines.iter().flat_map(|line| line.right.iter().map(|part| part.text.clone())).filter(|badge| badge.starts_with('◆')).collect()
+fn craft_badges(app: &mut App) -> Vec<String> {
+    let mut badges = Vec::new();
+    for index in 0..app.sessions.len() {
+        app.panels[1].selected = index;
+        render(app, 140, 45);
+        badges.extend(selected_session_badges(app).into_iter().filter(|badge| badge.starts_with('◆')));
+    }
+    badges
 }
 
 struct CraftProcess(std::process::Child);
@@ -2963,8 +3292,8 @@ fn only_the_sessions_of_the_project_figcraft_serves_show_it() {
     let mut dotfiles = session(SESSION_B, "waiting", "dotfiles", "/r/dotfiles", 2);
     dotfiles["apps"] = json!("figcraft:on");
     fixture.snapshot(json!([opusline, dotfiles]));
-    let app = fixture.app();
-    assert_eq!(craft_badges(&app), ["◆ figcraft"], "shown on dotfiles, which FigCraft does not serve");
+    let mut app = fixture.app();
+    assert_eq!(craft_badges(&mut app), ["◆ figcraft"], "shown on dotfiles, which FigCraft does not serve");
 }
 
 #[test]
@@ -2978,7 +3307,7 @@ fn independent_figcraft_instances_show_on_both_served_checkouts_only() {
         session(OPENCODE_SESSION, "waiting", "other", "/r/other", 3)];
     for row in &mut rows { row["apps"] = json!("figcraft:on"); }
     fixture.snapshot(json!(rows));
-    assert_eq!(craft_badges(&fixture.app()), ["◆ figcraft", "◆ figcraft"]);
+    assert_eq!(craft_badges(&mut fixture.app()), ["◆ figcraft", "◆ figcraft"]);
 }
 
 #[test]
@@ -2987,7 +3316,7 @@ fn a_craft_app_that_does_not_answer_shows_no_badge() {
     let mut row = session(SESSION_A, "waiting", "opusline", "/r/opusline", 1);
     row["apps"] = json!("figcraft:off");
     fixture.snapshot(json!([row]));
-    assert!(craft_badges(&fixture.app()).is_empty());
+    assert!(craft_badges(&mut fixture.app()).is_empty());
 }
 
 #[test]
@@ -3229,7 +3558,7 @@ fn a_dotfiles_card_shows_what_the_live_checkout_has_not_pushed_and_u_pushes_it()
     let work = crate::paths::dotfiles_work().display().to_string();
     fixture.snapshot(json!([session(SESSION_A, "waiting", "dotfiles", &work, 100)]));
     let app = fixture.app();
-    let badges: Vec<String> = app.panels[1].lines[0].right.iter().map(|part| part.text.clone()).collect();
+    let badges = selected_session_badges(&app);
     assert!(badges.contains(&"↑2 unpushed".to_string()), "{badges:?}");
     assert!(app.sessions_hints().contains(&("U", "push")), "{:?}", app.sessions_hints());
 }
@@ -3427,9 +3756,8 @@ fn an_opencode_session_wears_a_badge() {
     let fixture = Fixture::new();
     fixture.snapshot(json!([opencode_session("waiting", "runway", 1), session(SESSION_B, "waiting", "opusline", "/o", 2)]));
     let app = fixture.app();
-    let badged: Vec<String> = app.panels[1].lines.iter().filter(|line| line.right.iter().any(|part| part.text == "◇ opencode"))
-        .map(|line| line.texts()).collect();
-    assert!(badged.len() == 1 && badged[0].contains("runway"), "{badged:?}");
+    assert!(selected_session_badges(&app).contains(&"◇ opencode".into()));
+    assert_eq!(app.sessions[app.panels[1].selected].project, "runway");
 }
 
 #[test]

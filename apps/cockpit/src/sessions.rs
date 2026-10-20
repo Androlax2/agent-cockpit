@@ -303,9 +303,44 @@ pub fn waiting_request(session: &Session) -> String {
     if !session.detail.is_empty() { session.detail.clone() } else { session.request.clone() }
 }
 
+pub fn activity_label(session: &Session) -> &'static str {
+    match session.ask_to_run.as_str() {
+        "approval" => return "Approval needed",
+        "input" => return "Input needed",
+        _ => {}
+    }
+    if session.state == "needs-you" {
+        return "Needs you";
+    }
+    if session.ask_to_run == "running" {
+        return "Command running";
+    }
+    match session.state.as_str() {
+        "working" => "Working",
+        "waiting" => "Ready",
+        _ => "Status unknown",
+    }
+}
+
+pub fn activity_text(session: &Session) -> String {
+    let request = collapse(&waiting_request(session));
+    if !request.is_empty() {
+        return request;
+    }
+    match activity_label(session) {
+        "Approval needed" => "Review the command before it runs",
+        "Input needed" => "A running command needs your input",
+        "Needs you" => "An answer or permission is needed",
+        "Command running" => "An approved command is running",
+        "Working" => "The agent is working",
+        "Ready" => "Ready for your next instruction",
+        _ => "No current activity report",
+    }.into()
+}
+
 pub fn next_attention_index(sessions: &[Session], selected: usize) -> Option<usize> {
     let candidates: Vec<usize> = sessions.iter().enumerate()
-        .filter(|(_, session)| !session.is_external() && session.state != "working" && session.state != "recent")
+        .filter(|(_, session)| !session.is_external() && session.needs_attention())
         .map(|(index, _)| index)
         .collect();
     candidates.iter().find(|index| **index > selected).or(candidates.first()).copied()
@@ -633,11 +668,11 @@ mod tests {
     }
 
     #[test]
-    fn next_attention_wraps_to_the_first_waiting_one() {
+    fn next_attention_wraps_to_the_only_request() {
         let rows: Vec<Session> = ["working", "waiting", "working", "needs-you"].iter()
             .map(|state| Session { state: state.to_string(), tmux_pane: "%1".into(), ..Session::default() }).collect();
         assert_eq!(next_attention_index(&rows, 1), Some(3));
-        assert_eq!(next_attention_index(&rows, 3), Some(1));
+        assert_eq!(next_attention_index(&rows, 3), Some(3));
     }
 
     #[test]
