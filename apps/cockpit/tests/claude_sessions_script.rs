@@ -2774,7 +2774,7 @@ fn variants_opens_opencodes_native_picker_in_its_pane_without_restarting() {
         manager.with_opencode_session(state);
         let result = manager.run(&["variants", OPENCODE_SESSION], &[]);
         assert!(result.status.success(), "{}", stderr(&result));
-        assert_eq!(manager.tmux_calls("send-keys"), ["tmux send-keys -t %5 C-M-e"]);
+        assert_eq!(manager.tmux_calls("send-keys"), ["tmux send-keys -t %5 F6"]);
         assert!(manager.calls("tmux").iter().any(|call| call == "tmux select-pane -t %11"));
         assert!(manager.opencode_starts().is_empty());
         assert!(manager.tmux_calls("kill-session").is_empty());

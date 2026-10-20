@@ -677,7 +677,7 @@ open_variants() { # id
     fi
     view_session "$id" || return 1
     # Dedicated binding in opencode/cli.json: no prompt text or Enter that could submit a draft.
-    tmux send-keys -t "$pane" C-M-e || return 1
+    tmux send-keys -t "$pane" F6 || return 1
     focus_viewer
 }
 
