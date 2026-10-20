@@ -136,6 +136,10 @@ fn text(row: &Value, key: &str) -> String {
 }
 
 impl Session {
+    pub fn needs_attention(&self) -> bool {
+        self.state == "needs-you" || matches!(self.ask_to_run.as_str(), "approval" | "input")
+    }
+
     pub fn is_external(&self) -> bool {
         self.tmux_pane.is_empty() && self.kitty_pid.is_empty()
     }

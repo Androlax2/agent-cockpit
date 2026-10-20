@@ -240,6 +240,60 @@ fn a_card_needing_you_says_what_it_asks() {
 }
 
 #[test]
+fn sessions_needing_attention_keep_red_markers_even_when_selected() {
+    use crate::app::{RED, color};
+    use ratatui::style::Modifier;
+    let fixture = Fixture::new();
+    for (state, phase) in [("needs-you", ""), ("working", "approval"), ("working", "input")] {
+        for grouped in [false, true] {
+            for width in [60, 140] {
+                let mut row = session(SESSION_A, state, "runway", "/r/runway", 1);
+                row["ask_to_run"] = json!(phase);
+                let other_project = if grouped { "runway" } else { "other" };
+                fixture.snapshot(json!([row, session(SESSION_B, "working", other_project, "/r/other", 2)]));
+                let mut app = fixture.app();
+                app.focus = 1;
+                app.has_pane_focus = true;
+                app.panels[1].selected = 0;
+                let buffer = render(&mut app, width, 45);
+                let header: String = (0..width).map(|column| buffer[(column, 0)].symbol()).collect();
+                assert!(header.contains("1 need you"), "{state}/{phase}: {header}");
+                let card_rows: Vec<_> = app.hit_lines.iter().filter(|(_, (panel, item))| *panel == 1 && *item == Some(0)).map(|(row, _)| *row).collect();
+                let first = *card_rows.iter().min().unwrap();
+                for row in card_rows {
+                    assert_eq!(buffer[(1, row)].symbol(), "▌", "{state}/{phase}: missing attention rail");
+                    assert_eq!(buffer[(1, row)].fg, color(RED));
+                }
+                let marker_column = if grouped { 4 } else { 2 };
+                assert_eq!(buffer[(marker_column, first)].symbol(), "!");
+                assert_eq!(buffer[(marker_column, first)].fg, color(RED));
+                let text: String = (0..width).map(|column| buffer[(column, first)].symbol()).collect();
+                assert!(text.contains("Needs you"), "{state}/{phase}: {text}");
+                let label_start = (0..width).find(|column| buffer[(*column, first)].symbol() == "N").unwrap();
+                assert_eq!(buffer[(label_start, first)].fg, color(RED));
+                assert!(buffer[(label_start, first)].modifier.contains(Modifier::BOLD));
+                assert_eq!(app.sessions[0].state, state, "attention must not replace the agent's state");
+            }
+        }
+    }
+}
+
+#[test]
+fn running_commands_do_not_ask_for_attention() {
+    let fixture = Fixture::new();
+    let mut row = session(SESSION_A, "working", "runway", "/r/runway", 1);
+    row["ask_to_run"] = json!("running");
+    fixture.snapshot(json!([row]));
+    let mut app = fixture.app();
+    let buffer = render(&mut app, 100, 45);
+    let text: String = (0..45).flat_map(|row| (0..100).map(move |column| (column, row)))
+        .map(|position| buffer[position].symbol()).collect();
+    assert!(!text.contains("Needs you"));
+    let marker = (0..45).find(|row| buffer[(2, *row)].symbol() == "●").unwrap();
+    assert_eq!(buffer[(2, marker)].fg, crate::app::color(crate::app::BLUE));
+}
+
+#[test]
 fn the_effort_is_a_clickable_stamp_that_opens_the_menu() {
     let fixture = Fixture::new();
     fixture.snapshot(json!([session(SESSION_A, "waiting", "runway", "/r", 1)]));

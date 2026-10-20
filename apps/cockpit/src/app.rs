@@ -91,12 +91,13 @@ const PALETTE_ONLY: [(&str, &str, &str); 7] = [
     ("1", "drop-queued", "drop the messages queued for the selected session"),
     ("-", "pair-phone", "a QR code that pairs a phone with the phone page (claude-remote), once, within 10 minutes (also in S)"),
 ];
-const LEGEND: [(&str, &str); 23] = [
+const LEGEND: [(&str, &str); 24] = [
     ("●", "working"), ("○", "waiting for you"), ("!", "needs you: permission or question"), ("·", "running, state unknown"),
-    ("▌", "shown in the session pane"), ("⚲", "pinned"), ("⇅", "remote controlled"), ("◇ opencode", "run by opencode instead of Claude Code (O starts one)"),
+    ("▌", "shown in the session pane; red means the session needs you"), ("⚲", "pinned"), ("⇅", "remote controlled"), ("◇ opencode", "run by opencode instead of Claude Code (O starts one)"),
     ("◆ figcraft", "connected to FigCraft, which is open for this session's project (craft-open)"),
     ("◷ 2 agents + background", "background agents, and other background work (shells, monitors), still running when its turn ended"),
     ("ask-to-run: approval / running / input", "this session's command awaits approval, runs outside the sandbox, or needs your input; clears when finished"),
+    ("! Needs you", "red marker and rail: this session needs approval, input, or an answer; cards keep their place"),
     ("✉ 2 queued", "messages waiting for the end of its turn, sent one per turn (m, Alt+Q; M drops them)"),
     ("↑2 unpushed", "commits on no remote yet: U pushes the branch"),
     ("⏱ 1h20 today · 34h", "time spent with Claude (and opencode) on the project, today and in all: the gaps under 5 minutes between its sessions' replies"),
@@ -1086,8 +1087,10 @@ impl App {
             lines.push(Line::default());
         }
         for (index, session) in running.iter().enumerate() {
-            let tint = bold(state_color(&session.state));
-            let accent = (session.session == current).then_some(tint);
+            let needs_attention = session.needs_attention();
+            let tint = bold(if needs_attention { RED } else { state_color(&session.state) });
+            let accent = (needs_attention || session.session == current).then_some(tint);
+            let glyph = if needs_attention { "!" } else { sessions::glyph(&session.state) };
             let branch = util::git_branch(&session.cwd);
             let grouped = session.group_size > 1;
             // Sessions of one repository share a heading; task titles identify their cards,
@@ -1109,9 +1112,9 @@ impl App {
             let segments = if grouped {
                 let name = if !task_title.is_empty() { task_title.clone() }
                     else if branch.is_empty() { session.project.clone() } else { branch.clone() };
-                [rail.clone(), vec![segment(2, sessions::glyph(&session.state), tint), segment(4, name, bold(FG))]].concat()
+                [rail.clone(), vec![segment(2, glyph, tint), segment(4, name, bold(FG))]].concat()
             } else {
-                let mut segments = vec![segment(0, sessions::glyph(&session.state), tint), segment(2, &session.project, bold(project_color(&session.project)))];
+                let mut segments = vec![segment(0, glyph, tint), segment(2, &session.project, bold(project_color(&session.project)))];
                 if !branch.is_empty() {
                     segments.push(segment(4 + width_of(&session.project) as u16, format!("⎇ {branch}"), dim(FG_DARK)));
                 }
@@ -1119,8 +1122,11 @@ impl App {
             };
             let facts = &session.facts;
             let mut badges = Vec::new();
+            if needs_attention {
+                badges.push(part("Needs you", bold(RED)));
+            }
             if !session.ask_to_run.is_empty() {
-                let tint = if session.ask_to_run == "running" { BLUE } else { YELLOW };
+                let tint = if session.ask_to_run == "running" { BLUE } else { RED };
                 badges.push(part(format!("ask-to-run: {}", session.ask_to_run), bold(tint)));
             }
             if session.is_external() {
@@ -2100,12 +2106,16 @@ impl App {
             let line_index = panel.scroll + offset;
             let Some(line) = panel.lines.get(line_index) else { continue };
             let highlighted = focused && line.item.is_some() && line.item == Some(panel.selected);
-            let recolor = |style: Style, fg: u8| -> Style { if highlighted { style.fg(color(fg)).bg(color(BG_HIGHLIGHT)) } else { style } };
+            let recolor = |style: Style, fg: u8| -> Style {
+                if !highlighted { return style; }
+                let preserve_state = index == 1 && (style.fg == Some(color(RED)) || style.fg == Some(color(BLUE)));
+                if preserve_state { style.bg(color(BG_HIGHLIGHT)) } else { style.fg(color(fg)).bg(color(BG_HIGHLIGHT)) }
+            };
             if highlighted {
                 put(buffer, row, 1, &" ".repeat(inner), on(FG, BG_HIGHLIGHT));
             }
             if let Some(accent) = line.accent {
-                put(buffer, row, 1, "▌", if highlighted { accent.fg(color(BLUE)).bg(color(BG_HIGHLIGHT)) } else { accent });
+                put(buffer, row, 1, "▌", recolor(accent, BLUE));
             }
             let right_width: usize = if line.right.is_empty() { 0 } else { line.right.iter().map(|p| width_of(&p.text)).sum::<usize>() + 2 * (line.right.len() - 1) };
             for (column, text, tint) in &line.segments {
@@ -2139,7 +2149,7 @@ impl App {
     fn draw_header(&self, buffer: &mut Buffer, width: u16) {
         let title = "Claude sessions";
         put(buffer, 0, 2, title, bold(BLUE));
-        let needing = self.sessions.iter().filter(|s| s.state == "needs-you").count();
+        let needing = self.sessions.iter().filter(|s| s.needs_attention()).count();
         let mut column = 2 + title.len() as u16 + 2;
         if needing > 0 {
             let text = format!("{needing} need you");
