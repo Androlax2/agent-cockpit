@@ -584,6 +584,15 @@ fn the_focused_pane_has_a_full_height_orange_divider() {
 }
 
 #[test]
+fn the_manager_clips_the_top_border_to_the_focused_pane() {
+    let manager = Manager::new();
+    let result = manager.run(&["view", SESSION_A], &[]);
+    assert!(result.status.success(), "{}", stderr(&result));
+    assert!(manager.tmux_calls("set-option").iter().any(|call|
+        call.contains("set-option -w -t claude-manager:manager @pane-border-clip-top on")));
+}
+
+#[test]
 fn the_approval_pane_opens_under_the_session_without_the_cursor_and_closes() {
     let manager = Manager::new();
     manager.run(&["approval-pane", "0123456789ab"], &[]);
