@@ -2229,6 +2229,34 @@ fn parallel_dotfiles_clone(manager: &Manager, live: &Path) -> (PathBuf, PathBuf)
     (clones, clone)
 }
 
+fn sweep_dotfiles_clones(manager: &Manager, live: &Path, work: &Path, clones: &Path) {
+    let output = manager.sandbox.run_with_input(bin().join("claude-sessions"), &["clones-sweep"],
+        &[("CLAUDE_DOTFILES_LIVE", &path_str(live)), ("CLAUDE_DOTFILES_WORK", &path_str(work)), ("CLAUDE_SESSIONS_CLONES", &path_str(clones))], "");
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+}
+
+#[test]
+fn the_sweep_deletes_a_dotfiles_clone_whose_commits_live_main_took_with_git_am() {
+    let manager = Manager::new();
+    let (live, work) = dotfiles_pair(&manager);
+    let (clones, clone) = parallel_dotfiles_clone(&manager, &live);
+    let patch = manager.sandbox.root.join("waiting.patch");
+    fs::write(&patch, git_output(&clone, &["format-patch", "-1", "HEAD", "--stdout"]) + "\n").unwrap();
+    git_output(&live, &["am", "-q", &path_str(&patch)]);
+    assert_eq!(git_output(&live, &["log", "-1", "--format=%s"]), "Add waiting");
+    sweep_dotfiles_clones(&manager, &live, &work, &clones);
+    assert!(!clone.exists());
+}
+
+#[test]
+fn the_sweep_keeps_a_dotfiles_clone_with_a_commit_live_main_lacks() {
+    let manager = Manager::new();
+    let (live, work) = dotfiles_pair(&manager);
+    let (clones, clone) = parallel_dotfiles_clone(&manager, &live);
+    sweep_dotfiles_clones(&manager, &live, &work, &clones);
+    assert!(clone.exists());
+}
+
 #[test]
 fn apply_dotfiles_takes_a_parallel_clones_commits() {
     let manager = Manager::new();

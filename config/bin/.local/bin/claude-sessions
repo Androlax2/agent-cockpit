@@ -1304,12 +1304,30 @@ clones_popup() {
 # filters), and out here git would run what it names. Its answer only decides whether to keep.
 clone_leftovers() { # clone
     local report
-    report=$(cd "$1" && "$GREYWALL" --auto-profile --profile claude -- sh -c \
-        'git status --porcelain 2>/dev/null | head -1; echo "-- commits"; git log --branches --not --remotes --oneline 2>/dev/null | head -1' 2>/dev/null) \
-        || { echo "unreadable"; return; }
+    if dotfiles_clone_root "$1" >/dev/null; then
+        report=$(dotfiles_clone_report "$1") || { echo "unreadable"; return; }
+    else
+        report=$(cd "$1" && "$GREYWALL" --auto-profile --profile claude -- sh -c \
+            'git status --porcelain 2>/dev/null | head -1; echo "-- commits"; git log --branches --not --remotes --oneline 2>/dev/null | head -1' 2>/dev/null) \
+            || { echo "unreadable"; return; }
+    fi
     if [[ ${report%%-- commits*} == *[![:space:]]* ]]; then echo "changes"
     elif [[ ${report#*-- commits} == *[![:space:]]* ]]; then echo "commits"
     fi
+}
+
+# A dotfiles clone's commits reach live main through git am, with new hashes, never through a push:
+# its branches are compared with a fresh fetch of live main by change (patch id), as apply-run and
+# the card's counter do. Without that, every clone whose work was applied stayed forever.
+dotfiles_clone_report() { # clone
+    # shellcheck disable=SC2016
+    (cd "$1" && "$GREYWALL" --auto-profile --profile claude --allow-read-path "$DOTFILES_LIVE" -- sh -c '
+        git status --porcelain 2>/dev/null | head -1
+        echo "-- commits"
+        git fetch -q "$1" +main:refs/remotes/origin/main || exit 1
+        git for-each-ref --format="%(refname)" refs/heads | while read -r branch; do
+            git log --cherry-pick --right-only --no-merges --oneline "refs/remotes/origin/main...$branch"
+        done | head -1' sh "$DOTFILES_LIVE" 2>/dev/null)
 }
 
 clones_review() { # [sweep]
