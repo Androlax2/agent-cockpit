@@ -52,7 +52,7 @@ fn run(extra: &[(&str, &str)]) -> Run {
     write_executable(&sandbox.home.join("dotfiles/config/claude/.claude/hooks/session-state.sh"), "#!/usr/bin/env bash\ncat >/dev/null\n");
     sandbox.shim("cockpit-team", r#"case $1 in
   receive) if [ ! -f "$HOME/delivered" ]; then touch "$HOME/delivered"
-             echo '{"dispatch_id":"d1","message_id":"m1","text":"[Cockpit team message m1] The frame is ready."}'
+             echo '{"dispatch_id":"d1","message_id":"m1","text":"[Cockpit team message m1] The frame is ready.","envelope":{"kind":"notice","sender":{"role":"designer","agent":"claude"},"body":"The frame is ready.\u001b[2J\nSecond line"}}'
            else echo null; fi ;;
   receipt) cat >> "$HOME/receipts"; echo >> "$HOME/receipts"; echo '{"status":"recorded"}' ;;
 esac"#);
@@ -79,6 +79,14 @@ fn an_approved_message_enters_the_native_inbox_once_and_is_acknowledged() {
     assert_eq!(admitted["resume"], true);
     assert!(admitted["text"].as_str().unwrap().contains("The frame is ready."));
     assert_eq!(run.receipts, [json!({"action": "receipt", "dispatch_id": "d1", "outcome": {"outcome": "received", "native_id": "msg_cockpitm1"}})]);
+}
+
+#[test]
+fn the_inbox_row_shows_who_wrote_and_the_start_of_the_message() {
+    // OpenCode shows a synthetic message only as its one-line description: Theo missed the pong.
+    let run = run(&[]);
+    let description = run.synthetic[0]["description"].as_str().unwrap();
+    assert_eq!(description, "Team message from designer (claude): The frame is ready. [2J Second line");
 }
 
 #[test]

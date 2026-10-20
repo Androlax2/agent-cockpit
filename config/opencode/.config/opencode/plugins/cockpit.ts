@@ -125,6 +125,12 @@ export default {
       runTeam(["receipt"], { action: "receipt", dispatch_id: dispatchID, outcome }).catch((error) =>
         console.error("cockpit plugin: team receipt not recorded", error),
       )
+    // OpenCode's screen shows a synthetic message only as this one line: who wrote and how it starts.
+    const teamRow = (envelope: any) => {
+      const plain = (value: unknown) => String(value ?? "?").replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").replace(/\s+/g, " ").trim()
+      const row = `Team message from ${plain(envelope?.sender?.role)} (${plain(envelope?.sender?.agent)}): ${plain(envelope?.body)}`
+      return row.length > 160 ? `${row.slice(0, 159)}…` : row
+    }
     const deliverTeamMessage = async () => {
       const delivery = JSON.parse((await runTeam(["receive"])).trim() || "null")
       if (!delivery?.dispatch_id) return
@@ -134,7 +140,7 @@ export default {
           sessionID: cockpitSession,
           id: inboxID,
           text: delivery.text,
-          description: "Cockpit team message",
+          description: teamRow(delivery.envelope),
           metadata: { cockpit_team: { message_id: delivery.message_id, dispatch_id: delivery.dispatch_id } },
           delivery: "queue",
           resume: true,
