@@ -7,8 +7,8 @@ reconstructing what changed, why automation is waiting, or where a task went.
 This is an extension of the existing Ratatui/tmux cockpit, not a replacement UI.
 
 Theo requested all five brainstormed improvements, reviewed the browser preview,
-and requested no changes to it. The behavioural design calls below make that
-preview implementable; this written design still needs his approval.
+and requested no changes to it. Theo approved this written design, including
+the necessary hook/daemon additions, on 2026-10-20.
 
 The preview lives in this checkout's `.superpowers/brainstorm/` directory. It is
 throwaway HTML, not a production frontend or a dependency of the cockpit.
