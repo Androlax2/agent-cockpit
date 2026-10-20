@@ -229,7 +229,7 @@ async function loadScreen() {
 async function loadConversation() {
   const session = opened;
   const conversation = document.getElementById("conversation");
-  if (!session || !conversation || tab !== "sessions") return;
+  if (!isPaired || !session || !conversation || tab !== "sessions") return;
   if (loadingConversations.has(conversation)) return loadingConversations.get(conversation);
   const loading = (async () => {
     const request = ++conversationRequest;
@@ -306,6 +306,7 @@ async function post(path, body, note) {
 }
 
 function renderDetail() {
+  if (!isPaired) return;
   const box = document.getElementById("detail");
   const session = state.sessions.find((s) => s.session === opened);
   if (!session) { opened = null; box.hidden = true; return; }
@@ -760,8 +761,10 @@ async function renderUsage(box) {
 function render() {
   if (!isPaired) return;
   if (opened !== null && !state.sessions.some((session) => session.session === opened)) {
+    drafts.delete(opened);
     opened = null;
-    document.getElementById("detail").replaceChildren();
+    const detail = document.getElementById("detail");
+    detail.replaceChildren(); detail.dataset.session = "";
     shownScreen = "";
   }
   renderApprovals();
@@ -831,7 +834,7 @@ if (canPush) navigator.serviceWorker.register("/sw.js").catch(() => {});
 renderTabs();
 document.getElementById("refresh-view").onclick = () => {
   refresh();
-  if (tab === "sessions") { if (opened) loadScreen(); }
+  if (tab === "sessions") { if (opened) { loadConversation(); loadScreen(); } }
   else showTab(tab);
 };
 refresh();

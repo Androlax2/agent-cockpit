@@ -24,7 +24,7 @@ class Element {
   focus() { document.activeElement = this; }
   addEventListener(name, handler) { this[`on${name}`] = handler; }
 }
-const roots = Object.fromEntries(["approvals", "list", "detail", "phone", "starter", "updated", "tabs", "work", "pairing"].map(id => [id, new Element()]));
+const roots = Object.fromEntries(["approvals", "list", "detail", "phone", "phone-content", "starter", "updated", "tabs", "work", "pairing", "view-title", "refresh-view"].map(id => [id, new Element()]));
 const document = {
   createElement: tag => new Element(tag), activeElement: null,
   getElementById: id => roots[id] || Object.values(roots).map(root => root.querySelector(`#${id}`)).find(Boolean),
@@ -40,6 +40,7 @@ let current = { sessions: [
 let delayHistory = null;
 let failSend = false;
 let holdSend = null;
+let revokeSend = false;
 const history = { messages: [{ id: "u1", role: "user", text: "Hello" }, { id: "a1", role: "assistant", text: "<img src=x onerror=alert(1)>Which option?" }], truncated: false };
 const context = vm.createContext({
   document, console, URL, Map, Set, Promise, JSON,
@@ -50,6 +51,7 @@ const context = vm.createContext({
     if (path.startsWith("/api/conversation/") && delayHistory) await delayHistory;
     if (path.startsWith("/api/message/") && holdSend) await holdSend;
     if (path.startsWith("/api/message/") && failSend) throw new Error("offline");
+    if (path.startsWith("/api/message/") && revokeSend) return { status: 401, ok: false, text: async () => "This phone is not paired" };
     const body = path === "/api/state" ? current : path === "/api/conversation/s2" ? { messages: [{ id: "second", role: "user", text: "Second conversation" }], truncated: false } : path.startsWith("/api/conversation/") ? history : path === "/api/projects" || path === "/api/agents" ? [] : { ok: true, message: "sent" };
     return { status: 200, ok: true, json: async () => structuredClone(body), text: async () => "terminal text" };
   },
@@ -145,4 +147,14 @@ history.messages.push({ id: "slow-update", role: "assistant", text: "Slow networ
 releaseSlow(); await Promise.all([slowPoll, redundantPoll]); delayHistory = null;
 assert.match(document.getElementById("conversation").textContent, /Slow network reply arrived/, "slow responses must render even when another poll ticks");
 assert.equal(requests.filter(request => request.path === "/api/conversation/s1").length, beforeSlow + 1, "only one poll per conversation may be in flight");
+input = roots.detail.querySelector("textarea"); input.value = "Closed-session draft"; input.oninput();
+current.sessions = current.sessions.filter(session => session.session !== "s1");
+await run("refresh()"); await settle();
+current.sessions.unshift({ session: "s1", project: "First", agent: "opencode", state: "waiting", features: [] });
+await run("refresh()"); run('openSession("s1")'); await settle();
+assert.equal(roots.detail.querySelector("textarea").value, "", "closed sessions must not restore stale drafts or stale DOM identifiers");
+revokeSend = true;
+input = roots.detail.querySelector("textarea"); input.value = "Keep private"; input.oninput();
+await button(roots.detail, "Send").onclick();
+assert.equal(roots.detail.hidden, true, "revoked pairing must not reopen conversation details after a send failure");
 console.log("mobile chat: messages, safe text, scoped approvals, drafts, focus, scroll, stale responses, offline retry and duplicate submission passed");

@@ -58,6 +58,9 @@ class MobileBrowserTests(unittest.TestCase):
                           'else printf "%s\\n" "$*" >> "$XDG_RUNTIME_DIR/keys"; fi')
         self.shim("gh", "echo '[]'")
         self.snapshot()
+        transcripts = self.home / ".claude/projects/shop"
+        transcripts.mkdir(parents=True)
+        (transcripts / f"{SESSION}.jsonl").write_text(json.dumps({"uuid": "user1", "type": "user", "message": {"content": "Fix checkout"}}) + "\n")
         (self.runtime / "pane.txt").write_text("\x1b[32mReady\x1b[0m\n❯ \n")
         self.server = subprocess.Popen([str(BINARY), "serve"], env=self.environment,
                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
@@ -107,6 +110,7 @@ class MobileBrowserTests(unittest.TestCase):
     def open_detail(self):
         self.open_paired()
         self.page.locator("#list .card").tap()
+        self.page.locator("#terminal-details > summary").tap()
         expect(self.page.locator("#screen")).to_contain_text("Ready")
 
     def refresh(self):
@@ -128,8 +132,11 @@ class MobileBrowserTests(unittest.TestCase):
         expect(self.page.locator("#list .card")).to_have_count(1)
         expect(self.page.locator("#pairing")).to_be_hidden()
 
-    def test_notification_link_loads_the_terminal(self):
+    def test_notification_link_loads_chat_with_optional_terminal(self):
         self.open_paired(f"#session={SESSION}")
+        expect(self.page.locator("#conversation")).to_contain_text("Fix checkout")
+        expect(self.page.locator("#terminal-details")).not_to_have_attribute("open", "")
+        self.page.locator("#terminal-details > summary").tap()
         expect(self.page.locator("#screen")).to_contain_text("Ready")
 
     def test_back_from_detail_restores_new_session(self):
@@ -168,7 +175,7 @@ class MobileBrowserTests(unittest.TestCase):
         self.page.route("**/api/message/*", lambda route: route.abort())
         self.page.locator("#detail textarea").fill("Hello")
         self.page.get_by_role("button", name="Send", exact=True).tap()
-        expect(self.page.locator("#detail > .note").last).not_to_have_text("…")
+        expect(self.page.locator("#send-note")).to_contain_text("Failed")
         expect(self.page.locator("#detail textarea")).to_have_value("Hello")
         self.assertEqual(self.errors, [])
 
@@ -179,24 +186,24 @@ class MobileBrowserTests(unittest.TestCase):
                                                                   "cwd": str(self.project), "command": "echo hello"}))
         self.open_paired()
         self.page.get_by_role("button", name="Decline", exact=True).tap()
-        expect(self.page.locator("#approvals .note")).to_contain_text("declined")
+        expect(self.page.locator("#approvals .note")).to_contain_text("Declined")
         self.refresh()
-        expect(self.page.locator("#approvals .note")).to_contain_text("declined")
+        expect(self.page.locator("#approvals .note")).to_contain_text("Declined")
 
     def test_confirmation_does_not_lose_the_terminal(self):
         runs = self.runtime / "claude-runs"
         runs.mkdir()
-        (runs / "0123456789ab.asking").write_text(json.dumps({"id": "0123456789ab", "project": "shop",
+        (runs / "0123456789ab.asking").write_text(json.dumps({"id": "0123456789ab", "project": "shop", "session": SESSION,
                                                                   "cwd": str(self.project), "command": "echo hello"}))
         self.open_detail()
-        self.page.get_by_role("button", name="Run it", exact=True).tap()
+        self.page.get_by_role("button", name="Run", exact=True).tap()
         expect(self.page.locator("#screen")).to_contain_text("Ready")
         self.assertFalse((runs / "0123456789ab.remote").exists())
         with self.page.expect_response("**/api/decide/0123456789ab"):
             self.page.get_by_role("button", name="Tap again to run").tap()
         self.assertEqual((runs / "0123456789ab.remote").read_text(), "y")
         self.refresh()
-        expect(self.page.locator("#approvals .note")).to_have_text("it runs")
+        expect(self.page.locator("#chat-actions .note")).to_contain_text("Approved")
 
     def test_phone_widths_do_not_scroll_sideways(self):
         self.snapshot([{"session": SESSION, "project": "long-project-" * 12, "state": "waiting", "tmux_pane": "%4"}])
@@ -326,7 +333,7 @@ class MobileBrowserTests(unittest.TestCase):
         self.open_detail()
         self.page.locator("#detail textarea").fill("Review cart")
         self.page.get_by_role("button", name="Send", exact=True).tap()
-        expect(self.page.locator("#detail > .note").last).to_have_text("sent")
+        expect(self.page.locator("#send-note")).to_have_text("sent")
         expect(self.page.locator("#detail textarea")).to_have_value("")
         self.assertIn(f"say {SESSION} Review cart", (self.runtime / "actions").read_text())
 
@@ -334,24 +341,25 @@ class MobileBrowserTests(unittest.TestCase):
         self.snapshot([{"session": SESSION, "project": "shop", "state": "working", "tmux_pane": "%4"}])
         self.open_detail()
         self.page.locator("#detail textarea").fill("Then check tax")
-        self.page.get_by_role("button", name="Queue it", exact=True).tap()
-        expect(self.page.locator("#detail > .note").last).to_contain_text("queued")
+        self.page.get_by_role("button", name="Queue", exact=True).tap()
+        expect(self.page.locator("#send-note")).to_contain_text("queued")
         expect(self.page.locator("#detail textarea")).to_have_value("")
 
     def test_a_rejected_message_keeps_its_text(self):
         self.open_detail()
         self.page.locator("#detail textarea").fill("First line\nSecond line")
         self.page.get_by_role("button", name="Send", exact=True).tap()
-        expect(self.page.locator("#detail > .note").last).to_contain_text("one line")
+        expect(self.page.locator("#send-note")).to_contain_text("one line")
         expect(self.page.locator("#detail textarea")).to_have_value("First line\nSecond line")
 
     def test_interrupt_requires_two_taps(self):
         self.snapshot([{"session": SESSION, "project": "shop", "state": "working", "tmux_pane": "%4"}])
         self.open_detail()
+        self.page.locator(".session-options > summary").tap()
         self.page.get_by_role("button", name="Interrupt", exact=True).tap()
         self.assertFalse((self.runtime / "keys").exists())
         self.page.get_by_role("button", name="Tap again to interrupt").tap()
-        expect(self.page.locator("#detail > .note").last).to_have_text("interrupted")
+        expect(self.page.locator("#session-controls > .note")).to_have_text("interrupted")
         self.assertIn("send-keys -t %4 Escape", (self.runtime / "keys").read_text())
 
     def test_yes_and_no_answer_the_real_dialog(self):
@@ -361,7 +369,7 @@ class MobileBrowserTests(unittest.TestCase):
         for label, key, result in [("Yes", "Enter", "approved"), ("No", "Escape", "declined")]:
             with self.subTest(answer=label):
                 self.page.get_by_role("button", name=label, exact=True).tap()
-                expect(self.page.locator("#detail > .note").last).to_have_text(result)
+                expect(self.page.locator("#chat-actions .note")).to_have_text(result)
                 self.assertIn(f"send-keys -t %4 {key}", (self.runtime / "keys").read_text())
 
     def test_opencode_does_not_offer_claude_dialog_controls(self):
@@ -370,12 +378,13 @@ class MobileBrowserTests(unittest.TestCase):
         self.open_detail()
         expect(self.page.get_by_role("button", name="Yes", exact=True)).to_have_count(0)
         expect(self.page.get_by_role("button", name="Remote Control: off", exact=True)).to_have_count(0)
-        expect(self.page.locator("#detail")).to_contain_text("answer its questions in its pane")
+        expect(self.page.locator("#detail")).to_contain_text("must be answered on the computer")
 
     def test_remote_control_reaches_the_session_manager(self):
         self.open_detail()
+        self.page.locator(".session-options > summary").tap()
         self.page.get_by_role("button", name="Remote Control: off", exact=True).tap()
-        expect(self.page.locator("#detail > .note").last).to_have_text("Remote Control on")
+        expect(self.page.locator("#session-controls > .note")).to_have_text("Remote Control on")
         self.assertIn(f"remote {SESSION}", (self.runtime / "actions").read_text())
 
     def test_invalid_pairing_code_shows_a_useful_error(self):
@@ -406,10 +415,10 @@ class MobileBrowserTests(unittest.TestCase):
 
     def test_session_cards_are_keyboard_accessible(self):
         self.open_paired()
-        session = self.page.get_by_role("button", name=re.compile("shop.*Waiting", re.S))
+        session = self.page.get_by_role("button", name=re.compile("shop.*Ready", re.S))
         session.focus()
         self.page.keyboard.press("Enter")
-        expect(self.page.locator("#screen")).to_contain_text("Ready")
+        expect(self.page.locator("#conversation")).to_contain_text("Fix checkout")
 
     def test_new_session_fields_have_visible_labels(self):
         self.open_paired()
