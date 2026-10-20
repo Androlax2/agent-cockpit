@@ -80,7 +80,10 @@ const GLOBAL_HELP: [(&str, &str); 14] = [
     ("q ⌘C", "close the manager window; sessions keep running"),
 ];
 /// Rare actions with no key, only in the : list: the panel they run in ("-" for none), a name, a label.
-const PALETTE_ONLY: [(&str, &str, &str); 14] = [
+const PALETTE_ONLY: [(&str, &str, &str); 17] = [
+    ("1", "task-trail", "follow the selected session's tasks, results and PRs"),
+    ("2", "task-trail", "follow the selected PR's linked tasks and sessions"),
+    ("3", "task-trail", "follow the selected task's sessions, results and PRs"),
     ("-", "queue", "explain queued work and what each session is waiting for"),
     ("-", "updates", "unseen results, questions and archived return notes"),
     ("1", "reviewed", "mark the selected session's currently displayed updates reviewed (not answered)"),
@@ -295,6 +298,9 @@ struct SessionDetails {
 enum DetailAction {
     Reviewed { session: String, identities: Vec<String> },
     OpenSession(String),
+    OpenTask(String),
+    OpenPr(String),
+    ResumeSession { session: String, cwd: String },
 }
 
 impl SessionDetails {
@@ -742,6 +748,7 @@ pub struct App {
     todo_categories: HashMap<String, Option<todo::Category>>,
     todo_recovery_pending: bool,
     saved_todo_scope: Option<SavedTodoScope>,
+    todo_jump: Option<(String, String)>,
     /// session -> when the column last sent it a queued prompt: the next one waits for a turn that
     /// ended after that.
     pub(crate) prompts_sent: HashMap<String, i64>,
@@ -801,7 +808,7 @@ impl App {
             width: DEFAULT_COLUMN_WIDTH, sessions: Vec::new(), windows: Vec::new(), quota_rows: Vec::new(), review_rows: Vec::new(), todo_entries: Vec::new(),
             session_task_titles: HashMap::new(), session_branches: HashMap::new(),
             session_queued: HashMap::new(), session_roots: HashMap::new(),
-            todo_scope: String::new(), shown_session: String::new(), todo_tab: TODO_TAB_OPEN, todo_tabs: HashMap::new(), todo_categories: HashMap::new(), saved_todo_scope: None, todo_counts: [0; 5], prompts_sent: HashMap::new(), craft_roots: HashMap::new(), hit_lines: HashMap::new(), hit_actions: HashMap::new(),
+            todo_scope: String::new(), shown_session: String::new(), todo_tab: TODO_TAB_OPEN, todo_tabs: HashMap::new(), todo_categories: HashMap::new(), saved_todo_scope: None, todo_jump: None, todo_counts: [0; 5], prompts_sent: HashMap::new(), craft_roots: HashMap::new(), hit_lines: HashMap::new(), hit_actions: HashMap::new(),
             gathered: None, pending: Vec::new(), plan: String::new(), craft_checked: 0.0, dotfiles_unpushed: 0, dotfiles_checked: 0.0, todo_recovery_pending,
         }
     }
@@ -959,6 +966,7 @@ impl App {
                 continue;
             }
             self.todos.set_status(&key, "doing", &session.session);
+            if let Err(error) = self.record_task_assignment(&entry, Some(&session)) { self.continuity_error = Some(error); }
             util::log_event("INFO", &format!("queue: {key} given to {} ({}), idle for {} min", session.project,
                                              &session.session[..8.min(session.session.len())], (now as i64 - session.since) / 60));
             self.message = format!("queue: gave {} its next item", session.project);
@@ -1251,6 +1259,7 @@ impl App {
         }
         let has_dotfiles_card = running.iter().any(|s| sessions::is_dotfiles_clone(&s.cwd));
         if util::read_json(&paths::snapshot()).is_some_and(|snapshot| snapshot.get("sessions").is_some_and(Value::is_array)) {
+            self.observe_task_trails(&running);
             if let Ok(continuity) = &mut self.continuity {
                 match continuity.observe_sessions(&running, util::now_secs()) {
                     Ok(true) => self.continuity_error = None,
@@ -2087,11 +2096,13 @@ impl App {
     fn build_todo(&mut self) {
         // Like the issues: the viewed session's project only, every project when none is viewed.
         let viewed = current_session();
+        if self.todo_jump.as_ref().is_some_and(|(source, _)| *source != viewed) { self.todo_jump = None; }
         if self.saved_todo_scope.as_ref().is_some_and(|scope| scope.viewed_session != viewed) {
             self.saved_todo_scope = None;
         }
-        self.todo_scope = self.saved_todo_scope.as_ref().map(|scope| scope.project.clone())
-            .unwrap_or_else(|| self.sessions.iter().find(|s| s.session == viewed).map(|s| s.project.clone()).unwrap_or_default());
+        self.todo_scope = self.todo_jump.as_ref().and_then(|(_, key)| self.todos.items.iter().find(|item| item.id() == *key).map(|item| item.project()))
+            .or_else(|| self.saved_todo_scope.as_ref().map(|scope| scope.project.clone()))
+            .or_else(|| self.sessions.iter().find(|s| s.session == viewed).map(|s| s.project.clone())).unwrap_or_default();
         self.todo_tab = self.todo_tabs.get(&self.todo_owner()).copied().unwrap_or(TODO_TAB_OPEN);
         let scope = self.todo_scope.clone();
         let mut entries: Vec<Entry> = self.todos.items.iter()
@@ -2446,6 +2457,10 @@ impl App {
             }
         };
         self.todos.set_status(&key, "doing", running.as_ref().map(|s| s.session.as_str()).unwrap_or(""));
+        if let Err(error) = self.record_task_assignment(entry, running.as_ref()) {
+            self.continuity_error = Some(error.clone());
+            return format!("{outcome}; task trail unavailable: {error}");
+        }
         outcome
     }
 
@@ -2465,6 +2480,7 @@ impl App {
         let (branch, text) = todo::handoff_of(entry);
         manager_in_background(&["--agent", &agent, "parallel", &directory, &branch, &text]);
         self.todos.set_status(&key, "doing", "");
+        if let Err(error) = self.record_task_assignment(entry, None) { self.continuity_error = Some(error); }
         format!("starting a new session in a clone of {} (branch {branch})", project_name(&directory))
     }
 
@@ -3094,7 +3110,7 @@ impl App {
     fn run_palette_only(&mut self, name: &str, screen: &mut dyn Screen) -> String {
         let known = self.selected_session().filter(|s| s.state != "unknown");
         match name {
-            "return-note" | "clear-return-note" | "updates" | "reviewed" | "queue" => self.run_continuity_action(name, screen),
+            "return-note" | "clear-return-note" | "updates" | "reviewed" | "queue" | "task-trail" => self.run_continuity_action(name, screen),
             "new-with-agent" => {
                 let Some(directory) = screen.outside(&mut || pick_project()).filter(|directory| !directory.is_empty()) else { return String::new() };
                 let Some(agent) = screen.outside(&mut || pick_agent()) else { return String::new() };

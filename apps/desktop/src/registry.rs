@@ -1300,6 +1300,7 @@ impl Registry {
                     id: id.clone(), completed_at: now() as i64,
                     outcome: report.outcome.clone().unwrap_or_default(),
                     repository: entry.repository.clone(), branch: entry.branch.clone(),
+                    extra: Default::default(),
                 });
                 changed = true;
             }

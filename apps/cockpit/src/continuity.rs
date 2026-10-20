@@ -7,6 +7,8 @@ use std::{collections::BTreeMap, fs, io::{self, Write}, os::unix::fs::OpenOption
 
 const MAX_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_RECORDS: usize = 10_000;
+mod tasks;
+pub use tasks::{TaskSnapshot, TaskAssignment, TaskRecord, PullRequestMemory, TrailTarget};
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct SessionMemory {
@@ -61,6 +63,10 @@ struct State {
     version: u64,
     #[serde(default)]
     sessions: BTreeMap<String, SessionMemory>,
+    #[serde(default)]
+    tasks: BTreeMap<String, TaskRecord>,
+    #[serde(default)]
+    prs: BTreeMap<String, PullRequestMemory>,
     #[serde(flatten)]
     extra: Map<String, Value>,
 }
@@ -69,6 +75,7 @@ impl State {
     fn validate(&self) -> Result<(), String> {
         if self.version != 1 { return Err(format!("unsupported continuity version {}", self.version)); }
         if self.sessions.len() > MAX_RECORDS { return Err("too many continuity sessions".into()); }
+        self.validate_tasks()?;
         for (id, session) in &self.sessions {
             if !agents::is_session_id(id) || !valid_metadata_text(&session.title, 300)
                 || !valid_metadata_text(&session.cwd, 300) {
@@ -108,7 +115,7 @@ impl Continuity {
                 if bytes.len() as u64 > MAX_BYTES { return Err("continuity file exceeds 16 MiB; preserve it and reduce archived records".into()); }
                 serde_json::from_slice::<State>(&bytes).map_err(|error| format!("invalid continuity file: {error}"))?
             }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => State { version: 1, sessions: BTreeMap::new(), extra: Map::new() },
+            Err(error) if error.kind() == io::ErrorKind::NotFound => State { version: 1, sessions: BTreeMap::new(), tasks: BTreeMap::new(), prs: BTreeMap::new(), extra: Map::new() },
             Err(error) => return Err(format!("cannot read {}: {error}", path.display())),
         };
         state.validate()?;

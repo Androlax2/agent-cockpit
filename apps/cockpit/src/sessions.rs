@@ -117,6 +117,8 @@ pub struct TurnResult {
     pub outcome: String,
     pub repository: String,
     pub branch: String,
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, Value>,
 }
 
 impl TurnResult {

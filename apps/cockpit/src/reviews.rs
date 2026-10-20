@@ -17,7 +17,7 @@ const TURN_END_REFETCH_S: f64 = 30.0;
 const LIMIT: usize = 30;
 const RECENT_DAYS: i64 = 180; // older pull requests are dead repositories, not work
 const ISSUES_PER_REPOSITORY: &str = "20";
-const LIST_FIELDS: &str = "number,title,url,updatedAt,author,isDraft,reviewDecision,statusCheckRollup,headRefName";
+const LIST_FIELDS: &str = "number,title,url,updatedAt,author,isDraft,reviewDecision,statusCheckRollup,headRefName,headRefOid";
 const ISSUE_FIELDS: &str = "number,title,url,updatedAt,labels";
 /// Bot bumps are merged or closed without a review; they only bury real work.
 const BOT_AUTHORS: [&str; 6] = ["dependabot", "renovate", "app/dependabot", "app/renovate", "dependabot[bot]", "renovate[bot]"];
@@ -36,6 +36,8 @@ pub struct Review {
     pub draft: bool,
     pub review: String,
     pub ci: String,
+    pub head_branch: String,
+    pub head_oid: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -89,7 +91,8 @@ pub fn parse_reviews(raw: &str, repository: &str) -> Vec<Review> {
         };
         Review {
             title: text(row, "title"), url: text(row, "url"), number: row.get("number").and_then(Value::as_i64).unwrap_or(0),
-            repository: full.rsplit('/').next().unwrap_or("").to_string(), full_repository: full.clone(),
+            repository: full.rsplit('/').next().unwrap_or("").to_lowercase(), full_repository: full.to_lowercase(),
+            head_branch: text(row, "headRefName"), head_oid: text(row, "headRefOid"),
             author: row.get("author").and_then(|author| author.get("login")).and_then(Value::as_str).unwrap_or("").into(),
             updated: text(row, "updatedAt"), draft: row.get("isDraft").and_then(Value::as_bool).unwrap_or(false),
             review: text(row, "reviewDecision"), ci: ci_state(row.get("statusCheckRollup")),
@@ -139,6 +142,17 @@ pub fn fetch_reviews(repositories: &[String]) -> (Vec<Review>, String) {
             Ok(raw) => rows.extend(parse_reviews(&raw, "")),
             Err(reason) if reason == "gh is not installed" => return (Vec::new(), reason),
             Err(reason) => errors.push(format!("gh: {reason}")),
+        }
+        // Search's JSON omits head metadata; enrich only its requested PRs in this fetch thread.
+        for row in &mut rows {
+            match gh(&["pr", "view", &row.number.to_string(), "--repo", &row.full_repository, "--json", LIST_FIELDS]) {
+                Ok(raw) => {
+                    if let Ok(value @ Value::Object(_)) = serde_json::from_str::<Value>(&raw) {
+                        if let Some(detail) = parse_reviews(&serde_json::json!([value]).to_string(), &row.full_repository).into_iter().find(|detail| detail.number == row.number) { *row = detail; }
+                    } else { errors.push(format!("{}#{} metadata response is not an object", row.full_repository, row.number)); }
+                }
+                Err(reason) => errors.push(format!("{}#{} metadata: {reason}", row.full_repository, row.number)),
+            }
         }
     }
     for repository in repositories {
@@ -317,6 +331,25 @@ impl Reviews {
 
     pub fn issues(&self) -> Vec<Issue> {
         self.state.lock().unwrap().by_scope.get(&self.repositories).map(|fetched| fetched.issues.clone()).unwrap_or_default()
+    }
+
+    pub fn cached(&self) -> Vec<Review> {
+        let state = self.state.lock().unwrap();
+        let mut fetched: Vec<_> = state.by_scope.values().collect();
+        fetched.sort_by(|left, right| left.fetched_at.total_cmp(&right.fetched_at));
+        let mut rows = BTreeMap::new();
+        for fetched in fetched { for row in &fetched.rows { rows.insert((row.full_repository.clone(), row.number), row.clone()); } }
+        rows.into_values().collect()
+    }
+
+    pub fn availability(&self, repository: &str) -> Result<(), String> {
+        let state = self.state.lock().unwrap();
+        let latest = state.by_scope.iter().filter(|(scope, _)| scope.iter().any(|repo| repo.eq_ignore_ascii_case(repository)))
+            .map(|(_, fetched)| fetched).max_by(|left, right| left.fetched_at.total_cmp(&right.fetched_at));
+        let Some(fetched) = latest else { return Err("PR data unavailable (repository not loaded)".into()) };
+        if !fetched.error.is_empty() { return Err(format!("PR data unavailable: {}", fetched.error)); }
+        if now() - fetched.fetched_at > REFRESH_S { return Err("PR data stale; showing last known links".into()); }
+        Ok(())
     }
 
     #[cfg(test)]

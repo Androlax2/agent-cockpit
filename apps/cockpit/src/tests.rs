@@ -308,6 +308,277 @@ fn continuity_a_failed_acknowledgement_leaves_the_result_unseen() {
     assert!(texts(&app, 1).join("\n").contains("unseen result"));
 }
 
+fn continuity_saved(fixture: &Fixture) -> Value {
+    serde_json::from_str(&fs::read_to_string(fixture.path("state/claude-sessions/continuity.json")).unwrap()).unwrap()
+}
+
+#[test]
+fn continuity_a_successful_handoff_links_the_task_and_requests_start_acknowledgement() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([continuity_result_row("11111111111111111111111111111111", "waiting")]));
+    fixture.view(SESSION_A);
+    let mut app = fixture.app();
+    let key = app.todos.add("shop", "/r/shop", "Calculate VAT");
+    app.build();
+    app.focus_panel(3);
+    app.handle(Key::Char('h'), &mut FakeScreen::default());
+    assert!(fixture.calls("claude-sessions").iter().any(|call| call.contains(&format!("claude-todo start {key}"))));
+    let saved = continuity_saved(&fixture);
+    assert_eq!(saved["tasks"][&key]["assignments"][0]["session"], SESSION_A);
+    assert_eq!(saved["tasks"][&key]["assignments"][0]["baseline_result"], "11111111111111111111111111111111");
+    assert!(saved["tasks"][&key]["assignments"][0]["result"].is_null());
+}
+
+#[test]
+fn continuity_reusing_a_session_does_not_move_the_previous_tasks_result() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([continuity_result_row("11111111111111111111111111111111", "waiting")]));
+    let mut app = fixture.app();
+    let first = app.todos.add("shop", "/r/shop", "First task");
+    app.todos.set_status(&first, "doing", SESSION_A);
+    app.build();
+    fixture.snapshot(json!([continuity_result_row("22222222222222222222222222222222", "waiting")]));
+    app.build();
+    app.todos.set_status(&first, "done", SESSION_A);
+    let second = app.todos.add("shop", "/r/shop", "Second task");
+    app.todos.set_status(&second, "doing", SESSION_A);
+    app.build();
+    fixture.snapshot(json!([continuity_result_row("33333333333333333333333333333333", "waiting")]));
+    app.build();
+    let saved = continuity_saved(&fixture);
+    assert_eq!(saved["tasks"][&first]["assignments"][0]["result"]["id"], "22222222222222222222222222222222");
+    assert_eq!(saved["tasks"][&second]["assignments"][0]["result"]["id"], "33333333333333333333333333333333");
+}
+
+#[test]
+fn continuity_a_simultaneous_assignment_and_result_is_not_guessed() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([continuity_result_row("11111111111111111111111111111111", "waiting")]));
+    let mut app = fixture.app();
+    let first = app.todos.add("shop", "/r/shop", "First task");
+    app.todos.set_status(&first, "doing", SESSION_A);
+    app.build();
+    app.todos.set_status(&first, "done", SESSION_A);
+    let second = app.todos.add("shop", "/r/shop", "Second task");
+    app.todos.set_status(&second, "doing", SESSION_A);
+    fixture.snapshot(json!([continuity_result_row("22222222222222222222222222222222", "waiting")]));
+    app.build();
+    let saved = continuity_saved(&fixture);
+    for task in [&first, &second] { assert!(saved["tasks"][task]["assignments"][0]["result"].is_null()); }
+    assert_eq!(saved["tasks"][&second]["assignments"][0]["baseline_result"], "22222222222222222222222222222222");
+}
+
+#[test]
+fn continuity_exact_branches_link_every_matching_session_not_a_different_repository() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    app.reviews.checkouts.insert("acme/shop".into(), "/r/shop".into());
+    let key = app.todos.add("shop", "/r/shop", "VAT");
+    let entry = Entry::Typed(app.todos.items[0].clone());
+    app.hand_to_new_session(&entry, &mut FakeScreen::default());
+    let mut first = continuity_result_row("11111111111111111111111111111111", "waiting");
+    first["branch"] = json!(format!("todo-{key}"));
+    let mut second = first.clone();
+    second["session"] = json!(SESSION_B);
+    second["cwd"] = json!("/r/clone");
+    second["tmux_pane"] = json!("%2");
+    let mut unrelated = first.clone();
+    unrelated["session"] = json!("cccccccc-0000-4000-8000-000000000000");
+    unrelated["repository"] = json!("other/shop");
+    unrelated["tmux_pane"] = json!("%3");
+    fixture.snapshot(json!([first,second,unrelated]));
+    app.build();
+    let saved = continuity_saved(&fixture);
+    let linked: Vec<_> = saved["tasks"][&key]["assignments"].as_array().unwrap().iter().map(|assignment| assignment["session"].as_str().unwrap()).collect();
+    assert_eq!(linked, [SESSION_A, SESSION_B]);
+}
+
+#[test]
+fn continuity_background_assignment_waits_for_the_attributed_start_update() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    let key = app.todos.add("shop", "/r/shop", "VAT");
+    let entry = Entry::Typed(app.todos.items[0].clone());
+    app.hand_to_claude(&entry, &mut FakeScreen::default());
+    fixture.snapshot(json!([continuity_result_row("11111111111111111111111111111111", "waiting")]));
+    app.build();
+    assert_eq!(continuity_saved(&fixture)["tasks"][&key]["pending"], true);
+    app.todos.set_status(&key, "doing", SESSION_A);
+    app.build();
+    let saved = continuity_saved(&fixture);
+    assert_eq!(saved["tasks"][&key]["pending"], false);
+    assert_eq!(saved["tasks"][&key]["assignments"][0]["session"], SESSION_A);
+}
+
+#[test]
+fn continuity_issue_branches_require_the_full_github_repository() {
+    let fixture = Fixture::new();
+    let mut first = continuity_result_row("11111111111111111111111111111111", "waiting");
+    first["branch"] = json!("issue-12");
+    let mut other = first.clone();
+    other["session"] = json!(SESSION_B);
+    other["repository"] = json!("other/shop");
+    other["tmux_pane"] = json!("%2");
+    fixture.snapshot(json!([first,other]));
+    let mut app = fixture.app();
+    app.todos.set_status("acme/shop#12", "doing", "");
+    app.reviews.set_issues(vec![Issue { number:12, title:"Fix VAT".into(), url:"https://github.com/acme/shop/issues/12".into(), repository:"shop".into(), full_repository:"acme/shop".into(), updated:String::new(), labels:Vec::new() }]);
+    app.build();
+    let saved = continuity_saved(&fixture);
+    assert_eq!(saved["tasks"]["acme/shop#12"]["assignments"].as_array().unwrap().len(), 1);
+    assert_eq!(saved["tasks"]["acme/shop#12"]["assignments"][0]["session"], SESSION_A);
+    assert_eq!(saved["tasks"]["acme/shop#12"]["snapshot"]["title"], "Fix VAT");
+}
+
+#[test]
+fn continuity_task_updates_preserve_unknown_snapshot_fields() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([continuity_result_row("11111111111111111111111111111111", "waiting")]));
+    let mut app = fixture.app();
+    let key = app.todos.add("shop", "/r/shop", "VAT");
+    app.todos.set_status(&key, "doing", SESSION_A);
+    app.build();
+    let mut saved = continuity_saved(&fixture);
+    saved["tasks"][&key]["snapshot"]["future"] = json!({"keep":true});
+    saved["tasks"][&key]["assignments"][0]["future"] = json!({"keep":true});
+    fixture.write("state/claude-sessions/continuity.json", &saved.to_string());
+    let mut app = fixture.app();
+    app.todos.edit(&key, "Updated VAT task", "Notes");
+    app.build();
+    let saved = continuity_saved(&fixture);
+    assert_eq!(saved["tasks"][&key]["snapshot"]["future"]["keep"], true);
+    assert_eq!(saved["tasks"][&key]["assignments"][0]["future"]["keep"], true);
+}
+
+#[test]
+fn continuity_changing_branches_does_not_move_an_earlier_assignments_result() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([continuity_result_row("11111111111111111111111111111111", "waiting")]));
+    let mut app = fixture.app();
+    let key = app.todos.add("shop", "/r/shop", "VAT");
+    app.todos.set_status(&key, "doing", SESSION_A);
+    app.build();
+    fixture.snapshot(json!([continuity_result_row("22222222222222222222222222222222", "waiting")]));
+    app.build();
+    let mut changed = continuity_result_row("33333333333333333333333333333333", "waiting");
+    changed["branch"] = json!("feat/other");
+    changed["last_result"]["branch"] = json!("feat/other");
+    fixture.snapshot(json!([changed]));
+    app.build();
+    let saved = continuity_saved(&fixture);
+    let assignments = saved["tasks"][&key]["assignments"].as_array().unwrap();
+    assert_eq!(assignments.len(), 2);
+    assert_eq!(assignments[0]["result"]["id"], "22222222222222222222222222222222");
+    assert!(assignments[1]["result"].is_null());
+}
+
+#[test]
+fn continuity_result_extensions_survive_persistence() {
+    let fixture = Fixture::new();
+    let mut row = continuity_result_row("11111111111111111111111111111111", "waiting");
+    row["last_result"]["future"] = json!({"keep":true});
+    fixture.snapshot(json!([row]));
+    let _app = fixture.app();
+    assert_eq!(continuity_saved(&fixture)["sessions"][SESSION_A]["result"]["future"]["keep"], true);
+}
+
+#[test]
+fn continuity_trail_navigation_opens_the_live_session_and_selects_the_done_task() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([continuity_result_row("11111111111111111111111111111111", "waiting")]));
+    let mut app = fixture.app();
+    let key = app.todos.add("shop", "/r/shop", "VAT");
+    app.todos.set_status(&key, "doing", SESSION_A);
+    app.build();
+    continuity_action(&mut app, "1\ttask-trail", &[]);
+    app.handle(Key::Enter, &mut FakeScreen::typing(&["1"]));
+    assert!(fixture.wait_for_calls("claude-sessions", 1).iter().any(|call| call == &format!("claude-sessions view {SESSION_A}")));
+    app.todos.set_status(&key, "done", SESSION_A);
+    app.build();
+    continuity_action(&mut app, "1\ttask-trail", &[]);
+    app.handle(Key::Enter, &mut FakeScreen::typing(&["0"]));
+    assert_eq!(app.focus, 3);
+    assert_eq!(app.todo_tab, 4);
+    assert_eq!(app.todo_entries[app.panels[3].selected].key(), key);
+    assert_eq!(app.todos.status_of(&key), "done");
+}
+
+#[test]
+fn continuity_task_trails_link_every_exact_pr_without_title_or_repository_guessing() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([continuity_result_row("11111111111111111111111111111111", "waiting")]));
+    let mut app = fixture.app();
+    let key = app.todos.add("shop", "/r/shop", "Calculate VAT");
+    app.todos.set_status(&key, "doing", SESSION_A);
+    let mut prs = reviews::parse_reviews(r#"[{"number":61,"title":"Calculate VAT","url":"https://github.com/acme/shop/pull/61","headRefName":"feat/vat","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","reviewDecision":"REVIEW_REQUIRED"},{"number":62,"title":"Different title","url":"https://github.com/acme/shop/pull/62","headRefName":"feat/vat","headRefOid":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},{"number":63,"title":"Calculate VAT","url":"https://github.com/acme/shop/pull/63","headRefName":"Feat/vat"}]"#, "acme/shop");
+    prs.extend(reviews::parse_reviews(r#"[{"number":64,"title":"Calculate VAT","url":"https://github.com/other/shop/pull/64","headRefName":"feat/vat"}]"#, "other/shop"));
+    app.reviews.set_rows(prs);
+    app.build();
+    app.focus_panel(3);
+    continuity_action(&mut app, "3\ttask-trail", &[]);
+    let rows = buffer_rows(&render(&mut app, 110, 45)).join("\n");
+    assert!(rows.contains("shop#61") && rows.contains("shop#62"), "{rows}");
+    assert!(!rows.contains("shop#63") && !rows.contains("shop#64"), "{rows}");
+    app.handle(Key::Enter, &mut FakeScreen::typing(&["2"]));
+    assert!(fixture.calls("hyprctl").iter().any(|call| call.contains("https://github.com/acme/shop/pull/61")), "{:?}", fixture.calls("hyprctl"));
+    app.reviews.set_rows(Vec::new());
+    app.build();
+    app.focus_panel(3);
+    continuity_action(&mut app, "3\ttask-trail", &[]);
+    let rows = buffer_rows(&render(&mut app, 110, 45)).join("\n");
+    assert!(rows.contains("shop#61") && rows.contains("last known"), "{rows}");
+}
+
+#[test]
+fn continuity_pr_metadata_preserves_the_exact_branch_and_revision() {
+    let rows = reviews::parse_reviews(r#"[{"number":61,"headRefName":"Feat/VAT","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]"#, "Acme/Shop");
+    let row = &rows[0];
+    assert_eq!(row.full_repository, "acme/shop");
+    // The branch and revision must reach a trail, not be discarded by the parser.
+    let fixture = Fixture::new();
+    let mut snapshot = continuity_result_row("11111111111111111111111111111111", "waiting");
+    snapshot["branch"] = json!("Feat/VAT");
+    fixture.snapshot(json!([snapshot]));
+    let mut app = fixture.app();
+    let key = app.todos.add("shop", "/r/shop", "VAT");
+    app.todos.set_status(&key, "doing", SESSION_A);
+    app.reviews.set_rows(rows);
+    app.build();
+    let saved = continuity_saved(&fixture);
+    assert_eq!(saved["prs"]["acme/shop#61"]["head_oid"], "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+}
+
+#[test]
+fn continuity_review_search_enriches_requested_prs_with_branch_and_revision() {
+    let fixture = Fixture::new();
+    let updated = chrono::Utc::now().to_rfc3339();
+    let search = json!([{"number":61,"title":"VAT","repository":{"nameWithOwner":"acme/shop"},"updatedAt":updated}]);
+    let detail = json!({"number":61,"title":"VAT","updatedAt":updated,"headRefName":"feat/vat","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","reviewDecision":"REVIEW_REQUIRED"});
+    fixture.shim("gh", &format!("case \"$1 $2\" in 'search prs') echo '{search}';; 'pr view') echo '{detail}';; esac"));
+    let (rows, error) = reviews::fetch_reviews(&[]);
+    assert!(error.is_empty(), "{error}");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].head_branch, "feat/vat");
+    assert_eq!(rows[0].head_oid, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+}
+
+#[test]
+fn continuity_pruned_tasks_open_archived_details_instead_of_being_recreated() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([continuity_result_row("11111111111111111111111111111111", "waiting")]));
+    let mut app = fixture.app();
+    let key = app.todos.add("shop", "/r/shop", "Archived task");
+    app.todos.set_status(&key, "doing", SESSION_A);
+    app.build();
+    app.todos.remove(&key);
+    app.build();
+    continuity_action(&mut app, "1\ttask-trail", &[]);
+    app.handle(Key::Enter, &mut FakeScreen::typing(&["0"]));
+    let rows = buffer_rows(&render(&mut app, 110, 45)).join("\n");
+    assert!(rows.contains("Archived task") && rows.contains("Archived"), "{rows}");
+    assert!(app.todos.items.is_empty());
+}
+
 #[test]
 fn continuity_return_notes_persist_without_becoming_agent_messages() {
     let fixture = Fixture::new();
@@ -2931,7 +3202,8 @@ fn the_column_notices_another_session_in_the_pane_before_its_next_tick() {
 fn pull_requests_come_from_gh_without_bots_and_open_in_the_cockpit_window() {
     let fixture = Fixture::new();
     let recent = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
-    fixture.shim("gh", &format!("echo '[{{\"number\": 3, \"title\": \"Fix\", \"url\": \"https://github.com/o/r/pull/3\", \"repository\": {{\"nameWithOwner\": \"o/r\"}}, \"author\": {{\"login\": \"sam\"}}, \"updatedAt\": \"{recent}\"}}, {{\"number\": 4, \"title\": \"Bump\", \"url\": \"u\", \"repository\": {{\"nameWithOwner\": \"o/r\"}}, \"author\": {{\"login\": \"app/dependabot\"}}, \"updatedAt\": \"{recent}\"}}]'"));
+    let response = format!("[{{\"number\": 3, \"title\": \"Fix\", \"url\": \"https://github.com/o/r/pull/3\", \"repository\": {{\"nameWithOwner\": \"o/r\"}}, \"author\": {{\"login\": \"sam\"}}, \"updatedAt\": \"{recent}\"}}, {{\"number\": 4, \"title\": \"Bump\", \"url\": \"u\", \"repository\": {{\"nameWithOwner\": \"o/r\"}}, \"author\": {{\"login\": \"app/dependabot\"}}, \"updatedAt\": \"{recent}\"}}]");
+    fixture.shim("gh", &format!("if [ \"$1 $2\" = 'pr view' ]; then echo '{response}' | jq -c --argjson number \"$3\" '.[] | select(.number == $number)'; else echo '{response}'; fi"));
     let (rows, error) = reviews::fetch_reviews(&[]);
     assert_eq!((rows.len(), error.as_str()), (1, ""));
     assert!(fixture.calls("gh")[0].contains("--review-requested=@me"));
@@ -3686,8 +3958,8 @@ fn h_sends_to_the_running_session_or_starts_one_and_marks_it_in_progress() {
     }
     let mut calls = fixture.wait_for_calls("claude-sessions", 2);
     calls.sort();
-    assert_eq!(calls, [format!("claude-sessions --agent claude background /r/homelab bump postgres (todo {postgres}: when this is done, run claude-todo done {postgres})"),
-                       format!("claude-sessions say {SESSION_A} add a healthcheck (todo {healthcheck}: when this is done, run claude-todo done {healthcheck})")]);
+    assert_eq!(calls, [format!("claude-sessions --agent claude background /r/homelab bump postgres (todo {postgres}: before working, run claude-todo start {postgres}; when this is done, run claude-todo done {postgres})"),
+                       format!("claude-sessions say {SESSION_A} add a healthcheck (todo {healthcheck}: before working, run claude-todo start {healthcheck}; when this is done, run claude-todo done {healthcheck})")]);
     assert!(TodoList::load().items.iter().all(|item| item.status() == "doing"));
 }
 
@@ -4516,7 +4788,7 @@ fn an_idle_session_gets_its_projects_first_queued_item_by_priority() {
     app.todos.toggle_queued(&urgent);
     app.dispatch_queue();
     let calls = fixture.wait_for_calls("claude-sessions", 1);
-    assert_eq!(calls, [format!("claude-sessions say {SESSION_A} urgent job (todo {urgent}: when this is done, run claude-todo done {urgent})")]);
+    assert_eq!(calls, [format!("claude-sessions say {SESSION_A} urgent job (todo {urgent}: before working, run claude-todo start {urgent}; when this is done, run claude-todo done {urgent})")]);
     assert_eq!(app.todos.status_of(&urgent), "doing");
 }
 
@@ -4618,7 +4890,7 @@ fn queued_items_created_in_a_parallel_clone_are_shared_with_the_project() {
 
         app.dispatch_queue();
 
-        assert_eq!(fixture.calls("claude-sessions"), [format!("claude-sessions say {SESSION_A} shared job (todo {id}: when this is done, run claude-todo done {id})")]);
+        assert_eq!(fixture.calls("claude-sessions"), [format!("claude-sessions say {SESSION_A} shared job (todo {id}: before working, run claude-todo start {id}; when this is done, run claude-todo done {id})")]);
         assert_eq!(app.todos.status_of(&other_project), "todo");
     }
 }
@@ -6088,7 +6360,7 @@ fn h_sends_to_the_running_opencode_session_like_to_claude() {
     let healthcheck = app.todos.add("runway", "/r/runway", "add a healthcheck");
     hand_over_first_item(&mut app);
     assert_eq!(fixture.wait_for_calls("claude-sessions", 1)[0],
-               format!("claude-sessions say {OPENCODE_SESSION} add a healthcheck (todo {healthcheck}: when this is done, run claude-todo done {healthcheck})"));
+               format!("claude-sessions say {OPENCODE_SESSION} add a healthcheck (todo {healthcheck}: before working, run claude-todo start {healthcheck}; when this is done, run claude-todo done {healthcheck})"));
 }
 
 #[test]

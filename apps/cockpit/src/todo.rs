@@ -124,6 +124,7 @@ impl Item {
             Some(value) => value.as_str().and_then(Category::parse),
         }
     }
+    pub fn session(&self) -> String { self.text_of("session") }
     /// Why a session proposed it, in its own words.
     pub fn why(&self) -> String { self.text_of("why") }
     /// Work for the project's designer session (claude-todo --design): a gap in the design.
@@ -186,7 +187,7 @@ pub fn with_todo_note(text: &str, key: &str) -> String {
     // The text can become claude's first argument (claude-sessions new): one starting with "-"
     // would be read as an option, such as --append-system-prompt=….
     let text = if text.starts_with('-') { format!("Task: {text}") } else { text.to_string() };
-    format!("{text} (todo {key}: when this is done, run claude-todo done {key})")
+    format!("{text} (todo {key}: before working, run claude-todo start {key}; when this is done, run claude-todo done {key})")
 }
 
 pub fn issue_prompt(issue: &Issue) -> String {

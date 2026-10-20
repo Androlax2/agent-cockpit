@@ -1,10 +1,19 @@
 use super::*;
+use crate::continuity::{TaskSnapshot, TrailTarget};
 
 impl App {
     pub(super) fn run_continuity_action(&mut self, name: &str, screen: &mut dyn Screen) -> String {
         if name == "queue" { return self.open_queue(); }
         if let Err(error) = &self.continuity { return format!("Continuity unavailable: {error}"); }
         if name == "updates" { return self.open_updates(screen); }
+        if name == "task-trail" {
+            let target = match self.focus {
+                3 => self.todo_entries.get(self.panels[3].selected).map(|entry| TrailTarget::Task(entry.key())),
+                2 => self.review_rows.get(self.panels[2].selected).map(|review| TrailTarget::PullRequest { repository: review.full_repository.clone(), number: review.number }),
+                _ => self.selected_session().map(|session| TrailTarget::Session(session.session)),
+            };
+            return target.map(|target| self.open_task_trail(target, screen)).unwrap_or_else(|| "select a task, session or PR first".into());
+        }
         let Some(session) = self.selected_session() else { return "select a session first".into() };
         if name == "reviewed" {
             let identities = self.continuity.as_ref().unwrap().updates().into_iter()
@@ -38,6 +47,122 @@ impl App {
 
     pub(super) fn all_sessions(&self) -> Vec<Session> {
         self.gathered.as_ref().map(|gathered| gathered.running.clone()).unwrap_or_else(|| self.sessions.clone())
+    }
+
+    pub(super) fn record_task_assignment(&mut self, entry: &Entry, session: Option<&Session>) -> Result<bool, String> {
+        let repository = match entry {
+            Entry::Issue { issue, .. } => issue.full_repository.to_lowercase(),
+            Entry::Typed(item) => session.map(|session| session.repository.clone()).unwrap_or_else(|| {
+                let root = util::repository_root(&item.cwd());
+                self.reviews.checkouts.iter().find(|(_, checkout)| util::repository_root(checkout) == root)
+                    .map(|(repository, _)| repository.to_lowercase()).unwrap_or_default()
+            }),
+        };
+        let mut snapshot = TaskSnapshot::from_entry(entry, &repository);
+        snapshot.status = "doing".into();
+        let state = self.continuity.as_mut().map_err(|error| error.clone())?;
+        match session {
+            Some(session) => state.assign(&snapshot, session, util::now_secs()),
+            None => state.prepare_task(&snapshot),
+        }
+    }
+
+    pub(super) fn observe_task_trails(&mut self, sessions: &[Session]) {
+        let reviews = self.reviews.cached();
+        let issues = self.reviews.issues();
+        if let Ok(state) = &mut self.continuity {
+            let result = state.observe_tasks(&self.todos, sessions, &reviews, util::now_secs()).and_then(|_| {
+                for issue in issues {
+                    let entry = Entry::Issue { status: self.todos.status_of(&issue.key()), priority: todo::issue_priority(&issue.labels), issue: issue.clone() };
+                    state.remember_task(&TaskSnapshot::from_entry(&entry, &issue.full_repository.to_lowercase()))?;
+                }
+                Ok(())
+            });
+            if let Err(error) = result { self.continuity_error = Some(error); }
+        }
+    }
+
+    pub(super) fn open_task_trail(&mut self, target: TrailTarget, screen: &mut dyn Screen) -> String {
+        let state = self.continuity.as_ref().unwrap();
+        let keys: Vec<_> = state.tasks().iter().filter(|(key, record)| match &target {
+            TrailTarget::Task(task) => *key == task,
+            TrailTarget::Session(session) => record.assignments.iter().any(|assignment| assignment.session == *session),
+            TrailTarget::PullRequest { repository, number } => record.assignments.iter().any(|assignment| assignment.prs.contains(&format!("{repository}#{number}"))),
+        }).map(|(key, _)| key.clone()).collect();
+        if keys.is_empty() {
+            let mut text = "No linked session or task recorded.\nNo result recorded.\nNo linked PR.\n".to_string();
+            if let TrailTarget::Task(key) = &target {
+                if let Some(entry) = self.todo_entries.iter().find(|entry| entry.key() == *key) { text = format!("{}\n\n{text}", todo_details(entry)); }
+            }
+            self.session_details = Some(SessionDetails { title: "Task trail".into(), text, scroll: 0, actions: Vec::new() });
+            return String::new();
+        }
+        let key = if keys.len() == 1 { keys[0].clone() } else {
+            let entries: Vec<_> = keys.iter().enumerate().map(|(index, key)| format!("{index}\t{} · {key}", state.tasks()[key].snapshot.title)).collect();
+            let index = screen.outside(&mut || fzf("linked task> ", &entries, &["--delimiter", "\t", "--with-nth", "2.."]))
+                .and_then(|choice| choice.split('\t').next()?.parse::<usize>().ok());
+            let Some(key) = index.and_then(|index| keys.get(index)) else { return String::new() };
+            key.clone()
+        };
+        let record = &state.tasks()[&key];
+        let snapshot = &record.snapshot;
+        let mut text = format!("{}\nTask: {key} · {}\n{}\n\n", snapshot.title, snapshot.status, snapshot.notes);
+        let mut actions = vec![DetailAction::OpenTask(key.clone())];
+        if record.pending { text += "Starting; awaiting assignment\n\n"; }
+        if record.assignments.is_empty() { text += "No linked session\nNo result recorded\n"; }
+        let sessions = self.all_sessions();
+        let mut linked_prs = std::collections::BTreeSet::new();
+        for assignment in &record.assignments {
+            text += &format!("Session: {}\nAssigned {} · {} / {}\n", assignment.session, age(assignment.assigned_at), assignment.repository, assignment.branch);
+            if let Some(result) = &assignment.result { text += &format!("Latest recorded result ({}): {}\n", age(result.completed_at), result.outcome); }
+            else { text += "No result recorded\n"; }
+            if sessions.iter().any(|session| session.session == assignment.session && !session.is_external()) {
+                actions.push(DetailAction::OpenSession(assignment.session.clone()));
+            } else {
+                text += "Archived session; no live terminal target.\n";
+                if let Some(memory) = state.memories().get(&assignment.session) {
+                    if let Some(note) = &memory.note { text += &format!("Your note: {note}\n"); }
+                    if !memory.cwd.is_empty() && self.history.entries.iter().any(|past| past.session == assignment.session && past.cwd == memory.cwd) {
+                        actions.push(DetailAction::ResumeSession { session: assignment.session.clone(), cwd: memory.cwd.clone() });
+                    }
+                }
+            }
+            linked_prs.extend(assignment.prs.iter().cloned());
+            text += "\n";
+        }
+        match self.reviews.availability(&snapshot.repository) {
+            Ok(()) if linked_prs.is_empty() => text += "No linked PR\n",
+            Err(reason) => text += &format!("{reason}\n"),
+            _ => {},
+        }
+        let current = self.reviews.cached();
+        for id in linked_prs {
+            let pr = &state.prs()[&id];
+            let present = current.iter().any(|row| row.full_repository == pr.repository && row.number == pr.number);
+            text += &format!("{}#{} · {}{}\n", pr.repository, pr.number, pr.title, if present { "" } else { " (last known; current state unavailable)" });
+            if !pr.url.is_empty() { actions.push(DetailAction::OpenPr(id)); }
+        }
+        self.session_details = Some(SessionDetails { title: "Task trail".into(), text, scroll: 0, actions });
+        String::new()
+    }
+
+    fn open_trail_task(&mut self, key: &str) -> String {
+        let entry = self.todos.items.iter().find(|item| item.id() == key).map(|item| Entry::Typed(item.clone()))
+            .or_else(|| self.reviews.issues().into_iter().find(|issue| issue.key() == key).map(|issue|
+                Entry::Issue { status: self.todos.status_of(key), priority: todo::issue_priority(&issue.labels), issue }));
+        if let Some(entry) = entry {
+            self.todo_jump = Some((current_session(), key.into()));
+            self.show_todo_tab(match entry.status().as_str() { "doing" => 3, "done" => 4, "proposed" => 1, _ => 2 });
+            self.build_todo();
+            if let Some(index) = self.todo_entries.iter().position(|entry| entry.key() == key) { self.panels[3].selected = index; }
+            self.focus_panel(3);
+            self.session_details = None;
+        } else if let Some(record) = self.continuity.as_ref().ok().and_then(|state| state.tasks().get(key)) {
+            self.session_details = Some(SessionDetails { title: "Archived task".into(),
+                text: format!("Archived task\n{}\n{}\nLast recorded status: {}\n\n{}\n\nThe source item is no longer available; it was not recreated.",
+                    record.snapshot.title, key, record.snapshot.status, record.snapshot.notes), scroll: 0, actions: Vec::new() });
+        }
+        String::new()
     }
 
     pub(super) fn queue_context(&self) -> queue::QueueContext {
@@ -137,6 +262,9 @@ impl App {
         let entries: Vec<_> = actions.iter().enumerate().map(|(index, action)| format!("{index}\t{}", match action {
             DetailAction::Reviewed { .. } => "Mark displayed update reviewed (not answered)",
             DetailAction::OpenSession(_) => "Open live session",
+            DetailAction::OpenTask(_) => "Open task (archived details if its source is gone)",
+            DetailAction::OpenPr(_) => "Open linked PR (never merge)",
+            DetailAction::ResumeSession { .. } => "Resume this archived conversation explicitly",
         })).collect();
         let index = screen.outside(&mut || fzf("update action> ", &entries, &["--delimiter", "\t", "--with-nth", "2.."]))
             .and_then(|choice| choice.split('\t').next()?.parse::<usize>().ok());
@@ -147,9 +275,22 @@ impl App {
                 result
             }
             Some(DetailAction::OpenSession(session)) => {
-                if !self.sessions.iter().any(|candidate| candidate.session == *session && !candidate.is_external()) { return "session has exited".into(); }
+                if !self.all_sessions().iter().any(|candidate| candidate.session == *session && !candidate.is_external()) { return "session has exited".into(); }
                 self.session_details = None;
                 self.manager_async(&["view", session])
+            }
+            Some(DetailAction::OpenTask(key)) => self.open_trail_task(key),
+            Some(DetailAction::OpenPr(key)) => {
+                let Some(pr) = self.continuity.as_ref().ok().and_then(|state| state.prs().get(key)) else { return "PR link unavailable".into() };
+                let url = pr.url.clone();
+                self.session_details = None;
+                open_in_scratchpad("prs", &url)
+            }
+            Some(DetailAction::ResumeSession { session, cwd }) => {
+                if !self.history.entries.iter().any(|past| past.session == *session && past.cwd == *cwd) { return "archived conversation unavailable".into(); }
+                let result = self.manager_async(&["resume", cwd, session]);
+                self.session_details = None;
+                result
             }
             None => String::new(),
         }
