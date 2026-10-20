@@ -389,8 +389,7 @@ fn the_effort_is_a_clickable_stamp_that_opens_the_menu() {
     fixture.write(&format!("home/.cache/claude/statusline-{SESSION_A}.json"), r#"{"model": "Opus 5.5", "effort": "high", "context": 20}"#);
     let mut app = fixture.app();
     render(&mut app, 60, 40);
-    let (&row, &(start, _, action)) = app.hit_actions.iter().next().expect("a clickable effort");
-    assert_eq!(action, "effort");
+    let (&row, &(start, _, _)) = app.hit_actions.iter().find(|(_, (_, _, action))| *action == "effort").expect("a clickable effort");
     app.handle(Key::Click { x: start, y: row, double: false }, &mut FakeScreen::default());
     assert_eq!(app.menu.as_ref().map(|menu| menu.current.as_str()), Some("high"));
 }
@@ -1068,7 +1067,7 @@ fn unknown_and_empty_session_summaries_do_not_claim_readiness() {
     let empty = buffer_rows(&render(&mut app, 100, 40)).join("\n");
     assert!(empty.contains("No running session."));
     assert!(app.panels[1].fixed_bottom.is_empty());
-    assert!(app.hit_actions.is_empty());
+    assert!(!app.hit_actions.values().any(|(_, _, action)| *action == "next-attention"));
 }
 
 #[test]
@@ -1468,6 +1467,129 @@ fn the_picker_lists_recently_used_projects_first() {
 // ---- Status ----
 
 #[test]
+fn status_details_take_no_space_until_requested() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    let rows = settings_screen_rows(&render(&mut app, 100, 45));
+    assert!(rows[1].contains("[1] Sessions"), "{rows:?}");
+    assert!(!rows.iter().any(|row| row.contains("[0] Status")));
+}
+
+#[test]
+fn zero_opens_status_and_zero_or_escape_returns_to_the_previous_panel() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    let screen = &mut FakeScreen::default();
+    for close in [Key::Char('0'), Key::Esc] {
+        app.focus_panel(3);
+        app.handle(Key::Char('0'), screen);
+        let rows = settings_screen_rows(&render(&mut app, 100, 45));
+        assert!(rows.iter().any(|row| row.contains("[0] Status")));
+        assert!(!rows.iter().any(|row| row.contains("[1] Sessions")));
+        app.handle(close, screen);
+        assert_eq!(app.focus, 3);
+    }
+}
+
+#[test]
+fn clicking_the_header_status_link_toggles_the_details() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    app.focus_panel(2);
+    render(&mut app, 100, 45);
+    let &(start, _, _) = app.hit_actions.get(&0).unwrap();
+    let screen = &mut FakeScreen::default();
+    app.handle(Key::Click { x: start, y: 0, double: false }, screen);
+    assert_eq!(app.focus, 0);
+    render(&mut app, 100, 45);
+    app.handle(Key::Click { x: start, y: 0, double: false }, screen);
+    assert_eq!(app.focus, 2);
+}
+
+#[test]
+fn action_counts_do_not_push_allowances_out_of_a_narrow_header() {
+    let fixture = Fixture::new();
+    fixture.write("run/claude-usage.json", r#"{"seven_day":{"utilization":95}}"#);
+    fixture.write("run/codex-usage.json", r#"{"rate_limit":{"primary_window":{"used_percent":48,"limit_window_seconds":604800}}}"#);
+    fixture.snapshot(json!([session(SESSION_A, "needs-you", "runway", "/r", 1)]));
+    let mut app = fixture.app();
+    propose(&fixture, "An idea", "Why");
+    app.todos.apply_updates();
+    app.held = vec!["blocked.example".into()];
+    let rows = settings_screen_rows(&render(&mut app, 60, 45));
+    for text in ["1 need you", "1 idea", "Claude 5%", "Codex 52%"] {
+        assert!(rows[0].contains(text), "{}", rows[0]);
+    }
+}
+
+#[test]
+fn tab_navigation_cycles_only_the_action_panels() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    let screen = &mut FakeScreen::default();
+    app.focus_panel(3);
+    app.handle(Key::Tab, screen);
+    assert_eq!(app.focus, 1);
+    app.handle(Key::BackTab, screen);
+    assert_eq!(app.focus, 3);
+}
+
+#[test]
+fn the_header_shows_each_providers_tightest_allowance_without_overlapping_attention() {
+    let fixture = Fixture::new();
+    fixture.write("run/claude-usage.json", r#"{"five_hour":{"utilization":0},"seven_day":{"utilization":77}}"#);
+    fixture.write("run/codex-usage.json", r#"{"rate_limit":{"primary_window":{"used_percent":48,"limit_window_seconds":604800}}}"#);
+    fixture.snapshot(json!([session(SESSION_A, "needs-you", "runway", "/r", 1)]));
+    let mut app = fixture.app();
+    for width in [60, 130] {
+        let rows = settings_screen_rows(&render(&mut app, width, 45));
+        assert!(rows[0].contains("1 need you"), "{}", rows[0]);
+        for text in ["[0]", "Claude 23%", "Codex 52%"] {
+            assert!(rows[0].contains(text), "{}", rows[0]);
+        }
+    }
+}
+
+#[test]
+fn the_header_never_presents_stale_or_blocked_allowances_as_available() {
+    let fixture = Fixture::new();
+    fixture.write("run/claude-usage.json", r#"{"five_hour":{"utilization":0}}"#);
+    fixture.write("run/claude-usage-error.json", r#"{"error":"failed"}"#);
+    fixture.write("run/codex-usage.json", r#"{"rate_limit":{"allowed":false,"primary_window":{"used_percent":0,"limit_window_seconds":18000}}}"#);
+    let mut app = fixture.app();
+    let rows = settings_screen_rows(&render(&mut app, 100, 45));
+    assert!(rows[0].contains("Claude stale"), "{}", rows[0]);
+    assert!(rows[0].contains("Codex blocked"), "{}", rows[0]);
+    assert!(!rows[0].contains("100%"));
+}
+
+#[test]
+fn low_allowances_remain_red_in_the_header() {
+    let fixture = Fixture::new();
+    fixture.write("run/claude-usage.json", r#"{"seven_day":{"utilization":95}}"#);
+    let mut app = fixture.app();
+    let buffer = render(&mut app, 100, 45);
+    let rows = settings_screen_rows(&buffer);
+    let start = rows[0].find("Claude 5%").unwrap();
+    assert_eq!(buffer[(start as u16, 0)].fg, crate::app::color(crate::app::RED));
+}
+
+#[test]
+fn the_header_keeps_service_outages_visible_when_status_is_closed() {
+    for (provider, variable) in [("Claude", "CLAUDE_STATUS_URL"), ("Codex", "CODEX_STATUS_URL")] {
+        let fixture = Fixture::new();
+        let summary = fixture.write("status.json", &json!({"status": {"indicator": "major", "description": "Service disruption"}}).to_string());
+        unsafe { std::env::set_var(variable, format!("file://{}", summary.display())) };
+        let mut app = fixture.app();
+        app.claude_status.fetch_now();
+        app.codex_status.fetch_now();
+        app.build();
+        let rows = settings_screen_rows(&render(&mut app, 60, 45));
+        assert!(rows[0].contains(&format!("! {provider}")), "{}", rows[0]);
+    }
+}
+
+#[test]
 fn the_status_panel_lists_remaining_capacity_with_its_reset() {
     let fixture = Fixture::new();
     let soon = (chrono::Utc::now() + chrono::Duration::hours(2)).format("%Y-%m-%dT%H:%M:%SZ").to_string();
@@ -1603,6 +1725,7 @@ fn quota_rows_keep_status_and_capacity_readable_in_narrow_terminals() {
     fixture.write("run/claude-usage.json", r#"{"seven_day":{"utilization":0,"resets_at":"2100-01-01T00:00:00Z"}}"#);
     fixture.write("run/codex-usage.json", r#"{"rate_limit":{"primary_window":{"used_percent":86,"limit_window_seconds":18000,"reset_at":4102444800}}}"#);
     let mut app = fixture.app();
+    app.focus_panel(0);
     for width in [40, 60] {
         app.width = width;
         app.redraw();
@@ -1649,7 +1772,7 @@ fn quota_polling_refreshes_both_providers_and_forwards_forced_refresh() {
 fn pull_requests_and_todo_with_nothing_open_collapse_to_their_borders() {
     let fixture = Fixture::new();
     let app = fixture.app();
-    assert_eq!(app.layout(45), vec![6, 33, 2, 2]);
+    assert_eq!(app.layout(45), vec![0, 39, 2, 2]);
 }
 
 #[test]
@@ -1670,7 +1793,7 @@ fn a_collapsed_panel_opens_while_focused() {
     let fixture = Fixture::new();
     let mut app = fixture.app();
     app.focus = 3;
-    assert_eq!(app.layout(45), vec![6, 6, 2, 29]);
+    assert_eq!(app.layout(45), vec![0, 6, 2, 35]);
 }
 
 #[test]
@@ -1690,11 +1813,11 @@ fn an_unfocused_panel_takes_only_the_rows_its_lines_need() {
     app.reviews.set_rows(vec![Review { title: "VAT".into(), repository: "shop".into(), ..Review::default() }]);
     app.todos.add("runway", "/r/runway", "add a healthcheck");
     app.build();
-    assert_eq!(app.layout(45), vec![6, 29, 4, 4]);
+    assert_eq!(app.layout(45), vec![0, 35, 4, 4]);
 }
 
 #[test]
-fn an_unfocused_panel_takes_at_most_a_quarter_of_the_column_after_the_fixed_status() {
+fn an_unfocused_panel_takes_at_most_a_quarter_of_the_action_column() {
     let fixture = Fixture::new();
     let mut app = fixture.app();
     app.reviews.set_rows((1..=20).map(|number| Review { number, title: "VAT".into(), repository: "shop".into(), ..Review::default() }).collect());
@@ -1702,14 +1825,13 @@ fn an_unfocused_panel_takes_at_most_a_quarter_of_the_column_after_the_fixed_stat
         app.todos.add("runway", "/r/runway", &format!("item {number}"));
     }
     app.build();
-    // Two unknown quotas and two provider statuses, six with the borders.
-    assert_eq!(app.layout(45), vec![6, 19, 9, 9]);
+    assert_eq!(app.layout(45), vec![0, 23, 10, 10]);
     app.focus = 3;
     // Empty sessions still show the fixed attention summary.
-    assert_eq!(app.layout(45), vec![6, 6, 9, 22]);
+    assert_eq!(app.layout(45), vec![0, 6, 10, 27]);
     app.focus = 0;
-    assert_eq!(app.layout(45), vec![6, 19, 9, 9]);
-    assert!(app.layout(12).iter().sum::<u16>() <= 10, "short layouts must leave room for header/footer");
+    assert_eq!(app.layout(45), vec![43, 0, 0, 0]);
+    assert_eq!(app.layout(12), vec![10, 0, 0, 0]);
 }
 
 #[test]
@@ -2704,6 +2826,7 @@ fn before_the_first_usage_fetch_the_status_labels_stay_whole() {
     let mut app = fixture.app();
     app.claude_status.fetch_now();
     app.build();
+    app.focus_panel(0);
     let buffer = render(&mut app, 60, 30);
     let rows: Vec<String> = (0..30).map(|y| (0..60).map(|x| buffer[(x, y)].symbol().to_string()).collect()).collect();
     assert!(rows.iter().any(|row| row.contains("Claude") && row.contains("● All Systems Operational")), "{rows:#?}");
@@ -3207,7 +3330,7 @@ fn external_sessions_do_not_advertise_or_expose_terminal_controls() {
     assert!(hints.iter().all(|(key, _)| !["⏎", "r", "e", "C", "x", "n"].contains(key)), "{hints:?}");
     assert!(hints.contains(&("g", "git")), "repository actions must stay available");
     render(&mut app, 100, 45);
-    assert!(app.hit_actions.is_empty(), "external effort still clickable");
+    assert!(!app.hit_actions.values().any(|(_, _, action)| *action == "effort"), "external effort still clickable");
 }
 
 #[test]

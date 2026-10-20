@@ -1,6 +1,5 @@
-//! The column itself: four stacked panels (Status, Sessions, Pull requests, Todo), the header and
-//! the footer, the effort and settings menus, the help, and every key. The focused panel takes half the column;
-//! Status keeps its size.
+//! The action panels (Sessions, Pull requests, Todo), on-demand Status, the header and footer,
+//! the effort and settings menus, the help, and every key.
 
 use crate::agents::{self, Feature};
 use crate::costs::Costs;
@@ -70,7 +69,7 @@ const PANEL_KEYS: [&str; 4] = ["0", "1", "2", "3"];
 const GLOBAL_HINTS: [(&str, &str); 5] = [("⇥", "panel"), (":", "actions"), ("a", "new"), ("?", "help"), ("q", "close")];
 /// ⌘ in key hints: the physical Command key, which keyd turns into Ctrl (system/etc/keyd).
 const GLOBAL_HELP: [(&str, &str); 14] = [
-    ("0-3", "focus a panel"), ("H", "resume a past session, searched by project and prompt"),
+    ("0-3", "0 toggles Status (Esc returns); 1-3 focus action panels"), ("H", "resume a past session, searched by project and prompt"),
     ("⌘1 ⌘2 ⌘3", "focus a panel from inside the session (tmux)"), ("⇥ ⇧⇥", "next / previous panel"), ("j/k ↑↓", "move inside the panel"),
     (":", "every action, searchable; includes new-with-agent to override the default"), ("a", "new session in a project using the default agent from Settings (S)"),
     ("O", "new opencode session in a project, overriding the default agent: same sandbox, card and keys; e opens its native effort picker, while $, remote and /compact stay Claude-only"),
@@ -619,6 +618,7 @@ pub struct App {
     pub codex_status: ProviderStatus,
     pub panels: [PanelState; 4],
     pub focus: usize,
+    previous_panel: usize,
     pub help_open: bool,
     /// Whether tmux's focus is in the column: out of it, nothing there is drawn as focused.
     pub has_pane_focus: bool,
@@ -698,7 +698,7 @@ impl App {
         Self {
             history: History::default(), view: ViewState::load(), usage: Refresher::new(), alerts: BudgetAlerts::new(util::send_notice),
             costs: Costs::default(), reviews: Reviews::default(), todos: TodoList::load(), errors: ErrorReporter::new(),
-            claude_status: ProviderStatus::default(), codex_status: ProviderStatus::new(Provider::Codex), panels: Default::default(), focus: 1,
+            claude_status: ProviderStatus::default(), codex_status: ProviderStatus::new(Provider::Codex), panels: Default::default(), focus: 1, previous_panel: 1,
             help_open: false, has_pane_focus: true, message: String::new(), exiting: Vec::new(), labelled: Default::default(), menu: None, settings_menu: None, pairing: None, restore: Vec::new(),
             held: Vec::new(), held_checked: 0.0, queue_checked: 0.0, gaming: util::gaming, restore_checked: 0.0, start_files: Vec::new(),
             width: DEFAULT_COLUMN_WIDTH, sessions: Vec::new(), windows: Vec::new(), quota_rows: Vec::new(), review_rows: Vec::new(), todo_entries: Vec::new(),
@@ -712,6 +712,9 @@ impl App {
     /// A panel taking the focus shows from its top: while small it scrolled to keep its selection
     /// in view, and that scroll would otherwise stay once it is big again.
     pub fn focus_panel(&mut self, index: usize) {
+        if self.focus != 0 {
+            self.previous_panel = self.focus;
+        }
         if index != self.focus {
             self.panels[index].scroll = 0;
         }
@@ -2157,7 +2160,7 @@ impl App {
 
     fn panel_hints(&self, index: usize) -> Vec<(&'static str, &'static str)> {
         match index {
-            0 => vec![],
+            0 => vec![("0/Esc", "back")],
             1 => self.sessions_hints(),
             2 => vec![("⏎", "open"), ("c", "review"), ("P", "list")],
             _ => self.todo_hints(),
@@ -2226,17 +2229,19 @@ impl App {
         }
     }
 
-    /// Fixed panels keep their size, collapsed ones their borders; of the flexible ones, the others take
-    /// no more rows than their lines need and at most a quarter of the rest, the focused one the remainder.
+    /// Status replaces the action panels on demand. Otherwise collapsed panels keep their borders;
+    /// unfocused panels take at most a quarter of the column, the focused one the remainder.
     pub fn layout(&self, height: u16) -> Vec<u16> {
-        let status_height = self.panels[0].lines.len() as i64 + 2;
+        if self.focus == 0 {
+            return vec![height.saturating_sub(HEADER_LINES + 1), 0, 0, 0];
+        }
         let collapsed: Vec<usize> = [2usize, 3].into_iter().filter(|index| self.is_collapsed(*index)).collect();
         let flexible: Vec<usize> = [1usize, 2, 3].into_iter().filter(|index| !collapsed.contains(index)).collect();
-        let available = height as i64 - HEADER_LINES as i64 - 1 - status_height - 2 * collapsed.len() as i64;
+        let available = height as i64 - HEADER_LINES as i64 - 1 - 2 * collapsed.len() as i64;
         let expanded = if flexible.contains(&self.focus) { self.focus } else { flexible[0] };
         let minimum = MIN_PANEL_LINES as i64;
         let others = minimum.max(available / 4);
-        let mut heights = vec![status_height as u16, 2, 2, 2];
+        let mut heights = vec![0, 2, 2, 2];
         for &index in &flexible {
             heights[index] = others.min(minimum.max(self.panels[index].content_height() as i64 + 2)) as u16;
         }
@@ -2385,35 +2390,70 @@ impl App {
         }
     }
 
-    /// Title, the needs-you count and the clock (the bar is hidden on this workspace).
-    fn draw_header(&self, buffer: &mut Buffer, width: u16) {
-        let title = "Claude sessions";
-        put(buffer, 0, 2, title, bold(BLUE));
+    /// Allowances take precedence over the clock and cost on narrow columns.
+    fn draw_header(&mut self, buffer: &mut Buffer, width: u16) {
+        let mut quotas = vec![("[0]".to_string(), bold(BLUE))];
+        for (provider, status) in [("Claude", &self.claude_status), ("Codex", &self.codex_status)] {
+            let (service, error) = status.snapshot();
+            let has_outage = service.as_ref().is_some_and(|summary| summary.indicator != "none"
+                || !summary.degraded.is_empty() || !summary.incidents.is_empty());
+            let quota = self.quota_rows.iter().filter(|row| row.label.split(" · ").next() == Some(provider))
+                .min_by_key(|row| (match row.state.as_str() {
+                    "Blocked" | "Exhausted" => 0, "Low" => 1, "Stale" | "Unknown" => 2, _ => 3,
+                }, row.remaining.unwrap_or(0)));
+            let (value, tint) = match quota {
+                Some(row) if row.state == "Available" || row.state == "Low" => (
+                    row.remaining.map_or_else(|| "?".into(), |remaining| format!("{remaining}%")),
+                    if row.state == "Low" { RED } else if row.remaining.is_some_and(|remaining| remaining <= 50) { YELLOW } else { GREEN }),
+                Some(row) => (row.state.to_lowercase(), if matches!(row.state.as_str(), "Blocked" | "Exhausted") { RED } else { YELLOW }),
+                None => ("?".into(), FG_DARK),
+            };
+            let has_warning = has_outage || !error.is_empty();
+            quotas.push((format!("{}{provider} {value}", if has_warning { "! " } else { "" }), bold(if has_warning { RED } else { tint })));
+        }
+        let quota_width = quotas.iter().map(|(text, _)| width_of(text) + 2).sum::<usize>();
         let needing = self.sessions.iter().filter(|s| s.needs_attention()).count();
-        let mut column = 2 + title.len() as u16 + 2;
+        let attention_width = if needing > 0 { format!("{needing} need you").len() + 2 } else { 0 };
+        let proposed = self.todos.items.iter().filter(|item| item.status() == todo::PROPOSED).count();
+        let proposal_text = if proposed > 0 { format!("? {proposed} idea{}", if proposed == 1 { "" } else { "s" }) } else { String::new() };
+        let proposal_width = if proposed > 0 { width_of(&proposal_text) + 2 } else { 0 };
+        let held_text = if self.held.is_empty() { String::new() } else { format!("⛔ {}", self.held.len()) };
+        let held_width = if held_text.is_empty() { 0 } else { width_of(&held_text) + 2 };
+        let title = fit("Claude sessions", (width as usize).saturating_sub(4 + quota_width + attention_width + proposal_width + held_width));
+        put(buffer, 0, 2, &title, bold(BLUE));
+        let mut column = 2 + width_of(&title) as u16 + if title.is_empty() { 0 } else { 2 };
         if needing > 0 {
             let text = format!("{needing} need you");
             put(buffer, 0, column, &text, bold(RED));
             column += text.len() as u16 + 2;
         }
-        let proposed = self.todos.items.iter().filter(|item| item.status() == todo::PROPOSED).count();
         if proposed > 0 {
-            let text = format!("? {proposed} idea{}", if proposed == 1 { "" } else { "s" });
-            put(buffer, 0, column, &text, bold(MAGENTA));
-            column += width_of(&text) as u16 + 2;
+            put(buffer, 0, column, &proposal_text, bold(MAGENTA));
+            column += proposal_width as u16;
         }
         if !self.held.is_empty() {
-            let text = format!("⛔ {}", self.held.len());
-            put(buffer, 0, column, &text, bold(YELLOW));
+            put(buffer, 0, column, &held_text, bold(YELLOW));
+            column += held_width as u16;
+        }
+        let quota_start = column;
+        for (text, tint) in quotas {
+            let text = fit(&text, width.saturating_sub(column + 1) as usize);
+            put(buffer, 0, column, &text, tint);
             column += width_of(&text) as u16 + 2;
         }
+        self.hit_actions.insert(0, (quota_start, column.saturating_sub(2), "status"));
         let stamp = chrono::Local::now().format("%H:%M  %a %d %b").to_string();
-        put(buffer, 0, width.saturating_sub(2 + stamp.len() as u16).max(2), &stamp, style(FG_DARK));
+        let mut right = width.saturating_sub(2);
+        if right.saturating_sub(stamp.len() as u16) > column {
+            right -= stamp.len() as u16;
+            put(buffer, 0, right, &stamp, style(FG_DARK));
+            right = right.saturating_sub(3);
+        }
         let cost = self.costs.totals().today;
         if cost > 0.0 {
             let amount = format!("≈ {}", money(cost));
             let label = " today";
-            let start = width as i64 - 2 - stamp.len() as i64 - 3 - width_of(&amount) as i64 - label.len() as i64;
+            let start = right as i64 - width_of(&amount) as i64 - label.len() as i64;
             if start > column as i64 {
                 put(buffer, 0, start as u16, &amount, bold(MAGENTA));
                 put(buffer, 0, start as u16 + width_of(&amount) as u16, label, dim(FG_DARK));
@@ -2485,6 +2525,12 @@ impl App {
                 return;
             }
         }
+        if let Some((start, end, "status")) = self.hit_actions.get(&y).copied() {
+            if (start..end).contains(&x) {
+                self.focus_panel(if self.focus == 0 { self.previous_panel } else { 0 });
+                return;
+            }
+        }
         let Some((panel_index, item)) = self.hit_lines.get(&y).copied() else { return };
         self.focus_panel(panel_index);
         if let Some(item) = item {
@@ -2540,9 +2586,11 @@ impl App {
         }
         match key {
             Key::Click { x, y, double } => self.handle_click(x, y, double, screen),
-            Key::Char(digit @ '0'..='3') => self.focus_panel(digit as usize - '0' as usize),
-            Key::Tab => self.focus_panel((self.focus + 1) % 4),
-            Key::BackTab => self.focus_panel((self.focus + 3) % 4),
+            Key::Char('0') => self.focus_panel(if self.focus == 0 { self.previous_panel } else { 0 }),
+            Key::Esc if self.focus == 0 => self.focus_panel(self.previous_panel),
+            Key::Char(digit @ '1'..='3') => self.focus_panel(digit as usize - '0' as usize),
+            Key::Tab => self.focus_panel(if self.focus == 0 { 1 } else { self.focus % 3 + 1 }),
+            Key::BackTab => self.focus_panel(if self.focus <= 1 { 3 } else { self.focus - 1 }),
             Key::Char('j') | Key::Down => self.panels[self.focus].move_by(1),
             Key::Char('k') | Key::Up => self.panels[self.focus].move_by(-1),
             // From any panel, as ← comes back from the session (tmux.conf).
