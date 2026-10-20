@@ -735,7 +735,10 @@ pub struct App {
     pub(crate) restore_checked: f64,
     pub(crate) start_files: Vec<(&'static str, f64)>,
     pub width: u16,
+    /// The session cards shown, after the attention filter; the card selection indexes into it.
     pub sessions: Vec<Session>,
+    /// Every running, non-external session not being exited, whatever the attention filter hides.
+    pub running_sessions: Vec<Session>,
     pub(crate) session_task_titles: HashMap<String, String>,
     session_branches: HashMap<String, String>,
     session_queued: HashMap<String, usize>,
@@ -811,7 +814,7 @@ impl App {
             claude_status: ProviderStatus::default(), codex_status: ProviderStatus::new(Provider::Codex), panels: Default::default(), focus: 1, previous_panel: 1,
             help_open: false, has_pane_focus: true, attention_only: false, message, exiting: Vec::new(), labelled: Default::default(), menu: None, session_details: None, todo_composer: None, settings_menu: None, pairing: None, restore: Vec::new(),
             held: Vec::new(), held_checked: 0.0, queue_checked: 0.0, gaming: util::gaming, restore_checked: 0.0, start_files: Vec::new(),
-            width: DEFAULT_COLUMN_WIDTH, sessions: Vec::new(), windows: Vec::new(), quota_rows: Vec::new(), review_rows: Vec::new(), todo_entries: Vec::new(),
+            width: DEFAULT_COLUMN_WIDTH, sessions: Vec::new(), running_sessions: Vec::new(), windows: Vec::new(), quota_rows: Vec::new(), review_rows: Vec::new(), todo_entries: Vec::new(),
             session_task_titles: HashMap::new(), session_branches: HashMap::new(),
             session_queued: HashMap::new(), session_roots: HashMap::new(),
             todo_scope: String::new(), shown_session: String::new(), todo_tab: TODO_TAB_OPEN, todo_tabs: HashMap::new(), todo_categories: HashMap::new(), saved_todo_scope: None, todo_jump: None, todo_counts: [0; 5], prompts_sent: HashMap::new(), craft_roots: HashMap::new(), hit_lines: HashMap::new(), hit_actions: HashMap::new(),
@@ -911,7 +914,7 @@ impl App {
     /// restarted once its turn ends, in a tmux session of its own; its queued prompt then waits for
     /// the restarted session. A terminal session is its terminal's: it is only told in the log.
     fn dispatch_restarts(&mut self) {
-        let ready: Vec<Session> = self.sessions.iter()
+        let ready: Vec<Session> = self.running_sessions.iter()
             .filter(|session| !session.is_external() && session.state == "waiting" && prompts::restart_wanted(&session.session)).cloned().collect();
         for session in ready {
             prompts::restart_done(&session.session);
@@ -929,7 +932,7 @@ impl App {
     /// the next waits until the session worked and stopped again.
     pub fn dispatch_prompts(&mut self) {
         self.dispatch_restarts();
-        let ready: Vec<Session> = self.sessions.iter()
+        let ready: Vec<Session> = self.running_sessions.iter()
             .filter(|session| !session.is_external() && session.state == "waiting" && session.since > self.prompts_sent.get(&session.session).copied().unwrap_or(0))
             .cloned().collect();
         for session in ready {
@@ -1032,7 +1035,7 @@ impl App {
     /// The viewed session's state goes to the manager (its title line's colour) when it changes.
     fn push_viewed_state(&mut self) {
         let viewed = current_session();
-        let state = self.sessions.iter().find(|s| s.session == viewed)
+        let state = self.running_sessions.iter().find(|s| s.session == viewed)
             .map(|session| if session.needs_input { "needs-you".into() } else { session.state.clone() }).unwrap_or_default();
         if (viewed.clone(), state.clone()) == self.labelled {
             return;
@@ -1316,6 +1319,7 @@ impl App {
         for session in &mut running {
             session.pinned = self.view.pinned.contains(&session.session);
         }
+        self.running_sessions = sessions::grouped_by_project(running.clone());
         if self.attention_only {
             running.retain(|session| self.is_actionable(session, util::now_secs()));
         }
@@ -1325,7 +1329,7 @@ impl App {
         let mut lines = Vec::new();
         if now() - self.restore_checked > RESTORE_CHECK_S {
             self.restore_checked = now();
-            self.restore = sessions::restore_offer(&self.view, &running.iter().map(|s| s.session.clone()).collect());
+            self.restore = sessions::restore_offer(&self.view, &self.running_sessions.iter().map(|s| s.session.clone()).collect());
         }
         if now() - self.held_checked > GREYPROXY_POLL_S {
             self.held_checked = now();
@@ -1596,7 +1600,7 @@ impl App {
         if unknown > 0 {
             counts += &format!(" · {unknown} unknown");
         }
-        let outdated = self.sessions.iter().filter(|session| !sessions::changed_since_start(session, &self.start_files).is_empty()).count();
+        let outdated = self.running_sessions.iter().filter(|session| !sessions::changed_since_start(session, &self.start_files).is_empty()).count();
         if outdated > 0 {
             counts += &format!(" · {outdated} restart available");
         }
@@ -1831,7 +1835,7 @@ impl App {
     pub(crate) fn restart_all(&mut self, screen: &mut dyn Screen) -> String {
         // Only the sessions started before a change they do not have yet (the "⟳ restart" badge);
         // a terminal session is its terminal's and is left alone.
-        let stale: Vec<&Session> = self.sessions.iter()
+        let stale: Vec<&Session> = self.running_sessions.iter()
             .filter(|s| !s.is_external() && !s.terminal && !sessions::changed_since_start(s, &self.start_files).is_empty()).collect();
         let ready: Vec<Session> = stale.iter().filter(|s| s.state == "waiting").map(|s| (*s).clone()).collect();
         let busy: Vec<Session> = stale.iter().filter(|s| s.state == "working" || s.state == "needs-you").map(|s| (*s).clone()).collect();
@@ -1941,7 +1945,7 @@ impl App {
         let menu = self.settings_menu.as_ref().expect("the settings menu is open");
         let Some(catalog) = &menu.catalog else {
             let viewed = current_session();
-            let directory = self.sessions.iter().find(|session| session.session == viewed).map(|session| session.cwd.clone())
+            let directory = self.running_sessions.iter().find(|session| session.session == viewed).map(|session| session.cwd.clone())
                 .or_else(|| self.selected_session().map(|session| session.cwd)).filter(|directory| !directory.is_empty());
             let Some(directory) = directory.or_else(|| screen.outside(&mut || pick_project()).filter(|directory| !directory.is_empty())) else { return String::new() };
             let catalog = Arc::new(Mutex::new(None));
@@ -2129,7 +2133,7 @@ impl App {
         }
         self.todo_scope = self.todo_jump.as_ref().and_then(|(_, key)| self.todos.items.iter().find(|item| item.id() == *key).map(|item| item.project()))
             .or_else(|| self.saved_todo_scope.as_ref().map(|scope| scope.project.clone()))
-            .or_else(|| self.sessions.iter().find(|s| s.session == viewed).map(|s| s.project.clone())).unwrap_or_default();
+            .or_else(|| self.running_sessions.iter().find(|s| s.session == viewed).map(|s| s.project.clone())).unwrap_or_default();
         self.todo_tab = self.todo_tabs.get(&self.todo_owner()).copied().unwrap_or(TODO_TAB_OPEN);
         let scope = self.todo_scope.clone();
         let mut entries: Vec<Entry> = self.todos.items.iter()
@@ -2311,7 +2315,7 @@ impl App {
                 String::new()
             }
             Key::Char('t') => {
-                let viewed = self.sessions.iter().find(|s| s.session == viewed && !s.cwd.is_empty()).cloned();
+                let viewed = self.running_sessions.iter().find(|s| s.session == viewed && !s.cwd.is_empty()).cloned();
                 let directory = match &viewed {
                     Some(session) => session.cwd.clone(),
                     None => screen.outside(&mut || pick_project()).unwrap_or_default(),
@@ -2457,7 +2461,7 @@ impl App {
             _ => None,
         };
         let is_design = design_project.is_some();
-        let mut candidates = self.sessions.iter().filter(|session| session.state != "unknown" && match &design_project {
+        let mut candidates = self.running_sessions.iter().filter(|session| session.state != "unknown" && match &design_project {
             Some(project) => session.role == "designer" && session.project == *project,
             None => session.cwd == directory && session.role != "designer",
         });
@@ -2515,7 +2519,7 @@ impl App {
     /// on the item's project (by name, as the Todo list is narrowed) or the issue's repository.
     fn viewed_session_for(&self, entry: &Entry) -> Option<Session> {
         let viewed = current_session();
-        let session = self.sessions.iter().find(|s| !s.is_external() && s.session == viewed && s.state != "unknown" && s.role != "designer")?;
+        let session = self.running_sessions.iter().find(|s| !s.is_external() && s.session == viewed && s.state != "unknown" && s.role != "designer")?;
         let belongs = match entry {
             Entry::Typed(item) => item.project() == session.project,
             Entry::Issue { issue, .. } => self.reviews.repositories.contains(&issue.full_repository),
@@ -2802,7 +2806,7 @@ impl App {
             quotas.push((format!("{}{provider} {value}", if has_warning { "! " } else { "" }), bold(if has_warning { RED } else { tint })));
         }
         let quota_width = quotas.iter().map(|(text, _)| width_of(text) + 2).sum::<usize>();
-        let needing = self.sessions.iter().filter(|s| s.needs_attention()).count();
+        let needing = self.running_sessions.iter().filter(|s| s.needs_attention()).count();
         let attention_width = if needing > 0 { format!("{needing} need you").len() + 2 } else { 0 };
         let proposed = self.todos.items.iter().filter(|item| item.status() == todo::PROPOSED).count();
         let proposal_text = if proposed > 0 { format!("? {proposed} idea{}", if proposed == 1 { "" } else { "s" }) } else { String::new() };
@@ -3183,7 +3187,7 @@ impl App {
     /// Claude's past sessions and opencode's, newest first, the running ones left out.
     pub(crate) fn past_sessions(&mut self) -> Vec<(PastSession, String)> {
         self.history.refresh();
-        let running: Vec<&str> = self.sessions.iter().map(|s| s.session.as_str()).collect();
+        let running: Vec<&str> = self.running_sessions.iter().map(|s| s.session.as_str()).collect();
         let mut past: Vec<(PastSession, String)> = self.history.entries.iter()
             .map(|entry| (entry.clone(), self.history.title(&entry.session))).collect();
         match sessions::opencode_past_sessions(&paths::opencode_database()) {

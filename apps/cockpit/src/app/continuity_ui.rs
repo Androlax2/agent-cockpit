@@ -296,7 +296,7 @@ impl App {
         if let Some(note) = &memory.note { text += &format!("\n\nYour note: {note}"); }
         let mut actions = Vec::new();
         if !identities.is_empty() { actions.push(DetailAction::Reviewed { session: session.clone(), identities }); }
-        if self.sessions.iter().any(|candidate| candidate.session == session && !candidate.is_external()) {
+        if self.running_sessions.iter().any(|candidate| candidate.session == session && !candidate.is_external()) {
             actions.push(DetailAction::OpenSession(session));
         } else { text += "\n\nArchived session; no live terminal target."; }
         self.session_details = Some(SessionDetails { title: "Updates".into(), text, scroll: 0, actions });

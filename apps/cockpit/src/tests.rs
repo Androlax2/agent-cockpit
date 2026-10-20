@@ -579,6 +579,32 @@ fn continuity_pruned_tasks_open_archived_details_instead_of_being_recreated() {
     assert!(app.todos.items.is_empty());
 }
 
+#[test]
+fn continuity_the_attention_filter_still_delivers_queued_messages_to_hidden_sessions() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "runway", "/r/runway", 1), continuity_question_row(SESSION_B, "Retry failures?")]));
+    let mut app = fixture.app();
+    continuity_action(&mut app, "1\tattention-filter", &[]);
+    crate::prompts::add(SESSION_A, "follow-up").unwrap();
+    app.build();
+    app.dispatch_prompts();
+    assert_eq!(fixture.calls("claude-sessions"), [format!("claude-sessions say {SESSION_A} follow-up")]);
+}
+
+#[test]
+fn continuity_the_attention_filter_hands_a_task_to_the_hidden_viewed_session() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "runway", "/r/runway", 1), continuity_question_row(SESSION_B, "Retry failures?")]));
+    fixture.view(SESSION_A);
+    let mut app = fixture.app();
+    continuity_action(&mut app, "1\tattention-filter", &[]);
+    app.todos.add("runway", "/r/runway", "add a healthcheck");
+    hand_over_first_item(&mut app);
+    let calls = fixture.wait_for_calls("claude-sessions", 1);
+    assert!(calls.iter().any(|call| call.starts_with(&format!("claude-sessions say {SESSION_A} add a healthcheck"))), "{calls:?}");
+    assert!(!calls.iter().any(|call| call.contains(" background ")), "{calls:?}");
+}
+
 fn continuity_question_row(id: &str, question: &str) -> Value {
     let mut row = session(id, "needs-you", "shop", "/r/shop", if id == SESSION_A { 1 } else { 2 });
     row["needs_input"] = json!(true);
@@ -6080,7 +6106,7 @@ fn external_sessions_refuse_todo_handoffs_without_marking_items_in_progress() {
     let id = app.todos.add("crema", "/r/crema", "fix the header");
     app.build();
     let entry = app.todo_entries.iter().find(|entry| entry.key() == id).unwrap().clone();
-    app.sessions = sessions::reported();
+    app.running_sessions = sessions::reported();
     let message = app.hand_to_claude(&entry, &mut FakeScreen::default());
     assert!(message.contains("external"), "{message}");
     assert_ne!(app.todos.status_of(&id), "doing");
