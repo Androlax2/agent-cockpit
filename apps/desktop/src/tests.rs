@@ -1455,6 +1455,24 @@ fn a_report_gets_its_senders_pane_not_the_one_it_claims() {
 }
 
 #[test]
+fn a_waiting_session_gaining_its_senders_pane_publishes_the_target() {
+    let mut bench = Bench::new();
+    bench.world.borrow_mut().sender_targets.insert(500, target(&[]));
+    let report = || parse_session(&json!({"session": SESSION_A, "project": "p", "state": "waiting"}).to_string()).unwrap();
+    bench.registry.report_from(report(), 500);
+    assert!(bench.snapshot()[0].get("tmux_pane").is_none());
+    let since = bench.registry.sessions[SESSION_A].since;
+
+    bench.world.borrow_mut().sender_targets.insert(500, target(&[("tmux_pane", "%7")]));
+    bench.registry.report_from(report(), 500);
+
+    let row = &bench.snapshot()[0];
+    assert_eq!(row["tmux_pane"], "%7");
+    assert_eq!(row["state"], "waiting");
+    assert_eq!(bench.registry.sessions[SESSION_A].since, since);
+}
+
+#[test]
 fn a_session_cannot_be_moved_off_a_pane_where_it_still_runs() {
     // Another sandbox reporting the dotfiles session's id from its own pane would take its card.
     let mut bench = Bench::new();

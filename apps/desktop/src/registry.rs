@@ -1200,7 +1200,11 @@ impl Registry {
         let previous_pid = entry.target.get("kitty_pid").cloned();
         let mut target = entry.target.clone();
         target.extend(report.target.clone());
-        entry.target = self.resolve_target(target);
+        let resolved_target = self.resolve_target(target);
+        if entry.target != resolved_target {
+            entry.target = resolved_target;
+            changed = true;
+        }
         let kitty_pid = entry.target.get("kitty_pid").cloned();
         if previous_state.as_deref() != Some(entry.state.as_str()) {
             entry.since = now();
