@@ -247,6 +247,78 @@ fn generic_port_grants_cannot_forward_another_checkouts_reserved_figcraft_port()
     assert!(launch.sandbox.calls("greywall").is_empty());
 }
 
+fn opencode_inline_config(launch: &Launch) -> serde_json::Value {
+    let environment = launch.opencode_saw("environment");
+    let content = environment.iter().find_map(|line| line.strip_prefix("OPENCODE_CONFIG_CONTENT="))
+        .expect("no launcher override for project-local MCP configuration");
+    serde_json::from_str(content).unwrap()
+}
+
+#[test]
+fn opencodes_mcp_override_uses_only_the_verified_checkout_port() {
+    for port in ["17979", "17981"] {
+        let launch = Launch::new();
+        let open = managed_figcraft(&launch, port, launch.project.to_str().unwrap(), &[]);
+        launch.run_agent("opencode", &[("SHIM_FIGCRAFT_PID", &open.id()), ("FIGCRAFT_CONTROL_PORT", "17980")], &[]);
+        let config = opencode_inline_config(&launch);
+        let arguments = config["mcp"]["servers"]["figcraft-app"]["command"].as_array().unwrap();
+        launch.sandbox.shim("figcraft-cli", "exit 0");
+        let environment = launch.opencode_saw("environment");
+        let forwarded = environment.iter().find_map(|line| line.strip_prefix("FIGCRAFT_CONTROL_PORT=")).unwrap();
+        let mut command = launch.sandbox.command(arguments[0].as_str().unwrap(), &[("FIGCRAFT_CONTROL_PORT", forwarded)]);
+        for argument in &arguments[1..] { command.arg(argument.as_str().unwrap()); }
+        assert!(command.output().unwrap().status.success());
+        assert_eq!(launch.sandbox.calls("figcraft-cli"), [format!("figcraft-cli mcp --attach {port}")]);
+    }
+}
+
+#[test]
+fn opencodes_mcp_override_fails_closed_when_figcraft_is_disconnected() {
+    let launch = Launch::new();
+    launch.run_agent("opencode", &[("FIGCRAFT_CONTROL_PORT", "7979")], &[]);
+    let config = opencode_inline_config(&launch);
+    let arguments = config["mcp"]["servers"]["figcraft-app"]["command"].as_array().unwrap();
+    launch.sandbox.shim("figcraft-cli", "exit 0");
+    let mut command = launch.sandbox.command(arguments[0].as_str().unwrap(), &[("FIGCRAFT_CONTROL_PORT", "")]);
+    for argument in &arguments[1..] { command.arg(argument.as_str().unwrap()); }
+    let output = command.output().unwrap();
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("FigCraft is not connected to this checkout"), "{}", stderr(&output));
+    assert!(launch.sandbox.calls("figcraft-cli").is_empty());
+}
+
+#[test]
+fn opencodes_mcp_override_preserves_unrelated_inline_settings() {
+    for servers in [serde_json::json!({"figcraft-app": {"type": "local", "command": ["figcraft-cli", "mcp", "--attach", "7979"]}}),
+                    serde_json::json!({"servers": {"figcraft-app": {"type": "local", "command": ["false"], "disabled": true,
+                        "environment": {"FIGCRAFT_CONTROL_PORT": "7979"}}}})] {
+        let launch = Launch::new();
+        let mut inherited = serde_json::json!({"model": "openai/gpt-5", "mcp": servers});
+        inherited["mcp"]["servers"]["docs"] = serde_json::json!({"type": "remote", "url": "https://mcp.docs.astro.build/mcp"});
+        launch.run_agent("opencode", &[("OPENCODE_CONFIG_CONTENT", &inherited.to_string())], &[]);
+        let config = opencode_inline_config(&launch);
+        assert_eq!(config["model"], inherited["model"]);
+        assert_eq!(config["mcp"]["servers"]["docs"], inherited["mcp"]["servers"]["docs"]);
+        assert!(config["mcp"].get("figcraft-app").is_none(), "legacy entry conflicts with the canonical override");
+        let server = &config["mcp"]["servers"]["figcraft-app"];
+        assert_ne!(server["disabled"], true);
+        assert!(server.get("environment").is_none(), "an inherited port can override the verified connection");
+        assert_eq!(server["command"][0], "sh");
+    }
+}
+
+#[test]
+fn invalid_inline_config_stops_opencode_before_the_sandbox_starts() {
+    for content in ["not json", "null", "[]", "{} {}"] {
+        let launch = Launch::new();
+        let output = launch.sandbox.command(bin().join("greywall-agents/opencode"), &[("OPENCODE_CONFIG_CONTENT", content)])
+            .current_dir(&launch.project).output().unwrap();
+        assert_eq!(output.status.code(), Some(1), "{content}: {}", stderr(&output));
+        assert!(stderr(&output).contains("cannot override FigCraft"), "{}", stderr(&output));
+        assert!(launch.sandbox.calls("greywall").is_empty());
+    }
+}
+
 #[test]
 fn a_credits_session_gets_the_api_key_as_a_placeholder() {
     let launch = Launch::new();

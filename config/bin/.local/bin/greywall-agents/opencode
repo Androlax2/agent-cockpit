@@ -8,6 +8,19 @@ export OPENCODE_DISABLE_AUTOUPDATE=1
 . "$(dirname "$0")/launcher-common.sh"
 greywall_options="--auto-profile --profile opencode --proxy-user opencode $greywall_options"
 
+# Inline config outranks project files, including an old --attach 7979 command. Replace the
+# whole server so an inherited environment cannot redirect the verified checkout connection.
+figcraft_server='{"type":"local","command":["sh","-c","exec figcraft-cli mcp --attach \"${FIGCRAFT_CONTROL_PORT:?FigCraft is not connected to this checkout}\""]}'
+opencode_config=${OPENCODE_CONFIG_CONTENT:-'{}'}
+if ! OPENCODE_CONFIG_CONTENT=$(printf '%s\n' "$opencode_config" | jq -cse --argjson server "$figcraft_server" '
+    if length != 1 or (.[0] | type) != "object" then error("inline config must be a JSON object") else
+        .[0] | del(.mcp["figcraft-app"]) | .mcp.servers["figcraft-app"] = $server
+    end'); then
+    echo "opencode launcher: cannot override FigCraft in OPENCODE_CONFIG_CONTENT; provide a JSON object, not starting." >&2
+    exit 1
+fi
+export OPENCODE_CONFIG_CONTENT
+
 # opencode's Anthropic API key, from the keyring (make agent-opencode-key): a greyproxy placeholder
 # inside the sandbox, which greyproxy swaps for the key on its way to api.anthropic.com, so no
 # session reads it (opencode's own credential store, opencode.db, is open to every opencode
