@@ -168,13 +168,14 @@ agent_opencode_restore() { # dir id
 # rounds with a one-second grace each, then force-close.
 agent_opencode_exit() { # tmux-session pane id
     local attempt
-    tmux set-option -p -t "$2" @opencode_exit_requested 1 || return 1
+    # The pane can close between any two calls; a failed call is only success if its session is gone.
+    tmux set-option -p -t "$2" @opencode_exit_requested 1 || { ! tmux has-session -t "=$1" 2>/dev/null; return; }
     for attempt in 1 2; do
-        tmux send-keys -t "$2" Escape Escape
+        tmux send-keys -t "$2" Escape Escape || { ! tmux has-session -t "=$1" 2>/dev/null; return; }
         sleep 0.2
-        tmux send-keys -t "$2" C-c
+        tmux send-keys -t "$2" C-c || { ! tmux has-session -t "=$1" 2>/dev/null; return; }
         sleep 0.3
-        tmux send-keys -t "$2" C-c
+        tmux send-keys -t "$2" C-c || { ! tmux has-session -t "=$1" 2>/dev/null; return; }
         if claude_left "$1" "$2" 1; then
             # A failed exit leaves the start's epilogue waiting for a key.
             if tmux has-session -t "=$1" 2>/dev/null; then tmux kill-session -t "=$1" 2>/dev/null || true; fi
