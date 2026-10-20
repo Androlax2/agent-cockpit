@@ -90,6 +90,7 @@ pub struct Facts {
 pub struct Session {
     pub session: String,
     pub state: String,
+    pub needs_input: bool,
     pub project: String,
     pub cwd: String,
     pub task: String,
@@ -141,7 +142,7 @@ fn text(row: &Value, key: &str) -> String {
 
 impl Session {
     pub fn needs_attention(&self) -> bool {
-        self.state == "needs-you" || matches!(self.ask_to_run.as_str(), "approval" | "input")
+        self.needs_input || self.state == "needs-you" || matches!(self.ask_to_run.as_str(), "approval" | "input")
     }
 
     pub fn is_external(&self) -> bool {
@@ -153,6 +154,7 @@ impl Session {
         Some(Session {
             session,
             state: row.get("state").and_then(Value::as_str).unwrap_or("waiting").into(),
+            needs_input: row.get("needs_input").and_then(Value::as_bool).unwrap_or(false),
             project: row.get("project").and_then(Value::as_str).unwrap_or("?").into(),
             cwd: text(row, "cwd"),
             task: text(row, "task"),

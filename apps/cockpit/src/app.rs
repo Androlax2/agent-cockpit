@@ -995,13 +995,14 @@ impl App {
     /// The viewed session's state goes to the manager (its title line's colour) when it changes.
     fn push_viewed_state(&mut self) {
         let viewed = current_session();
-        let state = self.sessions.iter().find(|s| s.session == viewed).map(|s| s.state.clone()).unwrap_or_default();
+        let state = self.sessions.iter().find(|s| s.session == viewed)
+            .map(|session| if session.needs_input { "needs-you".into() } else { session.state.clone() }).unwrap_or_default();
         if (viewed.clone(), state.clone()) == self.labelled {
             return;
         }
         self.labelled = (viewed.clone(), state.clone());
         if !viewed.is_empty() && !state.is_empty() {
-            manager_in_background(&["label-state", &state]);
+            manager_in_background(&["label-state", &state, &viewed]);
         }
     }
 
@@ -1531,7 +1532,7 @@ impl App {
     }
 
     fn sessions_help() -> Vec<(&'static str, &'static str)> {
-        vec![("⏎", "show the session and move the cursor into it"), ("n", "Next needing me: preview the next approval, input request or answer needed"),
+        vec![("⏎", "show the session and move the cursor into it"), ("n", "Next needing me: focus its approval or question, return to Active Sessions after answering"),
              ("/", "find a session by project or task without opening it or changing list order"),
              ("i", "read the complete task, request and metadata; arrows scroll and Escape closes"),
              ("x", "exit the session: Ctrl-C twice, then killed if it lingers"), ("r", "restart in place: same conversation, new process"),
@@ -1568,7 +1569,7 @@ impl App {
                 Some(index) => {
                     self.panels[1].selected = index;
                     let viewed = self.sessions[index].session.clone();
-                    self.manager_async(&["view", &viewed])
+                    self.manager_async(&["attend", &viewed])
                 }
             },
             Key::Char('p') => {
