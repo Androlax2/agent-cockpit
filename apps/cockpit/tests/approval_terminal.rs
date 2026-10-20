@@ -18,7 +18,7 @@ fn request(command: &str) -> (PathBuf, String) {
     let id = "0123456789ab".to_string();
     // As the daemon holds it (approval::held_request), with the folder the session started in.
     let request = serde_json::json!({"id": id, "command": command, "why": "A test.", "cwd": root, "started_in": root, "project": "proj-a",
-                                     "answers": "proj-a", "requested_at": now});
+                                      "answers": "proj-a", "requested_at": now, "session": "aaaaaaaa-0000-4000-8000-000000000000"});
     fs::create_dir_all(root.join("run/claude-requests")).unwrap();
     fs::write(root.join(format!("run/claude-requests/{id}.request")), request.to_string()).unwrap();
     (root, id)
@@ -108,6 +108,7 @@ fn the_phone_page_answers_the_menu_and_the_command_runs() {
     terminal.pump(10.0, Some(b"Run it?"));
     let asking: serde_json::Value = serde_json::from_str(&fs::read_to_string(root.join(format!("run/claude-runs/{id}.asking"))).unwrap()).unwrap();
     assert_eq!(asking["command"].as_str(), Some("sh -c 'echo ran-from-the-phone'"));
+    assert_eq!(asking["session"], "aaaaaaaa-0000-4000-8000-000000000000", "the phone must associate the command with its conversation");
     fs::write(root.join(format!("run/claude-runs/{id}.remote")), "y").unwrap();
     terminal.pump(10.0, Some(b"Send the output"));
     terminal.pump(0.7, None);

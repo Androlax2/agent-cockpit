@@ -12,6 +12,15 @@ let shownScreen = ""; // the screen as last fetched, escapes included
 let approvalsLook = null;
 const pendingPosts = new Set();
 let controlSequence = 0;
+const drafts = new Map();
+const sendingMessages = new Set();
+let shownConversation = "";
+let conversationRequest = 0;
+
+function statusLabel(session) {
+  if (session.needs_input) return "Your reply needed";
+  return { "needs-you": "Approval needed", working: "Working", waiting: "Ready", unknown: "Connecting" }[session.state] || "Connecting";
+}
 
 function element(tag, className, text) {
   const node = document.createElement(tag);
@@ -50,39 +59,54 @@ function age(since) {
 
 function renderApprovals() {
   const box = document.getElementById("approvals");
-  const look = JSON.stringify([state.approvals, armed]);
+  const look = JSON.stringify([state.approvals, armed, opened, tab, isPaired]);
   if (look === approvalsLook) return;
   approvalsLook = look;
   const previousCards = Array.from(box.querySelectorAll(".approval"));
   box.replaceChildren();
+  box.hidden = opened !== null && tab === "sessions";
+  if (box.hidden) return;
   if (state.approvals.length === 0) return;
-  box.append(element("h2", "", "Asks you to run"));
+  box.append(element("h2", "", "Commands needing you"));
   for (const approval of state.approvals) {
-    const card = element("div", "card approval");
-    card.dataset.id = approval.id;
-    card.dataset.command = approval.command;
-    card.append(element("div", "project", `Claude · ${approval.project}`));
-    card.append(element("div", "task", `in ${approval.cwd}`));
-    card.append(element("pre", "command", approval.command));
-    if (approval.why) card.append(element("div", "why", approval.why));
-    if (approval.is_outside_its_folder) {
-      card.append(element("div", "warning", `This runs outside the folder the session works in (${approval.started_in}).`));
-    }
-    const previous = previousCards.find((candidate) => candidate.dataset.id === approval.id && candidate.dataset.command === approval.command);
-    const note = previous?.querySelector(".note") || element("div", "note");
-    const buttons = element("div", "buttons");
-    const decline = element("button", "no", "Decline");
-    const run = element("button", armed === approval.id ? "armed" : "run", armed === approval.id ? "Tap again to run" : "Run it");
-    decline.onclick = () => decide(approval, false, note);
-    run.onclick = () => {
-      if (armed !== approval.id) { armed = approval.id; renderApprovals(); return; }
-      armed = null;
-      decide(approval, true, note);
-    };
-    buttons.append(decline, run);
-    card.append(buttons, note);
-    box.append(card);
+    const previous = previousCards.find(card => card.dataset.id === approval.id && card.dataset.command === approval.command);
+    box.append(previous || approvalCard(approval));
   }
+}
+
+function approvalCard(approval) {
+  const card = element("article", "card approval");
+  card.dataset.id = approval.id;
+  card.dataset.command = approval.command;
+  card.append(element("div", "project", `${approval.project} · Run this command?`));
+  if (approval.why) card.append(element("div", "why", approval.why));
+  card.append(element("pre", "command", approval.command));
+  card.append(element("div", "task", `In ${approval.cwd || "its project folder"}`));
+  if (approval.is_outside_its_folder) card.append(element("div", "warning", `Outside the session folder: ${approval.started_in}`));
+  const note = element("div", "note");
+  note.setAttribute("role", "status");
+  const buttons = element("div", "buttons");
+  const decline = element("button", "no", "Decline");
+  const confirmation = `${approval.id}:${approval.command}`;
+  const run = element("button", armed === confirmation ? "armed" : "run", armed === confirmation ? "Tap again to run" : "Run");
+  let isSending = false;
+  const submit = async (isRun) => {
+    if (isSending) return;
+    isSending = true; run.disabled = true; decline.disabled = true;
+    const result = await decide(approval, isRun, note);
+    if (!result.ok) { isSending = false; run.disabled = false; decline.disabled = false; }
+    else note.textContent = isRun ? "Approved. Waiting for command output." : "Declined.";
+  };
+  decline.onclick = () => submit(false);
+  run.onclick = () => {
+    if (armed !== confirmation) {
+      armed = confirmation; run.textContent = "Tap again to run"; run.className = "armed"; return;
+    }
+    armed = null;
+    return submit(true);
+  };
+  buttons.append(decline, run); card.append(buttons, note);
+  return card;
 }
 
 function decide(approval, run, note) {
@@ -102,14 +126,14 @@ function renderList() {
   for (const session of sessions) {
     const card = element("button", `card session-card ${session.state}`);
     const row = element("span", "row");
-    row.append(element("span", "project", `${GLYPHS[session.state] || "·"} ${session.project}`));
-    row.append(element("span", "state", `${STATE_LABELS[session.state] || session.state} ${age(session.since)}`));
+    row.append(element("span", "project", session.project));
+    row.append(element("span", "state", statusLabel(session)));
     card.append(row);
     if (session.task) card.append(element("span", "task", session.task));
-    if (session.request) card.append(element("span", "request", session.detail || session.request));
+    if (session.needs_input || session.request) card.append(element("span", "preview", session.detail || session.request || "Open to reply"));
     if (session.queued) card.append(element("span", "task", `${session.queued} message${session.queued === 1 ? "" : "s"} queued`));
     if (session.state === "waiting" && session.outcome) card.append(element("span", "outcome", session.outcome));
-    card.onclick = () => { opened = session.session; render(); };
+    card.onclick = () => openSession(session.session);
     box.append(card);
   }
 }
@@ -181,12 +205,14 @@ function colouredNodes(text) {
 // unless Theo scrolled up to read.
 async function loadScreen() {
   const screen = document.getElementById("screen");
-  if (!screen || !opened) return;
+  const terminal = document.getElementById("terminal-details");
+  const session = opened;
+  if (!screen || !session || !terminal?.open) return;
   const note = document.getElementById("screen-note");
   try {
-    const response = await call("GET", `/api/screen/${opened}`);
+    const response = await call("GET", `/api/screen/${session}`);
     const text = (await response.text()).replace(/\s+$/, "");
-    if (screen !== document.getElementById("screen")) return;
+    if (session !== opened || screen !== document.getElementById("screen")) return;
     if (!response.ok) throw new Error(text);
     note.textContent = "";
     if (text === shownScreen) return;
@@ -196,6 +222,37 @@ async function loadScreen() {
     if (isFollowing) screen.scrollTop = screen.scrollHeight;
   } catch (error) {
     if (screen === document.getElementById("screen")) note.textContent = `Failed to update the terminal: ${error.message || error}`;
+  }
+}
+
+async function loadConversation() {
+  const session = opened;
+  const conversation = document.getElementById("conversation");
+  if (!session || !conversation || tab !== "sessions") return;
+  const request = ++conversationRequest;
+  try {
+    const response = await call("GET", `/api/conversation/${session}`);
+    const history = await response.json();
+    if (request !== conversationRequest || session !== opened || conversation !== document.getElementById("conversation")) return;
+    if (!response.ok) throw new Error(history.message || "Conversation unavailable. Open Terminal details below.");
+    const signature = JSON.stringify(history);
+    document.getElementById("conversation-error").textContent = "";
+    if (signature === shownConversation) return;
+    const isFollowing = shownConversation === "" || conversation.scrollTop + conversation.clientHeight >= conversation.scrollHeight - 32;
+    shownConversation = signature;
+    const turns = history.messages.map(message => {
+      const turn = element("article", `chat-turn ${message.role === "user" ? "from-you" : "from-agent"}`);
+      turn.append(element("div", "speaker", message.role === "user" ? "You" : "Agent"), element("div", "message-text", message.text));
+      return turn;
+    });
+    if (history.truncated) turns.unshift(element("p", "note", "Showing recent messages."));
+    if (turns.length === 0) turns.push(element("p", "empty", "No messages yet. Start the conversation below."));
+    conversation.replaceChildren(...turns);
+    if (isFollowing) conversation.scrollTop = conversation.scrollHeight;
+  } catch (error) {
+    if (request !== conversationRequest || session !== opened || conversation !== document.getElementById("conversation")) return;
+    const warning = document.getElementById("conversation-error");
+    warning.textContent = `${error.message} Try again, or open Terminal details.`;
   }
 }
 
@@ -233,23 +290,97 @@ function renderDetail() {
   const session = state.sessions.find((s) => s.session === opened);
   if (!session) { opened = null; box.hidden = true; return; }
   box.hidden = false;
-  const back = element("button", "back", "‹ Sessions");
-  back.onclick = () => { opened = null; render(); };
-  const card = element("div", `card ${session.state}`);
-  card.append(element("div", "project", session.project));
-  card.append(element("div", "state", STATE_LABELS[session.state] || session.state));
-  if (session.task) card.append(element("div", "task", session.task));
-  const screen = element("pre", "", "…");
-  screen.id = "screen";
-  screen.setAttribute("aria-label", "Session terminal output");
-  screen.tabIndex = 0;
-  const screenNote = element("div", "note");
-  screenNote.id = "screen-note";
-  shownScreen = "";
-  const note = element("div", "note");
+  const isNewSession = box.dataset.session !== session.session;
+  if (isNewSession) {
+    box.dataset.session = session.session;
+    shownScreen = ""; shownConversation = "";
+    const header = element("div", "chat-header");
+    const back = element("button", "back", "‹ Sessions");
+    back.onclick = () => { opened = null; box.dataset.session = ""; render(); };
+    const heading = element("h2", "chat-heading"); heading.id = "chat-heading";
+    const status = element("div", "chat-status"); status.id = "chat-status"; status.setAttribute("role", "status");
+    header.append(back, heading, status);
+    const conversation = element("section", "conversation"); conversation.id = "conversation";
+    conversation.setAttribute("aria-label", "Conversation"); conversation.setAttribute("tabindex", "0");
+    conversation.append(element("p", "empty", "Loading conversation…"));
+    const error = element("div", "note"); error.id = "conversation-error"; error.setAttribute("role", "status");
+    const actions = element("section", "chat-actions"); actions.id = "chat-actions"; actions.setAttribute("aria-label", "Needs your attention");
+    const composer = element("form", "composer");
+    const label = element("label", "reply-label", "Your message"); label.setAttribute("for", "chat-reply");
+    const message = element("textarea"); message.id = "chat-reply";
+    message.value = drafts.get(session.session) || "";
+    message.maxLength = 4000; message.rows = 2;
+    message.setAttribute("aria-describedby", "send-note");
+    message.oninput = () => drafts.set(session.session, message.value);
+    const send = element("button", "run", "Send"); send.id = "chat-send"; send.type = "submit";
+    const note = element("div", "note"); note.id = "send-note"; note.setAttribute("role", "status");
+    const submit = async (event) => {
+      event?.preventDefault();
+      if (sendingMessages.has(session.session)) return;
+      const submitted = message.value;
+      if (!submitted.trim()) { note.textContent = "Write a message first."; message.focus(); return; }
+      sendingMessages.add(session.session); send.disabled = true; send.textContent = "Sending…";
+      const result = await post(`/api/message/${session.session}`, { text: submitted }, note);
+      sendingMessages.delete(session.session);
+      if (result.ok && drafts.get(session.session) === submitted) {
+        drafts.delete(session.session); message.value = "";
+        if (opened === session.session) document.getElementById("chat-reply").value = "";
+      }
+      if (opened === session.session) { renderDetail(); loadConversation(); }
+    };
+    composer.onsubmit = submit;
+    send.onclick = submit;
+    composer.append(label, message, send, note);
+    const options = element("details", "session-options");
+    options.append(element("summary", "", "Session options"));
+    const controls = element("div"); controls.id = "session-controls"; options.append(controls);
+    const terminal = element("details", "terminal-details"); terminal.id = "terminal-details";
+    terminal.append(element("summary", "", "Terminal details"));
+    const screen = element("pre", "", "Open to load terminal output."); screen.id = "screen";
+    screen.setAttribute("aria-label", "Session terminal output"); screen.tabIndex = 0;
+    const screenNote = element("div", "note"); screenNote.id = "screen-note";
+    const refreshTerminal = element("button", "", "Refresh terminal"); refreshTerminal.onclick = loadScreen;
+    terminal.append(refreshTerminal, screen, screenNote); terminal.ontoggle = () => { if (terminal.open) loadScreen(); };
+    box.replaceChildren(header, conversation, error, actions, composer, options, terminal);
+    loadConversation();
+  }
+  document.getElementById("chat-heading").textContent = session.project;
+  document.getElementById("chat-status").textContent = `${statusLabel(session)}${session.queued ? ` · ${session.queued} queued` : ""}`;
+  const send = document.getElementById("chat-send");
+  const isDialog = session.state === "needs-you" && !session.needs_input;
+  send.textContent = sendingMessages.has(session.session) ? "Sending…" : session.state === "working" ? "Queue" : "Send";
+  send.disabled = sendingMessages.has(session.session) || isDialog;
+  document.getElementById("chat-reply").placeholder = session.state === "working" ? "Sent after this turn finishes" : "Reply to the agent…";
+  const actions = document.getElementById("chat-actions");
+  const approvals = state.approvals.filter(approval => approval.session === session.session);
+  const actionLook = JSON.stringify([approvals, isDialog, session.detail, session.request, session.features]);
+  if (actions.dataset.look !== actionLook) {
+    actions.dataset.look = actionLook;
+    actions.replaceChildren(...approvals.map(approvalCard));
+    if (isDialog) {
+      const prompt = element("div", "card approval");
+      prompt.append(element("div", "project", "Permission needed"), element("div", "request", session.detail || session.request || "Answer the dialog before sending a message."));
+      const note = element("div", "note"); note.setAttribute("role", "status");
+      if ((session.features || []).includes("dialogs")) {
+        const buttons = element("div", "buttons");
+        for (const [label, yes] of [["No", false], ["Yes", true]]) {
+          const button = element("button", yes ? "run" : "no", label);
+          button.onclick = () => post(`/api/answer/${session.session}`, { yes }, note);
+          buttons.append(button);
+        }
+        prompt.append(buttons);
+      } else prompt.append(element("p", "task", "This agent’s permission dialog must be answered on the computer."));
+      prompt.append(note); actions.append(prompt);
+    }
+  }
+  const controls = document.getElementById("session-controls");
+  const controlLook = JSON.stringify([session.state, session.remote_control, session.features, state.push, state.watched, armed]);
+  if (controls.dataset.look === controlLook) return;
+  controls.dataset.look = controlLook;
+  controls.replaceChildren();
+  const note = element("div", "note"); note.setAttribute("role", "status");
   // What its agent can do (cockpit::agents): the server refuses the rest anyway.
   const can = (feature) => (session.features || []).includes(feature);
-  const controls = element("div", "buttons");
   if (session.state === "working" && can("interrupt")) {
     const isArmed = armed === session.session;
     const interrupt = element("button", isArmed ? "armed" : "no", isArmed ? "Tap again to interrupt" : "Interrupt");
@@ -265,44 +396,15 @@ function renderDetail() {
     remoteControl.onclick = () => post(`/api/remote-control/${session.session}`, {}, note);
     controls.append(remoteControl);
   }
-  card.append(controls);
   if (state.push) {
     const isWatched = (state.watched || []).includes(session.session);
     const watch = element("button", "no", isWatched ? "Tell me when it finishes: on" : "Tell me when it finishes: off");
     watch.onclick = () => post(`/api/watch/${session.session}`, { on: !isWatched }, note);
     const watching = element("div", "buttons");
     watching.append(watch);
-    card.append(watching);
+    controls.append(watching);
   }
-  if (!can("dialogs")) card.append(element("div", "task", `${session.agent}: answer its questions in its pane on the computer.`));
-  if (session.state === "needs-you" && can("dialogs")) {
-    card.append(element("div", "request", session.detail || session.request));
-    const buttons = element("div", "buttons");
-    const no = element("button", "no", "No");
-    const yes = element("button", "run", "Yes");
-    no.onclick = () => post(`/api/answer/${session.session}`, { yes: false }, note);
-    yes.onclick = () => post(`/api/answer/${session.session}`, { yes: true }, note);
-    buttons.append(no, yes);
-    card.append(buttons);
-  }
-  const typed = box.dataset.session === session.session ? box.querySelector("textarea")?.value || "" : "";
-  box.dataset.session = session.session;
-  const message = element("textarea");
-  message.value = typed;
-  message.placeholder = session.state === "working" ? "A message for the end of its turn" : "A message for Claude";
-  const send = element("button", "run", session.state === "working" ? "Queue it" : "Send");
-  send.onclick = async () => {
-    const result = await post(`/api/message/${session.session}`, { text: message.value }, note);
-    if (result.ok) message.value = "";
-  };
-  const sending = element("div", "buttons");
-  sending.append(send);
-  const terminalHeading = element("div", "terminal-heading");
-  const refreshTerminal = element("button", "", "Refresh terminal");
-  refreshTerminal.onclick = loadScreen;
-  terminalHeading.append(element("h2", "", "Live terminal"), refreshTerminal);
-  box.replaceChildren(back, card, terminalHeading, screen, screenNote, labelControl("Message", message),
-                      element("div", "task", session.state === "working" ? "One line. Queued until the current turn ends." : "One line. Sent directly to this session."), sending, note);
+  controls.append(note);
 }
 
 // ---- This phone: notifications, and pairing the Home Screen app ----
@@ -657,6 +759,7 @@ function render() {
 function detailLook() {
   const session = state.sessions.find((s) => s.session === opened);
   return session ? JSON.stringify([session.state, session.request, session.detail, session.remote_control, session.task,
+                                   session.needs_input, session.queued, session.features, state.approvals,
                                    (state.watched || []).includes(session.session), state.push]) : "";
 }
 
@@ -685,7 +788,7 @@ async function refresh() {
     if (tab !== "sessions") return;
     renderPhone();
     if (opened === null) renderList();
-    else if (detailLook() !== before) { render(); }
+    else if (detailLook() !== before) { render(); loadConversation(); loadScreen(); }
   } catch (error) {
     document.getElementById("updated").textContent = "offline";
     document.getElementById("updated").dataset.state = "offline";
@@ -699,6 +802,7 @@ function openSession(session) {
   if (tab !== "sessions") showTab("sessions");
   opened = session;
   render();
+  loadConversation();
 }
 if (location.hash.startsWith("#session=")) opened = location.hash.slice("#session=".length);
 navigator.serviceWorker?.addEventListener("message", (event) => openSession(event.data && event.data.session));
@@ -712,4 +816,9 @@ document.getElementById("refresh-view").onclick = () => {
 };
 refresh();
 setInterval(refresh, 3000);
-setInterval(() => { if (opened) loadScreen(); }, 1500);
+setInterval(() => { if (opened) { loadConversation(); loadScreen(); } }, 1500);
+if (window.visualViewport) {
+  const fitKeyboard = () => document.documentElement.style.setProperty("--mobile-height", `${window.visualViewport.height}px`);
+  window.visualViewport.addEventListener("resize", fitKeyboard);
+  fitKeyboard();
+}
