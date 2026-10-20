@@ -4,9 +4,12 @@
 
 const GLYPHS = { "needs-you": "●", waiting: "◐", working: "◌", unknown: "?" };
 let state = { sessions: [], approvals: [] };
+let isPaired = false;
 let opened = null; // the session shown in detail
 let armed = null;  // the approval whose Run, or the session whose Interrupt, waits for its second tap
 let shownScreen = ""; // the screen as last fetched, escapes included
+let approvalsLook = null;
+const pendingPosts = new Set();
 
 function element(tag, className, text) {
   const node = document.createElement(tag);
@@ -33,11 +36,17 @@ function age(since) {
 
 function renderApprovals() {
   const box = document.getElementById("approvals");
+  const look = JSON.stringify([state.approvals, armed]);
+  if (look === approvalsLook) return;
+  approvalsLook = look;
+  const previousCards = Array.from(box.querySelectorAll(".approval"));
   box.replaceChildren();
   if (state.approvals.length === 0) return;
   box.append(element("h2", "", "Asks you to run"));
   for (const approval of state.approvals) {
     const card = element("div", "card approval");
+    card.dataset.id = approval.id;
+    card.dataset.command = approval.command;
     card.append(element("div", "project", `Claude · ${approval.project}`));
     card.append(element("div", "task", `in ${approval.cwd}`));
     card.append(element("pre", "command", approval.command));
@@ -45,13 +54,14 @@ function renderApprovals() {
     if (approval.is_outside_its_folder) {
       card.append(element("div", "warning", `This runs outside the folder the session works in (${approval.started_in}).`));
     }
-    const note = element("div", "note");
+    const previous = previousCards.find((candidate) => candidate.dataset.id === approval.id && candidate.dataset.command === approval.command);
+    const note = previous?.querySelector(".note") || element("div", "note");
     const buttons = element("div", "buttons");
     const decline = element("button", "no", "Decline");
     const run = element("button", armed === approval.id ? "armed" : "run", armed === approval.id ? "Tap again to run" : "Run it");
     decline.onclick = () => decide(approval, false, note);
     run.onclick = () => {
-      if (armed !== approval.id) { armed = approval.id; render(); return; }
+      if (armed !== approval.id) { armed = approval.id; renderApprovals(); return; }
       armed = null;
       decide(approval, true, note);
     };
@@ -81,7 +91,7 @@ function renderList() {
     if (session.request) card.append(element("div", "request", session.detail || session.request));
     if (session.queued) card.append(element("div", "task", `✉ ${session.queued} queued`));
     if (session.state === "waiting" && session.outcome) card.append(element("div", "outcome", `✓ ${session.outcome}`));
-    card.onclick = () => { opened = session.session; render(); loadScreen(); };
+    card.onclick = () => { opened = session.session; render(); };
     box.append(card);
   }
 }
@@ -154,22 +164,47 @@ function colouredNodes(text) {
 async function loadScreen() {
   const screen = document.getElementById("screen");
   if (!screen || !opened) return;
-  const response = await call("GET", `/api/screen/${opened}`);
-  const text = (await response.text()).replace(/\s+$/, "");
-  if (text === shownScreen) return;
-  const isFollowing = screen.scrollTop + screen.clientHeight >= screen.scrollHeight - 24 || shownScreen === "";
-  shownScreen = text;
-  screen.replaceChildren(...colouredNodes(text));
-  if (isFollowing) screen.scrollTop = screen.scrollHeight;
+  const note = document.getElementById("screen-note");
+  try {
+    const response = await call("GET", `/api/screen/${opened}`);
+    const text = (await response.text()).replace(/\s+$/, "");
+    if (screen !== document.getElementById("screen")) return;
+    if (!response.ok) throw new Error(text);
+    note.textContent = "";
+    if (text === shownScreen) return;
+    const isFollowing = screen.scrollTop + screen.clientHeight >= screen.scrollHeight - 24 || shownScreen === "";
+    shownScreen = text;
+    screen.replaceChildren(...colouredNodes(text));
+    if (isFollowing) screen.scrollTop = screen.scrollHeight;
+  } catch (error) {
+    if (screen === document.getElementById("screen")) note.textContent = `Failed to update the terminal: ${error.message || error}`;
+  }
 }
 
 async function post(path, body, note) {
+  if (pendingPosts.has(path)) return { ok: false, message: "This action is still pending." };
+  pendingPosts.add(path);
   note.textContent = "…";
-  const response = await call("POST", path, body);
-  const result = await response.json().catch(() => ({ message: "no answer" }));
-  note.textContent = result.message;
-  refresh();
-  return result;
+  try {
+    const response = await call("POST", path, body);
+    if (response.status === 401) {
+      const message = await response.text();
+      isPaired = false;
+      renderPairing(message);
+      return { ok: false, message };
+    }
+    const result = await response.json();
+    if (!response.ok) result.ok = false;
+    note.textContent = result.message;
+    refresh();
+    return result;
+  } catch (error) {
+    const message = `Failed to complete the action: ${error.message || error}. Check the connection before trying again.`;
+    note.textContent = message;
+    return { ok: false, message };
+  } finally {
+    pendingPosts.delete(path);
+  }
 }
 
 function renderDetail() {
@@ -184,6 +219,8 @@ function renderDetail() {
   if (session.task) card.append(element("div", "task", session.task));
   const screen = element("pre", "", "…");
   screen.id = "screen";
+  const screenNote = element("div", "note");
+  screenNote.id = "screen-note";
   shownScreen = "";
   const note = element("div", "note");
   // What its agent can do (cockpit::agents): the server refuses the rest anyway.
@@ -224,7 +261,8 @@ function renderDetail() {
     buttons.append(no, yes);
     card.append(buttons);
   }
-  const typed = box.querySelector("textarea")?.value || "";
+  const typed = box.dataset.session === session.session ? box.querySelector("textarea")?.value || "" : "";
+  box.dataset.session = session.session;
   const message = element("textarea");
   message.value = typed;
   message.placeholder = session.state === "working" ? "A message for the end of its turn" : "A message for Claude";
@@ -235,7 +273,7 @@ function renderDetail() {
   };
   const sending = element("div", "buttons");
   sending.append(send);
-  box.replaceChildren(back, card, screen, message, sending, note);
+  box.replaceChildren(back, card, screen, screenNote, message, sending, note);
 }
 
 // ---- This phone: notifications, and pairing the Home Screen app ----
@@ -330,8 +368,7 @@ function renderPairing(message) {
   pair.onclick = async () => {
     const typed = input.value.replace(/\s/g, "");
     if (/^[0-9]{6}$/.test(typed)) {
-      const response = await call("POST", "/pair-code", { code: typed });
-      const result = await response.json().catch(() => ({ message: "no answer" }));
+      const result = await post("/pair-code", { code: typed }, note);
       if (result.ok) { window.location.reload(); return; }
       note.textContent = result.message;
       return;
@@ -401,7 +438,8 @@ function showTab(name) {
   document.getElementById("detail").hidden = true;
   document.getElementById("work").hidden = isSessions;
   if (isSessions) { phoneLook = null; render(); return; }
-  const box = document.getElementById("work");
+  const box = element("div");
+  document.getElementById("work").replaceChildren(box);
   box.replaceChildren(element("div", "empty", "…"));
   const views = { todo: renderTodos, pulls: renderPulls, usage: renderUsage };
   views[name](box).catch((error) => box.replaceChildren(element("div", "warning", String(error.message || error))));
@@ -412,7 +450,10 @@ async function renderStarter() {
   const box = document.getElementById("starter");
   if (box.dataset.open !== "yes") {
     const open = element("button", "no", "+ New session");
-    open.onclick = () => { box.dataset.open = "yes"; renderStarter(); };
+    open.onclick = () => {
+      box.dataset.open = "yes";
+      renderStarter().catch((error) => box.replaceChildren(element("div", "warning", String(error))));
+    };
     box.replaceChildren(open);
     return;
   }
@@ -558,13 +599,19 @@ async function renderUsage(box) {
 }
 
 function render() {
+  if (!isPaired) return;
+  if (opened !== null && !state.sessions.some((session) => session.session === opened)) {
+    opened = null;
+    document.getElementById("detail").replaceChildren();
+    shownScreen = "";
+  }
   renderApprovals();
   if (tab !== "sessions") return;
   renderPhone();
   const detail = opened !== null;
   document.getElementById("starter").hidden = detail;
   document.getElementById("list").hidden = detail;
-  if (detail) renderDetail(); else document.getElementById("detail").hidden = true;
+  if (detail) { renderDetail(); loadScreen(); } else document.getElementById("detail").hidden = true;
   if (!detail) renderList();
 }
 
@@ -578,16 +625,28 @@ function detailLook() {
 async function refresh() {
   try {
     const response = await call("GET", "/api/state");
-    if (response.status === 401) { renderPairing(await response.text()); return; }
+    if (response.status === 401) { isPaired = false; renderPairing(await response.text()); return; }
+    if (!response.ok) throw new Error(await response.text());
     const before = detailLook();
     state = await response.json();
+    const wasPaired = isPaired;
+    isPaired = true;
     document.getElementById("updated").textContent = new Date().toLocaleTimeString();
+    if (!wasPaired) {
+      document.getElementById("pairing").hidden = true;
+      document.getElementById("tabs").hidden = false;
+      render();
+      renderStarter().catch((error) => {
+        document.getElementById("starter").replaceChildren(element("div", "warning", String(error)));
+      });
+      return;
+    }
     // The detail view redraws only when what it shows changed, keeping what is typed.
     renderApprovals();
     if (tab !== "sessions") return;
     renderPhone();
     if (opened === null) renderList();
-    else if (detailLook() !== before) { renderDetail(); loadScreen(); }
+    else if (detailLook() !== before) { render(); }
   } catch (error) {
     document.getElementById("updated").textContent = "offline";
   }
@@ -600,13 +659,12 @@ function openSession(session) {
   if (tab !== "sessions") showTab("sessions");
   opened = session;
   render();
-  loadScreen();
 }
 if (location.hash.startsWith("#session=")) opened = location.hash.slice("#session=".length);
 navigator.serviceWorker?.addEventListener("message", (event) => openSession(event.data && event.data.session));
 if (canPush) navigator.serviceWorker.register("/sw.js").catch(() => {});
 
 renderTabs();
-refresh().then(() => { render(); renderStarter().catch(() => {}); });
+refresh();
 setInterval(refresh, 3000);
 setInterval(() => { if (opened) loadScreen(); }, 1500);

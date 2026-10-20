@@ -11,6 +11,7 @@
   :root { color-scheme: dark; --bg: #1a1b26; --card: #24283b; --fg: #c0caf5; --dim: #7a82a8; --red: #f7768e; --yellow: #e0af68;
           --green: #9ece6a; --blue: #7aa2f7; --cyan: #7dcfff; }
   * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
   body { margin: 0; padding: env(safe-area-inset-top) 12px calc(76px + env(safe-area-inset-bottom)); background: var(--bg); color: var(--fg);
          font: 16px/1.4 system-ui, sans-serif; }
   h1 { font-size: 18px; margin: 14px 0 10px; display: flex; justify-content: space-between; align-items: baseline; }
@@ -20,7 +21,7 @@
   .card.needs-you { border-left-color: var(--red); } .card.waiting { border-left-color: var(--yellow); }
   .card.working { border-left-color: var(--blue); } .card.approval { border-left-color: var(--red); }
   .row { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
-  .project { font-weight: 600; } .state { font-size: 13px; color: var(--dim); }
+  .project { font-weight: 600; min-width: 0; overflow-wrap: anywhere; } .state { font-size: 13px; color: var(--dim); }
   .task, .request, .why { color: var(--dim); font-size: 14px; margin-top: 4px; overflow-wrap: anywhere; }
   .request { color: var(--red); }
   pre { background: #16161e; border-radius: 8px; padding: 10px; overflow-x: auto; white-space: pre-wrap; overflow-wrap: anywhere;
