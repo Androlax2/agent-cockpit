@@ -907,6 +907,24 @@ restart_session() { # id [effort] [detached] [credits|subscription]
     "agent_$(agent_of_session "$id")_restart" "$id" "$directory" "$effort" "$detached" "$billing"
 }
 
+# A restarted session, shown once it reports in again: by its id, or by its folder when it started
+# fresh under a new one. It never blocks the cockpit: past RESTORE_WAIT_S it is only logged.
+view_when_back() { # id directory since
+    local waited back
+    for (( waited = 0; waited < RESTORE_WAIT_S; waited++ )); do
+        back=$(jq -r --arg session "$1" --arg directory "$2" --argjson since "$3" \
+            '[.sessions[] | select((.started // 0) >= $since)
+              | select(if $session != "" then .session == $session else .cwd == $directory end) | .session][0] // empty' \
+            "$SNAPSHOT" 2>/dev/null)
+        if [[ -n $back ]]; then
+            view_session "$back"
+            return
+        fi
+        sleep 1
+    done
+    log_event WARN sessions "restart in $2 did not report back within ${RESTORE_WAIT_S}s"
+}
+
 # One after the other: each restart reuses the viewer pane. The session shown before comes back.
 # Each one is launched in a tmux session of its own, never in the viewer pane: a launch there dies
 # with whatever takes the pane next (the next restart, a click on another card) until
