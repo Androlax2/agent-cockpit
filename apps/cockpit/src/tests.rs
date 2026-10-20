@@ -579,6 +579,193 @@ fn continuity_pruned_tasks_open_archived_details_instead_of_being_recreated() {
     assert!(app.todos.items.is_empty());
 }
 
+fn continuity_question_row(id: &str, question: &str) -> Value {
+    let mut row = session(id, "needs-you", "shop", "/r/shop", if id == SESSION_A { 1 } else { 2 });
+    row["needs_input"] = json!(true);
+    row["request"] = json!(question);
+    row
+}
+
+#[test]
+fn continuity_deferral_keeps_questions_visible_but_out_of_attention_navigation() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([continuity_question_row(SESSION_A,"Which provider?"),continuity_question_row(SESSION_B,"Retry failures?")]));
+    let mut app = fixture.app();
+    let before = util::now_secs();
+    continuity_action(&mut app, "1\tdefer-20m", &[]);
+    let saved = continuity_saved(&fixture);
+    let expiry = saved["deferrals"][format!("question:{SESSION_A}")]["expires_at"].as_i64().expect("persisted expiry");
+    assert!(expiry >= before + 1200 && expiry <= util::now_secs() + 1200);
+    let rows = buffer_rows(&render(&mut app,110,45)).join("\n");
+    assert!(rows.contains("1 deferred"), "{rows}");
+    assert!(app.sessions[0].needs_attention());
+    assert!(app.sessions.iter().any(|session| session.session == SESSION_A));
+    app.handle(Key::Char('n'), &mut FakeScreen::default());
+    assert_eq!(app.sessions[app.panels[1].selected].session, SESSION_B);
+    continuity_action(&mut app,"1\tattention-filter",&[]);
+    assert_eq!(app.sessions.iter().map(|session| session.session.as_str()).collect::<Vec<_>>(), [SESSION_B]);
+    let rows = buffer_rows(&render(&mut app,110,45)).join("\n");
+    assert!(rows.contains("1 deferred"), "{rows}");
+    assert!(!fixture.calls("claude-sessions").iter().any(|call| call.contains(" say ")));
+}
+
+#[test]
+fn continuity_deferrals_survive_restart_and_expire_without_acknowledging_questions() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([continuity_question_row(SESSION_A,"Which provider?")]));
+    let mut app = fixture.app();
+    continuity_action(&mut app, "1\tdefer-20m", &[]);
+    let mut reloaded = fixture.app();
+    assert!(buffer_rows(&render(&mut reloaded,110,45)).join("\n").contains("1 deferred"));
+    let mut saved = continuity_saved(&fixture);
+    saved["deferrals"][format!("question:{SESSION_A}")]["created_at"] = json!(util::now_secs()-1201);
+    saved["deferrals"][format!("question:{SESSION_A}")]["expires_at"] = json!(util::now_secs()-1);
+    fixture.write("state/claude-sessions/continuity.json", &saved.to_string());
+    let mut expired = fixture.app();
+    let rows = buffer_rows(&render(&mut expired,110,45)).join("\n");
+    assert!(!rows.contains("1 deferred"), "{rows}");
+    assert!(rows.contains("1 need you") && rows.contains("1 unseen"), "{rows}");
+}
+
+#[test]
+fn continuity_new_questions_and_command_requests_invalidate_an_old_deferral() {
+    let fixture = Fixture::new();
+    let question = continuity_question_row(SESSION_A,"Which provider?");
+    fixture.snapshot(json!([question.clone()]));
+    let mut app = fixture.app();
+    continuity_action(&mut app,"1\tdefer-20m",&[]);
+    let mut command = question.clone();
+    command["ask_to_run"] = json!("approval");
+    fixture.snapshot(json!([command]));
+    app.build();
+    assert!(continuity_saved(&fixture)["deferrals"].as_object().is_some_and(|values| values.is_empty()));
+    fixture.snapshot(json!([question.clone()]));
+    app.build();
+    assert!(!buffer_rows(&render(&mut app,110,45)).join("\n").contains("1 deferred"));
+    continuity_action(&mut app,"1\tdefer-20m",&[]);
+    fixture.snapshot(json!([continuity_question_row(SESSION_A,"Should failures be retried?")]));
+    app.build();
+    assert!(continuity_saved(&fixture)["deferrals"].as_object().is_some_and(|values| values.is_empty()));
+}
+
+#[test]
+fn continuity_nondeferrable_requests_are_never_approved_or_hidden() {
+    for case in ["approval","input","running","permission","unknown","working","ready"] {
+        let fixture = Fixture::new();
+        let mut row = continuity_question_row(SESSION_A,"Which provider?");
+        match case {
+            "approval" | "input" | "running" => row["ask_to_run"] = json!(case),
+            "permission" => { row["request"] = json!("Do you want to proceed?"); row["detail"] = json!("1. Yes\n2. No"); }
+            "unknown" | "working" => row["state"] = json!(case),
+            _ => { row["state"] = json!("waiting"); row["needs_input"] = json!(false); }
+        }
+        fixture.snapshot(json!([row]));
+        let mut app = fixture.app();
+        continuity_action(&mut app,"1\tdefer-20m",&[]);
+        assert!(app.message.contains("only explicit questions or reviews"), "{case}: {}", app.message);
+        assert!(fixture.calls("claude-sessions").is_empty(), "{case}");
+        let saved = if fixture.path("state/claude-sessions/continuity.json").exists() { continuity_saved(&fixture) } else { json!({}) };
+        assert!(saved.get("deferrals").is_none_or(|value| value.as_object().is_some_and(|values| values.is_empty())), "{case}");
+    }
+}
+
+#[test]
+fn continuity_bring_back_is_explicit_and_a_failed_deferral_remains_actionable() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([continuity_question_row(SESSION_A,"Which provider?")]));
+    let mut app = fixture.app();
+    continuity_action(&mut app,"1\tdefer-20m",&[]);
+    continuity_action(&mut app,"1\tbring-back",&[]);
+    assert!(!buffer_rows(&render(&mut app,110,45)).join("\n").contains("1 deferred"));
+    let path=fixture.path("state/claude-sessions/continuity.json");
+    fs::rename(&path,path.with_extension("backup")).unwrap();
+    fs::create_dir(&path).unwrap();
+    continuity_action(&mut app,"1\tdefer-20m",&[]);
+    assert!(app.message.contains("cannot save continuity"));
+    app.handle(Key::Char('n'),&mut FakeScreen::default());
+    assert_eq!(app.sessions[app.panels[1].selected].session,SESSION_A);
+    assert!(!buffer_rows(&render(&mut app,110,45)).join("\n").contains("1 deferred"));
+}
+
+#[test]
+fn continuity_pr_deferral_tracks_head_revision_and_review_decision() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    let row = json!({"number":61,"title":"VAT","url":"https://github.com/acme/shop/pull/61","headRefName":"feat/vat","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","reviewDecision":"REVIEW_REQUIRED"});
+    app.reviews.set_rows(reviews::parse_reviews(&json!([row.clone()]).to_string(),"acme/shop"));
+    app.build();
+    app.focus_panel(2);
+    continuity_action(&mut app,"2\tdefer-20m",&[]);
+    assert!(continuity_saved(&fixture)["deferrals"]["pr:acme/shop#61"]["expires_at"].is_i64());
+    for (field,value) in [("headRefOid",json!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")),("reviewDecision",json!("APPROVED"))] {
+        let mut changed = row.clone();
+        changed[field] = value;
+        app.reviews.set_rows(reviews::parse_reviews(&json!([changed]).to_string(),"acme/shop"));
+        app.build();
+        assert!(continuity_saved(&fixture)["deferrals"].as_object().unwrap().is_empty());
+        app.reviews.set_rows(reviews::parse_reviews(&json!([row.clone()]).to_string(),"acme/shop"));
+        app.build();
+        continuity_action(&mut app,"2\tdefer-20m",&[]);
+    }
+    let mut missing = row;
+    missing["headRefOid"] = json!("");
+    app.reviews.set_rows(reviews::parse_reviews(&json!([missing]).to_string(),"acme/shop"));
+    app.build();
+    continuity_action(&mut app,"2\tdefer-20m",&[]);
+    assert!(app.message.contains("only explicit questions or reviews"));
+}
+
+#[test]
+fn continuity_deferral_boundary_is_exactly_twenty_minutes() {
+    let fixture = Fixture::new();
+    let question = continuity_question_row(SESSION_A,"Which provider?");
+    fixture.snapshot(json!([question.clone()]));
+    let mut app = fixture.app();
+    continuity_action(&mut app,"1\tdefer-20m",&[]);
+    let saved=continuity_saved(&fixture);
+    let started=saved["deferrals"][format!("question:{SESSION_A}")]["created_at"].as_i64().unwrap();
+    let target=crate::continuity::DeferralTarget::question(&sessions::Session::from_value(&question).unwrap()).unwrap();
+    let state=app.continuity.as_ref().unwrap();
+    assert!(state.is_deferred(&target,started+1199));
+    assert!(!state.is_deferred(&target,started+1200));
+    assert!(!state.is_deferred(&target,started-1));
+}
+
+#[test]
+fn continuity_deferred_questions_still_block_automatic_queue_work() {
+    let fixture = Fixture::new();
+    let mut question=continuity_question_row(SESSION_A,"Which provider?");
+    question["state"]=json!("waiting");
+    question["since"]=json!(util::now_secs()-600);
+    fixture.snapshot(json!([question]));
+    let mut app=fixture.app();
+    app.gaming=||false;
+    let key=app.todos.add("shop","/r/shop","Queued job");
+    app.todos.toggle_queued(&key);
+    continuity_action(&mut app,"1\tdefer-20m",&[]);
+    continuity_action(&mut app,"1\tattention-filter",&[]);
+    assert!(app.sessions.is_empty());
+    app.dispatch_queue();
+    assert_eq!(app.todos.status_of(&key),"todo");
+    assert!(fixture.calls("claude-sessions").is_empty());
+}
+
+#[test]
+fn continuity_a_review_that_does_not_need_review_cannot_be_deferred() {
+    let fixture=Fixture::new();
+    let mut app=fixture.app();
+    for (decision,head,draft) in [("APPROVED","aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",false),
+        ("CHANGES_REQUESTED","aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",false),
+        ("REVIEW_REQUIRED","",false),("REVIEW_REQUIRED","aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",true)] {
+        let rows=reviews::parse_reviews(&json!([{"number":61,"headRefOid":head,"reviewDecision":decision,"isDraft":draft}]).to_string(),"acme/shop");
+        app.reviews.set_rows(rows);
+        app.build();
+        continuity_action(&mut app,"2\tdefer-20m",&[]);
+        assert!(app.message.contains("only explicit questions or reviews"),"{}",app.message);
+    }
+    assert!(fixture.calls("claude-sessions").is_empty());
+}
+
 #[test]
 fn continuity_return_notes_persist_without_becoming_agent_messages() {
     let fixture = Fixture::new();

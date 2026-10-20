@@ -171,6 +171,7 @@ impl Continuity {
 
     pub fn observe_tasks(&mut self, todos: &TodoList, sessions: &[Session], reviews: &[Review], now: i64) -> Result<bool, String> {
         self.change(|state| {
+            state.refresh_pr_deferrals(reviews, now);
             let mut incoming: HashMap<String, Vec<TaskSnapshot>> = HashMap::new();
             for item in &todos.items {
                 let stored = state.tasks.get(&item.id());

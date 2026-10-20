@@ -9,6 +9,8 @@ const MAX_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_RECORDS: usize = 10_000;
 mod tasks;
 pub use tasks::{TaskSnapshot, TaskAssignment, TaskRecord, PullRequestMemory, TrailTarget};
+mod deferrals;
+pub use deferrals::{DeferralTarget, Deferral};
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct SessionMemory {
@@ -67,6 +69,8 @@ struct State {
     tasks: BTreeMap<String, TaskRecord>,
     #[serde(default)]
     prs: BTreeMap<String, PullRequestMemory>,
+    #[serde(default)]
+    deferrals: BTreeMap<String, Deferral>,
     #[serde(flatten)]
     extra: Map<String, Value>,
 }
@@ -76,6 +80,7 @@ impl State {
         if self.version != 1 { return Err(format!("unsupported continuity version {}", self.version)); }
         if self.sessions.len() > MAX_RECORDS { return Err("too many continuity sessions".into()); }
         self.validate_tasks()?;
+        self.validate_deferrals()?;
         for (id, session) in &self.sessions {
             if !agents::is_session_id(id) || !valid_metadata_text(&session.title, 300)
                 || !valid_metadata_text(&session.cwd, 300) {
@@ -115,7 +120,7 @@ impl Continuity {
                 if bytes.len() as u64 > MAX_BYTES { return Err("continuity file exceeds 16 MiB; preserve it and reduce archived records".into()); }
                 serde_json::from_slice::<State>(&bytes).map_err(|error| format!("invalid continuity file: {error}"))?
             }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => State { version: 1, sessions: BTreeMap::new(), tasks: BTreeMap::new(), prs: BTreeMap::new(), extra: Map::new() },
+            Err(error) if error.kind() == io::ErrorKind::NotFound => State { version: 1, sessions: BTreeMap::new(), tasks: BTreeMap::new(), prs: BTreeMap::new(), deferrals: BTreeMap::new(), extra: Map::new() },
             Err(error) => return Err(format!("cannot read {}: {error}", path.display())),
         };
         state.validate()?;
@@ -130,6 +135,7 @@ impl Continuity {
 
     pub fn observe_sessions(&mut self, sessions: &[Session], now: i64) -> Result<bool, String> {
         self.change(|state| {
+            state.refresh_question_deferrals(sessions, now);
             for (id, memory) in &mut state.sessions {
                 if !sessions.iter().any(|session| session.session == *id && question_text(session).is_some()) {
                     memory.question = None;

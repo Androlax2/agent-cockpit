@@ -80,7 +80,12 @@ const GLOBAL_HELP: [(&str, &str); 14] = [
     ("q ⌘C", "close the manager window; sessions keep running"),
 ];
 /// Rare actions with no key, only in the : list: the panel they run in ("-" for none), a name, a label.
-const PALETTE_ONLY: [(&str, &str, &str); 17] = [
+const PALETTE_ONLY: [(&str, &str, &str); 22] = [
+    ("1", "attention-filter", "show actionable sessions / show all; deferred items remain counted"),
+    ("1", "defer-20m", "remind me of this explicit question in twenty minutes (never approve)"),
+    ("2", "defer-20m", "remind me of this PR review in twenty minutes"),
+    ("1", "bring-back", "bring the selected question back to attention now"),
+    ("2", "bring-back", "bring the selected PR review back now"),
     ("1", "task-trail", "follow the selected session's tasks, results and PRs"),
     ("2", "task-trail", "follow the selected PR's linked tasks and sessions"),
     ("3", "task-trail", "follow the selected task's sessions, results and PRs"),
@@ -711,6 +716,7 @@ pub struct App {
     pub help_open: bool,
     /// Whether tmux's focus is in the column: out of it, nothing there is drawn as focused.
     pub has_pane_focus: bool,
+    attention_only: bool,
     pub message: String,
     /// Sessions told to exit (x): off the list at once, back with a warning if the exit fails.
     pub(crate) exiting: Vec<Exiting>,
@@ -803,7 +809,7 @@ impl App {
             history: History::default(), view: ViewState::load(), usage: Refresher::new(), alerts: BudgetAlerts::new(util::send_notice),
             costs: Costs::default(), reviews: Reviews::default(), todos, errors: ErrorReporter::new(),
             claude_status: ProviderStatus::default(), codex_status: ProviderStatus::new(Provider::Codex), panels: Default::default(), focus: 1, previous_panel: 1,
-            help_open: false, has_pane_focus: true, message, exiting: Vec::new(), labelled: Default::default(), menu: None, session_details: None, todo_composer: None, settings_menu: None, pairing: None, restore: Vec::new(),
+            help_open: false, has_pane_focus: true, attention_only: false, message, exiting: Vec::new(), labelled: Default::default(), menu: None, session_details: None, todo_composer: None, settings_menu: None, pairing: None, restore: Vec::new(),
             held: Vec::new(), held_checked: 0.0, queue_checked: 0.0, gaming: util::gaming, restore_checked: 0.0, start_files: Vec::new(),
             width: DEFAULT_COLUMN_WIDTH, sessions: Vec::new(), windows: Vec::new(), quota_rows: Vec::new(), review_rows: Vec::new(), todo_entries: Vec::new(),
             session_task_titles: HashMap::new(), session_branches: HashMap::new(),
@@ -1258,8 +1264,8 @@ impl App {
             session.role = sessions::role_of(&session.session);
         }
         let has_dotfiles_card = running.iter().any(|s| sessions::is_dotfiles_clone(&s.cwd));
+        self.observe_task_trails(&running);
         if util::read_json(&paths::snapshot()).is_some_and(|snapshot| snapshot.get("sessions").is_some_and(Value::is_array)) {
-            self.observe_task_trails(&running);
             if let Ok(continuity) = &mut self.continuity {
                 match continuity.observe_sessions(&running, util::now_secs()) {
                     Ok(true) => self.continuity_error = None,
@@ -1309,6 +1315,9 @@ impl App {
         running.retain(|s| !s.is_external() && !self.exiting.iter().any(|exit| exit.session == s.session || exit.tmux_pane == s.tmux_pane));
         for session in &mut running {
             session.pinned = self.view.pinned.contains(&session.session);
+        }
+        if self.attention_only {
+            running.retain(|session| self.is_actionable(session, util::now_secs()));
         }
         // A card keeps its place: pinned first, then in the order the sessions started.
         let running = sessions::grouped_by_project(running);
@@ -1405,6 +1414,10 @@ impl App {
             let labels: Vec<&str> = updates.iter().filter(|update| update.session == session.session).map(|update|
                 match update.kind { crate::continuity::UpdateKind::Result => "unseen result", crate::continuity::UpdateKind::Question => "new question" }).collect();
             let mut activity_text = sessions::activity_text(session);
+            if let Some(expiry) = self.session_deferred_until(session, util::now_secs()) {
+                activity_text = format!("deferred until {} · {activity_text}", chrono::DateTime::from_timestamp(expiry, 0)
+                    .map(|time| time.with_timezone(&chrono::Local).format("%H:%M").to_string()).unwrap_or_else(|| expiry.to_string()));
+            }
             if !labels.is_empty() { activity_text = format!("{}{}{}", labels.join(" · "), if activity_text.is_empty() { "" } else { " · " }, activity_text); }
             lines.push(Line { segments: [rail, vec![segment(2 + indent, activity_text, if needs_attention { style(YELLOW) } else { dim(FG_DARK) })]].concat(), right: vec![], item: Some(index), accent });
             if session.group_position == session.group_size - 1 {
@@ -1426,7 +1439,7 @@ impl App {
         panel.lines = lines;
         self.panels[1].fixed_top = self.session_summary_lines();
         self.panels[1].fixed_bottom = self.selected_session_detail_lines();
-        if selected_id.is_some() && selected_index.is_none() {
+        if selected_id.as_ref().is_some_and(|id| !self.all_sessions().iter().any(|session| session.session == *id)) && selected_index.is_none() {
             if let Some(session) = self.selected_session() {
                 let error = self.manager_async(&["view", &session.session]);
                 if !error.is_empty() {
@@ -1564,15 +1577,21 @@ impl App {
     }
 
     fn session_summary_lines(&self) -> Vec<Line> {
-        let needing = self.sessions.iter().filter(|session| session.needs_attention()).count();
-        let working = self.sessions.iter().filter(|session| !session.needs_attention() && matches!(sessions::activity_label(session), "Working" | "Command running")).count();
-        let ready = self.sessions.iter().filter(|session| !session.needs_attention() && sessions::activity_label(session) == "Ready").count();
-        let unknown = self.sessions.len() - needing - working - ready;
+        let sessions = self.all_sessions();
+        let underlying_needing = sessions.iter().filter(|session| session.needs_attention()).count();
+        let deferred_questions = sessions.iter().filter(|session| self.session_deferred_until(session, util::now_secs()).is_some()).count();
+        let needing = underlying_needing - deferred_questions;
+        let working = sessions.iter().filter(|session| !session.needs_attention() && matches!(sessions::activity_label(session), "Working" | "Command running")).count();
+        let ready = sessions.iter().filter(|session| !session.needs_attention() && sessions::activity_label(session) == "Ready").count();
+        let unknown = sessions.len() - underlying_needing - working - ready;
         let mut attention: String = if needing == 0 { "Nothing needs you".into() } else { format!("! {needing} need you") };
         if let Ok(continuity) = &self.continuity {
             let unseen = continuity.updates().len();
             if unseen > 0 { attention += &format!(" · {unseen} unseen"); }
+            let deferred = continuity.deferred_count(util::now_secs());
+            if deferred > 0 { attention += &format!(" · {deferred} deferred"); }
         }
+        if self.attention_only { attention += " · attention filter"; }
         let mut counts = format!("{working} working · {ready} ready");
         if unknown > 0 {
             counts += &format!(" · {unknown} unknown");
@@ -1661,7 +1680,7 @@ impl App {
         hints.extend([("⏎", "open"), ("n", "Next needing me"), ("/", "find"), ("i", "details"), ("e", "effort"), ("g", "git"), ("+", "another"), ("x", "exit")]);
         if !selected.session.is_empty() && selected.is_external() {
             hints.retain(|(key, _)| !session_key_requires_terminal(if *key == "⏎" { Key::Enter } else { Key::Char(key.chars().next().unwrap()) }));
-            if sessions::next_attention_index(&self.sessions, self.panels[1].selected).is_none() {
+            if self.attention_indices(util::now_secs()).is_empty() {
                 hints.retain(|(key, _)| *key != "n");
             }
         }
@@ -1705,7 +1724,10 @@ impl App {
             Key::Enter => session.map(|s| self.manager_async(&["open", &s.session])).unwrap_or_default(),
             Key::Char('/') => self.find_session(screen),
             Key::Char('i') => { self.open_session_details(); String::new() }
-            Key::Char('n') => match sessions::next_attention_index(&self.sessions, self.panels[1].selected) {
+            Key::Char('n') => match {
+                let candidates = self.attention_indices(util::now_secs());
+                candidates.iter().find(|index| **index > self.panels[1].selected).or(candidates.first()).copied()
+            } {
                 None => "nothing needs you".into(),
                 Some(index) => {
                     self.panels[1].selected = index;
@@ -2040,6 +2062,11 @@ impl App {
         for (index, row) in self.review_rows.iter().enumerate() {
             let label = format!("{}#{}", row.repository, row.number);
             let mut right = Vec::new();
+            if let Ok(state) = &self.continuity {
+                if let Some(deferral) = state.saved_deferral(&format!("pr:{}#{}", row.full_repository, row.number)) {
+                    if deferral.expires_at > util::now_secs() { right.push(part("deferred", style(CYAN))); }
+                }
+            }
             if row.draft {
                 right.push(part("draft", dim(FG_DARK)));
             }
@@ -3110,7 +3137,7 @@ impl App {
     fn run_palette_only(&mut self, name: &str, screen: &mut dyn Screen) -> String {
         let known = self.selected_session().filter(|s| s.state != "unknown");
         match name {
-            "return-note" | "clear-return-note" | "updates" | "reviewed" | "queue" | "task-trail" => self.run_continuity_action(name, screen),
+            "return-note" | "clear-return-note" | "updates" | "reviewed" | "queue" | "task-trail" | "defer-20m" | "bring-back" | "attention-filter" => self.run_continuity_action(name, screen),
             "new-with-agent" => {
                 let Some(directory) = screen.outside(&mut || pick_project()).filter(|directory| !directory.is_empty()) else { return String::new() };
                 let Some(agent) = screen.outside(&mut || pick_agent()) else { return String::new() };

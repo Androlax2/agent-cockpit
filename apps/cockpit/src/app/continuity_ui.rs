@@ -1,11 +1,13 @@
 use super::*;
-use crate::continuity::{TaskSnapshot, TrailTarget};
+use crate::continuity::{TaskSnapshot, TrailTarget, DeferralTarget};
 
 impl App {
     pub(super) fn run_continuity_action(&mut self, name: &str, screen: &mut dyn Screen) -> String {
         if name == "queue" { return self.open_queue(); }
+        if name == "attention-filter" { self.attention_only = !self.attention_only; return "attention filter toggled".into(); }
         if let Err(error) = &self.continuity { return format!("Continuity unavailable: {error}"); }
         if name == "updates" { return self.open_updates(screen); }
+        if name == "defer-20m" || name == "bring-back" { return self.change_deferral(name); }
         if name == "task-trail" {
             let target = match self.focus {
                 3 => self.todo_entries.get(self.panels[3].selected).map(|entry| TrailTarget::Task(entry.key())),
@@ -46,7 +48,51 @@ impl App {
     }
 
     pub(super) fn all_sessions(&self) -> Vec<Session> {
-        self.gathered.as_ref().map(|gathered| gathered.running.clone()).unwrap_or_else(|| self.sessions.clone())
+        let mut sessions = self.gathered.as_ref().map(|gathered| gathered.running.clone()).unwrap_or_else(|| self.sessions.clone());
+        sessions.retain(|session| !self.exiting.iter().any(|exit| exit.session == session.session || exit.tmux_pane == session.tmux_pane));
+        sessions
+    }
+
+    pub(super) fn session_deferred_until(&self, session: &Session, now: i64) -> Option<i64> {
+        let target = DeferralTarget::question(session)?;
+        self.continuity.as_ref().ok()?.deferred_until(&target, now)
+    }
+
+    pub(super) fn is_actionable(&self, session: &Session, now: i64) -> bool {
+        !session.is_external() && session.needs_attention() && self.session_deferred_until(session, now).is_none()
+    }
+
+    pub(crate) fn attention_indices(&self, now: i64) -> Vec<usize> {
+        self.sessions.iter().enumerate().filter(|(_, session)| self.is_actionable(session, now)).map(|(index, _)| index).collect()
+    }
+
+    fn change_deferral(&mut self, name: &str) -> String {
+        let target = match self.focus {
+            1 => self.selected_session().as_ref().and_then(DeferralTarget::question),
+            2 => self.review_rows.get(self.panels[2].selected).and_then(DeferralTarget::review),
+            _ => None,
+        };
+        let target = target.or_else(|| {
+            if name != "bring-back" { return None; }
+            let key = match self.focus {
+                1 => format!("question:{}", self.selected_session()?.session),
+                2 => { let pr = self.review_rows.get(self.panels[2].selected)?; format!("pr:{}#{}", pr.full_repository, pr.number) }
+                _ => return None,
+            };
+            self.continuity.as_ref().ok()?.saved_deferral(&key).map(|deferral| deferral.target.clone())
+        });
+        let Some(target) = target else { return "only explicit questions or reviews with a known revision can be deferred; approvals and command input stay immediate".into() };
+        let state = self.continuity.as_mut().unwrap();
+        let result = if name == "bring-back" { state.bring_back(&target) } else { state.defer(&target, util::now_secs()) };
+        match result {
+            Ok(_) => {
+                self.continuity_error = None;
+                crate::audit::record("column", "continuity.deferral", "ok", serde_json::json!({"action":name,"target":target.storage_key()}));
+                if name == "bring-back" { "reminder restored; nothing was answered or approved".into() }
+                else { "deferred for twenty minutes; question/review remains unresolved".into() }
+            }
+            Err(error) => { self.continuity_error = Some(error.clone()); error }
+        }
     }
 
     pub(super) fn record_task_assignment(&mut self, entry: &Entry, session: Option<&Session>) -> Result<bool, String> {
