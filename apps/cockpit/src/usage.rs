@@ -43,7 +43,26 @@ pub struct QuotaRow {
     pub state: String,
     pub remaining: Option<i64>,
     pub resets: String,
-    pub forecast: String,
+    pub forecast: Forecast,
+}
+
+#[derive(Clone, Debug)]
+pub enum Forecast {
+    Unavailable,
+    UntilReset,
+    Immediate,
+    Depletion(String),
+}
+
+impl Forecast {
+    pub fn text(&self) -> &str {
+        match self {
+            Self::Unavailable => "—",
+            Self::UntilReset => "until reset",
+            Self::Immediate => "may run out now",
+            Self::Depletion(duration) => duration,
+        }
+    }
 }
 
 impl QuotaRow {
@@ -101,7 +120,7 @@ fn provider_quota_rows(provider: &str, windows: Vec<(Window, Option<i64>)>, cach
         || failed.is_some_and(|error| fetched.is_none_or(|stamp| error >= stamp));
     if windows.is_empty() {
         return vec![QuotaRow { label: provider.into(), state: if blocked && !stale { "Blocked" } else { "Unknown" }.into(),
-                              remaining: None, resets: String::new(), forecast: String::new() }];
+                              remaining: None, resets: String::new(), forecast: Forecast::Unavailable }];
     }
     windows.into_iter().map(|(window, seconds)| {
         let remaining = window.percentage.map(|used| 100 - used);
@@ -122,29 +141,29 @@ fn provider_quota_rows(provider: &str, windows: Vec<(Window, Option<i64>)>, cach
         let forecast = if matches!(state, "Available" | "Low") {
             window_forecast(&window, seconds, fetched)
         } else {
-            String::new()
+            Forecast::Unavailable
         };
         QuotaRow { label: format!("{provider} · {}", window.label), state: state.into(), remaining, resets, forecast }
     }).collect()
 }
 
-fn window_forecast(window: &Window, seconds: Option<i64>, fetched: Option<std::time::SystemTime>) -> String {
-    let Some(used) = window.percentage else { return String::new() };
-    let Some(seconds) = seconds else { return String::new() };
-    let Some(reset) = window.resets_at.as_deref().and_then(parse_time) else { return String::new() };
-    let Some(fetched) = fetched.map(chrono::DateTime::<Utc>::from) else { return String::new() };
+fn window_forecast(window: &Window, seconds: Option<i64>, fetched: Option<std::time::SystemTime>) -> Forecast {
+    let Some(used) = window.percentage else { return Forecast::Unavailable };
+    let Some(seconds) = seconds else { return Forecast::Unavailable };
+    let Some(reset) = window.resets_at.as_deref().and_then(parse_time) else { return Forecast::Unavailable };
+    let Some(fetched) = fetched.map(chrono::DateTime::<Utc>::from) else { return Forecast::Unavailable };
     let elapsed = seconds as f64 - (reset - fetched).num_milliseconds() as f64 / 1000.0;
     if !(1..100).contains(&used) || seconds <= 0 || elapsed <= 0.0 || elapsed >= seconds as f64 {
-        return String::new();
+        return Forecast::Unavailable;
     }
     // Anchor the pace to the fetch, not the redraw: an unchanged cache is not new usage evidence.
     let current = Utc::now();
     let left = elapsed * (100 - used) as f64 / used as f64 - (current - fetched).num_milliseconds() as f64 / 1000.0;
     if left >= (reset - current).num_milliseconds() as f64 / 1000.0 {
-        return "should last until reset · window avg".into();
+        return Forecast::UntilReset;
     }
     if left <= 0.0 {
-        return "may run out now · window avg".into();
+        return Forecast::Immediate;
     }
     let minutes = (left / 60.0).round().max(1.0) as i64;
     let duration = if minutes >= 2880 {
@@ -154,7 +173,7 @@ fn window_forecast(window: &Window, seconds: Option<i64>, fetched: Option<std::t
     } else {
         format!("{minutes}m")
     };
-    format!("~{duration} left at this pace · window avg")
+    Forecast::Depletion(format!("~{duration}"))
 }
 
 /// Every limit in the cache, as the usage page lists them.

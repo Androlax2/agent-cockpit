@@ -159,6 +159,20 @@ fn texts(app: &App, panel: usize) -> Vec<String> {
     app.panels[panel].lines.iter().chain(&app.panels[panel].fixed_bottom).map(|line| line.texts()).collect()
 }
 
+fn quota_texts(app: &App) -> Vec<String> {
+    let mut rows = vec![String::new(); app.panels[0].items];
+    let mut provider = String::new();
+    for line in &app.panels[0].lines {
+        let text = line.texts();
+        if text == "Claude" || text == "Codex" { provider = text.clone(); }
+        if let Some(index) = line.item {
+            if rows[index].is_empty() { rows[index] = format!("{provider} · {text}"); }
+            else { rows[index].push_str(&format!(" {text}")); }
+        }
+    }
+    rows
+}
+
 fn selected_session_badges(app: &App) -> Vec<String> {
     app.panels[1].fixed_bottom.iter().flat_map(|line| line.right.iter().map(|part| part.text.clone())).collect()
 }
@@ -1752,15 +1766,289 @@ fn the_header_keeps_service_outages_visible_when_status_is_closed() {
 }
 
 #[test]
+fn status_groups_confirmed_windows_in_aligned_columns_at_each_terminal_width() {
+    let fixture = Fixture::new();
+    let reset = chrono::Utc::now() + chrono::Duration::hours(3);
+    fixture.write("run/claude-usage.json", &json!({"limits": [
+        {"kind": "session", "percent": 80, "resets_at": reset.to_rfc3339()},
+        {"kind": "weekly_all", "percent": 0},
+        {"kind": "weekly_scoped", "percent": 65, "scope": {"model": {"display_name": "Fable"}}}
+    ]}).to_string());
+    fixture.write("run/codex-usage.json", r#"{"rate_limit":{"secondary_window":{"used_percent":67,"limit_window_seconds":604800}}}"#);
+    let mut app = fixture.app();
+    app.focus_panel(0);
+    for width in [40, 60, 80, 140] {
+        app.width = width;
+        app.redraw();
+        let rows = texts(&app, 0);
+        assert_eq!(rows.iter().filter(|row| row.as_str() == "Claude").count(), 1, "{rows:?}");
+        assert_eq!(rows.iter().filter(|row| row.as_str() == "Codex").count(), 1, "{rows:?}");
+        assert!(rows.iter().any(|row| row.contains("Fable weekly")), "{rows:?}");
+        assert!(!rows.iter().any(|row| row.contains("Available")), "{rows:?}");
+        assert_eq!(rows.iter().filter(|row| row.contains("window-average pace")).count(), 1);
+        let quota_lines: Vec<_> = app.panels[0].lines.iter().filter(|line| line.item.is_some()).cloned().collect();
+        for (index, label) in [(0, "5-hour"), (1, "Weekly"), (2, "Fable weekly"), (3, "Weekly")] {
+            assert!(quota_lines.iter().any(|line| line.item == Some(index) && line.texts().contains(label)));
+        }
+        assert_eq!(app.panels[0].items, 4);
+        assert!(!quota_lines.iter().any(|line| line.item == Some(3) && line.texts().contains("5-hour")));
+        for line in &app.panels[0].lines {
+            for adjacent in line.segments.windows(2) {
+                assert!(adjacent[0].0 as usize + crate::app::width_of(&adjacent[0].1) <= adjacent[1].0 as usize, "overlap at {width}: {}", line.texts());
+            }
+            if line.texts().contains("LEFT") || line.texts().contains("window-average") || line.texts().contains("SERVICE HEALTH") {
+                assert_eq!(line.item, None);
+            }
+        }
+        let buffer = render(&mut app, width, 65);
+        let rendered: Vec<String> = (0..65).map(|y| (0..width).map(|x| buffer[(x, y)].symbol()).collect()).collect();
+        for text in ["5-hour", "20%", "Low", "100%", "Fable weekly", "33%", "~30m", "2h 59m"] {
+            assert!(rendered.iter().any(|row| row.contains(text)), "width {width}, missing {text}: {rendered:#?}");
+        }
+        if width >= 80 {
+            let first = quota_lines.iter().find(|line| line.item == Some(0)).unwrap();
+            assert!(first.texts().contains("~30m") && first.texts().contains("2h 59m"));
+            let offsets: Vec<_> = quota_lines.iter().map(|line| line.segments[1].0).collect();
+            assert!(offsets.iter().all(|offset| *offset == offsets[0]), "{offsets:?}");
+        } else if width == 40 {
+            assert!(quota_lines.iter().filter(|line| line.item == Some(0)).count() > 1);
+        }
+    }
+}
+
+#[test]
+fn status_spending_keeps_all_time_cost_out_of_the_plan_subtitle() {
+    let fixture = Fixture::new();
+    fixture.write("home/.claude/.credentials.json", r#"{"claudeAiOauth":{"subscriptionType":"max"}}"#);
+    let stamp = chrono::Utc::now();
+    fixture.write("home/.claude/projects/p/s.jsonl", &format!("{}\n{}\n", json!({"timestamp": (stamp - chrono::Duration::minutes(2)).to_rfc3339(), "sessionId": "s", "message": {
+        "id": "m", "model": "claude-opus-5-5", "usage": {"output_tokens": 1000000}
+    }}), json!({"timestamp": stamp.to_rfc3339(), "sessionId": "s", "message": {
+        "id": "m2", "model": "claude-opus-5-5", "usage": {"output_tokens": 0}
+    }})));
+    let mut app = fixture.app();
+    app.costs.tick();
+    for _ in 0..200 {
+        if app.costs.all_time() > 0.0 { break; }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    app.build();
+    assert_eq!(app.subtitle(0), "Max");
+    let rows = texts(&app, 0);
+    let spending = rows.iter().position(|row| row.contains("SPENDING")).unwrap();
+    let health = rows.iter().position(|row| row == "SERVICE HEALTH").unwrap();
+    let all_time = rows.iter().position(|row| row.contains("All-time cost") && row.contains("$20")).unwrap();
+    assert!(spending < all_time && all_time < health, "{rows:?}");
+    assert!(rows[spending].contains("API-equivalent, not your bill"));
+    assert!(rows.iter().any(|row| row.contains("TODAY") && row.contains("WEEK") && row.contains("MONTH")));
+    assert!(rows.iter().any(|row| row.contains("Active time") && row.contains("2m")), "{rows:?}");
+    app.focus_panel(0);
+    let buffer = render(&mut app, 80, 60);
+    let rendered: String = (0..60).flat_map(|y| (0..80).map(move |x| (x, y))).map(|cell| buffer[cell].symbol()).collect();
+    assert!(rendered.contains("All-time cost") && rendered.contains("$20"));
+}
+
+#[test]
+fn status_keeps_cost_errors_visible_without_fabricating_spending() {
+    let fixture = Fixture::new();
+    fs::create_dir_all(fixture.path("state/claude-sessions/usage.sqlite")).unwrap();
+    let mut app = fixture.app();
+    app.costs.tick();
+    for _ in 0..200 {
+        if !app.costs.error().is_empty() { break; }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    app.build();
+    let rows = texts(&app, 0).join(" ");
+    assert!(rows.contains("SPENDING") && rows.contains("usage archive:"), "{rows}");
+    assert!(!rows.contains("All-time cost") && !rows.contains("Active time"));
+    app.focus_panel(0);
+    let buffer = render(&mut app, 80, 60);
+    let rendered: String = (0..60).flat_map(|y| (0..80).map(move |x| (x, y))).map(|cell| buffer[cell].symbol()).collect();
+    assert!(rendered.contains("usage archive:"));
+}
+
+#[test]
+fn healthy_services_share_a_line_only_when_they_fit() {
+    let fixture = Fixture::new();
+    let feed = fixture.write("status.json", r#"{"status":{"indicator":"none","description":"All Systems Operational"}}"#);
+    unsafe {
+        std::env::set_var("CLAUDE_STATUS_URL", format!("file://{}", feed.display()));
+        std::env::set_var("CODEX_STATUS_URL", format!("file://{}", feed.display()));
+    }
+    let mut app = fixture.app();
+    app.claude_status.fetch_now();
+    app.codex_status.fetch_now();
+    app.build();
+    app.focus_panel(0);
+    for width in [40, 60, 80, 140] {
+        app.width = width;
+        app.redraw();
+        let rows = texts(&app, 0);
+        assert!(!rows.iter().any(|row| row.contains("All Systems Operational")));
+        assert_eq!(rows.iter().filter(|row| row.contains("Operational")).count(), if width == 40 { 2 } else { 1 }, "{rows:?}");
+        let buffer = render(&mut app, width, 60);
+        let rendered: Vec<String> = (0..60).map(|y| (0..width).map(|x| buffer[(x, y)].symbol()).collect()).collect();
+        assert!(rendered.iter().any(|row| row.contains("Claude") && row.contains("Operational")));
+        assert!(rendered.iter().any(|row| row.contains("Codex") && row.contains("Operational")));
+    }
+}
+
+#[test]
+fn narrow_status_forecasts_use_state_sensitive_sentences() {
+    let fixture = Fixture::new();
+    for (used, age, expected) in [(60, 0, "Runs out in ~1h 20m"), (10, 0, "Lasts until reset"),
+        (99, 300, "May run out now"), (0, 0, "Runs out in —")] {
+        let fetched = std::time::SystemTime::now() - Duration::from_secs(age);
+        let reset = chrono::DateTime::<chrono::Utc>::from(fetched) + chrono::Duration::hours(3);
+        let cache = fixture.write("run/claude-usage.json", &json!({"five_hour": {"utilization": used, "resets_at": reset.to_rfc3339()}}).to_string());
+        fs::File::options().write(true).open(cache).unwrap().set_modified(fetched).unwrap();
+        let mut app = fixture.app();
+        app.focus_panel(0);
+        app.width = 40;
+        app.redraw();
+        let buffer = render(&mut app, 40, 45);
+        let rows: Vec<String> = (0..45).map(|y| (0..40).map(|x| buffer[(x, y)].symbol()).collect()).collect();
+        assert!(rows.iter().any(|row| row.contains(expected)), "{used}: {rows:#?}");
+        assert!(!rows.iter().any(|row| row.contains("Runs out in until") || row.contains("Runs out in may")));
+    }
+}
+
+#[test]
+fn focused_status_keeps_capacity_forecast_and_reset_colours() {
+    use crate::app::{FG_DARK, GREEN, RED, YELLOW};
+    use ratatui::style::{Color, Modifier};
+
+    let fixture = Fixture::new();
+    for (used, age, forecast, capacity_color, forecast_color) in [
+        (60, 0, "~1h 20m", YELLOW, YELLOW),
+        (80, 0, "~30m", RED, RED),
+        (99, 300, "may run out now", RED, RED),
+        (10, 0, "until reset", GREEN, FG_DARK),
+    ] {
+        let fetched = std::time::SystemTime::now() - Duration::from_secs(age);
+        let reset = chrono::DateTime::<chrono::Utc>::from(fetched) + chrono::Duration::hours(3);
+        let cache = fixture.write("run/claude-usage.json", &json!({"five_hour": {"utilization": used, "resets_at": reset.to_rfc3339()}}).to_string());
+        fs::File::options().write(true).open(cache).unwrap().set_modified(fetched).unwrap();
+        let mut app = fixture.app();
+        app.focus_panel(0);
+        app.width = 80;
+        app.redraw();
+        let buffer = render(&mut app, 80, 45);
+        let rendered: Vec<String> = (0..45).map(|y| (0..80).map(|x| buffer[(x, y)].symbol()).collect()).collect();
+        for (text, tint) in [(format!("{}%", 100 - used), capacity_color), (forecast.into(), forecast_color)] {
+            let y = rendered.iter().position(|row| row.contains("5-hour") && row.contains(&text)).unwrap();
+            let x = crate::app::width_of(&rendered[y][..rendered[y].find(&text).unwrap()]);
+            assert_eq!(buffer[(x as u16, y as u16)].fg, Color::Indexed(tint), "{used}: {text}");
+        }
+        let reset = app.panels[0].lines.iter().find(|line| line.item == Some(0)).unwrap().segments.last().unwrap().1.clone();
+        let y = rendered.iter().position(|row| row.contains("5-hour")).unwrap();
+        let x = crate::app::width_of(&rendered[y][..rendered[y].rfind(&reset).unwrap()]);
+        let cell = &buffer[(x as u16, y as u16)];
+        assert_eq!(cell.fg, Color::Indexed(FG_DARK));
+        assert!(cell.modifier.contains(Modifier::DIM));
+    }
+}
+
+#[test]
+fn status_keeps_exceptional_quota_states_explicit_at_each_width() {
+    let fixture = Fixture::new();
+    for (used, reset, flags, expected) in [
+        (json!(null), None, json!({}), "Unknown"),
+        (json!(100), None, json!({}), "Exhausted"),
+        (json!(80), None, json!({}), "Low"),
+        (json!(10), None, json!({"allowed": false}), "Blocked"),
+        (json!(28), Some(1577836800_i64), json!({}), "Stale · last 72%"),
+    ] {
+        let mut limits = flags;
+        limits["secondary_window"] = json!({"used_percent": used, "limit_window_seconds": 604800, "reset_at": reset});
+        fixture.write("run/codex-usage.json", &json!({"rate_limit": limits}).to_string());
+        let mut app = fixture.app();
+        app.focus_panel(0);
+        for width in [40, 60, 80, 140] {
+            app.width = width;
+            app.redraw();
+            let buffer = render(&mut app, width, 60);
+            let rendered: Vec<String> = (0..60).map(|y| (0..width).map(|x| buffer[(x, y)].symbol()).collect()).collect();
+            assert!(rendered.iter().any(|row| row.contains("Weekly") && row.contains(expected)), "width {width}: {rendered:#?}");
+            assert!(!quota_texts(&app).iter().any(|row| row.contains('~') || row.contains("until reset") || row.contains("may run out now")));
+        }
+    }
+}
+
+#[test]
+fn status_wraps_outage_diagnostics_without_normalising_away_incidents() {
+    let fixture = Fixture::new();
+    let description = "Workspace requests unavailable while connection recovery continues";
+    let component = "Codex Desktop integrations: major outage";
+    let incident = "Investigating elevated failures affecting workspace requests";
+    let feed = fixture.write("status.json", &json!({"status": {"indicator": "major", "description": description},
+        "components": [{"name": "Codex Desktop integrations", "status": "major_outage"}],
+        "incidents": [{"name": incident, "status": "investigating"}]}).to_string());
+    unsafe { std::env::set_var("CODEX_STATUS_URL", format!("file://{}", feed.display())); }
+    let mut app = fixture.app();
+    app.codex_status.fetch_now();
+    app.build();
+    app.focus_panel(0);
+    for width in [40, 60, 80, 140] {
+        app.width = width;
+        app.redraw();
+        let buffer = render(&mut app, width, 65);
+        let rendered = (0..65).map(|y| (2..width - 2).map(|x| buffer[(x, y)].symbol()).collect::<String>()).map(|row| row.trim().to_string()).collect::<Vec<_>>().join(" ");
+        let rendered = rendered.split_whitespace().collect::<Vec<_>>().join(" ");
+        for detail in [description, component, incident] {
+            assert!(rendered.contains(detail), "width {width}: {rendered}");
+        }
+        assert!(!rendered.contains("Operational"));
+    }
+}
+
+#[test]
+fn status_continuations_keep_quota_selection_and_scrolling() {
+    let fixture = Fixture::new();
+    fixture.write("run/claude-usage.json", r#"{"limits":[{"kind":"session","percent":0},{"kind":"weekly_scoped","percent":28,"scope":{"model":{"display_name":"Long scoped model with a separate quota"}}}]}"#);
+    fixture.write("run/codex-usage.json", r#"{"rate_limit":{"secondary_window":{"used_percent":67,"limit_window_seconds":604800}}}"#);
+    let mut app = fixture.app();
+    app.focus_panel(0);
+    app.width = 40;
+    app.redraw();
+    for index in 0..3 {
+        assert_eq!(app.panels[0].selected, index);
+        let buffer = render(&mut app, 40, 12);
+        assert!(app.panels[0].lines[app.panels[0].scroll..].iter().take(8).any(|line| line.item == Some(index)));
+        assert!(app.panels[0].lines.iter().filter(|line| line.item == Some(index)).count() >= 3);
+        let rows: Vec<String> = (0..12).map(|y| (0..40).map(|x| buffer[(x, y)].symbol()).collect()).collect();
+        assert!(rows.iter().any(|row| row.contains(if index == 0 { "5-hour" } else if index == 1 { "Long scoped model" } else { "Weekly" })), "{rows:#?}");
+        app.handle(Key::Down, &mut FakeScreen::default());
+    }
+    assert_eq!(app.panels[0].selected, 2);
+    app.handle(Key::Char('0'), &mut FakeScreen::default());
+    assert_ne!(app.focus, 0);
+}
+
+#[test]
+fn grouped_status_leaves_external_quota_summaries_unchanged() {
+    let fixture = Fixture::new();
+    fixture.write("run/claude-usage.json", r#"{"five_hour":{"utilization":28},"seven_day":{"utilization":86}}"#);
+    fixture.write("run/codex-usage.json", r#"{"rate_limit":{"secondary_window":{"used_percent":100,"limit_window_seconds":604800}}}"#);
+    let mut app = fixture.app();
+    app.focus_panel(0);
+    render(&mut app, 80, 45);
+    let rows: Vec<_> = usage::quota_rows().iter().map(|quota| (quota.label.clone(), quota.summary())).collect();
+    assert_eq!(rows, [("Claude · 5h".into(), "Available · 72% left".into()),
+        ("Claude · week".into(), "Low · 14% left".into()), ("Codex · week".into(), "Exhausted · 0% left".into())]);
+}
+
+#[test]
 fn the_status_panel_lists_remaining_capacity_with_its_reset() {
     let fixture = Fixture::new();
     let soon = (chrono::Utc::now() + chrono::Duration::hours(2)).format("%Y-%m-%dT%H:%M:%SZ").to_string();
     fixture.write("run/claude-usage.json", &json!({"five_hour": {"utilization": 37.4, "resets_at": soon}, "seven_day": {"utilization": 72}}).to_string());
     fixture.write("home/.claude/.credentials.json", r#"{"claudeAiOauth": {"subscriptionType": "max"}}"#);
     let app = fixture.app();
-    let lines = texts(&app, 0);
-    assert!(lines[0].starts_with("Claude · 5h") && lines[0].ends_with("Available · 63% left"), "{}", lines[0]);
-    assert!(app.panels[0].lines[0].right[0].text.starts_with("resets in 1h 5") || app.panels[0].lines[0].right[0].text.starts_with("resets in 2h"));
+    let lines = quota_texts(&app);
+    assert!(lines[0].starts_with("Claude · 5-hour") && lines[0].contains("63%"), "{}", lines[0]);
+    assert!(lines[0].contains("1h 5") || lines[0].contains("2h"), "{}", lines[0]);
     assert_eq!(app.subtitle(0), "Max");
 }
 
@@ -1781,17 +2069,17 @@ fn quota_forecasts_use_each_providers_current_and_weekly_window_average() {
     let mut app = fixture.app();
     app.width = 60;
     app.redraw();
-    for (label, expected) in [("Claude · 5h", "~30m left"), ("Claude · week", "~12h 00m left"),
-                              ("Codex · 5h", "~30m left"), ("Codex · week", "~12h 00m left")] {
-        let rows = texts(&app, 0);
+    for (label, expected) in [("Claude · 5-hour", "~30m"), ("Claude · Weekly", "~12h 00m"),
+                              ("Codex · 5-hour", "~30m"), ("Codex · Weekly", "~12h 00m")] {
+        let rows = quota_texts(&app);
         let index = rows.iter().position(|row| row.starts_with(label)).unwrap();
-        assert!(rows[index + 1].contains(expected) && rows[index + 1].contains("window avg"), "{rows:?}");
+        assert!(rows[index].contains(expected), "{rows:?}");
     }
     app.focus_panel(0);
     let buffer = render(&mut app, 60, 45);
     let rows: Vec<_> = (0..45).map(|y| (0..60).map(|x| buffer[(x, y)].symbol()).collect::<String>()).collect();
-    assert!(rows.iter().any(|row| row.contains("~30m left")), "{rows:?}");
-    assert!(rows.iter().any(|row| row.contains("~12h 00m left")), "{rows:?}");
+    assert!(rows.iter().any(|row| row.contains("~30m")), "{rows:?}");
+    assert!(rows.iter().any(|row| row.contains("~12h 00m")), "{rows:?}");
 }
 
 #[test]
@@ -1802,10 +2090,10 @@ fn quota_forecasts_show_when_capacity_should_last_until_reset() {
     fixture.write("run/codex-usage.json", &json!({"rate_limit": {
         "primary_window": {"used_percent": 20, "limit_window_seconds": 7200, "reset_at": reset.timestamp()}
     }}).to_string());
-    let rows = texts(&fixture.app(), 0);
-    for label in ["Claude · 5h", "Codex · 2h"] {
+    let rows = quota_texts(&fixture.app());
+    for label in ["Claude · 5-hour", "Codex · 2h"] {
         let index = rows.iter().position(|row| row.starts_with(label)).unwrap();
-        assert!(rows[index + 1].contains("should last until reset"), "{rows:?}");
+        assert!(rows[index].contains("until reset"), "{rows:?}");
     }
 }
 
@@ -1829,8 +2117,8 @@ fn quota_forecasts_do_not_predict_from_unusable_or_unconfirmed_data() {
                 fixture.write(&format!("run/{provider}-usage-error.json"), r#"{"error":"failed"}"#);
             }
         }
-        let rows = texts(&fixture.app(), 0);
-        assert!(!rows.iter().any(|row| row.contains("window avg")), "{rows:?}");
+        let app = fixture.app();
+        assert!(app.panels[0].lines.iter().filter(|line| line.item.is_some()).all(|line| !line.texts().contains('~') && !line.texts().contains("until reset") && !line.texts().contains("may run out now")), "{:?}", quota_texts(&app));
     }
 }
 
@@ -1841,11 +2129,11 @@ fn quota_forecasts_keep_the_sampled_pace_between_fetches() {
     let reset = chrono::DateTime::<chrono::Utc>::from(fetched) + chrono::Duration::hours(3);
     let cache = fixture.write("run/claude-usage.json", &json!({"five_hour": {"utilization": 80, "resets_at": reset.to_rfc3339()}}).to_string());
     fs::File::options().write(true).open(&cache).unwrap().set_modified(fetched).unwrap();
-    let rows = texts(&fixture.app(), 0);
-    assert!(rows[1].contains("~25m left"), "{rows:?}");
+    let rows = quota_texts(&fixture.app());
+    assert!(rows[0].contains("~25m"), "{rows:?}");
     fs::File::options().write(true).open(&cache).unwrap().set_modified(fetched - Duration::from_secs(301)).unwrap();
-    let rows = texts(&fixture.app(), 0);
-    assert!(!rows.iter().any(|row| row.contains("window avg")), "{rows:?}");
+    let rows = quota_texts(&fixture.app());
+    assert!(!rows.iter().any(|row| row.contains('~')), "{rows:?}");
 }
 
 #[test]
@@ -1853,8 +2141,8 @@ fn quota_forecasts_show_days_for_a_weekly_limit_with_several_days_left() {
     let fixture = Fixture::new();
     let reset = chrono::Utc::now() + chrono::Duration::days(5);
     fixture.write("run/claude-usage.json", &json!({"seven_day": {"utilization": 40, "resets_at": reset.to_rfc3339()}}).to_string());
-    let rows = texts(&fixture.app(), 0);
-    assert!(rows[1].contains("~3d 0h left"), "{rows:?}");
+    let rows = quota_texts(&fixture.app());
+    assert!(rows[0].contains("~3d 0h"), "{rows:?}");
 }
 
 #[test]
@@ -1864,8 +2152,8 @@ fn quota_forecasts_do_not_suggest_remaining_time_when_codex_is_blocked() {
     fixture.write("run/codex-usage.json", &json!({"rate_limit": {"allowed": false,
         "primary_window": {"used_percent": 80, "limit_window_seconds": 18000, "reset_at": reset.timestamp()}
     }}).to_string());
-    let rows = texts(&fixture.app(), 0);
-    assert!(!rows.iter().any(|row| row.contains("window avg")), "{rows:?}");
+    let rows = quota_texts(&fixture.app());
+    assert!(!rows.iter().any(|row| row.contains('~') || row.contains("until reset")), "{rows:?}");
 }
 
 #[test]
@@ -1873,9 +2161,9 @@ fn quota_rows_show_both_providers_with_separate_windows_and_remaining_capacity()
     let fixture = Fixture::new();
     fixture.write("run/claude-usage.json", r#"{"five_hour":{"utilization":28},"seven_day":{"utilization":86}}"#);
     fixture.write("run/codex-usage.json", r#"{"rate_limit":{"primary_window":{"used_percent":5,"limit_window_seconds":18000},"secondary_window":{"used_percent":100,"limit_window_seconds":604800}}}"#);
-    let rows = texts(&fixture.app(), 0);
-    for (label, summary) in [("Claude · 5h", "Available · 72% left"), ("Claude · week", "Low · 14% left"),
-                             ("Codex · 5h", "Available · 95% left"), ("Codex · week", "Exhausted · 0% left")] {
+    let rows = quota_texts(&fixture.app());
+    for (label, summary) in [("Claude · 5-hour", "72%"), ("Claude · Weekly", "14% Low"),
+                             ("Codex · 5-hour", "95%"), ("Codex · Weekly", "0% Exhausted")] {
         assert!(rows.iter().any(|row| row.contains(label) && row.contains(summary)), "{rows:?}");
     }
 }
@@ -1884,14 +2172,14 @@ fn quota_rows_show_both_providers_with_separate_windows_and_remaining_capacity()
 fn quota_rows_distinguish_available_low_exhausted_and_invalid_percentages() {
     let fixture = Fixture::new();
     let mut app = fixture.app();
-    for (used, summary) in [(json!(0), "Available · 100% left"), (json!(79), "Available · 21% left"),
-        (json!(80), "Low · 20% left"), (json!(99), "Low · 1% left"), (json!(100), "Exhausted · 0% left"),
+    for (used, summary) in [(json!(0), "100%"), (json!(79), "21%"),
+        (json!(80), "20% Low"), (json!(99), "1% Low"), (json!(100), "0% Exhausted"),
         (json!(null), "Unknown"), (json!(-0.1), "Unknown"), (json!(100.1), "Unknown"), (json!("28"), "Unknown")] {
         fixture.write("run/claude-usage.json", &json!({"five_hour": {"utilization": used}}).to_string());
         fixture.write("run/codex-usage.json", &json!({"rate_limit": {"primary_window": {"used_percent": used, "limit_window_seconds": 18000}}}).to_string());
         app.build();
-        let rows = texts(&app, 0);
-        for provider in ["Claude · 5h", "Codex · 5h"] {
+        let rows = quota_texts(&app);
+        for provider in ["Claude · 5-hour", "Codex · 5-hour"] {
             let row = rows.iter().find(|row| row.starts_with(provider)).unwrap_or_else(|| panic!("{rows:?}"));
             assert!(row.contains(summary), "{used}: {row}");
             if summary == "Unknown" { assert!(!row.contains("left"), "{row}"); }
@@ -1909,7 +2197,7 @@ fn quota_colors_follow_remaining_capacity_for_both_providers() {
         fixture.write("run/claude-usage.json", &json!({"five_hour": {"utilization": 100 - remaining}}).to_string());
         fixture.write("run/codex-usage.json", &json!({"rate_limit": {"primary_window": {"used_percent": 100 - remaining, "limit_window_seconds": 18000}}}).to_string());
         let app = fixture.app();
-        for row in &app.panels[0].lines[..2] {
+        for row in app.panels[0].lines.iter().filter(|line| line.item.is_some()) {
             assert_eq!(row.segments[1].2.fg, Some(Color::Indexed(color)), "{}: {remaining}% left", row.segments[0].1);
         }
     }
@@ -1918,7 +2206,7 @@ fn quota_colors_follow_remaining_capacity_for_both_providers() {
 #[test]
 fn quota_rows_keep_missing_providers_visible_as_unknown() {
     let fixture = Fixture::new();
-    let rows = texts(&fixture.app(), 0);
+    let rows = quota_texts(&fixture.app());
     for provider in ["Claude", "Codex"] {
         let row = rows.iter().find(|row| row.starts_with(provider) && row.contains("Unknown")).unwrap_or_else(|| panic!("{rows:?}"));
         assert!(!row.contains("left"));
@@ -1936,13 +2224,13 @@ fn quota_rows_never_claim_fresh_capacity_from_old_or_failed_fetches() {
         let old = std::time::SystemTime::now() - Duration::from_secs(601);
         fs::File::options().write(true).open(&cache).unwrap().set_modified(old).unwrap();
         let app = fixture.app();
-        let row = texts(&app, 0).into_iter().find(|row| row.to_lowercase().starts_with(provider)).unwrap();
-        assert!(row.contains("Stale · last 72% left"), "{row}");
+        let row = quota_texts(&app).into_iter().find(|row| row.to_lowercase().starts_with(provider)).unwrap();
+        assert!(row.contains("Stale · last 72%"), "{row}");
         fixture.write(&relative, &payload.to_string());
         fixture.write(&format!("run/{provider}-usage-error.json"), r#"{"error":"request failed"}"#);
         let app = fixture.app();
-        let row = texts(&app, 0).into_iter().find(|row| row.to_lowercase().starts_with(provider)).unwrap();
-        assert!(row.contains("Stale · last 72% left"), "{row}");
+        let row = quota_texts(&app).into_iter().find(|row| row.to_lowercase().starts_with(provider)).unwrap();
+        assert!(row.contains("Stale · last 72%"), "{row}");
     }
 }
 
@@ -1952,10 +2240,10 @@ fn quota_rows_wait_for_confirmation_after_the_reset_time_passes() {
     fixture.write("run/claude-usage.json", r#"{"five_hour":{"utilization":100,"resets_at":"2020-01-01T00:00:00Z"}}"#);
     fixture.write("run/codex-usage.json", r#"{"rate_limit":{"primary_window":{"used_percent":100,"limit_window_seconds":18000,"reset_at":1577836800}}}"#);
     let app = fixture.app();
-    let rows = texts(&app, 0);
-    for provider in ["Claude · 5h", "Codex · 5h"] {
+    let rows = quota_texts(&app);
+    for provider in ["Claude · 5-hour", "Codex · 5-hour"] {
         let row = rows.iter().find(|row| row.starts_with(provider)).unwrap_or_else(|| panic!("{rows:?}"));
-        assert!(row.contains("Stale · last 0% left"), "{row}");
+        assert!(row.contains("Stale · last 0%"), "{row}");
         assert!(!row.contains("Available"));
     }
 }
@@ -1967,8 +2255,8 @@ fn quota_rows_respect_codex_blocking_flags_even_with_capacity_reported() {
         let mut limits = flags;
         limits["primary_window"] = json!({"used_percent": 10, "limit_window_seconds": 18000});
         fixture.write("run/codex-usage.json", &json!({"rate_limit": limits}).to_string());
-        let rows = texts(&fixture.app(), 0);
-        let row = rows.iter().find(|row| row.starts_with("Codex · 5h")).unwrap_or_else(|| panic!("{rows:?}"));
+        let rows = quota_texts(&fixture.app());
+        let row = rows.iter().find(|row| row.starts_with("Codex · 5-hour")).unwrap_or_else(|| panic!("{rows:?}"));
         assert!(row.contains("Blocked"), "{row}");
         assert!(!row.contains("Available"), "{row}");
     }
@@ -1979,8 +2267,8 @@ fn quota_rows_keep_scoped_claude_limits_and_actual_codex_durations() {
     let fixture = Fixture::new();
     fixture.write("run/claude-usage.json", r#"{"limits":[{"kind":"session","percent":28},{"kind":"weekly_scoped","percent":86,"scope":{"model":{"display_name":"Sonnet"}}}]}"#);
     fixture.write("run/codex-usage.json", r#"{"rate_limit":{"primary_window":{"used_percent":5,"limit_window_seconds":3600},"secondary_window":{"used_percent":20,"limit_window_seconds":86400}}}"#);
-    let rows = texts(&fixture.app(), 0);
-    for label in ["Claude · 5h", "Claude · Sonnet this week", "Codex · 1h", "Codex · 1d"] {
+    let rows = quota_texts(&fixture.app());
+    for label in ["Claude · 5-hour", "Claude · Sonnet weekly", "Codex · 1h", "Codex · 1d"] {
         assert!(rows.iter().any(|row| row.starts_with(label)), "{rows:?}");
     }
 }
@@ -1997,8 +2285,8 @@ fn quota_rows_keep_status_and_capacity_readable_in_narrow_terminals() {
         app.redraw();
         let buffer = render(&mut app, width, 45);
         let rows: Vec<_> = (0..45).map(|y| (0..width).map(|x| buffer[(x, y)].symbol()).collect::<String>()).collect();
-        for (provider, summary) in [("Claude", "Available · 100% left"), ("Codex", "Low · 14% left")] {
-            assert!(rows.iter().any(|row| row.contains(provider) && row.contains(summary)), "width {width}: {rows:?}");
+        for (label, summary) in [("Weekly", "100%"), ("5-hour", "14% Low")] {
+            assert!(rows.iter().any(|row| row.contains(label) && row.contains(summary)), "width {width}: {rows:?}");
         }
     }
 }
@@ -2010,9 +2298,9 @@ fn quota_redraw_does_not_read_new_data_until_refresh() {
     let mut app = fixture.app();
     fixture.write("run/claude-usage.json", r#"{"five_hour":{"utilization":100}}"#);
     app.redraw();
-    assert!(texts(&app, 0)[0].contains("72% left"));
+    assert!(quota_texts(&app)[0].contains("72%"));
     app.build();
-    assert!(texts(&app, 0)[0].contains("Exhausted · 0% left"));
+    assert!(quota_texts(&app)[0].contains("0% Exhausted"));
 }
 
 #[test]
@@ -2105,8 +2393,8 @@ fn both_provider_statuses_are_visible_before_their_first_fetch() {
     let fixture = Fixture::new();
     let app = fixture.app();
     let lines = texts(&app, 0);
-    assert!(lines.contains(&"Claude Statusnot checked".to_string()));
-    assert!(lines.contains(&"Codex Statusnot checked".to_string()));
+    assert!(lines.iter().any(|line| line.contains("Claudenot checked")));
+    assert!(lines.iter().any(|line| line.contains("Codexnot checked")));
 }
 
 #[test]
@@ -2126,8 +2414,8 @@ fn codexs_status_shows_outage_details_independently_of_claude() {
     app.codex_status.fetch_now();
     app.build();
     let lines = texts(&app, 0);
-    assert!(lines.contains(&"Claude Status● All Systems Operational".to_string()));
-    assert!(lines.contains(&"Codex Status● OpenAI: Partial System Outage".to_string()));
+    assert!(lines.contains(&"Claude● Operational".to_string()));
+    assert!(lines.contains(&"Codex● Partial System Outage".to_string()));
     assert!(lines.contains(&"Codex in ChatGPT Desktop: major outage".to_string()));
     assert!(lines.contains(&"Codex requests failing".to_string()));
     assert!(!lines.iter().any(|line| line.contains("Old incident")));
@@ -2148,7 +2436,7 @@ fn codexs_status_is_operational_when_its_official_feed_is_healthy() {
         std::thread::sleep(Duration::from_millis(10));
     }
     app.build();
-    assert!(texts(&app, 0).contains(&"Codex Status● OpenAI: All Systems Operational".to_string()));
+    assert!(texts(&app, 0).iter().any(|line| line.contains("Codex● Operational")));
 }
 
 #[test]
@@ -2158,7 +2446,7 @@ fn an_unreachable_codex_status_feed_does_not_report_a_healthy_service() {
     let mut app = fixture.app();
     app.codex_status.fetch_now();
     app.build();
-    assert!(texts(&app, 0).iter().any(|line| line.starts_with("Codex Statusstatus.openai.com unreachable")));
+    assert!(texts(&app, 0).iter().any(|line| line.starts_with("Codexstatus.openai.com unreachable")));
     assert!(!fs::read_to_string(fixture.path("state/claude-sessions/log")).unwrap_or_default().contains(" ERROR "));
 }
 
@@ -2171,7 +2459,7 @@ fn claudes_status_shows_in_status_and_warns_in_sessions_only_when_degraded() {
     let mut app = fixture.app();
     app.claude_status.fetch_now();
     app.build();
-    assert!(texts(&app, 0).contains(&"Claude Status● Partially Degraded Service".to_string()));
+    assert!(texts(&app, 0).contains(&"Claude● Partially Degraded Service".to_string()));
     assert_eq!(&texts(&app, 1)[..2], &["⚠ Claude: Partially Degraded Service".to_string(), "Claude Code: partial outage · Elevated errors".to_string()]);
     fs::write(&summary, json!({"status": {"indicator": "none", "description": "All Systems Operational"}}).to_string()).unwrap();
     let mut calm = App::new();
@@ -3092,8 +3380,7 @@ fn the_clone_review_is_in_the_action_list() {
 
 #[test]
 fn before_the_first_usage_fetch_the_status_labels_stay_whole() {
-    // The label column was sized on the usage rows alone: with none yet, the values covered
-    // "At API prices" and "Claude".
+    // A missing quota fetch must not collapse the service label column.
     let fixture = Fixture::new();
     let summary = fixture.write("status.json", &json!({"status": {"indicator": "none", "description": "All Systems Operational"}}).to_string());
     unsafe { std::env::set_var("CLAUDE_STATUS_URL", format!("file://{}", summary.display())) };
@@ -3103,7 +3390,7 @@ fn before_the_first_usage_fetch_the_status_labels_stay_whole() {
     app.focus_panel(0);
     let buffer = render(&mut app, 60, 30);
     let rows: Vec<String> = (0..30).map(|y| (0..60).map(|x| buffer[(x, y)].symbol().to_string()).collect()).collect();
-    assert!(rows.iter().any(|row| row.contains("Claude") && row.contains("● All Systems Operational")), "{rows:#?}");
+    assert!(rows.iter().any(|row| row.contains("Claude") && row.contains("● Operational")), "{rows:#?}");
 }
 
 #[test]

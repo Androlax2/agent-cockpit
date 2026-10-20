@@ -52,8 +52,8 @@ const GREYPROXY_POLL_S: f64 = 10.0;
 const QUEUE_IDLE_S: i64 = 5 * 60;
 const QUEUE_CHECK_S: f64 = 30.0;
 const RESTORE_CHECK_S: f64 = 30.0;
-const COSTS_LABEL: &str = "At API prices";
-const TIME_LABEL: &str = "Time with Claude";
+const COSTS_LABEL: &str = "Cost";
+const TIME_LABEL: &str = "Active time";
 /// The Todo panel's tabs: the statuses each one shows. Open merges everything not done yet.
 const TODO_TABS: [(&str, &[&str]); 5] = [("Open", &[todo::PROPOSED, "todo", "doing"]), ("Proposed", &[todo::PROPOSED]), ("To do", &["todo"]),
                                          ("In progress", &["doing"]), ("Done", &["done"])];
@@ -1009,11 +1009,44 @@ impl App {
     // ---- Status ----
 
     fn build_status(&mut self) {
-        // Every row's label shares the column, the cost and Claude rows too: sized on the usage rows
-        // alone, it shrank to nothing before the first usage fetch and the values covered the labels.
-        let label_width = self.quota_rows.iter().map(|row| width_of(&row.label)).chain([width_of(COSTS_LABEL), width_of(Provider::Claude.label()), width_of(Provider::Codex.label()), width_of(TIME_LABEL)]).max().unwrap_or(0) as u16;
+        let room = self.width.saturating_sub(4) as usize;
+        let labels: Vec<_> = self.quota_rows.iter().map(|quota| {
+            let window = quota.label.split_once(" · ").map_or("Quota", |(_, window)| window);
+            match window {
+                "5h" => "5-hour".into(),
+                "week" => "Weekly".into(),
+                _ => window.replace(" this week", " weekly"),
+            }
+        }).collect();
+        let capacities: Vec<_> = self.quota_rows.iter().map(|quota| match (quota.state.as_str(), quota.remaining) {
+            ("Available", Some(remaining)) => format!("{remaining}%"),
+            ("Stale", Some(remaining)) => format!("Stale · last {remaining}%"),
+            (state, Some(remaining)) => format!("{remaining}% {state}"),
+            (state, None) => state.into(),
+        }).collect();
+        let label_width = labels.iter().map(|label| width_of(label)).max().unwrap_or(0);
+        let capacity_width = capacities.iter().map(|text| width_of(text)).chain([4]).max().unwrap_or(4);
+        let forecast_width = self.quota_rows.iter().map(|quota| width_of(quota.forecast.text())).chain([11]).max().unwrap_or(11);
+        let reset_width = self.quota_rows.iter().map(|quota| width_of(quota.resets.trim_start_matches("resets in "))).chain([9]).max().unwrap_or(9);
+        let capacity_column = 2 + label_width + 2;
+        let forecast_column = capacity_column + capacity_width + 2;
+        let reset_column = forecast_column + forecast_width + 2;
+        let full_table = reset_column + reset_width <= room;
         let mut lines = Vec::new();
+        if full_table {
+            lines.push(Line::new(vec![segment(capacity_column as u16, "LEFT", dim(FG_DARK)),
+                segment(forecast_column as u16, "RUNS OUT IN", dim(FG_DARK)), segment(reset_column as u16, "RESETS IN", dim(FG_DARK))]));
+        } else {
+            lines.push(Line::new(vec![segment(0, "LEFT · remaining capacity", dim(FG_DARK))]));
+        }
+        let mut previous_provider = "";
         for (index, quota) in self.quota_rows.iter().enumerate() {
+            let provider = quota.label.split_once(" · ").map_or(quota.label.as_str(), |(provider, _)| provider);
+            if provider != previous_provider {
+                if !previous_provider.is_empty() { lines.push(Line::default()); }
+                lines.push(Line::new(vec![segment(0, provider, bold(FG))]));
+                previous_provider = provider;
+            }
             let tint = bold(match quota.state.as_str() {
                 "Available" if quota.remaining.is_some_and(|remaining| remaining <= 50) => YELLOW,
                 "Available" => GREEN,
@@ -1022,55 +1055,100 @@ impl App {
                 "Exhausted" | "Blocked" => RED,
                 _ => FG_DARK,
             });
-            let summary = quota.summary();
-            let room = self.width.saturating_sub(4) as usize;
-            let quota_label_width = (label_width as usize).min(room.saturating_sub(width_of(&summary) + 2));
-            let label = fit(&quota.label, quota_label_width);
-            let end = quota_label_width + 2 + width_of(&summary);
-            let show_reset = !quota.resets.is_empty() && end + 2 + width_of(&quota.resets) <= room;
-            lines.push(Line {
-                segments: vec![segment(0, label, style(FG)), segment(quota_label_width as u16 + 2, summary, tint)],
-                right: if show_reset { vec![part(&quota.resets, dim(FG_DARK))] } else { Vec::new() },
-                item: Some(index), accent: None,
-            });
-            if !quota.forecast.is_empty() {
-                lines.push(Line {
-                    segments: vec![segment(2, fit(&quota.forecast, room.saturating_sub(2)), dim(FG_DARK))],
-                    right: Vec::new(), item: Some(index), accent: None,
-                });
+            let forecast_tint = match quota.forecast {
+                usage::Forecast::Immediate => bold(RED),
+                _ if matches!(quota.state.as_str(), "Low" | "Exhausted" | "Blocked") => bold(RED),
+                usage::Forecast::Depletion(_) => bold(YELLOW),
+                _ => dim(FG_DARK),
+            };
+            let reset = if quota.resets.is_empty() { "—" } else { quota.resets.trim_start_matches("resets in ") };
+            let mut row = Line { item: Some(index), ..Line::default() };
+            if capacity_column + capacity_width <= room {
+                row.segments = vec![segment(2, &labels[index], style(FG)), segment(capacity_column as u16, &capacities[index], tint)];
+            } else {
+                for label in wrap_detail_text(&labels[index], room.saturating_sub(2).max(2)) {
+                    lines.push(Line { segments: vec![segment(2, label, style(FG))], item: Some(index), ..Line::default() });
+                }
+                row.segments = vec![segment(4, fit(&capacities[index], room.saturating_sub(4)), tint)];
             }
+            if full_table {
+                row.segments.push(segment(forecast_column as u16, quota.forecast.text(), forecast_tint));
+                row.segments.push(segment(reset_column as u16, reset, dim(FG_DARK)));
+            }
+            lines.push(row);
+            if !full_table {
+                let forecast = match &quota.forecast {
+                    usage::Forecast::UntilReset => "Lasts until reset".into(),
+                    usage::Forecast::Immediate => "May run out now".into(),
+                    _ => format!("Runs out in {}", quota.forecast.text()),
+                };
+                for (text, tint) in [(forecast, forecast_tint), (format!("Resets in {reset}"), dim(FG_DARK))] {
+                    for text in wrap_detail_text(&text, room.saturating_sub(4).max(2)) {
+                        lines.push(Line { segments: vec![segment(4, text, tint)], item: Some(index), ..Line::default() });
+                    }
+                }
+            }
+        }
+        lines.push(Line::default());
+        for text in wrap_detail_text("Estimates use window-average pace. — = no estimate.", room.max(2)) {
+            lines.push(Line::new(vec![segment(0, text, dim(FG_DARK))]));
         }
         let totals = self.costs.totals();
-        if totals.today > 0.0 || totals.week > 0.0 || totals.month > 0.0 {
-            let mut segments = vec![segment(0, COSTS_LABEL, style(FG))];
-            let mut column = label_width + 2;
-            for (label, amount) in [("today", totals.today), ("week", totals.week), ("month", totals.month)] {
-                let amount = money(amount);
-                segments.push(segment(column, label, dim(FG_DARK)));
-                segments.push(segment(column + label.len() as u16 + 1, &amount, bold(MAGENTA)));
-                column += (label.len() + width_of(&amount) + 3) as u16;
-            }
-            lines.push(Line::new(segments));
-        }
         // All sessions together, never the sum of the projects' times: parallel sessions overlap.
         let together = self.costs.time_together();
+        let mut spending = Vec::new();
+        if totals.today > 0.0 || totals.week > 0.0 || totals.month > 0.0 {
+            spending.push((COSTS_LABEL, [totals.today, totals.week, totals.month].map(money), bold(MAGENTA)));
+        }
         if together.month >= 60.0 {
-            let mut segments = vec![segment(0, TIME_LABEL, style(FG))];
-            let mut column = label_width + 2;
-            for (label, seconds) in [("today", together.today), ("week", together.week), ("month", together.month)] {
-                let amount = Self::duration_text(seconds);
-                segments.push(segment(column, label, dim(FG_DARK)));
-                segments.push(segment(column + label.len() as u16 + 1, &amount, bold(CYAN)));
-                column += (label.len() + width_of(&amount) + 3) as u16;
-            }
-            lines.push(Line::new(segments));
+            spending.push((TIME_LABEL, [together.today, together.week, together.month].map(Self::duration_text), bold(CYAN)));
         }
         let error = self.costs.error();
-        if !error.is_empty() {
-            lines.push(Line::new(vec![segment(0, error, style(YELLOW))]));
+        let all_time = self.costs.all_time();
+        if !spending.is_empty() || all_time > 0.0 || !error.is_empty() {
+            lines.push(Line::default());
+            for text in wrap_detail_text("SPENDING · API-equivalent, not your bill", room.max(2)) {
+                lines.push(Line::new(vec![segment(0, text, bold(FG))]));
+            }
+            let label_width = width_of("All-time cost");
+            let amount_width = spending.iter().flat_map(|(_, amounts, _)| amounts.iter().map(|text| width_of(text))).chain([5]).max().unwrap_or(5);
+            let columns = [0, 1, 2].map(|index| (label_width + 2 + index * (amount_width + 2)) as u16);
+            let periods = ["TODAY", "WEEK", "MONTH"];
+            if columns[2] as usize + amount_width <= room {
+                if !spending.is_empty() {
+                    lines.push(Line::new(periods.iter().enumerate().map(|(index, period)| segment(columns[index], *period, dim(FG_DARK))).collect()));
+                }
+                for (label, amounts, tint) in spending {
+                    let mut segments = vec![segment(0, label, style(FG))];
+                    segments.extend(amounts.iter().enumerate().map(|(index, amount)| segment(columns[index], amount, tint)));
+                    lines.push(Line::new(segments));
+                }
+            } else {
+                for (label, amounts, tint) in spending {
+                    lines.push(Line::new(vec![segment(0, label, style(FG))]));
+                    for (period, amount) in periods.iter().zip(amounts) {
+                        lines.push(Line::new(vec![segment(2, format!("{period}  {amount}"), tint)]));
+                    }
+                }
+            }
+            if all_time > 0.0 {
+                lines.push(Line::new(vec![segment(0, "All-time cost", style(FG)), segment(label_width as u16 + 2, money(all_time), bold(MAGENTA))]));
+            }
+            for text in wrap_detail_text(&error, room.max(2)) {
+                lines.push(Line::new(vec![segment(0, text, style(YELLOW))]));
+            }
         }
-        lines.extend(provider_status_lines(&self.claude_status, label_width));
-        lines.extend(provider_status_lines(&self.codex_status, label_width));
+        lines.push(Line::default());
+        lines.push(Line::new(vec![segment(0, "SERVICE HEALTH", bold(FG))]));
+        let mut claude = provider_status_lines(&self.claude_status, room);
+        let mut codex = provider_status_lines(&self.codex_status, room);
+        let claude_width = claude[0].segments.iter().map(|(column, text, _)| *column as usize + width_of(text)).max().unwrap_or(0);
+        let codex_width = codex[0].segments.iter().map(|(column, text, _)| *column as usize + width_of(text)).max().unwrap_or(0);
+        if claude.len() == 1 && codex.len() == 1 && claude_width + 4 + codex_width <= room {
+            claude[0].segments.extend(codex.remove(0).segments.into_iter().map(|(column, text, tint)| (column + claude_width as u16 + 4, text, tint)));
+        }
+        lines.extend(claude);
+        lines.extend(codex);
         let panel = &mut self.panels[0];
         panel.items = self.quota_rows.len();
         panel.clamp();
@@ -1078,9 +1156,7 @@ impl App {
     }
 
     fn status_subtitle(&self) -> String {
-        let plan = self.plan.clone();
-        let all_time = self.costs.all_time();
-        if all_time > 0.0 { format!("{plan} · all time {}", money(all_time)).trim_start_matches([' ', '·']).to_string() } else { plan }
+        self.plan.clone()
     }
 
     // ---- Sessions ----
@@ -2456,6 +2532,7 @@ impl App {
             let highlighted = focused && line.item.is_some() && line.item == Some(panel.selected);
             let recolor = |style: Style, fg: u8| -> Style {
                 if !highlighted { return style; }
+                if index == 0 { return style.bg(color(BG_HIGHLIGHT)); }
                 let preserve_state = index == 1 && (style.fg == Some(color(RED)) || style.fg == Some(color(BLUE)) || style.fg == Some(color(YELLOW)));
                 if preserve_state { style.bg(color(BG_HIGHLIGHT)) } else { style.fg(color(fg)).bg(color(BG_HIGHLIGHT)) }
             };
@@ -2878,28 +2955,43 @@ impl App {
     }
 }
 
-fn provider_status_lines(status: &ProviderStatus, label_width: u16) -> Vec<Line> {
+fn provider_status_lines(status: &ProviderStatus, room: usize) -> Vec<Line> {
     let (current, error) = status.snapshot();
-    let label = status.provider.label();
+    let label = status.provider.label().trim_end_matches(" Status");
+    let column = width_of(label) + 2;
+    let mut lines = Vec::new();
     let Some(current) = current else {
         let text = if !error.is_empty() { error } else if status.provider.url().is_empty() { "not checked".into() } else { format!("checking {} …", status.provider.host()) };
-        return vec![Line::new(vec![segment(0, label, style(FG)), segment(label_width + 2, text, dim(FG_DARK))])];
+        for (index, text) in wrap_detail_text(&text, room.saturating_sub(column).max(2)).into_iter().enumerate() {
+            let mut segments = Vec::new();
+            if index == 0 { segments.push(segment(0, label, style(FG))); }
+            segments.push(segment(column as u16, text, dim(FG_DARK)));
+            lines.push(Line::new(segments));
+        }
+        return lines;
     };
     let tint = bold(claude_status_color(&current.indicator));
-    let description = match status.provider {
-        Provider::Claude => current.description,
-        Provider::Codex => format!("OpenAI: {}", current.description),
+    let description = if current.indicator == "none" && current.degraded.is_empty() && current.incidents.is_empty() {
+        "Operational".into()
+    } else {
+        current.description
     };
-    let mut first = Line::new(vec![segment(0, label, style(FG)), segment(label_width + 2, format!("● {description}"), tint)]);
+    let description = format!("● {description}{}", if error.is_empty() { "" } else { " (stale)" });
+    for (index, text) in wrap_detail_text(&description, room.saturating_sub(column).max(2)).into_iter().enumerate() {
+        let mut segments = Vec::new();
+        if index == 0 { segments.push(segment(0, label, style(FG))); }
+        segments.push(segment(column as u16, text, tint));
+        lines.push(Line::new(segments));
+    }
+    for detail in current.degraded.iter().take(3).map(|(name, state)| format!("{name}: {state}")).chain(current.incidents.into_iter().take(2)) {
+        for text in wrap_detail_text(&detail, room.saturating_sub(2).max(2)) {
+            lines.push(Line::new(vec![segment(2, text, tint)]));
+        }
+    }
     if !error.is_empty() {
-        first.right = vec![part("stale", style(YELLOW))];
-    }
-    let mut lines = vec![first];
-    for (name, state) in current.degraded.iter().take(3) {
-        lines.push(Line::new(vec![segment(label_width + 4, format!("{name}: {state}"), tint)]));
-    }
-    for incident in current.incidents.iter().take(2) {
-        lines.push(Line::new(vec![segment(label_width + 4, incident, tint)]));
+        for text in wrap_detail_text(&error, room.saturating_sub(2).max(2)) {
+            lines.push(Line::new(vec![segment(2, text, style(YELLOW))]));
+        }
     }
     lines
 }
