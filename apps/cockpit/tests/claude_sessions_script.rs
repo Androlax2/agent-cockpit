@@ -29,7 +29,9 @@ case $1 in
     elif [[ $* == *@role* ]]; then cat "$roles" 2>/dev/null
     else printf '0\n1\n'; fi ;;
   has-session) [[ $3 == "=claude-manager" ]] && exit 0; (( $(grep -c "send-keys" "$SHIM_LOG") < ${SHIM_EXIT_AFTER:-1} )) ;;
-  display-message) if [[ $* == *pane_dead* ]]; then echo 0; elif [[ $* == *pane_active* ]]; then echo "${SHIM_VIEWER_ACTIVE:-0}"; elif [[ $* == *pane_id* ]]; then echo "%10"; elif [[ $* == *pane_width* ]]; then echo "${SHIM_VIEWER_SIZE:-181 47}"; elif [[ $* == *window_width* ]]; then echo "${SHIM_TARGET_SIZE:-181 47}"; elif [[ $* == *pane_height* ]]; then echo "${SHIM_APPROVAL_HEIGHT:-28}"; else echo "claude-retry-9-9"; fi ;;
+  display-message) if [[ $* == *pane_dead* ]]; then echo 0; elif [[ $* == *pane_active* ]]; then
+    if [[ $* == *"-t %11 "* ]]; then echo "${SHIM_VIEWER_ACTIVE:-0}"; else echo "${SHIM_APPROVAL_ACTIVE:-0}"; fi
+    elif [[ $* == *pane_id* ]]; then echo "%10"; elif [[ $* == *pane_width* ]]; then echo "${SHIM_VIEWER_SIZE:-181 47}"; elif [[ $* == *window_width* ]]; then echo "${SHIM_TARGET_SIZE:-181 47}"; elif [[ $* == *pane_height* ]]; then echo "${SHIM_APPROVAL_HEIGHT:-28}"; else echo "claude-retry-9-9"; fi ;;
   split-window) [[ $* == *-P* ]] && echo "%1$(( $(wc -l < "$roles" 2>/dev/null || echo 0) + 1 ))" ;;
   set-option) if [[ $2 == -p && $5 == @role ]]; then echo "$4 $6" >> "$roles"; fi ;;
   capture-pane) printf '%b' "$SHIM_PANE_TEXT" ;;
@@ -180,6 +182,31 @@ fn open_focuses_the_viewer_after_viewing() {
     let manager = Manager::new();
     manager.run(&["open", SESSION_A], &[]);
     assert!(manager.calls("tmux").contains(&"tmux select-pane -t %11".to_string()));
+}
+
+#[test]
+fn opening_a_session_focuses_its_waiting_approval() {
+    let manager = Manager::new();
+    file_request(&manager, "0123456789ab", SESSION_A);
+    fs::write(manager.runtime_file("claude-sessions-approval"), format!("0123456789ab {SESSION_A}\n")).unwrap();
+    manager.run(&["open", SESSION_A], &[]);
+    assert_eq!(manager.tmux_calls("select-pane").last().map(String::as_str), Some("tmux select-pane -t %13"));
+}
+
+#[test]
+fn answering_the_focused_approval_returns_to_the_agent_prompt() {
+    let manager = Manager::new();
+    fs::write(&manager.roles, "%10 sidebar\n%11 viewer\n%76 approval\n").unwrap();
+    manager.run(&["approval-pane", "close"], &[("SHIM_APPROVAL_ACTIVE", "1")]);
+    assert!(manager.calls("tmux").contains(&"tmux select-pane -t %11".to_string()));
+}
+
+#[test]
+fn answering_an_approval_does_not_take_focus_from_the_column() {
+    let manager = Manager::new();
+    fs::write(&manager.roles, "%10 sidebar\n%11 viewer\n%76 approval\n").unwrap();
+    manager.run(&["approval-pane", "close"], &[]);
+    assert!(manager.tmux_calls("select-pane").is_empty());
 }
 
 #[test]

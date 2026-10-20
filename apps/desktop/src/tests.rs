@@ -1000,6 +1000,29 @@ fn every_request_gets_a_pane_before_the_first_is_answered() {
 }
 
 #[test]
+fn approving_hides_the_pane_until_the_command_needs_input() {
+    let mut bench = Bench::new();
+    bench.registry.run_request(RUN_A).unwrap();
+    bench.registry.run_phase(RUN_A, "running");
+    let close = vec!["claude-sessions".to_string(), "approval-pane".into(), "close".into(), RUN_A.into()];
+    assert!(bench.commands().contains(&close), "approval pane stayed open while running");
+    bench.registry.run_phase(RUN_A, "input");
+    let show = vec!["claude-sessions".to_string(), "approval-pane".into(), RUN_A.into()];
+    assert_eq!(bench.commands().iter().filter(|command| **command == show).count(), 2);
+    bench.registry.run_phase(RUN_A, "running");
+    assert_eq!(bench.commands().iter().filter(|command| **command == close).count(), 2);
+}
+
+#[test]
+fn approving_a_queued_request_hides_its_pane() {
+    let mut bench = Bench::new();
+    bench.registry.run_request(RUN_A).unwrap();
+    bench.registry.run_request(RUN_B).unwrap();
+    bench.registry.run_phase(RUN_B, "running");
+    assert!(bench.commands().contains(&vec!["claude-sessions".to_string(), "approval-pane".into(), "close".into(), RUN_B.into()]));
+}
+
+#[test]
 fn a_later_approval_can_run_and_finish_before_the_first_is_answered() {
     let mut bench = Bench::new();
     bench.registry.run_request(RUN_A).unwrap();

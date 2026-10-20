@@ -326,7 +326,9 @@ label_state() {
 }
 
 focus_viewer() {
-    tmux select-pane -t "$(viewer_pane)"
+    local sidebar viewer approval approval_run sidebar_dead
+    read_manager_panes
+    tmux select-pane -t "${approval:-$viewer}"
 }
 
 running_session_in() { # dir agent
@@ -1293,8 +1295,8 @@ prs_window() {
 # session pane. It takes the cursor when Theo is in the session pane, not when he is in the
 # column (the other sessions stay usable there; Ctrl+Tab reaches it).
 # "close <id>" forgets that one. Nothing happens when the manager does not run.
-# The approvals under way, one line each ("<id> <session>"): several sessions can each have one,
-# since the daemon shows the next request while an approved command runs. The pane under the
+# The requests needing input, one line each ("<id> <session>"): several sessions can each have one.
+# Running commands are removed until they ask for input again. The pane under the
 # session pane shows the session on screen's own (view_session and place_approval follow it), and
 # carries the run it shows in @run.
 APPROVAL_STATE="${XDG_RUNTIME_DIR:-/tmp}/claude-sessions-approval"
@@ -1351,6 +1353,9 @@ place_approval() { # [focus]
     if [[ -n $pane ]]; then
         shown=$(tmux show-options -pqv -t "$pane" @run 2>/dev/null || true)
         [[ -n $run && $shown == "$run" ]] && return 0
+        if [[ $(tmux display-message -p -t "$pane" '#{pane_active}' 2>/dev/null) == 1 ]]; then
+            tmux select-pane -t "$(viewer_pane)"
+        fi
         # The pane closes itself when its approval ends (remain-on-exit off): already gone is fine.
         tmux kill-pane -t "$pane" 2>/dev/null || true
     fi

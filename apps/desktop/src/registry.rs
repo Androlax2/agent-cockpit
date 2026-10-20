@@ -713,6 +713,14 @@ impl RunRequests {
         if !RUN_PHASES.contains(&phase) {
             return;
         }
+        let is_known = self.current == id || self.queue.iter().any(|queued| queued == id) || self.running.iter().any(|run| run == id);
+        if is_known {
+            match phase {
+                "running" => { system.run(&["claude-sessions", "approval-pane", "close", id], &[0]); }
+                "input" => { system.run(&["claude-sessions", "approval-pane", id], &[0]); }
+                _ => {}
+            }
+        }
         let input_notice = format!("run-input-{id}");
         if phase == "input" && !system.quiet() {
             banners.raise_notice(&Notice { id: input_notice.clone(), title: "Command waiting".into(), message: "it asks for your input".into() });
