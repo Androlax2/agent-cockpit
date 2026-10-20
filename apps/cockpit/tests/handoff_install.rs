@@ -82,9 +82,19 @@ fn a_checksum_mismatch_installs_nothing() {
 fn a_destination_outside_the_repository_is_refused() {
     let handoff = Handoff::new();
     handoff.manifest("hook.sh\t../../.bashrc\n");
-    let output = handoff.install("y\n");
+    // Exceed the pipe capacity so refusal must happen before all input is written.
+    let output = handoff.install(&"y\n".repeat(1024 * 1024));
     assert_eq!(output.status.code(), Some(1));
     assert!(stdout(&output).contains("refusing"));
+}
+
+#[test]
+fn an_early_child_exit_preserves_its_status_and_output() {
+    let sandbox = Sandbox::new();
+    let output = sandbox.run_with_input("bash", &["-c", "printf 'out'; printf 'err' >&2; exit 23"], &[], &"y\n".repeat(1024 * 1024));
+    assert_eq!(output.status.code(), Some(23));
+    assert_eq!(stdout(&output), "out");
+    assert_eq!(stderr(&output), "err");
 }
 
 #[test]

@@ -150,7 +150,10 @@ impl Sandbox {
         use std::io::Write;
         let mut child = self.command(program, extra).args(arguments).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
             .spawn().unwrap();
-        child.stdin.take().unwrap().write_all(input.as_bytes()).unwrap();
+        if let Err(error) = child.stdin.take().unwrap().write_all(input.as_bytes()) {
+            // Commands can reject a request before consuming stdin; keep their diagnostics.
+            assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe, "cannot write child stdin: {error}");
+        }
         child.wait_with_output().unwrap()
     }
 }
