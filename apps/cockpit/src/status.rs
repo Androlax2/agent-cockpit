@@ -1,5 +1,5 @@
-//! Anthropic's status page (Atlassian Statuspage): the overall indicator, each product not
-//! operational, the open incidents. Fetched in a thread every 2 minutes; an empty CLAUDE_STATUS_URL
+//! Provider status pages: the overall indicator, each product not
+//! operational, the open incidents. Fetched in a thread every 2 minutes; an empty provider status URL
 //! turns it off, and a file:// address is read from disk (tests, the demo cockpit).
 
 use crate::paths;
@@ -8,7 +8,29 @@ use serde_json::Value;
 use std::sync::{Arc, Mutex};
 
 pub const PAGE: &str = "https://status.claude.com/";
+pub const CODEX_PAGE: &str = "https://status.openai.com/";
 const POLL_S: f64 = 120.0;
+
+#[derive(Clone, Copy, Default)]
+pub enum Provider {
+    #[default]
+    Claude,
+    Codex,
+}
+
+impl Provider {
+    pub fn url(self) -> String {
+        match self { Self::Claude => paths::claude_status_url(), Self::Codex => paths::codex_status_url() }
+    }
+
+    pub fn host(self) -> &'static str {
+        match self { Self::Claude => "status.claude.com", Self::Codex => "status.openai.com" }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self { Self::Claude => "Claude Status", Self::Codex => "Codex Status" }
+    }
+}
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Summary {
@@ -48,7 +70,8 @@ struct State {
 }
 
 #[derive(Clone, Default)]
-pub struct ClaudeStatus {
+pub struct ProviderStatus {
+    pub provider: Provider,
     state: Arc<Mutex<State>>,
 }
 
@@ -62,9 +85,14 @@ fn fetch(url: &str) -> Result<Value, String> {
     serde_json::from_str(&body).map_err(|_| "not JSON".to_string())
 }
 
-impl ClaudeStatus {
+impl ProviderStatus {
+    pub fn new(provider: Provider) -> Self {
+        Self { provider, ..Self::default() }
+    }
+
     pub fn tick(&self) {
-        let url = paths::claude_status_url();
+        let url = self.provider.url();
+        let provider = self.provider;
         {
             let mut state = self.state.lock().unwrap();
             if url.is_empty() || state.fetching || now() - state.fetched_at < POLL_S {
@@ -76,7 +104,7 @@ impl ClaudeStatus {
         std::thread::spawn(move || {
             let (current, error) = match fetch(&url) {
                 Ok(summary) => (Some(parse(&summary)), String::new()),
-                Err(reason) => (None, format!("status.claude.com unreachable ({reason})")),
+                Err(reason) => (None, format!("{} unreachable ({reason})", provider.host())),
             };
             let previous = {
                 let mut state = shared.lock().unwrap();
@@ -85,7 +113,7 @@ impl ClaudeStatus {
                     state.current = current.clone();
                 }
                 if error != state.error {
-                    if error.is_empty() { util::log_event("INFO", "status.claude.com reachable again") } else { util::log_event("WARN", &error) }
+                    if error.is_empty() { util::log_event("INFO", &format!("{} reachable again", provider.host())) } else { util::log_event("WARN", &error) }
                 }
                 state.error = error;
                 state.fetched_at = now();
@@ -94,9 +122,9 @@ impl ClaudeStatus {
             };
             if let Some(current) = current {
                 if previous.map(|p| p.indicator) != Some(current.indicator.clone()) {
-                    // WARN, not ERROR: Anthropic's outage is not a claude-sessions bug for the error hand-off.
+                    // Provider outages are not cockpit bugs for the error hand-off.
                     let level = if current.indicator == "none" { "INFO" } else { "WARN" };
-                    util::log_event(level, &format!("Claude status: {}", current.description));
+                    util::log_event(level, &format!("{}: {}", provider.label(), current.description));
                 }
             }
         });

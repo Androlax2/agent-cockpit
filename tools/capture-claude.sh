@@ -63,6 +63,7 @@ trap cleanup EXIT
 # session pane with its title line.
 env -u TMUX HOME="$demo/home" XDG_RUNTIME_DIR="$demo/run" XDG_STATE_HOME="$demo/state" PATH="$demo/bin:$PATH" \
     CLAUDE_STATUS_URL="file://$demo/status.json" \
+    CODEX_STATUS_URL="file://$demo/status.json" \
     tmux -S "$demo_socket" -f "$HOME/.config/tmux/tmux.conf" new-session -d -s claude-manager -x 240 -y 60 "$HOME/.local/bin/claude-sessions-sidebar"
 sidebar=$(demo_tmux list-panes -t claude-manager: -F '#{pane_id}' | head -n 1)
 [[ $sidebar == %* ]] || { echo "capture-claude: the demo cockpit did not start" >&2; exit 1; }

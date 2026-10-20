@@ -9,7 +9,7 @@ use crate::paths;
 use crate::reviews::{self, Review, Reviews};
 use crate::sessions::{self, CONTEXT_COMPACT_AT, History, PastSession, Restorable, Session, ViewState};
 use crate::settings::{self, LAUNCH_SETTINGS, SETTINGS};
-use crate::status::{self, ClaudeStatus};
+use crate::status::{self, Provider, ProviderStatus};
 use crate::todo::{self, Entry, TodoList};
 use crate::usage::{self, BudgetAlerts, Refresher, Window};
 use crate::prompts;
@@ -53,7 +53,6 @@ const QUEUE_IDLE_S: i64 = 5 * 60;
 const QUEUE_CHECK_S: f64 = 30.0;
 const RESTORE_CHECK_S: f64 = 30.0;
 const COSTS_LABEL: &str = "At API prices";
-const CLAUDE_LABEL: &str = "Claude";
 const TIME_LABEL: &str = "Time with Claude";
 /// The Todo panel's tabs: the statuses each one shows. Open merges everything not done yet.
 const TODO_TABS: [(&str, &[&str]); 5] = [("Open", &[todo::PROPOSED, "todo", "doing"]), ("Proposed", &[todo::PROPOSED]), ("To do", &["todo"]),
@@ -82,12 +81,13 @@ const GLOBAL_HELP: [(&str, &str); 14] = [
     ("q ⌘C", "close the manager window; sessions keep running"),
 ];
 /// Rare actions with no key, only in the : list: the panel they run in ("-" for none), a name, a label.
-const PALETTE_ONLY: [(&str, &str, &str); 8] = [
+const PALETTE_ONLY: [(&str, &str, &str); 9] = [
     ("-", "new-with-agent", "new session with an explicit agent: pick a project, then Claude Code or opencode"),
     ("-", "digest", "the digest: yesterday, today, plan usage, who waits, pull requests (also once a day by itself)"),
     ("-", "design", "a design session: a Claude Design canvas, worked on by a session in a project (link, then project)"),
     ("-", "clones", "the clones of + and reviews: delete those with no session, no uncommitted change and nothing unpushed (also once a day by itself)"),
     ("0", "status-page", "open status.claude.com: Anthropic's incidents and each product's state"),
+    ("0", "codex-status-page", "open status.openai.com: OpenAI's incidents and each product's state (Codex)"),
     ("1", "remote", "toggle Remote Control (phone / claude.ai/code) for the selected session"),
     ("1", "drop-queued", "drop the messages queued for the selected session"),
     ("-", "pair-phone", "a QR code that pairs a phone with the phone page (claude-remote), once, within 10 minutes (also in S)"),
@@ -611,7 +611,8 @@ pub struct App {
     pub reviews: Reviews,
     pub todos: TodoList,
     pub errors: ErrorReporter,
-    pub claude_status: ClaudeStatus,
+    pub claude_status: ProviderStatus,
+    pub codex_status: ProviderStatus,
     pub panels: [PanelState; 4],
     pub focus: usize,
     pub help_open: bool,
@@ -686,7 +687,7 @@ impl App {
         Self {
             history: History::default(), view: ViewState::load(), usage: Refresher::new(), alerts: BudgetAlerts::new(util::send_notice),
             costs: Costs::default(), reviews: Reviews::default(), todos: TodoList::load(), errors: ErrorReporter::new(),
-            claude_status: ClaudeStatus::default(), panels: Default::default(), focus: 1,
+            claude_status: ProviderStatus::default(), codex_status: ProviderStatus::new(Provider::Codex), panels: Default::default(), focus: 1,
             help_open: false, has_pane_focus: true, message: String::new(), exiting: Vec::new(), labelled: Default::default(), menu: None, settings_menu: None, pairing: None, restore: Vec::new(),
             held: Vec::new(), held_checked: 0.0, queue_checked: 0.0, gaming: util::gaming, restore_checked: 0.0, start_files: Vec::new(),
             width: DEFAULT_COLUMN_WIDTH, sessions: Vec::new(), windows: Vec::new(), quota_rows: Vec::new(), review_rows: Vec::new(), todo_entries: Vec::new(),
@@ -710,6 +711,7 @@ impl App {
         self.todos.apply_updates();
         self.errors.tick(sessions::reported);
         self.claude_status.tick();
+        self.codex_status.tick();
         self.usage.tick(false);
         self.alerts.check(&self.windows);
         self.costs.tick();
@@ -932,7 +934,7 @@ impl App {
     fn build_status(&mut self) {
         // Every row's label shares the column, the cost and Claude rows too: sized on the usage rows
         // alone, it shrank to nothing before the first usage fetch and the values covered the labels.
-        let label_width = self.quota_rows.iter().map(|row| width_of(&row.label)).chain([width_of(COSTS_LABEL), width_of(CLAUDE_LABEL), width_of(TIME_LABEL)]).max().unwrap_or(0) as u16;
+        let label_width = self.quota_rows.iter().map(|row| width_of(&row.label)).chain([width_of(COSTS_LABEL), width_of(Provider::Claude.label()), width_of(Provider::Codex.label()), width_of(TIME_LABEL)]).max().unwrap_or(0) as u16;
         let mut lines = Vec::new();
         for (index, quota) in self.quota_rows.iter().enumerate() {
             let tint = bold(match quota.state.as_str() {
@@ -984,7 +986,8 @@ impl App {
         if !error.is_empty() {
             lines.push(Line::new(vec![segment(0, error, style(YELLOW))]));
         }
-        lines.extend(claude_status_lines(&self.claude_status, label_width));
+        lines.extend(provider_status_lines(&self.claude_status, label_width));
+        lines.extend(provider_status_lines(&self.codex_status, label_width));
         let panel = &mut self.panels[0];
         panel.items = self.quota_rows.len();
         panel.clamp();
@@ -2547,6 +2550,10 @@ impl App {
                 let _ = Command::new("xdg-open").arg(status::PAGE).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
                 "opening status.claude.com …".into()
             }
+            "codex-status-page" => {
+                let _ = Command::new("xdg-open").arg(status::CODEX_PAGE).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
+                "opening status.openai.com …".into()
+            }
             "remote" => match known {
                 Some(s) if s.is_external() => "external session: no terminal target; use its own window".into(),
                 Some(s) if !s.agent().can(Feature::RemoteControl) => format!("Remote Control is not {}'s to do: {} runs {}", s.agent().label, s.project, s.agent().name),
@@ -2585,20 +2592,28 @@ impl App {
     }
 }
 
-fn claude_status_lines(claude_status: &ClaudeStatus, label_width: u16) -> Vec<Line> {
-    let (current, error) = claude_status.snapshot();
+fn provider_status_lines(status: &ProviderStatus, label_width: u16) -> Vec<Line> {
+    let (current, error) = status.snapshot();
+    let label = status.provider.label();
     let Some(current) = current else {
-        let text = if !error.is_empty() { error } else if paths::claude_status_url().is_empty() { "not checked".into() } else { "checking status.claude.com …".into() };
-        return vec![Line::new(vec![segment(0, CLAUDE_LABEL, style(FG)), segment(label_width + 2, text, dim(FG_DARK))])];
+        let text = if !error.is_empty() { error } else if status.provider.url().is_empty() { "not checked".into() } else { format!("checking {} …", status.provider.host()) };
+        return vec![Line::new(vec![segment(0, label, style(FG)), segment(label_width + 2, text, dim(FG_DARK))])];
     };
     let tint = bold(claude_status_color(&current.indicator));
-    let mut first = Line::new(vec![segment(0, CLAUDE_LABEL, style(FG)), segment(label_width + 2, format!("● {}", current.description), tint)]);
+    let description = match status.provider {
+        Provider::Claude => current.description,
+        Provider::Codex => format!("OpenAI: {}", current.description),
+    };
+    let mut first = Line::new(vec![segment(0, label, style(FG)), segment(label_width + 2, format!("● {description}"), tint)]);
     if !error.is_empty() {
         first.right = vec![part("stale", style(YELLOW))];
     }
     let mut lines = vec![first];
     for (name, state) in current.degraded.iter().take(3) {
         lines.push(Line::new(vec![segment(label_width + 4, format!("{name}: {state}"), tint)]));
+    }
+    for incident in current.incidents.iter().take(2) {
+        lines.push(Line::new(vec![segment(label_width + 4, incident, tint)]));
     }
     lines
 }

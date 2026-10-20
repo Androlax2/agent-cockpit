@@ -98,6 +98,7 @@ impl Sandbox {
             ("PATH".into(), path),
             ("SHIM_LOG".into(), log.display().to_string()),
             ("CLAUDE_STATUS_URL".into(), String::new()), // no network: status.claude.com is not fetched
+            ("CODEX_STATUS_URL".into(), String::new()),
             ("CLAUDE_ANSWERS_KEY".into(), ANSWERS_KEY.to_string()),
             ("CLAUDE_AUDIT_JOURNAL".into(), "off".to_string()),
         ]);

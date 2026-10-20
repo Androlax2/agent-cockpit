@@ -86,3 +86,6 @@ pub fn reviews_fixture() -> Option<PathBuf> { env::var("CLAUDE_REVIEWS_FIXTURE")
 pub fn claude_status_url() -> String {
     env::var("CLAUDE_STATUS_URL").unwrap_or_else(|_| "https://status.claude.com/api/v2/summary.json".into())
 }
+pub fn codex_status_url() -> String {
+    env::var("CODEX_STATUS_URL").unwrap_or_else(|_| "https://status.openai.com/api/v2/summary.json".into())
+}

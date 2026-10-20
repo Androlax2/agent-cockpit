@@ -6,8 +6,8 @@
 //! build writes home/ (statusline facts, history, plan name, parallel clones), run/ (the session
 //! snapshot, plan usage, the viewed session), state/ (todo list), repos/ (git checkouts with their
 //! branch and a github.com origin), bin/ (a gh that answers pull requests and issues from here, a
-//! no-op claude-sessions), and status.json for status.claude.com. Pointing HOME, XDG_RUNTIME_DIR,
-//! XDG_STATE_HOME, PATH and CLAUDE_STATUS_URL at it shows none of the real sessions, tasks or costs.
+//! no-op claude-sessions), and status.json for both provider status feeds. Pointing HOME, XDG_RUNTIME_DIR,
+//! XDG_STATE_HOME, PATH, CLAUDE_STATUS_URL and CODEX_STATUS_URL at it shows none of the real sessions, tasks or costs.
 
 use chrono::{Duration as Span, Utc};
 use serde_json::{Value, json};

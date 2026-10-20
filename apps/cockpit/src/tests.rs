@@ -49,6 +49,7 @@ impl Fixture {
             std::env::set_var("CLAUDE_AUDIT_JOURNAL", "off");
             std::env::set_var("PATH", path);
             std::env::set_var("CLAUDE_STATUS_URL", "");
+            std::env::set_var("CODEX_STATUS_URL", "");
             // H and the costs read opencode's database: never Theo's, wherever XDG_DATA_HOME points.
             std::env::set_var("CLAUDE_SESSIONS_OPENCODE_DB", root.join("home/.local/share/opencode/opencode.db"));
             // CLAUDE_SESSIONS_STATE_HOME too: set in opencode sessions, it would win over the
@@ -961,6 +962,16 @@ fn the_palette_runs_an_action_that_has_no_key() {
 }
 
 #[test]
+fn the_palette_opens_codexs_official_status_page() {
+    let fixture = Fixture::new();
+    fixture.shim("fzf", "grep 'status.openai.com'");
+    let mut app = fixture.app();
+    app.handle(Key::Char(':'), &mut FakeScreen::default());
+    assert_eq!(app.focus, 0);
+    assert_eq!(fixture.wait_for_calls("xdg-open", 1), vec!["xdg-open https://status.openai.com/".to_string()]);
+}
+
+#[test]
 fn the_rare_actions_are_left_without_a_key() {
     // The audit of October 2026 took these off the keyboard: they live in the : list only.
     let fixture = Fixture::new();
@@ -1260,7 +1271,7 @@ fn quota_polling_refreshes_both_providers_and_forwards_forced_refresh() {
 fn pull_requests_and_todo_with_nothing_open_collapse_to_their_borders() {
     let fixture = Fixture::new();
     let app = fixture.app();
-    assert_eq!(app.layout(45), vec![5, 34, 2, 2]);
+    assert_eq!(app.layout(45), vec![6, 33, 2, 2]);
 }
 
 #[test]
@@ -1281,7 +1292,7 @@ fn a_collapsed_panel_opens_while_focused() {
     let fixture = Fixture::new();
     let mut app = fixture.app();
     app.focus = 3;
-    assert_eq!(app.layout(45), vec![5, 4, 2, 32]);
+    assert_eq!(app.layout(45), vec![6, 4, 2, 31]);
 }
 
 #[test]
@@ -1301,7 +1312,7 @@ fn an_unfocused_panel_takes_only_the_rows_its_lines_need() {
     app.reviews.set_rows(vec![Review { title: "VAT".into(), repository: "shop".into(), ..Review::default() }]);
     app.todos.add("runway", "/r/runway", "add a healthcheck");
     app.build();
-    assert_eq!(app.layout(45), vec![5, 30, 4, 4]);
+    assert_eq!(app.layout(45), vec![6, 29, 4, 4]);
 }
 
 #[test]
@@ -1313,14 +1324,76 @@ fn an_unfocused_panel_takes_at_most_a_quarter_of_the_column_after_the_fixed_stat
         app.todos.add("runway", "/r/runway", &format!("item {number}"));
     }
     app.build();
-    // No usage cache: two unknown providers and the Claude status line, five with the borders.
-    assert_eq!(app.layout(45), vec![5, 20, 9, 9]);
+    // Two unknown quotas and two provider statuses, six with the borders.
+    assert_eq!(app.layout(45), vec![6, 19, 9, 9]);
     app.focus = 3;
     // No session: Sessions needs only its one line.
-    assert_eq!(app.layout(45), vec![5, 4, 9, 25]);
+    assert_eq!(app.layout(45), vec![6, 4, 9, 24]);
     app.focus = 0;
-    assert_eq!(app.layout(45), vec![5, 20, 9, 9]);
+    assert_eq!(app.layout(45), vec![6, 19, 9, 9]);
     assert!(app.layout(12).iter().all(|height| *height >= 3));
+}
+
+#[test]
+fn both_provider_statuses_are_visible_before_their_first_fetch() {
+    let fixture = Fixture::new();
+    let app = fixture.app();
+    let lines = texts(&app, 0);
+    assert!(lines.contains(&"Claude Statusnot checked".to_string()));
+    assert!(lines.contains(&"Codex Statusnot checked".to_string()));
+}
+
+#[test]
+fn codexs_status_shows_outage_details_independently_of_claude() {
+    let fixture = Fixture::new();
+    let claude = fixture.write("claude-status.json", &json!({"status": {"indicator": "none", "description": "All Systems Operational"},
+        "components": [], "incidents": []}).to_string());
+    let codex = fixture.write("codex-status.json", &json!({"status": {"indicator": "major", "description": "Partial System Outage"},
+        "components": [{"name": "Codex in ChatGPT Desktop", "status": "major_outage"}],
+        "incidents": [{"name": "Codex requests failing", "status": "investigating"}, {"name": "Old incident", "status": "resolved"}]}).to_string());
+    unsafe {
+        std::env::set_var("CLAUDE_STATUS_URL", format!("file://{}", claude.display()));
+        std::env::set_var("CODEX_STATUS_URL", format!("file://{}", codex.display()));
+    }
+    let mut app = fixture.app();
+    app.claude_status.fetch_now();
+    app.codex_status.fetch_now();
+    app.build();
+    let lines = texts(&app, 0);
+    assert!(lines.contains(&"Claude Status● All Systems Operational".to_string()));
+    assert!(lines.contains(&"Codex Status● OpenAI: Partial System Outage".to_string()));
+    assert!(lines.contains(&"Codex in ChatGPT Desktop: major outage".to_string()));
+    assert!(lines.contains(&"Codex requests failing".to_string()));
+    assert!(!lines.iter().any(|line| line.contains("Old incident")));
+}
+
+#[test]
+fn codexs_status_is_operational_when_its_official_feed_is_healthy() {
+    let fixture = Fixture::new();
+    let summary = fixture.write("codex-status.json", &json!({"status": {"indicator": "none", "description": "All Systems Operational"},
+        "components": [], "incidents": []}).to_string());
+    unsafe { std::env::set_var("CODEX_STATUS_URL", format!("file://{}", summary.display())) };
+    let mut app = fixture.app();
+    app.tick();
+    for _ in 0..100 {
+        if app.codex_status.snapshot().0.is_some() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    app.build();
+    assert!(texts(&app, 0).contains(&"Codex Status● OpenAI: All Systems Operational".to_string()));
+}
+
+#[test]
+fn an_unreachable_codex_status_feed_does_not_report_a_healthy_service() {
+    let fixture = Fixture::new();
+    unsafe { std::env::set_var("CODEX_STATUS_URL", format!("file://{}", fixture.path("missing.json").display())) };
+    let mut app = fixture.app();
+    app.codex_status.fetch_now();
+    app.build();
+    assert!(texts(&app, 0).iter().any(|line| line.starts_with("Codex Statusstatus.openai.com unreachable")));
+    assert!(!fs::read_to_string(fixture.path("state/claude-sessions/log")).unwrap_or_default().contains(" ERROR "));
 }
 
 #[test]
@@ -1332,7 +1405,7 @@ fn claudes_status_shows_in_status_and_warns_in_sessions_only_when_degraded() {
     let mut app = fixture.app();
     app.claude_status.fetch_now();
     app.build();
-    assert!(texts(&app, 0).contains(&"Claude● Partially Degraded Service".to_string()));
+    assert!(texts(&app, 0).contains(&"Claude Status● Partially Degraded Service".to_string()));
     assert_eq!(&texts(&app, 1)[..2], &["⚠ Claude: Partially Degraded Service".to_string(), "Claude Code: partial outage · Elevated errors".to_string()]);
     fs::write(&summary, json!({"status": {"indicator": "none", "description": "All Systems Operational"}}).to_string()).unwrap();
     let mut calm = App::new();
