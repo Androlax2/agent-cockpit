@@ -2,6 +2,8 @@
 //! the effort and settings menus, the help, and every key.
 
 use crate::agents::{self, Feature};
+use crate::continuity::Continuity;
+mod continuity_ui;
 use crate::costs::Costs;
 use crate::errors::ErrorReporter;
 use crate::paths;
@@ -81,7 +83,9 @@ const GLOBAL_HELP: [(&str, &str); 14] = [
     ("q ⌘C", "close the manager window; sessions keep running"),
 ];
 /// Rare actions with no key, only in the : list: the panel they run in ("-" for none), a name, a label.
-const PALETTE_ONLY: [(&str, &str, &str); 9] = [
+const PALETTE_ONLY: [(&str, &str, &str); 11] = [
+    ("1", "return-note", "write your session return note (never sent to the agent)"),
+    ("1", "clear-return-note", "explicitly remove your session return note"),
     ("-", "new-with-agent", "new session with an explicit agent: pick a project, then Claude Code or opencode"),
     ("-", "digest", "the digest: yesterday, today, plan usage, who waits, pull requests (also once a day by itself)"),
     ("-", "design", "a design session: a Claude Design canvas, worked on by a session in a project (link, then project)"),
@@ -674,6 +678,7 @@ struct SavedTodoScope {
 }
 
 pub struct App {
+    pub(crate) continuity: Result<Continuity, String>,
     pub history: History,
     pub view: ViewState,
     pub(crate) usage: Refresher,
@@ -776,6 +781,7 @@ impl App {
             Err(error) => (format!("TODO draft recovery failed; drafts kept: {error}"), false),
         };
         Self {
+            continuity: Continuity::load(&paths::continuity()),
             history: History::default(), view: ViewState::load(), usage: Refresher::new(), alerts: BudgetAlerts::new(util::send_notice),
             costs: Costs::default(), reviews: Reviews::default(), todos, errors: ErrorReporter::new(),
             claude_status: ProviderStatus::default(), codex_status: ProviderStatus::new(Provider::Codex), panels: Default::default(), focus: 1, previous_panel: 1,
@@ -1523,6 +1529,11 @@ impl App {
         lines.push(Line { segments: vec![segment(0, format!("Selected: {task_title}"), bold(BLUE))], right: vec![Part { text: "i Full details".into(), style: style(CYAN), action: Some("session-details") }], ..Line::default() });
         let location = if branch.is_empty() { session.project.clone() } else { format!("{} / {branch}", session.project) };
         lines.push(Line { segments: vec![segment(0, location, dim(FG_DARK))], right, ..Line::default() });
+        if let Ok(continuity) = &self.continuity {
+            if let Some(note) = continuity.note(&session.session) {
+                lines.push(Line::new(vec![segment(0, format!("Your note: {note}"), style(CYAN))]));
+            }
+        }
         if let Some(design) = &session.design {
             badges.push(part(format!("◆ {}", design.title), style(MAGENTA)));
         }
@@ -1547,8 +1558,8 @@ impl App {
 
     fn session_summary_lines(&self) -> Vec<Line> {
         let needing = self.sessions.iter().filter(|session| session.needs_attention()).count();
-        let working = self.sessions.iter().filter(|session| matches!(sessions::activity_label(session), "Working" | "Command running")).count();
-        let ready = self.sessions.iter().filter(|session| sessions::activity_label(session) == "Ready").count();
+        let working = self.sessions.iter().filter(|session| !session.needs_attention() && matches!(sessions::activity_label(session), "Working" | "Command running")).count();
+        let ready = self.sessions.iter().filter(|session| !session.needs_attention() && sessions::activity_label(session) == "Ready").count();
         let unknown = self.sessions.len() - needing - working - ready;
         let attention = if needing == 0 { "Nothing needs you".into() } else { format!("! {needing} need you") };
         let mut counts = format!("{working} working · {ready} ready");
@@ -1590,7 +1601,10 @@ impl App {
         let title = self.session_task_titles.get(&session.session).map(String::as_str).unwrap_or(&session.project);
         let branch = self.session_branches.get(&session.session).map(String::as_str).unwrap_or("");
         let mut text = format!("Task: {}\nOriginal title: {title}\nProject: {} / {branch}\nActivity: {}\n\n",
-                               self.session_display_title(session), session.project, sessions::activity_label(session));
+                                self.session_display_title(session), session.project, sessions::activity_label(session));
+        if let Ok(continuity) = &self.continuity {
+            if let Some(note) = continuity.note(&session.session) { text += &format!("Your note: {note}\n\n"); }
+        }
         if session.needs_attention() {
             let request = if !session.full_request.is_empty() { session.full_request.clone() }
                 else if !session.request.is_empty() { session.request.clone() }
@@ -2586,6 +2600,9 @@ impl App {
             top += panel_height;
         }
         self.draw_footer(buffer, height.saturating_sub(1), width);
+        if let Err(error) = &self.continuity {
+            put(buffer, height.saturating_sub(1), 0, &format!("Continuity unavailable: {error}"), bold(RED));
+        }
         if let Some(menu) = self.menu.as_mut() {
             menu.draw(buffer);
         }
@@ -3068,6 +3085,7 @@ impl App {
     fn run_palette_only(&mut self, name: &str, screen: &mut dyn Screen) -> String {
         let known = self.selected_session().filter(|s| s.state != "unknown");
         match name {
+            "return-note" | "clear-return-note" => self.run_continuity_action(name, screen),
             "new-with-agent" => {
                 let Some(directory) = screen.outside(&mut || pick_project()).filter(|directory| !directory.is_empty()) else { return String::new() };
                 let Some(agent) = screen.outside(&mut || pick_agent()) else { return String::new() };

@@ -5,6 +5,7 @@ pub mod app;
 pub mod approval;
 pub mod audit;
 pub mod costs;
+pub mod continuity;
 pub mod errors;
 pub mod paths;
 pub mod prompts;

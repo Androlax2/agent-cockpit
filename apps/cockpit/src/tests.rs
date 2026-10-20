@@ -196,6 +196,148 @@ fn external_session(id: &str, state: &str, project: &str, cwd: &str, started: i6
 
 // ---- Sessions ----
 
+fn continuity_action(app: &mut App, action: &str, answers: &[&str]) {
+    let mut typed = vec![action];
+    typed.extend_from_slice(answers);
+    app.handle(Key::Char(':'), &mut FakeScreen::typing(&typed));
+    app.redraw();
+}
+
+#[test]
+fn continuity_return_notes_persist_without_becoming_agent_messages() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "shop", "/r/shop", 1)]));
+    let mut app = fixture.app();
+    continuity_action(&mut app, "1\treturn-note", &["Review the migration first."]);
+    assert!(texts(&app, 1).join("\n").contains("Your note: Review the migration first."));
+    assert!(texts(&fixture.app(), 1).join("\n").contains("Review the migration first."));
+    assert!(!fixture.calls("claude-sessions").iter().any(|call| call.contains(" say ")));
+    use std::os::unix::fs::PermissionsExt;
+    assert_eq!(fs::metadata(fixture.path("state/claude-sessions/continuity.json")).unwrap().permissions().mode() & 0o777, 0o600);
+}
+
+#[test]
+fn continuity_cancel_preserves_a_note_and_clear_explicitly_removes_it() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "shop", "/r/shop", 1)]));
+    let mut app = fixture.app();
+    continuity_action(&mut app, "1\treturn-note", &["Keep me"]);
+    continuity_action(&mut app, "1\treturn-note", &[""]);
+    assert!(texts(&app, 1).join("\n").contains("Keep me"));
+    continuity_action(&mut app, "1\tclear-return-note", &[]);
+    assert!(!texts(&fixture.app(), 1).join("\n").contains("Keep me"));
+}
+
+#[test]
+fn continuity_note_validation_preserves_the_previous_note() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "shop", "/r/shop", 1)]));
+    let mut app = fixture.app();
+    let accepted = "é".repeat(280);
+    continuity_action(&mut app, "1\treturn-note", &[&accepted]);
+    for rejected in ["é".repeat(281), "bad\u{1b}note".into(), "bad\nnote".into(), "#{pane}".into(), "#(run)".into()] {
+        continuity_action(&mut app, "1\treturn-note", &[&rejected]);
+        assert!(app.message.contains("invalid return note"), "{}", app.message);
+    }
+    let saved: Value = serde_json::from_str(&fs::read_to_string(fixture.path("state/claude-sessions/continuity.json")).unwrap()).unwrap();
+    assert_eq!(saved["sessions"][SESSION_A]["note"], accepted);
+}
+
+#[test]
+fn continuity_invalid_state_is_preserved_and_warns_after_other_keys() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "shop", "/r/shop", 1)]));
+    for contents in ["not json", "{\"version\":2}", "{}"] {
+        let path = fixture.write("state/claude-sessions/continuity.json", contents);
+        let mut app = fixture.app();
+        continuity_action(&mut app, "1\treturn-note", &["Do not overwrite"]);
+        app.handle(Key::Down, &mut FakeScreen::default());
+        let rows = buffer_rows(&render(&mut app, 100, 40)).join("\n");
+        assert!(rows.contains("Continuity unavailable"), "{rows}");
+        assert_eq!(fs::read_to_string(path).unwrap(), contents);
+    }
+}
+
+#[test]
+fn continuity_symlink_and_oversized_state_are_not_overwritten() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "shop", "/r/shop", 1)]));
+    let target = fixture.write("private.json", "{\"version\":1}");
+    let path = fixture.path("state/claude-sessions/continuity.json");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(&target, &path).unwrap();
+    let mut app = fixture.app();
+    continuity_action(&mut app, "1\treturn-note", &["Must fail"]);
+    assert!(fs::symlink_metadata(&path).unwrap().file_type().is_symlink());
+    assert_eq!(fs::read_to_string(target).unwrap(), "{\"version\":1}");
+    assert!(app.message.contains("Continuity unavailable"));
+    fs::remove_file(&path).unwrap();
+    fs::write(&path, " ".repeat(16 * 1024 * 1024 + 1)).unwrap();
+    let mut app = fixture.app();
+    continuity_action(&mut app, "1\treturn-note", &["Must fail"]);
+    assert!(app.message.contains("Continuity unavailable"));
+    assert_eq!(fs::metadata(path).unwrap().len(), 16 * 1024 * 1024 + 1);
+}
+
+#[test]
+fn continuity_notes_preserve_unknown_state_and_are_not_written_during_render() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "shop", "/r/shop", 1)]));
+    let path = fixture.write("state/claude-sessions/continuity.json", &json!({"version":1,"sessions":{},"tasks":{},"prs":{},"future":{"keep":true}}).to_string());
+    let mut app = fixture.app();
+    continuity_action(&mut app, "1\treturn-note", &["Keep me"]);
+    let before = fs::metadata(&path).unwrap().modified().unwrap();
+    for (width, height) in [(30,12), (60,24), (100,40)] {
+        render(&mut app, width, height);
+        assert!(app.palette_entries().iter().any(|entry| entry.contains("return-note")));
+    }
+    assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), before);
+    let saved: Value = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+    assert_eq!(saved["future"]["keep"], true);
+}
+
+#[test]
+fn continuity_named_pipe_state_is_refused_without_blocking() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "shop", "/r/shop", 1)]));
+    let path = fixture.path("state/claude-sessions/continuity.json");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    assert!(std::process::Command::new("mkfifo").arg(&path).status().unwrap().success());
+    let mut app = fixture.app();
+    continuity_action(&mut app, "1\treturn-note", &["Must fail"]);
+    assert!(app.message.contains("Continuity unavailable"));
+    use std::os::unix::fs::FileTypeExt;
+    assert!(fs::symlink_metadata(path).unwrap().file_type().is_fifo());
+}
+
+#[test]
+fn continuity_session_exit_preserves_the_note_without_giving_it_to_a_new_session() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "shop", "/r/shop", 1)]));
+    let mut app = fixture.app();
+    continuity_action(&mut app, "1\treturn-note", &["Only for the old conversation"]);
+    fixture.snapshot(json!([session(SESSION_B, "waiting", "shop", "/r/shop", 2)]));
+    app.build();
+    assert!(!texts(&app, 1).join("\n").contains("Only for the old conversation"));
+    let saved: Value = serde_json::from_str(&fs::read_to_string(fixture.path("state/claude-sessions/continuity.json")).unwrap()).unwrap();
+    assert_eq!(saved["sessions"][SESSION_A]["note"], "Only for the old conversation");
+    assert!(saved["sessions"][SESSION_B]["note"].is_null());
+}
+
+#[test]
+fn continuity_failed_note_save_keeps_the_in_memory_note() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "shop", "/r/shop", 1)]));
+    let mut app = fixture.app();
+    continuity_action(&mut app, "1\treturn-note", &["Original"]);
+    let path = fixture.path("state/claude-sessions/continuity.json");
+    fs::rename(&path, path.with_extension("backup")).unwrap();
+    fs::create_dir(&path).unwrap();
+    continuity_action(&mut app, "1\treturn-note", &["Replacement"]);
+    assert!(app.message.contains("cannot save continuity"));
+    assert!(texts(&app, 1).join("\n").contains("Your note: Original"));
+}
+
 #[test]
 fn activity_labels_follow_reported_state_without_guessing() {
     for (state, phase, expected) in [
