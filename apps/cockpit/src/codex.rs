@@ -30,7 +30,6 @@ pub fn translate_hook(payload: &Value) -> Result<Option<Value>, String> {
     let state = match event {
         "SessionStart" | "UserPromptSubmit" | "PostToolUse" | "NeedsInput" => Some("working"),
         "PermissionRequest" | "Interrupt" => Some("needs-you"),
-        "Stop" if payload.get("stop_hook_active").and_then(Value::as_bool) == Some(true) => Some("working"),
         "Stop" => Some("waiting"),
         "SessionEnd" => Some("gone"),
         "TaskLabel" => None,

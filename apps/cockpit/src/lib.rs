@@ -17,6 +17,7 @@ pub mod reviews;
 pub mod sessions;
 pub mod settings;
 pub mod status;
+pub mod teams;
 pub mod todo;
 mod todo_editor;
 mod todo_composer;

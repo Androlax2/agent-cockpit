@@ -390,15 +390,55 @@ fn handle_connection(received: Received, registry: &Rc<RefCell<Registry>>) {
 }
 
 fn listen_for_reports(registry: &Rc<RefCell<Registry>>) {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::{Arc, Mutex};
-    let listener = match report_listener() {
+    match report_listener() {
+        Ok(listener) => serve(listener, registry, REPORT_MAX_BYTES, handle_connection),
+        Err(error) => eprintln!("osd: no report socket: {error}"),
+    }
+}
+
+/// One JSON team action per connection, answered with a TeamReply. The sender is the kernel's peer
+/// pid; nothing in the request names who sent it.
+fn handle_team_connection(received: Received, registry: &Rc<RefCell<Registry>>) {
+    let Received { mut stream, sender, text } = received;
+    let reply = match serde_json::from_str::<cockpit::teams::AgentAction>(&text) {
+        Ok(action) => desktop::teams::request(&mut registry.borrow_mut(), sender, action),
+        Err(error) => Err(cockpit::teams::TeamError::new(cockpit::teams::ErrorCode::Invalid, format!("invalid team action: {error}"))),
+    };
+    let reply = reply.unwrap_or_else(|error| cockpit::teams::TeamReply { request_id: String::new(), result: Err(error) });
+    let _ = std::io::Write::write_all(&mut stream, format!("{}\n", serde_json::to_string(&reply).unwrap_or_default()).as_bytes());
+}
+
+/// The team socket lives in a 0700 host folder; each project's sandbox reaches it only through a
+/// hard link in its own read-only answers mount (cockpit::teams::client::publish_socket).
+fn listen_for_teams(registry: &Rc<RefCell<Registry>>) {
+    use std::os::unix::fs::DirBuilderExt;
+    let path = cockpit::paths::team_agent_socket();
+    let folder = path.parent().expect("the team socket has a folder").to_path_buf();
+    let bound = std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&folder)
+        .and_then(|()| match std::fs::remove_file(&path) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error),
+            _ => std::os::unix::net::UnixListener::bind(&path),
+        });
+    let listener = match bound {
         Ok(listener) => listener,
         Err(error) => {
-            eprintln!("osd: no report socket: {error}");
+            eprintln!("osd: no team socket, linked sessions unavailable: {error}");
             return;
         }
     };
+    // Sessions started before this daemon still hold links to the old socket: link them again.
+    let answers = cockpit::paths::runtime_dir().join("claude-answers");
+    for project in std::fs::read_dir(&answers).into_iter().flatten().flatten() {
+        if let Err(error) = cockpit::teams::client::publish_socket(&path, &project.path()) {
+            eprintln!("osd: team socket not linked into {}: {error}", project.path().display());
+        }
+    }
+    serve(listener, registry, cockpit::teams::client::REQUEST_MAX, handle_team_connection);
+}
+
+fn serve(listener: std::os::unix::net::UnixListener, registry: &Rc<RefCell<Registry>>, max_bytes: usize, handler: fn(Received, &Rc<RefCell<Registry>>)) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
     let _ = listener.set_nonblocking(true);
     let raw = listener.as_raw_fd();
     let finished: Arc<Mutex<Vec<Received>>> = Arc::default();
@@ -426,7 +466,7 @@ fn listen_for_reports(registry: &Rc<RefCell<Registry>>) {
                 readers.fetch_add(1, Ordering::SeqCst);
                 std::thread::spawn(move || {
                     let reply_end = stream.try_clone();
-                    let message = desktop::fifo::read_message(stream, REPORT_READ_DEADLINE, REPORT_MAX_BYTES);
+                    let message = desktop::fifo::read_message(stream, REPORT_READ_DEADLINE, max_bytes);
                     if let Err(reason) = &message {
                         eprintln!("osd: a report connection from pid {sender} dropped: {reason}");
                     }
@@ -447,7 +487,7 @@ fn listen_for_reports(registry: &Rc<RefCell<Registry>>) {
         while (&wake_reader).read(&mut drained).is_ok_and(|count| count > 0) {}
         let ready: Vec<Received> = std::mem::take(&mut *finished.lock().unwrap());
         for received in ready {
-            handle_connection(received, &registry);
+            handler(received, &registry);
         }
         glib::ControlFlow::Continue
     });
@@ -466,6 +506,7 @@ fn activate(app: &Application) {
     listen(&cockpit::paths::osd_fifo(), false, &registry, &island);
     listen(&cockpit::paths::osd_host_fifo(), true, &registry, &island);
     listen_for_reports(&registry);
+    listen_for_teams(&registry);
     {
         let registry = registry.clone();
         glib::timeout_add_seconds_local(1, move || {

@@ -93,6 +93,11 @@ answers_dir="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/claude-answers/$answers_key"
 mkdir -p "$answers_dir/runs" "$answers_dir/guides"
 export CLAUDE_ANSWERS_KEY="$answers_key"
 greywall_options="$greywall_options --allow-read-path $answers_dir"
+# Linked sessions (cockpit-team): the daemon's host-only team socket, hard-linked into this
+# project's read-only answers folder. No new mount; a session sees no other project's link.
+if [ -x "$HOME/.local/bin/cockpit-team" ] && ! "$HOME/.local/bin/cockpit-team" prepare; then
+    echo "$agent launcher: linked-session messaging unavailable until the OSD daemon runs" >&2
+fi
 
 # The work clone and its parallel clones (<clones>/dotfiles/<name>) fetch from the live checkout
 # (their origin) to start from what is applied, and the session hook compares their commits with

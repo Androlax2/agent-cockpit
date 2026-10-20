@@ -163,6 +163,8 @@ pub struct Report {
     /// Which agent runs the session (cockpit::agents). None when the report did not say: Claude.
     pub agent: Option<String>,
     pub native_thread: Option<String>,
+    /// Set only by the daemon from the sender's launcher incarnation, never parsed from a report.
+    pub runtime: Option<String>,
     pub target: BTreeMap<String, String>,
 }
 
@@ -266,7 +268,7 @@ pub fn parse_session(raw: &str) -> Result<Report, String> {
         agents: report.get("agents").and_then(Value::as_u64),
         background: report.get("background").and_then(Value::as_u64),
         apps: report.get("apps").and_then(Value::as_str).map(str::to_string),
-        agent: report.get("agent").and_then(Value::as_str).map(str::to_string), native_thread, target,
+        agent: report.get("agent").and_then(Value::as_str).map(str::to_string), native_thread, runtime: None, target,
     })
 }
 
@@ -399,6 +401,8 @@ pub trait System {
     fn sender_target(&mut self, sender: u32) -> Option<BTreeMap<String, String>>;
     /// sandbox_directory for the process that sent a report.
     fn sender_directory(&mut self, sender: u32) -> Option<String>;
+    fn sender_runtime(&mut self, _sender: u32) -> Option<String> { None }
+    fn runtime_is_live(&mut self, _runtime: &str) -> bool { false }
     fn quiet(&mut self) -> bool {
         self.in_meeting() || self.gaming()
     }
@@ -1064,6 +1068,8 @@ pub struct Entry {
     /// The name of the agent that runs it (cockpit::agents).
     pub agent: String,
     pub native_thread: String,
+    /// The launcher incarnation that reported it (trusted_runtime); never published.
+    pub runtime: String,
 }
 
 pub struct Registry {
@@ -1076,6 +1082,8 @@ pub struct Registry {
     pub guides: GuideRequests,
     recent_written: (f64, Vec<String>),
     project_cache: HashMap<String, String>,
+    /// Linked-session state, opened on first use (teams.rs).
+    pub(crate) teams: Option<cockpit::teams::store::Connection>,
 }
 
 pub fn snapshot_path() -> PathBuf {
@@ -1085,7 +1093,7 @@ pub fn snapshot_path() -> PathBuf {
 impl Registry {
     pub fn new(system: Box<dyn System>, banners: Box<dyn Banners>) -> Self {
         let mut registry = Registry { system, banners, sessions: BTreeMap::new(), held: BTreeMap::new(), runs: RunRequests::default(),
-                                      guides: GuideRequests::default(), recent_written: (0.0, Vec::new()), project_cache: HashMap::new() };
+                                      guides: GuideRequests::default(), recent_written: (0.0, Vec::new()), project_cache: HashMap::new(), teams: None };
         registry.load_snapshot();
         registry
     }
@@ -1181,6 +1189,7 @@ impl Registry {
             }
         }
         report.target = target;
+        report.runtime = self.system.sender_runtime(sender);
         // The session's folder is where its sandbox started, never the one the report claims: a
         // claimed folder of another project would make a restart resume the session there, in that
         // project's sandbox with its token (security audit 2026-10-19, M1).
@@ -1218,6 +1227,9 @@ impl Registry {
             changed = true;
         }
         let mut entry = self.sessions.remove(&session).unwrap();
+        if let Some(runtime) = report.runtime.as_ref().filter(|runtime| **runtime != entry.runtime) {
+            entry.runtime = runtime.clone();
+        }
         if let Some(native) = report.native_thread.as_ref().filter(|native| **native != entry.native_thread) {
             entry.native_thread = native.clone();
             changed = true;
@@ -1810,6 +1822,33 @@ pub trait Processes {
         let _ = pid;
         None
     }
+    fn start_time(&self, _pid: &str) -> Option<String> { None }
+    fn boot_id(&self) -> Option<String> { None }
+}
+
+pub(crate) fn parse_process_start_time(stat: &str) -> Option<String> {
+    let (_, fields) = stat.rsplit_once(')')?;
+    fields.split_whitespace().nth(19)?.parse::<u64>().ok().map(|ticks| ticks.to_string())
+}
+
+fn runtime_of_process(table: &dyn Processes, pid: &str) -> Option<String> {
+    if pid.parse::<u32>().ok()? == 0 || table.pid_namespace(pid)? != table.pid_namespace("self")? { return None; }
+    let boot = table.boot_id()?;
+    if boot.is_empty() || boot.len() > 64 || !boot.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-') { return None; }
+    let started = table.start_time(pid)?.parse::<u64>().ok()?;
+    Some(format!("{boot}:{pid}:{started}"))
+}
+
+/// Bind a sandbox peer to its host launch incarnation, not a PID that can later be reused.
+pub fn trusted_runtime(table: &dyn Processes, sender: &str) -> Option<String> {
+    if table.pid_namespace(sender)? == table.pid_namespace("self")? { return None; }
+    runtime_of_process(table, &first_process_outside(table, sender)?)
+}
+
+pub fn runtime_is_live(table: &dyn Processes, runtime: &str) -> bool {
+    let mut parts = runtime.split(':');
+    let (Some(_boot), Some(pid), Some(_started), None) = (parts.next(),parts.next(),parts.next(),parts.next()) else { return false };
+    runtime_of_process(table, pid).as_deref() == Some(runtime)
 }
 
 /// Where a session report really comes from: the focus target (tmux pane, kitty window) in the
@@ -1881,6 +1920,12 @@ impl Processes for Proc {
 
     fn pid_namespace(&self, pid: &str) -> Option<String> {
         fs::read_link(format!("/proc/{pid}/ns/pid")).ok().map(|link| link.to_string_lossy().into_owned())
+    }
+    fn start_time(&self, pid: &str) -> Option<String> {
+        parse_process_start_time(&fs::read_to_string(format!("/proc/{pid}/stat")).ok()?)
+    }
+    fn boot_id(&self) -> Option<String> {
+        fs::read_to_string("/proc/sys/kernel/random/boot_id").ok().map(|boot| boot.trim().to_string())
     }
 }
 
@@ -2065,5 +2110,11 @@ impl System for RealSystem {
 
     fn sender_directory(&mut self, sender: u32) -> Option<String> {
         sandbox_directory(&Proc, &sender.to_string())
+    }
+    fn sender_runtime(&mut self, sender: u32) -> Option<String> {
+        trusted_runtime(&Proc, &sender.to_string())
+    }
+    fn runtime_is_live(&mut self, runtime: &str) -> bool {
+        runtime_is_live(&Proc, runtime)
     }
 }

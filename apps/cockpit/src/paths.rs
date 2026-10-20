@@ -67,6 +67,8 @@ pub fn usage_archive() -> PathBuf { state_dir().join("usage.sqlite") }
 pub fn alerts() -> PathBuf { state_dir().join("alerts.json") }
 pub fn log() -> PathBuf { state_dir().join("log") }
 pub fn todo() -> PathBuf { state_dir().join("todo.json") }
+pub fn team_database() -> PathBuf { crate::audit::dir().join("teams.sqlite") }
+pub fn team_agent_socket() -> PathBuf { runtime_dir().join("claude-team-host/agent.sock") }
 pub fn settings() -> PathBuf { state_dir().join("settings.json") }
 /// claude-todo's changes, queued by the OSD daemon with the sender's verified folder: the runtime
 /// directory, which no sandbox sees (security audit 2026-10-19, M4).

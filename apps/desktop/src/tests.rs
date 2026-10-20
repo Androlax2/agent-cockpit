@@ -113,6 +113,7 @@ struct World {
     /// sender pid -> the focus target its trusted ancestor carries
     sender_targets: HashMap<u32, BTreeMap<String, String>>,
     sender_directories: HashMap<u32, String>,
+    sender_runtimes: HashMap<u32, String>,
 }
 
 impl World {
@@ -166,6 +167,76 @@ impl System for FakeSystem {
     fn sender_directory(&mut self, sender: u32) -> Option<String> {
         self.0.borrow().sender_directories.get(&sender).cloned()
     }
+    fn sender_runtime(&mut self, sender: u32) -> Option<String> { self.0.borrow().sender_runtimes.get(&sender).cloned() }
+    fn runtime_is_live(&mut self, runtime: &str) -> bool { self.0.borrow().sender_runtimes.values().any(|known| known == runtime) }
+}
+
+fn team_bench() -> Bench {
+    let mut bench = Bench::new();
+    let project = bench.fixture.root.join("home/IdeaProjects/project-a");
+    fs::create_dir_all(project.join(".git")).unwrap();
+    fs::write(project.join(".git/config"), "[remote \"origin\"]\n\turl = git@github.com:example/project-a.git\n").unwrap();
+    fs::create_dir_all(cockpit::paths::state_dir()).unwrap();
+    fs::write(cockpit::paths::todo(), json!({"items":[{"id":"1d3fd318","project":"project-a","text":"Team task","status":"doing"}]}).to_string()).unwrap();
+    for (peer, session, agent) in [(10,SESSION_A,"claude"),(20,OPENCODE_SESSION,"opencode"),(30,SESSION_B,"claude")] {
+        bench.world.borrow_mut().sender_targets.insert(peer, target(&[("tmux_pane", format!("%{peer}").as_str())]));
+        bench.world.borrow_mut().sender_directories.insert(peer, project.to_string_lossy().into_owned());
+        bench.world.borrow_mut().sender_runtimes.insert(peer, format!("runtime-{peer}"));
+        let report = parse_session(&json!({"session":session,"agent":agent,"project":"project-a","cwd":project,"state":"waiting"}).to_string()).unwrap();
+        bench.registry.report_from(report, peer).unwrap();
+    }
+    bench
+}
+
+#[test]
+fn team_context_exposes_only_own_identity_before_link_approval() {
+    let mut bench = team_bench();
+    let result = crate::teams::request(&mut bench.registry, 10, cockpit::teams::AgentAction::Context).unwrap().result.unwrap();
+    assert_eq!(result["session_id"], SESSION_A);
+    assert!(result["members"].as_array().unwrap().is_empty());
+    assert!(!result.to_string().contains(OPENCODE_SESSION));
+    assert!(!result.to_string().contains(SESSION_B));
+    assert!(crate::teams::request(&mut bench.registry, 99, cockpit::teams::AgentAction::Context).is_err());
+}
+
+#[test]
+fn agent_team_proposals_remain_pending_until_the_host_approves_the_exact_mapping() {
+    use cockpit::teams::{AgentAction,HostAction,Member,Proposal,Role,TaskKey};
+    let mut bench = team_bench();
+    let own = crate::teams::request(&mut bench.registry, 10, AgentAction::Context).unwrap().result.unwrap();
+    let task = TaskKey { project:own["project"].as_str().unwrap().into(),task_id:"1d3fd318".into() };
+    let proposal = Proposal { submission_key:"link-1".into(),task,members:vec![Member {session_id:SESSION_A.into(),role:Role::Designer},
+        Member {session_id:OPENCODE_SESSION.into(),role:Role::Developer}],reason:"Review this task".into() };
+    let pending = crate::teams::request(&mut bench.registry, 10, AgentAction::Propose {proposal}).unwrap().result.unwrap();
+    let own = crate::teams::request(&mut bench.registry, 10, AgentAction::Context).unwrap().result.unwrap();
+    assert!(own["members"].as_array().unwrap().is_empty());
+    crate::teams::host_control(&mut bench.registry, &HostAction::Approve {request_id:"host-approval".into(),
+        proposal_id:pending["proposal_id"].as_str().unwrap().into(),expected_revision:1,mapping_hash:pending["mapping_hash"].as_str().unwrap().into()}).unwrap();
+    let own = crate::teams::request(&mut bench.registry, 10, AgentAction::Context).unwrap().result.unwrap();
+    assert_eq!(own["members"].as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn different_repositories_with_the_same_directory_name_have_distinct_team_identities() {
+    let bench = Bench::new();
+    let left = bench.fixture.root.join("left/project");
+    let right = bench.fixture.root.join("right/project");
+    for (root, remote) in [(&left,"git@github.com:example/one.git"),(&right,"git@github.com:example/two.git")] {
+        fs::create_dir_all(root.join(".git")).unwrap();
+        fs::write(root.join(".git/config"), format!("[remote \"origin\"]\n url = {remote}\n")).unwrap();
+    }
+    assert_ne!(crate::teams::canonical_project(left.to_str().unwrap()).unwrap(),crate::teams::canonical_project(right.to_str().unwrap()).unwrap());
+}
+
+#[test]
+fn managed_clones_can_share_a_team_without_executing_repository_git_config() {
+    let bench = team_bench();
+    let primary = bench.fixture.root.join("home/IdeaProjects/project-a");
+    let clone = bench.fixture.root.join("home/IdeaProjects/.parallel/project-a/review");
+    fs::create_dir_all(clone.join(".git")).unwrap();
+    fs::write(clone.join(".git/config"), format!("[remote \"origin\"]\n url = {}\n[core]\n hooksPath = /do-not-execute\n",primary.display())).unwrap();
+    assert_eq!(crate::teams::canonical_project(primary.to_str().unwrap()).unwrap(),crate::teams::canonical_project(clone.to_str().unwrap()).unwrap());
+    assert!(bench.world.borrow().commands.iter().all(|command| command.first().map(String::as_str) != Some("git")));
 }
 
 #[derive(Default)]
@@ -1660,6 +1731,46 @@ fn a_project_name_with_escape_codes_is_not_taken() {
 
 /// A process tree with namespaces: (pid, parent, namespace, environment).
 struct Tree(Vec<(&'static str, Option<&'static str>, &'static str, HashMap<String, String>)>);
+
+struct TimedTree { tree: Tree, start: String, boot: String }
+
+impl Processes for TimedTree {
+    fn pids(&self) -> Vec<String> { self.tree.pids() }
+    fn comm(&self, pid: &str) -> String { self.tree.comm(pid) }
+    fn command(&self, pid: &str) -> Vec<String> { self.tree.command(pid) }
+    fn environment(&self, pid: &str) -> HashMap<String, String> { self.tree.environment(pid) }
+    fn parent(&self, pid: &str) -> Option<String> { self.tree.parent(pid) }
+    fn pid_namespace(&self, pid: &str) -> Option<String> { self.tree.pid_namespace(pid) }
+    fn start_time(&self, _: &str) -> Option<String> { Some(self.start.clone()) }
+    fn boot_id(&self) -> Option<String> { Some(self.boot.clone()) }
+}
+
+#[test]
+fn team_runtime_proof_changes_when_a_launcher_pid_is_reused_or_the_machine_reboots() {
+    let mut tree = TimedTree { tree:Tree(vec![("50",Some("30"),"sandbox",environment(&[])),("30",None,"host",environment(&[]))]),
+        start:"1000".into(),boot:"boot-a".into() };
+    let original = trusted_runtime(&tree, "50").unwrap();
+    assert!(runtime_is_live(&tree, &original));
+    tree.start = "1001".into();
+    assert!(!runtime_is_live(&tree, &original));
+    assert_ne!(trusted_runtime(&tree, "50").unwrap(), original);
+    tree.start = "1000".into();
+    tree.boot = "boot-b".into();
+    assert!(!runtime_is_live(&tree, &original));
+}
+
+#[test]
+fn host_processes_cannot_claim_to_be_agent_transport_peers() {
+    let tree = TimedTree { tree:Tree(vec![("30",None,"host",environment(&[]))]),start:"1000".into(),boot:"boot-a".into() };
+    assert_eq!(trusted_runtime(&tree, "30"), None);
+}
+
+#[test]
+fn process_start_time_parsing_handles_parentheses_and_spaces_in_the_command_name() {
+    let stat = format!("50 (a command ) name) S {} 9876 0", (4..=21).map(|number| number.to_string()).collect::<Vec<_>>().join(" "));
+    assert_eq!(parse_process_start_time(&stat), Some("9876".into()));
+    assert_eq!(parse_process_start_time("not a stat record"), None);
+}
 
 impl Processes for Tree {
     fn pids(&self) -> Vec<String> { self.0.iter().map(|row| row.0.to_string()).collect() }

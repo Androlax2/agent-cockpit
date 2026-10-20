@@ -65,10 +65,10 @@ fn lifecycle_states_do_not_mistake_start_or_interrupt_for_idle() {
 }
 
 #[test]
-fn continued_stop_is_not_idle() {
+fn a_previous_stop_continuation_does_not_hide_a_completed_turn() {
     let report = translate_hook(&json!({"hook_event_name": "Stop", "session_id": NATIVE_THREAD,
         "cwd": "/projects/demo", "stop_hook_active": true})).unwrap().unwrap();
-    assert_eq!(report["state"], "working");
+    assert_eq!(report["state"], "waiting");
 }
 
 #[test]
