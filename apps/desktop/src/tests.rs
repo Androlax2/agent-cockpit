@@ -1009,8 +1009,22 @@ fn approving_hides_the_pane_until_the_command_needs_input() {
     bench.registry.run_phase(RUN_A, "input");
     let show = vec!["claude-sessions".to_string(), "approval-pane".into(), RUN_A.into()];
     assert_eq!(bench.commands().iter().filter(|command| **command == show).count(), 2);
+}
+
+#[test]
+fn after_an_answer_the_pane_stays_until_the_command_ends() {
+    let mut bench = Bench::new();
+    bench.registry.run_request(RUN_A).unwrap();
     bench.registry.run_phase(RUN_A, "running");
-    assert_eq!(bench.commands().iter().filter(|command| **command == close).count(), 2);
+    bench.registry.run_phase(RUN_A, "input");
+    let close = vec!["claude-sessions".to_string(), "approval-pane".into(), "close".into(), RUN_A.into()];
+    let closes_before_answer = bench.commands().iter().filter(|command| **command == close).count();
+    bench.registry.run_phase(RUN_A, "running");
+    bench.registry.tick_queues();
+    assert_eq!(bench.commands().iter().filter(|command| **command == close).count(), closes_before_answer,
+               "answering the command's prompt hid its output");
+    bench.registry.run_phase(RUN_A, "done");
+    assert_eq!(bench.commands().iter().filter(|command| **command == close).count(), closes_before_answer + 1);
 }
 
 #[test]

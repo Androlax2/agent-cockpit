@@ -716,7 +716,9 @@ impl RunRequests {
         let is_known = self.current == id || self.queue.iter().any(|queued| queued == id) || self.running.iter().any(|run| run == id);
         if is_known {
             match phase {
-                "running" => { system.run(&["claude-sessions", "approval-pane", "close", id], &[0]); }
+                "running" if self.current != id || !self.asked_input => {
+                    system.run(&["claude-sessions", "approval-pane", "close", id], &[0]);
+                }
                 "input" => { system.run(&["claude-sessions", "approval-pane", id], &[0]); }
                 _ => {}
             }
