@@ -507,13 +507,14 @@ pub fn project_of(cache: &mut HashMap<String, String>, cwd: &str, fallback: &str
 }
 
 /// Commands Claude asks Theo to run outside the sandbox (ask-to-run). The daemon runs nothing
-/// itself: each request gets claude-run-approve in a tmux session of its own (claude-run-<id>), one
-/// at a time, shown in a pane under the cockpit's session pane and in a floating window on the
-/// current workspace while it needs Theo: before he answers, and again when the command he approved
+/// itself: each request immediately gets claude-run-approve in a tmux session of its own
+/// (claude-run-<id>), shown in a pane under the cockpit's session pane. Floating windows take turns
+/// on the current workspace while a request needs Theo: before he answers, and again when the command he approved
 /// waits for input (sudo, a passphrase), then until it ends (what the answer does, the next prompt);
 /// closed while a command that never asked for input runs, and never while he games.
 #[derive(Default)]
 pub struct RunRequests {
+    /// Approvals already available in their panes, waiting their turn for the floating window.
     pub queue: Vec<String>,
     /// The run that has Theo's attention: its approval asks him, or its command waits for input.
     pub current: String,
@@ -637,6 +638,22 @@ impl RunRequests {
         if self.queue.iter().any(|queued| queued == id) || self.current == id || self.running.iter().any(|run| run == id) {
             return Ok(());
         }
+        let Some(result) = run_result(id) else {
+            log(&format!("run request {id} dropped: it names no answers folder (its session started before answers went per project)"));
+            return Ok(());
+        };
+        if result.exists() {
+            return Ok(());
+        }
+        if is_abandoned(id) {
+            write_abandoned(id);
+            return Ok(());
+        }
+        let approve = paths::home().join(".local/bin/claude-run-approve").to_string_lossy().into_owned();
+        if !system.run(&["tmux", "new-session", "-d", "-s", &run_session(id), "-x", "180", "-y", "45", &approve, id], &[0]) {
+            return Err(format!("cannot start the approval for {id}"));
+        }
+        system.run(&["claude-sessions", "approval-pane", id], &[0]);
         let project = project_from_request(&cockpit::approval::held_request(id, "request"));
         if !system.quiet() {
             banners.raise_notice(&Notice { id: format!("run-{id}"), title: format!("Claude · {project}"), message: "asks you to run a command".into() });
@@ -658,28 +675,19 @@ impl RunRequests {
         }
         while !self.queue.is_empty() {
             let id = self.queue.remove(0);
-            let Some(result) = run_result(&id) else {
-                log(&format!("run request {id} dropped: it names no answers folder (its session started before answers went per project)"));
-                continue;
-            };
-            if result.exists() {
-                continue;
-            }
-            if is_abandoned(&id) {
-                log(&format!("run request {id} dropped before it showed: nobody waits for it"));
-                write_abandoned(&id);
-                continue;
-            }
-            let approve = paths::home().join(".local/bin/claude-run-approve").to_string_lossy().into_owned();
-            if !system.run(&["tmux", "new-session", "-d", "-s", &run_session(&id), "-x", "180", "-y", "45", &approve, &id], &[0]) {
-                log(&format!("cannot start the approval for {id}"));
+            let abandoned = is_abandoned(&id);
+            if abandoned || run_result(&id).is_none_or(|result| result.exists()) {
+                if abandoned {
+                    write_abandoned(&id);
+                }
+                system.run(&["tmux", "kill-session", "-t", &format!("={}", run_session(&id))], &[0, 1]);
+                system.run(&["claude-sessions", "approval-pane", "close", &id], &[0]);
                 continue;
             }
             self.current = id.clone();
             self.phase = "asking".into();
             self.asked_input = false;
             self.dismissed = false;
-            system.run(&["claude-sessions", "approval-pane", &id], &[0]);
             self.show(system);
             return;
         }
@@ -704,6 +712,28 @@ impl RunRequests {
             banners.raise_notice(&Notice { id: input_notice.clone(), title: "Command waiting".into(), message: "it asks for your input".into() });
         } else {
             banners.drop_banner(&format!("notice:{input_notice}"));
+        }
+        if self.queue.iter().any(|queued| queued == id) {
+            if phase == "asking" {
+                return;
+            }
+            self.queue.retain(|queued| queued != id);
+            match phase {
+                "done" => {
+                    banners.drop_banner(&format!("notice:run-{id}"));
+                    system.run(&["claude-sessions", "approval-pane", "close", id], &[0]);
+                }
+                "running" | "input" => {
+                    banners.drop_banner(&format!("notice:run-{id}"));
+                    self.running.push(id.into());
+                    if phase == "input" {
+                        self.waiting_input.push(id.into());
+                    }
+                }
+                _ => unreachable!("validated run phase"),
+            }
+            self.next(system);
+            return;
         }
         if self.running.iter().any(|run| run == id) {
             match phase {
@@ -792,6 +822,17 @@ impl RunRequests {
     /// Every second: the window follows the workspace and the games, and an approval whose tmux
     /// session ended (closed by hand, crashed) is cleared.
     pub fn tick(&mut self, system: &mut dyn System, banners: &mut dyn Banners) {
+        for id in self.queue.clone() {
+            let target = format!("={}", run_session(&id));
+            let abandoned = is_abandoned(&id);
+            if abandoned || run_result(&id).is_some_and(|result| result.exists()) || system.tmux(&["has-session", "-t", &target]).is_none() {
+                if abandoned {
+                    write_abandoned(&id);
+                }
+                system.run(&["tmux", "kill-session", "-t", &target], &[0, 1]);
+                self.phase_changed(system, banners, &id, "done");
+            }
+        }
         // A running command whose tmux session ended (closed by hand, crashed) is forgotten.
         for id in self.running.clone() {
             if system.tmux(&["has-session", "-t", &format!("={}", run_session(&id))]).is_none() {

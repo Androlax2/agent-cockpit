@@ -884,12 +884,77 @@ fn a_bad_request_id_is_refused() {
 }
 
 #[test]
-fn a_request_starts_in_its_own_tmux_session_one_at_a_time() {
+fn every_request_gets_a_pane_before_the_first_is_answered() {
     let mut bench = Bench::new();
     bench.registry.run_request(RUN_A).unwrap();
     bench.registry.run_request(RUN_B).unwrap();
-    assert_eq!(started_sessions(&bench), ["claude-run-aaaaaaaaaaaa"]);
+    assert_eq!(started_sessions(&bench), ["claude-run-aaaaaaaaaaaa", "claude-run-bbbbbbbbbbbb"]);
     assert!(bench.commands().contains(&vec!["claude-sessions".to_string(), "approval-pane".into(), RUN_A.into()]));
+    assert!(bench.commands().contains(&vec!["claude-sessions".to_string(), "approval-pane".into(), RUN_B.into()]));
+    assert_eq!(bench.windows().len(), 1, "floating approvals still wait their turn");
+}
+
+#[test]
+fn a_later_approval_can_run_and_finish_before_the_first_is_answered() {
+    let mut bench = Bench::new();
+    bench.registry.run_request(RUN_A).unwrap();
+    bench.registry.run_request(RUN_B).unwrap();
+    bench.registry.run_phase(RUN_B, "running");
+    assert_eq!(bench.registry.runs.running, [RUN_B]);
+    bench.registry.run_phase(RUN_B, "done");
+    assert!(bench.commands().contains(&vec!["claude-sessions".to_string(), "approval-pane".into(), "close".into(), RUN_B.into()]));
+    bench.registry.run_phase(RUN_A, "done");
+    assert_eq!(bench.registry.runs.current, "", "completed approval must not be shown again");
+}
+
+#[test]
+fn a_later_approval_waiting_for_input_is_not_started_again() {
+    let mut bench = Bench::new();
+    bench.registry.run_request(RUN_A).unwrap();
+    bench.registry.run_request(RUN_B).unwrap();
+    bench.registry.run_phase(RUN_B, "running");
+    bench.registry.run_phase(RUN_B, "input");
+    bench.registry.run_phase(RUN_A, "done");
+    assert_eq!((bench.registry.runs.current.as_str(), bench.registry.runs.phase.as_str()), (RUN_B, "input"));
+    assert_eq!(started_sessions(&bench), ["claude-run-aaaaaaaaaaaa", "claude-run-bbbbbbbbbbbb"]);
+}
+
+#[test]
+fn a_later_approval_can_be_declined_without_being_shown_again() {
+    let mut bench = Bench::new();
+    bench.registry.run_request(RUN_A).unwrap();
+    bench.registry.run_request(RUN_B).unwrap();
+    bench.registry.run_phase(RUN_B, "done");
+    bench.registry.run_phase(RUN_A, "done");
+    assert_eq!(bench.registry.runs.current, "");
+    assert_eq!(bench.windows().len(), 1);
+}
+
+#[test]
+fn a_pane_announcing_its_approval_preserves_the_floating_window_order() {
+    let mut bench = Bench::new();
+    let third_run = "cccccccccccc";
+    fs::write(cockpit::approval::held_request(third_run, "request"), json!({"answers": ANSWERS_KEY}).to_string()).unwrap();
+    for id in [RUN_A, RUN_B, third_run] {
+        bench.registry.run_request(id).unwrap();
+    }
+    bench.registry.run_phase(RUN_B, "asking");
+    bench.registry.run_phase(RUN_A, "done");
+    assert_eq!(bench.windows()[1].borrow().command.last().unwrap(), "=claude-run-bbbbbbbbbbbb");
+}
+
+#[test]
+fn an_abandoned_later_approval_closes_while_the_first_still_asks() {
+    let mut bench = Bench::new();
+    heartbeat(&bench, RUN_A, 0);
+    heartbeat(&bench, RUN_B, 0);
+    bench.registry.run_request(RUN_A).unwrap();
+    bench.registry.run_request(RUN_B).unwrap();
+    heartbeat(&bench, RUN_B, 600);
+    bench.registry.tick_queues();
+    assert_eq!(result_status(&bench, RUN_B).as_deref(), Some("abandoned"));
+    assert!(bench.commands().contains(&vec!["claude-sessions".to_string(), "approval-pane".into(), "close".into(), RUN_B.into()]));
+    assert_eq!(bench.registry.runs.current, RUN_A);
 }
 
 #[test]
@@ -1028,6 +1093,8 @@ fn a_queued_request_nobody_waits_for_is_skipped() {
     bench.registry.run_phase(RUN_A, "done");
     assert_eq!(bench.registry.runs.current, "");
     assert_eq!(result_status(&bench, RUN_B).as_deref(), Some("abandoned"));
+    assert!(bench.commands().contains(&vec!["tmux".to_string(), "kill-session".into(), "-t".into(), format!("=claude-run-{RUN_B}")]));
+    assert!(bench.commands().contains(&vec!["claude-sessions".to_string(), "approval-pane".into(), "close".into(), RUN_B.into()]));
 }
 
 #[test]
