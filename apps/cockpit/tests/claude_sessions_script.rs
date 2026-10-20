@@ -1554,6 +1554,46 @@ fn the_doctor_does_not_count_the_health_checks_own_failure() {
     assert!(output.contains("no error logged in 24 h"), "{}\n---stderr\n{}", &output[output.len().saturating_sub(800)..], stderr(&result));
 }
 
+fn record_tmux_fingerprint(manager: &Manager) -> PathBuf {
+    let baseline = manager.sandbox.home.join(".config/tmux/border-junction.sha256");
+    fs::create_dir_all(baseline.parent().unwrap()).unwrap();
+    let digest = Command::new("sha256sum").arg(manager.sandbox.shims.join("tmux")).output().unwrap();
+    fs::write(&baseline, stdout(&digest).split_whitespace().next().unwrap()).unwrap();
+    baseline
+}
+
+#[test]
+fn the_doctor_accepts_the_reviewed_tmux_binary() {
+    let manager = Manager::new();
+    record_tmux_fingerprint(&manager);
+    let output = stdout(&manager.run(&["doctor"], &[]));
+    assert!(output.contains("ok    tmux border-junction fix verified"), "{output}");
+}
+
+#[test]
+fn the_doctor_detects_a_tmux_replacement_even_with_the_same_version() {
+    let manager = Manager::new();
+    record_tmux_fingerprint(&manager);
+    manager.sandbox.shim("tmux", &format!("{FAKE_TMUX}\n# replacement package, same version\n"));
+    let result = manager.run(&["doctor"], &[]);
+    assert!(!result.status.success());
+    let output = stdout(&result);
+    assert!(output.contains("FAIL  tmux border-junction fix: binary replaced or unreadable"), "{output}");
+}
+
+#[test]
+fn the_doctor_requires_a_valid_reviewed_tmux_fingerprint() {
+    for baseline in [None, Some(""), Some("not-a-sha256")] {
+        let manager = Manager::new();
+        if let Some(contents) = baseline {
+            let path = record_tmux_fingerprint(&manager);
+            fs::write(path, contents).unwrap();
+        }
+        let output = stdout(&manager.run(&["doctor"], &[]));
+        assert!(output.contains("FAIL  tmux border-junction fix: fingerprint missing or invalid"), "{baseline:?}: {output}");
+    }
+}
+
 /// What a launch hands fish after its script, from the `--` that ends fish's own options (the fake
 /// tmux logs calls without their quotes, so the script cannot be told apart otherwise).
 fn fish_arguments(call: &str) -> String {
