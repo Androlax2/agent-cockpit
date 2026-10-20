@@ -2553,7 +2553,7 @@ fn what_only_claude_code_does_is_refused_for_an_opencode_session() {
 
 #[test]
 fn variants_opens_opencodes_native_picker_in_its_pane_without_restarting() {
-    for state in ["waiting", "working"] {
+    for state in ["waiting", "working", "needs-you"] {
         let manager = Manager::new();
         manager.with_opencode_session(state);
         let result = manager.run(&["variants", OPENCODE_SESSION], &[]);
@@ -2566,8 +2566,8 @@ fn variants_opens_opencodes_native_picker_in_its_pane_without_restarting() {
 }
 
 #[test]
-fn variants_refuses_questions_unknown_states_and_missing_panes() {
-    for state in ["needs-you", "unknown", ""] {
+fn variants_refuses_unknown_states_and_missing_panes() {
+    for state in ["unknown", ""] {
         let manager = Manager::new();
         manager.with_opencode_session(state);
         if state.is_empty() {

@@ -622,8 +622,8 @@ open_variants() { # id
         return 1
     fi
     state=$(session_field "$id" state)
-    if [[ $state != waiting && $state != working ]]; then
-        echo "claude-sessions: open the variant picker when the session waits or works (${state:-no state yet})" >&2
+    if [[ $state != waiting && $state != working && $state != needs-you ]]; then
+        echo "claude-sessions: cannot open the variant picker without a known session state (${state:-no state yet})" >&2
         return 1
     fi
     view_session "$id" || return 1

@@ -4156,7 +4156,7 @@ fn what_only_claude_code_does_is_not_offered_on_an_opencode_card() {
 
 #[test]
 fn effort_opens_opencodes_native_picker_without_restarting() {
-    for state in ["waiting", "working"] {
+    for state in ["waiting", "working", "needs-you"] {
         let fixture = Fixture::new();
         fixture.snapshot(json!([opencode_session(state, "runway", 1)]));
         let mut app = fixture.app();
