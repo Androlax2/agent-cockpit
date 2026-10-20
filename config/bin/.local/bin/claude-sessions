@@ -1707,11 +1707,7 @@ case ${1:-attach} in
         ;;
     resume) resume_session "${2:?usage: claude-sessions resume <dir> <session-id>}" "${3:?usage: claude-sessions resume <dir> <session-id>}" ;;
     exit)
-        # The session in the pane: a "Closing" screen until it is gone, as for a start.
-        if [[ $(cat "$CURRENT" 2>/dev/null) == "${2:?usage: claude-sessions exit <session-id>}" ]]; then
-            loading_overlay "Closing $(session_field "$2" project) …" "$(session_field "$2" cwd)" "$2" gone
-        fi
-        exit_session "$2"
+        exit_session "${2:?usage: claude-sessions exit <session-id>}"
         mkdir -p "$(dirname "$ENDED_SESSIONS")" && printf '%s\n' "$2" >> "$ENDED_SESSIONS"
         ;;
     restore) shift; restore_sessions "$@" ;;

@@ -541,14 +541,13 @@ fn the_loading_screen_closes_once_the_session_reports_in() {
 }
 
 #[test]
-fn exiting_the_viewed_session_shows_a_closing_screen_until_it_is_gone() {
+fn exiting_the_viewed_session_does_not_block_navigation_with_a_popup() {
     let manager = Manager::new();
     fs::write(manager.runtime_file("claude-sessions.current"), format!("{SESSION_A}\n")).unwrap();
-    manager.run(&["exit", SESSION_A], &[]);
-    assert!(!manager.sandbox.wait_for_calls("tmux display-popup", 1, Duration::from_secs(3)).is_empty(), "no closing screen over the viewer");
-    let loading = fs::read_to_string(manager.runtime_file("claude-sessions-loading")).unwrap();
-    let every_fourth: Vec<&str> = loading.lines().step_by(4).collect();
-    assert_eq!(every_fourth, ["Closing proj-a …", "gone"]);
+    let result = manager.run(&["exit", SESSION_A], &[("SHIM_PANE_TEXT", IDLE)]);
+    assert!(result.status.success(), "{}", stderr(&result));
+    assert!(!manager.runtime_file("claude-sessions-loading").exists(), "closing must not reserve a loading overlay");
+    assert!(manager.tmux_calls("display-popup").is_empty(), "closing must leave navigation available");
 }
 
 #[test]
