@@ -1037,7 +1037,7 @@ impl App {
         };
         let mut running: Vec<Session> = gathered.running.clone();
         self.settle_exits(&running);
-        running.retain(|s| !self.exiting.iter().any(|exit| exit.session == s.session));
+        running.retain(|s| !s.is_external() && !self.exiting.iter().any(|exit| exit.session == s.session));
         for session in &mut running {
             session.pinned = self.view.pinned.contains(&session.session);
         }

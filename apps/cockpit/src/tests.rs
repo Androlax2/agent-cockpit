@@ -2519,17 +2519,17 @@ fn the_shown_todo_tab_is_drawn_as_a_chip() {
 }
 
 #[test]
-fn external_sessions_remain_visible_without_a_terminal_target() {
+fn external_sessions_are_hidden_without_a_terminal_target() {
     let fixture = Fixture::new();
     for state in ["working", "waiting", "needs-you"] {
         fixture.snapshot(json!([session(SESSION_A, "waiting", "runway", "/r/runway", 1),
             external_session(OPENCODE_SESSION, state, "crema", "/r/crema", 2)]));
         let mut app = fixture.app();
-        let external = app.sessions.iter().find(|session| session.session == OPENCODE_SESSION).expect("external session hidden");
-        assert_eq!(external.state, state);
+        assert_eq!(app.sessions.iter().map(|session| session.session.as_str()).collect::<Vec<_>>(), [SESSION_A]);
         let buffer = render(&mut app, 100, 45);
         let rows: Vec<String> = (0..45).map(|y| (0..100).map(|x| buffer[(x, y)].symbol()).collect()).collect();
-        assert!(rows.iter().any(|row| row.contains("crema") && row.contains("external")), "{rows:?}");
+        assert!(!rows.iter().any(|row| row.contains("crema") || row.contains("external")), "{rows:?}");
+        assert_eq!(sessions::reported().len(), 2, "hidden sessions must not be deleted");
     }
 }
 
@@ -2541,6 +2541,7 @@ fn external_sessions_reject_terminal_controls_without_running_commands() {
         row["agent"] = json!(agent);
         fixture.snapshot(json!([row]));
         let mut app = fixture.app();
+        app.sessions = sessions::reported();
         assert_eq!(app.sessions.len(), 1);
         for key in [Key::Enter, Key::Char('r'), Key::Char('e'), Key::Char('$'), Key::Char('C'), Key::Char('x')] {
             app.handle(key, &mut FakeScreen::answering(&[Key::Char('y')]));
@@ -2562,6 +2563,7 @@ fn external_sessions_do_not_advertise_or_expose_terminal_controls() {
     fixture.snapshot(json!([row]));
     fixture.write(&format!("home/.cache/claude/statusline-{SESSION_A}.json"), r#"{"effort":"high","context":95}"#);
     let mut app = fixture.app();
+    app.sessions = sessions::reported();
     assert_eq!(app.sessions.len(), 1);
     let hints = app.sessions_hints();
     assert!(hints.iter().all(|(key, _)| !["⏎", "r", "e", "C", "x", "n"].contains(key)), "{hints:?}");
@@ -2576,7 +2578,7 @@ fn external_sessions_become_controllable_when_a_terminal_target_is_known() {
     let mut row = external_session(OPENCODE_SESSION, "waiting", "crema", "/r/crema", 1);
     fixture.snapshot(json!([row]));
     let mut app = fixture.app();
-    assert_eq!(app.sessions.len(), 1);
+    assert!(app.sessions.is_empty());
     row["tmux_pane"] = json!("%9");
     fixture.snapshot(json!([row]));
     app.build();
@@ -2593,7 +2595,7 @@ fn external_sessions_are_skipped_when_peeking_at_sessions_needing_attention() {
         external_session(OPENCODE_SESSION, "needs-you", "crema", "/r/crema", 2),
         session(SESSION_B, "waiting", "opusline", "/r/opusline", 3)]));
     let mut app = fixture.app();
-    assert_eq!(app.sessions.len(), 3);
+    assert_eq!(app.sessions.len(), 2);
     app.handle(Key::Char('n'), &mut FakeScreen::default());
     assert_eq!(fixture.wait_for_calls("claude-sessions", 1), [format!("claude-sessions view {SESSION_B}")]);
 }
@@ -2603,7 +2605,7 @@ fn external_sessions_keep_queued_prompts_pending_without_dispatching_them() {
     let fixture = Fixture::new();
     fixture.snapshot(json!([external_session(OPENCODE_SESSION, "waiting", "crema", "/r/crema", 100)]));
     let mut app = fixture.app();
-    assert_eq!(app.sessions.len(), 1);
+    assert!(app.sessions.is_empty());
     crate::prompts::add(OPENCODE_SESSION, "next thought").unwrap();
     app.dispatch_prompts();
     assert_eq!(crate::prompts::count(OPENCODE_SESSION), 1);
@@ -2616,7 +2618,7 @@ fn external_sessions_do_not_receive_automatic_todo_assignments() {
     fixture.snapshot(json!([external_session(OPENCODE_SESSION, "waiting", "crema", "/r/crema", util::now_secs() - 600)]));
     let mut app = fixture.app();
     app.gaming = || false;
-    assert_eq!(app.sessions.len(), 1);
+    assert!(app.sessions.is_empty());
     let id = app.todos.add("crema", "/r/crema", "fix the header");
     app.todos.toggle_queued(&id);
     app.dispatch_queue();
@@ -2629,7 +2631,7 @@ fn external_sessions_are_not_restarted_by_bulk_or_deferred_restarts() {
     let fixture = Fixture::new();
     fixture.snapshot(json!([external_session(OPENCODE_SESSION, "waiting", "crema", "/r/crema", 100)]));
     let mut app = fixture.app();
-    assert_eq!(app.sessions.len(), 1);
+    assert!(app.sessions.is_empty());
     app.start_files = vec![("opencode plugin", 500.0)];
     app.handle(Key::Ctrl('r'), &mut FakeScreen::answering(&[Key::Char('y')]));
     want_restart(OPENCODE_SESSION);
@@ -2643,10 +2645,11 @@ fn external_sessions_refuse_todo_handoffs_without_marking_items_in_progress() {
     let fixture = Fixture::new();
     fixture.snapshot(json!([external_session(OPENCODE_SESSION, "waiting", "crema", "/r/crema", 100)]));
     let mut app = fixture.app();
-    assert_eq!(app.sessions.len(), 1);
+    assert!(app.sessions.is_empty());
     let id = app.todos.add("crema", "/r/crema", "fix the header");
     app.build();
     let entry = app.todo_entries.iter().find(|entry| entry.key() == id).unwrap().clone();
+    app.sessions = sessions::reported();
     let message = app.hand_to_claude(&entry, &mut FakeScreen::default());
     assert!(message.contains("external"), "{message}");
     assert_ne!(app.todos.status_of(&id), "doing");
@@ -2659,7 +2662,7 @@ fn external_sessions_do_not_block_handoffs_to_a_controllable_session_of_the_same
     fixture.snapshot(json!([external_session(OPENCODE_SESSION, "waiting", "crema", "/r/crema", 100),
         session(SESSION_A, "waiting", "crema", "/r/crema", 200)]));
     let mut app = fixture.app();
-    assert_eq!(app.sessions.len(), 2);
+    assert_eq!(app.sessions.len(), 1);
     let id = app.todos.add("crema", "/r/crema", "fix the header");
     app.build();
     let entry = app.todo_entries.iter().find(|entry| entry.key() == id).unwrap().clone();
