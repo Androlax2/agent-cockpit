@@ -2495,6 +2495,41 @@ fn an_opencode_session_that_does_not_exit_is_killed() {
 }
 
 #[test]
+fn an_opencode_pane_closing_during_exit_is_successful() {
+    for (failure_at, keys_sent) in [("set-option", "0"), ("send-keys -t %5 Escape Escape", "1"),
+                                    ("send-keys -t %5 C-c", "2"), ("send-keys -t %5 C-c", "3")] {
+        let manager = Manager::new();
+        manager.with_opencode_session("waiting");
+        manager.sandbox.shim("tmux", &format!(r#"
+if [[ $* == "$SHIM_FAIL_AT"* ]] && (( $(grep -c 'tmux send-keys' "$SHIM_LOG") >= SHIM_FAIL_AFTER )); then
+    touch "$SHIM_CLOSED"
+    echo "can't find pane: %5" >&2
+    exit 1
+fi
+if [[ $1 == has-session && -f $SHIM_CLOSED ]]; then exit 1; fi
+{FAKE_TMUX}"#));
+        let result = manager.run(&["exit", OPENCODE_SESSION], &[
+            ("SHIM_FAIL_AT", failure_at),
+            ("SHIM_FAIL_AFTER", keys_sent),
+            ("SHIM_CLOSED", &path_str(&manager.sandbox.root.join("closed"))),
+        ]);
+        assert_eq!(result.status.code(), Some(0), "{failure_at}: {}", stderr(&result));
+    }
+}
+
+#[test]
+fn an_opencode_exit_key_failure_is_reported_if_the_session_is_still_running() {
+    let manager = Manager::new();
+    manager.with_opencode_session("waiting");
+    manager.sandbox.shim("tmux", &format!(r#"
+if [[ $1 == send-keys ]]; then echo "cannot send keys" >&2; exit 1; fi
+{FAKE_TMUX}"#));
+    let result = manager.run(&["exit", OPENCODE_SESSION], &[("SHIM_EXIT_AFTER", "99")]);
+    assert_eq!(result.status.code(), Some(1), "{}", stderr(&result));
+    assert!(stderr(&result).contains("cannot send keys"), "{}", stderr(&result));
+}
+
+#[test]
 fn restore_brings_an_opencode_session_back_with_opencode() {
     let manager = Manager::new();
     manager.run(&["restore", &path_str(&manager.project), OPENCODE_SESSION], &[]);
