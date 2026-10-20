@@ -119,21 +119,26 @@ fn informational_notification_carries_no_state() {
 }
 
 #[test]
-fn an_explicit_question_survives_tools_and_turn_end_for_both_agents() {
+fn an_explicit_question_waits_for_turn_end_for_both_agents() {
     for session in [SESSION_A, OPENCODE_SESSION] {
         let mut test = HookTest::new();
         let result = test.sandbox.run("bash", &[bin().join("claude-needs-input").to_str().unwrap(), "Which option should I use?"],
             &[("CLAUDE_CODE_SESSION_ID", session)]);
         assert!(result.status.success(), "{}", stderr(&result));
-        for event in ["PostToolUse", "Stop"] {
-            let mut payload = with_session(json!({"hook_event_name": event}), "/x/proj");
+        for event in ["PostToolUse", "Notification", "Stop", "PostToolUse"] {
+            let mut payload = with_session(json!({"hook_event_name": event, "message": "Still running", "notification_type": "auth_success"}), "/x/proj");
             payload["session_id"] = json!(session);
             let result = test.run_hook(payload, &[("CLAUDE_SESSIONS_AGENT", if session == SESSION_A { "claude" } else { "opencode" })]);
             assert!(result.status.success(), "{}", stderr(&result));
         }
         let lines = test.received();
-        assert_eq!(lines.len(), 3);
-        for line in lines {
+        assert_eq!(lines.len(), 5);
+        for line in &lines[..3] {
+            assert_ne!(line["state"], "needs-you");
+            assert_ne!(line["needs_input"], true);
+            assert_ne!(line["message"], "Which option should I use?");
+        }
+        for line in &lines[3..] {
             assert_eq!(line["state"], "needs-you");
             assert_eq!(line["message"], "Which option should I use?");
             assert_eq!(line["needs_input"], true);
@@ -143,19 +148,42 @@ fn an_explicit_question_survives_tools_and_turn_end_for_both_agents() {
 }
 
 #[test]
+fn a_pending_question_does_not_delay_a_permission_prompt() {
+    let mut test = HookTest::new();
+    for payload in [json!({"hook_event_name": "NeedsInput", "message": "Which option?"}),
+        json!({"hook_event_name": "Notification", "notification_type": "permission_prompt", "message": "Allow Bash?"}),
+        json!({"hook_event_name": "Stop"})] {
+        let result = test.run_hook(with_session(payload, "/x/proj"), &[]);
+        assert!(result.status.success(), "{}", stderr(&result));
+    }
+    let lines = test.received();
+    assert_eq!(lines[1]["state"], "needs-you");
+    assert_eq!(lines[1]["message"], "Allow Bash?");
+    assert_eq!(lines[2]["message"], "Which option?");
+    assert_eq!(lines[2]["needs_input"], true);
+}
+
+#[test]
 fn lifecycle_resets_clear_an_explicit_question() {
     for event in ["UserPromptSubmit", "SessionStart", "SessionEnd"] {
-        let mut test = HookTest::new();
-        let result = test.run_hook(with_session(json!({"hook_event_name": "NeedsInput", "message": "Which option?"}), "/x/proj"), &[]);
-        assert!(result.status.success(), "{}", stderr(&result));
-        for payload in [json!({"hook_event_name": event, "prompt": "Use option A"}), json!({"hook_event_name": "Stop"})] {
-            let result = test.run_hook(with_session(payload, "/x/proj"), &[]);
-            assert!(result.status.success(), "{event}: {}", stderr(&result));
+        for has_finished in [false, true] {
+            let mut test = HookTest::new();
+            let result = test.run_hook(with_session(json!({"hook_event_name": "NeedsInput", "message": "Which option?"}), "/x/proj"), &[]);
+            assert!(result.status.success(), "{}", stderr(&result));
+            if has_finished {
+                let result = test.run_hook(with_session(json!({"hook_event_name": "Stop"}), "/x/proj"), &[]);
+                assert!(result.status.success(), "{}", stderr(&result));
+            }
+            for payload in [json!({"hook_event_name": event, "prompt": "Use option A"}), json!({"hook_event_name": "Stop"})] {
+                let result = test.run_hook(with_session(payload, "/x/proj"), &[]);
+                assert!(result.status.success(), "{event}: {}", stderr(&result));
+            }
+            let lines = test.received();
+            let reset_index = if has_finished { 2 } else { 1 };
+            assert_eq!(lines[reset_index]["needs_input"], false, "{event}");
+            assert_eq!(lines[reset_index + 1]["state"], "waiting", "{event}");
+            assert_eq!(lines[reset_index + 1]["needs_input"], false, "{event}");
         }
-        let lines = test.received();
-        assert_eq!(lines[1]["needs_input"], false, "{event}");
-        assert_eq!(lines[2]["state"], "waiting", "{event}");
-        assert_eq!(lines[2]["needs_input"], false, "{event}");
     }
 }
 
@@ -176,22 +204,24 @@ fn an_explicit_question_does_not_leak_to_another_session() {
 fn an_idle_notification_does_not_clear_an_explicit_question() {
     let mut test = HookTest::new();
     test.run_hook(with_session(json!({"hook_event_name": "NeedsInput", "message": "Which option?"}), "/x/proj"), &[]);
+    test.run_hook(with_session(json!({"hook_event_name": "Stop"}), "/x/proj"), &[]);
     test.run_hook(with_session(json!({"hook_event_name": "Notification", "notification_type": "idle_prompt", "message": "idle"}), "/x/proj"), &[]);
     let lines = test.received();
-    assert_eq!(lines[1]["state"], "needs-you");
-    assert_eq!(lines[1]["message"], "Which option?");
+    assert_eq!(lines[2]["state"], "needs-you");
+    assert_eq!(lines[2]["message"], "Which option?");
 }
 
 #[test]
 fn a_system_prompt_does_not_answer_an_explicit_question() {
     let mut test = HookTest::new();
     for payload in [json!({"hook_event_name": "NeedsInput", "message": "Which option?"}),
+        json!({"hook_event_name": "Stop"}),
         json!({"hook_event_name": "UserPromptSubmit", "source": "system", "prompt": "Background task finished"}),
         json!({"hook_event_name": "Stop"})] {
         let result = test.run_hook(with_session(payload, "/x/proj"), &[]);
         assert!(result.status.success(), "{}", stderr(&result));
     }
-    for line in test.received() {
+    for line in test.received().into_iter().skip(1) {
         assert_eq!(line["state"], "needs-you");
         assert_eq!(line["message"], "Which option?");
     }

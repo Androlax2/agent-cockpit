@@ -69,6 +69,7 @@ if [[ ! $session =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12
     exit 2
 fi
 input_file="$HOME/.cache/claude/input-$session.question"
+pending_input_file="$input_file.pending"
 # A socket, not the FIFO: the daemon learns which process sent the report and takes the tmux pane
 # from where it really runs (a sandbox could otherwise claim another session's pane).
 report_socket="${XDG_RUNTIME_DIR:-/tmp}/claude-report/osd-report.sock"
@@ -203,10 +204,12 @@ case $event in
             exit 2
         fi
         mkdir -p "$(dirname "$input_file")"
-        jq -r '.message' <<<"$payload" > "$input_file"
+        jq -r '.message' <<<"$payload" > "$pending_input_file"
+        rm -f "$input_file"
+        state=working
         ;;
     SessionStart)
-        rm -f "$input_file"
+        rm -f "$input_file" "$pending_input_file"
         needs_input=false
         state=waiting
         unpushed=$(unpushed_of "$cwd")
@@ -223,7 +226,7 @@ case $event in
         # Only what you typed names the task: prompts from the system (task notifications, loop
         # wake-ups) say nothing about it.
         if [[ $(jq -r '.source // "user"' <<<"$payload") == user ]]; then
-            rm -f "$input_file"
+            rm -f "$input_file" "$pending_input_file"
             needs_input=false
             task=$(jq -r '.prompt // "" | split("\n")[0] | gsub("\\s+"; " ") | .[:60]' <<<"$payload")
         fi
@@ -244,6 +247,8 @@ case $event in
         esac
         ;;
     Stop)
+        # The command runs before the final reply: only turn-end makes its question answerable.
+        if [[ -f $pending_input_file ]]; then mv -f "$pending_input_file" "$input_file"; fi
         state=waiting
         message="Finished, waiting for you"
         outcome=$(outcome_of_turn "$cwd")
@@ -253,7 +258,7 @@ case $event in
         if [[ -n $checks ]]; then outcome="${outcome:+$outcome · }$checks"; fi
         ;;
     SessionEnd)
-        rm -f "$input_file"
+        rm -f "$input_file" "$pending_input_file"
         needs_input=false
         state=gone
         rm -f "$turn_head_file"
