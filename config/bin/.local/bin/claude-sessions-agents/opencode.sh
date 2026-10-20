@@ -29,7 +29,9 @@ agent_opencode_can() { # feature
 # carries from the start; opencode makes the session with it at the first prompt. ask-to-run and
 # claude-todo read it from CLAUDE_CODE_SESSION_ID, as in a Claude session.
 OPENCODE_LAUNCHER="${CLAUDE_SESSIONS_OPENCODE:-$HOME/.local/bin/greywall-agents/opencode}"
-OPENCODE_EPILOGUE='"$@" && exit; code=$?; claude-sessions log manager ERROR "opencode exited with status $code in $PWD"; printf "\n  ✗ opencode exited with status %s\n  any key closes this pane " "$code"; read -r _'
+# OpenCode can return 255 on the manager's Ctrl-C close. Only that requested exit is benign;
+# a 255 without a request (or any other failure) must still reach the error hand-off.
+OPENCODE_EPILOGUE='"$@" && exit; code=$?; if [ "$code" = 255 ] && [ "$(tmux show-options -pqv -t "$TMUX_PANE" @opencode_exit_requested 2>/dev/null)" = 1 ]; then exit 0; fi; claude-sessions log manager ERROR "opencode exited with status $code in $PWD"; printf "\n  ✗ opencode exited with status %s\n  any key closes this pane " "$code"; read -r _'
 
 start_opencode() { # dir session-id model-ref opencode-arguments...
     local directory=$1 session=$2 model=$3 name size
@@ -166,6 +168,7 @@ agent_opencode_restore() { # dir id
 # rounds with a one-second grace each, then force-close.
 agent_opencode_exit() { # tmux-session pane id
     local attempt
+    tmux set-option -p -t "$2" @opencode_exit_requested 1 || return 1
     for attempt in 1 2; do
         tmux send-keys -t "$2" Escape Escape
         sleep 0.2

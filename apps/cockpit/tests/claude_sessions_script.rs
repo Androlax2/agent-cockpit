@@ -2358,6 +2358,44 @@ fn a_past_opencode_session_resumes_by_its_id() {
 }
 
 #[test]
+fn an_opencode_requested_close_does_not_report_255_as_a_crash() {
+    for (code, requested, reports_error) in [(255, true, false), (255, false, true), (1, true, true), (0, false, false)] {
+        let manager = Manager::new();
+        manager.with_opencode_session("waiting");
+        manager.sandbox.shim("tmux", &format!(r#"
+case $1 in
+  new-session)
+    while [[ $1 != env ]]; do shift; done
+    env TMUX_PANE=%5 "$@" > "$SHIM_EPILOGUE_OUTPUT" 2>&1
+    exit 0 ;;
+  set-option)
+    if [[ $* == "set-option -p -t %5 @opencode_exit_requested 1" ]]; then echo 1 > "$SHIM_EXIT_MARKER"; exit 0; fi ;;
+  show-options)
+    if [[ $* == "show-options -pqv -t %5 @opencode_exit_requested" ]]; then cat "$SHIM_EXIT_MARKER" 2>/dev/null; exit; fi ;;
+esac
+{FAKE_TMUX}"#));
+        manager.sandbox.shim("opencode-launcher", r#"
+if [[ $SHIM_REQUEST_EXIT == yes ]]; then claude-sessions exit "$CLAUDE_CODE_SESSION_ID" || exit 2; fi
+exit "$SHIM_OPENCODE_STATUS"
+"#);
+        let output_file = manager.sandbox.root.join("epilogue-output");
+        let result = manager.run(&["restore", &path_str(&manager.project), OPENCODE_SESSION], &[
+            ("CLAUDE_SESSIONS_OPENCODE", &path_str(&manager.sandbox.shims.join("opencode-launcher"))),
+            ("SHIM_EPILOGUE_OUTPUT", &path_str(&output_file)),
+            ("SHIM_EXIT_MARKER", &path_str(&manager.sandbox.root.join("exit-marker"))),
+            ("SHIM_REQUEST_EXIT", if requested { "yes" } else { "no" }),
+            ("SHIM_OPENCODE_STATUS", &code.to_string()),
+            ("SHIM_CLAUDE_EXIT_AFTER", "2"),
+        ]);
+        assert!(result.status.success(), "{}", stderr(&result));
+        let log = manager.log_lines().join("\n");
+        assert_eq!(log.contains("ERROR manager: opencode exited"), reports_error, "status={code}, requested={requested}: {log}");
+        let screen = fs::read_to_string(output_file).unwrap();
+        assert_eq!(screen.contains("any key closes this pane"), reports_error, "{screen}");
+    }
+}
+
+#[test]
 fn an_opencode_restart_exits_with_its_own_keys_then_resumes_it() {
     let manager = Manager::new();
     manager.with_opencode_session("waiting");
