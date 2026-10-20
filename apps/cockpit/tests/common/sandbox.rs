@@ -165,7 +165,13 @@ impl Sandbox {
     /// A fake team daemon, linked into this sandbox's answers folder as the real one is: answers
     /// `receive` with `delivery` once (then null), everything else "recorded".
     pub fn team_socket(&self, delivery: serde_json::Value) -> TeamRequests {
+        self.team_socket_as("", delivery)
+    }
+
+    /// The same, answering `context` as the verified session `session_id`.
+    pub fn team_socket_as(&self, session_id: &str, delivery: serde_json::Value) -> TeamRequests {
         use std::io::{Read, Write};
+        let session_id = session_id.to_string();
         let source = self.root.join(format!("team-{}.sock", cockpit::util::token_hex(4)));
         let listener = std::os::unix::net::UnixListener::bind(&source).unwrap();
         let answers = self.runtime.join("claude-answers").join(ANSWERS_KEY);
@@ -180,6 +186,7 @@ impl Sandbox {
                 let _ = stream.read_to_string(&mut text);
                 let Ok(request) = serde_json::from_str::<serde_json::Value>(&text) else { continue };
                 let result = if request["action"] == "receive" { pending.take().unwrap_or(serde_json::Value::Null) }
+                             else if request["action"] == "context" { serde_json::json!({"session_id": session_id, "members": []}) }
                              else { serde_json::json!({"status": "recorded"}) };
                 recorded.lock().unwrap().push(request);
                 let _ = stream.write_all(serde_json::json!({"request_id": "x", "result": {"Ok": result}}).to_string().as_bytes());

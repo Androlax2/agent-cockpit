@@ -316,12 +316,28 @@ fn claudes_mcp_override_connects_to_the_port_its_launcher_forwards() {
 }
 
 #[test]
+fn claude_runs_the_team_watcher_in_the_background_at_session_start_and_turn_end() {
+    let launch = Launch::new();
+    launch.run(&[]);
+    let arguments = fs::read_to_string(launch.sandbox.home.join("claude-arguments")).unwrap();
+    let arguments: Vec<_> = arguments.lines().collect();
+    let index = arguments.iter().position(|argument| *argument == "--settings").expect("no --settings");
+    let settings: serde_json::Value = serde_json::from_str(arguments[index + 1]).unwrap();
+    let watcher = serde_json::json!([{"hooks": [{"type": "command", "command": "cockpit-team watch", "asyncRewake": true, "timeout": 86400}]}]);
+    assert_eq!(settings, serde_json::json!({"hooks": {"SessionStart": watcher, "Stop": watcher}}));
+}
+
+#[test]
 fn claude_never_loads_a_development_channel() {
     // Team messages reach Claude through its Stop hook; no launch lifts Claude's channel allowlist.
     let launch = Launch::new();
     launch.run(&[("CLAUDE_SESSIONS_TEAM_CHANNEL", "1")]);
     let arguments = fs::read_to_string(launch.sandbox.home.join("claude-arguments")).unwrap();
-    assert!(!arguments.contains("channels") && !arguments.contains("cockpit-team"), "{arguments}");
+    assert!(!arguments.contains("channels"), "{arguments}");
+    let arguments: Vec<_> = arguments.lines().collect();
+    let index = arguments.iter().position(|argument| *argument == "--mcp-config").unwrap();
+    let servers: serde_json::Value = serde_json::from_str(arguments[index + 1]).unwrap();
+    assert!(servers["mcpServers"].get("cockpit-team").is_none(), "{servers}");
 }
 
 #[test]

@@ -29,7 +29,12 @@ fi
 
 figcraft_mcp_config='{"mcpServers":{"figcraft-app":{"command":"sh","args":["-c","exec figcraft-cli mcp --attach \"${FIGCRAFT_CONTROL_PORT:?FigCraft is not connected to this checkout}\""]}}}'
 
+# Linked sessions: a background hook that wakes an idle session with its next approved team message
+# (asyncRewake: exit 2 wakes Claude; it exits quietly without a team). Added to ~/.claude/settings.json's hooks.
+team_watch='[{"hooks":[{"type":"command","command":"cockpit-team watch","asyncRewake":true,"timeout":86400}]}]'
+team_settings="{\"hooks\":{\"SessionStart\":$team_watch,\"Stop\":$team_watch}}"
+
 # greywall_options is split on spaces on purpose: every path in it is under $HOME or
 # $XDG_RUNTIME_DIR, which have none.
 # shellcheck disable=SC2086
-exec "$HOME/.local/bin/greywall" $greywall_options -- "$HOME/.local/bin/claude" "$@" --mcp-config "$figcraft_mcp_config"
+exec "$HOME/.local/bin/greywall" $greywall_options -- "$HOME/.local/bin/claude" "$@" --mcp-config "$figcraft_mcp_config" --settings "$team_settings"

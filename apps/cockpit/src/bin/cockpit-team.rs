@@ -41,26 +41,62 @@ fn action(name: &str) -> Result<AgentAction, String> {
     Ok(action)
 }
 
-/// Claude's Stop hook, once the turn end is reported: the next approved message, if any, as the
-/// hook's decision to continue. Printed before the receipt, so a crash in between leaves the
-/// delivery uncertain, never falsely received. Prints nothing when there is none.
-fn turn_end() {
+fn is_claude_session_id(text: &str) -> bool {
+    text.len() == 36 && text.bytes().enumerate().all(|(index, byte)| match index {
+        8 | 13 | 18 | 23 => byte == b'-',
+        _ => byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte),
+    })
+}
+
+fn poll_interval() -> std::time::Duration {
+    std::time::Duration::from_millis(std::env::var("COCKPIT_TEAM_POLL_MS").ok().and_then(|value| value.parse().ok()).unwrap_or(3000))
+}
+
+/// Claude's background hook (asyncRewake, at SessionStart and Stop): waits for this session's next
+/// approved message, which the daemon hands out only while the session is idle, then wakes Claude
+/// with it (exit 2, the text on stderr). The receipt follows the text, so a crash in between leaves
+/// the delivery uncertain, never falsely received. One watcher per session: a newer one replaces it.
+fn watch() -> i32 {
     use cockpit::teams::{AgentAction, TransportOutcome};
-    let delivery = match client::request(&AgentAction::Receive).and_then(|reply| reply.result) {
-        Ok(delivery) => delivery,
-        Err(error) => {
-            eprintln!("cockpit-team turn-end: no team delivery: {}", escape_hiding(&error.to_string(), "", ""));
-            return;
-        },
-    };
-    let Some(dispatch_id) = delivery.get("dispatch_id").and_then(serde_json::Value::as_str) else { return };
-    println!("{}", serde_json::json!({"decision": "block", "reason": delivery["text"]}));
-    let _ = std::io::Write::flush(&mut std::io::stdout());
-    let receipt = AgentAction::Receipt { dispatch_id: dispatch_id.into(),
-        outcome: TransportOutcome::Received { native_id: format!("claude-stop:{dispatch_id}") } };
-    if let Err(error) = client::request(&receipt).and_then(|reply| reply.result) {
-        eprintln!("cockpit-team turn-end: team receipt not recorded: {}", escape_hiding(&error.to_string(), "", ""));
+    let mut payload = String::new();
+    let _ = io::stdin().take(65_536).read_to_string(&mut payload);
+    let session = serde_json::from_str::<serde_json::Value>(&payload).ok()
+        .and_then(|payload| payload["session_id"].as_str().map(str::to_string)).unwrap_or_default();
+    if !is_claude_session_id(&session) {
+        eprintln!("cockpit-team watch: the hook payload has no Claude session id");
+        return 1;
     }
+    let Some(home) = std::env::var_os("HOME") else { return 1 };
+    let marker = std::path::Path::new(&home).join(".cache/claude").join(format!("team-watch-{session}.pid"));
+    let own = std::process::id().to_string();
+    if std::fs::create_dir_all(marker.parent().unwrap_or(&marker)).and_then(|_| std::fs::write(&marker, &own)).is_err() {
+        eprintln!("cockpit-team watch: cannot write {}", marker.display());
+        return 1;
+    }
+    let is_current = || std::fs::read_to_string(&marker).is_ok_and(|current| current == own);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(86_400);
+    while is_current() && std::time::Instant::now() < deadline {
+        // Only the launch's own current session takes: not a nested `claude -p` sharing the launch,
+        // nor this session once /clear has given the launch a new one.
+        let is_confirmed = match client::request(&AgentAction::Context).and_then(|reply| reply.result) {
+            Ok(context) if context["session_id"] == session.as_str() => true,
+            Ok(_) => return 0,
+            Err(_) => false,
+        };
+        if is_confirmed {
+            if let Ok(delivery) = client::request(&AgentAction::Receive).and_then(|reply| reply.result) {
+                if let Some(dispatch_id) = delivery.get("dispatch_id").and_then(serde_json::Value::as_str) {
+                    eprintln!("{}", delivery["text"].as_str().unwrap_or_default());
+                    let receipt = AgentAction::Receipt { dispatch_id: dispatch_id.into(),
+                        outcome: TransportOutcome::Received { native_id: format!("claude-wake:{dispatch_id}") } };
+                    let _ = client::request(&receipt);
+                    return 2;
+                }
+            }
+        }
+        std::thread::sleep(poll_interval());
+    }
+    0
 }
 
 fn main() {
@@ -72,9 +108,8 @@ fn main() {
         }
         return;
     }
-    if arguments == ["turn-end"] {
-        turn_end();
-        return;
+    if arguments == ["watch"] {
+        std::process::exit(watch());
     }
     if arguments == ["--help"] || arguments.is_empty() {
         print!("{HELP}");

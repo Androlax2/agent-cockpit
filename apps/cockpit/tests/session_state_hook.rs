@@ -86,59 +86,20 @@ fn fake_agent(root: &Path, name: &str) -> PathBuf {
     fake
 }
 
-fn team_stop(test: &HookTest, delivery: Value, extra: &[(&str, &str)]) -> (Output, Vec<Value>) {
-    let team = test.sandbox.team_socket(delivery);
-    test.sandbox.shim("cockpit-team", &format!("exec '{}' \"$@\"", env!("CARGO_BIN_EXE_cockpit-team")));
-    let output = test.run_hook(with_session(json!({"hook_event_name": "Stop"}), "/x/proj"), extra);
-    std::thread::sleep(Duration::from_millis(200));
-    let requests = team.lock().unwrap().clone();
-    (output, requests)
-}
-
 #[test]
-fn a_finished_claude_turn_continues_with_the_next_approved_team_message() {
-    let mut test = HookTest::new();
-    let (output, requests) = team_stop(&test, json!({"dispatch_id": "d1", "message_id": "m1", "text": "[Cockpit team message m1] The frame is ready."}), &[]);
-    assert!(output.status.success(), "{}", stderr(&output));
-    let printed: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(printed["decision"], "block");
-    assert!(printed["reason"].as_str().unwrap().contains("The frame is ready."));
-    let states: Vec<_> = test.received().iter().map(|report| report["state"].clone()).collect();
-    assert_eq!(states, [json!("waiting"), json!("working")], "the turn end is reported before the next message is taken");
-    let actions: Vec<_> = requests.iter().map(|request| request["action"].clone()).collect();
-    assert_eq!(actions, [json!("receive"), json!("receipt")]);
-    assert_eq!(requests[1]["dispatch_id"], "d1");
-    assert_eq!(requests[1]["outcome"]["outcome"], "received");
-}
-
-#[test]
-fn a_finished_claude_turn_without_team_messages_stays_idle_and_prints_nothing() {
-    let mut test = HookTest::new();
-    let (output, requests) = team_stop(&test, Value::Null, &[]);
-    assert!(output.status.success(), "{}", stderr(&output));
-    assert!(output.stdout.is_empty(), "{}", String::from_utf8_lossy(&output.stdout));
-    assert_eq!(test.received().iter().map(|report| report["state"].clone()).collect::<Vec<_>>(), [json!("waiting")]);
-    assert_eq!(requests.len(), 1);
-}
-
-#[test]
-fn opencode_turn_ends_never_take_team_messages_through_this_hook() {
-    // opencode takes its messages in its plugin (session.synthetic); a second taker would race it.
-    let test = HookTest::new();
-    let (output, requests) = team_stop(&test, json!({"dispatch_id": "d1", "message_id": "m1", "text": "hi"}), &[("CLAUDE_SESSIONS_AGENT", "opencode")]);
-    assert!(output.status.success(), "{}", stderr(&output));
-    assert!(output.stdout.is_empty());
-    assert!(requests.is_empty(), "{requests:?}");
-}
-
-#[test]
-fn a_turn_ending_on_a_question_for_theo_takes_no_team_message() {
-    let test = HookTest::new();
-    assert!(test.run_hook(with_session(json!({"hook_event_name": "NeedsInput", "message": "Which provider?"}), "/x/proj"), &[]).status.success());
-    let (output, requests) = team_stop(&test, json!({"dispatch_id": "d1", "message_id": "m1", "text": "hi"}), &[]);
-    assert!(output.status.success(), "{}", stderr(&output));
-    assert!(output.stdout.is_empty());
-    assert!(requests.is_empty(), "{requests:?}");
+fn turn_ends_never_take_team_messages_themselves() {
+    // cockpit-team watch (an asyncRewake hook) is the only taker for Claude, the plugin for
+    // opencode: a second taker at Stop would race them.
+    for agent in ["", "opencode"] {
+        let mut test = HookTest::new();
+        let team = test.sandbox.team_socket(json!({"dispatch_id": "d1", "message_id": "m1", "text": "hi"}));
+        test.sandbox.shim("cockpit-team", &format!("exec '{}' \"$@\"", env!("CARGO_BIN_EXE_cockpit-team")));
+        let output = test.run_hook(with_session(json!({"hook_event_name": "Stop"}), "/x/proj"), &[("CLAUDE_SESSIONS_AGENT", agent)]);
+        assert!(output.status.success(), "{}", stderr(&output));
+        assert!(output.stdout.is_empty(), "{agent}");
+        assert_eq!(test.received().len(), 1, "{agent}");
+        assert!(team.lock().unwrap().is_empty(), "{agent}");
+    }
 }
 
 #[test]
