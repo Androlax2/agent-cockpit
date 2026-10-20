@@ -118,21 +118,16 @@ agent_claude_restart() { # id dir [effort] [detached] [credits|subscription]
         fi
         return
     fi
-    # Launched in a tmux session of its own, as restart-all does: in the viewer pane it died when the
-    # column showed the next card as this one dropped out, and the loading screen held the cockpit.
-    local since
-    since=$(date +%s)
     loading_overlay "Restarting $(basename "$directory")${effort:+ · effort $effort}${asked_billing:+ · $billing} …" "$directory" "$id"
     exit_session "$id" || return 1
-    if has_conversation "$id"; then
-        claude_launch_detached "$directory" --resume "$id" ${effort:+--effort "$effort"}
-        view_when_back "$id" "$directory" "$since"
-    else
-        # Nothing said yet: a fresh session in the same directory is the same thing, with a new id.
-        loading_overlay "Restarting $(basename "$directory") …" "$directory"
-        claude_launch_detached "$directory" ${effort:+--effort "$effort"}
-        view_when_back "" "$directory" "$since"
+    if ! has_conversation "$id"; then
+        # Nothing said yet: a fresh session in the same directory is the same thing.
+        new_session "$directory" ${effort:+--effort "$effort"}
+        return
     fi
+    # The exited session leaves a dead pane behind; replace it right away so the gap reads as intended.
+    tmux respawn-pane -k -t "$(viewer_pane)" sh -c 'printf "\n  ⟳ Session closed, resuming it …\n"; sleep 30'
+    resume_session "$directory" "$id" "$effort"
 }
 
 # A conversation is resumed; a session nobody typed in yet has none, and starts fresh in its folder.

@@ -315,6 +315,33 @@ fn continuity_archived_results_can_be_reviewed_without_opening_an_exited_session
     assert!(!fixture.calls("claude-sessions").iter().any(|call| call.contains(" view ") || call.contains(" resume ")));
 }
 
+fn vanish_selected_session(fixture: &Fixture, loading: Option<&str>) {
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "runway", "/r/runway", 1), session(SESSION_B, "waiting", "runway", "/r/runway", 2)]));
+    let mut app = fixture.app();
+    app.focus_panel(1);
+    let shown = app.sessions[app.panels[1].selected].session.clone();
+    let other = if shown == SESSION_A { SESSION_B } else { SESSION_A };
+    if let Some(label) = loading { fixture.write("run/claude-sessions-loading", label); }
+    fixture.snapshot(json!([session(other, "waiting", "runway", "/r/runway", 2)]));
+    app.build();
+}
+
+#[test]
+fn when_the_shown_session_ends_the_next_one_is_shown() {
+    let fixture = Fixture::new();
+    vanish_selected_session(&fixture, None);
+    assert!(fixture.wait_for_calls("claude-sessions", 1).iter().any(|call| call.starts_with("claude-sessions view ")));
+}
+
+#[test]
+fn a_session_restarting_in_place_keeps_the_viewer() {
+    // 2026-10-21: showing the next card replaced the viewer pane, killing the Claude restarting there.
+    let fixture = Fixture::new();
+    vanish_selected_session(&fixture, Some("Restarting runway …\n/r/runway\n\n1\nstart\n"));
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(!fixture.calls("claude-sessions").iter().any(|call| call.starts_with("claude-sessions view ")), "{:?}", fixture.calls("claude-sessions"));
+}
+
 #[test]
 fn continuity_reviewing_a_captured_result_does_not_acknowledge_a_later_result() {
     let fixture = Fixture::new();

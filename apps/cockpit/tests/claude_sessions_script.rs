@@ -202,11 +202,8 @@ else exec {} "$@"; fi"#, bin().join("osd").display()));
         Manager { sandbox, project, snapshot, roles }
     }
 
-    /// A restart waits for its session to report back before showing it: not in these tests.
     fn run(&self, arguments: &[&str], env: &[(&str, &str)]) -> Output {
-        let mut environment = vec![("CLAUDE_SESSIONS_RESTORE_WAIT", "0")];
-        environment.extend_from_slice(env);
-        self.sandbox.run(bin().join("claude-sessions"), arguments, &environment)
+        self.sandbox.run(bin().join("claude-sessions"), arguments, env)
     }
 
     fn calls(&self, name: &str) -> Vec<String> {
@@ -258,8 +255,7 @@ esac"#));
     }
 
     fn resume_call(&self) -> String {
-        self.calls("tmux").into_iter().find(|call| call.starts_with("tmux new-session -d -s claude-retry-restart-") && call.contains(" --resume "))
-            .expect("no resume")
+        self.calls("tmux").into_iter().find(|call| call.contains("claude --resume $argv")).expect("no resume")
     }
 }
 
@@ -625,26 +621,9 @@ fn restart_exits_then_resumes_the_same_conversation() {
     manager.run(&["restart", SESSION_A], &[("SHIM_PANE_TEXT", IDLE), ("SHIM_EXIT_AFTER", "1")]);
     let calls = manager.calls("tmux");
     let exit_index = calls.iter().position(|call| call == "tmux send-keys -t %4 -l -- /exit").expect("no /exit");
-    let resume = calls.iter().position(|call| call.starts_with("tmux new-session -d -s claude-retry-restart-") && call.contains(" --resume ")).expect("no resume");
+    let resume = calls.iter().position(|call| call.contains("claude --resume $argv")).expect("no resume");
     assert!(exit_index < resume);
     assert!(calls[resume].ends_with(SESSION_A));
-}
-
-#[test]
-fn an_in_place_restart_never_launches_claude_in_the_viewer_pane() {
-    // 2026-10-21: the column viewed the next card as the old session dropped out, which replaced
-    // the viewer pane and killed the Claude just started there; the loading screen then held the
-    // cockpit. Launched in a tmux session of its own, as restart-all does, nothing can take it away.
-    for transcript in ["{\"type\":\"user\",\"message\":{\"content\":\"hi\"}}\n", "{\"type\":\"summary\"}\n"] {
-        let manager = Manager::new();
-        let transcripts = manager.sandbox.root.join("transcripts");
-        fs::create_dir_all(transcripts.join("-x")).unwrap();
-        fs::write(transcripts.join("-x").join(format!("{SESSION_A}.jsonl")), transcript).unwrap();
-        manager.run(&["restart", SESSION_A], &[("SHIM_PANE_TEXT", IDLE), ("SHIM_EXIT_AFTER", "1"), ("CLAUDE_SESSIONS_TRANSCRIPTS", &path_str(&transcripts))]);
-        let calls = manager.calls("tmux");
-        assert!(calls.iter().any(|call| call.starts_with("tmux new-session -d -s claude-retry-restart-") && call.contains("claude $argv")), "{calls:?}");
-        assert!(!manager.tmux_calls("respawn-pane").iter().any(|call| call.contains("claude")), "{calls:?}");
-    }
 }
 
 #[test]
@@ -991,7 +970,7 @@ fn a_restart_covers_the_session_pane_with_a_loading_screen() {
     assert!(popup[0].contains("-t %11 -x #{popup_pane_left} -y #{popup_pane_bottom}"));
     assert!(popup[0].ends_with("claude-sessions loading-screen"));
     let loading = fs::read_to_string(manager.runtime_file("claude-sessions-loading")).unwrap();
-    assert_eq!(loading.lines().take(3).collect::<Vec<_>>(), ["Restarting proj-a …", &path_str(&manager.project), SESSION_A]);
+    assert_eq!(loading.lines().next(), Some("Resuming proj-a …")); // the restart's text, then the resume's
 }
 
 #[test]

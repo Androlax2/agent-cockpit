@@ -34,6 +34,8 @@ fn from_env(name: &str, default: PathBuf) -> PathBuf {
 
 pub fn state_dir() -> PathBuf { state_home().join("claude-sessions") }
 pub fn snapshot() -> PathBuf { runtime_dir().join("claude-sessions.json") }
+/// claude-sessions' loading screen state while a session starts or restarts in the viewer pane.
+pub fn loading_state() -> PathBuf { runtime_dir().join("claude-sessions-loading") }
 pub fn current() -> PathBuf { runtime_dir().join("claude-sessions.current") }
 /// While it exists, the phone page notifies: the lock screen's claude-sessions away on.
 pub fn phone_away() -> PathBuf { runtime_dir().join("claude-remote-away") }

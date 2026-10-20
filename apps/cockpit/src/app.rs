@@ -1451,7 +1451,8 @@ impl App {
         panel.lines = lines;
         self.panels[1].fixed_top = self.session_summary_lines();
         self.panels[1].fixed_bottom = self.selected_session_detail_lines();
-        if selected_id.as_ref().is_some_and(|id| !self.all_sessions().iter().any(|session| session.session == *id)) && selected_index.is_none() {
+        if selected_id.as_ref().is_some_and(|id| !self.all_sessions().iter().any(|session| session.session == *id)) && selected_index.is_none()
+            && !is_viewer_loading() {
             if let Some(session) = self.selected_session() {
                 let error = self.manager_async(&["view", &session.session]);
                 if !error.is_empty() {
@@ -3514,6 +3515,14 @@ fn open_in_scratchpad(name: &str, page: &str) -> String {
 }
 
 /// fzf over lines; the chosen line, or None.
+/// A session starting or restarting in the viewer pane: showing another card would replace the pane
+/// and kill it. Only for as long as claude-sessions' loading screen waits (60 s), so a state file
+/// left behind cannot stop the column from following.
+fn is_viewer_loading() -> bool {
+    fs::metadata(paths::loading_state()).and_then(|metadata| metadata.modified())
+        .is_ok_and(|modified| modified.elapsed().is_ok_and(|age| age < Duration::from_secs(60)))
+}
+
 /// The Team view over the column: its rows, then the selected one in full (wrapped, never cut).
 fn draw_team_view(view: &crate::teams::view::TeamView, buffer: &mut Buffer) {
     let (width, height) = (buffer.area.width, buffer.area.height);
