@@ -262,6 +262,83 @@ fn a_claude_member_must_run_the_team_channel_before_approval_binds_it() {
 }
 
 #[test]
+fn a_working_recipient_gets_nothing_until_its_turn_ends() {
+    let mut bench = linked_team_bench();
+    send_to_designer(&mut bench, "notice-1");
+    bench.report(SESSION_A, json!({"state": "working"}));
+    let busy = crate::teams::request(&mut bench.registry, 10, cockpit::teams::AgentAction::Receive).unwrap().result.unwrap();
+    assert!(busy.is_null());
+    bench.report(SESSION_A, json!({"state": "waiting"}));
+    let idle = crate::teams::request(&mut bench.registry, 10, cockpit::teams::AgentAction::Receive).unwrap().result.unwrap();
+    assert!(idle["dispatch_id"].is_string());
+}
+
+#[test]
+fn each_idle_period_after_a_new_turn_takes_the_next_message() {
+    use cockpit::teams::{AgentAction, TransportOutcome};
+    let mut bench = linked_team_bench();
+    send_to_designer(&mut bench, "notice-1");
+    send_to_designer(&mut bench, "notice-2");
+    for expected in ["notice-1", "notice-2"] {
+        let delivery = crate::teams::request(&mut bench.registry, 10, AgentAction::Receive).unwrap().result.unwrap();
+        assert!(delivery["dispatch_id"].is_string(), "no delivery for {expected}");
+        crate::teams::request(&mut bench.registry, 10, AgentAction::Receipt { dispatch_id: delivery["dispatch_id"].as_str().unwrap().into(),
+            outcome: TransportOutcome::Received { native_id: expected.into() } }).unwrap();
+        bench.report(SESSION_A, json!({"state": "working"}));
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        bench.report(SESSION_A, json!({"state": "waiting"}));
+    }
+}
+
+#[test]
+fn after_a_daemon_restart_linked_members_keep_receiving() {
+    let mut bench = linked_team_bench();
+    send_to_designer(&mut bench, "notice-1");
+    // A restarted daemon reloads sessions from its snapshot, without their launch proof.
+    bench.registry.sessions.get_mut(SESSION_A).unwrap().runtime.clear();
+    bench.registry.teams = None;
+    let delivery = crate::teams::request(&mut bench.registry, 10, cockpit::teams::AgentAction::Receive).unwrap().result.unwrap();
+    assert!(delivery["text"].as_str().unwrap().contains("The frame is ready."));
+}
+
+#[test]
+fn another_launch_cannot_take_over_a_live_sessions_identity() {
+    let mut bench = team_bench();
+    bench.world.borrow_mut().sender_targets.insert(99, target(&[("tmux_pane", "%99")]));
+    bench.world.borrow_mut().sender_runtimes.insert(99, "runtime-99".into());
+    let forged = parse_session(&json!({"session": SESSION_A, "agent": "claude", "project": "project-a", "state": "waiting"}).to_string()).unwrap();
+    assert!(bench.registry.report_from(forged, 99).is_err());
+    assert_eq!(bench.registry.sessions[SESSION_A].runtime, "runtime-10");
+}
+
+#[test]
+fn a_session_restarted_after_its_old_launch_ended_takes_its_new_launch() {
+    let mut bench = team_bench();
+    bench.world.borrow_mut().sender_runtimes.remove(&10);
+    bench.world.borrow_mut().sender_targets.insert(11, target(&[("tmux_pane", "%10")]));
+    bench.world.borrow_mut().sender_runtimes.insert(11, "runtime-11".into());
+    let restarted = parse_session(&json!({"session": SESSION_A, "agent": "claude", "project": "project-a", "state": "waiting"}).to_string()).unwrap();
+    bench.registry.report_from(restarted, 11).unwrap();
+    assert_eq!(bench.registry.sessions[SESSION_A].runtime, "runtime-11");
+}
+
+#[test]
+fn a_planted_git_origin_cannot_choose_the_team_project() {
+    let bench = team_bench();
+    let primary = bench.fixture.root.join("home/IdeaProjects/project-a");
+    let impostor = bench.fixture.root.join("home/IdeaProjects/impostor");
+    fs::create_dir_all(impostor.join(".git")).unwrap();
+    fs::write(impostor.join(".git/config"), "[remote \"origin\"]\n url = git@github.com:example/project-a.git\n").unwrap();
+    let pointing = bench.fixture.root.join("home/IdeaProjects/pointing");
+    fs::create_dir_all(&pointing).unwrap();
+    fs::write(pointing.join(".git"), format!("gitdir: {}\n", primary.join(".git").display())).unwrap();
+    let identity = |path: &std::path::Path| crate::teams::canonical_project(path.to_str().unwrap()).unwrap();
+    assert_ne!(identity(&impostor), identity(&primary));
+    assert_ne!(identity(&pointing), identity(&primary));
+    assert!(!identity(&impostor).contains("github.com"));
+}
+
+#[test]
 fn only_host_processes_may_use_the_team_host_socket() {
     let tree = Tree(vec![("50", Some("30"), "sandbox", environment(&[])), ("30", None, "host", environment(&[]))]);
     assert!(crate::teams::host_peer_allowed(&tree, "30"));

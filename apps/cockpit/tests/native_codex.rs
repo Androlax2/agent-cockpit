@@ -22,10 +22,12 @@ fn codex_ids_do_not_alias_claude_uuids() {
 
 #[test]
 fn native_thread_ids_reject_unsafe_or_oversized_values() {
-    for invalid in ["".to_string(), "x".repeat(257), "../thread".into(), "thread\nother".into(), "thread name".into()] {
+    for invalid in ["".to_string(), "x".repeat(36), "../thread".into(), "thread\nother".into(), "thread name".into(),
+                    "--dangerously-bypass-approvals-and-sandbox".into(), "-aaaaaaa-0000-4000-8000-000000000000".into(),
+                    "AAAAAAAA-0000-4000-8000-000000000000".into()] {
         assert!(cockpit_id(&invalid).is_err(), "accepted {invalid:?}");
     }
-    assert!(cockpit_id(&"x".repeat(256)).is_ok());
+    assert!(cockpit_id("01a02010-e5b0-75f1-b3b7-3e0c54879f59").is_ok());
 }
 
 #[test]
@@ -158,6 +160,23 @@ fn native_codex_restore_uses_only_the_exact_verified_native_thread() {
 }
 
 #[test]
+fn a_recorded_native_thread_that_is_a_flag_is_never_passed_to_codex() {
+    let sandbox = Sandbox::new();
+    sandbox.shim("tmux", "");
+    let flag = "--dangerously-bypass-approvals-and-sandbox";
+    let digest = cockpit::audit::sha256_hex(flag.as_bytes());
+    let forged_id = format!("cdx_{digest}");
+    let state = sandbox.state.join("claude-sessions");
+    std::fs::create_dir_all(&state).unwrap();
+    std::fs::write(state.join("recent-sessions.json"), json!({&forged_id: {"native_thread": flag}}).to_string()).unwrap();
+    let script = r#"source "$1"; RECENT_SESSIONS="$XDG_STATE_HOME/claude-sessions/recent-sessions.json"; detached_size() { echo '200 50'; }; require_plain_directory() { :; }; session_field() { return 0; }; agent_codex_restore "$2" "$3""#;
+    let output = sandbox.command("bash", &[]).args(["-c", script, "bash"])
+        .arg(common::sandbox::bin().join("claude-sessions-agents/codex.sh")).arg(&sandbox.root).arg(&forged_id).output().unwrap();
+    assert!(!output.status.success());
+    assert!(sandbox.calls("tmux").is_empty(), "{:?}", sandbox.calls("tmux"));
+}
+
+#[test]
 fn native_codex_missing_thread_refuses_instead_of_resuming_last() {
     let sandbox = Sandbox::new();
     sandbox.shim("tmux", "");
@@ -280,8 +299,10 @@ fn a_finished_codex_turn_continues_with_the_next_approved_team_message() {
     let printed: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(printed["decision"], "block");
     assert!(printed["reason"].as_str().unwrap().contains("The frame is ready."));
-    let report: serde_json::Value = serde_json::from_str(reports.received(std::time::Duration::from_secs(1))[0].strip_prefix("session-request ").unwrap()).unwrap();
-    assert_eq!(report["state"], "working");
+    let filed: Vec<serde_json::Value> = reports.received(std::time::Duration::from_secs(1)).iter()
+        .map(|line| serde_json::from_str(line.strip_prefix("session-request ").unwrap()).unwrap()).collect();
+    let states: Vec<_> = filed.iter().map(|report| report["state"].clone()).collect();
+    assert_eq!(states, [json!("waiting"), json!("working")], "the turn end is reported before the next message is taken");
     let requests = team.lock().unwrap().clone();
     assert_eq!(requests.last().unwrap()["action"], "receipt");
     assert_eq!(requests.last().unwrap()["outcome"]["outcome"], "received");

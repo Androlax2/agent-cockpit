@@ -34,7 +34,8 @@
       "~/.config/fish", "~/.local/bin", "~/.config/greywall", "~/dotfiles/config/greywall",
       "~/.config/systemd", "~/.config/autostart", "~/.gitconfig", ".git/hooks", ".git/config",
       "~/.skills", "~/.agents", "~/AGENTS.md", "~/.config/gh", "~/.local/share/gh",
-      "~/.codex/config.toml", "~/.codex/hooks.json", "~/.codex/hooks", "~/.claude/hooks",
+      "~/.codex/config.toml", "~/.codex/hooks.json", "~/.codex/hooks", "~/.codex/rules", "~/.codex/AGENTS.md",
+      "~/.codex/prompts", "~/.codex/skills", "~/.claude/hooks",
       "~/dotfiles/config/codex", "~/.local/npm"
     ]
   },

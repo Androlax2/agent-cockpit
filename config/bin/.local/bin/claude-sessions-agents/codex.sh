@@ -28,7 +28,7 @@ codex_native_thread() { # cockpit-id
     if [[ -z $native && -f $RECENT_SESSIONS ]]; then
         native=$(jq -er --arg id "$id" '.[$id].native_thread // empty' "$RECENT_SESSIONS") || return 1
     fi
-    if [[ ! $native =~ ^[A-Za-z0-9_-]{1,256}$ ]]; then
+    if [[ ! $native =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
         echo "claude-sessions: no verified native Codex thread for $id" >&2
         return 1
     fi

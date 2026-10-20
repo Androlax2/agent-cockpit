@@ -85,16 +85,22 @@ fn report() -> Result<Option<Value>, String> {
     let payload = serde_json::from_slice(&input).map_err(|error| format!("invalid Codex hook JSON: {error}"))?;
     let Some(mut report) = codex::translate_hook(&payload)? else { return Ok(None) };
     update_question(&payload, &mut report)?;
+    report["terminal"] = json!(std::env::var("CLAUDE_SESSIONS_TERMINAL").is_ok_and(|value| value == "1"));
+    file(&report)?;
+    // The daemon hands out a message only to a session it sees idle: the turn end goes first.
     let delivery = (payload["hook_event_name"] == "Stop" && report["state"] == "waiting").then(team_delivery).flatten();
     if delivery.is_some() {
         report["state"] = json!("working");
+        file(&report)?;
     }
-    report["terminal"] = json!(std::env::var("CLAUDE_SESSIONS_TERMINAL").is_ok_and(|value| value == "1"));
-    approval::file_request("session-request", &report).map_err(|refusal| {
+    Ok(delivery)
+}
+
+fn file(report: &Value) -> Result<(), String> {
+    approval::file_request("session-request", report).map_err(|refusal| {
         let (approval::Refusal::Unreachable(reason) | approval::Refusal::Refused(reason)) = refusal;
         format!("cannot report Codex lifecycle: {reason}")
-    })?;
-    Ok(delivery)
+    })
 }
 
 fn main() {

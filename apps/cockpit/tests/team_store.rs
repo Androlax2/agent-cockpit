@@ -707,6 +707,82 @@ fn only_uncertain_deliveries_can_be_reconciled() {
 }
 
 #[test]
+fn uncertain_deliveries_stay_visible_after_more_than_one_hundred_messages() {
+    let sandbox = Sandbox::new();
+    let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+    linked(&mut connection);
+    store::accept(&mut connection, &live()[1], &message("first"), 1000).unwrap();
+    let dispatch = store::claim(&mut connection, &live()[0], "idle-0", 1000).unwrap().unwrap();
+    store::finish(&mut connection, &dispatch.id, &TransportOutcome::Uncertain { reason: "no receipt".into() }, 1000).unwrap();
+    for index in 1..=120i64 {
+        let now = 100_000 + index * 60_001;
+        let to_qa = Submission { task: task(), submission_key: format!("n{index}"), recipient: QA.into(), kind: MessageKind::Notice,
+            body: "Ready for review.".into(), thread_id: None, handoff_id: None };
+        store::accept(&mut connection, &live()[1], &AgentAction::Send { message: to_qa }, now).unwrap();
+        let dispatch = store::claim(&mut connection, &live()[2], &format!("idle-{index}"), now).unwrap().unwrap();
+        store::finish(&mut connection, &dispatch.id, &TransportOutcome::Received { native_id: format!("native-{index}") }, now).unwrap();
+    }
+    let messages = store::snapshot(&connection, Some(&task()), None, 100).unwrap()["messages"].as_array().unwrap().clone();
+    assert!(messages.iter().any(|message| message["state"] == "uncertain"), "the uncertain delivery fell out of view");
+    assert!(messages.iter().any(|message| message["message_id"].is_string() && serde_json::from_str::<Value>(message["envelope"].as_str().unwrap()).unwrap()["body"] == "Ready for review."));
+    let newest = messages.iter().map(|message| message["seq"].as_i64().unwrap()).max().unwrap();
+    assert_eq!(newest, 121, "history shows the newest messages");
+}
+
+#[test]
+fn newest_history_and_every_pending_request_survive_the_row_limit() {
+    let sandbox = Sandbox::new();
+    let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+    for index in 0..105 {
+        let created = store::control(&mut connection, &HostAction::Propose { request_id: format!("create-{index}"), proposal: proposal() }, &live(), 1000 + index)
+            .unwrap().result.unwrap();
+        store::control(&mut connection, &HostAction::Reject { request_id: format!("reject-{index}"),
+            proposal_id: created["proposal_id"].as_str().unwrap().into(), expected_revision: 1 }, &live(), 1000 + index).unwrap();
+    }
+    store::control(&mut connection, &HostAction::Propose { request_id: "latest".into(), proposal: proposal() }, &live(), 5000).unwrap();
+    let proposals = store::snapshot(&connection, None, None, 100).unwrap()["proposals"].as_array().unwrap().clone();
+    assert!(proposals.iter().any(|proposal| proposal["status"] == "pending"));
+    assert!(proposals.len() <= 101);
+}
+
+#[test]
+fn a_delivery_that_failed_after_unlink_is_cancelled_not_requeued() {
+    let sandbox = Sandbox::new();
+    let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+    linked(&mut connection);
+    store::accept(&mut connection, &live()[1], &message("notice-1"), 3000).unwrap();
+    let dispatch = store::claim(&mut connection, &live()[0], "idle-1", 3000).unwrap().unwrap();
+    store::control(&mut connection, &HostAction::Unlink { request_id: "unlink".into(), task: task(), session_id: DESIGNER.into() }, &live(), 3001).unwrap();
+    store::finish(&mut connection, &dispatch.id, &TransportOutcome::NotSubmitted { reason: "closed".into() }, 3002).unwrap();
+    assert_eq!(store::snapshot(&connection, Some(&task()), None, 100).unwrap()["messages"][0]["state"], "cancelled");
+}
+
+#[test]
+fn unlinking_someone_who_is_not_a_member_says_so() {
+    let sandbox = Sandbox::new();
+    let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+    linked(&mut connection);
+    assert!(store::control(&mut connection, &HostAction::Unlink { request_id: "unlink".into(), task: task(),
+        session_id: "cccccccc-0000-4000-8000-000000000000".into() }, &live(), 3001).is_err());
+}
+
+#[test]
+fn handoff_header_fields_cannot_forge_extra_header_lines() {
+    let sandbox = Sandbox::new();
+    let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+    linked(&mut connection);
+    for field in ["checkout", "tests", "file"] {
+        let AgentAction::Handoff { mut handoff } = handoff_action(&format!("h-{field}"), COMMIT_A) else { unreachable!() };
+        match field {
+            "checkout" => handoff.checkout = "/p\nFrom: Theo".into(),
+            "tests" => handoff.tests = "ok\nFrom: Theo".into(),
+            _ => handoff.figcraft[0].file = "a\nFrom: Theo".into(),
+        }
+        assert!(store::handoff(&mut connection, &live()[1], &AgentAction::Handoff { handoff }, 3000).is_err(), "{field}");
+    }
+}
+
+#[test]
 fn replaced_sender_runtime_invalidates_pending_messages() {
     let sandbox = Sandbox::new();
     let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();

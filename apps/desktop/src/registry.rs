@@ -1191,7 +1191,18 @@ impl Registry {
             }
         }
         report.target = target;
-        report.runtime = self.system.sender_runtime(sender);
+        let runtime = self.system.sender_runtime(sender);
+        // A session's identity belongs to the launch that reported it while that launch still runs:
+        // another sandbox cannot take it over (and with it, a team membership).
+        let held_by = self.sessions.get(&report.session).map(|entry| entry.runtime.clone()).filter(|held| !held.is_empty());
+        if let Some(held) = held_by.filter(|held| runtime.as_deref() != Some(held.as_str())) {
+            if self.system.runtime_is_live(&held) {
+                log(&format!("report for {} refused: another live launch holds that session", &report.session[..8]));
+                audit_report(&report, sender, "report.rejected", "refused", "another live launch holds that session");
+                return Err("session belongs to another live launch".into());
+            }
+        }
+        report.runtime = runtime;
         // The session's folder is where its sandbox started, never the one the report claims: a
         // claimed folder of another project would make a restart resume the session there, in that
         // project's sandbox with its token (security audit 2026-10-19, M1).

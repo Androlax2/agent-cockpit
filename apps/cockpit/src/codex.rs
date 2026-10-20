@@ -4,10 +4,14 @@ use crate::audit;
 use serde_json::{Value, json};
 use std::path::Path;
 
-/// Namespace native threads so a Codex UUID cannot alias a Claude conversation.
+/// Namespace native threads so a Codex UUID cannot alias a Claude conversation. Only a lowercase
+/// UUID is a thread: anything else (a leading "-") would reach `codex resume` as an option.
 pub fn cockpit_id(native_thread: &str) -> Result<String, String> {
-    if native_thread.is_empty() || native_thread.len() > 256
-        || !native_thread.bytes().all(|character| character.is_ascii_alphanumeric() || matches!(character, b'-' | b'_')) {
+    let is_uuid = native_thread.len() == 36 && native_thread.bytes().enumerate().all(|(index, byte)| match index {
+        8 | 13 | 18 | 23 => byte == b'-',
+        _ => byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte),
+    });
+    if !is_uuid {
         return Err("invalid Codex thread id".into());
     }
     Ok(format!("cdx_{}", audit::sha256_hex(native_thread.as_bytes())))

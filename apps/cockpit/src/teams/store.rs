@@ -177,7 +177,9 @@ pub fn control(connection: &mut Connection, action: &HostAction, live: &[Verifie
         HostAction::Unlink { task, session_id, .. } => {
             let task_key = serde_json::to_string(task)?;
             cancel_member_messages(&transaction, &task_key, session_id)?;
-            transaction.execute("DELETE FROM members WHERE task_key=?1 AND session_id=?2", params![task_key,session_id])?;
+            if transaction.execute("DELETE FROM members WHERE task_key=?1 AND session_id=?2", params![task_key,session_id])? != 1 {
+                return Err(TeamError::new(ErrorCode::NotFound, "that session is not a member of this task's team"));
+            }
             transaction.execute("UPDATE teams SET revision=revision+1 WHERE task_key=?1", [&task_key])?;
             json!({"session_id":session_id,"status":"unlinked"})
         },
@@ -253,18 +255,26 @@ fn approve_mapping(transaction: &rusqlite::Transaction<'_>, proposal_id: &str, e
     Ok(json!({"proposal_id": proposal_id, "status": "approved"}))
 }
 
+/// Actionable rows (pending requests, open escalations, uncertain or failed deliveries) always, plus the
+/// newest `limit` of each history.
 pub fn snapshot(connection: &Connection, task: Option<&TaskKey>, after: Option<i64>, limit: usize) -> Result<Value, TeamError> {
     let task_key = task.map(serde_json::to_string).transpose()?;
-    let mut members = connection.prepare("SELECT m.session_id,m.role,m.agent,m.runtime,m.epoch,t.project,t.task_id FROM members m JOIN teams t ON t.task_key=m.task_key WHERE (?1 IS NULL OR m.task_key=?1) ORDER BY t.task_key,m.role LIMIT ?2")?;
-    let members = members.query_map(params![task_key, limit.min(100) as i64], |row| Ok(json!({"session_id":row.get::<_,String>(0)?,"role":row.get::<_,String>(1)?,"agent":row.get::<_,String>(2)?,
+    let mut members = connection.prepare("SELECT m.session_id,m.role,m.agent,m.runtime,m.epoch,t.project,t.task_id FROM members m JOIN teams t ON t.task_key=m.task_key WHERE (?1 IS NULL OR m.task_key=?1) ORDER BY t.task_key,m.role")?;
+    let members = members.query_map(params![task_key], |row| Ok(json!({"session_id":row.get::<_,String>(0)?,"role":row.get::<_,String>(1)?,"agent":row.get::<_,String>(2)?,
         "runtime":row.get::<_,String>(3)?,"epoch":row.get::<_,String>(4)?,"project":row.get::<_,String>(5)?,"task_id":row.get::<_,String>(6)?})))?.collect::<Result<Vec<_>,_>>()?;
-    let mut proposals = connection.prepare("SELECT id,project,task_id,mapping,mapping_hash,revision,status,reason,sender,created_by,parent_id FROM proposals WHERE (?1 IS NULL OR task_key=?1) ORDER BY created_at,id LIMIT ?2")?;
+    let mut proposals = connection.prepare("SELECT id,project,task_id,mapping,mapping_hash,revision,status,reason,sender,created_by,parent_id FROM proposals WHERE (?1 IS NULL OR task_key=?1)
+        AND (status='pending' OR id IN (SELECT id FROM proposals WHERE (?1 IS NULL OR task_key=?1) ORDER BY created_at DESC, id DESC LIMIT ?2))
+        ORDER BY created_at,id")?;
     let proposals = proposals.query_map(params![task_key, limit.min(100) as i64], |row| Ok(json!({"proposal_id":row.get::<_,String>(0)?,"project":row.get::<_,String>(1)?,"task_id":row.get::<_,String>(2)?,
         "mapping":row.get::<_,String>(3)?,"mapping_hash":row.get::<_,String>(4)?,"revision":row.get::<_,i64>(5)?,"status":row.get::<_,String>(6)?,"reason":row.get::<_,String>(7)?,"sender":row.get::<_,String>(8)?,"created_by":row.get::<_,String>(9)?,"parent_id":row.get::<_,Option<String>>(10)?})))?.collect::<Result<Vec<_>,_>>()?;
-    let mut messages = connection.prepare("SELECT seq,id,envelope,state,attempts,next_at,last_error FROM messages WHERE (?1 IS NULL OR task_key=?1) AND (?2 IS NULL OR seq>?2) ORDER BY seq LIMIT ?3")?;
+    let mut messages = connection.prepare("SELECT seq,id,envelope,state,attempts,next_at,last_error FROM messages WHERE (?1 IS NULL OR task_key=?1) AND (?2 IS NULL OR seq>?2)
+        AND (state IN ('uncertain','failed') OR seq IN (SELECT seq FROM messages WHERE (?1 IS NULL OR task_key=?1) AND (?2 IS NULL OR seq>?2) ORDER BY seq DESC LIMIT ?3))
+        ORDER BY seq")?;
     let messages = messages.query_map(params![task_key, after, limit.min(100) as i64], |row| Ok(json!({"seq":row.get::<_,i64>(0)?,"message_id":row.get::<_,String>(1)?,
         "envelope":row.get::<_,String>(2)?,"state":row.get::<_,String>(3)?,"attempts":row.get::<_,i64>(4)?,"next_at":row.get::<_,i64>(5)?,"error":row.get::<_,String>(6)?})))?.collect::<Result<Vec<_>,_>>()?;
-    let mut escalations = connection.prepare("SELECT thread_id,reason,status,note,created_at FROM escalations WHERE (?1 IS NULL OR task_key=?1) ORDER BY created_at LIMIT ?2")?;
+    let mut escalations = connection.prepare("SELECT thread_id,reason,status,note,created_at FROM escalations WHERE (?1 IS NULL OR task_key=?1)
+        AND (status='open' OR thread_id IN (SELECT thread_id FROM escalations WHERE (?1 IS NULL OR task_key=?1) ORDER BY created_at DESC LIMIT ?2))
+        ORDER BY created_at")?;
     let escalations = escalations.query_map(params![task_key, limit.min(100) as i64], |row| Ok(json!({"thread_id":row.get::<_,String>(0)?,
         "reason":row.get::<_,String>(1)?,"status":row.get::<_,String>(2)?,"note":row.get::<_,String>(3)?,"created_at":row.get::<_,i64>(4)?})))?
         .collect::<Result<Vec<_>,_>>()?;
@@ -365,10 +375,11 @@ fn validate_handoff(handoff: &super::Handoff) -> Result<(), TeamError> {
         && handoff.branch.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'/' | b'-'));
     let is_key = !handoff.submission_key.is_empty() && handoff.submission_key.len() <= 128
         && handoff.submission_key.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'));
-    let are_frames = handoff.figcraft.len() <= 20
-        && handoff.figcraft.iter().all(|frame| valid_text(&frame.file, 300) && valid_text(&frame.frame_id, 100) && !frame.frame_id.contains('\n'));
-    if !is_commit || !is_branch || !is_key || !are_frames || !handoff.checkout.starts_with('/') || !valid_text(&handoff.checkout, 300)
-        || !valid_text(&handoff.summary, 2000) || !valid_text(&handoff.tests, 2000) {
+    // Header fields are one line each: a newline there could forge a "From:" line above the body.
+    let one_line = |text: &str, max: usize| valid_text(text, max) && !text.contains('\n');
+    let are_frames = handoff.figcraft.len() <= 20 && handoff.figcraft.iter().all(|frame| one_line(&frame.file, 300) && one_line(&frame.frame_id, 100));
+    if !is_commit || !is_branch || !is_key || !are_frames || !handoff.checkout.starts_with('/') || !one_line(&handoff.checkout, 300)
+        || !valid_text(&handoff.summary, 2000) || !one_line(&handoff.tests, 2000) {
         return Err(TeamError::new(ErrorCode::Invalid, "a handoff needs a branch, a full commit id, an absolute checkout, a summary and test outcomes"));
     }
     Ok(())
@@ -494,6 +505,11 @@ pub fn assess(connection: &mut Connection, sender: &VerifiedSession, action: &Ag
     Ok(TeamReply { request_id: thread_id.clone(), result: Ok(json!({"thread_id": thread_id, "status": next, "round": round})) })
 }
 
+/// The launch a member was bound to, for a daemon that restarted and lost its in-memory copy.
+pub fn member_runtime(connection: &Connection, session: &str) -> Result<Option<String>, TeamError> {
+    Ok(connection.query_row("SELECT runtime FROM members WHERE session_id=?1", [session], |row| row.get(0)).optional()?)
+}
+
 /// The bound members of a request: (session, agent, runtime), for host-side checks before approval.
 pub fn proposal_members(connection: &Connection, proposal_id: &str) -> Result<Vec<(String, String, String)>, TeamError> {
     let mapping: Option<String> = connection.query_row("SELECT mapping FROM proposals WHERE id=?1", [proposal_id], |row| row.get(0)).optional()?;
@@ -583,6 +599,14 @@ pub fn finish(connection: &mut Connection, dispatch_id: &str, outcome: &Transpor
         },
         TransportOutcome::NotSubmitted { reason } => {
             if attempt_state != "submitting" { return Err(TeamError::new(ErrorCode::Conflict, "uncertain delivery needs reconciliation, not a retry")); }
+            let still_linked: i64 = transaction.query_row("SELECT count(*) FROM messages q JOIN members s ON s.task_key=q.task_key AND s.session_id=q.sender AND s.epoch=q.sender_epoch
+                JOIN members r ON r.task_key=q.task_key AND r.session_id=q.recipient AND r.epoch=q.recipient_epoch WHERE q.id=?1", [&message_id], |row| row.get(0))?;
+            if still_linked == 0 {
+                transaction.execute("UPDATE attempts SET state='not_submitted',finished_at=?2 WHERE id=?1", params![dispatch_id,now_ms])?;
+                transaction.execute("UPDATE messages SET state='cancelled',last_error='membership revoked' WHERE id=?1", [&message_id])?;
+                transaction.commit()?;
+                return Ok(());
+            }
             let delay = match number { 1 => Some(2000), 2 => Some(10_000), 3 => Some(30_000), _ => None };
             transaction.execute("UPDATE attempts SET state='not_submitted',finished_at=?2 WHERE id=?1", params![dispatch_id,now_ms])?;
             transaction.execute("UPDATE messages SET state=?2,next_at=?3,last_error=?4 WHERE id=?1", params![message_id,if delay.is_some() { "queued" } else { "failed" },now_ms+delay.unwrap_or(0),reason])?;
