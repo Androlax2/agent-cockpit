@@ -1,4 +1,4 @@
-//! What Claude Code's replies would cost at API prices (the plan is flat): every reply of the
+//! What Claude Code and opencode replies would cost at API prices (the plan is flat): every reply of the
 //! transcripts archived in usage.sqlite, which keeps them after Claude Code deletes old
 //! transcripts. Same schema and keys as the Python column, so the archive carries over. opencode's
 //! replies join them from its database (archive_opencode), keyed "opencode:<message id>".
@@ -29,10 +29,21 @@ const MODEL_PRICES: &[(&str, [f64; 5])] = &[
     ("claude-opus-5-5", [4.0, 20.0, 0.20, 5.0, 8.0]),
     ("claude-opus-5", [5.0, 25.0, 0.5, 6.25, 10.0]),
     ("claude-opus-4-8", [5.0, 25.0, 0.5, 6.25, 10.0]), ("claude-opus-4-7", [5.0, 25.0, 0.5, 6.25, 10.0]), ("claude-opus-4-6", [5.0, 25.0, 0.5, 6.25, 10.0]),
+    // https://www.anthropic.com/news/claude-opus-4-5; cache multipliers match the other Opus 4 models.
+    ("claude-opus-4-5", [5.0, 25.0, 0.5, 6.25, 10.0]),
     ("claude-sonnet-5-5", [2.0, 10.0, 0.20, 2.5, 4.0]), ("claude-sonnet-5", [2.0, 10.0, 0.20, 2.5, 4.0]),
     ("claude-sonnet-4-6", [3.0, 15.0, 0.3, 3.75, 6.0]),
     ("claude-haiku-5-5", [0.10, 0.50, 0.01, 0.125, 0.2]),
     ("claude-haiku-4-5", [1.0, 5.0, 0.1, 1.25, 2.0]),
+    // Standard API rates checked 2026-10-20: https://developers.openai.com/api/docs/pricing
+    ("gpt-5.3-codex", [1.75, 14.0, 0.175, 0.0, 0.0]),
+    ("gpt-5.4", [2.5, 15.0, 0.25, 0.0, 0.0]),
+    ("gpt-5.5", [5.0, 30.0, 0.5, 0.0, 0.0]),
+    ("gpt-6-astra", [10.0, 50.0, 1.0, 12.5, 12.5]),
+    ("gpt-6.1-sol", [2.0, 10.0, 0.1, 2.5, 2.5]),
+    // https://ai.google.dev/gemini-api/docs/pricing (2026-10-20); cache storage is time-based,
+    // not a per-reply token charge, and cannot be recovered from these transcripts.
+    ("gemini-3.1-pro-preview", [2.0, 12.0, 0.2, 0.0, 0.0]),
 ];
 /// Haiku 5.5 above 100K prompt tokens.
 const HAIKU_5_5_LONG_PROMPT: (i64, [f64; 5]) = (100_000, [0.50, 2.50, 0.05, 0.625, 1.0]);
@@ -51,7 +62,8 @@ create table if not exists files (path text primary key, mtime real not null, si
 /// The price row of a model id (date-suffixed ids included), or None for an unknown model.
 fn model_prices(model: &str) -> Option<[f64; 5]> {
     MODEL_PRICES.iter()
-        .filter(|(known, _)| model == *known || model.starts_with(&format!("{known}-")))
+        .filter(|(known, _)| model == *known || model.strip_prefix(&format!("{known}-")).is_some_and(|suffix|
+            (suffix.len() == 8 || suffix.len() == 10) && suffix.bytes().all(|byte| byte.is_ascii_digit() || byte == b'-')))
         .max_by_key(|(known, _)| known.len())
         .map(|(_, prices)| *prices)
 }
@@ -79,6 +91,12 @@ pub fn reply_cost(model: &str, usage: &Value) -> Option<f64> {
     let prompt = tokens(usage, "input_tokens") + tokens(usage, "cache_read_input_tokens") + tokens(usage, "cache_creation_input_tokens");
     if model.starts_with("claude-haiku-5-5") && prompt > HAIKU_5_5_LONG_PROMPT.0 {
         prices = HAIKU_5_5_LONG_PROMPT.1;
+    }
+    if model.starts_with("gpt-") && !model.starts_with("gpt-5.3-codex") && prompt > 272_000 {
+        prices = [prices[0] * 2.0, prices[1] * 1.5, prices[2] * 2.0, prices[3] * 2.0, prices[4] * 2.0];
+    }
+    if model.starts_with("gemini-3.1-pro-preview") && prompt > 200_000 {
+        prices = [4.0, 18.0, 0.4, 0.0, 0.0];
     }
     let [input, output, read, write_5m, write_1h] = prices;
     let cost = (tokens(usage, "input_tokens") as f64 * input + tokens(usage, "output_tokens") as f64 * output
@@ -265,6 +283,36 @@ pub fn archive_opencode(archive: &mut Connection, database: &Path) -> rusqlite::
     Ok(changed)
 }
 
+/// Price only previously unpriced replies from saved tokens: the source history may be gone.
+pub fn backfill_costs(archive: &mut Connection) -> rusqlite::Result<usize> {
+    let rows = {
+        let mut statement = archive.prepare(
+            "select key, model, input, output, cache_read, cache_write_5m, cache_write_1h, speed from replies where cost is null")?;
+        statement.query_map([], |row| {
+            let written_5m: i64 = row.get(5)?;
+            let written_1h: i64 = row.get(6)?;
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, serde_json::json!({
+                "input_tokens": row.get::<_, i64>(2)?, "output_tokens": row.get::<_, i64>(3)?,
+                "cache_read_input_tokens": row.get::<_, i64>(4)?, "cache_creation_input_tokens": written_5m + written_1h,
+                "cache_creation": {"ephemeral_5m_input_tokens": written_5m, "ephemeral_1h_input_tokens": written_1h},
+                "speed": row.get::<_, String>(7)?,
+            })))
+        })?.collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    let transaction = archive.transaction()?;
+    let mut changed = 0;
+    {
+        let mut update = transaction.prepare("update replies set cost = ? where key = ? and cost is null")?;
+        for (key, model, usage) in rows {
+            if let Some(cost) = reply_cost(&model, &usage) {
+                changed += update.execute(params![cost, key])?;
+            }
+        }
+    }
+    transaction.commit()?;
+    Ok(changed)
+}
+
 /// A gap between two replies of a session counts as time spent only under this: longer, the
 /// session sat waiting (a night, a meeting), and that is not time with Claude.
 const ACTIVE_GAP_S: f64 = 300.0;
@@ -391,6 +439,7 @@ impl Costs {
                 if let Err(error) = archive_opencode(&mut archive, &paths::opencode_database()) {
                     opencode_error = error.to_string();
                 }
+                backfill_costs(&mut archive)?;
                 Ok((archived_costs(&archive)?, active_seconds(&archive, &today)?, active_seconds(&archive, "0000-00-00")?,
                     time_with_claude(&archive, &starts)?))
             });
@@ -458,6 +507,7 @@ pub fn print_costs() -> rusqlite::Result<()> {
     let mut archive = open_archive(&paths::usage_archive())?;
     archive_transcripts(&mut archive, &paths::transcripts())?;
     let opencode = archive_opencode(&mut archive, &paths::opencode_database()).err();
+    backfill_costs(&mut archive)?;
     let (days, unpriced, all_time) = archived_costs(&archive)?;
     let first = Local::now().date_naive().with_day(1).unwrap().to_string();
     let mut out = String::new();
@@ -471,19 +521,19 @@ pub fn print_costs() -> rusqlite::Result<()> {
     let mut statement = archive.prepare("select substr(day, 1, 7), sum(cost) from replies group by 1 order by 1")?;
     for row in statement.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<f64>>(1)?)))? {
         let (month, cost) = row?;
-        out.push_str(&format!("  {month}     {:>9}\n", money(cost.unwrap_or(0.0))));
+        out.push_str(&format!("  {month}     {:>9}\n", cost.map(money).unwrap_or_else(|| "unpriced".into())));
     }
     out.push_str("per model\n");
     let mut statement = archive.prepare("select model, sum(cost), sum(output) from replies group by 1 order by 2 desc")?;
     for row in statement.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<f64>>(1)?, row.get::<_, i64>(2)?)))? {
         let (model, cost, output) = row?;
-        out.push_str(&format!("  {model:<24} {:>9}  {:.1}M output tokens\n", money(cost.unwrap_or(0.0)), output as f64 / 1e6));
+        out.push_str(&format!("  {model:<24} {:>9}  {:.1}M output tokens\n", cost.map(money).unwrap_or_else(|| "unpriced".into()), output as f64 / 1e6));
     }
     out.push_str("top projects\n");
     let mut statement = archive.prepare("select project, sum(cost) from replies group by 1 order by 2 desc limit 10")?;
     for row in statement.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<f64>>(1)?)))? {
         let (project, cost) = row?;
-        out.push_str(&format!("  {project:<24} {:>9}\n", money(cost.unwrap_or(0.0))));
+        out.push_str(&format!("  {project:<24} {:>9}\n", cost.map(money).unwrap_or_else(|| "unpriced".into())));
     }
     let first_day: Option<String> = archive.query_row("select min(day) from replies", [], |row| row.get(0))?;
     out.push_str(&format!("all time      {:>9}  (since {})\n", money(all_time), first_day.unwrap_or_else(|| "None".into())));
@@ -588,6 +638,7 @@ pub fn print_digest() -> rusqlite::Result<()> {
     if let Err(error) = archive_opencode(&mut archive, &paths::opencode_database()) {
         util::log_event("ERROR", &format!("digest: opencode's replies left out: {error}"));
     }
+    backfill_costs(&mut archive)?;
     let repositories: Vec<String> = reviews::session_checkouts("").into_keys().collect();
     let (rows, _) = reviews::fetch_reviews(&repositories);
     let lines = digest_lines(&archive, &sessions::reported(), &rows, Local::now().date_naive())?;
@@ -607,6 +658,45 @@ mod tests {
         assert_eq!(reply_cost("claude-unknown", &usage), None);
         let fast = json!({"output_tokens": 1_000_000, "speed": "fast"});
         assert_eq!(reply_cost("claude-opus-5-5", &fast), Some(40.0));
+    }
+
+    #[test]
+    fn previously_unpriced_models_include_input_output_and_cache_in_the_estimate() {
+        let usage = json!({"input_tokens": 100_000, "output_tokens": 1_000_000, "cache_read_input_tokens": 100_000});
+        for (model, expected) in [
+            ("claude-opus-4-5", 25.55), ("gpt-5.3-codex", 14.1925),
+            ("gpt-5.4", 15.275), ("gpt-5.5", 30.55),
+            ("gpt-6-astra", 51.1), ("gpt-6.1-sol", 10.21),
+            ("gemini-3.1-pro-preview", 12.22),
+        ] {
+            let cost = reply_cost(model, &usage).unwrap_or_else(|| panic!("no price for {model}"));
+            assert!((cost - expected).abs() < 1e-9, "{model}: {cost} != {expected}");
+        }
+    }
+
+    #[test]
+    fn long_prompts_use_the_full_request_long_context_rate() {
+        for (model, threshold, at_threshold, above_threshold) in [
+            ("gpt-5.4", 272_000, 15.68, 23.860005),
+            ("gpt-5.5", 272_000, 31.36, 47.72001),
+            ("gpt-6-astra", 272_000, 52.72, 80.44002),
+            ("gpt-6.1-sol", 272_000, 10.544, 16.088004),
+            ("gemini-3.1-pro-preview", 200_000, 12.4, 18.800004),
+        ] {
+            for (input, expected) in [(threshold, at_threshold), (threshold + 1, above_threshold)] {
+                let cost = reply_cost(model, &json!({"input_tokens": input, "output_tokens": 1_000_000})).unwrap();
+                assert!((cost - expected).abs() < 1e-9, "{model}, {input}: {cost} != {expected}");
+            }
+        }
+    }
+
+    #[test]
+    fn only_dated_snapshots_inherit_a_models_price() {
+        let usage = json!({"output_tokens": 1_000_000});
+        assert_eq!(reply_cost("gpt-5.4-2026-03-05", &usage), Some(15.0));
+        for model in ["gpt-5.4-mini", "gpt-5.4-pro", "gpt-5.5-fast", "gpt-6.1-sol-unknown", "big-pickle"] {
+            assert_eq!(reply_cost(model, &usage), None, "{model}");
+        }
     }
 
     #[test]
