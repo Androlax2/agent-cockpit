@@ -4,6 +4,7 @@ pub mod agents;
 pub mod app;
 pub mod approval;
 pub mod audit;
+pub mod codex;
 pub mod costs;
 pub mod continuity;
 pub mod errors;

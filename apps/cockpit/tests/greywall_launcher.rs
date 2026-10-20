@@ -45,7 +45,7 @@ impl Launch {
         fs::create_dir_all(sandbox.home.join("IdeaProjects/proj-b")).unwrap();
         fs::create_dir_all(sandbox.home.join("dotfiles")).unwrap();
         for (path, content) in [(".local/share/greyproxy/ca-cert.pem", ""), (".local/share/agent-shims/bin/wl-paste", "#!/bin/sh\n"),
-                                (".config/greywall/greywall.json", r#"{"filesystem": {"denyWrite": [".git/hooks"], "denyRead": ["~/.ssh/id_*", "~/.local/share/opencode/**", "~/.config/opencode/**"]}}"#)] {
+                                 (".config/greywall/greywall.json", r#"{"filesystem": {"denyWrite": [".git/hooks"], "denyRead": ["~/.ssh/id_*", "~/.local/share/opencode/**", "~/.config/opencode/**", "~/.codex/**"]}}"#)] {
             let file = sandbox.home.join(path);
             fs::create_dir_all(file.parent().unwrap()).unwrap();
             fs::write(file, content).unwrap();
@@ -60,6 +60,8 @@ impl Launch {
                                                                           env > \"$HOME/opencode-environment\"\n");
         write_executable(&sandbox.home.join(".local/bin/claude"), "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$HOME/claude-arguments\"\n\
                                                                          env > \"$HOME/claude-environment\"\n");
+        write_executable(&sandbox.home.join(".local/npm/bin/codex"), "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$HOME/codex-arguments\"\n\
+                                                                         env > \"$HOME/codex-environment\"\n");
         sandbox.shim("dig", "echo 127.0.0.1");
         sandbox.shim("secret-tool", r#"case "$3" in
   agent-anthropic) [ -n "${SHIM_ANTHROPIC_KEY:-}" ] && echo "$SHIM_ANTHROPIC_KEY" || exit 1 ;;
@@ -112,7 +114,7 @@ fn build_tools_share_a_budget_without_restricting_the_interactive_agent() {
         let expected_cpus = &available_cpus[..(available_cpus.len() / 2).max(1)];
         let probe = "#!/usr/bin/env python3\nimport json, os, subprocess\n\
                      print(json.dumps({'cpus': sorted(os.sched_getaffinity(0)), 'build': json.loads(subprocess.check_output(['cargo', 'test'], text=True))}))\n";
-        let agent_path = if agent == "opencode" { ".opencode/bin/opencode" } else { ".local/bin/claude" };
+        let agent_path = match agent { "opencode" => ".opencode/bin/opencode", "codex" => ".local/npm/bin/codex", _ => ".local/bin/claude" };
         write_executable(&launch.sandbox.home.join(agent_path), probe);
         launch.sandbox.shim("cargo", "python3 -c 'import json, os; print(json.dumps({\"cpus\": sorted(os.sched_getaffinity(0)), \"nice\": os.getpriority(os.PRIO_PROCESS, 0)}))'");
         let output = launch.sandbox.command(bin().join("greywall-agents").join(agent), &[])
@@ -122,6 +124,44 @@ fn build_tools_share_a_budget_without_restricting_the_interactive_agent() {
         assert_eq!(observed["cpus"], serde_json::json!(available_cpus), "{agent}: interactive agent was restricted");
         assert_eq!(observed["build"]["cpus"], serde_json::json!(expected_cpus), "{agent}: build was not restricted");
         assert!(observed["build"]["nice"].as_i64().unwrap() >= 10, "{agent}: {observed}");
+    }
+}
+
+#[test]
+fn native_codex_refuses_the_live_dotfiles_checkout() {
+    let launch = Launch::new();
+    let output = launch.sandbox.command(bin().join("greywall-agents/codex"), &[])
+        .current_dir(launch.sandbox.home.join("dotfiles")).output().unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(stderr(&output).contains("codex launcher:"));
+    assert!(launch.sandbox.calls("greywall").is_empty());
+}
+
+#[test]
+fn native_codex_uses_project_guards_without_learning_or_hook_bypass() {
+    let launch = Launch::new();
+    let invocation = launch.run_agent("codex", &[], &["--model", "configured-model", "a literal prompt"]);
+    assert!(invocation.contains("--settings "), "{invocation}");
+    assert!(invocation.contains("--profile codex"), "{invocation}");
+    assert!(!invocation.contains("--auto-profile"), "{invocation}");
+    assert!(!invocation.contains("dangerously"), "{invocation}");
+    assert!(invocation.contains("claude-answers/"), "{invocation}");
+    assert_eq!(std::fs::read_to_string(launch.sandbox.home.join("codex-arguments")).unwrap(),
+        "--no-daemon\n--model\nconfigured-model\na literal prompt\n");
+    let environment = std::fs::read_to_string(launch.sandbox.home.join("codex-environment")).unwrap();
+    assert!(environment.contains("CLAUDE_SESSIONS_AGENT=codex\n"));
+    assert!(environment.contains("CLAUDE_ANSWERS_KEY="));
+}
+
+#[test]
+fn native_codex_cannot_open_opencodes_state_and_other_agents_cannot_open_codex_state() {
+    for agent in ["claude", "opencode", "codex"] {
+        let launch = Launch::new();
+        launch.run_agent(agent, &[], &[]);
+        let settings = launch.settings_of(agent);
+        let denied = settings["filesystem"]["denyRead"].as_array().unwrap();
+        assert_eq!(denied.contains(&serde_json::json!("~/.codex/**")), agent != "codex", "{agent}");
+        assert_eq!(denied.contains(&serde_json::json!("~/.local/share/opencode/**")), agent != "opencode", "{agent}");
     }
 }
 
@@ -647,7 +687,7 @@ fn opencode_sees_its_own_data_and_claude_does_not() {
     launch.run_agent("claude", &[], &[]);
     let opencode = denied_reads(&launch.settings_of("opencode"));
     let claude = denied_reads(&launch.settings_of("claude"));
-    assert_eq!(opencode, ["~/.config/greywall-agents/figcraft", "~/.ssh/id_*"], "host-only FigCraft storage and every other rule stay hidden");
+    assert_eq!(opencode, ["~/.codex/**", "~/.config/greywall-agents/figcraft", "~/.ssh/id_*"], "other agents' state, host-only FigCraft storage and every other rule stay hidden");
     assert!(claude.contains(&"~/.local/share/opencode/**".to_string()) && claude.contains(&"~/.config/opencode/**".to_string()), "{claude:?}");
 }
 

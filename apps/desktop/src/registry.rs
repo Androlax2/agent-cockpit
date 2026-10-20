@@ -162,7 +162,26 @@ pub struct Report {
     pub apps: Option<String>,
     /// Which agent runs the session (cockpit::agents). None when the report did not say: Claude.
     pub agent: Option<String>,
+    pub native_thread: Option<String>,
     pub target: BTreeMap<String, String>,
+}
+
+fn native_thread_of(report: &Map<String, Value>) -> Result<Option<String>, String> {
+    let session = report.get("session").and_then(Value::as_str).unwrap_or("");
+    if report.get("agent").and_then(Value::as_str) == Some("codex") || session.starts_with("cdx_") {
+        if report.get("agent").and_then(Value::as_str) != Some("codex") {
+            return Err("native Codex reports require an explicit codex agent".into());
+        }
+        let native = report.get("native_thread").and_then(Value::as_str).ok_or("native Codex report has no native thread")?;
+        if cockpit::codex::cockpit_id(native)? != session {
+            return Err("native Codex thread does not match its cockpit id".into());
+        }
+        return Ok(Some(native.to_string()));
+    }
+    if report.contains_key("native_thread") {
+        return Err("only native Codex reports may name a native thread".into());
+    }
+    Ok(None)
 }
 
 pub fn parse_session(raw: &str) -> Result<Report, String> {
@@ -230,6 +249,7 @@ pub fn parse_session(raw: &str) -> Result<Report, String> {
         }
     }
     validate_focus_target(report)?;
+    let native_thread = native_thread_of(report)?;
     let text = |key: &str| report.get(key).and_then(Value::as_str).map(str::to_string);
     let target = TARGET_FIELDS.iter().filter_map(|key| {
         report.get(*key).map(|value| (key.to_string(), match value { Value::String(s) => s.clone(), other => other.to_string() }))
@@ -246,7 +266,7 @@ pub fn parse_session(raw: &str) -> Result<Report, String> {
         agents: report.get("agents").and_then(Value::as_u64),
         background: report.get("background").and_then(Value::as_u64),
         apps: report.get("apps").and_then(Value::as_str).map(str::to_string),
-        agent: report.get("agent").and_then(Value::as_str).map(str::to_string), target,
+        agent: report.get("agent").and_then(Value::as_str).map(str::to_string), native_thread, target,
     })
 }
 
@@ -1043,6 +1063,7 @@ pub struct Entry {
     pub apps: String,
     /// The name of the agent that runs it (cockpit::agents).
     pub agent: String,
+    pub native_thread: String,
 }
 
 pub struct Registry {
@@ -1197,6 +1218,10 @@ impl Registry {
             changed = true;
         }
         let mut entry = self.sessions.remove(&session).unwrap();
+        if let Some(native) = report.native_thread.as_ref().filter(|native| **native != entry.native_thread) {
+            entry.native_thread = native.clone();
+            changed = true;
+        }
         if let Some(needs_input) = report.needs_input.filter(|needs_input| *needs_input != entry.needs_input) {
             entry.needs_input = needs_input;
             changed = true;
@@ -1472,6 +1497,9 @@ impl Registry {
             for (key, value) in &entry.target {
                 row[key] = json!(value);
             }
+            if !entry.native_thread.is_empty() {
+                row["native_thread"] = json!(entry.native_thread);
+            }
             row
         }).collect();
         rows.sort_by(|a, b| {
@@ -1504,7 +1532,10 @@ impl Registry {
         for id in &ids {
             let entry = &self.sessions[id];
             recent.insert(id.clone(), json!({"project": entry.project, "cwd": entry.cwd, "last_seen": time as i64, "terminal": entry.terminal,
-                                     "credits": entry.credits, "agent": entry.agent}));
+                                      "credits": entry.credits, "agent": entry.agent}));
+            if !entry.native_thread.is_empty() {
+                recent[id]["native_thread"] = json!(entry.native_thread);
+            }
         }
         let oldest = time - RECENT_SESSIONS_DAYS * 86400.0;
         recent.retain(|_, row| row.get("last_seen").and_then(Value::as_f64).unwrap_or(0.0) >= oldest);
@@ -1525,6 +1556,7 @@ impl Registry {
         for row in rows {
             let loaded = (|| -> Result<(String, Entry), String> {
                 let session = row.get("session").and_then(Value::as_str).ok_or("no session")?.to_string();
+                let native_thread = native_thread_of(row.as_object().ok_or("snapshot row is not an object")?)?.unwrap_or_default();
                 let state = row.get("state").and_then(Value::as_str).ok_or("no state")?.to_string();
                 if urgency(&state) < 0 {
                     return Err(format!("state {state:?} unknown"));
@@ -1559,6 +1591,7 @@ impl Registry {
                     label,
                     repository: repository.into(), branch: branch.into(), last_result,
                     reports_turns: row.get("reports_turns").and_then(Value::as_bool).unwrap_or(false),
+                    native_thread,
                     request: request.into(),
                     full_request: full_request.into(),
                     started: row.get("started").and_then(Value::as_f64).unwrap_or(since),

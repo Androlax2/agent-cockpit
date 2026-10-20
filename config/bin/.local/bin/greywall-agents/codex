@@ -1,6 +1,9 @@
 #!/bin/sh
 # Keep this launcher separate from the binary replaced by vendor updates.
-# Chrome writes its crash reports under the config dir even headless; give it one the sandbox allows.
-export CHROME_CONFIG_HOME="$HOME/.cache/chrome-sandbox"
-mkdir -p "$CHROME_CONFIG_HOME"
-exec "$HOME/.local/bin/greywall" --auto-profile --profile codex --allow-path "$CHROME_CONFIG_HOME" -- "$HOME/.local/npm/bin/codex" "$@"
+agent=codex
+own_folders="~/.codex/**"
+export CLAUDE_SESSIONS_AGENT=codex
+. "$(dirname "$0")/launcher-common.sh"
+# Never connect a private namespace to a shared daemon whose socket belongs to another launch.
+# shellcheck disable=SC2086
+exec "$HOME/.local/bin/greywall" --profile codex $greywall_options -- "$HOME/.local/npm/bin/codex" --no-daemon "$@"

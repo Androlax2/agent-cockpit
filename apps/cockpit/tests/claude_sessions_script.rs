@@ -2744,7 +2744,7 @@ fn an_opencode_resume_exposes_its_conversation_id_before_the_plugin_reports() {
 #[test]
 fn an_unknown_agent_is_refused() {
     let manager = Manager::new();
-    let result = manager.run(&["--agent", "codex", "new", &path_str(&manager.project)], &[]);
+    let result = manager.run(&["--agent", "unknown-agent", "new", &path_str(&manager.project)], &[]);
     assert_eq!(result.status.code(), Some(2));
     assert!(manager.calls("tmux").is_empty());
 }

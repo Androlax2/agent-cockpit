@@ -82,7 +82,7 @@ impl Agent {
 /// The agent of every session that does not say: all of them did before there was another.
 pub const DEFAULT: &str = "claude";
 
-pub static AGENTS: [Agent; 2] = [
+pub static AGENTS: [Agent; 3] = [
     Agent {
         name: "claude",
         label: "Claude Code",
@@ -110,6 +110,17 @@ pub static AGENTS: [Agent; 2] = [
         start_files: &["CLAUDE.md", "sandbox", "shared launcher", "opencode config", "opencode plugin", "opencode profile",
                        "opencode launcher"],
     },
+    Agent {
+        name: "codex",
+        label: "Codex CLI",
+        badge: Some("◇ codex"),
+        tmux_prefix: "claude-retry-codex-",
+        id_pattern: r"^cdx_[0-9a-f]{64}$",
+        process: Some("codex"),
+        features: &[],
+        interrupt_keys: &[],
+        start_files: &["CLAUDE.md", "ADHD mode", "sandbox", "shared launcher", "codex hooks", "codex profile", "codex launcher"],
+    },
 ];
 
 static ID_PATTERNS: LazyLock<Vec<Regex>> =
@@ -136,6 +147,15 @@ pub fn is_session_id(id: &str) -> bool {
 /// The agent whose reported ids `id` matches.
 pub fn of_session_id(id: &str) -> Option<&'static Agent> {
     AGENTS.iter().zip(ID_PATTERNS.iter()).find(|(_, pattern)| pattern.is_match(id)).map(|(agent, _)| agent)
+}
+
+/// A tool's conversation identity; native Codex supplies its thread separately.
+pub fn current_session_id() -> Result<String, String> {
+    if std::env::var("CLAUDE_SESSIONS_AGENT").as_deref() == Ok("codex") {
+        let native = std::env::var("CODEX_THREAD_ID").map_err(|_| "native Codex tool has no CODEX_THREAD_ID")?;
+        return crate::codex::cockpit_id(&native);
+    }
+    Ok(std::env::var("CLAUDE_CODE_SESSION_ID").unwrap_or_default())
 }
 
 /// The agent of a tmux session not reported yet, by the longest prefix of its name.

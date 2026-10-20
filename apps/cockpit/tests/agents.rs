@@ -114,10 +114,10 @@ fn every_name_an_agent_file_defines_carries_its_agents_name() {
 #[test]
 fn an_agent_file_missing_a_verb_stops_claude_sessions_and_names_it() {
     let sandbox = Sandbox::new();
-    let folder = agents_with(&sandbox, "codex", &opencode_as("codex").replace("agent_codex_say()", "unrelated_say()"));
-    let output = sandbox.run(bin().join("claude-sessions"), &["--agent", "codex", "background", "/tmp", "hi"], &[("CLAUDE_SESSIONS_AGENTS_DIR", &folder)]);
+    let folder = agents_with(&sandbox, "fixtureagent", &opencode_as("fixtureagent").replace("agent_fixtureagent_say()", "unrelated_say()"));
+    let output = sandbox.run(bin().join("claude-sessions"), &["--agent", "fixtureagent", "background", "/tmp", "hi"], &[("CLAUDE_SESSIONS_AGENTS_DIR", &folder)]);
     assert_eq!(output.status.code(), Some(1));
-    assert!(stderr(&output).contains("the agent codex") && stderr(&output).contains("does not define: say"), "{}", stderr(&output));
+    assert!(stderr(&output).contains("the agent fixtureagent") && stderr(&output).contains("does not define: say"), "{}", stderr(&output));
     assert!(sandbox.calls("tmux").is_empty());
 }
 
@@ -125,32 +125,32 @@ fn an_agent_file_missing_a_verb_stops_claude_sessions_and_names_it() {
 fn an_agent_added_as_a_file_starts_with_agent_and_its_sessions_go_to_it() {
     let sandbox = Sandbox::new();
     sandbox.shim("tmux", "");
-    let folder = agents_with(&sandbox, "codex", &opencode_as("codex"));
+    let folder = agents_with(&sandbox, "fixtureagent", &opencode_as("fixtureagent"));
     let project = sandbox.root.join("project");
     fs::create_dir_all(&project).unwrap();
-    let output = sandbox.run(bin().join("claude-sessions"), &["--agent", "codex", "background", &project.display().to_string(), "fix the chip"],
+    let output = sandbox.run(bin().join("claude-sessions"), &["--agent", "fixtureagent", "background", &project.display().to_string(), "fix the chip"],
                              &[("CLAUDE_SESSIONS_AGENTS_DIR", &folder)]);
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
     let start = sandbox.calls("tmux").into_iter().find(|call| call.contains("new-session")).expect("no start");
-    assert!(start.contains("-s claude-retry-codex-") && start.ends_with("--prompt fix the chip"), "{start}");
+    assert!(start.contains("-s claude-retry-fixtureagent-") && start.ends_with("--prompt fix the chip"), "{start}");
 }
 
 #[test]
 fn an_unknown_agent_is_refused_with_the_known_ones_named() {
     let sandbox = Sandbox::new();
-    let output = sandbox.run(bin().join("claude-sessions"), &["--agent", "codex", "new", "/tmp"], &[]);
+    let output = sandbox.run(bin().join("claude-sessions"), &["--agent", "unknown-agent", "new", "/tmp"], &[]);
     assert_eq!(output.status.code(), Some(2));
-    assert!(stderr(&output).contains("--agent takes one of: claude opencode"), "{}", stderr(&output));
+    assert!(stderr(&output).contains("--agent takes one of: claude codex opencode"), "{}", stderr(&output));
 }
 
 #[test]
 fn left_knows_the_prompt_of_an_agent_added_as_a_file() {
     let sandbox = Sandbox::new();
-    let marker = "agent_codex_prompt_start() {\n    printf '%s\\n' '^ > $'\n}\n";
-    let codex = opencode_as("codex");
-    let start = codex.find("agent_codex_prompt_start() {").unwrap();
-    let end = start + codex[start..].find("\n}\n").unwrap() + 3;
-    let folder = agents_with(&sandbox, "codex", &format!("{}{marker}{}", &codex[..start], &codex[end..]));
+    let marker = "agent_fixtureagent_prompt_start() {\n    printf '%s\\n' '^ > $'\n}\n";
+    let fixtureagent = opencode_as("fixtureagent");
+    let start = fixtureagent.find("agent_fixtureagent_prompt_start() {").unwrap();
+    let end = start + fixtureagent[start..].find("\n}\n").unwrap() + 3;
+    let folder = agents_with(&sandbox, "fixtureagent", &format!("{}{marker}{}", &fixtureagent[..start], &fixtureagent[end..]));
     sandbox.shim("tmux", r#"case $1 in
   display-message) echo "3 7" ;;
   capture-pane) printf '%s\n' ' > ' ;;

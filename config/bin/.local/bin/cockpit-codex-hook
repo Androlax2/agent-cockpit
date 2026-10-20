@@ -1,0 +1,8 @@
+#!/bin/sh
+here=$(dirname "$(readlink -f "$0")")
+binary="$here/../../../../apps/target/release/$(basename "$0")"
+if [ ! -x "$binary" ]; then
+    echo "$(basename "$0") is not built yet: make -C ~/dotfiles cockpit" >&2
+    exit 1
+fi
+exec "$binary" "$@"

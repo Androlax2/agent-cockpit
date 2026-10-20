@@ -42,6 +42,7 @@
       "~/.local/share/fish/**",
       "~/.local/share/DBeaverData/**",
       "~/.local/share/opencode/**",
+      "~/.codex/**",
       "~/.local/share/com.vercel.cli/**",
       "~/.local/share/Trash/**",
       "~/.local/share/JetBrains/**",

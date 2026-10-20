@@ -36,7 +36,8 @@ agents_dir=${CLAUDE_SESSIONS_AGENTS_DIR:-$(dirname "$(readlink -f "${BASH_SOURCE
 for agent_file in "$agents_dir"/*.sh; do
     # shellcheck source=/dev/null
     source "$agent_file"
-    prompt_start=$("agent_$(basename "$agent_file" .sh)_prompt_start")
+    prompt_start=$("agent_$(basename "$agent_file" .sh)_prompt_start") || continue
+    [[ -n $prompt_start ]] || continue
     if [[ $before_cursor =~ $prompt_start ]]; then
         tmux select-pane -L -t "$pane"
         exit 0

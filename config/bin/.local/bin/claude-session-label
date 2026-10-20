@@ -5,6 +5,11 @@ if (( $# != 1 )); then
     echo "usage: claude-session-label '<3–6 word task label>'" >&2
     exit 2
 fi
+if [[ ${CLAUDE_SESSIONS_AGENT:-} == codex ]]; then
+    jq -cn --arg session "${CODEX_THREAD_ID:-}" --arg label "$1" --arg cwd "$PWD" \
+        '{hook_event_name: "TaskLabel", session_id: $session, label: $label, cwd: $cwd}' | cockpit-codex-hook
+    exit $?
+fi
 session=${CLAUDE_CODE_SESSION_ID:-}
 agent=claude
 [[ $session != ses_* ]] || agent=opencode

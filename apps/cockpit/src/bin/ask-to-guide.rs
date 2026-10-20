@@ -183,9 +183,13 @@ fn main() {
         std::process::exit(UNUSABLE);
     }
     let id = token_hex(6);
+    let session = cockpit::agents::current_session_id().unwrap_or_else(|error| {
+        eprintln!("ask-to-guide: {error}");
+        std::process::exit(UNUSABLE);
+    });
     let cwd = std::env::current_dir().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default();
     let guide = json!({"id": id, "title": title, "steps": steps, "cwd": cwd, "project": approval::project_of(&cwd),
-                       "session": std::env::var("CLAUDE_CODE_SESSION_ID").unwrap_or_default(), "answers": answers_key,
+                       "session": session, "answers": answers_key,
                        "requested_at": now_secs()});
     match approval::file_request("guide-request", &guide) {
         Ok(()) => {}

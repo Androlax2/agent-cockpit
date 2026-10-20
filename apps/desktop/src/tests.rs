@@ -16,6 +16,7 @@ const OPENCODE_SESSION: &str = "ses_3f2a9c0b1ffeQkTz8mWn4rJd2L";
 const RUN_A: &str = "aaaaaaaaaaaa";
 const RUN_B: &str = "bbbbbbbbbbbb";
 const ANSWERS_KEY: &str = "-home-theo-IdeaProjects-proj-a";
+const CODEX_SESSION: &str = "cdx_c214e8c0c9458f09ea4300974071bcad955995188f33264e341800f8a2bb5fcb";
 
 static ENVIRONMENT: Mutex<()> = Mutex::new(());
 
@@ -237,6 +238,38 @@ impl Bench {
     fn commands(&self) -> Vec<Vec<String>> {
         self.world.borrow().commands.clone()
     }
+}
+
+#[test]
+fn codex_native_identity_is_retained_for_exact_resume() {
+    let mut bench = Bench::new();
+    bench.report(CODEX_SESSION, json!({"agent": "codex", "native_thread": SESSION_A, "state": "working", "cwd": "/projects/p"}));
+    let rows = bench.snapshot();
+    assert_eq!(rows[0]["native_thread"], SESSION_A);
+    assert_eq!(rows[0]["agent"], "codex");
+    let recent: Value = serde_json::from_str(&fs::read_to_string(cockpit::paths::recent_sessions()).unwrap()).unwrap();
+    assert_eq!(recent[CODEX_SESSION]["native_thread"], SESSION_A);
+}
+
+#[test]
+fn codex_cannot_claim_a_claude_id_or_another_native_thread() {
+    for (session, agent, native) in [(SESSION_A, "codex", SESSION_A), (CODEX_SESSION, "codex", SESSION_B),
+        (CODEX_SESSION, "claude", SESSION_A), (SESSION_A, "claude", SESSION_A)] {
+        assert!(parse_session(&json!({"session": session, "project": "p", "agent": agent, "native_thread": native}).to_string()).is_err());
+    }
+    assert!(parse_session(&json!({"session": CODEX_SESSION, "project": "p", "agent": "codex"}).to_string()).is_err());
+}
+
+#[test]
+fn codex_native_claims_cannot_rebind_another_live_pane() {
+    let mut bench = Bench::new();
+    bench.world.borrow_mut().sender_targets.insert(10, BTreeMap::from([("tmux_pane".into(), "%10".into())]));
+    bench.world.borrow_mut().sender_targets.insert(20, BTreeMap::from([("tmux_pane".into(), "%20".into())]));
+    bench.world.borrow_mut().claude_panes.insert("%10".into());
+    let report = parse_session(&json!({"session": CODEX_SESSION, "native_thread": SESSION_A, "agent": "codex", "project": "p", "state": "working"}).to_string()).unwrap();
+    bench.registry.report_from(report.clone(), 10).unwrap();
+    assert!(bench.registry.report_from(report, 20).is_err());
+    assert_eq!(bench.registry.sessions[CODEX_SESSION].target["tmux_pane"], "%10");
 }
 
 fn target(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {

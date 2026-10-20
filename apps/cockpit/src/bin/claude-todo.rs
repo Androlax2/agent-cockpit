@@ -55,7 +55,7 @@ fn project() -> String {
 /// The change, handed to the OSD daemon on its report socket: it adds the folder this session's
 /// sandbox started in, which decides the project (security audit 2026-10-19, M4).
 fn append(mut update: serde_json::Map<String, Value>) -> Result<(), String> {
-    update.insert("session".into(), json!(std::env::var("CLAUDE_CODE_SESSION_ID").unwrap_or_default()));
+    update.insert("session".into(), json!(cockpit::agents::current_session_id()?));
     update.insert("at".into(), json!(now_secs()));
     approval::file_request("todo-update", &Value::Object(update)).map_err(|refusal| match refusal {
         approval::Refusal::Unreachable(reason) => format!("cannot reach the OSD daemon: {reason}"),

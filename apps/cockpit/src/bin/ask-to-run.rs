@@ -131,8 +131,12 @@ fn main() {
         std::process::exit(2);
     }
     let id = token_hex(6);
+    let session = cockpit::agents::current_session_id().unwrap_or_else(|error| {
+        eprintln!("ask-to-run: {error}");
+        std::process::exit(2);
+    });
     let request = json!({"id": id, "command": arguments[0], "why": why, "cwd": cwd, "project": approval::project_of(&cwd),
-                         "session": std::env::var("CLAUDE_CODE_SESSION_ID").unwrap_or_default(), "answers": answers_key,
+                         "session": session, "answers": answers_key,
                          "requested_at": now_secs()});
     let heartbeat = approval::runs_dir().join(format!("{id}.waiting"));
     touch(&heartbeat);
