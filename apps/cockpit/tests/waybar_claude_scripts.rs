@@ -71,6 +71,7 @@ fn codex_sandbox() -> Sandbox {
     let mut sandbox = Sandbox::new();
     sandbox.env.insert("XDG_DATA_HOME".into(), sandbox.home.join(".local/share").display().to_string());
     sandbox.env.insert("CODEX_HOME".into(), sandbox.home.join(".codex").display().to_string());
+    sandbox.env.insert("OPENCODE_DB".into(), sandbox.home.join(".local/share/opencode/opencode.db").display().to_string());
     let credentials = sandbox.home.join(".local/share/opencode/auth.json");
     fs::create_dir_all(credentials.parent().unwrap()).unwrap();
     fs::write(credentials, json!({"openai": {"type": "oauth", "access": "secret-test-token", "expires": 4102444800000i64,
@@ -176,6 +177,105 @@ fn codex_quota_uses_cli_credentials_when_opencode_has_no_oauth_account() {
     assert!(output.status.success(), "{}", stderr(&output));
     assert!(sandbox.runtime.join("codex-usage.json").exists());
     assert_eq!(fs::read_to_string(credentials).unwrap(), original);
+}
+
+fn opencode_credentials(sandbox: &Sandbox, rows: &[(&str, Option<bool>, i64, Value)]) -> std::path::PathBuf {
+    let path = std::path::PathBuf::from(&sandbox.env["OPENCODE_DB"]);
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let database = rusqlite::Connection::open(&path).unwrap();
+    database.execute_batch("CREATE TABLE credential (id TEXT PRIMARY KEY, integration_id TEXT, label TEXT NOT NULL,
+        value TEXT NOT NULL, connector_id TEXT, method_id TEXT, active INTEGER, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL)").unwrap();
+    for (id, active, created, value) in rows {
+        database.execute("INSERT INTO credential (id,integration_id,label,value,active,time_created,time_updated) VALUES (?1,'openai','test',?2,?3,?4,?4)",
+            rusqlite::params![id, value.to_string(), active, created]).unwrap();
+    }
+    path
+}
+
+fn v2_oauth(token: &str, expires: i64) -> Value {
+    json!({"type":"oauth", "access":token, "refresh":"secret-test-refresh", "expires":expires,
+        "methodID":"test-method", "metadata":{"accountID":"test-account"}})
+}
+
+#[test]
+fn codex_quota_reads_the_active_v2_account_instead_of_expired_legacy_credentials() {
+    let sandbox = codex_sandbox();
+    fs::write(sandbox.home.join(".local/share/opencode/auth.json"),
+        r#"{"openai":{"type":"oauth","access":"stale-legacy-token","expires":1}}"#).unwrap();
+    let path = opencode_credentials(&sandbox, &[("current", Some(true), 1, v2_oauth("secret-test-token", 4102444800000))]);
+    let original = fs::read(&path).unwrap();
+    let output = fetch_codex(&sandbox, false);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(sandbox.runtime.join("codex-usage.json").exists(), "{}", stdout(&output));
+    assert_eq!(fs::read(path).unwrap(), original, "quota reading changed the credential database");
+    for exposed in [stdout(&output), stderr(&output), fs::read_to_string(&sandbox.log).unwrap(),
+                    fs::read_to_string(sandbox.runtime.join("codex-usage.json")).unwrap()] {
+        for secret in ["secret-test-token", "secret-test-refresh", "stale-legacy-token"] {
+            assert!(!exposed.contains(secret));
+        }
+    }
+}
+
+#[test]
+fn codex_quota_prefers_an_explicitly_active_account_over_a_newer_inactive_account() {
+    let sandbox = codex_sandbox();
+    fs::remove_file(sandbox.home.join(".local/share/opencode/auth.json")).unwrap();
+    opencode_credentials(&sandbox, &[("active", Some(true), 1, v2_oauth("secret-test-token", 4102444800000)),
+        ("inactive", Some(false), 2, v2_oauth("wrong-account-token", 4102444800000))]);
+    assert!(fetch_codex(&sandbox, false).status.success());
+    assert!(sandbox.runtime.join("codex-usage.json").exists(), "the active account was not used");
+    assert_eq!(sandbox.calls("curl").len(), 1);
+}
+
+#[test]
+fn codex_quota_matches_v2_selection_for_accounts_without_an_explicit_active_flag() {
+    let sandbox = codex_sandbox();
+    fs::remove_file(sandbox.home.join(".local/share/opencode/auth.json")).unwrap();
+    opencode_credentials(&sandbox, &[("old", None, 1, v2_oauth("wrong-account-token", 4102444800000)),
+        ("a-new", None, 2, v2_oauth("wrong-account-token", 4102444800000)),
+        ("z-new", None, 2, v2_oauth("secret-test-token", 4102444800000))]);
+    assert!(fetch_codex(&sandbox, false).status.success());
+    assert!(sandbox.runtime.join("codex-usage.json").exists(), "the newest account (then highest id) must win");
+}
+
+#[test]
+fn codex_quota_does_not_fall_back_to_legacy_auth_for_an_expired_or_non_subscription_v2_account() {
+    for value in [v2_oauth("expired-v2-token", 1), json!({"type":"api", "key":"secret-test-key"})] {
+        let sandbox = codex_sandbox();
+        opencode_credentials(&sandbox, &[("selected", Some(true), 1, value)]);
+        assert!(fetch_codex(&sandbox, false).status.success());
+        assert!(sandbox.calls("curl").is_empty(), "must not silently switch to the valid legacy account");
+        assert!(sandbox.runtime.join("codex-usage-error.json").exists());
+        assert!(!sandbox.runtime.join("codex-usage.json").exists());
+    }
+}
+
+#[test]
+fn codex_quota_does_not_revive_legacy_auth_after_the_v2_account_was_removed() {
+    let sandbox = codex_sandbox();
+    opencode_credentials(&sandbox, &[]);
+    assert!(fetch_codex(&sandbox, false).status.success());
+    assert!(sandbox.calls("curl").is_empty());
+    assert!(!sandbox.runtime.join("codex-usage.json").exists());
+}
+
+#[test]
+fn codex_quota_reports_an_unreadable_v2_store_without_using_legacy_credentials() {
+    let sandbox = codex_sandbox();
+    fs::write(&sandbox.env["OPENCODE_DB"], "not a database").unwrap();
+    assert!(fetch_codex(&sandbox, false).status.success());
+    assert!(sandbox.calls("curl").is_empty());
+    assert!(sandbox.runtime.join("codex-usage-error.json").exists());
+}
+
+#[test]
+fn codex_quota_honors_the_configured_v2_database_path() {
+    let mut sandbox = codex_sandbox();
+    sandbox.env.insert("OPENCODE_DB".into(), sandbox.root.join("custom.db").display().to_string());
+    fs::write(sandbox.home.join(".local/share/opencode/auth.json"), "{}").unwrap();
+    opencode_credentials(&sandbox, &[("current", Some(true), 1, v2_oauth("secret-test-token", 4102444800000))]);
+    assert!(fetch_codex(&sandbox, false).status.success());
+    assert!(sandbox.runtime.join("codex-usage.json").exists());
 }
 
 #[test]
