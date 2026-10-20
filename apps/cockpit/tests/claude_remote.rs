@@ -766,13 +766,22 @@ fn the_usage_reads_the_columns_cache() {
 fn the_pull_requests_come_from_gh_and_are_kept_five_minutes() {
     let remote = Remote::start();
     let secret = remote.paired();
-    remote.sandbox.shim("gh", r#"echo '[{"number": 7, "title": "Fix cart", "url": "https://github.com/o/shop/pull/7", "repository": {"name": "shop", "nameWithOwner": "o/shop"}, "author": {"login": "sam"}, "updatedAt": "2026-10-19T10:00:00Z"}]'"#);
+    let updated = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ");
+    remote.sandbox.shim("gh", &format!(r#"pull='{{"number": 7, "title": "Fix cart", "url": "https://github.com/o/shop/pull/7", "repository": {{"name": "shop", "nameWithOwner": "o/shop"}}, "author": {{"login": "sam"}}, "updatedAt": "{updated}", "headRefName": "fix-cart", "headRefOid": "abc123"}}'
+case "$1 $2" in
+  "search prs") echo "[$pull]" ;;
+  "pr view") echo "$pull" ;;
+  *) exit 1 ;;
+esac"#));
     let pulls = remote.get_json(&secret, "/api/pulls");
     assert_eq!(pulls["pulls"][0]["title"], "Fix cart");
+    assert!(pulls.get("error").is_none(), "{pulls}");
+    let fetch_calls = remote.sandbox.calls("gh").len();
+    assert_eq!(fetch_calls, 2, "one search and one metadata view: {:?}", remote.sandbox.calls("gh"));
     remote.get_json(&secret, "/api/pulls");
-    assert_eq!(remote.sandbox.calls("gh").len(), 1, "fetched again within 5 minutes");
+    assert_eq!(remote.sandbox.calls("gh").len(), fetch_calls, "fetched again within 5 minutes");
     remote.get_json(&secret, "/api/pulls?refresh=1");
-    assert_eq!(remote.sandbox.calls("gh").len(), 2);
+    assert_eq!(remote.sandbox.calls("gh").len(), 2 * fetch_calls);
 }
 
 #[test]
