@@ -3493,6 +3493,24 @@ fn budget_alerts_fire_once_per_threshold_and_window() {
     assert_eq!(*SENT.lock().unwrap(), vec!["claude-usage-80".to_string(), "claude-usage-95".to_string()]);
 }
 
+#[test]
+fn budget_alerts_ignore_sub_second_jitter_in_the_reset_time() {
+    static SENT: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    fn send(notice: &Value) -> bool {
+        SENT.lock().unwrap().push(notice["id"].as_str().unwrap().to_string());
+        true
+    }
+    let _fixture = Fixture::new();
+    SENT.lock().unwrap().clear();
+    let window = |resets_at: &str| usage::Window { key: "weekly_all".into(), label: "This week".into(), percentage: Some(82),
+                                                   resets: String::new(), resets_at: Some(resets_at.into()), note: String::new() };
+    let mut alerts = BudgetAlerts::new(send);
+    alerts.check(&[window("2026-10-23T23:59:59.630773+00:00")]);
+    alerts.check(&[window("2026-10-23T23:59:59.912004+00:00")]);
+    BudgetAlerts::new(send).check(&[window("2026-10-24T00:00:00.104311+00:00")]);
+    assert_eq!(*SENT.lock().unwrap(), vec!["claude-usage-80".to_string()]);
+}
+
 // ---- Costs ----
 
 #[test]

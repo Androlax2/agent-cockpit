@@ -3,7 +3,7 @@
 
 use crate::paths;
 use crate::util::{self, now, parse_time, read_json};
-use chrono::{Duration, Local, Utc};
+use chrono::{DateTime, Duration, Local, Utc};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 use std::fs;
@@ -462,7 +462,7 @@ impl BudgetAlerts {
         let mut changed = false;
         for window in windows {
             for threshold in ALERT_THRESHOLDS {
-                let key = format!("{}:{threshold}:{}", window.key, window.resets_at.as_deref().unwrap_or(""));
+                let key = format!("{}:{threshold}:{}", window.key, alert_reset_key(window.resets_at.as_deref()));
                 live.insert(key.clone());
                 let Some(percentage) = window.percentage else { continue };
                 if percentage < threshold || self.fired.contains(&key) {
@@ -491,6 +491,15 @@ impl BudgetAlerts {
             let _ = util::write_json(&paths::alerts(), &json!(self.fired.iter().collect::<Vec<_>>()));
         }
     }
+}
+
+/// The reset time to the nearest minute: the API's fraction of a second changes between fetches
+/// ("23:59:59.630773", then "00:00:00.104311"), which made every fetch look like a new window.
+fn alert_reset_key(stamp: Option<&str>) -> String {
+    let Some(stamp) = stamp else { return String::new() };
+    let Some(moment) = parse_time(stamp) else { return stamp.to_string() };
+    let minute = (moment.timestamp() + 30).div_euclid(60) * 60;
+    DateTime::<Utc>::from_timestamp(minute, 0).map(|rounded| rounded.to_rfc3339()).unwrap_or_else(|| stamp.to_string())
 }
 
 fn capitalize_first(text: &str) -> String {
