@@ -135,6 +135,69 @@ fn blocked_files_a_report_with_what_stopped_the_session() {
 }
 
 #[test]
+fn add_and_propose_file_each_kind_without_losing_design_routing() {
+    let sandbox = Sandbox::new();
+    let daemon = daemon(&sandbox, "ok");
+    for action in ["add", "propose"] {
+        for kind in ["task", "feature", "bug", "improvement", "chore", "research"] {
+            let mut arguments = vec![action, "Fix the empty state", "--kind", kind, "--design", "--notes", "Keep the notes"];
+            if action == "propose" { arguments.extend(["--why", "It is broken"]); }
+            let output = claude_todo(&sandbox, &arguments, &sandbox.root);
+            assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+        }
+    }
+    let filed = updates(&daemon);
+    let categories: Vec<_> = filed.iter().map(|update| update["category"].as_str()).collect();
+    assert_eq!(categories, [Some("task"), Some("feature"), Some("bug"), Some("improvement"), Some("chore"), Some("research")].repeat(2));
+    assert!(filed.iter().all(|update| update["kind"] == "design" && update["notes"] == "Keep the notes"));
+}
+
+#[test]
+fn malformed_kind_options_send_no_update() {
+    let sandbox = Sandbox::new();
+    let daemon = daemon(&sandbox, "ok");
+    for arguments in [
+        vec!["add", "Title", "--kind"],
+        vec!["add", "Title", "--kind", "other"],
+        vec!["add", "Title", "--kind", "design"],
+        vec!["add", "Title", "--kind", "bug", "--kind", "feature"],
+        vec!["propose", "Title", "--why", "reason", "--kind", ""],
+        vec!["blocked", "Title", "--why", "reason", "--kind", "bug"],
+    ] {
+        assert_eq!(claude_todo(&sandbox, &arguments, &sandbox.root).status.code(), Some(2), "{arguments:?}");
+    }
+    assert!(updates(&daemon).is_empty());
+}
+
+#[test]
+fn flag_names_in_titles_and_notes_are_literal_text() {
+    let sandbox = Sandbox::new();
+    let daemon = daemon(&sandbox, "ok");
+    for arguments in [vec!["add", "--design"], vec!["add", "Title", "--notes", "--design"], vec!["add", "--kind", "--kind", "bug"]] {
+        assert_eq!(claude_todo(&sandbox, &arguments, &sandbox.root).status.code(), Some(0));
+    }
+    let filed = updates(&daemon);
+    assert!(filed.iter().all(|update| update.get("kind").is_none()));
+    assert_eq!(filed[0]["text"], "--design");
+    assert_eq!(filed[1]["notes"], "--design");
+    assert_eq!(filed[2]["text"], "--kind");
+}
+
+#[test]
+fn list_and_show_expose_kinds_including_legacy_tasks() {
+    let sandbox = Sandbox::new();
+    fs::write(sandbox.state.join("todo.json"), json!({"items": [
+        {"id": "0123abcd", "project": "runway", "text": "crash", "category": "bug"},
+        {"id": "4567abcd", "project": "runway", "text": "old"},
+        {"id": "89abcdef", "project": "runway", "text": "future", "category": "future-kind"}
+    ]}).to_string()).unwrap();
+    let listed = stdout(&claude_todo(&sandbox, &["list", "--all"], &sandbox.root));
+    assert!(listed.contains("[Bug]") && listed.contains("[Task]") && listed.contains("future-kind"), "{listed}");
+    let shown = stdout(&claude_todo(&sandbox, &["show", "0123abcd"], &sandbox.root));
+    assert!(shown.contains("Kind: Bug"), "{shown}");
+}
+
+#[test]
 fn blocked_without_what_stopped_it_is_refused() {
     let sandbox = Sandbox::new();
     assert_eq!(claude_todo(&sandbox, &["blocked", "Push the release tag"], &sandbox.root).status.code(), Some(2));

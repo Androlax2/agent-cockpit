@@ -714,6 +714,7 @@ pub struct App {
     pub(crate) todo_tab: usize,
     /// session -> the Todo tab it last showed: a session not in it shows Open.
     todo_tabs: HashMap<String, usize>,
+    todo_categories: HashMap<String, Option<todo::Category>>,
     /// session -> when the column last sent it a queued prompt: the next one waits for a turn that
     /// ended after that.
     pub(crate) prompts_sent: HashMap<String, i64>,
@@ -764,7 +765,7 @@ impl App {
             width: DEFAULT_COLUMN_WIDTH, sessions: Vec::new(), windows: Vec::new(), quota_rows: Vec::new(), review_rows: Vec::new(), todo_entries: Vec::new(),
             session_task_titles: HashMap::new(), session_branches: HashMap::new(),
             session_queued: HashMap::new(), session_roots: HashMap::new(),
-            todo_scope: String::new(), shown_session: String::new(), todo_tab: TODO_TAB_OPEN, todo_tabs: HashMap::new(), todo_counts: [0; 5], prompts_sent: HashMap::new(), craft_roots: HashMap::new(), hit_lines: HashMap::new(), hit_actions: HashMap::new(),
+            todo_scope: String::new(), shown_session: String::new(), todo_tab: TODO_TAB_OPEN, todo_tabs: HashMap::new(), todo_categories: HashMap::new(), todo_counts: [0; 5], prompts_sent: HashMap::new(), craft_roots: HashMap::new(), hit_lines: HashMap::new(), hit_actions: HashMap::new(),
             gathered: None, pending: Vec::new(), plan: String::new(), craft_checked: 0.0, dotfiles_unpushed: 0, dotfiles_checked: 0.0,
         }
     }
@@ -2050,6 +2051,9 @@ impl App {
             entries.push(Entry::Issue { issue, status, priority });
         }
         entries.sort_by(todo::todo_order);
+        if let Some(category) = self.todo_category_filter() {
+            entries.retain(|entry| matches!(entry, Entry::Typed(item) if item.category() == Some(category)));
+        }
         for (index, (_, statuses)) in TODO_TABS.iter().enumerate() {
             self.todo_counts[index] = entries.iter().filter(|entry| statuses.contains(&entry.status().as_str())).count();
         }
@@ -2063,13 +2067,15 @@ impl App {
             lines.push(Line::new(vec![segment(0, "?", bold(MAGENTA)), segment(2, format!("{ideas} for you · ] Proposed"), bold(MAGENTA))]));
         }
         if entries.is_empty() {
-            let empty = match shown_statuses {
+            let empty = if self.todo_category_filter().is_some() {
+                "Nothing here matches the kind filter. f changes it; [ ] switch tabs."
+            } else { match shown_statuses {
                 [_, _, ..] => "Nothing open. ] next tab.",
                 [todo::PROPOSED] => "No idea from Claude waiting for you. ] next tab.",
                 ["doing"] => "Nothing in progress. ] next tab.",
                 ["done"] => "Nothing done in the last 7 days.",
                 _ => "Nothing to do. t adds an item for the viewed project; [ ] switch tabs.",
-            };
+            }};
             lines.push(Line::new(vec![segment(0, empty, dim(FG_DARK))]));
         }
         for (index, entry) in entries.iter().enumerate() {
@@ -2097,6 +2103,9 @@ impl App {
                 if item.is_blocked_report() {
                     right.insert(0, part(format!("⛔ {}", item.reporter()), faded.unwrap_or(bold(RED))));
                 }
+                let label = item.category().map(todo::Category::label).unwrap_or("Unknown kind");
+                let color = if item.category() == Some(todo::Category::Bug) { RED } else { FG_DARK };
+                right.insert(0, part(label, faded.unwrap_or(style(color))));
             }
             let line = match entry {
                 Entry::Typed(item) => Line {
@@ -2137,7 +2146,24 @@ impl App {
         }).collect();
         let queued = self.todos.queued.len();
         let queue = if queued > 0 { format!(" · {queued} queued") } else { String::new() };
-        format!("{scope} · {}{queue}", tabs.join(" · "))
+        let category = self.todo_category_filter().map(|category| format!("kind: {} · ", category.label())).unwrap_or_default();
+        format!("{category}{scope} · {}{queue}", tabs.join(" · "))
+    }
+
+    fn todo_category_filter(&self) -> Option<todo::Category> {
+        self.todo_categories.get(&current_session()).copied().flatten()
+    }
+
+    fn reveal_todo(&mut self, id: &str) {
+        if let Some(category) = self.todo_category_filter() {
+            if self.todos.items.iter().any(|item| item.id() == id && item.category() != Some(category)) {
+                self.todo_categories.insert(current_session(), None);
+            }
+        }
+        self.build_todo();
+        if let Some(index) = self.todo_entries.iter().position(|entry| entry.key() == id) {
+            self.panels[3].selected = index;
+        }
     }
 
     fn show_todo_tab(&mut self, tab: usize) {
@@ -2167,12 +2193,16 @@ impl App {
                 let Some((title, notes)) = edit_in_popup(&format!("to do in {}", project_name(&directory)), "", "", "") else {
                     return "nothing added".into();
                 };
+                let Some(chosen) = screen.outside(&mut || pick_todo_kind(Some(todo::Category::Task), false)) else { return "nothing added".into() };
+                let Some(category) = todo::Category::parse(&chosen.to_lowercase()) else { return "nothing added: invalid kind".into() };
                 let project = viewed.map(|s| s.project).unwrap_or_else(|| project_name(&directory));
                 let id = self.todos.add(&project, &directory, &title);
                 if !notes.is_empty() {
                     self.todos.edit(&id, &title, &notes);
                 }
+                self.todos.set_category(&id, category);
                 self.show_todo_tab(TODO_TAB_TO_DO);
+                self.reveal_todo(&id);
                 format!("added to {}", project_name(&directory))
             }
             Key::Char('[') => {
@@ -2184,13 +2214,40 @@ impl App {
                 String::new()
             }
             Key::Char('e') => match entry {
-                Some(Entry::Typed(item)) => match edit_in_popup(&format!("edit · {}", item.project()), &item.text(), &item.notes(), &item.why()) {
-                    Some((title, notes)) if self.todos.edit(&item.id(), &title, &notes) => "saved".into(),
-                    _ => "unchanged".into(),
-                },
+                Some(Entry::Typed(item)) => {
+                    let Some((title, notes)) = edit_in_popup(&format!("edit · {}", item.project()), &item.text(), &item.notes(), &item.why()) else { return "unchanged".into() };
+                    let Some(chosen) = screen.outside(&mut || pick_todo_kind(item.category(), false)) else { return "unchanged".into() };
+                    let Some(category) = todo::Category::parse(&chosen.to_lowercase()) else { return "unchanged: invalid kind".into() };
+                    if !self.todos.edit(&item.id(), &title, &notes) { return "unchanged".into() }
+                    self.todos.set_category(&item.id(), category);
+                    self.reveal_todo(&item.id());
+                    "saved".into()
+                }
                 Some(Entry::Issue { .. }) => "an issue is edited on GitHub".into(),
                 None => String::new(),
             },
+            Key::Char('K') => match entry {
+                Some(Entry::Typed(item)) => {
+                    let Some(chosen) = screen.outside(&mut || pick_todo_kind(item.category(), false)) else { return "unchanged".into() };
+                    let Some(category) = todo::Category::parse(&chosen.to_lowercase()) else { return "unchanged: invalid kind".into() };
+                    self.todos.set_category(&item.id(), category);
+                    self.reveal_todo(&item.id());
+                    format!("kind: {}", category.label())
+                }
+                Some(Entry::Issue { .. }) => "an issue's labels are edited on GitHub".into(),
+                None => String::new(),
+            },
+            Key::Char('f') => {
+                let Some(chosen) = screen.outside(&mut || pick_todo_kind(self.todo_category_filter(), true)) else { return String::new() };
+                let category = if chosen == "All" { None } else {
+                    let Some(category) = todo::Category::parse(&chosen.to_lowercase()) else { return "invalid kind filter".into() };
+                    Some(category)
+                };
+                self.todo_categories.insert(viewed, category);
+                self.panels[3].selected = 0;
+                self.build_todo();
+                String::new()
+            }
             Key::Char('y') => match entry {
                 Some(Entry::Typed(item)) if item.status() == todo::PROPOSED => {
                     self.todos.approve(&item.id());
@@ -2361,12 +2418,14 @@ impl App {
             [only] => *only,
             _ => selected_status.as_deref().unwrap_or("todo"),
         };
-        match status {
+        let mut hints = match status {
             todo::PROPOSED => vec![("y", "approve"), ("n", "decline"), ("⏎", "details"), ("e", "edit"), ("[ ]", "tabs")],
             "doing" => vec![("d", "done"), ("⏎", "details"), ("i", "back to to do"), ("e", "edit"), ("t", "add"), ("[ ]", "tabs")],
             "done" => vec![("⏎", "details"), ("d", "back to to do"), ("t", "add"), ("[ ]", "tabs")],
             _ => vec![("h", "to a session"), ("N", "to a new session"), ("⏎", "details"), ("Q", "queue"), ("i", "doing"), ("d", "done"), ("e", "edit"), ("t", "add"), ("[ ]", "tabs")],
-        }
+        };
+        hints.extend([("K", "kind"), ("f", "filter kind")]);
+        hints
     }
 
     fn panel_help(index: usize) -> Vec<(&'static str, &'static str)> {
@@ -2381,7 +2440,9 @@ impl App {
                       ("[ ]", "previous / next tab: Open (Proposed, To do and In progress together) · Proposed · To do · In progress · Done"),
                       ("h", "hand the item over: the session on screen if it is on the item's project (a parallel clone too), Claude Code or opencode alike, else the project's running session, or a new one using the default agent"),
                       ("N", "hand the item to a new session using the default agent, in a parallel clone of its repository on a branch named after it (todo-<id>, issue-<n>), never to a running one"),
-                      ("e", "edit the title and notes in your editor, in a popup (first line: the title)"),
+                      ("e", "edit the title and notes in your editor, then choose the kind; cancelling saves nothing"),
+                      ("K", "change kind: Task, Feature, Bug, Improvement, Chore, Research; Design/Blocked routing stays unchanged"),
+                      ("f", "filter by kind, or All (including GitHub issues); each viewed session keeps its filter"),
                       ("y n", "approve or decline an idea Claude proposed; a declined idea is not proposed again"),
                       ("Q", "queue it (again: unqueue): a session of its project idle for 5 min at its prompt takes the first queued item, by priority, one at a time"),
                       ("t", "add an item for the viewed session's project (or pick a project), title and notes in your editor"),
@@ -2410,7 +2471,7 @@ impl App {
         }
         match index {
             2 => self.review_rows.is_empty() && self.reviews.current().1.is_empty(),
-            3 => self.todo_counts[0] == 0,
+            3 => self.todo_counts[0] == 0 && self.todo_category_filter().is_none(),
             _ => false,
         }
     }
@@ -2546,6 +2607,9 @@ impl App {
             let right_room = if index == 1 && line.item.is_some() {
                 let title_column = line.segments.iter().map(|(column, _, _)| *column as usize).max().unwrap_or(0);
                 (width as usize).saturating_sub(4 + title_column + MIN_SESSION_TITLE_WIDTH + 2)
+            } else if index == 3 && line.item.is_some() {
+                let title_column = line.segments.last().map(|segment| segment.0 as usize).unwrap_or(0);
+                (width as usize).saturating_sub(4 + title_column + 12 + 2)
             } else {
                 inner.saturating_sub(1)
             };
@@ -3080,6 +3144,17 @@ fn pick_project() -> Option<String> {
     fzf("project> ", &sessions::project_choices(), &[])
 }
 
+fn pick_todo_kind(current: Option<todo::Category>, include_all: bool) -> Option<String> {
+    let mut choices: Vec<String> = todo::Category::ALL.iter().map(|category| category.label().to_string()).collect();
+    if include_all { choices.insert(0, "All".into()); }
+    if let Some(category) = current {
+        let index = choices.iter().position(|label| label == category.label()).unwrap();
+        let selected = choices.remove(index);
+        choices.insert(0, selected);
+    }
+    fzf(if include_all { "filter kind> " } else { "kind> " }, &choices, &[])
+}
+
 /// The agent a new session runs (agents::AGENTS); None when the pick is cancelled, and then
 /// nothing starts.
 fn pick_agent() -> Option<String> {
@@ -3160,6 +3235,9 @@ pub(crate) fn todo_details(entry: &Entry) -> String {
             let created = chrono::DateTime::from_timestamp(item.created(), 0).map(|time| time.with_timezone(&chrono::Local).format("%d/%m %H:%M").to_string()).unwrap_or_default();
             let filed = if item.source().is_empty() { "you".to_string() } else { format!("Claude ({})", item.source()) };
             let mut text = format!("{}\n\n{} · {status} · filed by {filed} on {created}\n", item.text(), item.project());
+            let category = item.category().map(|category| category.label().to_string())
+                .unwrap_or_else(|| format!("Unknown: {}", item.0["category"]));
+            text.push_str(&format!("Kind: {category}\n"));
             if !item.why().is_empty() {
                 text.push_str(&format!("\nWhy Claude proposed it\n{}\n", item.why()));
             }

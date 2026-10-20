@@ -25,6 +25,32 @@ pub const PRIORITY_HIGH: i64 = 3;
 pub const PRIORITY_MAX: i64 = PRIORITY_NORMAL + 4; // + up to four times: ! !! !!! !!!!
 const STATUSES: [&str; 3] = ["todo", "doing", "done"];
 pub const PROPOSED: &str = "proposed";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Category { Task, Feature, Bug, Improvement, Chore, Research }
+
+impl Category {
+    pub const ALL: [Self; 6] = [Self::Task, Self::Feature, Self::Bug, Self::Improvement, Self::Chore, Self::Research];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Task => "task", Self::Feature => "feature", Self::Bug => "bug",
+            Self::Improvement => "improvement", Self::Chore => "chore", Self::Research => "research",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Task => "Task", Self::Feature => "Feature", Self::Bug => "Bug",
+            Self::Improvement => "Improvement", Self::Chore => "Chore", Self::Research => "Research",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|category| category.as_str() == value)
+    }
+}
+
 const NOTES_MAX: usize = 4000;
 const WHY_MAX: usize = 600;
 const DECLINED_KEPT: usize = 200;
@@ -92,6 +118,12 @@ impl Item {
     /// Who filed it when not Theo: "session <id>" for claude-todo add.
     pub fn source(&self) -> String { self.text_of("source") }
     pub fn notes(&self) -> String { self.text_of("notes") }
+    pub fn category(&self) -> Option<Category> {
+        match self.0.get("category") {
+            None => Some(Category::Task),
+            Some(value) => value.as_str().and_then(Category::parse),
+        }
+    }
     /// Why a session proposed it, in its own words.
     pub fn why(&self) -> String { self.text_of("why") }
     /// Work for the project's designer session (claude-todo --design): a gap in the design.
@@ -309,6 +341,13 @@ impl TodoList {
         true
     }
 
+    pub fn set_category(&mut self, id: &str, category: Category) -> bool {
+        let Some(item) = self.items.iter_mut().find(|item| item.id() == id) else { return false };
+        item.0.insert("category".into(), json!(category.as_str()));
+        self.save();
+        true
+    }
+
     /// A proposal Theo wants: it joins the list to do.
     pub fn approve(&mut self, id: &str) -> bool {
         let Some(item) = self.items.iter_mut().find(|item| item.id() == id && item.status() == PROPOSED) else { return false };
@@ -463,6 +502,10 @@ impl TodoList {
         let action = update.get("action").and_then(Value::as_str).unwrap_or("");
         let session: String = update.get("session").and_then(Value::as_str).unwrap_or("").chars().take(40).collect();
         if action == "add" || action == "propose" {
+            let category = match update.get("category") {
+                None => None,
+                Some(value) => Some(value.as_str().and_then(Category::parse).ok_or("invalid todo category")?),
+            };
             let text = update.get("text").and_then(Value::as_str).unwrap_or("").trim().to_string();
             // Where h hands the item: the folder the session named, when it is the session's own.
             let claimed_cwd = update.get("cwd").and_then(Value::as_str).unwrap_or("");
@@ -483,6 +526,9 @@ impl TodoList {
             if let Some(item) = self.items.iter_mut().find(|item| item.id() == id) {
                 item.0.insert("source".into(), json!(if session.is_empty() { "a session".to_string() } else { format!("session {session}") }));
                 item.0.insert("notes".into(), json!(field("notes", NOTES_MAX)));
+                if let Some(category) = category {
+                    item.0.insert("category".into(), json!(category.as_str()));
+                }
                 if update.get("kind").and_then(Value::as_str) == Some("design") {
                     item.0.insert("kind".into(), json!("design"));
                 }
@@ -496,6 +542,9 @@ impl TodoList {
                                              text.chars().take(60).collect::<String>()));
             Ok(())
         } else if action == "blocked" {
+            if update.contains_key("category") {
+                return Err("blocked reports do not accept a category".into());
+            }
             self.file_blocked_report(&update, &session, &started_in, &sender_project)
         } else if STATUSES.contains(&action) {
             let id = update.get("id").and_then(Value::as_str).unwrap_or("");

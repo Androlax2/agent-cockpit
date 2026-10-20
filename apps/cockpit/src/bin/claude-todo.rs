@@ -4,9 +4,9 @@
 //!     claude-todo start <id>          mark it in progress
 //!     claude-todo done <id>           mark it done
 //!     claude-todo todo <id>           back to to do
-//!     claude-todo add '<title>' [--notes '<details>'] [--design]
+//!     claude-todo add '<title>' [--notes '<details>'] [--design] [--kind <kind>]
 //!                                     a new item for this directory's project
-//!     claude-todo propose '<title>' --why '<reason>' [--notes '<details>'] [--design]
+//!     claude-todo propose '<title>' --why '<reason>' [--notes '<details>'] [--design] [--kind <kind>]
 //!                                     an idea for Theo to approve or decline (the Proposed tab)
 //!                                     --design: work for the project's designer session
 //!     claude-todo blocked '<what you could not do>' --why '<what stopped you>' [--notes '<details>']
@@ -21,6 +21,7 @@
 //! started in, and the cockpit's column applies them. CLAUDE_TODO_PATH overrides the list (tests).
 
 use cockpit::{approval, paths};
+use cockpit::todo::{Category, Item};
 use cockpit::util::{collapse, now_secs, project_name, repository_root};
 use regex::Regex;
 use serde_json::{Value, json};
@@ -31,10 +32,11 @@ const USAGE: &str = "    claude-todo list [--all]        the items of this direc
     claude-todo start <id>          mark it in progress
     claude-todo done <id>           mark it done
     claude-todo todo <id>           back to to do
-    claude-todo add '<title>' [--notes '<details>'] [--design]
-    claude-todo propose '<title>' --why '<reason>' [--notes '<details>'] [--design]
+    claude-todo add '<title>' [--notes '<details>'] [--design] [--kind <kind>]
+    claude-todo propose '<title>' --why '<reason>' [--notes '<details>'] [--design] [--kind <kind>]
                                     an idea for Theo to approve or decline; one Theo declined is not filed again
                                     --design: work for the project's designer session (a gap in the design)
+                                    --kind: task (default), feature, bug, improvement, chore, research
     claude-todo blocked '<what you could not do>' --why '<what stopped you>' [--notes '<details>']
                                     the setup (greywall, claude-sessions, the launcher…) blocked you:
                                     filed in the dotfiles list and queued for its session
@@ -78,6 +80,7 @@ fn show(id: &str) -> i32 {
     };
     let field = |key: &str| item.get(key).and_then(Value::as_str).unwrap_or("").to_string();
     println!("{} {id}  {}  {}: {}", glyph(&field("status")), field("status"), field("project"), field("text"));
+    println!("Kind: {}", category_label(item));
     for (label, key) in [("Why", "why"), ("Notes", "notes")] {
         let text = field(key);
         if !text.is_empty() {
@@ -87,12 +90,43 @@ fn show(id: &str) -> i32 {
     0
 }
 
-/// The value after `--flag` in the arguments, if any.
-fn option(arguments: &[&str], flag: &str) -> Option<String> {
-    arguments.iter().position(|word| *word == flag).and_then(|at| arguments.get(at + 1)).map(|value| value.to_string())
+fn category_label(value: &Value) -> String {
+    let Some(fields) = value.as_object() else { return "Unknown".into() };
+    let item = Item(fields.clone());
+    item.category().map(|category| category.label().to_string())
+        .unwrap_or_else(|| format!("Unknown: {}", value["category"]))
 }
 
-fn file(action: &str, title: &str, why: Option<String>, notes: Option<String>, is_design: bool) -> i32 {
+fn file_arguments(action: &str, title: &str, arguments: &[&str]) -> i32 {
+    let (mut why, mut notes, mut category) = (None, None, None);
+    let mut is_design = false;
+    let mut remaining = arguments;
+    while let Some((&flag, rest)) = remaining.split_first() {
+        if flag == "--design" && action != "blocked" && !is_design {
+            is_design = true;
+            remaining = rest;
+            continue;
+        }
+        let Some((&value, rest)) = rest.split_first() else { eprintln!("{USAGE}"); return 2 };
+        match flag {
+            "--why" if action != "add" && why.is_none() => why = Some(value.to_string()),
+            "--notes" if notes.is_none() => notes = Some(value.to_string()),
+            "--kind" if action != "blocked" && category.is_none() => {
+                let Some(parsed) = Category::parse(value) else { eprintln!("claude-todo: invalid kind {value:?}\n{USAGE}"); return 2 };
+                category = Some(parsed);
+            }
+            _ => { eprintln!("{USAGE}"); return 2 }
+        }
+        remaining = rest;
+    }
+    if action != "add" && !why.as_ref().is_some_and(|reason| !reason.trim().is_empty()) {
+        eprintln!("{USAGE}");
+        return 2;
+    }
+    file(action, title, why, notes, is_design, category)
+}
+
+fn file(action: &str, title: &str, why: Option<String>, notes: Option<String>, is_design: bool, category: Option<Category>) -> i32 {
     if action == "propose" && read_list().get("declined").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str)
         .any(|declined| collapse(declined).to_lowercase() == collapse(title).to_lowercase()) {
         println!("Theo already declined this idea; it is not filed again.");
@@ -104,6 +138,9 @@ fn file(action: &str, title: &str, why: Option<String>, notes: Option<String>, i
     update.insert("cwd".into(), json!(std::env::current_dir().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default()));
     if is_design {
         update.insert("kind".into(), json!("design"));
+    }
+    if let Some(category) = category {
+        update.insert("category".into(), json!(category.as_str()));
     }
     for (key, value) in [("why", why), ("notes", notes)] {
         if let Some(value) = value {
@@ -130,7 +167,7 @@ fn list(everything: bool) -> i32 {
         let status = item.get("status").and_then(Value::as_str).map(str::to_string)
             .unwrap_or_else(|| if item.get("sent").and_then(Value::as_bool).unwrap_or(false) { "doing".into() } else { "todo".into() });
         let has_notes = item.get("notes").and_then(Value::as_str).is_some_and(|notes| !notes.is_empty());
-        println!("{} {}  {status:<8}  {item_project}: {}{}", glyph(&status), item.get("id").and_then(Value::as_str).unwrap_or(""),
+        println!("{} {}  {status:<8}  [{}] {item_project}: {}{}", glyph(&status), item.get("id").and_then(Value::as_str).unwrap_or(""), category_label(item),
                  item.get("text").and_then(Value::as_str).unwrap_or(""), if has_notes { "  (notes: claude-todo show)" } else { "" });
         shown += 1;
     }
@@ -148,8 +185,7 @@ fn list(everything: bool) -> i32 {
 fn main() {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     let key = Regex::new(r"^(?:[0-9a-f]{8}|[\w.-]+/[\w.-]+#\d+)$").unwrap();
-    let is_design = arguments.iter().any(|word| word == "--design");
-    let words: Vec<&str> = arguments.iter().map(String::as_str).filter(|word| *word != "--design").collect();
+    let words: Vec<&str> = arguments.iter().map(String::as_str).collect();
     let status = match words.as_slice() {
         [] | ["list", ..] => list(words.contains(&"--all")),
         [action @ ("start" | "done" | "todo"), id] if key.is_match(id) => {
@@ -166,14 +202,7 @@ fn main() {
             }
         }
         ["show", id] if key.is_match(id) => show(id),
-        ["add", title, rest @ ..] if !title.trim().is_empty() && (rest.is_empty() || (rest.len() == 2 && rest[0] == "--notes")) =>
-            file("add", title, None, option(rest, "--notes"), is_design),
-        ["propose", title, rest @ ..] if !title.trim().is_empty() && option(rest, "--why").is_some_and(|why| !why.trim().is_empty())
-                                         && rest.len() % 2 == 0 && rest.chunks(2).all(|pair| pair[0] == "--why" || pair[0] == "--notes") =>
-            file("propose", title, option(rest, "--why"), option(rest, "--notes"), is_design),
-        ["blocked", what, rest @ ..] if !what.trim().is_empty() && option(rest, "--why").is_some_and(|why| !why.trim().is_empty())
-                                        && rest.len() % 2 == 0 && rest.chunks(2).all(|pair| pair[0] == "--why" || pair[0] == "--notes") =>
-            file("blocked", what, option(rest, "--why"), option(rest, "--notes"), false),
+        [action @ ("add" | "propose" | "blocked"), title, rest @ ..] if !title.trim().is_empty() => file_arguments(action, title, rest),
         _ => { eprintln!("{USAGE}"); 2 }
     };
     std::process::exit(status);

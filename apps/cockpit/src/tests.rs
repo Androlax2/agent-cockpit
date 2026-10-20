@@ -2865,6 +2865,281 @@ fn project_folder(fixture: &Fixture, name: &str) -> PathBuf {
 }
 
 #[test]
+fn todo_categories_survive_updates_and_reloading() {
+    let fixture = Fixture::new();
+    let runway = project_folder(&fixture, "runway");
+    for action in ["add", "propose"] {
+        for category in ["task", "feature", "bug", "improvement", "chore", "research"] {
+            queue_update(json!({"action": action, "text": format!("{action} {category}"), "category": category}), &runway);
+        }
+    }
+    let mut todos = TodoList::load();
+    assert_eq!(todos.apply_updates(), 12);
+    let reloaded = TodoList::load();
+    let categories: Vec<_> = reloaded.items.iter().map(|item| item.0.get("category").and_then(Value::as_str)).collect();
+    assert_eq!(categories, [Some("task"), Some("feature"), Some("bug"), Some("improvement"), Some("chore"), Some("research")].repeat(2));
+}
+
+#[test]
+fn invalid_incoming_categories_do_not_create_todos() {
+    let fixture = Fixture::new();
+    let runway = project_folder(&fixture, "runway");
+    for action in ["add", "propose"] {
+        for category in [json!("other"), json!("design"), json!(null), json!(5), json!(["bug"])] {
+            queue_update(json!({"action": action, "text": "invalid", "category": category}), &runway);
+        }
+    }
+    let mut todos = TodoList::load();
+    assert_eq!(todos.apply_updates(), 0);
+    assert!(TodoList::load().items.is_empty());
+}
+
+#[test]
+fn blocked_reports_reject_category_fields_without_creating_or_queueing_items() {
+    let fixture = Fixture::new();
+    let runway = project_folder(&fixture, "runway");
+    for category in [json!(null), json!("invalid"), json!("bug")] {
+        queue_update(json!({"action": "blocked", "text": "cannot push", "why": "blocked", "category": category}), &runway);
+    }
+    let mut todos = TodoList::load();
+    assert_eq!(todos.apply_updates(), 0);
+    assert!(TodoList::load().items.is_empty());
+    assert!(todos.queued.is_empty());
+}
+
+#[test]
+fn recategorizing_preserves_special_routing_and_item_contents() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    let design = design_item(&mut app, "runway", "/r/runway", "empty state");
+    report_blocked(&fixture, "opusline", "push the tag");
+    app.todos.apply_updates();
+    let blocked = app.todos.items.iter().find(|item| item.is_blocked_report()).unwrap().id();
+    for id in [&design, &blocked] {
+        app.todos.edit(id, "keep title", "keep notes");
+        assert!(app.todos.set_category(id, crate::todo::Category::Bug));
+    }
+    let reloaded = TodoList::load();
+    for item in &reloaded.items {
+        assert_eq!(item.category(), Some(crate::todo::Category::Bug));
+        assert_eq!((item.text(), item.notes()), ("keep title".into(), "keep notes".into()));
+    }
+    assert!(reloaded.items.iter().find(|item| item.id() == design).unwrap().is_design());
+    assert!(reloaded.items.iter().find(|item| item.id() == blocked).unwrap().is_blocked_report());
+    assert!(reloaded.is_queued(&blocked));
+}
+
+#[test]
+fn legacy_and_unknown_categories_are_not_rewritten_on_save() {
+    let fixture = Fixture::new();
+    fixture.write("state/claude-sessions/todo.json", &json!({"items": [
+        {"id": "0123abcd", "text": "old"},
+        {"id": "4567abcd", "text": "future", "category": "future-kind"}
+    ]}).to_string());
+    let mut todos = TodoList::load();
+    assert_eq!(todos.items[0].category(), Some(crate::todo::Category::Task));
+    assert_eq!(todos.items[1].category(), None);
+    todos.edit("4567abcd", "renamed", "notes");
+    let reloaded = TodoList::load();
+    assert!(reloaded.items[0].0.get("category").is_none());
+    assert_eq!(reloaded.items[1].0["category"], "future-kind");
+}
+
+#[test]
+fn todo_rows_and_details_show_the_kind_alongside_design_routing() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    let id = design_item(&mut app, "runway", "/r/runway", "empty state");
+    app.todos.set_category(&id, crate::todo::Category::Feature);
+    app.todos.add("runway", "/r/runway", "old task");
+    app.build();
+    let badges: Vec<_> = app.panels[3].lines.iter().flat_map(|line| &line.right).map(|part| part.text.as_str()).collect();
+    assert!(badges.contains(&"Feature") && badges.contains(&"Task") && badges.contains(&"✎ design"), "{badges:?}");
+    let details = crate::app::todo_details(app.todo_entries.iter().find(|entry| entry.key() == id).unwrap());
+    assert!(details.contains("Kind: Feature"), "{details}");
+}
+
+#[test]
+fn kind_filter_limits_status_counts_and_keeps_github_issues_under_all() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    let bug = app.todos.add("runway", "/r", "crash");
+    app.todos.set_category(&bug, crate::todo::Category::Bug);
+    let doing = app.todos.add("runway", "/r", "feature");
+    app.todos.set_category(&doing, crate::todo::Category::Feature);
+    app.todos.set_status(&doing, "doing", "");
+    app.reviews.set_issues(vec![issue(3, "github bug", &["bug"])]);
+    app.build();
+    app.focus_panel(3);
+    app.handle(Key::Char('f'), &mut FakeScreen::typing(&["Bug"]));
+    assert_eq!(app.todo_entries.iter().map(Entry::key).collect::<Vec<_>>(), [bug]);
+    assert_eq!(app.todo_counts, [1, 0, 1, 0, 0]);
+    assert!(app.subtitle(3).contains("kind: Bug"), "{}", app.subtitle(3));
+    for _ in 0..3 { app.handle(Key::Char(']'), &mut FakeScreen::default()); }
+    assert!(app.todo_entries.is_empty());
+    assert!(texts(&app, 3).iter().any(|line| line.contains("kind filter")));
+    app.handle(Key::Char('f'), &mut FakeScreen::typing(&["All"]));
+    app.handle(Key::Char('['), &mut FakeScreen::default());
+    assert_eq!(app.todo_entries.len(), 2); // Task tab: typed bug and GitHub issue.
+}
+
+#[test]
+fn each_viewed_session_keeps_its_own_kind_filter() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "working", "runway", "/r/runway", 1), session(SESSION_B, "working", "runway", "/r/runway", 2)]));
+    let mut app = fixture.app();
+    app.todos.add("runway", "/r", "task");
+    fixture.view(SESSION_A);
+    app.build();
+    app.focus_panel(3);
+    app.handle(Key::Char('f'), &mut FakeScreen::typing(&["Bug"]));
+    assert!(app.todo_entries.is_empty());
+    fixture.view(SESSION_B);
+    app.build();
+    assert_eq!(app.todo_entries.len(), 1);
+    fixture.view(SESSION_A);
+    app.build();
+    assert!(app.todo_entries.is_empty());
+    assert!(app.subtitle(3).contains("kind: Bug"));
+}
+
+#[test]
+fn changing_kind_preserves_notes_and_clears_a_filter_that_would_hide_it() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    let id = design_item(&mut app, "runway", "/r", "keep title");
+    app.todos.edit(&id, "keep title", "keep notes");
+    app.build();
+    app.focus_panel(3);
+    app.handle(Key::Char('f'), &mut FakeScreen::typing(&["Task"]));
+    app.handle(Key::Char('K'), &mut FakeScreen::typing(&["Bug"]));
+    let item = &TodoList::load().items[0];
+    assert_eq!((item.text(), item.notes(), item.category()), ("keep title".into(), "keep notes".into(), Some(crate::todo::Category::Bug)));
+    assert!(item.is_design());
+    assert_eq!(app.todo_entries.len(), 1);
+    assert!(!app.subtitle(3).contains("kind: Task"));
+}
+
+#[test]
+fn cancelling_kind_and_filter_pickers_changes_nothing() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    app.todos.add("runway", "/r", "task");
+    app.build();
+    app.focus_panel(3);
+    app.handle(Key::Char('f'), &mut FakeScreen::typing(&["Task"]));
+    let before = fs::read(crate::paths::todo()).unwrap();
+    for key in ['K', 'f'] { app.handle(Key::Char(key), &mut FakeScreen::default()); }
+    assert_eq!(fs::read(crate::paths::todo()).unwrap(), before);
+    assert!(app.subtitle(3).contains("kind: Task"));
+}
+
+#[test]
+fn unknown_persisted_kinds_stay_visible_and_are_described_without_rewriting() {
+    let fixture = Fixture::new();
+    fixture.write("state/claude-sessions/todo.json", &json!({"items": [
+        {"id": "0123abcd", "text": "future", "category": "future-kind"}
+    ]}).to_string());
+    let mut app = fixture.app();
+    assert_eq!(app.todo_entries.len(), 1);
+    assert!(crate::app::todo_details(&app.todo_entries[0]).contains("future-kind"));
+    app.focus_panel(3);
+    app.handle(Key::Char('K'), &mut FakeScreen::default());
+    assert_eq!(TodoList::load().items[0].0["category"], "future-kind");
+}
+
+#[test]
+fn the_kind_filter_does_not_change_queue_dispatch() {
+    let (fixture, mut app) = queue_fixture("waiting", 600);
+    let id = app.todos.add("runway", "/r/runway", "task still dispatches");
+    app.todos.toggle_queued(&id);
+    app.build();
+    app.focus_panel(3);
+    app.handle(Key::Char('f'), &mut FakeScreen::typing(&["Bug"]));
+    assert!(app.todo_entries.is_empty());
+    app.dispatch_queue();
+    assert!(fixture.wait_for_calls("claude-sessions", 1)[0].contains("task still dispatches"));
+}
+
+#[test]
+fn add_and_edit_choose_a_kind_before_saving() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "working", "runway", "/r/runway", 1)]));
+    fixture.view(SESSION_A);
+    fixture.shim("tmux", r#"[ "$1" = display-popup ] || exit 0; for last; do :; done; printf 'New title\n\nNew notes\n' > "$last""#);
+    let mut app = fixture.app();
+    app.focus_panel(3);
+    app.handle(Key::Char('t'), &mut FakeScreen::typing(&["Feature"]));
+    let items = TodoList::load().items;
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].category(), Some(crate::todo::Category::Feature));
+    app.handle(Key::Char('e'), &mut FakeScreen::typing(&["Research"]));
+    let item = &TodoList::load().items[0];
+    assert_eq!((item.text(), item.notes(), item.category()), ("New title".into(), "New notes".into(), Some(crate::todo::Category::Research)));
+}
+
+#[test]
+fn cancelling_add_or_edit_kind_picker_discards_editor_changes() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "working", "runway", "/r/runway", 1)]));
+    fixture.view(SESSION_A);
+    fixture.shim("tmux", r#"[ "$1" = display-popup ] || exit 0; for last; do :; done; printf 'Changed title\n\nChanged notes\n' > "$last""#);
+    let mut app = fixture.app();
+    app.focus_panel(3);
+    app.handle(Key::Char('t'), &mut FakeScreen::default());
+    assert!(TodoList::load().items.is_empty());
+    app.todos.add("runway", "/r", "original");
+    app.build();
+    app.handle(Key::Char('e'), &mut FakeScreen::default());
+    assert_eq!(TodoList::load().items[0].text(), "original");
+}
+
+#[test]
+fn the_kind_picker_starts_on_the_items_current_kind() {
+    let fixture = Fixture::new();
+    fixture.shim("fzf", "head -n 1");
+    let mut app = fixture.app();
+    let id = app.todos.add("runway", "/r", "keep kind");
+    app.todos.set_category(&id, crate::todo::Category::Research);
+    app.build();
+    app.focus_panel(3);
+    app.handle(Key::Char('K'), &mut FakeScreen::default());
+    assert!(fixture.calls("fzf").iter().any(|call| call.contains("kind>")));
+    assert_eq!(TodoList::load().items[0].category(), Some(crate::todo::Category::Research));
+}
+
+#[test]
+fn long_kind_badges_leave_the_title_readable_in_a_narrow_column() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    let id = design_item(&mut app, "runway", "/r/runway", "Repair the order list");
+    app.todos.set_category(&id, crate::todo::Category::Improvement);
+    app.todos.toggle_queued(&id);
+    app.build();
+    app.focus_panel(3);
+    let buffer = render(&mut app, 40, 40);
+    let rows: Vec<String> = (0..40).map(|row| (0..40).map(|column| buffer[(column, row)].symbol()).collect()).collect();
+    assert!(rows.iter().any(|row| row.contains("Repair the")), "{}", rows.join("\n"));
+}
+
+#[test]
+fn the_active_kind_filter_is_visible_even_with_a_long_project_name() {
+    let fixture = Fixture::new();
+    let project = "a-very-long-project-name";
+    fixture.snapshot(json!([session(SESSION_A, "working", project, "/r/project", 1)]));
+    fixture.view(SESSION_A);
+    let mut app = fixture.app();
+    app.todos.add(project, "/r/project", "a task");
+    app.build();
+    app.focus_panel(3);
+    app.handle(Key::Char('f'), &mut FakeScreen::typing(&["Bug"]));
+    let buffer = render(&mut app, 40, 40);
+    let rows: Vec<String> = (0..40).map(|row| (0..40).map(|column| buffer[(column, row)].symbol()).collect()).collect();
+    let header = rows.iter().find(|row| row.contains("Todo")).unwrap();
+    assert!(header.contains("kind: Bug"), "{header}");
+}
+
+#[test]
 fn a_session_marks_items_through_the_updates_queue() {
     let fixture = Fixture::new();
     let mut todos = TodoList::load();
@@ -3755,7 +4030,7 @@ fn e_saves_what_was_written_in_the_editor() {
     let id = app.todos.add("p", "/p", "draft");
     app.build();
     app.focus_panel(3);
-    app.handle(Key::Char('e'), &mut FakeScreen::default());
+    app.handle(Key::Char('e'), &mut FakeScreen::typing(&["Task"]));
     let item = TodoList::load().items.into_iter().find(|item| item.id() == id).unwrap();
     assert_eq!((item.text().as_str(), item.notes().as_str()), ("Better title", "first note"));
 }
