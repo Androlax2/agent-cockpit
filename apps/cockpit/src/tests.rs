@@ -2332,6 +2332,186 @@ fn the_rare_actions_are_left_without_a_key() {
     assert_eq!(crate::prompts::count(SESSION_A), 1);
 }
 
+// ---- The Team view: Theo's approvals, on the host-only team socket ----
+
+type HostRequests = std::sync::Arc<Mutex<Vec<Value>>>;
+
+const TEAM_PROJECT: &str = "remote:git@github.com:example/project-a.git";
+
+/// A fake daemon on the host-only team socket: snapshots answer `snapshot`, controls take the
+/// next of `replies` (success by default). Records every request.
+fn team_host(fixture: &Fixture, snapshot: Value, replies: Vec<Value>) -> HostRequests {
+    use std::io::{Read, Write};
+    let folder = fixture.path("run/claude-team-host");
+    fs::create_dir_all(&folder).unwrap();
+    let listener = std::os::unix::net::UnixListener::bind(folder.join("host.sock")).unwrap();
+    let requests = HostRequests::default();
+    let recorded = requests.clone();
+    std::thread::spawn(move || {
+        let mut replies: VecDeque<Value> = replies.into();
+        for mut stream in listener.incoming().flatten() {
+            let mut text = String::new();
+            let _ = stream.read_to_string(&mut text);
+            let request: Value = serde_json::from_str(&text).unwrap();
+            let result = if request["request"] == "snapshot" { json!({"Ok": snapshot}) }
+                         else { replies.pop_front().unwrap_or(json!({"Ok": {"status": "ok"}})) };
+            recorded.lock().unwrap().push(request);
+            let _ = stream.write_all(json!({"request_id": "x", "result": result}).to_string().as_bytes());
+        }
+    });
+    requests
+}
+
+fn team_snapshot() -> Value {
+    let mapping = json!([{"session_id": SESSION_A, "role": "designer", "agent": "claude", "runtime": "r1"},
+        {"session_id": OPENCODE_SESSION, "role": "developer", "agent": "opencode", "runtime": "r2"}]).to_string();
+    json!({"proposals": [{"proposal_id": "p1", "project": TEAM_PROJECT, "task_id": "1d3fd318", "mapping": mapping, "mapping_hash": "h1",
+            "revision": 2, "status": "pending", "reason": "Review this task", "sender": OPENCODE_SESSION, "created_by": "agent", "parent_id": null}],
+        "members": [{"session_id": SESSION_B, "role": "qa", "agent": "claude", "project": TEAM_PROJECT, "task_id": "0123abcd", "runtime": "r", "epoch": "e"}],
+        "messages": [], "escalations": [],
+        "sessions": [{"session_id": SESSION_A, "agent": "claude", "project": TEAM_PROJECT, "project_name": "project-a", "label": "", "state": "waiting", "needs_team_channel": true},
+            {"session_id": OPENCODE_SESSION, "agent": "opencode", "project": TEAM_PROJECT, "project_name": "project-a", "label": "", "state": "waiting", "needs_team_channel": false},
+            {"session_id": SESSION_B, "agent": "claude", "project": TEAM_PROJECT, "project_name": "project-a", "label": "", "state": "waiting", "needs_team_channel": false}]})
+}
+
+fn open_team_view(app: &mut App) {
+    app.handle(Key::Char(':'), &mut FakeScreen::typing(&["1\tteam"]));
+    assert!(app.team_view.is_some(), "{}", app.message);
+}
+
+fn controls(requests: &HostRequests) -> Vec<Value> {
+    requests.lock().unwrap().iter().filter(|request| request["request"] == "control").map(|request| request["action"].clone()).collect()
+}
+
+#[test]
+fn the_team_view_lives_in_the_palette_without_a_key() {
+    let fixture = Fixture::new();
+    let app = fixture.app();
+    assert!(app.palette_entries().iter().any(|entry| entry.starts_with("1\tteam\t")));
+}
+
+#[test]
+fn approving_sends_exactly_the_displayed_revision_and_mapping() {
+    let fixture = Fixture::new();
+    let requests = team_host(&fixture, team_snapshot(), vec![]);
+    let mut app = fixture.app();
+    open_team_view(&mut app);
+    app.handle(Key::Char('a'), &mut FakeScreen::answering(&[Key::Char('y')]));
+    assert_eq!(controls(&requests), [json!({"action": "approve", "request_id": controls(&requests)[0]["request_id"],
+        "proposal_id": "p1", "expected_revision": 2, "mapping_hash": "h1"})]);
+}
+
+#[test]
+fn declining_the_confirmation_approves_nothing() {
+    let fixture = Fixture::new();
+    let requests = team_host(&fixture, team_snapshot(), vec![]);
+    let mut app = fixture.app();
+    open_team_view(&mut app);
+    app.handle(Key::Char('a'), &mut FakeScreen::answering(&[Key::Char('n')]));
+    assert!(controls(&requests).is_empty());
+}
+
+#[test]
+fn claude_members_are_restarted_into_the_team_channel_only_after_a_yes() {
+    let fixture = Fixture::new();
+    let refusal = json!({"Err": {"code": "conflict", "message": format!("Claude members must first restart into the team channel (claude-sessions team-channel {SESSION_A}), then review the request again")}});
+    team_host(&fixture, team_snapshot(), vec![refusal.clone(), refusal]);
+    let mut app = fixture.app();
+    open_team_view(&mut app);
+    app.handle(Key::Char('a'), &mut FakeScreen::answering(&[Key::Char('y'), Key::Char('n')]));
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(fixture.calls("claude-sessions").is_empty());
+    app.handle(Key::Char('a'), &mut FakeScreen::answering(&[Key::Char('y'), Key::Char('y')]));
+    assert_eq!(fixture.wait_for_calls("claude-sessions", 1), [format!("claude-sessions team-channel {SESSION_A}")]);
+}
+
+#[test]
+fn after_a_channel_restart_the_same_mapping_is_rebound_for_a_fresh_review() {
+    let fixture = Fixture::new();
+    let changed = json!({"Err": {"code": "conflict", "message": "a requested session runtime changed; request fresh approval"}});
+    let requests = team_host(&fixture, team_snapshot(), vec![changed]);
+    let mut app = fixture.app();
+    open_team_view(&mut app);
+    app.handle(Key::Char('a'), &mut FakeScreen::answering(&[Key::Char('y')]));
+    let edit = controls(&requests).pop().unwrap();
+    assert_eq!(edit["action"], "edit");
+    assert_eq!(edit["proposal_id"], "p1");
+    assert_eq!(edit["replacement"]["task"], json!({"project": TEAM_PROJECT, "task_id": "1d3fd318"}));
+    assert_eq!(edit["replacement"]["members"], json!([{"session_id": SESSION_A, "role": "designer"}, {"session_id": OPENCODE_SESSION, "role": "developer"}]));
+    assert_eq!(controls(&requests).iter().filter(|action| action["action"] == "approve").count(), 1, "the rebound request needs its own approval");
+}
+
+#[test]
+fn unlinking_a_member_takes_a_yes_and_names_its_task() {
+    let fixture = Fixture::new();
+    let requests = team_host(&fixture, team_snapshot(), vec![]);
+    let mut app = fixture.app();
+    open_team_view(&mut app);
+    app.handle(Key::Char('j'), &mut FakeScreen::default());
+    app.handle(Key::Char('u'), &mut FakeScreen::answering(&[Key::Char('y')]));
+    let unlink = controls(&requests).pop().unwrap();
+    assert_eq!((unlink["action"].clone(), unlink["session_id"].clone(), unlink["task"].clone()),
+               (json!("unlink"), json!(SESSION_B), json!({"project": TEAM_PROJECT, "task_id": "0123abcd"})));
+}
+
+#[test]
+fn theo_creates_a_team_from_live_sessions_and_still_approves_it_separately() {
+    let fixture = Fixture::new();
+    let requests = team_host(&fixture, team_snapshot(), vec![]);
+    let mut app = fixture.app();
+    open_team_view(&mut app);
+    app.handle(Key::Char('n'), &mut FakeScreen::typing(&["1d3fd318", &format!("{SESSION_A}\tx"), &format!("{OPENCODE_SESSION}\tx"), "-\t(no one)"]));
+    let propose = controls(&requests).pop().unwrap();
+    assert_eq!(propose["action"], "propose");
+    assert_eq!(propose["proposal"]["task"], json!({"project": TEAM_PROJECT, "task_id": "1d3fd318"}));
+    assert_eq!(propose["proposal"]["members"], json!([{"session_id": SESSION_A, "role": "designer"}, {"session_id": OPENCODE_SESSION, "role": "developer"}]));
+    assert!(!controls(&requests).iter().any(|action| action["action"] == "approve"));
+}
+
+#[test]
+fn a_missing_team_service_is_said_and_nothing_opens() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    app.handle(Key::Char(':'), &mut FakeScreen::typing(&["1\tteam"]));
+    assert!(app.team_view.is_none());
+    assert!(app.message.contains("unavailable"), "{}", app.message);
+}
+
+#[test]
+fn the_team_view_draws_full_ids_and_closes_with_escape() {
+    let fixture = Fixture::new();
+    team_host(&fixture, team_snapshot(), vec![]);
+    let mut app = fixture.app();
+    open_team_view(&mut app);
+    let buffer = render(&mut app, 120, 40);
+    let text: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
+    assert!(text.contains(&format!("designer: {SESSION_A}")), "full id missing");
+    let _ = render(&mut app, 30, 12);
+    app.handle(Key::Esc, &mut FakeScreen::default());
+    assert!(app.team_view.is_none());
+}
+
+#[test]
+fn the_sessions_summary_says_when_the_team_needs_theo() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_B, "waiting", "project-a", "/p", 1)]));
+    team_host(&fixture, team_snapshot(), vec![]);
+    let mut app = fixture.app();
+    app.tick();
+    let summary: Vec<String> = app.panels[1].fixed_top.iter().map(|line| line.texts()).collect();
+    assert!(summary.iter().any(|line| line.contains("team: 1 needs you")), "{summary:?}");
+}
+
+#[test]
+fn a_linked_session_shows_its_team_role() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_B, "waiting", "project-a", "/p", 1)]));
+    team_host(&fixture, team_snapshot(), vec![]);
+    let mut app = fixture.app();
+    app.tick();
+    assert!(selected_session_badges(&app).iter().any(|badge| badge == "team qa · 0123abcd"), "{:?}", selected_session_badges(&app));
+}
+
 #[test]
 fn h_resumes_the_past_session_picked() {
     let fixture = Fixture::new();

@@ -80,7 +80,8 @@ const GLOBAL_HELP: [(&str, &str); 14] = [
     ("q ⌘C", "close the manager window; sessions keep running"),
 ];
 /// Rare actions with no key, only in the : list: the panel they run in ("-" for none), a name, a label.
-const PALETTE_ONLY: [(&str, &str, &str); 22] = [
+const PALETTE_ONLY: [(&str, &str, &str); 23] = [
+    ("1", "team", "linked sessions: approve, edit or reject team requests, unlink members, resolve escalations, read team messages"),
     ("1", "attention-filter", "show actionable sessions / show all; deferred items remain counted"),
     ("1", "defer-20m", "remind me of this explicit question in twenty minutes (never approve)"),
     ("2", "defer-20m", "remind me of this PR review in twenty minutes"),
@@ -725,6 +726,12 @@ pub struct App {
     session_details: Option<SessionDetails>,
     todo_composer: Option<TodoComposer>,
     pub(crate) settings_menu: Option<SettingsMenu>,
+    /// The Team view (: team), from the daemon's host-only team socket.
+    pub(crate) team_view: Option<crate::teams::view::TeamView>,
+    /// Team requests, escalations and uncertain deliveries waiting for Theo; session -> "team role · task".
+    team_attention: usize,
+    team_roles: HashMap<String, String>,
+    team_checked: f64,
     pub(crate) pairing: Option<Pairing>,
     pub restore: Vec<Restorable>,
     pub held: Vec<String>,
@@ -812,7 +819,7 @@ impl App {
             history: History::default(), view: ViewState::load(), usage: Refresher::new(), alerts: BudgetAlerts::new(util::send_notice),
             costs: Costs::default(), reviews: Reviews::default(), todos, errors: ErrorReporter::new(),
             claude_status: ProviderStatus::default(), codex_status: ProviderStatus::new(Provider::Codex), panels: Default::default(), focus: 1, previous_panel: 1,
-            help_open: false, has_pane_focus: true, attention_only: false, message, exiting: Vec::new(), labelled: Default::default(), menu: None, session_details: None, todo_composer: None, settings_menu: None, pairing: None, restore: Vec::new(),
+            help_open: false, has_pane_focus: true, attention_only: false, message, exiting: Vec::new(), labelled: Default::default(), menu: None, session_details: None, todo_composer: None, settings_menu: None, team_view: None, team_attention: 0, team_roles: HashMap::new(), team_checked: 0.0, pairing: None, restore: Vec::new(),
             held: Vec::new(), held_checked: 0.0, queue_checked: 0.0, gaming: util::gaming, restore_checked: 0.0, start_files: Vec::new(),
             width: DEFAULT_COLUMN_WIDTH, sessions: Vec::new(), running_sessions: Vec::new(), windows: Vec::new(), quota_rows: Vec::new(), review_rows: Vec::new(), todo_entries: Vec::new(),
             session_task_titles: HashMap::new(), session_branches: HashMap::new(),
@@ -859,6 +866,7 @@ impl App {
         self.costs.tick();
         self.reviews.tick();
         self.watch_pairing();
+        self.check_team();
         self.redraw();
         self.push_viewed_state();
         self.dispatch_queue();
@@ -1514,6 +1522,9 @@ impl App {
             "developer" => badges.push(part("⌨ developer", style(CYAN))),
             _ => {}
         }
+        if let Some(team) = self.team_roles.get(&session.session) {
+            badges.push(part(team.clone(), bold(MAGENTA)));
+        }
         // Launchers attach every craft server; show only instances serving this checkout.
         for app in session.apps.split_whitespace() {
             let Some((name, "on")) = app.split_once(':') else { continue };
@@ -1603,6 +1614,9 @@ impl App {
         let outdated = self.running_sessions.iter().filter(|session| !sessions::changed_since_start(session, &self.start_files).is_empty()).count();
         if outdated > 0 {
             counts += &format!(" · {outdated} restart available");
+        }
+        if self.team_attention > 0 {
+            counts += &format!(" · team: {} {} you (: team)", self.team_attention, if self.team_attention == 1 { "needs" } else { "need" });
         }
         vec![
             Line::new(vec![segment(0, attention, bold(if needing > 0 { YELLOW } else { FG_DARK }))]),
@@ -2661,6 +2675,11 @@ impl App {
         if let Some(menu) = self.settings_menu.as_mut() {
             menu.draw(buffer);
         }
+        if let Some(view) = self.team_view.as_ref() {
+            draw_team_view(view, buffer);
+            self.hit_lines.clear();
+            self.hit_actions.clear();
+        }
         if let Some(pairing) = self.pairing.as_ref() {
             pairing.draw(buffer);
         }
@@ -3011,6 +3030,10 @@ impl App {
             }
             return;
         }
+        if self.team_view.is_some() {
+            self.message = self.handle_team_view(key, screen);
+            return;
+        }
         if self.menu.is_some() {
             self.message = self.handle_menu(key, screen);
             return;
@@ -3148,6 +3171,7 @@ impl App {
                 self.manager_async(&["--agent", &agent, "new", &directory])
             }
             "digest" => self.manager_async(&["digest"]),
+            "team" => self.open_team_view(),
             "pair-phone" => self.start_pairing(),
             "design" => self.start_design_session(screen),
             "clones" => {
@@ -3180,6 +3204,218 @@ impl App {
                 _ => String::new(),
             },
             _ => panic!("no palette action named {name}"),
+        }
+    }
+
+    fn team_control(action: crate::teams::HostAction) -> Result<Value, crate::teams::TeamError> {
+        crate::teams::client::host_request(&crate::teams::HostRequest::Control { action }).and_then(|reply| reply.result)
+    }
+
+    fn team_snapshot() -> Result<Value, crate::teams::TeamError> {
+        crate::teams::client::host_request(&crate::teams::HostRequest::Snapshot).and_then(|reply| reply.result)
+    }
+
+    /// Every 10 s: what in the linked teams waits for Theo, and each member's role, for the cards.
+    fn check_team(&mut self) {
+        let now = util::now();
+        if now - self.team_checked < 10.0 { return; }
+        self.team_checked = now;
+        if !paths::team_host_socket().exists() {
+            self.team_attention = 0;
+            self.team_roles.clear();
+            return;
+        }
+        let Ok(snapshot) = Self::team_snapshot() else { return };
+        self.team_attention = crate::teams::view::TeamView::attention(&snapshot);
+        self.team_roles = snapshot["members"].as_array().into_iter().flatten().filter_map(|member| Some((member["session_id"].as_str()?.to_string(),
+            format!("team {} · {}", member["role"].as_str()?, member["task_id"].as_str()?)))).collect();
+    }
+
+    fn open_team_view(&mut self) -> String {
+        match Self::team_snapshot() {
+            Ok(snapshot) => {
+                self.team_view = Some(crate::teams::view::TeamView::new(snapshot));
+                String::new()
+            },
+            Err(error) => format!("Team view: {}", error.message),
+        }
+    }
+
+    /// Re-read after every change; the first pending request is selected when `to_request` says so.
+    fn refresh_team_view(&mut self, to_request: bool) {
+        let Ok(snapshot) = Self::team_snapshot() else { return };
+        if let Some(view) = self.team_view.as_mut() {
+            view.snapshot = snapshot;
+            let rows = view.rows();
+            view.selected = if to_request { 0 } else { view.selected.min(rows.len().saturating_sub(1)) };
+        }
+    }
+
+    fn handle_team_view(&mut self, key: Key, screen: &mut dyn Screen) -> String {
+        let Some(view) = self.team_view.as_mut() else { return String::new() };
+        match key {
+            Key::Esc | Key::Char('q') => {
+                self.team_view = None;
+                String::new()
+            },
+            Key::Tab => {
+                view.is_history = !view.is_history;
+                view.selected = 0;
+                String::new()
+            },
+            Key::Char('j') | Key::Down => { view.move_by(1); String::new() },
+            Key::Char('k') | Key::Up => { view.move_by(-1); String::new() },
+            Key::Char('r') => { self.refresh_team_view(false); String::new() },
+            Key::Char('n') => self.create_team_request(screen),
+            _ => match view.selected_row() {
+                Some(row) => self.team_row_action(row, key, screen),
+                None => String::new(),
+            },
+        }
+    }
+
+    fn team_row_action(&mut self, row: crate::teams::view::Row, key: Key, screen: &mut dyn Screen) -> String {
+        use crate::teams::{HostAction, TaskKey, view::Row};
+        let token = || format!("cockpit-{}", util::token_hex(8));
+        let view = self.team_view.as_ref().expect("the Team view is open");
+        let outcome = match (row, key) {
+            (Row::Proposal(index), Key::Char('a')) => return self.approve_team_request(index, screen),
+            (Row::Proposal(index), Key::Char('e')) => return self.edit_team_request(index, screen),
+            (Row::Proposal(index), Key::Char('x')) => {
+                let proposal = view.proposal(index).clone();
+                if !self.confirm(screen, "reject this team request? no links are made") { return String::new() }
+                Self::team_control(HostAction::Reject { request_id: token(), proposal_id: proposal["proposal_id"].as_str().unwrap_or("").into(),
+                    expected_revision: proposal["revision"].as_i64().unwrap_or(0) }).map(|_| "request rejected: no links were made".to_string())
+            },
+            (Row::Member(index), Key::Char('u')) => {
+                let member = view.member(index).clone();
+                let text = |key: &str| member[key].as_str().unwrap_or("").to_string();
+                if !self.confirm(screen, &format!("unlink {} {}? its pending messages and retries are cancelled", text("role"), text("session_id"))) {
+                    return String::new();
+                }
+                Self::team_control(HostAction::Unlink { request_id: token(), task: TaskKey { project: text("project"), task_id: text("task_id") },
+                    session_id: text("session_id") }).map(|_| "unlinked: it can no longer message the team".to_string())
+            },
+            (Row::Escalation(index), Key::Char('s')) => {
+                let thread_id = view.escalation(index)["thread_id"].as_str().unwrap_or("").to_string();
+                let note = input_line(screen, "resolution note for the team (empty cancels)> ");
+                if note.trim().is_empty() { return String::new() }
+                Self::team_control(HostAction::Resolve { request_id: token(), thread_id, note }).map(|_| "escalation resolved".to_string())
+            },
+            (Row::Uncertain(index), Key::Char(choice @ ('h' | 'c'))) => {
+                let message_id = view.message(index)["message_id"].as_str().unwrap_or("").to_string();
+                let (decision, question) = if choice == 'h' { ("handled", "it reached the session: mark it handled?") }
+                                           else { ("cancel", "cancel this delivery? it is not sent again") };
+                if !self.confirm(screen, question) { return String::new() }
+                Self::team_control(HostAction::Reconcile { request_id: token(), message_id, decision: decision.into() })
+                    .map(|_| format!("delivery {decision}"))
+            },
+            _ => return String::new(),
+        };
+        self.refresh_team_view(false);
+        outcome.unwrap_or_else(|error| error.message)
+    }
+
+    fn approve_team_request(&mut self, index: usize, screen: &mut dyn Screen) -> String {
+        use crate::teams::{HostAction, Member, Proposal, Role, TaskKey};
+        let view = self.team_view.as_ref().expect("the Team view is open");
+        let proposal = view.proposal(index).clone();
+        let mapping = view.mapping(index);
+        let needs_channel: Vec<String> = mapping.iter().filter_map(|member| member["session_id"].as_str())
+            .filter(|id| view.sessions().iter().any(|session| session["session_id"] == *id && session["needs_team_channel"] == true))
+            .map(str::to_string).collect();
+        let text = |key: &str| proposal[key].as_str().unwrap_or("").to_string();
+        if !self.confirm(screen, "approve exactly the request shown?") { return String::new() }
+        let approval = HostAction::Approve { request_id: format!("cockpit-{}", util::token_hex(8)), proposal_id: text("proposal_id"),
+            expected_revision: proposal["revision"].as_i64().unwrap_or(0), mapping_hash: text("mapping_hash") };
+        match Self::team_control(approval) {
+            Ok(_) => {
+                self.refresh_team_view(false);
+                "team approved: only these sessions can message each other about this task".into()
+            },
+            Err(error) if error.message.contains("claude-sessions team-channel") && !needs_channel.is_empty() => {
+                if !self.confirm(screen, &format!("restart {} Claude member(s) into the team channel? conversations are kept", needs_channel.len())) {
+                    return String::new();
+                }
+                for id in &needs_channel {
+                    manager_in_background(&["team-channel", id]);
+                }
+                "restarting into the team channel; once they are back, r refreshes and a approves".into()
+            },
+            Err(error) if error.message.contains("runtime changed") => {
+                // Restarted members: the same task, sessions and roles, bound to their new launches.
+                let members = mapping.iter().filter_map(|member| Some(Member {
+                    session_id: member["session_id"].as_str()?.to_string(),
+                    role: serde_json::from_value::<Role>(member["role"].clone()).ok()?,
+                })).collect();
+                let replacement = Proposal { submission_key: format!("rebind-{}", util::token_hex(8)),
+                    task: TaskKey { project: text("project"), task_id: text("task_id") }, members, reason: text("reason") };
+                let edit = HostAction::Edit { request_id: format!("cockpit-{}", util::token_hex(8)), proposal_id: text("proposal_id"),
+                    expected_revision: proposal["revision"].as_i64().unwrap_or(0), replacement };
+                match Self::team_control(edit) {
+                    Ok(_) => {
+                        self.refresh_team_view(true);
+                        "the sessions restarted: review the same request again, then a approves it".into()
+                    },
+                    Err(error) => error.message,
+                }
+            },
+            Err(error) => error.message,
+        }
+    }
+
+    /// Task id, then a session per role among the verified live ones of one project ("-" for none).
+    fn pick_team(&mut self, screen: &mut dyn Screen) -> Result<Option<(crate::teams::TaskKey, Vec<crate::teams::Member>)>, String> {
+        use crate::teams::{Member, Role, TaskKey};
+        let task_id = input_line(screen, "task id for the team (todo id or owner/repo#N, empty cancels)> ");
+        if task_id.trim().is_empty() { return Ok(None) }
+        let sessions = self.team_view.as_ref().expect("the Team view is open").sessions().to_vec();
+        let (mut project, mut members): (Option<String>, Vec<Member>) = (None, Vec::new());
+        for (role, name) in [(Role::Designer, "designer"), (Role::Developer, "developer"), (Role::Qa, "qa")] {
+            let choices: Vec<String> = sessions.iter()
+                .filter(|session| project.as_ref().is_none_or(|project| session["project"] == project.as_str()))
+                .filter(|session| !members.iter().any(|member| session["session_id"] == member.session_id.as_str()))
+                .map(|session| format!("{}\t{}  {}  {}", session["session_id"].as_str().unwrap_or(""), session["agent"].as_str().unwrap_or(""),
+                    session["project_name"].as_str().unwrap_or(""), session["label"].as_str().unwrap_or("")))
+                .chain(std::iter::once("-\t(no one)".to_string())).collect();
+            let Some(picked) = screen.outside(&mut || fzf(&format!("{name}> "), &choices, &["--delimiter", "\t", "--with-nth", "2.."])) else { return Ok(None) };
+            let id = picked.split('\t').next().unwrap_or("").to_string();
+            if id == "-" { continue }
+            let session = sessions.iter().find(|session| session["session_id"] == id.as_str()).ok_or("that session is not a verified live one")?;
+            project.get_or_insert_with(|| session["project"].as_str().unwrap_or("").to_string());
+            members.push(Member { session_id: id, role });
+        }
+        if members.len() < 2 { return Err("a team needs at least two members".into()) }
+        Ok(Some((TaskKey { project: project.unwrap_or_default(), task_id: task_id.trim().into() }, members)))
+    }
+
+    fn create_team_request(&mut self, screen: &mut dyn Screen) -> String {
+        use crate::teams::{HostAction, Proposal};
+        let (task, members) = match self.pick_team(screen) { Ok(Some(team)) => team, Ok(None) => return String::new(), Err(error) => return error };
+        let proposal = Proposal { submission_key: format!("host-{}", util::token_hex(8)), task, members, reason: "Created by Theo in the cockpit".into() };
+        match Self::team_control(HostAction::Propose { request_id: format!("cockpit-{}", util::token_hex(8)), proposal }) {
+            Ok(_) => {
+                self.refresh_team_view(true);
+                "request created: review its exact mapping, then a approves it".into()
+            },
+            Err(error) => error.message,
+        }
+    }
+
+    fn edit_team_request(&mut self, index: usize, screen: &mut dyn Screen) -> String {
+        use crate::teams::{HostAction, Proposal};
+        let proposal = self.team_view.as_ref().expect("the Team view is open").proposal(index).clone();
+        let (task, members) = match self.pick_team(screen) { Ok(Some(team)) => team, Ok(None) => return String::new(), Err(error) => return error };
+        let replacement = Proposal { submission_key: format!("edit-{}", util::token_hex(8)), task, members,
+            reason: proposal["reason"].as_str().unwrap_or("").to_string() };
+        let edit = HostAction::Edit { request_id: format!("cockpit-{}", util::token_hex(8)), proposal_id: proposal["proposal_id"].as_str().unwrap_or("").into(),
+            expected_revision: proposal["revision"].as_i64().unwrap_or(0), replacement };
+        match Self::team_control(edit) {
+            Ok(_) => {
+                self.refresh_team_view(true);
+                "edited: the new revision needs its own approval (a)".into()
+            },
+            Err(error) => error.message,
         }
     }
 
@@ -3286,6 +3522,43 @@ fn open_in_scratchpad(name: &str, page: &str) -> String {
 }
 
 /// fzf over lines; the chosen line, or None.
+/// The Team view over the column: its rows, then the selected one in full (wrapped, never cut).
+fn draw_team_view(view: &crate::teams::view::TeamView, buffer: &mut Buffer) {
+    let (width, height) = (buffer.area.width, buffer.area.height);
+    if width < 12 || height < 8 { return; }
+    let (top, bottom) = (HEADER_LINES, height - 2);
+    let inner = width.saturating_sub(4) as usize;
+    let body = inner.saturating_sub(2).max(2);
+    for row in top..=bottom {
+        put(buffer, row, 1, &" ".repeat((width - 2) as usize), on(FG, BLACK));
+        put(buffer, row, 1, "│", style(BLUE));
+        put(buffer, row, width - 2, "│", style(BLUE));
+    }
+    put(buffer, top, 1, &format!("┌{}┐", "─".repeat(inner)), style(BLUE));
+    let title = if view.is_history { "Team · message history" } else { "Team · requests and members" };
+    put(buffer, top, 3, &fit(title, inner.saturating_sub(2)), bold(BLUE));
+    let rows = view.rows();
+    let list_height = (rows.len() as u16).min((bottom - top) / 3).max(1);
+    let mut line = top + 1;
+    if rows.is_empty() {
+        put(buffer, line, 3, &fit("nothing here", body), dim(FG_DARK));
+    }
+    let first = view.selected.saturating_sub(list_height as usize - 1);
+    for (index, row) in rows.iter().enumerate().skip(first).take(list_height as usize) {
+        let selected = index == view.selected;
+        put(buffer, line, 3, &fit(&view.row_text(*row), body), if selected { on(FG, BG_HIGHLIGHT) } else { style(FG) });
+        line += 1;
+    }
+    line += 1;
+    for text in view.detail().iter().flat_map(|text| wrap_detail_text(text, body)) {
+        if line >= bottom - 1 { break; }
+        put(buffer, line, 3, &text, style(FG));
+        line += 1;
+    }
+    put(buffer, bottom - 1, 3, &fit("Tab history · j/k move · n new team · r refresh · Esc close", body), dim(FG_DARK));
+    put(buffer, bottom, 1, &format!("└{}┘", "─".repeat(inner)), style(BLUE));
+}
+
 fn fzf(prompt: &str, lines: &[String], extra: &[&str]) -> Option<String> {
     let mut child = Command::new("fzf").args(["--prompt", prompt, "--height", "100%", "--no-sort"]).args(extra)
         .stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().ok()?;

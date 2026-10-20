@@ -3,6 +3,7 @@
 pub mod store;
 pub mod channel;
 pub mod client;
+pub mod view;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
