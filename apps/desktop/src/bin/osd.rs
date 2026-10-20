@@ -27,6 +27,7 @@
 //!
 //!     osd classify < pane-text          the state a pane's last lines show, for claude-sessions
 //!     osd liveness <session> <pane>     whether the session runs: by id, by pane, or none
+//!     osd owns-pane <session> <pane> <server-pid>   exit 0 only for verified live ownership
 
 use desktop::registry::{self, Banner, Banners, NOTICE_ID, Notice, RealSystem, Registry};
 use gtk4::prelude::*;
@@ -496,13 +497,16 @@ fn main() {
             };
             println!("{verdict}");
         }
+        ["owns-pane", session, pane, server] => {
+            std::process::exit(if registry::session_owns_pane_in(&registry::Proc, session, pane, server) { 0 } else { 1 });
+        }
         [] => {
             let app = Application::builder().application_id("dotfiles.osd").build();
             app.connect_activate(activate);
             app.run_with_args::<&str>(&[]);
         }
         _ => {
-            eprintln!("usage: osd [classify < pane-text | liveness <session> <pane>]");
+            eprintln!("usage: osd [classify < pane-text | liveness <session> <pane> | owns-pane <session> <pane> <server-pid>]");
             std::process::exit(2);
         }
     }

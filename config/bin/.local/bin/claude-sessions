@@ -58,8 +58,8 @@
 #   claude-sessions reload       restart the sidebar in place (after editing it), and the OSD daemon
 #                                when it runs an older build than the one on disk
 #   claude-sessions layout       reapply the sidebar width
-#   claude-sessions design-review start|stop
-#                                approved host-only FigCraft/cockpit arrangement; no shortcut
+#   claude-sessions design-review start|stop [session-id] [--figcraft-window <address>]
+#                                approved host-only conversation float on FigCraft's workspace
 #   claude-sessions reset        close the manager and forget every tracked session; running
 #                                Claude sessions themselves are left alone
 #   claude-sessions doctor       check every piece this depends on (daemon, FIFO, greywall paths,
@@ -1872,11 +1872,45 @@ case ${1:-attach} in
     focus-viewer) focus_viewer ;;
     layout) ensure_manager && apply_layout ;;
     design-review)
-        if (( $# != 2 )) || [[ $2 != start && $2 != stop ]]; then
-            echo "usage: claude-sessions design-review start|stop" >&2
+        if (( $# < 2 )) || [[ $2 != start && $2 != stop ]] || (( $# != 2 && $# != 3 && $# != 5 )) ||
+            { (( $# >= 3 )) && [[ ! $3 =~ ^[a-zA-Z0-9_-]+$ ]]; } ||
+            { (( $# == 5 )) && [[ $2 != start || $4 != --figcraft-window || ! $5 =~ ^0x[0-9a-fA-F]+$ ]]; }; then
+            echo "usage: claude-sessions design-review start|stop [session-id] [--figcraft-window <address> (start only)]" >&2
             exit 2
         fi
-        hyprctl eval "require(\"figcraft-review\").$2()"
+        id=${3:-}
+        if [[ $2 == stop ]]; then
+            if [[ -n $id ]]; then
+                hyprctl eval "require(\"figcraft-review\").stop(\"$id\")"
+            else
+                hyprctl eval 'require("figcraft-review").stop()'
+            fi
+        else
+            [[ -n $id ]] || id=$(cat "$CURRENT" 2>/dev/null || true)
+            if [[ ! $id =~ ^[a-zA-Z0-9_-]+$ ]]; then
+                echo 'claude-sessions: select a conversation or pass its session ID' >&2
+                exit 1
+            fi
+            pane=$(jq -er --arg id "$id" 'first(.sessions[] | select(.session == $id)) | .tmux_pane' "$SNAPSHOT")
+            if [[ ! $pane =~ ^%[0-9]+$ ]]; then
+                echo 'claude-sessions: conversation has no valid tmux pane' >&2
+                exit 1
+            fi
+            read -r target dead server < <(tmux display-message -p -t "$pane" '#{session_name} #{pane_dead} #{pid}')
+            if [[ ! $target =~ ^claude-retry-[a-zA-Z0-9_-]+$ || $dead != 0 || ! $server =~ ^[0-9]+$ ]]; then
+                echo 'claude-sessions: conversation is not a live agent session' >&2
+                exit 1
+            fi
+            if ! timeout --signal=KILL 2s osd owns-pane "$id" "$pane" "$server"; then
+                echo 'claude-sessions: conversation ownership could not be verified; refusing a stale or reused tmux pane' >&2
+                exit 1
+            fi
+            if (( $# == 5 )); then
+                hyprctl eval "require(\"figcraft-review\").start(\"$id\",\"$target\",\"$5\")"
+            else
+                hyprctl eval "require(\"figcraft-review\").start(\"$id\",\"$target\")"
+            fi
+        fi
         ;;
     reset)
         tmux kill-session -t "=$MANAGER" 2>/dev/null || true

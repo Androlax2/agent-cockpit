@@ -1833,6 +1833,28 @@ pub fn live_session_ids() -> HashSet<String> {
     live_session_ids_in(&Proc)
 }
 
+/// Bind a live conversation to its launcher's pane and tmux server, not a recyclable pane ID.
+pub fn session_owns_pane_in(table: &dyn Processes, session: &str, pane: &str, server: &str) -> bool {
+    if !agents::is_session_id(session) {
+        return false;
+    }
+    claude_processes(table).iter().any(|pid| {
+        let command = table.command(pid);
+        let environment = table.environment(pid);
+        let identity = command.windows(2)
+            .find(|pair| matches!(pair[0].as_str(), "--session-id" | "--session"))
+            .map(|pair| pair[1].as_str())
+            .or_else(|| environment.get("CLAUDE_CODE_SESSION_ID").map(String::as_str));
+        if identity != Some(session) {
+            return false;
+        }
+        let Some(launcher) = first_process_outside(table, pid) else { return false };
+        let trusted = table.environment(&launcher);
+        trusted.get("TMUX_PANE").map(String::as_str) == Some(pane)
+            && trusted.get("TMUX").and_then(|value| value.rsplit(',').nth(1)) == Some(server)
+    })
+}
+
 pub fn claude_panes() -> HashSet<String> {
     claude_panes_in(&Proc)
 }

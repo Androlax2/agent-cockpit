@@ -505,6 +505,40 @@ impl Processes for ProcessTree {
     fn comm(&self, pid: &str) -> String { self.0[pid].0.clone() }
     fn command(&self, pid: &str) -> Vec<String> { self.0[pid].1.clone() }
     fn environment(&self, pid: &str) -> HashMap<String, String> { self.0[pid].2.clone() }
+    fn pid_namespace(&self, _: &str) -> Option<String> { Some("host".into()) }
+}
+
+#[test]
+fn floating_chat_ownership_binds_the_conversation_pane_and_tmux_server() {
+    for (agent, flag, session) in [("claude", "--session-id", SESSION_A), ("opencode", "--session", OPENCODE_SESSION)] {
+        let tree = ProcessTree(BTreeMap::from([("10".into(), (agent.into(),
+            vec![agent.into(), flag.into(), session.into()],
+            environment(&[("TMUX_PANE", "%4"), ("TMUX", "/tmp/fixture-tmux,123,0")])))]));
+        assert!(session_owns_pane_in(&tree, session, "%4", "123"));
+        assert!(!session_owns_pane_in(&tree, SESSION_B, "%4", "123"), "another conversation must not claim the pane");
+        assert!(!session_owns_pane_in(&tree, session, "%5", "123"), "another pane must not be accepted");
+        assert!(!session_owns_pane_in(&tree, session, "%4", "999"), "an orphan from an old tmux server must not claim a reused pane ID");
+    }
+}
+
+#[test]
+fn floating_chat_ownership_does_not_accept_a_shell_or_overrule_an_explicit_session_id() {
+    let mut tree = ProcessTree(BTreeMap::from([("10".into(), ("bash".into(),
+        vec!["bash".into()], environment(&[("TMUX_PANE", "%4"), ("TMUX", "/tmp/fixture-tmux,123,0"), ("CLAUDE_CODE_SESSION_ID", SESSION_A)])))]));
+    assert!(!session_owns_pane_in(&tree, SESSION_A, "%4", "123"));
+    tree.0.get_mut("10").unwrap().0 = "opencode".into();
+    assert!(session_owns_pane_in(&tree, SESSION_A, "%4", "123"));
+    tree.0.get_mut("10").unwrap().1 = vec!["opencode".into(), "--session".into(), OPENCODE_SESSION.into()];
+    assert!(!session_owns_pane_in(&tree, SESSION_A, "%4", "123"));
+}
+
+#[test]
+fn floating_chat_ownership_uses_the_current_id_not_the_conversation_resumed_from() {
+    let tree = ProcessTree(BTreeMap::from([("10".into(), ("claude".into(),
+        vec!["claude".into(), "--resume".into(), SESSION_B.into(), "--session-id".into(), SESSION_A.into()],
+        environment(&[("TMUX_PANE", "%4"), ("TMUX", "/tmp/fixture-tmux,123,0")])))]));
+    assert!(session_owns_pane_in(&tree, SESSION_A, "%4", "123"));
+    assert!(!session_owns_pane_in(&tree, SESSION_B, "%4", "123"));
 }
 
 #[test]

@@ -47,21 +47,51 @@ const BUSY_WITHOUT_PROMPT: &str = "✻ Flowing… (11s)\n";
 const DIALOG: &str = " Bash command\n   npm test\n Do you want to proceed?\n ❯ 1. Yes\n   2. No\n";
 
 #[test]
-fn design_review_dispatches_only_the_explicit_host_layout_action() {
-    for action in ["start", "stop"] {
+fn design_review_targets_the_existing_agent_not_the_cockpit() {
+    for (id, target) in [(SESSION_A, "claude-retry-9-9"), (OPENCODE_SESSION, "claude-retry-opencode-19")] {
         let manager = Manager::new();
-        let result = manager.run(&["design-review", action], &[]);
+        fs::write(&manager.snapshot, json!({"sessions": [{"session": id, "tmux_pane": "%4"}]}).to_string()).unwrap();
+        manager.sandbox.shim("tmux", &format!("printf '%s\\n' '{target} 0 123'"));
+        manager.sandbox.shim("osd", "exit 0");
+        let result = manager.run(&["design-review", "start", id], &[]);
         assert!(result.status.success(), "{}", stderr(&result));
-        assert_eq!(manager.calls("hyprctl"), [format!("hyprctl eval require(\"figcraft-review\").{action}()")]);
-        assert!(manager.calls("tmux").is_empty());
+        assert_eq!(manager.calls("hyprctl"), [format!("hyprctl eval require(\"figcraft-review\").start(\"{id}\",\"{target}\")")]);
+        assert_eq!(manager.calls("tmux"), ["tmux display-message -p -t %4 #{session_name} #{pane_dead} #{pid}"]);
+        assert_eq!(manager.calls("osd"), [format!("osd owns-pane {id} %4 123")]);
         assert!(manager.calls("setsid").is_empty());
+        assert!(!manager.runtime_file("claude-sessions.current").exists());
     }
+}
+
+#[test]
+fn design_review_start_uses_the_current_conversation_when_no_id_is_given() {
+    let manager = Manager::new();
+    fs::write(manager.runtime_file("claude-sessions.current"), SESSION_A).unwrap();
+    manager.sandbox.shim("tmux", "echo 'claude-retry-9-9 0 123'");
+    manager.sandbox.shim("osd", "exit 0");
+    let result = manager.run(&["design-review", "start"], &[]);
+    assert!(result.status.success(), "{}", stderr(&result));
+    assert!(manager.calls("hyprctl")[0].contains(&format!("start(\"{SESSION_A}\",")));
+    assert_eq!(fs::read_to_string(manager.runtime_file("claude-sessions.current")).unwrap(), SESSION_A);
+}
+
+#[test]
+fn design_review_accepts_an_explicit_design_window_when_approval_has_taken_focus() {
+    let manager = Manager::new();
+    manager.sandbox.shim("tmux", "echo 'claude-retry-9-9 0 123'");
+    manager.sandbox.shim("osd", "exit 0");
+    let result = manager.run(&["design-review", "start", SESSION_A, "--figcraft-window", "0xabc"], &[]);
+    assert!(result.status.success(), "{}", stderr(&result));
+    assert_eq!(manager.calls("hyprctl"), [format!("hyprctl eval require(\"figcraft-review\").start(\"{SESSION_A}\",\"claude-retry-9-9\",\"0xabc\")")]);
 }
 
 #[test]
 fn design_review_rejects_missing_unknown_or_extra_arguments_before_dispatch() {
     for arguments in [vec!["design-review"], vec!["design-review", "toggle"],
-        vec!["design-review", "start", "extra"], vec!["design-review", "start(); os.execute('bad')"]] {
+        vec!["design-review", "start", SESSION_A, "extra"], vec!["design-review", "start(); os.execute('bad')"],
+        vec!["design-review", "start", "bad\"); os.execute('bad')"], vec!["design-review", "stop", "bad/id"],
+        vec!["design-review", "stop", SESSION_A, "--figcraft-window", "0xabc"],
+        vec!["design-review", "start", SESSION_A, "--figcraft-window", "0xabc\");bad()"]] {
         let manager = Manager::new();
         let result = manager.run(&arguments, &[]);
         assert_eq!(result.status.code(), Some(2));
@@ -71,10 +101,50 @@ fn design_review_rejects_missing_unknown_or_extra_arguments_before_dispatch() {
 }
 
 #[test]
+fn design_review_refuses_missing_dead_and_non_agent_targets_before_launch() {
+    for (pane, details) in [("", "claude-retry-9-9 0"), ("%4", "claude-retry-9-9 1"),
+        ("%4", "claude-manager 0"), ("%4", "claude-retry-bad\");os.execute('bad') 0"), ("-bad", "claude-retry-9-9 0")] {
+        let manager = Manager::new();
+        fs::write(&manager.snapshot, json!({"sessions": [{"session": SESSION_A, "tmux_pane": pane}]}).to_string()).unwrap();
+        manager.sandbox.shim("tmux", "printf '%s\\n' \"$SHIM_DETAILS\"");
+        let result = manager.run(&["design-review", "start", SESSION_A], &[("SHIM_DETAILS", details)]);
+        assert!(!result.status.success(), "accepted {pane:?}, {details:?}");
+        assert!(manager.calls("hyprctl").is_empty());
+    }
+    let manager = Manager::new();
+    assert!(!manager.run(&["design-review", "start"], &[]).status.success());
+    assert!(manager.calls("hyprctl").is_empty());
+}
+
+#[test]
+fn design_review_stop_does_not_need_a_live_agent_or_change_the_current_session() {
+    for (arguments, expression) in [(vec!["design-review", "stop"], "stop()".to_string()),
+        (vec!["design-review", "stop", SESSION_A], format!("stop(\"{SESSION_A}\")"))] {
+        let manager = Manager::new();
+        fs::remove_file(&manager.snapshot).unwrap();
+        let result = manager.run(&arguments, &[]);
+        assert!(result.status.success(), "{}", stderr(&result));
+        assert_eq!(manager.calls("hyprctl"), [format!("hyprctl eval require(\"figcraft-review\").{expression}")]);
+        assert!(manager.calls("tmux").is_empty());
+    }
+}
+
+#[test]
+fn design_review_refuses_a_reused_pane_that_no_longer_belongs_to_the_conversation() {
+    let manager = Manager::new();
+    manager.sandbox.shim("tmux", "if [[ $* == *'#{pid}'* ]]; then echo 'claude-retry-another-project 0 999'; else echo 'claude-retry-another-project 0'; fi");
+    manager.sandbox.shim("osd", "exit 1");
+    let result = manager.run(&["design-review", "start", SESSION_A], &[]);
+    assert!(!result.status.success());
+    assert!(stderr(&result).contains("ownership"));
+    assert!(manager.calls("hyprctl").is_empty());
+}
+
+#[test]
 fn design_review_reports_a_failed_compositor_command() {
     let manager = Manager::new();
     manager.sandbox.shim("hyprctl", "echo 'compositor unavailable' >&2; exit 1");
-    let result = manager.run(&["design-review", "start"], &[]);
+    let result = manager.run(&["design-review", "stop"], &[]);
     assert!(!result.status.success());
     assert!(stderr(&result).contains("compositor unavailable"));
 }
