@@ -22,6 +22,9 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::process::{Command, Stdio};
 
+mod conversation;
+pub use conversation::conversation;
+
 pub const DEFAULT_ADDRESS: &str = "127.0.0.1:7380";
 const PAIRING_VALID_S: i64 = 600;
 const DIGITS_VALID_S: i64 = 120;
@@ -475,6 +478,7 @@ pub fn state() -> Value {
         "session": text(row, "session"), "project": text(row, "project"), "state": text(row, "state"), "task": text(row, "task"),
         "request": text(row, "request"), "detail": text(row, "detail"), "since": row.get("since"), "outcome": text(row, "outcome"),
         "queued": prompts::count(&text(row, "session")),
+        "needs_input": row.get("needs_input").and_then(Value::as_bool).unwrap_or(false),
         "remote_control": has_remote_control(row),
         "agent": Some(text(row, "agent")).filter(|agent| !agent.is_empty()).unwrap_or_else(|| agents::DEFAULT.into()),
         "features": agents::get(&text(row, "agent")).feature_names(),

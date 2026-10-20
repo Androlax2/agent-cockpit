@@ -189,6 +189,10 @@ fn handle(mut request: Request) {
             Ok(screen) => respond(request, 200, "text/plain; charset=utf-8", screen, &[]),
             Err(message) => respond(request, 409, "text/plain; charset=utf-8", message, &[]),
         },
+        (Method::Get, ["api", "conversation", id]) if is_session_id(id) => match remote::conversation(id) {
+            Ok(conversation) => respond_json(request, 200, conversation),
+            Err(message) => respond_json(request, 409, json!({"ok": false, "message": message})),
+        },
         (Method::Post, ["api", "message", id]) if is_session_id(id) => {
             let id = id.to_string();
             let text = body_json(&mut request).and_then(|body| body.get("text").and_then(Value::as_str).map(str::to_string)).unwrap_or_default();

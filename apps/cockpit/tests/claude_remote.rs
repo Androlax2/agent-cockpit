@@ -23,7 +23,7 @@ impl Remote {
         sandbox.shim("qrencode", "");
         // capture-pane shows the file pane.txt, as a session's pane would.
         sandbox.shim("tmux", r#"[[ $1 == capture-pane ]] && cat "$XDG_RUNTIME_DIR/pane.txt" 2>/dev/null; exit 0"#);
-        let mut server = sandbox.command(bin().join("claude-remote"), &[("CLAUDE_REMOTE_ADDRESS", "127.0.0.1:0")]).arg("serve")
+        let mut server = sandbox.command(env!("CARGO_BIN_EXE_claude-remote"), &[("CLAUDE_REMOTE_ADDRESS", "127.0.0.1:0")]).arg("serve")
             .stdout(Stdio::piped()).spawn().unwrap();
         let mut line = String::new();
         BufReader::new(server.stdout.take().unwrap()).read_line(&mut line).unwrap();
@@ -35,7 +35,7 @@ impl Remote {
     fn request(&self, method: &str, path: &str, cookie: Option<&str>, body: Option<Value>, from_page: bool) -> (u16, String, String) {
         let mut stream = TcpStream::connect(("127.0.0.1", self.port)).unwrap();
         let body = body.map(|body| body.to_string()).unwrap_or_default();
-        let mut head = format!("{method} {path} HTTP/1.1\r\nHost: box.tail1234.ts.net\r\nConnection: close\r\nContent-Length: {}\r\n", body.len());
+        let mut head = format!("{method} {path} HTTP/1.0\r\nHost: box.tail1234.ts.net\r\nConnection: close\r\nContent-Length: {}\r\n", body.len());
         if let Some(cookie) = cookie {
             head.push_str(&format!("Cookie: claude_remote={cookie}\r\n"));
         }
@@ -393,6 +393,157 @@ fn the_screen_keeps_its_colours_and_drops_every_other_escape() {
     let (status, _, body) = remote.request("GET", &format!("/api/screen/{SESSION_A}"), Some(&secret), None, false);
     assert_eq!(status, 200, "{body}");
     assert_eq!(body, "\x1b[1;32mdone\x1b[0mnext\n");
+}
+
+impl Remote {
+    fn claude_history(&self, records: &[Value]) -> std::path::PathBuf {
+        let folder = self.sandbox.home.join(".claude/projects/proj-a");
+        fs::create_dir_all(&folder).unwrap();
+        let path = folder.join(format!("{SESSION_A}.jsonl"));
+        fs::write(&path, records.iter().map(|record| format!("{record}\n")).collect::<String>()).unwrap();
+        path
+    }
+}
+
+#[test]
+fn the_phone_reads_only_visible_conversation_text_in_order() {
+    let remote = Remote::start();
+    let secret = remote.paired();
+    remote.session_in("waiting", IDLE);
+    remote.claude_history(&[
+        json!({"uuid": "u1", "type": "user", "message": {"content": "Fix login"}}),
+        json!({"uuid": "hidden", "type": "system", "message": {"content": "secret system prompt"}}),
+        json!({"uuid": "a1", "type": "assistant", "message": {"content": [
+            {"type": "thinking", "thinking": "private reasoning"}, {"type": "tool_use", "input": "secret"},
+            {"type": "text", "text": "<script>alert(1)</script>"}]}}),
+        json!({"uuid": "tool", "type": "user", "message": {"content": [{"type": "tool_result", "content": "secret output"}]}}),
+    ]);
+    assert_eq!(remote.get_json(&secret, &format!("/api/conversation/{SESSION_A}")), json!({
+        "messages": [{"id": "u1", "role": "user", "text": "Fix login"},
+            {"id": "a1", "role": "assistant", "text": "<script>alert(1)</script>"}], "truncated": false}));
+}
+
+#[test]
+fn conversation_access_requires_pairing_and_an_active_session() {
+    let remote = Remote::start();
+    let secret = remote.paired();
+    remote.claude_history(&[json!({"type": "user", "message": {"content": "Private"}})]);
+    let path = format!("/api/conversation/{SESSION_A}");
+    assert_eq!(remote.request("GET", &path, None, None, false).0, 401);
+    assert_eq!(remote.request("GET", &path, Some(&secret), None, false).0, 409);
+}
+
+#[test]
+fn unavailable_conversation_history_is_an_explicit_error() {
+    for content in [None, Some("not json\n")] {
+        let remote = Remote::start();
+        let secret = remote.paired();
+        remote.session_in("waiting", IDLE);
+        if let Some(content) = content {
+            let path = remote.claude_history(&[]);
+            fs::write(path, content).unwrap();
+        }
+        let (status, _, body) = remote.request("GET", &format!("/api/conversation/{SESSION_A}"), Some(&secret), None, false);
+        assert_eq!(status, 409, "{body}");
+        assert!(body.contains("history"), "{body}");
+    }
+}
+
+#[test]
+fn conversation_history_keeps_the_latest_hundred_messages() {
+    let remote = Remote::start();
+    let secret = remote.paired();
+    remote.session_in("waiting", IDLE);
+    remote.claude_history(&(0..105).map(|index| json!({"uuid": format!("u{index}"), "type": "user", "message": {"content": format!("Message {index}")}})).collect::<Vec<_>>());
+    let history = remote.get_json(&secret, &format!("/api/conversation/{SESSION_A}"));
+    assert_eq!(history["messages"].as_array().unwrap().len(), 100);
+    assert_eq!(history["messages"][0]["text"], "Message 5");
+    assert_eq!(history["messages"][99]["text"], "Message 104");
+    assert_eq!(history["truncated"], true);
+}
+
+#[test]
+fn conversation_text_is_bounded_without_breaking_unicode() {
+    let remote = Remote::start();
+    let secret = remote.paired();
+    remote.session_in("waiting", IDLE);
+    remote.claude_history(&[json!({"uuid": "large", "type": "assistant", "message": {"content": [{"type": "text", "text": "é".repeat(200_000)}]}})]);
+    let history = remote.get_json(&secret, &format!("/api/conversation/{SESSION_A}"));
+    let text = history["messages"][0]["text"].as_str().unwrap();
+    assert!(text.len() <= 256 * 1024);
+    assert!(!text.contains('\u{fffd}'));
+    assert_eq!(history["truncated"], true);
+}
+
+#[test]
+fn opencode_conversations_use_text_content_and_not_reasoning() {
+    let remote = Remote::start();
+    let secret = remote.paired();
+    fs::write(remote.sandbox.runtime.join("claude-sessions.json"), json!({"sessions": [{
+        "session": OPENCODE_SESSION, "agent": "opencode", "state": "waiting", "tmux_pane": "%5"}]}).to_string()).unwrap();
+    let folder = remote.sandbox.home.join(".local/share/opencode");
+    fs::create_dir_all(&folder).unwrap();
+    let database = rusqlite::Connection::open(folder.join("opencode.db")).unwrap();
+    database.execute_batch("create table session_message (id text primary key, session_id text, type text, seq integer, data text);").unwrap();
+    for (id, session, role, seq, data) in [
+        ("u1", OPENCODE_SESSION, "user", 1, json!({"text": "Fix login"})),
+        ("a1", OPENCODE_SESSION, "assistant", 2, json!({"content": [{"type": "reasoning", "text": "private"}, {"type": "text", "text": "Which option?"}]})),
+        ("other", "ses_other", "user", 3, json!({"text": "Other session secret"})),
+    ] {
+        database.execute("insert into session_message values (?1, ?2, ?3, ?4, ?5)", rusqlite::params![id, session, role, seq, data.to_string()]).unwrap();
+    }
+    assert_eq!(remote.get_json(&secret, &format!("/api/conversation/{OPENCODE_SESSION}")), json!({
+        "messages": [{"id": "u1", "role": "user", "text": "Fix login"},
+            {"id": "a1", "role": "assistant", "text": "Which option?"}], "truncated": false}));
+}
+
+#[test]
+fn locked_opencode_history_fails_promptly_without_writing_to_it() {
+    let remote = Remote::start();
+    let secret = remote.paired();
+    fs::write(remote.sandbox.runtime.join("claude-sessions.json"), json!({"sessions": [{
+        "session": OPENCODE_SESSION, "agent": "opencode", "state": "waiting", "tmux_pane": "%5"}]}).to_string()).unwrap();
+    let folder = remote.sandbox.home.join(".local/share/opencode");
+    fs::create_dir_all(&folder).unwrap();
+    let database = rusqlite::Connection::open(folder.join("opencode.db")).unwrap();
+    database.execute_batch("create table session_message (id text, session_id text, type text, seq integer, data text); begin exclusive;").unwrap();
+    let started = std::time::Instant::now();
+    let (status, _, body) = remote.request("GET", &format!("/api/conversation/{OPENCODE_SESSION}"), Some(&secret), None, false);
+    assert_eq!(status, 409, "{body}");
+    assert!(started.elapsed() < std::time::Duration::from_secs(2));
+    database.execute_batch("rollback").unwrap();
+    assert_eq!(database.query_row("select count(*) from session_message", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
+}
+
+#[test]
+fn history_does_not_follow_symlinks_or_wait_on_pipes() {
+    for is_pipe in [false, true] {
+        let remote = Remote::start();
+        let secret = remote.paired();
+        remote.session_in("waiting", IDLE);
+        let path = remote.claude_history(&[]);
+        fs::remove_file(&path).unwrap();
+        if is_pipe {
+            assert!(std::process::Command::new("mkfifo").arg(&path).status().unwrap().success());
+        } else {
+            let private = remote.sandbox.home.join("private");
+            fs::write(&private, "private data").unwrap();
+            std::os::unix::fs::symlink(&private, &path).unwrap();
+        }
+        assert_eq!(remote.request("GET", &format!("/api/conversation/{SESSION_A}"), Some(&secret), None, false).0, 409);
+    }
+}
+
+#[test]
+fn a_partial_streaming_record_does_not_hide_finished_messages() {
+    let remote = Remote::start();
+    let secret = remote.paired();
+    remote.session_in("working", IDLE);
+    let path = remote.claude_history(&[json!({"uuid": "u1", "type": "user", "message": {"content": "Hello"}})]);
+    use std::io::Write;
+    fs::OpenOptions::new().append(true).open(path).unwrap().write_all(b"{\"type\":\"assistant\"").unwrap();
+    let history = remote.get_json(&secret, &format!("/api/conversation/{SESSION_A}"));
+    assert_eq!(history["messages"][0]["text"], "Hello");
 }
 
 fn subscription(endpoint: &str) -> Value {
