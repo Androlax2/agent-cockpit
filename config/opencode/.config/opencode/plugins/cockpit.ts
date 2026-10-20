@@ -7,7 +7,7 @@
 // a setup. The plugin runs in the session's server, which the cockpit starts private to its TUI
 // (--standalone), so it lives and ends with the session. The cockpit picks the session's id
 // (--session) and exports it as CLAUDE_CODE_SESSION_ID: the card shows from the start, before
-// opencode makes the session at the first prompt.
+// opencode makes the session at the first prompt, unless the launcher pre-creates it with defaults.
 import { spawn } from "node:child_process"
 import { homedir } from "node:os"
 
@@ -22,23 +22,6 @@ export default {
   setup: async (ctx: any) => {
     const directory: string = ctx.location?.directory ?? process.cwd()
     const cockpitSession = process.env.CLAUDE_CODE_SESSION_ID
-    const selectedModel = process.env.CLAUDE_SESSIONS_OPENCODE_MODEL
-    // V2's full TUI has no --model flag and the root config drops variants. Create only the
-    // new managed conversation here, before its first prompt; reloads keep its current model.
-    if (cockpitSession && selectedModel) {
-      const reference = /^([^/#\s]+)\/([^#\s]+)(?:#([^/#\s]+))?$/.exec(selectedModel)
-      if (!reference) throw new Error(`cockpit: invalid model reference ${selectedModel}`)
-      const [, providerID, id, variant] = reference
-      let exists = true
-      try {
-        await ctx.session.get({ sessionID: cockpitSession })
-      } catch (error: any) {
-        // The plugin context uses the internal tag; HTTP clients see the encoded error tag.
-        if (error?._tag !== "Session.NotFoundError" && error?._tag !== "SessionNotFoundError") throw error
-        exists = false
-      }
-      if (!exists) await ctx.session.create({ id: cockpitSession, model: { providerID, id, ...(variant ? { variant } : {}) } })
-    }
     // A subagent runs in a session of its own, with a parent: what it asks shows on its root's card.
     const parentOf = new Map<string, string>()
     const started = new Set<string>()

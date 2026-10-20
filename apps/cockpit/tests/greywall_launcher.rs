@@ -35,7 +35,10 @@ struct Launch {
 
 impl Launch {
     fn new() -> Launch {
-        let sandbox = Sandbox::new();
+        let mut sandbox = Sandbox::new();
+        for name in ["CLAUDE_CODE_SESSION_ID", "CLAUDE_SESSIONS_OPENCODE_MODEL"] {
+            sandbox.env.insert(name.into(), String::new());
+        }
         let project = sandbox.home.join("IdeaProjects/proj-a");
         fs::create_dir_all(&project).unwrap();
         assert!(Command::new("git").args(["init", "-q"]).arg(&project).status().unwrap().success());
@@ -48,7 +51,7 @@ impl Launch {
             fs::write(file, content).unwrap();
         }
         // Logs its arguments, then runs the command after -- when it exists (the fake opencode).
-        write_executable(&sandbox.home.join(".local/bin/greywall"), "#!/bin/sh\necho \"greywall $* (api key: ${ANTHROPIC_API_KEY:-none})\" >> \"$SHIM_LOG\"\n\
+        write_executable(&sandbox.home.join(".local/bin/greywall"), "#!/bin/sh\nprintf 'greywall %s (api key: %s)\\n' \"$(printf '%s' \"$*\" | tr '\\n' ' ')\" \"${ANTHROPIC_API_KEY:-none}\" >> \"$SHIM_LOG\"\n\
                                                                      while [ \"$1\" != -- ]; do shift; done; shift\n\
                                                                      if [ \"$1\" = env ] || [ -x \"$1\" ]; then exec \"$@\"; fi\n");
         // Records its arguments and the environment it got, one line each.
@@ -379,6 +382,83 @@ fn opencode_keeps_its_arguments_as_given() {
     let arguments = ["--session", "ses_1", "a prompt with spaces", "--prompt"];
     launch.run_agent("opencode", &[], &arguments);
     assert_eq!(launch.opencode_saw("arguments"), arguments);
+}
+
+fn record_opencode_startup(launch: &Launch) {
+    write_executable(&launch.sandbox.home.join(".opencode/bin/opencode"), r#"#!/bin/sh
+if [ "$1" = api ]; then
+    printf '%s\n' "$@" > "$HOME/opencode-api-arguments"
+    [ "${SHIM_CREATE_FAIL:-}" != 1 ] || { echo 'session creation failed' >&2; exit 7; }
+    printf '%s\n' "$6" > "$HOME/opencode-request"
+    exit 0
+fi
+printf '%s\n' "$@" > "$HOME/opencode-arguments"
+env > "$HOME/opencode-environment"
+if [ -f "$HOME/opencode-request" ]; then
+    cp "$HOME/opencode-request" "$HOME/opencode-selected-at-startup"
+fi
+"#);
+}
+
+#[test]
+fn opencode_creates_the_selected_session_before_the_interface_checks_its_id() {
+    for (reference, expected) in [
+        ("openai/gpt-6.1-sol#medium", serde_json::json!({"providerID":"openai", "id":"gpt-6.1-sol", "variant":"medium"})),
+        ("openrouter/anthropic/claude-sonnet-4.5", serde_json::json!({"providerID":"openrouter", "id":"anthropic/claude-sonnet-4.5"})),
+    ] {
+        let launch = Launch::new();
+        record_opencode_startup(&launch);
+        let arguments = ["--standalone", "--session", OPENCODE_SESSION, "--prompt", "a prompt with spaces"];
+        launch.run_agent("opencode", &[("CLAUDE_CODE_SESSION_ID", OPENCODE_SESSION), ("CLAUDE_SESSIONS_OPENCODE_MODEL", reference)], &arguments);
+        let selected = fs::read_to_string(launch.sandbox.home.join("opencode-selected-at-startup"))
+            .expect("the session must exist before the TUI decides whether to resume it");
+        let request: serde_json::Value = serde_json::from_str(&selected).unwrap();
+        assert_eq!(request, serde_json::json!({"id":OPENCODE_SESSION, "model":expected, "location":{"directory":launch.project}}));
+        let api_arguments = launch.opencode_saw("api-arguments");
+        assert_eq!(&api_arguments[..5], ["api", "--standalone", "post", "/api/session", "--data"]);
+        assert_eq!(launch.opencode_saw("arguments"), arguments);
+        assert_eq!(launch.sandbox.calls("greywall").len(), 1);
+    }
+}
+
+#[test]
+fn a_failed_session_creation_never_opens_the_interface_on_another_model() {
+    let launch = Launch::new();
+    record_opencode_startup(&launch);
+    let output = launch.sandbox.command(bin().join("greywall-agents/opencode"), &[
+        ("CLAUDE_CODE_SESSION_ID", OPENCODE_SESSION), ("CLAUDE_SESSIONS_OPENCODE_MODEL", "openai/gpt-6.1-sol#medium"),
+        ("SHIM_CREATE_FAIL", "1"),
+    ]).args(["--standalone", "--session", OPENCODE_SESSION]).current_dir(&launch.project).output().unwrap();
+    assert_eq!(output.status.code(), Some(7));
+    assert!(stderr(&output).contains("session creation failed"));
+    assert!(!launch.sandbox.home.join("opencode-arguments").exists());
+}
+
+#[test]
+fn resuming_without_a_model_preference_does_not_create_or_change_a_session() {
+    let launch = Launch::new();
+    record_opencode_startup(&launch);
+    launch.run_agent("opencode", &[("CLAUDE_CODE_SESSION_ID", OPENCODE_SESSION)], &["--standalone", "--session", OPENCODE_SESSION]);
+    assert!(!launch.sandbox.home.join("opencode-api-arguments").exists());
+    assert_eq!(launch.opencode_saw("arguments"), ["--standalone", "--session", OPENCODE_SESSION]);
+}
+
+#[test]
+fn invalid_startup_preferences_never_reach_opencode() {
+    for (session, model) in [
+        ("", "openai/gpt-6.1-sol#medium"),
+        ("not-a-session", "openai/gpt-6.1-sol#medium"),
+        (OPENCODE_SESSION, "missing-provider"),
+        (OPENCODE_SESSION, "openai/gpt-6.1-sol#high#low"),
+    ] {
+        let launch = Launch::new();
+        let output = launch.sandbox.command(bin().join("greywall-agents/opencode"), &[
+            ("CLAUDE_CODE_SESSION_ID", session), ("CLAUDE_SESSIONS_OPENCODE_MODEL", model),
+        ]).current_dir(&launch.project).output().unwrap();
+        assert_eq!(output.status.code(), Some(1));
+        assert!(stderr(&output).contains("invalid managed session or model reference"));
+        assert!(launch.sandbox.calls("greywall").is_empty());
+    }
 }
 
 #[test]

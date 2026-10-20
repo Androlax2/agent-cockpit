@@ -186,13 +186,11 @@ fn the_cockpits_session_shows_from_the_start() {
 }
 
 #[test]
-fn a_new_managed_conversation_starts_with_its_selected_model_and_effort() {
-    for (reference, expected) in [
-        ("openai/gpt-6.1-sol#high", json!({"providerID":"openai", "id":"gpt-6.1-sol", "variant":"high"})),
-        ("openrouter/anthropic/claude-sonnet-4.5", json!({"providerID":"openrouter", "id":"anthropic/claude-sonnet-4.5"})),
-    ] {
+fn session_creation_is_left_to_the_launcher_before_the_interface_starts() {
+    for reference in ["", "openai/gpt-6.1-sol#high"] {
         let run = run_with(json!([]), "", &[("CLAUDE_CODE_SESSION_ID", ROOT), ("CLAUDE_SESSIONS_OPENCODE_MODEL", reference)]);
-        assert_eq!(run.created, vec![json!({"id": ROOT, "model": expected})]);
+        assert!(run.created.is_empty());
+        assert_eq!(events_of(&run), [("SessionStart".into(), ROOT.into())]);
     }
 }
 
@@ -202,21 +200,6 @@ fn reloading_the_plugin_preserves_an_existing_conversations_model() {
         ("CLAUDE_CODE_SESSION_ID", ROOT), ("CLAUDE_SESSIONS_OPENCODE_MODEL", "openai/gpt-6.1-sol#high"), ("SHIM_EXISTING_MODEL", "1"),
     ]);
     assert!(run.created.is_empty());
-}
-
-#[test]
-fn no_model_preference_leaves_opencodes_session_creation_alone() {
-    let run = run_with(json!([]), "", &[("CLAUDE_CODE_SESSION_ID", ROOT)]);
-    assert!(run.created.is_empty());
-}
-
-#[test]
-fn the_plugin_contexts_internal_not_found_error_creates_the_new_conversation() {
-    let run = run_with(json!([]), "", &[
-        ("CLAUDE_CODE_SESSION_ID", ROOT), ("CLAUDE_SESSIONS_OPENCODE_MODEL", "openai/gpt-6.1-sol#high"),
-        ("SHIM_NOT_FOUND_TAG", "Session.NotFoundError"),
-    ]);
-    assert_eq!(run.created, [json!({"id":ROOT, "model":{"providerID":"openai", "id":"gpt-6.1-sol", "variant":"high"}})]);
 }
 
 #[test]
