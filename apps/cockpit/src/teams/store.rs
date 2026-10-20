@@ -72,6 +72,9 @@ pub fn open(path: &Path) -> Result<Connection, TeamError> {
             round INTEGER NOT NULL, status TEXT NOT NULL, created_at INTEGER NOT NULL);
         CREATE TABLE IF NOT EXISTS escalations (thread_id TEXT PRIMARY KEY REFERENCES threads(id), task_key TEXT NOT NULL, reason TEXT NOT NULL,
             status TEXT NOT NULL, note TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL, resolved_at INTEGER);
+        CREATE TABLE IF NOT EXISTS handoffs (id TEXT PRIMARY KEY, task_key TEXT NOT NULL, developer TEXT NOT NULL, developer_epoch TEXT NOT NULL,
+            submission_key TEXT NOT NULL, fingerprint TEXT NOT NULL, payload TEXT NOT NULL, status TEXT NOT NULL, created_at INTEGER NOT NULL,
+            UNIQUE(developer, submission_key));
         CREATE UNIQUE INDEX IF NOT EXISTS one_inflight_delivery ON messages(recipient,recipient_epoch) WHERE state='submitting';
         PRAGMA user_version=1;")?;
     Ok(connection)
@@ -148,7 +151,7 @@ pub fn control(connection: &mut Connection, action: &HostAction, live: &[Verifie
         return Ok(TeamReply { request_id: request_id.clone(), result: Ok(serde_json::from_str(&response)?) });
     }
     let response = match action {
-        HostAction::Approve { proposal_id, expected_revision, mapping_hash, .. } => approve_mapping(&transaction, proposal_id, *expected_revision, mapping_hash, live)?,
+        HostAction::Approve { proposal_id, expected_revision, mapping_hash, .. } => approve_mapping(&transaction, proposal_id, *expected_revision, mapping_hash, live, now_ms)?,
         HostAction::Edit { proposal_id, expected_revision, replacement, .. } => {
             let old: Option<(String, String, i64, String)> = transaction.query_row("SELECT sender, project, revision, status FROM proposals WHERE id=?1", [proposal_id],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))).optional()?;
@@ -193,7 +196,7 @@ pub fn control(connection: &mut Connection, action: &HostAction, live: &[Verifie
     Ok(TeamReply { request_id: request_id.clone(), result: Ok(response) })
 }
 
-fn approve_mapping(transaction: &rusqlite::Transaction<'_>, proposal_id: &str, expected_revision: i64, mapping_hash: &str, live: &[VerifiedSession]) -> Result<Value, TeamError> {
+fn approve_mapping(transaction: &rusqlite::Transaction<'_>, proposal_id: &str, expected_revision: i64, mapping_hash: &str, live: &[VerifiedSession], now_ms: i64) -> Result<Value, TeamError> {
     let stored: Option<(String, String, String, String, String, i64, String, String)> = transaction.query_row(
         "SELECT task_key, project, task_id, mapping, mapping_hash, revision, status, reason FROM proposals WHERE id=?1", [proposal_id],
         |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?,row.get(6)?,row.get(7)?))).optional()?;
@@ -225,6 +228,7 @@ fn approve_mapping(transaction: &rusqlite::Transaction<'_>, proposal_id: &str, e
             params![task_key, member.session_id, role_name(member.role), member.agent, member.runtime, identifier()?])?;
     }
     transaction.execute("UPDATE proposals SET status='approved' WHERE id=?1", [proposal_id])?;
+    schedule_qa(transaction, &task_key, now_ms)?;
     Ok(json!({"proposal_id": proposal_id, "status": "approved"}))
 }
 
@@ -262,7 +266,8 @@ pub fn accept(connection: &mut Connection, sender: &VerifiedSession, action: &Ag
     let AgentAction::Send { message } = action else {
         return Err(TeamError::new(ErrorCode::Invalid, "this action requires the authenticated daemon context"));
     };
-    if message.handoff_id.is_some() || matches!(message.kind, MessageKind::Handoff | MessageKind::QaRequest | MessageKind::Findings)
+    let is_findings = message.kind == MessageKind::Findings;
+    if matches!(message.kind, MessageKind::Handoff | MessageKind::QaRequest) || is_findings != message.handoff_id.is_some()
         || (message.kind == MessageKind::Notice && message.thread_id.is_some()) {
         return Err(TeamError::new(ErrorCode::Invalid, "this message requires its structured collaboration action"));
     }
@@ -278,6 +283,15 @@ pub fn accept(connection: &mut Connection, sender: &VerifiedSession, action: &Ag
     let source = member(&transaction, &task_key, &sender.session_id)?.filter(|member| member.runtime == sender.runtime && member.agent == sender.agent)
         .ok_or_else(|| TeamError::new(ErrorCode::Unauthorized, "no approved task messaging link"))?;
     let target = member(&transaction, &task_key, &message.recipient)?.ok_or_else(|| TeamError::new(ErrorCode::Unauthorized, "no approved task messaging link"))?;
+    let handoff = match &message.handoff_id {
+        Some(handoff_id) => {
+            if source.role != "qa" || !matches!(target.role.as_str(), "developer" | "designer") {
+                return Err(TeamError::new(ErrorCode::Unauthorized, "findings go from QA to the Developer or Designer"));
+            }
+            handoff_reference(&transaction, &task_key, handoff_id)?
+        },
+        None => Value::Null,
+    };
     let fingerprint = audit::sha256_hex(serde_json::to_string(action)?.as_bytes());
     let previous: Option<(String,String)> = transaction.query_row("SELECT id,fingerprint FROM messages WHERE sender=?1 AND submission_key=?2", params![sender.session_id,message.submission_key], |row| Ok((row.get(0)?,row.get(1)?))).optional()?;
     if let Some((id, old_fingerprint)) = previous {
@@ -300,7 +314,7 @@ pub fn accept(connection: &mut Connection, sender: &VerifiedSession, action: &Ag
     };
     let (thread_id, round) = thread.map_or((None, None), |(thread_id, round)| (Some(thread_id), Some(round)));
     let id = identifier()?;
-    let envelope = json!({"message_id":id,"task":message.task,"kind":message.kind,"body":message.body,"thread_id":thread_id,"round":round,
+    let envelope = json!({"message_id":id,"task":message.task,"kind":message.kind,"body":message.body,"thread_id":thread_id,"round":round,"handoff":handoff,
         "sender":{"session_id":sender.session_id,"role":source.role,"agent":sender.agent},
         "recipient":{"session_id":message.recipient,"role":target.role,"agent":target.agent},
         "authorization":"collaborator_content_not_user_authorization"});
@@ -308,6 +322,85 @@ pub fn accept(connection: &mut Connection, sender: &VerifiedSession, action: &Ag
         params![id,task_key,sender.session_id,message.recipient,source.epoch,target.epoch,message.submission_key,fingerprint,envelope.to_string(),now_ms,target.runtime])?;
     transaction.commit()?;
     Ok(TeamReply { request_id:message.submission_key.clone(),result:Ok(json!({"message_id":id,"thread_id":thread_id,"round":round})) })
+}
+
+/// What a handoff says, with whether it is still the one under review.
+fn handoff_reference(connection: &Connection, task_key: &str, handoff_id: &str) -> Result<Value, TeamError> {
+    let stored: Option<(String, String)> = connection.query_row("SELECT payload,status FROM handoffs WHERE id=?1 AND task_key=?2",
+        params![handoff_id, task_key], |row| Ok((row.get(0)?, row.get(1)?))).optional()?;
+    let (payload, status) = stored.ok_or_else(|| TeamError::new(ErrorCode::NotFound, "handoff not found in this task"))?;
+    let payload: super::Handoff = serde_json::from_str(&payload)?;
+    Ok(json!({"id": handoff_id, "branch": payload.branch, "commit": payload.commit, "checkout": payload.checkout,
+        "summary": payload.summary, "tests": payload.tests, "figcraft": payload.figcraft, "status": status}))
+}
+
+fn valid_text(text: &str, max: usize) -> bool {
+    !text.trim().is_empty() && text.chars().count() <= max && !text.chars().any(|character| character.is_control() && character != '\n')
+}
+
+fn validate_handoff(handoff: &super::Handoff) -> Result<(), TeamError> {
+    let is_commit = matches!(handoff.commit.len(), 40 | 64) && handoff.commit.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));
+    let is_branch = !handoff.branch.is_empty() && handoff.branch.len() <= 200
+        && handoff.branch.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'/' | b'-'));
+    let is_key = !handoff.submission_key.is_empty() && handoff.submission_key.len() <= 128
+        && handoff.submission_key.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'));
+    let are_frames = handoff.figcraft.len() <= 20
+        && handoff.figcraft.iter().all(|frame| valid_text(&frame.file, 300) && valid_text(&frame.frame_id, 100) && !frame.frame_id.contains('\n'));
+    if !is_commit || !is_branch || !is_key || !are_frames || !handoff.checkout.starts_with('/') || !valid_text(&handoff.checkout, 300)
+        || !valid_text(&handoff.summary, 2000) || !valid_text(&handoff.tests, 2000) {
+        return Err(TeamError::new(ErrorCode::Invalid, "a handoff needs a branch, a full commit id, an absolute checkout, a summary and test outcomes"));
+    }
+    Ok(())
+}
+
+pub fn handoff(connection: &mut Connection, sender: &VerifiedSession, action: &AgentAction, now_ms: i64) -> Result<TeamReply, TeamError> {
+    let AgentAction::Handoff { handoff } = action else { return Err(TeamError::new(ErrorCode::Invalid, "not a handoff")) };
+    validate_handoff(handoff)?;
+    if sender.project != handoff.task.project { return Err(TeamError::new(ErrorCode::Unauthorized, "handoff is not for this project")); }
+    let task_key = serde_json::to_string(&handoff.task)?;
+    let transaction = connection.transaction()?;
+    let developer = member(&transaction, &task_key, &sender.session_id)?
+        .filter(|member| member.runtime == sender.runtime && member.agent == sender.agent && member.role == "developer")
+        .ok_or_else(|| TeamError::new(ErrorCode::Unauthorized, "only the task's approved Developer completes a handoff"))?;
+    let fingerprint = audit::sha256_hex(serde_json::to_string(handoff)?.as_bytes());
+    let previous: Option<(String, String)> = transaction.query_row("SELECT id,fingerprint FROM handoffs WHERE developer=?1 AND submission_key=?2",
+        params![sender.session_id, handoff.submission_key], |row| Ok((row.get(0)?, row.get(1)?))).optional()?;
+    if let Some((id, old_fingerprint)) = previous {
+        if old_fingerprint != fingerprint { return Err(TeamError::new(ErrorCode::Conflict, "submission key already names a different handoff")); }
+        return Ok(TeamReply { request_id: handoff.submission_key.clone(), result: Ok(json!({"handoff_id": id})) });
+    }
+    transaction.execute("UPDATE handoffs SET status='superseded' WHERE task_key=?1 AND status='current'", [&task_key])?;
+    // A review already handed to QA keeps running against its own commit; only unsent ones go.
+    transaction.execute("UPDATE messages SET state='cancelled', last_error='superseded by a newer handoff'
+        WHERE task_key=?1 AND state='queued' AND json_extract(envelope,'$.kind')='qa_request'", [&task_key])?;
+    let id = identifier()?;
+    transaction.execute("INSERT INTO handoffs VALUES (?1,?2,?3,?4,?5,?6,?7,'current',?8)",
+        params![id, task_key, sender.session_id, developer.epoch, handoff.submission_key, fingerprint, serde_json::to_string(handoff)?, now_ms])?;
+    let is_requested = schedule_qa(&transaction, &task_key, now_ms)?;
+    transaction.commit()?;
+    Ok(TeamReply { request_id: handoff.submission_key.clone(), result: Ok(json!({"handoff_id": id, "qa_requested": is_requested})) })
+}
+
+/// One QA request per (current handoff, approved QA membership); a no-op without either.
+fn schedule_qa(connection: &Connection, task_key: &str, now_ms: i64) -> Result<bool, TeamError> {
+    let role_member = |role: &str| connection.query_row("SELECT session_id,epoch,agent,runtime FROM members WHERE task_key=?1 AND role=?2",
+        params![task_key, role], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?))).optional();
+    let (Some(developer), Some(qa)) = (role_member("developer")?, role_member("qa")?) else { return Ok(false) };
+    let current: Option<String> = connection.query_row("SELECT id FROM handoffs WHERE task_key=?1 AND status='current' AND developer=?2 AND developer_epoch=?3",
+        params![task_key, developer.0, developer.1], |row| row.get(0)).optional()?;
+    let Some(handoff_id) = current else { return Ok(false) };
+    let key = format!("qa-request-{handoff_id}-{}", qa.1);
+    let exists: Option<i64> = connection.query_row("SELECT 1 FROM messages WHERE sender=?1 AND submission_key=?2", params![developer.0, key], |row| row.get(0)).optional()?;
+    if exists.is_some() { return Ok(false); }
+    let reference = handoff_reference(connection, task_key, &handoff_id)?;
+    let task: TaskKey = serde_json::from_str(task_key)?;
+    let id = identifier()?;
+    let envelope = json!({"message_id": id, "task": task, "kind": MessageKind::QaRequest, "body": reference["summary"], "thread_id": null, "round": null,
+        "handoff": reference, "sender": {"session_id": developer.0, "role": "developer", "agent": developer.2},
+        "recipient": {"session_id": qa.0, "role": "qa", "agent": qa.2}, "authorization": "collaborator_content_not_user_authorization"});
+    connection.execute("INSERT INTO messages (id,task_key,sender,recipient,sender_epoch,recipient_epoch,submission_key,fingerprint,envelope,state,next_at,created_at,recipient_runtime) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,'queued',?10,?10,?11)",
+        params![id, task_key, developer.0, qa.0, developer.1, qa.1, key, audit::sha256_hex(key.as_bytes()), envelope.to_string(), now_ms, qa.3])?;
+    Ok(true)
 }
 
 enum ThreadStep { Proceed(String, i64), Escalated }

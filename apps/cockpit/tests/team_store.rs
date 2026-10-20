@@ -1,6 +1,6 @@
 mod common;
 use common::sandbox::Sandbox;
-use cockpit::teams::{AgentAction, HostAction, Member, MessageKind, Proposal, Role, Submission, TaskKey, TransportOutcome, VerifiedSession, store};
+use cockpit::teams::{AgentAction, FrameReference, Handoff, HostAction, Member, MessageKind, Proposal, Role, Submission, TaskKey, TransportOutcome, VerifiedSession, store};
 use serde_json::Value;
 
 const DESIGNER: &str = "aaaaaaaa-0000-4000-8000-000000000000";
@@ -525,6 +525,147 @@ fn only_theo_can_close_an_escalation() {
     store::control(&mut connection, &HostAction::Resolve { request_id: "resolve-1".into(), thread_id: thread.clone(),
         note: "Use frame 12.".into() }, &live(), 4000).unwrap();
     assert_eq!(escalations(&connection)[0]["status"], "resolved");
+}
+
+const COMMIT_A: &str = "4e3f479aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const COMMIT_B: &str = "296b4a0bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+fn handoff_action(key: &str, commit: &str) -> AgentAction {
+    AgentAction::Handoff { handoff: Handoff { task: task(), submission_key: key.into(), branch: "feature/team-links".into(),
+        commit: commit.into(), checkout: "/home/theo/IdeaProjects/project-a".into(), summary: "Team links implemented.".into(),
+        tests: "cargo test: 37 passed".into(), figcraft: vec![FrameReference { file: "design.figcraft".into(), frame_id: "frame-approval".into() }] } }
+}
+
+fn hand_off(connection: &mut rusqlite::Connection, key: &str, commit: &str) -> Result<Value, cockpit::teams::TeamError> {
+    store::handoff(connection, &live()[1], &handoff_action(key, commit), 3000).and_then(|reply| reply.result)
+}
+
+fn qa_requests(connection: &rusqlite::Connection) -> Vec<Value> {
+    store::snapshot(connection, Some(&task()), None, 100).unwrap()["messages"].as_array().unwrap().iter()
+        .filter(|message| serde_json::from_str::<Value>(message["envelope"].as_str().unwrap()).unwrap()["kind"] == "qa_request").cloned().collect()
+}
+
+#[test]
+fn only_the_linked_developer_completes_a_handoff() {
+    let sandbox = Sandbox::new();
+    let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+    linked(&mut connection);
+    assert!(store::handoff(&mut connection, &live()[0], &handoff_action("h1", COMMIT_A), 3000).is_err());
+    assert!(qa_requests(&connection).is_empty());
+    hand_off(&mut connection, "h1", COMMIT_A).unwrap();
+    assert_eq!(qa_requests(&connection).len(), 1);
+}
+
+#[test]
+fn a_handoff_needs_a_full_commit_and_test_outcome() {
+    let sandbox = Sandbox::new();
+    let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+    linked(&mut connection);
+    for commit in ["4e3f479", "XYZ", ""] {
+        assert!(hand_off(&mut connection, "h1", commit).is_err(), "{commit}");
+    }
+    let AgentAction::Handoff { mut handoff } = handoff_action("h2", COMMIT_A) else { unreachable!() };
+    handoff.tests = " ".into();
+    assert!(store::handoff(&mut connection, &live()[1], &AgentAction::Handoff { handoff }, 3000).is_err());
+    assert!(qa_requests(&connection).is_empty());
+}
+
+#[test]
+fn a_repeated_handoff_submission_requests_qa_once() {
+    let sandbox = Sandbox::new();
+    let path = sandbox.root.join("protected/teams.sqlite");
+    let mut connection = store::open(&path).unwrap();
+    linked(&mut connection);
+    let first = hand_off(&mut connection, "h1", COMMIT_A).unwrap();
+    drop(connection);
+    let mut connection = store::open(&path).unwrap();
+    assert_eq!(hand_off(&mut connection, "h1", COMMIT_A).unwrap()["handoff_id"], first["handoff_id"]);
+    assert!(hand_off(&mut connection, "h1", COMMIT_B).is_err());
+    assert_eq!(qa_requests(&connection).len(), 1);
+}
+
+#[test]
+fn approving_qa_later_requests_review_of_the_current_handoff_once() {
+    let sandbox = Sandbox::new();
+    let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+    let mut without_qa = proposal();
+    without_qa.members.pop();
+    let request = propose(&mut connection, &without_qa);
+    approve(&mut connection, &request).unwrap();
+    hand_off(&mut connection, "h1", COMMIT_A).unwrap();
+    assert!(qa_requests(&connection).is_empty());
+    for key in ["add-qa", "add-qa-again"] {
+        let mut with_qa = proposal();
+        with_qa.submission_key = key.into();
+        let request = propose(&mut connection, &with_qa);
+        approve(&mut connection, &request).unwrap();
+    }
+    assert_eq!(qa_requests(&connection).len(), 1);
+}
+
+#[test]
+fn a_newer_handoff_cancels_the_unsent_review_of_the_older_one() {
+    let sandbox = Sandbox::new();
+    let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+    linked(&mut connection);
+    hand_off(&mut connection, "h1", COMMIT_A).unwrap();
+    hand_off(&mut connection, "h2", COMMIT_B).unwrap();
+    let states: Vec<_> = qa_requests(&connection).iter().map(|message| message["state"].as_str().unwrap().to_string()).collect();
+    assert_eq!(states, ["cancelled", "queued"]);
+}
+
+#[test]
+fn findings_on_a_superseded_review_stay_attached_to_its_original_commit() {
+    let sandbox = Sandbox::new();
+    let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+    linked(&mut connection);
+    let old = hand_off(&mut connection, "h1", COMMIT_A).unwrap()["handoff_id"].as_str().unwrap().to_string();
+    store::claim(&mut connection, &live()[2], "idle-1", 3000).unwrap().unwrap();
+    hand_off(&mut connection, "h2", COMMIT_B).unwrap();
+    let findings = Submission { task: task(), submission_key: "f1".into(), recipient: DEVELOPER.into(), kind: MessageKind::Findings,
+        body: "Focus is lost after rejecting a request.".into(), thread_id: None, handoff_id: Some(old) };
+    store::accept(&mut connection, &live()[2], &AgentAction::Send { message: findings }, 3000).unwrap();
+    let delivered = store::snapshot(&connection, Some(&task()), None, 100).unwrap()["messages"].as_array().unwrap().iter()
+        .map(|message| serde_json::from_str::<Value>(message["envelope"].as_str().unwrap()).unwrap())
+        .find(|envelope| envelope["kind"] == "findings").unwrap();
+    assert_eq!(delivered["handoff"]["commit"], COMMIT_A);
+    assert_eq!(delivered["handoff"]["status"], "superseded");
+    assert!(cockpit::teams::envelope_text(&delivered).contains("superseded"));
+}
+
+#[test]
+fn only_qa_sends_findings_and_only_about_this_tasks_handoffs() {
+    let sandbox = Sandbox::new();
+    let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+    linked(&mut connection);
+    let handoff = hand_off(&mut connection, "h1", COMMIT_A).unwrap()["handoff_id"].as_str().unwrap().to_string();
+    let findings = |key: &str, handoff_id: &str, recipient: &str| Submission { task: task(), submission_key: key.into(), recipient: recipient.into(),
+        kind: MessageKind::Findings, body: "Contrast fails.".into(), thread_id: None, handoff_id: Some(handoff_id.into()) };
+    assert!(store::accept(&mut connection, &live()[0], &AgentAction::Send { message: findings("f1", &handoff, DEVELOPER) }, 3000).is_err());
+    assert!(store::accept(&mut connection, &live()[2], &AgentAction::Send { message: findings("f2", "unknown", DEVELOPER) }, 3000).is_err());
+    store::accept(&mut connection, &live()[2], &AgentAction::Send { message: findings("f3", &handoff, DESIGNER) }, 3000).unwrap();
+}
+
+#[test]
+fn a_qa_request_tells_qa_to_review_without_changing_product_code() {
+    let sandbox = Sandbox::new();
+    let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+    linked(&mut connection);
+    hand_off(&mut connection, "h1", COMMIT_A).unwrap();
+    let dispatch = store::claim(&mut connection, &live()[2], "idle-1", 3000).unwrap().unwrap();
+    let text = cockpit::teams::envelope_text(&dispatch.envelope);
+    assert!(text.contains(COMMIT_A) && text.contains("feature/team-links") && text.contains("frame-approval"), "{text}");
+    assert!(text.contains("do not change product code"), "{text}");
+}
+
+#[test]
+fn unlinking_qa_cancels_its_pending_review_request() {
+    let sandbox = Sandbox::new();
+    let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+    linked(&mut connection);
+    hand_off(&mut connection, "h1", COMMIT_A).unwrap();
+    store::control(&mut connection, &HostAction::Unlink { request_id: "unlink-qa".into(), task: task(), session_id: QA.into() }, &live(), 3001).unwrap();
+    assert_eq!(qa_requests(&connection)[0]["state"], "cancelled");
 }
 
 #[test]
