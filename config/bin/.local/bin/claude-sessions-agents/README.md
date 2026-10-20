@@ -1,6 +1,6 @@
 # Agents
 
-The cockpit runs sessions of several agent CLIs (Claude Code, opencode). An agent needs four
+The cockpit runs sessions of several agent CLIs (Claude Code, opencode, Codex CLI). An agent needs four
 pieces. `apps/cockpit/tests/agents.rs` checks that each piece exists for every agent.
 
 1. **A file here, `<name>.sh`**: what `claude-sessions` and `claude-sessions-left` do with its
@@ -13,7 +13,12 @@ pieces. `apps/cockpit/tests/agents.rs` checks that each piece exists for every a
 4. **A report bridge**: anything that runs `~/.claude/hooks/session-state.sh` with
    `CLAUDE_SESSIONS_AGENT=<name>` and Claude-hook-shaped payloads (`SessionStart`,
    `UserPromptSubmit`, `PostToolUse`, `Notification`, `Stop`, `SessionEnd`). Claude Code has its
-   hooks; opencode has `config/opencode/.config/opencode/plugins/cockpit.ts`.
+   hooks; opencode has `config/opencode/.config/opencode/plugins/cockpit.ts`; Codex has
+   `cockpit-codex-hook` (`config/codex/.codex/hooks.json`), which reports namespaced `cdx_` ids.
+
+Linked sessions add a fifth piece: a way to take an approved team message natively, never by
+typing into the agent's screen (Claude: the `cockpit-team channel` MCP server; opencode: its
+plugin's `session.synthetic`; Codex: its Stop hook). An agent without one refuses `say`.
 
 ## The verbs
 
