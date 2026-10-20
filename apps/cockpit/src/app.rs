@@ -2610,14 +2610,14 @@ impl App {
         }
     }
 
-    /// Pull requests with none open, Todo with nothing open: just their borders, unless focused.
+    /// Pull requests with none open, and Todo always: just their borders, unless focused.
     fn is_collapsed(&self, index: usize) -> bool {
         if index == self.focus {
             return false;
         }
         match index {
             2 => self.review_rows.is_empty() && self.reviews.current().1.is_empty(),
-            3 => self.todo_counts[0] == 0 && self.todo_category_filter().is_none(),
+            3 => true,
             _ => false,
         }
     }

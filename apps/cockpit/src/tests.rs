@@ -3347,6 +3347,17 @@ fn a_collapsed_panel_opens_while_focused() {
 }
 
 #[test]
+fn the_todo_with_open_items_collapses_to_its_borders_while_unfocused() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    app.todos.add("runway", "/r/runway", "add a healthcheck");
+    app.build();
+    assert_eq!(app.layout(45)[3], 2);
+    app.focus = 3;
+    assert!(app.layout(45)[3] > 2);
+}
+
+#[test]
 fn done_items_alone_leave_the_todo_collapsed() {
     let fixture = Fixture::new();
     let mut app = fixture.app();
@@ -3363,7 +3374,7 @@ fn an_unfocused_panel_takes_only_the_rows_its_lines_need() {
     app.reviews.set_rows(vec![Review { title: "VAT".into(), repository: "shop".into(), ..Review::default() }]);
     app.todos.add("runway", "/r/runway", "add a healthcheck");
     app.build();
-    assert_eq!(app.layout(45), vec![0, 35, 4, 4]);
+    assert_eq!(app.layout(45), vec![0, 37, 4, 2]);
 }
 
 #[test]
@@ -3375,7 +3386,7 @@ fn an_unfocused_panel_takes_at_most_a_quarter_of_the_action_column() {
         app.todos.add("runway", "/r/runway", &format!("item {number}"));
     }
     app.build();
-    assert_eq!(app.layout(45), vec![0, 23, 10, 10]);
+    assert_eq!(app.layout(45), vec![0, 31, 10, 2]);
     app.focus = 3;
     // Empty sessions still show the fixed attention summary.
     assert_eq!(app.layout(45), vec![0, 6, 10, 27]);
@@ -5827,6 +5838,7 @@ fn a_waiting_proposal_draws_its_tab_as_a_magenta_chip() {
     let mut app = fixture.app();
     app.todos.apply_updates();
     app.build();
+    app.focus = 3;
     let buffer = render(&mut app, 160, 40);
     let on_magenta: String = (0..40).flat_map(|y| (0..160).map(move |x| (x, y)))
         .filter(|position| buffer[*position].bg == ratatui::style::Color::Indexed(crate::app::MAGENTA))
