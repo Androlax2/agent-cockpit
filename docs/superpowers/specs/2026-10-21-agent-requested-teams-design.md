@@ -89,7 +89,6 @@ yes the team exists and works without Theo relaying anything.
   no automatic retry that could start a second session).
 - How each QA copy is named; it must be at the exact handoff commit, made without running git on the
   host inside a folder a session can write (the existing clone rule).
-- What happens to the previous QA session when a newer handoff starts a new one.
 - How the Team view lays out a spawn request next to plain link requests.
 - How agents learn they can ask (help text and instructions); see "Open" below.
 
@@ -102,8 +101,9 @@ yes the team exists and works without Theo relaying anything.
   runs in (the global default at that moment); a later settings change does not alter an approved
   team. Codex is allowed if it is the default (its team adapter exists; its live check is tracked
   separately).
-- **Previous QA sessions** are unlinked when a newer handoff starts the next one and are left running
-  for Theo to close; nothing is killed automatically.
+- (Theo, 2026-10-21) **Previous QA sessions end automatically**: when a newer handoff starts the next
+  QA session, the previous one is unlinked and closed through the cockpit's normal session exit
+  (its findings on the superseded commit stay recorded).
 
 ## Open (for Theo)
 
