@@ -90,7 +90,7 @@ yes the team exists and works without Theo relaying anything.
 - How each QA copy is named; it must be at the exact handoff commit, made without running git on the
   host inside a folder a session can write (the existing clone rule).
 - How the Team view lays out a spawn request next to plain link requests.
-- How agents learn they can ask (help text and instructions); see "Open" below.
+- The wording of the when-to-ask rules (see below) and of the help text.
 
 ## Calls made while writing (check these)
 
@@ -105,7 +105,10 @@ yes the team exists and works without Theo relaying anything.
   QA session, the previous one is unlinked and closed through the cockpit's normal session exit
   (its findings on the superseded commit stay recorded).
 
-## Open (for Theo)
+## When agents ask (Theo, 2026-10-21)
 
-- Whether agents should be told *when* to ask (for example in the global instructions or the
-  design-first skill: "UI with no design → request a Designer"), or only *how*.
+Agents are told **when** to ask, not only how: the global agent instructions in dotfiles
+(`config/claude/.claude/CLAUDE.md` for Claude, `config/opencode/.config/opencode/AGENTS.md` for
+OpenCode) gain a short rule set, for example: a UI change with no FigCraft design → ask for a Designer
+before writing UI code; finished, tested work → hand off so QA reviews it. The exact wording is the
+builder's, kept short, and it only ever leads to a request Theo approves.
