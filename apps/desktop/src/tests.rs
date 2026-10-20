@@ -945,6 +945,28 @@ fn reports_without_an_input_flag_preserve_question_protection() {
 }
 
 #[test]
+fn after_a_daemon_restart_idle_sessions_can_still_be_picked_for_a_team() {
+    // Live smoke test 2026-10-20: after a restart only sessions that reported again were offered.
+    let bench = team_bench();
+    bench.world.borrow_mut().live_ids.extend([SESSION_A, SESSION_B, OPENCODE_SESSION].map(String::from));
+    let mut restored = Registry::new(Box::new(FakeSystem(bench.world.clone())), Box::new(FakeBanners(bench.shown.clone())));
+    let snapshot = crate::teams::host(&mut restored, cockpit::teams::HostRequest::Snapshot).unwrap().result.unwrap();
+    assert_eq!(snapshot["sessions"].as_array().unwrap().len(), 3, "{snapshot}");
+}
+
+#[test]
+fn a_launch_that_ended_while_the_daemon_was_down_is_not_restored() {
+    let bench = team_bench();
+    bench.world.borrow_mut().live_ids.extend([SESSION_A, SESSION_B, OPENCODE_SESSION].map(String::from));
+    bench.world.borrow_mut().sender_runtimes.remove(&10);
+    let mut restored = Registry::new(Box::new(FakeSystem(bench.world.clone())), Box::new(FakeBanners(bench.shown.clone())));
+    let snapshot = crate::teams::host(&mut restored, cockpit::teams::HostRequest::Snapshot).unwrap().result.unwrap();
+    let sessions: Vec<_> = snapshot["sessions"].as_array().unwrap().iter().map(|row| row["session_id"].clone()).collect();
+    assert!(!sessions.contains(&json!(SESSION_A)), "{sessions:?}");
+    assert_eq!(sessions.len(), 2);
+}
+
+#[test]
 fn a_daemon_restart_preserves_an_explicit_question() {
     let mut bench = Bench::new();
     bench.report(SESSION_A, json!({"state": "needs-you", "message": "Which option?", "needs_input": true, "tmux_pane": "%5"}));

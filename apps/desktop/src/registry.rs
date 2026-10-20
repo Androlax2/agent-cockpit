@@ -1523,6 +1523,9 @@ impl Registry {
             if !entry.native_thread.is_empty() {
                 row["native_thread"] = json!(entry.native_thread);
             }
+            if !entry.runtime.is_empty() {
+                row["runtime"] = json!(entry.runtime);
+            }
             row
         }).collect();
         rows.sort_by(|a, b| {
@@ -1631,6 +1634,11 @@ impl Registry {
             })();
             match loaded {
                 Ok((session, mut entry)) => {
+                    // The launch proof survives a daemon restart only while that very launch (boot,
+                    // pid, start time) still runs: idle sessions stay pickable for a team.
+                    if let Some(runtime) = row.get("runtime").and_then(Value::as_str) {
+                        if self.system.runtime_is_live(runtime) { entry.runtime = runtime.to_string(); }
+                    }
                     entry.project = self.project_of(&entry.cwd.clone(), &entry.project.clone());
                     entry.target = self.resolve_target(entry.target.clone());
                     self.sessions.insert(session, entry);
