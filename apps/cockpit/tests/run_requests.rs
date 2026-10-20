@@ -425,12 +425,40 @@ fn a_result_planted_in_the_shared_runs_folder_is_ignored() {
 }
 
 #[test]
-fn a_terminal_session_gets_no_approval_and_falls_back() {
-    let fixture = AskToRun::new();
-    let runs = fixture.runs.display().to_string();
-    let output = finish(fixture.sandbox.command(bin().join("ask-to-run"), &[("CLAUDE_RUNS_DIR", &runs), ("CLAUDE_SESSIONS_TERMINAL", "1")])
-        .args(["--why", "x", "true"]).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap(), TIMEOUT);
+fn a_terminal_session_waits_for_approval_and_returns_the_answer() {
+    for (answer, expected_exit, expected_output) in [
+        (json!({"status": "declined"}), 125, "Theo declined"),
+        (json!({"status": "ran", "exit": 3, "output": "approved output"}), 3, "approved output"),
+    ] {
+        let mut fixture = AskToRun::new();
+        fixture.sandbox.env.insert("CLAUDE_SESSIONS_TERMINAL".into(), "1".into());
+        let mut asking = fixture.ask(&["--why", "Check the terminal session approval path.", "echo approved output"], "5");
+        let request = fixture.request();
+        assert_eq!(request["answers"], ANSWERS_KEY);
+        assert!(asking.try_wait().unwrap().is_none(), "returned before Theo answered");
+        fixture.answer(&request, answer);
+        let output = finish(asking, TIMEOUT);
+        assert_eq!(output.status.code(), Some(expected_exit));
+        assert!(stdout(&output).contains(expected_output), "{}", stdout(&output));
+    }
+}
+
+#[test]
+fn a_terminal_session_can_check_approval_availability() {
+    let mut fixture = AskToRun::new();
+    fixture.sandbox.env.insert("CLAUDE_SESSIONS_TERMINAL".into(), "1".into());
+    let output = finish(fixture.ask(&["--check"], "5"), TIMEOUT);
+    assert_eq!(output.status.code(), Some(0), "{}", stdout(&output));
+}
+
+#[test]
+fn a_terminal_session_without_its_projects_answers_folder_still_falls_back() {
+    let mut fixture = AskToRun::new();
+    fixture.sandbox.env.insert("CLAUDE_SESSIONS_TERMINAL".into(), "1".into());
+    fixture.sandbox.env.insert("CLAUDE_ANSWERS_KEY".into(), String::new());
+    let output = finish(fixture.ask(&["--why", "x", "true"], "5"), TIMEOUT);
     assert_eq!(output.status.code(), Some(126));
+    assert!(stdout(&output).contains("no CLAUDE_ANSWERS_KEY"), "{}", stdout(&output));
     assert!(fixture.daemon.as_ref().unwrap().received(Duration::from_millis(200)).is_empty(), "a request was filed");
 }
 

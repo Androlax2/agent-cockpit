@@ -92,10 +92,6 @@ fn wait_for_result(answers_key: &str, id: &str) -> i32 {
 }
 
 fn main() {
-    if approval::in_terminal_session() {
-        println!("Not available in a session started with \"this terminal\": give Theo the command as a fish block instead.");
-        std::process::exit(NO_DAEMON);
-    }
     let Some(answers_key) = approval::own_answers_key() else {
         println!("{} Give Theo the command as a fish block meanwhile.", approval::NO_ANSWERS_KEY);
         std::process::exit(NO_DAEMON);

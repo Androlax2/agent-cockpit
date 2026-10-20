@@ -27,8 +27,8 @@ const PROMPT_IDLE: Duration = Duration::from_millis(1500);
 const REQUEST_REPLY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// A session started with "this terminal" (the claude function's t sets CLAUDE_SESSIONS_TERMINAL):
-/// Theo wanted it apart from the cockpit, so ask-to-run and ask-to-guide stay out of it and Claude
-/// falls back to giving him the command or the steps.
+/// ask-to-guide stays out of it and Claude falls back to giving him the steps. ask-to-run uses the
+/// same per-command approval as managed sessions.
 pub fn in_terminal_session() -> bool {
     std::env::var("CLAUDE_SESSIONS_TERMINAL").is_ok_and(|value| value == "1")
 }

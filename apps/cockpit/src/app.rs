@@ -105,7 +105,7 @@ const LEGEND: [(&str, &str); 24] = [
     ("⏱ 1h20 today · 34h", "time spent with Claude (and opencode) on the project, today and in all: the gaps under 5 minutes between its sessions' replies"),
     ("↑2 unapplied", "a dotfiles clone's commits ~/dotfiles lacks: U shows them and applies them after a yes"),
     ("↑2 unpushed (dotfiles)", "on a dotfiles card, commits ~/dotfiles holds and GitHub lacks: U pushes them after a yes"),
-    ("▭ terminal", "started with \"this terminal\": no ⌘R, restore, queue, error hand-off or ask-to-run"),
+    ("▭ terminal", "started with \"this terminal\": no ⌘R, restore, queue or error hand-off; ask-to-run still asks for approval"),
     ("✎ designer ⌨ developer", "its role in a project designed in FigCraft (claude-design role): design to-dos go to the designer"),
     ("✎ design", "a to-do for the designer session: a gap a developer found in the design (claude-todo --design)"),
     ("⛔ opusline", "a session of that project was blocked by the setup (claude-todo blocked): queued for dotfiles"),
