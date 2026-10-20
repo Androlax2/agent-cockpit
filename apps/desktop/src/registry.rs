@@ -1382,7 +1382,7 @@ impl Registry {
         let _ = cockpit::util::write_json(&path, &json!({"sessions": self.snapshot_rows()}));
         self.remember_sessions();
         // Exit 1 is "no waybar running", not an error.
-        self.system.run(&["pkill", "-RTMIN+16", "waybar"], &[0, 1]);
+        self.system.run(&["pkill", "-x", "-RTMIN+16", "waybar"], &[0, 1]);
     }
 
     /// recent-sessions.json for the column's "bring them back" after a reboot: refreshed when the

@@ -8,6 +8,17 @@ use common::sandbox::*;
 use serde_json::{Value, json};
 use std::fs;
 
+#[test]
+fn switching_audio_refreshes_only_the_exact_waybar_process_name() {
+    let sandbox = Sandbox::new();
+    sandbox.shim("pactl", "");
+    sandbox.shim("notify-send", "");
+    sandbox.shim("pkill", "");
+    let output = sandbox.run(waybar_scripts().join("switch-audio.sh"), &[], &[]);
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert_eq!(sandbox.calls("pkill"), ["pkill -x -RTMIN+8 waybar"]);
+}
+
 fn chip(sandbox: &Sandbox, snapshot: Value) -> Value {
     let path = sandbox.root.join("snapshot.json");
     fs::write(&path, snapshot.to_string()).unwrap();

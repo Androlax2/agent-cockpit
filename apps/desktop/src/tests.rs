@@ -714,10 +714,10 @@ fn a_new_session_tags_its_window_and_publishes() {
 }
 
 #[test]
-fn publishing_signals_waybar() {
+fn publishing_signals_only_the_exact_waybar_process_name() {
     let mut bench = Bench::new();
     bench.report(SESSION_A, json!({"state": "waiting"}));
-    assert!(bench.commands().contains(&vec!["pkill".to_string(), "-RTMIN+16".into(), "waybar".into()]));
+    assert!(bench.commands().contains(&vec!["pkill".to_string(), "-x".into(), "-RTMIN+16".into(), "waybar".into()]));
 }
 
 #[test]

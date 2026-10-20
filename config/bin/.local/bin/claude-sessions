@@ -1010,7 +1010,7 @@ doctor() {
     if [[ -x $(readlink -f "$HOME/.claude/statusline-command.sh") ]]; then report ok "status line script resolves"; else report fail "~/.claude/statusline-command.sh does not resolve" "ln -s ../dotfiles/config/claude/.claude/statusline-command.sh ~/.claude/statusline-command.sh"; fi
     echo "bar"
     if pgrep -x waybar >/dev/null; then report ok "waybar running"; else report fail "waybar not running" "waybar &"; fi
-    if pgrep -f workspace-listener.sh >/dev/null; then report ok "workspace listener running"; else report fail "workspace-listener.sh not running" "pkill -SIGUSR2 waybar (reload) and check custom/workspace-listener in config.jsonc"; fi
+    if pgrep -f workspace-listener.sh >/dev/null; then report ok "workspace listener running"; else report fail "workspace-listener.sh not running" "pkill -x -SIGUSR2 waybar (reload) and check custom/workspace-listener in config.jsonc"; fi
     local wanted=1; "$ON_CLAUDE_WORKSPACE" && wanted=0
     if [[ $(cat "${XDG_RUNTIME_DIR:-/tmp}/waybar-visible" 2>/dev/null || echo 1) == "$wanted" ]]; then report ok "bar visibility matches the workspace"; else report fail "bar visibility state out of step" "$HOME/.config/waybar/scripts/waybar-visibility.sh sync"; fi
     echo "tmux"
