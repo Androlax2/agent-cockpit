@@ -83,7 +83,9 @@ const GLOBAL_HELP: [(&str, &str); 14] = [
     ("q ⌘C", "close the manager window; sessions keep running"),
 ];
 /// Rare actions with no key, only in the : list: the panel they run in ("-" for none), a name, a label.
-const PALETTE_ONLY: [(&str, &str, &str); 11] = [
+const PALETTE_ONLY: [(&str, &str, &str); 13] = [
+    ("-", "updates", "unseen results, questions and archived return notes"),
+    ("1", "reviewed", "mark the selected session's currently displayed updates reviewed (not answered)"),
     ("1", "return-note", "write your session return note (never sent to the agent)"),
     ("1", "clear-return-note", "explicitly remove your session return note"),
     ("-", "new-with-agent", "new session with an explicit agent: pick a project, then Claude Code or opencode"),
@@ -285,8 +287,16 @@ pub enum Key {
 
 /// Keep the inspected text stable even if the source session changes or disappears.
 struct SessionDetails {
+    title: String,
     text: String,
     scroll: usize,
+    actions: Vec<DetailAction>,
+}
+
+#[derive(Clone)]
+enum DetailAction {
+    Reviewed { session: String, identities: Vec<String> },
+    OpenSession(String),
 }
 
 impl SessionDetails {
@@ -306,7 +316,7 @@ impl SessionDetails {
             put(buffer, row, width - 2, "│", style(BLUE));
         }
         put(buffer, top, 1, &format!("┌{}┐", "─".repeat(inner)), style(BLUE));
-        put(buffer, top, 3, &fit("Session details", inner.saturating_sub(2)), bold(BLUE));
+        put(buffer, top, 3, &fit(&self.title, inner.saturating_sub(2)), bold(BLUE));
         for (offset, line) in wrapped.iter().skip(self.scroll).take(body_height).enumerate() {
             put(buffer, top + 1 + offset as u16, 3, line, style(FG));
         }
@@ -314,7 +324,8 @@ impl SessionDetails {
         if bottom - 2 > top + body_height as u16 {
             put(buffer, bottom - 2, 3, &fit(&progress, body_width), dim(FG_DARK));
         }
-        put(buffer, bottom - 1, 3, &fit("↑↓ scroll  g/G top/end  Esc close", body_width), dim(FG_DARK));
+        put(buffer, bottom - 1, 3, &fit(if self.actions.is_empty() { "↑↓ scroll  g/G top/end  Esc close" }
+            else { "↑↓ scroll  Enter actions  Esc close" }, body_width), dim(FG_DARK));
         put(buffer, bottom, 1, &format!("└{}┘", "─".repeat(inner)), style(BLUE));
     }
 }
@@ -679,6 +690,7 @@ struct SavedTodoScope {
 
 pub struct App {
     pub(crate) continuity: Result<Continuity, String>,
+    continuity_error: Option<String>,
     pub history: History,
     pub view: ViewState,
     pub(crate) usage: Refresher,
@@ -782,6 +794,7 @@ impl App {
         };
         Self {
             continuity: Continuity::load(&paths::continuity()),
+            continuity_error: None,
             history: History::default(), view: ViewState::load(), usage: Refresher::new(), alerts: BudgetAlerts::new(util::send_notice),
             costs: Costs::default(), reviews: Reviews::default(), todos, errors: ErrorReporter::new(),
             claude_status: ProviderStatus::default(), codex_status: ProviderStatus::new(Provider::Codex), panels: Default::default(), focus: 1, previous_panel: 1,
@@ -1266,6 +1279,15 @@ impl App {
             session.role = sessions::role_of(&session.session);
         }
         let has_dotfiles_card = running.iter().any(|s| sessions::is_dotfiles_clone(&s.cwd));
+        if util::read_json(&paths::snapshot()).is_some_and(|snapshot| snapshot.get("sessions").is_some_and(Value::is_array)) {
+            if let Ok(continuity) = &mut self.continuity {
+                match continuity.observe_sessions(&running, util::now_secs()) {
+                    Ok(true) => self.continuity_error = None,
+                    Ok(false) => {},
+                    Err(error) => self.continuity_error = Some(error),
+                }
+            }
+        }
         Gathered {
             branches: running.iter().map(|session| (session.session.clone(), util::git_branch(&session.cwd))).collect(),
             queued: running.iter().map(|session| (session.session.clone(), prompts::count(&session.session))).collect(),
@@ -1399,7 +1421,12 @@ impl App {
                 vec![segment(0, glyph, tint), segment(2, display_title, bold(FG))]
             };
             lines.push(Line { segments, right: vec![part(sessions::activity_label(session), tint)], item: Some(index), accent });
-            lines.push(Line { segments: [rail, vec![segment(2 + indent, sessions::activity_text(session), if needs_attention { style(YELLOW) } else { dim(FG_DARK) })]].concat(), right: vec![], item: Some(index), accent });
+            let updates = self.continuity.as_ref().ok().map(|state| state.updates()).unwrap_or_default();
+            let labels: Vec<&str> = updates.iter().filter(|update| update.session == session.session).map(|update|
+                match update.kind { crate::continuity::UpdateKind::Result => "unseen result", crate::continuity::UpdateKind::Question => "new question" }).collect();
+            let mut activity_text = sessions::activity_text(session);
+            if !labels.is_empty() { activity_text = format!("{}{}{}", labels.join(" · "), if activity_text.is_empty() { "" } else { " · " }, activity_text); }
+            lines.push(Line { segments: [rail, vec![segment(2 + indent, activity_text, if needs_attention { style(YELLOW) } else { dim(FG_DARK) })]].concat(), right: vec![], item: Some(index), accent });
             if session.group_position == session.group_size - 1 {
                 lines.push(Line::default());
             }
@@ -1561,7 +1588,11 @@ impl App {
         let working = self.sessions.iter().filter(|session| !session.needs_attention() && matches!(sessions::activity_label(session), "Working" | "Command running")).count();
         let ready = self.sessions.iter().filter(|session| !session.needs_attention() && sessions::activity_label(session) == "Ready").count();
         let unknown = self.sessions.len() - needing - working - ready;
-        let attention = if needing == 0 { "Nothing needs you".into() } else { format!("! {needing} need you") };
+        let mut attention: String = if needing == 0 { "Nothing needs you".into() } else { format!("! {needing} need you") };
+        if let Ok(continuity) = &self.continuity {
+            let unseen = continuity.updates().len();
+            if unseen > 0 { attention += &format!(" · {unseen} unseen"); }
+        }
         let mut counts = format!("{working} working · {ready} ready");
         if unknown > 0 {
             counts += &format!(" · {unknown} unknown");
@@ -1614,6 +1645,7 @@ impl App {
         if !session.outcome.is_empty() {
             text += &format!("Last turn:\n{}\n\n", session.outcome);
         }
+        if session.last_result.is_none() { text += "Result tracking unavailable; restart to enable\n\n"; }
         for line in self.selected_session_detail_lines() {
             for part in line.right {
                 if part.action != Some("session-details") && !part.text.is_empty() {
@@ -1621,7 +1653,7 @@ impl App {
                 }
             }
         }
-        self.session_details = Some(SessionDetails { text, scroll: 0 });
+        self.session_details = Some(SessionDetails { title: "Session details".into(), text, scroll: 0, actions: Vec::new() });
     }
 
     /// The selected session's keys, most pressing first: what its card asks for (an approval, a
@@ -2602,6 +2634,8 @@ impl App {
         self.draw_footer(buffer, height.saturating_sub(1), width);
         if let Err(error) = &self.continuity {
             put(buffer, height.saturating_sub(1), 0, &format!("Continuity unavailable: {error}"), bold(RED));
+        } else if let Some(error) = &self.continuity_error {
+            put(buffer, height.saturating_sub(1), 0, &format!("Continuity unavailable: {error}"), bold(RED));
         }
         if let Some(menu) = self.menu.as_mut() {
             menu.draw(buffer);
@@ -2944,6 +2978,10 @@ impl App {
             return;
         }
         if matches!(key, Key::Paste(_)) { return; }
+        if self.session_details.as_ref().is_some_and(|details| !details.actions.is_empty()) && key == Key::Enter {
+            self.message = self.pick_detail_action(screen);
+            return;
+        }
         if let Some(details) = self.session_details.as_mut() {
             match key {
                 Key::Down | Key::Char('j') => details.scroll = details.scroll.saturating_add(1),
@@ -3085,7 +3123,7 @@ impl App {
     fn run_palette_only(&mut self, name: &str, screen: &mut dyn Screen) -> String {
         let known = self.selected_session().filter(|s| s.state != "unknown");
         match name {
-            "return-note" | "clear-return-note" => self.run_continuity_action(name, screen),
+            "return-note" | "clear-return-note" | "updates" | "reviewed" => self.run_continuity_action(name, screen),
             "new-with-agent" => {
                 let Some(directory) = screen.outside(&mut || pick_project()).filter(|directory| !directory.is_empty()) else { return String::new() };
                 let Some(agent) = screen.outside(&mut || pick_agent()) else { return String::new() };

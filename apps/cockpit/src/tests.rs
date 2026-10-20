@@ -203,6 +203,111 @@ fn continuity_action(app: &mut App, action: &str, answers: &[&str]) {
     app.redraw();
 }
 
+fn continuity_result_row(turn: &str, state: &str) -> Value {
+    let mut row = session(SESSION_A, state, "shop", "/r/shop", 1);
+    row["repository"] = json!("acme/shop");
+    row["branch"] = json!("feat/vat");
+    row["last_result"] = json!({"id":turn,"completed_at":util::now_secs(),"outcome":"tests passed","repository":"acme/shop","branch":"feat/vat"});
+    row
+}
+
+#[test]
+fn continuity_results_stay_unseen_until_explicitly_reviewed() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([continuity_result_row("11111111111111111111111111111111", "waiting")]));
+    let mut app = fixture.app();
+    assert!(texts(&app, 1).join("\n").contains("unseen result"));
+    app.handle(Key::FocusLost, &mut FakeScreen::default());
+    app.handle(Key::Enter, &mut FakeScreen::default());
+    app.build();
+    assert!(texts(&app, 1).join("\n").contains("unseen result"));
+    continuity_action(&mut app, "1\treviewed", &[]);
+    assert!(!texts(&fixture.app(), 1).join("\n").contains("unseen result"));
+    fixture.snapshot(json!([continuity_result_row("22222222222222222222222222222222", "working")]));
+    app.build();
+    assert!(texts(&app, 1).join("\n").contains("unseen result"));
+    assert_eq!(app.sessions[0].state, "working");
+}
+
+#[test]
+fn continuity_a_result_and_a_question_are_separate_updates() {
+    let fixture = Fixture::new();
+    let mut row = continuity_result_row("11111111111111111111111111111111", "needs-you");
+    row["needs_input"] = json!(true);
+    row["full_request"] = json!("Which provider should we use?");
+    fixture.snapshot(json!([row.clone()]));
+    let mut app = fixture.app();
+    let before = buffer_rows(&render(&mut app, 100, 40)).join("\n");
+    assert!(before.contains("2 unseen"), "{before}");
+    continuity_action(&mut app, "1\treviewed", &[]);
+    assert!(app.sessions[0].needs_attention());
+    row["full_request"] = json!("Should failures be retried?");
+    fixture.snapshot(json!([row.clone()]));
+    app.build();
+    assert!(texts(&app, 1).join("\n").contains("new question"));
+    row["needs_input"] = json!(false);
+    row["state"] = json!("working");
+    fixture.snapshot(json!([row]));
+    app.build();
+    assert!(!texts(&app, 1).join("\n").contains("new question"));
+}
+
+#[test]
+fn continuity_old_producers_do_not_invent_result_updates() {
+    let fixture = Fixture::new();
+    let mut row = session(SESSION_A, "waiting", "shop", "/r/shop", 1);
+    row["outcome"] = json!("tests passed");
+    fixture.snapshot(json!([row]));
+    let mut app = fixture.app();
+    app.handle(Key::Char('i'), &mut FakeScreen::default());
+    let rows = buffer_rows(&render(&mut app, 100, 40)).join("\n");
+    assert!(rows.contains("Result tracking unavailable"), "{rows}");
+    assert!(!rows.contains("unseen result"));
+}
+
+#[test]
+fn continuity_archived_results_can_be_reviewed_without_opening_an_exited_session() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([continuity_result_row("11111111111111111111111111111111", "waiting")]));
+    let mut app = fixture.app();
+    continuity_action(&mut app, "1\treturn-note", &["My next step"]);
+    fixture.snapshot(json!([]));
+    app.build();
+    continuity_action(&mut app, "-\tupdates", &["0"]);
+    let rows = buffer_rows(&render(&mut app, 100, 40)).join("\n");
+    assert!(rows.contains("Latest turn") && rows.contains("tests passed") && rows.contains("My next step"), "{rows}");
+    app.handle(Key::Enter, &mut FakeScreen::typing(&["0"]));
+    app.redraw();
+    assert!(!buffer_rows(&render(&mut app, 100, 40)).join("\n").contains("1 unseen"));
+    assert!(!fixture.calls("claude-sessions").iter().any(|call| call.contains(" view ") || call.contains(" resume ")));
+}
+
+#[test]
+fn continuity_reviewing_a_captured_result_does_not_acknowledge_a_later_result() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([continuity_result_row("11111111111111111111111111111111", "waiting")]));
+    let mut app = fixture.app();
+    continuity_action(&mut app, "-\tupdates", &["0"]);
+    fixture.snapshot(json!([continuity_result_row("22222222222222222222222222222222", "waiting")]));
+    app.build();
+    app.handle(Key::Enter, &mut FakeScreen::typing(&["0"]));
+    app.redraw();
+    assert!(texts(&app, 1).join("\n").contains("unseen result"));
+}
+
+#[test]
+fn continuity_a_failed_acknowledgement_leaves_the_result_unseen() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([continuity_result_row("11111111111111111111111111111111", "waiting")]));
+    let mut app = fixture.app();
+    let path = fixture.path("state/claude-sessions/continuity.json");
+    if path.exists() { fs::rename(&path, path.with_extension("backup")).unwrap(); }
+    fs::create_dir_all(&path).unwrap();
+    continuity_action(&mut app, "1\treviewed", &[]);
+    assert!(app.message.contains("cannot save continuity"));
+    assert!(texts(&app, 1).join("\n").contains("unseen result"));
+}
+
 #[test]
 fn continuity_return_notes_persist_without_becoming_agent_messages() {
     let fixture = Fixture::new();

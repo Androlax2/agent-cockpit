@@ -1,6 +1,6 @@
 //! User-owned continuity metadata. Mutations persist before they replace the live state.
 
-use crate::{agents, sessions::{Session, valid_metadata_text}, util};
+use crate::{agents, sessions::{Session, TurnResult, valid_metadata_text}, util, audit};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::{collections::BTreeMap, fs, io::{self, Write}, os::unix::fs::OpenOptionsExt, path::{Path, PathBuf}};
@@ -16,8 +16,44 @@ pub struct SessionMemory {
     pub cwd: String,
     #[serde(default)]
     pub note: Option<String>,
+    #[serde(default)]
+    pub result: Option<TurnResult>,
+    #[serde(default)]
+    pub question: Option<Update>,
+    #[serde(default)]
+    reviewed_result: Option<String>,
+    #[serde(default)]
+    reviewed_question: Option<String>,
     #[serde(flatten)]
     extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum UpdateKind { Result, Question }
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Update {
+    pub session: String,
+    pub identity: String,
+    pub kind: UpdateKind,
+    pub observed_at: i64,
+    pub text: String,
+}
+
+pub fn question_text(session: &Session) -> Option<&str> {
+    if !session.needs_input { return None; }
+    let text = if !session.full_request.is_empty() { &session.full_request }
+        else if !session.request.is_empty() { &session.request } else { &session.detail };
+    (!text.trim().is_empty()).then_some(text)
+}
+
+pub fn question_identity(session: &Session) -> Option<String> {
+    question_text(session).map(|text| format!("question:{}", audit::sha256_hex(text.as_bytes())))
+}
+
+fn valid_question(text: &str) -> bool {
+    text.chars().count() <= 16_384 && !text.chars().any(|character| character.is_control() && character != '\n')
+        && !text.contains("#(") && !text.contains("#{")
 }
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
@@ -39,6 +75,17 @@ impl State {
                 return Err("invalid continuity session metadata".into());
             }
             if let Some(note) = &session.note { validate_note(note)?; }
+            if let Some(result) = &session.result { result.validate()?; }
+            if let Some(question) = &session.question {
+                if question.session != *id || question.kind != UpdateKind::Question || !valid_question(&question.text)
+                    || question.observed_at <= 0 || question.identity != format!("question:{}", audit::sha256_hex(question.text.as_bytes())) {
+                    return Err("invalid saved question".into());
+                }
+            }
+            if session.reviewed_result.as_ref().is_some_and(|id| !crate::sessions::valid_turn_id(id))
+                || session.reviewed_question.as_ref().is_some_and(|id| !valid_metadata_text(id, 73)) {
+                return Err("invalid saved acknowledgement".into());
+            }
         }
         Ok(())
     }
@@ -73,6 +120,65 @@ impl Continuity {
     }
 
     pub fn memories(&self) -> &BTreeMap<String, SessionMemory> { &self.state.sessions }
+
+    pub fn observe_sessions(&mut self, sessions: &[Session], now: i64) -> Result<bool, String> {
+        self.change(|state| {
+            for (id, memory) in &mut state.sessions {
+                if !sessions.iter().any(|session| session.session == *id && question_text(session).is_some()) {
+                    memory.question = None;
+                    memory.reviewed_question = None;
+                }
+            }
+            for session in sessions.iter().filter(|session| agents::is_session_id(&session.session)) {
+                if session.last_result.is_none() && question_text(session).is_none() && !state.sessions.contains_key(&session.session) { continue; }
+                let memory = state.sessions.entry(session.session.clone()).or_default();
+                memory.title = util::collapse(if session.label.is_empty() { &session.title } else { &session.label });
+                memory.cwd = session.cwd.clone();
+                if let Some(result) = &session.last_result { memory.result = Some(result.clone()); }
+                if let Some(text) = question_text(session) {
+                    let identity = question_identity(session).unwrap();
+                    if memory.question.as_ref().is_none_or(|question| question.identity != identity) {
+                        memory.question = Some(Update { session: session.session.clone(), identity,
+                            kind: UpdateKind::Question, observed_at: now, text: text.into() });
+                        memory.reviewed_question = None;
+                    }
+                }
+            }
+            Ok(())
+        })
+    }
+
+    pub fn updates(&self) -> Vec<Update> {
+        let mut updates = Vec::new();
+        for (session, memory) in &self.state.sessions {
+            if let Some(result) = &memory.result {
+                if memory.reviewed_result.as_deref() != Some(&result.id) && !result.outcome.is_empty() {
+                    updates.push(Update { session: session.clone(), identity: format!("result:{}", result.id),
+                        kind: UpdateKind::Result, observed_at: result.completed_at, text: result.outcome.clone() });
+                }
+            }
+            if let Some(question) = &memory.question {
+                if memory.reviewed_question.as_deref() != Some(&question.identity) { updates.push(question.clone()); }
+            }
+        }
+        updates.sort_by(|left, right| right.observed_at.cmp(&left.observed_at).then(left.session.cmp(&right.session)));
+        updates
+    }
+
+    pub fn reviewed(&mut self, session: &str, identities: &[String]) -> Result<bool, String> {
+        self.change(|state| {
+            let Some(memory) = state.sessions.get_mut(session) else { return Ok(()) };
+            for identity in identities {
+                if let Some(result) = &memory.result {
+                    if *identity == format!("result:{}", result.id) { memory.reviewed_result = Some(result.id.clone()); }
+                }
+                if let Some(question) = &memory.question {
+                    if *identity == question.identity { memory.reviewed_question = Some(question.identity.clone()); }
+                }
+            }
+            Ok(())
+        })
+    }
 
     pub fn set_note(&mut self, session: &Session, note: Option<&str>) -> Result<bool, String> {
         if let Some(note) = note { validate_note(note)?; }
