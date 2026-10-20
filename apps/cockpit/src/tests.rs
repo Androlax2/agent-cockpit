@@ -2073,6 +2073,91 @@ fn a_session_gets_one_queued_item_at_a_time() {
 }
 
 #[test]
+fn four_parallel_sessions_each_receive_a_different_queued_item() {
+    let fixture = Fixture::new();
+    let since = util::now() as i64 - 600;
+    let session_ids = [SESSION_A, SESSION_B, "cccccccc-0000-4000-8000-000000000000", "dddddddd-0000-4000-8000-000000000000"];
+    let rows: Vec<Value> = session_ids.iter().enumerate().map(|(index, id)| {
+        let checkout = format!("home/IdeaProjects/.parallel/runway/parallel-{index}");
+        fixture.write(&format!("{checkout}/.git/HEAD"), "ref: refs/heads/main\n");
+        let cwd = fixture.path(&format!("{checkout}/apps"));
+        session(id, "waiting", "runway", &cwd.to_string_lossy(), since + index as i64)
+    }).collect();
+    fixture.snapshot(json!(rows));
+    let mut app = fixture.app();
+    app.gaming = || false;
+    let items: Vec<String> = (0..5).map(|index| {
+        let id = app.todos.add("runway", "/r/runway", &format!("job {index}"));
+        app.todos.toggle_queued(&id);
+        id
+    }).collect();
+
+    app.dispatch_queue();
+
+    let calls = fixture.calls("claude-sessions");
+    assert_eq!(calls.len(), 4, "{calls:?}");
+    for session_id in session_ids {
+        assert_eq!(calls.iter().filter(|call| call.starts_with(&format!("claude-sessions say {session_id} "))).count(), 1);
+    }
+    let assigned: Vec<_> = items.iter().filter(|id| app.todos.status_of(id) == "doing").collect();
+    assert_eq!(assigned.len(), 4);
+    for id in assigned {
+        assert_eq!(calls.iter().filter(|call| call.contains(&format!("(todo {id}:"))).count(), 1);
+    }
+    app.queue_checked = 0.0;
+    app.dispatch_queue();
+    assert_eq!(fixture.calls("claude-sessions").len(), 4);
+}
+
+#[test]
+fn queued_items_created_in_a_parallel_clone_are_shared_with_the_project() {
+    for session_path in ["home/IdeaProjects/runway", "home/IdeaProjects/.parallel/runway/second"] {
+        let fixture = Fixture::new();
+        let item_checkout = "home/IdeaProjects/.parallel/runway/first";
+        fixture.write(&format!("{item_checkout}/.git/HEAD"), "ref: refs/heads/main\n");
+        fixture.write(&format!("{session_path}/.git/HEAD"), "ref: refs/heads/main\n");
+        let cwd = fixture.path(&format!("{session_path}/apps"));
+        fixture.snapshot(json!([session(SESSION_A, "waiting", "runway", &cwd.to_string_lossy(), util::now() as i64 - 600)]));
+        let mut app = fixture.app();
+        app.gaming = || false;
+        let other_project = app.todos.add("runway", "/r/impostor", "wrong project");
+        app.todos.change_priority(&other_project, 2);
+        app.todos.toggle_queued(&other_project);
+        let item_cwd = fixture.path(&format!("{item_checkout}/apps"));
+        let id = app.todos.add("runway", &item_cwd.to_string_lossy(), "shared job");
+        app.todos.toggle_queued(&id);
+
+        app.dispatch_queue();
+
+        assert_eq!(fixture.calls("claude-sessions"), [format!("claude-sessions say {SESSION_A} shared job (todo {id}: when this is done, run claude-todo done {id})")]);
+        assert_eq!(app.todos.status_of(&other_project), "todo");
+    }
+}
+
+#[test]
+fn a_parallel_session_receives_queued_issues_from_the_projects_checkout() {
+    let fixture = Fixture::new();
+    let cwd = fixture.path("home/IdeaProjects/.parallel/runway/first");
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "runway", &cwd.to_string_lossy(), util::now() as i64 - 600)]));
+    let mut app = fixture.app();
+    app.gaming = || false;
+    app.reviews.set_issues(vec![issue(2, "Broken login", &["bug"])]);
+    app.reviews.checkouts.insert("o/runway".into(), "/r/runway".into());
+    app.todos.toggle_queued("o/runway#2");
+
+    app.dispatch_queue();
+
+    let calls = fixture.calls("claude-sessions");
+    assert_eq!(calls.len(), 1, "{calls:?}");
+    assert!(calls[0].starts_with(&format!("claude-sessions say {SESSION_A} ")));
+    assert!(calls[0].contains("(todo o/runway#2:"));
+    assert_eq!(app.todos.status_of("o/runway#2"), "doing");
+    app.queue_checked = 0.0;
+    app.dispatch_queue();
+    assert_eq!(fixture.calls("claude-sessions").len(), 1);
+}
+
+#[test]
 fn a_session_idle_for_less_than_five_minutes_gets_nothing() {
     let (fixture, mut app) = queue_fixture("waiting", 60);
     let id = app.todos.add("runway", "/r/runway", "job");

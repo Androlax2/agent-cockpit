@@ -850,17 +850,18 @@ impl App {
     /// The project's first queued item still to do: typed items of its project, issues of its
     /// repository.
     fn next_queued(&self, session: &Session) -> Option<Entry> {
-        // By folder, not by name: a session can call its project anything (its .git file).
-        let root = util::repository_root(&session.cwd);
+        // Derive the project from its checkout, not the session's label. Parallel clones share
+        // their source project's queue, just as they share its TODO panel.
+        let project = util::project_name(&util::repository_root(&session.cwd));
         let mut candidates: Vec<Entry> = self.todos.items.iter()
-            .filter(|item| util::repository_root(&item.cwd()) == root && item.status() == "todo" && self.todos.is_queued(&item.id()))
+            .filter(|item| util::project_name(&util::repository_root(&item.cwd())) == project && item.status() == "todo" && self.todos.is_queued(&item.id()))
             .filter(|item| item.is_design() == (session.role == "designer"))
             .map(|item| Entry::Typed(item.clone())).collect();
         for issue in self.reviews.issues() {
             let key = issue.key();
             let checkout = self.reviews.checkouts.get(&issue.full_repository);
             if self.todos.is_queued(&key) && self.todos.status_of(&key) == "todo"
-                && checkout.is_some_and(|checkout| util::repository_root(checkout) == root) {
+                && checkout.is_some_and(|checkout| util::project_name(&util::repository_root(checkout)) == project) {
                 let priority = todo::issue_priority(&issue.labels);
                 candidates.push(Entry::Issue { issue, status: "todo".into(), priority });
             }
