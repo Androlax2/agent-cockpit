@@ -817,6 +817,61 @@ fn without_a_client_the_hook_values_stay() {
 
 // ---- The run queue ----
 
+#[test]
+fn ask_to_run_phases_follow_the_requesting_session_until_done() {
+    let mut bench = Bench::new();
+    for session in [SESSION_A, SESSION_B] {
+        bench.report(session, json!({"state": "working", "cwd": "/r/same-project"}));
+    }
+    for (id, session) in [(RUN_A, SESSION_A), (RUN_B, SESSION_B)] {
+        fs::write(cockpit::approval::held_request(id, "request"), json!({"answers": ANSWERS_KEY, "session": session}).to_string()).unwrap();
+    }
+    let phase = |bench: &Bench, session: &str| {
+        bench.snapshot().iter().find(|row| row["session"] == session).unwrap()["ask_to_run"].clone()
+    };
+    bench.registry.run_request(RUN_A).unwrap();
+    assert_eq!(phase(&bench, SESSION_A), "approval");
+    assert_eq!(phase(&bench, SESSION_B), "");
+    bench.registry.run_request(RUN_B).unwrap();
+    assert_eq!(phase(&bench, SESSION_B), "approval", "queued approvals are visible too");
+    bench.registry.run_phase(RUN_A, "running");
+    assert_eq!(phase(&bench, SESSION_A), "running");
+    bench.registry.run_phase(RUN_A, "input");
+    assert_eq!(phase(&bench, SESSION_A), "input", "input remains visible while another approval is shown");
+    bench.registry.run_phase(RUN_B, "done");
+    assert_eq!(phase(&bench, SESSION_B), "");
+    bench.registry.run_phase(RUN_A, "running");
+    assert_eq!(phase(&bench, SESSION_A), "running");
+    bench.registry.run_phase(RUN_A, "done");
+    assert_eq!(phase(&bench, SESSION_A), "");
+}
+
+#[test]
+fn an_abandoned_ask_to_run_disappears_from_its_session_card() {
+    let mut bench = Bench::new();
+    bench.report(SESSION_A, json!({"state": "working"}));
+    fs::write(cockpit::approval::held_request(RUN_A, "request"), json!({"answers": ANSWERS_KEY, "session": SESSION_A}).to_string()).unwrap();
+    bench.registry.run_request(RUN_A).unwrap();
+    assert_eq!(bench.snapshot()[0]["ask_to_run"], "approval");
+    heartbeat(&bench, RUN_A, 600);
+    bench.registry.tick_queues();
+    assert_eq!(bench.snapshot()[0]["ask_to_run"], "");
+}
+
+#[test]
+fn approval_takes_precedence_over_a_running_command_in_the_same_session() {
+    let mut bench = Bench::new();
+    bench.report(SESSION_A, json!({"state": "working"}));
+    for id in [RUN_A, RUN_B] {
+        fs::write(cockpit::approval::held_request(id, "request"), json!({"answers": ANSWERS_KEY, "session": SESSION_A}).to_string()).unwrap();
+    }
+    bench.registry.run_request(RUN_A).unwrap();
+    bench.registry.run_phase(RUN_A, "input");
+    bench.registry.run_phase(RUN_A, "running");
+    bench.registry.run_request(RUN_B).unwrap();
+    assert_eq!(bench.snapshot()[0]["ask_to_run"], "approval");
+}
+
 
 fn started_sessions(bench: &Bench) -> Vec<String> {
     bench.commands().iter().filter(|command| command[..2] == ["tmux", "new-session"]).map(|command| command[4].clone()).collect()

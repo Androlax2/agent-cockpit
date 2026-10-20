@@ -91,11 +91,12 @@ const PALETTE_ONLY: [(&str, &str, &str); 7] = [
     ("1", "drop-queued", "drop the messages queued for the selected session"),
     ("-", "pair-phone", "a QR code that pairs a phone with the phone page (claude-remote), once, within 10 minutes (also in S)"),
 ];
-const LEGEND: [(&str, &str); 22] = [
+const LEGEND: [(&str, &str); 23] = [
     ("●", "working"), ("○", "waiting for you"), ("!", "needs you: permission or question"), ("·", "running, state unknown"),
     ("▌", "shown in the session pane"), ("⚲", "pinned"), ("⇅", "remote controlled"), ("◇ opencode", "run by opencode instead of Claude Code (O starts one)"),
     ("◆ figcraft", "connected to FigCraft, which is open for this session's project (craft-open)"),
     ("◷ 2 agents + background", "background agents, and other background work (shells, monitors), still running when its turn ended"),
+    ("ask-to-run: approval / running / input", "this session's command awaits approval, runs outside the sandbox, or needs your input; clears when finished"),
     ("✉ 2 queued", "messages waiting for the end of its turn, sent one per turn (m, Alt+Q; M drops them)"),
     ("↑2 unpushed", "commits on no remote yet: U pushes the branch"),
     ("⏱ 1h20 today · 34h", "time spent with Claude (and opencode) on the project, today and in all: the gaps under 5 minutes between its sessions' replies"),
@@ -1118,6 +1119,10 @@ impl App {
             };
             let facts = &session.facts;
             let mut badges = Vec::new();
+            if !session.ask_to_run.is_empty() {
+                let tint = if session.ask_to_run == "running" { BLUE } else { YELLOW };
+                badges.push(part(format!("ask-to-run: {}", session.ask_to_run), bold(tint)));
+            }
             if session.is_external() {
                 badges.push(part("external", bold(CYAN)));
             }

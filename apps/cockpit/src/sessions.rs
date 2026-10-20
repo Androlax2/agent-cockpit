@@ -111,6 +111,7 @@ pub struct Session {
     /// its last turn ended.
     pub agents: u64,
     pub background: u64,
+    pub ask_to_run: String,
     /// Desktop apps it drives through an attached MCP server, as the hook saw them: "figcraft:on".
     pub apps: String,
     /// The name of the agent that runs it (agents::AGENTS).
@@ -160,6 +161,7 @@ impl Session {
             unpushed: row.get("unpushed").and_then(Value::as_u64).unwrap_or(0),
             agents: row.get("agents").and_then(Value::as_u64).unwrap_or(0),
             background: row.get("background").and_then(Value::as_u64).unwrap_or(0),
+            ask_to_run: text(row, "ask_to_run"),
             apps: text(row, "apps"),
             agent: row.get("agent").and_then(Value::as_str).unwrap_or(crate::agents::DEFAULT).into(),
             ..Session::default()

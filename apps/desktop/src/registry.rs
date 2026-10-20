@@ -608,6 +608,28 @@ fn write_abandoned(id: &str) {
 }
 
 impl RunRequests {
+    fn session_phases(&self) -> HashMap<String, &'static str> {
+        let mut phases = HashMap::new();
+        let current_phase = match self.phase.as_str() {
+            "asking" => "approval",
+            "input" => "input",
+            "running" => "running",
+            _ => "",
+        };
+        // Later entries win: input and approval need Theo before a command running on does.
+        let requests = self.running.iter().map(|id| (id, "running"))
+            .chain((current_phase == "running").then_some((&self.current, current_phase)))
+            .chain(self.queue.iter().map(|id| (id, "approval")))
+            .chain((!self.current.is_empty() && current_phase != "running").then_some((&self.current, current_phase)))
+            .chain(self.waiting_input.iter().map(|id| (id, "input")));
+        for (id, phase) in requests {
+            let Some(session) = cockpit::util::read_json(&cockpit::approval::held_request(id, "request"))
+                .and_then(|request| request.get("session")?.as_str().map(str::to_string)) else { continue };
+            phases.insert(session, phase);
+        }
+        phases
+    }
+
     pub fn request(&mut self, system: &mut dyn System, banners: &mut dyn Banners, id: &str) -> Result<(), String> {
         if !RUN_ID.is_match(id) {
             return Err("not a request id".into());
@@ -937,7 +959,9 @@ impl Registry {
     }
 
     pub fn run_request(&mut self, id: &str) -> Result<(), String> {
-        self.runs.request(self.system.as_mut(), self.banners.as_mut(), id)
+        self.runs.request(self.system.as_mut(), self.banners.as_mut(), id)?;
+        self.publish();
+        Ok(())
     }
 
     /// The run and guide requests waiting (queued or shown) from sandboxes started in `started_in`.
@@ -977,6 +1001,7 @@ impl Registry {
 
     pub fn run_phase(&mut self, id: &str, phase: &str) {
         self.runs.phase_changed(self.system.as_mut(), self.banners.as_mut(), id, phase);
+        self.publish();
     }
 
     pub fn guide_request(&mut self, id: &str) -> Result<(), String> {
@@ -985,8 +1010,12 @@ impl Registry {
 
     /// Every second: the run and guide queues follow the workspace, the games and closed windows.
     pub fn tick_queues(&mut self) {
+        let phases = self.runs.session_phases();
         self.runs.tick(self.system.as_mut(), self.banners.as_mut());
         self.guides.tick(self.system.as_mut(), self.banners.as_mut());
+        if phases != self.runs.session_phases() {
+            self.publish();
+        }
     }
 
     /// A report from the report socket: its focus target comes from where the sender really runs,
@@ -1260,12 +1289,14 @@ impl Registry {
     }
 
     pub fn snapshot_rows(&self) -> Vec<Value> {
+        let run_phases = self.runs.session_phases();
         let mut rows: Vec<Value> = self.sessions.iter().map(|(session, entry)| {
             let mut row = json!({"session": session, "state": entry.state, "project": entry.project, "cwd": entry.cwd, "task": entry.task,
                                  "since": entry.since as i64, "started": entry.started as i64, "update": entry.update,
                                  "request": entry.request, "detail": entry.detail, "outcome": entry.outcome,
                                  "terminal": entry.terminal, "credits": entry.credits, "unpushed": entry.unpushed,
-                                 "agents": entry.agents, "background": entry.background, "apps": entry.apps, "agent": entry.agent});
+                                  "agents": entry.agents, "background": entry.background, "apps": entry.apps, "agent": entry.agent,
+                                  "ask_to_run": run_phases.get(session).copied().unwrap_or("")});
             for (key, value) in &entry.target {
                 row[key] = json!(value);
             }

@@ -1901,6 +1901,23 @@ fn a_card_shows_its_background_work_with_the_agents_counted() {
 }
 
 #[test]
+fn ask_to_run_badges_stay_on_their_session_and_clear_when_finished() {
+    let fixture = Fixture::new();
+    for phase in ["approval", "running", "input", ""] {
+        let mut row = session(SESSION_A, "working", "runway", "/r/runway", 1);
+        row["ask_to_run"] = json!(phase);
+        fixture.snapshot(json!([row, session(SESSION_B, "working", "runway", "/r/runway-clone", 2)]));
+        let app = fixture.app();
+        for (index, session) in app.sessions.iter().enumerate() {
+            let badges: Vec<_> = app.panels[1].lines.iter().filter(|line| line.item == Some(index))
+                .flat_map(|line| &line.right).filter(|part| part.text.starts_with("ask-to-run:")).map(|part| part.text.as_str()).collect();
+            let expected = if session.session == SESSION_A && !phase.is_empty() { vec![format!("ask-to-run: {phase}")] } else { vec![] };
+            assert_eq!(badges, expected, "session {} in phase {phase}", session.session);
+        }
+    }
+}
+
+#[test]
 fn the_background_badge_names_what_runs() {
     let badge = |agents, background| sessions::background_badge(&sessions::Session { agents, background, ..Default::default() });
     assert_eq!(badge(0, 0), None);
