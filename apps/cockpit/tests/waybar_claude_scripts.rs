@@ -67,6 +67,171 @@ fn unknown_usage_values_render_a_dash() {
     assert_eq!(usage(&sandbox, "five_hour", &json!({"five_hour": null, "seven_day": null}))["class"], "unknown");
 }
 
+fn codex_sandbox() -> Sandbox {
+    let mut sandbox = Sandbox::new();
+    sandbox.env.insert("XDG_DATA_HOME".into(), sandbox.home.join(".local/share").display().to_string());
+    sandbox.env.insert("CODEX_HOME".into(), sandbox.home.join(".codex").display().to_string());
+    let credentials = sandbox.home.join(".local/share/opencode/auth.json");
+    fs::create_dir_all(credentials.parent().unwrap()).unwrap();
+    fs::write(credentials, json!({"openai": {"type": "oauth", "access": "secret-test-token", "expires": 4102444800000i64,
+                                            "accountId": "test-account"}}).to_string()).unwrap();
+    sandbox.shim("curl", r#"
+headers=$(cat)
+[[ $headers == *'Authorization: Bearer secret-test-token'* && $headers == *'ChatGPT-Account-Id: test-account'* ]] || exit 2
+[[ "$*" == *'https://chatgpt.com/backend-api/wham/usage'* && "$*" != *secret-test-token* ]] || exit 3
+cat "$HOME/response.json"
+"#);
+    fs::write(sandbox.home.join("response.json"), json!({"rate_limit": {"allowed": true, "limit_reached": false,
+        "primary_window": {"used_percent": 28, "limit_window_seconds": 18000, "reset_at": 4102444800i64},
+        "secondary_window": {"used_percent": 86, "limit_window_seconds": 604800, "reset_at": 4102444800i64}}}).to_string()).unwrap();
+    sandbox
+}
+
+fn fetch_codex(sandbox: &Sandbox, force: bool) -> std::process::Output {
+    let script = waybar_scripts().join("codex-usage.sh");
+    let mut arguments = vec![script.to_str().unwrap()];
+    if force { arguments.push("--force"); }
+    sandbox.run("bash", &arguments, &[])
+}
+
+#[test]
+fn codex_quota_is_cached_without_persisting_or_printing_credentials() {
+    let sandbox = codex_sandbox();
+    let credentials = sandbox.home.join(".local/share/opencode/auth.json");
+    let original = fs::read(&credentials).unwrap();
+    let output = fetch_codex(&sandbox, false);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let cached = fs::read_to_string(sandbox.runtime.join("codex-usage.json")).unwrap();
+    let quota: Value = serde_json::from_str(&cached).unwrap();
+    assert_eq!(quota["rate_limit"]["primary_window"]["used_percent"], 28);
+    assert_eq!(quota["rate_limit"]["secondary_window"]["used_percent"], 86);
+    assert_eq!(fs::read(credentials).unwrap(), original);
+    for exposed in [cached, stdout(&output), stderr(&output), fs::read_to_string(&sandbox.log).unwrap()] {
+        assert!(!exposed.contains("secret-test-token"));
+    }
+}
+
+#[test]
+fn codex_quota_reuses_recent_cache_unless_forced() {
+    let sandbox = codex_sandbox();
+    assert!(fetch_codex(&sandbox, false).status.success());
+    assert!(fetch_codex(&sandbox, false).status.success());
+    assert_eq!(sandbox.calls("curl").len(), 1);
+    assert!(fetch_codex(&sandbox, true).status.success());
+    assert_eq!(sandbox.calls("curl").len(), 2);
+}
+
+#[test]
+fn codex_quota_reports_missing_or_expired_auth_without_using_another_account() {
+    for credentials in [json!({}), json!({"openai": {"type": "oauth", "access": "expired-token", "expires": 1}})] {
+        let sandbox = codex_sandbox();
+        fs::write(sandbox.home.join(".local/share/opencode/auth.json"), credentials.to_string()).unwrap();
+        // An expired OpenCode account must not fall back to another Codex CLI account.
+        if credentials.get("openai").is_some() {
+            fs::create_dir_all(sandbox.home.join(".codex")).unwrap();
+            fs::write(sandbox.home.join(".codex/auth.json"), r#"{"tokens":{"access_token":"other-token","account_id":"other-account"}}"#).unwrap();
+        }
+        let output = fetch_codex(&sandbox, false);
+        assert!(output.status.success(), "{}", stderr(&output));
+        assert!(sandbox.calls("curl").is_empty());
+        let error: Value = serde_json::from_str(&fs::read_to_string(sandbox.runtime.join("codex-usage-error.json")).unwrap()).unwrap();
+        assert!(!error["error"].as_str().unwrap().is_empty());
+        assert!(!sandbox.runtime.join("codex-usage.json").exists());
+    }
+}
+
+#[test]
+fn failed_codex_refresh_keeps_the_last_successful_quota_and_timestamp() {
+    for body in ["exit 22", "printf not-json", "printf '{}'", "printf '{\"rate_limit\": null}'"] {
+        let sandbox = codex_sandbox();
+        assert!(fetch_codex(&sandbox, false).status.success());
+        let cache = sandbox.runtime.join("codex-usage.json");
+        let original = fs::read(&cache).unwrap();
+        let modified = fs::metadata(&cache).unwrap().modified().unwrap();
+        sandbox.shim("curl", body);
+        assert!(fetch_codex(&sandbox, true).status.success());
+        assert_eq!(fs::read(&cache).unwrap(), original);
+        assert_eq!(fs::metadata(&cache).unwrap().modified().unwrap(), modified);
+        assert!(sandbox.runtime.join("codex-usage-error.json").exists());
+    }
+}
+
+#[test]
+fn successful_codex_refresh_clears_the_previous_error() {
+    let sandbox = codex_sandbox();
+    fs::write(sandbox.runtime.join("codex-usage-error.json"), r#"{"error":"request failed"}"#).unwrap();
+    assert!(fetch_codex(&sandbox, true).status.success());
+    assert!(!sandbox.runtime.join("codex-usage-error.json").exists());
+}
+
+#[test]
+fn codex_quota_uses_cli_credentials_when_opencode_has_no_oauth_account() {
+    let sandbox = codex_sandbox();
+    fs::write(sandbox.home.join(".local/share/opencode/auth.json"), r#"{"openai":{"type":"api","key":"api-key"}}"#).unwrap();
+    fs::create_dir_all(sandbox.home.join(".codex")).unwrap();
+    let credentials = sandbox.home.join(".codex/auth.json");
+    let original = r#"{"tokens":{"access_token":"secret-test-token","account_id":"test-account"}}"#;
+    fs::write(&credentials, original).unwrap();
+    let output = fetch_codex(&sandbox, false);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(sandbox.runtime.join("codex-usage.json").exists());
+    assert_eq!(fs::read_to_string(credentials).unwrap(), original);
+}
+
+#[test]
+fn claude_forced_refresh_updates_recent_cache_and_clears_the_error() {
+    let sandbox = Sandbox::new();
+    fs::create_dir_all(sandbox.home.join(".claude")).unwrap();
+    fs::write(sandbox.home.join(".claude/.credentials.json"),
+        r#"{"claudeAiOauth":{"accessToken":"claude-test-token","expiresAt":4102444800000}}"#).unwrap();
+    fs::write(sandbox.runtime.join("claude-usage.json"), r#"{"five_hour":{"utilization":28}}"#).unwrap();
+    fs::write(sandbox.runtime.join("claude-usage-error.json"), r#"{"error":"unknown"}"#).unwrap();
+    sandbox.shim("curl", r#"cat >/dev/null; printf '{"five_hour":{"utilization":86}}'"#);
+    let output = sandbox.run(waybar_scripts().join("claude-usage.sh"), &["five_hour", "--force"], &[]);
+    assert!(output.status.success());
+    let cached: Value = serde_json::from_str(&fs::read_to_string(sandbox.runtime.join("claude-usage.json")).unwrap()).unwrap();
+    assert_eq!(cached["five_hour"]["utilization"], 86);
+    assert!(!sandbox.runtime.join("claude-usage-error.json").exists());
+    assert!(!fs::read_to_string(&sandbox.log).unwrap().contains("claude-test-token"));
+}
+
+#[test]
+fn claude_forced_refresh_preserves_its_cache_when_the_request_fails() {
+    let sandbox = Sandbox::new();
+    fs::create_dir_all(sandbox.home.join(".claude")).unwrap();
+    fs::write(sandbox.home.join(".claude/.credentials.json"),
+        r#"{"claudeAiOauth":{"accessToken":"claude-test-token","expiresAt":4102444800000}}"#).unwrap();
+    let cache = sandbox.runtime.join("claude-usage.json");
+    let original = r#"{"five_hour":{"utilization":28}}"#;
+    fs::write(&cache, original).unwrap();
+    sandbox.shim("curl", "exit 22");
+    let output = sandbox.run(waybar_scripts().join("claude-usage.sh"), &["five_hour", "--force"], &[]);
+    assert!(output.status.success());
+    assert_eq!(sandbox.calls("curl").len(), 1, "a forced refresh must bypass the recent cache");
+    assert_eq!(fs::read_to_string(cache).unwrap(), original);
+}
+
+#[test]
+fn invalid_claude_refresh_preserves_the_last_successful_quota_and_timestamp() {
+    for response in ["not-json", r#"{"error":{"message":"try later"}}"#, "{}"] {
+        let sandbox = Sandbox::new();
+        fs::create_dir_all(sandbox.home.join(".claude")).unwrap();
+        fs::write(sandbox.home.join(".claude/.credentials.json"),
+            r#"{"claudeAiOauth":{"accessToken":"claude-test-token","expiresAt":4102444800000}}"#).unwrap();
+        let cache = sandbox.runtime.join("claude-usage.json");
+        let original = r#"{"five_hour":{"utilization":28}}"#;
+        fs::write(&cache, original).unwrap();
+        let modified = fs::metadata(&cache).unwrap().modified().unwrap();
+        fs::write(sandbox.home.join("response.json"), response).unwrap();
+        sandbox.shim("curl", r#"cat >/dev/null; cat "$HOME/response.json""#);
+        let output = sandbox.run(waybar_scripts().join("claude-usage.sh"), &["five_hour", "--force"], &[]);
+        assert!(output.status.success());
+        assert_eq!(fs::read_to_string(&cache).unwrap(), original);
+        assert_eq!(fs::metadata(&cache).unwrap().modified().unwrap(), modified);
+        assert!(sandbox.runtime.join("claude-usage-error.json").exists());
+    }
+}
+
 struct BarVisibility {
     sandbox: Sandbox,
     workspace: std::path::PathBuf,

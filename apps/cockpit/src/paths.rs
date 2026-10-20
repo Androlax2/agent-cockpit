@@ -38,6 +38,7 @@ pub fn current() -> PathBuf { runtime_dir().join("claude-sessions.current") }
 /// While it exists, the phone page notifies: the lock screen's claude-sessions away on.
 pub fn phone_away() -> PathBuf { runtime_dir().join("claude-remote-away") }
 pub fn usage_cache() -> PathBuf { runtime_dir().join("claude-usage.json") }
+pub fn codex_usage_cache() -> PathBuf { runtime_dir().join("codex-usage.json") }
 /// Sessions' reports and requests: the one FIFO the sandboxes can write (greywall allowWrite).
 pub fn osd_fifo() -> PathBuf { runtime_dir().join("osd.fifo") }
 /// Everything else the OSD daemon takes (banners, focus, clearing, phases, volume): only programs

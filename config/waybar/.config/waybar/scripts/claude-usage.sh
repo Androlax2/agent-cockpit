@@ -16,6 +16,7 @@ WINDOW=${1:?usage: claude-usage.sh five_hour|seven_day}
 CREDENTIALS="$HOME/.claude/.credentials.json"
 USAGE_URL="https://api.anthropic.com/api/oauth/usage"
 CACHE="${XDG_RUNTIME_DIR:-/tmp}/claude-usage.json"
+ERROR_CACHE="${XDG_RUNTIME_DIR:-/tmp}/claude-usage-error.json"
 CACHE_MAX_AGE_S=240
 WARNING_AT=70
 CRITICAL_AT=90
@@ -24,12 +25,15 @@ declare -A GLYPHS=([five_hour]=$(printf '\xf3\xb0\x85\x90') [seven_day]=$(printf
 GLYPH_COLOR="#a9b1d6"
 
 print_unavailable() { # class reason
+    if [[ -z ${CLAUDE_USAGE_FIXTURE:-} ]]; then
+        jq -cn --arg reason "$1" '{error: $reason}' > "$ERROR_CACHE.tmp" && mv "$ERROR_CACHE.tmp" "$ERROR_CACHE"
+    fi
     jq -cn --arg class "$1" --arg reason "$2" \
         '{text: "–", tooltip: "<b>Claude usage</b>\n\($reason | gsub("&"; "&amp;") | gsub("<"; "&lt;") | gsub(">"; "&gt;"))", class: $class, alt: $class}'
 }
 
 cache_is_fresh() {
-    [[ -f $CACHE ]] && (( $(date +%s) - $(stat -c %Y "$CACHE") < CACHE_MAX_AGE_S ))
+    [[ ${1:-} != --force && -f $CACHE ]] && (( $(date +%s) - $(stat -c %Y "$CACHE") < CACHE_MAX_AGE_S ))
 }
 
 fetch_response() {
@@ -45,15 +49,21 @@ fetch_response() {
         return 1
     fi
     local body
-    if ! body=$(curl -sS -f -m 15 \
-            -H "Authorization: Bearer $token" \
+    if ! body=$(printf 'Authorization: Bearer %s\n' "$token" | curl -sS -f -m 15 \
+            --header @- \
             -H "anthropic-beta: oauth-2025-04-20" \
             -H "Accept: application/json" \
             "$USAGE_URL" 2>"$errors"); then
         print_unavailable unknown "request failed: $(head -c 200 "$errors")"
         return 1
     fi
+    if ! jq -e 'type == "object" and (has("five_hour") or has("seven_day") or
+            (.limits | type == "array") or (.model_scoped | type == "array"))' <<< "$body" >/dev/null 2>&1; then
+        print_unavailable unknown "unexpected usage response"
+        return 1
+    fi
     printf '%s\n' "$body" > "$CACHE.tmp" && mv "$CACHE.tmp" "$CACHE"
+    rm -f "$ERROR_CACHE"
 }
 
 errors=$(mktemp)
@@ -73,7 +83,7 @@ else
     if { exec 9>"$CACHE.lock"; } 2>/dev/null; then
         flock 9
     fi
-    if ! cache_is_fresh && ! fetch_response; then
+    if ! cache_is_fresh "${2:-}" && ! fetch_response; then
         exit 0
     fi
     response=$(cat "$CACHE")

@@ -137,10 +137,6 @@ fn state_color(state: &str) -> u8 {
     match state { "working" => BLUE, "waiting" => YELLOW, "needs-you" => RED, "recent" => CYAN, _ => FG_DARK }
 }
 
-fn usage_color(percentage: Option<i64>) -> u8 {
-    match percentage { None => FG_DARK, Some(p) if p >= 90 => RED, Some(p) if p >= 70 => YELLOW, Some(_) => MAGENTA }
-}
-
 fn context_color(percentage: Option<f64>) -> u8 {
     match percentage { None => FG_DARK, Some(p) if p >= 80.0 => RED, Some(p) if p >= 50.0 => YELLOW, Some(_) => GREEN }
 }
@@ -562,6 +558,7 @@ pub struct App {
     pub width: u16,
     pub sessions: Vec<Session>,
     pub(crate) windows: Vec<Window>,
+    quota_rows: Vec<usage::QuotaRow>,
     pub(crate) review_rows: Vec<Review>,
     pub todo_entries: Vec<Entry>,
     pub(crate) todo_scope: String,
@@ -615,7 +612,7 @@ impl App {
             claude_status: ClaudeStatus::default(), panels: Default::default(), focus: 1,
             help_open: false, has_pane_focus: true, message: String::new(), exiting: Vec::new(), labelled: Default::default(), menu: None, settings_menu: None, pairing: None, restore: Vec::new(),
             held: Vec::new(), held_checked: 0.0, queue_checked: 0.0, gaming: util::gaming, restore_checked: 0.0, start_files: Vec::new(),
-            width: DEFAULT_COLUMN_WIDTH, sessions: Vec::new(), windows: Vec::new(), review_rows: Vec::new(), todo_entries: Vec::new(),
+            width: DEFAULT_COLUMN_WIDTH, sessions: Vec::new(), windows: Vec::new(), quota_rows: Vec::new(), review_rows: Vec::new(), todo_entries: Vec::new(),
             todo_scope: String::new(), shown_session: String::new(), todo_tab: TODO_TAB_OPEN, todo_tabs: HashMap::new(), todo_counts: [0; 5], prompts_sent: HashMap::new(), craft_roots: HashMap::new(), hit_lines: HashMap::new(), hit_actions: HashMap::new(),
             gathered: None, pending: Vec::new(), plan: String::new(), craft_checked: 0.0, dotfiles_unpushed: 0, dotfiles_checked: 0.0,
         }
@@ -806,6 +803,7 @@ impl App {
     fn refresh(&mut self) {
         self.gathered = None;
         self.windows = usage::windows();
+        self.quota_rows = usage::quota_rows();
         self.plan = usage::plan();
     }
 
@@ -854,26 +852,28 @@ impl App {
     // ---- Status ----
 
     fn build_status(&mut self) {
-        let windows = &self.windows;
         // Every row's label shares the column, the cost and Claude rows too: sized on the usage rows
         // alone, it shrank to nothing before the first usage fetch and the values covered the labels.
-        let label_width = windows.iter().map(|w| width_of(&w.label)).chain([width_of(COSTS_LABEL), width_of(CLAUDE_LABEL), width_of(TIME_LABEL)]).max().unwrap_or(0) as u16;
-        let resets: Vec<String> = windows.iter().map(usage::resets_short).collect();
-        let resets_width = resets.iter().map(|r| width_of(r)).max().unwrap_or(0);
-        let budget = self.width as i64 - 4 - label_width as i64 - 2 - 5 - if resets_width > 0 { resets_width as i64 + 2 } else { 0 };
-        let bar_width = budget.clamp(usage::USAGE_BAR_MIN as i64, usage::USAGE_BAR_MAX as i64) as usize;
+        let label_width = self.quota_rows.iter().map(|row| width_of(&row.label)).chain([width_of(COSTS_LABEL), width_of(CLAUDE_LABEL), width_of(TIME_LABEL)]).max().unwrap_or(0) as u16;
         let mut lines = Vec::new();
-        for (index, (window, reset)) in windows.iter().zip(resets).enumerate() {
-            let tint = bold(usage_color(window.percentage));
-            let value = window.percentage.map(|p| format!("{p:3}%")).unwrap_or_else(|| "   –".into());
-            lines.push(Line {
-                segments: vec![segment(0, &window.label, style(FG)), segment(label_width + 2, usage::bar(window.percentage, bar_width), tint),
-                               segment(label_width + 3 + bar_width as u16, value, tint)],
-                right: vec![part(reset, dim(FG_DARK))], item: Some(index), accent: None,
+        for (index, quota) in self.quota_rows.iter().enumerate() {
+            let tint = bold(match quota.state.as_str() {
+                "Available" => GREEN,
+                "Low" | "Stale" => YELLOW,
+                "Exhausted" | "Blocked" => RED,
+                _ => FG_DARK,
             });
-        }
-        if windows.is_empty() {
-            lines.push(Line::new(vec![segment(0, "No usage yet (claude-usage.sh has not fetched).", dim(FG_DARK))]));
+            let summary = quota.summary();
+            let room = self.width.saturating_sub(4) as usize;
+            let quota_label_width = (label_width as usize).min(room.saturating_sub(width_of(&summary) + 2));
+            let label = fit(&quota.label, quota_label_width);
+            let end = quota_label_width + 2 + width_of(&summary);
+            let show_reset = !quota.resets.is_empty() && end + 2 + width_of(&quota.resets) <= room;
+            lines.push(Line {
+                segments: vec![segment(0, label, style(FG)), segment(quota_label_width as u16 + 2, summary, tint)],
+                right: if show_reset { vec![part(&quota.resets, dim(FG_DARK))] } else { Vec::new() },
+                item: Some(index), accent: None,
+            });
         }
         let totals = self.costs.totals();
         if totals.today > 0.0 || totals.week > 0.0 || totals.month > 0.0 {
@@ -906,7 +906,7 @@ impl App {
         }
         lines.extend(claude_status_lines(&self.claude_status, label_width));
         let panel = &mut self.panels[0];
-        panel.items = self.windows.len();
+        panel.items = self.quota_rows.len();
         panel.clamp();
         panel.lines = lines;
     }

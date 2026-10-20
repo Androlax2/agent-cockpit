@@ -10,8 +10,6 @@ use std::fs;
 use std::process::{Command, Stdio};
 
 pub const USAGE_REFRESH_S: f64 = 300.0;
-pub const USAGE_BAR_MIN: usize = 8;
-pub const USAGE_BAR_MAX: usize = 40;
 const REPORT_BAR_WIDTH: usize = 40;
 const ALERT_THRESHOLDS: [i64; 2] = [80, 95];
 /// The flat windows: the older shape of the response, used only without its "limits" list.
@@ -36,7 +34,87 @@ pub fn cache() -> Value {
 }
 
 fn rounded(value: Option<&Value>) -> Option<i64> {
-    value.and_then(Value::as_f64).map(|number| number.round() as i64)
+    value.and_then(Value::as_f64).filter(|number| (0.0..=100.0).contains(number)).map(|number| number.round() as i64)
+}
+
+#[derive(Clone, Debug)]
+pub struct QuotaRow {
+    pub label: String,
+    pub state: String,
+    pub remaining: Option<i64>,
+    pub resets: String,
+}
+
+impl QuotaRow {
+    pub fn summary(&self) -> String {
+        match self.remaining {
+            Some(remaining) if self.state == "Stale" => format!("Stale · last {remaining}% left"),
+            Some(remaining) => format!("{} · {remaining}% left", self.state),
+            None => self.state.clone(),
+        }
+    }
+}
+
+/// The last confirmed subscription quotas. Errors and elapsed resets cannot imply new capacity.
+pub fn quota_rows() -> Vec<QuotaRow> {
+    let claude = windows().into_iter().map(|mut window| {
+        window.label = match window.key.as_str() {
+            "five_hour" | "session" => "5h".into(),
+            "seven_day" | "weekly_all" => "week".into(),
+            _ => window.label,
+        };
+        window
+    }).collect();
+    let mut rows = provider_quota_rows("Claude", claude, &paths::usage_cache(), false);
+    let codex = read_json(&paths::codex_usage_cache()).unwrap_or(Value::Null);
+    let limits = &codex["rate_limit"];
+    let windows = ["primary_window", "secondary_window"].into_iter().filter_map(|key| {
+        let window = limits.get(key).filter(|window| window.is_object())?;
+        let label = match window["limit_window_seconds"].as_i64() {
+            Some(604800) => "week".into(),
+            Some(seconds) if seconds > 0 && seconds % 86400 == 0 => format!("{}d", seconds / 86400),
+            Some(seconds) if seconds > 0 && seconds % 3600 == 0 => format!("{}h", seconds / 3600),
+            Some(seconds) if seconds > 0 && seconds % 60 == 0 => format!("{}m", seconds / 60),
+            Some(seconds) if seconds > 0 => format!("{seconds}s"),
+            _ => key.trim_end_matches("_window").into(),
+        };
+        let resets_at = window["reset_at"].as_i64().and_then(|stamp| chrono::DateTime::from_timestamp(stamp, 0)).map(|moment| moment.to_rfc3339());
+        Some(Window { key: key.into(), label, percentage: rounded(window.get("used_percent")), resets: reset_time(resets_at.as_deref()),
+                      resets_at, note: String::new() })
+    }).collect();
+    let blocked = limits["allowed"].as_bool() == Some(false) || limits["limit_reached"].as_bool() == Some(true);
+    rows.extend(provider_quota_rows("Codex", windows, &paths::codex_usage_cache(), blocked));
+    rows
+}
+
+fn provider_quota_rows(provider: &str, windows: Vec<Window>, cache: &std::path::Path, blocked: bool) -> Vec<QuotaRow> {
+    let fetched = fs::metadata(cache).and_then(|metadata| metadata.modified()).ok();
+    let failed = fs::metadata(cache.with_file_name(format!("{}-usage-error.json", provider.to_lowercase())))
+        .and_then(|metadata| metadata.modified()).ok();
+    let stale = fetched.is_none_or(|stamp| stamp.elapsed().map_or(true, |age| age.as_secs() > 600))
+        || failed.is_some_and(|error| fetched.is_none_or(|stamp| error >= stamp));
+    if windows.is_empty() {
+        return vec![QuotaRow { label: provider.into(), state: if blocked && !stale { "Blocked" } else { "Unknown" }.into(),
+                              remaining: None, resets: String::new() }];
+    }
+    windows.into_iter().map(|window| {
+        let remaining = window.percentage.map(|used| 100 - used);
+        let reset_passed = window.resets_at.as_deref().and_then(parse_time).is_some_and(|reset| reset <= Utc::now());
+        let state = match remaining {
+            None => "Unknown",
+            Some(_) if stale || reset_passed => "Stale",
+            Some(_) if blocked => "Blocked",
+            Some(0) => "Exhausted",
+            Some(1..=20) => "Low",
+            Some(_) => "Available",
+        };
+        let resets = match time_left(&window).as_str() {
+            "" => String::new(),
+            "now" => "reset pending".into(),
+            left => format!("resets in {left}"),
+        };
+        QuotaRow { label: format!("{provider} · {}", window.label), state: state.into(), remaining, resets }
+    }).collect()
 }
 
 /// Every limit in the cache, as the usage page lists them.
@@ -289,12 +367,18 @@ impl Refresher {
             return;
         }
         self.last_run = now();
-        if force {
-            let _ = fs::remove_file(paths::usage_cache()); // the script trusts a cache younger than 4 min
-        }
         let script = paths::usage_script();
         if script.exists() {
-            let _ = Command::new(script).arg("five_hour").stdout(Stdio::null()).stderr(Stdio::null()).spawn();
+            let mut command = Command::new(script);
+            command.arg("five_hour");
+            if force { command.arg("--force"); }
+            let _ = command.stdout(Stdio::null()).stderr(Stdio::null()).spawn();
+        }
+        let script = paths::home().join(".config/waybar/scripts/codex-usage.sh");
+        if script.exists() {
+            let mut command = Command::new(script);
+            if force { command.arg("--force"); }
+            let _ = command.stdout(Stdio::null()).stderr(Stdio::null()).spawn();
         }
     }
 }
