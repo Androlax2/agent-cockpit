@@ -1640,6 +1640,8 @@ apply_dotfiles() { # [clone]
     git -C "$DOTFILES_LIVE" apply --stat "$copies"/*.patch
     if ! patches_apply_in_order "$copies"; then
         echo "They do not apply to $DOTFILES_LIVE as it is: rebase the clone on origin/main and export again." >&2
+        # A stale export needs its author, not a new cockpit repair session from the error hand-off.
+        if [[ $log_command == apply-dotfiles ]]; then log_failure_level=WARN; fi
         return 1
     fi
     # Control characters shown, never interpreted: the patches are text a sandbox wrote. less reads
@@ -1776,6 +1778,7 @@ else
 fi
 
 log_command=${1:-attach}
+log_failure_level=ERROR
 log_started=$(date +%s%N)
 log_arguments="${*:2}"
 if [[ $log_command == say ]]; then
@@ -1794,7 +1797,7 @@ if [[ $log_command == label-state || $log_command == focus-viewer ]]; then
     # Called on every view change: only their failures are worth a line (40% of the log were these).
     trap 'log_status=$?; ((log_status)) && log_event ERROR manager "$log_command $log_arguments -> exit $log_status ($(( ($(date +%s%N) - log_started) / 1000000 )) ms)"' EXIT
 elif [[ $log_command != idle && $log_command != log && $log_command != logs ]]; then
-    trap 'log_status=$?; log_event "$( ((log_status)) && echo ERROR || echo INFO)" manager "$log_command $log_arguments -> exit $log_status ($(( ($(date +%s%N) - log_started) / 1000000 )) ms)"' EXIT
+    trap 'log_status=$?; log_event "$( ((log_status)) && echo "$log_failure_level" || echo INFO)" manager "$log_command $log_arguments -> exit $log_status ($(( ($(date +%s%N) - log_started) / 1000000 )) ms)"' EXIT
 fi
 if [[ -n ${CLAUDE_SESSIONS_LOG_STDERR:-} ]]; then
     exec 2> >(while IFS= read -r line; do log_event ERROR manager "$line"; done)

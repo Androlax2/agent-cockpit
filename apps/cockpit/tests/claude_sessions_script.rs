@@ -2124,6 +2124,19 @@ fn apply_dotfiles_refuses_patches_that_do_not_apply_and_leaves_the_checkout_alon
 }
 
 #[test]
+fn apply_dotfiles_logs_a_stale_patch_as_a_warning_not_a_cockpit_error() {
+    let manager = Manager::new();
+    let (live, work) = dotfiles_pair(&manager);
+    fs::write(live.join("README"), "changed in the live checkout\n").unwrap();
+    assert!(Command::new("git").arg("-C").arg(&live).args(["commit", "-qam", "Live change"]).status().unwrap().success());
+    let output = apply_dotfiles(&manager, &live, &work, "y\n");
+    assert_eq!(output.status.code(), Some(1));
+    let lines = manager.log_lines();
+    assert!(lines.iter().any(|line| line.contains(" WARN manager: apply-dotfiles ") && line.contains("-> exit 1")), "{lines:?}");
+    assert!(!lines.iter().any(|line| line.contains(" ERROR ")), "{lines:?}");
+}
+
+#[test]
 fn apply_dotfiles_applies_nothing_without_a_yes() {
     let manager = Manager::new();
     let (live, work) = dotfiles_pair(&manager);
@@ -2320,6 +2333,7 @@ fn a_failed_build_after_an_apply_leaves_the_osd_daemon_running() {
     assert_eq!(output.status.code(), Some(1));
     assert!(stderr(&output).contains("build failed"), "{}", stderr(&output));
     assert!(manager.calls("setsid").is_empty(), "{:?}", manager.calls("setsid"));
+    assert!(manager.log_lines().iter().any(|line| line.contains(" ERROR manager: apply-dotfiles ") && line.contains("-> exit 1")));
 }
 
 #[test]
