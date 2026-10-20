@@ -163,7 +163,7 @@ agent_opencode_restore() { # dir id
 }
 
 # Escape twice interrupts a turn, Ctrl-C clears typed input, Ctrl-C at an empty prompt exits. Two
-# rounds, then the tmux session is killed.
+# rounds with a one-second grace each, then force-close.
 agent_opencode_exit() { # tmux-session pane id
     local attempt
     for attempt in 1 2; do
@@ -172,7 +172,7 @@ agent_opencode_exit() { # tmux-session pane id
         tmux send-keys -t "$2" C-c
         sleep 0.3
         tmux send-keys -t "$2" C-c
-        if claude_left "$1" "$2" 3; then
+        if claude_left "$1" "$2" 1; then
             # A failed exit leaves the start's epilogue waiting for a key.
             if tmux has-session -t "=$1" 2>/dev/null; then tmux kill-session -t "=$1" 2>/dev/null || true; fi
             return 0

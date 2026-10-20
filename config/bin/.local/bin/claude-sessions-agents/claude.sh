@@ -145,7 +145,7 @@ agent_claude_restore() { # dir id
 
 # At the idle prompt /exit is the clean way out. Otherwise two Ctrl-C in quick succession: the
 # first interrupts the turn or clears typed input, the second must follow within Claude's short
-# "press again to exit" window. Two rounds, then the tmux session is killed.
+# "press again to exit" window. Two rounds with a one-second grace each, then force-close.
 agent_claude_exit() { # tmux-session pane id
     local target=$1 pane=$2 id=$3 attempt
     for attempt in 1 2; do
@@ -156,7 +156,7 @@ agent_claude_exit() { # tmux-session pane id
             sleep 0.3
             tmux send-keys -t "$pane" C-c
         fi
-        if claude_left "$target" "$pane" 3; then
+        if claude_left "$target" "$pane" 1; then
             # What claude-auto-retry left behind, if anything.
             if tmux has-session -t "=$target" 2>/dev/null; then tmux kill-session -t "=$target" 2>/dev/null || true; fi
             return 0

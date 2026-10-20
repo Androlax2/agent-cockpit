@@ -320,6 +320,52 @@ fn exit_gives_up_on_time_even_when_the_liveness_check_is_slow() {
 }
 
 #[test]
+fn unresponsive_sessions_close_within_five_seconds() {
+    for agent in ["claude", "opencode"] {
+        let manager = Manager::new();
+        let session = if agent == "opencode" {
+            manager.with_opencode_session("working");
+            OPENCODE_SESSION
+        } else {
+            SESSION_A
+        };
+        let started = Instant::now();
+        let result = manager.run(&["exit", session], &[("SHIM_PANE_TEXT", BUSY_WITHOUT_PROMPT), ("SHIM_EXIT_AFTER", "99")]);
+        assert!(started.elapsed() < Duration::from_secs(5), "{agent} took {:?}", started.elapsed());
+        assert_eq!(result.status.code(), Some(0), "{}", stderr(&result));
+        assert_eq!(manager.tmux_calls("kill-session"), ["tmux kill-session -t =claude-retry-9-9"]);
+    }
+}
+
+#[test]
+fn stalled_liveness_checks_do_not_hold_up_session_shutdown() {
+    let manager = Manager::new();
+    manager.sandbox.shim("osd", &format!(r#"if [[ $1 == liveness ]]; then exec /usr/bin/sleep 10; else exec {} "$@"; fi"#, bin().join("osd").display()));
+    let started = Instant::now();
+    let result = manager.run(&["exit", SESSION_A], &[("SHIM_PANE_TEXT", BUSY_WITHOUT_PROMPT), ("SHIM_EXIT_AFTER", "99")]);
+    assert!(started.elapsed() < Duration::from_secs(5), "took {:?}", started.elapsed());
+    assert!(stderr(&result).contains("did not exit"), "{}", stderr(&result));
+    assert_eq!(manager.tmux_calls("kill-session"), ["tmux kill-session -t =claude-retry-9-9"]);
+}
+
+#[test]
+fn a_session_can_still_exit_gracefully_on_the_second_attempt() {
+    for (agent, key_count) in [("claude", "4"), ("opencode", "6")] {
+        let manager = Manager::new();
+        let session = if agent == "opencode" {
+            manager.with_opencode_session("working");
+            OPENCODE_SESSION
+        } else {
+            SESSION_A
+        };
+        let result = manager.run(&["exit", session], &[("SHIM_PANE_TEXT", BUSY_WITHOUT_PROMPT), ("SHIM_EXIT_AFTER", "99"), ("SHIM_CLAUDE_EXIT_AFTER", key_count)]);
+        assert_eq!(result.status.code(), Some(0), "{}", stderr(&result));
+        assert!(!stderr(&result).contains("did not exit"), "{}", stderr(&result));
+        assert_eq!(manager.tmux_calls("send-keys").len(), key_count.parse::<usize>().unwrap());
+    }
+}
+
+#[test]
 fn restart_exits_then_resumes_the_same_conversation() {
     let manager = Manager::new();
     manager.run(&["restart", SESSION_A], &[("SHIM_PANE_TEXT", IDLE), ("SHIM_EXIT_AFTER", "1")]);

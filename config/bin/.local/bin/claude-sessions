@@ -519,13 +519,12 @@ session_field() { # id field
 
 # The session is over once its tmux session ended, or once no Claude runs in its pane any more:
 # claude-auto-retry keeps a shell after a non-zero exit, and that wait used to cost two rounds.
-# The timeout is wall-clock time: counted in loop turns, a slow /proc scan in osd liveness once
-# stretched each 3 s wait to a minute.
+# Bound each /proc scan too: checking the deadline only between scans cannot stop a stalled one.
 claude_left() { # tmux-session pane timeout-seconds
     local deadline=$(( ${EPOCHREALTIME//[!0-9]/} + $3 * 1000000 ))
     while (( ${EPOCHREALTIME//[!0-9]/} < deadline )); do
         tmux has-session -t "=$1" 2>/dev/null || return 0
-        [[ $(osd liveness "" "$2" 2>/dev/null) == none ]] && return 0
+        [[ $(timeout --signal=KILL 0.5s osd liveness "" "$2" 2>/dev/null) == none ]] && return 0
         sleep 0.1
     done
     return 1
