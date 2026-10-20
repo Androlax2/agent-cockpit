@@ -132,15 +132,18 @@ fn simultaneous_opens_of_one_checkout_start_only_one_window() {
 #[test]
 fn a_closed_instances_port_is_not_reassigned_to_another_checkout() {
     let craft = Craft::new();
-    assert!(craft.run(&["figcraft"], &[]).status.success());
+    let output = craft.run(&["figcraft"], &[]);
+    assert!(output.status.success(), "initial open: {}{}", stdout(&output), stderr(&output));
     let original_port = craft.started_port(0);
     let original_pid = fs::read_to_string(craft.sandbox.home.join("figcraft-pids")).unwrap();
     assert!(Command::new("kill").arg(original_pid.trim()).status().unwrap().success());
     fs::write(craft.sandbox.home.join("figcraft-pids"), "").unwrap();
     let other = craft.other_project("other");
-    assert!(craft.command(&other, &["figcraft"], &[]).output().unwrap().status.success());
+    let output = craft.command(&other, &["figcraft"], &[]).output().unwrap();
+    assert!(output.status.success(), "other checkout: {}{}", stdout(&output), stderr(&output));
     assert_ne!(original_port, craft.started_port(1));
-    assert!(craft.run(&["figcraft"], &[]).status.success());
+    let output = craft.run(&["figcraft"], &[]);
+    assert!(output.status.success(), "reopen: {}{}", stdout(&output), stderr(&output));
     assert_eq!(original_port, craft.started_port(2));
 }
 
