@@ -213,6 +213,51 @@ fn new_refuses_a_directory_with_a_tmux_format() {
 }
 
 #[test]
+fn exiting_the_viewed_session_restores_the_empty_viewer() {
+    for (roles, respawn) in [
+        ("%10 sidebar\n%11 viewer\n", "tmux respawn-pane -k -t %11 claude-sessions idle"),
+        ("%10 sidebar\n%11 viewer\n%12 approval 0 run-a\n", "tmux respawn-pane -k -t %11 claude-sessions idle ; kill-pane -t %12"),
+    ] {
+        let manager = Manager::new();
+        fs::write(manager.runtime_file("claude-sessions.current"), SESSION_A).unwrap();
+        fs::write(&manager.roles, roles).unwrap();
+
+        let result = manager.run(&["exit", SESSION_A], &[("SHIM_PANE_TEXT", IDLE), ("SHIM_EXIT_AFTER", "1")]);
+
+        assert_eq!(result.status.code(), Some(0), "{}", stderr(&result));
+        assert_eq!(manager.tmux_calls("respawn-pane"), [respawn]);
+        assert!(fs::read_to_string(manager.runtime_file("claude-sessions.current")).unwrap().is_empty());
+        assert!(manager.calls("tmux").contains(&"tmux select-pane -t %10 -T sessions ; set-option -p -t %11 @project  ; set-option -p -t %11 @state ".to_string()));
+        assert!(manager.calls("tmux").contains(&"tmux select-pane -t %10".to_string()));
+    }
+}
+
+#[test]
+fn exiting_another_session_keeps_the_viewer() {
+    let manager = Manager::new();
+    fs::write(manager.runtime_file("claude-sessions.current"), SESSION_B).unwrap();
+
+    let result = manager.run(&["exit", SESSION_A], &[("SHIM_PANE_TEXT", IDLE), ("SHIM_EXIT_AFTER", "1")]);
+
+    assert_eq!(result.status.code(), Some(0), "{}", stderr(&result));
+    assert!(manager.tmux_calls("respawn-pane").is_empty());
+    assert_eq!(fs::read_to_string(manager.runtime_file("claude-sessions.current")).unwrap(), SESSION_B);
+}
+
+#[test]
+fn selecting_a_session_during_exit_keeps_the_new_viewer() {
+    let manager = Manager::new();
+    fs::write(manager.runtime_file("claude-sessions.current"), SESSION_A).unwrap();
+    manager.sandbox.shim("sleep", &format!(r#"printf '%s' '{SESSION_B}' > "$XDG_RUNTIME_DIR/claude-sessions.current""#));
+
+    let result = manager.run(&["exit", SESSION_A], &[("SHIM_PANE_TEXT", IDLE), ("SHIM_EXIT_AFTER", "1")]);
+
+    assert_eq!(result.status.code(), Some(0), "{}", stderr(&result));
+    assert!(manager.tmux_calls("respawn-pane").is_empty());
+    assert_eq!(fs::read_to_string(manager.runtime_file("claude-sessions.current")).unwrap(), SESSION_B);
+}
+
+#[test]
 fn exit_types_slash_exit_at_an_idle_prompt() {
     let manager = Manager::new();
     manager.run(&["exit", SESSION_A], &[("SHIM_PANE_TEXT", IDLE), ("SHIM_EXIT_AFTER", "1")]);
