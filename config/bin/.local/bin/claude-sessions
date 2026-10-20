@@ -448,6 +448,14 @@ detached_size() {
 # restart, billing and restore set it from the session; everything else starts on the subscription.
 launch_credits=0
 
+# Claude sessions Theo restarted into a linked team load the cockpit-team channel (the launcher
+# reads CLAUDE_SESSIONS_TEAM_CHANNEL): one marker per session, host-only, kept across restarts.
+TEAM_CHANNELS="${XDG_STATE_HOME:-$HOME/.local/state}/claude-sessions/team-channel"
+launch_team_channel=0
+team_channel_of() { # id
+    if is_session_id "$1" && [[ -f $TEAM_CHANNELS/$1 ]]; then echo 1; else echo 0; fi
+}
+
 new_session() {
     local directory=$1 existing
     shift
@@ -894,6 +902,19 @@ restore_sessions() { # dir id [dir id …]
 
 # Exit it and bring it back in its directory; each agent says how (agent_*_restart). An effort or a
 # billing is refused for an agent without the feature.
+# Restart a running Claude session so it loads the team channel (option B: only team members do).
+team_channel_session() { # id
+    local id=$1
+    if [[ $(agent_of_session "$id") != claude ]] || ! agent_claude_is_session_id "$id" || [[ -z $(session_field "$id" cwd) ]]; then
+        echo "claude-sessions: team-channel takes a running Claude session's id" >&2
+        return 1
+    fi
+    mkdir -p "$TEAM_CHANNELS"
+    : > "$TEAM_CHANNELS/$id"
+    audit_event manager session.team_channel asked "session=$id"
+    restart_session "$id" "" detached
+}
+
 restart_session() { # id [effort] [detached] [credits|subscription]
     local id=$1 effort=${2:-} detached=${3:-} billing=${4:-} directory
     directory=$(session_field "$id" cwd)
@@ -1856,6 +1877,7 @@ case ${1:-attach} in
     background) background_session "${2:?usage: claude-sessions background <dir> <prompt>}" "${3:?usage: claude-sessions background <dir> <prompt>}" ;;
     loading-screen) show_loading ;;
     restart) restart_session "${2:?usage: claude-sessions restart <session-id> [effort] [detached]}" "${3:-}" "${4:-}" ;;
+    team-channel) team_channel_session "${2:?usage: claude-sessions team-channel <session-id>}" ;;
     billing)
         # The session restarts on the same conversation, billed the other way.
         [[ ${3:-} == credits || ${3:-} == subscription ]] || { echo "usage: claude-sessions billing <session-id> credits|subscription" >&2; exit 2; }

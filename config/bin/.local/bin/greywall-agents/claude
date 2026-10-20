@@ -27,9 +27,19 @@ if [ "${CLAUDE_SESSIONS_CREDITS:-}" = 1 ]; then
     greywall_options="$greywall_options --secret ANTHROPIC_API_KEY"
 fi
 
-figcraft_mcp_config='{"mcpServers":{"figcraft-app":{"command":"sh","args":["-c","exec figcraft-cli mcp --attach \"${FIGCRAFT_CONTROL_PORT:?FigCraft is not connected to this checkout}\""]}}}'
+figcraft_server='{"command":"sh","args":["-c","exec figcraft-cli mcp --attach \"${FIGCRAFT_CONTROL_PORT:?FigCraft is not connected to this checkout}\""]}'
+
+# A session restarted into a linked team (claude-sessions team-channel) loads the one local
+# cockpit-team channel. Theo approved this single development channel: it skips Claude's channel
+# allowlist only, never tool approvals; the channel declares no permission relay.
+if [ "${CLAUDE_SESSIONS_TEAM_CHANNEL:-}" = 1 ]; then
+    mcp_config="{\"mcpServers\":{\"figcraft-app\":$figcraft_server,\"cockpit-team\":{\"command\":\"cockpit-team\",\"args\":[\"channel\"]}}}"
+    set -- "$@" --dangerously-load-development-channels server:cockpit-team
+else
+    mcp_config="{\"mcpServers\":{\"figcraft-app\":$figcraft_server}}"
+fi
 
 # greywall_options is split on spaces on purpose: every path in it is under $HOME or
 # $XDG_RUNTIME_DIR, which have none.
 # shellcheck disable=SC2086
-exec "$HOME/.local/bin/greywall" $greywall_options -- "$HOME/.local/bin/claude" "$@" --mcp-config "$figcraft_mcp_config"
+exec "$HOME/.local/bin/greywall" $greywall_options -- "$HOME/.local/bin/claude" "$@" --mcp-config "$mcp_config"

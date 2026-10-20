@@ -159,6 +159,17 @@ pub fn request(registry: &mut Registry, peer: u32, action: AgentAction) -> Resul
 /// Host UI only: reached through a socket no sandbox can open.
 pub fn host_control(registry: &mut Registry, action: &HostAction) -> Result<TeamReply, TeamError> {
     let live = live_sessions(registry);
+    if let HostAction::Approve { proposal_id, .. } = action {
+        let members = store::proposal_members(database(registry, &live)?, proposal_id)?;
+        let missing: Vec<String> = members.into_iter()
+            .filter(|(_, agent, runtime)| agent == "claude" && !registry.system.runtime_has_team_channel(runtime))
+            .map(|(session, _, _)| session).collect();
+        if !missing.is_empty() {
+            let commands: Vec<String> = missing.iter().map(|session| format!("claude-sessions team-channel {session}")).collect();
+            return Err(TeamError::new(ErrorCode::Conflict, format!(
+                "Claude members must first restart into the team channel ({}), then review the request again", commands.join("; "))));
+        }
+    }
     let result = database(registry, &live).and_then(|connection| store::control(connection, action, &live, now_ms()));
     record("host_control", None, result.as_ref().is_ok_and(|reply| reply.result.is_ok()));
     result

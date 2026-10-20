@@ -403,6 +403,8 @@ pub trait System {
     fn sender_directory(&mut self, sender: u32) -> Option<String>;
     fn sender_runtime(&mut self, _sender: u32) -> Option<String> { None }
     fn runtime_is_live(&mut self, _runtime: &str) -> bool { false }
+    /// Whether that launch loads Claude's cockpit-team channel, read from its host-side command line.
+    fn runtime_has_team_channel(&mut self, _runtime: &str) -> bool { false }
     fn quiet(&mut self) -> bool {
         self.in_meeting() || self.gaming()
     }
@@ -1851,6 +1853,23 @@ pub fn runtime_is_live(table: &dyn Processes, runtime: &str) -> bool {
     runtime_of_process(table, pid).as_deref() == Some(runtime)
 }
 
+/// The launch's host process (or a host ancestor: the launcher execs greywall in place) carries the
+/// flag and the named server as adjacent arguments; a sandbox cannot rewrite those command lines.
+pub fn runtime_has_team_channel(table: &dyn Processes, runtime: &str) -> bool {
+    if !runtime_is_live(table, runtime) { return false; }
+    let Some(mut pid) = runtime.split(':').nth(1).map(str::to_string) else { return false };
+    let host = table.pid_namespace("self");
+    for _ in 0..8 {
+        if table.pid_namespace(&pid) != host { return false; }
+        if table.command(&pid).windows(2).any(|pair| pair[0] == "--dangerously-load-development-channels" && pair[1] == "server:cockpit-team") {
+            return true;
+        }
+        let Some(parent) = table.parent(&pid) else { return false };
+        pid = parent;
+    }
+    false
+}
+
 /// Where a session report really comes from: the focus target (tmux pane, kitty window) in the
 /// environment of the first ancestor of the sending process that runs outside the sandbox, in the
 /// daemon's own pid namespace. What runs inside a sandbox can set any TMUX_PANE it likes in its own
@@ -2116,5 +2135,8 @@ impl System for RealSystem {
     }
     fn runtime_is_live(&mut self, runtime: &str) -> bool {
         runtime_is_live(&Proc, runtime)
+    }
+    fn runtime_has_team_channel(&mut self, runtime: &str) -> bool {
+        runtime_has_team_channel(&Proc, runtime)
     }
 }

@@ -114,6 +114,8 @@ struct World {
     sender_targets: HashMap<u32, BTreeMap<String, String>>,
     sender_directories: HashMap<u32, String>,
     sender_runtimes: HashMap<u32, String>,
+    /// Runtimes whose launcher command loads Claude's cockpit-team channel.
+    team_channels: HashSet<String>,
 }
 
 impl World {
@@ -169,6 +171,7 @@ impl System for FakeSystem {
     }
     fn sender_runtime(&mut self, sender: u32) -> Option<String> { self.0.borrow().sender_runtimes.get(&sender).cloned() }
     fn runtime_is_live(&mut self, runtime: &str) -> bool { self.0.borrow().sender_runtimes.values().any(|known| known == runtime) }
+    fn runtime_has_team_channel(&mut self, runtime: &str) -> bool { self.0.borrow().team_channels.contains(runtime) }
 }
 
 fn team_bench() -> Bench {
@@ -182,6 +185,7 @@ fn team_bench() -> Bench {
         bench.world.borrow_mut().sender_targets.insert(peer, target(&[("tmux_pane", format!("%{peer}").as_str())]));
         bench.world.borrow_mut().sender_directories.insert(peer, project.to_string_lossy().into_owned());
         bench.world.borrow_mut().sender_runtimes.insert(peer, format!("runtime-{peer}"));
+        bench.world.borrow_mut().team_channels.insert(format!("runtime-{peer}"));
         let report = parse_session(&json!({"session":session,"agent":agent,"project":"project-a","cwd":project,"state":"waiting"}).to_string()).unwrap();
         bench.registry.report_from(report, peer).unwrap();
     }
@@ -237,6 +241,24 @@ fn send_to_designer(bench: &mut Bench, key: &str) {
     let message = Submission { task, submission_key: key.into(), recipient: SESSION_A.into(), kind: MessageKind::Notice,
         body: "The frame is ready.".into(), thread_id: None, handoff_id: None };
     crate::teams::request(&mut bench.registry, 20, AgentAction::Send { message }).unwrap().result.unwrap();
+}
+
+#[test]
+fn a_claude_member_must_run_the_team_channel_before_approval_binds_it() {
+    use cockpit::teams::{AgentAction,HostAction,Member,Proposal,Role,TaskKey};
+    let mut bench = team_bench();
+    bench.world.borrow_mut().team_channels.remove("runtime-10");
+    let own = crate::teams::request(&mut bench.registry, 10, AgentAction::Context).unwrap().result.unwrap();
+    let task = TaskKey { project: own["project"].as_str().unwrap().into(), task_id: "1d3fd318".into() };
+    let proposal = Proposal { submission_key: "link-1".into(), task, members: vec![Member { session_id: SESSION_A.into(), role: Role::Designer },
+        Member { session_id: OPENCODE_SESSION.into(), role: Role::Developer }], reason: "Review this task".into() };
+    let pending = crate::teams::request(&mut bench.registry, 20, AgentAction::Propose { proposal }).unwrap().result.unwrap();
+    let approval = HostAction::Approve { request_id: "host-approval".into(), proposal_id: pending["proposal_id"].as_str().unwrap().into(),
+        expected_revision: 1, mapping_hash: pending["mapping_hash"].as_str().unwrap().into() };
+    let refused = crate::teams::host_control(&mut bench.registry, &approval).unwrap_err();
+    assert!(refused.message.contains(&format!("claude-sessions team-channel {SESSION_A}")), "{}", refused.message);
+    let context = crate::teams::request(&mut bench.registry, 20, AgentAction::Context).unwrap().result.unwrap();
+    assert!(context["members"].as_array().unwrap().is_empty());
 }
 
 #[test]
@@ -1813,6 +1835,37 @@ fn team_runtime_proof_changes_when_a_launcher_pid_is_reused_or_the_machine_reboo
     tree.start = "1000".into();
     tree.boot = "boot-b".into();
     assert!(!runtime_is_live(&tree, &original));
+}
+
+struct CommandTree { timed: TimedTree, commands: HashMap<String, Vec<String>> }
+
+impl Processes for CommandTree {
+    fn pids(&self) -> Vec<String> { self.timed.pids() }
+    fn comm(&self, pid: &str) -> String { self.timed.comm(pid) }
+    fn command(&self, pid: &str) -> Vec<String> { self.commands.get(pid).cloned().unwrap_or_default() }
+    fn environment(&self, pid: &str) -> HashMap<String, String> { self.timed.environment(pid) }
+    fn parent(&self, pid: &str) -> Option<String> { self.timed.parent(pid) }
+    fn pid_namespace(&self, pid: &str) -> Option<String> { self.timed.pid_namespace(pid) }
+    fn start_time(&self, pid: &str) -> Option<String> { self.timed.start_time(pid) }
+    fn boot_id(&self) -> Option<String> { self.timed.boot_id() }
+}
+
+#[test]
+fn the_team_channel_is_read_from_the_host_launch_command_not_from_the_sandbox() {
+    let words = |text: &str| text.split(' ').map(str::to_string).collect::<Vec<_>>();
+    let tree = |host_command: &str| CommandTree {
+        timed: TimedTree { tree: Tree(vec![("50", Some("30"), "sandbox", environment(&[])), ("30", Some("20"), "host", environment(&[])),
+            ("20", None, "host", environment(&[]))]), start: "1000".into(), boot: "boot-a".into() },
+        commands: HashMap::from([("50".into(), words("claude --dangerously-load-development-channels server:cockpit-team")),
+            ("30".into(), words(host_command))]),
+    };
+    let with_channel = tree("greywall -- claude --dangerously-load-development-channels server:cockpit-team --mcp-config {}");
+    let runtime = trusted_runtime(&with_channel, "50").unwrap();
+    assert!(runtime_has_team_channel(&with_channel, &runtime));
+    let forged_only_inside = tree("greywall -- claude --mcp-config {}");
+    assert!(!runtime_has_team_channel(&forged_only_inside, &runtime));
+    let other_server = tree("greywall -- claude --dangerously-load-development-channels server:other");
+    assert!(!runtime_has_team_channel(&other_server, &runtime));
 }
 
 #[test]

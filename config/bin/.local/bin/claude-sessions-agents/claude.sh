@@ -41,7 +41,7 @@ claude_launch_detached() { # dir claude-arguments...
     require_plain_directory "$directory"
     size=$(detached_size)
     tmux new-session -d -s "claude-retry-restart-$(date +%s%N)" -x "${size% *}" -y "${size#* }" -c "$directory" \
-        env CLAUDE_SESSIONS_INSIDE=1 CLAUDE_SESSIONS_CREDITS="$launch_credits" \
+        env CLAUDE_SESSIONS_INSIDE=1 CLAUDE_SESSIONS_CREDITS="$launch_credits" CLAUDE_SESSIONS_TEAM_CHANNEL="$launch_team_channel" \
         fish -ic 'claude $argv; or claude-sessions log manager ERROR "claude exited with status $status in $PWD"' -- "$@"
 }
 
@@ -56,7 +56,7 @@ agent_claude_new() { # dir [claude arguments]
     shift
     loading_overlay "Starting Claude in $(basename "$directory") …" "$directory"
     tmux respawn-pane -k -t "$(viewer_pane)" -c "$directory" \
-        env -u TMUX -u TMUX_PANE CLAUDE_SESSIONS_INSIDE=1 CLAUDE_SESSIONS_CREDITS="$launch_credits" \
+        env -u TMUX -u TMUX_PANE CLAUDE_SESSIONS_INSIDE=1 CLAUDE_SESSIONS_CREDITS="$launch_credits" CLAUDE_SESSIONS_TEAM_CHANNEL="$launch_team_channel" \
         fish -ic 'echo; echo "  ⟳ Starting Claude in $PWD …"; echo; claude $argv'"$CLAUDE_LAUNCH_EPILOGUE" -- "$@"
     : > "$CURRENT"
     label_panes "$(basename "$directory")"
@@ -69,7 +69,7 @@ agent_claude_new_with_prompt() { # dir prompt
 
 agent_claude_background() { # dir prompt
     tmux new-session -d -s "claude-retry-bg-$(date +%s)" -x 200 -y 50 -c "$1" \
-        env CLAUDE_SESSIONS_INSIDE=1 CLAUDE_SESSIONS_CREDITS="$launch_credits" fish -ic 'claude $argv' -- "$2"
+        env CLAUDE_SESSIONS_INSIDE=1 CLAUDE_SESSIONS_CREDITS="$launch_credits" CLAUDE_SESSIONS_TEAM_CHANNEL="$launch_team_channel" fish -ic 'claude $argv' -- "$2"
 }
 
 agent_claude_detached() { # dir prompt
@@ -83,9 +83,10 @@ agent_claude_resume() { # dir id [effort]
         effort_flags=(--effort "$3")
     fi
     ensure_manager
+    launch_team_channel=$(team_channel_of "$2")
     loading_overlay "Resuming $(basename "$1")${3:+ · effort $3} …" "$1" "$2"
     tmux respawn-pane -k -t "$(viewer_pane)" -c "$1" \
-        env -u TMUX -u TMUX_PANE CLAUDE_SESSIONS_INSIDE=1 CLAUDE_SESSIONS_CREDITS="$launch_credits" \
+        env -u TMUX -u TMUX_PANE CLAUDE_SESSIONS_INSIDE=1 CLAUDE_SESSIONS_CREDITS="$launch_credits" CLAUDE_SESSIONS_TEAM_CHANNEL="$launch_team_channel" \
         fish -ic 'echo; echo "  ⟳ Resuming the conversation in $PWD …"; echo; claude --resume $argv'"$CLAUDE_LAUNCH_EPILOGUE" -- "$2" "${effort_flags[@]}"
     : > "$CURRENT"
     label_panes "$(basename "$1")"
@@ -103,6 +104,7 @@ agent_claude_restart() { # id dir [effort] [detached] [credits|subscription]
     fi
     launch_credits=0
     [[ $billing == credits ]] && launch_credits=1
+    launch_team_channel=$(team_channel_of "$id")
     if [[ -n $effort ]]; then
         require_effort "$effort" || return 1
     else
@@ -137,6 +139,7 @@ agent_claude_restore() { # dir id
     require_effort "$effort" 2>/dev/null || effort=""
     launch_credits=0
     [[ $(jq -r --arg id "$id" '.[$id].credits // false' "$RECENT_SESSIONS" 2>/dev/null) == true ]] && launch_credits=1
+    launch_team_channel=$(team_channel_of "$id")
     if has_conversation "$id"; then
         claude_launch_detached "$directory" --resume "$id" ${effort:+--effort "$effort"}
     else

@@ -1597,6 +1597,39 @@ fn restart_all_resumes_each_session_in_a_tmux_session_of_its_own() {
 }
 
 #[test]
+fn team_channel_restarts_the_session_with_its_channel_and_later_restarts_keep_it() {
+    let manager = Manager::new();
+    let options = [("SHIM_PANE_TEXT", IDLE), ("SHIM_EXIT_AFTER", "1")];
+    let result = manager.run(&["team-channel", SESSION_A], &options);
+    assert!(result.status.success(), "{}", stderr(&result));
+    assert!(manager.sandbox.state.join("claude-sessions/team-channel").join(SESSION_A).is_file());
+    let launch = manager.calls("tmux").into_iter().find(|call| call.starts_with("tmux new-session -d -s claude-retry-restart-")).expect("no detached launch");
+    assert!(launch.contains("CLAUDE_SESSIONS_TEAM_CHANNEL=1") && launch.contains(&format!("--resume {SESSION_A}")), "{launch}");
+    manager.sandbox.reset_log();
+    manager.run(&["restart", SESSION_A, "", "detached"], &options);
+    let launch = manager.calls("tmux").into_iter().find(|call| call.starts_with("tmux new-session -d -s claude-retry-restart-")).expect("no detached launch");
+    assert!(launch.contains("CLAUDE_SESSIONS_TEAM_CHANNEL=1"), "{launch}");
+}
+
+#[test]
+fn sessions_outside_a_team_restart_without_the_channel() {
+    let manager = Manager::new();
+    manager.run(&["restart", SESSION_A, "", "detached"], &[("SHIM_PANE_TEXT", IDLE), ("SHIM_EXIT_AFTER", "1")]);
+    let launch = manager.calls("tmux").into_iter().find(|call| call.starts_with("tmux new-session -d -s claude-retry-restart-")).expect("no detached launch");
+    assert!(launch.contains("CLAUDE_SESSIONS_TEAM_CHANNEL=0"), "{launch}");
+}
+
+#[test]
+fn team_channel_refuses_ids_that_are_not_running_claude_sessions() {
+    for id in ["../escape", OPENCODE_SESSION, "cccccccc-0000-4000-8000-000000000000"] {
+        let manager = Manager::new();
+        let result = manager.run(&["team-channel", id], &[]);
+        assert!(!result.status.success(), "{id}");
+        assert!(!manager.sandbox.state.join("claude-sessions/team-channel").exists(), "{id}");
+    }
+}
+
+#[test]
 fn restart_all_of_a_session_nobody_typed_in_starts_a_fresh_one_of_its_own() {
     let manager = Manager::new();
     let transcripts = manager.sandbox.root.join("transcripts");
