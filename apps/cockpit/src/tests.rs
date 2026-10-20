@@ -454,6 +454,41 @@ fn a_repository_with_several_sessions_gets_one_heading_and_railed_cards() {
 }
 
 #[test]
+fn grouped_todo_cards_keep_the_task_title_after_short_replies() {
+    let fixture = Fixture::new();
+    fixture.write("repos/clone/.git/HEAD", "ref: refs/heads/todo-1234abcd\n");
+    let clone = fixture.path("repos/clone").display().to_string();
+    fixture.write("state/claude-sessions/todo.json", &json!({"items": [{
+        "id": "1234abcd", "project": "opusline", "text": "Fix FigCraft reconnect", "status": "done"
+    }]}).to_string());
+    let mut row = session(SESSION_A, "waiting", "opusline", &clone, 1);
+    row["task"] = json!("Yes");
+    fixture.snapshot(json!([row, session(SESSION_B, "working", "opusline", "/r/opusline", 2)]));
+    let app = fixture.app();
+    let lines = texts(&app, 1);
+    assert!(lines.contains(&"│○Fix FigCraft reconnect".to_string()), "{lines:?}");
+    assert!(lines.iter().any(|line| line.contains("todo-1234abcd")), "{lines:?}");
+    assert!(!lines.contains(&"│Yes".to_string()), "{lines:?}");
+}
+
+#[test]
+fn grouped_opencode_cards_use_the_session_title_not_the_last_reply() {
+    let fixture = Fixture::new();
+    fixture.write("repos/clone/.git/HEAD", "ref: refs/heads/parallel-1249\n");
+    let clone = fixture.path("repos/clone").display().to_string();
+    opencode_database_with(&fixture, &[(OPENCODE_SESSION, &clone, "Improve invoice layout", None, 2_000_000, None)]);
+    let mut row = opencode_session("waiting", "opusline", 1);
+    row["cwd"] = json!(clone);
+    row["task"] = json!("Proceed");
+    fixture.snapshot(json!([row, session(SESSION_A, "working", "opusline", "/r/opusline", 2)]));
+    let app = fixture.app();
+    let lines = texts(&app, 1);
+    assert!(lines.contains(&"│○Improve invoice layout".to_string()), "{lines:?}");
+    assert!(lines.iter().any(|line| line.contains("parallel-1249")), "{lines:?}");
+    assert!(!lines.contains(&"│Proceed".to_string()), "{lines:?}");
+}
+
+#[test]
 fn sessions_started_before_a_global_change_are_told_to_restart() {
     let fixture = Fixture::new();
     fixture.write("home/.claude/CLAUDE.md", "rules");

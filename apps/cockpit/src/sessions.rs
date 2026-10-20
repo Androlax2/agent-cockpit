@@ -305,8 +305,17 @@ pub fn next_attention_index(sessions: &[Session], selected: usize) -> Option<usi
     candidates.iter().find(|index| **index > selected).or(candidates.first()).copied()
 }
 
-/// The transcript's generated title ("ai-title" record), or empty.
+/// The agent's session title, or empty when none has been written yet.
 pub fn read_title(session_id: &str) -> String {
+    if crate::agents::of_session_id(session_id).is_some_and(|agent| agent.name == "opencode") {
+        return match opencode_title(session_id) {
+            Ok(title) => title,
+            Err(error) => {
+                util::log_event("WARN", &format!("cannot read opencode title for {session_id}: {error}"));
+                String::new()
+            }
+        };
+    }
     let Some(path) = transcript_of(session_id) else { return String::new() };
     let Ok(head) = util::read_untrusted(&path, TITLE_SCAN_BYTES) else { return String::new() };
     let mut title = String::new();
@@ -323,6 +332,20 @@ pub fn read_title(session_id: &str) -> String {
         }
     }
     title
+}
+
+fn opencode_title(session_id: &str) -> rusqlite::Result<String> {
+    use rusqlite::{Connection, OpenFlags, OptionalExtension};
+    let database = paths::opencode_database();
+    if !database.exists() {
+        return Ok(String::new());
+    }
+    let source = Connection::open_with_flags(database, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    source.busy_timeout(std::time::Duration::from_secs(1))?;
+    let title: Option<String> = source.query_row(
+        "select coalesce(title, '') from session_v2 where id = ?1 and parent_id is null",
+        [session_id], |row| row.get(0)).optional()?;
+    Ok(title.map(|title| collapse(&title)).unwrap_or_default())
 }
 
 fn transcript_of(session_id: &str) -> Option<std::path::PathBuf> {

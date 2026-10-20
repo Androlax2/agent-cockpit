@@ -1089,8 +1089,8 @@ impl App {
             let accent = (session.session == current).then_some(tint);
             let branch = util::git_branch(&session.cwd);
             let grouped = session.group_size > 1;
-            // Sessions of one repository: its name once as a heading, then each card on a rail,
-            // named by its branch, with no gap between them.
+            // Sessions of one repository share a heading; task titles identify their cards,
+            // with branch names kept below so short replies cannot replace their identity.
             let indent: u16 = if grouped { 2 } else { 0 };
             let rail = if grouped { vec![segment(0, "│", dim(project_color(&session.project)))] } else { vec![] };
             let time_spent = Self::time_spent_text(self.costs.time_spent(&session.project));
@@ -1100,8 +1100,14 @@ impl App {
                 heading.right = time_spent.iter().map(|text| part(text, dim(FG_DARK))).collect();
                 lines.push(heading);
             }
+            let task_title = branch.strip_prefix("todo-")
+                .and_then(|id| self.todos.items.iter().find(|item| item.id() == id && item.project() == session.project))
+                .map(|item| util::collapse(&item.text()))
+                .filter(|title| !title.is_empty())
+                .unwrap_or_else(|| util::collapse(&session.title));
             let segments = if grouped {
-                let name = if branch.is_empty() { session.project.clone() } else { branch.clone() };
+                let name = if !task_title.is_empty() { task_title.clone() }
+                    else if branch.is_empty() { session.project.clone() } else { branch.clone() };
                 [rail.clone(), vec![segment(2, sessions::glyph(&session.state), tint), segment(4, name, bold(FG))]].concat()
             } else {
                 let mut segments = vec![segment(0, sessions::glyph(&session.state), tint), segment(2, &session.project, bold(project_color(&session.project)))];
@@ -1175,7 +1181,8 @@ impl App {
             }
             badges.push(part(age(session.since), tint));
             lines.push(Line { segments, right: badges, item: Some(index), accent });
-            let title = if !session.title.is_empty() { session.title.clone() } else { sessions::visible_task(session) };
+            let title = if grouped && !task_title.is_empty() { branch.clone() }
+                else if !task_title.is_empty() { task_title.clone() } else { sessions::visible_task(session) };
             let mut right = Vec::new();
             if session.state != "unknown" {
                 right.push(part(&facts.model, dim(FG_DARK)));
