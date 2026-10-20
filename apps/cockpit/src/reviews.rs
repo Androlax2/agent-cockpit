@@ -144,14 +144,16 @@ pub fn fetch_reviews(repositories: &[String]) -> (Vec<Review>, String) {
             Err(reason) => errors.push(format!("gh: {reason}")),
         }
         // Search's JSON omits head metadata; enrich only its requested PRs in this fetch thread.
+        // A PR whose details fail keeps its search row without branch or revision (so it links
+        // to no task): failing the whole list would make the phone refetch it on every request.
         for row in &mut rows {
             match gh(&["pr", "view", &row.number.to_string(), "--repo", &row.full_repository, "--json", LIST_FIELDS]) {
                 Ok(raw) => {
                     if let Ok(value @ Value::Object(_)) = serde_json::from_str::<Value>(&raw) {
                         if let Some(detail) = parse_reviews(&serde_json::json!([value]).to_string(), &row.full_repository).into_iter().find(|detail| detail.number == row.number) { *row = detail; }
-                    } else { errors.push(format!("{}#{} metadata response is not an object", row.full_repository, row.number)); }
+                    } else { util::log_event("WARN", &format!("pull request {}#{} metadata response is not an object", row.full_repository, row.number)); }
                 }
-                Err(reason) => errors.push(format!("{}#{} metadata: {reason}", row.full_repository, row.number)),
+                Err(reason) => util::log_event("WARN", &format!("pull request {}#{} metadata: {reason}", row.full_repository, row.number)),
             }
         }
     }

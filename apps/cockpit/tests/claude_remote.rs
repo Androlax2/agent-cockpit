@@ -785,6 +785,23 @@ esac"#));
 }
 
 #[test]
+fn a_pull_request_without_metadata_is_still_listed_and_cached() {
+    let remote = Remote::start();
+    let secret = remote.paired();
+    let updated = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ");
+    remote.sandbox.shim("gh", &format!(r#"case "$1 $2" in
+  "search prs") echo '[{{"number": 7, "title": "Fix cart", "url": "https://github.com/o/shop/pull/7", "repository": {{"name": "shop", "nameWithOwner": "o/shop"}}, "author": {{"login": "sam"}}, "updatedAt": "{updated}"}}]' ;;
+  *) echo "GraphQL: Resource protected by organization SAML enforcement" >&2; exit 1 ;;
+esac"#));
+    let pulls = remote.get_json(&secret, "/api/pulls");
+    assert_eq!(pulls["pulls"][0]["title"], "Fix cart");
+    assert!(pulls.get("error").is_none(), "{pulls}");
+    let fetch_calls = remote.sandbox.calls("gh").len();
+    remote.get_json(&secret, "/api/pulls");
+    assert_eq!(remote.sandbox.calls("gh").len(), fetch_calls, "fetched again within 5 minutes");
+}
+
+#[test]
 fn a_phone_watches_a_session_and_stops() {
     let remote = Remote::start();
     let secret = remote.paired();
