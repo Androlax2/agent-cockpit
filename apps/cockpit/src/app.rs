@@ -344,6 +344,7 @@ pub struct SettingsMenu {
     pub(crate) phones: Vec<Value>,
     phone_health: Arc<Mutex<Option<PhoneHealth>>>,
     catalog: Option<ModelCatalog>,
+    scroll: usize,
 }
 
 /// Whether the phone page's server answers, and whether tailscale serve publishes it (None: Tailscale
@@ -360,6 +361,12 @@ pub(crate) enum SettingsRow {
     Phone(usize),
 }
 
+enum SettingsLine {
+    Section(&'static str),
+    Health,
+    Choice(usize),
+}
+
 impl SettingsMenu {
     fn new() -> Self {
         let phone_health = Arc::new(Mutex::new(None));
@@ -369,7 +376,7 @@ impl SettingsMenu {
             let health = (remote::server_answers(), remote::is_published());
             *shared.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(health);
         });
-        Self { selected: 0, rows: HashMap::new(), area: (0, 0, 0, 0), phones: remote::phones(), phone_health, catalog: None }
+        Self { selected: 0, rows: HashMap::new(), area: (0, 0, 0, 0), phones: remote::phones(), phone_health, catalog: None, scroll: 0 }
     }
 
     fn row_count(&self) -> usize {
@@ -377,11 +384,13 @@ impl SettingsMenu {
     }
 
     pub(crate) fn row(&self, index: usize) -> SettingsRow {
+        let phone_start = LAUNCH_SETTINGS.len() + SETTINGS.len() - 1;
         match index {
-            index if index < SETTINGS.len() => SettingsRow::Setting(index),
-            index if index < SETTINGS.len() + LAUNCH_SETTINGS.len() => SettingsRow::Launch(index - SETTINGS.len()),
-            index if index == SETTINGS.len() + LAUNCH_SETTINGS.len() => SettingsRow::PairPhone,
-            index => SettingsRow::Phone(index - SETTINGS.len() - LAUNCH_SETTINGS.len() - 1),
+            index if index < LAUNCH_SETTINGS.len() => SettingsRow::Launch(index),
+            index if index < phone_start => SettingsRow::Setting(index - LAUNCH_SETTINGS.len() + 1),
+            index if index == phone_start => SettingsRow::Setting(0),
+            index if index == phone_start + 1 => SettingsRow::PairPhone,
+            index => SettingsRow::Phone(index - phone_start - 2),
         }
     }
 
@@ -397,41 +406,72 @@ impl SettingsMenu {
 
     fn draw(&mut self, buffer: &mut Buffer) {
         let width = buffer.area.width;
-        let box_height = self.row_count() as u16 + 5;
         let top = HEADER_LINES;
+        self.rows.clear();
+        if width < 16 || buffer.area.height < top + 6 { return; }
+        let mut lines = Vec::new();
+        for index in 0..self.row_count() {
+            match self.row(index) {
+                SettingsRow::Launch(0) => lines.push(SettingsLine::Section("Sessions")),
+                SettingsRow::Setting(1) => lines.push(SettingsLine::Section("Automation")),
+                SettingsRow::Setting(0) => {
+                    lines.push(SettingsLine::Section("Phone"));
+                    lines.push(SettingsLine::Health);
+                }
+                _ => {}
+            }
+            lines.push(SettingsLine::Choice(index));
+        }
+        let box_height = (lines.len() as u16 + 4).min(buffer.area.height - top - 1);
+        let body_height = (box_height - 4) as usize;
+        let selected_line = lines.iter().position(|line| matches!(line, SettingsLine::Choice(index) if *index == self.selected)).unwrap_or(0);
+        self.scroll = self.scroll.min(lines.len().saturating_sub(body_height));
+        if selected_line < self.scroll { self.scroll = selected_line; }
+        if selected_line >= self.scroll + body_height { self.scroll = selected_line + 1 - body_height; }
         let menu_width = width.saturating_sub(4).min(54);
         let left = width.saturating_sub(3 + menu_width).max(1);
         let right = left + menu_width - 1;
         self.area = (top, left, top + box_height - 1, right);
-        let frame = on(BLUE, BG_HIGHLIGHT).add_modifier(Modifier::BOLD);
-        let ground = on(FG, BG_HIGHLIGHT);
-        let dim = on(FG_DARK, BG_HIGHLIGHT);
+        let frame = on(FG_DARK, BLACK);
+        let ground = on(FG, BLACK);
+        let dim = on(FG_DARK, BLACK);
+        let heading = on(BLUE, BLACK).add_modifier(Modifier::BOLD);
         let inner = menu_width.saturating_sub(2) as usize;
+        let value_left = left + if menu_width >= 44 { 26 } else { menu_width / 2 };
+        let label_width = value_left.saturating_sub(left + 5) as usize;
+        let value_width = right.saturating_sub(value_left + 3) as usize;
         let blank = |buffer: &mut Buffer, row: u16| put(buffer, row, left, &format!("│{}│", " ".repeat(inner)), frame);
         put(buffer, top, left, &format!("╭{}╮", "─".repeat(inner)), frame);
-        put(buffer, top, left + 2, " Settings ", frame);
-        self.rows.clear();
+        put(buffer, top, left + 2, " Settings ", heading);
         let mut row = top + 1;
-        for index in 0..self.row_count() {
-            if index == SETTINGS.len() + LAUNCH_SETTINGS.len() {
-                put(buffer, row, left, &format!("├{}┤", "─".repeat(inner)), frame);
-                put(buffer, row, left + 2, " Phone ", frame);
-                blank(buffer, row + 1);
-                let (health, color) = self.health_line();
-                put(buffer, row + 1, left + 2, &fit(&health, inner - 2), on(color, BG_HIGHLIGHT));
-                row += 2;
-            }
-            let chosen = index == self.selected;
+        for line in lines.iter().skip(self.scroll).take(body_height) {
             blank(buffer, row);
-            put(buffer, row, left + 1, &" ".repeat(inner), if chosen { on(BG_HIGHLIGHT, BLUE) } else { ground });
-            let text_style = if chosen { on(BG_HIGHLIGHT, BLUE).add_modifier(Modifier::BOLD) } else { ground };
+            let index = match line {
+                SettingsLine::Section(label) => {
+                    put(buffer, row, left + 2, &format!("{label} {}", "─".repeat(inner.saturating_sub(label.len() + 4))), heading);
+                    row += 1;
+                    continue;
+                }
+                SettingsLine::Health => {
+                    let (health, color) = self.health_line();
+                    put(buffer, row, left + 4, &fit(&health, inner - 4), on(color, BLACK));
+                    row += 1;
+                    continue;
+                }
+                SettingsLine::Choice(index) => *index,
+            };
+            let chosen = index == self.selected;
+            let background = if chosen { BG_HIGHLIGHT } else { BLACK };
+            let text_style = if chosen { on(FG, background).add_modifier(Modifier::BOLD) } else { ground };
+            put(buffer, row, left + 1, &" ".repeat(inner), on(FG, background));
+            if chosen { put(buffer, row, left + 2, "›", on(BLUE, background).add_modifier(Modifier::BOLD)); }
             match self.row(index) {
                 SettingsRow::Setting(setting) => {
                     let (name, label) = SETTINGS[setting];
                     let is_on = settings::is_on(name);
-                    put(buffer, row, left + 2, &fit(label, inner - 6), text_style);
-                    let state_style = if chosen { on(BG_HIGHLIGHT, BLUE) } else if is_on { on(GREEN, BG_HIGHLIGHT).add_modifier(Modifier::BOLD) } else { dim };
-                    put(buffer, row, right - 4, if is_on { " on" } else { "off" }, state_style);
+                    put(buffer, row, left + 4, &fit(label, label_width), text_style);
+                    let state_style = if chosen { on(BLUE, background).add_modifier(Modifier::BOLD) } else { on(if is_on { FG } else { FG_DARK }, background) };
+                    put(buffer, row, value_left, if is_on { "on" } else { "off" }, state_style);
                 }
                 SettingsRow::Launch(setting) => {
                     let (name, label) = LAUNCH_SETTINGS[setting];
@@ -440,26 +480,35 @@ impl SettingsMenu {
                         Ok(value) => value,
                         Err(error) => error,
                     };
-                    put(buffer, row, left + 2, &fit(&format!("{label}: {value}"), inner - 2), text_style);
+                    put(buffer, row, left + 4, &fit(label, label_width), text_style);
+                    put(buffer, row, value_left, &fit(&value, value_width), if chosen { on(BLUE, background).add_modifier(Modifier::BOLD) } else { ground });
+                    put(buffer, row, right - 2, "▾", on(FG_DARK, background));
                 }
-                SettingsRow::PairPhone => put(buffer, row, left + 2, "Pair a phone (QR code)", text_style),
+                SettingsRow::PairPhone => put(buffer, row, left + 4, &fit("Pair a phone (QR code)", inner - 4), text_style),
                 SettingsRow::Phone(phone) => {
                     let phone = &self.phones[phone];
                     let seen = format!("seen {}", remote::seen_ago(phone.get("last_seen").and_then(Value::as_i64)));
-                    put(buffer, row, left + 2, &fit(phone["name"].as_str().unwrap_or(""), inner.saturating_sub(seen.width() + 3)), text_style);
-                    put(buffer, row, right - seen.width() as u16 - 1, &seen, if chosen { on(BG_HIGHLIGHT, BLUE) } else { dim });
+                    let seen_width = seen.width().min(inner / 2);
+                    put(buffer, row, left + 4, &fit(phone["name"].as_str().unwrap_or(""), inner.saturating_sub(seen_width + 5)), text_style);
+                    put(buffer, row, right - seen_width as u16 - 1, &fit(&seen, seen_width), on(FG_DARK, background));
                 }
             }
             self.rows.insert(row, index);
             row += 1;
         }
+        while row < top + box_height - 3 { blank(buffer, row); row += 1; }
+        blank(buffer, row);
+        put(buffer, row, left + 2, &fit("↑↓ move   esc close", inner - 2), dim);
+        row += 1;
         blank(buffer, row);
         let keys = match self.row(self.selected) {
-            SettingsRow::Phone(_) => "x forgets this phone  esc",
-            SettingsRow::Launch(1 | 2) => "⏎ chooses  d OpenCode default  esc",
-            _ => "⏎ changes or pairs  esc",
+            SettingsRow::Phone(_) => "x forget phone",
+            SettingsRow::Launch(1 | 2) => "⏎ choose   d reset to default",
+            SettingsRow::Launch(_) => "⏎ choose agent",
+            SettingsRow::PairPhone => "⏎ pair phone",
+            SettingsRow::Setting(_) => "⏎ toggle",
         };
-        put(buffer, row, left + 2, keys, dim.add_modifier(Modifier::DIM));
+        put(buffer, row, left + 2, &fit(keys, inner - 2), ground);
         put(buffer, row + 1, left, &format!("╰{}╯", "─".repeat(inner)), frame);
     }
 

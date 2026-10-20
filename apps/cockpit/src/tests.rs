@@ -3,7 +3,7 @@
 //! hyprctl, osd-show), and a screen that answers questions from a script.
 
 use crate::agents;
-use crate::app::{App, Key, Screen};
+use crate::app::{App, Key, Screen, SettingsRow};
 use crate::costs;
 use crate::errors::ErrorReporter;
 use crate::reviews::{self, Issue, Review};
@@ -314,7 +314,7 @@ fn enter_in_the_settings_menu_flips_the_setting_through_claude_sessions() {
             fixture.write("state/claude-sessions/settings.json", content);
         }
         let mut app = fixture.app();
-        app.handle(Key::Char('S'), &mut FakeScreen::default());
+        open_settings_row(&mut app, SettingsRow::Setting(0));
         app.handle(Key::Enter, &mut FakeScreen::default());
         assert_eq!(fixture.calls("claude-sessions"), vec![format!("claude-sessions setting phone-on-lock {wanted}")], "stored {stored:?}");
         assert_eq!(app.message, format!("Phone on lock: {wanted}"));
@@ -331,12 +331,75 @@ fn any_other_key_closes_the_settings_menu_without_changing_anything() {
     assert!(fixture.calls("claude-sessions").is_empty());
 }
 
+fn settings_screen_rows(buffer: &Buffer) -> Vec<String> {
+    (0..buffer.area.height).map(|row| (0..buffer.area.width).map(|column| buffer[(column, row)].symbol()).collect()).collect()
+}
+
+#[test]
+fn settings_group_sessions_first_then_automation_then_phone() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    app.handle(Key::Char('S'), &mut FakeScreen::default());
+    let rows = settings_screen_rows(&render(&mut app, 60, 40));
+    let row_of = |label: &str| rows.iter().position(|row| row.contains(label)).unwrap_or_else(|| panic!("missing {label}"));
+    for (before, after) in [
+        ("Sessions", "Default agent"), ("OpenCode effort", "Automation"),
+        ("Automation", "Todo queue"), ("Daily digest", "Phone on lock"),
+        ("Phone on lock", "Pair a phone"),
+    ] {
+        assert!(row_of(before) < row_of(after), "{before} must precede {after}: {rows:?}");
+    }
+}
+
+#[test]
+fn opening_settings_selects_the_default_agent_and_marks_keyboard_selection() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    app.handle(Key::Char('S'), &mut FakeScreen::default());
+    let rows = settings_screen_rows(&render(&mut app, 60, 40));
+    assert!(rows.iter().any(|row| row.contains('›') && row.contains("Default agent")), "{rows:?}");
+    app.handle(Key::Down, &mut FakeScreen::default());
+    let rows = settings_screen_rows(&render(&mut app, 60, 40));
+    assert!(rows.iter().any(|row| row.contains('›') && row.contains("OpenCode model")), "{rows:?}");
+}
+
+#[test]
+fn settings_values_share_one_column_across_sections() {
+    let fixture = Fixture::new();
+    fixture.write("state/claude-sessions/settings.json", r#"{"default-agent":"opencode","opencode-model":"openai/gpt-6.1-sol","opencode-effort":"medium","todo-queue":false}"#);
+    let mut app = fixture.app();
+    app.handle(Key::Char('S'), &mut FakeScreen::default());
+    let rows = settings_screen_rows(&render(&mut app, 60, 40));
+    let columns: Vec<usize> = [("Default agent", "opencode"), ("OpenCode model", "openai/gpt-6.1-sol"),
+        ("OpenCode effort", "medium"), ("Todo queue", "off")].iter().map(|(label, value)| {
+            let row = rows.iter().find(|row| row.contains(label)).unwrap();
+            row.chars().collect::<Vec<_>>().windows(value.chars().count()).position(|characters| characters.iter().collect::<String>() == *value).unwrap()
+        }).collect();
+    assert!(columns.iter().all(|column| *column == columns[0]), "unaligned columns: {columns:?}");
+}
+
+#[test]
+fn short_settings_panels_scroll_the_selected_phone_into_view() {
+    for (width, height) in [(32, 12), (60, 20)] {
+        let fixture = Fixture::new();
+        let phones: Vec<Value> = (0..12).map(|index| phone(&format!("Mobile-{index:02}"), &format!("aa{index:02}"))).collect();
+        phone_page(&fixture, json!(phones));
+        let mut app = fixture.app();
+        open_settings_row(&mut app, SettingsRow::Phone(11));
+        let rows = settings_screen_rows(&render(&mut app, width, height));
+        assert!(rows.iter().any(|row| row.contains('›') && row.contains("Mobile-11")), "{rows:?}");
+        assert!(rows.iter().any(|row| row.contains("x forget")), "phone action is not visible: {rows:?}");
+        app.handle(Key::Char('x'), &mut FakeScreen::answering(&[Key::Char('n')]));
+        assert_eq!(crate::remote::phones().len(), 12);
+    }
+}
+
 #[test]
 fn settings_can_save_a_default_agent_with_keyboard_or_mouse() {
     for click in [false, true] {
         let fixture = Fixture::new();
         let mut app = fixture.app();
-        open_settings_on(&mut app, crate::settings::SETTINGS.len());
+        open_settings_row(&mut app, SettingsRow::Launch(0));
         if click {
             let drawn = render(&mut app, 60, 40);
             let row = (0..40).find(|row| {
@@ -354,7 +417,7 @@ fn settings_can_save_a_default_agent_with_keyboard_or_mouse() {
 fn cancelling_a_default_agent_change_writes_nothing() {
     let fixture = Fixture::new();
     let mut app = fixture.app();
-    open_settings_on(&mut app, crate::settings::SETTINGS.len());
+    open_settings_row(&mut app, SettingsRow::Launch(0));
     app.handle(Key::Enter, &mut FakeScreen::default());
     assert!(fixture.calls("claude-sessions").is_empty());
 }
@@ -396,7 +459,7 @@ fn the_model_picker_loads_the_active_projects_catalog_and_saves_the_choice() {
     fixture.snapshot(json!([session(SESSION_A, "waiting", "runway", "/r/runway", 1)]));
     model_catalog(&fixture, json!([{"id":"high"}]));
     let mut app = fixture.app();
-    open_settings_on(&mut app, crate::settings::SETTINGS.len() + 1);
+    open_settings_row(&mut app, SettingsRow::Launch(1));
     choose_loaded_preference(&mut app, &fixture, "openai/gpt-6.1-sol");
     assert_eq!(fixture.calls("claude-sessions"), [
         "claude-sessions opencode-models /r/runway", "claude-sessions setting opencode-model openai/gpt-6.1-sol",
@@ -412,7 +475,7 @@ fn effort_choices_come_from_the_selected_models_variants() {
         model_catalog(&fixture, variants.clone());
         fixture.shim("fzf", &format!("cat > '{}'\nhead -n 1 '{}'", fixture.root.join("choices").display(), fixture.root.join("choices").display()));
         let mut app = fixture.app();
-        open_settings_on(&mut app, crate::settings::SETTINGS.len() + 2);
+        open_settings_row(&mut app, SettingsRow::Launch(2));
         choose_loaded_preference(&mut app, &fixture, "");
         let choices = fs::read_to_string(fixture.root.join("choices")).unwrap();
         assert_eq!(choices.contains("high"), !variants.as_array().unwrap().is_empty());
@@ -427,7 +490,7 @@ fn catalog_errors_are_visible_and_do_not_write_preferences() {
         fixture.snapshot(json!([session(SESSION_A, "waiting", "runway", "/r/runway", 1)]));
         fixture.shim("claude-sessions", body);
         let mut app = fixture.app();
-        open_settings_on(&mut app, crate::settings::SETTINGS.len() + 1);
+        open_settings_row(&mut app, SettingsRow::Launch(1));
         for _ in 0..100 {
             app.handle(Key::Enter, &mut FakeScreen::default());
             if app.message.starts_with("cannot load OpenCode models:") { break; }
@@ -445,7 +508,7 @@ fn a_malformed_model_preference_can_be_replaced_in_settings() {
     fixture.write("state/claude-sessions/settings.json", r#"{"opencode-model":false}"#);
     model_catalog(&fixture, json!([]));
     let mut app = fixture.app();
-    open_settings_on(&mut app, crate::settings::SETTINGS.len() + 1);
+    open_settings_row(&mut app, SettingsRow::Launch(1));
     choose_loaded_preference(&mut app, &fixture, "openai/gpt-6.1-sol");
     assert!(fixture.calls("claude-sessions").contains(&"claude-sessions setting opencode-model openai/gpt-6.1-sol".into()));
 }
@@ -457,7 +520,7 @@ fn model_and_effort_overrides_can_be_reset_without_loading_a_catalog() {
         fixture.write("state/claude-sessions/settings.json", r#"{"opencode-model":false,"opencode-effort":false}"#);
         fixture.shim("claude-sessions", "if [ \"$1\" = opencode-models ]; then exit 1; fi");
         let mut app = fixture.app();
-        open_settings_on(&mut app, crate::settings::SETTINGS.len() + index);
+        open_settings_row(&mut app, SettingsRow::Launch(index));
         app.handle(Key::Char('d'), &mut FakeScreen::default());
         assert_eq!(fixture.calls("claude-sessions"), [format!("claude-sessions setting {name} ")]);
     }
@@ -472,7 +535,7 @@ fn failed_catalogs_and_unavailable_models_do_not_prevent_resetting_effort() {
         if unavailable { model_catalog(&fixture, json!([])); }
         else { fixture.shim("claude-sessions", "if [ \"$1\" = opencode-models ]; then echo 'unavailable' >&2; exit 1; fi"); }
         let mut app = fixture.app();
-        open_settings_on(&mut app, crate::settings::SETTINGS.len() + 2);
+        open_settings_row(&mut app, SettingsRow::Launch(2));
         for _ in 0..100 {
             app.handle(Key::Enter, &mut FakeScreen::default());
             if app.message.contains("cannot load") || app.message.contains("model unavailable") { break; }
@@ -500,11 +563,14 @@ fn pairing_digits(app: &App) -> String {
     app.pairing.as_ref().unwrap().digits.clone()
 }
 
-fn open_settings_on(app: &mut App, index: usize) {
+fn open_settings_row(app: &mut App, wanted: SettingsRow) {
     app.handle(Key::Char('S'), &mut FakeScreen::default());
-    for _ in 0..index {
+    for _ in 0..100 {
+        let menu = app.settings_menu.as_ref().expect("settings are open");
+        if menu.row(menu.selected) == wanted { return; }
         app.handle(Key::Down, &mut FakeScreen::default());
     }
+    panic!("no settings row {wanted:?}");
 }
 
 #[test]
@@ -524,7 +590,7 @@ fn enter_on_pair_a_phone_shows_a_one_time_link_and_its_qr_code() {
     let fixture = Fixture::new();
     phone_page(&fixture, json!([]));
     let mut app = fixture.app();
-    open_settings_on(&mut app, crate::settings::SETTINGS.len() + crate::settings::LAUNCH_SETTINGS.len());
+    open_settings_row(&mut app, SettingsRow::PairPhone);
     app.handle(Key::Enter, &mut FakeScreen::default());
     let pairing = app.pairing.as_ref().expect("no pairing shown");
     assert!(pairing.link.starts_with("https://box.tail1234.ts.net/pair/"), "{}", pairing.link);
@@ -553,7 +619,7 @@ fn pairing_without_tailscale_says_why_and_shows_nothing() {
     phone_page(&fixture, json!([]));
     fixture.shim("tailscale", "exit 1");
     let mut app = fixture.app();
-    open_settings_on(&mut app, crate::settings::SETTINGS.len() + crate::settings::LAUNCH_SETTINGS.len());
+    open_settings_row(&mut app, SettingsRow::PairPhone);
     app.handle(Key::Enter, &mut FakeScreen::default());
     assert!(app.pairing.is_none());
     assert!(app.message.contains("is Tailscale up?"), "{}", app.message);
@@ -565,7 +631,7 @@ fn x_on_a_phone_forgets_it_after_a_yes_only() {
         let fixture = Fixture::new();
         phone_page(&fixture, json!([phone("iPhone", "aa11aa11ff"), phone("iPad", "bb22bb22ff")]));
         let mut app = fixture.app();
-        open_settings_on(&mut app, crate::settings::SETTINGS.len() + crate::settings::LAUNCH_SETTINGS.len() + 1);
+        open_settings_row(&mut app, SettingsRow::Phone(0));
         app.handle(Key::Char('x'), &mut FakeScreen::answering(&[answer]));
         let names: Vec<String> = crate::remote::phones().iter().map(|phone| phone["name"].as_str().unwrap().to_string()).collect();
         assert_eq!(names, kept, "answered {answer:?}");
