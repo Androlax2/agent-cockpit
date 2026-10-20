@@ -34,6 +34,26 @@ pub struct Proposal {
     pub reason: String,
 }
 
+/// A teammate an agent asks Theo to start, with what it will be told first.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Recruit {
+    pub role: Role,
+    pub brief: String,
+}
+
+/// An agent's request for missing teammates: it joins as `role`; the recruits start only after
+/// Theo approves, in the global default agent recorded with the request.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Recruitment {
+    pub submission_key: String,
+    pub task: TaskKey,
+    pub role: Role,
+    pub recruits: Vec<Recruit>,
+    pub reason: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct VerifiedSession {
@@ -129,6 +149,8 @@ pub enum AgentAction {
     Assess { task: TaskKey, thread_id: String, resolved: bool },
     /// The Developer's completed work: it supersedes earlier handoffs and requests QA once.
     Handoff { handoff: Handoff },
+    /// Missing teammates, started only after Theo approves.
+    Recruit { recruitment: Recruitment },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

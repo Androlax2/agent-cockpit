@@ -190,10 +190,10 @@ fn unsupported_database_versions_are_not_overwritten() {
     let sandbox = Sandbox::new();
     let path = sandbox.root.join("protected/teams.sqlite");
     let connection = store::open(&path).unwrap();
-    connection.execute_batch("PRAGMA user_version=2").unwrap();
+    connection.execute_batch("PRAGMA user_version=3").unwrap();
     drop(connection);
     assert!(store::open(&path).is_err());
-    assert_eq!(rusqlite::Connection::open(path).unwrap().query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0)).unwrap(), 2);
+    assert_eq!(rusqlite::Connection::open(path).unwrap().query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0)).unwrap(), 3);
 }
 
 #[test]
@@ -881,4 +881,92 @@ fn concurrent_claims_do_not_duplicate_native_wake_attempts() {
     let state = store::snapshot(&connection, Some(&task()), None, 100).unwrap();
     assert_eq!(state["messages"][0]["attempts"], 1);
     assert_eq!(state["messages"][0]["state"], "submitting");
+}
+
+// ---- Recruit requests: an agent asks for missing teammates ----
+
+fn recruitment(key: &str, role: Role, recruits: &[(Role, &str)]) -> cockpit::teams::Recruitment {
+    cockpit::teams::Recruitment { submission_key: key.into(), task: task(), role, reason: "The UI needs a design".into(),
+        recruits: recruits.iter().map(|(role, brief)| cockpit::teams::Recruit { role: *role, brief: brief.to_string() }).collect() }
+}
+
+fn recruit(connection: &mut rusqlite::Connection, asker: usize, request: &cockpit::teams::Recruitment, agent: &str) -> Result<Value, cockpit::teams::TeamError> {
+    store::recruit(connection, &live()[asker], request, agent, &live(), 1000).and_then(|reply| reply.result)
+}
+
+#[test]
+fn a_recruit_request_stays_pending_and_binds_only_the_asker() {
+    let sandbox = Sandbox::new();
+    let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+    recruit(&mut connection, 1, &recruitment("r1", Role::Developer, &[(Role::Designer, "Design the jobs list"), (Role::Qa, "Check contrast")]), "claude").unwrap();
+    let state = store::snapshot(&connection, Some(&task()), None, 100).unwrap();
+    let proposal = &state["proposals"][0];
+    assert_eq!(proposal["status"], "pending");
+    let mapping: Value = serde_json::from_str(proposal["mapping"].as_str().unwrap()).unwrap();
+    assert_eq!(mapping.as_array().unwrap().len(), 1);
+    assert_eq!((mapping[0]["session_id"].clone(), mapping[0]["role"].clone()), (serde_json::json!(DEVELOPER), serde_json::json!("developer")));
+    let recruits: Value = serde_json::from_str(proposal["recruits"].as_str().unwrap()).unwrap();
+    assert_eq!(recruits, serde_json::json!([{"role": "designer", "brief": "Design the jobs list"}, {"role": "qa", "brief": "Check contrast"}]));
+    assert_eq!(proposal["spawn_agent"], "claude");
+    assert_eq!(state["members"], serde_json::json!([]));
+}
+
+#[test]
+fn recruit_validation_refuses_bad_requests() {
+    let long = "x".repeat(2001);
+    let cases: Vec<(cockpit::teams::Recruitment, &str)> = vec![
+        (recruitment("own-role", Role::Developer, &[(Role::Developer, "Build it")]), "claude"),
+        (recruitment("duplicate", Role::Developer, &[(Role::Designer, "a"), (Role::Designer, "b")]), "claude"),
+        (recruitment("empty-brief", Role::Developer, &[(Role::Designer, " ")]), "claude"),
+        (recruitment("long-brief", Role::Developer, &[(Role::Designer, &long)]), "claude"),
+        (recruitment("control", Role::Developer, &[(Role::Designer, "a\u{1b}[2J")]), "claude"),
+        (recruitment("none", Role::Developer, &[]), "claude"),
+        (recruitment("no-agent", Role::Developer, &[(Role::Designer, "Design it")]), ""),
+    ];
+    for (request, agent) in cases {
+        let sandbox = Sandbox::new();
+        let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+        assert!(recruit(&mut connection, 1, &request, agent).is_err(), "{}", request.submission_key);
+    }
+}
+
+#[test]
+fn an_asker_in_a_team_may_only_fill_missing_roles() {
+    let sandbox = Sandbox::new();
+    let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+    linked(&mut connection);
+    assert!(recruit(&mut connection, 1, &recruitment("taken", Role::Developer, &[(Role::Designer, "Design it")]), "claude").is_err());
+    store::control(&mut connection, &HostAction::Unlink { request_id: "unlink-designer".into(), task: task(), session_id: DESIGNER.into() }, &live(), 1500).unwrap();
+    assert!(recruit(&mut connection, 1, &recruitment("wrong-role", Role::Qa, &[(Role::Designer, "Design it")]), "claude").is_err());
+    recruit(&mut connection, 1, &recruitment("missing", Role::Developer, &[(Role::Designer, "Design it")]), "claude").unwrap();
+}
+
+#[test]
+fn changing_recruits_or_agent_changes_the_mapping_hash() {
+    let sandbox = Sandbox::new();
+    let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+    let first = recruit(&mut connection, 1, &recruitment("a", Role::Developer, &[(Role::Designer, "Design the jobs list")]), "claude").unwrap();
+    let other_brief = recruit(&mut connection, 1, &recruitment("b", Role::Developer, &[(Role::Designer, "Design the settings page")]), "claude").unwrap();
+    let other_agent = recruit(&mut connection, 1, &recruitment("c", Role::Developer, &[(Role::Designer, "Design the jobs list")]), "opencode").unwrap();
+    assert_ne!(first["mapping_hash"], other_brief["mapping_hash"]);
+    assert_ne!(first["mapping_hash"], other_agent["mapping_hash"]);
+}
+
+#[test]
+fn an_existing_version_1_store_opens_and_gains_recruit_columns() {
+    let sandbox = Sandbox::new();
+    let path = sandbox.root.join("protected/teams.sqlite");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::set_permissions(path.parent().unwrap(), std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+    let old = rusqlite::Connection::open(&path).unwrap();
+    old.execute_batch("CREATE TABLE proposals (id TEXT PRIMARY KEY, sender TEXT NOT NULL, submission_key TEXT NOT NULL,
+        fingerprint TEXT NOT NULL, task_key TEXT NOT NULL, project TEXT NOT NULL, task_id TEXT NOT NULL,
+        mapping TEXT NOT NULL, mapping_hash TEXT NOT NULL, reason TEXT NOT NULL, revision INTEGER NOT NULL,
+        status TEXT NOT NULL, created_at INTEGER NOT NULL, parent_id TEXT, created_by TEXT NOT NULL DEFAULT 'agent', UNIQUE(sender, submission_key));
+        PRAGMA user_version=1;").unwrap();
+    drop(old);
+    std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o600)).unwrap();
+    let connection = store::open(&path).unwrap();
+    assert_eq!(connection.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0)).unwrap(), 2);
+    connection.prepare("SELECT recruits, spawn_agent FROM proposals").unwrap();
 }

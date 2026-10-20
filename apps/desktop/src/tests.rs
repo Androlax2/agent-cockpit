@@ -114,6 +114,7 @@ struct World {
     sender_targets: HashMap<u32, BTreeMap<String, String>>,
     sender_directories: HashMap<u32, String>,
     sender_runtimes: HashMap<u32, String>,
+    default_agent: Option<String>,
 }
 
 impl World {
@@ -169,6 +170,7 @@ impl System for FakeSystem {
     }
     fn sender_runtime(&mut self, sender: u32) -> Option<String> { self.0.borrow().sender_runtimes.get(&sender).cloned() }
     fn runtime_is_live(&mut self, runtime: &str) -> bool { self.0.borrow().sender_runtimes.values().any(|known| known == runtime) }
+    fn default_agent(&mut self) -> Option<String> { self.0.borrow().default_agent.clone() }
 }
 
 fn team_bench() -> Bench {
@@ -314,6 +316,50 @@ fn a_planted_git_origin_cannot_choose_the_team_project() {
     assert_ne!(identity(&impostor), identity(&primary));
     assert_ne!(identity(&pointing), identity(&primary));
     assert!(!identity(&impostor).contains("github.com"));
+}
+
+fn recruit_designer() -> cockpit::teams::AgentAction {
+    cockpit::teams::AgentAction::Recruit { recruitment: cockpit::teams::Recruitment { submission_key: "recruit-1".into(),
+        task: cockpit::teams::TaskKey { project: String::new(), task_id: "1d3fd318".into() }, role: cockpit::teams::Role::Developer,
+        recruits: vec![cockpit::teams::Recruit { role: cockpit::teams::Role::Designer, brief: "Design the jobs list".into() }],
+        reason: "The UI needs a design".into() } }
+}
+
+fn with_own_project(bench: &mut Bench, action: cockpit::teams::AgentAction) -> cockpit::teams::AgentAction {
+    let own = crate::teams::request(&mut bench.registry, 20, cockpit::teams::AgentAction::Context).unwrap().result.unwrap();
+    let cockpit::teams::AgentAction::Recruit { mut recruitment } = action else { return action };
+    recruitment.task.project = own["project"].as_str().unwrap().into();
+    cockpit::teams::AgentAction::Recruit { recruitment }
+}
+
+#[test]
+fn a_recruit_request_records_the_default_agent() {
+    let mut bench = team_bench();
+    bench.world.borrow_mut().default_agent = Some("opencode".into());
+    let action = with_own_project(&mut bench, recruit_designer());
+    crate::teams::request(&mut bench.registry, 20, action).unwrap().result.unwrap();
+    let snapshot = crate::teams::host(&mut bench.registry, cockpit::teams::HostRequest::Snapshot).unwrap().result.unwrap();
+    assert_eq!(snapshot["proposals"][0]["spawn_agent"], "opencode");
+}
+
+#[test]
+fn an_unreadable_default_agent_refuses_the_recruit_request() {
+    let mut bench = team_bench();
+    let action = with_own_project(&mut bench, recruit_designer());
+    let refused = crate::teams::request(&mut bench.registry, 20, action).unwrap_err();
+    assert!(refused.message.contains("default agent"), "{}", refused.message);
+}
+
+#[test]
+fn the_default_agent_follows_the_cockpit_settings_rules() {
+    let bench = Bench::new();
+    let settings = bench.fixture.root.join("settings.json");
+    assert_eq!(crate::registry::default_agent_in(&settings).as_deref(), Some("claude"));
+    for (text, expected) in [(r#"{}"#, Some("claude")), (r#"{"default-agent":"opencode"}"#, Some("opencode")),
+                             (r#"{"default-agent":"nobody"}"#, None), (r#"{"default-agent":3}"#, None), ("[]", None), ("not json", None)] {
+        fs::write(&settings, text).unwrap();
+        assert_eq!(crate::registry::default_agent_in(&settings).as_deref(), expected, "{text}");
+    }
 }
 
 #[test]

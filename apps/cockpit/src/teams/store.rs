@@ -50,7 +50,7 @@ pub fn open(path: &Path) -> Result<Connection, TeamError> {
     let connection = Connection::open(path)?;
     connection.busy_timeout(Duration::from_millis(250))?;
     let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-    if !(0..=1).contains(&version) { return Err(TeamError::new(ErrorCode::Storage, "unsupported team database version")); }
+    if !(0..=2).contains(&version) { return Err(TeamError::new(ErrorCode::Storage, "unsupported team database version")); }
     connection.execute_batch("PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;
         CREATE TABLE IF NOT EXISTS teams (task_key TEXT PRIMARY KEY, project TEXT NOT NULL, task_id TEXT NOT NULL, revision INTEGER NOT NULL);
         CREATE TABLE IF NOT EXISTS proposals (id TEXT PRIMARY KEY, sender TEXT NOT NULL, submission_key TEXT NOT NULL,
@@ -75,8 +75,15 @@ pub fn open(path: &Path) -> Result<Connection, TeamError> {
         CREATE TABLE IF NOT EXISTS handoffs (id TEXT PRIMARY KEY, task_key TEXT NOT NULL, developer TEXT NOT NULL, developer_epoch TEXT NOT NULL,
             submission_key TEXT NOT NULL, fingerprint TEXT NOT NULL, payload TEXT NOT NULL, status TEXT NOT NULL, created_at INTEGER NOT NULL,
             UNIQUE(developer, submission_key));
-        CREATE UNIQUE INDEX IF NOT EXISTS one_inflight_delivery ON messages(recipient,recipient_epoch) WHERE state='submitting';
-        PRAGMA user_version=1;")?;
+        CREATE UNIQUE INDEX IF NOT EXISTS one_inflight_delivery ON messages(recipient,recipient_epoch) WHERE state='submitting';")?;
+    // Version 2: a proposal can carry recruits (teammates to start on approval) and the agent they run in.
+    let columns: Vec<String> = connection.prepare("SELECT name FROM pragma_table_info('proposals')")?
+        .query_map([], |row| row.get(0))?.collect::<Result<_, _>>()?;
+    if !columns.iter().any(|column| column == "recruits") {
+        connection.execute_batch("ALTER TABLE proposals ADD COLUMN recruits TEXT NOT NULL DEFAULT '[]';
+            ALTER TABLE proposals ADD COLUMN spawn_agent TEXT NOT NULL DEFAULT '';")?;
+    }
+    connection.execute_batch("PRAGMA user_version=2;")?;
     Ok(connection)
 }
 
@@ -138,6 +145,58 @@ pub fn propose(connection: &mut Connection, sender: &VerifiedSession, proposal: 
     Ok(TeamReply { request_id: proposal.submission_key.clone(), result: Ok(json!({"proposal_id": id, "revision": 1, "mapping_hash": mapping_hash})) })
 }
 
+fn valid_brief(brief: &str) -> bool {
+    !brief.trim().is_empty() && brief.chars().count() <= 2000 && !brief.chars().any(|character| character.is_control() && character != '\n')
+}
+
+/// An agent asks for missing teammates. Pending like any request: only the asker is bound now; the
+/// recruits, their briefs and the agent they run in are part of what Theo approves (the hash).
+pub fn recruit(connection: &mut Connection, sender: &VerifiedSession, recruitment: &super::Recruitment, agent: &str,
+               live: &[VerifiedSession], now_ms: i64) -> Result<TeamReply, TeamError> {
+    if sender.project != recruitment.task.project || !live.contains(sender) {
+        return Err(TeamError::new(ErrorCode::Unauthorized, "team request is not from this task's project"));
+    }
+    let mut roles = BTreeSet::from([recruitment.role]);
+    if recruitment.recruits.is_empty() || agent.is_empty() || agents::find(agent).is_none()
+        || !recruitment.recruits.iter().all(|recruit| roles.insert(recruit.role) && valid_brief(&recruit.brief)) {
+        return Err(TeamError::new(ErrorCode::Invalid, "a recruit request names new roles other than its own, each with a 1–2000 character brief"));
+    }
+    let task_key = serde_json::to_string(&recruitment.task)?;
+    let own_task: Option<(String, String)> = connection.query_row("SELECT task_key, role FROM members WHERE session_id=?1", [&sender.session_id],
+        |row| Ok((row.get(0)?, row.get(1)?))).optional()?;
+    if own_task.as_ref().is_some_and(|(own_key, own_role)| *own_key != task_key || own_role != role_name(recruitment.role)) {
+        return Err(TeamError::new(ErrorCode::Conflict, "this session already has another task or role in a team"));
+    }
+    let occupied: Vec<String> = connection.prepare("SELECT role FROM members WHERE task_key=?1 AND session_id<>?2")?
+        .query_map(params![task_key, sender.session_id], |row| row.get(0))?.collect::<Result<_, _>>()?;
+    if roles.iter().any(|role| occupied.iter().any(|taken| taken == role_name(*role))) {
+        return Err(TeamError::new(ErrorCode::Conflict, "the team already has one of these roles; ask only for the missing ones"));
+    }
+    let asker = Proposal { submission_key: recruitment.submission_key.clone(), task: recruitment.task.clone(), reason: recruitment.reason.clone(),
+        members: vec![super::Member { session_id: sender.session_id.clone(), role: recruitment.role }] };
+    let mapping = serde_json::to_string(&bind(&asker, live)?)?;
+    let recruits = serde_json::to_string(&recruitment.recruits)?;
+    let fingerprint = audit::sha256_hex(format!("{}\n{agent}", serde_json::to_string(recruitment)?).as_bytes());
+    let transaction = connection.transaction()?;
+    let previous: Option<(String, String, String)> = transaction.query_row(
+        "SELECT id, fingerprint, mapping_hash FROM proposals WHERE sender=?1 AND submission_key=?2",
+        params![sender.session_id, recruitment.submission_key], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).optional()?;
+    if let Some((id, old_fingerprint, mapping_hash)) = previous {
+        if old_fingerprint != fingerprint { return Err(TeamError::new(ErrorCode::Conflict, "submission key already names different contents")); }
+        return Ok(TeamReply { request_id: recruitment.submission_key.clone(), result: Ok(json!({"proposal_id": id, "revision": 1, "mapping_hash": mapping_hash})) });
+    }
+    let recent: i64 = transaction.query_row("SELECT count(*) FROM proposals WHERE sender=?1 AND created_at>?2", params![sender.session_id, now_ms - 60_000], |row| row.get(0))?;
+    if recent >= 10 { return Err(TeamError::new(ErrorCode::Limit, "team request rate limit reached")); }
+    let id = identifier()?;
+    let mapping_hash = audit::sha256_hex(format!("{task_key}\n{mapping}\n{recruits}\n{agent}").as_bytes());
+    transaction.execute("INSERT INTO proposals (id,sender,submission_key,fingerprint,task_key,project,task_id,mapping,mapping_hash,reason,revision,status,created_at,recruits,spawn_agent)
+        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,1,'pending',?11,?12,?13)",
+        params![id, sender.session_id, recruitment.submission_key, fingerprint, task_key, recruitment.task.project, recruitment.task.task_id,
+            mapping, mapping_hash, recruitment.reason, now_ms, recruits, agent])?;
+    transaction.commit()?;
+    Ok(TeamReply { request_id: recruitment.submission_key.clone(), result: Ok(json!({"proposal_id": id, "revision": 1, "mapping_hash": mapping_hash})) })
+}
+
 pub fn control(connection: &mut Connection, action: &HostAction, live: &[VerifiedSession], now_ms: i64) -> Result<TeamReply, TeamError> {
     let request_id = match action {
         HostAction::Approve { request_id, .. } | HostAction::Edit { request_id, .. }
@@ -154,19 +213,22 @@ pub fn control(connection: &mut Connection, action: &HostAction, live: &[Verifie
     let response = match action {
         HostAction::Approve { proposal_id, expected_revision, mapping_hash, .. } => approve_mapping(&transaction, proposal_id, *expected_revision, mapping_hash, live, now_ms)?,
         HostAction::Edit { proposal_id, expected_revision, replacement, .. } => {
-            let old: Option<(String, String, i64, String)> = transaction.query_row("SELECT sender, project, revision, status FROM proposals WHERE id=?1", [proposal_id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))).optional()?;
-            let Some((sender, project, revision, status)) = old else { return Err(TeamError::new(ErrorCode::NotFound, "team request not found")); };
+            let old: Option<(String, String, i64, String, String, String)> = transaction.query_row(
+                "SELECT sender, project, revision, status, recruits, spawn_agent FROM proposals WHERE id=?1", [proposal_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?))).optional()?;
+            let Some((sender, project, revision, status, recruits, spawn_agent)) = old else { return Err(TeamError::new(ErrorCode::NotFound, "team request not found")); };
             if revision != *expected_revision || status != "pending" || replacement.task.project != project {
                 return Err(TeamError::new(ErrorCode::Conflict, "team request changed or belongs to another project"));
             }
             let mapping = serde_json::to_string(&bind(replacement, live)?)?;
             let task_key = serde_json::to_string(&replacement.task)?;
-            let mapping_hash = audit::sha256_hex(format!("{task_key}\n{mapping}").as_bytes());
+            let mapping_hash = if spawn_agent.is_empty() { audit::sha256_hex(format!("{task_key}\n{mapping}").as_bytes()) }
+                               else { audit::sha256_hex(format!("{task_key}\n{mapping}\n{recruits}\n{spawn_agent}").as_bytes()) };
             let id = identifier()?;
             transaction.execute("UPDATE proposals SET status='superseded' WHERE id=?1", [proposal_id])?;
-            transaction.execute("INSERT INTO proposals VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,'pending',?12,?13,'host')",
-                params![id,sender,format!("host-edit-{}",identifier()?),fingerprint,task_key,project,replacement.task.task_id,mapping,mapping_hash,replacement.reason,revision+1,now_ms,proposal_id])?;
+            transaction.execute("INSERT INTO proposals (id,sender,submission_key,fingerprint,task_key,project,task_id,mapping,mapping_hash,reason,revision,status,created_at,parent_id,created_by,recruits,spawn_agent)
+                VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,'pending',?12,?13,'host',?14,?15)",
+                params![id,sender,format!("host-edit-{}",identifier()?),fingerprint,task_key,project,replacement.task.task_id,mapping,mapping_hash,replacement.reason,revision+1,now_ms,proposal_id,recruits,spawn_agent])?;
             json!({"proposal_id":id,"revision":revision+1,"mapping_hash":mapping_hash})
         },
         HostAction::Reject { proposal_id, expected_revision, .. } => {
@@ -198,7 +260,8 @@ pub fn control(connection: &mut Connection, action: &HostAction, live: &[Verifie
             let task_key = serde_json::to_string(&proposal.task)?;
             let mapping_hash = audit::sha256_hex(format!("{task_key}\n{mapping}").as_bytes());
             let id = identifier()?;
-            transaction.execute("INSERT INTO proposals VALUES (?1,'host',?2,?3,?4,?5,?6,?7,?8,?9,1,'pending',?10,NULL,'host')",
+            transaction.execute("INSERT INTO proposals (id,sender,submission_key,fingerprint,task_key,project,task_id,mapping,mapping_hash,reason,revision,status,created_at,parent_id,created_by)
+                VALUES (?1,'host',?2,?3,?4,?5,?6,?7,?8,?9,1,'pending',?10,NULL,'host')",
                 params![id, format!("host-{id}"), fingerprint, task_key, proposal.task.project, proposal.task.task_id, mapping, mapping_hash, proposal.reason, now_ms])?;
             json!({"proposal_id": id, "revision": 1, "mapping_hash": mapping_hash})
         },
@@ -262,11 +325,11 @@ pub fn snapshot(connection: &Connection, task: Option<&TaskKey>, after: Option<i
     let mut members = connection.prepare("SELECT m.session_id,m.role,m.agent,m.runtime,m.epoch,t.project,t.task_id FROM members m JOIN teams t ON t.task_key=m.task_key WHERE (?1 IS NULL OR m.task_key=?1) ORDER BY t.task_key,m.role")?;
     let members = members.query_map(params![task_key], |row| Ok(json!({"session_id":row.get::<_,String>(0)?,"role":row.get::<_,String>(1)?,"agent":row.get::<_,String>(2)?,
         "runtime":row.get::<_,String>(3)?,"epoch":row.get::<_,String>(4)?,"project":row.get::<_,String>(5)?,"task_id":row.get::<_,String>(6)?})))?.collect::<Result<Vec<_>,_>>()?;
-    let mut proposals = connection.prepare("SELECT id,project,task_id,mapping,mapping_hash,revision,status,reason,sender,created_by,parent_id FROM proposals WHERE (?1 IS NULL OR task_key=?1)
+    let mut proposals = connection.prepare("SELECT id,project,task_id,mapping,mapping_hash,revision,status,reason,sender,created_by,parent_id,recruits,spawn_agent FROM proposals WHERE (?1 IS NULL OR task_key=?1)
         AND (status='pending' OR id IN (SELECT id FROM proposals WHERE (?1 IS NULL OR task_key=?1) ORDER BY created_at DESC, id DESC LIMIT ?2))
         ORDER BY created_at,id")?;
     let proposals = proposals.query_map(params![task_key, limit.min(100) as i64], |row| Ok(json!({"proposal_id":row.get::<_,String>(0)?,"project":row.get::<_,String>(1)?,"task_id":row.get::<_,String>(2)?,
-        "mapping":row.get::<_,String>(3)?,"mapping_hash":row.get::<_,String>(4)?,"revision":row.get::<_,i64>(5)?,"status":row.get::<_,String>(6)?,"reason":row.get::<_,String>(7)?,"sender":row.get::<_,String>(8)?,"created_by":row.get::<_,String>(9)?,"parent_id":row.get::<_,Option<String>>(10)?})))?.collect::<Result<Vec<_>,_>>()?;
+        "mapping":row.get::<_,String>(3)?,"mapping_hash":row.get::<_,String>(4)?,"revision":row.get::<_,i64>(5)?,"status":row.get::<_,String>(6)?,"reason":row.get::<_,String>(7)?,"sender":row.get::<_,String>(8)?,"created_by":row.get::<_,String>(9)?,"parent_id":row.get::<_,Option<String>>(10)?,"recruits":row.get::<_,String>(11)?,"spawn_agent":row.get::<_,String>(12)?})))?.collect::<Result<Vec<_>,_>>()?;
     let mut messages = connection.prepare("SELECT seq,id,envelope,state,attempts,next_at,last_error FROM messages WHERE (?1 IS NULL OR task_key=?1) AND (?2 IS NULL OR seq>?2)
         AND (state IN ('uncertain','failed') OR seq IN (SELECT seq FROM messages WHERE (?1 IS NULL OR task_key=?1) AND (?2 IS NULL OR seq>?2) ORDER BY seq DESC LIMIT ?3))
         ORDER BY seq")?;

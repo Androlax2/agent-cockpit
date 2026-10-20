@@ -89,8 +89,10 @@ pub fn request(registry: &mut Registry, peer: u32, action: AgentAction) -> Resul
     let kind = match &action {
         AgentAction::Context => "context", AgentAction::Propose { .. } => "propose", AgentAction::Send { .. } => "send",
         AgentAction::Receive => "receive", AgentAction::Receipt { .. } => "receipt", AgentAction::Assess { .. } => "assess",
-        AgentAction::Handoff { .. } => "handoff",
+        AgentAction::Handoff { .. } => "handoff", AgentAction::Recruit { .. } => "recruit",
     };
+    // Recruits run in the default agent as it stands now; Theo sees and approves that choice.
+    let default_agent = if matches!(action, AgentAction::Recruit { .. }) { registry.system.default_agent() } else { None };
     // The daemon's own view of the recipient decides whether it may be woken: never the adapter's claim.
     let turn = registry.sessions.get(&sender.session_id)
         .filter(|entry| !entry.needs_input && entry.state == "waiting")
@@ -109,6 +111,10 @@ pub fn request(registry: &mut Registry, peer: u32, action: AgentAction) -> Resul
         },
         AgentAction::Assess { .. } => store::assess(connection, &sender, &action, now_ms()),
         AgentAction::Handoff { .. } => store::handoff(connection, &sender, &action, now_ms()),
+        AgentAction::Recruit { recruitment } => {
+            let agent = default_agent.as_deref().ok_or_else(|| TeamError::new(ErrorCode::Unavailable, "cannot read the default agent from the cockpit settings"))?;
+            store::recruit(connection, &sender, recruitment, agent, &live, now_ms())
+        },
         AgentAction::Receipt { dispatch_id, outcome } => {
             store::finish_for(connection, &sender, dispatch_id, outcome, now_ms())?;
             Ok(TeamReply { request_id: dispatch_id.clone(), result: Ok(json!({"status": "recorded"})) })

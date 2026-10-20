@@ -403,6 +403,9 @@ pub trait System {
     fn sender_directory(&mut self, sender: u32) -> Option<String>;
     fn sender_runtime(&mut self, _sender: u32) -> Option<String> { None }
     fn runtime_is_live(&mut self, _runtime: &str) -> bool { false }
+    /// The cockpit's default agent for new sessions (Settings, `default-agent`): "claude" without a
+    /// settings file, None when it cannot be read or names no known agent.
+    fn default_agent(&mut self) -> Option<String> { None }
     fn quiet(&mut self) -> bool {
         self.in_meeting() || self.gaming()
     }
@@ -1864,6 +1867,18 @@ pub fn trusted_runtime(table: &dyn Processes, sender: &str) -> Option<String> {
     runtime_of_process(table, &first_process_outside(table, sender)?)
 }
 
+pub fn default_agent_in(settings: &std::path::Path) -> Option<String> {
+    let text = match fs::read_to_string(settings) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Some(agents::DEFAULT.to_string()),
+        Err(_) => return None,
+    };
+    // The same rules as claude-sessions' launch_setting_value: an object, a string when present.
+    let Value::Object(settings) = serde_json::from_str::<Value>(&text).ok()? else { return None };
+    let name = match settings.get("default-agent") { None => agents::DEFAULT, Some(name) => name.as_str()? };
+    agents::find(name).map(|agent| agent.name.to_string())
+}
+
 pub fn runtime_is_live(table: &dyn Processes, runtime: &str) -> bool {
     let mut parts = runtime.split(':');
     let (Some(_boot), Some(pid), Some(_started), None) = (parts.next(),parts.next(),parts.next(),parts.next()) else { return false };
@@ -2135,5 +2150,8 @@ impl System for RealSystem {
     }
     fn runtime_is_live(&mut self, runtime: &str) -> bool {
         runtime_is_live(&Proc, runtime)
+    }
+    fn default_agent(&mut self) -> Option<String> {
+        default_agent_in(&cockpit::paths::settings())
     }
 }

@@ -28,3 +28,16 @@ fn proposals_accept_only_the_three_assigned_roles_and_no_self_approval() {
     forged["approved"] = json!(true);
     assert!(serde_json::from_value::<Proposal>(forged).is_err());
 }
+
+#[test]
+fn recruit_actions_reject_unknown_fields() {
+    let valid = json!({"action":"recruit","recruitment":{"submission_key":"recruit-1","task":{"project":"project-a","task_id":"1d3fd318"},
+        "role":"developer","recruits":[{"role":"designer","brief":"Design the jobs list"}],"reason":"The UI needs a design"}});
+    assert!(serde_json::from_value::<AgentAction>(valid.clone()).is_ok());
+    let mut forged = valid.clone();
+    forged["recruitment"]["agent"] = json!("codex");
+    assert!(serde_json::from_value::<AgentAction>(forged).is_err());
+    let mut forged = valid;
+    forged["recruitment"]["recruits"][0]["session_id"] = json!("x");
+    assert!(serde_json::from_value::<AgentAction>(forged).is_err());
+}
