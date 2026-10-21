@@ -282,6 +282,38 @@ fn the_output_always_goes_back_without_a_question() {
     assert!(result["output"].as_str().unwrap().contains("ran: "), "{result}");
 }
 
+/// The HYPRLAND_INSTANCE_SIGNATURE an approved command sees, when the approval terminal starts
+/// with `signature` (None: unset) and Hyprland runs as live_instance.
+fn hyprland_signature_an_approved_command_sees(signature: Option<&str>) -> String {
+    let fixture = Approve::new();
+    fixture.sandbox.shim("script", r#"printf "signature: %s\n" "${HYPRLAND_INSTANCE_SIGNATURE-unset}" > "$3""#);
+    let live = fixture.sandbox.runtime.join("hypr/live_instance");
+    fs::create_dir_all(&live).unwrap();
+    fs::write(live.join(".socket.sock"), "").unwrap();
+    let request_id = fixture.file_default();
+    let mut approval = fixture.sandbox.command(bin().join("claude-run-approve"), &[]);
+    approval.env_remove("HYPRLAND_INSTANCE_SIGNATURE");
+    if let Some(signature) = signature {
+        approval.env("HYPRLAND_INSTANCE_SIGNATURE", signature);
+    }
+    let mut process = approval.arg(&request_id).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    let _ = process.stdin.take().unwrap().write_all(b"y\n");
+    let shown = finish(process, Duration::from_secs(10));
+    fixture.result(&request_id).unwrap_or_else(|| panic!("no result: {}{}", stdout(&shown), stderr(&shown)))["output"].as_str().unwrap().to_string()
+}
+
+#[test]
+fn an_approved_command_reaches_hyprland_when_the_approval_terminal_has_no_signature() {
+    let output = hyprland_signature_an_approved_command_sees(None);
+    assert!(output.contains("signature: live_instance"), "{output}");
+}
+
+#[test]
+fn an_approved_command_reaches_the_running_hyprland_when_the_approval_terminal_has_a_past_ones_signature() {
+    let output = hyprland_signature_an_approved_command_sees(Some("gone_instance"));
+    assert!(output.contains("signature: live_instance"), "{output}");
+}
+
 #[test]
 fn secrets_in_the_output_are_redacted_before_they_go_back() {
     let fixture = Approve::new();

@@ -474,6 +474,11 @@ pub fn run(command: &str, cwd: &str, log_path: &Path, request: Option<&str>) -> 
         // A pager's full screen ends on its ":" prompt, which reads as a question, and the status
         // line drawn under it left the window blank (apply-dotfiles showed its patches in less).
         .env("PAGER", "cat");
+    // The approval runs in a tmux session the daemon starts, whose server may predate Hyprland's
+    // last start or lack its signature: hyprctl in an approved command would find no Hyprland.
+    if let Some(instance) = crate::util::running_hyprland_instance() {
+        command_line.env("HYPRLAND_INSTANCE_SIGNATURE", instance);
+    }
     if !cwd.is_empty() {
         command_line.current_dir(cwd);
     }

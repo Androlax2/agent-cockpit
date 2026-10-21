@@ -294,21 +294,26 @@ pub fn token_hex(bytes: usize) -> String {
 /// restart, or start outside it, hold a stale or no value: take the running instance, the newest
 /// $XDG_RUNTIME_DIR/hypr/<id> with a socket.
 pub fn refresh_hyprland_instance() {
+    if let Some(instance) = running_hyprland_instance() {
+        // SAFETY: the column is single-threaded when it refreshes this (before spawning hyprctl).
+        unsafe { std::env::set_var("HYPRLAND_INSTANCE_SIGNATURE", instance) };
+    }
+}
+
+/// The signature hyprctl needs: this process's own when its Hyprland still runs, else the newest
+/// $XDG_RUNTIME_DIR/hypr/<id> with a socket; None when no Hyprland runs.
+pub fn running_hyprland_instance() -> Option<std::ffi::OsString> {
     let base = paths::runtime_dir().join("hypr");
-    if let Ok(current) = std::env::var("HYPRLAND_INSTANCE_SIGNATURE") {
+    if let Some(current) = std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE") {
         if !current.is_empty() && base.join(&current).join(".socket.sock").exists() {
-            return;
+            return Some(current);
         }
     }
-    let Ok(entries) = fs::read_dir(&base) else { return };
-    let newest = entries
+    fs::read_dir(&base).ok()?
         .flatten()
         .filter(|entry| entry.path().join(".socket.sock").exists())
-        .max_by_key(|entry| entry.metadata().and_then(|m| m.modified()).ok());
-    if let Some(entry) = newest {
-        // SAFETY: the column is single-threaded when it refreshes this (before spawning hyprctl).
-        unsafe { std::env::set_var("HYPRLAND_INSTANCE_SIGNATURE", entry.file_name()) };
-    }
+        .max_by_key(|entry| entry.metadata().and_then(|m| m.modified()).ok())
+        .map(|entry| entry.file_name())
 }
 
 /// Game mode (the gamemode submap) or a game window focused; same rule as the daemon's.
