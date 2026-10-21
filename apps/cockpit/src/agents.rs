@@ -1,10 +1,10 @@
 //! The agents a session can run (Claude Code, opencode): one row each, read by the column, the
-//! phone page and the daemon. claude-sessions has the same agents as files
-//! (config/bin/.local/bin/claude-sessions-agents/<name>.sh), and a test keeps both lists equal.
+//! phone page and the daemon. cockpit has the same agents as files
+//! (config/bin/.local/bin/cockpit-agents/<name>.sh), and a test keeps both lists equal.
 //! Adding a CLI takes three pieces:
 //! - a row here
 //! - a file there
-//! - a bridge that sends its states as session-state.sh payloads with CLAUDE_SESSIONS_AGENT=<name>
+//! - a bridge that sends its states as session-state.sh payloads with COCKPIT_AGENT=<name>
 //!   (Claude's hooks, opencode's plugin)
 
 use regex::Regex;
@@ -14,7 +14,7 @@ use std::sync::LazyLock;
 /// typing something into a screen where it means something else.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Feature {
-    /// claude-sessions restarts it on another effort level.
+    /// cockpit restarts it on another effort level.
     Effort,
     /// Open its native model variant picker without restarting.
     Variants,
@@ -33,7 +33,7 @@ pub enum Feature {
 }
 
 pub struct Agent {
-    /// claude-sessions' --agent name, and the agent field of its reports.
+    /// cockpit' --agent name, and the agent field of its reports.
     pub name: &'static str,
     /// Shown in messages.
     pub label: &'static str,
@@ -151,7 +151,7 @@ pub fn of_session_id(id: &str) -> Option<&'static Agent> {
 
 /// A tool's conversation identity; native Codex supplies its thread separately.
 pub fn current_session_id() -> Result<String, String> {
-    if std::env::var("CLAUDE_SESSIONS_AGENT").as_deref() == Ok("codex") {
+    if std::env::var("COCKPIT_AGENT").as_deref() == Ok("codex") {
         let native = std::env::var("CODEX_THREAD_ID").map_err(|_| "native Codex tool has no CODEX_THREAD_ID")?;
         return crate::codex::cockpit_id(&native);
     }

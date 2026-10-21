@@ -10,10 +10,10 @@
 //!     mute                    mute icon, empty line
 //!     brightness <0-100>      blue line, sun icon
 //!     session <json>          a Claude session's state report (the registry)
-//!     sessions-clear          forget every session (claude-sessions reset)
+//!     sessions-clear          forget every session (cockpit reset)
 //!     focus-next              show the most urgent Claude session in the manager
-//!     session-seen <id>       Theo looked at that session (claude-sessions view): its banner goes
-//!     session-pushed <dir>    claude-sessions pushed the branch of the sessions started there
+//!     session-seen <id>       Theo looked at that session (cockpit view): its banner goes
+//!     session-pushed <dir>    cockpit pushed the branch of the sessions started there
 //!     run-request <json>      Claude asks to run a command outside the sandbox (ask-to-run; report socket)
 //!     run-phase <id> <phase>  claude-run-approve's asking / running / done
 //!     guide-request <json>    steps for Theo to do by hand (ask-to-guide; report socket)
@@ -25,7 +25,7 @@
 //! Clicking a session's banner shows that session in the manager and drops the banner. The island
 //! hides 1.2 s after the last command. Icons are the bar's SVGs.
 //!
-//!     osd classify < pane-text          the state a pane's last lines show, for claude-sessions
+//!     osd classify < pane-text          the state a pane's last lines show, for cockpit
 //!     osd liveness <session> <pane>     whether the session runs: by id, by pane, or none
 //!     osd owns-pane <session> <pane> <server-pid>   exit 0 only for verified live ownership
 
@@ -148,7 +148,7 @@ impl Banners for GtkBanners {
             // show takes about 60 ms: waited for on a thread of its own, the banner goes at once.
             let shown = session.clone();
             std::thread::spawn(move || {
-                let _ = std::process::Command::new("claude-sessions").args(["show", &shown]).status();
+                let _ = std::process::Command::new("cockpit").args(["show", &shown]).status();
             });
             this.remove(&session);
         });

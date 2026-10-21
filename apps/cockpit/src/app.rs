@@ -689,7 +689,7 @@ pub trait Screen {
     fn outside(&mut self, action: &mut dyn FnMut() -> Option<String>) -> Option<String>;
 }
 
-/// A session told to exit, and the `claude-sessions exit` doing it.
+/// A session told to exit, and the `cockpit exit` doing it.
 pub(crate) struct Exiting {
     pub(crate) session: String,
     tmux_pane: String,
@@ -790,7 +790,7 @@ pub struct App {
     /// The session cards' data as the last tick read it (gather_sessions); a key press redraws from
     /// it instead of reading tmux and the files again.
     gathered: Option<Gathered>,
-    /// claude-sessions commands a key started (open, view, digest…), not waited for: the column stays
+    /// cockpit commands a key started (open, view, digest…), not waited for: the column stays
     /// responsive while they run; an error shows once one ends (collect_manager).
     pending: Vec<(String, std::process::Child)>,
     /// The plan's name (usage::plan, from the credentials file), read once a tick.
@@ -888,18 +888,18 @@ impl App {
         self.dispatch_prompts();
     }
 
-    /// A claude-sessions command a key asked for, started and not waited for (it takes 40 to 60 ms,
+    /// A cockpit command a key asked for, started and not waited for (it takes 40 to 60 ms,
     /// up to 500): the column keeps answering keys meanwhile (security audit 2026-10-19,
     /// performance 2). Its error, if any, shows once it ends (collect_manager).
     pub(crate) fn manager_async(&mut self, arguments: &[&str]) -> String {
-        let started = Command::new("claude-sessions").args(arguments).env("CLAUDE_SESSIONS_LOG_STDERR", "1")
+        let started = Command::new("cockpit").args(arguments).env("COCKPIT_LOG_STDERR", "1")
             .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).spawn();
         match started {
             Ok(child) => {
                 self.pending.push((command_name(arguments).to_string(), child));
                 String::new()
             }
-            Err(error) => format!("claude-sessions {}: {error}", command_name(arguments)),
+            Err(error) => format!("cockpit {}: {error}", command_name(arguments)),
         }
     }
 
@@ -921,12 +921,12 @@ impl App {
                         let _ = stderr.read_to_string(&mut errors);
                     }
                     let last = errors.trim().lines().last().unwrap_or("").to_string();
-                    util::log_event("ERROR", &format!("claude-sessions {command}: {}", if last.is_empty() { "failed" } else { &last }));
-                    self.message = if last.is_empty() { format!("claude-sessions {command} failed") } else { last };
+                    util::log_event("ERROR", &format!("cockpit {command}: {}", if last.is_empty() { "failed" } else { &last }));
+                    self.message = if last.is_empty() { format!("cockpit {command} failed") } else { last };
                 }
                 Err(error) => {
                     has_ended = true;
-                    self.message = format!("claude-sessions {command}: {error}");
+                    self.message = format!("cockpit {command}: {error}");
                 }
             }
         }
@@ -1261,7 +1261,7 @@ impl App {
 
     // ---- Sessions ----
 
-    /// x on a card: a session in tmux leaves the list at once while `claude-sessions exit` runs.
+    /// x on a card: a session in tmux leaves the list at once while `cockpit exit` runs.
     fn exit_session(&mut self, session: &Session) -> String {
         if session.tmux_pane.is_empty() {
             return kill_session(session);
@@ -1291,7 +1291,7 @@ impl App {
                     Ok(None) => return true,
                     Ok(Some(status)) if status.success() => exit.ended_at = Some(now),
                     Ok(Some(status)) => {
-                        warnings.push(format!("⚠ {} did not exit ({status}): see ~/.local/state/claude-sessions/log", exit.project));
+                        warnings.push(format!("⚠ {} did not exit ({status}): see ~/.local/state/cockpit/log", exit.project));
                         return false;
                     }
                     Err(error) => {
@@ -1383,7 +1383,7 @@ impl App {
             }
             if now() as i64 - restart.since > RESTART_TIMEOUT_S {
                 util::log_event("WARN", &format!("{} did not report within {RESTART_TIMEOUT_S}s of its restart", restart.project));
-                self.message = format!("⚠ {} did not come back from its restart: claude-sessions logs", restart.project);
+                self.message = format!("⚠ {} did not come back from its restart: cockpit logs", restart.project);
                 sessions::end_restart(&restart.session);
                 continue;
             }
@@ -2694,7 +2694,7 @@ impl App {
             }
             None => {
                 let agent = match settings::launch_agent() { Ok(agent) => agent, Err(error) => return error };
-                // Out of sight, as a card of its own (claude-sessions background): in the session pane
+                // Out of sight, as a card of its own (cockpit background): in the session pane
                 // it replaced the session on screen, and the Todo panel lost its project.
                 manager_in_background(&["--agent", &agent, "background", &directory, &text]);
                 format!("starting a session in {}", project_name(&directory))
@@ -2709,7 +2709,7 @@ impl App {
     }
 
     /// The item to a new session in a parallel clone of its repository, on a branch named after it
-    /// (claude-sessions parallel), never to a running one: it does not touch the files a session
+    /// (cockpit parallel), never to a running one: it does not touch the files a session
     /// already works on. Then it is in progress.
     pub fn hand_to_new_session(&mut self, entry: &Entry, _screen: &mut dyn Screen) -> String {
         let directory = match entry {
@@ -3280,7 +3280,7 @@ impl App {
             Key::Char('j') | Key::Down => self.panels[self.focus].move_by(1),
             Key::Char('k') | Key::Up => self.panels[self.focus].move_by(-1),
             // From any panel, as ← comes back from the session (tmux.conf).
-            Key::Char('l') | Key::Right => { let _ = Command::new("claude-sessions").arg("focus-viewer").status(); }
+            Key::Char('l') | Key::Right => { let _ = Command::new("cockpit").arg("focus-viewer").status(); }
             Key::Char('?') => self.help_open = true,
             Key::Char(':') => {
                 let entries = self.palette_entries();
@@ -3732,7 +3732,7 @@ fn open_in_scratchpad(name: &str, page: &str) -> String {
 
 /// fzf over lines; the chosen line, or None.
 /// A session starting or restarting in the viewer pane: showing another card would replace the pane
-/// and kill it. Only for as long as claude-sessions' loading screen waits (60 s), so a state file
+/// and kill it. Only for as long as cockpit' loading screen waits (60 s), so a state file
 /// left behind cannot stop the column from following.
 fn is_viewer_loading() -> bool {
     fs::metadata(paths::loading_state()).and_then(|metadata| metadata.modified())
@@ -3797,7 +3797,7 @@ fn session_key_requires_terminal(key: Key) -> bool {
 }
 
 /// The card keys that need a feature of the session's agent, and what they do, named for a
-/// refusal (claude-sessions refuses them too, and Remote Control).
+/// refusal (cockpit refuses them too, and Remote Control).
 fn key_feature(key: Key, agent: &agents::Agent) -> Option<(Feature, &'static str)> {
     match key {
         Key::Char('e') if agent.can(Feature::Variants) => Some((Feature::Variants, "the model variant picker")),
@@ -3808,7 +3808,7 @@ fn key_feature(key: Key, agent: &agents::Agent) -> Option<(Feature, &'static str
     }
 }
 
-/// The claude-sessions command in `arguments`, past a leading --agent <name>.
+/// The cockpit command in `arguments`, past a leading --agent <name>.
 fn command_name<'a>(arguments: &[&'a str]) -> &'a str {
     match arguments {
         ["--agent", _, command, ..] => command,

@@ -5,7 +5,7 @@ if (( $# != 1 )); then
     echo "usage: claude-needs-input '<question>'" >&2
     exit 2
 fi
-if [[ ${CLAUDE_SESSIONS_AGENT:-} == codex ]]; then
+if [[ ${COCKPIT_AGENT:-} == codex ]]; then
     jq -cn --arg session "${CODEX_THREAD_ID:-}" --arg question "$1" --arg cwd "$PWD" \
         '{hook_event_name: "NeedsInput", session_id: $session, message: $question, cwd: $cwd}' | cockpit-codex-hook
     exit $?
@@ -16,4 +16,4 @@ agent=claude
 here=$(dirname "$(readlink -f "$0")")
 jq -cn --arg session "$session" --arg question "$1" --arg cwd "$PWD" \
     '{hook_event_name: "NeedsInput", session_id: $session, message: $question, cwd: $cwd}' |
-    CLAUDE_SESSIONS_AGENT="$agent" bash "$here/../../../claude/.claude/hooks/session-state.sh"
+    COCKPIT_AGENT="$agent" bash "$here/../../../claude/.claude/hooks/session-state.sh"

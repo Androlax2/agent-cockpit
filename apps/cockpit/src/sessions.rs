@@ -190,7 +190,7 @@ pub struct Session {
     pub pinned: bool,
     pub group_size: usize,
     pub group_position: usize,
-    /// Held on screen while `claude-sessions restart` brings it back (Restart).
+    /// Held on screen while `cockpit restart` brings it back (Restart).
     pub restarting: bool,
 }
 
@@ -309,7 +309,7 @@ pub fn running() -> Vec<Session> {
     sessions
 }
 
-/// A session `claude-sessions restart` is bringing back, from the note it leaves before the exit
+/// A session `cockpit restart` is bringing back, from the note it leaves before the exit
 /// (paths::restarting_dir, one file per session: when, project, folder). Between the exit and the
 /// new process's first report the session is in no snapshot: its card is held from this.
 #[derive(Clone, Debug, PartialEq)]
@@ -698,7 +698,7 @@ pub struct Restorable {
 
 /// The sessions still alive when the machine went down: seen before this boot, within
 /// RESTORE_WINDOW_S of the last one seen, not ended on purpose, not running now. One nobody typed in
-/// yet comes back too, as a fresh session in its folder (claude-sessions restore): leaving it out
+/// yet comes back too, as a fresh session in its folder (cockpit restore): leaving it out
 /// made sessions opened and not used yet vanish at each reboot. One started in a terminal of its
 /// own ("this terminal") is that terminal's to bring back, not the cockpit's.
 pub fn sessions_to_restore(recent: &Value, ended: &HashSet<String>, running: &HashSet<String>, boot: i64) -> Vec<Restorable> {

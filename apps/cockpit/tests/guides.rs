@@ -162,7 +162,7 @@ fn a_terminal_session_gets_no_guide_window_and_falls_back() {
     let fixture = AskToGuide::new();
     let daemon = fixture.listen();
     let guides = fixture.guides.display().to_string();
-    let mut asking = fixture.sandbox.command(bin().join("ask-to-guide"), &[("CLAUDE_GUIDES_DIR", &guides), ("CLAUDE_SESSIONS_TERMINAL", "1")])
+    let mut asking = fixture.sandbox.command(bin().join("ask-to-guide"), &[("CLAUDE_GUIDES_DIR", &guides), ("COCKPIT_TERMINAL", "1")])
         .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
     let _ = asking.stdin.take().unwrap().write_all(STEPS.as_bytes());
     let output = finish(asking, TIMEOUT);

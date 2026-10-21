@@ -25,18 +25,18 @@ installed_version() {
 
 before=$(installed_version)
 if [[ ! $before =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-    claude-sessions log update WARN "opencode-update: cannot read the installed version (got '${before}'), nothing updated" 2>/dev/null || true
+    cockpit log update WARN "opencode-update: cannot read the installed version (got '${before}'), nothing updated" 2>/dev/null || true
     echo "opencode-update: cannot read the installed version (got '${before}')" >&2
     exit 1
 fi
 newest=$(curl -fsSL --max-time 20 "$latest_url" 2>/dev/null | jq -r '.version // empty' 2>/dev/null)
 if [[ ! $newest =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-    claude-sessions log update WARN "opencode-update: no version from $latest_url (got '${newest}'), nothing updated" 2>/dev/null || true
+    cockpit log update WARN "opencode-update: no version from $latest_url (got '${newest}'), nothing updated" 2>/dev/null || true
     echo "opencode-update: no version from $latest_url (got '${newest}')" >&2
     exit 1
 fi
 if [[ ${newest%%.*} != "${before%%.*}" ]]; then
-    claude-sessions log update WARN "opencode $newest held: a major version change from $before; check the cockpit plugin against it, then: opencode upgrade $newest" 2>/dev/null || true
+    cockpit log update WARN "opencode $newest held: a major version change from $before; check the cockpit plugin against it, then: opencode upgrade $newest" 2>/dev/null || true
     echo "opencode-update: $newest held (major change from $before)"
     exit 0
 fi
@@ -45,12 +45,12 @@ if [[ $newest == "$before" || $(printf '%s\n%s\n' "$before" "$newest" | sort -V 
     exit 0
 fi
 if ! output=$(timeout 300 "$opencode" upgrade "$newest" 2>&1); then
-    claude-sessions log update WARN "opencode upgrade failed: $(tail -1 <<< "$output")" 2>/dev/null || true
+    cockpit log update WARN "opencode upgrade failed: $(tail -1 <<< "$output")" 2>/dev/null || true
     echo "$output" >&2
     exit 1
 fi
 after=$(installed_version)
 if [[ $after != "$before" ]]; then
-    claude-sessions log update INFO "opencode now starts $after (was $before); r on a card restarts it on the new version" 2>/dev/null || true
+    cockpit log update INFO "opencode now starts $after (was $before); r on a card restarts it on the new version" 2>/dev/null || true
 fi
 echo "opencode-update: ${after:-?}"

@@ -197,7 +197,7 @@ impl Approve {
         fs::create_dir(&held).unwrap();
         // script -qfec "<command>" <log>: record what would run, then exit with SHIM_EXIT.
         sandbox.shim("script", r#"printf "ran: %s\n" "$2" > "$3"; exit "${SHIM_EXIT:-0}""#);
-        sandbox.shim("claude-sessions", "");
+        sandbox.shim("cockpit", "");
         let editor = sandbox.shims.join("edit-command");
         write_executable(&editor, "#!/bin/sh\necho 'echo edited' > \"$1\"\n");
         Approve { sandbox, held, editor }
@@ -463,7 +463,7 @@ fn a_terminal_session_waits_for_approval_and_returns_the_answer() {
         (json!({"status": "ran", "exit": 3, "output": "approved output"}), 3, "approved output"),
     ] {
         let mut fixture = AskToRun::new();
-        fixture.sandbox.env.insert("CLAUDE_SESSIONS_TERMINAL".into(), "1".into());
+        fixture.sandbox.env.insert("COCKPIT_TERMINAL".into(), "1".into());
         let mut asking = fixture.ask(&["--why", "Check the terminal session approval path.", "echo approved output"], "5");
         let request = fixture.request();
         assert_eq!(request["answers"], ANSWERS_KEY);
@@ -478,7 +478,7 @@ fn a_terminal_session_waits_for_approval_and_returns_the_answer() {
 #[test]
 fn a_terminal_session_can_check_approval_availability() {
     let mut fixture = AskToRun::new();
-    fixture.sandbox.env.insert("CLAUDE_SESSIONS_TERMINAL".into(), "1".into());
+    fixture.sandbox.env.insert("COCKPIT_TERMINAL".into(), "1".into());
     let output = finish(fixture.ask(&["--check"], "5"), TIMEOUT);
     assert_eq!(output.status.code(), Some(0), "{}", stdout(&output));
 }
@@ -486,7 +486,7 @@ fn a_terminal_session_can_check_approval_availability() {
 #[test]
 fn a_terminal_session_without_its_projects_answers_folder_still_falls_back() {
     let mut fixture = AskToRun::new();
-    fixture.sandbox.env.insert("CLAUDE_SESSIONS_TERMINAL".into(), "1".into());
+    fixture.sandbox.env.insert("COCKPIT_TERMINAL".into(), "1".into());
     fixture.sandbox.env.insert("CLAUDE_ANSWERS_KEY".into(), String::new());
     let output = finish(fixture.ask(&["--why", "x", "true"], "5"), TIMEOUT);
     assert_eq!(output.status.code(), Some(126));
@@ -568,5 +568,5 @@ fn a_daemon_that_never_answers_points_at_an_old_build() {
     let fixture = AskToRun::answering("");
     let output = finish(fixture.ask(&["--why", "x", "true"], "5"), TIMEOUT);
     assert_eq!(output.status.code(), Some(126));
-    assert!(stdout(&output).contains("claude-sessions reload"), "{}", stdout(&output));
+    assert!(stdout(&output).contains("cockpit reload"), "{}", stdout(&output));
 }

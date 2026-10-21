@@ -88,12 +88,12 @@ fn list_reads_the_cockpits_state_folder_under_an_agents_private_xdg_state_home()
     let sandbox = Sandbox::new();
     let checkout = sandbox.root.join("runway");
     fs::create_dir_all(checkout.join(".git")).unwrap();
-    fs::create_dir_all(sandbox.state.join("claude-sessions")).unwrap();
-    fs::write(sandbox.state.join("claude-sessions/todo.json"),
+    fs::create_dir_all(sandbox.state.join("cockpit")).unwrap();
+    fs::write(sandbox.state.join("cockpit/todo.json"),
               json!({"items": [{"id": "0123abcd", "project": "runway", "text": "deploy", "status": "todo"}], "issues": {}}).to_string()).unwrap();
     let private = sandbox.root.join("opencode-greywall-state").display().to_string();
     let state = sandbox.state.display().to_string();
-    let output = sandbox.command(bin().join("claude-todo"), &[("XDG_STATE_HOME", &private), ("CLAUDE_SESSIONS_STATE_HOME", &state)])
+    let output = sandbox.command(bin().join("claude-todo"), &[("XDG_STATE_HOME", &private), ("COCKPIT_STATE_HOME", &state)])
         .args(["show", "0123abcd"]).current_dir(&checkout).output().unwrap();
     assert!(stdout(&output).contains("deploy"), "{}{}", stdout(&output), stderr(&output));
 }

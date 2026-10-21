@@ -47,13 +47,13 @@ class MobileBrowserTests(unittest.TestCase):
         self.project.mkdir(parents=True)
         self.environment = dict(os.environ, HOME=str(self.home),
                                 XDG_RUNTIME_DIR=str(self.runtime), XDG_STATE_HOME=str(self.state),
-                                CLAUDE_SESSIONS_STATE_HOME=str(self.state),
+                                COCKPIT_STATE_HOME=str(self.state),
                                 CLAUDE_REMOTE_DIR=str(self.state / "claude-remote"),
                                 CLAUDE_REMOTE_ADDRESS="127.0.0.1:0", CLAUDE_AUDIT_JOURNAL="off",
                                 PATH=f"{self.shims}:{os.environ['PATH']}")
         self.shim("tailscale", "echo '{\"Self\":{\"DNSName\":\"test.ts.net\"}}'")
         self.shim("qrencode", "exit 0")
-        self.shim("claude-sessions", 'printf "%s\\n" "$*" >> "$XDG_RUNTIME_DIR/actions"')
+        self.shim("cockpit", 'printf "%s\\n" "$*" >> "$XDG_RUNTIME_DIR/actions"')
         self.shim("tmux", 'if [ "$1" = capture-pane ]; then cat "$XDG_RUNTIME_DIR/pane.txt"; '
                           'else printf "%s\\n" "$*" >> "$XDG_RUNTIME_DIR/keys"; fi')
         self.shim("gh", "echo '[]'")
@@ -88,7 +88,7 @@ class MobileBrowserTests(unittest.TestCase):
         if sessions is None:
             sessions = [{"session": SESSION, "project": "shop", "state": "waiting",
                          "task": "Fix checkout", "tmux_pane": "%4"}]
-        path = self.runtime / "claude-sessions.json"
+        path = self.runtime / "cockpit.json"
         temporary = path.with_suffix(".tmp")
         temporary.write_text(json.dumps({"sessions": sessions}))
         temporary.replace(path)
@@ -302,7 +302,7 @@ class MobileBrowserTests(unittest.TestCase):
         expect(self.page.get_by_placeholder("A new item")).to_have_value("")
 
     def test_a_todo_starts_with_the_selected_agent(self):
-        todo = self.state / "claude-sessions/todo.json"
+        todo = self.state / "cockpit/todo.json"
         todo.parent.mkdir(parents=True)
         todo.write_text(json.dumps({"items": [{"id": "aaaa1111", "project": "shop", "cwd": str(self.project),
                                                 "text": "Fix cart", "status": "todo", "created": 1}]}))
@@ -443,7 +443,7 @@ class MobileBrowserTests(unittest.TestCase):
         expect(self.page.locator("#work")).to_contain_text("Cost estimate (API prices)")
 
     def test_todo_expansion_is_keyboard_accessible(self):
-        todo = self.state / "claude-sessions/todo.json"
+        todo = self.state / "cockpit/todo.json"
         todo.parent.mkdir(parents=True)
         todo.write_text(json.dumps({"items": [{"id": "aaaa1111", "project": "shop", "cwd": str(self.project),
                                                 "text": "Fix cart", "notes": "Use the phone", "status": "todo", "created": 1}]}))
@@ -480,7 +480,7 @@ class MobileBrowserTests(unittest.TestCase):
         expect(self.page.locator("#screen-note")).to_have_text("")
 
     def test_long_todo_and_pull_names_fit_a_small_phone(self):
-        todo = self.state / "claude-sessions/todo.json"
+        todo = self.state / "cockpit/todo.json"
         todo.parent.mkdir(parents=True)
         todo.write_text(json.dumps({"items": [{"id": "aaaa1111", "project": "shop", "cwd": str(self.project),
                                                 "text": "Unbroken" * 50, "status": "todo", "created": 1}]}))

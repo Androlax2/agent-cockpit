@@ -1,5 +1,5 @@
 //! The agents' interface: one row per agent in cockpit::agents, one file per agent for
-//! claude-sessions, every verb defined, and an agent added as a file is run like the others.
+//! cockpit, every verb defined, and an agent added as a file is run like the others.
 
 mod common;
 use common::sandbox::*;
@@ -10,7 +10,7 @@ use std::fs;
 use std::path::PathBuf;
 
 fn agents_dir() -> PathBuf {
-    bin().join("claude-sessions-agents")
+    bin().join("cockpit-agents")
 }
 
 /// The names of the agent files, sorted.
@@ -22,7 +22,7 @@ fn agent_files() -> Vec<String> {
 }
 
 #[test]
-fn every_agent_has_a_row_and_a_file_for_claude_sessions() {
+fn every_agent_has_a_row_and_a_file_for_cockpit() {
     let mut rows = agents::names();
     rows.sort();
     assert_eq!(rows, agent_files());
@@ -112,10 +112,10 @@ fn every_name_an_agent_file_defines_carries_its_agents_name() {
 }
 
 #[test]
-fn an_agent_file_missing_a_verb_stops_claude_sessions_and_names_it() {
+fn an_agent_file_missing_a_verb_stops_cockpit_and_names_it() {
     let sandbox = Sandbox::new();
     let folder = agents_with(&sandbox, "fixtureagent", &opencode_as("fixtureagent").replace("agent_fixtureagent_say()", "unrelated_say()"));
-    let output = sandbox.run(bin().join("claude-sessions"), &["--agent", "fixtureagent", "background", "/tmp", "hi"], &[("CLAUDE_SESSIONS_AGENTS_DIR", &folder)]);
+    let output = sandbox.run(bin().join("cockpit"), &["--agent", "fixtureagent", "background", "/tmp", "hi"], &[("COCKPIT_AGENTS_DIR", &folder)]);
     assert_eq!(output.status.code(), Some(1));
     assert!(stderr(&output).contains("the agent fixtureagent") && stderr(&output).contains("does not define: say"), "{}", stderr(&output));
     assert!(sandbox.calls("tmux").is_empty());
@@ -128,8 +128,8 @@ fn an_agent_added_as_a_file_starts_with_agent_and_its_sessions_go_to_it() {
     let folder = agents_with(&sandbox, "fixtureagent", &opencode_as("fixtureagent"));
     let project = sandbox.root.join("project");
     fs::create_dir_all(&project).unwrap();
-    let output = sandbox.run(bin().join("claude-sessions"), &["--agent", "fixtureagent", "background", &project.display().to_string(), "fix the chip"],
-                             &[("CLAUDE_SESSIONS_AGENTS_DIR", &folder)]);
+    let output = sandbox.run(bin().join("cockpit"), &["--agent", "fixtureagent", "background", &project.display().to_string(), "fix the chip"],
+                             &[("COCKPIT_AGENTS_DIR", &folder)]);
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
     let start = sandbox.calls("tmux").into_iter().find(|call| call.contains("new-session")).expect("no start");
     assert!(start.contains("-s claude-retry-fixtureagent-") && start.ends_with("--prompt fix the chip"), "{start}");
@@ -138,7 +138,7 @@ fn an_agent_added_as_a_file_starts_with_agent_and_its_sessions_go_to_it() {
 #[test]
 fn an_unknown_agent_is_refused_with_the_known_ones_named() {
     let sandbox = Sandbox::new();
-    let output = sandbox.run(bin().join("claude-sessions"), &["--agent", "unknown-agent", "new", "/tmp"], &[]);
+    let output = sandbox.run(bin().join("cockpit"), &["--agent", "unknown-agent", "new", "/tmp"], &[]);
     assert_eq!(output.status.code(), Some(2));
     assert!(stderr(&output).contains("--agent takes one of: claude codex opencode"), "{}", stderr(&output));
 }
@@ -155,7 +155,7 @@ fn left_knows_the_prompt_of_an_agent_added_as_a_file() {
   display-message) echo "3 7" ;;
   capture-pane) printf '%s\n' ' > ' ;;
 esac"#);
-    let output = sandbox.run(bin().join("claude-sessions-left"), &["%11"], &[("CLAUDE_SESSIONS_AGENTS_DIR", &folder)]);
+    let output = sandbox.run(bin().join("cockpit-left"), &["%11"], &[("COCKPIT_AGENTS_DIR", &folder)]);
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
     assert!(sandbox.calls("tmux").contains(&"tmux select-pane -L -t %11".to_string()), "{:?}", sandbox.calls("tmux"));
 }

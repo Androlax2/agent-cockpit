@@ -1,4 +1,4 @@
-//! claude-sessions-left: Left in the cockpit's session pane goes back to the column from the start
+//! cockpit-left: Left in the cockpit's session pane goes back to the column from the start
 //! of Claude's prompt, and reaches Claude anywhere else (tmux.conf binds it).
 
 mod common;
@@ -16,7 +16,7 @@ case $1 in
   display-message) echo "{cursor_x} 7" ;;
   capture-pane) capture "$@" ;;
 esac"#));
-    let output = sandbox.run(bin().join("claude-sessions-left"), &["%11"], &[]);
+    let output = sandbox.run(bin().join("cockpit-left"), &["%11"], &[]);
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
     sandbox.calls("tmux").into_iter().filter(|call| !call.starts_with("tmux display-message") && !call.starts_with("tmux capture-pane")).collect()
 }
@@ -71,8 +71,8 @@ fn left_inside_opencode_text_reaches_opencode() {
 /// session's own pane %20 reads `own_line` at `own_x`, the viewer's copy reads something else.
 fn left_showing(shown: &str, own_line: &str, own_x: usize) -> Vec<String> {
     let sandbox = Sandbox::new();
-    std::fs::write(sandbox.runtime.join("claude-sessions.current"), format!("{shown}\n")).unwrap();
-    std::fs::write(sandbox.runtime.join("claude-sessions.json"),
+    std::fs::write(sandbox.runtime.join("cockpit.current"), format!("{shown}\n")).unwrap();
+    std::fs::write(sandbox.runtime.join("cockpit.json"),
                    serde_json::json!({"sessions": [{"session": OPENCODE_SESSION, "tmux_pane": "%20"}]}).to_string()).unwrap();
     sandbox.shim("tmux", &format!(r#"{CAPTURE}
 LINE='{own_line}'
@@ -83,7 +83,7 @@ case "$*" in
   "capture-pane -p -N -t %20 "*) capture "$@" ;;
   "capture-pane -p -N -t %11 "*) printf '%s\n' 'some other line of the viewer' ;;
 esac"#));
-    let output = sandbox.run(bin().join("claude-sessions-left"), &["%11"], &[]);
+    let output = sandbox.run(bin().join("cockpit-left"), &["%11"], &[]);
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
     sandbox.calls("tmux").into_iter().filter(|call| call.starts_with("tmux select-pane") || call.starts_with("tmux send-keys")).collect()
 }

@@ -43,7 +43,7 @@ class GreyproxyPruneTests(unittest.TestCase):
         self.bin = self.folder / "bin"
         self.bin.mkdir()
         self.fake_command("systemctl", "exit 3")
-        self.fake_command("claude-sessions", 'printf "%s\\n" "$*" >> "$PRUNE_LOG"')
+        self.fake_command("cockpit", 'printf "%s\\n" "$*" >> "$PRUNE_LOG"')
         self.environment = dict(os.environ, GREYPROXY_DB=str(self.database),
                                 PATH=f"{self.bin}:{os.environ['PATH']}", PRUNE_LOG=str(self.folder / "log"))
 

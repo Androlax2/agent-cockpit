@@ -486,7 +486,7 @@ pub fn state() -> Value {
     json!({"sessions": cards, "approvals": asking_approvals()})
 }
 
-/// A session's row when its agent has `feature` (as claude-sessions' require_feature).
+/// A session's row when its agent has `feature` (as cockpit' require_feature).
 fn require_feature(id: &str, feature: Feature, what: &str) -> Result<Value, String> {
     let row = session_row(id).ok_or("no such session")?;
     let agent = agents::get(&text(&row, "agent"));
@@ -599,7 +599,7 @@ pub fn interrupt(id: &str) -> Result<String, String> {
     Ok("interrupted".into())
 }
 
-/// Remote Control on or off for a session (as the column's : remote): claude-sessions restarts it.
+/// Remote Control on or off for a session (as the column's : remote): cockpit restarts it.
 pub fn toggle_remote_control(id: &str) -> Result<String, String> {
     let row = session_row(id).ok_or("no such session")?;
     let error = util::manager(&["remote", id]);

@@ -8,7 +8,7 @@ fn review(before: &str, actions: &str) -> Vec<String> {
     let script = format!(r#"
 local monitor = {{id = 0, x = 1920, y = -100, width = 3840, height = 2160,
     scale = 2, transform = 0, reserved = {{left = 0, top = 24, right = 0, bottom = 0}}}}
-local cockpit = {{class = "claude-sessions", stable_id = "a", workspace = {{id = 6, name = "6"}}}}
+local cockpit = {{class = "cockpit", stable_id = "a", workspace = {{id = 6, name = "6"}}}}
 local figcraft = {{class = "ai.storyteller.figcraft", address = "0xb", stable_id = "b", workspace = {{id = 2, name = "2"}}, monitor = monitor}}
 local chat = {{class = "figcraft-chat.{SESSION_A}", stable_id = "chat", workspace = {{id = 2, name = "2"}}}}
 local windows = {{cockpit, figcraft}}

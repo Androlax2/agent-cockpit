@@ -1,4 +1,4 @@
-//! claude-sessions-sidebar: the left column of the Claude session manager (claude-sessions), and
+//! cockpit-sidebar: the left column of the Claude session manager (cockpit), and
 //! three reports it prints for the manager: usage (the plan's usage, redrawn in the session pane),
 //! costs (the API-price estimate) and digest (the morning digest).
 
@@ -59,7 +59,7 @@ fn run() -> io::Result<()> {
     enter()?;
     let mut screen = TerminalScreen { terminal: Terminal::new(CrosstermBackend::new(io::stdout()))?, last_click: None };
     let mut app = App::new();
-    let _ = Command::new("claude-sessions").arg("sweep").stdout(Stdio::null()).stderr(Stdio::null()).status();
+    let _ = Command::new("cockpit").arg("sweep").stdout(Stdio::null()).stderr(Stdio::null()).status();
     app.history.refresh();
     let mut last_tick: Option<Instant> = None;
     loop {
@@ -88,7 +88,7 @@ fn main() {
         ["usage"] => usage::report_forever(),
         ["costs"] => costs::print_costs().map_err(|error| error.to_string()),
         ["digest"] => costs::print_digest().map_err(|error| error.to_string()),
-        _ => Err("usage: claude-sessions-sidebar [usage|costs|digest]".into()),
+        _ => Err("usage: cockpit-sidebar [usage|costs|digest]".into()),
     };
     if let Err(error) = result {
         eprintln!("{error}");

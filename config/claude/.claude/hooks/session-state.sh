@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Claude Code hooks, and opencode's cockpit plugin (~/.config/opencode/plugins/cockpit.ts, which
-# sends the same payloads with CLAUDE_SESSIONS_AGENT=opencode) → the OSD daemon (osd, apps/desktop): one `session <json>` line per event with
+# sends the same payloads with COCKPIT_AGENT=opencode) → the OSD daemon (osd, apps/desktop): one `session <json>` line per event with
 # the session's state (working | waiting | needs-you | gone), its project, the focus target of its
 # window (KITTY_* can be stale after a tmux re-attach; the daemon re-resolves it) and an optional
 # banner message. The daemon keeps the registry, colours the Hyprland window
@@ -201,13 +201,13 @@ sticky=false
 # Started with "this terminal" (the claude function's t): the cockpit keeps it out of what acts on
 # every session.
 terminal=false
-[[ ${CLAUDE_SESSIONS_TERMINAL:-} == 1 ]] && terminal=true
+[[ ${COCKPIT_TERMINAL:-} == 1 ]] && terminal=true
 # Billed to the Console's API credits (the cockpit's $): always reported, false included, so the
 # card follows a switch back to the subscription.
 credits=false
-[[ ${CLAUDE_SESSIONS_CREDITS:-} == 1 ]] && credits=true
+[[ ${COCKPIT_CREDITS:-} == 1 ]] && credits=true
 # opencode's plugin says so; Claude's hooks say nothing, which the daemon takes for claude.
-agent=${CLAUDE_SESSIONS_AGENT:-}
+agent=${COCKPIT_AGENT:-}
 needs_input=
 case $event in
     TaskLabel)
@@ -350,7 +350,7 @@ report=$(jq -cn \
 
 # One line per event in ~/.cache/claude/hook.log, the one place the sandbox lets the hook write:
 # the event, the session, the state and where the report went, never prompt text. 512 KB, then
-# one previous file. `claude-sessions logs` shows the end of it.
+# one previous file. `cockpit logs` shows the end of it.
 hook_log() { # message
     local log="$HOME/.cache/claude/hook.log"
     {

@@ -76,10 +76,10 @@ fn run(steps: Value, hook_body: &str) -> Run {
 fn run_with(steps: Value, hook_body: &str, extra: &[(&str, &str)]) -> Run {
     let sandbox = Sandbox::new();
     write_executable(&sandbox.home.join("dotfiles/config/claude/.claude/hooks/session-state.sh"),
-                     &format!("#!/usr/bin/env bash\n{{ cat; echo; }} >> \"$HOME/payloads\"\necho \"$CLAUDE_SESSIONS_AGENT\" >> \"$HOME/agents\"\n{hook_body}\n"));
+                     &format!("#!/usr/bin/env bash\n{{ cat; echo; }} >> \"$HOME/payloads\"\necho \"$COCKPIT_AGENT\" >> \"$HOME/agents\"\n{hook_body}\n"));
     let harness = sandbox.root.join("harness.mjs");
     fs::write(&harness, HARNESS).unwrap();
-    let output = sandbox.command("node", extra).env_remove("CLAUDE_CODE_SESSION_ID").env_remove("CLAUDE_SESSIONS_OPENCODE_MODEL").envs(extra.iter().copied())
+    let output = sandbox.command("node", extra).env_remove("CLAUDE_CODE_SESSION_ID").env_remove("COCKPIT_OPENCODE_MODEL").envs(extra.iter().copied())
         .arg(&harness).arg(plugin()).arg("/x/proj").arg(steps.to_string()).output()
         .expect("node runs the plugin's tests (pacman -S nodejs)");
     assert!(output.status.success(), "{}", stderr(&output));
@@ -188,7 +188,7 @@ fn the_cockpits_session_shows_from_the_start() {
 #[test]
 fn session_creation_is_left_to_the_launcher_before_the_interface_starts() {
     for reference in ["", "openai/gpt-6.1-sol#high"] {
-        let run = run_with(json!([]), "", &[("CLAUDE_CODE_SESSION_ID", ROOT), ("CLAUDE_SESSIONS_OPENCODE_MODEL", reference)]);
+        let run = run_with(json!([]), "", &[("CLAUDE_CODE_SESSION_ID", ROOT), ("COCKPIT_OPENCODE_MODEL", reference)]);
         assert!(run.created.is_empty());
         assert_eq!(events_of(&run), [("SessionStart".into(), ROOT.into())]);
     }
@@ -197,7 +197,7 @@ fn session_creation_is_left_to_the_launcher_before_the_interface_starts() {
 #[test]
 fn reloading_the_plugin_preserves_an_existing_conversations_model() {
     let run = run_with(json!([]), "", &[
-        ("CLAUDE_CODE_SESSION_ID", ROOT), ("CLAUDE_SESSIONS_OPENCODE_MODEL", "openai/gpt-6.1-sol#high"), ("SHIM_EXISTING_MODEL", "1"),
+        ("CLAUDE_CODE_SESSION_ID", ROOT), ("COCKPIT_OPENCODE_MODEL", "openai/gpt-6.1-sol#high"), ("SHIM_EXISTING_MODEL", "1"),
     ]);
     assert!(run.created.is_empty());
 }

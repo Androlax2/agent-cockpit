@@ -15,7 +15,7 @@ fn sandbox() -> Sandbox {
     let sandbox = Sandbox::new();
     sandbox.shim("systemctl", FAKE_SYSTEMCTL);
     sandbox.shim("hyprctl", "");
-    sandbox.shim("claude-sessions", "");
+    sandbox.shim("cockpit", "");
     // Three greywall sandboxes: two in tmux scopes, one of those with two processes, and one in a
     // kitty window's scope.
     sandbox.shim("ps", r#"printf '%s\n' "0::/user.slice/user-1000.slice/user@1000.service/app.slice/tmux-spawn-aaa.scope" \
@@ -40,7 +40,7 @@ fn a_game_start_pauses_only_the_timers_that_were_running() {
 #[test]
 fn a_game_start_leaves_the_sessions_running_while_freeze_while_gaming_is_off() {
     let sandbox = sandbox();
-    sandbox.shim("claude-sessions", r#"[[ $1 == setting ]] && echo "$2: off"; exit 0"#);
+    sandbox.shim("cockpit", r#"[[ $1 == setting ]] && echo "$2: off"; exit 0"#);
     run(&sandbox, "on", "");
     assert!(sandbox.calls("systemctl").iter().all(|call| !call.contains(" freeze ")));
 }
@@ -122,8 +122,8 @@ fn a_game_end_that_cannot_reach_hyprland_says_so_in_the_log() {
     let sandbox = sandbox();
     sandbox.shim("hyprctl", "exit 1");
     run(&sandbox, "off", "");
-    assert!(sandbox.calls("claude-sessions").iter().any(|call| call.contains("game WARN") && call.contains("could not be told to leave game mode")),
-            "{:?}", sandbox.calls("claude-sessions"));
+    assert!(sandbox.calls("cockpit").iter().any(|call| call.contains("game WARN") && call.contains("could not be told to leave game mode")),
+            "{:?}", sandbox.calls("cockpit"));
 }
 
 #[test]

@@ -19,7 +19,7 @@ Environment=SSL_CERT_FILE=/var/lib/agent-docker/ca-bundle.pem
 RuntimeDirectory=agent-%i
 RuntimeDirectoryMode=0700
 ExecStart=/usr/bin/dockerd-rootless.sh --exec-opt native.cgroupdriver=cgroupfs
-# Filesystem view: an empty /home except this project and its parallel clones (claude-sessions'
+# Filesystem view: an empty /home except this project and its parallel clones (cockpit'
 # +, which share this daemon), and nothing else of yours
 TemporaryFileSystem=/home:ro
 BindPaths=/home/theo/IdeaProjects/%i

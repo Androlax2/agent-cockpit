@@ -26,11 +26,11 @@ const TYPE_AHEAD: Duration = Duration::from_millis(500);
 const PROMPT_IDLE: Duration = Duration::from_millis(1500);
 const REQUEST_REPLY_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// A session started with "this terminal" (the claude function's t sets CLAUDE_SESSIONS_TERMINAL):
+/// A session started with "this terminal" (the claude function's t sets COCKPIT_TERMINAL):
 /// ask-to-guide stays out of it and Claude falls back to giving him the steps. ask-to-run uses the
 /// same per-command approval as managed sessions.
 pub fn in_terminal_session() -> bool {
-    std::env::var("CLAUDE_SESSIONS_TERMINAL").is_ok_and(|value| value == "1")
+    std::env::var("COCKPIT_TERMINAL").is_ok_and(|value| value == "1")
 }
 
 pub fn runs_dir() -> PathBuf {
@@ -105,12 +105,12 @@ fn unreachable_reason(socket: &Path, error: &io::Error) -> String {
         io::ErrorKind::ConnectionRefused => format!(
             "nothing listens on the report socket {}: the OSD daemon and its socket are down. Ask Theo to run \
              `systemctl --user restart osd-report.socket osd.service` (with ask-to-run unavailable, as a fish block).", socket.display()),
-        _ => format!("the report socket {} cannot be reached ({error}). Ask Theo to run `claude-sessions doctor`.", socket.display()),
+        _ => format!("the report socket {} cannot be reached ({error}). Ask Theo to run `cockpit doctor`.", socket.display()),
     }
 }
 
 const NO_ANSWER: &str = "the OSD daemon took the request but did not answer: it may run a build older than this command. \
-                         Ask Theo to run `claude-sessions reload` (it restarts the daemon on its new build).";
+                         Ask Theo to run `cockpit reload` (it restarts the daemon on its new build).";
 
 /// One message to the daemon on the report socket, and its one-line answer.
 fn ask_daemon(line: &str, timeout: Duration) -> Result<String, Refusal> {
@@ -169,7 +169,7 @@ pub fn phase(id: &str, name: &str) {
 
 /// A line in the shared log, through the manager.
 pub fn log(level: &str, message: &str) {
-    let _ = Command::new("claude-sessions").args(["log", "run", level, message]).stdout(Stdio::null()).stderr(Stdio::null()).status();
+    let _ = Command::new("cockpit").args(["log", "run", level, message]).stdout(Stdio::null()).stderr(Stdio::null()).status();
 }
 
 /// The repository a directory belongs to (its git checkout's name), else the directory's name.

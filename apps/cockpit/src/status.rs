@@ -79,7 +79,7 @@ fn fetch(url: &str) -> Result<Value, String> {
     let body = if let Some(path) = url.strip_prefix("file://") {
         std::fs::read_to_string(path).map_err(|error| error.kind().to_string())?
     } else {
-        let mut response = ureq::get(url).header("User-Agent", "claude-sessions").call().map_err(|error| error.to_string())?;
+        let mut response = ureq::get(url).header("User-Agent", "cockpit").call().map_err(|error| error.to_string())?;
         response.body_mut().read_to_string().map_err(|error| error.to_string())?
     };
     serde_json::from_str(&body).map_err(|_| "not JSON".to_string())

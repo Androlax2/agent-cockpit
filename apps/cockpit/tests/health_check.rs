@@ -13,7 +13,7 @@ use std::time::Duration;
 fn health_sandbox() -> Sandbox {
     let sandbox = Sandbox::new();
     sandbox.shim("make", r#"echo "make $*"; [[ $* == *" test" ]] && exit "${SHIM_TESTS_EXIT:-0}"; exit 0"#);
-    sandbox.shim("claude-sessions", r#"[[ $1 == doctor ]] && { echo "1 problem(s)"; exit "${SHIM_DOCTOR_EXIT:-0}"; }; exit 0"#);
+    sandbox.shim("cockpit", r#"[[ $1 == doctor ]] && { echo "1 problem(s)"; exit "${SHIM_DOCTOR_EXIT:-0}"; }; exit 0"#);
     let recent = stdout(&Command::new("date").args(["-d", "1 hour ago", "+%a %Y-%m-%d %H:%M:%S %Z"]).output().unwrap());
     let recent = recent.trim();
     sandbox.shim("systemctl", &format!(
@@ -29,14 +29,14 @@ fn run_check(sandbox: &Sandbox, extra: &[(&str, &str)]) -> Output {
 }
 
 fn report(sandbox: &Sandbox) -> String {
-    let path = fs::read_dir(sandbox.state.join("claude-sessions")).unwrap().flatten().map(|entry| entry.path())
+    let path = fs::read_dir(sandbox.state.join("cockpit")).unwrap().flatten().map(|entry| entry.path())
         .find(|path| { let name = path.file_name().unwrap().to_string_lossy(); name.starts_with("health-") && name.ends_with(".txt") })
         .unwrap();
     fs::read_to_string(path).unwrap()
 }
 
 fn logged(sandbox: &Sandbox) -> Vec<String> {
-    sandbox.calls("claude-sessions").into_iter().filter(|call| call.starts_with("claude-sessions log")).collect()
+    sandbox.calls("cockpit").into_iter().filter(|call| call.starts_with("cockpit log")).collect()
 }
 
 /// Kills the fifo's reader and writer even when an assertion fails first.
@@ -54,7 +54,7 @@ fn a_quiet_week_writes_a_report_and_logs_all_good() {
     let sandbox = health_sandbox();
     assert_eq!(run_check(&sandbox, &[]).status.code(), Some(0));
     assert!(report(&sandbox).contains("== make check (drift, for reading)"));
-    assert!(logged(&sandbox).last().unwrap().starts_with("claude-sessions log health INFO weekly check: all good"));
+    assert!(logged(&sandbox).last().unwrap().starts_with("cockpit log health INFO weekly check: all good"));
 }
 
 #[test]

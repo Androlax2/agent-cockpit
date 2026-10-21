@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # Weekly health check (claude-health-check.timer): the Claude setup and the machine around it.
-# The full report goes to ~/.local/state/claude-sessions/health-<date>.txt; a banner (and an
-# ERROR line in claude-sessions' log) only when something is wrong, so a quiet week stays quiet.
+# The full report goes to ~/.local/state/cockpit/health-<date>.txt; a banner (and an
+# ERROR line in cockpit' log) only when something is wrong, so a quiet week stays quiet.
 # Problems: the doctor failing, the tests failing, the backup failed or older than two days, a disk
 # over 90%. `make check` (drift between the repo and the machine) is in the report, not a problem.
 # CLAUDE_HEALTH_DOTFILES points at another repository (tests).
 set -uo pipefail
 DOTFILES=${CLAUDE_HEALTH_DOTFILES:-$HOME/dotfiles}
-REPORT_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/claude-sessions"
+REPORT_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/cockpit"
 FIFO="${XDG_RUNTIME_DIR:-/tmp}/osd.fifo"
 DISK_FULL_AT=90
 BACKUP_MAX_AGE_S=$((2 * 86400))
@@ -20,8 +20,8 @@ section() { printf '\n== %s\n' "$1" >> "$report"; }
 
 printf 'Weekly health check, %s\n' "$(date)" > "$report"
 
-section "claude-sessions doctor"
-if ! claude-sessions doctor >> "$report" 2>&1; then
+section "cockpit doctor"
+if ! cockpit doctor >> "$report" 2>&1; then
     problems+=("doctor: $(tail -1 "$report")")
 fi
 
@@ -57,11 +57,11 @@ timeout 600 make -C "$DOTFILES" check >> "$report" 2>&1
 find "$REPORT_DIR" -maxdepth 1 -name 'health-*.txt' -mtime +"$REPORTS_KEPT_DAYS" -delete 2>/dev/null
 
 if (( ${#problems[@]} == 0 )); then
-    claude-sessions log health INFO "weekly check: all good ($report)" 2>/dev/null
+    cockpit log health INFO "weekly check: all good ($report)" 2>/dev/null
     exit 0
 fi
 summary=$(IFS='; '; printf '%s' "${problems[*]}")
-claude-sessions log health ERROR "weekly check: ${#problems[@]} problem(s): $summary ($report)" 2>/dev/null
+cockpit log health ERROR "weekly check: ${#problems[@]} problem(s): $summary ($report)" 2>/dev/null
 if [[ -p $FIFO ]]; then
     jq -cn --arg title "Weekly check: ${#problems[@]} problem(s)" --arg message "${summary:0:180}" \
         '{id: "claude-health", $title, $message}' | sed 's/^/notice /' | timeout 1 tee "$FIFO" >/dev/null 2>&1

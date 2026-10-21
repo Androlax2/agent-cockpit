@@ -134,7 +134,7 @@ fn native_codex_is_an_explicit_agent_not_a_claude_uuid_alias() {
 fn native_codex_background_starts_its_own_sandbox_launcher() {
     let sandbox = Sandbox::new();
     sandbox.shim("tmux", "");
-    let output = sandbox.run(common::sandbox::bin().join("claude-sessions"),
+    let output = sandbox.run(common::sandbox::bin().join("cockpit"),
         &["--agent", "codex", "background", sandbox.root.to_str().unwrap(), "review this task"], &[]);
     assert!(output.status.success(), "{}", common::sandbox::stderr(&output));
     let calls = sandbox.calls("tmux");
@@ -149,12 +149,12 @@ fn native_codex_background_starts_its_own_sandbox_launcher() {
 fn native_codex_restore_uses_only_the_exact_verified_native_thread() {
     let sandbox = Sandbox::new();
     sandbox.shim("tmux", "");
-    let state = sandbox.state.join("claude-sessions");
+    let state = sandbox.state.join("cockpit");
     std::fs::create_dir_all(&state).unwrap();
     std::fs::write(state.join("recent-sessions.json"), json!({COCKPIT_THREAD: {"native_thread": NATIVE_THREAD}}).to_string()).unwrap();
-    let script = r#"source "$1"; RECENT_SESSIONS="$XDG_STATE_HOME/claude-sessions/recent-sessions.json"; detached_size() { echo '200 50'; }; require_plain_directory() { :; }; session_field() { return 0; }; agent_codex_restore "$2" "$3""#;
+    let script = r#"source "$1"; RECENT_SESSIONS="$XDG_STATE_HOME/cockpit/recent-sessions.json"; detached_size() { echo '200 50'; }; require_plain_directory() { :; }; session_field() { return 0; }; agent_codex_restore "$2" "$3""#;
     let output = sandbox.command("bash", &[]).args(["-c", script, "bash"])
-        .arg(common::sandbox::bin().join("claude-sessions-agents/codex.sh")).arg(&sandbox.root).arg(COCKPIT_THREAD).output().unwrap();
+        .arg(common::sandbox::bin().join("cockpit-agents/codex.sh")).arg(&sandbox.root).arg(COCKPIT_THREAD).output().unwrap();
     assert!(output.status.success(), "{}", common::sandbox::stderr(&output));
     assert!(sandbox.calls("tmux").iter().any(|call| call.ends_with(&format!("resume {NATIVE_THREAD}"))));
 }
@@ -166,12 +166,12 @@ fn a_recorded_native_thread_that_is_a_flag_is_never_passed_to_codex() {
     let flag = "--dangerously-bypass-approvals-and-sandbox";
     let digest = cockpit::audit::sha256_hex(flag.as_bytes());
     let forged_id = format!("cdx_{digest}");
-    let state = sandbox.state.join("claude-sessions");
+    let state = sandbox.state.join("cockpit");
     std::fs::create_dir_all(&state).unwrap();
     std::fs::write(state.join("recent-sessions.json"), json!({&forged_id: {"native_thread": flag}}).to_string()).unwrap();
-    let script = r#"source "$1"; RECENT_SESSIONS="$XDG_STATE_HOME/claude-sessions/recent-sessions.json"; detached_size() { echo '200 50'; }; require_plain_directory() { :; }; session_field() { return 0; }; agent_codex_restore "$2" "$3""#;
+    let script = r#"source "$1"; RECENT_SESSIONS="$XDG_STATE_HOME/cockpit/recent-sessions.json"; detached_size() { echo '200 50'; }; require_plain_directory() { :; }; session_field() { return 0; }; agent_codex_restore "$2" "$3""#;
     let output = sandbox.command("bash", &[]).args(["-c", script, "bash"])
-        .arg(common::sandbox::bin().join("claude-sessions-agents/codex.sh")).arg(&sandbox.root).arg(&forged_id).output().unwrap();
+        .arg(common::sandbox::bin().join("cockpit-agents/codex.sh")).arg(&sandbox.root).arg(&forged_id).output().unwrap();
     assert!(!output.status.success());
     assert!(sandbox.calls("tmux").is_empty(), "{:?}", sandbox.calls("tmux"));
 }
@@ -180,9 +180,9 @@ fn a_recorded_native_thread_that_is_a_flag_is_never_passed_to_codex() {
 fn native_codex_missing_thread_refuses_instead_of_resuming_last() {
     let sandbox = Sandbox::new();
     sandbox.shim("tmux", "");
-    let script = r#"source "$1"; RECENT_SESSIONS="$XDG_STATE_HOME/claude-sessions/recent-sessions.json"; session_field() { return 0; }; agent_codex_restore "$2" "$3""#;
+    let script = r#"source "$1"; RECENT_SESSIONS="$XDG_STATE_HOME/cockpit/recent-sessions.json"; session_field() { return 0; }; agent_codex_restore "$2" "$3""#;
     let output = sandbox.command("bash", &[]).args(["-c", script, "bash"])
-        .arg(common::sandbox::bin().join("claude-sessions-agents/codex.sh")).arg(&sandbox.root).arg(COCKPIT_THREAD).output().unwrap();
+        .arg(common::sandbox::bin().join("cockpit-agents/codex.sh")).arg(&sandbox.root).arg(COCKPIT_THREAD).output().unwrap();
     assert!(!output.status.success());
     assert!(common::sandbox::stderr(&output).contains("no verified native Codex thread"));
     assert!(sandbox.calls("tmux").is_empty());
@@ -192,7 +192,7 @@ fn native_codex_missing_thread_refuses_instead_of_resuming_last() {
 fn native_codex_todo_updates_are_attributed_to_its_namespaced_session() {
     let sandbox = Sandbox::new();
     let daemon = common::sandbox::ReportSocket::start(&sandbox.runtime.join("claude-report/osd-report.sock"), "ok");
-    let output = sandbox.command(env!("CARGO_BIN_EXE_claude-todo"), &[("CLAUDE_SESSIONS_AGENT", "codex"), ("CODEX_THREAD_ID", NATIVE_THREAD)])
+    let output = sandbox.command(env!("CARGO_BIN_EXE_claude-todo"), &[("COCKPIT_AGENT", "codex"), ("CODEX_THREAD_ID", NATIVE_THREAD)])
         .env_remove("CLAUDE_CODE_SESSION_ID").args(["start", "0123abcd"]).current_dir(&sandbox.root).output().unwrap();
     assert!(output.status.success(), "{}", common::sandbox::stderr(&output));
     let recorded = daemon.received(std::time::Duration::from_secs(1));
@@ -204,7 +204,7 @@ fn native_codex_todo_updates_are_attributed_to_its_namespaced_session() {
 fn native_codex_run_requests_keep_user_approval_and_own_session() {
     let sandbox = Sandbox::new();
     let daemon = common::sandbox::ReportSocket::start(&sandbox.runtime.join("claude-report/osd-report.sock"), "ok");
-    let output = sandbox.command(env!("CARGO_BIN_EXE_ask-to-run"), &[("CLAUDE_SESSIONS_AGENT", "codex"),
+    let output = sandbox.command(env!("CARGO_BIN_EXE_ask-to-run"), &[("COCKPIT_AGENT", "codex"),
         ("CODEX_THREAD_ID", NATIVE_THREAD), ("ASK_TO_RUN_WAIT_S", "0")])
         .env_remove("CLAUDE_CODE_SESSION_ID").args(["--why", "Inspect the kernel version.", "uname -r"]).current_dir(&sandbox.root).output().unwrap();
     assert_eq!(output.status.code(), Some(124));
@@ -219,9 +219,9 @@ fn native_codex_run_requests_keep_user_approval_and_own_session() {
 fn native_codex_guides_are_attributed_to_the_same_cockpit_session() {
     let sandbox = Sandbox::new();
     let daemon = common::sandbox::ReportSocket::start(&sandbox.runtime.join("claude-report/osd-report.sock"), "ok");
-    let mut child = sandbox.command(env!("CARGO_BIN_EXE_ask-to-guide"), &[("CLAUDE_SESSIONS_AGENT", "codex"),
+    let mut child = sandbox.command(env!("CARGO_BIN_EXE_ask-to-guide"), &[("COCKPIT_AGENT", "codex"),
         ("CODEX_THREAD_ID", NATIVE_THREAD), ("ASK_TO_GUIDE_WAIT_S", "0")])
-        .env_remove("CLAUDE_CODE_SESSION_ID").env_remove("CLAUDE_SESSIONS_TERMINAL")
+        .env_remove("CLAUDE_CODE_SESSION_ID").env_remove("COCKPIT_TERMINAL")
         .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
     child.stdin.take().unwrap().write_all(b"# Check the team\nInspect the linked sessions\n").unwrap();
     let output = child.wait_with_output().unwrap();
@@ -234,7 +234,7 @@ fn native_codex_guides_are_attributed_to_the_same_cockpit_session() {
 #[test]
 fn native_codex_design_role_uses_its_own_session_file() {
     let sandbox = Sandbox::new();
-    let output = sandbox.command(env!("CARGO_BIN_EXE_claude-design"), &[("CLAUDE_SESSIONS_AGENT", "codex"), ("CODEX_THREAD_ID", NATIVE_THREAD)])
+    let output = sandbox.command(env!("CARGO_BIN_EXE_claude-design"), &[("COCKPIT_AGENT", "codex"), ("CODEX_THREAD_ID", NATIVE_THREAD)])
         .env_remove("CLAUDE_CODE_SESSION_ID").args(["role", "developer"]).output().unwrap();
     assert!(output.status.success(), "{}", common::sandbox::stderr(&output));
     assert_eq!(std::fs::read_to_string(sandbox.home.join(format!(".cache/claude/designs/{COCKPIT_THREAD}.role"))).unwrap(), "developer");
@@ -246,7 +246,7 @@ fn native_codex_task_label_targets_its_own_card() {
     let daemon = common::sandbox::ReportSocket::start(&sandbox.runtime.join("claude-report/osd-report.sock"), "ok");
     sandbox.shim("cockpit-codex-hook", &format!("exec '{}'", env!("CARGO_BIN_EXE_cockpit-codex-hook")));
     let output = sandbox.command(common::sandbox::bin().join("claude-session-label"),
-        &[("CLAUDE_SESSIONS_AGENT", "codex"), ("CODEX_THREAD_ID", NATIVE_THREAD)])
+        &[("COCKPIT_AGENT", "codex"), ("CODEX_THREAD_ID", NATIVE_THREAD)])
         .env_remove("CLAUDE_CODE_SESSION_ID").arg("Implement native Codex sessions").current_dir(&sandbox.root).output().unwrap();
     assert!(output.status.success(), "{}", common::sandbox::stderr(&output));
     let recorded = daemon.received(std::time::Duration::from_secs(1));
@@ -262,7 +262,7 @@ fn native_codex_question_becomes_answerable_only_after_the_turn_ends() {
     let daemon = common::sandbox::ReportSocket::start(&sandbox.runtime.join("claude-report/osd-report.sock"), "ok");
     sandbox.shim("cockpit-codex-hook", &format!("exec '{}'", env!("CARGO_BIN_EXE_cockpit-codex-hook")));
     let output = sandbox.command(common::sandbox::bin().join("claude-needs-input"),
-        &[("CLAUDE_SESSIONS_AGENT", "codex"), ("CODEX_THREAD_ID", NATIVE_THREAD)])
+        &[("COCKPIT_AGENT", "codex"), ("CODEX_THREAD_ID", NATIVE_THREAD)])
         .env_remove("CLAUDE_CODE_SESSION_ID").arg("Which task should QA review?").current_dir(&sandbox.root).output().unwrap();
     assert!(output.status.success(), "{}", common::sandbox::stderr(&output));
     let recorded = daemon.received(std::time::Duration::from_secs(1));
@@ -327,7 +327,7 @@ fn failed_native_codex_restart_does_not_focus_an_unknown_session() {
     sandbox.shim("tmux", "exit 1");
     let script = r#"source "$1"; session_field() { echo aaaaaaaa-0000-4000-8000-000000000000; }; exit_session() { :; }; require_plain_directory() { :; }; detached_size() { echo '200 50'; }; view_session() { echo 'unexpected view'; }; label_panes() { :; }; agent_codex_restart "$2" "$3""#;
     let output = sandbox.command("bash", &[]).args(["-c", script, "bash"])
-        .arg(common::sandbox::bin().join("claude-sessions-agents/codex.sh")).arg(COCKPIT_THREAD).arg(&sandbox.root).output().unwrap();
+        .arg(common::sandbox::bin().join("cockpit-agents/codex.sh")).arg(COCKPIT_THREAD).arg(&sandbox.root).output().unwrap();
     assert!(!output.status.success());
     assert!(!common::sandbox::stdout(&output).contains("unexpected view"));
 }

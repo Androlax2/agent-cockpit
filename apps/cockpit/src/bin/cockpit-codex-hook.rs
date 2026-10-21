@@ -85,7 +85,7 @@ fn report() -> Result<Option<Value>, String> {
     let payload = serde_json::from_slice(&input).map_err(|error| format!("invalid Codex hook JSON: {error}"))?;
     let Some(mut report) = codex::translate_hook(&payload)? else { return Ok(None) };
     update_question(&payload, &mut report)?;
-    report["terminal"] = json!(std::env::var("CLAUDE_SESSIONS_TERMINAL").is_ok_and(|value| value == "1"));
+    report["terminal"] = json!(std::env::var("COCKPIT_TERMINAL").is_ok_and(|value| value == "1"));
     file(&report)?;
     // The daemon hands out a message only to a session it sees idle: the turn end goes first.
     let delivery = (payload["hook_event_name"] == "Stop" && report["state"] == "waiting").then(team_delivery).flatten();

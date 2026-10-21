@@ -13,9 +13,9 @@ payload=$(cat)
 cwd=$(jq -r '.cwd // empty' <<<"$payload" 2>/dev/null)
 cwd=${cwd:-$PWD}
 project_root=$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null || echo "$cwd")
-# A parallel clone (claude-sessions' +, <clones>/<repo>/<name>) is its repository's project, as in
+# A parallel clone (cockpit' +, <clones>/<repo>/<name>) is its repository's project, as in
 # the launcher: same GitHub token, same name.
-clones_dir="${CLAUDE_SESSIONS_CLONES:-$HOME/IdeaProjects/.parallel}"
+clones_dir="${COCKPIT_CLONES:-$HOME/IdeaProjects/.parallel}"
 if [[ $project_root == "$clones_dir"/*/* ]]; then
     project_name=$(basename "$(dirname "$project_root")")
 else

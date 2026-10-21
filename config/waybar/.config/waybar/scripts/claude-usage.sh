@@ -6,7 +6,7 @@
 # (warning / critical); the tooltip lists every window the server reports. Read from the endpoint
 # Claude Code's /usage uses (api.anthropic.com/api/oauth/usage, undocumented, so a schema change
 # shows up as itself in the tooltip rather than being hidden). The response is cached in
-# $XDG_RUNTIME_DIR/claude-usage.json, which the claude-sessions sidebar reads for its header; the
+# $XDG_RUNTIME_DIR/claude-usage.json, which the cockpit sidebar reads for its header; the
 # sidebar runs this script every 5 min to keep that cache fresh.
 # The OAuth token comes from ~/.claude/.credentials.json and is never refreshed here: Claude Code
 # owns it, and a refresh from two places invalidates one of them. An expired token is shown as

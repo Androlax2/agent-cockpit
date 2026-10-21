@@ -28,7 +28,7 @@ pub fn collapse(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// A line in the shared log (format and rotation as claude-sessions' log_event). Never fails:
+/// A line in the shared log (format and rotation as cockpit' log_event). Never fails:
 /// logging must not take the column down, and the state dir is read-only inside greywall.
 pub fn log_event(level: &str, message: &str) {
     log_as("sidebar", level, message);
@@ -47,7 +47,7 @@ pub fn log_as(component: &str, level: &str, message: &str) {
             fs::rename(&path, rotated)?;
         }
         // No control character reaches the log: a session's text in it could carry escape codes to
-        // the terminal `claude-sessions logs` prints to (security audit 2026-10-19, M6).
+        // the terminal `cockpit logs` prints to (security audit 2026-10-19, M6).
         let line: String = collapse(message).chars().filter(|c| !c.is_control()).take(LOG_LINE_MAX).collect();
         let stamp = Local::now().format("%Y-%m-%dT%H:%M:%S%:z");
         let mut file = OpenOptions::new().create(true).append(true).open(&path)?;
@@ -57,20 +57,20 @@ pub fn log_as(component: &str, level: &str, message: &str) {
 
 /// Runs the manager command; its last error line, empty on success.
 pub fn manager(arguments: &[&str]) -> String {
-    let output = Command::new("claude-sessions").args(arguments).stdin(Stdio::null()).output();
+    let output = Command::new("cockpit").args(arguments).stdin(Stdio::null()).output();
     match output {
         Ok(output) if output.status.success() => String::new(),
         Ok(output) => {
             let stderr = String::from_utf8_lossy(&output.stderr);
             let last = stderr.trim().lines().last().unwrap_or("").to_string();
             if !last.is_empty() {
-                log_event("ERROR", &format!("claude-sessions {}: {last}", arguments[0]));
+                log_event("ERROR", &format!("cockpit {}: {last}", arguments[0]));
                 last
             } else {
-                format!("claude-sessions {} failed", arguments[0])
+                format!("cockpit {} failed", arguments[0])
             }
         }
-        Err(error) => format!("claude-sessions {}: {error}", arguments[0]),
+        Err(error) => format!("cockpit {}: {error}", arguments[0]),
     }
 }
 
@@ -82,9 +82,9 @@ pub fn manager_in_background(arguments: &[&str]) {
 
 /// The manager running in the background, for a caller that wants to know how it ended.
 pub fn manager_child(arguments: &[&str]) -> std::io::Result<std::process::Child> {
-    Command::new("claude-sessions")
+    Command::new("cockpit")
         .args(arguments)
-        .env("CLAUDE_SESSIONS_LOG_STDERR", "1")
+        .env("COCKPIT_LOG_STDERR", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -183,7 +183,7 @@ pub fn repository_root(path: &str) -> String {
     }
 }
 
-/// A directory's project: the repository for a claude-sessions clone (<clones>/<repo>/<name>),
+/// A directory's project: the repository for a cockpit clone (<clones>/<repo>/<name>),
 /// else the directory's own name. Same rule as the daemon's registry::parallel_clone_repository.
 pub fn project_name(path: &str) -> String {
     if !path.is_empty() {

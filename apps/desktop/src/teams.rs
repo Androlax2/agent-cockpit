@@ -86,13 +86,13 @@ pub fn start_spawns(registry: &mut Registry) -> Result<(), TeamError> {
         let commit = spawn.commit_id.as_deref().unwrap_or("-");
         // Recorded before the start: a failure after it can never start the same teammate twice.
         store::mark_spawn_started(registry.teams.as_ref().expect("opened above"), &spawn.token, now_ms())?;
-        if !registry.system.start_detached(&["claude-sessions", "--agent", &spawn.agent, "team-spawn", &spawn.token, role, &spawn.directory, commit, &spawn.brief]) {
+        if !registry.system.start_detached(&["cockpit", "--agent", &spawn.agent, "team-spawn", &spawn.token, role, &spawn.directory, commit, &spawn.brief]) {
             store::mark_spawn_failed(registry.teams.as_ref().expect("opened above"), &spawn.token)?;
         }
     }
     for session in superseded {
         // Only once the exit could be started; otherwise the next pass tries again.
-        if registry.system.start_detached(&["claude-sessions", "exit", &session]) {
+        if registry.system.start_detached(&["cockpit", "exit", &session]) {
             store::mark_qa_exited(registry.teams.as_ref().expect("opened above"), &session)?;
         }
     }

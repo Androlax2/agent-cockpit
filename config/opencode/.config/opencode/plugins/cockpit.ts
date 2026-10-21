@@ -1,6 +1,6 @@
 // An opencode session on the cockpit's column, like a Claude one: its events go to the same hook
 // as Claude's (session-state.sh), as the payloads Claude Code sends, with
-// CLAUDE_SESSIONS_AGENT=opencode. The hook works out the turn's outcome inside the sandbox and
+// COCKPIT_AGENT=opencode. The hook works out the turn's outcome inside the sandbox and
 // reports to the OSD daemon.
 //
 // opencode 2's plugin API (packages/plugin/src/promise/plugin.ts): a default export with an id and
@@ -36,7 +36,7 @@ export default {
     const send = (sessionID: string, payload: HookPayload) => {
       reports = reports.then(async () => {
         // node's spawn, which Bun has too: the tests run this plugin under node.
-        const hook = spawn("bash", [HOOK], { env: { ...process.env, CLAUDE_SESSIONS_AGENT: "opencode" }, stdio: ["pipe", "ignore", "pipe"] })
+        const hook = spawn("bash", [HOOK], { env: { ...process.env, COCKPIT_AGENT: "opencode" }, stdio: ["pipe", "ignore", "pipe"] })
         let error = ""
         hook.stderr.on("data", (chunk) => (error += chunk))
         hook.stdin.end(JSON.stringify({ ...payload, session_id: sessionID, cwd: directory }))

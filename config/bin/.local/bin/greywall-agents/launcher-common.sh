@@ -15,14 +15,14 @@ mkdir -p "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/claude-report"
 mkdir -p -m 700 "${XDG_STATE_HOME:-$HOME/.local/state}/claude-audit"
 # The phone page's paired devices (claude-remote): hidden the same way.
 mkdir -p -m 700 "${XDG_STATE_HOME:-$HOME/.local/state}/claude-remote"
-# What sessions that ignored their exit showed (claude-sessions record_stuck_exit): hidden the same way.
+# What sessions that ignored their exit showed (cockpit record_stuck_exit): hidden the same way.
 mkdir -p -m 700 "${XDG_STATE_HOME:-$HOME/.local/state}/claude-stuck-exits"
 # Created before the sandbox mounts its denyRead entries, even when no FigCraft has started yet.
 mkdir -p -m 700 "$HOME/.config/greywall-agents/figcraft"
 
 # ~/dotfiles is the live checkout: stowed into ~/.local/bin and ~/.config, built and run by the host.
 # A session writing there would run its code with Theo's rights, unreviewed (security audit
-# 2026-10-19, C1). Sessions work in the clone ~/IdeaProjects/dotfiles; claude-sessions
+# 2026-10-19, C1). Sessions work in the clone ~/IdeaProjects/dotfiles; cockpit
 # apply-dotfiles brings its commits over after Theo read the diff.
 live_dotfiles=$(cd "$HOME/dotfiles" 2>/dev/null && pwd -P)
 case "$(pwd -P)/" in
@@ -34,9 +34,9 @@ esac
 
 project_root=$(git rev-parse --show-toplevel 2>/dev/null || pwd -P)
 project_root=$(realpath -e -- "$project_root") || exit 1
-# A parallel clone (claude-sessions' +, <clones>/<repo>/<name>) is its repository's project: same
+# A parallel clone (cockpit' +, <clones>/<repo>/<name>) is its repository's project: same
 # GitHub token, same name everywhere.
-clones_dir="${CLAUDE_SESSIONS_CLONES:-$HOME/IdeaProjects/.parallel}"
+clones_dir="${COCKPIT_CLONES:-$HOME/IdeaProjects/.parallel}"
 case "$project_root" in
     "$clones_dir"/*/*) project_name=$(basename "$(dirname "$project_root")") ;;
     *) project_name=$(basename "$project_root") ;;

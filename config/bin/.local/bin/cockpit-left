@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
-# claude-sessions-left <pane>: Left in the cockpit's session pane (tmux.conf). When the prompt's
+# cockpit-left <pane>: Left in the cockpit's session pane (tmux.conf). When the prompt's
 # cursor sits right after an agent's prompt marker (Claude's ❯, opencode's ┃), nothing is left of it in the
 # prompt (an empty prompt, or the start of its text): Left goes back to the column, as Ctrl+Tab
 # does. Anywhere else it reaches the agent, to move in the text. Read from the pane as it shows: its cursor and that line
 # (an empty prompt can show a dim placeholder after ❯, so the cursor decides, not the text).
-# A script of its own, not claude-sessions: tmux waits for it on every Left.
+# A script of its own, not cockpit: tmux waits for it on every Left.
 set -u
 export LC_ALL=C.UTF-8 # ${line:0:n} counts characters, not the bytes of ❯
-pane=${1:?usage: claude-sessions-left <pane>}
+pane=${1:?usage: cockpit-left <pane>}
 
 # The session's own pane, not the viewer's copy of it: the viewer runs claude-fade and a nested
 # client, and a session window larger than the viewer (an opencode window made at the viewer's
 # height plus an approval pane's) showed there with another cursor and other lines, so Left never
-# matched. The session shown is claude-sessions.current: a daemon session id, or a tmux session
+# matched. The session shown is cockpit.current: a daemon session id, or a tmux session
 # name (claude-retry-*) before it reports. The viewer itself when none is known.
 shown_pane() {
-    local shown snapshot="${XDG_RUNTIME_DIR:-/tmp}/claude-sessions.json"
-    shown=$(cat "${XDG_RUNTIME_DIR:-/tmp}/claude-sessions.current" 2>/dev/null) || return 1
+    local shown snapshot="${XDG_RUNTIME_DIR:-/tmp}/cockpit.json"
+    shown=$(cat "${XDG_RUNTIME_DIR:-/tmp}/cockpit.current" 2>/dev/null) || return 1
     case $shown in
         claude-retry-*) tmux list-panes -t "=$shown" -F '#{pane_id}' 2>/dev/null | head -1 ;;
         ?*) jq -r --arg id "$shown" 'first(.sessions[] | select(.session == $id) | .tmux_pane // empty)' "$snapshot" 2>/dev/null ;;
@@ -30,9 +30,9 @@ read -r cursor_x cursor_y < <(tmux display-message -p -t "$read_from" '#{cursor_
 # session) ends in the spaces the cursor sits after, and without -N they were gone.
 line=$(tmux capture-pane -p -N -t "$read_from" -S "${cursor_y:-0}" -E "${cursor_y:-0}")
 before_cursor=${line:0:${cursor_x:-0}}
-# Each agent's prompt start (agent_<name>_prompt_start, claude-sessions-agents/): the cursor after
+# Each agent's prompt start (agent_<name>_prompt_start, cockpit-agents/): the cursor after
 # any of them is at the start of an empty prompt.
-agents_dir=${CLAUDE_SESSIONS_AGENTS_DIR:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/claude-sessions-agents}
+agents_dir=${COCKPIT_AGENTS_DIR:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/cockpit-agents}
 for agent_file in "$agents_dir"/*.sh; do
     # shellcheck source=/dev/null
     source "$agent_file"

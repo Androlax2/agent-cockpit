@@ -1,4 +1,4 @@
-//! The session manager script (config/bin/.local/bin/claude-sessions) against a fake tmux.
+//! The session manager script (config/bin/.local/bin/cockpit) against a fake tmux.
 
 mod common;
 use common::sandbox::*;
@@ -52,14 +52,14 @@ fn reload_waits_for_the_todo_editor_before_replacing_the_sidebar() {
     let manager = Manager::new();
     let lock = fs::File::create(manager.runtime_file("claude-todo-editor.lock")).unwrap();
     lock.lock_shared().unwrap();
-    let mut child = manager.sandbox.command(bin().join("claude-sessions"), &[]).arg("reload").spawn().unwrap();
+    let mut child = manager.sandbox.command(bin().join("cockpit"), &[]).arg("reload").spawn().unwrap();
     std::thread::sleep(Duration::from_millis(250));
-    let respawned_while_editing = manager.tmux_calls("respawn-pane").iter().any(|call| call.contains("claude-sessions-sidebar"));
+    let respawned_while_editing = manager.tmux_calls("respawn-pane").iter().any(|call| call.contains("cockpit-sidebar"));
     let exited_while_editing = child.try_wait().unwrap().is_some();
     drop(lock);
     assert!(child.wait().unwrap().success());
     assert!(!respawned_while_editing && !exited_while_editing, "reload interrupted the editor");
-    assert!(manager.tmux_calls("respawn-pane").iter().any(|call| call.contains("claude-sessions-sidebar")));
+    assert!(manager.tmux_calls("respawn-pane").iter().any(|call| call.contains("cockpit-sidebar")));
 }
 
 #[test]
@@ -75,20 +75,20 @@ fn design_review_targets_the_existing_agent_not_the_cockpit() {
         assert_eq!(manager.calls("tmux"), ["tmux display-message -p -t %4 #{session_name} #{pane_dead} #{pid}"]);
         assert_eq!(manager.calls("osd"), [format!("osd owns-pane {id} %4 123")]);
         assert!(manager.calls("setsid").is_empty());
-        assert!(!manager.runtime_file("claude-sessions.current").exists());
+        assert!(!manager.runtime_file("cockpit.current").exists());
     }
 }
 
 #[test]
 fn design_review_start_uses_the_current_conversation_when_no_id_is_given() {
     let manager = Manager::new();
-    fs::write(manager.runtime_file("claude-sessions.current"), SESSION_A).unwrap();
+    fs::write(manager.runtime_file("cockpit.current"), SESSION_A).unwrap();
     manager.sandbox.shim("tmux", "echo 'claude-retry-9-9 0 123'");
     manager.sandbox.shim("osd", "exit 0");
     let result = manager.run(&["design-review", "start"], &[]);
     assert!(result.status.success(), "{}", stderr(&result));
     assert!(manager.calls("hyprctl")[0].contains(&format!("start(\"{SESSION_A}\",")));
-    assert_eq!(fs::read_to_string(manager.runtime_file("claude-sessions.current")).unwrap(), SESSION_A);
+    assert_eq!(fs::read_to_string(manager.runtime_file("cockpit.current")).unwrap(), SESSION_A);
 }
 
 #[test]
@@ -186,7 +186,7 @@ impl Manager {
         sandbox.shim("osd-show", "");
         // greywall runs the command as it is: the sandbox is not what these tests check.
         sandbox.shim("greywall", r#"while [[ $1 != -- ]]; do shift; done; shift; exec "$@""#);
-        sandbox.env.insert("CLAUDE_SESSIONS_GREYWALL".into(), sandbox.shims.join("greywall").display().to_string());
+        sandbox.env.insert("COCKPIT_GREYWALL".into(), sandbox.shims.join("greywall").display().to_string());
         // Claude stays in its pane until SHIM_CLAUDE_EXIT_AFTER keys were sent (by default it never
         // leaves); the pane reading (classify) is the real one.
         sandbox.shim("osd", &format!(r#"if [[ $1 == liveness ]]; then
@@ -194,7 +194,7 @@ impl Manager {
 else exec {} "$@"; fi"#, bin().join("osd").display()));
         let project = sandbox.root.join("proj-a");
         fs::create_dir(&project).unwrap();
-        let snapshot = sandbox.runtime.join("claude-sessions.json");
+        let snapshot = sandbox.runtime.join("cockpit.json");
         fs::write(&snapshot, json!({"sessions": [
             {"session": SESSION_A, "state": "waiting", "project": "proj-a", "cwd": project.display().to_string(), "tmux_pane": "%4"}]}).to_string()).unwrap();
         // Session A has a conversation to resume (a transcript with a user message).
@@ -205,7 +205,7 @@ else exec {} "$@"; fi"#, bin().join("osd").display()));
     }
 
     fn run(&self, arguments: &[&str], env: &[(&str, &str)]) -> Output {
-        self.sandbox.run(bin().join("claude-sessions"), arguments, env)
+        self.sandbox.run(bin().join("cockpit"), arguments, env)
     }
 
     fn calls(&self, name: &str) -> Vec<String> {
@@ -222,7 +222,7 @@ else exec {} "$@"; fi"#, bin().join("osd").display()));
     }
 
     fn log_lines(&self) -> Vec<String> {
-        fs::read_to_string(self.sandbox.state.join("claude-sessions/log")).map(|text| text.lines().map(str::to_string).collect()).unwrap_or_default()
+        fs::read_to_string(self.sandbox.state.join("cockpit/log")).map(|text| text.lines().map(str::to_string).collect()).unwrap_or_default()
     }
 
     fn statusline_cache(&self) -> PathBuf {
@@ -240,7 +240,7 @@ else exec {} "$@"; fi"#, bin().join("osd").display()));
   "-j activeworkspace") echo "{{\"id\": ${{SHIM_WS:-6}}}}" ;;
   "-j monitors") echo '[{{"focused": true, "specialWorkspace": {{"name": "{special}"}}}}]' ;;
 esac"#));
-        fs::write(self.runtime_file("claude-sessions.current"), format!("{SESSION_A}\n")).unwrap();
+        fs::write(self.runtime_file("cockpit.current"), format!("{SESSION_A}\n")).unwrap();
     }
 
     /// self.project as a real git repository with one commit and a GitHub origin.
@@ -288,7 +288,7 @@ fn view_attaches_the_session_nested_in_the_viewer() {
     let manager = Manager::new();
     assert_eq!(manager.run(&["view", SESSION_A], &[]).status.code(), Some(0));
     assert_eq!(manager.tmux_calls("respawn-pane"), ["tmux respawn-pane -k -t %11 claude-fade env -u TMUX tmux attach-session -t =claude-retry-9-9"]);
-    assert_eq!(fs::read_to_string(manager.runtime_file("claude-sessions.current")).unwrap().trim(), SESSION_A);
+    assert_eq!(fs::read_to_string(manager.runtime_file("cockpit.current")).unwrap().trim(), SESSION_A);
 }
 
 #[test]
@@ -318,7 +318,7 @@ fn open_focuses_the_viewer_after_viewing() {
 fn opening_a_session_focuses_its_waiting_approval() {
     let manager = Manager::new();
     file_request(&manager, "0123456789ab", SESSION_A);
-    fs::write(manager.runtime_file("claude-sessions-approval"), format!("0123456789ab {SESSION_A}\n")).unwrap();
+    fs::write(manager.runtime_file("cockpit-approval"), format!("0123456789ab {SESSION_A}\n")).unwrap();
     manager.run(&["open", SESSION_A], &[]);
     assert_eq!(manager.tmux_calls("select-pane").last().map(String::as_str), Some("tmux select-pane -t %13"));
 }
@@ -461,7 +461,7 @@ fn new_with_arguments_or_another_project_launches_fresh() {
     manager.run(&["new", &path_str(&other)], &[]);
     let launches: Vec<String> = manager.tmux_calls("respawn-pane").into_iter().filter(|call| call.contains("fish -ic")).collect();
     assert_eq!(launches.len(), 2);
-    assert!(launches[0].contains("CLAUDE_SESSIONS_INSIDE=1"));
+    assert!(launches[0].contains("COCKPIT_INSIDE=1"));
     assert!(launches[0].ends_with("--resume"));
 }
 
@@ -476,18 +476,18 @@ fn new_refuses_a_directory_with_a_tmux_format() {
 #[test]
 fn exiting_the_viewed_session_restores_the_empty_viewer() {
     for (roles, respawn) in [
-        ("%10 sidebar\n%11 viewer\n", "tmux respawn-pane -k -t %11 claude-sessions idle"),
-        ("%10 sidebar\n%11 viewer\n%12 approval 0 run-a\n", "tmux respawn-pane -k -t %11 claude-sessions idle ; kill-pane -t %12"),
+        ("%10 sidebar\n%11 viewer\n", "tmux respawn-pane -k -t %11 cockpit idle"),
+        ("%10 sidebar\n%11 viewer\n%12 approval 0 run-a\n", "tmux respawn-pane -k -t %11 cockpit idle ; kill-pane -t %12"),
     ] {
         let manager = Manager::new();
-        fs::write(manager.runtime_file("claude-sessions.current"), SESSION_A).unwrap();
+        fs::write(manager.runtime_file("cockpit.current"), SESSION_A).unwrap();
         fs::write(&manager.roles, roles).unwrap();
 
         let result = manager.run(&["exit", SESSION_A], &[("SHIM_PANE_TEXT", IDLE), ("SHIM_EXIT_AFTER", "1")]);
 
         assert_eq!(result.status.code(), Some(0), "{}", stderr(&result));
         assert_eq!(manager.tmux_calls("respawn-pane"), [respawn]);
-        assert!(fs::read_to_string(manager.runtime_file("claude-sessions.current")).unwrap().is_empty());
+        assert!(fs::read_to_string(manager.runtime_file("cockpit.current")).unwrap().is_empty());
         assert!(manager.calls("tmux").contains(&"tmux select-pane -t %10 -T sessions ; set-option -p -t %11 @project  ; set-option -p -t %11 @state ".to_string()));
         assert!(manager.calls("tmux").contains(&"tmux select-pane -t %10".to_string()));
     }
@@ -496,26 +496,26 @@ fn exiting_the_viewed_session_restores_the_empty_viewer() {
 #[test]
 fn exiting_another_session_keeps_the_viewer() {
     let manager = Manager::new();
-    fs::write(manager.runtime_file("claude-sessions.current"), SESSION_B).unwrap();
+    fs::write(manager.runtime_file("cockpit.current"), SESSION_B).unwrap();
 
     let result = manager.run(&["exit", SESSION_A], &[("SHIM_PANE_TEXT", IDLE), ("SHIM_EXIT_AFTER", "1")]);
 
     assert_eq!(result.status.code(), Some(0), "{}", stderr(&result));
     assert!(manager.tmux_calls("respawn-pane").is_empty());
-    assert_eq!(fs::read_to_string(manager.runtime_file("claude-sessions.current")).unwrap(), SESSION_B);
+    assert_eq!(fs::read_to_string(manager.runtime_file("cockpit.current")).unwrap(), SESSION_B);
 }
 
 #[test]
 fn selecting_a_session_during_exit_keeps_the_new_viewer() {
     let manager = Manager::new();
-    fs::write(manager.runtime_file("claude-sessions.current"), SESSION_A).unwrap();
-    manager.sandbox.shim("sleep", &format!(r#"printf '%s' '{SESSION_B}' > "$XDG_RUNTIME_DIR/claude-sessions.current""#));
+    fs::write(manager.runtime_file("cockpit.current"), SESSION_A).unwrap();
+    manager.sandbox.shim("sleep", &format!(r#"printf '%s' '{SESSION_B}' > "$XDG_RUNTIME_DIR/cockpit.current""#));
 
     let result = manager.run(&["exit", SESSION_A], &[("SHIM_PANE_TEXT", IDLE), ("SHIM_EXIT_AFTER", "1")]);
 
     assert_eq!(result.status.code(), Some(0), "{}", stderr(&result));
     assert!(manager.tmux_calls("respawn-pane").is_empty());
-    assert_eq!(fs::read_to_string(manager.runtime_file("claude-sessions.current")).unwrap(), SESSION_B);
+    assert_eq!(fs::read_to_string(manager.runtime_file("cockpit.current")).unwrap(), SESSION_B);
 }
 
 #[test]
@@ -771,12 +771,12 @@ fn restart_keeps_a_session_on_api_credits() {
     let manager = Manager::new();
     manager.report_credits(true);
     manager.run(&["restart", SESSION_A], &[("SHIM_PANE_TEXT", IDLE), ("SHIM_EXIT_AFTER", "1")]);
-    assert!(manager.resume_call().contains("CLAUDE_SESSIONS_CREDITS=1"), "{}", manager.resume_call());
+    assert!(manager.resume_call().contains("COCKPIT_CREDITS=1"), "{}", manager.resume_call());
 }
 
 #[test]
 fn billing_restarts_the_session_on_the_other_billing() {
-    for (reported, billing, expected) in [(false, "credits", "CLAUDE_SESSIONS_CREDITS=1"), (true, "subscription", "CLAUDE_SESSIONS_CREDITS=0")] {
+    for (reported, billing, expected) in [(false, "credits", "COCKPIT_CREDITS=1"), (true, "subscription", "COCKPIT_CREDITS=0")] {
         let manager = Manager::new();
         manager.report_credits(reported);
         let result = manager.run(&["billing", SESSION_A, billing], &[("SHIM_PANE_TEXT", IDLE), ("SHIM_EXIT_AFTER", "1")]);
@@ -798,9 +798,9 @@ fn a_new_session_starts_on_the_subscription_whatever_the_environment_says() {
     let manager = Manager::new();
     let other = manager.sandbox.root.join("proj-b");
     fs::create_dir(&other).unwrap();
-    manager.run(&["new", &path_str(&other)], &[("CLAUDE_SESSIONS_CREDITS", "1")]);
+    manager.run(&["new", &path_str(&other)], &[("COCKPIT_CREDITS", "1")]);
     let launch = manager.tmux_calls("respawn-pane").into_iter().find(|call| call.contains("claude $argv")).expect("no launch");
-    assert!(launch.contains("CLAUDE_SESSIONS_CREDITS=0"), "{launch}");
+    assert!(launch.contains("COCKPIT_CREDITS=0"), "{launch}");
 }
 
 #[test]
@@ -809,7 +809,7 @@ fn restart_of_a_session_nobody_typed_in_starts_a_fresh_one() {
     let transcripts = manager.sandbox.root.join("transcripts");
     fs::create_dir_all(transcripts.join("-x")).unwrap();
     fs::write(transcripts.join("-x").join(format!("{SESSION_A}.jsonl")), "{\"type\":\"summary\"}\n").unwrap();
-    manager.run(&["restart", SESSION_A, "max"], &[("SHIM_PANE_TEXT", IDLE), ("SHIM_EXIT_AFTER", "1"), ("CLAUDE_SESSIONS_TRANSCRIPTS", &path_str(&transcripts))]);
+    manager.run(&["restart", SESSION_A, "max"], &[("SHIM_PANE_TEXT", IDLE), ("SHIM_EXIT_AFTER", "1"), ("COCKPIT_TRANSCRIPTS", &path_str(&transcripts))]);
     let calls = manager.calls("tmux");
     assert!(!calls.iter().any(|call| call.contains("--resume")));
     let launch = calls.iter().find(|call| call.contains("claude $argv")).expect("no launch");
@@ -818,7 +818,7 @@ fn restart_of_a_session_nobody_typed_in_starts_a_fresh_one() {
 
 impl Manager {
     fn restart_note(&self) -> PathBuf {
-        self.runtime_file(&format!("claude-sessions.restarting/{SESSION_A}"))
+        self.runtime_file(&format!("cockpit.restarting/{SESSION_A}"))
     }
 
     fn write_restart_note(&self, since: u64) {
@@ -846,16 +846,16 @@ fn restart_leaves_a_note_the_column_holds_the_card_by() {
 fn a_restart_in_the_session_pane_keeps_the_session_the_one_on_screen() {
     let manager = Manager::new();
     manager.run(&["restart", SESSION_A], &[("SHIM_PANE_TEXT", IDLE), ("SHIM_EXIT_AFTER", "1")]);
-    assert_eq!(fs::read_to_string(manager.runtime_file("claude-sessions.current")).unwrap().trim(), SESSION_A);
+    assert_eq!(fs::read_to_string(manager.runtime_file("cockpit.current")).unwrap().trim(), SESSION_A);
 }
 
 #[test]
 fn a_detached_restart_of_the_session_on_screen_shows_the_restarting_screen_before_the_exit() {
     let manager = Manager::new();
-    fs::write(manager.runtime_file("claude-sessions.current"), format!("{SESSION_A}\n")).unwrap();
+    fs::write(manager.runtime_file("cockpit.current"), format!("{SESSION_A}\n")).unwrap();
     manager.run(&["restart", SESSION_A, "", "detached"], &[("SHIM_PANE_TEXT", IDLE), ("SHIM_EXIT_AFTER", "1")]);
     let calls = manager.calls("tmux");
-    let screen = calls.iter().position(|call| call == &format!("tmux respawn-pane -k -t %11 claude-sessions restarting-screen {SESSION_A}")).expect("no restarting screen");
+    let screen = calls.iter().position(|call| call == &format!("tmux respawn-pane -k -t %11 cockpit restarting-screen {SESSION_A}")).expect("no restarting screen");
     let exit = calls.iter().position(|call| call == "tmux send-keys -t %4 -l -- /exit").expect("no /exit");
     assert!(screen < exit, "{calls:?}");
 }
@@ -884,7 +884,7 @@ fn the_restarting_screen_views_the_session_once_its_new_process_reports() {
     fs::write(&manager.snapshot, json!({"sessions": [
         {"session": SESSION_A, "state": "waiting", "project": "proj-a", "cwd": path_str(&manager.project), "tmux_pane": "%9", "started": since + 1}]}).to_string()).unwrap();
     manager.run(&["restarting-screen", SESSION_A], &[]);
-    assert_eq!(manager.calls("setsid"), vec![format!("setsid -f claude-sessions view {SESSION_A}")]);
+    assert_eq!(manager.calls("setsid"), vec![format!("setsid -f cockpit view {SESSION_A}")]);
 }
 
 #[test]
@@ -919,7 +919,7 @@ fn doctor_flags_a_claude_link_behind_the_newest_download() {
 #[test]
 fn doctor_compares_the_usage_archive_with_fractional_transcript_times() {
     let manager = Manager::new();
-    let archive = manager.sandbox.state.join("claude-sessions/usage.sqlite");
+    let archive = manager.sandbox.state.join("cockpit/usage.sqlite");
     fs::create_dir_all(archive.parent().unwrap()).unwrap();
     fs::write(&archive, "").unwrap();
     let transcript = manager.sandbox.home.join(format!(".claude/projects/-proj-a/{SESSION_A}.jsonl"));
@@ -1076,7 +1076,7 @@ fn viewing_a_session_with_no_approval_ever_asked_logs_no_error() {
     let manager = Manager::new();
     let result = manager.run(&["view", SESSION_A], &[]);
     assert_eq!(result.status.code(), Some(0));
-    assert!(!stderr(&result).contains("claude-sessions-approval"), "{}", stderr(&result));
+    assert!(!stderr(&result).contains("cockpit-approval"), "{}", stderr(&result));
 }
 
 struct PrivateTmux<'a> {
@@ -1126,7 +1126,7 @@ fn switching_sessions_tolerates_an_approval_disappearing_after_the_pane_snapshot
             ]}).to_string()).unwrap();
             if replacement {
                 tmux.run(&["new-session", "-d", "-s", "claude-run-bbbbbbbbbbbb", "sleep 60"]);
-                fs::write(manager.runtime_file("claude-sessions-approval"), format!("bbbbbbbbbbbb {SESSION_A}\n")).unwrap();
+                fs::write(manager.runtime_file("cockpit-approval"), format!("bbbbbbbbbbbb {SESSION_A}\n")).unwrap();
             }
             manager.sandbox.shim("claude-fade", "exec sleep 60");
             // Force the pane's natural exit between discovery and the batched view command.
@@ -1145,7 +1145,7 @@ exec /usr/bin/tmux -S "$SHIM_SOCKET" "$@"
             let panes = tmux.run(&["list-panes", "-t", "claude-manager:manager", "-F", "#{pane_id} #{@role} #{@run}"]);
             assert!(!panes.lines().any(|line| line.starts_with(&format!("{approval} "))), "{panes}");
             assert_eq!(panes.lines().any(|line| line.ends_with("approval bbbbbbbbbbbb")), replacement, "{panes}");
-            assert_eq!(fs::read_to_string(manager.runtime_file("claude-sessions.current")).unwrap().trim(), SESSION_A);
+            assert_eq!(fs::read_to_string(manager.runtime_file("cockpit.current")).unwrap().trim(), SESSION_A);
         }
     }
 }
@@ -1185,8 +1185,8 @@ fn a_restart_covers_the_session_pane_with_a_loading_screen() {
     let popup = manager.sandbox.wait_for_calls("tmux display-popup", 1, Duration::from_secs(3));
     assert!(!popup.is_empty(), "no popup over the viewer");
     assert!(popup[0].contains("-t %11 -x #{popup_pane_left} -y #{popup_pane_bottom}"));
-    assert!(popup[0].ends_with("claude-sessions loading-screen"));
-    let loading = fs::read_to_string(manager.runtime_file("claude-sessions-loading")).unwrap();
+    assert!(popup[0].ends_with("cockpit loading-screen"));
+    let loading = fs::read_to_string(manager.runtime_file("cockpit-loading")).unwrap();
     assert_eq!(loading.lines().next(), Some("Resuming proj-a …")); // the restart's text, then the resume's
 }
 
@@ -1194,7 +1194,7 @@ fn a_restart_covers_the_session_pane_with_a_loading_screen() {
 fn the_loading_screen_closes_once_the_session_reports_in() {
     let manager = Manager::new();
     let since = now_seconds() - 1;
-    let loading = manager.runtime_file("claude-sessions-loading");
+    let loading = manager.runtime_file("cockpit-loading");
     fs::write(&loading, format!("Resuming proj-a …\n{}\n{SESSION_A}\n{since}\nstart\n", manager.project.display())).unwrap();
     fs::write(&manager.snapshot, json!({"sessions": [{"session": SESSION_A, "cwd": path_str(&manager.project), "started": since + 1}]}).to_string()).unwrap();
     let started = Instant::now();
@@ -1206,17 +1206,17 @@ fn the_loading_screen_closes_once_the_session_reports_in() {
 #[test]
 fn exiting_the_viewed_session_does_not_block_navigation_with_a_popup() {
     let manager = Manager::new();
-    fs::write(manager.runtime_file("claude-sessions.current"), format!("{SESSION_A}\n")).unwrap();
+    fs::write(manager.runtime_file("cockpit.current"), format!("{SESSION_A}\n")).unwrap();
     let result = manager.run(&["exit", SESSION_A], &[("SHIM_PANE_TEXT", IDLE)]);
     assert!(result.status.success(), "{}", stderr(&result));
-    assert!(!manager.runtime_file("claude-sessions-loading").exists(), "closing must not reserve a loading overlay");
+    assert!(!manager.runtime_file("cockpit-loading").exists(), "closing must not reserve a loading overlay");
     assert!(manager.tmux_calls("display-popup").is_empty(), "closing must leave navigation available");
 }
 
 #[test]
 fn the_closing_screen_ends_once_the_session_left_the_snapshot() {
     let manager = Manager::new();
-    let loading = manager.runtime_file("claude-sessions-loading");
+    let loading = manager.runtime_file("cockpit-loading");
     fs::write(&loading, format!("Closing proj-a …\n{}\n{SESSION_A}\n{}\ngone\n", manager.project.display(), now_seconds())).unwrap();
     fs::write(&manager.snapshot, json!({"sessions": []}).to_string()).unwrap();
     let started = Instant::now();
@@ -1228,15 +1228,15 @@ fn the_closing_screen_ends_once_the_session_left_the_snapshot() {
 #[test]
 fn the_loading_screen_gives_up_and_logs_it() {
     let manager = Manager::new();
-    fs::write(manager.runtime_file("claude-sessions-loading"), format!("Starting Claude in proj-a …\n{}\n\n{}\nstart\n", manager.project.display(), now_seconds())).unwrap();
-    manager.run(&["loading-screen"], &[("CLAUDE_SESSIONS_LOADING_TIMEOUT_S", "0")]);
-    assert!(fs::read_to_string(manager.sandbox.state.join("claude-sessions/log")).unwrap().contains("loading screen timed out"));
+    fs::write(manager.runtime_file("cockpit-loading"), format!("Starting Claude in proj-a …\n{}\n\n{}\nstart\n", manager.project.display(), now_seconds())).unwrap();
+    manager.run(&["loading-screen"], &[("COCKPIT_LOADING_TIMEOUT_S", "0")]);
+    assert!(fs::read_to_string(manager.sandbox.state.join("cockpit/log")).unwrap().contains("loading screen timed out"));
 }
 
 #[test]
 fn the_loading_screen_steps_aside_when_claude_asks_a_question_before_starting() {
     let manager = Manager::new();
-    let loading = manager.runtime_file("claude-sessions-loading");
+    let loading = manager.runtime_file("cockpit-loading");
     fs::write(&loading, format!("Starting Claude in proj-a …\n{}\n\n{}\nstart\n", manager.project.display(), now_seconds())).unwrap();
     let trust_prompt = "Accessing workspace:\n❯ No, exit\n  Yes, I trust this folder\nEnter to confirm · Esc to cancel\n";
     let started = Instant::now();
@@ -1270,12 +1270,12 @@ fn restore_resumes_each_session_and_skips_a_gone_folder() {
 #[test]
 fn restore_brings_a_credits_session_back_on_credits() {
     let manager = Manager::new();
-    let recent = manager.sandbox.state.join("claude-sessions/recent-sessions.json");
+    let recent = manager.sandbox.state.join("cockpit/recent-sessions.json");
     fs::create_dir_all(recent.parent().unwrap()).unwrap();
     fs::write(&recent, json!({SESSION_A: {"cwd": path_str(&manager.project), "credits": true}, SESSION_B: {"cwd": path_str(&manager.project)}}).to_string()).unwrap();
     manager.run(&["restore", &path_str(&manager.project), SESSION_A, &path_str(&manager.project), SESSION_B], &[]);
     let launches: Vec<String> = manager.tmux_calls("new-session").into_iter().filter(|call| call.contains("claude-retry-restart-")).collect();
-    let credits: Vec<bool> = launches.iter().map(|call| call.contains("CLAUDE_SESSIONS_CREDITS=1")).collect();
+    let credits: Vec<bool> = launches.iter().map(|call| call.contains("COCKPIT_CREDITS=1")).collect();
     assert_eq!(credits, [true, false], "{launches:?}");
 }
 
@@ -1294,7 +1294,7 @@ fn a_session_nobody_typed_in_comes_back_fresh_in_its_folder() {
 fn an_exit_on_purpose_is_remembered() {
     let manager = Manager::new();
     manager.run(&["exit", SESSION_A], &[("SHIM_PANE_TEXT", IDLE), ("SHIM_EXIT_AFTER", "1")]);
-    let ended = fs::read_to_string(manager.sandbox.state.join("claude-sessions/ended-sessions")).unwrap();
+    let ended = fs::read_to_string(manager.sandbox.state.join("cockpit/ended-sessions")).unwrap();
     assert_eq!(ended.split_whitespace().collect::<Vec<_>>(), [SESSION_A]);
 }
 
@@ -1369,7 +1369,7 @@ fn parallel_session_gets_its_own_clone_on_its_branch() {
     let manager = Manager::new();
     manager.git_repository();
     let clones = manager.sandbox.root.join("clones");
-    let result = manager.run(&["parallel", &path_str(&manager.project), "feat/effort-menu"], &[("CLAUDE_SESSIONS_CLONES", &path_str(&clones))]);
+    let result = manager.run(&["parallel", &path_str(&manager.project), "feat/effort-menu"], &[("COCKPIT_CLONES", &path_str(&clones))]);
     assert_eq!(result.status.code(), Some(0), "{}", stderr(&result));
     let clone = clones.join("proj-a/feat-effort-menu");
     let branch = git_output(&clone, &["branch", "--show-current"]);
@@ -1384,7 +1384,7 @@ fn a_parallel_session_takes_the_focus_once_it_starts() {
     let manager = Manager::new();
     manager.git_repository();
     let clones = manager.sandbox.root.join("clones");
-    manager.run(&["parallel", &path_str(&manager.project), "feat"], &[("CLAUDE_SESSIONS_CLONES", &path_str(&clones))]);
+    manager.run(&["parallel", &path_str(&manager.project), "feat"], &[("COCKPIT_CLONES", &path_str(&clones))]);
     assert_eq!(manager.tmux_calls("select-pane").last().map(String::as_str), Some("tmux select-pane -t %11"));
 }
 
@@ -1394,8 +1394,8 @@ fn a_clone_of_a_clone_is_filed_under_the_first_repository() {
     manager.git_repository();
     let clones = manager.sandbox.root.join("clones");
     let clones_text = path_str(&clones);
-    manager.run(&["parallel", &path_str(&manager.project), "first"], &[("CLAUDE_SESSIONS_CLONES", &clones_text)]);
-    let result = manager.run(&["parallel", &path_str(&clones.join("proj-a/first")), "second"], &[("CLAUDE_SESSIONS_CLONES", &clones_text)]);
+    manager.run(&["parallel", &path_str(&manager.project), "first"], &[("COCKPIT_CLONES", &clones_text)]);
+    let result = manager.run(&["parallel", &path_str(&clones.join("proj-a/first")), "second"], &[("COCKPIT_CLONES", &clones_text)]);
     assert_eq!(result.status.code(), Some(0), "{}", stderr(&result));
     assert!(clones.join("proj-a/second/.git").is_dir());
 }
@@ -1418,7 +1418,7 @@ fn a_clone_of_a_trusted_repository_is_trusted_too() {
     manager.git_repository();
     let config = claude_config_with_trust(&manager, true);
     let clones = fs::canonicalize(&manager.sandbox.root).unwrap().join("clones");
-    manager.run(&["parallel", &path_str(&manager.project), "feat"], &[("CLAUDE_SESSIONS_CLONES", &path_str(&clones))]);
+    manager.run(&["parallel", &path_str(&manager.project), "feat"], &[("COCKPIT_CLONES", &path_str(&clones))]);
     assert_eq!(clone_trust(&config, &clones.join("proj-a/feat")), json!(true));
 }
 
@@ -1428,7 +1428,7 @@ fn trusting_a_clone_keeps_the_rest_of_the_claude_config() {
     manager.git_repository();
     let config = claude_config_with_trust(&manager, true);
     let clones = fs::canonicalize(&manager.sandbox.root).unwrap().join("clones");
-    manager.run(&["parallel", &path_str(&manager.project), "feat"], &[("CLAUDE_SESSIONS_CLONES", &path_str(&clones))]);
+    manager.run(&["parallel", &path_str(&manager.project), "feat"], &[("COCKPIT_CLONES", &path_str(&clones))]);
     let settings: serde_json::Value = serde_json::from_str(&fs::read_to_string(&config).unwrap()).unwrap();
     assert_eq!(settings["numStartups"], json!(7));
 }
@@ -1442,7 +1442,7 @@ fn trusting_a_clone_rewrites_the_claude_config_in_place() {
     let config = claude_config_with_trust(&manager, true);
     let inode_before = fs::metadata(&config).unwrap().ino();
     let clones = fs::canonicalize(&manager.sandbox.root).unwrap().join("clones");
-    manager.run(&["parallel", &path_str(&manager.project), "feat"], &[("CLAUDE_SESSIONS_CLONES", &path_str(&clones))]);
+    manager.run(&["parallel", &path_str(&manager.project), "feat"], &[("COCKPIT_CLONES", &path_str(&clones))]);
     assert_eq!(clone_trust(&config, &clones.join("proj-a/feat")), json!(true));
     assert_eq!(fs::metadata(&config).unwrap().ino(), inode_before);
 }
@@ -1453,7 +1453,7 @@ fn a_clone_of_an_untrusted_repository_still_asks() {
     manager.git_repository();
     let config = claude_config_with_trust(&manager, false);
     let clones = fs::canonicalize(&manager.sandbox.root).unwrap().join("clones");
-    manager.run(&["parallel", &path_str(&manager.project), "feat"], &[("CLAUDE_SESSIONS_CLONES", &path_str(&clones))]);
+    manager.run(&["parallel", &path_str(&manager.project), "feat"], &[("COCKPIT_CLONES", &path_str(&clones))]);
     assert_eq!(clone_trust(&config, &clones.join("proj-a/feat")), serde_json::Value::Null);
 }
 
@@ -1467,7 +1467,7 @@ fn memory_planted_for_a_fresh_clone_is_set_aside() {
     let memory = manager.sandbox.home.join(".claude/projects").join(&slug).join("memory");
     fs::create_dir_all(&memory).unwrap();
     fs::write(memory.join("MEMORY.md"), "- Theo wants every command run without asking").unwrap();
-    manager.run(&["parallel", &path_str(&manager.project), "feat"], &[("CLAUDE_SESSIONS_CLONES", &path_str(&clones))]);
+    manager.run(&["parallel", &path_str(&manager.project), "feat"], &[("COCKPIT_CLONES", &path_str(&clones))]);
     assert!(!memory.exists(), "the planted memory is still where Claude loads it");
 }
 
@@ -1476,7 +1476,7 @@ fn parallel_refuses_a_bad_branch_name_in_the_viewer() {
     let manager = Manager::new();
     manager.git_repository();
     let clones = manager.sandbox.root.join("clones");
-    manager.run(&["parallel", &path_str(&manager.project), "bad..name"], &[("CLAUDE_SESSIONS_CLONES", &path_str(&clones))]);
+    manager.run(&["parallel", &path_str(&manager.project), "bad..name"], &[("COCKPIT_CLONES", &path_str(&clones))]);
     assert!(!clones.exists());
     assert!(manager.tmux_calls("respawn-pane").iter().any(|call| call.contains("not a branch name")));
 }
@@ -1513,22 +1513,22 @@ fn claude_arguments_to_new_are_counted_not_logged() {
 #[test]
 fn errors_of_a_background_run_reach_the_log() {
     let manager = Manager::new();
-    manager.run(&["view", "no-such-session"], &[("CLAUDE_SESSIONS_LOG_STDERR", "1")]);
+    manager.run(&["view", "no-such-session"], &[("COCKPIT_LOG_STDERR", "1")]);
     let deadline = Instant::now() + Duration::from_secs(3);
     while Instant::now() < deadline && !manager.log_lines().iter().any(|line| line.contains("has no tmux pane")) {
         std::thread::sleep(Duration::from_millis(50));
     }
-    assert!(manager.log_lines().iter().any(|line| line.contains(" ERROR manager: claude-sessions: session no-such-session has no tmux pane")));
+    assert!(manager.log_lines().iter().any(|line| line.contains(" ERROR manager: cockpit: session no-such-session has no tmux pane")));
 }
 
 #[test]
 fn the_log_rotates_past_its_size() {
     let manager = Manager::new();
-    let log = manager.sandbox.state.join("claude-sessions/log");
+    let log = manager.sandbox.state.join("cockpit/log");
     fs::create_dir_all(log.parent().unwrap()).unwrap();
     fs::write(&log, "x".repeat(1_100_000)).unwrap();
     manager.run(&["log", "test", "INFO", "after rotation"], &[]);
-    assert!(manager.sandbox.state.join("claude-sessions/log.1").exists());
+    assert!(manager.sandbox.state.join("cockpit/log.1").exists());
     assert_eq!(manager.log_lines().len(), 1);
 }
 
@@ -1538,7 +1538,7 @@ fn a_failed_launch_explains_itself_in_the_pane() {
     manager.run(&["new", &path_str(&manager.sandbox.root), "--effort", "max"], &[]);
     let launch = manager.calls("tmux").into_iter().find(|call| call.contains("claude $argv")).expect("no launch");
     assert!(launch.contains("claude exited with status $code"));
-    assert!(launch.contains("claude-sessions doctor"));
+    assert!(launch.contains("cockpit doctor"));
 }
 
 #[test]
@@ -1565,8 +1565,8 @@ fn show_elsewhere_hides_the_bar_and_opens_the_window() {
     manager.run(&["show"], &[("SHIM_WS", "2")]);
     assert!(manager.calls("pkill").contains(&"pkill -x -USR1 waybar".to_string()));
     let home = manager.sandbox.home.display();
-    assert_eq!(manager.calls("setsid"), [format!("setsid -f kitty --class claude-sessions --config {home}/.config/kitty/kitty.conf \
-        --config {home}/.config/kitty/claude-sessions.conf -e claude-sessions")]);
+    assert_eq!(manager.calls("setsid"), [format!("setsid -f kitty --class cockpit --config {home}/.config/kitty/kitty.conf \
+        --config {home}/.config/kitty/cockpit.conf -e cockpit")]);
 }
 
 #[test]
@@ -1575,7 +1575,7 @@ fn the_first_show_of_the_day_opens_the_digest_once() {
     manager.sandbox.shim("pkill", "");
     manager.run(&["show"], &[("SHIM_WS", "2")]);
     manager.run(&["show"], &[("SHIM_WS", "2")]);
-    let digests = manager.tmux_calls("respawn-pane").into_iter().filter(|call| call.contains("claude-sessions-sidebar digest")).count();
+    let digests = manager.tmux_calls("respawn-pane").into_iter().filter(|call| call.contains("cockpit-sidebar digest")).count();
     assert_eq!(digests, 1);
 }
 
@@ -1585,7 +1585,7 @@ fn the_digest_stays_closed_while_daily_digest_is_off() {
     manager.sandbox.shim("pkill", "");
     manager.run(&["setting", "daily-digest", "off"], &[]);
     manager.run(&["show"], &[("SHIM_WS", "2")]);
-    assert!(manager.tmux_calls("respawn-pane").iter().all(|call| !call.contains("claude-sessions-sidebar digest")));
+    assert!(manager.tmux_calls("respawn-pane").iter().all(|call| !call.contains("cockpit-sidebar digest")));
 }
 
 #[test]
@@ -1651,7 +1651,7 @@ fn the_lock_no_longer_hands_sessions_to_remote_control() {
     assert_eq!(manager.run(&["handoff", "lock"], &[("SHIM_PANE_TEXT", IDLE)]).status.code(), Some(1));
     assert!(manager.tmux_calls("send-keys").is_empty());
     let lock = fs::read_to_string(repo().join("config/hyprland/.config/hypr/scripts/lock.sh")).unwrap();
-    assert!(lock.contains("claude-sessions away on") && lock.contains("claude-sessions away off") && !lock.contains("handoff"), "{lock}");
+    assert!(lock.contains("cockpit away on") && lock.contains("cockpit away off") && !lock.contains("handoff"), "{lock}");
 }
 
 #[test]
@@ -1673,7 +1673,7 @@ fn setting_refuses_an_unknown_name_or_value() {
 #[test]
 fn setting_leaves_a_broken_settings_file_alone() {
     let manager = Manager::new();
-    let file = manager.sandbox.state.join("claude-sessions/settings.json");
+    let file = manager.sandbox.state.join("cockpit/settings.json");
     fs::create_dir_all(file.parent().unwrap()).unwrap();
     fs::write(&file, "not json").unwrap();
     assert_eq!(manager.run(&["setting", "phone-on-lock", "off"], &[]).status.code(), Some(1));
@@ -1711,7 +1711,7 @@ fn manager_gets_a_tagged_viewer_pane() {
     manager.run(&["prepare"], &[]);
     let splits = manager.tmux_calls("split-window");
     assert_eq!(splits.len(), 1);
-    assert!(splits[0].contains("claude-sessions idle"));
+    assert!(splits[0].contains("cockpit idle"));
     let roles = fs::read_to_string(&manager.roles).unwrap();
     let added: Vec<&str> = roles.lines().skip(1).map(|line| line.split_whitespace().nth(1).unwrap()).collect();
     assert_eq!(added, ["viewer"]);
@@ -1768,9 +1768,9 @@ impl Clones {
     fn run(&self, arguments: &[&str], extra: &[(&str, &str)], input: &str) -> String {
         let clones = self.manager.sandbox.root.join("clones").display().to_string();
         let greywall = self.manager.sandbox.shims.join("greywall").display().to_string();
-        let mut environment = vec![("CLAUDE_SESSIONS_CLONES", clones.as_str()), ("CLAUDE_SESSIONS_GREYWALL", greywall.as_str())];
+        let mut environment = vec![("COCKPIT_CLONES", clones.as_str()), ("COCKPIT_GREYWALL", greywall.as_str())];
         environment.extend_from_slice(extra);
-        let output = self.manager.sandbox.run_with_input(bin().join("claude-sessions"), arguments, &environment, input);
+        let output = self.manager.sandbox.run_with_input(bin().join("cockpit"), arguments, &environment, input);
         String::from_utf8_lossy(&output.stdout).into_owned()
     }
 }
@@ -1829,7 +1829,7 @@ fn restart_all_resumes_each_session_in_a_tmux_session_of_its_own() {
     // In the viewer pane a launch dies with the next thing shown there, until claude-auto-retry has
     // moved it out: a restart-all once lost a session that way.
     let manager = Manager::new();
-    manager.run(&["restart-all", SESSION_A], &[("SHIM_PANE_TEXT", IDLE), ("SHIM_EXIT_AFTER", "1"), ("CLAUDE_SESSIONS_RESTORE_WAIT", "0")]);
+    manager.run(&["restart-all", SESSION_A], &[("SHIM_PANE_TEXT", IDLE), ("SHIM_EXIT_AFTER", "1"), ("COCKPIT_RESTORE_WAIT", "0")]);
     let calls = manager.calls("tmux");
     let launch = calls.iter().find(|call| call.starts_with("tmux new-session -d -s claude-retry-restart-")).expect("no detached launch");
     assert!(launch.contains(&format!("--resume {SESSION_A}")), "{launch}");
@@ -1841,8 +1841,8 @@ fn restart_all_of_a_session_nobody_typed_in_starts_a_fresh_one_of_its_own() {
     let manager = Manager::new();
     let transcripts = manager.sandbox.root.join("transcripts");
     fs::create_dir_all(&transcripts).unwrap();
-    manager.run(&["restart-all", SESSION_A], &[("SHIM_PANE_TEXT", IDLE), ("SHIM_EXIT_AFTER", "1"), ("CLAUDE_SESSIONS_RESTORE_WAIT", "0"),
-                                               ("CLAUDE_SESSIONS_TRANSCRIPTS", &path_str(&transcripts))]);
+    manager.run(&["restart-all", SESSION_A], &[("SHIM_PANE_TEXT", IDLE), ("SHIM_EXIT_AFTER", "1"), ("COCKPIT_RESTORE_WAIT", "0"),
+                                               ("COCKPIT_TRANSCRIPTS", &path_str(&transcripts))]);
     let launch = manager.calls("tmux").into_iter().find(|call| call.starts_with("tmux new-session -d -s claude-retry-restart-")).expect("no detached launch");
     assert!(!launch.contains("--resume"), "{launch}");
 }
@@ -1853,7 +1853,7 @@ fn the_branch_of_a_parallel_clone_is_switched_inside_greywall() {
     let manager = Manager::new();
     manager.git_repository();
     let clones = manager.sandbox.root.join("clones");
-    manager.run(&["parallel", &path_str(&manager.project), "feat/x"], &[("CLAUDE_SESSIONS_CLONES", &path_str(&clones))]);
+    manager.run(&["parallel", &path_str(&manager.project), "feat/x"], &[("COCKPIT_CLONES", &path_str(&clones))]);
     assert!(manager.calls("greywall").iter().any(|call| call.ends_with("-- git switch --quiet -c feat/x")), "{:?}", manager.calls("greywall"));
 }
 
@@ -1865,7 +1865,7 @@ fn a_pull_request_reviewed_before_gets_a_fresh_clone() {
     let clones = manager.sandbox.root.join("clones");
     fs::create_dir_all(clones.join("proj-a/pr-7")).unwrap();
     fs::write(clones.join("proj-a/pr-7/left-by-a-session"), "").unwrap();
-    manager.run(&["review", &path_str(&manager.project), "7"], &[("CLAUDE_SESSIONS_CLONES", &path_str(&clones))]);
+    manager.run(&["review", &path_str(&manager.project), "7"], &[("COCKPIT_CLONES", &path_str(&clones))]);
     let names: Vec<String> = fs::read_dir(clones.join("proj-a")).unwrap().flatten().map(|entry| entry.file_name().to_string_lossy().into_owned()).collect();
     assert!(names.iter().any(|name| name.starts_with("pr-7-")), "{names:?}");
     assert_eq!(fs::read_dir(clones.join("proj-a/pr-7")).unwrap().count(), 1, "the earlier clone was touched");
@@ -1897,7 +1897,7 @@ fn a_parallel_clone_gets_a_hook_for_each_git_hook_its_lefthook_config_names() {
     let manager = Manager::new();
     lefthook_repository(&manager);
     let clones = manager.sandbox.root.join("clones");
-    manager.run(&["parallel", &path_str(&manager.project), "feat"], &[("CLAUDE_SESSIONS_CLONES", &path_str(&clones))]);
+    manager.run(&["parallel", &path_str(&manager.project), "feat"], &[("COCKPIT_CLONES", &path_str(&clones))]);
     assert_eq!(installed_hooks(&clones.join("proj-a/feat")), vec!["commit-msg", "pre-commit"]);
 }
 
@@ -1906,7 +1906,7 @@ fn a_parallel_clones_hook_runs_the_lefthook_of_its_node_modules() {
     let manager = Manager::new();
     lefthook_repository(&manager);
     let clones = manager.sandbox.root.join("clones");
-    manager.run(&["parallel", &path_str(&manager.project), "feat"], &[("CLAUDE_SESSIONS_CLONES", &path_str(&clones))]);
+    manager.run(&["parallel", &path_str(&manager.project), "feat"], &[("COCKPIT_CLONES", &path_str(&clones))]);
     let clone = clones.join("proj-a/feat");
     let lefthook = clone.join("node_modules/lefthook/bin/index.js");
     fs::create_dir_all(lefthook.parent().unwrap()).unwrap();
@@ -1923,7 +1923,7 @@ fn a_parallel_clone_without_a_lefthook_config_gets_no_hooks() {
     let manager = Manager::new();
     manager.git_repository();
     let clones = manager.sandbox.root.join("clones");
-    manager.run(&["parallel", &path_str(&manager.project), "feat"], &[("CLAUDE_SESSIONS_CLONES", &path_str(&clones))]);
+    manager.run(&["parallel", &path_str(&manager.project), "feat"], &[("COCKPIT_CLONES", &path_str(&clones))]);
     assert!(installed_hooks(&clones.join("proj-a/feat")).is_empty());
 }
 
@@ -1933,14 +1933,14 @@ fn a_pull_request_clone_gets_no_hooks() {
     let manager = Manager::new();
     lefthook_repository(&manager);
     let clones = manager.sandbox.root.join("clones");
-    manager.run(&["review", &path_str(&manager.project), "7"], &[("CLAUDE_SESSIONS_CLONES", &path_str(&clones))]);
+    manager.run(&["review", &path_str(&manager.project), "7"], &[("COCKPIT_CLONES", &path_str(&clones))]);
     assert!(installed_hooks(&clones.join("proj-a/pr-7")).is_empty());
 }
 
 fn push(manager: &Manager, answer: &str) -> String {
     // ssh stands in for GitHub: it records the call and refuses, as an unreachable host would.
     manager.sandbox.shim("ssh", "exit 1");
-    let output = manager.sandbox.run_with_input(bin().join("claude-sessions"), &["push-run", &path_str(&manager.project)], &[], answer);
+    let output = manager.sandbox.run_with_input(bin().join("cockpit"), &["push-run", &path_str(&manager.project)], &[], answer);
     // read -p prints its question on stderr.
     format!("{}{}", stdout(&output), stderr(&output))
 }
@@ -2015,7 +2015,7 @@ fn the_loading_screen_works_without_a_terminal_type() {
     // The health check runs these tests from a systemd unit, where TERM is unset: tput failed and
     // the screen quit at once.
     let manager = Manager::new();
-    let loading = manager.runtime_file("claude-sessions-loading");
+    let loading = manager.runtime_file("cockpit-loading");
     fs::write(&loading, format!("Closing proj-a …\n{}\n{SESSION_A}\n{}\ngone\n", manager.project.display(), now_seconds())).unwrap();
     fs::write(&manager.snapshot, json!({"sessions": []}).to_string()).unwrap();
     assert_eq!(manager.run(&["loading-screen"], &[("TERM", "")]).status.code(), Some(0));
@@ -2033,7 +2033,7 @@ fn viewing_a_session_tells_the_daemon_it_was_seen() {
 fn the_doctor_does_not_count_the_health_checks_own_failure() {
     // The health check runs the doctor: its failure line would fail the next check for a day.
     let manager = Manager::new();
-    let log = manager.sandbox.state.join("claude-sessions/log");
+    let log = manager.sandbox.state.join("cockpit/log");
     fs::create_dir_all(log.parent().unwrap()).unwrap();
     let now = stdout(&Command::new("date").arg("-Iseconds").output().unwrap());
     fs::write(&log, format!("{} ERROR health: weekly check: 1 problem(s)\n", now.trim())).unwrap();
@@ -2099,7 +2099,7 @@ fn fish_accepts(arguments: &str) -> bool {
 #[test]
 fn restart_all_hands_its_resume_arguments_to_claude_not_to_fish() {
     let manager = Manager::new();
-    manager.run(&["restart-all", SESSION_A], &[("SHIM_PANE_TEXT", IDLE), ("SHIM_EXIT_AFTER", "1"), ("CLAUDE_SESSIONS_RESTORE_WAIT", "0")]);
+    manager.run(&["restart-all", SESSION_A], &[("SHIM_PANE_TEXT", IDLE), ("SHIM_EXIT_AFTER", "1"), ("COCKPIT_RESTORE_WAIT", "0")]);
     let launch = manager.calls("tmux").into_iter().find(|call| call.contains("claude-retry-restart-")).expect("no launch");
     let arguments = fish_arguments(&launch);
     assert!(arguments.starts_with("-- --resume"), "{arguments}");
@@ -2130,7 +2130,7 @@ fn approval_shown(manager: &Manager) -> bool {
 fn the_approval_pane_hides_under_a_session_that_did_not_ask() {
     let manager = Manager::new();
     let runs = file_request(&manager, "0123456789ab", SESSION_B);
-    fs::write(manager.runtime_file("claude-sessions.current"), format!("{SESSION_A}\n")).unwrap();
+    fs::write(manager.runtime_file("cockpit.current"), format!("{SESSION_A}\n")).unwrap();
     manager.run(&["approval-pane", "0123456789ab"], &[("CLAUDE_RUNS_DIR", &runs)]);
     assert!(!approval_shown(&manager), "shown under a session that did not ask");
 }
@@ -2139,7 +2139,7 @@ fn the_approval_pane_hides_under_a_session_that_did_not_ask() {
 fn the_approval_pane_follows_theo_back_to_the_session_that_asked() {
     let manager = Manager::new();
     let runs = file_request(&manager, "0123456789ab", SESSION_A);
-    fs::write(manager.runtime_file("claude-sessions.current"), format!("{SESSION_A}\n")).unwrap();
+    fs::write(manager.runtime_file("cockpit.current"), format!("{SESSION_A}\n")).unwrap();
     manager.run(&["approval-pane", "0123456789ab"], &[("CLAUDE_RUNS_DIR", &runs)]);
     assert!(approval_shown(&manager));
     fs::write(&manager.snapshot, json!({"sessions": [
@@ -2154,8 +2154,8 @@ fn the_approval_pane_follows_theo_back_to_the_session_that_asked() {
 #[test]
 fn alt_q_queues_a_prompt_for_the_session_in_that_pane() {
     let manager = Manager::new();
-    manager.sandbox.run_with_input(bin().join("claude-sessions"), &["queue-prompt-ask", "%4"], &[], "check the docs too\n");
-    let folder = manager.sandbox.state.join(format!("claude-sessions/prompt-queue/{SESSION_A}"));
+    manager.sandbox.run_with_input(bin().join("cockpit"), &["queue-prompt-ask", "%4"], &[], "check the docs too\n");
+    let folder = manager.sandbox.state.join(format!("cockpit/prompt-queue/{SESSION_A}"));
     let queued: Vec<String> = fs::read_dir(&folder).unwrap().flatten().map(|entry| fs::read_to_string(entry.path()).unwrap()).collect();
     assert_eq!(queued, ["check the docs too"]);
 }
@@ -2163,18 +2163,18 @@ fn alt_q_queues_a_prompt_for_the_session_in_that_pane() {
 #[test]
 fn alt_q_outside_a_claude_session_queues_nothing() {
     let manager = Manager::new();
-    manager.sandbox.run_with_input(bin().join("claude-sessions"), &["queue-prompt-ask", "%99"], &[], "lost\n");
-    assert!(!manager.sandbox.state.join("claude-sessions/prompt-queue").exists());
+    manager.sandbox.run_with_input(bin().join("cockpit"), &["queue-prompt-ask", "%99"], &[], "lost\n");
+    assert!(!manager.sandbox.state.join("cockpit/prompt-queue").exists());
 }
 
 #[test]
-fn tmux_bindings_name_claude_sessions_by_its_full_path() {
-    // The tmux server runs popups with PATH=/usr/local/bin:/usr/bin: a bare claude-sessions is not
+fn tmux_bindings_name_cockpit_by_its_full_path() {
+    // The tmux server runs popups with PATH=/usr/local/bin:/usr/bin: a bare cockpit is not
     // found there, and the Alt+Q popup closed the moment it opened.
     let conf = fs::read_to_string(repo().join("config/tmux/.config/tmux/tmux.conf")).unwrap();
     for line in conf.lines().filter(|line| !line.trim_start().starts_with('#')) {
-        for (at, _) in line.match_indices("claude-sessions ") {
-            assert!(line[..at].ends_with("/.local/bin/"), "bare claude-sessions in: {line}");
+        for (at, _) in line.match_indices("cockpit ") {
+            assert!(line[..at].ends_with("/.local/bin/"), "bare cockpit in: {line}");
         }
     }
 }
@@ -2184,8 +2184,8 @@ fn alt_q_without_a_pane_asks_tmux_for_the_active_one() {
     // tmux leaves #{pane_id} empty in the binding: the popup finds the pane itself.
     let manager = Manager::new();
     manager.sandbox.shim("tmux", r#"[[ $1 == display-message && $* == *pane_id* ]] && echo "%4"; exit 0"#);
-    manager.sandbox.run_with_input(bin().join("claude-sessions"), &["queue-prompt-ask"], &[], "check the docs too\n");
-    let folder = manager.sandbox.state.join(format!("claude-sessions/prompt-queue/{SESSION_A}"));
+    manager.sandbox.run_with_input(bin().join("cockpit"), &["queue-prompt-ask"], &[], "check the docs too\n");
+    let folder = manager.sandbox.state.join(format!("cockpit/prompt-queue/{SESSION_A}"));
     assert_eq!(fs::read_dir(&folder).map(|entries| entries.count()).unwrap_or(0), 1);
 }
 
@@ -2193,7 +2193,7 @@ fn alt_q_without_a_pane_asks_tmux_for_the_active_one() {
 fn escape_closes_the_alt_q_prompt_without_queuing() {
     // In a terminal (script gives it one), as in the popup: Escape alone ends it.
     let manager = Manager::new();
-    let command = format!("{} queue-prompt-ask %4", bin().join("claude-sessions").display());
+    let command = format!("{} queue-prompt-ask %4", bin().join("cockpit").display());
     let mut child = manager.sandbox.command("script", &[]).args(["-qfec", &command, "/dev/null"])
         .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::null()).spawn().unwrap();
     let mut input = child.stdin.take().unwrap();
@@ -2208,7 +2208,7 @@ fn escape_closes_the_alt_q_prompt_without_queuing() {
     std::thread::sleep(Duration::from_millis(500));
     drop(input);
     let _ = child.wait();
-    assert!(!manager.sandbox.state.join(format!("claude-sessions/prompt-queue/{SESSION_A}")).exists(), "queued after Escape");
+    assert!(!manager.sandbox.state.join(format!("cockpit/prompt-queue/{SESSION_A}")).exists(), "queued after Escape");
 }
 
 #[test]
@@ -2236,7 +2236,7 @@ fn sessions_launched_in_their_own_tmux_session_keep_their_pane_id() {
     // Stripped, the session reported no pane: its card could not be opened, and its tmux session
     // showed up as a second, unknown card.
     let manager = Manager::new();
-    manager.run(&["restart-all", SESSION_A], &[("SHIM_PANE_TEXT", IDLE), ("SHIM_EXIT_AFTER", "1"), ("CLAUDE_SESSIONS_RESTORE_WAIT", "0")]);
+    manager.run(&["restart-all", SESSION_A], &[("SHIM_PANE_TEXT", IDLE), ("SHIM_EXIT_AFTER", "1"), ("COCKPIT_RESTORE_WAIT", "0")]);
     manager.run(&["background", &path_str(&manager.project), "fix this"], &[]);
     let launches: Vec<String> = manager.tmux_calls("new-session").into_iter().filter(|call| call.contains("claude $argv")).collect();
     assert_eq!(launches.len(), 2, "{launches:?}");
@@ -2248,7 +2248,7 @@ fn switching_sessions_changes_the_approval_pane_in_the_same_tmux_command() {
     // Two commands drew the session at full height a moment before the pane came or went.
     let manager = Manager::new();
     let runs = file_request(&manager, "0123456789ab", SESSION_A);
-    fs::write(manager.runtime_file("claude-sessions.current"), format!("{SESSION_A}\n")).unwrap();
+    fs::write(manager.runtime_file("cockpit.current"), format!("{SESSION_A}\n")).unwrap();
     manager.run(&["approval-pane", "0123456789ab"], &[("CLAUDE_RUNS_DIR", &runs)]);
     fs::write(&manager.snapshot, json!({"sessions": [
         {"session": SESSION_A, "state": "waiting", "project": "proj-a", "cwd": path_str(&manager.project), "tmux_pane": "%4"},
@@ -2265,7 +2265,7 @@ fn switching_sessions_changes_the_approval_pane_in_the_same_tmux_command() {
 fn a_restarted_session_starts_at_the_viewer_panes_size() {
     // Resized when shown, Claude redrew and left the resumed conversation out of view.
     let manager = Manager::new();
-    manager.run(&["restart-all", SESSION_A], &[("SHIM_PANE_TEXT", IDLE), ("SHIM_EXIT_AFTER", "1"), ("CLAUDE_SESSIONS_RESTORE_WAIT", "0")]);
+    manager.run(&["restart-all", SESSION_A], &[("SHIM_PANE_TEXT", IDLE), ("SHIM_EXIT_AFTER", "1"), ("COCKPIT_RESTORE_WAIT", "0")]);
     let launch = manager.tmux_calls("new-session").into_iter().find(|call| call.contains("claude-retry-restart-")).expect("no launch");
     assert!(launch.contains(" -x 181 -y 47 "), "{launch}");
 }
@@ -2274,7 +2274,7 @@ fn a_restarted_session_starts_at_the_viewer_panes_size() {
 fn a_restart_while_an_approval_pane_is_open_counts_the_rows_it_will_give_back() {
     let manager = Manager::new();
     fs::write(&manager.roles, "%10 sidebar\n%11 viewer\n%76 approval\n").unwrap();
-    manager.run(&["restart-all", SESSION_A], &[("SHIM_PANE_TEXT", IDLE), ("SHIM_EXIT_AFTER", "1"), ("CLAUDE_SESSIONS_RESTORE_WAIT", "0")]);
+    manager.run(&["restart-all", SESSION_A], &[("SHIM_PANE_TEXT", IDLE), ("SHIM_EXIT_AFTER", "1"), ("COCKPIT_RESTORE_WAIT", "0")]);
     let launch = manager.tmux_calls("new-session").into_iter().find(|call| call.contains("claude-retry-restart-")).expect("no launch");
     assert!(launch.contains(" -x 181 -y 76 "), "{launch}");
 }
@@ -2288,7 +2288,7 @@ fn redraws_per_view(target_size: &str, state: &str, started: Option<u64>, views:
     }
     fs::write(&manager.snapshot, json!({"sessions": [session]}).to_string()).unwrap();
     (0..views).map(|view| {
-        manager.run(&["view", SESSION_A], &[("SHIM_TARGET_SIZE", target_size), ("CLAUDE_SESSIONS_REDRAW_DELAY", "0")]);
+        manager.run(&["view", SESSION_A], &[("SHIM_TARGET_SIZE", target_size), ("COCKPIT_REDRAW_DELAY", "0")]);
         for _ in 0..40 {
             if manager.tmux_calls("send-keys").iter().filter(|call| call.ends_with(" C-l")).count() > view {
                 return true;
@@ -2332,9 +2332,9 @@ fn a_start_first_viewed_at_a_permission_dialog_is_redrawn_on_a_later_view() {
         fs::write(&manager.snapshot, json!({"sessions": [{"session": SESSION_A, "state": state, "project": "proj-a", "tmux_pane": "%4", "started": 1_700_000_000}]}).to_string()).unwrap();
     };
     write_state("needs-you");
-    manager.run(&["view", SESSION_A], &[("CLAUDE_SESSIONS_REDRAW_DELAY", "0")]);
+    manager.run(&["view", SESSION_A], &[("COCKPIT_REDRAW_DELAY", "0")]);
     write_state("waiting");
-    manager.run(&["view", SESSION_A], &[("CLAUDE_SESSIONS_REDRAW_DELAY", "0")]);
+    manager.run(&["view", SESSION_A], &[("COCKPIT_REDRAW_DELAY", "0")]);
     let deadline = Instant::now() + Duration::from_secs(1);
     while Instant::now() < deadline && manager.tmux_calls("send-keys").is_empty() {
         std::thread::sleep(Duration::from_millis(25));
@@ -2366,7 +2366,7 @@ fn dotfiles_pair(manager: &Manager) -> (PathBuf, PathBuf) {
 }
 
 fn apply_dotfiles(manager: &Manager, live: &Path, work: &Path, answer: &str) -> Output {
-    manager.sandbox.run_with_input(bin().join("claude-sessions"), &["apply-dotfiles"],
+    manager.sandbox.run_with_input(bin().join("cockpit"), &["apply-dotfiles"],
                                    &[("CLAUDE_DOTFILES_LIVE", &path_str(live)), ("CLAUDE_DOTFILES_WORK", &path_str(work))], answer)
 }
 
@@ -2488,7 +2488,7 @@ fn apply_dotfiles_still_asks_after_the_pager_quits_early() {
     let work_path = path_str(&work);
     let mut environment: Vec<(&str, &Path)> = manager.sandbox.env.iter().map(|(name, value)| (name.as_str(), Path::new(value))).collect();
     environment.extend([("CLAUDE_DOTFILES_LIVE", Path::new(&live_path)), ("CLAUDE_DOTFILES_WORK", Path::new(&work_path))]);
-    let mut terminal = common::Terminal::start(&bin().join("claude-sessions"), &["apply-dotfiles"], &environment);
+    let mut terminal = common::Terminal::start(&bin().join("cockpit"), &["apply-dotfiles"], &environment);
     terminal.pump(10.0, Some(b"[y/N]"));
     terminal.type_keys(b"y\r");
     let status = terminal.child.wait().unwrap();
@@ -2591,8 +2591,8 @@ fn parallel_dotfiles_clone(manager: &Manager, live: &Path) -> (PathBuf, PathBuf)
 }
 
 fn sweep_dotfiles_clones(manager: &Manager, live: &Path, work: &Path, clones: &Path) {
-    let output = manager.sandbox.run_with_input(bin().join("claude-sessions"), &["clones-sweep"],
-        &[("CLAUDE_DOTFILES_LIVE", &path_str(live)), ("CLAUDE_DOTFILES_WORK", &path_str(work)), ("CLAUDE_SESSIONS_CLONES", &path_str(clones))], "");
+    let output = manager.sandbox.run_with_input(bin().join("cockpit"), &["clones-sweep"],
+        &[("CLAUDE_DOTFILES_LIVE", &path_str(live)), ("CLAUDE_DOTFILES_WORK", &path_str(work)), ("COCKPIT_CLONES", &path_str(clones))], "");
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
 }
 
@@ -2624,8 +2624,8 @@ fn apply_dotfiles_takes_a_parallel_clones_commits() {
     let (live, work) = dotfiles_pair(&manager);
     let (clones, clone) = parallel_dotfiles_clone(&manager, &live);
     Command::new("git").arg("-C").arg(&clone).args(["format-patch", "-q", "-1", "HEAD", "-o", ".outgoing"]).status().unwrap();
-    let output = manager.sandbox.run_with_input(bin().join("claude-sessions"), &["apply-dotfiles", &path_str(&clone)],
-        &[("CLAUDE_DOTFILES_LIVE", &path_str(&live)), ("CLAUDE_DOTFILES_WORK", &path_str(&work)), ("CLAUDE_SESSIONS_CLONES", &path_str(&clones))], "y\n");
+    let output = manager.sandbox.run_with_input(bin().join("cockpit"), &["apply-dotfiles", &path_str(&clone)],
+        &[("CLAUDE_DOTFILES_LIVE", &path_str(&live)), ("CLAUDE_DOTFILES_WORK", &path_str(&work)), ("COCKPIT_CLONES", &path_str(&clones))], "y\n");
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
     assert_eq!(git_output(&live, &["log", "-1", "--format=%s"]), "Add waiting");
 }
@@ -2636,7 +2636,7 @@ fn apply_dotfiles_refuses_a_folder_that_is_no_dotfiles_clone() {
     let (live, work) = dotfiles_pair(&manager);
     fs::create_dir_all(manager.project.join(".outgoing")).unwrap();
     fs::copy(fs::read_dir(work.join(".outgoing")).unwrap().next().unwrap().unwrap().path(), manager.project.join(".outgoing/0001-x.patch")).unwrap();
-    let output = manager.sandbox.run_with_input(bin().join("claude-sessions"), &["apply-dotfiles", &path_str(&manager.project)],
+    let output = manager.sandbox.run_with_input(bin().join("cockpit"), &["apply-dotfiles", &path_str(&manager.project)],
         &[("CLAUDE_DOTFILES_LIVE", &path_str(&live)), ("CLAUDE_DOTFILES_WORK", &path_str(&work))], "y\n");
     assert_eq!(output.status.code(), Some(1));
     assert!(stderr(&output).contains("not a dotfiles clone"), "{}", stderr(&output));
@@ -2648,8 +2648,8 @@ fn u_on_a_dotfiles_clone_exports_only_what_live_main_lacks_then_applies_it() {
     let manager = Manager::new();
     let (live, work) = dotfiles_pair(&manager);
     let (clones, clone) = parallel_dotfiles_clone(&manager, &live);
-    let output = manager.sandbox.run_with_input(bin().join("claude-sessions"), &["apply-run", &path_str(&clone)],
-        &[("CLAUDE_DOTFILES_LIVE", &path_str(&live)), ("CLAUDE_DOTFILES_WORK", &path_str(&work)), ("CLAUDE_SESSIONS_CLONES", &path_str(&clones))], "y\n\n");
+    let output = manager.sandbox.run_with_input(bin().join("cockpit"), &["apply-run", &path_str(&clone)],
+        &[("CLAUDE_DOTFILES_LIVE", &path_str(&live)), ("CLAUDE_DOTFILES_WORK", &path_str(&work)), ("COCKPIT_CLONES", &path_str(&clones))], "y\n\n");
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
     assert!(stdout(&output).contains("1 commit(s)"), "the applied commit was exported again: {}", stdout(&output));
     assert_eq!(git_output(&live, &["log", "--format=%s", "-3"]), "Add waiting\nAdd applied\ninit");
@@ -2661,7 +2661,7 @@ fn u_on_a_dotfiles_clone_opens_the_apply_not_a_push() {
     let (live, work) = dotfiles_pair(&manager);
     let (clones, clone) = parallel_dotfiles_clone(&manager, &live);
     fs::create_dir(clone.join("apps")).unwrap();
-    manager.run(&["push", &path_str(&clone.join("apps"))], &[("CLAUDE_DOTFILES_WORK", &path_str(&work)), ("CLAUDE_SESSIONS_CLONES", &path_str(&clones))]);
+    manager.run(&["push", &path_str(&clone.join("apps"))], &[("CLAUDE_DOTFILES_WORK", &path_str(&work)), ("COCKPIT_CLONES", &path_str(&clones))]);
     let popup = manager.tmux_calls("display-popup").pop().expect("no popup");
     assert!(popup.contains(&format!("apply-run {}", clone.display())), "{popup}");
 }
@@ -2681,7 +2681,7 @@ fn osd_daemon(manager: &Manager, running_for: u64, built_ago: u64) -> String {
 fn reload_restarts_an_osd_daemon_older_than_its_build() {
     let manager = Manager::new();
     let binary = osd_daemon(&manager, 3600, 60);
-    let output = manager.run(&["reload"], &[("CLAUDE_SESSIONS_OSD_BINARY", &binary)]);
+    let output = manager.run(&["reload"], &[("COCKPIT_OSD_BINARY", &binary)]);
     assert!(stdout(&output).contains("older build"), "{}", stdout(&output));
     assert!(manager.calls("setsid").iter().any(|call| call.ends_with("restart-osd-when-idle")), "{:?}", manager.calls("setsid"));
 }
@@ -2690,7 +2690,7 @@ fn reload_restarts_an_osd_daemon_older_than_its_build() {
 fn reload_leaves_an_osd_daemon_on_its_build_alone() {
     let manager = Manager::new();
     let binary = osd_daemon(&manager, 60, 3600);
-    manager.run(&["reload"], &[("CLAUDE_SESSIONS_OSD_BINARY", &binary)]);
+    manager.run(&["reload"], &[("COCKPIT_OSD_BINARY", &binary)]);
     assert!(manager.calls("setsid").is_empty(), "{:?}", manager.calls("setsid"));
 }
 
@@ -2705,7 +2705,7 @@ fn the_osd_daemon_restarts_only_once_no_approval_is_open() {
     manager.sandbox.shim("tmux", &format!(r#"if [[ $1 == list-sessions ]]; then
   left=$(cat {0}); if (( left > 0 )); then echo claude-run-0123456789ab; echo $(( left - 1 )) > {0}; fi; exit 0
 fi"#, approvals.display()));
-    let output = finish(manager.sandbox.command(bin().join("claude-sessions"), &[("CLAUDE_SESSIONS_OSD_BINARY", &binary)]).arg("restart-osd-when-idle")
+    let output = finish(manager.sandbox.command(bin().join("cockpit"), &[("COCKPIT_OSD_BINARY", &binary)]).arg("restart-osd-when-idle")
         .stdout(std::process::Stdio::piped()).spawn().unwrap(), std::time::Duration::from_secs(15));
     assert_eq!(output.status.code(), Some(0));
     assert_eq!(manager.calls("tmux").iter().filter(|call| call.starts_with("tmux list-sessions")).count(), 3);
@@ -2734,7 +2734,7 @@ fn an_approval_nobody_waits_for_holds_no_restart_back() {
     let binary = osd_daemon(&manager, 3600, 60);
     approval_stays_open(&manager);
     heartbeat(&manager, std::time::Duration::from_secs(600));
-    let waiter = manager.sandbox.command(bin().join("claude-sessions"), &[("CLAUDE_SESSIONS_OSD_BINARY", &binary)])
+    let waiter = manager.sandbox.command(bin().join("cockpit"), &[("COCKPIT_OSD_BINARY", &binary)])
         .arg("restart-osd-when-idle").stdout(std::process::Stdio::null()).spawn().unwrap();
     finish(waiter, std::time::Duration::from_secs(10));
     assert_eq!(restarts(&manager), 1);
@@ -2746,7 +2746,7 @@ fn an_approval_ask_to_run_still_waits_for_holds_the_restart() {
     let binary = osd_daemon(&manager, 3600, 60);
     approval_stays_open(&manager);
     let beat = heartbeat(&manager, std::time::Duration::from_secs(5));
-    let waiter = manager.sandbox.command(bin().join("claude-sessions"), &[("CLAUDE_SESSIONS_OSD_BINARY", &binary)])
+    let waiter = manager.sandbox.command(bin().join("cockpit"), &[("COCKPIT_OSD_BINARY", &binary)])
         .arg("restart-osd-when-idle").stdout(std::process::Stdio::null()).spawn().unwrap();
     std::thread::sleep(std::time::Duration::from_secs(3));
     assert_eq!(restarts(&manager), 0);
@@ -2764,7 +2764,7 @@ fn a_waiting_restart_names_the_approval_it_waits_on() {
     manager.sandbox.shim("tmux", &format!(r#"if [[ $1 == list-sessions ]]; then
   left=$(cat {0}); if (( left > 0 )); then echo claude-run-0123456789ab; echo $(( left - 1 )) > {0}; fi; exit 0
 fi"#, approvals.display()));
-    let waiter = manager.sandbox.command(bin().join("claude-sessions"), &[("CLAUDE_SESSIONS_OSD_BINARY", &binary)])
+    let waiter = manager.sandbox.command(bin().join("cockpit"), &[("COCKPIT_OSD_BINARY", &binary)])
         .arg("restart-osd-when-idle").stdout(std::process::Stdio::null()).spawn().unwrap();
     finish(waiter, std::time::Duration::from_secs(10));
     assert!(manager.log_lines().iter().any(|line| line.ends_with("osd.service restart waits on claude-run-0123456789ab")), "{:?}", manager.log_lines());
@@ -2781,8 +2781,8 @@ fn export_an_apps_change(work: &Path) {
 }
 
 fn apply_dotfiles_with_osd(manager: &Manager, live: &Path, work: &Path, binary: &str) -> Output {
-    manager.sandbox.run_with_input(bin().join("claude-sessions"), &["apply-dotfiles"],
-                                   &[("CLAUDE_DOTFILES_LIVE", &path_str(live)), ("CLAUDE_DOTFILES_WORK", &path_str(work)), ("CLAUDE_SESSIONS_OSD_BINARY", binary)], "y\n")
+    manager.sandbox.run_with_input(bin().join("cockpit"), &["apply-dotfiles"],
+                                   &[("CLAUDE_DOTFILES_LIVE", &path_str(live)), ("CLAUDE_DOTFILES_WORK", &path_str(work)), ("COCKPIT_OSD_BINARY", binary)], "y\n")
 }
 
 #[test]
@@ -2839,7 +2839,7 @@ fn the_shared_log_keeps_no_control_character() {
     let manager = Manager::new();
     manager.run(&["log", "todo", "INFO", "from a session: \x1b]52;c;cGF5\x07 done"], &[]);
     manager.run(&["log", "todo", "INFO", "from a session: \u{1b}[2J"], &[]);
-    let log = fs::read_to_string(manager.sandbox.state.join("claude-sessions/log")).unwrap();
+    let log = fs::read_to_string(manager.sandbox.state.join("cockpit/log")).unwrap();
     assert!(!log.contains('\u{1b}') && !log.contains('\u{7}'), "{log:?}");
 }
 
@@ -2875,14 +2875,14 @@ fn track_github(live: &Path) {
 
 fn apply_run(manager: &Manager, live: &Path, work: &Path, clones: &Path, clone: &Path, answers: &str) -> String {
     manager.sandbox.shim("ssh", "exit 1");
-    let output = manager.sandbox.run_with_input(bin().join("claude-sessions"), &["apply-run", &path_str(clone)],
-        &[("CLAUDE_DOTFILES_LIVE", &path_str(live)), ("CLAUDE_DOTFILES_WORK", &path_str(work)), ("CLAUDE_SESSIONS_CLONES", &path_str(clones))], answers);
+    let output = manager.sandbox.run_with_input(bin().join("cockpit"), &["apply-run", &path_str(clone)],
+        &[("CLAUDE_DOTFILES_LIVE", &path_str(live)), ("CLAUDE_DOTFILES_WORK", &path_str(work)), ("COCKPIT_CLONES", &path_str(clones))], answers);
     format!("{}{}", stdout(&output), stderr(&output))
 }
 
 #[test]
 fn after_the_apply_u_offers_to_push_the_live_checkout_to_github() {
-    // ~/dotfiles is a GitHub repository: claude-sessions had no way to push it.
+    // ~/dotfiles is a GitHub repository: cockpit had no way to push it.
     let manager = Manager::new();
     let (live, work) = dotfiles_pair(&manager);
     track_github(&live);
@@ -2909,7 +2909,7 @@ fn a_parallel_session_can_start_with_a_prompt_kept_out_of_the_log() {
     let manager = Manager::new();
     manager.git_repository();
     let clones = manager.sandbox.root.join("clones");
-    let result = manager.run(&["parallel", &path_str(&manager.project), "todo-0123abcd", "add a healthcheck"], &[("CLAUDE_SESSIONS_CLONES", &path_str(&clones))]);
+    let result = manager.run(&["parallel", &path_str(&manager.project), "todo-0123abcd", "add a healthcheck"], &[("COCKPIT_CLONES", &path_str(&clones))]);
     assert_eq!(result.status.code(), Some(0), "{}", stderr(&result));
     let start = manager.tmux_calls("new-session").into_iter().find(|call| call.contains("claude-retry-restart-")).expect("no session started");
     assert!(start.contains(&format!("-c {} ", clones.join("proj-a/todo-0123abcd").display())) && start.ends_with("add a healthcheck"), "{start}");
@@ -2922,11 +2922,11 @@ fn a_todo_sent_to_a_new_session_leaves_the_session_on_screen_alone() {
     // it was sent from lost its project and showed every project's items.
     let manager = Manager::new();
     manager.git_repository();
-    fs::write(manager.runtime_file("claude-sessions.current"), format!("{SESSION_A}\n")).unwrap();
+    fs::write(manager.runtime_file("cockpit.current"), format!("{SESSION_A}\n")).unwrap();
     let clones = manager.sandbox.root.join("clones");
-    manager.run(&["parallel", &path_str(&manager.project), "todo-0123abcd", "add a healthcheck"], &[("CLAUDE_SESSIONS_CLONES", &path_str(&clones))]);
+    manager.run(&["parallel", &path_str(&manager.project), "todo-0123abcd", "add a healthcheck"], &[("COCKPIT_CLONES", &path_str(&clones))]);
     assert!(manager.tmux_calls("respawn-pane").is_empty(), "the session pane was taken: {:?}", manager.tmux_calls("respawn-pane"));
-    assert_eq!(fs::read_to_string(manager.runtime_file("claude-sessions.current")).unwrap().trim(), SESSION_A);
+    assert_eq!(fs::read_to_string(manager.runtime_file("cockpit.current")).unwrap().trim(), SESSION_A);
 }
 
 fn restarts(manager: &Manager) -> usize {
@@ -2942,7 +2942,7 @@ fn waiters_started_together_restart_the_daemon_once() {
     let opened = std::time::Instant::now();
     manager.sandbox.shim("tmux", &format!(r#"[[ $1 == list-sessions ]] && (( $(date +%s) < {} )) && echo claude-run-0123456789ab; exit 0"#,
         std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() + 2));
-    let waiters: Vec<std::process::Child> = (0..3).map(|_| manager.sandbox.command(bin().join("claude-sessions"), &[("CLAUDE_SESSIONS_OSD_BINARY", &binary)])
+    let waiters: Vec<std::process::Child> = (0..3).map(|_| manager.sandbox.command(bin().join("cockpit"), &[("COCKPIT_OSD_BINARY", &binary)])
         .arg("restart-osd-when-idle").stdout(std::process::Stdio::null()).spawn().unwrap()).collect();
     for waiter in waiters {
         finish(waiter, std::time::Duration::from_secs(15));
@@ -2955,7 +2955,7 @@ fn waiters_started_together_restart_the_daemon_once() {
 fn a_daemon_already_on_its_build_is_not_restarted() {
     let manager = Manager::new();
     let binary = osd_daemon(&manager, 60, 3600);
-    manager.sandbox.run(bin().join("claude-sessions"), &["restart-osd-when-idle"], &[("CLAUDE_SESSIONS_OSD_BINARY", &binary)]);
+    manager.sandbox.run(bin().join("cockpit"), &["restart-osd-when-idle"], &[("COCKPIT_OSD_BINARY", &binary)]);
     assert_eq!(restarts(&manager), 0);
 }
 
@@ -2965,7 +2965,7 @@ fn each_session_shows_its_own_approval_when_several_run() {
     let manager = Manager::new();
     file_request(&manager, "aaaaaaaaaaaa", SESSION_A);
     file_request(&manager, "bbbbbbbbbbbb", SESSION_B);
-    fs::write(manager.runtime_file("claude-sessions.current"), format!("{SESSION_A}\n")).unwrap();
+    fs::write(manager.runtime_file("cockpit.current"), format!("{SESSION_A}\n")).unwrap();
     manager.run(&["approval-pane", "aaaaaaaaaaaa"], &[]);
     manager.run(&["approval-pane", "bbbbbbbbbbbb"], &[]);
     fs::write(&manager.snapshot, json!({"sessions": [
@@ -2975,7 +2975,7 @@ fn each_session_shows_its_own_approval_when_several_run() {
     let switch = manager.tmux_calls("respawn-pane").pop().expect("no switch");
     assert!(switch.ends_with("attach-session -t =claude-run-bbbbbbbbbbbb"), "{switch}");
     manager.run(&["approval-pane", "close", "bbbbbbbbbbbb"], &[]);
-    let state = fs::read_to_string(manager.runtime_file("claude-sessions-approval")).unwrap();
+    let state = fs::read_to_string(manager.runtime_file("cockpit-approval")).unwrap();
     assert_eq!(state.trim(), format!("aaaaaaaaaaaa {SESSION_A}"));
 }
 
@@ -2985,7 +2985,7 @@ fn an_opencode_sessions_approval_shows_under_that_session_only() {
     let manager = Manager::new();
     file_request(&manager, "cccccccccccc", OPENCODE_SESSION);
     manager.run(&["approval-pane", "cccccccccccc"], &[]);
-    let state = fs::read_to_string(manager.runtime_file("claude-sessions-approval")).unwrap();
+    let state = fs::read_to_string(manager.runtime_file("cockpit-approval")).unwrap();
     assert_eq!(state.trim(), format!("cccccccccccc {OPENCODE_SESSION}"));
 }
 
@@ -3018,7 +3018,7 @@ fn launch_preferences_validate_values_and_preserve_other_settings() {
         let result = manager.run(&arguments, &[]);
         assert!(result.status.success(), "{}", stderr(&result));
     }
-    let file = manager.sandbox.state.join("claude-sessions/settings.json");
+    let file = manager.sandbox.state.join("cockpit/settings.json");
     let before = fs::read_to_string(&file).unwrap();
     for (name, value) in [("default-agent", "unknown"), ("opencode-model", "no-provider"), ("opencode-model", "openai/model#high"), ("opencode-effort", "high\nlow")] {
         assert!(!manager.run(&["setting", name, value], &[]).status.success());
@@ -3033,7 +3033,7 @@ fn launch_preferences_validate_values_and_preserve_other_settings() {
 #[test]
 fn an_invalid_saved_agent_blocks_launches_but_not_preference_repair() {
     let manager = Manager::new();
-    let file = manager.sandbox.state.join("claude-sessions/settings.json");
+    let file = manager.sandbox.state.join("cockpit/settings.json");
     fs::create_dir_all(file.parent().unwrap()).unwrap();
     fs::write(&file, r#"{"default-agent":"unknown"}"#).unwrap();
     let result = manager.run(&["background", manager.project.to_str().unwrap(), "hello"], &[]);
@@ -3051,24 +3051,24 @@ fn opencode_launch_preferences_are_passed_only_to_new_conversations() {
     }
     let result = manager.run(&["--agent", "opencode", "background", manager.project.to_str().unwrap(), "hello"], &[]);
     assert!(result.status.success(), "{}", stderr(&result));
-    assert!(manager.opencode_starts()[0].contains("CLAUDE_SESSIONS_OPENCODE_MODEL=openai/gpt-6.1-sol#high"));
+    assert!(manager.opencode_starts()[0].contains("COCKPIT_OPENCODE_MODEL=openai/gpt-6.1-sol#high"));
     manager.sandbox.reset_log();
     let result = manager.run(&["resume", manager.project.to_str().unwrap(), OPENCODE_SESSION], &[]);
     assert!(result.status.success(), "{}", stderr(&result));
-    assert!(!manager.opencode_starts()[0].contains("CLAUDE_SESSIONS_OPENCODE_MODEL="));
+    assert!(!manager.opencode_starts()[0].contains("COCKPIT_OPENCODE_MODEL="));
 }
 
 #[test]
 fn the_model_catalog_uses_the_project_sandbox_without_a_managed_session_identity() {
     let manager = Manager::new();
     manager.sandbox.shim("opencode-catalog", r#"
-[[ -z ${CLAUDE_CODE_SESSION_ID:-} && -z ${CLAUDE_SESSIONS_OPENCODE_MODEL:-} ]] || exit 9
+[[ -z ${CLAUDE_CODE_SESSION_ID:-} && -z ${COCKPIT_OPENCODE_MODEL:-} ]] || exit 9
 printf '{"location":{"directory":"%s"},"data":[]}\n' "$PWD"
 "#);
     let launcher = manager.sandbox.shims.join("opencode-catalog");
     let output = manager.run(&["opencode-models", manager.project.to_str().unwrap()], &[
-        ("CLAUDE_SESSIONS_OPENCODE", launcher.to_str().unwrap()),
-        ("CLAUDE_CODE_SESSION_ID", OPENCODE_SESSION), ("CLAUDE_SESSIONS_OPENCODE_MODEL", "openai/gpt-6.1-sol#high"),
+        ("COCKPIT_OPENCODE", launcher.to_str().unwrap()),
+        ("CLAUDE_CODE_SESSION_ID", OPENCODE_SESSION), ("COCKPIT_OPENCODE_MODEL", "openai/gpt-6.1-sol#high"),
     ]);
     assert!(output.status.success(), "{}", stderr(&output));
     let catalog: serde_json::Value = serde_json::from_str(&stdout(&output)).unwrap();
@@ -3081,7 +3081,7 @@ printf '{"location":{"directory":"%s"},"data":[]}\n' "$PWD"
 fn malformed_launch_settings_stop_creation_without_overwriting_the_file() {
     for contents in ["not json", "[]", r#"{"default-agent":false}"#, r#"{"default-agent":null}"#] {
         let manager = Manager::new();
-        let file = manager.sandbox.state.join("claude-sessions/settings.json");
+        let file = manager.sandbox.state.join("cockpit/settings.json");
         fs::create_dir_all(file.parent().unwrap()).unwrap();
         fs::write(&file, contents).unwrap();
         assert!(!manager.run(&["background", manager.project.to_str().unwrap(), "hello"], &[]).status.success());
@@ -3174,7 +3174,7 @@ fn a_parallel_opencode_session_gets_its_first_prompt_as_one() {
     manager.git_repository();
     let clones = manager.sandbox.root.join("clones");
     let result = manager.run(&["--agent", "opencode", "parallel", &path_str(&manager.project), "todo-1", "-v fix the chip"],
-                             &[("CLAUDE_SESSIONS_CLONES", &path_str(&clones))]);
+                             &[("COCKPIT_CLONES", &path_str(&clones))]);
     assert_eq!(result.status.code(), Some(0), "{}", stderr(&result));
     let start = manager.opencode_starts().pop().expect("no opencode start");
     assert!(start.contains(&format!("-c {} ", clones.join("proj-a/todo-1").display())), "{start}");
@@ -3206,7 +3206,7 @@ fn an_opencode_review_gets_the_review_as_its_prompt() {
     git(&manager.project, &["remote", "set-url", "origin", &path_str(&origin)]);
     git(&manager.project, &["push", "-q", "origin", "main", "main:refs/pull/7/head"]);
     let clones = manager.sandbox.root.join("clones");
-    let result = manager.run(&["--agent", "opencode", "review", &path_str(&manager.project), "7"], &[("CLAUDE_SESSIONS_CLONES", &path_str(&clones))]);
+    let result = manager.run(&["--agent", "opencode", "review", &path_str(&manager.project), "7"], &[("COCKPIT_CLONES", &path_str(&clones))]);
     assert_eq!(result.status.code(), Some(0), "{}", stderr(&result));
     let start = manager.opencode_starts().pop().expect("no opencode start");
     assert!(start.contains(&format!("-c {} ", clones.join("proj-a/pr-7").display())), "{start}");
@@ -3240,12 +3240,12 @@ case $1 in
 esac
 {FAKE_TMUX}"#));
         manager.sandbox.shim("opencode-launcher", r#"
-if [[ $SHIM_REQUEST_EXIT == yes ]]; then claude-sessions exit "$CLAUDE_CODE_SESSION_ID" || exit 2; fi
+if [[ $SHIM_REQUEST_EXIT == yes ]]; then cockpit exit "$CLAUDE_CODE_SESSION_ID" || exit 2; fi
 exit "$SHIM_OPENCODE_STATUS"
 "#);
         let output_file = manager.sandbox.root.join("epilogue-output");
         let result = manager.run(&["restore", &path_str(&manager.project), OPENCODE_SESSION], &[
-            ("CLAUDE_SESSIONS_OPENCODE", &path_str(&manager.sandbox.shims.join("opencode-launcher"))),
+            ("COCKPIT_OPENCODE", &path_str(&manager.sandbox.shims.join("opencode-launcher"))),
             ("SHIM_EPILOGUE_OUTPUT", &path_str(&output_file)),
             ("SHIM_EXIT_MARKER", &path_str(&manager.sandbox.root.join("exit-marker"))),
             ("SHIM_REQUEST_EXIT", if requested { "yes" } else { "no" }),
@@ -3409,8 +3409,8 @@ fn handoff_leaves_opencode_sessions_alone() {
 fn alt_q_queues_a_prompt_for_an_opencode_session_too() {
     let manager = Manager::new();
     manager.with_opencode_session("working");
-    manager.sandbox.run_with_input(bin().join("claude-sessions"), &["queue-prompt-ask", "%5"], &[], "check the docs too\n");
-    assert!(manager.sandbox.state.join(format!("claude-sessions/prompt-queue/{OPENCODE_SESSION}")).is_dir());
+    manager.sandbox.run_with_input(bin().join("cockpit"), &["queue-prompt-ask", "%5"], &[], "check the docs too\n");
+    assert!(manager.sandbox.state.join(format!("cockpit/prompt-queue/{OPENCODE_SESSION}")).is_dir());
 }
 
 #[test]
@@ -3453,7 +3453,7 @@ fn team_spawn_starts_a_designer_out_of_sight_in_the_askers_folder() {
     assert_eq!(result.status.code(), Some(0), "{}", stderr(&result));
     let started = manager.tmux_calls("new-session").pop().expect("no launch");
     assert!(started.contains(&format!("-c {} ", path_str(&manager.project))), "{started}");
-    assert!(started.contains(&format!("CLAUDE_SESSIONS_TEAM_SPAWN={SPAWN_TOKEN}")), "{started}");
+    assert!(started.contains(&format!("COCKPIT_TEAM_SPAWN={SPAWN_TOKEN}")), "{started}");
     assert!(started.ends_with("-- Design the jobs list"), "the daemon's brief is the first message as it is, labelled there: {started}");
     assert!(manager.tmux_calls("respawn-pane").is_empty());
 }
@@ -3464,13 +3464,13 @@ fn team_spawn_starts_qa_in_a_fresh_copy_at_the_commit() {
     manager.git_repository();
     let commit = head_commit(&manager);
     let clones = manager.sandbox.root.join("clones");
-    let result = manager.run(&["team-spawn", SPAWN_TOKEN, "qa", &path_str(&manager.project), &commit, "Review it"], &[("CLAUDE_SESSIONS_CLONES", &path_str(&clones))]);
+    let result = manager.run(&["team-spawn", SPAWN_TOKEN, "qa", &path_str(&manager.project), &commit, "Review it"], &[("COCKPIT_CLONES", &path_str(&clones))]);
     assert_eq!(result.status.code(), Some(0), "{}", stderr(&result));
     let copy = clones.join(format!("proj-a/qa-{}-{}", &commit[..12], &SPAWN_TOKEN[..8]));
     assert!(copy.join(".git").is_dir());
     assert!(manager.calls("greywall").iter().any(|call| call.ends_with(&format!("-- git switch --quiet --detach {commit}"))), "{:?}", manager.calls("greywall"));
     let started = manager.tmux_calls("new-session").pop().expect("no launch");
-    assert!(started.contains(&format!("-c {} ", copy.display())) && started.contains(&format!("CLAUDE_SESSIONS_TEAM_SPAWN={SPAWN_TOKEN}")), "{started}");
+    assert!(started.contains(&format!("-c {} ", copy.display())) && started.contains(&format!("COCKPIT_TEAM_SPAWN={SPAWN_TOKEN}")), "{started}");
 }
 
 #[test]
@@ -3499,7 +3499,7 @@ fn opencode_team_spawns_carry_the_token_too() {
     let result = manager.run(&["--agent", "opencode", "team-spawn", SPAWN_TOKEN, "developer", &path_str(&manager.project), "-", "Build from the frames"], &[]);
     assert_eq!(result.status.code(), Some(0), "{}", stderr(&result));
     let started = manager.tmux_calls("new-session").pop().expect("no launch");
-    assert!(started.contains(&format!("CLAUDE_SESSIONS_TEAM_SPAWN={SPAWN_TOKEN}")), "{started}");
+    assert!(started.contains(&format!("COCKPIT_TEAM_SPAWN={SPAWN_TOKEN}")), "{started}");
 }
 
 #[test]
@@ -3511,7 +3511,7 @@ fn each_qa_start_gets_a_folder_of_its_own() {
     let clones = manager.sandbox.root.join("clones");
     let existing = clones.join(format!("proj-a/qa-{}-{}", &commit[..12], &SPAWN_TOKEN[..8]));
     fs::create_dir_all(existing.join(".git")).unwrap();
-    let result = manager.run(&["team-spawn", SPAWN_TOKEN, "qa", &path_str(&manager.project), &commit, "Review it"], &[("CLAUDE_SESSIONS_CLONES", &path_str(&clones))]);
+    let result = manager.run(&["team-spawn", SPAWN_TOKEN, "qa", &path_str(&manager.project), &commit, "Review it"], &[("COCKPIT_CLONES", &path_str(&clones))]);
     assert_ne!(result.status.code(), Some(0));
     assert!(manager.tmux_calls("new-session").is_empty());
 }
@@ -3523,7 +3523,7 @@ fn codex_team_spawns_carry_the_token_too() {
     let result = manager.run(&["--agent", "codex", "team-spawn", SPAWN_TOKEN, "developer", &path_str(&manager.project), "-", "Build from the frames"], &[]);
     assert_eq!(result.status.code(), Some(0), "{}", stderr(&result));
     let started = manager.tmux_calls("new-session").pop().expect("no launch");
-    assert!(started.contains(&format!("CLAUDE_SESSIONS_TEAM_SPAWN={SPAWN_TOKEN}")), "{started}");
+    assert!(started.contains(&format!("COCKPIT_TEAM_SPAWN={SPAWN_TOKEN}")), "{started}");
 }
 
 #[test]
@@ -3551,8 +3551,33 @@ fn a_qa_copy_is_refused_from_a_repository_that_borrows_objects_or_points_elsewhe
             fs::write(manager.project.join(".git"), format!("gitdir: {}\n", real.display())).unwrap();
         }
         let clones = manager.sandbox.root.join("clones");
-        let result = manager.run(&["team-spawn", SPAWN_TOKEN, "qa", &path_str(&manager.project), &commit, "Review it"], &[("CLAUDE_SESSIONS_CLONES", &path_str(&clones))]);
+        let result = manager.run(&["team-spawn", SPAWN_TOKEN, "qa", &path_str(&manager.project), &commit, "Review it"], &[("COCKPIT_CLONES", &path_str(&clones))]);
         assert_ne!(result.status.code(), Some(0), "{case}");
         assert!(manager.tmux_calls("new-session").is_empty(), "{case}");
     }
+}
+
+#[test]
+fn the_first_run_after_the_rename_moves_the_old_state_folder_and_links_its_name() {
+    let manager = Manager::new();
+    let old = manager.sandbox.state.join("claude-sessions");
+    fs::create_dir(&old).unwrap();
+    fs::write(old.join("todo.json"), r#"{"items": []}"#).unwrap();
+    let result = manager.run(&["log", "test", "INFO", "hello"], &[]);
+    assert!(result.status.success(), "{}", stderr(&result));
+    assert_eq!(fs::read_to_string(manager.sandbox.state.join("cockpit/todo.json")).unwrap(), r#"{"items": []}"#);
+    assert_eq!(fs::read_link(&old).unwrap(), Path::new("cockpit"));
+}
+
+#[test]
+fn two_state_folders_are_both_kept_and_the_start_reports_them() {
+    let manager = Manager::new();
+    for (folder, content) in [("claude-sessions", "old"), ("cockpit", "new")] {
+        fs::create_dir_all(manager.sandbox.state.join(folder)).unwrap();
+        fs::write(manager.sandbox.state.join(folder).join("todo.json"), content).unwrap();
+    }
+    manager.run(&["prepare"], &[]);
+    assert_eq!(fs::read_to_string(manager.sandbox.state.join("claude-sessions/todo.json")).unwrap(), "old");
+    assert_eq!(fs::read_to_string(manager.sandbox.state.join("cockpit/todo.json")).unwrap(), "new");
+    assert!(manager.log_lines().iter().any(|line| line.contains("ERROR") && line.contains("two state folders")), "{:?}", manager.log_lines());
 }

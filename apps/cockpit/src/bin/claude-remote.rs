@@ -240,7 +240,7 @@ fn serve() -> Result<(), String> {
         println!("claude-remote listening on {bound}");
     }
     std::thread::spawn(watch_for_notifications);
-    // A few workers: a slow tmux or claude-sessions call for one phone does not stall the others.
+    // A few workers: a slow tmux or cockpit call for one phone does not stall the others.
     let server = std::sync::Arc::new(server);
     let workers: Vec<_> = (0..WORKERS).map(|_| {
         let server = server.clone();

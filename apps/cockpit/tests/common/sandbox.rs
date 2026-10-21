@@ -70,7 +70,7 @@ pub struct Sandbox {
 
 impl Sandbox {
     pub fn new() -> Sandbox {
-        let root = std::env::temp_dir().join(format!("claude-sessions-test-{}", cockpit::util::token_hex(6)));
+        let root = std::env::temp_dir().join(format!("cockpit-test-{}", cockpit::util::token_hex(6)));
         let (home, runtime, state, shims) = (root.join("home"), root.join("runtime"), root.join("state"), root.join("shims"));
         for path in [&home, &runtime, &state, &shims] {
             fs::create_dir_all(path).unwrap();
@@ -85,7 +85,7 @@ impl Sandbox {
         }
         let local_bin = home.join(".local/bin");
         fs::create_dir_all(&local_bin).unwrap();
-        for name in ["claude-sessions", "claude-sessions-sidebar", "osd", "osd-show", "claude-audit"] {
+        for name in ["cockpit", "cockpit-sidebar", "osd", "osd-show", "claude-audit"] {
             symlink(bin().join(name), local_bin.join(name)).unwrap();
         }
         let path = format!("{}:{}:{}", shims.display(), local_bin.display(), std::env::var("PATH").unwrap_or_default());
@@ -94,7 +94,7 @@ impl Sandbox {
             ("XDG_RUNTIME_DIR".into(), runtime.display().to_string()),
             ("XDG_STATE_HOME".into(), state.display().to_string()),
             // Wins over XDG_STATE_HOME in the cockpit's tools, and opencode sessions set it.
-            ("CLAUDE_SESSIONS_STATE_HOME".into(), state.display().to_string()),
+            ("COCKPIT_STATE_HOME".into(), state.display().to_string()),
             ("PATH".into(), path),
             ("SHIM_LOG".into(), log.display().to_string()),
             ("CLAUDE_STATUS_URL".into(), String::new()), // no network: status.claude.com is not fetched

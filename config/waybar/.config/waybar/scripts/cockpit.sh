@@ -2,8 +2,8 @@
 # Waybar custom module: running Claude Code sessions as "● 2  ○ 1  ! 1" (working / waiting / needs you),
 # a dim robot glyph when none runs (it is the last module of its island, which must not show empty). The OSD daemon (osd) writes the snapshot and sends RTMIN+16 on every change;
 # the 60 s interval only refreshes the ages in the tooltip. Click (osd-show focus-next) jumps to the
-# most urgent session. CLAUDE_SESSIONS_SNAPSHOT overrides the path for testing against a fixture.
-SNAPSHOT="${CLAUDE_SESSIONS_SNAPSHOT:-${XDG_RUNTIME_DIR:-/tmp}/claude-sessions.json}"
+# most urgent session. COCKPIT_SNAPSHOT overrides the path for testing against a fixture.
+SNAPSHOT="${COCKPIT_SNAPSHOT:-${XDG_RUNTIME_DIR:-/tmp}/cockpit.json}"
 IDLE_GLYPH=$(printf '\xf3\xb0\x9a\xa9')  # nf-md-robot U+F06A9 as bytes: $'\U…' needs a UTF-8 locale, make runs with LC_ALL=C
 
 print_idle() {

@@ -22,7 +22,7 @@ fn switching_audio_refreshes_only_the_exact_waybar_process_name() {
 fn chip(sandbox: &Sandbox, snapshot: Value) -> Value {
     let path = sandbox.root.join("snapshot.json");
     fs::write(&path, snapshot.to_string()).unwrap();
-    let output = sandbox.run(waybar_scripts().join("claude-sessions.sh"), &[], &[("CLAUDE_SESSIONS_SNAPSHOT", path.to_str().unwrap())]);
+    let output = sandbox.run(waybar_scripts().join("cockpit.sh"), &[], &[("COCKPIT_SNAPSHOT", path.to_str().unwrap())]);
     serde_json::from_str(&stdout(&output)).unwrap()
 }
 

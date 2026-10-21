@@ -1,5 +1,5 @@
 //! Errors in the shared log go to a dotfiles session to be fixed: the waiting one gets a message,
-//! else one starts in the background (claude-sessions background). The same error (ids and
+//! else one starts in the background (cockpit background). The same error (ids and
 //! numbers masked) once a day, at most three a day, held while Theo games. Lines logged before
 //! the column started are not reported.
 
@@ -40,14 +40,14 @@ fn fenced(text: &str) -> String {
 }
 
 pub fn prompt(error: &str, context: &[String]) -> String {
-    format!("claude-sessions logged an error (sent automatically by the cockpit's error hand-off). Find the cause in \
+    format!("cockpit logged an error (sent automatically by the cockpit's error hand-off). Find the cause in \
              the dotfiles and fix it, with a regression test. Ask me before anything that needs ask-to-run. {UNTRUSTED}\n\n\
-             Error:\n{}\n\nThe log before it (~/.local/state/claude-sessions/log):\n{}", fenced(error), fenced(&context.join("\n")))
+             Error:\n{}\n\nThe log before it (~/.local/state/cockpit/log):\n{}", fenced(error), fenced(&context.join("\n")))
 }
 
 /// The one line `say` can type: the instructions, and where the error and its log wait.
 fn message(report_path: &str) -> String {
-    format!("claude-sessions logged an error (sent automatically by the cockpit's error hand-off). Find the cause in \
+    format!("cockpit logged an error (sent automatically by the cockpit's error hand-off). Find the cause in \
              the dotfiles and fix it, with a regression test. Ask me before anything that needs ask-to-run. {UNTRUSTED} \
              The error and the log before it: {report_path}")
 }
@@ -189,7 +189,7 @@ mod tests {
 
     #[test]
     fn ids_and_numbers_are_masked_in_the_signature() {
-        assert_eq!(signature("2026-10-18T13:03:32+02:00 ERROR manager: claude-sessions: 5a0bb934-9e25-4b52-af1f-f4fb8752dfcd did not exit"),
-                   signature("2026-10-18T13:15:58+02:00 ERROR manager: claude-sessions: 4e0eda6a-202a-4c97-af82-c6e19e431f15 did not exit"));
+        assert_eq!(signature("2026-10-18T13:03:32+02:00 ERROR manager: cockpit: 5a0bb934-9e25-4b52-af1f-f4fb8752dfcd did not exit"),
+                   signature("2026-10-18T13:15:58+02:00 ERROR manager: cockpit: 4e0eda6a-202a-4c97-af82-c6e19e431f15 did not exit"));
     }
 }

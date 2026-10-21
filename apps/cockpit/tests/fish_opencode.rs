@@ -7,12 +7,12 @@ fn invoke(choice: &str, arguments: &[&str], inside: &str, terminal: bool, attach
     let fzf = sandbox.home.join(".config/fzf");
     fs::create_dir_all(&fzf).unwrap();
     fs::write(fzf.join("tokyonight_night.sh"), "").unwrap();
-    sandbox.shim("claude-sessions", "if [[ $1 == attach ]]; then exit \"$ATTACH_STATUS\"; fi");
-    sandbox.shim("opencode", "echo \"terminal=$CLAUDE_SESSIONS_TERMINAL\" >> \"$SHIM_LOG\"");
+    sandbox.shim("cockpit", "if [[ $1 == attach ]]; then exit \"$ATTACH_STATUS\"; fi");
+    sandbox.shim("opencode", "echo \"terminal=$COCKPIT_TERMINAL\" >> \"$SHIM_LOG\"");
     let script = r#"
         source "$FISH_CONFIG"
         set -gx PATH "$TEST_SHIMS" $PATH
-        set -e CLAUDE_SESSIONS_TERMINAL
+        set -e COCKPIT_TERMINAL
         function isatty
             test "$TEST_TERMINAL" = yes
         end
@@ -24,7 +24,7 @@ fn invoke(choice: &str, arguments: &[&str], inside: &str, terminal: bool, attach
     let output = sandbox.run_with_input("fish", &command_arguments, &[
         ("FISH_CONFIG", config.to_str().unwrap()),
         ("TEST_SHIMS", sandbox.shims.to_str().unwrap()),
-        ("CLAUDE_SESSIONS_INSIDE", inside),
+        ("COCKPIT_INSIDE", inside),
         ("TEST_TERMINAL", if terminal { "yes" } else { "no" }),
         ("ATTACH_STATUS", attach_status),
     ], choice);
@@ -37,7 +37,7 @@ fn resume_attaches_the_existing_cockpit_without_starting_an_agent() {
     for choice in ["r", "R"] {
         let (output, calls) = invoke(choice, &[], "", true, "0");
         assert!(output.status.success(), "{}", stderr(&output));
-        assert_eq!(calls, ["claude-sessions attach"]);
+        assert_eq!(calls, ["cockpit attach"]);
     }
 }
 
@@ -45,7 +45,7 @@ fn resume_attaches_the_existing_cockpit_without_starting_an_agent() {
 fn resume_preserves_an_attach_failure() {
     let (output, calls) = invoke("r", &[], "", true, "42");
     assert_eq!(output.status.code(), Some(42));
-    assert_eq!(calls, ["claude-sessions attach"]);
+    assert_eq!(calls, ["cockpit attach"]);
 }
 
 #[test]
@@ -54,8 +54,8 @@ fn enter_and_manager_keys_keep_creating_then_showing_a_session() {
         let (output, calls) = invoke(choice, &[], "", true, "0");
         assert!(output.status.success(), "{}", stderr(&output));
         assert_eq!(calls.len(), 2);
-        assert!(calls[0].starts_with("claude-sessions --agent opencode new "));
-        assert_eq!(calls[1], "claude-sessions show");
+        assert!(calls[0].starts_with("cockpit --agent opencode new "));
+        assert_eq!(calls[1], "cockpit show");
     }
 }
 
@@ -65,7 +65,7 @@ fn terminal_keys_keep_using_the_managed_terminal_launch() {
         let (output, calls) = invoke(choice, &[], "", true, "0");
         assert!(output.status.success(), "{}", stderr(&output));
         assert_eq!(calls.len(), 1);
-        assert!(calls[0].starts_with("claude-sessions --agent opencode terminal "));
+        assert!(calls[0].starts_with("cockpit --agent opencode terminal "));
     }
 }
 

@@ -12,12 +12,12 @@ export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
 . "$(dirname "$0")/launcher-common.sh"
 greywall_options="--auto-profile --profile claude $greywall_options"
 
-# A credits session (the cockpit's $ sets CLAUDE_SESSIONS_CREDITS=1) bills the Console's API
+# A credits session (the cockpit's $ sets COCKPIT_CREDITS=1) bills the Console's API
 # credits instead of the subscription: Claude prefers ANTHROPIC_API_KEY over its login. The key
 # stays a greyproxy placeholder inside the sandbox. Without a key in the keyring the session does
 # not start, rather than running on the subscription unnoticed (launcher-common.sh gives every other
 # session none).
-if [ "${CLAUDE_SESSIONS_CREDITS:-}" = 1 ]; then
+if [ "${COCKPIT_CREDITS:-}" = 1 ]; then
     anthropic_key=$(secret-tool lookup service agent-anthropic 2>/dev/null || true)
     if [ -z "$anthropic_key" ]; then
         echo "claude launcher: no API key in the keyring for a credits session (make -C ~/dotfiles agent-anthropic-key), not starting." >&2

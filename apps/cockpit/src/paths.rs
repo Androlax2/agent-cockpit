@@ -20,20 +20,20 @@ pub fn runtime_dir() -> PathBuf {
     PathBuf::from(env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".into()))
 }
 
-/// The filesystems whose fill the column watches: / and home, or CLAUDE_SESSIONS_DISK_MOUNTS
+/// The filesystems whose fill the column watches: / and home, or COCKPIT_DISK_MOUNTS
 /// (colon-separated; empty watches none, as the tests do).
 pub fn disk_mounts() -> Vec<String> {
-    match env::var("CLAUDE_SESSIONS_DISK_MOUNTS") {
+    match env::var("COCKPIT_DISK_MOUNTS") {
         Ok(list) => list.split(':').filter(|mount| !mount.is_empty()).map(str::to_string).collect(),
         Err(_) => vec!["/".into(), home().display().to_string()],
     }
 }
 
-/// CLAUDE_SESSIONS_STATE_HOME first: the opencode launcher moves XDG_STATE_HOME into the sandbox's
+/// COCKPIT_STATE_HOME first: the opencode launcher moves XDG_STATE_HOME into the sandbox's
 /// private /tmp for opencode's own state, and every tool opencode runs inherits it; this one keeps
 /// the cockpit's tools (claude-todo's list) on the real folder.
 pub fn state_home() -> PathBuf {
-    env::var("CLAUDE_SESSIONS_STATE_HOME").or_else(|_| env::var("XDG_STATE_HOME")).map(PathBuf::from)
+    env::var("COCKPIT_STATE_HOME").or_else(|_| env::var("XDG_STATE_HOME")).map(PathBuf::from)
         .unwrap_or_else(|_| home().join(".local/state"))
 }
 
@@ -41,14 +41,14 @@ fn from_env(name: &str, default: PathBuf) -> PathBuf {
     env::var(name).map(PathBuf::from).unwrap_or(default)
 }
 
-pub fn state_dir() -> PathBuf { state_home().join("claude-sessions") }
-pub fn snapshot() -> PathBuf { runtime_dir().join("claude-sessions.json") }
-/// claude-sessions' loading screen state while a session starts or restarts in the viewer pane.
-pub fn loading_state() -> PathBuf { runtime_dir().join("claude-sessions-loading") }
-pub fn current() -> PathBuf { runtime_dir().join("claude-sessions.current") }
-/// One note per session `claude-sessions restart` is bringing back (sessions::restarts).
-pub fn restarting_dir() -> PathBuf { runtime_dir().join("claude-sessions.restarting") }
-/// While it exists, the phone page notifies: the lock screen's claude-sessions away on.
+pub fn state_dir() -> PathBuf { state_home().join("cockpit") }
+pub fn snapshot() -> PathBuf { runtime_dir().join("cockpit.json") }
+/// cockpit' loading screen state while a session starts or restarts in the viewer pane.
+pub fn loading_state() -> PathBuf { runtime_dir().join("cockpit-loading") }
+pub fn current() -> PathBuf { runtime_dir().join("cockpit.current") }
+/// One note per session `cockpit restart` is bringing back (sessions::restarts).
+pub fn restarting_dir() -> PathBuf { runtime_dir().join("cockpit.restarting") }
+/// While it exists, the phone page notifies: the lock screen's cockpit away on.
 pub fn phone_away() -> PathBuf { runtime_dir().join("claude-remote-away") }
 pub fn usage_cache() -> PathBuf { runtime_dir().join("claude-usage.json") }
 pub fn codex_usage_cache() -> PathBuf { runtime_dir().join("codex-usage.json") }
@@ -64,12 +64,12 @@ pub fn osd_host_fifo() -> PathBuf { runtime_dir().join("osd-host.fifo") }
 pub fn osd_report_socket() -> PathBuf { runtime_dir().join("claude-report/osd-report.sock") }
 /// The Claude sessions' scopes game-performance froze for a game, one per line; gone after it.
 pub fn game_frozen() -> PathBuf { runtime_dir().join("game-performance.frozen") }
-pub fn history() -> PathBuf { from_env("CLAUDE_SESSIONS_HISTORY", home().join(".claude/history.jsonl")) }
-pub fn transcripts() -> PathBuf { from_env("CLAUDE_SESSIONS_TRANSCRIPTS", home().join(".claude/projects")) }
+pub fn history() -> PathBuf { from_env("COCKPIT_HISTORY", home().join(".claude/history.jsonl")) }
+pub fn transcripts() -> PathBuf { from_env("COCKPIT_TRANSCRIPTS", home().join(".claude/projects")) }
 /// opencode's sessions and messages ($XDG_DATA_HOME/opencode/opencode.db), which its sandboxes write.
 pub fn opencode_database() -> PathBuf {
     let data_home = env::var("XDG_DATA_HOME").map(PathBuf::from).unwrap_or_else(|_| home().join(".local/share"));
-    from_env("CLAUDE_SESSIONS_OPENCODE_DB", data_home.join("opencode/opencode.db"))
+    from_env("COCKPIT_OPENCODE_DB", data_home.join("opencode/opencode.db"))
 }
 pub fn statusline_dir() -> PathBuf { home().join(".cache/claude") }
 pub fn usage_script() -> PathBuf { home().join(".config/waybar/scripts/claude-usage.sh") }
@@ -93,12 +93,12 @@ pub fn error_reports() -> PathBuf { state_dir().join("error-reports.json") }
 pub fn error_report_dir() -> PathBuf { state_dir().join("error-reports") }
 pub fn recent_sessions() -> PathBuf { state_dir().join("recent-sessions.json") }
 pub fn ended_sessions() -> PathBuf { state_dir().join("ended-sessions") }
-pub fn clones_dir() -> PathBuf { from_env("CLAUDE_SESSIONS_CLONES", home().join("IdeaProjects/.parallel")) }
-pub fn greyproxy_db() -> PathBuf { from_env("CLAUDE_SESSIONS_GREYPROXY_DB", home().join(".local/share/greyproxy/greyproxy.db")) }
+pub fn clones_dir() -> PathBuf { from_env("COCKPIT_CLONES", home().join("IdeaProjects/.parallel")) }
+pub fn greyproxy_db() -> PathBuf { from_env("COCKPIT_GREYPROXY_DB", home().join(".local/share/greyproxy/greyproxy.db")) }
 pub fn designs() -> PathBuf { from_env("CLAUDE_DESIGNS_DIR", home().join(".cache/claude/designs")) }
 pub fn dotfiles() -> PathBuf { home().join("dotfiles") }
 /// Where the dotfiles session works: a clone the host never runs or builds from. ~/dotfiles, the
-/// stowed checkout, only moves forward through `claude-sessions apply-dotfiles`, after Theo read the
+/// stowed checkout, only moves forward through `cockpit apply-dotfiles`, after Theo read the
 /// diff (security audit 2026-10-19, C1).
 pub fn dotfiles_work() -> PathBuf { from_env("CLAUDE_DOTFILES_WORK", home().join("IdeaProjects/dotfiles")) }
 /// Theo's greywall fork, where `claude-todo stack greywall` files problems in greywall's own code.

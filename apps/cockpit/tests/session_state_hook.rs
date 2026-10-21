@@ -94,7 +94,7 @@ fn turn_ends_never_take_team_messages_themselves() {
         let mut test = HookTest::new();
         let team = test.sandbox.team_socket(json!({"dispatch_id": "d1", "message_id": "m1", "text": "hi"}));
         test.sandbox.shim("cockpit-team", &format!("exec '{}' \"$@\"", env!("CARGO_BIN_EXE_cockpit-team")));
-        let output = test.run_hook(with_session(json!({"hook_event_name": "Stop"}), "/x/proj"), &[("CLAUDE_SESSIONS_AGENT", agent)]);
+        let output = test.run_hook(with_session(json!({"hook_event_name": "Stop"}), "/x/proj"), &[("COCKPIT_AGENT", agent)]);
         assert!(output.status.success(), "{}", stderr(&output));
         assert!(output.stdout.is_empty(), "{agent}");
         assert_eq!(test.received().len(), 1, "{agent}");
@@ -278,7 +278,7 @@ fn an_explicit_question_waits_for_turn_end_for_both_agents() {
         for event in ["PostToolUse", "Notification", "Stop", "PostToolUse"] {
             let mut payload = with_session(json!({"hook_event_name": event, "message": "Still running", "notification_type": "auth_success"}), "/x/proj");
             payload["session_id"] = json!(session);
-            let result = test.run_hook(payload, &[("CLAUDE_SESSIONS_AGENT", if session == SESSION_A { "claude" } else { "opencode" })]);
+            let result = test.run_hook(payload, &[("COCKPIT_AGENT", if session == SESSION_A { "claude" } else { "opencode" })]);
             assert!(result.status.success(), "{}", stderr(&result));
         }
         let lines = test.received();
@@ -453,7 +453,7 @@ fn a_session_nested_in_an_opencode_tool_reports_nothing() {
     let fake = fake_agent(&test.sandbox.root, "opencode");
     let script = format!("bash {}; :", hook().display());
     let payload = with_session(json!({"hook_event_name": "Stop"}), "/x/proj");
-    test.sandbox.run_with_input(&fake, &["-c", &script], &[("OPENCODE", "1"), ("CLAUDE_SESSIONS_AGENT", "opencode")], &payload.to_string());
+    test.sandbox.run_with_input(&fake, &["-c", &script], &[("OPENCODE", "1"), ("COCKPIT_AGENT", "opencode")], &payload.to_string());
     assert_eq!(test.received(), Vec::<Value>::new());
 }
 
@@ -465,7 +465,7 @@ fn an_opencode_session_started_from_a_shell_reports_its_agent() {
     let script = format!("bash {}; :", hook().display());
     let mut payload = json!({"hook_event_name": "SessionStart", "session_id": "ses_3f2a9c0b1ffeQkTz8mWn4rJd2L", "cwd": "/x/proj"});
     // Unmarked, like a session you start (these tests may themselves run under an agent's tool).
-    let mut child = test.sandbox.command(&fake, &[("CLAUDE_SESSIONS_AGENT", "opencode")]).env_remove("CLAUDECODE").env_remove("OPENCODE")
+    let mut child = test.sandbox.command(&fake, &[("COCKPIT_AGENT", "opencode")]).env_remove("CLAUDECODE").env_remove("OPENCODE")
         .args(["-c", &script]).stdin(Stdio::piped()).spawn().unwrap();
     child.stdin.take().unwrap().write_all(payload.to_string().as_bytes()).unwrap();
     child.wait().unwrap();
@@ -624,7 +624,7 @@ fn a_session_started_in_its_own_terminal_says_so() {
     let mut test = HookTest::new();
     let folder = test.sandbox.root.join("notes");
     fs::create_dir(&folder).unwrap();
-    test.run_hook(with_session(json!({"hook_event_name": "SessionStart"}), &folder.to_string_lossy()), &[("CLAUDE_SESSIONS_TERMINAL", "1")]);
+    test.run_hook(with_session(json!({"hook_event_name": "SessionStart"}), &folder.to_string_lossy()), &[("COCKPIT_TERMINAL", "1")]);
     test.run_hook(with_session(json!({"hook_event_name": "SessionStart"}), &folder.to_string_lossy()), &[]);
     let reports = test.received();
     assert_eq!(reports[0]["terminal"], true);
@@ -636,7 +636,7 @@ fn every_report_says_whether_the_session_bills_api_credits() {
     let mut test = HookTest::new();
     let folder = test.sandbox.root.join("notes");
     fs::create_dir(&folder).unwrap();
-    test.run_hook(with_session(json!({"hook_event_name": "SessionStart"}), &folder.to_string_lossy()), &[("CLAUDE_SESSIONS_CREDITS", "1")]);
+    test.run_hook(with_session(json!({"hook_event_name": "SessionStart"}), &folder.to_string_lossy()), &[("COCKPIT_CREDITS", "1")]);
     test.run_hook(with_session(json!({"hook_event_name": "SessionStart"}), &folder.to_string_lossy()), &[]);
     let reports = test.received();
     assert_eq!((&reports[0]["credits"], &reports[1]["credits"]), (&json!(true), &json!(false)));

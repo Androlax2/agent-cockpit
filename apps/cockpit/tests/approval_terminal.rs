@@ -33,7 +33,7 @@ fn approve_in_terminal(command: &str) -> (Terminal, PathBuf, String) {
     let (root, id) = request(command);
     let mut terminal = Terminal::start(Path::new(env!("CARGO_BIN_EXE_claude-run-approve")), &[&id],
                                        &[("CLAUDE_RUNS_DIR", &root.join("runs")), ("CLAUDE_ANSWERS_DIR", &root.join("answers")), ("XDG_RUNTIME_DIR", &root.join("run")),
-                                         ("XDG_STATE_HOME", &root.join("state")), ("CLAUDE_SESSIONS_STATE_HOME", &root.join("state")), ("CLAUDE_AUDIT_JOURNAL", Path::new("off"))]);
+                                         ("XDG_STATE_HOME", &root.join("state")), ("COCKPIT_STATE_HOME", &root.join("state")), ("CLAUDE_AUDIT_JOURNAL", Path::new("off"))]);
     terminal.pump(10.0, Some(b"Edit it first"));
     assert!(contains(&terminal.screen, b"Edit it first"), "the menu never showed");
     terminal.pump(1.0, None);
@@ -105,7 +105,7 @@ fn the_phone_page_answers_the_menu_and_the_command_runs() {
     let (root, id) = request("sh -c 'echo ran-from-the-phone'");
     let mut terminal = Terminal::start(Path::new(env!("CARGO_BIN_EXE_claude-run-approve")), &[&id],
                                        &[("CLAUDE_ANSWERS_DIR", &root.join("answers")), ("XDG_RUNTIME_DIR", &root.join("run")),
-                                         ("XDG_STATE_HOME", &root.join("state")), ("CLAUDE_SESSIONS_STATE_HOME", &root.join("state")), ("CLAUDE_AUDIT_JOURNAL", Path::new("off"))]);
+                                         ("XDG_STATE_HOME", &root.join("state")), ("COCKPIT_STATE_HOME", &root.join("state")), ("CLAUDE_AUDIT_JOURNAL", Path::new("off"))]);
     terminal.pump(10.0, Some(b"Run it?"));
     let asking: serde_json::Value = serde_json::from_str(&fs::read_to_string(root.join(format!("run/claude-runs/{id}.asking"))).unwrap()).unwrap();
     assert_eq!(asking["command"].as_str(), Some("sh -c 'echo ran-from-the-phone'"));
@@ -127,7 +127,7 @@ fn unverified_session_claims_do_not_associate_commands_with_a_mobile_chat() {
     fs::write(path, held.to_string()).unwrap();
     let mut terminal = Terminal::start(Path::new(env!("CARGO_BIN_EXE_claude-run-approve")), &[&id],
         &[("CLAUDE_ANSWERS_DIR", &root.join("answers")), ("XDG_RUNTIME_DIR", &root.join("run")),
-            ("XDG_STATE_HOME", &root.join("state")), ("CLAUDE_SESSIONS_STATE_HOME", &root.join("state")), ("CLAUDE_AUDIT_JOURNAL", Path::new("off"))]);
+            ("XDG_STATE_HOME", &root.join("state")), ("COCKPIT_STATE_HOME", &root.join("state")), ("CLAUDE_AUDIT_JOURNAL", Path::new("off"))]);
     terminal.pump(10.0, Some(b"Run it?"));
     let asking: serde_json::Value = serde_json::from_str(&fs::read_to_string(root.join(format!("run/claude-runs/{id}.asking"))).unwrap()).unwrap();
     assert_eq!(asking["session"], "");

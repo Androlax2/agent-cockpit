@@ -1,4 +1,4 @@
-//! A made-up Claude Code cockpit for the README screenshots (tools/capture-claude.sh).
+//! A made-up Agent Cockpit for the README screenshots (tools/capture-claude.sh).
 //!
 //!     claude-demo build <root>   everything the column reads, invented, under <root>
 //!     claude-demo session        a still picture of a session for the demo's session pane
@@ -6,7 +6,7 @@
 //! build writes home/ (statusline facts, history, plan name, parallel clones), run/ (the session
 //! snapshot, plan usage, the viewed session), state/ (todo list), repos/ (git checkouts with their
 //! branch and a github.com origin), bin/ (a gh that answers pull requests and issues from here, a
-//! no-op claude-sessions), and status.json for both provider status feeds. Pointing HOME, XDG_RUNTIME_DIR,
+//! no-op cockpit), and status.json for both provider status feeds. Pointing HOME, XDG_RUNTIME_DIR,
 //! XDG_STATE_HOME, PATH, CLAUDE_STATUS_URL and CODEX_STATUS_URL at it shows none of the real sessions, tasks or costs.
 
 use chrono::{Duration as Span, Utc};
@@ -100,8 +100,8 @@ fn build(root: &Path) -> Result<(), String> {
     let (home, run, state) = (root.join("home"), root.join("run"), root.join("state"));
     let now = Utc::now().timestamp();
     let viewed = SESSIONS[0].id;
-    write(&run.join("claude-sessions.json"), &json!({"sessions": session_rows(root, now)?}).to_string())?;
-    write(&run.join("claude-sessions.current"), &format!("{viewed}\n"))?;
+    write(&run.join("cockpit.json"), &json!({"sessions": session_rows(root, now)?}).to_string())?;
+    write(&run.join("cockpit.current"), &format!("{viewed}\n"))?;
     write(&run.join("claude-usage.json"), &json!({
         "five_hour": {"utilization": 34, "resets_at": iso(2 * 3600 + 40 * 60)},
         "seven_day": {"utilization": 58, "resets_at": iso(3 * 86400)},
@@ -117,7 +117,7 @@ fn build(root: &Path) -> Result<(), String> {
         }).collect();
     write(&home.join(".claude/history.jsonl"), &history)?;
     let shop = root.join("repos/acme-shop");
-    write(&state.join("claude-sessions/todo.json"), &json!({"items": [
+    write(&state.join("cockpit/todo.json"), &json!({"items": [
         {"id": "a1b2c3d4", "project": "acme-shop", "cwd": shop, "text": "Show prices with and without VAT on the product page",
          "status": "doing", "priority": 4, "created": now - 3600},
         {"id": "b2c3d4e5", "project": "acme-shop", "cwd": shop, "text": "Remove the old coupon endpoint",
@@ -151,7 +151,7 @@ case "$*" in
   *) echo "[]" ;;
 esac
 "#))?;
-    write_executable(&root.join("bin/claude-sessions"), "#!/bin/sh\n# The demo has no real sessions to act on.\nexit 0\n")?;
+    write_executable(&root.join("bin/cockpit"), "#!/bin/sh\n# The demo has no real sessions to act on.\nexit 0\n")?;
     write(&root.join("status.json"), &json!({"status": {"indicator": "none", "description": "All Systems Operational"},
                                              "components": [], "incidents": []}).to_string())
 }

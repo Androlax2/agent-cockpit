@@ -16,7 +16,7 @@
 //!                                     --project: for another project, a checkout in ~/IdeaProjects;
 //!                                     add names only a linked one (security audit M4)
 //!     claude-todo blocked '<what you could not do>' --why '<what stopped you>' [--notes '<details>']
-//!                                     from any project: greywall, claude-sessions, the launcher or
+//!                                     from any project: greywall, cockpit, the launcher or
 //!                                     another part of Theo's setup kept you from doing something;
 //!                                     filed in the dotfiles list and queued for its session
 //!     claude-todo stack <repo> '<title>' --why '<reason>' [--notes '<details>'] [--kind <kind>]
@@ -29,7 +29,7 @@
 //!     claude-todo show <id>           an item with its notes, the paths of its pasted images and, for a proposal, why
 //!
 //! An id is a typed item's 8 hex characters, or a GitHub issue as owner/repo#12. The list is read
-//! from ~/.local/state/claude-sessions/todo.json; the sandbox cannot write there, so changes go to
+//! from ~/.local/state/cockpit/todo.json; the sandbox cannot write there, so changes go to
 //! the OSD daemon on its report socket, which queues them with the folder the session's sandbox
 //! started in, and the cockpit's column applies them. CLAUDE_TODO_PATH overrides the list (tests).
 
@@ -60,7 +60,7 @@ const USAGE: &str = "    claude-todo list [--all]        the items of this direc
                                     --project: work for another project (its folder name in ~/IdeaProjects):
                                     proposed in that project's list; add names only a linked project
     claude-todo blocked '<what you could not do>' --why '<what stopped you>' [--notes '<details>']
-                                    the setup (greywall, claude-sessions, the launcher…) blocked you:
+                                    the setup (greywall, cockpit, the launcher…) blocked you:
                                     filed in the dotfiles list and queued for its session
     claude-todo stack <repo> '<title>' --why '<reason>' [--notes '<details>'] [--kind <kind>]
                                     a security hole, bug or improvement in the own code of a sandbox stack

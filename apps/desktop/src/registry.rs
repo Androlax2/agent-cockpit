@@ -2,7 +2,7 @@
 //!
 //! Every live Claude Code session, keyed by session id, fed by `session <json>` reports from
 //! ~/.claude/hooks/session-state.sh and mirrored to:
-//!   - $XDG_RUNTIME_DIR/claude-sessions.json for the waybar chip (RTMIN+16) and claude-sessions;
+//!   - $XDG_RUNTIME_DIR/cockpit.json for the waybar chip (RTMIN+16) and cockpit;
 //!   - Hyprland, through `hyprctl eval CLAUDE_WINDOW_STATE(pid, state)` (apps/claude.lua), which
 //!     colours the session's terminal border by state;
 //!   - the OSD banners (the `Banners` given at construction).
@@ -432,7 +432,7 @@ pub struct Banner {
     pub sticky: bool,
 }
 
-/// The repository a claude-sessions clone (<clones>/<repository>/<name>) was made from, or "".
+/// The repository a cockpit clone (<clones>/<repository>/<name>) was made from, or "".
 pub fn parallel_clone_repository(cwd: &str) -> String {
     match Path::new(cwd).strip_prefix(paths::clones_dir()) {
         Ok(relative) => {
@@ -740,7 +740,7 @@ impl RunRequests {
         if !system.run(&["tmux", "new-session", "-d", "-s", &run_session(id), "-x", "180", "-y", "45", &approve, id], &[0]) {
             return Err(format!("cannot start the approval for {id}"));
         }
-        system.run(&["claude-sessions", "approval-pane", id], &[0]);
+        system.run(&["cockpit", "approval-pane", id], &[0]);
         let project = project_from_request(&cockpit::approval::held_request(id, "request"));
         if !system.quiet() {
             banners.raise_notice(&Notice { id: format!("run-{id}"), title: format!("Claude · {project}"), message: "asks you to run a command".into() });
@@ -768,7 +768,7 @@ impl RunRequests {
                     write_abandoned(&id);
                 }
                 system.run(&["tmux", "kill-session", "-t", &format!("={}", run_session(&id))], &[0, 1]);
-                system.run(&["claude-sessions", "approval-pane", "close", &id], &[0]);
+                system.run(&["cockpit", "approval-pane", "close", &id], &[0]);
                 continue;
             }
             self.current = id.clone();
@@ -798,10 +798,10 @@ impl RunRequests {
         if is_known {
             match phase {
                 "running" if self.current != id || !self.asked_input => {
-                    system.run(&["claude-sessions", "approval-pane", "close", id], &[0]);
+                    system.run(&["cockpit", "approval-pane", "close", id], &[0]);
                 }
-                "running" => { system.run(&["claude-sessions", "attention-answered", id], &[0]); }
-                "input" => { system.run(&["claude-sessions", "approval-pane", id], &[0]); }
+                "running" => { system.run(&["cockpit", "attention-answered", id], &[0]); }
+                "input" => { system.run(&["cockpit", "approval-pane", id], &[0]); }
                 _ => {}
             }
         }
@@ -819,7 +819,7 @@ impl RunRequests {
             match phase {
                 "done" => {
                     banners.drop_banner(&format!("notice:run-{id}"));
-                    system.run(&["claude-sessions", "approval-pane", "close", id], &[0]);
+                    system.run(&["cockpit", "approval-pane", "close", id], &[0]);
                 }
                 "running" | "input" => {
                     banners.drop_banner(&format!("notice:run-{id}"));
@@ -838,7 +838,7 @@ impl RunRequests {
                 "done" => {
                     self.running.retain(|run| run != id);
                     self.waiting_input.retain(|run| run != id);
-                    system.run(&["claude-sessions", "approval-pane", "close", id], &[0]);
+                    system.run(&["cockpit", "approval-pane", "close", id], &[0]);
                 }
                 "input" if self.current.is_empty() => self.attend(system, id, "input"),
                 "input" if !self.waiting_input.iter().any(|run| run == id) => self.waiting_input.push(id.into()),
@@ -909,7 +909,7 @@ impl RunRequests {
             }
         }
         banners.drop_banner(&format!("notice:run-{}", self.current));
-        system.run(&["claude-sessions", "approval-pane", "close", &self.current], &[0]);
+        system.run(&["cockpit", "approval-pane", "close", &self.current], &[0]);
         self.current.clear();
         self.phase.clear();
         self.asked_input = false;
@@ -936,7 +936,7 @@ impl RunRequests {
             if system.tmux(&["has-session", "-t", &format!("={}", run_session(&id))]).is_none() {
                 self.running.retain(|run| *run != id);
                 self.waiting_input.retain(|run| *run != id);
-                system.run(&["claude-sessions", "approval-pane", "close", &id], &[0]);
+                system.run(&["cockpit", "approval-pane", "close", &id], &[0]);
             }
         }
         if !self.current.is_empty() {
@@ -1078,7 +1078,7 @@ pub struct Entry {
     pub native_thread: String,
     /// The launcher incarnation that reported it (trusted_runtime); never published.
     pub runtime: String,
-    /// The team start this launch belongs to (CLAUDE_SESSIONS_TEAM_SPAWN), empty for others.
+    /// The team start this launch belongs to (COCKPIT_TEAM_SPAWN), empty for others.
     pub spawn_token: String,
 }
 
@@ -1474,7 +1474,7 @@ impl Registry {
         }
     }
 
-    /// claude-sessions pushed the branch of the sessions started in `directory` (the sidebar's U):
+    /// cockpit pushed the branch of the sessions started in `directory` (the sidebar's U):
     /// nothing of theirs waits on a push any more, until their hook counts again.
     pub fn pushed(&mut self, directory: &str) {
         if !directory.starts_with('/') || directory.chars().any(char::is_control) {
@@ -1769,9 +1769,9 @@ impl Registry {
             .max_by(|(a_id, a), (b_id, b)| (urgency(&a.state), -a.since as i64, a_id.as_str()).cmp(&(urgency(&b.state), -b.since as i64, b_id.as_str())))
             .map(|(id, _)| id.clone());
         match best {
-            None => { self.system.run(&["claude-sessions", "show"], &[0]); }
+            None => { self.system.run(&["cockpit", "show"], &[0]); }
             Some(session) => {
-                self.system.run(&["claude-sessions", "show", &session], &[0]);
+                self.system.run(&["cockpit", "show", &session], &[0]);
                 self.banners.drop_banner(&session);
             }
         }
@@ -1884,7 +1884,7 @@ pub fn default_agent_in(settings: &std::path::Path) -> Option<String> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Some(agents::DEFAULT.to_string()),
         Err(_) => return None,
     };
-    // The same rules as claude-sessions' launch_setting_value: an object, a string when present.
+    // The same rules as cockpit' launch_setting_value: an object, a string when present.
     let Value::Object(settings) = serde_json::from_str::<Value>(&text).ok()? else { return None };
     let name = match settings.get("default-agent") { None => agents::DEFAULT, Some(name) => name.as_str()? };
     agents::find(name).map(|agent| agent.name.to_string())
@@ -1924,10 +1924,10 @@ pub fn trusted_target(table: &dyn Processes, sender: &str) -> Option<BTreeMap<St
     validate_focus_target(&fields).ok().map(|_| target)
 }
 
-/// The one-time token a team start put in the launch's environment (claude-sessions team-spawn),
+/// The one-time token a team start put in the launch's environment (cockpit team-spawn),
 /// read outside the sandbox like the focus target: a session cannot claim one in its report.
 pub fn trusted_spawn_token(table: &dyn Processes, sender: &str) -> Option<String> {
-    let token = table.environment(&first_process_outside(table, sender)?).remove("CLAUDE_SESSIONS_TEAM_SPAWN")?;
+    let token = table.environment(&first_process_outside(table, sender)?).remove("COCKPIT_TEAM_SPAWN")?;
     (token.len() == 32 && token.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))).then_some(token)
 }
 

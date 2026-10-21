@@ -2,7 +2,7 @@
 //!
 //!     claude-audit record <component> <event> <outcome> [key=value | fp:key=value ...]
 //!                                     one event; values are text, an fp: one is kept only as its
-//!                                     hash and length (claude-sessions' audit events)
+//!                                     hash and length (cockpit' audit events)
 //!     claude-audit verify             walks the hash chain; exit 1 at the first break, named
 //!
 //! The log is ~/.local/state/claude-audit (greywall hides it from every sandbox).

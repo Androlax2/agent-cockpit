@@ -1,5 +1,5 @@
-# Claude Code, as claude-sessions runs it (sourced by claude-sessions and claude-sessions-left).
-# The verbs every agent defines are listed in claude-sessions (AGENT_VERBS); README.md in this
+# Claude Code, as cockpit runs it (sourced by cockpit and cockpit-left).
+# The verbs every agent defines are listed in cockpit (AGENT_VERBS); README.md in this
 # folder says what each one does. These call the manager's helpers (loading_overlay, view_session,
 # pane_at_prompt, …), which exist by the time a verb runs.
 # shellcheck shell=bash
@@ -27,7 +27,7 @@ agent_claude_can() { # feature
 # Appended to every launch in the viewer pane: a start that fails says so and stays on screen,
 # instead of leaving a bare "Pane is dead (status 1)". Claude itself runs in its own tmux session
 # (claude-auto-retry), so its error may be there; the epilogue lists those sessions.
-CLAUDE_LAUNCH_EPILOGUE='; set -l code $status; if test $code -ne 0; claude-sessions log manager ERROR "claude exited with status $code in $PWD" 2>/dev/null; echo; echo "  ✗ claude exited with status $code"; echo "  Claude sessions still open:"; tmux ls 2>/dev/null | string match "*claude-retry*" | string replace -r "^" "    "; echo "  More: claude-sessions doctor · journalctl --user -u claude-sessions"; read -n 1 -P "  any key closes this pane " answer; end'
+CLAUDE_LAUNCH_EPILOGUE='; set -l code $status; if test $code -ne 0; cockpit log manager ERROR "claude exited with status $code in $PWD" 2>/dev/null; echo; echo "  ✗ claude exited with status $code"; echo "  Claude sessions still open:"; tmux ls 2>/dev/null | string match "*claude-retry*" | string replace -r "^" "    "; echo "  More: cockpit doctor · journalctl --user -u cockpit"; read -n 1 -P "  any key closes this pane " answer; end'
 
 # A session started out of the viewer pane, in a tmux session named like claude-auto-retry's so the
 # manager treats it as any other; inside tmux the launcher runs claude right there. A failed start
@@ -41,14 +41,14 @@ claude_launch_detached() { # dir claude-arguments...
     require_plain_directory "$directory"
     size=$(detached_size)
     tmux new-session -d -s "claude-retry-restart-$(date +%s%N)" -x "${size% *}" -y "${size#* }" -c "$directory" \
-        env CLAUDE_SESSIONS_INSIDE=1 CLAUDE_SESSIONS_CREDITS="$launch_credits" CLAUDE_SESSIONS_TEAM_SPAWN="$launch_team_spawn" \
-        fish -ic 'claude $argv; or claude-sessions log manager ERROR "claude exited with status $status in $PWD"' -- "$@"
+        env COCKPIT_INSIDE=1 COCKPIT_CREDITS="$launch_credits" COCKPIT_TEAM_SPAWN="$launch_team_spawn" \
+        fish -ic 'claude $argv; or cockpit log manager ERROR "claude exited with status $status in $PWD"' -- "$@"
 }
 
 # fish owns the `claude` function (greywall + claude-auto-retry). With no tmux variable left in
 # the environment the launcher creates the session's own tmux session and attaches it here;
 # with one still set it would run claude directly in this pane, which the next view kills.
-# CLAUDE_SESSIONS_INSIDE stops the function from delegating back to this manager.
+# COCKPIT_INSIDE stops the function from delegating back to this manager.
 # The launch takes a few seconds (fish, the launcher, greywall, Claude): say so in the pane
 # until Claude's own screen takes over.
 agent_claude_new() { # dir [claude arguments]
@@ -56,7 +56,7 @@ agent_claude_new() { # dir [claude arguments]
     shift
     loading_overlay "Starting Claude in $(basename "$directory") …" "$directory"
     tmux respawn-pane -k -t "$(viewer_pane)" -c "$directory" \
-        env -u TMUX -u TMUX_PANE CLAUDE_SESSIONS_INSIDE=1 CLAUDE_SESSIONS_CREDITS="$launch_credits" CLAUDE_SESSIONS_TEAM_SPAWN="$launch_team_spawn" \
+        env -u TMUX -u TMUX_PANE COCKPIT_INSIDE=1 COCKPIT_CREDITS="$launch_credits" COCKPIT_TEAM_SPAWN="$launch_team_spawn" \
         fish -ic 'echo; echo "  ⟳ Starting Claude in $PWD …"; echo; claude $argv'"$CLAUDE_LAUNCH_EPILOGUE" -- "$@"
     : > "$CURRENT"
     label_panes "$(basename "$directory")"
@@ -69,7 +69,7 @@ agent_claude_new_with_prompt() { # dir prompt
 
 agent_claude_background() { # dir prompt
     tmux new-session -d -s "claude-retry-bg-$(date +%s)" -x 200 -y 50 -c "$1" \
-        env CLAUDE_SESSIONS_INSIDE=1 CLAUDE_SESSIONS_CREDITS="$launch_credits" CLAUDE_SESSIONS_TEAM_SPAWN="$launch_team_spawn" fish -ic 'claude $argv' -- "$2"
+        env COCKPIT_INSIDE=1 COCKPIT_CREDITS="$launch_credits" COCKPIT_TEAM_SPAWN="$launch_team_spawn" fish -ic 'claude $argv' -- "$2"
 }
 
 agent_claude_detached() { # dir prompt
@@ -85,7 +85,7 @@ agent_claude_resume() { # dir id [effort]
     ensure_manager
     loading_overlay "Resuming $(basename "$1")${3:+ · effort $3} …" "$1" "$2"
     tmux respawn-pane -k -t "$(viewer_pane)" -c "$1" \
-        env -u TMUX -u TMUX_PANE CLAUDE_SESSIONS_INSIDE=1 CLAUDE_SESSIONS_CREDITS="$launch_credits" CLAUDE_SESSIONS_TEAM_SPAWN="$launch_team_spawn" \
+        env -u TMUX -u TMUX_PANE COCKPIT_INSIDE=1 COCKPIT_CREDITS="$launch_credits" COCKPIT_TEAM_SPAWN="$launch_team_spawn" \
         fish -ic 'echo; echo "  ⟳ Resuming the conversation in $PWD …"; echo; claude --resume $argv'"$CLAUDE_LAUNCH_EPILOGUE" -- "$2" "${effort_flags[@]}"
     : > "$CURRENT"
     label_panes "$(basename "$1")"
@@ -167,7 +167,7 @@ agent_claude_exit() { # tmux-session pane id
         fi
     done
     record_stuck_exit "$target" "$pane" "$id"
-    echo "claude-sessions: $id did not exit, killing its tmux session" >&2
+    echo "cockpit: $id did not exit, killing its tmux session" >&2
     tmux kill-session -t "=$target"
 }
 
@@ -177,7 +177,7 @@ agent_claude_say() { # id pane message
     local id=$1 pane=$2 message=$3 tail
     tail=$(tmux capture-pane -p -t "$pane" -S -20 2>/dev/null)
     if [[ $(osd classify <<<"$tail") == needs-you ]]; then
-        echo "claude-sessions: $(session_field "$id" project) has a dialog open; answer it first (Y or N)" >&2
+        echo "cockpit: $(session_field "$id" project) has a dialog open; answer it first (Y or N)" >&2
         return 1
     fi
     tmux send-keys -t "$pane" -l -- "$message"

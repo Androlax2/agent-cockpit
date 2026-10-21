@@ -5,7 +5,7 @@ After=osd.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=%h/.local/bin/claude-sessions prepare
+ExecStart=%h/.local/bin/cockpit prepare
 
 [Install]
 WantedBy=default.target

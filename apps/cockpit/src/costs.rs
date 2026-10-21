@@ -501,7 +501,7 @@ fn write_out(text: &str) {
     let _ = std::io::stdout().lock().write_all(text.as_bytes());
 }
 
-/// claude-sessions-sidebar costs: the API-price estimate per day this month, per month, per model
+/// cockpit-sidebar costs: the API-price estimate per day this month, per month, per model
 /// and per project, from the archive (brought up to date first).
 pub fn print_costs() -> rusqlite::Result<()> {
     let mut archive = open_archive(&paths::usage_archive())?;
@@ -631,7 +631,7 @@ pub fn digest_lines(archive: &Connection, sessions: &[sessions::Session], review
     Ok(lines)
 }
 
-/// claude-sessions-sidebar digest: the morning digest (claude-sessions digest shows it).
+/// cockpit-sidebar digest: the morning digest (cockpit digest shows it).
 pub fn print_digest() -> rusqlite::Result<()> {
     let mut archive = open_archive(&paths::usage_archive())?;
     archive_transcripts(&mut archive, &paths::transcripts())?;

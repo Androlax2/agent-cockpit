@@ -2,7 +2,7 @@
 # The bar's visibility: hidden on the Claude workspace (the cockpit, hypr/apps/claude.lua), shown
 # elsewhere. waybar's SIGUSR1 is a stateless toggle: the current state is read from Hyprland's
 # layers, with a runtime file as the fallback, and every sender goes through here: workspace-listener.sh on each workspace event, and
-# claude-sessions before it switches to the cockpit (hiding first avoids a flash of the bar).
+# cockpit before it switches to the cockpit (hiding first avoids a flash of the bar).
 #   waybar-visibility.sh sync    hide or show according to the active workspace
 #   waybar-visibility.sh hide
 #   waybar-visibility.sh show

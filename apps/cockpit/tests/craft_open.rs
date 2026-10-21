@@ -140,7 +140,7 @@ fn an_unbindable_fixed_port_is_rejected_without_starting_or_reconnecting() {
         assert_eq!(output.status.code(), Some(3), "reserved={is_reserved}: {}{}", stdout(&output), stderr(&output));
         assert!(stderr(&output).contains("cannot be bound"), "{}", stderr(&output));
         assert!(craft.sandbox.calls("figcraft").is_empty());
-        assert!(!craft.sandbox.state.join("claude-sessions/restart-when-idle").exists());
+        assert!(!craft.sandbox.state.join("cockpit/restart-when-idle").exists());
         if is_reserved {
             assert_eq!(fs::read_to_string(reservation).unwrap(), format!("{}\n", craft.project.display()));
         }
@@ -245,7 +245,7 @@ fn a_failed_workspace_routing_starts_no_window() {
     assert_eq!(output.status.code(), Some(1), "{}{}", stdout(&output), stderr(&output));
     assert!(stderr(&output).contains("could not route FigCraft to workspace 2"), "{}", stderr(&output));
     assert!(craft.sandbox.calls("figcraft").is_empty());
-    assert!(!craft.sandbox.state.join("claude-sessions/restart-when-idle").exists());
+    assert!(!craft.sandbox.state.join("cockpit/restart-when-idle").exists());
 }
 
 #[test]
@@ -439,7 +439,7 @@ fn a_window_that_does_not_become_ready_does_not_restart_the_session() {
     craft.sandbox.shim("setsid", "exit 0");
     let output = craft.run(&["figcraft", "--workspace", "2", "--session", SESSION_A], &[("CRAFT_OPEN_WAIT_S", "0")]);
     assert_eq!(output.status.code(), Some(1), "{}{}", stdout(&output), stderr(&output));
-    assert!(!craft.sandbox.state.join("claude-sessions/restart-when-idle").exists());
+    assert!(!craft.sandbox.state.join("cockpit/restart-when-idle").exists());
 }
 
 #[test]
@@ -452,7 +452,7 @@ fn opening_without_a_session_explains_that_existing_connections_are_unchanged() 
         assert!(message.contains("Existing sessions were not reconnected"), "{message}");
         assert!(message.contains("craft-open figcraft --workspace <number> --session <session-id>"), "{message}");
     }
-    assert!(!craft.sandbox.state.join("claude-sessions/restart-when-idle").exists());
+    assert!(!craft.sandbox.state.join("cockpit/restart-when-idle").exists());
 }
 
 #[test]
@@ -461,7 +461,7 @@ fn with_a_session_it_schedules_a_restart_and_a_message_to_carry_on() {
         let craft = Craft::new();
         let output = craft.run(&["figcraft", "--workspace", "2", "--session", session], &[]);
         assert_eq!(output.status.code(), Some(0), "{session}: {}{}", stdout(&output), stderr(&output));
-        let state = craft.sandbox.state.join("claude-sessions");
+        let state = craft.sandbox.state.join("cockpit");
         assert!(state.join("restart-when-idle").join(session).exists(), "{session}");
         let queued: Vec<String> = fs::read_dir(state.join("prompt-queue").join(session)).unwrap().flatten()
             .map(|entry| fs::read_to_string(entry.path()).unwrap()).collect();
@@ -476,5 +476,5 @@ fn an_unknown_app_or_session_is_refused() {
     for session in ["../x", "ses_../../../../tmp/x", "ses_short", "ses_3f2a9c0b1ffeQkTz8mWn4rJd2L\n../x"] {
         assert_eq!(craft.run(&["figcraft", "--workspace", "2", "--session", session], &[]).status.code(), Some(2), "{session}");
     }
-    assert!(!craft.sandbox.state.join("claude-sessions/restart-when-idle").exists());
+    assert!(!craft.sandbox.state.join("cockpit/restart-when-idle").exists());
 }

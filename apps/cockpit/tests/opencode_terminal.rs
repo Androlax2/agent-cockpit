@@ -12,14 +12,14 @@ struct Terminal {
 impl Terminal {
     fn new() -> Self {
         let mut sandbox = Sandbox::new();
-        for name in ["CLAUDE_SESSIONS_INSIDE", "CLAUDE_SESSIONS_TERMINAL", "TMUX"] {
+        for name in ["COCKPIT_INSIDE", "COCKPIT_TERMINAL", "TMUX"] {
             sandbox.env.insert(name.into(), String::new());
         }
         let directory = sandbox.root.join("project with spaces");
         fs::create_dir(&directory).unwrap();
         sandbox.env.insert("TEST_PANES".into(), sandbox.root.join("panes").display().to_string());
-        sandbox.env.insert("CLAUDE_SESSIONS_OPENCODE".into(), sandbox.shims.join("opencode").display().to_string());
-        sandbox.shim("opencode", "printf '%s\\n' \"$CLAUDE_CODE_SESSION_ID|$CLAUDE_SESSIONS_TERMINAL|$*\" >> \"$HOME/launches\"");
+        sandbox.env.insert("COCKPIT_OPENCODE".into(), sandbox.shims.join("opencode").display().to_string());
+        sandbox.shim("opencode", "printf '%s\\n' \"$CLAUDE_CODE_SESSION_ID|$COCKPIT_TERMINAL|$*\" >> \"$HOME/launches\"");
         sandbox.shim("claude-audit", "");
         sandbox.shim("tmux", r#"
 case $1 in
@@ -58,7 +58,7 @@ esac
     }
 
     fn manager(&self, input: &str, extra: &[(&str, &str)]) -> Output {
-        self.sandbox.run_with_input(bin().join("claude-sessions"),
+        self.sandbox.run_with_input(bin().join("cockpit"),
             &["--agent", "opencode", "terminal", self.directory.to_str().unwrap()], extra, input)
     }
 
@@ -66,8 +66,8 @@ esac
         // Only the tty detection is substituted: real fish parsing, read and dispatch remain.
         let script = format!("source '{}'; function isatty; return 0; end; opencode {arguments}", repo().join("config/fish/.config/fish/config.fish").display());
         let mut command = self.sandbox.command("fish", extra);
-        command.current_dir(&self.directory).env_remove("CLAUDE_SESSIONS_INSIDE")
-            .env_remove("CLAUDE_SESSIONS_TERMINAL").env_remove("TMUX").envs(extra.iter().copied());
+        command.current_dir(&self.directory).env_remove("COCKPIT_INSIDE")
+            .env_remove("COCKPIT_TERMINAL").env_remove("TMUX").envs(extra.iter().copied());
         use std::io::Write;
         use std::process::Stdio;
         let mut child = command.args(["--no-config", "-c", &script]).stdin(Stdio::piped())
@@ -84,14 +84,14 @@ esac
 #[test]
 fn typing_claude_explicitly_keeps_claude_when_the_global_default_changes() {
     let terminal = Terminal::new();
-    terminal.sandbox.shim("claude-sessions", "");
-    fs::remove_file(terminal.sandbox.home.join(".local/bin/claude-sessions")).unwrap();
-    std::os::unix::fs::symlink(terminal.sandbox.shims.join("claude-sessions"), terminal.sandbox.home.join(".local/bin/claude-sessions")).unwrap();
+    terminal.sandbox.shim("cockpit", "");
+    fs::remove_file(terminal.sandbox.home.join(".local/bin/cockpit")).unwrap();
+    std::os::unix::fs::symlink(terminal.sandbox.shims.join("cockpit"), terminal.sandbox.home.join(".local/bin/cockpit")).unwrap();
     let script = format!("source '{}'; function isatty; return 0; end; claude", repo().join("config/fish/.config/fish/config.fish").display());
     let output = terminal.sandbox.run_with_input("fish", &["--no-config", "-c", &script], &[], "\n");
     assert!(output.status.success(), "{}", stderr(&output));
-    let calls = terminal.sandbox.calls("claude-sessions");
-    assert!(calls[0].starts_with("claude-sessions --agent claude new "), "{calls:?}");
+    let calls = terminal.sandbox.calls("cockpit");
+    assert!(calls[0].starts_with("cockpit --agent claude new "), "{calls:?}");
 }
 
 #[test]
@@ -181,7 +181,7 @@ fn nested_tmux_switches_clients_instead_of_nesting_and_managed_launches_are_refu
     assert_eq!(terminal.tmux("switch-client"), ["tmux switch-client -t =claude-retry-opencode-123"]);
     assert!(terminal.tmux("attach-session").is_empty());
     terminal.sandbox.reset_log();
-    let output = terminal.manager("", &[("CLAUDE_SESSIONS_INSIDE", "1")]);
+    let output = terminal.manager("", &[("COCKPIT_INSIDE", "1")]);
     assert!(!output.status.success());
     assert!(terminal.sandbox.calls("tmux").is_empty());
 }
@@ -209,7 +209,7 @@ fn hash_directories_are_refused_before_tmux() {
 
 #[test]
 fn fish_arguments_and_managed_launches_still_call_the_launcher_directly() {
-    for (arguments, extra) in [("--version", vec![]), ("", vec![("CLAUDE_SESSIONS_INSIDE", "1")])] {
+    for (arguments, extra) in [("--version", vec![]), ("", vec![("COCKPIT_INSIDE", "1")])] {
         let terminal = Terminal::new();
         let output = terminal.fish(arguments, "", &extra);
         assert!(output.status.success(), "{}", stderr(&output));
@@ -221,14 +221,14 @@ fn fish_arguments_and_managed_launches_still_call_the_launcher_directly() {
 #[test]
 fn fish_default_choice_keeps_the_manager_new_and_show_route() {
     let terminal = Terminal::new();
-    terminal.sandbox.shim("claude-sessions", "");
-    fs::remove_file(terminal.sandbox.home.join(".local/bin/claude-sessions")).unwrap();
-    std::os::unix::fs::symlink(terminal.sandbox.shims.join("claude-sessions"), terminal.sandbox.home.join(".local/bin/claude-sessions")).unwrap();
+    terminal.sandbox.shim("cockpit", "");
+    fs::remove_file(terminal.sandbox.home.join(".local/bin/cockpit")).unwrap();
+    std::os::unix::fs::symlink(terminal.sandbox.shims.join("cockpit"), terminal.sandbox.home.join(".local/bin/cockpit")).unwrap();
     let output = terminal.fish("", "\n", &[]);
     assert!(output.status.success(), "{}", stderr(&output));
-    assert_eq!(terminal.sandbox.calls("claude-sessions"), [
-        format!("claude-sessions --agent opencode new {}", terminal.directory.display()),
-        "claude-sessions show".to_string(),
+    assert_eq!(terminal.sandbox.calls("cockpit"), [
+        format!("cockpit --agent opencode new {}", terminal.directory.display()),
+        "cockpit show".to_string(),
     ]);
 }
 
@@ -243,7 +243,7 @@ fn a_failed_tmux_start_never_attaches_a_phantom_session() {
 #[test]
 fn simultaneous_terminals_create_only_one_process() {
     let terminal = Terminal::new();
-    let mut children: Vec<_> = (0..2).map(|_| terminal.sandbox.command(bin().join("claude-sessions"), &[])
+    let mut children: Vec<_> = (0..2).map(|_| terminal.sandbox.command(bin().join("cockpit"), &[])
         .args(["--agent", "opencode", "terminal", terminal.directory.to_str().unwrap()])
         .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn().unwrap()).collect();
     for child in children.drain(..) {
@@ -269,7 +269,7 @@ fn a_symlinked_project_attaches_the_existing_physical_directory() {
     terminal.panes(&["claude-retry-opencode-123"]);
     let alias = terminal.sandbox.root.join("project-alias");
     std::os::unix::fs::symlink(&terminal.directory, &alias).unwrap();
-    let output = terminal.sandbox.run(bin().join("claude-sessions"),
+    let output = terminal.sandbox.run(bin().join("cockpit"),
         &["--agent", "opencode", "terminal", alias.to_str().unwrap()], &[]);
     assert!(output.status.success(), "{}", stderr(&output));
     assert_eq!(terminal.tmux("attach-session"), ["tmux attach-session -t =claude-retry-opencode-123"]);
@@ -282,7 +282,7 @@ fn simultaneous_physical_and_symlinked_paths_share_the_creation_lock() {
     let alias = terminal.sandbox.root.join("project-alias");
     std::os::unix::fs::symlink(&terminal.directory, &alias).unwrap();
     let children: Vec<_> = [&terminal.directory, &alias].into_iter().map(|directory| {
-        terminal.sandbox.command(bin().join("claude-sessions"), &[])
+        terminal.sandbox.command(bin().join("cockpit"), &[])
             .args(["--agent", "opencode", "terminal", directory.to_str().unwrap()])
             .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn().unwrap()
     }).collect();

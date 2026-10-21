@@ -1,7 +1,7 @@
 //! Prompts queued for a session while it works: sent one at a time, each when a turn ends, so a
 //! thought written mid-turn waits instead of interrupting Claude. One file per prompt in
 //! <state>/prompt-queue/<session>/<nanoseconds>.txt, written by the column (m) and by
-//! `claude-sessions queue-prompt` (Alt+Q in the session pane); the column sends and deletes them.
+//! `cockpit queue-prompt` (Alt+Q in the session pane); the column sends and deletes them.
 
 use crate::paths;
 use std::fs;

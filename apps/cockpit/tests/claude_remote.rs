@@ -85,7 +85,7 @@ impl Remote {
     }
 
     fn session_in(&self, state: &str, pane: &str) {
-        fs::write(self.sandbox.runtime.join("claude-sessions.json"),
+        fs::write(self.sandbox.runtime.join("cockpit.json"),
                   json!({"sessions": [{"session": SESSION_A, "state": state, "project": "proj-a", "tmux_pane": "%4"}]}).to_string()).unwrap();
         fs::write(self.sandbox.runtime.join("pane.txt"), pane).unwrap();
     }
@@ -141,7 +141,7 @@ fn a_pairing_link_works_once() {
 fn a_paired_phone_sees_the_sessions() {
     let remote = Remote::start();
     let secret = remote.paired();
-    fs::write(remote.sandbox.runtime.join("claude-sessions.json"),
+    fs::write(remote.sandbox.runtime.join("cockpit.json"),
               json!({"sessions": [{"session": SESSION_A, "state": "needs-you", "project": "proj-a", "task": "Deploy", "request": "Bash: make deploy"}]}).to_string()).unwrap();
     let (status, _, body) = remote.request("GET", "/api/state", Some(&secret), None, false);
     assert_eq!(status, 200);
@@ -287,7 +287,7 @@ fn a_slow_request_does_not_stall_the_others() {
     let remote = Remote::start();
     let secret = remote.paired();
     remote.sandbox.shim("tmux", "sleep 3");
-    fs::write(remote.sandbox.runtime.join("claude-sessions.json"),
+    fs::write(remote.sandbox.runtime.join("cockpit.json"),
               json!({"sessions": [{"session": SESSION_A, "state": "waiting", "project": "proj-a", "tmux_pane": "%4"}]}).to_string()).unwrap();
     let port = remote.port;
     let slow_secret = secret.clone();
@@ -351,7 +351,7 @@ fn interrupt_presses_an_opencode_sessions_own_keys() {
     // Escape twice: the first only says "esc again to interrupt".
     let remote = Remote::start();
     let secret = remote.paired();
-    fs::write(remote.sandbox.runtime.join("claude-sessions.json"),
+    fs::write(remote.sandbox.runtime.join("cockpit.json"),
               json!({"sessions": [{"session": OPENCODE_SESSION, "state": "working", "project": "proj-a", "tmux_pane": "%4", "agent": "opencode"}]}).to_string()).unwrap();
     let (status, _, body) = remote.request("POST", &format!("/api/interrupt/{OPENCODE_SESSION}"), Some(&secret), Some(json!({})), true);
     assert_eq!(status, 200, "{body}");
@@ -362,7 +362,7 @@ fn interrupt_presses_an_opencode_sessions_own_keys() {
 fn each_card_carries_what_its_agent_can_do_and_the_agents_are_listed() {
     let remote = Remote::start();
     let secret = remote.paired();
-    fs::write(remote.sandbox.runtime.join("claude-sessions.json"), json!({"sessions": [
+    fs::write(remote.sandbox.runtime.join("cockpit.json"), json!({"sessions": [
         {"session": SESSION_A, "state": "waiting", "project": "proj-a", "tmux_pane": "%4"},
         {"session": OPENCODE_SESSION, "state": "waiting", "project": "proj-b", "tmux_pane": "%5", "agent": "opencode"}]}).to_string()).unwrap();
     let cards = remote.get_json(&secret, "/api/state");
@@ -374,15 +374,15 @@ fn each_card_carries_what_its_agent_can_do_and_the_agents_are_listed() {
 }
 
 #[test]
-fn remote_control_from_the_phone_goes_through_claude_sessions() {
+fn remote_control_from_the_phone_goes_through_cockpit() {
     let remote = Remote::start();
     let secret = remote.paired();
-    remote.sandbox.shim("claude-sessions", "exit 0");
+    remote.sandbox.shim("cockpit", "exit 0");
     remote.session_in("waiting", IDLE);
     let (status, _, body) = remote.request("POST", &format!("/api/remote-control/{SESSION_A}"), Some(&secret), Some(json!({})), true);
     assert_eq!(status, 200, "{body}");
     assert!(body.contains("Remote Control on"), "{body}");
-    assert_eq!(remote.sandbox.calls("claude-sessions"), [format!("claude-sessions remote {SESSION_A}")]);
+    assert_eq!(remote.sandbox.calls("cockpit"), [format!("cockpit remote {SESSION_A}")]);
 }
 
 #[test]
@@ -479,7 +479,7 @@ fn conversation_text_is_bounded_without_breaking_unicode() {
 fn opencode_conversations_use_text_content_and_not_reasoning() {
     let remote = Remote::start();
     let secret = remote.paired();
-    fs::write(remote.sandbox.runtime.join("claude-sessions.json"), json!({"sessions": [{
+    fs::write(remote.sandbox.runtime.join("cockpit.json"), json!({"sessions": [{
         "session": OPENCODE_SESSION, "agent": "opencode", "state": "waiting", "tmux_pane": "%5"}]}).to_string()).unwrap();
     let folder = remote.sandbox.home.join(".local/share/opencode");
     fs::create_dir_all(&folder).unwrap();
@@ -501,7 +501,7 @@ fn opencode_conversations_use_text_content_and_not_reasoning() {
 fn locked_opencode_history_fails_promptly_without_writing_to_it() {
     let remote = Remote::start();
     let secret = remote.paired();
-    fs::write(remote.sandbox.runtime.join("claude-sessions.json"), json!({"sessions": [{
+    fs::write(remote.sandbox.runtime.join("cockpit.json"), json!({"sessions": [{
         "session": OPENCODE_SESSION, "agent": "opencode", "state": "waiting", "tmux_pane": "%5"}]}).to_string()).unwrap();
     let folder = remote.sandbox.home.join(".local/share/opencode");
     fs::create_dir_all(&folder).unwrap();
@@ -605,7 +605,7 @@ fn yes_and_no_refuse_an_opencode_session() {
     for (path, state, body) in [("answer", "needs-you", json!({"yes": true}))] {
         let remote = Remote::start();
         let secret = remote.paired();
-        fs::write(remote.sandbox.runtime.join("claude-sessions.json"),
+        fs::write(remote.sandbox.runtime.join("cockpit.json"),
                   json!({"sessions": [{"session": SESSION_A, "state": state, "project": "proj-a", "tmux_pane": "%4", "agent": "opencode"}]}).to_string()).unwrap();
         fs::write(remote.sandbox.runtime.join("pane.txt"), DIALOG).unwrap();
         let (status, _, answered) = remote.request("POST", &format!("/api/{path}/{SESSION_A}"), Some(&secret), Some(body), true);
@@ -619,7 +619,7 @@ fn yes_and_no_refuse_an_opencode_session() {
 fn a_phone_answers_an_opencode_chat_question_through_the_real_manager() {
     let remote = Remote::start();
     let secret = remote.paired();
-    fs::write(remote.sandbox.runtime.join("claude-sessions.json"), json!({"sessions": [{
+    fs::write(remote.sandbox.runtime.join("cockpit.json"), json!({"sessions": [{
         "session": OPENCODE_SESSION, "agent": "opencode", "state": "needs-you", "needs_input": true,
         "project": "proj-a", "tmux_pane": "%5"}]}).to_string()).unwrap();
     let (status, _, body) = remote.request("POST", &format!("/api/message/{OPENCODE_SESSION}"),
@@ -657,17 +657,17 @@ impl Remote {
 
 #[test]
 fn a_new_session_starts_out_of_sight_in_its_own_clone_or_in_the_folder() {
-    for (is_in_clone, agent, expected) in [(true, "claude", "claude-sessions --agent claude parallel {dir} phone-"),
-                                           (false, "claude", "claude-sessions --agent claude background {dir} Fix the login page"),
-                                           (true, "opencode", "claude-sessions --agent opencode parallel {dir} phone-"),
-                                           (false, "opencode", "claude-sessions --agent opencode background {dir} Fix the login page")] {
+    for (is_in_clone, agent, expected) in [(true, "claude", "cockpit --agent claude parallel {dir} phone-"),
+                                           (false, "claude", "cockpit --agent claude background {dir} Fix the login page"),
+                                           (true, "opencode", "cockpit --agent opencode parallel {dir} phone-"),
+                                           (false, "opencode", "cockpit --agent opencode background {dir} Fix the login page")] {
         let remote = Remote::start();
         let secret = remote.paired();
-        remote.sandbox.shim("claude-sessions", "exit 0");
+        remote.sandbox.shim("cockpit", "exit 0");
         let directory = remote.project("shop");
         let (status, answer) = remote.post_json(&secret, "/api/sessions", json!({"project": directory, "agent": agent, "prompt": "Fix the login page", "clone": is_in_clone}));
         assert_eq!(status, 200, "{answer}");
-        let call = remote.sandbox.calls("claude-sessions").pop().unwrap();
+        let call = remote.sandbox.calls("cockpit").pop().unwrap();
         assert!(call.starts_with(&expected.replace("{dir}", &directory)), "{call}");
         assert!(call.ends_with("Fix the login page"), "{call}");
     }
@@ -677,10 +677,10 @@ fn a_new_session_starts_out_of_sight_in_its_own_clone_or_in_the_folder() {
 fn a_session_starts_only_in_a_listed_project() {
     let remote = Remote::start();
     let secret = remote.paired();
-    remote.sandbox.shim("claude-sessions", "exit 0");
+    remote.sandbox.shim("cockpit", "exit 0");
     let (status, answer) = remote.post_json(&secret, "/api/sessions", json!({"project": "/etc", "agent": "claude", "prompt": "hi"}));
     assert_eq!(status, 409, "{answer}");
-    assert!(remote.sandbox.calls("claude-sessions").is_empty());
+    assert!(remote.sandbox.calls("cockpit").is_empty());
 }
 
 #[test]
@@ -688,14 +688,14 @@ fn a_session_starts_only_with_an_agent_the_column_offers() {
     for body in [json!({"agent": "unknown-agent"}), json!({})] {
         let remote = Remote::start();
         let secret = remote.paired();
-        remote.sandbox.shim("claude-sessions", "exit 0");
+        remote.sandbox.shim("cockpit", "exit 0");
         let mut body = body;
         body["project"] = json!(remote.project("shop"));
         body["prompt"] = json!("hi");
         let (status, answer) = remote.post_json(&secret, "/api/sessions", body);
         assert_eq!(status, 409, "{answer}");
         assert!(answer.to_string().contains("which agent?"), "{answer}");
-        assert!(remote.sandbox.calls("claude-sessions").is_empty());
+        assert!(remote.sandbox.calls("cockpit").is_empty());
     }
 }
 
@@ -718,14 +718,14 @@ fn an_item_added_from_the_phone_goes_through_the_columns_update_queue() {
     let updates = remote.todo_updates();
     assert_eq!((updates[0]["action"].as_str(), updates[0]["started_in"].as_str(), updates[0]["text"].as_str()),
                (Some("add"), Some(directory.as_str()), Some("Cache the cart")));
-    assert!(!remote.sandbox.state.join("claude-sessions/todo.json").exists(), "the phone wrote the column's file");
+    assert!(!remote.sandbox.state.join("cockpit/todo.json").exists(), "the phone wrote the column's file");
 }
 
 #[test]
 fn the_open_items_are_listed_and_done_ones_are_not() {
     let remote = Remote::start();
     let secret = remote.paired();
-    let todo = remote.sandbox.state.join("claude-sessions/todo.json");
+    let todo = remote.sandbox.state.join("cockpit/todo.json");
     fs::create_dir_all(todo.parent().unwrap()).unwrap();
     fs::write(&todo, json!({"items": [
         {"id": "aaaa1111", "project": "shop", "cwd": "/x", "text": "open one", "status": "todo", "created": 1},
@@ -739,15 +739,15 @@ fn the_open_items_are_listed_and_done_ones_are_not() {
 fn starting_an_item_hands_it_to_a_new_clone_and_marks_it_in_progress() {
     let remote = Remote::start();
     let secret = remote.paired();
-    remote.sandbox.shim("claude-sessions", "exit 0");
+    remote.sandbox.shim("cockpit", "exit 0");
     let directory = remote.project("shop");
-    let todo = remote.sandbox.state.join("claude-sessions/todo.json");
+    let todo = remote.sandbox.state.join("cockpit/todo.json");
     fs::create_dir_all(todo.parent().unwrap()).unwrap();
     fs::write(&todo, json!({"items": [{"id": "aaaa1111", "project": "shop", "cwd": directory, "text": "Cache the cart", "status": "todo", "created": 1}]}).to_string()).unwrap();
     let (status, answer) = remote.post_json(&secret, "/api/todos/aaaa1111/start", json!({"agent": "opencode"}));
     assert_eq!(status, 200, "{answer}");
-    let call = remote.sandbox.calls("claude-sessions").pop().unwrap();
-    assert!(call.starts_with(&format!("claude-sessions --agent opencode parallel {directory} todo-aaaa1111 Cache the cart (todo aaaa1111")), "{call}");
+    let call = remote.sandbox.calls("cockpit").pop().unwrap();
+    assert!(call.starts_with(&format!("cockpit --agent opencode parallel {directory} todo-aaaa1111 Cache the cart (todo aaaa1111")), "{call}");
     let updates = remote.todo_updates();
     assert_eq!((updates[0]["action"].as_str(), updates[0]["id"].as_str()), (Some("doing"), Some("aaaa1111")));
 }

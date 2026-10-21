@@ -38,12 +38,12 @@ impl Fixture {
             std::env::set_var("HOME", root.join("home"));
             std::env::set_var("XDG_RUNTIME_DIR", root.join("run"));
             std::env::set_var("XDG_STATE_HOME", root.join("state"));
-            std::env::set_var("CLAUDE_SESSIONS_STATE_HOME", root.join("state"));
+            std::env::set_var("COCKPIT_STATE_HOME", root.join("state"));
             // The audit log goes under state/; never into the real journal.
             std::env::set_var("CLAUDE_AUDIT_JOURNAL", "off");
             std::env::set_var("CLAUDE_RUNS_DIR", root.join("queue"));
             std::env::set_var("CLAUDE_ANSWERS_DIR", root.join("answers"));
-            for name in ["CLAUDE_SESSIONS_CLONES", "HYPRLAND_INSTANCE_SIGNATURE"] {
+            for name in ["COCKPIT_CLONES", "HYPRLAND_INSTANCE_SIGNATURE"] {
                 std::env::remove_var(name);
             }
         }
@@ -115,7 +115,7 @@ struct World {
     sender_directories: HashMap<u32, String>,
     sender_runtimes: HashMap<u32, String>,
     default_agent: Option<String>,
-    /// sender pid -> CLAUDE_SESSIONS_TEAM_SPAWN in its launch's host environment
+    /// sender pid -> COCKPIT_TEAM_SPAWN in its launch's host environment
     spawn_tokens: HashMap<u32, String>,
     /// start_detached commands, in order
     started: Vec<Vec<String>>,
@@ -425,7 +425,7 @@ fn approving_a_recruit_request_starts_each_teammate_detached() {
     let starts = started(&bench);
     assert_eq!(starts.len(), 1, "{starts:?}");
     let project = bench.fixture.root.join("home/IdeaProjects/project-a").to_string_lossy().into_owned();
-    assert_eq!(starts[0][..4], ["claude-sessions", "--agent", "claude", "team-spawn"]);
+    assert_eq!(starts[0][..4], ["cockpit", "--agent", "claude", "team-spawn"]);
     assert!(starts[0][4].len() == 32 && starts[0][4].bytes().all(|byte| byte.is_ascii_hexdigit()));
     assert_eq!(starts[0][5..], ["designer", project.as_str(), "-", "Brief written by your team's developer agent and approved by Theo:\nDesign the jobs list"]);
     crate::teams::request(&mut bench.registry, 20, cockpit::teams::AgentAction::Context).unwrap();
@@ -476,7 +476,7 @@ fn a_handoff_exits_the_previous_qa_and_starts_the_next() {
     assert_eq!(role_of(&mut bench, NEW_SESSION).as_deref(), Some("qa"));
     developer_hands_off(&mut bench, "h2", &"b".repeat(40));
     let starts = started(&bench);
-    assert!(starts.contains(&vec!["claude-sessions".to_string(), "exit".into(), NEW_SESSION.into()]), "{starts:?}");
+    assert!(starts.contains(&vec!["cockpit".to_string(), "exit".into(), NEW_SESSION.into()]), "{starts:?}");
     assert_eq!(starts.iter().filter(|command| command.get(5).is_some_and(|role| role == "qa")).count(), 2);
     assert_eq!(role_of(&mut bench, NEW_SESSION), None);
 }
@@ -1069,7 +1069,7 @@ fn fixture_state_does_not_escape_into_an_inherited_host_state_folder() {
     fs::create_dir(&outside).unwrap();
     let result = std::process::Command::new(std::env::current_exe().unwrap())
         .args(["--exact", "tests::sessions_are_remembered_across_reboots"])
-        .env("CLAUDE_SESSIONS_STATE_HOME", &outside).output().unwrap();
+        .env("COCKPIT_STATE_HOME", &outside).output().unwrap();
     let leaked = fs::read_dir(&outside).unwrap().next().is_some();
     fs::remove_dir_all(&outside).unwrap();
     assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stdout));
@@ -1211,7 +1211,7 @@ fn command_chat_ownership_comes_from_the_authenticated_pane_not_the_claim() {
 fn the_daemon_writes_its_messages_to_the_shared_log() {
     let fixture = Fixture::new();
     log("session aaaaaaaa (runway) is gone, dropping it");
-    let text = fs::read_to_string(fixture.root.join("state/claude-sessions/log")).unwrap();
+    let text = fs::read_to_string(fixture.root.join("state/cockpit/log")).unwrap();
     let line = text.lines().last().unwrap();
     assert!(regex::Regex::new(r"[+-]\d\d:\d\d INFO daemon: session aaaaaaaa \(runway\) is gone, dropping it$").unwrap().is_match(line), "{line}");
 }
@@ -1527,7 +1527,7 @@ fn focusing_shows_the_most_urgent_session_and_drops_its_banner() {
     bench.report(SESSION_A, json!({"state": "working", "tmux_pane": "%1"}));
     bench.report(SESSION_B, json!({"state": "needs-you", "tmux_pane": "%2"}));
     bench.registry.focus_most_urgent();
-    assert!(bench.commands().contains(&vec!["claude-sessions".to_string(), "show".into(), SESSION_B.into()]));
+    assert!(bench.commands().contains(&vec!["cockpit".to_string(), "show".into(), SESSION_B.into()]));
     assert!(bench.dropped().contains(&SESSION_B.to_string()));
 }
 
@@ -1633,8 +1633,8 @@ fn every_request_gets_a_pane_before_the_first_is_answered() {
     bench.registry.run_request(RUN_A).unwrap();
     bench.registry.run_request(RUN_B).unwrap();
     assert_eq!(started_sessions(&bench), ["claude-run-aaaaaaaaaaaa", "claude-run-bbbbbbbbbbbb"]);
-    assert!(bench.commands().contains(&vec!["claude-sessions".to_string(), "approval-pane".into(), RUN_A.into()]));
-    assert!(bench.commands().contains(&vec!["claude-sessions".to_string(), "approval-pane".into(), RUN_B.into()]));
+    assert!(bench.commands().contains(&vec!["cockpit".to_string(), "approval-pane".into(), RUN_A.into()]));
+    assert!(bench.commands().contains(&vec!["cockpit".to_string(), "approval-pane".into(), RUN_B.into()]));
     assert_eq!(bench.windows().len(), 1, "floating approvals still wait their turn");
 }
 
@@ -1643,10 +1643,10 @@ fn approving_hides_the_pane_until_the_command_needs_input() {
     let mut bench = Bench::new();
     bench.registry.run_request(RUN_A).unwrap();
     bench.registry.run_phase(RUN_A, "running");
-    let close = vec!["claude-sessions".to_string(), "approval-pane".into(), "close".into(), RUN_A.into()];
+    let close = vec!["cockpit".to_string(), "approval-pane".into(), "close".into(), RUN_A.into()];
     assert!(bench.commands().contains(&close), "approval pane stayed open while running");
     bench.registry.run_phase(RUN_A, "input");
-    let show = vec!["claude-sessions".to_string(), "approval-pane".into(), RUN_A.into()];
+    let show = vec!["cockpit".to_string(), "approval-pane".into(), RUN_A.into()];
     assert_eq!(bench.commands().iter().filter(|command| **command == show).count(), 2);
 }
 
@@ -1656,7 +1656,7 @@ fn after_an_answer_the_pane_stays_until_the_command_ends() {
     bench.registry.run_request(RUN_A).unwrap();
     bench.registry.run_phase(RUN_A, "running");
     bench.registry.run_phase(RUN_A, "input");
-    let close = vec!["claude-sessions".to_string(), "approval-pane".into(), "close".into(), RUN_A.into()];
+    let close = vec!["cockpit".to_string(), "approval-pane".into(), "close".into(), RUN_A.into()];
     let closes_before_answer = bench.commands().iter().filter(|command| **command == close).count();
     bench.registry.run_phase(RUN_A, "running");
     bench.registry.tick_queues();
@@ -1672,7 +1672,7 @@ fn approving_a_queued_request_hides_its_pane() {
     bench.registry.run_request(RUN_A).unwrap();
     bench.registry.run_request(RUN_B).unwrap();
     bench.registry.run_phase(RUN_B, "running");
-    assert!(bench.commands().contains(&vec!["claude-sessions".to_string(), "approval-pane".into(), "close".into(), RUN_B.into()]));
+    assert!(bench.commands().contains(&vec!["cockpit".to_string(), "approval-pane".into(), "close".into(), RUN_B.into()]));
 }
 
 #[test]
@@ -1683,7 +1683,7 @@ fn a_later_approval_can_run_and_finish_before_the_first_is_answered() {
     bench.registry.run_phase(RUN_B, "running");
     assert_eq!(bench.registry.runs.running, [RUN_B]);
     bench.registry.run_phase(RUN_B, "done");
-    assert!(bench.commands().contains(&vec!["claude-sessions".to_string(), "approval-pane".into(), "close".into(), RUN_B.into()]));
+    assert!(bench.commands().contains(&vec!["cockpit".to_string(), "approval-pane".into(), "close".into(), RUN_B.into()]));
     bench.registry.run_phase(RUN_A, "done");
     assert_eq!(bench.registry.runs.current, "", "completed approval must not be shown again");
 }
@@ -1734,7 +1734,7 @@ fn an_abandoned_later_approval_closes_while_the_first_still_asks() {
     heartbeat(&bench, RUN_B, 600);
     bench.registry.tick_queues();
     assert_eq!(result_status(&bench, RUN_B).as_deref(), Some("abandoned"));
-    assert!(bench.commands().contains(&vec!["claude-sessions".to_string(), "approval-pane".into(), "close".into(), RUN_B.into()]));
+    assert!(bench.commands().contains(&vec!["cockpit".to_string(), "approval-pane".into(), "close".into(), RUN_B.into()]));
     assert_eq!(bench.registry.runs.current, RUN_A);
 }
 
@@ -1744,7 +1744,7 @@ fn a_finished_request_closes_the_pane_and_starts_the_next() {
     bench.registry.run_request(RUN_A).unwrap();
     bench.registry.run_request(RUN_B).unwrap();
     bench.registry.run_phase(RUN_A, "done");
-    assert!(bench.commands().contains(&vec!["claude-sessions".to_string(), "approval-pane".into(), "close".into(), RUN_A.into()]));
+    assert!(bench.commands().contains(&vec!["cockpit".to_string(), "approval-pane".into(), "close".into(), RUN_A.into()]));
     assert_eq!(bench.registry.runs.current, RUN_B);
 }
 
@@ -1754,8 +1754,8 @@ fn answering_command_input_returns_attention_without_closing_its_output() {
     bench.registry.run_request(RUN_A).unwrap();
     bench.registry.run_phase(RUN_A, "input");
     bench.registry.run_phase(RUN_A, "running");
-    assert!(bench.commands().contains(&vec!["claude-sessions".into(), "attention-answered".into(), RUN_A.into()]));
-    assert!(!bench.commands().contains(&vec!["claude-sessions".into(), "approval-pane".into(), "close".into(), RUN_A.into()]));
+    assert!(bench.commands().contains(&vec!["cockpit".into(), "attention-answered".into(), RUN_A.into()]));
+    assert!(!bench.commands().contains(&vec!["cockpit".into(), "approval-pane".into(), "close".into(), RUN_A.into()]));
 }
 
 #[test]
@@ -1868,7 +1868,7 @@ fn a_command_that_ends_while_running_on_closes_its_own_pane() {
     bench.registry.run_request(RUN_B).unwrap();
     bench.registry.run_phase(RUN_A, "running");
     bench.registry.run_phase(RUN_A, "done");
-    assert!(bench.commands().contains(&vec!["claude-sessions".to_string(), "approval-pane".into(), "close".into(), RUN_A.into()]));
+    assert!(bench.commands().contains(&vec!["cockpit".to_string(), "approval-pane".into(), "close".into(), RUN_A.into()]));
     assert!(bench.registry.runs.running.is_empty());
     assert_eq!(bench.registry.runs.current, RUN_B);
 }
@@ -1885,7 +1885,7 @@ fn a_queued_request_nobody_waits_for_is_skipped() {
     assert_eq!(bench.registry.runs.current, "");
     assert_eq!(result_status(&bench, RUN_B).as_deref(), Some("abandoned"));
     assert!(bench.commands().contains(&vec!["tmux".to_string(), "kill-session".into(), "-t".into(), format!("=claude-run-{RUN_B}")]));
-    assert!(bench.commands().contains(&vec!["claude-sessions".to_string(), "approval-pane".into(), "close".into(), RUN_B.into()]));
+    assert!(bench.commands().contains(&vec!["cockpit".to_string(), "approval-pane".into(), "close".into(), RUN_B.into()]));
 }
 
 #[test]

@@ -18,24 +18,24 @@ impl ComposerTerminal {
     fn new() -> Self {
         let root = std::env::temp_dir().join(format!("todo-terminal-{}", cockpit::util::token_hex(6)));
         for folder in ["home", "run", "state", "bin"] { fs::create_dir_all(root.join(folder)).unwrap(); }
-        for name in ["claude-sessions", "tmux", "hyprctl", "fzf", "pgrep", "git", "gh"] {
+        for name in ["cockpit", "tmux", "hyprctl", "fzf", "pgrep", "git", "gh"] {
             let path = root.join("bin").join(name);
             fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
             fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
         }
-        fs::write(root.join("bin/claude-sessions"), format!("#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\n", root.join("claude-sessions.calls").display())).unwrap();
-        fs::write(root.join("run/claude-sessions.current"), "aaaaaaaa-0000-4000-8000-000000000000").unwrap();
-        fs::write(root.join("run/claude-sessions.json"), json!({"sessions": [{"session": "aaaaaaaa-0000-4000-8000-000000000000", "state": "working", "project": "test-project", "cwd": root, "since": 1, "started": 1, "tmux_pane": "%1"}]}).to_string()).unwrap();
+        fs::write(root.join("bin/cockpit"), format!("#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\n", root.join("cockpit.calls").display())).unwrap();
+        fs::write(root.join("run/cockpit.current"), "aaaaaaaa-0000-4000-8000-000000000000").unwrap();
+        fs::write(root.join("run/cockpit.json"), json!({"sessions": [{"session": "aaaaaaaa-0000-4000-8000-000000000000", "state": "working", "project": "test-project", "cwd": root, "since": 1, "started": 1, "tmux_pane": "%1"}]}).to_string()).unwrap();
         let terminal = Self::start(&root);
         Self { terminal, root }
     }
 
     fn start(root: &Path) -> Terminal {
-        Terminal::start(Path::new(env!("CARGO_BIN_EXE_claude-sessions-sidebar")), &[], &[
+        Terminal::start(Path::new(env!("CARGO_BIN_EXE_cockpit-sidebar")), &[], &[
             ("HOME", &root.join("home")), ("XDG_RUNTIME_DIR", &root.join("run")),
-            ("XDG_STATE_HOME", &root.join("state")), ("CLAUDE_SESSIONS_STATE_HOME", &root.join("state")),
+            ("XDG_STATE_HOME", &root.join("state")), ("COCKPIT_STATE_HOME", &root.join("state")),
             ("PATH", &root.join("bin")), ("CLAUDE_STATUS_URL", Path::new("")), ("CODEX_STATUS_URL", Path::new("")),
-            ("CLAUDE_AUDIT_JOURNAL", Path::new("off")), ("CLAUDE_SESSIONS_OPENCODE_DB", &root.join("missing.db")),
+            ("CLAUDE_AUDIT_JOURNAL", Path::new("off")), ("COCKPIT_OPENCODE_DB", &root.join("missing.db")),
         ])
     }
 
@@ -46,13 +46,13 @@ impl ComposerTerminal {
     }
 
     fn stored(&self) -> Option<Value> {
-        fs::read_to_string(self.root.join("state/claude-sessions/todo.json")).ok().map(|text| serde_json::from_str(&text).unwrap())
+        fs::read_to_string(self.root.join("state/cockpit/todo.json")).ok().map(|text| serde_json::from_str(&text).unwrap())
     }
 
     /// Switches the viewed session and waits until the column has taken it over: it labels the
     /// new view's state once it shows it, and a key typed before then would act on the old view.
     fn view_session(&mut self, session: &str) {
-        fs::write(self.root.join("run/claude-sessions.current"), session).unwrap();
+        fs::write(self.root.join("run/cockpit.current"), session).unwrap();
         let labelled = format!("label-state working {session}");
         let deadline = Instant::now() + Duration::from_secs(5);
         while self.last_label().as_deref() != Some(labelled.as_str()) {
@@ -62,7 +62,7 @@ impl ComposerTerminal {
     }
 
     fn last_label(&self) -> Option<String> {
-        let calls = fs::read_to_string(self.root.join("claude-sessions.calls")).unwrap_or_default();
+        let calls = fs::read_to_string(self.root.join("cockpit.calls")).unwrap_or_default();
         calls.lines().rev().find(|call| call.starts_with("label-state ")).map(str::to_string)
     }
 
@@ -120,12 +120,12 @@ fn reviewed_native_form_saves_to_its_origin_after_the_view_changes() {
     for edit in [false, true] {
         let mut fixture = ComposerTerminal::new();
         let other_session = "bbbbbbbb-0000-4000-8000-000000000000";
-        fs::write(fixture.root.join("run/claude-sessions.json"), json!({"sessions": [
+        fs::write(fixture.root.join("run/cockpit.json"), json!({"sessions": [
             {"session": "aaaaaaaa-0000-4000-8000-000000000000", "state": "working", "project": "test-project", "cwd": fixture.root, "since": 1, "started": 1, "tmux_pane": "%1"},
             {"session": other_session, "state": "working", "project": "other-project", "cwd": fixture.root.join("other"), "since": 2, "started": 2, "tmux_pane": "%2"}
         ]}).to_string()).unwrap();
-        fs::create_dir_all(fixture.root.join("state/claude-sessions")).unwrap();
-        fs::write(fixture.root.join("state/claude-sessions/todo.json"), json!({"items": [
+        fs::create_dir_all(fixture.root.join("state/cockpit")).unwrap();
+        fs::write(fixture.root.join("state/cockpit/todo.json"), json!({"items": [
             {"id": "0123abcd", "project": "test-project", "cwd": fixture.root, "text": "original", "category": "feature", "status": "doing"}
         ]}).to_string()).unwrap();
         fs::write(fixture.root.join("bin/fzf"), format!("#!/bin/sh\nIFS= read -r choice < '{}'\nprintf '%s\\n' \"$choice\"\n", fixture.root.join("pick").display())).unwrap();
@@ -147,7 +147,7 @@ fn reviewed_native_form_saves_to_its_origin_after_the_view_changes() {
         assert!(contains(&fixture.terminal.screen, form_title), "{}", String::from_utf8_lossy(&fixture.terminal.screen));
         fixture.terminal.type_keys(b"\x1b[200~ saved-cross-view\x1b[201~");
         fixture.terminal.pump(0.3, None);
-        fs::write(fixture.root.join("run/claude-sessions.current"), other_session).unwrap();
+        fs::write(fixture.root.join("run/cockpit.current"), other_session).unwrap();
         fixture.terminal.pump(0.4, None);
         fixture.terminal.screen.clear();
         fixture.terminal.type_keys(b"\x13");
@@ -157,7 +157,7 @@ fn reviewed_native_form_saves_to_its_origin_after_the_view_changes() {
         assert_eq!(saved["project"], "test-project");
         assert!(contains(&fixture.terminal.screen, b"saved: test-project"), "{}", String::from_utf8_lossy(&fixture.terminal.screen));
         assert!(contains(&fixture.terminal.screen, b"saved-cross-view"));
-        assert_eq!(fs::read_to_string(fixture.root.join("run/claude-sessions.current")).unwrap(), other_session);
+        assert_eq!(fs::read_to_string(fixture.root.join("run/cockpit.current")).unwrap(), other_session);
         fixture.terminal.screen.clear();
         fixture.terminal.type_keys(b"\x1b");
         fixture.terminal.pump(0.6, None);
@@ -185,7 +185,7 @@ fn integrated_native_terminal_recovers_a_crashed_draft_and_releases_the_reload_l
     fixture.terminal.child.wait().unwrap();
     assert!(lock.try_lock().is_ok(), "crashed sidebar retained the reload lock");
     drop(lock);
-    fs::write(fixture.root.join("run/claude-sessions.current"), "different-view").unwrap();
+    fs::write(fixture.root.join("run/cockpit.current"), "different-view").unwrap();
     fixture.restart();
     fixture.terminal.pump(5.0, Some(b"recovered 1 TODO"));
     let stored = fixture.stored().expect("crashed native draft was lost");
@@ -215,7 +215,7 @@ fn reviewed_native_terminal_cancel_cleanup_rejects_input_and_save_for_add_and_ed
         let before = fixture.stored();
         fixture.terminal.type_keys(b" cancelled text");
         fixture.terminal.pump(0.4, None);
-        let directory = fixture.root.join("state/claude-sessions/todo-drafts");
+        let directory = fixture.root.join("state/cockpit/todo-drafts");
         let buffer = fs::read_dir(&directory).unwrap().map(|entry| entry.unwrap().path()).find(|path| path.extension().is_some_and(|extension| extension == "md")).unwrap();
         fs::remove_file(&buffer).unwrap();
         fs::create_dir(&buffer).unwrap();

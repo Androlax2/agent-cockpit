@@ -36,7 +36,7 @@ struct Launch {
 impl Launch {
     fn new() -> Launch {
         let mut sandbox = Sandbox::new();
-        for name in ["CLAUDE_CODE_SESSION_ID", "CLAUDE_SESSIONS_OPENCODE_MODEL"] {
+        for name in ["CLAUDE_CODE_SESSION_ID", "COCKPIT_OPENCODE_MODEL"] {
             sandbox.env.insert(name.into(), String::new());
         }
         let project = sandbox.home.join("IdeaProjects/proj-a");
@@ -149,7 +149,7 @@ fn native_codex_uses_project_guards_without_learning_or_hook_bypass() {
     assert_eq!(std::fs::read_to_string(launch.sandbox.home.join("codex-arguments")).unwrap(),
         "--no-daemon\n--model\nconfigured-model\na literal prompt\n");
     let environment = std::fs::read_to_string(launch.sandbox.home.join("codex-environment")).unwrap();
-    assert!(environment.contains("CLAUDE_SESSIONS_AGENT=codex\n"));
+    assert!(environment.contains("COCKPIT_AGENT=codex\n"));
     assert!(environment.contains("CLAUDE_ANSWERS_KEY="));
 }
 
@@ -297,7 +297,7 @@ fn figcraft_reservations_are_hidden_even_before_the_first_window_starts() {
         .any(|entry| entry == "~/.config/greywall-agents/figcraft" || entry == &storage.display().to_string()));
 }
 
-// Stuck-exit captures hold the screens of other sessions (claude-sessions record_stuck_exit).
+// Stuck-exit captures hold the screens of other sessions (cockpit record_stuck_exit).
 // greywall hides only a folder that exists when the sandbox starts: every launcher makes it.
 #[test]
 fn every_launcher_creates_the_stuck_exit_folder_before_its_sandbox_starts() {
@@ -348,7 +348,7 @@ fn claude_runs_the_team_watcher_in_the_background_at_session_start_and_turn_end(
 fn claude_never_loads_a_development_channel() {
     // Team messages reach Claude through its Stop hook; no launch lifts Claude's channel allowlist.
     let launch = Launch::new();
-    launch.run(&[("CLAUDE_SESSIONS_TEAM_CHANNEL", "1")]);
+    launch.run(&[("COCKPIT_TEAM_CHANNEL", "1")]);
     let arguments = fs::read_to_string(launch.sandbox.home.join("claude-arguments")).unwrap();
     assert!(!arguments.contains("channels"), "{arguments}");
     let arguments: Vec<_> = arguments.lines().collect();
@@ -449,14 +449,14 @@ fn invalid_inline_config_stops_opencode_before_the_sandbox_starts() {
 #[test]
 fn a_credits_session_gets_the_api_key_as_a_placeholder() {
     let launch = Launch::new();
-    let started = launch.run(&[("CLAUDE_SESSIONS_CREDITS", "1"), ("SHIM_ANTHROPIC_KEY", "sk-ant-test")]);
+    let started = launch.run(&[("COCKPIT_CREDITS", "1"), ("SHIM_ANTHROPIC_KEY", "sk-ant-test")]);
     assert!(started.contains("--secret ANTHROPIC_API_KEY") && started.contains("(api key: sk-ant-test)"), "{started}");
 }
 
 #[test]
 fn a_credits_session_without_a_key_does_not_start_on_the_subscription() {
     let launch = Launch::new();
-    let output = launch.sandbox.command(bin().join("greywall-agents/claude"), &[("CLAUDE_SESSIONS_CREDITS", "1")]).current_dir(&launch.project).output().unwrap();
+    let output = launch.sandbox.command(bin().join("greywall-agents/claude"), &[("COCKPIT_CREDITS", "1")]).current_dir(&launch.project).output().unwrap();
     assert_eq!(output.status.code(), Some(1));
     assert!(stderr(&output).contains("agent-anthropic-key"), "{}", stderr(&output));
     assert!(launch.sandbox.calls("greywall").is_empty());
@@ -473,7 +473,7 @@ fn a_subscription_session_gets_no_api_key_even_from_its_environment() {
 fn an_opencode_session_never_gets_the_credits_key_nor_a_stray_one() {
     // The credits key is a Claude session's: opencode would bill it unnoticed.
     let launch = Launch::new();
-    let started = launch.run_agent("opencode", &[("ANTHROPIC_API_KEY", "sk-ant-stray"), ("CLAUDE_SESSIONS_CREDITS", "1"), ("SHIM_ANTHROPIC_KEY", "sk-ant-test")], &[]);
+    let started = launch.run_agent("opencode", &[("ANTHROPIC_API_KEY", "sk-ant-stray"), ("COCKPIT_CREDITS", "1"), ("SHIM_ANTHROPIC_KEY", "sk-ant-test")], &[]);
     assert!(!started.contains("ANTHROPIC_API_KEY") && started.contains("(api key: none)"), "{started}");
 }
 
@@ -559,7 +559,7 @@ fn opencode_creates_the_selected_session_before_the_interface_checks_its_id() {
         let launch = Launch::new();
         record_opencode_startup(&launch);
         let arguments = ["--standalone", "--session", OPENCODE_SESSION, "--prompt", "a prompt with spaces"];
-        launch.run_agent("opencode", &[("CLAUDE_CODE_SESSION_ID", OPENCODE_SESSION), ("CLAUDE_SESSIONS_OPENCODE_MODEL", reference)], &arguments);
+        launch.run_agent("opencode", &[("CLAUDE_CODE_SESSION_ID", OPENCODE_SESSION), ("COCKPIT_OPENCODE_MODEL", reference)], &arguments);
         let selected = fs::read_to_string(launch.sandbox.home.join("opencode-selected-at-startup"))
             .expect("the session must exist before the TUI decides whether to resume it");
         let request: serde_json::Value = serde_json::from_str(&selected).unwrap();
@@ -576,7 +576,7 @@ fn a_failed_session_creation_never_opens_the_interface_on_another_model() {
     let launch = Launch::new();
     record_opencode_startup(&launch);
     let output = launch.sandbox.command(bin().join("greywall-agents/opencode"), &[
-        ("CLAUDE_CODE_SESSION_ID", OPENCODE_SESSION), ("CLAUDE_SESSIONS_OPENCODE_MODEL", "openai/gpt-6.1-sol#medium"),
+        ("CLAUDE_CODE_SESSION_ID", OPENCODE_SESSION), ("COCKPIT_OPENCODE_MODEL", "openai/gpt-6.1-sol#medium"),
         ("SHIM_CREATE_FAIL", "1"),
     ]).args(["--standalone", "--session", OPENCODE_SESSION]).current_dir(&launch.project).output().unwrap();
     assert_eq!(output.status.code(), Some(7));
@@ -603,7 +603,7 @@ fn invalid_startup_preferences_never_reach_opencode() {
     ] {
         let launch = Launch::new();
         let output = launch.sandbox.command(bin().join("greywall-agents/opencode"), &[
-            ("CLAUDE_CODE_SESSION_ID", session), ("CLAUDE_SESSIONS_OPENCODE_MODEL", model),
+            ("CLAUDE_CODE_SESSION_ID", session), ("COCKPIT_OPENCODE_MODEL", model),
         ]).current_dir(&launch.project).output().unwrap();
         assert_eq!(output.status.code(), Some(1));
         assert!(stderr(&output).contains("invalid managed session or model reference"));
@@ -629,7 +629,7 @@ fn the_tools_opencode_runs_keep_the_cockpits_real_state_folder() {
     let launch = Launch::new();
     launch.run_agent("opencode", &[], &[]);
     let environment = launch.opencode_saw("environment");
-    let real = format!("CLAUDE_SESSIONS_STATE_HOME={}", launch.sandbox.state.display());
+    let real = format!("COCKPIT_STATE_HOME={}", launch.sandbox.state.display());
     assert!(environment.contains(&real), "{environment:?}");
 }
 
@@ -797,6 +797,22 @@ fn no_session_can_replace_the_report_socket_every_other_session_connects_to() {
     let profile: serde_json::Value = serde_json::from_str(&fs::read_to_string(repo().join("config/greywall/.config/greywall/greywall.json")).unwrap()).unwrap();
     let writable: Vec<&str> = profile["filesystem"]["allowWrite"].as_array().unwrap().iter().filter_map(|path| path.as_str()).collect();
     assert!(writable.iter().all(|path| !path.contains("claude-report")), "{writable:?}");
+}
+
+#[test]
+fn no_profile_lets_a_session_write_the_cockpit_state_folder() {
+    // todo.json, settings and the prompt queue are the cockpit's alone; sessions send changes through
+    // the update queue. The rename from claude-sessions (2026-10-21) must not open the new name.
+    let shared: serde_json::Value = serde_json::from_str(&fs::read_to_string(repo().join("config/greywall/.config/greywall/greywall.json")).unwrap()).unwrap();
+    let profiles = [("greywall.json", shared), ("claude", learned_profile("claude")), ("codex", learned_profile("codex")), ("opencode", learned_profile("opencode"))];
+    for (name, profile) in profiles {
+        let writable: Vec<&str> = profile["filesystem"]["allowWrite"].as_array().map(|paths| paths.iter().filter_map(|path| path.as_str()).collect()).unwrap_or_default();
+        for path in &writable {
+            let opens_the_state = ["~", "~/.local", "~/.local/state", "~/.local/state/cockpit", "~/.local/state/claude-sessions"]
+                .iter().any(|folder| path.trim_end_matches("/**").trim_end_matches('/') == *folder || path.starts_with("~/.local/state/cockpit/"));
+            assert!(!opens_the_state, "{name} lets sessions write {path}");
+        }
+    }
 }
 
 #[test]

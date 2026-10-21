@@ -24,8 +24,8 @@ export OPENCODE_CONFIG_CONTENT
 # The TUI checks --session before location plugins load. A session created by a plugin is
 # too late: the home composer keeps its own selection and overwrites it on the first prompt.
 session_request=""
-if [ -n "${CLAUDE_SESSIONS_OPENCODE_MODEL:-}" ]; then
-    if ! session_request=$(jq -nce --arg reference "$CLAUDE_SESSIONS_OPENCODE_MODEL" \
+if [ -n "${COCKPIT_OPENCODE_MODEL:-}" ]; then
+    if ! session_request=$(jq -nce --arg reference "$COCKPIT_OPENCODE_MODEL" \
             --arg session "${CLAUDE_CODE_SESSION_ID:-}" --arg directory "$PWD" '
         ($session | test("^ses_[0-9A-Za-z]{12,40}$")) as $valid_session
         | if $valid_session then
@@ -51,13 +51,13 @@ fi
 # Each Greywall launch has private network/PID namespaces and a private /tmp.
 # Sharing service.json across them makes unreachable servers replace each other.
 # Set only state inside the sandbox; keep the database, config and cache shared.
-# The tools opencode runs inherit that XDG_STATE_HOME: CLAUDE_SESSIONS_STATE_HOME keeps the
+# The tools opencode runs inherit that XDG_STATE_HOME: COCKPIT_STATE_HOME keeps the
 # cockpit's (claude-todo list and show) on the real one, which the sandbox already reads.
 # greywall_options is split on spaces on purpose: every path in it is under $HOME or
 # $XDG_RUNTIME_DIR, which have none.
 # shellcheck disable=SC2086
 exec "$HOME/.local/bin/greywall" $greywall_options -- \
-    env XDG_STATE_HOME=/tmp/opencode-greywall-state CLAUDE_SESSIONS_STATE_HOME="${XDG_STATE_HOME:-$HOME/.local/state}" \
+    env XDG_STATE_HOME=/tmp/opencode-greywall-state COCKPIT_STATE_HOME="${XDG_STATE_HOME:-$HOME/.local/state}" \
     sh -c '
         request=$1
         shift

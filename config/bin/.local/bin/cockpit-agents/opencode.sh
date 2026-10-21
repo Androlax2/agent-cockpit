@@ -1,5 +1,5 @@
-# opencode, as claude-sessions runs it (sourced by claude-sessions and claude-sessions-left).
-# The verbs every agent defines are listed in claude-sessions (AGENT_VERBS); README.md in this
+# opencode, as cockpit runs it (sourced by cockpit and cockpit-left).
+# The verbs every agent defines are listed in cockpit (AGENT_VERBS); README.md in this
 # folder says what each one does. Its cockpit plugin (~/.config/opencode/plugins/cockpit.ts)
 # reports its states like a Claude session's hooks.
 # shellcheck shell=bash
@@ -28,10 +28,10 @@ agent_opencode_can() { # feature
 # server that outlives the session, and its cockpit plugin with it). --session: the id the card
 # carries from the start; opencode makes the session with it at the first prompt. ask-to-run and
 # claude-todo read it from CLAUDE_CODE_SESSION_ID, as in a Claude session.
-OPENCODE_LAUNCHER="${CLAUDE_SESSIONS_OPENCODE:-$HOME/.local/bin/greywall-agents/opencode}"
+OPENCODE_LAUNCHER="${COCKPIT_OPENCODE:-$HOME/.local/bin/greywall-agents/opencode}"
 # OpenCode can return 255 on the manager's Ctrl-C close. Only that requested exit is benign;
 # a 255 without a request (or any other failure) must still reach the error hand-off.
-OPENCODE_EPILOGUE='"$@" && exit; code=$?; if [ "$code" = 255 ] && [ "$(tmux show-options -pqv -t "$TMUX_PANE" @opencode_exit_requested 2>/dev/null)" = 1 ]; then exit 0; fi; claude-sessions log manager ERROR "opencode exited with status $code in $PWD"; printf "\n  ✗ opencode exited with status %s\n  any key closes this pane " "$code"; read -r _'
+OPENCODE_EPILOGUE='"$@" && exit; code=$?; if [ "$code" = 255 ] && [ "$(tmux show-options -pqv -t "$TMUX_PANE" @opencode_exit_requested 2>/dev/null)" = 1 ]; then exit 0; fi; cockpit log manager ERROR "opencode exited with status $code in $PWD"; printf "\n  ✗ opencode exited with status %s\n  any key closes this pane " "$code"; read -r _'
 
 start_opencode() { # dir session-id model-ref opencode-arguments...
     local directory=$1 session=$2 model=$3 name size
@@ -40,13 +40,13 @@ start_opencode() { # dir session-id model-ref opencode-arguments...
     require_plain_directory "$directory"
     name="$OPENCODE_TMUX_PREFIX$(date +%s%N)"
     size=$(detached_size)
-    if [[ -n ${CLAUDE_SESSIONS_TERMINAL:-} ]]; then
-        terminal_environment=(CLAUDE_SESSIONS_TERMINAL="$CLAUDE_SESSIONS_TERMINAL")
+    if [[ -n ${COCKPIT_TERMINAL:-} ]]; then
+        terminal_environment=(COCKPIT_TERMINAL="$COCKPIT_TERMINAL")
     fi
-    if [[ -n $model ]]; then terminal_environment+=(CLAUDE_SESSIONS_OPENCODE_MODEL="$model"); fi
-    if [[ -n ${launch_team_spawn:-} ]]; then terminal_environment+=(CLAUDE_SESSIONS_TEAM_SPAWN="$launch_team_spawn"); fi
+    if [[ -n $model ]]; then terminal_environment+=(COCKPIT_OPENCODE_MODEL="$model"); fi
+    if [[ -n ${launch_team_spawn:-} ]]; then terminal_environment+=(COCKPIT_TEAM_SPAWN="$launch_team_spawn"); fi
     tmux new-session -d -s "$name" -x "${size% *}" -y "${size#* }" -c "$directory" -e "CLAUDE_CODE_SESSION_ID=$session" \
-        env -u CLAUDE_SESSIONS_OPENCODE_MODEL CLAUDE_SESSIONS_INSIDE=1 CLAUDE_CODE_SESSION_ID="$session" "${terminal_environment[@]}" \
+        env -u COCKPIT_OPENCODE_MODEL COCKPIT_INSIDE=1 CLAUDE_CODE_SESSION_ID="$session" "${terminal_environment[@]}" \
         sh -c "$OPENCODE_EPILOGUE" opencode "$OPENCODE_LAUNCHER" --standalone --session "$session" "$@" || return
     printf '%s\n' "$name"
 }
@@ -58,7 +58,7 @@ opencode_default_model() {
     validate_launch_setting opencode-model "$model" || return
     validate_launch_setting opencode-effort "$effort" || return
     if [[ -z $model && -n $effort ]]; then
-        echo "claude-sessions: pick an opencode-model before its effort" >&2; return 1
+        echo "cockpit: pick an opencode-model before its effort" >&2; return 1
     fi
     printf '%s' "$model"
     [[ -z $effort ]] || printf '#%s' "$effort"
@@ -79,20 +79,20 @@ agent_opencode_terminal() ( # dir
     local -a matches=()
     directory=$(CDPATH= cd -- "$directory" && pwd -P) || return
     require_plain_directory "$directory"
-    if [[ -n ${CLAUDE_SESSIONS_INSIDE:-} ]]; then
-        echo "claude-sessions: already inside a managed session" >&2
+    if [[ -n ${COCKPIT_INSIDE:-} ]]; then
+        echo "cockpit: already inside a managed session" >&2
         return 1
     fi
     # Two terminals arriving before the first plugin report must still create only one process.
     lock_key=$(printf '%s' "$directory" | sha256sum)
-    exec 9>"${XDG_RUNTIME_DIR:-/tmp}/claude-sessions-opencode-${lock_key%% *}.lock"
+    exec 9>"${XDG_RUNTIME_DIR:-/tmp}/cockpit-opencode-${lock_key%% *}.lock"
     flock 9
     while IFS=$'\t' read -r name pane folder dead; do
         [[ $name =~ ^claude-retry-opencode-[0-9]+$ && $pane =~ ^%[0-9]+$ && $folder == "$directory" && $dead == 0 ]] || continue
         [[ " ${matches[*]} " == *" $name "* ]] || matches+=("$name")
     done < <(tmux list-panes -a -F '#{session_name}	#{pane_id}	#{pane_current_path}	#{pane_dead}' 9>&-)
     case ${#matches[@]} in
-        0) target=$(CLAUDE_SESSIONS_TERMINAL=1 start_new_opencode "$directory" 9>&-) || return ;;
+        0) target=$(COCKPIT_TERMINAL=1 start_new_opencode "$directory" 9>&-) || return ;;
         1) target=${matches[0]} ;;
         *)
             for index in "${!matches[@]}"; do printf '%s) %s\n' "$((index + 1))" "${matches[index]}" >&2; done
@@ -184,7 +184,7 @@ agent_opencode_exit() { # tmux-session pane id
         fi
     done
     record_stuck_exit "$1" "$2" "$3"
-    echo "claude-sessions: opencode in $1 did not exit, killing its tmux session" >&2
+    echo "cockpit: opencode in $1 did not exit, killing its tmux session" >&2
     tmux kill-session -t "=$1"
 }
 
@@ -204,11 +204,11 @@ agent_opencode_say() { # id pane message
     local id=$1 pane=$2 message=$3 state
     state=$(session_field "$id" state)
     if [[ $state == needs-you && $(session_field "$id" needs_input) != true ]]; then
-        echo "claude-sessions: $(session_field "$id" project) has a question open; answer it in its pane first" >&2
+        echo "cockpit: $(session_field "$id" project) has a question open; answer it in its pane first" >&2
         return 1
     fi
     if [[ $state != waiting && $state != working && $state != needs-you ]]; then
-        echo "claude-sessions: $(session_field "$id" project) is not at its prompt (${state:-no state yet})" >&2
+        echo "cockpit: $(session_field "$id" project) is not at its prompt (${state:-no state yet})" >&2
         return 1
     fi
     submit_to_pane "$pane" "$message"

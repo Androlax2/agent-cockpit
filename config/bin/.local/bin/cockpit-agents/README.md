@@ -3,15 +3,15 @@
 The cockpit runs sessions of several agent CLIs (Claude Code, opencode, Codex CLI). An agent needs four
 pieces. `apps/cockpit/tests/agents.rs` checks that each piece exists for every agent.
 
-1. **A file here, `<name>.sh`**: what `claude-sessions` and `claude-sessions-left` do with its
-   sessions. `claude-sessions` sources every file in this folder and refuses to run if a file is
+1. **A file here, `<name>.sh`**: what `cockpit` and `cockpit-left` do with its
+   sessions. `cockpit` sources every file in this folder and refuses to run if a file is
    missing a verb.
 2. **A row in `apps/cockpit/src/agents.rs`**: what the column, the phone page and the OSD daemon
    need to know (label, badge, ids, features, start files).
 3. **A greywall launcher and profile**: `greywall-agents/<name>` (sourcing
    `launcher-common.sh`) and `config/greywall/.config/greywall/learned/<name>.json`.
 4. **A report bridge**: anything that runs `~/.claude/hooks/session-state.sh` with
-   `CLAUDE_SESSIONS_AGENT=<name>` and Claude-hook-shaped payloads (`SessionStart`,
+   `COCKPIT_AGENT=<name>` and Claude-hook-shaped payloads (`SessionStart`,
    `UserPromptSubmit`, `PostToolUse`, `Notification`, `Stop`, `SessionEnd`). Claude Code has its
    hooks; opencode has `config/opencode/.config/opencode/plugins/cockpit.ts`; Codex has
    `cockpit-codex-hook` (`config/codex/.codex/hooks.json`), which reports namespaced `cdx_` ids.
@@ -43,7 +43,7 @@ namespace. Each verb is `agent_<name>_<verb>`:
 | `say` | id pane message | types a one-line message into it, or refuses |
 | `prompt_start` | | prints the regex of what is left of the cursor at the start of an empty prompt (Left) |
 
-Optional: `doctor`, its section of `claude-sessions doctor` (`report ok|fail what [fix]`).
+Optional: `doctor`, its section of `cockpit doctor` (`report ok|fail what [fix]`).
 
 The manager's helpers are there when a verb runs: `view_session`, `label_panes`,
 `detached_size`, `submit_to_pane`, `pane_at_prompt`, `claude_left` (waits for the pane to end),

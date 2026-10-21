@@ -105,7 +105,7 @@ fn on_the_claude_workspace_an_unanswered_screen_locks() {
 fn the_screen_stays_away_while_idle_lock_is_off() {
     let test = IdleTest::new();
     test.on_workspace(6);
-    test.sandbox.shim("claude-sessions", r#"[[ $1 == setting ]] && echo "$2: off"; exit 0"#);
+    test.sandbox.shim("cockpit", r#"[[ $1 == setting ]] && echo "$2: off"; exit 0"#);
     test.screen(r#"echo "shown $1" > "$HOME/shown"; exit 1"#);
     test.run_script("prompt");
     assert!(!test.shown().exists());

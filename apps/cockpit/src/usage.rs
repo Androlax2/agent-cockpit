@@ -354,7 +354,7 @@ fn credits(usage: &Value) -> String {
     text
 }
 
-/// The usage page as text with ANSI colours, for the session pane (claude-sessions usage).
+/// The usage page as text with ANSI colours, for the session pane (cockpit usage).
 pub fn report_lines(columns: usize) -> Vec<String> {
     let (bold, dim, reset) = ("\x1b[1m", "\x1b[2m", "\x1b[0m");
     let colour = |percentage: Option<i64>| match percentage {
@@ -400,7 +400,7 @@ pub fn report_lines(columns: usize) -> Vec<String> {
     lines
 }
 
-/// claude-sessions usage: redraws the report until the pane is replaced.
+/// cockpit usage: redraws the report until the pane is replaced.
 pub fn report_forever() -> ! {
     loop {
         let columns = crossterm::terminal::size().map(|(columns, _)| columns as usize).unwrap_or(80);

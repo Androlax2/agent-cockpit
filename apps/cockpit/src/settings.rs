@@ -1,4 +1,4 @@
-//! Theo's on/off choices, kept by `claude-sessions setting` in settings.json. A setting missing
+//! Theo's on/off choices, kept by `cockpit setting` in settings.json. A setting missing
 //! from the file is on: what the setup did before it had settings.
 
 use crate::paths;
@@ -8,7 +8,7 @@ use serde_json::Value;
 use std::fs;
 use std::process::Command;
 
-/// Every setting the S menu shows: its name in settings.json and claude-sessions (KNOWN_SETTINGS
+/// Every setting the S menu shows: its name in settings.json and cockpit (KNOWN_SETTINGS
 /// there), and what it does.
 pub const SETTINGS: [(&str, &str); 7] = [
     ("phone-on-lock", "Phone on lock"),
@@ -69,7 +69,7 @@ impl ModelChoice {
 }
 
 pub fn load_models(directory: &str) -> Result<Vec<ModelChoice>, String> {
-    let output = Command::new("claude-sessions").args(["opencode-models", directory]).output().map_err(|error| error.to_string())?;
+    let output = Command::new("cockpit").args(["opencode-models", directory]).output().map_err(|error| error.to_string())?;
     if !output.status.success() {
         let error = String::from_utf8_lossy(&output.stderr);
         return Err(format!("{}: {}", output.status, error.trim()));

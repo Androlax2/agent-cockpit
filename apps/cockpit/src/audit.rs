@@ -5,7 +5,7 @@
 //! hides the folder from every sandbox), copied to journald (`journalctl -t claude-audit`). Each line
 //! carries `seq` and `prev`, the SHA-256 of the line before it: a line removed or changed afterwards
 //! breaks the chain, and `claude-audit verify` names where. Writers (the daemon, the column, the
-//! approval and guide windows, claude-sessions through `claude-audit record`) take a lock on the
+//! approval and guide windows, cockpit through `claude-audit record`) take a lock on the
 //! folder for each line. A text a sandbox chose (a command, a message, a title) goes in only as
 //! `{sha256, len}` (fingerprint); short labels it chose (its session id, a folder) go in whole,
 //! named claimed_* so they are never mistaken for what the daemon verified. An approved command is

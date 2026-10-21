@@ -4,7 +4,7 @@
 # table agent_docker_egress confines to greyproxy), a daemon that sees only that project under
 # /home, and a socket at <project>/.agent-docker.sock. Greywall mounts only the session's own
 # project, so a session reaches its project's daemon and no other.
-# Its parallel clones (claude-sessions' +, in <projects>/.parallel/<project>/<name>) share that
+# Its parallel clones (cockpit' +, in <projects>/.parallel/<project>/<name>) share that
 # daemon: it sees them too, and their socket is <projects>/.parallel/<project>/.agent-docker/docker.sock.
 # Units: system/etc/systemd/system/agent-docker@.service, agent-docker-relay@.service and
 # agent-docker-clones-relay@.service.

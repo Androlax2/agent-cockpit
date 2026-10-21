@@ -7,7 +7,7 @@ use std::os::unix::fs::symlink;
 
 fn sandbox_with_claude(update_body: &str) -> (Sandbox, String) {
     let sandbox = Sandbox::new();
-    sandbox.shim("claude-sessions", "");
+    sandbox.shim("cockpit", "");
     let versions = sandbox.root.join("versions");
     write_executable(&versions.join("2.1.300"), &format!("#!/bin/sh\necho \"claude $*\" >> \"$SHIM_LOG\"\n{update_body}\n"));
     let link = sandbox.root.join("claude");
@@ -37,14 +37,14 @@ fn a_failed_update_is_logged_and_fails() {
     let (sandbox, link) = sandbox_with_claude("echo 'network unreachable'; exit 1");
     let output = sandbox.run(bin().join("claude-update"), &[], &[("CLAUDE_LINK", &link)]);
     assert_eq!(output.status.code(), Some(1));
-    assert!(sandbox.calls("claude-sessions").iter().any(|call| call.contains("WARN") && call.contains("network unreachable")));
+    assert!(sandbox.calls("cockpit").iter().any(|call| call.contains("WARN") && call.contains("network unreachable")));
 }
 
 /// A fake opencode at 1.19.3; `upgrade <version>` runs `upgrade_body`, which finds the version file
 /// in $version and the requested version in $2. The feed says `newest` is the latest version.
 fn sandbox_with_opencode(newest: &str, upgrade_body: &str) -> (Sandbox, Vec<(&'static str, String)>) {
     let sandbox = Sandbox::new();
-    sandbox.shim("claude-sessions", "");
+    sandbox.shim("cockpit", "");
     let binary = sandbox.root.join("opencode");
     let version = sandbox.root.join("opencode-version");
     std::fs::write(&version, "opencode v1.19.3\n").unwrap();
@@ -67,7 +67,7 @@ fn the_installed_opencode_upgrades_to_the_newest_version_of_its_major_and_says_w
     let output = run_opencode_update(&sandbox, &environment);
     assert!(output.status.success(), "{}", stderr(&output));
     assert!(sandbox.calls("opencode").contains(&"opencode upgrade 1.20.0".to_string()), "{:?}", sandbox.calls("opencode"));
-    assert!(sandbox.calls("claude-sessions").iter().any(|call| call.contains("opencode now starts 1.20.0 (was 1.19.3)")), "{:?}", sandbox.calls("claude-sessions"));
+    assert!(sandbox.calls("cockpit").iter().any(|call| call.contains("opencode now starts 1.20.0 (was 1.19.3)")), "{:?}", sandbox.calls("cockpit"));
 }
 
 #[test]
@@ -76,7 +76,7 @@ fn a_new_major_version_is_held_and_logged() {
     let output = run_opencode_update(&sandbox, &environment);
     assert!(output.status.success(), "{}", stderr(&output));
     assert!(!sandbox.calls("opencode").iter().any(|call| call.starts_with("opencode upgrade")), "{:?}", sandbox.calls("opencode"));
-    assert!(sandbox.calls("claude-sessions").iter().any(|call| call.contains("WARN") && call.contains("opencode 2.0.32 held")), "{:?}", sandbox.calls("claude-sessions"));
+    assert!(sandbox.calls("cockpit").iter().any(|call| call.contains("WARN") && call.contains("opencode 2.0.32 held")), "{:?}", sandbox.calls("cockpit"));
 }
 
 #[test]
@@ -93,7 +93,7 @@ fn a_feed_without_a_version_is_logged_and_fails() {
     let output = run_opencode_update(&sandbox, &environment);
     assert_eq!(output.status.code(), Some(1));
     assert!(!sandbox.calls("opencode").iter().any(|call| call.starts_with("opencode upgrade")));
-    assert!(sandbox.calls("claude-sessions").iter().any(|call| call.contains("WARN") && call.contains("no version from")), "{:?}", sandbox.calls("claude-sessions"));
+    assert!(sandbox.calls("cockpit").iter().any(|call| call.contains("WARN") && call.contains("no version from")), "{:?}", sandbox.calls("cockpit"));
 }
 
 #[test]
@@ -101,7 +101,7 @@ fn a_failed_opencode_upgrade_is_logged_and_fails() {
     let (sandbox, environment) = sandbox_with_opencode("1.20.0", "echo 'network unreachable'; exit 1");
     let output = run_opencode_update(&sandbox, &environment);
     assert_eq!(output.status.code(), Some(1));
-    assert!(sandbox.calls("claude-sessions").iter().any(|call| call.contains("WARN") && call.contains("network unreachable")));
+    assert!(sandbox.calls("cockpit").iter().any(|call| call.contains("WARN") && call.contains("network unreachable")));
 }
 
 #[test]
