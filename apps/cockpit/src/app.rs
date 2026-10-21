@@ -2117,6 +2117,23 @@ impl App {
         panel.lines = lines;
     }
 
+    /// An unfocused Pull requests panel shows a few rows: its border counts all of them.
+    fn review_counts(&self) -> Vec<(String, Style)> {
+        if self.review_rows.is_empty() {
+            return Vec::new();
+        }
+        let count = |state: fn(&Review) -> bool| self.review_rows.iter().filter(|row| state(row)).count();
+        let mut counts = vec![(format!("{} open", self.review_rows.len()), bold(FG_DARK))];
+        for (number, label, count_style) in [(count(|row| row.ci == "failing"), "✗", bold(RED)),
+                                             (count(|row| row.review == "CHANGES_REQUESTED"), "changes", style(RED)),
+                                             (count(|row| row.review == "REVIEW_REQUIRED"), "review", style(YELLOW))] {
+            if number > 0 {
+                counts.push((format!("{label} {number}"), count_style));
+            }
+        }
+        counts
+    }
+
     fn reviews_subtitle(&self) -> String {
         let scope = self.reviews.repositories.iter().map(|r| r.rsplit('/').next().unwrap_or("")).collect::<Vec<_>>().join(", ");
         let scope = if scope.is_empty() { "awaiting my review".to_string() } else { scope };
@@ -2723,7 +2740,11 @@ impl App {
         let border = if focused { bold(BLUE) } else { style(BG_HIGHLIGHT) };
         let inner_height = (height - 2) as usize;
         let subtitle_text = self.subtitle(index);
-        let counts = if index == 3 && self.is_collapsed(3) { self.todo_collapsed_counts() } else { Vec::new() };
+        let counts = match index {
+            2 => self.review_counts(),
+            3 if self.is_collapsed(3) => self.todo_collapsed_counts(),
+            _ => Vec::new(),
+        };
         let panel = &mut self.panels[index];
         let fixed_top_height = panel.fixed_top.len().min(if inner_height >= 4 { 2 } else if inner_height >= 2 { 1 } else { 0 });
         let fixed_bottom_height = if inner_height >= fixed_top_height + panel.fixed_bottom.len() + if index == 3 { 4 } else { 2 } { panel.fixed_bottom.len() } else { 0 };

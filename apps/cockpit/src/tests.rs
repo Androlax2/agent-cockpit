@@ -3394,10 +3394,44 @@ fn done_items_alone_leave_the_todo_collapsed() {
     assert_eq!(app.layout(45)[3], 2);
 }
 
-fn todo_border(app: &mut App) -> String {
+fn panel_border(app: &mut App, label: &str) -> String {
     let buffer = render(app, 80, 45);
     (0..45).map(|y| (0..80).map(|x| buffer[(x, y)].symbol().to_string()).collect::<String>())
-        .find(|row| row.contains("[3] Todo")).expect("the Todo border is drawn")
+        .find(|row| row.contains(label)).expect("the panel border is drawn")
+}
+
+fn todo_border(app: &mut App) -> String {
+    panel_border(app, "[3] Todo")
+}
+
+#[test]
+fn the_pull_requests_border_counts_open_failing_and_waiting_pull_requests() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    let review = |number, ci: &str, decision: &str| Review { number, title: "VAT".into(), repository: "shop".into(), ci: ci.into(), review: decision.into(), ..Review::default() };
+    app.reviews.set_rows(vec![review(1, "failing", "CHANGES_REQUESTED"), review(2, "passing", "REVIEW_REQUIRED"),
+                              review(3, "failing", "REVIEW_REQUIRED"), review(4, "pending", "APPROVED"), review(5, "", "")]);
+    app.build();
+    let border = panel_border(&mut app, "[2] Pull requests");
+    assert!(border.contains("Pull requests · 5 open ✗ 2 changes 1 review 2 · "), "{border}");
+}
+
+#[test]
+fn the_pull_requests_border_leaves_out_counts_that_are_zero() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    app.reviews.set_rows(vec![Review { number: 1, title: "VAT".into(), repository: "shop".into(), ci: "passing".into(), ..Review::default() }]);
+    app.build();
+    let border = panel_border(&mut app, "[2] Pull requests");
+    assert!(border.contains("Pull requests · 1 open · "), "{border}");
+}
+
+#[test]
+fn the_empty_pull_requests_border_shows_no_count() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    let border = panel_border(&mut app, "[2] Pull requests");
+    assert!(!border.contains("open"), "{border}");
 }
 
 #[test]
