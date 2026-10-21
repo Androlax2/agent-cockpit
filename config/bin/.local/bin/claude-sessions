@@ -612,6 +612,51 @@ thaw_frozen_pane() { # pane
     printf '%s' "${remaining:+$remaining$'\n'}" > "$GAME_FROZEN"
 }
 
+# What a session that ignores /exit and Ctrl-C looks like, saved just before it is killed: the
+# cause of opusline's 2026-10-19 case could not be found afterwards (todo a788e999). The screen
+# holds conversation text, so the folder is hidden from the sandboxes (greywall.json). Each step is
+# bounded: the capture must not hold up the close it explains.
+STUCK_EXITS_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/claude-stuck-exits"
+STUCK_EXITS_KEPT=20
+record_stuck_exit() { # tmux-session pane id
+    local target=$1 pane=$2 id=$3 stamp file pane_pid cgroup started liveness elapsed_ms
+    printf -v stamp '%(%Y%m%dT%H%M%S)T' -1
+    file="$STUCK_EXITS_DIR/$stamp-${id:0:8}.txt"
+    mkdir -p -m 700 "$STUCK_EXITS_DIR" 2>/dev/null || return 0
+    pane_pid=$(timeout 1 tmux display-message -p -t "$pane" '#{pane_pid}' 2>/dev/null) || pane_pid=
+    started=${EPOCHREALTIME//[!0-9]/}
+    liveness=$(timeout --signal=KILL 1s osd liveness "" "$pane" 2>/dev/null) || liveness=
+    elapsed_ms=$(( (${EPOCHREALTIME//[!0-9]/} - started) / 1000 ))
+    {
+        echo "session $id, tmux session $target, pane $pane, agent $(agent_of_session "$id" 2>/dev/null)"
+        echo "osd liveness: ${liveness:-no answer} in ${elapsed_ms} ms"
+        echo "== pane"
+        # pane_in_mode: keys sent to a pane in copy mode never reach the agent; pane_input_off: select-pane -d.
+        timeout 1 tmux display-message -p -t "$pane" 'pid #{pane_pid} dead #{pane_dead} command #{pane_current_command} in_mode #{pane_in_mode} mode #{pane_mode} input_off #{pane_input_off} size #{pane_width}x#{pane_height}' 2>&1
+        echo "== processes of the pane (stat D: waits in the kernel; wchan: where)"
+        if [[ $pane_pid =~ ^[0-9]+$ ]]; then
+            timeout 2 ps -eo pid=,ppid=,stat=,wchan:32=,etime=,time=,rss=,comm= 2>/dev/null | awk -v root="$pane_pid" '
+                { line[$1] = $0; parent[$1] = $2 }
+                END { for (pid in line) { ancestor = pid
+                        while (ancestor != "" && ancestor != root && ancestor in parent && ancestor != parent[ancestor]) ancestor = parent[ancestor]
+                        if (ancestor == root) print line[pid] } }' | sort -n
+            cgroup=$(sed -n 's/^0:://p' "/proc/$pane_pid/cgroup" 2>/dev/null)
+            echo "== cgroup $cgroup"
+            echo "cgroup.freeze: $(cat "/sys/fs/cgroup$cgroup/cgroup.freeze" 2>/dev/null || echo unreadable)"
+            grep -h frozen "/sys/fs/cgroup$cgroup/cgroup.events" 2>/dev/null
+        else
+            echo "no pane pid (${pane_pid:-tmux did not answer})"
+        fi
+        echo "== every process in D state"
+        timeout 2 ps -eo pid=,stat=,wchan:32=,comm= 2>/dev/null | awk '$2 ~ /^D/'
+        echo "== screen (last 40 lines)"
+        timeout 1 tmux capture-pane -p -t "$pane" -S -40 2>&1
+    } > "$file" 2>/dev/null || true  # under set -e: a failed probe must not stop the kill
+    chmod 600 "$file" 2>/dev/null || true
+    ls -1t "$STUCK_EXITS_DIR"/*.txt 2>/dev/null | tail -n +$(( STUCK_EXITS_KEPT + 1 )) | xargs -r rm -f || true
+    log_event WARN manager "$id did not exit: its state is in $file"
+}
+
 exit_session() {
     local id=$1 pane target
     audit_event manager session.exit asked "session=$id"

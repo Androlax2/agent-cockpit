@@ -51,6 +51,7 @@
       "~/.local/state/restic-backup/**",
       "~/.local/state/claude-audit",
       "~/.local/state/claude-remote",
+      "~/.local/state/claude-stuck-exits",
       "~/.config/greywall-agents/figcraft",
       "~/.config/Bitwarden/**",
       "~/.config/BraveSoftware/**",

@@ -657,6 +657,64 @@ fn stalled_liveness_checks_do_not_hold_up_session_shutdown() {
     assert_eq!(manager.tmux_calls("kill-session"), ["tmux kill-session -t =claude-retry-9-9"]);
 }
 
+fn stuck_exit_records(manager: &Manager) -> Vec<PathBuf> {
+    let mut records: Vec<PathBuf> = fs::read_dir(manager.sandbox.state.join("claude-stuck-exits"))
+        .map(|entries| entries.flatten().map(|entry| entry.path()).collect()).unwrap_or_default();
+    records.sort();
+    records
+}
+
+#[test]
+fn a_session_that_ignores_its_exit_leaves_what_it_showed_before_the_kill() {
+    // opusline ignored /exit and Ctrl-C on 2026-10-19; nothing was left to tell why (todo a788e999).
+    for agent in ["claude", "opencode"] {
+        let manager = Manager::new();
+        let session = if agent == "opencode" { manager.with_opencode_session("working"); OPENCODE_SESSION } else { SESSION_A };
+        manager.run(&["exit", session], &[("SHIM_PANE_TEXT", "the last words on screen\n"), ("SHIM_EXIT_AFTER", "99")]);
+        let records = stuck_exit_records(&manager);
+        assert_eq!(records.len(), 1, "{agent}: {records:?}");
+        let record = fs::read_to_string(&records[0]).unwrap();
+        assert!(record.contains("the last words on screen"), "{agent}: {record}");
+        assert!(record.contains("osd liveness: by pane in "), "{agent}: {record}");
+        assert!(record.contains("cgroup.freeze") || record.contains("no pane pid"), "{agent}: {record}");
+        assert!(manager.log_lines().iter().any(|line| line.contains(&format!("did not exit: its state is in {}", records[0].display()))), "{agent}");
+    }
+}
+
+#[test]
+fn stuck_exit_records_are_readable_by_theo_alone() {
+    use std::os::unix::fs::PermissionsExt;
+    let manager = Manager::new();
+    manager.run(&["exit", SESSION_A], &[("SHIM_PANE_TEXT", BUSY_WITHOUT_PROMPT), ("SHIM_EXIT_AFTER", "99")]);
+    let records = stuck_exit_records(&manager);
+    assert_eq!(fs::metadata(&records[0]).unwrap().permissions().mode() & 0o777, 0o600);
+    assert_eq!(fs::metadata(records[0].parent().unwrap()).unwrap().permissions().mode() & 0o777, 0o700);
+}
+
+#[test]
+fn a_session_that_exits_leaves_no_stuck_exit_record() {
+    let manager = Manager::new();
+    manager.run(&["exit", SESSION_A], &[("SHIM_PANE_TEXT", IDLE), ("SHIM_EXIT_AFTER", "1")]);
+    assert!(stuck_exit_records(&manager).is_empty());
+}
+
+#[test]
+fn only_the_twenty_newest_stuck_exit_records_are_kept() {
+    let manager = Manager::new();
+    let folder = manager.sandbox.state.join("claude-stuck-exits");
+    fs::create_dir_all(&folder).unwrap();
+    for index in 0..25 {
+        let old = folder.join(format!("20260101T0000{index:02}-old.txt"));
+        fs::write(&old, "").unwrap();
+        Command::new("touch").arg("-d").arg(format!("2026-01-01 00:00:{index:02}")).arg(&old).status().unwrap();
+    }
+    manager.run(&["exit", SESSION_A], &[("SHIM_PANE_TEXT", BUSY_WITHOUT_PROMPT), ("SHIM_EXIT_AFTER", "99")]);
+    let records = stuck_exit_records(&manager);
+    assert_eq!(records.len(), 20);
+    assert!(records.iter().any(|record| !record.to_string_lossy().contains("-old")), "the new record was dropped");
+    assert!(!records.iter().any(|record| record.to_string_lossy().contains("20260101T000000-old")), "the oldest was kept");
+}
+
 #[test]
 fn a_session_can_still_exit_gracefully_on_the_second_attempt() {
     for (agent, key_count) in [("claude", "4"), ("opencode", "6")] {

@@ -166,6 +166,7 @@ agent_claude_exit() { # tmux-session pane id
             return 0
         fi
     done
+    record_stuck_exit "$target" "$pane" "$id"
     echo "claude-sessions: $id did not exit, killing its tmux session" >&2
     tmux kill-session -t "=$target"
 }

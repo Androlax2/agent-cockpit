@@ -15,6 +15,8 @@ mkdir -p "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/claude-report"
 mkdir -p -m 700 "${XDG_STATE_HOME:-$HOME/.local/state}/claude-audit"
 # The phone page's paired devices (claude-remote): hidden the same way.
 mkdir -p -m 700 "${XDG_STATE_HOME:-$HOME/.local/state}/claude-remote"
+# What sessions that ignored their exit showed (claude-sessions record_stuck_exit): hidden the same way.
+mkdir -p -m 700 "${XDG_STATE_HOME:-$HOME/.local/state}/claude-stuck-exits"
 # Created before the sandbox mounts its denyRead entries, even when no FigCraft has started yet.
 mkdir -p -m 700 "$HOME/.config/greywall-agents/figcraft"
 

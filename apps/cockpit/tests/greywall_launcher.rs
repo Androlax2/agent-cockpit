@@ -297,6 +297,23 @@ fn figcraft_reservations_are_hidden_even_before_the_first_window_starts() {
         .any(|entry| entry == "~/.config/greywall-agents/figcraft" || entry == &storage.display().to_string()));
 }
 
+// Stuck-exit captures hold the screens of other sessions (claude-sessions record_stuck_exit).
+// greywall hides only a folder that exists when the sandbox starts: every launcher makes it.
+#[test]
+fn every_launcher_creates_the_stuck_exit_folder_before_its_sandbox_starts() {
+    for &agent in AGENTS.iter() {
+        let launch = Launch::new();
+        launch.run_agent(agent, &[], &[]);
+        assert!(launch.sandbox.state.join("claude-stuck-exits").is_dir(), "{agent}");
+    }
+}
+
+#[test]
+fn the_greywall_profile_hides_stuck_exit_captures() {
+    let settings: serde_json::Value = serde_json::from_str(&fs::read_to_string(repo().join("config/greywall/.config/greywall/greywall.json")).unwrap()).unwrap();
+    assert!(settings["filesystem"]["denyRead"].as_array().unwrap().iter().any(|entry| entry == "~/.local/state/claude-stuck-exits"));
+}
+
 #[test]
 fn claudes_mcp_override_connects_to_the_port_its_launcher_forwards() {
     let launch = Launch::new();

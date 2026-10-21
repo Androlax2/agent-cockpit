@@ -183,6 +183,7 @@ agent_opencode_exit() { # tmux-session pane id
             return 0
         fi
     done
+    record_stuck_exit "$1" "$2" "$3"
     echo "claude-sessions: opencode in $1 did not exit, killing its tmux session" >&2
     tmux kill-session -t "=$1"
 }
