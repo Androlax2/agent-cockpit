@@ -112,8 +112,7 @@
     "denyRead": [
       "~/.ssh/id_*",
       "~/.gnupg/**",
-      ".env",
-      ".env.*"
+      ".env"
     ],
     "allowWrite": [
       ".",
@@ -177,5 +176,5 @@
   "credentials": {},
   "schemaVersion": 1,
   "generatedBy": "0.3.7",
-  "driftAckHash": "3de496f48dca2c719d28fde94f7739fb"
+  "driftAckHash": "c4388f8f898565c850600d30df41035c"
 }

@@ -27,7 +27,7 @@
       "~/dotfiles/config/codex", "~/dotfiles/config/bin/.local/bin/cockpit-codex-hook",
       "~/dotfiles/apps/target/release/cockpit-codex-hook"
     ],
-    "denyRead": ["~/.ssh/id_*", "~/.gnupg/**", ".env", ".env.*"],
+    "denyRead": ["~/.ssh/id_*", "~/.gnupg/**", ".env"],
     "allowWrite": [".", "~/.cache/gh", "~/.local/state/gh", "~/.codex", "~/.cache/claude"],
     "denyWrite": [
       "~/.bashrc", "~/.bash_profile", "~/.zshrc", "~/.zprofile", "~/.profile", "~/.ssh", "~/.gnupg",

@@ -141,7 +141,6 @@
       "~/.ssh/id_*",
       "~/.gnupg/**",
       ".env",
-      ".env.*",
       "~/.aws/**",
       "~/.kube/**",
       "~/.docker/config.json",
@@ -211,5 +210,5 @@
   "credentials": {},
   "schemaVersion": 1,
   "generatedBy": "0.3.7",
-  "driftAckHash": "ed56e8465368bc813e2767fa064f91ea"
+  "driftAckHash": "ce7e4e629b7af6426b7497bb9d375137"
 }

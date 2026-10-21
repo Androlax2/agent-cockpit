@@ -782,9 +782,26 @@ fn an_opencode_session_cannot_write_what_every_other_session_runs_or_reads() {
 }
 
 fn opencode_profile() -> serde_json::Value {
-    let text = fs::read_to_string(repo().join("config/greywall/.config/greywall/learned/opencode.json")).unwrap();
+    learned_profile("opencode")
+}
+
+fn learned_profile(agent: &str) -> serde_json::Value {
+    let text = fs::read_to_string(repo().join(format!("config/greywall/.config/greywall/learned/{agent}.json"))).unwrap();
     let json: String = text.lines().filter(|line| !line.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");
     serde_json::from_str(&json).unwrap()
+}
+
+#[test]
+fn no_agent_profile_brings_back_the_env_glob_the_launcher_narrows() {
+    // Greywall merges the profile's denyRead with the settings file's: a ".env.*" there hid
+    // opusline's committed .env.production.example again after the launcher narrowed its own
+    // (2026-10-21). After an edit here, the profile's driftAckHash must match the new drift, or
+    // greywall asks at every start.
+    for &agent in AGENTS.iter() {
+        let denied = denied_reads(&learned_profile(agent));
+        assert!(!denied.contains(&".env.*".to_string()), "{agent}: {denied:?}");
+        assert!(denied.contains(&".env".to_string()), "{agent}: {denied:?}");
+    }
 }
 
 #[test]
