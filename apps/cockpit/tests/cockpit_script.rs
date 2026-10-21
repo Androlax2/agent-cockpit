@@ -3238,8 +3238,11 @@ fn a_past_opencode_session_resumes_by_its_id() {
 }
 
 #[test]
-fn an_opencode_requested_close_does_not_report_255_as_a_crash() {
-    for (code, requested, reports_error) in [(255, true, false), (255, false, true), (1, true, true), (0, false, false)] {
+fn an_opencode_255_is_never_reported_as_a_crash_and_warns_only_when_unrequested() {
+    // A quit in Theo's own terminal ends with 255 too (greywall's code for a signal), unrequested.
+    for (code, requested, reports_error, warns) in
+        [(255, true, false, false), (255, false, false, true), (1, true, true, false), (0, false, false, false)]
+    {
         let manager = Manager::new();
         manager.with_opencode_session("waiting");
         manager.sandbox.shim("tmux", &format!(r#"
@@ -3270,6 +3273,7 @@ exit "$SHIM_OPENCODE_STATUS"
         assert!(result.status.success(), "{}", stderr(&result));
         let log = manager.log_lines().join("\n");
         assert_eq!(log.contains("ERROR manager: opencode exited"), reports_error, "status={code}, requested={requested}: {log}");
+        assert_eq!(log.contains("WARN manager: opencode ended by a signal (status 255)"), warns, "status={code}, requested={requested}: {log}");
         let screen = fs::read_to_string(output_file).unwrap();
         assert_eq!(screen.contains("any key closes this pane"), reports_error, "{screen}");
     }

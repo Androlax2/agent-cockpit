@@ -29,9 +29,10 @@ agent_opencode_can() { # feature
 # carries from the start; opencode makes the session with it at the first prompt. ask-to-run and
 # claude-todo read it from CLAUDE_CODE_SESSION_ID, as in a Claude session.
 OPENCODE_LAUNCHER="${COCKPIT_OPENCODE:-$HOME/.local/bin/greywall-agents/opencode}"
-# OpenCode can return 255 on the manager's Ctrl-C close. Only that requested exit is benign;
-# a 255 without a request (or any other failure) must still reach the error hand-off.
-OPENCODE_EPILOGUE='"$@" && exit; code=$?; if [ "$code" = 255 ] && [ "$(tmux show-options -pqv -t "$TMUX_PANE" @opencode_exit_requested 2>/dev/null)" = 1 ]; then exit 0; fi; cockpit log manager ERROR "opencode exited with status $code in $PWD"; printf "\n  ✗ opencode exited with status %s\n  any key closes this pane " "$code"; read -r _'
+# greywall exits 255 for a child ended by a signal, which is how OpenCode's quit ends: the
+# manager's Ctrl-C close (benign) and Theo's own quit in a terminal (a warning, no hand-off,
+# since a crash by a signal looks the same). Any other failure must reach the error hand-off.
+OPENCODE_EPILOGUE='"$@" && exit; code=$?; if [ "$code" = 255 ]; then [ "$(tmux show-options -pqv -t "$TMUX_PANE" @opencode_exit_requested 2>/dev/null)" = 1 ] || cockpit log manager WARN "opencode ended by a signal (status 255) in $PWD: a quit, or a crash"; exit 0; fi; cockpit log manager ERROR "opencode exited with status $code in $PWD"; printf "\n  ✗ opencode exited with status %s\n  any key closes this pane " "$code"; read -r _'
 
 start_opencode() { # dir session-id model-ref opencode-arguments...
     local directory=$1 session=$2 model=$3 name size
