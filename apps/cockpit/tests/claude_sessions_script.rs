@@ -173,6 +173,7 @@ struct Manager {
 
 impl Manager {
     fn new() -> Manager {
+        require_release_programs();
         let mut sandbox = Sandbox::new();
         sandbox.shim("tmux", FAKE_TMUX);
         let roles = sandbox.root.join("roles");
@@ -257,6 +258,15 @@ esac"#));
     fn resume_call(&self) -> String {
         self.calls("tmux").into_iter().find(|call| call.contains("claude --resume $argv")).expect("no resume")
     }
+}
+
+/// The script reaches osd and claude-audit through wrappers that run apps/target/release only.
+/// Without those builds a plain `cargo test` reads every idle pane as busy and fails far from the
+/// cause ("no /exit"); `make test` builds them first.
+fn require_release_programs() {
+    let release = repo().join("apps/target/release");
+    let missing: Vec<&str> = ["osd", "claude-audit"].into_iter().filter(|name| !release.join(name).is_file()).collect();
+    assert!(missing.is_empty(), "{} not built in {}: run `make test` from the repository root", missing.join(" and "), release.display());
 }
 
 fn path_str(path: &Path) -> String {
