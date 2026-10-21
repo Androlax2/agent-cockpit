@@ -135,3 +135,36 @@ fn a_published_hard_link_keeps_the_original_listener_identity() {
     assert!(receiver.join().unwrap().contains("context"));
     assert_eq!(replacement.accept().unwrap_err().kind(), std::io::ErrorKind::WouldBlock);
 }
+
+#[test]
+fn recruit_is_an_agent_action() {
+    let sandbox = Sandbox::new();
+    let source = sandbox.root.join("host.sock");
+    let listener = UnixListener::bind(&source).unwrap();
+    let answers = sandbox.answers("teams").parent().unwrap().to_path_buf();
+    client::publish_socket(&source, &answers).unwrap();
+    let receiver = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = String::new();
+        stream.read_to_string(&mut request).unwrap();
+        stream.write_all(b"{\"request_id\":\"recruit-1\",\"result\":{\"Ok\":{\"proposal_id\":\"p\",\"revision\":1}}}\n").unwrap();
+        request
+    });
+    let mut child = sandbox.command(env!("CARGO_BIN_EXE_cockpit-team"), &[]).arg("recruit")
+        .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    let request = json!({"action":"recruit","recruitment":{"submission_key":"recruit-1","task":{"project":"project-a","task_id":"1d3fd318"},
+        "role":"developer","recruits":[{"role":"designer","brief":"Design the jobs list"}],"reason":"The UI needs a design"}});
+    child.stdin.take().unwrap().write_all(request.to_string().as_bytes()).unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success(), "{}", stderr(&output));
+    let sent: Value = serde_json::from_str(receiver.join().unwrap().trim()).unwrap();
+    assert_eq!(sent["action"], "recruit");
+    assert_eq!(sent["recruitment"]["recruits"][0]["role"], "designer");
+}
+
+#[test]
+fn help_shows_how_to_recruit() {
+    let sandbox = Sandbox::new();
+    let help = stdout(&sandbox.command(env!("CARGO_BIN_EXE_cockpit-team"), &[]).arg("--help").output().unwrap());
+    assert!(help.lines().any(|line| line.trim().starts_with("{\"action\":\"recruit\"")), "{help}");
+}

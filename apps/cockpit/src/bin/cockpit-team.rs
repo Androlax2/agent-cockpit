@@ -5,7 +5,7 @@ use cockpit::approval::escape_hiding;
 use std::io::{self, Read};
 
 const HELP: &str = r#"cockpit-team context            your task, your role and your teammates' session ids
-cockpit-team <action> < action.json   propose, send, assess or handoff; the JSON's "action" names the same one
+cockpit-team <action> < action.json   propose, recruit, send, assess or handoff; the JSON's "action" names the same one
 
 Recipients are session ids from `context`, never role names. Use each submission_key once
 (letters, digits, - or _): resending the same one is a no-op. Task is the object `context` shows.
@@ -16,6 +16,9 @@ A clarification (at most three rounds; answer with kind "reply" and the thread_i
   {"action":"send","message":{"task":{"project":"path:/home/theo/IdeaProjects/app","task_id":"5e1f7e57"},"submission_key":"ask-1","recipient":"aaaaaaaa-0000-4000-8000-000000000000","kind":"clarification","body":"Which frame is approved?"}}
 Whether the reply resolved your question:
   {"action":"assess","task":{"project":"path:/home/theo/IdeaProjects/app","task_id":"5e1f7e57"},"thread_id":"<thread_id>","resolved":true}
+Missing teammates (Theo approves; they start in his default agent, Designer and Developer in your
+folder; a QA recruit means a fresh QA at each handoff). Your own role, then each new one with its brief:
+  {"action":"recruit","recruitment":{"task":{"project":"path:/home/theo/IdeaProjects/app","task_id":"5e1f7e57"},"submission_key":"recruit-1","role":"developer","recruits":[{"role":"designer","brief":"Design the jobs list screen in FigCraft."},{"role":"qa","brief":"Check contrast and keyboard use."}],"reason":"The UI has no design yet."}}
 The Developer's finished work (requests QA once):
   {"action":"handoff","handoff":{"task":{"project":"path:/home/theo/IdeaProjects/app","task_id":"5e1f7e57"},"submission_key":"handoff-1","branch":"feature/x","commit":"<full 40-character commit id>","checkout":"/home/theo/IdeaProjects/app","summary":"What changed.","tests":"cargo test: 57 passed","figcraft":[]}}
 

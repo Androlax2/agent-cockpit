@@ -87,3 +87,34 @@ fn failed_spawns_count_as_needing_theo() {
     state["spawns"] = json!([{"token": "t1", "role": "designer", "agent": "claude", "status": "failed", "directory": "/p", "created_at": 1}]);
     assert_eq!(TeamView::attention(&state), TeamView::attention(&snapshot()) + 1);
 }
+
+fn with_recruit_request() -> Value {
+    let mut state = snapshot();
+    let mapping = json!([{"session_id": DEVELOPER, "role": "developer", "agent": "opencode", "runtime": "r2"}]).to_string();
+    let recruits = json!([{"role": "designer", "brief": "Design the jobs list\u{1b}[2J"}, {"role": "qa", "brief": "Check contrast"}]).to_string();
+    state["proposals"] = json!([{"proposal_id": "p2", "project": PROJECT, "task_id": "1d3fd318", "mapping": mapping, "mapping_hash": "h2",
+        "revision": 1, "status": "pending", "reason": "The UI needs a design", "sender": DEVELOPER, "created_by": "agent", "parent_id": null,
+        "recruits": recruits, "spawn_agent": "claude"}]);
+    state
+}
+
+#[test]
+fn a_recruit_request_shows_the_asker_each_new_teammate_its_agent_and_brief() {
+    let view = TeamView::new(with_recruit_request());
+    let detail = view.detail().join("\n");
+    for expected in [&format!("asker (developer): {DEVELOPER}"), "new designer (claude): Design the jobs list",
+                     "QA: a fresh reviewer for each handoff (claude): Check contrast"] {
+        assert!(detail.contains(expected), "missing {expected:?} in\n{detail}");
+    }
+    assert!(!detail.contains('\u{1b}') && detail.contains("\\u001b"), "{detail}");
+}
+
+#[test]
+fn a_failed_spawn_is_listed_and_counted() {
+    let mut state = snapshot();
+    state["spawns"] = json!([{"token": "t1", "task_key": "k", "role": "designer", "agent": "claude", "status": "failed", "directory": "/p", "created_at": 1}]);
+    let view = TeamView::new(state.clone());
+    let texts: Vec<String> = view.rows().iter().map(|row| view.row_text(*row)).collect();
+    assert!(texts.iter().any(|text| text.contains("did not start") && text.contains("designer")), "{texts:?}");
+    assert_eq!(TeamView::attention(&state), TeamView::attention(&snapshot()) + 1);
+}
