@@ -2411,6 +2411,21 @@ impl App {
                 Some(Entry::Issue { .. }) => "an issue's labels are edited on GitHub".into(),
                 None => String::new(),
             },
+            Key::Char('m') => match entry {
+                Some(Entry::Typed(item)) => {
+                    let Some(directory) = screen.outside(&mut || pick_project()).filter(|directory| !directory.is_empty()) else { return "unchanged".into() };
+                    let project = project_name(&directory);
+                    match self.todos.move_to(&item.id(), &project, &directory) {
+                        Ok(()) => {
+                            self.build_todo();
+                            format!("moved to {project}")
+                        }
+                        Err(reason) => format!("not moved: {reason}"),
+                    }
+                }
+                Some(Entry::Issue { .. }) => "an issue belongs to its repository".into(),
+                None => String::new(),
+            },
             Key::Char('f') => {
                 let Some(chosen) = screen.outside(&mut || pick_todo_kind(self.todo_category_filter(), true)) else { return String::new() };
                 let category = if chosen == "All" { None } else {
@@ -2603,7 +2618,7 @@ impl App {
             "done" => vec![("⏎", "details"), ("d", "back to to do"), ("t", "add"), ("[ ]", "tabs")],
             _ => vec![("h", "to a session"), ("N", "to a new session"), ("⏎", "details"), ("Q", "queue"), ("i", "doing"), ("d", "done"), ("e", "edit"), ("t", "add"), ("[ ]", "tabs")],
         };
-        hints.extend([("K", "kind"), ("f", "filter kind")]);
+        hints.extend([("K", "kind"), ("m", "move"), ("f", "filter kind")]);
         hints
     }
 
@@ -2621,6 +2636,7 @@ impl App {
                       ("N", "hand the item to a new session using the default agent, in a parallel clone of its repository on a branch named after it (todo-<id>, issue-<n>), never to a running one"),
                       ("e", "edit Kind, Title and Notes in one form; Tab / Shift+Tab fields, arrows choose Kind; CMD+S saves, Esc cancels"),
                       ("K", "change kind: Task, Feature, Bug, Improvement, Chore, Research; Design/Blocked routing stays unchanged"),
+                      ("m", "move a typed item to another project, picked like a new session's; not while it is in progress"),
                       ("f", "filter by kind, or All (including GitHub issues); each viewed session keeps its filter"),
                       ("y n", "approve or decline an idea Claude proposed; a declined idea is not proposed again"),
                       ("Q", "queue it (again: unqueue): a session of its project idle for 5 min at its prompt takes the first queued item, by priority, one at a time"),

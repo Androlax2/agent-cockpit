@@ -418,6 +418,24 @@ impl TodoList {
         true
     }
 
+    /// A typed item filed in the wrong project, to another one. An item in progress stays: the
+    /// session working on it belongs to its first project.
+    pub fn move_to(&mut self, id: &str, project: &str, cwd: &str) -> Result<(), String> {
+        let Some(item) = self.items.iter_mut().find(|item| item.id() == id) else { return Err(format!("{id} is not in the list")) };
+        if item.status() == "doing" {
+            return Err("in progress in a session of its project: i puts it back to do first".into());
+        }
+        if item.project() == project {
+            return Err(format!("already in {project}"));
+        }
+        item.0.insert("project".into(), json!(project));
+        item.0.insert("cwd".into(), json!(cwd));
+        item.0.remove("session");
+        item.0.insert("updated".into(), json!(now_secs()));
+        self.save();
+        Ok(())
+    }
+
     /// A proposal Theo wants: it joins the list to do.
     pub fn approve(&mut self, id: &str) -> bool {
         let Some(item) = self.items.iter_mut().find(|item| item.id() == id && item.status() == PROPOSED) else { return false };

@@ -5031,6 +5031,32 @@ fn changing_kind_preserves_notes_and_clears_a_filter_that_would_hide_it() {
 }
 
 #[test]
+fn moving_an_item_gives_it_the_picked_project_and_folder() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    let id = app.todos.add("runway", "/r", "filed in the wrong project");
+    app.build();
+    app.focus_panel(3);
+    app.handle(Key::Char('m'), &mut FakeScreen::typing(&["/home/theo/IdeaProjects/opusline"]));
+    let item = TodoList::load().items.into_iter().find(|item| item.id() == id).unwrap();
+    assert_eq!((item.project(), item.cwd()), ("opusline".into(), "/home/theo/IdeaProjects/opusline".into()));
+    assert_eq!(app.message, "moved to opusline");
+}
+
+#[test]
+fn an_item_in_progress_is_not_moved() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    let id = app.todos.add("runway", "/r", "being worked on");
+    app.todos.set_status(&id, "doing", "session-a");
+    app.build();
+    app.focus_panel(3);
+    app.handle(Key::Char('m'), &mut FakeScreen::typing(&["/home/theo/IdeaProjects/opusline"]));
+    assert_eq!(TodoList::load().items[0].project(), "runway");
+    assert!(app.message.starts_with("not moved"), "{}", app.message);
+}
+
+#[test]
 fn cancelling_kind_and_filter_pickers_changes_nothing() {
     let fixture = Fixture::new();
     let mut app = fixture.app();
@@ -5039,7 +5065,7 @@ fn cancelling_kind_and_filter_pickers_changes_nothing() {
     app.focus_panel(3);
     app.handle(Key::Char('f'), &mut FakeScreen::typing(&["Task"]));
     let before = fs::read(crate::paths::todo()).unwrap();
-    for key in ['K', 'f'] { app.handle(Key::Char(key), &mut FakeScreen::default()); }
+    for key in ['K', 'm', 'f'] { app.handle(Key::Char(key), &mut FakeScreen::default()); }
     assert_eq!(fs::read(crate::paths::todo()).unwrap(), before);
     assert!(app.subtitle(3).contains("kind: Task"));
 }
