@@ -1319,3 +1319,18 @@ fn an_asker_without_a_folder_cannot_be_approved_into_spawns() {
         mapping_hash: request["mapping_hash"].as_str().unwrap().into() }, &live(), &directories, 2000).is_err());
     assert!(store::pending_spawns(&connection).unwrap().is_empty());
 }
+
+#[test]
+fn a_team_start_joins_only_a_session_of_the_agent_it_started() {
+    // Todo a130b244: the spawn named claude; an opencode session (or a mislabelled one) takes nothing.
+    let sandbox = Sandbox::new();
+    let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+    recruited(&mut connection, false);
+    let token = store::pending_spawns(&connection).unwrap()[0].token.clone();
+    store::mark_spawn_started(&connection, &token, 2100).unwrap();
+    let opencode = VerifiedSession { session_id: "ses_3f2a9c0b1ffeQkTz8mWn4rJd2X".into(), agent: "opencode".into(), project: "project-a".into(), runtime: "runtime-x".into() };
+    assert!(!store::bind_spawn(&mut connection, &token, &opencode, 2200).unwrap());
+    let mut mislabelled = designer_session("project-a");
+    mislabelled.agent = "opencode".into();
+    assert!(!store::bind_spawn(&mut connection, &token, &mislabelled, 2200).unwrap());
+}

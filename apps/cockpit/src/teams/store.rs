@@ -418,9 +418,11 @@ pub fn expire_spawns(connection: &Connection, now_ms: i64) -> Result<(), TeamErr
 /// or whose role was taken meanwhile is refused, and its session queued to close.
 pub fn bind_spawn(connection: &mut Connection, token: &str, session: &VerifiedSession, now_ms: i64) -> Result<bool, TeamError> {
     let transaction = connection.transaction()?;
-    let spawn: Option<(String, String, String)> = transaction.query_row("SELECT task_key, role, status FROM spawns WHERE token=?1 AND status IN ('started','superseded')",
-        [token], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).optional()?;
-    let Some((task_key, role, status)) = spawn else { return Ok(false) };
+    let spawn: Option<(String, String, String, String)> = transaction.query_row("SELECT task_key, role, status, agent FROM spawns WHERE token=?1 AND status IN ('started','superseded')",
+        [token], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))).optional()?;
+    let Some((task_key, role, status, agent)) = spawn else { return Ok(false) };
+    // The same consistency bind() asks of links: the id's agent, the session's, and the one started.
+    if session.agent != agent || agents::of_session_id(&session.session_id).map(|known| known.name) != Some(agent.as_str()) { return Ok(false); }
     let project: String = transaction.query_row("SELECT project FROM teams WHERE task_key=?1", [&task_key], |row| row.get(0))?;
     let elsewhere: Option<String> = transaction.query_row("SELECT task_key FROM members WHERE session_id=?1", [&session.session_id], |row| row.get(0)).optional()?;
     if project != session.project || elsewhere.is_some() || session.runtime.is_empty() { return Ok(false); }
