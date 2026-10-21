@@ -6,11 +6,11 @@
 //!     claude-todo todo <id>           back to to do
 //!     claude-todo add '<title>' [--notes '<details>'] [--design] [--kind <kind>]
 //!                                     a new item for this directory's project
-//!     claude-todo propose '<title>' --why '<reason>' [--notes '<details>'] [--design] [--kind <kind>]
+//!     claude-todo propose '<title>' --why '<reason>' [--notes '<details>'] [--design] [--kind <kind>] [--project <name>]
 //!                                     an idea for Theo to approve or decline (the Proposed tab)
 //!                                     --design: work for the project's designer session
-//!                                     only this directory's project (security audit M4): for
-//!                                     another one, propose it here naming that project; Theo moves it
+//!                                     --project: for another project, a checkout in ~/IdeaProjects;
+//!                                     add stays limited to this directory's project (security audit M4)
 //!     claude-todo blocked '<what you could not do>' --why '<what stopped you>' [--notes '<details>']
 //!                                     from any project: greywall, claude-sessions, the launcher or
 //!                                     another part of Theo's setup kept you from doing something;
@@ -40,12 +40,12 @@ const USAGE: &str = "    claude-todo list [--all]        the items of this direc
     claude-todo done <id>           mark it done
     claude-todo todo <id>           back to to do
     claude-todo add '<title>' [--notes '<details>'] [--design] [--kind <kind>]
-    claude-todo propose '<title>' --why '<reason>' [--notes '<details>'] [--design] [--kind <kind>]
+    claude-todo propose '<title>' --why '<reason>' [--notes '<details>'] [--design] [--kind <kind>] [--project <name>]
                                     an idea for Theo to approve or decline; one Theo declined is not filed again
                                     --design: work for the project's designer session (a gap in the design)
                                     --kind: task (default), feature, bug, improvement, chore, research
-                                    an item lands only in this directory's project: for another one, propose it
-                                    here and name that project in --notes; Theo moves it there (m in the Todo panel)
+                                    --project: work for another project (its folder name in ~/IdeaProjects):
+                                    proposed in that project's list; add files only in this directory's project
     claude-todo blocked '<what you could not do>' --why '<what stopped you>' [--notes '<details>']
                                     the setup (greywall, claude-sessions, the launcher…) blocked you:
                                     filed in the dotfiles list and queued for its session
@@ -120,7 +120,7 @@ fn category_label(value: &Value) -> String {
 }
 
 fn file_arguments(action: &str, title: &str, arguments: &[&str]) -> i32 {
-    let (mut why, mut notes, mut category) = (None, None, None);
+    let (mut why, mut notes, mut category, mut target) = (None, None, None, None);
     let mut is_design = false;
     let mut remaining = arguments;
     while let Some((&flag, rest)) = remaining.split_first() {
@@ -133,6 +133,7 @@ fn file_arguments(action: &str, title: &str, arguments: &[&str]) -> i32 {
         match flag {
             "--why" if action != "add" && why.is_none() => why = Some(value.to_string()),
             "--notes" if notes.is_none() => notes = Some(value.to_string()),
+            "--project" if action == "propose" && target.is_none() => target = Some(value.to_string()),
             "--kind" if action != "blocked" && category.is_none() => {
                 let Some(parsed) = Category::parse(value) else { eprintln!("claude-todo: invalid kind {value:?}\n{USAGE}"); return 2 };
                 category = Some(parsed);
@@ -145,10 +146,10 @@ fn file_arguments(action: &str, title: &str, arguments: &[&str]) -> i32 {
         eprintln!("{USAGE}");
         return 2;
     }
-    file(action, title, why, notes, is_design, category)
+    file(action, title, why, notes, is_design, category, target)
 }
 
-fn file(action: &str, title: &str, why: Option<String>, notes: Option<String>, is_design: bool, category: Option<Category>) -> i32 {
+fn file(action: &str, title: &str, why: Option<String>, notes: Option<String>, is_design: bool, category: Option<Category>, target: Option<String>) -> i32 {
     if action == "propose" && read_list().get("declined").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str)
         .any(|declined| collapse(declined).to_lowercase() == collapse(title).to_lowercase()) {
         println!("Theo already declined this idea; it is not filed again.");
@@ -164,13 +165,16 @@ fn file(action: &str, title: &str, why: Option<String>, notes: Option<String>, i
     if let Some(category) = category {
         update.insert("category".into(), json!(category.as_str()));
     }
+    if let Some(target) = &target {
+        update.insert("project".into(), json!(target));
+    }
     for (key, value) in [("why", why), ("notes", notes)] {
         if let Some(value) = value {
             update.insert(key.into(), json!(value.chars().take(4000).collect::<String>()));
         }
     }
     match append(update) {
-        Ok(()) if action == "propose" => { println!("Proposed to Theo in {}'s list (Theo approves or declines it).", project()); 0 }
+        Ok(()) if action == "propose" => { println!("Proposed to Theo in {}'s list (Theo approves or declines it).", target.unwrap_or_else(project)); 0 }
         Ok(()) if action == "greywall" => { println!("Proposed to Theo in greywall's list (Theo approves or declines it)."); 0 }
         Ok(()) if action == "blocked" => { println!("Reported in the dotfiles list and queued for its session. Tell Theo what you could not do; don't work around it."); 0 }
         Ok(()) => { println!("Added to {}'s list.", project()); 0 }

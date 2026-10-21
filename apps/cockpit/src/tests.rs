@@ -6364,6 +6364,56 @@ fn a_greywall_report_theo_declined_is_not_filed_again() {
     assert!(greywall_items(&todos).is_empty());
 }
 
+fn project_checkout(fixture: &Fixture, name: &str) -> PathBuf {
+    let checkout = fixture.root.join("home/IdeaProjects").join(name);
+    fs::create_dir_all(checkout.join(".git")).unwrap();
+    checkout
+}
+
+#[test]
+fn a_proposal_naming_another_project_waits_in_that_projects_proposed_tab() {
+    let fixture = Fixture::new();
+    let checkout = project_checkout(&fixture, "dotfiles");
+    let reporter = project_folder(&fixture, "greywall");
+    queue_update(json!({"action": "propose", "project": "dotfiles", "text": "Pin the greywall build", "why": "builds drift",
+                        "category": "chore", "notes": "build.sh", "session": "s1"}), &reporter);
+    let mut todos = TodoList::load();
+    assert_eq!(todos.apply_updates(), 1);
+    let item = todos.items.iter().find(|item| item.project() == "dotfiles").expect("not filed in dotfiles");
+    assert_eq!((item.cwd(), item.status(), item.category(), item.reporter(), item.why()),
+               (checkout.display().to_string(), crate::todo::PROPOSED.to_string(), Some(crate::todo::Category::Chore),
+                "greywall".to_string(), "builds drift".to_string()));
+    assert!(item.notes().contains(&reporter.display().to_string()), "Theo sees where it came from: {}", item.notes());
+    assert!(!todos.is_queued(&item.id()), "a proposal waits for Theo's approval");
+    assert_eq!(todos.items.len(), 1, "nothing lands in the reporter's list");
+}
+
+#[test]
+fn an_add_or_status_change_naming_another_project_is_refused() {
+    let fixture = Fixture::new();
+    project_checkout(&fixture, "dotfiles");
+    let reporter = project_folder(&fixture, "greywall");
+    queue_update(json!({"action": "add", "project": "dotfiles", "text": "Run this in dotfiles", "session": "s1"}), &reporter);
+    queue_update(json!({"action": "blocked", "project": "dotfiles", "text": "x", "why": "y", "session": "s1"}), &reporter);
+    let mut todos = TodoList::load();
+    assert_eq!(todos.apply_updates(), 0);
+    assert!(todos.items.is_empty(), "add lands in To do, where sessions take work unreviewed (audit M4)");
+}
+
+#[test]
+fn a_proposal_for_a_name_that_is_not_a_project_checkout_is_refused() {
+    let fixture = Fixture::new();
+    project_checkout(&fixture, ".parallel");
+    fs::create_dir_all(fixture.root.join("home/IdeaProjects/notes")).unwrap();
+    let reporter = project_folder(&fixture, "greywall");
+    for target in ["missing", "notes", ".parallel", "../dotfiles", "dotfiles/../greywall", ""] {
+        queue_update(json!({"action": "propose", "project": target, "text": format!("for {target}"), "why": "w", "session": "s1"}), &reporter);
+    }
+    let mut todos = TodoList::load();
+    assert_eq!(todos.apply_updates(), 0);
+    assert!(todos.items.is_empty(), "never falls back to another list");
+}
+
 fn propose(fixture: &Fixture, title: &str, why: &str) {
     let _ = fs::remove_file(crate::paths::todo_updates());
     queue_update(json!({"action": "propose", "text": title, "why": why, "notes": "line one\nline two", "session": "s1"}), &fixture.root);

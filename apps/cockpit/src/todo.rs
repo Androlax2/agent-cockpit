@@ -59,9 +59,10 @@ const DONE_KEPT_DAYS: i64 = 7;
 /// loop must not flood it.
 const BLOCKED_OPEN_MAX: usize = 3;
 const BLOCKED_DAILY_MAX: usize = 5;
-/// The same caps for the proposals one project files in the greywall list (claude-todo greywall).
-const GREYWALL_OPEN_MAX: usize = 3;
-const GREYWALL_DAILY_MAX: usize = 5;
+/// The same caps for the proposals one project files in another project's list (claude-todo greywall,
+/// claude-todo propose --project).
+const ELSEWHERE_OPEN_MAX: usize = 3;
+const ELSEWHERE_DAILY_MAX: usize = 5;
 /// Updates read per apply: the rest of a flood is dropped, and logged.
 const APPLY_MAX_LINES: usize = 200;
 
@@ -79,6 +80,18 @@ pub fn multiline(text: &str, limit: usize) -> String {
 /// How two titles compare for "already declined": case and spacing aside.
 fn normalized(title: &str) -> String {
     util::collapse(title).to_lowercase()
+}
+
+/// The checkout of a project a session names (claude-todo propose --project): a repository directly
+/// in ~/IdeaProjects, not a symlink, a hidden folder (parallel clones) or a path.
+fn project_checkout(name: &str) -> Option<std::path::PathBuf> {
+    static PROJECT: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| Regex::new(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$").unwrap());
+    if !PROJECT.is_match(name) {
+        return None;
+    }
+    let checkout = paths::home().join("IdeaProjects").join(name);
+    let is_directory = fs::symlink_metadata(&checkout).is_ok_and(|metadata| metadata.is_dir());
+    (is_directory && checkout.join(".git").exists()).then_some(checkout)
 }
 
 /// From an issue's labels: P0/P1/urgent/critical/high are high, P3/P4/low are low.
@@ -605,6 +618,21 @@ impl TodoList {
         if !checkout.is_dir() {
             return Err(format!("greywall report from {reporter} refused: no greywall checkout at {}", checkout.display()));
         }
+        self.file_proposal_in(&checkout, update, session, started_in, reporter, "greywall.proposed")
+    }
+
+    /// A proposal for another project (claude-todo propose --project <name>): it lands as Proposed in
+    /// that project's list, never in To do, so it becomes work only once Theo approves it; `add`
+    /// stays limited to the sender's project (security audit 2026-10-19, M4). The project must be a
+    /// checkout in ~/IdeaProjects. Same caps as greywall reports, per reporting project.
+    fn file_proposal_for(&mut self, target: &str, update: &Map<String, Value>, session: &str, started_in: &str, reporter: &str) -> Result<(), String> {
+        let checkout = project_checkout(target)
+            .ok_or_else(|| format!("proposal from {reporter} refused: no project checkout named {:?}", target.chars().take(60).collect::<String>()))?;
+        self.file_proposal_in(&checkout, update, session, started_in, reporter, "proposal.elsewhere")
+    }
+
+    fn file_proposal_in(&mut self, checkout: &std::path::Path, update: &Map<String, Value>, session: &str, started_in: &str, reporter: &str,
+                        audit_event: &str) -> Result<(), String> {
         let category = match update.get("category") {
             None => None,
             Some(value) => Some(value.as_str().and_then(Category::parse).ok_or("invalid todo category")?),
@@ -612,25 +640,25 @@ impl TodoList {
         let field = |key: &str, limit: usize| multiline(update.get(key).and_then(Value::as_str).unwrap_or(""), limit);
         let title: String = util::collapse(&without_controls(&field("text", 300)));
         let why = field("why", WHY_MAX);
+        let project = project_name(&checkout.to_string_lossy());
         if title.is_empty() || why.is_empty() {
-            return Err(format!("greywall report from {reporter} without a title or a reason"));
+            return Err(format!("proposal from {reporter} for {project} without a title or a reason"));
         }
         if self.was_declined(&title) {
-            util::log_event("INFO", &format!("greywall proposal already declined, dropped: {}", title.chars().take(60).collect::<String>()));
+            util::log_event("INFO", &format!("proposal for {project} already declined, dropped: {}", title.chars().take(60).collect::<String>()));
             return Ok(());
         }
-        let project = project_name(&checkout.to_string_lossy());
         let reports_of_reporter: Vec<&Item> = self.items.iter()
             .filter(|item| item.project() == project && item.reporter() == reporter && !item.source().is_empty()).collect();
         let open_reports: Vec<&&Item> = reports_of_reporter.iter().filter(|item| item.status() != "done").collect();
         if open_reports.iter().any(|item| normalized(&item.text()) == normalized(&title)) {
             return Ok(());
         }
-        if open_reports.len() >= GREYWALL_OPEN_MAX {
-            return Err(format!("greywall report from {reporter} dropped: {GREYWALL_OPEN_MAX} already open"));
+        if open_reports.len() >= ELSEWHERE_OPEN_MAX {
+            return Err(format!("proposal from {reporter} for {project} dropped: {ELSEWHERE_OPEN_MAX} already open"));
         }
-        if reports_of_reporter.iter().filter(|item| now_secs() - item.created() < 86_400).count() >= GREYWALL_DAILY_MAX {
-            return Err(format!("greywall report from {reporter} dropped: {GREYWALL_DAILY_MAX} filed in the last day"));
+        if reports_of_reporter.iter().filter(|item| now_secs() - item.created() < 86_400).count() >= ELSEWHERE_DAILY_MAX {
+            return Err(format!("proposal from {reporter} for {project} dropped: {ELSEWHERE_DAILY_MAX} filed in the last day"));
         }
         let id = self.add_unsaved(&project, &checkout.to_string_lossy(), &title);
         if let Some(item) = self.items.iter_mut().find(|item| item.id() == id) {
@@ -643,11 +671,14 @@ impl TodoList {
             if let Some(category) = category {
                 item.0.insert("category".into(), json!(category.as_str()));
             }
+            if update.get("kind").and_then(Value::as_str) == Some("design") {
+                item.0.insert("kind".into(), json!("design"));
+            }
         }
         self.save();
-        util::log_event("INFO", &format!("todo {id}: {reporter} proposed a greywall fix: {}", title.chars().take(60).collect::<String>()));
-        crate::audit::record("column", "greywall.proposed", "proposed", json!({"id": id, "reporter": reporter, "started_in": started_in,
-                                                                             "text": crate::audit::fingerprint(&title)}));
+        util::log_event("INFO", &format!("todo {id}: {reporter} proposed for {project}: {}", title.chars().take(60).collect::<String>()));
+        crate::audit::record("column", audit_event, "proposed", json!({"id": id, "project": project, "reporter": reporter, "started_in": started_in,
+                                                                   "text": crate::audit::fingerprint(&title)}));
         Ok(())
     }
 
@@ -699,6 +730,14 @@ impl TodoList {
         let sender_project = project_name(&repository_root(&started_in));
         let action = update.get("action").and_then(Value::as_str).unwrap_or("");
         let session: String = update.get("session").and_then(Value::as_str).unwrap_or("").chars().take(40).collect();
+        let target = update.get("project").and_then(Value::as_str).filter(|target| *target != sender_project);
+        if let Some(target) = target {
+            return match action {
+                "propose" => self.file_proposal_for(target, &update, &session, &started_in, &sender_project),
+                _ => Err(format!("{action:?} for another project ({:?}) from {sender_project}: only a proposal may name one",
+                                 target.chars().take(60).collect::<String>())),
+            };
+        }
         if action == "add" || action == "propose" {
             let category = match update.get("category") {
                 None => None,

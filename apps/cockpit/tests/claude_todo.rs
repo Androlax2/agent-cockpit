@@ -185,6 +185,28 @@ fn help_says_greywall_code_goes_to_greywall_and_config_blocks_to_blocked() {
 }
 
 #[test]
+fn propose_with_project_names_the_project_it_is_for() {
+    let sandbox = Sandbox::new();
+    let daemon = daemon(&sandbox, "ok");
+    let output = claude_todo(&sandbox, &["propose", "Pin the greywall build", "--why", "builds drift", "--project", "dotfiles"], &sandbox.root);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert!(stdout(&output).contains("dotfiles's list"), "{}", stdout(&output));
+    let update = &updates(&daemon)[0];
+    assert_eq!((update["action"].as_str(), update["project"].as_str()), (Some("propose"), Some("dotfiles")));
+}
+
+#[test]
+fn project_outside_propose_or_without_a_name_sends_no_update() {
+    let sandbox = Sandbox::new();
+    let daemon = daemon(&sandbox, "ok");
+    for arguments in [vec!["blocked", "Title", "--why", "reason", "--project", "runway"], vec!["greywall", "Title", "--why", "reason", "--project", "runway"],
+                      vec!["propose", "Title", "--why", "reason", "--project"]] {
+        assert_eq!(claude_todo(&sandbox, &arguments, &sandbox.root).status.code(), Some(2), "{arguments:?}");
+    }
+    assert!(updates(&daemon).is_empty());
+}
+
+#[test]
 fn add_and_propose_file_each_kind_without_losing_design_routing() {
     let sandbox = Sandbox::new();
     let daemon = daemon(&sandbox, "ok");
@@ -246,12 +268,12 @@ fn help_prints_the_usage_and_files_nothing() {
 }
 
 #[test]
-fn help_says_work_for_another_project_is_proposed_here_and_moved_by_theo() {
+fn help_says_work_for_another_project_is_proposed_with_its_name() {
     let sandbox = Sandbox::new();
     let output = claude_todo(&sandbox, &["--help"], &sandbox.root);
     let usage = String::from_utf8_lossy(&output.stdout);
-    assert!(usage.contains("for another one, propose it"), "{usage}");
-    assert!(usage.contains("Theo moves it there (m in the Todo panel)"), "{usage}");
+    assert!(usage.contains("[--project <name>]"), "{usage}");
+    assert!(usage.contains("add files only in this directory's project"), "{usage}");
 }
 
 #[test]
