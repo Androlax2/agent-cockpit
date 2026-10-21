@@ -9,6 +9,8 @@
 //!     claude-todo propose '<title>' --why '<reason>' [--notes '<details>'] [--design] [--kind <kind>]
 //!                                     an idea for Theo to approve or decline (the Proposed tab)
 //!                                     --design: work for the project's designer session
+//!                                     only this directory's project (security audit M4): for
+//!                                     another one, propose it here naming that project; Theo moves it
 //!     claude-todo blocked '<what you could not do>' --why '<what stopped you>' [--notes '<details>']
 //!                                     from any project: greywall, claude-sessions, the launcher or
 //!                                     another part of Theo's setup kept you from doing something;
@@ -38,6 +40,8 @@ const USAGE: &str = "    claude-todo list [--all]        the items of this direc
                                     an idea for Theo to approve or decline; one Theo declined is not filed again
                                     --design: work for the project's designer session (a gap in the design)
                                     --kind: task (default), feature, bug, improvement, chore, research
+                                    an item lands only in this directory's project: for another one, propose it
+                                    here and name that project in --notes; Theo moves it there (m in the Todo panel)
     claude-todo blocked '<what you could not do>' --why '<what stopped you>' [--notes '<details>']
                                     the setup (greywall, claude-sessions, the launcher…) blocked you:
                                     filed in the dotfiles list and queued for its session

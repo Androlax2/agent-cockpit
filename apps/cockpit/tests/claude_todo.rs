@@ -216,6 +216,24 @@ fn help_prints_the_usage_and_files_nothing() {
 }
 
 #[test]
+fn help_says_work_for_another_project_is_proposed_here_and_moved_by_theo() {
+    let sandbox = Sandbox::new();
+    let output = claude_todo(&sandbox, &["--help"], &sandbox.root);
+    let usage = String::from_utf8_lossy(&output.stdout);
+    assert!(usage.contains("for another one, propose it"), "{usage}");
+    assert!(usage.contains("Theo moves it there (m in the Todo panel)"), "{usage}");
+}
+
+#[test]
+fn a_project_option_is_refused_instead_of_filing_elsewhere() {
+    let sandbox = Sandbox::new();
+    let daemon = daemon(&sandbox, "ok");
+    let output = claude_todo(&sandbox, &["add", "check the compose names", "--project", "opusline"], &sandbox.root);
+    assert_eq!(output.status.code(), Some(2));
+    assert!(updates(&daemon).is_empty());
+}
+
+#[test]
 fn list_and_show_expose_kinds_including_legacy_tasks() {
     let sandbox = Sandbox::new();
     fs::write(sandbox.state.join("todo.json"), json!({"items": [
