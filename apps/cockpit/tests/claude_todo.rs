@@ -155,6 +155,36 @@ fn blocked_files_a_report_with_what_stopped_the_session() {
 }
 
 #[test]
+fn greywall_files_a_report_for_the_greywall_project_with_its_kind_and_reason() {
+    let sandbox = Sandbox::new();
+    let daemon = daemon(&sandbox, "ok");
+    let output = claude_todo(&sandbox, &["greywall", "Security: masks lose to later binds", "--why", "~/.ssh/id_* readable", "--kind", "bug", "--notes", "linux.go"], &sandbox.root);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert!(stdout(&output).contains("greywall"), "{}", stdout(&output));
+    let update = &updates(&daemon)[0];
+    assert_eq!((update["action"].as_str(), update["why"].as_str(), update["category"].as_str(), update["notes"].as_str()),
+               (Some("greywall"), Some("~/.ssh/id_* readable"), Some("bug"), Some("linux.go")));
+}
+
+#[test]
+fn greywall_without_a_reason_or_with_design_sends_no_update() {
+    let sandbox = Sandbox::new();
+    let daemon = daemon(&sandbox, "ok");
+    for arguments in [vec!["greywall", "Title"], vec!["greywall", "Title", "--why", "reason", "--design"]] {
+        assert_eq!(claude_todo(&sandbox, &arguments, &sandbox.root).status.code(), Some(2), "{arguments:?}");
+    }
+    assert!(updates(&daemon).is_empty());
+}
+
+#[test]
+fn help_says_greywall_code_goes_to_greywall_and_config_blocks_to_blocked() {
+    let sandbox = Sandbox::new();
+    let usage = stdout(&claude_todo(&sandbox, &["greywall", "--help"], &sandbox.root));
+    assert!(usage.contains("claude-todo greywall '<title>'"), "{usage}");
+    assert!(usage.contains("greywall.json"), "{usage}");
+}
+
+#[test]
 fn add_and_propose_file_each_kind_without_losing_design_routing() {
     let sandbox = Sandbox::new();
     let daemon = daemon(&sandbox, "ok");

@@ -59,6 +59,9 @@ const DONE_KEPT_DAYS: i64 = 7;
 /// loop must not flood it.
 const BLOCKED_OPEN_MAX: usize = 3;
 const BLOCKED_DAILY_MAX: usize = 5;
+/// The same caps for the proposals one project files in the greywall list (claude-todo greywall).
+const GREYWALL_OPEN_MAX: usize = 3;
+const GREYWALL_DAILY_MAX: usize = 5;
 /// Updates read per apply: the rest of a flood is dropped, and logged.
 const APPLY_MAX_LINES: usize = 200;
 
@@ -593,6 +596,61 @@ impl TodoList {
         Ok(())
     }
 
+    /// A problem in greywall's own code (claude-todo greywall) from a session of any project: a
+    /// proposal in the greywall fork's list, which becomes work only once Theo approves it. Blocks
+    /// from greywall.json stay blocked reports for the dotfiles. Without the fork's checkout it is
+    /// refused, never filed elsewhere. Same caps as blocked reports, per reporting project.
+    fn file_greywall_proposal(&mut self, update: &Map<String, Value>, session: &str, started_in: &str, reporter: &str) -> Result<(), String> {
+        let checkout = paths::greywall_work();
+        if !checkout.is_dir() {
+            return Err(format!("greywall report from {reporter} refused: no greywall checkout at {}", checkout.display()));
+        }
+        let category = match update.get("category") {
+            None => None,
+            Some(value) => Some(value.as_str().and_then(Category::parse).ok_or("invalid todo category")?),
+        };
+        let field = |key: &str, limit: usize| multiline(update.get(key).and_then(Value::as_str).unwrap_or(""), limit);
+        let title: String = util::collapse(&without_controls(&field("text", 300)));
+        let why = field("why", WHY_MAX);
+        if title.is_empty() || why.is_empty() {
+            return Err(format!("greywall report from {reporter} without a title or a reason"));
+        }
+        if self.was_declined(&title) {
+            util::log_event("INFO", &format!("greywall proposal already declined, dropped: {}", title.chars().take(60).collect::<String>()));
+            return Ok(());
+        }
+        let project = project_name(&checkout.to_string_lossy());
+        let reports_of_reporter: Vec<&Item> = self.items.iter()
+            .filter(|item| item.project() == project && item.reporter() == reporter && !item.source().is_empty()).collect();
+        let open_reports: Vec<&&Item> = reports_of_reporter.iter().filter(|item| item.status() != "done").collect();
+        if open_reports.iter().any(|item| normalized(&item.text()) == normalized(&title)) {
+            return Ok(());
+        }
+        if open_reports.len() >= GREYWALL_OPEN_MAX {
+            return Err(format!("greywall report from {reporter} dropped: {GREYWALL_OPEN_MAX} already open"));
+        }
+        if reports_of_reporter.iter().filter(|item| now_secs() - item.created() < 86_400).count() >= GREYWALL_DAILY_MAX {
+            return Err(format!("greywall report from {reporter} dropped: {GREYWALL_DAILY_MAX} filed in the last day"));
+        }
+        let id = self.add_unsaved(&project, &checkout.to_string_lossy(), &title);
+        if let Some(item) = self.items.iter_mut().find(|item| item.id() == id) {
+            let notes = format!("{}\n\nReported from a session started in {started_in}.", field("notes", NOTES_MAX));
+            item.0.insert("status".into(), json!(PROPOSED));
+            item.0.insert("why".into(), json!(why));
+            item.0.insert("notes".into(), json!(notes.trim()));
+            item.0.insert("reporter".into(), json!(reporter));
+            item.0.insert("source".into(), json!(if session.is_empty() { "a session".to_string() } else { format!("session {session}") }));
+            if let Some(category) = category {
+                item.0.insert("category".into(), json!(category.as_str()));
+            }
+        }
+        self.save();
+        util::log_event("INFO", &format!("todo {id}: {reporter} proposed a greywall fix: {}", title.chars().take(60).collect::<String>()));
+        crate::audit::record("column", "greywall.proposed", "proposed", json!({"id": id, "reporter": reporter, "started_in": started_in,
+                                                                             "text": crate::audit::fingerprint(&title)}));
+        Ok(())
+    }
+
     /// The changes sessions asked for (claude-todo), each checked; returns how many applied. The
     /// OSD daemon queued each with `started_in`, the folder the sender's sandbox started in: its
     /// project is the only one the update touches (security audit 2026-10-19, M4). Refusals are logged.
@@ -686,6 +744,8 @@ impl TodoList {
                 return Err("blocked reports do not accept a category".into());
             }
             self.file_blocked_report(&update, &session, &started_in, &sender_project)
+        } else if action == "greywall" {
+            self.file_greywall_proposal(&update, &session, &started_in, &sender_project)
         } else if STATUSES.contains(&action) {
             let id = update.get("id").and_then(Value::as_str).unwrap_or("");
             if !self.belongs_to(id, &sender_project) {

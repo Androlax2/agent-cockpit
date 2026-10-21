@@ -15,6 +15,10 @@
 //!                                     from any project: greywall, claude-sessions, the launcher or
 //!                                     another part of Theo's setup kept you from doing something;
 //!                                     filed in the dotfiles list and queued for its session
+//!     claude-todo greywall '<title>' --why '<reason>' [--notes '<details>'] [--kind <kind>]
+//!                                     from any project: a security hole, bug or improvement in greywall's
+//!                                     own code (not greywall.json, which is a blocked report); proposed
+//!                                     in the greywall fork's list for Theo to approve
 //!     claude-todo delete <id>         remove an item a session filed in this project (never one Theo wrote)
 //!     claude-todo show <id>           an item with its notes, the paths of its pasted images and, for a proposal, why
 //!
@@ -45,6 +49,10 @@ const USAGE: &str = "    claude-todo list [--all]        the items of this direc
     claude-todo blocked '<what you could not do>' --why '<what stopped you>' [--notes '<details>']
                                     the setup (greywall, claude-sessions, the launcher…) blocked you:
                                     filed in the dotfiles list and queued for its session
+    claude-todo greywall '<title>' --why '<reason>' [--notes '<details>'] [--kind <kind>]
+                                    a security hole, bug or improvement in greywall's own code, from any
+                                    project: proposed in the greywall list for Theo to approve. A path or
+                                    host greywall.json denies you is a blocked report, not this
     claude-todo delete <id>         remove an item a session filed in this project (never one Theo wrote)
     claude-todo show <id>           an item with its notes and the paths of its pasted images";
 
@@ -116,7 +124,7 @@ fn file_arguments(action: &str, title: &str, arguments: &[&str]) -> i32 {
     let mut is_design = false;
     let mut remaining = arguments;
     while let Some((&flag, rest)) = remaining.split_first() {
-        if flag == "--design" && action != "blocked" && !is_design {
+        if flag == "--design" && !matches!(action, "blocked" | "greywall") && !is_design {
             is_design = true;
             remaining = rest;
             continue;
@@ -163,6 +171,7 @@ fn file(action: &str, title: &str, why: Option<String>, notes: Option<String>, i
     }
     match append(update) {
         Ok(()) if action == "propose" => { println!("Proposed to Theo in {}'s list (Theo approves or declines it).", project()); 0 }
+        Ok(()) if action == "greywall" => { println!("Proposed to Theo in greywall's list (Theo approves or declines it)."); 0 }
         Ok(()) if action == "blocked" => { println!("Reported in the dotfiles list and queued for its session. Tell Theo what you could not do; don't work around it."); 0 }
         Ok(()) => { println!("Added to {}'s list.", project()); 0 }
         Err(error) => { eprintln!("claude-todo: {error}"); 1 }
@@ -202,7 +211,7 @@ fn main() {
     let item_key = Regex::new(r"^[0-9a-f]{8}$").unwrap();
     let words: Vec<&str> = arguments.iter().map(String::as_str).collect();
     let status = match words.as_slice() {
-        ["--help" | "-h" | "help", ..] | ["add" | "propose" | "blocked", "--help" | "-h", ..] => { println!("{USAGE}"); 0 }
+        ["--help" | "-h" | "help", ..] | ["add" | "propose" | "blocked" | "greywall", "--help" | "-h", ..] => { println!("{USAGE}"); 0 }
         [] | ["list", ..] => list(words.contains(&"--all")),
         [action @ ("start" | "done" | "todo"), id] if key.is_match(id) => {
             let status = if *action == "start" { "doing" } else { action };
@@ -227,7 +236,7 @@ fn main() {
             }
         }
         ["show", id] if key.is_match(id) => show(id),
-        [action @ ("add" | "propose" | "blocked"), title, rest @ ..] if !title.trim().is_empty() => file_arguments(action, title, rest),
+        [action @ ("add" | "propose" | "blocked" | "greywall"), title, rest @ ..] if !title.trim().is_empty() => file_arguments(action, title, rest),
         _ => { eprintln!("{USAGE}"); 2 }
     };
     std::process::exit(status);
