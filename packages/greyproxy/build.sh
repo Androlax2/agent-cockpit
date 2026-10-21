@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Build and install greyproxy from the dotfiles branch of github.com/Androlax2/greyproxy: v0.4.5
-# plus the refusal of proxied traffic to greyproxy's own listeners. Without it a sandbox reaches the
-# unauthenticated API on 127.0.0.1:43080 through the proxy and can turn on allow-all.
+# plus the refusal of proxied traffic to greyproxy's own listeners (without it a sandbox reaches the
+# API on 127.0.0.1:43080 through the proxy and can turn on allow-all), an optional API token
+# (api-token in its data dir; requireApiToken off), per-client proxy secrets (requireClientSecret
+# off) and a fail-closed start (it exits 1 when its service cannot start). Both checks stay off
+# until greywall and the Docker service send the token and the secret.
 # Each fix lands on that branch and goes upstream as a PR.
 #   make greyproxy-patch
 # Move the pins below to the next tip of that branch, or to an upstream release once it ships them.
@@ -11,8 +14,8 @@ set -euo pipefail
 build_dir="${XDG_CACHE_HOME:-$HOME/.cache}/dotfiles-build/greyproxy"
 target="$HOME/.local/bin/greyproxy"
 
-greyproxy_commit=059dda7bdfdb12b353261b569d5737ab03501c82 # branch dotfiles
-greyproxy_sha256=c69e7f37ebbd546720cea7e7be05ead8366a3711aa4df56cc2f073a0960bf7dd
+greyproxy_commit=a30e3d426133e77a24a0727833de4a6330d31327 # branch dotfiles
+greyproxy_sha256=7518f18e5d52fcde3d0033560478e7026e1fed9ff8418f92c95f673567af5432
 # Plain semver, no +dotfiles: greywall parses this version, treats anything else as outdated, and
 # `greywall setup` would then replace this build with upstream's release. The commit line tells
 # the builds apart.
