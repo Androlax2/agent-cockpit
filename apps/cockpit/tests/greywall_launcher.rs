@@ -610,7 +610,9 @@ fn start_claude_in(launch: &Launch, folder: &str) -> (String, Vec<String>) {
     let project = launch.sandbox.home.join(folder);
     fs::create_dir_all(&project).unwrap();
     assert!(Command::new("git").args(["init", "-q"]).arg(&project).status().unwrap().success());
-    let output = launch.sandbox.command(bin().join("greywall-agents/claude"), &[]).current_dir(&project).output().unwrap();
+    // A dotfiles session running the suite has the shared folder set already.
+    let output = launch.sandbox.command(bin().join("greywall-agents/claude"), &[]).env_remove("CARGO_BUILD_BUILD_DIR")
+        .current_dir(&project).output().unwrap();
     assert_eq!(output.status.code(), Some(0), "{folder}: {}", stderr(&output));
     let environment = fs::read_to_string(launch.sandbox.home.join("claude-environment")).unwrap();
     (launch.sandbox.calls("greywall").pop().unwrap(), environment.lines().map(str::to_string).collect())
