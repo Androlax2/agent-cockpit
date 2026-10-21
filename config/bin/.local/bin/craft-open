@@ -141,6 +141,13 @@ else
     fi
     config_home="$figcraft_home/instances/$PORT/config"
     mkdir -p -m 700 "$config_home"
+    # A new instance starts dark; FigCraft fills the other preferences with its defaults, and a
+    # theme picked later in the window is kept.
+    preferences="$config_home/FigCraft/state.json"
+    if [[ ! -e $preferences ]]; then
+        mkdir -p -m 700 "$config_home/FigCraft"
+        (umask 077; printf '%s\n' '{"prefs":{"theme":"dark"}}' > "$preferences")
+    fi
     XDG_CONFIG_HOME="$config_home" setsid -f figcraft --control "$PORT" --automation-read-root "$root" --automation-write-root "$root" 9>&- >"$config_home/startup.log" 2>&1
     for (( waited = 0; waited < WAIT_S * 10; waited++ )); do
         [[ $(figcraft_port_for_root "$root") == "$PORT" ]] && answers && break

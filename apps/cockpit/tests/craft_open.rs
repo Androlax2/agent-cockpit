@@ -175,6 +175,29 @@ fn figcraft_starts_with_its_files_limited_to_the_project() {
 }
 
 #[test]
+fn a_new_instance_starts_in_the_dark_theme() {
+    let craft = Craft::new();
+    let output = craft.run(&["figcraft"], &[]);
+    assert_eq!(output.status.code(), Some(0), "{}{}", stdout(&output), stderr(&output));
+    let preferences = craft.sandbox.home.join(format!(".config/greywall-agents/figcraft/instances/{}/config/FigCraft/state.json", craft.started_port(0)));
+    assert_eq!(fs::read_to_string(&preferences).unwrap(), "{\"prefs\":{\"theme\":\"dark\"}}\n");
+    use std::os::unix::fs::PermissionsExt;
+    assert_eq!(fs::metadata(&preferences).unwrap().permissions().mode() & 0o777, 0o600);
+}
+
+#[test]
+fn an_instances_saved_preferences_are_kept_on_restart() {
+    let craft = Craft::new();
+    let port = "45123";
+    let preferences = craft.sandbox.home.join(format!(".config/greywall-agents/figcraft/instances/{port}/config/FigCraft/state.json"));
+    fs::create_dir_all(preferences.parent().unwrap()).unwrap();
+    fs::write(&preferences, "{\"prefs\":{\"theme\":\"light\"}}").unwrap();
+    let output = craft.run(&["figcraft"], &[("CRAFT_OPEN_PORT", port)]);
+    assert_eq!(output.status.code(), Some(0), "{}{}", stdout(&output), stderr(&output));
+    assert_eq!(fs::read_to_string(&preferences).unwrap(), "{\"prefs\":{\"theme\":\"light\"}}");
+}
+
+#[test]
 fn a_foreign_window_is_left_alive_while_this_checkout_starts() {
     let craft = Craft::new();
     let mut open = WaitingProcess::new("figcraft", &["--control", "7979", "--automation-write-root", "/home/elsewhere"], &craft.project);
