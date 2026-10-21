@@ -1322,8 +1322,10 @@ set_aside_claude_memory() { # clone-dir
 
 # A fresh clone holds the same files as its source, so a source Claude already trusts makes the
 # clone trusted too: no trust prompt on each parallel session. An untrusted source leaves the prompt.
-# Claude rewrites ~/.claude.json while it runs; the write is atomic (temp file, then mv), and
-# losing a race only brings the prompt back.
+# Claude rewrites ~/.claude.json while it runs, and losing a race only brings the prompt back.
+# Running sandboxes bind-mount the file itself: one moved over it is a new inode they never see,
+# and their own writes land in the old one. So the update goes over the same inode, without
+# truncating first: Claude reading an empty file would start over from blank settings.
 CLAUDE_CONFIG_FILE="$HOME/.claude.json"
 
 inherit_trust() { # source-dir clone-dir
@@ -1333,9 +1335,10 @@ inherit_trust() { # source-dir clone-dir
         log_event WARN sessions "could not mark $2 as trusted: no temp file next to $CLAUDE_CONFIG_FILE"
         return 0
     fi
-    if jq --arg clone "$2" '.projects[$clone].hasTrustDialogAccepted = true' "$CLAUDE_CONFIG_FILE" > "$updated"; then
-        chmod 600 "$updated"
-        mv -f "$updated" "$CLAUDE_CONFIG_FILE"
+    if jq --arg clone "$2" '.projects[$clone].hasTrustDialogAccepted = true' "$CLAUDE_CONFIG_FILE" > "$updated" \
+        && dd if="$updated" of="$CLAUDE_CONFIG_FILE" conv=notrunc status=none \
+        && truncate -s "$(stat -c %s "$updated")" "$CLAUDE_CONFIG_FILE"; then
+        rm -f "$updated"
     else
         rm -f "$updated"
         log_event WARN sessions "could not mark $2 as trusted in $CLAUDE_CONFIG_FILE"

@@ -1376,6 +1376,20 @@ fn trusting_a_clone_keeps_the_rest_of_the_claude_config() {
 }
 
 #[test]
+fn trusting_a_clone_rewrites_the_claude_config_in_place() {
+    // Running sandboxes bind-mount ~/.claude.json: a file moved over it stays invisible to them.
+    use std::os::unix::fs::MetadataExt;
+    let manager = Manager::new();
+    manager.git_repository();
+    let config = claude_config_with_trust(&manager, true);
+    let inode_before = fs::metadata(&config).unwrap().ino();
+    let clones = fs::canonicalize(&manager.sandbox.root).unwrap().join("clones");
+    manager.run(&["parallel", &path_str(&manager.project), "feat"], &[("CLAUDE_SESSIONS_CLONES", &path_str(&clones))]);
+    assert_eq!(clone_trust(&config, &clones.join("proj-a/feat")), json!(true));
+    assert_eq!(fs::metadata(&config).unwrap().ino(), inode_before);
+}
+
+#[test]
 fn a_clone_of_an_untrusted_repository_still_asks() {
     let manager = Manager::new();
     manager.git_repository();
