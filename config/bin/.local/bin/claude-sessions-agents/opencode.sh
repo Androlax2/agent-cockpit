@@ -168,15 +168,15 @@ agent_opencode_restore() { # dir id
 # Escape twice interrupts a turn, Ctrl-C clears typed input, Ctrl-C at an empty prompt exits. Two
 # rounds with a one-second grace each, then force-close.
 agent_opencode_exit() { # tmux-session pane id
-    local attempt
+    local attempt error
     # The pane can close between any two calls; a failed call is only success if its session is gone.
-    tmux set-option -p -t "$2" @opencode_exit_requested 1 || { ! tmux has-session -t "=$1" 2>/dev/null; return; }
+    error=$(tmux set-option -p -t "$2" @opencode_exit_requested 1 2>&1) || { opencode_exit_call_failed "$1" "$error"; return; }
     for attempt in 1 2; do
-        tmux send-keys -t "$2" Escape Escape || { ! tmux has-session -t "=$1" 2>/dev/null; return; }
+        error=$(tmux send-keys -t "$2" Escape Escape 2>&1) || { opencode_exit_call_failed "$1" "$error"; return; }
         sleep 0.2
-        tmux send-keys -t "$2" C-c || { ! tmux has-session -t "=$1" 2>/dev/null; return; }
+        error=$(tmux send-keys -t "$2" C-c 2>&1) || { opencode_exit_call_failed "$1" "$error"; return; }
         sleep 0.3
-        tmux send-keys -t "$2" C-c || { ! tmux has-session -t "=$1" 2>/dev/null; return; }
+        error=$(tmux send-keys -t "$2" C-c 2>&1) || { opencode_exit_call_failed "$1" "$error"; return; }
         if claude_left "$1" "$2" 1; then
             # A failed exit leaves the start's epilogue waiting for a key.
             if tmux has-session -t "=$1" 2>/dev/null; then tmux kill-session -t "=$1" 2>/dev/null || true; fi
@@ -185,6 +185,14 @@ agent_opencode_exit() { # tmux-session pane id
     done
     echo "claude-sessions: opencode in $1 did not exit, killing its tmux session" >&2
     tmux kill-session -t "=$1"
+}
+
+# A background exit's stderr is logged as an ERROR, so tmux's error is shown only while the session
+# still runs: once it is gone, the exit succeeded and "can't find pane" is just the race.
+opencode_exit_call_failed() { # tmux-session error
+    tmux has-session -t "=$1" 2>/dev/null || return 0
+    printf '%s\n' "$2" >&2
+    return 1
 }
 
 # Its screen is not Claude's: the daemon's state, from its plugin, says what it does. At its

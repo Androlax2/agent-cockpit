@@ -2967,6 +2967,8 @@ if [[ $1 == has-session && -f $SHIM_CLOSED ]]; then exit 1; fi
             ("SHIM_CLOSED", &path_str(&manager.sandbox.root.join("closed"))),
         ]);
         assert_eq!(result.status.code(), Some(0), "{failure_at}: {}", stderr(&result));
+        // A background exit's stderr is logged as an ERROR: a pane that closed is not one.
+        assert!(!stderr(&result).contains("can't find pane"), "{failure_at}: {}", stderr(&result));
     }
 }
 
