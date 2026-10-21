@@ -37,7 +37,13 @@ mkdir -p internal/sandbox/bin
 unzip -q -o "$build_dir/tun2socks.zip" tun2socks-linux-amd64 -d internal/sandbox/bin
 
 # On the host, the tests that start a real bubblewrap sandbox run too (they skip inside greywall).
-go test -mod=readonly -count=1 ./...
+# They get an empty HOME outside /tmp: bwrap cannot mount over our stowed ~/.gitconfig symlink,
+# and greywall ignores paths under /tmp.
+test_home="$build_dir/home"
+mkdir -p "$test_home"
+env -u XDG_CONFIG_HOME -u XDG_DATA_HOME -u XDG_CACHE_HOME \
+    GOPATH="$(go env GOPATH)" GOCACHE="$(go env GOCACHE)" GOMODCACHE="$(go env GOMODCACHE)" HOME="$test_home" \
+    go test -mod=readonly -count=1 ./...
 CGO_ENABLED=0 go build -mod=readonly -trimpath \
     -ldflags "-s -w -X main.version=0.3.7+dotfiles -X main.buildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ) -X main.gitCommit=$greywall_commit" \
     -o "$build_dir/greywall" ./cmd/greywall
