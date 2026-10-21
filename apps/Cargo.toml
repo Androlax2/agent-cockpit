@@ -6,3 +6,11 @@ resolver = "3"
 
 [profile.release]
 strip = true
+
+# Every clone builds into its own apps/target; full debug info made each one 6-20G. Line tables
+# keep backtraces and panic locations readable.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false

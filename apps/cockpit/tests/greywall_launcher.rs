@@ -610,7 +610,7 @@ fn start_claude_in(launch: &Launch, folder: &str) -> (String, Vec<String>) {
     let project = launch.sandbox.home.join(folder);
     fs::create_dir_all(&project).unwrap();
     assert!(Command::new("git").args(["init", "-q"]).arg(&project).status().unwrap().success());
-    // A dotfiles session running the suite has the shared folder set already.
+    // Dotfiles sessions started while clones shared a build folder still have it set.
     let output = launch.sandbox.command(bin().join("greywall-agents/claude"), &[]).env_remove("CARGO_BUILD_BUILD_DIR")
         .current_dir(&project).output().unwrap();
     assert_eq!(output.status.code(), Some(0), "{folder}: {}", stderr(&output));
@@ -619,22 +619,11 @@ fn start_claude_in(launch: &Launch, folder: &str) -> (String, Vec<String>) {
 }
 
 #[test]
-fn dotfiles_clones_share_one_cargo_build_folder() {
-    // Each clone's apps/target grew to 6-20G of the same dependencies built again.
-    for folder in ["IdeaProjects/dotfiles", "IdeaProjects/.parallel/dotfiles/p1"] {
-        let launch = Launch::new();
-        let shared = launch.sandbox.home.join(".cache/dotfiles-cargo-build");
-        let (started, environment) = start_claude_in(&launch, folder);
-        assert!(environment.contains(&format!("CARGO_BUILD_BUILD_DIR={}", shared.display())), "{folder}: {environment:?}");
-        assert!(started.contains(&format!("--allow-path {} ", shared.display())), "{folder}: {started}");
-        assert!(shared.is_dir(), "{folder}: greywall mounts only what exists when it starts");
-    }
-}
-
-#[test]
-fn other_projects_and_pull_request_clones_keep_their_own_cargo_build_folder() {
-    // A pull request's clone runs someone else's build scripts; another project has no business there.
-    for folder in ["IdeaProjects/proj-c", "IdeaProjects/.parallel/dotfiles/pr-12", "IdeaProjects/.parallel/proj-a/p1"] {
+fn every_clone_keeps_its_own_cargo_build_folder() {
+    // Cargo names a workspace's own crates the same in every clone, so a shared build folder handed
+    // one clone the tests and binaries another clone built, with that clone's paths compiled in.
+    for folder in ["IdeaProjects/dotfiles", "IdeaProjects/.parallel/dotfiles/p1", "IdeaProjects/.parallel/dotfiles/pr-12",
+                   "IdeaProjects/proj-c", "IdeaProjects/.parallel/proj-a/p1"] {
         let launch = Launch::new();
         let (started, environment) = start_claude_in(&launch, folder);
         assert!(!environment.iter().any(|line| line.starts_with("CARGO_BUILD_BUILD_DIR=")), "{folder}: {environment:?}");
