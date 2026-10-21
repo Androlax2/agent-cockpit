@@ -53,6 +53,11 @@ folder_slug() {
     printf '%s' "$1" | sed 's/[^A-Za-z0-9]/-/g'
 }
 
+# greyproxy shows and matches this sandbox's requests by its login: <agent>-<project> says which
+# project asks for a host. A label, not proof: the password is greywall's fixed "proxy", so any
+# sandbox can log in under any name. Never scope an approval to it as a security boundary.
+greywall_options="$greywall_options --proxy-user $agent-$(folder_slug "$project_name")"
+
 # ~/.claude is writable (Claude keeps its state there), and ~/.claude/projects holds every project's
 # memory and transcripts: a session could plant "memory" another project loads as Theo's own
 # (security audit 2026-10-19, H2). Every project's folder but this session's own goes read-only,

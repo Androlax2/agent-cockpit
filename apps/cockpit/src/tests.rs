@@ -2195,13 +2195,14 @@ fn sessions_started_before_a_global_change_are_told_to_restart() {
 }
 
 #[test]
-fn greyproxy_requests_retried_lately_count_as_held() {
+fn greyproxy_requests_retried_lately_count_as_held_with_the_sandbox_that_asked() {
     let fixture = Fixture::new();
     let database = fixture.path("greyproxy.db");
     let connection = rusqlite::Connection::open(&database).unwrap();
-    connection.execute_batch("create table pending_requests (destination_host text, destination_port integer, last_seen text);
-        insert into pending_requests values ('api.example.com', 443, datetime('now')), ('old.example.com', 443, datetime('now', '-1 hour'));").unwrap();
-    assert_eq!(sessions::greyproxy_held(&database), vec!["api.example.com:443".to_string()]);
+    connection.execute_batch("create table pending_requests (container_name text, destination_host text, destination_port integer, last_seen text);
+        insert into pending_requests values ('claude-runway', 'api.example.com', 443, datetime('now')),
+                                            ('claude-opusline', 'old.example.com', 443, datetime('now', '-1 hour'));").unwrap();
+    assert_eq!(sessions::greyproxy_held(&database), vec!["claude-runway → api.example.com:443".to_string()]);
 }
 
 #[test]

@@ -6,7 +6,7 @@ own_folders="~/.local/share/opencode/** ~/.config/opencode/**"
 # Sessions do not update opencode, for the reason the claude launcher gives for Claude Code.
 export OPENCODE_DISABLE_AUTOUPDATE=1
 . "$(dirname "$0")/launcher-common.sh"
-greywall_options="--auto-profile --profile opencode --proxy-user opencode $greywall_options"
+greywall_options="--auto-profile --profile opencode $greywall_options"
 
 # Inline config outranks project files, including an old --attach 7979 command. Replace the
 # whole server so an inherited environment cannot redirect the verified checkout connection.

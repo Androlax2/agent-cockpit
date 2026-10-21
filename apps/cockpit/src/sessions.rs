@@ -731,15 +731,16 @@ pub fn restore_offer(view: &ViewState, running: &HashSet<String>) -> Vec<Restora
     sessions_to_restore(&recent, &ended, running, boot)
 }
 
-/// host:port of the requests greyproxy holds for approval, retried in the last few minutes.
+/// "<sandbox> → host:port" of the requests greyproxy holds for approval, retried in the last few
+/// minutes. The sandbox is greyproxy's name for it (the launcher's <agent>-<project> login).
 pub fn greyproxy_held(database: &Path) -> Vec<String> {
     let flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_URI;
     let Ok(connection) = rusqlite::Connection::open_with_flags(database, flags) else { return Vec::new() };
     let _ = connection.busy_timeout(std::time::Duration::from_secs(1));
-    let query = "select destination_host, destination_port from pending_requests where last_seen >= datetime('now', ?) order by last_seen desc";
+    let query = "select destination_host, destination_port, container_name from pending_requests where last_seen >= datetime('now', ?) order by last_seen desc";
     let Ok(mut statement) = connection.prepare(query) else { return Vec::new() };
     let rows = statement.query_map([format!("-{GREYPROXY_RECENT_MINUTES} minutes")], |row| {
-        Ok(format!("{}:{}", row.get::<_, String>(0)?, row.get::<_, rusqlite::types::Value>(1).map(|port| match port {
+        Ok(format!("{} → {}:{}", row.get::<_, String>(2)?, row.get::<_, String>(0)?, row.get::<_, rusqlite::types::Value>(1).map(|port| match port {
             rusqlite::types::Value::Integer(port) => port.to_string(),
             rusqlite::types::Value::Text(port) => port,
             _ => String::new(),

@@ -493,11 +493,37 @@ fn a_claude_session_never_gets_opencodes_key() {
 }
 
 #[test]
-fn opencode_runs_in_its_own_profile_and_proxy_identity() {
+fn opencode_runs_in_its_own_profile() {
     let launch = Launch::new();
     let started = launch.run_agent("opencode", &[], &[]);
-    assert!(started.contains("--auto-profile --profile opencode --proxy-user opencode "), "{started}");
+    assert!(started.contains("--auto-profile --profile opencode "), "{started}");
     assert!(!started.contains("--profile claude"), "{started}");
+}
+
+/// greyproxy shows and matches requests by this name: <agent>-<project> tells Theo which
+/// project asks for a host. It is a label, not proof: any sandbox can log in under any name.
+#[test]
+fn every_agent_gets_one_proxy_identity_named_after_its_agent_and_project() {
+    for &agent in AGENTS.iter() {
+        let launch = Launch::new();
+        let started = launch.run_agent(agent, &[], &[]);
+        assert_eq!(started.matches("--proxy-user ").count(), 1, "{agent}: {started}");
+        assert!(started.contains(&format!("--proxy-user {agent}-proj-a ")), "{agent}: {started}");
+    }
+}
+
+#[test]
+fn a_parallel_clone_uses_its_repositorys_proxy_identity() {
+    let launch = Launch::new();
+    let (started, _) = start_claude_in(&launch, "IdeaProjects/.parallel/proj-a/p1");
+    assert!(started.contains("--proxy-user claude-proj-a "), "{started}");
+}
+
+#[test]
+fn a_project_name_becomes_a_proxy_identity_of_letters_digits_and_dashes() {
+    let launch = Launch::new();
+    let (started, _) = start_claude_in(&launch, "IdeaProjects/site.v2+beta");
+    assert!(started.contains("--proxy-user claude-site-v2-beta "), "{started}");
 }
 
 #[test]
