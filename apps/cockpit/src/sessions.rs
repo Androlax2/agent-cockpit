@@ -189,6 +189,8 @@ pub struct Session {
     pub pinned: bool,
     pub group_size: usize,
     pub group_position: usize,
+    /// Held on screen while `claude-sessions restart` brings it back (Restart).
+    pub restarting: bool,
 }
 
 fn text(row: &Value, key: &str) -> String {
@@ -306,6 +308,53 @@ pub fn running() -> Vec<Session> {
     sessions
 }
 
+/// A session `claude-sessions restart` is bringing back, from the note it leaves before the exit
+/// (paths::restarting_dir, one file per session: when, project, folder). Between the exit and the
+/// new process's first report the session is in no snapshot: its card is held from this.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Restart {
+    pub session: String,
+    pub since: i64,
+    pub project: String,
+    pub cwd: String,
+}
+
+pub fn restarts() -> Vec<Restart> {
+    let Ok(entries) = fs::read_dir(paths::restarting_dir()) else { return vec![] };
+    entries.flatten().filter_map(|entry| {
+        let session = entry.file_name().to_str()?.to_string();
+        let text = fs::read_to_string(entry.path()).ok()?;
+        let mut lines = text.lines();
+        let since = lines.next()?.trim().parse().ok()?;
+        Some(Restart { session, since, project: lines.next().unwrap_or("").into(), cwd: lines.next().unwrap_or("").into() })
+    }).collect()
+}
+
+pub fn end_restart(session: &str) {
+    let _ = fs::remove_file(paths::restarting_dir().join(session));
+}
+
+impl Restart {
+    /// The session reporting in its place: the same conversation from a new process (its report
+    /// started after the restart, or comes from another pane), or, when it had no conversation to
+    /// resume, a fresh one in its folder.
+    pub fn replacement<'a>(&self, running: &'a [Session], old_pane: &str) -> Option<&'a Session> {
+        running.iter().filter(|session| crate::agents::is_session_id(&session.session)).find(|session| {
+            let is_new = session.started.is_some_and(|started| started >= self.since);
+            if session.session == self.session {
+                is_new || (!old_pane.is_empty() && !session.tmux_pane.is_empty() && session.tmux_pane != old_pane)
+            } else {
+                is_new && !self.cwd.is_empty() && session.cwd == self.cwd
+            }
+        })
+    }
+
+    /// The new process's tmux session, before it reports: a card of its own until then.
+    pub fn is_unreported_launch(&self, session: &Session) -> bool {
+        !crate::agents::is_session_id(&session.session) && session.cwd == self.cwd && session.started.is_some_and(|started| started >= self.since)
+    }
+}
+
 pub fn statusline_facts(session_id: &str) -> Facts {
     let Some(facts) = read_json(&paths::statusline_dir().join(format!("statusline-{session_id}.json"))) else { return Facts::default() };
     Facts {
@@ -400,6 +449,9 @@ pub fn waiting_request(session: &Session) -> String {
 }
 
 pub fn activity_label(session: &Session) -> &'static str {
+    if session.restarting {
+        return "Restarting";
+    }
     match session.ask_to_run.as_str() {
         "approval" => return "Approval needed",
         "input" => return "Input needed",
@@ -426,6 +478,9 @@ pub fn is_idle(session: &Session, now: i64) -> bool {
 }
 
 pub fn activity_text(session: &Session) -> String {
+    if session.restarting {
+        return "A new process starts: back in a few seconds".into();
+    }
     let request = collapse(&waiting_request(session));
     if !request.is_empty() {
         return request;

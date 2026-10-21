@@ -36,6 +36,9 @@
 #                                sidebar's error hand-off); it shows as a card
 #   claude-sessions loading-screen
 #                                what the popup over the viewer pane runs while a session starts
+#   claude-sessions restarting-screen <id>
+#                                what the viewer pane runs while the session on screen restarts out of
+#                                sight; it views the session again once it reports
 #   claude-sessions idle         what the viewer pane runs while nothing is selected
 #   claude-sessions usage        show the plan's usage report in the viewer pane (the sidebar's Enter on Status)
 #   claude-sessions logs [lines] the end of the log (~/.local/state/claude-sessions/log) and the hook's
@@ -895,10 +898,17 @@ restore_sessions() { # dir id [dir id …]
     done
 }
 
+# A note per session being restarted, "<since>\n<project>\n<directory>\n<old pane>": the column
+# holds its card (Restarting) and its selection until the new process reports, and the session pane
+# waits for it (restarting_screen). Without it, the card vanished at the exit and the column viewed
+# the next one.
+RESTARTING_DIR="${XDG_RUNTIME_DIR:-/tmp}/claude-sessions.restarting"
+RESTART_TIMEOUT_S=90
+
 # Exit it and bring it back in its directory; each agent says how (agent_*_restart). An effort or a
 # billing is refused for an agent without the feature.
 restart_session() { # id [effort] [detached] [credits|subscription]
-    local id=$1 effort=${2:-} detached=${3:-} billing=${4:-} directory
+    local id=$1 effort=${2:-} detached=${3:-} billing=${4:-} directory note
     directory=$(session_field "$id" cwd)
     audit_event manager session.restart asked "session=$id" "directory=$directory"
     if [[ -z $directory ]]; then
@@ -907,7 +917,56 @@ restart_session() { # id [effort] [detached] [credits|subscription]
     fi
     [[ -z $effort ]] || require_feature "$id" effort "effort" || return 1
     [[ -z $billing ]] || require_feature "$id" billing "billing" || return 1
-    "agent_$(agent_of_session "$id")_restart" "$id" "$directory" "$effort" "$detached" "$billing"
+    [[ $id =~ ^[A-Za-z0-9_-]+$ ]] || { echo "claude-sessions: refusing session id $id" >&2; return 1; }
+    note="$RESTARTING_DIR/$id"
+    mkdir -p "$RESTARTING_DIR"
+    printf '%s\n%s\n%s\n%s\n' "$(date +%s)" "$(session_field "$id" project)" "$directory" "$(session_field "$id" tmux_pane)" > "$note"
+    # Detached, nothing else takes the session pane: it would show a dead client.
+    if [[ $detached == detached && $(cat "$CURRENT" 2>/dev/null) == "$id" ]]; then
+        show_restarting "$id"
+    fi
+    if ! "agent_$(agent_of_session "$id")_restart" "$id" "$directory" "$effort" "$detached" "$billing"; then
+        rm -f "$note"
+        return 1
+    fi
+}
+
+show_restarting() { # id
+    local sidebar viewer approval approval_run sidebar_dead
+    read_manager_panes
+    [[ -n $viewer ]] || return 0
+    tmux respawn-pane -k -t "$viewer" claude-sessions restarting-screen "$1"
+}
+
+# The session pane while a session restarts out of sight: a spinner, then the session again once its
+# new process reports (the same conversation, or a fresh one in its folder when it had none). It runs
+# the view in the background: the view replaces this pane.
+restarting_screen() { # id
+    local id=$1 since project directory old_pane frames=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏) tick=0 rows columns label back
+    if ! { read -r since; read -r project; read -r directory; read -r old_pane; } < "$RESTARTING_DIR/$id" 2>/dev/null; then
+        printf '\n  No restart under way for %s.\n' "$id"
+        exec sleep infinity
+    fi
+    label="Restarting $project …"
+    tput civis 2>/dev/null || true
+    while (( $(date +%s) - since <= RESTART_TIMEOUT_S )); do
+        back=$(jq -r --arg session "$id" --arg directory "$directory" --arg pane "$old_pane" --argjson since "$since" \
+            'first(.sessions[] | select(((.started // 0) >= $since and (.session == $session or .cwd == $directory))
+                                        or (.session == $session and (.tmux_pane // "") != "" and .tmux_pane != $pane))) | .session' \
+            "$SNAPSHOT" 2>/dev/null || true)
+        if [[ -n $back ]]; then
+            setsid -f claude-sessions view "$back" >/dev/null 2>&1
+            exec sleep infinity
+        fi
+        rows=$(tput lines 2>/dev/null || echo 24) columns=$(tput cols 2>/dev/null || echo 80)
+        printf '\033[2J\033[%d;%dH\033[1;36m%s\033[0m  \033[1m%s\033[0m' \
+            $(( rows / 2 )) $(( (columns - ${#label} - 3) / 2 > 1 ? (columns - ${#label} - 3) / 2 : 1 )) "${frames[tick % 10]}" "$label"
+        tick=$(( tick + 1 ))
+        sleep 0.15
+    done
+    log_event WARN sessions "restart of $project ($id) did not report within ${RESTART_TIMEOUT_S}s"
+    printf '\033[2J\033[H\n  ✗ %s did not come back within %ss.\n  claude-sessions logs says more; its card shows it if it reports later.\n' "$project" "$RESTART_TIMEOUT_S"
+    exec sleep infinity
 }
 
 # One after the other: each restart reuses the viewer pane. The session shown before comes back.
@@ -1928,6 +1987,7 @@ case ${1:-attach} in
     restart-all) shift; restart_sessions "$@" ;;
     background) background_session "${2:?usage: claude-sessions background <dir> <prompt>}" "${3:?usage: claude-sessions background <dir> <prompt>}" ;;
     loading-screen) show_loading ;;
+    restarting-screen) restarting_screen "${2:?usage: claude-sessions restarting-screen <session-id>}" ;;
     restart) restart_session "${2:?usage: claude-sessions restart <session-id> [effort] [detached]}" "${3:-}" "${4:-}" ;;
     billing)
         # The session restarts on the same conversation, billed the other way.

@@ -48,6 +48,8 @@ const MIN_SESSION_TITLE_WIDTH: usize = 8;
 const POLL: Duration = Duration::from_millis(250);
 /// How long a session that exited cleanly may stay in the snapshot before its card shows again.
 const EXIT_SETTLE_S: f64 = 15.0;
+/// How long a restarting session's card is held without a report from its new process.
+const RESTART_TIMEOUT_S: i64 = 90;
 const DEFAULT_COLUMN_WIDTH: u16 = 60;
 const TITLES_PER_TICK: usize = 8;
 const GREYPROXY_POLL_S: f64 = 10.0;
@@ -722,6 +724,8 @@ pub struct App {
     pub message: String,
     /// Sessions told to exit (x): off the list at once, back with a warning if the exit fails.
     pub(crate) exiting: Vec<Exiting>,
+    /// The cards of the sessions being restarted, as last drawn: held until each reports again.
+    restarting_cards: HashMap<String, Session>,
     pub(crate) labelled: (String, String),
     pub(crate) menu: Option<EffortMenu>,
     session_details: Option<SessionDetails>,
@@ -820,7 +824,7 @@ impl App {
             history: History::default(), view: ViewState::load(), usage: Refresher::new(), alerts: BudgetAlerts::new(util::send_notice),
             costs: Costs::default(), reviews: Reviews::default(), todos, errors: ErrorReporter::new(),
             claude_status: ProviderStatus::default(), codex_status: ProviderStatus::new(Provider::Codex), panels: Default::default(), focus: 1, previous_panel: 1,
-            help_open: false, has_pane_focus: true, attention_only: false, message, exiting: Vec::new(), labelled: Default::default(), menu: None, session_details: None, todo_composer: None, settings_menu: None, team_view: None, team_attention: 0, team_roles: HashMap::new(), team_checked: 0.0, pairing: None, restore: Vec::new(),
+            help_open: false, has_pane_focus: true, attention_only: false, message, exiting: Vec::new(), restarting_cards: HashMap::new(), labelled: Default::default(), menu: None, session_details: None, todo_composer: None, settings_menu: None, team_view: None, team_attention: 0, team_roles: HashMap::new(), team_checked: 0.0, pairing: None, restore: Vec::new(),
             held: Vec::new(), held_checked: 0.0, queue_checked: 0.0, gaming: util::gaming, restore_checked: 0.0, start_files: Vec::new(),
             width: DEFAULT_COLUMN_WIDTH, sessions: Vec::new(), running_sessions: Vec::new(), windows: Vec::new(), quota_rows: Vec::new(), review_rows: Vec::new(), todo_entries: Vec::new(),
             session_task_titles: HashMap::new(), session_branches: HashMap::new(),
@@ -1313,8 +1317,47 @@ impl App {
         }
     }
 
+    /// A session being restarted keeps its card, marked Restarting, and the selection while its old
+    /// process is gone and the new one has not reported: without it the column selected and viewed
+    /// the next card, which also killed a restart launching in the session pane. The new process's
+    /// card takes the selection over.
+    fn hold_restarting_cards(&mut self, running: &mut Vec<Session>, selected_id: &mut Option<String>) {
+        let mut held = HashMap::new();
+        for restart in sessions::restarts() {
+            let previous = self.restarting_cards.remove(&restart.session)
+                .or_else(|| self.running_sessions.iter().find(|session| session.session == restart.session).cloned());
+            let old_pane = previous.as_ref().map(|card| card.tmux_pane.clone()).unwrap_or_default();
+            if let Some(replacement) = restart.replacement(running, &old_pane) {
+                if selected_id.as_deref() == Some(restart.session.as_str()) {
+                    *selected_id = Some(replacement.session.clone());
+                }
+                sessions::end_restart(&restart.session);
+                continue;
+            }
+            if now() as i64 - restart.since > RESTART_TIMEOUT_S {
+                util::log_event("WARN", &format!("{} did not report within {RESTART_TIMEOUT_S}s of its restart", restart.project));
+                self.message = format!("⚠ {} did not come back from its restart: claude-sessions logs", restart.project);
+                sessions::end_restart(&restart.session);
+                continue;
+            }
+            running.retain(|session| !restart.is_unreported_launch(session));
+            let still_running = running.iter().position(|session| session.session == restart.session).map(|index| running.remove(index));
+            let mut card = still_running.or(previous).unwrap_or_else(|| Session {
+                session: restart.session.clone(), project: restart.project.clone(), cwd: restart.cwd.clone(),
+                since: restart.since, started: Some(restart.since), ..Session::default()
+            });
+            card.restarting = true;
+            card.state = "unknown".into();
+            card.needs_input = false;
+            card.ask_to_run.clear();
+            held.insert(restart.session.clone(), card.clone());
+            running.push(card);
+        }
+        self.restarting_cards = held;
+    }
+
     fn build_sessions(&mut self) {
-        let selected_id = self.sessions.get(self.panels[1].selected).map(|session| session.session.clone());
+        let mut selected_id = self.sessions.get(self.panels[1].selected).map(|session| session.session.clone());
         let gathered = match self.gathered.take() {
             Some(gathered) => gathered,
             None => self.gather_sessions(),
@@ -1325,6 +1368,7 @@ impl App {
         self.session_roots = gathered.roots.clone();
         self.settle_exits(&running);
         running.retain(|s| !s.is_external() && !self.exiting.iter().any(|exit| exit.session == s.session || exit.tmux_pane == s.tmux_pane));
+        self.hold_restarting_cards(&mut running, &mut selected_id);
         for session in &mut running {
             session.pinned = self.view.pinned.contains(&session.session);
         }
@@ -1394,12 +1438,14 @@ impl App {
             let tint = bold(if needs_attention { YELLOW } else if is_idle { FG_DARK } else { match activity {
                 "Working" | "Command running" => BLUE,
                 "Ready" => GREEN,
+                "Restarting" => CYAN,
                 _ => FG_DARK,
             } });
             let accent = (needs_attention || session.session == current).then_some(tint);
             let glyph = if needs_attention { "!" } else { match activity {
                 "Working" | "Command running" => "●",
                 "Ready" => "○",
+                "Restarting" => "⟳",
                 _ => "·",
             } };
             let branch = self.session_branches.get(&session.session).map(String::as_str).unwrap_or("");
@@ -1736,6 +1782,9 @@ impl App {
 
     pub(crate) fn handle_sessions(&mut self, key: Key, screen: &mut dyn Screen) -> String {
         let session = self.selected_session();
+        if let Some(s) = session.as_ref().filter(|s| s.restarting) && matches!(key, Key::Enter | Key::Char('r' | 'e' | '$' | 'C' | 'x')) {
+            return format!("{} is restarting: wait for it to come back", s.project);
+        }
         if session.as_ref().is_some_and(|session| session.is_external()) && session_key_requires_terminal(key.clone()) {
             return "external session: no terminal target; use its own window".into();
         }

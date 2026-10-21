@@ -699,6 +699,88 @@ fn restart_of_a_session_nobody_typed_in_starts_a_fresh_one() {
     assert!(launch.ends_with("--effort max"));
 }
 
+impl Manager {
+    fn restart_note(&self) -> PathBuf {
+        self.runtime_file(&format!("claude-sessions.restarting/{SESSION_A}"))
+    }
+
+    fn write_restart_note(&self, since: u64) {
+        fs::create_dir_all(self.restart_note().parent().unwrap()).unwrap();
+        fs::write(self.restart_note(), format!("{since}\nproj-a\n{}\n%4\n", path_str(&self.project))).unwrap();
+    }
+}
+
+fn epoch_seconds() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs()
+}
+
+#[test]
+fn restart_leaves_a_note_the_column_holds_the_card_by() {
+    let manager = Manager::new();
+    let before = epoch_seconds();
+    manager.run(&["restart", SESSION_A], &[("SHIM_PANE_TEXT", IDLE), ("SHIM_EXIT_AFTER", "1")]);
+    let note = fs::read_to_string(manager.restart_note()).expect("no restart note");
+    let lines: Vec<&str> = note.lines().collect();
+    assert!(lines[0].parse::<u64>().unwrap() >= before, "{note}");
+    assert_eq!(lines[1..], ["proj-a", path_str(&manager.project).as_str(), "%4"]);
+}
+
+#[test]
+fn a_restart_in_the_session_pane_keeps_the_session_the_one_on_screen() {
+    let manager = Manager::new();
+    manager.run(&["restart", SESSION_A], &[("SHIM_PANE_TEXT", IDLE), ("SHIM_EXIT_AFTER", "1")]);
+    assert_eq!(fs::read_to_string(manager.runtime_file("claude-sessions.current")).unwrap().trim(), SESSION_A);
+}
+
+#[test]
+fn a_detached_restart_of_the_session_on_screen_shows_the_restarting_screen_before_the_exit() {
+    let manager = Manager::new();
+    fs::write(manager.runtime_file("claude-sessions.current"), format!("{SESSION_A}\n")).unwrap();
+    manager.run(&["restart", SESSION_A, "", "detached"], &[("SHIM_PANE_TEXT", IDLE), ("SHIM_EXIT_AFTER", "1")]);
+    let calls = manager.calls("tmux");
+    let screen = calls.iter().position(|call| call == &format!("tmux respawn-pane -k -t %11 claude-sessions restarting-screen {SESSION_A}")).expect("no restarting screen");
+    let exit = calls.iter().position(|call| call == "tmux send-keys -t %4 -l -- /exit").expect("no /exit");
+    assert!(screen < exit, "{calls:?}");
+}
+
+#[test]
+fn a_detached_restart_of_a_session_out_of_sight_leaves_the_session_pane_alone() {
+    let manager = Manager::new();
+    manager.run(&["restart", SESSION_A, "", "detached"], &[("SHIM_PANE_TEXT", IDLE), ("SHIM_EXIT_AFTER", "1")]);
+    assert!(manager.tmux_calls("respawn-pane").is_empty(), "{:?}", manager.tmux_calls("respawn-pane"));
+}
+
+#[test]
+fn a_failed_restart_takes_its_note_back() {
+    let manager = Manager::new();
+    manager.sandbox.shim("tmux", &format!("{FAKE_TMUX}\n[[ $1 == new-session ]] && exit 1\nexit 0"));
+    manager.run(&["restart", SESSION_A, "", "detached"], &[("SHIM_PANE_TEXT", IDLE), ("SHIM_EXIT_AFTER", "1")]);
+    assert!(!manager.restart_note().exists());
+}
+
+#[test]
+fn the_restarting_screen_views_the_session_once_its_new_process_reports() {
+    let manager = Manager::new();
+    manager.sandbox.shim("sleep", r#"[[ $1 == infinity ]] && exit 0; exec /usr/bin/sleep "$@""#);
+    let since = epoch_seconds();
+    manager.write_restart_note(since);
+    fs::write(&manager.snapshot, json!({"sessions": [
+        {"session": SESSION_A, "state": "waiting", "project": "proj-a", "cwd": path_str(&manager.project), "tmux_pane": "%9", "started": since + 1}]}).to_string()).unwrap();
+    manager.run(&["restarting-screen", SESSION_A], &[]);
+    assert_eq!(manager.calls("setsid"), vec![format!("setsid -f claude-sessions view {SESSION_A}")]);
+}
+
+#[test]
+fn the_restarting_screen_waits_while_the_old_process_still_reports() {
+    let manager = Manager::new();
+    manager.sandbox.shim("sleep", r#"[[ $1 == infinity ]] && exit 0; exec /usr/bin/sleep "$@""#);
+    // Already past the timeout once the first check sees only the old process: no view.
+    manager.write_restart_note(epoch_seconds() - 89);
+    let result = manager.run(&["restarting-screen", SESSION_A], &[]);
+    assert!(manager.calls("setsid").is_empty());
+    assert!(stdout(&result).contains("proj-a did not come back"), "{}", stdout(&result));
+}
+
 #[test]
 fn doctor_flags_a_claude_link_behind_the_newest_download() {
     let manager = Manager::new();

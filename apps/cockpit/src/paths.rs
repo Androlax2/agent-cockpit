@@ -37,6 +37,8 @@ pub fn snapshot() -> PathBuf { runtime_dir().join("claude-sessions.json") }
 /// claude-sessions' loading screen state while a session starts or restarts in the viewer pane.
 pub fn loading_state() -> PathBuf { runtime_dir().join("claude-sessions-loading") }
 pub fn current() -> PathBuf { runtime_dir().join("claude-sessions.current") }
+/// One note per session `claude-sessions restart` is bringing back (sessions::restarts).
+pub fn restarting_dir() -> PathBuf { runtime_dir().join("claude-sessions.restarting") }
 /// While it exists, the phone page notifies: the lock screen's claude-sessions away on.
 pub fn phone_away() -> PathBuf { runtime_dir().join("claude-remote-away") }
 pub fn usage_cache() -> PathBuf { runtime_dir().join("claude-usage.json") }

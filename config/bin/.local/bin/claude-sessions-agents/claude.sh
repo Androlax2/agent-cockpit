@@ -128,6 +128,8 @@ agent_claude_restart() { # id dir [effort] [detached] [credits|subscription]
     # The exited session leaves a dead pane behind; replace it right away so the gap reads as intended.
     tmux respawn-pane -k -t "$(viewer_pane)" sh -c 'printf "\n  ⟳ Session closed, resuming it …\n"; sleep 30'
     resume_session "$directory" "$id" "$effort"
+    # Still the session on screen: its card stays the active one through the restart.
+    printf '%s\n' "$id" > "$CURRENT"
 }
 
 # A conversation is resumed; a session nobody typed in yet has none, and starts fresh in its folder.

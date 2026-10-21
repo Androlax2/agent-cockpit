@@ -2251,6 +2251,104 @@ fn exiting_the_selected_session_previews_its_replacement_once() {
     }
 }
 
+fn note_restart(fixture: &Fixture, session_id: &str, since: i64, project: &str, cwd: &str) {
+    fixture.write(&format!("run/claude-sessions.restarting/{session_id}"), &format!("{since}\n{project}\n{cwd}\n%1\n"));
+}
+
+#[test]
+fn a_restarting_session_keeps_its_card_and_the_selection_while_it_is_gone() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "runway", "/r", 1), session(SESSION_B, "waiting", "opusline", "/o", 2)]));
+    fixture.view(SESSION_A);
+    let mut app = fixture.app();
+    app.panels[1].selected = 0;
+
+    note_restart(&fixture, SESSION_A, util::now() as i64, "runway", "/r");
+    fixture.snapshot(json!([session(SESSION_B, "waiting", "opusline", "/o", 2)]));
+    app.build();
+
+    let selected = &app.sessions[app.panels[1].selected];
+    assert_eq!((selected.session.as_str(), sessions::activity_label(selected)), (SESSION_A, "Restarting"));
+    assert!(fixture.calls("claude-sessions").is_empty(), "no other session is viewed: {:?}", fixture.calls("claude-sessions"));
+}
+
+#[test]
+fn a_restarted_session_reporting_again_ends_the_hold() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "runway", "/r", 1)]));
+    let mut app = fixture.app();
+    let since = util::now() as i64;
+    note_restart(&fixture, SESSION_A, since, "runway", "/r");
+    fixture.snapshot(json!([]));
+    app.build();
+
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "runway", "/r", since + 1)]));
+    app.build();
+
+    assert!(!app.sessions[0].restarting);
+    assert!(!fixture.path(&format!("run/claude-sessions.restarting/{SESSION_A}")).exists());
+}
+
+#[test]
+fn a_fresh_session_in_the_folder_of_a_restart_takes_its_selection() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "runway", "/r", 1), session(SESSION_B, "waiting", "opusline", "/o", 2)]));
+    let mut app = fixture.app();
+    app.panels[1].selected = 0;
+    let since = util::now() as i64;
+    note_restart(&fixture, SESSION_A, since, "runway", "/r");
+    fixture.snapshot(json!([session(SESSION_B, "waiting", "opusline", "/o", 2)]));
+    app.build();
+
+    let fresh = "cccccccc-0000-4000-8000-000000000000";
+    fixture.snapshot(json!([session(SESSION_B, "waiting", "opusline", "/o", 2), session(fresh, "waiting", "runway", "/r", since + 1)]));
+    app.build();
+
+    assert_eq!(app.sessions[app.panels[1].selected].session, fresh);
+    assert!(fixture.calls("claude-sessions").is_empty(), "nothing is viewed: {:?}", fixture.calls("claude-sessions"));
+}
+
+#[test]
+fn the_unreported_launch_of_a_restart_has_no_card_of_its_own() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "runway", "/r", 1)]));
+    let mut app = fixture.app();
+    let since = util::now() as i64;
+    note_restart(&fixture, SESSION_A, since, "runway", "/r");
+    fixture.snapshot(json!([]));
+    fixture.shim("tmux", &format!("if [ \"$1\" = list-panes ]; then printf 'claude-retry-restart-1\\t%%5\\t/r\\trunway\\t{}\\t\\n'; fi", since + 1));
+    app.build();
+
+    assert_eq!(app.sessions.iter().map(|s| s.session.as_str()).collect::<Vec<_>>(), [SESSION_A]);
+}
+
+#[test]
+fn a_restart_that_never_reports_drops_its_card_and_says_so() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([]));
+    note_restart(&fixture, SESSION_A, util::now() as i64 - 600, "runway", "/r");
+    let app = fixture.app();
+
+    assert!(app.sessions.is_empty());
+    assert!(app.message.contains("runway did not come back"), "{}", app.message);
+    assert!(!fixture.path(&format!("run/claude-sessions.restarting/{SESSION_A}")).exists());
+}
+
+#[test]
+fn a_restarting_card_refuses_the_keys_that_act_on_its_process() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "runway", "/r", 1)]));
+    let mut app = fixture.app();
+    note_restart(&fixture, SESSION_A, util::now() as i64, "runway", "/r");
+    fixture.snapshot(json!([]));
+    app.build();
+
+    app.handle(Key::Char('x'), &mut FakeScreen::answering(&[Key::Char('y')]));
+
+    assert_eq!(app.message, "runway is restarting: wait for it to come back");
+    assert!(fixture.calls("claude-sessions").is_empty());
+}
+
 #[test]
 fn exiting_the_last_session_does_not_try_to_preview_a_replacement() {
     let fixture = Fixture::new();
