@@ -43,4 +43,4 @@ install -m 0755 "$build_dir/greyproxy" "$target.new"
 mv "$target.new" "$target"
 "$target" --version | sed -n 3p
 echo "greyproxy-patch: installed; the previous binary is $target.previous."
-echo "greyproxy-patch: systemctl --user restart greyproxy, then restart the sessions."
+echo "greyproxy-patch: systemctl --user restart greyproxy (running sessions reconnect on their own)."
