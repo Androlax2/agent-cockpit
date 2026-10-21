@@ -5,7 +5,6 @@ use serde::{Deserialize, Serialize};
 use std::{fs, io};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::process::Command;
 
 fn lock_file() -> io::Result<fs::File> {
     fs::OpenOptions::new().create(true).append(true)
@@ -100,10 +99,6 @@ impl Draft {
         self.discard()
     }
 
-    pub fn has_title(&self) -> io::Result<bool> {
-        Ok(app::parse_editor_text(&fs::read_to_string(self.path("md"))?).is_some())
-    }
-
     pub fn discard(&self) -> io::Result<()> {
         for extension in ["json", "md"] {
             match fs::remove_file(self.path(extension)) {
@@ -111,18 +106,6 @@ impl Draft {
                 Err(error) if error.kind() == io::ErrorKind::NotFound => (),
                 Err(error) => return Err(error),
             }
-        }
-        Ok(())
-    }
-
-    pub fn edit(&self, heading: &str) -> io::Result<()> {
-        let status = Command::new("tmux").args(["display-popup", "-E", "-w", "80%", "-h", "70%", "-T", &format!(" {heading} · save and quit keeps it ")])
-            // Recovery can retire a draft before a delayed popup starts. Check ownership under
-            // the same lock before opening the editor; it must never recreate a retired buffer.
-            .args(["sh", "-c", "exec flock -s \"$1\" sh -c '[ -f \"$1\" ] || exit 1; exec \"${EDITOR:-nvim}\" \"$2\"' sh \"$2\" \"$3\"", "sh"])
-            .arg(paths::runtime_dir().join("claude-todo-editor.lock")).arg(self.path("json")).arg(self.path("md")).status()?;
-        if !status.success() {
-            return Err(io::Error::other(format!("editor exited with {status}")));
         }
         Ok(())
     }

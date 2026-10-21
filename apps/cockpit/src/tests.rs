@@ -4277,7 +4277,6 @@ fn integrated_recovery_reads_legacy_metadata_and_ignores_cancelled_native_residu
     metadata.as_object_mut().unwrap().remove("cancelled");
     fs::write(&metadata_path, metadata.to_string()).unwrap();
     fs::write(directory.join(format!("{}.md", draft.token)), "Legacy title\n\nLegacy notes\n").unwrap();
-    assert!(draft.has_title().unwrap());
     let mut recovered = fixture.app();
     assert_eq!((recovered.todos.items[0].project(), recovered.todos.items[0].text(), recovered.todos.items[0].notes()), ("legacy-project".into(), "Legacy title".into(), "Legacy notes".into()));
     recovered.focus_panel(3);
@@ -6643,86 +6642,6 @@ fn todo_drafts_cancel_a_blank_first_line_without_promoting_notes_to_the_title() 
                    ("Original title".into(), "Existing notes".into()));
         assert_eq!(fs::read_dir(fixture.path("state/claude-sessions/todo-drafts")).unwrap().count(), 0);
     }
-}
-
-#[test]
-fn todo_drafts_do_not_reopen_a_buffer_recovered_before_the_popup_acquired_its_lock() {
-    let fixture = Fixture::new();
-    fixture.view(SESSION_A);
-    fixture.snapshot(json!([session(SESSION_A, "waiting", "runway", "/r/runway", 100)]));
-    fixture.shim("test-todo-editor", r#"printf opened > "$XDG_RUNTIME_DIR/editor-opened"; printf 'Orphaned input\n' > "$1""#);
-    fixture.shim("delayed-popup", r#"
-        printf waiting > "$XDG_RUNTIME_DIR/popup-waiting"
-        while [ ! -f "$XDG_RUNTIME_DIR/popup-release" ]; do sleep 0.01; done
-        EDITOR=test-todo-editor "$@"
-        printf done > "$XDG_RUNTIME_DIR/popup-done"
-    "#);
-    fixture.shim("tmux", r#"
-        [ "$1" = display-popup ] || exit 0
-        while [ "$1" != sh ]; do shift; done
-        timeout 5 delayed-popup "$@" >/dev/null 2>&1 &
-        exit 7
-    "#);
-    let mut app = fixture.app();
-    app.focus_panel(3);
-    let editor_lock = crate::todo_editor::lock().unwrap();
-    let draft = crate::todo_editor::Draft::create("runway", "/r/runway", None).unwrap();
-    assert!(draft.edit("legacy delayed popup").is_err());
-    drop(editor_lock);
-    let deadline = std::time::Instant::now() + Duration::from_secs(3);
-    while !fixture.path("run/popup-waiting").exists() && std::time::Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    assert!(fixture.path("run/popup-waiting").exists());
-    assert!(fixture.app().todos.items.is_empty());
-    fixture.write("run/popup-release", "continue");
-    while !fixture.path("run/popup-done").exists() && std::time::Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    assert!(fixture.path("run/popup-done").exists());
-    assert!(!fixture.path("run/editor-opened").exists(), "late popup reopened a retired buffer and could orphan new input");
-    assert_eq!(fs::read_dir(fixture.path("state/claude-sessions/todo-drafts")).unwrap().count(), 0);
-}
-
-#[test]
-fn todo_drafts_wait_for_the_popup_process_after_the_sidebar_stops_waiting() {
-    let fixture = Fixture::new();
-    fixture.view(SESSION_A);
-    fixture.snapshot(json!([session(SESSION_A, "waiting", "runway", "/r/runway", 100)]));
-    fixture.shim("test-todo-editor", r#"
-        printf ready > "$XDG_RUNTIME_DIR/editor-ready"
-        while [ ! -f "$XDG_RUNTIME_DIR/editor-release" ]; do sleep 0.01; done
-        printf 'Finished after sidebar restart\n' > "$1"
-    "#);
-    fixture.shim("tmux", r#"
-        [ "$1" = display-popup ] || exit 0
-        while [ "$1" != sh ]; do shift; done
-        EDITOR=test-todo-editor timeout 5 "$@" >/dev/null 2>&1 &
-        exit 7
-    "#);
-    let mut app = fixture.app();
-    app.focus_panel(3);
-    let editor_lock = crate::todo_editor::lock().unwrap();
-    let draft = crate::todo_editor::Draft::create("runway", "/r/runway", None).unwrap();
-    assert!(draft.edit("legacy active popup").is_err());
-    drop(editor_lock);
-    let deadline = std::time::Instant::now() + Duration::from_secs(3);
-    while !fixture.path("run/editor-ready").exists() && std::time::Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    assert!(fixture.path("run/editor-ready").exists(), "popup editor did not start");
-    let lock = fs::File::open(fixture.path("run/claude-todo-editor.lock")).unwrap();
-    let is_protected = lock.try_lock().is_err();
-    let mut restarted = fixture.app();
-    let recovered_too_early = !restarted.todos.items.is_empty();
-    fixture.write("run/editor-release", "finish");
-    while restarted.todos.items.is_empty() && std::time::Instant::now() < deadline {
-        restarted.tick();
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    assert!(is_protected, "the editor subprocess did not hold the reload lock");
-    assert!(!recovered_too_early, "startup read the buffer before its editor finished");
-    assert_eq!(restarted.todos.items[0].text(), "Finished after sidebar restart");
 }
 
 #[test]
