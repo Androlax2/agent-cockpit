@@ -109,6 +109,8 @@ LOG_LINE_MAX=300
 HOOK_LOG_FILE="$HOME/.cache/claude/hook.log"
 CURRENT="${XDG_RUNTIME_DIR:-/tmp}/claude-sessions.current"
 ATTENTION="${XDG_RUNTIME_DIR:-/tmp}/claude-sessions.attention"
+# The sandbox scopes game-performance froze for a game, one per line; its `off` thaws them.
+GAME_FROZEN="${XDG_RUNTIME_DIR:-/tmp}/game-performance.frozen"
 SIDEBAR_WIDTH=60   # columns; the rest is the session
 WINDOW_CLASS=claude-sessions
 KITTY_CONFIG="$HOME/.config/kitty/kitty.conf"
@@ -593,6 +595,23 @@ claude_left() { # tmux-session pane timeout-seconds
     return 1
 }
 
+# A sandbox frozen for a game ignores /exit and Ctrl-C, and a kill left its frozen processes and
+# scope behind. Thawed first, it leaves cleanly, and the game's end no longer counts it as paused.
+thaw_frozen_pane() { # pane
+    local pane_pid scope remaining
+    pane_pid=$(tmux display-message -p -t "$1" '#{pane_pid}' 2>/dev/null) || return 0
+    [[ $pane_pid =~ ^[0-9]+$ ]] || return 0
+    scope=$(ps -o cgroup= -p "$pane_pid" 2>/dev/null | sed -n 's|.*/\([^/]*\.scope\)$|\1|p') || return 0
+    [[ -n $scope ]] && grep -qxF "$scope" "$GAME_FROZEN" 2>/dev/null || return 0
+    if ! systemctl --user thaw "$scope"; then
+        log_event WARN manager "could not thaw $scope, frozen for a game; its exit may fail"
+        return 0
+    fi
+    log_event INFO manager "thawed $scope, frozen for a game, so its session can exit"
+    remaining=$(grep -vxF "$scope" "$GAME_FROZEN" || true)
+    printf '%s' "${remaining:+$remaining$'\n'}" > "$GAME_FROZEN"
+}
+
 exit_session() {
     local id=$1 pane target
     audit_event manager session.exit asked "session=$id"
@@ -608,6 +627,7 @@ exit_session() {
         fi
         target=$(tmux display-message -p -t "$pane" '#{session_name}')
     fi
+    thaw_frozen_pane "$pane"
     "agent_$(agent_of_session "$id")_exit" "$target" "$pane" "$id"
 }
 

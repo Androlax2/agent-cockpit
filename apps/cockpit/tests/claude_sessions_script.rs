@@ -31,6 +31,7 @@ case $1 in
   has-session) [[ $3 == "=claude-manager" ]] && exit 0; (( $(grep -c "send-keys" "$SHIM_LOG") < ${SHIM_EXIT_AFTER:-1} )) ;;
   display-message) if [[ $* == *pane_dead* ]]; then echo 0; elif [[ $* == *pane_active* ]]; then
     if [[ $* == *"-t %11 "* ]]; then echo "${SHIM_VIEWER_ACTIVE:-0}"; else echo "${SHIM_APPROVAL_ACTIVE:-0}"; fi
+    elif [[ $* == *pane_pid* ]]; then echo "${SHIM_PANE_PID:-}";
     elif [[ $* == *pane_id* ]]; then echo "%10"; elif [[ $* == *pane_width* ]]; then echo "${SHIM_VIEWER_SIZE:-181 47}"; elif [[ $* == *window_width* ]]; then echo "${SHIM_TARGET_SIZE:-181 47}"; elif [[ $* == *pane_height* ]]; then echo "${SHIM_APPROVAL_HEIGHT:-28}"; else echo "claude-retry-9-9"; fi ;;
   split-window) [[ $* == *-P* ]] && echo "%1$(( $(wc -l < "$roles" 2>/dev/null || echo 0) + 1 ))" ;;
   set-option) if [[ $2 == -p && $5 == @role ]]; then echo "$4 $6" >> "$roles"; fi ;;
@@ -539,6 +540,54 @@ fn prompt_commands_pause_between_the_text_and_its_enter() {
         let expected = [format!("tmux send-keys -t %4 -l -- {text}"), "sleep 0.15".into(), "tmux send-keys -t %4 Enter".into()];
         assert_eq!(typed, expected, "command {command}");
     }
+}
+
+impl Manager {
+    /// Session A's pane (pid 4242) runs in tmux-spawn-aaa.scope; `frozen` is game-performance's list.
+    fn with_game_frozen(&self, frozen: &str) {
+        self.sandbox.shim("ps", r#"[[ $* == "-o cgroup= -p 4242" ]] && echo "0::/user.slice/user-1000.slice/user@1000.service/app.slice/tmux-spawn-aaa.scope""#);
+        self.sandbox.shim("systemctl", "");
+        fs::write(self.runtime_file("game-performance.frozen"), frozen).unwrap();
+    }
+}
+
+#[test]
+fn exit_thaws_a_session_frozen_for_a_game_before_sending_keys() {
+    let manager = Manager::new();
+    manager.with_game_frozen("tmux-spawn-aaa.scope\ntmux-spawn-bbb.scope\n");
+    manager.run(&["exit", SESSION_A], &[("SHIM_PANE_TEXT", IDLE), ("SHIM_EXIT_AFTER", "1"), ("SHIM_PANE_PID", "4242")]);
+    let log = fs::read_to_string(&manager.sandbox.log).unwrap();
+    let thaw = log.lines().position(|line| line == "systemctl --user thaw tmux-spawn-aaa.scope").expect("no thaw");
+    let first_key = log.lines().position(|line| line.starts_with("tmux send-keys")).expect("no keys");
+    assert!(thaw < first_key);
+}
+
+#[test]
+fn exit_takes_the_thawed_session_off_the_games_frozen_list() {
+    for (frozen, left) in [("tmux-spawn-aaa.scope\ntmux-spawn-bbb.scope\n", "tmux-spawn-bbb.scope\n"), ("tmux-spawn-aaa.scope\n", "")] {
+        let manager = Manager::new();
+        manager.with_game_frozen(frozen);
+        manager.run(&["exit", SESSION_A], &[("SHIM_PANE_TEXT", IDLE), ("SHIM_EXIT_AFTER", "1"), ("SHIM_PANE_PID", "4242")]);
+        assert_eq!(fs::read_to_string(manager.runtime_file("game-performance.frozen")).unwrap(), left);
+    }
+}
+
+#[test]
+fn exit_leaves_a_session_the_game_did_not_freeze_alone() {
+    let manager = Manager::new();
+    manager.with_game_frozen("tmux-spawn-bbb.scope\n");
+    let result = manager.run(&["exit", SESSION_A], &[("SHIM_PANE_TEXT", IDLE), ("SHIM_EXIT_AFTER", "1"), ("SHIM_PANE_PID", "4242")]);
+    assert_eq!(result.status.code(), Some(0), "{}", stderr(&result));
+    assert!(manager.calls("systemctl").is_empty());
+    assert_eq!(fs::read_to_string(manager.runtime_file("game-performance.frozen")).unwrap(), "tmux-spawn-bbb.scope\n");
+}
+
+#[test]
+fn restart_thaws_a_session_frozen_for_a_game() {
+    let manager = Manager::new();
+    manager.with_game_frozen("tmux-spawn-aaa.scope\n");
+    manager.run(&["restart", SESSION_A], &[("SHIM_PANE_TEXT", IDLE), ("SHIM_EXIT_AFTER", "1"), ("SHIM_PANE_PID", "4242")]);
+    assert_eq!(manager.calls("systemctl"), ["systemctl --user thaw tmux-spawn-aaa.scope"]);
 }
 
 #[test]
