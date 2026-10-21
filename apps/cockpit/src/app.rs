@@ -60,6 +60,7 @@ const TODO_TABS: [(&str, &[&str]); 5] = [("Open", &[todo::PROPOSED, "todo", "doi
 const TODO_TAB_OPEN: usize = 0;
 const TODO_TAB_PROPOSED: usize = 1;
 const TODO_TAB_TO_DO: usize = 2;
+const TODO_TAB_IN_PROGRESS: usize = 3;
 const EDITOR_HELP_MARK: &str = "#── everything from this line on is left out ──";
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 pub const EFFORT_LEVELS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
@@ -2291,6 +2292,14 @@ impl App {
         format!("{category}{saved}{scope}{queue}")
     }
 
+    /// The collapsed Todo shows no tabs: its border carries their counts, ideas awaiting Theo first.
+    fn todo_collapsed_counts(&self) -> Vec<(String, Style)> {
+        [(TODO_TAB_PROPOSED, "?", bold(MAGENTA)), (TODO_TAB_IN_PROGRESS, "◐", bold(BLUE)), (TODO_TAB_TO_DO, "•", bold(YELLOW))].into_iter()
+            .filter(|(tab, _, _)| self.todo_counts[*tab] > 0)
+            .map(|(tab, glyph, count_style)| (format!("{glyph} {}", self.todo_counts[tab]), count_style))
+            .collect()
+    }
+
     fn todo_owner(&self) -> String {
         let viewed = current_session();
         self.saved_todo_scope.as_ref().filter(|scope| scope.viewed_session == viewed)
@@ -2714,6 +2723,7 @@ impl App {
         let border = if focused { bold(BLUE) } else { style(BG_HIGHLIGHT) };
         let inner_height = (height - 2) as usize;
         let subtitle_text = self.subtitle(index);
+        let counts = if index == 3 && self.is_collapsed(3) { self.todo_collapsed_counts() } else { Vec::new() };
         let panel = &mut self.panels[index];
         let fixed_top_height = panel.fixed_top.len().min(if inner_height >= 4 { 2 } else if inner_height >= 2 { 1 } else { 0 });
         let fixed_bottom_height = if inner_height >= fixed_top_height + panel.fixed_bottom.len() + if index == 3 { 4 } else { 2 } { panel.fixed_bottom.len() } else { 0 };
@@ -2723,9 +2733,19 @@ impl App {
         put(buffer, top, 0, &format!("┌{}┐", "─".repeat(inner)), border);
         let label = format!("[{}] {}", PANEL_KEYS[index], PANEL_NAMES[index]);
         put(buffer, top, 2, &label, bold(if focused { BLUE } else { FG_DARK }));
-        let subtitle = fit(&subtitle_text, (width as usize).saturating_sub(8 + width_of(&label)));
+        let mut title_end = 2 + width_of(&label);
+        let counts_width: usize = counts.iter().map(|(text, _)| 1 + width_of(text)).sum();
+        if !counts.is_empty() && title_end + 2 + counts_width + 2 <= width as usize {
+            put(buffer, top, title_end as u16, " ·", dim(FG_DARK));
+            title_end += 2;
+            for (text, count_style) in &counts {
+                put(buffer, top, title_end as u16, &format!(" {text}"), *count_style);
+                title_end += 1 + width_of(text);
+            }
+        }
+        let subtitle = fit(&subtitle_text, (width as usize).saturating_sub(6 + title_end));
         if !subtitle.is_empty() {
-            put(buffer, top, 2 + width_of(&label) as u16, &format!(" · {subtitle} "), dim(FG_DARK));
+            put(buffer, top, title_end as u16, &format!(" · {subtitle} "), dim(FG_DARK));
         }
         for offset in 0..inner_height {
             let row = top + 1 + offset as u16;

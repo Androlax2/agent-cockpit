@@ -3394,6 +3394,46 @@ fn done_items_alone_leave_the_todo_collapsed() {
     assert_eq!(app.layout(45)[3], 2);
 }
 
+fn todo_border(app: &mut App) -> String {
+    let buffer = render(app, 80, 45);
+    (0..45).map(|y| (0..80).map(|x| buffer[(x, y)].symbol().to_string()).collect::<String>())
+        .find(|row| row.contains("[3] Todo")).expect("the Todo border is drawn")
+}
+
+#[test]
+fn the_collapsed_todo_border_counts_proposed_in_progress_and_to_do_items() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    let proposed = app.todos.add("runway", "/r/runway", "cache the manifest");
+    app.todos.items.iter_mut().find(|item| item.id() == proposed).unwrap().0.insert("status".into(), json!("proposed"));
+    let doing = app.todos.add("runway", "/r/runway", "add a healthcheck");
+    app.todos.set_status(&doing, "doing", "");
+    app.todos.add("runway", "/r/runway", "rotate the logs");
+    app.todos.add("runway", "/r/runway", "pin the image");
+    app.build();
+    assert!(todo_border(&mut app).contains("Todo · ? 1 ◐ 1 • 2 · all projects"), "{}", todo_border(&mut app));
+}
+
+#[test]
+fn the_collapsed_todo_border_leaves_out_empty_counts() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    let id = app.todos.add("runway", "/r/runway", "add a healthcheck");
+    app.todos.set_status(&id, "done", "");
+    app.build();
+    assert!(todo_border(&mut app).contains("Todo · all projects"), "{}", todo_border(&mut app));
+}
+
+#[test]
+fn the_focused_todo_leaves_its_counts_to_the_tabs() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    app.todos.add("runway", "/r/runway", "add a healthcheck");
+    app.build();
+    app.focus = 3;
+    assert!(todo_border(&mut app).contains("Todo · all projects"), "{}", todo_border(&mut app));
+}
+
 #[test]
 fn an_unfocused_panel_takes_only_the_rows_its_lines_need() {
     let fixture = Fixture::new();
