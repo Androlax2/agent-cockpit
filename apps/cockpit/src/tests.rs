@@ -7524,6 +7524,42 @@ fn n_starts_opencode_in_a_clone_when_it_is_the_saved_default() {
     assert!(fixture.wait_for_calls("claude-sessions", 1)[0].starts_with(&format!("claude-sessions --agent opencode parallel /r/runway todo-{healthcheck} ")));
 }
 
+/// An item filed in a parallel clone that has since been deleted, handed off with `key`.
+fn hand_off_from_a_deleted_clone(fixture: &Fixture, key: char) -> (App, String) {
+    fixture.write("state/claude-sessions/settings.json", r#"{"default-agent":"opencode"}"#);
+    let gone_clone = crate::paths::clones_dir().join("runway/todo-0123abcd/apps");
+    let mut app = fixture.app();
+    let healthcheck = app.todos.add("runway", &gone_clone.display().to_string(), "add a healthcheck");
+    app.build();
+    app.focus_panel(3);
+    app.panels[3].selected = 0;
+    app.handle(Key::Char(key), &mut FakeScreen::default());
+    (app, healthcheck)
+}
+
+#[test]
+fn an_item_from_a_deleted_clone_starts_from_its_repositorys_checkout() {
+    for (key, command) in [('N', "parallel"), ('h', "background")] {
+        let fixture = Fixture::new();
+        let checkout = fixture.path("home/IdeaProjects/runway");
+        fs::create_dir_all(&checkout).unwrap();
+        let (app, healthcheck) = hand_off_from_a_deleted_clone(&fixture, key);
+        let call = fixture.wait_for_calls("claude-sessions", 1).remove(0);
+        assert!(call.starts_with(&format!("claude-sessions --agent opencode {command} {} ", checkout.display())), "{key}: {call}");
+        assert_eq!(app.todos.status_of(&healthcheck), "doing", "{key}");
+    }
+}
+
+#[test]
+fn an_item_from_a_deleted_clone_without_a_checkout_stays_to_do() {
+    for key in ['N', 'h'] {
+        let fixture = Fixture::new();
+        let (app, healthcheck) = hand_off_from_a_deleted_clone(&fixture, key);
+        assert!(fixture.calls("claude-sessions").is_empty(), "{key}");
+        assert_eq!(app.todos.status_of(&healthcheck), "todo", "{key}");
+    }
+}
+
 #[test]
 fn c_reviews_a_pull_request_with_the_saved_default() {
     let fixture = Fixture::new();

@@ -17,7 +17,7 @@ use crate::usage::{self, BudgetAlerts, Refresher, Window};
 use crate::prompts;
 use crate::queue::{self, QUEUE_CHECK_S};
 use crate::{approval, remote};
-use crate::util::{self, age, current_session, manager, manager_in_background, money, now, project_name};
+use crate::util::{self, age, current_session, manager, manager_in_background, money, now, project_name, start_directory};
 use serde_json::Value;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind};
 use ratatui::buffer::Buffer;
@@ -2599,6 +2599,7 @@ impl App {
         if directory.is_empty() {
             return format!("no local checkout of {}: start a session there first", if repository.is_empty() { "?" } else { &repository });
         }
+        let directory = match start_directory(&directory) { Ok(directory) => directory, Err(error) => return error };
         let key = entry.key();
         let text = todo::with_todo_note(&text, &key);
         // A design to-do goes to the project's designer session, wherever its checkout is; any
@@ -2655,6 +2656,7 @@ impl App {
         if directory.is_empty() {
             return "no local checkout of this issue's repository: clone it first".into();
         }
+        let directory = match start_directory(&directory) { Ok(directory) => directory, Err(error) => return error };
         let agent = match settings::launch_agent() { Ok(agent) => agent, Err(error) => return error };
         let key = entry.key();
         let (branch, text) = todo::handoff_of(entry);

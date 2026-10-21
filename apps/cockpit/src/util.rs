@@ -201,6 +201,21 @@ pub fn project_name(path: &str) -> String {
     }
 }
 
+/// Where a session for an item filed in `directory` starts. A finished clone is deleted and the
+/// manager refuses a folder that is gone, so an item filed in one starts from its repository's
+/// own checkout (~/IdeaProjects/<repository>, the projects the picker lists).
+pub fn start_directory(directory: &str) -> Result<String, String> {
+    let path = Path::new(directory);
+    if path.is_dir() || !path.starts_with(paths::clones_dir()) {
+        return Ok(directory.to_string());
+    }
+    let checkout = paths::home().join("IdeaProjects").join(project_name(directory));
+    if !checkout.is_dir() {
+        return Err(format!("its clone is gone and there is no {} to start from", checkout.display()));
+    }
+    Ok(checkout.to_string_lossy().into_owned())
+}
+
 /// A .git file or a HEAD is a line: anything longer is not one.
 const GIT_FILE_MAX: u64 = 4096;
 
