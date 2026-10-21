@@ -20,6 +20,15 @@ pub fn runtime_dir() -> PathBuf {
     PathBuf::from(env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".into()))
 }
 
+/// The filesystems whose fill the column watches: / and home, or CLAUDE_SESSIONS_DISK_MOUNTS
+/// (colon-separated; empty watches none, as the tests do).
+pub fn disk_mounts() -> Vec<String> {
+    match env::var("CLAUDE_SESSIONS_DISK_MOUNTS") {
+        Ok(list) => list.split(':').filter(|mount| !mount.is_empty()).map(str::to_string).collect(),
+        Err(_) => vec!["/".into(), home().display().to_string()],
+    }
+}
+
 /// CLAUDE_SESSIONS_STATE_HOME first: the opencode launcher moves XDG_STATE_HOME into the sandbox's
 /// private /tmp for opencode's own state, and every tool opencode runs inherits it; this one keeps
 /// the cockpit's tools (claude-todo's list) on the real folder.

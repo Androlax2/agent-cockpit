@@ -348,6 +348,33 @@ pub fn active_game() -> Option<String> {
     game_class.is_match(class).then(|| title.unwrap_or(class).to_string())
 }
 
+/// The fullest of paths::disk_mounts as (mount, percent used); the first wins a tie, so a single
+/// filesystem reads as /. None when none could be measured.
+pub fn fullest_disk() -> Option<(String, f64)> {
+    paths::disk_mounts().into_iter()
+        .filter_map(|mount| disk_used_percent(&mount).map(|used| (mount, used)))
+        .fold(None, |fullest, (mount, used)| {
+            if fullest.as_ref().is_some_and(|(_, top)| *top >= used) { fullest } else { Some((mount, used)) }
+        })
+}
+
+fn disk_used_percent(mount: &str) -> Option<f64> {
+    let path = std::ffi::CString::new(mount).ok()?;
+    // SAFETY: statvfs fills the zeroed struct and reads only the NUL-terminated path.
+    let mut stats: libc::statvfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::statvfs(path.as_ptr(), &mut stats) } != 0 {
+        return None;
+    }
+    used_percent(stats.f_blocks as u64, stats.f_bfree as u64, stats.f_bavail as u64)
+}
+
+/// df's Use%: the blocks reserved for root count as neither used nor available.
+pub fn used_percent(blocks: u64, free: u64, available: u64) -> Option<f64> {
+    let used = blocks.checked_sub(free)?;
+    let total = used + available;
+    (total > 0).then(|| (used as f64 * 100.0 / total as f64).ceil())
+}
+
 /// One banner through the OSD daemon's FIFO; false when the daemon is not reading it.
 pub fn send_notice(notice: &Value) -> bool {
     use std::os::unix::fs::OpenOptionsExt;
@@ -371,6 +398,13 @@ mod tests {
         assert_eq!(money(316.4), "$316");
         assert_eq!(money(2780.0), "$2,780");
         assert_eq!(money(12345.0), "$12.3k");
+    }
+
+    #[test]
+    fn used_percent_matches_df_by_leaving_roots_reserve_out() {
+        assert_eq!(used_percent(1000, 150, 100), Some(90.0));
+        assert_eq!(used_percent(1000, 1000, 950), Some(0.0));
+        assert_eq!(used_percent(0, 0, 0), None);
     }
 
     #[test]

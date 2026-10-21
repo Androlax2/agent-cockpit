@@ -50,6 +50,8 @@ impl Fixture {
             std::env::set_var("PATH", path);
             std::env::set_var("CLAUDE_STATUS_URL", "");
             std::env::set_var("CODEX_STATUS_URL", "");
+            // The real disk's fill would add a warning to the sessions panel; a test sets its own.
+            std::env::set_var("CLAUDE_SESSIONS_DISK_MOUNTS", "");
             // H and the costs read opencode's database: never Theo's, wherever XDG_DATA_HOME points.
             std::env::set_var("CLAUDE_SESSIONS_OPENCODE_DB", root.join("home/.local/share/opencode/opencode.db"));
             // CLAUDE_SESSIONS_STATE_HOME too: set in opencode sessions, it would win over the
@@ -3764,6 +3766,33 @@ fn an_unreachable_codex_status_feed_does_not_report_a_healthy_service() {
     app.build();
     assert!(texts(&app, 0).iter().any(|line| line.starts_with("Codexstatus.openai.com unreachable")));
     assert!(!fs::read_to_string(fixture.path("state/claude-sessions/log")).unwrap_or_default().contains(" ERROR "));
+}
+
+#[test]
+fn the_sessions_panel_warns_from_85_percent_disk_use_and_points_to_make_disk() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    for (disk, is_warned) in [(Some(("/", 84.0)), false), (Some(("/", 85.0)), true), (Some(("/home", 96.0)), true), (None, false)] {
+        app.disk = disk.map(|(mount, used)| (mount.to_string(), used));
+        app.disk_checked = util::now();
+        app.build();
+        let lines = texts(&app, 1);
+        let expected = disk.map(|(mount, used)| format!("⚠ Disk {mount} {used:.0}% full")).unwrap_or_default();
+        assert_eq!(lines.first() == Some(&expected), is_warned, "{lines:?}");
+        assert_eq!(lines.iter().any(|line| line == "make -C ~/dotfiles disk shows what uses it"), is_warned, "{lines:?}");
+    }
+}
+
+#[test]
+fn the_disk_fill_is_read_again_once_a_minute_has_passed() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    app.disk_usage = || Some(("/".into(), 90.0));
+    app.build();
+    assert!(!texts(&app, 1).iter().any(|line| line.starts_with("⚠ Disk")));
+    app.disk_checked -= 61.0;
+    app.build();
+    assert_eq!(texts(&app, 1).first().map(String::as_str), Some("⚠ Disk / 90% full"));
 }
 
 #[test]

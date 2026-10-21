@@ -53,6 +53,10 @@ const RESTART_TIMEOUT_S: i64 = 90;
 const DEFAULT_COLUMN_WIDTH: u16 = 60;
 const TITLES_PER_TICK: usize = 8;
 const GREYPROXY_POLL_S: f64 = 10.0;
+/// The same limits as vitals' disk warning (apps/vitals/src/checks.rs).
+const DISK_WARNING_PERCENT: f64 = 85.0;
+const DISK_CRITICAL_PERCENT: f64 = 95.0;
+const DISK_CHECK_S: f64 = 60.0;
 const RESTORE_CHECK_S: f64 = 30.0;
 const COSTS_LABEL: &str = "Cost";
 const TIME_LABEL: &str = "Active time";
@@ -744,6 +748,11 @@ pub struct App {
     pub(crate) queue_checked: f64,
     /// Whether Theo games right now; the queue waits meanwhile (a test sets its own).
     pub gaming: fn() -> bool,
+    /// The fullest watched filesystem (util::fullest_disk; a test sets its own), read every
+    /// DISK_CHECK_S.
+    pub disk_usage: fn() -> Option<(String, f64)>,
+    pub(crate) disk: Option<(String, f64)>,
+    pub(crate) disk_checked: f64,
     pub(crate) restore_checked: f64,
     pub(crate) start_files: Vec<(&'static str, f64)>,
     pub width: u16,
@@ -825,7 +834,8 @@ impl App {
             costs: Costs::default(), reviews: Reviews::default(), todos, errors: ErrorReporter::new(),
             claude_status: ProviderStatus::default(), codex_status: ProviderStatus::new(Provider::Codex), panels: Default::default(), focus: 1, previous_panel: 1,
             help_open: false, has_pane_focus: true, attention_only: false, message, exiting: Vec::new(), restarting_cards: HashMap::new(), labelled: Default::default(), menu: None, session_details: None, todo_composer: None, settings_menu: None, team_view: None, team_attention: 0, team_roles: HashMap::new(), team_checked: 0.0, pairing: None, restore: Vec::new(),
-            held: Vec::new(), held_checked: 0.0, queue_checked: 0.0, gaming: util::gaming, restore_checked: 0.0, start_files: Vec::new(),
+            held: Vec::new(), held_checked: 0.0, queue_checked: 0.0, gaming: util::gaming,
+            disk_usage: util::fullest_disk, disk: None, disk_checked: 0.0, restore_checked: 0.0, start_files: Vec::new(),
             width: DEFAULT_COLUMN_WIDTH, sessions: Vec::new(), running_sessions: Vec::new(), windows: Vec::new(), quota_rows: Vec::new(), review_rows: Vec::new(), todo_entries: Vec::new(),
             session_task_titles: HashMap::new(), session_branches: HashMap::new(),
             session_queued: HashMap::new(), session_roots: HashMap::new(),
@@ -1392,6 +1402,10 @@ impl App {
             }
             self.held = held;
         }
+        if now() - self.disk_checked > DISK_CHECK_S {
+            self.disk_checked = now();
+            self.disk = (self.disk_usage)();
+        }
         let (claude, _) = self.claude_status.snapshot();
         if let Some(claude) = claude.filter(|c| !c.indicator.is_empty() && c.indicator != "none") {
             let tint = bold(claude_status_color(&claude.indicator));
@@ -1422,6 +1436,12 @@ impl App {
             }
             lines.push(Line::new(vec![segment(0, format!("⛔ greyproxy holds {hosts}"), bold(YELLOW))]));
             lines.push(Line::new(vec![segment(2, "G opens its dashboard to approve or deny", dim(FG_DARK))]));
+            lines.push(Line::default());
+        }
+        if let Some((mount, used)) = self.disk.as_ref().filter(|(_, used)| *used >= DISK_WARNING_PERCENT) {
+            let tint = bold(if *used >= DISK_CRITICAL_PERCENT { RED } else { YELLOW });
+            lines.push(Line::new(vec![segment(0, format!("⚠ Disk {mount} {used:.0}% full"), tint)]));
+            lines.push(Line::new(vec![segment(2, "make -C ~/dotfiles disk shows what uses it", dim(FG_DARK))]));
             lines.push(Line::default());
         }
         if !self.restore.is_empty() {
