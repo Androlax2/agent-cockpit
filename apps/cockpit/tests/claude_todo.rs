@@ -184,6 +184,18 @@ fn flag_names_in_titles_and_notes_are_literal_text() {
 }
 
 #[test]
+fn help_prints_the_usage_and_files_nothing() {
+    let sandbox = Sandbox::new();
+    let daemon = daemon(&sandbox, "ok");
+    for arguments in [vec!["--help"], vec!["-h"], vec!["help"], vec!["add", "--help"], vec!["propose", "-h"], vec!["blocked", "--help"], vec!["add", "--help", "--kind", "bug"]] {
+        let output = claude_todo(&sandbox, &arguments, &sandbox.root);
+        assert_eq!(output.status.code(), Some(0), "{arguments:?}");
+        assert!(String::from_utf8_lossy(&output.stdout).contains("claude-todo add '<title>'"), "{arguments:?}");
+    }
+    assert!(updates(&daemon).is_empty());
+}
+
+#[test]
 fn list_and_show_expose_kinds_including_legacy_tasks() {
     let sandbox = Sandbox::new();
     fs::write(sandbox.state.join("todo.json"), json!({"items": [

@@ -187,6 +187,7 @@ fn main() {
     let key = Regex::new(r"^(?:[0-9a-f]{8}|[\w.-]+/[\w.-]+#\d+)$").unwrap();
     let words: Vec<&str> = arguments.iter().map(String::as_str).collect();
     let status = match words.as_slice() {
+        ["--help" | "-h" | "help", ..] | ["add" | "propose" | "blocked", "--help" | "-h", ..] => { println!("{USAGE}"); 0 }
         [] | ["list", ..] => list(words.contains(&"--all")),
         [action @ ("start" | "done" | "todo"), id] if key.is_match(id) => {
             let status = if *action == "start" { "doing" } else { action };
