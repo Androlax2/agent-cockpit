@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
-# craft-open figcraft [--session <id>]: FigCraft for the project of the current folder, driven by
-# the session's figcraft-app MCP server, on a port reserved for this checkout. Run
-# outside the sandbox, through ask-to-run, when Theo asks a session to connect to FigCraft.
+# craft-open figcraft --workspace <n> [--session <id>]: FigCraft for the project of the current
+# folder, driven by the session's figcraft-app MCP server, on a port reserved for this checkout.
+# Run outside the sandbox, through ask-to-run, when Theo asks a session to connect to FigCraft.
 #
 # Existing windows are never closed. Each checkout has separate preferences/recovery storage,
 # and its port is never reassigned to another checkout (old sandboxes retain their forwards).
+#
+# --workspace <n>: the workspace Theo picked for a new window. Approving from the cockpit would
+# otherwise open it on the cockpit's workspace (6), which is refused. An already open window stays
+# where it is.
 #
 # --session <id>: reconnect that session even if its tools are still listed: its sandbox and MCP
 # connection may predate this checkout's port. The cockpit restarts it once its turn ends
@@ -13,10 +17,11 @@ set -euo pipefail
 
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/claude-sessions"
 WAIT_S=${CRAFT_OPEN_WAIT_S:-15}
+CLAUDE_WORKSPACE=6  # the same number as WORKSPACE in hypr/apps/claude.lua
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/greywall-agents/figcraft.sh"
 
 usage() {
-    echo "usage: craft-open figcraft [--session <session-id>]" >&2
+    echo "usage: craft-open figcraft --workspace <number> [--session <session-id>]" >&2
     exit 2
 }
 
@@ -34,13 +39,30 @@ is_agent_session_id() { # id
 }
 
 [[ ${1:-} == figcraft ]] || usage
-session=""
-if (( $# == 3 )) && [[ $2 == --session ]]; then
-    session=$3
-    is_agent_session_id "$session" || { echo "craft-open: not a session id: $session" >&2; exit 2; }
-elif (( $# != 1 )); then
-    usage
+shift
+unset workspace session
+while (( $# >= 2 )); do
+    case "$1" in
+        --workspace) [[ ! -v workspace ]] || usage; workspace=$2 ;;
+        --session) [[ ! -v session ]] || usage; session=$2 ;;
+        *) usage ;;
+    esac
+    shift 2
+done
+(( $# == 0 )) && [[ -v workspace ]] || usage
+if [[ ! $workspace =~ ^[1-9][0-9]?$ ]]; then
+    echo "craft-open: not a workspace number: $workspace" >&2
+    exit 2
 fi
+if [[ $workspace == "$CLAUDE_WORKSPACE" ]]; then
+    echo "craft-open: workspace $CLAUDE_WORKSPACE is the cockpit's; pick another one" >&2
+    exit 2
+fi
+if [[ -v session ]] && ! is_agent_session_id "$session"; then
+    echo "craft-open: not a session id: $session" >&2
+    exit 2
+fi
+session=${session-}
 
 root=$(git rev-parse --show-toplevel 2>/dev/null || pwd -P)
 root=$(realpath -e -- "$root")
@@ -148,6 +170,11 @@ else
         mkdir -p -m 700 "$config_home/FigCraft"
         (umask 077; printf '%s\n' '{"prefs":{"theme":"dark"}}' > "$preferences")
     fi
+    if ! hyprctl eval "FIGCRAFT_OPEN_ON_WORKSPACE($workspace)" >/dev/null; then
+        echo "craft-open: Hyprland could not route FigCraft to workspace $workspace; no window started" >&2
+        echo "Reload Hyprland (hyprctl reload) if hypr/apps/craft.lua changed since it started." >&2
+        exit 1
+    fi
     XDG_CONFIG_HOME="$config_home" setsid -f figcraft --control "$PORT" --automation-read-root "$root" --automation-write-root "$root" 9>&- >"$config_home/startup.log" 2>&1
     for (( waited = 0; waited < WAIT_S * 10; waited++ )); do
         [[ $(figcraft_port_for_root "$root") == "$PORT" ]] && answers && break
@@ -158,7 +185,7 @@ else
         echo "Startup output: $config_home/startup.log" >&2
         exit 1
     fi
-    echo "FigCraft started for $root, listening on port $PORT."
+    echo "FigCraft started for $root on workspace $workspace, listening on port $PORT."
 fi
 flock -u 9
 exec 9>&-
@@ -171,5 +198,5 @@ if [[ -n $session ]]; then
     echo "The session restarts when its turn ends (its conversation is kept), then carries on."
 else
     echo "Existing sessions were not reconnected: their sandbox forwards and MCP connections are unchanged."
-    echo "To reconnect a cockpit session, run: craft-open figcraft --session <session-id>"
+    echo "To reconnect a cockpit session, run: craft-open figcraft --workspace <number> --session <session-id>"
 fi
