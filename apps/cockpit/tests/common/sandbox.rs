@@ -227,14 +227,24 @@ impl WaitingProcess {
     }
 
     pub fn with_environment(name: &str, arguments: &[&str], directory: &Path, environment: &[(&str, &str)]) -> Self {
-        let child = Command::new("bash").args(["-c", "read -r -t 60", name]).args(arguments)
-            .current_dir(directory).envs(environment.iter().copied()).stdin(Stdio::piped()).spawn().unwrap();
+        let mut child = Command::new("bash").args(["-c", "echo; read -r -t 60", name]).args(arguments)
+            .current_dir(directory).envs(environment.iter().copied()).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+        wait_until_exec_finished(&mut child);
         Self(child)
     }
 
     pub fn id(&self) -> String { self.0.id().to_string() }
 
     pub fn is_alive(&mut self) -> bool { self.0.try_wait().unwrap().is_none() }
+}
+
+/// spawn() returns before the kernel publishes the new /proc/<pid>/cmdline, which then reads
+/// empty; output from the child proves its exec, arguments included, has completed.
+pub fn wait_until_exec_finished(child: &mut Child) {
+    use std::io::Read;
+    let mut ready = [0u8];
+    child.stdout.take().expect("child stdout is not piped").read_exact(&mut ready)
+        .unwrap_or_else(|error| panic!("process {} exited before it was ready: {error}", child.id()));
 }
 
 impl Drop for WaitingProcess {

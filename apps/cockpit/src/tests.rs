@@ -7023,8 +7023,13 @@ struct CraftProcess(std::process::Child);
 
 impl CraftProcess {
     fn new(root: &str) -> Self {
-        Self(std::process::Command::new("bash").args(["-c", "read -r -t 60", "figcraft", "--control", "17979",
-            "--automation-read-root", root, "--automation-write-root", root]).stdin(std::process::Stdio::piped()).spawn().unwrap())
+        use std::io::Read;
+        let mut child = std::process::Command::new("bash").args(["-c", "echo; read -r -t 60", "figcraft", "--control", "17979",
+            "--automation-read-root", root, "--automation-write-root", root])
+            .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).spawn().unwrap();
+        // spawn() returns before the kernel publishes /proc/<pid>/cmdline; the child's output proves it has.
+        child.stdout.take().unwrap().read_exact(&mut [0u8]).expect("figcraft fixture exited before it was ready");
+        Self(child)
     }
 
     fn id(&self) -> u32 { self.0.id() }

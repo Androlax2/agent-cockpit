@@ -404,6 +404,16 @@ fn alternate_greywall_flag_spellings_keep_stale_forward_protection() {
 }
 
 #[test]
+fn fixture_processes_expose_their_arguments_as_soon_as_they_are_created() {
+    let craft = Craft::new();
+    for _ in 0..50 {
+        let holder = WaitingProcess::new("greywall", &["-f=17979", "--"], &craft.project);
+        let arguments = fs::read(format!("/proc/{}/cmdline", holder.id())).unwrap();
+        assert!(arguments.ends_with(b"greywall\0-f=17979\0--\0"), "{:?}", String::from_utf8_lossy(&arguments));
+    }
+}
+
+#[test]
 fn a_reserved_port_cannot_be_claimed_by_a_different_checkout() {
     let craft = Craft::new();
     let storage = craft.sandbox.home.join(".config/greywall-agents/figcraft/ports");
