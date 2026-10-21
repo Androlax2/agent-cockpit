@@ -1,7 +1,6 @@
-# Every program of the Agent Cockpit and the desktop that is not a shell script: one workspace,
-# built with `make cockpit` into apps/target/release.
+# The Agent Cockpit's Rust programs: one workspace, built with `make build` into apps/target/release.
 [workspace]
-members = ["cockpit", "config-tests", "desktop", "osd", "vitals"]
+members = ["cockpit", "osd"]
 resolver = "3"
 
 [profile.release]
