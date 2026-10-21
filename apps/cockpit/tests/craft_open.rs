@@ -210,6 +210,21 @@ fn a_new_window_is_routed_to_the_requested_workspace_before_it_starts() {
 }
 
 #[test]
+fn hyprctl_reaches_the_running_hyprland_from_a_terminal_without_its_signature() {
+    let craft = Craft::new();
+    let hypr = craft.sandbox.runtime.join("hypr");
+    for (instance, has_socket) in [("stale", false), ("live", true)] {
+        fs::create_dir_all(hypr.join(instance)).unwrap();
+        if has_socket { fs::write(hypr.join(instance).join(".socket.sock"), "").unwrap(); }
+    }
+    craft.sandbox.shim("hyprctl", r#"echo "$HYPRLAND_INSTANCE_SIGNATURE" > "$HOME/hyprctl-instance""#);
+    let mut command = craft.command(&craft.project, &["figcraft", "--workspace", "2"], &[]);
+    let output = command.env_remove("HYPRLAND_INSTANCE_SIGNATURE").output().unwrap();
+    assert_eq!(output.status.code(), Some(0), "{}{}", stdout(&output), stderr(&output));
+    assert_eq!(fs::read_to_string(craft.sandbox.home.join("hyprctl-instance")).unwrap(), "live\n");
+}
+
+#[test]
 fn an_already_open_window_is_not_moved() {
     let craft = Craft::new();
     assert!(craft.run(&["figcraft", "--workspace", "2"], &[]).status.success());

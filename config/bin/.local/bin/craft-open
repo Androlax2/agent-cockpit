@@ -20,6 +20,19 @@ WAIT_S=${CRAFT_OPEN_WAIT_S:-15}
 CLAUDE_WORKSPACE=6  # the same number as WORKSPACE in hypr/apps/claude.lua
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/greywall-agents/figcraft.sh"
 
+# hyprctl finds Hyprland through HYPRLAND_INSTANCE_SIGNATURE. The ask-to-run terminal this runs in
+# has none: take the running instance, the newest $XDG_RUNTIME_DIR/hypr/<id> with a socket.
+refresh_hyprland_instance() {
+    local base="${XDG_RUNTIME_DIR:-/tmp}/hypr" instance
+    [[ -n ${HYPRLAND_INSTANCE_SIGNATURE:-} && -e $base/$HYPRLAND_INSTANCE_SIGNATURE/.socket.sock ]] && return
+    while read -r instance; do
+        if [[ -e $base/$instance/.socket.sock ]]; then
+            export HYPRLAND_INSTANCE_SIGNATURE=$instance
+            return
+        fi
+    done < <(ls -t "$base" 2>/dev/null)
+}
+
 usage() {
     echo "usage: craft-open figcraft --workspace <number> [--session <session-id>]" >&2
     exit 2
@@ -170,6 +183,7 @@ else
         mkdir -p -m 700 "$config_home/FigCraft"
         (umask 077; printf '%s\n' '{"prefs":{"theme":"dark"}}' > "$preferences")
     fi
+    refresh_hyprland_instance
     if ! hyprctl eval "FIGCRAFT_OPEN_ON_WORKSPACE($workspace)" >/dev/null; then
         echo "craft-open: Hyprland could not route FigCraft to workspace $workspace; no window started" >&2
         echo "Reload Hyprland (hyprctl reload) if hypr/apps/craft.lua changed since it started." >&2
