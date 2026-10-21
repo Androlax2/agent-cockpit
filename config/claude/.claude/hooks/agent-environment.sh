@@ -33,6 +33,8 @@ describe_sandbox() {
 describe_docker() {
     if [[ -n ${DOCKER_HOST:-} && -S ${DOCKER_HOST#unix://} ]]; then
         echo "- Docker: ready, this project's own rootless daemon (${DOCKER_HOST})."
+    elif [[ $project_root == "$clones_dir"/*/* ]]; then
+        echo "- Docker: not set up for ${project_name}'s parallel clones. If the task needs Docker, ask Theo to run \`make -C ${DOTFILES} agent-docker-add PROJECT=${project_name}\` (again if ${project_name} already has a daemon, then \`sudo systemctl restart agent-docker@${project_name}\`), then restart the session."
     elif [[ $project_root == "$PROJECTS_DIR"/* ]]; then
         echo "- Docker: not set up for ${project_name}. If the task needs Docker, ask Theo to run \`make -C ${DOTFILES} agent-docker-add PROJECT=${project_name}\`, then restart the session."
     else

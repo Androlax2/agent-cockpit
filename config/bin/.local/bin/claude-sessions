@@ -1195,7 +1195,8 @@ doctor() {
 # keeps its metadata in the main repository's .git, which the sandbox would not see. A local clone
 # hardlinks the objects (fast, little disk) and is self-contained; origin points at the real
 # remote. Clones live in $CLONES_DIR/<repository>/<name>; the registry and the sidebar name such a
-# session after <repository>. A per-project Docker daemon (agent-docker) does not follow a clone.
+# session after <repository>. A clone shares its repository's Docker daemon (agent-docker), whose
+# socket for clones is $CLONES_DIR/<repository>/.agent-docker/docker.sock.
 CLONES_DIR="${CLAUDE_SESSIONS_CLONES:-$HOME/IdeaProjects/.parallel}"
 GREYWALL="${CLAUDE_SESSIONS_GREYWALL:-$HOME/.local/bin/greywall}"
 

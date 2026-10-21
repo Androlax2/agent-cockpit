@@ -658,6 +658,62 @@ fn sessions_can_read_the_stowed_label_helper_without_exposing_the_bin_directory(
     }
 }
 
+/// proj-a's own daemon socket, at its checkout's root.
+fn bind_proj_a_daemon_socket(launch: &Launch) {
+    std::os::unix::net::UnixListener::bind(launch.project.join(".agent-docker.sock")).unwrap();
+}
+
+#[test]
+fn a_parallel_clone_reaches_its_repositorys_docker_daemon_through_the_clones_socket_folder() {
+    // opusline's parallel-1031 session had no Docker (todo fb4e44cb): the socket was looked for at
+    // the clone's root only.
+    let launch = Launch::new();
+    bind_proj_a_daemon_socket(&launch);
+    let socket_folder = launch.sandbox.home.join("IdeaProjects/.parallel/proj-a/.agent-docker");
+    fs::create_dir_all(&socket_folder).unwrap();
+    let socket_folder = fs::canonicalize(socket_folder).unwrap();
+    std::os::unix::net::UnixListener::bind(socket_folder.join("docker.sock")).unwrap();
+    let (started, environment) = start_claude_in(&launch, "IdeaProjects/.parallel/proj-a/p1");
+    assert!(environment.contains(&format!("DOCKER_HOST=unix://{}/docker.sock", socket_folder.display())), "{environment:?}");
+    // The folder, not the socket alone: a socket made again stays the old one in a single-file mount.
+    assert!(started.contains(&format!("--allow-path {} ", socket_folder.display())), "{started}");
+    assert!(!started.contains(&launch.project.display().to_string()), "the clone's sandbox mounts proj-a's checkout: {started}");
+}
+
+#[test]
+fn a_parallel_clone_never_gets_its_repositorys_own_socket() {
+    // Mounting proj-a's socket alone would go stale on a relay restart; without the clones' socket the
+    // session start says Docker is not set up instead.
+    let launch = Launch::new();
+    bind_proj_a_daemon_socket(&launch);
+    let (started, environment) = start_claude_in(&launch, "IdeaProjects/.parallel/proj-a/p1");
+    assert!(!environment.iter().any(|line| line.starts_with("DOCKER_HOST=")), "{environment:?}");
+    assert!(!started.contains(".agent-docker"), "{started}");
+}
+
+#[test]
+fn the_repositorys_own_session_keeps_its_daemon_socket_at_the_checkout_root() {
+    let launch = Launch::new();
+    bind_proj_a_daemon_socket(&launch);
+    let (_, environment) = start_claude_in(&launch, "IdeaProjects/proj-a");
+    let socket = fs::canonicalize(&launch.project).unwrap().join(".agent-docker.sock");
+    assert!(environment.contains(&format!("DOCKER_HOST=unix://{}", socket.display())), "{environment:?}");
+}
+
+#[test]
+fn the_clones_docker_socket_is_where_the_daemon_and_the_launcher_expect_it() {
+    let units = repo().join("system/etc/systemd/system");
+    let daemon = fs::read_to_string(units.join("agent-docker@.service")).unwrap();
+    assert!(daemon.contains("BindPaths=-/home/theo/IdeaProjects/.parallel/%i\n"), "the daemon cannot see the clones' files: {daemon}");
+    let relay = fs::read_to_string(units.join("agent-docker-clones-relay@.service")).unwrap();
+    assert!(relay.contains("BindPaths=/home/theo/IdeaProjects/.parallel/%i/.agent-docker\n"), "{relay}");
+    assert!(relay.contains("UNIX-LISTEN:/home/theo/IdeaProjects/.parallel/%i/.agent-docker/docker.sock,"), "{relay}");
+    let script = fs::read_to_string(repo().join("tools/agent-docker.sh")).unwrap();
+    for expected in ["CLONES_DIR=$PROJECTS_DIR/.parallel", "\"$clones/.agent-docker\"", "\"agent-docker-clones-relay@$name\""] {
+        assert!(script.contains(expected), "tools/agent-docker.sh lost {expected}");
+    }
+}
+
 #[test]
 fn sandboxes_mount_the_report_sockets_folder_never_the_socket_alone() {
     // A socket file mounted alone stays the old one in every running sandbox once the socket is made

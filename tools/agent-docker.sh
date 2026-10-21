@@ -4,10 +4,14 @@
 # table agent_docker_egress confines to greyproxy), a daemon that sees only that project under
 # /home, and a socket at <project>/.agent-docker.sock. Greywall mounts only the session's own
 # project, so a session reaches its project's daemon and no other.
-# Units: system/etc/systemd/system/agent-docker@.service and agent-docker-relay@.service.
+# Its parallel clones (claude-sessions' +, in <projects>/.parallel/<project>/<name>) share that
+# daemon: it sees them too, and their socket is <projects>/.parallel/<project>/.agent-docker/docker.sock.
+# Units: system/etc/systemd/system/agent-docker@.service, agent-docker-relay@.service and
+# agent-docker-clones-relay@.service.
 set -euo pipefail
 
 PROJECTS_DIR=/home/theo/IdeaProjects
+CLONES_DIR=$PROJECTS_DIR/.parallel
 OWNER=theo
 GROUP=agent-docker
 FIRST_UID=2000
@@ -68,9 +72,14 @@ setup() {
     echo "agent-docker: ready"
 }
 
+# Made before the daemon starts: it sees only the folders that exist then.
+make_owned_folder() { # path
+    [[ -d $1 ]] || install -d -o "$OWNER" -g "$(id -gn "$OWNER")" -m 755 "$1"
+}
+
 add() {
     require_root
-    local name=$1 user=agent-$1 project=$PROJECTS_DIR/$1
+    local name=$1 user=agent-$1 project=$PROJECTS_DIR/$1 clones=$CLONES_DIR/$1
     require_valid_name "$name"
     [[ -d $project ]] || die "no such project: $project"
     getent group "$GROUP" >/dev/null || die "run make agent-docker-setup first"
@@ -86,19 +95,28 @@ add() {
         start=$(awk -F: '{ end = $2 + $3; if (end > max) max = end } END { print (max < 200000 ? 200000 : max) }' /etc/subuid)
         usermod --add-subuids "$start-$((start + 65535))" --add-subgids "$start-$((start + 65535))" "$user"
     fi
-    setfacl -R -m "u:$user:rwX,d:u:$user:rwX,d:u:$OWNER:rwX" "$project"
-    systemctl enable --now "agent-docker@$name" "agent-docker-relay@$name"
-    echo "agent-docker: $name ready, socket $project/.agent-docker.sock, greyproxy client $name-docker"
+    make_owned_folder "$CLONES_DIR"
+    make_owned_folder "$clones"
+    setfacl -R -m "u:$user:rwX,d:u:$user:rwX,d:u:$OWNER:rwX" "$project" "$clones"
+    # After the ACLs: its mode sets their mask, so only its daemon's relay writes there.
+    install -d -o "$user" -g "$GROUP" -m 750 "$clones/.agent-docker"
+    systemctl enable --now "agent-docker@$name" "agent-docker-relay@$name" "agent-docker-clones-relay@$name"
+    echo "agent-docker: $name ready, socket $project/.agent-docker.sock (clones: $clones/.agent-docker/docker.sock), greyproxy client $name-docker"
+    echo "agent-docker: a daemon that was already running sees new folders only after: systemctl restart agent-docker@$name"
 }
 
 remove() {
     require_root
-    local name=$1 user=agent-$1 project=$PROJECTS_DIR/$1
+    local name=$1 user=agent-$1 project=$PROJECTS_DIR/$1 clones=$CLONES_DIR/$1
     require_valid_name "$name"
-    systemctl disable --now "agent-docker-relay@$name" "agent-docker@$name" 2>/dev/null || true
+    systemctl disable --now "agent-docker-clones-relay@$name" "agent-docker-relay@$name" "agent-docker@$name" 2>/dev/null || true
     if [[ -d $project ]]; then
         setfacl -R -x "u:$user,d:u:$user" "$project" 2>/dev/null || true
         rm -f "$project/.agent-docker.sock"
+    fi
+    if [[ -d $clones ]]; then
+        rm -rf -- "$clones/.agent-docker"
+        setfacl -R -x "u:$user,d:u:$user" "$clones" 2>/dev/null || true
     fi
     if id "$user" >/dev/null 2>&1; then
         userdel -r "$user"
@@ -107,7 +125,7 @@ remove() {
 }
 
 status() {
-    local user name socket
+    local user name socket clones_socket
     if [[ -r $CA_BUNDLE ]]; then
         echo "CA bundle: $CA_BUNDLE, written $(stat -c %y "$CA_BUNDLE" | cut -d. -f1)"
     else
@@ -117,7 +135,8 @@ status() {
         while read -r user; do
             name=${user#agent-}
             socket=$( [[ -S $PROJECTS_DIR/$name/.agent-docker.sock ]] && echo present || echo missing )
-            printf '%-20s daemon=%-8s socket=%s\n' "$name" "$(systemctl is-active "agent-docker@$name" || true)" "$socket"
+            clones_socket=$( [[ -S $CLONES_DIR/$name/.agent-docker/docker.sock ]] && echo present || echo missing )
+            printf '%-20s daemon=%-8s socket=%-8s clones socket=%s\n' "$name" "$(systemctl is-active "agent-docker@$name" || true)" "$socket" "$clones_socket"
         done
 }
 

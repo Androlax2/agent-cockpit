@@ -200,7 +200,17 @@ unset ANTHROPIC_API_KEY
 # socket at the project root. Started in a subfolder, greywall mounts only that folder, so the
 # socket needs a mount of its own; at the project root the folder mount already includes it and
 # stays live when the relay recreates the socket, which a single-file mount would not.
+# A parallel clone shares its repository's daemon through a socket in a folder of its own beside
+# the clones (agent-docker-clones-relay@), mounted whole: never the repository's checkout.
 docker_socket="$project_root/.agent-docker.sock"
+docker_socket_mount=
+case "$project_root" in
+    "$clones_dir"/*/*)
+        docker_socket="$clones_dir/$project_name/.agent-docker/docker.sock"
+        docker_socket_mount=$(dirname "$docker_socket") ;;
+    *)
+        if [ "$(pwd -P)" != "$project_root" ]; then docker_socket_mount=$docker_socket; fi ;;
+esac
 if [ -S "$docker_socket" ]; then
     export DOCKER_HOST="unix://$docker_socket"
     # Build steps and containers live in the daemon's network namespace, where greyproxy is
@@ -213,8 +223,8 @@ if [ -S "$docker_socket" ]; then
         "$container_proxy" "$container_proxy" > "$docker_config/config.json"
     export DOCKER_CONFIG="$docker_config"
     greywall_options="$greywall_options --allow-path $docker_config"
-    if [ "$(pwd -P)" != "$project_root" ]; then
-        greywall_options="$greywall_options --allow-path $docker_socket"
+    if [ -n "$docker_socket_mount" ]; then
+        greywall_options="$greywall_options --allow-path $docker_socket_mount"
     fi
 fi
 
