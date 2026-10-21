@@ -1642,14 +1642,22 @@ impl App {
     }
 
     fn session_summary_lines(&self) -> Vec<Line> {
-        let sessions = self.all_sessions();
-        let underlying_needing = sessions.iter().filter(|session| session.needs_attention()).count();
-        let deferred_questions = sessions.iter().filter(|session| self.session_deferred_until(session, util::now_secs()).is_some()).count();
-        let needing = underlying_needing - deferred_questions;
-        let working = sessions.iter().filter(|session| !session.needs_attention() && matches!(sessions::activity_label(session), "Working" | "Command running")).count();
-        let idle = sessions.iter().filter(|session| !session.needs_attention() && sessions::is_idle(session, util::now_secs())).count();
-        let ready = sessions.iter().filter(|session| !session.needs_attention() && sessions::activity_label(session) == "Ready").count() - idle;
-        let unknown = sessions.len() - underlying_needing - working - ready - idle;
+        let now = util::now_secs();
+        // One bucket per session, in the cards' precedence, so the counts cannot overlap.
+        let (mut needing, mut working, mut ready, mut idle, mut unknown) = (0, 0, 0, 0, 0);
+        for session in self.all_sessions() {
+            if session.needs_attention() {
+                if self.session_deferred_until(&session, now).is_none() { needing += 1; }
+            } else if sessions::is_idle(&session, now) {
+                idle += 1;
+            } else {
+                match sessions::activity_label(&session) {
+                    "Working" | "Command running" => working += 1,
+                    "Ready" => ready += 1,
+                    _ => unknown += 1,
+                }
+            }
+        }
         let mut attention: String = if needing == 0 { "Nothing needs you".into() } else { format!("! {needing} need you") };
         if let Ok(continuity) = &self.continuity {
             let unseen = continuity.updates().len();

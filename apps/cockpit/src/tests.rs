@@ -2009,6 +2009,26 @@ fn unknown_and_empty_session_summaries_do_not_claim_readiness() {
 }
 
 #[test]
+fn session_summary_counts_each_session_in_exactly_one_bucket() {
+    let fixture = Fixture::new();
+    let mut needing_while_working = session(SESSION_A, "working", "dotfiles", "/r/a", 1);
+    needing_while_working["needs_input"] = json!(true);
+    let mut fresh_ready = session("cccccccc-0000-4000-8000-000000000000", "waiting", "dotfiles", "/r/c", 3);
+    fresh_ready["since"] = json!(util::now_secs());
+    fixture.snapshot(json!([
+        needing_while_working,
+        session(SESSION_B, "working", "dotfiles", "/r/b", 2),
+        fresh_ready,
+        session("dddddddd-0000-4000-8000-000000000000", "waiting", "dotfiles", "/r/d", 4),
+        session("eeeeeeee-0000-4000-8000-000000000000", "unknown", "dotfiles", "/r/e", 5),
+    ]));
+    let mut app = fixture.app();
+    let rows = buffer_rows(&render(&mut app, 120, 40)).join("\n");
+    assert!(rows.contains("! 1 need you"), "{rows}");
+    assert!(rows.contains("1 working · 1 ready · 1 idle · 1 unknown"), "{rows}");
+}
+
+#[test]
 fn long_unicode_task_titles_stay_complete_in_selected_detail() {
     let fixture = Fixture::new();
     let title = "清理磁盘缓存 e\u{301} — Preserve all project data while removing unused download caches";
