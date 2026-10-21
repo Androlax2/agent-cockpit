@@ -118,7 +118,7 @@ class AgentBuildTests(unittest.TestCase):
             tool = Path(directory) / "cargo"
             tool.write_text(f"#!{sys.executable}\n{PROBE}\n")
             tool.chmod(0o755)
-            result = subprocess.run(["make", "--no-print-directory", "cockpit"], cwd=REPO,
+            result = subprocess.run(["make", "--no-print-directory", "build"], cwd=REPO,
                                     env=self.environment | {"PATH": f"{directory}:{self.environment['PATH']}"},
                                     preexec_fn=lambda: os.sched_setaffinity(0, self.available_cpus),
                                     capture_output=True, text=True)
