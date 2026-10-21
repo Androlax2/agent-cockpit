@@ -413,6 +413,12 @@ pub fn mark_spawn_started(connection: &Connection, token: &str, now_ms: i64) -> 
     Ok(())
 }
 
+/// A start that could not even be launched: Theo's to look at at once, never retried.
+pub fn mark_spawn_failed(connection: &Connection, token: &str) -> Result<(), TeamError> {
+    connection.execute("UPDATE spawns SET status='failed' WHERE token=?1 AND status IN ('pending','started')", [token])?;
+    Ok(())
+}
+
 /// A started session that never reported is Theo's to look at: never started a second time.
 pub fn expire_spawns(connection: &Connection, now_ms: i64) -> Result<(), TeamError> {
     connection.execute("UPDATE spawns SET status='failed' WHERE status='started' AND started_at<?1", [now_ms - 300_000])?;

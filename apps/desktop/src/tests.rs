@@ -119,6 +119,8 @@ struct World {
     spawn_tokens: HashMap<u32, String>,
     /// start_detached commands, in order
     started: Vec<Vec<String>>,
+    /// start_detached reports that nothing could be started
+    start_fails: bool,
 }
 
 impl World {
@@ -178,7 +180,7 @@ impl System for FakeSystem {
     fn sender_spawn_token(&mut self, sender: u32) -> Option<String> { self.0.borrow().spawn_tokens.get(&sender).cloned() }
     fn start_detached(&mut self, command: &[&str]) -> bool {
         self.0.borrow_mut().started.push(command.iter().map(|part| part.to_string()).collect());
-        true
+        !self.0.borrow().start_fails
     }
 }
 
@@ -428,6 +430,17 @@ fn approving_a_recruit_request_starts_each_teammate_detached() {
     assert_eq!(starts[0][5..], ["designer", project.as_str(), "-", "Brief written by your team's developer agent and approved by Theo:\nDesign the jobs list"]);
     crate::teams::request(&mut bench.registry, 20, cockpit::teams::AgentAction::Context).unwrap();
     assert_eq!(started(&bench).len(), 1, "a started teammate is never started twice");
+}
+
+#[test]
+fn a_start_that_cannot_be_launched_shows_as_failed_at_once_and_is_never_retried() {
+    // Todo f4a5eb57.
+    let mut bench = team_bench();
+    bench.world.borrow_mut().start_fails = true;
+    recruit_and_approve(&mut bench, vec![recruit(cockpit::teams::Role::Designer, "Design the jobs list")]);
+    let snapshot = crate::teams::host(&mut bench.registry, cockpit::teams::HostRequest::Snapshot).unwrap().result.unwrap();
+    assert_eq!(snapshot["spawns"][0]["status"], "failed");
+    assert_eq!(started(&bench).len(), 1);
 }
 
 #[test]
