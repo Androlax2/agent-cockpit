@@ -4,7 +4,7 @@ mod common;
 use common::sandbox::*;
 
 use std::fs;
-use std::os::unix::fs::symlink;
+use std::os::unix::fs::{symlink, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -1869,6 +1869,72 @@ fn a_pull_request_reviewed_before_gets_a_fresh_clone() {
     let names: Vec<String> = fs::read_dir(clones.join("proj-a")).unwrap().flatten().map(|entry| entry.file_name().to_string_lossy().into_owned()).collect();
     assert!(names.iter().any(|name| name.starts_with("pr-7-")), "{names:?}");
     assert_eq!(fs::read_dir(clones.join("proj-a/pr-7")).unwrap().count(), 1, "the earlier clone was touched");
+}
+
+const LEFTHOOK_CONFIG: &str = "output:\n  - summary\npre-commit:\n  jobs:\n    - run: true\ncommit-msg:\n  jobs:\n    - run: true\nremotes:\n  - git_url: x\n    pre-push: true\n";
+
+/// self.project as a git repository whose committed lefthook.yml names pre-commit and commit-msg.
+fn lefthook_repository(manager: &Manager) {
+    manager.git_repository();
+    fs::write(manager.project.join("lefthook.yml"), LEFTHOOK_CONFIG).unwrap();
+    for arguments in [&["add", "lefthook.yml"][..], &["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "lefthook"]] {
+        let output = Command::new("git").arg("-C").arg(&manager.project).args(arguments).output().unwrap();
+        assert!(output.status.success(), "git {arguments:?}: {}", stderr(&output));
+    }
+}
+
+/// The clone's hooks other than git's *.sample files, sorted.
+fn installed_hooks(clone: &Path) -> Vec<String> {
+    let mut hooks: Vec<String> = fs::read_dir(clone.join(".git/hooks")).unwrap().flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| !name.ends_with(".sample")).collect();
+    hooks.sort();
+    hooks
+}
+
+#[test]
+fn a_parallel_clone_gets_a_hook_for_each_git_hook_its_lefthook_config_names() {
+    let manager = Manager::new();
+    lefthook_repository(&manager);
+    let clones = manager.sandbox.root.join("clones");
+    manager.run(&["parallel", &path_str(&manager.project), "feat"], &[("CLAUDE_SESSIONS_CLONES", &path_str(&clones))]);
+    assert_eq!(installed_hooks(&clones.join("proj-a/feat")), vec!["commit-msg", "pre-commit"]);
+}
+
+#[test]
+fn a_parallel_clones_hook_runs_the_lefthook_of_its_node_modules() {
+    let manager = Manager::new();
+    lefthook_repository(&manager);
+    let clones = manager.sandbox.root.join("clones");
+    manager.run(&["parallel", &path_str(&manager.project), "feat"], &[("CLAUDE_SESSIONS_CLONES", &path_str(&clones))]);
+    let clone = clones.join("proj-a/feat");
+    let lefthook = clone.join("node_modules/lefthook/bin/index.js");
+    fs::create_dir_all(lefthook.parent().unwrap()).unwrap();
+    fs::write(&lefthook, "#!/bin/sh\necho \"$@\" >> \"$(dirname \"$0\")/calls\"\n").unwrap();
+    fs::set_permissions(&lefthook, fs::Permissions::from_mode(0o755)).unwrap();
+    let output = Command::new(clone.join(".git/hooks/commit-msg")).arg(".git/COMMIT_EDITMSG").current_dir(&clone)
+        .env("PATH", "/usr/bin:/bin").env_remove("LEFTHOOK_BIN").env_remove("LEFTHOOK").output().unwrap();
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(fs::read_to_string(clone.join("node_modules/lefthook/bin/calls")).unwrap(), "run commit-msg .git/COMMIT_EDITMSG\n");
+}
+
+#[test]
+fn a_parallel_clone_without_a_lefthook_config_gets_no_hooks() {
+    let manager = Manager::new();
+    manager.git_repository();
+    let clones = manager.sandbox.root.join("clones");
+    manager.run(&["parallel", &path_str(&manager.project), "feat"], &[("CLAUDE_SESSIONS_CLONES", &path_str(&clones))]);
+    assert!(installed_hooks(&clones.join("proj-a/feat")).is_empty());
+}
+
+#[test]
+fn a_pull_request_clone_gets_no_hooks() {
+    // git fetches and switches the pull request's head out of the sandbox: a hook would run there.
+    let manager = Manager::new();
+    lefthook_repository(&manager);
+    let clones = manager.sandbox.root.join("clones");
+    manager.run(&["review", &path_str(&manager.project), "7"], &[("CLAUDE_SESSIONS_CLONES", &path_str(&clones))]);
+    assert!(installed_hooks(&clones.join("proj-a/pr-7")).is_empty());
 }
 
 fn push(manager: &Manager, answer: &str) -> String {

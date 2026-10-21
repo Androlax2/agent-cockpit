@@ -1348,7 +1348,11 @@ clone_for() { # source-dir name -> prints the clone's path, created on first use
         fi
         # A pull request's clone gets someone else's code (its .claude/settings.json hooks, its
         # CLAUDE.md): Claude Code's trust dialog must ask about it, never inherit the yes.
-        if [[ $name != pr-* ]]; then inherit_trust "$top" "$clone"; fi
+        # Its hooks too: out here, git fetches and switches a pull request's head in it.
+        if [[ $name != pr-* ]]; then
+            inherit_trust "$top" "$clone"
+            install_lefthook_hooks "$clone"
+        fi
         set_aside_claude_memory "$clone"
     fi
     printf '%s\n' "$clone"
@@ -1363,6 +1367,52 @@ set_aside_claude_memory() { # clone-dir
     [[ -e $memory ]] || return 0
     mv "$memory" "$memory.set-aside-$(date +%s)"
     log_event WARN sessions "memory found for the fresh clone $1 was set aside: $memory.set-aside-*"
+}
+
+# Sessions cannot write .git/hooks (greywall mounts it read-only: a planted hook would run out
+# here), so the `lefthook install` of a session's pnpm install fails and its commits would skip
+# the checks. A fresh clone gets them here instead: one hook per git hook its lefthook config
+# names, each running the clone's own lefthook at commit time, as lefthook's generated hook does.
+# The hooks are this script's text, never the clone's: only hook names are read from the config.
+# Only while the clone is fresh: a session could later replace .git/hooks with a symlink.
+LEFTHOOK_GIT_HOOKS=(applypatch-msg pre-applypatch post-applypatch pre-commit pre-merge-commit
+    prepare-commit-msg commit-msg post-commit pre-rebase post-checkout post-merge pre-push
+    pre-auto-gc post-rewrite reference-transaction push-to-checkout sendemail-validate post-index-change)
+
+install_lefthook_hooks() { # clone-dir
+    local clone=$1 config="" candidate hook installed=()
+    for candidate in lefthook.yml .lefthook.yml lefthook.yaml .lefthook.yaml; do
+        if [[ -f $clone/$candidate && ! -L $clone/$candidate ]]; then config=$clone/$candidate; break; fi
+    done
+    [[ -n $config ]] || return 0
+    mkdir -p "$clone/.git/hooks"
+    for hook in "${LEFTHOOK_GIT_HOOKS[@]}"; do
+        grep -qE "^${hook}:" "$config" || continue
+        lefthook_hook_script "$hook" > "$clone/.git/hooks/$hook"
+        chmod 755 "$clone/.git/hooks/$hook"
+        installed+=("$hook")
+    done
+    log_event INFO sessions "lefthook hooks installed in $clone: ${installed[*]:-none named in $(basename "$config")}"
+}
+
+lefthook_hook_script() { # hook
+    printf '#!/bin/sh\n# Installed by claude-sessions when this parallel clone was created.\nhook=%s\n' "$1"
+    cat <<'EOF'
+[ "$LEFTHOOK" = "0" ] && exit 0
+dir=$(git rev-parse --show-toplevel)
+platform="$(uname | tr '[:upper:]' '[:lower:]')-$(uname -m | sed 's/aarch64/arm64/;s/x86_64/x64/')"
+if [ -n "$LEFTHOOK_BIN" ]; then
+    exec "$LEFTHOOK_BIN" run "$hook" "$@"
+elif lefthook -h >/dev/null 2>&1; then
+    exec lefthook run "$hook" "$@"
+fi
+for lefthook in "$dir/node_modules/lefthook-$platform/bin/lefthook" \
+    "$dir/node_modules/@evilmartians/lefthook/bin/lefthook-$platform/lefthook" \
+    "$dir/node_modules/lefthook/bin/index.js"; do
+    [ -f "$lefthook" ] && exec "$lefthook" run "$hook" "$@"
+done
+echo "lefthook not found: run pnpm install, or its $hook checks are skipped" >&2
+EOF
 }
 
 # A fresh clone holds the same files as its source, so a source Claude already trusts makes the
