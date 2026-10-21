@@ -917,6 +917,18 @@ fn doctor_flags_a_claude_link_behind_the_newest_download() {
 }
 
 #[test]
+fn doctor_reads_the_fish_claude_function_from_its_own_file() {
+    // Since the move out of dotfiles, claude is functions/claude.fish, not part of config.fish.
+    let manager = Manager::new();
+    let fish = manager.sandbox.home.join(".config/fish");
+    fs::create_dir_all(fish.join("functions")).unwrap();
+    fs::write(fish.join("config.fish"), "# nothing about claude here\n").unwrap();
+    assert!(manager.doctor_line("fish claude function", &[]).trim().starts_with("FAIL"));
+    fs::copy(repo().join("config/fish/.config/fish/functions/claude.fish"), fish.join("functions/claude.fish")).unwrap();
+    assert!(manager.doctor_line("claude asks manager or terminal", &[]).trim().starts_with("ok"));
+}
+
+#[test]
 fn doctor_compares_the_usage_archive_with_fractional_transcript_times() {
     let manager = Manager::new();
     let archive = manager.sandbox.state.join("cockpit/usage.sqlite");

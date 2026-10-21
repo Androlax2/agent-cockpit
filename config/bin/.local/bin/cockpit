@@ -1290,7 +1290,7 @@ doctor() {
     if [[ -z $recent_facts ]] || jq -e 'select(.effort != null)' $recent_facts >/dev/null 2>&1; then report ok "status line reports the effort"; else report fail "status line reports no effort" "install .handoff/claude/statusline-command.sh"; fi
     if command -v ask-to-run >/dev/null && command -v claude-run-approve >/dev/null; then report ok "ask-to-run and claude-run-approve resolve"; else report fail "ask-to-run or claude-run-approve not on PATH" "cd ~/agent-cockpit/config && stow --no-folding -t ~ --restow bin"; fi
     if command -v ask-to-guide >/dev/null && command -v claude-guide >/dev/null && command -v kitten >/dev/null; then report ok "ask-to-guide, claude-guide and kitten resolve"; else report fail "ask-to-guide, claude-guide or kitten not on PATH" "cd ~/agent-cockpit/config && stow --no-folding -t ~ --restow bin"; fi
-    if grep -qs "this terminal" "$HOME/.config/fish/config.fish"; then report ok "claude asks manager or terminal"; else report fail "fish claude function is the old one" "install .handoff/fish/config.fish"; fi
+    if grep -qs "this terminal" "$HOME/.config/fish/functions/claude.fish"; then report ok "claude asks manager or terminal"; else report fail "fish claude function missing or the old one (~/.config/fish/functions/claude.fish)" "make -C ~/agent-cockpit install"; fi
     local agent
     for agent in "${AGENTS[@]}"; do
         if declare -F "agent_${agent}_doctor" >/dev/null; then "agent_${agent}_doctor"; fi
