@@ -315,6 +315,7 @@ fn approve_mapping(transaction: &rusqlite::Transaction<'_>, proposal_id: &str, e
     };
     // A link request names the whole team; a recruit request names only its asker and adds to the team.
     let is_recruit: bool = transaction.query_row("SELECT spawn_agent<>'' FROM proposals WHERE id=?1", [proposal_id], |row| row.get(0))?;
+    if is_recruit { recruit_roles_still_free(transaction, proposal_id, &task_key, &bound)?; }
     for (session, role, runtime) in existing {
         if !is_recruit && !bound.iter().any(|member| member.session_id == session && role_name(member.role) == role && member.runtime == runtime) {
             cancel_member_messages(transaction, &task_key, &session)?;
@@ -333,11 +334,31 @@ fn approve_mapping(transaction: &rusqlite::Transaction<'_>, proposal_id: &str, e
     Ok(json!({"proposal_id": proposal_id, "status": "approved"}))
 }
 
+/// Roles can be taken between the request and Theo's yes (another request, a link): review again then.
+fn recruit_roles_still_free(transaction: &Connection, proposal_id: &str, task_key: &str, bound: &[BoundMember]) -> Result<(), TeamError> {
+    let recruits: String = transaction.query_row("SELECT recruits FROM proposals WHERE id=?1", [proposal_id], |row| row.get(0))?;
+    let recruits: Vec<super::Recruit> = serde_json::from_str(&recruits)?;
+    let taken = |role: Role, except: Option<&str>| -> Result<bool, TeamError> {
+        let holder: Option<String> = transaction.query_row("SELECT session_id FROM members WHERE task_key=?1 AND role=?2",
+            params![task_key, role_name(role)], |row| row.get(0)).optional()?;
+        let starting: i64 = transaction.query_row("SELECT count(*) FROM spawns WHERE task_key=?1 AND role=?2 AND status IN ('pending','started')",
+            params![task_key, role_name(role)], |row| row.get(0))?;
+        Ok(holder.is_some_and(|holder| Some(holder.as_str()) != except) || (role != Role::Qa && starting > 0))
+    };
+    let asker_taken = bound.iter().map(|member| taken(member.role, Some(&member.session_id))).collect::<Result<Vec<_>, _>>()?.into_iter().any(|is| is);
+    let recruit_taken = recruits.iter().map(|recruit| taken(recruit.role, None)).collect::<Result<Vec<_>, _>>()?.into_iter().any(|is| is);
+    if asker_taken || recruit_taken {
+        return Err(TeamError::new(ErrorCode::Conflict, "a role of this request was taken meanwhile; the agent must ask again"));
+    }
+    Ok(())
+}
+
 /// What an approved recruit request starts: its Designer and Developer now, in the asker's folder;
 /// a Qa recruit becomes the team's standing QA brief, a fresh QA starting at each handoff.
 fn queue_recruits(transaction: &Connection, proposal_id: &str, task_key: &str, directories: &HashMap<String, String>, now_ms: i64) -> Result<(), TeamError> {
-    let (sender, recruits, agent): (String, String, String) = transaction.query_row("SELECT sender, recruits, spawn_agent FROM proposals WHERE id=?1",
-        [proposal_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
+    let (sender, recruits, agent, mapping): (String, String, String, String) = transaction.query_row(
+        "SELECT sender, recruits, spawn_agent, mapping FROM proposals WHERE id=?1", [proposal_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))?;
+    let asker_role = serde_json::from_str::<Vec<BoundMember>>(&mapping)?.first().map(|member| role_name(member.role)).unwrap_or("asking");
     let recruits: Vec<super::Recruit> = serde_json::from_str(&recruits)?;
     if recruits.is_empty() { return Ok(()); }
     let directory = directories.get(&sender).ok_or_else(|| TeamError::new(ErrorCode::Conflict, "the asking session is no longer live"))?;
@@ -348,7 +369,8 @@ fn queue_recruits(transaction: &Connection, proposal_id: &str, task_key: &str, d
             continue;
         }
         transaction.execute("INSERT INTO spawns (token,task_key,role,agent,directory,brief,status,created_at) VALUES (?1,?2,?3,?4,?5,?6,'pending',?7)",
-            params![identifier()?, task_key, role_name(recruit.role), agent, directory, recruit.brief, now_ms])?;
+            params![identifier()?, task_key, role_name(recruit.role), agent, directory,
+                format!("Brief written by your team's {asker_role} agent and approved by Theo:\n{}", recruit.brief), now_ms])?;
     }
     Ok(())
 }
@@ -388,23 +410,29 @@ pub fn expire_spawns(connection: &Connection, now_ms: i64) -> Result<(), TeamErr
 }
 
 /// The first verified session whose launch carried `token` takes its role, once. A session of another
-/// project, or already in another team, takes nothing.
+/// project, or already in another team, takes nothing. A start that was superseded (a newer handoff)
+/// or whose role was taken meanwhile is refused, and its session queued to close.
 pub fn bind_spawn(connection: &mut Connection, token: &str, session: &VerifiedSession, now_ms: i64) -> Result<bool, TeamError> {
     let transaction = connection.transaction()?;
-    let spawn: Option<(String, String)> = transaction.query_row("SELECT task_key, role FROM spawns WHERE token=?1 AND status='started'", [token],
-        |row| Ok((row.get(0)?, row.get(1)?))).optional()?;
-    let Some((task_key, role)) = spawn else { return Ok(false) };
+    let spawn: Option<(String, String, String)> = transaction.query_row("SELECT task_key, role, status FROM spawns WHERE token=?1 AND status IN ('started','superseded')",
+        [token], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).optional()?;
+    let Some((task_key, role, status)) = spawn else { return Ok(false) };
     let project: String = transaction.query_row("SELECT project FROM teams WHERE task_key=?1", [&task_key], |row| row.get(0))?;
     let elsewhere: Option<String> = transaction.query_row("SELECT task_key FROM members WHERE session_id=?1", [&session.session_id], |row| row.get(0)).optional()?;
     if project != session.project || elsewhere.is_some() || session.runtime.is_empty() { return Ok(false); }
-    let inserted = transaction.execute("INSERT INTO members (task_key,session_id,role,agent,runtime,epoch) VALUES (?1,?2,?3,?4,?5,?6) ON CONFLICT(task_key,role) DO NOTHING",
-        params![task_key, session.session_id, role, session.agent, session.runtime, identifier()?])?;
-    if inserted != 1 { return Ok(false); }
-    transaction.execute("UPDATE spawns SET status='bound', session_id=?2 WHERE token=?1", params![token, session.session_id])?;
-    transaction.execute("UPDATE teams SET revision=revision+1 WHERE task_key=?1", [&task_key])?;
-    schedule_qa(&transaction, &task_key, now_ms)?;
+    let is_bound = status == "started" && transaction.execute("INSERT INTO members (task_key,session_id,role,agent,runtime,epoch) VALUES (?1,?2,?3,?4,?5,?6) ON CONFLICT(task_key,role) DO NOTHING",
+        params![task_key, session.session_id, role, session.agent, session.runtime, identifier()?])? == 1;
+    if is_bound {
+        transaction.execute("UPDATE spawns SET status='bound', session_id=?2 WHERE token=?1", params![token, session.session_id])?;
+        transaction.execute("UPDATE teams SET revision=revision+1 WHERE task_key=?1", [&task_key])?;
+        schedule_qa(&transaction, &task_key, now_ms)?;
+    } else {
+        transaction.execute("UPDATE spawns SET status=CASE status WHEN 'superseded' THEN 'superseded' ELSE 'refused' END, session_id=?2 WHERE token=?1",
+            params![token, session.session_id])?;
+        transaction.execute("INSERT INTO qa_exits VALUES (?1,'pending') ON CONFLICT(session_id) DO UPDATE SET status='pending'", [&session.session_id])?;
+    }
     transaction.commit()?;
-    Ok(true)
+    Ok(is_bound)
 }
 
 /// Actionable rows (pending requests, open escalations, uncertain or failed deliveries) always, plus the
@@ -584,8 +612,15 @@ fn spawn_qa(transaction: &Connection, task_key: &str, handoff_id: &str, commit: 
     let standing: Option<(String, String)> = transaction.query_row("SELECT brief, agent FROM team_qa WHERE task_key=?1", [task_key],
         |row| Ok((row.get(0)?, row.get(1)?))).optional()?;
     let Some((standing, agent)) = standing else { return Ok(false) };
+    // A QA Theo linked himself stays: it gets the usual review request, and is never closed.
+    if qa_member_is_spawned(transaction, task_key)? == Some(false) { return Ok(false); }
     let folder = folder.ok_or_else(|| TeamError::new(ErrorCode::Conflict, "the Developer's folder is unknown; QA cannot be started"))?;
+    let recent: i64 = transaction.query_row("SELECT count(*) FROM spawns WHERE task_key=?1 AND role='qa' AND created_at>?2",
+        params![task_key, now_ms - 600_000], |row| row.get(0))?;
+    if recent >= 3 { return Err(TeamError::new(ErrorCode::Limit, "three QA reviews started in ten minutes; hand off again later")); }
     transaction.execute("UPDATE spawns SET status='cancelled' WHERE task_key=?1 AND role='qa' AND status='pending'", [task_key])?;
+    // Started but not joined yet: it can no longer take the role, and is closed once it shows up.
+    transaction.execute("UPDATE spawns SET status='superseded' WHERE task_key=?1 AND role='qa' AND status='started'", [task_key])?;
     let previous: Option<String> = transaction.query_row("SELECT session_id FROM members WHERE task_key=?1 AND role='qa'", [task_key], |row| row.get(0)).optional()?;
     if let Some(previous) = previous {
         cancel_member_messages(transaction, task_key, &previous)?;
@@ -603,7 +638,16 @@ fn spawn_qa(transaction: &Connection, task_key: &str, handoff_id: &str, commit: 
     Ok(true)
 }
 
-/// QA sessions a newer handoff replaced, still to be closed.
+/// Whether the task's QA member came from a team start: None without a QA member.
+fn qa_member_is_spawned(connection: &Connection, task_key: &str) -> Result<Option<bool>, TeamError> {
+    let member: Option<String> = connection.query_row("SELECT session_id FROM members WHERE task_key=?1 AND role='qa'", [task_key], |row| row.get(0)).optional()?;
+    let Some(member) = member else { return Ok(None) };
+    let spawned: Option<i64> = connection.query_row("SELECT 1 FROM spawns WHERE task_key=?1 AND role='qa' AND status='bound' AND session_id=?2",
+        params![task_key, member], |row| row.get(0)).optional()?;
+    Ok(Some(spawned.is_some()))
+}
+
+/// Started sessions to close: QA a newer handoff replaced, and starts that could not join.
 pub fn superseded_qa(connection: &Connection) -> Result<Vec<String>, TeamError> {
     let mut statement = connection.prepare("SELECT session_id FROM qa_exits WHERE status='pending' ORDER BY session_id")?;
     Ok(statement.query_map([], |row| row.get(0))?.collect::<Result<_, _>>()?)
@@ -618,7 +662,7 @@ pub fn mark_qa_exited(connection: &Connection, session_id: &str) -> Result<(), T
 fn schedule_qa(connection: &Connection, task_key: &str, now_ms: i64) -> Result<bool, TeamError> {
     // A team with a standing QA brief gives each fresh QA its review request as its first message.
     let has_standing_qa: Option<i64> = connection.query_row("SELECT 1 FROM team_qa WHERE task_key=?1", [task_key], |row| row.get(0)).optional()?;
-    if has_standing_qa.is_some() { return Ok(false); }
+    if has_standing_qa.is_some() && qa_member_is_spawned(connection, task_key)? != Some(false) { return Ok(false); }
     let role_member = |role: &str| connection.query_row("SELECT session_id,epoch,agent,runtime FROM members WHERE task_key=?1 AND role=?2",
         params![task_key, role], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?))).optional();
     let (Some(developer), Some(qa)) = (role_member("developer")?, role_member("qa")?) else { return Ok(false) };

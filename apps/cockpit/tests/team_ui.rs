@@ -118,3 +118,18 @@ fn a_failed_spawn_is_listed_and_counted() {
     assert!(texts.iter().any(|text| text.contains("did not start") && text.contains("designer")), "{texts:?}");
     assert_eq!(TeamView::attention(&state), TeamView::attention(&snapshot()) + 1);
 }
+
+#[test]
+fn a_recruit_request_is_summed_up_first_and_a_long_brief_cannot_push_it_away() {
+    // Final review I6: a brief with many lines hid the rest of the request.
+    let mut state = with_recruit_request();
+    let recruits = json!([{"role": "designer", "brief": "line\n".repeat(40)}, {"role": "qa", "brief": "Check contrast"}]).to_string();
+    state["proposals"][0]["recruits"] = json!(recruits);
+    state["sessions"] = json!([{"session_id": DEVELOPER, "agent": "opencode", "project": PROJECT, "project_name": "project-a",
+        "label": "", "state": "waiting", "cwd": "/home/theo/IdeaProjects/project-a"}]);
+    let view = TeamView::new(state);
+    let detail = view.detail();
+    assert_eq!(detail[0], "Starts: new designer in /home/theo/IdeaProjects/project-a · a fresh QA at each handoff · agent claude");
+    let designer = detail.iter().find(|line| line.starts_with("new designer")).unwrap();
+    assert!(!designer.contains('\n') && designer.contains("line⏎line"), "{designer}");
+}

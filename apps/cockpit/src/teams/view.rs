@@ -128,15 +128,26 @@ impl TeamView {
                     format!("Revision {} · reason: {}", proposal["revision"], shown(&proposal["reason"]))];
                 let recruits: Vec<Value> = serde_json::from_str(proposal["recruits"].as_str().unwrap_or("[]")).unwrap_or_default();
                 let agent = shown(&proposal["spawn_agent"]);
+                // One line, before anything an agent wrote: what starts where (the briefs follow, one line each).
+                if !recruits.is_empty() {
+                    let asker = self.mapping(index).first().and_then(|member| member["session_id"].as_str().map(str::to_string)).unwrap_or_default();
+                    let folder = self.sessions().iter().find(|session| session["session_id"] == asker.as_str())
+                        .map(|session| shown(&session["cwd"])).filter(|folder| !folder.is_empty()).unwrap_or_else(|| "(asker not live)".into());
+                    let mut starts: Vec<String> = recruits.iter().filter(|recruit| recruit["role"] != "qa")
+                        .map(|recruit| format!("new {} in {folder}", shown(&recruit["role"]))).collect();
+                    if recruits.iter().any(|recruit| recruit["role"] == "qa") { starts.push("a fresh QA at each handoff".into()); }
+                    lines.insert(0, format!("Starts: {} · agent {agent}", starts.join(" · ")));
+                }
+                let one_line = |brief: &Value| shown(brief).trim_end().replace('\n', "⏎");
                 for member in self.mapping(index) {
                     let label = if recruits.is_empty() { shown(&member["role"]) } else { format!("asker ({})", shown(&member["role"])) };
                     lines.push(format!("{label}: {} ({})", shown(&member["session_id"]), shown(&member["agent"])));
                 }
                 for recruit in &recruits {
                     if recruit["role"] == "qa" {
-                        lines.push(format!("QA: a fresh reviewer for each handoff ({agent}): {}", shown(&recruit["brief"])));
+                        lines.push(format!("QA: a fresh reviewer for each handoff ({agent}): {}", one_line(&recruit["brief"])));
                     } else {
-                        lines.push(format!("new {} ({agent}): {}", shown(&recruit["role"]), shown(&recruit["brief"])));
+                        lines.push(format!("new {} ({agent}): {}", shown(&recruit["role"]), one_line(&recruit["brief"])));
                     }
                 }
                 lines.push("Approving lets only these sessions message each other about this task. It grants no tool, scope, install or Git permission.".into());

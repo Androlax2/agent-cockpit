@@ -3086,7 +3086,6 @@ fn each_new_opencode_session_gets_an_id_of_its_own_newest_first() {
 // ---- team-spawn: a teammate Theo approved ----
 
 const SPAWN_TOKEN: &str = "0123456789abcdef0123456789abcdef";
-const BRIEF_LABEL: &str = "Brief from your team (written by the asking agent, approved by Theo):";
 
 fn head_commit(manager: &Manager) -> String {
     let output = Command::new("git").arg("-C").arg(&manager.project).args(["rev-parse", "HEAD"]).output().unwrap();
@@ -3101,9 +3100,7 @@ fn team_spawn_starts_a_designer_out_of_sight_in_the_askers_folder() {
     let started = manager.tmux_calls("new-session").pop().expect("no launch");
     assert!(started.contains(&format!("-c {} ", path_str(&manager.project))), "{started}");
     assert!(started.contains(&format!("CLAUDE_SESSIONS_TEAM_SPAWN={SPAWN_TOKEN}")), "{started}");
-    assert!(started.ends_with(BRIEF_LABEL), "{started}");
-    let log = fs::read_to_string(&manager.sandbox.log).unwrap();
-    assert!(log.contains(&format!("{BRIEF_LABEL}\nDesign the jobs list")), "the brief follows its label on the next line");
+    assert!(started.ends_with("-- Design the jobs list"), "the daemon's brief is the first message as it is, labelled there: {started}");
     assert!(manager.tmux_calls("respawn-pane").is_empty());
 }
 
@@ -3115,7 +3112,7 @@ fn team_spawn_starts_qa_in_a_fresh_copy_at_the_commit() {
     let clones = manager.sandbox.root.join("clones");
     let result = manager.run(&["team-spawn", SPAWN_TOKEN, "qa", &path_str(&manager.project), &commit, "Review it"], &[("CLAUDE_SESSIONS_CLONES", &path_str(&clones))]);
     assert_eq!(result.status.code(), Some(0), "{}", stderr(&result));
-    let copy = clones.join(format!("proj-a/qa-{}", &commit[..12]));
+    let copy = clones.join(format!("proj-a/qa-{}-{}", &commit[..12], &SPAWN_TOKEN[..8]));
     assert!(copy.join(".git").is_dir());
     assert!(manager.calls("greywall").iter().any(|call| call.ends_with(&format!("-- git switch --quiet --detach {commit}"))), "{:?}", manager.calls("greywall"));
     let started = manager.tmux_calls("new-session").pop().expect("no launch");
@@ -3146,6 +3143,30 @@ fn team_spawn_refuses_bad_arguments() {
 fn opencode_team_spawns_carry_the_token_too() {
     let manager = Manager::new();
     let result = manager.run(&["--agent", "opencode", "team-spawn", SPAWN_TOKEN, "developer", &path_str(&manager.project), "-", "Build from the frames"], &[]);
+    assert_eq!(result.status.code(), Some(0), "{}", stderr(&result));
+    let started = manager.tmux_calls("new-session").pop().expect("no launch");
+    assert!(started.contains(&format!("CLAUDE_SESSIONS_TEAM_SPAWN={SPAWN_TOKEN}")), "{started}");
+}
+
+#[test]
+fn each_qa_start_gets_a_folder_of_its_own() {
+    // Final review I7: the same commit handed off twice must not reuse the previous QA's folder.
+    let manager = Manager::new();
+    manager.git_repository();
+    let commit = head_commit(&manager);
+    let clones = manager.sandbox.root.join("clones");
+    let existing = clones.join(format!("proj-a/qa-{}-{}", &commit[..12], &SPAWN_TOKEN[..8]));
+    fs::create_dir_all(existing.join(".git")).unwrap();
+    let result = manager.run(&["team-spawn", SPAWN_TOKEN, "qa", &path_str(&manager.project), &commit, "Review it"], &[("CLAUDE_SESSIONS_CLONES", &path_str(&clones))]);
+    assert_ne!(result.status.code(), Some(0));
+    assert!(manager.tmux_calls("new-session").is_empty());
+}
+
+#[test]
+fn codex_team_spawns_carry_the_token_too() {
+    // Final review I5: with Codex as default agent, every start must still be able to join.
+    let manager = Manager::new();
+    let result = manager.run(&["--agent", "codex", "team-spawn", SPAWN_TOKEN, "developer", &path_str(&manager.project), "-", "Build from the frames"], &[]);
     assert_eq!(result.status.code(), Some(0), "{}", stderr(&result));
     let started = manager.tmux_calls("new-session").pop().expect("no launch");
     assert!(started.contains(&format!("CLAUDE_SESSIONS_TEAM_SPAWN={SPAWN_TOKEN}")), "{started}");

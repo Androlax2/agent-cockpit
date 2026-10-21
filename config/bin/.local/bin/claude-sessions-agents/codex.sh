@@ -15,7 +15,7 @@ codex_launch() { # directory native-arguments...
     name="claude-retry-codex-$(date +%s%N)"
     size=$(detached_size)
     tmux new-session -d -s "$name" -x "${size% *}" -y "${size#* }" -c "$directory" \
-        env -u CLAUDE_CODE_SESSION_ID CLAUDE_SESSIONS_INSIDE=1 CLAUDE_SESSIONS_AGENT=codex \
+        env -u CLAUDE_CODE_SESSION_ID CLAUDE_SESSIONS_INSIDE=1 CLAUDE_SESSIONS_AGENT=codex CLAUDE_SESSIONS_TEAM_SPAWN="${launch_team_spawn:-}" \
         sh -c '"$@"; result=$?; if [ "$result" -ne 0 ]; then claude-sessions log manager ERROR "native Codex exited with status $result in $PWD"; fi; exit "$result"' \
         codex "$CODEX_LAUNCHER" "$@" || return
     printf '%s\n' "$name"

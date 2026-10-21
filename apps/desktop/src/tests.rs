@@ -425,7 +425,7 @@ fn approving_a_recruit_request_starts_each_teammate_detached() {
     let project = bench.fixture.root.join("home/IdeaProjects/project-a").to_string_lossy().into_owned();
     assert_eq!(starts[0][..4], ["claude-sessions", "--agent", "claude", "team-spawn"]);
     assert!(starts[0][4].len() == 32 && starts[0][4].bytes().all(|byte| byte.is_ascii_hexdigit()));
-    assert_eq!(starts[0][5..], ["designer", project.as_str(), "-", "Design the jobs list"]);
+    assert_eq!(starts[0][5..], ["designer", project.as_str(), "-", "Brief written by your team's developer agent and approved by Theo:\nDesign the jobs list"]);
     crate::teams::request(&mut bench.registry, 20, cockpit::teams::AgentAction::Context).unwrap();
     assert_eq!(started(&bench).len(), 1, "a started teammate is never started twice");
 }

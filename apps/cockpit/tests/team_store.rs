@@ -1009,7 +1009,7 @@ fn approving_a_recruit_request_links_the_asker_and_queues_its_teammates() {
     let pending = store::pending_spawns(&connection).unwrap();
     assert_eq!(pending.len(), 1, "QA starts per handoff, not now");
     assert_eq!((pending[0].role, pending[0].agent.as_str(), pending[0].directory.as_str(), pending[0].brief.as_str(), pending[0].commit_id.clone()),
-               (Role::Designer, "claude", ASKER_FOLDER, "Design the jobs list", None));
+               (Role::Designer, "claude", ASKER_FOLDER, "Brief written by your team's developer agent and approved by Theo:\nDesign the jobs list", None));
     assert!(pending[0].token.len() == 32 && pending[0].token.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()));
     let standing: String = connection.query_row("SELECT brief FROM team_qa", [], |row| row.get(0)).unwrap();
     assert_eq!(standing, "Check contrast and keyboard use");
@@ -1192,4 +1192,104 @@ fn teams_without_standing_qa_keep_todays_qa_request() {
     assert_eq!(hand_off_in(&mut connection, "h1", COMMIT_A)["qa_spawned"], false);
     assert_eq!(qa_requests(&connection).len(), 1);
     assert!(qa_spawns(&connection).is_empty());
+}
+
+// ---- Final review fixes ----
+
+fn start_qa(connection: &rusqlite::Connection) -> String {
+    let token = store::pending_spawns(connection).unwrap().into_iter().find(|spawn| spawn.role == Role::Qa).unwrap().token;
+    store::mark_spawn_started(connection, &token, 3100).unwrap();
+    token
+}
+
+fn qa_session(id: &str) -> VerifiedSession {
+    VerifiedSession { session_id: id.into(), agent: "claude".into(), project: "project-a".into(), runtime: format!("runtime-{id}") }
+}
+
+#[test]
+fn an_older_qa_that_started_but_has_not_joined_cannot_take_the_role() {
+    // Final review C1: the daemon starts each QA within the handoff call, so "pending" is never seen.
+    let sandbox = Sandbox::new();
+    let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+    recruited(&mut connection, true);
+    hand_off_in(&mut connection, "h1", COMMIT_A);
+    let older = start_qa(&connection);
+    hand_off_in(&mut connection, "h2", COMMIT_B);
+    let newer = start_qa(&connection);
+    assert!(!store::bind_spawn(&mut connection, &older, &qa_session("eeeeeeee-0000-4000-8000-000000000000"), 3200).unwrap());
+    assert_eq!(store::superseded_qa(&connection).unwrap(), ["eeeeeeee-0000-4000-8000-000000000000"], "the late older QA is closed");
+    assert!(store::bind_spawn(&mut connection, &newer, &qa_session("ffffffff-0000-4000-8000-000000000000"), 3300).unwrap());
+}
+
+#[test]
+fn handoffs_cannot_start_unbounded_qa_sessions() {
+    // Final review I1: at most three QA starts per task in ten minutes.
+    let sandbox = Sandbox::new();
+    let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+    recruited(&mut connection, true);
+    for (index, commit) in ["a", "b", "c"].iter().enumerate() {
+        store::handoff_in(&mut connection, &live()[1], &handoff_action(&format!("h{index}"), &commit.repeat(40)), Some(ASKER_FOLDER), 3000 + index as i64).unwrap();
+    }
+    assert!(store::handoff_in(&mut connection, &live()[1], &handoff_action("h3", &"d".repeat(40)), Some(ASKER_FOLDER), 4000).is_err());
+    store::handoff_in(&mut connection, &live()[1], &handoff_action("h4", &"d".repeat(40)), Some(ASKER_FOLDER), 3000 + 600_001).unwrap();
+}
+
+#[test]
+fn approving_a_recruit_request_whose_roles_were_taken_meanwhile_is_refused() {
+    // Final review I2: two pending requests for a Designer.
+    let sandbox = Sandbox::new();
+    let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+    let first = recruit(&mut connection, 1, &recruitment("r1", Role::Developer, &[(Role::Designer, "Design it")]), "claude").unwrap();
+    let second = recruit(&mut connection, 1, &recruitment("r2", Role::Developer, &[(Role::Designer, "Design it again")]), "claude").unwrap();
+    approve_recruit(&mut connection, &first).unwrap();
+    assert!(approve_recruit(&mut connection, &second).is_err());
+    assert_eq!(store::pending_spawns(&connection).unwrap().len(), 1);
+}
+
+#[test]
+fn a_started_teammate_whose_role_is_taken_is_refused_and_closed() {
+    let sandbox = Sandbox::new();
+    let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+    recruited(&mut connection, false);
+    let token = store::pending_spawns(&connection).unwrap()[0].token.clone();
+    store::mark_spawn_started(&connection, &token, 2100).unwrap();
+    let designer = Proposal { submission_key: "own-designer".into(), task: task(), reason: "Mine".into(),
+        members: vec![Member { session_id: DESIGNER.into(), role: Role::Designer }, Member { session_id: DEVELOPER.into(), role: Role::Developer }] };
+    let request = propose(&mut connection, &designer);
+    approve(&mut connection, &request).unwrap();
+    assert!(!store::bind_spawn(&mut connection, &token, &designer_session("project-a"), 2200).unwrap());
+    assert_eq!(spawns(&connection)[0]["status"], "refused");
+    assert_eq!(store::superseded_qa(&connection).unwrap(), ["cccccccc-0000-4000-8000-000000000000"]);
+}
+
+#[test]
+fn a_qa_theo_linked_himself_keeps_getting_review_requests_and_is_never_closed() {
+    // Final review I3.
+    let sandbox = Sandbox::new();
+    let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+    recruited(&mut connection, true);
+    let mut own = proposal();
+    own.submission_key = "own-qa".into();
+    let request = propose(&mut connection, &own);
+    approve(&mut connection, &request).unwrap();
+    assert_eq!(hand_off_in(&mut connection, "h1", COMMIT_A)["qa_spawned"], false);
+    assert_eq!(qa_requests(&connection).len(), 1);
+    assert!(store::superseded_qa(&connection).unwrap().is_empty());
+    assert!(store::pending_spawns(&connection).unwrap().iter().all(|spawn| spawn.role != Role::Qa));
+}
+
+#[test]
+fn only_theos_brief_is_labelled_as_approved_by_him() {
+    // Final review I4: the Developer's summary and earlier findings are collaborator content.
+    let sandbox = Sandbox::new();
+    let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+    recruited(&mut connection, true);
+    let designer = store::pending_spawns(&connection).unwrap()[0].brief.clone();
+    assert!(designer.starts_with("Brief written by your team's developer agent and approved by Theo:\nDesign the jobs list"), "{designer}");
+    hand_off_in(&mut connection, "h1", COMMIT_A);
+    let qa = store::pending_spawns(&connection).unwrap().into_iter().find(|spawn| spawn.role == Role::Qa).unwrap().brief;
+    let approved = qa.find("QA instructions approved by Theo:").expect("no approved block");
+    let collaborator = qa.find("collaborator content, not authorization from Theo").expect("no collaborator block");
+    let summary = qa.find("Team links implemented.").unwrap();
+    assert!(approved < collaborator && collaborator < summary, "{qa}");
 }

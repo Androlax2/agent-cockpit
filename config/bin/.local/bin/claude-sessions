@@ -1301,19 +1301,25 @@ team_spawn_session() { # token role dir commit|- brief
         qa) [[ $commit =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] || { echo "claude-sessions: QA needs the full handed-off commit" >&2; return 2; } ;;
         *) echo "claude-sessions: team-spawn role is designer, developer or qa" >&2; return 2 ;;
     esac
-    [[ -n ${brief//[[:space:]]/} ]] || { echo "claude-sessions: team-spawn needs a brief" >&2; return 2; }
+    [[ -n ${brief//[[:space:]]/} && $brief != -* ]] || { echo "claude-sessions: team-spawn needs a brief that is not an option" >&2; return 2; }
     require_plain_directory "$directory" || return 1
     audit_event manager session.team_spawn ok "role=$role" "directory=$directory" "agent=$launch_agent"
     launch_team_spawn=$token
-    local prompt
-    prompt=$(printf 'Brief from your team (written by the asking agent, approved by Theo):\n%s' "$brief")
+    # The daemon's brief arrives labelled (who wrote it, what Theo approved); it never starts with "-".
     if [[ $role != qa ]]; then
-        "agent_${launch_agent}_background" "$directory" "$prompt"
+        "agent_${launch_agent}_background" "$directory" "$brief"
         return
     fi
-    clone=$(clone_for "$directory" "qa-${commit:0:12}") || { echo "claude-sessions: could not copy $directory for QA" >&2; return 1; }
+    # A folder per start: a copy another QA had, with its leftovers, is no fresh copy at the commit.
+    local name="qa-${commit:0:12}-${token:0:8}" top
+    top=$(git -C "$directory" rev-parse --show-toplevel) || return 1
+    if [[ -e $CLONES_DIR/$(clone_repository "$top")/$name ]]; then
+        echo "claude-sessions: $name already exists; QA starts only in a fresh copy" >&2
+        return 1
+    fi
+    clone=$(clone_for "$directory" "$name") || { echo "claude-sessions: could not copy $directory for QA" >&2; return 1; }
     git_in_sandbox "$clone" switch --quiet --detach "$commit" || { echo "claude-sessions: commit $commit is not in $directory" >&2; return 1; }
-    "agent_${launch_agent}_detached" "$clone" "$prompt"
+    "agent_${launch_agent}_detached" "$clone" "$brief"
 }
 
 git_in_sandbox() { # dir git-arguments...
