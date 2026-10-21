@@ -127,7 +127,8 @@ fn stalled_server_is_killed_and_reaped_when_the_deadline_expires() {
     codex_quota::vendor(&sandbox, r#"
 import os, signal, time
 from pathlib import Path
-Path.home().joinpath('vendor.pid').write_text(str(os.getpid()))
+Path.home().joinpath('vendor.pid.tmp').write_text(str(os.getpid()))
+Path.home().joinpath('vendor.pid.tmp').rename(Path.home().joinpath('vendor.pid'))
 signal.signal(signal.SIGTERM, signal.SIG_IGN)
 while True:
     time.sleep(1)
@@ -154,7 +155,8 @@ fn terminating_the_helper_reaps_its_stalled_server() {
     codex_quota::vendor(&sandbox, r#"
 import os, time
 from pathlib import Path
-Path.home().joinpath('vendor.pid').write_text(str(os.getpid()))
+Path.home().joinpath('vendor.pid.tmp').write_text(str(os.getpid()))
+Path.home().joinpath('vendor.pid.tmp').rename(Path.home().joinpath('vendor.pid'))
 while True:
     time.sleep(1)
 "#);
