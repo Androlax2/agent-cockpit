@@ -2042,6 +2042,21 @@ fn the_doctor_does_not_count_the_health_checks_own_failure() {
     assert!(output.contains("no error logged in 24 h"), "{}\n---stderr\n{}", &output[output.len().saturating_sub(800)..], stderr(&result));
 }
 
+#[test]
+fn the_doctor_logs_its_findings_as_a_warning_not_a_cockpit_error() {
+    let manager = Manager::new();
+    let log = manager.sandbox.state.join("cockpit/log");
+    fs::create_dir_all(log.parent().unwrap()).unwrap();
+    fs::write(&log, "").unwrap();
+    let first = manager.run(&["doctor"], &[]);
+    assert_eq!(first.status.code(), Some(1), "{}\n---stderr\n{}", stdout(&first), stderr(&first));
+    let lines = manager.log_lines();
+    assert!(lines.iter().any(|line| line.contains(" WARN manager: doctor ") && line.contains("-> exit 1")), "{lines:?}");
+    assert!(!lines.iter().any(|line| line.contains(" ERROR ")), "{lines:?}");
+    let second = stdout(&manager.run(&["doctor"], &[]));
+    assert!(second.contains("no error logged in 24 h"), "{second}");
+}
+
 fn record_tmux_fingerprint(manager: &Manager) -> PathBuf {
     let baseline = manager.sandbox.home.join(".config/tmux/border-junction.sha256");
     fs::create_dir_all(baseline.parent().unwrap()).unwrap();

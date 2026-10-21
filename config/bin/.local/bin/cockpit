@@ -1313,7 +1313,12 @@ doctor() {
     else
         echo "  no session tracked"
     fi
-    (( failures == 0 )) && echo "all good" || { echo "$failures problem(s)"; return 1; }
+    (( failures == 0 )) && echo "all good" && return 0
+    echo "$failures problem(s)"
+    # Its findings are in its output: as an ERROR, its exit would start a repair session from the
+    # error hand-off and fail the next doctor's log check for a day.
+    if [[ $log_command == doctor ]]; then log_failure_level=WARN; fi
+    return 1
 }
 
 # Parallel sessions on one repository each get their own clone, so they never edit the same files.
