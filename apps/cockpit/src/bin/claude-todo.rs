@@ -18,7 +18,7 @@
 //!     claude-todo blocked '<what you could not do>' --why '<what stopped you>' [--notes '<details>']
 //!                                     from any project: greywall, cockpit, the launcher or
 //!                                     another part of Theo's setup kept you from doing something;
-//!                                     filed in the dotfiles list and queued for its session
+//!                                     filed in the agent-cockpit list and queued for its session
 //!     claude-todo stack <repo> '<title>' --why '<reason>' [--notes '<details>'] [--kind <kind>]
 //!                                     from any project: a security hole, bug or improvement in the own
 //!                                     code of a sandbox stack repository (greywall, greyproxy; not
@@ -61,7 +61,7 @@ const USAGE: &str = "    claude-todo list [--all]        the items of this direc
                                     proposed in that project's list; add names only a linked project
     claude-todo blocked '<what you could not do>' --why '<what stopped you>' [--notes '<details>']
                                     the setup (greywall, cockpit, the launcher…) blocked you:
-                                    filed in the dotfiles list and queued for its session
+                                    filed in the agent-cockpit list and queued for its session
     claude-todo stack <repo> '<title>' --why '<reason>' [--notes '<details>'] [--kind <kind>]
                                     a security hole, bug or improvement in the own code of a sandbox stack
                                     repository, from any project: <repo> is the one the code is in (greywall,
@@ -228,7 +228,7 @@ fn file(action: &str, repo: Option<&str>, title: &str, why: Option<String>, note
     match append(update) {
         Ok(()) if action == "propose" => { println!("Proposed to Theo in {}'s list (Theo approves or declines it).", target.unwrap_or_else(project)); 0 }
         Ok(()) if action == "stack" => { println!("Proposed to Theo in {}'s list (Theo approves or declines it).", repo.unwrap_or_default()); 0 }
-        Ok(()) if action == "blocked" => { println!("Reported in the dotfiles list and queued for its session. Tell Theo what you could not do; don't work around it."); 0 }
+        Ok(()) if action == "blocked" => { println!("Reported in the agent-cockpit list and queued for its session. Tell Theo what you could not do; don't work around it."); 0 }
         Ok(()) => match target.filter(|target| *target != project()) {
             Some(target) => {
                 let is_on = todo_list::link_between(&project(), &target).is_some_and(|(_, setting)| cockpit::settings::is_on(setting));

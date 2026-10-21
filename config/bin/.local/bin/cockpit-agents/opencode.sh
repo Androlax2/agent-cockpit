@@ -241,16 +241,16 @@ agent_opencode_doctor() {
     elif grep -q 'msg="loading plugin" id=[^ ]*/plugins/cockpit\.ts' "$newest_log"; then
         report ok "the cockpit plugin loaded in its last run ($(basename "$newest_log"))"
     else
-        report fail "the cockpit plugin did not load in opencode's last run ($newest_log)" "ls -l ~/.config/opencode/plugins (cd ~/dotfiles/config && stow -t ~ --restow opencode)"
+        report fail "the cockpit plugin did not load in opencode's last run ($newest_log)" "ls -l ~/.config/opencode/plugins (cd ~/agent-cockpit/config && stow --no-folding -t ~ --restow opencode)"
     fi
     key=$(secret-tool lookup service agent-opencode-anthropic 2>/dev/null || true)
     if [[ -z $key ]]; then
-        report fail "no Anthropic API key for opencode in the keyring" "make -C ~/dotfiles agent-opencode-key"
+        report fail "no Anthropic API key for opencode in the keyring" "make -C ~/agent-cockpit agent-opencode-key"
     elif [[ $key =~ ^(sk-ant-[a-z]+[0-9]*)-[A-Za-z0-9_-]+$ ]] && (( ${#key} >= 80 )); then
         key_kind=${BASH_REMATCH[1]}
         report ok "API key in the keyring: $key_kind-… (${#key} characters)"
     else
-        report fail "the keyring's opencode key does not look like an Anthropic API key (${#key} characters)" "make -C ~/dotfiles agent-opencode-key"
+        report fail "the keyring's opencode key does not look like an Anthropic API key (${#key} characters)" "make -C ~/agent-cockpit agent-opencode-key"
     fi
     unset key
     # Its own folders, from its launcher, must have left denyRead in its newest settings file.
@@ -261,7 +261,7 @@ agent_opencode_doctor() {
     if [[ -z $settings ]]; then
         report ok "sandbox: no opencode session started since boot"
     elif [[ -z $own_folders ]]; then
-        report fail "no own_folders in $launcher" "cd ~/dotfiles/config && stow -t ~ --restow bin"
+        report fail "no own_folders in $launcher" "cd ~/agent-cockpit/config && stow --no-folding -t ~ --restow bin"
     else
         read -ra folders <<< "$own_folders" # no glob: the entries are greywall's patterns, ** included
         for folder in "${folders[@]}"; do

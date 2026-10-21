@@ -86,7 +86,7 @@
       "~/CLAUDE.md",
       "~/AGENTS.md",
       "~/dotfiles/config/claude/.claude/CLAUDE.md",
-      "~/dotfiles/config/claude/.claude/hooks",
+      "~/agent-cockpit/config/claude/.claude/hooks",
       "~/.gitconfig",
       "~/.gitignore",
       "~/.config/git",
@@ -107,7 +107,8 @@
       "~/.local/share/opentui",
       "~/.local/state/opencode",
       "~/.config/github-copilot",
-      "~/dotfiles/config/opencode"
+      "~/dotfiles/config/opencode",
+      "~/agent-cockpit/config/opencode"
     ],
     "denyRead": [
       "~/.ssh/id_*",
@@ -136,7 +137,7 @@
       "~/.config/fish",
       "~/.local/bin",
       "~/.config/greywall",
-      "~/dotfiles/config/greywall",
+      "~/agent-cockpit/config/greywall",
       "~/.config/systemd",
       "~/.config/autostart",
       "~/.gitconfig",

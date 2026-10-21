@@ -1056,12 +1056,12 @@ restart_sessions() { # id...
     view_session "$shown" || true
 }
 
-# The OSD daemon (osd.service) keeps running the build it started with: make cockpit replaces the
+# The OSD daemon (osd.service) keeps running the build it started with: make build replaces the
 # binary, not the process, so the daemon's fixes were not live after an apply until a manual
 # restart. reload restarts it when its build is older than the one on disk, once no approval is
 # open: a restart forgets the approval the daemon shows (its pane and window would stay), and the
 # apply itself often runs in one.
-OSD_BINARY="${COCKPIT_OSD_BINARY:-$HOME/dotfiles/apps/target/release/osd}"
+OSD_BINARY="${COCKPIT_OSD_BINARY:-$HOME/agent-cockpit/apps/target/release/osd}"
 
 osd_is_stale() {
     local pid running_for built
@@ -1220,9 +1220,9 @@ doctor() {
     echo "greywall (what sessions can reach)"
     local greywall="$HOME/.config/greywall/greywall.json"
     if jq -e --arg path "$fifo" '.filesystem.allowWrite | index($path)' "$greywall" >/dev/null 2>&1; then report ok "$fifo in allowWrite"; else report fail "$fifo not in greywall allowWrite" "add it to filesystem.allowWrite in $greywall"; fi
-    if jq -e '.filesystem.allowRead | index("~/dotfiles/config/claude")' "$greywall" >/dev/null 2>&1; then report ok "~/dotfiles/config/claude in allowRead"; else report fail "~/dotfiles/config/claude not in greywall allowRead" "add it, or hooks are unreachable from other projects"; fi
+    if jq -e '.filesystem.allowRead | index("~/agent-cockpit/config/claude")' "$greywall" >/dev/null 2>&1; then report ok "~/agent-cockpit/config/claude in allowRead"; else report fail "~/agent-cockpit/config/claude not in greywall allowRead" "add it, or hooks are unreachable from other projects"; fi
     echo "hooks"
-    if [[ -x $(readlink -f "$HOME/.claude/hooks/session-state.sh") ]]; then report ok "~/.claude/hooks/session-state.sh resolves"; else report fail "~/.claude/hooks/session-state.sh does not resolve" "ln -s ../dotfiles/config/claude/.claude/hooks ~/.claude/hooks"; fi
+    if [[ -x $(readlink -f "$HOME/.claude/hooks/session-state.sh") ]]; then report ok "~/.claude/hooks/session-state.sh resolves"; else report fail "~/.claude/hooks/session-state.sh does not resolve" "cd ~/agent-cockpit/config && stow --no-folding -t ~ --restow claude"; fi
     local event missing_events=""
     for event in SessionStart UserPromptSubmit PostToolUse Notification Stop SessionEnd; do
         jq -e --arg event "$event" '[.hooks[$event][]?.hooks[]?.command] | any(test("session-state.sh"))' "$HOME/.claude/settings.json" >/dev/null 2>&1 \
@@ -1233,7 +1233,7 @@ doctor() {
     else
         report fail "settings.json misses session-state.sh on:$missing_events" "add {\"type\": \"command\", \"command\": \"bash ~/.claude/hooks/session-state.sh\"} under hooks.<event>"
     fi
-    if [[ -x $(readlink -f "$HOME/.claude/statusline-command.sh") ]]; then report ok "status line script resolves"; else report fail "~/.claude/statusline-command.sh does not resolve" "ln -s ../dotfiles/config/claude/.claude/statusline-command.sh ~/.claude/statusline-command.sh"; fi
+    if [[ -x $(readlink -f "$HOME/.claude/statusline-command.sh") ]]; then report ok "status line script resolves"; else report fail "~/.claude/statusline-command.sh does not resolve" "cd ~/agent-cockpit/config && stow --no-folding -t ~ --restow claude"; fi
     echo "bar"
     if pgrep -x waybar >/dev/null; then report ok "waybar running"; else report fail "waybar not running" "waybar &"; fi
     if pgrep -f workspace-listener.sh >/dev/null; then report ok "workspace listener running"; else report fail "workspace-listener.sh not running" "pkill -x -SIGUSR2 waybar (reload) and check custom/workspace-listener in config.jsonc"; fi
@@ -1288,8 +1288,8 @@ doctor() {
     local recent_facts
     recent_facts=$(find "$HOME/.cache/claude" -maxdepth 1 -name 'statusline-*.json' -mmin -60 2>/dev/null || true)
     if [[ -z $recent_facts ]] || jq -e 'select(.effort != null)' $recent_facts >/dev/null 2>&1; then report ok "status line reports the effort"; else report fail "status line reports no effort" "install .handoff/claude/statusline-command.sh"; fi
-    if command -v ask-to-run >/dev/null && command -v claude-run-approve >/dev/null; then report ok "ask-to-run and claude-run-approve resolve"; else report fail "ask-to-run or claude-run-approve not on PATH" "cd ~/dotfiles/config && stow -t ~ --restow bin"; fi
-    if command -v ask-to-guide >/dev/null && command -v claude-guide >/dev/null && command -v kitten >/dev/null; then report ok "ask-to-guide, claude-guide and kitten resolve"; else report fail "ask-to-guide, claude-guide or kitten not on PATH" "cd ~/dotfiles/config && stow -t ~ --restow bin"; fi
+    if command -v ask-to-run >/dev/null && command -v claude-run-approve >/dev/null; then report ok "ask-to-run and claude-run-approve resolve"; else report fail "ask-to-run or claude-run-approve not on PATH" "cd ~/agent-cockpit/config && stow --no-folding -t ~ --restow bin"; fi
+    if command -v ask-to-guide >/dev/null && command -v claude-guide >/dev/null && command -v kitten >/dev/null; then report ok "ask-to-guide, claude-guide and kitten resolve"; else report fail "ask-to-guide, claude-guide or kitten not on PATH" "cd ~/agent-cockpit/config && stow --no-folding -t ~ --restow bin"; fi
     if grep -qs "this terminal" "$HOME/.config/fish/config.fish"; then report ok "claude asks manager or terminal"; else report fail "fish claude function is the old one" "install .handoff/fish/config.fish"; fi
     local agent
     for agent in "${AGENTS[@]}"; do
@@ -2024,10 +2024,11 @@ apply_reviewed() { # [clone]
     fi
 }
 
+# The dotfiles' command links share ~/.local/bin with agent-cockpit's, file by file (--no-folding).
 after_dotfiles_apply() { # commit-before-the-apply
     if ! git -C "$DOTFILES_LIVE" diff --quiet "$1" HEAD -- config/bin; then
         echo "Refreshing command links …"
-        if ! stow --dir="$DOTFILES_LIVE/config" --target="$HOME" --restow bin; then
+        if ! stow --dir="$DOTFILES_LIVE/config" --target="$HOME" --no-folding --restow bin; then
             echo "The commits were applied, but refreshing command links failed (above). Existing personal files were not replaced." >&2
             log_event ERROR apply "stow bin failed after the apply: command links need attention"
             return 1
@@ -2037,7 +2038,7 @@ after_dotfiles_apply() { # commit-before-the-apply
         echo "Applied."
         return 0
     fi
-    rebuild_apps
+    build_dotfiles_apps
 }
 
 # Another running copy installs itself: its Makefile's after-apply target (build, links, restarts),
@@ -2055,17 +2056,16 @@ after_reviewed_apply() { # live commit-before-the-apply
     fi
 }
 
-# The daemon's fixes are only live once it runs the new build: an apply that left osd.service on
-# the old one (security audits 2 and 3) broke ask-to-run and claude-todo until a manual restart.
-rebuild_apps() {
+# The dotfiles' apps/ are their own programs (widgets); the OSD daemon and the column are
+# agent-cockpit's, whose after-apply rebuilds them and reloads (restarting a stale daemon).
+build_dotfiles_apps() {
     echo "Applied. apps/ changed: building it …"
-    if ! make -C "$DOTFILES_LIVE" cockpit; then
-        echo "The build failed (above): the OSD daemon keeps its old build." >&2
-        log_event WARN apply "make cockpit failed after the apply"
+    if ! make -C "$DOTFILES_LIVE" build; then
+        echo "The build failed (above): the dotfiles' programs keep their old build." >&2
+        log_event WARN apply "make build failed in $DOTFILES_LIVE after the apply"
         return 1
     fi
-    restart_stale_osd
-    echo "Next: make test in $DOTFILES_LIVE, then cockpit reload for the column."
+    echo "Next: make test in $DOTFILES_LIVE."
 }
 
 show_usage() {

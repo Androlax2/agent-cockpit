@@ -111,6 +111,9 @@ pub fn running_copy(repository: &str) -> PathBuf {
 pub fn work_clone(repository: &str) -> PathBuf {
     if repository == "dotfiles" { dotfiles_work() } else { home().join("IdeaProjects").join(repository) }
 }
+/// Where the agent-cockpit session works: the cockpit's logged errors and every session's blocked
+/// reports go there, since the setup they are about (cockpit, launchers, greywall.json, hooks) is its own.
+pub fn cockpit_work() -> PathBuf { work_clone("agent-cockpit") }
 pub fn greywall_work() -> PathBuf { from_env("CLAUDE_GREYWALL_WORK", home().join("IdeaProjects/greywall")) }
 /// Theo's greyproxy fork, where `claude-todo stack greyproxy` files problems in greyproxy's own code.
 pub fn greyproxy_work() -> PathBuf { from_env("CLAUDE_GREYPROXY_WORK", home().join("IdeaProjects/greyproxy")) }

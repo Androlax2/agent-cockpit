@@ -24,8 +24,9 @@ fn health_sandbox() -> Sandbox {
 }
 
 fn run_check(sandbox: &Sandbox, extra: &[(&str, &str)]) -> Output {
-    let dotfiles = sandbox.root.display().to_string();
-    sandbox.command(bin().join("claude-health-check"), &[("CLAUDE_HEALTH_DOTFILES", &dotfiles)]).envs(extra.iter().copied()).output().unwrap()
+    let (cockpit, dotfiles) = (sandbox.root.join("agent-cockpit").display().to_string(), sandbox.root.join("dotfiles").display().to_string());
+    sandbox.command(bin().join("claude-health-check"), &[("CLAUDE_HEALTH_COCKPIT", &cockpit), ("CLAUDE_HEALTH_DOTFILES", &dotfiles)])
+        .envs(extra.iter().copied()).output().unwrap()
 }
 
 fn report(sandbox: &Sandbox) -> String {
@@ -58,6 +59,24 @@ fn a_quiet_week_writes_a_report_and_logs_all_good() {
 }
 
 #[test]
+fn both_repositories_run_their_tests_and_only_the_dotfiles_their_drift_check() {
+    // Cutover 5a: the cockpit's tests live in agent-cockpit, the machine's drift check in the dotfiles.
+    let sandbox = health_sandbox();
+    run_check(&sandbox, &[]);
+    let (cockpit, dotfiles) = (sandbox.root.join("agent-cockpit"), sandbox.root.join("dotfiles"));
+    assert_eq!(sandbox.calls("make"), [format!("make -C {} test", cockpit.display()), format!("make -C {} test", dotfiles.display()),
+                                        format!("make -C {} check", dotfiles.display())]);
+}
+
+#[test]
+fn failing_tests_name_their_repository() {
+    let sandbox = health_sandbox();
+    assert_eq!(run_check(&sandbox, &[("SHIM_TESTS_EXIT", "2")]).status.code(), Some(1));
+    let line = logged(&sandbox).last().unwrap().clone();
+    assert!(line.contains("agent-cockpit tests failing") && line.contains("dotfiles tests failing"), "{line}");
+}
+
+#[test]
 fn problems_are_named_logged_and_shown_as_a_banner() {
     let sandbox = health_sandbox();
     let fifo = sandbox.runtime.join("osd.fifo");
@@ -85,7 +104,8 @@ fn problems_are_named_logged_and_shown_as_a_banner() {
     let received = receiver.recv_timeout(Duration::from_secs(5)).expect("the fifo reader did not finish");
     let notice = received.lines().next().unwrap();
     let banner: serde_json::Value = serde_json::from_str(notice.strip_prefix("notice ").expect("not a notice")).unwrap();
-    assert_eq!(banner["title"], "Weekly check: 4 problem(s)");
+    // Both repositories fail their tests here: one problem each.
+    assert_eq!(banner["title"], "Weekly check: 5 problem(s)");
 }
 
 #[test]

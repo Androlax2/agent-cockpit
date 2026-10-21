@@ -13,7 +13,7 @@ import { homedir } from "node:os"
 
 // Where ~/.claude/hooks points: inside an opencode sandbox ~/.claude stays hidden, and greywall makes
 // no link there, only the folder the link points to.
-const HOOK = `${homedir()}/dotfiles/config/claude/.claude/hooks/session-state.sh`
+const HOOK = `${homedir()}/agent-cockpit/config/claude/.claude/hooks/session-state.sh`
 
 type HookPayload = { hook_event_name: string } & Record<string, unknown>
 

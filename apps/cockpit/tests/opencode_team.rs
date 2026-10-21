@@ -49,7 +49,7 @@ struct Run {
 
 fn run(extra: &[(&str, &str)]) -> Run {
     let sandbox = Sandbox::new();
-    write_executable(&sandbox.home.join("dotfiles/config/claude/.claude/hooks/session-state.sh"), "#!/usr/bin/env bash\ncat >/dev/null\n");
+    write_executable(&sandbox.home.join("agent-cockpit/config/claude/.claude/hooks/session-state.sh"), "#!/usr/bin/env bash\ncat >/dev/null\n");
     sandbox.shim("cockpit-team", r#"case $1 in
   receive) if [ ! -f "$HOME/delivered" ]; then touch "$HOME/delivered"
              echo '{"dispatch_id":"d1","message_id":"m1","text":"[Cockpit team message m1] The frame is ready.","envelope":{"kind":"notice","sender":{"role":"designer","agent":"claude"},"body":"The frame is ready.\u001b[2J\nSecond line"}}'

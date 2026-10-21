@@ -2847,7 +2847,8 @@ fn apply_dotfiles_with_osd(manager: &Manager, live: &Path, work: &Path, binary: 
 }
 
 #[test]
-fn an_apply_that_changes_apps_builds_them_and_restarts_the_osd_daemon() {
+fn a_dotfiles_apply_that_changes_apps_builds_them_and_leaves_the_osd_daemon_alone() {
+    // The daemon is agent-cockpit's since cutover 5a: its after-apply rebuilds and reloads it.
     let manager = Manager::new();
     let (live, work) = dotfiles_pair(&manager);
     export_an_apps_change(&work);
@@ -2855,8 +2856,25 @@ fn an_apply_that_changes_apps_builds_them_and_restarts_the_osd_daemon() {
     let binary = osd_daemon(&manager, 3600, 60);
     let output = apply_dotfiles_with_osd(&manager, &live, &work, &binary);
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
-    assert_eq!(manager.calls("make"), [format!("make -C {} cockpit", live.display())]);
-    assert!(manager.calls("setsid").iter().any(|call| call.ends_with("restart-osd-when-idle")), "{:?}", manager.calls("setsid"));
+    assert_eq!(manager.calls("make"), [format!("make -C {} build", live.display())]);
+    assert!(manager.calls("setsid").is_empty(), "{:?}", manager.calls("setsid"));
+}
+
+#[test]
+fn a_dotfiles_apply_that_changes_config_bin_relinks_it_file_by_file() {
+    // ~/.local/bin holds agent-cockpit's links too: a folded link would take it over.
+    let manager = Manager::new();
+    let (live, work) = dotfiles_pair(&manager);
+    fs::create_dir_all(work.join("config/bin/.local/bin")).unwrap();
+    fs::write(work.join("config/bin/.local/bin/tool"), "#!/bin/sh\n").unwrap();
+    fs::remove_dir_all(work.join(".outgoing")).unwrap();
+    for arguments in [&["add", "config"][..], &["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "Add a tool"], &["format-patch", "-q", "origin/main", "-o", ".outgoing"]] {
+        assert!(Command::new("git").arg("-C").arg(&work).args(arguments).status().unwrap().success());
+    }
+    manager.sandbox.shim("stow", "exit 0");
+    let output = apply_dotfiles(&manager, &live, &work, "y\n");
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(manager.calls("stow"), [format!("stow --dir={}/config --target={} --no-folding --restow bin", live.display(), manager.sandbox.home.display())]);
 }
 
 #[test]

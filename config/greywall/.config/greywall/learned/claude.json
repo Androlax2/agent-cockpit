@@ -179,7 +179,7 @@
       "~/.config/fish",
       "~/.local/bin",
       "~/.config/greywall",
-      "~/dotfiles/config/greywall",
+      "~/agent-cockpit/config/greywall",
       "~/.config/systemd",
       "~/.config/autostart",
       "~/.gitconfig",

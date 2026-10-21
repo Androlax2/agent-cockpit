@@ -4,8 +4,9 @@
 # ERROR line in cockpit' log) only when something is wrong, so a quiet week stays quiet.
 # Problems: the doctor failing, the tests failing, the backup failed or older than two days, a disk
 # over 90%. `make check` (drift between the repo and the machine) is in the report, not a problem.
-# CLAUDE_HEALTH_DOTFILES points at another repository (tests).
+# CLAUDE_HEALTH_COCKPIT and CLAUDE_HEALTH_DOTFILES point at other repositories (tests).
 set -uo pipefail
+COCKPIT_REPOSITORY=${CLAUDE_HEALTH_COCKPIT:-$HOME/agent-cockpit}
 DOTFILES=${CLAUDE_HEALTH_DOTFILES:-$HOME/dotfiles}
 REPORT_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/cockpit"
 FIFO="${XDG_RUNTIME_DIR:-/tmp}/osd.fifo"
@@ -25,10 +26,12 @@ if ! cockpit doctor >> "$report" 2>&1; then
     problems+=("doctor: $(tail -1 "$report")")
 fi
 
-section "make test"
-if ! make -C "$DOTFILES" test >> "$report" 2>&1; then
-    problems+=("tests failing")
-fi
+for repository in "$COCKPIT_REPOSITORY" "$DOTFILES"; do
+    section "make test ($repository)"
+    if ! make -C "$repository" test >> "$report" 2>&1; then
+        problems+=("$(basename "$repository") tests failing")
+    fi
+done
 
 section "backup (restic-backup.service)"
 result=$(systemctl --user show restic-backup.service --property=Result --value 2>/dev/null)

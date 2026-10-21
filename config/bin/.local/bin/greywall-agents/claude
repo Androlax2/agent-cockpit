@@ -20,7 +20,7 @@ greywall_options="--auto-profile --profile claude $greywall_options"
 if [ "${COCKPIT_CREDITS:-}" = 1 ]; then
     anthropic_key=$(secret-tool lookup service agent-anthropic 2>/dev/null || true)
     if [ -z "$anthropic_key" ]; then
-        echo "claude launcher: no API key in the keyring for a credits session (make -C ~/dotfiles agent-anthropic-key), not starting." >&2
+        echo "claude launcher: no API key in the keyring for a credits session (make -C ~/agent-cockpit agent-anthropic-key), not starting." >&2
         exit 1
     fi
     export ANTHROPIC_API_KEY="$anthropic_key"

@@ -6,7 +6,7 @@
 # instant and never fails the session start.
 set -uo pipefail
 
-DOTFILES=~/dotfiles
+COCKPIT_REPOSITORY=~/agent-cockpit
 PROJECTS_DIR=/home/theo/IdeaProjects
 
 payload=$(cat)
@@ -34,9 +34,9 @@ describe_docker() {
     if [[ -n ${DOCKER_HOST:-} && -S ${DOCKER_HOST#unix://} ]]; then
         echo "- Docker: ready, this project's own rootless daemon (${DOCKER_HOST})."
     elif [[ $project_root == "$clones_dir"/*/* ]]; then
-        echo "- Docker: not set up for ${project_name}'s parallel clones. If the task needs Docker, ask Theo to run \`make -C ${DOTFILES} agent-docker-add PROJECT=${project_name}\` (again if ${project_name} already has a daemon, then \`sudo systemctl restart agent-docker@${project_name}\`), then restart the session."
+        echo "- Docker: not set up for ${project_name}'s parallel clones. If the task needs Docker, ask Theo to run \`make -C ${COCKPIT_REPOSITORY} agent-docker-add PROJECT=${project_name}\` (again if ${project_name} already has a daemon, then \`sudo systemctl restart agent-docker@${project_name}\`), then restart the session."
     elif [[ $project_root == "$PROJECTS_DIR"/* ]]; then
-        echo "- Docker: not set up for ${project_name}. If the task needs Docker, ask Theo to run \`make -C ${DOTFILES} agent-docker-add PROJECT=${project_name}\`, then restart the session."
+        echo "- Docker: not set up for ${project_name}. If the task needs Docker, ask Theo to run \`make -C ${COCKPIT_REPOSITORY} agent-docker-add PROJECT=${project_name}\`, then restart the session."
     else
         echo "- Docker: unavailable. Isolated daemons only exist for projects directly under ${PROJECTS_DIR}."
     fi
@@ -54,7 +54,7 @@ describe_github() {
     if [[ -n ${GH_TOKEN:-} ]]; then
         echo "- GitHub: ready, a token limited to ${repository}. gh and git push work; push feature branches only."
     elif [[ $remote == *github.com* ]]; then
-        echo "- GitHub: no token for ${project_name}. If the task needs GitHub, ask Theo to run \`make -C ${DOTFILES} agent-github-token PROJECT=${project_name}\`, then restart the session."
+        echo "- GitHub: no token for ${project_name}. If the task needs GitHub, ask Theo to run \`make -C ${COCKPIT_REPOSITORY} agent-github-token PROJECT=${project_name}\`, then restart the session."
     else
         echo "- GitHub: no GitHub remote for this project."
     fi

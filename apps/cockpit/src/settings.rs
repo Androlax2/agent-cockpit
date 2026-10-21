@@ -13,7 +13,7 @@ use std::process::Command;
 pub const SETTINGS: [(&str, &str); 7] = [
     ("phone-on-lock", "Phone on lock"),
     ("todo-queue", "Todo queue (Q)"),
-    ("error-handoff", "Errors to dotfiles"),
+    ("error-handoff", "Error hand-off"),
     ("freeze-while-gaming", "Freeze while gaming"),
     ("idle-lock", "Lock workspace 6 idle"),
     ("daily-digest", "Daily digest"),

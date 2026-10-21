@@ -708,9 +708,10 @@ fn sessions_can_read_the_stowed_label_helper_without_exposing_the_bin_directory(
         launch.run_agent(agent, &[], &[]);
         let settings = launch.settings_of(agent);
         let readable = settings["filesystem"]["allowRead"].as_array().unwrap();
-        assert!(readable.iter().any(|path| path == "~/dotfiles/config/bin/.local/bin/claude-session-label"),
+        assert!(readable.iter().any(|path| path == "~/agent-cockpit/config/bin/.local/bin/claude-session-label"),
                 "{agent}: the stowed label helper's target is hidden");
-        for directory in ["~/dotfiles", "~/dotfiles/config/bin", "~/dotfiles/config/bin/.local/bin"] {
+        for directory in ["~/agent-cockpit", "~/agent-cockpit/config/bin", "~/agent-cockpit/config/bin/.local/bin",
+                          "~/dotfiles", "~/dotfiles/config/bin", "~/dotfiles/config/bin/.local/bin"] {
             assert!(!readable.iter().any(|path| path == directory), "{agent}: exposed {directory}");
         }
         assert!(settings["filesystem"]["denyWrite"].as_array().unwrap().iter().any(|path| path == "~/.local/bin"));
@@ -895,9 +896,9 @@ fn an_opencode_session_reaches_the_hook_its_plugin_reports_through() {
     // files and log in ~/.cache/claude.
     let profile = opencode_profile();
     let has = |key: &str, path: &str| profile["filesystem"][key].as_array().unwrap().iter().any(|entry| entry == path);
-    assert!(has("allowRead", "~/dotfiles/config/claude/.claude/hooks") && has("allowWrite", "~/.cache/claude"));
+    assert!(has("allowRead", "~/agent-cockpit/config/claude/.claude/hooks") && has("allowWrite", "~/.cache/claude"));
     let plugin = fs::read_to_string(repo().join("config/opencode/.config/opencode/plugins/cockpit.ts")).unwrap();
-    assert!(plugin.contains("`${homedir()}/dotfiles/config/claude/.claude/hooks/session-state.sh`"), "the plugin runs another hook path");
+    assert!(plugin.contains("`${homedir()}/agent-cockpit/config/claude/.claude/hooks/session-state.sh`"), "the plugin runs another hook path");
 }
 
 #[test]
@@ -916,6 +917,37 @@ fn the_opencode_profile_names_no_link_in_the_hidden_claude_folder() {
     let readable = opencode_profile()["filesystem"]["allowRead"].clone();
     for link in ["~/.claude/CLAUDE.md", "~/.claude/hooks"] {
         assert!(!readable.as_array().unwrap().iter().any(|entry| entry == link), "{link}: {readable}");
+    }
+}
+
+/// Every path of a profile's filesystem lists, greywall.json first, then each agent's learned profile.
+fn profile_paths() -> Vec<(String, String)> {
+    let base: serde_json::Value = serde_json::from_str(&fs::read_to_string(repo().join("config/greywall/.config/greywall/greywall.json")).unwrap()).unwrap();
+    let profiles = std::iter::once(("greywall.json".to_string(), base))
+        .chain(AGENTS.iter().map(|agent| (format!("learned/{agent}.json"), learned_profile(agent))));
+    profiles.flat_map(|(name, profile)| {
+        ["allowRead", "allowWrite", "denyRead", "denyWrite"].iter()
+            .flat_map(|key| profile["filesystem"][key].as_array().cloned().unwrap_or_default())
+            .map(|path| (name.clone(), path.as_str().unwrap().to_string()))
+            .collect::<Vec<_>>()
+    }).collect()
+}
+
+#[test]
+fn profiles_reach_agent_cockpits_files_in_agent_cockpit_not_in_the_dotfiles() {
+    // Cutover 5a: the links into ~/.local/bin, ~/.claude and ~/.config point at ~/agent-cockpit; an
+    // entry left on ~/dotfiles would hide the file the link resolves to.
+    for (profile, path) in profile_paths() {
+        if let Some(inside) = path.strip_prefix("~/dotfiles/") {
+            assert!(!repo().join(inside).is_file() && !inside.starts_with("apps/"), "{profile}: {path} is agent-cockpit's");
+            if repo().join(inside).is_dir() {
+                let ours = format!("~/agent-cockpit/{inside}");
+                assert!(profile_paths().iter().any(|(other, path)| *other == profile && *path == ours), "{profile}: {path} without {ours}");
+            }
+        }
+        if let Some(inside) = path.strip_prefix("~/agent-cockpit/") {
+            assert!(repo().join(inside).exists() || inside.starts_with("apps/target/release/"), "{profile}: {path} is no file of agent-cockpit");
+        }
     }
 }
 

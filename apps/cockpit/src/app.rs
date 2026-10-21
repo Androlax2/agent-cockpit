@@ -128,7 +128,7 @@ const LEGEND: [(&str, &str); 24] = [
     ("▭ terminal", "started with \"this terminal\": no ⌘R, restore, queue or error hand-off; ask-to-run still asks for approval"),
     ("✎ designer ⌨ developer", "its role in a project designed in FigCraft (claude-design role): design to-dos go to the designer"),
     ("✎ design", "a to-do for the designer session: a gap a developer found in the design (claude-todo --design)"),
-    ("⛔ opusline", "a session of that project was blocked by the setup (claude-todo blocked): queued for dotfiles"),
+    ("⛔ opusline", "a session of that project was blocked by the setup (claude-todo blocked): queued for agent-cockpit"),
     ("⬆", "Claude updated itself: r restarts on the new version"),
     ("/compact", "context over 90%: /compact in the session before it gets slow and costly"), ("high ▾", "effort level: click to change it"),
 ];

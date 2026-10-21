@@ -24,19 +24,19 @@
       "~/.ssh/config", "~/.ssh/known_hosts", "~/.ssh/allowed_signers", "~/.skills", "~/.agents",
       "~/.claude/agents", "~/.claude/skills", "~/.config/gh", "~/.config/glab-cli",
       "~/.codex", "~/.local/npm/bin/codex", "~/.local/npm/lib/node_modules/@openai/codex",
-      "~/dotfiles/config/codex", "~/dotfiles/config/bin/.local/bin/cockpit-codex-hook",
-      "~/dotfiles/apps/target/release/cockpit-codex-hook"
+      "~/dotfiles/config/codex", "~/agent-cockpit/config/codex",
+      "~/agent-cockpit/config/bin/.local/bin/cockpit-codex-hook", "~/agent-cockpit/apps/target/release/cockpit-codex-hook"
     ],
     "denyRead": ["~/.ssh/id_*", "~/.gnupg/**", ".env"],
     "allowWrite": [".", "~/.cache/gh", "~/.local/state/gh", "~/.codex", "~/.cache/claude"],
     "denyWrite": [
       "~/.bashrc", "~/.bash_profile", "~/.zshrc", "~/.zprofile", "~/.profile", "~/.ssh", "~/.gnupg",
-      "~/.config/fish", "~/.local/bin", "~/.config/greywall", "~/dotfiles/config/greywall",
+      "~/.config/fish", "~/.local/bin", "~/.config/greywall", "~/agent-cockpit/config/greywall",
       "~/.config/systemd", "~/.config/autostart", "~/.gitconfig", ".git/hooks", ".git/config",
       "~/.skills", "~/.agents", "~/AGENTS.md", "~/.config/gh", "~/.local/share/gh",
       "~/.codex/config.toml", "~/.codex/hooks.json", "~/.codex/hooks", "~/.codex/rules", "~/.codex/AGENTS.md",
       "~/.codex/prompts", "~/.codex/skills", "~/.claude/hooks",
-      "~/dotfiles/config/codex", "~/.local/npm"
+      "~/dotfiles/config/codex", "~/agent-cockpit/config/codex", "~/.local/npm"
     ]
   },
   "command": {
