@@ -6119,6 +6119,76 @@ fn a_project_files_at_most_five_blocked_reports_a_day() {
     assert_eq!(todos.items.iter().filter(|item| item.is_blocked_report()).count(), 5);
 }
 
+/// A report from SESSION_A, which worked in `cwd` (running or since ended), filed from `started_in`.
+fn report_blocked_by_session_a(fixture: &Fixture, started_in: &Path, cwd: &Path, is_running: bool) -> (TodoList, String) {
+    fs::create_dir_all(started_in).unwrap();
+    let cwd = cwd.display().to_string();
+    if is_running {
+        fixture.snapshot(json!([session(SESSION_A, "working", "opusline", &cwd, 100)]));
+    } else {
+        fixture.write("state/claude-sessions/recent-sessions.json", &json!({SESSION_A: {"cwd": cwd, "project": "opusline", "last_seen": 100}}).to_string());
+    }
+    queue_update(json!({"action": "blocked", "text": "run the API tests", "why": "no Docker daemon", "session": SESSION_A}), started_in);
+    let mut todos = TodoList::load();
+    todos.apply_updates();
+    let id = todos.items.iter().find(|item| item.is_blocked_report()).expect("no report").id();
+    (todos, id)
+}
+
+#[test]
+fn a_fixed_blocked_report_tells_its_session_to_retry_whether_it_runs_or_ended() {
+    for is_running in [true, false] {
+        let fixture = Fixture::new();
+        let clone = fixture.root.join("clones/opusline/parallel-1031");
+        let (mut todos, id) = report_blocked_by_session_a(&fixture, &clone, &clone.join("api"), is_running);
+        fs::create_dir_all(clone.join("api")).unwrap();
+        assert!(todos.set_status(&id, "done", ""));
+        let (text, _) = crate::prompts::oldest(SESSION_A).unwrap_or_else(|| panic!("nothing queued (running: {is_running})"));
+        assert!(text.starts_with(&format!("Your claude-todo blocked report {id} (\"parallel-1031: run the API tests\") is marked done")), "{text}");
+    }
+}
+
+#[test]
+fn a_blocked_report_is_answered_once_not_at_each_save_of_a_done_item() {
+    let fixture = Fixture::new();
+    let clone = fixture.root.join("opusline");
+    let (mut todos, id) = report_blocked_by_session_a(&fixture, &clone, &clone, true);
+    todos.set_status(&id, "doing", "");
+    todos.set_status(&id, "done", "");
+    todos.set_status(&id, "done", "");
+    assert_eq!(crate::prompts::count(SESSION_A), 1);
+}
+
+#[test]
+fn a_fixed_report_does_not_reach_a_session_outside_its_folder_or_whose_folder_is_gone() {
+    let fixture = Fixture::new();
+    let started_in = fixture.root.join("opusline");
+    let cases = [("claimed by a session of another folder", fixture.root.join("runway")), ("folder deleted", started_in.join("deleted-clone"))];
+    for (case, cwd) in cases {
+        if case.starts_with("claimed") {
+            fs::create_dir_all(&cwd).unwrap();
+        }
+        let (mut todos, id) = report_blocked_by_session_a(&fixture, &started_in, &cwd, true);
+        todos.set_status(&id, "done", "");
+        assert_eq!(crate::prompts::count(SESSION_A), 0, "{case}");
+        todos.remove(&id);
+    }
+}
+
+#[test]
+fn marking_a_blocked_report_done_in_the_todo_panel_tells_its_session() {
+    let fixture = Fixture::new();
+    let clone = fixture.root.join("opusline");
+    report_blocked_by_session_a(&fixture, &clone, &clone, true);
+    let mut app = fixture.app();
+    app.build();
+    show_to_do_tab(&mut app);
+    let selected = app.todo_entries.iter().position(|entry| matches!(entry, Entry::Typed(item) if item.is_blocked_report())).expect("report not listed");
+    app.panels[3].selected = selected;
+    app.handle(Key::Char('d'), &mut FakeScreen::default());
+    assert_eq!(crate::prompts::count(SESSION_A), 1);
+}
+
 #[test]
 fn the_dotfiles_session_gets_a_blocked_report_framed_as_data() {
     let fixture = Fixture::new();

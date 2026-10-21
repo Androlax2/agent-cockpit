@@ -222,6 +222,52 @@ pub fn prompt_of(entry: &Entry) -> String {
     }
 }
 
+pub fn retry_prompt(item: &Item) -> String {
+    format!("Your claude-todo blocked report {} (\"{}\") is marked done: the dotfiles changed for it. Retry what it blocked. \
+             A fix to the sandbox (mounts, Docker, network) may only reach a restarted session: if it fails the same way, \
+             tell me and ask me to restart you; if it fails another way, file claude-todo blocked again with the new error.",
+            item.id(), item.text().replace('"', "'"))
+}
+
+/// The folder the OSD daemon saw the session work in, and whether it still runs: its snapshot
+/// first, then recent-sessions.json (kept a week after a session ends).
+fn recorded_session(session: &str) -> Option<(String, bool)> {
+    let cwd_of = |row: &Value| row.get("cwd").and_then(Value::as_str).filter(|cwd| !cwd.is_empty()).map(str::to_string);
+    let running = util::read_json(&paths::snapshot()).and_then(|snapshot| snapshot.get("sessions").and_then(Value::as_array).cloned()).unwrap_or_default()
+        .into_iter().find(|row| row.get("session").and_then(Value::as_str) == Some(session)).and_then(|row| cwd_of(&row));
+    if let Some(cwd) = running {
+        return Some((cwd, true));
+    }
+    util::read_json(&paths::recent_sessions()).and_then(|recent| recent.get(session).and_then(cwd_of)).map(|cwd| (cwd, false))
+}
+
+/// A blocked report marked done: the session that filed it is told to retry, through its prompt
+/// queue (prompts.rs), so a running one reads it when its turn ends and an ended one when Theo
+/// resumes it. The session id in a report is its sender's claim: only a session the daemon saw
+/// working inside the folder the report came from is told.
+fn tell_reporter_to_retry(item: &Item) {
+    let session = item.text_of("reporter_session");
+    let started_in = item.text_of("started_in");
+    let outcome = if session.is_empty() || started_in.is_empty() {
+        Err("no reporter session recorded".to_string())
+    } else {
+        match recorded_session(&session) {
+            None => Err(format!("session {session} is not among the recent sessions")),
+            Some((cwd, _)) if !std::path::Path::new(&cwd).starts_with(&started_in) => Err(format!("session {session} worked in {cwd}, outside {started_in}")),
+            Some((cwd, _)) if !std::path::Path::new(&cwd).is_dir() => Err(format!("{cwd} is gone")),
+            Some((_, is_running)) => crate::prompts::add(&session, &retry_prompt(item))
+                .map(|_| if is_running { "queued for the end of its turn".to_string() } else { "it has ended: the message waits until it is resumed".to_string() }),
+        }
+    };
+    let id = item.id();
+    match &outcome {
+        Ok(how) => util::log_event("INFO", &format!("todo {id} done: {} session {session} told to retry, {how}", item.reporter())),
+        Err(reason) => util::log_event("INFO", &format!("todo {id} done: its reporter is not told ({reason})")),
+    }
+    crate::audit::record("column", "blocked.retry", if outcome.is_ok() { "queued" } else { "skipped" },
+                         json!({"id": id, "session": session, "started_in": started_in, "detail": outcome.unwrap_or_else(|reason| reason)}));
+}
+
 /// What a new session gets for an item (the Todo panel's N, the phone): the branch named after it
 /// in its own clone, and its first message.
 pub fn handoff_of(entry: &Entry) -> (String, String) {
@@ -491,10 +537,14 @@ impl TodoList {
         } else {
             // A proposal becomes work only through Theo's approval, never a session's status change.
             let Some(item) = self.items.iter_mut().find(|item| item.id() == key && item.status() != PROPOSED) else { return false };
+            let is_fixed_report = item.is_blocked_report() && item.status() != "done" && status == "done";
             let session = if session.is_empty() { item.text_of("session") } else { session.to_string() };
             item.0.insert("status".into(), json!(status));
             item.0.insert("updated".into(), json!(now_secs()));
             item.0.insert("session".into(), json!(session));
+            if is_fixed_report {
+                tell_reporter_to_retry(item);
+            }
         }
         self.save();
         true
@@ -532,6 +582,8 @@ impl TodoList {
             item.0.insert("why".into(), json!(field("why", WHY_MAX)));
             item.0.insert("notes".into(), json!(notes.trim()));
             item.0.insert("source".into(), json!(if session.is_empty() { "a session".to_string() } else { format!("session {session}") }));
+            item.0.insert("reporter_session".into(), json!(session));
+            item.0.insert("started_in".into(), json!(started_in));
         }
         self.queued.insert(id.clone());
         self.save();
