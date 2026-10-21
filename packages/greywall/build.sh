@@ -53,5 +53,6 @@ if [[ -e $target ]]; then
 fi
 install -m 0755 "$build_dir/greywall" "$target.new"
 mv "$target.new" "$target"
-"$target" --version | head -3
+# sed, not head: head exits early, greywall gets SIGPIPE, and pipefail fails the script (141).
+"$target" --version | sed -n 2p
 echo "greywall-patch: installed; the previous binary is $target.previous. Restart the sessions."
