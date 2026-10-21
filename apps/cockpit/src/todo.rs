@@ -59,7 +59,7 @@ const DONE_KEPT_DAYS: i64 = 7;
 /// loop must not flood it.
 const BLOCKED_OPEN_MAX: usize = 3;
 const BLOCKED_DAILY_MAX: usize = 5;
-/// The same caps for the proposals one project files in another project's list (claude-todo greywall,
+/// The same caps for the proposals one project files in another project's list (claude-todo stack,
 /// claude-todo propose --project).
 const ELSEWHERE_OPEN_MAX: usize = 3;
 const ELSEWHERE_DAILY_MAX: usize = 5;
@@ -80,6 +80,17 @@ pub fn multiline(text: &str, limit: usize) -> String {
 /// How two titles compare for "already declined": case and spacing aside.
 fn normalized(title: &str) -> String {
     util::collapse(title).to_lowercase()
+}
+
+/// The repositories of the sandbox stack, each with its own list (claude-todo stack <repo>).
+pub const STACK_REPOS: [&str; 2] = ["greywall", "greyproxy"];
+
+fn stack_checkout(repo: &str) -> Option<std::path::PathBuf> {
+    match repo {
+        "greywall" => Some(paths::greywall_work()),
+        "greyproxy" => Some(paths::greyproxy_work()),
+        _ => None,
+    }
 }
 
 /// The checkout of a project a session names (claude-todo propose --project): a repository directly
@@ -609,16 +620,18 @@ impl TodoList {
         Ok(())
     }
 
-    /// A problem in greywall's own code (claude-todo greywall) from a session of any project: a
-    /// proposal in the greywall fork's list, which becomes work only once Theo approves it. Blocks
-    /// from greywall.json stay blocked reports for the dotfiles. Without the fork's checkout it is
-    /// refused, never filed elsewhere. Same caps as blocked reports, per reporting project.
-    fn file_greywall_proposal(&mut self, update: &Map<String, Value>, session: &str, started_in: &str, reporter: &str) -> Result<(), String> {
-        let checkout = paths::greywall_work();
+    /// A problem in the own code of a sandbox stack repository (claude-todo stack <repo>) from a
+    /// session of any project: a proposal in that repository's list, which becomes work only once
+    /// Theo approves it. Blocks from greywall.json stay blocked reports for the dotfiles. An unknown
+    /// repository, or one without its checkout, is refused, never filed elsewhere. Same caps as
+    /// blocked reports, per reporting project.
+    fn file_stack_proposal(&mut self, repo: &str, update: &Map<String, Value>, session: &str, started_in: &str, reporter: &str) -> Result<(), String> {
+        let checkout = stack_checkout(repo)
+            .ok_or_else(|| format!("stack report from {reporter} refused: {:?} is not a stack repository", repo.chars().take(60).collect::<String>()))?;
         if !checkout.is_dir() {
-            return Err(format!("greywall report from {reporter} refused: no greywall checkout at {}", checkout.display()));
+            return Err(format!("{repo} report from {reporter} refused: no {repo} checkout at {}", checkout.display()));
         }
-        self.file_proposal_in(&checkout, update, session, started_in, reporter, "greywall.proposed")
+        self.file_proposal_in(&checkout, update, session, started_in, reporter, "stack.proposed")
     }
 
     /// A proposal for another project (claude-todo propose --project <name>): it lands as Proposed in
@@ -783,8 +796,9 @@ impl TodoList {
                 return Err("blocked reports do not accept a category".into());
             }
             self.file_blocked_report(&update, &session, &started_in, &sender_project)
-        } else if action == "greywall" {
-            self.file_greywall_proposal(&update, &session, &started_in, &sender_project)
+        } else if action == "stack" {
+            let repo = update.get("repo").and_then(Value::as_str).unwrap_or("");
+            self.file_stack_proposal(repo, &update, &session, &started_in, &sender_project)
         } else if STATUSES.contains(&action) {
             let id = update.get("id").and_then(Value::as_str).unwrap_or("");
             if !self.belongs_to(id, &sender_project) {

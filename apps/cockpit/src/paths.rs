@@ -101,8 +101,10 @@ pub fn dotfiles() -> PathBuf { home().join("dotfiles") }
 /// stowed checkout, only moves forward through `claude-sessions apply-dotfiles`, after Theo read the
 /// diff (security audit 2026-10-19, C1).
 pub fn dotfiles_work() -> PathBuf { from_env("CLAUDE_DOTFILES_WORK", home().join("IdeaProjects/dotfiles")) }
-/// Theo's greywall fork, where `claude-todo greywall` files problems in greywall's own code.
+/// Theo's greywall fork, where `claude-todo stack greywall` files problems in greywall's own code.
 pub fn greywall_work() -> PathBuf { from_env("CLAUDE_GREYWALL_WORK", home().join("IdeaProjects/greywall")) }
+/// Theo's greyproxy fork, where `claude-todo stack greyproxy` files problems in greyproxy's own code.
+pub fn greyproxy_work() -> PathBuf { from_env("CLAUDE_GREYPROXY_WORK", home().join("IdeaProjects/greyproxy")) }
 pub fn reviews_fixture() -> Option<PathBuf> { env::var("CLAUDE_REVIEWS_FIXTURE").ok().map(PathBuf::from) }
 pub fn claude_status_url() -> String {
     env::var("CLAUDE_STATUS_URL").unwrap_or_else(|_| "https://status.claude.com/api/v2/summary.json".into())

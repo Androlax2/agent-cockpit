@@ -155,7 +155,7 @@ fn blocked_files_a_report_with_what_stopped_the_session() {
 }
 
 #[test]
-fn greywall_files_a_report_for_the_greywall_project_with_its_kind_and_reason() {
+fn greywall_is_stack_greywall_with_its_kind_and_reason() {
     let sandbox = Sandbox::new();
     let daemon = daemon(&sandbox, "ok");
     let output = claude_todo(&sandbox, &["greywall", "Security: masks lose to later binds", "--why", "~/.ssh/id_* readable", "--kind", "bug", "--notes", "linux.go"], &sandbox.root);
@@ -163,7 +163,32 @@ fn greywall_files_a_report_for_the_greywall_project_with_its_kind_and_reason() {
     assert!(stdout(&output).contains("greywall"), "{}", stdout(&output));
     let update = &updates(&daemon)[0];
     assert_eq!((update["action"].as_str(), update["why"].as_str(), update["category"].as_str(), update["notes"].as_str()),
-               (Some("greywall"), Some("~/.ssh/id_* readable"), Some("bug"), Some("linux.go")));
+               (Some("stack"), Some("~/.ssh/id_* readable"), Some("bug"), Some("linux.go")));
+    assert_eq!(update["repo"].as_str(), Some("greywall"));
+}
+
+#[test]
+fn stack_names_the_repository_the_report_is_for() {
+    let sandbox = Sandbox::new();
+    let daemon = daemon(&sandbox, "ok");
+    let output = claude_todo(&sandbox, &["stack", "greyproxy", "Security: the built-in rule opens the API", "--why", "any sandbox reaches it", "--kind", "bug"], &sandbox.root);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert!(stdout(&output).contains("greyproxy's list"), "{}", stdout(&output));
+    let update = &updates(&daemon)[0];
+    assert_eq!((update["action"].as_str(), update["repo"].as_str(), update["text"].as_str()),
+               (Some("stack"), Some("greyproxy"), Some("Security: the built-in rule opens the API")));
+}
+
+#[test]
+fn stack_outside_the_stack_repositories_or_without_a_title_sends_no_update() {
+    let sandbox = Sandbox::new();
+    let daemon = daemon(&sandbox, "ok");
+    for arguments in [vec!["stack", "dotfiles", "Title", "--why", "reason"], vec!["stack", "Title", "--why", "reason"],
+                      vec!["stack", "greyproxy", "--why", "reason"], vec!["stack", "greyproxy", "Title", "--why", "reason", "--design"],
+                      vec!["stack", "greyproxy", "Title", "--why", "reason", "--project", "runway"]] {
+        assert_eq!(claude_todo(&sandbox, &arguments, &sandbox.root).status.code(), Some(2), "{arguments:?}");
+    }
+    assert!(updates(&daemon).is_empty());
 }
 
 #[test]
@@ -177,10 +202,10 @@ fn greywall_without_a_reason_or_with_design_sends_no_update() {
 }
 
 #[test]
-fn help_says_greywall_code_goes_to_greywall_and_config_blocks_to_blocked() {
+fn help_says_stack_code_goes_to_its_repository_and_config_blocks_to_blocked() {
     let sandbox = Sandbox::new();
-    let usage = stdout(&claude_todo(&sandbox, &["greywall", "--help"], &sandbox.root));
-    assert!(usage.contains("claude-todo greywall '<title>'"), "{usage}");
+    let usage = stdout(&claude_todo(&sandbox, &["stack", "--help"], &sandbox.root));
+    assert!(usage.contains("claude-todo stack <repo> '<title>'") && usage.contains("greyproxy"), "{usage}");
     assert!(usage.contains("greywall.json"), "{usage}");
 }
 

@@ -15,10 +15,12 @@
 //!                                     from any project: greywall, claude-sessions, the launcher or
 //!                                     another part of Theo's setup kept you from doing something;
 //!                                     filed in the dotfiles list and queued for its session
-//!     claude-todo greywall '<title>' --why '<reason>' [--notes '<details>'] [--kind <kind>]
-//!                                     from any project: a security hole, bug or improvement in greywall's
-//!                                     own code (not greywall.json, which is a blocked report); proposed
-//!                                     in the greywall fork's list for Theo to approve
+//!     claude-todo stack <repo> '<title>' --why '<reason>' [--notes '<details>'] [--kind <kind>]
+//!                                     from any project: a security hole, bug or improvement in the own
+//!                                     code of a sandbox stack repository (greywall, greyproxy; not
+//!                                     greywall.json, which is a blocked report); proposed in that
+//!                                     repository's list for Theo to approve
+//!     claude-todo greywall '<title>' …  the same as stack greywall
 //!     claude-todo delete <id>         remove an item a session filed in this project (never one Theo wrote)
 //!     claude-todo show <id>           an item with its notes, the paths of its pasted images and, for a proposal, why
 //!
@@ -28,7 +30,7 @@
 //! started in, and the cockpit's column applies them. CLAUDE_TODO_PATH overrides the list (tests).
 
 use cockpit::{approval, paths, todo_images};
-use cockpit::todo::{Category, Item};
+use cockpit::todo::{Category, Item, STACK_REPOS};
 use cockpit::util::{collapse, now_secs, project_name, repository_root};
 use regex::Regex;
 use serde_json::{Value, json};
@@ -49,10 +51,12 @@ const USAGE: &str = "    claude-todo list [--all]        the items of this direc
     claude-todo blocked '<what you could not do>' --why '<what stopped you>' [--notes '<details>']
                                     the setup (greywall, claude-sessions, the launcher…) blocked you:
                                     filed in the dotfiles list and queued for its session
-    claude-todo greywall '<title>' --why '<reason>' [--notes '<details>'] [--kind <kind>]
-                                    a security hole, bug or improvement in greywall's own code, from any
-                                    project: proposed in the greywall list for Theo to approve. A path or
-                                    host greywall.json denies you is a blocked report, not this
+    claude-todo stack <repo> '<title>' --why '<reason>' [--notes '<details>'] [--kind <kind>]
+                                    a security hole, bug or improvement in the own code of a sandbox stack
+                                    repository, from any project: <repo> is the one the code is in (greywall,
+                                    greyproxy); proposed in its list for Theo to approve. A path or host
+                                    greywall.json denies you is a blocked report, not this
+    claude-todo greywall '<title>' …  the same as stack greywall
     claude-todo delete <id>         remove an item a session filed in this project (never one Theo wrote)
     claude-todo show <id>           an item with its notes and the paths of its pasted images";
 
@@ -119,12 +123,12 @@ fn category_label(value: &Value) -> String {
         .unwrap_or_else(|| format!("Unknown: {}", value["category"]))
 }
 
-fn file_arguments(action: &str, title: &str, arguments: &[&str]) -> i32 {
+fn file_arguments(action: &str, repo: Option<&str>, title: &str, arguments: &[&str]) -> i32 {
     let (mut why, mut notes, mut category, mut target) = (None, None, None, None);
     let mut is_design = false;
     let mut remaining = arguments;
     while let Some((&flag, rest)) = remaining.split_first() {
-        if flag == "--design" && !matches!(action, "blocked" | "greywall") && !is_design {
+        if flag == "--design" && !matches!(action, "blocked" | "stack") && !is_design {
             is_design = true;
             remaining = rest;
             continue;
@@ -146,10 +150,10 @@ fn file_arguments(action: &str, title: &str, arguments: &[&str]) -> i32 {
         eprintln!("{USAGE}");
         return 2;
     }
-    file(action, title, why, notes, is_design, category, target)
+    file(action, repo, title, why, notes, is_design, category, target)
 }
 
-fn file(action: &str, title: &str, why: Option<String>, notes: Option<String>, is_design: bool, category: Option<Category>, target: Option<String>) -> i32 {
+fn file(action: &str, repo: Option<&str>, title: &str, why: Option<String>, notes: Option<String>, is_design: bool, category: Option<Category>, target: Option<String>) -> i32 {
     if action == "propose" && read_list().get("declined").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str)
         .any(|declined| collapse(declined).to_lowercase() == collapse(title).to_lowercase()) {
         println!("Theo already declined this idea; it is not filed again.");
@@ -168,6 +172,9 @@ fn file(action: &str, title: &str, why: Option<String>, notes: Option<String>, i
     if let Some(target) = &target {
         update.insert("project".into(), json!(target));
     }
+    if let Some(repo) = repo {
+        update.insert("repo".into(), json!(repo));
+    }
     for (key, value) in [("why", why), ("notes", notes)] {
         if let Some(value) = value {
             update.insert(key.into(), json!(value.chars().take(4000).collect::<String>()));
@@ -175,7 +182,7 @@ fn file(action: &str, title: &str, why: Option<String>, notes: Option<String>, i
     }
     match append(update) {
         Ok(()) if action == "propose" => { println!("Proposed to Theo in {}'s list (Theo approves or declines it).", target.unwrap_or_else(project)); 0 }
-        Ok(()) if action == "greywall" => { println!("Proposed to Theo in greywall's list (Theo approves or declines it)."); 0 }
+        Ok(()) if action == "stack" => { println!("Proposed to Theo in {}'s list (Theo approves or declines it).", repo.unwrap_or_default()); 0 }
         Ok(()) if action == "blocked" => { println!("Reported in the dotfiles list and queued for its session. Tell Theo what you could not do; don't work around it."); 0 }
         Ok(()) => { println!("Added to {}'s list.", project()); 0 }
         Err(error) => { eprintln!("claude-todo: {error}"); 1 }
@@ -215,7 +222,7 @@ fn main() {
     let item_key = Regex::new(r"^[0-9a-f]{8}$").unwrap();
     let words: Vec<&str> = arguments.iter().map(String::as_str).collect();
     let status = match words.as_slice() {
-        ["--help" | "-h" | "help", ..] | ["add" | "propose" | "blocked" | "greywall", "--help" | "-h", ..] => { println!("{USAGE}"); 0 }
+        ["--help" | "-h" | "help", ..] | ["add" | "propose" | "blocked" | "stack" | "greywall", "--help" | "-h", ..] | ["stack", _, "--help" | "-h", ..] => { println!("{USAGE}"); 0 }
         [] | ["list", ..] => list(words.contains(&"--all")),
         [action @ ("start" | "done" | "todo"), id] if key.is_match(id) => {
             let status = if *action == "start" { "doing" } else { action };
@@ -240,7 +247,13 @@ fn main() {
             }
         }
         ["show", id] if key.is_match(id) => show(id),
-        [action @ ("add" | "propose" | "blocked" | "greywall"), title, rest @ ..] if !title.trim().is_empty() => file_arguments(action, title, rest),
+        [action @ ("add" | "propose" | "blocked"), title, rest @ ..] if !title.trim().is_empty() => file_arguments(action, None, title, rest),
+        ["stack", repo, title, rest @ ..] if STACK_REPOS.contains(repo) && !title.trim().is_empty() => file_arguments("stack", Some(repo), title, rest),
+        ["stack", repo, ..] if !STACK_REPOS.contains(repo) => {
+            eprintln!("claude-todo: {repo:?} is not a stack repository (one of: {}); work for another project goes through propose --project\n{USAGE}", STACK_REPOS.join(", "));
+            2
+        }
+        ["greywall", title, rest @ ..] if !title.trim().is_empty() => file_arguments("stack", Some("greywall"), title, rest),
         _ => { eprintln!("{USAGE}"); 2 }
     };
     std::process::exit(status);
