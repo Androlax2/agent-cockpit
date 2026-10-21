@@ -807,6 +807,57 @@ fn opencode_sees_its_own_data_and_claude_does_not() {
     assert!(claude.contains(&"~/.local/share/opencode/**".to_string()) && claude.contains(&"~/.config/opencode/**".to_string()), "{claude:?}");
 }
 
+/// A launch whose greywall.json hides `.env.*`, in a project holding `files` (name, content);
+/// `committed` of them are committed first.
+fn launch_with_env_files(files: &[(&str, &str)], committed: &[&str]) -> Launch {
+    let launch = Launch::new();
+    fs::write(launch.sandbox.home.join(".config/greywall/greywall.json"), r#"{"filesystem": {"denyRead": ["~/.ssh/id_*", ".env.*"]}}"#).unwrap();
+    for (name, content) in files {
+        fs::write(launch.project.join(name), content).unwrap();
+    }
+    if !committed.is_empty() {
+        let git = |arguments: &[&str]| assert!(Command::new("git").args(["-c", "user.name=test", "-c", "user.email=test@example.com", "-C"])
+            .arg(&launch.project).args(arguments).status().unwrap().success());
+        git(&[&["add", "--"], committed].concat());
+        git(&["commit", "-q", "-m", "templates"]);
+    }
+    launch
+}
+
+#[test]
+fn a_committed_unchanged_env_template_stays_readable_and_other_env_files_stay_hidden() {
+    // opusline's e2e stack could not read its committed .env.production.example (2026-10-21).
+    for &agent in AGENTS.iter() {
+        let launch = launch_with_env_files(&[(".env.production.example", "KEY=\n"), (".env.staging.example", "KEY=\n"), (".env.secret", "KEY=s3cret\n")],
+                                           &[".env.production.example", ".env.staging.example"]);
+        fs::write(launch.project.join(".env.staging.example"), "KEY=s3cret\n").unwrap();
+        launch.run_agent(agent, &[], &[]);
+        let project = fs::canonicalize(&launch.project).unwrap();
+        let denied = denied_reads(&launch.settings_of(agent));
+        let path = |name: &str| project.join(name).display().to_string();
+        assert!(!denied.contains(&path(".env.production.example")), "{agent}: {denied:?}");
+        assert!(denied.contains(&path(".env.staging.example")), "{agent}: a modified template must stay hidden: {denied:?}");
+        assert!(denied.contains(&path(".env.secret")), "{agent}: an untracked file must stay hidden: {denied:?}");
+        assert!(!denied.contains(&".env.*".to_string()) && denied.contains(&"~/.ssh/id_*".to_string()), "{agent}: {denied:?}");
+    }
+}
+
+#[test]
+fn an_env_file_staged_but_never_committed_stays_hidden() {
+    let launch = launch_with_env_files(&[(".env.new", "KEY=s3cret\n")], &[]);
+    assert!(Command::new("git").arg("-C").arg(&launch.project).args(["add", ".env.new"]).status().unwrap().success());
+    launch.run(&[]);
+    let hidden = fs::canonicalize(&launch.project).unwrap().join(".env.new").display().to_string();
+    assert!(denied_reads(&launch.settings()).contains(&hidden), "{:?}", denied_reads(&launch.settings()));
+}
+
+#[test]
+fn an_env_file_name_the_list_cannot_carry_keeps_the_glob() {
+    let launch = launch_with_env_files(&[(".env.a\nb", "KEY=s3cret\n")], &[]);
+    launch.run(&[]);
+    assert!(denied_reads(&launch.settings()).contains(&".env.*".to_string()), "{:?}", denied_reads(&launch.settings()));
+}
+
 #[test]
 fn each_agent_starts_on_a_settings_file_of_its_own() {
     // One file per folder was rewritten by whichever agent started there last.

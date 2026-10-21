@@ -73,11 +73,36 @@ mkdir -p "$settings_dir"
 # from Claude sessions). Hidden, it is an empty folder mounted over the one the agent's profile
 # allows, last, so the agent's own sessions lost what they wrote (opencode's sessions, on
 # 2026-10-19): its own entries leave denyRead in its settings.
+#
+# greywall.json's ".env.*" hides every match at the top of the folder greywall starts in, committed
+# templates too (.env.production.example: opusline's e2e stack could not start, 2026-10-21). A
+# file git tracks and the work tree leaves unchanged hides nothing: the session reads it with git
+# show. The glob becomes the paths of every other match; greywall's built-in list still hides
+# .env, .env.local, .env.production... whatever git says. A name the list cannot carry keeps the glob.
+hidden_env_files=""
+keeps_env_glob=false
+for env_file in "$PWD"/.env.*; do
+    [ -e "$env_file" ] || [ -L "$env_file" ] || continue
+    if [ -f "$env_file" ] && [ ! -L "$env_file" ] \
+        && git --literal-pathspecs ls-files --error-unmatch -- "$env_file" >/dev/null 2>&1 \
+        && git --literal-pathspecs diff --quiet HEAD -- "$env_file" >/dev/null 2>&1; then
+        continue
+    fi
+    case "$env_file" in
+        *"
+"*) keeps_env_glob=true ;;
+    esac
+    hidden_env_files="$hidden_env_files$env_file
+"
+done
 if ! jq --arg others "$other_projects" --arg own "${own_folders:-}" \
+        --arg hidden_env "$hidden_env_files" --argjson keeps_env_glob "$keeps_env_glob" \
         '.filesystem.denyWrite += ($others | split("\n") | map(select(. != "")))
          | .filesystem.denyWrite = ((.filesystem.denyWrite + ["~/.config/greywall-agents/figcraft"]) | unique)
          | .filesystem.denyRead -= ($own | split(" ") | map(select(. != "")))
-         | .filesystem.denyRead = ((.filesystem.denyRead + ["~/.config/greywall-agents/figcraft"]) | unique)' \
+         | .filesystem.denyRead = ((.filesystem.denyRead + ["~/.config/greywall-agents/figcraft"]) | unique)
+         | if $keeps_env_glob or (any(.filesystem.denyRead[]; . == ".env.*") | not) then .
+           else .filesystem.denyRead = (.filesystem.denyRead - [".env.*"] + ($hidden_env | split("\n") | map(select(. != "")))) end' \
         "$HOME/.config/greywall/greywall.json" > "$settings.new"; then
     echo "$agent launcher: cannot write $settings from ~/.config/greywall/greywall.json, not starting." >&2
     exit 1
