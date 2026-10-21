@@ -22,10 +22,11 @@ const GREYPROXY_RECENT_MINUTES: i64 = 10;
 /// What a session reads only when it starts: after a change, the sessions started before it run
 /// on the old version until they restart. Label -> path (a missing file is skipped). Each agent
 /// lists the ones it reads (agents::Agent::start_files).
-pub const START_FILES: [(&str, &str); 16] = [
+pub const START_FILES: [(&str, &str); 17] = [
     ("CLAUDE.md", "~/.claude/CLAUDE.md"), ("settings", "~/.claude/settings.json"),
     ("plugins", "~/.claude/plugins/installed_plugins.json"), ("ADHD mode", "~/.claude/.i-have-adhd-always"),
     ("session hook", "~/.claude/hooks/agent-environment.sh"), ("sandbox", "~/.config/greywall/greywall.json"),
+    ("greywall", "~/.local/bin/greywall"),
     ("sandbox profile", "~/.config/greywall/learned/claude.json"), ("launcher", "~/.local/bin/greywall-agents/claude"),
     ("shared launcher", "~/.local/bin/greywall-agents/launcher-common.sh"),
     ("opencode config", "~/.config/opencode/opencode.jsonc"), ("opencode plugin", "~/.config/opencode/plugins/cockpit.ts"),

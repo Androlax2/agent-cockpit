@@ -7559,6 +7559,22 @@ fn an_opencode_session_restarts_for_its_own_files_not_claudes() {
                                     ("opusline".to_string(), vec!["settings", "shared launcher"])]);
 }
 
+// make greywall-patch replaced the binary and no card said to restart (2026-10-21): sessions kept
+// the old mounts, with greyproxy's keys readable.
+#[test]
+fn every_agent_restarts_when_the_greywall_binary_changes() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([opencode_session("waiting", "runway", 1), session(SESSION_B, "waiting", "opusline", "/o", 2)]));
+    let mut app = fixture.app();
+    app.start_files = vec![("greywall", 50.0)];
+    for session in &app.sessions {
+        assert_eq!(sessions::changed_since_start(session, &app.start_files), vec!["greywall"], "{}", session.project);
+    }
+    for agent in &crate::agents::AGENTS {
+        assert!(agent.start_files.contains(&"greywall"), "{} does not restart for a new greywall", agent.name);
+    }
+}
+
 #[test]
 fn a_message_can_be_queued_for_an_opencode_session() {
     let _fixture = Fixture::new();

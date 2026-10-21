@@ -93,7 +93,7 @@ pub static AGENTS: [Agent; 3] = [
         features: &[Feature::Effort, Feature::Billing, Feature::Compact, Feature::RemoteControl, Feature::Dialogs,
                     Feature::Interrupt, Feature::ScreenStates],
         interrupt_keys: &["Escape"],
-        start_files: &["CLAUDE.md", "settings", "plugins", "ADHD mode", "session hook", "sandbox", "sandbox profile",
+        start_files: &["CLAUDE.md", "settings", "plugins", "ADHD mode", "session hook", "sandbox", "greywall", "sandbox profile",
                        "launcher", "shared launcher"],
     },
     Agent {
@@ -107,7 +107,7 @@ pub static AGENTS: [Agent; 3] = [
         // questions are not Claude's yes/no menu: no Dialogs.
         features: &[Feature::Interrupt, Feature::Variants],
         interrupt_keys: &["Escape", "Escape"],
-        start_files: &["CLAUDE.md", "sandbox", "shared launcher", "opencode config", "opencode plugin", "opencode profile",
+        start_files: &["CLAUDE.md", "sandbox", "greywall", "shared launcher", "opencode config", "opencode plugin", "opencode profile",
                        "opencode launcher"],
     },
     Agent {
@@ -119,7 +119,7 @@ pub static AGENTS: [Agent; 3] = [
         process: Some("codex"),
         features: &[],
         interrupt_keys: &[],
-        start_files: &["CLAUDE.md", "ADHD mode", "sandbox", "shared launcher", "codex hooks", "codex profile", "codex launcher"],
+        start_files: &["CLAUDE.md", "ADHD mode", "sandbox", "greywall", "shared launcher", "codex hooks", "codex profile", "codex launcher"],
     },
 ];
 
