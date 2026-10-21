@@ -1095,3 +1095,101 @@ fn approving_a_recruit_request_in_an_existing_team_keeps_its_members() {
         .map(|member| member["role"].as_str().unwrap().to_string()).collect();
     assert_eq!(members, ["developer", "qa"]);
 }
+
+// ---- A handoff starts a fresh QA ----
+
+fn hand_off_in(connection: &mut rusqlite::Connection, key: &str, commit: &str) -> Value {
+    store::handoff_in(connection, &live()[1], &handoff_action(key, commit), Some(ASKER_FOLDER), 3000).unwrap().result.unwrap()
+}
+
+fn qa_spawns(connection: &rusqlite::Connection) -> Vec<Value> {
+    spawns(connection).into_iter().filter(|spawn| spawn["role"] == "qa").collect()
+}
+
+fn bind_qa(connection: &mut rusqlite::Connection, session: &str) {
+    let token = store::pending_spawns(connection).unwrap().into_iter().find(|spawn| spawn.role == Role::Qa).unwrap().token;
+    store::mark_spawn_started(connection, &token, 3100).unwrap();
+    let qa = VerifiedSession { session_id: session.into(), agent: "claude".into(), project: "project-a".into(), runtime: format!("runtime-{session}") };
+    assert!(store::bind_spawn(connection, &token, &qa, 3200).unwrap());
+}
+
+#[test]
+fn a_handoff_in_a_team_with_standing_qa_spawns_a_fresh_qa_at_its_commit() {
+    let sandbox = Sandbox::new();
+    let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+    recruited(&mut connection, true);
+    assert_eq!(hand_off_in(&mut connection, "h1", COMMIT_A)["qa_spawned"], true);
+    let qa = store::pending_spawns(&connection).unwrap().into_iter().find(|spawn| spawn.role == Role::Qa).expect("no QA spawn");
+    assert_eq!((qa.commit_id.as_deref(), qa.directory.as_str()), (Some(COMMIT_A), ASKER_FOLDER));
+    assert!(qa.brief.contains(COMMIT_A) && qa.brief.contains("Check contrast and keyboard use") && qa.brief.contains("do not change product code"), "{}", qa.brief);
+    assert!(qa_requests(&connection).is_empty());
+    bind_qa(&mut connection, "eeeeeeee-0000-4000-8000-000000000000");
+    assert!(qa_requests(&connection).is_empty(), "the brief is the review request: no second one");
+}
+
+#[test]
+fn the_previous_qa_is_unlinked_and_marked_to_exit() {
+    let sandbox = Sandbox::new();
+    let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+    recruited(&mut connection, true);
+    hand_off_in(&mut connection, "h1", COMMIT_A);
+    bind_qa(&mut connection, "eeeeeeee-0000-4000-8000-000000000000");
+    hand_off_in(&mut connection, "h2", COMMIT_B);
+    let members = store::snapshot(&connection, Some(&task()), None, 100).unwrap()["members"].as_array().unwrap().clone();
+    assert!(!members.iter().any(|member| member["role"] == "qa"));
+    assert_eq!(store::superseded_qa(&connection).unwrap(), ["eeeeeeee-0000-4000-8000-000000000000"]);
+    store::mark_qa_exited(&connection, "eeeeeeee-0000-4000-8000-000000000000").unwrap();
+    assert!(store::superseded_qa(&connection).unwrap().is_empty());
+    let pending: Vec<_> = store::pending_spawns(&connection).unwrap().into_iter().filter(|spawn| spawn.role == Role::Qa).collect();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].commit_id.as_deref(), Some(COMMIT_B));
+}
+
+#[test]
+fn two_quick_handoffs_cancel_the_unstarted_older_qa_spawn() {
+    let sandbox = Sandbox::new();
+    let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+    recruited(&mut connection, true);
+    hand_off_in(&mut connection, "h1", COMMIT_A);
+    hand_off_in(&mut connection, "h2", COMMIT_B);
+    let pending: Vec<_> = store::pending_spawns(&connection).unwrap().into_iter().filter(|spawn| spawn.role == Role::Qa).collect();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].commit_id.as_deref(), Some(COMMIT_B));
+    assert_eq!(qa_spawns(&connection).len(), 1, "the cancelled one is no longer listed");
+}
+
+#[test]
+fn earlier_findings_travel_in_the_next_qa_brief() {
+    let sandbox = Sandbox::new();
+    let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+    recruited(&mut connection, true);
+    let first = hand_off_in(&mut connection, "h1", COMMIT_A)["handoff_id"].as_str().unwrap().to_string();
+    bind_qa(&mut connection, "eeeeeeee-0000-4000-8000-000000000000");
+    let qa = VerifiedSession { session_id: "eeeeeeee-0000-4000-8000-000000000000".into(), agent: "claude".into(), project: "project-a".into(),
+        runtime: "runtime-eeeeeeee-0000-4000-8000-000000000000".into() };
+    let findings = Submission { task: task(), submission_key: "f1".into(), recipient: DEVELOPER.into(), kind: MessageKind::Findings,
+        body: "Focus is lost after closing the dialog.".into(), thread_id: None, handoff_id: Some(first) };
+    store::accept(&mut connection, &qa, &AgentAction::Send { message: findings }, 3300).unwrap();
+    hand_off_in(&mut connection, "h2", COMMIT_B);
+    let next = store::pending_spawns(&connection).unwrap().into_iter().find(|spawn| spawn.role == Role::Qa).unwrap();
+    assert!(next.brief.contains("Focus is lost after closing the dialog."), "{}", next.brief);
+}
+
+#[test]
+fn a_standing_qa_handoff_needs_the_developers_real_folder() {
+    let sandbox = Sandbox::new();
+    let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+    recruited(&mut connection, true);
+    assert!(store::handoff_in(&mut connection, &live()[1], &handoff_action("h1", COMMIT_A), None, 3000).is_err());
+    assert!(store::pending_spawns(&connection).unwrap().iter().all(|spawn| spawn.role != Role::Qa));
+}
+
+#[test]
+fn teams_without_standing_qa_keep_todays_qa_request() {
+    let sandbox = Sandbox::new();
+    let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+    linked(&mut connection);
+    assert_eq!(hand_off_in(&mut connection, "h1", COMMIT_A)["qa_spawned"], false);
+    assert_eq!(qa_requests(&connection).len(), 1);
+    assert!(qa_spawns(&connection).is_empty());
+}

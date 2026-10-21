@@ -79,6 +79,7 @@ pub fn open(path: &Path) -> Result<Connection, TeamError> {
             directory TEXT NOT NULL, commit_id TEXT, brief TEXT NOT NULL, handoff_id TEXT, status TEXT NOT NULL, session_id TEXT,
             created_at INTEGER NOT NULL, started_at INTEGER);
         CREATE TABLE IF NOT EXISTS team_qa (task_key TEXT PRIMARY KEY, brief TEXT NOT NULL, agent TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS qa_exits (session_id TEXT PRIMARY KEY, status TEXT NOT NULL);
         CREATE UNIQUE INDEX IF NOT EXISTS one_inflight_delivery ON messages(recipient,recipient_epoch) WHERE state='submitting';")?;
     // Version 2: a proposal can carry recruits (teammates to start on approval) and the agent they run in.
     let columns: Vec<String> = connection.prepare("SELECT name FROM pragma_table_info('proposals')")?
@@ -543,6 +544,12 @@ fn validate_handoff(handoff: &super::Handoff) -> Result<(), TeamError> {
 }
 
 pub fn handoff(connection: &mut Connection, sender: &VerifiedSession, action: &AgentAction, now_ms: i64) -> Result<TeamReply, TeamError> {
+    handoff_in(connection, sender, action, None, now_ms)
+}
+
+/// `folder`: the Developer session's real folder (from the daemon, never the handoff's own claim),
+/// where a team with a standing QA brief makes the fresh QA's copy.
+pub fn handoff_in(connection: &mut Connection, sender: &VerifiedSession, action: &AgentAction, folder: Option<&str>, now_ms: i64) -> Result<TeamReply, TeamError> {
     let AgentAction::Handoff { handoff } = action else { return Err(TeamError::new(ErrorCode::Invalid, "not a handoff")) };
     validate_handoff(handoff)?;
     if sender.project != handoff.task.project { return Err(TeamError::new(ErrorCode::Unauthorized, "handoff is not for this project")); }
@@ -565,13 +572,53 @@ pub fn handoff(connection: &mut Connection, sender: &VerifiedSession, action: &A
     let id = identifier()?;
     transaction.execute("INSERT INTO handoffs VALUES (?1,?2,?3,?4,?5,?6,?7,'current',?8)",
         params![id, task_key, sender.session_id, developer.epoch, handoff.submission_key, fingerprint, serde_json::to_string(handoff)?, now_ms])?;
+    let is_spawned = spawn_qa(&transaction, &task_key, &id, &handoff.commit, folder, now_ms)?;
     let is_requested = schedule_qa(&transaction, &task_key, now_ms)?;
     transaction.commit()?;
-    Ok(TeamReply { request_id: handoff.submission_key.clone(), result: Ok(json!({"handoff_id": id, "qa_requested": is_requested})) })
+    Ok(TeamReply { request_id: handoff.submission_key.clone(), result: Ok(json!({"handoff_id": id, "qa_requested": is_requested, "qa_spawned": is_spawned})) })
+}
+
+/// A team that asked for QA gets a fresh QA per handoff: the unstarted older one is cancelled, the
+/// current one unlinked and queued to exit, and a new one queued at exactly this commit.
+fn spawn_qa(transaction: &Connection, task_key: &str, handoff_id: &str, commit: &str, folder: Option<&str>, now_ms: i64) -> Result<bool, TeamError> {
+    let standing: Option<(String, String)> = transaction.query_row("SELECT brief, agent FROM team_qa WHERE task_key=?1", [task_key],
+        |row| Ok((row.get(0)?, row.get(1)?))).optional()?;
+    let Some((standing, agent)) = standing else { return Ok(false) };
+    let folder = folder.ok_or_else(|| TeamError::new(ErrorCode::Conflict, "the Developer's folder is unknown; QA cannot be started"))?;
+    transaction.execute("UPDATE spawns SET status='cancelled' WHERE task_key=?1 AND role='qa' AND status='pending'", [task_key])?;
+    let previous: Option<String> = transaction.query_row("SELECT session_id FROM members WHERE task_key=?1 AND role='qa'", [task_key], |row| row.get(0)).optional()?;
+    if let Some(previous) = previous {
+        cancel_member_messages(transaction, task_key, &previous)?;
+        transaction.execute("DELETE FROM members WHERE task_key=?1 AND session_id=?2", params![task_key, previous])?;
+        transaction.execute("INSERT INTO qa_exits VALUES (?1,'pending') ON CONFLICT(session_id) DO UPDATE SET status='pending'", [&previous])?;
+        transaction.execute("UPDATE teams SET revision=revision+1 WHERE task_key=?1", [task_key])?;
+    }
+    let mut findings = transaction.prepare("SELECT json_extract(envelope,'$.body') FROM messages WHERE task_key=?1
+        AND json_extract(envelope,'$.kind')='findings' ORDER BY seq DESC LIMIT 10")?;
+    let findings: Vec<String> = findings.query_map([task_key], |row| row.get::<_, String>(0))?.collect::<Result<_, _>>()?;
+    let mut reference = handoff_reference(transaction, task_key, handoff_id)?;
+    reference["task"] = serde_json::from_str(task_key)?;
+    transaction.execute("INSERT INTO spawns (token,task_key,role,agent,directory,commit_id,brief,handoff_id,status,created_at) VALUES (?1,?2,'qa',?3,?4,?5,?6,?7,'pending',?8)",
+        params![identifier()?, task_key, agent, folder, commit, super::qa_brief_text(&standing, &reference, &findings), handoff_id, now_ms])?;
+    Ok(true)
+}
+
+/// QA sessions a newer handoff replaced, still to be closed.
+pub fn superseded_qa(connection: &Connection) -> Result<Vec<String>, TeamError> {
+    let mut statement = connection.prepare("SELECT session_id FROM qa_exits WHERE status='pending' ORDER BY session_id")?;
+    Ok(statement.query_map([], |row| row.get(0))?.collect::<Result<_, _>>()?)
+}
+
+pub fn mark_qa_exited(connection: &Connection, session_id: &str) -> Result<(), TeamError> {
+    connection.execute("UPDATE qa_exits SET status='exited' WHERE session_id=?1", [session_id])?;
+    Ok(())
 }
 
 /// One QA request per (current handoff, approved QA membership); a no-op without either.
 fn schedule_qa(connection: &Connection, task_key: &str, now_ms: i64) -> Result<bool, TeamError> {
+    // A team with a standing QA brief gives each fresh QA its review request as its first message.
+    let has_standing_qa: Option<i64> = connection.query_row("SELECT 1 FROM team_qa WHERE task_key=?1", [task_key], |row| row.get(0)).optional()?;
+    if has_standing_qa.is_some() { return Ok(false); }
     let role_member = |role: &str| connection.query_row("SELECT session_id,epoch,agent,runtime FROM members WHERE task_key=?1 AND role=?2",
         params![task_key, role], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?))).optional();
     let (Some(developer), Some(qa)) = (role_member("developer")?, role_member("qa")?) else { return Ok(false) };

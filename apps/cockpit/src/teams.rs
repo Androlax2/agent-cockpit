@@ -204,6 +204,26 @@ pub fn envelope_text(envelope: &Value) -> String {
         kind = field(&["kind"]), body = field(&["body"]), reply = reply_template(envelope))
 }
 
+/// A fresh QA's first message: exactly what to review, the team's standing instructions, what earlier
+/// rounds found, and how to report. Collaborator content approved by Theo with the team.
+pub fn qa_brief_text(standing: &str, handoff: &Value, findings: &[String]) -> String {
+    let text = |key: &str| handoff[key].as_str().unwrap_or("?").to_string();
+    let frames: Vec<String> = handoff["figcraft"].as_array().into_iter().flatten()
+        .map(|frame| format!("{} {}", frame["file"].as_str().unwrap_or("?"), frame["frame_id"].as_str().unwrap_or("?"))).collect();
+    let earlier = if findings.is_empty() { "none".to_string() } else {
+        findings.iter().map(|finding| format!("- {}", finding.chars().take(500).collect::<String>().replace('\n', " "))).collect::<Vec<_>>().join("\n")
+    };
+    let report = serde_json::json!({"action": "send", "message": {"task": handoff["task"], "submission_key": "<a new key: letters, digits, - or _>",
+        "recipient": "<the Developer's session_id from cockpit-team context>", "kind": "findings", "handoff_id": handoff["id"], "body": "<what you found>"}});
+    format!("You are this team's QA (Cockpit team, task {task}). Review exactly commit {commit} (branch {branch}): this folder is a fresh copy at it.\n\
+             Developer's summary: {summary}\nDeveloper's tests: {tests}\nFigCraft frames: {frames}\n\n\
+             Team's QA instructions: {standing}\n\nWhat earlier QA rounds found:\n{earlier}\n\n\
+             Check behavior, accessibility and design fidelity; do not change product code. Report your findings with:\n\
+             printf '%s' '{report}' | cockpit-team send",
+        task = handoff["task"]["task_id"].as_str().unwrap_or("?"), commit = text("commit"), branch = text("branch"), summary = text("summary"),
+        tests = text("tests"), frames = if frames.is_empty() { "none".into() } else { frames.join(", ") })
+}
+
 /// The send action that answers this message: a reply in its thread, findings on its handoff, or a notice.
 fn reply_template(envelope: &Value) -> String {
     let mut message = serde_json::json!({"task": envelope["task"], "submission_key": "<a new key: letters, digits, - or _>",
