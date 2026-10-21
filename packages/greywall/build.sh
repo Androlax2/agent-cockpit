@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
-# Build and install greywall v0.3.7 with the two patches next to this script (see their headers):
-# without them a sandbox can read greyproxy's CA key and session key, and ~/.ssh/id_*.
+# Build and install greywall from the dotfiles branch of github.com/Androlax2/greywall: v0.3.7 plus
+# upstream PRs #103, #112, #113 and #114 (denyRead masks applied last). Without them a sandbox can
+# read greyproxy's CA key and session key, and ~/.ssh/id_*.
 #   make greywall-patch
-# Drop a patch once upstream ships it, and move the pins below to that release.
+# Move the pins below to the next tip of that branch, or to an upstream release once it ships them.
 # Sessions started before the install keep the old mounts: restart them afterwards.
 set -euo pipefail
 
-here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 build_dir="${XDG_CACHE_HOME:-$HOME/.cache}/dotfiles-build/greywall"
 target="$HOME/.local/bin/greywall"
 
-greywall_commit=5581056d0523bfa244d8061008744ed9f72a0361 # v0.3.7
-greywall_sha256=7b988162eee8aa628bca153f06e8058eab6480c74c05aa1e818809c6ffca4367
+greywall_commit=16f1909f14f63ed5013ba88bafa2458bfe0059f4 # branch dotfiles
+greywall_sha256=5867535cfcce9b204ccd1bcc2daf8a7b1920eddc2ae68a83d13a458f97a6b21c
 # The tun2socks greywall embeds, as its Makefile pins it (same file v0.3.7's release ships).
 tun2socks_url=https://github.com/xjasonlyu/tun2socks/releases/download/v2.5.2/tun2socks-linux-amd64.zip
 tun2socks_sha256=4aa7737009a9f06b9f4957c4fc12932ae0cd2039471d2ae4e5d4666ffeb40a2e
@@ -26,13 +26,11 @@ fetch_verified() {
 
 rm -rf "$build_dir"
 mkdir -p "$build_dir/src"
-fetch_verified "https://github.com/GreyhavenHQ/greywall/archive/$greywall_commit.tar.gz" "$greywall_sha256" "$build_dir/greywall.tar.gz"
+fetch_verified "https://github.com/Androlax2/greywall/archive/$greywall_commit.tar.gz" "$greywall_sha256" "$build_dir/greywall.tar.gz"
 fetch_verified "$tun2socks_url" "$tun2socks_sha256" "$build_dir/tun2socks.zip"
 tar -xzf "$build_dir/greywall.tar.gz" --strip-components=1 -C "$build_dir/src"
 
 cd "$build_dir/src"
-patch -p1 --forward < "$here/greyproxy-secrets-pr103.patch"
-patch -p1 --forward < "$here/deny-read-last.patch"
 mkdir -p internal/sandbox/bin
 unzip -q -o "$build_dir/tun2socks.zip" tun2socks-linux-amd64 -d internal/sandbox/bin
 
