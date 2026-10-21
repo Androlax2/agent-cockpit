@@ -1156,7 +1156,8 @@ doctor() {
     if [[ -z $newest || $linked == "$newest" ]]; then report ok "claude starts the newest version (${linked:-none})"; else report fail "claude starts $linked, $newest is in the versions folder" "claude-update (claude-update.timer runs it every 6 h)"; fi
     local archive="${XDG_STATE_HOME:-$HOME/.local/state}/claude-sessions/usage.sqlite" newest_transcript
     newest_transcript=$(find "${CLAUDE_SESSIONS_TRANSCRIPTS:-$HOME/.claude/projects}" -name '*.jsonl' -printf '%T@\n' 2>/dev/null | sort -n | tail -1 || true)
-    if [[ -f $archive ]] && (( $(stat -c %Y "$archive") + 600 >= ${newest_transcript%.*:-0} )); then report ok "usage archive up to date"; else report fail "usage archive missing or behind the transcripts" "claude-sessions reload (the sidebar keeps it), or claude-sessions-sidebar costs"; fi
+    newest_transcript=${newest_transcript%.*}
+    if [[ -f $archive ]] && (( $(stat -c %Y "$archive") + 600 >= ${newest_transcript:-0} )); then report ok "usage archive up to date"; else report fail "usage archive missing or behind the transcripts" "claude-sessions reload (the sidebar keeps it), or claude-sessions-sidebar costs"; fi
     local recent_facts
     recent_facts=$(find "$HOME/.cache/claude" -maxdepth 1 -name 'statusline-*.json' -mmin -60 2>/dev/null || true)
     if [[ -z $recent_facts ]] || jq -e 'select(.effort != null)' $recent_facts >/dev/null 2>&1; then report ok "status line reports the effort"; else report fail "status line reports no effort" "install .handoff/claude/statusline-command.sh"; fi

@@ -717,6 +717,24 @@ fn doctor_flags_a_claude_link_behind_the_newest_download() {
     assert!(manager.doctor_line("newest version", &env).trim().starts_with("ok"));
 }
 
+#[test]
+fn doctor_compares_the_usage_archive_with_fractional_transcript_times() {
+    let manager = Manager::new();
+    let archive = manager.sandbox.state.join("claude-sessions/usage.sqlite");
+    fs::create_dir_all(archive.parent().unwrap()).unwrap();
+    fs::write(&archive, "").unwrap();
+    let transcript = manager.sandbox.home.join(format!(".claude/projects/-proj-a/{SESSION_A}.jsonl"));
+    for (archive_age, verdict) in [("@0", "FAIL"), ("now", "ok")] {
+        let touched = Command::new("touch").arg("-d").arg(archive_age).arg(&archive).status().unwrap();
+        assert!(touched.success());
+        assert!(Command::new("touch").arg("-d").arg("@1700000000.2574978310").arg(&transcript).status().unwrap().success());
+        let output = manager.run(&["doctor"], &[]);
+        let line = stdout(&output).lines().find(|line| line.contains("usage archive")).expect("no usage archive line").to_string();
+        assert!(line.trim().starts_with(verdict), "archive {archive_age}: {line}");
+        assert!(!stderr(&output).contains("syntax error"), "{}", stderr(&output));
+    }
+}
+
 /// The doctor's environment for its opencode section: a fake opencode 2.0.26 and the data folder.
 fn opencode_doctor_env(manager: &Manager) -> Vec<(&'static str, String)> {
     let binary = manager.sandbox.root.join("opencode");
