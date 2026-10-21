@@ -706,6 +706,36 @@ fn the_clones_docker_socket_is_where_the_daemon_and_the_launcher_expect_it() {
 }
 
 #[test]
+fn a_parallel_clone_is_granted_no_sibling_clone_nor_a_folder_holding_one() {
+    // Decided 2026-10-21 (todo 8a4c0172): a session sees only its own checkout, so it never reads or
+    // changes another session's uncommitted work. Work in a sibling clone goes to that clone's session.
+    for &agent in AGENTS.iter() {
+        let launch = Launch::new();
+        let home = fs::canonicalize(&launch.sandbox.home).unwrap();
+        let clones = home.join("IdeaProjects/.parallel/dotfiles");
+        let (clone, sibling) = (clones.join("p1"), clones.join("p2"));
+        for checkout in [&clone, &sibling] {
+            fs::create_dir_all(checkout).unwrap();
+            assert!(Command::new("git").args(["init", "-q"]).arg(checkout).status().unwrap().success());
+        }
+        let output = launch.sandbox.command(bin().join("greywall-agents").join(agent), &[]).current_dir(&clone).output().unwrap();
+        assert_eq!(output.status.code(), Some(0), "{agent}: {}", stderr(&output));
+        let started = launch.sandbox.calls("greywall").pop().unwrap();
+        let words: Vec<&str> = started.split_whitespace().collect();
+        let mut granted: Vec<PathBuf> = words.windows(2).filter(|pair| pair[0] == "--allow-path" || pair[0] == "--allow-read-path").map(|pair| PathBuf::from(pair[1])).collect();
+        let settings_path = words.windows(2).find(|pair| pair[0] == "--settings").map(|pair| pair[1]).expect("no --settings");
+        let settings: serde_json::Value = serde_json::from_str(&fs::read_to_string(settings_path).unwrap()).unwrap();
+        for key in ["allowRead", "allowWrite"] {
+            let paths = settings["filesystem"][key].as_array().map(Vec::as_slice).unwrap_or_default();
+            granted.extend(paths.iter().map(|path| PathBuf::from(path.as_str().unwrap().replacen('~', &home.display().to_string(), 1))));
+        }
+        for path in &granted {
+            assert!(!sibling.starts_with(path), "{agent} grants {} which holds {}: {started}", path.display(), sibling.display());
+        }
+    }
+}
+
+#[test]
 fn sandboxes_mount_the_report_sockets_folder_never_the_socket_alone() {
     // A socket file mounted alone stays the old one in every running sandbox once the socket is made
     // again: on 2026-10-19 a socket restart cut every session off the daemon.
