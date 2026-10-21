@@ -5051,6 +5051,21 @@ fn a_session_deletes_an_item_a_session_filed_in_its_project() {
 }
 
 #[test]
+fn a_shipped_commits_trailer_marks_its_item_done_and_keeps_the_items_session() {
+    // claude-sessions apply-dotfiles queues it as the live checkout, without a session (todo 4ab912da).
+    let fixture = Fixture::new();
+    let dotfiles = project_folder(&fixture, "dotfiles");
+    let mut todos = TodoList::load();
+    let id = todos.add("dotfiles", &dotfiles.display().to_string(), "fixed by another session");
+    todos.set_status(&id, "doing", SESSION_A);
+    queue_update(json!({"action": "done", "id": id}), &dotfiles);
+    assert_eq!(todos.apply_updates(), 1);
+    let reloaded = TodoList::load();
+    assert_eq!(reloaded.items[0].status(), "done");
+    assert_eq!(reloaded.items[0].0.get("session").and_then(Value::as_str), Some(SESSION_A));
+}
+
+#[test]
 fn a_session_cannot_delete_theos_items_or_another_projects() {
     let fixture = Fixture::new();
     let runway = project_folder(&fixture, "runway");

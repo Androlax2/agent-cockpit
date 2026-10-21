@@ -10,7 +10,7 @@ use std::process::{Command, Output};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use regex::Regex;
-use serde_json::json;
+use serde_json::{Value, json};
 
 // The manager's panes are found by their @role tag; the fake keeps those tags in $SHIM_ROLES.
 const FAKE_TMUX: &str = r#"
@@ -2312,6 +2312,61 @@ fn apply_dotfiles_takes_the_clones_commits_after_a_yes() {
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
     assert_eq!(git_output(&live, &["log", "-1", "--format=%s"]), "Add y");
     assert_eq!(fs::read_dir(work.join(".outgoing")).unwrap().count(), 0);
+}
+
+/// Replaces the clone's export with one commit per message on top of what it has.
+fn export_commits(work: &Path, messages: &[&str]) {
+    for patch in fs::read_dir(work.join(".outgoing")).unwrap() {
+        fs::remove_file(patch.unwrap().path()).unwrap();
+    }
+    for (number, message) in messages.iter().enumerate() {
+        fs::write(work.join(format!("change-{number}")), "x\n").unwrap();
+        assert!(Command::new("git").arg("-C").arg(work).args(["add", "."]).status().unwrap().success());
+        assert!(Command::new("git").arg("-C").arg(work).args(["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", message])
+            .status().unwrap().success());
+    }
+    assert!(Command::new("git").arg("-C").arg(work).args(["format-patch", "-q", "origin/main", "-o", ".outgoing"]).status().unwrap().success());
+}
+
+fn queued_todo_updates(manager: &Manager) -> Vec<Value> {
+    fs::read_to_string(manager.sandbox.runtime.join("claude-todo-updates.jsonl")).unwrap_or_default()
+        .lines().map(|line| serde_json::from_str(line).unwrap()).collect()
+}
+
+#[test]
+fn applied_commits_mark_the_todos_of_their_trailers_done() {
+    // Items stayed open when another session or a duplicate shipped their fix (todo 4ab912da).
+    let manager = Manager::new();
+    let (live, work) = dotfiles_pair(&manager);
+    export_commits(&work, &["Fix the counters\n\nTodo: 4ab912da\nTodo: c4178595", "Fix it again\n\nTodo: c4178595"]);
+    let output = apply_dotfiles(&manager, &live, &work, "y\n");
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let live_folder = path_str(&live);
+    let expected: Vec<Value> = ["4ab912da", "c4178595"].iter()
+        .map(|id| json!({"action": "done", "id": id, "started_in": live_folder})).collect();
+    assert_eq!(queued_todo_updates(&manager), expected);
+    assert!(stdout(&output).contains("Todo 4ab912da marked done."), "{}", stdout(&output));
+}
+
+#[test]
+fn a_trailer_that_is_no_item_id_marks_nothing() {
+    let manager = Manager::new();
+    let (live, work) = dotfiles_pair(&manager);
+    export_commits(&work, &["Odd trailer\n\nTodo: Androlax2/runway#50"]);
+    let output = apply_dotfiles(&manager, &live, &work, "y\n");
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(queued_todo_updates(&manager), Vec::<Value>::new());
+    assert!(stderr(&output).contains("not an item id"), "{}", stderr(&output));
+}
+
+#[test]
+fn a_declined_apply_marks_no_todo_done() {
+    let manager = Manager::new();
+    let (live, work) = dotfiles_pair(&manager);
+    export_commits(&work, &["Fix\n\nTodo: 4ab912da"]);
+    let output = apply_dotfiles(&manager, &live, &work, "n\n");
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(queued_todo_updates(&manager), Vec::<Value>::new());
 }
 
 fn export_a_new_command(work: &Path) {
