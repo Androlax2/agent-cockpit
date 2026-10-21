@@ -1,0 +1,182 @@
+Apply the denyRead masks after the mandatory and denyWrite read-only binds. Those bind the
+real path over itself, and bubblewrap's last mount wins, so denyWrite ~/.ssh re-exposed
+~/.ssh/id_* that denyRead had masked (same for ~/.gnupg and ~/.config/greywall-agents/figcraft).
+Not upstream yet; applies on top of greyproxy-secrets-pr103.patch.
+
+diff --git a/internal/sandbox/denyread_order_linux_test.go b/internal/sandbox/denyread_order_linux_test.go
+new file mode 100644
+index 0000000..315fa8f
+--- /dev/null
++++ b/internal/sandbox/denyread_order_linux_test.go
+@@ -0,0 +1,81 @@
++//go:build linux
++
++package sandbox
++
++import (
++	"os"
++	"path/filepath"
++	"testing"
++
++	"github.com/GreyhavenHQ/greywall/internal/config"
++)
++
++// A denyWrite of a directory binds the real directory read-only. When that bind
++// came after the denyRead masks, it re-exposed every masked file inside it.
++func TestWrapCommandLinux_DenyWriteDirectoryDoesNotUnmaskDenyReadFile(t *testing.T) {
++	cases := []struct {
++		name     string
++		denyRead []string
++	}{
++		{"glob", []string{"~/.ssh/id_*"}},
++		{"literal", []string{"~/.ssh/id_ed25519"}},
++	}
++	for _, tc := range cases {
++		t.Run(tc.name, func(t *testing.T) {
++			home := t.TempDir()
++			t.Setenv("HOME", home)
++			sshDir := filepath.Join(home, ".ssh")
++			if err := os.MkdirAll(sshDir, 0o700); err != nil {
++				t.Fatal(err)
++			}
++			privateKey := filepath.Join(sshDir, "id_ed25519")
++			if err := os.WriteFile(privateKey, []byte("x"), 0o600); err != nil {
++				t.Fatal(err)
++			}
++			cfg := &config.Config{Filesystem: config.FilesystemConfig{
++				DenyRead:  tc.denyRead,
++				DenyWrite: []string{"~/.ssh"},
++			}}
++
++			cmd, err := WrapCommandLinuxWithOptions(cfg, "true", nil, nil, nil, nil, nil, "", LinuxSandboxOptions{UseLandlock: true, UseSeccomp: true})
++			if err != nil {
++				t.Fatalf("wrap: %v", err)
++			}
++			mounts := parseBwrapMounts(cmd)
++
++			maskIndex := lastDestIndex(mounts, privateKey)
++			if maskIndex < 0 || mounts[maskIndex].src != "/dev/null" {
++				t.Fatalf("private key is not masked with /dev/null; mounts=%+v", mounts)
++			}
++			if dirIndex := lastDestIndex(mounts, sshDir); dirIndex > maskIndex {
++				t.Errorf("~/.ssh is bound at %d, after the private key mask at %d: it re-exposes the key; mounts=%+v", dirIndex, maskIndex, mounts)
++			}
++		})
++	}
++}
++
++// A denyRead directory that is also a denyWrite directory must end up hidden,
++// not bound read-only.
++func TestWrapCommandLinux_DenyReadDirectoryWinsOverDenyWrite(t *testing.T) {
++	home := t.TempDir()
++	t.Setenv("HOME", home)
++	privateDir := filepath.Join(home, ".config", "private")
++	if err := os.MkdirAll(privateDir, 0o700); err != nil {
++		t.Fatal(err)
++	}
++	cfg := &config.Config{Filesystem: config.FilesystemConfig{
++		DenyRead:  []string{"~/.config/private"},
++		DenyWrite: []string{"~/.config/private"},
++	}}
++
++	cmd, err := WrapCommandLinuxWithOptions(cfg, "true", nil, nil, nil, nil, nil, "", LinuxSandboxOptions{UseLandlock: true, UseSeccomp: true})
++	if err != nil {
++		t.Fatalf("wrap: %v", err)
++	}
++	mounts := parseBwrapMounts(cmd)
++
++	i := lastDestIndex(mounts, privateDir)
++	if i < 0 || mounts[i].flag != "--tmpfs" {
++		t.Errorf("last mount at %q should be the --tmpfs mask; mounts=%+v", privateDir, mounts)
++	}
++}
+diff --git a/internal/sandbox/linux.go b/internal/sandbox/linux.go
+index e9e49cd..3d8befe 100644
+--- a/internal/sandbox/linux.go
++++ b/internal/sandbox/linux.go
+@@ -835,6 +835,36 @@ func greyproxyDenyReadArgs() []string {
+ 	return args
+ }
+ 
++// denyReadMaskArgs returns bwrap args hiding the configured denyRead paths:
++// directories get an empty tmpfs, files /dev/null. Symlinks are skipped: they
++// may point outside the sandbox and cause mount errors.
++func denyReadMaskArgs(cfg *config.Config) []string {
++	var args []string
++	if cfg == nil || cfg.Filesystem.DenyRead == nil {
++		return args
++	}
++	for _, p := range ExpandGlobPatterns(cfg.Filesystem.DenyRead) {
++		if canMountOver(p) {
++			if isDirectory(p) {
++				args = append(args, "--tmpfs", p)
++			} else {
++				args = append(args, "--ro-bind", "/dev/null", p)
++			}
++		}
++	}
++	for _, p := range cfg.Filesystem.DenyRead {
++		normalized := NormalizePath(p)
++		if !ContainsGlobChars(normalized) && canMountOver(normalized) {
++			if isDirectory(normalized) {
++				args = append(args, "--tmpfs", normalized)
++			} else {
++				args = append(args, "--ro-bind", "/dev/null", normalized)
++			}
++		}
++	}
++	return args
++}
++
+ // buildDenyByDefaultMounts builds bwrap arguments for deny-by-default filesystem isolation.
+ // Starts with --tmpfs / (empty root), then selectively mounts system paths read-only,
+ // CWD read-write, and user tooling paths read-only. Sensitive files within CWD are masked.
+@@ -1268,36 +1298,6 @@ func WrapCommandLinuxWithOptions(cfg *config.Config, command string, proxyBridge
+ 		// Make writable paths actually writable (override read-only root)
+ 		bwrapArgs = append(bwrapArgs, writableBindArgs(cfg)...)
+ 
+-		// Handle denyRead paths - hide them
+-		// For directories: use --tmpfs to replace with empty tmpfs
+-		// For files: use --ro-bind /dev/null to mask with empty file
+-		// Skip symlinks: they may point outside the sandbox and cause mount errors
+-		if cfg != nil && cfg.Filesystem.DenyRead != nil {
+-			expandedDenyRead := ExpandGlobPatterns(cfg.Filesystem.DenyRead)
+-			for _, p := range expandedDenyRead {
+-				if canMountOver(p) {
+-					if isDirectory(p) {
+-						bwrapArgs = append(bwrapArgs, "--tmpfs", p)
+-					} else {
+-						// Mask file with /dev/null (appears as empty, unreadable)
+-						bwrapArgs = append(bwrapArgs, "--ro-bind", "/dev/null", p)
+-					}
+-				}
+-			}
+-
+-			// Add non-glob paths
+-			for _, p := range cfg.Filesystem.DenyRead {
+-				normalized := NormalizePath(p)
+-				if !ContainsGlobChars(normalized) && canMountOver(normalized) {
+-					if isDirectory(normalized) {
+-						bwrapArgs = append(bwrapArgs, "--tmpfs", normalized)
+-					} else {
+-						bwrapArgs = append(bwrapArgs, "--ro-bind", "/dev/null", normalized)
+-					}
+-				}
+-			}
+-		}
+-
+ 		// Apply mandatory deny patterns (make dangerous files/dirs read-only)
+ 		// This overrides any writable mounts for these paths
+ 		//
+@@ -1351,6 +1351,11 @@ func WrapCommandLinuxWithOptions(cfg *config.Config, command string, proxyBridge
+ 			}
+ 		}
+ 
++		// denyRead masks go after the mandatory and denyWrite read-only binds: those
++		// bind the real path ("--ro-bind p p"), and bubblewrap's last mount wins, so a
++		// denyWrite of ~/.ssh applied after a denyRead of ~/.ssh/id_* re-exposed the key.
++		bwrapArgs = append(bwrapArgs, denyReadMaskArgs(cfg)...)
++
+ 	} // end if !opts.Learning && !opts.Watch
+ 
+ 	// Bind the proxy bridge Unix socket into the sandbox (needs to be writable)
