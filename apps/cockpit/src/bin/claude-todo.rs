@@ -13,6 +13,7 @@
 //!                                     from any project: greywall, claude-sessions, the launcher or
 //!                                     another part of Theo's setup kept you from doing something;
 //!                                     filed in the dotfiles list and queued for its session
+//!     claude-todo delete <id>         remove an item a session filed in this project (never one Theo wrote)
 //!     claude-todo show <id>           an item with its notes and, for a proposal, why
 //!
 //! An id is a typed item's 8 hex characters, or a GitHub issue as owner/repo#12. The list is read
@@ -40,6 +41,7 @@ const USAGE: &str = "    claude-todo list [--all]        the items of this direc
     claude-todo blocked '<what you could not do>' --why '<what stopped you>' [--notes '<details>']
                                     the setup (greywall, claude-sessions, the launcher…) blocked you:
                                     filed in the dotfiles list and queued for its session
+    claude-todo delete <id>         remove an item a session filed in this project (never one Theo wrote)
     claude-todo show <id>           an item with its notes";
 
 fn todo_path() -> PathBuf {
@@ -185,6 +187,7 @@ fn list(everything: bool) -> i32 {
 fn main() {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     let key = Regex::new(r"^(?:[0-9a-f]{8}|[\w.-]+/[\w.-]+#\d+)$").unwrap();
+    let item_key = Regex::new(r"^[0-9a-f]{8}$").unwrap();
     let words: Vec<&str> = arguments.iter().map(String::as_str).collect();
     let status = match words.as_slice() {
         ["--help" | "-h" | "help", ..] | ["add" | "propose" | "blocked", "--help" | "-h", ..] => { println!("{USAGE}"); 0 }
@@ -199,6 +202,15 @@ fn main() {
                     println!("{id} marked {} (the column applies it).", if *action == "start" { "in progress" } else { action });
                     0
                 }
+                Err(error) => { eprintln!("claude-todo: {error}"); 1 }
+            }
+        }
+        ["delete", id] if item_key.is_match(id) => {
+            let mut update = serde_json::Map::new();
+            update.insert("action".into(), json!("delete"));
+            update.insert("id".into(), json!(id));
+            match append(update) {
+                Ok(()) => { println!("{id} deleted (the column applies it; only items a session filed in this project)."); 0 }
                 Err(error) => { eprintln!("claude-todo: {error}"); 1 }
             }
         }

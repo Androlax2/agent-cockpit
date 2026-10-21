@@ -39,6 +39,26 @@ fn start_and_done_append_an_update_with_the_session() {
 }
 
 #[test]
+fn delete_appends_an_update_with_the_item_and_the_session() {
+    let sandbox = Sandbox::new();
+    let daemon = daemon(&sandbox, "ok");
+    assert_eq!(claude_todo(&sandbox, &["delete", "0123abcd"], &sandbox.root).status.code(), Some(0));
+    let recorded: Vec<(Value, Value, Value)> = updates(&daemon).into_iter()
+        .map(|update| (update["action"].clone(), update["id"].clone(), update["session"].clone())).collect();
+    assert_eq!(recorded, [(json!("delete"), json!("0123abcd"), json!(SESSION_A))]);
+}
+
+#[test]
+fn delete_refuses_an_issue_or_a_malformed_id() {
+    let sandbox = Sandbox::new();
+    let daemon = daemon(&sandbox, "ok");
+    for id in ["o/runway#12", "rm -rf"] {
+        assert_eq!(claude_todo(&sandbox, &["delete", id], &sandbox.root).status.code(), Some(2), "{id}");
+    }
+    assert!(updates(&daemon).is_empty());
+}
+
+#[test]
 fn a_malformed_id_is_refused() {
     let sandbox = Sandbox::new();
     let daemon = daemon(&sandbox, "ok");

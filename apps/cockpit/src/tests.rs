@@ -4776,6 +4776,39 @@ fn todo_categories_survive_updates_and_reloading() {
 }
 
 #[test]
+fn a_session_deletes_an_item_a_session_filed_in_its_project() {
+    let fixture = Fixture::new();
+    let runway = project_folder(&fixture, "runway");
+    queue_update(json!({"action": "add", "text": "--help", "session": SESSION_A}), &runway);
+    let mut todos = TodoList::load();
+    todos.apply_updates();
+    let id = todos.items[0].id();
+    todos.toggle_queued(&id);
+    queue_update(json!({"action": "delete", "id": id, "session": SESSION_A}), &runway);
+    assert_eq!(todos.apply_updates(), 1);
+    let reloaded = TodoList::load();
+    assert!(reloaded.items.is_empty());
+    assert!(!reloaded.is_queued(&id));
+}
+
+#[test]
+fn a_session_cannot_delete_theos_items_or_another_projects() {
+    let fixture = Fixture::new();
+    let runway = project_folder(&fixture, "runway");
+    let opusline = project_folder(&fixture, "opusline");
+    queue_update(json!({"action": "add", "text": "filed by opusline", "session": SESSION_A}), &opusline);
+    let mut todos = TodoList::load();
+    todos.apply_updates();
+    let written_by_theo = todos.add("runway", &runway.display().to_string(), "written by Theo");
+    let other_project = todos.items.iter().find(|item| item.project() == "opusline").unwrap().id();
+    for id in [&written_by_theo, &other_project] {
+        queue_update(json!({"action": "delete", "id": id, "session": SESSION_A}), &runway);
+    }
+    assert_eq!(todos.apply_updates(), 0);
+    assert_eq!(TodoList::load().items.len(), 2);
+}
+
+#[test]
 fn invalid_incoming_categories_do_not_create_todos() {
     let fixture = Fixture::new();
     let runway = project_folder(&fixture, "runway");

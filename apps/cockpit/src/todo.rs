@@ -606,6 +606,16 @@ impl TodoList {
             }
             util::log_event("INFO", &format!("todo {id} marked {action} by a session of {sender_project}"));
             Ok(())
+        } else if action == "delete" {
+            let id = update.get("id").and_then(Value::as_str).unwrap_or("");
+            // Only what a session filed: an item Theo wrote has no source and stays his to remove.
+            let is_session_filed = self.items.iter().any(|item| item.id() == id && item.project() == sender_project && !item.source().is_empty());
+            if !is_session_filed {
+                return Err(format!("{id} deleted by a session of {sender_project}, which did not file it there"));
+            }
+            self.remove(id);
+            util::log_event("INFO", &format!("todo {id} deleted by a session of {sender_project}"));
+            Ok(())
         } else {
             Err(format!("unknown action {action:?} from {sender_project}"))
         }
