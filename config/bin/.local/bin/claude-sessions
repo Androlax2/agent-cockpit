@@ -1872,6 +1872,9 @@ elif [[ $log_command == parallel ]]; then
     # The Todo panel's N passes the item as the first prompt: its length, not its text.
     log_arguments="${2:-} ${3:-}"
     if (( $# > 3 )); then log_arguments+=" (prompt of ${#4} characters)"; fi
+elif [[ $log_command == team-spawn ]]; then
+    # The token and the brief stay out of the log (the audit has the role and the folder).
+    log_arguments="${3:-} ${4:-} ${5:-} (brief of ${#6} characters)"
 fi
 [[ $launch_agent == claude ]] || log_arguments+=" (agent $launch_agent)"
 if [[ $log_command == label-state || $log_command == focus-viewer ]]; then

@@ -3191,3 +3191,13 @@ fn codex_team_spawns_carry_the_token_too() {
     let started = manager.tmux_calls("new-session").pop().expect("no launch");
     assert!(started.contains(&format!("CLAUDE_SESSIONS_TEAM_SPAWN={SPAWN_TOKEN}")), "{started}");
 }
+
+#[test]
+fn a_team_start_keeps_its_brief_and_token_out_of_the_log() {
+    // Todo 8f40641a.
+    let manager = Manager::new();
+    manager.run(&["team-spawn", SPAWN_TOKEN, "designer", &path_str(&manager.project), "-", "Design the secret jobs list"], &[]);
+    let lines = manager.log_lines();
+    assert!(lines.iter().any(|line| line.contains("team-spawn designer")), "{lines:?}");
+    assert!(lines.iter().all(|line| !line.contains("secret") && !line.contains(SPAWN_TOKEN)), "{lines:?}");
+}
