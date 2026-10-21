@@ -18,7 +18,7 @@ fn invoke(choice: &str, arguments: &[&str], inside: &str, terminal: bool, attach
         end
         opencode $argv
     "#;
-    let config = repo().join("config/fish/.config/fish/config.fish");
+    let config = repo().join("config/fish/.config/fish/functions/opencode.fish");
     let mut command_arguments = vec!["--no-config", "-c", script, "--"];
     command_arguments.extend_from_slice(arguments);
     let output = sandbox.run_with_input("fish", &command_arguments, &[

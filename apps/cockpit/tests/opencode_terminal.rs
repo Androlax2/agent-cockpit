@@ -64,7 +64,7 @@ esac
 
     fn fish(&self, arguments: &str, input: &str, extra: &[(&str, &str)]) -> Output {
         // Only the tty detection is substituted: real fish parsing, read and dispatch remain.
-        let script = format!("source '{}'; function isatty; return 0; end; opencode {arguments}", repo().join("config/fish/.config/fish/config.fish").display());
+        let script = format!("source '{}'; function isatty; return 0; end; opencode {arguments}", repo().join("config/fish/.config/fish/functions/opencode.fish").display());
         let mut command = self.sandbox.command("fish", extra);
         command.current_dir(&self.directory).env_remove("COCKPIT_INSIDE")
             .env_remove("COCKPIT_TERMINAL").env_remove("TMUX").envs(extra.iter().copied());
@@ -87,7 +87,7 @@ fn typing_claude_explicitly_keeps_claude_when_the_global_default_changes() {
     terminal.sandbox.shim("cockpit", "");
     fs::remove_file(terminal.sandbox.home.join(".local/bin/cockpit")).unwrap();
     std::os::unix::fs::symlink(terminal.sandbox.shims.join("cockpit"), terminal.sandbox.home.join(".local/bin/cockpit")).unwrap();
-    let script = format!("source '{}'; function isatty; return 0; end; claude", repo().join("config/fish/.config/fish/config.fish").display());
+    let script = format!("source '{}'; function isatty; return 0; end; claude", repo().join("config/fish/.config/fish/functions/claude.fish").display());
     let output = terminal.sandbox.run_with_input("fish", &["--no-config", "-c", &script], &[], "\n");
     assert!(output.status.success(), "{}", stderr(&output));
     let calls = terminal.sandbox.calls("cockpit");
@@ -110,7 +110,7 @@ fn bare_fish_on_a_real_tty_attaches_the_managed_process() {
     let terminal = Terminal::new();
     terminal.panes(&["claude-retry-opencode-123"]);
     let script = format!("cd '{}'; source '{}'; opencode", terminal.directory.display(),
-        repo().join("config/fish/.config/fish/config.fish").display());
+        repo().join("config/fish/.config/fish/functions/opencode.fish").display());
     let environment: Vec<_> = terminal.sandbox.env.iter()
         .map(|(name, value)| (name.as_str(), std::path::Path::new(value))).collect();
     let mut tty = common::Terminal::start(std::path::Path::new("fish"), &["--no-config", "--features=no-query-term", "-c", &script], &environment);

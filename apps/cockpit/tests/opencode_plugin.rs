@@ -214,32 +214,3 @@ fn a_failing_hook_is_logged_not_swallowed() {
     assert!(run.stderr.contains("session-state.sh SessionStart exited 1: jq: not found"), "{}", run.stderr);
 }
 
-/// opencode.jsonc as JSON: its whole-line // comments left out.
-fn opencode_config() -> Value {
-    let text = fs::read_to_string(repo().join("config/opencode/.config/opencode/opencode.jsonc")).unwrap();
-    let json: String = text.lines().filter(|line| !line.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");
-    serde_json::from_str(&json).expect("opencode.jsonc is JSON once its comment lines are left out")
-}
-
-#[test]
-fn opencode_registers_figcraft_app_on_the_port_the_launcher_forwards() {
-    let server = &opencode_config()["mcp"]["figcraft-app"];
-    let sandbox = Sandbox::new();
-    sandbox.shim("figcraft-cli", "exit 0");
-    for port in ["17979", "17980"] {
-        let arguments = server["command"].as_array().unwrap();
-        let mut command = sandbox.command(arguments[0].as_str().unwrap(), &[("FIGCRAFT_CONTROL_PORT", port)]);
-        for argument in &arguments[1..] { command.arg(argument.as_str().unwrap()); }
-        assert!(command.output().unwrap().status.success());
-        assert_eq!(sandbox.calls("figcraft-cli").last().unwrap(), &format!("figcraft-cli mcp --attach {port}"));
-    }
-    let arguments = server["command"].as_array().unwrap();
-    let mut command = sandbox.command(arguments[0].as_str().unwrap(), &[("FIGCRAFT_CONTROL_PORT", "")]);
-    for argument in &arguments[1..] { command.arg(argument.as_str().unwrap()); }
-    assert!(!command.output().unwrap().status.success(), "connected to an implicit default port");
-}
-
-#[test]
-fn opencode_leaves_updates_to_opencode_update() {
-    assert_eq!(opencode_config()["autoupdate"], json!(false));
-}

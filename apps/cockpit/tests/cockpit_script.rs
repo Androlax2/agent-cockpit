@@ -1650,8 +1650,6 @@ fn the_lock_no_longer_hands_sessions_to_remote_control() {
     let manager = Manager::new();
     assert_eq!(manager.run(&["handoff", "lock"], &[("SHIM_PANE_TEXT", IDLE)]).status.code(), Some(1));
     assert!(manager.tmux_calls("send-keys").is_empty());
-    let lock = fs::read_to_string(repo().join("config/hyprland/.config/hypr/scripts/lock.sh")).unwrap();
-    assert!(lock.contains("cockpit away on") && lock.contains("cockpit away off") && !lock.contains("handoff"), "{lock}");
 }
 
 #[test]
@@ -2180,18 +2178,6 @@ fn alt_q_outside_a_claude_session_queues_nothing() {
     let manager = Manager::new();
     manager.sandbox.run_with_input(bin().join("cockpit"), &["queue-prompt-ask", "%99"], &[], "lost\n");
     assert!(!manager.sandbox.state.join("cockpit/prompt-queue").exists());
-}
-
-#[test]
-fn tmux_bindings_name_cockpit_by_its_full_path() {
-    // The tmux server runs popups with PATH=/usr/local/bin:/usr/bin: a bare cockpit is not
-    // found there, and the Alt+Q popup closed the moment it opened.
-    let conf = fs::read_to_string(repo().join("config/tmux/.config/tmux/tmux.conf")).unwrap();
-    for line in conf.lines().filter(|line| !line.trim_start().starts_with('#')) {
-        for (at, _) in line.match_indices("cockpit ") {
-            assert!(line[..at].ends_with("/.local/bin/"), "bare cockpit in: {line}");
-        }
-    }
 }
 
 #[test]

@@ -904,9 +904,7 @@ fn an_opencode_session_reaches_the_hook_its_plugin_reports_through() {
 fn opencode_reads_theos_rules_from_its_own_agents_md() {
     // opencode 2 reads ~/.config/opencode/AGENTS.md, never ~/.claude/CLAUDE.md: the stowed AGENTS.md is
     // the same file, which its profile can read where it lives.
-    let agents = repo().join("config/opencode/.config/opencode/AGENTS.md");
-    assert_eq!(fs::read_link(&agents).unwrap(), Path::new("../../../claude/.claude/CLAUDE.md"));
-    assert_eq!(fs::read_to_string(&agents).unwrap(), fs::read_to_string(repo().join("config/claude/.claude/CLAUDE.md")).unwrap());
+    // The link itself is dotfiles' (config-tests: opencode_reads_the_same_rules_as_claude).
     let readable = opencode_profile()["filesystem"]["allowRead"].clone();
     assert!(readable.as_array().unwrap().iter().any(|entry| entry == "~/dotfiles/config/claude/.claude/CLAUDE.md"), "{readable}");
 }
