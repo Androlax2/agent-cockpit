@@ -165,6 +165,7 @@ pub struct Report {
     pub native_thread: Option<String>,
     /// Set only by the daemon from the sender's launcher incarnation, never parsed from a report.
     pub runtime: Option<String>,
+    pub spawn_token: Option<String>,
     pub target: BTreeMap<String, String>,
 }
 
@@ -268,7 +269,7 @@ pub fn parse_session(raw: &str) -> Result<Report, String> {
         agents: report.get("agents").and_then(Value::as_u64),
         background: report.get("background").and_then(Value::as_u64),
         apps: report.get("apps").and_then(Value::as_str).map(str::to_string),
-        agent: report.get("agent").and_then(Value::as_str).map(str::to_string), native_thread, runtime: None, target,
+        agent: report.get("agent").and_then(Value::as_str).map(str::to_string), native_thread, runtime: None, spawn_token: None, target,
     })
 }
 
@@ -406,6 +407,10 @@ pub trait System {
     /// The cockpit's default agent for new sessions (Settings, `default-agent`): "claude" without a
     /// settings file, None when it cannot be read or names no known agent.
     fn default_agent(&mut self) -> Option<String> { None }
+    /// trusted_spawn_token for the process that sent a report.
+    fn sender_spawn_token(&mut self, _sender: u32) -> Option<String> { None }
+    /// Starts a command and does not wait for it: false when it could not start.
+    fn start_detached(&mut self, _command: &[&str]) -> bool { false }
     fn quiet(&mut self) -> bool {
         self.in_meeting() || self.gaming()
     }
@@ -1073,6 +1078,8 @@ pub struct Entry {
     pub native_thread: String,
     /// The launcher incarnation that reported it (trusted_runtime); never published.
     pub runtime: String,
+    /// The team start this launch belongs to (CLAUDE_SESSIONS_TEAM_SPAWN), empty for others.
+    pub spawn_token: String,
 }
 
 pub struct Registry {
@@ -1204,6 +1211,7 @@ impl Registry {
             }
         }
         report.runtime = runtime;
+        report.spawn_token = self.system.sender_spawn_token(sender);
         // The session's folder is where its sandbox started, never the one the report claims: a
         // claimed folder of another project would make a restart resume the session there, in that
         // project's sandbox with its token (security audit 2026-10-19, M1).
@@ -1243,6 +1251,9 @@ impl Registry {
         let mut entry = self.sessions.remove(&session).unwrap();
         if let Some(runtime) = report.runtime.as_ref().filter(|runtime| **runtime != entry.runtime) {
             entry.runtime = runtime.clone();
+        }
+        if let Some(token) = report.spawn_token.as_ref() {
+            entry.spawn_token = token.clone();
         }
         if let Some(native) = report.native_thread.as_ref().filter(|native| **native != entry.native_thread) {
             entry.native_thread = native.clone();
@@ -1913,6 +1924,13 @@ pub fn trusted_target(table: &dyn Processes, sender: &str) -> Option<BTreeMap<St
     validate_focus_target(&fields).ok().map(|_| target)
 }
 
+/// The one-time token a team start put in the launch's environment (claude-sessions team-spawn),
+/// read outside the sandbox like the focus target: a session cannot claim one in its report.
+pub fn trusted_spawn_token(table: &dyn Processes, sender: &str) -> Option<String> {
+    let token = table.environment(&first_process_outside(table, sender)?).remove("CLAUDE_SESSIONS_TEAM_SPAWN")?;
+    (token.len() == 32 && token.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))).then_some(token)
+}
+
 /// The folder the sender's sandbox started in: the working directory of its first process outside
 /// the sandbox (greywall, bwrap), which nothing inside can change.
 pub fn sandbox_directory(table: &dyn Processes, sender: &str) -> Option<String> {
@@ -2153,5 +2171,16 @@ impl System for RealSystem {
     }
     fn default_agent(&mut self) -> Option<String> {
         default_agent_in(&cockpit::paths::settings())
+    }
+    fn sender_spawn_token(&mut self, sender: u32) -> Option<String> {
+        trusted_spawn_token(&Proc, &sender.to_string())
+    }
+    fn start_detached(&mut self, command: &[&str]) -> bool {
+        let Some((program, arguments)) = command.split_first() else { return false };
+        match Command::new(program).args(arguments).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn() {
+            // Reaped on a thread of its own: the daemon never waits for a session to start.
+            Ok(mut child) => { std::thread::spawn(move || child.wait()); true },
+            Err(error) => { log(&format!("could not start {program}: {error}")); false },
+        }
     }
 }

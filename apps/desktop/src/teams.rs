@@ -56,7 +56,38 @@ pub(crate) fn live_sessions(registry: &mut Registry) -> Result<Vec<VerifiedSessi
     if is_opened {
         store::recover(registry.teams.as_mut().expect("opened above"), &live, now_ms())?;
     }
+    // A session the cockpit started for an approved team takes its role at its first verified request.
+    let tokens: Vec<(String, VerifiedSession)> = live.iter().filter_map(|session| registry.sessions.get(&session.session_id)
+        .filter(|entry| !entry.spawn_token.is_empty()).map(|entry| (entry.spawn_token.clone(), session.clone()))).collect();
+    for (token, session) in tokens {
+        store::bind_spawn(registry.teams.as_mut().expect("opened above"), &token, &session, now_ms())?;
+    }
     Ok(live)
+}
+
+/// The live sessions' folders: approved recruits start in the asker's.
+fn folders(registry: &Registry, live: &[VerifiedSession]) -> std::collections::HashMap<String, String> {
+    live.iter().filter_map(|session| registry.sessions.get(&session.session_id).map(|entry| (session.session_id.clone(), entry.cwd.clone()))).collect()
+}
+
+/// Starts what approvals and handoffs queued (never waiting for it), and closes replaced QA sessions.
+/// A start is recorded before the next pass, so nothing is started twice.
+pub fn start_spawns(registry: &mut Registry) -> Result<(), TeamError> {
+    let Some(connection) = registry.teams.as_mut() else { return Ok(()) };
+    store::expire_spawns(connection, now_ms())?;
+    let pending = store::pending_spawns(connection)?;
+    let superseded = store::superseded_qa(connection)?;
+    for spawn in pending {
+        let role = match spawn.role { cockpit::teams::Role::Designer => "designer", cockpit::teams::Role::Developer => "developer", cockpit::teams::Role::Qa => "qa" };
+        let commit = spawn.commit_id.as_deref().unwrap_or("-");
+        registry.system.start_detached(&["claude-sessions", "--agent", &spawn.agent, "team-spawn", &spawn.token, role, &spawn.directory, commit, &spawn.brief]);
+        store::mark_spawn_started(registry.teams.as_ref().expect("opened above"), &spawn.token, now_ms())?;
+    }
+    for session in superseded {
+        registry.system.start_detached(&["claude-sessions", "exit", &session]);
+        store::mark_qa_exited(registry.teams.as_ref().expect("opened above"), &session)?;
+    }
+    Ok(())
 }
 
 fn verified_sender(registry: &mut Registry, peer: u32, live: &[VerifiedSession]) -> Result<VerifiedSession, TeamError> {
@@ -93,6 +124,8 @@ pub fn request(registry: &mut Registry, peer: u32, action: AgentAction) -> Resul
     };
     // Recruits run in the default agent as it stands now; Theo sees and approves that choice.
     let default_agent = if matches!(action, AgentAction::Recruit { .. }) { registry.system.default_agent() } else { None };
+    // The Developer's real folder, where a fresh QA's copy comes from (never the handoff's own claim).
+    let developer_folder = registry.sessions.get(&sender.session_id).map(|entry| entry.cwd.clone()).filter(|cwd| !cwd.is_empty());
     // The daemon's own view of the recipient decides whether it may be woken: never the adapter's claim.
     let turn = registry.sessions.get(&sender.session_id)
         .filter(|entry| !entry.needs_input && entry.state == "waiting")
@@ -110,7 +143,7 @@ pub fn request(registry: &mut Registry, peer: u32, action: AgentAction) -> Resul
                 "text": cockpit::teams::envelope_text(&dispatch.envelope), "envelope": dispatch.envelope}))) })
         },
         AgentAction::Assess { .. } => store::assess(connection, &sender, &action, now_ms()),
-        AgentAction::Handoff { .. } => store::handoff(connection, &sender, &action, now_ms()),
+        AgentAction::Handoff { .. } => store::handoff_in(connection, &sender, &action, developer_folder.as_deref(), now_ms()),
         AgentAction::Recruit { recruitment } => {
             let agent = default_agent.as_deref().ok_or_else(|| TeamError::new(ErrorCode::Unavailable, "cannot read the default agent from the cockpit settings"))?;
             store::recruit(connection, &sender, recruitment, agent, &live, now_ms())
@@ -122,6 +155,9 @@ pub fn request(registry: &mut Registry, peer: u32, action: AgentAction) -> Resul
     });
     if !matches!(kind, "context" | "receive") || result.as_ref().is_ok_and(|reply| reply.result.as_ref().is_ok_and(|value| !value.is_null())) {
         record(kind, Some(&sender), result.as_ref().is_ok_and(|reply| reply.result.is_ok()));
+    }
+    if kind == "handoff" && result.as_ref().is_ok_and(|reply| reply.result.is_ok()) {
+        start_spawns(registry)?;
     }
     result
 }
@@ -135,6 +171,9 @@ pub fn host_peer_allowed(table: &dyn crate::registry::Processes, pid: &str) -> b
 /// What the cockpit's Team view shows: the store's state plus the verified live sessions to pick.
 pub fn host_snapshot(registry: &mut Registry) -> Result<Value, TeamError> {
     let live = live_sessions(registry)?;
+    // The cockpit asks every 10 s: starts that never reported turn failed here, and a start queued
+    // before a daemon restart goes out.
+    start_spawns(registry)?;
     let mut sessions = Vec::new();
     for session in &live {
         let entry = registry.sessions.get(&session.session_id);
@@ -157,7 +196,12 @@ pub fn host(registry: &mut Registry, request: cockpit::teams::HostRequest) -> Re
 /// Host UI only: reached through a socket no sandbox can open.
 pub fn host_control(registry: &mut Registry, action: &HostAction) -> Result<TeamReply, TeamError> {
     let live = live_sessions(registry)?;
-    let result = database(registry, &live).and_then(|connection| store::control(connection, action, &live, now_ms()));
-    record("host_control", None, result.as_ref().is_ok_and(|reply| reply.result.is_ok()));
+    let directories = folders(registry, &live);
+    let result = database(registry, &live).and_then(|connection| store::control_with(connection, action, &live, &directories, now_ms()));
+    let is_ok = result.as_ref().is_ok_and(|reply| reply.result.is_ok());
+    record("host_control", None, is_ok);
+    if is_ok && matches!(action, HostAction::Approve { .. }) {
+        start_spawns(registry)?;
+    }
     result
 }

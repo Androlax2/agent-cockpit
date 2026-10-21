@@ -115,6 +115,10 @@ struct World {
     sender_directories: HashMap<u32, String>,
     sender_runtimes: HashMap<u32, String>,
     default_agent: Option<String>,
+    /// sender pid -> CLAUDE_SESSIONS_TEAM_SPAWN in its launch's host environment
+    spawn_tokens: HashMap<u32, String>,
+    /// start_detached commands, in order
+    started: Vec<Vec<String>>,
 }
 
 impl World {
@@ -171,6 +175,11 @@ impl System for FakeSystem {
     fn sender_runtime(&mut self, sender: u32) -> Option<String> { self.0.borrow().sender_runtimes.get(&sender).cloned() }
     fn runtime_is_live(&mut self, runtime: &str) -> bool { self.0.borrow().sender_runtimes.values().any(|known| known == runtime) }
     fn default_agent(&mut self) -> Option<String> { self.0.borrow().default_agent.clone() }
+    fn sender_spawn_token(&mut self, sender: u32) -> Option<String> { self.0.borrow().spawn_tokens.get(&sender).cloned() }
+    fn start_detached(&mut self, command: &[&str]) -> bool {
+        self.0.borrow_mut().started.push(command.iter().map(|part| part.to_string()).collect());
+        true
+    }
 }
 
 fn team_bench() -> Bench {
@@ -360,6 +369,103 @@ fn the_default_agent_follows_the_cockpit_settings_rules() {
         fs::write(&settings, text).unwrap();
         assert_eq!(crate::registry::default_agent_in(&settings).as_deref(), expected, "{text}");
     }
+}
+
+const NEW_SESSION: &str = "cccccccc-0000-4000-8000-000000000000";
+
+fn recruit_and_approve(bench: &mut Bench, recruits: Vec<cockpit::teams::Recruit>) {
+    use cockpit::teams::{AgentAction, HostAction};
+    bench.world.borrow_mut().default_agent = Some("claude".into());
+    let AgentAction::Recruit { mut recruitment } = with_own_project(bench, recruit_designer()) else { unreachable!() };
+    recruitment.recruits = recruits;
+    let pending = crate::teams::request(&mut bench.registry, 20, AgentAction::Recruit { recruitment }).unwrap().result.unwrap();
+    crate::teams::host_control(&mut bench.registry, &HostAction::Approve { request_id: "approve-recruit".into(),
+        proposal_id: pending["proposal_id"].as_str().unwrap().into(), expected_revision: 1,
+        mapping_hash: pending["mapping_hash"].as_str().unwrap().into() }).unwrap().result.unwrap();
+}
+
+fn recruit(role: cockpit::teams::Role, brief: &str) -> cockpit::teams::Recruit { cockpit::teams::Recruit { role, brief: brief.into() } }
+
+fn started(bench: &Bench) -> Vec<Vec<String>> { bench.world.borrow().started.clone() }
+
+/// A session started by the cockpit reports from peer `peer`, its launch carrying `token`.
+fn spawned_session_reports(bench: &mut Bench, peer: u32, session: &str, token: &str) {
+    let project = bench.fixture.root.join("home/IdeaProjects/project-a");
+    {
+        let mut world = bench.world.borrow_mut();
+        world.sender_targets.insert(peer, target(&[("tmux_pane", format!("%{peer}").as_str())]));
+        world.sender_directories.insert(peer, project.to_string_lossy().into_owned());
+        world.sender_runtimes.insert(peer, format!("runtime-{peer}"));
+        if !token.is_empty() { world.spawn_tokens.insert(peer, token.into()); }
+    }
+    let report = parse_session(&json!({"session": session, "agent": "claude", "project": "project-a", "cwd": project, "state": "waiting"}).to_string()).unwrap();
+    bench.registry.report_from(report, peer).unwrap();
+}
+
+fn role_of(bench: &mut Bench, session: &str) -> Option<String> {
+    let snapshot = crate::teams::host(&mut bench.registry, cockpit::teams::HostRequest::Snapshot).unwrap().result.unwrap();
+    snapshot["members"].as_array().unwrap().iter().find(|member| member["session_id"] == session).map(|member| member["role"].as_str().unwrap().to_string())
+}
+
+fn developer_hands_off(bench: &mut Bench, key: &str, commit: &str) {
+    use cockpit::teams::{AgentAction, Handoff};
+    let own = crate::teams::request(&mut bench.registry, 20, AgentAction::Context).unwrap().result.unwrap();
+    let task = cockpit::teams::TaskKey { project: own["project"].as_str().unwrap().into(), task_id: "1d3fd318".into() };
+    let handoff = Handoff { task, submission_key: key.into(), branch: "feature/jobs".into(), commit: commit.into(), checkout: "/elsewhere".into(),
+        summary: "Jobs list built.".into(), tests: "cargo test: 12 passed".into(), figcraft: vec![] };
+    crate::teams::request(&mut bench.registry, 20, AgentAction::Handoff { handoff }).unwrap().result.unwrap();
+}
+
+#[test]
+fn approving_a_recruit_request_starts_each_teammate_detached() {
+    let mut bench = team_bench();
+    recruit_and_approve(&mut bench, vec![recruit(cockpit::teams::Role::Designer, "Design the jobs list")]);
+    let starts = started(&bench);
+    assert_eq!(starts.len(), 1, "{starts:?}");
+    let project = bench.fixture.root.join("home/IdeaProjects/project-a").to_string_lossy().into_owned();
+    assert_eq!(starts[0][..4], ["claude-sessions", "--agent", "claude", "team-spawn"]);
+    assert!(starts[0][4].len() == 32 && starts[0][4].bytes().all(|byte| byte.is_ascii_hexdigit()));
+    assert_eq!(starts[0][5..], ["designer", project.as_str(), "-", "Design the jobs list"]);
+    crate::teams::request(&mut bench.registry, 20, cockpit::teams::AgentAction::Context).unwrap();
+    assert_eq!(started(&bench).len(), 1, "a started teammate is never started twice");
+}
+
+#[test]
+fn a_session_launched_with_its_token_joins_the_team_as_its_role() {
+    let mut bench = team_bench();
+    recruit_and_approve(&mut bench, vec![recruit(cockpit::teams::Role::Designer, "Design the jobs list")]);
+    let token = started(&bench)[0][4].clone();
+    spawned_session_reports(&mut bench, 40, NEW_SESSION, &token);
+    assert_eq!(role_of(&mut bench, NEW_SESSION).as_deref(), Some("designer"));
+}
+
+#[test]
+fn a_session_without_its_launch_token_joins_nothing() {
+    let mut bench = team_bench();
+    recruit_and_approve(&mut bench, vec![recruit(cockpit::teams::Role::Designer, "Design the jobs list")]);
+    spawned_session_reports(&mut bench, 40, NEW_SESSION, "");
+    spawned_session_reports(&mut bench, 41, "dddddddd-0000-4000-8000-000000000000", &"0".repeat(32));
+    assert_eq!(role_of(&mut bench, NEW_SESSION), None);
+    assert_eq!(role_of(&mut bench, "dddddddd-0000-4000-8000-000000000000"), None);
+}
+
+#[test]
+fn a_handoff_exits_the_previous_qa_and_starts_the_next() {
+    use cockpit::teams::Role;
+    let mut bench = team_bench();
+    recruit_and_approve(&mut bench, vec![recruit(Role::Designer, "Design the jobs list"), recruit(Role::Qa, "Check contrast")]);
+    let commit_a = "a".repeat(40);
+    developer_hands_off(&mut bench, "h1", &commit_a);
+    let project = bench.fixture.root.join("home/IdeaProjects/project-a").to_string_lossy().into_owned();
+    let qa_start = started(&bench).into_iter().find(|command| command[5] == "qa").expect("no QA start");
+    assert_eq!(qa_start[6..8], [project.as_str(), commit_a.as_str()], "QA is copied from the Developer's real folder, at the commit");
+    spawned_session_reports(&mut bench, 43, NEW_SESSION, &qa_start[4]);
+    assert_eq!(role_of(&mut bench, NEW_SESSION).as_deref(), Some("qa"));
+    developer_hands_off(&mut bench, "h2", &"b".repeat(40));
+    let starts = started(&bench);
+    assert!(starts.contains(&vec!["claude-sessions".to_string(), "exit".into(), NEW_SESSION.into()]), "{starts:?}");
+    assert_eq!(starts.iter().filter(|command| command.get(5).is_some_and(|role| role == "qa")).count(), 2);
+    assert_eq!(role_of(&mut bench, NEW_SESSION), None);
 }
 
 #[test]
