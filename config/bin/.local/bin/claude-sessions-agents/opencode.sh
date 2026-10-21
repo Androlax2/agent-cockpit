@@ -44,6 +44,7 @@ start_opencode() { # dir session-id model-ref opencode-arguments...
         terminal_environment=(CLAUDE_SESSIONS_TERMINAL="$CLAUDE_SESSIONS_TERMINAL")
     fi
     if [[ -n $model ]]; then terminal_environment+=(CLAUDE_SESSIONS_OPENCODE_MODEL="$model"); fi
+    if [[ -n ${launch_team_spawn:-} ]]; then terminal_environment+=(CLAUDE_SESSIONS_TEAM_SPAWN="$launch_team_spawn"); fi
     tmux new-session -d -s "$name" -x "${size% *}" -y "${size#* }" -c "$directory" -e "CLAUDE_CODE_SESSION_ID=$session" \
         env -u CLAUDE_SESSIONS_OPENCODE_MODEL CLAUDE_SESSIONS_INSIDE=1 CLAUDE_CODE_SESSION_ID="$session" "${terminal_environment[@]}" \
         sh -c "$OPENCODE_EPILOGUE" opencode "$OPENCODE_LAUNCHER" --standalone --session "$session" "$@" || return

@@ -447,6 +447,9 @@ detached_size() {
 # reads CLAUDE_SESSIONS_CREDITS. Every launch sets it, so none inherits it from this environment.
 # restart, billing and restore set it from the session; everything else starts on the subscription.
 launch_credits=0
+# The approved team start a launch belongs to (team-spawn); the daemon reads it from the launch's
+# host environment to give the new session its role. Empty for every other start.
+launch_team_spawn=
 
 new_session() {
     local directory=$1 existing
@@ -1287,6 +1290,32 @@ parallel_session() { # dir branch [prompt: its first message, the Todo panel's N
     "agent_${launch_agent}_detached" "$clone" "$prompt"
 }
 
+# A teammate Theo approved, started by the OSD daemon: Designer or Developer out of sight in the
+# asking session's folder; QA in a fresh copy at exactly the handed-off commit. The brief is the
+# new session's first message, labelled as the asking agent's text Theo approved.
+team_spawn_session() { # token role dir commit|- brief
+    local token=$1 role=$2 directory=$3 commit=$4 brief=$5 clone
+    if [[ ! $token =~ ^[0-9a-f]{32}$ ]]; then echo "claude-sessions: team-spawn needs a 32-character team token" >&2; return 2; fi
+    case $role in
+        designer | developer) [[ $commit == - ]] || { echo "claude-sessions: only QA starts at a commit" >&2; return 2; } ;;
+        qa) [[ $commit =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] || { echo "claude-sessions: QA needs the full handed-off commit" >&2; return 2; } ;;
+        *) echo "claude-sessions: team-spawn role is designer, developer or qa" >&2; return 2 ;;
+    esac
+    [[ -n ${brief//[[:space:]]/} ]] || { echo "claude-sessions: team-spawn needs a brief" >&2; return 2; }
+    require_plain_directory "$directory" || return 1
+    audit_event manager session.team_spawn ok "role=$role" "directory=$directory" "agent=$launch_agent"
+    launch_team_spawn=$token
+    local prompt
+    prompt=$(printf 'Brief from your team (written by the asking agent, approved by Theo):\n%s' "$brief")
+    if [[ $role != qa ]]; then
+        "agent_${launch_agent}_background" "$directory" "$prompt"
+        return
+    fi
+    clone=$(clone_for "$directory" "qa-${commit:0:12}") || { echo "claude-sessions: could not copy $directory for QA" >&2; return 1; }
+    git_in_sandbox "$clone" switch --quiet --detach "$commit" || { echo "claude-sessions: commit $commit is not in $directory" >&2; return 1; }
+    "agent_${launch_agent}_detached" "$clone" "$prompt"
+}
+
 git_in_sandbox() { # dir git-arguments...
     local directory=$1
     shift
@@ -1903,6 +1932,7 @@ case ${1:-attach} in
     push-run) push_run "${2:?usage: claude-sessions push-run <dir>}" ;;
     apply-dotfiles) apply_dotfiles "${2:-}" ;;
     apply-run) apply_run "${2:?usage: claude-sessions apply-run <dotfiles clone>}" ;;
+    team-spawn) team_spawn_session "${2:?usage: claude-sessions team-spawn <token> <role> <dir> <commit|-> <brief>}" "${3:?}" "${4:?}" "${5:?}" "${6:-}" ;;
     parallel) parallel_session "${2:?usage: claude-sessions parallel <dir> <branch> [prompt]}" "${3:?usage: claude-sessions parallel <dir> <branch> [prompt]}" "${4:-}" ;;
     review) review_session "${2:?usage: claude-sessions review <dir> <pr-number>}" "${3:?usage: claude-sessions review <dir> <pr-number>}" ;;
     clones) clones_popup ;;

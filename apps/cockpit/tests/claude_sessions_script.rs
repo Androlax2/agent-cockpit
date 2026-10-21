@@ -3082,3 +3082,71 @@ fn each_new_opencode_session_gets_an_id_of_its_own_newest_first() {
     let ids: Vec<String> = manager.opencode_starts().iter().map(id_of).collect();
     assert!(ids.len() == 2 && ids[1] < ids[0], "{ids:?}");
 }
+
+// ---- team-spawn: a teammate Theo approved ----
+
+const SPAWN_TOKEN: &str = "0123456789abcdef0123456789abcdef";
+const BRIEF_LABEL: &str = "Brief from your team (written by the asking agent, approved by Theo):";
+
+fn head_commit(manager: &Manager) -> String {
+    let output = Command::new("git").arg("-C").arg(&manager.project).args(["rev-parse", "HEAD"]).output().unwrap();
+    String::from_utf8(output.stdout).unwrap().trim().to_string()
+}
+
+#[test]
+fn team_spawn_starts_a_designer_out_of_sight_in_the_askers_folder() {
+    let manager = Manager::new();
+    let result = manager.run(&["team-spawn", SPAWN_TOKEN, "designer", &path_str(&manager.project), "-", "Design the jobs list"], &[]);
+    assert_eq!(result.status.code(), Some(0), "{}", stderr(&result));
+    let started = manager.tmux_calls("new-session").pop().expect("no launch");
+    assert!(started.contains(&format!("-c {} ", path_str(&manager.project))), "{started}");
+    assert!(started.contains(&format!("CLAUDE_SESSIONS_TEAM_SPAWN={SPAWN_TOKEN}")), "{started}");
+    assert!(started.ends_with(BRIEF_LABEL), "{started}");
+    let log = fs::read_to_string(&manager.sandbox.log).unwrap();
+    assert!(log.contains(&format!("{BRIEF_LABEL}\nDesign the jobs list")), "the brief follows its label on the next line");
+    assert!(manager.tmux_calls("respawn-pane").is_empty());
+}
+
+#[test]
+fn team_spawn_starts_qa_in_a_fresh_copy_at_the_commit() {
+    let manager = Manager::new();
+    manager.git_repository();
+    let commit = head_commit(&manager);
+    let clones = manager.sandbox.root.join("clones");
+    let result = manager.run(&["team-spawn", SPAWN_TOKEN, "qa", &path_str(&manager.project), &commit, "Review it"], &[("CLAUDE_SESSIONS_CLONES", &path_str(&clones))]);
+    assert_eq!(result.status.code(), Some(0), "{}", stderr(&result));
+    let copy = clones.join(format!("proj-a/qa-{}", &commit[..12]));
+    assert!(copy.join(".git").is_dir());
+    assert!(manager.calls("greywall").iter().any(|call| call.ends_with(&format!("-- git switch --quiet --detach {commit}"))), "{:?}", manager.calls("greywall"));
+    let started = manager.tmux_calls("new-session").pop().expect("no launch");
+    assert!(started.contains(&format!("-c {} ", copy.display())) && started.contains(&format!("CLAUDE_SESSIONS_TEAM_SPAWN={SPAWN_TOKEN}")), "{started}");
+}
+
+#[test]
+fn team_spawn_refuses_bad_arguments() {
+    let manager = Manager::new();
+    manager.git_repository();
+    let project = path_str(&manager.project);
+    let commit = head_commit(&manager);
+    for arguments in [
+        vec!["team-spawn", "not-a-token", "designer", &project, "-", "Design it"],
+        vec!["team-spawn", SPAWN_TOKEN, "admin", &project, "-", "Design it"],
+        vec!["team-spawn", SPAWN_TOKEN, "qa", &project, "-", "Review it"],
+        vec!["team-spawn", SPAWN_TOKEN, "designer", &project, &commit, "Design it"],
+        vec!["team-spawn", SPAWN_TOKEN, "designer", "/no/such/folder", "-", "Design it"],
+        vec!["team-spawn", SPAWN_TOKEN, "designer", &project, "-", ""],
+    ] {
+        let result = manager.run(&arguments, &[]);
+        assert_ne!(result.status.code(), Some(0), "{arguments:?}");
+    }
+    assert!(manager.tmux_calls("new-session").is_empty());
+}
+
+#[test]
+fn opencode_team_spawns_carry_the_token_too() {
+    let manager = Manager::new();
+    let result = manager.run(&["--agent", "opencode", "team-spawn", SPAWN_TOKEN, "developer", &path_str(&manager.project), "-", "Build from the frames"], &[]);
+    assert_eq!(result.status.code(), Some(0), "{}", stderr(&result));
+    let started = manager.tmux_calls("new-session").pop().expect("no launch");
+    assert!(started.contains(&format!("CLAUDE_SESSIONS_TEAM_SPAWN={SPAWN_TOKEN}")), "{started}");
+}
