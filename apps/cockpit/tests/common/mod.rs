@@ -8,7 +8,7 @@ use std::io::{Read, Write};
 use std::os::fd::{FromRawFd, OwnedFd};
 use std::os::unix::process::CommandExt;
 use std::path::Path;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
 pub struct Terminal {
@@ -60,6 +60,19 @@ impl Terminal {
                 Ok(count) => self.screen.extend_from_slice(&buffer[..count]),
                 Err(_) => std::thread::sleep(Duration::from_millis(30)),
             }
+        }
+    }
+
+    /// Collects what is drawn until the program exits; fails after `seconds`.
+    pub fn wait_for_exit(&mut self, seconds: f64) -> ExitStatus {
+        let end = Instant::now() + Duration::from_secs_f64(seconds);
+        loop {
+            self.pump(0.1, None);
+            if let Some(status) = self.child.try_wait().unwrap() {
+                self.pump(0.2, None);
+                return status;
+            }
+            assert!(Instant::now() < end, "the program did not exit within {seconds}s");
         }
     }
 
