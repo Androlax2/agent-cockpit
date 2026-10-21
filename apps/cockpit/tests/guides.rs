@@ -1,4 +1,4 @@
-//! Guides: ask-to-guide (inside the sandbox). The daemon's queue is tested in apps/desktop.
+//! Guides: ask-to-guide (inside the sandbox). The daemon's queue is tested in apps/osd.
 
 mod common;
 use common::sandbox::*;

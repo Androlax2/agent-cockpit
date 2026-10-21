@@ -29,7 +29,7 @@
 //!     osd liveness <session> <pane>     whether the session runs: by id, by pane, or none
 //!     osd owns-pane <session> <pane> <server-pid>   exit 0 only for verified live ownership
 
-use desktop::registry::{self, Banner, Banners, NOTICE_ID, Notice, RealSystem, Registry};
+use osd::registry::{self, Banner, Banners, NOTICE_ID, Notice, RealSystem, Registry};
 use gtk4::prelude::*;
 use gtk4::{Align, Application, Box as GtkBox, CssProvider, GestureClick, Image, Label, Orientation, Window, gdk, glib, pango};
 use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
@@ -301,7 +301,7 @@ fn handle(line: &str, from_host: bool, registry: &Rc<RefCell<Registry>>, island:
 /// The FIFO, opened read-write so the daemon never sees EOF when a writer closes.
 /// One command per line from a FIFO; `from_host` says whether it is the one sandboxes cannot open.
 fn listen(path: &std::path::Path, from_host: bool, registry: &Rc<RefCell<Registry>>, island: &Rc<RefCell<Island>>) {
-    let fifo = match desktop::fifo::open(path) {
+    let fifo = match osd::fifo::open(path) {
         Ok(fifo) => fifo,
         Err(error) => {
             eprintln!("osd: cannot open {}: {error}", path.display());
@@ -401,7 +401,7 @@ fn listen_for_reports(registry: &Rc<RefCell<Registry>>) {
 fn handle_team_connection(received: Received, registry: &Rc<RefCell<Registry>>) {
     let Received { mut stream, sender, text } = received;
     let reply = match serde_json::from_str::<cockpit::teams::AgentAction>(&text) {
-        Ok(action) => desktop::teams::request(&mut registry.borrow_mut(), sender, action),
+        Ok(action) => osd::teams::request(&mut registry.borrow_mut(), sender, action),
         Err(error) => Err(cockpit::teams::TeamError::new(cockpit::teams::ErrorCode::Invalid, format!("invalid team action: {error}"))),
     };
     let reply = reply.unwrap_or_else(|error| cockpit::teams::TeamReply { request_id: String::new(), result: Err(error) });
@@ -412,11 +412,11 @@ fn handle_team_connection(received: Received, registry: &Rc<RefCell<Registry>>) 
 fn handle_team_host_connection(received: Received, registry: &Rc<RefCell<Registry>>) {
     use cockpit::teams::{ErrorCode, HostRequest, TeamError, TeamReply};
     let Received { mut stream, sender, text } = received;
-    let reply = if !desktop::teams::host_peer_allowed(&registry::Proc, &sender.to_string()) {
+    let reply = if !osd::teams::host_peer_allowed(&registry::Proc, &sender.to_string()) {
         Err(TeamError::new(ErrorCode::Unauthorized, "team host controls are for the cockpit outside the sandbox"))
     } else {
         match serde_json::from_str::<HostRequest>(&text) {
-            Ok(request) => desktop::teams::host(&mut registry.borrow_mut(), request),
+            Ok(request) => osd::teams::host(&mut registry.borrow_mut(), request),
             Err(error) => Err(TeamError::new(ErrorCode::Invalid, format!("invalid team host request: {error}"))),
         }
     };
@@ -481,7 +481,7 @@ fn serve(listener: std::os::unix::net::UnixListener, registry: &Rc<RefCell<Regis
         let finished = finished.clone();
         glib_unix::unix_fd_add_local(raw, glib::IOCondition::IN, move |_, _| {
             while let Ok((stream, _)) = listener.accept() {
-                let Some(sender) = desktop::fifo::peer_pid(&stream) else { continue };
+                let Some(sender) = osd::fifo::peer_pid(&stream) else { continue };
                 if readers.load(Ordering::SeqCst) >= REPORT_READERS_MAX {
                     eprintln!("osd: {REPORT_READERS_MAX} report connections already being read, one from pid {sender} dropped");
                     continue;
@@ -491,7 +491,7 @@ fn serve(listener: std::os::unix::net::UnixListener, registry: &Rc<RefCell<Regis
                 readers.fetch_add(1, Ordering::SeqCst);
                 std::thread::spawn(move || {
                     let reply_end = stream.try_clone();
-                    let message = desktop::fifo::read_message(stream, REPORT_READ_DEADLINE, max_bytes);
+                    let message = osd::fifo::read_message(stream, REPORT_READ_DEADLINE, max_bytes);
                     if let Err(reason) = &message {
                         eprintln!("osd: a report connection from pid {sender} dropped: {reason}");
                     }

@@ -259,6 +259,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "config-tests"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
 name = "convert_case"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -416,13 +423,9 @@ dependencies = [
 name = "desktop"
 version = "0.1.0"
 dependencies = [
- "chrono",
- "cockpit",
  "glib-unix",
  "gtk4",
  "gtk4-layer-shell",
- "regex",
- "serde_json",
 ]
 
 [[package]]
@@ -1371,6 +1374,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7bb71e1b3fa6ca1c61f383464aaf2bb0e2f8e772a1f01d486832464de363b951"
 dependencies = [
  "num-traits",
+]
+
+[[package]]
+name = "osd"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "cockpit",
+ "glib-unix",
+ "gtk4",
+ "gtk4-layer-shell",
+ "regex",
+ "serde_json",
 ]
 
 [[package]]
@@ -2482,7 +2498,6 @@ name = "vitals"
 version = "0.1.0"
 dependencies = [
  "chrono",
- "cockpit",
  "crossterm",
  "ratatui",
  "regex",

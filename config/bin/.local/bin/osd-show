@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Send one command to the OSD daemon (osd, apps/desktop): osd-show volume 45 | mute | brightness 60
+# Send one command to the OSD daemon (osd, apps/osd): osd-show volume 45 | mute | brightness 60
 # The host FIFO: sandboxes may only send their own reports on osd.fifo.
 fifo="${XDG_RUNTIME_DIR:-/tmp}/osd-host.fifo"
 [[ -p $fifo ]] || exit 0

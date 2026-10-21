@@ -1,5 +1,5 @@
 [Unit]
-Description=On-screen display, Claude banners and the Claude session registry (osd, apps/desktop)
+Description=On-screen display, Claude banners and the Claude session registry (osd, apps/osd)
 After=graphical-session.target osd-report.socket
 Wants=osd-report.socket
 

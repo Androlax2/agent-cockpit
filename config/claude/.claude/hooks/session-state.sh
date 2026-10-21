@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Claude Code hooks, and opencode's cockpit plugin (~/.config/opencode/plugins/cockpit.ts, which
-# sends the same payloads with COCKPIT_AGENT=opencode) → the OSD daemon (osd, apps/desktop): one `session <json>` line per event with
+# sends the same payloads with COCKPIT_AGENT=opencode) → the OSD daemon (osd, apps/osd): one `session <json>` line per event with
 # the session's state (working | waiting | needs-you | gone), its project, the focus target of its
 # window (KITTY_* can be stale after a tmux re-attach; the daemon re-resolves it) and an optional
 # banner message. The daemon keeps the registry, colours the Hyprland window
