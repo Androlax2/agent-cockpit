@@ -7,7 +7,7 @@ pub use rusqlite::Connection;
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::fs::{self, OpenOptions};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::Path;
@@ -75,6 +75,10 @@ pub fn open(path: &Path) -> Result<Connection, TeamError> {
         CREATE TABLE IF NOT EXISTS handoffs (id TEXT PRIMARY KEY, task_key TEXT NOT NULL, developer TEXT NOT NULL, developer_epoch TEXT NOT NULL,
             submission_key TEXT NOT NULL, fingerprint TEXT NOT NULL, payload TEXT NOT NULL, status TEXT NOT NULL, created_at INTEGER NOT NULL,
             UNIQUE(developer, submission_key));
+        CREATE TABLE IF NOT EXISTS spawns (token TEXT PRIMARY KEY, task_key TEXT NOT NULL, role TEXT NOT NULL, agent TEXT NOT NULL,
+            directory TEXT NOT NULL, commit_id TEXT, brief TEXT NOT NULL, handoff_id TEXT, status TEXT NOT NULL, session_id TEXT,
+            created_at INTEGER NOT NULL, started_at INTEGER);
+        CREATE TABLE IF NOT EXISTS team_qa (task_key TEXT PRIMARY KEY, brief TEXT NOT NULL, agent TEXT NOT NULL);
         CREATE UNIQUE INDEX IF NOT EXISTS one_inflight_delivery ON messages(recipient,recipient_epoch) WHERE state='submitting';")?;
     // Version 2: a proposal can carry recruits (teammates to start on approval) and the agent they run in.
     let columns: Vec<String> = connection.prepare("SELECT name FROM pragma_table_info('proposals')")?
@@ -198,6 +202,12 @@ pub fn recruit(connection: &mut Connection, sender: &VerifiedSession, recruitmen
 }
 
 pub fn control(connection: &mut Connection, action: &HostAction, live: &[VerifiedSession], now_ms: i64) -> Result<TeamReply, TeamError> {
+    control_with(connection, action, live, &HashMap::new(), now_ms)
+}
+
+/// `directories`: the live sessions' folders (session id → cwd), where approved recruits start.
+pub fn control_with(connection: &mut Connection, action: &HostAction, live: &[VerifiedSession], directories: &HashMap<String, String>,
+                    now_ms: i64) -> Result<TeamReply, TeamError> {
     let request_id = match action {
         HostAction::Approve { request_id, .. } | HostAction::Edit { request_id, .. }
         | HostAction::Reject { request_id, .. } | HostAction::Unlink { request_id, .. } | HostAction::Resolve { request_id, .. }
@@ -211,7 +221,7 @@ pub fn control(connection: &mut Connection, action: &HostAction, live: &[Verifie
         return Ok(TeamReply { request_id: request_id.clone(), result: Ok(serde_json::from_str(&response)?) });
     }
     let response = match action {
-        HostAction::Approve { proposal_id, expected_revision, mapping_hash, .. } => approve_mapping(&transaction, proposal_id, *expected_revision, mapping_hash, live, now_ms)?,
+        HostAction::Approve { proposal_id, expected_revision, mapping_hash, .. } => approve_mapping(&transaction, proposal_id, *expected_revision, mapping_hash, live, directories, now_ms)?,
         HostAction::Edit { proposal_id, expected_revision, replacement, .. } => {
             let old: Option<(String, String, i64, String, String, String)> = transaction.query_row(
                 "SELECT sender, project, revision, status, recruits, spawn_agent FROM proposals WHERE id=?1", [proposal_id],
@@ -282,7 +292,8 @@ pub fn control(connection: &mut Connection, action: &HostAction, live: &[Verifie
     Ok(TeamReply { request_id: request_id.clone(), result: Ok(response) })
 }
 
-fn approve_mapping(transaction: &rusqlite::Transaction<'_>, proposal_id: &str, expected_revision: i64, mapping_hash: &str, live: &[VerifiedSession], now_ms: i64) -> Result<Value, TeamError> {
+fn approve_mapping(transaction: &rusqlite::Transaction<'_>, proposal_id: &str, expected_revision: i64, mapping_hash: &str, live: &[VerifiedSession],
+                   directories: &HashMap<String, String>, now_ms: i64) -> Result<Value, TeamError> {
     let stored: Option<(String, String, String, String, String, i64, String, String)> = transaction.query_row(
         "SELECT task_key, project, task_id, mapping, mapping_hash, revision, status, reason FROM proposals WHERE id=?1", [proposal_id],
         |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?,row.get(6)?,row.get(7)?))).optional()?;
@@ -301,8 +312,10 @@ fn approve_mapping(transaction: &rusqlite::Transaction<'_>, proposal_id: &str, e
         let mut statement = transaction.prepare("SELECT session_id, role, runtime FROM members WHERE task_key=?1")?;
         statement.query_map([&task_key], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?)))?.collect::<Result<_,_>>()?
     };
+    // A link request names the whole team; a recruit request names only its asker and adds to the team.
+    let is_recruit: bool = transaction.query_row("SELECT spawn_agent<>'' FROM proposals WHERE id=?1", [proposal_id], |row| row.get(0))?;
     for (session, role, runtime) in existing {
-        if !bound.iter().any(|member| member.session_id == session && role_name(member.role) == role && member.runtime == runtime) {
+        if !is_recruit && !bound.iter().any(|member| member.session_id == session && role_name(member.role) == role && member.runtime == runtime) {
             cancel_member_messages(transaction, &task_key, &session)?;
             transaction.execute("DELETE FROM members WHERE task_key=?1 AND session_id=?2", params![task_key, session])?;
         }
@@ -313,9 +326,84 @@ fn approve_mapping(transaction: &rusqlite::Transaction<'_>, proposal_id: &str, e
         transaction.execute("INSERT INTO members (task_key,session_id,role,agent,runtime,epoch) VALUES (?1,?2,?3,?4,?5,?6) ON CONFLICT(task_key,role) DO NOTHING",
             params![task_key, member.session_id, role_name(member.role), member.agent, member.runtime, identifier()?])?;
     }
+    queue_recruits(transaction, proposal_id, &task_key, directories, now_ms)?;
     transaction.execute("UPDATE proposals SET status='approved' WHERE id=?1", [proposal_id])?;
     schedule_qa(transaction, &task_key, now_ms)?;
     Ok(json!({"proposal_id": proposal_id, "status": "approved"}))
+}
+
+/// What an approved recruit request starts: its Designer and Developer now, in the asker's folder;
+/// a Qa recruit becomes the team's standing QA brief, a fresh QA starting at each handoff.
+fn queue_recruits(transaction: &Connection, proposal_id: &str, task_key: &str, directories: &HashMap<String, String>, now_ms: i64) -> Result<(), TeamError> {
+    let (sender, recruits, agent): (String, String, String) = transaction.query_row("SELECT sender, recruits, spawn_agent FROM proposals WHERE id=?1",
+        [proposal_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
+    let recruits: Vec<super::Recruit> = serde_json::from_str(&recruits)?;
+    if recruits.is_empty() { return Ok(()); }
+    let directory = directories.get(&sender).ok_or_else(|| TeamError::new(ErrorCode::Conflict, "the asking session is no longer live"))?;
+    for recruit in recruits {
+        if recruit.role == Role::Qa {
+            transaction.execute("INSERT INTO team_qa VALUES (?1,?2,?3) ON CONFLICT(task_key) DO UPDATE SET brief=?2, agent=?3",
+                params![task_key, recruit.brief, agent])?;
+            continue;
+        }
+        transaction.execute("INSERT INTO spawns (token,task_key,role,agent,directory,brief,status,created_at) VALUES (?1,?2,?3,?4,?5,?6,'pending',?7)",
+            params![identifier()?, task_key, role_name(recruit.role), agent, directory, recruit.brief, now_ms])?;
+    }
+    Ok(())
+}
+
+/// A session the cockpit is asked to start for an approved team.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Spawn {
+    pub token: String,
+    pub role: Role,
+    pub agent: String,
+    pub directory: String,
+    pub commit_id: Option<String>,
+    pub brief: String,
+}
+
+fn role_of(name: &str) -> Option<Role> {
+    match name { "designer" => Some(Role::Designer), "developer" => Some(Role::Developer), "qa" => Some(Role::Qa), _ => None }
+}
+
+pub fn pending_spawns(connection: &Connection) -> Result<Vec<Spawn>, TeamError> {
+    let mut statement = connection.prepare("SELECT token, role, agent, directory, commit_id, brief FROM spawns WHERE status='pending' ORDER BY created_at, token")?;
+    let rows = statement.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows.into_iter().filter_map(|(token, role, agent, directory, commit_id, brief)|
+        Some(Spawn { token, role: role_of(&role)?, agent, directory, commit_id, brief })).collect())
+}
+
+pub fn mark_spawn_started(connection: &Connection, token: &str, now_ms: i64) -> Result<(), TeamError> {
+    connection.execute("UPDATE spawns SET status='started', started_at=?2 WHERE token=?1 AND status='pending'", params![token, now_ms])?;
+    Ok(())
+}
+
+/// A started session that never reported is Theo's to look at: never started a second time.
+pub fn expire_spawns(connection: &Connection, now_ms: i64) -> Result<(), TeamError> {
+    connection.execute("UPDATE spawns SET status='failed' WHERE status='started' AND started_at<?1", [now_ms - 300_000])?;
+    Ok(())
+}
+
+/// The first verified session whose launch carried `token` takes its role, once. A session of another
+/// project, or already in another team, takes nothing.
+pub fn bind_spawn(connection: &mut Connection, token: &str, session: &VerifiedSession, now_ms: i64) -> Result<bool, TeamError> {
+    let transaction = connection.transaction()?;
+    let spawn: Option<(String, String)> = transaction.query_row("SELECT task_key, role FROM spawns WHERE token=?1 AND status='started'", [token],
+        |row| Ok((row.get(0)?, row.get(1)?))).optional()?;
+    let Some((task_key, role)) = spawn else { return Ok(false) };
+    let project: String = transaction.query_row("SELECT project FROM teams WHERE task_key=?1", [&task_key], |row| row.get(0))?;
+    let elsewhere: Option<String> = transaction.query_row("SELECT task_key FROM members WHERE session_id=?1", [&session.session_id], |row| row.get(0)).optional()?;
+    if project != session.project || elsewhere.is_some() || session.runtime.is_empty() { return Ok(false); }
+    let inserted = transaction.execute("INSERT INTO members (task_key,session_id,role,agent,runtime,epoch) VALUES (?1,?2,?3,?4,?5,?6) ON CONFLICT(task_key,role) DO NOTHING",
+        params![task_key, session.session_id, role, session.agent, session.runtime, identifier()?])?;
+    if inserted != 1 { return Ok(false); }
+    transaction.execute("UPDATE spawns SET status='bound', session_id=?2 WHERE token=?1", params![token, session.session_id])?;
+    transaction.execute("UPDATE teams SET revision=revision+1 WHERE task_key=?1", [&task_key])?;
+    schedule_qa(&transaction, &task_key, now_ms)?;
+    transaction.commit()?;
+    Ok(true)
 }
 
 /// Actionable rows (pending requests, open escalations, uncertain or failed deliveries) always, plus the
@@ -341,7 +429,12 @@ pub fn snapshot(connection: &Connection, task: Option<&TaskKey>, after: Option<i
     let escalations = escalations.query_map(params![task_key, limit.min(100) as i64], |row| Ok(json!({"thread_id":row.get::<_,String>(0)?,
         "reason":row.get::<_,String>(1)?,"status":row.get::<_,String>(2)?,"note":row.get::<_,String>(3)?,"created_at":row.get::<_,i64>(4)?})))?
         .collect::<Result<Vec<_>,_>>()?;
-    Ok(json!({"members":members,"proposals":proposals,"messages":messages,"escalations":escalations}))
+    let mut spawns = connection.prepare("SELECT token,task_key,role,agent,directory,commit_id,status,session_id,created_at FROM spawns
+        WHERE (?1 IS NULL OR task_key=?1) AND status<>'cancelled' ORDER BY created_at DESC LIMIT ?2")?;
+    let spawns = spawns.query_map(params![task_key, limit.min(100) as i64], |row| Ok(json!({"token":row.get::<_,String>(0)?,"task_key":row.get::<_,String>(1)?,
+        "role":row.get::<_,String>(2)?,"agent":row.get::<_,String>(3)?,"directory":row.get::<_,String>(4)?,"commit_id":row.get::<_,Option<String>>(5)?,
+        "status":row.get::<_,String>(6)?,"session_id":row.get::<_,Option<String>>(7)?,"created_at":row.get::<_,i64>(8)?})))?.collect::<Result<Vec<_>,_>>()?;
+    Ok(json!({"members":members,"proposals":proposals,"messages":messages,"escalations":escalations,"spawns":spawns}))
 }
 
 fn cancel_member_messages(connection: &Connection, task_key: &str, session: &str) -> Result<(), TeamError> {

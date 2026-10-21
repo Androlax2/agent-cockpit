@@ -69,6 +69,7 @@ impl TeamView {
     pub fn attention(snapshot: &Value) -> usize {
         let count = |key: &str, field: &str, value: &str| snapshot[key].as_array().into_iter().flatten().filter(|item| item[field] == value).count();
         count("proposals", "status", "pending") + count("escalations", "status", "open") + count("messages", "state", "uncertain")
+            + count("spawns", "status", "failed")
     }
 
     pub fn selected_row(&self) -> Option<Row> {

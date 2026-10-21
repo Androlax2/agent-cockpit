@@ -970,3 +970,128 @@ fn an_existing_version_1_store_opens_and_gains_recruit_columns() {
     assert_eq!(connection.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0)).unwrap(), 2);
     connection.prepare("SELECT recruits, spawn_agent FROM proposals").unwrap();
 }
+
+// ---- Approved recruit requests queue their teammates ----
+
+const ASKER_FOLDER: &str = "/home/theo/IdeaProjects/project-a";
+
+fn approve_recruit(connection: &mut rusqlite::Connection, request: &Value) -> Result<Value, cockpit::teams::TeamError> {
+    let directories = std::collections::HashMap::from([(DEVELOPER.to_string(), ASKER_FOLDER.to_string())]);
+    store::control_with(connection, &HostAction::Approve { request_id: format!("approval-{}", request["proposal_id"].as_str().unwrap()),
+        proposal_id: request["proposal_id"].as_str().unwrap().into(), expected_revision: 1,
+        mapping_hash: request["mapping_hash"].as_str().unwrap().into() }, &live(), &directories, 2000).and_then(|reply| reply.result)
+}
+
+/// The developer asks for a Designer (and standing QA); Theo approves.
+fn recruited(connection: &mut rusqlite::Connection, with_qa: bool) {
+    let mut recruits = vec![(Role::Designer, "Design the jobs list")];
+    if with_qa { recruits.push((Role::Qa, "Check contrast and keyboard use")); }
+    let request = recruit(connection, 1, &recruitment("r1", Role::Developer, &recruits), "claude").unwrap();
+    approve_recruit(connection, &request).unwrap();
+}
+
+fn spawns(connection: &rusqlite::Connection) -> Vec<Value> {
+    store::snapshot(connection, None, None, 100).unwrap()["spawns"].as_array().unwrap().clone()
+}
+
+fn designer_session(project: &str) -> VerifiedSession {
+    VerifiedSession { session_id: "cccccccc-0000-4000-8000-000000000000".into(), agent: "claude".into(), project: project.into(), runtime: "runtime-new".into() }
+}
+
+#[test]
+fn approving_a_recruit_request_links_the_asker_and_queues_its_teammates() {
+    let sandbox = Sandbox::new();
+    let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+    recruited(&mut connection, true);
+    let members = store::snapshot(&connection, Some(&task()), None, 100).unwrap()["members"].as_array().unwrap().clone();
+    assert_eq!(members.len(), 1);
+    assert_eq!((members[0]["session_id"].clone(), members[0]["role"].clone()), (serde_json::json!(DEVELOPER), serde_json::json!("developer")));
+    let pending = store::pending_spawns(&connection).unwrap();
+    assert_eq!(pending.len(), 1, "QA starts per handoff, not now");
+    assert_eq!((pending[0].role, pending[0].agent.as_str(), pending[0].directory.as_str(), pending[0].brief.as_str(), pending[0].commit_id.clone()),
+               (Role::Designer, "claude", ASKER_FOLDER, "Design the jobs list", None));
+    assert!(pending[0].token.len() == 32 && pending[0].token.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()));
+    let standing: String = connection.query_row("SELECT brief FROM team_qa", [], |row| row.get(0)).unwrap();
+    assert_eq!(standing, "Check contrast and keyboard use");
+}
+
+#[test]
+fn an_asker_that_is_no_longer_live_cannot_be_approved_into_spawns() {
+    let sandbox = Sandbox::new();
+    let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+    let request = recruit(&mut connection, 1, &recruitment("r1", Role::Developer, &[(Role::Designer, "Design it")]), "claude").unwrap();
+    assert!(approve(&mut connection, &request).is_err());
+    assert!(store::pending_spawns(&connection).unwrap().is_empty());
+}
+
+#[test]
+fn a_spawn_binds_its_first_session_once() {
+    let sandbox = Sandbox::new();
+    let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+    recruited(&mut connection, false);
+    let token = store::pending_spawns(&connection).unwrap()[0].token.clone();
+    store::mark_spawn_started(&connection, &token, 2100).unwrap();
+    assert!(store::bind_spawn(&mut connection, &token, &designer_session("project-a"), 2200).unwrap());
+    let members = store::snapshot(&connection, Some(&task()), None, 100).unwrap()["members"].as_array().unwrap().clone();
+    assert!(members.iter().any(|member| member["session_id"] == "cccccccc-0000-4000-8000-000000000000" && member["role"] == "designer"));
+    assert_eq!(spawns(&connection)[0]["status"], "bound");
+    let mut other = designer_session("project-a");
+    other.session_id = "dddddddd-0000-4000-8000-000000000000".into();
+    assert!(!store::bind_spawn(&mut connection, &token, &other, 2300).unwrap());
+    assert_eq!(store::snapshot(&connection, Some(&task()), None, 100).unwrap()["members"].as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn a_spawn_refuses_a_session_of_another_project_or_task() {
+    let sandbox = Sandbox::new();
+    let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+    recruited(&mut connection, false);
+    let token = store::pending_spawns(&connection).unwrap()[0].token.clone();
+    store::mark_spawn_started(&connection, &token, 2100).unwrap();
+    assert!(!store::bind_spawn(&mut connection, &token, &designer_session("project-b"), 2200).unwrap());
+    let mut in_other_task = live()[2].clone();
+    in_other_task.project = "project-a".into();
+    let other = Proposal { submission_key: "other".into(), task: TaskKey { project: "project-a".into(), task_id: "0123abcd".into() },
+        reason: "Other work".into(), members: vec![Member { session_id: QA.into(), role: Role::Qa }] };
+    let request = propose(&mut connection, &other);
+    approve(&mut connection, &request).unwrap();
+    assert!(!store::bind_spawn(&mut connection, &token, &in_other_task, 2200).unwrap());
+    assert_eq!(spawns(&connection)[0]["status"], "started");
+}
+
+#[test]
+fn an_unknown_or_expired_token_binds_nothing() {
+    let sandbox = Sandbox::new();
+    let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+    recruited(&mut connection, false);
+    assert!(!store::bind_spawn(&mut connection, &"0".repeat(32), &designer_session("project-a"), 2200).unwrap());
+    let token = store::pending_spawns(&connection).unwrap()[0].token.clone();
+    store::mark_spawn_started(&connection, &token, 2100).unwrap();
+    store::expire_spawns(&connection, 2100 + 300_001).unwrap();
+    assert_eq!(spawns(&connection)[0]["status"], "failed");
+    assert!(!store::bind_spawn(&mut connection, &token, &designer_session("project-a"), 2100 + 300_002).unwrap());
+    assert!(store::pending_spawns(&connection).unwrap().is_empty(), "a failed start is never retried");
+}
+
+#[test]
+fn rejecting_or_superseding_a_recruit_request_queues_nothing() {
+    let sandbox = Sandbox::new();
+    let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+    let request = recruit(&mut connection, 1, &recruitment("r1", Role::Developer, &[(Role::Designer, "Design it")]), "claude").unwrap();
+    store::control(&mut connection, &HostAction::Reject { request_id: "reject".into(), proposal_id: request["proposal_id"].as_str().unwrap().into(),
+        expected_revision: 1 }, &live(), 1500).unwrap();
+    assert!(store::pending_spawns(&connection).unwrap().is_empty());
+}
+
+#[test]
+fn approving_a_recruit_request_in_an_existing_team_keeps_its_members() {
+    let sandbox = Sandbox::new();
+    let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+    linked(&mut connection);
+    store::control(&mut connection, &HostAction::Unlink { request_id: "unlink-designer".into(), task: task(), session_id: DESIGNER.into() }, &live(), 1500).unwrap();
+    let request = recruit(&mut connection, 1, &recruitment("missing", Role::Developer, &[(Role::Designer, "Design it")]), "claude").unwrap();
+    approve_recruit(&mut connection, &request).unwrap();
+    let members: Vec<_> = store::snapshot(&connection, Some(&task()), None, 100).unwrap()["members"].as_array().unwrap().iter()
+        .map(|member| member["role"].as_str().unwrap().to_string()).collect();
+    assert_eq!(members, ["developer", "qa"]);
+}

@@ -80,3 +80,10 @@ fn moving_the_selection_stays_inside_the_rows() {
     view.move_by(50);
     assert_eq!(view.selected, 3);
 }
+
+#[test]
+fn failed_spawns_count_as_needing_theo() {
+    let mut state = snapshot();
+    state["spawns"] = json!([{"token": "t1", "role": "designer", "agent": "claude", "status": "failed", "directory": "/p", "created_at": 1}]);
+    assert_eq!(TeamView::attention(&state), TeamView::attention(&snapshot()) + 1);
+}
