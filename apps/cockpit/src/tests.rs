@@ -2211,7 +2211,34 @@ fn ctrl_r_restarts_the_stale_waiting_sessions_and_names_the_busy_ones() {
     app.start_files = vec![("CLAUDE.md", 50.0)];
     app.handle(Key::Ctrl('r'), &mut FakeScreen::answering(&[Key::Char('y')]));
     assert_eq!(fixture.wait_for_calls("claude-sessions", 1), vec![format!("claude-sessions restart-all {SESSION_A}")]);
-    assert!(app.message.contains("busy, not restarted: opusline"));
+    assert!(app.message.contains("at the end of their turn: opusline"), "{}", app.message);
+}
+
+// The session that asked for the apply is still in its turn when Ctrl+R comes (2026-10-19: the
+// dotfiles session, twice): it must not be left on its old sandbox.
+#[test]
+fn ctrl_r_restarts_a_busy_stale_session_once_its_turn_ends() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "working", "dotfiles", "/r/dotfiles", 1)]));
+    let mut app = fixture.app();
+    app.start_files = vec![("launcher", 50.0)];
+    app.handle(Key::Ctrl('r'), &mut FakeScreen::answering(&[Key::Char('y')]));
+    app.dispatch_prompts();
+    assert!(fixture.calls("claude-sessions").is_empty(), "restarted mid-turn");
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "dotfiles", "/r/dotfiles", 1)]));
+    app.build();
+    app.dispatch_prompts();
+    assert_eq!(fixture.wait_for_calls("claude-sessions", 1), [format!("claude-sessions restart {SESSION_A}  detached")]);
+}
+
+#[test]
+fn ctrl_r_declined_leaves_a_busy_stale_session_alone() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "working", "dotfiles", "/r/dotfiles", 1)]));
+    let mut app = fixture.app();
+    app.start_files = vec![("launcher", 50.0)];
+    app.handle(Key::Ctrl('r'), &mut FakeScreen::answering(&[Key::Char('n')]));
+    assert!(!crate::prompts::restart_wanted(SESSION_A));
 }
 
 #[test]

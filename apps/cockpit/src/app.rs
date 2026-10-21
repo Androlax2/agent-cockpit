@@ -932,12 +932,12 @@ impl App {
         for session in ready {
             prompts::restart_done(&session.session);
             if session.terminal {
-                util::log_event("WARN", &format!("{} asked for a restart to load figcraft-app, but runs in its own terminal: restart it there", session.project));
+                util::log_event("WARN", &format!("{} waited for a restart at the end of its turn, but runs in its own terminal: restart it there", session.project));
                 continue;
             }
             manager_in_background(&["restart", &session.session, "", "detached"]);
             self.prompts_sent.insert(session.session.clone(), util::now() as i64);
-            util::log_event("INFO", &format!("{} restarted to load figcraft-app", session.project));
+            util::log_event("INFO", &format!("{} restarted at the end of its turn", session.project));
         }
     }
 
@@ -1913,8 +1913,9 @@ impl App {
         }
     }
 
-    /// Restart every session sitting at its prompt: one that works or asks for a permission would
-    /// lose its turn, so it is skipped and named.
+    /// Restart every session sitting at its prompt now. One that works or asks for a permission
+    /// would lose its turn: it restarts once that turn ends (dispatch_restarts). The session that
+    /// asked for the apply is always one of those, still in its turn when the apply lands.
     pub(crate) fn restart_all(&mut self, screen: &mut dyn Screen) -> String {
         // Only the sessions started before a change they do not have yet (the "⟳ restart" badge);
         // a terminal session is its terminal's and is left alone.
@@ -1922,19 +1923,44 @@ impl App {
             .filter(|s| !s.is_external() && !s.terminal && !sessions::changed_since_start(s, &self.start_files).is_empty()).collect();
         let ready: Vec<Session> = stale.iter().filter(|s| s.state == "waiting").map(|s| (*s).clone()).collect();
         let busy: Vec<Session> = stale.iter().filter(|s| s.state == "working" || s.state == "needs-you").map(|s| (*s).clone()).collect();
-        if ready.is_empty() {
-            return if busy.is_empty() { "no session needs a restart".into() } else { "nothing to restart now: the sessions that need it are busy".into() };
+        if ready.is_empty() && busy.is_empty() {
+            return "no session needs a restart".into();
         }
-        let skipped = if busy.is_empty() { String::new() } else { format!(", leaving {} busy", busy.len()) };
-        let question = format!("restart {} session{}{skipped}? same conversations, new processes", ready.len(), if ready.len() > 1 { "s" } else { "" });
+        let plural = |count: usize| if count > 1 { "s" } else { "" };
+        let now_part = if ready.is_empty() { String::new() } else { format!("restart {} session{} now", ready.len(), plural(ready.len())) };
+        let later_part = if busy.is_empty() { String::new() } else { format!("{} busy one{} at the end of its turn", busy.len(), plural(busy.len())) };
+        let question = match (now_part.is_empty(), later_part.is_empty()) {
+            (false, false) => format!("{now_part}, {later_part}?"),
+            (true, _) => format!("restart {later_part}?"),
+            (_, true) => format!("{now_part}?"),
+        } + " same conversations, new processes";
         if !self.confirm(screen, &question) {
             return String::new();
         }
-        let mut arguments = vec!["restart-all"];
-        arguments.extend(ready.iter().map(|s| s.session.as_str()));
-        manager_in_background(&arguments);
-        let busy_names = busy.iter().map(|s| s.project.as_str()).collect::<Vec<_>>().join(", ");
-        format!("restarting {} …", ready.len()) + &if busy.is_empty() { String::new() } else { format!(" busy, not restarted: {busy_names}") }
+        let mut queued: Vec<&str> = Vec::new();
+        let mut not_queued: Vec<String> = Vec::new();
+        for session in &busy {
+            match prompts::want_restart(&session.session) {
+                Ok(()) => queued.push(session.project.as_str()),
+                Err(error) => {
+                    util::log_event("WARN", &format!("restart-all could not queue {} for the end of its turn: {error}", session.project));
+                    not_queued.push(format!("{} ({error})", session.project));
+                }
+            }
+        }
+        if !ready.is_empty() {
+            let mut arguments = vec!["restart-all"];
+            arguments.extend(ready.iter().map(|s| s.session.as_str()));
+            manager_in_background(&arguments);
+        }
+        let mut message = if ready.is_empty() { String::new() } else { format!("restarting {} …", ready.len()) };
+        if !queued.is_empty() {
+            message += &format!("{}at the end of their turn: {}", if message.is_empty() { "" } else { " " }, queued.join(", "));
+        }
+        if !not_queued.is_empty() {
+            message += &format!("{}not queued, restart by hand: {}", if message.is_empty() { "" } else { " " }, not_queued.join(", "));
+        }
+        message
     }
 
     pub(crate) fn open_effort_menu(&mut self, session: Session, anchor_row: Option<u16>) -> String {

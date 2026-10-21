@@ -56,8 +56,16 @@ pub fn clear(session: &str) {
     }
 }
 
-/// Sessions to restart once their turn ends (craft-open's --session): the marker files in
-/// <state>/restart-when-idle, each named after its session.
+/// Sessions to restart once their turn ends (craft-open's --session, restart-all's busy ones): the
+/// marker files in <state>/restart-when-idle, each named after its session.
+pub fn want_restart(session: &str) -> Result<(), String> {
+    if !valid_session(session) {
+        return Err("not a session id".into());
+    }
+    let markers = paths::state_dir().join("restart-when-idle");
+    fs::create_dir_all(&markers).and_then(|_| fs::write(markers.join(session), "")).map_err(|error| error.to_string())
+}
+
 pub fn restart_wanted(session: &str) -> bool {
     valid_session(session) && paths::state_dir().join("restart-when-idle").join(session).exists()
 }
