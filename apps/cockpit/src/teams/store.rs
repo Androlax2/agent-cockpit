@@ -364,7 +364,8 @@ fn queue_recruits(transaction: &Connection, proposal_id: &str, task_key: &str, d
     let asker_role = serde_json::from_str::<Vec<BoundMember>>(&mapping)?.first().map(|member| role_name(member.role)).unwrap_or("asking");
     let recruits: Vec<super::Recruit> = serde_json::from_str(&recruits)?;
     if recruits.is_empty() { return Ok(()); }
-    let directory = directories.get(&sender).ok_or_else(|| TeamError::new(ErrorCode::Conflict, "the asking session is no longer live"))?;
+    let directory = directories.get(&sender).filter(|directory| !directory.is_empty())
+        .ok_or_else(|| TeamError::new(ErrorCode::Conflict, "the asking session is no longer live, or its folder is unknown"))?;
     for recruit in recruits {
         if recruit.role == Role::Qa {
             transaction.execute("INSERT INTO team_qa VALUES (?1,?2,?3) ON CONFLICT(task_key) DO UPDATE SET brief=?2, agent=?3",

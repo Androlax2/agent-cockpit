@@ -67,7 +67,8 @@ pub(crate) fn live_sessions(registry: &mut Registry) -> Result<Vec<VerifiedSessi
 
 /// The live sessions' folders: approved recruits start in the asker's.
 fn folders(registry: &Registry, live: &[VerifiedSession]) -> std::collections::HashMap<String, String> {
-    live.iter().filter_map(|session| registry.sessions.get(&session.session_id).map(|entry| (session.session_id.clone(), entry.cwd.clone()))).collect()
+    live.iter().filter_map(|session| registry.sessions.get(&session.session_id).filter(|entry| !entry.cwd.is_empty())
+        .map(|entry| (session.session_id.clone(), entry.cwd.clone()))).collect()
 }
 
 /// Starts what approvals and handoffs queued (never waiting for it), and closes replaced QA sessions.

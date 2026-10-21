@@ -1306,3 +1306,16 @@ fn a_store_left_half_migrated_by_a_crash_still_opens_complete() {
     let connection = store::open(&path).unwrap();
     connection.prepare("SELECT recruits, spawn_agent FROM proposals").unwrap();
 }
+
+#[test]
+fn an_asker_without_a_folder_cannot_be_approved_into_spawns() {
+    // Todo 08fae328: a session whose folder the daemon does not know.
+    let sandbox = Sandbox::new();
+    let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+    let request = recruit(&mut connection, 1, &recruitment("r1", Role::Developer, &[(Role::Designer, "Design it")]), "claude").unwrap();
+    let directories = std::collections::HashMap::from([(DEVELOPER.to_string(), String::new())]);
+    assert!(store::control_with(&mut connection, &HostAction::Approve { request_id: "approve".into(),
+        proposal_id: request["proposal_id"].as_str().unwrap().into(), expected_revision: 1,
+        mapping_hash: request["mapping_hash"].as_str().unwrap().into() }, &live(), &directories, 2000).is_err());
+    assert!(store::pending_spawns(&connection).unwrap().is_empty());
+}
