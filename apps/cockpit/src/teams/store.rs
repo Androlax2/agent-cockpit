@@ -215,7 +215,7 @@ pub fn control_with(connection: &mut Connection, action: &HostAction, live: &[Ve
     let request_id = match action {
         HostAction::Approve { request_id, .. } | HostAction::Edit { request_id, .. }
         | HostAction::Reject { request_id, .. } | HostAction::Unlink { request_id, .. } | HostAction::Resolve { request_id, .. }
-        | HostAction::Propose { request_id, .. } | HostAction::Reconcile { request_id, .. } => request_id,
+        | HostAction::Propose { request_id, .. } | HostAction::Reconcile { request_id, .. } | HostAction::Dismiss { request_id, .. } => request_id,
     };
     let fingerprint = audit::sha256_hex(serde_json::to_string(action)?.as_bytes());
     let transaction = connection.transaction()?;
@@ -289,6 +289,12 @@ pub fn control_with(connection: &mut Connection, action: &HostAction, live: &[Ve
             transaction.execute("UPDATE attempts SET state=?2, finished_at=?3 WHERE message_id=?1 AND state='uncertain'",
                 params![message_id, if state == "received" { "received" } else { "not_submitted" }, now_ms])?;
             json!({"message_id": message_id, "state": state})
+        },
+        HostAction::Dismiss { token, .. } => {
+            if transaction.execute("UPDATE spawns SET status='dismissed' WHERE token=?1 AND status IN ('failed','refused')", [token])? != 1 {
+                return Err(TeamError::new(ErrorCode::Conflict, "only a start that failed or could not join is dismissed"));
+            }
+            json!({"token": token, "status": "dismissed"})
         },
     };
     transaction.execute("INSERT INTO host_actions VALUES (?1,?2,?3)", params![request_id, fingerprint, response.to_string()])?;
@@ -465,7 +471,9 @@ pub fn snapshot(connection: &Connection, task: Option<&TaskKey>, after: Option<i
         "reason":row.get::<_,String>(1)?,"status":row.get::<_,String>(2)?,"note":row.get::<_,String>(3)?,"created_at":row.get::<_,i64>(4)?})))?
         .collect::<Result<Vec<_>,_>>()?;
     let mut spawns = connection.prepare("SELECT token,task_key,role,agent,directory,commit_id,status,session_id,created_at FROM spawns
-        WHERE (?1 IS NULL OR task_key=?1) AND status<>'cancelled' ORDER BY created_at DESC LIMIT ?2")?;
+        WHERE (?1 IS NULL OR task_key=?1) AND status NOT IN ('cancelled','dismissed')
+        AND (status IN ('failed','refused') OR token IN (SELECT token FROM spawns WHERE (?1 IS NULL OR task_key=?1) ORDER BY created_at DESC LIMIT ?2))
+        ORDER BY created_at DESC")?;
     let spawns = spawns.query_map(params![task_key, limit.min(100) as i64], |row| Ok(json!({"token":row.get::<_,String>(0)?,"task_key":row.get::<_,String>(1)?,
         "role":row.get::<_,String>(2)?,"agent":row.get::<_,String>(3)?,"directory":row.get::<_,String>(4)?,"commit_id":row.get::<_,Option<String>>(5)?,
         "status":row.get::<_,String>(6)?,"session_id":row.get::<_,Option<String>>(7)?,"created_at":row.get::<_,i64>(8)?})))?.collect::<Result<Vec<_>,_>>()?;

@@ -62,7 +62,7 @@ impl TeamView {
         rows.extend((0..self.list("members").len()).map(Row::Member));
         rows.extend(indices("escalations", &|escalation| escalation["status"] == "open").into_iter().map(Row::Escalation));
         rows.extend(indices("messages", &|message| message["state"] == "uncertain").into_iter().map(Row::Uncertain));
-        rows.extend(indices("spawns", &|spawn| spawn["status"] == "failed").into_iter().map(Row::FailedStart));
+        rows.extend(indices("spawns", &|spawn| spawn["status"] == "failed" || spawn["status"] == "refused").into_iter().map(Row::FailedStart));
         rows
     }
 
@@ -70,7 +70,7 @@ impl TeamView {
     pub fn attention(snapshot: &Value) -> usize {
         let count = |key: &str, field: &str, value: &str| snapshot[key].as_array().into_iter().flatten().filter(|item| item[field] == value).count();
         count("proposals", "status", "pending") + count("escalations", "status", "open") + count("messages", "state", "uncertain")
-            + count("spawns", "status", "failed")
+            + count("spawns", "status", "failed") + count("spawns", "status", "refused")
     }
 
     pub fn selected_row(&self) -> Option<Row> {
@@ -105,7 +105,8 @@ impl TeamView {
             },
             Row::FailedStart(index) => {
                 let spawn = &self.list("spawns")[index];
-                format!("! new {} ({}) did not start in {}", shown(&spawn["role"]), shown(&spawn["agent"]), shown(&spawn["directory"]))
+                let what = if spawn["status"] == "refused" { "started but could not join (its role was taken)" } else { "did not start" };
+                format!("! new {} ({}) {what} in {}", shown(&spawn["role"]), shown(&spawn["agent"]), shown(&spawn["directory"]))
             },
             Row::Message(index) => {
                 let envelope = self.envelope(index);
@@ -162,7 +163,7 @@ impl TeamView {
                 vec![self.row_text(row), format!("{}", shown(&envelope["body"])), format!("Last error: {}", shown(&self.message(index)["error"])),
                     "It may have reached the session: h it arrived (mark handled) · c cancel it. It is never sent twice.".into()]
             },
-            Row::FailedStart(_) => vec![self.row_text(row), "It was started once and never reported; it is not started again. Start it by hand or ask the team to request it again.".into()],
+            Row::FailedStart(_) => vec![self.row_text(row), "It is never started again: start it by hand or ask the team to request it again. d dismiss".into()],
             Row::Message(index) => crate::teams::envelope_text(&self.envelope(index)).lines().map(|line| shown(&Value::String(line.into()))).collect(),
         }
     }

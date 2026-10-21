@@ -1334,3 +1334,25 @@ fn a_team_start_joins_only_a_session_of_the_agent_it_started() {
     mislabelled.agent = "opencode".into();
     assert!(!store::bind_spawn(&mut connection, &token, &mislabelled, 2200).unwrap());
 }
+
+#[test]
+fn a_failed_start_stays_listed_past_the_history_limit_until_theo_dismisses_it() {
+    // Todo 9397cffb.
+    let sandbox = Sandbox::new();
+    let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+    recruited(&mut connection, false);
+    let token = store::pending_spawns(&connection).unwrap()[0].token.clone();
+    store::mark_spawn_started(&connection, &token, 2100).unwrap();
+    store::expire_spawns(&connection, 2100 + 300_001).unwrap();
+    for index in 0..3 {
+        connection.execute("INSERT INTO spawns (token,task_key,role,agent,directory,brief,status,created_at) VALUES (?1,'k','designer','claude','/p','b','bound',?2)",
+            rusqlite::params![format!("newer{index}"), 900_000 + index]).unwrap();
+    }
+    let listed = |connection: &rusqlite::Connection| store::snapshot(connection, None, None, 2).unwrap()["spawns"].as_array().unwrap().iter()
+        .any(|spawn| spawn["token"] == token.as_str() && spawn["status"] == "failed");
+    assert!(listed(&connection), "a failed start never drops out of view");
+    store::control(&mut connection, &HostAction::Dismiss { request_id: "dismiss".into(), token: token.clone() }, &live(), 3000).unwrap();
+    assert!(!listed(&connection));
+    assert!(store::control(&mut connection, &HostAction::Dismiss { request_id: "dismiss-bound".into(), token: "newer0".into() }, &live(), 3000).is_err(),
+        "only a failed or refused start is dismissed");
+}

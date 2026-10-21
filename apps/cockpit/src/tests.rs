@@ -2462,6 +2462,24 @@ fn controls(requests: &HostRequests) -> Vec<Value> {
 }
 
 #[test]
+fn a_failed_team_start_is_dismissed_after_a_yes() {
+    // Todo 9397cffb.
+    let fixture = Fixture::new();
+    let mut snapshot = team_snapshot();
+    snapshot["proposals"] = json!([]);
+    snapshot["members"] = json!([]);
+    snapshot["spawns"] = json!([{"token": "t1", "task_key": "k", "role": "designer", "agent": "claude", "status": "refused", "directory": "/p", "created_at": 1}]);
+    let requests = team_host(&fixture, snapshot, vec![]);
+    let mut app = fixture.app();
+    open_team_view(&mut app);
+    app.handle(Key::Char('d'), &mut FakeScreen::answering(&[Key::Char('n')]));
+    assert!(controls(&requests).is_empty());
+    app.handle(Key::Char('d'), &mut FakeScreen::answering(&[Key::Char('y')]));
+    let dismiss = controls(&requests).pop().expect("no dismiss");
+    assert_eq!((dismiss["action"].clone(), dismiss["token"].clone()), (json!("dismiss"), json!("t1")));
+}
+
+#[test]
 fn the_team_view_lives_in_the_palette_without_a_key() {
     let fixture = Fixture::new();
     let app = fixture.app();

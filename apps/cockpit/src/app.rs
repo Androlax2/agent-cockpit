@@ -3370,6 +3370,11 @@ impl App {
                 if note.trim().is_empty() { return String::new() }
                 Self::team_control(HostAction::Resolve { request_id: token(), thread_id, note }).map(|_| "escalation resolved".to_string())
             },
+            (Row::FailedStart(index), Key::Char('d')) => {
+                let spawn_token = view.snapshot["spawns"][index]["token"].as_str().unwrap_or("").to_string();
+                if !self.confirm(screen, "dismiss this team start? it is not started again either way") { return String::new() }
+                Self::team_control(HostAction::Dismiss { request_id: token(), token: spawn_token }).map(|_| "dismissed".to_string())
+            },
             (Row::Uncertain(index), Key::Char(choice @ ('h' | 'c'))) => {
                 let message_id = view.message(index)["message_id"].as_str().unwrap_or("").to_string();
                 let (decision, question) = if choice == 'h' { ("handled", "it reached the session: mark it handled?") }

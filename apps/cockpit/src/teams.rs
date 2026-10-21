@@ -76,6 +76,8 @@ pub enum HostAction {
     Propose { request_id: String, proposal: Proposal },
     /// An uncertain delivery: "handled" (Theo confirmed it arrived) or "cancel". Never a resend.
     Reconcile { request_id: String, message_id: String, decision: String },
+    /// Theo has seen a team start that failed or could not join: it leaves the view and the count.
+    Dismiss { request_id: String, token: String },
 }
 
 /// What only programs outside the sandbox send, on the host socket no sandbox can reach.
