@@ -6081,16 +6081,18 @@ fn the_background_badge_names_what_runs() {
 }
 
 #[test]
-fn a_dotfiles_clone_counts_unapplied_commits_and_u_applies_them() {
-    let fixture = Fixture::new();
-    let clone = fixture.root.join("home/IdeaProjects/.parallel/dotfiles/p1").display().to_string();
-    let mut row = session(SESSION_A, "waiting", "dotfiles", &clone, 1);
-    row["unpushed"] = json!(3);
-    fixture.snapshot(json!([row]));
-    let app = fixture.app();
-    let badges = selected_session_badges(&app);
-    assert_eq!(badges.iter().filter(|badge| badge.starts_with('↑')).collect::<Vec<_>>(), ["↑3 unapplied"]);
-    assert!(app.sessions_hints().contains(&("U", "apply")));
+fn a_reviewed_clone_counts_unapplied_commits_and_u_applies_them() {
+    for repository in crate::paths::REVIEWED_REPOSITORIES {
+        let fixture = Fixture::new();
+        let clone = fixture.root.join("home/IdeaProjects/.parallel").join(repository).join("p1").display().to_string();
+        let mut row = session(SESSION_A, "waiting", repository, &clone, 1);
+        row["unpushed"] = json!(3);
+        fixture.snapshot(json!([row]));
+        let app = fixture.app();
+        let badges = selected_session_badges(&app);
+        assert_eq!(badges.iter().filter(|badge| badge.starts_with('↑')).collect::<Vec<_>>(), ["↑3 unapplied"], "{repository}");
+        assert!(app.sessions_hints().contains(&("U", "apply")), "{repository}");
+    }
 }
 
 fn first_hint_keys(app: &App, count: usize) -> Vec<&'static str> {
@@ -7553,28 +7555,31 @@ fn enter_opens_the_session_without_waiting_and_shows_a_failure_once_it_ends() {
 }
 
 #[test]
-fn a_dotfiles_card_shows_what_the_live_checkout_has_not_pushed_and_u_pushes_it() {
-    // U on a dotfiles card pushes ~/dotfiles after the apply: its count belongs on the card.
-    let fixture = Fixture::new();
-    let live = crate::paths::dotfiles();
-    let git = |arguments: &[&str]| {
-        assert!(std::process::Command::new("git").arg("-C").arg(&live).args(["-c", "user.email=t@t", "-c", "user.name=t"]).args(arguments)
-            .output().unwrap().status.success(), "git {arguments:?}");
-    };
-    fs::create_dir_all(&live).unwrap();
-    git(&["init", "-q", "-b", "main"]);
-    git(&["commit", "-q", "--allow-empty", "-m", "on GitHub"]);
-    git(&["remote", "add", "origin", "git@github.com:o/dotfiles.git"]);
-    git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
-    git(&["branch", "-q", "--set-upstream-to=origin/main"]);
-    git(&["commit", "-q", "--allow-empty", "-m", "applied one"]);
-    git(&["commit", "-q", "--allow-empty", "-m", "applied two"]);
-    let work = crate::paths::dotfiles_work().display().to_string();
-    fixture.snapshot(json!([session(SESSION_A, "waiting", "dotfiles", &work, 100)]));
-    let app = fixture.app();
-    let badges = selected_session_badges(&app);
-    assert!(badges.contains(&"↑2 unpushed".to_string()), "{badges:?}");
-    assert!(app.sessions_hints().contains(&("U", "push")), "{:?}", app.sessions_hints());
+fn a_reviewed_clones_card_shows_what_its_running_copy_has_not_pushed_and_u_pushes_it() {
+    // U on a dotfiles card pushes ~/dotfiles after the apply: its count belongs on the card, and
+    // likewise for the other running copies.
+    for repository in crate::paths::REVIEWED_REPOSITORIES {
+        let fixture = Fixture::new();
+        let live = crate::paths::running_copy(repository);
+        let git = |arguments: &[&str]| {
+            assert!(std::process::Command::new("git").arg("-C").arg(&live).args(["-c", "user.email=t@t", "-c", "user.name=t"]).args(arguments)
+                .output().unwrap().status.success(), "git {arguments:?}");
+        };
+        fs::create_dir_all(&live).unwrap();
+        git(&["init", "-q", "-b", "main"]);
+        git(&["commit", "-q", "--allow-empty", "-m", "on GitHub"]);
+        git(&["remote", "add", "origin", "git@github.com:o/dotfiles.git"]);
+        git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        git(&["branch", "-q", "--set-upstream-to=origin/main"]);
+        git(&["commit", "-q", "--allow-empty", "-m", "applied one"]);
+        git(&["commit", "-q", "--allow-empty", "-m", "applied two"]);
+        let work = crate::paths::work_clone(repository).display().to_string();
+        fixture.snapshot(json!([session(SESSION_A, "waiting", repository, &work, 100)]));
+        let app = fixture.app();
+        let badges = selected_session_badges(&app);
+        assert!(badges.contains(&"↑2 unpushed".to_string()), "{repository}: {badges:?}");
+        assert!(app.sessions_hints().contains(&("U", "push")), "{repository}: {:?}", app.sessions_hints());
+    }
 }
 
 #[test]

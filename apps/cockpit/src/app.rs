@@ -24,6 +24,7 @@ use ratatui::buffer::Buffer;
 use ratatui::style::{Color, Modifier, Style};
 use std::collections::{HashMap, HashSet};
 use std::io::{self, Write};
+use std::path::PathBuf;
 use std::fs;
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
@@ -122,8 +123,8 @@ const LEGEND: [(&str, &str); 24] = [
     ("✉ 2 queued", "messages waiting for the end of its turn, sent one per turn (m, Alt+Q; M drops them)"),
     ("↑2 unpushed", "commits on no remote yet: U pushes the branch"),
     ("⏱ 1h20 today · 34h", "time spent with Claude (and opencode) on the project, today and in all: the gaps under 5 minutes between its sessions' replies"),
-    ("↑2 unapplied", "a dotfiles clone's commits ~/dotfiles lacks: U shows them and applies them after a yes"),
-    ("↑2 unpushed (dotfiles)", "on a dotfiles card, commits ~/dotfiles holds and GitHub lacks: U pushes them after a yes"),
+    ("↑2 unapplied", "a reviewed clone's commits its running copy (~/dotfiles, ~/agent-cockpit, ~/vitals) lacks: U shows them and applies them after a yes"),
+    ("↑2 unpushed (running copy)", "on a reviewed clone's card, commits its running copy holds and GitHub lacks: U pushes them after a yes"),
     ("▭ terminal", "started with \"this terminal\": no ⌘R, restore, queue or error hand-off; ask-to-run still asks for approval"),
     ("✎ designer ⌨ developer", "its role in a project designed in FigCraft (claude-design role): design to-dos go to the designer"),
     ("✎ design", "a to-do for the designer session: a gap a developer found in the design (claude-todo --design)"),
@@ -797,9 +798,10 @@ pub struct App {
     plan: String,
     /// When craft_roots was last asked of pgrep (CRAFT_CHECK_S).
     craft_checked: f64,
-    /// Commits ~/dotfiles holds and GitHub lacks (sessions::dotfiles_unpushed), and when counted.
-    pub(crate) dotfiles_unpushed: usize,
-    dotfiles_checked: f64,
+    /// Commits each running copy with a card on screen holds and GitHub lacks
+    /// (sessions::running_copy_unpushed), and when counted.
+    pub(crate) running_copies_unpushed: HashMap<PathBuf, usize>,
+    running_copies_checked: f64,
 }
 
 /// pgrep for the craft apps' project folders forked on every tick (4 a second); which project
@@ -813,7 +815,7 @@ struct Gathered {
     queued: HashMap<String, usize>,
     roots: HashMap<String, String>,
     paused: usize,
-    dotfiles_unpushed: usize,
+    running_copies_unpushed: HashMap<PathBuf, usize>,
     start_files: Vec<(&'static str, f64)>,
     craft_roots: HashMap<String, HashSet<String>>,
 }
@@ -840,7 +842,7 @@ impl App {
             session_task_titles: HashMap::new(), session_branches: HashMap::new(),
             session_queued: HashMap::new(), session_roots: HashMap::new(),
             todo_scope: String::new(), shown_session: String::new(), todo_tab: TODO_TAB_OPEN, todo_tabs: HashMap::new(), todo_categories: HashMap::new(), saved_todo_scope: None, todo_jump: None, todo_counts: [0; 5], prompts_sent: HashMap::new(), craft_roots: HashMap::new(), hit_lines: HashMap::new(), hit_actions: HashMap::new(),
-            gathered: None, pending: Vec::new(), plan: String::new(), craft_checked: 0.0, dotfiles_unpushed: 0, dotfiles_checked: 0.0, todo_recovery_pending,
+            gathered: None, pending: Vec::new(), plan: String::new(), craft_checked: 0.0, running_copies_unpushed: HashMap::new(), running_copies_checked: 0.0, todo_recovery_pending,
         }
     }
 
@@ -1326,7 +1328,7 @@ impl App {
             session.design = sessions::design_of(&session.session);
             session.role = sessions::role_of(&session.session);
         }
-        let has_dotfiles_card = running.iter().any(|s| sessions::is_dotfiles_clone(&s.cwd));
+        let running_copies: HashSet<PathBuf> = running.iter().filter_map(|s| sessions::running_copy_of(&s.cwd)).collect();
         self.observe_task_trails(&running);
         if util::read_json(&paths::snapshot()).is_some_and(|snapshot| snapshot.get("sessions").is_some_and(Value::is_array)) {
             if let Ok(continuity) = &mut self.continuity {
@@ -1344,16 +1346,14 @@ impl App {
             running,
             paused: std::fs::read_to_string(paths::game_frozen()).map(|list| list.lines().filter(|line| !line.trim().is_empty()).count()).unwrap_or(0),
             start_files: sessions::start_file_mtimes(),
-            // What ~/dotfiles holds and GitHub lacks: U on a dotfiles card pushes it (apply_run). Counted
-            // here, out of the sandbox, in the live checkout no session writes; only with a dotfiles
-            // card on screen, and like craft_roots at most every CRAFT_CHECK_S.
-            dotfiles_unpushed: if !has_dotfiles_card {
-                0
-            } else if now() - self.dotfiles_checked >= CRAFT_CHECK_S {
-                self.dotfiles_checked = now();
-                sessions::dotfiles_unpushed()
+            // What a running copy holds and GitHub lacks: U on a card of its clones pushes it
+            // (apply_run). Counted here, out of the sandbox, in the running copy no session writes;
+            // only for the cards on screen, and like craft_roots at most every CRAFT_CHECK_S.
+            running_copies_unpushed: if now() - self.running_copies_checked >= CRAFT_CHECK_S {
+                self.running_copies_checked = now();
+                running_copies.into_iter().map(|live| { let count = sessions::running_copy_unpushed(&live); (live, count) }).collect()
             } else {
-                self.dotfiles_unpushed
+                self.running_copies_unpushed.iter().filter(|(live, _)| running_copies.contains(*live)).map(|(live, count)| (live.clone(), *count)).collect()
             },
             craft_roots: if now() - self.craft_checked >= CRAFT_CHECK_S {
                 self.craft_checked = now();
@@ -1463,7 +1463,7 @@ impl App {
             lines.push(Line::default());
         }
         self.start_files = gathered.start_files.clone();
-        self.dotfiles_unpushed = gathered.dotfiles_unpushed;
+        self.running_copies_unpushed = gathered.running_copies_unpushed.clone();
         self.craft_roots = gathered.craft_roots.clone();
         self.gathered = Some(gathered);
         if !self.held.is_empty() {
@@ -1648,11 +1648,12 @@ impl App {
             badges.push(part(format!("✉ {queued} queued"), bold(CYAN)));
         }
         if session.unpushed > 0 {
-            let count = if sessions::is_dotfiles_clone(&session.cwd) { "unapplied" } else { "unpushed" };
+            let count = if sessions::is_reviewed_clone(&session.cwd) { "unapplied" } else { "unpushed" };
             badges.push(part(format!("↑{} {count}", session.unpushed), bold(YELLOW)));
         }
-        if sessions::is_dotfiles_clone(&session.cwd) && self.dotfiles_unpushed > 0 {
-            badges.push(part(format!("↑{} unpushed", self.dotfiles_unpushed), bold(YELLOW)));
+        let running_copy_unpushed = self.running_copy_unpushed(&session.cwd);
+        if running_copy_unpushed > 0 {
+            badges.push(part(format!("↑{running_copy_unpushed} unpushed"), bold(YELLOW)));
         }
         if session.pinned {
             badges.push(part("⚲", style(YELLOW)));
@@ -1795,6 +1796,11 @@ impl App {
     /// The selected session's keys, most pressing first: what its card asks for (an approval, a
     /// restart, /compact, a push…), then the everyday keys. The footer cuts the end of the list
     /// when the column is narrow, so the order is what keeps the useful keys on screen.
+    /// What the running copy a card's clone applies to holds and GitHub lacks; 0 for other cards.
+    fn running_copy_unpushed(&self, cwd: &str) -> usize {
+        sessions::running_copy_of(cwd).and_then(|live| self.running_copies_unpushed.get(&live).copied()).unwrap_or(0)
+    }
+
     pub(crate) fn sessions_hints(&self) -> Vec<(&'static str, &'static str)> {
         let selected = self.selected_session().unwrap_or_default();
         let mut hints = Vec::new();
@@ -1809,7 +1815,7 @@ impl App {
         if selected.design.is_some() {
             hints.push(("o", "canvas"));
         }
-        if sessions::is_dotfiles_clone(&selected.cwd) && (selected.unpushed > 0 || self.dotfiles_unpushed > 0) {
+        if sessions::is_reviewed_clone(&selected.cwd) && (selected.unpushed > 0 || self.running_copy_unpushed(&selected.cwd) > 0) {
             hints.push(("U", if selected.unpushed > 0 { "apply" } else { "push" }));
         } else if selected.unpushed > 0 {
             hints.push(("U", "push"));

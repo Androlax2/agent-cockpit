@@ -11,18 +11,24 @@ use std::process::Command;
 /// Every agent runs in its own launcher (cockpit::agents; tests/agents.rs checks each has one).
 static AGENTS: std::sync::LazyLock<Vec<&'static str>> = std::sync::LazyLock::new(cockpit::agents::names);
 
+/// The repositories whose running copy, ~/<name>, the host runs (cockpit's REVIEWED_REPOSITORIES).
+const REVIEWED_REPOSITORIES: [&str; 3] = ["dotfiles", "agent-cockpit", "vitals"];
+
 #[test]
-fn no_session_starts_in_the_live_dotfiles_checkout() {
+fn no_session_starts_in_a_running_copy() {
     // Security audit C1: a session there could write code the host runs, unreviewed.
-    for &agent in AGENTS.iter() {
-        let sandbox = Sandbox::new();
-        let live = sandbox.home.join("dotfiles/apps");
-        fs::create_dir_all(&live).unwrap();
-        sandbox.shim("greywall", "");
-        let output = sandbox.command(bin().join("greywall-agents").join(agent), &[]).current_dir(&live).output().unwrap();
-        assert_eq!(output.status.code(), Some(1), "{agent}");
-        assert!(stderr(&output).contains(&format!("{agent} launcher:")) && stderr(&output).contains("IdeaProjects/dotfiles"), "{}", stderr(&output));
-        assert!(sandbox.calls("greywall").is_empty(), "{agent}");
+    for repository in REVIEWED_REPOSITORIES {
+        for &agent in AGENTS.iter() {
+            let sandbox = Sandbox::new();
+            let live = sandbox.home.join(repository).join("src");
+            fs::create_dir_all(&live).unwrap();
+            sandbox.shim("greywall", "");
+            let output = sandbox.command(bin().join("greywall-agents").join(agent), &[]).current_dir(&live).output().unwrap();
+            assert_eq!(output.status.code(), Some(1), "{repository} {agent}");
+            assert!(stderr(&output).contains(&format!("{agent} launcher:")) && stderr(&output).contains(&format!("IdeaProjects/{repository}")),
+                    "{}", stderr(&output));
+            assert!(sandbox.calls("greywall").is_empty(), "{repository} {agent}");
+        }
     }
 }
 
@@ -631,6 +637,25 @@ fn the_tools_opencode_runs_keep_the_cockpits_real_state_folder() {
     let environment = launch.opencode_saw("environment");
     let real = format!("COCKPIT_STATE_HOME={}", launch.sandbox.state.display());
     assert!(environment.contains(&real), "{environment:?}");
+}
+
+#[test]
+fn the_clones_of_a_reviewed_repository_read_its_running_copy_and_no_other() {
+    for repository in ["agent-cockpit", "vitals"] {
+        let launch = Launch::new();
+        let mut running_copies = Vec::new();
+        for name in REVIEWED_REPOSITORIES {
+            fs::create_dir_all(launch.sandbox.home.join(name)).unwrap();
+            running_copies.push((name, fs::canonicalize(launch.sandbox.home.join(name)).unwrap()));
+        }
+        for folder in [format!("IdeaProjects/{repository}"), format!("IdeaProjects/.parallel/{repository}/p1")] {
+            let (started, _) = start_claude_in(&launch, &folder);
+            for (name, live) in &running_copies {
+                let reads = started.contains(&format!("--allow-read-path {} ", live.display()));
+                assert_eq!(reads, *name == repository, "{folder} and ~/{name}: {started}");
+            }
+        }
+    }
 }
 
 #[test]

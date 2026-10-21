@@ -2359,25 +2359,30 @@ fn a_start_first_viewed_at_a_permission_dialog_is_redrawn_on_a_later_view() {
 
 /// A live dotfiles checkout and a work clone with one commit exported to .outgoing.
 fn dotfiles_pair(manager: &Manager) -> (PathBuf, PathBuf) {
-    let live = manager.sandbox.root.join("live");
-    let work = manager.sandbox.root.join("work");
+    let (live, work) = (manager.sandbox.root.join("live"), manager.sandbox.root.join("work"));
+    reviewed_pair(&live, &work);
+    (live, work)
+}
+
+/// A running copy at `live` and its clone at `work`, with one commit exported to .outgoing.
+fn reviewed_pair(live: &Path, work: &Path) {
     let git = |directory: &Path, arguments: &[&str]| {
         let output = Command::new("git").arg("-C").arg(directory)
             .args(["-c", "user.email=t@t", "-c", "user.name=t"]).args(arguments).output().unwrap();
         assert!(output.status.success(), "git {arguments:?}: {}", stderr(&output));
     };
-    fs::create_dir(&live).unwrap();
-    git(&live, &["init", "-q", "-b", "main"]);
-    git(&live, &["config", "user.email", "t@t"]);
-    git(&live, &["config", "user.name", "t"]);
+    fs::create_dir_all(live).unwrap();
+    git(live, &["init", "-q", "-b", "main"]);
+    git(live, &["config", "user.email", "t@t"]);
+    git(live, &["config", "user.name", "t"]);
     fs::write(live.join("README"), "x\n").unwrap();
-    git(&live, &["add", "README"]);
-    git(&live, &["commit", "-qm", "init"]);
-    git(&manager.sandbox.root, &["clone", "-q", &path_str(&live), "work"]);
+    git(live, &["add", "README"]);
+    git(live, &["commit", "-qm", "init"]);
+    fs::create_dir_all(work.parent().unwrap()).unwrap();
+    git(work.parent().unwrap(), &["clone", "-q", &path_str(live), &path_str(work)]);
     fs::write(work.join("README"), "x\ny\n").unwrap();
-    git(&work, &["commit", "-qam", "Add y"]);
-    git(&work, &["format-patch", "-q", "origin/main", "-o", ".outgoing"]);
-    (live, work)
+    git(work, &["commit", "-qam", "Add y"]);
+    git(work, &["format-patch", "-q", "origin/main", "-o", ".outgoing"]);
 }
 
 fn apply_dotfiles(manager: &Manager, live: &Path, work: &Path, answer: &str) -> Output {
@@ -2646,7 +2651,7 @@ fn apply_dotfiles_takes_a_parallel_clones_commits() {
 }
 
 #[test]
-fn apply_dotfiles_refuses_a_folder_that_is_no_dotfiles_clone() {
+fn apply_dotfiles_refuses_a_folder_that_is_no_reviewed_clone() {
     let manager = Manager::new();
     let (live, work) = dotfiles_pair(&manager);
     fs::create_dir_all(manager.project.join(".outgoing")).unwrap();
@@ -2654,7 +2659,7 @@ fn apply_dotfiles_refuses_a_folder_that_is_no_dotfiles_clone() {
     let output = manager.sandbox.run_with_input(bin().join("cockpit"), &["apply-dotfiles", &path_str(&manager.project)],
         &[("CLAUDE_DOTFILES_LIVE", &path_str(&live)), ("CLAUDE_DOTFILES_WORK", &path_str(&work))], "y\n");
     assert_eq!(output.status.code(), Some(1));
-    assert!(stderr(&output).contains("not a dotfiles clone"), "{}", stderr(&output));
+    assert!(stderr(&output).contains("not a reviewed clone"), "{}", stderr(&output));
     assert_eq!(git_output(&live, &["log", "-1", "--format=%s"]), "init");
 }
 
@@ -3608,4 +3613,62 @@ fn the_old_claude_sessions_name_runs_cockpit() {
     assert!(result.status.success(), "{}", stderr(&result));
     assert!(manager.log_lines().iter().any(|line| line.contains("through the old name")), "{:?}", manager.log_lines());
     assert_eq!(stderr(&result), "", "a program reading stderr would take the rename note for an error");
+}
+
+/// `cockpit apply <clone>` for a reviewed repository other than dotfiles, whose running copy is
+/// ~/<name> and work clone ~/IdeaProjects/<name>.
+fn apply_reviewed(manager: &Manager, clone: &Path, answer: &str) -> Output {
+    let clones = manager.sandbox.root.join("clones");
+    manager.sandbox.run_with_input(bin().join("cockpit"), &["apply", &path_str(clone)], &[("COCKPIT_CLONES", &path_str(&clones))], answer)
+}
+
+#[test]
+fn apply_takes_a_work_clones_commits_into_its_own_running_copy() {
+    for name in ["agent-cockpit", "vitals"] {
+        let manager = Manager::new();
+        let (live, work) = (manager.sandbox.home.join(name), manager.sandbox.home.join("IdeaProjects").join(name));
+        reviewed_pair(&live, &work);
+        let output = apply_reviewed(&manager, &work, "y\n");
+        assert_eq!(output.status.code(), Some(0), "{name}: {}", stderr(&output));
+        assert_eq!(git_output(&live, &["log", "-1", "--format=%s"]), "Add y", "{name}");
+    }
+}
+
+#[test]
+fn apply_takes_a_parallel_clones_commits_into_the_running_copy_of_its_repository() {
+    // The folder decides where the commits go: a vitals clone's patches never reach agent-cockpit.
+    let manager = Manager::new();
+    let (cockpit_live, cockpit_work) = (manager.sandbox.home.join("agent-cockpit"), manager.sandbox.home.join("IdeaProjects/agent-cockpit"));
+    reviewed_pair(&cockpit_live, &cockpit_work);
+    let (vitals_live, vitals_clone) = (manager.sandbox.home.join("vitals"), manager.sandbox.root.join("clones/vitals/todo-1"));
+    reviewed_pair(&vitals_live, &vitals_clone);
+    let output = apply_reviewed(&manager, &vitals_clone, "y\n");
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(git_output(&vitals_live, &["log", "-1", "--format=%s"]), "Add y");
+    assert_eq!(git_output(&cockpit_live, &["log", "-1", "--format=%s"]), "init");
+}
+
+#[test]
+fn apply_refuses_a_repository_whose_running_copy_is_missing() {
+    let manager = Manager::new();
+    let (live, work) = (manager.sandbox.root.join("elsewhere/vitals"), manager.sandbox.home.join("IdeaProjects/vitals"));
+    reviewed_pair(&live, &work);
+    let output = apply_reviewed(&manager, &work, "y\n");
+    assert_eq!(output.status.code(), Some(1));
+    assert!(stderr(&output).contains("is not a git checkout"), "{}", stderr(&output));
+}
+
+#[test]
+fn apply_runs_the_running_copys_after_apply_target_with_the_commit_before() {
+    let manager = Manager::new();
+    let (live, work) = (manager.sandbox.home.join("agent-cockpit"), manager.sandbox.home.join("IdeaProjects/agent-cockpit"));
+    reviewed_pair(&live, &work);
+    let record = manager.sandbox.root.join("after-apply");
+    fs::write(live.join("Makefile"), format!("after-apply:\n\techo $(BEFORE) > {}\n", record.display())).unwrap();
+    assert!(Command::new("git").arg("-C").arg(&live).args(["add", "Makefile"]).status().unwrap().success());
+    assert!(Command::new("git").arg("-C").arg(&live).args(["commit", "-qm", "Install it"]).status().unwrap().success());
+    let before = git_output(&live, &["rev-parse", "HEAD"]);
+    let output = apply_reviewed(&manager, &work, "y\n");
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(fs::read_to_string(&record).unwrap().trim(), before);
 }

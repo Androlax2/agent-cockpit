@@ -46,6 +46,8 @@
 #                                add a line, for the lock, idle and update scripts
 #   cockpit git <dir>            lazygit on that repository in a popup over the manager (the sidebar's g)
 #   cockpit push <dir>           push its branch to origin with Theo's SSH key, after a yes (the sidebar's U)
+#   cockpit apply [clone]        apply a reviewed clone's exported commits (.outgoing) to its running
+#                                copy after a yes: dotfiles, agent-cockpit or vitals (apply-dotfiles too)
 #   cockpit prs                  the pull requests window on the viewed session's repository (Super+Ctrl+P)
 #   cockpit digest               yesterday, today, usage, waiting sessions and pull requests in the viewer
 #                                (the digest action of the sidebar's : list; also the first time the cockpit opens each day)
@@ -1556,9 +1558,9 @@ clones_popup() {
 # greywall, as for lazygit: the clone's .git/config is the session's to write (core.fsmonitor,
 # filters), and out here git would run what it names. Its answer only decides whether to keep.
 clone_leftovers() { # clone
-    local report
-    if dotfiles_clone_root "$1" >/dev/null; then
-        report=$(dotfiles_clone_report "$1") || { echo "unreadable"; return; }
+    local report name clone
+    if IFS=$'\t' read -r name clone < <(reviewed_clone_of "$1"); then
+        report=$(reviewed_clone_report "$1" "$(live_checkout_of "$name")") || { echo "unreadable"; return; }
     else
         report=$(cd "$1" && "$GREYWALL" --auto-profile --profile claude -- sh -c \
             'git status --porcelain 2>/dev/null | head -1; echo "-- commits"; git log --branches --not --remotes --oneline 2>/dev/null | head -1' 2>/dev/null) \
@@ -1569,18 +1571,18 @@ clone_leftovers() { # clone
     fi
 }
 
-# A dotfiles clone's commits reach live main through git am, with new hashes, never through a push:
+# A reviewed clone's commits reach live main through git am, with new hashes, never through a push:
 # its branches are compared with a fresh fetch of live main by change (patch id), as apply-run and
 # the card's counter do. Without that, every clone whose work was applied stayed forever.
-dotfiles_clone_report() { # clone
+reviewed_clone_report() { # clone live
     # shellcheck disable=SC2016
-    (cd "$1" && "$GREYWALL" --auto-profile --profile claude --allow-read-path "$DOTFILES_LIVE" -- sh -c '
+    (cd "$1" && "$GREYWALL" --auto-profile --profile claude --allow-read-path "$2" -- sh -c '
         git status --porcelain 2>/dev/null | head -1
         echo "-- commits"
         git fetch -q "$1" +main:refs/remotes/origin/main || exit 1
         git for-each-ref --format="%(refname)" refs/heads | while read -r branch; do
             git log --cherry-pick --right-only --no-merges --oneline "refs/remotes/origin/main...$branch"
-        done | head -1' sh "$DOTFILES_LIVE" 2>/dev/null)
+        done | head -1' sh "$2" 2>/dev/null)
 }
 
 clones_review() { # [sweep]
@@ -1756,52 +1758,70 @@ git_popup() { # dir
 # (security audit 2026-10-19, H1).
 push_popup() { # dir
     require_plain_directory "$1"
-    local clone
-    # A dotfiles clone's commits reach ~/dotfiles through apply-dotfiles, never a push.
-    if clone=$(dotfiles_clone_root "$1"); then
+    local name clone
+    # A reviewed clone's commits reach its running copy through apply, never a push.
+    if IFS=$'\t' read -r name clone < <(reviewed_clone_of "$1"); then
         tmux display-popup -E -w 80% -h 80% -d "$clone" -T " apply · $(basename "$clone") " "$0" apply-run "$clone"
         return
     fi
     tmux display-popup -E -w 70% -h 50% -d "$1" -T " push · $(basename "$1") " "$0" push-run "$1"
 }
 
-# The dotfiles clone a folder is in: the work clone, or one of its parallel clones
-# (<clones>/dotfiles/<name>). Prints the clone's root; fails for any other folder.
-dotfiles_clone_root() { # dir
-    local inside name
-    case "$1/" in
-        "$DOTFILES_WORK"/*) printf '%s\n' "$DOTFILES_WORK" ;;
-        "$CLONES_DIR"/dotfiles/*/*)
-            inside=${1#"$CLONES_DIR"/dotfiles/}
-            name=${inside%%/*}
-            [[ $name =~ ^[A-Za-z0-9._-]+$ && $name != . && $name != .. && -d $CLONES_DIR/dotfiles/$name && ! -L $CLONES_DIR/dotfiles/$name ]] || return 1
-            printf '%s\n' "$CLONES_DIR/dotfiles/$name" ;;
-        *) return 1 ;;
-    esac
+# The repositories whose running copy the host runs with Theo's rights: sessions work in clones
+# (the work clone ~/IdeaProjects/<name>, or <clones>/<name>/<clone>), and the running copy only
+# takes their commits through apply, after Theo read them (security audit 2026-10-19, C1).
+REVIEWED_REPOSITORIES=(dotfiles agent-cockpit vitals)
+
+live_checkout_of() { # name
+    if [[ $1 == dotfiles ]]; then printf '%s\n' "$DOTFILES_LIVE"; else printf '%s\n' "$HOME/$1"; fi
 }
 
-# U on a dotfiles clone's card: the commits live main lacks are exported inside greywall (no host
-# git runs in a clone), from a fresh fetch of ~/dotfiles, leaving out those already applied (same
-# change, git am's new hash), then apply-dotfiles shows them and asks.
+work_clone_of() { # name
+    if [[ $1 == dotfiles ]]; then printf '%s\n' "$DOTFILES_WORK"; else printf '%s\n' "$HOME/IdeaProjects/$1"; fi
+}
+
+# The reviewed clone a folder is in: prints "<repository>\t<clone root>"; fails for any other folder.
+reviewed_clone_of() { # dir
+    local name work inside clone_name
+    for name in "${REVIEWED_REPOSITORIES[@]}"; do
+        work=$(work_clone_of "$name")
+        case "$1/" in
+            "$work"/*) printf '%s\t%s\n' "$name" "$work"; return 0 ;;
+            "$CLONES_DIR/$name"/*/*)
+                inside=${1#"$CLONES_DIR/$name"/}
+                clone_name=${inside%%/*}
+                [[ $clone_name =~ ^[A-Za-z0-9._-]+$ && $clone_name != . && $clone_name != .. &&
+                   -d $CLONES_DIR/$name/$clone_name && ! -L $CLONES_DIR/$name/$clone_name ]] || return 1
+                printf '%s\t%s\n' "$name" "$CLONES_DIR/$name/$clone_name"
+                return 0 ;;
+        esac
+    done
+    return 1
+}
+
+# U on a reviewed clone's card: the commits live main lacks are exported inside greywall (no host
+# git runs in a clone), from a fresh fetch of the running copy, leaving out those already applied
+# (same change, git am's new hash), then apply shows them and asks.
 apply_run() { # clone
-    local clone
-    clone=$(dotfiles_clone_root "$1") || { echo "Refused: $1 is not a dotfiles clone." >&2; return 1; }
-    echo "Exporting the commits $DOTFILES_LIVE lacks, inside greywall …"
+    local name clone live
+    IFS=$'\t' read -r name clone < <(reviewed_clone_of "$1") || { echo "Refused: $1 is not a reviewed clone." >&2; return 1; }
+    live=$(live_checkout_of "$name")
+    echo "Exporting the commits $live lacks, inside greywall …"
     # shellcheck disable=SC2016
-    if ! (cd "$clone" && "$GREYWALL" --auto-profile --profile claude --allow-read-path "$DOTFILES_LIVE" -- sh -c \
+    if ! (cd "$clone" && "$GREYWALL" --auto-profile --profile claude --allow-read-path "$live" -- sh -c \
             'git fetch -q "$1" main:refs/remotes/origin/main && rm -f .outgoing/*.patch && git format-patch -q --ignore-if-in-upstream -o .outgoing refs/remotes/origin/main' \
-            sh "$DOTFILES_LIVE"); then
+            sh "$live"); then
         echo "The export failed (above): nothing applied."
         read -r -p "Enter closes. " _ || true
         return 1
     fi
-    apply_dotfiles "$clone" || true
-    # ~/dotfiles is a GitHub repository too: what it holds and GitHub lacks (just applied, or
-    # applied earlier) goes out from here, after its own list and y/N. Never from the clone, whose
-    # origin is ~/dotfiles.
-    if [[ -n $(git "${SAFE_GIT_CONFIG[@]}" -C "$DOTFILES_LIVE" rev-list "@{upstream}..HEAD" 2>/dev/null | head -1) ]]; then
+    apply_reviewed "$clone" || true
+    # The running copy is a GitHub repository too: what it holds and GitHub lacks (just applied,
+    # or applied earlier) goes out from here, after its own list and y/N. Never from the clone,
+    # whose origin is the running copy.
+    if [[ -n $(git "${SAFE_GIT_CONFIG[@]}" -C "$live" rev-list "@{upstream}..HEAD" 2>/dev/null | head -1) ]]; then
         echo
-        push_run "$DOTFILES_LIVE" || true
+        push_run "$live" || true
         return 0
     fi
     read -r -p "Enter closes. " _ || true
@@ -1865,19 +1885,19 @@ DOTFILES_WORK="${CLAUDE_DOTFILES_WORK:-$HOME/IdeaProjects/dotfiles}"
 # before, in a scratch index, so the live checkout's files and index stay as they are. One
 # `git apply --check` of them all held each patch against the unchanged tree and refused a series
 # whose later commits edit what earlier ones changed.
-patches_apply_in_order() { # folder-of-patches
-    local patch scratch_index="$1/check.index"
-    GIT_INDEX_FILE="$scratch_index" git -C "$DOTFILES_LIVE" read-tree HEAD || return 1
-    for patch in "$1"/*.patch; do
-        GIT_INDEX_FILE="$scratch_index" git -C "$DOTFILES_LIVE" apply --cached "$patch" || return 1
+patches_apply_in_order() { # live folder-of-patches
+    local patch scratch_index="$2/check.index"
+    GIT_INDEX_FILE="$scratch_index" git -C "$1" read-tree HEAD || return 1
+    for patch in "$2"/*.patch; do
+        GIT_INDEX_FILE="$scratch_index" git -C "$1" apply --cached "$patch" || return 1
     done
 }
 
 # Work that ships closes its items: each "Todo: <id>" trailer of the applied commits marks that
-# dotfiles item done, through the queue the column applies (claude-todo's), as the live checkout.
+# item of the running copy's project done, through the queue the column applies (claude-todo's).
 # Items stayed open when another session or a duplicate fixed them (todo 4ab912da). Theo read
 # the trailers in the patches before his yes; a dotfiles session can mark its items done anyway.
-close_shipped_todos() { # commit-before-the-apply
+close_shipped_todos() { # live commit-before-the-apply
     local trailer queue="${CLAUDE_TODO_UPDATES:-${XDG_RUNTIME_DIR:-/tmp}/claude-todo-updates.jsonl}"
     while IFS= read -r trailer; do
         [[ -z $trailer ]] && continue
@@ -1885,19 +1905,24 @@ close_shipped_todos() { # commit-before-the-apply
             echo "Ignored the trailer \"Todo: $(cat -v <<< "$trailer")\": not an item id (8 hex characters)." >&2
             continue
         fi
-        if ! jq -nc --arg id "$trailer" --arg folder "$DOTFILES_LIVE" '{action: "done", id: $id, started_in: $folder}' >> "$queue"; then
+        if ! jq -nc --arg id "$trailer" --arg folder "$1" '{action: "done", id: $id, started_in: $folder}' >> "$queue"; then
             echo "Could not mark todo $trailer done: claude-todo done $trailer" >&2
             continue
         fi
         echo "Todo $trailer marked done."
         log_event INFO apply "todo $trailer marked done by its commit's trailer"
-    done < <(git -C "$DOTFILES_LIVE" log --format='%(trailers:key=Todo,valueonly,separator=%x0a)' "$1..HEAD" | sort -u)
+    done < <(git -C "$1" log --format='%(trailers:key=Todo,valueonly,separator=%x0a)' "$2..HEAD" | sort -u)
 }
 
-apply_dotfiles() { # [clone]
-    local clone outgoing copies patch subjects answer count before
-    if ! clone=$(dotfiles_clone_root "${1:-$DOTFILES_WORK}"); then
-        echo "Refused: ${1:-} is not a dotfiles clone ($DOTFILES_WORK or $CLONES_DIR/dotfiles/<name>)." >&2
+apply_reviewed() { # [clone]
+    local name clone live outgoing copies patch subjects answer count before
+    if ! IFS=$'\t' read -r name clone < <(reviewed_clone_of "${1:-$DOTFILES_WORK}"); then
+        echo "Refused: ${1:-} is not a reviewed clone (~/IdeaProjects/<repository> or $CLONES_DIR/<repository>/<name>, for ${REVIEWED_REPOSITORIES[*]})." >&2
+        return 1
+    fi
+    live=$(live_checkout_of "$name")
+    if [[ ! -d $live/.git || -L $live ]]; then
+        echo "Refused: $live, the running copy of $name, is not a git checkout." >&2
         return 1
     fi
     outgoing="$clone/.outgoing"
@@ -1921,19 +1946,19 @@ apply_dotfiles() { # [clone]
         echo "Nothing to apply: $outgoing is empty."
         return 0
     fi
-    if ! git -C "$DOTFILES_LIVE" diff --quiet || ! git -C "$DOTFILES_LIVE" diff --cached --quiet; then
-        echo "Refused: $DOTFILES_LIVE has uncommitted changes; commit or stash them first." >&2
+    if ! git -C "$live" diff --quiet || ! git -C "$live" diff --cached --quiet; then
+        echo "Refused: $live has uncommitted changes; commit or stash them first." >&2
         return 1
     fi
     subjects=$(grep -h '^Subject: ' "$copies"/*.patch | sed 's/^Subject: //' | cat -v)
-    echo "$count commit(s) for $DOTFILES_LIVE, the live checkout the host runs:"
+    echo "$count commit(s) for $live, the running copy of $name the host runs:"
     sed 's/^/  /' <<< "$subjects"
     echo
-    git -C "$DOTFILES_LIVE" apply --stat "$copies"/*.patch
-    if ! patches_apply_in_order "$copies"; then
-        echo "They do not apply to $DOTFILES_LIVE as it is: rebase the clone on origin/main and export again." >&2
+    git -C "$live" apply --stat "$copies"/*.patch
+    if ! patches_apply_in_order "$live" "$copies"; then
+        echo "They do not apply to $live as it is: rebase the clone on origin/main and export again." >&2
         # A stale export needs its author, not a new cockpit repair session from the error hand-off.
-        if [[ $log_command == apply-dotfiles ]]; then log_failure_level=WARN; fi
+        if [[ $log_command == apply-dotfiles || $log_command == apply ]]; then log_failure_level=WARN; fi
         return 1
     fi
     # Control characters shown, never interpreted: the patches are text a sandbox wrote. less reads
@@ -1941,28 +1966,36 @@ apply_dotfiles() { # [clone]
     # PAGER is cat in the approval window (ask-to-run), which shows the patches as plain output.
     cat -v "$copies"/*.patch > "$copies/review.txt"
     if [[ -t 1 ]]; then ${PAGER:-less} "$copies/review.txt"; else cat "$copies/review.txt"; fi
-    read -r -p "Apply these $count commit(s) to $DOTFILES_LIVE? [y/N] " answer || answer=""
+    read -r -p "Apply these $count commit(s) to $live? [y/N] " answer || answer=""
     if [[ $answer != y && $answer != Y ]]; then
         echo "Not applied."
-        log_event INFO apply "declined $count patch(es): ${subjects//$'\n'/ | }"
-        audit_event apply dotfiles.declined declined "patches=$count" "subjects=${subjects//$'\n'/ | }"
+        log_event INFO apply "declined $count patch(es) for $name: ${subjects//$'\n'/ | }"
+        audit_event apply dotfiles.declined declined "repository=$name" "patches=$count" "subjects=${subjects//$'\n'/ | }"
         return 0
     fi
-    before=$(git -C "$DOTFILES_LIVE" rev-parse HEAD)
-    if ! git -C "$DOTFILES_LIVE" am --quiet "$copies"/*.patch; then
-        git -C "$DOTFILES_LIVE" am --abort 2>/dev/null || true
+    before=$(git -C "$live" rev-parse HEAD)
+    if ! git -C "$live" am --quiet "$copies"/*.patch; then
+        git -C "$live" am --abort 2>/dev/null || true
         echo "git am failed: nothing applied." >&2
-        log_event WARN apply "git am failed for $count patch(es)"
-        audit_event apply dotfiles.failed failed "patches=$count" "subjects=${subjects//$'\n'/ | }"
+        log_event WARN apply "git am failed for $count patch(es) for $name"
+        audit_event apply dotfiles.failed failed "repository=$name" "patches=$count" "subjects=${subjects//$'\n'/ | }"
         return 1
     fi
     find "$outgoing" -maxdepth 1 -type f -name '*.patch' -delete
     # The card's "↑N unapplied" clears now, not at the session's next turn.
     osd-show session-pushed "$clone" 2>/dev/null || true
-    log_event INFO apply "applied $count patch(es) to $DOTFILES_LIVE: ${subjects//$'\n'/ | }"
-    audit_event apply dotfiles.applied ok "patches=$count" "head=$(git -C "$DOTFILES_LIVE" rev-parse HEAD 2>/dev/null)" "subjects=${subjects//$'\n'/ | }"
-    close_shipped_todos "$before"
-    if ! git -C "$DOTFILES_LIVE" diff --quiet "$before" HEAD -- config/bin; then
+    log_event INFO apply "applied $count patch(es) to $live: ${subjects//$'\n'/ | }"
+    audit_event apply dotfiles.applied ok "repository=$name" "patches=$count" "head=$(git -C "$live" rev-parse HEAD 2>/dev/null)" "subjects=${subjects//$'\n'/ | }"
+    close_shipped_todos "$live" "$before"
+    if [[ $name == dotfiles ]]; then
+        after_dotfiles_apply "$before"
+    else
+        after_reviewed_apply "$live" "$before"
+    fi
+}
+
+after_dotfiles_apply() { # commit-before-the-apply
+    if ! git -C "$DOTFILES_LIVE" diff --quiet "$1" HEAD -- config/bin; then
         echo "Refreshing command links …"
         if ! stow --dir="$DOTFILES_LIVE/config" --target="$HOME" --restow bin; then
             echo "The commits were applied, but refreshing command links failed (above). Existing personal files were not replaced." >&2
@@ -1970,11 +2003,26 @@ apply_dotfiles() { # [clone]
             return 1
         fi
     fi
-    if git -C "$DOTFILES_LIVE" diff --quiet "$before" HEAD -- apps; then
+    if git -C "$DOTFILES_LIVE" diff --quiet "$1" HEAD -- apps; then
         echo "Applied."
         return 0
     fi
     rebuild_apps
+}
+
+# Another running copy installs itself: its Makefile's after-apply target (build, links, restarts),
+# reviewed with the rest, gets the commit before the apply to see what changed.
+after_reviewed_apply() { # live commit-before-the-apply
+    if ! make -C "$1" -n after-apply >/dev/null 2>&1; then
+        echo "Applied. $1 has no after-apply target: nothing installed."
+        return 0
+    fi
+    echo "Applied. Installing it (make after-apply) …"
+    if ! make -C "$1" after-apply BEFORE="$2"; then
+        echo "The commits were applied, but make after-apply failed (above)." >&2
+        log_event ERROR apply "make after-apply failed in $1"
+        return 1
+    fi
 }
 
 # The daemon's fixes are only live once it runs the new build: an apply that left osd.service on
@@ -2174,8 +2222,8 @@ case ${1:-attach} in
     push) push_popup "${2:?usage: cockpit push <dir>}" ;;
     queue-prompt-ask) queue_prompt_ask "${2:-}" ;;
     push-run) push_run "${2:?usage: cockpit push-run <dir>}" ;;
-    apply-dotfiles) apply_dotfiles "${2:-}" ;;
-    apply-run) apply_run "${2:?usage: cockpit apply-run <dotfiles clone>}" ;;
+    apply|apply-dotfiles) apply_reviewed "${2:-}" ;;
+    apply-run) apply_run "${2:?usage: cockpit apply-run <reviewed clone>}" ;;
     team-spawn) team_spawn_session "${2:?usage: cockpit team-spawn <token> <role> <dir> <commit|-> <brief>}" "${3:?}" "${4:?}" "${5:?}" "${6:-}" ;;
     parallel) parallel_session "${2:?usage: cockpit parallel <dir> <branch> [prompt]}" "${3:?usage: cockpit parallel <dir> <branch> [prompt]}" "${4:-}" ;;
     review) review_session "${2:?usage: cockpit review <dir> <pr-number>}" "${3:?usage: cockpit review <dir> <pr-number>}" ;;

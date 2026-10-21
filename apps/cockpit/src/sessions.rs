@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub const GLYPHS: [(&str, &str); 5] = [("working", "●"), ("waiting", "○"), ("needs-you", "!"), ("unknown", "·"), ("recent", "↻")];
 pub const CONTEXT_COMPACT_AT: f64 = 90.0;
@@ -394,17 +394,24 @@ pub fn grouped_by_project(mut sessions: Vec<Session>) -> Vec<Session> {
 }
 
 /// The task line, unless it is one of Claude's internal messages (<agent-message …>).
-/// A dotfiles clone (the work clone, or <clones>/dotfiles/<name>): its commits reach ~/dotfiles
-/// through apply-dotfiles, never a push, so its count is of commits not applied yet (the hook).
-pub fn is_dotfiles_clone(cwd: &str) -> bool {
+/// The running copy a reviewed clone applies to (paths::REVIEWED_REPOSITORIES; the work clone, or
+/// <clones>/<repository>/<name>): its commits reach it through cockpit apply, never a push, so its
+/// count is of commits not applied yet (the hook). None for any other folder.
+pub fn running_copy_of(cwd: &str) -> Option<PathBuf> {
     let cwd = Path::new(cwd);
-    cwd.starts_with(paths::dotfiles_work()) || cwd.starts_with(paths::clones_dir().join("dotfiles"))
+    paths::REVIEWED_REPOSITORIES.iter()
+        .find(|repository| cwd.starts_with(paths::work_clone(repository)) || cwd.starts_with(paths::clones_dir().join(repository)))
+        .map(|repository| paths::running_copy(repository))
 }
 
-/// Commits ~/dotfiles (the live checkout, which no session writes) holds and its GitHub upstream
-/// lacks: what U on a dotfiles card pushes after the apply. 0 when it tracks no upstream.
-pub fn dotfiles_unpushed() -> usize {
-    let live = paths::dotfiles().to_string_lossy().into_owned();
+pub fn is_reviewed_clone(cwd: &str) -> bool {
+    running_copy_of(cwd).is_some()
+}
+
+/// Commits a running copy (which no session writes) holds and its GitHub upstream lacks: what U on
+/// a card of its clones pushes after the apply. 0 when it tracks no upstream.
+pub fn running_copy_unpushed(live: &Path) -> usize {
+    let live = live.to_string_lossy().into_owned();
     util::output_of("git", &["-C", &live, "rev-list", "--count", "@{upstream}..HEAD"]).and_then(|count| count.trim().parse().ok()).unwrap_or(0)
 }
 

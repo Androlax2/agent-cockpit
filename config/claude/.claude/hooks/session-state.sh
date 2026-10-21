@@ -136,16 +136,19 @@ checks_of_turn() { # transcript
 # with a remote; git runs here, inside the sandbox, like the outcome above.
 unpushed_of() { # cwd
     git -C "$1" remote 2>/dev/null | grep -q . || return 0
-    local live="$HOME/dotfiles"
-    if [[ $(git -C "$1" remote get-url origin 2>/dev/null) == "$live" ]]; then
-        unapplied_of "$1" "$live"
-        return
-    fi
+    local origin live
+    origin=$(git -C "$1" remote get-url origin 2>/dev/null)
+    for live in "$HOME/dotfiles" "$HOME/agent-cockpit" "$HOME/vitals"; do
+        if [[ $origin == "$live" ]]; then
+            unapplied_of "$1" "$live"
+            return
+        fi
+    done
     git -C "$1" rev-list --count HEAD --not --remotes 2>/dev/null || true
 }
 
-# A clone of the live dotfiles (its origin) brings its commits over with apply-dotfiles, never a
-# push, and its origin/main is only as fresh as its last fetch: what counts is the commits whose
+# A clone of a running copy (its origin: ~/dotfiles, ~/agent-cockpit, ~/vitals) brings its commits
+# over with cockpit apply, never a push, and its origin/main is only as fresh as its last fetch: what counts is the commits whose
 # change live main lacks. git am gives an applied commit a new hash, so changes are compared by
 # patch id. Read-only: the launcher mounts the live checkout read-only for these clones.
 unapplied_of() { # cwd live

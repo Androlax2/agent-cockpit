@@ -102,6 +102,15 @@ pub fn dotfiles() -> PathBuf { home().join("dotfiles") }
 /// diff (security audit 2026-10-19, C1).
 pub fn dotfiles_work() -> PathBuf { from_env("CLAUDE_DOTFILES_WORK", home().join("IdeaProjects/dotfiles")) }
 /// Theo's greywall fork, where `claude-todo stack greywall` files problems in greywall's own code.
+/// The repositories whose running copy the host runs with Theo's rights: sessions work in their
+/// clones, and the running copy only takes commits through `cockpit apply`, after Theo read them.
+pub const REVIEWED_REPOSITORIES: [&str; 3] = ["dotfiles", "agent-cockpit", "vitals"];
+pub fn running_copy(repository: &str) -> PathBuf {
+    if repository == "dotfiles" { dotfiles() } else { home().join(repository) }
+}
+pub fn work_clone(repository: &str) -> PathBuf {
+    if repository == "dotfiles" { dotfiles_work() } else { home().join("IdeaProjects").join(repository) }
+}
 pub fn greywall_work() -> PathBuf { from_env("CLAUDE_GREYWALL_WORK", home().join("IdeaProjects/greywall")) }
 /// Theo's greyproxy fork, where `claude-todo stack greyproxy` files problems in greyproxy's own code.
 pub fn greyproxy_work() -> PathBuf { from_env("CLAUDE_GREYPROXY_WORK", home().join("IdeaProjects/greyproxy")) }

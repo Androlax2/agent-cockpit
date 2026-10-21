@@ -20,17 +20,20 @@ mkdir -p -m 700 "${XDG_STATE_HOME:-$HOME/.local/state}/claude-stuck-exits"
 # Created before the sandbox mounts its denyRead entries, even when no FigCraft has started yet.
 mkdir -p -m 700 "$HOME/.config/greywall-agents/figcraft"
 
-# ~/dotfiles is the live checkout: stowed into ~/.local/bin and ~/.config, built and run by the host.
-# A session writing there would run its code with Theo's rights, unreviewed (security audit
-# 2026-10-19, C1). Sessions work in the clone ~/IdeaProjects/dotfiles; cockpit
-# apply-dotfiles brings its commits over after Theo read the diff.
-live_dotfiles=$(cd "$HOME/dotfiles" 2>/dev/null && pwd -P)
-case "$(pwd -P)/" in
-    "$live_dotfiles"/*)
-        echo "$agent launcher: no session in $live_dotfiles, the live checkout the host runs." >&2
-        echo "Work in ~/IdeaProjects/dotfiles (make -C ~/dotfiles dotfiles-work creates it)." >&2
-        exit 1 ;;
-esac
+# ~/dotfiles, ~/agent-cockpit and ~/vitals are running copies: linked into ~/.local/bin and
+# ~/.config, built and run by the host. A session writing there would run its code with Theo's
+# rights, unreviewed (security audit 2026-10-19, C1). Sessions work in a clone,
+# ~/IdeaProjects/<name>; cockpit apply brings its commits over after Theo read the diff.
+reviewed_repositories="dotfiles agent-cockpit vitals"
+for reviewed in $reviewed_repositories; do
+    running_copy=$(cd "$HOME/$reviewed" 2>/dev/null && pwd -P) || continue
+    case "$(pwd -P)/" in
+        "$running_copy"/*)
+            echo "$agent launcher: no session in $running_copy, the running copy the host runs." >&2
+            echo "Work in its clone, ~/IdeaProjects/$reviewed." >&2
+            exit 1 ;;
+    esac
+done
 
 project_root=$(git rev-parse --show-toplevel 2>/dev/null || pwd -P)
 project_root=$(realpath -e -- "$project_root") || exit 1
@@ -132,16 +135,16 @@ if [ -x "$HOME/.local/bin/cockpit-team" ] && ! "$HOME/.local/bin/cockpit-team" p
     echo "$agent launcher: linked-session messaging unavailable until the OSD daemon runs" >&2
 fi
 
-# The work clone and its parallel clones (<clones>/dotfiles/<name>) fetch from the live checkout
-# (their origin) to start from what is applied, and the session hook compares their commits with
-# it for the card's "↑N unapplied". Read-only.
-case "$project_root" in
-    "$HOME/IdeaProjects/dotfiles"|"$clones_dir"/dotfiles/*) is_dotfiles_clone=true ;;
-    *) is_dotfiles_clone=false ;;
-esac
-if [ -n "$live_dotfiles" ] && "$is_dotfiles_clone"; then
-    greywall_options="$greywall_options --allow-read-path $live_dotfiles"
-fi
+# A reviewed repository's work clone and its parallel clones (<clones>/<name>/<clone>) fetch from
+# the running copy (their origin) to start from what is applied, and the session hook compares
+# their commits with it for the card's "↑N unapplied". Read-only.
+for reviewed in $reviewed_repositories; do
+    running_copy=$(cd "$HOME/$reviewed" 2>/dev/null && pwd -P) || continue
+    case "$project_root" in
+        "$HOME/IdeaProjects/$reviewed"|"$clones_dir/$reviewed"/*)
+            greywall_options="$greywall_options --allow-read-path $running_copy" ;;
+    esac
+done
 
 # Greyproxy re-signs HTTPS with a CA the system deliberately does not trust. Greywall hands the
 # sandbox that CA alone (SSL_CERT_FILE), which git, curl, cargo and PHP ignore, so they get a bundle of
