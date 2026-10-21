@@ -17,8 +17,8 @@
 //!        run: <command>                        a command, approved like ask-to-run before it runs
 //!        More text indented under a step continues it.
 //!
-//! Prints what Theo did: his answers, his notes on any step, the commands run with their output,
-//! or where he got stuck and why. Exits 0 when every step is done, 3 when he is stuck, 125 when he
+//! Prints what Theo did: his answers, his notes on any step, the images he pasted (paths to read),
+//! the commands run with their output, or where he got stuck and why. Exits 0 when every step is done, 3 when he is stuck, 125 when he
 //! closed the guide, 124 when the wait runs out (9 minutes; ask-to-guide --wait <id> resumes), 126
 //! when no daemon reads the requests (list the steps in the chat then), 2 for unusable steps.
 //! ASK_TO_GUIDE_WAIT_S overrides the wait (tests).
@@ -96,8 +96,15 @@ fn shown(value: Option<&Value>) -> String {
     }
 }
 
+/// An image claude-guide saved in the answers folder: a plain file name, never a path out of it.
+fn image_path(answers_key: &str, image: &Value) -> Option<std::path::PathBuf> {
+    let name = image.get("file").and_then(Value::as_str)?;
+    let is_plain = name.ends_with(".png") && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.') && !name.starts_with('.');
+    is_plain.then(|| approval::answers_dir(answers_key, "guides").join(name))
+}
+
 /// Prints what Theo did; returns the exit status.
-fn report(result: &Value) -> i32 {
+fn report(answers_key: &str, result: &Value) -> i32 {
     let status = result.get("status").and_then(Value::as_str).unwrap_or("");
     let total = result.get("total").map(|t| shown(Some(t))).unwrap_or_else(|| "?".into());
     match status {
@@ -114,6 +121,11 @@ fn report(result: &Value) -> i32 {
     }
     for answer in result.get("answers").and_then(Value::as_array).into_iter().flatten() {
         println!("\nStep {} asked: {}\nTheo answered: {}", shown(answer.get("step")), shown(answer.get("question")), shown(answer.get("answer")));
+    }
+    for image in result.get("images").and_then(Value::as_array).into_iter().flatten() {
+        if let Some(path) = image_path(answers_key, image) {
+            println!("\nTheo pasted an image on step {} (read it): {}", shown(image.get("step")), path.display());
+        }
     }
     for run in result.get("runs").and_then(Value::as_array).into_iter().flatten() {
         let edited = run.get("edited_command").and_then(Value::as_str).filter(|e| !e.is_empty());
@@ -142,7 +154,7 @@ fn wait_for_result(answers_key: &str, id: &str) -> i32 {
     let deadline = Instant::now() + Duration::from_secs(wait_seconds());
     while Instant::now() < deadline {
         if let Some(result) = std::fs::read_to_string(&path).ok().and_then(|text| serde_json::from_str::<Value>(&text).ok()) {
-            return report(&result);
+            return report(answers_key, &result);
         }
         std::thread::sleep(Duration::from_secs(1));
     }

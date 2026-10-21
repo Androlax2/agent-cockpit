@@ -7,6 +7,8 @@
 //! without Theo's "Run it". The text box under the step is always open: the answer when the step
 //! asks something, else a note to Claude. When every step is done, or Theo is stuck or closes the
 //! guide, the result goes back to Claude; <id>.progress tells a waiting Claude where Theo is.
+//! Ctrl+V attaches the clipboard's PNG image to the step: it is saved beside the result, in the
+//! project's answers folder its sandbox reads, and the result names it.
 //! XDG_RUNTIME_DIR moves the daemon's copies (tests).
 
 use cockpit::app::{put, style, width_of};
@@ -31,7 +33,9 @@ const MAX_AGE_S: i64 = 2 * 3600; // a guide can wait in the queue behind another
 const MAX_STEPS: usize = 60;
 const MAX_TEXT: usize = 2000;
 const STEP_FIELDS: [&str; 6] = ["text", "section", "open", "copy", "ask", "run"];
-const HINTS: [&str; 2] = ["⏎ next   ↑ back   ⌘O open   ⌘Y copy   ⌘R run", "⌘S stuck: send my note now   Esc close"];
+const HINTS: [&str; 2] = ["⏎ next   ↑ back   ⌘O open   ⌘Y copy   ⌘R run", "⌘V image   ⌘S stuck: send my note now   Esc close"];
+const MAX_IMAGE_BYTES: usize = 20 * 1024 * 1024;
+const PNG_SIGNATURE: [u8; 8] = [137, 80, 78, 71, 13, 10, 26, 10];
 const CYAN: u8 = 6;
 const BLUE: u8 = 4;
 const GREEN: u8 = 2;
@@ -103,6 +107,9 @@ struct Guide {
     answers: BTreeMap<usize, String>,
     notes: BTreeMap<usize, String>,
     runs: BTreeMap<usize, Map<String, Value>>,
+    /// The images Theo pasted on each step: file names in the answers folder.
+    images: BTreeMap<usize, Vec<String>>,
+    images_saved: usize,
 }
 
 impl Guide {
@@ -114,7 +121,7 @@ impl Guide {
         // The project comes from the daemon's copy: the one of the folder the session's sandbox started in.
         let project = guide.get("project").and_then(Value::as_str).unwrap_or("?").to_string();
         Guide { id: id.into(), title, steps, project, cwd, answers_folder, position: 0, done: BTreeSet::new(),
-                answers: BTreeMap::new(), notes: BTreeMap::new(), runs: BTreeMap::new() }
+                answers: BTreeMap::new(), notes: BTreeMap::new(), runs: BTreeMap::new(), images: BTreeMap::new(), images_saved: 0 }
     }
 
     fn step(&self) -> &Map<String, Value> {
@@ -156,6 +163,35 @@ impl Guide {
         }
     }
 
+    /// Saves a pasted PNG for the step on screen, readable by the project's sandbox only.
+    fn attach_image(&mut self, png: &[u8]) -> Result<(), String> {
+        use std::os::unix::fs::OpenOptionsExt;
+        if !png.starts_with(&PNG_SIGNATURE) {
+            return Err("the clipboard image is not a PNG".into());
+        }
+        if png.len() > MAX_IMAGE_BYTES {
+            return Err("the image is over 20 MiB".into());
+        }
+        let name = format!("{}-image{}.png", self.id, self.images_saved + 1);
+        let mut file = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(self.answers_folder.join(&name))
+            .map_err(|error| format!("cannot save the image: {error}"))?;
+        file.write_all(png).map_err(|error| format!("cannot save the image: {error}"))?;
+        self.images_saved += 1;
+        self.images.entry(self.position).or_default().push(name);
+        Ok(())
+    }
+
+    /// Takes back the step's last image; false when it has none.
+    fn remove_last_image(&mut self) -> bool {
+        let Some(attached) = self.images.get_mut(&self.position) else { return false };
+        let Some(name) = attached.pop() else { return false };
+        if attached.is_empty() {
+            self.images.remove(&self.position);
+        }
+        let _ = std::fs::remove_file(self.answers_folder.join(name));
+        true
+    }
+
     fn progress(&self) -> Value {
         json!({"step": self.position + 1, "total": self.steps.len(), "done": self.done.len()})
     }
@@ -168,6 +204,7 @@ impl Guide {
             "answers": self.answers.iter().map(|(index, answer)| json!({"step": index + 1, "question": self.steps[*index].get("ask"), "answer": answer})).collect::<Vec<_>>(),
             "notes": self.notes.iter().map(|(index, note)| json!({"step": index + 1, "note": note})).collect::<Vec<_>>(),
             "runs": self.runs.iter().map(|(index, run)| { let mut run = run.clone(); run.insert("step".into(), json!(index + 1)); Value::Object(run) }).collect::<Vec<_>>(),
+            "images": self.images.iter().flat_map(|(index, names)| names.iter().map(move |name| json!({"step": index + 1, "file": name}))).collect::<Vec<_>>(),
         })
     }
 
@@ -227,10 +264,15 @@ fn render_step(guide: &Guide, width: usize) -> Vec<(String, Style)> {
 /// The line(s) above the box: Claude's question, wrapped to the width, or the note hint.
 fn render_question(guide: &Guide, width: usize) -> (Vec<String>, Style) {
     let ask = guide.field("ask");
+    let images = match guide.images.get(&guide.position).map(Vec::len) {
+        Some(1) => " · 1 image".to_string(),
+        Some(count) => format!(" · {count} images"),
+        None => String::new(),
+    };
     if ask.is_empty() {
-        return (vec!["A note for Claude about this step (optional)".to_string()], style(BLUE).add_modifier(Modifier::DIM));
+        return (vec![format!("A note for Claude about this step (optional){images}")], style(BLUE).add_modifier(Modifier::DIM));
     }
-    (approval::wrap(&format!("Claude asks: {}", shown(&ask)), width.max(10)), style(BLUE).add_modifier(Modifier::BOLD))
+    (approval::wrap(&format!("Claude asks: {}{images}", shown(&ask)), width.max(10)), style(BLUE).add_modifier(Modifier::BOLD))
 }
 
 fn draw(buffer: &mut Buffer, guide: &Guide, draft: &str, message: &str) -> (u16, u16) {
@@ -357,6 +399,28 @@ fn copy(value: &str) -> String {
     }
 }
 
+/// The clipboard's PNG image; never its text.
+fn clipboard_png() -> Result<Vec<u8>, String> {
+    let types = Command::new("wl-paste").arg("--list-types").stderr(Stdio::null()).output()
+        .map_err(|error| format!("cannot read the clipboard: {error}"))?;
+    if !String::from_utf8_lossy(&types.stdout).lines().any(|found| found == "image/png") {
+        return Err("no image in the clipboard (⌘⇧V pastes text)".into());
+    }
+    let image = Command::new("wl-paste").args(["--no-newline", "--type", "image/png"]).stderr(Stdio::null()).output()
+        .map_err(|error| format!("cannot read the clipboard: {error}"))?;
+    if !image.status.success() {
+        return Err(format!("cannot read the clipboard: wl-paste exited {}", image.status.code().unwrap_or(-1)));
+    }
+    Ok(image.stdout)
+}
+
+fn paste_image(guide: &mut Guide) -> String {
+    match clipboard_png().and_then(|png| guide.attach_image(&png)) {
+        Ok(()) => "image attached (⌫ on an empty box takes it back)".into(),
+        Err(reason) => reason,
+    }
+}
+
 fn open_link(link: &str) -> String {
     match Command::new("xdg-open").arg(link).stdout(Stdio::null()).stderr(Stdio::null()).spawn() {
         Ok(_) => "opened in the browser".into(),
@@ -423,7 +487,13 @@ fn run_loop(guide: &mut Guide) -> io::Result<String> {
                 guide.move_by(-1);
                 draft = guide.typed();
             }
+            KeyCode::Backspace if draft.is_empty() => {
+                if guide.remove_last_image() {
+                    message = "image removed".into();
+                }
+            }
             KeyCode::Backspace => { draft.pop(); }
+            KeyCode::Char('v') if control => message = paste_image(guide),
             KeyCode::Char('o') if control => {
                 let link = link_of(guide.step());
                 message = if link.is_empty() { "no link on this step".into() } else { open_link(&link) };
@@ -543,6 +613,47 @@ mod tests {
         assert_eq!(link_of(&step(json!({"text": "Go to https://example.com/x."}))), "https://example.com/x.");
         assert_eq!(link_of(&step(json!({"text": "x", "open": "javascript:alert(1)"}))), "");
         assert_eq!(link_of(&step(json!({"text": "x", "open": "file:///etc/passwd"}))), "");
+    }
+
+    fn guide_with_own_folder(name: &str) -> Guide {
+        let folder = std::env::temp_dir().join(format!("claude-guide-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&folder);
+        std::fs::create_dir_all(&folder).unwrap();
+        Guide::new("aaaaaaaaaaaa", &json!({"title": "Key", "cwd": "/", "steps": [{"text": "a"}, {"text": "b"}]}), folder)
+    }
+
+    fn png() -> Vec<u8> {
+        [PNG_SIGNATURE.as_slice(), b"rest"].concat()
+    }
+
+    #[test]
+    fn a_pasted_image_is_saved_beside_the_result_and_named_in_it() {
+        let mut guide = guide_with_own_folder("attach");
+        guide.move_by(1);
+        guide.attach_image(&png()).unwrap();
+        let saved = guide.answers_folder.join("aaaaaaaaaaaa-image1.png");
+        assert_eq!(std::fs::read(&saved).unwrap(), png());
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(std::fs::metadata(&saved).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(guide.result("done", "")["images"], json!([{"step": 2, "file": "aaaaaaaaaaaa-image1.png"}]));
+    }
+
+    #[test]
+    fn a_clipboard_image_that_is_not_a_png_is_refused() {
+        let mut guide = guide_with_own_folder("refuse");
+        assert!(guide.attach_image(b"GIF89a").is_err());
+        assert!(guide.images.is_empty());
+    }
+
+    #[test]
+    fn taking_an_image_back_deletes_it_and_never_reuses_its_name() {
+        let mut guide = guide_with_own_folder("remove");
+        guide.attach_image(&png()).unwrap();
+        assert!(guide.remove_last_image());
+        assert!(!guide.answers_folder.join("aaaaaaaaaaaa-image1.png").exists());
+        assert!(!guide.remove_last_image());
+        guide.attach_image(&png()).unwrap();
+        assert_eq!(guide.images.get(&0), Some(&vec!["aaaaaaaaaaaa-image2.png".to_string()]));
     }
 
     #[test]

@@ -92,6 +92,20 @@ fn a_guide_is_filed_announced_and_its_answers_come_back() {
 }
 
 #[test]
+fn a_pasted_image_comes_back_as_a_path_in_the_answers_folder() {
+    let fixture = AskToGuide::new();
+    let daemon = fixture.listen();
+    let asking = fixture.ask(STEPS, "5");
+    let guide = AskToGuide::filed(&daemon);
+    fixture.write_beside(&guide, "result", json!({"status": "done", "total": 5,
+        "images": [{"step": 2, "file": "aaaaaaaaaaaa-image1.png"}, {"step": 3, "file": "../../etc/passwd.png"}]}));
+    let shown = stdout(&finish(asking, TIMEOUT));
+    let expected = fixture.sandbox.answers("guides").join("aaaaaaaaaaaa-image1.png");
+    assert!(shown.contains(&format!("image on step 2 (read it): {}", expected.display())), "{shown}");
+    assert!(!shown.contains("passwd"), "a file name leaving the answers folder was printed: {shown}");
+}
+
+#[test]
 fn stuck_exits_3_with_the_note() {
     let fixture = AskToGuide::new();
     let daemon = fixture.listen();
