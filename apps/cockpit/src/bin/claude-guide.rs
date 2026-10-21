@@ -224,6 +224,15 @@ fn render_step(guide: &Guide, width: usize) -> Vec<(String, Style)> {
     lines
 }
 
+/// The line(s) above the box: Claude's question, wrapped to the width, or the note hint.
+fn render_question(guide: &Guide, width: usize) -> (Vec<String>, Style) {
+    let ask = guide.field("ask");
+    if ask.is_empty() {
+        return (vec!["A note for Claude about this step (optional)".to_string()], style(BLUE).add_modifier(Modifier::DIM));
+    }
+    (approval::wrap(&format!("Claude asks: {}", shown(&ask)), width.max(10)), style(BLUE).add_modifier(Modifier::BOLD))
+}
+
 fn draw(buffer: &mut Buffer, guide: &Guide, draft: &str, message: &str) -> (u16, u16) {
     let (width, height) = (buffer.area.width as usize, buffer.area.height as usize);
     let counter = format!("step {} of {}", guide.position + 1, guide.steps.len());
@@ -243,16 +252,20 @@ fn draw(buffer: &mut Buffer, guide: &Guide, draft: &str, message: &str) -> (u16,
     }
     let box_lines: Vec<String> = box_lines[box_lines.len().saturating_sub(3)..].to_vec();
     let box_top = height.saturating_sub(4 + box_lines.len() + 3);
-    for (row, (text, line_style)) in render_step(guide, width.saturating_sub(4)).into_iter().take(box_top.saturating_sub(5)).enumerate() {
+    let (mut question_lines, question_style) = render_question(guide, width.saturating_sub(4));
+    // The question may take up to half the room between the header and the box; the step keeps the rest.
+    let question_room = (box_top.saturating_sub(4) / 2).max(1);
+    if question_lines.len() > question_room {
+        question_lines.truncate(question_room);
+        question_lines[question_room - 1].push_str(" …");
+    }
+    let question_top = box_top.saturating_sub(question_lines.len());
+    for (row, (text, line_style)) in render_step(guide, width.saturating_sub(4)).into_iter().take(question_top.saturating_sub(4)).enumerate() {
         put(buffer, 4 + row as u16, 2, &text, line_style);
     }
-    let ask = guide.field("ask");
-    let (question, question_style) = if ask.is_empty() {
-        ("A note for Claude about this step (optional)".to_string(), style(BLUE).add_modifier(Modifier::DIM))
-    } else {
-        (format!("Claude asks: {}", shown(&ask)), style(BLUE).add_modifier(Modifier::BOLD))
-    };
-    put(buffer, box_top.saturating_sub(1) as u16, 2, &question, question_style);
+    for (row, line) in question_lines.iter().enumerate() {
+        put(buffer, (question_top + row) as u16, 2, line, question_style);
+    }
     let rule = "─".repeat(width.saturating_sub(4));
     put(buffer, box_top as u16, 1, &format!("┌{rule}┐"), Style::default().add_modifier(Modifier::DIM));
     for (row, line) in box_lines.iter().enumerate() {
@@ -509,6 +522,19 @@ mod tests {
         let text: String = render_step(&guide, 50).into_iter().map(|(line, _)| line + "\n").collect();
         assert!(!text.contains('\u{202e}') && !text.contains('\u{1b}'));
         assert!(text.contains("\\u202e") && text.contains("hidden characters"));
+    }
+
+    #[test]
+    fn a_long_question_wraps_instead_of_being_cut_at_the_window_edge() {
+        let ask = "What did cockpit-team answer (or what error did it print)? Paste it whole.";
+        let guide = guide(json!([{"text": "Paste this prompt", "ask": ask}]));
+        let mut buffer = Buffer::empty(ratatui::layout::Rect::new(0, 0, 40, 30));
+        draw(&mut buffer, &guide, "", "");
+        let screen: String = (0..buffer.area.height)
+            .map(|row| (0..buffer.area.width).map(|column| buffer[(column, row)].symbol()).collect::<String>())
+            .collect::<Vec<_>>().join(" ");
+        let words_on_screen: Vec<&str> = screen.split_whitespace().collect();
+        assert!(words_on_screen.windows(2).any(|pair| pair == ["Paste", "it"]) && words_on_screen.contains(&"whole."), "{screen}");
     }
 
     #[test]
