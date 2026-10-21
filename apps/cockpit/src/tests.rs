@@ -783,6 +783,21 @@ fn continuity_new_questions_and_command_requests_invalidate_an_old_deferral() {
 }
 
 #[test]
+fn continuity_a_deferred_question_answered_elsewhere_leaves_nothing_needing_you() {
+    let fixture = Fixture::new();
+    let mut row = continuity_question_row(SESSION_A,"Which provider?");
+    fixture.snapshot(json!([row.clone()]));
+    let mut app = fixture.app();
+    continuity_action(&mut app,"1\tdefer-20m",&[]);
+    row["state"] = json!("waiting");
+    row["needs_input"] = json!(false);
+    fixture.snapshot(json!([row]));
+    app.build();
+    let rows = buffer_rows(&render(&mut app,110,45)).join("\n");
+    assert!(rows.contains("Nothing needs you"), "{rows}");
+}
+
+#[test]
 fn continuity_nondeferrable_requests_are_never_approved_or_hidden() {
     for case in ["approval","input","running","permission","unknown","working","ready"] {
         let fixture = Fixture::new();
