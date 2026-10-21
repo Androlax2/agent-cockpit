@@ -2162,12 +2162,12 @@ fn a_waiting_session_gaining_its_senders_pane_publishes_the_target() {
     let mut bench = Bench::new();
     bench.world.borrow_mut().sender_targets.insert(500, target(&[]));
     let report = || parse_session(&json!({"session": SESSION_A, "project": "p", "state": "waiting"}).to_string()).unwrap();
-    bench.registry.report_from(report(), 500);
+    bench.registry.report_from(report(), 500).unwrap();
     assert!(bench.snapshot()[0].get("tmux_pane").is_none());
     let since = bench.registry.sessions[SESSION_A].since;
 
     bench.world.borrow_mut().sender_targets.insert(500, target(&[("tmux_pane", "%7")]));
-    bench.registry.report_from(report(), 500);
+    bench.registry.report_from(report(), 500).unwrap();
 
     let row = &bench.snapshot()[0];
     assert_eq!(row["tmux_pane"], "%7");

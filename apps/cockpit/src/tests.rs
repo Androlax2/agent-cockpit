@@ -1127,7 +1127,7 @@ fn reported_and_unreported_tmux_sessions_are_listed() {
     let fixture = Fixture::new();
     fixture.snapshot(json!([session(SESSION_A, "waiting", "runway", "/r/runway", 1)]));
     fixture.shim("tmux", "printf 'claude-retry-7\\t%%5\\t/r/opusline\\t✳ Fix login\\t100\\nother\\t%%6\\t/x\\tsh\\t1\\n'");
-    let mut app = fixture.app();
+    let app = fixture.app();
     assert_eq!(app.sessions.iter().map(|s| (s.project.as_str(), s.state.as_str())).collect::<Vec<_>>(), vec![("runway", "waiting"), ("opusline", "unknown")]);
     assert_eq!(app.sessions[1].task, "Fix login");
 }
