@@ -1217,7 +1217,8 @@ clone_for() { # source-dir name -> prints the clone's path, created on first use
     clone="$CLONES_DIR/$repository/$name"
     if [[ ! -d $clone/.git ]]; then
         mkdir -p "$CLONES_DIR/$repository"
-        git clone --quiet "$top" "$clone" >&2 || return 1
+        # --no-local: objects are copied through git's own transport, never hard-linked or borrowed.
+        git clone --quiet --no-local "$top" "$clone" >&2 || return 1
         if origin=$(git -C "$top" remote get-url origin 2>/dev/null); then
             git -C "$clone" remote set-url origin "$origin"
         fi
@@ -1315,6 +1316,12 @@ team_spawn_session() { # token role dir commit|- brief
     # A folder per start: a copy another QA had, with its leftovers, is no fresh copy at the commit.
     local name="qa-${commit:0:12}-${token:0:8}" top
     top=$(git -C "$directory" rev-parse --show-toplevel) || return 1
+    # An agent's handoff makes the host clone this folder, which its session could rewrite: only a
+    # plain repository, holding its own objects (no .git file pointing elsewhere, no alternates).
+    if [[ ! -d $top/.git || -L $top/.git || -e $top/.git/objects/info/alternates ]]; then
+        echo "claude-sessions: $top is not a plain repository with its own objects; QA is not copied from it" >&2
+        return 1
+    fi
     if [[ -e $CLONES_DIR/$(clone_repository "$top")/$name ]]; then
         echo "claude-sessions: $name already exists; QA starts only in a fresh copy" >&2
         return 1

@@ -3201,3 +3201,24 @@ fn a_team_start_keeps_its_brief_and_token_out_of_the_log() {
     assert!(lines.iter().any(|line| line.contains("team-spawn designer")), "{lines:?}");
     assert!(lines.iter().all(|line| !line.contains("secret") && !line.contains(SPAWN_TOKEN)), "{lines:?}");
 }
+
+#[test]
+fn a_qa_copy_is_refused_from_a_repository_that_borrows_objects_or_points_elsewhere() {
+    // Todo 2cbea1b6: the host clones the Developer's folder, which its session could rewrite.
+    for case in ["alternates", "gitfile"] {
+        let manager = Manager::new();
+        manager.git_repository();
+        let commit = head_commit(&manager);
+        if case == "alternates" {
+            fs::write(manager.project.join(".git/objects/info/alternates"), "/elsewhere/objects\n").unwrap();
+        } else {
+            let real = manager.sandbox.root.join("real-git");
+            fs::rename(manager.project.join(".git"), &real).unwrap();
+            fs::write(manager.project.join(".git"), format!("gitdir: {}\n", real.display())).unwrap();
+        }
+        let clones = manager.sandbox.root.join("clones");
+        let result = manager.run(&["team-spawn", SPAWN_TOKEN, "qa", &path_str(&manager.project), &commit, "Review it"], &[("CLAUDE_SESSIONS_CLONES", &path_str(&clones))]);
+        assert_ne!(result.status.code(), Some(0), "{case}");
+        assert!(manager.tmux_calls("new-session").is_empty(), "{case}");
+    }
+}
