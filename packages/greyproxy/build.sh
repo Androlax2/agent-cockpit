@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Build and install greyproxy from github.com/Androlax2/greyproxy, so our fixes run here before
-# upstream ships them. The fork has no dotfiles branch yet: the pin is v0.4.5's commit, the
-# release installed until now. Each fix lands on that branch and goes upstream as a PR.
+# Build and install greyproxy from the dotfiles branch of github.com/Androlax2/greyproxy: v0.4.5
+# plus the refusal of proxied traffic to greyproxy's own listeners. Without it a sandbox reaches the
+# unauthenticated API on 127.0.0.1:43080 through the proxy and can turn on allow-all.
+# Each fix lands on that branch and goes upstream as a PR.
 #   make greyproxy-patch
 # Move the pins below to the next tip of that branch, or to an upstream release once it ships them.
 # The running service keeps the old binary until it restarts (the script says how).
@@ -10,8 +11,8 @@ set -euo pipefail
 build_dir="${XDG_CACHE_HOME:-$HOME/.cache}/dotfiles-build/greyproxy"
 target="$HOME/.local/bin/greyproxy"
 
-greyproxy_commit=017a3a7e480315443b0c53ffd10575b31b91a0f1 # tag v0.4.5
-greyproxy_sha256=9b207db06aef144e367c02879fa2cd752dd6499af01e1f885428ea0771e3ed03
+greyproxy_commit=059dda7bdfdb12b353261b569d5737ab03501c82 # branch dotfiles
+greyproxy_sha256=c69e7f37ebbd546720cea7e7be05ead8366a3711aa4df56cc2f073a0960bf7dd
 # Plain semver, no +dotfiles: greywall parses this version, treats anything else as outdated, and
 # `greywall setup` would then replace this build with upstream's release. The commit line tells
 # the builds apart.
