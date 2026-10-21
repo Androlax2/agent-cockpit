@@ -4334,6 +4334,87 @@ fn todo_composer_paste_is_text_even_when_it_contains_shortcuts_and_controls() {
     assert_eq!((item.text(), item.notes()), ("qtdjk123 界 fin".into(), "first\nsecond last".into()));
 }
 
+const CLIPBOARD_PNG: &str = r"case $1 in --list-types) echo text/plain; echo image/png ;; *) printf '\211PNG\r\n\032\nimage-bytes' ;; esac";
+
+#[test]
+fn todo_composer_pastes_a_clipboard_image_as_a_marker_in_the_notes() {
+    let fixture = Fixture::new();
+    fixture.shim("wl-paste", CLIPBOARD_PNG);
+    let mut app = fixture.app();
+    app.focus_panel(3);
+    app.handle(Key::Char('t'), &mut FakeScreen::typing(&["/p"]));
+    type_in_app(&mut app, "Fix the header");
+    app.handle(Key::Tab, &mut FakeScreen::default());
+    type_in_app(&mut app, "Looks like this: ");
+    app.handle(Key::Ctrl('v'), &mut FakeScreen::default());
+    type_in_app(&mut app, " and then ");
+    app.handle(Key::Ctrl('v'), &mut FakeScreen::default());
+    app.handle(Key::Ctrl('s'), &mut FakeScreen::default());
+    let item = &TodoList::load().items[0];
+    assert_eq!(item.notes(), "Looks like this: [Image 1] and then [Image 2]");
+    let images = item.images();
+    assert_eq!(images.keys().copied().collect::<Vec<_>>(), vec![1, 2]);
+    for file in images.values() {
+        assert!(fs::read(crate::paths::todo_images().join(file)).unwrap().starts_with(b"\x89PNG\r\n\x1a\n"));
+    }
+}
+
+#[test]
+fn todo_composer_drops_an_image_whose_marker_was_deleted() {
+    let fixture = Fixture::new();
+    fixture.shim("wl-paste", CLIPBOARD_PNG);
+    let mut app = fixture.app();
+    app.focus_panel(3);
+    app.handle(Key::Char('t'), &mut FakeScreen::typing(&["/p"]));
+    type_in_app(&mut app, "Fix the header");
+    app.handle(Key::Ctrl('v'), &mut FakeScreen::default());
+    for _ in 0.."[Image 1]".len() { app.handle(Key::Backspace, &mut FakeScreen::default()); }
+    type_in_app(&mut app, "no image after all");
+    app.handle(Key::Ctrl('s'), &mut FakeScreen::default());
+    let item = &TodoList::load().items[0];
+    assert_eq!(item.notes(), "no image after all");
+    assert!(item.images().is_empty() && !item.0.contains_key("images"));
+}
+
+#[test]
+fn todo_composer_reports_a_clipboard_without_an_image() {
+    let fixture = Fixture::new();
+    fixture.shim("wl-paste", "case $1 in --list-types) echo text/plain ;; *) echo secret ;; esac");
+    let mut app = fixture.app();
+    app.focus_panel(3);
+    app.handle(Key::Char('t'), &mut FakeScreen::typing(&["/p"]));
+    app.handle(Key::Ctrl('v'), &mut FakeScreen::default());
+    let form = buffer_text(&render(&mut app, 60, 30));
+    assert!(form.contains("No image in the clipboard"), "{form}");
+    assert!(fixture.calls("wl-paste").iter().all(|call| call.contains("--list-types")), "text is never read");
+    assert!(!crate::paths::todo_images().exists());
+}
+
+#[test]
+fn a_todo_with_images_tells_the_session_where_to_read_them() {
+    let item = crate::todo::Item(json!({"id": "0123abcd", "text": "Fix the header", "images": {"1": "0123456789abcdef.png"}}).as_object().unwrap().clone());
+    let prompt = crate::todo::prompt_of(&Entry::Typed(item));
+    assert!(prompt.starts_with("Fix the header") && prompt.contains("claude-todo show 0123abcd"), "{prompt}");
+}
+
+#[test]
+fn saving_the_list_removes_old_images_nothing_refers_to() {
+    let _fixture = Fixture::new();
+    let folder = crate::paths::todo_images();
+    fs::create_dir_all(&folder).unwrap();
+    let hour_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(7200);
+    for name in ["0000000000000001.png", "0000000000000002.png", "0000000000000003.png", "keep-me.txt"] {
+        fs::File::create(folder.join(name)).unwrap().set_modified(hour_ago).unwrap();
+    }
+    fs::write(folder.join("0000000000000004.png"), "pasted just now").unwrap();
+    let mut todos = TodoList::load();
+    todos.items.push(crate::todo::Item(json!({"id": "0123abcd", "text": "t", "images": {"1": "0000000000000001.png"}}).as_object().unwrap().clone()));
+    todos.try_save().unwrap();
+    let mut left: Vec<String> = fs::read_dir(&folder).unwrap().map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned()).collect();
+    left.sort();
+    assert_eq!(left, ["0000000000000001.png", "0000000000000004.png", "keep-me.txt"]);
+}
+
 #[test]
 fn todo_composer_keeps_focus_and_draft_at_all_terminal_sizes() {
     let fixture = Fixture::new();

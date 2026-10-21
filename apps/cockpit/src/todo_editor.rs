@@ -3,6 +3,7 @@
 use crate::{app, paths, todo::{Item, TodoList}, util};
 use serde::{Deserialize, Serialize};
 use std::{fs, io};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -37,6 +38,9 @@ pub(crate) struct Draft {
     pub native: Option<NativeText>,
     #[serde(default)]
     pub cancelled: bool,
+    /// Pasted images by marker number; the saved item keeps those its notes still mention.
+    #[serde(default)]
+    pub images: BTreeMap<u32, String>,
 }
 
 fn directory() -> PathBuf { paths::state_dir().join("todo-drafts") }
@@ -46,7 +50,8 @@ impl Draft {
         let draft = Self { token: util::token_hex(6), id: item.map(Item::id).unwrap_or_else(|| util::token_hex(4)),
             project: project.into(), cwd: cwd.into(), is_edit: item.is_some(),
             previous_draft: item.and_then(|item| item.0.get("editor_draft")).and_then(|value| value.as_str()).map(str::to_string),
-            category: item.map(Item::category).unwrap_or(Some(crate::todo::Category::Task)).map(|category| category.as_str().into()), native: None, cancelled: false };
+            category: item.map(Item::category).unwrap_or(Some(crate::todo::Category::Task)).map(|category| category.as_str().into()), native: None, cancelled: false,
+            images: item.map(Item::images).unwrap_or_default() };
         fs::create_dir_all(directory())?;
         let (title, notes, why) = item.map(|item| (item.text(), item.notes(), item.why())).unwrap_or_default();
         fs::write(draft.path("md"), app::editor_text(&title, &notes, &why))?;
@@ -74,6 +79,18 @@ impl Draft {
             return Err(error);
         }
         Ok(())
+    }
+
+    /// Records a stored image under the next free number; that number goes in the notes' marker.
+    pub fn add_image(&mut self, file: String) -> io::Result<u32> {
+        if self.cancelled { return Err(io::Error::other("cancelled draft only permits cleanup")); }
+        let number = self.images.keys().next_back().map_or(1, |last| last + 1);
+        self.images.insert(number, file);
+        if let Err(error) = self.persist() {
+            self.images.remove(&number);
+            return Err(error);
+        }
+        Ok(number)
     }
 
     pub fn cancel(&mut self) -> io::Result<()> {
@@ -128,6 +145,16 @@ impl Draft {
         }
         Ok(saved)
     }
+}
+
+/// The images open drafts hold: kept while their form may still save them.
+pub(crate) fn draft_images() -> Vec<String> {
+    let Ok(entries) = fs::read_dir(directory()) else { return Vec::new() };
+    entries.flatten().map(|entry| entry.path())
+        .filter(|path| path.extension().and_then(|extension| extension.to_str()) == Some("json"))
+        .filter_map(|path| serde_json::from_str::<Draft>(&fs::read_to_string(path).ok()?).ok())
+        .flat_map(|draft| draft.images.into_values())
+        .collect()
 }
 
 pub(crate) fn recover(todos: &mut TodoList) -> io::Result<Option<usize>> {

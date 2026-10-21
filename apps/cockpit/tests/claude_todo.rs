@@ -230,6 +230,19 @@ fn list_and_show_expose_kinds_including_legacy_tasks() {
 }
 
 #[test]
+fn show_lists_the_paths_of_pasted_images_and_skips_malformed_ones() {
+    let sandbox = Sandbox::new();
+    fs::write(sandbox.state.join("todo.json"), json!({"items": [
+        {"id": "0123abcd", "project": "runway", "text": "header", "notes": "Like [Image 1]",
+         "images": {"1": "0123456789abcdef.png", "2": "../../.ssh/id_ed25519"}}
+    ]}).to_string()).unwrap();
+    let shown = stdout(&claude_todo(&sandbox, &["show", "0123abcd"], &sandbox.root));
+    let expected = format!("[Image 1] {}", sandbox.state.join("todo-images/0123456789abcdef.png").display());
+    assert!(shown.contains(&expected), "{shown}");
+    assert!(!shown.contains("[Image 2]") && !shown.contains(".ssh"), "{shown}");
+}
+
+#[test]
 fn blocked_without_what_stopped_it_is_refused() {
     let sandbox = Sandbox::new();
     assert_eq!(claude_todo(&sandbox, &["blocked", "Push the release tag"], &sandbox.root).status.code(), Some(2));

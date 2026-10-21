@@ -14,14 +14,14 @@
 //!                                     another part of Theo's setup kept you from doing something;
 //!                                     filed in the dotfiles list and queued for its session
 //!     claude-todo delete <id>         remove an item a session filed in this project (never one Theo wrote)
-//!     claude-todo show <id>           an item with its notes and, for a proposal, why
+//!     claude-todo show <id>           an item with its notes, the paths of its pasted images and, for a proposal, why
 //!
 //! An id is a typed item's 8 hex characters, or a GitHub issue as owner/repo#12. The list is read
 //! from ~/.local/state/claude-sessions/todo.json; the sandbox cannot write there, so changes go to
 //! the OSD daemon on its report socket, which queues them with the folder the session's sandbox
 //! started in, and the cockpit's column applies them. CLAUDE_TODO_PATH overrides the list (tests).
 
-use cockpit::{approval, paths};
+use cockpit::{approval, paths, todo_images};
 use cockpit::todo::{Category, Item};
 use cockpit::util::{collapse, now_secs, project_name, repository_root};
 use regex::Regex;
@@ -42,7 +42,7 @@ const USAGE: &str = "    claude-todo list [--all]        the items of this direc
                                     the setup (greywall, claude-sessions, the launcher…) blocked you:
                                     filed in the dotfiles list and queued for its session
     claude-todo delete <id>         remove an item a session filed in this project (never one Theo wrote)
-    claude-todo show <id>           an item with its notes";
+    claude-todo show <id>           an item with its notes and the paths of its pasted images";
 
 fn todo_path() -> PathBuf {
     std::env::var("CLAUDE_TODO_PATH").map(PathBuf::from).unwrap_or_else(|_| paths::todo())
@@ -87,6 +87,14 @@ fn show(id: &str) -> i32 {
         let text = field(key);
         if !text.is_empty() {
             println!("\n{label}:\n{text}");
+        }
+    }
+    let images = item.as_object().map(|fields| Item(fields.clone()).images()).unwrap_or_default();
+    if !images.is_empty() {
+        let list_folder = todo_path().parent().map(PathBuf::from).unwrap_or_default();
+        println!("\nImages (open each with your file reader):");
+        for (number, file) in images {
+            println!("{} {}", todo_images::marker(number), todo_images::path_in(&list_folder, &file).display());
         }
     }
     0

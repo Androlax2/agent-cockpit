@@ -21,6 +21,7 @@ pub mod teams;
 pub mod todo;
 mod todo_editor;
 mod todo_composer;
+pub mod todo_images;
 pub mod usage;
 pub mod util;
 

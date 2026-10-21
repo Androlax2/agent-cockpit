@@ -147,6 +147,7 @@ impl TodoComposer {
         match key {
             Key::Esc => return Outcome::Cancel,
             Key::Ctrl('s') => return Outcome::Save,
+            Key::Ctrl('v') => self.paste_image(),
             Key::Enter if self.focus == 3 => return Outcome::Save,
             Key::Tab => self.focus = (self.focus + 1) % 4,
             Key::BackTab => self.focus = (self.focus + 3) % 4,
@@ -161,6 +162,20 @@ impl TodoComposer {
             _ => {}
         }
         Outcome::Editing
+    }
+
+    /// The clipboard's image goes into the notes as "[Image N]", at the notes' cursor.
+    fn paste_image(&mut self) {
+        let number = crate::todo_images::paste_from_clipboard()
+            .and_then(|file| self.draft.add_image(file).map_err(|error| format!("Cannot keep the image: {error}")));
+        match number {
+            Ok(number) => {
+                self.focus = 2;
+                self.notes.handle(Key::Paste(crate::todo_images::marker(number)), true);
+                self.error.clear();
+            }
+            Err(error) => self.error = error,
+        }
     }
 
     pub fn draw(&self, buffer: &mut Buffer) {
@@ -184,7 +199,7 @@ impl TodoComposer {
         let button = if self.is_cancelling { "[ Esc Retry cleanup ]" } else if self.id.is_some() { "[ Save changes ]" } else { "[ Add TODO ]" };
         put(buffer, height - 4, 2, button, label(3));
         put(buffer, height - 3, 2, &fit(&self.error, inner), style(RED));
-        let hints = if self.is_cancelling { "Esc Retry cleanup · input disabled" } else { "CMD+S Save · Esc Cancel · Tab fields" };
+        let hints = if self.is_cancelling { "Esc Retry cleanup · input disabled" } else { "CMD+S Save · CMD+V Image · Esc Cancel · Tab fields" };
         put(buffer, height - 2, 2, &fit(hints, inner), style(FG_DARK));
     }
 }

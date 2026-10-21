@@ -3749,6 +3749,9 @@ pub(crate) fn todo_details(entry: &Entry) -> String {
             }
             let notes = item.notes();
             text.push_str(&format!("\nNotes\n{}\n", if notes.is_empty() { "(none: e adds some)" } else { notes.as_str() }));
+            for (number, file) in item.images() {
+                text.push_str(&format!("{} {}\n", crate::todo_images::marker(number), crate::todo_images::path_of(&file).display()));
+            }
             text.push_str(if item.status() == todo::PROPOSED { "\nIn the column: y approve · n decline · e edit\n" } else { "\nIn the column: e edit · h hand to a session · d done\n" });
             text
         }

@@ -69,6 +69,7 @@ pub fn usage_archive() -> PathBuf { state_dir().join("usage.sqlite") }
 pub fn alerts() -> PathBuf { state_dir().join("alerts.json") }
 pub fn log() -> PathBuf { state_dir().join("log") }
 pub fn todo() -> PathBuf { state_dir().join("todo.json") }
+pub fn todo_images() -> PathBuf { state_dir().join("todo-images") }
 pub fn team_database() -> PathBuf { crate::audit::dir().join("teams.sqlite") }
 pub fn team_agent_socket() -> PathBuf { runtime_dir().join("claude-team-host/agent.sock") }
 /// Approvals, edits, unlinks: never linked into any sandbox, and the daemon refuses sandboxed peers.
