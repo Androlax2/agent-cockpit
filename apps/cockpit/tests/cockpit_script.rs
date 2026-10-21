@@ -3581,3 +3581,12 @@ fn two_state_folders_are_both_kept_and_the_start_reports_them() {
     assert_eq!(fs::read_to_string(manager.sandbox.state.join("cockpit/todo.json")).unwrap(), "new");
     assert!(manager.log_lines().iter().any(|line| line.contains("ERROR") && line.contains("two state folders")), "{:?}", manager.log_lines());
 }
+
+#[test]
+fn the_old_claude_sessions_name_runs_cockpit() {
+    let manager = Manager::new();
+    let result = manager.sandbox.run(bin().join("claude-sessions"), &["log", "test", "INFO", "through the old name"], &[]);
+    assert!(result.status.success(), "{}", stderr(&result));
+    assert!(manager.log_lines().iter().any(|line| line.contains("through the old name")), "{:?}", manager.log_lines());
+    assert_eq!(stderr(&result), "", "a program reading stderr would take the rename note for an error");
+}
