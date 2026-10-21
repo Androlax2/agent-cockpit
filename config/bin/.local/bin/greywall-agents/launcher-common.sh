@@ -6,8 +6,9 @@
 # Chrome writes its crash reports under the config dir even headless; give it one the sandbox allows.
 export CHROME_CONFIG_HOME="$HOME/.cache/chrome-sandbox"
 mkdir -p "$CHROME_CONFIG_HOME"
-# The report socket's folder (osd-report.socket), mounted whole into the sandbox (greywall.json),
-# so a socket made again is seen at once: greywall mounts only what exists when it starts.
+# The report socket's folder (osd-report.socket), mounted whole and read-only into the sandbox
+# (greywall.json), so a socket made again is seen at once and no session can replace it: greywall
+# mounts only what exists when it starts.
 mkdir -p "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/claude-report"
 # The audit log (claude-audit; security audit 2026-10-19, M6): greywall.json hides it from the
 # sandbox, which greywall does only for a folder that exists when the sandbox starts.

@@ -6,8 +6,8 @@
 # banner message. The daemon keeps the registry, colours the Hyprland window
 # border, feeds the waybar chip and shows the top-centre banners. A swaync toast is only the fallback
 # when the OSD cannot be reached (daemon down, or a sandbox without the FIFO).
-# Runs inside greywall: the session bus is exposed (notifications only) and $XDG_RUNTIME_DIR/claude-report/osd-report.sock
-# must be in allowWrite.
+# Runs inside greywall: the session bus is exposed (notifications only) and $XDG_RUNTIME_DIR/claude-report
+# is in allowRead (connecting needs no more; writable, a session could replace the socket).
 set -euo pipefail
 
 # A nested claude (a `claude -p` that a tool of another session runs) is not a session of yours:

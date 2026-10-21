@@ -15,11 +15,11 @@
       "~/dotfiles/apps/target/release/ask-to-run",
       "~/dotfiles/apps/target/release/ask-to-guide",
       "~/dotfiles/apps/target/release/claude-todo",
-      "~/dotfiles/apps/target/release/claude-design"
+      "~/dotfiles/apps/target/release/claude-design",
+      "/run/user/1000/claude-report"
     ],
     "allowWrite": [
-      "/run/user/1000/osd.fifo",
-      "/run/user/1000/claude-report"
+      "/run/user/1000/osd.fifo"
     ],
     "denyRead": [
       "~/.ssh/id_*",

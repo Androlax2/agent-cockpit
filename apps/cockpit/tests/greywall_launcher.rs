@@ -710,11 +710,20 @@ fn sandboxes_mount_the_report_sockets_folder_never_the_socket_alone() {
     // A socket file mounted alone stays the old one in every running sandbox once the socket is made
     // again: on 2026-10-19 a socket restart cut every session off the daemon.
     let profile: serde_json::Value = serde_json::from_str(&fs::read_to_string(repo().join("config/greywall/.config/greywall/greywall.json")).unwrap()).unwrap();
-    let writable: Vec<&str> = profile["filesystem"]["allowWrite"].as_array().unwrap().iter().filter_map(|path| path.as_str()).collect();
-    assert!(writable.contains(&"/run/user/1000/claude-report"), "{writable:?}");
-    assert!(writable.iter().all(|path| !path.ends_with(".sock")), "{writable:?}");
+    let readable: Vec<&str> = profile["filesystem"]["allowRead"].as_array().unwrap().iter().filter_map(|path| path.as_str()).collect();
+    assert!(readable.contains(&"/run/user/1000/claude-report"), "{readable:?}");
+    assert!(readable.iter().all(|path| !path.ends_with(".sock")), "{readable:?}");
     let unit = fs::read_to_string(repo().join("config/systemd/.config/systemd/user/osd-report.socket")).unwrap();
     assert!(unit.contains("ListenStream=%t/claude-report/osd-report.sock"), "{unit}");
+}
+
+#[test]
+fn no_session_can_replace_the_report_socket_every_other_session_connects_to() {
+    // A session writing the folder could remove the daemon's socket and listen in its place: it would
+    // read every project's reports and requests and answer them (review of 2026-10-21, todo 6ca343ca).
+    let profile: serde_json::Value = serde_json::from_str(&fs::read_to_string(repo().join("config/greywall/.config/greywall/greywall.json")).unwrap()).unwrap();
+    let writable: Vec<&str> = profile["filesystem"]["allowWrite"].as_array().unwrap().iter().filter_map(|path| path.as_str()).collect();
+    assert!(writable.iter().all(|path| !path.contains("claude-report")), "{writable:?}");
 }
 
 #[test]
