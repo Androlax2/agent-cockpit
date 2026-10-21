@@ -298,7 +298,57 @@ fn help_says_work_for_another_project_is_proposed_with_its_name() {
     let output = claude_todo(&sandbox, &["--help"], &sandbox.root);
     let usage = String::from_utf8_lossy(&output.stdout);
     assert!(usage.contains("[--project <name>]"), "{usage}");
-    assert!(usage.contains("add files only in this directory's project"), "{usage}");
+    assert!(usage.contains("add names only a linked project"), "{usage}");
+}
+
+/// A checkout named after a project, where claude-todo runs as that project's session.
+fn checkout(sandbox: &Sandbox, project: &str) -> std::path::PathBuf {
+    let folder = sandbox.root.join(project);
+    fs::create_dir_all(folder.join(".git")).unwrap();
+    folder
+}
+
+#[test]
+fn add_names_a_linked_project_and_the_items_it_waits_on() {
+    let sandbox = Sandbox::new();
+    let daemon = daemon(&sandbox, "ok");
+    let greywall = checkout(&sandbox, "greywall");
+    let output = claude_todo(&sandbox, &["add", "client secret", "--project", "greyproxy", "--after", "0123abcd", "--after", "4567abcd"], &greywall);
+    assert_eq!(output.status.code(), Some(0), "{}", String::from_utf8_lossy(&output.stderr));
+    let sent = updates(&daemon).remove(0);
+    assert_eq!((sent["action"].clone(), sent["project"].clone(), sent["after"].clone()), (json!("add"), json!("greyproxy"), json!(["0123abcd", "4567abcd"])));
+}
+
+#[test]
+fn add_refuses_a_project_outside_the_links_before_reaching_the_daemon() {
+    let sandbox = Sandbox::new();
+    let daemon = daemon(&sandbox, "ok");
+    let output = claude_todo(&sandbox, &["add", "strict mode", "--project", "dotfiles"], &checkout(&sandbox, "greywall"));
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("not linked"), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(updates(&daemon).is_empty());
+}
+
+#[test]
+fn after_takes_item_ids_only() {
+    let sandbox = Sandbox::new();
+    let daemon = daemon(&sandbox, "ok");
+    for arguments in [&["after", "0123abcd"][..], &["after", "0123abcd", "o/r#1"], &["add", "x", "--after", "nope"]] {
+        assert_eq!(claude_todo(&sandbox, arguments, &sandbox.root).status.code(), Some(2), "{arguments:?}");
+    }
+    assert_eq!(claude_todo(&sandbox, &["after", "0123abcd", "4567abcd"], &sandbox.root).status.code(), Some(0));
+    let sent = updates(&daemon);
+    assert_eq!(sent.len(), 1);
+    assert_eq!((sent[0]["action"].clone(), sent[0]["id"].clone(), sent[0]["after"].clone()), (json!("after"), json!("0123abcd"), json!(["4567abcd"])));
+}
+
+#[test]
+fn done_carries_the_sessions_summary() {
+    let sandbox = Sandbox::new();
+    let daemon = daemon(&sandbox, "ok");
+    assert_eq!(claude_todo(&sandbox, &["done", "0123abcd", "--summary", "branch x, PR #3"], &sandbox.root).status.code(), Some(0));
+    let sent = updates(&daemon).remove(0);
+    assert_eq!((sent["action"].clone(), sent["summary"].clone()), (json!("done"), json!("branch x, PR #3")));
 }
 
 #[test]

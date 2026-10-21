@@ -63,7 +63,7 @@ pub fn candidates(session: &Session, todos: &TodoList, issues: &[Issue], checkou
     let project = util::project_name(&util::repository_root(&session.cwd));
     let mut entries: Vec<_> = todos.items.iter()
         .filter(|item| util::project_name(&util::repository_root(&item.cwd())) == project
-            && item.status() == "todo" && todos.is_queued(&item.id()) && item.is_design() == (session.role == "designer"))
+            && item.status() == "todo" && todos.is_queued(&item.id()) && !item.is_waiting() && item.is_design() == (session.role == "designer"))
         .map(|item| Entry::Typed(item.clone())).collect();
     for issue in issues.iter().filter(|_| session.role != "designer") {
         let matches = if session.repository.is_empty() {

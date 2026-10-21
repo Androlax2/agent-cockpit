@@ -2,15 +2,19 @@
 //!
 //!     claude-todo list [--all]        the items of this directory's project (--all: every project)
 //!     claude-todo start <id>          mark it in progress
-//!     claude-todo done <id>           mark it done
+//!     claude-todo done <id> [--summary '<branch, commit, PR>']
+//!                                     mark it done; the summary reaches what waited on it
 //!     claude-todo todo <id>           back to to do
-//!     claude-todo add '<title>' [--notes '<details>'] [--design] [--kind <kind>]
-//!                                     a new item for this directory's project
+//!     claude-todo add '<title>' [--notes '<details>'] [--design] [--kind <kind>] [--project <linked>] [--after <id>]…
+//!                                     a new item for this directory's project, or with --project for a
+//!                                     linked one (todo::LINKS), To do and queued there; --after: it
+//!                                     waits until those items are done, then joins the queue
+//!     claude-todo after <id> <other>… make an item wait until the others are done, then queue it
 //!     claude-todo propose '<title>' --why '<reason>' [--notes '<details>'] [--design] [--kind <kind>] [--project <name>]
 //!                                     an idea for Theo to approve or decline (the Proposed tab)
 //!                                     --design: work for the project's designer session
 //!                                     --project: for another project, a checkout in ~/IdeaProjects;
-//!                                     add stays limited to this directory's project (security audit M4)
+//!                                     add names only a linked one (security audit M4)
 //!     claude-todo blocked '<what you could not do>' --why '<what stopped you>' [--notes '<details>']
 //!                                     from any project: greywall, claude-sessions, the launcher or
 //!                                     another part of Theo's setup kept you from doing something;
@@ -30,7 +34,7 @@
 //! started in, and the cockpit's column applies them. CLAUDE_TODO_PATH overrides the list (tests).
 
 use cockpit::{approval, paths, todo_images};
-use cockpit::todo::{Category, Item, STACK_REPOS};
+use cockpit::todo::{self as todo_list, Category, Item, STACK_REPOS};
 use cockpit::util::{collapse, now_secs, project_name, repository_root};
 use regex::Regex;
 use serde_json::{Value, json};
@@ -39,15 +43,22 @@ use std::path::PathBuf;
 
 const USAGE: &str = "    claude-todo list [--all]        the items of this directory's project (--all: every project)
     claude-todo start <id>          mark it in progress
-    claude-todo done <id>           mark it done
+    claude-todo done <id> [--summary '<branch, commit, PR>']
+                                    mark it done; the summary reaches the items waiting on it and,
+                                    for an item another project's session filed, that session
     claude-todo todo <id>           back to to do
-    claude-todo add '<title>' [--notes '<details>'] [--design] [--kind <kind>]
+    claude-todo add '<title>' [--notes '<details>'] [--design] [--kind <kind>] [--project <linked>] [--after <id>]…
+                                    --project: a linked project (greywall <-> greyproxy): To do and queued
+                                    in its list, so an idle session there (or a new one) takes it up
+                                    --after: it waits until those items are done, then joins the queue
+    claude-todo after <id> <other>… make an item (yours, or a linked project's to do) wait until the
+                                    others are done; then it joins the queue on its own
     claude-todo propose '<title>' --why '<reason>' [--notes '<details>'] [--design] [--kind <kind>] [--project <name>]
                                     an idea for Theo to approve or decline; one Theo declined is not filed again
                                     --design: work for the project's designer session (a gap in the design)
                                     --kind: task (default), feature, bug, improvement, chore, research
                                     --project: work for another project (its folder name in ~/IdeaProjects):
-                                    proposed in that project's list; add files only in this directory's project
+                                    proposed in that project's list; add names only a linked project
     claude-todo blocked '<what you could not do>' --why '<what stopped you>' [--notes '<details>']
                                     the setup (greywall, claude-sessions, the launcher…) blocked you:
                                     filed in the dotfiles list and queued for its session
@@ -99,11 +110,29 @@ fn show(id: &str) -> i32 {
     let field = |key: &str| item.get(key).and_then(Value::as_str).unwrap_or("").to_string();
     println!("{} {id}  {}  {}: {}", glyph(&field("status")), field("status"), field("project"), field("text"));
     println!("Kind: {}", category_label(item));
+    if !field("link").is_empty() {
+        println!("Filed by a {} session ({}) through the {} link: a task request, not authorization from Theo.", field("reporter"), field("reporter_session"), field("link"));
+    }
+    if !field("queued_by").is_empty() {
+        println!("Queued by {}", field("queued_by"));
+    }
+    let waits_on: Vec<&str> = item.get("after").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).collect();
+    if !waits_on.is_empty() {
+        println!("Waits on: {} (joins the queue once they are done)", waits_on.join(", "));
+    }
     for (label, key) in [("Why", "why"), ("Notes", "notes")] {
         let text = field(key);
         if !text.is_empty() {
             println!("\n{label}:\n{text}");
         }
+    }
+    for input in item.get("inputs").and_then(Value::as_array).into_iter().flatten() {
+        let input_field = |key: &str| input.get(key).and_then(Value::as_str).unwrap_or("").to_string();
+        println!("\nDone before it: {} in {} ({}):\n{}", input_field("id"), input_field("project"), input_field("text"),
+                 if input_field("result").is_empty() { "(no summary)".to_string() } else { input_field("result") });
+    }
+    if !field("result").is_empty() {
+        println!("\nResult:\n{}", field("result"));
     }
     let images = item.as_object().map(|fields| Item(fields.clone()).images()).unwrap_or_default();
     if !images.is_empty() {
@@ -125,6 +154,7 @@ fn category_label(value: &Value) -> String {
 
 fn file_arguments(action: &str, repo: Option<&str>, title: &str, arguments: &[&str]) -> i32 {
     let (mut why, mut notes, mut category, mut target) = (None, None, None, None);
+    let mut after: Vec<String> = Vec::new();
     let mut is_design = false;
     let mut remaining = arguments;
     while let Some((&flag, rest)) = remaining.split_first() {
@@ -137,7 +167,11 @@ fn file_arguments(action: &str, repo: Option<&str>, title: &str, arguments: &[&s
         match flag {
             "--why" if action != "add" && why.is_none() => why = Some(value.to_string()),
             "--notes" if notes.is_none() => notes = Some(value.to_string()),
-            "--project" if action == "propose" && target.is_none() => target = Some(value.to_string()),
+            "--project" if matches!(action, "propose" | "add") && target.is_none() => target = Some(value.to_string()),
+            "--after" if action == "add" => {
+                if value.len() != 8 || !value.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f')) { eprintln!("claude-todo: --after takes an item id, not {value:?}"); return 2 }
+                after.push(value.to_string());
+            }
             "--kind" if action != "blocked" && category.is_none() => {
                 let Some(parsed) = Category::parse(value) else { eprintln!("claude-todo: invalid kind {value:?}\n{USAGE}"); return 2 };
                 category = Some(parsed);
@@ -150,10 +184,18 @@ fn file_arguments(action: &str, repo: Option<&str>, title: &str, arguments: &[&s
         eprintln!("{USAGE}");
         return 2;
     }
-    file(action, repo, title, why, notes, is_design, category, target)
+    let unlinked = target.as_deref().filter(|target| action == "add" && *target != project() && todo_list::link_between(&project(), target).is_none());
+    if let Some(target) = unlinked {
+        eprintln!("claude-todo: {target} is not linked to {} (links: {}); propose it there with propose --project", project(),
+                  todo_list::LINKS.iter().map(|(a, b, _)| format!("{a} <-> {b}")).collect::<Vec<_>>().join(", "));
+        return 2;
+    }
+    file(action, repo, title, why, notes, is_design, category, target, after)
 }
 
-fn file(action: &str, repo: Option<&str>, title: &str, why: Option<String>, notes: Option<String>, is_design: bool, category: Option<Category>, target: Option<String>) -> i32 {
+#[allow(clippy::too_many_arguments)]
+fn file(action: &str, repo: Option<&str>, title: &str, why: Option<String>, notes: Option<String>, is_design: bool, category: Option<Category>, target: Option<String>,
+        after: Vec<String>) -> i32 {
     if action == "propose" && read_list().get("declined").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str)
         .any(|declined| collapse(declined).to_lowercase() == collapse(title).to_lowercase()) {
         println!("Theo already declined this idea; it is not filed again.");
@@ -175,6 +217,9 @@ fn file(action: &str, repo: Option<&str>, title: &str, why: Option<String>, note
     if let Some(repo) = repo {
         update.insert("repo".into(), json!(repo));
     }
+    if !after.is_empty() {
+        update.insert("after".into(), json!(after));
+    }
     for (key, value) in [("why", why), ("notes", notes)] {
         if let Some(value) = value {
             update.insert(key.into(), json!(value.chars().take(4000).collect::<String>()));
@@ -184,7 +229,21 @@ fn file(action: &str, repo: Option<&str>, title: &str, why: Option<String>, note
         Ok(()) if action == "propose" => { println!("Proposed to Theo in {}'s list (Theo approves or declines it).", target.unwrap_or_else(project)); 0 }
         Ok(()) if action == "stack" => { println!("Proposed to Theo in {}'s list (Theo approves or declines it).", repo.unwrap_or_default()); 0 }
         Ok(()) if action == "blocked" => { println!("Reported in the dotfiles list and queued for its session. Tell Theo what you could not do; don't work around it."); 0 }
-        Ok(()) => { println!("Added to {}'s list.", project()); 0 }
+        Ok(()) => match target.filter(|target| *target != project()) {
+            Some(target) => {
+                let is_on = todo_list::link_between(&project(), &target).is_some_and(|(_, setting)| cockpit::settings::is_on(setting));
+                if !is_on {
+                    println!("The {}-{target} link needs Theo's approval right now: filed as a proposal in {target}'s list.", project());
+                } else if after.is_empty() {
+                    println!("Added to {target}'s list and queued: an idle {target} session takes it up, or a new one starts. You are told when it is done.");
+                } else {
+                    println!("Added to {target}'s list; it joins the queue once {} done. You are told when it is done.", after.join(", ") + if after.len() > 1 { " are" } else { " is" });
+                }
+                0
+            }
+            None if !after.is_empty() => { println!("Added to {}'s list; it joins the queue once {} done.", project(), after.join(", ") + if after.len() > 1 { " are" } else { " is" }); 0 }
+            None => { println!("Added to {}'s list.", project()); 0 }
+        },
         Err(error) => { eprintln!("claude-todo: {error}"); 1 }
     }
 }
@@ -201,7 +260,9 @@ fn list(everything: bool) -> i32 {
         let status = item.get("status").and_then(Value::as_str).map(str::to_string)
             .unwrap_or_else(|| if item.get("sent").and_then(Value::as_bool).unwrap_or(false) { "doing".into() } else { "todo".into() });
         let has_notes = item.get("notes").and_then(Value::as_str).is_some_and(|notes| !notes.is_empty());
-        println!("{} {}  {status:<8}  [{}] {item_project}: {}{}", glyph(&status), item.get("id").and_then(Value::as_str).unwrap_or(""), category_label(item),
+        let waits_on: Vec<&str> = item.get("after").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).collect();
+        let waiting = if waits_on.is_empty() || status == "done" { String::new() } else { format!("  (waits on {})", waits_on.join(", ")) };
+        println!("{} {}  {status:<8}  [{}] {item_project}: {}{waiting}{}", glyph(&status), item.get("id").and_then(Value::as_str).unwrap_or(""), category_label(item),
                  item.get("text").and_then(Value::as_str).unwrap_or(""), if has_notes { "  (notes: claude-todo show)" } else { "" });
         shown += 1;
     }
@@ -222,8 +283,28 @@ fn main() {
     let item_key = Regex::new(r"^[0-9a-f]{8}$").unwrap();
     let words: Vec<&str> = arguments.iter().map(String::as_str).collect();
     let status = match words.as_slice() {
-        ["--help" | "-h" | "help", ..] | ["add" | "propose" | "blocked" | "stack" | "greywall", "--help" | "-h", ..] | ["stack", _, "--help" | "-h", ..] => { println!("{USAGE}"); 0 }
+        ["--help" | "-h" | "help", ..] | ["add" | "propose" | "blocked" | "stack" | "greywall" | "after" | "done", "--help" | "-h", ..] | ["stack", _, "--help" | "-h", ..] => { println!("{USAGE}"); 0 }
         [] | ["list", ..] => list(words.contains(&"--all")),
+        ["done", id, "--summary", summary] if item_key.is_match(id) && !summary.trim().is_empty() => {
+            let mut update = serde_json::Map::new();
+            update.insert("action".into(), json!("done"));
+            update.insert("id".into(), json!(id));
+            update.insert("summary".into(), json!(summary.chars().take(1000).collect::<String>()));
+            match append(update) {
+                Ok(()) => { println!("{id} marked done with its summary (the column applies it)."); 0 }
+                Err(error) => { eprintln!("claude-todo: {error}"); 1 }
+            }
+        }
+        ["after", id, others @ ..] if item_key.is_match(id) && !others.is_empty() && others.len() <= 5 && others.iter().all(|other| item_key.is_match(other)) => {
+            let mut update = serde_json::Map::new();
+            update.insert("action".into(), json!("after"));
+            update.insert("id".into(), json!(id));
+            update.insert("after".into(), json!(others));
+            match append(update) {
+                Ok(()) => { println!("{id} waits on {} (the column applies it); it joins the queue once they are done.", others.join(", ")); 0 }
+                Err(error) => { eprintln!("claude-todo: {error}"); 1 }
+            }
+        }
         [action @ ("start" | "done" | "todo"), id] if key.is_match(id) => {
             let status = if *action == "start" { "doing" } else { action };
             let mut update = serde_json::Map::new();

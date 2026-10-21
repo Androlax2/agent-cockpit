@@ -1003,6 +1003,43 @@ impl App {
                                              &session.session[..8.min(session.session.len())], (now as i64 - session.since) / 60));
             self.message = format!("queue: gave {} its next item", session.project);
         }
+        self.start_sessions_for_handed_work(&context);
+    }
+
+    /// Work a session handed over (across a link, or once what it waited on is done) for a project
+    /// where no session runs: a background session starts for it, as h does, one item per project
+    /// per check. Theo's own Q items keep waiting for a session he starts.
+    fn start_sessions_for_handed_work(&mut self, context: &queue::QueueContext) {
+        if !context.enabled || context.gaming {
+            return;
+        }
+        let running: HashSet<String> = self.all_sessions().iter().map(|session| project_name(&util::repository_root(&session.cwd))).collect();
+        let mut handed: Vec<Entry> = self.todos.items.iter()
+            .filter(|item| item.status() == "todo" && self.todos.is_queued(&item.id()) && !item.queued_by().is_empty() && !item.is_waiting() && !item.is_design())
+            .map(|item| Entry::Typed(item.clone())).collect();
+        handed.sort_by(todo::queue_order);
+        let mut started = HashSet::new();
+        for entry in handed {
+            let Entry::Typed(item) = &entry else { continue };
+            let project = project_name(&util::repository_root(&item.cwd()));
+            if running.contains(&project) || !started.insert(project.clone()) {
+                continue;
+            }
+            let directory = match start_directory(&item.cwd()) {
+                Ok(directory) => directory,
+                Err(error) => { util::log_event("WARN", &format!("queue: cannot start a session for {}: {error}", item.id())); continue }
+            };
+            let agent = match settings::launch_agent() {
+                Ok(agent) => agent,
+                Err(error) => { util::log_event("WARN", &format!("queue: cannot start a session for {}: {error}", item.id())); return }
+            };
+            manager_in_background(&["--agent", &agent, "background", &directory, &todo::with_todo_note(&todo::prompt_of(&entry), &item.id())]);
+            self.todos.set_status(&item.id(), "doing", "");
+            if let Err(error) = self.record_task_assignment(&entry, None) { self.continuity_error = Some(error); }
+            util::log_event("INFO", &format!("queue: no session in {project}, started one for {} ({})", item.id(), item.queued_by()));
+            crate::audit::record("column", "queue.session_started", "ok", serde_json::json!({"id": item.id(), "project": project, "queued_by": item.queued_by()}));
+            self.message = format!("queue: started a session in {project} for handed work");
+        }
     }
 
     /// The project's first queued item still to do: typed items of its project, issues of its
@@ -2348,6 +2385,12 @@ impl App {
                 }
                 if item.is_blocked_report() {
                     right = vec![part(if queued { "⛔Q" } else { "⛔" }, faded.unwrap_or(bold(RED)))];
+                }
+                if !item.link().is_empty() {
+                    right.insert(0, part("↔", faded.unwrap_or(bold(CYAN))));
+                }
+                if item.is_waiting() && !done {
+                    right = vec![part("waits", bold(YELLOW))];
                 }
             }
             let line = match entry {
@@ -3854,7 +3897,10 @@ fn show_in_popup(text: &str) {
 fn todo_context(item: &todo::Item) -> String {
     let category = item.category().map(|category| category.label().to_string()).unwrap_or_else(|| format!("Unknown: {}", item.0["category"]));
     let source = if item.source().is_empty() { "you" } else { "Claude" };
-    let routing = if item.is_design() { " · Design".to_string() } else if item.is_blocked_report() { format!(" · setup report from {}", item.reporter()) } else { " · standard routing".to_string() };
+    let routing = if item.is_design() { " · Design".to_string() }
+        else if item.is_blocked_report() { format!(" · setup report from {}", item.reporter()) }
+        else if !item.link().is_empty() { format!(" · from a {} session ({} link)", item.reporter(), item.link()) }
+        else { " · standard routing".to_string() };
     format!("{category} · {} · {source}{routing}", item.status())
 }
 
@@ -3873,6 +3919,7 @@ pub(crate) fn todo_details(entry: &Entry) -> String {
             if !item.why().is_empty() {
                 text.push_str(&format!("\nWhy Claude proposed it\n{}\n", item.why()));
             }
+            text.push_str(&handoff_details(item));
             let notes = item.notes();
             text.push_str(&format!("\nNotes\n{}\n", if notes.is_empty() { "(none: e adds some)" } else { notes.as_str() }));
             for (number, file) in item.images() {
@@ -3884,6 +3931,27 @@ pub(crate) fn todo_details(entry: &Entry) -> String {
         Entry::Issue { issue, status, .. } => format!("{}#{} {}\n\n{status} · labels: {}\n\n{}\n", issue.repository, issue.number, issue.title,
                                                        issue.labels.join(", "), issue.url),
     }
+}
+
+/// Who handed an item over and what it waits on: the linked todos, for Theo to follow.
+fn handoff_details(item: &todo::Item) -> String {
+    let mut text = String::new();
+    if !item.queued_by().is_empty() {
+        text.push_str(&format!("Queued by {}\n", item.queued_by()));
+    }
+    let after = item.after();
+    if !after.is_empty() {
+        text.push_str(&format!("\nWaits on (joins the queue once they are done; h hands it anyway)\n{}\n", after.join(", ")));
+    }
+    for input in item.inputs() {
+        let field = |key: &str| input.get(key).and_then(serde_json::Value::as_str).unwrap_or("").to_string();
+        text.push_str(&format!("\nDone before it: {} in {} ({})\n{}\n", field("id"), field("project"), field("text"),
+                               if field("result").is_empty() { "(no summary)".to_string() } else { field("result") }));
+    }
+    if !item.result().is_empty() {
+        text.push_str(&format!("\nResult, from its session\n{}\n", item.result()));
+    }
+    text
 }
 
 /// What a key does to a one-line prompt.

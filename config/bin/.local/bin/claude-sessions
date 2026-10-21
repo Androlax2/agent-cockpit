@@ -74,7 +74,8 @@
 #                                runs it (nothing while the setting phone-on-lock is off)
 #   claude-sessions setting <name> [on|off]
 #                                show or change a setting (the sidebar's S): phone-on-lock,
-#                                todo-queue, error-handoff, freeze-while-gaming, idle-lock, daily-digest
+#                                todo-queue, error-handoff, freeze-while-gaming, idle-lock, daily-digest,
+#                                todo-link-greywall-greyproxy (off: linked todos wait for Theo's approval)
 #   claude-sessions remote <id>  toggle Remote Control for one session (the remote action of the sidebar's : list)
 #   claude-sessions restore <dir> <id> […]
 #                                resume those sessions one after the other (the sidebar's B after a reboot)
@@ -809,7 +810,7 @@ PHONE_AWAY="${XDG_RUNTIME_DIR:-/tmp}/claude-remote-away"
 # from the file is on: what the setup did before it had settings. The cockpit's S menu lists the
 # same names (apps/cockpit/src/settings.rs).
 SETTINGS_FILE="${CLAUDE_SESSIONS_STATE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}}/claude-sessions/settings.json"
-KNOWN_SETTINGS=(phone-on-lock todo-queue error-handoff freeze-while-gaming idle-lock daily-digest)
+KNOWN_SETTINGS=(phone-on-lock todo-queue error-handoff freeze-while-gaming idle-lock daily-digest todo-link-greywall-greyproxy)
 LAUNCH_SETTINGS=(default-agent opencode-model opencode-effort)
 
 launch_setting_value() { # name

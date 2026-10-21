@@ -10,13 +10,15 @@ use std::process::Command;
 
 /// Every setting the S menu shows: its name in settings.json and claude-sessions (KNOWN_SETTINGS
 /// there), and what it does.
-pub const SETTINGS: [(&str, &str); 6] = [
+pub const SETTINGS: [(&str, &str); 7] = [
     ("phone-on-lock", "Phone on lock"),
     ("todo-queue", "Todo queue (Q)"),
     ("error-handoff", "Errors to dotfiles"),
     ("freeze-while-gaming", "Freeze while gaming"),
     ("idle-lock", "Lock workspace 6 idle"),
     ("daily-digest", "Daily digest"),
+    // One per todo::LINKS entry; off, what crosses the link waits for Theo's approval.
+    ("todo-link-greywall-greyproxy", "Todos greywall↔greyproxy"),
 ];
 
 pub const LAUNCH_SETTINGS: [(&str, &str); 3] = [
