@@ -418,6 +418,13 @@ pub fn activity_label(session: &Session) -> &'static str {
     }
 }
 
+/// A ready session left alone this long stops reading as "Ready": it is idle, not waiting on you.
+pub const IDLE_AFTER_S: i64 = 30 * 60;
+
+pub fn is_idle(session: &Session, now: i64) -> bool {
+    activity_label(session) == "Ready" && now - session.since >= IDLE_AFTER_S
+}
+
 pub fn activity_text(session: &Session) -> String {
     let request = collapse(&waiting_request(session));
     if !request.is_empty() {

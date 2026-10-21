@@ -1390,7 +1390,8 @@ impl App {
         for (index, session) in running.iter().enumerate() {
             let needs_attention = session.needs_attention();
             let activity = sessions::activity_label(session);
-            let tint = bold(if needs_attention { YELLOW } else { match activity {
+            let is_idle = !needs_attention && sessions::is_idle(session, util::now_secs());
+            let tint = bold(if needs_attention { YELLOW } else if is_idle { FG_DARK } else { match activity {
                 "Working" | "Command running" => BLUE,
                 "Ready" => GREEN,
                 _ => FG_DARK,
@@ -1422,7 +1423,8 @@ impl App {
             } else {
                 vec![segment(0, glyph, tint), segment(2, display_title, bold(FG))]
             };
-            lines.push(Line { segments, right: vec![part(sessions::activity_label(session), tint)], item: Some(index), accent });
+            let activity_badge = if is_idle { format!("Idle {}", util::age(session.since)) } else { activity.to_string() };
+            lines.push(Line { segments, right: vec![part(activity_badge, tint)], item: Some(index), accent });
             let updates = self.continuity.as_ref().ok().map(|state| state.updates()).unwrap_or_default();
             let labels: Vec<&str> = updates.iter().filter(|update| update.session == session.session).map(|update|
                 match update.kind { crate::continuity::UpdateKind::Result => "unseen result", crate::continuity::UpdateKind::Question => "new question" }).collect();
@@ -1599,8 +1601,9 @@ impl App {
         let deferred_questions = sessions.iter().filter(|session| self.session_deferred_until(session, util::now_secs()).is_some()).count();
         let needing = underlying_needing - deferred_questions;
         let working = sessions.iter().filter(|session| !session.needs_attention() && matches!(sessions::activity_label(session), "Working" | "Command running")).count();
-        let ready = sessions.iter().filter(|session| !session.needs_attention() && sessions::activity_label(session) == "Ready").count();
-        let unknown = sessions.len() - underlying_needing - working - ready;
+        let idle = sessions.iter().filter(|session| !session.needs_attention() && sessions::is_idle(session, util::now_secs())).count();
+        let ready = sessions.iter().filter(|session| !session.needs_attention() && sessions::activity_label(session) == "Ready").count() - idle;
+        let unknown = sessions.len() - underlying_needing - working - ready - idle;
         let mut attention: String = if needing == 0 { "Nothing needs you".into() } else { format!("! {needing} need you") };
         if let Ok(continuity) = &self.continuity {
             let unseen = continuity.updates().len();
@@ -1610,6 +1613,9 @@ impl App {
         }
         if self.attention_only { attention += " · attention filter"; }
         let mut counts = format!("{working} working · {ready} ready");
+        if idle > 0 {
+            counts += &format!(" · {idle} idle");
+        }
         if unknown > 0 {
             counts += &format!(" · {unknown} unknown");
         }

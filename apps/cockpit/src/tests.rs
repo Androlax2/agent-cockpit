@@ -1785,7 +1785,9 @@ fn compact_session_cards_separate_task_identity_from_reported_activity() {
     let mut row = session(SESSION_A, "working", "dotfiles", "/r/dotfiles", 1);
     row["task"] = json!("Proceed");
     row["agents"] = json!(3);
-    fixture.snapshot(json!([row, session(SESSION_B, "waiting", "other", "/r/other", 2)]));
+    let mut ready = session(SESSION_B, "waiting", "other", "/r/other", 2);
+    ready["since"] = json!(util::now_secs());
+    fixture.snapshot(json!([row, ready]));
     let app = fixture.app();
     let rows: Vec<_> = app.panels[1].lines.iter().filter(|line| line.item == Some(1)).collect();
     assert_eq!(rows.len(), 2);
@@ -1793,6 +1795,33 @@ fn compact_session_cards_separate_task_identity_from_reported_activity() {
     assert!(rows[1].texts().is_empty(), "ordinary ready sessions reserve a quiet second row");
     assert!(rows[0].right.iter().all(|part| part.text == "Ready"));
     assert!(!texts(&app, 1).iter().any(|line| line.contains("Proceed")));
+}
+
+#[test]
+fn ready_sessions_left_alone_past_the_idle_threshold_show_as_idle_not_ready() {
+    let fixture = Fixture::new();
+    let mut idle = session(SESSION_A, "waiting", "dotfiles", "/r/dotfiles", 1);
+    idle["since"] = json!(util::now_secs() - sessions::IDLE_AFTER_S - 3600);
+    fixture.snapshot(json!([idle]));
+    let app = fixture.app();
+    let card = app.panels[1].lines.iter().find(|line| line.item == Some(0)).unwrap();
+    let badge = card.right.iter().map(|part| part.text.as_str()).collect::<String>();
+    assert!(badge.starts_with("Idle "), "badge was {badge:?}");
+    assert!(card.right.iter().all(|part| part.style.fg != crate::app::style(crate::app::GREEN).fg));
+}
+
+#[test]
+fn session_summary_counts_idle_sessions_apart_from_ready_ones() {
+    let fixture = Fixture::new();
+    let mut idle = session(SESSION_A, "waiting", "dotfiles", "/r/dotfiles", 1);
+    idle["since"] = json!(util::now_secs() - sessions::IDLE_AFTER_S);
+    let mut ready = session(SESSION_B, "waiting", "other", "/r/other", 2);
+    ready["since"] = json!(util::now_secs());
+    fixture.snapshot(json!([idle, ready]));
+    let app = fixture.app();
+    let summary = app.panels[1].fixed_top.iter().map(|line| line.texts()).collect::<Vec<_>>().join("\n");
+    assert!(summary.contains("1 ready · 1 idle"), "summary was {summary:?}");
+    assert!(!summary.contains("unknown"));
 }
 
 fn buffer_rows(buffer: &Buffer) -> Vec<String> {
@@ -1857,6 +1886,7 @@ fn attention_summary_counts_sessions_once_by_their_current_activity() {
     let fixture = Fixture::new();
     let mut rows: Vec<_> = (0..9).map(|index| session(&format!("session-{index}"), if index < 2 { "needs-you" } else if index < 6 { "working" } else { "waiting" }, "dotfiles", "/r/dotfiles", index + 1)).collect();
     rows[0]["ask_to_run"] = json!("approval");
+    for row in &mut rows { row["since"] = json!(util::now_secs()); }
     fixture.snapshot(json!(rows));
     let mut app = fixture.app();
     let rendered = buffer_rows(&render(&mut app, 120, 40)).join("\n");
