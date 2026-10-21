@@ -41,7 +41,9 @@ esac"#);
     }
 
     fn command(&self, directory: &Path, arguments: &[&str], extra: &[(&str, &str)]) -> Command {
-        let mut command = self.sandbox.command(bin().join("craft-open"), &[("CRAFT_OPEN_WAIT_S", "2")]);
+        // Generous: a start returns as soon as its port answers, and a loaded machine (make test while
+        // another session builds) took longer than 2 s to start the fake (todo 0ca1de7a).
+        let mut command = self.sandbox.command(bin().join("craft-open"), &[("CRAFT_OPEN_WAIT_S", "15")]);
         command.env_remove("CRAFT_OPEN_PORT").envs(extra.iter().copied()).args(arguments).current_dir(directory);
         command
     }
@@ -159,7 +161,8 @@ fn a_failed_bind_probe_is_reported_without_starting_a_window() {
 fn a_failed_start_reports_the_private_log_containing_the_child_error() {
     let craft = Craft::new();
     craft.sandbox.shim("figcraft", "echo 'fixture startup failed' >&2; exit 1");
-    let output = craft.run(&["figcraft", "--workspace", "2"], &[]);
+    // It never listens: a short wait, the outcome is the same.
+    let output = craft.run(&["figcraft", "--workspace", "2"], &[("CRAFT_OPEN_WAIT_S", "1")]);
     assert_eq!(output.status.code(), Some(1), "{}{}", stdout(&output), stderr(&output));
     let log = craft.sandbox.home.join(format!(".config/greywall-agents/figcraft/instances/{}/config/startup.log", craft.started_port(0)));
     assert!(stderr(&output).contains(log.to_str().unwrap()), "{}", stderr(&output));
@@ -189,7 +192,9 @@ fn a_new_instance_starts_in_the_dark_theme() {
 #[test]
 fn an_instances_saved_preferences_are_kept_on_restart() {
     let craft = Craft::new();
-    let port = "45123";
+    // A port nothing else holds: a fixed one collided with concurrent runs of this suite.
+    let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port().to_string();
+    let port = port.as_str();
     let preferences = craft.sandbox.home.join(format!(".config/greywall-agents/figcraft/instances/{port}/config/FigCraft/state.json"));
     fs::create_dir_all(preferences.parent().unwrap()).unwrap();
     fs::write(&preferences, "{\"prefs\":{\"theme\":\"light\"}}").unwrap();
@@ -309,8 +314,8 @@ fn simultaneous_opens_of_one_checkout_start_only_one_window() {
     let craft = Craft::new();
     let first = craft.command(&craft.project, &["figcraft", "--workspace", "2"], &[]).spawn().unwrap();
     let second = craft.command(&craft.project, &["figcraft", "--workspace", "2"], &[]).spawn().unwrap();
-    assert!(finish(first, std::time::Duration::from_secs(8)).status.success());
-    assert!(finish(second, std::time::Duration::from_secs(8)).status.success());
+    assert!(finish(first, std::time::Duration::from_secs(30)).status.success());
+    assert!(finish(second, std::time::Duration::from_secs(30)).status.success());
     assert_eq!(craft.sandbox.calls("figcraft").len(), 1);
 }
 
@@ -360,8 +365,8 @@ fn simultaneous_opens_of_different_checkouts_get_distinct_ports() {
     let other = craft.other_project("other");
     let first = craft.command(&craft.project, &["figcraft", "--workspace", "2"], &[]).spawn().unwrap();
     let second = craft.command(&other, &["figcraft", "--workspace", "2"], &[]).spawn().unwrap();
-    assert!(finish(first, std::time::Duration::from_secs(8)).status.success());
-    assert!(finish(second, std::time::Duration::from_secs(8)).status.success());
+    assert!(finish(first, std::time::Duration::from_secs(30)).status.success());
+    assert!(finish(second, std::time::Duration::from_secs(30)).status.success());
     assert_ne!(craft.started_port(0), craft.started_port(1));
 }
 
