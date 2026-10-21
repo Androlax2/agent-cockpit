@@ -2493,6 +2493,61 @@ fn applying_a_command_refuses_to_overwrite_a_personal_file() {
     assert!(stderr(&output).contains("command links"), "{}", stderr(&output));
 }
 
+/// The clone's export becomes one commit adding a Hyprland config file; hyprctl logs, with each
+/// call, whether that file was in the live checkout yet.
+fn export_a_hyprland_change(manager: &Manager, live: &Path, work: &Path) {
+    let file = "config/hyprland/.config/hypr/autostart.lua";
+    fs::create_dir_all(work.join(file).parent().unwrap()).unwrap();
+    fs::write(work.join(file), "-- autostart\n").unwrap();
+    for patch in fs::read_dir(work.join(".outgoing")).unwrap() {
+        fs::remove_file(patch.unwrap().path()).unwrap();
+    }
+    for arguments in [&["add", "config/hyprland"][..], &["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "Add autostart"],
+        &["format-patch", "-q", "origin/main", "-o", ".outgoing"]] {
+        assert!(Command::new("git").arg("-C").arg(work).args(arguments).status().unwrap().success());
+    }
+    manager.sandbox.shim("hyprctl", &format!(r#"if [[ -e {} ]]; then echo "hyprctl-saw written" >> "$SHIM_LOG"; else echo "hyprctl-saw unwritten" >> "$SHIM_LOG"; fi"#,
+                                             live.join(file).display()));
+}
+
+fn hyprland_calls(manager: &Manager) -> Vec<String> {
+    fs::read_to_string(&manager.sandbox.log).unwrap().lines().filter(|line| line.starts_with("hyprctl")).map(str::to_string).collect()
+}
+
+const PAUSE_AUTORELOAD: &str = "hyprctl eval hl.config({ misc = { disable_autoreload = true } })";
+
+#[test]
+fn applying_a_hyprland_change_pauses_autoreload_before_writing_and_reloads_after() {
+    // A reload that read hyprland.lua before the file it requires left the emergency binds (todo 7bea5263).
+    let manager = Manager::new();
+    let (live, work) = dotfiles_pair(&manager);
+    export_a_hyprland_change(&manager, &live, &work);
+    let output = apply_dotfiles(&manager, &live, &work, "y\n");
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(hyprland_calls(&manager), [PAUSE_AUTORELOAD, "hyprctl-saw unwritten", "hyprctl reload", "hyprctl-saw written"]);
+}
+
+#[test]
+fn a_failed_apply_of_a_hyprland_change_turns_autoreload_back_on_without_a_reload() {
+    let manager = Manager::new();
+    let (live, work) = dotfiles_pair(&manager);
+    export_a_hyprland_change(&manager, &live, &work);
+    write_executable(&live.join(".git/hooks/applypatch-msg"), "#!/bin/sh\nexit 1\n");
+    let output = apply_dotfiles(&manager, &live, &work, "y\n");
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    assert_eq!(hyprland_calls(&manager), [PAUSE_AUTORELOAD, "hyprctl-saw unwritten",
+        "hyprctl eval hl.config({ misc = { disable_autoreload = false } })", "hyprctl-saw unwritten"]);
+}
+
+#[test]
+fn applying_no_hyprland_change_leaves_hyprland_alone() {
+    let manager = Manager::new();
+    let (live, work) = dotfiles_pair(&manager);
+    let output = apply_dotfiles(&manager, &live, &work, "y\n");
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert!(!hyprland_calls(&manager).iter().any(|call| call.contains("reload")), "{:?}", hyprland_calls(&manager));
+}
+
 #[test]
 fn apply_dotfiles_still_asks_after_the_pager_quits_early() {
     // q in less before the end of a long patch: the pipe into less broke, and pipefail ended the

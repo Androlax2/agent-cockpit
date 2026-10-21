@@ -1914,6 +1914,29 @@ close_shipped_todos() { # live commit-before-the-apply
     done < <(git -C "$1" log --format='%(trailers:key=Todo,valueonly,separator=%x0a)' "$2..HEAD" | sort -u)
 }
 
+# Hyprland reloads its config whenever one of its files changes. git am writes them one after the
+# other, and a reload that read hyprland.lua before the file it requires left Hyprland on its
+# emergency binds (todo 7bea5263). Autoreload stays off while git am writes; one reload then reads
+# the finished config, which also turns autoreload back on (it is not set there).
+pause_hyprland_autoreload() {
+    if ! hyprctl eval 'hl.config({ misc = { disable_autoreload = true } })' >/dev/null 2>&1; then
+        echo "Could not pause Hyprland's autoreload (is Hyprland running?): if it shows emergency binds afterwards, run hyprctl reload." >&2
+        log_event WARN apply "could not pause Hyprland's autoreload before git am"
+    fi
+}
+
+resume_hyprland_autoreload() { # commit-before-the-apply
+    if git -C "$DOTFILES_LIVE" diff --quiet "$1" HEAD -- config/hyprland; then
+        hyprctl eval 'hl.config({ misc = { disable_autoreload = false } })' >/dev/null 2>&1 && return 0
+        echo "Could not turn Hyprland's autoreload back on: hyprctl reload does." >&2
+    else
+        echo "Reloading Hyprland …"
+        hyprctl reload >/dev/null 2>&1 && return 0
+        echo "Could not reload Hyprland: run hyprctl reload." >&2
+    fi
+    log_event WARN apply "could not resume Hyprland's autoreload after git am"
+}
+
 apply_reviewed() { # [clone]
     local name clone live outgoing copies patch subjects answer count before
     if ! IFS=$'\t' read -r name clone < <(reviewed_clone_of "${1:-$DOTFILES_WORK}"); then
@@ -1974,13 +1997,20 @@ apply_reviewed() { # [clone]
         return 0
     fi
     before=$(git -C "$live" rev-parse HEAD)
+    local touches_hyprland=false
+    if [[ $name == dotfiles ]] && ! GIT_INDEX_FILE="$copies/check.index" git -C "$live" diff --cached --quiet HEAD -- config/hyprland; then
+        touches_hyprland=true
+        pause_hyprland_autoreload
+    fi
     if ! git -C "$live" am --quiet "$copies"/*.patch; then
         git -C "$live" am --abort 2>/dev/null || true
+        if $touches_hyprland; then resume_hyprland_autoreload "$before"; fi
         echo "git am failed: nothing applied." >&2
         log_event WARN apply "git am failed for $count patch(es) for $name"
         audit_event apply dotfiles.failed failed "repository=$name" "patches=$count" "subjects=${subjects//$'\n'/ | }"
         return 1
     fi
+    if $touches_hyprland; then resume_hyprland_autoreload "$before"; fi
     find "$outgoing" -maxdepth 1 -type f -name '*.patch' -delete
     # The card's "↑N unapplied" clears now, not at the session's next turn.
     osd-show session-pushed "$clone" 2>/dev/null || true
