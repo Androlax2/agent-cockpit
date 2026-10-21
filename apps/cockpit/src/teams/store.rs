@@ -84,11 +84,14 @@ pub fn open(path: &Path) -> Result<Connection, TeamError> {
     // Version 2: a proposal can carry recruits (teammates to start on approval) and the agent they run in.
     let columns: Vec<String> = connection.prepare("SELECT name FROM pragma_table_info('proposals')")?
         .query_map([], |row| row.get(0))?.collect::<Result<_, _>>()?;
-    if !columns.iter().any(|column| column == "recruits") {
-        connection.execute_batch("ALTER TABLE proposals ADD COLUMN recruits TEXT NOT NULL DEFAULT '[]';
-            ALTER TABLE proposals ADD COLUMN spawn_agent TEXT NOT NULL DEFAULT '';")?;
+    // One transaction, each column checked on its own: a crash midway leaves nothing half done.
+    let mut migration = String::from("BEGIN IMMEDIATE;");
+    for (column, definition) in [("recruits", "TEXT NOT NULL DEFAULT '[]'"), ("spawn_agent", "TEXT NOT NULL DEFAULT ''")] {
+        if !columns.iter().any(|existing| existing == column) {
+            migration += &format!("ALTER TABLE proposals ADD COLUMN {column} {definition};");
+        }
     }
-    connection.execute_batch("PRAGMA user_version=2;")?;
+    connection.execute_batch(&(migration + "PRAGMA user_version=2; COMMIT;"))?;
     Ok(connection)
 }
 

@@ -1293,3 +1293,16 @@ fn only_theos_brief_is_labelled_as_approved_by_him() {
     let summary = qa.find("Team links implemented.").unwrap();
     assert!(approved < collaborator && collaborator < summary, "{qa}");
 }
+
+#[test]
+fn a_store_left_half_migrated_by_a_crash_still_opens_complete() {
+    // Todo 1adcc24b: the second ALTER TABLE never ran.
+    let sandbox = Sandbox::new();
+    let path = sandbox.root.join("protected/teams.sqlite");
+    drop(store::open(&path).unwrap());
+    let half = rusqlite::Connection::open(&path).unwrap();
+    half.execute_batch("ALTER TABLE proposals DROP COLUMN spawn_agent; PRAGMA user_version=1;").unwrap();
+    drop(half);
+    let connection = store::open(&path).unwrap();
+    connection.prepare("SELECT recruits, spawn_agent FROM proposals").unwrap();
+}
