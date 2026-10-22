@@ -31,7 +31,7 @@ namespace. Each verb is `agent_<name>_<verb>`:
 | `label` | | prints its name for messages ("Claude Code") |
 | `is_session_id` | id | true for an id it reports |
 | `tmux_prefix` | | prints the prefix of its tmux sessions' names (the longest matching prefix wins) |
-| `can` | feature | true if it has `effort`, `billing`, `compact`, `remote` or `redraw` |
+| `can` | feature | true if it has `effort`, `billing`, `compact`, `remote`, `redraw` or `sleep` (exited when idle, resumed by id) |
 | `new` | dir [args] | starts a session in the viewer pane |
 | `new_with_prompt` | dir prompt | the same, with a first message |
 | `background` | dir prompt | starts one out of sight (the error hand-off, `h` on a Todo item) |

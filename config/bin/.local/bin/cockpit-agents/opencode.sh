@@ -16,9 +16,10 @@ OPENCODE_TMUX_PREFIX=claude-retry-opencode-
 agent_opencode_tmux_prefix() { echo "$OPENCODE_TMUX_PREFIX"; }
 
 # Effort restarts, billing, /compact and Remote Control are Claude's. OpenCode changes effort
-# through its native variant picker and redraws itself on a resize (no Ctrl+L redraw).
+# through its native variant picker and redraws itself on a resize (no Ctrl+L redraw). Like
+# Claude, it can be exited when idle and resumed by its id (sleep).
 agent_opencode_can() { # feature
-    [[ $1 == variants ]]
+    [[ $1 == variants || $1 == sleep ]]
 }
 
 # opencode in a tmux session of its own, named like claude-auto-retry's (which is Claude's alone)

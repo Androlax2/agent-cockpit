@@ -76,10 +76,14 @@
 #                                runs it (nothing while the setting phone-on-lock is off)
 #   cockpit setting <name> [on|off]
 #                                show or change a setting (the sidebar's S): phone-on-lock,
-#                                todo-queue, error-handoff, freeze-while-gaming, idle-lock, daily-digest
+#                                todo-queue, error-handoff, freeze-while-gaming, idle-lock, daily-digest,
+#                                idle-sleep (off: idle sessions stay running); idle-sleep-after <minutes>
+#                                (30 or more, default 60) is how long a session idles before it sleeps
 #   cockpit remote <id>          toggle Remote Control for one session (the remote action of the sidebar's : list)
 #   cockpit restore <dir> <id> […]
 #                                resume those sessions one after the other (the sidebar's B after a reboot)
+#   cockpit sleep <id>           exit a session idle at its prompt and keep a note to wake it (asleep/<id>);
+#                                exit 3 and the reason on stderr when it stays awake (a draft, a background shell…)
 #   cockpit compact <id> type /compact into a session waiting at its prompt (the sidebar's C)
 #   cockpit variants <id>
 #                                open opencode's native effort picker and focus its pane (the sidebar's e)
@@ -811,8 +815,8 @@ PHONE_AWAY="${XDG_RUNTIME_DIR:-/tmp}/claude-remote-away"
 # from the file is on: what the setup did before it had settings. The cockpit's S menu lists the
 # same names (apps/cockpit/src/settings.rs).
 SETTINGS_FILE="${COCKPIT_STATE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}}/cockpit/settings.json"
-KNOWN_SETTINGS=(phone-on-lock todo-queue error-handoff freeze-while-gaming idle-lock daily-digest)
-LAUNCH_SETTINGS=(default-agent opencode-model opencode-effort)
+KNOWN_SETTINGS=(phone-on-lock todo-queue error-handoff freeze-while-gaming idle-lock daily-digest idle-sleep)
+LAUNCH_SETTINGS=(default-agent opencode-model opencode-effort idle-sleep-after)
 
 launch_setting_value() { # name
     local fallback=""
@@ -831,6 +835,7 @@ validate_launch_setting() { # name value
         default-agent) [[ -n $2 && " ${AGENTS[*]} " == *" $2 "* ]] ;;
         opencode-model) [[ -z $2 || $2 =~ ^[^/#[:space:][:cntrl:]]+/[^#[:space:][:cntrl:]]+$ ]] ;;
         opencode-effort) [[ -z $2 || $2 =~ ^[^/#[:space:][:cntrl:]]+$ ]] ;;
+        idle-sleep-after) [[ $2 =~ ^[1-9][0-9]{1,5}$ ]] && (( $2 >= 30 )) ;;
     esac || { echo "cockpit: invalid $1: $2" >&2; return 1; }
 }
 
@@ -941,6 +946,135 @@ has_conversation() { # id
         [[ -f $transcript ]] && grep -qs '"type":"user"' "$transcript" && return 0
     done
     return 1
+}
+
+# Sleeping: a session idle at its prompt exits and leaves a note here, its card stays as Asleep, and
+# `cockpit wake` resumes the conversation. Notes live in the state folder (they outlive a reboot)
+# and are not ended-sessions: a sleep is not Theo's decision to end it.
+ASLEEP_DIR="${COCKPIT_STATE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}}/cockpit/asleep"
+
+# Whether anything sits in the prompt of the agent's pane. Only the cursor right after the agent's
+# prompt start, with nothing but blanks or dim text (a placeholder) after it, reads as empty:
+# anything else, or a screen that cannot be read, counts as a draft.
+prompt_has_draft() { # pane agent
+    local LC_ALL=C.UTF-8 # ${#line} and ${line:i:1} count characters, not the bytes of ❯
+    local pane=$1 agent=$2 cursor_x cursor_y line prompt_start
+    local plain= dim_flags= dim=0 index=0 char sequence params codes code step before_cursor after_cursor
+    read -r cursor_x cursor_y < <(tmux display-message -p -t "$pane" '#{cursor_x} #{cursor_y}' 2>/dev/null) || return 0
+    [[ $cursor_x =~ ^[0-9]+$ && $cursor_y =~ ^[0-9]+$ ]] || return 0
+    line=$(tmux capture-pane -p -e -N -t "$pane" -S "$cursor_y" -E "$cursor_y" 2>/dev/null) || return 0
+    prompt_start=$("agent_${agent}_prompt_start") || return 0
+    [[ -n $prompt_start ]] || return 0
+    # The cursor is a column of the screen: read the line without the colour codes in it.
+    while (( index < ${#line} )); do
+        char=${line:index:1}
+        if [[ $char != $'\e' ]]; then
+            plain+=$char dim_flags+=$dim index=$(( index + 1 ))
+            continue
+        fi
+        sequence=${line:index+1}
+        [[ $sequence =~ ^\[([0-9;]*)([@-~]) ]] || return 0
+        index=$(( index + ${#BASH_REMATCH[0]} + 1 ))
+        [[ ${BASH_REMATCH[2]} == m ]] || continue
+        params=${BASH_REMATCH[1]}
+        IFS=';' read -ra codes <<< "${params:-0}"
+        for (( step = 0; step < ${#codes[@]}; step++ )); do
+            code=$(( 10#${codes[step]:-0} ))
+            case $code in
+                2|90) dim=1 ;;
+                0|22|39|3[0-7]|9[1-7]) dim=0 ;;
+                38|48)
+                    [[ $code == 38 ]] && dim=0
+                    # 38;5;n and 38;2;r;g;b carry numbers that are no codes of their own.
+                    case ${codes[step+1]:-} in 5) step=$(( step + 2 )) ;; 2) step=$(( step + 4 )) ;; esac ;;
+            esac
+        done
+    done
+    before_cursor=${plain:0:cursor_x}
+    [[ $before_cursor =~ $prompt_start ]] || return 0
+    after_cursor=${plain:cursor_x}
+    for (( index = 0; index < ${#after_cursor}; index++ )); do
+        char=${after_cursor:index:1}
+        [[ $char == " " || $char == $'\u00a0' || ${dim_flags:cursor_x+index:1} == 1 ]] || return 0
+    done
+    return 1
+}
+
+# "pid comm" of the first shell run by the agent itself (a background command it started: bash
+# under claude), among the pane's descendants. Fails when the processes cannot be read.
+background_shell_of() { # pane
+    local pane_pid table shells
+    pane_pid=$(tmux display-message -p -t "$1" '#{pane_pid}' 2>/dev/null) || return 1
+    [[ $pane_pid =~ ^[0-9]+$ ]] || return 1
+    table=$(timeout 2 ps -eo pid=,ppid=,comm= 2>/dev/null) || return 1
+    shells=$(awk -v root="$pane_pid" '
+        { parent[$1] = $2; name[$1] = $3 }
+        END { for (pid in parent) { ancestor = pid
+                while (ancestor != "" && ancestor != root && ancestor in parent && ancestor != parent[ancestor]) ancestor = parent[ancestor]
+                if (ancestor == root && pid != root && name[pid] ~ /^(bash|sh|zsh|fish|dash)$/ && name[parent[pid]] ~ /^(claude|opencode)$/)
+                    print pid, name[pid] } }' <<< "$table" | sort -n) || return 1
+    printf '%s' "${shells%%$'\n'*}"
+}
+
+# The first reason this session must stay awake, or nothing. Any doubt is a reason.
+sleep_blocker() { # id pane
+    local id=$1 pane=$2 agent shell background_work
+    [[ $(session_field "$id" state) == waiting ]] || { echo "it is not waiting at its prompt"; return; }
+    [[ -z $(session_field "$id" needs_input) ]] || { echo "it needs an answer"; return; }
+    agent=$(agent_of_session "$id")
+    if [[ $agent == claude ]]; then
+        has_conversation "$id" || { echo "it has no conversation to resume yet"; return; }
+        for background_work in background agents; do
+            [[ $(session_field "$id" "$background_work") =~ ^0?$ ]] || { echo "it has $background_work work running"; return; }
+        done
+    fi
+    if prompt_has_draft "$pane" "$agent"; then echo "its prompt holds a draft or cannot be read"; return; fi
+    shell=$(background_shell_of "$pane") || { echo "its processes cannot be read"; return; }
+    [[ -z $shell ]] || echo "it runs a background shell ($shell)"
+}
+
+# Exit 0: asleep. Exit 3: it stays awake (the reason is logged and on stderr). Exit 1: an error.
+# The note is written before the exit, so a session that is gone always has one to wake from; an
+# exit that fails takes the note back.
+sleep_session() { # id
+    local id=$1 pane project agent title since slept_at remote=false reason note temporary
+    [[ $id =~ ^[A-Za-z0-9_-]+$ ]] || { echo "cockpit: invalid session id $id" >&2; return 1; }
+    require_feature "$id" sleep "sleeping" || return 1
+    project=$(session_field "$id" project)
+    pane=$(session_field "$id" tmux_pane)
+    if [[ -z $pane ]]; then reason="it has no tmux pane"; else reason=$(sleep_blocker "$id" "$pane"); fi
+    since=$(session_field "$id" since)
+    [[ -n $reason || $since =~ ^[0-9]+(\.[0-9]+)?$ ]] || reason="its idle time is unknown"
+    if [[ -n $reason ]]; then
+        log_event INFO sleep "$project stays awake: $reason"
+        echo "cockpit: $project stays awake: $reason" >&2
+        return 3
+    fi
+    agent=$(agent_of_session "$id")
+    title=$(session_field "$id" task)
+    [[ $agent == claude ]] && session_is_remote "$id" && remote=true
+    printf -v slept_at '%(%s)T' -1
+    note="$ASLEEP_DIR/$id"
+    # Outside the folder: the column and `cockpit wake` read every file in it as a note.
+    temporary="$(dirname "$ASLEEP_DIR")/.asleep-$id.tmp"
+    mkdir -p "$ASLEEP_DIR"
+    if ! (umask 077; jq -n --arg session "$id" --arg agent "$agent" --arg project "$project" --arg cwd "$(session_field "$id" cwd)" \
+            --arg title "$title" --argjson since "$since" --argjson slept_at "$slept_at" --argjson remote "$remote" \
+            '{session: $session, agent: $agent, project: $project, cwd: $cwd, title: $title, idle_since: ($since | floor),
+              slept_at: $slept_at, remote: $remote}' > "$temporary"); then
+        rm -f "$temporary"
+        echo "cockpit: could not write the note for $id" >&2
+        return 1
+    fi
+    chmod 600 "$temporary"
+    mv -f "$temporary" "$note"
+    if ! exit_session "$id"; then
+        rm -f "$note"
+        log_event WARN sleep "$project did not exit to sleep; its note is removed"
+        return 1
+    fi
+    clear_exited_viewer "$id"
+    log_event INFO sleep "$project asleep after $(( (slept_at - ${since%.*}) / 60 )) min idle"
 }
 
 # Sessions ended on purpose (exit, the sidebar's x): not offered back after a reboot.
@@ -2233,6 +2367,7 @@ case ${1:-attach} in
         clear_exited_viewer "$2"
         mkdir -p "$(dirname "$ENDED_SESSIONS")" && printf '%s\n' "$2" >> "$ENDED_SESSIONS"
         ;;
+    sleep) sleep_session "${2:?usage: cockpit sleep <session-id>}" ;;
     restore) shift; restore_sessions "$@" ;;
     restart-all) shift; restart_sessions "$@" ;;
     background) background_session "${2:?usage: cockpit background <dir> <prompt>}" "${3:?usage: cockpit background <dir> <prompt>}" ;;
@@ -2330,7 +2465,7 @@ case ${1:-attach} in
     doctor) doctor ;;
     handoff) handoff "${2:-on}" ;;
     away) away "${2:-}" ;;
-    setting) setting "${2:?usage: cockpit setting <name> [on|off]}" "${3:-}" ;;
+    setting) setting "${2:?usage: cockpit setting <name> [on|off]}" "${@:3}" ;;
     remote) toggle_remote "${2:?usage: cockpit remote <session-id>}" ;;
     sweep) sweep_caches ;;
     *)

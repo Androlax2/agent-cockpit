@@ -17,7 +17,7 @@ agent_claude_tmux_prefix() { echo "claude-retry-"; }
 
 agent_claude_can() { # feature
     case $1 in
-        effort|billing|compact|remote|redraw) return 0 ;;
+        effort|billing|compact|remote|redraw|sleep) return 0 ;;
         *) return 1 ;;
     esac
 }

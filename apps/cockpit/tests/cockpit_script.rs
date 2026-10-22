@@ -29,13 +29,15 @@ case $1 in
     elif [[ $* == *@role* ]]; then cat "$roles" 2>/dev/null
     else printf '0\n1\n'; fi ;;
   has-session) [[ $3 == "=claude-manager" ]] && exit 0; (( $(grep -c "send-keys" "$SHIM_LOG") < ${SHIM_EXIT_AFTER:-1} )) ;;
-  display-message) if [[ $* == *pane_dead* ]]; then echo 0; elif [[ $* == *pane_active* ]]; then
+  display-message) if [[ $* == *cursor_x* ]]; then echo "${SHIM_CURSOR:-}"; elif [[ $* == *pane_dead* ]]; then echo 0; elif [[ $* == *pane_active* ]]; then
     if [[ $* == *"-t %11 "* ]]; then echo "${SHIM_VIEWER_ACTIVE:-0}"; else echo "${SHIM_APPROVAL_ACTIVE:-0}"; fi
     elif [[ $* == *pane_pid* ]]; then echo "${SHIM_PANE_PID:-}";
     elif [[ $* == *pane_id* ]]; then echo "%10"; elif [[ $* == *pane_width* ]]; then echo "${SHIM_VIEWER_SIZE:-181 47}"; elif [[ $* == *window_width* ]]; then echo "${SHIM_TARGET_SIZE:-181 47}"; elif [[ $* == *pane_height* ]]; then echo "${SHIM_APPROVAL_HEIGHT:-28}"; else echo "claude-retry-9-9"; fi ;;
   split-window) [[ $* == *-P* ]] && echo "%1$(( $(wc -l < "$roles" 2>/dev/null || echo 0) + 1 ))" ;;
   set-option) if [[ $2 == -p && $5 == @role ]]; then echo "$4 $6" >> "$roles"; fi ;;
-  capture-pane) printf '%b' "$SHIM_PANE_TEXT" ;;
+  capture-pane)
+    # -E <row>: only that row of the screen, as tmux prints it.
+    if [[ $* =~ -E\ ([0-9]+) ]]; then printf '%b' "$SHIM_PANE_TEXT" | sed -n "$(( BASH_REMATCH[1] + 1 ))p"; else printf '%b' "$SHIM_PANE_TEXT"; fi ;;
   list-clients) echo "/dev/pts/9" ;;
   kill-pane) if [[ -n $SHIM_PANE_GONE ]]; then echo "can't find pane: $3" >&2; exit 1; fi; [[ -f $roles ]] && sed -i "/^$3 /d" "$roles" ;;
   if-shell) if grep -q "^${6##* } " "$roles"; then read -ra command <<< "$6"; exec "$0" "${command[@]}"; fi ;;
@@ -3759,4 +3761,244 @@ fn apply_runs_the_running_copys_after_apply_target_with_the_commit_before() {
     let output = apply_reviewed(&manager, &work, "y\n");
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
     assert_eq!(fs::read_to_string(&record).unwrap().trim(), before);
+}
+
+const SLEEP_SINCE: u64 = 1_700_000_000;
+const SLEEP_PROCESSES: &str = "  4242     1 fish\n  4300  4242 bash\n  5000  4242 claude\n  5002  5000 git";
+/// The cursor right after the empty prompt of IDLE, where tmux has it.
+const AT_EMPTY_PROMPT: &str = "2 1";
+const SLEEP_ENV: [(&str, &str); 4] = [("SHIM_PANE_TEXT", IDLE), ("SHIM_CURSOR", AT_EMPTY_PROMPT), ("SHIM_PANE_PID", "4242"), ("SHIM_EXIT_AFTER", "1")];
+
+impl Manager {
+    /// Session A waiting at an empty prompt since SLEEP_SINCE; its pane (pid 4242) runs claude under fish.
+    fn with_idle_session(&self) {
+        self.with_idle_session_row(json!({}));
+        self.with_processes(SLEEP_PROCESSES);
+    }
+
+    fn with_idle_session_row(&self, changes: Value) {
+        let mut row = json!({"session": SESSION_A, "state": "waiting", "project": "proj-a", "cwd": path_str(&self.project),
+            "tmux_pane": "%4", "task": "Fix the tests", "since": SLEEP_SINCE});
+        for (field, value) in changes.as_object().unwrap() {
+            row[field] = value.clone();
+        }
+        fs::write(&self.snapshot, json!({"sessions": [row]}).to_string()).unwrap();
+    }
+
+    fn with_processes(&self, table: &str) {
+        self.sandbox.shim("ps", &format!("[[ $1 == -eo ]] && printf '%s\\n' '{table}'"));
+    }
+
+    fn asleep_note(&self, id: &str) -> PathBuf {
+        self.sandbox.state.join("cockpit/asleep").join(id)
+    }
+
+    fn sleep_with(&self, id: &str, changes: &[(&str, &str)]) -> Output {
+        let mut env = SLEEP_ENV.to_vec();
+        for (name, value) in changes {
+            env.retain(|(existing, _)| existing != name);
+            env.push((*name, *value));
+        }
+        self.run(&["sleep", id], &env)
+    }
+}
+
+#[test]
+fn sleep_writes_a_note_and_exits_without_ending_the_session() {
+    let manager = Manager::new();
+    manager.with_idle_session();
+    let result = manager.sleep_with(SESSION_A, &[]);
+    assert_eq!(result.status.code(), Some(0), "{}", stderr(&result));
+    let note: Value = serde_json::from_str(&fs::read_to_string(manager.asleep_note(SESSION_A)).unwrap()).unwrap();
+    assert_eq!(note["session"], SESSION_A);
+    assert_eq!(note["agent"], "claude");
+    assert_eq!(note["project"], "proj-a");
+    assert_eq!(note["cwd"], path_str(&manager.project));
+    assert_eq!(note["title"], "Fix the tests");
+    assert_eq!(note["idle_since"], SLEEP_SINCE);
+    assert_eq!(note["remote"], false);
+    assert!(note["slept_at"].as_u64().unwrap().abs_diff(now_seconds()) < 60);
+    assert_eq!(fs::metadata(manager.asleep_note(SESSION_A)).unwrap().permissions().mode() & 0o777, 0o600);
+    assert_eq!(manager.tmux_calls("send-keys"), ["tmux send-keys -t %4 -l -- /exit", "tmux send-keys -t %4 Enter"]);
+    assert!(!manager.sandbox.state.join("cockpit/ended-sessions").exists());
+    assert_eq!(fs::read_dir(manager.sandbox.state.join("cockpit/asleep")).unwrap().count(), 1, "only the note is left in the folder");
+    assert!(manager.log_lines().iter().any(|line| line.contains("sleep: proj-a asleep after ")), "{:?}", manager.log_lines());
+}
+
+#[test]
+fn sleep_records_remote_control_and_the_viewer_is_cleared() {
+    let manager = Manager::new();
+    manager.with_idle_session();
+    fs::write(manager.statusline_cache().join(format!("statusline-{SESSION_A}.json")), r#"{"remote": true}"#).unwrap();
+    fs::write(manager.runtime_file("cockpit.current"), SESSION_A).unwrap();
+    assert_eq!(manager.sleep_with(SESSION_A, &[]).status.code(), Some(0));
+    let note: Value = serde_json::from_str(&fs::read_to_string(manager.asleep_note(SESSION_A)).unwrap()).unwrap();
+    assert_eq!(note["remote"], true);
+    assert_eq!(fs::read_to_string(manager.runtime_file("cockpit.current")).unwrap(), "");
+}
+
+#[test]
+fn sleep_keeps_a_session_with_a_draft() {
+    for (pane_text, cursor) in [("done\n❯ fix the tests\n", AT_EMPTY_PROMPT), ("done\n❯ fix the tests\n", "9 1"), (IDLE, "")] {
+        let manager = Manager::new();
+        manager.with_idle_session();
+        let result = manager.sleep_with(SESSION_A, &[("SHIM_PANE_TEXT", pane_text), ("SHIM_CURSOR", cursor)]);
+        assert_eq!(result.status.code(), Some(3), "{pane_text:?} {cursor:?}: {}", stderr(&result));
+        assert!(stderr(&result).contains("stays awake"), "{}", stderr(&result));
+        assert!(!manager.asleep_note(SESSION_A).exists());
+        assert!(manager.tmux_calls("send-keys").is_empty());
+        assert!(manager.log_lines().iter().any(|line| line.contains("sleep: proj-a stays awake: ")), "{:?}", manager.log_lines());
+    }
+}
+
+#[test]
+fn sleep_reads_a_dim_placeholder_as_an_empty_prompt() {
+    for placeholder in ["\\e[2mTry \"refactor\"\\e[0m", "\\e[90mTry \"refactor\"\\e[0m", "\\e[1;2mTry\\e[22m \\e[0;2mmore\\e[0m"] {
+        let manager = Manager::new();
+        manager.with_idle_session();
+        let pane_text = format!("done\n❯ {placeholder}\n");
+        let result = manager.sleep_with(SESSION_A, &[("SHIM_PANE_TEXT", &pane_text)]);
+        assert_eq!(result.status.code(), Some(0), "{placeholder}: {}", stderr(&result));
+    }
+}
+
+#[test]
+fn sleep_keeps_a_session_whose_text_after_the_cursor_is_not_dim() {
+    for text in ["fix the tests", "\\e[2mTry\\e[0m typed", "\\e[2mTry\\e[22m typed", "\\e[38;2;2;2;2mTry"] {
+        let manager = Manager::new();
+        manager.with_idle_session();
+        let pane_text = format!("done\n❯ {text}\n");
+        let result = manager.sleep_with(SESSION_A, &[("SHIM_PANE_TEXT", &pane_text)]);
+        assert_eq!(result.status.code(), Some(3), "{text}: {}", stderr(&result));
+    }
+}
+
+#[test]
+fn sleep_keeps_a_session_with_a_background_shell() {
+    let manager = Manager::new();
+    manager.with_idle_session();
+    manager.with_processes(&format!("{SLEEP_PROCESSES}\n  5001  5000 bash"));
+    let result = manager.sleep_with(SESSION_A, &[]);
+    assert_eq!(result.status.code(), Some(3), "{}", stderr(&result));
+    assert!(manager.log_lines().iter().any(|line| line.contains("stays awake") && line.contains("bash")), "{:?}", manager.log_lines());
+    assert!(!manager.asleep_note(SESSION_A).exists());
+}
+
+#[test]
+fn sleep_keeps_a_session_whose_processes_cannot_be_read() {
+    let manager = Manager::new();
+    manager.with_idle_session();
+    manager.sandbox.shim("ps", "exit 1");
+    assert_eq!(manager.sleep_with(SESSION_A, &[]).status.code(), Some(3));
+    let manager = Manager::new();
+    manager.with_idle_session();
+    assert_eq!(manager.sleep_with(SESSION_A, &[("SHIM_PANE_PID", "")]).status.code(), Some(3));
+    assert!(!manager.asleep_note(SESSION_A).exists());
+}
+
+#[test]
+fn sleep_keeps_a_claude_session_with_background_work() {
+    for changes in [json!({"background": 1}), json!({"agents": 2})] {
+        let manager = Manager::new();
+        manager.with_idle_session();
+        manager.with_idle_session_row(changes.clone());
+        let result = manager.sleep_with(SESSION_A, &[]);
+        assert_eq!(result.status.code(), Some(3), "{changes}: {}", stderr(&result));
+        assert!(!manager.asleep_note(SESSION_A).exists());
+    }
+}
+
+#[test]
+fn sleep_keeps_a_session_that_is_not_waiting_or_needs_input() {
+    for changes in [json!({"state": "working"}), json!({"needs_input": true}), json!({"tmux_pane": ""})] {
+        let manager = Manager::new();
+        manager.with_idle_session();
+        manager.with_idle_session_row(changes.clone());
+        let result = manager.sleep_with(SESSION_A, &[]);
+        assert_eq!(result.status.code(), Some(3), "{changes}: {}", stderr(&result));
+        assert!(manager.tmux_calls("send-keys").is_empty());
+    }
+}
+
+#[test]
+fn sleep_keeps_a_claude_session_with_no_conversation() {
+    let manager = Manager::new();
+    manager.with_idle_session();
+    fs::remove_file(manager.sandbox.home.join(format!(".claude/projects/-proj-a/{SESSION_A}.jsonl"))).unwrap();
+    let result = manager.sleep_with(SESSION_A, &[]);
+    assert_eq!(result.status.code(), Some(3), "{}", stderr(&result));
+    assert!(!manager.asleep_note(SESSION_A).exists());
+}
+
+#[test]
+fn sleep_puts_an_opencode_session_to_sleep() {
+    let manager = Manager::new();
+    manager.with_processes("  4242     1 fish\n  5000  4242 opencode");
+    fs::write(&manager.snapshot, json!({"sessions": [{"session": OPENCODE_SESSION, "state": "waiting", "project": "proj-a", "cwd": path_str(&manager.project),
+        "tmux_pane": "%5", "agent": "opencode", "task": "Port it", "since": SLEEP_SINCE}]}).to_string()).unwrap();
+    let result = manager.sleep_with(OPENCODE_SESSION, &[("SHIM_CURSOR", "")]);
+    assert_eq!(result.status.code(), Some(3), "a prompt it cannot read keeps it awake: {}", stderr(&result));
+    let result = manager.sleep_with(OPENCODE_SESSION, &[("SHIM_PANE_TEXT", "done\n┃  \n"), ("SHIM_CURSOR", "3 1")]);
+    assert_eq!(result.status.code(), Some(0), "{}", stderr(&result));
+    let note: Value = serde_json::from_str(&fs::read_to_string(manager.asleep_note(OPENCODE_SESSION)).unwrap()).unwrap();
+    assert_eq!(note["agent"], "opencode");
+    assert_eq!(note["remote"], false);
+}
+
+#[test]
+fn sleep_refuses_codex() {
+    let manager = Manager::new();
+    let codex_session = format!("cdx_{}", "ab".repeat(32));
+    let result = manager.sleep_with(&codex_session, &[]);
+    assert_eq!(result.status.code(), Some(1));
+    assert!(stderr(&result).contains("not Codex CLI's to do"), "{}", stderr(&result));
+}
+
+#[test]
+fn sleep_refuses_an_id_that_is_not_a_session_id() {
+    let manager = Manager::new();
+    for id in ["../../etc/passwd", "a b", "a;b", "a/b", "."] {
+        let result = manager.sleep_with(id, &[]);
+        assert_eq!(result.status.code(), Some(1), "{id}");
+    }
+    assert!(!manager.sandbox.state.join("cockpit/asleep").exists());
+}
+
+#[test]
+fn a_failed_exit_removes_the_sleep_note() {
+    let manager = Manager::new();
+    manager.with_idle_session();
+    manager.sandbox.shim("tmux", &format!(r#"
+if [[ $1 == send-keys || $1 == kill-session ]]; then echo "cannot reach tmux" >&2; exit 1; fi
+{FAKE_TMUX}"#));
+    let result = manager.sleep_with(SESSION_A, &[("SHIM_EXIT_AFTER", "99")]);
+    assert_eq!(result.status.code(), Some(1), "{}", stderr(&result));
+    assert!(!manager.asleep_note(SESSION_A).exists());
+    assert_eq!(fs::read_dir(manager.sandbox.state.join("cockpit")).unwrap().flatten().filter(|entry| entry.file_name().to_string_lossy().starts_with(".asleep")).count(), 0);
+}
+
+#[test]
+fn idle_sleep_after_takes_minutes_of_thirty_or_more() {
+    let manager = Manager::new();
+    let file = manager.sandbox.state.join("cockpit/settings.json");
+    for minutes in ["30", "90"] {
+        let result = manager.run(&["setting", "idle-sleep-after", minutes], &[]);
+        assert!(result.status.success(), "{minutes}: {}", stderr(&result));
+        assert_eq!(stdout(&manager.run(&["setting", "idle-sleep-after"], &[])).trim(), format!("idle-sleep-after: {minutes}"));
+    }
+    let saved = fs::read_to_string(&file).unwrap();
+    for minutes in ["29", "abc", "-5", "", "030", "0", "99999999999999999999"] {
+        let result = manager.run(&["setting", "idle-sleep-after", minutes], &[]);
+        assert!(!result.status.success(), "{minutes:?}");
+        assert!(stderr(&result).contains("invalid idle-sleep-after"), "{minutes:?}: {}", stderr(&result));
+        assert_eq!(fs::read_to_string(&file).unwrap(), saved);
+    }
+}
+
+#[test]
+fn idle_sleep_is_a_switch_that_starts_on() {
+    let manager = Manager::new();
+    assert_eq!(stdout(&manager.run(&["setting", "idle-sleep"], &[])).trim(), "idle-sleep: on");
+    assert!(manager.run(&["setting", "idle-sleep", "off"], &[]).status.success());
+    assert_eq!(stdout(&manager.run(&["setting", "idle-sleep"], &[])).trim(), "idle-sleep: off");
 }
