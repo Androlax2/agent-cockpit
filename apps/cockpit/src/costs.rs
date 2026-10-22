@@ -9,7 +9,7 @@ use crate::sessions;
 use crate::usage;
 use crate::util::{self, money, now, parse_time};
 use chrono::{Datelike, Duration, Local, NaiveDate};
-use rusqlite::{Connection, OpenFlags, Transaction, params};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction, params};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
@@ -57,7 +57,11 @@ create table if not exists replies (
 );
 create index if not exists replies_day on replies (day);
 create table if not exists files (path text primary key, mtime real not null, size integer not null);
+create table if not exists databases (path text primary key, read_until integer not null);
 ";
+/// archive_opencode reads again the messages updated this long (ms) before the newest it read: a
+/// sandbox can commit a message stamped earlier than one another sandbox committed first.
+const OPENCODE_REREAD_MS: i64 = 60_000;
 
 /// The price row of a model id (date-suffixed ids included), or None for an unknown model.
 fn model_prices(model: &str) -> Option<[f64; 5]> {
@@ -254,23 +258,31 @@ pub fn opencode_reply_row(id: &str, session: &str, data: &str, cwd: &str) -> Opt
     })
 }
 
-/// Copies opencode's replies into the archive: every assistant message of its database (opencode 2's
-/// session_message, the folder from session_v2), read-only (its sandboxes write it), the known ones
-/// only corrected. Nothing when opencode never ran. Returns how many rows changed.
+/// Copies opencode's replies into the archive: the assistant messages of its database (opencode 2's
+/// session_message, the folder from session_v2) updated since the last pass, read-only (its
+/// sandboxes write it), the known ones only corrected. Reading every message each minute parsed
+/// over a gigabyte of JSON (todo d3cfe632). Nothing when opencode never ran. Returns how many rows
+/// changed.
 pub fn archive_opencode(archive: &mut Connection, database: &Path) -> rusqlite::Result<usize> {
     if !database.exists() {
         return Ok(0);
     }
+    let key = database.to_string_lossy().into_owned();
+    let read_until: Option<i64> = archive.query_row("select read_until from databases where path = ?", [&key], |row| row.get(0)).optional()?;
     let source = Connection::open_with_flags(database, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     source.busy_timeout(std::time::Duration::from_secs(1))?;
     let mut statement = source.prepare(
-        "select message.id, message.session_id, message.data, session.directory from session_message message
-         join session_v2 session on session.id = message.session_id where message.type = 'assistant'")?;
-    let messages = statement.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?)))?;
+        "select message.id, message.session_id, message.data, session.directory, message.time_updated from session_message message
+         join session_v2 session on session.id = message.session_id where message.type = 'assistant' and message.time_updated >= ?")?;
+    let since = read_until.map_or(i64::MIN, |read_until| read_until - OPENCODE_REREAD_MS);
+    let messages = statement.query_map([since], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?,
+                                                          row.get::<_, String>(3)?, row.get::<_, i64>(4)?)))?;
     let mut projects: HashMap<String, String> = HashMap::new();
     let mut rows = Vec::new();
+    let mut newest = read_until;
     for message in messages {
-        let (id, session, data, cwd) = message?;
+        let (id, session, data, cwd, updated) = message?;
+        newest = newest.max(Some(updated));
         let Some(mut row) = opencode_reply_row(&id, &session, &data, &cwd) else { continue };
         if !row.cwd.is_empty() {
             row.project = projects.entry(row.cwd.clone()).or_insert_with(|| util::project_name(&util::repository_root(&row.cwd))).clone();
@@ -279,6 +291,9 @@ pub fn archive_opencode(archive: &mut Connection, database: &Path) -> rusqlite::
     }
     let transaction = archive.transaction()?;
     let changed = insert_replies(&transaction, &rows)?;
+    if let Some(newest) = newest {
+        transaction.execute("insert or replace into databases values (?, ?)", params![key, newest])?;
+    }
     transaction.commit()?;
     Ok(changed)
 }
@@ -756,17 +771,29 @@ mod tests {
         }
     }
 
+    /// An opencode database with opencode 2.0.26's tables (packages/core/src/session/sql.ts), the
+    /// columns read here, and one session in /x/shop with a user message.
+    fn opencode_database(directory: &Path) -> (PathBuf, Connection) {
+        fs::create_dir_all(directory).unwrap();
+        let database = directory.join("opencode.db");
+        let source = Connection::open(&database).unwrap();
+        source.execute_batch("create table session_v2 (id text primary key, directory text not null);
+            create table session_message (id text primary key, session_id text not null, type text not null, seq integer not null,
+                                          time_updated integer not null, data text not null);
+            insert into session_v2 values ('ses_1', '/x/shop');
+            insert into session_message values ('msg_0', 'ses_1', 'user', 0, 0, '{\"text\": \"hi\"}');").unwrap();
+        (database, source)
+    }
+
+    fn add_opencode_reply(source: &Connection, id: &str, updated_ms: i64, data: &str) {
+        source.execute("insert into session_message values (?, 'ses_1', 'assistant', (select count(*) from session_message), ?, ?)",
+                       params![id, updated_ms, data]).unwrap();
+    }
+
     #[test]
     fn opencodes_replies_join_the_archive_once_and_count_as_time_spent() {
         let directory = std::env::temp_dir().join(format!("costs-test-{}", util::token_hex(4)));
-        fs::create_dir_all(&directory).unwrap();
-        let database = directory.join("opencode.db");
-        let source = Connection::open(&database).unwrap();
-        // opencode 2.0.26's tables (packages/core/src/session/sql.ts), the columns read here.
-        source.execute_batch("create table session_v2 (id text primary key, directory text not null);
-            create table session_message (id text primary key, session_id text not null, type text not null, seq integer not null, data text not null);
-            insert into session_v2 values ('ses_1', '/x/shop');
-            insert into session_message values ('msg_0', 'ses_1', 'user', 0, '{\"text\": \"hi\"}');").unwrap();
+        let (database, source) = opencode_database(&directory);
         // Both replies on one day, and that day the one checked: ten minutes ago is yesterday just
         // after midnight.
         let day_of = |ms: i64| chrono::DateTime::from_timestamp_millis(ms).unwrap().with_timezone(&chrono::Local).date_naive();
@@ -774,9 +801,8 @@ mod tests {
         if day_of(start) != day_of(start + 120_000) {
             start -= 300_000;
         }
-        for (seq, (id, offset)) in [("msg_1", 0), ("msg_2", 120_000)].into_iter().enumerate() {
-            source.execute("insert into session_message values (?, 'ses_1', 'assistant', ?, ?)",
-                           params![id, seq as i64 + 1, opencode_message(start + offset, "claude-opus-5-5", 1_000_000, 0.0)]).unwrap();
+        for (id, offset) in [("msg_1", 0), ("msg_2", 120_000)] {
+            add_opencode_reply(&source, id, start + offset + 1000, &opencode_message(start + offset, "claude-opus-5-5", 1_000_000, 0.0));
         }
         drop(source);
         let mut archive = open_archive(&directory.join("usage.sqlite")).unwrap();
@@ -793,6 +819,47 @@ mod tests {
         let directory = std::env::temp_dir().join(format!("costs-test-{}", util::token_hex(4)));
         let mut archive = open_archive(&directory.join("usage.sqlite")).unwrap();
         assert_eq!(archive_opencode(&mut archive, &directory.join("opencode.db")).unwrap(), 0);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn opencode_messages_updated_before_the_last_pass_are_not_read_again() {
+        let directory = std::env::temp_dir().join(format!("costs-test-{}", util::token_hex(4)));
+        let (database, source) = opencode_database(&directory);
+        let newest = 10 * OPENCODE_REREAD_MS;
+        add_opencode_reply(&source, "msg_1", newest, &opencode_message(1_760_781_600_000, "claude-opus-5-5", 1000, 0.0));
+        let mut archive = open_archive(&directory.join("usage.sqlite")).unwrap();
+        assert_eq!(archive_opencode(&mut archive, &database).unwrap(), 1);
+        add_opencode_reply(&source, "msg_old", newest - OPENCODE_REREAD_MS - 1, &opencode_message(1_760_781_600_000, "claude-opus-5-5", 1000, 0.0));
+        assert_eq!(archive_opencode(&mut archive, &database).unwrap(), 0);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn an_opencode_reply_still_streaming_at_one_pass_joins_the_archive_once_completed() {
+        let directory = std::env::temp_dir().join(format!("costs-test-{}", util::token_hex(4)));
+        let (database, source) = opencode_database(&directory);
+        let mut streaming: Value = serde_json::from_str(&opencode_message(1_760_781_600_000, "claude-opus-5-5", 1000, 0.0)).unwrap();
+        streaming["time"].as_object_mut().unwrap().remove("completed");
+        add_opencode_reply(&source, "msg_1", 1_760_781_600_000, &streaming.to_string());
+        let mut archive = open_archive(&directory.join("usage.sqlite")).unwrap();
+        assert_eq!(archive_opencode(&mut archive, &database).unwrap(), 0);
+        source.execute("update session_message set data = ?, time_updated = ? where id = 'msg_1'",
+                       params![opencode_message(1_760_781_600_000, "claude-opus-5-5", 1000, 0.0), 1_760_781_600_000 + 10 * OPENCODE_REREAD_MS]).unwrap();
+        assert_eq!(archive_opencode(&mut archive, &database).unwrap(), 1);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn a_pass_over_an_opencode_database_without_replies_skips_none_of_the_later_ones() {
+        let directory = std::env::temp_dir().join(format!("costs-test-{}", util::token_hex(4)));
+        let (database, source) = opencode_database(&directory);
+        let mut archive = open_archive(&directory.join("usage.sqlite")).unwrap();
+        assert_eq!(archive_opencode(&mut archive, &database).unwrap(), 0);
+        let read_until: Option<i64> = archive.query_row("select read_until from databases", [], |row| row.get(0)).optional().unwrap();
+        assert_eq!(read_until, None, "a database with no assistant message leaves nothing to resume from");
+        add_opencode_reply(&source, "msg_1", 5, &opencode_message(1_760_781_600_000, "claude-opus-5-5", 1000, 0.0));
+        assert_eq!(archive_opencode(&mut archive, &database).unwrap(), 1);
         fs::remove_dir_all(directory).unwrap();
     }
 }
