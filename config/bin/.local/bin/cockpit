@@ -61,7 +61,7 @@
 #   cockpit focus-viewer move the cursor into the viewer pane (the sidebar's l / Right)
 #   cockpit prepare              create the manager's tmux session without a window (login autostart)
 #   cockpit reload               restart the sidebar in place (after editing it), and the OSD daemon
-#                                when it runs an older build than the one on disk
+#                                and the phone page when they run an older build than the one on disk
 #   cockpit layout               reapply the sidebar width
 #   cockpit design-review start|stop [session-id] [--figcraft-window <address>]
 #                                approved host-only conversation float on FigCraft's workspace
@@ -1063,14 +1063,19 @@ restart_sessions() { # id...
 # apply itself often runs in one.
 OSD_BINARY="${COCKPIT_OSD_BINARY:-$HOME/agent-cockpit/apps/target/release/osd}"
 
-osd_is_stale() {
-    local pid running_for built
-    pid=$(systemctl --user show -p MainPID --value osd.service 2>/dev/null)
+# unit_is_stale <unit> <binary>: the unit runs and started before its binary was last built.
+unit_is_stale() {
+    local unit=$1 binary=$2 pid running_for built
+    pid=$(systemctl --user show -p MainPID --value "$unit" 2>/dev/null)
     [[ $pid =~ ^[1-9][0-9]*$ ]] || return 1
     running_for=$(ps -o etimes= -p "$pid" 2>/dev/null | tr -d ' ')
-    built=$(stat -c %Y "$OSD_BINARY" 2>/dev/null)
+    built=$(stat -c %Y "$binary" 2>/dev/null)
     [[ $running_for =~ ^[0-9]+$ && $built =~ ^[0-9]+$ ]] || return 1
     (( built > $(date +%s) - running_for ))
+}
+
+osd_is_stale() {
+    unit_is_stale osd.service "$OSD_BINARY"
 }
 
 restart_stale_osd() {
@@ -1078,6 +1083,22 @@ restart_stale_osd() {
     echo "The OSD daemon runs an older build: it restarts once no approval is open."
     log_event INFO manager "osd.service runs a build older than $OSD_BINARY: restart once no approval is open"
     setsid -f "$0" restart-osd-when-idle >/dev/null 2>&1
+}
+
+# The phone page (claude-remote.service) is compiled into its binary: after an apply the phone kept
+# the old page until a manual restart. It restarts at once: it shows no approval of its own (a
+# decision in flight fails on the phone, which says so), and its pairings are on disk.
+REMOTE_BINARY="${COCKPIT_REMOTE_BINARY:-$HOME/agent-cockpit/apps/target/release/claude-remote}"
+
+restart_stale_remote() {
+    unit_is_stale claude-remote.service "$REMOTE_BINARY" || return 0
+    if systemctl --user restart claude-remote.service; then
+        echo "The phone page ran an older build: restarted."
+        log_event INFO manager "claude-remote.service restarted on its new build"
+    else
+        echo "The phone page did not restart: systemctl --user restart claude-remote.service" >&2
+        log_event ERROR manager "claude-remote.service did not restart: systemctl --user restart claude-remote.service by hand"
+    fi
 }
 
 # One waiter at a time: several sessions reloading around one apply each scheduled a restart, the
@@ -2276,6 +2297,7 @@ case ${1:-attach} in
         tmux respawn-pane -k -t "$(sidebar_pane)" cockpit-sidebar
         exec {todo_editor_lock}>&-
         restart_stale_osd
+        restart_stale_remote
         ;;
     restart-osd-when-idle) restart_osd_when_idle ;;
     focus-viewer) focus_viewer ;;

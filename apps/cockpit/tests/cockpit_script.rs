@@ -2785,6 +2785,39 @@ fn reload_leaves_an_osd_daemon_on_its_build_alone() {
     assert!(manager.calls("setsid").is_empty(), "{:?}", manager.calls("setsid"));
 }
 
+fn reload_with_phone_build(manager: &Manager, binary: &str) -> std::process::Output {
+    let no_osd_build = path_str(&manager.sandbox.root.join("no-osd-build"));
+    manager.run(&["reload"], &[("COCKPIT_REMOTE_BINARY", binary), ("COCKPIT_OSD_BINARY", &no_osd_build)])
+}
+
+#[test]
+fn reload_restarts_a_phone_server_older_than_its_build() {
+    // The phone page is compiled in: after an apply the phone kept the old page.
+    let manager = Manager::new();
+    let binary = osd_daemon(&manager, 3600, 60);
+    let output = reload_with_phone_build(&manager, &binary);
+    assert!(stdout(&output).contains("phone page ran an older build"), "{}", stdout(&output));
+    assert!(manager.calls("systemctl").iter().any(|call| call == "systemctl --user restart claude-remote.service"), "{:?}", manager.calls("systemctl"));
+}
+
+#[test]
+fn reload_leaves_a_phone_server_on_its_build_alone() {
+    let manager = Manager::new();
+    let binary = osd_daemon(&manager, 60, 3600);
+    reload_with_phone_build(&manager, &binary);
+    assert!(manager.calls("systemctl").iter().all(|call| !call.contains("restart")), "{:?}", manager.calls("systemctl"));
+}
+
+#[test]
+fn a_phone_server_that_fails_to_restart_says_how_to_do_it_by_hand() {
+    let manager = Manager::new();
+    let binary = osd_daemon(&manager, 3600, 60);
+    manager.sandbox.shim("systemctl", r#"[[ $* == *"show -p MainPID"* ]] && { echo 4242; exit 0; }; [[ $* == *restart* ]] && exit 1; exit 0"#);
+    let output = reload_with_phone_build(&manager, &binary);
+    assert!(stderr(&output).contains("systemctl --user restart claude-remote.service"), "{}", stderr(&output));
+    assert!(manager.log_lines().iter().any(|line| line.contains("claude-remote.service did not restart")), "{:?}", manager.log_lines());
+}
+
 #[test]
 fn the_osd_daemon_restarts_only_once_no_approval_is_open() {
     // A restart forgets the approval it shows: its pane and window would stay.
