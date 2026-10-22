@@ -92,7 +92,7 @@ agent-opencode-key: ## Store the Anthropic API key opencode sessions use, a grey
 agent_github = tools/agent-github.sh
 
 .PHONY: agent-github-token agent-github-board-token agent-github-relogin agent-github-protect agent-github-check \
-	    agent-dashboard-tailnet agent-dashboard-tailnet-off
+	    agent-dashboard-tailnet-grant agent-dashboard-tailnet agent-dashboard-tailnet-off
 
 agent-github-token: ## Create and store a GitHub token that reaches only this project's repo: make agent-github-token PROJECT=runway
 	@test -n "$(PROJECT)" || { echo "usage: make agent-github-token PROJECT=<folder in ~/IdeaProjects>"; exit 2; }
@@ -112,11 +112,21 @@ agent-github-check: ## [read-only] Check that each agent token reaches only its 
 	@$(agent_github) check
 
 # greyproxy's dashboard listens on localhost only; `tailscale serve` publishes it to this tailnet
-# (and nowhere else) so pending network requests can be approved from the phone.
+# (and nowhere else) so pending network requests can be approved from the phone. It has no login:
+# every device on the tailnet would reach it. So it gets a port of its own, which a tailnet grant
+# keeps to the phone (agent-dashboard-tailnet-grant prints it), and publishing waits until Theo says
+# the grant is in place (GRANTED=yes). Port 443 stays the phone page's (claude-remote).
 GREYPROXY_DASHBOARD_PORT ?= 43080
-agent-dashboard-tailnet: ## Publish greyproxy's dashboard on the tailnet: make agent-dashboard-tailnet [GREYPROXY_DASHBOARD_PORT=43080] (then open /dashboard)
-	tailscale serve --bg --https=443 http://127.0.0.1:$(GREYPROXY_DASHBOARD_PORT)
+DASHBOARD_TAILNET_PORT ?= 8443
+agent-dashboard-tailnet-grant: ## [read-only] Print the tailnet grants that keep the dashboard to one phone: make agent-dashboard-tailnet-grant PHONE=iphone
+	@test -n "$(PHONE)" || { echo "usage: make agent-dashboard-tailnet-grant PHONE=<phone name, as tailscale status shows it>"; exit 2; }
+	@tools/tailnet-dashboard-grant.sh "$(PHONE)" "$(DASHBOARD_TAILNET_PORT)"
+
+agent-dashboard-tailnet: ## Publish greyproxy's dashboard to the phone, once its grant is in place: make agent-dashboard-tailnet GRANTED=yes (then open :8443/dashboard)
+	@test "$(GRANTED)" = yes || { echo "Without a grant every device on the tailnet reaches the dashboard, with no login."; \
+	    echo "Paste make agent-dashboard-tailnet-grant PHONE=<phone> into the tailnet's access controls first, then: make agent-dashboard-tailnet GRANTED=yes"; exit 2; }
+	tailscale serve --bg --https=$(DASHBOARD_TAILNET_PORT) http://127.0.0.1:$(GREYPROXY_DASHBOARD_PORT)
 	tailscale serve status
 
 agent-dashboard-tailnet-off: ## Stop publishing greyproxy's dashboard on the tailnet
-	tailscale serve --https=443 off
+	tailscale serve --https=$(DASHBOARD_TAILNET_PORT) off
