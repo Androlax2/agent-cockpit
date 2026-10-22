@@ -7,7 +7,7 @@ use chrono::{DateTime, Duration, Local, Utc};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 use std::fs;
-use std::process::{Command, Stdio};
+use std::process::Command;
 
 pub const USAGE_REFRESH_S: f64 = 300.0;
 const REPORT_BAR_WIDTH: usize = 40;
@@ -431,13 +431,13 @@ impl Refresher {
             let mut command = Command::new(script);
             command.arg("five_hour");
             if force { command.arg("--force"); }
-            let _ = command.stdout(Stdio::null()).stderr(Stdio::null()).spawn();
+            let _ = util::spawn_detached(&mut command);
         }
         let script = paths::home().join(".config/waybar/scripts/codex-usage.sh");
         if script.exists() {
             let mut command = Command::new(script);
             if force { command.arg("--force"); }
-            let _ = command.stdout(Stdio::null()).stderr(Stdio::null()).spawn();
+            let _ = util::spawn_detached(&mut command);
         }
     }
 }

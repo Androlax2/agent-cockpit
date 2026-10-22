@@ -1283,7 +1283,7 @@ impl App {
     fn settle_exits(&mut self, running: &[Session]) {
         let now = now();
         let mut warnings = Vec::new();
-        self.exiting.retain_mut(|exit| {
+        let mut is_pending = |exit: &mut Exiting| {
             // The hook can disappear before tmux closes, leaving a fallback card with a new ID.
             if !running.iter().any(|s| s.session == exit.session || s.tmux_pane == exit.tmux_pane) {
                 return false;
@@ -1307,7 +1307,15 @@ impl App {
                 return false;
             }
             true
-        });
+        };
+        for mut exit in std::mem::take(&mut self.exiting) {
+            if is_pending(&mut exit) {
+                self.exiting.push(exit);
+            } else {
+                // Its session can be gone while `cockpit exit` still runs.
+                util::reap_in_background(exit.child);
+            }
+        }
         if let Some(warning) = warnings.pop() {
             self.message = warning;
         }
@@ -1947,7 +1955,7 @@ impl App {
             },
             Key::Char('o') => match session.and_then(|s| s.design) {
                 Some(design) => {
-                    let _ = Command::new("xdg-open").arg(&design.url).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
+                    let _ = util::spawn_detached(Command::new("xdg-open").arg(&design.url));
                     format!("opening {} …", design.title)
                 }
                 None => "no canvas: the design action in the : list starts a design session".into(),
@@ -3401,11 +3409,11 @@ impl App {
                 String::new()
             }
             "status-page" => {
-                let _ = Command::new("xdg-open").arg(status::PAGE).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
+                let _ = util::spawn_detached(Command::new("xdg-open").arg(status::PAGE));
                 "opening status.claude.com …".into()
             }
             "codex-status-page" => {
-                let _ = Command::new("xdg-open").arg(status::CODEX_PAGE).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
+                let _ = util::spawn_detached(Command::new("xdg-open").arg(status::CODEX_PAGE));
                 "opening status.openai.com …".into()
             }
             "remote" => match known {

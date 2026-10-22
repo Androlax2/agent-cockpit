@@ -77,7 +77,18 @@ pub fn manager(arguments: &[&str]) -> String {
 /// For exit and restart, which wait on Claude for seconds: the column must not freeze meanwhile.
 /// Nobody sees its terminal, so the manager sends its error messages to the log.
 pub fn manager_in_background(arguments: &[&str]) {
-    let _ = manager_child(arguments);
+    let _ = manager_child(arguments).map(reap_in_background);
+}
+
+/// A child nobody waits for stays a zombie until its parent exits, and the column runs for days
+/// (244 defunct bash processes after 8 hours, 2026-10-22). Fire-and-forget spawns hand it here.
+pub fn reap_in_background(mut child: std::process::Child) {
+    std::thread::spawn(move || child.wait());
+}
+
+/// A command started and not waited for: its output is dropped and it is reaped once it ends.
+pub fn spawn_detached(command: &mut Command) -> std::io::Result<()> {
+    command.stdout(Stdio::null()).stderr(Stdio::null()).spawn().map(reap_in_background)
 }
 
 /// The manager running in the background, for a caller that wants to know how it ended.

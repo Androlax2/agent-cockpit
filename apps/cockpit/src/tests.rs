@@ -2464,6 +2464,49 @@ fn the_viewed_sessions_state_is_pushed_only_when_it_changes() {
     assert_eq!(fixture.wait_for_calls("cockpit label-state", 1).len(), 1);
 }
 
+/// The pid a stand-in wrote to `relative`, once it has.
+fn pid_written_to(fixture: &Fixture, relative: &str) -> u32 {
+    for _ in 0..250 {
+        if let Some(pid) = fs::read_to_string(fixture.path(relative)).ok().and_then(|text| text.trim().parse().ok()) {
+            return pid;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    panic!("nothing wrote its pid to {relative}");
+}
+
+/// A zombie keeps its /proc entry, in state Z, until its parent waits on it.
+fn is_reaped(pid: u32) -> bool {
+    for _ in 0..250 {
+        if !Path::new(&format!("/proc/{pid}")).exists() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    false
+}
+
+#[test]
+fn a_manager_command_started_in_the_background_is_reaped_once_it_ends() {
+    let fixture = Fixture::new();
+    fixture.shim("cockpit", &format!("echo $$ > '{}'", fixture.path("cockpit.pid").display()));
+    util::manager_in_background(&["label-state", "working", SESSION_A]);
+    assert!(is_reaped(pid_written_to(&fixture, "cockpit.pid")), "cockpit stays a zombie");
+}
+
+#[test]
+fn a_session_that_leaves_before_its_exit_ends_does_not_leave_a_zombie() {
+    let fixture = Fixture::new();
+    fixture.shim("cockpit", &format!("echo $$ > '{}'\nsleep 0.5", fixture.path("cockpit.pid").display()));
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "runway", "/r", 1)]));
+    let mut app = fixture.app();
+    app.handle(Key::Char('x'), &mut FakeScreen::answering(&[Key::Char('y')]));
+    let pid = pid_written_to(&fixture, "cockpit.pid");
+    fixture.snapshot(json!([]));
+    app.build();
+    assert!(is_reaped(pid), "cockpit exit stays a zombie");
+}
+
 #[test]
 fn answering_an_explicit_chat_question_updates_the_viewed_state() {
     let fixture = Fixture::new();
@@ -3563,6 +3606,20 @@ fn quota_polling_refreshes_both_providers_and_forwards_forced_refresh() {
     refresher.tick(true);
     assert_eq!(fixture.wait_for_calls("claude-quota", 2)[1], "claude-quota five_hour --force");
     assert_eq!(fixture.wait_for_calls("codex-quota", 2)[1], "codex-quota --force");
+}
+
+#[test]
+fn quota_scripts_are_reaped_once_they_end() {
+    let fixture = Fixture::new();
+    for provider in ["claude", "codex"] {
+        let script = fixture.write(&format!("home/.config/waybar/scripts/{provider}-usage.sh"),
+            &format!("#!/bin/sh\necho $$ > '{}'\n", fixture.path(&format!("{provider}.pid")).display()));
+        fs::set_permissions(script, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    usage::Refresher::new().tick(true);
+    for provider in ["claude", "codex"] {
+        assert!(is_reaped(pid_written_to(&fixture, &format!("{provider}.pid"))), "{provider}-usage.sh stays a zombie");
+    }
 }
 
 #[test]
