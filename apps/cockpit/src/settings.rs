@@ -10,19 +10,21 @@ use std::process::Command;
 
 /// Every setting the S menu shows: its name in settings.json and cockpit (KNOWN_SETTINGS
 /// there), and what it does.
-pub const SETTINGS: [(&str, &str); 6] = [
+pub const SETTINGS: [(&str, &str); 7] = [
     ("phone-on-lock", "Phone on lock"),
     ("todo-queue", "Todo queue (Q)"),
     ("error-handoff", "Error hand-off"),
     ("freeze-while-gaming", "Freeze while gaming"),
     ("idle-lock", "Lock workspace 6 idle"),
     ("daily-digest", "Daily digest"),
+    ("idle-sleep", "Sleep idle sessions"),
 ];
 
-pub const LAUNCH_SETTINGS: [(&str, &str); 3] = [
+pub const LAUNCH_SETTINGS: [(&str, &str); 4] = [
     ("default-agent", "Default agent"),
     ("opencode-model", "OpenCode model"),
     ("opencode-effort", "OpenCode effort"),
+    ("idle-sleep-after", "Sleep after (minutes)"),
 ];
 
 pub fn launch_value(name: &str) -> Result<String, String> {

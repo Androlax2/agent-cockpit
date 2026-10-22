@@ -16,6 +16,7 @@ use crate::todo_composer::{TodoComposer, Outcome};
 use crate::usage::{self, BudgetAlerts, Refresher, Window};
 use crate::prompts;
 use crate::queue::{self, QUEUE_CHECK_S};
+use crate::sleep;
 use crate::{approval, remote};
 use crate::util::{self, age, current_session, manager, manager_in_background, money, now, project_name, start_directory};
 use serde_json::Value;
@@ -579,6 +580,7 @@ impl SettingsMenu {
                 SettingsRow::Launch(setting) => {
                     let (name, label) = LAUNCH_SETTINGS[setting];
                     let (value, color) = match settings::launch_value(name) {
+                        Ok(value) if value.is_empty() && name == "idle-sleep-after" => (sleep::DEFAULT_AFTER_MIN.to_string(), FG_DARK),
                         Ok(value) if value.is_empty() => ("OpenCode default".into(), FG_DARK),
                         Ok(value) => (value, CYAN),
                         Err(error) => (error, RED),
@@ -607,6 +609,7 @@ impl SettingsMenu {
         let keys = match self.row(self.selected) {
             SettingsRow::Phone(_) => "x forget phone",
             SettingsRow::Launch(1 | 2) => "⏎ choose   d reset to default",
+            SettingsRow::Launch(3) => "⏎ next delay",
             SettingsRow::Launch(_) => "⏎ choose agent",
             SettingsRow::PairPhone => "⏎ pair phone",
             SettingsRow::Setting(_) => "⏎ toggle",
@@ -747,6 +750,7 @@ pub struct App {
     pub held: Vec<String>,
     pub(crate) held_checked: f64,
     pub(crate) queue_checked: f64,
+    sleep_checked: f64,
     /// Whether Theo games right now; the queue waits meanwhile (a test sets its own).
     pub gaming: fn() -> bool,
     /// The fullest watched filesystem (util::fullest_disk; a test sets its own), read every
@@ -808,6 +812,12 @@ pub struct App {
 /// FigCraft serves changes when Theo opens it.
 const CRAFT_CHECK_S: f64 = 5.0;
 
+/// How often the column looks for sessions to put to sleep.
+const SLEEP_CHECK_S: f64 = 60.0;
+
+/// What a press on the "Sleep after" row cycles through, in minutes.
+const SLEEP_AFTER_CHOICES: [i64; 4] = [30, 60, 120, 240];
+
 /// What the session cards are drawn from (App::gather_sessions).
 struct Gathered {
     running: Vec<Session>,
@@ -836,7 +846,7 @@ impl App {
             costs: Costs::default(), reviews: Reviews::default(), todos, errors: ErrorReporter::new(),
             claude_status: ProviderStatus::default(), codex_status: ProviderStatus::new(Provider::Codex), panels: Default::default(), focus: 1, previous_panel: 1,
             help_open: false, has_pane_focus: true, attention_only: false, message, exiting: Vec::new(), restarting_cards: HashMap::new(), labelled: Default::default(), menu: None, session_details: None, todo_composer: None, settings_menu: None, team_view: None, team_attention: 0, team_roles: HashMap::new(), team_checked: 0.0, pairing: None, restore: Vec::new(),
-            held: Vec::new(), held_checked: 0.0, queue_checked: 0.0, gaming: util::gaming,
+            held: Vec::new(), held_checked: 0.0, queue_checked: 0.0, sleep_checked: 0.0, gaming: util::gaming,
             disk_usage: util::fullest_disk, disk: None, disk_checked: 0.0, restore_checked: 0.0, start_files: Vec::new(),
             width: DEFAULT_COLUMN_WIDTH, sessions: Vec::new(), running_sessions: Vec::new(), windows: Vec::new(), quota_rows: Vec::new(), review_rows: Vec::new(), todo_entries: Vec::new(),
             session_task_titles: HashMap::new(), session_branches: HashMap::new(),
@@ -888,6 +898,7 @@ impl App {
         self.push_viewed_state();
         self.dispatch_queue();
         self.dispatch_prompts();
+        self.dispatch_sleep();
     }
 
     /// A cockpit command a key asked for, started and not waited for (it takes 40 to 60 ms,
@@ -972,6 +983,29 @@ impl App {
             util::log_event("INFO", &format!("queued prompt sent to {} at the end of its turn", session.project));
             crate::audit::record("column", "prompt.sent", "ok", serde_json::json!({"session": session.session, "project": session.project,
                                                                      "text": crate::audit::fingerprint(&text)}));
+        }
+    }
+
+    /// Every minute: a session left at its prompt past the sleep delay exits and keeps its card
+    /// (`cockpit sleep` checks again before it exits it); notes a week old are dropped.
+    pub fn dispatch_sleep(&mut self) {
+        let now = util::now();
+        if now - self.sleep_checked < SLEEP_CHECK_S {
+            return;
+        }
+        self.sleep_checked = now;
+        for note in sleep::expire(now as i64) {
+            util::log_event("INFO", &format!("{} asleep for over a week, forgotten", note.project));
+        }
+        let context = sleep::SleepContext {
+            now: now as i64, enabled: settings::is_on("idle-sleep"), after_s: sleep::after_minutes() * 60,
+            viewed: current_session(), team_members: self.team_roles.keys().cloned().collect(),
+        };
+        let eligible: Vec<Session> = self.running_sessions.iter()
+            .filter(|session| sleep::block(session, &context, self.todos.busy(&session.session), prompts::count(&session.session) > 0).is_none())
+            .cloned().collect();
+        for session in eligible {
+            manager_in_background(&["sleep", &session.session]);
         }
     }
 
@@ -1411,6 +1445,21 @@ impl App {
         self.restarting_cards = held;
     }
 
+    /// A sleeping session keeps a card until it is woken. A note the session outlived (it started
+    /// after the sleep) is stale. While the old process still shows, or a wake is under way
+    /// (the restarting card), that card stands and the note adds none.
+    fn add_asleep_cards(&self, running: &mut Vec<Session>) {
+        let waking: HashSet<String> = sessions::restarts().into_iter().map(|restart| restart.session).collect();
+        for note in sleep::asleep() {
+            if waking.contains(&note.session) { continue; }
+            match running.iter().find(|session| session.session == note.session) {
+                Some(session) if session.started.is_some_and(|started| started >= note.slept_at) => sleep::forget(&note.session),
+                Some(_) => {}
+                None => running.push(note.card()),
+            }
+        }
+    }
+
     fn build_sessions(&mut self) {
         let mut selected_id = self.sessions.get(self.panels[1].selected).map(|session| session.session.clone());
         let gathered = match self.gathered.take() {
@@ -1424,6 +1473,7 @@ impl App {
         self.settle_exits(&running);
         running.retain(|s| !s.is_external() && !self.exiting.iter().any(|exit| exit.session == s.session || exit.tmux_pane == s.tmux_pane));
         self.hold_restarting_cards(&mut running, &mut selected_id);
+        self.add_asleep_cards(&mut running);
         for session in &mut running {
             session.pinned = self.view.pinned.contains(&session.session);
         }
@@ -1500,7 +1550,8 @@ impl App {
             let needs_attention = session.needs_attention();
             let activity = sessions::activity_label(session);
             let is_idle = !needs_attention && sessions::is_idle(session, util::now_secs());
-            let tint = bold(if needs_attention { YELLOW } else if is_idle { FG_DARK } else { match activity {
+            let is_asleep = session.asleep.is_some();
+            let tint = bold(if needs_attention { YELLOW } else if is_idle || is_asleep { FG_DARK } else { match activity {
                 "Working" | "Command running" => BLUE,
                 "Ready" => GREEN,
                 "Restarting" => CYAN,
@@ -1534,7 +1585,11 @@ impl App {
             } else {
                 vec![segment(0, glyph, tint), segment(2, display_title, bold(FG))]
             };
-            let activity_badge = if is_idle { format!("Idle {}", util::age(session.since)) } else { activity.to_string() };
+            let activity_badge = match session.asleep {
+                Some(slept_at) => format!("Asleep {}", util::age(slept_at)),
+                None if is_idle => format!("Idle {}", util::age(session.since)),
+                None => activity.to_string(),
+            };
             lines.push(Line { segments, right: vec![part(activity_badge, tint)], item: Some(index), accent });
             let updates = self.continuity.as_ref().ok().map(|state| state.updates()).unwrap_or_default();
             let labels: Vec<&str> = updates.iter().filter(|update| update.session == session.session).map(|update|
@@ -1710,12 +1765,14 @@ impl App {
     fn session_summary_lines(&self) -> Vec<Line> {
         let now = util::now_secs();
         // One bucket per session, in the cards' precedence, so the counts cannot overlap.
-        let (mut needing, mut working, mut ready, mut idle, mut unknown) = (0, 0, 0, 0, 0);
+        let (mut needing, mut working, mut ready, mut idle, mut asleep, mut unknown) = (0, 0, 0, 0, 0, 0);
         for session in self.all_sessions() {
             if session.needs_attention() {
                 if self.session_deferred_until(&session, now).is_none() { needing += 1; }
             } else if sessions::is_idle(&session, now) {
                 idle += 1;
+            } else if session.asleep.is_some() {
+                asleep += 1;
             } else {
                 match sessions::activity_label(&session) {
                     "Working" | "Command running" => working += 1,
@@ -1735,6 +1792,9 @@ impl App {
         let mut counts = format!("{working} working · {ready} ready");
         if idle > 0 {
             counts += &format!(" · {idle} idle");
+        }
+        if asleep > 0 {
+            counts += &format!(" · {asleep} asleep");
         }
         if unknown > 0 {
             counts += &format!(" · {unknown} unknown");
@@ -2117,6 +2177,12 @@ impl App {
             if agents::find(&agent).is_none() { return format!("invalid default-agent: {agent}"); }
             let error = manager(&["setting", name, &agent]);
             return if error.is_empty() { format!("{label}: {agent}") } else { error };
+        }
+        if name == "idle-sleep-after" {
+            let current = sleep::after_minutes();
+            let next = SLEEP_AFTER_CHOICES.iter().copied().find(|minutes| *minutes > current).unwrap_or(SLEEP_AFTER_CHOICES[0]);
+            let error = manager(&["setting", name, &next.to_string()]);
+            return if error.is_empty() { format!("{label}: {next}") } else { error };
         }
         let selected_model = if name == "opencode-effort" {
             match settings::launch_value("opencode-model") { Ok(model) => model, Err(error) => return error }

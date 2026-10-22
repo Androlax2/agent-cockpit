@@ -691,6 +691,8 @@ impl ViewState {
 }
 
 pub fn boot_time() -> i64 {
+    // A test cannot make the machine boot recently.
+    if let Some(boot) = std::env::var("COCKPIT_BOOT_TIME").ok().and_then(|text| text.parse().ok()) { return boot; }
     fs::read_to_string("/proc/uptime").ok()
         .and_then(|uptime| uptime.split_whitespace().next()?.parse::<f64>().ok())
         .map(|uptime| (now() - uptime) as i64)

@@ -50,6 +50,7 @@ impl App {
     pub(super) fn all_sessions(&self) -> Vec<Session> {
         let mut sessions = self.gathered.as_ref().map(|gathered| gathered.running.clone()).unwrap_or_else(|| self.sessions.clone());
         sessions.retain(|session| !self.exiting.iter().any(|exit| exit.session == session.session || exit.tmux_pane == session.tmux_pane));
+        sessions.extend(self.running_sessions.iter().filter(|session| session.asleep.is_some()).cloned());
         sessions
     }
 

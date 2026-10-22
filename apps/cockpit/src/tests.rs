@@ -57,7 +57,7 @@ impl Fixture {
             // COCKPIT_STATE_HOME too: set in opencode sessions, it would win over the
             // XDG_STATE_HOME above and point the tests at Theo's real state.
             for name in ["COCKPIT_STATE_HOME", "COCKPIT_HISTORY", "COCKPIT_TRANSCRIPTS", "CLAUDE_TODO_UPDATES", "CLAUDE_REVIEWS_FIXTURE",
-                         "COCKPIT_CLONES", "COCKPIT_GREYPROXY_DB", "CLAUDE_GREYWALL_WORK", "CLAUDE_GREYPROXY_WORK", "HYPRLAND_INSTANCE_SIGNATURE"] {
+                         "COCKPIT_CLONES", "COCKPIT_BOOT_TIME", "COCKPIT_GREYPROXY_DB", "CLAUDE_GREYWALL_WORK", "CLAUDE_GREYPROXY_WORK", "HYPRLAND_INSTANCE_SIGNATURE"] {
                 std::env::remove_var(name);
             }
         }
@@ -1839,6 +1839,183 @@ fn session_summary_counts_idle_sessions_apart_from_ready_ones() {
     let summary = app.panels[1].fixed_top.iter().map(|line| line.texts()).collect::<Vec<_>>().join("\n");
     assert!(summary.contains("1 ready · 1 idle"), "summary was {summary:?}");
     assert!(!summary.contains("unknown"));
+}
+
+/// A note `cockpit sleep` left for a session that exited at its prompt.
+fn asleep_note(fixture: &Fixture, session: &str, idle_since: i64, slept_at: i64) {
+    fixture.write(&format!("state/cockpit/asleep/{session}"), &json!({
+        "agent": "claude", "project": "runway", "cwd": "/r/runway", "title": "Fix the chart",
+        "idle_since": idle_since, "slept_at": slept_at, "remote": false,
+    }).to_string());
+}
+
+fn asleep_badge(app: &App) -> String {
+    let card = app.panels[1].lines.iter().find(|line| line.item == Some(0)).expect("a card");
+    card.right.iter().map(|part| part.text.as_str()).collect()
+}
+
+#[test]
+fn an_asleep_note_shows_as_an_asleep_card() {
+    let fixture = Fixture::new();
+    let now = util::now_secs();
+    asleep_note(&fixture, SESSION_A, now - 7200, now - 3600);
+    let app = fixture.app();
+    assert_eq!(app.sessions.len(), 1);
+    assert!(asleep_badge(&app).starts_with("Asleep "), "badge was {:?}", asleep_badge(&app));
+    assert_eq!(app.running_sessions.len(), 1);
+}
+
+#[test]
+fn a_running_session_drops_its_stale_sleep_note() {
+    let fixture = Fixture::new();
+    let now = util::now_secs();
+    asleep_note(&fixture, SESSION_A, now - 7200, now - 3600);
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "runway", "/r/runway", now - 60)]));
+    let app = fixture.app();
+    assert_eq!(app.sessions.len(), 1);
+    assert!(app.sessions[0].asleep.is_none());
+    assert!(!fixture.path(&format!("state/cockpit/asleep/{SESSION_A}")).exists());
+}
+
+#[test]
+fn a_session_still_exiting_keeps_its_note_and_shows_one_card() {
+    let fixture = Fixture::new();
+    let now = util::now_secs();
+    asleep_note(&fixture, SESSION_A, now - 7200, now - 10);
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "runway", "/r/runway", now - 7200)]));
+    let app = fixture.app();
+    assert_eq!(app.sessions.len(), 1);
+    assert!(fixture.path(&format!("state/cockpit/asleep/{SESSION_A}")).exists());
+}
+
+#[test]
+fn a_session_being_woken_shows_as_restarting_not_asleep() {
+    let fixture = Fixture::new();
+    let now = util::now_secs();
+    asleep_note(&fixture, SESSION_A, now - 7200, now - 3600);
+    fixture.write(&format!("run/cockpit.restarting/{SESSION_A}"), &format!("{now}\nrunway\n/r/runway\n%1\n"));
+    let app = fixture.app();
+    assert_eq!(app.sessions.len(), 1);
+    assert!(app.sessions[0].restarting);
+    assert!(app.sessions[0].asleep.is_none());
+}
+
+#[test]
+fn asleep_sessions_are_not_offered_for_restore() {
+    let fixture = Fixture::new();
+    let boot = util::now_secs() - 3600;
+    // SAFETY: the fixture's lock keeps every test that touches the environment one at a time.
+    unsafe { std::env::set_var("COCKPIT_BOOT_TIME", boot.to_string()); }
+    fixture.write("state/cockpit/recent-sessions.json", &json!({SESSION_A: {"cwd": "/r/runway", "project": "runway", "last_seen": boot - 100}}).to_string());
+    assert_eq!(fixture.app().restore.len(), 1, "without a note the session is offered");
+    let now = util::now_secs();
+    asleep_note(&fixture, SESSION_A, now - 7200, now - 3600);
+    let app = fixture.app();
+    assert!(app.restore.is_empty(), "{:?}", app.restore);
+}
+
+#[test]
+fn summary_counts_asleep_sessions() {
+    let fixture = Fixture::new();
+    let now = util::now_secs();
+    asleep_note(&fixture, SESSION_A, now - 7200, now - 3600);
+    let mut ready = session(SESSION_B, "waiting", "other", "/r/other", 2);
+    ready["since"] = json!(now);
+    fixture.snapshot(json!([ready]));
+    let app = fixture.app();
+    let summary = app.panels[1].fixed_top.iter().map(|line| line.texts()).collect::<Vec<_>>().join("\n");
+    assert!(summary.contains("1 ready · 1 asleep"), "summary was {summary:?}");
+    assert!(!summary.contains("idle"), "summary was {summary:?}");
+}
+
+#[test]
+fn asleep_cards_do_not_count_as_started_before_a_change() {
+    let fixture = Fixture::new();
+    let now = util::now_secs();
+    asleep_note(&fixture, SESSION_A, now - 7200, now - 3600);
+    let mut app = fixture.app();
+    app.start_files = vec![("greywall", now as f64)];
+    app.build();
+    let summary = app.panels[1].fixed_top.iter().map(|line| line.texts()).collect::<Vec<_>>().join("\n");
+    assert!(!summary.contains("restart available"), "summary was {summary:?}");
+}
+
+/// One waiting session idle for `idle_s`, with a project of its own per id.
+fn sleep_fixture(idle_s: &[(&str, i64)]) -> (Fixture, App) {
+    let fixture = Fixture::new();
+    let now = util::now_secs();
+    let rows: Vec<Value> = idle_s.iter().enumerate().map(|(index, (id, idle))| {
+        let mut row = session(id, "waiting", &format!("project-{index}"), &format!("/r/project-{index}"), index as i64 + 1);
+        row["since"] = json!(now - idle);
+        row
+    }).collect();
+    fixture.snapshot(json!(rows));
+    let app = fixture.app();
+    (fixture, app)
+}
+
+#[test]
+fn dispatch_sleep_sleeps_only_eligible_sessions() {
+    let (fixture, mut app) = sleep_fixture(&[(SESSION_A, 7200), (SESSION_B, 600)]);
+    app.dispatch_sleep();
+    assert_eq!(fixture.wait_for_calls("cockpit", 1), vec![format!("cockpit sleep {SESSION_A}")]);
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(fixture.calls("cockpit"), vec![format!("cockpit sleep {SESSION_A}")]);
+}
+
+#[test]
+fn dispatch_sleep_does_nothing_when_switched_off() {
+    let (fixture, mut app) = sleep_fixture(&[(SESSION_A, 7200)]);
+    fixture.write("state/cockpit/settings.json", r#"{"idle-sleep":false}"#);
+    app.dispatch_sleep();
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(fixture.calls("cockpit").is_empty());
+}
+
+#[test]
+fn dispatch_sleep_checks_once_a_minute() {
+    let (fixture, mut app) = sleep_fixture(&[(SESSION_A, 7200)]);
+    app.dispatch_sleep();
+    fixture.wait_for_calls("cockpit", 1);
+    app.dispatch_sleep();
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(fixture.calls("cockpit").len(), 1);
+}
+
+#[test]
+fn dispatch_sleep_expires_week_old_notes() {
+    let (fixture, mut app) = sleep_fixture(&[]);
+    let now = util::now_secs();
+    asleep_note(&fixture, SESSION_A, now - 9 * 86_400, now - 8 * 86_400);
+    app.dispatch_sleep();
+    assert!(!fixture.path(&format!("state/cockpit/asleep/{SESSION_A}")).exists());
+}
+
+#[test]
+fn the_queue_gives_an_asleep_session_its_todo() {
+    let fixture = Fixture::new();
+    let now = util::now_secs();
+    asleep_note(&fixture, SESSION_A, now - 7200, now - 3600);
+    let mut app = fixture.app();
+    app.gaming = || false;
+    let key = app.todos.add("runway", "/r/runway", "next job");
+    app.todos.toggle_queued(&key);
+    app.dispatch_queue();
+    let calls = fixture.wait_for_calls("cockpit", 1);
+    assert!(calls[0].starts_with(&format!("cockpit say {SESSION_A} ")), "{calls:?}");
+    assert_eq!(app.todos.status_of(&key), "doing");
+}
+
+#[test]
+fn settings_menu_cycles_the_sleep_delay() {
+    for (stored, wanted) in [(None, "120"), (Some(r#"{"idle-sleep-after":"120"}"#), "240"), (Some(r#"{"idle-sleep-after":"240"}"#), "30")] {
+        let fixture = Fixture::new();
+        if let Some(content) = stored { fixture.write("state/cockpit/settings.json", content); }
+        let mut app = fixture.app();
+        open_settings_row(&mut app, SettingsRow::Launch(3));
+        app.handle(Key::Enter, &mut FakeScreen::default());
+        assert_eq!(fixture.calls("cockpit"), vec![format!("cockpit setting idle-sleep-after {wanted}")], "stored {stored:?}");
+    }
 }
 
 fn buffer_rows(buffer: &Buffer) -> Vec<String> {
