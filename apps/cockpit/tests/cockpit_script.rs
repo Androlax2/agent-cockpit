@@ -185,7 +185,7 @@ impl Manager {
         sandbox.shim("setsid", "");
         sandbox.shim("osd-show", "");
         // greywall runs the command as it is: the sandbox is not what these tests check.
-        sandbox.shim("greywall", r#"while [[ $1 != -- ]]; do shift; done; shift; exec "$@""#);
+        sandbox.shim("greywall", r#"[[ $1 == --version ]] && exit 1; while [[ $# -gt 0 && $1 != -- ]]; do shift; done; shift; exec "$@""#);
         sandbox.env.insert("COCKPIT_GREYWALL".into(), sandbox.shims.join("greywall").display().to_string());
         // Claude stays in its pane until SHIM_CLAUDE_EXIT_AFTER keys were sent (by default it never
         // leaves); the pane reading (classify) is the real one.
@@ -914,6 +914,24 @@ fn doctor_flags_a_claude_link_behind_the_newest_download() {
     fs::remove_file(&link).unwrap();
     symlink(versions.join("2.1.302"), &link).unwrap();
     assert!(manager.doctor_line("newest version", &env).trim().starts_with("ok"));
+}
+
+/// The commit packages/greywall/build.sh pins.
+fn pinned_greywall_commit() -> String {
+    let build = fs::read_to_string(repo().join("packages/greywall/build.sh")).unwrap();
+    build.lines().find_map(|line| line.strip_prefix("greywall_commit=")).unwrap()[..40].to_string()
+}
+
+#[test]
+fn doctor_flags_a_greywall_that_is_not_the_pinned_build() {
+    // A pin moved without make greywall-patch left sessions on the old sandbox, unnoticed (todo bffe2f2c).
+    let manager = Manager::new();
+    let pinned = pinned_greywall_commit();
+    for (commit, verdict) in [("0123456789abcdef0123456789abcdef01234567", "FAIL"), (pinned.as_str(), "ok")] {
+        manager.sandbox.shim("greywall", &format!("[ \"$1\" = --version ] && printf '  Version: 0.3.7+dotfiles\\n  Commit:  {commit}\\n'; exit 1"));
+        let line = manager.doctor_line("greywall is", &[]);
+        assert!(line.trim().starts_with(verdict), "{commit}: {line}");
+    }
 }
 
 #[test]

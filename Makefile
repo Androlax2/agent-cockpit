@@ -33,11 +33,16 @@ system: ## [sudo] Copy system/ into /: each changed file shows its diff and asks
 	@tools/system-install.sh
 
 # cockpit apply runs this in the running copy after git am, with BEFORE the commit it started from.
-after-apply: ## Relink, and rebuild and reload when apps/ changed: make after-apply BEFORE=<commit>
+# A new greywall pin is built and installed too: sessions are flagged for a restart once the binary
+# changes (the column watches it). The last line fails loud whenever the installed greywall is not
+# the pinned build, whatever changed.
+after-apply: ## Relink, rebuild and reload when apps/ changed, rebuild greywall when its pin did: make after-apply BEFORE=<commit>
 	@test -n "$(BEFORE)" || { echo "usage: make after-apply BEFORE=<commit before the apply>"; exit 2; }
 	$(stow) --restow $(packages)
 	systemctl --user daemon-reload
 	@if ! git diff --quiet "$(BEFORE)" HEAD -- apps; then $(MAKE) build && cockpit reload; fi
+	@if ! git diff --quiet "$(BEFORE)" HEAD -- packages/greywall/build.sh; then $(MAKE) greywall-patch; fi
+	@packages/greywall/check.sh
 
 handoff-install: ## Install what an agent left in .handoff/ (checksums, diff, then asks; runs with your rights)
 	@tools/handoff-install.sh
@@ -48,6 +53,7 @@ handoff-install: ## Install what an agent left in .handoff/ (checksums, diff, th
 # cannot read greyproxy's CA key, its session key or ~/.ssh/id_*. Restart sessions afterwards.
 greywall-patch: ## Build, test and install the patched greywall into ~/.local/bin (keeps greywall.previous)
 	packages/greywall/build.sh
+	@packages/greywall/check.sh
 
 # greyproxy from the dotfiles branch of Androlax2/greyproxy: v0.4.5 plus the self-listener block,
 # an optional API token, per-client proxy secrets (both off) and a fail-closed start.

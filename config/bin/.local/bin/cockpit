@@ -1220,6 +1220,12 @@ doctor() {
     echo "greywall (what sessions can reach)"
     local greywall="$HOME/.config/greywall/greywall.json"
     if jq -e --arg path "$fifo" '.filesystem.allowWrite | index($path)' "$greywall" >/dev/null 2>&1; then report ok "$fifo in allowWrite"; else report fail "$fifo not in greywall allowWrite" "add it to filesystem.allowWrite in $greywall"; fi
+    local pin_check
+    if pin_check=$("$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../../../../packages/greywall/check.sh" "$GREYWALL" 2>&1); then
+        report ok "$pin_check"
+    else
+        report fail "${pin_check%%:*}" "make -C ~/agent-cockpit greywall-patch (sessions get flagged for a restart)"
+    fi
     if jq -e '.filesystem.allowRead | index("~/agent-cockpit/config/claude")' "$greywall" >/dev/null 2>&1; then report ok "~/agent-cockpit/config/claude in allowRead"; else report fail "~/agent-cockpit/config/claude not in greywall allowRead" "add it, or hooks are unreachable from other projects"; fi
     echo "hooks"
     if [[ -x $(readlink -f "$HOME/.claude/hooks/session-state.sh") ]]; then report ok "~/.claude/hooks/session-state.sh resolves"; else report fail "~/.claude/hooks/session-state.sh does not resolve" "cd ~/agent-cockpit/config && stow --no-folding -t ~ --restow claude"; fi
