@@ -387,12 +387,13 @@ class MobileBrowserTests(unittest.TestCase):
         expect(self.page.locator("#send-note")).to_contain_text("queued")
         expect(self.page.locator("#detail textarea")).to_have_value("")
 
-    def test_a_rejected_message_keeps_its_text(self):
+    def test_a_message_with_line_breaks_is_sent_as_one_line(self):
         self.open_detail()
         self.page.locator("#detail textarea").fill("First line\nSecond line")
+        expect(self.page.locator("#reply-hint")).to_be_visible()
         self.page.get_by_role("button", name="Send", exact=True).tap()
-        expect(self.page.locator("#send-note")).to_contain_text("one line")
-        expect(self.page.locator("#detail textarea")).to_have_value("First line\nSecond line")
+        expect(self.page.locator("#send-note")).to_contain_text("sent")
+        self.assertIn(f"say {SESSION} First line Second line", (self.runtime / "actions").read_text())
 
     def test_interrupt_requires_two_taps(self):
         self.snapshot([{"session": SESSION, "project": "shop", "state": "working", "tmux_pane": "%4"}])

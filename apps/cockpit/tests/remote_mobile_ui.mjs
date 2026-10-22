@@ -212,6 +212,27 @@ const tests = {
     assert.equal(page.document.getElementById("tab-sessions").querySelector(".badge").textContent, "1");
   },
 
+  async "a reply's line breaks are sent as single spaces"() {
+    const page = await startPage({ sessions: SESSIONS });
+    page.run('openSession("s1")'); await settle();
+    const reply = page.document.getElementById("chat-reply");
+    reply.value = "Fix the login bug\n- check the cookie\r\n\n  - add a test\t now\n"; reply.oninput();
+    await page.button(page.roots.detail, "Send").onclick();
+    assert.deepEqual(page.server.posts, [{ path: "/api/message/s1", body: { text: "Fix the login bug - check the cookie - add a test  now" } }]);
+  },
+
+  async "the reply box says line breaks become spaces only while it has one"() {
+    const page = await startPage({ sessions: SESSIONS });
+    page.run('openSession("s1")'); await settle();
+    const reply = page.document.getElementById("chat-reply");
+    const hint = page.document.getElementById("reply-hint");
+    assert.equal(hint.hidden, true);
+    reply.value = "two\nlines"; reply.oninput();
+    assert.equal(hint.hidden, false);
+    reply.value = "one line"; reply.oninput();
+    assert.equal(hint.hidden, true);
+  },
+
   async "session options stay closed until More is tapped"() {
     const page = await startPage({ sessions: SESSIONS });
     page.run('openSession("s1")'); await settle();

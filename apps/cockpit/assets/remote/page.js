@@ -33,6 +33,12 @@ function element(tag, className, text) {
   return node;
 }
 
+// A message reaches a session typed into its terminal, where a line break would press Enter: the
+// lines of what the phone sends join with single spaces (the server takes one line only).
+function oneLine(text) {
+  return text.split(/\s*[\r\n]+\s*/).join(" ").replace(/\t/g, " ").trim();
+}
+
 function labelControl(label, control) {
   const field = element("div", "field");
   const caption = element("label", "field-label", label);
@@ -488,7 +494,10 @@ function renderDetail() {
     message.maxLength = 4000; message.rows = 2;
     message.setAttribute("aria-describedby", "send-note");
     const fitMessage = () => { message.style.height = "auto"; message.style.height = `${message.scrollHeight + 2}px`; };
-    message.oninput = () => { drafts.set(session.session, message.value); fitMessage(); };
+    const hint = element("div", "note", "Line breaks are sent as spaces."); hint.id = "reply-hint";
+    const showHint = () => { hint.hidden = !/[\r\n]/.test(message.value); };
+    showHint();
+    message.oninput = () => { drafts.set(session.session, message.value); fitMessage(); showHint(); };
     const send = element("button", "run", "Send"); send.id = "chat-send"; send.type = "submit";
     const note = element("div", "note"); note.id = "send-note"; note.setAttribute("role", "status");
     const submit = async (event) => {
@@ -497,17 +506,17 @@ function renderDetail() {
       const submitted = message.value;
       if (!submitted.trim()) { note.textContent = "Write a message first."; message.focus(); return; }
       sendingMessages.add(session.session); send.disabled = true; send.textContent = "Sending…";
-      const result = await post(`/api/message/${session.session}`, { text: submitted }, note);
+      const result = await post(`/api/message/${session.session}`, { text: oneLine(submitted) }, note);
       sendingMessages.delete(session.session);
       if (result.ok && drafts.get(session.session) === submitted) {
-        drafts.delete(session.session); message.value = ""; fitMessage();
+        drafts.delete(session.session); message.value = ""; fitMessage(); showHint();
         if (opened === session.session) document.getElementById("chat-reply").value = "";
       }
       if (opened === session.session) { renderDetail(); loadConversation(); }
     };
     composer.onsubmit = submit;
     send.onclick = submit;
-    composer.append(label, message, send, note);
+    composer.append(label, message, send, hint, note);
     const panel = element("section", "session-more"); panel.id = "session-more"; panel.hidden = true;
     panel.setAttribute("aria-label", "Session options");
     more.onclick = () => {
@@ -800,7 +809,7 @@ async function renderStarter() {
   const note = element("div", "note");
   const start = element("button", "run", "Start");
   start.onclick = async () => {
-    const result = await post("/api/sessions", { project: picker.value, agent: agent.value, prompt: prompt.value, clone: inClone.checked }, note);
+    const result = await post("/api/sessions", { project: picker.value, agent: agent.value, prompt: oneLine(prompt.value), clone: inClone.checked }, note);
     if (result.ok) prompt.value = "";
   };
   const close = element("button", "no", "Close");
