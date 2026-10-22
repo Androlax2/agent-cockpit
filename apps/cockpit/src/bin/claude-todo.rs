@@ -278,6 +278,9 @@ fn list(everything: bool) -> i32 {
 }
 
 fn main() {
+    // Rust ignores SIGPIPE, so println! panicked when a reader stopped early (claude-todo list | head):
+    // the default ends the process quietly, as for any command line tool.
+    unsafe { libc::signal(libc::SIGPIPE, libc::SIG_DFL) };
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     let key = Regex::new(r"^(?:[0-9a-f]{8}|[\w.-]+/[\w.-]+#\d+)$").unwrap();
     let item_key = Regex::new(r"^[0-9a-f]{8}$").unwrap();

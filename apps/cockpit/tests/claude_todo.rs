@@ -361,6 +361,20 @@ fn a_project_option_is_refused_instead_of_filing_elsewhere() {
 }
 
 #[test]
+fn a_reader_that_stops_early_ends_the_list_quietly() {
+    // claude-todo list | head -3 printed a panic (failed printing to stdout: Broken pipe).
+    let sandbox = Sandbox::new();
+    let items: Vec<Value> = (0..40).map(|index| json!({"id": format!("{index:08x}"), "project": "runway", "text": format!("item {index}")})).collect();
+    fs::write(sandbox.state.join("todo.json"), json!({"items": items}).to_string()).unwrap();
+    let todo = sandbox.state.join("todo.json").display().to_string();
+    let mut child = sandbox.command(bin().join("claude-todo"), &[("CLAUDE_TODO_PATH", &todo)]).args(["list", "--all"])
+        .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn().unwrap();
+    drop(child.stdout.take());
+    let output = child.wait_with_output().unwrap();
+    assert!(!stderr(&output).contains("panicked"), "{}", stderr(&output));
+}
+
+#[test]
 fn list_and_show_expose_kinds_including_legacy_tasks() {
     let sandbox = Sandbox::new();
     fs::write(sandbox.state.join("todo.json"), json!({"items": [
