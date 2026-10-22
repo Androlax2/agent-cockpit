@@ -744,13 +744,18 @@ pub struct App {
     /// Team requests, escalations and uncertain deliveries waiting for Theo; session -> "team role · task".
     team_attention: usize,
     team_roles: HashMap<String, String>,
-    team_checked: f64,
+    /// Whether the last team check succeeded: until then anyone may be a member, and no one sleeps.
+    team_known: bool,
+    pub(crate) team_checked: f64,
     pub(crate) pairing: Option<Pairing>,
     pub restore: Vec<Restorable>,
     pub held: Vec<String>,
     pub(crate) held_checked: f64,
     pub(crate) queue_checked: f64,
-    sleep_checked: f64,
+    pub(crate) sleep_checked: f64,
+    /// session -> the idle start `cockpit sleep` was asked about: a refusal is not asked again
+    /// until the session worked and went idle again.
+    sleep_asked: HashMap<String, i64>,
     /// Whether Theo games right now; the queue waits meanwhile (a test sets its own).
     pub gaming: fn() -> bool,
     /// The fullest watched filesystem (util::fullest_disk; a test sets its own), read every
@@ -845,8 +850,8 @@ impl App {
             history: History::default(), view: ViewState::load(), usage: Refresher::new(), alerts: BudgetAlerts::new(util::send_notice),
             costs: Costs::default(), reviews: Reviews::default(), todos, errors: ErrorReporter::new(),
             claude_status: ProviderStatus::default(), codex_status: ProviderStatus::new(Provider::Codex), panels: Default::default(), focus: 1, previous_panel: 1,
-            help_open: false, has_pane_focus: true, attention_only: false, message, exiting: Vec::new(), restarting_cards: HashMap::new(), labelled: Default::default(), menu: None, session_details: None, todo_composer: None, settings_menu: None, team_view: None, team_attention: 0, team_roles: HashMap::new(), team_checked: 0.0, pairing: None, restore: Vec::new(),
-            held: Vec::new(), held_checked: 0.0, queue_checked: 0.0, sleep_checked: 0.0, gaming: util::gaming,
+            help_open: false, has_pane_focus: true, attention_only: false, message, exiting: Vec::new(), restarting_cards: HashMap::new(), labelled: Default::default(), menu: None, session_details: None, todo_composer: None, settings_menu: None, team_view: None, team_attention: 0, team_roles: HashMap::new(), team_known: false, team_checked: 0.0, pairing: None, restore: Vec::new(),
+            held: Vec::new(), held_checked: 0.0, queue_checked: 0.0, sleep_checked: 0.0, sleep_asked: HashMap::new(), gaming: util::gaming,
             disk_usage: util::fullest_disk, disk: None, disk_checked: 0.0, restore_checked: 0.0, start_files: Vec::new(),
             width: DEFAULT_COLUMN_WIDTH, sessions: Vec::new(), running_sessions: Vec::new(), windows: Vec::new(), quota_rows: Vec::new(), review_rows: Vec::new(), todo_entries: Vec::new(),
             session_task_titles: HashMap::new(), session_branches: HashMap::new(),
@@ -969,7 +974,9 @@ impl App {
     pub fn dispatch_prompts(&mut self) {
         self.dispatch_restarts();
         let ready: Vec<Session> = self.running_sessions.iter()
-            .filter(|session| !session.is_external() && session.state == "waiting" && session.since > self.prompts_sent.get(&session.session).copied().unwrap_or(0))
+            // An asleep card is no process: the wake its message asked for delivers it.
+            .filter(|session| !session.is_external() && session.asleep.is_none() && session.state == "waiting"
+                && session.since > self.prompts_sent.get(&session.session).copied().unwrap_or(0))
             .cloned().collect();
         for session in ready {
             let Some((text, path)) = prompts::oldest(&session.session) else { continue };
@@ -997,15 +1004,21 @@ impl App {
         for note in sleep::expire(now as i64) {
             util::log_event("INFO", &format!("{} asleep for over a week, forgotten", note.project));
         }
+        if !self.team_known {
+            return;
+        }
         let context = sleep::SleepContext {
             now: now as i64, enabled: settings::is_on("idle-sleep"), after_s: sleep::after_minutes() * 60,
             viewed: current_session(), team_members: self.team_roles.keys().cloned().collect(),
         };
         let eligible: Vec<Session> = self.running_sessions.iter()
+            .filter(|session| self.sleep_asked.get(&session.session) != Some(&session.since))
             .filter(|session| sleep::block(session, &context, self.todos.busy(&session.session), prompts::count(&session.session) > 0).is_none())
             .cloned().collect();
+        self.sleep_asked.retain(|asked, _| self.running_sessions.iter().any(|session| &session.session == asked));
         for session in eligible {
             manager_in_background(&["sleep", &session.session]);
+            self.sleep_asked.insert(session.session, session.since);
         }
     }
 
@@ -1299,6 +1312,11 @@ impl App {
 
     /// x on a card: a session in tmux leaves the list at once while `cockpit exit` runs.
     fn exit_session(&mut self, session: &Session) -> String {
+        if session.asleep.is_some() {
+            // No process to wait for: `cockpit exit` forgets its note and remembers it ended.
+            manager_in_background(&["exit", &session.session]);
+            return format!("ended {}", session.project);
+        }
         if session.tmux_pane.is_empty() {
             return kill_session(session);
         }
@@ -1622,7 +1640,8 @@ impl App {
         self.panels[1].fixed_bottom = self.selected_session_detail_lines();
         if selected_id.as_ref().is_some_and(|id| !self.all_sessions().iter().any(|session| session.session == *id)) && selected_index.is_none()
             && !is_viewer_loading() {
-            if let Some(session) = self.selected_session() {
+            // Viewing an asleep card wakes it, and moving the selection never does.
+            if let Some(session) = self.selected_session().filter(|session| session.asleep.is_none()) {
                 let error = self.manager_async(&["view", &session.session]);
                 if !error.is_empty() {
                     self.message = error;
@@ -1812,7 +1831,7 @@ impl App {
         ]
     }
 
-    fn selected_session(&self) -> Option<Session> {
+    pub(crate) fn selected_session(&self) -> Option<Session> {
         self.sessions.get(self.panels[1].selected).cloned()
     }
 
@@ -3512,16 +3531,21 @@ impl App {
     }
 
     /// Every 10 s: what in the linked teams waits for Theo, and each member's role, for the cards.
-    fn check_team(&mut self) {
+    pub(crate) fn check_team(&mut self) {
         let now = util::now();
         if now - self.team_checked < 10.0 { return; }
         self.team_checked = now;
         if !paths::team_host_socket().exists() {
             self.team_attention = 0;
             self.team_roles.clear();
+            self.team_known = false;
             return;
         }
-        let Ok(snapshot) = Self::team_snapshot() else { return };
+        let Ok(snapshot) = Self::team_snapshot() else {
+            self.team_known = false;
+            return;
+        };
+        self.team_known = true;
         self.team_attention = crate::teams::view::TeamView::attention(&snapshot);
         self.team_roles = snapshot["members"].as_array().into_iter().flatten().filter_map(|member| Some((member["session_id"].as_str()?.to_string(),
             format!("team {} · {}", member["role"].as_str()?, member["task_id"].as_str()?)))).collect();

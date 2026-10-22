@@ -1962,17 +1962,29 @@ fn asleep_cards_do_not_count_as_started_before_a_change() {
     assert!(!summary.contains("restart available"), "summary was {summary:?}");
 }
 
-/// One waiting session idle for `idle_s`, with a project of its own per id.
-fn sleep_fixture(idle_s: &[(&str, i64)]) -> (Fixture, App) {
-    let fixture = Fixture::new();
+fn idle_rows(idle_s: &[(&str, i64)]) -> Value {
     let now = util::now_secs();
-    let rows: Vec<Value> = idle_s.iter().enumerate().map(|(index, (id, idle))| {
+    json!(idle_s.iter().enumerate().map(|(index, (id, idle))| {
         let mut row = session(id, "waiting", &format!("project-{index}"), &format!("/r/project-{index}"), index as i64 + 1);
         row["since"] = json!(now - idle);
         row
-    }).collect();
-    fixture.snapshot(json!(rows));
-    let app = fixture.app();
+    }).collect::<Vec<Value>>())
+}
+
+/// A team daemon whose teams have no member: membership is known and keeps no one awake.
+fn no_team_members(fixture: &Fixture) {
+    let mut snapshot = team_snapshot();
+    snapshot["members"] = json!([]);
+    team_host(fixture, snapshot, vec![]);
+}
+
+/// One waiting session idle for `idle_s`, with a project of its own per id; team membership known.
+fn sleep_fixture(idle_s: &[(&str, i64)]) -> (Fixture, App) {
+    let fixture = Fixture::new();
+    fixture.snapshot(idle_rows(idle_s));
+    no_team_members(&fixture);
+    let mut app = fixture.app();
+    app.check_team();
     (fixture, app)
 }
 
@@ -2002,6 +2014,78 @@ fn dispatch_sleep_checks_once_a_minute() {
     app.dispatch_sleep();
     std::thread::sleep(Duration::from_millis(200));
     assert_eq!(fixture.calls("cockpit").len(), 1);
+}
+
+#[test]
+fn dispatch_sleep_asks_once_per_idle_spell() {
+    // A refused sleep stays refused until the session works again: no retry every minute.
+    let (fixture, mut app) = sleep_fixture(&[(SESSION_A, 7200)]);
+    app.dispatch_sleep();
+    fixture.wait_for_calls("cockpit", 1);
+    app.sleep_checked = 0.0;
+    app.dispatch_sleep();
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(fixture.calls("cockpit").len(), 1);
+    fixture.snapshot(idle_rows(&[(SESSION_A, 3600)]));
+    app.build();
+    app.sleep_checked = 0.0;
+    app.dispatch_sleep();
+    assert_eq!(fixture.wait_for_calls("cockpit", 2), vec![format!("cockpit sleep {SESSION_A}"); 2], "idle again since a later time");
+}
+
+#[test]
+fn dispatch_sleep_sleeps_no_one_before_team_membership_is_known() {
+    let fixture = Fixture::new();
+    fixture.snapshot(idle_rows(&[(SESSION_A, 7200)]));
+    let mut app = fixture.app();
+    app.check_team();
+    app.dispatch_sleep();
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(fixture.calls("cockpit").is_empty(), "no team service: a team member could be put to sleep");
+    no_team_members(&fixture);
+    app.team_checked = 0.0;
+    app.check_team();
+    app.sleep_checked = 0.0;
+    app.dispatch_sleep();
+    assert_eq!(fixture.wait_for_calls("cockpit", 1), vec![format!("cockpit sleep {SESSION_A}")]);
+}
+
+#[test]
+fn x_on_an_asleep_card_ends_it_through_the_manager() {
+    let fixture = Fixture::new();
+    let now = util::now_secs();
+    asleep_note(&fixture, SESSION_A, now - 7200, now - 3600);
+    let mut app = fixture.app();
+    app.handle(Key::Char('x'), &mut FakeScreen::answering(&[Key::Char('y')]));
+    assert_eq!(fixture.wait_for_calls("cockpit", 1), vec![format!("cockpit exit {SESSION_A}")]);
+    assert!(fixture.calls("osd-show").is_empty(), "{:?}", fixture.calls("osd-show"));
+}
+
+#[test]
+fn queued_prompts_wait_for_an_asleep_session_to_wake() {
+    let fixture = Fixture::new();
+    let now = util::now_secs();
+    asleep_note(&fixture, SESSION_A, now - 7200, now - 3600);
+    crate::prompts::add(SESSION_A, "run the tests").unwrap();
+    let mut app = fixture.app();
+    app.dispatch_prompts();
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(fixture.calls("cockpit").is_empty(), "{:?}", fixture.calls("cockpit"));
+}
+
+#[test]
+fn the_selection_moving_onto_an_asleep_card_does_not_wake_it() {
+    let fixture = Fixture::new();
+    let now = util::now_secs();
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "opusline", "/o", 1)]));
+    asleep_note(&fixture, SESSION_B, now - 7200, now - 3600);
+    let mut app = fixture.app();
+    app.panels[1].selected = app.sessions.iter().position(|session| session.session == SESSION_A).unwrap();
+    fixture.snapshot(json!([]));
+    app.build();
+    assert_eq!(app.selected_session().map(|session| session.session.clone()), Some(SESSION_B.to_string()));
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(fixture.calls("cockpit").is_empty(), "{:?}", fixture.calls("cockpit"));
 }
 
 #[test]
