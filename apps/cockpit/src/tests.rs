@@ -2051,6 +2051,55 @@ fn dispatch_sleep_sleeps_no_one_before_team_membership_is_known() {
 }
 
 #[test]
+fn s_puts_the_selected_session_to_sleep_without_waiting_for_the_idle_delay() {
+    let (fixture, mut app) = sleep_fixture(&[(SESSION_A, 60)]);
+    app.handle(Key::Char('s'), &mut FakeScreen::default());
+    assert_eq!(fixture.wait_for_calls("cockpit", 1), vec![format!("cockpit sleep {SESSION_A}")]);
+    assert!(app.message.contains("to sleep"), "{}", app.message);
+}
+
+#[test]
+fn s_shows_why_a_session_stays_awake_without_logging_an_error() {
+    let (fixture, mut app) = sleep_fixture(&[(SESSION_A, 60)]);
+    fixture.shim("cockpit", "echo 'cockpit: project-0 stays awake: text is typed in its prompt' >&2; exit 3");
+    app.handle(Key::Char('s'), &mut FakeScreen::default());
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while !app.collect_manager() && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(app.message, "cockpit: project-0 stays awake: text is typed in its prompt");
+    let log = fs::read_to_string(crate::paths::log()).unwrap_or_default();
+    assert!(!log.lines().any(|line| line.contains("ERROR") && line.contains("cockpit sleep")), "{log}");
+}
+
+#[test]
+fn s_keeps_a_team_member_awake() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_B, "waiting", "project-a", "/r/project-a", 1)]));
+    team_host(&fixture, team_snapshot(), vec![]);
+    let mut app = fixture.app();
+    app.check_team();
+    app.handle(Key::Char('s'), &mut FakeScreen::default());
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(fixture.calls("cockpit").is_empty(), "{:?}", fixture.calls("cockpit"));
+    assert!(app.message.contains("team"), "{}", app.message);
+}
+
+#[test]
+fn s_on_an_asleep_card_says_it_already_sleeps() {
+    let fixture = Fixture::new();
+    let now = util::now_secs();
+    asleep_note(&fixture, SESSION_A, now - 7200, now - 3600);
+    no_team_members(&fixture);
+    let mut app = fixture.app();
+    app.check_team();
+    app.handle(Key::Char('s'), &mut FakeScreen::default());
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(fixture.calls("cockpit").is_empty(), "{:?}", fixture.calls("cockpit"));
+    assert!(app.message.contains("already asleep"), "{}", app.message);
+}
+
+#[test]
 fn x_on_an_asleep_card_ends_it_through_the_manager() {
     let fixture = Fixture::new();
     let now = util::now_secs();

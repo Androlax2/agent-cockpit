@@ -819,6 +819,8 @@ const CRAFT_CHECK_S: f64 = 5.0;
 
 /// How often the column looks for sessions to put to sleep.
 const SLEEP_CHECK_S: f64 = 60.0;
+/// `cockpit sleep`'s exit status when the session must stay awake (typed text, background work…).
+const SLEEP_REFUSED: i32 = 3;
 
 /// What a press on the "Sleep after" row cycles through, in minutes.
 const SLEEP_AFTER_CHOICES: [i64; 4] = [30, 60, 120, 240];
@@ -921,6 +923,33 @@ impl App {
         }
     }
 
+    /// `s`: the session sleeps now, whatever its idle time; cockpit's own checks (typed text,
+    /// background work, a conversation to resume) still apply. Its stderr is kept out of the
+    /// log (COCKPIT_LOG_STDERR unset): a refusal is shown, not reported as an error.
+    fn sleep_now(&mut self, session: &Session) -> String {
+        if session.asleep.is_some() {
+            return format!("{} is already asleep", session.project);
+        }
+        if session.terminal {
+            return format!("{} runs in its own terminal: the cockpit could not wake it", session.project);
+        }
+        if !self.team_known {
+            return format!("cannot tell yet whether {} is in a team: try again in a moment", session.project);
+        }
+        if self.team_roles.contains_key(&session.session) {
+            return format!("{} is in a team: teammates stay awake (a woken session would lose its team)", session.project);
+        }
+        let started = Command::new("cockpit").args(["sleep", &session.session])
+            .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).spawn();
+        match started {
+            Ok(child) => {
+                self.pending.push(("sleep".into(), child));
+                format!("putting {} to sleep …", session.project)
+            }
+            Err(error) => format!("cockpit sleep: {error}"),
+        }
+    }
+
     /// The commands manager_async started that have ended; a failure's last error line becomes the
     /// message. True when one ended (the column redraws).
     pub fn collect_manager(&mut self) -> bool {
@@ -939,6 +968,11 @@ impl App {
                         let _ = stderr.read_to_string(&mut errors);
                     }
                     let last = errors.trim().lines().last().unwrap_or("").to_string();
+                    // `s` on a session that must stay awake: cockpit logged why at INFO.
+                    if command == "sleep" && status.code() == Some(SLEEP_REFUSED) && !last.is_empty() {
+                        self.message = last;
+                        continue;
+                    }
                     util::log_event("ERROR", &format!("cockpit {command}: {}", if last.is_empty() { "failed" } else { &last }));
                     self.message = if last.is_empty() { format!("cockpit {command} failed") } else { last };
                 }
@@ -1926,6 +1960,7 @@ impl App {
              ("/", "find a session by project or task without opening it or changing list order"),
              ("i", "read the complete task, request and metadata; arrows scroll and Escape closes"),
              ("x", "exit the session: Ctrl-C twice, then killed if it lingers"), ("r", "restart in place: same conversation, new process"),
+             ("s", "sleep now: it exits to free its memory and keeps its card; opening or messaging it resumes the conversation"),
              ("⌘R", "restart the sessions started before a change they lack (badge ⟳ restart), when they wait at their prompt; busy ones are named and left alone"),
              ("p", "pin on top"),
              ("e", "effort level: Claude restarts on it (or click the card's level); opencode opens its native picker without restarting"),
@@ -1940,7 +1975,7 @@ impl App {
 
     pub(crate) fn handle_sessions(&mut self, key: Key, screen: &mut dyn Screen) -> String {
         let session = self.selected_session();
-        if let Some(s) = session.as_ref().filter(|s| s.restarting) && matches!(key, Key::Enter | Key::Char('r' | 'e' | '$' | 'C' | 'x')) {
+        if let Some(s) = session.as_ref().filter(|s| s.restarting) && matches!(key, Key::Enter | Key::Char('r' | 'e' | '$' | 'C' | 'x' | 's')) {
             return format!("{} is restarting: wait for it to come back", s.project);
         }
         if session.as_ref().is_some_and(|session| session.is_external()) && session_key_requires_terminal(key.clone()) {
@@ -2058,6 +2093,10 @@ impl App {
             Key::Char('x') => match session {
                 Some(s) if self.confirm(screen, &format!("exit {}?", s.project)) => self.exit_session(&s),
                 _ => String::new(),
+            },
+            Key::Char('s') => match known {
+                Some(s) => self.sleep_now(&s),
+                None => String::new(),
             },
             _ => String::new(),
         }
@@ -3897,13 +3936,14 @@ fn fzf(prompt: &str, lines: &[String], extra: &[&str]) -> Option<String> {
 }
 
 fn session_key_requires_terminal(key: Key) -> bool {
-    matches!(key, Key::Enter | Key::Char('r' | 'e' | '$' | 'C' | 'x'))
+    matches!(key, Key::Enter | Key::Char('r' | 'e' | '$' | 'C' | 'x' | 's'))
 }
 
 /// The card keys that need a feature of the session's agent, and what they do, named for a
 /// refusal (cockpit refuses them too, and Remote Control).
 fn key_feature(key: Key, agent: &agents::Agent) -> Option<(Feature, &'static str)> {
     match key {
+        Key::Char('s') => Some((Feature::Sleep, "sleeping")),
         Key::Char('e') if agent.can(Feature::Variants) => Some((Feature::Variants, "the model variant picker")),
         Key::Char('e') => Some((Feature::Effort, "the effort level")),
         Key::Char('$') => Some((Feature::Billing, "billing to API credits")),

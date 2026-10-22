@@ -27,7 +27,8 @@ conversation when Theo or the cockpit needs it again.
 
 ### Non-goals
 
-- No manual "sleep now" key (Theo said no).
+- ~~No manual "sleep now" key~~: added later at Theo's request: `s` sleeps the selected session at once,
+  skipping the idle delay but keeping the typed-text, background-work, conversation and team checks.
 - No freezing / thawing.
 - Waking does not need to be fast; a few seconds of resume is accepted.
 - Waking with the current CLAUDE.md, settings and sandbox (not the ones the session started
@@ -52,7 +53,7 @@ All of these must hold; any doubt means "stay awake" (fail safe toward keeping t
   question, no approval or input request, no running command) for at least
   **`idle-sleep-after` minutes, default 60**, measured from `Session.since`.
 - It is a managed session: not `terminal` (started with `t`), not external.
-- It is not pinned.
+- Pinned sessions sleep too (Theo's choice, after the first version kept them awake).
 - It is not the session on screen in workspace 6.
 - It is not a member of a team (team bindings are tied to the running process: `osd/teams.rs`
   `open_and_restore` and `teams/store.rs` refuse a changed runtime, so a resumed teammate would
@@ -144,7 +145,7 @@ Everything that reaches a session wakes it first, then proceeds as today:
 
 ## Calls made without Theo (check these)
 
-- Pinned sessions, team members, the session on screen and terminal sessions never sleep.
+- Team members, the session on screen and terminal sessions never sleep (pinned ones do, by Theo's later choice).
 - Sleep notes live in `~/.local/state/cockpit/asleep/` and survive reboots; asleep cards are not
   part of the `B` restore offer.
 - `x` on an asleep card ends it for good; `r` wakes it.

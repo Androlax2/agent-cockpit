@@ -120,7 +120,7 @@ pub struct SleepContext {
 
 #[derive(Debug, PartialEq)]
 pub enum SleepBlock {
-    Disabled, Asleep, Restarting, External, Terminal, Unsupported, Pinned, Viewed, Team, NotReady, Busy,
+    Disabled, Asleep, Restarting, External, Terminal, Unsupported, Viewed, Team, NotReady, Busy,
     PendingMessage, Idle { remaining: i64 },
 }
 
@@ -133,7 +133,6 @@ impl fmt::Display for SleepBlock {
             Self::External => formatter.write_str("no terminal target"),
             Self::Terminal => formatter.write_str("terminal-managed session"),
             Self::Unsupported => formatter.write_str("its agent cannot sleep"),
-            Self::Pinned => formatter.write_str("pinned"),
             Self::Viewed => formatter.write_str("viewed in the cockpit"),
             Self::Team => formatter.write_str("member of a team"),
             Self::NotReady => formatter.write_str("not waiting at its prompt"),
@@ -151,7 +150,6 @@ pub fn block(session: &Session, context: &SleepContext, busy: bool, has_pending_
     if session.is_external() { return Some(SleepBlock::External); }
     if session.terminal { return Some(SleepBlock::Terminal); }
     if !session.agent().can(Feature::Sleep) { return Some(SleepBlock::Unsupported); }
-    if session.pinned { return Some(SleepBlock::Pinned); }
     if session.session == context.viewed { return Some(SleepBlock::Viewed); }
     if context.team_members.contains(&session.session) { return Some(SleepBlock::Team); }
     // activity_label ignores needs_input, which also keeps a session awake.
@@ -205,16 +203,21 @@ mod tests {
     }
 
     #[test]
+    fn block_lets_a_pinned_session_sleep() {
+        let pinned = Session { pinned: true, ..idle_session() };
+        assert_eq!(block(&pinned, &context(), false, false), None);
+    }
+
+    #[test]
     fn block_reasons() {
         type Change = fn(&mut Session, &mut SleepContext, &mut bool, &mut bool);
-        let cases: [(&str, Change, SleepBlock); 15] = [
+        let cases: [(&str, Change, SleepBlock); 14] = [
             ("disabled", |_, context, _, _| context.enabled = false, SleepBlock::Disabled),
             ("asleep", |session, _, _, _| session.asleep = Some(NOW), SleepBlock::Asleep),
             ("restarting", |session, _, _, _| session.restarting = true, SleepBlock::Restarting),
             ("external", |session, _, _, _| session.tmux_pane.clear(), SleepBlock::External),
             ("terminal", |session, _, _, _| session.terminal = true, SleepBlock::Terminal),
             ("codex", |session, _, _, _| session.agent = "codex".into(), SleepBlock::Unsupported),
-            ("pinned", |session, _, _, _| session.pinned = true, SleepBlock::Pinned),
             ("viewed", |session, context, _, _| context.viewed = session.session.clone(), SleepBlock::Viewed),
             ("team member", |session, context, _, _| { context.team_members.insert(session.session.clone()); }, SleepBlock::Team),
             ("working", |session, _, _, _| session.state = "working".into(), SleepBlock::NotReady),
