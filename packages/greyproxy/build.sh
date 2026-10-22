@@ -8,8 +8,11 @@
 # Each fix lands on that branch and goes upstream as a PR.
 #   make greyproxy-patch
 # Move the pins below to the next tip of that branch, or to an upstream release once it ships them.
-# The running service keeps the old binary until it restarts (the script says how).
+# restart.sh then restarts the service on the new binary and fails, saying how to roll back, unless
+# it answers its health check.
 set -euo pipefail
+
+package_dir=$(dirname "$(readlink -f "$0")")
 
 build_dir="${XDG_CACHE_HOME:-$HOME/.cache}/dotfiles-build/greyproxy"
 target="$HOME/.local/bin/greyproxy"
@@ -46,5 +49,6 @@ fi
 install -m 0755 "$build_dir/greyproxy" "$target.new"
 mv "$target.new" "$target"
 "$target" --version | sed -n 3p
-echo "greyproxy-patch: installed; the previous binary is $target.previous."
-echo "greyproxy-patch: systemctl --user restart greyproxy (running sessions reconnect on their own)."
+echo "greyproxy-patch: installed; the previous binary is $target.previous. Restarting greyproxy (running sessions reconnect on their own) …"
+
+"$package_dir/restart.sh"

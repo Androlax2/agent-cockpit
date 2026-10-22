@@ -33,16 +33,18 @@ system: ## [sudo] Copy system/ into /: each changed file shows its diff and asks
 	@tools/system-install.sh
 
 # cockpit apply runs this in the running copy after git am, with BEFORE the commit it started from.
-# A new greywall pin is built and installed too: sessions are flagged for a restart once the binary
-# changes (the column watches it). The last line fails loud whenever the installed greywall is not
-# the pinned build, whatever changed.
-after-apply: ## Relink, rebuild and reload when apps/ changed, rebuild greywall when its pin did: make after-apply BEFORE=<commit>
+# A new greywall or greyproxy pin is built and installed too: sessions are flagged for a restart once
+# greywall changes (the column watches it), greyproxy restarts on its new build. The last lines fail
+# loud whenever either installed binary is not the pinned build, whatever changed.
+after-apply: ## Relink, rebuild and reload when apps/ changed, rebuild greywall or greyproxy when its pin did: make after-apply BEFORE=<commit>
 	@test -n "$(BEFORE)" || { echo "usage: make after-apply BEFORE=<commit before the apply>"; exit 2; }
 	$(stow) --restow $(packages)
 	systemctl --user daemon-reload
 	@if ! git diff --quiet "$(BEFORE)" HEAD -- apps; then $(MAKE) build && cockpit reload; fi
 	@if ! git diff --quiet "$(BEFORE)" HEAD -- packages/greywall/build.sh; then $(MAKE) greywall-patch; fi
+	@if ! git diff --quiet "$(BEFORE)" HEAD -- packages/greyproxy/build.sh; then $(MAKE) greyproxy-patch; fi
 	@packages/greywall/check.sh
+	@packages/greyproxy/check.sh
 
 handoff-install: ## Install what an agent left in .handoff/ (checksums, diff, then asks; runs with your rights)
 	@tools/handoff-install.sh
@@ -57,8 +59,9 @@ greywall-patch: ## Build, test and install the patched greywall into ~/.local/bi
 
 # greyproxy from the dotfiles branch of Androlax2/greyproxy: v0.4.5 plus the self-listener block,
 # an optional API token, per-client proxy secrets (both off) and a fail-closed start.
-greyproxy-patch: ## Build, test and install greyproxy from the fork into ~/.local/bin (keeps greyproxy.previous)
+greyproxy-patch: ## Build, test, install and restart greyproxy from the fork (keeps greyproxy.previous)
 	packages/greyproxy/build.sh
+	@packages/greyproxy/check.sh
 
 ##@ Isolate coding agents
 
