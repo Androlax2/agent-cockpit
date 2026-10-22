@@ -2156,26 +2156,6 @@ if [[ " ${AGENTS[*]} " != *" $DEFAULT_AGENT "* ]]; then
     exit 1
 fi
 
-# The state folder was claude-sessions until the rename to cockpit (2026-10-21). The first run
-# moves it and leaves the old name as a link, so the programs started before the rename (the
-# sidebar, the daemon) keep writing into the moved folder until they restart.
-# TODO: drop with the claude-sessions forwarding script (follow-up of todo bc95a4d0).
-move_old_state_folder() { # command
-    local state_home=${COCKPIT_STATE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}}
-    local old=$state_home/claude-sessions new=$state_home/cockpit
-    [[ -d $old && ! -L $old ]] || return 0
-    if [[ -e $new ]]; then
-        # Every call would log it: only the start and the reload say so.
-        [[ $1 == prepare || $1 == reload ]] &&
-            log_event ERROR manager "two state folders, $old and $new: cockpit uses $new; move what $old still holds by hand"
-        return 0
-    fi
-    # A sandbox reads the folder but cannot move it; two runs at once: the second finds it moved.
-    mv -T "$old" "$new" 2>/dev/null || return 0
-    ln -s cockpit "$old" 2>/dev/null || true
-}
-move_old_state_folder "${1:-attach}"
-
 # The agent a start runs (new, parallel, background, review): claude, or another with --agent
 # <name> before the command. A running session is its own: resume, restart and restore go by its id.
 launch_agent=$DEFAULT_AGENT

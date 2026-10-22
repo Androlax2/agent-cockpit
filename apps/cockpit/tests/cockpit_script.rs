@@ -3703,40 +3703,6 @@ fn a_qa_copy_is_refused_from_a_repository_that_borrows_objects_or_points_elsewhe
     }
 }
 
-#[test]
-fn the_first_run_after_the_rename_moves_the_old_state_folder_and_links_its_name() {
-    let manager = Manager::new();
-    let old = manager.sandbox.state.join("claude-sessions");
-    fs::create_dir(&old).unwrap();
-    fs::write(old.join("todo.json"), r#"{"items": []}"#).unwrap();
-    let result = manager.run(&["log", "test", "INFO", "hello"], &[]);
-    assert!(result.status.success(), "{}", stderr(&result));
-    assert_eq!(fs::read_to_string(manager.sandbox.state.join("cockpit/todo.json")).unwrap(), r#"{"items": []}"#);
-    assert_eq!(fs::read_link(&old).unwrap(), Path::new("cockpit"));
-}
-
-#[test]
-fn two_state_folders_are_both_kept_and_the_start_reports_them() {
-    let manager = Manager::new();
-    for (folder, content) in [("claude-sessions", "old"), ("cockpit", "new")] {
-        fs::create_dir_all(manager.sandbox.state.join(folder)).unwrap();
-        fs::write(manager.sandbox.state.join(folder).join("todo.json"), content).unwrap();
-    }
-    manager.run(&["prepare"], &[]);
-    assert_eq!(fs::read_to_string(manager.sandbox.state.join("claude-sessions/todo.json")).unwrap(), "old");
-    assert_eq!(fs::read_to_string(manager.sandbox.state.join("cockpit/todo.json")).unwrap(), "new");
-    assert!(manager.log_lines().iter().any(|line| line.contains("ERROR") && line.contains("two state folders")), "{:?}", manager.log_lines());
-}
-
-#[test]
-fn the_old_claude_sessions_name_runs_cockpit() {
-    let manager = Manager::new();
-    let result = manager.sandbox.run(bin().join("claude-sessions"), &["log", "test", "INFO", "through the old name"], &[]);
-    assert!(result.status.success(), "{}", stderr(&result));
-    assert!(manager.log_lines().iter().any(|line| line.contains("through the old name")), "{:?}", manager.log_lines());
-    assert_eq!(stderr(&result), "", "a program reading stderr would take the rename note for an error");
-}
-
 /// `cockpit apply <clone>` for a reviewed repository other than dotfiles, whose running copy is
 /// ~/<name> and work clone ~/IdeaProjects/<name>.
 fn apply_reviewed(manager: &Manager, clone: &Path, answer: &str) -> Output {

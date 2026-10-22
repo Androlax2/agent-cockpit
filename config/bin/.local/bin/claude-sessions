@@ -1,7 +1,0 @@
-#!/bin/sh
-# claude-sessions was renamed cockpit (2026-10-21): what still calls the old name (the programs
-# started before the rename, habits) reaches the new one.
-# TODO: remove once nothing calls it (follow-up of todo bc95a4d0).
-# Only to a person: programs read the stderr of a failed call as its error message.
-[ -t 2 ] && echo "claude-sessions is now cockpit" >&2
-exec cockpit "$@"
