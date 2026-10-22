@@ -268,6 +268,12 @@ view_session() {
             'first(.sessions[] | select(.session == $id)) | [.tmux_pane // "", .state // "", (.started // "" | tostring), .project // ""] | join("\u001f")' \
             "$SNAPSHOT" 2>/dev/null) || true
         if [[ -z $pane ]]; then
+            if is_asleep "$id"; then
+                wake_session "$id" || return 1
+                printf '%s\n' "$id" > "$CURRENT"
+                show_restarting "$id"
+                return 0
+            fi
             echo "cockpit: session $id has no tmux pane" >&2
             return 1
         fi
@@ -760,9 +766,13 @@ open_variants() { # id
 
 # A message for a session without opening it; each agent says when it takes one (agent_*_say).
 say_to_session() { # id message
-    local id=$1 message=$2 pane
+    local id=$1 message=$2 pane waking=""
     pane=$(session_field "$id" tmux_pane)
-    [[ -n $pane ]] || { echo "cockpit: session $id has no tmux pane" >&2; return 1; }
+    if [[ -z $pane ]]; then
+        # Asleep, or restarting with no pane yet: the message waits for the new process.
+        if is_asleep "$id"; then waking=asleep; elif is_restarting "$id"; then waking=restarting; fi
+        [[ -n $waking ]] || { echo "cockpit: session $id has no tmux pane" >&2; return 1; }
+    fi
     if [[ -z $message || $message == *$'\n'* || ${#message} -gt 4000 ]]; then
         echo "cockpit: a message is one line of at most 4000 characters" >&2
         return 1
@@ -771,6 +781,12 @@ say_to_session() { # id message
     if [[ $message == *[[:cntrl:]]* ]]; then
         echo "cockpit: a message cannot carry control characters" >&2
         return 1
+    fi
+    if [[ -n $waking ]]; then
+        queue_for_wake "$id" "$message"
+        if [[ $waking == asleep ]]; then setsid -f cockpit wake "$id" >/dev/null 2>&1; fi
+        echo "queued until it wakes"
+        return 0
     fi
     "agent_$(agent_of_session "$id")_say" "$id" "$pane" "$message"
 }
@@ -953,6 +969,10 @@ has_conversation() { # id
 # and are not ended-sessions: a sleep is not Theo's decision to end it.
 ASLEEP_DIR="${COCKPIT_STATE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}}/cockpit/asleep"
 
+is_asleep() { # id
+    [[ $1 =~ ^[A-Za-z0-9_-]+$ && -f $ASLEEP_DIR/$1 ]]
+}
+
 # Whether anything sits in the prompt of the agent's pane. Only the cursor right after the agent's
 # prompt start, with nothing but blanks or dim text (a placeholder) after it, reads as empty:
 # anything else, or a screen that cannot be read, counts as a draft.
@@ -1106,10 +1126,91 @@ restore_sessions() { # dir id [dir id …]
 RESTARTING_DIR="${XDG_RUNTIME_DIR:-/tmp}/cockpit.restarting"
 RESTART_TIMEOUT_S=90
 
+is_restarting() { # id
+    [[ $1 =~ ^[A-Za-z0-9_-]+$ && -f $RESTARTING_DIR/$1 ]]
+}
+
+# A message for a session that is not running yet; the column sends it once the new process waits
+# at its prompt (apps/cockpit/src/prompts.rs).
+queue_for_wake() { # id message
+    local folder="${XDG_STATE_HOME:-$HOME/.local/state}/cockpit/prompt-queue/$1"
+    mkdir -p "$folder"
+    printf '%s' "$2" > "$folder/$(date +%s%N).txt"
+    log_event INFO sessions "prompt queued for $1 until it wakes"
+    audit_event manager prompt.queued queued "session=$1" "fp:text=$2"
+}
+
+# Resume an asleep session's conversation out of sight, the way restore does, under a restart note
+# (the column shows Restarting, the session pane waits for it). Never a fresh session in place of a
+# conversation that is gone: Claude's restore would start one, so the check is made here. The agent
+# not starting keeps the note, so a later wake can try again.
+wake_session() { # id
+    local id=$1 note="$ASLEEP_DIR/$1"
+    is_asleep "$id" || { echo "cockpit: $id is not asleep" >&2; return 1; }
+    # The sleep note is the lock: a click and a message waking it together resume it once.
+    (
+        flock -n 9 || { log_event INFO sleep "$id is already waking"; exit 0; }
+        [[ -f $note ]] || exit 0
+        local project directory remote agent woke_at reason=""
+        IFS=$'\x1f' read -r project directory remote < <(jq -r '[.project // "", .cwd // "", (.remote // false | tostring)] | join("\u001f")' "$note" 2>/dev/null) || true
+        [[ -n $project ]] || project=$id
+        agent=$(agent_of_session "$id")
+        if [[ -z $directory || $directory == *"#"* || ! -d $directory ]]; then
+            reason="its folder is unknown or gone"
+        elif [[ $agent == claude ]] && ! has_conversation "$id"; then
+            reason="its conversation is gone"
+        fi
+        if [[ -n $reason ]]; then
+            rm -f "$note"
+            log_event WARN sleep "$project could not wake: $reason"
+            echo "cockpit: $project could not wake: $reason" >&2
+            exit 1
+        fi
+        printf -v woke_at '%(%s)T' -1
+        mkdir -p "$RESTARTING_DIR"
+        printf '%s\n%s\n%s\n\n' "$woke_at" "$project" "$directory" > "$RESTARTING_DIR/$id"
+        if [[ $(cat "$CURRENT" 2>/dev/null) == "$id" ]]; then show_restarting "$id"; fi
+        if ! "agent_${agent}_restore" "$directory" "$id"; then
+            rm -f "$RESTARTING_DIR/$id"
+            log_event WARN sleep "$project could not wake: its $agent did not start"
+            echo "cockpit: $project could not wake: its $agent did not start" >&2
+            exit 1
+        fi
+        rm -f "$note"
+        log_event INFO sleep "$project woke"
+        # Not inheriting the lock: the wait outlives this wake by up to RESTART_TIMEOUT_S.
+        if [[ $remote == true ]]; then setsid -f cockpit wake-remote "$id" "$woke_at" 9<&- >/dev/null 2>&1; fi
+    ) 9<"$note"
+}
+
+# Remote Control does not survive the exit: switch it back on once the resumed session waits at its
+# prompt (a new process: started at or after the wake).
+restore_remote_control() { # id woke_at
+    local id=$1 woke_at=$2 pane
+    [[ $id =~ ^[A-Za-z0-9_-]+$ && $woke_at =~ ^[0-9]+$ ]] || { echo "usage: cockpit wake-remote <session-id> <woke-at>" >&2; return 1; }
+    while (( $(date +%s) - woke_at <= RESTART_TIMEOUT_S )); do
+        pane=$(jq -r --arg id "$id" --argjson woke_at "$woke_at" \
+            'first(.sessions[] | select(.session == $id and (.tmux_pane // "") != "" and .state == "waiting" and (.started // 0) >= $woke_at)) | .tmux_pane' \
+            "$SNAPSHOT" 2>/dev/null || true)
+        if [[ -n $pane ]]; then
+            session_is_remote "$id" || send_remote_toggle "$pane"
+            return 0
+        fi
+        sleep 1
+    done
+    log_event WARN sleep "$id did not reach its prompt within ${RESTART_TIMEOUT_S}s: Remote Control stays off"
+    return 1
+}
+
 # Exit it and bring it back in its directory; each agent says how (agent_*_restart). An effort or a
 # billing is refused for an agent without the feature.
 restart_session() { # id [effort] [detached] [credits|subscription]
     local id=$1 effort=${2:-} detached=${3:-} billing=${4:-} directory note
+    if is_asleep "$id"; then
+        [[ -z $effort && -z $billing ]] || { echo "cockpit: $id is asleep; wake it before changing its effort or billing" >&2; return 1; }
+        wake_session "$id"
+        return
+    fi
     directory=$(session_field "$id" cwd)
     audit_event manager session.restart asked "session=$id" "directory=$directory"
     if [[ -z $directory ]]; then
@@ -2363,11 +2464,18 @@ case ${1:-attach} in
         ;;
     resume) resume_session "${2:?usage: cockpit resume <dir> <session-id>}" "${3:?usage: cockpit resume <dir> <session-id>}" ;;
     exit)
-        exit_session "${2:?usage: cockpit exit <session-id>}"
-        clear_exited_viewer "$2"
+        if is_asleep "${2:?usage: cockpit exit <session-id>}"; then
+            rm -f "$ASLEEP_DIR/$2"
+            log_event INFO sleep "$2 ended while asleep"
+        else
+            exit_session "$2"
+            clear_exited_viewer "$2"
+        fi
         mkdir -p "$(dirname "$ENDED_SESSIONS")" && printf '%s\n' "$2" >> "$ENDED_SESSIONS"
         ;;
     sleep) sleep_session "${2:?usage: cockpit sleep <session-id>}" ;;
+    wake) wake_session "${2:?usage: cockpit wake <session-id>}" ;;
+    wake-remote) restore_remote_control "${2:?usage: cockpit wake-remote <session-id> <woke-at>}" "${3:?usage: cockpit wake-remote <session-id> <woke-at>}" ;;
     restore) shift; restore_sessions "$@" ;;
     restart-all) shift; restart_sessions "$@" ;;
     background) background_session "${2:?usage: cockpit background <dir> <prompt>}" "${3:?usage: cockpit background <dir> <prompt>}" ;;

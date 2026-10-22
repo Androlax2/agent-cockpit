@@ -4002,3 +4002,266 @@ fn idle_sleep_is_a_switch_that_starts_on() {
     assert!(manager.run(&["setting", "idle-sleep", "off"], &[]).status.success());
     assert_eq!(stdout(&manager.run(&["setting", "idle-sleep"], &[])).trim(), "idle-sleep: off");
 }
+
+impl Manager {
+    /// `id` asleep: its note is there and no process reports it.
+    fn put_to_sleep(&self, id: &str, agent: &str, remote: bool) {
+        let folder = self.sandbox.state.join("cockpit/asleep");
+        fs::create_dir_all(&folder).unwrap();
+        fs::write(folder.join(id), json!({"session": id, "agent": agent, "project": "proj-a", "cwd": path_str(&self.project),
+            "title": "Fix the tests", "idle_since": SLEEP_SINCE, "slept_at": now_seconds(), "remote": remote}).to_string()).unwrap();
+        fs::write(&self.snapshot, json!({"sessions": []}).to_string()).unwrap();
+    }
+
+    fn restart_note_of(&self, id: &str) -> PathBuf {
+        self.runtime_file(&format!("cockpit.restarting/{id}"))
+    }
+
+    fn queued_prompts(&self, id: &str) -> Vec<String> {
+        let folder = self.sandbox.state.join("cockpit/prompt-queue").join(id);
+        fs::read_dir(folder).map(|entries| entries.flatten().map(|entry| fs::read_to_string(entry.path()).unwrap()).collect()).unwrap_or_default()
+    }
+
+    fn claude_wakes(&self) -> Vec<String> {
+        self.tmux_calls("new-session").into_iter().filter(|call| call.contains("claude-retry-restart-")).collect()
+    }
+}
+
+#[test]
+fn wake_restores_the_conversation_and_drops_the_note() {
+    let manager = Manager::new();
+    manager.put_to_sleep(SESSION_A, "claude", false);
+    let before = epoch_seconds();
+    let result = manager.run(&["wake", SESSION_A], &[]);
+    assert_eq!(result.status.code(), Some(0), "{}", stderr(&result));
+    let launches = manager.claude_wakes();
+    assert_eq!(launches.len(), 1, "{launches:?}");
+    assert!(launches[0].contains(&format!("-- --resume {SESSION_A}")), "{}", launches[0]);
+    assert!(launches[0].contains(&format!("-c {}", manager.project.display())), "{}", launches[0]);
+    assert!(!manager.asleep_note(SESSION_A).exists());
+    let restart_note = fs::read_to_string(manager.restart_note_of(SESSION_A)).expect("no restart note");
+    let lines: Vec<&str> = restart_note.lines().collect();
+    assert!(lines[0].parse::<u64>().unwrap() >= before, "{restart_note}");
+    assert_eq!(lines[1..], ["proj-a", path_str(&manager.project).as_str(), ""]);
+    assert!(manager.tmux_calls("send-keys").is_empty());
+    assert!(manager.calls("setsid").is_empty(), "no Remote Control to bring back");
+    assert!(manager.log_lines().iter().any(|line| line.contains("sleep: proj-a woke")), "{:?}", manager.log_lines());
+}
+
+#[test]
+fn wake_never_starts_a_fresh_session_when_the_conversation_is_gone() {
+    let manager = Manager::new();
+    manager.put_to_sleep(SESSION_A, "claude", false);
+    let empty_transcripts = manager.sandbox.root.join("transcripts");
+    fs::create_dir_all(&empty_transcripts).unwrap();
+    let result = manager.run(&["wake", SESSION_A], &[("COCKPIT_TRANSCRIPTS", &path_str(&empty_transcripts))]);
+    assert_eq!(result.status.code(), Some(1), "{}", stderr(&result));
+    assert!(manager.tmux_calls("new-session").is_empty(), "{:?}", manager.tmux_calls("new-session"));
+    assert!(!manager.asleep_note(SESSION_A).exists());
+    assert!(!manager.restart_note_of(SESSION_A).exists());
+    assert!(manager.log_lines().iter().any(|line| line.contains("WARN sleep: proj-a could not wake")), "{:?}", manager.log_lines());
+}
+
+#[test]
+fn wake_gives_up_on_a_folder_that_is_gone() {
+    let manager = Manager::new();
+    manager.put_to_sleep(SESSION_A, "claude", false);
+    fs::remove_dir(&manager.project).unwrap();
+    let result = manager.run(&["wake", SESSION_A], &[]);
+    assert_eq!(result.status.code(), Some(1), "{}", stderr(&result));
+    assert!(manager.tmux_calls("new-session").is_empty());
+    assert!(!manager.asleep_note(SESSION_A).exists());
+    assert!(manager.log_lines().iter().any(|line| line.contains("could not wake")), "{:?}", manager.log_lines());
+}
+
+#[test]
+fn wake_keeps_the_note_when_the_agent_does_not_start() {
+    let manager = Manager::new();
+    manager.put_to_sleep(SESSION_A, "claude", false);
+    manager.sandbox.shim("tmux", &format!("{FAKE_TMUX}\n[[ $1 == new-session ]] && exit 1\nexit 0"));
+    let result = manager.run(&["wake", SESSION_A], &[]);
+    assert_eq!(result.status.code(), Some(1), "{}", stderr(&result));
+    assert!(manager.asleep_note(SESSION_A).exists(), "the conversation is still there to wake later");
+    assert!(!manager.restart_note_of(SESSION_A).exists());
+}
+
+#[test]
+fn wake_resumes_an_opencode_session_without_a_conversation_check() {
+    let manager = Manager::new();
+    manager.put_to_sleep(OPENCODE_SESSION, "opencode", false);
+    let result = manager.run(&["wake", OPENCODE_SESSION], &[]);
+    assert_eq!(result.status.code(), Some(0), "{}", stderr(&result));
+    let start = manager.opencode_starts().pop().expect("no opencode start");
+    assert!(start.ends_with(&format!("--session {OPENCODE_SESSION}")), "{start}");
+    assert!(!manager.asleep_note(OPENCODE_SESSION).exists());
+}
+
+#[test]
+fn wake_of_a_session_that_is_not_asleep_or_not_an_id_fails() {
+    let manager = Manager::new();
+    for id in [SESSION_B, "../../etc/passwd", "a b"] {
+        let result = manager.run(&["wake", id], &[]);
+        assert_eq!(result.status.code(), Some(1), "{id}");
+    }
+    assert!(manager.tmux_calls("new-session").is_empty());
+}
+
+#[test]
+fn two_wakes_at_once_resume_the_conversation_once() {
+    let manager = Manager::new();
+    manager.put_to_sleep(SESSION_A, "claude", false);
+    let first_wake = fs::File::open(manager.asleep_note(SESSION_A)).unwrap();
+    first_wake.lock().unwrap();
+    let result = manager.run(&["wake", SESSION_A], &[]);
+    assert_eq!(result.status.code(), Some(0), "{}", stderr(&result));
+    assert!(manager.tmux_calls("new-session").is_empty());
+    assert!(manager.asleep_note(SESSION_A).exists(), "the first wake is still at it");
+}
+
+/// setsid runs what it is given, in the background, as the real one does with -f.
+fn run_setsid_for_real(manager: &Manager) {
+    manager.sandbox.shim("setsid", r#"[[ $1 == -f ]] && shift; "$@" </dev/null >/dev/null 2>&1 &"#);
+}
+
+fn wait_for_send_keys(manager: &Manager, count: usize) -> Vec<String> {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline && manager.tmux_calls("send-keys").len() < count {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    manager.tmux_calls("send-keys")
+}
+
+#[test]
+fn wake_turns_remote_control_back_on() {
+    let manager = Manager::new();
+    manager.put_to_sleep(SESSION_A, "claude", true);
+    run_setsid_for_real(&manager);
+    // The resumed process, already at its prompt: it started after any wake that happens now.
+    fs::write(&manager.snapshot, json!({"sessions": [{"session": SESSION_A, "state": "waiting", "project": "proj-a",
+        "cwd": path_str(&manager.project), "tmux_pane": "%9", "started": now_seconds() + 1000}]}).to_string()).unwrap();
+    let result = manager.run(&["wake", SESSION_A], &[("SHIM_PANE_TEXT", IDLE)]);
+    assert_eq!(result.status.code(), Some(0), "{}", stderr(&result));
+    let keys = wait_for_send_keys(&manager, 2);
+    assert_eq!(keys, ["tmux send-keys -t %9 /rc", "tmux send-keys -t %9 Enter"]);
+    std::thread::sleep(Duration::from_millis(400));
+    assert_eq!(manager.tmux_calls("send-keys").len(), 2, "/rc is sent once");
+}
+
+#[test]
+fn wake_leaves_remote_control_alone_when_it_is_already_on() {
+    let manager = Manager::new();
+    manager.put_to_sleep(SESSION_A, "claude", true);
+    run_setsid_for_real(&manager);
+    fs::write(manager.statusline_cache().join(format!("statusline-{SESSION_A}.json")), r#"{"remote": true}"#).unwrap();
+    fs::write(&manager.snapshot, json!({"sessions": [{"session": SESSION_A, "state": "waiting", "project": "proj-a",
+        "cwd": path_str(&manager.project), "tmux_pane": "%9", "started": now_seconds() + 1000}]}).to_string()).unwrap();
+    let result = manager.run(&["wake", SESSION_A], &[("SHIM_PANE_TEXT", IDLE)]);
+    assert_eq!(result.status.code(), Some(0), "{}", stderr(&result));
+    let waited_for = manager.sandbox.wait_for_calls("setsid", 1, Duration::from_secs(5));
+    assert_eq!(waited_for.len(), 1, "{waited_for:?}");
+    std::thread::sleep(Duration::from_millis(600));
+    assert!(manager.tmux_calls("send-keys").is_empty(), "{:?}", manager.tmux_calls("send-keys"));
+}
+
+#[test]
+fn opening_an_asleep_session_wakes_it() {
+    let manager = Manager::new();
+    manager.put_to_sleep(SESSION_A, "claude", false);
+    let result = manager.run(&["open", SESSION_A], &[]);
+    assert_eq!(result.status.code(), Some(0), "{}", stderr(&result));
+    assert_eq!(manager.claude_wakes().len(), 1);
+    assert_eq!(fs::read_to_string(manager.runtime_file("cockpit.current")).unwrap().trim(), SESSION_A);
+    assert_eq!(manager.tmux_calls("respawn-pane"), [format!("tmux respawn-pane -k -t %11 cockpit restarting-screen {SESSION_A}")]);
+    assert!(!manager.asleep_note(SESSION_A).exists());
+}
+
+#[test]
+fn opening_an_asleep_session_that_cannot_wake_fails_and_shows_nothing() {
+    let manager = Manager::new();
+    manager.put_to_sleep(SESSION_A, "claude", false);
+    fs::remove_dir(&manager.project).unwrap();
+    let result = manager.run(&["open", SESSION_A], &[]);
+    assert_eq!(result.status.code(), Some(1));
+    assert!(manager.tmux_calls("respawn-pane").is_empty());
+    assert!(!manager.runtime_file("cockpit.current").exists());
+}
+
+#[test]
+fn say_to_an_asleep_session_queues_and_wakes() {
+    let manager = Manager::new();
+    manager.put_to_sleep(SESSION_A, "claude", false);
+    let result = manager.run(&["say", SESSION_A, "run the tests"], &[]);
+    assert_eq!(result.status.code(), Some(0), "{}", stderr(&result));
+    assert!(stdout(&result).contains("queued until it wakes"), "{}", stdout(&result));
+    assert_eq!(manager.queued_prompts(SESSION_A), ["run the tests"]);
+    assert_eq!(manager.calls("setsid"), [format!("setsid -f cockpit wake {SESSION_A}")]);
+    assert!(manager.tmux_calls("send-keys").is_empty());
+}
+
+#[test]
+fn say_to_an_asleep_session_still_refuses_a_bad_message() {
+    let manager = Manager::new();
+    manager.put_to_sleep(SESSION_A, "claude", false);
+    for message in ["two\nlines", "bell\u{7}", ""] {
+        let result = manager.run(&["say", SESSION_A, message], &[]);
+        assert_ne!(result.status.code(), Some(0), "{message:?}");
+    }
+    assert!(manager.queued_prompts(SESSION_A).is_empty());
+    assert!(manager.calls("setsid").is_empty());
+}
+
+#[test]
+fn say_while_waking_queues_the_message() {
+    let manager = Manager::new();
+    fs::write(&manager.snapshot, json!({"sessions": []}).to_string()).unwrap();
+    manager.write_restart_note(epoch_seconds());
+    let result = manager.run(&["say", SESSION_A, "and then deploy"], &[]);
+    assert_eq!(result.status.code(), Some(0), "{}", stderr(&result));
+    assert!(stdout(&result).contains("queued until it wakes"), "{}", stdout(&result));
+    assert_eq!(manager.queued_prompts(SESSION_A), ["and then deploy"]);
+    assert!(manager.calls("setsid").is_empty(), "no second wake");
+}
+
+#[test]
+fn say_to_a_session_that_is_neither_running_nor_waking_still_fails() {
+    let manager = Manager::new();
+    fs::write(&manager.snapshot, json!({"sessions": []}).to_string()).unwrap();
+    let result = manager.run(&["say", SESSION_A, "hello"], &[]);
+    assert_eq!(result.status.code(), Some(1));
+    assert!(stderr(&result).contains("has no tmux pane"), "{}", stderr(&result));
+    assert!(manager.queued_prompts(SESSION_A).is_empty());
+}
+
+#[test]
+fn restart_on_an_asleep_session_wakes_it() {
+    let manager = Manager::new();
+    manager.put_to_sleep(SESSION_A, "claude", false);
+    let result = manager.run(&["restart", SESSION_A], &[]);
+    assert_eq!(result.status.code(), Some(0), "{}", stderr(&result));
+    assert_eq!(manager.claude_wakes().len(), 1);
+    assert!(!manager.asleep_note(SESSION_A).exists());
+    assert!(manager.tmux_calls("send-keys").is_empty());
+}
+
+#[test]
+fn restart_with_an_effort_on_an_asleep_session_is_refused_not_dropped() {
+    let manager = Manager::new();
+    manager.put_to_sleep(SESSION_A, "claude", false);
+    let result = manager.run(&["restart", SESSION_A, "max"], &[]);
+    assert_eq!(result.status.code(), Some(1));
+    assert!(stderr(&result).contains("asleep"), "{}", stderr(&result));
+    assert!(manager.asleep_note(SESSION_A).exists());
+    assert!(manager.tmux_calls("new-session").is_empty());
+}
+
+#[test]
+fn exit_on_an_asleep_session_forgets_it_for_good() {
+    let manager = Manager::new();
+    manager.put_to_sleep(SESSION_A, "claude", false);
+    let result = manager.run(&["exit", SESSION_A], &[]);
+    assert_eq!(result.status.code(), Some(0), "{}", stderr(&result));
+    assert!(!manager.asleep_note(SESSION_A).exists());
+    let ended = fs::read_to_string(manager.sandbox.state.join("cockpit/ended-sessions")).unwrap();
+    assert_eq!(ended.split_whitespace().collect::<Vec<_>>(), [SESSION_A]);
+    assert!(manager.tmux_calls("send-keys").is_empty());
+}
