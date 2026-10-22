@@ -146,10 +146,11 @@ function renderList() {
   for (const session of sessions) {
     const card = element("button", `card session-card ${session.state}`);
     const row = element("span", "row");
-    row.append(element("span", "project", session.project));
+    row.append(element("span", "project", session.title || session.project));
     row.append(element("span", "state", statusLabel(session)));
     card.append(row);
-    if (session.task) card.append(element("span", "task", session.task));
+    if (session.title) card.append(element("span", "card-project", session.project));
+    if (session.task && session.task !== session.title) card.append(element("span", "task", session.task));
     if (session.needs_input || session.request) card.append(element("span", "preview", session.detail || session.request || "Open to reply"));
     if (session.queued) card.append(element("span", "task", `${session.queued} message${session.queued === 1 ? "" : "s"} queued`));
     if (session.state === "waiting" && session.outcome) card.append(element("span", "outcome", session.outcome));
@@ -474,8 +475,8 @@ function renderDetail() {
     if (message.value) fitMessage();
     loadConversation();
   }
-  document.getElementById("chat-heading").textContent = session.project;
-  document.getElementById("chat-status").textContent = `${statusLabel(session)}${session.queued ? ` · ${session.queued} queued` : ""}`;
+  document.getElementById("chat-heading").textContent = session.title || session.project;
+  document.getElementById("chat-status").textContent = `${session.title ? `${session.project} · ` : ""}${statusLabel(session)}${session.queued ? ` · ${session.queued} queued` : ""}`;
   const send = document.getElementById("chat-send");
   const isDialog = session.state === "needs-you" && !session.needs_input;
   send.textContent = sendingMessages.has(session.session) ? "Sending…" : session.state === "working" ? "Queue" : "Send";

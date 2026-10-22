@@ -405,6 +405,37 @@ impl Remote {
     }
 }
 
+fn card_title(remote: &Remote, secret: &str, row: Value) -> Value {
+    fs::write(remote.sandbox.runtime.join("cockpit.json"), json!({"sessions": [row]}).to_string()).unwrap();
+    remote.get_json(secret, "/api/state")["sessions"][0]["title"].clone()
+}
+
+#[test]
+fn a_card_is_titled_by_its_session_label_first() {
+    let remote = Remote::start();
+    let secret = remote.paired();
+    remote.claude_history(&[json!({"type": "ai-title", "aiTitle": "Agent title"})]);
+    let row = json!({"session": SESSION_A, "state": "waiting", "project": "proj-a", "label": "Fix phone session titles"});
+    assert_eq!(card_title(&remote, &secret, row), json!("Fix phone session titles"));
+}
+
+#[test]
+fn a_card_without_a_label_is_titled_by_its_agent() {
+    let remote = Remote::start();
+    let secret = remote.paired();
+    remote.claude_history(&[json!({"type": "ai-title", "aiTitle": "Remote access to desktop from phone"})]);
+    let row = json!({"session": SESSION_A, "state": "waiting", "project": "proj-a"});
+    assert_eq!(card_title(&remote, &secret, row), json!("Remote access to desktop from phone"));
+}
+
+#[test]
+fn a_card_with_neither_has_an_empty_title() {
+    let remote = Remote::start();
+    let secret = remote.paired();
+    let row = json!({"session": SESSION_A, "state": "waiting", "project": "proj-a"});
+    assert_eq!(card_title(&remote, &secret, row), json!(""));
+}
+
 #[test]
 fn the_phone_reads_only_visible_conversation_text_in_order() {
     let remote = Remote::start();

@@ -472,10 +472,29 @@ pub fn asking_approvals() -> Vec<Value> {
     asking
 }
 
+/// The agents' own titles, shared by the server's workers: a transcript is scanned again at most
+/// every TITLE_RETRY_S while its title is still empty, never on each poll.
+static TITLES: Mutex<Option<sessions::History>> = Mutex::new(None);
+
+/// What the column's card calls a session: its label (claude-session-label), else its agent's title.
+fn card_title(row: &Value, titles: &sessions::History) -> String {
+    let label = util::collapse(&text(row, "label"));
+    if !label.is_empty() {
+        return label;
+    }
+    util::collapse(&titles.title(&text(row, "session")))
+}
+
 /// What the page shows: the session cards and the approvals asking.
 pub fn state() -> Value {
-    let cards: Vec<Value> = snapshot_sessions().iter().map(|row| json!({
+    let rows = snapshot_sessions();
+    let mut titles = TITLES.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let titles = titles.get_or_insert_with(sessions::History::default);
+    let ids: Vec<String> = rows.iter().map(|row| text(row, "session")).filter(|id| agents::is_session_id(id)).collect();
+    titles.load_titles(&ids, ids.len());
+    let cards: Vec<Value> = rows.iter().map(|row| json!({
         "session": text(row, "session"), "project": text(row, "project"), "state": text(row, "state"), "task": text(row, "task"),
+        "title": card_title(row, titles),
         "request": text(row, "request"), "detail": text(row, "detail"), "since": row.get("since"), "outcome": text(row, "outcome"),
         "queued": prompts::count(&text(row, "session")),
         "needs_input": row.get("needs_input").and_then(Value::as_bool).unwrap_or(false),

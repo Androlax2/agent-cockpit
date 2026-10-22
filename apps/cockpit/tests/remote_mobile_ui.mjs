@@ -164,6 +164,23 @@ const tests = {
     assert.equal(jump.hidden, true);
   },
 
+  async "a card leads with what the session does, then its project"() {
+    const page = await startPage({ sessions: [{ ...SESSIONS[0], title: "Remote access to desktop from phone" }] });
+    const card = page.roots.list.querySelector("button");
+    assert.equal(card.querySelector(".project").textContent, "Remote access to desktop from phone");
+    assert.equal(card.querySelector(".card-project").textContent, "Shop");
+    page.run('openSession("s1")'); await settle();
+    assert.equal(page.document.getElementById("chat-heading").textContent, "Remote access to desktop from phone");
+    assert.equal(page.document.getElementById("chat-status").textContent, "Shop · Ready");
+  },
+
+  async "a card without a title shows its project alone"() {
+    const page = await startPage({ sessions: SESSIONS });
+    const card = page.roots.list.querySelector("button");
+    assert.equal(card.querySelector(".project").textContent, "Shop");
+    assert.equal(card.querySelector(".card-project"), null);
+  },
+
   async "session options stay closed until More is tapped"() {
     const page = await startPage({ sessions: SESSIONS });
     page.run('openSession("s1")'); await settle();
