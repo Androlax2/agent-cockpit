@@ -328,6 +328,13 @@ pub fn remote_answer(id: &str) -> PathBuf {
     log_dir().join(format!("{id}.remote"))
 }
 
+/// `<id>.input`: the question a running command waits on (its prompt line, and the command), while
+/// it waits; the phone answers it with Yes or No (claude-remote types the answer in the approval's
+/// tmux session).
+pub fn remote_input(id: &str) -> PathBuf {
+    log_dir().join(format!("{id}.input"))
+}
+
 const REMOTE_POLL: Duration = Duration::from_millis(250);
 
 /// choose, also answered by the phone: while the menu waits, an answer in `remote_answer` picks the
@@ -416,17 +423,31 @@ static PROMPT_SHAPE: LazyLock<Regex> = LazyLock::new(|| Regex::new(
 /// The recorded output ends mid-line on something shaped like a question, and has not grown for
 /// PROMPT_IDLE: a prompt.
 pub fn waits_for_input(log_path: &Path, idle: Duration) -> bool {
-    if idle < PROMPT_IDLE {
-        return false;
-    }
-    let Ok(bytes) = fs::read(log_path) else { return false };
+    idle >= PROMPT_IDLE && prompt_line(log_path).is_some_and(|line| PROMPT_SHAPE.is_match(&line))
+}
+
+/// The unfinished last line of the recorded output, colours taken out; None when it ends a line.
+pub fn prompt_line(log_path: &Path) -> Option<String> {
+    let bytes = fs::read(log_path).ok()?;
     if bytes.last().is_none_or(|last| *last == b'\n') {
-        return false;
+        return None;
     }
     let tail = &bytes[bytes.len().saturating_sub(400)..];
     let text = strip_ansi(&String::from_utf8_lossy(tail));
-    let last_line = text.rsplit(['\n', '\r']).next().unwrap_or("");
-    PROMPT_SHAPE.is_match(last_line)
+    Some(text.rsplit(['\n', '\r']).next().unwrap_or("").to_string())
+}
+
+static YES_NO: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\[y/n\]|\(y/n\)|yes/no").unwrap());
+static SECRET_PROMPT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)password|passphrase|passcode|\bpin\b|token|secret").unwrap());
+
+/// What Yes and No type at a prompt the phone may answer: a yes/no question asking for no secret.
+/// "yes"/"no" where it asks for the words, else "y"/"n".
+pub fn yes_no_answers(prompt: &str) -> Option<(&'static str, &'static str)> {
+    if SECRET_PROMPT.is_match(prompt) {
+        return None;
+    }
+    let found = YES_NO.find(prompt)?;
+    Some(if found.as_str().eq_ignore_ascii_case("yes/no") { ("yes", "no") } else { ("y", "n") })
 }
 
 /// Keep the last row out of the scroll region, so command output never lands under the status
@@ -518,6 +539,9 @@ pub fn run(command: &str, cwd: &str, log_path: &Path, request: Option<&str>) -> 
                 waiting = true;
                 if let Some(id) = request {
                     phase(id, "input");
+                    if let Some(prompt) = prompt_line(log_path) {
+                        let _ = write_json(&remote_input(id), &serde_json::json!({"id": id, "command": command, "prompt": prompt.trim()}));
+                    }
                 }
                 print!("{}", reserve_last_row(rows));
                 draw_status(rows, &format!("{YELLOW}waiting for your answer above{RESET}"));
@@ -525,6 +549,7 @@ pub fn run(command: &str, cwd: &str, log_path: &Path, request: Option<&str>) -> 
         } else {
             if waiting {
                 if let Some(id) = request {
+                    let _ = fs::remove_file(remote_input(id));
                     phase(id, "running");
                 }
             }
@@ -535,6 +560,9 @@ pub fn run(command: &str, cwd: &str, log_path: &Path, request: Option<&str>) -> 
         }
         std::thread::sleep(Duration::from_millis(100));
     };
+    if let Some(id) = request {
+        let _ = fs::remove_file(remote_input(id));
+    }
     print!("\x1b7\x1b[{rows};1H\x1b[2K\x1b8\x1b[r\x1b[{};1H\n", rows - 1);
     // Whatever modes the output left on (no line wrap, a line-drawing charset, hidden text) must
     // not change how the next command or question reads.
@@ -748,6 +776,25 @@ mod tests {
         assert_eq!(shell_quote("fish"), "fish");
         assert_eq!(shell_quote("echo hi"), "'echo hi'");
         assert_eq!(shell_quote("it's"), "'it'\"'\"'s'");
+    }
+
+    #[test]
+    fn the_phone_answers_yes_no_questions_with_the_keys_they_ask_for() {
+        for (prompt, answers) in [
+            ("Apply these 2 commit(s) to /home/theo/agent-cockpit? [y/N] ", Some(("y", "n"))),
+            ("Continue (Y/n)? ", Some(("y", "n"))),
+            ("Are you sure you want to continue connecting (yes/no/[fingerprint])? ", Some(("yes", "no"))),
+        ] {
+            assert_eq!(yes_no_answers(prompt), answers, "{prompt}");
+        }
+    }
+
+    #[test]
+    fn the_phone_never_answers_a_secret_or_an_open_question() {
+        for prompt in ["[sudo] password for theo: ", "Enter passphrase for key (y/n): ", "Paste the token [y/N]: ",
+                       "Project name: ", "Which option? "] {
+            assert_eq!(yes_no_answers(prompt), None, "{prompt}");
+        }
     }
 
     #[test]

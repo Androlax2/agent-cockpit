@@ -69,6 +69,21 @@ fn a_question_without_newline_stays_on_screen_until_answered() {
 }
 
 #[test]
+fn a_waiting_question_is_left_for_the_phone_until_it_is_answered() {
+    let command = "sh -c 'printf \"Apply these 1 commit(s)? [y/N] \"; read answer; echo \"got $answer\"'";
+    let (mut terminal, root, id) = approve_in_terminal(command);
+    terminal.pump(10.0, Some(b"waiting for your answer above"));
+    let input_path = root.join(format!("run/claude-runs/{id}.input"));
+    let input: serde_json::Value = serde_json::from_str(&fs::read_to_string(&input_path).unwrap()).unwrap();
+    assert_eq!(input["prompt"], "Apply these 1 commit(s)? [y/N]");
+    assert_eq!(input["command"], command);
+    terminal.type_keys(b"y\n");
+    terminal.wait_for_exit(20.0);
+    assert!(!input_path.exists(), "the question stays offered after its answer");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn a_resize_moves_the_reserved_row_to_the_new_bottom() {
     // The command runs until the test has seen the resize: a fixed sleep could end first on a busy machine.
     let (mut terminal, root, _) = approve_in_terminal("sh -c 'until [ -e resized ]; do sleep 0.1; done'");

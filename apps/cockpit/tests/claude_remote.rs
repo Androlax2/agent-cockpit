@@ -405,6 +405,85 @@ impl Remote {
     }
 }
 
+const RUNNING: &str = "0123456789ab";
+
+impl Remote {
+    /// A command approved and running, waiting on `prompt` after printing `output`, as approval::run
+    /// leaves it.
+    fn command_asking(&self, prompt: &str, output: &str) {
+        let runs = self.sandbox.runtime.join("claude-runs");
+        fs::create_dir_all(&runs).unwrap();
+        fs::write(runs.join(format!("{RUNNING}.input")), json!({"id": RUNNING, "command": "cockpit apply /clone", "prompt": prompt}).to_string()).unwrap();
+        fs::write(runs.join(format!("{RUNNING}.log")), format!("Script started on 2026-10-22\n{output}{prompt} ")).unwrap();
+    }
+}
+
+#[test]
+fn a_command_waiting_on_a_yes_no_question_is_listed() {
+    let remote = Remote::start();
+    let secret = remote.paired();
+    remote.command_asking("Apply these 1 commit(s)? [y/N]", "1 commit(s)\n");
+    assert_eq!(remote.get_json(&secret, "/api/state")["inputs"],
+               json!([{"id": RUNNING, "command": "cockpit apply /clone", "prompt": "Apply these 1 commit(s)? [y/N]"}]));
+}
+
+#[test]
+fn a_question_for_a_secret_is_left_to_the_computer() {
+    let remote = Remote::start();
+    let secret = remote.paired();
+    remote.command_asking("[sudo] password for theo:", "");
+    assert_eq!(remote.get_json(&secret, "/api/state")["inputs"], json!([]));
+    let (status, answer) = remote.post_json(&secret, &format!("/api/input/{RUNNING}"), json!({"yes": true, "prompt": "[sudo] password for theo:"}));
+    assert_eq!(status, 409, "{answer}");
+    assert!(remote.keys_pressed().is_empty(), "{:?}", remote.keys_pressed());
+}
+
+#[test]
+fn the_phone_reads_what_the_waiting_command_printed_without_escapes_or_secrets() {
+    let remote = Remote::start();
+    let secret = remote.paired();
+    remote.command_asking("Apply? [y/N]", "\x1b[1mSubject: fix\x1b[0m\nGITHUB_TOKEN=ghp_0123456789abcdefghijABCDEFGHIJ012345\n");
+    let (status, _, body) = remote.request("GET", &format!("/api/input/{RUNNING}"), Some(&secret), None, false);
+    assert_eq!(status, 200, "{body}");
+    assert!(body.contains("Subject: fix\n") && body.trim_end().ends_with("Apply? [y/N]"), "{body:?}");
+    assert!(!body.contains('\x1b') && !body.contains("ghp_0123"), "{body:?}");
+}
+
+#[test]
+fn an_answer_is_typed_in_the_approval_window_as_the_question_asks() {
+    for (is_yes, prompt, typed) in [(true, "Apply? [y/N]", "y"), (false, "Apply? [y/N]", "n"), (true, "Continue connecting (yes/no)?", "yes")] {
+        let remote = Remote::start();
+        let secret = remote.paired();
+        remote.command_asking(prompt, "");
+        let (status, answer) = remote.post_json(&secret, &format!("/api/input/{RUNNING}"), json!({"yes": is_yes, "prompt": prompt}));
+        assert_eq!(status, 200, "{answer}");
+        assert_eq!(remote.keys_pressed(), [format!("tmux send-keys -t =claude-run-{RUNNING}: -l {typed}"), format!("tmux send-keys -t =claude-run-{RUNNING}: Enter")]);
+        assert!(!remote.sandbox.runtime.join(format!("claude-runs/{RUNNING}.input")).exists(), "one answer per question");
+    }
+}
+
+#[test]
+fn an_answer_to_a_question_that_changed_is_refused() {
+    let remote = Remote::start();
+    let secret = remote.paired();
+    remote.command_asking("Delete 3 branches? [y/N]", "");
+    let (status, answer) = remote.post_json(&secret, &format!("/api/input/{RUNNING}"), json!({"yes": true, "prompt": "Apply? [y/N]"}));
+    assert_eq!(status, 409, "{answer}");
+    assert!(remote.keys_pressed().is_empty(), "{:?}", remote.keys_pressed());
+}
+
+#[test]
+fn an_answer_to_a_command_that_ended_is_refused() {
+    let remote = Remote::start();
+    let secret = remote.paired();
+    remote.command_asking("Apply? [y/N]", "");
+    remote.sandbox.shim("tmux", "exit 1");
+    let (status, answer) = remote.post_json(&secret, &format!("/api/input/{RUNNING}"), json!({"yes": true, "prompt": "Apply? [y/N]"}));
+    assert_eq!(status, 409, "{answer}");
+    assert_eq!(answer["message"], "this command ended");
+    assert!(remote.keys_pressed().is_empty(), "{:?}", remote.keys_pressed());
+}
+
 fn card_title(remote: &Remote, secret: &str, row: Value) -> Value {
     fs::write(remote.sandbox.runtime.join("cockpit.json"), json!({"sessions": [row]}).to_string()).unwrap();
     remote.get_json(secret, "/api/state")["sessions"][0]["title"].clone()

@@ -224,6 +224,21 @@ fn handle(mut request: Request) {
                 _ => respond_json(request, 400, json!({"ok": false, "message": "run or decline, with the command shown"})),
             }
         }
+        (Method::Get, ["api", "input", id]) => match remote::input_output(id) {
+            Ok(output) => respond(request, 200, "text/plain; charset=utf-8", output, &[]),
+            Err(message) => respond(request, 409, "text/plain; charset=utf-8", message, &[]),
+        },
+        (Method::Post, ["api", "input", id]) => {
+            let id = id.to_string();
+            let body = body_json(&mut request).unwrap_or(json!({}));
+            match (body.get("yes").and_then(Value::as_bool), body.get("prompt").and_then(Value::as_str)) {
+                (Some(is_yes), Some(prompt)) => {
+                    let prompt = prompt.to_string();
+                    outcome(request, remote::answer_input(&id, is_yes, &prompt));
+                }
+                _ => respond_json(request, 400, json!({"ok": false, "message": "yes or no, with the question shown"})),
+            }
+        }
         _ => respond(request, 404, "text/plain", "not found".into(), &[]),
     }
 }

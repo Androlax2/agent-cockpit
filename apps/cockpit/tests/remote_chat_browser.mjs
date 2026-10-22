@@ -15,6 +15,8 @@ const session = { session: "s1", project: "Mobile test", agent: "opencode", stat
 let history = { messages: [{ id: "user", role: "user", text: "Make the mobile cockpit simple." },
   { id: "agent", role: "assistant", text: "Ready for your reply.\n\n<img src=x onerror=alert(1)> stays plain text." }], truncated: false };
 let approvals = [];
+let inputs = [];
+const inputOutput = "1 commit(s) for /home/theo/agent-cockpit, the running copy of agent-cockpit the host runs:\n  [PATCH] chore(cockpit): drop the claude-sessions name\n\n apps/cockpit/tests/cockpit_script.rs  | 34 ----------\n config/bin/.local/bin/claude-sessions |  7 ---\n 3 files changed, 61 deletions(-)\n";
 const posts = [];
 const server = createServer((request, response) => {
   const path = request.url;
@@ -27,7 +29,8 @@ const server = createServer((request, response) => {
     let text = ""; request.on("data", chunk => { text += chunk; });
     request.on("end", () => { posts.push({ path, body: JSON.parse(text) }); response.end(JSON.stringify({ ok: true, message: "sent" })); }); return;
   }
-  const data = path === "/api/state" ? { sessions: [session], approvals } : path.startsWith("/api/conversation/") ? history : [];
+  if (path.startsWith("/api/input/")) { response.setHeader("Content-Type", "text/plain"); response.end(inputOutput); return; }
+  const data = path === "/api/state" ? { sessions: [session], approvals, inputs } : path.startsWith("/api/conversation/") ? history : [];
   response.end(JSON.stringify(data));
 });
 await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
@@ -131,6 +134,12 @@ try {
   assert.equal(await evaluate('document.querySelector("#detail").hidden'), true, "back returns to the list");
   assert.equal(await evaluate('getComputedStyle(document.querySelector("#tabs")).display'), "flex");
   await capture("mobile-list.png");
+  inputs = [{ id: "0123456789ab", command: "cockpit apply /home/theo/IdeaProjects/agent-cockpit", prompt: "Apply these 1 commit(s) to /home/theo/agent-cockpit? [y/N]" }];
+  await evaluate("refresh()");
+  for (let attempt = 0; attempt < 100 && !(await evaluate('document.querySelector(".input-output")?.textContent.includes("drop the claude-sessions")')); attempt++) await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(await evaluate('document.querySelector(".question").textContent'), "Apply these 1 commit(s) to /home/theo/agent-cockpit? [y/N]");
+  assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, "a long question must not widen the page");
+  await capture("mobile-command-question.png");
   console.log("real Chromium: 390px/320px layouts, safe text, reply, approval confirmation, focus, reading position, formatting, growing reply, options panel and back gesture passed");
 } finally {
   browser.kill();

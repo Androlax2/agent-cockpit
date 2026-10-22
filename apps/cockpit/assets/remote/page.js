@@ -4,7 +4,7 @@
 
 const GLYPHS = { "needs-you": "●", waiting: "◐", working: "◌", unknown: "?" };
 const STATE_LABELS = { "needs-you": "Needs you", waiting: "Waiting", working: "Working", unknown: "Unknown" };
-let state = { sessions: [], approvals: [] };
+let state = { sessions: [], approvals: [], inputs: [] };
 let isPaired = false;
 let opened = null; // the session shown in detail
 let armed = null;  // the approval whose Run, or the session whose Interrupt, waits for its second tap
@@ -60,18 +60,70 @@ function age(since) {
 
 function renderApprovals() {
   const box = document.getElementById("approvals");
-  const look = JSON.stringify([state.approvals, armed, opened, tab, isPaired]);
+  const inputs = state.inputs || [];
+  const look = JSON.stringify([state.approvals, inputs, armed, opened, tab, isPaired]);
   if (look === approvalsLook) return;
   approvalsLook = look;
   const previousCards = Array.from(box.querySelectorAll(".approval"));
   box.replaceChildren();
   box.hidden = opened !== null && tab === "sessions";
   if (box.hidden) return;
-  if (state.approvals.length === 0) return;
+  if (state.approvals.length === 0 && inputs.length === 0) return;
   box.append(element("h2", "", "Commands needing you"));
+  for (const input of inputs) {
+    const previous = previousCards.find(card => card.dataset.input === input.id && card.dataset.prompt === input.prompt);
+    box.append(previous || inputCard(input));
+  }
   for (const approval of state.approvals) {
     const previous = previousCards.find(card => card.dataset.id === approval.id && card.dataset.command === approval.command);
     box.append(previous || approvalCard(approval));
+  }
+}
+
+// A command Theo let run that waits on a yes/no question: what it printed (for an apply, the
+// commits to read), the question, and No / Yes typed into its window. Yes takes a second tap.
+function inputCard(input) {
+  const card = element("article", "card approval");
+  card.dataset.input = input.id;
+  card.dataset.prompt = input.prompt;
+  card.append(element("div", "project", "A command asks you"));
+  card.append(element("pre", "command", input.command));
+  const output = element("pre", "input-output", "Loading what it printed…");
+  output.tabIndex = 0;
+  output.setAttribute("aria-label", "What the command printed");
+  card.append(output, element("div", "question", input.prompt));
+  const note = element("div", "note");
+  const buttons = element("div", "buttons");
+  const no = element("button", "no", "No");
+  const yes = element("button", "run", "Yes");
+  const confirmation = `input:${input.id}:${input.prompt}`;
+  let isSending = false;
+  const submit = async (isYes) => {
+    if (isSending) return;
+    isSending = true; yes.disabled = true; no.disabled = true;
+    const result = await post(`/api/input/${input.id}`, { yes: isYes, prompt: input.prompt }, note);
+    if (!result.ok) { isSending = false; yes.disabled = false; no.disabled = false; }
+  };
+  no.onclick = () => submit(false);
+  yes.onclick = () => {
+    if (armed !== confirmation) { armed = confirmation; yes.textContent = "Tap again for yes"; yes.className = "armed"; return; }
+    armed = null;
+    return submit(true);
+  };
+  buttons.append(no, yes);
+  card.append(buttons, note);
+  loadInputOutput(input, output);
+  return card;
+}
+
+async function loadInputOutput(input, output) {
+  try {
+    const response = await call("GET", `/api/input/${input.id}`);
+    const text = await response.text();
+    output.textContent = response.ok ? text || "(It printed nothing.)" : text;
+    output.scrollTop = output.scrollHeight;
+  } catch (error) {
+    output.textContent = `Failed to load what it printed: ${error.message || error}`;
   }
 }
 
@@ -118,6 +170,7 @@ function decide(approval, run, note) {
 function sessionsNeedingYou() {
   const waiting = new Set(state.sessions.filter((session) => session.state === "needs-you").map((session) => session.session));
   for (const approval of state.approvals) waiting.add(approval.session || approval.id);
+  for (const input of state.inputs || []) waiting.add(input.id);
   return waiting.size;
 }
 

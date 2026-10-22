@@ -26,7 +26,7 @@ class Element {
 
 const settle = async () => { for (let index = 0; index < 20; index++) await Promise.resolve(); };
 
-async function startPage({ sessions, approvals = [], messages = [], hash = "" }) {
+async function startPage({ sessions, approvals = [], inputs = [], messages = [], hash = "", inputOutput = "" }) {
   const roots = Object.fromEntries(["approvals", "list", "detail", "phone", "phone-content", "starter", "updated", "tabs", "work", "pairing", "view-title", "refresh-view"].map(id => [id, new Element()]));
   const document = {
     title: "", createElement: tag => new Element(tag),
@@ -45,13 +45,15 @@ async function startPage({ sessions, approvals = [], messages = [], hash = "" })
     replaceState(state, _title, url) { entries[position] = { state, hash: hashOf(url) }; location.hash = hashOf(url); },
     back() { if (position === 0) return; position--; location.hash = entries[position].hash; listeners.popstate?.(); },
   };
-  const server = { sessions, approvals, messages };
+  const server = { sessions, approvals, inputs, messages, posts: [] };
   const context = vm.createContext({
     document, console, URL, Map, Set, Promise, JSON, history, location, navigator: {}, setInterval: () => {},
     decodeURIComponent, encodeURIComponent,
     window: { navigator: {}, matchMedia: () => ({ matches: false }), addEventListener: (name, handler) => { listeners[name] = handler; } },
-    fetch: async (path) => {
-      const body = path === "/api/state" ? { sessions: server.sessions, approvals: server.approvals }
+    fetch: async (path, options = {}) => {
+      if (options.method === "POST") server.posts.push({ path, body: JSON.parse(options.body) });
+      if (path.startsWith("/api/input/") && options.method !== "POST") return { status: 200, ok: true, text: async () => inputOutput };
+      const body = path === "/api/state" ? { sessions: server.sessions, approvals: server.approvals, inputs: server.inputs }
         : path.startsWith("/api/conversation/") ? { messages: server.messages, truncated: false }
         : path === "/api/projects" || path === "/api/agents" ? [] : { ok: true, message: "sent" };
       return { status: 200, ok: true, json: async () => structuredClone(body), text: async () => "" };
@@ -64,6 +66,7 @@ async function startPage({ sessions, approvals = [], messages = [], hash = "" })
   return { roots, document, history, location, server, run, button };
 }
 
+const INPUT = { id: "0123456789ab", command: "cockpit apply /clone", prompt: "Apply these 1 commit(s)? [y/N]" };
 const SESSIONS = [{ session: "s1", project: "Shop", agent: "claude", state: "waiting", features: ["dialogs"] }];
 
 const tests = {
@@ -179,6 +182,34 @@ const tests = {
     const card = page.roots.list.querySelector("button");
     assert.equal(card.querySelector(".project").textContent, "Shop");
     assert.equal(card.querySelector(".card-project"), null);
+  },
+
+  async "a command's question shows what it printed and the question"() {
+    const page = await startPage({ sessions: SESSIONS, inputs: [INPUT], inputOutput: "1 commit(s) for agent-cockpit:\n  fix: thing\n" }); await settle();
+    const card = page.roots.approvals.querySelector("article");
+    assert.equal(card.querySelector(".command").textContent, "cockpit apply /clone");
+    assert.match(card.querySelector(".input-output").textContent, /fix: thing/);
+    assert.equal(card.querySelector(".question").textContent, "Apply these 1 commit(s)? [y/N]");
+  },
+
+  async "yes to a command's question takes a second tap"() {
+    const page = await startPage({ sessions: SESSIONS, inputs: [INPUT] }); await settle();
+    const card = page.roots.approvals.querySelector("article");
+    page.button(card, "Yes").onclick();
+    assert.equal(page.server.posts.length, 0);
+    await page.button(card, "Tap again for yes").onclick();
+    assert.deepEqual(page.server.posts, [{ path: "/api/input/0123456789ab", body: { yes: true, prompt: "Apply these 1 commit(s)? [y/N]" } }]);
+  },
+
+  async "no to a command's question answers at once"() {
+    const page = await startPage({ sessions: SESSIONS, inputs: [INPUT] }); await settle();
+    await page.button(page.roots.approvals.querySelector("article"), "No").onclick();
+    assert.deepEqual(page.server.posts, [{ path: "/api/input/0123456789ab", body: { yes: false, prompt: "Apply these 1 commit(s)? [y/N]" } }]);
+  },
+
+  async "a command's question counts in the badge"() {
+    const page = await startPage({ sessions: SESSIONS, inputs: [INPUT] });
+    assert.equal(page.document.getElementById("tab-sessions").querySelector(".badge").textContent, "1");
   },
 
   async "session options stay closed until More is tapped"() {

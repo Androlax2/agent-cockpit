@@ -346,7 +346,17 @@ fn shorten(text: &str) -> String {
 
 /// Everything that deserves a notification now (alerts over the snapshot and the approvals).
 pub fn current_alerts() -> Vec<(String, Value)> {
-    alerts(&snapshot_sessions(), &asking_approvals())
+    let mut found = alerts(&snapshot_sessions(), &asking_approvals());
+    found.extend(input_alerts(&waiting_inputs()));
+    found
+}
+
+/// A command Theo let run that now waits on a yes/no question, once per question.
+pub fn input_alerts(inputs: &[Value]) -> Vec<(String, Value)> {
+    inputs.iter().map(|input| {
+        let (id, prompt) = (text(input, "id"), text(input, "prompt"));
+        (format!("input {id} {prompt}"), json!({"title": "A command asks you", "body": shorten(&prompt), "topic": id}))
+    }).collect()
 }
 
 /// Whether a phone hears of an alert: everything while Theo is away (the lock screen's away on);
@@ -485,6 +495,69 @@ fn card_title(row: &Value, titles: &sessions::History) -> String {
     util::collapse(&titles.title(&text(row, "session")))
 }
 
+/// The commands that run after an approval and wait on a yes/no question the phone may answer
+/// (`<id>.input`, written by approval::run while the question waits).
+pub fn waiting_inputs() -> Vec<Value> {
+    let Ok(entries) = fs::read_dir(approval::log_dir()) else { return Vec::new() };
+    let mut waiting: Vec<Value> = entries.flatten().map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|extension| extension == "input"))
+        .filter_map(|path| util::read_json(&path))
+        .filter(|input| input.get("id").and_then(Value::as_str).is_some_and(approval::valid_id))
+        .filter(|input| approval::yes_no_answers(&text(input, "prompt")).is_some())
+        .filter(|input| !approval_has_ended(&text(input, "id")))
+        .map(|input| {
+            let command: String = text(&input, "command").chars().map(|character| if approval::is_hiding(character) { '�' } else { character }).collect();
+            json!({"id": text(&input, "id"), "command": command, "prompt": text(&input, "prompt")})
+        })
+        .collect();
+    waiting.sort_by_key(|input| text(input, "id"));
+    waiting
+}
+
+/// At most this much of a waiting command's output reaches the phone: its end, where the question is.
+const INPUT_OUTPUT_MAX: usize = 200_000;
+
+/// What a command waiting on a question printed so far, as the approval window shows it: colours and
+/// control characters out, secret-looking values redacted.
+pub fn input_output(id: &str) -> Result<String, String> {
+    if !approval::valid_id(id) || !approval::remote_input(id).exists() {
+        return Err("this command asks nothing now".into());
+    }
+    let (output, _) = approval::redact_secrets(&approval::strip_ansi(&approval::recorded_output(&approval::log_dir().join(format!("{id}.log")))));
+    let output: String = output.chars().filter(|character| !character.is_control() || matches!(character, '\n' | '\t')).collect();
+    let start = output.len().saturating_sub(INPUT_OUTPUT_MAX);
+    let start = (start..=output.len()).find(|index| output.is_char_boundary(*index)).unwrap_or(output.len());
+    Ok(output[start..].to_string())
+}
+
+/// Yes or No to the question a running command waits on: typed in the approval's tmux session, as
+/// if at its window, only while that question (the one the page showed) still waits.
+pub fn answer_input(id: &str, is_yes: bool, shown_prompt: &str) -> Result<String, String> {
+    if !approval::valid_id(id) {
+        return Err("not a request id".into());
+    }
+    let input = util::read_json(&approval::remote_input(id)).ok_or("this command asks nothing now")?;
+    let prompt = text(&input, "prompt");
+    if prompt != shown_prompt {
+        return Err("the question changed since the page showed it: look again".into());
+    }
+    let (yes, no) = approval::yes_no_answers(&prompt).ok_or("this question is not a yes or no: answer it on the computer")?;
+    if approval_has_ended(id) {
+        return Err("this command ended".into());
+    }
+    let target = format!("=claude-run-{id}:");
+    let typed = Command::new("tmux").args(["send-keys", "-t", &target, "-l", if is_yes { yes } else { no }]).stdin(Stdio::null()).status();
+    if !typed.is_ok_and(|status| status.success()) {
+        return Err("tmux could not type the answer".into());
+    }
+    press(&target, "Enter")?;
+    // One answer per question: the window writes the file again if the command asks again.
+    let _ = fs::remove_file(approval::remote_input(id));
+    audit::record("remote", "remote.input", if is_yes { "yes" } else { "no" },
+                  json!({"id": id, "prompt": audit::fingerprint(&prompt), "command": audit::fingerprint(&text(&input, "command"))}));
+    Ok(if is_yes { "answered yes".into() } else { "answered no".into() })
+}
+
 /// What the page shows: the session cards and the approvals asking.
 pub fn state() -> Value {
     let rows = snapshot_sessions();
@@ -502,7 +575,7 @@ pub fn state() -> Value {
         "agent": Some(text(row, "agent")).filter(|agent| !agent.is_empty()).unwrap_or_else(|| agents::DEFAULT.into()),
         "features": agents::get(&text(row, "agent")).feature_names(),
     })).collect();
-    json!({"sessions": cards, "approvals": asking_approvals()})
+    json!({"sessions": cards, "approvals": asking_approvals(), "inputs": waiting_inputs()})
 }
 
 /// A session's row when its agent has `feature` (as cockpit' require_feature).
@@ -800,6 +873,16 @@ mod tests {
 
     fn needs_you(request: &str) -> Value {
         json!({"session": "s1", "state": "needs-you", "project": "proj-a", "request": request})
+    }
+
+    #[test]
+    fn each_question_a_command_asks_is_a_new_alert() {
+        let asked = |prompt: &str| input_alerts(&[json!({"id": "0123456789ab", "command": "cockpit apply /c", "prompt": prompt})]);
+        let first = asked("Apply these 1 commit(s)? [y/N]");
+        assert_eq!(first[0].1["title"], "A command asks you");
+        assert_eq!(first[0].1["body"], "Apply these 1 commit(s)? [y/N]");
+        assert_eq!(first[0].0, asked("Apply these 1 commit(s)? [y/N]")[0].0);
+        assert_ne!(first[0].0, asked("Delete 2 clones? [y/N]")[0].0);
     }
 
     #[test]
