@@ -1826,6 +1826,19 @@ fn clones_with_changes_unpushed_commits_or_a_session_are_kept() {
 }
 
 #[test]
+fn clone_sweep_keeps_a_clone_with_an_asleep_session() {
+    let clones = Clones::new();
+    let folder = clones.manager.sandbox.state.join("cockpit/asleep");
+    fs::create_dir_all(&folder).unwrap();
+    let clean = fs::canonicalize(clones.root.join("clean")).unwrap();
+    fs::write(folder.join(SESSION_B), json!({"session": SESSION_B, "agent": "claude", "project": "repo", "cwd": path_str(&clean),
+        "title": "Fix the tests", "idle_since": SLEEP_SINCE, "slept_at": now_seconds(), "remote": false}).to_string()).unwrap();
+    let shown = clones.run(&["clones-sweep"], &[], "");
+    assert!(shown.contains("repo/clean: kept, a session sleeps in it"), "{shown}");
+    assert!(clones.root.join("clean").exists(), "{shown}");
+}
+
+#[test]
 fn without_a_yes_no_clone_is_deleted() {
     let clones = Clones::new();
     clones.review("\n");

@@ -1864,13 +1864,15 @@ reviewed_clone_report() { # clone live
 }
 
 clones_review() { # [sweep]
-    local sweep=${1:-} clones_root clone real in_use leftovers removable=() line answer
+    local sweep=${1:-} clones_root clone real in_use asleep_in_use leftovers removable=() line answer
     clones_root=$(realpath -e "$CLONES_DIR" 2>/dev/null) || {
         echo "No clones ($CLONES_DIR does not exist)."
         [[ -n $sweep ]] || read -r -p "Enter closes. " _
         return 0
     }
     in_use=$(jq -r '.sessions[]?.cwd // empty' "$SNAPSHOT" 2>/dev/null)
+    # An asleep session wakes in its folder, so a clone it names is not one to delete.
+    asleep_in_use=$(jq -r '.cwd // empty' "$ASLEEP_DIR"/* 2>/dev/null || true)
     echo "Clones in $CLONES_DIR"
     echo
     for clone in "$clones_root"/*/*/; do
@@ -1879,6 +1881,10 @@ clones_review() { # [sweep]
         line="  $(basename "$(dirname "$clone")")/$(basename "$clone")"
         if grep -qxF -- "$clone" <<< "$in_use"; then
             echo "$line: kept, a session runs in it"
+            continue
+        fi
+        if grep -qxF -- "$clone" <<< "$asleep_in_use"; then
+            echo "$line: kept, a session sleeps in it"
             continue
         fi
         leftovers=$(clone_leftovers "$clone")
