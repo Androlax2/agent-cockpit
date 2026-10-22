@@ -45,13 +45,14 @@ async function startPage({ sessions, approvals = [], inputs = [], messages = [],
     replaceState(state, _title, url) { entries[position] = { state, hash: hashOf(url) }; location.hash = hashOf(url); },
     back() { if (position === 0) return; position--; location.hash = entries[position].hash; listeners.popstate?.(); },
   };
-  const server = { sessions, approvals, inputs, messages, posts: [] };
+  const server = { sessions, approvals, inputs, messages, posts: [], requests: [] };
   const context = vm.createContext({
     document, console, URL, Map, Set, Promise, JSON, history, location, navigator: {}, setInterval: () => {},
     decodeURIComponent, encodeURIComponent,
     window: { navigator: {}, matchMedia: () => ({ matches: false }), addEventListener: (name, handler) => { listeners[name] = handler; } },
     fetch: async (path, options = {}) => {
-      if (options.method === "POST") server.posts.push({ path, body: JSON.parse(options.body) });
+      server.requests.push({ path, method: options.method });
+      if (options.method === "POST") server.posts.push({ path, body: options.body === undefined ? undefined : JSON.parse(options.body) });
       if (path.startsWith("/api/input/") && options.method !== "POST") return { status: 200, ok: true, text: async () => inputOutput };
       const body = path === "/api/state" ? { sessions: server.sessions, approvals: server.approvals, inputs: server.inputs }
         : path.startsWith("/api/conversation/") ? { messages: server.messages, truncated: false }
@@ -68,6 +69,9 @@ async function startPage({ sessions, approvals = [], inputs = [], messages = [],
 
 const INPUT = { id: "0123456789ab", command: "cockpit apply /clone", prompt: "Apply these 1 commit(s)? [y/N]" };
 const SESSIONS = [{ session: "s1", project: "Shop", agent: "claude", state: "waiting", features: ["dialogs"] }];
+
+const ASLEEP = [{ session: "s1", project: "Shop", agent: "claude", state: "asleep", since: Math.floor(Date.now() / 1000) - 7200,
+                  features: ["dialogs", "interrupt", "remote_control"] }];
 
 const tests = {
   async "the back gesture returns from a session to the list"() {
@@ -243,6 +247,25 @@ const tests = {
     assert.equal(panel.hidden, false);
     assert.equal(more.getAttribute("aria-expanded"), "true");
     assert.equal(more.textContent, "Close");
+  },
+
+  async "an asleep session shows its age and a Wake button in the list"() {
+    const page = await startPage({ sessions: ASLEEP });
+    assert.match(page.roots.list.textContent, /asleep · 2h00/);
+    await page.button(page.roots.list, "Wake").onclick(); await settle();
+    assert.deepEqual(page.server.requests.filter(request => request.path === "/api/wake/s1"), [{ path: "/api/wake/s1", method: "POST" }]);
+  },
+
+  async "an asleep session offers Wake and none of the buttons of a live one"() {
+    const page = await startPage({ sessions: ASLEEP });
+    page.run('openSession("s1")'); await settle();
+    page.document.getElementById("session-more-toggle").onclick();
+    assert.match(page.roots.detail.textContent, /asleep · 2h00/);
+    await page.button(page.roots.detail, "Wake").onclick(); await settle();
+    assert.equal(page.server.requests.some(request => request.path === "/api/wake/s1"), true);
+    for (const label of ["Yes", "No", "Interrupt", "Remote Control: on", "Remote Control: off"]) {
+      assert.equal(page.button(page.roots.detail, label), undefined, label);
+    }
   },
 };
 

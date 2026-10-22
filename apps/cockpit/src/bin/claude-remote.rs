@@ -213,6 +213,10 @@ fn handle(mut request: Request) {
             let id = id.to_string();
             outcome(request, remote::interrupt(&id));
         }
+        (Method::Post, ["api", "wake", id]) if is_session_id(id) => {
+            let id = id.to_string();
+            outcome(request, remote::wake(&id));
+        }
         (Method::Post, ["api", "remote-control", id]) if is_session_id(id) => {
             let id = id.to_string();
             outcome(request, remote::toggle_remote_control(&id));

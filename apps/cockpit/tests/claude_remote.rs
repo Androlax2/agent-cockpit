@@ -368,7 +368,7 @@ fn each_card_carries_what_its_agent_can_do_and_the_agents_are_listed() {
     let cards = remote.get_json(&secret, "/api/state");
     let features = |id: &str| cards["sessions"].as_array().unwrap().iter().find(|card| card["session"] == id).unwrap()["features"].clone();
     assert!(features(SESSION_A).as_array().unwrap().contains(&json!("dialogs")), "{cards}");
-    assert_eq!(features(OPENCODE_SESSION), json!(["interrupt", "variants"]));
+    assert_eq!(features(OPENCODE_SESSION), json!(["interrupt", "variants", "sleep"]));
     let agents = remote.get_json(&secret, "/api/agents");
     assert_eq!(agents, json!([{"name": "claude", "label": "Claude Code"}, {"name": "opencode", "label": "opencode"}, {"name": "codex", "label": "Codex CLI"}]));
 }
@@ -980,6 +980,95 @@ fn a_phone_watches_a_session_and_stops() {
     assert_eq!(remote.get_json(&secret, "/api/state")["watched"], json!([SESSION_A]));
     remote.post_json(&secret, &format!("/api/watch/{SESSION_A}"), json!({"on": false}));
     assert_eq!(remote.get_json(&secret, "/api/state")["watched"], json!([]));
+}
+
+// ---- Asleep sessions ----
+
+impl Remote {
+    /// A sleep note (sleep::Asleep), with no row in the snapshot: the session's process is gone.
+    fn asleep_note(&self, id: &str, slept_at: i64) {
+        let folder = self.sandbox.state.join("cockpit/asleep");
+        fs::create_dir_all(&folder).unwrap();
+        fs::write(folder.join(id), json!({
+            "agent": "claude", "project": "proj-a", "cwd": "/p", "title": "Fix the build",
+            "idle_since": slept_at - 3600, "slept_at": slept_at, "remote": false,
+        }).to_string()).unwrap();
+    }
+}
+
+#[test]
+fn phone_lists_asleep_sessions() {
+    let remote = Remote::start();
+    let secret = remote.paired();
+    remote.asleep_note(SESSION_A, 1_700_000_000);
+    let cards = remote.get_json(&secret, "/api/state");
+    let card = cards["sessions"].as_array().unwrap().iter().find(|card| card["session"] == SESSION_A).unwrap_or_else(|| panic!("{cards}"));
+    assert_eq!((card["state"].clone(), card["since"].clone(), card["project"].clone(), card["task"].clone()),
+               (json!("asleep"), json!(1_700_000_000), json!("proj-a"), json!("Fix the build")));
+}
+
+#[test]
+fn phone_lists_a_session_once_when_its_row_and_its_note_both_exist() {
+    let remote = Remote::start();
+    let secret = remote.paired();
+    remote.session_in("waiting", IDLE);
+    remote.asleep_note(SESSION_A, 1_700_000_000);
+    let cards = remote.get_json(&secret, "/api/state");
+    assert_eq!(cards["sessions"].as_array().unwrap().len(), 1, "{cards}");
+    assert_eq!(cards["sessions"][0]["state"], "waiting");
+}
+
+#[test]
+fn phone_wake_starts_cockpit_wake() {
+    let remote = Remote::start();
+    let secret = remote.paired();
+    remote.sandbox.shim("cockpit", "exit 0");
+    remote.asleep_note(SESSION_A, 1_700_000_000);
+    let (status, answer) = remote.post_json(&secret, &format!("/api/wake/{SESSION_A}"), json!({}));
+    assert_eq!((status, answer["message"].clone()), (200, json!("waking")), "{answer}");
+    assert_eq!(remote.sandbox.wait_for_calls("cockpit", 1, std::time::Duration::from_secs(5)), [format!("cockpit wake {SESSION_A}")]);
+}
+
+#[test]
+fn phone_wake_refuses_an_unknown_session() {
+    let remote = Remote::start();
+    let secret = remote.paired();
+    remote.sandbox.shim("cockpit", "exit 0");
+    let (status, answer) = remote.post_json(&secret, &format!("/api/wake/{SESSION_A}"), json!({}));
+    assert_eq!((status, answer["message"].clone()), (409, json!("no such session")), "{answer}");
+    assert_eq!(remote.sandbox.calls("cockpit"), Vec::<String>::new());
+}
+
+#[test]
+fn phone_wake_takes_an_opencode_session_id() {
+    let remote = Remote::start();
+    let secret = remote.paired();
+    remote.sandbox.shim("cockpit", "exit 0");
+    remote.asleep_note(OPENCODE_SESSION, 1_700_000_000);
+    let (status, answer) = remote.post_json(&secret, &format!("/api/wake/{OPENCODE_SESSION}"), json!({}));
+    assert_eq!(status, 200, "{answer}");
+    assert_eq!(remote.sandbox.wait_for_calls("cockpit", 1, std::time::Duration::from_secs(5)), [format!("cockpit wake {OPENCODE_SESSION}")]);
+}
+
+#[test]
+fn phone_message_to_an_asleep_session_is_queued_and_wakes_it() {
+    let remote = Remote::start();
+    let secret = remote.paired();
+    remote.sandbox.shim("cockpit", "exit 0");
+    remote.asleep_note(SESSION_A, 1_700_000_000);
+    let (status, answer) = remote.post_json(&secret, &format!("/api/message/{SESSION_A}"), json!({"text": "carry on"}));
+    assert_eq!((status, answer["message"].clone()), (200, json!("queued; it wakes now")), "{answer}");
+    assert_eq!(remote.sandbox.calls("cockpit"), [format!("cockpit say {SESSION_A} carry on")]);
+}
+
+#[test]
+fn phone_message_to_an_asleep_session_that_cannot_wake_says_why() {
+    let remote = Remote::start();
+    let secret = remote.paired();
+    remote.sandbox.shim("cockpit", "echo 'its folder is gone' >&2; exit 1");
+    remote.asleep_note(SESSION_A, 1_700_000_000);
+    let (status, answer) = remote.post_json(&secret, &format!("/api/message/{SESSION_A}"), json!({"text": "carry on"}));
+    assert_eq!((status, answer["message"].clone()), (409, json!("its folder is gone")), "{answer}");
 }
 
 // ---- Pairing with 6 digits (the Home Screen app) ----

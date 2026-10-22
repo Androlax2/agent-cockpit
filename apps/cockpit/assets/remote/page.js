@@ -19,8 +19,15 @@ let conversationRequest = 0;
 const loadingConversations = new WeakMap();
 
 function statusLabel(session) {
+  if (session.state === "asleep") return `asleep · ${age(session.since)}`;
   if (session.needs_input) return "Your reply needed";
   return { "needs-you": "Approval needed", working: "Working", waiting: "Ready", unknown: "Connecting" }[session.state] || "Connecting";
+}
+
+function wakeButton(session, note) {
+  const wake = element("button", "run wake", "Wake");
+  wake.onclick = () => post(`/api/wake/${session.session}`, {}, note);
+  return wake;
 }
 
 function element(tag, className, text) {
@@ -215,6 +222,10 @@ function renderList() {
     if (session.state === "waiting" && session.outcome) card.append(element("span", "outcome", session.outcome));
     card.onclick = () => openSession(session.session);
     box.append(card);
+    if (session.state === "asleep") {
+      const note = element("div", "note");
+      box.append(wakeButton(session, note), note);
+    }
   }
 }
 
@@ -543,13 +554,19 @@ function renderDetail() {
   const isDialog = session.state === "needs-you" && !session.needs_input;
   send.textContent = sendingMessages.has(session.session) ? "Sending…" : session.state === "working" ? "Queue" : "Send";
   send.disabled = sendingMessages.has(session.session) || isDialog;
-  document.getElementById("chat-reply").placeholder = session.state === "working" ? "Sent after this turn finishes" : "Reply to the agent…";
+  document.getElementById("chat-reply").placeholder = session.state === "working" ? "Sent after this turn finishes"
+    : session.state === "asleep" ? "Wakes the session and sends this" : "Reply to the agent…";
   const actions = document.getElementById("chat-actions");
   const approvals = state.approvals.filter(approval => approval.session === session.session);
-  const actionLook = JSON.stringify([approvals, isDialog, session.detail, session.request, session.features]);
+  const isAsleep = session.state === "asleep";
+  const actionLook = JSON.stringify([approvals, isDialog, session.detail, session.request, session.features, isAsleep]);
   if (actions.dataset.look !== actionLook) {
     actions.dataset.look = actionLook;
     actions.replaceChildren(...approvals.map(approvalCard));
+    if (isAsleep) {
+      const note = element("div", "note"); note.setAttribute("role", "status");
+      actions.append(wakeButton(session, note), note);
+    }
     if (isDialog) {
       const prompt = element("div", "card approval");
       prompt.append(element("div", "project", "Permission needed"), element("div", "request", session.detail || session.request || "Answer the dialog before sending a message."));
@@ -584,7 +601,7 @@ function renderDetail() {
     };
     controls.append(interrupt);
   }
-  if (can("remote_control")) {
+  if (can("remote_control") && session.state !== "asleep") {
     const remoteControl = element("button", "no", session.remote_control ? "Remote Control: on" : "Remote Control: off");
     remoteControl.onclick = () => post(`/api/remote-control/${session.session}`, {}, note);
     controls.append(remoteControl);
@@ -1088,7 +1105,7 @@ function render() {
 function detailLook() {
   const session = state.sessions.find((s) => s.session === opened);
   return session ? JSON.stringify([session.state, session.request, session.detail, session.remote_control, session.task,
-                                   session.needs_input, session.queued, session.features, state.approvals,
+                                   session.needs_input, session.queued, session.features, state.approvals, session.state === "asleep" ? age(session.since) : "",
                                    (state.watched || []).includes(session.session), state.push]) : "";
 }
 

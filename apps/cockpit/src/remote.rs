@@ -13,8 +13,9 @@
 //! `<id>.remote`). Every action is an audit event (component "remote").
 
 use crate::agents::{self, Feature};
-use crate::{approval, audit, costs, paths, prompts, push, reviews, sessions, todo, usage, util};
+use crate::{approval, audit, costs, paths, prompts, push, reviews, sessions, sleep, todo, usage, util};
 use serde_json::{Value, json};
+use std::collections::HashSet;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
@@ -558,14 +559,32 @@ pub fn answer_input(id: &str, is_yes: bool, shown_prompt: &str) -> Result<String
     Ok(if is_yes { "answered yes".into() } else { "answered no".into() })
 }
 
-/// What the page shows: the session cards and the approvals asking.
+fn asleep_note(id: &str) -> Option<sleep::Asleep> {
+    sleep::asleep().into_iter().find(|note| note.session == id)
+}
+
+/// The card of a session that sleeps: no process, so no row in the snapshot; "since" is when it
+/// fell asleep.
+fn asleep_card(note: &sleep::Asleep) -> Value {
+    json!({
+        "session": note.session, "project": note.project, "state": "asleep", "task": note.title, "title": note.title,
+        "request": "", "detail": "", "since": note.slept_at, "outcome": "",
+        "queued": prompts::count(&note.session),
+        "needs_input": false,
+        "remote_control": note.remote,
+        "agent": note.agent,
+        "features": agents::get(&note.agent).feature_names(),
+    })
+}
+
+/// What the page shows: the session cards (the sleeping ones last) and the approvals asking.
 pub fn state() -> Value {
     let rows = snapshot_sessions();
     let mut titles = TITLES.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let titles = titles.get_or_insert_with(sessions::History::default);
     let ids: Vec<String> = rows.iter().map(|row| text(row, "session")).filter(|id| agents::is_session_id(id)).collect();
     titles.load_titles(&ids, ids.len());
-    let cards: Vec<Value> = rows.iter().map(|row| json!({
+    let mut cards: Vec<Value> = rows.iter().map(|row| json!({
         "session": text(row, "session"), "project": text(row, "project"), "state": text(row, "state"), "task": text(row, "task"),
         "title": card_title(row, titles),
         "request": text(row, "request"), "detail": text(row, "detail"), "since": row.get("since"), "outcome": text(row, "outcome"),
@@ -575,6 +594,8 @@ pub fn state() -> Value {
         "agent": Some(text(row, "agent")).filter(|agent| !agent.is_empty()).unwrap_or_else(|| agents::DEFAULT.into()),
         "features": agents::get(&text(row, "agent")).feature_names(),
     })).collect();
+    let in_snapshot: HashSet<String> = rows.iter().map(|row| text(row, "session")).collect();
+    cards.extend(sleep::asleep().iter().filter(|note| !in_snapshot.contains(&note.session)).map(asleep_card));
     json!({"sessions": cards, "approvals": asking_approvals(), "inputs": waiting_inputs()})
 }
 
@@ -638,23 +659,41 @@ pub fn colours_only(text: &str) -> String {
 /// A message for a session: said at its prompt now, or queued for the end of its turn while it
 /// works (as the column's m).
 pub fn message(id: &str, message: &str) -> Result<String, String> {
-    let row = session_row(id).ok_or("no such session")?;
+    let row = session_row(id);
+    let is_asleep = row.is_none() && asleep_note(id).is_some();
+    if row.is_none() && !is_asleep {
+        return Err("no such session".into());
+    }
     let message = message.trim();
     if message.is_empty() || message.chars().count() > MESSAGE_MAX || message.chars().any(char::is_control) {
         return Err(format!("a message is one line of at most {MESSAGE_MAX} characters"));
     }
-    let outcome = if text(&row, "state") == "working" {
+    let is_working = row.as_ref().is_some_and(|row| text(row, "state") == "working");
+    let outcome = if is_working {
         prompts::add(id, message)?;
         "queued for the end of its turn".to_string()
     } else {
+        // For an asleep session `cockpit say` checks that it can wake (folder, conversation) before
+        // it queues the message and wakes it in the background, so a failure reaches the phone.
         let error = util::manager(&["say", id, message]);
         if !error.is_empty() {
             return Err(error);
         }
-        "sent".to_string()
+        if is_asleep { "queued; it wakes now".to_string() } else { "sent".to_string() }
     };
     audit::record("remote", "remote.message", "ok", json!({"session": id, "message": audit::fingerprint(message), "outcome": outcome}));
     Ok(outcome)
+}
+
+/// Wakes a sleeping session: `cockpit wake` runs in the background, since it waits for the
+/// session to start again.
+pub fn wake(id: &str) -> Result<String, String> {
+    if asleep_note(id).is_none() {
+        return Err("no such session".into());
+    }
+    util::manager_in_background(&["wake", id]);
+    audit::record("remote", "remote.wake", "ok", json!({"session": id}));
+    Ok("waking".into())
 }
 
 /// Yes or no to the permission dialog a session shows. The pane is read again right before: Yes
