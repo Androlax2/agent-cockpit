@@ -181,6 +181,8 @@ impl Manager {
         sandbox.shim("tmux", FAKE_TMUX);
         let roles = sandbox.root.join("roles");
         sandbox.env.insert("SHIM_ROLES".into(), roles.display().to_string());
+        // Never Theo's opencode database, wherever XDG_DATA_HOME points.
+        sandbox.env.insert("COCKPIT_OPENCODE_DB".into(), sandbox.root.join("no-opencode.db").display().to_string());
         // A manager whose panes are already tagged, as ensure_manager leaves them.
         fs::write(&roles, "%10 sidebar\n%11 viewer\n").unwrap();
         sandbox.shim("hyprctl", r#"[[ $1 == -j && $2 == activeworkspace ]] && echo "{\"id\": ${SHIM_WS:-2}}"; exit 0"#);
@@ -4113,17 +4115,6 @@ fn wake_keeps_the_note_when_the_agent_does_not_start() {
 }
 
 #[test]
-fn wake_resumes_an_opencode_session_without_a_conversation_check() {
-    let manager = Manager::new();
-    manager.put_to_sleep(OPENCODE_SESSION, "opencode", false);
-    let result = manager.run(&["wake", OPENCODE_SESSION], &[]);
-    assert_eq!(result.status.code(), Some(0), "{}", stderr(&result));
-    let start = manager.opencode_starts().pop().expect("no opencode start");
-    assert!(start.ends_with(&format!("--session {OPENCODE_SESSION}")), "{start}");
-    assert!(!manager.asleep_note(OPENCODE_SESSION).exists());
-}
-
-#[test]
 fn wake_of_a_session_that_is_not_asleep_or_not_an_id_fails() {
     let manager = Manager::new();
     for id in [SESSION_B, "../../etc/passwd", "a b"] {
@@ -4329,4 +4320,215 @@ fn exit_on_an_asleep_session_forgets_it_for_good() {
     let ended = fs::read_to_string(manager.sandbox.state.join("cockpit/ended-sessions")).unwrap();
     assert_eq!(ended.split_whitespace().collect::<Vec<_>>(), [SESSION_A]);
     assert!(manager.tmux_calls("send-keys").is_empty());
+}
+
+// ---- Final review fixes of idle sleep ----
+
+#[test]
+fn a_refused_sleep_run_in_the_background_logs_no_error() {
+    let manager = Manager::new();
+    manager.with_idle_session();
+    manager.with_idle_session_row(json!({"state": "working"}));
+    let result = manager.sleep_with(SESSION_A, &[("COCKPIT_LOG_STDERR", "1")]);
+    assert_eq!(result.status.code(), Some(3), "{}", stderr(&result));
+    // The background run's stderr reaches the log through a reader that may finish after it.
+    std::thread::sleep(Duration::from_millis(300));
+    let lines = manager.log_lines();
+    assert!(!lines.iter().any(|line| line.contains(" ERROR ")), "{lines:?}");
+    assert_eq!(lines.iter().filter(|line| line.contains("INFO sleep: proj-a stays awake: it is not waiting")).count(), 1, "{lines:?}");
+}
+
+#[test]
+fn a_refused_sleep_run_by_hand_still_says_why() {
+    let manager = Manager::new();
+    manager.with_idle_session();
+    manager.with_idle_session_row(json!({"state": "working"}));
+    let result = manager.sleep_with(SESSION_A, &[]);
+    assert_eq!(result.status.code(), Some(3));
+    assert!(stderr(&result).contains("stays awake: it is not waiting"), "{}", stderr(&result));
+}
+
+#[test]
+fn exit_of_an_asleep_session_drops_its_queued_messages() {
+    let manager = Manager::new();
+    manager.put_to_sleep(SESSION_A, "claude", false);
+    let queue = manager.sandbox.state.join("cockpit/prompt-queue").join(SESSION_A);
+    fs::create_dir_all(&queue).unwrap();
+    fs::write(queue.join("1.txt"), "run the tests").unwrap();
+    let result = manager.run(&["exit", SESSION_A], &[]);
+    assert_eq!(result.status.code(), Some(0), "{}", stderr(&result));
+    assert!(!queue.exists(), "a later resume from H must not get them");
+}
+
+#[test]
+fn exit_of_a_session_whose_sleep_is_still_exiting_exits_its_process() {
+    let manager = Manager::new();
+    manager.put_to_sleep(SESSION_A, "claude", false);
+    manager.with_idle_session_row(json!({}));
+    let result = manager.run(&["exit", SESSION_A], &[("SHIM_PANE_TEXT", IDLE), ("SHIM_EXIT_AFTER", "1")]);
+    assert_eq!(result.status.code(), Some(0), "{}", stderr(&result));
+    assert_eq!(manager.tmux_calls("send-keys"), ["tmux send-keys -t %4 -l -- /exit", "tmux send-keys -t %4 Enter"]);
+    assert!(!manager.asleep_note(SESSION_A).exists(), "ended on purpose: no asleep card comes back");
+}
+
+#[test]
+fn restart_of_a_session_whose_sleep_is_still_exiting_restarts_its_process_once() {
+    let manager = Manager::new();
+    manager.put_to_sleep(SESSION_A, "claude", false);
+    manager.with_idle_session_row(json!({}));
+    let result = manager.run(&["restart", SESSION_A, "", "detached"], &[("SHIM_PANE_TEXT", IDLE), ("SHIM_EXIT_AFTER", "1")]);
+    assert_eq!(result.status.code(), Some(0), "{}", stderr(&result));
+    assert_eq!(manager.tmux_calls("send-keys"), ["tmux send-keys -t %4 -l -- /exit", "tmux send-keys -t %4 Enter"]);
+    let resumes: Vec<String> = manager.tmux_calls("new-session").into_iter().filter(|call| call.contains(&format!("--resume {SESSION_A}"))).collect();
+    assert_eq!(resumes.len(), 1, "{:?}", manager.tmux_calls("new-session"));
+}
+
+#[test]
+fn an_exit_that_finished_just_before_the_kill_keeps_the_sleep_note() {
+    let manager = Manager::new();
+    manager.with_idle_session();
+    let gone = manager.sandbox.root.join("tmux-session-gone");
+    manager.sandbox.shim("tmux", &format!(r#"
+if [[ $1 == kill-session ]]; then touch '{gone}'; echo "can't find session: ${{3#=}}" >&2; exit 1; fi
+if [[ $1 == has-session && $3 != "=claude-manager" && -f '{gone}' ]]; then exit 1; fi
+{FAKE_TMUX}"#, gone = gone.display()));
+    let result = manager.sleep_with(SESSION_A, &[("SHIM_EXIT_AFTER", "99")]);
+    assert_eq!(result.status.code(), Some(0), "{}", stderr(&result));
+    assert!(manager.asleep_note(SESSION_A).exists(), "the session is gone: only its note can wake it");
+}
+
+/// An idle opencode pane's processes, from the live capture (2026-10-23): the pane's sh, greywall
+/// and its helpers, the outer bwrap, the inner one (the sandbox's pid 1) and opencode under it.
+const OPENCODE_TREE: &str = "   5048     1 tmux: server
+2758587    5048 sh
+2758606 2758587 greywall
+2759319 2758606 socat
+2759335 2758606 socat
+2759373 2758606 xdg-dbus-proxy
+2759603 2758606 bwrap
+2759619 2759603 bwrap
+2759671 2759619 opencode
+2759706 2759671 socat
+2759707 2759671 greywall-tun2so
+2759708 2759671 socat
+2760151 2759671 opencode
+2280341 2759706 socat";
+
+impl Manager {
+    fn sleep_opencode_with_processes(&self, table: &str) -> Output {
+        self.with_processes(table);
+        fs::write(&self.snapshot, json!({"sessions": [{"session": OPENCODE_SESSION, "state": "waiting", "project": "proj-a", "cwd": path_str(&self.project),
+            "tmux_pane": "%5", "agent": "opencode", "task": "Port it", "since": SLEEP_SINCE}]}).to_string()).unwrap();
+        self.sleep_with(OPENCODE_SESSION, &[("SHIM_PANE_TEXT", "done\n┃  \n"), ("SHIM_CURSOR", "3 1"), ("SHIM_PANE_PID", "2758587")])
+    }
+}
+
+#[test]
+fn sleep_puts_an_idle_opencode_sandbox_to_sleep() {
+    let manager = Manager::new();
+    let result = manager.sleep_opencode_with_processes(OPENCODE_TREE);
+    assert_eq!(result.status.code(), Some(0), "{}", stderr(&result));
+}
+
+#[test]
+fn sleep_keeps_a_session_whose_background_process_left_the_agent_for_the_sandbox() {
+    // `npm run dev &`, nohup or setsid: the server ends up under the sandbox's pid 1.
+    let manager = Manager::new();
+    let result = manager.sleep_opencode_with_processes(&format!("{OPENCODE_TREE}\n2761000 2759619 node"));
+    assert_eq!(result.status.code(), Some(3), "{}", stderr(&result));
+    assert!(manager.log_lines().iter().any(|line| line.contains("stays awake") && line.contains("2761000 node")), "{:?}", manager.log_lines());
+    assert!(!manager.asleep_note(OPENCODE_SESSION).exists());
+}
+
+#[test]
+fn sleep_ignores_the_launchers_own_processes_above_the_sandbox() {
+    // claude-auto-retry (node) runs greywall: the session's plumbing, outside the sandbox.
+    let manager = Manager::new();
+    manager.with_idle_session();
+    manager.with_processes("  4242     1 sh\n  4250  4242 node\n  4260  4250 greywall\n  4261  4260 socat\n  4262  4260 xdg-dbus-proxy\n  4270  4260 bwrap\n  4271  4270 bwrap\n  5000  4271 claude\n  5002  5000 git");
+    let result = manager.sleep_with(SESSION_A, &[]);
+    assert_eq!(result.status.code(), Some(0), "{}", stderr(&result));
+}
+
+/// The cursor line of an idle opencode prompt as tmux printed it on Theo's host (live capture
+/// 2026-10-23): `typed` sits after `┃  `, the cursor is at column 5 of row 64 when nothing is typed.
+fn opencode_prompt_screen(typed: &str) -> String {
+    let padding = " ".repeat(244 - typed.chars().count());
+    format!("{}\\e[38;2;255;255;255m\\e[48;2;26;27;38m  \\e[38;2;192;153;255m┃\\e[38;2;255;255;255m\\e[48;2;34;36;54m{typed}{padding}\\e[48;2;26;27;38m  \n",
+            "\n".repeat(64))
+}
+
+impl Manager {
+    fn sleep_opencode_at(&self, screen: &str, cursor: &str) -> Output {
+        self.with_processes("  4242     1 sh\n  5000  4242 opencode");
+        fs::write(&self.snapshot, json!({"sessions": [{"session": OPENCODE_SESSION, "state": "waiting", "project": "proj-a", "cwd": path_str(&self.project),
+            "tmux_pane": "%5", "agent": "opencode", "task": "Port it", "since": SLEEP_SINCE}]}).to_string()).unwrap();
+        self.sleep_with(OPENCODE_SESSION, &[("SHIM_PANE_TEXT", screen), ("SHIM_CURSOR", cursor)])
+    }
+}
+
+#[test]
+fn sleep_reads_a_real_empty_opencode_prompt_as_empty() {
+    let manager = Manager::new();
+    let result = manager.sleep_opencode_at(&opencode_prompt_screen(""), "5 64");
+    assert_eq!(result.status.code(), Some(0), "{}", stderr(&result));
+}
+
+#[test]
+fn sleep_keeps_an_opencode_session_with_text_in_its_real_prompt() {
+    for cursor in ["5 64", "11 64"] {
+        let manager = Manager::new();
+        let result = manager.sleep_opencode_at(&opencode_prompt_screen("  fix it"), cursor);
+        assert_eq!(result.status.code(), Some(3), "{cursor}: {}", stderr(&result));
+        assert!(stderr(&result).contains("draft"), "{cursor}: {}", stderr(&result));
+    }
+}
+
+impl Manager {
+    /// opencode's database with the top-level sessions `ids`, where the script looks for it.
+    fn opencode_database_with(&self, ids: &[&str]) -> PathBuf {
+        let path = self.sandbox.root.join("opencode.db");
+        let database = rusqlite::Connection::open(&path).unwrap();
+        database.execute_batch("create table session_v2 (id text primary key, parent_id text, directory text, title text)").unwrap();
+        for id in ids {
+            database.execute("insert into session_v2 (id, directory) values (?1, '/p')", [id]).unwrap();
+        }
+        path
+    }
+}
+
+#[test]
+fn wake_resumes_an_opencode_session_its_database_still_has() {
+    let manager = Manager::new();
+    manager.put_to_sleep(OPENCODE_SESSION, "opencode", false);
+    let database = manager.opencode_database_with(&[OPENCODE_SESSION]);
+    let result = manager.run(&["wake", OPENCODE_SESSION], &[("COCKPIT_OPENCODE_DB", &path_str(&database))]);
+    assert_eq!(result.status.code(), Some(0), "{}", stderr(&result));
+    let start = manager.opencode_starts().pop().expect("no opencode start");
+    assert!(start.ends_with(&format!("--session {OPENCODE_SESSION}")), "{start}");
+    assert!(!manager.asleep_note(OPENCODE_SESSION).exists());
+}
+
+#[test]
+fn wake_never_starts_a_fresh_opencode_session_when_its_session_is_gone() {
+    let manager = Manager::new();
+    manager.put_to_sleep(OPENCODE_SESSION, "opencode", false);
+    let database = manager.opencode_database_with(&["ses_someoneelse"]);
+    let result = manager.run(&["say", OPENCODE_SESSION, "run the tests"], &[("COCKPIT_OPENCODE_DB", &path_str(&database))]);
+    assert_eq!(result.status.code(), Some(1), "{}", stdout(&result));
+    assert!(stderr(&result).contains("could not wake: its conversation is gone"), "{}", stderr(&result));
+    assert!(manager.opencode_starts().is_empty());
+    assert!(manager.queued_prompts(OPENCODE_SESSION).is_empty());
+    assert!(!manager.asleep_note(OPENCODE_SESSION).exists());
+    assert!(manager.log_lines().iter().any(|line| line.contains("WARN sleep: proj-a could not wake")), "{:?}", manager.log_lines());
+}
+
+#[test]
+fn wake_resumes_an_opencode_session_when_its_database_cannot_be_read() {
+    let manager = Manager::new();
+    manager.put_to_sleep(OPENCODE_SESSION, "opencode", false);
+    let result = manager.run(&["wake", OPENCODE_SESSION], &[("COCKPIT_OPENCODE_DB", &path_str(&manager.sandbox.root.join("missing.db")))]);
+    assert_eq!(result.status.code(), Some(0), "{}", stderr(&result));
+    assert_eq!(manager.opencode_starts().len(), 1);
+    assert!(manager.log_lines().iter().any(|line| line.contains("INFO sleep: proj-a") && line.contains("cannot tell")), "{:?}", manager.log_lines());
 }

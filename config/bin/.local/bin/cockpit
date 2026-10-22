@@ -83,7 +83,7 @@
 #   cockpit restore <dir> <id> […]
 #                                resume those sessions one after the other (the sidebar's B after a reboot)
 #   cockpit sleep <id>           exit a session idle at its prompt and keep a note to wake it (asleep/<id>);
-#                                exit 3 and the reason on stderr when it stays awake (a draft, a background shell…)
+#                                exit 3 and the reason on stderr when it stays awake (a draft, a background process…)
 #   cockpit compact <id> type /compact into a session waiting at its prompt (the sidebar's C)
 #   cockpit variants <id>
 #                                open opencode's native effort picker and focus its pane (the sidebar's e)
@@ -628,6 +628,15 @@ thaw_frozen_pane() { # pane
 # cause of opusline's 2026-10-19 case could not be found afterwards (todo a788e999). The screen
 # holds conversation text, so the folder is hidden from the sandboxes (greywall.json). Each step is
 # bounded: the capture must not hold up the close it explains.
+# The lines of a `ps -eo pid=,ppid=,…` table on stdin for root and the processes under it, by pid.
+descendants_of() { # root-pid
+    awk -v root="$1" '
+        { line[$1] = $0; parent[$1] = $2 }
+        END { for (pid in line) { ancestor = pid
+                while (ancestor != "" && ancestor != root && ancestor in parent && ancestor != parent[ancestor]) ancestor = parent[ancestor]
+                if (ancestor == root) print line[pid] } }' | sort -n
+}
+
 STUCK_EXITS_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/claude-stuck-exits"
 STUCK_EXITS_KEPT=20
 record_stuck_exit() { # tmux-session pane id
@@ -647,11 +656,7 @@ record_stuck_exit() { # tmux-session pane id
         timeout 1 tmux display-message -p -t "$pane" 'pid #{pane_pid} dead #{pane_dead} command #{pane_current_command} in_mode #{pane_in_mode} mode #{pane_mode} input_off #{pane_input_off} size #{pane_width}x#{pane_height}' 2>&1
         echo "== processes of the pane (stat D: waits in the kernel; wchan: where)"
         if [[ $pane_pid =~ ^[0-9]+$ ]]; then
-            timeout 2 ps -eo pid=,ppid=,stat=,wchan:32=,etime=,time=,rss=,comm= 2>/dev/null | awk -v root="$pane_pid" '
-                { line[$1] = $0; parent[$1] = $2 }
-                END { for (pid in line) { ancestor = pid
-                        while (ancestor != "" && ancestor != root && ancestor in parent && ancestor != parent[ancestor]) ancestor = parent[ancestor]
-                        if (ancestor == root) print line[pid] } }' | sort -n
+            timeout 2 ps -eo pid=,ppid=,stat=,wchan:32=,etime=,time=,rss=,comm= 2>/dev/null | descendants_of "$pane_pid"
             cgroup=$(sed -n 's/^0:://p' "/proc/$pane_pid/cgroup" 2>/dev/null)
             echo "== cgroup $cgroup"
             echo "cgroup.freeze: $(cat "/sys/fs/cgroup$cgroup/cgroup.freeze" 2>/dev/null || echo unreadable)"
@@ -968,6 +973,22 @@ has_conversation() { # id
     return 1
 }
 
+# opencode keeps its sessions in its database (paths::opencode_database in the column): present,
+# gone, or unknown when sqlite3 or the database cannot answer. Read-only: its sandboxes write it.
+OPENCODE_DATABASE=${COCKPIT_OPENCODE_DB:-${XDG_DATA_HOME:-$HOME/.local/share}/opencode/opencode.db}
+opencode_session_state() { # id
+    local count
+    # The id goes into the SQL text: sqlite3's shell has no parameters for a one-shot query.
+    [[ $1 =~ ^[A-Za-z0-9_-]+$ ]] && command -v sqlite3 >/dev/null && [[ -f $OPENCODE_DATABASE ]] || { echo unknown; return; }
+    count=$(sqlite3 -readonly -batch -noheader -cmd '.timeout 1000' "$OPENCODE_DATABASE" \
+        "select count(*) from session_v2 where id = '$1'" 2>/dev/null) || { echo unknown; return; }
+    case $count in
+        0) echo gone ;;
+        [1-9]*) echo present ;;
+        *) echo unknown ;;
+    esac
+}
+
 # Sleeping: a session idle at its prompt exits and leaves a note here, its card stays as Asleep, and
 # `cockpit wake` resumes the conversation. Notes live in the state folder (they outlive a reboot)
 # and are not ended-sessions: a sleep is not Theo's decision to end it.
@@ -1024,20 +1045,25 @@ prompt_has_draft() { # pane agent
     return 1
 }
 
-# "pid comm" of the first shell run by the agent itself (a background command it started: bash
-# under claude), among the pane's descendants. Fails when the processes cannot be read.
+# "pid comm" of the first background process among the pane's descendants: a shell run by the
+# agent itself (a background command it started: bash under claude), or anything but the agent
+# under the sandbox's pid 1, the inner bwrap, where `cmd &`, nohup and setsid leave what they
+# start. What runs above the sandbox (greywall, its proxies, claude-auto-retry) is the session's
+# own plumbing. Fails when the processes cannot be read.
 background_shell_of() { # pane
-    local pane_pid table shells
+    local pane_pid table found
     pane_pid=$(tmux display-message -p -t "$1" '#{pane_pid}' 2>/dev/null) || return 1
     [[ $pane_pid =~ ^[0-9]+$ ]] || return 1
     table=$(timeout 2 ps -eo pid=,ppid=,comm= 2>/dev/null) || return 1
-    shells=$(awk -v root="$pane_pid" '
+    found=$(descendants_of "$pane_pid" <<< "$table" | awk -v root="$pane_pid" '
         { parent[$1] = $2; name[$1] = $3 }
-        END { for (pid in parent) { ancestor = pid
-                while (ancestor != "" && ancestor != root && ancestor in parent && ancestor != parent[ancestor]) ancestor = parent[ancestor]
-                if (ancestor == root && pid != root && name[pid] ~ /^(bash|sh|zsh|fish|dash)$/ && name[parent[pid]] ~ /^(claude|opencode)$/)
-                    print pid, name[pid] } }' <<< "$table" | sort -n) || return 1
-    printf '%s' "${shells%%$'\n'*}"
+        END { for (pid in parent) if (name[pid] == "bwrap" && name[parent[pid]] == "bwrap") sandbox_init = pid
+              for (pid in parent) {
+                  if (pid == root) continue
+                  agent_shell = name[pid] ~ /^(bash|sh|zsh|fish|dash)$/ && name[parent[pid]] ~ /^(claude|opencode)$/
+                  left_the_agent = sandbox_init != "" && parent[pid] == sandbox_init && name[pid] !~ /^(claude|opencode)$/
+                  if (agent_shell || left_the_agent) print pid, name[pid] } }' | sort -n) || return 1
+    printf '%s' "${found%%$'\n'*}"
 }
 
 # The first reason this session must stay awake, or nothing. Any doubt is a reason.
@@ -1054,14 +1080,14 @@ sleep_blocker() { # id pane
     fi
     if prompt_has_draft "$pane" "$agent"; then echo "its prompt holds a draft or cannot be read"; return; fi
     shell=$(background_shell_of "$pane") || { echo "its processes cannot be read"; return; }
-    [[ -z $shell ]] || echo "it runs a background shell ($shell)"
+    [[ -z $shell ]] || echo "it runs a background process ($shell)"
 }
 
 # Exit 0: asleep. Exit 3: it stays awake (the reason is logged and on stderr). Exit 1: an error.
 # The note is written before the exit, so a session that is gone always has one to wake from; an
 # exit that fails takes the note back.
 sleep_session() { # id
-    local id=$1 pane project agent title since started slept_at remote=false reason note temporary
+    local id=$1 pane project agent title since started slept_at remote=false reason note temporary target
     [[ $id =~ ^[A-Za-z0-9_-]+$ ]] || { echo "cockpit: invalid session id $id" >&2; return 1; }
     require_feature "$id" sleep "sleeping" || return 1
     project=$(session_field "$id" project)
@@ -1071,7 +1097,10 @@ sleep_session() { # id
     [[ -n $reason || $since =~ ^[0-9]+(\.[0-9]+)?$ ]] || reason="its idle time is unknown"
     if [[ -n $reason ]]; then
         log_event INFO sleep "$project stays awake: $reason"
-        echo "cockpit: $project stays awake: $reason" >&2
+        # An expected outcome, not an error: the column's background runs log stderr as ERROR,
+        # and ERROR lines are handed to a session to fix.
+        log_failure_level=INFO
+        [[ -n ${COCKPIT_LOG_STDERR:-} ]] || echo "cockpit: $project stays awake: $reason" >&2
         return 3
     fi
     agent=$(agent_of_session "$id")
@@ -1095,10 +1124,16 @@ sleep_session() { # id
     fi
     chmod 600 "$temporary"
     mv -f "$temporary" "$note"
+    target=$(tmux display-message -p -t "$pane" '#{session_name}' 2>/dev/null) || target=""
     if ! exit_session "$id"; then
-        rm -f "$note"
-        log_event WARN sleep "$project did not exit to sleep; its note is removed"
-        return 1
+        # An exit that finished just before the last-resort kill fails it: the session is gone
+        # all the same, and only the note can wake it.
+        if [[ -z $target ]] || tmux has-session -t "=$target" 2>/dev/null; then
+            rm -f "$note"
+            log_event WARN sleep "$project did not exit to sleep; its note is removed"
+            return 1
+        fi
+        log_event INFO sleep "$project left while its exit was failing; it sleeps"
     fi
     clear_exited_viewer "$id"
     log_event INFO sleep "$project asleep after $(( (slept_at - ${since%.*}) / 60 )) min idle"
@@ -1160,6 +1195,11 @@ check_wakeable() { # id
         reason="its folder is unknown or gone"
     elif [[ $agent == claude ]] && ! has_conversation "$id"; then
         reason="its conversation is gone"
+    elif [[ $agent == opencode ]]; then
+        case $(opencode_session_state "$id") in
+            gone) reason="its conversation is gone" ;;
+            unknown) log_event INFO sleep "$project wakes though opencode's database cannot tell whether its session is still there" ;;
+        esac
     fi
     [[ -n $reason ]] || return 0
     rm -f "$note"
@@ -1223,7 +1263,8 @@ restore_remote_control() { # id woke_at
 # billing is refused for an agent without the feature.
 restart_session() { # id [effort] [detached] [credits|subscription]
     local id=$1 effort=${2:-} detached=${3:-} billing=${4:-} directory note
-    if is_asleep "$id"; then
+    # A live pane first: a note can outlive its process by the length of the sleep's exit.
+    if [[ -z $(session_field "$id" tmux_pane) ]] && is_asleep "$id"; then
         [[ -z $effort && -z $billing ]] || { echo "cockpit: $id is asleep; wake it before changing its effort or billing" >&2; return 1; }
         wake_session "$id"
         return
@@ -2487,12 +2528,16 @@ case ${1:-attach} in
         ;;
     resume) resume_session "${2:?usage: cockpit resume <dir> <session-id>}" "${3:?usage: cockpit resume <dir> <session-id>}" ;;
     exit)
-        if is_asleep "${2:?usage: cockpit exit <session-id>}"; then
+        # A live pane first: a note can outlive its process by the length of the sleep's exit.
+        if [[ -z $(session_field "${2:?usage: cockpit exit <session-id>}" tmux_pane) ]] && is_asleep "$2"; then
             rm -f "$ASLEEP_DIR/$2"
+            # A later resume (H) must not get the messages that waited for a wake.
+            rm -rf "${XDG_STATE_HOME:-$HOME/.local/state}/cockpit/prompt-queue/$2"
             log_event INFO sleep "$2 ended while asleep"
         else
             exit_session "$2"
             clear_exited_viewer "$2"
+            if is_asleep "$2"; then rm -f "$ASLEEP_DIR/$2"; fi
         fi
         mkdir -p "$(dirname "$ENDED_SESSIONS")" && printf '%s\n' "$2" >> "$ENDED_SESSIONS"
         ;;
