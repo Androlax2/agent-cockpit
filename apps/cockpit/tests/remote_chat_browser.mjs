@@ -108,9 +108,30 @@ try {
   assert.ok(Math.abs(anchorAfter - anchorBefore) < 2, `Rolling history moved the visible message: ${anchorBefore} -> ${anchorAfter}`);
   await cdp("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
   await evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
-  const screenshot = await cdp("Page.captureScreenshot", { format: "png" });
-  writeFileSync(join(artifacts, "mobile-chat.png"), Buffer.from(screenshot.data, "base64"));
-  console.log("real Chromium: 390px/320px layouts, safe text, reply, approval confirmation, focus and reading position passed");
+  const frame = () => evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+  const capture = async name => writeFileSync(join(artifacts, name), Buffer.from((await cdp("Page.captureScreenshot", { format: "png" })).data, "base64"));
+  await capture("mobile-chat.png");
+  assert.equal(await evaluate('getComputedStyle(document.querySelector("#tabs")).display'), "none", "the chat hides the tab bar");
+  history = { messages: [{ id: "u", role: "user", text: "How is the fix going?" },
+    { id: "m", role: "assistant", text: "## Done\nThe cart now keeps **its items** after `make test`.\n\n- Fixed the session cookie\n- Added a regression test\n\n```\nmake test  # 42 passed\n```" }], truncated: false };
+  await evaluate("loadConversation()"); await frame();
+  assert.equal(await evaluate('document.querySelector("#conversation strong")?.textContent'), "its items");
+  assert.equal(await evaluate('document.querySelectorAll("#conversation li").length'), 2);
+  await capture("mobile-chat-formatted.png");
+  const sendBottom = () => evaluate('document.querySelector("#chat-send").getBoundingClientRect().bottom');
+  await evaluate('const grow = document.querySelector("#chat-reply"); grow.value = "one\\ntwo\\nthree\\nfour\\nfive"; grow.dispatchEvent(new Event("input"))'); await frame();
+  assert.ok(await evaluate('document.querySelector("#chat-reply").getBoundingClientRect().height') > 90, "the reply box grows with its text");
+  assert.ok(await sendBottom() <= 844, "a grown reply box keeps Send on screen");
+  await evaluate('document.querySelector("#session-more-toggle").click()'); await frame();
+  assert.equal(await evaluate('document.querySelector("#session-more").hidden'), false);
+  assert.ok(await sendBottom() <= 844, "the open options keep Send on screen");
+  await capture("mobile-chat-more.png");
+  await evaluate("history.back()");
+  for (let attempt = 0; attempt < 100 && !(await evaluate('document.querySelector("#detail").hidden')); attempt++) await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(await evaluate('document.querySelector("#detail").hidden'), true, "back returns to the list");
+  assert.equal(await evaluate('getComputedStyle(document.querySelector("#tabs")).display'), "flex");
+  await capture("mobile-list.png");
+  console.log("real Chromium: 390px/320px layouts, safe text, reply, approval confirmation, focus, reading position, formatting, growing reply, options panel and back gesture passed");
 } finally {
   browser.kill();
   server.closeAllConnections(); await new Promise(resolve => server.close(resolve));

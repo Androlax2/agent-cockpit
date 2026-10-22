@@ -44,7 +44,9 @@ let revokeSend = false;
 const history = { messages: [{ id: "u1", role: "user", text: "Hello" }, { id: "a1", role: "assistant", text: "<img src=x onerror=alert(1)>Which option?" }], truncated: false };
 const context = vm.createContext({
   document, console, URL, Map, Set, Promise, JSON,
-  window: { navigator: {}, matchMedia: () => ({ matches: false }) }, navigator: {}, location: { hash: "" },
+  window: { navigator: {}, matchMedia: () => ({ matches: false }), addEventListener: () => {} }, navigator: {},
+  location: { hash: "", pathname: "/", search: "" },
+  history: { state: null, pushState() {}, replaceState() {}, back() {} },
   setInterval: () => {},
   fetch: async (path, options = {}) => {
     requests.push({ path, options });

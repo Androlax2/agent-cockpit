@@ -110,6 +110,7 @@ class MobileBrowserTests(unittest.TestCase):
     def open_detail(self):
         self.open_paired()
         self.page.locator("#list .card").tap()
+        self.page.get_by_role("button", name="More", exact=True).tap()
         self.page.locator("#terminal-details > summary").tap()
         expect(self.page.locator("#screen")).to_contain_text("Ready")
 
@@ -136,6 +137,7 @@ class MobileBrowserTests(unittest.TestCase):
         self.open_paired(f"#session={SESSION}")
         expect(self.page.locator("#conversation")).to_contain_text("Fix checkout")
         expect(self.page.locator("#terminal-details")).not_to_have_attribute("open", "")
+        self.page.get_by_role("button", name="More", exact=True).tap()
         self.page.locator("#terminal-details > summary").tap()
         expect(self.page.locator("#screen")).to_contain_text("Ready")
 
@@ -355,7 +357,6 @@ class MobileBrowserTests(unittest.TestCase):
     def test_interrupt_requires_two_taps(self):
         self.snapshot([{"session": SESSION, "project": "shop", "state": "working", "tmux_pane": "%4"}])
         self.open_detail()
-        self.page.locator(".session-options > summary").tap()
         self.page.get_by_role("button", name="Interrupt", exact=True).tap()
         self.assertFalse((self.runtime / "keys").exists())
         self.page.get_by_role("button", name="Tap again to interrupt").tap()
@@ -382,7 +383,6 @@ class MobileBrowserTests(unittest.TestCase):
 
     def test_remote_control_reaches_the_session_manager(self):
         self.open_detail()
-        self.page.locator(".session-options > summary").tap()
         self.page.get_by_role("button", name="Remote Control: off", exact=True).tap()
         expect(self.page.locator("#session-controls > .note")).to_have_text("Remote Control on")
         self.assertIn(f"remote {SESSION}", (self.runtime / "actions").read_text())
@@ -453,6 +453,18 @@ class MobileBrowserTests(unittest.TestCase):
         summary.focus()
         self.page.keyboard.press("Enter")
         expect(self.page.get_by_role("button", name="Start in a new session")).to_be_visible()
+
+    def test_the_back_gesture_returns_from_a_session_to_the_list(self):
+        self.open_detail()
+        self.page.go_back()
+        expect(self.page.locator("#detail")).to_be_hidden()
+        expect(self.page.locator("#list .card")).to_have_count(1)
+
+    def test_the_chat_hides_the_tab_bar_and_keeps_the_reply_box_on_screen(self):
+        self.open_detail()
+        expect(self.page.locator("#tabs")).to_be_hidden()
+        box = self.page.locator("#chat-send").bounding_box()
+        self.assertLessEqual(box["y"] + box["height"], self.page.viewport_size["height"])
 
     def test_header_refresh_is_available_without_changing_the_tab(self):
         self.open_paired()

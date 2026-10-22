@@ -114,6 +114,25 @@ function decide(approval, run, note) {
   return post(`/api/decide/${approval.id}`, { run, command: approval.command }, note);
 }
 
+// A session waiting on a reply or a dialog, or with a command asking to run, counts once.
+function sessionsNeedingYou() {
+  const waiting = new Set(state.sessions.filter((session) => session.state === "needs-you").map((session) => session.session));
+  for (const approval of state.approvals) waiting.add(approval.session || approval.id);
+  return waiting.size;
+}
+
+function updateAttentionBadge() {
+  const count = sessionsNeedingYou();
+  document.title = count ? `(${count}) Claude sessions` : "Claude sessions";
+  const button = document.getElementById("tab-sessions");
+  if (!button) return;
+  const badge = button.querySelector(".badge");
+  badge.textContent = count ? String(count) : "";
+  badge.hidden = count === 0;
+  if (count) button.setAttribute("aria-label", `Sessions, ${count} need${count === 1 ? "s" : ""} you`);
+  else button.setAttribute("aria-label", "Sessions");
+}
+
 function renderList() {
   const box = document.getElementById("list");
   box.replaceChildren(element("h2", "", "Sessions"));
@@ -226,6 +245,74 @@ async function loadScreen() {
   }
 }
 
+// The agent's Markdown, as elements built from text: fenced code, headings, lists, `code` and
+// **bold**. Anything else stays literal; no part of the message becomes markup or a link.
+function inlineNodes(text) {
+  const nodes = [];
+  for (const [index, part] of text.split(/(`[^`\n]+`|\*\*[^*\n]+\*\*)/).entries()) {
+    if (part === "") continue;
+    if (index % 2 === 0) nodes.push(element("span", "", part));
+    else if (part.startsWith("`")) nodes.push(element("code", "", part.slice(1, -1)));
+    else nodes.push(element("strong", "", part.slice(2, -2)));
+  }
+  return nodes;
+}
+
+function messageNodes(text) {
+  const blocks = [];
+  const lines = text.split("\n");
+  let paragraph = [];
+  let list = null;
+  const endParagraph = () => {
+    if (paragraph.length === 0) return;
+    const block = element("p");
+    block.append(...inlineNodes(paragraph.join("\n")));
+    blocks.push(block);
+    paragraph = [];
+  };
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index];
+    if (/^\s*```/.test(line)) {
+      endParagraph(); list = null;
+      const code = [];
+      while (++index < lines.length && !/^\s*```/.test(lines[index])) code.push(lines[index]);
+      blocks.push(element("pre", "", code.join("\n")));
+      continue;
+    }
+    const heading = /^#{1,6}\s+(.*)$/.exec(line);
+    const item = /^\s*(?:[-*+]|(\d+)[.)])\s+(.*)$/.exec(line);
+    if (heading) {
+      endParagraph(); list = null;
+      const block = element("p", "message-heading");
+      block.append(...inlineNodes(heading[1]));
+      blocks.push(block);
+    } else if (item) {
+      endParagraph();
+      const kind = item[1] === undefined ? "ul" : "ol";
+      if (list === null || list.dataset.kind !== kind) {
+        list = element(kind);
+        list.dataset.kind = kind;
+        if (kind === "ol") list.start = Number(item[1]);
+        blocks.push(list);
+      }
+      const entry = element("li");
+      entry.append(...inlineNodes(item[2]));
+      list.append(entry);
+    } else if (line.trim() === "") {
+      endParagraph(); list = null;
+    } else {
+      list = null;
+      paragraph.push(line);
+    }
+  }
+  endParagraph();
+  return blocks;
+}
+
+function isNearBottom(node) {
+  return node.scrollTop + node.clientHeight >= node.scrollHeight - 32;
+}
+
 async function loadConversation() {
   const session = opened;
   const conversation = document.getElementById("conversation");
@@ -241,7 +328,7 @@ async function loadConversation() {
       const signature = JSON.stringify(history);
       document.getElementById("conversation-error").textContent = "";
       if (signature === shownConversation) return;
-      const isFollowing = shownConversation === "" || conversation.scrollTop + conversation.clientHeight >= conversation.scrollHeight - 32;
+      const isFollowing = shownConversation === "" || isNearBottom(conversation);
       const anchor = isFollowing ? null : Array.from(conversation.children).find(turn => turn.dataset.messageId
         && turn.getBoundingClientRect().bottom > conversation.getBoundingClientRect().top);
       const anchorTop = anchor?.getBoundingClientRect().top;
@@ -249,12 +336,16 @@ async function loadConversation() {
       const turns = history.messages.map(message => {
         const turn = element("article", `chat-turn ${message.role === "user" ? "from-you" : "from-agent"}`);
         turn.dataset.messageId = message.id;
-        turn.append(element("div", "speaker", message.role === "user" ? "You" : "Agent"), element("div", "message-text", message.text));
+        const text = message.role === "user" ? element("div", "message-text", message.text) : element("div", "message-text formatted");
+        if (message.role !== "user") text.append(...messageNodes(message.text));
+        turn.append(element("div", "speaker", message.role === "user" ? "You" : "Agent"), text);
         return turn;
       });
       if (history.truncated) turns.unshift(element("p", "note", "Showing recent messages."));
       if (turns.length === 0) turns.push(element("p", "empty", "No messages yet. Start the conversation below."));
       conversation.replaceChildren(...turns);
+      const jump = document.getElementById("jump-latest");
+      if (!isFollowing) { jump.textContent = "↓ New messages"; jump.hidden = false; }
       if (isFollowing) conversation.scrollTop = conversation.scrollHeight;
       else if (anchor) {
         const restored = turns.find(turn => turn.dataset.messageId === anchor.dataset.messageId);
@@ -317,13 +408,23 @@ function renderDetail() {
     shownScreen = ""; shownConversation = "";
     const header = element("div", "chat-header");
     const back = element("button", "back", "‹ Sessions");
-    back.onclick = () => { opened = null; box.dataset.session = ""; render(); };
+    back.onclick = leaveSession;
     const heading = element("h2", "chat-heading"); heading.id = "chat-heading";
     const status = element("div", "chat-status"); status.id = "chat-status"; status.setAttribute("role", "status");
-    header.append(back, heading, status);
+    const more = element("button", "more", "More"); more.id = "session-more-toggle";
+    more.setAttribute("aria-expanded", "false"); more.setAttribute("aria-controls", "session-more");
+    header.append(back, heading, more, status);
     const conversation = element("section", "conversation"); conversation.id = "conversation";
     conversation.setAttribute("aria-label", "Conversation"); conversation.setAttribute("tabindex", "0");
     conversation.append(element("p", "empty", "Loading conversation…"));
+    const jump = element("button", "jump-latest", "↓ Latest"); jump.id = "jump-latest"; jump.hidden = true;
+    jump.onclick = () => { conversation.scrollTop = conversation.scrollHeight; jump.hidden = true; };
+    conversation.onscroll = () => {
+      if (isNearBottom(conversation)) jump.hidden = true;
+      else if (jump.hidden) { jump.textContent = "↓ Latest"; jump.hidden = false; }
+    };
+    const reading = element("div", "conversation-wrap");
+    reading.append(conversation, jump);
     const error = element("div", "note"); error.id = "conversation-error"; error.setAttribute("role", "status");
     const actions = element("section", "chat-actions"); actions.id = "chat-actions"; actions.setAttribute("aria-label", "Needs your attention");
     const composer = element("form", "composer");
@@ -332,7 +433,8 @@ function renderDetail() {
     message.value = drafts.get(session.session) || "";
     message.maxLength = 4000; message.rows = 2;
     message.setAttribute("aria-describedby", "send-note");
-    message.oninput = () => drafts.set(session.session, message.value);
+    const fitMessage = () => { message.style.height = "auto"; message.style.height = `${message.scrollHeight + 2}px`; };
+    message.oninput = () => { drafts.set(session.session, message.value); fitMessage(); };
     const send = element("button", "run", "Send"); send.id = "chat-send"; send.type = "submit";
     const note = element("div", "note"); note.id = "send-note"; note.setAttribute("role", "status");
     const submit = async (event) => {
@@ -344,7 +446,7 @@ function renderDetail() {
       const result = await post(`/api/message/${session.session}`, { text: submitted }, note);
       sendingMessages.delete(session.session);
       if (result.ok && drafts.get(session.session) === submitted) {
-        drafts.delete(session.session); message.value = "";
+        drafts.delete(session.session); message.value = ""; fitMessage();
         if (opened === session.session) document.getElementById("chat-reply").value = "";
       }
       if (opened === session.session) { renderDetail(); loadConversation(); }
@@ -352,9 +454,14 @@ function renderDetail() {
     composer.onsubmit = submit;
     send.onclick = submit;
     composer.append(label, message, send, note);
-    const options = element("details", "session-options");
-    options.append(element("summary", "", "Session options"));
-    const controls = element("div"); controls.id = "session-controls"; options.append(controls);
+    const panel = element("section", "session-more"); panel.id = "session-more"; panel.hidden = true;
+    panel.setAttribute("aria-label", "Session options");
+    more.onclick = () => {
+      panel.hidden = !panel.hidden;
+      more.textContent = panel.hidden ? "More" : "Close";
+      more.setAttribute("aria-expanded", String(!panel.hidden));
+    };
+    const controls = element("div"); controls.id = "session-controls";
     const terminal = element("details", "terminal-details"); terminal.id = "terminal-details";
     terminal.append(element("summary", "", "Terminal details"));
     const screen = element("pre", "", "Open to load terminal output."); screen.id = "screen";
@@ -362,7 +469,9 @@ function renderDetail() {
     const screenNote = element("div", "note"); screenNote.id = "screen-note";
     const refreshTerminal = element("button", "", "Refresh terminal"); refreshTerminal.onclick = loadScreen;
     terminal.append(refreshTerminal, screen, screenNote); terminal.ontoggle = () => { if (terminal.open) loadScreen(); };
-    box.replaceChildren(header, conversation, error, actions, composer, options, terminal);
+    panel.append(controls, terminal);
+    box.replaceChildren(header, panel, reading, error, actions, composer);
+    if (message.value) fitMessage();
     loadConversation();
   }
   document.getElementById("chat-heading").textContent = session.project;
@@ -577,15 +686,23 @@ function renderTabs() {
   document.getElementById("view-title").textContent = TABS.find(([name]) => name === tab)[1];
   bar.replaceChildren(...TABS.map(([name, label]) => {
     const button = element("button", name === tab ? "tab active" : "tab", label);
+    button.id = `tab-${name}`;
     if (name === tab) button.setAttribute("aria-current", "page");
+    if (name === "sessions") {
+      const badge = element("span", "badge");
+      badge.setAttribute("aria-hidden", "true");
+      button.append(badge);
+    }
     button.onclick = () => showTab(name);
     return button;
   }));
+  updateAttentionBadge();
 }
 
 function showTab(name) {
   tab = name;
   opened = null;
+  forgetSessionAddress();
   renderTabs();
   const isSessions = name === "sessions";
   for (const id of ["list", "phone", "starter"]) document.getElementById(id).hidden = !isSessions;
@@ -763,6 +880,7 @@ function render() {
   if (opened !== null && !state.sessions.some((session) => session.session === opened)) {
     drafts.delete(opened);
     opened = null;
+    forgetSessionAddress();
     const detail = document.getElementById("detail");
     detail.replaceChildren(); detail.dataset.session = "";
     shownScreen = "";
@@ -793,6 +911,7 @@ async function refresh() {
     if (!response.ok) throw new Error(await response.text());
     const before = detailLook();
     state = await response.json();
+    updateAttentionBadge();
     const wasPaired = isPaired;
     isPaired = true;
     document.getElementById("updated").textContent = `Updated ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
@@ -820,14 +939,53 @@ async function refresh() {
 
 // A tap on a notification opens its session: in a new window through the address, in an open one
 // through the service worker's message.
+// Each opened session is a history entry, so the phone's back gesture returns to the list instead
+// of leaving the page.
 function openSession(session) {
   if (!session) return;
   if (tab !== "sessions") showTab("sessions");
+  if (sessionInAddress() !== session) history.pushState({ isSessionView: true }, "", `#session=${encodeURIComponent(session)}`);
+  showSession(session);
+}
+
+function showSession(session) {
   opened = session;
   render();
   loadConversation();
 }
-if (location.hash.startsWith("#session=")) opened = location.hash.slice("#session=".length);
+
+function closeSession() {
+  opened = null;
+  document.getElementById("detail").dataset.session = "";
+  render();
+}
+
+function leaveSession() {
+  if (history.state?.isSessionView) { history.back(); return; }
+  forgetSessionAddress();
+  closeSession();
+}
+
+function sessionInAddress() {
+  return location.hash.startsWith("#session=") ? decodeURIComponent(location.hash.slice("#session=".length)) : null;
+}
+
+function forgetSessionAddress() {
+  if (sessionInAddress() !== null) history.replaceState(null, "", location.pathname + location.search);
+}
+
+window.addEventListener("popstate", () => {
+  const session = sessionInAddress();
+  if (session !== null && tab === "sessions") showSession(session);
+  else if (session === null && opened !== null) closeSession();
+});
+// A notification's link opens straight on its session: an entry for the list goes beneath it.
+if (sessionInAddress() !== null) {
+  const address = location.hash;
+  opened = sessionInAddress();
+  history.replaceState(null, "", location.pathname + location.search);
+  history.pushState({ isSessionView: true }, "", address);
+}
 navigator.serviceWorker?.addEventListener("message", (event) => openSession(event.data && event.data.session));
 if (canPush) navigator.serviceWorker.register("/sw.js").catch(() => {});
 
@@ -841,7 +999,13 @@ refresh();
 setInterval(refresh, 3000);
 setInterval(() => { if (opened) { loadConversation(); loadScreen(); } }, 1500);
 if (window.visualViewport) {
-  const fitKeyboard = () => document.documentElement.style.setProperty("--mobile-height", `${window.visualViewport.height}px`);
+  // iOS keeps the layout viewport when the keyboard opens and scrolls it instead: the chat follows
+  // the visible part, its height and its offset.
+  const fitKeyboard = () => {
+    document.documentElement.style.setProperty("--mobile-height", `${window.visualViewport.height}px`);
+    document.documentElement.style.setProperty("--viewport-top", `${window.visualViewport.offsetTop}px`);
+  };
   window.visualViewport.addEventListener("resize", fitKeyboard);
+  window.visualViewport.addEventListener("scroll", fitKeyboard);
   fitKeyboard();
 }
