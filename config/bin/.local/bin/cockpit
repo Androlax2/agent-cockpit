@@ -783,6 +783,10 @@ say_to_session() { # id message
         return 1
     fi
     if [[ -n $waking ]]; then
+        if [[ $waking == asleep ]]; then
+            local project directory remote agent
+            check_wakeable "$id" || return 1
+        fi
         queue_for_wake "$id" "$message"
         if [[ $waking == asleep ]]; then setsid -f cockpit wake "$id" >/dev/null 2>&1; fi
         echo "queued until it wakes"
@@ -1140,10 +1144,30 @@ queue_for_wake() { # id message
     audit_event manager prompt.queued queued "session=$1" "fp:text=$2"
 }
 
+# Whether an asleep session can wake: fills the caller's project, directory, remote and agent from
+# its note. Claude's restore would start a fresh session when its conversation is gone, so that is
+# checked here. When it cannot, the note is deleted and the reason logged and printed, as a dead
+# session would be: a wake, or a message waiting for one, must not be left hanging.
+check_wakeable() { # id
+    local id=$1 note="$ASLEEP_DIR/$1" reason=""
+    IFS=$'\x1f' read -r project directory remote < <(jq -r '[.project // "", .cwd // "", (.remote // false | tostring)] | join("\u001f")' "$note" 2>/dev/null) || true
+    [[ -n $project ]] || project=$id
+    agent=$(agent_of_session "$id")
+    if [[ -z $directory || $directory == *"#"* || ! -d $directory ]]; then
+        reason="its folder is unknown or gone"
+    elif [[ $agent == claude ]] && ! has_conversation "$id"; then
+        reason="its conversation is gone"
+    fi
+    [[ -n $reason ]] || return 0
+    rm -f "$note"
+    log_event WARN sleep "$project could not wake: $reason"
+    echo "cockpit: $project could not wake: $reason" >&2
+    return 1
+}
+
 # Resume an asleep session's conversation out of sight, the way restore does, under a restart note
-# (the column shows Restarting, the session pane waits for it). Never a fresh session in place of a
-# conversation that is gone: Claude's restore would start one, so the check is made here. The agent
-# not starting keeps the note, so a later wake can try again.
+# (the column shows Restarting, the session pane waits for it). The agent not starting keeps the
+# note, so a later wake can try again.
 wake_session() { # id
     local id=$1 note="$ASLEEP_DIR/$1"
     is_asleep "$id" || { echo "cockpit: $id is not asleep" >&2; return 1; }
@@ -1151,21 +1175,8 @@ wake_session() { # id
     (
         flock -n 9 || { log_event INFO sleep "$id is already waking"; exit 0; }
         [[ -f $note ]] || exit 0
-        local project directory remote agent woke_at reason=""
-        IFS=$'\x1f' read -r project directory remote < <(jq -r '[.project // "", .cwd // "", (.remote // false | tostring)] | join("\u001f")' "$note" 2>/dev/null) || true
-        [[ -n $project ]] || project=$id
-        agent=$(agent_of_session "$id")
-        if [[ -z $directory || $directory == *"#"* || ! -d $directory ]]; then
-            reason="its folder is unknown or gone"
-        elif [[ $agent == claude ]] && ! has_conversation "$id"; then
-            reason="its conversation is gone"
-        fi
-        if [[ -n $reason ]]; then
-            rm -f "$note"
-            log_event WARN sleep "$project could not wake: $reason"
-            echo "cockpit: $project could not wake: $reason" >&2
-            exit 1
-        fi
+        local project directory remote agent woke_at
+        check_wakeable "$id" || exit 1
         printf -v woke_at '%(%s)T' -1
         mkdir -p "$RESTARTING_DIR"
         printf '%s\n%s\n%s\n\n' "$woke_at" "$project" "$directory" > "$RESTARTING_DIR/$id"
@@ -1186,14 +1197,17 @@ wake_session() { # id
 # Remote Control does not survive the exit: switch it back on once the resumed session waits at its
 # prompt (a new process: started at or after the wake).
 restore_remote_control() { # id woke_at
-    local id=$1 woke_at=$2 pane
+    local id=$1 woke_at=$2 pane status_line
     [[ $id =~ ^[A-Za-z0-9_-]+$ && $woke_at =~ ^[0-9]+$ ]] || { echo "usage: cockpit wake-remote <session-id> <woke-at>" >&2; return 1; }
     while (( $(date +%s) - woke_at <= RESTART_TIMEOUT_S )); do
         pane=$(jq -r --arg id "$id" --argjson woke_at "$woke_at" \
             'first(.sessions[] | select(.session == $id and (.tmux_pane // "") != "" and .state == "waiting" and (.started // 0) >= $woke_at)) | .tmux_pane' \
             "$SNAPSHOT" 2>/dev/null || true)
         if [[ -n $pane ]]; then
-            session_is_remote "$id" || send_remote_toggle "$pane"
+            # The status line the sleeping process wrote still says remote: only a newer one counts.
+            status_line="$HOME/.cache/claude/statusline-$id.json"
+            if (( $(stat -c %Y "$status_line" 2>/dev/null || echo 0) >= woke_at )) && session_is_remote "$id"; then return 0; fi
+            send_remote_toggle "$pane"
             return 0
         fi
         sleep 1

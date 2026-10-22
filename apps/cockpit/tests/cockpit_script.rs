@@ -4147,20 +4147,43 @@ fn wake_turns_remote_control_back_on() {
     assert_eq!(manager.tmux_calls("send-keys").len(), 2, "/rc is sent once");
 }
 
-#[test]
-fn wake_leaves_remote_control_alone_when_it_is_already_on() {
-    let manager = Manager::new();
+/// The status line of the resumed process (modified in the future) or of the one that went to sleep (an hour ago).
+fn write_status_line_saying_remote(manager: &Manager, id: &str, from_the_resumed_process: bool) {
+    let path = manager.statusline_cache().join(format!("statusline-{id}.json"));
+    fs::write(&path, r#"{"remote": true}"#).unwrap();
+    let offset = Duration::from_secs(3600);
+    let modified = if from_the_resumed_process { SystemTime::now() + offset } else { SystemTime::now() - offset };
+    fs::File::options().write(true).open(&path).unwrap().set_modified(modified).unwrap();
+}
+
+fn wake_with_remote_control_noted(manager: &Manager) {
     manager.put_to_sleep(SESSION_A, "claude", true);
-    run_setsid_for_real(&manager);
-    fs::write(manager.statusline_cache().join(format!("statusline-{SESSION_A}.json")), r#"{"remote": true}"#).unwrap();
+    run_setsid_for_real(manager);
     fs::write(&manager.snapshot, json!({"sessions": [{"session": SESSION_A, "state": "waiting", "project": "proj-a",
         "cwd": path_str(&manager.project), "tmux_pane": "%9", "started": now_seconds() + 1000}]}).to_string()).unwrap();
+}
+
+#[test]
+fn wake_leaves_remote_control_alone_when_a_fresh_status_line_says_it_is_on() {
+    let manager = Manager::new();
+    wake_with_remote_control_noted(&manager);
+    write_status_line_saying_remote(&manager, SESSION_A, true);
     let result = manager.run(&["wake", SESSION_A], &[("SHIM_PANE_TEXT", IDLE)]);
     assert_eq!(result.status.code(), Some(0), "{}", stderr(&result));
     let waited_for = manager.sandbox.wait_for_calls("setsid", 1, Duration::from_secs(5));
     assert_eq!(waited_for.len(), 1, "{waited_for:?}");
     std::thread::sleep(Duration::from_millis(600));
     assert!(manager.tmux_calls("send-keys").is_empty(), "{:?}", manager.tmux_calls("send-keys"));
+}
+
+#[test]
+fn wake_turns_remote_control_on_when_the_status_line_is_the_one_from_before_the_sleep() {
+    let manager = Manager::new();
+    wake_with_remote_control_noted(&manager);
+    write_status_line_saying_remote(&manager, SESSION_A, false);
+    let result = manager.run(&["wake", SESSION_A], &[("SHIM_PANE_TEXT", IDLE)]);
+    assert_eq!(result.status.code(), Some(0), "{}", stderr(&result));
+    assert_eq!(wait_for_send_keys(&manager, 2), ["tmux send-keys -t %9 /rc", "tmux send-keys -t %9 Enter"]);
 }
 
 #[test]
@@ -4208,6 +4231,21 @@ fn say_to_an_asleep_session_still_refuses_a_bad_message() {
     }
     assert!(manager.queued_prompts(SESSION_A).is_empty());
     assert!(manager.calls("setsid").is_empty());
+}
+
+#[test]
+fn say_to_an_asleep_session_that_cannot_wake_fails_instead_of_queuing() {
+    let manager = Manager::new();
+    manager.put_to_sleep(SESSION_A, "claude", false);
+    let empty_transcripts = manager.sandbox.root.join("transcripts");
+    fs::create_dir_all(&empty_transcripts).unwrap();
+    let result = manager.run(&["say", SESSION_A, "run the tests"], &[("COCKPIT_TRANSCRIPTS", &path_str(&empty_transcripts))]);
+    assert_eq!(result.status.code(), Some(1), "{}", stdout(&result));
+    assert!(stderr(&result).contains("could not wake: its conversation is gone"), "{}", stderr(&result));
+    assert!(manager.queued_prompts(SESSION_A).is_empty());
+    assert!(!manager.asleep_note(SESSION_A).exists());
+    assert!(manager.calls("setsid").is_empty());
+    assert!(manager.log_lines().iter().any(|line| line.contains("WARN sleep: proj-a could not wake")), "{:?}", manager.log_lines());
 }
 
 #[test]
