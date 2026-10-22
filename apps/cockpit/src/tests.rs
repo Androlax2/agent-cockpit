@@ -2933,6 +2933,15 @@ fn action_counts_do_not_push_allowances_out_of_a_narrow_header() {
 }
 
 #[test]
+fn the_header_names_the_agent_cockpit_not_claude_sessions() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    let rows = settings_screen_rows(&render(&mut app, 80, 45));
+    assert!(rows[0].trim_start().starts_with("Agent Cockpit"), "{}", rows[0]);
+    assert!(!rows[0].contains("Claude sessions"), "{}", rows[0]);
+}
+
+#[test]
 fn tab_navigation_cycles_only_the_action_panels() {
     let fixture = Fixture::new();
     let mut app = fixture.app();

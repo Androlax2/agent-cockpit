@@ -3054,7 +3054,7 @@ impl App {
         let proposal_width = if proposed > 0 { width_of(&proposal_text) + 2 } else { 0 };
         let held_text = if self.held.is_empty() { String::new() } else { format!("⛔ {}", self.held.len()) };
         let held_width = if held_text.is_empty() { 0 } else { width_of(&held_text) + 2 };
-        let title = fit("Claude sessions", (width as usize).saturating_sub(4 + quota_width + attention_width + proposal_width + held_width));
+        let title = fit("Agent Cockpit", (width as usize).saturating_sub(4 + quota_width + attention_width + proposal_width + held_width));
         put(buffer, 0, 2, &title, bold(BLUE));
         let mut column = 2 + width_of(&title) as u16 + if title.is_empty() { 0 } else { 2 };
         if needing > 0 {
