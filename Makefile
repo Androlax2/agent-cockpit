@@ -115,18 +115,19 @@ agent-github-check: ## [read-only] Check that each agent token reaches only its 
 # (and nowhere else) so pending network requests can be approved from the phone. It has no login:
 # every device on the tailnet would reach it. So it gets a port of its own, which a tailnet grant
 # keeps to the phone (agent-dashboard-tailnet-grant prints it), and publishing waits until Theo says
-# the grant is in place (GRANTED=yes). Port 443 stays the phone page's (claude-remote).
+# the grant is in place (GRANTED=yes). Port 443 stays the phone page's (claude-remote). tailscaled
+# takes serve changes from root only (no operator is set).
 GREYPROXY_DASHBOARD_PORT ?= 43080
 DASHBOARD_TAILNET_PORT ?= 8443
 agent-dashboard-tailnet-grant: ## [read-only] Print the tailnet grants that keep the dashboard to one phone: make agent-dashboard-tailnet-grant PHONE=iphone
 	@test -n "$(PHONE)" || { echo "usage: make agent-dashboard-tailnet-grant PHONE=<phone name, as tailscale status shows it>"; exit 2; }
 	@tools/tailnet-dashboard-grant.sh "$(PHONE)" "$(DASHBOARD_TAILNET_PORT)"
 
-agent-dashboard-tailnet: ## Publish greyproxy's dashboard to the phone, once its grant is in place: make agent-dashboard-tailnet GRANTED=yes (then open :8443/dashboard)
+agent-dashboard-tailnet: ## [sudo] Publish greyproxy's dashboard to the phone, once its grant is in place: make agent-dashboard-tailnet GRANTED=yes (then open :8443/dashboard)
 	@test "$(GRANTED)" = yes || { echo "Without a grant every device on the tailnet reaches the dashboard, with no login."; \
 	    echo "Paste make agent-dashboard-tailnet-grant PHONE=<phone> into the tailnet's access controls first, then: make agent-dashboard-tailnet GRANTED=yes"; exit 2; }
-	tailscale serve --bg --https=$(DASHBOARD_TAILNET_PORT) http://127.0.0.1:$(GREYPROXY_DASHBOARD_PORT)
+	sudo tailscale serve --bg --https=$(DASHBOARD_TAILNET_PORT) http://127.0.0.1:$(GREYPROXY_DASHBOARD_PORT)
 	tailscale serve status
 
-agent-dashboard-tailnet-off: ## Stop publishing greyproxy's dashboard on the tailnet
-	tailscale serve --https=$(DASHBOARD_TAILNET_PORT) off
+agent-dashboard-tailnet-off: ## [sudo] Stop publishing greyproxy's dashboard on the tailnet
+	sudo tailscale serve --https=$(DASHBOARD_TAILNET_PORT) off
