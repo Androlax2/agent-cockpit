@@ -16,6 +16,7 @@ pub mod remote;
 pub mod reviews;
 pub mod sessions;
 pub mod settings;
+pub mod sleep;
 pub mod status;
 pub mod teams;
 pub mod todo;

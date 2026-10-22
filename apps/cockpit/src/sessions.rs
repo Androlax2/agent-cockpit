@@ -192,6 +192,8 @@ pub struct Session {
     pub group_position: usize,
     /// Held on screen while `cockpit restart` brings it back (Restart).
     pub restarting: bool,
+    /// When it fell asleep (sleep.rs): its process is gone and the card waits to be woken.
+    pub asleep: Option<i64>,
 }
 
 fn text(row: &Value, key: &str) -> String {
@@ -208,7 +210,7 @@ impl Session {
     }
 
     pub fn is_external(&self) -> bool {
-        self.tmux_pane.is_empty() && self.kitty_pid.is_empty()
+        self.asleep.is_none() && self.tmux_pane.is_empty() && self.kitty_pid.is_empty()
     }
 
     pub fn from_value(row: &Value) -> Option<Session> {
@@ -482,7 +484,7 @@ pub fn activity_label(session: &Session) -> &'static str {
 pub const IDLE_AFTER_S: i64 = 30 * 60;
 
 pub fn is_idle(session: &Session, now: i64) -> bool {
-    activity_label(session) == "Ready" && now - session.since >= IDLE_AFTER_S
+    session.asleep.is_none() && activity_label(session) == "Ready" && now - session.since >= IDLE_AFTER_S
 }
 
 pub fn activity_text(session: &Session) -> String {

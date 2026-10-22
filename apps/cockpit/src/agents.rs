@@ -30,6 +30,8 @@ pub enum Feature {
     Interrupt,
     /// The daemon reads its state from its screen (osd classify's patterns), over stale reports.
     ScreenStates,
+    /// An idle session may exit and resume its conversation on demand (sleep.rs).
+    Sleep,
 }
 
 pub struct Agent {
@@ -65,6 +67,7 @@ impl Feature {
             Feature::Dialogs => "dialogs",
             Feature::Interrupt => "interrupt",
             Feature::ScreenStates => "screen_states",
+            Feature::Sleep => "sleep",
         }
     }
 }
@@ -91,7 +94,7 @@ pub static AGENTS: [Agent; 3] = [
         id_pattern: r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
         process: None,
         features: &[Feature::Effort, Feature::Billing, Feature::Compact, Feature::RemoteControl, Feature::Dialogs,
-                    Feature::Interrupt, Feature::ScreenStates],
+                    Feature::Interrupt, Feature::ScreenStates, Feature::Sleep],
         interrupt_keys: &["Escape"],
         start_files: &["CLAUDE.md", "settings", "plugins", "ADHD mode", "session hook", "sandbox", "greywall", "sandbox profile",
                        "launcher", "shared launcher"],
@@ -105,7 +108,7 @@ pub static AGENTS: [Agent; 3] = [
         process: Some("opencode"),
         // Escape twice stops its turn (the first only says "esc again to interrupt"). Its permission
         // questions are not Claude's yes/no menu: no Dialogs.
-        features: &[Feature::Interrupt, Feature::Variants],
+        features: &[Feature::Interrupt, Feature::Variants, Feature::Sleep],
         interrupt_keys: &["Escape", "Escape"],
         start_files: &["CLAUDE.md", "sandbox", "greywall", "shared launcher", "opencode config", "opencode plugin", "opencode profile",
                        "opencode launcher"],

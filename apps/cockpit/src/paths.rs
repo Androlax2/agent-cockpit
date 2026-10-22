@@ -93,6 +93,8 @@ pub fn error_reports() -> PathBuf { state_dir().join("error-reports.json") }
 pub fn error_report_dir() -> PathBuf { state_dir().join("error-reports") }
 pub fn recent_sessions() -> PathBuf { state_dir().join("recent-sessions.json") }
 pub fn ended_sessions() -> PathBuf { state_dir().join("ended-sessions") }
+/// One note per session that fell asleep (sleep::Asleep), named by its id; waking removes it.
+pub fn asleep_dir() -> PathBuf { state_dir().join("asleep") }
 pub fn clones_dir() -> PathBuf { from_env("COCKPIT_CLONES", home().join("IdeaProjects/.parallel")) }
 pub fn greyproxy_db() -> PathBuf { from_env("COCKPIT_GREYPROXY_DB", home().join(".local/share/greyproxy/greyproxy.db")) }
 pub fn designs() -> PathBuf { from_env("CLAUDE_DESIGNS_DIR", home().join(".cache/claude/designs")) }
