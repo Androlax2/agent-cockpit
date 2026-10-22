@@ -298,7 +298,7 @@ fn help_says_work_for_another_project_is_proposed_with_its_name() {
     let output = claude_todo(&sandbox, &["--help"], &sandbox.root);
     let usage = String::from_utf8_lossy(&output.stdout);
     assert!(usage.contains("[--project <name>]"), "{usage}");
-    assert!(usage.contains("add names only a linked project"), "{usage}");
+    assert!(!usage.contains("linked"), "{usage}");
 }
 
 /// A checkout named after a project, where claude-todo runs as that project's session.
@@ -309,7 +309,7 @@ fn checkout(sandbox: &Sandbox, project: &str) -> std::path::PathBuf {
 }
 
 #[test]
-fn add_names_a_linked_project_and_the_items_it_waits_on() {
+fn add_names_another_project_and_the_items_it_waits_on() {
     let sandbox = Sandbox::new();
     let daemon = daemon(&sandbox, "ok");
     let greywall = checkout(&sandbox, "greywall");
@@ -320,13 +320,14 @@ fn add_names_a_linked_project_and_the_items_it_waits_on() {
 }
 
 #[test]
-fn add_refuses_a_project_outside_the_links_before_reaching_the_daemon() {
+fn add_hands_work_to_any_project_and_says_it_is_queued_there() {
     let sandbox = Sandbox::new();
     let daemon = daemon(&sandbox, "ok");
-    let output = claude_todo(&sandbox, &["add", "strict mode", "--project", "dotfiles"], &checkout(&sandbox, "greywall"));
-    assert_eq!(output.status.code(), Some(2));
-    assert!(String::from_utf8_lossy(&output.stderr).contains("not linked"), "{}", String::from_utf8_lossy(&output.stderr));
-    assert!(updates(&daemon).is_empty());
+    let output = claude_todo(&sandbox, &["add", "strict mode", "--project", "dotfiles"], &checkout(&sandbox, "runway"));
+    assert_eq!(output.status.code(), Some(0), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("Added to dotfiles's list and queued"), "{}", String::from_utf8_lossy(&output.stdout));
+    let sent = updates(&daemon).remove(0);
+    assert_eq!((sent["action"].clone(), sent["project"].clone()), (json!("add"), json!("dotfiles")));
 }
 
 #[test]
@@ -349,15 +350,6 @@ fn done_carries_the_sessions_summary() {
     assert_eq!(claude_todo(&sandbox, &["done", "0123abcd", "--summary", "branch x, PR #3"], &sandbox.root).status.code(), Some(0));
     let sent = updates(&daemon).remove(0);
     assert_eq!((sent["action"].clone(), sent["summary"].clone()), (json!("done"), json!("branch x, PR #3")));
-}
-
-#[test]
-fn a_project_option_is_refused_instead_of_filing_elsewhere() {
-    let sandbox = Sandbox::new();
-    let daemon = daemon(&sandbox, "ok");
-    let output = claude_todo(&sandbox, &["add", "check the compose names", "--project", "opusline"], &sandbox.root);
-    assert_eq!(output.status.code(), Some(2));
-    assert!(updates(&daemon).is_empty());
 }
 
 #[test]

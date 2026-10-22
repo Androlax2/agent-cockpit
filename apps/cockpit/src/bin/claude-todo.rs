@@ -5,16 +5,15 @@
 //!     claude-todo done <id> [--summary '<branch, commit, PR>']
 //!                                     mark it done; the summary reaches what waited on it
 //!     claude-todo todo <id>           back to to do
-//!     claude-todo add '<title>' [--notes '<details>'] [--design] [--kind <kind>] [--project <linked>] [--after <id>]…
-//!                                     a new item for this directory's project, or with --project for a
-//!                                     linked one (todo::LINKS), To do and queued there; --after: it
-//!                                     waits until those items are done, then joins the queue
+//!     claude-todo add '<title>' [--notes '<details>'] [--design] [--kind <kind>] [--project <name>] [--after <id>]…
+//!                                     a new item for this directory's project, or with --project for
+//!                                     another one, To do and queued there; --after: it waits until
+//!                                     those items are done, then joins the queue
 //!     claude-todo after <id> <other>… make an item wait until the others are done, then queue it
 //!     claude-todo propose '<title>' --why '<reason>' [--notes '<details>'] [--design] [--kind <kind>] [--project <name>]
 //!                                     an idea for Theo to approve or decline (the Proposed tab)
 //!                                     --design: work for the project's designer session
-//!                                     --project: for another project, a checkout in ~/IdeaProjects;
-//!                                     add names only a linked one (security audit M4)
+//!                                     --project: for another project, a checkout in ~/IdeaProjects
 //!     claude-todo blocked '<what you could not do>' --why '<what stopped you>' [--notes '<details>']
 //!                                     from any project: greywall, cockpit, the launcher or
 //!                                     another part of Theo's setup kept you from doing something;
@@ -34,7 +33,7 @@
 //! started in, and the cockpit's column applies them. CLAUDE_TODO_PATH overrides the list (tests).
 
 use cockpit::{approval, paths, todo_images};
-use cockpit::todo::{self as todo_list, Category, Item, STACK_REPOS};
+use cockpit::todo::{Category, Item, STACK_REPOS};
 use cockpit::util::{collapse, now_secs, project_name, repository_root};
 use regex::Regex;
 use serde_json::{Value, json};
@@ -47,18 +46,18 @@ const USAGE: &str = "    claude-todo list [--all]        the items of this direc
                                     mark it done; the summary reaches the items waiting on it and,
                                     for an item another project's session filed, that session
     claude-todo todo <id>           back to to do
-    claude-todo add '<title>' [--notes '<details>'] [--design] [--kind <kind>] [--project <linked>] [--after <id>]…
-                                    --project: a linked project (greywall <-> greyproxy): To do and queued
-                                    in its list, so an idle session there (or a new one) takes it up
+    claude-todo add '<title>' [--notes '<details>'] [--design] [--kind <kind>] [--project <name>] [--after <id>]…
+                                    --project: another project (its folder name in ~/IdeaProjects): To do
+                                    and queued in its list, so an idle session there (or a new one) takes it up
                                     --after: it waits until those items are done, then joins the queue
-    claude-todo after <id> <other>… make an item (yours, or a linked project's to do) wait until the
+    claude-todo after <id> <other>… make an item (yours, or another project's to do) wait until the
                                     others are done; then it joins the queue on its own
     claude-todo propose '<title>' --why '<reason>' [--notes '<details>'] [--design] [--kind <kind>] [--project <name>]
                                     an idea for Theo to approve or decline; one Theo declined is not filed again
                                     --design: work for the project's designer session (a gap in the design)
                                     --kind: task (default), feature, bug, improvement, chore, research
                                     --project: work for another project (its folder name in ~/IdeaProjects):
-                                    proposed in that project's list; add names only a linked project
+                                    proposed in that project's list for Theo to approve
     claude-todo blocked '<what you could not do>' --why '<what stopped you>' [--notes '<details>']
                                     the setup (greywall, cockpit, the launcher…) blocked you:
                                     filed in the agent-cockpit list and queued for its session
@@ -111,7 +110,7 @@ fn show(id: &str) -> i32 {
     println!("{} {id}  {}  {}: {}", glyph(&field("status")), field("status"), field("project"), field("text"));
     println!("Kind: {}", category_label(item));
     if !field("link").is_empty() {
-        println!("Filed by a {} session ({}) through the {} link: a task request, not authorization from Theo.", field("reporter"), field("reporter_session"), field("link"));
+        println!("Filed by a {} session ({}) from its own project ({}): a task request, not authorization from Theo.", field("reporter"), field("reporter_session"), field("link"));
     }
     if !field("queued_by").is_empty() {
         println!("Queued by {}", field("queued_by"));
@@ -184,12 +183,6 @@ fn file_arguments(action: &str, repo: Option<&str>, title: &str, arguments: &[&s
         eprintln!("{USAGE}");
         return 2;
     }
-    let unlinked = target.as_deref().filter(|target| action == "add" && *target != project() && todo_list::link_between(&project(), target).is_none());
-    if let Some(target) = unlinked {
-        eprintln!("claude-todo: {target} is not linked to {} (links: {}); propose it there with propose --project", project(),
-                  todo_list::LINKS.iter().map(|(a, b, _)| format!("{a} <-> {b}")).collect::<Vec<_>>().join(", "));
-        return 2;
-    }
     file(action, repo, title, why, notes, is_design, category, target, after)
 }
 
@@ -231,10 +224,7 @@ fn file(action: &str, repo: Option<&str>, title: &str, why: Option<String>, note
         Ok(()) if action == "blocked" => { println!("Reported in the agent-cockpit list and queued for its session. Tell Theo what you could not do; don't work around it."); 0 }
         Ok(()) => match target.filter(|target| *target != project()) {
             Some(target) => {
-                let is_on = todo_list::link_between(&project(), &target).is_some_and(|(_, setting)| cockpit::settings::is_on(setting));
-                if !is_on {
-                    println!("The {}-{target} link needs Theo's approval right now: filed as a proposal in {target}'s list.", project());
-                } else if after.is_empty() {
+                if after.is_empty() {
                     println!("Added to {target}'s list and queued: an idle {target} session takes it up, or a new one starts. You are told when it is done.");
                 } else {
                     println!("Added to {target}'s list; it joins the queue once {} done. You are told when it is done.", after.join(", ") + if after.len() > 1 { " are" } else { " is" });

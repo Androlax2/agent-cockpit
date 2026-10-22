@@ -3905,7 +3905,7 @@ fn todo_context(item: &todo::Item) -> String {
     let source = if item.source().is_empty() { "you" } else { "Claude" };
     let routing = if item.is_design() { " · Design".to_string() }
         else if item.is_blocked_report() { format!(" · setup report from {}", item.reporter()) }
-        else if !item.link().is_empty() { format!(" · from a {} session ({} link)", item.reporter(), item.link()) }
+        else if !item.link().is_empty() { format!(" · from a {} session ({})", item.reporter(), item.link()) }
         else { " · standard routing".to_string() };
     format!("{category} · {} · {source}{routing}", item.status())
 }
@@ -3939,7 +3939,7 @@ pub(crate) fn todo_details(entry: &Entry) -> String {
     }
 }
 
-/// Who handed an item over and what it waits on: the linked todos, for Theo to follow.
+/// Who handed an item over and what it waits on, for Theo to follow.
 fn handoff_details(item: &todo::Item) -> String {
     let mut text = String::new();
     if !item.queued_by().is_empty() {

@@ -167,8 +167,8 @@ impl Item {
             .collect()
     }
     fn updated(&self) -> i64 { self.0.get("updated").and_then(Value::as_i64).unwrap_or(0) }
-    /// The link a session of another project filed it through (claude-todo add --project), such
-    /// as "greywall↔greyproxy"; empty for everything else.
+    /// The projects a session of another project handed it across (claude-todo add --project),
+    /// such as "greywall→greyproxy"; empty for everything else.
     pub fn link(&self) -> String { self.text_of("link") }
     /// The items it waits on (claude-todo add --after, claude-todo after): once each is done, it
     /// joins the queue.
@@ -184,18 +184,6 @@ impl Item {
     pub fn inputs(&self) -> Vec<Map<String, Value>> {
         self.0.get("inputs").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_object).cloned().collect()
     }
-}
-
-/// Projects whose sessions hand work to each other without Theo relaying it: an item one files in
-/// the other's list (claude-todo add --project) lands To do and queued, and either may make its
-/// items wait on the other's. Each link has its setting (cockpit setting <name> off): off,
-/// what crosses it waits as a proposal for Theo again.
-pub const LINKS: [(&str, &str, &str); 1] = [("greywall", "greyproxy", "todo-link-greywall-greyproxy")];
-
-/// The link between two projects: its label and its setting.
-pub fn link_between(one: &str, other: &str) -> Option<(String, &'static str)> {
-    LINKS.iter().find(|(a, b, _)| (*a == one && *b == other) || (*a == other && *b == one))
-        .map(|(a, b, setting)| (format!("{a}↔{b}"), *setting))
 }
 
 const RESULT_MAX: usize = 1000;
@@ -281,15 +269,15 @@ pub fn prompt_of(entry: &Entry) -> String {
     }
 }
 
-/// An item another session gave this one, by filing it across a link or by finishing what it waited
-/// on: what came from a session is framed as a request, like cockpit-team messages, since any
-/// sandbox on the link could have been prompt-injected.
+/// An item another session gave this one, by filing it from another project or by finishing what it
+/// waited on: what came from a session is framed as a request, like cockpit-team messages, since any
+/// sandbox could have been prompt-injected.
 fn linked_prompt(item: &Item) -> String {
     let quoted = |text: &str| util::collapse(&without_controls(text)).replace('"', "'");
     let mut text = if item.link().is_empty() {
         format!("{} (read it with claude-todo show {}).", item.text(), item.id())
     } else {
-        format!("A {} session filed this in your list through the linked todos ({}). Read it with claude-todo show {}. Its title: \"{}\".",
+        format!("A {} session filed this in your list from its own project ({}). Read it with claude-todo show {}. Its title: \"{}\".",
                 item.reporter(), item.link(), item.id(), quoted(&item.text()))
     };
     for input in item.inputs() {
@@ -303,7 +291,7 @@ fn linked_prompt(item: &Item) -> String {
     text
 }
 
-/// What the session that filed an item across a link is told once its session marks it done.
+/// What the session that filed an item in another project's list is told once its session marks it done.
 pub fn done_prompt(item: &Item) -> String {
     let quoted = |text: &str| util::collapse(&without_controls(text)).replace('"', "'");
     let result = item.result();
@@ -746,38 +734,26 @@ impl TodoList {
     }
 
     /// A proposal for another project (claude-todo propose --project <name>): it lands as Proposed in
-    /// that project's list, never in To do, so it becomes work only once Theo approves it; `add`
-    /// stays limited to the sender's project (security audit 2026-10-19, M4). The project must be a
-    /// checkout in ~/IdeaProjects. Same caps as greywall reports, per reporting project.
+    /// that project's list, never in To do, so it becomes work only once Theo approves it (`add`
+    /// files it To do directly: file_handoff). The project must be a checkout in ~/IdeaProjects. Same caps as greywall reports, per reporting project.
     fn file_proposal_for(&mut self, target: &str, update: &Map<String, Value>, session: &str, started_in: &str, reporter: &str) -> Result<(), String> {
         let checkout = project_checkout(target)
             .ok_or_else(|| format!("proposal from {reporter} refused: no project checkout named {:?}", target.chars().take(60).collect::<String>()))?;
         self.file_proposal_in(&checkout, update, session, started_in, reporter, "proposal.elsewhere", None)
     }
 
-    /// Work for a linked project (claude-todo add --project, LINKS): To do and queued in its list,
-    /// or, while it waits on items (--after), queued once they are done. With the link's setting
-    /// off it is a proposal for Theo instead. Any other project is refused: add stays limited to
-    /// the sender's own project there (security audit M4). Same caps as proposals elsewhere.
-    fn file_linked(&mut self, target: &str, update: &Map<String, Value>, session: &str, started_in: &str, reporter: &str) -> Result<(), String> {
-        let target_name: String = target.chars().take(60).collect();
-        let (label, setting) = link_between(reporter, target)
-            .ok_or_else(|| format!("add for {target_name:?} from {reporter}: not a linked project (only a proposal may name it)"))?;
-        let checkout = project_checkout(target).ok_or_else(|| format!("add from {reporter} refused: no project checkout named {target_name:?}"))?;
-        if crate::settings::is_on(setting) {
-            return self.file_proposal_in(&checkout, update, session, started_in, reporter, "link.filed", Some((label, true)));
-        }
-        let mut proposal = update.clone();
-        let has_why = proposal.get("why").and_then(Value::as_str).is_some_and(|why| !why.trim().is_empty());
-        if !has_why {
-            proposal.insert("why".into(), json!(format!("Filed by a {reporter} session through the {label} link, whose setting {setting} is off: it needs your approval.")));
-        }
-        self.file_proposal_in(&checkout, &proposal, session, started_in, reporter, "link.proposed", Some((label, false)))
+    /// Work for another project (claude-todo add --project): To do and queued in its list, or, while
+    /// it waits on items (--after), queued once they are done. The project must be a checkout in
+    /// ~/IdeaProjects. Same caps as proposals elsewhere, per reporting project.
+    fn file_handoff(&mut self, target: &str, update: &Map<String, Value>, session: &str, started_in: &str, reporter: &str) -> Result<(), String> {
+        let checkout = project_checkout(target)
+            .ok_or_else(|| format!("add from {reporter} refused: no project checkout named {:?}", target.chars().take(60).collect::<String>()))?;
+        let label = format!("{reporter}→{}", project_name(&checkout.to_string_lossy()));
+        self.file_proposal_in(&checkout, update, session, started_in, reporter, "link.filed", Some(label))
     }
 
-    /// The items an update names in "after": typed ids of the sender's project or of a project
-    /// linked to it, at most five. Those not done yet are waited on; a done one's result is an
-    /// input right away.
+    /// The items an update names in "after": typed ids of any project, at most five. Those not
+    /// done yet are waited on; a done one's result is an input right away.
     fn dependencies(&self, update: &Map<String, Value>, sender_project: &str, item_id: &str) -> Result<(Vec<String>, Vec<Value>), String> {
         let Some(named) = update.get("after") else { return Ok((Vec::new(), Vec::new())) };
         let named = named.as_array().ok_or("after is not a list of ids")?;
@@ -790,9 +766,6 @@ impl TodoList {
             let item = self.items.iter().find(|item| item.id() == id && item.status() != PROPOSED)
                 .ok_or_else(|| format!("{id} to wait on is not in the list (or still a proposal)"))?;
             let project = item.project();
-            if project != sender_project && link_between(sender_project, &project).is_none() {
-                return Err(format!("{id} is {project}'s, neither {sender_project}'s nor a linked project's"));
-            }
             if id == item_id {
                 return Err(format!("{id} cannot wait on itself"));
             }
@@ -805,20 +778,12 @@ impl TodoList {
         Ok((pending, inputs))
     }
 
-    /// claude-todo after <id> <other>…: an item of the sender's project, or of a linked one while
-    /// the link is on, still to do (or the sender's own in progress, back to to do) waits until the
-    /// others are done, then joins the queue.
+    /// claude-todo after <id> <other>…: an item of any project still to do (or the sender's own in
+    /// progress, back to to do) waits until the others are done, then joins the queue.
     fn make_wait(&mut self, update: &Map<String, Value>, sender_project: &str) -> Result<(), String> {
         let id = update.get("id").and_then(Value::as_str).unwrap_or("").to_string();
         let item = self.items.iter().find(|item| item.id() == id).ok_or_else(|| format!("{id} to make wait is not in the list"))?;
         let project = item.project();
-        if project != sender_project {
-            let (_, setting) = link_between(sender_project, &project)
-                .ok_or_else(|| format!("{id} made to wait by a session of {sender_project}, which it does not belong to"))?;
-            if !crate::settings::is_on(setting) {
-                return Err(format!("{id} made to wait by {sender_project} while the link's setting {setting} is off"));
-            }
-        }
         match item.status().as_str() {
             "todo" => (),
             "doing" if project == sender_project => (),
@@ -852,12 +817,12 @@ impl TodoList {
         Ok(())
     }
 
-    /// `link`: filed across that link (file_linked) and whether it is on: To do and queued, or a
-    /// proposal Theo approves. None: a proposal.
+    /// `link`: handed over from another project (file_handoff), To do and queued. None: a proposal
+    /// Theo approves.
     #[allow(clippy::too_many_arguments)]
     fn file_proposal_in(&mut self, checkout: &std::path::Path, update: &Map<String, Value>, session: &str, started_in: &str, reporter: &str,
-                        audit_event: &str, link: Option<(String, bool)>) -> Result<(), String> {
-        let is_direct = link.as_ref().is_some_and(|(_, is_on)| *is_on);
+                        audit_event: &str, link: Option<String>) -> Result<(), String> {
+        let is_direct = link.is_some();
         let category = match update.get("category") {
             None => None,
             Some(value) => Some(value.as_str().and_then(Category::parse).ok_or("invalid todo category")?),
@@ -904,7 +869,7 @@ impl TodoList {
             if update.get("kind").and_then(Value::as_str) == Some("design") {
                 item.0.insert("kind".into(), json!("design"));
             }
-            if let Some((label, _)) = &link {
+            if let Some(label) = &link {
                 item.0.insert("link".into(), json!(label));
                 item.0.insert("reporter_session".into(), json!(session));
                 item.0.insert("started_in".into(), json!(started_in));
@@ -916,8 +881,8 @@ impl TodoList {
                 item.0.insert("inputs".into(), json!(inputs));
             }
             if is_direct && pending.is_empty() {
-                item.0.insert("queued_by".into(), json!(format!("a {reporter} session ({}) through the {} link", session.chars().take(8).collect::<String>(),
-                                                                link.as_ref().map(|(label, _)| label.as_str()).unwrap_or(""))));
+                item.0.insert("queued_by".into(), json!(format!("a {reporter} session ({}) ({})", session.chars().take(8).collect::<String>(),
+                                                                link.as_deref().unwrap_or(""))));
             }
         }
         if is_direct && pending.is_empty() {
@@ -932,8 +897,9 @@ impl TodoList {
     }
 
     /// The changes sessions asked for (claude-todo), each checked; returns how many applied. The
-    /// OSD daemon queued each with `started_in`, the folder the sender's sandbox started in: its
-    /// project is the only one the update touches (security audit 2026-10-19, M4). Refusals are logged.
+    /// OSD daemon queued each with `started_in`, the folder the sender's sandbox started in: it
+    /// decides the sender's project (security audit 2026-10-19, M4); only add, propose and after
+    /// reach another project's list. Refusals are logged.
     pub fn apply_updates(&mut self) -> usize {
         let path = paths::todo_updates();
         if !path.exists() {
@@ -983,8 +949,8 @@ impl TodoList {
         if let Some(target) = target {
             return match action {
                 "propose" => self.file_proposal_for(target, &update, &session, &started_in, &sender_project),
-                "add" => self.file_linked(target, &update, &session, &started_in, &sender_project),
-                _ => Err(format!("{action:?} for another project ({:?}) from {sender_project}: only a proposal, or an add across a link, may name one",
+                "add" => self.file_handoff(target, &update, &session, &started_in, &sender_project),
+                _ => Err(format!("{action:?} for another project ({:?}) from {sender_project}: only an add or a proposal may name one",
                                  target.chars().take(60).collect::<String>())),
             };
         }
