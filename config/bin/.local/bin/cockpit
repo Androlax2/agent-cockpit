@@ -1061,7 +1061,7 @@ sleep_blocker() { # id pane
 # The note is written before the exit, so a session that is gone always has one to wake from; an
 # exit that fails takes the note back.
 sleep_session() { # id
-    local id=$1 pane project agent title since slept_at remote=false reason note temporary
+    local id=$1 pane project agent title since started slept_at remote=false reason note temporary
     [[ $id =~ ^[A-Za-z0-9_-]+$ ]] || { echo "cockpit: invalid session id $id" >&2; return 1; }
     require_feature "$id" sleep "sleeping" || return 1
     project=$(session_field "$id" project)
@@ -1076,6 +1076,9 @@ sleep_session() { # id
     fi
     agent=$(agent_of_session "$id")
     title=$(session_field "$id" task)
+    # Kept so the card holds its place in the column; without it the card sorts by its idle time.
+    started=$(session_field "$id" started)
+    [[ $started =~ ^[0-9]+(\.[0-9]+)?$ ]] || started=""
     [[ $agent == claude ]] && session_is_remote "$id" && remote=true
     printf -v slept_at '%(%s)T' -1
     note="$ASLEEP_DIR/$id"
@@ -1083,9 +1086,9 @@ sleep_session() { # id
     temporary="$(dirname "$ASLEEP_DIR")/.asleep-$id.tmp"
     mkdir -p "$ASLEEP_DIR"
     if ! (umask 077; jq -n --arg session "$id" --arg agent "$agent" --arg project "$project" --arg cwd "$(session_field "$id" cwd)" \
-            --arg title "$title" --argjson since "$since" --argjson slept_at "$slept_at" --argjson remote "$remote" \
+            --arg title "$title" --argjson since "$since" --arg started "$started" --argjson slept_at "$slept_at" --argjson remote "$remote" \
             '{session: $session, agent: $agent, project: $project, cwd: $cwd, title: $title, idle_since: ($since | floor),
-              slept_at: $slept_at, remote: $remote}' > "$temporary"); then
+              slept_at: $slept_at, remote: $remote} + (if $started == "" then {} else {started: ($started | tonumber | floor)} end)' > "$temporary"); then
         rm -f "$temporary"
         echo "cockpit: could not write the note for $id" >&2
         return 1

@@ -1845,7 +1845,7 @@ fn session_summary_counts_idle_sessions_apart_from_ready_ones() {
 fn asleep_note(fixture: &Fixture, session: &str, idle_since: i64, slept_at: i64) {
     fixture.write(&format!("state/cockpit/asleep/{session}"), &json!({
         "agent": "claude", "project": "runway", "cwd": "/r/runway", "title": "Fix the chart",
-        "idle_since": idle_since, "slept_at": slept_at, "remote": false,
+        "idle_since": idle_since, "slept_at": slept_at, "remote": false, "started": idle_since - 100,
     }).to_string());
 }
 
@@ -1863,6 +1863,27 @@ fn an_asleep_note_shows_as_an_asleep_card() {
     assert_eq!(app.sessions.len(), 1);
     assert!(asleep_badge(&app).starts_with("Asleep "), "badge was {:?}", asleep_badge(&app));
     assert_eq!(app.running_sessions.len(), 1);
+}
+
+#[test]
+fn an_asleep_card_keeps_its_place_among_its_projects_sessions() {
+    let fixture = Fixture::new();
+    let now = util::now_secs();
+    let mut later = session(SESSION_B, "working", "runway", "/r/runway", now - 5000);
+    later["since"] = json!(now);
+    fixture.snapshot(json!([later]));
+    let mut note = json!({
+        "agent": "claude", "project": "runway", "cwd": "/r/runway", "title": "Fix the chart",
+        "idle_since": now - 100, "slept_at": now - 50, "remote": false, "started": now - 9000,
+    });
+    fixture.write(&format!("state/cockpit/asleep/{SESSION_A}"), &note.to_string());
+    let app = fixture.app();
+    let order: Vec<&str> = app.sessions.iter().map(|session| session.session.as_str()).collect();
+    assert_eq!(order, [SESSION_A, SESSION_B], "it started first, so it stays first even though it went idle last");
+    note.as_object_mut().unwrap().remove("started");
+    fixture.write(&format!("state/cockpit/asleep/{SESSION_A}"), &note.to_string());
+    let app = fixture.app();
+    assert_eq!(app.sessions.len(), 2, "a note without started still shows its card");
 }
 
 #[test]
@@ -1934,6 +1955,7 @@ fn asleep_cards_do_not_count_as_started_before_a_change() {
     let now = util::now_secs();
     asleep_note(&fixture, SESSION_A, now - 7200, now - 3600);
     let mut app = fixture.app();
+    assert!(app.sessions[0].started.is_some(), "the note carries a start time");
     app.start_files = vec![("greywall", now as f64)];
     app.build();
     let summary = app.panels[1].fixed_top.iter().map(|line| line.texts()).collect::<Vec<_>>().join("\n");

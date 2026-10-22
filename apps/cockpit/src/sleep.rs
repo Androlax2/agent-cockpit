@@ -26,15 +26,18 @@ pub struct Asleep {
     pub idle_since: i64,
     pub slept_at: i64,
     pub remote: bool,
+    /// When the process that fell asleep started: the card keeps its place among its siblings.
+    pub started: Option<i64>,
 }
 
 impl Asleep {
     /// The card that stands in for the session in the column: ready since it went idle, with no
-    /// terminal target until it wakes.
+    /// terminal target until it wakes. It is no process, so it never counts as started before a
+    /// change (sessions::changed_since_start).
     pub fn card(&self) -> Session {
         Session {
             session: self.session.clone(), state: "waiting".into(), project: self.project.clone(), cwd: self.cwd.clone(),
-            task: self.title.clone(), since: self.idle_since, agent: self.agent.clone(), asleep: Some(self.slept_at),
+            task: self.title.clone(), since: self.idle_since, started: self.started, agent: self.agent.clone(), asleep: Some(self.slept_at),
             facts: Facts { remote: self.remote, ..Facts::default() }, ..Session::default()
         }
     }
@@ -48,6 +51,7 @@ impl Asleep {
             project: text("project"), cwd: text("cwd"), title: text("title"),
             idle_since: seconds("idle_since")?, slept_at: seconds("slept_at")?,
             remote: note.get("remote").and_then(Value::as_bool).unwrap_or(false),
+            started: seconds("started"),
         })
     }
 }
@@ -190,7 +194,7 @@ mod tests {
     fn write_note(dir: &PathBuf, session: &str, slept_at: i64) {
         let note = serde_json::json!({
             "agent": "opencode", "project": "vitals", "cwd": "/home/theo/vitals", "title": "Fix the chart",
-            "idle_since": slept_at - HOUR_S, "slept_at": slept_at, "remote": true,
+            "idle_since": slept_at - HOUR_S, "slept_at": slept_at, "remote": true, "started": slept_at - 5 * HOUR_S,
         });
         fs::write(dir.join(session), note.to_string()).unwrap();
     }
@@ -237,6 +241,7 @@ mod tests {
         assert_eq!(card.session, "ses_3f2a9c0b1ffeQkTz8mWn4rJd2L");
         assert_eq!(card.asleep, Some(NOW));
         assert_eq!(card.since, NOW - HOUR_S);
+        assert_eq!(card.started, Some(NOW - 5 * HOUR_S));
         assert_eq!(card.task, "Fix the chart");
         assert_eq!(card.agent, "opencode");
         assert!(card.facts.remote);

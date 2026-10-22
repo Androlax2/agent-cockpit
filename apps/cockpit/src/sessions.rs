@@ -769,7 +769,7 @@ pub fn start_file_mtimes() -> Vec<(&'static str, f64)> {
 
 /// What changed after the session started, so it does not have it yet; none without a start time.
 pub fn changed_since_start(session: &Session, mtimes: &[(&'static str, f64)]) -> Vec<&'static str> {
-    let Some(started) = session.started else { return Vec::new() };
+    let Some(started) = session.started.filter(|_| session.asleep.is_none()) else { return Vec::new() };
     let reads = |label: &str| session.agent().start_files.contains(&label);
     mtimes.iter().filter(|(label, mtime)| *mtime > started as f64 && reads(label)).map(|(label, _)| *label).collect()
 }

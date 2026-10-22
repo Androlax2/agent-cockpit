@@ -3778,7 +3778,7 @@ impl Manager {
 
     fn with_idle_session_row(&self, changes: Value) {
         let mut row = json!({"session": SESSION_A, "state": "waiting", "project": "proj-a", "cwd": path_str(&self.project),
-            "tmux_pane": "%4", "task": "Fix the tests", "since": SLEEP_SINCE});
+            "tmux_pane": "%4", "task": "Fix the tests", "since": SLEEP_SINCE, "started": SLEEP_SINCE - 3600});
         for (field, value) in changes.as_object().unwrap() {
             row[field] = value.clone();
         }
@@ -3816,6 +3816,7 @@ fn sleep_writes_a_note_and_exits_without_ending_the_session() {
     assert_eq!(note["cwd"], path_str(&manager.project));
     assert_eq!(note["title"], "Fix the tests");
     assert_eq!(note["idle_since"], SLEEP_SINCE);
+    assert_eq!(note["started"], SLEEP_SINCE - 3600);
     assert_eq!(note["remote"], false);
     assert!(note["slept_at"].as_u64().unwrap().abs_diff(now_seconds()) < 60);
     assert_eq!(fs::metadata(manager.asleep_note(SESSION_A)).unwrap().permissions().mode() & 0o777, 0o600);
@@ -3823,6 +3824,19 @@ fn sleep_writes_a_note_and_exits_without_ending_the_session() {
     assert!(!manager.sandbox.state.join("cockpit/ended-sessions").exists());
     assert_eq!(fs::read_dir(manager.sandbox.state.join("cockpit/asleep")).unwrap().count(), 1, "only the note is left in the folder");
     assert!(manager.log_lines().iter().any(|line| line.contains("sleep: proj-a asleep after ")), "{:?}", manager.log_lines());
+}
+
+#[test]
+fn sleep_without_a_usable_start_time_still_sleeps_and_omits_it() {
+    for started in [json!(null), json!("soon")] {
+        let manager = Manager::new();
+        manager.with_idle_session();
+        manager.with_idle_session_row(json!({"started": started}));
+        let result = manager.sleep_with(SESSION_A, &[]);
+        assert_eq!(result.status.code(), Some(0), "{started}: {}", stderr(&result));
+        let note: Value = serde_json::from_str(&fs::read_to_string(manager.asleep_note(SESSION_A)).unwrap()).unwrap();
+        assert!(note.get("started").is_none(), "{started}: {note}");
+    }
 }
 
 #[test]
