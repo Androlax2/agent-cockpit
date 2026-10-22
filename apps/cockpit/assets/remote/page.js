@@ -811,51 +811,176 @@ async function renderStarter() {
                       labelControl("First message", prompt), label, buttons, note);
 }
 
-async function renderTodos(box) {
-  const [todos, choices, agentChoices] = await Promise.all([getJson("/api/todos"), projects(), getJson("/api/agents")]);
+// What the Todo tab keeps across its reloads: the project shown, the cards opened, the new task
+// being written.
+const KINDS = ["Task", "Feature", "Bug", "Improvement", "Chore", "Research"];
+const todoView = { project: null, openItems: new Set(), isAdding: false, draft: { project: "", kind: "task", text: "", notes: "" } };
+let armedDone = null; // the item whose Mark done waits for its second tap
+let todoReload = null;
+
+// The column applies the phone's changes within a second or two: the list follows a little later.
+function reloadTodosSoon() {
+  clearTimeout(todoReload);
+  todoReload = setTimeout(() => { if (tab === "todo") showTab("todo"); }, 2500);
+}
+
+function priorityMark(priority) {
+  if (priority > 2) return "!".repeat(priority - 2);
+  return priority < 2 ? "low" : "";
+}
+
+function projectFilter(todos, redraw) {
+  const counts = new Map();
+  for (const item of todos) counts.set(item.project, (counts.get(item.project) || 0) + 1);
+  const bar = element("div", "chips");
+  bar.setAttribute("role", "group");
+  bar.setAttribute("aria-label", "Show the items of");
+  const chip = (project, label, count) => {
+    const button = element("button", "chip", `${label} `);
+    button.append(element("span", "chip-count", String(count)));
+    button.setAttribute("aria-pressed", String(todoView.project === project));
+    button.onclick = () => { todoView.project = project; redraw(); };
+    return button;
+  };
+  bar.append(chip(null, "All", todos.length));
+  for (const [project, count] of [...counts].sort(([a], [b]) => a.localeCompare(b))) bar.append(chip(project, project, count));
+  return bar;
+}
+
+function todoComposer(choices, redraw) {
+  const draft = todoView.draft;
+  if (!todoView.isAdding) {
+    const open = element("button", "no", "+ New task");
+    open.onclick = () => {
+      todoView.isAdding = true;
+      if (todoView.project) draft.project = choices.find((project) => project.name === todoView.project)?.path || draft.project;
+      redraw();
+      document.querySelector("#work .todo-text")?.focus();
+    };
+    return [open];
+  }
   const picker = projectPicker(choices);
+  if (draft.project) picker.value = draft.project;
+  draft.project = picker.value;
+  picker.onchange = () => { draft.project = picker.value; };
+  const kind = element("select");
+  for (const label of KINDS) {
+    const option = element("option", "", label);
+    option.value = label.toLowerCase();
+    kind.append(option);
+  }
+  kind.value = draft.kind;
+  kind.onchange = () => { draft.kind = kind.value; };
   const text = element("input");
   text.placeholder = "A new item";
+  text.value = draft.text;
+  text.maxLength = 300;
+  text.oninput = () => { draft.text = text.value; };
   const notes = element("textarea");
   notes.placeholder = "Notes (optional)";
+  notes.value = draft.notes;
+  notes.oninput = () => { draft.notes = notes.value; };
   const note = element("div", "note");
   const add = element("button", "run", "Add");
-  add.onclick = async () => {
-    const result = await post("/api/todos", { project: picker.value, text: text.value, notes: notes.value }, note);
-    if (result.ok) { text.value = ""; notes.value = ""; setTimeout(() => { if (tab === "todo") showTab("todo"); }, 2500); }
+  const submit = async (event) => {
+    event?.preventDefault();
+    if (!text.value.trim()) { note.textContent = "Write the task first."; note.dataset.kind = "error"; text.focus(); return; }
+    add.disabled = true;
+    const result = await post("/api/todos", { project: picker.value, kind: kind.value, text: text.value, notes: notes.value }, note);
+    add.disabled = false;
+    if (!result.ok) return;
+    text.value = ""; notes.value = ""; draft.text = ""; draft.notes = "";
+    note.textContent = "Added. It shows in the list in a few seconds.";
+    text.focus();
+    reloadTodosSoon();
   };
-  const adding = element("div", "buttons");
-  adding.append(add);
-  const nodes = [element("h2", "", "Add a task"), labelControl("Project", picker), labelControl("Task", text),
-                 labelControl("Notes (optional)", notes), adding, note];
-  let shownProject = null;
-  if (todos.length === 0) nodes.push(element("div", "empty", "Nothing to do. Add a task above, then start it in a session."));
-  for (const item of [...todos].sort((a, b) => a.project.localeCompare(b.project))) {
-    if (item.project !== shownProject) { shownProject = item.project; nodes.push(element("h2", "", item.project)); }
-    const card = element("details", `card ${item.status === "doing" ? "working" : ""}`);
-    const summary = element("summary");
-    const row = element("span", "row");
-    row.append(element("span", "project", `${"!".repeat(Math.max(0, item.priority - 2))} ${item.text}`.trim()));
-    row.append(element("span", "state", item.status === "doing" ? "in progress" : ""));
-    summary.append(row);
-    card.append(summary);
-    const details = element("div");
-    if (item.notes) details.append(element("div", "notes", item.notes));
-    const itemNote = element("div", "note");
+  add.onclick = submit;
+  const close = element("button", "no", "Close");
+  close.onclick = () => { todoView.isAdding = false; redraw(); };
+  const buttons = element("div", "buttons");
+  buttons.append(close, add);
+  const form = element("form", "card composer-card");
+  form.onsubmit = submit;
+  const title = labelControl("Task", text);
+  text.classList.add("todo-text");
+  const pickers = element("div", "pair");
+  pickers.append(labelControl("Project", picker), labelControl("Kind", kind));
+  form.append(element("h2", "", "New task"), title, pickers, labelControl("Notes (optional)", notes), buttons, note);
+  return [form];
+}
+
+function todoCard(item, agentChoices, isAllProjects) {
+  const card = element("details", `card todo-card ${item.status === "doing" ? "working" : ""}`);
+  card.dataset.id = item.id;
+  card.open = todoView.openItems.has(item.id);
+  card.ontoggle = () => { if (card.open) todoView.openItems.add(item.id); else todoView.openItems.delete(item.id); };
+  const summary = element("summary");
+  summary.append(element("span", "todo-title", item.text));
+  const meta = element("span", "todo-meta");
+  const mark = priorityMark(item.priority);
+  if (mark) meta.append(element("span", item.priority > 2 ? "tag urgent" : "tag", mark === "low" ? "low" : `${mark} priority`));
+  if (item.kind !== "Task") meta.append(element("span", `tag kind-${(item.kind || "unknown").toLowerCase()}`, item.kind || "Unknown kind"));
+  if (isAllProjects) meta.append(element("span", "tag", item.project));
+  if (item.is_queued) meta.append(element("span", "tag", "queued"));
+  if (item.is_waiting) meta.append(element("span", "tag", "waiting on another item"));
+  if (item.notes) meta.append(element("span", "tag", "notes"));
+  if (meta.childElementCount) summary.append(meta);
+  card.append(summary);
+  const details = element("div", "todo-details");
+  if (item.notes) details.append(element("div", "notes", item.notes));
+  const itemNote = element("div", "note");
+  const buttons = element("div", "buttons");
+  const isArmed = armedDone === item.id;
+  const done = element("button", isArmed ? "armed" : "no", isArmed ? "Tap again: done" : "Mark done");
+  done.onclick = async () => {
+    if (armedDone !== item.id) { armedDone = item.id; done.textContent = "Tap again: done"; done.className = "armed"; return; }
+    armedDone = null;
+    done.disabled = true;
+    const result = await post(`/api/todos/${item.id}/done`, {}, itemNote);
+    if (!result.ok) { done.disabled = false; done.textContent = "Mark done"; done.className = "no"; return; }
+    card.classList.add("finished");
+    todoView.openItems.delete(item.id);
+    reloadTodosSoon();
+  };
+  buttons.append(done);
+  if (item.status !== "doing") {
     const agent = agentPicker(agentChoices);
     const start = element("button", "run", "Start in a new session");
-    start.onclick = async (event) => {
-      event.stopPropagation();
+    start.onclick = async () => {
+      start.disabled = true;
       const result = await post(`/api/todos/${item.id}/start`, { agent: agent.value }, itemNote);
-      if (result.ok) setTimeout(() => { if (tab === "todo") showTab("todo"); }, 2500);
+      start.disabled = false;
+      if (result.ok) reloadTodosSoon();
     };
-    const buttons = element("div", "buttons");
+    details.append(labelControl("Agent", agent));
     buttons.append(start);
-    details.append(labelControl("Agent", agent), buttons, itemNote);
-    card.append(details);
-    nodes.push(card);
-  }
-  box.replaceChildren(...nodes);
+  } else details.append(element("div", "task", "A session is on it. Find it under Sessions."));
+  details.append(buttons, itemNote);
+  card.append(details);
+  return card;
+}
+
+async function renderTodos(box) {
+  const [todos, choices, agentChoices] = await Promise.all([getJson("/api/todos"), projects(), getJson("/api/agents")]);
+  if (todoView.project && !todos.some((item) => item.project === todoView.project)) todoView.project = null;
+  const redraw = () => {
+    const shown = todos.filter((item) => todoView.project === null || item.project === todoView.project);
+    const inProgress = shown.filter((item) => item.status === "doing");
+    const toDo = shown.filter((item) => item.status !== "doing");
+    const nodes = [element("p", "overview", todos.length === 0 ? "Nothing open."
+      : `${toDo.length} to do · ${inProgress.length} in progress${todoView.project ? ` in ${todoView.project}` : ""}`)];
+    if (todos.length > 0) nodes.push(projectFilter(todos, redraw));
+    nodes.push(...todoComposer(choices, redraw));
+    if (todos.length === 0) nodes.push(element("div", "empty", "Nothing to do. Add a task, then start it in a session."));
+    const isAllProjects = todoView.project === null;
+    for (const [heading, items] of [["In progress", inProgress], ["To do", toDo]]) {
+      if (items.length === 0) continue;
+      nodes.push(element("h2", "", `${heading} · ${items.length}`));
+      nodes.push(...items.map((item) => todoCard(item, agentChoices, isAllProjects)));
+    }
+    box.replaceChildren(...nodes);
+  };
+  redraw();
 }
 
 const CI_LOOK = { failing: ["request", "✗ checks failing"], pending: ["task", "◌ checks running"], passing: ["outcome", "✓ checks pass"] };

@@ -173,7 +173,11 @@ fn handle(mut request: Request) {
         (Method::Post, ["api", "todos"]) => {
             let body = body_json(&mut request).unwrap_or(json!({}));
             let field = |name: &str| body.get(name).and_then(Value::as_str).unwrap_or("").to_string();
-            outcome(request, remote::add_todo(&field("project"), &field("text"), &field("notes")));
+            outcome(request, remote::add_todo(&field("project"), &field("text"), &field("notes"), &field("kind")));
+        }
+        (Method::Post, ["api", "todos", id, "done"]) if is_todo_id(id) => {
+            let id = id.to_string();
+            outcome(request, remote::finish_todo(&id));
         }
         (Method::Post, ["api", "todos", id, "start"]) if is_todo_id(id) => {
             let id = id.to_string();

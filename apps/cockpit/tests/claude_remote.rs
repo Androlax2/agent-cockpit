@@ -863,6 +863,65 @@ fn starting_an_item_hands_it_to_a_new_clone_and_marks_it_in_progress() {
 }
 
 #[test]
+fn an_item_added_from_the_phone_keeps_its_kind() {
+    let remote = Remote::start();
+    let secret = remote.paired();
+    let directory = remote.project("shop");
+    let (status, answer) = remote.post_json(&secret, "/api/todos", json!({"project": directory, "text": "Cart total", "kind": "bug"}));
+    assert_eq!(status, 200, "{answer}");
+    assert_eq!(remote.todo_updates()[0]["category"].as_str(), Some("bug"));
+}
+
+#[test]
+fn an_unknown_kind_is_refused() {
+    let remote = Remote::start();
+    let secret = remote.paired();
+    let directory = remote.project("shop");
+    let (status, answer) = remote.post_json(&secret, "/api/todos", json!({"project": directory, "text": "Cart total", "kind": "epic"}));
+    assert_ne!(status, 200, "{answer}");
+    assert!(remote.todo_updates().is_empty());
+}
+
+#[test]
+fn the_listed_items_carry_their_kind_and_queue() {
+    let remote = Remote::start();
+    let secret = remote.paired();
+    let todo = remote.sandbox.state.join("cockpit/todo.json");
+    fs::create_dir_all(todo.parent().unwrap()).unwrap();
+    fs::write(&todo, json!({"items": [{"id": "aaaa1111", "project": "shop", "cwd": "/x", "text": "open one", "status": "todo",
+                                       "category": "bug", "created": 1}], "queued": ["aaaa1111"]}).to_string()).unwrap();
+    let todos = remote.get_json(&secret, "/api/todos");
+    assert_eq!((todos[0]["kind"].as_str(), todos[0]["is_queued"].as_bool()), (Some("Bug"), Some(true)), "{todos}");
+}
+
+#[test]
+fn marking_an_item_done_goes_through_the_columns_update_queue() {
+    let remote = Remote::start();
+    let secret = remote.paired();
+    let directory = remote.project("shop");
+    let todo = remote.sandbox.state.join("cockpit/todo.json");
+    fs::create_dir_all(todo.parent().unwrap()).unwrap();
+    fs::write(&todo, json!({"items": [{"id": "aaaa1111", "project": "shop", "cwd": directory, "text": "Cache the cart", "status": "doing", "created": 1}]}).to_string()).unwrap();
+    let (status, answer) = remote.post_json(&secret, "/api/todos/aaaa1111/done", json!({}));
+    assert_eq!(status, 200, "{answer}");
+    let updates = remote.todo_updates();
+    assert_eq!((updates[0]["action"].as_str(), updates[0]["id"].as_str(), updates[0]["started_in"].as_str()),
+               (Some("done"), Some("aaaa1111"), Some(directory.as_str())));
+}
+
+#[test]
+fn a_done_item_cannot_be_marked_done_again() {
+    let remote = Remote::start();
+    let secret = remote.paired();
+    let todo = remote.sandbox.state.join("cockpit/todo.json");
+    fs::create_dir_all(todo.parent().unwrap()).unwrap();
+    fs::write(&todo, json!({"items": [{"id": "aaaa1111", "project": "shop", "cwd": "/x", "text": "finished", "status": "done", "created": 1}]}).to_string()).unwrap();
+    let (status, answer) = remote.post_json(&secret, "/api/todos/aaaa1111/done", json!({}));
+    assert_ne!(status, 200, "{answer}");
+    assert!(remote.todo_updates().is_empty());
+}
+
+#[test]
 fn the_usage_reads_the_columns_cache() {
     let remote = Remote::start();
     let secret = remote.paired();

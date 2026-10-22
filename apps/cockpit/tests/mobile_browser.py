@@ -217,7 +217,7 @@ class MobileBrowserTests(unittest.TestCase):
 
     def test_all_work_tabs_load(self):
         self.open_paired()
-        for label, heading in [("Todo", "Add"), ("Pull requests", "No open pull request."), ("Usage", "Cost estimate (API prices)")]:
+        for label, heading in [("Todo", "New task"), ("Pull requests", "No open pull request."), ("Usage", "Cost estimate (API prices)")]:
             with self.subTest(tab=label):
                 self.page.get_by_role("button", name=label, exact=True).tap()
                 expect(self.page.locator("#work")).to_contain_text(heading)
@@ -295,13 +295,53 @@ class MobileBrowserTests(unittest.TestCase):
     def test_todo_creation_reaches_the_update_queue(self):
         self.open_paired()
         self.page.get_by_role("button", name="Todo", exact=True).tap()
+        self.page.get_by_role("button", name="+ New task", exact=True).tap()
         self.page.get_by_placeholder("A new item").fill("Fix cart")
+        self.page.get_by_label("Kind", exact=True).select_option("bug")
         self.page.get_by_placeholder("Notes (optional)").fill("Phone regression")
         with self.page.expect_response("**/api/todos"):
             self.page.get_by_role("button", name="Add", exact=True).tap()
-        updates = (self.runtime / "claude-todo-updates.jsonl").read_text().splitlines()
-        self.assertEqual(json.loads(updates[0])["text"], "Fix cart")
+        update = json.loads((self.runtime / "claude-todo-updates.jsonl").read_text().splitlines()[0])
+        self.assertEqual((update["text"], update["category"]), ("Fix cart", "bug"))
         expect(self.page.get_by_placeholder("A new item")).to_have_value("")
+
+    def todo_items(self, items):
+        todo = self.state / "cockpit/todo.json"
+        todo.parent.mkdir(parents=True)
+        todo.write_text(json.dumps({"items": [dict({"cwd": str(self.project), "status": "todo", "created": 1}, **item) for item in items]}))
+
+    def test_marking_a_todo_done_takes_two_taps(self):
+        self.todo_items([{"id": "aaaa1111", "project": "shop", "text": "Fix cart"}])
+        self.open_paired()
+        self.page.get_by_role("button", name="Todo", exact=True).tap()
+        self.page.locator("#work .todo-card summary").tap()
+        self.page.get_by_role("button", name="Mark done", exact=True).tap()
+        self.assertFalse((self.runtime / "claude-todo-updates.jsonl").exists())
+        with self.page.expect_response("**/api/todos/aaaa1111/done"):
+            self.page.get_by_role("button", name="Tap again: done", exact=True).tap()
+        update = json.loads((self.runtime / "claude-todo-updates.jsonl").read_text().splitlines()[0])
+        self.assertEqual((update["action"], update["id"]), ("done", "aaaa1111"))
+
+    def test_the_project_filter_shows_only_its_items(self):
+        other = self.home / "IdeaProjects/blog"
+        other.mkdir(parents=True)
+        self.todo_items([{"id": "aaaa1111", "project": "shop", "text": "Fix cart"},
+                         {"id": "bbbb2222", "project": "blog", "cwd": str(other), "text": "Write post"}])
+        self.open_paired()
+        self.page.get_by_role("button", name="Todo", exact=True).tap()
+        expect(self.page.locator("#work .todo-card")).to_have_count(2)
+        self.page.get_by_role("button", name=re.compile("^blog")).tap()
+        expect(self.page.locator("#work .todo-card")).to_have_count(1)
+        expect(self.page.locator("#work .todo-card")).to_contain_text("Write post")
+
+    def test_items_in_progress_come_first_and_cannot_start_again(self):
+        self.todo_items([{"id": "aaaa1111", "project": "shop", "text": "Fix cart"},
+                         {"id": "bbbb2222", "project": "shop", "text": "Ship tax", "status": "doing"}])
+        self.open_paired()
+        self.page.get_by_role("button", name="Todo", exact=True).tap()
+        expect(self.page.locator("#work h2").first).to_have_text("In progress · 1")
+        self.page.locator("#work .todo-card summary").first.tap()
+        expect(self.page.locator("#work .todo-card").first.get_by_role("button", name="Start in a new session")).to_have_count(0)
 
     def test_a_todo_starts_with_the_selected_agent(self):
         todo = self.state / "cockpit/todo.json"
@@ -530,13 +570,10 @@ class MobileBrowserTests(unittest.TestCase):
             self.page.locator("#list .card").tap()
             expect(self.page.locator("#screen")).to_contain_text("Ready")
             self.page.screenshot(path=str(Path(folder) / "detail.png"), full_page=True)
-            for label, content in [("Todo", "A new item"), ("Pull requests", "No open pull request."),
+            for label, content in [("Todo", "New task"), ("Pull requests", "No open pull request."),
                                    ("Usage", "Cost estimate (API prices)")]:
                 self.page.get_by_role("button", name=label, exact=True).tap()
-                if label == "Todo":
-                    expect(self.page.get_by_placeholder(content)).to_be_visible()
-                else:
-                    expect(self.page.locator("#work")).to_contain_text(content)
+                expect(self.page.locator("#work")).to_contain_text(content)
                 self.page.screenshot(path=str(Path(folder) / f"{label.lower().replace(' ', '-')}.png"), full_page=True)
 
 

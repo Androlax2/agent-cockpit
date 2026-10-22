@@ -760,6 +760,8 @@ pub fn todos() -> Vec<Value> {
         todo::Entry::Typed(item) => Some(json!({
             "id": item.id(), "project": item.project(), "text": item.text(), "notes": item.notes(),
             "status": item.status(), "priority": item.priority(),
+            "kind": item.category().map(todo::Category::label), "is_queued": list.queued.contains(&item.id()),
+            "is_waiting": item.is_waiting(),
         })),
         todo::Entry::Issue { .. } => None,
     }).collect()
@@ -774,11 +776,16 @@ fn queue_todo_update(update: Value) -> Result<(), String> {
 }
 
 /// A new item in a project's list (the column adds it within a second or two).
-pub fn add_todo(project: &str, text: &str, notes: &str) -> Result<String, String> {
+pub fn add_todo(project: &str, text: &str, notes: &str, kind: &str) -> Result<String, String> {
     let directory = known_project(project)?;
     let text = one_line(text, "an item")?;
+    // A page loaded before kinds existed sends none: Task, as the panel's t starts with.
+    let category = if kind.is_empty() { Some(todo::Category::Task) } else { todo::Category::parse(kind) };
+    let category = category.ok_or_else(|| {
+        format!("which kind? one of {}", todo::Category::ALL.map(todo::Category::as_str).join(", "))
+    })?;
     queue_todo_update(json!({"action": "add", "started_in": directory, "cwd": directory, "text": text,
-                             "notes": todo::multiline(notes, MESSAGE_MAX), "session": "the phone"}))?;
+                             "notes": todo::multiline(notes, MESSAGE_MAX), "category": category.as_str(), "session": "the phone"}))?;
     audit::record("remote", "remote.todo_added", "ok", json!({"project": directory, "text": audit::fingerprint(&text)}));
     Ok("added".into())
 }
@@ -801,6 +808,19 @@ pub fn start_todo(id: &str, agent: &str) -> Result<String, String> {
     queue_todo_update(json!({"action": "doing", "id": id, "started_in": directory}))?;
     audit::record("remote", "remote.todo_started", "ok", json!({"id": id, "project": directory, "agent": agent}));
     Ok(format!("starting a new session in a clone of {} (branch {branch})", util::project_name(&directory)))
+}
+
+/// An item marked done (the Todo panel's d), through the column's queue.
+pub fn finish_todo(id: &str) -> Result<String, String> {
+    let list = todo::TodoList::load();
+    let item = list.items.iter().find(|item| item.id() == id).ok_or("no such item")?;
+    if !matches!(item.status().as_str(), "todo" | "doing") {
+        return Err("only an item to do or in progress can be marked done".into());
+    }
+    let directory = util::start_directory(&item.cwd())?;
+    queue_todo_update(json!({"action": "done", "id": id, "started_in": directory, "session": "the phone"}))?;
+    audit::record("remote", "remote.todo_done", "ok", json!({"id": id, "project": directory}));
+    Ok("marked done".into())
 }
 
 /// The open pull requests of the repositories sessions run in (or the review requests), fetched
