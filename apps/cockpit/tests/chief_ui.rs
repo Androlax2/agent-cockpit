@@ -153,6 +153,30 @@ fn root_cancel_restores_focus_and_tab_does_not_submit() {
     app.handle(Key::Char('n'),&mut screen); assert!(host.mutations().is_empty());
 }
 #[test]
+fn suspended_chief_cycles_all_four_panels_without_retaining_confirmation() {
+    for (key, cycles) in [
+        (Key::Tab, [[2,3,4,1], [3,4,1,2], [4,1,2,3], [1,2,3,4]]),
+        (Key::BackTab, [[4,3,2,1], [1,4,3,2], [2,1,4,3], [3,2,1,4]]),
+    ] {
+        for (index, cycle) in cycles.iter().enumerate() {
+            let host=Host::new(vec![proposal("p1",1)]); let (mut app,mut screen)=host.open();
+            awaiting(&mut app,&mut screen);
+            keys(&mut app,&mut screen,&[Key::Char(' '),Key::Char('a'),Key::Enter]);
+            app.focus=index+1;
+            for expected in cycle {
+                app.handle(key.clone(),&mut screen);
+                assert_eq!(app.focus,*expected,"{key:?} from panel {}",index+1);
+                assert!(host.mutations().is_empty());
+            }
+            screen.picks.push_back("-\tchief".into()); app.handle(Key::Char(':'),&mut screen);
+            app.handle(Key::Char('y'),&mut screen);
+            assert!(host.mutations().is_empty(),"suspended confirmation must be reset");
+            app.handle(Key::Esc,&mut screen);
+            assert_eq!(app.focus,index+1,"closing Chief restores the ordinary panel");
+        }
+    }
+}
+#[test]
 fn summary_request_does_not_enable_progress_notifications() {
     let host=Host::new(vec![json!({"kind":"summary","state":"completed","last_completed_at_ms":12345,
         "last_result":{"provenance":"chief_narrative_unverified","sections":{"completed":"Worker claim only"},"references":[]}})]);

@@ -286,6 +286,18 @@ pub fn qa_brief_text(standing: &str, handoff: &Value, findings: &[String]) -> St
     };
     let report = serde_json::json!({"action": "send", "message": {"task": handoff["task"], "submission_key": "<a new key: letters, digits, - or _>",
         "recipient": "<the Developer's session_id from cockpit-team context>", "kind": "findings", "handoff_id": handoff["id"], "body": "<what you found>"}});
+    let reporting = if handoff["structured_qa_required"] == true {
+        let result = serde_json::json!({"action":"qa_result","result":{"task":handoff["task"],
+            "submission_key":"<a new key: letters, digits, - or _>","handoff_id":handoff["id"],
+            "verdict":"<pass or findings>","tests":[],"findings":"<what you found>"}});
+        format!("This exact handoff requires structured QA evidence. Replace verdict with pass or findings based on your actual review; list only actual checks in tests. This is a reviewer attestation, not independently proven test execution.\n\
+                 Publish the structured result successfully (evidence_id returned) BEFORE sending terminal findings. The chained command stops if publication fails: keep the error visible, report the publication blocker, and do not send terminal findings or claim the review reporting is complete.\n\
+                 printf '%s' '{result}' | cockpit-team qa-result &&\n\
+                 printf '%s' '{report}' | cockpit-team send")
+    } else {
+        format!("Report your findings with:\n\
+                 printf '%s' '{report}' | cockpit-team send")
+    };
     format!("You are this team's QA (Cockpit team, task {task}). Review exactly commit {commit} (branch {branch}): this folder is a fresh copy at it.\n\
              Check behavior, accessibility and design fidelity; do not change product code.\n\
              Work only on this review: do not claim, start or complete todo items, take unrelated work, or apply changes.\n\
@@ -295,8 +307,7 @@ pub fn qa_brief_text(standing: &str, handoff: &Value, findings: &[String]) -> St
              permissions, Git writes, merges or releases.\n\
              QA instructions written by your team's agent:\n{standing}\n\n\
              Developer's summary: {summary}\nDeveloper's tests: {tests}\nFigCraft frames: {frames}\nWhat earlier QA rounds found:\n{earlier}\n\n\
-             Report your findings with:\n\
-             printf '%s' '{report}' | cockpit-team send",
+              {reporting}",
         task = handoff["task"]["task_id"].as_str().unwrap_or("?"), commit = text("commit"), branch = text("branch"), summary = text("summary"),
         tests = text("tests"), frames = if frames.is_empty() { "none".into() } else { frames.join(", ") })
 }

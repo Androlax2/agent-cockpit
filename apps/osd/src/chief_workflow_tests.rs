@@ -645,3 +645,156 @@ fn chief_workflow_records_real_gate_producers_before_cross_project_dispatch_with
         assert!(bench.world.borrow().started.is_empty(), "no recruitment/host execution is allowed");
     }
 }
+
+// Execute the generated report contract with the real CLI and authenticated daemon routes.
+// Only process identity and detached terminal launch are controlled fixture boundaries.
+fn team_cli_script(bench: &mut Bench, peer: u32, script: &str) -> (std::process::Output, Vec<(String, i64)>) {
+    let binary = std::env::current_exe().unwrap().parent().unwrap().parent().unwrap().join("cockpit-team");
+    let shims = bench.fixture.root.join("report-bin");
+    fs::create_dir_all(&shims).unwrap();
+    if !shims.join("cockpit-team").exists() { std::os::unix::fs::symlink(binary, shims.join("cockpit-team")).unwrap(); }
+    let socket = bench.fixture.root.join(format!("report-{}.sock",cockpit::util::token_hex(4)));
+    let listener = UnixListener::bind(&socket).unwrap(); listener.set_nonblocking(true).unwrap();
+    let answers = bench.fixture.answers("teams");
+    cockpit::teams::client::publish_socket(&socket, answers.parent().unwrap()).unwrap();
+    let runtime = bench.world.borrow().sender_runtimes[&peer].clone();
+    let mut child = Command::new("bash").args(["-c",script])
+        .env("CLAUDE_ANSWERS_KEY",ANSWERS_KEY)
+        .env("PATH",format!("{}:{}",shims.display(),std::env::var("PATH").unwrap()))
+        .stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    let deadline = std::time::Instant::now()+std::time::Duration::from_secs(10);
+    let mut requests = Vec::new();
+    loop {
+        if let Ok((mut stream,_)) = listener.accept() {
+            stream.set_read_timeout(Some(std::time::Duration::from_secs(2))).unwrap();
+            let process = crate::fifo::peer_pid(&stream).unwrap();
+            bench.world.borrow_mut().sender_runtimes.insert(process,runtime.clone());
+            let mut wire = String::new(); stream.read_to_string(&mut wire).unwrap();
+            let payload: Value = serde_json::from_str(&wire).unwrap();
+            // A separate connection observes committed evidence before the terminal send arrives.
+            let durable = cockpit::teams::store::Connection::open(cockpit::paths::team_database()).unwrap()
+                .query_row("SELECT count(*) FROM chief_evidence WHERE source='qa'",[],|row|row.get(0)).unwrap();
+            requests.push((payload["action"].as_str().unwrap().into(),durable));
+            let reply = crate::teams::request(&mut bench.registry,process,serde_json::from_value(payload).unwrap())
+                .unwrap_or_else(|error|cockpit::teams::TeamReply {request_id:"fixture-error".into(),result:Err(error)});
+            stream.write_all(serde_json::to_string(&reply).unwrap().as_bytes()).unwrap();
+            bench.world.borrow_mut().sender_runtimes.remove(&process);
+        }
+        if child.try_wait().unwrap().is_some() {break;}
+        if std::time::Instant::now()>deadline {child.kill().unwrap();panic!("team CLI fixture timed out");}
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    (child.wait_with_output().unwrap(),requests)
+}
+
+fn team_cli_action(bench: &mut Bench, peer: u32, verb: &str, action: Value) -> Value {
+    let (output,_) = team_cli_script(bench,peer,&format!("printf '%s' '{}' | cockpit-team {verb}",action));
+    assert!(output.status.success(),"{}",String::from_utf8_lossy(&output.stderr));
+    assert!(output.stderr.is_empty(),"{}",String::from_utf8_lossy(&output.stderr));
+    serde_json::from_slice(&output.stdout).unwrap()
+}
+
+fn spawned_qa_report_contract(chief_bound: bool) -> (Bench, String, Option<(WorkRef, WorkRef)>) {
+    let mut bench = team_bench(); report_launches(&mut bench);
+    bench.world.borrow_mut().default_agent=Some("claude".into());
+    let task=TaskKey {project:verified(&mut bench,WORKER_A).project,task_id:"1d3fd318".into()};
+    team_cli_action(&mut bench,40,"recruit",json!({"action":"recruit","recruitment":{
+        "task":task,"submission_key":"report-recruit","role":"developer","reason":"Review the exact task",
+        "recruits":[{"role":"qa","brief":"Review only this task"}]}}));
+    let works = if chief_bound {
+        fresh_facts(&mut bench);
+        verify_admission(&mut bench,OPENCODE_SESSION);
+        let chief=verified(&mut bench,OPENCODE_SESSION);
+        host(&mut bench,ChiefHostAction::Enable {request_id:"report-enable".into(),session:chief});
+        assert_eq!(native_inbox(&mut bench,20,OPENCODE_SESSION).len(),1);
+        let pending=proposal(&mut bench,20,"report-work",WorkProposal {task:task.clone(),brief:"Exact reviewed work".into(),
+            role:Role::Developer,prerequisites:vec![],gates:vec![GateRequirement {kind:GateKind::Qa,source:"qa".into(),expected:json!({"commit":COMMIT})}]});
+        let parent=approve(&mut bench,&pending,"report-approve",false);
+        let dependent_project=verified(&mut bench,WORKER_B).project;
+        let pending=proposal(&mut bench,20,"report-dependent",WorkProposal {
+            task:TaskKey {project:dependent_project,task_id:"2d3fd318".into()},brief:"Dependent waits for exact QA".into(),
+            role:Role::Developer,prerequisites:vec![parent.work.clone()],gates:vec![GateRequirement {kind:GateKind::Tests,source:"host_attestation".into(),expected:json!({"commit":COMMIT})}]});
+        let dependent=approve(&mut bench,&pending,"report-dependent-approve",false);
+        host(&mut bench,ChiefHostAction::AttestEvidence {request_id:"report-dependent-evidence".into(),evidence:Evidence {
+            id:"report-dependent-proof".into(),work:dependent.work.clone(),kind:GateKind::Tests,commit:COMMIT.into(),source:"host_attestation".into(),
+            result:json!({"passed":true,"note":"Controlled host attestation fixture, not QA test prose"})}});
+        assert_eq!(work_state(&mut bench,&dependent.work),"approved");
+        Some((parent.work,dependent.work))
+    } else {None};
+    let folder=bench.registry.sessions[WORKER_A].cwd.clone();
+    team_cli_action(&mut bench,40,"handoff",json!({"action":"handoff","handoff":{
+        "task":task,"submission_key":"report-handoff","branch":"feature/report","commit":COMMIT,"checkout":folder,
+        "summary":"Exact implementation","tests":"Worker prose is not proof","figcraft":[]}}));
+    let start=started(&bench).into_iter().find(|command|command.get(5).is_some_and(|role|role=="qa")).unwrap();
+    assert_eq!(start[7],COMMIT);
+    spawned_session_reports(&mut bench,43,NEW_SESSION,&start[4]);
+    assert_eq!(role_of(&mut bench,NEW_SESSION).as_deref(),Some("qa"));
+    (bench,start[8].clone(),works)
+}
+
+fn filled_report_script(brief: &str, verdict: &str) -> String {
+    brief.lines().filter(|line|line.starts_with("printf ")).collect::<Vec<_>>().join("\n")
+        .replace("<a new key: letters, digits, - or _>","final-report")
+        .replace("<the Developer's session_id from cockpit-team context>",WORKER_A)
+        .replace("<pass or findings>",verdict)
+        .replace("<what you found>","Reviewed exact commit; worker test prose is not execution proof")
+}
+
+#[test]
+fn spawned_chief_qa_publishes_structured_verdict_before_terminal_findings_and_dependency_progress() {
+    for verdict in ["pass","findings"] {
+        let (mut bench,brief,works)=spawned_qa_report_contract(true);
+        let (parent,dependent)=works.unwrap();
+        let script=filled_report_script(&brief,verdict);
+        let (output,requests)=team_cli_script(&mut bench,43,&script);
+        assert!(output.status.success(),"{}",String::from_utf8_lossy(&output.stderr));
+        assert_eq!(requests,vec![("qa_result".into(),0),("send".into(),1)],"durable QA must precede terminal send");
+        assert!(output.stderr.is_empty());
+        let evidence=snapshot(&mut bench)["records"].as_array().unwrap().iter()
+            .find(|record|record["kind"]=="evidence" && record["source"]=="qa").unwrap().clone();
+        assert_eq!(evidence["work"],json!(parent)); assert_eq!(evidence["commit"],COMMIT);
+        assert_eq!(evidence["result"]["verdict"],verdict);
+        assert_eq!(evidence["result"]["reviewer"],NEW_SESSION);
+        assert_eq!(evidence["result"]["provenance"],"approved_reviewer_attestation_not_test_execution");
+        assert_eq!(count(&bench,"SELECT count(*) FROM chief_evidence WHERE kind='tests' AND source='qa'"),0);
+        assert_eq!(work_state(&mut bench,&parent),if verdict=="pass" {"completed"} else {"approved"});
+        assert_eq!(work_state(&mut bench,&dependent),if verdict=="pass" {"completed"} else {"approved"});
+        crate::teams::host_snapshot(&mut bench.registry).unwrap();
+        assert!(started(&bench).contains(&vec!["cockpit".into(),"exit".into(),NEW_SESSION.into()]));
+        // The QA runtime has exited; its committed final message still reaches the Developer.
+        bench.world.borrow_mut().sender_runtimes.remove(&43);
+        bench.world.borrow_mut().live_ids.remove(NEW_SESSION);
+        let delivery=crate::teams::request(&mut bench.registry,40,AgentAction::Receive).unwrap().result.unwrap();
+        assert_eq!(delivery["envelope"]["kind"],"findings");
+        assert_eq!(delivery["envelope"]["handoff"]["id"],evidence["result"]["handoff_id"]);
+        assert!(delivery["envelope"]["body"].as_str().unwrap().contains("not execution proof"));
+    }
+}
+
+#[test]
+fn failed_spawned_chief_qa_publication_is_visible_and_does_not_send_terminal_findings() {
+    let (mut bench,brief,works)=spawned_qa_report_contract(true);
+    let handoff: String=bench.registry.teams.as_ref().unwrap().query_row("SELECT handoff_id FROM spawns WHERE session_id=?1",[NEW_SESSION],|row|row.get(0)).unwrap();
+    let script=filled_report_script(&brief,"pass").replace(&handoff,&"0".repeat(32));
+    let (output,requests)=team_cli_script(&mut bench,43,&script);
+    assert!(!output.status.success(),"a failed structured report must fail the generated sequence");
+    assert!(!output.stderr.is_empty(),"publication failure must be visible");
+    assert_eq!(requests,vec![("qa_result".into(),0)]);
+    crate::teams::host_snapshot(&mut bench.registry).unwrap();
+    assert_eq!(count(&bench,"SELECT count(*) FROM chief_evidence WHERE source='qa'"),0);
+    assert_eq!(count(&bench,"SELECT count(*) FROM messages WHERE json_extract(envelope,'$.kind')='findings'"),0);
+    assert!(!started(&bench).iter().any(|command|command.get(1).is_some_and(|verb|verb=="exit")));
+    let (parent,dependent)=works.unwrap();
+    assert_eq!(work_state(&mut bench,&parent),"approved"); assert_eq!(work_state(&mut bench,&dependent),"approved");
+}
+
+#[test]
+fn ordinary_spawned_qa_keeps_findings_only_reporting_and_automatic_exit() {
+    let (mut bench,brief,_)=spawned_qa_report_contract(false);
+    let (output,requests)=team_cli_script(&mut bench,43,&filled_report_script(&brief,"pass"));
+    assert!(output.status.success(),"{}",String::from_utf8_lossy(&output.stderr));
+    assert_eq!(requests,vec![("send".into(),0)]);
+    crate::teams::host_snapshot(&mut bench.registry).unwrap();
+    assert!(started(&bench).contains(&vec!["cockpit".into(),"exit".into(),NEW_SESSION.into()]));
+    assert_eq!(count(&bench,"SELECT count(*) FROM chief_evidence"),0);
+}

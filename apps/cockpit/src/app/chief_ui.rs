@@ -51,7 +51,7 @@ impl App {
         let Some(view)=self.chief_view.as_mut() else {return false};
         if matches!(key,Key::Tab|Key::BackTab) {
             view.suspend();
-            self.focus_panel(if key==Key::Tab {if self.focus==0 {1} else {self.focus%3+1}} else if self.focus<=1 {3} else {self.focus-1});
+            self.focus_panel(if key==Key::Tab {if self.focus==0 {1} else {self.focus%(PANEL_NAMES.len()-1)+1}} else if self.focus<=1 {PANEL_NAMES.len()-1} else {self.focus-1});
             return true;
         }
         if view.suspended {return false;}

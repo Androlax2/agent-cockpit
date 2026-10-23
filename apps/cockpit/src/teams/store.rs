@@ -789,6 +789,8 @@ fn spawn_qa(transaction: &Connection, task_key: &str, handoff_id: &str, commit: 
     let findings: Vec<String> = findings.query_map([task_key], |row| row.get::<_, String>(0))?.collect::<Result<_, _>>()?;
     let mut reference = handoff_reference(transaction, task_key, handoff_id)?;
     reference["task"] = serde_json::from_str(task_key)?;
+    reference["structured_qa_required"] = transaction.query_row("SELECT EXISTS(SELECT 1 FROM chief_handoffs WHERE handoff_id=?1)",
+        [handoff_id], |row| row.get::<_, bool>(0))?.into();
     transaction.execute("INSERT INTO spawns (token,task_key,role,agent,directory,commit_id,brief,handoff_id,status,created_at) VALUES (?1,?2,'qa',?3,?4,?5,?6,?7,'pending',?8)",
         params![identifier()?, task_key, agent, folder, commit, super::qa_brief_text(&standing, &reference, &findings), handoff_id, now_ms])?;
     Ok(true)
