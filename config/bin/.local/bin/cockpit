@@ -2411,7 +2411,10 @@ close_shipped_todos() { # live commit-before-the-apply
             echo "Ignored the trailer \"Todo: $(cat -v <<< "$trailer")\": not an item id (8 hex characters)." >&2
             continue
         fi
-        if ! jq -nc --arg id "$trailer" --arg folder "$1" '{action: "done", id: $id, started_in: $folder}' >> "$queue"; then
+        if ! (
+            flock -x 9 || exit 1
+            jq -nc --arg id "$trailer" --arg folder "$1" '{action: "done", id: $id, started_in: $folder}' >> "$queue"
+        ) 9>"$queue.lock"; then
             echo "Could not mark todo $trailer done: cockpit-todo done $trailer" >&2
             continue
         fi

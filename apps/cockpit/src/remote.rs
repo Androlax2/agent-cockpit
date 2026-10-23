@@ -817,9 +817,7 @@ pub fn todos() -> Vec<Value> {
 /// A change for the todo list, through the queue the column applies (claude-todo's), so the
 /// column stays the only writer of todo.json. `started_in` is the project's folder.
 fn queue_todo_update(update: Value) -> Result<(), String> {
-    let path = paths::todo_updates();
-    let mut file = OpenOptions::new().create(true).append(true).mode(0o600).open(&path).map_err(|error| format!("{}: {error}", path.display()))?;
-    writeln!(file, "{update}").map_err(|error| error.to_string())
+    crate::todo_requests::append_update(&update)
 }
 
 /// A new item in a project's list (the column adds it within a second or two).

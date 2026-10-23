@@ -915,15 +915,16 @@ impl TodoList {
         let mut lines = String::new();
         for path in queues {
             if !path.exists() { continue; }
-            let taken = path.with_extension(format!("jsonl.{}", std::process::id()));
-            match fs::rename(&path, &taken).and_then(|_| fs::read_to_string(&taken)) {
+            match crate::todo_requests::take_updates(&path) {
                 Ok(text) => {
                     lines.push_str(&text);
                     if !text.is_empty() && !text.ends_with('\n') { lines.push('\n'); }
                 }
-                Err(_) => continue,
+                Err(error) => {
+                    util::log_event("WARN", &format!("cannot take todo updates: {error}"));
+                    continue;
+                }
             }
-            let _ = fs::remove_file(&taken);
         }
         let line_count = lines.lines().count();
         if line_count > APPLY_MAX_LINES {

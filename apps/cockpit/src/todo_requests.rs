@@ -2,7 +2,39 @@
 
 use crate::{approval, paths, util};
 use serde_json::{Map, Value, json};
-use std::{fs, io::Write, path::PathBuf};
+use std::{fs, io::{self, Write}, os::{fd::AsRawFd, unix::fs::OpenOptionsExt}, path::{Path, PathBuf}};
+
+fn lock_queue(path: &Path) -> io::Result<fs::File> {
+    let mut lock_path = path.as_os_str().to_os_string();
+    lock_path.push(".lock");
+    let lock = fs::OpenOptions::new().create(true).write(true).truncate(false).mode(0o600).open(lock_path)?;
+    if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) } != 0 { return Err(io::Error::last_os_error()); }
+    Ok(lock)
+}
+
+/// All host writers share this lock with extraction: no fragmented records or writes to a taken inode.
+pub fn append_update(request: &Value) -> Result<(), String> {
+    let path = paths::todo_updates();
+    let _lock = lock_queue(&path).map_err(|error| format!("cannot lock todo queue: {error}"))?;
+    let mut line = serde_json::to_vec(request).map_err(|error| error.to_string())?;
+    line.push(b'\n');
+    let size = fs::metadata(&path).map(|metadata| metadata.len()).unwrap_or(0);
+    if size.saturating_add(line.len() as u64) > 1 << 20 { return Err("the todo queue is full; retry after the column applies it".into()); }
+    let mut file = fs::OpenOptions::new().create(true).append(true).mode(0o600).open(path).map_err(|error| error.to_string())?;
+    file.write_all(&line).map_err(|error| format!("cannot queue todo: {error}"))
+}
+
+pub fn take_updates(path: &Path) -> io::Result<String> {
+    let _lock = lock_queue(path)?;
+    let taken = path.with_extension(format!("jsonl.{}", std::process::id()));
+    match fs::rename(path, &taken) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(String::new()),
+        result => result?,
+    }
+    let text = fs::read_to_string(&taken)?;
+    fs::remove_file(taken)?;
+    Ok(text)
+}
 
 pub fn receipt_path(request: &Map<String, Value>) -> Option<PathBuf> {
     let id = request.get("request_id")?.as_str().filter(|id| approval::valid_id(id))?;
@@ -101,9 +133,6 @@ pub fn approve(id: &str) -> Result<(), String> {
     if util::read_json(&path).is_some_and(|receipt| receipt["outcome"] == "accepted") { return Ok(()); }
     request.insert("host_approved".into(), json!(true));
     util::write_json(&approval::held_request(id, "todo-approved"), &json!(request)).map_err(|error| error.to_string())?;
-    let queue = paths::todo_updates();
-    if fs::metadata(&queue).is_ok_and(|metadata| metadata.len() >= 1 << 20) { return Err("todo queue is full".into()); }
-    let mut file = fs::OpenOptions::new().create(true).append(true).open(queue).map_err(|error| error.to_string())?;
     finish(&json!(request), "pending", None, false, "host approved; awaiting persistence");
-    writeln!(file, "{}", json!(request)).map_err(|error| error.to_string())
+    append_update(&json!(request))
 }

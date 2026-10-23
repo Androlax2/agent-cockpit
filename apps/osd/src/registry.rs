@@ -472,14 +472,12 @@ pub fn answers_key_of(started_in: &Path) -> String {
 /// Requests one sandbox folder can have waiting for Theo: more is a flood (security audit M5).
 const WAITING_PER_FOLDER_MAX: usize = 3;
 const TODO_UPDATE_MAX_BYTES: usize = 65_536;
-const TODO_QUEUE_MAX_BYTES: u64 = 1 << 20;
 
 /// A claude-todo change as a sandbox sent it on the report socket, queued for the column
 /// (cockpit::todo::Todo::apply_updates) in the runtime directory, where no sandbox reaches, with the
 /// folder its sandbox started in: that folder, never one the update names, decides the project
 /// (security audit 2026-10-19, M4). The queue has a size cap: a session cannot flood the list.
 pub fn queue_todo_update(raw: &str, started_in: &str) -> Result<(), String> {
-    use std::io::Write;
     if raw.len() > TODO_UPDATE_MAX_BYTES {
         return Err(format!("longer than {TODO_UPDATE_MAX_BYTES} bytes"));
     }
@@ -495,12 +493,7 @@ pub fn queue_todo_update(raw: &str, started_in: &str) -> Result<(), String> {
         }
     }
     cockpit::todo_requests::hold(&mut update, started_in, &answers_key_of(Path::new(started_in)))?;
-    let path = paths::todo_updates();
-    if fs::metadata(&path).is_ok_and(|metadata| metadata.len() > TODO_QUEUE_MAX_BYTES) {
-        return Err("the todo queue is full: the column has not applied it (is the cockpit running?)".into());
-    }
-    let mut file = fs::OpenOptions::new().create(true).append(true).open(&path).map_err(|error| format!("cannot queue it: {error}"))?;
-    writeln!(file, "{}", Value::Object(update)).map_err(|error| format!("cannot queue it: {error}"))
+    cockpit::todo_requests::append_update(&Value::Object(update))
 }
 
 /// A run or guide request as a sandbox sent it on the report socket (`kind` "run-request" or

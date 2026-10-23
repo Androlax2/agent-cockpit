@@ -3114,6 +3114,50 @@ fn todo_retention_uses_the_daemons_clock_not_the_senders() {
 }
 
 #[test]
+fn concurrent_host_approvals_and_filings_survive_queue_extraction() {
+    let fixture = Fixture::new();
+    let greywall = fixture.root.join("home/IdeaProjects/greywall");
+    let greyproxy = fixture.root.join("home/IdeaProjects/greyproxy");
+    fs::create_dir_all(greywall.join(".git")).unwrap();
+    fs::create_dir_all(greyproxy.join(".git")).unwrap();
+    let notes = "quoted \" JSON record ".repeat(400);
+    for index in 0..32 {
+        let mut request = json!({"action": "add", "project": "greyproxy", "text": format!("approved {index}"),
+                                 "notes": notes, "request_id": format!("{index:012x}")}).as_object().unwrap().clone();
+        cockpit::todo_requests::hold(&mut request, &greywall.display().to_string(), "greywall").unwrap();
+    }
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(5));
+    let mut writers = Vec::new();
+    for writer in 0..4 {
+        let barrier = barrier.clone();
+        let folder = greywall.display().to_string();
+        let notes = notes.clone();
+        writers.push(std::thread::spawn(move || {
+            barrier.wait();
+            for offset in 0..16 {
+                let index = (writer % 2) * 16 + offset;
+                if writer < 2 {
+                    cockpit::todo_requests::approve(&format!("{index:012x}")).unwrap();
+                } else {
+                    queue_todo_update(&json!({"action": "add", "text": format!("ordinary {index}"), "notes": notes}).to_string(), &folder).unwrap();
+                }
+            }
+        }));
+    }
+    let mut todos = cockpit::todo::TodoList::load();
+    barrier.wait();
+    while writers.iter().any(|writer| !writer.is_finished()) {
+        todos.apply_updates();
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    for writer in writers { writer.join().unwrap(); }
+    todos.apply_updates();
+    let saved = cockpit::todo::TodoList::load();
+    assert_eq!(saved.items.len(), 64, "a concurrent queue record was lost or malformed");
+    assert_eq!(saved.items.iter().filter(|item| item.project() == "greyproxy" && saved.is_queued(&item.id())).count(), 32);
+}
+
+#[test]
 fn a_todo_for_a_nonexistent_project_is_refused_before_queueing() {
     let mut bench = Bench::new();
     bench.world.borrow_mut().sender_directories.insert(500, "/p".into());
