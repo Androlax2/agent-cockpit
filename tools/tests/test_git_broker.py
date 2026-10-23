@@ -168,7 +168,7 @@ class BrokerPushPolicyTests(BrokerFixture):
                 self.validate(encoded + b'0000PACK')
 
     def test_malformed_or_unsupported_receive_commands_deny(self):
-        for encoded in [b'', b'0000', b'0001', b'0002', b'0003', b'ffffshort', b'zzzz',
+        for encoded in [b'', b'0000PACK', b'0001', b'0002', b'0003', b'ffffshort', b'zzzz',
                         self.command()[:-1], self.command(old=b'1' * 64) + b'0000',
                         self.command(new=b'g' * 40) + b'0000',
                         self.command(capabilities=b'push-options') + b'0000',
@@ -177,6 +177,13 @@ class BrokerPushPolicyTests(BrokerFixture):
                         self.command() + self.command(b'refs/heads/next') + b'0000']:
             with self.subTest(encoded=encoded), self.assertRaises(self.broker.RequestDenied):
                 self.validate(encoded)
+
+    def test_exact_empty_rpc_probe_is_not_a_ref_update(self):
+        self.assertEqual(self.validate(b'0000'), [])
+
+    def test_native_git_capability_separator_is_supported(self):
+        self.assertEqual(self.validate(self.command(capabilities=b' report-status-v2 side-band-64k quiet object-format=sha1 agent=git/2.56.0-Linux')
+                                       + b'0000PACK'), ['refs/heads/feature/nested'])
 
     def test_invalid_ref_names_cannot_reach_forwarding(self):
         for suffix in [b'', b'.hidden', b'foo..bar', b'foo@{bar', b'foo.lock', b'foo/.bar',
@@ -489,6 +496,18 @@ class BrokerChannelTests(BrokerFixture):
         self.assertEqual(self.purposes, ['admission', 'admission', 'admission'])
         with self.rate.locked_state() as state:
             self.assertEqual(state.get('mutations', []), [])
+
+    def test_empty_rpc_probe_does_not_consume_content_mutation_pacing(self):
+        self.enable_fixture_forwarding()
+        self.start()
+        response, _ = self.exchange(self.header(action='git.push', body_length=4), body=b'0000')
+        self.assertEqual(response['status'], 200)
+        body = self.push_body()
+        response, _ = self.exchange(self.header(action='git.push', body_length=len(body)), body=body)
+        self.assertEqual(response['status'], 200)
+        self.assertEqual(self.purposes, ['admission', 'write', 'write'])
+        with self.rate.locked_state() as state:
+            self.assertEqual(len(state['mutations']), 1)
 
     def test_revoked_generation_stops_accepting_requests(self):
         _, worker, failures = self.start()
