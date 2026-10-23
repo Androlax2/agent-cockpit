@@ -1446,6 +1446,37 @@ fn earlier_findings_travel_in_the_next_qa_brief() {
 }
 
 #[test]
+fn spawned_qa_exits_after_reporting_without_losing_its_findings() {
+    let sandbox = Sandbox::new();
+    let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+    recruited(&mut connection, true);
+    let handoff = hand_off_in(&mut connection, "h1", COMMIT_A)["handoff_id"].as_str().unwrap().to_string();
+    let qa = qa_session("eeeeeeee-0000-4000-8000-000000000000");
+    bind_qa(&mut connection, &qa.session_id);
+    let action = AgentAction::Send { message: Submission { task: task(), submission_key: "final-findings".into(),
+        recipient: DEVELOPER.into(), kind: MessageKind::Findings, body: "No findings.".into(), thread_id: None, handoff_id: Some(handoff) } };
+    let first = store::accept(&mut connection, &qa, &action, 3300).unwrap().result.unwrap();
+    assert_eq!(store::superseded_qa(&connection).unwrap(), [qa.session_id.clone()]);
+    assert_eq!(store::accept(&mut connection, &qa, &action, 3400).unwrap().result.unwrap()["message_id"], first["message_id"]);
+    store::mark_qa_exited(&connection, &qa.session_id).unwrap();
+    store::recover(&mut connection, &live(), 3500).unwrap();
+    let dispatch = store::claim(&mut connection, &live()[1], "developer-idle", 3600).unwrap().unwrap();
+    assert_eq!(dispatch.envelope["body"], "No findings.");
+}
+
+#[test]
+fn manually_linked_qa_stays_open_after_reporting() {
+    let sandbox = Sandbox::new();
+    let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+    linked(&mut connection);
+    let handoff = hand_off_in(&mut connection, "h1", COMMIT_A)["handoff_id"].as_str().unwrap().to_string();
+    store::accept(&mut connection, &live()[2], &AgentAction::Send { message: Submission { task: task(),
+        submission_key: "final-findings".into(), recipient: DEVELOPER.into(), kind: MessageKind::Findings,
+        body: "No findings.".into(), thread_id: None, handoff_id: Some(handoff) } }, 3300).unwrap();
+    assert!(store::superseded_qa(&connection).unwrap().is_empty());
+}
+
+#[test]
 fn a_standing_qa_handoff_needs_the_developers_real_folder() {
     let sandbox = Sandbox::new();
     let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();

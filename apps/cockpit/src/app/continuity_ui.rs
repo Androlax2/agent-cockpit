@@ -214,7 +214,7 @@ impl App {
 
     pub(super) fn queue_context(&self) -> queue::QueueContext {
         queue::QueueContext { now: util::now_secs(), enabled: settings::is_on("todo-queue"), gaming: (self.gaming)(),
-            viewed: current_session(), workspace_active: util::claude_workspace_active() }
+            viewed: current_session(), workspace_active: util::claude_workspace_active(), qa_sessions: self.qa_sessions.clone() }
     }
 
     pub(super) fn open_queue(&mut self) -> String {

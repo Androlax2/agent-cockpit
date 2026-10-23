@@ -3229,6 +3229,59 @@ fn a_linked_session_shows_its_team_role() {
 }
 
 #[test]
+fn qa_sessions_do_not_receive_queued_todos() {
+    for is_linked in [true, false] {
+        let fixture = Fixture::new();
+        fixture.snapshot(json!([session(SESSION_B, "waiting", "project-a", "/p", util::now_secs() - 600)]));
+        let mut snapshot = team_snapshot();
+        if !is_linked {
+            snapshot["members"] = json!([]);
+            snapshot["spawns"] = json!([{"role": "qa", "session_id": SESSION_B, "status": "superseded"}]);
+        }
+        team_host(&fixture, snapshot, vec![]);
+        let mut app = fixture.app();
+        app.gaming = || false;
+        app.check_team();
+        let id = app.todos.add("project-a", "/p", "Unrelated work");
+        app.todos.toggle_queued(&id);
+        app.dispatch_queue();
+        assert_eq!(app.todos.status_of(&id), "todo", "linked: {is_linked}");
+        assert!(fixture.calls("cockpit").is_empty());
+    }
+}
+
+#[test]
+fn todo_handoffs_start_a_worker_instead_of_reusing_qa() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_B, "waiting", "project-a", "/p", 1)]));
+    team_host(&fixture, team_snapshot(), vec![]);
+    let mut app = fixture.app();
+    app.check_team();
+    let id = app.todos.add("project-a", "/p", "Unrelated work");
+    app.build();
+    let entry = app.todo_entries.iter().find(|entry| entry.key() == id).unwrap().clone();
+    assert_eq!(app.hand_to_claude(&entry, &mut FakeScreen::default()), "starting a session in p");
+    let calls = fixture.wait_for_calls("cockpit", 1);
+    assert!(calls[0].contains("background /p "), "{calls:?}");
+}
+
+#[test]
+fn viewed_qa_does_not_override_the_worker_chosen_for_a_todo() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_B, "waiting", "project-a", "/qa-copy", 1),
+        session(SESSION_A, "waiting", "project-a", "/p", 1)]));
+    fixture.view(SESSION_B);
+    team_host(&fixture, team_snapshot(), vec![]);
+    let mut app = fixture.app();
+    app.check_team();
+    let id = app.todos.add("project-a", "/p", "Unrelated work");
+    app.build();
+    let entry = app.todo_entries.iter().find(|entry| entry.key() == id).unwrap().clone();
+    assert_eq!(app.hand_to_claude(&entry, &mut FakeScreen::default()), "sent to project-a");
+    assert!(fixture.calls("cockpit")[0].starts_with(&format!("cockpit say {SESSION_A} ")));
+}
+
+#[test]
 fn h_resumes_the_past_session_picked() {
     let fixture = Fixture::new();
     fixture.write("home/.claude/history.jsonl", &format!("{}\n{}\n",
@@ -6092,6 +6145,21 @@ fn an_issue_without_a_local_checkout_says_so() {
 
 // ---- Errors ----
 
+#[test]
+fn automatic_error_reports_do_not_interrupt_a_qa_review() {
+    let fixture = Fixture::new();
+    let checkout = crate::paths::cockpit_work().to_string_lossy().into_owned();
+    fixture.snapshot(json!([session(SESSION_B, "waiting", "agent-cockpit", &checkout, 1)]));
+    team_host(&fixture, team_snapshot(), vec![]);
+    let mut app = fixture.app();
+    app.errors = reporter(&fixture);
+    append_log(&fixture, &["2026-10-18T13:00:01+02:00 ERROR manager: it broke"]);
+    app.maintain();
+    let calls = fixture.wait_for_calls("cockpit", 1);
+    assert!(!calls.iter().any(|call| call.starts_with(&format!("cockpit say {SESSION_B} "))), "{calls:?}");
+    assert!(calls.iter().any(|call| call.starts_with("cockpit background ")), "{calls:?}");
+}
+
 fn reporter(fixture: &Fixture) -> ErrorReporter {
     fixture.write("state/cockpit/log", "2026-10-18T10:00:00+02:00 ERROR manager: logged before the column started\n");
     let mut reporter = ErrorReporter::new();
@@ -6371,7 +6439,8 @@ fn continuity_queue_view_keeps_priority_and_designer_routes_without_network_call
 #[test]
 fn continuity_queue_idle_boundary_is_exactly_five_minutes() {
     let fixture = Fixture::new();
-    let context = crate::queue::QueueContext { now: 1000, enabled: true, gaming: false, viewed: String::new(), workspace_active: false };
+    let context = crate::queue::QueueContext { now: 1000, enabled: true, gaming: false, viewed: String::new(), workspace_active: false,
+        qa_sessions: Default::default() };
     for (since, remaining) in [(701, Some(1)), (700, None), (699, None)] {
         let reported = sessions::Session::from_value(&session(SESSION_A, "waiting", "runway", "/r/runway", since)).unwrap();
         assert_eq!(crate::queue::block(&reported, &context, false, false), remaining.map(|remaining| crate::queue::QueueBlock::Idle { remaining }));

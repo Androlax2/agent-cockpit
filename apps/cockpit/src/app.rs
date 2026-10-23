@@ -745,6 +745,7 @@ pub struct App {
     /// Team requests, escalations and uncertain deliveries waiting for Theo; session -> "team role · task".
     team_attention: usize,
     team_roles: HashMap<String, String>,
+    qa_sessions: HashSet<String>,
     /// Whether the last team check succeeded: until then anyone may be a member, and no one sleeps.
     team_known: bool,
     pub(crate) team_checked: f64,
@@ -853,7 +854,7 @@ impl App {
             history: History::default(), view: ViewState::load(), usage: Refresher::new(), alerts: BudgetAlerts::new(util::send_notice),
             costs: Costs::default(), reviews: Reviews::default(), todos, errors: ErrorReporter::new(),
             claude_status: ProviderStatus::default(), codex_status: ProviderStatus::new(Provider::Codex), panels: Default::default(), focus: 1, previous_panel: 1,
-            help_open: false, has_pane_focus: true, attention_only: false, message, exiting: Vec::new(), restarting_cards: HashMap::new(), labelled: Default::default(), menu: None, session_details: None, todo_composer: None, settings_menu: None, team_view: None, team_attention: 0, team_roles: HashMap::new(), team_known: false, team_checked: 0.0, pairing: None, restore: Vec::new(),
+            help_open: false, has_pane_focus: true, attention_only: false, message, exiting: Vec::new(), restarting_cards: HashMap::new(), labelled: Default::default(), menu: None, session_details: None, todo_composer: None, settings_menu: None, team_view: None, team_attention: 0, team_roles: HashMap::new(), qa_sessions: HashSet::new(), team_known: false, team_checked: 0.0, pairing: None, restore: Vec::new(),
             held: Vec::new(), held_checked: 0.0, queue_checked: 0.0, sleep_checked: 0.0, sleep_asked: HashMap::new(), gaming: util::gaming,
             disk_usage: util::fullest_disk, disk: None, disk_checked: 0.0, restore_checked: 0.0, start_files: Vec::new(),
             width: DEFAULT_COLUMN_WIDTH, sessions: Vec::new(), running_sessions: Vec::new(), windows: Vec::new(), quota_rows: Vec::new(), review_rows: Vec::new(), todo_entries: Vec::new(),
@@ -899,7 +900,9 @@ impl App {
             }
         }
         self.todos.apply_updates();
-        self.errors.tick(sessions::reported);
+        self.check_team();
+        self.errors.tick(|| sessions::reported().into_iter()
+            .filter(|session| !self.qa_sessions.contains(&session.session)).collect());
         self.claude_status.tick();
         self.codex_status.tick();
         self.usage.tick(false);
@@ -907,7 +910,6 @@ impl App {
         self.costs.tick();
         self.reviews.tick();
         self.watch_pairing();
-        self.check_team();
         self.redraw();
         self.push_viewed_state();
         self.dispatch_queue();
@@ -2853,7 +2855,7 @@ impl App {
             _ => None,
         };
         let is_design = design_project.is_some();
-        let mut candidates = self.running_sessions.iter().filter(|session| session.state != "unknown" && match &design_project {
+        let mut candidates = self.running_sessions.iter().filter(|session| !self.qa_sessions.contains(&session.session) && session.state != "unknown" && match &design_project {
             Some(project) => session.role == "designer" && session.project == *project,
             None => session.cwd == directory && session.role != "designer",
         });
@@ -2912,7 +2914,8 @@ impl App {
     /// on the item's project (by name, as the Todo list is narrowed) or the issue's repository.
     fn viewed_session_for(&self, entry: &Entry) -> Option<Session> {
         let viewed = current_session();
-        let session = self.running_sessions.iter().find(|s| !s.is_external() && s.session == viewed && s.state != "unknown" && s.role != "designer")?;
+        let session = self.running_sessions.iter().find(|s| !s.is_external() && !self.qa_sessions.contains(&s.session)
+            && s.session == viewed && s.state != "unknown" && s.role != "designer")?;
         let belongs = match entry {
             Entry::Typed(item) => item.project() == session.project,
             Entry::Issue { issue, .. } => self.reviews.repositories.contains(&issue.full_repository),
@@ -3628,6 +3631,10 @@ impl App {
         };
         self.team_known = true;
         self.team_attention = crate::teams::view::TeamView::attention(&snapshot);
+        self.qa_sessions = snapshot["members"].as_array().into_iter().flatten()
+            .chain(snapshot["spawns"].as_array().into_iter().flatten())
+            .filter(|row| row["role"] == "qa")
+            .filter_map(|row| row["session_id"].as_str().map(str::to_string)).collect();
         self.team_roles = snapshot["members"].as_array().into_iter().flatten().filter_map(|member| Some((member["session_id"].as_str()?.to_string(),
             format!("team {} · {}", member["role"].as_str()?, member["task_id"].as_str()?)))).collect();
     }

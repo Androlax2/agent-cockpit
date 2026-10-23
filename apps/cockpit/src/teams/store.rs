@@ -564,6 +564,12 @@ pub fn accept(connection: &mut Connection, sender: &VerifiedSession, action: &Ag
         "authorization":"collaborator_content_not_user_authorization"});
     transaction.execute("INSERT INTO messages (id,task_key,sender,recipient,sender_epoch,recipient_epoch,submission_key,fingerprint,envelope,state,next_at,created_at,recipient_runtime) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,'queued',?10,?10,?11)",
         params![id,task_key,sender.session_id,message.recipient,source.epoch,target.epoch,message.submission_key,fingerprint,envelope.to_string(),now_ms,target.runtime])?;
+    if is_findings {
+        // Keep the membership epoch: the stored report still needs it for delivery after QA exits.
+        transaction.execute("INSERT INTO qa_exits SELECT session_id,'pending' FROM spawns
+            WHERE task_key=?1 AND session_id=?2 AND role='qa' AND status='bound' AND handoff_id=?3
+            ON CONFLICT(session_id) DO NOTHING", params![task_key, sender.session_id, message.handoff_id])?;
+    }
     transaction.commit()?;
     Ok(TeamReply { request_id:message.submission_key.clone(),result:Ok(json!({"message_id":id,"thread_id":thread_id,"round":round})) })
 }
@@ -675,7 +681,7 @@ fn qa_member_is_spawned(connection: &Connection, task_key: &str) -> Result<Optio
     Ok(Some(spawned.is_some()))
 }
 
-/// Started sessions to close: QA a newer handoff replaced, and starts that could not join.
+/// Started sessions to close: QA that reported or was replaced, and starts that could not join.
 pub fn superseded_qa(connection: &Connection) -> Result<Vec<String>, TeamError> {
     let mut statement = connection.prepare("SELECT session_id FROM qa_exits WHERE status='pending' ORDER BY session_id")?;
     Ok(statement.query_map([], |row| row.get(0))?.collect::<Result<_, _>>()?)

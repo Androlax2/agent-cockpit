@@ -488,6 +488,33 @@ fn a_handoff_exits_the_previous_qa_and_starts_the_next() {
 }
 
 #[test]
+fn a_spawned_qa_report_queues_one_exit_and_retries_a_failed_launch() {
+    use cockpit::teams::{AgentAction, MessageKind, Role, Submission};
+    let mut bench = team_bench();
+    recruit_and_approve(&mut bench, vec![recruit(Role::Qa, "Check contrast")]);
+    developer_hands_off(&mut bench, "h1", &"a".repeat(40));
+    let qa_start = started(&bench).into_iter().find(|command| command[5] == "qa").unwrap();
+    spawned_session_reports(&mut bench, 43, NEW_SESSION, &qa_start[4]);
+    let own = crate::teams::request(&mut bench.registry, 43, AgentAction::Context).unwrap().result.unwrap();
+    let snapshot = crate::teams::host(&mut bench.registry, cockpit::teams::HostRequest::Snapshot).unwrap().result.unwrap();
+    let handoff = snapshot["spawns"].as_array().unwrap().iter().find(|spawn| spawn["role"] == "qa").unwrap();
+    let token = handoff["token"].as_str().unwrap();
+    let handoff_id: String = bench.registry.teams.as_ref().unwrap().query_row(
+        "SELECT handoff_id FROM spawns WHERE token=?1", [token], |row| row.get(0)).unwrap();
+    let task = cockpit::teams::TaskKey { project: own["project"].as_str().unwrap().into(), task_id: "1d3fd318".into() };
+    crate::teams::request(&mut bench.registry, 43, AgentAction::Send { message: Submission { task,
+        submission_key: "final-findings".into(), recipient: OPENCODE_SESSION.into(), kind: MessageKind::Findings,
+        body: "No findings.".into(), thread_id: None, handoff_id: Some(handoff_id) } }).unwrap().result.unwrap();
+    bench.world.borrow_mut().start_fails = true;
+    crate::teams::start_spawns(&mut bench.registry).unwrap();
+    bench.world.borrow_mut().start_fails = false;
+    crate::teams::start_spawns(&mut bench.registry).unwrap();
+    crate::teams::start_spawns(&mut bench.registry).unwrap();
+    let exits: Vec<_> = started(&bench).into_iter().filter(|command| command.get(1).is_some_and(|action| action == "exit")).collect();
+    assert_eq!(exits, vec![vec!["cockpit", "exit", NEW_SESSION]; 2]);
+}
+
+#[test]
 fn only_host_processes_may_use_the_team_host_socket() {
     let tree = Tree(vec![("50", Some("30"), "sandbox", environment(&[])), ("30", None, "host", environment(&[]))]);
     assert!(crate::teams::host_peer_allowed(&tree, "30"));
