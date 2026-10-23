@@ -71,6 +71,40 @@ fn unlinked_fixture_sockets_do_not_prevent_server_shutdown() {
     check_fixture_listener_lifetimes("unlinked_fixture_sockets_do_not_prevent_server_shutdown", false, true);
 }
 
+fn check_fixture_server_panic(test_name: &str, unwind: bool) {
+    if std::env::var("COCKPIT_FIXTURE_PANIC_TEST").as_deref() == Ok(test_name) {
+        use std::io::Read;
+        let fixture = Fixture::new();
+        fixture.serve(|_| panic!("intentional fixture server failure"));
+        let mut stream = std::os::unix::net::UnixStream::connect(crate::paths::team_host_socket()).unwrap();
+        stream.read_to_end(&mut Vec::new()).unwrap();
+        if unwind { panic!("intentional test failure"); }
+        drop(fixture);
+        return;
+    }
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", &format!("tests::{test_name}"), "--nocapture"])
+        .env("COCKPIT_FIXTURE_PANIC_TEST", test_name)
+        .output().unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(101), "expected ordinary test failure, got {}: {stderr}", output.status);
+    assert!(stderr.contains("intentional fixture server failure"), "{stderr}");
+    if unwind {
+        assert!(stderr.contains("intentional test failure"), "{stderr}");
+        assert!(stderr.contains("fixture server panicked during test unwinding"), "{stderr}");
+    }
+}
+
+#[test]
+fn fixture_server_panic_during_test_unwind_does_not_abort() {
+    check_fixture_server_panic("fixture_server_panic_during_test_unwind_does_not_abort", true);
+}
+
+#[test]
+fn fixture_server_panic_without_test_unwind_fails_the_test() {
+    check_fixture_server_panic("fixture_server_panic_without_test_unwind_fails_the_test", false);
+}
+
 #[test]
 fn canonical_configuration_wins_while_legacy_overrides_still_work() {
     let _fixture = Fixture::new();
@@ -153,7 +187,14 @@ impl FixtureServer {
     fn stop(self) {
         self.stopping.store(true, Ordering::SeqCst);
         self.thread.thread().unpark();
-        self.thread.join().expect("fixture server panicked");
+        if let Err(error) = self.thread.join() {
+            if std::thread::panicking() {
+                use std::io::Write;
+                let _ = writeln!(std::io::stderr(), "fixture server panicked during test unwinding: {error:?}");
+            } else {
+                std::panic::resume_unwind(error);
+            }
+        }
     }
 }
 
