@@ -1169,9 +1169,11 @@ sleep_session() { # id
     chmod 600 "$operation_dir/$id" || return 1
     exec {operation_guard}<>"$operation_dir/$id"
     flock -n "$operation_guard" || return 3
-    trap 'status=$?; if (( status )) && [[ -n ${permit:-} ]]; then
+    # Closing our reference must not unlock inherited helpers; the daemon checks their quiescence.
+    trap 'status=$?; exec {operation_guard}>&-
+    if (( status )) && [[ -n ${permit:-} ]]; then
         if [[ -z ${note:-} || ! -e $note ]]; then cancel_sleep_permit "$id" "$permit";
-        elif [[ -n ${target:-} ]] && tmux has-session -t "=$target" 2>/dev/null; then forget_sleep_note "$id"; fi
+        else team_sleep_request sleep-status "$id" "$permit" >/dev/null || log_event WARN sleep "$project interrupted; daemon reconciliation unavailable"; fi
     fi' EXIT
     if ! permit=$(cockpit-team sleep-prepare "$id" 2>/dev/null) ||
             ! jq -e 'type == "object" and has("token") and (.token == null or (.token | type == "string" and length > 0))' >/dev/null 2>&1 <<< "$permit"; then

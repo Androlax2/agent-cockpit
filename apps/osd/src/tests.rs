@@ -789,15 +789,26 @@ fn abandoned_sleep_preparation_restores_live_sends_and_claims_without_losing_que
 }
 
 #[test]
-fn recorded_sleep_survives_normal_operation_exit_and_delayed_old_runtime_death() {
+fn recorded_sleep_survives_normal_operation_exit_after_old_runtime_death() {
     let mut bench = linked_team_bench();
     let token = prepare_team_sleep(&mut bench);
+    bench.world.borrow_mut().sender_runtimes.remove(&10);
     bench.sleep_guards.clear();
     assert_eq!(sleep_host(&mut bench, "sleep_status", Some(&token)).unwrap()["state"], "prepared");
-    bench.world.borrow_mut().sender_runtimes.remove(&10);
     send_to_designer(&mut bench, "after-normal-sleep");
     crate::teams::host_snapshot(&mut bench.registry).unwrap();
     assert_eq!(started(&bench), vec![vec!["cockpit", "wake", SESSION_A]]);
+}
+
+#[test]
+fn recorded_abandoned_sleep_recovers_when_helpers_end_with_old_runtime_alive() {
+    let mut bench = linked_team_bench();
+    let token = prepare_team_sleep(&mut bench);
+    send_to_designer(&mut bench, "after-recorded-abandonment");
+    bench.sleep_guards.clear();
+    let delivery = crate::teams::request(&mut bench.registry, 10, cockpit::teams::AgentAction::Receive).unwrap().result.unwrap();
+    assert!(delivery["dispatch_id"].is_string(), "{delivery}");
+    assert_eq!(sleep_host(&mut bench, "sleep_status", Some(&token)).unwrap()["state"], "cancelled");
 }
 
 #[test]
@@ -829,8 +840,8 @@ fn killed_manager_leaves_pause_owned_by_its_live_inherited_exit_helper() {
     let mut bench = linked_team_bench();
     // Create the protected file with the same permissions as the real host script.
     let old = sleep_host(&mut bench, "prepare_sleep", None).unwrap()["token"].as_str().unwrap().to_string();
-    sleep_host(&mut bench, "cancel_sleep", Some(&old)).unwrap();
     bench.sleep_guards.clear();
+    sleep_host(&mut bench, "cancel_sleep", Some(&old)).unwrap();
     let directory = cockpit::paths::runtime_dir().join("cockpit.sleep-operations");
     let ready = directory.join("helper-ready");
     let release = directory.join("release-helper");
@@ -857,6 +868,140 @@ wait
     let delivery = crate::teams::request(&mut bench.registry, 10, cockpit::teams::AgentAction::Receive).unwrap().result.unwrap();
     assert!(delivery["dispatch_id"].is_string(), "{delivery}");
     assert!(started(&bench).is_empty());
+}
+
+#[test]
+fn explicit_sleep_cancellation_cannot_bypass_live_operation_ownership() {
+    let mut bench = linked_team_bench();
+    let token = prepare_team_sleep(&mut bench);
+    send_to_designer(&mut bench, "during-cancel");
+    let result = sleep_host(&mut bench, "cancel_sleep", Some(&token));
+    let delivery = crate::teams::request(&mut bench.registry, 10, cockpit::teams::AgentAction::Receive).unwrap().result.unwrap();
+    assert!(result.is_err(), "cancellation must wait for all operation descriptors to close");
+    assert!(delivery.is_null(), "{delivery}");
+}
+
+#[test]
+fn sigterm_exit_cleanup_waits_for_real_claude_exit_helper_before_restoring_traffic() {
+    interrupt_recorded_claude_exit(false);
+}
+
+#[test]
+fn sigterm_exit_cleanup_preserves_resume_when_surviving_helper_exits_old_runtime() {
+    interrupt_recorded_claude_exit(true);
+}
+
+fn interrupt_recorded_claude_exit(does_helper_exit_agent: bool) {
+    use std::io::{Read, Write};
+    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::net::UnixListener;
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+    use cockpit::teams::{AgentAction, MessageKind, Submission};
+
+    let mut bench = linked_team_bench();
+    let root = bench.fixture.root.clone();
+    let repository = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().unwrap();
+    let script = fs::read_to_string(repository.join("config/bin/.local/bin/cockpit")).unwrap();
+    let definitions = root.join("manager-functions.sh");
+    // Keep the actual lifecycle, EXIT trap, cancellation and agent exit functions; stub only host I/O/safety inputs.
+    fs::write(&definitions, script.split("# Every command leaves a line:").next().unwrap()).unwrap();
+    let shims = root.join("shims");
+    fs::create_dir(&shims).unwrap();
+    fs::write(shims.join("tmux"), r#"#!/usr/bin/env bash
+if [[ $1 == send-keys ]]; then
+  [[ $* == *C-c* ]] || exit 2
+  echo "$PPID" > "$TEST_ROOT/helper-ready"
+  kill -TERM "$PPID"
+  for ((attempt=0; attempt<500; attempt++)); do
+    [[ ! -e $TEST_ROOT/release-helper ]] || break
+    sleep .01
+  done
+  echo acted > "$TEST_ROOT/helper-acted"
+  exit 1
+fi
+[[ $1 != display-message ]] || echo claude-test
+exit 0
+"#).unwrap();
+    fs::set_permissions(shims.join("tmux"), fs::Permissions::from_mode(0o700)).unwrap();
+    let host_socket = cockpit::paths::team_host_socket();
+    fs::create_dir_all(host_socket.parent().unwrap()).unwrap();
+    let listener = UnixListener::bind(host_socket).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let driver = root.join("driver.sh");
+    fs::write(&driver, r#"set -euo pipefail
+source "$TEST_DEFINITIONS"
+source "$TEST_REPOSITORY/config/bin/.local/bin/cockpit-agents/claude.sh"
+session_field() {
+  case $2 in project) echo project-a;; tmux_pane) echo %4;; since|started) echo 1;; cwd) echo "$TEST_CHECKOUT";; task) echo test;; esac
+}
+agent_of_session() { echo claude; }
+require_feature() { :; }
+sleep_blocker() { :; }
+session_is_remote() { return 1; }
+log_event() { :; }
+audit_event() { :; }
+thaw_frozen_pane() { :; }
+pane_at_prompt() { return 1; }
+clear_exited_viewer() { :; }
+sleep_session aaaaaaaa-0000-4000-8000-000000000000
+"#).unwrap();
+    let mut manager = Command::new("bash").arg(driver)
+        .env("PATH", format!("{}:{}:/usr/bin:/bin", shims.display(), repository.join("config/bin/.local/bin").display()))
+        .env("TEST_ROOT", &root).env("TEST_DEFINITIONS", definitions).env("TEST_REPOSITORY", repository)
+        .env("TEST_CHECKOUT", &bench.registry.sessions[SESSION_A].cwd)
+        .stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut recorded = false;
+    loop {
+        while let Ok((mut stream, _)) = listener.accept() {
+            stream.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+            let peer = crate::fifo::peer_pid(&stream).unwrap();
+            let mut input = String::new();
+            stream.read_to_string(&mut input).unwrap();
+            let request: cockpit::teams::HostRequest = serde_json::from_str(&input).unwrap();
+            recorded |= matches!(request, cockpit::teams::HostRequest::SleepRecorded { .. });
+            let reply = crate::teams::host(&mut bench.registry, peer, request)
+                .unwrap_or_else(|error| cockpit::teams::TeamReply { request_id: "sleep".into(), result: Err(error) });
+            stream.write_all(serde_json::to_string(&reply).unwrap().as_bytes()).unwrap();
+        }
+        if manager.try_wait().unwrap().is_some() || Instant::now() >= deadline { break; }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let helper_started = root.join("helper-ready").exists();
+    let context = crate::teams::request(&mut bench.registry, 10, AgentAction::Context).unwrap().result.unwrap();
+    send_to_designer(&mut bench, "during-interrupted-recorded-exit");
+    let paused_delivery = crate::teams::request(&mut bench.registry, 10, AgentAction::Receive).unwrap().result.unwrap();
+    let outgoing = AgentAction::Send { message: Submission { task: serde_json::from_value(context["task"].clone()).unwrap(),
+        submission_key: "during-exit".into(), recipient: OPENCODE_SESSION.into(), kind: MessageKind::Notice,
+        body: "Must wait for exit helper".into(), thread_id: None, handoff_id: None } };
+    let paused_send = crate::teams::request(&mut bench.registry, 10, outgoing.clone()).and_then(|reply| reply.result);
+    let note_retained = cockpit::paths::asleep_dir().join(SESSION_A).exists();
+    fs::write(root.join("release-helper"), "").unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let guard = fs::File::open(cockpit::paths::runtime_dir().join("cockpit.sleep-operations").join(SESSION_A)).unwrap();
+    while guard.try_lock().is_err() && Instant::now() < deadline { std::thread::sleep(Duration::from_millis(10)); }
+    drop(guard);
+    if manager.try_wait().unwrap().is_none() { manager.kill().unwrap(); }
+    manager.wait().unwrap();
+    assert!(recorded && helper_started, "must interrupt actual Claude C-c exit after sleep-recorded");
+    assert!(note_retained, "cleanup discarded the resume note while an exit helper survived");
+    assert!(paused_delivery.is_null(), "claim admitted while exit helper could still act: {paused_delivery}");
+    assert!(paused_send.is_err(), "send admitted while exit helper could still act");
+    assert!(root.join("helper-acted").exists());
+    if does_helper_exit_agent {
+        bench.world.borrow_mut().sender_runtimes.remove(&10);
+        let note: Value = serde_json::from_str(&fs::read_to_string(cockpit::paths::asleep_dir().join(SESSION_A)).unwrap()).unwrap();
+        assert_eq!(sleep_host(&mut bench, "sleep_status", note["team_resume"].as_str()).unwrap()["state"], "prepared");
+        for _ in 0..2 { crate::teams::host_snapshot(&mut bench.registry).unwrap(); }
+        assert_eq!(started(&bench), vec![vec!["cockpit", "wake", SESSION_A]]);
+    } else {
+        let resumed_delivery = crate::teams::request(&mut bench.registry, 10, AgentAction::Receive).unwrap().result.unwrap();
+        let resumed_send = crate::teams::request(&mut bench.registry, 10, outgoing).and_then(|reply| reply.result);
+        assert!(resumed_delivery["dispatch_id"].is_string(), "recorded abandoned operation did not recover: {resumed_delivery}");
+        assert!(resumed_send.is_ok(), "{resumed_send:?}");
+        assert!(started(&bench).is_empty());
+    }
 }
 
 #[test]

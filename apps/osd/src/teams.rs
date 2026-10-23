@@ -140,8 +140,8 @@ fn reconcile_sleep(registry: &mut Registry) -> Result<(), TeamError> {
         // The inherited kernel lock outlives a killed manager while an exit helper still runs.
         // Never reopen delivery on a clock while that operation can still exit the old runtime.
         if is_old_live && sleep_operation_is_live(&permit.session_id)? { continue; }
-        // Recorded notes remain the durable sleep barrier, even if process teardown lags the script.
-        if !permit.note_recorded || !matching_sleep_note(&permit, now_ms()) {
+        // A recorded operation that ended without exiting its old runtime is abandoned too.
+        if is_old_live || !permit.note_recorded || !matching_sleep_note(&permit, now_ms()) {
             store::sleep::cancel(connection, &permit.session_id, &permit.token)?;
         }
     }
@@ -386,6 +386,9 @@ fn sleep_control(registry: &mut Registry, request: cockpit::teams::HostRequest) 
             json!({"token":token})
         },
         HostRequest::CancelSleep { session_id, token } => {
+            if sleep_operation_is_live(&session_id)? {
+                return Err(TeamError::new(ErrorCode::Conflict, "sleep operation still has live exit helpers"));
+            }
             store::sleep::cancel(registry.teams.as_mut().expect("opened above"), &session_id, &token)?;
             json!({"state":"cancelled"})
         },
