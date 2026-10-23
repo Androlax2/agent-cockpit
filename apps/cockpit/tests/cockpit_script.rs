@@ -3807,6 +3807,24 @@ fn apply_runs_the_running_copys_after_apply_target_with_the_commit_before() {
     assert_eq!(fs::read_to_string(&record).unwrap().trim(), before);
 }
 
+#[test]
+fn apply_logs_the_install_failure_details_without_undoing_the_commits() {
+    let manager = Manager::new();
+    let (live, work) = (manager.sandbox.home.join("agent-cockpit"), manager.sandbox.home.join("IdeaProjects/agent-cockpit"));
+    reviewed_pair(&live, &work);
+    let mismatch = "greywall is f3cc844, the pin is bf1d8fd: make -C ~/agent-cockpit greywall-patch";
+    fs::write(live.join("Makefile"), format!("after-apply:\n\t@echo 'build completed'\n\t@echo '{mismatch}' >&2\n\t@exit 1\n")).unwrap();
+    git_output(&live, &["add", "Makefile"]);
+    git_output(&live, &["commit", "-qm", "Install it"]);
+    let output = apply_reviewed(&manager, &work, "y\n");
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    assert!(stdout(&output).contains(mismatch) || stderr(&output).contains(mismatch));
+    assert_eq!(git_output(&live, &["log", "-1", "--format=%s"]), "Add y");
+    let lines = manager.log_lines();
+    let failure = lines.iter().position(|line| line.contains(" ERROR apply: make after-apply failed")).expect("install failure logged");
+    assert!(lines[..failure].iter().any(|line| line.contains(mismatch)), "{lines:?}");
+}
+
 const SLEEP_SINCE: u64 = 1_700_000_000;
 const SLEEP_PROCESSES: &str = "  4242     1 fish\n  4300  4242 bash\n  5000  4242 claude\n  5002  5000 git";
 /// The cursor right after the empty prompt of IDLE, where tmux has it.

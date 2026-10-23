@@ -2376,11 +2376,19 @@ after_reviewed_apply() { # live commit-before-the-apply
         return 0
     fi
     echo "Applied. Installing it (make after-apply) …"
-    if ! make -C "$1" after-apply BEFORE="$2"; then
+    local output line
+    output=$(mktemp "${XDG_RUNTIME_DIR:-/tmp}/cockpit-after-apply.XXXXXX")
+    if ! make -C "$1" after-apply BEFORE="$2" 2>&1 | tee "$output"; then
+        # The error hand-off sees the log, not the approval terminal's captured output.
+        while IFS= read -r line; do
+            log_event WARN apply "after-apply output: $line"
+        done < <(tail -n 20 "$output")
+        rm -f "$output"
         echo "The commits were applied, but make after-apply failed (above)." >&2
         log_event ERROR apply "make after-apply failed in $1"
         return 1
     fi
+    rm -f "$output"
 }
 
 # The dotfiles' apps/ are their own programs (widgets); the OSD daemon and the column are
