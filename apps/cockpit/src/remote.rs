@@ -37,11 +37,13 @@ const PULLS_FRESH_S: i64 = 300;
 
 /// Where the server listens: CLAUDE_REMOTE_ADDRESS, or 127.0.0.1:7380.
 pub fn address() -> String {
-    std::env::var("CLAUDE_REMOTE_ADDRESS").unwrap_or_else(|_| DEFAULT_ADDRESS.into())
+    paths::cockpit_env("COCKPIT_REMOTE_ADDRESS", "CLAUDE_REMOTE_ADDRESS").unwrap_or_else(|_| DEFAULT_ADDRESS.into())
 }
 
 pub fn state_dir() -> PathBuf {
-    std::env::var("CLAUDE_REMOTE_DIR").map(PathBuf::from).unwrap_or_else(|_| paths::state_home().join("claude-remote"))
+    paths::cockpit_env("COCKPIT_REMOTE_DIR", "CLAUDE_REMOTE_DIR").map(PathBuf::from).unwrap_or_else(|_| {
+        paths::renamed_path(paths::state_home().join("cockpit-remote"), paths::state_home().join("claude-remote"))
+    })
 }
 
 pub(crate) fn write_private(name: &str, value: &Value) -> std::io::Result<()> {

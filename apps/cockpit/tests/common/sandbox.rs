@@ -102,7 +102,12 @@ impl Sandbox {
             ("CLAUDE_ANSWERS_KEY".into(), ANSWERS_KEY.to_string()),
             ("CLAUDE_AUDIT_JOURNAL".into(), "off".to_string()),
         ]);
-        Sandbox { root, home, runtime, state, shims, log, env }
+        let sandbox = Sandbox { root, home, runtime, state, shims, log, env };
+        // Model an installed cockpit: legacy-path tests exercise the migration aliases too.
+        let migration = Command::new("python3").arg(repo().join("tools/migrate-cockpit-names.py")).arg("--apply")
+            .envs(&sandbox.env).output().unwrap();
+        assert!(migration.status.success(), "{}", String::from_utf8_lossy(&migration.stderr));
+        sandbox
     }
 
     /// A fake command. `body` is bash; $SHIM_LOG receives one line per call by convention.
@@ -174,7 +179,7 @@ impl Sandbox {
         let session_id = session_id.to_string();
         let source = self.root.join(format!("team-{}.sock", cockpit::util::token_hex(4)));
         let listener = std::os::unix::net::UnixListener::bind(&source).unwrap();
-        let answers = self.runtime.join("claude-answers").join(ANSWERS_KEY);
+        let answers = self.runtime.join("cockpit-answers").join(ANSWERS_KEY);
         fs::create_dir_all(&answers).unwrap();
         cockpit::teams::client::publish_socket(&source, &answers).unwrap();
         let requests = TeamRequests::default();
@@ -197,7 +202,7 @@ impl Sandbox {
 
     /// Theo's answers to this sandbox's project, "runs" or "guides" (cockpit::approval::answers_dir).
     pub fn answers(&self, kind: &str) -> PathBuf {
-        let directory = self.runtime.join("claude-answers").join(ANSWERS_KEY).join(kind);
+        let directory = self.runtime.join("cockpit-answers").join(ANSWERS_KEY).join(kind);
         fs::create_dir_all(&directory).unwrap();
         directory
     }

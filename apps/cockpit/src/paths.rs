@@ -41,6 +41,27 @@ fn from_env(name: &str, default: PathBuf) -> PathBuf {
     env::var(name).map(PathBuf::from).unwrap_or(default)
 }
 
+/// New configuration wins; running sessions may still carry the pre-rename override.
+pub fn cockpit_env(canonical: &str, legacy: &str) -> Result<String, env::VarError> {
+    match env::var(canonical) {
+        Err(env::VarError::NotPresent) => env::var(legacy),
+        value => value,
+    }
+}
+
+/// Before host migration, use existing data rather than start an empty second store.
+pub fn renamed_path(canonical: PathBuf, legacy: PathBuf) -> PathBuf {
+    if !canonical.exists() && legacy.exists() { legacy } else { canonical }
+}
+
+pub fn cockpit_runtime(name: &str, legacy: &str) -> PathBuf {
+    renamed_path(runtime_dir().join(name), runtime_dir().join(legacy))
+}
+
+pub fn cockpit_cache(name: &str) -> PathBuf {
+    renamed_path(home().join(".cache/cockpit").join(name), home().join(".cache/claude").join(name))
+}
+
 pub fn state_dir() -> PathBuf { state_home().join("cockpit") }
 pub fn snapshot() -> PathBuf { runtime_dir().join("cockpit.json") }
 /// cockpit' loading screen state while a session starts or restarts in the viewer pane.
@@ -49,7 +70,7 @@ pub fn current() -> PathBuf { runtime_dir().join("cockpit.current") }
 /// One note per session `cockpit restart` is bringing back (sessions::restarts).
 pub fn restarting_dir() -> PathBuf { runtime_dir().join("cockpit.restarting") }
 /// While it exists, the phone page notifies: the lock screen's cockpit away on.
-pub fn phone_away() -> PathBuf { runtime_dir().join("claude-remote-away") }
+pub fn phone_away() -> PathBuf { cockpit_runtime("cockpit-remote-away", "claude-remote-away") }
 pub fn usage_cache() -> PathBuf { runtime_dir().join("claude-usage.json") }
 pub fn codex_usage_cache() -> PathBuf { runtime_dir().join("codex-usage.json") }
 /// Sessions' reports and requests: the one FIFO the sandboxes can write (greywall allowWrite).
@@ -61,7 +82,7 @@ pub fn osd_host_fifo() -> PathBuf { runtime_dir().join("osd-host.fifo") }
 /// learns which process sent each report and takes the pane from where it really runs.
 /// In a folder of its own, which the sandboxes mount whole: a socket file mounted alone stays the
 /// old one in every running sandbox once the socket is made again.
-pub fn osd_report_socket() -> PathBuf { runtime_dir().join("claude-report/osd-report.sock") }
+pub fn osd_report_socket() -> PathBuf { cockpit_runtime("cockpit-report", "claude-report").join("osd-report.sock") }
 /// The Claude sessions' scopes game-performance froze for a game, one per line; gone after it.
 pub fn game_frozen() -> PathBuf { runtime_dir().join("game-performance.frozen") }
 pub fn history() -> PathBuf { from_env("COCKPIT_HISTORY", home().join(".claude/history.jsonl")) }
@@ -82,13 +103,16 @@ pub fn log() -> PathBuf { state_dir().join("log") }
 pub fn todo() -> PathBuf { state_dir().join("todo.json") }
 pub fn todo_images() -> PathBuf { state_dir().join("todo-images") }
 pub fn team_database() -> PathBuf { crate::audit::dir().join("teams.sqlite") }
-pub fn team_agent_socket() -> PathBuf { runtime_dir().join("claude-team-host/agent.sock") }
+pub fn team_agent_socket() -> PathBuf { cockpit_runtime("cockpit-team-host", "claude-team-host").join("agent.sock") }
 /// Approvals, edits, unlinks: never linked into any sandbox, and the daemon refuses sandboxed peers.
-pub fn team_host_socket() -> PathBuf { runtime_dir().join("claude-team-host/host.sock") }
+pub fn team_host_socket() -> PathBuf { cockpit_runtime("cockpit-team-host", "claude-team-host").join("host.sock") }
 pub fn settings() -> PathBuf { state_dir().join("settings.json") }
 /// claude-todo's changes, queued by the OSD daemon with the sender's verified folder: the runtime
 /// directory, which no sandbox sees (security audit 2026-10-19, M4).
-pub fn todo_updates() -> PathBuf { from_env("CLAUDE_TODO_UPDATES", runtime_dir().join("claude-todo-updates.jsonl")) }
+pub fn todo_updates() -> PathBuf {
+    cockpit_env("COCKPIT_TODO_UPDATES", "CLAUDE_TODO_UPDATES").map(PathBuf::from)
+        .unwrap_or_else(|_| cockpit_runtime("cockpit-todo-updates.jsonl", "claude-todo-updates.jsonl"))
+}
 pub fn error_reports() -> PathBuf { state_dir().join("error-reports.json") }
 pub fn error_report_dir() -> PathBuf { state_dir().join("error-reports") }
 pub fn recent_sessions() -> PathBuf { state_dir().join("recent-sessions.json") }
@@ -97,12 +121,16 @@ pub fn ended_sessions() -> PathBuf { state_dir().join("ended-sessions") }
 pub fn asleep_dir() -> PathBuf { state_dir().join("asleep") }
 pub fn clones_dir() -> PathBuf { from_env("COCKPIT_CLONES", home().join("IdeaProjects/.parallel")) }
 pub fn greyproxy_db() -> PathBuf { from_env("COCKPIT_GREYPROXY_DB", home().join(".local/share/greyproxy/greyproxy.db")) }
-pub fn designs() -> PathBuf { from_env("CLAUDE_DESIGNS_DIR", home().join(".cache/claude/designs")) }
+pub fn designs() -> PathBuf {
+    cockpit_env("COCKPIT_DESIGNS_DIR", "CLAUDE_DESIGNS_DIR").map(PathBuf::from).unwrap_or_else(|_| cockpit_cache("designs"))
+}
 pub fn dotfiles() -> PathBuf { home().join("dotfiles") }
 /// Where the dotfiles session works: a clone the host never runs or builds from. ~/dotfiles, the
 /// stowed checkout, only moves forward through `cockpit apply-dotfiles`, after Theo read the
 /// diff (security audit 2026-10-19, C1).
-pub fn dotfiles_work() -> PathBuf { from_env("CLAUDE_DOTFILES_WORK", home().join("IdeaProjects/dotfiles")) }
+pub fn dotfiles_work() -> PathBuf {
+    cockpit_env("COCKPIT_DOTFILES_WORK", "CLAUDE_DOTFILES_WORK").map(PathBuf::from).unwrap_or_else(|_| home().join("IdeaProjects/dotfiles"))
+}
 /// Theo's greywall fork, where `claude-todo stack greywall` files problems in greywall's own code.
 /// The repositories whose running copy the host runs with Theo's rights: sessions work in their
 /// clones, and the running copy only takes commits through `cockpit apply`, after Theo read them.
@@ -116,10 +144,14 @@ pub fn work_clone(repository: &str) -> PathBuf {
 /// Where the agent-cockpit session works: the cockpit's logged errors and every session's blocked
 /// reports go there, since the setup they are about (cockpit, launchers, greywall.json, hooks) is its own.
 pub fn cockpit_work() -> PathBuf { work_clone("agent-cockpit") }
-pub fn greywall_work() -> PathBuf { from_env("CLAUDE_GREYWALL_WORK", home().join("IdeaProjects/greywall")) }
+pub fn greywall_work() -> PathBuf {
+    cockpit_env("COCKPIT_GREYWALL_WORK", "CLAUDE_GREYWALL_WORK").map(PathBuf::from).unwrap_or_else(|_| home().join("IdeaProjects/greywall"))
+}
 /// Theo's greyproxy fork, where `claude-todo stack greyproxy` files problems in greyproxy's own code.
-pub fn greyproxy_work() -> PathBuf { from_env("CLAUDE_GREYPROXY_WORK", home().join("IdeaProjects/greyproxy")) }
-pub fn reviews_fixture() -> Option<PathBuf> { env::var("CLAUDE_REVIEWS_FIXTURE").ok().map(PathBuf::from) }
+pub fn greyproxy_work() -> PathBuf {
+    cockpit_env("COCKPIT_GREYPROXY_WORK", "CLAUDE_GREYPROXY_WORK").map(PathBuf::from).unwrap_or_else(|_| home().join("IdeaProjects/greyproxy"))
+}
+pub fn reviews_fixture() -> Option<PathBuf> { cockpit_env("COCKPIT_REVIEWS_FIXTURE", "CLAUDE_REVIEWS_FIXTURE").ok().map(PathBuf::from) }
 pub fn claude_status_url() -> String {
     env::var("CLAUDE_STATUS_URL").unwrap_or_else(|_| "https://status.claude.com/api/v2/summary.json".into())
 }

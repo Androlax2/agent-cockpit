@@ -140,7 +140,7 @@ fn a_waiting_question_is_left_for_the_phone_until_it_is_answered() {
     let command = "sh -c 'printf \"Apply these 1 commit(s)? [y/N] \"; read answer; echo \"got $answer\"'";
     let (mut terminal, root, id) = approve_in_terminal(command);
     terminal.pump(10.0, Some(b"waiting for your answer above"));
-    let input_path = root.join(format!("run/claude-runs/{id}.input"));
+    let input_path = root.join(format!("run/cockpit-runs/{id}.input"));
     let input: serde_json::Value = serde_json::from_str(&fs::read_to_string(&input_path).unwrap()).unwrap();
     assert_eq!(input["prompt"], "Apply these 1 commit(s)? [y/N]");
     assert_eq!(input["command"], command);
@@ -189,14 +189,14 @@ fn the_phone_page_answers_the_menu_and_the_command_runs() {
                                        &[("CLAUDE_ANSWERS_DIR", &root.join("answers")), ("XDG_RUNTIME_DIR", &root.join("run")),
                                          ("XDG_STATE_HOME", &root.join("state")), ("COCKPIT_STATE_HOME", &root.join("state")), ("CLAUDE_AUDIT_JOURNAL", Path::new("off"))]);
     terminal.pump(10.0, Some(b"Run it?"));
-    let asking: serde_json::Value = serde_json::from_str(&fs::read_to_string(root.join(format!("run/claude-runs/{id}.asking"))).unwrap()).unwrap();
+    let asking: serde_json::Value = serde_json::from_str(&fs::read_to_string(root.join(format!("run/cockpit-runs/{id}.asking"))).unwrap()).unwrap();
     assert_eq!(asking["command"].as_str(), Some("sh -c 'echo ran-from-the-phone'"));
     assert_eq!(asking["session"], "aaaaaaaa-0000-4000-8000-000000000000", "the phone must associate the command with its conversation");
-    fs::write(root.join(format!("run/claude-runs/{id}.remote")), "y").unwrap();
+    fs::write(root.join(format!("run/cockpit-runs/{id}.remote")), "y").unwrap();
     terminal.wait_for_exit(20.0);
     let result: serde_json::Value = serde_json::from_str(&fs::read_to_string(root.join(format!("answers/proj-a/runs/{id}.result"))).unwrap()).unwrap();
     assert!(result["output"].as_str().unwrap().contains("ran-from-the-phone"), "{result}");
-    assert!(!root.join(format!("run/claude-runs/{id}.asking")).exists(), "still asking after the answer");
+    assert!(!root.join(format!("run/cockpit-runs/{id}.asking")).exists(), "still asking after the answer");
     let _ = fs::remove_dir_all(root);
 }
 
@@ -211,9 +211,9 @@ fn unverified_session_claims_do_not_associate_commands_with_a_mobile_chat() {
         &[("CLAUDE_ANSWERS_DIR", &root.join("answers")), ("XDG_RUNTIME_DIR", &root.join("run")),
             ("XDG_STATE_HOME", &root.join("state")), ("COCKPIT_STATE_HOME", &root.join("state")), ("CLAUDE_AUDIT_JOURNAL", Path::new("off"))]);
     terminal.pump(10.0, Some(b"Run it?"));
-    let asking: serde_json::Value = serde_json::from_str(&fs::read_to_string(root.join(format!("run/claude-runs/{id}.asking"))).unwrap()).unwrap();
+    let asking: serde_json::Value = serde_json::from_str(&fs::read_to_string(root.join(format!("run/cockpit-runs/{id}.asking"))).unwrap()).unwrap();
     assert_eq!(asking["session"], "");
-    fs::write(root.join(format!("run/claude-runs/{id}.remote")), "n").unwrap();
+    fs::write(root.join(format!("run/cockpit-runs/{id}.remote")), "n").unwrap();
     // Keep draining the PTY and bound the wait even if a loaded runner misses the decline.
     let status = terminal.wait_for_exit(20.0);
     assert!(status.success(), "approval exited with {status}");

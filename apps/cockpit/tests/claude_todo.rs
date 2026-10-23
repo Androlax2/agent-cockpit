@@ -83,6 +83,21 @@ fn list_shows_the_items_of_this_directorys_repository() {
 }
 
 #[test]
+fn the_canonical_todo_path_wins_over_the_legacy_override() {
+    let sandbox = Sandbox::new();
+    let canonical = sandbox.state.join("canonical-todo.json");
+    let legacy = sandbox.state.join("legacy-todo.json");
+    fs::write(&canonical, json!({"items": [{"id": "0123abcd", "project": "shop", "text": "canonical task", "status": "todo"}]}).to_string()).unwrap();
+    fs::write(&legacy, json!({"items": [{"id": "4567cdef", "project": "shop", "text": "legacy task", "status": "todo"}]}).to_string()).unwrap();
+    let output = sandbox.run(bin().join("cockpit-todo"), &["list", "--all"],
+        &[("COCKPIT_TODO_PATH", canonical.to_str().unwrap()), ("CLAUDE_TODO_PATH", legacy.to_str().unwrap())]);
+    assert!(output.status.success(), "{}", stdout(&output));
+    let shown = stdout(&output);
+    assert!(shown.contains("canonical task"), "{shown}");
+    assert!(!shown.contains("legacy task"), "{shown}");
+}
+
+#[test]
 fn list_reads_the_cockpits_state_folder_under_an_agents_private_xdg_state_home() {
     // The opencode launcher moves XDG_STATE_HOME into the sandbox's /tmp for opencode's own state.
     let sandbox = Sandbox::new();

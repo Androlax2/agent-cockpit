@@ -450,7 +450,7 @@ fn basename(path: &str) -> String {
 // ---- The run and guide queues ----
 
 pub fn runs_dir() -> PathBuf {
-    std::env::var("CLAUDE_RUNS_DIR").map(PathBuf::from).unwrap_or_else(|_| paths::home().join(".cache/claude/runs"))
+    cockpit::approval::runs_dir()
 }
 
 /// The project of a held request: the daemon set it from the folder the sender's sandbox started in.

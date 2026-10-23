@@ -22,6 +22,69 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
 static ENVIRONMENT: Mutex<()> = Mutex::new(());
+
+#[test]
+fn canonical_configuration_wins_while_legacy_overrides_still_work() {
+    let _fixture = Fixture::new();
+    let readers: &[(&str, &str, fn() -> PathBuf)] = &[
+        ("COCKPIT_TODO_UPDATES", "CLAUDE_TODO_UPDATES", crate::paths::todo_updates),
+        ("COCKPIT_DESIGNS_DIR", "CLAUDE_DESIGNS_DIR", crate::paths::designs),
+        ("COCKPIT_DOTFILES_WORK", "CLAUDE_DOTFILES_WORK", crate::paths::dotfiles_work),
+        ("COCKPIT_GREYWALL_WORK", "CLAUDE_GREYWALL_WORK", crate::paths::greywall_work),
+        ("COCKPIT_GREYPROXY_WORK", "CLAUDE_GREYPROXY_WORK", crate::paths::greyproxy_work),
+        ("COCKPIT_RUNS_DIR", "CLAUDE_RUNS_DIR", crate::approval::runs_dir),
+        ("COCKPIT_REMOTE_DIR", "CLAUDE_REMOTE_DIR", crate::remote::state_dir),
+    ];
+    for &(canonical, legacy, read) in readers {
+        // SAFETY: Fixture holds the environment lock.
+        unsafe {
+            std::env::remove_var(canonical);
+            std::env::set_var(legacy, "/legacy override");
+        }
+        assert_eq!(read(), PathBuf::from("/legacy override"), "{legacy}");
+        unsafe { std::env::set_var(canonical, "/canonical override"); }
+        let actual = read();
+        unsafe { std::env::remove_var(canonical); std::env::remove_var(legacy); }
+        assert_eq!(actual, PathBuf::from("/canonical override"), "{canonical}");
+    }
+}
+
+#[test]
+fn canonical_remote_address_wins_over_legacy_address() {
+    let _fixture = Fixture::new();
+    unsafe { std::env::set_var("CLAUDE_REMOTE_ADDRESS", "127.0.0.1:7000"); }
+    assert_eq!(crate::remote::address(), "127.0.0.1:7000");
+    unsafe { std::env::set_var("COCKPIT_REMOTE_ADDRESS", "127.0.0.1:7001"); }
+    let actual = crate::remote::address();
+    unsafe { std::env::remove_var("COCKPIT_REMOTE_ADDRESS"); std::env::remove_var("CLAUDE_REMOTE_ADDRESS"); }
+    assert_eq!(actual, "127.0.0.1:7001");
+}
+
+#[test]
+fn canonical_answer_configuration_wins_without_losing_legacy_sessions() {
+    let _fixture = Fixture::new();
+    unsafe {
+        std::env::remove_var("COCKPIT_ANSWERS_DIR");
+        std::env::remove_var("COCKPIT_ANSWERS_KEY");
+        std::env::set_var("CLAUDE_ANSWERS_DIR", "/legacy-answers");
+        std::env::set_var("CLAUDE_ANSWERS_KEY", "legacy-project");
+    }
+    assert_eq!(crate::approval::answers_dir("p", "runs"), PathBuf::from("/legacy-answers/p/runs"));
+    assert_eq!(crate::approval::own_answers_key().as_deref(), Some("legacy-project"));
+    unsafe {
+        std::env::set_var("COCKPIT_ANSWERS_DIR", "/canonical-answers");
+        std::env::set_var("COCKPIT_ANSWERS_KEY", "canonical-project");
+    }
+    let actual_dir = crate::approval::answers_dir("p", "runs");
+    let actual_key = crate::approval::own_answers_key();
+    unsafe {
+        for name in ["COCKPIT_ANSWERS_DIR", "CLAUDE_ANSWERS_DIR", "COCKPIT_ANSWERS_KEY", "CLAUDE_ANSWERS_KEY"] {
+            std::env::remove_var(name);
+        }
+    }
+    assert_eq!(actual_dir, PathBuf::from("/canonical-answers/p/runs"));
+    assert_eq!(actual_key.as_deref(), Some("canonical-project"));
+}
 const SESSION_A: &str = "aaaaaaaa-0000-4000-8000-000000000000";
 const SESSION_B: &str = "bbbbbbbb-0000-4000-8000-000000000000";
 const OPENCODE_SESSION: &str = "ses_3f2a9c0b1ffeQkTz8mWn4rJd2L";

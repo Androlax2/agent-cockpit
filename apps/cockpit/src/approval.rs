@@ -34,7 +34,7 @@ pub fn in_terminal_session() -> bool {
 }
 
 pub fn runs_dir() -> PathBuf {
-    std::env::var("CLAUDE_RUNS_DIR").map(PathBuf::from).unwrap_or_else(|_| paths::home().join(".cache/claude/runs"))
+    paths::cockpit_env("COCKPIT_RUNS_DIR", "CLAUDE_RUNS_DIR").map(PathBuf::from).unwrap_or_else(|_| paths::cockpit_cache("runs"))
 }
 
 /// Where Theo's answers go: the results of runs and guides, and a guide's progress. Every sandbox
@@ -44,7 +44,8 @@ pub fn runs_dir() -> PathBuf {
 /// project's own folder, read-only, into its sandboxes and no other, so no session reads another
 /// project's command output (security audit 2026-10-19, M3). `kind` is "runs" or "guides".
 pub fn answers_dir(key: &str, kind: &str) -> PathBuf {
-    std::env::var("CLAUDE_ANSWERS_DIR").map(PathBuf::from).unwrap_or_else(|_| paths::runtime_dir().join("claude-answers")).join(key).join(kind)
+    paths::cockpit_env("COCKPIT_ANSWERS_DIR", "CLAUDE_ANSWERS_DIR").map(PathBuf::from)
+        .unwrap_or_else(|_| paths::cockpit_runtime("cockpit-answers", "claude-answers")).join(key).join(kind)
 }
 
 /// A project's answers folder name, as the launcher makes it: letters, digits and "-" only, so it
@@ -56,7 +57,7 @@ pub fn valid_answers_key(key: &str) -> bool {
 /// This sandbox's answers folder name, from the launcher; None in a session started before answers
 /// went per project.
 pub fn own_answers_key() -> Option<String> {
-    std::env::var("CLAUDE_ANSWERS_KEY").ok().filter(|key| valid_answers_key(key))
+    paths::cockpit_env("COCKPIT_ANSWERS_KEY", "CLAUDE_ANSWERS_KEY").ok().filter(|key| valid_answers_key(key))
 }
 
 /// The answers folder a run or guide request names (its "answers" field). The sandbox chose it:
@@ -66,12 +67,12 @@ pub fn request_answers_dir(request: &Value, kind: &str) -> Option<PathBuf> {
 }
 
 /// What ask-to-run and ask-to-guide say in a session the launcher gave no answers folder.
-pub const NO_ANSWERS_KEY: &str = "This session started before Theo's answers went per project (no CLAUDE_ANSWERS_KEY): \
+pub const NO_ANSWERS_KEY: &str = "This session started before Theo's answers went per project (no COCKPIT_ANSWERS_KEY): \
                                   ask Theo to restart it (r in the column).";
 
 /// The run log, outside the sandbox's reach (the runtime directory).
 pub fn log_dir() -> PathBuf {
-    paths::runtime_dir().join("claude-runs")
+    paths::cockpit_runtime("cockpit-runs", "claude-runs")
 }
 
 /// A request or guide id: 12 hex characters.
@@ -153,7 +154,7 @@ pub fn file_request(kind: &str, request: &Value) -> Result<(), Refusal> {
 /// The daemon's copy of a run request (`extension` "request") or a guide ("guide"), in the
 /// runtime directory no sandbox sees: what the approval and the guide window read.
 pub fn held_request(id: &str, extension: &str) -> PathBuf {
-    paths::runtime_dir().join("claude-requests").join(format!("{id}.{extension}"))
+    paths::cockpit_runtime("cockpit-requests", "claude-requests").join(format!("{id}.{extension}"))
 }
 
 /// A command only programs outside the sandbox may give (phases, banners, notice-clear).

@@ -1,0 +1,108 @@
+"""The host migration must retain data and reject collisions before changing anything."""
+
+import json
+import os
+from pathlib import Path
+import subprocess
+import tempfile
+import unittest
+
+
+REPO = Path(__file__).resolve().parents[2]
+MIGRATION = REPO / "tools/migrate-cockpit-names.py"
+
+
+class MigrationTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="cockpit-migration-")
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.home = self.root / "home"
+        self.state = self.home / ".local/state"
+        self.runtime = self.root / "run"
+        self.state.mkdir(parents=True)
+        self.runtime.mkdir()
+        self.environment = dict(os.environ, HOME=str(self.home), XDG_STATE_HOME=str(self.state),
+                                COCKPIT_STATE_HOME=str(self.state), XDG_RUNTIME_DIR=str(self.runtime))
+
+    def run_migration(self, mode="--apply"):
+        return subprocess.run(["python3", MIGRATION, mode], env=self.environment, capture_output=True, text=True)
+
+    def seed(self, path, text="private-data"):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+        return path
+
+    def test_phone_state_survives_with_private_permissions_and_a_legacy_alias(self):
+        old = self.state / "claude-remote"
+        self.seed(old / "devices.json", '{"devices":[{"sha256":"kept"}]}')
+        self.seed(old / "push.json", '{"subscriptions":["kept"]}')
+        old.chmod(0o700)
+        (old / "devices.json").chmod(0o600)
+        output = self.run_migration()
+        self.assertEqual(output.returncode, 0, output.stderr)
+        new = self.state / "cockpit-remote"
+        self.assertEqual((new / "devices.json").read_bytes(), b'{"devices":[{"sha256":"kept"}]}')
+        self.assertEqual((new / "push.json").read_bytes(), b'{"subscriptions":["kept"]}')
+        self.assertEqual(new.stat().st_mode & 0o777, 0o700)
+        self.assertEqual((new / "devices.json").stat().st_mode & 0o777, 0o600)
+        self.assertTrue(old.is_symlink())
+        self.assertEqual(old.resolve(), new)
+        second = self.run_migration()
+        self.assertEqual(second.returncode, 0, second.stderr)
+
+    def test_conflicting_directories_leave_every_source_untouched(self):
+        untouched = self.seed(self.state / "claude-remote/devices.json")
+        self.seed(self.home / ".cache/claude/runs/old.json")
+        self.seed(self.home / ".cache/cockpit/runs/new.json")
+        output = self.run_migration()
+        self.assertNotEqual(output.returncode, 0)
+        self.assertIn("conflict", output.stderr.lower())
+        self.assertFalse(untouched.parent.is_symlink())
+        self.assertFalse((self.state / "cockpit-remote").exists())
+
+    def test_an_unexpected_symlink_is_not_followed(self):
+        outside = self.root / "outside"
+        outside.mkdir()
+        self.seed(outside / "devices.json")
+        (self.state / "claude-remote").symlink_to(outside)
+        output = self.run_migration()
+        self.assertNotEqual(output.returncode, 0)
+        self.assertEqual((outside / "devices.json").read_text(), "private-data")
+
+    def test_check_mode_leaves_old_state_unchanged(self):
+        old = self.seed(self.state / "claude-remote/devices.json")
+        output = self.run_migration("--check")
+        self.assertEqual(output.returncode, 0, output.stderr)
+        self.assertTrue(old.exists())
+        self.assertFalse(old.parent.is_symlink())
+        self.assertFalse((self.state / "cockpit-remote").exists())
+
+    def test_a_report_directory_retains_its_inode_for_existing_sandbox_mounts(self):
+        old = self.runtime / "claude-report"
+        old.mkdir()
+        inode = old.stat().st_ino
+        output = self.run_migration()
+        self.assertEqual(output.returncode, 0, output.stderr)
+        self.assertEqual((self.runtime / "cockpit-report").stat().st_ino, inode)
+        self.assertEqual(old.stat().st_ino, inode)
+
+    def test_custom_override_folders_are_not_moved(self):
+        custom = self.seed(self.root / "custom/devices.json")
+        self.environment["CLAUDE_REMOTE_DIR"] = str(custom.parent)
+        output = self.run_migration()
+        self.assertEqual(output.returncode, 0, output.stderr)
+        self.assertTrue(custom.exists())
+        self.assertFalse(custom.parent.is_symlink())
+
+    def test_in_flight_requests_refuse_migration_without_changing_state(self):
+        self.seed(self.state / "claude-remote/devices.json")
+        self.seed(self.runtime / "claude-runs/012345abcdef.asking", json.dumps({"command": "echo hello"}))
+        output = self.run_migration()
+        self.assertNotEqual(output.returncode, 0)
+        self.assertIn("in-flight", output.stderr)
+        self.assertFalse((self.state / "claude-remote").is_symlink())
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -193,8 +193,8 @@ struct Approve {
 impl Approve {
     fn new() -> Approve {
         let sandbox = Sandbox::new();
-        let held = sandbox.runtime.join("claude-requests");
-        fs::create_dir(&held).unwrap();
+        let held = sandbox.runtime.join("cockpit-requests");
+        fs::create_dir_all(&held).unwrap();
         // script -qfec "<command>" <log>: record what would run, then exit with SHIM_EXIT.
         sandbox.shim("script", r#"printf "ran: %s\n" "$2" > "$3"; exit "${SHIM_EXIT:-0}""#);
         sandbox.shim("cockpit", "");
@@ -490,7 +490,7 @@ fn a_terminal_session_without_its_projects_answers_folder_still_falls_back() {
     fixture.sandbox.env.insert("CLAUDE_ANSWERS_KEY".into(), String::new());
     let output = finish(fixture.ask(&["--why", "x", "true"], "5"), TIMEOUT);
     assert_eq!(output.status.code(), Some(126));
-    assert!(stdout(&output).contains("no CLAUDE_ANSWERS_KEY"), "{}", stdout(&output));
+    assert!(stdout(&output).contains("no COCKPIT_ANSWERS_KEY"), "{}", stdout(&output));
     assert!(fixture.daemon.as_ref().unwrap().received(Duration::from_millis(200)).is_empty(), "a request was filed");
 }
 

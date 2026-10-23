@@ -71,7 +71,7 @@ const USAGE: &str = "    cockpit-todo list [--all]        the items of this dire
     cockpit-todo show <id>           an item with its notes and the paths of its pasted images";
 
 fn todo_path() -> PathBuf {
-    std::env::var("CLAUDE_TODO_PATH").map(PathBuf::from).unwrap_or_else(|_| paths::todo())
+    paths::cockpit_env("COCKPIT_TODO_PATH", "CLAUDE_TODO_PATH").map(PathBuf::from).unwrap_or_else(|_| paths::todo())
 }
 
 /// The project of the directory: its git checkout (a parallel clone counts as its repository).
