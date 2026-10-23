@@ -302,6 +302,7 @@ pub fn request(registry: &mut Registry, peer: u32, action: AgentAction) -> Resul
         AgentAction::Handoff { .. } => "handoff", AgentAction::Recruit { .. } => "recruit",
         AgentAction::QaResult { .. } => "qa_result",
         AgentAction::Chief { .. } | AgentAction::NativeTelemetry { .. } => return Err(TeamError::new(ErrorCode::Unavailable, "action is unavailable here")),
+        AgentAction::LinkPropose { .. } => "link_propose", AgentAction::LinkSend { .. } => "link_send", AgentAction::LinkAssess { .. } => "link_assess",
     };
     // The host chooses the default agent; the requesting session cannot choose one.
     let default_agent = if matches!(action, AgentAction::Recruit { .. }) { registry.system.default_agent() } else { None };
@@ -355,6 +356,8 @@ pub fn request(registry: &mut Registry, peer: u32, action: AgentAction) -> Resul
         AgentAction::QaResult { result } => store::qa_result(connection,&sender,result,now_ms()),
         AgentAction::Chief { .. } | AgentAction::NativeTelemetry { .. } => Err(TeamError::new(ErrorCode::Unavailable, "action is unavailable here")),
         AgentAction::Propose { proposal } => store::propose(connection, &sender, proposal, &live, now_ms()),
+        AgentAction::LinkPropose { proposal } => cockpit::teams::links::propose(connection, &sender, proposal, &live, now_ms()),
+        AgentAction::LinkSend { .. } | AgentAction::LinkAssess { .. } => Err(TeamError::new(ErrorCode::Unavailable, "link messaging is not implemented")),
         AgentAction::Send { .. } => store::accept(connection, &sender, &action, now_ms()),
         AgentAction::Receive => {
             store::expire(connection, now_ms())?;

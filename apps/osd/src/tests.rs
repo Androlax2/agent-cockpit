@@ -231,6 +231,46 @@ fn team_context_exposes_only_own_identity_before_link_approval() {
 }
 
 #[test]
+fn team_link_routes_use_authenticated_sender_and_fail_closed_until_delivery_exists() {
+    use cockpit::teams::{AgentAction, HostAction};
+    let mut bench = team_bench();
+    let second = bench.fixture.root.join("home/IdeaProjects/project-b");
+    fs::create_dir_all(second.join(".git")).unwrap();
+    bench.registry.sessions.get_mut(OPENCODE_SESSION).unwrap().cwd = second.to_string_lossy().into_owned();
+    let first = bench.fixture.root.join("home/IdeaProjects/project-a");
+    fs::write(cockpit::paths::todo(), json!({"items":[{"id":"1d3fd318","project":"project-a","cwd":first,"text":"Joint work","status":"doing"}]}).to_string()).unwrap();
+    let proposal = json!({"action":"link_propose","proposal":{"submission_key":"joint","task":{"project":format!("path:{}", first.display()),"task_id":"1d3fd318"},
+        "peer_session_id":OPENCODE_SESSION,"purpose":"Coordinate shared work"}});
+    let action: AgentAction = serde_json::from_value(proposal.clone()).unwrap();
+    assert!(crate::teams::request(&mut bench.registry, 99, action.clone()).is_err());
+    let pending = crate::teams::request(&mut bench.registry, 10, action).unwrap().result.unwrap();
+    assert_eq!(pending["status"], "pending");
+    assert!(!pending.to_string().contains(OPENCODE_SESSION));
+    let connection = bench.registry.teams.as_ref().unwrap();
+    let (sender, hash): (String, String) = connection.query_row("SELECT sender,mapping_hash FROM link_proposals", [], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
+    assert_eq!(sender, SESSION_A);
+    let approve = json!({"action":"link_approve","request_id":"host-link","proposal_id":pending["proposal_id"],"expected_revision":1,"mapping_hash":hash});
+    assert!(serde_json::from_value::<AgentAction>(approve.clone()).is_err());
+    let active = crate::teams::host(&mut bench.registry, std::process::id(), cockpit::teams::HostRequest::Control {
+        action: serde_json::from_value::<HostAction>(approve).unwrap() }).unwrap().result.unwrap();
+    for action in [json!({"action":"link_send","message":{"link_id":active["link_id"],"submission_key":"note","kind":"notice","body":"Ready"}}),
+        json!({"action":"link_assess","link_id":active["link_id"],"thread_id":"thread","resolved":true})] {
+        assert!(crate::teams::request(&mut bench.registry, 10, serde_json::from_value(action).unwrap()).is_err());
+    }
+    let mut errors = Vec::new();
+    for (peer, owner) in [(SESSION_C, format!("path:{}", first.display())), (SESSION_B, "path:/unrelated".into()), (OPENCODE_SESSION, format!("path:{}", first.display()))] {
+        bench.world.borrow_mut().sender_runtimes.remove(&20);
+        let mut invalid = proposal.clone();
+        invalid["proposal"]["submission_key"] = json!(peer);
+        invalid["proposal"]["peer_session_id"] = json!(peer);
+        invalid["proposal"]["task"]["project"] = json!(owner);
+        errors.push(serde_json::to_value(crate::teams::request(&mut bench.registry, 10, serde_json::from_value(invalid).unwrap()).unwrap_err()).unwrap());
+    }
+    assert!(errors.iter().all(|error| error == &errors[0]));
+    assert!(bench.world.borrow().started.is_empty());
+}
+
+#[test]
 fn agent_team_proposals_remain_pending_until_the_host_approves_the_exact_mapping() {
     use cockpit::teams::{AgentAction,HostAction,Member,Proposal,Role,TaskKey};
     let mut bench = team_bench();

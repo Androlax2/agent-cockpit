@@ -1,7 +1,184 @@
 //! Protected shared-work identity and schema; no link grants team membership.
 
-use super::{ErrorCode, TaskKey, TeamError};
+use super::{ErrorCode, HostAction, LinkProposal, TaskKey, TeamError, TeamReply, VerifiedSession, store};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
+use serde_json::{Value, json};
+
+fn invalid_mapping() -> TeamError {
+    TeamError::new(ErrorCode::Invalid, "invalid or unavailable collaboration link")
+}
+
+fn live_participant<'a>(live: &'a [VerifiedSession], id: &str) -> Result<&'a VerifiedSession, TeamError> {
+    let mut matches = live.iter().filter(|session| session.session_id == id);
+    let session = matches.next().ok_or_else(invalid_mapping)?;
+    if matches.next().is_some() || session.runtime.is_empty()
+        || crate::agents::of_session_id(id).map(|agent| agent.name) != Some(session.agent.as_str())
+        || !session.project.starts_with("path:/") || session.project.chars().any(char::is_control) {
+        return Err(invalid_mapping());
+    }
+    Ok(session)
+}
+
+fn bind(sender: &VerifiedSession, proposal: &LinkProposal, live: &[VerifiedSession]) -> Result<[VerifiedSession; 2], TeamError> {
+    if live_participant(live, &sender.session_id)? != sender { return Err(invalid_mapping()); }
+    let peer = live_participant(live, &proposal.peer_session_id)?;
+    if sender.session_id == peer.session_id || sender.runtime == peer.runtime
+        || (proposal.task.project != sender.project && proposal.task.project != peer.project)
+        || proposal.submission_key.is_empty() || proposal.submission_key.len() > 128
+        || !proposal.submission_key.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        || proposal.purpose.trim().is_empty() || proposal.purpose.chars().count() > 1000
+        || proposal.purpose.chars().any(char::is_control) {
+        return Err(invalid_mapping());
+    }
+    Ok([sender.clone(), peer.clone()])
+}
+
+fn mapping_hash(task: &TaskKey, purpose: &str, revision: i64, generation: i64, participants: &[VerifiedSession; 2]) -> Result<String, TeamError> {
+    Ok(crate::audit::sha256_hex(serde_json::to_vec(&json!({"task":task,"purpose":purpose,"revision":revision,
+        "work_generation":generation,"participants":participants,"permission":"coordination_messages_only"}))?.as_slice()))
+}
+
+fn receipt(id: &str, revision: i64, status: &str) -> Value {
+    json!({"proposal_id":id,"revision":revision,"status":status})
+}
+
+pub fn propose(connection: &mut Connection, sender: &VerifiedSession, proposal: &LinkProposal, live: &[VerifiedSession], now_ms: i64) -> Result<TeamReply, TeamError> {
+    if live_participant(live, &sender.session_id)? != sender { return Err(invalid_mapping()); }
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    store::sleep::guard_sender(&transaction, &sender.session_id)?;
+    let fingerprint = crate::audit::sha256_hex(&serde_json::to_vec(proposal)?);
+    let previous: Option<(String, String, i64, String)> = transaction.query_row(
+        "SELECT id,fingerprint,revision,status FROM link_proposals WHERE sender=?1 AND submission_key=?2",
+        params![sender.session_id, proposal.submission_key], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))).optional()?;
+    if let Some((id, old_fingerprint, revision, status)) = previous {
+        if fingerprint != old_fingerprint { return Err(TeamError::new(ErrorCode::Conflict, "submission key already names different contents")); }
+        return Ok(TeamReply { request_id: proposal.submission_key.clone(), result: Ok(receipt(&id, revision, &status)) });
+    }
+    let created = insert_proposal(&transaction, sender, proposal, live, 1, None, now_ms)?;
+    transaction.commit()?;
+    // A pending receipt is not a session-discovery API, even for a known peer ID.
+    Ok(TeamReply { request_id: proposal.submission_key.clone(), result: Ok(receipt(created["proposal_id"].as_str().expect("created id"), 1, "pending")) })
+}
+
+fn insert_proposal(transaction: &Transaction<'_>, sender: &VerifiedSession, proposal: &LinkProposal, live: &[VerifiedSession],
+                   revision: i64, parent: Option<&str>, now_ms: i64) -> Result<Value, TeamError> {
+    let participants = bind(sender, proposal, live)?;
+    let (_, generation) = enroll_work(transaction, &proposal.task)?;
+    let pending: i64 = transaction.query_row("SELECT count(*) FROM link_proposals WHERE sender=?1 AND status='pending'", [&sender.session_id], |row| row.get(0))?;
+    if pending >= 10 { return Err(TeamError::new(ErrorCode::Limit, "pending link request limit reached")); }
+    store::guard_sender_budget(transaction, &sender.session_id, now_ms)?;
+    let id = store::identifier()?;
+    let fingerprint = crate::audit::sha256_hex(&serde_json::to_vec(proposal)?);
+    let mapping_hash = mapping_hash(&proposal.task, &proposal.purpose, revision, generation, &participants)?;
+    transaction.execute("INSERT INTO link_proposals (id,sender,submission_key,fingerprint,task_key,purpose,revision,mapping_hash,work_generation,status,created_at,parent_id)
+        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,'pending',?10,?11)",
+        params![id,sender.session_id,proposal.submission_key,fingerprint,serde_json::to_string(&proposal.task)?,proposal.purpose,revision,mapping_hash,generation,now_ms,parent])?;
+    for (slot, participant) in participants.iter().enumerate() {
+        transaction.execute("INSERT INTO link_participants VALUES (?1,?2,?3,?4,?5,?6)",
+            params![id,slot as i64,participant.session_id,participant.agent,participant.project,participant.runtime])?;
+    }
+    Ok(json!({"proposal_id":id,"revision":revision,"mapping_hash":mapping_hash,"status":"pending","task":proposal.task,
+        "purpose":proposal.purpose,"participants":participants,"work_generation":generation,"permission":"coordination_messages_only"}))
+}
+
+struct StoredProposal {
+    sender: String,
+    task: TaskKey,
+    purpose: String,
+    revision: i64,
+    mapping_hash: String,
+    generation: i64,
+}
+
+fn pending_proposal(connection: &Connection, id: &str, revision: i64) -> Result<StoredProposal, TeamError> {
+    let stored = connection.query_row("SELECT sender,task_key,purpose,revision,mapping_hash,work_generation FROM link_proposals
+        WHERE id=?1 AND revision=?2 AND status='pending'", params![id,revision], |row| {
+        Ok((row.get::<_, String>(0)?,row.get::<_, String>(1)?,row.get::<_, String>(2)?,row.get::<_, i64>(3)?,row.get::<_, String>(4)?,row.get::<_, i64>(5)?))
+    }).optional()?.ok_or_else(|| TeamError::new(ErrorCode::Conflict, "link request changed; review it again"))?;
+    Ok(StoredProposal { sender: stored.0, task: serde_json::from_str(&stored.1)?, purpose: stored.2, revision: stored.3, mapping_hash: stored.4, generation: stored.5 })
+}
+
+fn approve(transaction: &Transaction<'_>, id: &str, revision: i64, hash: &str, live: &[VerifiedSession], now_ms: i64) -> Result<Value, TeamError> {
+    let proposal = pending_proposal(transaction, id, revision)?;
+    if proposal.mapping_hash != hash { return Err(TeamError::new(ErrorCode::Conflict, "link mapping changed; review it again")); }
+    let participants = transaction.prepare("SELECT session_id,agent,project,runtime FROM link_participants WHERE proposal_id=?1 ORDER BY slot")?
+        .query_map([id], |row| Ok(VerifiedSession { session_id: row.get(0)?, agent: row.get(1)?, project: row.get(2)?, runtime: row.get(3)? }))?
+        .collect::<Result<Vec<_>, _>>()?;
+    let participants: [VerifiedSession; 2] = participants.try_into().map_err(|_| invalid_mapping())?;
+    let original = LinkProposal { submission_key: "approval".into(), task: proposal.task.clone(), peer_session_id: participants[1].session_id.clone(), purpose: proposal.purpose.clone() };
+    if proposal.sender != participants[0].session_id || bind(&participants[0], &original, live)? != participants
+        || mapping_hash(&proposal.task, &proposal.purpose, proposal.revision, proposal.generation, &participants)? != hash {
+        return Err(TeamError::new(ErrorCode::Conflict, "link identities changed; propose a new link"));
+    }
+    require_open_work(transaction, &proposal.task, proposal.generation)?;
+    for participant in &participants {
+        let active: i64 = transaction.query_row("SELECT count(*) FROM links WHERE state='active' AND (session_low=?1 OR session_high=?1)",
+            [&participant.session_id], |row| row.get(0))?;
+        if active >= 10 { return Err(TeamError::new(ErrorCode::Limit, "active link limit reached")); }
+    }
+    let (low, high) = if participants[0].session_id < participants[1].session_id { (&participants[0].session_id, &participants[1].session_id) }
+                      else { (&participants[1].session_id, &participants[0].session_id) };
+    let task_key = serde_json::to_string(&proposal.task)?;
+    let exists: bool = transaction.query_row("SELECT EXISTS(SELECT 1 FROM links WHERE session_low=?1 AND session_high=?2 AND task_key=?3 AND state='active')",
+        params![low,high,task_key], |row| row.get(0))?;
+    if exists { return Err(TeamError::new(ErrorCode::Conflict, "this pair already has an active link for this work")); }
+    let link_id = store::identifier()?;
+    transaction.execute("INSERT INTO links VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,'active',NULL,?10,NULL)",
+        params![link_id,id,revision,hash,task_key,proposal.generation,low,high,store::identifier()?,now_ms])?;
+    transaction.execute("UPDATE link_proposals SET status='approved' WHERE id=?1", [id])?;
+    Ok(json!({"link_id":link_id,"proposal_id":id,"status":"active"}))
+}
+
+/// Host socket only. Link controls share the existing host-action replay namespace atomically.
+pub fn control(connection: &mut Connection, action: &HostAction, live: &[VerifiedSession], now_ms: i64) -> Result<TeamReply, TeamError> {
+    let request_id = match action {
+        HostAction::LinkPropose { request_id, .. } | HostAction::LinkApprove { request_id, .. } | HostAction::LinkEdit { request_id, .. }
+        | HostAction::LinkReject { request_id, .. } | HostAction::LinkRevoke { request_id, .. } => request_id,
+        _ => return Err(TeamError::new(ErrorCode::Invalid, "not a link control")),
+    };
+    let fingerprint = crate::audit::sha256_hex(&serde_json::to_vec(action)?);
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let previous: Option<(String, String)> = transaction.query_row("SELECT fingerprint,response FROM host_actions WHERE request_id=?1", [request_id],
+        |row| Ok((row.get(0)?,row.get(1)?))).optional()?;
+    if let Some((old_fingerprint, response)) = previous {
+        if fingerprint != old_fingerprint { return Err(TeamError::new(ErrorCode::Conflict, "host request id already used")); }
+        return Ok(TeamReply { request_id: request_id.clone(), result: Ok(serde_json::from_str(&response)?) });
+    }
+    let response = match action {
+        HostAction::LinkPropose { requester_session_id, proposal, .. } => {
+            let sender = live_participant(live, requester_session_id)?;
+            bind(sender, proposal, live)?;
+            let proposal = LinkProposal { submission_key: format!("host-{}", store::identifier()?), ..proposal.clone() };
+            insert_proposal(&transaction, sender, &proposal, live, 1, None, now_ms)?
+        },
+        HostAction::LinkApprove { proposal_id, expected_revision, mapping_hash, .. } => approve(&transaction, proposal_id, *expected_revision, mapping_hash, live, now_ms)?,
+        HostAction::LinkEdit { proposal_id, expected_revision, replacement, .. } => {
+            let original = pending_proposal(&transaction, proposal_id, *expected_revision)?;
+            require_open_work(&transaction, &original.task, original.generation)?;
+            let sender = live_participant(live, &original.sender)?;
+            bind(sender, replacement, live)?;
+            transaction.execute("UPDATE link_proposals SET status='closed',closure_reason='superseded' WHERE id=?1", [proposal_id])?;
+            let proposal = LinkProposal { submission_key: format!("host-edit-{}", store::identifier()?), ..replacement.clone() };
+            insert_proposal(&transaction, sender, &proposal, live, original.revision + 1, Some(proposal_id), now_ms)?
+        },
+        HostAction::LinkReject { proposal_id, expected_revision, .. } => {
+            pending_proposal(&transaction, proposal_id, *expected_revision)?;
+            transaction.execute("UPDATE link_proposals SET status='rejected',closure_reason='rejected' WHERE id=?1", [proposal_id])?;
+            receipt(proposal_id, *expected_revision, "rejected")
+        },
+        HostAction::LinkRevoke { link_id, .. } => {
+            if transaction.execute("UPDATE links SET state='closed',closure_reason='revoked',closed_at=?2 WHERE id=?1 AND state='active'", params![link_id,now_ms])? != 1 {
+                return Err(TeamError::new(ErrorCode::Conflict, "no active link to revoke"));
+            }
+            transaction.execute("UPDATE messages SET state='cancelled',last_error='link revoked' WHERE scope_kind='link' AND link_id=?1 AND state IN ('queued','ready')", [link_id])?;
+            json!({"link_id":link_id,"status":"closed","closure_reason":"revoked"})
+        },
+        _ => unreachable!("non-link controls rejected above"),
+    };
+    transaction.execute("INSERT INTO host_actions VALUES (?1,?2,?3)", params![request_id,fingerprint,response.to_string()])?;
+    transaction.commit()?;
+    Ok(TeamReply { request_id: request_id.clone(), result: Ok(response) })
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SharedWork {

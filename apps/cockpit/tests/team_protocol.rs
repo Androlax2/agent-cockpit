@@ -2,6 +2,37 @@ use cockpit::teams::{AgentAction, Proposal};
 use serde_json::json;
 
 #[test]
+fn link_protocol_derives_identity_and_keeps_approval_host_only() {
+    let proposal = json!({"submission_key":"link-1","task":{"project":"path:/project-a","task_id":"1d3fd318"},
+        "peer_session_id":"aaaaaaaa-0000-4000-8000-000000000000","purpose":"Coordinate shared work"});
+    let actions = [json!({"action":"link_propose","proposal":proposal}),
+        json!({"action":"link_send","message":{"link_id":"link","submission_key":"message-1","kind":"notice","body":"Ready","thread_id":null}}),
+        json!({"action":"link_assess","link_id":"link","thread_id":"thread","resolved":true})];
+    for action in actions {
+        assert!(serde_json::from_value::<AgentAction>(action.clone()).is_ok());
+        for field in ["sender", "requester_session_id", "approved", "runtime", "project", "recipient", "role"] {
+            let mut forged = action.clone();
+            forged[field] = json!("forged");
+            assert!(serde_json::from_value::<AgentAction>(forged).is_err(), "accepted {field}");
+            for payload in ["proposal", "message"] {
+                if action.get(payload).is_none() { continue; }
+                let mut forged = action.clone();
+                forged[payload][field] = json!("forged");
+                assert!(serde_json::from_value::<AgentAction>(forged).is_err(), "accepted {payload}.{field}");
+            }
+        }
+    }
+    for action in [json!({"action":"link_propose","request_id":"host","requester_session_id":"requester","proposal":proposal}),
+        json!({"action":"link_approve","request_id":"host","proposal_id":"proposal","expected_revision":1,"mapping_hash":"hash"}),
+        json!({"action":"link_edit","request_id":"host","proposal_id":"proposal","expected_revision":1,"replacement":proposal}),
+        json!({"action":"link_reject","request_id":"host","proposal_id":"proposal","expected_revision":1}),
+        json!({"action":"link_revoke","request_id":"host","link_id":"link"})] {
+        assert!(serde_json::from_value::<cockpit::teams::HostAction>(action.clone()).is_ok());
+        assert!(serde_json::from_value::<AgentAction>(action).is_err());
+    }
+}
+
+#[test]
 fn sandbox_cannot_prepare_or_cancel_team_sleep() {
     for request in ["prepare_sleep", "cancel_sleep", "begin_wake", "sleep_status", "sleep_recorded"] {
         let mut host = json!({"request":request,"session_id":"aaaaaaaa-0000-4000-8000-000000000000"});

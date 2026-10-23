@@ -53,6 +53,7 @@ fn action(name: &str) -> Result<AgentAction, String> {
         AgentAction::Chief { .. } => "chief",
         AgentAction::NativeTelemetry { .. } => "native-telemetry",
         AgentAction::QaResult { .. } => "qa-result",
+        AgentAction::LinkPropose { .. } | AgentAction::LinkSend { .. } | AgentAction::LinkAssess { .. } => return Err("link commands are not implemented".into()),
     };
     if name != actual { return Err("command and JSON action do not match".into()); }
     Ok(action)

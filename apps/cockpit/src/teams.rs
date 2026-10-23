@@ -47,6 +47,25 @@ pub struct Proposal {
     pub reason: String,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LinkProposal {
+    pub submission_key: String,
+    pub task: TaskKey,
+    pub peer_session_id: String,
+    pub purpose: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LinkSubmission {
+    pub link_id: String,
+    pub submission_key: String,
+    pub kind: MessageKind,
+    pub body: String,
+    pub thread_id: Option<String>,
+}
+
 /// A teammate an agent asks Theo to start, with what it will be told first.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -79,6 +98,11 @@ pub struct VerifiedSession {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum HostAction {
+    LinkPropose { request_id: String, requester_session_id: String, proposal: LinkProposal },
+    LinkApprove { request_id: String, proposal_id: String, expected_revision: i64, mapping_hash: String },
+    LinkEdit { request_id: String, proposal_id: String, expected_revision: i64, replacement: LinkProposal },
+    LinkReject { request_id: String, proposal_id: String, expected_revision: i64 },
+    LinkRevoke { request_id: String, link_id: String },
     Approve { request_id: String, proposal_id: String, expected_revision: i64, mapping_hash: String },
     Edit { request_id: String, proposal_id: String, expected_revision: i64, replacement: Proposal },
     Reject { request_id: String, proposal_id: String, expected_revision: i64 },
@@ -186,6 +210,9 @@ pub struct NativeCounts {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AgentAction {
+    LinkPropose { proposal: LinkProposal },
+    LinkSend { message: LinkSubmission },
+    LinkAssess { link_id: String, thread_id: String, resolved: bool },
     Context,
     /// Runtime-reported native facts, not readiness, identity, approval or host verification.
     NativeTelemetry { sequence: i64, counts: Option<NativeCounts> },

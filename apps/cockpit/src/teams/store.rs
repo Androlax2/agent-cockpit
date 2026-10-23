@@ -223,8 +223,7 @@ pub fn propose(connection: &mut Connection, sender: &VerifiedSession, proposal: 
         if old_fingerprint != fingerprint { return Err(TeamError::new(ErrorCode::Conflict, "submission key already names different contents")); }
         return Ok(TeamReply { request_id: proposal.submission_key.clone(), result: Ok(json!({"proposal_id": id, "revision": revision, "mapping_hash": mapping_hash})) });
     }
-    let recent: i64 = transaction.query_row("SELECT count(*) FROM proposals WHERE sender=?1 AND created_at>?2", params![sender.session_id, now_ms - 60_000], |row| row.get(0))?;
-    if recent >= 10 { return Err(TeamError::new(ErrorCode::Limit, "team request rate limit reached")); }
+    guard_sender_budget(&transaction, &sender.session_id, now_ms)?;
     let id = identifier()?;
     let task_key = serde_json::to_string(&proposal.task)?;
     let mapping_hash = audit::sha256_hex(format!("{task_key}\n{mapping}").as_bytes());
@@ -277,8 +276,7 @@ pub fn recruit(connection: &mut Connection, sender: &VerifiedSession, recruitmen
     let mapping = serde_json::to_string(&bind(&asker, live)?)?;
     let recruits = serde_json::to_string(&recruitment.recruits)?;
     let fingerprint = audit::sha256_hex(format!("{contents}\n{agent}").as_bytes());
-    let recent: i64 = transaction.query_row("SELECT count(*) FROM proposals WHERE sender=?1 AND created_at>?2", params![sender.session_id, now_ms - 60_000], |row| row.get(0))?;
-    if recent >= 10 { return Err(TeamError::new(ErrorCode::Limit, "team request rate limit reached")); }
+    guard_sender_budget(&transaction, &sender.session_id, now_ms)?;
     let id = identifier()?;
     let mapping_hash = audit::sha256_hex(format!("{task_key}\n{mapping}\n{recruits}\n{agent}").as_bytes());
     transaction.execute("INSERT INTO proposals (id,sender,submission_key,fingerprint,task_key,project,task_id,mapping,mapping_hash,reason,revision,status,created_at,recruits,spawn_agent)
@@ -298,6 +296,8 @@ pub fn control(connection: &mut Connection, action: &HostAction, live: &[Verifie
 pub fn control_with(connection: &mut Connection, action: &HostAction, live: &[VerifiedSession], directories: &HashMap<String, String>,
                     now_ms: i64) -> Result<TeamReply, TeamError> {
     let request_id = match action {
+        HostAction::LinkPropose { .. } | HostAction::LinkApprove { .. } | HostAction::LinkEdit { .. }
+        | HostAction::LinkReject { .. } | HostAction::LinkRevoke { .. } => return super::links::control(connection, action, live, now_ms),
         HostAction::Approve { request_id, .. } | HostAction::Edit { request_id, .. }
         | HostAction::Reject { request_id, .. } | HostAction::Unlink { request_id, .. } | HostAction::Resolve { request_id, .. }
         | HostAction::Propose { request_id, .. } | HostAction::Reconcile { request_id, .. } | HostAction::Dismiss { request_id, .. } => request_id,
@@ -381,6 +381,8 @@ pub fn control_with(connection: &mut Connection, action: &HostAction, live: &[Ve
             }
             json!({"token": token, "status": "dismissed"})
         },
+        HostAction::LinkPropose { .. } | HostAction::LinkApprove { .. } | HostAction::LinkEdit { .. }
+        | HostAction::LinkReject { .. } | HostAction::LinkRevoke { .. } => unreachable!("link controls dispatched above"),
     };
     transaction.execute("INSERT INTO host_actions VALUES (?1,?2,?3)", params![request_id, fingerprint, response.to_string()])?;
     transaction.commit()?;
@@ -602,6 +604,17 @@ fn cancel_member_messages(connection: &Connection, task_key: &str, session: &str
 
 struct ActiveMember { role: String, epoch: String, agent: String, runtime: String, last_idle_turn: Option<String> }
 
+/// One sender budget across both collaboration scopes; call after replay detection, before insertion.
+pub(super) fn guard_sender_budget(connection: &Connection, sender: &str, now_ms: i64) -> Result<(), TeamError> {
+    let recent: i64 = connection.query_row("SELECT
+        (SELECT count(*) FROM messages WHERE sender=?1 AND created_at>?2) +
+        (SELECT count(*) FROM proposals WHERE sender=?1 AND created_at>?2) +
+        (SELECT count(*) FROM link_proposals WHERE sender=?1 AND created_at>?2)",
+        params![sender, now_ms.saturating_sub(60_000)], |row| row.get(0))?;
+    if recent >= 10 { return Err(TeamError::new(ErrorCode::Limit, "collaboration sender rate limit reached")); }
+    Ok(())
+}
+
 fn member(connection: &Connection, task_key: &str, session: &str) -> Result<Option<ActiveMember>, TeamError> {
     Ok(connection.query_row("SELECT role,epoch,agent,runtime,last_idle_turn FROM members WHERE task_key=?1 AND session_id=?2", params![task_key,session],
         |row| Ok(ActiveMember { role:row.get(0)?,epoch:row.get(1)?,agent:row.get(2)?,runtime:row.get(3)?,last_idle_turn:row.get(4)? })).optional()?)
@@ -646,8 +659,8 @@ pub fn accept(connection: &mut Connection, sender: &VerifiedSession, action: &Ag
         return Ok(TeamReply { request_id:message.submission_key.clone(),result:Ok(json!({"message_id":id})) });
     }
     let pending: i64 = transaction.query_row("SELECT count(*) FROM messages WHERE task_key=?1 AND state IN ('queued','ready','submitting','uncertain')", [&task_key], |row| row.get(0))?;
-    let recent: i64 = transaction.query_row("SELECT (SELECT count(*) FROM messages WHERE sender=?1 AND created_at>?2)+(SELECT count(*) FROM proposals WHERE sender=?1 AND created_at>?2)", params![sender.session_id,now_ms-60_000], |row| row.get(0))?;
-    if pending >= 100 || recent >= 10 { return Err(TeamError::new(ErrorCode::Limit, "collaboration queue or rate limit reached")); }
+    guard_sender_budget(&transaction, &sender.session_id, now_ms)?;
+    if pending >= 100 { return Err(TeamError::new(ErrorCode::Limit, "collaboration queue limit reached")); }
     let thread = match message.kind {
         MessageKind::Clarification => match thread_request(&transaction, &task_key, sender, message, now_ms)? {
             ThreadStep::Proceed(thread_id, round) => Some((thread_id, round)),

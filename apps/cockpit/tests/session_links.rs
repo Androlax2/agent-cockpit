@@ -7,6 +7,281 @@ use rusqlite::Connection;
 use rusqlite::Connection as LinkConnection;
 use serde_json::json;
 use std::{fs, path::Path};
+use cockpit::teams::{AgentAction, ErrorCode, HostAction, LinkProposal, Member, MessageKind, Proposal, Role, Submission, VerifiedSession};
+use serde_json::Value;
+
+fn proposal_fixture() -> (Connection, todo::TodoList, Vec<VerifiedSession>, LinkProposal) {
+    let first = checkout(&cockpit::paths::home().join("IdeaProjects/first"));
+    let second = checkout(&cockpit::paths::home().join("IdeaProjects/second"));
+    let mut todos = todo::TodoList::load();
+    let task = TaskKey { project: format!("path:{first}"), task_id: todos.add("first", &first, "Joint work") };
+    let live = vec![
+        VerifiedSession { session_id: "aaaaaaaa-0000-4000-8000-000000000000".into(), agent: "claude".into(), project: task.project.clone(), runtime: "first-runtime".into() },
+        VerifiedSession { session_id: "bbbbbbbb-0000-4000-8000-000000000000".into(), agent: "claude".into(), project: format!("path:{second}"), runtime: "second-runtime".into() },
+        VerifiedSession { session_id: "cccccccc-0000-4000-8000-000000000000".into(), agent: "claude".into(), project: task.project.clone(), runtime: "third-runtime".into() },
+    ];
+    let proposal = LinkProposal { submission_key: "link-request".into(), task, peer_session_id: live[1].session_id.clone(), purpose: "Coordinate shared work".into() };
+    (store::open(&cockpit::paths::team_database()).unwrap(), todos, live, proposal)
+}
+
+fn host_action(value: Value) -> HostAction { serde_json::from_value(value).unwrap() }
+
+fn link_approval(connection: &Connection, receipt: &Value, request: &str) -> HostAction {
+    let hash: String = connection.query_row("SELECT mapping_hash FROM link_proposals WHERE id=?1", [receipt["proposal_id"].as_str().unwrap()], |row| row.get(0)).unwrap();
+    host_action(json!({"action":"link_approve","request_id":request,"proposal_id":receipt["proposal_id"],"expected_revision":receipt["revision"],"mapping_hash":hash}))
+}
+
+fn own_teams(connection: &mut Connection, live: &[VerifiedSession], proposal: &LinkProposal) {
+    for (index, developer) in live[..2].iter().enumerate() {
+        let mut members = vec![Member { session_id: developer.session_id.clone(), role: Role::Developer }];
+        if index == 0 { members.push(Member { session_id: live[2].session_id.clone(), role: Role::Designer }); }
+        let request = Proposal { submission_key: format!("team-{index}"), task: TaskKey { project: developer.project.clone(), task_id: proposal.task.task_id.clone() }, members, reason: "Own team".into() };
+        let pending = store::propose(connection, developer, &request, live, 0).unwrap().result.unwrap();
+        store::control(connection, &HostAction::Approve { request_id: format!("team-approval-{index}"), proposal_id: pending["proposal_id"].as_str().unwrap().into(),
+            expected_revision: 1, mapping_hash: pending["mapping_hash"].as_str().unwrap().into() }, live, 1).unwrap();
+    }
+}
+
+#[test]
+fn cross_project_developers_require_exact_host_approval() {
+    if isolated("cross_project_developers_require_exact_host_approval") { return; }
+    let (mut connection, _, live, proposal) = proposal_fixture();
+    own_teams(&mut connection, &live, &proposal);
+    let before = store::snapshot(&connection, None, None, 100).unwrap();
+    let todo_before = fs::read(cockpit::paths::todo()).unwrap();
+    let pending = links::propose(&mut connection, &live[0], &proposal, &live, 1000).unwrap().result.unwrap();
+    assert_eq!(pending["status"], "pending");
+    assert!(!pending.to_string().contains(&live[1].session_id));
+    assert!(!pending.to_string().contains(&live[1].project));
+    let message = AgentAction::Send { message: Submission { task: proposal.task.clone(), submission_key: "premature".into(), recipient: live[1].session_id.clone(),
+        kind: MessageKind::Notice, body: "Ready".into(), thread_id: None, handoff_id: None } };
+    assert!(store::accept(&mut connection, &live[0], &message, 1100).is_err());
+    assert_eq!(connection.query_row("SELECT count(*) FROM links", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
+    let approval = link_approval(&connection, &pending, "exact");
+    let approved = store::control(&mut connection, &approval, &live, 2000).unwrap().result.unwrap();
+    assert_eq!(approved["status"], "active");
+    assert_eq!(store::control(&mut connection, &approval, &[], 2100).unwrap().result.unwrap(), approved);
+    assert!(store::accept(&mut connection, &live[0], &message, 2200).is_err());
+    let swapped = LinkProposal { submission_key: "reverse".into(), peer_session_id: live[0].session_id.clone(), ..proposal };
+    let pending = links::propose(&mut connection, &live[1], &swapped, &live, 3000).unwrap().result.unwrap();
+    let approval = link_approval(&connection, &pending, "duplicate-pair");
+    assert!(store::control(&mut connection, &approval, &live, 4000).is_err());
+    assert_eq!(store::snapshot(&connection, None, None, 100).unwrap(), before);
+    assert_eq!(fs::read(cockpit::paths::todo()).unwrap(), todo_before);
+}
+
+#[test]
+fn link_approval_revalidates_every_immutable_fact() {
+    if isolated("link_approval_revalidates_every_immutable_fact") { return; }
+    let (mut connection, mut todos, live, proposal) = proposal_fixture();
+    for (index, field) in ["runtime", "requester_runtime", "project", "peer", "todo", "purpose", "revision", "hash", "unavailable", "generation"].into_iter().enumerate() {
+        let mut proposal = proposal.clone();
+        proposal.submission_key = format!("change-{field}");
+        let pending = links::propose(&mut connection, &live[0], &proposal, &live, 1000 + index as i64 * 60_001).unwrap().result.unwrap();
+        let mut approval = serde_json::to_value(link_approval(&connection, &pending, field)).unwrap();
+        let mut changed = live.clone();
+        match field {
+            "runtime" => changed[1].runtime = "replacement".into(),
+            "requester_runtime" => changed[0].runtime = "replacement".into(),
+            "project" => changed[1].project = changed[0].project.clone(),
+            "unavailable" => { changed.remove(1); },
+            "revision" => approval["expected_revision"] = json!(2),
+            "hash" => approval["mapping_hash"] = json!("forged"),
+            "generation" => { assert!(todos.set_status(&proposal.task.task_id, "done", "")); assert!(todos.set_status(&proposal.task.task_id, "todo", "")); },
+            _ => {
+                let mut replacement = proposal.clone();
+                if field == "peer" { replacement.peer_session_id = live[2].session_id.clone(); }
+                if field == "purpose" { replacement.purpose = "Different purpose".into(); }
+                if field == "todo" { replacement.task.task_id = todos.add("first", live[0].project.trim_start_matches("path:"), "Different work"); }
+                let edited = store::control(&mut connection, &host_action(json!({"action":"link_edit","request_id":format!("edit-{field}"),
+                    "proposal_id":pending["proposal_id"],"expected_revision":1,"replacement":replacement})), &live, 1100).unwrap().result.unwrap();
+                assert_eq!(edited["revision"], 2);
+                assert_ne!(edited["mapping_hash"], approval["mapping_hash"]);
+            },
+        }
+        let stale_approval = store::control(&mut connection, &host_action(approval), &changed, 2000);
+        assert!(stale_approval.is_err(), "accepted changed {field}");
+        // Free the pending capacity without erasing history between cases.
+        connection.execute("UPDATE link_proposals SET status='rejected' WHERE status='pending'", []).unwrap();
+    }
+}
+
+#[test]
+fn invalid_link_peers_are_indistinguishable_and_receipts_are_private() {
+    if isolated("invalid_link_peers_are_indistinguishable_and_receipts_are_private") { return; }
+    let (mut connection, _, live, proposal) = proposal_fixture();
+    let mut errors = Vec::new();
+    for invalid in ["unknown", "unavailable", "unrelated", "self", "unmanaged", "empty-runtime", "duplicate"] {
+        let mut proposal = proposal.clone();
+        let mut changed = live.clone();
+        match invalid {
+            "unknown" => proposal.peer_session_id = "dddddddd-0000-4000-8000-000000000000".into(),
+            "unavailable" => { changed.remove(1); },
+            "unrelated" => proposal.task.project = "path:/unrelated".into(),
+            "self" => proposal.peer_session_id = live[0].session_id.clone(),
+            "unmanaged" => changed[1].agent = "unmanaged".into(),
+            "empty-runtime" => changed[1].runtime.clear(),
+            "duplicate" => changed.push(live[1].clone()),
+            _ => unreachable!(),
+        }
+        errors.push(serde_json::to_value(links::propose(&mut connection, &live[0], &proposal, &changed, 1000).unwrap_err()).unwrap());
+    }
+    assert!(errors.iter().all(|error| error == &errors[0]));
+    let pending = links::propose(&mut connection, &live[0], &proposal, &live, 1000).unwrap().result.unwrap();
+    store::control(&mut connection, &host_action(json!({"action":"link_reject","request_id":"reject","proposal_id":pending["proposal_id"],"expected_revision":1})), &live, 2000).unwrap();
+    let rejected = links::propose(&mut connection, &live[0], &proposal, &live, 3000).unwrap().result.unwrap();
+    assert_eq!(rejected, json!({"proposal_id":pending["proposal_id"],"revision":1,"status":"rejected"}));
+    let approval = link_approval(&connection, &pending, "rejected-approval");
+    assert!(store::control(&mut connection, &approval, &live, 4000).is_err());
+}
+
+#[test]
+fn link_proposal_limits_validate_keys_and_count_pending_requests() {
+    if isolated("link_proposal_limits_validate_keys_and_count_pending_requests") { return; }
+    let (mut connection, _, live, proposal) = proposal_fixture();
+    for key in ["".into(), "a".repeat(129), "not valid".into(), "é".into()] {
+        assert!(links::propose(&mut connection, &live[0], &LinkProposal { submission_key: key, ..proposal.clone() }, &live, 1000).is_err());
+    }
+    for purpose in ["".into(), " ".into(), "a".repeat(1001), "two\nlines".into(), "control\u{1b}".into()] {
+        assert!(links::propose(&mut connection, &live[0], &LinkProposal { purpose, ..proposal.clone() }, &live, 1000).is_err());
+    }
+    for index in 0..10 {
+        let proposal = LinkProposal { submission_key: format!("{}-{index}", "a".repeat(126)), purpose: "é".repeat(1000), ..proposal.clone() };
+        links::propose(&mut connection, &live[0], &proposal, &live, index * 60_001).unwrap();
+    }
+    assert_eq!(links::propose(&mut connection, &live[0], &proposal, &live, 700_000).unwrap_err().code, ErrorCode::Limit);
+}
+
+#[test]
+fn link_and_team_traffic_share_one_sender_budget_and_replays_are_free() {
+    if isolated("link_and_team_traffic_share_one_sender_budget_and_replays_are_free") { return; }
+    let (mut connection, _, live, proposal) = proposal_fixture();
+    own_teams(&mut connection, &live, &proposal);
+    let message = AgentAction::Send { message: Submission { task: proposal.task.clone(), submission_key: "team-message".into(), recipient: live[2].session_id.clone(),
+        kind: MessageKind::Notice, body: "Ready".into(), thread_id: None, handoff_id: None } };
+    store::accept(&mut connection, &live[0], &message, 1000).unwrap();
+    for index in 0..8 {
+        let proposal = LinkProposal { submission_key: format!("link-{index}"), ..proposal.clone() };
+        let receipt = links::propose(&mut connection, &live[0], &proposal, &live, 1000).unwrap().result.unwrap();
+        assert_eq!(links::propose(&mut connection, &live[0], &proposal, &live, 1000).unwrap().result.unwrap(), receipt);
+    }
+    assert_eq!(links::propose(&mut connection, &live[0], &proposal, &live, 1000).unwrap_err().code, ErrorCode::Limit);
+    let team = Proposal { submission_key: "extra-team".into(), task: proposal.task.clone(), members: vec![Member { session_id: live[0].session_id.clone(), role: Role::Developer }], reason: "Own work".into() };
+    assert_eq!(store::propose(&mut connection, &live[0], &team, &live, 1000).unwrap_err().code, ErrorCode::Limit);
+    let recruitment = teams::Recruitment { submission_key: "extra-recruit".into(), task: proposal.task.clone(), role: Role::Developer,
+        recruits: vec![teams::Recruit { role: Role::Qa, brief: "Review this work".into() }], reason: "Review".into() };
+    assert_eq!(store::recruit(&mut connection, &live[0], &recruitment, Some("claude"), &live, &Default::default(), 1000).unwrap_err().code, ErrorCode::Limit);
+    let AgentAction::Send { mut message } = message else { unreachable!() };
+    message.submission_key = "extra-message".into();
+    assert_eq!(store::accept(&mut connection, &live[0], &AgentAction::Send { message }, 1000).unwrap_err().code, ErrorCode::Limit);
+    assert_eq!(links::propose(&mut connection, &live[0], &LinkProposal { submission_key: "link-0".into(), purpose: "Changed".into(), ..proposal.clone() }, &live, 1000).unwrap_err().code, ErrorCode::Conflict);
+    links::propose(&mut connection, &live[0], &proposal, &live, 61_001).unwrap();
+}
+
+#[test]
+fn host_link_controls_are_idempotent_and_revocation_cancels_only_safe_deliveries() {
+    if isolated("host_link_controls_are_idempotent_and_revocation_cancels_only_safe_deliveries") { return; }
+    let (mut connection, _, live, proposal) = proposal_fixture();
+    let originate = host_action(json!({"action":"link_propose","request_id":"host-create","requester_session_id":live[0].session_id,"proposal":proposal}));
+    let pending = store::control(&mut connection, &originate, &live, 1000).unwrap().result.unwrap();
+    assert_eq!(store::control(&mut connection, &originate, &[], 1001).unwrap().result.unwrap(), pending);
+    let conflicting = host_action(json!({"action":"link_reject","request_id":"host-create","proposal_id":pending["proposal_id"],"expected_revision":1}));
+    assert_eq!(store::control(&mut connection, &conflicting, &live, 1002).unwrap_err().code, ErrorCode::Conflict);
+    let approval = link_approval(&connection, &pending, "approve");
+    let approved = store::control(&mut connection, &approval, &live, 2000).unwrap().result.unwrap();
+    for state in ["queued", "ready", "submitting", "uncertain", "received"] {
+        connection.execute("INSERT INTO messages (id,task_key,sender,recipient,sender_epoch,recipient_epoch,submission_key,fingerprint,envelope,state,next_at,created_at,recipient_runtime,scope_kind,link_id)
+            VALUES (?1,'task','sender','recipient','a','b',?1,'fingerprint','{}',?1,0,0,'runtime','link',?2)", (state, approved["link_id"].as_str().unwrap())).unwrap();
+    }
+    let revoke = host_action(json!({"action":"link_revoke","request_id":"revoke","link_id":approved["link_id"]}));
+    store::control(&mut connection, &revoke, &[], 3000).unwrap();
+    store::control(&mut connection, &revoke, &[], 4000).unwrap();
+    for (initial, expected) in [("queued", "cancelled"), ("ready", "cancelled"), ("submitting", "submitting"), ("uncertain", "uncertain"), ("received", "received")] {
+        assert_eq!(connection.query_row("SELECT state FROM messages WHERE id=?1", [initial], |row| row.get::<_, String>(0)).unwrap(), expected);
+    }
+    let approval = link_approval(&connection, &pending, "restore");
+    assert!(store::control(&mut connection, &approval, &live, 5000).is_err());
+    assert_eq!(connection.query_row("SELECT closure_reason FROM links", [], |row| row.get::<_, String>(0)).unwrap(), "revoked");
+}
+
+#[test]
+fn link_approval_caps_both_participants_at_ten_active_links() {
+    if isolated("link_approval_caps_both_participants_at_ten_active_links") { return; }
+    let (mut connection, mut todos, live, proposal) = proposal_fixture();
+    for index in 0..10 {
+        let task_id = todos.add("first", live[0].project.trim_start_matches("path:"), &format!("Joint work {index}"));
+        let proposal = LinkProposal { submission_key: format!("work-{index}"), task: TaskKey { task_id, ..proposal.task.clone() }, ..proposal.clone() };
+        let pending = links::propose(&mut connection, &live[0], &proposal, &live, index * 60_001).unwrap().result.unwrap();
+        let approval = link_approval(&connection, &pending, &format!("approval-{index}"));
+        store::control(&mut connection, &approval, &live, index * 60_001 + 1).unwrap();
+    }
+    for (index, peer) in [0, 1].into_iter().enumerate() {
+        let proposal = LinkProposal { submission_key: format!("overflow-{index}"), peer_session_id: live[peer].session_id.clone(), ..proposal.clone() };
+        let pending = links::propose(&mut connection, &live[2], &proposal, &live, 700_000).unwrap().result.unwrap();
+        let approval = link_approval(&connection, &pending, &format!("overflow-{index}"));
+        assert_eq!(store::control(&mut connection, &approval, &live, 700_001).unwrap_err().code, ErrorCode::Limit);
+    }
+    assert_eq!(connection.query_row("SELECT count(*) FROM links WHERE state='active'", [], |row| row.get::<_, i64>(0)).unwrap(), 10);
+}
+
+#[test]
+fn edited_link_proposals_survive_restart_and_need_the_new_exact_confirmation() {
+    if isolated("edited_link_proposals_survive_restart_and_need_the_new_exact_confirmation") { return; }
+    let (mut connection, _, live, proposal) = proposal_fixture();
+    // The work may be owned by the peer, rather than the requester.
+    let proposal = LinkProposal { peer_session_id: live[0].session_id.clone(), ..proposal };
+    let pending = links::propose(&mut connection, &live[1], &proposal, &live, 1000).unwrap().result.unwrap();
+    let old_approval = link_approval(&connection, &pending, "old-approval");
+    let replacement = LinkProposal { purpose: "Revised coordination purpose".into(), ..proposal.clone() };
+    let edit = host_action(json!({"action":"link_edit","request_id":"edit","proposal_id":pending["proposal_id"],"expected_revision":1,"replacement":replacement}));
+    let revised = store::control(&mut connection, &edit, &live, 2000).unwrap().result.unwrap();
+    assert_eq!(revised["revision"], 2);
+    assert_eq!(revised["task"], json!(proposal.task));
+    assert_eq!(revised["purpose"], "Revised coordination purpose");
+    assert_eq!(revised["participants"], json!([live[1], live[0]]));
+    assert_eq!(revised["permission"], "coordination_messages_only");
+    drop(connection);
+    let mut connection = store::open(&cockpit::paths::team_database()).unwrap();
+    assert_eq!(store::control(&mut connection, &edit, &[], 3000).unwrap().result.unwrap(), revised);
+    let replay = links::propose(&mut connection, &live[1], &proposal, &live, 3000).unwrap().result.unwrap();
+    assert_eq!(replay, json!({"proposal_id":pending["proposal_id"],"revision":1,"status":"closed"}));
+    assert!(store::control(&mut connection, &old_approval, &live, 3000).is_err());
+    let approval = link_approval(&connection, &revised, "revised-approval");
+    store::control(&mut connection, &approval, &live, 4000).unwrap();
+    assert_eq!(connection.query_row("SELECT purpose FROM link_proposals WHERE id=?1", [pending["proposal_id"].as_str().unwrap()], |row| row.get::<_, String>(0)).unwrap(), "Coordinate shared work");
+    assert_eq!(connection.query_row("SELECT parent_id FROM link_proposals WHERE id=?1", [revised["proposal_id"].as_str().unwrap()], |row| row.get::<_, String>(0)).unwrap(), pending["proposal_id"].as_str().unwrap());
+}
+
+#[test]
+fn link_controls_fail_closed_on_bad_todo_state_and_lost_lifecycle_history() {
+    if isolated("link_controls_fail_closed_on_bad_todo_state_and_lost_lifecycle_history") { return; }
+    let (mut connection, mut todos, live, proposal) = proposal_fixture();
+    let path = cockpit::paths::todo();
+    let original = fs::read(&path).unwrap();
+    let pending = links::propose(&mut connection, &live[0], &proposal, &live, 1000).unwrap().result.unwrap();
+    let approval = link_approval(&connection, &pending, "approve");
+    for document in ["{broken".into(), json!({"items":[]}).to_string(),
+        json!({"items":[{"id":proposal.task.task_id,"project":"first","cwd":live[0].project.trim_start_matches("path:"),"text":"Joint work","status":"proposed"}]}).to_string(),
+        json!({"items":[{"id":proposal.task.task_id,"project":"first","cwd":live[0].project.trim_start_matches("path:"),"text":"Joint work","status":"done"}]}).to_string()] {
+        fs::write(&path, document).unwrap();
+        assert!(store::control(&mut connection, &approval, &live, 2000).is_err());
+        let fresh = LinkProposal { submission_key: "fresh".into(), ..proposal.clone() };
+        assert!(links::propose(&mut connection, &live[0], &fresh, &live, 2000).is_err());
+    }
+    fs::write(&path, original).unwrap();
+    assert!(todos.set_status(&proposal.task.task_id, "done", ""));
+    assert!(todos.set_status(&proposal.task.task_id, "todo", ""));
+    assert!(store::control(&mut connection, &approval, &live, 3000).is_err());
+    let fresh = LinkProposal { submission_key: "fresh".into(), ..proposal.clone() };
+    let pending = links::propose(&mut connection, &live[0], &fresh, &live, 3000).unwrap().result.unwrap();
+    let approval = link_approval(&connection, &pending, "new-generation");
+    store::control(&mut connection, &approval, &live, 4000).unwrap();
+    assert_eq!(connection.query_row("SELECT work_generation FROM links", [], |row| row.get::<_, i64>(0)).unwrap(), 1);
+    connection.execute_batch("PRAGMA foreign_keys=OFF; DROP TRIGGER retain_link_work; DELETE FROM link_work;").unwrap();
+    let lost = LinkProposal { submission_key: "lost".into(), ..proposal };
+    assert!(links::propose(&mut connection, &live[0], &lost, &live, 5000).is_err());
+    assert_eq!(connection.query_row("SELECT count(*) FROM link_work", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
+}
 
 fn checkout(path: &Path) -> String {
     fs::create_dir_all(path.join(".git")).unwrap();
