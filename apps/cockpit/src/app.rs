@@ -1645,8 +1645,9 @@ impl App {
         self.session_task_titles.clear();
         for (index, session) in running.iter().enumerate() {
             let needs_attention = session.needs_attention();
-            let activity = sessions::activity_label(session);
-            let is_idle = !needs_attention && sessions::is_idle(session, util::now_secs());
+            let dependency = self.session_dependency_activity(session);
+            let activity = dependency.as_ref().map(|(badge, _)| *badge).unwrap_or_else(|| sessions::activity_label(session));
+            let is_idle = !needs_attention && dependency.is_none() && sessions::is_idle(session, util::now_secs());
             let is_asleep = session.asleep.is_some();
             let tint = bold(if needs_attention { YELLOW } else if is_idle || is_asleep { FG_DARK } else { match activity {
                 "Working" | "Command running" => BLUE,
@@ -1691,7 +1692,7 @@ impl App {
             let updates = self.continuity.as_ref().ok().map(|state| state.updates()).unwrap_or_default();
             let labels: Vec<&str> = updates.iter().filter(|update| update.session == session.session).map(|update|
                 match update.kind { crate::continuity::UpdateKind::Result => "unseen result", crate::continuity::UpdateKind::Question => "new question" }).collect();
-            let mut activity_text = sessions::activity_text(session);
+            let mut activity_text = dependency.map(|(_, detail)| detail).unwrap_or_else(|| sessions::activity_text(session));
             if let Some(expiry) = self.session_deferred_until(session, util::now_secs()) {
                 activity_text = format!("deferred until {} · {activity_text}", chrono::DateTime::from_timestamp(expiry, 0)
                     .map(|time| time.with_timezone(&chrono::Local).format("%H:%M").to_string()).unwrap_or_else(|| expiry.to_string()));
@@ -1727,6 +1728,33 @@ impl App {
                 }
             }
         }
+    }
+
+    fn session_dependency_activity(&self, session: &Session) -> Option<(&'static str, String)> {
+        if session.asleep.is_some() || session.needs_attention() || sessions::activity_label(session) != "Ready" {
+            return None;
+        }
+        let branch_id = self.session_branches.get(&session.session).and_then(|branch| branch.strip_prefix("todo-"));
+        let mut seen = HashSet::new();
+        let mut blockers: Vec<_> = self.todos.items.iter()
+            .filter(|item| item.status() != "done" && (item.session() == session.session
+                || (branch_id == Some(item.id().as_str()) && item.project() == session.project)))
+            .flat_map(|item| item.after()).filter(|id| seen.insert(id.clone()))
+            .filter_map(|id| match self.todos.items.iter().find(|item| item.id() == id) {
+                Some(item) if item.status() == "done" => None,
+                Some(item) => Some((item.status() == "doing", util::collapse(&item.text()))),
+                None => Some((false, id)),
+            }).collect();
+        blockers.sort_by_key(|(is_running, _)| *is_running);
+        let (is_running, title) = blockers.first()?;
+        let (badge, prefix) = if *is_running {
+            ("Waiting on TODO", "Waiting on TODO")
+        } else {
+            ("Blocked · TODO not running", "Blocked by TODO")
+        };
+        let mut detail = format!("{prefix}: {title}");
+        if blockers.len() > 1 { detail += &format!(" · +{} more", blockers.len() - 1); }
+        Some((badge, detail))
     }
 
     fn session_task_title(&self, session: &Session, branch: &str) -> String {
@@ -1863,10 +1891,12 @@ impl App {
     fn session_summary_lines(&self) -> Vec<Line> {
         let now = util::now_secs();
         // One bucket per session, in the cards' precedence, so the counts cannot overlap.
-        let (mut needing, mut working, mut ready, mut idle, mut asleep, mut unknown) = (0, 0, 0, 0, 0, 0);
+        let (mut needing, mut working, mut ready, mut idle, mut asleep, mut unknown, mut waiting, mut blocked) = (0, 0, 0, 0, 0, 0, 0, 0);
         for session in self.all_sessions() {
             if session.needs_attention() {
                 if self.session_deferred_until(&session, now).is_none() { needing += 1; }
+            } else if let Some((badge, _)) = self.session_dependency_activity(&session) {
+                if badge == "Waiting on TODO" { waiting += 1; } else { blocked += 1; }
             } else if sessions::is_idle(&session, now) {
                 idle += 1;
             } else if session.asleep.is_some() {
@@ -1888,6 +1918,8 @@ impl App {
         }
         if self.attention_only { attention += " · attention filter"; }
         let mut counts = format!("{working} working · {ready} ready");
+        if waiting > 0 { counts += &format!(" · {waiting} waiting on TODO"); }
+        if blocked > 0 { counts += &format!(" · {blocked} blocked"); }
         if idle > 0 {
             counts += &format!(" · {idle} idle");
         }

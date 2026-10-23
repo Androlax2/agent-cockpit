@@ -1906,6 +1906,80 @@ fn compact_session_cards_separate_task_identity_from_reported_activity() {
 }
 
 #[test]
+fn todo_dependencies_replace_ready_and_idle_on_session_cards() {
+    let fixture = Fixture::new();
+    fixture.write("repos/clone/.git/HEAD", "ref: refs/heads/todo-1234abcd\n");
+    let clone = fixture.path("repos/clone").display().to_string();
+    for (blocker_status, expected_badge, expected_detail) in [
+        ("doing", "Waiting on TODO", "Waiting on TODO: Fix profile drift"),
+        ("todo", "Blocked · TODO not running", "Blocked by TODO: Fix profile drift"),
+        ("done", "Ready", ""),
+    ] {
+        for (assigned, since) in [(true, util::now_secs()), (false, 1)] {
+            fixture.write("state/cockpit/todo.json", &json!({"items": [
+                {"id": "1234abcd", "project": "opusline", "text": "Resume deployment", "status": "todo",
+                 "session": if assigned { SESSION_A } else { "" }, "after": ["abcd1234"]},
+                {"id": "abcd1234", "project": "other", "text": "Fix  profile\ndrift", "status": blocker_status}
+            ]}).to_string());
+            let cwd = if assigned { "/r/opusline" } else { &clone };
+            let mut row = session(SESSION_A, "waiting", "opusline", cwd, 1);
+            row["since"] = json!(if blocker_status == "done" { util::now_secs() } else { since });
+            fixture.snapshot(json!([row, session(SESSION_B, "working", "opusline", "/r/opusline", 2)]));
+            let app = fixture.app();
+            let rows: Vec<_> = app.panels[1].lines.iter().filter(|line| line.item == Some(0)).collect();
+            assert_eq!(rows.len(), 2);
+            assert_eq!(rows[0].right[0].text, expected_badge, "{blocker_status}, assigned={assigned}");
+            assert_eq!(rows[1].texts(), format!("│{expected_detail}"));
+            if blocker_status != "done" {
+                assert!(rows[0].right.iter().all(|part| part.style.fg != crate::app::style(crate::app::GREEN).fg));
+                let summary = app.panels[1].fixed_top.iter().map(|line| line.texts()).collect::<Vec<_>>().join("\n");
+                assert!(summary.contains("0 ready"), "{summary}");
+            }
+        }
+    }
+}
+
+#[test]
+fn todo_dependencies_prioritize_stopped_blockers_and_ignore_completed_ones() {
+    let fixture = Fixture::new();
+    fixture.write("state/cockpit/todo.json", &json!({"items": [
+        {"id": "1234abcd", "project": "opusline", "text": "Resume deployment", "status": "todo",
+         "session": SESSION_A, "after": ["aaaa1234", "bbbb1234", "cccc1234"]},
+        {"id": "aaaa1234", "text": "Running fix", "status": "doing"},
+        {"id": "bbbb1234", "text": "Stopped fix", "status": "todo"},
+        {"id": "cccc1234", "text": "Completed fix", "status": "done"}
+    ]}).to_string());
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "opusline", "/r/opusline", 1)]));
+    let app = fixture.app();
+    let rows: Vec<_> = app.panels[1].lines.iter().filter(|line| line.item == Some(0)).collect();
+    assert_eq!(rows[0].right[0].text, "Blocked · TODO not running");
+    assert_eq!(rows[1].texts(), "Blocked by TODO: Stopped fix · +1 more");
+}
+
+#[test]
+fn todo_dependencies_do_not_override_active_or_attention_statuses() {
+    let fixture = Fixture::new();
+    fixture.write("state/cockpit/todo.json", &json!({"items": [
+        {"id": "1234abcd", "project": "opusline", "text": "Resume deployment", "status": "todo",
+         "session": SESSION_A, "after": ["abcd1234"]},
+        {"id": "abcd1234", "text": "Fix profile drift", "status": "todo"}
+    ]}).to_string());
+    for (state, command, badge) in [
+        ("working", "", "Working"), ("waiting", "approval", "Approval needed"),
+        ("waiting", "input", "Input needed"), ("needs-you", "", "Needs you"),
+        ("waiting", "running", "Command running"),
+    ] {
+        let mut row = session(SESSION_A, state, "opusline", "/r/opusline", 1);
+        row["ask_to_run"] = json!(command);
+        fixture.snapshot(json!([row]));
+        let app = fixture.app();
+        let card = app.panels[1].lines.iter().find(|line| line.item == Some(0)).unwrap();
+        assert_eq!(card.right[0].text, badge);
+        assert!(!texts(&app, 1).iter().any(|text| text.contains("Blocked by TODO")));
+    }
+}
+
+#[test]
 fn ready_sessions_left_alone_past_the_idle_threshold_show_as_idle_not_ready() {
     let fixture = Fixture::new();
     let mut idle = session(SESSION_A, "waiting", "dotfiles", "/r/dotfiles", 1);
