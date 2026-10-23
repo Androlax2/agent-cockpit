@@ -101,6 +101,8 @@
 #                                exit and say follow its id (ses_…), and what only Claude Code does
 #                                (compact, remote, effort, billing) is refused for it
 set -euo pipefail
+# Resume authority comes only from a managed sleep note, never the caller's environment.
+unset COCKPIT_TEAM_RESUME
 # Run from a tmux popup or binding, this gets the tmux server's PATH (/usr/local/bin:/usr/bin): the
 # helpers it calls (osd-show, osd, cockpit-sidebar) live in ~/.local/bin. Without it a U push
 # never told the daemon, and the card kept its "unpushed" count.
@@ -478,6 +480,7 @@ launch_credits=0
 # The approved team start a launch belongs to (team-spawn); the daemon reads it from the launch's
 # host environment to give the new session its role. Empty for every other start.
 launch_team_spawn=
+launch_team_resume=
 
 new_session() {
     local directory=$1 existing
@@ -1028,6 +1031,27 @@ is_asleep() { # id
     [[ $1 =~ ^[A-Za-z0-9_-]+$ && -f $ASLEEP_DIR/$1 ]]
 }
 
+team_sleep_request() { # command id token-object
+    [[ $2 =~ ^[A-Za-z0-9_-]+$ ]] || return 1
+    printf '%s\n' "$3" | cockpit-team "$1" "$2" 2>/dev/null
+}
+
+cancel_sleep_permit() { # id token-object
+    [[ -n $2 ]] || return 0
+    if ! team_sleep_request sleep-cancel "$1" "$2" >/dev/null; then
+        log_event WARN sleep "$1 sleep cancellation unavailable; daemon reconciliation must check permission"
+    fi
+}
+
+forget_sleep_note() { # id
+    [[ $1 =~ ^[A-Za-z0-9_-]+$ ]] || return 1
+    local permit
+    permit=$(jq -ce 'select(.team_resume | type == "string" and length > 0) | {token: .team_resume}' "$ASLEEP_DIR/$1" 2>/dev/null) || permit=""
+    # Deletion is durable revocation, even when the host daemon cannot be reached.
+    rm -f "$ASLEEP_DIR/$1" || return 1
+    cancel_sleep_permit "$1" "$permit"
+}
+
 # Whether anything sits in the prompt of the agent's pane. Only the cursor right after the agent's
 # prompt start, with nothing but blanks or dim text (a placeholder) after it, reads as empty:
 # anything else, or a screen that cannot be read, counts as a draft.
@@ -1117,7 +1141,7 @@ sleep_blocker() { # id pane
 # The note is written before the exit, so a session that is gone always has one to wake from; an
 # exit that fails takes the note back.
 sleep_session() { # id
-    local id=$1 pane project agent title since started slept_at remote=false reason note temporary target
+    local id=$1 pane project agent title since started slept_at remote=false reason note temporary target permit token
     [[ $id =~ ^[A-Za-z0-9_-]+$ ]] || { echo "cockpit: invalid session id $id" >&2; return 1; }
     require_feature "$id" sleep "sleeping" || return 1
     project=$(session_field "$id" project)
@@ -1133,6 +1157,14 @@ sleep_session() { # id
         [[ -n ${COCKPIT_LOG_STDERR:-} ]] || echo "cockpit: $project stays awake: $reason" >&2
         return 3
     fi
+    if ! permit=$(cockpit-team sleep-prepare "$id" 2>/dev/null) ||
+            ! jq -e 'type == "object" and has("token") and (.token == null or (.token | type == "string" and length > 0))' >/dev/null 2>&1 <<< "$permit"; then
+        log_event WARN sleep "$project stays awake: team membership preparation unavailable or refused"
+        echo "cockpit: $project stays awake: team membership preparation unavailable or refused" >&2
+        return 3
+    fi
+    token=$(jq -r '.token // empty' <<< "$permit")
+    [[ -n $token ]] || permit=""
     agent=$(agent_of_session "$id")
     title=$(session_field "$id" task)
     # Kept so the card holds its place in the column; without it the card sorts by its idle time.
@@ -1142,25 +1174,60 @@ sleep_session() { # id
     printf -v slept_at '%(%s)T' -1
     note="$ASLEEP_DIR/$id"
     # Outside the folder: the column and `cockpit wake` read every file in it as a note.
-    temporary="$(dirname "$ASLEEP_DIR")/.asleep-$id.tmp"
-    mkdir -p "$ASLEEP_DIR"
+    if ! mkdir -p -m 700 "$ASLEEP_DIR" || [[ -L $ASLEEP_DIR || ! -O $ASLEEP_DIR ]] || ! chmod 700 "$ASLEEP_DIR"; then
+        cancel_sleep_permit "$id" "$permit"
+        echo "cockpit: could not secure sleep notes" >&2
+        return 1
+    fi
+    temporary=$(umask 077; mktemp "$(dirname "$ASLEEP_DIR")/.asleep-$id.XXXXXX") || { cancel_sleep_permit "$id" "$permit"; return 1; }
     if ! (umask 077; jq -n --arg session "$id" --arg agent "$agent" --arg project "$project" --arg cwd "$(session_field "$id" cwd)" \
-            --arg title "$title" --argjson since "$since" --arg started "$started" --argjson slept_at "$slept_at" --argjson remote "$remote" \
+            --arg title "$title" --argjson since "$since" --arg started "$started" --argjson slept_at "$slept_at" --argjson remote "$remote" --arg token "$token" \
             '{session: $session, agent: $agent, project: $project, cwd: $cwd, title: $title, idle_since: ($since | floor),
-              slept_at: $slept_at, remote: $remote} + (if $started == "" then {} else {started: ($started | tonumber | floor)} end)' > "$temporary"); then
+              slept_at: $slept_at, remote: $remote} + (if $started == "" then {} else {started: ($started | tonumber | floor)} end)
+              + (if $token == "" then {} else {team_resume: $token} end)' > "$temporary"); then
         rm -f "$temporary"
+        cancel_sleep_permit "$id" "$permit"
         echo "cockpit: could not write the note for $id" >&2
         return 1
     fi
-    chmod 600 "$temporary"
-    mv -f "$temporary" "$note"
+    if ! chmod 600 "$temporary" || ! mv -fT -- "$temporary" "$note"; then
+        rm -f "$temporary"
+        cancel_sleep_permit "$id" "$permit"
+        return 1
+    fi
     target=$(tmux display-message -p -t "$pane" '#{session_name}' 2>/dev/null) || target=""
+    if [[ -n $permit ]] && ! team_sleep_request sleep-recorded "$id" "$permit" >/dev/null; then
+        if [[ -n $target ]] && tmux has-session -t "=$target" 2>/dev/null; then
+            forget_sleep_note "$id"
+        else
+            cancel_sleep_permit "$id" "$permit"
+            log_event WARN sleep "$project vanished before recording; its sleep note is retained"
+        fi
+        echo "cockpit: $project stays awake: team sleep recording failed" >&2
+        return 3
+    fi
+    reason=$(sleep_blocker "$id" "$pane")
+    if [[ -n $reason ]]; then
+        if [[ -n $target ]] && tmux has-session -t "=$target" 2>/dev/null; then
+            forget_sleep_note "$id"
+        else
+            cancel_sleep_permit "$id" "$permit"
+            log_event WARN sleep "$project vanished before exit; its sleep note is retained"
+        fi
+        log_event INFO sleep "$project stays awake: $reason"
+        echo "cockpit: $project stays awake: $reason" >&2
+        return 3
+    fi
     if ! exit_session "$id"; then
         # An exit that finished just before the last-resort kill fails it: the session is gone
         # all the same, and only the note can wake it.
-        if [[ -z $target ]] || tmux has-session -t "=$target" 2>/dev/null; then
-            rm -f "$note"
+        if [[ -n $target ]] && tmux has-session -t "=$target" 2>/dev/null; then
+            forget_sleep_note "$id"
             log_event WARN sleep "$project did not exit to sleep; its note is removed"
+            return 1
+        fi
+        if [[ -z $target ]]; then
+            log_event WARN sleep "$project exit outcome unknown; its sleep note is retained"
             return 1
         fi
         log_event INFO sleep "$project left while its exit was failing; it sleeps"
@@ -1232,7 +1299,7 @@ check_wakeable() { # id
         esac
     fi
     [[ -n $reason ]] || return 0
-    rm -f "$note"
+    forget_sleep_note "$id"
     log_event WARN sleep "$project could not wake: $reason"
     echo "cockpit: $project could not wake: $reason" >&2
     return 1
@@ -1240,7 +1307,7 @@ check_wakeable() { # id
 
 # Resume an asleep session's conversation out of sight, the way restore does, under a restart note
 # (the column shows Restarting, the session pane waits for it). The agent not starting keeps the
-# note, so a later wake can try again.
+# note. Team launch permissions are never retried after an ambiguous launch.
 wake_session() { # id
     local id=$1 note="$ASLEEP_DIR/$1"
     is_asleep "$id" || { echo "cockpit: $id is not asleep" >&2; return 1; }
@@ -1248,23 +1315,70 @@ wake_session() { # id
     (
         flock -n 9 || { log_event INFO sleep "$id is already waking"; exit 0; }
         [[ -f $note ]] || exit 0
-        local project directory remote agent woke_at
+        local project directory remote agent woke_at permit status launch_team_resume=
         check_wakeable "$id" || exit 1
+        permit=$(jq -ce 'select(.team_resume | type == "string" and length > 0) | {token: .team_resume}' "$note" 2>/dev/null) || permit=""
+        if [[ -z $permit ]] && jq -e 'has("team_resume")' "$note" >/dev/null 2>&1; then
+            forget_sleep_note "$id"
+            log_event WARN sleep "$id team wake failed: invalid sleep permit note"
+            exit 1
+        fi
+        if [[ -n $permit ]]; then
+            if ! team_sleep_request sleep-begin-wake "$id" "$permit" >/dev/null; then
+                # The previous waiter may have died after binding committed but before cleanup.
+                if status=$(team_sleep_request sleep-status "$id" "$permit") &&
+                        jq -e '.state == "bound"' >/dev/null 2>&1 <<< "$status"; then
+                    [[ ! $note -ef /dev/fd/9 ]] || rm -f "$note"
+                    log_event INFO sleep "$id woke; team binding acknowledged"
+                    exit 0
+                fi
+                log_event WARN sleep "$id team wake failed: host refused launch permission"
+                echo "cockpit: $id team wake failed: host refused launch permission" >&2
+                exit 1
+            fi
+            launch_team_resume=$(jq -r .token <<< "$permit")
+        fi
         printf -v woke_at '%(%s)T' -1
         mkdir -p "$RESTARTING_DIR"
         printf '%s\n%s\n%s\n\n' "$woke_at" "$project" "$directory" > "$RESTARTING_DIR/$id"
         if [[ $(cat "$CURRENT" 2>/dev/null) == "$id" ]]; then show_restarting "$id"; fi
-        if ! "agent_${agent}_restore" "$directory" "$id"; then
+        if ! "agent_${agent}_restore" "$directory" "$id" 9<&-; then
             rm -f "$RESTARTING_DIR/$id"
             log_event WARN sleep "$project could not wake: its $agent did not start"
             echo "cockpit: $project could not wake: its $agent did not start" >&2
             exit 1
         fi
-        rm -f "$note"
-        log_event INFO sleep "$project woke"
+        if [[ -n $permit ]]; then
+            # Keep the wake lock in the waiter, not in tmux or its long-lived agent.
+            ( wait_team_binding "$id" "$permit" "$woke_at" ) </dev/null >/dev/null 2>&1 &
+        else
+            rm -f "$note"
+            log_event INFO sleep "$project woke"
+        fi
         # Not inheriting the lock: the wait outlives this wake by up to RESTART_TIMEOUT_S.
         if [[ $remote == true ]]; then setsid -f cockpit wake-remote "$id" "$woke_at" 9<&- >/dev/null 2>&1; fi
     ) 9<"$note"
+}
+
+wait_team_binding() { # id token-object woke-at; inherits the sleep note's lock on fd 9
+    local id=$1 permit=$2 woke_at=$3 status state reason="binding acknowledgement timed out" note="$ASLEEP_DIR/$1"
+    while (( $(date +%s) - woke_at < RESTART_TIMEOUT_S )); do
+        if [[ ! $note -ef /dev/fd/9 ]]; then reason="sleep note removed or replaced"; break; fi
+        if ! status=$(team_sleep_request sleep-status "$id" "$permit"); then reason="host status unavailable"; break; fi
+        state=$(jq -er '.state | select(type == "string")' <<< "$status" 2>/dev/null) || { reason="invalid host status"; break; }
+        case $state in
+            bound)
+                # A concurrent explicit exit may have deleted or replaced this note while IPC ran.
+                if [[ $note -ef /dev/fd/9 ]]; then rm -f "$note"; fi
+                log_event INFO sleep "$id woke; team binding acknowledged"
+                return 0 ;;
+            waking) sleep 1 ;;
+            *) reason="host did not acknowledge binding"; break ;;
+        esac
+    done
+    rm -f "$RESTARTING_DIR/$id"
+    log_event WARN sleep "$id team wake failed: $reason; sleep note retained, no automatic retry"
+    return 1
 }
 
 # Remote Control does not survive the exit: switch it back on once the resumed session waits at its
@@ -2585,17 +2699,18 @@ case ${1:-attach} in
         ;;
     resume) resume_session "${2:?usage: cockpit resume <dir> <session-id>}" "${3:?usage: cockpit resume <dir> <session-id>}" ;;
     exit)
+        [[ ${2:-} =~ ^[A-Za-z0-9_-]+$ ]] || { echo "cockpit: invalid session id" >&2; exit 1; }
         # A live pane first: a note can outlive its process by the length of the sleep's exit.
         if [[ -z $(session_field "${2:?usage: cockpit exit <session-id>}" tmux_pane) ]] && is_asleep "$2"; then
-            rm -f "$ASLEEP_DIR/$2"
-            # A later resume (H) must not get the messages that waited for a wake.
-            rm -rf "${XDG_STATE_HOME:-$HOME/.local/state}/cockpit/prompt-queue/$2"
+            forget_sleep_note "$2"
             log_event INFO sleep "$2 ended while asleep"
         else
             exit_session "$2"
             clear_exited_viewer "$2"
-            if is_asleep "$2"; then rm -f "$ASLEEP_DIR/$2"; fi
+            if is_asleep "$2"; then forget_sleep_note "$2"; fi
         fi
+        # A later resume (H) must not get the messages that waited for a wake.
+        rm -rf "${XDG_STATE_HOME:-$HOME/.local/state}/cockpit/prompt-queue/$2"
         mkdir -p "$(dirname "$ENDED_SESSIONS")" && printf '%s\n' "$2" >> "$ENDED_SESSIONS"
         ;;
     sleep) sleep_session "${2:?usage: cockpit sleep <session-id>}" ;;

@@ -187,6 +187,8 @@ impl Manager {
         fs::write(&roles, "%10 sidebar\n%11 viewer\n").unwrap();
         sandbox.shim("hyprctl", r#"[[ $1 == -j && $2 == activeworkspace ]] && echo "{\"id\": ${SHIM_WS:-2}}"; exit 0"#);
         sandbox.shim("setsid", "");
+        // Sleep must check the host even for nonmembers; never contact the real team daemon.
+        sandbox.shim("cockpit-team", r#"[[ $1 == sleep-prepare ]] && { echo '{"token":null}'; exit 0; }; exit 1"#);
         sandbox.shim("osd-show", "");
         // greywall runs the command as it is: the sandbox is not what these tests check.
         sandbox.shim("greywall", r#"[[ $1 == --version ]] && exit 1; while [[ $# -gt 0 && $1 != -- ]]; do shift; done; shift; exec "$@""#);
@@ -4039,6 +4041,369 @@ const SLEEP_PROCESSES: &str = "  4242     1 fish\n  4300  4242 bash\n  5000  424
 /// The cursor right after the empty prompt of IDLE, where tmux has it.
 const AT_EMPTY_PROMPT: &str = "2 1";
 const SLEEP_ENV: [(&str, &str); 4] = [("SHIM_PANE_TEXT", IDLE), ("SHIM_CURSOR", AT_EMPTY_PROMPT), ("SHIM_PANE_PID", "4242"), ("SHIM_EXIT_AFTER", "1")];
+
+const TEAM_RESUME: &str = "private-team-resume-permit";
+
+impl Manager {
+    fn team_sleep_cli(&self) {
+        self.sandbox.shim("cockpit-team", r#"
+case $1 in
+  sleep-prepare) [[ ${SHIM_TEAM_FAIL:-} != prepare ]] || exit 1; echo '{"token":"private-team-resume-permit"}' ;;
+  sleep-recorded|sleep-cancel|sleep-begin-wake|sleep-status)
+    payload=$(cat)
+    [[ $(jq -r .token <<< "$payload") == private-team-resume-permit ]] || exit 1
+    note="$COCKPIT_STATE_HOME/cockpit/asleep/$2"
+    case $1 in
+      sleep-recorded)
+        [[ -f $note && $(stat -c %a "$note") == 600 && $(stat -c %h "$note") == 1 && $(stat -c %a "${note%/*}") == 700 ]] || exit 1
+        [[ $(jq -r .team_resume "$note") == private-team-resume-permit ]] || exit 1
+        [[ ${SHIM_TEAM_FAIL:-} != recorded ]] || exit 1 ;;
+      sleep-cancel) [[ ! -e $note ]] || exit 1 ;;
+      sleep-begin-wake)
+        [[ ${SHIM_TEAM_FAIL:-} != begin ]] || exit 1
+        mkdir "$XDG_RUNTIME_DIR/team-wake-started" 2>/dev/null || exit 1 ;;
+      sleep-status)
+        count=$(cat "$XDG_RUNTIME_DIR/team-status-count" 2>/dev/null || echo 0)
+        echo $((count + 1)) > "$XDG_RUNTIME_DIR/team-status-count"
+        [[ ${SHIM_TEAM_FAIL:-} != status ]] || exit 1
+        if [[ -f $XDG_RUNTIME_DIR/team-bound ]]; then echo '{"state":"bound","error":"","replacement_runtime":"new-runtime"}'
+        elif [[ ${SHIM_TEAM_FAIL:-} == failed ]]; then echo '{"state":"failed","error":"launch timed out","replacement_runtime":null}'
+        else echo '{"state":"waking","error":"","replacement_runtime":null}'; fi ;;
+    esac ;;
+  *) exit 1 ;;
+esac
+"#);
+    }
+
+    fn put_team_to_sleep(&self, id: &str, agent: &str) {
+        self.put_to_sleep(id, agent, false);
+        let path = self.asleep_note(id);
+        let mut note: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        note["team_resume"] = json!(TEAM_RESUME);
+        fs::write(&path, note.to_string()).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        fs::set_permissions(path.parent().unwrap(), fs::Permissions::from_mode(0o700)).unwrap();
+        self.team_sleep_cli();
+    }
+
+    fn acknowledge_team_binding(&self, id: &str) {
+        fs::write(self.runtime_file("team-bound"), "").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while self.asleep_note(id).exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        assert!(!self.asleep_note(id).exists(), "bound handoff was not acknowledged");
+    }
+}
+
+#[test]
+fn team_sleep_prepares_before_exit_and_records_private_permit() {
+    let manager = Manager::new();
+    manager.with_idle_session();
+    manager.team_sleep_cli();
+    let folder = manager.asleep_note(SESSION_A).parent().unwrap().to_path_buf();
+    fs::create_dir_all(&folder).unwrap();
+    fs::set_permissions(&folder, fs::Permissions::from_mode(0o755)).unwrap();
+    let output = manager.sleep_with(SESSION_A, &[]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let note: Value = serde_json::from_str(&fs::read_to_string(manager.asleep_note(SESSION_A)).unwrap()).unwrap();
+    assert_eq!(note["team_resume"], TEAM_RESUME);
+    let calls = fs::read_to_string(&manager.sandbox.log).unwrap();
+    let prepare = calls.find("cockpit-team sleep-prepare").unwrap();
+    let recorded = calls.find("cockpit-team sleep-recorded").unwrap();
+    let exit = calls.find("tmux send-keys").unwrap();
+    assert!(prepare < recorded && recorded < exit, "{calls}");
+    assert!(!calls.contains(TEAM_RESUME));
+    assert!(!manager.log_lines().join("\n").contains(TEAM_RESUME));
+}
+
+#[test]
+fn team_unknown_membership_prevents_sleep() {
+    for reply in ["exit 1", "echo '{}'", "echo '{\"token\":false}'"] {
+        let manager = Manager::new();
+        manager.with_idle_session();
+        manager.sandbox.shim("cockpit-team", reply);
+        let output = manager.sleep_with(SESSION_A, &[]);
+        assert_eq!(output.status.code(), Some(3), "{}", stderr(&output));
+        assert!(manager.tmux_calls("send-keys").is_empty());
+        assert!(!manager.asleep_note(SESSION_A).exists());
+    }
+}
+
+#[test]
+fn team_failed_recording_stays_awake_and_cancels_permit() {
+    let manager = Manager::new();
+    manager.with_idle_session();
+    manager.team_sleep_cli();
+    let output = manager.sleep_with(SESSION_A, &[("SHIM_TEAM_FAIL", "recorded")]);
+    assert!(!output.status.success());
+    assert!(manager.tmux_calls("send-keys").is_empty());
+    assert!(!manager.asleep_note(SESSION_A).exists());
+    assert!(manager.calls("cockpit-team").contains(&format!("cockpit-team sleep-cancel {SESSION_A}")));
+}
+
+#[test]
+fn team_process_disappearing_at_recording_keeps_its_only_resume_note() {
+    let manager = Manager::new();
+    manager.with_idle_session();
+    manager.team_sleep_cli();
+    // Once the note exists the old process disappears, before the recording request completes.
+    manager.sandbox.shim("tmux", &format!(r#"
+if [[ -f $COCKPIT_STATE_HOME/cockpit/asleep/{SESSION_A} ]]; then
+  if [[ $1 == has-session || ( $1 == display-message && $* == *session_name* ) ]]; then exit 1; fi
+fi
+{FAKE_TMUX}"#));
+    let output = manager.sleep_with(SESSION_A, &[("SHIM_TEAM_FAIL", "recorded")]);
+    assert!(!output.status.success());
+    assert!(manager.asleep_note(SESSION_A).exists(), "process death must not destroy the only resume metadata");
+    assert!(manager.tmux_calls("send-keys").is_empty());
+}
+
+#[test]
+fn team_sleep_refuses_a_directory_in_place_of_the_note() {
+    let manager = Manager::new();
+    manager.with_idle_session();
+    manager.team_sleep_cli();
+    fs::create_dir_all(manager.asleep_note(SESSION_A)).unwrap();
+    let output = manager.sleep_with(SESSION_A, &[]);
+    assert!(!output.status.success());
+    assert_eq!(fs::read_dir(manager.asleep_note(SESSION_A)).unwrap().count(), 0, "atomic publication must not move a permit inside a directory");
+    assert!(manager.tmux_calls("send-keys").is_empty());
+}
+
+#[test]
+fn team_wake_refuses_a_malformed_resume_field_instead_of_unprotected_launch() {
+    let manager = Manager::new();
+    manager.put_team_to_sleep(SESSION_A, "claude");
+    let path = manager.asleep_note(SESSION_A);
+    let mut note: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    note["team_resume"] = json!(null);
+    fs::write(&path, note.to_string()).unwrap();
+    assert!(!manager.run(&["wake", SESSION_A], &[]).status.success());
+    assert!(manager.claude_wakes().is_empty());
+    assert!(!path.exists());
+}
+
+#[test]
+fn team_failed_exit_cancels_permit() {
+    let manager = Manager::new();
+    manager.with_idle_session();
+    manager.team_sleep_cli();
+    manager.sandbox.shim("tmux", &format!("if [[ $1 == send-keys || $1 == kill-session ]]; then exit 1; fi\n{FAKE_TMUX}"));
+    let output = manager.sleep_with(SESSION_A, &[("SHIM_EXIT_AFTER", "99")]);
+    assert!(!output.status.success());
+    assert!(!manager.asleep_note(SESSION_A).exists());
+    assert!(manager.calls("cockpit-team").contains(&format!("cockpit-team sleep-cancel {SESSION_A}")));
+}
+
+#[test]
+fn team_unknown_exit_outcome_retains_the_only_resume_note() {
+    let manager = Manager::new();
+    manager.with_idle_session();
+    manager.team_sleep_cli();
+    // Pane identity was lost while exiting: no positive evidence that the old process lives.
+    manager.sandbox.shim("tmux", &format!(r#"
+if [[ $1 == display-message && $* == *session_name* ]]; then exit 1; fi
+if [[ $1 == send-keys || $1 == kill-session ]]; then exit 1; fi
+{FAKE_TMUX}"#));
+    let _ = manager.sleep_with(SESSION_A, &[("SHIM_EXIT_AFTER", "99")]);
+    assert!(manager.asleep_note(SESSION_A).exists(), "uncertainty is not permission to discard the only note");
+    assert!(!manager.calls("cockpit-team").contains(&format!("cockpit-team sleep-cancel {SESSION_A}")));
+}
+
+#[test]
+fn team_last_moment_draft_cancels_before_exit() {
+    let manager = Manager::new();
+    manager.with_idle_session();
+    manager.team_sleep_cli();
+    manager.sandbox.shim("tmux", &format!(r#"
+if [[ $1 == capture-pane && -f $COCKPIT_STATE_HOME/cockpit/asleep/{SESSION_A} ]]; then echo '❯ new draft'; exit 0; fi
+{FAKE_TMUX}"#));
+    let output = manager.sleep_with(SESSION_A, &[]);
+    assert_eq!(output.status.code(), Some(3), "{}", stderr(&output));
+    assert!(!manager.asleep_note(SESSION_A).exists());
+    assert!(manager.tmux_calls("send-keys").is_empty());
+    assert!(manager.calls("cockpit-team").contains(&format!("cockpit-team sleep-cancel {SESSION_A}")));
+}
+
+#[test]
+fn team_wake_reconciles_an_already_bound_permit_without_relaunching() {
+    let manager = Manager::new();
+    manager.put_team_to_sleep(SESSION_A, "claude");
+    fs::create_dir(manager.runtime_file("team-wake-started")).unwrap();
+    fs::write(manager.runtime_file("team-bound"), "").unwrap();
+    let output = manager.run(&["wake", SESSION_A], &[]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(manager.claude_wakes().is_empty());
+    assert!(!manager.asleep_note(SESSION_A).exists());
+}
+
+#[test]
+fn team_sleep_note_survives_launch_until_binding_acknowledged() {
+    let manager = Manager::new();
+    manager.put_team_to_sleep(SESSION_A, "claude");
+    let output = manager.run(&["wake", SESSION_A], &[]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(manager.claude_wakes().len(), 1);
+    assert!(manager.asleep_note(SESSION_A).exists(), "launch is not binding acknowledgement");
+    assert!(!manager.sandbox.wait_for_calls("cockpit-team", 2, Duration::from_secs(5)).is_empty());
+    manager.acknowledge_team_binding(SESSION_A);
+}
+
+#[test]
+fn team_status_failures_keep_note_and_report_error_without_retry() {
+    for failure in ["status", "failed", "begin"] {
+        let manager = Manager::new();
+        manager.put_team_to_sleep(SESSION_A, "claude");
+        let output = manager.run(&["wake", SESSION_A], &[("SHIM_TEAM_FAIL", failure)]);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !manager.log_lines().join("\n").contains("team wake failed") && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(manager.asleep_note(SESSION_A).exists());
+        assert!(manager.log_lines().join("\n").contains("team wake failed"), "{} {:?}", stderr(&output), manager.log_lines());
+        if failure == "begin" { assert!(manager.claude_wakes().is_empty()); }
+        else {
+            assert_eq!(manager.claude_wakes().len(), 1);
+            let _ = manager.run(&["wake", SESSION_A], &[]);
+            assert_eq!(manager.claude_wakes().len(), 1);
+        }
+    }
+}
+
+#[test]
+fn team_binding_timeout_is_ninety_seconds_and_does_not_retry() {
+    let manager = Manager::new();
+    manager.put_team_to_sleep(SESSION_A, "claude");
+    manager.sandbox.shim("date", r#"
+if [[ $1 == +%s ]]; then
+  count=$(cat "$XDG_RUNTIME_DIR/team-status-count" 2>/dev/null || echo 0)
+  echo $(( $(/usr/bin/date +%s) + count * 30 ))
+else exec /usr/bin/date "$@"; fi"#);
+    manager.sandbox.shim("sleep", "exit 0");
+    assert!(manager.run(&["wake", SESSION_A], &[]).status.success());
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !manager.log_lines().join("\n").contains("binding acknowledgement timed out") && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    assert!(manager.log_lines().join("\n").contains("binding acknowledgement timed out"));
+    assert_eq!(fs::read_to_string(manager.runtime_file("team-status-count")).unwrap().trim(), "3");
+    assert!(manager.asleep_note(SESSION_A).exists());
+    assert!(!manager.restart_note_of(SESSION_A).exists());
+    assert!(!manager.run(&["wake", SESSION_A], &[]).status.success());
+    assert_eq!(manager.claude_wakes().len(), 1);
+}
+
+#[test]
+fn team_explicit_exit_during_binding_wait_never_recreates_note() {
+    let manager = Manager::new();
+    manager.put_team_to_sleep(SESSION_A, "claude");
+    assert!(manager.run(&["wake", SESSION_A], &[]).status.success());
+    assert!(manager.run(&["exit", SESSION_A], &[]).status.success());
+    fs::write(manager.runtime_file("team-bound"), "").unwrap();
+    std::thread::sleep(Duration::from_millis(1200));
+    assert!(!manager.asleep_note(SESSION_A).exists());
+    assert_eq!(manager.claude_wakes().len(), 1);
+    assert!(manager.calls("cockpit-team").contains(&format!("cockpit-team sleep-cancel {SESSION_A}")));
+}
+
+#[test]
+fn team_concurrent_wakes_launch_once_and_keep_queue() {
+    let manager = Manager::new();
+    manager.put_team_to_sleep(SESSION_A, "claude");
+    let queue = manager.sandbox.state.join("cockpit/prompt-queue").join(SESSION_A);
+    fs::create_dir_all(&queue).unwrap();
+    fs::write(queue.join("1.txt"), "queued message").unwrap();
+    assert!(manager.run(&["wake", SESSION_A], &[]).status.success());
+    assert!(manager.run(&["wake", SESSION_A], &[]).status.success());
+    assert_eq!(manager.claude_wakes().len(), 1);
+    assert_eq!(manager.queued_prompts(SESSION_A), ["queued message"]);
+    manager.acknowledge_team_binding(SESSION_A);
+}
+
+#[test]
+fn team_r_on_asleep_teammate_uses_authorized_wake() {
+    let manager = Manager::new();
+    manager.put_team_to_sleep(SESSION_A, "claude");
+    fs::write(manager.runtime_file("team-bound"), "").unwrap();
+    assert!(manager.run(&["restart", SESSION_A], &[]).status.success());
+    assert!(manager.calls("cockpit-team").contains(&format!("cockpit-team sleep-begin-wake {SESSION_A}")));
+    assert!(manager.tmux_calls("send-keys").is_empty());
+    manager.acknowledge_team_binding(SESSION_A);
+}
+
+#[test]
+fn team_claude_and_opencode_wake_launch_with_host_resume_permit() {
+    for (id, agent) in [(SESSION_A, "claude"), (OPENCODE_SESSION, "opencode")] {
+        let manager = Manager::new();
+        manager.put_team_to_sleep(id, agent);
+        fs::write(manager.runtime_file("team-bound"), "").unwrap();
+        let output = manager.run(&["wake", id], &[]);
+        assert!(output.status.success(), "{}", stderr(&output));
+        let launches = manager.tmux_calls("new-session");
+        assert_eq!(launches.len(), 1);
+        assert!(launches[0].contains(&format!("COCKPIT_TEAM_RESUME={TEAM_RESUME}")), "{launches:?}");
+        assert!(manager.calls("cockpit-team").iter().all(|call| !call.contains(TEAM_RESUME)));
+        assert!(!manager.log_lines().join("\n").contains(TEAM_RESUME));
+        manager.acknowledge_team_binding(id);
+    }
+}
+
+#[test]
+fn team_remote_control_waiter_does_not_release_the_binding_lock() {
+    let manager = Manager::new();
+    manager.put_team_to_sleep(SESSION_A, "claude");
+    let path = manager.asleep_note(SESSION_A);
+    let mut note: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    note["remote"] = json!(true);
+    fs::write(&path, note.to_string()).unwrap();
+    run_setsid_for_real(&manager);
+    fs::write(&manager.snapshot, json!({"sessions": [{"session": SESSION_A, "state": "waiting", "tmux_pane": "%9", "started": now_seconds() + 1000}]}).to_string()).unwrap();
+    assert!(manager.run(&["wake", SESSION_A], &[("SHIM_PANE_TEXT", IDLE)]).status.success());
+    assert_eq!(wait_for_send_keys(&manager, 2), ["tmux send-keys -t %9 /rc", "tmux send-keys -t %9 Enter"]);
+    assert!(manager.asleep_note(SESSION_A).exists());
+    assert!(manager.run(&["wake", SESSION_A], &[]).status.success());
+    assert_eq!(manager.claude_wakes().len(), 1);
+    manager.acknowledge_team_binding(SESSION_A);
+}
+
+#[test]
+fn team_ordinary_restart_does_not_pass_team_resume_permit() {
+    let manager = Manager::new();
+    manager.with_idle_session();
+    let output = manager.run(&["restart", SESSION_A, "", "detached"], &[
+        ("COCKPIT_TEAM_RESUME", TEAM_RESUME), ("SHIM_PANE_TEXT", IDLE), ("SHIM_EXIT_AFTER", "1")]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(!manager.tmux_calls("new-session").join("\n").contains(TEAM_RESUME));
+    assert!(manager.calls("cockpit-team").is_empty());
+}
+
+#[test]
+fn team_exit_and_invalid_note_cleanup_revoke_pending_resume() {
+    for action in ["exit", "wake"] {
+        let manager = Manager::new();
+        manager.put_team_to_sleep(SESSION_A, "claude");
+        if action == "wake" { fs::remove_dir(&manager.project).unwrap(); }
+        let _ = manager.run(&[action, SESSION_A], &[]);
+        assert!(!manager.asleep_note(SESSION_A).exists());
+        assert!(manager.calls("cockpit-team").contains(&format!("cockpit-team sleep-cancel {SESSION_A}")));
+        assert!(manager.claude_wakes().is_empty());
+    }
+}
+
+#[test]
+fn team_explicit_exit_of_still_exiting_sleep_discards_queued_prompts() {
+    let manager = Manager::new();
+    manager.put_team_to_sleep(SESSION_A, "claude");
+    manager.with_idle_session();
+    let queue = manager.sandbox.state.join("cockpit/prompt-queue").join(SESSION_A);
+    fs::create_dir_all(&queue).unwrap();
+    fs::write(queue.join("1.txt"), "do not deliver after explicit exit").unwrap();
+    assert!(manager.run(&["exit", SESSION_A], &[("SHIM_PANE_TEXT", IDLE), ("SHIM_EXIT_AFTER", "1")]).status.success());
+    assert!(!manager.asleep_note(SESSION_A).exists());
+    assert!(!queue.exists());
+    assert!(manager.calls("cockpit-team").contains(&format!("cockpit-team sleep-cancel {SESSION_A}")));
+}
 
 impl Manager {
     /// Session A waiting at an empty prompt since SLEEP_SINCE; its pane (pid 4242) runs claude under fish.

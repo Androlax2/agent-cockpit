@@ -44,6 +44,12 @@ impl Asleep {
 
     /// The session id is the note's file name, so a note cannot name a file outside its folder.
     fn from_note(session: String, note: &Value) -> Option<Asleep> {
+        if let Some(permit) = note.get("team_resume") {
+            if permit.as_str().is_none_or(str::is_empty) || note.get("session")?.as_str()? != session
+                || note.get("slept_at")?.as_i64().is_none() {
+                return None;
+            }
+        }
         let text = |key: &str| note.get(key).and_then(Value::as_str).unwrap_or_default().to_string();
         let seconds = |key: &str| note.get(key).and_then(Value::as_f64).map(|seconds| seconds as i64);
         Some(Asleep {
@@ -60,9 +66,14 @@ fn notes_in(dir: &Path) -> Vec<Asleep> {
     let Ok(entries) = fs::read_dir(dir) else { return vec![] };
     entries.flatten().filter_map(|entry| {
         let session = entry.file_name().to_str()?.to_string();
-        let note = util::read_json(&entry.path())
+        let note = fs::symlink_metadata(entry.path()).ok().filter(|metadata| metadata.is_file())
+            .and_then(|_| util::read_json(&entry.path()))
             .and_then(|note| Asleep::from_note(session.clone(), &note));
-        if note.is_none() { util::log_event("WARN", &format!("unreadable sleep note {session}")); }
+        if note.is_none() {
+            // Missing notes revoke pending handoffs even while host IPC is unavailable.
+            let _ = fs::remove_file(entry.path());
+            util::log_event("WARN", &format!("unreadable sleep note {session}"));
+        }
         note
     }).collect()
 }
@@ -72,7 +83,16 @@ pub fn asleep() -> Vec<Asleep> {
 }
 
 pub fn forget(session: &str) {
-    let _ = fs::remove_file(paths::asleep_dir().join(session));
+    forget_in(&paths::asleep_dir(), session);
+}
+
+fn forget_in(dir: &Path, session: &str) {
+    if session.is_empty() || !session.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-')) { return; }
+    let path = dir.join(session);
+    // A process report is not an acknowledgement of committed team binding. The wake waiter
+    // owns that cleanup; expiry and explicit exit can still revoke by deleting the note.
+    if util::read_json(&path).is_some_and(|note| note.get("team_resume").is_some()) { return; }
+    let _ = fs::remove_file(path);
 }
 
 fn expire_in(dir: &Path, now: i64) -> Vec<Asleep> {
@@ -250,6 +270,38 @@ mod tests {
         assert!(card.facts.remote);
         assert!(!card.is_external());
         assert!(!sessions::is_idle(&card, NOW + 10 * 86_400));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn team_note_is_not_forgotten_before_binding_acknowledgement() {
+        let dir = scratch_dir("team-binding");
+        write_note(&dir, "teammate", NOW);
+        let path = dir.join("teammate");
+        let mut note = util::read_json(&path).unwrap();
+        note["session"] = serde_json::json!("teammate");
+        note["team_resume"] = serde_json::json!("private-permit");
+        fs::write(&path, note.to_string()).unwrap();
+        let card = notes_in(&dir).pop().unwrap().card();
+        assert!(!format!("{card:?}").contains("private-permit"));
+        forget_in(&dir, "teammate");
+        assert!(path.exists(), "a new process report alone does not acknowledge team binding");
+        assert!(expire_in(&dir, NOW + EXPIRY_S).iter().any(|note| note.session == "teammate"));
+        assert!(!path.exists(), "expiry still revokes permission by deleting the note");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn invalid_team_note_is_removed_without_exposing_the_permit() {
+        let dir = scratch_dir("invalid-team-note");
+        write_note(&dir, "teammate", NOW);
+        let path = dir.join("teammate");
+        let mut note = util::read_json(&path).unwrap();
+        note["team_resume"] = serde_json::json!("private-permit");
+        note["session"] = serde_json::json!("different-session");
+        fs::write(&path, note.to_string()).unwrap();
+        assert!(notes_in(&dir).is_empty());
+        assert!(!path.exists());
         fs::remove_dir_all(dir).unwrap();
     }
 

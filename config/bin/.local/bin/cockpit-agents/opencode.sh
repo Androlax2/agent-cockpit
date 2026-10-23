@@ -47,8 +47,9 @@ start_opencode() { # dir session-id model-ref opencode-arguments...
     fi
     if [[ -n $model ]]; then terminal_environment+=(COCKPIT_OPENCODE_MODEL="$model"); fi
     if [[ -n ${launch_team_spawn:-} ]]; then terminal_environment+=(COCKPIT_TEAM_SPAWN="$launch_team_spawn"); fi
+    if [[ -n ${launch_team_resume:-} ]]; then terminal_environment+=(COCKPIT_TEAM_RESUME="$launch_team_resume"); fi
     tmux new-session -d -s "$name" -x "${size% *}" -y "${size#* }" -c "$directory" -e "CLAUDE_CODE_SESSION_ID=$session" \
-        env -u COCKPIT_OPENCODE_MODEL COCKPIT_INSIDE=1 CLAUDE_CODE_SESSION_ID="$session" "${terminal_environment[@]}" \
+        env -u COCKPIT_OPENCODE_MODEL -u COCKPIT_TEAM_RESUME COCKPIT_INSIDE=1 CLAUDE_CODE_SESSION_ID="$session" "${terminal_environment[@]}" \
         sh -c "$OPENCODE_EPILOGUE" opencode "$OPENCODE_LAUNCHER" --standalone --session "$session" "$@" || return
     printf '%s\n' "$name"
 }

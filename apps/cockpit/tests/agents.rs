@@ -29,6 +29,26 @@ fn every_agent_has_a_row_and_a_file_for_cockpit() {
 }
 
 #[test]
+fn ordinary_restore_does_not_forward_inherited_team_resume_permit() {
+    for (agent, id) in [("claude", SESSION_A), ("opencode", OPENCODE_SESSION)] {
+        let sandbox = Sandbox::new();
+        let project = sandbox.root.join("project");
+        fs::create_dir(&project).unwrap();
+        sandbox.shim("tmux", r#"[[ $1 == new-session ]] || exit 0; while [[ $# -gt 0 && $1 != env ]]; do shift; done; exec "$@""#);
+        sandbox.shim("fish", r#"env > "$HOME/restored-environment""#);
+        sandbox.shim("opencode-launch", r#"env > "$HOME/restored-environment""#);
+        let output = sandbox.run(bin().join("cockpit"), &["restore", &project.display().to_string(), id], &[
+            ("COCKPIT_TEAM_RESUME", "must-not-be-forwarded"),
+            ("COCKPIT_OPENCODE", &sandbox.shims.join("opencode-launch").display().to_string()),
+        ]);
+        assert!(output.status.success(), "{agent}: {}", stderr(&output));
+        let environment = fs::read_to_string(sandbox.home.join("restored-environment")).unwrap();
+        assert!(!environment.contains("must-not-be-forwarded"), "{agent}: inherited a resume permit");
+        assert!(!environment.lines().any(|line| line.starts_with("COCKPIT_TEAM_RESUME=")), "{agent}: ordinary restore has no resume authority");
+    }
+}
+
+#[test]
 fn every_agent_runs_in_its_own_greywall_launcher_and_profile() {
     for name in agents::names() {
         assert!(bin().join("greywall-agents").join(name).is_file(), "no launcher greywall-agents/{name}");

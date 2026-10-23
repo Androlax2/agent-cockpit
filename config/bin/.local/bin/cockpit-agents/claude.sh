@@ -37,11 +37,13 @@ CLAUDE_LAUNCH_EPILOGUE='; set -l code $status; if test $code -ne 0; cockpit log 
 # second, unknown card).
 claude_launch_detached() { # dir claude-arguments...
     local directory=$1 size
+    local -a resume_environment=()
     shift
     require_plain_directory "$directory"
     size=$(detached_size)
+    if [[ -n ${launch_team_resume:-} ]]; then resume_environment+=(COCKPIT_TEAM_RESUME="$launch_team_resume"); fi
     tmux new-session -d -s "claude-retry-restart-$(date +%s%N)" -x "${size% *}" -y "${size#* }" -c "$directory" \
-        env COCKPIT_INSIDE=1 COCKPIT_CREDITS="$launch_credits" COCKPIT_TEAM_SPAWN="$launch_team_spawn" \
+        env -u COCKPIT_TEAM_RESUME COCKPIT_INSIDE=1 COCKPIT_CREDITS="$launch_credits" COCKPIT_TEAM_SPAWN="$launch_team_spawn" "${resume_environment[@]}" \
         fish -ic 'claude $argv; or cockpit log manager ERROR "claude exited with status $status in $PWD"' -- "$@"
 }
 
@@ -56,7 +58,7 @@ agent_claude_new() { # dir [claude arguments]
     shift
     loading_overlay "Starting Claude in $(basename "$directory") …" "$directory"
     tmux respawn-pane -k -t "$(viewer_pane)" -c "$directory" \
-        env -u TMUX -u TMUX_PANE COCKPIT_INSIDE=1 COCKPIT_CREDITS="$launch_credits" COCKPIT_TEAM_SPAWN="$launch_team_spawn" \
+        env -u TMUX -u TMUX_PANE -u COCKPIT_TEAM_RESUME COCKPIT_INSIDE=1 COCKPIT_CREDITS="$launch_credits" COCKPIT_TEAM_SPAWN="$launch_team_spawn" \
         fish -ic 'echo; echo "  ⟳ Starting Claude in $PWD …"; echo; claude $argv'"$CLAUDE_LAUNCH_EPILOGUE" -- "$@"
     : > "$CURRENT"
     label_panes "$(basename "$directory")"
@@ -69,7 +71,7 @@ agent_claude_new_with_prompt() { # dir prompt
 
 agent_claude_background() { # dir prompt
     tmux new-session -d -s "claude-retry-bg-$(date +%s)" -x 200 -y 50 -c "$1" \
-        env COCKPIT_INSIDE=1 COCKPIT_CREDITS="$launch_credits" COCKPIT_TEAM_SPAWN="$launch_team_spawn" fish -ic 'claude $argv' -- "$2"
+        env -u COCKPIT_TEAM_RESUME COCKPIT_INSIDE=1 COCKPIT_CREDITS="$launch_credits" COCKPIT_TEAM_SPAWN="$launch_team_spawn" fish -ic 'claude $argv' -- "$2"
 }
 
 agent_claude_detached() { # dir prompt
@@ -85,7 +87,7 @@ agent_claude_resume() { # dir id [effort]
     ensure_manager
     loading_overlay "Resuming $(basename "$1")${3:+ · effort $3} …" "$1" "$2"
     tmux respawn-pane -k -t "$(viewer_pane)" -c "$1" \
-        env -u TMUX -u TMUX_PANE COCKPIT_INSIDE=1 COCKPIT_CREDITS="$launch_credits" COCKPIT_TEAM_SPAWN="$launch_team_spawn" \
+        env -u TMUX -u TMUX_PANE -u COCKPIT_TEAM_RESUME COCKPIT_INSIDE=1 COCKPIT_CREDITS="$launch_credits" COCKPIT_TEAM_SPAWN="$launch_team_spawn" \
         fish -ic 'echo; echo "  ⟳ Resuming the conversation in $PWD …"; echo; claude --resume $argv'"$CLAUDE_LAUNCH_EPILOGUE" -- "$2" "${effort_flags[@]}"
     : > "$CURRENT"
     label_panes "$(basename "$1")"
@@ -142,6 +144,7 @@ agent_claude_restore() { # dir id
     if has_conversation "$id"; then
         claude_launch_detached "$directory" --resume "$id" ${effort:+--effort "$effort"}
     else
+        [[ -z ${launch_team_resume:-} ]] || { echo "cockpit: team conversation is gone" >&2; return 1; }
         log_event INFO manager "restore: $id had no conversation yet, a fresh session starts in $directory"
         claude_launch_detached "$directory" ${effort:+--effort "$effort"}
     fi

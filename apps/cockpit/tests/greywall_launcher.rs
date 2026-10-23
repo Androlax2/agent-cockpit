@@ -155,6 +155,19 @@ fn build_tools_share_a_budget_without_restricting_the_interactive_agent() {
 }
 
 #[test]
+fn team_resume_permit_survives_the_host_launcher_without_entering_arguments_or_settings() {
+    for agent in ["claude", "opencode"] {
+        let launch = Launch::new();
+        let token = "0123456789abcdef0123456789abcdef";
+        let call = launch.run_agent(agent, &[("COCKPIT_TEAM_RESUME", token)], &[]);
+        let environment = fs::read_to_string(launch.sandbox.home.join(format!("{agent}-environment"))).unwrap();
+        assert!(environment.lines().any(|line| line == format!("COCKPIT_TEAM_RESUME={token}")), "{agent}");
+        assert!(!call.contains(token), "permit must not enter greywall argv");
+        assert!(!launch.settings_of(agent).to_string().contains(token));
+    }
+}
+
+#[test]
 fn native_codex_refuses_the_live_dotfiles_checkout() {
     let launch = Launch::new();
     let output = launch.sandbox.command(bin().join("greywall-agents/codex"), &[])
