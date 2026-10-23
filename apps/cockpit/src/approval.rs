@@ -656,33 +656,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_command_runs_exactly_as_shown_even_under_fish() {
-        // Under fish as $SHELL, a backslash before the closing quote used to end the quoting early,
-        // so the second word ran as a command of its own.
-        let folder = std::env::temp_dir().join(format!("approval-run-{}", crate::util::token_hex(4)));
-        fs::create_dir_all(&folder).unwrap();
-        let log = folder.join("out.log");
-        // SAFETY: only this test reads SHELL; run() overrides it for script anyway.
-        unsafe { std::env::set_var("SHELL", "/usr/bin/fish") };
-        let marker = folder.join("ran");
-        let command = format!("echo 'a\\\\' '; touch {} #'", marker.display());
-        run(&command, folder.to_str().unwrap(), &log, None);
-        assert!(!marker.exists(), "the second word ran as a command");
-        fs::remove_dir_all(folder).unwrap();
-    }
-
-    #[test]
-    fn a_chain_that_stops_names_its_last_step() {
-        let folder = std::env::temp_dir().join(format!("approval-step-{}", crate::util::token_hex(4)));
-        fs::create_dir_all(&folder).unwrap();
-        let log = folder.join("out.log");
-        let code = run("echo one; and false; and echo three", folder.to_str().unwrap(), &log, None);
-        let trace = fs::read_to_string(trace_path(&log)).unwrap_or_default();
-        assert_eq!((code, last_step(&trace)), (1, Some("false".into())));
-        fs::remove_dir_all(folder).unwrap();
-    }
-
-    #[test]
     fn the_end_of_a_block_is_not_a_step() {
         assert_eq!(last_step("> begin\n-> make test\n> end begin\n"), Some("begin".into()));
     }

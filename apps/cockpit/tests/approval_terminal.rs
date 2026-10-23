@@ -33,7 +33,8 @@ fn approve_in_terminal(command: &str) -> (Terminal, PathBuf, String) {
     let (root, id) = request(command);
     let mut terminal = Terminal::start(Path::new(env!("CARGO_BIN_EXE_claude-run-approve")), &[&id],
                                        &[("CLAUDE_RUNS_DIR", &root.join("runs")), ("CLAUDE_ANSWERS_DIR", &root.join("answers")), ("XDG_RUNTIME_DIR", &root.join("run")),
-                                         ("XDG_STATE_HOME", &root.join("state")), ("COCKPIT_STATE_HOME", &root.join("state")), ("CLAUDE_AUDIT_JOURNAL", Path::new("off"))]);
+                                          ("XDG_STATE_HOME", &root.join("state")), ("COCKPIT_STATE_HOME", &root.join("state")), ("CLAUDE_AUDIT_JOURNAL", Path::new("off")),
+                                          ("SHELL", Path::new("/usr/bin/fish"))]);
     terminal.pump(10.0, Some(b"Edit it first"));
     assert!(contains(&terminal.screen, b"Edit it first"), "the menu never showed");
     terminal.pump(1.0, None);
@@ -43,6 +44,72 @@ fn approve_in_terminal(command: &str) -> (Terminal, PathBuf, String) {
     assert!(contains(&terminal.screen, run_it_selected), "Down did not select Run it");
     terminal.type_keys(b"\r");
     (terminal, root, id)
+}
+
+#[test]
+fn approved_command_keeps_shell_quoting_under_fish() {
+    let (root, _) = request("true");
+    let marker = root.join("ran");
+    let command = format!("echo 'a\\\\' '; touch {} #'", marker.display());
+    let (mut terminal, approval_root, id) = approve_in_terminal(&command);
+    assert!(terminal.wait_for_exit(20.0).success());
+    let result: serde_json::Value = serde_json::from_str(&fs::read_to_string(approval_root.join(format!("answers/proj-a/runs/{id}.result"))).unwrap()).unwrap();
+    assert_eq!(result["exit"], 0, "{result}");
+    assert!(!marker.exists(), "the second word ran as a command");
+    fs::remove_dir_all(approval_root).unwrap();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn approved_command_reports_its_last_failed_step() {
+    let (mut terminal, root, id) = approve_in_terminal("echo one; and false; and echo three");
+    assert!(terminal.wait_for_exit(20.0).success());
+    let result: serde_json::Value = serde_json::from_str(&fs::read_to_string(root.join(format!("answers/proj-a/runs/{id}.result"))).unwrap()).unwrap();
+    assert_eq!((result["exit"].as_i64(), result["failed_step"].as_str()), (Some(1), Some("false")));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn approval_tests_preserve_the_callers_terminal_when_commands_overlap() {
+    use common::sandbox::write_executable;
+    use std::os::fd::AsRawFd;
+
+    let (root, _) = request("true");
+    let commands = root.join("bin");
+    fs::create_dir(&commands).unwrap();
+    // Force the first script to exit before the second, which saved its raw terminal settings.
+    write_executable(&commands.join("script"), r#"#!/bin/sh
+case "$*" in
+  *"echo one"*)
+    timeout 10 sh -c 'until [ -e "$APPROVAL_TIMING_ROOT/first" ]; do sleep 0.01; done' || exit 1
+    exec /usr/bin/script "$@";;
+  *)
+    /usr/bin/script "$@"
+    status=$?
+    touch "$APPROVAL_TIMING_ROOT/first-finished"
+    exit "$status";;
+esac
+"#);
+    write_executable(&commands.join("fish"), r#"#!/bin/sh
+case "$*" in
+  *"echo one"*) touch "$APPROVAL_TIMING_ROOT/second"; timeout 10 sh -c 'until [ -e "$APPROVAL_TIMING_ROOT/first-finished" ]; do sleep 0.01; done' || exit 1;;
+  *) touch "$APPROVAL_TIMING_ROOT/first"; timeout 10 sh -c 'until [ -e "$APPROVAL_TIMING_ROOT/second" ]; do sleep 0.01; done' || exit 1;;
+esac
+exec /usr/bin/fish "$@"
+"#);
+    let path = format!("{}:{}", commands.display(), std::env::var("PATH").unwrap());
+    let mut terminal = Terminal::start(&std::env::current_exe().unwrap(), &["approved_command_", "--test-threads=2"],
+        &[("PATH", Path::new(&path)), ("SHELL", Path::new("/usr/bin/fish")), ("APPROVAL_TIMING_ROOT", &root)]);
+    let status = terminal.wait_for_exit(30.0);
+    assert!(status.success(), "{}", String::from_utf8_lossy(&terminal.screen));
+    assert!(contains(&terminal.screen, b"2 passed; 0 failed"), "the overlapping command tests did not both run");
+    let mut settings = std::mem::MaybeUninit::<libc::termios>::uninit();
+    assert_eq!(unsafe { libc::tcgetattr(terminal.master.as_raw_fd(), settings.as_mut_ptr()) }, 0);
+    let settings = unsafe { settings.assume_init() };
+    assert_ne!(settings.c_iflag & libc::ICRNL, 0, "Enter no longer produces a newline");
+    assert_ne!(settings.c_oflag & libc::OPOST, 0, "output is left stair-stepped");
+    assert_eq!(settings.c_lflag & (libc::ICANON | libc::ECHO), libc::ICANON | libc::ECHO, "line editing or echo was disabled");
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
@@ -59,7 +126,7 @@ fn a_question_without_newline_stays_on_screen_until_answered() {
     let settled = terminal.screen.len();
     terminal.pump(1.0, None);
     assert_eq!(terminal.screen.len(), settled, "nothing is drawn while the question waits");
-    terminal.type_keys(b"y\n");
+    terminal.type_keys(b"y\r");
     terminal.wait_for_exit(20.0);
     assert!(contains(&terminal.screen, b"got y"));
     let result: serde_json::Value = serde_json::from_str(&fs::read_to_string(root.join(format!("answers/proj-a/runs/{id}.result"))).unwrap()).unwrap();
