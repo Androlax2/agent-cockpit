@@ -69,7 +69,7 @@ impl Launch {
         }
         copy_executable(&bin().join("agent-build"), &sandbox.home.join(".local/bin/agent-build"));
         // Logs its arguments, then runs the command after -- when it exists (the fake opencode).
-        write_executable(&sandbox.home.join(".local/bin/greywall"), "#!/bin/sh\nprintf 'greywall %s (api key: %s)\\n' \"$(printf '%s' \"$*\" | tr '\\n' ' ')\" \"${ANTHROPIC_API_KEY:-none}\" >> \"$SHIM_LOG\"\n\
+        write_executable(&sandbox.home.join(".local/bin/greywall"), "#!/bin/sh\nprintf '%s' \"${GREYWALL_NO_PROMPT:-}\" > \"$HOME/greywall-no-prompt\"\nprintf 'greywall %s (api key: %s)\\n' \"$(printf '%s' \"$*\" | tr '\\n' ' ')\" \"${ANTHROPIC_API_KEY:-none}\" >> \"$SHIM_LOG\"\n\
                                                                      while [ \"$1\" != -- ]; do shift; done; shift\n\
                                                                      if [ \"$1\" = env ] || [ -x \"$1\" ]; then exec \"$@\"; fi\n");
         // Records its arguments and the environment it got, one line each.
@@ -116,6 +116,16 @@ esac"#);
     fn settings_of(&self, agent: &str) -> serde_json::Value {
         let path = self.sandbox.runtime.join("greywall-agents").join(format!("{}.{agent}.json", Launch::slug(&self.project)));
         serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap()
+    }
+}
+
+#[test]
+fn every_agent_keeps_reviewed_profiles_without_a_drift_merge_prompt() {
+    for &agent in AGENTS.iter() {
+        let launch = Launch::new();
+        launch.run_agent(agent, &[("GREYWALL_NO_PROMPT", "")], &[]);
+        let no_prompt = fs::read_to_string(launch.sandbox.home.join("greywall-no-prompt")).unwrap();
+        assert_eq!(no_prompt, "1", "{agent} must disable greywall's profile merge prompt");
     }
 }
 

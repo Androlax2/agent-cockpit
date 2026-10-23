@@ -3,6 +3,9 @@
 # Not executable: this folder is on PATH. The launcher sets $agent (messages) before sourcing it,
 # and $own_folders: the denyRead entries of greywall.json that are its agent's own data.
 
+# Greywall's drift prompt defaults to merging bundled grants into our reviewed profiles.
+export GREYWALL_NO_PROMPT=1
+
 # Chrome writes its crash reports under the config dir even headless; give it one the sandbox allows.
 export CHROME_CONFIG_HOME="$HOME/.cache/chrome-sandbox"
 mkdir -p "$CHROME_CONFIG_HOME"
