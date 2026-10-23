@@ -95,7 +95,7 @@ fn stack_checkout(repo: &str) -> Option<std::path::PathBuf> {
 
 /// The checkout of a project a session names (claude-todo propose --project): a repository directly
 /// in ~/IdeaProjects, not a symlink, a hidden folder (parallel clones) or a path.
-fn project_checkout(name: &str) -> Option<std::path::PathBuf> {
+pub fn project_checkout(name: &str) -> Option<std::path::PathBuf> {
     static PROJECT: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| Regex::new(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$").unwrap());
     if !PROJECT.is_match(name) {
         return None;

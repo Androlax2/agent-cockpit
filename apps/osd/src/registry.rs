@@ -485,6 +485,13 @@ pub fn queue_todo_update(raw: &str, started_in: &str) -> Result<(), String> {
         Ok(Value::Object(update)) => update,
         _ => return Err("not a JSON object".into()),
     };
+    if matches!(update.get("action").and_then(Value::as_str), Some("add" | "propose")) {
+        if let Some(target) = update.get("project").and_then(Value::as_str) {
+            if cockpit::todo::project_checkout(target).is_none() {
+                return Err(format!("no project checkout named {:?}", target.chars().take(60).collect::<String>()));
+            }
+        }
+    }
     update.insert("started_in".into(), json!(started_in));
     let path = paths::todo_updates();
     if fs::metadata(&path).is_ok_and(|metadata| metadata.len() > TODO_QUEUE_MAX_BYTES) {

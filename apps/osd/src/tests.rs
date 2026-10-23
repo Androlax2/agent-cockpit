@@ -2413,6 +2413,40 @@ fn a_todo_update_is_queued_with_the_folder_its_sandbox_started_in() {
 }
 
 #[test]
+fn a_todo_for_a_nonexistent_project_is_refused_before_queueing() {
+    let mut bench = Bench::new();
+    bench.world.borrow_mut().sender_directories.insert(500, "/p".into());
+    let projects = bench.fixture.root.join("home/IdeaProjects");
+    fs::create_dir_all(projects.join("notes")).unwrap();
+    fs::create_dir_all(projects.join(".parallel/.git")).unwrap();
+    fs::create_dir_all(projects.join("real/.git")).unwrap();
+    std::os::unix::fs::symlink(projects.join("real"), projects.join("alias")).unwrap();
+    for action in ["add", "propose"] {
+        for target in ["no-such-project-xyz", "notes", ".parallel", "../real", "alias", ""] {
+            let raw = json!({"action": action, "project": target, "text": "probe", "why": "test"}).to_string();
+            let error = bench.registry.request_from("todo-update", &raw, 500).unwrap_err();
+            assert!(error.contains("no project checkout named"), "{error}");
+            assert!(!cockpit::paths::todo_updates().exists());
+        }
+    }
+}
+
+#[test]
+fn a_todo_for_an_existing_project_is_queued() {
+    let mut bench = Bench::new();
+    bench.world.borrow_mut().sender_directories.insert(500, "/p".into());
+    fs::create_dir_all(bench.fixture.root.join("home/IdeaProjects/greyproxy/.git")).unwrap();
+    for action in ["add", "propose"] {
+        let raw = json!({"action": action, "project": "greyproxy", "text": "work", "why": "test"}).to_string();
+        bench.registry.request_from("todo-update", &raw, 500).unwrap();
+    }
+    let queued = fs::read_to_string(cockpit::paths::todo_updates()).unwrap();
+    let updates: Vec<Value> = queued.lines().map(|line| serde_json::from_str(line).unwrap()).collect();
+    assert_eq!(updates.len(), 2);
+    assert!(updates.iter().all(|update| update["project"] == "greyproxy" && update["started_in"] == "/p"));
+}
+
+#[test]
 fn a_full_todo_queue_takes_no_more() {
     let mut bench = Bench::new();
     bench.world.borrow_mut().sender_directories.insert(500, "/p".into());
