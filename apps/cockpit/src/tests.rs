@@ -14,14 +14,62 @@ use crate::util;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use serde_json::{Value, json};
+use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
 use std::time::Duration;
 
 static ENVIRONMENT: Mutex<()> = Mutex::new(());
+
+fn check_fixture_listener_lifetimes(test_name: &str, replace: bool, unlink: bool) {
+    if std::env::var("COCKPIT_FIXTURE_LIFETIME_TEST").as_deref() != Ok(test_name) {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &format!("tests::{test_name}"), "--nocapture"])
+            .env("COCKPIT_FIXTURE_LIFETIME_TEST", test_name)
+            .output().unwrap();
+        assert!(output.status.success(), "{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+        return;
+    }
+    let socket_count = || fs::read_dir("/proc/self/fd").unwrap()
+        .filter_map(|entry| fs::read_link(entry.unwrap().path()).ok())
+        .filter(|target| target.to_string_lossy().starts_with("socket:")).count();
+    let baseline = socket_count();
+    for iteration in 0..12 {
+        let fixture = Fixture::new();
+        drop(fixture.app());
+        if replace {
+            for _ in 0..3 {
+                team_host(&fixture, team_snapshot(), vec![]);
+                drop(fixture.app());
+            }
+            assert_eq!(socket_count(), baseline + 1, "replacement leaked listeners at iteration {iteration}");
+        }
+        if unlink { fs::remove_file(crate::paths::team_host_socket()).unwrap(); }
+        drop(fixture);
+        let remaining = socket_count();
+        eprintln!("iteration {iteration}: baseline={baseline}, remaining={remaining}");
+        assert_eq!(remaining, baseline, "fixture leaked listeners at iteration {iteration}");
+    }
+}
+
+#[test]
+fn successive_app_fixtures_release_their_listeners() {
+    check_fixture_listener_lifetimes("successive_app_fixtures_release_their_listeners", false, false);
+}
+
+#[test]
+fn replacing_fixture_servers_releases_previous_listeners() {
+    check_fixture_listener_lifetimes("replacing_fixture_servers_releases_previous_listeners", true, false);
+}
+
+#[test]
+fn unlinked_fixture_sockets_do_not_prevent_server_shutdown() {
+    check_fixture_listener_lifetimes("unlinked_fixture_sockets_do_not_prevent_server_shutdown", false, true);
+}
 
 #[test]
 fn canonical_configuration_wins_while_legacy_overrides_still_work() {
@@ -92,7 +140,21 @@ const OPENCODE_SESSION: &str = "ses_3f2a9c0b1ffeQkTz8mWn4rJd2L";
 /// A scratch machine for one test. Tests run one at a time: they all change the environment.
 struct Fixture {
     root: PathBuf,
+    server: RefCell<Option<FixtureServer>>,
     _lock: MutexGuard<'static, ()>,
+}
+
+struct FixtureServer {
+    stopping: Arc<AtomicBool>,
+    thread: std::thread::JoinHandle<()>,
+}
+
+impl FixtureServer {
+    fn stop(self) {
+        self.stopping.store(true, Ordering::SeqCst);
+        self.thread.thread().unpark();
+        self.thread.join().expect("fixture server panicked");
+    }
 }
 
 impl Fixture {
@@ -127,7 +189,7 @@ impl Fixture {
                 std::env::remove_var(name);
             }
         }
-        let fixture = Fixture { root, _lock: lock };
+        let fixture = Fixture { root, server: RefCell::new(None), _lock: lock };
         // fzf too: the real one opens a picker on the terminal running the tests and waits there
         // (make test on the host). Its stand-in picks nothing: a test that needs a pick shims its own.
         for name in ["cockpit", "hyprctl", "osd-show", "xdg-open", "tmux", "fzf"] {
@@ -191,43 +253,64 @@ impl Fixture {
         use std::io::{Read, Write};
         let path = crate::paths::team_host_socket();
         if path.exists() { return; }
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        let listener = std::os::unix::net::UnixListener::bind(path).unwrap();
         let mut connection = rusqlite::Connection::open_in_memory().unwrap();
         crate::chief::store::migrate(&mut connection).unwrap();
-        std::thread::spawn(move || {
-            for mut stream in listener.incoming().flatten() {
-                let mut text = String::new();
-                if stream.read_to_string(&mut text).is_err() { continue; }
-                let request: crate::teams::HostRequest = serde_json::from_str(&text).unwrap();
-                crate::chief::store::reconcile_todos(&mut connection, &TodoList::load(), 0).unwrap();
-                let result = match request {
-                    crate::teams::HostRequest::Snapshot => Ok(json!({"members":[], "chief_scheduling_owner":false,"chief_owned_work":[]})),
-                    crate::teams::HostRequest::ReserveManual {task_id,directory} => {
-                        let task=crate::teams::TaskKey {project:format!("path:{directory}"),task_id};
-                        crate::chief::store::reserve_legacy_kind(&mut connection,&task,None,true,0).map(|token|json!({"reservation":token}))
+        self.serve(move |mut stream| {
+            let mut text = String::new();
+            if stream.read_to_string(&mut text).is_err() { return; }
+            let request: crate::teams::HostRequest = serde_json::from_str(&text).unwrap();
+            crate::chief::store::reconcile_todos(&mut connection, &TodoList::load(), 0).unwrap();
+            let result = match request {
+                crate::teams::HostRequest::Snapshot => Ok(json!({"members":[], "chief_scheduling_owner":false,"chief_owned_work":[]})),
+                crate::teams::HostRequest::ReserveManual {task_id,directory} => {
+                    let task=crate::teams::TaskKey {project:format!("path:{directory}"),task_id};
+                    crate::chief::store::reserve_legacy_kind(&mut connection,&task,None,true,0).map(|token|json!({"reservation":token}))
+                },
+                crate::teams::HostRequest::ReleaseManual {task_id,directory,token} => crate::chief::store::release_manual(&mut connection,&format!("path:{directory}"),&task_id,&token).map(|_|json!({"released_manual_only":true})),
+                crate::teams::HostRequest::SettleReservation {token,expected_revision,outcome} => crate::chief::store::settle_launch(&mut connection,&token,expected_revision,&outcome),
+                crate::teams::HostRequest::ReserveTask { task_id, directory, worker, .. } => {
+                    let task = crate::teams::TaskKey { project:format!("path:{directory}"), task_id };
+                    crate::chief::store::reserve_legacy(&mut connection, &task, worker.as_deref(), 0).map(|token| json!({"reservation":token}))
+                },
+                crate::teams::HostRequest::ReserveResume { session, directory } => {
+                    let task = crate::teams::TaskKey { project:format!("path:{directory}"), task_id:format!("resume:{session}") };
+                    crate::chief::store::reserve_legacy(&mut connection, &task, Some(&session), 0).map(|token| json!({"reservation":token}))
+                },
+                _ => Ok(json!({"recorded":true})),
+            };
+            let reply = crate::teams::TeamReply { request_id:"fixture".into(), result };
+            let _ = stream.write_all(serde_json::to_string(&reply).unwrap().as_bytes());
+        });
+    }
+
+    fn serve(&self, mut handle: impl FnMut(std::os::unix::net::UnixStream) + Send + 'static) {
+        if let Some(server) = self.server.borrow_mut().take() { server.stop(); }
+        let path = crate::paths::team_host_socket();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        if path.exists() { fs::remove_file(&path).unwrap(); }
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let stopping = Arc::new(AtomicBool::new(false));
+        let server_stopping = stopping.clone();
+        let thread = std::thread::spawn(move || {
+            while !server_stopping.load(Ordering::SeqCst) {
+                match listener.accept() {
+                    Ok((stream, _)) => handle(stream),
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        // Tests may unlink the socket, so shutdown must not reconnect by pathname.
+                        std::thread::park_timeout(Duration::from_millis(1));
                     },
-                    crate::teams::HostRequest::ReleaseManual {task_id,directory,token} => crate::chief::store::release_manual(&mut connection,&format!("path:{directory}"),&task_id,&token).map(|_|json!({"released_manual_only":true})),
-                    crate::teams::HostRequest::SettleReservation {token,expected_revision,outcome} => crate::chief::store::settle_launch(&mut connection,&token,expected_revision,&outcome),
-                    crate::teams::HostRequest::ReserveTask { task_id, directory, worker, .. } => {
-                        let task = crate::teams::TaskKey { project:format!("path:{directory}"), task_id };
-                        crate::chief::store::reserve_legacy(&mut connection, &task, worker.as_deref(), 0).map(|token| json!({"reservation":token}))
-                    },
-                    crate::teams::HostRequest::ReserveResume { session, directory } => {
-                        let task = crate::teams::TaskKey { project:format!("path:{directory}"), task_id:format!("resume:{session}") };
-                        crate::chief::store::reserve_legacy(&mut connection, &task, Some(&session), 0).map(|token| json!({"reservation":token}))
-                    },
-                    _ => Ok(json!({"recorded":true})),
-                };
-                let reply = crate::teams::TeamReply { request_id:"fixture".into(), result };
-                let _ = stream.write_all(serde_json::to_string(&reply).unwrap().as_bytes());
+                    Err(error) => panic!("accept fixture request: {error}"),
+                }
             }
         });
+        *self.server.borrow_mut() = Some(FixtureServer { stopping, thread });
     }
 }
 
 impl Drop for Fixture {
     fn drop(&mut self) {
+        if let Some(server) = self.server.get_mut().take() { server.stop(); }
         let _ = fs::remove_dir_all(&self.root);
     }
 }
@@ -3173,42 +3256,36 @@ const TEAM_PROJECT: &str = "remote:git@github.com:example/project-a.git";
 
 /// A fake daemon on the host-only team socket: snapshots answer `snapshot`, controls take the
 /// next of `replies` (success by default). Records every request.
-fn team_host(_fixture: &Fixture, mut snapshot: Value, replies: Vec<Value>) -> HostRequests {
+fn team_host(fixture: &Fixture, mut snapshot: Value, replies: Vec<Value>) -> HostRequests {
     use std::io::{Read, Write};
-    let path = crate::paths::team_host_socket();
-    fs::create_dir_all(path.parent().unwrap()).unwrap();
-    if path.exists() { fs::remove_file(&path).unwrap(); }
-    let listener = std::os::unix::net::UnixListener::bind(path).unwrap();
     if snapshot.get("chief_scheduling_owner").is_none() { snapshot["chief_scheduling_owner"] = json!(false); }
     if snapshot.get("chief_owned_work").is_none() { snapshot["chief_owned_work"] = json!([]); }
     let mut connection = rusqlite::Connection::open_in_memory().unwrap();
     crate::chief::store::migrate(&mut connection).unwrap();
     let requests = HostRequests::default();
     let recorded = requests.clone();
-    std::thread::spawn(move || {
-        let mut replies: VecDeque<Value> = replies.into();
-        for mut stream in listener.incoming().flatten() {
-            let mut text = String::new();
-            let _ = stream.read_to_string(&mut text);
-            let request: Value = serde_json::from_str(&text).unwrap();
-            let result = if request["request"] == "snapshot" { json!({"Ok": snapshot}) }
-                          else if snapshot["chief_scheduling_owner"] == true && matches!(request["request"].as_str(), Some("reserve_task" | "reserve_resume")) {
-                              json!({"Err":{"code":"conflict", "message":"chief owns scheduling"}})
-                          }
-                          else if request["request"] == "reserve_task" {
-                              let task = crate::teams::TaskKey { project: format!("path:{}", request["directory"].as_str().unwrap()),
-                                  task_id: request["task_id"].as_str().unwrap().into() };
-                              json!(crate::chief::store::reserve_legacy(&mut connection, &task, request["worker"].as_str(), 0)
-                                  .map(|token| json!({"reservation": token})))
-                          }
-                          else if request["request"] == "settle_reservation" {
-                              json!(crate::chief::store::settle_launch(&mut connection, request["token"].as_str().unwrap(),
-                                  request["expected_revision"].as_i64().unwrap(), request["outcome"].as_str().unwrap()))
-                          }
-                         else { replies.pop_front().unwrap_or(json!({"Ok": {"status": "ok"}})) };
-            recorded.lock().unwrap().push(request);
-            let _ = stream.write_all(json!({"request_id": "x", "result": result}).to_string().as_bytes());
-        }
+    let mut replies: VecDeque<Value> = replies.into();
+    fixture.serve(move |mut stream| {
+        let mut text = String::new();
+        let _ = stream.read_to_string(&mut text);
+        let request: Value = serde_json::from_str(&text).unwrap();
+        let result = if request["request"] == "snapshot" { json!({"Ok": snapshot}) }
+                      else if snapshot["chief_scheduling_owner"] == true && matches!(request["request"].as_str(), Some("reserve_task" | "reserve_resume")) {
+                          json!({"Err":{"code":"conflict", "message":"chief owns scheduling"}})
+                      }
+                      else if request["request"] == "reserve_task" {
+                          let task = crate::teams::TaskKey { project: format!("path:{}", request["directory"].as_str().unwrap()),
+                              task_id: request["task_id"].as_str().unwrap().into() };
+                          json!(crate::chief::store::reserve_legacy(&mut connection, &task, request["worker"].as_str(), 0)
+                              .map(|token| json!({"reservation": token})))
+                      }
+                      else if request["request"] == "settle_reservation" {
+                          json!(crate::chief::store::settle_launch(&mut connection, request["token"].as_str().unwrap(),
+                              request["expected_revision"].as_i64().unwrap(), request["outcome"].as_str().unwrap()))
+                      }
+                     else { replies.pop_front().unwrap_or(json!({"Ok": {"status": "ok"}})) };
+        recorded.lock().unwrap().push(request);
+        let _ = stream.write_all(json!({"request_id": "x", "result": result}).to_string().as_bytes());
     });
     requests
 }
