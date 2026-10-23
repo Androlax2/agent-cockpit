@@ -10,7 +10,8 @@
 
 **Spec:** `docs/superpowers/specs/2026-10-23-subscription-fallback-design.md`
 
-**Status:** Draft for execution review. Theo confirmed an existing OpenCode
+**Status:** Implementation approved by Theo ("Go"); Tasks 1–3 verified in the
+execution ledger. Theo confirmed an existing OpenCode
 Anthropic `Claude OAuth` connection through `/connect`; keep OpenCode fallback in
 the same conversation using existing connected accounts. Verify actual active
 connection/billing/quota rather than treating the label as sufficient evidence.
