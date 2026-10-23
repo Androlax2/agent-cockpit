@@ -143,6 +143,61 @@ fn no_answer_in_time_says_how_to_keep_waiting() {
 }
 
 #[test]
+fn a_timeout_distinguishes_the_hosts_last_reported_phase() {
+    for (phase, expected) in [
+        ("asking", "awaiting Theo's approval"),
+        ("running", "approved; last reported running"),
+        ("input", "approved; waiting for terminal input"),
+        ("done", "finished; waiting for the final result"),
+    ] {
+        let fixture = AskToRun::new();
+        fs::write(answers(&fixture.sandbox).join("0123456789ab.phase"), json!({"phase": phase}).to_string()).unwrap();
+        let output = finish(fixture.ask(&["--wait", "0123456789ab"], "0"), TIMEOUT);
+        let shown = stdout(&output);
+        assert_eq!(output.status.code(), Some(124), "{phase}: {shown}");
+        assert!(shown.contains(expected), "{phase}: {shown}");
+        assert!(!shown.contains("No answer"), "{phase}: {shown}");
+        assert!(shown.contains("ask-to-run --wait 0123456789ab"), "{phase}: {shown}");
+        assert!(fixture.daemon.as_ref().unwrap().received(Duration::from_millis(10)).is_empty(), "a duplicate request was filed");
+    }
+}
+
+#[test]
+fn a_phase_in_the_shared_writable_folder_cannot_claim_approval() {
+    let fixture = AskToRun::new();
+    fs::create_dir_all(&fixture.runs).unwrap();
+    fs::write(fixture.runs.join("0123456789ab.phase"), json!({"phase": "running"}).to_string()).unwrap();
+    let output = finish(fixture.ask(&["--wait", "0123456789ab"], "0"), TIMEOUT);
+    let shown = stdout(&output);
+    assert!(shown.contains("host status unavailable"), "{shown}");
+    assert!(!shown.contains("approved;"), "{shown}");
+    assert!(!shown.contains("No answer"), "{shown}");
+}
+
+#[test]
+fn unreadable_or_unrecognized_phase_data_does_not_imply_no_approval() {
+    for content in ["broken json", r#"{"phase":"invented"}"#] {
+        let fixture = AskToRun::new();
+        fs::write(answers(&fixture.sandbox).join("0123456789ab.phase"), content).unwrap();
+        let shown = stdout(&finish(fixture.ask(&["--wait", "0123456789ab"], "0"), TIMEOUT));
+        assert!(shown.contains("host status unavailable"), "{content}: {shown}");
+        assert!(!shown.contains("No answer"), "{content}: {shown}");
+    }
+}
+
+#[test]
+fn the_final_result_takes_precedence_over_a_running_phase() {
+    let fixture = AskToRun::new();
+    let folder = answers(&fixture.sandbox);
+    fs::write(folder.join("0123456789ab.phase"), json!({"phase": "running"}).to_string()).unwrap();
+    fs::write(folder.join("0123456789ab.result"), json!({"status": "ran", "exit": 7, "output": "finished output"}).to_string()).unwrap();
+    let output = finish(fixture.ask(&["--wait", "0123456789ab"], "0"), TIMEOUT);
+    assert_eq!(output.status.code(), Some(7));
+    assert!(stdout(&output).contains("finished output"), "{}", stdout(&output));
+    assert!(!stdout(&output).contains("last reported running"));
+}
+
+#[test]
 fn while_waiting_it_keeps_a_heartbeat_for_the_daemon() {
     let fixture = AskToRun::new();
     let asking = fixture.ask(&["--why", "x", "true"], "5");
@@ -390,6 +445,32 @@ fn it_tells_the_daemon_when_it_needs_theo() {
     let phases: Vec<&str> = received.lines().filter(|line| line.starts_with("run-phase"))
         .map(|line| line.split_whitespace().last().unwrap()).collect();
     assert_eq!(phases, ["asking", "running", "done"]);
+}
+
+#[test]
+fn the_approval_terminal_publishes_phases_where_its_project_can_read_them() {
+    let fixture = Approve::new();
+    let request_id = fixture.file_default();
+    let phase = answers(&fixture.sandbox).join(format!("{request_id}.phase"));
+    fixture.sandbox.shim("script", r#"cat "$SHIM_PHASE_PATH" > "$HOME/phase-at-run"; printf 'ran\n' > "$3""#);
+    let asking = std::cell::RefCell::new(None::<Value>);
+    let before_answer = || {
+        let deadline = std::time::Instant::now() + TIMEOUT;
+        while std::time::Instant::now() < deadline {
+            if let Ok(content) = fs::read_to_string(&phase) {
+                *asking.borrow_mut() = serde_json::from_str(&content).ok();
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    };
+    fixture.approve_with(&request_id, "y\n\n", before_answer, &[("SHIM_PHASE_PATH", phase.to_str().unwrap())]);
+    assert_eq!(asking.into_inner().unwrap_or(Value::Null)["phase"], "asking");
+    let during: Value = serde_json::from_str(&fs::read_to_string(fixture.sandbox.home.join("phase-at-run")).unwrap()).unwrap();
+    assert_eq!(during["phase"], "running");
+    let after: Value = serde_json::from_str(&fs::read_to_string(&phase).unwrap()).unwrap();
+    assert_eq!(after["phase"], "done");
+    assert_eq!(fixture.result(&request_id).unwrap()["status"], "ran");
 }
 
 #[test]

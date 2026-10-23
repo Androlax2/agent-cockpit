@@ -164,8 +164,24 @@ pub fn send_host(line: &str) -> bool {
 
 /// The daemon learns whether this needs Theo (asking: the floating window comes up wherever he
 /// is), runs (running: an open window stays, no new one opens), or is done (pane and window close).
+/// The same host-reported phase is published in the project's read-only answers folder for --wait.
 pub fn phase(id: &str, name: &str) {
+    if !valid_id(id) || !matches!(name, "asking" | "running" | "input" | "done") {
+        return;
+    }
+    if let Err(error) = publish_run_phase(id, name) {
+        eprintln!("Cannot publish host command status for {id}: {error}");
+    }
     send_host(&format!("run-phase {id} {name}"));
+}
+
+// Only the host can read held requests and write answers: the shared runs folder is not trusted.
+fn publish_run_phase(id: &str, name: &str) -> io::Result<()> {
+    let request: Value = serde_json::from_reader(fs::File::open(held_request(id, "request"))?)
+        .map_err(io::Error::other)?;
+    let answers = request_answers_dir(&request, "runs")
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "request names no answers folder"))?;
+    write_json(&answers.join(format!("{id}.phase")), &serde_json::json!({"phase": name}))
 }
 
 /// A line in the shared log, through the manager.

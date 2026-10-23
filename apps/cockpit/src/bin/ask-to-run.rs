@@ -43,13 +43,23 @@ fn touch(path: &std::path::Path) {
 }
 
 fn wait_for_result(answers_key: &str, id: &str) -> i32 {
-    let path = approval::answers_dir(answers_key, "runs").join(format!("{id}.result"));
+    let answers = approval::answers_dir(answers_key, "runs");
+    let path = answers.join(format!("{id}.result"));
     let heartbeat = approval::runs_dir().join(format!("{id}.waiting"));
     let deadline = Instant::now() + Duration::from_secs(wait_seconds());
     let mut last_beat: Option<Instant> = None;
     while !path.exists() {
         if Instant::now() >= deadline {
-            println!("No answer after {} min. Keep waiting with: ask-to-run --wait {id} (within 5 minutes, or the request is dropped)", wait_seconds() / 60);
+            let status: Option<Value> = std::fs::read(answers.join(format!("{id}.phase"))).ok()
+                .and_then(|bytes| serde_json::from_slice(&bytes).ok());
+            match status.as_ref().and_then(|status| status.get("phase")).and_then(Value::as_str) {
+                Some("asking") => println!("Still awaiting Theo's approval. Keep waiting within 5 minutes, or the request may be dropped."),
+                Some("running") => println!("Command approved; last reported running. No final result yet; do not request approval again."),
+                Some("input") => println!("Command approved; waiting for terminal input, not another approval."),
+                Some("done") => println!("Host request finished; waiting for the final result."),
+                _ => println!("No final result yet; host status unavailable. Approval may already have happened; do not submit a duplicate request."),
+            }
+            println!("Keep waiting with: ask-to-run --wait {id}");
             return TIMED_OUT;
         }
         if last_beat.is_none_or(|beat| beat.elapsed() >= HEARTBEAT_EVERY) {
