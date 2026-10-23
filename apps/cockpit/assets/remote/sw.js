@@ -3,7 +3,7 @@
 "use strict";
 
 self.addEventListener("push", (event) => {
-  const notification = event.data ? event.data.json() : { title: "Claude sessions", body: "" };
+  const notification = event.data ? event.data.json() : { title: "Agent Cockpit", body: "" };
   event.waitUntil(self.registration.showNotification(notification.title, {
     body: notification.body,
     tag: notification.topic,

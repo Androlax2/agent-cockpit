@@ -41,6 +41,18 @@ fn chip_tooltip_escapes_markup() {
     assert!(tooltip.contains("&lt;totals&gt;"), "{tooltip}");
 }
 
+#[test]
+fn chip_tooltip_is_titled_agent_cockpit_not_claude_sessions() {
+    let sandbox = Sandbox::new();
+    let busy = chip(&sandbox, json!({"sessions": [{"state": "working", "project": "a", "since": 1}]}));
+    let idle = chip(&sandbox, json!({"sessions": []}));
+    for tooltip in [busy["tooltip"].as_str().unwrap(), idle["tooltip"].as_str().unwrap()] {
+        assert!(!tooltip.contains("Claude session"), "{tooltip}");
+    }
+    assert!(busy["tooltip"].as_str().unwrap().contains("<b>Agent Cockpit</b>"), "{busy}");
+    assert!(idle["tooltip"].as_str().unwrap().starts_with("No agent session"), "{idle}");
+}
+
 fn usage(sandbox: &Sandbox, window: &str, fixture: &Value) -> Value {
     let path = sandbox.root.join("usage.json");
     fs::write(&path, fixture.to_string()).unwrap();

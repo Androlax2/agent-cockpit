@@ -7,7 +7,7 @@ SNAPSHOT="${COCKPIT_SNAPSHOT:-${XDG_RUNTIME_DIR:-/tmp}/cockpit.json}"
 IDLE_GLYPH=$(printf '\xf3\xb0\x9a\xa9')  # nf-md-robot U+F06A9 as bytes: $'\U…' needs a UTF-8 locale, make runs with LC_ALL=C
 
 print_idle() {
-    jq -cn --arg glyph "$IDLE_GLYPH" '{text: $glyph, tooltip: "No Claude session\nClick: open the manager", class: "idle", alt: "idle"}'
+    jq -cn --arg glyph "$IDLE_GLYPH" '{text: $glyph, tooltip: "No agent session\nClick: open the manager", class: "idle", alt: "idle"}'
 }
 
 if [[ ! -s $SNAPSHOT ]]; then
@@ -24,11 +24,11 @@ def count($state): [.sessions[] | select(.state == $state)] | length;
 def chip($state): count($state) as $n | if $n > 0 then "<span color=\"\($state | colour)\">\($state | glyph) \($n)</span>" else empty end;
 def most_urgent: if count("needs-you") > 0 then "needs-you" elif count("waiting") > 0 then "waiting" else "working" end;
 
-if (.sessions | length) == 0 then {text: $idle_glyph, tooltip: "No Claude session\nClick: open the manager", class: "idle", alt: "idle"} else
+if (.sessions | length) == 0 then {text: $idle_glyph, tooltip: "No agent session\nClick: open the manager", class: "idle", alt: "idle"} else
 {
   text: ([chip("working"), chip("waiting"), chip("needs-you")] | join("  ")),
   tooltip: ([
-      "<span color=\"#7aa2f7\"><b>Claude sessions</b></span>",
+      "<span color=\"#7aa2f7\"><b>Agent Cockpit</b></span>",
       (.sessions[] | "<span color=\"\(.state | colour)\">\(.state | glyph)</span>  <b>\(.project | pango)</b>  \(.task // "" | pango)  <span color=\"#565f89\">\(age)</span>"),
       "",
       "<span color=\"#565f89\">Click: focus the most urgent session</span>"

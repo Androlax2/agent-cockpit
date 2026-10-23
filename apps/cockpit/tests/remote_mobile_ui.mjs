@@ -120,7 +120,7 @@ const tests = {
     assert.equal(tab.querySelector(".badge").textContent, "2");
     assert.equal(tab.querySelector(".badge").hidden, false);
     assert.equal(tab.getAttribute("aria-label"), "Sessions, 2 need you");
-    assert.equal(page.document.title, "(2) Claude sessions");
+    assert.equal(page.document.title, "(2) Agent Cockpit");
   },
 
   async "the badge disappears once nothing needs you"() {
@@ -130,7 +130,7 @@ const tests = {
     const tab = page.document.getElementById("tab-sessions");
     assert.equal(tab.querySelector(".badge").hidden, true);
     assert.equal(tab.getAttribute("aria-label"), "Sessions");
-    assert.equal(page.document.title, "Claude sessions");
+    assert.equal(page.document.title, "Agent Cockpit");
   },
 
   async "agent Markdown becomes formatting without markup"() {

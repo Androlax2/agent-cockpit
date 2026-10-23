@@ -189,7 +189,7 @@ function sessionsNeedingYou() {
 
 function updateAttentionBadge() {
   const count = sessionsNeedingYou();
-  document.title = count ? `(${count}) Claude sessions` : "Claude sessions";
+  document.title = count ? `(${count}) Agent Cockpit` : "Agent Cockpit";
   const button = document.getElementById("tab-sessions");
   if (!button) return;
   const badge = button.querySelector(".badge");

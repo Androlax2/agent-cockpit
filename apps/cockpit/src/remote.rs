@@ -378,7 +378,7 @@ fn push_contact() -> String {
 /// A notification to one phone, to check they reach it.
 pub fn send_test(phone: &str) -> Result<String, String> {
     let (_, subscription) = push_targets().into_iter().find(|(id, _)| id == phone).ok_or("notifications are off on this phone")?;
-    let test = json!({"title": "Claude sessions", "body": "Notifications reach this phone.", "topic": "test"});
+    let test = json!({"title": "Agent Cockpit", "body": "Notifications reach this phone.", "topic": "test"});
     match push::send(&subscription, &test, "test", &push_contact()) {
         push::Delivery::Sent => Ok("sent: it shows in a few seconds".into()),
         push::Delivery::Gone => {
