@@ -3531,6 +3531,36 @@ fn team_sidebar_next_attention_reaches_task_only_blockers() {
 }
 
 #[test]
+fn team_sidebar_failed_wake_stays_reachable_when_collapsed_or_filtered() {
+    for filtered in [false,true] {
+        let fixture = Fixture::new();
+        fixture.snapshot(json!([session(SESSION_A,"waiting","project-a","/r/project-a",1)]));
+        fixture.write(&format!("state/cockpit/asleep/{OPENCODE_SESSION}"),&json!({
+            "agent":"opencode","project":"project-a","cwd":"/r/project-a","title":"Sleeping developer",
+            "idle_since":util::now_secs()-7200,"slept_at":util::now_secs()-3600,"remote":false,"started":1
+        }).to_string());
+        let mut state = sidebar_snapshot();
+        state["sleeps"] = json!([{"session_id":OPENCODE_SESSION,"state":"failed","error":"launcher refused"}]);
+        team_host(&fixture,state,vec![]);
+        let mut app = fixture.app();
+        sidebar_fold(&mut app);
+        if filtered { continuity_action(&mut app,"1\tattention-filter",&[]); }
+        let shown = texts(&app,1).join("\n");
+        assert!(shown.contains("▸ Team: 1d3fd318") && shown.contains("Developer wake failed: launcher refused"),"{shown}");
+        app.handle(Key::Char('n'),&mut FakeScreen::default());
+        app.redraw();
+        assert!(app.selected_session().is_none());
+        assert!(texts(&app,1).iter().any(|line| line.starts_with("▾ Team: 1d3fd318")));
+        app.handle(Key::Char('i'),&mut FakeScreen::default());
+        assert!(app.team_view.is_some());
+        for _ in 0..2 { app.handle(Key::Down,&mut FakeScreen::default()); }
+        let details = app.team_view.as_ref().unwrap().detail().join("\n");
+        assert!(details.contains("launcher refused") && details.contains(OPENCODE_SESSION),"{details}");
+        assert!(fixture.calls("cockpit").is_empty(),"no wake/open/attend: {:?}",fixture.calls("cockpit"));
+    }
+}
+
+#[test]
 fn team_sidebar_unicode_and_small_buffers_preserve_attention() {
     let fixture = Fixture::new();
     let mut developer = session(OPENCODE_SESSION,"needs-you","project-a","/r/project-a",2);

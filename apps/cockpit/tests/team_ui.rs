@@ -211,3 +211,22 @@ fn sidebar_invalid_membership_is_unavailable_instead_of_dropping_the_session() {
         assert!(sidebar::grouped_rows(&state,&[Session {session:DESIGNER.into(),project:"shop".into(),..Session::default()}],&HashSet::new()).is_err());
     }
 }
+
+#[test]
+fn sidebar_failed_wake_attention_uses_exact_member_task_not_display_project() {
+    let task = TaskKey {project:PROJECT.into(),task_id:"1d3fd318".into()};
+    let mut state = json!({"members":[
+        {"session_id":DEVELOPER,"role":"developer","project":PROJECT,"task_id":"1d3fd318"},
+        {"session_id":DESIGNER,"role":"designer","project":"path:/another/project-a","task_id":"1d3fd318"}],
+        "sleeps":[{"session_id":DEVELOPER,"state":"failed","error":"launcher refused\u{1b}[2J"}]});
+    let attention = sidebar::attention(&state,&task).expect("failed wake must remain visible");
+    assert!(attention.contains("Developer") && attention.contains("launcher refused"));
+    assert!(!attention.contains('\u{1b}'));
+    assert!(sidebar::attention(&state,&TaskKey {project:"path:/another/project-a".into(),..task.clone()}).is_none());
+    assert!(sidebar::attention(&state,&TaskKey {task_id:"0123abcd".into(),..task.clone()}).is_none());
+    state["sleeps"][0]["state"] = json!("asleep");
+    assert!(sidebar::attention(&state,&task).is_none());
+    state["sleeps"][0]["state"] = json!("failed");
+    state["sleeps"][0]["session_id"] = json!("unlinked-session");
+    assert!(sidebar::attention(&state,&task).is_none());
+}

@@ -82,6 +82,13 @@ pub fn attention(snapshot: &Value, task: &TaskKey) -> Option<String> {
     if let Some(spawn) = list(snapshot, "spawns").iter().filter(scoped).find(|spawn| matches!(spawn["status"].as_str(), Some("failed" | "refused"))) {
         return Some(format!("Needs you: {} start {}", shown(spawn["role"].as_str().unwrap_or("Teammate")), shown(spawn["status"].as_str().unwrap())));
     }
+    for sleep in list(snapshot, "sleeps").iter().filter(|sleep| sleep["state"] == "failed") {
+        let Some(id) = sleep["session_id"].as_str() else { continue };
+        if let Some(member) = list(snapshot, "members").iter().filter(scoped).find(|member| member["session_id"] == id) {
+            let role = role(member).map(role_label).unwrap_or("Teammate");
+            return Some(format!("Needs you: {role} wake failed: {}", shown(sleep["error"].as_str().unwrap_or("Wake error unavailable"))));
+        }
+    }
     None
 }
 
