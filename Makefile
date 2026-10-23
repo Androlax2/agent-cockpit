@@ -121,7 +121,7 @@ agent-github-board-token: ## Create and store the classic token, project scope o
 agent-github-relogin: ## Revoke your old GitHub CLI login and log in again with keyring storage
 	@$(agent_github) relogin
 
-agent-github-protect: ## Require pull requests and block force pushes on the project's default branch: make agent-github-protect PROJECT=runway
+agent-github-protect: ## [read-only] Preview additive protections for an enrolled project; does not apply: make agent-github-protect PROJECT=runway
 	@test -n "$(PROJECT)" || { echo "usage: make agent-github-protect PROJECT=<folder in ~/IdeaProjects>"; exit 2; }
 	@$(agent_github) protect "$(PROJECT)"
 

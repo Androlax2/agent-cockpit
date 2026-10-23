@@ -12,7 +12,6 @@ PROJECTS_DIR="$HOME/IdeaProjects"
 NEW_TOKEN_URL=https://github.com/settings/personal-access-tokens/new
 NEW_CLASSIC_TOKEN_URL=https://github.com/settings/tokens/new
 AUTHORIZED_APPS_URL=https://github.com/settings/applications
-RULESET_NAME="agents: protect default branch"
 PROJECT_BOARD_SERVICE=agent-gh-projects
 
 die() { echo "agent-github: $*" >&2; exit 1; }
@@ -144,7 +143,7 @@ fine_grained_token_url() {
             "expires_in=90",
             "contents=write", "issues=write", "pull_requests=write",
             (if $allow_workflows == "1" then "workflows=write" else empty end),
-            "actions=read", "metadata=read"
+            "actions=read", "statuses=read", "metadata=read"
         ] | join("&"))'
 }
 
@@ -162,7 +161,8 @@ print_token_instructions() {
         echo "    Read and write     Contents, Issues, Pull requests"
         echo "    Workflows          No access"
     fi
-    echo "    Read-only          Actions, Metadata"
+    echo "    Read-only          Actions, Commit statuses, Metadata"
+    echo "  Checks API access must be separately proved; do not broaden token scopes."
     echo "  Account permissions  No access"
     echo "Set by hand:"
     echo "  Repository access    Only select repositories: $repository"
@@ -212,34 +212,8 @@ relogin() {
     check_cli_storage
 }
 
-ruleset_body() {
-    jq -n --arg name "$RULESET_NAME" '{
-        name: $name, target: "branch", enforcement: "active",
-        conditions: {ref_name: {include: ["~DEFAULT_BRANCH"], exclude: []}},
-        rules: [
-            {type: "deletion"},
-            {type: "non_fast_forward"},
-            {type: "pull_request", parameters: {
-                required_approving_review_count: 0, dismiss_stale_reviews_on_push: false,
-                require_code_owner_review: false, require_last_push_approval: false,
-                required_review_thread_resolution: false}}
-        ]}'
-}
-
 protect() {
-    local name=$1 repository existing
-    require_valid_name "$name"
-    repository=$(repository_of "$name")
-    if ! existing=$(gh api "repos/$repository/rulesets" --jq ".[] | select(.name == \"$RULESET_NAME\") | .id" 2>&1); then
-        die "cannot manage rulesets on $repository: $existing"
-    fi
-    if [[ -n $existing ]]; then
-        ruleset_body | gh api -X PUT "repos/$repository/rulesets/$existing" --input - >/dev/null
-        echo "$name: ruleset updated on $repository"
-    else
-        ruleset_body | gh api -X POST "repos/$repository/rulesets" --input - >/dev/null
-        echo "$name: default branch of $repository protected"
-    fi
+    exec /usr/bin/python3 -I "$(/usr/bin/dirname "$(/usr/bin/realpath -- "$0")")/../config/bin/.local/bin/greywall-agents/git-protection.py" "$@"
 }
 
 check() {
@@ -261,6 +235,7 @@ usage() {
     exit 2
 }
 
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
 case ${1:-} in
     inspect|enroll)
         action=$1
@@ -269,7 +244,8 @@ case ${1:-} in
     token) token "${2:?usage: agent-github.sh token <project>}" ;;
     project-board-token) project_board_token ;;
     relogin) relogin ;;
-    protect) protect "${2:?usage: agent-github.sh protect <project>}" ;;
+    protect) shift; protect "$@" ;;
     check) check ;;
     *) usage ;;
 esac
+fi
