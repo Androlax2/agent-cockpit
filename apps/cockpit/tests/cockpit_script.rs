@@ -1870,6 +1870,72 @@ fn the_first_show_of_the_day_sweeps_the_clones_in_the_background() {
 }
 
 #[test]
+fn restart_all_without_ids_includes_the_calling_session_and_other_agents() {
+    let manager = Manager::new();
+    fs::write(&manager.snapshot, json!({"sessions": [
+        {"session": SESSION_A, "agent": "claude", "state": "working", "project": "proj-a", "cwd": path_str(&manager.project), "tmux_pane": "%4"},
+        {"session": OPENCODE_SESSION, "agent": "opencode", "state": "waiting", "project": "proj-a", "cwd": path_str(&manager.project), "tmux_pane": "%5"}
+    ]}).to_string()).unwrap();
+    let result = manager.run(&["restart-all"], &[("CLAUDE_CODE_SESSION_ID", SESSION_A),
+        ("SHIM_PANE_TEXT", IDLE), ("SHIM_EXIT_AFTER", "1"), ("COCKPIT_RESTORE_WAIT", "0")]);
+    assert!(result.status.success(), "{}", stderr(&result));
+    let launches = manager.tmux_calls("new-session");
+    assert!(launches.iter().any(|call| call.contains(&format!("--resume {SESSION_A}"))), "{launches:?}");
+    assert!(launches.iter().any(|call| call.contains(OPENCODE_SESSION)), "{launches:?}");
+    assert_eq!(launches.len(), 2, "{launches:?}");
+}
+
+#[test]
+fn restart_all_without_ids_leaves_unmanaged_sessions_alone() {
+    let manager = Manager::new();
+    fs::write(&manager.snapshot, json!({"sessions": [
+        {"session": SESSION_A, "cwd": path_str(&manager.project), "tmux_pane": "%4"},
+        {"session": SESSION_B, "cwd": path_str(&manager.project), "tmux_pane": ""},
+        {"session": OPENCODE_SESSION, "cwd": path_str(&manager.project), "tmux_pane": "%5", "terminal": true},
+        {"session": "external", "cwd": path_str(&manager.project)}
+    ]}).to_string()).unwrap();
+    let result = manager.run(&["restart-all"], &[("SHIM_PANE_TEXT", IDLE), ("SHIM_EXIT_AFTER", "1"), ("COCKPIT_RESTORE_WAIT", "0")]);
+    assert!(result.status.success(), "{}", stderr(&result));
+    assert_eq!(manager.tmux_calls("new-session").len(), 1);
+    assert!(!manager.log_lines().iter().any(|line| line.contains("failed during restart-all")));
+}
+
+#[test]
+fn restart_all_without_ids_reports_an_unreadable_snapshot() {
+    for snapshot in [None, Some(""), Some("not json"), Some("{}"), Some("{\"sessions\": null}")] {
+        let manager = Manager::new();
+        if let Some(contents) = snapshot { fs::write(&manager.snapshot, contents).unwrap(); }
+        else { fs::remove_file(&manager.snapshot).unwrap(); }
+        let result = manager.run(&["restart-all"], &[]);
+        assert!(!result.status.success());
+        assert!(manager.tmux_calls("new-session").is_empty());
+    }
+}
+
+#[test]
+fn restart_all_with_no_running_sessions_succeeds_without_launching() {
+    let manager = Manager::new();
+    fs::write(&manager.snapshot, "{\"sessions\": []}").unwrap();
+    let result = manager.run(&["restart-all"], &[]);
+    assert!(result.status.success(), "{}", stderr(&result));
+    assert!(manager.tmux_calls("new-session").is_empty());
+}
+
+#[test]
+fn restart_all_with_explicit_ids_does_not_restart_other_running_sessions() {
+    let manager = Manager::new();
+    fs::write(&manager.snapshot, json!({"sessions": [
+        {"session": SESSION_A, "cwd": path_str(&manager.project), "tmux_pane": "%4"},
+        {"session": SESSION_B, "cwd": path_str(&manager.project), "tmux_pane": "%5"}
+    ]}).to_string()).unwrap();
+    let result = manager.run(&["restart-all", SESSION_A], &[("SHIM_PANE_TEXT", IDLE), ("SHIM_EXIT_AFTER", "1"), ("COCKPIT_RESTORE_WAIT", "0")]);
+    assert!(result.status.success(), "{}", stderr(&result));
+    let launches = manager.tmux_calls("new-session");
+    assert_eq!(launches.len(), 1, "{launches:?}");
+    assert!(launches[0].contains(&format!("--resume {SESSION_A}")), "{launches:?}");
+}
+
+#[test]
 fn restart_all_resumes_each_session_in_a_tmux_session_of_its_own() {
     // In the viewer pane a launch dies with the next thing shown there, until claude-auto-retry has
     // moved it out: a restart-all once lost a session that way.

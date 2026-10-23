@@ -29,8 +29,11 @@
 #                                is how an installed Claude update gets applied (the sidebar's r);
 #                                with an effort level (low … max) it comes back on that one (the
 #                                sidebar's effort menu), without one it keeps the level it had
-#   cockpit restart-all <id>...
-#                                restart those sessions one after the other (the sidebar's Ctrl+R)
+#   cockpit restart-all [<id>...]
+#                                without ids, restart every managed running session, including the
+#                                caller; terminal/external and sleeping sessions are left alone.
+#                                With ids, restart only those (the sidebar's Ctrl+R).
+#                                Active turns and background jobs are interrupted, as with restart.
 #   cockpit background <dir> <prompt>
 #                                start a session there out of sight, with that first message (the
 #                                sidebar's error hand-off); it shows as a card
@@ -1333,8 +1336,18 @@ restarting_screen() { # id
 # Each one is launched in a tmux session of its own, never in the viewer pane: a launch there dies
 # with whatever takes the pane next (the next restart, a click on another card) until
 # claude-auto-retry has moved it out, and one restart-all lost a session that way.
-restart_sessions() { # id...
-    local shown id waited
+restart_sessions() { # [id...]
+    local shown id waited sessions session_ids=()
+    if (( $# == 0 )); then
+        # Capture the list before restarting: the daemon replaces rows as sessions come back.
+        if ! sessions=$(jq -er '[.sessions[] | select((.tmux_pane // "") != "" and (.terminal // false) == false) | .session] | unique | join("\n")' "$SNAPSHOT"); then
+            echo "cockpit: cannot read running sessions from $SNAPSHOT" >&2
+            return 1
+        fi
+        [[ -n $sessions ]] || { echo "cockpit: no managed running sessions"; return 0; }
+        mapfile -t session_ids <<< "$sessions"
+        set -- "${session_ids[@]}"
+    fi
     shown=$(cat "$CURRENT" 2>/dev/null || true)
     for id in "$@"; do
         restart_session "$id" "" detached || log_event WARN sessions "restart of $id failed during restart-all"
@@ -2655,7 +2668,7 @@ case ${1:-attach} in
     remote) toggle_remote "${2:?usage: cockpit remote <session-id>}" ;;
     sweep) sweep_caches ;;
     *)
-        echo "usage: cockpit [attach|show [id]|view <id>|open <id>|new <dir>|resume <dir> <id>|exit <id>|restart <id>|billing <id> credits|subscription|handoff [on|off]|away on|off|setting <name> [on|off]|remote <id>|prepare|idle|reload|reset|doctor|sweep]" >&2
+        echo "usage: cockpit [attach|show [id]|view <id>|open <id>|new <dir>|resume <dir> <id>|exit <id>|restart <id>|restart-all [<id>...]|billing <id> credits|subscription|handoff [on|off]|away on|off|setting <name> [on|off]|remote <id>|prepare|idle|reload|reset|doctor|sweep]" >&2
         exit 2
         ;;
 esac
