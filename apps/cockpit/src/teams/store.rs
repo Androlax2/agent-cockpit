@@ -596,7 +596,9 @@ pub fn snapshot(connection: &Connection, task: Option<&TaskKey>, after: Option<i
         WHERE (?1 IS NULL OR q.task_key=?1) ORDER BY q.task_key")?;
     let qa_plans = qa_plans.query_map(params![task_key], |row| Ok(json!({"project":row.get::<_,String>(0)?,
         "task_id":row.get::<_,String>(1)?,"agent":row.get::<_,String>(2)?})))?.collect::<Result<Vec<_>,_>>()?;
-    Ok(json!({"members":members,"proposals":proposals,"messages":messages,"escalations":escalations,"spawns":spawns,"handoffs":handoffs,"qa_plans":qa_plans}))
+    let mut snapshot = super::links::snapshot(connection, task, limit)?;
+    snapshot.as_object_mut().expect("host snapshot").extend(json!({"members":members,"proposals":proposals,"messages":messages,"escalations":escalations,"spawns":spawns,"handoffs":handoffs,"qa_plans":qa_plans}).as_object().expect("snapshot").clone());
+    Ok(snapshot)
 }
 
 fn cancel_member_messages(connection: &Connection, task_key: &str, session: &str) -> Result<(), TeamError> {

@@ -231,6 +231,40 @@ fn team_context_exposes_only_own_identity_before_link_approval() {
 }
 
 #[test]
+fn team_link_host_snapshot_keeps_exact_pair_and_runtime_provenance_host_only() {
+    use cockpit::teams::{AgentAction, HostAction, HostRequest};
+    let mut bench = team_bench();
+    let first = bench.fixture.root.join("home/IdeaProjects/project-a");
+    let second = bench.fixture.root.join("home/IdeaProjects/project-b");
+    fs::create_dir_all(second.join(".git")).unwrap();
+    bench.registry.sessions.get_mut(OPENCODE_SESSION).unwrap().cwd = second.to_string_lossy().into_owned();
+    fs::write(cockpit::paths::todo(),json!({"items":[{"id":"1d3fd318","project":"project-a","cwd":first,"text":"Shared work","status":"doing"}]}).to_string()).unwrap();
+    let task = json!({"project":format!("path:{}",first.display()),"task_id":"1d3fd318"});
+    let pending = crate::teams::request(&mut bench.registry,10,serde_json::from_value(json!({"action":"link_propose",
+        "proposal":{"submission_key":"snapshot-request","peer_session_id":OPENCODE_SESSION,"task":task,"purpose":"Coordinate work"}})).unwrap()).unwrap().result.unwrap();
+    let snapshot = crate::teams::host(&mut bench.registry,std::process::id(),HostRequest::Snapshot).unwrap().result.unwrap();
+    let proposal = &snapshot["link_proposals"][0];
+    assert_eq!(proposal["proposal_id"],pending["proposal_id"]);
+    assert_eq!(proposal["task"],task);
+    assert_eq!(proposal["permission"],"coordination_messages_only");
+    assert_eq!(proposal["participants"],json!([
+        {"session_id":SESSION_A,"agent":"claude","project":format!("path:{}",first.display()),"runtime":"runtime-10"},
+        {"session_id":OPENCODE_SESSION,"agent":"opencode","project":format!("path:{}",second.display()),"runtime":"runtime-20"}]));
+    let verified = snapshot["sessions"].as_array().unwrap().iter().find(|session| session["session_id"] == OPENCODE_SESSION).unwrap();
+    assert_eq!(verified["runtime"],"runtime-20");
+    crate::teams::host(&mut bench.registry,std::process::id(),HostRequest::Control {action:HostAction::LinkApprove {
+        request_id:"snapshot-approval".into(),proposal_id:pending["proposal_id"].as_str().unwrap().into(),expected_revision:1,
+        mapping_hash:proposal["mapping_hash"].as_str().unwrap().into() }}).unwrap().result.unwrap();
+    for peer in [10,20,30] {
+        let context = crate::teams::request(&mut bench.registry,peer,AgentAction::Context).unwrap().result.unwrap();
+        for private in ["runtime-10","runtime-20","link_proposals","sessions"] { assert!(!context.to_string().contains(private),"{context}"); }
+    }
+    let snapshot = crate::teams::host_snapshot(&mut bench.registry).unwrap();
+    assert_eq!(snapshot["links"][0]["state"],"active");
+    assert_eq!(snapshot["links"][0]["participants"],proposal["participants"]);
+}
+
+#[test]
 fn team_link_routes_use_authenticated_sender_and_deliver_without_membership() {
     use cockpit::teams::{AgentAction, HostAction};
     let mut bench = team_bench();

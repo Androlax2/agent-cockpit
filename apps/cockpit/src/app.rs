@@ -93,7 +93,7 @@ const GLOBAL_HELP: [(&str, &str); 15] = [
 /// Rare actions with no key, only in the : list: the panel they run in ("-" for none), a name, a label.
 const PALETTE_ONLY: [(&str, &str, &str); 24] = [
     ("-", "chief", "Chief: global coordination, exact work approvals, workers, decisions and requested summary"),
-    ("1", "team", "linked sessions: approve, edit or reject team requests, unlink members, resolve escalations, read team messages"),
+    ("1", "team", "teams and shared-work links: approve, edit, reject or revoke; resolve escalations and read message history"),
     ("1", "attention-filter", "show actionable sessions / show all; deferred items remain counted"),
     ("1", "defer-20m", "remind me of this explicit question in twenty minutes (never approve)"),
     ("2", "defer-20m", "remind me of this PR review in twenty minutes"),
@@ -4174,9 +4174,17 @@ impl App {
 
     /// Re-read after every change; the first pending request is selected when `to_request` says so.
     fn refresh_team_view(&mut self, to_request: bool) {
-        let Ok(snapshot) = Self::team_snapshot() else { return };
+        let snapshot = match Self::team_snapshot() {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                if let Some(view) = self.team_view.as_mut() { view.snapshot_error = Some(crate::approval::escape_hiding(&error.message, "", "")); }
+                return;
+            },
+        };
         if let Some(view) = self.team_view.as_mut() {
             view.snapshot = snapshot;
+            view.snapshot_error = None;
+            view.detail_scroll = 0;
             let rows = view.rows();
             view.selected = if to_request { 0 } else { view.selected.min(rows.len().saturating_sub(1)) };
         }
@@ -4184,6 +4192,10 @@ impl App {
 
     fn handle_team_view(&mut self, key: Key, screen: &mut dyn Screen) -> String {
         let Some(view) = self.team_view.as_mut() else { return String::new() };
+        if view.snapshot_error.is_some() && (key == Key::Char('l') || (matches!(view.selected_row(), Some(crate::teams::view::Row::LinkProposal(_) | crate::teams::view::Row::Link(_)))
+            && matches!(key, Key::Char('a' | 'e' | 'x' | 'u')))) {
+            return "Collaboration status unavailable: r refresh before changing links".into();
+        }
         match key {
             Key::Esc | Key::Char('q') => {
                 self.team_view = None;
@@ -4192,12 +4204,24 @@ impl App {
             Key::Tab => {
                 view.is_history = !view.is_history;
                 view.selected = 0;
+                view.detail_scroll = 0;
                 String::new()
             },
             Key::Char('j') | Key::Down => { view.move_by(1); String::new() },
             Key::Char('k') | Key::Up => { view.move_by(-1); String::new() },
-            Key::Char('r') => { self.refresh_team_view(false); String::new() },
+            Key::Right => {
+                let lines = view.detail().iter().flat_map(|text| wrap_detail_text(text, self.width.saturating_sub(6).max(2) as usize)).count();
+                view.detail_scroll = view.detail_scroll.saturating_add(1).min(lines.saturating_sub(1));
+                String::new()
+            },
+            Key::Left => { view.detail_scroll = view.detail_scroll.saturating_sub(1); String::new() },
+            Key::Char('r') => {
+                self.refresh_team_view(false);
+                self.team_view.as_ref().and_then(|view| view.snapshot_error.as_ref())
+                    .map(|error| format!("Collaboration snapshot unavailable: {error}")).unwrap_or_default()
+            },
             Key::Char('n') => self.create_team_request(screen),
+            Key::Char('l') => self.create_link_request(screen),
             _ => match view.selected_row() {
                 Some(row) => self.team_row_action(row, key, screen),
                 None => String::new(),
@@ -4210,6 +4234,12 @@ impl App {
         let token = || format!("cockpit-{}", util::token_hex(8));
         let view = self.team_view.as_ref().expect("the Team view is open");
         let outcome = match (row, key) {
+            (Row::LinkProposal(index), key @ Key::Char('a' | 'e' | 'x')) => return self.link_request_action(index, key, screen),
+            (Row::Link(index), Key::Char('u')) if view.link(index)["state"] == "active" => {
+                let link_id = view.link(index)["link_id"].as_str().unwrap_or("").to_string();
+                if !self.confirm(screen, &format!("revoke link {link_id}? queued messages and safe retries are cancelled; submitted messages cannot be recalled")) { return String::new() }
+                return self.finish_link_action(HostAction::LinkRevoke { request_id:token(), link_id }, "link revoked; queued messages and safe retries cancelled");
+            },
             (Row::Proposal(index), Key::Char('a')) => return self.approve_team_request(index, screen),
             (Row::Proposal(index), Key::Char('e')) => return self.edit_team_request(index, screen),
             (Row::Proposal(index), Key::Char('x')) => {
@@ -4256,6 +4286,97 @@ impl App {
         };
         self.refresh_team_view(false);
         outcome.unwrap_or_else(|error| error.message)
+    }
+
+    fn finish_link_action(&mut self, action: crate::teams::HostAction, success: &str) -> String {
+        let outcome = Self::team_control(action);
+        self.refresh_team_view(false);
+        match outcome {
+            Ok(receipt) => {
+                if let Some(view) = self.team_view.as_mut() {
+                    if receipt["status"] == "pending" { view.is_history = false; }
+                    if let Some(index) = view.rows().iter().position(|row| match row {
+                        crate::teams::view::Row::LinkProposal(index) => view.link_proposal(*index)["proposal_id"] == receipt["proposal_id"],
+                        crate::teams::view::Row::Link(index) => view.link(*index)["link_id"] == receipt["link_id"],
+                        _ => false,
+                    }) {
+                        view.selected = index;
+                    }
+                }
+                success.into()
+            },
+            Err(error) => format!("Link action {}: {}. Refresh to inspect current status; no automatic retry.",
+                if error.code == crate::teams::ErrorCode::Unavailable { "outcome unknown" } else { "failed" },
+                crate::approval::escape_hiding(&error.message, "", "")),
+        }
+    }
+
+    fn link_request_action(&mut self, index: usize, key: Key, screen: &mut dyn Screen) -> String {
+        use crate::teams::HostAction;
+        let proposal = self.team_view.as_ref().expect("collaboration view open").link_proposal(index).clone();
+        if proposal["status"] != "pending" { return String::new() }
+        let Some(proposal_id) = proposal["proposal_id"].as_str() else { return "Link request identity unavailable".into() };
+        let Some(expected_revision) = proposal["revision"].as_i64() else { return "Link request revision unavailable".into() };
+        let request_id = format!("cockpit-{}", util::token_hex(8));
+        let (action, success) = match key {
+            Key::Char('a') => {
+                let Some(mapping_hash) = proposal["mapping_hash"].as_str() else { return "Link request hash unavailable".into() };
+                if !self.confirm(screen, "approve exactly this link revision/hash, pair, TODO and purpose? messaging only; no team role") { return String::new() }
+                (HostAction::LinkApprove {request_id,proposal_id:proposal_id.into(),expected_revision,mapping_hash:mapping_hash.into()},
+                    "link approved: messaging-only for this exact pair and shared TODO")
+            },
+            Key::Char('x') => {
+                if !self.confirm(screen, "reject this exact link request? no messaging permission is granted") { return String::new() }
+                (HostAction::LinkReject {request_id,proposal_id:proposal_id.into(),expected_revision},"link request rejected")
+            },
+            Key::Char('e') => {
+                let Some(requester) = proposal["sender"].as_str() else { return "Link requester unavailable".into() };
+                let replacement = match self.pick_link(screen,Some(requester)) {
+                    Ok(Some((_, replacement))) => replacement, Ok(None) => return String::new(), Err(error) => return error,
+                };
+                (HostAction::LinkEdit {request_id,proposal_id:proposal_id.into(),expected_revision,replacement},
+                    "edited: the new revision needs its own approval (a)")
+            },
+            _ => return String::new(),
+        };
+        self.finish_link_action(action,success)
+    }
+
+    /// Only the host's verified live registry is offered, never free-form participant IDs.
+    fn pick_link(&mut self, screen: &mut dyn Screen, requester: Option<&str>) -> Result<Option<(String, crate::teams::LinkProposal)>, String> {
+        use crate::teams::{LinkProposal, TaskKey};
+        let snapshot = Self::team_snapshot().map_err(|error| error.message)?;
+        let sessions = snapshot["sessions"].as_array().ok_or("verified live sessions unavailable")?;
+        let display = |value: &str| crate::approval::escape_hiding(value, "", "").replace(['\n','\r','\t'], " ");
+        let choices = |exclude: Option<&str>| sessions.iter().filter(|session| session["session_id"].as_str() != exclude)
+            .filter_map(|session| Some(format!("{}\t{} · {} · {}", session["session_id"].as_str()?,
+                display(session["agent"].as_str()?), display(session["project"].as_str()?), display(session["label"].as_str().unwrap_or(""))))).collect::<Vec<_>>();
+        let requester = if let Some(requester) = requester { requester.to_string() } else {
+            let Some(picked) = screen.outside(&mut || fzf("link first session> ", &choices(None), &["--delimiter", "\t", "--with-nth", "1.."])) else { return Ok(None) };
+            picked.split('\t').next().unwrap_or("").to_string()
+        };
+        let first = sessions.iter().find(|session| session["session_id"] == requester).ok_or("requester is not a verified live session")?;
+        let Some(picked) = screen.outside(&mut || fzf("link peer session> ", &choices(Some(&requester)), &["--delimiter", "\t", "--with-nth", "1.."])) else { return Ok(None) };
+        let peer_id = picked.split('\t').next().unwrap_or("");
+        let peer = sessions.iter().find(|session| session["session_id"] == peer_id && peer_id != requester).ok_or("peer is not a distinct verified live session")?;
+        let owners: Vec<String> = [first, peer].iter().filter_map(|session| session["project"].as_str()).map(|project| format!("{project}\t{project}")).collect();
+        let Some(owner) = screen.outside(&mut || fzf("shared TODO owning project> ", &owners, &["--delimiter", "\t", "--with-nth", "2.."])) else { return Ok(None) };
+        let owner = owner.split('\t').next().unwrap_or("");
+        if ![first, peer].iter().any(|session| session["project"] == owner) { return Err("TODO owner must be one of the verified participant projects".into()) }
+        let task_id = input_line(screen,"shared local TODO id (empty cancels)> ");
+        if task_id.trim().is_empty() { return Ok(None) }
+        let purpose = input_line(screen,"link purpose (empty cancels)> ");
+        if purpose.trim().is_empty() { return Ok(None) }
+        Ok(Some((requester,LinkProposal {submission_key:format!("host-{}",util::token_hex(8)),
+            task:TaskKey {project:owner.into(),task_id:task_id.trim().into()},peer_session_id:peer_id.into(),purpose})))
+    }
+
+    fn create_link_request(&mut self, screen: &mut dyn Screen) -> String {
+        let (requester_session_id, proposal) = match self.pick_link(screen,None) {
+            Ok(Some(request)) => request, Ok(None) => return String::new(), Err(error) => return error,
+        };
+        self.finish_link_action(crate::teams::HostAction::LinkPropose {request_id:format!("cockpit-{}",util::token_hex(8)),requester_session_id,proposal},
+            "link request created: review its exact mapping, then a approves it")
     }
 
     fn approve_team_request(&mut self, index: usize, screen: &mut dyn Screen) -> String {
@@ -4473,11 +4594,15 @@ fn draw_team_view(view: &crate::teams::view::TeamView, buffer: &mut Buffer) {
         put(buffer, row, width - 2, "│", style(BLUE));
     }
     put(buffer, top, 1, &format!("┌{}┐", "─".repeat(inner)), style(BLUE));
-    let title = if view.is_history { "Team · message history" } else { "Team · requests and members" };
+    let title = if view.is_history { "Team · link and message history" } else { "Team · requests, members and links" };
     put(buffer, top, 3, &fit(title, inner.saturating_sub(2)), bold(BLUE));
     let rows = view.rows();
     let list_height = (rows.len() as u16).min((bottom - top) / 3).max(1);
     let mut line = top + 1;
+    if view.snapshot_error.is_some() {
+        put(buffer, line, 3, &fit("Collaboration unavailable · stale snapshot (r refresh)", body), style(YELLOW));
+        line += 1;
+    }
     if rows.is_empty() {
         put(buffer, line, 3, &fit("nothing here", body), dim(FG_DARK));
     }
@@ -4488,12 +4613,12 @@ fn draw_team_view(view: &crate::teams::view::TeamView, buffer: &mut Buffer) {
         line += 1;
     }
     line += 1;
-    for text in view.detail().iter().flat_map(|text| wrap_detail_text(text, body)) {
+    for text in view.detail().iter().flat_map(|text| wrap_detail_text(text, body)).skip(view.detail_scroll) {
         if line >= bottom - 1 { break; }
         put(buffer, line, 3, &text, style(FG));
         line += 1;
     }
-    put(buffer, bottom - 1, 3, &fit("Tab history · j/k move · n new team · r refresh · Esc close", body), dim(FG_DARK));
+    put(buffer, bottom - 1, 3, &fit("Tab history · j/k rows · ←/→ detail · n team · l link · r refresh · Esc close", body), dim(FG_DARK));
     put(buffer, bottom, 1, &format!("└{}┘", "─".repeat(inner)), style(BLUE));
 }
 

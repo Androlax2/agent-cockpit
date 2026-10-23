@@ -240,3 +240,76 @@ fn sidebar_failed_wake_attention_uses_exact_member_task_not_display_project() {
     state["sleeps"][0]["session_id"] = json!("unlinked-session");
     assert!(sidebar::attention(&state,&task).is_none());
 }
+
+fn link_snapshot() -> Value {
+    json!({"link_proposals":[{"proposal_id":"lp1","sender":DESIGNER,"revision":2,"mapping_hash":"exact-hash",
+        "task":{"project":"path:/first","task_id":"1234abcd"},"purpose":"Coordinate builds",
+        "permission":"coordination_messages_only","status":"pending","blocked_reason":"TODO unreadable",
+        "participants":[{"session_id":DESIGNER,"agent":"claude","project":"path:/first","runtime":"runtime-a"},
+            {"session_id":DEVELOPER,"agent":"opencode","project":"path:/second","runtime":"runtime-b"}]}],
+        "links":[{"link_id":"l1","proposal_id":"lp0","state":"closed","closure_reason":"done",
+            "task":{"project":"path:/first","task_id":"1234abcd"}}]})
+}
+
+#[test]
+fn link_requests_show_exact_provenance_permission_and_lifecycle_block() {
+    let view = TeamView::new(link_snapshot());
+    let detail = view.detail().join("\n");
+    for expected in [DESIGNER, DEVELOPER, "path:/first", "path:/second", "runtime-a", "runtime-b", "1234abcd",
+        "Coordinate builds", "Revision 2", "exact-hash", "messaging-only", "no team role", "TODO unreadable", "e edit", "x reject"] {
+        assert!(detail.contains(expected), "missing {expected:?}: {detail}");
+    }
+    assert_eq!(TeamView::attention(&link_snapshot()), 1);
+}
+
+#[test]
+fn closed_links_remain_history_and_are_not_offered_for_revocation() {
+    let mut view = TeamView::new(link_snapshot());
+    view.is_history = true;
+    let detail = view.detail().join("\n");
+    assert!(detail.contains("l1") && detail.contains("done"), "{detail}");
+    assert!(!detail.contains("u revoke"), "{detail}");
+}
+
+#[test]
+fn live_link_identity_absence_or_replacement_is_visibly_blocked_not_closed() {
+    for runtime in [None,Some("replacement-runtime")] {
+        let mut state = link_snapshot();
+        let mut link = state["link_proposals"][0].clone();
+        link["state"] = json!("active");
+        link["status"] = json!("approved");
+        link["link_id"] = json!("active-link");
+        link["blocked_reason"] = Value::Null;
+        state["link_proposals"] = json!([]);
+        state["links"] = json!([link]);
+        state["sessions"] = if let Some(runtime) = runtime { json!([
+            {"session_id":DESIGNER,"project":"path:/first","agent":"claude","runtime":runtime},
+            {"session_id":DEVELOPER,"project":"path:/second","agent":"opencode","runtime":"runtime-b"}]) } else { json!([]) };
+        assert_eq!(TeamView::attention(&state),1);
+        let detail = TeamView::new(state).detail().join("\n");
+        assert!(detail.contains("Blocked") && detail.contains("active"),"{detail}");
+        assert!(detail.contains(if runtime.is_some() {"identity changed"} else {"absent"}),"{detail}");
+    }
+}
+
+#[test]
+fn link_message_rows_distinguish_full_session_provenance_from_team_roles() {
+    let mut state = snapshot();
+    state["messages"][0]["envelope"] = json!(json!({"scope_kind":"link","link_id":"l1","kind":"notice","body":"Hello\u{1b}[2J",
+        "sender":{"session_id":DESIGNER,"project":"path:/first","agent":"claude"},
+        "recipient":{"session_id":DEVELOPER,"project":"path:/second","agent":"opencode"},
+        "task":{"project":"path:/first","task_id":"1234abcd"}}).to_string());
+    let mut view = TeamView::new(state);
+    view.selected = 3;
+    let detail = view.detail().join("\n");
+    for expected in ["link l1", DESIGNER, DEVELOPER, "path:/first", "path:/second", "1234abcd", "h it arrived", "c cancel"] {
+        assert!(detail.contains(expected), "missing {expected}: {detail}");
+    }
+    assert!(!detail.contains('\u{1b}') && !detail.contains("resend"));
+    view.is_history = true;
+    view.selected = 0;
+    let history = view.detail().join("\n");
+    for expected in [DESIGNER, DEVELOPER, "path:/second", "uncertain", "no receipt"] {
+        assert!(history.contains(expected), "missing {expected}: {history}");
+    }
+}

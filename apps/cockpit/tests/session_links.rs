@@ -131,6 +131,32 @@ fn historical_context_is_byte_bounded_without_hiding_current_links_or_pending_re
 }
 
 #[test]
+fn host_link_snapshot_preserves_current_requests_and_exact_closed_mappings_past_history_limit() {
+    if isolated("host_link_snapshot_preserves_current_requests_and_exact_closed_mappings_past_history_limit") { return; }
+    let (mut connection, _, live, proposal) = proposal_fixture();
+    let active = activate(&mut connection, &live[0], &proposal, &live);
+    let pending = links::propose(&mut connection,&live[0],&LinkProposal {submission_key:"pending".into(),..proposal.clone()},&live,0).unwrap().result.unwrap();
+    link_history::populate(&mut connection,&live,&LinkProposal {peer_session_id:live[2].session_id.clone(),..proposal.clone()});
+    let snapshot = store::snapshot(&connection,None,None,2).unwrap();
+    let links = snapshot["links"].as_array().unwrap();
+    assert!(links.iter().any(|link| link["link_id"] == active && link["state"] == "active"));
+    assert!(snapshot["link_proposals"].as_array().unwrap().iter().any(|request| request["proposal_id"] == pending["proposal_id"] && request["status"] == "pending"));
+    let closed: Vec<_> = links.iter().filter(|link| link["state"] == "closed").collect();
+    assert_eq!(closed.len(),2);
+    for link in closed {
+        assert_eq!(link["closure_reason"],"revoked");
+        assert_eq!(link["participants"],json!([live[0],live[2]]));
+        assert_eq!(link["task"],json!(proposal.task));
+        assert_eq!(link["revision"],1);
+        assert_eq!(link["mapping_hash"].as_str().unwrap().len(),64);
+    }
+    let other = TaskKey {task_id:"unrelated".into(),..proposal.task};
+    let scoped = store::snapshot(&connection,Some(&other),None,2).unwrap();
+    assert_eq!(scoped["links"],json!([]));
+    assert_eq!(scoped["link_proposals"],json!([]));
+}
+
+#[test]
 fn approved_link_delivers_without_team_membership() {
     if isolated("approved_link_delivers_without_team_membership") { return; }
     let (mut connection, _, live, proposal) = proposal_fixture();
@@ -516,7 +542,15 @@ fn cross_project_developers_require_exact_host_approval() {
     let pending = links::propose(&mut connection, &live[1], &swapped, &live, 3000).unwrap().result.unwrap();
     let approval = link_approval(&connection, &pending, "duplicate-pair");
     assert!(store::control(&mut connection, &approval, &live, 4000).is_err());
-    assert_eq!(store::snapshot(&connection, None, None, 100).unwrap(), before);
+    let after = store::snapshot(&connection, None, None, 100).unwrap();
+    for (field, value) in before.as_object().unwrap() {
+        if matches!(field.as_str(), "links" | "link_proposals") { continue }
+        assert_eq!(&after[field], value, "link approval changed team field {field}");
+    }
+    assert_eq!(after["links"].as_array().unwrap().len(), 1);
+    assert_eq!(after["links"][0]["state"], "active");
+    assert_eq!(after["links"][0]["link_id"], approved["link_id"]);
+    assert_eq!(after["link_proposals"].as_array().unwrap().len(), 2);
     assert_eq!(fs::read(cockpit::paths::todo()).unwrap(), todo_before);
 }
 

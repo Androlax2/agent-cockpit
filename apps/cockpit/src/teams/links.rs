@@ -42,6 +42,58 @@ fn receipt(id: &str, revision: i64, status: &str) -> Value {
     json!({"proposal_id":id,"revision":revision,"status":status})
 }
 
+/// Host history only; participant context deliberately never calls this snapshot.
+pub fn snapshot(connection: &Connection, task: Option<&TaskKey>, limit: usize) -> Result<Value, TeamError> {
+    let task_key = task.map(serde_json::to_string).transpose()?;
+    let mut statement = connection.prepare("SELECT p.id,p.sender,p.task_key,p.purpose,p.revision,p.mapping_hash,p.work_generation,
+        p.status,p.closure_reason,p.parent_id,p.created_at,w.generation,w.state
+        FROM link_proposals p LEFT JOIN link_work w ON w.task_key=p.task_key
+        WHERE (?1 IS NULL OR p.task_key=?1) AND (p.status='pending' OR p.id IN (SELECT proposal_id FROM links WHERE state='active'
+        OR id IN (SELECT id FROM links WHERE (?1 IS NULL OR task_key=?1) ORDER BY created_at DESC,id DESC LIMIT ?2))
+        OR p.id IN (SELECT id FROM link_proposals WHERE (?1 IS NULL OR task_key=?1) ORDER BY created_at DESC,id DESC LIMIT ?2))
+        ORDER BY p.created_at,p.id")?;
+    let records = statement.query_map(params![task_key,limit.min(100) as i64], |row| Ok((
+        json!({"proposal_id":row.get::<_,String>(0)?,"sender":row.get::<_,String>(1)?,"purpose":row.get::<_,String>(3)?,
+            "revision":row.get::<_,i64>(4)?,"mapping_hash":row.get::<_,String>(5)?,"work_generation":row.get::<_,i64>(6)?,
+            "status":row.get::<_,String>(7)?,"closure_reason":row.get::<_,Option<String>>(8)?,"parent_id":row.get::<_,Option<String>>(9)?,
+            "created_at":row.get::<_,i64>(10)?,"permission":"coordination_messages_only"}),
+        row.get::<_,String>(2)?,row.get::<_,Option<i64>>(11)?,row.get::<_,Option<String>>(12)?
+    )))?.collect::<Result<Vec<_>,_>>()?;
+    let mut proposals = Vec::new();
+    for (mut record, task_key, generation, state) in records {
+        let task: TaskKey = serde_json::from_str(&task_key)?;
+        record["task"] = json!(task);
+        let participants = connection.prepare("SELECT session_id,agent,project,runtime FROM link_participants WHERE proposal_id=?1 ORDER BY slot")?
+            .query_map([record["proposal_id"].as_str().expect("stored id")], |row| Ok(VerifiedSession {
+                session_id:row.get(0)?,agent:row.get(1)?,project:row.get(2)?,runtime:row.get(3)?
+            }))?.collect::<Result<Vec<_>,_>>()?;
+        record["participants"] = json!(participants);
+        if record["status"] == "pending" || record["status"] == "approved" {
+            let blocked = if generation != record["work_generation"].as_i64() || state.as_deref() != Some("open") {
+                Some("shared work lifecycle is closed, missing or stale".to_string())
+            } else { crate::todo::read_shared_work(&task).err().map(|error| error.message) };
+            record["blocked_reason"] = json!(blocked);
+        }
+        proposals.push(record);
+    }
+    let mut statement = connection.prepare("SELECT id,proposal_id,state,closure_reason,created_at,closed_at,epoch FROM links
+        WHERE (?1 IS NULL OR task_key=?1) AND (state='active' OR id IN
+        (SELECT id FROM links WHERE (?1 IS NULL OR task_key=?1) ORDER BY created_at DESC,id DESC LIMIT ?2)) ORDER BY created_at,id")?;
+    let records = statement.query_map(params![task_key,limit.min(100) as i64], |row| Ok(json!({"link_id":row.get::<_,String>(0)?,
+        "proposal_id":row.get::<_,String>(1)?,"state":row.get::<_,String>(2)?,"closure_reason":row.get::<_,Option<String>>(3)?,
+        "created_at":row.get::<_,i64>(4)?,"closed_at":row.get::<_,Option<i64>>(5)?,"epoch":row.get::<_,String>(6)?})))?
+        .collect::<Result<Vec<_>,_>>()?;
+    let mut links = Vec::new();
+    for record in records {
+        let proposal_id = record["proposal_id"].as_str().expect("stored proposal id");
+        let mut detail = proposals.iter().find(|proposal| proposal["proposal_id"] == proposal_id)
+            .ok_or_else(|| TeamError::new(ErrorCode::Storage, "link history is missing its proposal"))?.clone();
+        detail.as_object_mut().expect("record").extend(record.as_object().expect("record").clone());
+        links.push(detail);
+    }
+    Ok(json!({"link_proposals":proposals,"links":links}))
+}
+
 /// Approved routing facts and the requester's own status receipts, bound to its exact identity.
 pub fn context(connection: &Connection, sender: &VerifiedSession) -> Result<Value, TeamError> {
     let mut approved = Vec::new();

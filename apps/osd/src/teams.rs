@@ -411,7 +411,7 @@ pub fn host_snapshot(registry: &mut Registry) -> Result<Value, TeamError> {
     let mut sessions = Vec::new();
     for session in &live {
         let entry = registry.sessions.get(&session.session_id);
-        sessions.push(json!({"session_id": session.session_id, "agent": session.agent, "project": session.project,
+        sessions.push(json!({"session_id": session.session_id, "agent": session.agent, "project": session.project, "runtime": session.runtime,
             "project_name": entry.map(|entry| entry.project.as_str()).unwrap_or(""), "label": entry.map(|entry| entry.label.as_str()).unwrap_or(""),
             "state": entry.map(|entry| entry.state.as_str()).unwrap_or(""), "cwd": entry.map(|entry| entry.cwd.as_str()).unwrap_or("")}));
     }

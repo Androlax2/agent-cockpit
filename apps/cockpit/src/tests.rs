@@ -4274,6 +4274,272 @@ fn controls(requests: &HostRequests) -> Vec<Value> {
     requests.lock().unwrap().iter().filter(|request| request["request"] == "control").map(|request| request["action"].clone()).collect()
 }
 
+/// Real link authorization/lifecycle behind an isolated host socket; never a live daemon.
+fn link_ui_host(fixture: &Fixture) -> (Vec<crate::teams::VerifiedSession>, crate::teams::TaskKey, Value) {
+    use crate::teams::{VerifiedSession, LinkProposal, links, store};
+    use std::io::{Read, Write};
+    let first = fixture.path("first");
+    let second = fixture.path("second");
+    for project in [&first, &second] { fs::create_dir_all(project.join(".git")).unwrap(); }
+    let mut todos = TodoList::load();
+    let task = crate::teams::TaskKey { project:format!("path:{}", first.display()), task_id:todos.add("first",first.to_str().unwrap(),"Shared work") };
+    let live = vec![VerifiedSession { session_id:SESSION_A.into(), agent:"claude".into(), project:task.project.clone(), runtime:"first-runtime".into() },
+        VerifiedSession { session_id:OPENCODE_SESSION.into(), agent:"opencode".into(), project:format!("path:{}", second.display()), runtime:"second-runtime".into() }];
+    let mut connection = store::open(&crate::paths::team_database()).unwrap();
+    let pending = links::propose(&mut connection,&live[0],&LinkProposal { submission_key:"ui-request".into(),task:task.clone(),
+        peer_session_id:live[1].session_id.clone(),purpose:"Coordinate builds".into() },&live,0).unwrap().result.unwrap();
+    let folder = fixture.path("run/claude-team-host");
+    fs::create_dir_all(&folder).unwrap();
+    let listener = std::os::unix::net::UnixListener::bind(folder.join("host.sock")).unwrap();
+    let verified = live.clone();
+    std::thread::spawn(move || {
+        for mut stream in listener.incoming().flatten() {
+            let mut text = String::new();
+            stream.read_to_string(&mut text).unwrap();
+            let request: crate::teams::HostRequest = serde_json::from_str(&text).unwrap();
+            let result = match request {
+                crate::teams::HostRequest::Snapshot => store::snapshot(&connection,None,None,100).map(|mut state| {
+                    state["sessions"] = json!(verified); state
+                }),
+                crate::teams::HostRequest::Control { action } => store::control(&mut connection,&action,&verified,100_000).and_then(|reply| reply.result),
+                _ => panic!("unexpected host request"),
+            };
+            stream.write_all(serde_json::to_string(&crate::teams::TeamReply {request_id:"ui".into(),result}).unwrap().as_bytes()).unwrap();
+        }
+    });
+    (live,task,pending)
+}
+
+#[test]
+fn link_ui_approval_confirms_the_exact_mapping_and_keeps_navigation() {
+    let fixture = Fixture::new();
+    let (live,task,_) = link_ui_host(&fixture);
+    fixture.snapshot(json!([session(SESSION_A,"waiting","first",live[0].project.trim_start_matches("path:"),1),
+        session(OPENCODE_SESSION,"waiting","second",live[1].project.trim_start_matches("path:"),2)]));
+    let mut app = fixture.app();
+    app.focus_panel(1);
+    let focus = app.focus;
+    let selected = app.selected_session().unwrap().session.clone();
+    open_team_view(&mut app);
+    let shown = buffer_rows(&render(&mut app,160,55)).join("\n");
+    assert!(shown.contains("Claude unknown") && shown.contains("Codex unknown"),"{shown}");
+    for expected in [SESSION_A,OPENCODE_SESSION,&live[0].project,&live[1].project,&task.task_id,"first-runtime","messaging-only","Coordinate builds"] {
+        assert!(shown.contains(expected),"missing {expected}: {shown}");
+    }
+    app.handle(Key::Char('a'),&mut FakeScreen::answering(&[Key::Char('n')]));
+    let connection = crate::teams::store::open(&crate::paths::team_database()).unwrap();
+    assert_eq!(connection.query_row("SELECT count(*) FROM links",[],|row| row.get::<_,i64>(0)).unwrap(),0);
+    app.handle(Key::Char('a'),&mut FakeScreen::answering(&[Key::Char('y')]));
+    assert!(app.message.contains("link approved"),"{}",app.message);
+    assert_eq!(connection.query_row("SELECT count(*) FROM links WHERE state='active'",[],|row| row.get::<_,i64>(0)).unwrap(),1);
+    assert_eq!(connection.query_row("SELECT count(*) FROM members",[],|row| row.get::<_,i64>(0)).unwrap(),0);
+    app.handle(Key::Esc,&mut FakeScreen::default());
+    assert_eq!(app.focus,focus);
+    assert_eq!(app.selected_session().unwrap().session,selected);
+    assert!(app.team_view.is_none());
+}
+
+#[test]
+fn link_ui_changed_revision_is_refused_without_rebinding_or_approval() {
+    let fixture = Fixture::new();
+    let (live,task,pending) = link_ui_host(&fixture);
+    let mut app = fixture.app();
+    open_team_view(&mut app);
+    let mut connection = crate::teams::store::open(&crate::paths::team_database()).unwrap();
+    crate::teams::store::control(&mut connection,&crate::teams::HostAction::LinkEdit { request_id:"other-edit".into(),
+        proposal_id:pending["proposal_id"].as_str().unwrap().into(),expected_revision:1,
+        replacement:crate::teams::LinkProposal { submission_key:"other".into(),task,peer_session_id:live[1].session_id.clone(),purpose:"Changed purpose".into() } },&live,1).unwrap();
+    app.handle(Key::Char('a'),&mut FakeScreen::answering(&[Key::Char('y')]));
+    assert!(app.message.contains("changed"),"{}",app.message);
+    assert_eq!(connection.query_row("SELECT count(*) FROM links",[],|row| row.get::<_,i64>(0)).unwrap(),0);
+    assert!(app.team_view.as_ref().unwrap().detail().join("\n").contains("Changed purpose"));
+}
+
+#[test]
+fn link_ui_edits_require_a_fresh_confirmation() {
+    let fixture = Fixture::new();
+    let (live,task,_) = link_ui_host(&fixture);
+    let mut app = fixture.app();
+    open_team_view(&mut app);
+    app.handle(Key::Char('e'),&mut FakeScreen::typing(&[&format!("{}\tpeer",live[1].session_id),&format!("{}\towner",task.project),&task.task_id,"New purpose"]));
+    assert!(app.message.contains("new revision"),"{}",app.message);
+    let connection = crate::teams::store::open(&crate::paths::team_database()).unwrap();
+    assert_eq!(connection.query_row("SELECT count(*) FROM links",[],|row| row.get::<_,i64>(0)).unwrap(),0);
+    let detail = app.team_view.as_ref().unwrap().detail().join("\n");
+    assert!(detail.contains("Revision 2") && detail.contains("New purpose"),"{detail}");
+    app.handle(Key::Char('a'),&mut FakeScreen::answering(&[Key::Char('n')]));
+    assert_eq!(connection.query_row("SELECT count(*) FROM links",[],|row| row.get::<_,i64>(0)).unwrap(),0);
+    app.handle(Key::Char('a'),&mut FakeScreen::answering(&[Key::Char('y')]));
+    assert_eq!(connection.query_row("SELECT revision FROM links",[],|row| row.get::<_,i64>(0)).unwrap(),2);
+}
+
+#[test]
+fn link_ui_unreadable_todo_never_reports_successful_approval() {
+    let fixture = Fixture::new();
+    link_ui_host(&fixture);
+    let mut app = fixture.app();
+    open_team_view(&mut app);
+    fs::write(crate::paths::todo(),"not json").unwrap();
+    app.handle(Key::Char('a'),&mut FakeScreen::answering(&[Key::Char('y')]));
+    assert!(!app.message.contains("link approved") && !app.message.is_empty(),"{}",app.message);
+    let connection = crate::teams::store::open(&crate::paths::team_database()).unwrap();
+    assert_eq!(connection.query_row("SELECT count(*) FROM links",[],|row| row.get::<_,i64>(0)).unwrap(),0);
+    assert!(app.team_view.as_ref().unwrap().detail().join("\n").contains("Blocked"));
+}
+
+fn queue_link_note(live: &[crate::teams::VerifiedSession]) -> (String,String) {
+    let mut connection = crate::teams::store::open(&crate::paths::team_database()).unwrap();
+    let link_id: String = connection.query_row("SELECT id FROM links WHERE state='active'",[],|row| row.get(0)).unwrap();
+    let receipt = crate::teams::links::accept(&mut connection,&live[0],&crate::teams::LinkSubmission {
+        link_id:link_id.clone(),submission_key:"ui-note".into(),kind:crate::teams::MessageKind::Notice,body:"Coordinate shared work".into(),thread_id:None },live,200_000).unwrap().result.unwrap();
+    (link_id,receipt["message_id"].as_str().unwrap().into())
+}
+
+#[test]
+fn link_ui_revoke_requires_yes_cancels_queued_messages_and_retains_history() {
+    let fixture = Fixture::new();
+    let (live,_,_) = link_ui_host(&fixture);
+    let mut app = fixture.app();
+    open_team_view(&mut app);
+    app.handle(Key::Char('a'),&mut FakeScreen::answering(&[Key::Char('y')]));
+    let (link_id,message_id) = queue_link_note(&live);
+    app.handle(Key::Char('u'),&mut FakeScreen::answering(&[Key::Char('n')]));
+    let connection = crate::teams::store::open(&crate::paths::team_database()).unwrap();
+    assert_eq!(connection.query_row("SELECT state FROM links WHERE id=?1",[&link_id],|row| row.get::<_,String>(0)).unwrap(),"active");
+    app.handle(Key::Char('u'),&mut FakeScreen::answering(&[Key::Char('y')]));
+    assert_eq!(connection.query_row("SELECT state FROM messages WHERE id=?1",[message_id],|row| row.get::<_,String>(0)).unwrap(),"cancelled");
+    app.handle(Key::Tab,&mut FakeScreen::default());
+    let shown = buffer_rows(&render(&mut app,160,55)).join("\n");
+    assert!(shown.contains(&link_id) && shown.contains("Closed/rejected: revoked"),"{shown}");
+    assert!(!app.team_view.as_ref().unwrap().detail().join("\n").contains("u revoke"));
+}
+
+#[test]
+fn link_ui_todo_done_closes_link_and_reopening_does_not_restore_it() {
+    let fixture = Fixture::new();
+    let (live,task,_) = link_ui_host(&fixture);
+    let mut app = fixture.app();
+    open_team_view(&mut app);
+    app.handle(Key::Char('a'),&mut FakeScreen::answering(&[Key::Char('y')]));
+    let (link_id,message_id) = queue_link_note(&live);
+    app.handle(Key::Esc,&mut FakeScreen::default());
+    app.build();
+    app.focus_panel(3);
+    app.handle(Key::Char('d'),&mut FakeScreen::default());
+    assert_eq!(app.todos.status_of(&task.task_id),"done");
+    assert!(app.todos.set_status(&task.task_id,"todo",""));
+    open_team_view(&mut app);
+    assert!(app.team_view.as_ref().unwrap().rows().is_empty());
+    app.handle(Key::Tab,&mut FakeScreen::default());
+    let shown = buffer_rows(&render(&mut app,160,55)).join("\n");
+    assert!(shown.contains(&link_id) && shown.contains("Closed/rejected: done"),"{shown}");
+    let connection = crate::teams::store::open(&crate::paths::team_database()).unwrap();
+    assert_eq!(connection.query_row("SELECT state FROM messages WHERE id=?1",[message_id],|row| row.get::<_,String>(0)).unwrap(),"cancelled");
+}
+
+#[test]
+fn link_ui_uncertain_submission_is_reconciled_never_resent_even_after_revoke() {
+    for decision in ['h','c'] {
+        let fixture = Fixture::new();
+        let (live,_,_) = link_ui_host(&fixture);
+        let mut app = fixture.app();
+        open_team_view(&mut app);
+        app.handle(Key::Char('a'),&mut FakeScreen::answering(&[Key::Char('y')]));
+        let (_,message_id) = queue_link_note(&live);
+        let mut connection = crate::teams::store::open(&crate::paths::team_database()).unwrap();
+        let claimed = crate::teams::store::claim(&mut connection,&live[1],"ui-idle-turn",&live,200_000).unwrap().expect("claim queued note");
+        crate::teams::store::finish_for(&mut connection,&live[1],&claimed.id,&crate::teams::TransportOutcome::Uncertain {reason:"lost acknowledgement".into()},200_001).unwrap();
+        app.handle(Key::Char('u'),&mut FakeScreen::answering(&[Key::Char('y')]));
+        let shown = buffer_rows(&render(&mut app,160,55)).join("\n");
+        assert!(shown.contains("uncertain") && shown.contains(&message_id),"{shown}");
+        for key in [Key::Char('a'),Key::Char('e'),Key::Char('r')] { app.handle(key,&mut FakeScreen::default()); }
+        app.handle(Key::Char(decision),&mut FakeScreen::answering(&[Key::Char('y')]));
+        let (state,attempts):(String,i64) = connection.query_row("SELECT state,attempts FROM messages WHERE id=?1",[&message_id],|row| Ok((row.get(0)?,row.get(1)?))).unwrap();
+        assert_eq!(state,if decision == 'h' {"received"} else {"cancelled"});
+        assert_eq!(attempts,1);
+        assert!(crate::teams::store::claim(&mut connection,&live[1],"ui-next-turn",&live,300_000).unwrap().is_none());
+    }
+}
+
+#[test]
+fn link_ui_host_creation_and_rejection_grant_no_team_role_or_messaging() {
+    let fixture = Fixture::new();
+    let (live,task,_) = link_ui_host(&fixture);
+    let mut app = fixture.app();
+    open_team_view(&mut app);
+    app.handle(Key::Tab,&mut FakeScreen::default());
+    app.handle(Key::Char('l'),&mut FakeScreen::typing(&[&format!("{}\tfirst",live[0].session_id),&format!("{}\tpeer",live[1].session_id),
+        &format!("{}\towner",task.project),&task.task_id,"Host requested work"]));
+    assert!(app.message.contains("link request created"),"{}",app.message);
+    assert!(app.team_view.as_ref().unwrap().detail().join("\n").contains("Host requested work"));
+    app.handle(Key::Char('x'),&mut FakeScreen::answering(&[Key::Char('n')]));
+    let connection = crate::teams::store::open(&crate::paths::team_database()).unwrap();
+    assert_eq!(connection.query_row("SELECT count(*) FROM link_proposals WHERE status='pending'",[],|row| row.get::<_,i64>(0)).unwrap(),2);
+    app.handle(Key::Char('x'),&mut FakeScreen::answering(&[Key::Char('y')]));
+    assert_eq!(connection.query_row("SELECT count(*) FROM link_proposals WHERE status='rejected'",[],|row| row.get::<_,i64>(0)).unwrap(),1);
+    for table in ["links","members"] { assert_eq!(connection.query_row(&format!("SELECT count(*) FROM {table}"),[],|row| row.get::<_,i64>(0)).unwrap(),0); }
+}
+
+#[test]
+fn link_ui_refresh_failure_is_visible_instead_of_silently_showing_old_status() {
+    let fixture = Fixture::new();
+    link_ui_host(&fixture);
+    let mut app = fixture.app();
+    open_team_view(&mut app);
+    fs::remove_file(fixture.path("run/claude-team-host/host.sock")).unwrap();
+    app.handle(Key::Char('r'),&mut FakeScreen::default());
+    let shown = buffer_rows(&render(&mut app,160,55)).join("\n");
+    assert!(shown.contains("unavailable") && shown.contains("stale"),"{shown}");
+}
+
+#[test]
+fn link_ui_narrow_screen_can_scroll_the_entire_exact_request_without_losing_selection() {
+    let fixture = Fixture::new();
+    let (_,task,_) = link_ui_host(&fixture);
+    let mut app = fixture.app();
+    open_team_view(&mut app);
+    let mut all_text = String::new();
+    for _ in 0..80 {
+        all_text.push_str(&buffer_rows(&render(&mut app,40,16)).join("\n"));
+        app.handle(Key::Right,&mut FakeScreen::default());
+    }
+    for expected in [&task.task_id,"first-runtime","second-runtime","Coordinate builds","a approve exactly this"] {
+        assert!(all_text.contains(expected),"missing {expected}: {all_text}");
+    }
+    assert_eq!(app.team_view.as_ref().unwrap().selected,0);
+    app.handle(Key::Down,&mut FakeScreen::default());
+    assert_eq!(app.team_view.as_ref().unwrap().detail_scroll,0);
+}
+
+#[test]
+fn link_ui_never_accepts_free_form_or_duplicate_participants_from_the_picker() {
+    for peer in ["invented-session",SESSION_A] {
+        let fixture = Fixture::new();
+        let (live,_,_) = link_ui_host(&fixture);
+        let mut app = fixture.app();
+        open_team_view(&mut app);
+        app.handle(Key::Char('l'),&mut FakeScreen::typing(&[&format!("{}\tfirst",live[0].session_id),&format!("{peer}\tpeer")]));
+        assert!(app.message.contains("verified live session"),"{}",app.message);
+        let connection = crate::teams::store::open(&crate::paths::team_database()).unwrap();
+        assert_eq!(connection.query_row("SELECT count(*) FROM link_proposals",[],|row| row.get::<_,i64>(0)).unwrap(),1);
+    }
+}
+
+#[test]
+fn link_ui_ambiguous_host_reply_is_not_retried_or_reported_as_approval() {
+    let fixture = Fixture::new();
+    link_ui_host(&fixture);
+    let mut app = fixture.app();
+    open_team_view(&mut app);
+    let snapshot = app.team_view.as_ref().unwrap().snapshot.clone();
+    fs::remove_file(fixture.path("run/claude-team-host/host.sock")).unwrap();
+    let requests = team_host(&fixture,snapshot,vec![json!({"Err":{"code":"unavailable","message":"reply lost after submission"}})]);
+    app.handle(Key::Char('a'),&mut FakeScreen::answering(&[Key::Char('y')]));
+    assert!(app.message.contains("unknown") && !app.message.contains("link approved"),"{}",app.message);
+    app.handle(Key::Char('r'),&mut FakeScreen::default());
+    assert_eq!(controls(&requests).len(),1);
+}
+
 #[test]
 fn a_failed_team_start_is_dismissed_after_a_yes() {
     // Todo 9397cffb.
