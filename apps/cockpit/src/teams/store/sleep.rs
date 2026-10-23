@@ -4,6 +4,7 @@ use super::*;
 use rusqlite::TransactionBehavior;
 
 const LIFETIME_MS: i64 = 7 * 24 * 60 * 60 * 1000;
+const WAKE_TIMEOUT_MS: i64 = 90_000;
 
 #[derive(Clone)]
 pub struct SleepPermit {
@@ -184,7 +185,7 @@ pub fn mark_failed(connection: &mut Connection, session: &str, token: &str, reas
 
 pub fn expire_wakes(connection: &mut Connection, now_ms: i64) -> Result<(), TeamError> {
     connection.execute("UPDATE sleep_permits SET state='failed',error='wake acknowledgement timed out'
-        WHERE state IN ('launch_requested','waking') AND started_at<=?1", [now_ms.saturating_sub(300_000)])?;
+        WHERE state IN ('launch_requested','waking') AND started_at<=?1", [now_ms.saturating_sub(WAKE_TIMEOUT_MS)])?;
     Ok(())
 }
 

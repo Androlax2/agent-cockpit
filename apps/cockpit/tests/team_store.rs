@@ -245,14 +245,17 @@ fn sleep_launch_reservation_and_timeout_survive_recovery_without_retry() {
         }
         drop(connection);
         let mut connection = store::open(&path).unwrap();
-        store::recover(&mut connection, &live()[1..], 303_002).unwrap();
+        store::recover(&mut connection, &live()[1..], 3002 + 89_999).unwrap();
+        assert_eq!(store::sleep::status(&connection, DESIGNER, &token).unwrap()["state"],
+            if failure == "timeout" { "waking" } else { "failed" }, "{failure}");
+        store::recover(&mut connection, &live()[1..], 3002 + 90_000).unwrap();
         assert_eq!(store::sleep::status(&connection, DESIGNER, &token).unwrap()["state"], "failed", "{failure}");
         assert_eq!(store::sleep::prepared_records(&connection).unwrap().len(), 1);
-        assert!(store::sleep::pending_wakes(&connection, 303_003).unwrap().is_empty());
-        assert!(store::sleep::begin_wake(&mut connection, DESIGNER, &token, 303_003).is_err());
+        assert!(store::sleep::pending_wakes(&connection, 93_003).unwrap().is_empty());
+        assert!(store::sleep::begin_wake(&mut connection, DESIGNER, &token, 93_003).is_err());
         let mut replacement = live()[0].clone();
         replacement.runtime = "too-late".into();
-        assert!(!store::sleep::bind(&mut connection, &token, &replacement, SLEEP_CHECKOUT, 303_003).unwrap());
+        assert!(!store::sleep::bind(&mut connection, &token, &replacement, SLEEP_CHECKOUT, 93_003).unwrap());
         assert_eq!(store::snapshot(&connection, None, None, 100).unwrap()["messages"][0]["state"], "queued");
     }
 }
