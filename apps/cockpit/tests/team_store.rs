@@ -223,6 +223,273 @@ fn linked(connection: &mut rusqlite::Connection) {
     approve(connection, &request).unwrap();
 }
 
+const SLEEP_CHECKOUT: &str = "/home/theo/IdeaProjects/project-a";
+
+#[test]
+fn sleep_launch_reservation_and_timeout_survive_recovery_without_retry() {
+    for failure in ["timeout", "launch"] {
+        let sandbox = Sandbox::new();
+        let path = sandbox.root.join("protected/teams.sqlite");
+        let mut connection = store::open(&path).unwrap();
+        linked(&mut connection);
+        let token = store::sleep::prepare(&mut connection, &live()[0], SLEEP_CHECKOUT, 3000).unwrap().unwrap();
+        store::accept(&mut connection, &live()[1], &message("wake"), 3001).unwrap();
+        assert!(!store::sleep::reserve_wake(&mut connection, QA, &token, 3002).unwrap());
+        assert!(store::sleep::reserve_wake(&mut connection, DESIGNER, &token, 3002).unwrap());
+        assert!(!store::sleep::reserve_wake(&mut connection, DESIGNER, &token, 3003).unwrap());
+        assert!(store::sleep::pending_wakes(&connection, 3003).unwrap().is_empty());
+        if failure == "launch" { store::sleep::mark_failed(&mut connection, DESIGNER, &token, "launch refused").unwrap(); }
+        else {
+            store::sleep::begin_wake(&mut connection, DESIGNER, &token, 3004).unwrap();
+            assert!(store::sleep::begin_wake(&mut connection, DESIGNER, &token, 3005).is_err());
+        }
+        drop(connection);
+        let mut connection = store::open(&path).unwrap();
+        store::recover(&mut connection, &live()[1..], 303_002).unwrap();
+        assert_eq!(store::sleep::status(&connection, DESIGNER, &token).unwrap()["state"], "failed", "{failure}");
+        assert_eq!(store::sleep::prepared_records(&connection).unwrap().len(), 1);
+        assert!(store::sleep::pending_wakes(&connection, 303_003).unwrap().is_empty());
+        assert!(store::sleep::begin_wake(&mut connection, DESIGNER, &token, 303_003).is_err());
+        let mut replacement = live()[0].clone();
+        replacement.runtime = "too-late".into();
+        assert!(!store::sleep::bind(&mut connection, &token, &replacement, SLEEP_CHECKOUT, 303_003).unwrap());
+        assert_eq!(store::snapshot(&connection, None, None, 100).unwrap()["messages"][0]["state"], "queued");
+    }
+}
+
+#[test]
+fn sleep_preparation_serializes_with_real_sqlite_sends_and_claims() {
+    let sandbox = Sandbox::new();
+    let path = sandbox.root.join("protected/teams.sqlite");
+    let mut connection = store::open(&path).unwrap();
+    linked(&mut connection);
+    let mut other = store::open(&path).unwrap();
+    other.busy_timeout(std::time::Duration::ZERO).unwrap();
+    connection.execute_batch("BEGIN IMMEDIATE").unwrap();
+    assert!(store::sleep::prepare(&mut other, &live()[0], SLEEP_CHECKOUT, 3000).is_err());
+    connection.execute_batch("ROLLBACK").unwrap();
+    let token = store::sleep::prepare(&mut connection, &live()[0], SLEEP_CHECKOUT, 3001).unwrap().unwrap();
+    store::accept(&mut other, &live()[1], &message("incoming"), 3002).unwrap();
+    assert!(store::claim(&mut other, &live()[0], "idle", 3003).unwrap().is_none());
+    store::sleep::cancel(&mut connection, DESIGNER, &token).unwrap();
+    let dispatch = store::claim(&mut other, &live()[0], "idle", 3004).unwrap().unwrap();
+    assert!(store::sleep::prepare(&mut connection, &live()[0], SLEEP_CHECKOUT, 3005).is_err());
+    assert_eq!(connection.query_row("SELECT count(*) FROM attempts WHERE id=?1", [&dispatch.id], |row| row.get::<_, i64>(0)).unwrap(), 1);
+}
+
+#[test]
+fn sleep_prepare_distinguishes_nonmembers_from_mismatched_members() {
+    let sandbox = Sandbox::new();
+    let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+    assert!(store::sleep::prepare(&mut connection, &live()[0], SLEEP_CHECKOUT, 3000).unwrap().is_none());
+    linked(&mut connection);
+    for field in ["runtime", "project", "agent"] {
+        let mut wrong = live()[0].clone();
+        match field { "runtime" => wrong.runtime = "other".into(), "project" => wrong.project = "other".into(), _ => wrong.agent = "opencode".into() }
+        assert!(store::sleep::prepare(&mut connection, &wrong, SLEEP_CHECKOUT, 3001).is_err(), "{field}");
+    }
+}
+
+#[test]
+fn sleep_pauses_structured_collaboration_actions() {
+    let sandbox = Sandbox::new();
+    let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+    linked(&mut connection);
+    store::control(&mut connection, &HostAction::Unlink { request_id: "free-qa".into(), task: task(), session_id: QA.into() }, &live(), 3000).unwrap();
+    let thread = ask(&mut connection, "question", None).unwrap()["thread_id"].as_str().unwrap().to_string();
+    answer(&mut connection, "answer", &thread).unwrap();
+    for (index, recipient) in [0, 1].into_iter().enumerate() {
+        let dispatch = store::claim(&mut connection, &live()[recipient], "idle", 3001).unwrap().unwrap();
+        store::finish(&mut connection, &dispatch.id, &TransportOutcome::Received { native_id: format!("native-{index}") }, 3002).unwrap();
+    }
+    let token = store::sleep::prepare(&mut connection, &live()[1], SLEEP_CHECKOUT, 3003).unwrap().unwrap();
+    assert!(assess(&mut connection, &thread, true).is_err());
+    assert!(hand_off(&mut connection, "handoff", COMMIT_A).is_err());
+    let recruitment = recruitment("recruit", Role::Developer, &[(Role::Qa, "Review")]);
+    assert!(recruit(&mut connection, 1, &recruitment, "claude").is_err());
+    assert!(store::propose(&mut connection, &live()[1], &proposal(), &live(), 3004).is_err());
+    store::sleep::cancel(&mut connection, DEVELOPER, &token).unwrap();
+    assert!(assess(&mut connection, &thread, true).is_ok());
+    assert!(hand_off(&mut connection, "handoff", COMMIT_A).is_ok());
+    assert!(recruit(&mut connection, 1, &recruitment, "claude").is_ok());
+}
+
+#[test]
+fn sleep_permit_does_not_exempt_an_unauthorized_restart_from_recovery() {
+    let sandbox = Sandbox::new();
+    let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+    linked(&mut connection);
+    store::sleep::prepare(&mut connection, &live()[0], SLEEP_CHECKOUT, 3000).unwrap().unwrap();
+    store::accept(&mut connection, &live()[1], &message("incoming"), 3001).unwrap();
+    let mut unauthorized = live();
+    unauthorized[0].runtime = "unauthorized".into();
+    store::recover(&mut connection, &unauthorized, 3002).unwrap();
+    assert_eq!(store::snapshot(&connection, None, None, 100).unwrap()["messages"][0]["state"], "cancelled");
+    assert!(store::context(&connection, &unauthorized[0]).unwrap()["task"].is_null());
+}
+
+#[test]
+fn sleep_resume_schedules_a_review_approved_while_the_developer_was_paused() {
+    for resume in ["cancel", "bind"] {
+        let sandbox = Sandbox::new();
+        let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+        let mut without_qa = proposal();
+        without_qa.members.pop();
+        let request = propose(&mut connection, &without_qa);
+        approve(&mut connection, &request).unwrap();
+        hand_off(&mut connection, "handoff", COMMIT_A).unwrap();
+        let token = store::sleep::prepare(&mut connection, &live()[1], SLEEP_CHECKOUT, 3001).unwrap().unwrap();
+        let mut with_qa = proposal();
+        with_qa.submission_key = "add-qa".into();
+        let request = store::propose(&mut connection, &live()[0], &with_qa, &live(), 3002).unwrap().result.unwrap();
+        approve(&mut connection, &request).unwrap();
+        assert!(qa_requests(&connection).is_empty());
+        if resume == "cancel" { store::sleep::cancel(&mut connection, DEVELOPER, &token).unwrap(); }
+        else {
+            let mut replacement = live()[1].clone();
+            replacement.runtime = "replacement".into();
+            assert!(store::sleep::bind(&mut connection, &token, &replacement, SLEEP_CHECKOUT, 3003).unwrap());
+        }
+        assert_eq!(qa_requests(&connection).len(), 1, "{resume}");
+    }
+}
+
+#[test]
+fn sleep_prepare_pauses_sends_and_claims_but_accepts_incoming_messages() {
+    let sandbox = Sandbox::new();
+    let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+    linked(&mut connection);
+    let token = store::sleep::prepare(&mut connection, &live()[0], SLEEP_CHECKOUT, 3000).unwrap().unwrap();
+    assert_eq!(store::sleep::prepare(&mut connection, &live()[0], SLEEP_CHECKOUT, 3001).unwrap(), Some(token.clone()));
+    store::accept(&mut connection, &live()[1], &message("incoming"), 3002).unwrap();
+    assert!(store::claim(&mut connection, &live()[0], "idle", 3003).unwrap().is_none());
+    let outgoing = AgentAction::Send { message: Submission { task: task(), submission_key: "outgoing".into(), recipient: DEVELOPER.into(),
+        kind: MessageKind::Notice, body: "not while asleep".into(), thread_id: None, handoff_id: None } };
+    assert!(store::accept(&mut connection, &live()[0], &outgoing, 3003).is_err());
+    assert_eq!(store::sleep::pending_wakes(&connection, 3003).unwrap().len(), 1);
+    assert!(!store::snapshot(&connection, None, None, 100).unwrap().to_string().contains(&token));
+    assert!(!store::sleep::status(&connection, DESIGNER, &token).unwrap().to_string().contains(&token));
+}
+
+#[test]
+fn sleep_prepare_refuses_pending_or_uncertain_delivery() {
+    for state in ["queued", "ready", "submitting", "uncertain"] {
+        for member in [0, 1] {
+            let sandbox = Sandbox::new();
+            let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+            linked(&mut connection);
+            store::accept(&mut connection, &live()[1], &message("pending"), 3000).unwrap();
+            connection.execute("UPDATE messages SET state=?1", [state]).unwrap();
+            assert!(store::sleep::prepare(&mut connection, &live()[member], SLEEP_CHECKOUT, 3001).is_err(), "{state}, member {member}");
+        }
+    }
+}
+
+#[test]
+fn sleep_bind_preserves_role_epoch_and_queued_messages() {
+    let sandbox = Sandbox::new();
+    let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+    linked(&mut connection);
+    store::accept(&mut connection, &live()[1], &message("received"), 3000).unwrap();
+    let old_attempt = store::claim(&mut connection, &live()[0], "idle", 3000).unwrap().unwrap();
+    let receipt = TransportOutcome::Received { native_id: "native-old".into() };
+    store::finish_for(&mut connection, &live()[0], &old_attempt.id, &receipt, 3001).unwrap();
+    let epoch: String = connection.query_row("SELECT epoch FROM members WHERE session_id=?1", [DESIGNER], |row| row.get(0)).unwrap();
+    let token = store::sleep::prepare(&mut connection, &live()[0], SLEEP_CHECKOUT, 3002).unwrap().unwrap();
+    store::accept(&mut connection, &live()[1], &message("during-sleep"), 3003).unwrap();
+    store::recover(&mut connection, &live()[1..], 3004).unwrap();
+    store::sleep::begin_wake(&mut connection, DESIGNER, &token, 3005).unwrap();
+    let mut replacement = live()[0].clone();
+    replacement.runtime = "replacement".into();
+    assert!(store::sleep::bind(&mut connection, &token, &replacement, SLEEP_CHECKOUT, 3006).unwrap());
+    let mut current = live();
+    current[0] = replacement.clone();
+    store::recover(&mut connection, &current, 3007).unwrap();
+    assert_eq!(store::context(&connection, &replacement).unwrap()["task"]["task_id"], "1d3fd318");
+    assert_eq!(connection.query_row("SELECT epoch FROM members WHERE session_id=?1", [DESIGNER], |row| row.get::<_, String>(0)).unwrap(), epoch);
+    assert!(store::finish_for(&mut connection, &replacement, &old_attempt.id, &receipt, 3008).is_err());
+    let dispatch = store::claim(&mut connection, &replacement, "idle", 3008).unwrap().unwrap();
+    assert!(store::finish_for(&mut connection, &live()[0], &dispatch.id, &receipt, 3009).is_err());
+    store::finish_for(&mut connection, &replacement, &dispatch.id, &receipt, 3009).unwrap();
+    assert!(store::claim(&mut connection, &replacement, "next", 3010).unwrap().is_none());
+}
+
+#[test]
+fn sleep_bind_rejects_wrong_identity_expiry_replay_and_revocation() {
+    for invalid in ["session", "agent", "project", "checkout", "runtime", "empty-runtime", "expiry", "epoch", "task", "role", "revoked", "cancelled", "token"] {
+        let sandbox = Sandbox::new();
+        let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+        linked(&mut connection);
+        let mut token = store::sleep::prepare(&mut connection, &live()[0], SLEEP_CHECKOUT, 3000).unwrap().unwrap();
+        let mut replacement = live()[0].clone();
+        replacement.runtime = "replacement".into();
+        let mut checkout = SLEEP_CHECKOUT;
+        let mut now = 3001;
+        match invalid {
+            "session" => replacement.session_id = QA.into(),
+            "agent" => replacement.agent = "opencode".into(),
+            "project" => replacement.project = "elsewhere".into(),
+            "checkout" => checkout = "/other",
+            "runtime" => replacement.runtime = live()[0].runtime.clone(),
+            "empty-runtime" => replacement.runtime.clear(),
+            "expiry" => now = 3000 + 7 * 24 * 60 * 60 * 1000,
+            "epoch" => { connection.execute("UPDATE members SET epoch='new' WHERE session_id=?1", [DESIGNER]).unwrap(); },
+            "task" => { connection.execute("UPDATE sleep_permits SET task_key='other'", []).unwrap(); },
+            "role" => { connection.execute("UPDATE sleep_permits SET role='qa'", []).unwrap(); },
+            "revoked" => { store::control(&mut connection, &HostAction::Unlink { request_id: "unlink-sleep".into(), task: task(), session_id: DESIGNER.into() }, &live(), 3001).unwrap(); },
+            "cancelled" => store::sleep::cancel(&mut connection, DESIGNER, &token).unwrap(),
+            "token" => token = "forged".into(),
+            _ => unreachable!(),
+        }
+        assert!(!store::sleep::bind(&mut connection, &token, &replacement, checkout, now).unwrap(), "{invalid}");
+    }
+}
+
+#[test]
+fn sleep_bind_is_idempotent_for_the_winning_runtime_only() {
+    let sandbox = Sandbox::new();
+    let path = sandbox.root.join("protected/teams.sqlite");
+    let mut connection = store::open(&path).unwrap();
+    linked(&mut connection);
+    let token = store::sleep::prepare(&mut connection, &live()[0], SLEEP_CHECKOUT, 3000).unwrap().unwrap();
+    let mut replacement = live()[0].clone();
+    replacement.runtime = "winner".into();
+    assert!(store::sleep::bind(&mut connection, &token, &replacement, SLEEP_CHECKOUT, 3001).unwrap());
+    drop(connection);
+    let mut connection = store::open(&path).unwrap();
+    assert!(store::sleep::bind(&mut connection, &token, &replacement, SLEEP_CHECKOUT, 3002).unwrap());
+    replacement.runtime = "loser".into();
+    assert!(!store::sleep::bind(&mut connection, &token, &replacement, SLEEP_CHECKOUT, 3003).unwrap());
+    assert_eq!(store::sleep::status(&connection, DESIGNER, &token).unwrap()["state"], "bound");
+}
+
+#[test]
+fn sleep_cancel_restores_normal_delivery() {
+    let sandbox = Sandbox::new();
+    let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+    linked(&mut connection);
+    let token = store::sleep::prepare(&mut connection, &live()[0], SLEEP_CHECKOUT, 3000).unwrap().unwrap();
+    store::accept(&mut connection, &live()[1], &message("incoming"), 3001).unwrap();
+    store::sleep::cancel(&mut connection, QA, &token).unwrap();
+    assert!(store::claim(&mut connection, &live()[0], "idle", 3002).unwrap().is_none());
+    store::sleep::cancel(&mut connection, DESIGNER, &token).unwrap();
+    store::sleep::cancel(&mut connection, DESIGNER, &token).unwrap();
+    assert!(store::claim(&mut connection, &live()[0], "idle", 3003).unwrap().is_some());
+}
+
+#[test]
+fn sleep_recovery_does_not_resend_uncertain_attempts() {
+    let sandbox = Sandbox::new();
+    let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+    linked(&mut connection);
+    store::accept(&mut connection, &live()[1], &message("uncertain"), 3000).unwrap();
+    let dispatch = store::claim(&mut connection, &live()[0], "idle", 3000).unwrap().unwrap();
+    store::recover(&mut connection, &live(), 3001).unwrap();
+    assert!(store::sleep::prepare(&mut connection, &live()[0], SLEEP_CHECKOUT, 3002).is_err());
+    assert!(store::claim(&mut connection, &live()[0], "next", 5000).unwrap().is_none());
+    assert_eq!(connection.query_row("SELECT state FROM attempts WHERE id=?1", [&dispatch.id], |row| row.get::<_, String>(0)).unwrap(), "uncertain");
+}
+
 #[test]
 fn unapproved_or_wrong_task_messages_are_refused() {
     let sandbox = Sandbox::new();

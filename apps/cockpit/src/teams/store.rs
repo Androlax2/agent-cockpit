@@ -1,5 +1,7 @@
 //! Authoritative team state lives beside the protected audit log, never in a writable inbox.
 
+pub mod sleep;
+
 use super::{AgentAction, Dispatch, ErrorCode, HostAction, MessageKind, Proposal, Role, TaskKey, TeamError, TeamReply, TransportOutcome, VerifiedSession};
 use crate::{agents, audit};
 use ring::rand::{SecureRandom, SystemRandom};
@@ -92,6 +94,7 @@ pub fn open(path: &Path) -> Result<Connection, TeamError> {
         }
     }
     connection.execute_batch(&(migration + "PRAGMA user_version=2; COMMIT;"))?;
+    sleep::migrate(&connection)?;
     Ok(connection)
 }
 
@@ -135,6 +138,7 @@ pub fn propose(connection: &mut Connection, sender: &VerifiedSession, proposal: 
     let mapping = serde_json::to_string(&bound)?;
     let fingerprint = audit::sha256_hex(serde_json::to_string(proposal)?.as_bytes());
     let transaction = connection.transaction()?;
+    sleep::guard_sender(&transaction, &sender.session_id)?;
     let previous: Option<(String, String, String, i64)> = transaction.query_row(
         "SELECT id, fingerprint, mapping_hash, revision FROM proposals WHERE sender=?1 AND submission_key=?2",
         params![sender.session_id, proposal.submission_key], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))).optional()?;
@@ -186,6 +190,7 @@ pub fn recruit(connection: &mut Connection, sender: &VerifiedSession, recruitmen
     let recruits = serde_json::to_string(&recruitment.recruits)?;
     let fingerprint = audit::sha256_hex(format!("{}\n{agent}", serde_json::to_string(recruitment)?).as_bytes());
     let transaction = connection.transaction()?;
+    sleep::guard_sender(&transaction, &sender.session_id)?;
     let previous: Option<(String, String, String)> = transaction.query_row(
         "SELECT id, fingerprint, mapping_hash FROM proposals WHERE sender=?1 AND submission_key=?2",
         params![sender.session_id, recruitment.submission_key], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).optional()?;
@@ -487,6 +492,7 @@ pub fn snapshot(connection: &Connection, task: Option<&TaskKey>, after: Option<i
 }
 
 fn cancel_member_messages(connection: &Connection, task_key: &str, session: &str) -> Result<(), TeamError> {
+    connection.execute("UPDATE sleep_permits SET state='cancelled' WHERE task_key=?1 AND session_id=?2 AND state IN ('prepared','launch_requested','waking','failed')", params![task_key,session])?;
     connection.execute("UPDATE messages SET state='cancelled', last_error='membership revoked' WHERE task_key=?1 AND (sender=?2 OR recipient=?2) AND state IN ('queued','ready')", params![task_key,session])?;
     Ok(())
 }
@@ -518,6 +524,7 @@ pub fn accept(connection: &mut Connection, sender: &VerifiedSession, action: &Ag
     let transaction = connection.transaction()?;
     let source = member(&transaction, &task_key, &sender.session_id)?.filter(|member| member.runtime == sender.runtime && member.agent == sender.agent)
         .ok_or_else(|| TeamError::new(ErrorCode::Unauthorized, "no approved task messaging link"))?;
+    sleep::guard_sender(&transaction, &sender.session_id)?;
     let target = member(&transaction, &task_key, &message.recipient)?.ok_or_else(|| TeamError::new(ErrorCode::Unauthorized,
         "the recipient is not a member of this task's team: use its session_id from `cockpit-team context`, not a role"))?;
     let handoff = match &message.handoff_id {
@@ -606,6 +613,7 @@ pub fn handoff_in(connection: &mut Connection, sender: &VerifiedSession, action:
     let developer = member(&transaction, &task_key, &sender.session_id)?
         .filter(|member| member.runtime == sender.runtime && member.agent == sender.agent && member.role == "developer")
         .ok_or_else(|| TeamError::new(ErrorCode::Unauthorized, "only the task's approved Developer completes a handoff"))?;
+    sleep::guard_sender(&transaction, &sender.session_id)?;
     let fingerprint = audit::sha256_hex(serde_json::to_string(handoff)?.as_bytes());
     let previous: Option<(String, String)> = transaction.query_row("SELECT id,fingerprint FROM handoffs WHERE developer=?1 AND submission_key=?2",
         params![sender.session_id, handoff.submission_key], |row| Ok((row.get(0)?, row.get(1)?))).optional()?;
@@ -686,6 +694,7 @@ fn schedule_qa(connection: &Connection, task_key: &str, now_ms: i64) -> Result<b
     let role_member = |role: &str| connection.query_row("SELECT session_id,epoch,agent,runtime FROM members WHERE task_key=?1 AND role=?2",
         params![task_key, role], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?))).optional();
     let (Some(developer), Some(qa)) = (role_member("developer")?, role_member("qa")?) else { return Ok(false) };
+    if sleep::paused(connection, &developer.0)? { return Ok(false); }
     let current: Option<String> = connection.query_row("SELECT id FROM handoffs WHERE task_key=?1 AND status='current' AND developer=?2 AND developer_epoch=?3",
         params![task_key, developer.0, developer.1], |row| row.get(0)).optional()?;
     let Some(handoff_id) = current else { return Ok(false) };
@@ -758,6 +767,7 @@ pub fn assess(connection: &mut Connection, sender: &VerifiedSession, action: &Ag
     let transaction = connection.transaction()?;
     member(&transaction, &task_key, &sender.session_id)?.filter(|member| member.runtime == sender.runtime && member.agent == sender.agent)
         .ok_or_else(|| TeamError::new(ErrorCode::Unauthorized, "no approved task messaging link"))?;
+    sleep::guard_sender(&transaction, &sender.session_id)?;
     let thread: Option<(String, i64, String)> = transaction.query_row("SELECT asker,round,status FROM threads WHERE id=?1 AND task_key=?2",
         params![thread_id, task_key], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).optional()?;
     let Some((asker, round, status)) = thread else { return Err(TeamError::new(ErrorCode::NotFound, "clarification thread not found")) };
@@ -802,6 +812,7 @@ pub fn claim(connection: &mut Connection, recipient: &VerifiedSession, idle_turn
     let task_key: Option<String> = transaction.query_row("SELECT m.task_key FROM members m JOIN teams t ON t.task_key=m.task_key WHERE m.session_id=?1 AND m.runtime=?2 AND m.agent=?3 AND t.project=?4",
         params![recipient.session_id,recipient.runtime,recipient.agent,recipient.project], |row| row.get(0)).optional()?;
     let Some(task_key) = task_key else { return Ok(None) };
+    if sleep::paused(&transaction, &recipient.session_id)? { return Ok(None); }
     let Some(target) = member(&transaction, &task_key, &recipient.session_id)? else { return Ok(None) };
     if target.last_idle_turn.as_deref() == Some(idle_turn) { return Ok(None); }
     let unresolved: i64 = transaction.query_row("SELECT count(*) FROM messages WHERE recipient=?1 AND recipient_epoch=?2 AND state IN ('submitting','uncertain')", params![recipient.session_id,target.epoch], |row| row.get(0))?;
@@ -882,6 +893,8 @@ pub fn finish(connection: &mut Connection, dispatch_id: &str, outcome: &Transpor
 }
 
 pub fn recover(connection: &mut Connection, live: &[VerifiedSession], now_ms: i64) -> Result<(), TeamError> {
+    // Host-verified sleep replacements must bind before recovery; a token alone cannot exempt a restart.
+    sleep::expire_wakes(connection, now_ms)?;
     let transaction = connection.transaction()?;
     transaction.execute("UPDATE attempts SET state='uncertain',finished_at=?1 WHERE state='submitting'", [now_ms])?;
     transaction.execute("UPDATE messages SET state='uncertain',last_error='daemon restarted during submission; reconcile before proceeding' WHERE state='submitting'", [])?;
