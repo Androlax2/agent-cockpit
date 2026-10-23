@@ -83,6 +83,8 @@ pub struct Route {
     pub updated_at: i64,
     #[serde(default)]
     pub admitted_generation: Option<String>,
+    #[serde(default)]
+    pub retired_sessions: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -129,6 +131,22 @@ impl Drop for RoutingStore {
     }
 }
 
+fn read_state(path: &Path) -> Result<RoutingState, String> {
+    let state = match util::read_untrusted(path, 1024 * 1024 + 1) {
+        Ok(bytes) if bytes.len() <= 1024 * 1024 => serde_json::from_slice::<RoutingState>(&bytes).map_err(|error| format!("invalid routing state: {error}"))?,
+        Ok(_) => return Err("routing state exceeds 1 MiB".into()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => RoutingState { version: 1, routes: BTreeMap::new() },
+        Err(error) => return Err(format!("cannot read routing state: {error}")),
+    };
+    validate_state(&state)?;
+    Ok(state)
+}
+
+/// Writers publish by atomic rename; read-only dispatch holds must not seize their exclusive lock.
+pub fn read_routes(path: &Path) -> Result<Vec<Route>, String> {
+    Ok(read_state(path)?.routes.into_values().collect())
+}
+
 impl RoutingStore {
     pub fn load(path: &Path) -> Result<Self, String> {
         let parent = path.parent().ok_or("routing path has no parent")?;
@@ -139,17 +157,20 @@ impl RoutingStore {
         if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
             return Err("subscription routing is already being reconciled".into());
         }
-        let state = match util::read_untrusted(path, 1024 * 1024 + 1) {
-            Ok(bytes) if bytes.len() <= 1024 * 1024 => serde_json::from_slice::<RoutingState>(&bytes).map_err(|error| format!("invalid routing state: {error}"))?,
-            Ok(_) => return Err("routing state exceeds 1 MiB".into()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => RoutingState { version: 1, routes: BTreeMap::new() },
-            Err(error) => return Err(format!("cannot read routing state: {error}")),
-        };
-        validate_state(&state)?;
+        let state = read_state(path)?;
         Ok(Self { path: path.into(), state, lock })
     }
 
     pub fn route(&self, origin: &str) -> Option<&Route> { self.state.routes.get(origin) }
+
+    pub fn routes(&self) -> impl Iterator<Item = &Route> { self.state.routes.values() }
+
+    pub fn prompt_destination<'a>(&'a self, session: &'a str) -> &'a str {
+        self.routes().find(|route| matches!(route.phase, Phase::Active | Phase::Pending(_) | Phase::Paused(_))
+            && (route.current.session == session || route.retired_sessions.iter().any(|retired| retired == session)
+                || matches!(&route.phase, Phase::Pending(pending) if pending.replacement.as_ref().is_some_and(|replacement| replacement.session == session))))
+            .map_or(session, |route| route.current.session.as_str())
+    }
 
     pub fn execution_allowed(&self, generation: &str, session: &str, runtime: &str) -> bool {
         self.state.routes.values().any(|route| route.admitted_generation.as_deref() == Some(generation)
@@ -159,6 +180,7 @@ impl RoutingStore {
 
     pub fn track(&mut self, original: Binding, directory: &str, task: &str, now: i64) -> Result<(), String> {
         if self.state.routes.values().any(|route| route.current.session == original.session
+            || (!matches!(route.phase, Phase::Cancelled | Phase::Completed) && route.retired_sessions.contains(&original.session))
             || matches!(&route.phase, Phase::Pending(pending) if pending.replacement.as_ref().is_some_and(|replacement| replacement.session == original.session))) {
             return Ok(());
         }
@@ -166,6 +188,7 @@ impl RoutingStore {
         next.routes.entry(original.session.clone()).or_insert_with(|| Route {
             current: original.clone(), original, directory: directory.into(), task: task.into(), phase: Phase::Active, updated_at: now,
             admitted_generation: None,
+            retired_sessions: Vec::new(),
         });
         self.save(next)
     }
@@ -245,6 +268,10 @@ impl RoutingStore {
         if pending.stage != Stage::Bound { return Err("replacement runtime has not been verified".into()); }
         let replacement = pending.replacement.clone().ok_or("replacement runtime is missing")?;
         let route = next.routes.get_mut(origin).unwrap();
+        route.retired_sessions.retain(|session| *session != replacement.session);
+        if route.current.session != replacement.session && !route.retired_sessions.contains(&route.current.session) {
+            route.retired_sessions.push(route.current.session.clone());
+        }
         route.current = replacement;
         route.admitted_generation = Some(generation.into());
         route.phase = Phase::Active;
@@ -287,6 +314,10 @@ fn validate_state(state: &RoutingState) -> Result<(), String> {
             || !Path::new(&route.directory).is_absolute() || !crate::sessions::valid_metadata_text(&route.directory, 300)
             || route.task.is_empty() || !crate::sessions::valid_metadata_text(&route.task, 300) || route.updated_at <= 0 {
             return Err("invalid routing identity or task".into());
+        }
+        if route.retired_sessions.len() > 1000 || route.retired_sessions.iter().any(|session| !agents::is_session_id(session) || *session == route.current.session)
+            || route.retired_sessions.iter().collect::<std::collections::BTreeSet<_>>().len() != route.retired_sessions.len() {
+            return Err("invalid retired subscription session identities".into());
         }
         if route.admitted_generation.as_ref().is_some_and(|generation| generation.len() != 32
             || !generation.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))) {

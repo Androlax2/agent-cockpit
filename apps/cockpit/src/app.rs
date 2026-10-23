@@ -808,6 +808,9 @@ pub struct App {
     /// session -> when the column last sent it a queued prompt: the next one waits for a turn that
     /// ended after that.
     pub(crate) prompts_sent: HashMap<String, i64>,
+    subscription_held: HashSet<String>,
+    subscription_directories: HashSet<String>,
+    subscription_error: Option<String>,
     /// craft app -> the checkout folders its running instances serve (sessions::craft_roots).
     pub(crate) craft_roots: HashMap<String, HashSet<String>>,
     pub(crate) todo_counts: [usize; 5],
@@ -876,7 +879,7 @@ impl App {
             width: DEFAULT_COLUMN_WIDTH, sessions: Vec::new(), running_sessions: Vec::new(), windows: Vec::new(), quota_rows: Vec::new(), review_rows: Vec::new(), todo_entries: Vec::new(), idea_entries: Vec::new(),
             session_task_titles: HashMap::new(), session_branches: HashMap::new(),
             session_queued: HashMap::new(), session_roots: HashMap::new(),
-            todo_scope: String::new(), shown_session: String::new(), todo_tab: TODO_TAB_OPEN, todo_tabs: HashMap::new(), todo_categories: HashMap::new(), saved_todo_scope: None, todo_jump: None, todo_counts: [0; 5], prompts_sent: HashMap::new(), craft_roots: HashMap::new(), hit_lines: HashMap::new(), hit_actions: HashMap::new(),
+            todo_scope: String::new(), shown_session: String::new(), todo_tab: TODO_TAB_OPEN, todo_tabs: HashMap::new(), todo_categories: HashMap::new(), saved_todo_scope: None, todo_jump: None, todo_counts: [0; 5], prompts_sent: HashMap::new(), subscription_held: HashSet::new(), subscription_directories: HashSet::new(), subscription_error: None, craft_roots: HashMap::new(), hit_lines: HashMap::new(), hit_actions: HashMap::new(),
             gathered: None, pending: Vec::new(), plan: String::new(), craft_checked: 0.0, running_copies_unpushed: HashMap::new(), running_copies_checked: 0.0, todo_recovery_pending, idea_header_range: None,
         }
     }
@@ -933,6 +936,7 @@ impl App {
         self.watch_pairing();
         self.redraw();
         self.push_viewed_state();
+        self.dispatch_subscription_routes();
         self.dispatch_queue();
         self.dispatch_prompts();
         self.dispatch_sleep();
@@ -1012,12 +1016,58 @@ impl App {
         has_ended
     }
 
+    pub fn dispatch_subscription_routes(&mut self) {
+        use crate::subscription_fallback::{self, Direction, Phase};
+        let result = (|| -> Result<(), String> {
+            let routes = subscription_fallback::read_routes(&paths::subscription_routes())?;
+            self.subscription_held.clear();
+            self.subscription_directories.clear();
+            for route in routes.iter().filter(|route| matches!(route.original.selection.agent.as_str(), "claude" | "codex")) {
+                if matches!(route.phase, Phase::Cancelled | Phase::Completed) { continue; }
+                self.subscription_held.extend(route.retired_sessions.iter().cloned());
+                if route.original.session != route.current.session { self.subscription_held.insert(route.original.session.clone()); }
+                match &route.phase {
+                    Phase::Pending(pending) => {
+                        self.subscription_held.insert(route.current.session.clone());
+                        self.subscription_directories.insert(route.directory.clone());
+                        if pending.direction == Direction::Return { self.subscription_held.insert(route.original.session.clone()); }
+                        if let Some(replacement) = &pending.replacement { self.subscription_held.insert(replacement.session.clone()); }
+                    }
+                    Phase::Paused(_) => {
+                        self.subscription_held.insert(route.current.session.clone());
+                        self.subscription_directories.insert(route.directory.clone());
+                    }
+                    Phase::Active => {
+                        for retired in &route.retired_sessions {
+                            prompts::transfer_subscription_prompts(retired, &route.current.session)?;
+                        }
+                    }
+                    Phase::Cancelled | Phase::Completed => unreachable!(),
+                }
+            }
+            Ok(())
+        })();
+        let error = result.err();
+        if error != self.subscription_error {
+            if let Some(error) = &error {
+                util::log_event("WARN", &format!("automatic native actions paused: subscription routing: {error}"));
+                self.message = format!("Subscription routing paused: {error}");
+            }
+            self.subscription_error = error;
+        }
+    }
+
+    fn subscription_holds(&self, session: &Session) -> bool {
+        matches!(session.agent.as_str(), "claude" | "codex")
+            && (self.subscription_error.is_some() || self.subscription_held.contains(&session.session))
+    }
+
     /// A session craft-open asked to restart (its figcraft-app server had exited at its start) is
     /// restarted once its turn ends, in a tmux session of its own; its queued prompt then waits for
     /// the restarted session. A terminal session is its terminal's: it is only told in the log.
     fn dispatch_restarts(&mut self) {
         let ready: Vec<Session> = self.running_sessions.iter()
-            .filter(|session| !session.is_external() && session.state == "waiting" && prompts::restart_wanted(&session.session)).cloned().collect();
+            .filter(|session| !self.subscription_holds(session) && !session.is_external() && session.state == "waiting" && prompts::restart_wanted(&session.session)).cloned().collect();
         for session in ready {
             prompts::restart_done(&session.session);
             if session.terminal {
@@ -1036,7 +1086,7 @@ impl App {
         self.dispatch_restarts();
         let ready: Vec<Session> = self.running_sessions.iter()
             // An asleep card is no process: the wake its message asked for delivers it.
-            .filter(|session| !session.is_external() && session.asleep.is_none() && session.state == "waiting"
+            .filter(|session| !self.subscription_holds(session) && !session.is_external() && session.asleep.is_none() && session.state == "waiting"
                 && session.since > self.prompts_sent.get(&session.session).copied().unwrap_or(0))
             .cloned().collect();
         for session in ready {
@@ -1073,6 +1123,7 @@ impl App {
             viewed: current_session(),
         };
         let eligible: Vec<Session> = self.running_sessions.iter()
+            .filter(|session| !self.subscription_holds(session))
             .filter(|session| self.sleep_asked.get(&session.session) != Some(&session.since))
             .filter(|session| sleep::block(session, &context, self.todos.busy(&session.session), prompts::count(&session.session) > 0).is_none())
             .cloned().collect();
@@ -1098,6 +1149,7 @@ impl App {
         }
         self.queue_checked = now;
         let idle: Vec<Session> = self.all_sessions().into_iter()
+            .filter(|session| !self.subscription_holds(session))
             .filter(|session| queue::block(session, &context, self.todos.busy(&session.session), prompts::count(&session.session) > 0).is_none())
             .collect();
         for session in idle {
@@ -1133,6 +1185,9 @@ impl App {
         for entry in handed {
             let Entry::Typed(item) = &entry else { continue };
             let project = project_name(&util::repository_root(&item.cwd()));
+            if self.subscription_error.is_some() || self.subscription_directories.iter().any(|directory| project_name(&util::repository_root(directory)) == project) {
+                continue;
+            }
             let directory = match start_directory(&item.cwd()) {
                 Ok(directory) => directory,
                 Err(error) => { util::log_event("WARN", &format!("queue: cannot start a session for {}: {error}", item.id())); continue }

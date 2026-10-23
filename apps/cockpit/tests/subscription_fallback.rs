@@ -110,6 +110,17 @@ fn fresh_recovery_restores_the_original_model_and_variant_after_a_verified_repla
     assert_eq!(returned.len(), 1);
     assert_eq!(returned[0].direction, Direction::Return);
     assert_eq!(returned[0].target, source.selection);
+    assert_eq!(store.prompt_destination(&source.session), replacement.session);
+    store.mark_retired(&source.session, &returned[0].generation).unwrap();
+    store.mark_submitted(&source.session, &returned[0].generation).unwrap();
+    let mut restored = source.clone();
+    restored.runtime = "runtime-restored-original".into();
+    store.record_runtime(&returned[0].generation, restored, "/projects/demo").unwrap();
+    store.finish(&source.session, &returned[0].generation).unwrap();
+    assert_eq!(store.prompt_destination(&replacement.session), source.session);
+    assert_eq!(store.route(&source.session).unwrap().retired_sessions, [replacement.session.clone()]);
+    store.track(replacement.clone(), "/projects/demo", "1797cdd6", 104).unwrap();
+    assert!(store.route(&replacement.session).is_none(), "a retired task owner must not become a second logical route");
 }
 
 #[test]
@@ -158,6 +169,18 @@ fn another_dispatcher_cannot_take_a_held_store_lock() {
     assert!(RoutingStore::load(&path).is_err());
     drop(store);
     assert!(RoutingStore::load(&path).is_ok());
+}
+
+#[test]
+fn automatic_action_readers_can_inspect_committed_routes_without_taking_the_writer_lock() {
+    let sandbox = Sandbox::new();
+    let path = sandbox.root.join("routes.json");
+    let mut writer = RoutingStore::load(&path).unwrap();
+    writer.track(binding("claude"), "/projects/demo", "1797cdd6", 100).unwrap();
+    let routes = cockpit::subscription_fallback::read_routes(&path).unwrap();
+    assert_eq!(routes.len(), 1);
+    assert_eq!(routes[0].current.session, SESSION_A);
+    assert!(RoutingStore::load(&path).is_err(), "readers must not release another dispatcher's lock");
 }
 
 #[test]

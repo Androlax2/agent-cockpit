@@ -7322,6 +7322,74 @@ fn queue_fixture(state: &str, idle_s: i64) -> (Fixture, App) {
     (fixture, app)
 }
 
+fn prepare_subscription_hold() {
+    use crate::subscription_fallback::{Binding, Observation, RoutingStore, Selection};
+    use crate::usage::SubscriptionCapacity::{Available, Exhausted};
+    let source = Binding { session:SESSION_A.into(),runtime:"runtime-source".into(),native_thread:None,
+        selection:Selection { agent:"claude".into(),provider:"anthropic".into(),model:"claude-opus-4-7".into(),variant:Some("high".into()),account:"a".repeat(64) } };
+    let alternate = Selection { agent:"codex".into(),provider:"openai".into(),model:"gpt-6.1-sol".into(),variant:Some("high".into()),account:"b".repeat(64) };
+    let mut store = RoutingStore::load(&crate::paths::subscription_routes()).unwrap();
+    store.track(source.clone(), "/r/runway", "1797cdd6", 100).unwrap();
+    store.reconcile(&[Observation { binding:source,session:sessions::Session::from_value(&session(SESSION_A,"waiting","runway","/r/runway",1)).unwrap(),
+        current_capacity:Exhausted,original_capacity:Exhausted,alternate:Some((alternate,Available)),has_pending_work:true,prompt_clear:true,manual_override:false }], 101).unwrap();
+}
+
+#[test]
+fn automatic_actions_leave_routing_held_sessions_and_their_work_untouched() {
+    for action in ["queue", "prompt", "restart", "sleep"] {
+        let (fixture, mut app) = queue_fixture("waiting", 7200);
+        no_team_members(&fixture);
+        app.check_team();
+        prepare_subscription_hold();
+        app.dispatch_subscription_routes();
+        match action {
+            "queue" => {
+                let key = app.todos.add("runway", "/r/runway", "A different queued task");
+                app.todos.toggle_queued(&key);
+                app.dispatch_queue();
+                assert_eq!(app.todos.status_of(&key), "todo");
+            }
+            "prompt" => {
+                crate::prompts::add(SESSION_A, "A queued user message").unwrap();
+                app.dispatch_prompts();
+                assert_eq!(crate::prompts::count(SESSION_A), 1);
+            }
+            "restart" => {
+                crate::prompts::want_restart(SESSION_A).unwrap();
+                app.dispatch_prompts();
+                assert!(crate::prompts::restart_wanted(SESSION_A));
+            }
+            "sleep" => { app.dispatch_sleep(); std::thread::sleep(Duration::from_millis(200)); }
+            _ => unreachable!(),
+        }
+        assert!(fixture.calls("cockpit").is_empty(), "{action}");
+    }
+}
+
+#[test]
+fn late_messages_to_retired_sessions_follow_the_active_owner_without_terminal_replay() {
+    use crate::subscription_fallback::{Binding, Phase, RoutingStore};
+    let (fixture, mut app) = queue_fixture("waiting", 7200);
+    prepare_subscription_hold();
+    let mut routes = RoutingStore::load(&crate::paths::subscription_routes()).unwrap();
+    let Phase::Pending(pending) = routes.route(SESSION_A).unwrap().phase.clone() else { unreachable!() };
+    let replacement = "cdx_c214e8c0c9458f09ea4300974071bcad955995188f33264e341800f8a2bb5fcb";
+    routes.mark_retired(SESSION_A, &pending.generation).unwrap();
+    routes.mark_submitted(SESSION_A, &pending.generation).unwrap();
+    routes.record_runtime(&pending.generation, Binding { session:replacement.into(),runtime:"runtime-replacement".into(),
+        selection:pending.target,native_thread:Some(SESSION_A.into()) }, "/r/runway").unwrap();
+    routes.finish(SESSION_A, &pending.generation).unwrap();
+    drop(routes);
+    crate::prompts::add(SESSION_A, "Message arriving after ownership binding").unwrap();
+    app.dispatch_subscription_routes();
+    app.dispatch_subscription_routes();
+    app.dispatch_prompts();
+    assert_eq!(crate::prompts::count(SESSION_A), 0);
+    assert_eq!(crate::prompts::count(replacement), 1);
+    assert_eq!(crate::prompts::oldest(replacement).unwrap().0, "Message arriving after ownership binding");
+    assert!(fixture.calls("cockpit").is_empty(), "the retired terminal must never receive these messages");
+}
+
 #[test]
 fn continuity_queue_explanation_and_dispatch_agree_about_blocked_capacity() {
     for (case, expected, can_dispatch) in [
