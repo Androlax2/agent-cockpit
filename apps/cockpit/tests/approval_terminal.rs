@@ -147,7 +147,9 @@ fn unverified_session_claims_do_not_associate_commands_with_a_mobile_chat() {
     let asking: serde_json::Value = serde_json::from_str(&fs::read_to_string(root.join(format!("run/claude-runs/{id}.asking"))).unwrap()).unwrap();
     assert_eq!(asking["session"], "");
     fs::write(root.join(format!("run/claude-runs/{id}.remote")), "n").unwrap();
-    terminal.pump(5.0, Some(b"Declined"));
-    let _ = terminal.child.wait();
+    // Keep draining the PTY and bound the wait even if a loaded runner misses the decline.
+    let status = terminal.wait_for_exit(20.0);
+    assert!(status.success(), "approval exited with {status}");
+    assert!(contains(&terminal.screen, b"Declined: Claude is told."), "{}", String::from_utf8_lossy(&terminal.screen));
     let _ = fs::remove_dir_all(root);
 }
