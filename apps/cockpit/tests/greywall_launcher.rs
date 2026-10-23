@@ -15,6 +15,17 @@ static AGENTS: std::sync::LazyLock<Vec<&'static str>> = std::sync::LazyLock::new
 const REVIEWED_REPOSITORIES: [&str; 3] = ["dotfiles", "agent-cockpit", "vitals"];
 
 #[test]
+fn claude_launch_does_not_wait_for_profile_drift_input() {
+    let launch = Launch::new();
+    write_executable(&launch.sandbox.home.join(".local/bin/greywall"),
+        "#!/bin/sh\nprintf '%s' \"${GREYWALL_NO_PROMPT:-unset}\" > \"$HOME/greywall-no-prompt\"\n");
+    let output = launch.sandbox.command(bin().join("greywall-agents/claude"), &[])
+        .env_remove("GREYWALL_NO_PROMPT").current_dir(&launch.project).output().unwrap();
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(fs::read_to_string(launch.sandbox.home.join("greywall-no-prompt")).unwrap(), "1");
+}
+
+#[test]
 fn no_session_starts_in_a_running_copy() {
     // Security audit C1: a session there could write code the host runs, unreviewed.
     for repository in REVIEWED_REPOSITORIES {

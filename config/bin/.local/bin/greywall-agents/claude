@@ -9,6 +9,8 @@ export DISABLE_AUTOUPDATER=1
 # showing its prompt, 2.3 s of a 3.9 s start (measured 2026-10-19; DISABLE_TELEMETRY and
 # DISABLE_ERROR_REPORTING alone did not help). This also turns off /bug inside sessions.
 export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+# --auto-profile still prompts on drift; keep the reviewed profile without blocking detached launches.
+export GREYWALL_NO_PROMPT=1
 . "$(dirname "$0")/launcher-common.sh"
 greywall_options="--auto-profile --profile claude $greywall_options"
 
