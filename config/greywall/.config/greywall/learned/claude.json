@@ -1,6 +1,7 @@
 // Learned profile for "claude"
 // Updated by greywall after profile drift resolution
 {
+  "preserveEnvGlobException": true,
   "network": {
     "rules": [
       {
@@ -190,5 +191,5 @@
   "credentials": {},
   "schemaVersion": 1,
   "generatedBy": "0.3.7",
-  "driftAckHash": "ce7e4e629b7af6426b7497bb9d375137"
+  "driftAckHash": "7c88facc21231642e4c571686f243897"
 }

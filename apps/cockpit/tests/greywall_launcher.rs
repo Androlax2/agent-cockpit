@@ -975,6 +975,19 @@ fn no_agent_profile_brings_back_the_env_glob_the_launcher_narrows() {
 }
 
 #[test]
+fn the_saved_claude_env_exception_preserves_reviewed_write_permissions() {
+    let profile = learned_profile("claude");
+    assert_eq!(profile["preserveEnvGlobException"], true);
+    let writable = profile["filesystem"]["allowWrite"].as_array().unwrap();
+    for shared in ["~/.skills", "~/.agents", "~/AGENTS.md", "~/.config/gh", "~/.local/share/gh"] {
+        assert!(!writable.iter().any(|entry| entry == shared), "{shared} became writable");
+    }
+    let denied = denied_reads(&profile);
+    assert!(denied.contains(&".env".to_string()));
+    assert!(!denied.contains(&".env.*".to_string()));
+}
+
+#[test]
 fn an_opencode_session_reaches_the_hook_its_plugin_reports_through() {
     // cockpit.ts runs session-state.sh where ~/.claude/hooks points (greywall makes no link in the
     // hidden ~/.claude: tried on 2026-10-19, "No such file or directory"); the hook keeps its turn
