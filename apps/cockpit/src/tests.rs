@@ -181,9 +181,48 @@ impl Fixture {
     }
 
     fn app(&self) -> App {
+        self.scheduler();
         let mut app = App::new();
         app.build();
         app
+    }
+
+    fn scheduler(&self) {
+        use std::io::{Read, Write};
+        let path = crate::paths::team_host_socket();
+        if path.exists() { return; }
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let listener = std::os::unix::net::UnixListener::bind(path).unwrap();
+        let mut connection = rusqlite::Connection::open_in_memory().unwrap();
+        crate::chief::store::migrate(&mut connection).unwrap();
+        std::thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                let mut text = String::new();
+                if stream.read_to_string(&mut text).is_err() { continue; }
+                let request: crate::teams::HostRequest = serde_json::from_str(&text).unwrap();
+                crate::chief::store::reconcile_todos(&mut connection, &TodoList::load(), 0).unwrap();
+                let result = match request {
+                    crate::teams::HostRequest::Snapshot => Ok(json!({"members":[], "chief_scheduling_owner":false,"chief_owned_work":[]})),
+                    crate::teams::HostRequest::ReserveManual {task_id,directory} => {
+                        let task=crate::teams::TaskKey {project:format!("path:{directory}"),task_id};
+                        crate::chief::store::reserve_legacy_kind(&mut connection,&task,None,true,0).map(|token|json!({"reservation":token}))
+                    },
+                    crate::teams::HostRequest::ReleaseManual {task_id,directory,token} => crate::chief::store::release_manual(&mut connection,&format!("path:{directory}"),&task_id,&token).map(|_|json!({"released_manual_only":true})),
+                    crate::teams::HostRequest::SettleReservation {token,expected_revision,outcome} => crate::chief::store::settle_launch(&mut connection,&token,expected_revision,&outcome),
+                    crate::teams::HostRequest::ReserveTask { task_id, directory, worker, .. } => {
+                        let task = crate::teams::TaskKey { project:format!("path:{directory}"), task_id };
+                        crate::chief::store::reserve_legacy(&mut connection, &task, worker.as_deref(), 0).map(|token| json!({"reservation":token}))
+                    },
+                    crate::teams::HostRequest::ReserveResume { session, directory } => {
+                        let task = crate::teams::TaskKey { project:format!("path:{directory}"), task_id:format!("resume:{session}") };
+                        crate::chief::store::reserve_legacy(&mut connection, &task, Some(&session), 0).map(|token| json!({"reservation":token}))
+                    },
+                    _ => Ok(json!({"recorded":true})),
+                };
+                let reply = crate::teams::TeamReply { request_id:"fixture".into(), result };
+                let _ = stream.write_all(serde_json::to_string(&reply).unwrap().as_bytes());
+            }
+        });
     }
 }
 
@@ -2203,6 +2242,7 @@ fn unknown_membership_blocks_manual_and_automatic_sleep() {
     let fixture = Fixture::new();
     fixture.snapshot(idle_rows(&[(SESSION_A, 7200)]));
     let mut app = fixture.app();
+    fs::remove_file(crate::paths::team_host_socket()).unwrap();
     app.check_team();
     app.handle(Key::Char('s'), &mut FakeScreen::default());
     assert!(app.message.contains("cannot tell yet"), "{}", app.message);
@@ -2959,7 +2999,7 @@ fn exit_closes_the_window_of_a_session_without_a_pane() {
     fixture.snapshot(json!([{"session": SESSION_A, "state": "waiting", "project": "runway", "since": 1, "kitty_pid": "4242"}]));
     let mut app = fixture.app();
     app.handle(Key::Char('x'), &mut FakeScreen::answering(&[Key::Char('y')]));
-    assert!(fixture.calls("hyprctl")[0].contains("pid:4242"));
+    assert!(fixture.calls("hyprctl").iter().any(|call| call.contains("pid:4242")));
 }
 
 #[test]
@@ -3133,11 +3173,16 @@ const TEAM_PROJECT: &str = "remote:git@github.com:example/project-a.git";
 
 /// A fake daemon on the host-only team socket: snapshots answer `snapshot`, controls take the
 /// next of `replies` (success by default). Records every request.
-fn team_host(fixture: &Fixture, snapshot: Value, replies: Vec<Value>) -> HostRequests {
+fn team_host(_fixture: &Fixture, mut snapshot: Value, replies: Vec<Value>) -> HostRequests {
     use std::io::{Read, Write};
-    let folder = fixture.path("run/claude-team-host");
-    fs::create_dir_all(&folder).unwrap();
-    let listener = std::os::unix::net::UnixListener::bind(folder.join("host.sock")).unwrap();
+    let path = crate::paths::team_host_socket();
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    if path.exists() { fs::remove_file(&path).unwrap(); }
+    let listener = std::os::unix::net::UnixListener::bind(path).unwrap();
+    if snapshot.get("chief_scheduling_owner").is_none() { snapshot["chief_scheduling_owner"] = json!(false); }
+    if snapshot.get("chief_owned_work").is_none() { snapshot["chief_owned_work"] = json!([]); }
+    let mut connection = rusqlite::Connection::open_in_memory().unwrap();
+    crate::chief::store::migrate(&mut connection).unwrap();
     let requests = HostRequests::default();
     let recorded = requests.clone();
     std::thread::spawn(move || {
@@ -3147,6 +3192,19 @@ fn team_host(fixture: &Fixture, snapshot: Value, replies: Vec<Value>) -> HostReq
             let _ = stream.read_to_string(&mut text);
             let request: Value = serde_json::from_str(&text).unwrap();
             let result = if request["request"] == "snapshot" { json!({"Ok": snapshot}) }
+                          else if snapshot["chief_scheduling_owner"] == true && matches!(request["request"].as_str(), Some("reserve_task" | "reserve_resume")) {
+                              json!({"Err":{"code":"conflict", "message":"chief owns scheduling"}})
+                          }
+                          else if request["request"] == "reserve_task" {
+                              let task = crate::teams::TaskKey { project: format!("path:{}", request["directory"].as_str().unwrap()),
+                                  task_id: request["task_id"].as_str().unwrap().into() };
+                              json!(crate::chief::store::reserve_legacy(&mut connection, &task, request["worker"].as_str(), 0)
+                                  .map(|token| json!({"reservation": token})))
+                          }
+                          else if request["request"] == "settle_reservation" {
+                              json!(crate::chief::store::settle_launch(&mut connection, request["token"].as_str().unwrap(),
+                                  request["expected_revision"].as_i64().unwrap(), request["outcome"].as_str().unwrap()))
+                          }
                          else { replies.pop_front().unwrap_or(json!({"Ok": {"status": "ok"}})) };
             recorded.lock().unwrap().push(request);
             let _ = stream.write_all(json!({"request_id": "x", "result": result}).to_string().as_bytes());
@@ -3370,7 +3428,7 @@ fn team_sidebar_reports_unavailable_links_without_hiding_sessions() {
     app.check_team();
     app.redraw();
     assert!(texts(&app, 1).join("\n").contains("Team: 1d3fd318"));
-    fs::remove_file(fixture.path("run/claude-team-host/host.sock")).unwrap();
+    fs::remove_file(crate::paths::team_host_socket()).unwrap();
     app.team_checked = 0.0;
     app.check_team();
     app.redraw();
@@ -3711,7 +3769,7 @@ fn team_sidebar_unlink_refresh_cannot_target_an_unrelated_session() {
     team_host(&fixture,sidebar_snapshot(),vec![]);
     let mut app = fixture.app();
     sidebar_select(&mut app,"Build session");
-    fs::remove_file(fixture.path("run/claude-team-host/host.sock")).unwrap();
+    fs::remove_file(crate::paths::team_host_socket()).unwrap();
     app.team_checked = 0.0;
     app.check_team();
     fixture.snapshot(json!([session(SESSION_B,"waiting","project-a","/r/project-a",3)]));
@@ -3870,6 +3928,7 @@ fn theo_creates_a_team_from_live_sessions_and_still_approves_it_separately() {
 fn a_missing_team_service_is_said_and_nothing_opens() {
     let fixture = Fixture::new();
     let mut app = fixture.app();
+    fs::remove_file(crate::paths::team_host_socket()).unwrap();
     app.handle(Key::Char(':'), &mut FakeScreen::typing(&["1\tteam"]));
     assert!(app.team_view.is_none());
     assert!(app.message.contains("unavailable"), "{}", app.message);
@@ -5370,7 +5429,7 @@ fn pull_requests_come_from_gh_without_bots_and_open_in_the_cockpit_window() {
     app.build();
     app.focus_panel(2);
     app.handle(Key::Enter, &mut FakeScreen::default());
-    assert_eq!(fixture.calls("hyprctl"), vec![r#"hyprctl eval OPEN_IN_SCRATCHPAD("prs", "https://github.com/o/r/pull/3")"#.to_string()]);
+    assert_eq!(fixture.calls("hyprctl"), vec!["hyprctl -j activeworkspace".to_string(), r#"hyprctl eval OPEN_IN_SCRATCHPAD("prs", "https://github.com/o/r/pull/3")"#.to_string()]);
 }
 
 #[test]
@@ -5378,7 +5437,7 @@ fn g_opens_pending_requests_in_the_greyproxy_window() {
     let fixture = Fixture::new();
     let mut app = fixture.app();
     app.handle(Key::Char('G'), &mut FakeScreen::default());
-    assert_eq!(fixture.calls("hyprctl"), vec![r#"hyprctl eval OPEN_IN_SCRATCHPAD("greyproxy", "http://localhost:43080/pending")"#.to_string()]);
+    assert_eq!(fixture.calls("hyprctl"), vec!["hyprctl -j activeworkspace".to_string(), r#"hyprctl eval OPEN_IN_SCRATCHPAD("greyproxy", "http://localhost:43080/pending")"#.to_string()]);
 }
 
 #[test]
@@ -6317,6 +6376,32 @@ fn i_and_d_set_in_progress_and_done_and_toggle_back() {
         statuses.push(TodoList::load().items[0].status());
     }
     assert_eq!(statuses, vec!["doing", "todo", "done", "todo"]);
+    assert!(crate::queue::reserve_task("/r",&app.todos.items[0].id(),None,false).is_ok(),"manual undo must release its exact status-only reservation");
+}
+
+#[test]
+fn deleting_manual_status_work_releases_the_project_for_another_task() {
+    let fixture=Fixture::new();let mut app=fixture.app();
+    app.todos.add("runway","/r","manual work");app.build();app.focus_panel(3);
+    app.handle(Key::Char('i'),&mut FakeScreen::default());
+    assert_eq!(TodoList::load().items[0].status(),"doing");
+    app.handle(Key::Char('x'),&mut FakeScreen::default());
+    assert!(crate::queue::reserve_task("/r","bbbbbbbb",None,false).is_ok());
+}
+
+#[test]
+fn conclusive_spawn_failure_releases_but_nonzero_execution_retains_the_exact_launch() {
+    let fixture=Fixture::new();fixture.scheduler();
+    let token=crate::queue::reserve_task("/r","aaaaaaaa",None,false).unwrap();
+    let shim=fixture.root.join("bin/cockpit");
+    let previous=fs::read(&shim).unwrap();fs::remove_file(&shim).unwrap();
+    let result=crate::queue::launch_reserved(&token,&["say",SESSION_A,"message"],false);
+    fs::write(&shim,previous).unwrap();fs::set_permissions(&shim,std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    assert!(result.unwrap_err().contains("not submitted"));
+    let next=crate::queue::reserve_task("/r","aaaaaaaa",None,false).unwrap();
+    fs::write(&shim,"#!/bin/sh\nexit 1\n").unwrap();
+    assert!(crate::queue::launch_reserved(&next,&["say",SESSION_A,"message"],false).unwrap_err().contains("uncertain"));
+    assert!(crate::queue::reserve_task("/r","bbbbbbbb",None,false).is_err());
 }
 
 #[test]
@@ -7122,11 +7207,212 @@ fn continuity_queue_view_keeps_priority_and_designer_routes_without_network_call
 fn continuity_queue_idle_boundary_is_exactly_five_minutes() {
     let fixture = Fixture::new();
     let context = crate::queue::QueueContext { now: 1000, enabled: true, gaming: false, viewed: String::new(), workspace_active: false,
-        qa_sessions: Default::default() };
+        qa_sessions: Default::default(), chief_scheduling_owner:Some(false) };
     for (since, remaining) in [(701, Some(1)), (700, None), (699, None)] {
         let reported = sessions::Session::from_value(&session(SESSION_A, "waiting", "runway", "/r/runway", since)).unwrap();
         assert_eq!(crate::queue::block(&reported, &context, false, false), remaining.map(|remaining| crate::queue::QueueBlock::Idle { remaining }));
     }
+    assert!(fixture.calls("cockpit").is_empty());
+}
+
+#[test]
+fn chief_unknown_host_blocks_automatic_and_manual_handoffs() {
+    let (fixture, mut app) = queue_fixture("waiting", 600);
+    let id = app.todos.add("runway", "/r/runway", "protected queue");
+    app.todos.toggle_queued(&id);
+    let entry = Entry::Typed(app.todos.items.iter().find(|item| item.id() == id).unwrap().clone());
+    let _ = fs::remove_file(crate::paths::team_host_socket());
+    app.dispatch_queue();
+    assert_eq!(app.todos.status_of(&id), "todo");
+    assert!(app.hand_to_claude(&entry, &mut FakeScreen::default()).contains("unavailable"));
+    assert!(app.hand_to_new_session(&entry, &mut FakeScreen::default()).contains("unavailable"));
+    assert!(fixture.calls("cockpit").is_empty());
+}
+
+#[test]
+fn chief_two_sidebars_yield_both_queue_sends_and_handed_work_spawns() {
+    let fixture = Fixture::new();
+    team_host(&fixture, json!({"members":[], "chief_scheduling_owner":true, "chief_owned_work":[]}), vec![]);
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "runway", "/r/runway", util::now_secs()-600)]));
+    let mut first = fixture.app();
+    first.gaming = || false;
+    let id = first.todos.add("runway", "/r/runway", "queued");
+    first.todos.toggle_queued(&id);
+    let handed = first.todos.add("other", "/r/other", "handed");
+    first.todos.items.iter_mut().find(|item| item.id() == handed).unwrap().0.insert("queued_by".into(), json!("another project"));
+    first.todos.toggle_queued(&handed);
+    let mut second = fixture.app();
+    second.gaming = || false;
+    first.dispatch_queue();
+    second.dispatch_queue();
+    assert_eq!(first.todos.status_of(&id), "todo");
+    assert_eq!(second.todos.status_of(&handed), "todo");
+    assert!(fixture.calls("cockpit").is_empty());
+}
+
+#[test]
+fn chief_projection_repairs_failed_save_and_keeps_agent_done_from_releasing_dependencies() {
+    use crate::chief::{store,ChiefHostAction,ChiefAgentAction,WorkBrief,WorkRef,WorkerState};
+    use crate::teams::{Role,VerifiedSession,TaskKey};
+    let fixture = Fixture::new();
+    let mut todos = TodoList::load();
+    let id = todos.add("runway", "/r/runway", "approved work");
+    let dependent = todos.add("runway", "/r/runway", "unapproved dependent");
+    todos.items.iter_mut().find(|item| item.id() == dependent).unwrap().0.insert("after".into(), json!([id]));
+    todos.save();
+    let mut connection = rusqlite::Connection::open(fixture.root.join("chief.sqlite")).unwrap();
+    store::migrate(&mut connection).unwrap();
+    let mut identities = [SESSION_A,SESSION_B].map(|session| VerifiedSession { session_id:session.into(),agent:"claude".into(),
+        project:"path:/r/runway".into(),runtime:format!("runtime-{session}") });
+    identities[0].session_id="ses_chiefprojection00000000000".into();
+    identities[0].agent="opencode".into();
+    // Protected-store fixture, not a claim that the Claude native adapter is dispatchable.
+    let live = identities.iter().map(|session| WorkerState { session:session.clone(),role:Some(Role::Developer),ready:true,blocked_by:vec![],observed_at_ms:1000 }).collect::<Vec<_>>();
+    store::host(&mut connection,&ChiefHostAction::Enable { request_id:"enable".into(),session:identities[0].clone() },&live,1000).unwrap().result.unwrap();
+    store::host(&mut connection,&ChiefHostAction::BindWorker { request_id:"bind".into(),session:identities[1].clone(),role:Role::Developer,expected_epoch:None },&live,1000).unwrap().result.unwrap();
+    let brief = WorkBrief { work:WorkRef { task:TaskKey { project:"path:/r/runway".into(),task_id:id.clone() },revision:1 },
+        brief:"approved scope".into(),role:Role::Developer,prerequisites:vec![],gates:vec![] };
+    store::host(&mut connection,&ChiefHostAction::ApproveWork { request_id:"approve".into(),approval_hash:brief.approval_hash().unwrap(),brief:brief.clone(),expected_revision:0 },&live,1000).unwrap().result.unwrap();
+    store::verify_admission(&mut connection,&identities[0],"opencode-queued-v1","Controlled native-admission fixture; not live support proof",1000).unwrap();
+    store::observe(&mut connection,&live,1000).unwrap();
+    let bootstrap = store::claim(&mut connection,&identities[0],"projection-bootstrap",1000).unwrap().unwrap();
+    store::finish_for(&mut connection,&identities[0],&bootstrap.id,&crate::teams::TransportOutcome::Received {native_id:"projection-native".into()},1000).unwrap();
+    let dispatch = ChiefAgentAction::Dispatch { submission_key:"claim-before-json".into(),work:brief.work,worker:SESSION_B.into() };
+    let claim = store::agent(&mut connection,&identities[0],&dispatch,&live,1000).unwrap().result.unwrap();
+    let backup = fixture.root.join("todo-before-projection.json");
+    fs::rename(crate::paths::todo(),&backup).unwrap();
+    fs::create_dir(crate::paths::todo()).unwrap();
+    assert!(todos.project_chief(&store::owned_work(&connection).unwrap()).is_err());
+    fs::remove_dir(crate::paths::todo()).unwrap();
+    fs::rename(backup,crate::paths::todo()).unwrap();
+    drop(connection);
+    let mut connection = rusqlite::Connection::open(fixture.root.join("chief.sqlite")).unwrap();
+    store::recover(&mut connection,1000).unwrap();
+    let mut restarted = TodoList::load();
+    restarted.project_chief(&store::owned_work(&connection).unwrap()).unwrap();
+    assert_eq!(restarted.items.iter().find(|item| item.id() == id).unwrap().session(),SESSION_B);
+    assert!(!restarted.set_status(&id,"done",SESSION_B));
+    assert!(restarted.items.iter().find(|item| item.id() == dependent).unwrap().is_waiting());
+    assert_eq!(store::agent(&mut connection,&identities[0],&dispatch,&live,1000).unwrap().result.unwrap(),claim);
+    assert_eq!(connection.query_row("SELECT count(*) FROM chief_assignments",[],|row|row.get::<_,i64>(0)).unwrap(),1);
+    assert!(fixture.calls("cockpit").is_empty());
+}
+
+#[test]
+fn chief_projection_and_stale_sidebar_save_do_not_overwrite_other_todo_edits() {
+    let _fixture = Fixture::new();
+    let mut first = TodoList::load();
+    let id = first.add("runway", "/r/runway", "first");
+    let mut stale = TodoList::load();
+    let other = first.add("runway", "/r/runway", "new from another sidebar");
+    stale.edit(&id, "edited", "notes");
+    let saved = TodoList::load();
+    assert_eq!(saved.items.iter().find(|item| item.id() == id).unwrap().text(), "edited");
+    assert!(saved.items.iter().any(|item| item.id() == other));
+}
+
+fn chief_status_fixture(fixture: &Fixture) -> (TodoList,String,String) {
+    fixture.snapshot(json!([session(SESSION_B,"waiting","source",fixture.root.to_str().unwrap(),1)]));
+    let mut todos = TodoList::load();
+    let id = todos.add("runway",fixture.root.to_str().unwrap(),"chief work");
+    let dependent = todos.add("runway",fixture.root.to_str().unwrap(),"dependent");
+    let item = todos.items.iter_mut().find(|item|item.id()==id).unwrap();
+    item.0.insert("link".into(),json!("source"));
+    item.0.insert("reporter_session".into(),json!(SESSION_B));
+    item.0.insert("started_in".into(),json!(fixture.root));
+    todos.items.iter_mut().find(|item|item.id()==dependent).unwrap().0.insert("after".into(),json!([id]));
+    todos.save();
+    (todos,id,dependent)
+}
+
+#[test]
+fn chief_interleaved_projection_refuses_agent_done_before_any_completion_side_effect() {
+    use std::sync::{Arc,Barrier};
+    let fixture = Fixture::new();
+    let (mut stale,id,dependent) = chief_status_fixture(&fixture);
+    let path = crate::paths::todo();
+    let writer = fs::OpenOptions::new().create(true).truncate(false).write(true).open(path.with_extension("lock")).unwrap();
+    writer.lock().unwrap();
+    let barrier = Arc::new(Barrier::new(2));
+    let entering = barrier.clone();
+    let task = id.clone();
+    let agent = std::thread::spawn(move || {
+        entering.wait();
+        stale.set_status(&task,"done",SESSION_A)
+    });
+    barrier.wait();
+    // Let the competing done operation reach the held writer lock. The old code emitted a prompt here.
+    for _ in 0..100 {
+        if crate::prompts::count(SESSION_B)>0 { break; }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let premature_prompts = crate::prompts::count(SESSION_B);
+    // The other writer persists a protected host projection while holding the production writer lock.
+    let mut projected:Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    let item = projected["items"].as_array_mut().unwrap().iter_mut().find(|item|item["id"]==id).unwrap();
+    item["status"] = json!("doing"); item["session"] = json!(SESSION_A); item["chief_assignment"] = json!("interleaved-claim");
+    crate::util::write_json(&path,&projected).unwrap();
+    drop(writer);
+    assert!(!agent.join().unwrap());
+    assert_eq!(premature_prompts,0);
+    assert_eq!(crate::prompts::count(SESSION_B),0);
+    let saved = TodoList::load();
+    assert_eq!(saved.status_of(&id),"doing");
+    let waiting = saved.items.iter().find(|item|item.id()==dependent).unwrap();
+    assert_eq!(waiting.after(),[id]); assert!(waiting.inputs().is_empty()); assert!(!saved.is_queued(&dependent));
+}
+
+#[test]
+fn chief_failed_projection_keeps_its_in_memory_ownership_before_agent_done() {
+    let fixture = Fixture::new();
+    let (mut todos,id,dependent) = chief_status_fixture(&fixture);
+    let path = crate::paths::todo();
+    let backup = fixture.root.join("unprojected.json");
+    fs::rename(&path,&backup).unwrap(); fs::create_dir(&path).unwrap();
+    assert!(todos.project_chief(&[json!({"task_id":id,"assignment":"unsaved-claim","worker":SESSION_A})]).is_err());
+    assert!(!todos.set_status(&id,"done",SESSION_A));
+    fs::remove_dir(&path).unwrap(); fs::rename(backup,&path).unwrap();
+    // Restoring an older disk image must not erase the assignment already learned in memory.
+    assert!(!todos.set_status(&id,"done",SESSION_A));
+    assert_eq!(todos.status_of(&id),"doing");
+    assert!(todos.items.iter().find(|item|item.id()==dependent).unwrap().is_waiting());
+    assert_eq!(crate::prompts::count(SESSION_B),0);
+    let saved = TodoList::load();
+    assert_eq!(saved.status_of(&id),"todo");
+    assert!(saved.items.iter().find(|item|item.id()==dependent).unwrap().is_waiting());
+}
+
+#[test]
+fn chief_unknown_disk_ownership_refuses_done_without_notifications_or_dependency_release() {
+    for mode in ["missing","malformed","unreadable","removed-item"] {
+        let fixture = Fixture::new();
+        let (mut todos,id,dependent) = chief_status_fixture(&fixture);
+        let path = crate::paths::todo();
+        fs::remove_file(&path).unwrap();
+        match mode {
+            "malformed" => fs::write(&path,b"not JSON").unwrap(),
+            "unreadable" => fs::create_dir(&path).unwrap(),
+            "removed-item" => {
+                fs::write(&path,json!({"items":[],"issues":{}}).to_string()).unwrap();
+                todos.set_result(&id,"agent summary must not resurrect an unknown source");
+            },
+            _ => {},
+        }
+        assert!(!todos.set_status(&id,"done",SESSION_A),"{mode}");
+        assert_eq!(todos.status_of(&id),"todo");
+        assert!(todos.items.iter().find(|item|item.id()==dependent).unwrap().is_waiting());
+        assert_eq!(crate::prompts::count(SESSION_B),0);
+    }
+}
+
+#[test]
+fn chief_archived_resume_cannot_bypass_the_scheduling_owner() {
+    let fixture = Fixture::new();
+    team_host(&fixture, json!({"members":[], "chief_scheduling_owner":true,"chief_owned_work":[]}), vec![]);
+    fixture.write("home/.claude/history.jsonl", &json!({"sessionId":SESSION_A,"project":"/r/runway","timestamp":1000,"display":"archived"}).to_string());
+    let mut app = fixture.app();
+    app.handle(Key::Char('H'), &mut FakeScreen::typing(&["0"]));
+    assert!(app.message.contains("chief owns"), "{}", app.message);
     assert!(fixture.calls("cockpit").is_empty());
 }
 
@@ -8384,7 +8670,7 @@ fn handed_work_does_not_wait_for_the_ordinary_queue_check() {
 }
 
 #[test]
-fn handed_work_starts_each_item_once_even_in_the_same_project() {
+fn handed_work_starts_each_item_once_after_the_previous_launch_has_a_known_worker() {
     let fixture = Fixture::new();
     let (greywall, _) = greywall_and_greyproxy(&fixture);
     for title in ["First handoff", "Second handoff"] {
@@ -8393,6 +8679,12 @@ fn handed_work_starts_each_item_once_even_in_the_same_project() {
     let mut app = fixture.app();
     app.gaming = || false;
     app.todos.apply_updates();
+    app.dispatch_queue();
+    let first = fixture.wait_for_calls("cockpit", 1);
+    assert_eq!(first.len(), 1, "unknown launch ownership must block another launch in this project");
+    let id = item_titled(&app.todos, "First handoff").id();
+    assert!(app.todos.set_status(&id, "doing", SESSION_A));
+    app.queue_checked = 0.0;
     app.dispatch_queue();
     let calls = fixture.wait_for_calls("cockpit", 2);
     assert_eq!(calls.len(), 2, "{calls:?}");
@@ -9171,7 +9463,7 @@ fn external_sessions_reject_terminal_controls_without_running_commands() {
     }
     assert!(fixture.calls("cockpit").is_empty());
     assert!(fixture.calls("osd-show").is_empty());
-    assert!(fixture.calls("hyprctl").is_empty());
+    assert!(fixture.calls("hyprctl").iter().all(|call| call == "hyprctl -j activeworkspace"));
 }
 
 #[test]

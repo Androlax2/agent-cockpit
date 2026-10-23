@@ -2,6 +2,7 @@
 #![allow(dead_code)]
 
 pub mod sandbox;
+pub mod chief;
 
 use std::fs;
 use std::io::{Read, Write};
@@ -88,4 +89,3 @@ pub fn contains(haystack: &[u8], needle: &[u8]) -> bool {
 pub fn last_index(haystack: &[u8], needle: &[u8]) -> usize {
     haystack.windows(needle.len()).rposition(|window| window == needle).expect("text on screen")
 }
-

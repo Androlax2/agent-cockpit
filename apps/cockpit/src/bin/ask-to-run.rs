@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 /// The end of the output, where errors and test summaries are; the rest is in the output file.
 const OUTPUT_LINES: usize = 120;
 const WHY_MAX: usize = 1000;
-const USAGE: &str = "usage: ask-to-run [--cwd DIR] --why '<what it does and why>' '<command>' | ask-to-run --wait <id> | ask-to-run --check";
+const USAGE: &str = "usage: ask-to-run [--cwd DIR] [--evidence '{\"assignment\":\"...\",\"gate\":\"tests\"}'] --why '<what it does and why>' '<command>' | ask-to-run --wait <id> | ask-to-run --check";
 const DECLINED: i32 = 125;
 const TIMED_OUT: i32 = 124;
 const NO_DAEMON: i32 = 126;
@@ -122,10 +122,15 @@ fn main() {
     }
     let mut cwd = std::env::current_dir().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default();
     let mut why = String::new();
-    while arguments.len() >= 3 && (arguments[0] == "--cwd" || arguments[0] == "--why") {
+    let mut evidence = Value::Null;
+    while arguments.len() >= 3 && matches!(arguments[0].as_str(), "--cwd" | "--why" | "--evidence") {
         if arguments[0] == "--cwd" {
             let path = std::path::Path::new(&arguments[1]);
             cwd = if path.is_absolute() { arguments[1].clone() } else { std::env::current_dir().unwrap_or_default().join(path).to_string_lossy().into_owned() };
+        } else if arguments[0] == "--evidence" {
+            evidence = serde_json::from_str::<cockpit::chief::evidence::RunBinding>(&arguments[1]).and_then(serde_json::to_value).unwrap_or_else(|error| {
+                eprintln!("ask-to-run: invalid exact assignment/gate binding: {error}"); std::process::exit(2);
+            });
         } else {
             why = cockpit::util::collapse(&arguments[1]);
         }
@@ -147,7 +152,7 @@ fn main() {
     });
     let request = json!({"id": id, "command": arguments[0], "why": why, "cwd": cwd, "project": approval::project_of(&cwd),
                          "session": session, "answers": answers_key,
-                         "requested_at": now_secs()});
+                          "requested_at": now_secs(), "evidence": evidence});
     let heartbeat = approval::runs_dir().join(format!("{id}.waiting"));
     touch(&heartbeat);
     match approval::file_request("run-request", &request) {

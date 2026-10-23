@@ -976,12 +976,47 @@ fn starting_an_item_hands_it_to_a_new_clone_and_marks_it_in_progress() {
     let todo = remote.sandbox.state.join("cockpit/todo.json");
     fs::create_dir_all(todo.parent().unwrap()).unwrap();
     fs::write(&todo, json!({"items": [{"id": "aaaa1111", "project": "shop", "cwd": directory, "text": "Cache the cart", "status": "todo", "created": 1}]}).to_string()).unwrap();
+    let host = remote.sandbox.runtime.join("claude-team-host/host.sock");
+    fs::create_dir_all(host.parent().unwrap()).unwrap();
+    let listener = std::os::unix::net::UnixListener::bind(host).unwrap();
+    let arbitration = std::thread::spawn(move || {
+        let mut requests=Vec::new();
+        for _ in 0..3 {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut text = String::new();stream.read_to_string(&mut text).unwrap();
+            requests.push(serde_json::from_str::<Value>(&text).unwrap());
+            stream.write_all(br#"{"request_id":"legacy","result":{"Ok":{"reservation":"reserved-before-spawn"}}}"#).unwrap();
+        }
+        requests
+    });
     let (status, answer) = remote.post_json(&secret, "/api/todos/aaaa1111/start", json!({"agent": "opencode"}));
     assert_eq!(status, 200, "{answer}");
+    let requests = arbitration.join().unwrap();
+    let reserved=&requests[0];
+    assert_eq!(requests[1]["outcome"],"begin");assert_eq!(requests[1]["token"],"reserved-before-spawn");
+    assert_eq!(requests[2]["outcome"],"submitted");assert_eq!(requests[2]["expected_revision"],2);
+    assert_eq!(reserved["request"], "reserve_task");
+    assert_eq!(reserved["task_id"], "aaaa1111");
+    assert_eq!(reserved["directory"], directory);
     let call = remote.sandbox.calls("cockpit").pop().unwrap();
     assert!(call.starts_with(&format!("cockpit --agent opencode parallel {directory} todo-aaaa1111 Cache the cart (todo aaaa1111")), "{call}");
     let updates = remote.todo_updates();
     assert_eq!((updates[0]["action"].as_str(), updates[0]["id"].as_str()), (Some("doing"), Some("aaaa1111")));
+}
+
+#[test]
+fn starting_an_item_from_phone_fails_closed_when_host_arbitration_is_missing() {
+    let remote = Remote::start();
+    let secret = remote.paired();
+    remote.sandbox.shim("cockpit", "exit 0");
+    let directory = remote.project("shop");
+    let todo = remote.sandbox.state.join("cockpit/todo.json");
+    fs::create_dir_all(todo.parent().unwrap()).unwrap();
+    fs::write(todo, json!({"items":[{"id":"aaaa1111","project":"shop","cwd":directory,"text":"request","status":"todo"}]}).to_string()).unwrap();
+    let (status, answer) = remote.post_json(&secret, "/api/todos/aaaa1111/start", json!({"agent":"opencode"}));
+    assert_ne!(status, 200, "{answer}");
+    assert!(remote.sandbox.calls("cockpit").is_empty());
+    assert!(remote.todo_updates().is_empty());
 }
 
 #[test]

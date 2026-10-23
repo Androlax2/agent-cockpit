@@ -1098,6 +1098,11 @@ pub struct Registry {
     project_cache: HashMap<String, String>,
     /// Linked-session state, opened on first use (teams.rs).
     pub(crate) teams: Option<cockpit::teams::store::Connection>,
+    pub(crate) chief_focus: Option<(String, bool, bool, i64)>,
+    pub(crate) chief_fault: Option<String>,
+    pub(crate) chief_attention_presentations: HashMap<String, bool>,
+    pub(crate) chief_native: HashMap<String, (cockpit::teams::VerifiedSession, bool, bool, i64)>,
+    pub(crate) chief_telemetry: HashMap<String, crate::chief::NativeTelemetryObservation>,
 }
 
 pub fn snapshot_path() -> PathBuf {
@@ -1107,7 +1112,8 @@ pub fn snapshot_path() -> PathBuf {
 impl Registry {
     pub fn new(system: Box<dyn System>, banners: Box<dyn Banners>) -> Self {
         let mut registry = Registry { system, banners, sessions: BTreeMap::new(), held: BTreeMap::new(), runs: RunRequests::default(),
-                                      guides: GuideRequests::default(), recent_written: (0.0, Vec::new()), project_cache: HashMap::new(), teams: None };
+                                      guides: GuideRequests::default(), recent_written: (0.0, Vec::new()), project_cache: HashMap::new(), teams: None,
+                                      chief_focus: None, chief_fault: None, chief_attention_presentations: HashMap::new(), chief_native: HashMap::new(), chief_telemetry: HashMap::new() };
         registry.load_snapshot();
         registry
     }
@@ -1120,6 +1126,24 @@ impl Registry {
         self.runs.request(self.system.as_mut(), self.banners.as_mut(), id)?;
         self.publish();
         Ok(())
+    }
+
+    /// Pending host work that belongs to this worker, or cannot be proved unrelated to its project.
+    pub(crate) fn pending_host_request_for(&self, session: Option<&str>, project: &str) -> bool {
+        let runs = self.runs.queue.iter().chain(&self.runs.running).chain(&self.runs.waiting_input)
+            .chain(std::iter::once(&self.runs.current)).map(|id|(id,"request"));
+        let guides = self.guides.queue.iter().chain(std::iter::once(&self.guides.current)).map(|id|(id,"guide"));
+        runs.chain(guides).filter(|(id,_)|!id.is_empty()).any(|(id,extension)| {
+            let Some(request) = cockpit::util::read_json(&cockpit::approval::held_request(id,extension)) else { return true };
+            // Only the daemon's verified owner is authoritative; the caller's `session` is not.
+            if let Some(target) = session
+                && let Some(owner) = request["verified_session"].as_str().filter(|owner|agents::is_session_id(owner)) {
+                return owner==target;
+            }
+            let Some(started_in) = request["started_in"].as_str().filter(|directory|!directory.is_empty()) else { return true };
+            // Without an exact owner, only a proven different project is unrelated.
+            crate::teams::canonical_project(started_in).map_or(true,|owner_project|owner_project==project)
+        })
     }
 
     /// The run and guide requests waiting (queued or shown) from sandboxes started in `started_in`.
@@ -1179,6 +1203,17 @@ impl Registry {
 
     /// Every second: the run and guide queues follow the workspace, the games and closed windows.
     pub fn tick_queues(&mut self) {
+        match crate::chief::tick(self,crate::teams::now_ms()) {
+            Ok(()) => {self.chief_fault=None;},
+            Err(error) => {
+                let message = format!("Chief coordination failed: {}. Review protected storage/delivery; scheduling must not fall back.",error.message);
+                if self.chief_fault.as_ref()!=Some(&message) {
+                    self.banners.raise_notice(&Notice {id:"chief-host-fault".into(),title:"Chief · host intervention needed".into(),message:message.clone()});
+                    log(&message);
+                    self.chief_fault=Some(message);
+                }
+            },
+        }
         let phases = self.runs.session_phases();
         self.runs.tick(self.system.as_mut(), self.banners.as_mut());
         self.guides.tick(self.system.as_mut(), self.banners.as_mut());

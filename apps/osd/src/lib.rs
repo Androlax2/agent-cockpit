@@ -4,6 +4,7 @@
 pub mod fifo;
 pub mod registry;
 pub mod teams;
+pub mod chief;
 
 #[cfg(test)]
 mod tests;

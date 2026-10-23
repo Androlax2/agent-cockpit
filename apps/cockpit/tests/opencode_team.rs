@@ -33,6 +33,7 @@ const ctx = {
     synthetic: async (input) => {
       appendFileSync(`${process.env.HOME}/synthetic`, JSON.stringify(input) + '\n')
       if (process.env.SHIM_SYNTHETIC_FAILS) throw new Error('server went away')
+      if (process.env.SHIM_SYNTHETIC_REPLY) return JSON.parse(process.env.SHIM_SYNTHETIC_REPLY)
       return { id: input.id }
     },
   },
@@ -53,7 +54,9 @@ fn run(extra: &[(&str, &str)]) -> Run {
     write_executable(&sandbox.home.join("agent-cockpit/config/claude/.claude/hooks/session-state.sh"), "#!/usr/bin/env bash\ncat >/dev/null\n");
     sandbox.shim("cockpit-team", r#"case $1 in
   receive) if [ ! -f "$HOME/delivered" ]; then touch "$HOME/delivered"
+             if [ -n "$SHIM_TEAM_DELIVERY" ]; then printf '%s\n' "$SHIM_TEAM_DELIVERY"; else
              echo '{"dispatch_id":"d1","message_id":"m1","text":"[Cockpit team message m1] The frame is ready.","envelope":{"kind":"notice","sender":{"role":"designer","agent":"claude"},"body":"The frame is ready.\u001b[2J\nSecond line"}}'
+             fi
            else echo null; fi ;;
   receipt) cat >> "$HOME/receipts"; echo >> "$HOME/receipts"; echo '{"status":"recorded"}' ;;
 esac"#);
@@ -96,4 +99,34 @@ fn a_failed_admission_is_reported_uncertain_not_resent() {
     assert_eq!(run.synthetic.len(), 1);
     assert_eq!(run.receipts.len(), 1);
     assert_eq!(run.receipts[0]["outcome"]["outcome"], "uncertain");
+}
+
+#[test]
+fn chief_assignments_and_coordination_reuse_native_stable_admission_and_receipts() {
+    for kind in ["chief_assignment", "chief_coordinate"] {
+        let delivery = json!({"dispatch_id": "chief_d1", "message_id": "assignment1", "text": "Protected approval and untrusted commentary",
+            "envelope": {"kind": kind, "sender": {"role": "chief", "agent": "claude"}, "body": "Approved task coordination"}}).to_string();
+        let admitted = run(&[("SHIM_TEAM_DELIVERY", &delivery)]);
+        assert_eq!(admitted.synthetic.len(), 1);
+        assert_eq!(admitted.synthetic[0]["id"], "msg_cockpitassignment1");
+        assert_eq!(admitted.synthetic[0]["delivery"], "queue");
+        assert_eq!(admitted.synthetic[0]["description"], "Team message from chief (claude): Approved task coordination");
+        assert_eq!(admitted.receipts[0]["dispatch_id"], "chief_d1");
+        assert_eq!(admitted.receipts[0]["outcome"]["outcome"], "received");
+        let failed = run(&[("SHIM_TEAM_DELIVERY", &delivery), ("SHIM_SYNTHETIC_FAILS", "1")]);
+        assert_eq!(failed.synthetic.len(), 1);
+        assert_eq!(failed.receipts[0]["outcome"]["outcome"], "uncertain");
+    }
+}
+
+#[test]
+fn chief_native_admission_without_the_expected_stable_id_stays_uncertain() {
+    let delivery = json!({"dispatch_id":"chief_bad_reply","message_id":"assignment1","text":"approved task",
+        "envelope":{"kind":"chief_assignment","sender":{"role":"chief","agent":"claude"}}}).to_string();
+    for reply in ["{}", "null", "{\"id\":\"another-message\"}"] {
+        let admitted = run(&[("SHIM_TEAM_DELIVERY",&delivery),("SHIM_SYNTHETIC_REPLY",reply)]);
+        assert_eq!(admitted.synthetic.len(),1);
+        assert_eq!(admitted.receipts.len(),1);
+        assert_eq!(admitted.receipts[0]["outcome"]["outcome"],"uncertain");
+    }
 }

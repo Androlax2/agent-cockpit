@@ -7,6 +7,55 @@ const DESIGNER: &str = "aaaaaaaa-0000-4000-8000-000000000000";
 const DEVELOPER: &str = "ses_3f2a9c0b1ffeQkTz8mWn4rJd2L";
 const QA: &str = "bbbbbbbb-0000-4000-8000-000000000000";
 
+#[test]
+fn structured_qa_is_current_reviewer_attestation_not_proof_of_test_execution() {
+    use cockpit::chief::{ChiefHostAction, GateKind, GateRequirement, WorkBrief, WorkRef};
+    use cockpit::teams::{QaResult, QaVerdict};
+    let sandbox = Sandbox::new();
+    let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+    linked(&mut connection);
+    let brief = WorkBrief { work:WorkRef { task:task(), revision:1 }, brief:"Review exactly this commit".into(), role:Role::Developer,
+        prerequisites:vec![], gates:vec![GateRequirement { kind:GateKind::Qa, source:"qa".into(), expected:serde_json::json!({"commit":COMMIT_A}) },
+            GateRequirement { kind:GateKind::Tests, source:"host_attestation".into(), expected:serde_json::json!({"commit":COMMIT_A}) }] };
+    cockpit::chief::store::host(&mut connection, &ChiefHostAction::ApproveWork { request_id:"approve-work".into(), approval_hash:brief.approval_hash().unwrap(), brief, expected_revision:0 }, &[], 2500).unwrap().result.unwrap();
+    let handoff = hand_off(&mut connection,"qa-handoff",COMMIT_A).unwrap();
+    let result = QaResult { submission_key:"qa-result".into(), task:task(), handoff_id:handoff["handoff_id"].as_str().unwrap().into(),
+        verdict:QaVerdict::Pass, tests:vec!["make test: passed".into()], findings:"No findings".into() };
+    assert!(store::qa_result(&mut connection,&live()[1],&result,3100).is_err());
+    let mut wrong_runtime = live()[2].clone();
+    wrong_runtime.runtime = "wrong-runtime".into();
+    assert!(store::qa_result(&mut connection,&wrong_runtime,&result,3100).is_err());
+    let mut findings = result.clone();
+    findings.submission_key = "qa-findings".into();
+    findings.verdict = QaVerdict::Findings;
+    findings.findings = "A regression remains".into();
+    store::qa_result(&mut connection,&live()[2],&findings,3090).unwrap().result.unwrap();
+    assert!(cockpit::chief::store::complete_ready(&mut connection,3091).unwrap().is_empty());
+    store::qa_result(&mut connection,&live()[2],&result,3100).unwrap().result.unwrap();
+    assert_eq!(connection.query_row("SELECT count(*) FROM chief_evidence WHERE kind='tests'", [], |row|row.get::<_,i64>(0)).unwrap(),0);
+    assert!(cockpit::chief::store::complete_ready(&mut connection,3200).unwrap().is_empty());
+    let work = cockpit::chief::WorkRef {task:task(),revision:1};
+    let test_attestation = cockpit::chief::Evidence {id:"verified-tests".into(),work,kind:GateKind::Tests,commit:COMMIT_A.into(),source:"host_attestation".into(),
+        result:serde_json::json!({"passed":true,"note":"Theo verified tests for this exact commit"})};
+    cockpit::chief::store::host(&mut connection,&ChiefHostAction::AttestEvidence {request_id:"attest-tests".into(),evidence:test_attestation},&[],3201).unwrap().result.unwrap();
+    assert_eq!(connection.query_row("SELECT state FROM chief_work_revisions",[],|row|row.get::<_,String>(0)).unwrap(),"completed");
+    let chief=VerifiedSession {session_id:"ses_summary000000000000".into(),agent:"opencode".into(),project:"project-a".into(),runtime:"summary-runtime".into()};
+    let workers=vec![cockpit::chief::WorkerState {session:chief.clone(),role:None,ready:false,blocked_by:vec!["host_role_unbound".into()],observed_at_ms:3201}];
+    cockpit::chief::store::host(&mut connection,&ChiefHostAction::Enable {request_id:"summary-chief".into(),session:chief.clone()},&workers,3201).unwrap().result.unwrap();
+    cockpit::chief::store::host(&mut connection,&ChiefHostAction::RequestSummary {request_id:"qa-summary".into()},&workers,3201).unwrap().result.unwrap();
+    common::chief::admit(&mut connection,&workers,&chief,3201);
+    let proof:String=connection.query_row("SELECT id FROM chief_evidence WHERE kind='qa' ORDER BY rowid DESC LIMIT 1",[],|row|row.get(0)).unwrap();
+    let response=serde_json::from_value(serde_json::json!({"action":"summary_response","request_id":"qa-summary","sections":{"completed":"QA current","active":"None","decisions":"None","idle":"None"},"evidence_ids":[proof]})).unwrap();
+    cockpit::chief::store::agent(&mut connection,&chief,&response,&workers,3201).unwrap().result.unwrap();
+    let snapshot=cockpit::chief::store::snapshot(&connection,&workers,0,50).unwrap();
+    assert_eq!(snapshot["records"].as_array().unwrap().iter().find(|record|record["kind"]=="summary").unwrap()["last_result"]["references"][0]["verified_current"],true);
+    hand_off(&mut connection,"qa-new-handoff",COMMIT_B).unwrap();
+    let snapshot=cockpit::chief::store::snapshot(&connection,&workers,0,50).unwrap();
+    assert_eq!(snapshot["records"].as_array().unwrap().iter().find(|record|record["kind"]=="summary").unwrap()["last_result"]["references"][0]["verified_current"],false);
+    assert_eq!(connection.query_row("SELECT state FROM chief_work_revisions",[],|row|row.get::<_,String>(0)).unwrap(),"approved");
+    assert!(store::qa_result(&mut connection,&live()[2],&result,3300).is_err());
+}
+
 fn task() -> TaskKey { TaskKey { project: "project-a".into(), task_id: "1d3fd318".into() } }
 
 fn live() -> Vec<VerifiedSession> {
@@ -20,6 +69,60 @@ fn proposal() -> Proposal {
         Member { session_id: DEVELOPER.into(), role: Role::Developer },
         Member { session_id: QA.into(), role: Role::Qa },
     ] }
+}
+
+fn enable_chief(connection: &mut rusqlite::Connection, session: &VerifiedSession, paused: bool) -> String {
+    use cockpit::chief::{ChiefHostAction, WorkerState};
+    let workers = [WorkerState { session: session.clone(), role: None, ready: false, blocked_by: vec![], observed_at_ms: 1000 }];
+    let epoch = cockpit::chief::store::host(connection, &ChiefHostAction::Enable { request_id: "enable-chief".into(), session: session.clone() }, &workers, 1000).unwrap().result.unwrap()["epoch"].as_str().unwrap().to_string();
+    if paused { cockpit::chief::store::host(connection, &ChiefHostAction::Pause { request_id: "pause-chief".into(), expected_epoch: epoch.clone() }, &workers, 1001).unwrap().result.unwrap(); }
+    epoch
+}
+
+#[test]
+fn active_and_paused_chiefs_cannot_join_an_approved_team_until_explicitly_disabled() {
+    for paused in [false, true] {
+        let sandbox = Sandbox::new();
+        let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+        let request = propose(&mut connection, &proposal());
+        let epoch = enable_chief(&mut connection, &live()[1], paused);
+        assert_eq!(approve(&mut connection, &request).unwrap_err().code, cockpit::teams::ErrorCode::Unauthorized);
+        let snapshot = store::snapshot(&connection, None, None, 100).unwrap();
+        assert!(snapshot["members"].as_array().unwrap().is_empty());
+        assert_eq!(snapshot["proposals"][0]["status"], "pending");
+        cockpit::chief::store::host(&mut connection, &cockpit::chief::ChiefHostAction::Disable { request_id: "disable-chief".into(), expected_epoch: epoch }, &[], 2001).unwrap().result.unwrap();
+        approve(&mut connection, &request).unwrap().result.unwrap();
+        assert_eq!(store::snapshot(&connection, None, None, 100).unwrap()["members"].as_array().unwrap().len(), 3);
+    }
+}
+
+#[test]
+fn active_and_paused_chiefs_cannot_acquire_membership_through_recruitment() {
+    for paused in [false, true] {
+        let sandbox = Sandbox::new();
+        let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+        enable_chief(&mut connection, &live()[1], paused);
+        assert_eq!(recruit(&mut connection, 1, &recruitment("r1", Role::Developer, &[(Role::Designer, "Design it")]), "claude").unwrap_err().code,
+            cockpit::teams::ErrorCode::Unauthorized);
+        assert!(store::snapshot(&connection, None, None, 100).unwrap()["members"].as_array().unwrap().is_empty());
+        assert!(store::pending_spawns(&connection).unwrap().is_empty());
+    }
+}
+
+#[test]
+fn active_and_paused_chiefs_cannot_bind_an_approved_spawn() {
+    for paused in [false, true] {
+        let sandbox = Sandbox::new();
+        let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+        recruited(&mut connection, false);
+        let token = store::pending_spawns(&connection).unwrap()[0].token.clone();
+        store::mark_spawn_started(&connection, &token, 2100).unwrap();
+        let session = designer_session("project-a");
+        enable_chief(&mut connection, &session, paused);
+        assert_eq!(store::bind_spawn(&mut connection, &token, &session, 2200).unwrap_err().code, cockpit::teams::ErrorCode::Unauthorized);
+        assert_eq!(spawns(&connection)[0]["status"], "started");
+        assert_eq!(store::snapshot(&connection, None, None, 100).unwrap()["members"].as_array().unwrap().len(), 1);
+    }
 }
 
 fn propose(connection: &mut rusqlite::Connection, proposal: &Proposal) -> Value {
@@ -190,10 +293,10 @@ fn unsupported_database_versions_are_not_overwritten() {
     let sandbox = Sandbox::new();
     let path = sandbox.root.join("protected/teams.sqlite");
     let connection = store::open(&path).unwrap();
-    connection.execute_batch("PRAGMA user_version=3").unwrap();
+    connection.execute_batch("PRAGMA user_version=11").unwrap();
     drop(connection);
     assert!(store::open(&path).is_err());
-    assert_eq!(rusqlite::Connection::open(path).unwrap().query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0)).unwrap(), 3);
+    assert_eq!(rusqlite::Connection::open(path).unwrap().query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0)).unwrap(), 11);
 }
 
 #[test]
@@ -1463,7 +1566,7 @@ fn an_existing_version_1_store_opens_and_gains_recruit_columns() {
     drop(old);
     std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o600)).unwrap();
     let connection = store::open(&path).unwrap();
-    assert_eq!(connection.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0)).unwrap(), 2);
+    assert_eq!(connection.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0)).unwrap(), 10);
     connection.prepare("SELECT recruits, spawn_agent FROM proposals").unwrap();
 }
 
@@ -1859,12 +1962,28 @@ fn a_store_left_half_migrated_by_a_crash_still_opens_complete() {
     // Todo 1adcc24b: the second ALTER TABLE never ran.
     let sandbox = Sandbox::new();
     let path = sandbox.root.join("protected/teams.sqlite");
-    drop(store::open(&path).unwrap());
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::set_permissions(path.parent().unwrap(), std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
     let half = rusqlite::Connection::open(&path).unwrap();
-    half.execute_batch("ALTER TABLE proposals DROP COLUMN spawn_agent; PRAGMA user_version=1;").unwrap();
+    half.execute_batch("CREATE TABLE proposals (id TEXT PRIMARY KEY, sender TEXT NOT NULL, submission_key TEXT NOT NULL,
+        fingerprint TEXT NOT NULL, task_key TEXT NOT NULL, project TEXT NOT NULL, task_id TEXT NOT NULL,
+        mapping TEXT NOT NULL, mapping_hash TEXT NOT NULL, reason TEXT NOT NULL, revision INTEGER NOT NULL,
+        status TEXT NOT NULL, created_at INTEGER NOT NULL, parent_id TEXT, created_by TEXT NOT NULL DEFAULT 'agent',
+        recruits TEXT NOT NULL DEFAULT '[]', UNIQUE(sender, submission_key));
+        INSERT INTO proposals (id,sender,submission_key,fingerprint,task_key,project,task_id,mapping,mapping_hash,reason,
+            revision,status,created_at,recruits) VALUES ('proposal-a','sender-a','submission-a','fingerprint-a','task-a',
+            'project-a','1d3fd318','[]','hash-a','Review the task',1,'pending',100,'[{\"role\":\"qa\",\"brief\":\"Review only\"}]');
+        PRAGMA user_version=1;").unwrap();
+    assert!(half.prepare("SELECT recruits FROM proposals").is_ok());
+    assert!(half.prepare("SELECT spawn_agent FROM proposals").is_err());
     drop(half);
+    std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o600)).unwrap();
     let connection = store::open(&path).unwrap();
-    connection.prepare("SELECT recruits, spawn_agent FROM proposals").unwrap();
+    assert_eq!(connection.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0)).unwrap(), 10);
+    let (recruits, spawn_agent): (String, String) = connection.query_row(
+        "SELECT recruits, spawn_agent FROM proposals WHERE id='proposal-a'", [], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
+    assert_eq!(recruits, "[{\"role\":\"qa\",\"brief\":\"Review only\"}]");
+    assert_eq!(spawn_agent, "");
 }
 
 #[test]

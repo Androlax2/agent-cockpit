@@ -186,6 +186,9 @@ impl System for FakeSystem {
     }
 }
 
+#[path = "chief_tests.rs"]
+mod chief_tests;
+
 fn team_bench() -> Bench {
     let mut bench = Bench::new();
     let project = bench.fixture.root.join("home/IdeaProjects/project-a");

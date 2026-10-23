@@ -260,7 +260,8 @@ export default {
           delivery: "queue",
           resume: true,
         })
-        await receipt(delivery.dispatch_id, { outcome: "received", native_id: admitted?.id ?? inboxID })
+        if (admitted?.id !== inboxID) throw new Error("native queued admission did not confirm the expected stable inbox id")
+        await receipt(delivery.dispatch_id, { outcome: "received", native_id: admitted.id })
       } catch (error) {
         // The inbox may have taken it before failing: never resend, let Theo reconcile.
         await receipt(delivery.dispatch_id, { outcome: "uncertain", reason: String(error).slice(0, 300) })

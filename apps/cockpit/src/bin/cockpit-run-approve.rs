@@ -74,6 +74,7 @@ fn approve(id: &str) -> i32 {
                                                       "claimed_session": session, "command": audit::fingerprint(&original),
                                                       "is_outside_its_folder": is_outside_its_folder}));
     approval::phase(id, "asking");
+    let mut shown_review = None;
     let answer = loop {
         let (shown, hiding) = approval::visible_command(&command);
         // The folder and project come from the sandbox too: a directory name can carry escape codes.
@@ -82,6 +83,19 @@ fn approve(id: &str) -> i32 {
         println!("\n{BOLD}{BLUE}Claude · {shown_project}{RESET} asks you to run, in {DIM}{shown_cwd}{RESET}:\n");
         println!("{}\n", shown.split('\n').map(|line| format!("  {BOLD}{line}{RESET}")).collect::<Vec<_>>().join("\n"));
         println!("{}\n", approval::explanation(&why));
+        if let Some(binding) = request.get("evidence").filter(|binding|!binding.is_null()) {
+            println!("Chief evidence binding: {}",approval::escape_hiding(&binding.to_string(),RED,RESET));
+            match run_review(binding,&command,&cwd) {
+                Ok(review) => {
+                    println!("Approved gate/work/commit/checkout: {}",approval::escape_hiding(&serde_json::to_string(&review).unwrap_or_default(),RED,RESET));
+                    shown_review = Some(review);
+                },
+                Err(error) => {
+                    shown_review = None;
+                    println!("{YELLOW}Evidence unavailable: {}. This command cannot satisfy the gate; use an explicit host attestation if appropriate.{RESET}",approval::escape_hiding(&error,RED,RESET));
+                },
+            }
+        }
         if is_outside_its_folder {
             let shown_started_in = approval::escape_hiding(&started_in, RED, &format!("{RESET}{RED}{BOLD}"));
             println!("{RED}{BOLD}This runs outside the folder the session works in ({shown_started_in}). \
@@ -101,8 +115,13 @@ fn approve(id: &str) -> i32 {
         // The phone page (claude-remote) can answer too: it shows what this shows, from this file.
         let _ = std::fs::create_dir_all(approval::log_dir());
         let _ = std::fs::remove_file(approval::remote_answer(id));
+        let remote_why = match request.get("evidence").filter(|binding|!binding.is_null()) {
+            Some(binding) => format!("{why}\nChief evidence binding: {binding}\nReviewed gate identity: {}",
+                shown_review.as_ref().and_then(|review|serde_json::to_string(review).ok()).unwrap_or_else(||"Evidence unavailable; this run cannot satisfy the gate".into())),
+            None => why.clone(),
+        };
         let _ = approval::write_json(&approval::remote_asking(id), &json!({"id": id, "session": verified_session, "project": project, "cwd": cwd, "started_in": started_in,
-                                                                         "command": command, "why": why, "is_outside_its_folder": is_outside_its_folder}));
+                                                                         "command": command, "why": remote_why, "evidence":request.get("evidence"), "is_outside_its_folder": is_outside_its_folder}));
         let answer = approval::choose_or_remote("Run it?", &[("n", "Decline"), ("y", "Run it"), ("e", "Edit it first")], "n",
                                                 Some(&approval::remote_answer(id)));
         let _ = std::fs::remove_file(approval::remote_asking(id));
@@ -129,7 +148,14 @@ fn approve(id: &str) -> i32 {
     let log_path = approval::log_dir().join(format!("{id}.log"));
     println!("{DIM}─── running ───{RESET}");
     approval::phase(id, "running");
+    let evidence_review = shown_review.filter(|shown|request.get("evidence").and_then(|binding|run_review(binding,&command,&cwd).ok())
+        .is_some_and(|current|serde_json::to_value(current).ok() == serde_json::to_value(shown).ok()));
     let exit_code = approval::run(&command, "", &log_path, Some(id));
+    if let Some(review) = evidence_review {
+        let published = cockpit::teams::store::open(&cockpit::paths::team_database()).and_then(|mut connection|
+            cockpit::chief::evidence::finish_run(&mut connection,id,&review,&command,exit_code,now_secs()*1000));
+        if let Err(error) = published { eprintln!("Evidence publication failed: {}",approval::escape_hiding(&error.to_string(),RED,RESET)); }
+    }
     let trace_path = approval::trace_path(&log_path);
     let failed_step = if exit_code == 0 { None } else { approval::last_step(&std::fs::read_to_string(&trace_path).unwrap_or_default()) };
     let _ = std::fs::remove_file(&trace_path);
@@ -156,6 +182,12 @@ fn approve(id: &str) -> i32 {
     approval::log("INFO", &format!("ran {id} for {project}: exit {exit_code}{}{}", if command != original { ", edited" } else { "" },
                                    if redacted > 0 { format!(", {redacted} secret(s) redacted") } else { String::new() }));
     0
+}
+
+fn run_review(binding: &Value, command: &str, cwd: &str) -> Result<cockpit::chief::evidence::RunReview,String> {
+    let binding = serde_json::from_value(binding.clone()).map_err(|error|format!("invalid binding: {error}"))?;
+    let connection = cockpit::teams::store::open(&cockpit::paths::team_database()).map_err(|error|error.to_string())?;
+    cockpit::chief::evidence::prepare_run(&connection,&binding,command,cwd).map_err(|error|error.to_string())
 }
 
 fn main() {

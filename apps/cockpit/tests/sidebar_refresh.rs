@@ -73,6 +73,26 @@ fn an_idle_sidebar_does_not_gather_sessions_four_times_per_second() {
 }
 
 #[test]
+fn unopened_chief_controls_do_not_add_host_snapshot_polling() {
+    use std::{io::{Read,Write},sync::{Arc,Mutex},os::unix::net::UnixListener};
+    let requests=Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));let captured=requests.clone();
+    let mut sidebar=Sidebar::configured("",move |root| {
+        let folder=root.join("run/claude-team-host");fs::create_dir_all(&folder).unwrap();
+        let listener=UnixListener::bind(folder.join("host.sock")).unwrap();
+        std::thread::spawn(move || for mut stream in listener.incoming().flatten() {
+            let mut wire=String::new();if stream.read_to_string(&mut wire).is_err() {continue;}
+            let request:serde_json::Value=serde_json::from_str(&wire).unwrap();captured.lock().unwrap().push(request);
+            let reply=cockpit::teams::TeamReply {request_id:"fixture".into(),result:Ok(serde_json::json!({"members":[],"chief_scheduling_owner":false,"chief_owned_work":[]}))};
+            let _=stream.write_all(serde_json::to_string(&reply).unwrap().as_bytes());
+        });
+    });
+    sidebar.terminal.pump(1.0,None);sidebar.terminal.pump(1.0,None);
+    let requests=requests.lock().unwrap();
+    assert!(requests.iter().any(|request|request["request"]=="snapshot"));
+    assert!(!requests.iter().any(|request|request["request"]=="chief_snapshot" || request["request"]=="chief"));
+}
+
+#[test]
 fn a_background_provider_result_appears_before_the_next_maintenance_tick() {
     use std::{io::{Read, Write}, net::TcpListener, sync::mpsc};
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();

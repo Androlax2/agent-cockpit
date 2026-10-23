@@ -374,7 +374,60 @@ pub fn without_controls(text: &str) -> String {
     text.chars().map(|c| if c.is_control() && c != '\n' { ' ' } else { c }).collect()
 }
 
-#[derive(Clone)]
+fn merge_fields(original: &Value, current: &Value, latest: &Value) -> Value {
+    if original == current { return latest.clone(); }
+    let (Some(current), Some(latest)) = (current.as_object(), latest.as_object()) else { return current.clone() };
+    let mut merged = latest.clone();
+    for (key, value) in current {
+        if original.get(key) != Some(value) { merged.insert(key.clone(), merge_fields(&original[key], value, &latest.get(key).cloned().unwrap_or(Value::Null))); }
+    }
+    if let Some(original) = original.as_object() {
+        for key in original.keys().filter(|key| !current.contains_key(*key)) { merged.remove(key); }
+    }
+    Value::Object(merged)
+}
+
+fn merge_todos(original: &Value, current: &Value, latest: &Value) -> Value {
+    let indexed = |value: &Value| value["items"].as_array().into_iter().flatten().filter_map(|item|
+        Some((item["id"].as_str()?.to_string(), item.clone()))).collect::<BTreeMap<_,_>>();
+    let previous = indexed(original);
+    let edited = indexed(current);
+    let mut items = indexed(latest);
+    for (key, item) in &edited {
+        if previous.get(key) != Some(item) {
+            items.insert(key.clone(), merge_fields(previous.get(key).unwrap_or(&Value::Null), item, items.get(key).unwrap_or(&Value::Null)));
+        }
+    }
+    for key in previous.keys().filter(|key| !edited.contains_key(*key)) {
+        if items.get(key).is_none_or(|item| item.get("chief_assignment").is_none()) { items.remove(key); }
+    }
+    let mut merged = merge_fields(original, current, latest);
+    let mut ordered = Vec::new();
+    for value in [latest, current] {
+        for item in value["items"].as_array().into_iter().flatten() {
+            if let Some(item) = item["id"].as_str().and_then(|key| items.remove(key)) { ordered.push(item); }
+        }
+    }
+    merged["items"] = json!(ordered);
+    for key in ["queued", "declined"] {
+        let values = |value: &Value| value[key].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect::<BTreeSet<_>>();
+        let old = values(original);
+        let new = values(current);
+        let mut kept = values(latest);
+        for removed in old.difference(&new) { kept.remove(removed); }
+        kept.extend(new.difference(&old).cloned());
+        let mut ordered = Vec::new();
+        for value in [latest, current] {
+            for item in value[key].as_array().into_iter().flatten().filter_map(Value::as_str) {
+                if kept.remove(item) { ordered.push(item.to_string()); }
+            }
+        }
+        merged[key] = json!(ordered);
+    }
+    merged
+}
+
+#[derive(Clone, Default)]
 pub struct TodoList {
     pub items: Vec<Item>,
     pub issues: Map<String, Value>, // "owner/repo#12" -> {"status", "updated", "session"}
@@ -383,11 +436,16 @@ pub struct TodoList {
     pub queued: BTreeSet<String>,
     /// Titles Theo declined when a session proposed them, newest last.
     pub declined: Vec<String>,
+    original: Value,
 }
 
 impl TodoList {
     pub fn load() -> Self {
         let data = util::read_json(&paths::todo()).unwrap_or(json!({}));
+        Self::from_data(data)
+    }
+
+    fn from_data(data: Value) -> Self {
         // The first format: items only, "sent" for handed to Claude.
         let data = if data.is_array() { json!({"items": data}) } else { data };
         let mut items = Vec::new();
@@ -419,7 +477,9 @@ impl TodoList {
         let queued = data.get("queued").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str)
             .filter(|key| typed_id().is_match(key) || issue_key().is_match(key)).map(str::to_string).collect();
         let declined = data.get("declined").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect();
-        Self { items, issues, queued, declined }
+        let mut todos = Self { items, issues, queued, declined, original: Value::Null };
+        todos.original = todos.encoded();
+        todos
     }
 
     /// Queues the item or issue, or takes it out of the queue; true when it is now queued.
@@ -447,6 +507,40 @@ impl TodoList {
     }
 
     pub(crate) fn try_save(&mut self) -> std::io::Result<()> {
+        let _writer = Self::lock_writer()?;
+        self.try_save_locked()
+    }
+
+    fn lock_writer() -> std::io::Result<fs::File> {
+        use std::os::unix::fs::OpenOptionsExt;
+        let path = paths::todo();
+        fs::create_dir_all(path.parent().unwrap())?;
+        let lock = fs::OpenOptions::new().create(true).truncate(false).write(true).mode(0o600).open(path.with_extension("lock"))?;
+        lock.lock()?;
+        Ok(lock)
+    }
+
+    fn read_for_update(allow_missing: bool) -> std::io::Result<Value> {
+        let data: Value = match fs::read(paths::todo()) {
+            Ok(bytes) => serde_json::from_slice(&bytes).map_err(std::io::Error::other)?,
+            Err(error) if allow_missing && error.kind() == std::io::ErrorKind::NotFound => json!({}),
+            Err(error) => return Err(error),
+        };
+        if !data.is_array() && (!data.is_object() || ["items","queued","declined"].iter()
+            .any(|key|data.get(key).is_some_and(|value|!value.is_array())) || data.get("issues").is_some_and(|value|!value.is_object())) {
+            return Err(std::io::Error::other("cannot establish todo ownership from invalid todo data"));
+        }
+        Ok(if data.is_array() { json!({"items":data}) } else { data })
+    }
+
+    fn can_initialize(&self) -> bool {
+        self.items.is_empty() && self.issues.is_empty()
+            && self.original["items"].as_array().is_none_or(Vec::is_empty)
+            && self.original["issues"].as_object().is_none_or(Map::is_empty)
+    }
+
+    fn try_save_locked(&mut self) -> std::io::Result<()> {
+        let path = paths::todo();
         let oldest = now_secs() - DONE_KEPT_DAYS * 86400;
         self.items.retain(|item| item.status() != "done" || item.updated() >= oldest);
         self.issues.retain(|_, value| value.get("status").and_then(Value::as_str) != Some("done")
@@ -458,12 +552,51 @@ impl TodoList {
         } else {
             items.iter().any(|item| &item.id() == key && item.status() != "done")
         });
-        let items: Vec<Value> = self.items.iter().map(|item| Value::Object(item.0.clone())).collect();
-        util::write_json(&paths::todo(), &json!({"items": items, "issues": self.issues, "queued": self.queued, "declined": self.declined}))?;
+        let current = self.encoded();
+        let latest = Self::read_for_update(true)?;
+        let merged = merge_todos(&self.original, &current, &latest);
+        util::write_json(&path, &merged)?;
+        *self = Self::load();
         let mut kept: HashSet<String> = self.items.iter().flat_map(|item| item.images().into_values()).collect();
         kept.extend(crate::todo_editor::draft_images());
         crate::todo_images::sweep(&kept);
         Ok(())
+    }
+
+    fn encoded(&self) -> Value {
+        json!({"items":self.items.iter().map(|item| Value::Object(item.0.clone())).collect::<Vec<_>>(),
+            "issues":self.issues,"queued":self.queued,"declined":self.declined})
+    }
+
+    /// Only the authenticated host snapshot supplies this projection. Never creates missing tasks.
+    pub fn project_chief(&mut self, work: &[Value]) -> std::io::Result<()> {
+        let initial = self.can_initialize();
+        // Remember host ownership even if locking, reading or persisting the projection fails.
+        self.apply_chief_projection(work);
+        let _writer = Self::lock_writer()?;
+        let mut projected = Self::from_data(Self::read_for_update(initial)?);
+        let changed = projected.apply_chief_projection(work);
+        if changed || !paths::todo().is_file() { projected.try_save_locked()?; }
+        *self = projected;
+        Ok(())
+    }
+
+    fn apply_chief_projection(&mut self, work: &[Value]) -> bool {
+        let mut changed = false;
+        for claim in work {
+            let Some(key) = claim["task_id"].as_str() else { continue };
+            let Some(assignment) = claim["assignment"].as_str() else { continue };
+            let Some(worker) = claim["worker"].as_str() else { continue };
+            let fields = if issue_key().is_match(key) {
+                self.issues.entry(key.to_string()).or_insert(json!({})).as_object_mut()
+            } else { self.items.iter_mut().find(|item| item.id() == key).map(|item| &mut item.0) };
+            let Some(fields) = fields else { continue };
+            let status = if claim["status"] == "done" { "done" } else { "doing" };
+            for (field, value) in [("status",json!(status)), ("session",json!(worker)), ("chief_assignment",json!(assignment))] {
+                if fields.get(field) != Some(&value) { fields.insert(field.into(),value); changed = true; }
+            }
+        }
+        changed
     }
 
     pub(crate) fn save_editor(&mut self, draft: &crate::todo_editor::Draft, title: &str, notes: &str) -> std::io::Result<()> {
@@ -599,6 +732,18 @@ impl TodoList {
         self.save();
     }
 
+    pub fn manual_reservation(&self, key: &str) -> Option<String> {
+        self.items.iter().find(|item|item.id()==key).and_then(|item|item.0.get("manual_reservation"))
+            .or_else(||self.issues.get(key).and_then(|issue|issue.get("manual_reservation")))
+            .and_then(Value::as_str).map(str::to_string)
+    }
+
+    pub fn record_manual_reservation(&mut self, key: &str, token: &str) {
+        if let Some(item)=self.items.iter_mut().find(|item|item.id()==key) {item.0.insert("manual_reservation".into(),json!(token));}
+        else if let Some(issue)=self.issues.get_mut(key) {issue["manual_reservation"]=json!(token);}
+        self.save();
+    }
+
     pub fn change_priority(&mut self, id: &str, step: i64) {
         for item in self.items.iter_mut().filter(|item| item.id() == id) {
             let priority = (item.priority() + step).clamp(PRIORITY_LOW, PRIORITY_MAX);
@@ -616,31 +761,53 @@ impl TodoList {
 
     /// Status of a typed item (its id) or an issue ("owner/repo#12"); false when unknown.
     pub fn set_status(&mut self, key: &str, status: &str, session: &str) -> bool {
-        if !STATUSES.contains(&status) {
-            return false;
-        }
-        if issue_key().is_match(key) {
-            self.issues.insert(key.into(), json!({"status": status, "updated": now_secs(), "session": session}));
-        } else {
-            // A proposal becomes work only through Theo's approval, never a session's status change.
-            let Some(item) = self.items.iter_mut().find(|item| item.id() == key && item.status() != PROPOSED) else { return false };
-            let is_finished = item.status() != "done" && status == "done";
-            let session = if session.is_empty() { item.text_of("session") } else { session.to_string() };
-            item.0.insert("status".into(), json!(status));
-            item.0.insert("updated".into(), json!(now_secs()));
-            item.0.insert("session".into(), json!(session));
-            if is_finished {
-                let finished = item.clone();
+        if !STATUSES.contains(&status) || self.chief_controls(key) { return false; }
+        let result = (|| -> std::io::Result<bool> {
+            let _writer = Self::lock_writer()?;
+            let initial = self.can_initialize();
+            let latest = Self::read_for_update(initial)?;
+            let disk = Self::from_data(latest.clone());
+            if disk.chief_controls(key) { return Ok(false); }
+            if issue_key().is_match(key) {
+                if self.issues.contains_key(key) && !disk.issues.contains_key(key) { return Ok(false); }
+            } else if !disk.items.iter().any(|item|item.id()==key) { return Ok(false); }
+            let mut updated = Self::from_data(merge_todos(&self.original,&self.encoded(),&latest));
+            updated.original = disk.original;
+            let mut finished = None;
+            if issue_key().is_match(key) {
+                updated.issues.insert(key.into(),json!({"status":status,"updated":now_secs(),"session":session}));
+            } else {
+                // A proposal becomes work only through Theo's approval, never a session's status change.
+                let Some(item) = updated.items.iter_mut().find(|item|item.id()==key && item.status()!=PROPOSED) else { return Ok(false) };
+                let is_finished = item.status()!="done" && status=="done";
+                let session = if session.is_empty() { item.session() } else { session.to_string() };
+                item.0.insert("status".into(),json!(status));
+                item.0.insert("updated".into(),json!(now_secs()));
+                item.0.insert("session".into(),json!(session));
+                if is_finished { finished = Some(item.clone()); }
+            }
+            let released = finished.as_ref().map(|item|updated.release_waiting_on(item)).unwrap_or_default();
+            updated.try_save_locked()?;
+            *self = updated;
+            if let Some(finished) = finished {
                 if finished.is_blocked_report() {
                     tell_reporter_to_retry(&finished);
                 } else if !finished.link().is_empty() {
                     tell_filer_it_is_done(&finished);
                 }
-                self.release_waiting_on(&finished);
+                for waiting in released {
+                    util::log_event("INFO",&format!("todo {waiting} queued: {key}, which it waited on, is done"));
+                    crate::audit::record("column","todo.released","queued",json!({"id":waiting,"after":key}));
+                }
             }
-        }
-        self.save();
-        true
+            Ok(true)
+        })();
+        result.unwrap_or_else(|error| { util::log_event("WARN",&format!("cannot safely change todo {key} status: {error}")); false })
+    }
+
+    fn chief_controls(&self, key: &str) -> bool {
+        self.items.iter().any(|item|item.id()==key && item.0.contains_key("chief_assignment"))
+            || self.issues.get(key).is_some_and(|issue|issue.get("chief_assignment").is_some())
     }
 
     /// What a session says it did, kept on the item for whoever waited on it.
@@ -652,7 +819,7 @@ impl TodoList {
 
     /// The items waiting on one now done: it leaves their list, its result joins their inputs, and
     /// one that waits on nothing more joins the queue (still to do; a proposal waits for Theo).
-    fn release_waiting_on(&mut self, finished: &Item) {
+    fn release_waiting_on(&mut self, finished: &Item) -> Vec<String> {
         let id = finished.id();
         let input = json!({"id": id, "project": finished.project(), "text": finished.text(), "result": finished.result()});
         let mut released = Vec::new();
@@ -667,11 +834,8 @@ impl TodoList {
                 released.push(item.id());
             }
         }
-        for waiting in released {
-            self.queued.insert(waiting.clone());
-            util::log_event("INFO", &format!("todo {waiting} queued: {id}, which it waited on, is done"));
-            crate::audit::record("column", "todo.released", "queued", json!({"id": waiting, "after": id}));
-        }
+        self.queued.extend(released.iter().cloned());
+        released
     }
 
     /// A blocked report (claude-todo blocked) from a session of any project: an item of agent-cockpit,
@@ -1116,7 +1280,7 @@ mod tests {
 
     #[test]
     fn control_characters_never_reach_a_session() {
-        let mut todos = TodoList { items: Vec::new(), issues: Map::new(), queued: BTreeSet::new(), declined: Vec::new() };
+        let mut todos = TodoList::default();
         let id = todos.add_unsaved("p", "/p", "fix typo\x1b[Z\x03\x03 now");
         let text = todos.items.iter().find(|item| item.id() == id).unwrap().text();
         assert!(!text.chars().any(char::is_control), "{text:?}");

@@ -84,6 +84,16 @@ fn moving_the_selection_stays_inside_the_rows() {
 }
 
 #[test]
+fn chief_review_records_do_not_change_team_navigation_or_attention() {
+    let mut state=snapshot();
+    state["records"]=json!([{"kind":"decision","state":"open","id":"chief-decision"},
+        {"kind":"proposal","freshness":"pending","id":"chief-proposal"}]);
+    let view=TeamView::new(state.clone());
+    assert_eq!(TeamView::attention(&state),3);
+    assert_eq!(view.rows(),[Row::Proposal(0),Row::Member(0),Row::Escalation(0),Row::Uncertain(0)]);
+}
+
+#[test]
 fn failed_spawns_count_as_needing_theo() {
     let mut state = snapshot();
     state["spawns"] = json!([{"token": "t1", "role": "designer", "agent": "claude", "status": "failed", "directory": "/p", "created_at": 1}]);

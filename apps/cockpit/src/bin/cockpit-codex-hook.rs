@@ -107,11 +107,19 @@ fn main() {
     match report() {
         Ok(None) => println!("{{}}"),
         Ok(Some(delivery)) => {
-            // Codex continues the turn with `reason` as its next prompt: printed before the receipt,
-            // so a crash in between leaves the delivery uncertain, never falsely received.
-            println!("{}", json!({"decision": "block", "reason": delivery["text"]}));
-            let _ = io::Write::flush(&mut io::stdout());
+            // Output is not proof of native continuation acceptance; chief scheduling keeps Codex unavailable.
             let dispatch_id = delivery["dispatch_id"].as_str().unwrap_or_default().to_string();
+            let text = format!("{}\n", json!({"decision": "block", "reason": delivery["text"]}));
+            let mut stdout = io::stdout();
+            let output = io::Write::write_all(&mut stdout, text.as_bytes()).and_then(|_| io::Write::flush(&mut stdout));
+            if let Err(error) = output {
+                let receipt = teams::AgentAction::Receipt { dispatch_id,
+                    outcome:teams::TransportOutcome::Uncertain { reason:format!("native continuation output failed: {error}") } };
+                if let Err(error) = teams::client::request(&receipt).and_then(|reply| reply.result) {
+                    eprintln!("cockpit-codex-hook: uncertain receipt not recorded: {error}");
+                }
+                std::process::exit(1);
+            }
             let receipt = teams::AgentAction::Receipt { dispatch_id: dispatch_id.clone(),
                 outcome: teams::TransportOutcome::Received { native_id: format!("codex-stop:{dispatch_id}") } };
             if let Err(error) = teams::client::request(&receipt).and_then(|reply| reply.result) {

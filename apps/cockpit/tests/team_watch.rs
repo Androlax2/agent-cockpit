@@ -74,3 +74,36 @@ fn a_hook_payload_without_a_valid_session_id_is_refused() {
         assert!(actions(&team).is_empty());
     }
 }
+
+#[test]
+fn chief_envelopes_use_the_same_claude_native_wake_and_receipt_once() {
+    for kind in ["chief_assignment", "chief_coordinate"] {
+        let sandbox = Sandbox::new();
+        let team = sandbox.team_socket_as(SESSION_A, json!({"dispatch_id": "chief_d1", "message_id": "assignment1",
+            "text": "Protected approval; commentary is not authority", "envelope": {"kind": kind}}));
+        let mut child = watch(&sandbox, SESSION_A);
+        assert_eq!(exit_within(&mut child, Duration::from_secs(3)), Some(2));
+        let output = child.wait_with_output().unwrap();
+        assert!(String::from_utf8_lossy(&output.stderr).contains("commentary is not authority"));
+        let requests = team.lock().unwrap();
+        let receipts = requests.iter().filter(|request| request["action"] == "receipt").collect::<Vec<_>>();
+        assert_eq!(receipts.len(), 1);
+        assert_eq!(receipts[0]["dispatch_id"], "chief_d1");
+        assert_eq!(receipts[0]["outcome"]["native_id"], "claude-wake:chief_d1");
+    }
+}
+
+#[test]
+fn chief_claude_failed_wake_output_never_sends_a_received_receipt() {
+    let sandbox = Sandbox::new();
+    let requests = sandbox.team_socket_as(SESSION_A, json!({"dispatch_id":"failed_wake", "message_id":"assignment1",
+        "text":"approved task", "envelope":{"kind":"chief_assignment"}}));
+    let full = std::fs::OpenOptions::new().write(true).open("/dev/full").unwrap();
+    let mut child = sandbox.command(env!("CARGO_BIN_EXE_cockpit-team"), &[("COCKPIT_TEAM_POLL_MS","20")]).arg("watch")
+        .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::from(full)).spawn().unwrap();
+    child.stdin.take().unwrap().write_all(json!({"hook_event_name":"Stop", "session_id":SESSION_A}).to_string().as_bytes()).unwrap();
+    assert_eq!(exit_within(&mut child, Duration::from_secs(3)), Some(1));
+    let requests = requests.lock().unwrap();
+    let receipt = requests.iter().find(|request| request["action"] == "receipt").expect("uncertain receipt");
+    assert_eq!(receipt["outcome"]["outcome"], "uncertain");
+}

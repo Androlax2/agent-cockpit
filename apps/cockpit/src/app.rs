@@ -4,6 +4,7 @@
 use crate::agents::{self, Feature};
 use crate::continuity::Continuity;
 mod continuity_ui;
+mod chief_ui;
 pub mod refresh;
 use crate::costs::Costs;
 use crate::errors::ErrorReporter;
@@ -90,7 +91,8 @@ const GLOBAL_HELP: [(&str, &str); 15] = [
     ("q ⌘C", "close the manager window; sessions keep running"),
 ];
 /// Rare actions with no key, only in the : list: the panel they run in ("-" for none), a name, a label.
-const PALETTE_ONLY: [(&str, &str, &str); 23] = [
+const PALETTE_ONLY: [(&str, &str, &str); 24] = [
+    ("-", "chief", "Chief: global coordination, exact work approvals, workers, decisions and requested summary"),
     ("1", "team", "linked sessions: approve, edit or reject team requests, unlink members, resolve escalations, read team messages"),
     ("1", "attention-filter", "show actionable sessions / show all; deferred items remain counted"),
     ("1", "defer-20m", "remind me of this explicit question in twenty minutes (never approve)"),
@@ -293,6 +295,8 @@ pub enum Key {
     BackTab,
     Esc,
     Backspace,
+    PageUp,
+    PageDown,
     Up,
     Down,
     Left,
@@ -745,6 +749,7 @@ pub struct App {
     pub(crate) settings_menu: Option<SettingsMenu>,
     /// The Team view (: team), from the daemon's host-only team socket.
     pub(crate) team_view: Option<crate::teams::view::TeamView>,
+    chief_view: Option<crate::chief::view::ChiefView>,
     /// Team requests, escalations and uncertain deliveries waiting for Theo; session -> "team role · task".
     team_attention: usize,
     team_roles: HashMap<String, String>,
@@ -864,7 +869,7 @@ impl App {
             history: History::default(), view: ViewState::load(), usage: Refresher::new(), alerts: BudgetAlerts::new(util::send_notice),
             costs: Costs::default(), reviews: Reviews::default(), todos, errors: ErrorReporter::new(),
             claude_status: ProviderStatus::default(), codex_status: ProviderStatus::new(Provider::Codex), panels: Default::default(), focus: 1, previous_panel: 1,
-            help_open: false, has_pane_focus: true, attention_only: false, message, exiting: Vec::new(), restarting_cards: HashMap::new(), labelled: Default::default(), menu: None, session_details: None, todo_composer: None, settings_menu: None, team_view: None, team_attention: 0, team_roles: HashMap::new(), qa_sessions: HashSet::new(), team_known: false, team_checked: 0.0,
+            help_open: false, has_pane_focus: true, attention_only: false, message, exiting: Vec::new(), restarting_cards: HashMap::new(), labelled: Default::default(), menu: None, session_details: None, todo_composer: None, settings_menu: None, team_view: None, chief_view: None, team_attention: 0, team_roles: HashMap::new(), qa_sessions: HashSet::new(), team_known: false, team_checked: 0.0,
             team_links: TeamLinks::Loading, sidebar_rows: Vec::new(), collapsed_teams: HashSet::new(), sidebar_selection_lost: false, sidebar_session_tasks: HashMap::new(), pairing: None, restore: Vec::new(),
             held: Vec::new(), held_checked: 0.0, queue_checked: 0.0, sleep_checked: 0.0, sleep_asked: HashMap::new(), gaming: util::gaming,
             disk_usage: util::fullest_disk, disk: None, disk_checked: 0.0, restore_checked: 0.0, start_files: Vec::new(),
@@ -908,6 +913,11 @@ impl App {
                     self.todo_recovery_pending = false;
                     self.message = format!("TODO draft recovery failed; drafts kept: {error}");
                 }
+            }
+        }
+        if let Ok(snapshot) = Self::team_snapshot() {
+            if let Some(work) = snapshot["chief_owned_work"].as_array() {
+                if let Err(error) = self.todos.project_chief(work) { self.continuity_error = Some(format!("chief projection: {error}")); }
             }
         }
         self.todos.apply_updates();
@@ -1096,8 +1106,8 @@ impl App {
                 Entry::Typed(item) => (item.id(), todo::prompt_of(&entry)),
                 Entry::Issue { issue, .. } => (issue.key(), todo::prompt_of(&entry)),
             };
-            let error = manager(&["say", &session.session, &todo::with_todo_note(&text, &key)]);
-            if !error.is_empty() {
+            let token=match queue::reserve_task(&session.cwd,&key,Some(&session.session),true) {Ok(token)=>token,Err(error)=>{util::log_event("WARN",&format!("queue: {error}"));continue;}};
+            if let Err(error) = queue::launch_reserved(&token,&["say", &session.session, &todo::with_todo_note(&text, &key)],false) {
                 util::log_event("WARN", &format!("queue: cannot give {key} to {}: {error}", session.project));
                 continue;
             }
@@ -1112,7 +1122,7 @@ impl App {
     /// Handed work and setup blockers get fresh background sessions on every tick, before idle
     /// sessions can absorb them. Theo's own Q items keep waiting for a session he starts.
     fn start_sessions_for_handed_work(&mut self, context: &queue::QueueContext) {
-        if !context.enabled || context.gaming {
+        if !context.enabled || context.gaming || context.chief_scheduling_owner != Some(false) {
             return;
         }
         let mut handed: Vec<Entry> = self.todos.items.iter()
@@ -1131,7 +1141,8 @@ impl App {
                 Ok(agent) => agent,
                 Err(error) => { util::log_event("WARN", &format!("queue: cannot start a session for {}: {error}", item.id())); return }
             };
-            manager_in_background(&["--agent", &agent, "background", &directory, &todo::with_todo_note(&todo::prompt_of(&entry), &item.id())]);
+            let token=match queue::reserve_task(&directory,&item.id(),None,true) {Ok(token)=>token,Err(error)=>{util::log_event("WARN",&format!("queue: {error}"));continue;}};
+            if let Err(error)=queue::launch_reserved(&token,&["--agent", &agent, "background", &directory, &todo::with_todo_note(&todo::prompt_of(&entry), &item.id())],true) {util::log_event("WARN",&error);continue;}
             self.todos.set_status(&item.id(), "doing", "");
             if let Err(error) = self.record_task_assignment(&entry, None) { self.continuity_error = Some(error); }
             util::log_event("INFO", &format!("queue: started a fresh session in {project} for {} ({})", item.id(), item.queued_by()));
@@ -1143,7 +1154,10 @@ impl App {
     /// The project's first queued item still to do: typed items of its project, issues of its
     /// repository.
     fn next_queued(&self, session: &Session) -> Option<Entry> {
-        queue::candidates(session, &self.todos, &self.reviews.issues(), &self.reviews.checkouts).into_iter().next()
+        let snapshot = Self::team_snapshot().ok()?;
+        let protected = snapshot["chief_owned_work"].as_array()?;
+        queue::candidates(session, &self.todos, &self.reviews.issues(), &self.reviews.checkouts).into_iter()
+            .find(|entry| !protected.iter().any(|work| work["task_id"].as_str() == Some(entry.key().as_str())))
     }
 
     /// Everything read again (sessions, usage, plan), then drawn.
@@ -3123,7 +3137,10 @@ impl App {
             },
             Key::Char('x') => match entry {
                 Some(Entry::Typed(item)) => {
+                    if item.0.contains_key("chief_assignment") { return "chief-owned work requires host reconciliation".into(); }
+                    let token=self.todos.manual_reservation(&item.id());
                     self.todos.remove(&item.id());
+                    if let Err(error)=queue::release_manual(&item.cwd(),&item.id(),token.as_deref()) {return error;}
                     "removed".into()
                 }
                 _ => String::new(),
@@ -3132,7 +3149,18 @@ impl App {
                 Some(entry) => {
                     let target = if pressed == 'i' { "doing" } else { "done" };
                     let status = if self.todos.status_of(&entry.key()) == target { "todo" } else { target };
-                    self.todos.set_status(&entry.key(), status, "");
+                    let directory = match &entry { Entry::Typed(item) => item.cwd(), Entry::Issue { issue, .. } => self.reviews.checkouts.get(&issue.full_repository).cloned().unwrap_or_default() };
+                    let mut token=self.todos.manual_reservation(&entry.key());
+                    if status == "doing" {
+                        token=Some(match queue::reserve_manual(&directory, &entry.key()) {Ok(token)=>token,Err(error)=>return error});
+                        self.todos.record_manual_reservation(&entry.key(),token.as_deref().expect("reservation obtained"));
+                    }
+                    if !self.todos.set_status(&entry.key(), status, "") {
+                        if status=="doing" {if let Err(error)=queue::release_manual(&directory,&entry.key(),token.as_deref()) {return error;}}
+                        return "chief-owned work: completion/ownership requires host reconciliation".into();
+                    }
+                    if status=="doing" {self.todos.record_manual_reservation(&entry.key(),token.as_deref().expect("reservation obtained"));}
+                    if status!="doing" {if let Err(error)=queue::release_manual(&directory,&entry.key(),token.as_deref()) {return error;}}
                     match status { "doing" => "in progress", "done" => "done", _ => "back to do" }.into()
                 }
                 None => String::new(),
@@ -3198,19 +3226,18 @@ impl App {
             return "external session: no terminal target; use its own window".into();
         };
         let text = if is_design && running.is_none() { format!("Load the figcraft-design skill first. {text}") } else { text };
+        let agent=if running.is_none() {match settings::launch_agent() {Ok(agent)=>Some(agent),Err(error)=>return error}} else {None};
+        let token=match queue::reserve_task(&directory,&key,running.as_ref().map(|session|session.session.as_str()),false) {Ok(token)=>token,Err(error)=>return error};
         let outcome = match &running {
             Some(session) => {
-                let error = manager(&["say", &session.session, &text]);
-                if !error.is_empty() {
-                    return error;
-                }
+                if let Err(error)=queue::launch_reserved(&token,&["say", &session.session, &text],false) {return error;}
                 format!("sent to {}", session.project)
             }
             None => {
-                let agent = match settings::launch_agent() { Ok(agent) => agent, Err(error) => return error };
+                let agent = agent.expect("launch agent validated before reservation");
                 // Out of sight, as a card of its own (cockpit background): in the session pane
                 // it replaced the session on screen, and the Todo panel lost its project.
-                manager_in_background(&["--agent", &agent, "background", &directory, &text]);
+                if let Err(error)=queue::launch_reserved(&token,&["--agent", &agent, "background", &directory, &text],true) {return error;}
                 format!("starting a session in {}", project_name(&directory))
             }
         };
@@ -3237,7 +3264,8 @@ impl App {
         let agent = match settings::launch_agent() { Ok(agent) => agent, Err(error) => return error };
         let key = entry.key();
         let (branch, text) = todo::handoff_of(entry);
-        manager_in_background(&["--agent", &agent, "parallel", &directory, &branch, &text]);
+        let token=match queue::reserve_task(&directory,&key,None,false) {Ok(token)=>token,Err(error)=>return error};
+        if let Err(error)=queue::launch_reserved(&token,&["--agent", &agent, "parallel", &directory, &branch, &text],true) {return error;}
         self.todos.set_status(&key, "doing", "");
         if let Err(error) = self.record_task_assignment(entry, None) { self.continuity_error = Some(error); }
         format!("starting a new session in a clone of {} (branch {branch})", project_name(&directory))
@@ -3396,6 +3424,11 @@ impl App {
         }
         if let Some(menu) = self.settings_menu.as_mut() {
             menu.draw(buffer);
+        }
+        if let Some(view) = self.chief_view.as_mut().filter(|view| !view.suspended) {
+            chief_ui::draw(view, buffer);
+            self.hit_lines.clear();
+            self.hit_actions.clear();
         }
         if let Some(view) = self.team_view.as_ref() {
             draw_team_view(view, buffer);
@@ -3767,7 +3800,7 @@ impl App {
             self.handle_composer(key);
             return;
         }
-        if matches!(key, Key::Paste(_)) { return; }
+        if matches!(key, Key::Paste(_)) && self.chief_view.as_ref().is_none_or(|view|view.suspended) { return; }
         if self.session_details.as_ref().is_some_and(|details| !details.actions.is_empty()) && key == Key::Enter {
             self.message = self.pick_detail_action(screen);
             return;
@@ -3781,6 +3814,9 @@ impl App {
                 Key::Esc | Key::Enter | Key::Char('i') => self.session_details = None,
                 _ => {}
             }
+            return;
+        }
+        if self.chief_view.is_some() && self.handle_chief_key(key.clone()) {
             return;
         }
         if self.team_view.is_some() {
@@ -3859,7 +3895,10 @@ impl App {
                 let past = self.past_sessions();
                 if let Some(index) = screen.outside(&mut || pick_past_session(&past)).and_then(|chosen| chosen.parse::<usize>().ok()) {
                     let chosen = &past[index].0;
-                    self.message = self.manager_async(&["resume", &chosen.cwd, &chosen.session]);
+                    self.message = match queue::reserve_resume(&chosen.cwd, &chosen.session) {
+                        Ok(token) => match queue::launch_reserved(&token,&["resume", &chosen.cwd, &chosen.session],true) {Ok(())=>"resuming conversation".into(),Err(error)=>error},
+                        Err(error) => error,
+                    };
                 }
             }
             Key::Char('P') => self.message = self.manager_async(&["prs"]),
@@ -3931,6 +3970,7 @@ impl App {
             }
             "digest" => self.manager_async(&["digest"]),
             "team" => self.open_team_view(),
+            "chief" => self.open_chief_view(),
             "pair-phone" => self.start_pairing(),
             "design" => self.start_design_session(screen),
             "clones" => {
@@ -3979,6 +4019,14 @@ impl App {
         let now = util::now();
         if now - self.team_checked < 10.0 { return; }
         self.team_checked = now;
+        if self.chief_view.is_some() { self.refresh_chief_view(); }
+        let workspace = util::output_of("hyprctl", &["-j", "activeworkspace"])
+            .and_then(|text| serde_json::from_str::<Value>(&text).ok()).and_then(|workspace|workspace["id"].as_i64());
+        if let Some(workspace) = workspace {
+            let _ = crate::teams::client::host_request(&crate::teams::HostRequest::ChiefFocus {
+                viewed:current_session(), workspace_active:workspace == util::CLAUDE_WORKSPACE, gaming:(self.gaming)(),
+            });
+        }
         if !paths::team_host_socket().exists() {
             self.team_attention = 0;
             self.team_roles.clear();
@@ -4614,6 +4662,8 @@ pub fn read_key(timeout: Option<Duration>, last_click: &mut Option<(Instant, u16
                     KeyCode::Enter => Key::Enter,
                     KeyCode::Tab => Key::Tab,
                     KeyCode::BackTab => Key::BackTab,
+                    KeyCode::PageUp => Key::PageUp,
+                    KeyCode::PageDown => Key::PageDown,
                     KeyCode::Esc => Key::Esc,
                     KeyCode::Backspace => Key::Backspace,
                     KeyCode::Up => Key::Up,

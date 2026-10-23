@@ -2446,8 +2446,9 @@ resume_hyprland_autoreload() { # commit-before-the-apply
     log_event WARN apply "could not resume Hyprland's autoreload after git am"
 }
 
-apply_reviewed() { # [clone]
+apply_reviewed() { # [clone] [chief-assignment]
     local name clone live outgoing copies patch subjects answer count before
+    local chief_assignment=${2:-} chief_review="" installed=true
     if ! IFS=$'\t' read -r name clone < <(reviewed_clone_of "${1:-$DOTFILES_WORK}"); then
         echo "Refused: ${1:-} is not a reviewed clone (~/IdeaProjects/<repository> or $CLONES_DIR/<repository>/<name>, for ${REVIEWED_REPOSITORIES[*]})." >&2
         return 1
@@ -2500,6 +2501,12 @@ apply_reviewed() { # [clone]
     # PAGER is cat in the approval window (ask-to-run), which shows the patches as plain output.
     cat -v "$copies"/*.patch > "$copies/review.txt"
     if [[ -t 1 ]]; then ${PAGER:-less} "$copies/review.txt"; else cat "$copies/review.txt"; fi
+    if [[ -n $chief_assignment ]]; then
+        chief_review=$(cockpit-team evidence-apply-prepare "$chief_assignment" "$live" "$copies") || {
+            echo "Refused: the exact Chief work/patch binding could not be verified." >&2
+            return 1
+        }
+    fi
     read -r -p "Apply these $count commit(s) to $live? [y/N] " answer || answer=""
     if [[ $answer != y && $answer != Y ]]; then
         echo "Not applied."
@@ -2529,10 +2536,17 @@ apply_reviewed() { # [clone]
     audit_event apply dotfiles.applied ok "repository=$name" "patches=$count" "head=$(git -C "$live" rev-parse HEAD 2>/dev/null)" "subjects=${subjects//$'\n'/ | }"
     close_shipped_todos "$live" "$before"
     if [[ $name == dotfiles ]]; then
-        after_dotfiles_apply "$before"
+        after_dotfiles_apply "$before" || installed=false
     else
-        after_reviewed_apply "$live" "$before"
+        after_reviewed_apply "$live" "$before" "$chief_review" || installed=false
     fi
+    if [[ -n $chief_review ]]; then
+        cockpit-team evidence-apply-finish "$chief_review" "$installed" || {
+            echo "Chief evidence was not published; completion remains blocked." >&2
+            return 1
+        }
+    fi
+    $installed
 }
 
 # The dotfiles' command links share ~/.local/bin with agent-cockpit's, file by file (--no-folding).
@@ -2554,8 +2568,9 @@ after_dotfiles_apply() { # commit-before-the-apply
 
 # Another running copy installs itself: its Makefile's after-apply target (build, links, restarts),
 # reviewed with the rest, gets the commit before the apply to see what changed.
-after_reviewed_apply() { # live commit-before-the-apply
-    if ! make -C "$1" -n after-apply >/dev/null 2>&1; then
+after_reviewed_apply() { # live commit-before-the-apply [required-chief-review]
+    # A bound gate needs the actual installer to succeed, not a failed probe interpreted as absence.
+    if [[ -z ${3:-} ]] && ! make -C "$1" -n after-apply >/dev/null 2>&1; then
         echo "Applied. $1 has no after-apply target: nothing installed."
         return 0
     fi
@@ -2767,7 +2782,7 @@ case ${1:-attach} in
     push) push_popup "${2:?usage: cockpit push <dir>}" ;;
     queue-prompt-ask) queue_prompt_ask "${2:-}" ;;
     push-run) push_run "${2:?usage: cockpit push-run <dir>}" ;;
-    apply|apply-dotfiles) apply_reviewed "${2:-}" ;;
+    apply|apply-dotfiles) apply_reviewed "${2:-}" "${3:-}" ;;
     apply-run) apply_run "${2:?usage: cockpit apply-run <reviewed clone>}" ;;
     team-spawn) team_spawn_session "${2:?usage: cockpit team-spawn <token> <role> <dir> <commit|-> <brief>}" "${3:?}" "${4:?}" "${5:?}" "${6:-}" ;;
     parallel) parallel_session "${2:?usage: cockpit parallel <dir> <branch> [prompt]}" "${3:?usage: cockpit parallel <dir> <branch> [prompt]}" "${4:-}" ;;

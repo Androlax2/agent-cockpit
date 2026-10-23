@@ -14,10 +14,12 @@ pub struct QueueContext {
     pub viewed: String,
     pub workspace_active: bool,
     pub qa_sessions: HashSet<String>,
+    pub chief_scheduling_owner: Option<bool>,
 }
 
 #[derive(Debug, PartialEq)]
 pub enum QueueBlock {
+    ChiefOwned, OwnershipUnknown,
     Disabled, Gaming, External, Terminal, Qa, MissingDirectory, Unknown, Working,
     NeedsInput, CommandRunning, Busy, PendingMessage, Viewed, Idle { remaining: i64 },
 }
@@ -25,6 +27,8 @@ pub enum QueueBlock {
 impl fmt::Display for QueueBlock {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::ChiefOwned => formatter.write_str("chief owns scheduling"),
+            Self::OwnershipUnknown => formatter.write_str("scheduling ownership unavailable"),
             Self::Disabled => formatter.write_str("queue disabled"),
             Self::Gaming => formatter.write_str("paused while gaming"),
             Self::External => formatter.write_str("no terminal target"),
@@ -46,6 +50,11 @@ impl fmt::Display for QueueBlock {
 pub fn block(session: &Session, context: &QueueContext, busy: bool, has_pending_message: bool) -> Option<QueueBlock> {
     if !context.enabled { return Some(QueueBlock::Disabled); }
     if context.gaming { return Some(QueueBlock::Gaming); }
+    match context.chief_scheduling_owner {
+        Some(false) => {},
+        Some(true) => return Some(QueueBlock::ChiefOwned),
+        None => return Some(QueueBlock::OwnershipUnknown),
+    }
     if session.is_external() { return Some(QueueBlock::External); }
     if session.terminal { return Some(QueueBlock::Terminal); }
     if context.qa_sessions.contains(&session.session) { return Some(QueueBlock::Qa); }
@@ -60,6 +69,56 @@ pub fn block(session: &Session, context: &QueueContext, busy: bool, has_pending_
     let idle = context.now.saturating_sub(session.since);
     if idle < QUEUE_IDLE_S { return Some(QueueBlock::Idle { remaining: QUEUE_IDLE_S - idle }); }
     None
+}
+
+pub fn reserve_task(directory: &str, task_id: &str, worker: Option<&str>, automatic: bool) -> Result<String, String> {
+    reserve(crate::teams::HostRequest::ReserveTask { task_id: task_id.into(), directory:directory.into(), worker:worker.map(str::to_string), automatic })
+}
+
+pub fn reserve_resume(directory: &str, session: &str) -> Result<String, String> {
+    reserve(crate::teams::HostRequest::ReserveResume { session:session.into(), directory:directory.into() })
+}
+
+pub fn reserve_manual(directory: &str, task_id: &str) -> Result<String,String> {
+    reserve(crate::teams::HostRequest::ReserveManual {directory:directory.into(),task_id:task_id.into()})
+}
+
+pub fn release_manual(directory: &str, task_id: &str, token: Option<&str>) -> Result<(),String> {
+    let Some(token)=token else {return Ok(());};
+    crate::teams::client::host_request(&crate::teams::HostRequest::ReleaseManual {directory:directory.into(),task_id:task_id.into(),token:token.into()})
+        .and_then(|reply|reply.result).map(|_|()).map_err(|error|error.message)
+}
+
+fn reserve(request: crate::teams::HostRequest) -> Result<String, String> {
+    let reply = crate::teams::client::host_request(&request).and_then(|reply| reply.result).map_err(|error| error.message)?;
+    if reply["reservation"].as_str().is_none_or(str::is_empty) { return Err("scheduling reservation unavailable".into()); }
+    Ok(reply["reservation"].as_str().expect("reservation validated").into())
+}
+
+fn settle(token: &str, revision: i64, outcome: &str) -> Result<(),String> {
+    crate::teams::client::host_request(&crate::teams::HostRequest::SettleReservation {token:token.into(),expected_revision:revision,outcome:outcome.into()})
+        .and_then(|reply|reply.result).map(|_|()).map_err(|error|error.message)
+}
+
+/// Mark possible execution before spawning; only a failure to spawn proves non-submission.
+pub fn launch_reserved(token: &str, arguments: &[&str], background: bool) -> Result<(),String> {
+    settle(token,1,"begin")?;
+    let child=std::process::Command::new("cockpit").args(arguments).stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped()).spawn();
+    let child=match child {
+        Ok(child)=>child,
+        Err(error)=>{settle(token,2,"not_submitted")?;return Err(format!("cockpit launch was not submitted: {error}"));},
+    };
+    let token=token.to_string();
+    let finish=move || {
+        let output=match child.wait_with_output() {Ok(output)=>output,Err(error)=>{settle(&token,2,"uncertain")?;return Err(format!("launch outcome uncertain: {error}"));}};
+        if !output.status.success() {settle(&token,2,"uncertain")?;return Err(format!("launch outcome uncertain; host recovery required: {}",String::from_utf8_lossy(&output.stderr).trim()));}
+        settle(&token,2,"submitted")
+    };
+    if background {
+        std::thread::spawn(move || {if let Err(error)=finish() {util::log_event("ERROR",&error);}});
+        Ok(())
+    } else {finish()}
 }
 
 pub fn candidates(session: &Session, todos: &TodoList, issues: &[Issue], checkouts: &BTreeMap<String, String>) -> Vec<Entry> {

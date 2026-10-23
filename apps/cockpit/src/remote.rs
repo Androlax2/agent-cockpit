@@ -846,10 +846,8 @@ pub fn start_todo(id: &str, agent: &str) -> Result<String, String> {
     let entry = todo::Entry::Typed(item.clone());
     let (branch, text) = todo::handoff_of(&entry);
     let directory = util::start_directory(&item.cwd())?;
-    let error = util::manager(&["--agent", agent, "parallel", &directory, &branch, &text]);
-    if !error.is_empty() {
-        return Err(error);
-    }
+    let token=crate::queue::reserve_task(&directory, id, None, false)?;
+    crate::queue::launch_reserved(&token,&["--agent", agent, "parallel", &directory, &branch, &text],false)?;
     queue_todo_update(json!({"action": "doing", "id": id, "started_in": directory}))?;
     audit::record("remote", "remote.todo_started", "ok", json!({"id": id, "project": directory, "agent": agent}));
     Ok(format!("starting a new session in a clone of {} (branch {branch})", util::project_name(&directory)))

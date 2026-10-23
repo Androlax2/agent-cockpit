@@ -56,13 +56,13 @@ fn membership_matches(connection: &Connection, permit: &SleepPermit, runtime: &s
         params![permit.session_id, permit.agent, permit.project, runtime, permit.task_key, role_name(permit.role), permit.epoch], |row| row.get(0))?)
 }
 
-pub(super) fn paused(connection: &Connection, session: &str) -> Result<bool, TeamError> {
+pub fn paused(connection: &Connection, session: &str) -> Result<bool, TeamError> {
     Ok(connection.query_row("SELECT EXISTS(SELECT 1 FROM sleep_permits p JOIN members m ON m.session_id=p.session_id
         AND m.task_key=p.task_key AND m.epoch=p.epoch AND m.runtime=p.old_runtime AND m.agent=p.agent AND m.role=p.role
         WHERE p.session_id=?1 AND p.state IN ('prepared','launch_requested','waking','failed'))", [session], |row| row.get(0))?)
 }
 
-pub(super) fn guard_sender(connection: &Connection, session: &str) -> Result<(), TeamError> {
+pub(crate) fn guard_sender(connection: &Connection, session: &str) -> Result<(), TeamError> {
     if paused(connection, session)? { return Err(TeamError::new(ErrorCode::Conflict, "team member is prepared for sleep")); }
     Ok(())
 }
@@ -89,7 +89,8 @@ pub fn prepare(connection: &mut Connection, member: &VerifiedSession, checkout: 
         return Err(TeamError::new(ErrorCode::Conflict, "sleep continuation already exists or expired; cancel it first"));
     }
     let pending: bool = transaction.query_row("SELECT EXISTS(SELECT 1 FROM messages WHERE task_key=?1 AND
-        (sender=?2 OR recipient=?2) AND state IN ('queued','ready','submitting','uncertain'))",
+        (sender=?2 OR recipient=?2) AND state IN ('queued','ready','submitting','uncertain'))
+        OR EXISTS(SELECT 1 FROM chief_inbox WHERE recipient=?2 AND state IN ('queued','submitting','uncertain'))",
         params![task_key, member.session_id], |row| row.get(0))?;
     if pending { return Err(TeamError::new(ErrorCode::Conflict, "pending team delivery prevents sleep")); }
     let token = identifier()?;

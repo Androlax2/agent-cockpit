@@ -1,4 +1,4 @@
-//! Sandbox-safe collaboration actions. Host approval controls are deliberately absent.
+//! Peer-authenticated agent actions and a separate, host-socket-only chief control mode.
 
 use cockpit::teams::{AgentAction, client};
 use cockpit::approval::escape_hiding;
@@ -6,6 +6,12 @@ use std::io::{self, Read};
 
 const HELP: &str = r#"cockpit-team context            your task, your role and your teammates' session ids
 cockpit-team <action> < action.json   propose, recruit, send, assess or handoff; the JSON's "action" names the same one
+cockpit-team chief < action.json      nested {"action":"chief","request":{...}} agent request
+cockpit-team chief-host < request.json   host only: {"request":"chief","action":{...}} or chief_snapshot
+cockpit-team qa-result < result.json   {"action":"qa_result","result":{"submission_key":"qa-1","task":{...},"handoff_id":"...","verdict":"pass","tests":[],"findings":"No findings"}}
+
+Reviewed host commands: ask-to-run --evidence '{"assignment":"...","gate":"tests"}' --cwd <protected reviewed checkout> --why '...' '<exact approved command>'
+Reviewed apply: cockpit apply <clone> <assignment-id> (the existing Apply approval displays the exact work/patch binding).
 
 Recipients are session ids from `context`, never role names. Use each submission_key once
 (letters, digits, - or _): resending the same one is a no-op. Task is the object `context` shows.
@@ -24,12 +30,16 @@ The Developer's finished work (requests QA once):
   {"action":"handoff","handoff":{"task":{"project":"path:/home/theo/IdeaProjects/app","task_id":"5e1f7e57"},"submission_key":"handoff-1","branch":"feature/x","commit":"<full 40-character commit id>","checkout":"/home/theo/IdeaProjects/app","summary":"What changed.","tests":"cargo test: 57 passed","figcraft":[]}}
 
 Link requests require Theo's approval. Collaboration never grants tool or scope permissions.
+
+Chief coordination (only an active chief, to an exact approved work/dependency's assigned worker):
+  {"action":"chief","request":{"action":"coordinate","submission_key":"coordinate-1","work":{"task":{"project":"path:/home/theo/IdeaProjects/app","task_id":"5e1f7e57"},"revision":1},"recipient":"aaaaaaaa-0000-4000-8000-000000000000","body":"Is the approved dependency ready?"}}
+Reuse a coordination key only for the same request. A new key deliberately sends identical content again.
 "#;
 
 fn action(name: &str) -> Result<AgentAction, String> {
     if name == "context" { return Ok(AgentAction::Context); }
     if name == "receive" { return Ok(AgentAction::Receive); }
-    if !matches!(name, "propose" | "send" | "receipt" | "assess" | "handoff" | "recruit") {
+    if !matches!(name, "chief" | "qa-result" | "native-telemetry" | "propose" | "send" | "receipt" | "assess" | "handoff" | "recruit") {
         return Err(format!("{name:?} is not an agent action; use context, propose, recruit, send, assess, handoff, receive or receipt"));
     }
     let mut input = Vec::new();
@@ -40,6 +50,9 @@ fn action(name: &str) -> Result<AgentAction, String> {
         AgentAction::Context => "context", AgentAction::Propose { .. } => "propose", AgentAction::Send { .. } => "send",
         AgentAction::Receive => "receive", AgentAction::Receipt { .. } => "receipt", AgentAction::Assess { .. } => "assess",
         AgentAction::Handoff { .. } => "handoff", AgentAction::Recruit { .. } => "recruit",
+        AgentAction::Chief { .. } => "chief",
+        AgentAction::NativeTelemetry { .. } => "native-telemetry",
+        AgentAction::QaResult { .. } => "qa-result",
     };
     if name != actual { return Err("command and JSON action do not match".into()); }
     Ok(action)
@@ -85,8 +98,8 @@ fn sleep_request(arguments: &[String]) -> Result<cockpit::teams::HostRequest, St
 
 /// Claude's background hook (asyncRewake, at SessionStart and Stop): waits for this session's next
 /// approved message, which the daemon hands out only while the session is idle, then wakes Claude
-/// with it (exit 2, the text on stderr). The receipt follows the text, so a crash in between leaves
-/// the delivery uncertain, never falsely received. One watcher per session: a newer one replaces it.
+/// with it (exit 2, the text on stderr). This cannot prove acceptance after the hook exits: chief
+/// scheduling keeps Claude unavailable. One watcher per session: a newer one replaces it.
 fn watch() -> i32 {
     use cockpit::teams::{AgentAction, TransportOutcome};
     let mut payload = String::new();
@@ -117,7 +130,17 @@ fn watch() -> i32 {
         if is_confirmed {
             if let Ok(delivery) = client::request(&AgentAction::Receive).and_then(|reply| reply.result) {
                 if let Some(dispatch_id) = delivery.get("dispatch_id").and_then(serde_json::Value::as_str) {
-                    eprintln!("{}", delivery["text"].as_str().unwrap_or_default());
+                    let text = format!("{}\n", delivery["text"].as_str().unwrap_or_default());
+                    let mut stderr = io::stderr();
+                    let output = io::Write::write_all(&mut stderr, text.as_bytes()).and_then(|_| io::Write::flush(&mut stderr));
+                    if let Err(error) = output {
+                        let receipt = AgentAction::Receipt { dispatch_id:dispatch_id.into(),
+                            outcome:TransportOutcome::Uncertain { reason:format!("native wake output failed: {error}") } };
+                        if let Err(error) = client::request(&receipt).and_then(|reply| reply.result) {
+                            cockpit::util::log_event("WARN", &format!("native wake uncertain receipt not recorded: {error}"));
+                        }
+                        return 1;
+                    }
                     let receipt = AgentAction::Receipt { dispatch_id: dispatch_id.into(),
                         outcome: TransportOutcome::Received { native_id: format!("claude-wake:{dispatch_id}") } };
                     let _ = client::request(&receipt);
@@ -140,6 +163,25 @@ fn main() {
         }
         return;
     }
+    if arguments.first().is_some_and(|argument|argument.starts_with("evidence-apply-")) {
+        let result = (|| -> Result<(),cockpit::teams::TeamError> {
+            // Installed host-only helper. The protected database is not mounted into agent sandboxes.
+            let mut connection = cockpit::teams::store::open(&cockpit::paths::team_database())?;
+            let now = cockpit::util::now_secs()*1000;
+            match arguments.as_slice() {
+                [action,assignment,cwd,copies] if action == "evidence-apply-prepare" => {
+                    println!("{}",cockpit::chief::evidence::prepare_apply(&mut connection,assignment,cwd,std::path::Path::new(copies),now)?);
+                },
+                [action,token,installed] if action == "evidence-apply-finish" && matches!(installed.as_str(),"true"|"false") => {
+                    cockpit::chief::evidence::finish_apply(&mut connection,token,installed == "true",now)?;
+                },
+                _ => return Err(cockpit::teams::TeamError::new(cockpit::teams::ErrorCode::Invalid,"invalid reviewed apply producer arguments")),
+            }
+            Ok(())
+        })();
+        if let Err(error) = result { eprintln!("cockpit-team: {}",escape_hiding(&error.to_string(),"","")); std::process::exit(1); }
+        return;
+    }
     if arguments == ["prepare"] {
         if let Err(error) = client::prepare() {
             eprintln!("cockpit-team: {}", escape_hiding(&error.to_string(), "", ""));
@@ -157,6 +199,36 @@ fn main() {
     if arguments.len() != 1 {
         eprintln!("usage: cockpit-team context | propose|send < tagged-action.json");
         std::process::exit(2);
+    }
+    if arguments[0] == "chief-host" {
+        let result = (|| {
+            let mut input = Vec::new();
+            io::stdin().take(client::REQUEST_MAX as u64 + 1).read_to_end(&mut input)?;
+            if input.len() > client::REQUEST_MAX { return Err(cockpit::teams::TeamError::new(cockpit::teams::ErrorCode::Limit, "chief host request exceeds 32 KiB")); }
+            let request: cockpit::teams::HostRequest = serde_json::from_slice(&input)?;
+            if !matches!(request, cockpit::teams::HostRequest::Chief { .. } | cockpit::teams::HostRequest::ChiefSnapshot { .. } | cockpit::teams::HostRequest::ChiefAudit { .. }
+                | cockpit::teams::HostRequest::VerifyChiefAdmission { .. } | cockpit::teams::HostRequest::ChiefNativeObservation { .. }
+                | cockpit::teams::HostRequest::ChiefFocus { .. }) {
+                return Err(cockpit::teams::TeamError::new(cockpit::teams::ErrorCode::Invalid, "chief-host requires a chief host request"));
+            }
+            if matches!(&request,cockpit::teams::HostRequest::Chief {action:cockpit::chief::ChiefHostAction::AttestEvidence {..}
+                | cockpit::chief::ChiefHostAction::Reconcile {..} | cockpit::chief::ChiefHostAction::ReconcileDelivery {..} | cockpit::chief::ChiefHostAction::ReconcileLaunch {..}}) {
+                use std::io::{BufRead,Write};
+                eprintln!("Host confirmation of exact work/revision/gate/source/result/commit or stopped-worker evidence:\n{}",escape_hiding(&serde_json::to_string_pretty(&request)?,"",""));
+                let mut terminal = std::fs::OpenOptions::new().read(true).write(true).open("/dev/tty")?;
+                terminal.write_all(b"Confirm exactly this host attestation/reconciliation? [y/N] ")?;
+                terminal.flush()?;
+                let mut answer = String::new();
+                std::io::BufReader::new(terminal).read_line(&mut answer)?;
+                if !matches!(answer.trim(),"y"|"Y") { return Err(cockpit::teams::TeamError::new(cockpit::teams::ErrorCode::Unauthorized,"host declined confirmation")); }
+            }
+            client::host_request(&request)?.result
+        })();
+        match result {
+            Ok(result) => println!("{result}"),
+            Err(error) => { eprintln!("cockpit-team: {}", escape_hiding(&error.to_string(), "", "")); std::process::exit(1); },
+        }
+        return;
     }
     let action = action(&arguments[0]).unwrap_or_else(|error| {
         eprintln!("cockpit-team: {}", escape_hiding(&error, "", ""));

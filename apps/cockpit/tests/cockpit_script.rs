@@ -4145,6 +4145,23 @@ fn apply_logs_the_install_failure_details_without_undoing_the_commits() {
     assert!(lines[..failure].iter().any(|line| line.contains(mismatch)), "{lines:?}");
 }
 
+#[test]
+fn a_failed_after_apply_publishes_only_failed_chief_install_evidence() {
+    let manager = Manager::new();
+    let live = manager.sandbox.home.join("agent-cockpit");
+    let work = manager.sandbox.home.join("IdeaProjects/agent-cockpit");
+    reviewed_pair(&live,&work);
+    fs::write(live.join("Makefile"),"after-apply:\n\t@exit 1\n").unwrap();
+    assert!(Command::new("git").arg("-C").arg(&live).args(["add","Makefile"]).status().unwrap().success());
+    assert!(Command::new("git").arg("-C").arg(&live).args(["commit","-qm","installation target"]).status().unwrap().success());
+    manager.sandbox.shim("cockpit-team","if [ \"$1\" = evidence-apply-prepare ]; then echo reviewed-token; fi");
+    let output = manager.sandbox.run_with_input(bin().join("cockpit"),&["apply",&path_str(&work),"assignment-1"],&[],"y\n");
+    assert_eq!(output.status.code(),Some(1),"{}",stderr(&output));
+    assert_eq!(git_output(&live,&["log","-1","--format=%s"]),"Add y");
+    assert!(manager.calls("cockpit-team").iter().any(|call|call.contains("evidence-apply-finish reviewed-token false")),"{:?}",manager.calls("cockpit-team"));
+    assert!(!manager.calls("cockpit-team").iter().any(|call|call.contains("reviewed-token true")));
+}
+
 const SLEEP_SINCE: u64 = 1_700_000_000;
 const SLEEP_PROCESSES: &str = "  4242     1 fish\n  4300  4242 bash\n  5000  4242 claude\n  5002  5000 git";
 /// The cursor right after the empty prompt of IDLE, where tmux has it.

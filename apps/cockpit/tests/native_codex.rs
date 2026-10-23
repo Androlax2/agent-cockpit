@@ -322,6 +322,43 @@ fn a_finished_codex_turn_without_team_messages_stays_idle() {
 }
 
 #[test]
+fn chief_envelopes_reuse_codex_turn_boundary_continuation_and_receipts() {
+    for kind in ["chief_assignment", "chief_coordinate"] {
+        let sandbox = Sandbox::new();
+        let _reports = common::sandbox::ReportSocket::start(&sandbox.runtime.join("claude-report/osd-report.sock"), "ok");
+        let requests = sandbox.team_socket(json!({"dispatch_id": "chief_d1", "message_id": "assignment1",
+            "text": "Chief collaborator; approved scope only", "envelope": {"kind": kind}}));
+        let output = stop_hook(&sandbox);
+        assert!(output.status.success());
+        let printed: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(printed["decision"], "block");
+        assert_eq!(printed["reason"], "Chief collaborator; approved scope only");
+        let requests = requests.lock().unwrap();
+        let receipts = requests.iter().filter(|request| request["action"] == "receipt").collect::<Vec<_>>();
+        assert_eq!(receipts.len(), 1);
+        assert_eq!(receipts[0]["dispatch_id"], "chief_d1");
+        assert_eq!(receipts[0]["outcome"]["native_id"], "codex-stop:chief_d1");
+    }
+}
+
+#[test]
+fn chief_codex_failed_continuation_output_is_uncertain_never_received() {
+    let sandbox = Sandbox::new();
+    let _reports = common::sandbox::ReportSocket::start(&sandbox.runtime.join("claude-report/osd-report.sock"), "ok");
+    let requests = sandbox.team_socket(json!({"dispatch_id":"chief_failed", "message_id":"assignment1", "text":"approved task",
+        "envelope":{"kind":"chief_assignment"}}));
+    let full = std::fs::OpenOptions::new().write(true).open("/dev/full").unwrap();
+    let mut child = sandbox.command(env!("CARGO_BIN_EXE_cockpit-codex-hook"), &[])
+        .stdin(Stdio::piped()).stdout(Stdio::from(full)).stderr(Stdio::piped()).spawn().unwrap();
+    child.stdin.take().unwrap().write_all(json!({"hook_event_name":"Stop", "session_id":NATIVE_THREAD,"cwd":sandbox.root}).to_string().as_bytes()).unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(!output.status.success());
+    let requests = requests.lock().unwrap();
+    let receipt = requests.iter().find(|request| request["action"] == "receipt").expect("uncertain receipt");
+    assert_eq!(receipt["outcome"]["outcome"], "uncertain");
+}
+
+#[test]
 fn failed_native_codex_restart_does_not_focus_an_unknown_session() {
     let sandbox = Sandbox::new();
     sandbox.shim("tmux", "exit 1");
