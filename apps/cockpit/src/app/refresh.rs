@@ -31,26 +31,33 @@ pub struct Target {
     path: PathBuf,
     tree: bool,
     immediate: bool,
+    statuslines: bool,
 }
 
 impl Target {
-    pub fn file(path: PathBuf, immediate: bool) -> Self { Self { path, tree: false, immediate } }
-    pub fn tree(path: PathBuf) -> Self { Self { path, tree: true, immediate: false } }
+    pub fn file(path: PathBuf, immediate: bool) -> Self { Self { path, tree: false, immediate, statuslines: false } }
+    pub fn tree(path: PathBuf) -> Self { Self { path, tree: true, immediate: false, statuslines: false } }
+    pub fn statuslines(path: PathBuf) -> Self { Self { path, tree: false, immediate: false, statuslines: true } }
 
     fn matches(&self, path: &Path) -> bool {
         path == self.path || self.path.starts_with(path) || (self.tree && path.starts_with(&self.path))
+            || (self.statuslines && path.parent() == Some(self.path.as_path()) && path.file_name().is_some_and(|name| {
+                let name = name.as_bytes();
+                name.starts_with(b"statusline-") && name.ends_with(b".json")
+            }))
     }
 }
 
 pub fn inputs() -> Vec<Target> {
     use crate::{paths, remote};
-    let mut targets = vec![Target::file(paths::current(), true)];
+    let mut targets = vec![Target::file(paths::current(), true), Target::statuslines(paths::statusline_dir())];
     for path in [paths::snapshot(), paths::usage_cache(), paths::codex_usage_cache(), paths::todo_updates(),
         paths::game_frozen(), paths::loading_state(), paths::todo(), paths::settings(), paths::view_state(),
-        paths::recent_sessions(), paths::history(), paths::credentials(), remote::state_dir().join("devices.json")] {
+        paths::recent_sessions(), paths::history(), paths::credentials(), remote::state_dir().join("devices.json"),
+        paths::runtime_dir().join("claude-usage-error.json"), paths::runtime_dir().join("codex-usage-error.json")] {
         targets.push(Target::file(path, false));
     }
-    for path in [paths::statusline_dir(), paths::designs(), paths::restarting_dir(), paths::asleep_dir(),
+    for path in [paths::designs(), paths::restarting_dir(), paths::asleep_dir(),
         paths::ended_sessions(), paths::state_dir().join("prompt-queue"), paths::state_dir().join("restart-when-idle")] {
         targets.push(Target::tree(path));
     }
@@ -79,6 +86,7 @@ impl Watcher {
             }
             watcher.add_directory(parent)?;
             if target.tree && target.path.is_dir() { watcher.add_tree(&target.path)?; }
+            if target.statuslines && target.path.is_dir() { watcher.add_directory(&target.path)?; }
         }
         Ok(watcher)
     }
@@ -168,6 +176,10 @@ pub struct Schedule {
 }
 
 impl Schedule {
+    /// Expensive work earns its cooldown after completion, not before it starts. Otherwise a
+    /// slow gather plus frequent reports can keep the terminal busy with back-to-back gathers.
+    pub fn finished(&mut self, now: Duration) { self.last_full = Some(now); }
+
     pub fn maintenance_due(&mut self, now: Duration) -> bool {
         if self.last_maintenance.is_none_or(|last| now.saturating_sub(last) >= Duration::from_secs(1)) {
             self.last_maintenance = Some(now);
@@ -293,5 +305,26 @@ mod tests {
         assert!(schedule.maintenance_due(Duration::from_secs(1)));
         assert!(!schedule.maintenance_due(Duration::from_millis(1040)));
         assert!(schedule.maintenance_due(Duration::from_secs(2)));
+    }
+
+    #[test]
+    fn a_slow_refresh_gets_a_cooldown_after_it_finishes() {
+        let mut schedule = Schedule::default();
+        assert!(schedule.due(Duration::ZERO, Changes::default(), true));
+        schedule.finished(Duration::from_millis(400));
+        assert!(!schedule.due(Duration::from_millis(440), Changes { refresh: true, immediate: false }, true));
+        assert!(schedule.due(Duration::from_millis(650), Changes::default(), true));
+    }
+
+    #[test]
+    fn statusline_watches_ignore_hook_logs_and_request_subtrees() {
+        let fixture = Fixture::new();
+        let mut watcher = Watcher::new(vec![Target::statuslines(fixture.0.clone())]).unwrap();
+        fs::write(fixture.0.join("hook.log"), "noise").unwrap();
+        fs::create_dir(fixture.0.join("requests")).unwrap();
+        fs::write(fixture.0.join("requests/request.json"), "{}").unwrap();
+        assert!(!watcher.changes().unwrap().refresh);
+        fs::write(fixture.0.join("statusline-session.json"), "{}").unwrap();
+        assert!(watcher.changes().unwrap().refresh);
     }
 }

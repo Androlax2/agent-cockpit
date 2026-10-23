@@ -73,7 +73,7 @@ fn run() -> io::Result<()> {
     let mut repaired_at = Instant::now();
     let mut schedule = Schedule::default();
     loop {
-        let changes = match watcher.as_mut().map(Watcher::changes).transpose() {
+        let mut changes = match watcher.as_mut().map(Watcher::changes).transpose() {
             Ok(changes) => changes.unwrap_or_default(),
             Err(error) => {
                 util::log_event("WARN", &format!("sidebar input watch: {error}; using 250 ms polling"));
@@ -97,12 +97,18 @@ fn run() -> io::Result<()> {
             }
             repaired_at = Instant::now();
         }
+        // Watching normally replaces this small file read. During degraded coverage preserve
+        // the 40 ms session-switch check, independently of the full-refresh polling cooldown.
+        if watcher.is_none() && app.viewed_changed() {
+            changes.immediate = true;
+        }
         let full = schedule.due(started.elapsed(), changes, watcher.is_some());
         let maintenance = schedule.maintenance_due(started.elapsed());
         let background = refresh::take_background_changed();
         if full {
             app.tick();
             screen.draw(&mut app);
+            schedule.finished(started.elapsed());
         } else if maintenance {
             app.maintain();
             screen.draw(&mut app);
@@ -118,6 +124,7 @@ fn run() -> io::Result<()> {
         if app.collect_manager() {
             app.tick();
             screen.draw(&mut app);
+            schedule.finished(started.elapsed());
         }
     }
 }

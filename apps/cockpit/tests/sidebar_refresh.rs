@@ -141,6 +141,22 @@ fn writing_the_sidebar_log_does_not_trigger_full_refreshes() {
 }
 
 #[test]
+fn hook_logs_and_approval_files_do_not_trigger_full_refreshes() {
+    let mut sidebar = Sidebar::configured("", |root| {
+        fs::create_dir_all(root.join("home/.cache/claude")).unwrap();
+    });
+    sidebar.terminal.pump(1.0, None);
+    let before = sidebar.gathers();
+    fs::create_dir(sidebar.root.join("home/.cache/claude/requests")).unwrap();
+    for _ in 0..8 {
+        fs::write(sidebar.root.join("home/.cache/claude/hook.log"), "unrelated hook log").unwrap();
+        fs::write(sidebar.root.join("home/.cache/claude/requests/approval.json"), "{}").unwrap();
+        sidebar.terminal.pump(0.1, None);
+    }
+    assert_eq!(sidebar.gathers(), before, "unrelated cache writes caused a refresh loop");
+}
+
+#[test]
 fn resize_and_keyboard_input_do_not_wait_for_the_safety_refresh() {
     let mut sidebar = Sidebar::new();
     sidebar.terminal.pump(1.0, None);
@@ -181,4 +197,69 @@ fn watch_failure_falls_back_to_polling_then_recovers() {
     assert_eq!(sidebar.gathers(), before, "polling did not stop after watch recovery");
     let log = fs::read_to_string(sidebar.root.join("state/cockpit/log")).unwrap();
     assert!(log.contains("using 250 ms polling") && log.contains("input watch restored"), "watch failure was silent: {log}");
+}
+
+#[test]
+fn slow_gathers_do_not_run_back_to_back_when_reports_keep_arriving() {
+    let mut sidebar = Sidebar::configured("", |root| {
+        write_executable(&root.join("bin/tmux"), &format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\n/usr/bin/sleep 0.4\nprintf 'done\\n' >> '{}'\n",
+            root.join("tmux.calls").display(), root.join("tmux.done").display()));
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !sidebar.root.join("tmux.done").exists() {
+        assert!(std::time::Instant::now() < deadline, "first gather did not complete");
+        sidebar.terminal.pump(0.01, None);
+    }
+    let before = sidebar.gathers();
+    for _ in 0..5 {
+        fs::write(sidebar.root.join("run/cockpit.json"), "{\"sessions\":[]}").unwrap();
+        sidebar.terminal.pump(0.03, None);
+    }
+    assert_eq!(sidebar.gathers(), before, "a slow gather consumed its own cooldown");
+}
+
+#[test]
+fn usage_failures_and_their_removal_refresh_quota_data_promptly() {
+    let mut sidebar = Sidebar::new();
+    sidebar.terminal.pump(1.0, None);
+    for filename in ["claude-usage-error.json", "codex-usage-error.json"] {
+        let path = sidebar.root.join("run").join(filename);
+        let before = sidebar.gathers();
+        fs::write(&path, "{}").unwrap();
+        sidebar.terminal.pump(0.5, None);
+        assert!(sidebar.gathers() > before, "failure cache was not watched: {filename}");
+        let before = sidebar.gathers();
+        fs::remove_file(path).unwrap();
+        sidebar.terminal.pump(0.5, None);
+        assert!(sidebar.gathers() > before, "failure recovery was not watched: {filename}");
+    }
+}
+
+#[test]
+fn switching_sessions_stays_prompt_even_when_watching_has_failed() {
+    let mut sidebar = Sidebar::configured("", |root| {
+        let cache = root.join("home/.cache/claude");
+        fs::create_dir_all(&cache).unwrap();
+        fs::set_permissions(cache, fs::Permissions::from_mode(0o000)).unwrap();
+    });
+    const FIRST: &str = "aaaaaaaa-0000-4000-8000-000000000000";
+    const SECOND: &str = "bbbbbbbb-0000-4000-8000-000000000000";
+    let sessions: Vec<_> = [FIRST, SECOND].into_iter().map(|session| serde_json::json!({
+        "session": session, "state": "working", "project": "test-project", "cwd": sidebar.root,
+        "since": 1, "started": 1, "tmux_pane": "%1"
+    })).collect();
+    fs::write(sidebar.root.join("run/cockpit.json"), serde_json::json!({"sessions": sessions}).to_string()).unwrap();
+    fs::write(sidebar.root.join("run/cockpit.current"), FIRST).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let calls = fs::read_to_string(sidebar.root.join("cockpit.calls")).unwrap_or_default();
+        if calls.contains(&format!("label-state working {FIRST}")) { break; }
+        assert!(std::time::Instant::now() < deadline, "initial scope was not shown");
+        sidebar.terminal.pump(0.01, None);
+    }
+    fs::write(sidebar.root.join("run/cockpit.current"), SECOND).unwrap();
+    sidebar.terminal.pump(0.15, None);
+    let calls = fs::read_to_string(sidebar.root.join("cockpit.calls")).unwrap();
+    assert!(calls.contains(&format!("label-state working {SECOND}")), "fallback slowed session switching");
 }
