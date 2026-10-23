@@ -152,6 +152,10 @@ export default {
             report(data.sessionID, { hook_event_name: "UserPromptSubmit", prompt: data.item.payload?.text ?? "" })
           }
           break
+        case "session.execution.started":
+          // Synthetic turns can finish without tools; they still consume an idle period.
+          if (isTopLevel(data.sessionID)) report(data.sessionID, { hook_event_name: "UserPromptSubmit", source: "system" })
+          break
         case "session.execution.succeeded":
         case "session.execution.failed":
         case "session.execution.interrupted":

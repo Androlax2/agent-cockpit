@@ -217,6 +217,36 @@ fn a_turn_reports_like_claudes_hooks_do() {
 }
 
 #[test]
+fn tool_free_team_turns_report_working_before_each_idle_period() {
+    for ending in ["session.execution.succeeded", "session.execution.failed", "session.execution.interrupted"] {
+        let run = run(json!([
+            created(ROOT, None),
+            event("session.execution.started", json!({"sessionID": ROOT})),
+            event(ending, json!({"sessionID": ROOT})),
+            event("session.execution.started", json!({"sessionID": ROOT})),
+            finished(ROOT),
+        ]), "");
+        assert_eq!(names(&run), ["SessionStart", "UserPromptSubmit", "Stop", "UserPromptSubmit", "Stop"], "{ending}");
+        for payload in [&run.payloads[1], &run.payloads[3]] {
+            assert_eq!(payload["source"], "system", "execution does not answer Theo's saved question");
+            assert!(payload.get("prompt").is_none(), "execution does not rename Theo's task");
+        }
+    }
+}
+
+#[test]
+fn a_queued_synthetic_message_is_not_work_until_execution_starts() {
+    let run = run(json!([
+        created(ROOT, None),
+        event("session.inbox.enqueued", json!({"sessionID": ROOT, "inboxID": "msg_team1", "item": {
+            "id": "msg_team1", "sessionID": ROOT, "time": {"created": 0}, "type": "synthetic",
+            "payload": {"text": "The frame is ready."}, "delivery": "queue"
+        }})),
+    ]), "");
+    assert_eq!(names(&run), ["SessionStart"]);
+}
+
+#[test]
 fn a_failed_or_interrupted_turn_ends_it_too() {
     for kind in ["session.execution.failed", "session.execution.interrupted"] {
         let run = run(json!([created(ROOT, None), event(kind, json!({"sessionID": ROOT, "reason": "user", "error": {"type": "x", "message": "y"}}))]), "");
@@ -235,6 +265,7 @@ fn a_subagents_session_shows_on_its_roots_card_and_never_ends_the_turn() {
     let run = run(json!([
         created(ROOT, None),
         created(CHILD, Some(ROOT)),
+        event("session.execution.started", json!({"sessionID": CHILD})),
         tool(CHILD),
         event("permission.asked", json!({"id": "per_2", "sessionID": CHILD, "action": "edit", "resources": []})),
         finished(CHILD),
