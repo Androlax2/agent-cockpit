@@ -50,8 +50,9 @@ esac
 greywall_options="--allow-path $CHROME_CONFIG_HOME"
 
 # Greywall's private /tmp keeps Go verification writable without exposing the host's build
-# cache to writes or letting a session poison artifacts used outside the sandbox.
+# or module caches to writes or letting a session poison artifacts used outside the sandbox.
 export GOCACHE=/tmp/greywall-go-build
+export GOMODCACHE=/tmp/greywall-go-mod
 
 # A folder's name the way Claude names its folder in ~/.claude/projects: every character but a
 # letter or a digit becomes "-".

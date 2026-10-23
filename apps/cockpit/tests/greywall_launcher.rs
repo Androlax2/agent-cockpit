@@ -231,6 +231,22 @@ fn go_build_cache_stays_in_the_sandbox_instead_of_the_host_home() {
 }
 
 #[test]
+fn go_module_cache_stays_in_the_sandbox_instead_of_the_host_gopath() {
+    for &agent in AGENTS.iter() {
+        for inherited_cache in ["", "/host/custom-go-mod-cache"] {
+            let launch = Launch::new();
+            let started = launch.run_agent(agent, &[("GOMODCACHE", inherited_cache), ("GOPATH", "/host/go")], &[]);
+            let environment = fs::read_to_string(launch.sandbox.home.join(format!("{agent}-environment"))).unwrap();
+            assert!(environment.lines().any(|line| line == "GOMODCACHE=/tmp/greywall-go-mod"),
+                "{agent} did not redirect the Go module cache (inherited {inherited_cache:?})");
+            assert!(!started.contains("--allow-path /tmp/greywall-go-mod"), "{started}");
+            assert!(!started.contains("--allow-path /host/go"), "{started}");
+            assert!(!launch.sandbox.home.join("go/pkg").exists());
+        }
+    }
+}
+
+#[test]
 fn only_the_projects_own_answers_folder_is_mounted() {
     // Security audit M3: no session reads another project's command output.
     for &agent in AGENTS.iter() {
