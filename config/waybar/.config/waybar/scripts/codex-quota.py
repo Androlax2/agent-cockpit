@@ -3,6 +3,7 @@
 
 import argparse
 from contextlib import contextmanager
+import hashlib
 import json
 import math
 import os
@@ -159,6 +160,7 @@ def normalize_quota(result):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--login", action="store_true", help="Sign in to the dedicated quota account")
+    parser.add_argument("--routing", action="store_true", help="Include private account-binding and included-usage evidence")
     arguments = parser.parse_args()
     os.umask(0o077)
     signal.signal(signal.SIGALRM, timeout_handler)
@@ -174,7 +176,16 @@ def main():
             account = request(process, 2, "account/read", {"refreshToken": False}).get("account")
             if not isinstance(account, dict) or account.get("type") != "chatgpt":
                 raise QuotaError("Codex quota sign-in required; run codex-usage.sh --login")
-            quota = normalize_quota(request(process, 3, "account/rateLimits/read"))
+            result = request(process, 3, "account/rateLimits/read")
+            quota = normalize_quota(result)
+            if arguments.routing:
+                account_id = result.get("accountId")
+                if (not isinstance(account_id, str) or not 0 < len(account_id) <= 256
+                        or any(ord(character) < 32 or ord(character) == 127 for character in account_id)):
+                    account_id = None
+                quota["account_fingerprint"] = hashlib.sha256(f"openai:{account_id}".encode()).hexdigest() if account_id else None
+                allowed = result.get("ordinaryUsageAllowed")
+                quota["ordinary_usage_allowed"] = allowed if type(allowed) is bool else None
         print(json.dumps(quota, allow_nan=False))
         return 0
     except QuotaError as error:

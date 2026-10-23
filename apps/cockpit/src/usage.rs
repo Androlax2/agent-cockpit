@@ -10,6 +10,87 @@ use std::fs;
 use std::process::Command;
 
 pub const USAGE_REFRESH_S: f64 = 300.0;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SubscriptionCapacity { Available, Exhausted, Unknown }
+
+/// Routing needs raw, account-matched evidence; rounded display rows cannot establish capacity.
+pub fn subscription_capacity_of(provider: &str, model: &str, usage: &Value, fetched: i64,
+                                failed: Option<i64>, now: i64, account_matches: bool) -> SubscriptionCapacity {
+    use SubscriptionCapacity::*;
+    if !account_matches || fetched > now || now.saturating_sub(fetched) > 600 || failed.is_some_and(|failed| failed >= fetched) {
+        return Unknown;
+    }
+    let classify = |percent: Option<f64>, reset: Option<i64>| {
+        match (percent, reset) {
+            (Some(percent), Some(reset)) if (0.0..=100.0).contains(&percent) && reset > now => {
+                if percent == 100.0 { Exhausted } else { Available }
+            },
+            _ => Unknown,
+        }
+    };
+    let claude_window = |window: &Value, percent: &str| classify(window[percent].as_f64(),
+        window["resets_at"].as_str().and_then(parse_time).map(|time| time.timestamp()));
+    let mut states = Vec::new();
+    match provider {
+        "claude" | "anthropic" => {
+            let Some(family) = ["opus", "sonnet", "haiku"].into_iter().find(|family| model.starts_with(&format!("claude-{family}-"))) else {
+                return Unknown;
+            };
+            if let Some(limits) = usage["limits"].as_array() {
+                for limit in limits {
+                    match limit["kind"].as_str() {
+                        Some("session" | "weekly_all") => states.push(claude_window(limit, "percent")),
+                        Some("weekly_scoped") => {
+                            let Some(scope) = limit["scope"]["model"]["display_name"].as_str() else { return Unknown };
+                            let scope = scope.to_lowercase();
+                            let Some(scoped_family) = ["opus", "sonnet", "haiku"].into_iter().find(|known| scope == *known || scope.starts_with(&format!("claude {known}"))) else {
+                                return Unknown;
+                            };
+                            if scoped_family == family { states.push(claude_window(limit, "percent")); }
+                        },
+                        _ => return Unknown,
+                    }
+                }
+            } else {
+                for key in ["five_hour".to_string(), "seven_day".into(), format!("seven_day_{family}")] {
+                    if let Some(window) = usage.get(&key).filter(|window| !window.is_null()) {
+                        states.push(claude_window(window, "utilization"));
+                    }
+                }
+                if let Some(scoped) = usage.get("model_scoped") {
+                    let Some(scoped) = scoped.as_array() else { return Unknown };
+                    for window in scoped {
+                        let Some(name) = window["display_name"].as_str() else { return Unknown };
+                        let name = name.to_lowercase();
+                        let Some(scoped_family) = ["opus", "sonnet", "haiku"].into_iter().find(|known| name == *known || name.starts_with(&format!("claude {known}"))) else {
+                            return Unknown;
+                        };
+                        if scoped_family == family { states.push(claude_window(window, "utilization")); }
+                    }
+                }
+            }
+        },
+        "codex" | "openai" => {
+            let Some(allowed) = usage["ordinary_usage_allowed"].as_bool() else { return Unknown };
+            let limits = &usage["rate_limit"];
+            for key in ["primary_window", "secondary_window"] {
+                if let Some(window) = limits.get(key).filter(|window| !window.is_null()) {
+                    states.push(classify(window["used_percent"].as_f64(), window["reset_at"].as_i64()));
+                }
+            }
+            if states.is_empty() || states.contains(&Unknown) { return Unknown; }
+            if !allowed || limits["allowed"].as_bool() == Some(false) || limits["limit_reached"].as_bool() == Some(true) {
+                return Exhausted;
+            }
+        },
+        _ => return Unknown,
+    }
+    if states.is_empty() || states.contains(&Unknown) { Unknown }
+    else if states.contains(&Exhausted) { Exhausted }
+    else { Available }
+}
+
 const REPORT_BAR_WIDTH: usize = 40;
 const ALERT_THRESHOLDS: [i64; 2] = [80, 95];
 /// The flat windows: the older shape of the response, used only without its "limits" list.

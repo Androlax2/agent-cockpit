@@ -1,0 +1,25 @@
+{
+  "sources": {
+    "codex": "Installed app-server generate-json-schema --experimental; v2 GetAccountRateLimitsResponse, Thread, CodexErrorInfo",
+    "opencode": "Installed v2.1.4 model/integration metadata; https://opencode.ai/v2/openapi.json",
+    "claude": "Existing claude-usage.sh endpoint contract and usage.rs fixtures"
+  },
+  "codex": {
+    "accountId": "fixture-workspace",
+    "ordinaryUsageAllowed": true,
+    "rateLimits": {
+      "limitId": "codex",
+      "primary": {"usedPercent": 99.6, "windowDurationMins": 300, "resetsAt": 1800003600},
+      "secondary": null
+    }
+  },
+  "codex_thread_metadata": {
+    "id": "aaaaaaaa-0000-4000-8000-000000000000",
+    "model": "fixture-model",
+    "modelProvider": "openai",
+    "reasoningEffort": "high"
+  },
+  "codex_errors": ["usageLimitExceeded", "rateLimitExceeded", "unauthorized"],
+  "opencode_model_reference": {"providerID": "anthropic", "id": "claude-opus-4-7", "variant": "high"},
+  "opencode_connection_shape": {"type": "credential", "id": "fixture-credential", "label": "Claude OAuth", "method": "oauth"}
+}

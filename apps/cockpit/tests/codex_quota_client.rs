@@ -4,6 +4,33 @@ mod codex_quota;
 
 use common::sandbox::*;
 use serde_json::{Value, json};
+
+#[test]
+fn routing_quota_is_bound_to_the_backend_account_without_exposing_its_identity() {
+    let sandbox = codex_quota::sandbox();
+    let path = sandbox.home.join("quota-response.json");
+    let mut response: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    response["accountId"] = json!("fixture-workspace");
+    response["ordinaryUsageAllowed"] = json!(true);
+    fs::write(path, response.to_string()).unwrap();
+    let output = codex_quota::client(&sandbox, &["--routing"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let quota: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(quota["ordinary_usage_allowed"], true);
+    assert_eq!(quota["account_fingerprint"], "df9e9e72b3bc12700495d3e62d855e093227025065df23af8e3e7e22fc77f4f9");
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("fixture-workspace"));
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("private@example.test"));
+}
+
+#[test]
+fn routing_quota_does_not_infer_account_or_included_usage_from_the_login_label() {
+    let sandbox = codex_quota::sandbox();
+    let output = codex_quota::client(&sandbox, &["--routing"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let quota: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(quota["ordinary_usage_allowed"].is_null());
+    assert!(quota["account_fingerprint"].is_null());
+}
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::process::Stdio;
