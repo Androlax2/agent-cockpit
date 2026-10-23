@@ -194,3 +194,20 @@ fn sidebar_findings_are_attached_to_the_current_handoff_not_interpreted_as_appro
     state.as_object_mut().unwrap().remove("handoffs");
     assert_eq!(sidebar::handoff_summary(&state, &task), "Handoff evidence unavailable");
 }
+
+#[test]
+fn sidebar_pending_qa_is_starting_not_a_second_planned_review() {
+    let task = TaskKey { project:PROJECT.into(),task_id:"1d3fd318".into() };
+    let state = json!({"handoffs":[{"project":PROJECT,"task_id":"1d3fd318","handoff_id":"h2","status":"current","payload":{"commit":"abc"}}],
+        "spawns":[{"task_key":serde_json::to_string(&task).unwrap(),"role":"qa","status":"pending","commit_id":"abc","created_at":1}]});
+    assert_eq!(sidebar::qa_status(&state,&task), "QA starting · not yet linked");
+}
+
+#[test]
+fn sidebar_invalid_membership_is_unavailable_instead_of_dropping_the_session() {
+    for member in [json!({"session_id":DESIGNER,"project":PROJECT,"task_id":"1d3fd318","role":"invented-role"}),
+        json!({"session_id":DESIGNER,"project":PROJECT,"role":"designer"})] {
+        let state = json!({"members":[member],"sessions":[]});
+        assert!(sidebar::grouped_rows(&state,&[Session {session:DESIGNER.into(),project:"shop".into(),..Session::default()}],&HashSet::new()).is_err());
+    }
+}

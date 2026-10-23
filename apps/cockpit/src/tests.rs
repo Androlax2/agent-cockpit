@@ -3321,6 +3321,211 @@ fn team_sidebar_selected_details_keep_full_member_identity_and_handoff() {
     }
 }
 
+fn sidebar_select(app: &mut App, text: &str) {
+    app.panels[1].selected = app.panels[1].lines.iter().find(|line| line.item.is_some() && line.texts().contains(text))
+        .unwrap_or_else(|| panic!("missing {text}: {:?}", texts(app, 1))).item.unwrap();
+}
+
+fn sidebar_fold(app: &mut App) {
+    sidebar_select(app, "Team: 1d3fd318");
+    app.handle(Key::Enter, &mut FakeScreen::default());
+    app.redraw();
+}
+
+#[test]
+fn team_sidebar_enter_toggles_without_opening_or_waking() {
+    let fixture = Fixture::new();
+    sidebar_sessions(&fixture);
+    team_host(&fixture, sidebar_snapshot(), vec![]);
+    let mut app = fixture.app();
+    sidebar_fold(&mut app);
+    assert!(texts(&app, 1).iter().any(|text| text.starts_with("▸ Team:")));
+    assert!(!app.panels[1].lines.iter().any(|line| line.texts().contains("Build session")));
+    assert!(app.selected_session().is_none());
+    app.handle(Key::Enter, &mut FakeScreen::default());
+    app.redraw();
+    assert!(app.panels[1].lines.iter().any(|line| line.texts().contains("Build session")));
+    assert!(fixture.calls("cockpit").is_empty(), "{:?}", fixture.calls("cockpit"));
+    sidebar_select(&mut app, "Build session");
+    app.handle(Key::Enter, &mut FakeScreen::default());
+    assert_eq!(fixture.wait_for_calls("cockpit", 1), [format!("cockpit open {OPENCODE_SESSION}")]);
+    app.handle(Key::Right, &mut FakeScreen::default());
+    assert!(fixture.calls("cockpit").contains(&"cockpit focus-viewer".into()));
+}
+
+#[test]
+fn team_sidebar_next_attention_expands_the_correct_team() {
+    let fixture = Fixture::new();
+    let mut developer = session(OPENCODE_SESSION, "needs-you", "project-a", "/r/project-a", 2);
+    developer["request"] = json!("Which test should run?");
+    developer["label"] = json!("Build session");
+    fixture.snapshot(json!([session(SESSION_A,"waiting","project-a","/r/project-a",1),developer]));
+    team_host(&fixture, sidebar_snapshot(), vec![]);
+    let mut app = fixture.app();
+    sidebar_fold(&mut app);
+    app.handle(Key::Char('n'), &mut FakeScreen::default());
+    app.redraw();
+    assert_eq!(app.selected_session().unwrap().session, OPENCODE_SESSION);
+    assert!(texts(&app,1).iter().any(|text| text.starts_with("▾ Team:")));
+    assert_eq!(fixture.wait_for_calls("cockpit",1), [format!("cockpit attend {OPENCODE_SESSION}")]);
+}
+
+#[test]
+fn team_sidebar_search_finds_a_collapsed_member() {
+    let fixture = Fixture::new();
+    sidebar_sessions(&fixture);
+    team_host(&fixture, sidebar_snapshot(), vec![]);
+    let mut app = fixture.app();
+    sidebar_fold(&mut app);
+    app.handle(Key::Char('/'), &mut FakeScreen::typing(&[&format!("{OPENCODE_SESSION}\tproject-a\tBuild session")]));
+    app.redraw();
+    assert_eq!(app.selected_session().unwrap().session, OPENCODE_SESSION);
+    assert!(texts(&app,1).iter().any(|text| text.starts_with("▾ Team:")));
+    assert!(fixture.calls("cockpit").is_empty());
+    app.handle(Key::Char('U'), &mut FakeScreen::default());
+    assert_eq!(fixture.wait_for_calls("cockpit",1), ["cockpit push /r/project-a"]);
+}
+
+#[test]
+fn team_sidebar_refresh_preserves_selected_session_identity() {
+    let fixture = Fixture::new();
+    sidebar_sessions(&fixture);
+    team_host(&fixture, sidebar_snapshot(), vec![]);
+    let mut app = fixture.app();
+    sidebar_select(&mut app, "Build session");
+    app.handle(Key::Char('p'), &mut FakeScreen::default());
+    app.build();
+    assert_eq!(app.selected_session().unwrap().session, OPENCODE_SESSION);
+    continuity_action(&mut app,"1\tattention-filter",&[]);
+    continuity_action(&mut app,"1\tattention-filter",&[]);
+    sidebar_select(&mut app, "Build session");
+    fixture.snapshot(json!([session(SESSION_A,"waiting","project-a","/r/project-a",1),session(SESSION_B,"waiting","project-a","/r/project-a",3)]));
+    app.build();
+    assert!(app.selected_session().is_none(), "disappeared member inherited another session target");
+    for key in [Key::Enter, Key::Char('x'), Key::Char('U')] { app.handle(key, &mut FakeScreen::answering(&[Key::Char('y')])); }
+    assert!(fixture.calls("cockpit").is_empty(), "{:?}", fixture.calls("cockpit"));
+}
+
+#[test]
+fn team_sidebar_non_session_rows_cannot_run_session_actions() {
+    let fixture = Fixture::new();
+    sidebar_sessions(&fixture);
+    let mut state = sidebar_snapshot();
+    state["members"][0]["session_id"] = json!("missing-designer");
+    state["qa_plans"] = json!([{"project":SIDEBAR_PROJECT,"task_id":"1d3fd318","agent":"claude"}]);
+    team_host(&fixture, state, vec![]);
+    let mut app = fixture.app();
+    for target in ["Team: 1d3fd318", "Designer · Unavailable", "QA planned · Fresh"] {
+        sidebar_select(&mut app,target);
+        for key in [Key::Char('x'),Key::Char('r'),Key::Char('s'),Key::Char('U'),Key::Char('e'),Key::Char('$'),Key::Char('C'),Key::Char('+')] {
+            app.handle(key, &mut FakeScreen::answering(&[Key::Char('y')]));
+        }
+    }
+    assert!(fixture.calls("cockpit").is_empty());
+    assert!(app.menu.is_none());
+    render(&mut app,80,60);
+    let rows = buffer_rows(&render(&mut app,80,60));
+    let heading_y = rows.iter().position(|row| row.contains("Team: 1d3fd318")).unwrap() as u16;
+    app.handle(Key::Click {x:8,y:heading_y,double:true}, &mut FakeScreen::default());
+    app.redraw();
+    assert!(texts(&app,1).iter().any(|text| text.starts_with("▸ Team:")));
+    assert!(fixture.calls("cockpit").is_empty());
+}
+
+#[test]
+fn team_sidebar_next_attention_reaches_task_only_blockers() {
+    let fixture = Fixture::new();
+    sidebar_sessions(&fixture);
+    let mut state = sidebar_snapshot();
+    state["escalations"] = json!([{"project":SIDEBAR_PROJECT,"task_id":"1d3fd318","thread_id":"t1","status":"open","reason":"Choose the frame"}]);
+    team_host(&fixture, state, vec![]);
+    let mut app = fixture.app();
+    sidebar_fold(&mut app);
+    sidebar_select(&mut app,"Independent session");
+    app.handle(Key::Char('n'), &mut FakeScreen::default());
+    app.redraw();
+    assert!(app.selected_session().is_none());
+    assert!(texts(&app,1).iter().any(|text| text.starts_with("▾ Team:")));
+    app.handle(Key::Char('i'), &mut FakeScreen::default());
+    assert!(app.team_view.is_some(), "task attention must be actionable");
+    assert!(fixture.calls("cockpit").is_empty());
+}
+
+#[test]
+fn team_sidebar_unicode_and_small_buffers_preserve_attention() {
+    let fixture = Fixture::new();
+    let mut developer = session(OPENCODE_SESSION,"needs-you","project-a","/r/project-a",2);
+    developer["label"] = json!(format!("Review 界{}\u{1b}[2J", "界".repeat(50)));
+    developer["request"] = json!("Choose frame\u{1b}[2J");
+    fixture.snapshot(json!([session(SESSION_A,"waiting","project-a","/r/project-a",1),developer]));
+    team_host(&fixture, sidebar_snapshot(), vec![]);
+    let mut app = fixture.app();
+    sidebar_select(&mut app,"Review 界");
+    for width in [80,40,24,8,1] {
+        let buffer = render(&mut app,width,60);
+        let rows = buffer_rows(&buffer).join("\n");
+        assert!(!rows.contains('\u{1b}'), "{rows:?}");
+        if width >= 40 {
+            assert!(rows.contains("Needs you") && rows.contains("Choose frame"), "{rows}");
+            assert!(rows.contains('…'), "{rows}");
+            let selected = (0..60).find(|y| buffer_rows(&buffer)[*y].contains("Developer")).unwrap() as u16;
+            let cell = &buffer[(8,selected)];
+            assert_eq!(cell.fg, ratatui::style::Color::Indexed(crate::app::FG));
+            assert!(!cell.modifier.contains(ratatui::style::Modifier::DIM));
+        }
+    }
+    app.handle(Key::Char('i'), &mut FakeScreen::default());
+    let details = buffer_rows(&render(&mut app,120,60)).join("\n");
+    assert!(!details.contains('\u{1b}'), "{details:?}");
+    assert!(details.contains(OPENCODE_SESSION), "{details}");
+}
+
+#[test]
+fn team_sidebar_unlink_refresh_cannot_target_an_unrelated_session() {
+    let fixture = Fixture::new();
+    sidebar_sessions(&fixture);
+    team_host(&fixture,sidebar_snapshot(),vec![]);
+    let mut app = fixture.app();
+    sidebar_select(&mut app,"Build session");
+    fs::remove_file(fixture.path("run/claude-team-host/host.sock")).unwrap();
+    app.team_checked = 0.0;
+    app.check_team();
+    fixture.snapshot(json!([session(SESSION_B,"waiting","project-a","/r/project-a",3)]));
+    app.build();
+    for _ in 0..2 {
+        for key in [Key::Enter,Key::Char('x'),Key::Char('U')] { app.handle(key,&mut FakeScreen::answering(&[Key::Char('y')])); }
+        app.redraw();
+    }
+    assert!(fixture.calls("cockpit").is_empty(),"{:?}",fixture.calls("cockpit"));
+    app.handle(Key::Down,&mut FakeScreen::default());
+    app.handle(Key::Enter,&mut FakeScreen::default());
+    assert_eq!(fixture.wait_for_calls("cockpit",1),[format!("cockpit open {SESSION_B}")]);
+}
+
+#[test]
+fn team_sidebar_fold_retains_sleeping_and_restarting_members_without_side_effects() {
+    for state in ["asleep","restarting"] {
+        let fixture = Fixture::new();
+        sidebar_sessions(&fixture);
+        team_host(&fixture,sidebar_snapshot(),vec![]);
+        let mut app = fixture.app();
+        sidebar_select(&mut app,"Build session");
+        if state == "asleep" {
+            asleep_note(&fixture,OPENCODE_SESSION,util::now_secs()-120,util::now_secs()-60);
+        } else {
+            note_restart(&fixture,OPENCODE_SESSION,util::now_secs(),"project-a","/r/project-a");
+        }
+        fixture.snapshot(json!([session(SESSION_A,"waiting","project-a","/r/project-a",1)]));
+        app.build();
+        assert_eq!(app.selected_session().unwrap().session,OPENCODE_SESSION);
+        sidebar_fold(&mut app);
+        app.handle(Key::Enter,&mut FakeScreen::default());
+        app.redraw();
+        assert!(texts(&app,1).iter().any(|text| text.contains(if state == "asleep" {"Asleep"} else {"Restarting"})),"{:?}",texts(&app,1));
+        assert!(fixture.calls("cockpit").is_empty(),"{state}: {:?}",fixture.calls("cockpit"));
+    }
+}
+
 fn open_team_view(app: &mut App) {
     app.handle(Key::Char(':'), &mut FakeScreen::typing(&["1\tteam"]));
     assert!(app.team_view.is_some(), "{}", app.message);

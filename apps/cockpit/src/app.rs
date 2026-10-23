@@ -755,6 +755,8 @@ pub struct App {
     team_links: TeamLinks,
     pub(crate) sidebar_rows: Vec<crate::teams::sidebar::SidebarRow>,
     collapsed_teams: HashSet<String>,
+    sidebar_selection_lost: bool,
+    sidebar_session_tasks: HashMap<String, crate::teams::TaskKey>,
     pub(crate) pairing: Option<Pairing>,
     pub restore: Vec<Restorable>,
     pub held: Vec<String>,
@@ -863,7 +865,7 @@ impl App {
             costs: Costs::default(), reviews: Reviews::default(), todos, errors: ErrorReporter::new(),
             claude_status: ProviderStatus::default(), codex_status: ProviderStatus::new(Provider::Codex), panels: Default::default(), focus: 1, previous_panel: 1,
             help_open: false, has_pane_focus: true, attention_only: false, message, exiting: Vec::new(), restarting_cards: HashMap::new(), labelled: Default::default(), menu: None, session_details: None, todo_composer: None, settings_menu: None, team_view: None, team_attention: 0, team_roles: HashMap::new(), qa_sessions: HashSet::new(), team_known: false, team_checked: 0.0,
-            team_links: TeamLinks::Loading, sidebar_rows: Vec::new(), collapsed_teams: HashSet::new(), pairing: None, restore: Vec::new(),
+            team_links: TeamLinks::Loading, sidebar_rows: Vec::new(), collapsed_teams: HashSet::new(), sidebar_selection_lost: false, sidebar_session_tasks: HashMap::new(), pairing: None, restore: Vec::new(),
             held: Vec::new(), held_checked: 0.0, queue_checked: 0.0, sleep_checked: 0.0, sleep_asked: HashMap::new(), gaming: util::gaming,
             disk_usage: util::fullest_disk, disk: None, disk_checked: 0.0, restore_checked: 0.0, start_files: Vec::new(),
             width: DEFAULT_COLUMN_WIDTH, sessions: Vec::new(), running_sessions: Vec::new(), windows: Vec::new(), quota_rows: Vec::new(), review_rows: Vec::new(), todo_entries: Vec::new(), idea_entries: Vec::new(),
@@ -1567,6 +1569,10 @@ impl App {
     fn build_sessions(&mut self) {
         use crate::teams::sidebar::{self, SidebarRow};
         let selected_row = self.sidebar_rows.get(self.panels[1].selected).cloned();
+        let selected_team = selected_row.as_ref().and_then(|row| match row {
+            SidebarRow::Team { task } | SidebarRow::PlannedQa { task } | SidebarRow::UnavailableMember { task, .. } => Some(task.clone()),
+            SidebarRow::Session { session_id } => self.sidebar_session_tasks.get(session_id).cloned(),
+        });
         let mut selected_id = self.selected_session().map(|session| session.session);
         let gathered = match self.gathered.take() {
             Some(gathered) => gathered,
@@ -1806,10 +1812,17 @@ impl App {
         self.sessions = running.into_iter().filter(|session| !self.attention_only || self.is_actionable(session, util::now_secs())
             || matches!(&self.team_links, TeamLinks::Ready(snapshot) if sidebar::membership(snapshot, session).is_some())).collect();
         self.sidebar_rows = rows;
+        self.sidebar_session_tasks = match &self.team_links {
+            TeamLinks::Ready(snapshot) => self.sessions.iter().filter_map(|session| sidebar::member_task(snapshot, session).map(|task| (session.session.clone(),task))).collect(),
+            _ => HashMap::new(),
+        };
         let panel = &mut self.panels[1];
         let selected_index = selected_id.as_ref().and_then(|id| self.sidebar_rows.iter().position(|row| matches!(row, SidebarRow::Session { session_id } if session_id == id)))
             .or_else(|| selected_row.as_ref().and_then(|selected| self.sidebar_rows.iter().position(|row| row == selected)))
+            .or_else(|| selected_id.as_ref().and_then(|id| self.sidebar_rows.iter().position(|row| matches!(row, SidebarRow::UnavailableMember { session_id, .. } if session_id == id))))
+            .or_else(|| selected_team.as_ref().and_then(|task| self.sidebar_rows.iter().position(|row| matches!(row, SidebarRow::Team { task: candidate } if candidate == task))))
             .or_else(|| selected_row.is_none().then(|| self.sidebar_rows.iter().position(|row| matches!(row, SidebarRow::Session { .. }))).flatten());
+        if selected_team.is_some() && selected_index.is_none() { self.sidebar_selection_lost = true; }
         if let Some(index) = selected_index {
             panel.selected = index;
         }
@@ -1818,7 +1831,7 @@ impl App {
         panel.lines = lines;
         self.panels[1].fixed_top = self.session_summary_lines();
         self.panels[1].fixed_bottom = self.selected_session_detail_lines();
-        if selected_id.as_ref().is_some_and(|id| !self.all_sessions().iter().any(|session| session.session == *id)) && selected_index.is_none()
+        if selected_team.is_none() && selected_id.as_ref().is_some_and(|id| !self.all_sessions().iter().any(|session| session.session == *id)) && selected_index.is_none()
             && !is_viewer_loading() {
             // Viewing an asleep card wakes it, and moving the selection never does.
             if let Some(session) = self.selected_session().filter(|session| session.asleep.is_none()) {
@@ -1879,6 +1892,9 @@ impl App {
 
     fn selected_session_detail_lines(&self) -> Vec<Line> {
         use crate::teams::sidebar::{self, SidebarRow};
+        if self.sidebar_selection_lost {
+            return vec![Line::new(vec![segment(0, "Selected member unavailable · choose a row", style(YELLOW))])];
+        }
         if let (TeamLinks::Ready(snapshot), Some(SidebarRow::Team { task } | SidebarRow::PlannedQa { task } | SidebarRow::UnavailableMember { task, .. })) =
             (&self.team_links, self.sidebar_rows.get(self.panels[1].selected)) {
             return vec![Line::new(vec![segment(0, format!("Selected team: {}", self.team_task_title(snapshot, task)), bold(CYAN))]),
@@ -2065,6 +2081,7 @@ impl App {
     }
 
     pub(crate) fn selected_session(&self) -> Option<Session> {
+        if self.sidebar_selection_lost { return None; }
         let crate::teams::sidebar::SidebarRow::Session { session_id } = self.sidebar_rows.get(self.panels[1].selected)? else { return None };
         self.sessions.iter().find(|session| session.session == *session_id).cloned()
     }
@@ -2091,12 +2108,52 @@ impl App {
         }).collect();
         if let Some(chosen) = screen.outside(&mut || fzf("find session> ", &entries, &["--delimiter", "\t", "--with-nth", "2.."])) {
             if let Some(id) = chosen.split('\t').next() {
-                if let Some(index) = self.sessions.iter().position(|session| session.session == id) {
-                    self.panels[1].selected = index;
-                }
+                self.select_sidebar_target(crate::teams::sidebar::SidebarRow::Session { session_id: id.into() });
             }
         }
         String::new()
+    }
+
+    fn select_sidebar_target(&mut self, target: crate::teams::sidebar::SidebarRow) {
+        use crate::teams::sidebar::{self, SidebarRow};
+        let task = match &target {
+            SidebarRow::Team { task } => Some(task.clone()),
+            SidebarRow::Session { session_id } => self.sessions.iter().find(|session| session.session == *session_id).and_then(|session| match &self.team_links {
+                TeamLinks::Ready(snapshot) => sidebar::member_task(snapshot, session), _ => None,
+            }),
+            _ => None,
+        };
+        if let Some(task) = task { self.collapsed_teams.remove(&sidebar::task_key(&task)); }
+        self.build_sessions();
+        if let Some(index) = self.sidebar_rows.iter().position(|row| row == &target) {
+            self.panels[1].selected = index;
+            self.sidebar_selection_lost = false;
+        }
+    }
+
+    fn next_sidebar_attention(&mut self) -> String {
+        use crate::teams::sidebar::{self, SidebarRow};
+        let rows = match &self.team_links {
+            TeamLinks::Ready(snapshot) => sidebar::grouped_rows(snapshot, &self.sessions, &HashSet::new()).unwrap_or_default(),
+            _ => self.sessions.iter().map(|session| SidebarRow::Session { session_id:session.session.clone() }).collect(),
+        };
+        let current = self.sidebar_rows.get(self.panels[1].selected);
+        let selected_index = current.and_then(|current| rows.iter().position(|row| row == current));
+        let candidates: Vec<_> = rows.iter().enumerate().filter(|(_, row)| match row {
+            SidebarRow::Session { session_id } => self.sessions.iter().find(|session| session.session == *session_id).is_some_and(|session| self.is_actionable(session, util::now_secs())),
+            SidebarRow::Team { task } => matches!(&self.team_links, TeamLinks::Ready(snapshot) if sidebar::attention(snapshot, task).is_some()
+                && !self.sessions.iter().any(|session| sidebar::member_task(snapshot, session).as_ref() == Some(task) && self.is_actionable(session, util::now_secs()))),
+            _ => false,
+        }).collect();
+        let Some((_, target)) = candidates.iter().find(|(index, _)| selected_index.is_none_or(|selected| *index > selected)).or(candidates.first()) else {
+            return "nothing needs you".into();
+        };
+        let target = (*target).clone();
+        self.select_sidebar_target(target.clone());
+        if let SidebarRow::Session { session_id } = target {
+            let attended = self.manager_async(&["attend", &session_id]);
+            self.mark_result_seen(&session_id).unwrap_or(attended)
+        } else { String::new() }
     }
 
     fn open_session_details(&mut self) {
@@ -2118,6 +2175,14 @@ impl App {
         if !session.outcome.is_empty() {
             text += &format!("Last turn:\n{}\n\n", session.outcome);
         }
+        if let TeamLinks::Ready(snapshot) = &self.team_links {
+            if let Some(task) = crate::teams::sidebar::member_task(snapshot, session) {
+                let member = crate::teams::sidebar::membership(snapshot, session).expect("task came from membership");
+                text += &format!("Session: {}\nAgent: {}\nTeam: {} / {}\nRole: {}\n{}\n", session.session, session.agent,
+                    task.project, task.task_id, member["role"].as_str().unwrap_or("Member"), crate::teams::sidebar::handoff_summary(snapshot, &task));
+                text = crate::approval::escape_hiding(&text, "", "");
+            }
+        }
         if session.last_result.is_none() && !session.reports_turns { text += "Result tracking unavailable; restart to enable\n\n"; }
         for line in self.selected_session_detail_lines() {
             for part in line.right {
@@ -2138,6 +2203,9 @@ impl App {
     }
 
     pub(crate) fn sessions_hints(&self) -> Vec<(&'static str, &'static str)> {
+        if self.selected_session().is_none() && self.sidebar_rows.get(self.panels[1].selected).is_some() {
+            return vec![("⏎", "fold/unfold team"), ("n", "Next needing me"), ("/", "find"), ("i", "team details")];
+        }
         let selected = self.selected_session().unwrap_or_default();
         let mut hints = Vec::new();
         if selected.update {
@@ -2189,6 +2257,19 @@ impl App {
     }
 
     pub(crate) fn handle_sessions(&mut self, key: Key, screen: &mut dyn Screen) -> String {
+        use crate::teams::sidebar::{self, SidebarRow};
+        if key == Key::Char('n') { return self.next_sidebar_attention(); }
+        if !self.sidebar_selection_lost {
+            if let Some(SidebarRow::Team { task } | SidebarRow::PlannedQa { task } | SidebarRow::UnavailableMember { task, .. }) = self.sidebar_rows.get(self.panels[1].selected).cloned() {
+                if key == Key::Char('i') { return self.open_team_view(); }
+                if key == Key::Enter && matches!(self.sidebar_rows.get(self.panels[1].selected), Some(SidebarRow::Team { .. })) {
+                    let key = sidebar::task_key(&task);
+                    if !self.collapsed_teams.remove(&key) { self.collapsed_teams.insert(key); }
+                    self.build_sessions();
+                    return String::new();
+                }
+            }
+        }
         let session = self.selected_session();
         if let Some(s) = session.as_ref().filter(|s| s.restarting) && matches!(key, Key::Enter | Key::Char('r' | 'e' | '$' | 'C' | 'x' | 's')) {
             return format!("{} is restarting: wait for it to come back", s.project);
@@ -2210,18 +2291,6 @@ impl App {
             }).unwrap_or_default(),
             Key::Char('/') => self.find_session(screen),
             Key::Char('i') => { self.open_session_details(); String::new() }
-            Key::Char('n') => match {
-                let candidates = self.attention_indices(util::now_secs());
-                candidates.iter().find(|index| **index > self.panels[1].selected).or(candidates.first()).copied()
-            } {
-                None => "nothing needs you".into(),
-                Some(index) => {
-                    self.panels[1].selected = index;
-                    let viewed = self.sessions[index].session.clone();
-                    let attended = self.manager_async(&["attend", &viewed]);
-                    self.mark_result_seen(&viewed).unwrap_or(attended)
-                }
-            },
             Key::Char('p') => {
                 if let Some(s) = known {
                     self.view.toggle_pin(&s.session);
@@ -3634,6 +3703,7 @@ impl App {
         self.focus_panel(panel_index);
         if let Some(item) = item {
             self.panels[panel_index].selected = item;
+            if panel_index == 1 { self.sidebar_selection_lost = false; }
         }
         if let Some((start, end, "effort")) = self.hit_actions.get(&y).copied() {
             if (start..end).contains(&x) {
@@ -3716,8 +3786,14 @@ impl App {
             Key::Char(digit @ '1'..='4') => self.focus_panel(digit as usize - '0' as usize),
             Key::Tab => self.focus_panel(if self.focus == 0 { 1 } else { self.focus % (PANEL_NAMES.len() - 1) + 1 }),
             Key::BackTab => self.focus_panel(if self.focus <= 1 { PANEL_NAMES.len() - 1 } else { self.focus - 1 }),
-            Key::Char('j') | Key::Down => self.panels[self.focus].move_by(1),
-            Key::Char('k') | Key::Up => self.panels[self.focus].move_by(-1),
+            Key::Char('j') | Key::Down => {
+                self.panels[self.focus].move_by(1);
+                if self.focus == 1 { self.sidebar_selection_lost = false; }
+            },
+            Key::Char('k') | Key::Up => {
+                self.panels[self.focus].move_by(-1);
+                if self.focus == 1 { self.sidebar_selection_lost = false; }
+            },
             // From any panel, as ← comes back from the session (tmux.conf).
             Key::Char('l') | Key::Right => { let _ = Command::new("cockpit").arg("focus-viewer").status(); }
             Key::Char('?') => self.help_open = true,

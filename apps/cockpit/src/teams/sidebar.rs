@@ -109,7 +109,7 @@ pub fn qa_status(snapshot: &Value, task: &TaskKey) -> String {
         && current.is_none_or(|handoff| spawn["commit_id"] == handoff["payload"]["commit"]))
         .max_by_key(|spawn| spawn["created_at"].as_i64().unwrap_or(0));
     match spawn.and_then(|spawn| spawn["status"].as_str()) {
-        Some("queued" | "starting" | "started") => "QA starting · not yet linked".into(),
+        Some("pending" | "started") => "QA starting · not yet linked".into(),
         Some("bound") => "QA unavailable · waiting reason unavailable".into(),
         Some("failed") => "QA start failed".into(),
         Some("refused") => "QA start refused".into(),
@@ -140,6 +140,13 @@ pub fn status(session: &Session) -> String {
 pub fn grouped_rows(snapshot: &Value, sessions: &[Session], collapsed: &HashSet<String>) -> Result<Vec<SidebarRow>, TeamError> {
     if !snapshot["members"].is_array() || !snapshot["sessions"].is_array() {
         return Err(TeamError::new(ErrorCode::Invalid, "team snapshot lacks membership or verified sessions"));
+    }
+    let mut member_ids = HashSet::new();
+    for member in list(snapshot, "members") {
+        if role(member).is_none() || task_of(member).is_none_or(|task| task.project.is_empty() || task.task_id.is_empty())
+            || member["session_id"].as_str().is_none_or(|id| id.is_empty() || !member_ids.insert(id)) {
+            return Err(TeamError::new(ErrorCode::Invalid, "invalid team member identity, role or task"));
+        }
     }
     let mut tasks = Vec::new();
     for field in ["members", "proposals", "escalations", "spawns", "handoffs", "qa_plans"] {
