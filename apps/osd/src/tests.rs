@@ -496,11 +496,8 @@ fn a_spawned_qa_report_queues_one_exit_and_retries_a_failed_launch() {
     let qa_start = started(&bench).into_iter().find(|command| command[5] == "qa").unwrap();
     spawned_session_reports(&mut bench, 43, NEW_SESSION, &qa_start[4]);
     let own = crate::teams::request(&mut bench.registry, 43, AgentAction::Context).unwrap().result.unwrap();
-    let snapshot = crate::teams::host(&mut bench.registry, cockpit::teams::HostRequest::Snapshot).unwrap().result.unwrap();
-    let handoff = snapshot["spawns"].as_array().unwrap().iter().find(|spawn| spawn["role"] == "qa").unwrap();
-    let token = handoff["token"].as_str().unwrap();
     let handoff_id: String = bench.registry.teams.as_ref().unwrap().query_row(
-        "SELECT handoff_id FROM spawns WHERE token=?1", [token], |row| row.get(0)).unwrap();
+        "SELECT handoff_id FROM spawns WHERE token=?1", [&qa_start[4]], |row| row.get(0)).unwrap();
     let task = cockpit::teams::TaskKey { project: own["project"].as_str().unwrap().into(), task_id: "1d3fd318".into() };
     crate::teams::request(&mut bench.registry, 43, AgentAction::Send { message: Submission { task,
         submission_key: "final-findings".into(), recipient: OPENCODE_SESSION.into(), kind: MessageKind::Findings,
