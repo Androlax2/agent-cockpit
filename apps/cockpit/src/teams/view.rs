@@ -5,7 +5,7 @@ use crate::approval::escape_hiding;
 use serde_json::Value;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Row { Proposal(usize), Member(usize), Escalation(usize), Uncertain(usize), Message(usize), FailedStart(usize) }
+pub enum Row { Proposal(usize), Member(usize), Escalation(usize), Uncertain(usize), Message(usize), FailedStart(usize), FailedWake(usize) }
 
 pub struct TeamView {
     pub snapshot: Value,
@@ -63,6 +63,7 @@ impl TeamView {
         rows.extend(indices("escalations", &|escalation| escalation["status"] == "open").into_iter().map(Row::Escalation));
         rows.extend(indices("messages", &|message| message["state"] == "uncertain").into_iter().map(Row::Uncertain));
         rows.extend(indices("spawns", &|spawn| spawn["status"] == "failed" || spawn["status"] == "refused").into_iter().map(Row::FailedStart));
+        rows.extend(indices("sleeps", &|sleep| sleep["state"] == "failed").into_iter().map(Row::FailedWake));
         rows
     }
 
@@ -71,6 +72,7 @@ impl TeamView {
         let count = |key: &str, field: &str, value: &str| snapshot[key].as_array().into_iter().flatten().filter(|item| item[field] == value).count();
         count("proposals", "status", "pending") + count("escalations", "status", "open") + count("messages", "state", "uncertain")
             + count("spawns", "status", "failed") + count("spawns", "status", "refused")
+            + count("sleeps", "state", "failed")
     }
 
     pub fn selected_row(&self) -> Option<Row> {
@@ -107,6 +109,10 @@ impl TeamView {
                 let spawn = &self.list("spawns")[index];
                 let what = if spawn["status"] == "refused" { "started but could not join (its role was taken)" } else { "did not start" };
                 format!("! new {} ({}) {what} in {}", shown(&spawn["role"]), shown(&spawn["agent"]), shown(&spawn["directory"]))
+            },
+            Row::FailedWake(index) => {
+                let sleep = &self.list("sleeps")[index];
+                format!("! wake {} failed: {}", shown(&sleep["session_id"]), shown(&sleep["error"]))
             },
             Row::Message(index) => {
                 let envelope = self.envelope(index);
@@ -164,6 +170,7 @@ impl TeamView {
                     "It may have reached the session: h it arrived (mark handled) · c cancel it. It is never sent twice.".into()]
             },
             Row::FailedStart(_) => vec![self.row_text(row), "It is never started again: start it by hand or ask the team to request it again. d dismiss".into()],
+            Row::FailedWake(_) => vec![self.row_text(row), "Queued messages are retained. No automatic second launch is attempted.".into()],
             Row::Message(index) => crate::teams::envelope_text(&self.envelope(index)).lines().map(|line| shown(&Value::String(line.into()))).collect(),
         }
     }

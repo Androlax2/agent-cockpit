@@ -1157,6 +1157,22 @@ sleep_session() { # id
         [[ -n ${COCKPIT_LOG_STDERR:-} ]] || echo "cockpit: $project stays awake: $reason" >&2
         return 3
     fi
+    (
+    local operation_dir="${XDG_RUNTIME_DIR:-/tmp}/cockpit.sleep-operations" operation_guard
+    if ! (umask 077; mkdir -p -m 700 "$operation_dir") || [[ -L $operation_dir || ! -O $operation_dir ]] ||
+            ! chmod 700 "$operation_dir" || [[ -L $operation_dir/$id || ( -e $operation_dir/$id && ! -f $operation_dir/$id ) ]]; then
+        echo "cockpit: could not secure sleep operation" >&2
+        return 1
+    fi
+    # Never unlink these files: every holder must lock the same inode, including orphan helpers.
+    (umask 077; touch "$operation_dir/$id") || return 1
+    chmod 600 "$operation_dir/$id" || return 1
+    exec {operation_guard}<>"$operation_dir/$id"
+    flock -n "$operation_guard" || return 3
+    trap 'status=$?; if (( status )) && [[ -n ${permit:-} ]]; then
+        if [[ -z ${note:-} || ! -e $note ]]; then cancel_sleep_permit "$id" "$permit";
+        elif [[ -n ${target:-} ]] && tmux has-session -t "=$target" 2>/dev/null; then forget_sleep_note "$id"; fi
+    fi' EXIT
     if ! permit=$(cockpit-team sleep-prepare "$id" 2>/dev/null) ||
             ! jq -e 'type == "object" and has("token") and (.token == null or (.token | type == "string" and length > 0))' >/dev/null 2>&1 <<< "$permit"; then
         log_event WARN sleep "$project stays awake: team membership preparation unavailable or refused"
@@ -1234,6 +1250,7 @@ sleep_session() { # id
     fi
     clear_exited_viewer "$id"
     log_event INFO sleep "$project asleep after $(( (slept_at - ${since%.*}) / 60 )) min idle"
+    )
 }
 
 # Sessions ended on purpose (exit, the sidebar's x): not offered back after a reboot.

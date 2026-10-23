@@ -416,7 +416,7 @@ fn handle_team_host_connection(received: Received, registry: &Rc<RefCell<Registr
         Err(TeamError::new(ErrorCode::Unauthorized, "team host controls are for the cockpit outside the sandbox"))
     } else {
         match serde_json::from_str::<HostRequest>(&text) {
-            Ok(request) => osd::teams::host(&mut registry.borrow_mut(), request),
+            Ok(request) => osd::teams::host(&mut registry.borrow_mut(), sender, request),
             Err(error) => Err(TeamError::new(ErrorCode::Invalid, format!("invalid team host request: {error}"))),
         }
     };

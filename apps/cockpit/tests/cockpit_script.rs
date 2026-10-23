@@ -4044,6 +4044,57 @@ const SLEEP_ENV: [(&str, &str); 4] = [("SHIM_PANE_TEXT", IDLE), ("SHIM_CURSOR", 
 
 const TEAM_RESUME: &str = "private-team-resume-permit";
 
+#[test]
+fn team_sleep_operation_lock_reaches_the_host_cli_and_exit_helpers() {
+    let manager = Manager::new();
+    manager.with_idle_session();
+    manager.team_sleep_cli();
+    let helper = manager.sandbox.shims.join("cockpit-team");
+    let existing = fs::read_to_string(&helper).unwrap();
+    write_executable(&helper, &existing.replacen("case $1 in", r#"
+if [[ $1 == sleep-prepare ]]; then
+  grep -q 'FLOCK.*WRITE' /proc/$$/fdinfo/* || exit 1
+fi
+case $1 in"#, 1));
+    manager.sandbox.shim("tmux", &format!(r#"
+if [[ $1 == send-keys ]]; then
+  grep -q 'FLOCK.*WRITE' /proc/$$/fdinfo/* || exit 1
+fi
+{FAKE_TMUX}"#));
+    let result = manager.sleep_with(SESSION_A, &[]);
+    assert!(result.status.success(), "{}", stderr(&result));
+    let lock = fs::File::open(manager.runtime_file(&format!("cockpit.sleep-operations/{SESSION_A}"))).unwrap();
+    lock.try_lock().expect("completed sleep must release its operation lock");
+}
+
+#[test]
+fn team_sleep_ordinary_unexpected_failure_cancels_preparation() {
+    let manager = Manager::new();
+    manager.with_idle_session();
+    manager.team_sleep_cli();
+    manager.sandbox.shim("jq", r#"
+if [[ $1 == -r && $2 == '.token // empty' ]]; then exit 42; fi
+exec /usr/bin/jq "$@"
+"#);
+    let result = manager.sleep_with(SESSION_A, &[]);
+    assert!(!result.status.success());
+    assert!(manager.calls("cockpit-team").contains(&format!("cockpit-team sleep-cancel {SESSION_A}")));
+    assert!(manager.tmux_calls("send-keys").is_empty());
+}
+
+#[test]
+fn team_sleep_lost_prepare_reply_releases_operation_without_exiting_agent() {
+    let manager = Manager::new();
+    manager.with_idle_session();
+    manager.sandbox.shim("cockpit-team", "exit 1");
+    let result = manager.sleep_with(SESSION_A, &[]);
+    assert_eq!(result.status.code(), Some(3));
+    let lock = fs::File::open(manager.runtime_file(&format!("cockpit.sleep-operations/{SESSION_A}"))).expect("operation lock exists before prepare");
+    lock.try_lock().expect("lost prepare reply must release the operation lock");
+    assert!(manager.tmux_calls("send-keys").is_empty());
+    assert!(!manager.asleep_note(SESSION_A).exists());
+}
+
 impl Manager {
     fn team_sleep_cli(&self) {
         self.sandbox.shim("cockpit-team", r#"

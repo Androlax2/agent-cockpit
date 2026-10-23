@@ -88,6 +88,37 @@ fn failed_spawns_count_as_needing_theo() {
     assert_eq!(TeamView::attention(&state), TeamView::attention(&snapshot()) + 1);
 }
 
+#[test]
+fn failed_sleep_wakes_use_team_error_rows_and_attention() {
+    for reason in ["could not start cockpit wake", "wake acknowledgement timed out\u{1b}[2J"] {
+        let mut state = snapshot();
+        state["sleeps"] = json!([
+            {"session_id": DESIGNER, "state": "failed", "error": reason},
+            {"session_id": DEVELOPER, "state": "prepared", "error": ""},
+            {"session_id": QA, "state": "bound", "error": ""}
+        ]);
+        assert_eq!(TeamView::attention(&state), 4);
+        let mut view = TeamView::new(state);
+        assert_eq!(view.rows().len(), 5);
+        view.selected = 4;
+        let text = view.row_text(view.selected_row().unwrap());
+        assert!(text.starts_with("! ") && text.contains(DESIGNER), "{text}");
+        let detail = view.detail().join("\n");
+        assert!(detail.contains(reason.split('\u{1b}').next().unwrap()), "{detail}");
+        assert!(!detail.contains('\u{1b}'));
+    }
+}
+
+#[test]
+fn healthy_sleep_continuations_do_not_demand_attention() {
+    for status in ["prepared", "launch_requested", "waking", "bound", "cancelled"] {
+        let mut state = snapshot();
+        state["sleeps"] = json!([{"session_id":DESIGNER,"state":status,"error":""}]);
+        assert_eq!(TeamView::attention(&state), 3, "{status}");
+        assert_eq!(TeamView::new(state).rows().len(), 4, "{status}");
+    }
+}
+
 fn with_recruit_request() -> Value {
     let mut state = snapshot();
     let mapping = json!([{"session_id": DEVELOPER, "role": "developer", "agent": "opencode", "runtime": "r2"}]).to_string();

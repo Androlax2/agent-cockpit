@@ -137,16 +137,70 @@ fn reconcile_sleep(registry: &mut Registry) -> Result<(), TeamError> {
     store::sleep::expire_wakes(connection, now_ms())?;
     for permit in store::sleep::prepared_records(connection)? {
         let is_old_live = registry.system.runtime_is_live(&permit.old_runtime);
-        // Preparation precedes note creation. Only this live, unrecorded phase may lack a note;
-        // sleep-recorded is the durable barrier after which deletion always cancels permission.
-        let is_preparing = !permit.note_recorded && permit.state == "prepared"
-            && is_old_live && permit.expires_at > now_ms() && !ended(&permit.session_id);
-        if is_preparing { continue; }
+        // The inherited kernel lock outlives a killed manager while an exit helper still runs.
+        // Never reopen delivery on a clock while that operation can still exit the old runtime.
+        if is_old_live && sleep_operation_is_live(&permit.session_id)? { continue; }
+        // Recorded notes remain the durable sleep barrier, even if process teardown lags the script.
         if !permit.note_recorded || !matching_sleep_note(&permit, now_ms()) {
             store::sleep::cancel(connection, &permit.session_id, &permit.token)?;
         }
     }
     Ok(())
+}
+
+fn sleep_operation_file(session: &str) -> std::io::Result<Option<fs::File>> {
+    const O_NOFOLLOW: i32 = 0x20000;
+    const O_DIRECTORY: i32 = 0x10000;
+    const O_NONBLOCK: i32 = 0x800;
+    let directory = match fs::OpenOptions::new().read(true).custom_flags(O_NOFOLLOW | O_DIRECTORY)
+        .open(cockpit::paths::runtime_dir().join("cockpit.sleep-operations")) {
+        Ok(directory) => directory,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let owner = fs::metadata("/proc/self")?.uid();
+    let metadata = directory.metadata()?;
+    if metadata.uid() != owner || metadata.mode() & 0o077 != 0 {
+        return Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+    }
+    let file = match fs::OpenOptions::new().read(true).custom_flags(O_NOFOLLOW | O_NONBLOCK)
+        .open(format!("/proc/self/fd/{}/{session}", directory.as_raw_fd())) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.uid() != owner || metadata.mode() & 0o077 != 0 || metadata.nlink() != 1 {
+        return Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+    }
+    Ok(Some(file))
+}
+
+fn sleep_operation_is_live(session: &str) -> std::io::Result<bool> {
+    let Some(file) = sleep_operation_file(session)? else { return Ok(false) };
+    match file.try_lock() {
+        Ok(()) => Ok(false),
+        Err(std::fs::TryLockError::WouldBlock) => Ok(true),
+        Err(std::fs::TryLockError::Error(error)) => Err(error),
+    }
+}
+
+fn verify_sleep_operation(peer: u32, session: &str) -> Result<(), TeamError> {
+    if !host_peer_allowed(&crate::registry::Proc, &peer.to_string()) { return Err(unauthorized()); }
+    let file = sleep_operation_file(session)?.ok_or_else(unauthorized)?;
+    let metadata = file.metadata()?;
+    // fdinfo reports locks attached to this open description, including inherited flock locks.
+    // A PID, environment claim or merely opening somebody else's locked file is not ownership.
+    for descriptor in fs::read_dir(format!("/proc/{peer}/fd"))? {
+        let descriptor = descriptor?;
+        let Ok(candidate) = fs::metadata(descriptor.path()) else { continue };
+        if candidate.dev() != metadata.dev() || candidate.ino() != metadata.ino() { continue; }
+        let Ok(info) = fs::read_to_string(format!("/proc/{peer}/fdinfo/{}", descriptor.file_name().to_string_lossy())) else { continue };
+        if info.lines().any(|line| line.starts_with("lock:") && line.contains(" FLOCK ") && line.contains(" WRITE ")) {
+            return Ok(());
+        }
+    }
+    Err(unauthorized())
 }
 
 fn start_sleep_wakes(registry: &mut Registry) -> Result<(), TeamError> {
@@ -298,7 +352,11 @@ pub fn host_snapshot(registry: &mut Registry) -> Result<Value, TeamError> {
     Ok(state)
 }
 
-pub fn host(registry: &mut Registry, request: cockpit::teams::HostRequest) -> Result<TeamReply, TeamError> {
+pub fn host(registry: &mut Registry, peer: u32, request: cockpit::teams::HostRequest) -> Result<TeamReply, TeamError> {
+    if let cockpit::teams::HostRequest::PrepareSleep { session_id } = &request {
+        if cockpit::agents::of_session_id(session_id).is_none() { return Err(unauthorized()); }
+        verify_sleep_operation(peer, session_id)?;
+    }
     match request {
         cockpit::teams::HostRequest::Control { action } => host_control(registry, &action),
         cockpit::teams::HostRequest::Snapshot => Ok(TeamReply { request_id: "snapshot".into(), result: Ok(host_snapshot(registry)?) }),
