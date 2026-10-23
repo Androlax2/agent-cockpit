@@ -596,6 +596,84 @@ fn sleep_recovery_does_not_resend_uncertain_attempts() {
     assert_eq!(connection.query_row("SELECT state FROM attempts WHERE id=?1", [&dispatch.id], |row| row.get::<_, String>(0)).unwrap(), "uncertain");
 }
 
+fn subscription_replacement() -> VerifiedSession {
+    VerifiedSession { session_id: "cdx_c214e8c0c9458f09ea4300974071bcad955995188f33264e341800f8a2bb5fcb".into(),
+        agent: "codex".into(), project: "project-a".into(), runtime: "runtime-codex-replacement".into() }
+}
+
+#[test]
+fn subscription_replacement_keeps_the_role_and_queued_messages_without_new_approval() {
+    let sandbox = Sandbox::new();
+    let path = sandbox.root.join("protected/teams.sqlite");
+    let mut connection = store::open(&path).unwrap();
+    linked(&mut connection);
+    store::accept(&mut connection, &live()[1], &message("pending-subscription-notice"), 3000).unwrap();
+    let before = store::snapshot(&connection, Some(&task()), None, 100).unwrap();
+    let epoch = before["members"].as_array().unwrap().iter().find(|member| member["session_id"] == DESIGNER).unwrap()["epoch"].clone();
+    let replacement = subscription_replacement();
+    let generation = "a".repeat(32);
+    assert!(store::replace_subscription_member(&mut connection, &generation, &task(), &live()[0], &replacement).unwrap());
+    drop(connection);
+    let mut connection = store::open(&path).unwrap();
+    assert!(store::replace_subscription_member(&mut connection, &generation, &task(), &live()[0], &replacement).unwrap());
+    let after = store::snapshot(&connection, Some(&task()), None, 100).unwrap();
+    let member = after["members"].as_array().unwrap().iter().find(|member| member["session_id"] == replacement.session_id).unwrap();
+    assert_eq!(member["role"], "designer");
+    assert_ne!(member["epoch"], epoch);
+    assert_eq!(after["proposals"], before["proposals"]);
+    assert!(store::claim(&mut connection, &live()[0], "old-idle", 4000).unwrap().is_none());
+    let dispatch = store::claim(&mut connection, &replacement, "new-idle", 4000).unwrap().unwrap();
+    assert_eq!(dispatch.envelope["body"], "Please check the approved frame.");
+    assert_eq!(dispatch.envelope["recipient"]["session_id"], replacement.session_id);
+    assert_eq!(dispatch.envelope["sender"]["session_id"], DEVELOPER);
+    let AgentAction::Send { message: mut outgoing } = message("stale-sender") else { unreachable!() };
+    outgoing.recipient = DEVELOPER.into();
+    assert!(store::accept(&mut connection, &live()[0], &AgentAction::Send { message: outgoing }, 4001).is_err());
+}
+
+#[test]
+fn subscription_replacement_preserves_outgoing_message_provenance_and_reply_destination() {
+    let sandbox = Sandbox::new();
+    let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+    linked(&mut connection);
+    let AgentAction::Send { message: mut outgoing } = message("outgoing-subscription-notice") else { unreachable!() };
+    outgoing.recipient = DEVELOPER.into();
+    store::accept(&mut connection, &live()[0], &AgentAction::Send { message: outgoing }, 3000).unwrap();
+    let replacement = subscription_replacement();
+    store::replace_subscription_member(&mut connection, &"a".repeat(32), &task(), &live()[0], &replacement).unwrap();
+    let dispatch = store::claim(&mut connection, &live()[1], "developer-idle", 4000).unwrap().unwrap();
+    assert_eq!(dispatch.envelope["sender"]["session_id"], replacement.session_id);
+    assert_eq!(dispatch.envelope["historical_sender"]["session_id"], DESIGNER);
+    assert_eq!(dispatch.envelope["authorization"], "collaborator_content_not_user_authorization");
+}
+
+#[test]
+fn subscription_replacement_refuses_uncertain_delivery_and_mismatched_runtime_or_task() {
+    for mismatch in ["delivery", "runtime", "project", "task", "generation"] {
+        let sandbox = Sandbox::new();
+        let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+        linked(&mut connection);
+        let mut source = live()[0].clone();
+        let mut replacement = subscription_replacement();
+        let mut task = task();
+        let mut generation = "a".repeat(32);
+        match mismatch {
+            "delivery" => {
+                store::accept(&mut connection, &live()[1], &message("inflight"), 3000).unwrap();
+                store::claim(&mut connection, &live()[0], "idle", 3000).unwrap().unwrap();
+            }
+            "runtime" => source.runtime = "unverified-runtime".into(),
+            "project" => replacement.project = "other-project".into(),
+            "task" => task.task_id = "0123abcd".into(),
+            "generation" => generation = "../not-a-generation".into(),
+            _ => unreachable!(),
+        }
+        let before = store::snapshot(&connection, None, None, 100).unwrap();
+        assert!(store::replace_subscription_member(&mut connection, &generation, &task, &source, &replacement).is_err(), "{mismatch}");
+        assert_eq!(store::snapshot(&connection, None, None, 100).unwrap(), before);
+    }
+}
+
 #[test]
 fn unapproved_or_wrong_task_messages_are_refused() {
     let sandbox = Sandbox::new();

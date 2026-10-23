@@ -436,6 +436,77 @@ fn subscription_prompt_admission_requires_completed_binding_and_the_real_sender(
 }
 
 #[test]
+fn host_subscription_binding_stays_paused_until_retirement_and_every_store_commit() {
+    use cockpit::subscription_fallback::{Binding, Observation, RoutingStore, Selection};
+    use cockpit::usage::SubscriptionCapacity::{Available, Exhausted};
+    use cockpit::{continuity::{Continuity, TaskSnapshot}, todo::{Entry, TodoList}};
+    let mut bench = linked_team_bench();
+    let directory = bench.registry.sessions[SESSION_A].cwd.clone();
+    let source_session = cockpit::sessions::Session::from_value(&bench.registry.snapshot_rows().into_iter().find(|row| row["session"] == SESSION_A).unwrap()).unwrap();
+    let mut todos = TodoList::load();
+    assert!(todos.set_status("1d3fd318", "doing", SESSION_A));
+    let task = TaskSnapshot::from_entry(&Entry::Typed(todos.items[0].clone()), "");
+    let mut continuity = Continuity::load(&cockpit::paths::continuity()).unwrap();
+    continuity.assign(&task, &source_session, 100).unwrap();
+    cockpit::prompts::add(SESSION_A, "A user instruction queued during handoff").unwrap();
+    send_to_designer(&mut bench, "queued-before-subscription-transfer");
+    let source = Binding { session:SESSION_A.into(), runtime:"runtime-10".into(), native_thread:None,
+        selection:Selection { agent:"claude".into(), provider:"anthropic".into(), model:"claude-opus-4-7".into(), variant:Some("high".into()), account:"a".repeat(64) } };
+    let target_selection = Selection { agent:"codex".into(), provider:"openai".into(), model:"gpt-6.1-sol".into(), variant:Some("high".into()), account:"b".repeat(64) };
+    let mut routes = RoutingStore::load(&cockpit::paths::subscription_routes()).unwrap();
+    routes.track(source.clone(), &directory, "1d3fd318", 100).unwrap();
+    let transition = routes.reconcile(&[Observation { binding:source,session:source_session,current_capacity:Exhausted,
+        original_capacity:Exhausted,alternate:Some((target_selection,Available)),has_pending_work:true,prompt_clear:true,manual_override:false }], 101).unwrap().remove(0);
+    routes.mark_retired(SESSION_A, &transition.generation).unwrap();
+    routes.mark_submitted(SESSION_A, &transition.generation).unwrap();
+    drop(routes);
+    {
+        let mut world = bench.world.borrow_mut();
+        world.sender_targets.insert(40,target(&[("tmux_pane","%40")]));
+        world.sender_runtimes.insert(40,"runtime-40".into());
+        world.sender_directories.insert(40,directory.clone());
+        world.subscription_tokens.insert(40,transition.generation.clone());
+    }
+    bench.registry.report_from(parse_session(&json!({"session":CODEX_SESSION,"native_thread":SESSION_A,"agent":"codex",
+        "project":"project-a","cwd":directory,"state":"working"}).to_string()).unwrap(), 40).unwrap();
+    let request = json!({"request":"subscription_bind","origin":SESSION_A,"generation":transition.generation});
+    let bind = |bench: &mut Bench| crate::teams::host(&mut bench.registry, serde_json::from_value(request.clone()).unwrap());
+    assert!(bind(&mut bench).is_err(), "a live source must remain the only executable owner");
+    assert!(TodoList::load().busy(SESSION_A));
+    bench.world.borrow_mut().sender_runtimes.remove(&10);
+    let saved_todo = fs::read(cockpit::paths::todo()).unwrap();
+    fs::write(cockpit::paths::todo(), "corrupt ownership state").unwrap();
+    assert!(bind(&mut bench).is_err());
+    assert!(bench.registry.request_from("subscription-gate", &json!({"generation":transition.generation}).to_string(), 40).is_err());
+    fs::write(cockpit::paths::todo(), saved_todo).unwrap();
+    let source_prompt = cockpit::prompts::pending(SESSION_A).remove(0);
+    let target_queue = cockpit::prompts::folder(CODEX_SESSION).unwrap();
+    fs::create_dir_all(&target_queue).unwrap();
+    let conflicting_prompt = target_queue.join(source_prompt.file_name().unwrap());
+    fs::write(&conflicting_prompt, "A distinct existing instruction").unwrap();
+    assert!(bind(&mut bench).is_err(), "a partial transfer must not open the execution gate");
+    assert!(TodoList::load().busy(CODEX_SESSION));
+    assert!(bench.registry.request_from("subscription-gate", &json!({"generation":transition.generation}).to_string(), 40).is_err());
+    fs::remove_file(conflicting_prompt).unwrap();
+    cockpit::prompts::add(SESSION_A, "A later instruction while the transfer is paused").unwrap();
+    bench.registry.teams = None;
+    bind(&mut bench).unwrap().result.unwrap();
+    bind(&mut bench).unwrap().result.unwrap();
+    assert!(TodoList::load().busy(CODEX_SESSION));
+    assert!(!TodoList::load().busy(SESSION_A));
+    let continuity = Continuity::load(&cockpit::paths::continuity()).unwrap();
+    let active: Vec<_> = continuity.tasks()["1d3fd318"].assignments.iter().filter(|assignment| assignment.active).collect();
+    assert_eq!(active.len(), 1);
+    assert_eq!(active[0].session, CODEX_SESSION);
+    assert_eq!(cockpit::prompts::count(SESSION_A), 0);
+    assert_eq!(cockpit::prompts::count(CODEX_SESSION), 2);
+    let team = crate::teams::request(&mut bench.registry, 40, cockpit::teams::AgentAction::Context).unwrap().result.unwrap();
+    assert_eq!(team["task"]["task_id"], "1d3fd318");
+    assert!(team["members"].as_array().unwrap().iter().any(|member| member["session_id"] == CODEX_SESSION && member["role"] == "designer"));
+    assert!(bench.registry.request_from("subscription-gate", &json!({"generation":transition.generation}).to_string(), 40).is_ok());
+}
+
+#[test]
 fn a_planted_git_origin_cannot_choose_the_team_project() {
     let bench = team_bench();
     let primary = bench.fixture.root.join("home/IdeaProjects/project-a");

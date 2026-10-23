@@ -510,6 +510,7 @@ pub fn host(registry: &mut Registry, peer: u32, request: cockpit::teams::HostReq
                 .map_err(|error| TeamError::new(ErrorCode::Conflict, error))?;
             Ok(TeamReply { request_id: generation, result: Ok(runtime) })
         },
+        cockpit::teams::HostRequest::SubscriptionBind { origin, generation } => bind_subscription(registry, &origin, &generation),
         request => sleep_control(registry, request),
     }
 }
@@ -566,6 +567,56 @@ fn sleep_control(registry: &mut Registry, request: cockpit::teams::HostRequest) 
         _ => unreachable!(),
     };
     Ok(TeamReply { request_id: "sleep".into(), result: Ok(result) })
+}
+
+fn bind_subscription(registry: &mut Registry, origin: &str, generation: &str) -> Result<TeamReply, TeamError> {
+    use cockpit::subscription_fallback::{Binding, Phase, RoutingStore};
+    let conflict = |message: &str| TeamError::new(ErrorCode::Conflict, message);
+    let storage = |message: String| TeamError::new(ErrorCode::Storage, message);
+    let mut routes = RoutingStore::load(&cockpit::paths::subscription_routes()).map_err(storage)?;
+    let route = routes.route(origin).cloned().ok_or_else(|| conflict("no such subscription route"))?;
+    let receipt = registry.subscription_runtime(generation).map_err(|error| conflict(&error))?;
+    let session = receipt["session"].as_str().ok_or_else(|| conflict("subscription replacement has not reported"))?;
+    let runtime = receipt["runtime"].as_str().ok_or_else(|| conflict("subscription replacement has no verified runtime"))?;
+    if matches!(route.phase, Phase::Active) && route.admitted_generation.as_deref() == Some(generation)
+        && route.current.session == session && route.current.runtime == runtime && receipt["cwd"].as_str() == Some(&route.directory) {
+        return Ok(TeamReply { request_id: generation.into(), result: Ok(json!({"session":session,"bound":true})) });
+    }
+    let Phase::Pending(pending) = &route.phase else { return Err(conflict("subscription route is not pending")) };
+    if pending.generation != generation { return Err(conflict("subscription routing generation changed")); }
+    let mut source_runtimes = vec![pending.source.runtime.clone()];
+    if let Some(entry) = registry.sessions.get(&pending.source.session) { source_runtimes.push(entry.runtime.clone()); }
+    if source_runtimes.iter().any(|runtime| !runtime.is_empty() && registry.system.runtime_is_live(runtime)) {
+        return Err(conflict("subscription source has not retired or was manually restarted"));
+    }
+    if receipt["agent"].as_str() != Some(&pending.target.agent) || receipt["cwd"].as_str() != Some(&route.directory) {
+        return Err(conflict("subscription runtime does not match the planned agent and checkout"));
+    }
+    let replacement = registry.snapshot_rows().iter().find(|row| row["session"] == session)
+        .and_then(cockpit::sessions::Session::from_value).ok_or_else(|| conflict("replacement metadata is unavailable"))?;
+    if replacement.cwd != route.directory || replacement.branch != pending.source_branch || replacement.repository != pending.source_repository {
+        return Err(conflict("replacement task metadata does not match the retired source"));
+    }
+    let binding = Binding { session:session.into(),runtime:runtime.into(),selection:pending.target.clone(),
+        native_thread:receipt["native_thread"].as_str().filter(|native| !native.is_empty()).map(str::to_string) };
+    routes.record_runtime(generation, binding, &route.directory).map_err(storage)?;
+    let source = cockpit::sessions::Session { session:pending.source.session.clone(),agent:pending.source.selection.agent.clone(),
+        cwd:route.directory.clone(),branch:pending.source_branch.clone(),repository:pending.source_repository.clone(), ..Default::default() };
+    let mut todos = cockpit::todo::TodoList::load_checked().map_err(storage)?;
+    let has_todo_transfer = todos.transfer_subscription_task(&route.task, &source.session, session).map_err(storage)?;
+    let mut continuity = cockpit::continuity::Continuity::load(&cockpit::paths::continuity()).map_err(storage)?;
+    let project = canonical_project(&route.directory)?;
+    let task = cockpit::teams::TaskKey { project:project.clone(),task_id:route.task.clone() };
+    let source_member = VerifiedSession { session_id:source.session.clone(),agent:source.agent.clone(),project:project.clone(),runtime:pending.source.runtime.clone() };
+    let replacement_member = VerifiedSession { session_id:session.into(),agent:pending.target.agent.clone(),project,runtime:runtime.into() };
+    open_and_restore(registry)?;
+    store::replace_subscription_member(registry.teams.as_mut().expect("opened above"), generation, &task, &source_member, &replacement_member)?;
+    continuity.transfer_subscription_task(&route.task, &source, &replacement, now_ms() / 1000).map_err(storage)?;
+    if has_todo_transfer { todos.try_save()?; }
+    cockpit::prompts::transfer_subscription_prompts(&source.session, session).map_err(storage)?;
+    routes.finish(origin, generation).map_err(storage)?;
+    registry.publish();
+    Ok(TeamReply { request_id:generation.into(),result:Ok(json!({"session":session,"bound":true})) })
 }
 
 /// Host UI only: reached through a socket no sandbox can open.

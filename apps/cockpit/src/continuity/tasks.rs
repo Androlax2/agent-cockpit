@@ -171,6 +171,30 @@ impl Continuity {
         })
     }
 
+    pub fn transfer_subscription_task(&mut self, task: &str, source: &Session, replacement: &Session, now: i64) -> Result<bool, String> {
+        if source.session == replacement.session || agents::of_session_id(&source.session).is_none_or(|agent| agent.name != source.agent)
+            || agents::of_session_id(&replacement.session).is_none_or(|agent| agent.name != replacement.agent) || source.cwd != replacement.cwd
+            || source.branch != replacement.branch || source.repository != replacement.repository || now <= 0 {
+            return Err("subscription task replacement does not match the source checkout".into());
+        }
+        self.change(|state| {
+            let Some(record) = state.tasks.get_mut(task) else { return Ok(()) };
+            if record.snapshot.status != "doing" { return Err("subscription task is no longer in progress".into()); }
+            let source_assignment = record.assignments.iter_mut().find(|assignment| assignment.session == source.session
+                && assignment.branch == source.branch && assignment.repository == source.repository)
+                .ok_or("source does not own this subscription task")?;
+            if !source_assignment.active {
+                if record.assignments.iter().any(|assignment| assignment.session == replacement.session && assignment.active
+                    && assignment.branch == replacement.branch && assignment.repository == replacement.repository) { return Ok(()); }
+                return Err("subscription task owner changed before transfer".into());
+            }
+            source_assignment.active = false;
+            let snapshot = record.snapshot.clone();
+            state.link_task(&snapshot, replacement, now, true);
+            Ok(())
+        })
+    }
+
     pub fn remember_task(&mut self, task: &TaskSnapshot) -> Result<bool, String> {
         self.change(|state| {
             if let Some(record) = state.tasks.get_mut(&task.key) { record.update_snapshot(task); }

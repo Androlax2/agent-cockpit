@@ -918,6 +918,75 @@ pub fn member_runtime(connection: &Connection, session: &str) -> Result<Option<S
     Ok(connection.query_row("SELECT runtime FROM members WHERE session_id=?1", [session], |row| row.get(0)).optional()?)
 }
 
+/// Host-only routing coordinator: both runtimes and source retirement must be verified first.
+pub fn replace_subscription_member(connection: &mut Connection, generation: &str, task: &TaskKey,
+                                   source: &VerifiedSession, replacement: &VerifiedSession) -> Result<bool, TeamError> {
+    let conflict = || TeamError::new(ErrorCode::Conflict, "subscription replacement does not match the approved task membership");
+    if generation.len() != 32 || !generation.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        || source.project != replacement.project || task.project != source.project || source.project.is_empty()
+        || source.runtime.is_empty() || replacement.runtime.is_empty() || source.runtime == replacement.runtime
+        || source.session_id == replacement.session_id
+        || !matches!((source.agent.as_str(), replacement.agent.as_str()), ("claude", "codex") | ("codex", "claude"))
+        || agents::of_session_id(&source.session_id).is_none_or(|agent| agent.name != source.agent)
+        || agents::of_session_id(&replacement.session_id).is_none_or(|agent| agent.name != replacement.agent) {
+        return Err(conflict());
+    }
+    let task_key = serde_json::to_string(task)?;
+    let fingerprint = audit::sha256_hex(serde_json::to_vec(&(task, source, replacement))?.as_slice());
+    let request_id = format!("subscription-{generation}");
+    let transaction = connection.transaction()?;
+    let previous: Option<(String, String)> = transaction.query_row("SELECT fingerprint,response FROM host_actions WHERE request_id=?1",
+        [&request_id], |row| Ok((row.get(0)?, row.get(1)?))).optional()?;
+    if let Some((recorded, response)) = previous {
+        if recorded != fingerprint { return Err(conflict()); }
+        return Ok(serde_json::from_str(&response)?);
+    }
+    let membership: Option<(String, String, String, String)> = transaction.query_row(
+        "SELECT task_key,runtime,agent,epoch FROM members WHERE session_id=?1", [&source.session_id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))).optional()?;
+    let occupied: bool = transaction.query_row("SELECT EXISTS(SELECT 1 FROM members WHERE session_id=?1)", [&replacement.session_id], |row| row.get(0))?;
+    if occupied { return Err(conflict()); }
+    let has_membership = membership.is_some();
+    if let Some((bound_task, runtime, agent, epoch)) = membership {
+        if bound_task != task_key || runtime != source.runtime || agent != source.agent { return Err(conflict()); }
+        let uncertain: bool = transaction.query_row("SELECT EXISTS(SELECT 1 FROM messages WHERE task_key=?1 AND (sender=?2 OR recipient=?2) AND state IN ('submitting','uncertain'))",
+            params![task_key, source.session_id], |row| row.get(0))?;
+        if uncertain { return Err(TeamError::new(ErrorCode::Conflict, "subscription transfer waits for uncertain collaborator delivery to be reconciled")); }
+        let next_epoch = identifier()?;
+        let mut statement = transaction.prepare("SELECT id,envelope,sender,recipient FROM messages WHERE task_key=?1 AND (sender=?2 OR recipient=?2) AND state IN ('queued','ready')")?;
+        let queued: Vec<(String, String, String, String)> = statement.query_map(params![task_key,source.session_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))?.collect::<Result<_, _>>()?;
+        drop(statement);
+        for (id, envelope, sender, recipient) in queued {
+            let mut envelope: Value = serde_json::from_str(&envelope)?;
+            if sender == source.session_id {
+                envelope["historical_sender"] = envelope["sender"].clone();
+                envelope["sender"]["session_id"] = json!(replacement.session_id);
+                envelope["sender"]["agent"] = json!(replacement.agent);
+                transaction.execute("UPDATE messages SET sender=?2,sender_epoch=?3 WHERE id=?1", params![id,replacement.session_id,next_epoch])?;
+            }
+            if recipient == source.session_id {
+                envelope["recipient"]["session_id"] = json!(replacement.session_id);
+                envelope["recipient"]["agent"] = json!(replacement.agent);
+                transaction.execute("UPDATE messages SET recipient=?2,recipient_epoch=?3,recipient_runtime=?4 WHERE id=?1",
+                    params![id,replacement.session_id,next_epoch,replacement.runtime])?;
+            }
+            transaction.execute("UPDATE messages SET envelope=?2 WHERE id=?1", params![id,envelope.to_string()])?;
+        }
+        transaction.execute("UPDATE threads SET asker=?3 WHERE task_key=?1 AND asker=?2 AND status<>'resolved'", params![task_key,source.session_id,replacement.session_id])?;
+        transaction.execute("UPDATE threads SET answerer=?3 WHERE task_key=?1 AND answerer=?2 AND status<>'resolved'", params![task_key,source.session_id,replacement.session_id])?;
+        transaction.execute("UPDATE handoffs SET developer=?3,developer_epoch=?4 WHERE task_key=?1 AND developer=?2 AND developer_epoch=?5 AND status='current'",
+            params![task_key,source.session_id,replacement.session_id,next_epoch,epoch])?;
+        transaction.execute("UPDATE spawns SET session_id=?3,agent=?4 WHERE task_key=?1 AND session_id=?2 AND status='started'",
+            params![task_key,source.session_id,replacement.session_id,replacement.agent])?;
+        transaction.execute("UPDATE members SET session_id=?2,agent=?3,runtime=?4,epoch=?5,last_idle_turn=NULL WHERE task_key=?1 AND session_id=?6",
+            params![task_key,replacement.session_id,replacement.agent,replacement.runtime,next_epoch,source.session_id])?;
+    }
+    transaction.execute("INSERT INTO host_actions (request_id,fingerprint,response) VALUES (?1,?2,?3)", params![request_id,fingerprint,serde_json::to_string(&has_membership)?])?;
+    transaction.commit()?;
+    Ok(has_membership)
+}
+
 /// The caller's own approved team only; never lists unrelated live sessions.
 pub fn context(connection: &Connection, sender: &VerifiedSession) -> Result<Value, TeamError> {
     let task_key: Option<String> = connection.query_row("SELECT task_key FROM members WHERE session_id=?1 AND runtime=?2 AND agent=?3",

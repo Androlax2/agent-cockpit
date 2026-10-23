@@ -59,6 +59,10 @@ pub struct Transition {
     pub origin: String,
     pub generation: String,
     pub source: Binding,
+    #[serde(default)]
+    pub source_repository: String,
+    #[serde(default)]
+    pub source_branch: String,
     pub target: Selection,
     pub direction: Direction,
     pub stage: Stage,
@@ -190,6 +194,7 @@ impl RoutingStore {
             } else { None };
             if let Some((target, direction)) = target {
                 let transition = Transition { origin: origin.clone(), generation: util::token_hex(16), source: route.current.clone(),
+                    source_repository: observed.session.repository.clone(), source_branch: observed.session.branch.clone(),
                     target, direction, stage: Stage::Prepared, replacement: None };
                 route.phase = Phase::Pending(transition.clone());
                 route.updated_at = now;
@@ -289,6 +294,8 @@ fn validate_state(state: &RoutingState) -> Result<(), String> {
         }
         if let Phase::Pending(pending) = &route.phase {
             if pending.origin != *origin || pending.source != route.current || !pending.target.valid()
+                || (!pending.source_repository.is_empty() && !crate::sessions::valid_repository(&pending.source_repository))
+                || !crate::sessions::valid_metadata_text(&pending.source_branch, 300)
                 || pending.generation.len() != 32 || !pending.generation.bytes().all(|byte| byte.is_ascii_hexdigit())
                 || pending.replacement.as_ref().is_some_and(|replacement| !replacement.valid() || replacement.selection != pending.target)
                 || (pending.stage == Stage::Bound) != pending.replacement.is_some() {

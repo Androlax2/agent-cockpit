@@ -6603,6 +6603,75 @@ fn todo_categories_survive_updates_and_reloading() {
 }
 
 #[test]
+fn native_codex_task_updates_keep_the_full_replacement_session_identity() {
+    let fixture = Fixture::new();
+    let project = project_folder(&fixture, "runway");
+    queue_update(json!({"action":"add","text":"Finish this task","session":SESSION_A}), &project);
+    let mut todos = TodoList::load();
+    assert_eq!(todos.apply_updates(), 1);
+    let id = todos.items[0].id();
+    let replacement = "cdx_c214e8c0c9458f09ea4300974071bcad955995188f33264e341800f8a2bb5fcb";
+    queue_update(json!({"action":"doing","id":id,"session":replacement}), &project);
+    assert_eq!(todos.apply_updates(), 1);
+    assert_eq!(TodoList::load().items[0].session(), replacement);
+    assert!(TodoList::load().busy(replacement));
+}
+
+#[test]
+fn subscription_ownership_reads_refuse_corrupt_or_partially_discarded_todo_state() {
+    let _fixture = Fixture::new();
+    fs::create_dir_all(crate::paths::state_dir()).unwrap();
+    for invalid in ["not JSON", "42", r#"{"items":[{"id":"1797cdd6"}]}"#, r#"{"issues":{"not-an-issue":{"status":"doing"}}}"#] {
+        fs::write(crate::paths::todo(), invalid).unwrap();
+        assert!(TodoList::load_checked().is_err(), "{invalid}");
+        assert_eq!(fs::read_to_string(crate::paths::todo()).unwrap(), invalid);
+    }
+    fs::write(crate::paths::todo(), r#"{"items":[],"issues":{}}"#).unwrap();
+    assert!(TodoList::load_checked().is_ok());
+}
+
+#[test]
+fn subscription_prompt_transfer_includes_late_messages_without_replaying_moved_files() {
+    let _fixture = Fixture::new();
+    let replacement = "cdx_c214e8c0c9458f09ea4300974071bcad955995188f33264e341800f8a2bb5fcb";
+    crate::prompts::add(SESSION_A, "First queued instruction").unwrap();
+    assert_eq!(crate::prompts::transfer_subscription_prompts(SESSION_A, replacement).unwrap(), 1);
+    crate::prompts::add(SESSION_A, "Message arriving during handoff").unwrap();
+    assert_eq!(crate::prompts::transfer_subscription_prompts(SESSION_A, replacement).unwrap(), 1);
+    assert_eq!(crate::prompts::transfer_subscription_prompts(SESSION_A, replacement).unwrap(), 0);
+    assert_eq!(crate::prompts::count(SESSION_A), 0);
+    let prompts: Vec<_> = crate::prompts::pending(replacement).iter().map(|path| fs::read_to_string(path).unwrap()).collect();
+    assert_eq!(prompts, ["First queued instruction", "Message arriving during handoff"]);
+}
+
+#[test]
+fn subscription_prompt_transfer_recovers_a_published_link_without_copying_the_message_twice() {
+    let _fixture = Fixture::new();
+    crate::prompts::add(SESSION_A, "Keep this instruction exactly once").unwrap();
+    let source = crate::prompts::pending(SESSION_A).remove(0);
+    let target = crate::prompts::folder(SESSION_B).unwrap();
+    fs::create_dir_all(&target).unwrap();
+    fs::hard_link(&source, target.join(source.file_name().unwrap())).unwrap();
+    assert_eq!(crate::prompts::transfer_subscription_prompts(SESSION_A, SESSION_B).unwrap(), 1);
+    assert_eq!(crate::prompts::count(SESSION_A), 0);
+    assert_eq!(crate::prompts::count(SESSION_B), 1);
+}
+
+#[test]
+fn subscription_prompt_transfer_never_overwrites_another_queued_message() {
+    let _fixture = Fixture::new();
+    crate::prompts::add(SESSION_A, "Source instruction").unwrap();
+    let source = crate::prompts::pending(SESSION_A).remove(0);
+    let target = crate::prompts::folder(SESSION_B).unwrap();
+    fs::create_dir_all(&target).unwrap();
+    let target = target.join(source.file_name().unwrap());
+    fs::write(&target, "Unrelated instruction").unwrap();
+    assert!(crate::prompts::transfer_subscription_prompts(SESSION_A, SESSION_B).is_err());
+    assert_eq!(fs::read_to_string(&source).unwrap(), "Source instruction");
+    assert_eq!(fs::read_to_string(&target).unwrap(), "Unrelated instruction");
+}
+
+#[test]
 fn a_session_deletes_an_item_a_session_filed_in_its_project() {
     let fixture = Fixture::new();
     let runway = project_folder(&fixture, "runway");

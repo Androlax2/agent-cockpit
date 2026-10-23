@@ -73,6 +73,24 @@ fn uncertain_launches_survive_restarts_without_being_submitted_again() {
 }
 
 #[test]
+fn prepared_handoffs_keep_source_task_metadata_after_the_source_runtime_exits() {
+    let sandbox = Sandbox::new();
+    let path = sandbox.root.join("routes.json");
+    let mut store = RoutingStore::load(&path).unwrap();
+    let source = binding("claude");
+    store.track(source.clone(), "/projects/demo", "1797cdd6", 100).unwrap();
+    let mut observed = observation(&source, Exhausted);
+    observed.session.repository = "owner/repo".into();
+    observed.session.branch = "todo-1797cdd6".into();
+    store.reconcile(&[observed], 101).unwrap();
+    drop(store);
+    let store = RoutingStore::load(&path).unwrap();
+    let Phase::Pending(pending) = &store.route(SESSION_A).unwrap().phase else { panic!("lost pending handoff") };
+    assert_eq!(pending.source_repository, "owner/repo");
+    assert_eq!(pending.source_branch, "todo-1797cdd6");
+}
+
+#[test]
 fn fresh_recovery_restores_the_original_model_and_variant_after_a_verified_replacement() {
     let sandbox = Sandbox::new();
     let mut store = RoutingStore::load(&sandbox.state.join("subscriptions/routes.json")).unwrap();
@@ -380,6 +398,49 @@ fn protected_plan_retries_never_replace_conflicting_or_exposed_context() {
         assert_eq!(fs::read(&path).unwrap(), previous);
         assert!(!stderr(&output).contains("conflicting-private-context"));
         assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 1);
+    }
+}
+
+#[test]
+fn subscription_task_ownership_moves_once_and_keeps_the_previous_assignment_in_its_trail() {
+    use cockpit::{continuity::{Continuity, TaskSnapshot}, todo::{Entry, Item}};
+    let sandbox = Sandbox::new();
+    let path = sandbox.root.join("continuity.json");
+    let mut continuity = Continuity::load(&path).unwrap();
+    let item = Item(json!({"id":"1797cdd6","text":"Finish the requested change","status":"doing"}).as_object().unwrap().clone());
+    let task = TaskSnapshot::from_entry(&Entry::Typed(item), "owner/repo");
+    let source = Session { session: SESSION_A.into(), agent: "claude".into(), cwd: "/projects/demo".into(),
+        branch: "todo-1797cdd6".into(), repository: "owner/repo".into(), ..Session::default() };
+    let replacement = Session { session: binding("codex").session, agent: "codex".into(), ..source.clone() };
+    continuity.assign(&task, &source, 100).unwrap();
+    assert!(continuity.transfer_subscription_task("1797cdd6", &source, &replacement, 101).unwrap());
+    drop(continuity);
+    let mut continuity = Continuity::load(&path).unwrap();
+    assert!(!continuity.transfer_subscription_task("1797cdd6", &source, &replacement, 102).unwrap());
+    let assignments = &continuity.tasks()["1797cdd6"].assignments;
+    assert_eq!(assignments.len(), 2);
+    assert!(assignments.iter().any(|assignment| assignment.session == SESSION_A && !assignment.active));
+    assert_eq!(assignments.iter().filter(|assignment| assignment.active).map(|assignment| assignment.session.as_str()).collect::<Vec<_>>(), [replacement.session.as_str()]);
+}
+
+#[test]
+fn typed_and_issue_assignments_follow_a_subscription_replacement_without_requeueing() {
+    use cockpit::todo::{TodoList, Item};
+    for issue in [false, true] {
+        let key = if issue { "owner/repo#12" } else { "1797cdd6" };
+        let assignment = json!({"id":key,"text":"Finish this task","status":"doing","session":SESSION_A,"updated":100});
+        let mut todos = TodoList { items: if issue { Vec::new() } else { vec![Item(assignment.as_object().unwrap().clone())] },
+            issues: if issue { json!({key:assignment}).as_object().unwrap().clone() } else { Default::default() },
+            queued: Default::default(), declined: Vec::new() };
+        let replacement = binding("codex").session;
+        assert!(todos.transfer_subscription_task(key, SESSION_A, &replacement).unwrap());
+        assert!(!todos.transfer_subscription_task(key, SESSION_A, &replacement).unwrap());
+        assert!(!todos.busy(SESSION_A));
+        assert!(todos.busy(&replacement));
+        assert_eq!(todos.status_of(key), "doing");
+        assert!(!todos.is_queued(key));
+        assert!(todos.transfer_subscription_task(key, SESSION_B, SESSION_A).is_err());
+        assert!(todos.busy(&replacement));
     }
 }
 

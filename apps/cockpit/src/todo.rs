@@ -445,6 +445,28 @@ impl TodoList {
         Self::from_data(data)
     }
 
+    /// Ownership admission must not mistake unreadable or discarded assignments for an empty list.
+    pub fn load_checked() -> Result<Self, String> {
+        let data = match util::read_untrusted(&paths::todo(), 16 * 1024 * 1024 + 1) {
+            Ok(bytes) if bytes.len() <= 16 * 1024 * 1024 => serde_json::from_slice::<Value>(&bytes).map_err(|_| "invalid todo state JSON")?,
+            Ok(_) => return Err("todo state exceeds the safe ownership-transfer size".into()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => json!({}),
+            Err(error) => return Err(format!("cannot read todo ownership: {error}")),
+        };
+        let data = if data.is_array() { json!({"items":data}) } else { data };
+        if !data.is_object() || data.get("items").is_some_and(|items| !items.is_array())
+            || data.get("issues").is_some_and(|issues| !issues.is_object()) {
+            return Err("invalid todo ownership state".into());
+        }
+        let item_count = data["items"].as_array().map_or(0, Vec::len);
+        let issue_count = data["issues"].as_object().map_or(0, Map::len);
+        let todos = Self::from_data(data);
+        if todos.items.len() != item_count || todos.issues.len() != issue_count {
+            return Err("todo ownership state contains invalid assignments".into());
+        }
+        Ok(todos)
+    }
+
     fn from_data(data: Value) -> Self {
         // The first format: items only, "sent" for handed to Claude.
         let data = if data.is_array() { json!({"items": data}) } else { data };
@@ -500,13 +522,34 @@ impl TodoList {
                                          && value.get("session").and_then(Value::as_str) == Some(session))
     }
 
+    /// Mutate the caller's snapshot; the routing coordinator must persist it before admission.
+    pub fn transfer_subscription_task(&mut self, key: &str, source: &str, replacement: &str) -> Result<bool, String> {
+        if source == replacement || !crate::agents::is_session_id(source) || !crate::agents::is_session_id(replacement) {
+            return Err("invalid subscription task owners".into());
+        }
+        let assignment = if issue_key().is_match(key) {
+            self.issues.get_mut(key).and_then(Value::as_object_mut)
+        } else {
+            self.items.iter_mut().find(|item| item.id() == key).map(|item| &mut item.0)
+        };
+        let Some(assignment) = assignment else { return Ok(false) };
+        if assignment.get("status").and_then(Value::as_str) != Some("doing") {
+            return Err("subscription task is no longer in progress".into());
+        }
+        match assignment.get("session").and_then(Value::as_str) {
+            Some(owner) if owner == replacement => Ok(false),
+            Some(owner) if owner == source => { assignment.insert("session".into(), json!(replacement)); Ok(true) },
+            _ => Err("subscription task owner changed before transfer".into()),
+        }
+    }
+
     pub fn save(&mut self) {
         if let Err(error) = self.try_save() {
             util::log_event("WARN", &format!("cannot save the todo list: {error}"));
         }
     }
 
-    pub(crate) fn try_save(&mut self) -> std::io::Result<()> {
+    pub fn try_save(&mut self) -> std::io::Result<()> {
         let _writer = Self::lock_writer()?;
         self.try_save_locked()
     }
@@ -1157,7 +1200,8 @@ impl TodoList {
             .ok_or("no folder its sandbox started in")?.to_string();
         let sender_project = project_name(&repository_root(&started_in));
         let action = update.get("action").and_then(Value::as_str).unwrap_or("");
-        let session: String = update.get("session").and_then(Value::as_str).unwrap_or("").chars().take(40).collect();
+        let session = update.get("session").and_then(Value::as_str).unwrap_or("");
+        if !crate::sessions::valid_metadata_text(session, 100) { return Err("invalid todo update session identity".into()); }
         let target = update.get("project").and_then(Value::as_str).filter(|target| *target != sender_project);
         if let Some(target) = target {
             return match action {

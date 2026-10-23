@@ -44,6 +44,50 @@ pub fn count(session: &str) -> usize {
     pending(session).len()
 }
 
+/// Both sessions must remain routing-held until this transfer and ownership binding finish.
+pub fn transfer_subscription_prompts(source: &str, replacement: &str) -> Result<usize, String> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+    let source_folder = folder(source).ok_or("invalid source prompt queue")?;
+    let target_folder = folder(replacement).filter(|_| source != replacement).ok_or("invalid replacement prompt queue")?;
+    let metadata = match fs::symlink_metadata(&source_folder) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => return Err(error.to_string()),
+    };
+    if !metadata.is_dir() { return Err("source prompt queue is not a plain directory".into()); }
+    fs::DirBuilder::new().recursive(true).mode(0o700).create(&target_folder).map_err(|error| error.to_string())?;
+    if !fs::symlink_metadata(&target_folder).map_err(|error| error.to_string())?.is_dir() {
+        return Err("replacement prompt queue is not a plain directory".into());
+    }
+    let target_directory = fs::File::open(&target_folder).map_err(|error| error.to_string())?;
+    let source_directory = fs::File::open(&source_folder).map_err(|error| error.to_string())?;
+    let mut transferred = 0;
+    for path in pending(source) {
+        let file = crate::util::open_untrusted(&path).map_err(|error| error.to_string())?;
+        let metadata = file.metadata().map_err(|error| error.to_string())?;
+        if metadata.len() > (PROMPT_MAX * 4) as u64 { return Err("queued prompt exceeds the safe transfer size".into()); }
+        file.sync_all().map_err(|error| error.to_string())?;
+        let target = target_folder.join(path.file_name().ok_or("queued prompt has no filename")?);
+        match fs::hard_link(&path, &target) {
+            Ok(()) => (),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => (),
+            Err(error) => return Err(error.to_string()),
+        }
+        let published = fs::symlink_metadata(&target).map_err(|error| error.to_string())?;
+        let current = fs::symlink_metadata(&path).map_err(|error| error.to_string())?;
+        if !published.is_file() || published.ino() != metadata.ino() || published.dev() != metadata.dev()
+            || current.ino() != metadata.ino() || current.dev() != metadata.dev() {
+            return Err("queued prompt changed or conflicts with the replacement queue".into());
+        }
+        // A crash after publication leaves the same inode at both names, safely recognizable on retry.
+        target_directory.sync_all().map_err(|error| error.to_string())?;
+        fs::remove_file(&path).map_err(|error| error.to_string())?;
+        source_directory.sync_all().map_err(|error| error.to_string())?;
+        transferred += 1;
+    }
+    Ok(transferred)
+}
+
 /// The oldest prompt's text and file, to delete once sent.
 pub fn oldest(session: &str) -> Option<(String, PathBuf)> {
     let path = pending(session).into_iter().next()?;
