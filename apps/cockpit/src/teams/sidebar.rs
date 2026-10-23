@@ -119,7 +119,11 @@ pub fn qa_status(snapshot: &Value, task: &TaskKey) -> String {
 
 pub fn activity(session: &Session) -> String {
     let request = sessions::activity_text(session);
-    if !request.is_empty() { return shown(&request); }
+    if !request.is_empty() {
+        let age = if session.since > 0 && session.since <= util::now_secs() { format!("state {}", util::age(session.since)) }
+            else { "State age unavailable".into() };
+        return format!("{} · {age}", shown(&request));
+    }
     if !session.detail.trim().is_empty() {
         return format!("Reported: {} · state {}", shown(&session.detail), util::age(session.since));
     }

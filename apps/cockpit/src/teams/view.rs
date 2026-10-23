@@ -5,7 +5,7 @@ use crate::approval::escape_hiding;
 use serde_json::Value;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Row { Proposal(usize), Member(usize), Escalation(usize), Uncertain(usize), Message(usize), FailedStart(usize), FailedWake(usize) }
+pub enum Row { Proposal(usize), Member(usize), Escalation(usize), Uncertain(usize), Message(usize), FailedStart(usize), FailedWake(usize), FailedDelivery(usize) }
 
 pub struct TeamView {
     pub snapshot: Value,
@@ -62,6 +62,7 @@ impl TeamView {
         rows.extend((0..self.list("members").len()).map(Row::Member));
         rows.extend(indices("escalations", &|escalation| escalation["status"] == "open").into_iter().map(Row::Escalation));
         rows.extend(indices("messages", &|message| message["state"] == "uncertain").into_iter().map(Row::Uncertain));
+        rows.extend(indices("messages", &|message| message["state"] == "failed").into_iter().map(Row::FailedDelivery));
         rows.extend(indices("spawns", &|spawn| spawn["status"] == "failed" || spawn["status"] == "refused").into_iter().map(Row::FailedStart));
         rows.extend(indices("sleeps", &|sleep| sleep["state"] == "failed").into_iter().map(Row::FailedWake));
         rows
@@ -70,7 +71,7 @@ impl TeamView {
     /// Pending requests, open escalations and uncertain deliveries: what needs Theo.
     pub fn attention(snapshot: &Value) -> usize {
         let count = |key: &str, field: &str, value: &str| snapshot[key].as_array().into_iter().flatten().filter(|item| item[field] == value).count();
-        count("proposals", "status", "pending") + count("escalations", "status", "open") + count("messages", "state", "uncertain")
+        count("proposals", "status", "pending") + count("escalations", "status", "open") + count("messages", "state", "uncertain") + count("messages", "state", "failed")
             + count("spawns", "status", "failed") + count("spawns", "status", "refused")
             + count("sleeps", "state", "failed")
     }
@@ -104,6 +105,10 @@ impl TeamView {
             Row::Uncertain(index) => {
                 let envelope = self.envelope(index);
                 format!("? uncertain delivery {} → {}", shown(&self.message(index)["message_id"]), shown(&envelope["recipient"]["role"]))
+            },
+            Row::FailedDelivery(index) => {
+                let envelope = self.envelope(index);
+                format!("! failed delivery {} → {}", shown(&self.message(index)["message_id"]), shown(&envelope["recipient"]["role"]))
             },
             Row::FailedStart(index) => {
                 let spawn = &self.list("spawns")[index];
@@ -169,6 +174,9 @@ impl TeamView {
                 vec![self.row_text(row), format!("{}", shown(&envelope["body"])), format!("Last error: {}", shown(&self.message(index)["error"])),
                     "It may have reached the session: h it arrived (mark handled) · c cancel it. It is never sent twice.".into()]
             },
+            Row::FailedDelivery(index) => vec![self.row_text(row), shown(&self.envelope(index)["body"]),
+                format!("Last error: {}", shown(&self.message(index)["error"])),
+                "Delivery failed and is not retried. c cancel it; cancelling does not mark it received.".into()],
             Row::FailedStart(_) => vec![self.row_text(row), "It is never started again: start it by hand or ask the team to request it again. d dismiss".into()],
             Row::FailedWake(_) => vec![self.row_text(row), "Queued messages are retained. No automatic second launch is attempted.".into()],
             Row::Message(index) => crate::teams::envelope_text(&self.envelope(index)).lines().map(|line| shown(&Value::String(line.into()))).collect(),

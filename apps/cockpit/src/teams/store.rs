@@ -291,9 +291,9 @@ pub fn control_with(connection: &mut Connection, action: &HostAction, live: &[Ve
             let state = match decision.as_str() { "handled" => "received", "cancel" => "cancelled", _ => {
                 return Err(TeamError::new(ErrorCode::Invalid, "reconcile with handled or cancel"));
             } };
-            let changed = transaction.execute("UPDATE messages SET state=?2, last_error='reconciled by Theo' WHERE id=?1 AND state='uncertain'",
+            let changed = transaction.execute("UPDATE messages SET state=?2, last_error='reconciled by Theo' WHERE id=?1 AND (state='uncertain' OR (state='failed' AND ?2='cancelled'))",
                 params![message_id, state])?;
-            if changed != 1 { return Err(TeamError::new(ErrorCode::Conflict, "only an uncertain delivery can be reconciled")); }
+            if changed != 1 { return Err(TeamError::new(ErrorCode::Conflict, "only an uncertain delivery can be reconciled; failed deliveries can only be cancelled")); }
             transaction.execute("UPDATE attempts SET state=?2, finished_at=?3 WHERE message_id=?1 AND state='uncertain'",
                 params![message_id, if state == "received" { "received" } else { "not_submitted" }, now_ms])?;
             json!({"message_id": message_id, "state": state})

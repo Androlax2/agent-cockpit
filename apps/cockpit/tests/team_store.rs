@@ -1076,6 +1076,28 @@ fn only_uncertain_deliveries_can_be_reconciled() {
 }
 
 #[test]
+fn a_failed_delivery_can_be_cancelled_but_never_marked_received_or_retried() {
+    let sandbox = Sandbox::new();
+    let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+    linked(&mut connection);
+    let accepted = store::accept(&mut connection,&live()[1],&message("failed-notice"),3000).unwrap().result.unwrap();
+    for now in [3000,5000,15000,45000] {
+        let dispatch = store::claim(&mut connection,&live()[0],"idle-1",now).unwrap().unwrap();
+        store::finish(&mut connection,&dispatch.id,&TransportOutcome::NotSubmitted {reason:"inbox unavailable".into()},now).unwrap();
+    }
+    let id = accepted["message_id"].as_str().unwrap();
+    assert_eq!(store::snapshot(&connection,Some(&task()),None,100).unwrap()["messages"][0]["state"],"failed");
+    assert!(store::control(&mut connection,&HostAction::Reconcile {request_id:"failed-handled".into(),message_id:id.into(),decision:"handled".into()},&live(),50000).is_err());
+    store::control(&mut connection,&HostAction::Reconcile {request_id:"failed-cancel".into(),message_id:id.into(),decision:"cancel".into()},&live(),50001).unwrap();
+    let state = store::snapshot(&connection,Some(&task()),None,100).unwrap();
+    assert_eq!(state["messages"][0]["state"],"cancelled");
+    assert_eq!(state["messages"][0]["attempts"],4);
+    assert_eq!(cockpit::teams::view::TeamView::attention(&state),0);
+    assert!(cockpit::teams::sidebar::attention(&state,&task()).is_none());
+    assert!(store::claim(&mut connection,&live()[0],"idle-2",500000).unwrap().is_none());
+}
+
+#[test]
 fn uncertain_deliveries_stay_visible_after_more_than_one_hundred_messages() {
     let sandbox = Sandbox::new();
     let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();

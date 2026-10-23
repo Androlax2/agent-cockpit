@@ -2108,13 +2108,22 @@ impl App {
         }).collect();
         if let Some(chosen) = screen.outside(&mut || fzf("find session> ", &entries, &["--delimiter", "\t", "--with-nth", "2.."])) {
             if let Some(id) = chosen.split('\t').next() {
-                self.select_sidebar_target(crate::teams::sidebar::SidebarRow::Session { session_id: id.into() });
+                use crate::teams::sidebar::{self, SidebarRow};
+                let filtered_team = self.attention_only && self.sessions.iter().find(|session| session.session == id).is_some_and(|session| {
+                    matches!(&self.team_links, TeamLinks::Ready(snapshot) if sidebar::member_task(snapshot, session).is_some_and(|task|
+                        !self.sidebar_rows.iter().any(|row| matches!(row, SidebarRow::Team { task: visible } if visible == &task))))
+                });
+                if filtered_team { self.attention_only = false; }
+                if !self.select_sidebar_target(SidebarRow::Session { session_id: id.into() }) {
+                    return "Selected session unavailable; choose a row".into();
+                }
+                if filtered_team { return "Attention filter cleared to show the selected session".into(); }
             }
         }
         String::new()
     }
 
-    fn select_sidebar_target(&mut self, target: crate::teams::sidebar::SidebarRow) {
+    fn select_sidebar_target(&mut self, target: crate::teams::sidebar::SidebarRow) -> bool {
         use crate::teams::sidebar::{self, SidebarRow};
         let task = match &target {
             SidebarRow::Team { task } => Some(task.clone()),
@@ -2128,7 +2137,10 @@ impl App {
         if let Some(index) = self.sidebar_rows.iter().position(|row| row == &target) {
             self.panels[1].selected = index;
             self.sidebar_selection_lost = false;
+            return true;
         }
+        self.sidebar_selection_lost = true;
+        false
     }
 
     fn next_sidebar_attention(&mut self) -> String {
@@ -2149,7 +2161,7 @@ impl App {
             return "nothing needs you".into();
         };
         let target = (*target).clone();
-        self.select_sidebar_target(target.clone());
+        if !self.select_sidebar_target(target.clone()) { return "Selected session unavailable; choose a row".into(); }
         if let SidebarRow::Session { session_id } = target {
             let attended = self.manager_async(&["attend", &session_id]);
             self.mark_result_seen(&session_id).unwrap_or(attended)
@@ -4066,6 +4078,12 @@ impl App {
                 if !self.confirm(screen, question) { return String::new() }
                 Self::team_control(HostAction::Reconcile { request_id: token(), message_id, decision: decision.into() })
                     .map(|_| format!("delivery {decision}"))
+            },
+            (Row::FailedDelivery(index), Key::Char('c')) => {
+                let message_id = view.message(index)["message_id"].as_str().unwrap_or("").to_string();
+                if !self.confirm(screen, "cancel this failed delivery? it is not sent again") { return String::new() }
+                Self::team_control(HostAction::Reconcile { request_id: token(), message_id, decision: "cancel".into() })
+                    .map(|_| "failed delivery cancelled".to_string())
             },
             _ => return String::new(),
         };

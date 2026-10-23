@@ -3387,6 +3387,85 @@ fn team_sidebar_search_finds_a_collapsed_member() {
 }
 
 #[test]
+fn team_sidebar_filtered_search_opens_only_the_requested_member() {
+    for (key,expected) in [(Key::Enter,format!("cockpit open {SESSION_A}")),
+        (Key::Char('x'),format!("cockpit exit {SESSION_A}")),(Key::Char('U'),"cockpit push /r/design".into())] {
+        let fixture = Fixture::new();
+        let mut designer = session(SESSION_A,"waiting","project-a","/r/design",1);
+        designer["label"] = json!("Design session");
+        let mut developer = session(OPENCODE_SESSION,"needs-you","project-a","/r/build",2);
+        developer["label"] = json!("Build session");
+        developer["request"] = json!("Choose frame");
+        fixture.snapshot(json!([designer,developer]));
+        let mut state = sidebar_snapshot();
+        state["members"][1]["task_id"] = json!("0123abcd");
+        team_host(&fixture,state,vec![]);
+        let mut app = fixture.app();
+        continuity_action(&mut app,"1\tattention-filter",&[]);
+        sidebar_select(&mut app,"Build session");
+        assert!(!app.panels[1].lines.iter().any(|line| line.texts().contains("Design session")));
+        app.handle(Key::Char('/'),&mut FakeScreen::typing(&[&format!("{SESSION_A}\tproject-a\tDesign session")]));
+        app.redraw();
+        assert_eq!(app.selected_session().map(|session| session.session),Some(SESSION_A.into()));
+        assert!(app.panels[1].lines.iter().any(|line| line.texts().contains("Design session")));
+        app.handle(key,&mut FakeScreen::answering(&[Key::Char('y')]));
+        assert_eq!(fixture.wait_for_calls("cockpit",1),[expected]);
+    }
+}
+
+#[test]
+fn team_sidebar_unavailable_search_target_cannot_reuse_previous_actions() {
+    let fixture = Fixture::new();
+    sidebar_sessions(&fixture);
+    team_host(&fixture,sidebar_snapshot(),vec![]);
+    let mut app = fixture.app();
+    sidebar_select(&mut app,"Build session");
+    app.handle(Key::Char('/'),&mut FakeScreen::typing(&["missing-session\tMissing"]));
+    app.redraw();
+    assert!(app.selected_session().is_none());
+    for key in [Key::Enter,Key::Char('x'),Key::Char('U')] { app.handle(key,&mut FakeScreen::answering(&[Key::Char('y')])); }
+    assert!(fixture.calls("cockpit").is_empty(),"{:?}",fixture.calls("cockpit"));
+}
+
+#[test]
+fn team_sidebar_old_attention_request_shows_state_age() {
+    let fixture = Fixture::new();
+    let mut developer = session(OPENCODE_SESSION,"needs-you","project-a","/r/project-a",util::now_secs()-7200);
+    developer["request"] = json!("Choose old frame");
+    fixture.snapshot(json!([developer]));
+    team_host(&fixture,sidebar_snapshot(),vec![]);
+    let app = fixture.app();
+    let request = app.panels[1].lines.iter().find(|line| line.texts().contains("Choose old frame")).unwrap().texts();
+    assert!(request.contains("state 2h"),"{request}");
+}
+
+#[test]
+fn team_sidebar_failed_delivery_can_be_cancelled_from_task_attention() {
+    let fixture = Fixture::new();
+    let mut state = sidebar_snapshot();
+    state["members"] = json!([]);
+    state["messages"] = json!([{"message_id":"failed-m1","state":"failed","error":"native inbox unavailable",
+        "envelope":json!({"task":{"project":SIDEBAR_PROJECT,"task_id":"1d3fd318"},"kind":"notice","body":"Review frame","sender":{"role":"developer"},"recipient":{"role":"qa"}}).to_string()}]);
+    let requests = team_host(&fixture,state,vec![]);
+    let mut app = fixture.app();
+    app.handle(Key::Char('n'),&mut FakeScreen::default());
+    app.redraw();
+    app.handle(Key::Char('i'),&mut FakeScreen::default());
+    assert!(app.team_view.as_ref().unwrap().detail().join("\n").contains("cancel"));
+    app.handle(Key::Char('h'),&mut FakeScreen::answering(&[Key::Char('y')]));
+    assert!(controls(&requests).is_empty(),"failed delivery cannot be marked received");
+    app.handle(Key::Char('c'),&mut FakeScreen::answering(&[Key::Char('n')]));
+    assert!(controls(&requests).is_empty(),"cancellation needs confirmation");
+    app.handle(Key::Char('c'),&mut FakeScreen::answering(&[Key::Char('y')]));
+    let actions = controls(&requests);
+    assert_eq!(actions.len(),1);
+    assert_eq!(actions[0]["action"],"reconcile");
+    assert_eq!(actions[0]["message_id"],"failed-m1");
+    assert_eq!(actions[0]["decision"],"cancel");
+    assert!(fixture.calls("cockpit").is_empty());
+}
+
+#[test]
 fn team_sidebar_refresh_preserves_selected_session_identity() {
     let fixture = Fixture::new();
     sidebar_sessions(&fixture);
