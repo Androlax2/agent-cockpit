@@ -47,6 +47,33 @@ fn approve_in_terminal(command: &str) -> (Terminal, PathBuf, String) {
 }
 
 #[test]
+fn a_pending_approval_keeps_its_menu_and_answer_through_path_migration() {
+    let (root, id) = request("true");
+    fs::create_dir_all(root.join("home")).unwrap();
+    fs::create_dir_all(root.join("run/claude-runs")).unwrap();
+    let mut terminal = Terminal::start(Path::new(env!("CARGO_BIN_EXE_cockpit-run-approve")), &[&id],
+        &[("HOME", &root.join("home")), ("CLAUDE_ANSWERS_DIR", &root.join("answers")),
+          ("XDG_RUNTIME_DIR", &root.join("run")), ("XDG_STATE_HOME", &root.join("state")),
+          ("COCKPIT_STATE_HOME", &root.join("state")), ("CLAUDE_AUDIT_JOURNAL", Path::new("off"))]);
+    terminal.pump(10.0, Some(b"Edit it first"));
+    let asking = root.join(format!("run/claude-runs/{id}.asking"));
+    let before = fs::read(&asking).unwrap();
+    let migration = Command::new("python3").arg(common::sandbox::repo().join("tools/migrate-cockpit-names.py")).arg("--apply")
+        .env("HOME", root.join("home")).env("XDG_RUNTIME_DIR", root.join("run"))
+        .env("XDG_STATE_HOME", root.join("state")).env("COCKPIT_STATE_HOME", root.join("state"))
+        .env("XDG_DATA_HOME", root.join("home/.local/share")).output().unwrap();
+    assert!(migration.status.success(), "{}", String::from_utf8_lossy(&migration.stderr));
+    assert_eq!(fs::read(&asking).unwrap(), before);
+    assert_eq!(fs::read(root.join(format!("run/cockpit-runs/{id}.asking"))).unwrap(), before);
+    fs::write(root.join(format!("run/cockpit-runs/{id}.remote")), "n").unwrap();
+    assert!(terminal.wait_for_exit(20.0).success());
+    let result: serde_json::Value = serde_json::from_str(&fs::read_to_string(root.join(format!("answers/proj-a/runs/{id}.result"))).unwrap()).unwrap();
+    assert_eq!(result["status"], "declined");
+    assert!(!asking.exists());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn approved_command_keeps_shell_quoting_under_fish() {
     let (root, _) = request("true");
     let marker = root.join("ran");

@@ -53,15 +53,6 @@ def check_paths(pairs):
                 raise ValueError(f"unexpected type or owner: {path}")
 
 
-def check_pending(pairs):
-    for old, new, _ in pairs:
-        if new.name != "cockpit-runs":
-            continue
-        for folder in [old, new]:
-            if any(folder.glob("*.asking")):
-                raise ValueError("in-flight approval: answer or decline it before migrating cockpit names")
-
-
 def check_guides():
     runtime = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"))
     for requests in {runtime / "claude-requests", runtime / "cockpit-requests"}:
@@ -189,8 +180,6 @@ def main():
         fcntl.flock(lock, fcntl.LOCK_EX)
         check_paths(pairs)
         check_queues()
-        if any(old.exists() and not old.is_symlink() and not new.is_symlink() for old, new, _ in pairs):
-            check_pending(pairs)
         snapshot = runtime / "cockpit-name-services.json"
         if args.mode == "--prepare":
             prepare_services(snapshot)

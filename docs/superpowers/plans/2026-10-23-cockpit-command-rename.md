@@ -39,6 +39,7 @@
 - Canonical configuration: `COCKPIT_{REMOTE_DIR,REMOTE_ADDRESS,TODO_PATH,TODO_UPDATES,DESIGNS_DIR,RUNS_DIR,ANSWERS_DIR,ANSWERS_KEY,DOTFILES_WORK,DOTFILES_LIVE,GREYWALL_WORK,GREYPROXY_WORK,REVIEWS_FIXTURE,HEALTH_COCKPIT,HEALTH_DOTFILES}`, with each old `CLAUDE_*` spelling accepted as fallback. `CLAUDE_GUIDES_DIR` is already unused and is not a migration input.
 - Keep phone cookie `claude_remote`, public routes, wire formats, request ids and agent-owned retry/session identifiers stable; changing those would break existing conversations rather than rename a command.
 - Refuse deployment while held guides have no result. Deferred OSD restart also checks guide completion, including guides opened after initial preflight. Transfer legacy services using explicit systemd states and stop installed legacy units even when they are activating or waiting to restart.
+- Pending run approvals may remain open: requests/log directories keep their inodes and old aliases, cache paths stay beneath existing mounts, and daemon restart waits for pending approvals. A real PTY regression migrates an open approval and answers it afterwards without executing its command. Do not approve or decline other agents' requests as part of deployment.
 
 ---
 

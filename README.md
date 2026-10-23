@@ -14,8 +14,9 @@ Claude Code updates, Claude usage, and `claude-audit` retain their names.
 pairing and push subscriptions survive. The phone unit becomes
 `cockpit-remote.service`; the weekly timer becomes `cockpit-health-check.timer`.
 Enabled/active intent and the timer's last-run stamp are preserved, and old units
-are stopped and disabled. Finish or decline outstanding approvals before the
-first migration; conflicting state locations stop it before anything is moved.
+are stopped and disabled. Pending approvals keep their requests and terminals;
+the daemon restart waits for their completion. Conflicting state locations stop
+migration before anything is moved.
 
 Shared state/runtime paths use `cockpit-*`. Existing private phone state and
 stuck-exit captures stay physically beneath the legacy sandbox masks, with

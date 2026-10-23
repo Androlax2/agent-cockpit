@@ -141,12 +141,13 @@ class MigrationTests(unittest.TestCase):
         self.assertTrue(custom.exists())
         self.assertFalse(custom.parent.is_symlink())
 
-    def test_in_flight_requests_refuse_migration_without_changing_state(self):
+    def test_pending_approvals_keep_their_original_request_through_migration(self):
         self.seed(self.state / "claude-remote/devices.json")
         self.seed(self.runtime / "claude-runs/012345abcdef.asking", json.dumps({"command": "echo hello"}))
         output = self.run_migration()
-        self.assertNotEqual(output.returncode, 0)
-        self.assertIn("in-flight", output.stderr)
+        self.assertEqual(output.returncode, 0, output.stderr)
+        self.assertEqual((self.runtime / "claude-runs/012345abcdef.asking").read_bytes(),
+                         (self.runtime / "cockpit-runs/012345abcdef.asking").read_bytes())
         self.assertFalse((self.state / "claude-remote").is_symlink())
 
     def test_an_unfinished_guide_blocks_deployment_before_paths_change(self):
