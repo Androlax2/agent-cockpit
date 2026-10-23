@@ -42,6 +42,9 @@ use std::fs;
 use std::path::PathBuf;
 
 const USAGE: &str = "    cockpit-todo list [--all]        the items of this directory's project (--all: every project)
+    cockpit-todo receipt <request-id>  saved/rejected/pending result of an add or proposal
+    cockpit-todo approve-request <request-id>
+                                     host only, through ask-to-run: approve the exact capped handoff
     cockpit-todo start <id>          mark it in progress
     cockpit-todo done <id> [--summary '<branch, commit, PR>']
                                     mark it done; the summary reaches the items waiting on it and,
@@ -222,11 +225,20 @@ fn file(action: &str, repo: Option<&str>, title: &str, why: Option<String>, note
             update.insert(key.into(), json!(value.chars().take(4000).collect::<String>()));
         }
     }
+    let request_id = matches!(action, "add" | "propose").then(|| cockpit::util::token_hex(6));
+    if let Some(id) = &request_id {
+        update.insert("request_id".into(), json!(id));
+        println!("Submitted request {id}; pending transport confirmation. Check: cockpit-todo receipt {id}");
+    }
     if let Err(error) = append(update) {
         eprintln!("cockpit-todo: {error}");
         return 1;
     }
     println!("Submitted to the cockpit; not yet saved. The column may reject it, including for rate limits. Check cockpit-todo list --all to confirm.");
+    if let Some(id) = request_id {
+        println!("Request {id} submitted; pending acceptance, not yet saved. Check: cockpit-todo receipt {id}");
+        println!("If rejected by a filing cap, request host approval through ask-to-run: cockpit-todo approve-request {id}");
+    }
     match action {
         "propose" => println!("If accepted, it goes to Theo in {}'s list (Theo approves or declines it).", target.unwrap_or_else(project)),
         "stack" => println!("If accepted, it goes to Theo in {}'s list (Theo approves or declines it).", repo.unwrap_or_default()),
@@ -275,6 +287,24 @@ fn list(everything: bool) -> i32 {
     0
 }
 
+fn receipt(id: &str) -> i32 {
+    let Some(key) = approval::own_answers_key() else {
+        eprintln!("cockpit-todo: no answers key; restart this session before checking receipts");
+        return 1;
+    };
+    let path = approval::answers_dir(&key, "todos").join(format!("{id}.json"));
+    let Some(result) = cockpit::util::read_json(&path) else {
+        println!("Request {id}: pending or unknown; no saved result. Do not file a duplicate.");
+        return 124;
+    };
+    println!("{result}");
+    match result["outcome"].as_str() {
+        Some("accepted" | "skipped") => 0,
+        Some("rejected") => 1,
+        _ => 124,
+    }
+}
+
 fn main() {
     // Rust ignores SIGPIPE, so println! panicked when a reader stopped early (claude-todo list | head):
     // the default ends the process quietly, as for any command line tool.
@@ -284,6 +314,11 @@ fn main() {
     let item_key = Regex::new(r"^[0-9a-f]{8}$").unwrap();
     let words: Vec<&str> = arguments.iter().map(String::as_str).collect();
     let status = match words.as_slice() {
+        ["receipt", id] if approval::valid_id(id) => receipt(id),
+        ["approve-request", id] if approval::valid_id(id) => match cockpit::todo_requests::approve(id) {
+            Ok(()) => { println!("Approval for exact request {id} submitted; check its saved receipt before claiming success."); 0 }
+            Err(error) => { eprintln!("cockpit-todo: {error}"); 1 }
+        },
         ["--help" | "-h" | "help", ..] | ["add" | "propose" | "blocked" | "stack" | "greywall" | "after" | "done", "--help" | "-h", ..] | ["stack", _, "--help" | "-h", ..] => { println!("{USAGE}"); 0 }
         [] | ["list", ..] => list(words.contains(&"--all")),
         ["done", id, "--summary", summary] if item_key.is_match(id) && !summary.trim().is_empty() => {

@@ -39,6 +39,34 @@ fn start_and_done_append_an_update_with_the_session() {
 }
 
 #[test]
+fn a_transport_acknowledgment_does_not_claim_a_handoff_was_saved() {
+    let sandbox = Sandbox::new();
+    let daemon = daemon(&sandbox, "ok");
+    let output = claude_todo(&sandbox, &["add", "Deploy pinned greywall", "--project", "agent-cockpit"], &sandbox.root);
+    let text = stdout(&output);
+    assert!(text.contains("pending"), "{text}");
+    assert!(!text.contains("Added to") && !text.contains("and queued"), "{text}");
+    let recorded = updates(&daemon);
+    assert!(recorded[0]["request_id"].as_str().is_some_and(|id| id.len() == 12));
+}
+
+#[test]
+fn a_filing_receipt_exposes_the_saved_id_or_rejection_and_missing_is_pending() {
+    let sandbox = Sandbox::new();
+    let folder = sandbox.runtime.join("cockpit-answers").join(ANSWERS_KEY).join("todos");
+    fs::create_dir_all(&folder).unwrap();
+    let id = "123456abcdef";
+    for (outcome, code) in [("accepted", 0), ("rejected", 1)] {
+        fs::write(folder.join(format!("{id}.json")), json!({"request_id": id, "outcome": outcome, "id": "1234abcd", "reason": "filing cap"}).to_string()).unwrap();
+        let output = claude_todo(&sandbox, &["receipt", id], &sandbox.root);
+        assert_eq!(output.status.code(), Some(code), "{}{}", stdout(&output), stderr(&output));
+        assert!(stdout(&output).contains("1234abcd"));
+    }
+    let output = claude_todo(&sandbox, &["receipt", "abcdef123456"], &sandbox.root);
+    assert_eq!(output.status.code(), Some(124));
+}
+
+#[test]
 fn both_command_names_report_each_update_once_after_migration() {
     let sandbox = Sandbox::new();
     let daemon = daemon(&sandbox, "ok");

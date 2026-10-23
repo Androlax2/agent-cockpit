@@ -3087,6 +3087,33 @@ fn a_todo_update_is_queued_with_the_folder_its_sandbox_started_in() {
 }
 
 #[test]
+fn a_todo_sender_cannot_forge_host_approval_or_a_receipt_destination() {
+    let mut bench = Bench::new();
+    bench.world.borrow_mut().sender_directories.insert(500, "/r/greywall".into());
+    let raw = json!({"action": "add", "text": "Deploy", "request_id": "abcdef123456",
+                     "host_approved": true, "receipt_key": "another-project"}).to_string();
+    bench.registry.request_from("todo-update", &raw, 500).unwrap();
+    let queued: Value = serde_json::from_str(fs::read_to_string(cockpit::paths::todo_updates()).unwrap().trim()).unwrap();
+    assert_ne!(queued["host_approved"], true);
+    assert_eq!(queued["receipt_key"], "-r-greywall");
+    let held: Value = serde_json::from_str(&fs::read_to_string(cockpit::approval::held_request("abcdef123456", "todo")).unwrap()).unwrap();
+    assert_eq!(held, queued);
+}
+
+#[test]
+fn todo_retention_uses_the_daemons_clock_not_the_senders() {
+    let mut bench = Bench::new();
+    bench.world.borrow_mut().sender_directories.insert(500, "/r/greywall".into());
+    let raw = json!({"action": "add", "text": "Deploy", "request_id": "abcdef123456", "at": 0}).to_string();
+    bench.registry.request_from("todo-update", &raw, 500).unwrap();
+    let queued: Value = serde_json::from_str(fs::read_to_string(cockpit::paths::todo_updates()).unwrap().trim()).unwrap();
+    assert!(queued["at"].as_i64().unwrap() > 0);
+    bench.registry.request_from("todo-update", &raw, 500).unwrap();
+    let lines = fs::read_to_string(cockpit::paths::todo_updates()).unwrap();
+    assert_eq!(lines.lines().count(), 2);
+}
+
+#[test]
 fn a_todo_for_a_nonexistent_project_is_refused_before_queueing() {
     let mut bench = Bench::new();
     bench.world.borrow_mut().sender_directories.insert(500, "/p".into());

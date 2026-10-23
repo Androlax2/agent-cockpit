@@ -21,6 +21,7 @@ pub mod sleep;
 pub mod status;
 pub mod teams;
 pub mod todo;
+pub mod todo_requests;
 mod todo_editor;
 mod todo_composer;
 pub mod todo_images;

@@ -494,7 +494,7 @@ pub fn queue_todo_update(raw: &str, started_in: &str) -> Result<(), String> {
             }
         }
     }
-    update.insert("started_in".into(), json!(started_in));
+    cockpit::todo_requests::hold(&mut update, started_in, &answers_key_of(Path::new(started_in)))?;
     let path = paths::todo_updates();
     if fs::metadata(&path).is_ok_and(|metadata| metadata.len() > TODO_QUEUE_MAX_BYTES) {
         return Err("the todo queue is full: the column has not applied it (is the cockpit running?)".into());

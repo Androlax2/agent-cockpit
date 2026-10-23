@@ -842,13 +842,18 @@ impl TodoList {
         let reports_of_reporter: Vec<&Item> = self.items.iter()
             .filter(|item| item.project() == project && item.reporter() == reporter && !item.source().is_empty()).collect();
         let open_reports: Vec<&&Item> = reports_of_reporter.iter().filter(|item| item.status() != "done").collect();
-        if open_reports.iter().any(|item| normalized(&item.text()) == normalized(&title)) {
+        if let Some(existing) = self.items.iter().find(|item| item.project() == project && item.status() != "done"
+            && (if is_direct { item.status() != PROPOSED } else { item.reporter() == reporter })
+            && normalized(&item.text()) == normalized(&title)).map(Item::id) {
+            self.remember_filing(&existing, update);
+            self.try_save().map_err(|error| format!("cannot save reused todo: {error}"))?;
             return Ok(());
         }
-        if open_reports.len() >= ELSEWHERE_OPEN_MAX {
+        let is_approved = is_direct && crate::todo_requests::is_approved(update);
+        if !is_approved && open_reports.len() >= ELSEWHERE_OPEN_MAX {
             return Err(format!("proposal from {reporter} for {project} dropped: {ELSEWHERE_OPEN_MAX} already open"));
         }
-        if reports_of_reporter.iter().filter(|item| now_secs() - item.created() < 86_400).count() >= ELSEWHERE_DAILY_MAX {
+        if !is_approved && reports_of_reporter.iter().filter(|item| now_secs() - item.created() < 86_400).count() >= ELSEWHERE_DAILY_MAX {
             return Err(format!("proposal from {reporter} for {project} dropped: {ELSEWHERE_DAILY_MAX} filed in the last day"));
         }
         let id = self.add_unsaved(&project, &checkout.to_string_lossy(), &title);
@@ -888,7 +893,8 @@ impl TodoList {
         if is_direct && pending.is_empty() {
             self.queued.insert(id.clone());
         }
-        self.save();
+        self.remember_filing(&id, update);
+        self.try_save().map_err(|error| format!("cannot save todo: {error}"))?;
         let outcome = if !is_direct { "proposed" } else if pending.is_empty() { "queued" } else { "waiting" };
         util::log_event("INFO", &format!("todo {id}: {reporter} {outcome} for {project}: {}", title.chars().take(60).collect::<String>()));
         crate::audit::record("column", audit_event, outcome, json!({"id": id, "project": project, "reporter": reporter, "started_in": started_in,
@@ -924,16 +930,28 @@ impl TodoList {
             util::log_event("WARN", &format!("todo: {} queued updates dropped past the first {APPLY_MAX_LINES}", line_count - APPLY_MAX_LINES));
         }
         let mut applied = 0;
-        for line in lines.lines().take(APPLY_MAX_LINES) {
+        for (position, line) in lines.lines().enumerate() {
             let update: Value = serde_json::from_str(line).unwrap_or(Value::Null);
             let mut fields = json!({"update": crate::audit::fingerprint(line), "action": update.get("action"), "id": update.get("id"),
                                     "started_in": update.get("started_in"), "claimed_session": update.get("session")});
-            match self.apply_update(line) {
+            let previous = self.clone();
+            let accepted = self.filing_id(&update);
+            let result = if accepted.is_some() { self.try_save().map_err(|error| format!("cannot save reused todo: {error}")) }
+                else if position >= APPLY_MAX_LINES { Err("todo update batch limit reached; retry".into()) } else { self.apply_update(line) };
+            match result {
                 Ok(()) => {
                     applied += 1;
+                    if matches!(update["action"].as_str(), Some("add" | "propose")) {
+                        let id = self.filing_id(&update);
+                        let item = self.items.iter().find(|item| id.as_deref() == Some(item.id().as_str()));
+                        crate::todo_requests::finish(&update, if item.is_some() { "accepted" } else { "skipped" }, item,
+                            item.is_some_and(|item| self.is_queued(&item.id())), "");
+                    }
                     crate::audit::record("column", "todo.applied", "ok", fields);
                 }
                 Err(reason) => {
+                    *self = previous;
+                    crate::todo_requests::finish(&update, "rejected", None, false, &reason);
                     util::log_event("WARN", &format!("todo update refused: {reason}"));
                     fields["reason"] = json!(reason);
                     crate::audit::record("column", "todo.rejected", "refused", fields);
@@ -941,6 +959,21 @@ impl TodoList {
             }
         }
         applied
+    }
+
+    fn filing_id(&self, update: &Value) -> Option<String> {
+        if !crate::todo_requests::is_retained(update) { return None; }
+        let request_id = update.get("request_id")?;
+        self.items.iter().find(|item| item.0.get("filing_requests").and_then(Value::as_array)
+            .is_some_and(|requests| requests.contains(request_id))).map(Item::id)
+    }
+
+    fn remember_filing(&mut self, id: &str, update: &Map<String, Value>) {
+        if !crate::todo_requests::is_retained(&Value::Object(update.clone())) { return; }
+        let request_id = update["request_id"].clone();
+        let item = self.items.iter_mut().find(|item| item.id() == id).unwrap();
+        let requests = item.0.entry("filing_requests").or_insert_with(|| json!([])).as_array_mut().unwrap();
+        if !requests.contains(&request_id) { requests.push(request_id); }
     }
 
     fn apply_update(&mut self, line: &str) -> Result<(), String> {
@@ -1011,7 +1044,8 @@ impl TodoList {
                 }
                 self.queued.insert(id.clone());
             }
-            self.save();
+            self.remember_filing(&id, &update);
+            self.try_save().map_err(|error| format!("cannot save todo: {error}"))?;
             util::log_event("INFO", &format!("todo {id} {} by a session of {sender_project}: {}", if action == "propose" { "proposed" } else { "added" },
                                              text.chars().take(60).collect::<String>()));
             Ok(())

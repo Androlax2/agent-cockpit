@@ -7296,6 +7296,162 @@ fn a_session_files_an_item_to_do_and_queued_in_another_projects_list() {
 }
 
 #[test]
+fn an_approved_capped_handoff_is_saved_queued_and_receipted_once() {
+    let fixture = Fixture::new();
+    let (greywall, _) = greywall_and_greyproxy(&fixture);
+    let mut todos = TodoList::load();
+    for number in 0..5 {
+        file_in_greyproxy(&greywall, &format!("earlier {number}"), json!({}));
+        todos.apply_updates();
+        let id = item_titled(&todos, &format!("earlier {number}")).id();
+        todos.set_status(&id, "done", "");
+    }
+    let mut request = json!({"action": "add", "project": "greyproxy", "text": "Deploy pinned greywall",
+                             "request_id": "123456abcdef", "session": SESSION_A}).as_object().unwrap().clone();
+    crate::todo_requests::hold(&mut request, &greywall.display().to_string(), "greywall").unwrap();
+    queue_update(Value::Object(request.clone()), &greywall);
+    assert_eq!(todos.apply_updates(), 0);
+    let receipt_path = crate::todo_requests::receipt_path(&request).unwrap();
+    let rejected = util::read_json(&receipt_path).unwrap();
+    assert_eq!(rejected["outcome"], "rejected");
+    assert!(rejected["reason"].as_str().unwrap().contains("last day"));
+    crate::todo_requests::approve("123456abcdef").unwrap();
+    assert_eq!(todos.apply_updates(), 1);
+    let saved = TodoList::load();
+    let item = item_titled(&saved, "Deploy pinned greywall");
+    assert!(saved.is_queued(&item.id()));
+    let receipt = util::read_json(&receipt_path).unwrap();
+    assert_eq!(receipt["outcome"], "accepted");
+    assert_eq!(receipt["id"], item.id());
+    assert_eq!(receipt["state"], "queued");
+    let id = item.id();
+    todos.set_status(&id, "done", "");
+    queue_update(Value::Object(request.clone()), &greywall);
+    todos.apply_updates();
+    crate::todo_requests::approve("123456abcdef").unwrap();
+    todos.apply_updates();
+    assert_eq!(todos.items.iter().filter(|item| item.text() == "Deploy pinned greywall").count(), 1);
+}
+
+#[test]
+fn a_handoff_save_failure_is_rejected_and_never_dispatchable() {
+    let fixture = Fixture::new();
+    let (greywall, _) = greywall_and_greyproxy(&fixture);
+    let mut request = json!({"action": "add", "project": "greyproxy", "text": "Deploy", "request_id": "abcdef123456"})
+        .as_object().unwrap().clone();
+    crate::todo_requests::hold(&mut request, &greywall.display().to_string(), "greywall").unwrap();
+    queue_update(Value::Object(request.clone()), &greywall);
+    fs::create_dir_all(crate::paths::todo()).unwrap();
+    let mut todos = TodoList::load();
+    assert_eq!(todos.apply_updates(), 0);
+    assert!(todos.items.is_empty());
+    assert!(todos.queued.is_empty());
+    let receipt = util::read_json(&crate::todo_requests::receipt_path(&request).unwrap()).unwrap();
+    assert_eq!(receipt["outcome"], "rejected");
+    assert!(receipt["reason"].as_str().unwrap().contains("save"));
+}
+
+#[test]
+fn altered_requests_and_another_senders_request_id_are_refused() {
+    let fixture = Fixture::new();
+    let (greywall, _) = greywall_and_greyproxy(&fixture);
+    let mut request = json!({"action": "add", "project": "greyproxy", "text": "Deploy", "request_id": "123456abcdef"})
+        .as_object().unwrap().clone();
+    crate::todo_requests::hold(&mut request, &greywall.display().to_string(), "greywall").unwrap();
+    let mut altered = request.clone();
+    altered.insert("text".into(), json!("Deploy something else"));
+    assert!(crate::todo_requests::hold(&mut altered, &greywall.display().to_string(), "greywall").is_err());
+    assert!(crate::todo_requests::hold(&mut request, "/another/project", "another-project").is_err());
+    for id in ["../123456789", "123", "ABCDEF123456"] {
+        assert!(crate::todo_requests::approve(id).is_err());
+    }
+    drop(fixture);
+}
+
+#[test]
+fn an_existing_target_task_is_reused_even_when_another_project_filed_it() {
+    let fixture = Fixture::new();
+    let (greywall, greyproxy) = greywall_and_greyproxy(&fixture);
+    let mut todos = TodoList::load();
+    let existing = todos.add("greyproxy", &greyproxy.display().to_string(), "Deploy pinned greywall");
+    todos.toggle_queued(&existing);
+    file_in_greyproxy(&greywall, "deploy  pinned greywall", json!({}));
+    assert_eq!(todos.apply_updates(), 1);
+    assert_eq!(TodoList::load().items.len(), 1);
+    assert!(TodoList::load().is_queued(&existing));
+}
+
+#[test]
+fn a_saved_request_stays_deduplicated_when_its_receipt_cannot_be_written() {
+    let fixture = Fixture::new();
+    let (greywall, _) = greywall_and_greyproxy(&fixture);
+    let mut request = json!({"action": "add", "project": "greyproxy", "text": "Deploy", "request_id": "123456abcdef"})
+        .as_object().unwrap().clone();
+    crate::todo_requests::hold(&mut request, &greywall.display().to_string(), "greywall").unwrap();
+    fs::create_dir_all(crate::todo_requests::receipt_path(&request).unwrap()).unwrap();
+    queue_update(json!(request), &greywall);
+    let mut todos = TodoList::load();
+    assert_eq!(todos.apply_updates(), 1);
+    let id = item_titled(&todos, "Deploy").id();
+    todos.set_status(&id, "done", "");
+    let mut todos = TodoList::load();
+    queue_update(json!(request), &greywall);
+    todos.apply_updates();
+    assert_eq!(TodoList::load().items.len(), 1);
+}
+
+#[test]
+fn a_successful_receipt_is_not_rejected_by_a_batch_overflow_replay() {
+    let fixture = Fixture::new();
+    let (greywall, _) = greywall_and_greyproxy(&fixture);
+    let mut request = json!({"action": "add", "project": "greyproxy", "text": "Deploy", "request_id": "123456abcdef"})
+        .as_object().unwrap().clone();
+    crate::todo_requests::hold(&mut request, &greywall.display().to_string(), "greywall").unwrap();
+    queue_update(json!(request), &greywall);
+    let mut todos = TodoList::load();
+    todos.apply_updates();
+    for _ in 0..200 { queue_update(json!({"action": "invalid"}), &greywall); }
+    queue_update(json!(request), &greywall);
+    todos.apply_updates();
+    let receipt = util::read_json(&crate::todo_requests::receipt_path(&request).unwrap()).unwrap();
+    assert_eq!(receipt["outcome"], "accepted");
+}
+
+#[test]
+fn deduplication_does_not_acknowledge_an_item_that_only_exists_in_memory() {
+    let fixture = Fixture::new();
+    let (greywall, greyproxy) = greywall_and_greyproxy(&fixture);
+    fs::create_dir_all(crate::paths::todo()).unwrap();
+    let mut todos = TodoList::load();
+    todos.add("greyproxy", &greyproxy.display().to_string(), "Deploy");
+    let mut request = json!({"action": "add", "project": "greyproxy", "text": "Deploy", "request_id": "123456abcdef"})
+        .as_object().unwrap().clone();
+    crate::todo_requests::hold(&mut request, &greywall.display().to_string(), "greywall").unwrap();
+    queue_update(json!(request), &greywall);
+    assert_eq!(todos.apply_updates(), 0);
+    let receipt = util::read_json(&crate::todo_requests::receipt_path(&request).unwrap()).unwrap();
+    assert_eq!(receipt["outcome"], "rejected");
+}
+
+#[test]
+fn a_duplicate_handoff_receipt_names_the_reused_task_not_a_newer_proposal() {
+    let fixture = Fixture::new();
+    let (greywall, greyproxy) = greywall_and_greyproxy(&fixture);
+    let mut todos = TodoList::load();
+    let id = todos.add("greyproxy", &greyproxy.display().to_string(), "Deploy");
+    let proposal = todos.add("greyproxy", &greyproxy.display().to_string(), "Deploy");
+    todos.items.iter_mut().find(|item| item.id() == proposal).unwrap().0.insert("status".into(), json!(crate::todo::PROPOSED));
+    todos.save();
+    let mut request = json!({"action": "add", "project": "greyproxy", "text": "Deploy", "request_id": "123456abcdef"})
+        .as_object().unwrap().clone();
+    crate::todo_requests::hold(&mut request, &greywall.display().to_string(), "greywall").unwrap();
+    queue_update(json!(request), &greywall);
+    assert_eq!(todos.apply_updates(), 1);
+    let receipt = util::read_json(&crate::todo_requests::receipt_path(&request).unwrap()).unwrap();
+    assert_eq!(receipt["id"], id);
+}
+
+#[test]
 fn any_project_files_directly_in_any_other_projects_list() {
     let fixture = Fixture::new();
     let runway = project_folder(&fixture, "runway");
