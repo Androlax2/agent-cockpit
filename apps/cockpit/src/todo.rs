@@ -69,6 +69,26 @@ static ISSUE_KEY: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| Regex
 fn typed_id() -> &'static Regex { &TYPED_ID }
 fn issue_key() -> &'static Regex { &ISSUE_KEY }
 
+/// Authorization reads the host file strictly; display/retention defaults cannot open shared work.
+pub fn read_shared_work(task: &crate::teams::TaskKey) -> Result<crate::teams::links::SharedWork, crate::teams::TeamError> {
+    use crate::teams::{ErrorCode, TeamError, canonical_project, links::SharedWork};
+    let invalid = || TeamError::new(ErrorCode::Invalid, "shared work must name existing approved typed work in its canonical project");
+    if !typed_id().is_match(&task.task_id) { return Err(invalid()); }
+    let document: Value = serde_json::from_slice(&fs::read(paths::todo())?)?;
+    let items = document.get("items").and_then(Value::as_array).ok_or_else(invalid)?;
+    let mut matches = items.iter().filter(|item| item.get("id").and_then(Value::as_str) == Some(task.task_id.as_str()));
+    let item = matches.next().ok_or_else(invalid)?;
+    if matches.next().is_some() { return Err(invalid()); }
+    let field = |name: &str| item.get(name).and_then(Value::as_str).filter(|value| !value.trim().is_empty()).ok_or_else(invalid);
+    let cwd = field("cwd")?;
+    let status = field("status")?;
+    if !matches!(status, "todo" | "doing") || canonical_project(cwd)? != task.project
+        || field("project")? != project_name(&repository_root(cwd)) {
+        return Err(invalid());
+    }
+    Ok(SharedWork { task: task.clone(), title: field("text")?.to_string(), status: status.to_string() })
+}
+
 /// Notes and reasons keep their line breaks; every other control character goes.
 pub fn multiline(text: &str, limit: usize) -> String {
     let kept: String = text.chars().map(|c| if c == '\n' || !c.is_control() { c } else { ' ' }).collect();

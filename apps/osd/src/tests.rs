@@ -648,7 +648,7 @@ fn a_planted_git_origin_cannot_choose_the_team_project() {
     let pointing = bench.fixture.root.join("home/IdeaProjects/pointing");
     fs::create_dir_all(&pointing).unwrap();
     fs::write(pointing.join(".git"), format!("gitdir: {}\n", primary.join(".git").display())).unwrap();
-    let identity = |path: &std::path::Path| crate::teams::canonical_project(path.to_str().unwrap()).unwrap();
+    let identity = |path: &std::path::Path| cockpit::teams::canonical_project(path.to_str().unwrap()).unwrap();
     assert_ne!(identity(&impostor), identity(&primary));
     assert_ne!(identity(&pointing), identity(&primary));
     assert!(!identity(&impostor).contains("github.com"));
@@ -1501,7 +1501,7 @@ fn different_repositories_with_the_same_directory_name_have_distinct_team_identi
         fs::create_dir_all(root.join(".git")).unwrap();
         fs::write(root.join(".git/config"), format!("[remote \"origin\"]\n url = {remote}\n")).unwrap();
     }
-    assert_ne!(crate::teams::canonical_project(left.to_str().unwrap()).unwrap(),crate::teams::canonical_project(right.to_str().unwrap()).unwrap());
+    assert_ne!(cockpit::teams::canonical_project(left.to_str().unwrap()).unwrap(),cockpit::teams::canonical_project(right.to_str().unwrap()).unwrap());
 }
 
 #[test]
@@ -1511,7 +1511,7 @@ fn managed_clones_can_share_a_team_without_executing_repository_git_config() {
     let clone = bench.fixture.root.join("home/IdeaProjects/.parallel/project-a/review");
     fs::create_dir_all(clone.join(".git")).unwrap();
     fs::write(clone.join(".git/config"), format!("[remote \"origin\"]\n url = {}\n[core]\n hooksPath = /do-not-execute\n",primary.display())).unwrap();
-    assert_eq!(crate::teams::canonical_project(primary.to_str().unwrap()).unwrap(),crate::teams::canonical_project(clone.to_str().unwrap()).unwrap());
+    assert_eq!(cockpit::teams::canonical_project(primary.to_str().unwrap()).unwrap(),cockpit::teams::canonical_project(clone.to_str().unwrap()).unwrap());
     assert!(bench.world.borrow().commands.iter().all(|command| command.first().map(String::as_str) != Some("git")));
 }
 
@@ -1954,10 +1954,10 @@ fn hyprctl_gets_the_running_hyprland_when_its_id_is_stale() {
 fn a_parallel_clone_is_named_after_its_repository() {
     let _fixture = Fixture::new();
     let clones = cockpit::paths::clones_dir();
-    assert_eq!(parallel_clone_repository(&clones.join("opusline/feat-x").to_string_lossy()), "opusline");
-    assert_eq!(parallel_clone_repository(&clones.join("opusline/pr-12/apps").to_string_lossy()), "opusline");
-    assert_eq!(parallel_clone_repository("/home/theo/IdeaProjects/opusline"), "");
-    assert_eq!(parallel_clone_repository(&clones.to_string_lossy()), "");
+    assert_eq!(cockpit::util::parallel_clone_repository(&clones.join("opusline/feat-x").to_string_lossy()), "opusline");
+    assert_eq!(cockpit::util::parallel_clone_repository(&clones.join("opusline/pr-12/apps").to_string_lossy()), "opusline");
+    assert_eq!(cockpit::util::parallel_clone_repository("/home/theo/IdeaProjects/opusline"), "");
+    assert_eq!(cockpit::util::parallel_clone_repository(&clones.to_string_lossy()), "");
 }
 
 struct ProcessTree(BTreeMap<String, (String, Vec<String>, HashMap<String, String>)>);

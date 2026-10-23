@@ -195,17 +195,21 @@ pub fn repository_root(path: &str) -> String {
     }
 }
 
-/// A directory's project: the repository for a cockpit clone (<clones>/<repo>/<name>),
-/// else the directory's own name. Same rule as the daemon's registry::parallel_clone_repository.
-pub fn project_name(path: &str) -> String {
-    if !path.is_empty() {
-        if let Ok(relative) = Path::new(path).strip_prefix(paths::clones_dir()) {
+/// The repository a cockpit clone (<clones>/<repository>/<name>) was made from, or "".
+pub fn parallel_clone_repository(cwd: &str) -> String {
+    match Path::new(cwd).strip_prefix(paths::clones_dir()) {
+        Ok(relative) => {
             let parts: Vec<_> = relative.components().collect();
-            if parts.len() >= 2 {
-                return parts[0].as_os_str().to_string_lossy().into_owned();
-            }
+            if parts.len() >= 2 { parts[0].as_os_str().to_string_lossy().into_owned() } else { String::new() }
         }
+        Err(_) => String::new(),
     }
+}
+
+/// A directory's project: the repository for a cockpit clone, else the directory's own name.
+pub fn project_name(path: &str) -> String {
+    let repository = parallel_clone_repository(path);
+    if !repository.is_empty() { return repository; }
     let trimmed = path.trim_end_matches('/');
     match Path::new(trimmed).file_name() {
         Some(name) => name.to_string_lossy().into_owned(),

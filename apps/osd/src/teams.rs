@@ -2,12 +2,12 @@
 
 use crate::registry::Registry;
 use cockpit::teams::{AgentAction, ErrorCode, HostAction, TeamError, TeamReply, VerifiedSession, store};
+use cockpit::teams::canonical_project;
 use serde_json::{Value, json};
 use std::fs;
 use std::io::Read;
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
-use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub(crate) fn now_ms() -> i64 {
@@ -16,19 +16,6 @@ pub(crate) fn now_ms() -> i64 {
 
 fn unauthorized() -> TeamError {
     TeamError::new(ErrorCode::Unauthorized, "this process is not a verified live cockpit session")
-}
-
-/// The checkout's real host path: a parallel clone counts as its repository's primary checkout
-/// (`~/IdeaProjects/<repo>`, from the host-made clones layout). Never read from repository files,
-/// which a session can write.
-pub fn canonical_project(cwd: &str) -> Result<String, TeamError> {
-    if cwd.is_empty() {
-        return Err(TeamError::new(ErrorCode::Invalid, "session has no working directory"));
-    }
-    let repository = crate::registry::parallel_clone_repository(cwd);
-    let primary = cockpit::paths::home().join("IdeaProjects").join(&repository);
-    let root = if !repository.is_empty() && primary.is_dir() { primary } else { PathBuf::from(cockpit::util::repository_root(cwd)) };
-    Ok(format!("path:{}", fs::canonicalize(&root)?.display()))
 }
 
 /// Opens the store on first use; a restarted daemon takes each member's launch back from it while

@@ -22,6 +22,7 @@
 
 use cockpit::agents::{self, Feature};
 use cockpit::paths;
+use cockpit::util::parallel_clone_repository;
 use regex::Regex;
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -438,17 +439,6 @@ pub struct Banner {
     pub title: String,
     pub message: String,
     pub sticky: bool,
-}
-
-/// The repository a cockpit clone (<clones>/<repository>/<name>) was made from, or "".
-pub fn parallel_clone_repository(cwd: &str) -> String {
-    match Path::new(cwd).strip_prefix(paths::clones_dir()) {
-        Ok(relative) => {
-            let parts: Vec<_> = relative.components().collect();
-            if parts.len() >= 2 { parts[0].as_os_str().to_string_lossy().into_owned() } else { String::new() }
-        }
-        Err(_) => String::new(),
-    }
 }
 
 fn basename(path: &str) -> String {

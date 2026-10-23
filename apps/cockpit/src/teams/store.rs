@@ -52,7 +52,7 @@ pub fn open(path: &Path) -> Result<Connection, TeamError> {
     let mut connection = Connection::open(path)?;
     connection.busy_timeout(Duration::from_millis(250))?;
     let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-    if !(0..=10).contains(&version) { return Err(TeamError::new(ErrorCode::Storage, "unsupported team database version")); }
+    if !(0..=11).contains(&version) { return Err(TeamError::new(ErrorCode::Storage, "unsupported team database version")); }
     connection.execute_batch("PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;")?;
     migrate(&mut connection)?;
     Ok(connection)
@@ -62,18 +62,20 @@ pub fn migrate(connection: &mut Connection) -> Result<(), TeamError> {
     let transaction = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     let connection = &transaction;
     let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-    if !(0..=10).contains(&version) { return Err(TeamError::new(ErrorCode::Storage, "unsupported team database version")); }
+    if !(0..=11).contains(&version) { return Err(TeamError::new(ErrorCode::Storage, "unsupported team database version")); }
     sleep::migrate(connection)?;
-    if version == 10 { transaction.commit()?; return Ok(()); }
+    if version >= 10 { super::links::migrate(connection)?; transaction.commit()?; return Ok(()); }
     if version == 9 {
         crate::chief::store::upgrade_launches(connection)?;
         connection.execute_batch("PRAGMA user_version=10;")?;
+        super::links::migrate(connection)?;
         transaction.commit()?;
         return Ok(());
     }
     if version == 8 {
         crate::chief::store::upgrade_events(connection)?;
         connection.execute_batch("PRAGMA user_version=10;")?;
+        super::links::migrate(connection)?;
         transaction.commit()?;
         return Ok(());
     }
@@ -81,6 +83,7 @@ pub fn migrate(connection: &mut Connection) -> Result<(), TeamError> {
     if version == 7 {
         crate::chief::store::upgrade_events(connection)?;
         connection.execute_batch("PRAGMA user_version=10;")?;
+        super::links::migrate(connection)?;
         transaction.commit()?;
         return Ok(());
     }
@@ -88,6 +91,7 @@ pub fn migrate(connection: &mut Connection) -> Result<(), TeamError> {
     if version == 6 {
         crate::chief::store::upgrade_events(connection)?;
         connection.execute_batch("PRAGMA user_version=10;")?;
+        super::links::migrate(connection)?;
         transaction.commit()?;
         return Ok(());
     }
@@ -95,6 +99,7 @@ pub fn migrate(connection: &mut Connection) -> Result<(), TeamError> {
         crate::chief::store::upgrade_scheduling(connection)?;
         crate::chief::store::upgrade_events(connection)?;
         connection.execute_batch("PRAGMA user_version=10;")?;
+        super::links::migrate(connection)?;
         transaction.commit()?;
         return Ok(());
     }
@@ -104,6 +109,7 @@ pub fn migrate(connection: &mut Connection) -> Result<(), TeamError> {
         crate::chief::store::upgrade_scheduling(connection)?;
         crate::chief::store::upgrade_events(connection)?;
         connection.execute_batch("PRAGMA user_version=10;")?;
+        super::links::migrate(connection)?;
         transaction.commit()?;
         return Ok(());
     }
@@ -137,7 +143,7 @@ pub fn migrate(connection: &mut Connection) -> Result<(), TeamError> {
         CREATE TABLE IF NOT EXISTS qa_exits (session_id TEXT PRIMARY KEY, status TEXT NOT NULL);
         CREATE UNIQUE INDEX IF NOT EXISTS one_inflight_delivery ON messages(recipient,recipient_epoch) WHERE state='submitting';")?;
     // Version 2: a proposal can carry recruits (teammates to start on approval) and the agent they run in.
-    let columns: Vec<String> = connection.prepare("SELECT name FROM pragma_table_info('proposals')")?
+    let columns: Vec<String> = transaction.prepare("SELECT name FROM pragma_table_info('proposals')")?
         .query_map([], |row| row.get(0))?.collect::<Result<_, _>>()?;
     for (column, definition) in [("recruits", "TEXT NOT NULL DEFAULT '[]'"), ("spawn_agent", "TEXT NOT NULL DEFAULT ''")] {
         if !columns.iter().any(|existing| existing == column) {
@@ -149,6 +155,7 @@ pub fn migrate(connection: &mut Connection) -> Result<(), TeamError> {
     crate::chief::store::upgrade_scheduling(connection)?;
     crate::chief::store::upgrade_events(connection)?;
     connection.execute_batch("PRAGMA user_version=10;")?;
+    super::links::migrate(connection)?;
     transaction.commit()?;
     Ok(())
 }

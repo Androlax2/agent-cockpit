@@ -4,9 +4,21 @@ pub mod store;
 pub mod client;
 pub mod view;
 pub mod sidebar;
+pub mod links;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+/// Parallel clones use their host-managed primary checkout, never a writable remote URL.
+pub fn canonical_project(cwd: &str) -> Result<String, TeamError> {
+    if cwd.is_empty() {
+        return Err(TeamError::new(ErrorCode::Invalid, "session has no working directory"));
+    }
+    let repository = crate::util::parallel_clone_repository(cwd);
+    let primary = crate::paths::home().join("IdeaProjects").join(&repository);
+    let root = if !repository.is_empty() && primary.is_dir() { primary } else { std::path::PathBuf::from(crate::util::repository_root(cwd)) };
+    Ok(format!("path:{}", std::fs::canonicalize(&root)?.display()))
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
