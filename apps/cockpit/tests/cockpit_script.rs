@@ -4118,6 +4118,30 @@ fn team_sleep_prepares_before_exit_and_records_private_permit() {
 }
 
 #[test]
+fn team_review_note_construction_keeps_permit_out_of_helper_arguments() {
+    let manager = Manager::new();
+    manager.with_idle_session();
+    manager.team_sleep_cli();
+    // Unlike Sandbox::shim, this records only a boolean, never the helper's raw argv.
+    write_executable(&manager.sandbox.shims.join("jq"), r#"#!/usr/bin/env bash
+has_permit=false
+for argument in "$@"; do
+  [[ $argument != *private-team-resume-permit* ]] || has_permit=true
+done
+printf '%s\n' "$has_permit" >> "$HOME/jq-argument-checks"
+exec /usr/bin/jq "$@"
+"#);
+    let output = manager.sleep_with(SESSION_A, &[]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let checks = fs::read_to_string(manager.sandbox.home.join("jq-argument-checks")).unwrap();
+    assert!(!checks.is_empty());
+    assert!(checks.lines().all(|line| line == "false"), "permit appeared in helper argv");
+    let note: Value = serde_json::from_str(&fs::read_to_string(manager.asleep_note(SESSION_A)).unwrap()).unwrap();
+    assert_eq!(note["team_resume"], TEAM_RESUME);
+    assert!(!fs::read_to_string(&manager.sandbox.log).unwrap().contains(TEAM_RESUME));
+}
+
+#[test]
 fn team_unknown_membership_prevents_sleep() {
     for reply in ["exit 1", "echo '{}'", "echo '{\"token\":false}'"] {
         let manager = Manager::new();
@@ -4403,6 +4427,30 @@ fn team_explicit_exit_of_still_exiting_sleep_discards_queued_prompts() {
     assert!(!manager.asleep_note(SESSION_A).exists());
     assert!(!queue.exists());
     assert!(manager.calls("cockpit-team").contains(&format!("cockpit-team sleep-cancel {SESSION_A}")));
+}
+
+#[test]
+fn team_review_failed_live_exit_still_revokes_handoff_and_cleans_ended_session() {
+    let manager = Manager::new();
+    manager.put_team_to_sleep(SESSION_A, "claude");
+    manager.with_idle_session();
+    let queue = manager.sandbox.state.join("cockpit/prompt-queue").join(SESSION_A);
+    fs::create_dir_all(&queue).unwrap();
+    fs::write(queue.join("1.txt"), "never deliver after explicit exit").unwrap();
+    manager.sandbox.shim("tmux", &format!(r#"
+if [[ $1 == send-keys ]]; then echo 'live exit rejected' >&2; exit 7; fi
+{FAKE_TMUX}"#));
+    let output = manager.run(&["exit", SESSION_A], &[("SHIM_PANE_TEXT", IDLE), ("SHIM_EXIT_AFTER", "99")]);
+    assert_eq!(output.status.code(), Some(7), "preserve shutdown failure: {}", stderr(&output));
+    assert!(stderr(&output).contains("live exit rejected"));
+    assert!(!manager.asleep_note(SESSION_A).exists(), "explicit exit must revoke before attempting shutdown");
+    assert!(!queue.exists());
+    let ended = fs::read_to_string(manager.sandbox.state.join("cockpit/ended-sessions")).unwrap();
+    assert!(ended.lines().any(|line| line == SESSION_A));
+    let calls = fs::read_to_string(&manager.sandbox.log).unwrap();
+    assert!(calls.find("cockpit-team sleep-cancel").unwrap() < calls.find("tmux send-keys").unwrap());
+    assert!(!manager.run(&["wake", SESSION_A], &[]).status.success());
+    assert!(manager.claude_wakes().is_empty());
 }
 
 impl Manager {

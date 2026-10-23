@@ -1180,9 +1180,9 @@ sleep_session() { # id
         return 1
     fi
     temporary=$(umask 077; mktemp "$(dirname "$ASLEEP_DIR")/.asleep-$id.XXXXXX") || { cancel_sleep_permit "$id" "$permit"; return 1; }
-    if ! (umask 077; jq -n --arg session "$id" --arg agent "$agent" --arg project "$project" --arg cwd "$(session_field "$id" cwd)" \
-            --arg title "$title" --argjson since "$since" --arg started "$started" --argjson slept_at "$slept_at" --argjson remote "$remote" --arg token "$token" \
-            '{session: $session, agent: $agent, project: $project, cwd: $cwd, title: $title, idle_since: ($since | floor),
+    if ! (umask 077; printf '%s' "$token" | jq -Rs --arg session "$id" --arg agent "$agent" --arg project "$project" --arg cwd "$(session_field "$id" cwd)" \
+            --arg title "$title" --argjson since "$since" --arg started "$started" --argjson slept_at "$slept_at" --argjson remote "$remote" \
+            '. as $token | {session: $session, agent: $agent, project: $project, cwd: $cwd, title: $title, idle_since: ($since | floor),
               slept_at: $slept_at, remote: $remote} + (if $started == "" then {} else {started: ($started | tonumber | floor)} end)
               + (if $token == "" then {} else {team_resume: $token} end)' > "$temporary"); then
         rm -f "$temporary"
@@ -2700,18 +2700,21 @@ case ${1:-attach} in
     resume) resume_session "${2:?usage: cockpit resume <dir> <session-id>}" "${3:?usage: cockpit resume <dir> <session-id>}" ;;
     exit)
         [[ ${2:-} =~ ^[A-Za-z0-9_-]+$ ]] || { echo "cockpit: invalid session id" >&2; exit 1; }
-        # A live pane first: a note can outlive its process by the length of the sleep's exit.
+        is_exiting_asleep=false
         if [[ -z $(session_field "${2:?usage: cockpit exit <session-id>}" tmux_pane) ]] && is_asleep "$2"; then
-            forget_sleep_note "$2"
+            is_exiting_asleep=true
+        fi
+        # Explicit ending revokes handoff even if process shutdown subsequently fails.
+        if is_asleep "$2"; then forget_sleep_note "$2"; fi
+        # A later resume (H) must not get the messages that waited for a wake.
+        rm -rf "${XDG_STATE_HOME:-$HOME/.local/state}/cockpit/prompt-queue/$2"
+        mkdir -p "$(dirname "$ENDED_SESSIONS")" && printf '%s\n' "$2" >> "$ENDED_SESSIONS"
+        if [[ $is_exiting_asleep == true ]]; then
             log_event INFO sleep "$2 ended while asleep"
         else
             exit_session "$2"
             clear_exited_viewer "$2"
-            if is_asleep "$2"; then forget_sleep_note "$2"; fi
         fi
-        # A later resume (H) must not get the messages that waited for a wake.
-        rm -rf "${XDG_STATE_HOME:-$HOME/.local/state}/cockpit/prompt-queue/$2"
-        mkdir -p "$(dirname "$ENDED_SESSIONS")" && printf '%s\n' "$2" >> "$ENDED_SESSIONS"
         ;;
     sleep) sleep_session "${2:?usage: cockpit sleep <session-id>}" ;;
     wake) wake_session "${2:?usage: cockpit wake <session-id>}" ;;
