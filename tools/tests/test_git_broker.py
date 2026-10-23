@@ -181,6 +181,19 @@ class BrokerPushPolicyTests(BrokerFixture):
     def test_exact_empty_rpc_probe_is_not_a_ref_update(self):
         self.assertEqual(self.validate(b'0000'), [])
 
+    def test_shallow_push_preserves_boundaries_and_validates_updates(self):
+        for ending in [b'', b'\n']:
+            payload = b'shallow ' + b'a' * 40 + ending
+            shallow = f'{len(payload) + 4:04x}'.encode() + payload
+            with self.subTest(ending=ending):
+                self.assertEqual(self.validate(shallow + self.command() + b'0000PACK'),
+                                 ['refs/heads/feature/nested'])
+                for encoded in [shallow + b'0000', self.command() + shallow + b'0000',
+                                shallow + self.command(new=b'0' * 40) + b'0000',
+                                shallow + self.command(b'refs/heads/main') + b'0000']:
+                    with self.assertRaises(self.broker.RequestDenied):
+                        self.validate(encoded)
+
     def test_native_git_capability_separator_is_supported(self):
         self.assertEqual(self.validate(self.command(capabilities=b' report-status-v2 side-band-64k quiet object-format=sha1 agent=git/2.56.0-Linux')
                                        + b'0000PACK'), ['refs/heads/feature/nested'])
@@ -204,13 +217,31 @@ class BrokerPushPolicyTests(BrokerFixture):
 
 
 class BrokerDispatchTests(BrokerFixture):
+    def test_no_primary_cost_requires_fresh_action_specific_evidence(self):
+        access = self.broker.load_access()
+        record = {'repository_id': 42, 'canonical_name': 'acme/project'}
+        serialized = b'private registry fixture'
+        binding = record | {'registry_digest': hashlib.sha256(serialized).hexdigest()}
+        profile = {'kind': 'fine_grained_pat', 'actor_id': 99, 'permissions': {'contents': 'write'},
+                   'git_rate_setup_approved': True, 'git_rate_costs': {'git.push': {}}}
+        with patch.object(access, 'load_registry', return_value=({'repositories': [record]}, serialized)), \
+                patch.object(access, 'runtime_credential_profiles', return_value={'forward': profile}):
+            with self.assertRaises(self.broker.RequestDenied):
+                self.broker.git_authority(access, binding, self.header(action='git.push'))
+            profile['git_unmetered_evidence'] = {'git.push': {'reviewed_at': int(time.time()) - 60,
+                'valid_until': int(time.time()) + 3600, 'evidence': 'a' * 64, 'mode': 'no_primary_headers'}}
+            self.assertEqual(self.broker.git_authority(access, binding, self.header(action='git.push'))[2], {})
+            profile['git_unmetered_evidence']['git.push']['valid_until'] = 1
+            with self.assertRaises(self.broker.RequestDenied):
+                self.broker.git_authority(access, binding, self.header(action='git.push'))
+
     def test_git_authority_requires_reviewed_role_specific_costs(self):
         access = self.broker.load_access()
         record = {'repository_id': 42, 'canonical_name': 'acme/project'}
         serialized = b'private registry fixture'
         binding = record | {'registry_digest': hashlib.sha256(serialized).hexdigest()}
-        profiles = {'read': {'actor_id': 88, 'permissions': {'contents': 'read'}},
-                    'forward': {'actor_id': 99, 'permissions': {'contents': 'write'}}}
+        profiles = {'read': {'kind': 'fine_grained_pat', 'actor_id': 88, 'permissions': {'contents': 'read'}},
+                    'forward': {'kind': 'fine_grained_pat', 'actor_id': 99, 'permissions': {'contents': 'write'}}}
         with patch.object(access, 'load_registry', return_value=({'repositories': [record]}, serialized)), \
                 patch.object(access, 'runtime_credential_profiles', return_value=profiles):
             with self.assertRaisesRegex(self.broker.RequestDenied, '^git_rate_setup_required$'):
@@ -383,6 +414,225 @@ class BrokerChannelTests(BrokerFixture):
         response, _ = self.exchange(self.header(action='git.advertise', service='receive-pack', protocol=2))
         self.assertEqual(response['code'], 'unsupported_git_protocol')
 
+    def enable_issue_fixture(self):
+        self.enable_fixture_forwarding()
+        now = int(time.time())
+        shared = {'kind': 'fine_grained_pat', 'repository_id': 42, 'actor_id': 88,
+                  'key_epoch': 'fixture-1', 'fingerprint': 'b' * 64, 'setup_approved': True,
+                  'reviewed_at': now - 60, 'valid_until': now + 3600, 'expires_at': now + 3600}
+        profiles = [shared | {'id': 'read', 'role': 'read', 'permissions': {name: 'read' for name in
+                    ['metadata', 'contents', 'issues', 'pull_requests', 'checks', 'statuses', 'actions']}},
+                    shared | {'id': 'forward', 'role': 'forward', 'fingerprint': 'c' * 64,
+                              'permissions': {'metadata': 'read', 'issues': 'write'}}]
+        registry, _ = self.access.load_registry()
+        registry['repositories'] = [{'project': 'project', 'repository_id': 42, 'canonical_name': 'acme/project',
+                                     'credential_roles': {'read': 'read', 'forward': 'forward'},
+                                     'mirror_edges': [], 'checkouts': [{'path': self.binding['checkout'],
+                                         'git_dir': self.binding['git_dir'], 'common_dir': self.binding['common_dir']}]}]
+        registry['runtime_credentials'] = profiles
+        path = self.access.registry_path()
+        path.write_text(json.dumps(registry))
+        self.binding['registry_digest'] = hashlib.sha256(path.read_bytes()).hexdigest()
+        self.write_binding()
+        self.api_calls = []
+
+        def request(method, path, token, deadline, body=None):
+            self.api_calls.append((method, path, body))
+            self.assertEqual(path, '/repos/acme/project/issues')
+            self.assertEqual(method, 'POST')
+            return 201, {'id': 107, 'number': 7, 'title': 'Investigate', 'state': 'open',
+                         'repository_url': 'https://api.github.com/repos/acme/project',
+                         'html_url': 'https://github.com/acme/project/issues/7',
+                         'temp_clone_token': 'SYNTHETIC_FORWARD_SECRET'}, {
+                             'x-ratelimit-resource': 'core', 'x-ratelimit-limit': '5000',
+                             'x-ratelimit-remaining': '4900', 'x-ratelimit-reset': str(now + 3600)}
+
+        upstream = patch.object(self.access, 'github_request', side_effect=request)
+        upstream.start()
+        self.addCleanup(upstream.stop)
+
+    def test_typed_issue_create_checks_before_dispatch_and_projects_result(self):
+        self.enable_issue_fixture()
+        self.start()
+        body = b'{"title":"Investigate"}'
+        response, payload = self.exchange(self.header(action='issue.create', body_length=len(body)), body=body)
+        self.assertEqual(response['status'], 200, response)
+        result = json.loads(payload)
+        self.assertEqual(result['number'], 7)
+        self.assertEqual(result['outcome'], 'succeeded')
+        self.assertRegex(result['request_id'], r'^[0-9a-f]{32}$')
+        self.assertNotIn('SYNTHETIC', payload.decode())
+        self.assertEqual(self.api_calls, [('POST', '/repos/acme/project/issues', {'title': 'Investigate'})])
+        self.assertEqual(self.purposes, ['admission', 'write'])
+        journal = self.home / '.local/state/greywall-agents/github-actions'
+        records = list(journal.iterdir())
+        self.assertEqual([path.name for path in records], [result['request_id'] + '.completed'])
+        self.assertNotIn('Investigate', records[0].read_text())
+        self.assertNotIn('SYNTHETIC', records[0].read_text())
+        self.assertEqual(records[0].stat().st_mode & 0o777, 0o600)
+
+    def test_typed_issue_failed_check_never_mutates(self):
+        self.enable_issue_fixture()
+        self.write_report['mode'] = 'read_only'
+        self.start()
+        body = b'{"title":"Investigate"}'
+        response, _ = self.exchange(self.header(action='issue.create', body_length=len(body)), body=body)
+        self.assertEqual(response['code'], 'write_check_denied')
+        self.assertEqual(self.api_calls, [])
+
+    def test_failed_write_inspection_closes_session_channel_immediately(self):
+        self.enable_issue_fixture()
+        self.write_report['mode'] = 'read_only'
+        stop, worker, _ = self.start()
+        body = b'{"title":"Investigate"}'
+        response, _ = self.exchange(self.header(action='issue.create', body_length=len(body)), body=body)
+        self.assertEqual(response['code'], 'write_check_denied')
+        worker.join(1)
+        self.assertTrue(stop.is_set())
+        self.assertFalse(worker.is_alive())
+        self.assertFalse(self.socket_path.exists())
+
+    def test_uncertain_throttled_git_write_still_revokes_session(self):
+        self.enable_fixture_forwarding()
+        stop, worker, _ = self.start()
+        body = self.push_body()
+        with patch.object(self.broker, 'run_git_transport', return_value={
+                'status': 403, 'content_type': 'application/json', 'body_length': 0,
+                'rate_headers': {'retry-after': '60'}}):
+            response, _ = self.exchange(self.header(action='git.push', body_length=len(body)), body=body)
+        self.assertEqual(response['code'], 'upstream_outcome_unknown')
+        worker.join(1)
+        self.assertTrue(stop.is_set())
+        self.assertFalse(worker.is_alive())
+
+    def test_typed_issue_rejects_duplicate_json_and_unknown_fields_before_upstream(self):
+        self.enable_issue_fixture()
+        self.start()
+        for body in [b'{"title":"x","title":"y"}', b'{"title":"x","url":"https://evil.invalid"}']:
+            response, _ = self.exchange(self.header(action='issue.create', body_length=len(body)), body=body)
+            self.assertGreaterEqual(response['status'], 400)
+        self.assertEqual(self.api_calls, [])
+
+    def test_uncertain_issue_create_is_not_replayed(self):
+        self.enable_issue_fixture()
+        self.start()
+        body = b'{"title":"Investigate"}'
+        with patch.object(self.access, 'github_request', side_effect=OSError('private upstream error')):
+            response, _ = self.exchange(self.header(action='issue.create', body_length=len(body)), body=body)
+        self.assertEqual(response['code'], 'action_outcome_unknown')
+        response, _ = self.exchange(self.header(action='issue.create', body_length=len(body)), body=body)
+        self.assertEqual(response['code'], 'action_reconciliation_required')
+        self.assertEqual(self.api_calls, [])
+
+    def test_pr_comment_cannot_borrow_issue_only_write_grant(self):
+        self.enable_issue_fixture()
+        self.start()
+        calls = []
+
+        def upstream(method, path, token, deadline, body=None):
+            calls.append((method, path))
+            self.assertEqual((method, path), ('GET', '/repos/acme/project/issues/7'))
+            return 200, {'number': 7, 'id': 107, 'pull_request': {},
+                         'repository_url': 'https://api.github.com/repos/acme/project'}, {
+                'x-ratelimit-resource': 'core', 'x-ratelimit-limit': '5000',
+                'x-ratelimit-remaining': '4900', 'x-ratelimit-reset': str(int(time.time()) + 3600)}
+
+        body = b'{"number":7,"body":"Review notes"}'
+        with patch.object(self.access, 'github_request', side_effect=upstream):
+            response, _ = self.exchange(self.header(action='comment.create', body_length=len(body)), body=body)
+        self.assertEqual(response['code'], 'collaboration_role_denied')
+        self.assertEqual(calls, [('GET', '/repos/acme/project/issues/7')])
+
+    def enable_review_fixture(self):
+        self.enable_issue_fixture()
+        registry, _ = self.access.load_registry()
+        registry['runtime_credentials'][1]['permissions']['pull_requests'] = 'write'
+        registry['runtime_credentials'][0].update(kind='github_app', app_id=456, client_id='IvReadFixture',
+                                                installation_id=77, owner_id=99)
+        del registry['runtime_credentials'][0]['actor_id']
+        self.rate.observe('installation:77', {'x-ratelimit-resource': 'core', 'x-ratelimit-limit': '5000',
+            'x-ratelimit-remaining': '5000', 'x-ratelimit-reset': str(int(time.time()) + 3600)})
+        path = self.access.registry_path()
+        path.write_text(json.dumps(registry))
+        self.binding['registry_digest'] = hashlib.sha256(path.read_bytes()).hexdigest()
+        self.write_binding()
+        self.review_calls = []
+        self.review_head = 'a' * 40
+
+        def upstream(method, path, token, deadline, body=None):
+            self.review_calls.append((method, path, body))
+            headers = {'x-ratelimit-resource': 'core', 'x-ratelimit-limit': '5000',
+                       'x-ratelimit-remaining': '4900', 'x-ratelimit-reset': str(int(time.time()) + 3600)}
+            if method != 'GET':
+                return 200, {'id': 301, 'commit_id': 'a' * 40, 'state': 'APPROVED', 'user': {'id': 88},
+                             'pull_request_url': 'https://api.github.com/repos/acme/project/pulls/7'}, headers
+            head = 'a' * 40 if len(self.review_calls) == 1 else self.review_head
+            return 200, {'id': 207, 'number': 7, 'state': 'open', 'user': {'id': 99},
+                'html_url': 'https://github.com/acme/project/pull/7',
+                'head': {'ref': 'feature', 'sha': head, 'repo': {'id': 42}},
+                'base': {'ref': 'main', 'sha': 'b' * 40, 'repo': {'id': 42}}}, headers
+        active = patch.object(self.access, 'github_request', side_effect=upstream)
+        active.start()
+        self.addCleanup(active.stop)
+
+    def test_review_head_change_during_protection_scan_prevents_submission(self):
+        self.enable_review_fixture()
+        self.review_head = 'c' * 40
+        self.start()
+
+        body = json.dumps({'number': 7, 'expected_head_sha': 'a' * 40, 'event': 'APPROVE'}).encode()
+        response, _ = self.exchange(self.header(action='review.create', body_length=len(body)), body=body)
+        self.assertEqual(response.get('code'), 'review_head_changed')
+        self.assertEqual(self.review_calls, [('GET', '/repos/acme/project/pulls/7', None),
+                                            ('GET', '/repos/acme/project/pulls/7', None)])
+
+    def test_review_funds_separate_read_installation_guard_and_user_submission(self):
+        self.enable_review_fixture()
+        self.start()
+        body = json.dumps({'number': 7, 'expected_head_sha': 'a' * 40, 'event': 'APPROVE'}).encode()
+        response, payload = self.exchange(self.header(action='review.create', body_length=len(body)), body=body)
+        self.assertEqual(response['status'], 200, response)
+        result = json.loads(payload)
+        self.assertEqual(result['review_state'], 'APPROVED')
+        self.assertEqual(result['head_oid'], 'a' * 40)
+        self.assertEqual(self.review_calls, [('GET', '/repos/acme/project/pulls/7', None),
+            ('GET', '/repos/acme/project/pulls/7', None), ('POST', '/repos/acme/project/pulls/7/reviews',
+                                                       {'commit_id': 'a' * 40, 'event': 'APPROVE', 'body': ''})])
+        self.assertEqual(self.purposes, ['admission', 'write'])
+
+    def test_queued_branch_update_remains_journaled_and_cannot_be_replayed(self):
+        self.enable_review_fixture()
+        registry, _ = self.access.load_registry()
+        registry['runtime_credentials'][1]['permissions']['contents'] = 'write'
+        path = self.access.registry_path()
+        path.write_text(json.dumps(registry))
+        self.binding['registry_digest'] = hashlib.sha256(path.read_bytes()).hexdigest()
+        self.write_binding()
+        existing_upstream = self.access.github_request.side_effect
+
+        def upstream(method, path, token, deadline, body=None):
+            if method != 'PUT':
+                return existing_upstream(method, path, token, deadline, body)
+            self.review_calls.append((method, path, body))
+            return 202, None, {'x-ratelimit-resource': 'core', 'x-ratelimit-limit': '5000',
+                'x-ratelimit-remaining': '4900', 'x-ratelimit-reset': str(int(time.time()) + 3600)}
+
+        self.start()
+        body = json.dumps({'number': 7, 'expected_head_sha': 'a' * 40}).encode()
+        with patch.object(self.access, 'github_request', side_effect=upstream):
+            response, payload = self.exchange(self.header(action='pull_request.update_branch', body_length=len(body)), body=body)
+            self.assertEqual(response['status'], 200, response)
+            self.assertEqual(json.loads(payload)['outcome'], 'queued')
+            response, _ = self.exchange(self.header(action='pull_request.update_branch', body_length=len(body)), body=body)
+        self.assertEqual(response['code'], 'action_reconciliation_required')
+        self.assertEqual([entry[0] for entry in self.review_calls], ['GET', 'GET', 'PUT'])
+        records = list((self.home / '.local/state/greywall-agents/github-actions').iterdir())
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0].suffix, '.pending')
+        journal = json.loads(records[0].read_text())
+        self.assertEqual(journal['target_number'], 7)
+        self.assertEqual(journal['head_oid'], 'a' * 40)
+
     def enable_fixture_forwarding(self):
         self.assertTrue(hasattr(self.broker, 'git_authority'), 'per-request Git authority lookup is missing')
         self.rate = self.access.load_rate()
@@ -393,11 +643,11 @@ class BrokerChannelTests(BrokerFixture):
         self.upstream = []
         self.write_report = self.report.copy()
 
-        def inspect(checkout, *, purpose, operation_costs=None):
+        def inspect(checkout, *, purpose, operation_costs=None, unmetered_operation=False):
             self.purposes.append(purpose)
             report = (self.write_report if purpose == 'write' else self.report).copy()
             if purpose == 'write' and report['mode'] == 'verified':
-                report['rate_reservation'] = self.rate.reserve(operation_costs, purpose='write', repository_id=42,
+                report['rate_reservation'] = self.rate.reserve(operation_costs or {'user:88:core': 7}, purpose='write', repository_id=42,
                                                              deadline=time.monotonic() + 30)['reservation']
                 report['rate_operation_costs'] = operation_costs
             return report
@@ -412,7 +662,7 @@ class BrokerChannelTests(BrokerFixture):
 
         patches = [patch.object(self.broker, 'git_authority', return_value=(
                        {'repository_id': 42, 'canonical_name': 'acme/project'},
-                       {'id': 'fixture', 'actor_id': 88}, {'user:88:core': 1})),
+                       {'id': 'fixture', 'kind': 'fine_grained_pat', 'actor_id': 88}, {'user:88:core': 1})),
                    patch.object(self.access, 'inspect_access', side_effect=inspect),
                    patch.object(self.access, 'read_runtime_credential', return_value='SYNTHETIC_FORWARD_SECRET'),
                    patch.object(self.broker, 'run_git_transport', side_effect=transport)]
@@ -445,6 +695,20 @@ class BrokerChannelTests(BrokerFixture):
         response, _ = self.exchange(self.header(action='git.push', body_length=len(body)), body=body)
         self.assertEqual(response['code'], 'write_check_denied')
         self.assertEqual(self.upstream, [])
+
+    def test_reviewed_no_primary_cost_still_checks_and_paces_each_write(self):
+        self.enable_fixture_forwarding()
+        self.start()
+        body = self.push_body()
+        with patch.object(self.broker, 'git_authority', return_value=(
+                {'repository_id': 42, 'canonical_name': 'acme/project'},
+                {'kind': 'fine_grained_pat', 'actor_id': 88}, {})):
+            response, _ = self.exchange(self.header(action='git.push', body_length=len(body)), body=body)
+            self.assertEqual(response['status'], 200)
+            response, _ = self.exchange(self.header(action='git.push', body_length=len(body)), body=body)
+            self.assertEqual(response['code'], 'mutation_paced')
+        self.assertEqual(self.purposes, ['admission', 'write', 'write'])
+        self.assertEqual(len(self.upstream), 1)
 
     def test_current_default_is_rechecked_after_upload(self):
         self.enable_fixture_forwarding()

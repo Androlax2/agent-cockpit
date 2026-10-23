@@ -12,6 +12,7 @@ import math
 import os
 from pathlib import Path
 import re
+import secrets
 import signal
 import socket
 import stat
@@ -35,10 +36,23 @@ BINDING_FIELDS = {'version', 'mode', 'session', 'generation', 'capability', 'rev
                   'repository_id', 'canonical_name', 'git_dir', 'common_dir', 'configuration_digest',
                   'registry_digest', 'checked_at', 'checked_wall', 'boot_id'}
 BINDING_IDENTITY = ('checkout', 'repository_id', 'canonical_name', 'git_dir', 'common_dir', 'configuration_digest')
+CONTAINMENT_CODES = {'write_check_denied', 'admission_denied', 'admission_revoked', 'admission_expired',
+                     'git_accounting_changed', 'upstream_throttled', 'rate_quota_unknown', 'rate_quota_exhausted',
+                     'rate_headroom_reserved', 'rate_ledger_untrusted', 'rate_ledger_invalid', 'rate_ledger_unavailable',
+                     'rate_headers_uninspectable', 'rate_resource_mismatch', 'rate_clock_changed'}
 
 
 class RequestDenied(Exception):
     """Stable public error code; never includes untrusted request data."""
+
+    def __init__(self, code, *, requires_containment=False):
+        super().__init__(code)
+        self.requires_containment = requires_containment
+
+
+def is_admission_failure(error):
+    return ((isinstance(error, RequestDenied) and error.requires_containment)
+            or str(error) in CONTAINMENT_CODES)
 
 
 def unique_fields(pairs):
@@ -68,6 +82,12 @@ def request_header(encoded):
             or not isinstance(header['action'], str)
             or type(header['body_length']) is not int or header['body_length'] < 0):
         raise RequestDenied('invalid_header')
+    if header['action'] in load_actions().COLLABORATION_ACTIONS:
+        if header.keys() != required:
+            raise RequestDenied('invalid_header')
+        if header['body_length'] > MAX_COMMAND_BYTES:
+            raise RequestDenied('body_too_large')
+        return header
     allowed = required | {'protocol'}
     if header['action'] == 'git.advertise':
         allowed.add('service')
@@ -110,7 +130,7 @@ def validate_push(body, *, default_branch):
             if prefix_bytes > MAX_COMMAND_BYTES:
                 raise RequestDenied('command_prefix_too_large')
             if length == 0:
-                if not refs and body.read(1):
+                if not refs and (prefix_bytes != 4 or body.read(1)):
                     raise RequestDenied('invalid_receive_commands')
                 return refs
             if not 4 < length <= 65520 or len(refs) >= MAX_UPDATED_REFS:
@@ -121,6 +141,8 @@ def validate_push(body, *, default_branch):
             payload = body.read(length - 4)
             if len(payload) != length - 4:
                 raise RequestDenied('invalid_receive_commands')
+            if not refs and re.fullmatch(b'shallow [0-9a-f]{40}\n?', payload):
+                continue
             command, separator, capabilities = payload.partition(b'\0')
             if separator:
                 if refs:
@@ -181,13 +203,175 @@ def git_authority(access, binding, header):
     operation = header['action'] + (':' + header['service'] if header['action'] == 'git.advertise' else '')
     costs = profile.get('git_rate_costs', {}).get(operation)
     rate = access.load_rate()
-    if (profile.get('git_rate_setup_approved') is not True or not isinstance(costs, dict) or not costs
-            or any(not rate.valid_bucket(bucket) or not bucket.startswith(f'user:{profile["actor_id"]}:')
+    if costs == {}:
+        evidence = profile.get('git_unmetered_evidence', {}).get(operation)
+        if (not isinstance(evidence, dict) or evidence.get('mode') != 'no_primary_headers'
+                or type(evidence.get('reviewed_at')) is not int or type(evidence.get('valid_until')) is not int
+                or not 0 < evidence['reviewed_at'] <= time.time() < evidence['valid_until']
+                or not isinstance(evidence.get('evidence'), str) or not CAPABILITY.fullmatch(evidence['evidence'])):
+            raise RequestDenied('git_rate_setup_required')
+    if (profile.get('git_rate_setup_approved') is not True or not isinstance(costs, dict)
+            or any(not rate.valid_bucket(bucket) or not bucket.startswith(access.runtime_principal(profile) + ':')
                    or type(cost) is not int or cost <= 0 for bucket, cost in costs.items())):
         raise RequestDenied('git_rate_setup_required')
     if profile['permissions'].get('contents') != ('write' if role == 'forward' else 'read'):
         raise RequestDenied('git_role_denied')
     return record, profile, costs
+
+
+def load_actions():
+    spec = importlib.util.spec_from_file_location('cockpit_github_actions', Path(__file__).with_name('github-actions.py'))
+    actions = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(actions)
+    return actions
+
+
+def action_pending_path(binding, action, fields):
+    directory = Path.home() / '.local/state/greywall-agents/github-actions'
+    private_directory(directory, create=True)
+    digest = hashlib.sha256(json.dumps({'repository_id': binding['repository_id'], 'action': action,
+                                       'fields': fields}, sort_keys=True).encode()).hexdigest()
+    return directory / (digest + '.pending')
+
+
+def action_intent(binding, action, fields):
+    path = action_pending_path(binding, action, fields)
+    request_id = secrets.token_hex(16)
+    try:
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    except FileExistsError:
+        raise RequestDenied('action_reconciliation_required') from None
+    with os.fdopen(descriptor, 'w') as journal:
+        json.dump({'request_id': request_id, 'repository_id': binding['repository_id'], 'action': action,
+                   'digest': path.stem, 'created_at': int(time.time()), 'target_number': fields.get('number'),
+                   'head_oid': fields.get('expected_head_sha'),
+                   'body_digest': hashlib.sha256(fields['body'].encode()).hexdigest() if 'body' in fields else None,
+                   'title_digest': hashlib.sha256(fields['title'].encode()).hexdigest() if 'title' in fields else None}, journal)
+        journal.flush()
+        os.fsync(journal.fileno())
+    sync_action_directory(path.parent)
+    return path, request_id
+
+
+def sync_action_directory(directory):
+    descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def dispatch_collaboration(access, binding, header, body, output, *, deadline, check_live):
+    actions = load_actions()
+    rate = access.load_rate()
+    reservation = None
+    dispatched = False
+    try:
+        body.seek(0)
+        try:
+            fields = json.loads(body.read(MAX_COMMAND_BYTES + 1), object_pairs_hook=unique_fields,
+                                parse_constant=reject_constant)
+        except (ValueError, UnicodeError, RecursionError):
+            raise RequestDenied('invalid_action_fields') from None
+        actions.action_fields(header['action'], fields)
+        registry, serialized = access.load_registry()
+        if serialized is None or hashlib.sha256(serialized).hexdigest() != binding['registry_digest']:
+            raise RequestDenied('admission_revoked')
+        record = next((entry for entry in registry['repositories']
+                       if entry['repository_id'] == binding['repository_id']
+                       and entry['canonical_name'] == binding['canonical_name']), None)
+        if record is None:
+            raise RequestDenied('action_unavailable')
+        profiles = access.runtime_credential_profiles(record, registry)
+        request_id = None
+        intent = None
+
+        def request(method, path, payload=None, *, permission='issues'):
+            nonlocal reservation, dispatched, request_id, intent
+            check_live()
+            profile = profiles['read' if method == 'GET' else 'forward']
+            if profile['permissions'].get(permission) != ('read' if method == 'GET' else 'write'):
+                raise RequestDenied('collaboration_role_denied')
+            bucket = access.runtime_principal(profile) + ':core'
+            costs = {bucket: 1}
+            needs_head_guard = method != 'GET' and (header['action'].startswith('review.')
+                                                    or header['action'] == 'pull_request.update_branch')
+            if needs_head_guard:
+                guard_bucket = access.runtime_principal(profiles['read']) + ':core'
+                costs[guard_bucket] = costs.get(guard_bucket, 0) + 1
+            if method == 'GET':
+                reservation = rate.reserve(costs, purpose='admission', repository_id=binding['repository_id'],
+                                           deadline=min(deadline, time.monotonic() + 30))['reservation']
+            else:
+                report = access.inspect_access(Path(binding['checkout']), purpose='write', operation_costs=costs)
+                reservation = report.get('rate_reservation')
+                if (report.get('mode') != 'verified' or report.get('identity_verified') is not True
+                        or report.get('rate_verified') is not True
+                        or report.get('credential_roles_verified') != ['read', 'forward']
+                        or any(report.get(field) != binding[field] for field in BINDING_IDENTITY)
+                        or reservation is None or report.get('rate_operation_costs') != costs):
+                    raise RequestDenied('write_check_denied')
+            token = access.read_runtime_credential(record, profile, min(deadline, time.monotonic() + 30), verify_remote=False)
+            check_live()
+            rate.ready(reservation, costs)
+            if needs_head_guard:
+                guard_token = access.read_runtime_credential(record, profiles['read'],
+                    min(deadline, time.monotonic() + 30), verify_remote=False)
+                rate.charge(reservation, guard_bucket)
+                guard_status, current, guard_headers = access.github_request('GET',
+                    '/repos/' + record['canonical_name'] + '/pulls/' + str(fields['number']),
+                    guard_token, min(deadline, time.monotonic() + 30))
+                observed = rate.observe(access.runtime_principal(profiles['read']), guard_headers, status=guard_status)
+                if observed != guard_bucket:
+                    raise RequestDenied('rate_resource_mismatch')
+                if guard_status != 200:
+                    raise RequestDenied('review_head_changed')
+                current = actions.verified_pull_request(record, fields['number'], current)
+                if (current['head']['sha'] != fields['expected_head_sha']
+                        or (header['action'] in ('review.create', 'review.submit', 'pull_request.update_branch')
+                            and current['state'] != 'open')):
+                    raise RequestDenied('review_head_changed')
+                check_live()
+                rate.ready(reservation, {bucket: 1})
+            if method != 'GET':
+                rate.admit_mutation()
+                intent, request_id = action_intent(binding, header['action'], fields)
+            rate.charge(reservation, bucket)
+            if method != 'GET':
+                dispatched = True
+            status, value, headers = access.github_request(method, path, token, min(deadline, time.monotonic() + 30), payload)
+            observed = rate.observe(access.runtime_principal(profile), headers, status=status)
+            if observed != bucket:
+                raise RequestDenied('rate_resource_mismatch')
+            if status in (403, 429) or 'retry-after' in headers:
+                raise RequestDenied('upstream_throttled')
+            rate.finish(reservation)
+            reservation = None
+            return status, value, headers
+
+        with rate.repository_write(binding['repository_id']):
+            pending = action_pending_path(binding, header['action'], fields)
+            if pending.exists() or pending.is_symlink():
+                raise RequestDenied('action_reconciliation_required')
+            result = actions.perform_action(record, header['action'], fields, request,
+                                            actor_id=profiles['forward']['actor_id'])
+            result['request_id'] = request_id
+            if intent is not None and result.get('outcome') == 'succeeded':
+                os.replace(intent, intent.with_name(request_id + '.completed'))
+                sync_action_directory(intent.parent)
+            encoded = json.dumps(result).encode()
+            output.write(encoded)
+            output.seek(0)
+            return {'status': 200, 'content_type': 'application/json', 'body_length': len(encoded)}
+    except (actions.ActionDenied, access.AccessDenied, rate.RateDenied, RequestDenied, OSError) as error:
+        if dispatched:
+            raise RequestDenied('action_outcome_unknown', requires_containment=is_admission_failure(error)) from None
+        if isinstance(error, OSError):
+            raise RequestDenied('action_storage_unavailable') from None
+        raise RequestDenied(str(error)) from None
+    finally:
+        if reservation is not None:
+            rate.finish(reservation)
 
 
 def run_git_transport(header, binding, token, body, output, *, deadline, check_live):
@@ -255,9 +439,9 @@ def dispatch_git(access, binding, header, body, output, *, deadline, check_live)
     try:
         with rate.repository_write(binding['repository_id']) if requires_write_check else nullcontext():
             check_live()
-            token = access.read_runtime_credential(record, profile, min(deadline, time.monotonic() + 30), verify_remote=False)
             report = access.inspect_access(Path(binding['checkout']), purpose='write' if requires_write_check else 'admission',
-                                           **({'operation_costs': costs} if requires_write_check else {}))
+                                           **(({'operation_costs': costs} | ({'unmetered_operation': True} if not costs else {}))
+                                              if requires_write_check else {}))
             reservation = report.get('rate_reservation')
             if (report.get('mode') != 'verified' or report.get('identity_verified') is not True
                     or report.get('rate_verified') is not True
@@ -269,19 +453,22 @@ def dispatch_git(access, binding, header, body, output, *, deadline, check_live)
                 if not isinstance(default, str) or not default:
                     raise RequestDenied('write_check_denied')
                 updated_refs = validate_push(body, default_branch=default)
-            if not requires_write_check:
+            if not requires_write_check and costs:
                 reservation = rate.reserve(costs, purpose='admission', repository_id=binding['repository_id'],
                                            deadline=min(deadline, time.monotonic() + 30))['reservation']
-            elif reservation is None or report.get('rate_operation_costs') != costs:
+            elif requires_write_check and (reservation is None or report.get('rate_operation_costs') != costs):
                 raise RequestDenied('write_check_denied')
+            token = access.read_runtime_credential(record, profile, min(deadline, time.monotonic() + 30), verify_remote=False)
             with rate.request_slot():
                 check_live()
-                rate.ready(reservation, costs)
+                if costs:
+                    rate.ready(reservation, costs)
                 if updated_refs:
                     rate.admit_mutation()
                 for bucket, cost in costs.items():
                     rate.charge(reservation, bucket, cost)
-                rate.finish(reservation)
+                if reservation is not None:
+                    rate.finish(reservation)
                 reservation = None
                 check_live()
                 if time.monotonic() >= deadline:
@@ -289,16 +476,18 @@ def dispatch_git(access, binding, header, body, output, *, deadline, check_live)
                 dispatched = True
                 response = run_git_transport(header, binding, token, body, output, deadline=deadline, check_live=check_live)
                 if response['status'] in (403, 429):
-                    rate.backoff(costs, response['rate_headers'])
+                    rate.backoff(costs or [access.runtime_principal(profile) + ':core'], response['rate_headers'])
                     raise RequestDenied('upstream_throttled')
                 if response['rate_headers']:
-                    observed = rate.observe(f'user:{profile["actor_id"]}', response['rate_headers'], status=response['status'])
+                    if not costs:
+                        raise RequestDenied('git_accounting_changed')
+                    observed = rate.observe(access.runtime_principal(profile), response['rate_headers'], status=response['status'])
                     if observed not in costs:
                         raise RequestDenied('rate_resource_mismatch')
                 return {key: response[key] for key in ['status', 'content_type', 'body_length']}
     except (RequestDenied, rate.RateDenied, access.AccessDenied, OSError) as error:
         if dispatched and header['action'] == 'git.push':
-            raise RequestDenied('upstream_outcome_unknown') from None
+            raise RequestDenied('upstream_outcome_unknown', requires_containment=is_admission_failure(error)) from None
         if isinstance(error, (rate.RateDenied, access.AccessDenied)):
             raise RequestDenied(str(error)) from None
         raise
@@ -486,10 +675,13 @@ def serve(decision, socket_path, *, ready=None, stop=None):
     stop = stop if stop is not None else threading.Event()
     capacity = threading.BoundedSemaphore(2)
     internal_failure = threading.Event()
+    admission_failure = threading.Event()
     lock = threading.Lock()
     workers, connections = set(), set()
 
     def authorize(header):
+        if admission_failure.is_set():
+            raise RequestDenied('admission_revoked')
         check_live_binding(decision, binding, access)
         if not hmac.compare_digest(header['capability'], binding['capability']):
             raise RequestDenied('capability_denied')
@@ -503,7 +695,7 @@ def serve(decision, socket_path, *, ready=None, stop=None):
 
             def check_live():
                 nonlocal next_check
-                if stop.is_set():
+                if stop.is_set() or admission_failure.is_set():
                     raise RequestDenied('admission_revoked')
                 check_live_binding(decision, binding, access)
                 if time.monotonic() >= next_check:
@@ -518,14 +710,17 @@ def serve(decision, socket_path, *, ready=None, stop=None):
 
             with tempfile.TemporaryFile(dir=spool) as body, tempfile.TemporaryFile(dir=spool) as output:
                 header = read_request(connection, body, deadline=deadline, authorize=authorize)
-                git_route(header, binding['canonical_name'])
+                is_collaboration_action = header['action'] in load_actions().COLLABORATION_ACTIONS
+                if not is_collaboration_action:
+                    git_route(header, binding['canonical_name'])
                 if header['action'] == 'git.push':
                     default_branch = report.get('default_branch')
                     if not isinstance(default_branch, str) or not default_branch:
                         raise RequestDenied('admission_denied')
                     validate_push(body, default_branch=default_branch)
-                response = dispatch_git(access, binding, header, body, output, deadline=deadline, check_live=check_live)
-                push_completed = header['action'] == 'git.push'
+                dispatch = dispatch_collaboration if is_collaboration_action else dispatch_git
+                response = dispatch(access, binding, header, body, output, deadline=deadline, check_live=check_live)
+                push_completed = header['action'] == 'git.push' or is_collaboration_action
                 encoded = json.dumps(response).encode()
                 check_live()
                 connection.settimeout(min(IDLE_SECONDS, max(0.001, deadline - time.monotonic())))
@@ -538,8 +733,13 @@ def serve(decision, socket_path, *, ready=None, stop=None):
                     connection.settimeout(min(IDLE_SECONDS, deadline - time.monotonic()))
                     connection.sendall(chunk)
         except RequestDenied as error:
+            contains_failure = is_admission_failure(error)
+            if contains_failure:
+                admission_failure.set()
             if not response_started:
                 send_error(connection, 'upstream_outcome_unknown' if push_completed else str(error))
+            if contains_failure:
+                stop.set()
         except OSError:
             if not response_started:
                 send_error(connection, 'request_io_failed')
@@ -608,7 +808,8 @@ def serve(decision, socket_path, *, ready=None, stop=None):
                 worker.join()
             if socket_path.exists() and socket_path.lstat().st_ino == identity.st_ino:
                 socket_path.unlink()
-    return 'internal_error' if internal_failure.is_set() else termination
+    return ('internal_error' if internal_failure.is_set() else
+            'admission_revoked' if admission_failure.is_set() else termination)
 
 
 def protect_parent():
