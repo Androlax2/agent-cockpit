@@ -5,6 +5,7 @@
 # (api-token in its data dir; requireApiToken off), per-client proxy secrets (requireClientSecret
 # off) and a fail-closed start (it exits 1 when its service cannot start). Both checks stay off
 # until greywall and the Docker service send the token and the secret.
+# cdd5cde skips DNS lookups for numeric destination IPs, avoiding resolver timeouts (#6).
 # Each fix lands on that branch and goes upstream as a PR.
 #   make greyproxy-patch
 # Move the pins below to the next tip of that branch, or to an upstream release once it ships them.
@@ -17,8 +18,8 @@ package_dir=$(dirname "$(readlink -f "$0")")
 build_dir="${XDG_CACHE_HOME:-$HOME/.cache}/dotfiles-build/greyproxy"
 target="$HOME/.local/bin/greyproxy"
 
-greyproxy_commit=a30e3d426133e77a24a0727833de4a6330d31327 # branch dotfiles
-greyproxy_sha256=7518f18e5d52fcde3d0033560478e7026e1fed9ff8418f92c95f673567af5432
+greyproxy_commit=cdd5cde76dce1262c0fd8d6b1ab2bd9953df5e71 # branch dotfiles
+greyproxy_sha256=6e1932582a097cc665917b3177ff33dfe6f6eaef2f32047a05655082f63fd448
 # Plain semver, no +dotfiles: greywall parses this version, treats anything else as outdated, and
 # `greywall setup` would then replace this build with upstream's release. The commit line tells
 # the builds apart.
