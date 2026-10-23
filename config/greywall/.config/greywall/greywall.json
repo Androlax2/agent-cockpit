@@ -1,4 +1,9 @@
 {
+  "network": {
+    "forwardPorts": [
+      8081
+    ]
+  },
   "filesystem": {
     "defaultDenyRead": true,
     "allowRead": [
