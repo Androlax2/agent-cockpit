@@ -7475,6 +7475,35 @@ fn e_saves_what_was_written_in_the_native_form() {
 }
 
 #[test]
+fn multiline_queued_prompts_preserve_paragraphs_through_dispatch() {
+    for id in [SESSION_A, OPENCODE_SESSION] {
+        let fixture = Fixture::new();
+        let row = if id == OPENCODE_SESSION { opencode_session("waiting", "runway", 200) }
+                  else { session(SESSION_A, "waiting", "runway", "/r/runway", 200) };
+        fixture.snapshot(json!([row]));
+        fixture.shim("cockpit", r#"printf '%s' "$3" > "$XDG_RUNTIME_DIR/delivered-prompt""#);
+        let mut app = fixture.app();
+        crate::prompts::add(id, "First line\r\n\r\n  - second line").unwrap();
+        assert_eq!(crate::prompts::oldest(id).unwrap().0, "First line\n\n  - second line");
+        app.dispatch_prompts();
+        assert_eq!(fs::read_to_string(fixture.path("run/delivered-prompt")).unwrap(), "First line\n\n  - second line");
+        assert_eq!(crate::prompts::count(id), 0);
+    }
+}
+
+#[test]
+fn multiline_queued_prompts_reject_other_controls_and_keep_the_character_limit() {
+    let _fixture = Fixture::new();
+    for text in ["".to_string(), "\n \n".into(), "first\n\u{1b}[201~second".into(), "first\n\u{3}second".into(), "first\rsecond".into(), "first\tsecond".into(), "é".repeat(4001)] {
+        assert!(crate::prompts::add(SESSION_A, &text).is_err());
+    }
+    assert_eq!(crate::prompts::count(SESSION_A), 0);
+    let text = format!("{}\né", "é".repeat(3998));
+    crate::prompts::add(SESSION_A, &text).unwrap();
+    assert_eq!(crate::prompts::oldest(SESSION_A).unwrap().0, text);
+}
+
+#[test]
 fn a_queued_prompt_waits_for_the_end_of_the_turn_one_per_turn() {
     let fixture = Fixture::new();
     fixture.snapshot(json!([session(SESSION_A, "working", "runway", "/r/runway", 100)]));

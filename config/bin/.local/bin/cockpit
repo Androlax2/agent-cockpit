@@ -696,11 +696,29 @@ exit_session() {
     "agent_$(agent_of_session "$id")_exit" "$target" "$pane" "$id"
 }
 
-# A command typed at Claude's prompt and submitted. Text and Enter go in two send-keys calls with a
+# Newlines must be pasted as text, not sent as Enter keys. Named buffers keep concurrent sends
+# separate; -r preserves LF bytes and -p wraps the paste when the receiving app enables it.
+type_into_pane() { # pane text
+    if [[ $2 != *$'\n'* ]]; then
+        tmux send-keys -t "$1" -l -- "$2"
+        return
+    fi
+    local buffer="cockpit-message-$$-$(date +%s%N)"
+    if ! printf '%s' "$2" | tmux load-buffer -b "$buffer" -; then
+        tmux delete-buffer -b "$buffer" >/dev/null 2>&1 || true
+        return 1
+    fi
+    if ! tmux paste-buffer -d -p -r -b "$buffer" -t "$1"; then
+        tmux delete-buffer -b "$buffer" >/dev/null 2>&1 || true
+        return 1
+    fi
+}
+
+# A command typed at Claude's prompt and submitted. Text and Enter go in two calls with a
 # pause: in one burst Claude's input takes them as a paste and the Enter becomes a newline, so the
 # command never runs (claude-auto-retry's SUBMIT_DELAY_MS, src/tmux.js, documents the same).
 submit_to_pane() { # pane text
-    tmux send-keys -t "$1" -l -- "$2"
+    type_into_pane "$1" "$2" || return 1
     sleep 0.15
     tmux send-keys -t "$1" Enter
 }
@@ -775,18 +793,19 @@ open_variants() { # id
 # A message for a session without opening it; each agent says when it takes one (agent_*_say).
 say_to_session() { # id message
     local id=$1 message=$2 pane waking=""
+    message=${message//$'\r\n'/$'\n'}
     pane=$(session_field "$id" tmux_pane)
     if [[ -z $pane ]]; then
         # Asleep, or restarting with no pane yet: the message waits for the new process.
         if is_asleep "$id"; then waking=asleep; elif is_restarting "$id"; then waking=restarting; fi
         [[ -n $waking ]] || { echo "cockpit: session $id has no tmux pane" >&2; return 1; }
     fi
-    if [[ -z $message || $message == *$'\n'* || ${#message} -gt 4000 ]]; then
-        echo "cockpit: a message is one line of at most 4000 characters" >&2
+    if [[ -z $message || ${#message} -gt 4000 ]]; then
+        echo "cockpit: a message is at most 4000 characters" >&2
         return 1
     fi
-    # send-keys turns a control character into a key press (Escape, Ctrl+C, Shift+Tab's sequence).
-    if [[ $message == *[[:cntrl:]]* ]]; then
+    # LF is bracketed-pasted; other controls could escape the paste or press a key.
+    if [[ ${message//$'\n'/} == *[[:cntrl:]]* ]]; then
         echo "cockpit: a message cannot carry control characters" >&2
         return 1
     fi

@@ -18,11 +18,12 @@ pub fn folder(session: &str) -> Option<PathBuf> {
     valid_session(session).then(|| paths::state_dir().join("prompt-queue").join(session))
 }
 
-/// Queues one prompt: one line, no control characters, at most PROMPT_MAX characters.
+/// Queues one prompt, retaining line breaks but no other controls, at most PROMPT_MAX characters.
 pub fn add(session: &str, text: &str) -> Result<(), String> {
-    let text = text.trim();
-    if text.is_empty() || text.chars().count() > PROMPT_MAX || text.chars().any(char::is_control) {
-        return Err("a queued prompt is one line, without control characters".into());
+    let normalized = text.replace("\r\n", "\n");
+    let text = normalized.trim();
+    if text.is_empty() || text.chars().count() > PROMPT_MAX || text.chars().any(|character| character.is_control() && character != '\n') {
+        return Err(format!("a queued prompt is at most {PROMPT_MAX} characters, without control characters other than line breaks"));
     }
     let folder = folder(session).ok_or("not a session id")?;
     fs::create_dir_all(&folder).map_err(|error| error.to_string())?;

@@ -1041,6 +1041,134 @@ fn say_sends_at_the_prompt_and_queues_while_working() {
 }
 
 #[test]
+fn multiline_messages_are_pasted_once_before_the_agents_submit_keys() {
+    for (agent, state, screen, submit) in [
+        ("claude", "waiting", IDLE, "Enter"),
+        ("claude", "working", BUSY_WITHOUT_PROMPT, "C-x Enter"),
+        ("opencode", "waiting", "", "Enter"),
+        ("opencode", "working", "", "Enter"),
+    ] {
+        let manager = Manager::new();
+        let (session, pane) = if agent == "opencode" {
+            manager.with_opencode_session(state);
+            (OPENCODE_SESSION, "%5")
+        } else { (SESSION_A, "%4") };
+        manager.sandbox.shim("tmux", &format!("{FAKE_TMUX}\nif [[ $1 == load-buffer ]]; then cat > \"$XDG_RUNTIME_DIR/pasted-message\"; fi\nexit 0"));
+        let output = manager.run(&["say", session, "First line\r\n\r\n  - second line"], &[("SHIM_PANE_TEXT", screen)]);
+        assert!(output.status.success(), "{agent}/{state}: {}", stderr(&output));
+        assert_eq!(fs::read_to_string(manager.runtime_file("pasted-message")).unwrap(), "First line\n\n  - second line");
+        let loads = manager.tmux_calls("load-buffer");
+        assert_eq!(loads.len(), 1);
+        let buffer = loads[0].strip_prefix("tmux load-buffer -b ").unwrap().strip_suffix(" -").unwrap();
+        assert_eq!(manager.tmux_calls("paste-buffer"), [format!("tmux paste-buffer -d -p -r -b {buffer} -t {pane}")]);
+        assert_eq!(manager.tmux_calls("send-keys"), [format!("tmux send-keys -t {pane} {submit}")]);
+        let log = fs::read_to_string(&manager.sandbox.log).unwrap();
+        assert!(log.find("tmux paste-buffer ").unwrap() < log.find("tmux send-keys ").unwrap());
+        assert!(!manager.log_lines().iter().any(|line| line.contains("First line") || line.contains("second line")));
+    }
+}
+
+#[test]
+fn multiline_messages_arrive_as_one_bracketed_paste_in_a_real_terminal() {
+    struct PrivateTmux<'a>(&'a Manager);
+    impl Drop for PrivateTmux<'_> {
+        fn drop(&mut self) {
+            self.0.sandbox.run("/usr/bin/tmux", &["-S", &path_str(&self.0.runtime_file("test-tmux.sock")), "kill-server"], &[]);
+        }
+    }
+    for (agent, session) in [("claude", SESSION_A), ("opencode", OPENCODE_SESSION)] {
+        let manager = Manager::new();
+        manager.sandbox.shim("tmux", r#"exec /usr/bin/tmux -S "$XDG_RUNTIME_DIR/test-tmux.sock" "$@""#);
+        let receiver = manager.runtime_file("receive.py");
+        fs::write(&receiver, r#"import os, tty
+tty.setraw(0)
+os.write(1, b'\x1b[?2004hReady\n')
+received = b''
+while not received.endswith(b'\r'):
+    received += os.read(0, 4096)
+    with open(os.environ['XDG_RUNTIME_DIR'] + '/terminal-input', 'wb') as output:
+        output.write(received)
+"#).unwrap();
+        let _server = PrivateTmux(&manager);
+        let started = manager.sandbox.run("tmux", &["new-session", "-d", "-P", "-F", "#{pane_id}", "python3", &path_str(&receiver)], &[]);
+        assert!(started.status.success(), "{}", stderr(&started));
+        let pane = stdout(&started).trim().to_string();
+        let ready = Instant::now() + Duration::from_secs(5);
+        loop {
+            let screen = manager.sandbox.run("tmux", &["capture-pane", "-p", "-t", &pane], &[]);
+            if stdout(&screen).contains("Ready") { break; }
+            assert!(Instant::now() < ready, "terminal receiver did not start: {}", stderr(&screen));
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        fs::write(&manager.snapshot, json!({"sessions": [{"session": session, "agent": agent, "state": "waiting", "project": "proj-a", "tmux_pane": pane}]}).to_string()).unwrap();
+        // Only the agent-state reading is fixed; load/paste/submit use the real private server.
+        manager.sandbox.shim("tmux", r#"if [[ $1 == capture-pane ]]; then printf 'done\n❯ \n'; else exec /usr/bin/tmux -S "$XDG_RUNTIME_DIR/test-tmux.sock" "$@"; fi"#);
+        let result = manager.run(&["say", session, "First line\n\n  - second line"], &[]);
+        assert!(result.status.success(), "{}", stderr(&result));
+        let expected = b"\x1b[200~First line\n\n  - second line\x1b[201~\r";
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let received = fs::read(manager.runtime_file("terminal-input")).unwrap_or_default();
+            if received == expected { break; }
+            assert!(Instant::now() < deadline, "{agent} received {received:?}, expected {expected:?}");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let buffers = manager.sandbox.run("tmux", &["list-buffers"], &[]);
+        assert!(stdout(&buffers).is_empty(), "message text was left in a tmux buffer");
+    }
+}
+
+#[test]
+fn a_failed_multiline_paste_cleans_up_without_submitting_even_in_a_conditional() {
+    for agent in ["claude", "opencode"] {
+        for failure in ["load-buffer", "paste-buffer"] {
+            let manager = Manager::new();
+            let session = if agent == "opencode" { manager.with_opencode_session("waiting"); OPENCODE_SESSION } else { SESSION_A };
+            manager.sandbox.shim("tmux", &format!("{FAKE_TMUX}\n[[ $1 == load-buffer ]] && cat > /dev/null\n[[ $1 == {failure} ]] && exit 1\nexit 0"));
+            let output = manager.sandbox.run("bash", &["-c", r#"if source "$1" say "$2" "$3"; then exit 0; else exit 1; fi"#,
+                "bash", &path_str(&bin().join("cockpit")), session, "First\nsecond"], &[("SHIM_PANE_TEXT", IDLE)]);
+            assert!(!output.status.success(), "{agent}/{failure}: {}", stderr(&output));
+            let loads = manager.tmux_calls("load-buffer");
+            assert_eq!(loads.len(), 1, "{agent}/{failure}");
+            let buffer = loads[0].strip_prefix("tmux load-buffer -b ").unwrap().strip_suffix(" -").unwrap();
+            assert_eq!(manager.tmux_calls("delete-buffer"), [format!("tmux delete-buffer -b {buffer}")]);
+            assert!(manager.tmux_calls("send-keys").is_empty());
+        }
+    }
+}
+
+#[test]
+fn concurrent_multiline_sends_use_different_named_buffers() {
+    let manager = Manager::new();
+    manager.sandbox.shim("tmux", &format!("{FAKE_TMUX}\n[[ $1 == load-buffer ]] && cat > /dev/null\nexit 0"));
+    let mut children: Vec<_> = (0..2).map(|_| manager.sandbox.command(bin().join("cockpit"), &[("SHIM_PANE_TEXT", IDLE)])
+        .args(["say", SESSION_A, "First\nsecond"]).stdout(std::process::Stdio::null()).spawn().unwrap()).collect();
+    for child in &mut children { assert!(child.wait().unwrap().success()); }
+    let loads = manager.tmux_calls("load-buffer");
+    assert_eq!(loads.len(), 2);
+    assert_ne!(loads[0], loads[1]);
+    assert!(manager.tmux_calls("paste-buffer").iter().all(|call| call.contains(" -d -p -r -b ")));
+}
+
+#[test]
+fn multiline_messages_cannot_escape_the_paste_or_answer_a_permission_dialog() {
+    for agent in ["claude", "opencode"] {
+        for message in ["First\n\u{1b}[201~second", "First\n\u{3}second", "First\n\tsecond", "First\rsecond"] {
+            let manager = Manager::new();
+            let session = if agent == "opencode" { manager.with_opencode_session("waiting"); OPENCODE_SESSION } else { SESSION_A };
+            assert!(!manager.run(&["say", session, message], &[("SHIM_PANE_TEXT", IDLE)]).status.success());
+            assert!(manager.tmux_calls("load-buffer").is_empty());
+            assert!(manager.tmux_calls("send-keys").is_empty());
+        }
+        let manager = Manager::new();
+        let session = if agent == "opencode" { manager.with_opencode_session("needs-you"); OPENCODE_SESSION } else { SESSION_A };
+        assert!(!manager.run(&["say", session, "First\nsecond"], &[("SHIM_PANE_TEXT", DIALOG)]).status.success());
+        assert!(manager.tmux_calls("load-buffer").is_empty());
+        assert!(manager.tmux_calls("send-keys").is_empty());
+    }
+}
+
+#[test]
 fn say_refuses_while_a_dialog_is_open_and_keeps_the_text_out_of_the_log() {
     let manager = Manager::new();
     let result = manager.run(&["say", SESSION_A, "the secret plan"], &[("SHIM_PANE_TEXT", DIALOG)]);
@@ -4344,10 +4472,10 @@ fn opening_an_asleep_session_that_cannot_wake_fails_and_shows_nothing() {
 fn say_to_an_asleep_session_queues_and_wakes() {
     let manager = Manager::new();
     manager.put_to_sleep(SESSION_A, "claude", false);
-    let result = manager.run(&["say", SESSION_A, "run the tests"], &[]);
+    let result = manager.run(&["say", SESSION_A, "run the tests\n\n  then check the output"], &[]);
     assert_eq!(result.status.code(), Some(0), "{}", stderr(&result));
     assert!(stdout(&result).contains("queued until it wakes"), "{}", stdout(&result));
-    assert_eq!(manager.queued_prompts(SESSION_A), ["run the tests"]);
+    assert_eq!(manager.queued_prompts(SESSION_A), ["run the tests\n\n  then check the output"]);
     assert_eq!(manager.calls("setsid"), [format!("setsid -f cockpit wake {SESSION_A}")]);
     assert!(manager.tmux_calls("send-keys").is_empty());
 }
@@ -4356,7 +4484,7 @@ fn say_to_an_asleep_session_queues_and_wakes() {
 fn say_to_an_asleep_session_still_refuses_a_bad_message() {
     let manager = Manager::new();
     manager.put_to_sleep(SESSION_A, "claude", false);
-    for message in ["two\nlines", "bell\u{7}", ""] {
+    for message in ["two\nlines\u{7}", "bell\u{7}", ""] {
         let result = manager.run(&["say", SESSION_A, message], &[]);
         assert_ne!(result.status.code(), Some(0), "{message:?}");
     }

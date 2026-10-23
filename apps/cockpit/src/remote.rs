@@ -664,24 +664,21 @@ pub fn message(id: &str, message: &str) -> Result<String, String> {
     if row.is_none() && !is_asleep {
         return Err("no such session".into());
     }
-    let message = message.trim();
-    if message.is_empty() || message.chars().count() > MESSAGE_MAX || message.chars().any(char::is_control) {
-        return Err(format!("a message is one line of at most {MESSAGE_MAX} characters"));
-    }
+    let message = message_text(message, "a message")?;
     let is_working = row.as_ref().is_some_and(|row| text(row, "state") == "working");
     let outcome = if is_working {
-        prompts::add(id, message)?;
+        prompts::add(id, &message)?;
         "queued for the end of its turn".to_string()
     } else {
         // For an asleep session `cockpit say` checks that it can wake (folder, conversation) before
         // it queues the message and wakes it in the background, so a failure reaches the phone.
-        let error = util::manager(&["say", id, message]);
+        let error = util::manager(&["say", id, &message]);
         if !error.is_empty() {
             return Err(error);
         }
         if is_asleep { "queued; it wakes now".to_string() } else { "sent".to_string() }
     };
-    audit::record("remote", "remote.message", "ok", json!({"session": id, "message": audit::fingerprint(message), "outcome": outcome}));
+    audit::record("remote", "remote.message", "ok", json!({"session": id, "message": audit::fingerprint(&message), "outcome": outcome}));
     Ok(outcome)
 }
 
@@ -767,6 +764,15 @@ fn one_line(text: &str, what: &str) -> Result<String, String> {
     Ok(text.to_string())
 }
 
+fn message_text(text: &str, what: &str) -> Result<String, String> {
+    let normalized = text.replace("\r\n", "\n");
+    let text = normalized.trim();
+    if text.is_empty() || text.chars().count() > MESSAGE_MAX || text.chars().any(|character| character.is_control() && character != '\n') {
+        return Err(format!("{what} is at most {MESSAGE_MAX} characters, without control characters other than line breaks"));
+    }
+    Ok(text.to_string())
+}
+
 /// One of the agents (agents::AGENTS); anything else, an absent one included, is refused.
 fn known_agent(agent: &str) -> Result<&'static str, String> {
     agents::find(agent).map(|known| known.name).ok_or_else(|| format!("which agent? one of {}", agents::names().join(", ")))
@@ -776,7 +782,7 @@ fn known_agent(agent: &str) -> Result<&'static str, String> {
 /// phone-<time> branch (as the column's +), or in the project's folder itself.
 pub fn start_session(project: &str, prompt: &str, in_clone: bool, agent: &str) -> Result<String, String> {
     let directory = known_project(project)?;
-    let prompt = one_line(prompt, "the first message")?;
+    let prompt = message_text(prompt, "the first message")?;
     let agent = known_agent(agent)?;
     let branch = format!("phone-{}", chrono::Local::now().format("%Y%m%d-%H%M%S"));
     let arguments: Vec<&str> = if in_clone { vec!["--agent", agent, "parallel", &directory, &branch, &prompt] } else { vec!["--agent", agent, "background", &directory, &prompt] };

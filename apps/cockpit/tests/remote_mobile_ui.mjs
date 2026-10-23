@@ -216,25 +216,52 @@ const tests = {
     assert.equal(page.document.getElementById("tab-sessions").querySelector(".badge").textContent, "1");
   },
 
-  async "a reply's line breaks are sent as single spaces"() {
+  async "a reply keeps paragraphs and indentation as one message"() {
     const page = await startPage({ sessions: SESSIONS });
     page.run('openSession("s1")'); await settle();
     const reply = page.document.getElementById("chat-reply");
     reply.value = "Fix the login bug\n- check the cookie\r\n\n  - add a test\t now\n"; reply.oninput();
     await page.button(page.roots.detail, "Send").onclick();
-    assert.deepEqual(page.server.posts, [{ path: "/api/message/s1", body: { text: "Fix the login bug - check the cookie - add a test  now" } }]);
+    assert.deepEqual(page.server.posts, [{ path: "/api/message/s1", body: { text: "Fix the login bug\n- check the cookie\n\n  - add a test  now" } }]);
   },
 
-  async "the reply box says line breaks become spaces only while it has one"() {
+  async "the reply box no longer warns that paragraphs become spaces"() {
     const page = await startPage({ sessions: SESSIONS });
     page.run('openSession("s1")'); await settle();
     const reply = page.document.getElementById("chat-reply");
-    const hint = page.document.getElementById("reply-hint");
-    assert.equal(hint.hidden, true);
     reply.value = "two\nlines"; reply.oninput();
-    assert.equal(hint.hidden, false);
-    reply.value = "one line"; reply.oninput();
-    assert.equal(hint.hidden, true);
+    assert.equal(page.roots.detail.querySelector("#reply-hint"), null);
+    assert.doesNotMatch(page.roots.detail.textContent, /Line breaks are sent as spaces/);
+  },
+
+  async "a queued reply preserves blank lines"() {
+    const page = await startPage({ sessions: [{ ...SESSIONS[0], state: "working" }] });
+    page.run('openSession("s1")'); await settle();
+    const reply = page.document.getElementById("chat-reply");
+    reply.value = "First\n\n  second"; reply.oninput();
+    await page.button(page.roots.detail, "Queue").onclick();
+    assert.deepEqual(page.server.posts, [{ path: "/api/message/s1", body: { text: "First\n\n  second" } }]);
+  },
+
+  async "a multiline draft survives switching sessions"() {
+    const page = await startPage({ sessions: [...SESSIONS, { ...SESSIONS[0], session: "s2" }] });
+    page.run('openSession("s1")'); await settle();
+    const reply = page.document.getElementById("chat-reply");
+    reply.value = "First\n\n  second"; reply.oninput();
+    page.run('openSession("s2")'); await settle();
+    assert.equal(page.document.getElementById("chat-reply").value, "");
+    page.run('openSession("s1")'); await settle();
+    assert.equal(page.document.getElementById("chat-reply").value, "First\n\n  second");
+  },
+
+  async "a new session receives its first message with paragraphs intact"() {
+    const page = await startPage({ sessions: SESSIONS });
+    page.button(page.roots.starter, "+ New session").onclick(); await settle();
+    const [project, agent] = page.roots.starter.querySelectorAll("select");
+    project.value = "/shop"; agent.value = "claude";
+    page.roots.starter.querySelector("textarea").value = "First\r\n\r\n  - second";
+    await page.button(page.roots.starter, "Start").onclick();
+    assert.deepEqual(page.server.posts, [{ path: "/api/sessions", body: { project: "/shop", agent: "claude", prompt: "First\n\n  - second", clone: true } }]);
   },
 
   async "session options stay closed until More is tapped"() {

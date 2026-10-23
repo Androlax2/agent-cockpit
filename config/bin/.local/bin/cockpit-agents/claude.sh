@@ -180,11 +180,12 @@ agent_claude_say() { # id pane message
         echo "cockpit: $(session_field "$id" project) has a dialog open; answer it first (Y or N)" >&2
         return 1
     fi
-    tmux send-keys -t "$pane" -l -- "$message"
+    type_into_pane "$pane" "$message" || return 1
+    if [[ $message == *$'\n'* ]]; then sleep 0.15; fi
     if pane_at_prompt "$pane"; then
-        tmux send-keys -t "$pane" Enter
+        tmux send-keys -t "$pane" Enter || return 1
     else
-        tmux send-keys -t "$pane" C-x Enter
+        tmux send-keys -t "$pane" C-x Enter || return 1
     fi
     audit_event manager say sent "session=$id" "project=$(session_field "$id" project)" "fp:message=$message"
 }

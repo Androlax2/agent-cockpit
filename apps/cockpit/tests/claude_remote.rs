@@ -740,6 +740,95 @@ fn a_phone_answers_an_opencode_chat_question_through_the_real_manager() {
 
 // ---- Work from the phone ----
 
+#[test]
+fn multiline_phone_replies_reach_each_agents_paste_unchanged() {
+    for (agent, session, pane) in [("claude", SESSION_A, "%4"), ("opencode", OPENCODE_SESSION, "%5")] {
+        let remote = Remote::start();
+        let secret = remote.paired();
+        fs::write(remote.sandbox.runtime.join("cockpit.json"), json!({"sessions": [{
+            "session": session, "agent": agent, "state": "waiting", "project": "proj-a", "tmux_pane": pane
+        }]}).to_string()).unwrap();
+        fs::write(remote.sandbox.runtime.join("pane.txt"), IDLE).unwrap();
+        remote.sandbox.shim("tmux", r#"case $1 in
+            capture-pane) cat "$XDG_RUNTIME_DIR/pane.txt" ;;
+            load-buffer) cat > "$XDG_RUNTIME_DIR/message-bytes" ;;
+        esac
+        exit 0"#);
+        let (status, answer) = remote.post_json(&secret, &format!("/api/message/{session}"),
+            json!({"text": "First line\r\n\r\n  - second line"}));
+        assert_eq!(status, 200, "{agent}: {answer}");
+        assert_eq!(fs::read_to_string(remote.sandbox.runtime.join("message-bytes")).unwrap(), "First line\n\n  - second line");
+        assert_eq!(remote.keys_pressed(), [format!("tmux send-keys -t {pane} Enter")]);
+    }
+}
+
+#[test]
+fn multiline_phone_replies_wait_unchanged_for_the_end_of_the_turn() {
+    for (agent, session) in [("claude", SESSION_A), ("opencode", OPENCODE_SESSION)] {
+        let remote = Remote::start();
+        let secret = remote.paired();
+        fs::write(remote.sandbox.runtime.join("cockpit.json"), json!({"sessions": [{
+            "session": session, "agent": agent, "state": "working", "project": "proj-a", "tmux_pane": "%4"
+        }]}).to_string()).unwrap();
+        let (status, answer) = remote.post_json(&secret, &format!("/api/message/{session}"),
+            json!({"text": "First line\r\n\r\n  - second line"}));
+        assert_eq!(status, 200, "{agent}: {answer}");
+        let files: Vec<_> = fs::read_dir(remote.sandbox.state.join("cockpit/prompt-queue").join(session)).unwrap().flatten().collect();
+        assert_eq!(files.len(), 1);
+        assert_eq!(fs::read_to_string(files[0].path()).unwrap(), "First line\n\n  - second line");
+        assert!(remote.keys_pressed().is_empty());
+    }
+}
+
+#[test]
+fn multiline_first_messages_remain_one_argument_for_both_agents_and_launch_modes() {
+    for agent in ["claude", "opencode"] {
+        for in_clone in [false, true] {
+            let remote = Remote::start();
+            let secret = remote.paired();
+            remote.sandbox.shim("cockpit", r#"printf '%s\0' "$@" > "$XDG_RUNTIME_DIR/launch-arguments""#);
+            let directory = remote.project("shop");
+            let (status, answer) = remote.post_json(&secret, "/api/sessions", json!({
+                "project": directory, "agent": agent, "prompt": "First line\r\n\r\n  - second line", "clone": in_clone
+            }));
+            assert_eq!(status, 200, "{agent}/{in_clone}: {answer}");
+            let bytes = fs::read(remote.sandbox.runtime.join("launch-arguments")).unwrap();
+            let arguments: Vec<_> = bytes.split(|byte| *byte == 0).filter(|part| !part.is_empty()).collect();
+            assert_eq!(arguments.last().copied(), Some(b"First line\n\n  - second line".as_slice()));
+            assert_eq!(arguments[2], if in_clone { b"parallel".as_slice() } else { b"background".as_slice() });
+        }
+    }
+}
+
+#[test]
+fn phone_messages_and_first_prompts_still_reject_other_controls_and_invalid_lengths() {
+    let remote = Remote::start();
+    let secret = remote.paired();
+    remote.session_in("working", IDLE);
+    remote.sandbox.shim("cockpit", "exit 0");
+    let directory = remote.project("shop");
+    for text in ["".to_string(), " \n ".into(), "a\n\u{1b}[201~b".into(), "a\n\u{3}b".into(), "a\tb".into(), "a\rb".into(), "é".repeat(4001)] {
+        let (status, answer) = remote.post_json(&secret, &format!("/api/message/{SESSION_A}"), json!({"text": text}));
+        assert_eq!(status, 409, "{answer}");
+        let (status, answer) = remote.post_json(&secret, "/api/sessions", json!({"project": directory, "agent": "claude", "prompt": text}));
+        assert_eq!(status, 409, "{answer}");
+    }
+    assert!(!remote.sandbox.state.join("cockpit/prompt-queue").exists());
+    assert!(remote.sandbox.calls("cockpit").is_empty());
+    let valid = format!("{}\né", "é".repeat(3998));
+    assert_eq!(remote.post_json(&secret, &format!("/api/message/{SESSION_A}"), json!({"text": valid})).0, 200);
+}
+
+#[test]
+fn allowing_paragraphs_in_messages_does_not_allow_multiline_todo_titles() {
+    let remote = Remote::start();
+    let secret = remote.paired();
+    let directory = remote.project("shop");
+    let (status, answer) = remote.post_json(&secret, "/api/todos", json!({"project": directory, "text": "First\nsecond", "kind": "bug"}));
+    assert_eq!(status, 409, "{answer}");
+    assert!(remote.todo_updates().is_empty());
+}
+
 impl Remote {
     /// A project folder under ~/IdeaProjects, which the column's picker lists.
     fn project(&self, name: &str) -> String {

@@ -213,7 +213,7 @@ agent_opencode_say() { # id pane message
         echo "cockpit: $(session_field "$id" project) is not at its prompt (${state:-no state yet})" >&2
         return 1
     fi
-    submit_to_pane "$pane" "$message"
+    submit_to_pane "$pane" "$message" || return 1
     audit_event manager say sent "session=$id" "project=$(session_field "$id" project)" "fp:message=$message"
 }
 
