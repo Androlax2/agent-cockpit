@@ -484,11 +484,12 @@ pub fn snapshot(connection: &Connection, task: Option<&TaskKey>, after: Option<i
         ORDER BY seq")?;
     let messages = messages.query_map(params![task_key, after, limit.min(100) as i64], |row| Ok(json!({"seq":row.get::<_,i64>(0)?,"message_id":row.get::<_,String>(1)?,
         "envelope":row.get::<_,String>(2)?,"state":row.get::<_,String>(3)?,"attempts":row.get::<_,i64>(4)?,"next_at":row.get::<_,i64>(5)?,"error":row.get::<_,String>(6)?})))?.collect::<Result<Vec<_>,_>>()?;
-    let mut escalations = connection.prepare("SELECT thread_id,reason,status,note,created_at FROM escalations WHERE (?1 IS NULL OR task_key=?1)
-        AND (status='open' OR thread_id IN (SELECT thread_id FROM escalations WHERE (?1 IS NULL OR task_key=?1) ORDER BY created_at DESC LIMIT ?2))
-        ORDER BY created_at")?;
+    let mut escalations = connection.prepare("SELECT e.thread_id,e.reason,e.status,e.note,e.created_at,t.project,t.task_id FROM escalations e JOIN teams t ON t.task_key=e.task_key WHERE (?1 IS NULL OR e.task_key=?1)
+        AND (e.status='open' OR e.thread_id IN (SELECT thread_id FROM escalations WHERE (?1 IS NULL OR task_key=?1) ORDER BY created_at DESC LIMIT ?2))
+        ORDER BY e.created_at")?;
     let escalations = escalations.query_map(params![task_key, limit.min(100) as i64], |row| Ok(json!({"thread_id":row.get::<_,String>(0)?,
-        "reason":row.get::<_,String>(1)?,"status":row.get::<_,String>(2)?,"note":row.get::<_,String>(3)?,"created_at":row.get::<_,i64>(4)?})))?
+        "reason":row.get::<_,String>(1)?,"status":row.get::<_,String>(2)?,"note":row.get::<_,String>(3)?,"created_at":row.get::<_,i64>(4)?,
+        "project":row.get::<_,String>(5)?,"task_id":row.get::<_,String>(6)?})))?
         .collect::<Result<Vec<_>,_>>()?;
     let mut spawns = connection.prepare("SELECT token,task_key,role,agent,directory,commit_id,status,session_id,created_at FROM spawns
         WHERE (?1 IS NULL OR task_key=?1) AND status NOT IN ('cancelled','dismissed')
@@ -497,7 +498,21 @@ pub fn snapshot(connection: &Connection, task: Option<&TaskKey>, after: Option<i
     let spawns = spawns.query_map(params![task_key, limit.min(100) as i64], |row| Ok(json!({"token":row.get::<_,String>(0)?,"task_key":row.get::<_,String>(1)?,
         "role":row.get::<_,String>(2)?,"agent":row.get::<_,String>(3)?,"directory":row.get::<_,String>(4)?,"commit_id":row.get::<_,Option<String>>(5)?,
         "status":row.get::<_,String>(6)?,"session_id":row.get::<_,Option<String>>(7)?,"created_at":row.get::<_,i64>(8)?})))?.collect::<Result<Vec<_>,_>>()?;
-    Ok(json!({"members":members,"proposals":proposals,"messages":messages,"escalations":escalations,"spawns":spawns}))
+    let mut handoffs = connection.prepare("SELECT h.id,t.project,t.task_id,h.developer,h.status,h.created_at,h.payload FROM handoffs h JOIN teams t ON t.task_key=h.task_key
+        WHERE (?1 IS NULL OR h.task_key=?1) AND (h.status='current' OR h.id IN
+        (SELECT id FROM handoffs WHERE (?1 IS NULL OR task_key=?1) ORDER BY created_at DESC,id DESC LIMIT ?2)) ORDER BY h.created_at,h.id")?;
+    let handoffs = handoffs.query_map(params![task_key, limit.min(100) as i64], |row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,
+        row.get::<_,String>(2)?,row.get::<_,String>(3)?,row.get::<_,String>(4)?,row.get::<_,i64>(5)?,row.get::<_,String>(6)?)))?
+        .map(|row| {
+            let (id, project, task_id, developer, status, created_at, payload) = row?;
+            Ok(json!({"handoff_id":id,"project":project,"task_id":task_id,"developer":developer,"status":status,
+                "created_at":created_at,"payload":serde_json::from_str::<Value>(&payload)?}))
+        }).collect::<Result<Vec<_>,TeamError>>()?;
+    let mut qa_plans = connection.prepare("SELECT t.project,t.task_id,q.agent FROM team_qa q JOIN teams t ON t.task_key=q.task_key
+        WHERE (?1 IS NULL OR q.task_key=?1) ORDER BY q.task_key")?;
+    let qa_plans = qa_plans.query_map(params![task_key], |row| Ok(json!({"project":row.get::<_,String>(0)?,
+        "task_id":row.get::<_,String>(1)?,"agent":row.get::<_,String>(2)?})))?.collect::<Result<Vec<_>,_>>()?;
+    Ok(json!({"members":members,"proposals":proposals,"messages":messages,"escalations":escalations,"spawns":spawns,"handoffs":handoffs,"qa_plans":qa_plans}))
 }
 
 fn cancel_member_messages(connection: &Connection, task_key: &str, session: &str) -> Result<(), TeamError> {

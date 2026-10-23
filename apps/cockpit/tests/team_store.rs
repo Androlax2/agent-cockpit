@@ -857,6 +857,64 @@ fn qa_requests(connection: &rusqlite::Connection) -> Vec<Value> {
 }
 
 #[test]
+fn snapshot_exposes_current_handoffs_and_qa_plans() {
+    let sandbox = Sandbox::new();
+    let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+    recruited(&mut connection, true);
+    let first = hand_off_in(&mut connection, "h1", COMMIT_A);
+    hand_off_in(&mut connection, "h2", COMMIT_B);
+    let state = store::snapshot(&connection, None, None, 100).unwrap();
+    assert_eq!(state["qa_plans"], serde_json::json!([{"project":"project-a", "task_id":"1d3fd318", "agent":"claude"}]));
+    let handoffs = state["handoffs"].as_array().expect("handoff evidence missing");
+    assert_eq!(handoffs.len(), 2);
+    let old = handoffs.iter().find(|handoff| handoff["handoff_id"] == first["handoff_id"]).unwrap();
+    assert_eq!(old["status"], "superseded");
+    let current = handoffs.iter().find(|handoff| handoff["status"] == "current").unwrap();
+    assert_eq!(current["project"], "project-a");
+    assert_eq!(current["task_id"], "1d3fd318");
+    assert_eq!(current["developer"], DEVELOPER);
+    assert_eq!(current["payload"]["commit"], COMMIT_B);
+    assert_eq!(current["created_at"], 3000);
+}
+
+#[test]
+fn snapshot_scopes_handoff_evidence_by_project_and_task() {
+    let sandbox = Sandbox::new();
+    let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+    linked(&mut connection);
+    hand_off(&mut connection, "h1", COMMIT_A).unwrap();
+    let thread = ask(&mut connection, "q1", None).unwrap()["thread_id"].as_str().unwrap().to_string();
+    for round in 1..=3 {
+        if round > 1 { ask(&mut connection, &format!("q{round}"), Some(&thread)).unwrap(); }
+        answer(&mut connection, &format!("a{round}"), &thread).unwrap();
+        assess(&mut connection, &thread, false).unwrap();
+    }
+    let state = store::snapshot(&connection, Some(&task()), None, 100).unwrap();
+    assert_eq!(state["qa_plans"], serde_json::json!([]));
+    assert_eq!(state["handoffs"][0]["payload"]["commit"], COMMIT_A);
+    assert_eq!(state["escalations"][0]["project"], "project-a");
+    assert_eq!(state["escalations"][0]["task_id"], "1d3fd318");
+    for other in [TaskKey { project: "project-b".into(), ..task() }, TaskKey { task_id: "0123abcd".into(), ..task() }] {
+        let state = store::snapshot(&connection, Some(&other), None, 100).unwrap();
+        for field in ["handoffs", "qa_plans", "escalations"] { assert_eq!(state[field], serde_json::json!([]), "{field}"); }
+    }
+}
+
+#[test]
+fn snapshot_preserves_current_handoffs_beyond_history_limit() {
+    let sandbox = Sandbox::new();
+    let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+    recruited(&mut connection, true);
+    hand_off_in(&mut connection, "h1", COMMIT_A);
+    hand_off_in(&mut connection, "h2", COMMIT_B);
+    let state = store::snapshot(&connection, None, Some(i64::MAX), 0).unwrap();
+    assert_eq!(state["handoffs"].as_array().expect("current handoff must outlive history").len(), 1);
+    assert_eq!(state["handoffs"][0]["status"], "current");
+    assert_eq!(state["handoffs"][0]["payload"]["commit"], COMMIT_B);
+    assert_eq!(state["qa_plans"].as_array().unwrap().len(), 1);
+}
+
+#[test]
 fn only_the_linked_developer_completes_a_handoff() {
     let sandbox = Sandbox::new();
     let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
