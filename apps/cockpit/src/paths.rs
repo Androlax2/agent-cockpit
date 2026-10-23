@@ -93,6 +93,7 @@ pub fn opencode_database() -> PathBuf {
     from_env("COCKPIT_OPENCODE_DB", data_home.join("opencode/opencode.db"))
 }
 pub fn statusline_dir() -> PathBuf { home().join(".cache/claude") }
+pub fn billing_dir() -> PathBuf { statusline_dir().join("billing") }
 pub fn usage_script() -> PathBuf { home().join(".config/waybar/scripts/claude-usage.sh") }
 pub fn credentials() -> PathBuf { home().join(".claude/.credentials.json") }
 pub fn view_state() -> PathBuf { state_dir().join("view.json") }

@@ -3533,15 +3533,15 @@ fn status_spending_keeps_all_time_cost_out_of_the_plan_subtitle() {
     let rows = texts(&app, 0);
     let spending = rows.iter().position(|row| row.contains("SPENDING")).unwrap();
     let health = rows.iter().position(|row| row == "SERVICE HEALTH").unwrap();
-    let all_time = rows.iter().position(|row| row.contains("All-time cost") && row.contains("$20")).unwrap();
+    let all_time = rows.iter().position(|row| row.contains("All-time API value") && row.contains("≈ $20")).unwrap();
     assert!(spending < all_time && all_time < health, "{rows:?}");
-    assert!(rows[spending].contains("API-equivalent, not your bill"));
+    assert!(rows[spending].contains("token-based estimates, not your bill"));
     assert!(rows.iter().any(|row| row.contains("TODAY") && row.contains("WEEK") && row.contains("MONTH")));
     assert!(rows.iter().any(|row| row.contains("Active time") && row.contains("2m")), "{rows:?}");
     app.focus_panel(0);
     let buffer = render(&mut app, 80, 60);
     let rendered: String = (0..60).flat_map(|y| (0..80).map(move |x| (x, y))).map(|cell| buffer[cell].symbol()).collect();
-    assert!(rendered.contains("All-time cost") && rendered.contains("$20"));
+    assert!(rendered.contains("All-time API value") && rendered.contains("$20"));
 }
 
 #[test]
@@ -3557,11 +3557,108 @@ fn status_keeps_cost_errors_visible_without_fabricating_spending() {
     app.build();
     let rows = texts(&app, 0).join(" ");
     assert!(rows.contains("SPENDING") && rows.contains("usage archive:"), "{rows}");
-    assert!(!rows.contains("All-time cost") && !rows.contains("Active time"));
+    assert!(!rows.contains("All-time API value") && !rows.contains("Active time") && !rows.contains("$0.00"));
     app.focus_panel(0);
     let buffer = render(&mut app, 80, 60);
     let rendered: String = (0..60).flat_map(|y| (0..80).map(move |x| (x, y))).map(|cell| buffer[cell].symbol()).collect();
     assert!(rendered.contains("usage archive:"));
+}
+
+fn app_with_billing(fixture: &Fixture, replies: &[(&str, Option<&str>, Option<f64>)]) -> App {
+    let archive = costs::open_archive(&fixture.path("state/cockpit/usage.sqlite")).unwrap();
+    let stamp = chrono::Local::now();
+    for (key, billing, cost) in replies {
+        archive.execute("insert into replies values (?, ?, ?, ?, 'shop', 'session', 0, 1000, 0, 0, 0, 'standard', ?)",
+            rusqlite::params![key, stamp.date_naive().to_string(), stamp.to_rfc3339(), if cost.is_some() { "claude-opus-5-5" } else { "unpriced-model" }, cost]).unwrap();
+        if let Some(billing) = billing { archive.execute("insert into reply_billing values (?, ?)", rusqlite::params![key, billing]).unwrap(); }
+    }
+    drop(archive);
+    let mut app = fixture.app();
+    app.costs.tick();
+    for _ in 0..200 {
+        if !app.costs.is_loading() { break; }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(!app.costs.is_loading(), "usage scan did not finish");
+    app.build();
+    app
+}
+
+#[test]
+fn the_header_shows_only_verified_api_credit_value() {
+    let fixture = Fixture::new();
+    let mut app = app_with_billing(&fixture, &[("api", Some("api"), Some(12.0)),
+        ("plan", Some("subscription"), Some(54.0)), ("legacy", None, Some(8.0))]);
+    let buffer = render(&mut app, 140, 70);
+    let header: String = (0..140).map(|column| buffer[(column, 0)].symbol()).collect();
+    assert!(header.contains("API ≈ $12.00 today"), "{header}");
+    assert!(!header.contains("$74.00") && !header.contains("$54.00") && !header.contains("$8.00"), "{header}");
+    let narrow = render(&mut app, 24, 70);
+    let header: String = (0..24).map(|column| narrow[(column, 0)].symbol()).collect();
+    assert!(!header.contains('$'), "partial monetary fragment: {header}");
+}
+
+#[test]
+fn historical_billing_stays_visible_without_an_api_header_claim() {
+    let fixture = Fixture::new();
+    let mut app = app_with_billing(&fixture, &[("legacy", None, Some(74.0))]);
+    let buffer = render(&mut app, 140, 70);
+    let header: String = (0..140).map(|column| buffer[(column, 0)].symbol()).collect();
+    assert!(!header.contains('$'), "{header}");
+    let rows = texts(&app, 0);
+    assert!(rows.iter().any(|row| row.contains("Unknown billing (API value)") && row.contains("$74.00")), "{rows:?}");
+    assert!(rows.iter().any(|row| row.contains("API credits (est.)") && row.contains("$0.00")), "{rows:?}");
+}
+
+#[test]
+fn billing_rows_keep_their_meaning_at_wide_and_narrow_widths() {
+    let fixture = Fixture::new();
+    let mut app = app_with_billing(&fixture, &[("api", Some("api"), Some(12_345_678.0)),
+        ("plan", Some("subscription"), Some(54.0)), ("legacy", None, Some(8.0))]);
+    app.focus_panel(0);
+    for width in [24, 40, 80, 140] {
+        let _ = render(&mut app, width, 120);
+        let rows = texts(&app, 0).join(" ");
+        assert!(rows.contains("API credits (est.)"), "{width}: {rows}");
+        assert!(rows.contains("Subscription (API value)"), "{width}: {rows}");
+        assert!(rows.contains("Unknown billing (API value)"), "{width}: {rows}");
+        assert!(rows.contains("not a subscription charge.") && rows.contains("includes historical records."), "{width}: {rows}");
+        for line in &app.panels[0].lines {
+            for pair in line.segments.windows(2) {
+                assert!(pair[0].0 as usize + pair[0].1.chars().count() <= pair[1].0 as usize,
+                    "overlapping spending columns at width {width}: {}", line.texts());
+            }
+        }
+        if width == 40 { assert!(texts(&app, 0).iter().any(|row| row.contains("TODAY") && row.contains("$12345.7k")), "{rows}"); }
+    }
+}
+
+#[test]
+fn no_recorded_usage_is_not_presented_as_a_zero_bill() {
+    let fixture = Fixture::new();
+    let app = app_with_billing(&fixture, &[]);
+    let rows = texts(&app, 0).join(" ");
+    assert!(rows.contains("No recorded usage"), "{rows}");
+    assert!(!rows.contains("$0.00"), "{rows}");
+}
+
+#[test]
+fn an_unpriced_reply_makes_the_estimate_visibly_incomplete() {
+    let fixture = Fixture::new();
+    let app = app_with_billing(&fixture, &[("unpriced", Some("api"), None)]);
+    let rows = texts(&app, 0).join(" ");
+    assert!(rows.contains("Incomplete estimate") && rows.contains("1 unpriced"), "{rows}");
+    assert!(!rows.contains("$0.00"), "unpriced usage is not free: {rows}");
+    assert!(rows.contains("API credits (est.)") && rows.contains("Unknown billing (API value)"), "{rows}");
+}
+
+#[test]
+fn usage_loading_does_not_imply_a_verified_zero() {
+    let fixture = Fixture::new();
+    let app = fixture.app();
+    let rows = texts(&app, 0).join(" ");
+    assert!(rows.contains("Loading usage"), "{rows}");
+    assert!(!rows.contains("$0.00"), "{rows}");
 }
 
 #[test]

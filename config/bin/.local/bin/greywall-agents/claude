@@ -36,6 +36,10 @@ figcraft_mcp_config='{"mcpServers":{"figcraft-app":{"command":"sh","args":["-c",
 team_watch='[{"hooks":[{"type":"command","command":"cockpit-team watch","asyncRewake":true,"timeout":86400}]}]'
 team_settings="{\"hooks\":{\"SessionStart\":$team_watch,\"Stop\":$team_watch}}"
 
+COCKPIT_BILLING=subscription
+[ "${COCKPIT_CREDITS:-}" != 1 ] || COCKPIT_BILLING=api
+COCKPIT_BILLING_STARTED_AT=$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)
+export COCKPIT_BILLING COCKPIT_BILLING_STARTED_AT
 # greywall_options is split on spaces on purpose: every path in it is under $HOME or
 # $XDG_RUNTIME_DIR, which have none.
 # shellcheck disable=SC2086

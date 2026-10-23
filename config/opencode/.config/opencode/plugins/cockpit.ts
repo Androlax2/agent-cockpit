@@ -9,6 +9,8 @@
 // (--session) and exports it as CLAUDE_CODE_SESSION_ID: the card shows from the start, before
 // opencode makes the session at the first prompt, unless the launcher pre-creates it with defaults.
 import { spawn } from "node:child_process"
+import { createHash, randomUUID } from "node:crypto"
+import { closeSync, constants, fstatSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 
 // Where ~/.claude/hooks points: inside an opencode sandbox ~/.claude stays hidden, and greywall makes
@@ -16,6 +18,7 @@ import { homedir } from "node:os"
 const HOOK = `${homedir()}/agent-cockpit/config/claude/.claude/hooks/session-state.sh`
 
 type HookPayload = { hook_event_name: string } & Record<string, unknown>
+type BillingMode = "api" | "subscription" | "unknown"
 
 export default {
   id: "cockpit",
@@ -25,6 +28,44 @@ export default {
     // A subagent runs in a session of its own, with a parent: what it asks shows on its root's card.
     const parentOf = new Map<string, string>()
     const started = new Set<string>()
+    const pendingBilling = new Map<string, { providerID: string; modelID: string; billing: BillingMode }>()
+    const recordBilling = (messageID: string, billing: BillingMode) => {
+      try {
+        const key = `opencode:${messageID}`
+        if (!/^[A-Za-z0-9:_-]{1,512}$/.test(key)) throw new Error("invalid billing reply key")
+        const directory = `${homedir()}/.cache/claude/billing`
+        mkdirSync(directory, { recursive: true })
+        if (lstatSync(directory).isSymbolicLink()) throw new Error("billing directory must not be a symlink")
+        const payload = JSON.stringify({ key, billing })
+        const destination = `${directory}/${createHash("sha1").update(payload).digest("hex")}.json`
+        const temporary = `${directory}/.${randomUUID()}.tmp`
+        const descriptor = openSync(temporary, "wx", 0o600)
+        try {
+          writeFileSync(descriptor, payload)
+        } finally {
+          closeSync(descriptor)
+        }
+        // Persist during this event: a short-lived native run can kill an asynchronous helper at shutdown.
+        try {
+          try {
+            linkSync(temporary, destination)
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error
+            const existing = openSync(destination, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
+            try {
+              const metadata = fstatSync(existing)
+              if (!metadata.isFile() || metadata.size > 4096 || readFileSync(existing, "utf8") !== payload) throw new Error("billing record conflicts with its filename")
+            } finally {
+              closeSync(existing)
+            }
+          }
+        } finally {
+          unlinkSync(temporary)
+        }
+      } catch (error) {
+        console.error("cockpit plugin: billing capture failed; usage remains unknown", error)
+      }
+    }
     const rootOf = (sessionID: string): string => {
       let root = sessionID
       while (parentOf.has(root)) root = parentOf.get(root)!
@@ -68,6 +109,15 @@ export default {
     const handle = (event: { type: string; data: any }) => {
       const { type, data } = event
       switch (type) {
+        case "session.step.started": {
+          const pending = pendingBilling.get(data.sessionID)
+          pendingBilling.delete(data.sessionID)
+          if (pending && typeof data.assistantMessageID === "string") {
+            const matches = data.model?.providerID === pending.providerID && data.model?.id === pending.modelID
+            recordBilling(data.assistantMessageID, matches ? pending.billing : "unknown")
+          }
+          break
+        }
         case "session.created":
           if (data.parentID) parentOf.set(data.sessionID, data.parentID)
           else report(data.sessionID, { hook_event_name: "SessionStart" })
@@ -80,9 +130,11 @@ export default {
         case "session.execution.succeeded":
         case "session.execution.failed":
         case "session.execution.interrupted":
+          pendingBilling.delete(data.sessionID)
           if (isTopLevel(data.sessionID)) report(data.sessionID, { hook_event_name: "Stop" })
           break
         case "session.deleted":
+          pendingBilling.delete(data.sessionID)
           if (isTopLevel(data.sessionID) && started.delete(data.sessionID)) send(data.sessionID, { hook_event_name: "SessionEnd" })
           break
         case "permission.asked":
@@ -100,6 +152,30 @@ export default {
 
     await ctx.tool.hook("execute.after", (input: { tool: string; sessionID: string }) => {
       report(input.sessionID, { hook_event_name: "PostToolUse", tool_name: input.tool })
+    })
+
+    const billingHook = await ctx.session.hook("http.request", (event: any) => {
+      if (event.kind !== "primary") return
+      const provider = event.model.providerID
+      let billing: BillingMode = "unknown"
+      try {
+        const url = new URL(event.request.url)
+        const hostname = url.hostname
+        const headers: Headers = event.request.headers
+        // Current saved credentials can change while this request is in flight; only its assembled route/auth counts.
+        if (url.protocol === "https:") {
+          if (provider === "anthropic" && hostname === "api.anthropic.com" && headers.has("x-api-key") && !headers.has("authorization")) billing = "api"
+          else if (provider === "openai" && headers.has("authorization")) {
+            if (hostname === "api.openai.com") billing = "api"
+            else if (hostname === "chatgpt.com") billing = "subscription"
+          }
+        }
+      } catch (error) {
+        console.error("cockpit plugin: billing capture failed; usage remains unknown", error)
+      }
+      const previous = pendingBilling.get(event.sessionID)
+      if (previous && (previous.providerID !== provider || previous.modelID !== event.model.id || previous.billing !== billing)) billing = "unknown"
+      pendingBilling.set(event.sessionID, { providerID: provider, modelID: event.model.id, billing })
     })
 
     // Linked sessions: pull this session's next approved team message and admit it natively,
@@ -174,9 +250,10 @@ export default {
     })().catch((error: unknown) => {
       if (!subscription.signal.aborted) console.error("cockpit plugin: event stream ended", error)
     })
-    return () => {
+    return async () => {
       subscription.abort()
       if (teamTimer) clearInterval(teamTimer)
+      await billingHook.dispose()
     }
   },
 }

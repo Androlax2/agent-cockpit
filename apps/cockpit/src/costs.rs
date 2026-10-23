@@ -58,6 +58,10 @@ create table if not exists replies (
 create index if not exists replies_day on replies (day);
 create table if not exists files (path text primary key, mtime real not null, size integer not null);
 create table if not exists databases (path text primary key, read_until integer not null);
+create table if not exists reply_billing (
+    key text primary key, billing text not null check (billing in ('api', 'subscription', 'unknown'))
+);
+create table if not exists billing_files (path text primary key, mtime real not null, size integer not null);
 ";
 /// archive_opencode reads again the messages updated this long (ms) before the newest it read: a
 /// sandbox can commit a message stamped earlier than one another sandbox committed first.
@@ -385,10 +389,49 @@ pub fn archived_costs(archive: &Connection) -> rusqlite::Result<(HashMap<String,
     Ok((days, unpriced, all_time))
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Billing {
+    Api,
+    Subscription,
+    Unknown,
+}
+
+#[derive(Clone, Copy, Default)]
+pub struct BillingTotals {
+    pub api: Totals,
+    pub subscription: Totals,
+    pub unknown: Totals,
+    pub recorded_replies: i64,
+    pub unpriced_replies: i64,
+}
+
+/// Only exact reply evidence separates costs; historical or conflicting evidence stays unknown.
+pub fn archived_billing_totals(archive: &Connection) -> rusqlite::Result<BillingTotals> {
+    let (recorded_replies, unpriced_replies) = archive.query_row(
+        "select count(*), count(*) - count(cost) from replies", [], |row| Ok((row.get(0)?, row.get(1)?)))?;
+    let mut days: HashMap<String, HashMap<String, f64>> = HashMap::new();
+    let mut statement = archive.prepare(
+        "select coalesce(b.billing, 'unknown'), r.day, sum(r.cost) from replies r
+         left join reply_billing b on b.key = r.key where r.cost is not null group by 1, 2")?;
+    for row in statement.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, f64>(2)?)))? {
+        let (billing, day, cost) = row?;
+        days.entry(billing).or_default().insert(day, cost);
+    }
+    Ok(BillingTotals {
+        api: totals_of(&days.remove("api").unwrap_or_default()),
+        subscription: totals_of(&days.remove("subscription").unwrap_or_default()),
+        unknown: totals_of(&days.remove("unknown").unwrap_or_default()),
+        recorded_replies,
+        unpriced_replies,
+    })
+}
+
 #[derive(Default)]
 struct State {
     days: HashMap<String, f64>,
     all_time: f64,
+    billing: BillingTotals,
     /// Seconds spent with Claude per project (active_seconds): today, and all the archive holds.
     active_today: HashMap<String, f64>,
     active_all_time: HashMap<String, f64>,
@@ -419,7 +462,7 @@ pub fn totals_of(days: &HashMap<String, f64>) -> Totals {
     let today = Local::now().date_naive();
     let since = |first: NaiveDate| -> f64 {
         let first = first.to_string();
-        days.iter().filter(|(day, _)| **day >= first).map(|(_, cost)| cost).sum()
+        days.iter().filter(|(day, _)| **day >= first).fold(0.0, |total, (_, cost)| total + cost)
     };
     Totals {
         today: since(today),
@@ -428,6 +471,7 @@ pub fn totals_of(days: &HashMap<String, f64>) -> Totals {
     }
 }
 
+#[derive(Clone, Copy, Default)]
 pub struct Totals {
     pub today: f64,
     pub week: f64,
@@ -449,13 +493,17 @@ impl Costs {
             let today = Local::now().date_naive().to_string();
             let starts = period_starts();
             let mut opencode_error = String::new();
+            let mut billing_error = String::new();
             let result = open_archive(&path).and_then(|mut archive| {
                 archive_transcripts(&mut archive, &paths::transcripts())?;
                 if let Err(error) = archive_opencode(&mut archive, &paths::opencode_database()) {
                     opencode_error = error.to_string();
                 }
                 backfill_costs(&mut archive)?;
-                Ok((archived_costs(&archive)?, active_seconds(&archive, &today)?, active_seconds(&archive, "0000-00-00")?,
+                if let Err(error) = crate::billing::import(&mut archive) {
+                    billing_error = format!("billing metadata: {error}");
+                }
+                Ok((archived_costs(&archive)?, archived_billing_totals(&archive)?, active_seconds(&archive, &today)?, active_seconds(&archive, "0000-00-00")?,
                     time_with_claude(&archive, &starts)?))
             });
             let mut state = shared.lock().unwrap();
@@ -464,13 +512,14 @@ impl Costs {
             }
             state.opencode_error = opencode_error;
             match result {
-                Ok(((days, _, all_time), active_today, active_all_time, together)) => {
+                Ok(((days, _, all_time), billing, active_today, active_all_time, together)) => {
                     state.time_together = [together[0], together[1], together[2]];
                     state.days = days;
                     state.all_time = all_time;
+                    state.billing = billing;
                     state.active_today = active_today;
                     state.active_all_time = active_all_time;
-                    state.error.clear();
+                    state.error = billing_error;
                 }
                 Err(error) => {
                     let message = format!("usage archive: {error}");
@@ -488,6 +537,14 @@ impl Costs {
 
     pub fn totals(&self) -> Totals {
         totals_of(&self.state.lock().unwrap().days)
+    }
+
+    pub fn billing_totals(&self) -> BillingTotals {
+        self.state.lock().unwrap().billing
+    }
+
+    pub fn is_loading(&self) -> bool {
+        self.state.lock().unwrap().scanned_at == 0.0
     }
 
     pub fn all_time(&self) -> f64 {
@@ -524,6 +581,7 @@ pub fn print_costs() -> rusqlite::Result<()> {
     archive_transcripts(&mut archive, &paths::transcripts())?;
     let opencode = archive_opencode(&mut archive, &paths::opencode_database()).err();
     backfill_costs(&mut archive)?;
+    if let Err(error) = crate::billing::import(&mut archive) { eprintln!("billing metadata: {error}"); }
     let (days, unpriced, all_time) = archived_costs(&archive)?;
     let first = Local::now().date_naive().with_day(1).unwrap().to_string();
     let mut out = String::new();
@@ -655,6 +713,7 @@ pub fn print_digest() -> rusqlite::Result<()> {
         util::log_event("ERROR", &format!("digest: opencode's replies left out: {error}"));
     }
     backfill_costs(&mut archive)?;
+    if let Err(error) = crate::billing::import(&mut archive) { eprintln!("billing metadata: {error}"); }
     let repositories: Vec<String> = reviews::session_checkouts("").into_keys().collect();
     let (rows, _) = reviews::fetch_reviews(&repositories);
     let lines = digest_lines(&archive, &sessions::reported(), &rows, Local::now().date_naive())?;

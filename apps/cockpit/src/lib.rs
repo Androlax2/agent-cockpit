@@ -7,6 +7,7 @@ pub mod audit;
 pub mod codex;
 pub mod costs;
 pub mod continuity;
+pub mod billing;
 pub mod errors;
 pub mod paths;
 pub mod prompts;

@@ -27,6 +27,7 @@ const ctx = {
   event: { subscribe: () => stream() },
   tool: { hook: async () => ({ dispose: async () => {} }) },
   session: {
+    hook: async () => ({ dispose: async () => {} }),
     get: async () => ({ id: 'x' }),
     create: async (input) => input,
     synthetic: async (input) => {

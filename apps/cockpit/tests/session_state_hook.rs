@@ -506,6 +506,51 @@ fn a_session_started_from_a_shell_reports_even_under_the_daemon() {
 }
 
 #[test]
+fn a_claude_stop_captures_billing_from_the_launch_even_when_the_environment_is_scrubbed() {
+    for scrubbed in [false, true] {
+        let test = HookTest::new();
+        let transcript = test.sandbox.root.join("transcript.jsonl");
+        fs::write(&transcript, r#"{"timestamp":"2026-10-23T10:02:00Z","requestId":"request","message":{"id":"reply","model":"claude-opus-5-5","usage":{"output_tokens":100}}}"#).unwrap();
+        let payload = with_session(json!({"hook_event_name":"Stop", "transcript_path":transcript}), "/x/proj");
+        let extra = [("COCKPIT_BILLING", "api"), ("COCKPIT_BILLING_STARTED_AT", "2026-10-23T10:01:00Z")];
+        let output = if scrubbed {
+            let fake = fake_claude(&test.sandbox.root);
+            let script = format!("env -u COCKPIT_BILLING -u COCKPIT_BILLING_STARTED_AT {} -c 'bash {}'; :", fake.display(), hook().display());
+            let mut child = test.sandbox.command(&fake, &extra).env_remove("CLAUDECODE").env_remove("OPENCODE")
+                .args(["-c", &script]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+            child.stdin.take().unwrap().write_all(payload.to_string().as_bytes()).unwrap();
+            child.wait_with_output().unwrap()
+        } else {
+            test.run_hook(payload, &extra)
+        };
+        assert!(output.status.success(), "{}", stderr(&output));
+        let files = fs::read_dir(test.sandbox.home.join(".cache/claude/billing")).unwrap().collect::<Result<Vec<_>, _>>().unwrap();
+        assert_eq!(files.len(), 1);
+        let record: Value = serde_json::from_slice(&fs::read(files[0].path()).unwrap()).unwrap();
+        assert_eq!(record, json!({"key":"reply:request", "billing":"api"}));
+    }
+}
+
+#[test]
+fn a_stop_without_launch_evidence_does_not_guess_billing() {
+    let test = HookTest::new();
+    let output = test.run_hook(with_session(json!({"hook_event_name":"Stop", "transcript_path":"/unused"}), "/x/proj"),
+        &[("COCKPIT_BILLING", ""), ("COCKPIT_BILLING_STARTED_AT", "")]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(!test.sandbox.home.join(".cache/claude/billing").exists());
+}
+
+#[test]
+fn failed_billing_capture_is_logged_without_losing_the_stop_report() {
+    let mut test = HookTest::new();
+    let output = test.run_hook(with_session(json!({"hook_event_name":"Stop", "transcript_path":"/missing"}), "/x/proj"),
+        &[("COCKPIT_BILLING", "api"), ("COCKPIT_BILLING_STARTED_AT", "2026-10-23T10:01:00Z")]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(fs::read_to_string(test.sandbox.home.join(".cache/claude/hook.log")).unwrap().contains("billing capture failed"));
+    assert_eq!(test.received().len(), 1);
+}
+
+#[test]
 fn each_event_leaves_a_line_in_the_hook_log() {
     let mut test = HookTest::new();
     test.run_hook(

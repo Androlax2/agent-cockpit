@@ -531,6 +531,20 @@ fn a_credits_session_gets_the_api_key_as_a_placeholder() {
 }
 
 #[test]
+fn each_claude_launch_overwrites_inherited_billing_facts() {
+    for (credits, mode) in [("0", "subscription"), ("1", "api")] {
+        let launch = Launch::new();
+        launch.run(&[("COCKPIT_CREDITS", credits), ("SHIM_ANTHROPIC_KEY", "sk-ant-test"),
+            ("COCKPIT_BILLING", "wrong"), ("COCKPIT_BILLING_STARTED_AT", "2000-01-01T00:00:00Z")]);
+        let environment = fs::read_to_string(launch.sandbox.home.join("claude-environment")).unwrap();
+        assert!(environment.lines().any(|line| line == format!("COCKPIT_BILLING={mode}")), "launch did not export {mode} billing");
+        let timestamp = environment.lines().find_map(|line| line.strip_prefix("COCKPIT_BILLING_STARTED_AT=")).unwrap();
+        let started = chrono::DateTime::parse_from_rfc3339(timestamp).unwrap();
+        assert!((chrono::Utc::now().timestamp() - started.timestamp()).abs() < 30);
+    }
+}
+
+#[test]
 fn a_credits_session_without_a_key_does_not_start_on_the_subscription() {
     let launch = Launch::new();
     let output = launch.sandbox.command(bin().join("greywall-agents/claude"), &[("COCKPIT_CREDITS", "1")]).current_dir(&launch.project).output().unwrap();

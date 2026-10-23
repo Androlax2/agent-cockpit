@@ -61,7 +61,6 @@ const DISK_WARNING_PERCENT: f64 = 85.0;
 const DISK_CRITICAL_PERCENT: f64 = 95.0;
 const DISK_CHECK_S: f64 = 60.0;
 const RESTORE_CHECK_S: f64 = 30.0;
-const COSTS_LABEL: &str = "Cost";
 const TIME_LABEL: &str = "Active time";
 /// The Todo panel's tabs: the statuses each one shows. Open merges everything not done yet.
 const TODO_TABS: [(&str, &[&str]); 5] = [("Open", &[todo::PROPOSED, "todo", "doing"]), ("Proposed", &[todo::PROPOSED]), ("To do", &["todo"]),
@@ -84,7 +83,7 @@ const GLOBAL_HELP: [(&str, &str); 14] = [
     ("O", "new opencode session in a project, overriding the default agent: same sandbox, card and keys; e opens its native effort picker, while $, remote and /compact stay Claude-only"),
     ("S", "settings: default agent, OpenCode model and model-specific effort; on/off choices; and the phone page, pairing (QR code), forgetting a phone (x)"),
     ("P W G", "windows on top: pull requests, Claude on the web, greyproxy (also Super+Ctrl+P/A/G)"),
-    ("≈ $", "today's Claude Code and opencode replies on this machine at API prices (the plan is flat); week and month in Status"),
+    ("API ≈ $", "today's verified API-credit usage at token prices, not your bill; subscription value, unknown billing, week and month in Status"),
     ("⌘⇥", "cursor between the column and the session (tmux)"),
     ("l →  ←", "into the session from any panel; ← from the session comes back"),
     ("q ⌘C", "close the manager window; sessions keep running"),
@@ -1281,46 +1280,83 @@ impl App {
         for text in wrap_detail_text("Estimates use window-average pace. — = no estimate.", room.max(2)) {
             lines.push(Line::new(vec![segment(0, text, dim(FG_DARK))]));
         }
-        let totals = self.costs.totals();
+        let billing = self.costs.billing_totals();
         // All sessions together, never the sum of the projects' times: parallel sessions overlap.
         let together = self.costs.time_together();
         let mut spending = Vec::new();
-        if totals.today > 0.0 || totals.week > 0.0 || totals.month > 0.0 {
-            spending.push((COSTS_LABEL, [totals.today, totals.week, totals.month].map(money), bold(MAGENTA)));
+        let has_priced_replies = billing.recorded_replies > billing.unpriced_replies;
+        if billing.recorded_replies > 0 {
+            for (label, totals) in [("API credits (est.)", billing.api), ("Subscription (API value)", billing.subscription),
+                ("Unknown billing (API value)", billing.unknown)] {
+                let amounts = if has_priced_replies { [totals.today, totals.week, totals.month].map(money) }
+                    else { std::array::from_fn(|_| "—".into()) };
+                spending.push((label, amounts, bold(MAGENTA)));
+            }
         }
         if together.month >= 60.0 {
             spending.push((TIME_LABEL, [together.today, together.week, together.month].map(Self::duration_text), bold(CYAN)));
         }
         let error = self.costs.error();
         let all_time = self.costs.all_time();
-        if !spending.is_empty() || all_time > 0.0 || !error.is_empty() {
+        {
             lines.push(Line::default());
-            for text in wrap_detail_text("SPENDING · API-equivalent, not your bill", room.max(2)) {
+            for text in wrap_detail_text("SPENDING · token-based estimates, not your bill", room.max(2)) {
                 lines.push(Line::new(vec![segment(0, text, bold(FG))]));
             }
-            let label_width = width_of("All-time cost");
+            if self.costs.is_loading() {
+                lines.push(Line::new(vec![segment(0, "Loading usage…", dim(FG_DARK))]));
+            } else if billing.recorded_replies == 0 && error.is_empty() {
+                lines.push(Line::new(vec![segment(0, "No recorded usage", dim(FG_DARK))]));
+            }
+            if billing.unpriced_replies > 0 {
+                let warning = format!("Incomplete estimate: {} unpriced replies; amounts exclude them.", billing.unpriced_replies);
+                for text in wrap_detail_text(&warning, room.max(2)) {
+                    lines.push(Line::new(vec![segment(0, text, style(YELLOW))]));
+                }
+            }
+            let label_width = spending.iter().map(|(label, _, _)| width_of(label)).chain([width_of("All-time API value")]).max().unwrap_or(0);
             let amount_width = spending.iter().flat_map(|(_, amounts, _)| amounts.iter().map(|text| width_of(text))).chain([5]).max().unwrap_or(5);
             let columns = [0, 1, 2].map(|index| (label_width + 2 + index * (amount_width + 2)) as u16);
             let periods = ["TODAY", "WEEK", "MONTH"];
             if columns[2] as usize + amount_width <= room {
                 if !spending.is_empty() {
-                    lines.push(Line::new(periods.iter().enumerate().map(|(index, period)| segment(columns[index], *period, dim(FG_DARK))).collect()));
+                    lines.push(Line::new(periods.iter().enumerate().map(|(index, period)|
+                        segment(columns[index] + (amount_width - width_of(period)) as u16, *period, dim(FG_DARK))).collect()));
                 }
                 for (label, amounts, tint) in spending {
                     let mut segments = vec![segment(0, label, style(FG))];
-                    segments.extend(amounts.iter().enumerate().map(|(index, amount)| segment(columns[index], amount, tint)));
+                    segments.extend(amounts.iter().enumerate().map(|(index, amount)|
+                        segment(columns[index] + (amount_width - width_of(amount)) as u16, amount, tint)));
                     lines.push(Line::new(segments));
                 }
             } else {
                 for (label, amounts, tint) in spending {
-                    lines.push(Line::new(vec![segment(0, label, style(FG))]));
+                    for text in wrap_detail_text(label, room.max(2)) {
+                        lines.push(Line::new(vec![segment(0, text, style(FG))]));
+                    }
                     for (period, amount) in periods.iter().zip(amounts) {
-                        lines.push(Line::new(vec![segment(2, format!("{period}  {amount}"), tint)]));
+                        for text in wrap_detail_text(&format!("{period}  {amount}"), room.saturating_sub(2).max(2)) {
+                            lines.push(Line::new(vec![segment(2, text, tint)]));
+                        }
                     }
                 }
             }
-            if all_time > 0.0 {
-                lines.push(Line::new(vec![segment(0, "All-time cost", style(FG)), segment(label_width as u16 + 2, money(all_time), bold(MAGENTA))]));
+            if has_priced_replies {
+                let amount = format!("≈ {}", money(all_time));
+                let label = "All-time API value";
+                if label_width + 2 + width_of(&amount) <= room {
+                    lines.push(Line::new(vec![segment(0, label, style(FG)), segment(label_width as u16 + 2, amount, bold(MAGENTA))]));
+                } else {
+                    for text in wrap_detail_text(label, room.max(2)) { lines.push(Line::new(vec![segment(0, text, style(FG))])); }
+                    for text in wrap_detail_text(&amount, room.saturating_sub(2).max(2)) { lines.push(Line::new(vec![segment(2, text, bold(MAGENTA))])); }
+                }
+            }
+            if billing.recorded_replies > 0 {
+                for explanation in ["Subscription = API-price value, not a subscription charge.", "Unknown = billing mode unverified; includes historical records."] {
+                    for text in wrap_detail_text(explanation, room.max(2)) {
+                        lines.push(Line::new(vec![segment(0, text, dim(FG_DARK))]));
+                    }
+                }
             }
             for text in wrap_detail_text(&error, room.max(2)) {
                 lines.push(Line::new(vec![segment(0, text, style(YELLOW))]));
@@ -3221,9 +3257,9 @@ impl App {
             put(buffer, 0, right, &stamp, style(FG_DARK));
             right = right.saturating_sub(3);
         }
-        let cost = self.costs.totals().today;
+        let cost = self.costs.billing_totals().api.today;
         if cost > 0.0 {
-            let amount = format!("≈ {}", money(cost));
+            let amount = format!("API ≈ {}", money(cost));
             let label = " today";
             let start = right as i64 - width_of(&amount) as i64 - label.len() as i64;
             if start > column as i64 {

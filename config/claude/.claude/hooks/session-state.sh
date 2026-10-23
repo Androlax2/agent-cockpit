@@ -364,6 +364,17 @@ hook_log() { # message
     } 2>/dev/null || true
 }
 
+if [[ $event == Stop && ( -z $agent || $agent == claude ) ]]; then
+    billing=${COCKPIT_BILLING:-$(inherited COCKPIT_BILLING)}
+    billing_started_at=${COCKPIT_BILLING_STARTED_AT:-$(inherited COCKPIT_BILLING_STARTED_AT)}
+    transcript=$(jq -r '.transcript_path // ""' <<<"$payload")
+    if [[ ( $billing == api || $billing == subscription ) && -n $billing_started_at && -n $transcript ]]; then
+        if ! python3 "$(dirname "${BASH_SOURCE[0]}")/billing-capture.py" record-transcript-billing "$billing" "$billing_started_at" "$transcript"; then
+            hook_log "billing capture failed; usage remains visible with unknown billing"
+        fi
+    fi
+fi
+
 # A daemon that does not answer must not hold the hook: give up after a second.
 send_to_osd() {
     [[ -S $report_socket ]] || return 1
