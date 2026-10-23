@@ -118,6 +118,17 @@ impl Observation {
     }
 }
 
+/// Input-row evidence only: callers must also verify the runtime, idle state and absence of dialogs/work.
+/// Unknown layouts are unconfirmed; a cursor at Home is not proof that a draft is empty.
+pub fn native_input_is_clear(agent: &str, line: &str, cursor_column: u16) -> bool {
+    if cursor_column != 2 { return false; }
+    match agent {
+        "codex" => line == "\x1b[1m›\x1b[0m \x1b[2mAsk Codex to do anything\x1b[0m",
+        "claude" => line == "❯ ",
+        _ => false,
+    }
+}
+
 #[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RoutingState {

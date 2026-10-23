@@ -148,6 +148,26 @@ fn working_background_and_attention_boundaries_never_prepare_a_handoff() {
 }
 
 #[test]
+fn native_input_checks_reject_drafts_even_when_the_cursor_is_at_home() {
+    use cockpit::subscription_fallback::native_input_is_clear;
+    for (agent, line, cursor, clear) in [
+        ("codex", "\x1b[1m›\x1b[0m \x1b[2mAsk Codex to do anything\x1b[0m", 2, true),
+        ("codex", "\x1b[1m›\x1b[0m \x1b[2mAsk Codex to do anything\x1b[0m", 27, false),
+        ("codex", "\x1b[1m›\x1b[0m Unsubmitted fixture draft", 2, false),
+        ("codex", "\x1b[1m›\x1b[0m Ask Codex to do anything", 2, false),
+        ("codex", "\x1b[1m›\x1b[0m \x1b[2mSelect a model\x1b[0m", 2, false),
+        ("codex", "", 2, false),
+        ("codex", "Quota exhausted; resets in an hour", 2, false),
+        ("claude", "❯ ", 2, true),
+        ("claude", "❯ Do not continue yet", 2, false),
+        ("claude", "❯ ", 7, false),
+        ("opencode", "❯ ", 2, false),
+    ] {
+        assert_eq!(native_input_is_clear(agent, line, cursor), clear, "{agent}/{line:?}/{cursor}");
+    }
+}
+
+#[test]
 fn completion_or_manual_override_cancels_automatic_work() {
     for completed in [true, false] {
         let sandbox = Sandbox::new();
