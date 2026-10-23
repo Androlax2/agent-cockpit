@@ -16,13 +16,20 @@
       "~/agent-cockpit/config/bin/.local/bin/claude-design",
       "~/agent-cockpit/config/bin/.local/bin/claude-needs-input",
       "~/agent-cockpit/config/bin/.local/bin/claude-session-label",
+      "~/agent-cockpit/config/bin/.local/bin/cockpit-todo",
+      "~/agent-cockpit/config/bin/.local/bin/cockpit-design",
+      "~/agent-cockpit/config/bin/.local/bin/cockpit-needs-input",
+      "~/agent-cockpit/config/bin/.local/bin/cockpit-session-label",
       "~/agent-cockpit/config/bin/.local/bin/cockpit-team",
       "~/agent-cockpit/apps/target/release/cockpit-team",
       "~/agent-cockpit/apps/target/release/ask-to-run",
       "~/agent-cockpit/apps/target/release/ask-to-guide",
       "~/agent-cockpit/apps/target/release/claude-todo",
       "~/agent-cockpit/apps/target/release/claude-design",
-      "/run/user/1000/claude-report"
+      "~/agent-cockpit/apps/target/release/cockpit-todo",
+      "~/agent-cockpit/apps/target/release/cockpit-design",
+      "/run/user/1000/claude-report",
+      "/run/user/1000/cockpit-report"
     ],
     "allowWrite": [
       "/run/user/1000/osd.fifo"
@@ -58,6 +65,8 @@
       "~/.local/state/claude-audit",
       "~/.local/state/claude-remote",
       "~/.local/state/claude-stuck-exits",
+      "~/.local/state/cockpit-remote",
+      "~/.local/state/cockpit-stuck-exits",
       "~/.config/greywall-agents/figcraft",
       "~/.config/Bitwarden/**",
       "~/.config/BraveSoftware/**",

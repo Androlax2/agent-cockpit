@@ -743,7 +743,7 @@ impl RunRequests {
             write_abandoned(id);
             return Ok(());
         }
-        let approve = paths::home().join(".local/bin/claude-run-approve").to_string_lossy().into_owned();
+        let approve = paths::home().join(".local/bin/cockpit-run-approve").to_string_lossy().into_owned();
         if !system.run(&["tmux", "new-session", "-d", "-s", &run_session(id), "-x", "180", "-y", "45", &approve, id], &[0]) {
             return Err(format!("cannot start the approval for {id}"));
         }
@@ -1010,8 +1010,8 @@ impl GuideRequests {
             if answers.join(format!("{id}.result")).exists() {
                 continue;
             }
-            let guide = paths::home().join(".local/bin/claude-guide").to_string_lossy().into_owned();
-            match system.open_window(&["kitty", "--class", "claude-guide", "-T", "Claude · steps for you", &guide, &id]) {
+            let guide = paths::home().join(".local/bin/cockpit-guide").to_string_lossy().into_owned();
+            match system.open_window(&["kitty", "--class", "cockpit-guide", "-T", "Cockpit · steps for you", &guide, &id]) {
                 Some(window) => {
                     self.window = Some(window);
                     self.current = id;

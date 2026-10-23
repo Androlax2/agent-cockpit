@@ -1,0 +1,10 @@
+[Unit]
+Description=Run the weekly health check on Monday morning, or at the next boot if the PC was off
+
+[Timer]
+OnCalendar=Mon *-*-* 10:00:00
+Persistent=true
+RandomizedDelaySec=10min
+
+[Install]
+WantedBy=timers.target

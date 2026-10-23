@@ -1,0 +1,12 @@
+[Unit]
+Description=The phone page for Agent Cockpit, on loopback for tailscale serve
+After=osd.service
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/cockpit-remote serve
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

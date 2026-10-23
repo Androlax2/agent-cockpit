@@ -93,6 +93,7 @@ impl Sandbox {
             ("HOME".to_string(), home.display().to_string()),
             ("XDG_RUNTIME_DIR".into(), runtime.display().to_string()),
             ("XDG_STATE_HOME".into(), state.display().to_string()),
+            ("XDG_DATA_HOME".into(), home.join(".local/share").display().to_string()),
             // Wins over XDG_STATE_HOME in the cockpit's tools, and opencode sessions set it.
             ("COCKPIT_STATE_HOME".into(), state.display().to_string()),
             ("PATH".into(), path),

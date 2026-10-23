@@ -6,8 +6,8 @@
 # over 90%. `make check` (drift between the repo and the machine) is in the report, not a problem.
 # CLAUDE_HEALTH_COCKPIT and CLAUDE_HEALTH_DOTFILES point at other repositories (tests).
 set -uo pipefail
-COCKPIT_REPOSITORY=${CLAUDE_HEALTH_COCKPIT:-$HOME/agent-cockpit}
-DOTFILES=${CLAUDE_HEALTH_DOTFILES:-$HOME/dotfiles}
+COCKPIT_REPOSITORY=${COCKPIT_HEALTH_COCKPIT-${CLAUDE_HEALTH_COCKPIT:-$HOME/agent-cockpit}}
+DOTFILES=${COCKPIT_HEALTH_DOTFILES-${CLAUDE_HEALTH_DOTFILES:-$HOME/dotfiles}}
 REPORT_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/cockpit"
 FIFO="${XDG_RUNTIME_DIR:-/tmp}/osd.fifo"
 DISK_FULL_AT=90

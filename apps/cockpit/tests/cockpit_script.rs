@@ -291,7 +291,7 @@ fn git_output(directory: &Path, arguments: &[&str]) -> String {
 fn view_attaches_the_session_nested_in_the_viewer() {
     let manager = Manager::new();
     assert_eq!(manager.run(&["view", SESSION_A], &[]).status.code(), Some(0));
-    assert_eq!(manager.tmux_calls("respawn-pane"), ["tmux respawn-pane -k -t %11 claude-fade env -u TMUX tmux attach-session -t =claude-retry-9-9"]);
+    assert_eq!(manager.tmux_calls("respawn-pane"), ["tmux respawn-pane -k -t %11 cockpit-fade env -u TMUX tmux attach-session -t =claude-retry-9-9"]);
     assert_eq!(fs::read_to_string(manager.runtime_file("cockpit.current")).unwrap().trim(), SESSION_A);
 }
 
@@ -662,7 +662,7 @@ fn stalled_liveness_checks_do_not_hold_up_session_shutdown() {
 }
 
 fn stuck_exit_records(manager: &Manager) -> Vec<PathBuf> {
-    let mut records: Vec<PathBuf> = fs::read_dir(manager.sandbox.state.join("claude-stuck-exits"))
+    let mut records: Vec<PathBuf> = fs::read_dir(manager.sandbox.state.join("cockpit-stuck-exits"))
         .map(|entries| entries.flatten().map(|entry| entry.path()).collect()).unwrap_or_default();
     records.sort();
     records
@@ -1290,7 +1290,7 @@ fn switching_sessions_tolerates_an_approval_disappearing_after_the_pane_snapshot
                 tmux.run(&["new-session", "-d", "-s", "claude-run-bbbbbbbbbbbb", "sleep 60"]);
                 fs::write(manager.runtime_file("cockpit-approval"), format!("bbbbbbbbbbbb {SESSION_A}\n")).unwrap();
             }
-            manager.sandbox.shim("claude-fade", "exec sleep 60");
+            manager.sandbox.shim("cockpit-fade", "exec sleep 60");
             // Force the pane's natural exit between discovery and the batched view command.
             manager.sandbox.shim("tmux", r#"
 if [[ $1 == respawn-pane && $SHIM_APPROVAL_DISAPPEARS == 1 ]]; then
@@ -1791,7 +1791,7 @@ fn handoff_queues_rc_while_claude_works() {
 #[test]
 fn away_on_and_off_set_and_clear_the_phone_flag() {
     let manager = Manager::new();
-    let flag = manager.runtime_file("claude-remote-away");
+    let flag = manager.runtime_file("cockpit-remote-away");
     assert!(manager.run(&["away", "on"], &[]).status.success());
     assert!(flag.exists());
     assert!(manager.run(&["away", "off"], &[]).status.success());
@@ -1803,7 +1803,7 @@ fn away_leaves_the_phone_quiet_while_phone_on_lock_is_off() {
     let manager = Manager::new();
     assert!(manager.run(&["setting", "phone-on-lock", "off"], &[]).status.success());
     assert!(manager.run(&["away", "on"], &[]).status.success());
-    assert!(!manager.runtime_file("claude-remote-away").exists());
+    assert!(!manager.runtime_file("cockpit-remote-away").exists());
 }
 
 #[test]
@@ -3008,7 +3008,7 @@ fn reload_restarts_a_phone_server_older_than_its_build() {
     let binary = osd_daemon(&manager, 3600, 60);
     let output = reload_with_phone_build(&manager, &binary);
     assert!(stdout(&output).contains("phone page ran an older build"), "{}", stdout(&output));
-    assert!(manager.calls("systemctl").iter().any(|call| call == "systemctl --user restart claude-remote.service"), "{:?}", manager.calls("systemctl"));
+    assert!(manager.calls("systemctl").iter().any(|call| call == "systemctl --user restart cockpit-remote.service"), "{:?}", manager.calls("systemctl"));
 }
 
 #[test]
@@ -3025,8 +3025,8 @@ fn a_phone_server_that_fails_to_restart_says_how_to_do_it_by_hand() {
     let binary = osd_daemon(&manager, 3600, 60);
     manager.sandbox.shim("systemctl", r#"[[ $* == *"show -p MainPID"* ]] && { echo 4242; exit 0; }; [[ $* == *restart* ]] && exit 1; exit 0"#);
     let output = reload_with_phone_build(&manager, &binary);
-    assert!(stderr(&output).contains("systemctl --user restart claude-remote.service"), "{}", stderr(&output));
-    assert!(manager.log_lines().iter().any(|line| line.contains("claude-remote.service did not restart")), "{:?}", manager.log_lines());
+    assert!(stderr(&output).contains("systemctl --user restart cockpit-remote.service"), "{}", stderr(&output));
+    assert!(manager.log_lines().iter().any(|line| line.contains("cockpit-remote.service did not restart")), "{:?}", manager.log_lines());
 }
 
 #[test]

@@ -2023,7 +2023,7 @@ fn a_guide_opens_in_a_floating_window_of_its_own_one_at_a_time() {
     let windows = bench.windows();
     assert_eq!(windows.len(), 1);
     let command = windows[0].borrow().command.clone();
-    assert_eq!(command[..3], ["kitty", "--class", "claude-guide"]);
+    assert_eq!(command[..3], ["kitty", "--class", "cockpit-guide"]);
     assert_eq!(command.last().unwrap(), RUN_A);
 }
 

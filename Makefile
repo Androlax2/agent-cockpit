@@ -26,8 +26,11 @@ test: ## Build the OSD classifier and run the test suite
 	$(build_runner) cargo test --release --quiet --manifest-path apps/Cargo.toml
 
 install: build ## Link every package into your home and reload the user units
+	python3 tools/migrate-cockpit-names.py --prepare
 	$(stow) --restow $(packages)
+	python3 tools/migrate-cockpit-names.py --apply
 	systemctl --user daemon-reload
+	python3 tools/migrate-cockpit-names.py --services
 
 system: ## [sudo] Copy system/ into /: each changed file shows its diff and asks first
 	@tools/system-install.sh
@@ -38,9 +41,13 @@ system: ## [sudo] Copy system/ into /: each changed file shows its diff and asks
 # loud whenever either installed binary is not the pinned build, whatever changed.
 after-apply: ## Relink, rebuild and reload when apps/ changed, rebuild greywall or greyproxy when its pin did: make after-apply BEFORE=<commit>
 	@test -n "$(BEFORE)" || { echo "usage: make after-apply BEFORE=<commit before the apply>"; exit 2; }
+	python3 tools/migrate-cockpit-names.py --prepare
+	@if ! git diff --quiet "$(BEFORE)" HEAD -- apps; then $(MAKE) build; fi
 	$(stow) --restow $(packages)
+	python3 tools/migrate-cockpit-names.py --apply
 	systemctl --user daemon-reload
-	@if ! git diff --quiet "$(BEFORE)" HEAD -- apps; then $(MAKE) build && cockpit reload; fi
+	python3 tools/migrate-cockpit-names.py --services
+	@if ! git diff --quiet "$(BEFORE)" HEAD -- apps; then cockpit reload; fi
 	@if ! git diff --quiet "$(BEFORE)" HEAD -- packages/greywall/build.sh; then $(MAKE) greywall-patch; fi
 	@if ! git diff --quiet "$(BEFORE)" HEAD -- packages/greyproxy/build.sh; then $(MAKE) greyproxy-patch; fi
 	@packages/greywall/check.sh

@@ -28,6 +28,8 @@ class AfterApplyPinTests(unittest.TestCase):
         for name in ["Makefile", "packages"]:
             source = REPO / name
             (shutil.copytree if source.is_dir() else shutil.copy)(source, self.repository / name)
+        (self.repository / "tools").mkdir()
+        shutil.copy(REPO / "tools/migrate-cockpit-names.py", self.repository / "tools")
         (self.repository / "config/bin").mkdir(parents=True)
         git(self.repository, "init", "-q", "-b", "main")
         git(self.repository, "add", ".")
@@ -39,9 +41,16 @@ class AfterApplyPinTests(unittest.TestCase):
         self.log = root / "calls"
         self.home = root / "home"
         (self.home / ".local/bin").mkdir(parents=True)
-        for command in ["stow", "systemctl"]:
+        for command in ["stow"]:
             self.fake(self.bin / command, "exit 0")
-        self.environment = {**os.environ, "PATH": f"{self.bin}:{os.environ['PATH']}", "HOME": str(self.home)}
+        self.fake(self.bin / "systemctl", 'case "$2" in is-active|is-enabled) exit 1;; esac; exit 0')
+        runtime = root / "run"
+        runtime.mkdir()
+        state = self.home / ".local/state"
+        state.mkdir(parents=True)
+        self.environment = {**os.environ, "PATH": f"{self.bin}:{os.environ['PATH']}", "HOME": str(self.home),
+                            "XDG_RUNTIME_DIR": str(runtime), "XDG_STATE_HOME": str(state), "COCKPIT_STATE_HOME": str(state),
+                            "XDG_DATA_HOME": str(self.home / ".local/share")}
         for tool in VERSION_LINE:
             self.install(tool, self.pinned(tool))
 

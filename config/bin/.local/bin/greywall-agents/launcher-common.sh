@@ -12,14 +12,27 @@ mkdir -p "$CHROME_CONFIG_HOME"
 # The report socket's folder (osd-report.socket), mounted whole and read-only into the sandbox
 # (greywall.json), so a socket made again is seen at once and no session can replace it: greywall
 # mounts only what exists when it starts.
-mkdir -p "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/claude-report"
+prepare_cockpit_folder() {
+    if [ -d "$1" ]; then
+        printf '%s\n' "$1"
+    elif [ -d "$2" ]; then
+        printf '%s\n' "$2"
+    else
+        mkdir -p -m 700 "$1" || return 1
+        [ -L "$2" ] || ln -s "$1" "$2" || return 1
+        printf '%s\n' "$1"
+    fi
+}
+runtime_root="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+state_root="${COCKPIT_STATE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}}"
+prepare_cockpit_folder "$runtime_root/cockpit-report" "$runtime_root/claude-report" >/dev/null || exit 1
 # The audit log (claude-audit; security audit 2026-10-19, M6): greywall.json hides it from the
 # sandbox, which greywall does only for a folder that exists when the sandbox starts.
 mkdir -p -m 700 "${XDG_STATE_HOME:-$HOME/.local/state}/claude-audit"
-# The phone page's paired devices (claude-remote): hidden the same way.
-mkdir -p -m 700 "${XDG_STATE_HOME:-$HOME/.local/state}/claude-remote"
+# Both spellings stay hidden during the transition, including fresh sandboxes.
+prepare_cockpit_folder "$state_root/cockpit-remote" "$state_root/claude-remote" >/dev/null || exit 1
 # What sessions that ignored their exit showed (cockpit record_stuck_exit): hidden the same way.
-mkdir -p -m 700 "${XDG_STATE_HOME:-$HOME/.local/state}/claude-stuck-exits"
+prepare_cockpit_folder "$state_root/cockpit-stuck-exits" "$state_root/claude-stuck-exits" >/dev/null || exit 1
 # Created before the sandbox mounts its denyRead entries, even when no FigCraft has started yet.
 mkdir -p -m 700 "$HOME/.config/greywall-agents/figcraft"
 
@@ -129,8 +142,11 @@ greywall_options="$greywall_options --settings $settings"
 # project's folder is mounted, read-only, so no session reads another project's command output or
 # guide answers (security audit 2026-10-19, M3). ask-to-run names it in its requests.
 answers_key=$(folder_slug "$project_root")
-answers_dir="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/claude-answers/$answers_key"
+answers_root=$(prepare_cockpit_folder "$runtime_root/cockpit-answers" "$runtime_root/claude-answers") || exit 1
+answers_dir="$answers_root/$answers_key"
 mkdir -p "$answers_dir/runs" "$answers_dir/guides"
+export COCKPIT_ANSWERS_KEY="$answers_key"
+# Older agent binaries inside an already-running sandbox still accept this name.
 export CLAUDE_ANSWERS_KEY="$answers_key"
 greywall_options="$greywall_options --allow-read-path $answers_dir"
 # Linked sessions (cockpit-team): the daemon's host-only team socket, hard-linked into this

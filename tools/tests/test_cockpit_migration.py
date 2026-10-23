@@ -23,7 +23,8 @@ class MigrationTests(unittest.TestCase):
         self.state.mkdir(parents=True)
         self.runtime.mkdir()
         self.environment = dict(os.environ, HOME=str(self.home), XDG_STATE_HOME=str(self.state),
-                                COCKPIT_STATE_HOME=str(self.state), XDG_RUNTIME_DIR=str(self.runtime))
+                                COCKPIT_STATE_HOME=str(self.state), XDG_RUNTIME_DIR=str(self.runtime),
+                                XDG_DATA_HOME=str(self.home / ".local/share"))
 
     def run_migration(self, mode="--apply"):
         return subprocess.run(["python3", MIGRATION, mode], env=self.environment, capture_output=True, text=True)
@@ -102,6 +103,67 @@ class MigrationTests(unittest.TestCase):
         self.assertNotEqual(output.returncode, 0)
         self.assertIn("in-flight", output.stderr)
         self.assertFalse((self.state / "claude-remote").is_symlink())
+
+    def service_fixture(self, units):
+        self.units = self.root / "units.json"
+        self.units.write_text(json.dumps(units))
+        shim = self.root / "bin/systemctl"
+        shim.parent.mkdir()
+        shim.write_text('''#!/usr/bin/env python3
+import json, os, sys
+from pathlib import Path
+path = Path(os.environ["TEST_UNITS"])
+units = json.loads(path.read_text())
+args = [arg for arg in sys.argv[1:] if arg not in ["--user", "--quiet"]]
+action, unit = args
+state = units.setdefault(unit, {"active": False, "enabled": False})
+if action in ["is-active", "is-enabled"]:
+    flag = state["active" if action == "is-active" else "enabled"]
+    print(("active" if action == "is-active" else "enabled") if flag else "disabled")
+    sys.exit(0 if flag else 1)
+if action in ["start", "stop"]: state["active"] = action == "start"
+elif action in ["enable", "disable"]: state["enabled"] = action == "enable"
+else: sys.exit(9)
+units.setdefault("calls", []).append([action, unit])
+path.write_text(json.dumps(units))
+''')
+        shim.chmod(0o755)
+        self.environment.update(TEST_UNITS=str(self.units), PATH=f"{shim.parent}:{os.environ['PATH']}")
+
+    def apply_service_migration(self):
+        for mode in ["--prepare", "--apply", "--services"]:
+            output = self.run_migration(mode)
+            self.assertEqual(output.returncode, 0, output.stderr)
+        return json.loads(self.units.read_text())
+
+    def test_active_legacy_phone_and_timer_transfer_without_duplicate_units(self):
+        self.service_fixture({"claude-remote.service": {"active": True, "enabled": True},
+                              "claude-health-check.timer": {"active": True, "enabled": True}})
+        units = self.apply_service_migration()
+        self.assertEqual(units["cockpit-remote.service"], {"active": True, "enabled": True})
+        self.assertEqual(units["cockpit-health-check.timer"], {"active": True, "enabled": True})
+        self.assertEqual(units["claude-remote.service"], {"active": False, "enabled": False})
+        calls = units["calls"]
+        self.assertLess(calls.index(["stop", "claude-remote.service"]), calls.index(["start", "cockpit-remote.service"]))
+        again = self.apply_service_migration()
+        self.assertEqual(again["calls"], calls, "an already-migrated service was restarted")
+
+    def test_inactive_disabled_services_stay_inactive_and_disabled(self):
+        self.service_fixture({})
+        units = self.apply_service_migration()
+        self.assertFalse(units.get("cockpit-remote.service", {}).get("active", False))
+        self.assertFalse(units.get("cockpit-health-check.timer", {}).get("enabled", False))
+        self.assertNotIn("calls", units)
+
+    def test_service_preparation_refuses_a_path_conflict_before_stopping_anything(self):
+        self.service_fixture({"claude-remote.service": {"active": True, "enabled": True}})
+        self.seed(self.state / "claude-remote/devices.json")
+        self.seed(self.state / "cockpit-remote/devices.json")
+        output = self.run_migration("--prepare")
+        self.assertNotEqual(output.returncode, 0)
+        units = json.loads(self.units.read_text())
+        self.assertTrue(units["claude-remote.service"]["active"])
+        self.assertNotIn("calls", units)
 
 
 if __name__ == "__main__":

@@ -293,7 +293,7 @@ view_session() {
     size_before=$(tmux display-message -p -t "=$target:" '#{window_width} #{window_height}' 2>/dev/null || true)
     # Nested on purpose: the inner client is the real, interactive session. claude-fade relays it and
     # fades it while the column has the focus.
-    local commands=(respawn-pane -k -t "$viewer" claude-fade env -u TMUX tmux attach-session -t "=$target")
+    local commands=(respawn-pane -k -t "$viewer" cockpit-fade env -u TMUX tmux attach-session -t "=$target")
     # The pane shows this session's own approval: another session's goes, this one's comes.
     if [[ -n $approval && ( -z $run || $approval_run != "$run" ) ]]; then
         # It can exit after read_manager_panes. Test membership inside tmux's command queue;
@@ -640,7 +640,7 @@ descendants_of() { # root-pid
                 if (ancestor == root) print line[pid] } }' | sort -n
 }
 
-STUCK_EXITS_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/claude-stuck-exits"
+STUCK_EXITS_DIR="${COCKPIT_STATE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}}/cockpit-stuck-exits"
 STUCK_EXITS_KEPT=20
 record_stuck_exit() { # tmux-session pane id
     local target=$1 pane=$2 id=$3 stamp file pane_pid cgroup started liveness elapsed_ms
@@ -856,7 +856,7 @@ queue_prompt_ask() { # [pane]
 }
 
 # While it exists, the phone page (claude-remote) notifies: set by the lock screen (away on).
-PHONE_AWAY="${XDG_RUNTIME_DIR:-/tmp}/claude-remote-away"
+PHONE_AWAY="${XDG_RUNTIME_DIR:-/tmp}/cockpit-remote-away"
 
 # Theo's choices, on or off, kept across reboots ({"phone-on-lock": false}). A setting missing
 # from the file is on: what the setup did before it had settings. The cockpit's S menu lists the
@@ -972,13 +972,13 @@ away() { # on|off
     case ${1:-} in
         on)
             if ! setting_is_on phone-on-lock; then
-                rm -f "$PHONE_AWAY"
+                rm -f "$PHONE_AWAY" "${XDG_RUNTIME_DIR:-/tmp}/claude-remote-away"
                 log_event INFO lock "phone-on-lock is off: the phone stays quiet"
                 echo "cockpit: phone-on-lock is off, the phone stays quiet"
                 return 0
             fi
             : > "$PHONE_AWAY" ;;
-        off) rm -f "$PHONE_AWAY" ;;
+        off) rm -f "$PHONE_AWAY" "${XDG_RUNTIME_DIR:-/tmp}/claude-remote-away" ;;
         *) echo "usage: cockpit away on|off" >&2; return 1 ;;
     esac
     audit_event manager phone.away "$1"
@@ -1412,16 +1412,16 @@ restart_stale_osd() {
 # The phone page (claude-remote.service) is compiled into its binary: after an apply the phone kept
 # the old page until a manual restart. It restarts at once: it shows no approval of its own (a
 # decision in flight fails on the phone, which says so), and its pairings are on disk.
-REMOTE_BINARY="${COCKPIT_REMOTE_BINARY:-$HOME/agent-cockpit/apps/target/release/claude-remote}"
+REMOTE_BINARY="${COCKPIT_REMOTE_BINARY:-$HOME/agent-cockpit/apps/target/release/cockpit-remote}"
 
 restart_stale_remote() {
-    unit_is_stale claude-remote.service "$REMOTE_BINARY" || return 0
-    if systemctl --user restart claude-remote.service; then
+    unit_is_stale cockpit-remote.service "$REMOTE_BINARY" || return 0
+    if systemctl --user restart cockpit-remote.service; then
         echo "The phone page ran an older build: restarted."
-        log_event INFO manager "claude-remote.service restarted on its new build"
+        log_event INFO manager "cockpit-remote.service restarted on its new build"
     else
-        echo "The phone page did not restart: systemctl --user restart claude-remote.service" >&2
-        log_event ERROR manager "claude-remote.service did not restart: systemctl --user restart claude-remote.service by hand"
+        echo "The phone page did not restart: systemctl --user restart cockpit-remote.service" >&2
+        log_event ERROR manager "cockpit-remote.service did not restart: systemctl --user restart cockpit-remote.service by hand"
     fi
 }
 
@@ -1639,8 +1639,8 @@ doctor() {
     local recent_facts
     recent_facts=$(find "$HOME/.cache/claude" -maxdepth 1 -name 'statusline-*.json' -mmin -60 2>/dev/null || true)
     if [[ -z $recent_facts ]] || jq -e 'select(.effort != null)' $recent_facts >/dev/null 2>&1; then report ok "status line reports the effort"; else report fail "status line reports no effort" "install .handoff/claude/statusline-command.sh"; fi
-    if command -v ask-to-run >/dev/null && command -v claude-run-approve >/dev/null; then report ok "ask-to-run and claude-run-approve resolve"; else report fail "ask-to-run or claude-run-approve not on PATH" "cd ~/agent-cockpit/config && stow --no-folding -t ~ --restow bin"; fi
-    if command -v ask-to-guide >/dev/null && command -v claude-guide >/dev/null && command -v kitten >/dev/null; then report ok "ask-to-guide, claude-guide and kitten resolve"; else report fail "ask-to-guide, claude-guide or kitten not on PATH" "cd ~/agent-cockpit/config && stow --no-folding -t ~ --restow bin"; fi
+    if command -v ask-to-run >/dev/null && command -v cockpit-run-approve >/dev/null; then report ok "ask-to-run and cockpit-run-approve resolve"; else report fail "ask-to-run or cockpit-run-approve not on PATH" "cd ~/agent-cockpit/config && stow --no-folding -t ~ --restow bin"; fi
+    if command -v ask-to-guide >/dev/null && command -v cockpit-guide >/dev/null && command -v kitten >/dev/null; then report ok "ask-to-guide, cockpit-guide and kitten resolve"; else report fail "ask-to-guide, cockpit-guide or kitten not on PATH" "cd ~/agent-cockpit/config && stow --no-folding -t ~ --restow bin"; fi
     if grep -qs "this terminal" "$HOME/.config/fish/functions/claude.fish"; then report ok "claude asks manager or terminal"; else report fail "fish claude function missing or the old one (~/.config/fish/functions/claude.fish)" "make -C ~/agent-cockpit install"; fi
     local agent
     for agent in "${AGENTS[@]}"; do
@@ -2235,8 +2235,8 @@ push_run() { # dir
 # (security audit 2026-10-19, C1). The session exports them as patches (git format-patch into
 # .outgoing): plain text, read from a host-only copy, applied with the live repository's own git.
 # No host git ever runs inside the clone, whose .git/config the sandbox writes.
-DOTFILES_LIVE="${CLAUDE_DOTFILES_LIVE:-$HOME/dotfiles}"
-DOTFILES_WORK="${CLAUDE_DOTFILES_WORK:-$HOME/IdeaProjects/dotfiles}"
+DOTFILES_LIVE="${COCKPIT_DOTFILES_LIVE-${CLAUDE_DOTFILES_LIVE:-$HOME/dotfiles}}"
+DOTFILES_WORK="${COCKPIT_DOTFILES_WORK-${CLAUDE_DOTFILES_WORK:-$HOME/IdeaProjects/dotfiles}}"
 
 # Whether the patches apply one after the other, as git am takes them: each on top of the ones
 # before, in a scratch index, so the live checkout's files and index stay as they are. One
@@ -2255,7 +2255,7 @@ patches_apply_in_order() { # live folder-of-patches
 # Items stayed open when another session or a duplicate fixed them (todo 4ab912da). Theo read
 # the trailers in the patches before his yes; a dotfiles session can mark its items done anyway.
 close_shipped_todos() { # live commit-before-the-apply
-    local trailer queue="${CLAUDE_TODO_UPDATES:-${XDG_RUNTIME_DIR:-/tmp}/claude-todo-updates.jsonl}"
+    local trailer queue="${COCKPIT_TODO_UPDATES-${CLAUDE_TODO_UPDATES:-${XDG_RUNTIME_DIR:-/tmp}/cockpit-todo-updates.jsonl}}"
     while IFS= read -r trailer; do
         [[ -z $trailer ]] && continue
         if [[ ! $trailer =~ ^[0-9a-f]{8}$ ]]; then
@@ -2263,7 +2263,7 @@ close_shipped_todos() { # live commit-before-the-apply
             continue
         fi
         if ! jq -nc --arg id "$trailer" --arg folder "$1" '{action: "done", id: $id, started_in: $folder}' >> "$queue"; then
-            echo "Could not mark todo $trailer done: claude-todo done $trailer" >&2
+            echo "Could not mark todo $trailer done: cockpit-todo done $trailer" >&2
             continue
         fi
         echo "Todo $trailer marked done."
@@ -2623,7 +2623,7 @@ case ${1:-attach} in
     prepare) ensure_manager ;;
     reload)
         # The editor owns a shared lock until its text reaches todo.json, not just until it closes.
-        exec {todo_editor_lock}>"${XDG_RUNTIME_DIR:-/tmp}/claude-todo-editor.lock"
+        exec {todo_editor_lock}>"${XDG_RUNTIME_DIR:-/tmp}/cockpit-todo-editor.lock"
         flock "$todo_editor_lock"
         ensure_manager
         tmux respawn-pane -k -t "$(sidebar_pane)" cockpit-sidebar

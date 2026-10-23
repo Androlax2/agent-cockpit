@@ -34,6 +34,7 @@
 - `~/.cache/claude/{runs,designs}` → `~/.cache/cockpit/{runs,designs}`. Other `.cache/claude` entries remain Claude-owned.
 - `$XDG_RUNTIME_DIR/claude-{report,team-host,answers,runs,requests}` → corresponding `cockpit-*` directories. Move, do not copy, preserving existing mounted inodes; leave exact legacy symlinks.
 - `$XDG_RUNTIME_DIR/claude-{todo-updates.jsonl,todo-editor.lock}` → corresponding `cockpit-*` files, also preserving inode and legacy aliases.
+- Preserve an existing `$XDG_DATA_HOME/systemd/timers/stamp-claude-health-check.timer` as `stamp-cockpit-health-check.timer` (default data home `~/.local/share`) so the timer does not forget its last run. Do not create a stamp for a new installation.
 - Transient away markers and draft filenames transition at their explicit readers/writers, not through glob-based host migration. Outstanding requests/results keep their JSON formats and identifiers.
 - Canonical configuration: `COCKPIT_{REMOTE_DIR,REMOTE_ADDRESS,TODO_PATH,TODO_UPDATES,DESIGNS_DIR,RUNS_DIR,ANSWERS_DIR,ANSWERS_KEY,DOTFILES_WORK,DOTFILES_LIVE,GREYWALL_WORK,GREYPROXY_WORK,REVIEWS_FIXTURE,HEALTH_COCKPIT,HEALTH_DOTFILES}`, with each old `CLAUDE_*` spelling accepted as fallback. `CLAUDE_GUIDES_DIR` is already unused and is not a migration input.
 - Keep phone cookie `claude_phone` (if used by the existing server), public routes, wire formats, request ids and agent-owned retry/session identifiers stable; changing those would break existing conversations rather than rename a command.

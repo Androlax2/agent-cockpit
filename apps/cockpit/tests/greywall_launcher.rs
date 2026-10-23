@@ -172,7 +172,7 @@ fn native_codex_uses_project_guards_without_learning_or_hook_bypass() {
     assert!(invocation.contains("--profile codex"), "{invocation}");
     assert!(!invocation.contains("--auto-profile"), "{invocation}");
     assert!(!invocation.contains("dangerously"), "{invocation}");
-    assert!(invocation.contains("claude-answers/"), "{invocation}");
+    assert!(invocation.contains("cockpit-answers/"), "{invocation}");
     assert_eq!(std::fs::read_to_string(launch.sandbox.home.join("codex-arguments")).unwrap(),
         "--no-daemon\n--model\nconfigured-model\na literal prompt\n");
     let environment = std::fs::read_to_string(launch.sandbox.home.join("codex-environment")).unwrap();
@@ -252,7 +252,7 @@ fn only_the_projects_own_answers_folder_is_mounted() {
     for &agent in AGENTS.iter() {
         let launch = Launch::new();
         let started = launch.run_agent(agent, &[], &[]);
-        let answers = launch.sandbox.runtime.join("claude-answers").join(Launch::slug(&launch.project));
+        let answers = launch.sandbox.runtime.join("cockpit-answers").join(Launch::slug(&launch.project));
         assert!(started.contains(&format!("--allow-read-path {} ", answers.display())), "{started}");
         assert!(answers.join("runs").is_dir() && answers.join("guides").is_dir(), "{agent}");
     }
@@ -355,6 +355,27 @@ fn every_launcher_creates_the_stuck_exit_folder_before_its_sandbox_starts() {
 fn the_greywall_profile_hides_stuck_exit_captures() {
     let settings: serde_json::Value = serde_json::from_str(&fs::read_to_string(repo().join("config/greywall/.config/greywall/greywall.json")).unwrap()).unwrap();
     assert!(settings["filesystem"]["denyRead"].as_array().unwrap().iter().any(|entry| entry == "~/.local/state/claude-stuck-exits"));
+}
+
+#[test]
+fn new_sandboxes_can_read_canonical_commands_but_not_either_phone_state_path() {
+    let launch = Launch::new();
+    fs::copy(repo().join("config/greywall/.config/greywall/greywall.json"),
+             launch.sandbox.home.join(".config/greywall/greywall.json")).unwrap();
+    launch.run(&[]);
+    let settings = launch.settings();
+    let readable = settings["filesystem"]["allowRead"].as_array().unwrap();
+    let hidden = settings["filesystem"]["denyRead"].as_array().unwrap();
+    for name in ["cockpit-todo", "cockpit-design", "cockpit-needs-input", "cockpit-session-label"] {
+        assert!(readable.iter().any(|value| value == &format!("~/agent-cockpit/config/bin/.local/bin/{name}")), "{name}");
+    }
+    for name in ["cockpit-todo", "cockpit-design"] {
+        assert!(readable.iter().any(|value| value == &format!("~/agent-cockpit/apps/target/release/{name}")), "{name}");
+    }
+    for path in ["~/.local/state/claude-remote", "~/.local/state/cockpit-remote", "~/.local/state/claude-audit"] {
+        assert!(hidden.iter().any(|value| value == path), "{path}");
+    }
+    assert!(launch.sandbox.state.join("cockpit-remote").is_dir());
 }
 
 #[test]
@@ -847,10 +868,10 @@ fn sandboxes_mount_the_report_sockets_folder_never_the_socket_alone() {
     // again: on 2026-10-19 a socket restart cut every session off the daemon.
     let profile: serde_json::Value = serde_json::from_str(&fs::read_to_string(repo().join("config/greywall/.config/greywall/greywall.json")).unwrap()).unwrap();
     let readable: Vec<&str> = profile["filesystem"]["allowRead"].as_array().unwrap().iter().filter_map(|path| path.as_str()).collect();
-    assert!(readable.contains(&"/run/user/1000/claude-report"), "{readable:?}");
+    assert!(readable.contains(&"/run/user/1000/cockpit-report"), "{readable:?}");
     assert!(readable.iter().all(|path| !path.ends_with(".sock")), "{readable:?}");
     let unit = fs::read_to_string(repo().join("config/systemd/.config/systemd/user/osd-report.socket")).unwrap();
-    assert!(unit.contains("ListenStream=%t/claude-report/osd-report.sock"), "{unit}");
+    assert!(unit.contains("ListenStream=%t/cockpit-report/osd-report.sock"), "{unit}");
 }
 
 #[test]
@@ -859,7 +880,7 @@ fn no_session_can_replace_the_report_socket_every_other_session_connects_to() {
     // read every project's reports and requests and answer them (review of 2026-10-21, todo 6ca343ca).
     let profile: serde_json::Value = serde_json::from_str(&fs::read_to_string(repo().join("config/greywall/.config/greywall/greywall.json")).unwrap()).unwrap();
     let writable: Vec<&str> = profile["filesystem"]["allowWrite"].as_array().unwrap().iter().filter_map(|path| path.as_str()).collect();
-    assert!(writable.iter().all(|path| !path.contains("claude-report")), "{writable:?}");
+    assert!(writable.iter().all(|path| !path.contains("claude-report") && !path.contains("cockpit-report")), "{writable:?}");
 }
 
 #[test]

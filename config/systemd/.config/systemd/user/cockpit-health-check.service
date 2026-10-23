@@ -1,0 +1,7 @@
+[Unit]
+Description=Weekly health check of Agent Cockpit and the machine
+After=graphical-session.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/cockpit-health-check
