@@ -256,12 +256,16 @@ check() {
 }
 
 usage() {
-    echo "usage: agent-github.sh token <project> | project-board-token | relogin | protect <project> | check" >&2
+    echo "usage: agent-github.sh token <project> | project-board-token | relogin | protect <project> | check | inspect --checkout <path> | enroll <explicit identity arguments>" >&2
     echo "       Workflow write access is off by default; ALLOW_WORKFLOWS=1 opts in for token <project>." >&2
     exit 2
 }
 
 case ${1:-} in
+    inspect|enroll)
+        action=$1
+        shift
+        exec /usr/bin/python3 -I "$(/usr/bin/dirname "$(/usr/bin/realpath -- "$0")")/../config/bin/.local/bin/greywall-agents/git-access.py" "$action" "$@" ;;
     token) token "${2:?usage: agent-github.sh token <project>}" ;;
     project-board-token) project_board_token ;;
     relogin) relogin ;;
