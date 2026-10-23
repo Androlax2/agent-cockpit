@@ -50,6 +50,24 @@ const BUSY_WITHOUT_PROMPT: &str = "✻ Flowing… (11s)\n";
 const DIALOG: &str = " Bash command\n   npm test\n Do you want to proceed?\n ❯ 1. Yes\n   2. No\n";
 
 #[test]
+fn reload_restores_bar_visibility_for_the_active_workspace() {
+    for (workspace, shown, wanted) in [("6", "1", "0"), ("6", "0", "0"), ("2", "0", "1"), ("2", "1", "1")] {
+        let manager = Manager::new();
+        manager.sandbox.shim("pkill", "exit 0");
+        let visibility = manager.runtime_file("waybar-visible");
+        fs::write(&visibility, format!("{shown}\n")).unwrap();
+
+        let output = manager.run(&["reload"], &[("SHIM_WS", workspace)]);
+
+        assert!(output.status.success(), "{}", stderr(&output));
+        assert_eq!(fs::read_to_string(visibility).unwrap().trim(), wanted, "workspace {workspace}, initially shown {shown}");
+        let expected_calls = if shown != wanted { vec!["pkill -x -USR1 waybar"] } else { vec![] };
+        assert_eq!(manager.calls("pkill"), expected_calls);
+        assert!(!manager.calls("hyprctl").iter().any(|call| call.contains("dispatch")));
+    }
+}
+
+#[test]
 fn reload_waits_for_the_todo_editor_before_replacing_the_sidebar() {
     let manager = Manager::new();
     let lock = fs::File::create(manager.runtime_file("claude-todo-editor.lock")).unwrap();

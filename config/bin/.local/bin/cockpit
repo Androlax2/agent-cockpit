@@ -2783,6 +2783,7 @@ case ${1:-attach} in
         exec {todo_editor_lock}>&-
         restart_stale_osd
         restart_stale_remote
+        "$BAR_VISIBILITY" sync
         ;;
     restart-osd-when-idle) restart_osd_when_idle ;;
     focus-viewer) focus_viewer ;;
