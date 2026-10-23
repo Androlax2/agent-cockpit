@@ -3212,6 +3212,25 @@ fn team_sidebar_groups_members_without_duplicate_cards() {
 }
 
 #[test]
+fn team_sidebar_hides_teams_without_available_members() {
+    for has_members in [false, true] {
+        let fixture = Fixture::new();
+        fixture.snapshot(json!([session(SESSION_B, "waiting", "project-a", "/r/project-a", 3)]));
+        let mut state = sidebar_snapshot();
+        if !has_members { state["members"] = json!([]); }
+        state["qa_plans"] = json!([{"project":SIDEBAR_PROJECT,"task_id":"1d3fd318","agent":"claude"}]);
+        state["handoffs"] = json!([{"project":SIDEBAR_PROJECT,"task_id":"1d3fd318","handoff_id":"h1","status":"current"}]);
+        team_host(&fixture, state, vec![]);
+        let mut app = fixture.app();
+        let shown = texts(&app, 1).join("\n");
+        assert!(!shown.contains("Team:"), "{shown}");
+        assert_eq!(app.sessions.len(), 1);
+        open_team_view(&mut app);
+        assert_eq!(app.team_view.as_ref().unwrap().snapshot["handoffs"].as_array().unwrap().len(), 1);
+    }
+}
+
+#[test]
 fn team_sidebar_keeps_identical_titles_in_separate_tasks() {
     let fixture = Fixture::new();
     sidebar_sessions(&fixture);

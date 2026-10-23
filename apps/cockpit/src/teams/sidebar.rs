@@ -171,7 +171,8 @@ pub fn grouped_rows(snapshot: &Value, sessions: &[Session], collapsed: &HashSet<
             if !tasks.contains(&task) { tasks.push(task); }
         }
     }
-    tasks.retain(|task| member_count(snapshot, task) > 0 || has_qa_plan(snapshot, task) || attention(snapshot, task).is_some());
+    tasks.retain(|task| sessions.iter().any(|session| member_task(snapshot, session).as_ref() == Some(task))
+        || attention(snapshot, task).is_some());
     tasks.sort_by_key(|task| sessions.iter().position(|session| member_task(snapshot, session).as_ref() == Some(task)).unwrap_or(usize::MAX));
     let mut projects: Vec<String> = Vec::new();
     for project in sessions.iter().map(|session| session.project.clone()).chain(tasks.iter().map(|task| project_name(snapshot, task, sessions))) {
