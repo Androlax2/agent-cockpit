@@ -99,13 +99,14 @@ agent-opencode-key: ## Store the Anthropic API key opencode sessions use, a grey
 	echo "stored ($${#key} characters)"
 
 agent_github = tools/agent-github.sh
+ALLOW_WORKFLOWS ?= 0
 
 .PHONY: agent-github-token agent-github-board-token agent-github-relogin agent-github-protect agent-github-check \
 	    agent-dashboard-tailnet-grant agent-dashboard-tailnet agent-dashboard-tailnet-off
 
-agent-github-token: ## Create and store a GitHub token that reaches only this project's repo: make agent-github-token PROJECT=runway
+agent-github-token: ## Create a repo-only token without workflow write access (opt in: ALLOW_WORKFLOWS=1)
 	@test -n "$(PROJECT)" || { echo "usage: make agent-github-token PROJECT=<folder in ~/IdeaProjects>"; exit 2; }
-	@$(agent_github) token "$(PROJECT)"
+	@ALLOW_WORKFLOWS="$(ALLOW_WORKFLOWS)" $(agent_github) token "$(PROJECT)"
 
 agent-github-board-token: ## Create and store the classic token, project scope only, that lets agents read and move Project board cards
 	@$(agent_github) project-board-token

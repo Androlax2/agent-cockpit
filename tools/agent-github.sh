@@ -8,7 +8,7 @@
 # page and verify the result.
 set -euo pipefail
 
-PROJECTS_DIR=/home/theo/IdeaProjects
+PROJECTS_DIR="$HOME/IdeaProjects"
 NEW_TOKEN_URL=https://github.com/settings/personal-access-tokens/new
 NEW_CLASSIC_TOKEN_URL=https://github.com/settings/tokens/new
 AUTHORIZED_APPS_URL=https://github.com/settings/applications
@@ -135,13 +135,15 @@ verify_project_board_token() {
 fine_grained_token_url() {
     local name=$1 owner=$2
     jq -rn --arg base "$NEW_TOKEN_URL" --arg name "agent $name" --arg owner "$owner" \
-        --arg description "Coding agents working on $name, passed in by the greywall launcher" '
+        --arg description "Coding agents working on $name, passed in by the greywall launcher" \
+        --arg allow_workflows "${ALLOW_WORKFLOWS:-0}" '
         $base + "?" + ([
             "name=" + ($name | @uri),
             "description=" + ($description | @uri),
             "target_name=" + ($owner | @uri),
             "expires_in=90",
-            "contents=write", "issues=write", "pull_requests=write", "workflows=write",
+            "contents=write", "issues=write", "pull_requests=write",
+            (if $allow_workflows == "1" then "workflows=write" else empty end),
             "actions=read", "metadata=read"
         ] | join("&"))'
 }
@@ -153,7 +155,13 @@ print_token_instructions() {
     echo "  Expiration           90 days"
     echo "  Resource owner       ${repository%%/*}"
     echo "  Repository permissions"
-    echo "    Read and write     Contents, Issues, Pull requests, Workflows"
+    if [[ ${ALLOW_WORKFLOWS:-0} == 1 ]]; then
+        echo "    Read and write     Contents, Issues, Pull requests, Workflows"
+        echo "    Workflow editing   Explicitly enabled for $name (ALLOW_WORKFLOWS=1)"
+    else
+        echo "    Read and write     Contents, Issues, Pull requests"
+        echo "    Workflows          No access"
+    fi
     echo "    Read-only          Actions, Metadata"
     echo "  Account permissions  No access"
     echo "Set by hand:"
@@ -163,6 +171,10 @@ print_token_instructions() {
 
 token() {
     local name=$1 repository url
+    case ${ALLOW_WORKFLOWS:-0} in
+        0|1) ;;
+        *) die "ALLOW_WORKFLOWS must be 0 or 1" ;;
+    esac
     require_valid_name "$name"
     repository=$(repository_of "$name")
     url=$(fine_grained_token_url "$name" "${repository%%/*}")
@@ -245,6 +257,7 @@ check() {
 
 usage() {
     echo "usage: agent-github.sh token <project> | project-board-token | relogin | protect <project> | check" >&2
+    echo "       Workflow write access is off by default; ALLOW_WORKFLOWS=1 opts in for token <project>." >&2
     exit 2
 }
 
