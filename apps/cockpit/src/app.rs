@@ -1,4 +1,4 @@
-//! The action panels (Sessions, Pull requests, Todo), on-demand Status, the header and footer,
+//! The action panels (Sessions, Pull requests, Todo, Ideas), on-demand Status, the header and footer,
 //! the effort and settings menus, the help, and every key.
 
 use crate::agents::{self, Feature};
@@ -72,12 +72,13 @@ const TODO_TAB_IN_PROGRESS: usize = 3;
 const EDITOR_HELP_MARK: &str = "#── everything from this line on is left out ──";
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 pub const EFFORT_LEVELS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
-const PANEL_NAMES: [&str; 4] = ["Status", "Sessions", "Pull requests", "Todo"];
-const PANEL_KEYS: [&str; 4] = ["0", "1", "2", "3"];
+const PANEL_NAMES: [&str; 5] = ["Status", "Sessions", "Pull requests", "Todo", "Ideas"];
+const PANEL_KEYS: [&str; 5] = ["0", "1", "2", "3", "4"];
 const GLOBAL_HINTS: [(&str, &str); 5] = [("⇥", "panel"), (":", "actions"), ("a", "new"), ("?", "help"), ("q", "close")];
 /// ⌘ in key hints: the physical Command key, which keyd turns into Ctrl (system/etc/keyd).
-const GLOBAL_HELP: [(&str, &str); 14] = [
-    ("0-3", "0 toggles Status (Esc returns); 1-3 focus action panels"), ("H", "resume a past session, searched by project and prompt"),
+const GLOBAL_HELP: [(&str, &str); 15] = [
+    ("0-4", "0 toggles Status (Esc returns); 1-4 focus action panels"), ("H", "resume a past session, searched by project and prompt"),
+    ("4", "global Ideas: proposals from every project, their source sessions and reasons; also click the header idea count"),
     ("⌘1 ⌘2 ⌘3", "focus a panel from inside the session (tmux)"), ("⇥ ⇧⇥", "next / previous panel"), ("j/k ↑↓", "move inside the panel"),
     (":", "every action, searchable; includes new-with-agent to override the default"), ("a", "new session in a project using the default agent from Settings (S)"),
     ("O", "new opencode session in a project, overriding the default agent: same sandbox, card and keys; e opens its native effort picker, while $, remote and /compact stay Claude-only"),
@@ -723,7 +724,7 @@ pub struct App {
     pub errors: ErrorReporter,
     pub claude_status: ProviderStatus,
     pub codex_status: ProviderStatus,
-    pub panels: [PanelState; 4],
+    pub panels: [PanelState; 5],
     pub focus: usize,
     previous_panel: usize,
     pub help_open: bool,
@@ -780,6 +781,7 @@ pub struct App {
     quota_rows: Vec<usage::QuotaRow>,
     pub(crate) review_rows: Vec<Review>,
     pub todo_entries: Vec<Entry>,
+    idea_entries: Vec<todo::Item>,
     pub(crate) todo_scope: String,
     /// The session in the session pane as of the last tick: its change wakes the column at once.
     shown_session: String,
@@ -799,6 +801,7 @@ pub struct App {
     pub(crate) todo_counts: [usize; 5],
     pub(crate) hit_lines: HashMap<u16, (usize, Option<usize>)>,
     pub(crate) hit_actions: HashMap<u16, (u16, u16, &'static str)>,
+    idea_header_range: Option<(u16, u16)>,
     /// The session cards' data as the last tick read it (gather_sessions); a key press redraws from
     /// it instead of reading tmux and the files again.
     gathered: Option<Gathered>,
@@ -857,11 +860,11 @@ impl App {
             help_open: false, has_pane_focus: true, attention_only: false, message, exiting: Vec::new(), restarting_cards: HashMap::new(), labelled: Default::default(), menu: None, session_details: None, todo_composer: None, settings_menu: None, team_view: None, team_attention: 0, team_roles: HashMap::new(), qa_sessions: HashSet::new(), team_known: false, team_checked: 0.0, pairing: None, restore: Vec::new(),
             held: Vec::new(), held_checked: 0.0, queue_checked: 0.0, sleep_checked: 0.0, sleep_asked: HashMap::new(), gaming: util::gaming,
             disk_usage: util::fullest_disk, disk: None, disk_checked: 0.0, restore_checked: 0.0, start_files: Vec::new(),
-            width: DEFAULT_COLUMN_WIDTH, sessions: Vec::new(), running_sessions: Vec::new(), windows: Vec::new(), quota_rows: Vec::new(), review_rows: Vec::new(), todo_entries: Vec::new(),
+            width: DEFAULT_COLUMN_WIDTH, sessions: Vec::new(), running_sessions: Vec::new(), windows: Vec::new(), quota_rows: Vec::new(), review_rows: Vec::new(), todo_entries: Vec::new(), idea_entries: Vec::new(),
             session_task_titles: HashMap::new(), session_branches: HashMap::new(),
             session_queued: HashMap::new(), session_roots: HashMap::new(),
             todo_scope: String::new(), shown_session: String::new(), todo_tab: TODO_TAB_OPEN, todo_tabs: HashMap::new(), todo_categories: HashMap::new(), saved_todo_scope: None, todo_jump: None, todo_counts: [0; 5], prompts_sent: HashMap::new(), craft_roots: HashMap::new(), hit_lines: HashMap::new(), hit_actions: HashMap::new(),
-            gathered: None, pending: Vec::new(), plan: String::new(), craft_checked: 0.0, running_copies_unpushed: HashMap::new(), running_copies_checked: 0.0, todo_recovery_pending,
+            gathered: None, pending: Vec::new(), plan: String::new(), craft_checked: 0.0, running_copies_unpushed: HashMap::new(), running_copies_checked: 0.0, todo_recovery_pending, idea_header_range: None,
         }
     }
 
@@ -1157,6 +1160,7 @@ impl App {
         self.build_sessions();
         self.build_reviews();
         self.build_todo();
+        self.build_ideas();
     }
 
     /// A duration as the column shows it: "42m", "3h05", then "34h".
@@ -2486,6 +2490,70 @@ impl App {
 
     // ---- Todo ----
 
+    fn build_ideas(&mut self) {
+        let selected = self.idea_entries.get(self.panels[4].selected).map(todo::Item::id);
+        let mut entries: Vec<_> = self.todos.items.iter().filter(|item| item.status() == todo::PROPOSED).cloned().collect();
+        entries.sort_by_key(|item| (-item.priority(), item.created()));
+        let mut lines = Vec::new();
+        if entries.is_empty() {
+            lines.push(Line::new(vec![segment(0, "No ideas waiting for your approval.", dim(FG_DARK))]));
+        }
+        for (index, item) in entries.iter().enumerate() {
+            let category = item.category().map_or("Unknown kind", |category| category.label());
+            let reason = if item.why().is_empty() { "No reason provided".to_string() } else { util::collapse(&item.why()) };
+            for (text, tint) in [(format!("? {}", item.text()), bold(MAGENTA)),
+                                 (format!("{} · {category}", item.project()), bold(project_color(&item.project()))),
+                                 (self.idea_source(item), style(FG_DARK)),
+                                 (format!("Why: {reason}"), style(FG))] {
+                lines.push(Line { segments: vec![segment(0, text, tint)], item: Some(index), ..Line::default() });
+            }
+            lines.push(Line::default());
+        }
+        let panel = &mut self.panels[4];
+        panel.items = entries.len();
+        panel.selected = selected.and_then(|id| entries.iter().position(|item| item.id() == id)).unwrap_or(panel.selected);
+        panel.clamp();
+        panel.lines = lines;
+        panel.fixed_top = vec![Line::new(vec![segment(0, "y Approve  n Decline  Enter Details", dim(FG_DARK))])];
+        self.idea_entries = entries;
+    }
+
+    fn idea_source(&self, item: &todo::Item) -> String {
+        let source = item.source();
+        let Some(identity) = source.strip_prefix("session ").filter(|identity| !identity.is_empty()) else {
+            return "Unknown session".into();
+        };
+        match self.all_sessions().iter().find(|session| session.session == identity) {
+            Some(session) => {
+                let label = if session.label.is_empty() { String::new() } else { format!(" · {}", session.label) };
+                format!("From {}{label} · {source}", session.project)
+            }
+            None => format!("{source} · not running"),
+        }
+    }
+
+    fn handle_ideas(&mut self, key: Key) -> String {
+        let Some(item) = self.idea_entries.get(self.panels[4].selected).cloned() else { return String::new(); };
+        match key {
+            Key::Char('y') | Key::Char('n') => {
+                let approved = key == Key::Char('y');
+                if approved { self.todos.approve(&item.id()); } else { self.todos.decline(&item.id()); }
+                self.build_ideas();
+                self.build_todo();
+                if approved { "approved: it is in To do now".into() } else { "declined: it will not be proposed again".into() }
+            }
+            Key::Enter => {
+                self.session_details = Some(SessionDetails {
+                    title: "Idea".into(),
+                    text: format!("{}\n\n{}", self.idea_source(&item), todo_details(&Entry::Typed(item))),
+                    scroll: 0, actions: Vec::new(),
+                });
+                String::new()
+            }
+            _ => String::new(),
+        }
+    }
+
     fn build_todo(&mut self) {
         // Like the issues: the viewed session's project only, every project when none is viewed.
         let viewed = current_session();
@@ -2928,6 +2996,7 @@ impl App {
             0 => vec![("0/Esc", "back")],
             1 => self.sessions_hints(),
             2 => vec![("⏎", "open"), ("c", "review"), ("P", "list")],
+            4 => vec![("y", "approve"), ("n", "decline"), ("⏎", "details")],
             _ => self.todo_hints(),
         }
     }
@@ -2958,6 +3027,9 @@ impl App {
                       ("c", "a session reviewing it, in its own clone of the repository, using the default agent"),
                       ("P", "the pull requests window on the viewed session's repository (or your review requests)"),
                       ("✓ ● ✗", "CI passing, running, failing"), ("approved", "review state: approved, changes (requested), review (required)")],
+            4 => vec![("y", "approve the selected idea: it moves to its project's To do, without starting work"),
+                      ("n", "decline the selected idea; the declined title will not be proposed again"),
+                      ("⏎", "the full idea, reason, notes and source session from any project")],
             _ => vec![("⏎", "the item's details: title, notes, why Claude proposed it, who filed it, when"),
                       ("[ ]", "previous / next tab: Open (Proposed, To do and In progress together) · Proposed · To do · In progress · Done"),
                       ("h", "hand the item over: the session on screen if it is on the item's project (a parallel clone too), Claude Code or opencode alike, else the project's running session, or a new one using the default agent"),
@@ -2983,6 +3055,7 @@ impl App {
             0 => self.status_subtitle(),
             1 => String::new(),
             2 => self.reviews_subtitle(),
+            4 => "all projects".into(),
             _ => self.todo_subtitle(),
         }
     }
@@ -2994,7 +3067,7 @@ impl App {
         }
         match index {
             2 => self.review_rows.is_empty() && self.reviews.current().1.is_empty(),
-            3 => true,
+            3 | 4 => true,
             _ => false,
         }
     }
@@ -3003,15 +3076,15 @@ impl App {
     /// unfocused panels take at most a quarter of the column, the focused one the remainder.
     pub fn layout(&self, height: u16) -> Vec<u16> {
         if self.focus == 0 {
-            return vec![height.saturating_sub(HEADER_LINES + 1), 0, 0, 0];
+            return vec![height.saturating_sub(HEADER_LINES + 1), 0, 0, 0, 0];
         }
-        let collapsed: Vec<usize> = [2usize, 3].into_iter().filter(|index| self.is_collapsed(*index)).collect();
-        let flexible: Vec<usize> = [1usize, 2, 3].into_iter().filter(|index| !collapsed.contains(index)).collect();
+        let collapsed: Vec<usize> = [2usize, 3, 4].into_iter().filter(|index| self.is_collapsed(*index)).collect();
+        let flexible: Vec<usize> = [1usize, 2, 3, 4].into_iter().filter(|index| !collapsed.contains(index)).collect();
         let available = height as i64 - HEADER_LINES as i64 - 1 - 2 * collapsed.len() as i64;
         let expanded = if flexible.contains(&self.focus) { self.focus } else { flexible[0] };
         let minimum = MIN_PANEL_LINES as i64;
         let others = minimum.max(available / 4);
-        let mut heights = vec![0, 2, 2, 2];
+        let mut heights = vec![0, 2, 2, 2, 2];
         for &index in &flexible {
             heights[index] = others.min(minimum.max(self.panels[index].content_height() as i64 + 2)) as u16;
         }
@@ -3020,7 +3093,7 @@ impl App {
         let budget = height.saturating_sub(HEADER_LINES + 1) as i64;
         let mut excess = (heights.iter().map(|height| *height as i64).sum::<i64>() - budget).max(0);
         for floor in [2, 0] {
-            for index in [0, 2, 3, 1].into_iter().filter(|index| *index != self.focus) {
+            for index in [0, 2, 3, 4, 1].into_iter().filter(|index| *index != self.focus) {
                 let reduction = excess.min(heights[index].saturating_sub(floor) as i64);
                 heights[index] -= reduction as u16;
                 excess -= reduction;
@@ -3033,6 +3106,7 @@ impl App {
     pub fn render(&mut self, buffer: &mut Buffer) {
         self.hit_lines.clear();
         self.hit_actions.clear();
+        self.idea_header_range = None;
         let (width, height) = (buffer.area.width, buffer.area.height);
         self.width = width;
         self.panels[1].fixed_top = self.session_summary_lines();
@@ -3093,6 +3167,7 @@ impl App {
         let counts = match index {
             2 => self.review_counts(),
             3 if self.is_collapsed(3) => self.todo_collapsed_counts(),
+            4 if !self.idea_entries.is_empty() => vec![(format!("? {}", self.idea_entries.len()), bold(MAGENTA))],
             _ => Vec::new(),
         };
         let panel = &mut self.panels[index];
@@ -3104,6 +3179,7 @@ impl App {
         put(buffer, top, 0, &format!("┌{}┐", "─".repeat(inner)), border);
         let label = format!("[{}] {}", PANEL_KEYS[index], PANEL_NAMES[index]);
         put(buffer, top, 2, &label, bold(if focused { BLUE } else { FG_DARK }));
+        self.hit_lines.insert(top, (index, None));
         let mut title_end = 2 + width_of(&label);
         let counts_width: usize = counts.iter().map(|(text, _)| 1 + width_of(text)).sum();
         if !counts.is_empty() && title_end + 2 + counts_width + 2 <= width as usize {
@@ -3224,7 +3300,7 @@ impl App {
         let needing = self.running_sessions.iter().filter(|s| s.needs_attention()).count();
         let attention_width = if needing > 0 { format!("{needing} need you").len() + 2 } else { 0 };
         let proposed = self.todos.items.iter().filter(|item| item.status() == todo::PROPOSED).count();
-        let proposal_text = if proposed > 0 { format!("? {proposed} idea{}", if proposed == 1 { "" } else { "s" }) } else { String::new() };
+        let proposal_text = if proposed > 0 { format!("[4] ? {proposed} idea{}", if proposed == 1 { "" } else { "s" }) } else { String::new() };
         let proposal_width = if proposed > 0 { width_of(&proposal_text) + 2 } else { 0 };
         let held_text = if self.held.is_empty() { String::new() } else { format!("⛔ {}", self.held.len()) };
         let held_width = if held_text.is_empty() { 0 } else { width_of(&held_text) + 2 };
@@ -3238,6 +3314,7 @@ impl App {
         }
         if proposed > 0 {
             put(buffer, 0, column, &proposal_text, bold(MAGENTA));
+            self.idea_header_range = Some((column, (column + width_of(&proposal_text) as u16).min(width.saturating_sub(1))));
             column += proposal_width as u16;
         }
         if !self.held.is_empty() {
@@ -3293,7 +3370,7 @@ impl App {
         let (width, height) = (buffer.area.width, buffer.area.height);
         let mut rows: Vec<(String, Option<String>)> = Vec::new();
         let mut sections: Vec<(String, Vec<(&str, &str)>)> = vec![("Everywhere".into(), GLOBAL_HELP.to_vec())];
-        for index in 0..4 {
+        for index in 0..PANEL_NAMES.len() {
             sections.push((format!("[{}] {}", PANEL_KEYS[index], PANEL_NAMES[index]), Self::panel_help(index)));
         }
         sections.push(("Glyphs".into(), LEGEND.to_vec()));
@@ -3360,6 +3437,10 @@ impl App {
     }
 
     fn handle_click(&mut self, x: u16, y: u16, double: bool, screen: &mut dyn Screen) {
+        if y == 0 && self.idea_header_range.is_some_and(|(start, end)| (start..end).contains(&x)) {
+            self.focus_panel(4);
+            return;
+        }
         if let Some((start, end, action @ ("next-attention" | "session-details"))) = self.hit_actions.get(&y).copied() {
             if (start..end).contains(&x) {
                 self.focus_panel(1);
@@ -3396,6 +3477,7 @@ impl App {
             0 => String::new(),
             1 => self.handle_sessions(key, screen),
             2 => self.handle_reviews(key, screen),
+            4 => self.handle_ideas(key),
             _ => self.handle_todo(key, screen),
         }
     }
@@ -3447,17 +3529,17 @@ impl App {
             self.help_open = false;
             return;
         }
-        if let Key::F(number @ 1..=3) = key {
-            self.focus_panel(number as usize); // F1..F3 from the tmux Ctrl+digit binds
+        if let Key::F(number @ 1..=4) = key {
+            self.focus_panel(number as usize);
             return;
         }
         match key {
             Key::Click { x, y, double } => self.handle_click(x, y, double, screen),
             Key::Char('0') => self.focus_panel(if self.focus == 0 { self.previous_panel } else { 0 }),
             Key::Esc if self.focus == 0 => self.focus_panel(self.previous_panel),
-            Key::Char(digit @ '1'..='3') => self.focus_panel(digit as usize - '0' as usize),
-            Key::Tab => self.focus_panel(if self.focus == 0 { 1 } else { self.focus % 3 + 1 }),
-            Key::BackTab => self.focus_panel(if self.focus <= 1 { 3 } else { self.focus - 1 }),
+            Key::Char(digit @ '1'..='4') => self.focus_panel(digit as usize - '0' as usize),
+            Key::Tab => self.focus_panel(if self.focus == 0 { 1 } else { self.focus % (PANEL_NAMES.len() - 1) + 1 }),
+            Key::BackTab => self.focus_panel(if self.focus <= 1 { PANEL_NAMES.len() - 1 } else { self.focus - 1 }),
             Key::Char('j') | Key::Down => self.panels[self.focus].move_by(1),
             Key::Char('k') | Key::Up => self.panels[self.focus].move_by(-1),
             // From any panel, as ← comes back from the session (tmux.conf).
@@ -3537,7 +3619,7 @@ impl App {
             .filter(|(key, _)| key.chars().count() == 1 && !":?".contains(*key))
             .map(|(key, label)| format!("-\t{key}\t{:<13} {key:<2} {label}", "everywhere"))
             .collect();
-        for index in 0..4 {
+        for index in 0..PANEL_NAMES.len() {
             for (key, label) in Self::panel_help(index) {
                 if index == 1 && is_external
                     && session_key_requires_terminal(if key == "⏎" { Key::Enter } else { Key::Char(key.chars().next().unwrap()) }) {
@@ -4087,7 +4169,7 @@ fn show_in_popup(text: &str) {
 
 fn todo_context(item: &todo::Item) -> String {
     let category = item.category().map(|category| category.label().to_string()).unwrap_or_else(|| format!("Unknown: {}", item.0["category"]));
-    let source = if item.source().is_empty() { "you" } else { "Claude" };
+    let source = if !item.source().is_empty() { "Claude" } else if item.status() == todo::PROPOSED { "unknown session" } else { "you" };
     let routing = if item.is_design() { " · Design".to_string() }
         else if item.is_blocked_report() { format!(" · setup report from {}", item.reporter()) }
         else if !item.link().is_empty() { format!(" · from a {} session ({})", item.reporter(), item.link()) }
@@ -4101,7 +4183,8 @@ pub(crate) fn todo_details(entry: &Entry) -> String {
         Entry::Typed(item) => {
             let status = match item.status().as_str() { todo::PROPOSED => "proposed by Claude", "doing" => "in progress", "done" => "done", _ => "to do" };
             let created = chrono::DateTime::from_timestamp(item.created(), 0).map(|time| time.with_timezone(&chrono::Local).format("%d/%m %H:%M").to_string()).unwrap_or_default();
-            let filed = if item.source().is_empty() { "you".to_string() } else { format!("Claude ({})", item.source()) };
+            let filed = if !item.source().is_empty() { format!("Claude ({})", item.source()) }
+                else if item.status() == todo::PROPOSED { "an unknown session".into() } else { "you".into() };
             let mut text = format!("{}\n\n{} · {status} · filed by {filed} on {created}\n", item.text(), item.project());
             let category = item.category().map(|category| category.label().to_string())
                 .unwrap_or_else(|| format!("Unknown: {}", item.0["category"]));

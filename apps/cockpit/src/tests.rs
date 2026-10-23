@@ -2972,7 +2972,7 @@ fn tab_digits_and_function_keys_move_the_focus() {
     app.handle(Key::Char('0'), screen);
     assert_eq!(app.focus, 0);
     app.handle(Key::BackTab, screen);
-    assert_eq!(app.focus, 3);
+    assert_eq!(app.focus, 4);
     app.handle(Key::F(1), screen);
     assert_eq!(app.focus, 1);
 }
@@ -3477,11 +3477,11 @@ fn tab_navigation_cycles_only_the_action_panels() {
     let fixture = Fixture::new();
     let mut app = fixture.app();
     let screen = &mut FakeScreen::default();
-    app.focus_panel(3);
+    app.focus_panel(4);
     app.handle(Key::Tab, screen);
     assert_eq!(app.focus, 1);
     app.handle(Key::BackTab, screen);
-    assert_eq!(app.focus, 3);
+    assert_eq!(app.focus, 4);
 }
 
 #[test]
@@ -4208,10 +4208,10 @@ fn quota_scripts_are_reaped_once_they_end() {
 }
 
 #[test]
-fn pull_requests_and_todo_with_nothing_open_collapse_to_their_borders() {
+fn pull_requests_todo_and_ideas_with_nothing_open_collapse_to_their_borders() {
     let fixture = Fixture::new();
     let app = fixture.app();
-    assert_eq!(app.layout(45), vec![0, 39, 2, 2]);
+    assert_eq!(app.layout(45), vec![0, 37, 2, 2, 2]);
 }
 
 #[test]
@@ -4232,7 +4232,7 @@ fn a_collapsed_panel_opens_while_focused() {
     let fixture = Fixture::new();
     let mut app = fixture.app();
     app.focus = 3;
-    assert_eq!(app.layout(45), vec![0, 6, 2, 35]);
+    assert_eq!(app.layout(45), vec![0, 6, 2, 33, 2]);
 }
 
 #[test]
@@ -4337,7 +4337,7 @@ fn an_unfocused_panel_takes_only_the_rows_its_lines_need() {
     app.reviews.set_rows(vec![Review { title: "VAT".into(), repository: "shop".into(), ..Review::default() }]);
     app.todos.add("runway", "/r/runway", "add a healthcheck");
     app.build();
-    assert_eq!(app.layout(45), vec![0, 37, 4, 2]);
+    assert_eq!(app.layout(45), vec![0, 35, 4, 2, 2]);
 }
 
 #[test]
@@ -4349,13 +4349,13 @@ fn an_unfocused_panel_takes_at_most_a_quarter_of_the_action_column() {
         app.todos.add("runway", "/r/runway", &format!("item {number}"));
     }
     app.build();
-    assert_eq!(app.layout(45), vec![0, 31, 10, 2]);
+    assert_eq!(app.layout(45), vec![0, 30, 9, 2, 2]);
     app.focus = 3;
     // Empty sessions still show the fixed attention summary.
-    assert_eq!(app.layout(45), vec![0, 6, 10, 27]);
+    assert_eq!(app.layout(45), vec![0, 6, 10, 25, 2]);
     app.focus = 0;
-    assert_eq!(app.layout(45), vec![43, 0, 0, 0]);
-    assert_eq!(app.layout(12), vec![10, 0, 0, 0]);
+    assert_eq!(app.layout(45), vec![43, 0, 0, 0, 0]);
+    assert_eq!(app.layout(12), vec![10, 0, 0, 0, 0]);
 }
 
 #[test]
@@ -7597,6 +7597,192 @@ fn the_header_counts_waiting_proposals() {
     let buffer = render(&mut app, 120, 40);
     let header: String = (0..120).map(|x| buffer[(x, 0)].symbol().to_string()).collect();
     assert!(header.contains("? 1 idea "), "{header}");
+}
+
+fn ideas_fixture() -> (Fixture, App) {
+    let fixture = Fixture::new();
+    let homelab = project_checkout(&fixture, "homelab");
+    let greywall = project_checkout(&fixture, "greywall");
+    let cockpit = project_checkout(&fixture, "agent-cockpit");
+    let mut reporter = session(SESSION_B, "waiting", "greywall", greywall.to_str().unwrap(), 10);
+    reporter["label"] = json!("Check isolation");
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "homelab", homelab.to_str().unwrap(), 1), reporter]));
+    fixture.view(SESSION_A);
+    queue_update(json!({"action": "propose", "text": "Show sandbox failures", "why": "Failures should be visible", "session": SESSION_B}), &greywall);
+    queue_update(json!({"action": "propose", "text": "Explain queued work", "why": "Show what happens next", "session": OPENCODE_SESSION}), &cockpit);
+    let mut app = fixture.app();
+    assert_eq!(app.todos.apply_updates(), 2);
+    app.todos.add("homelab", homelab.to_str().unwrap(), "Ordinary work");
+    app.build();
+    (fixture, app)
+}
+
+fn open_ideas(app: &mut App) {
+    app.handle(Key::Char('4'), &mut FakeScreen::default());
+    assert_eq!(app.focus, 4, "4 opens the global Ideas pane");
+}
+
+#[test]
+fn ideas_show_proposals_from_every_project_without_changing_the_viewed_session() {
+    let (_fixture, mut app) = ideas_fixture();
+    open_ideas(&mut app);
+    let rows = settings_screen_rows(&render(&mut app, 160, 45)).join("\n");
+    for text in ["[4] Ideas", "Show sandbox failures", "greywall", "Explain queued work", "agent-cockpit"] {
+        assert!(rows.contains(text), "missing {text}: {rows}");
+    }
+    assert!(!texts(&app, 4).join("\n").contains("Ordinary work"));
+    assert_eq!(util::current_session(), SESSION_A);
+    assert_eq!(app.todo_scope, "homelab");
+}
+
+#[test]
+fn ideas_ignore_the_todo_kind_filter_without_changing_it() {
+    let (_fixture, mut app) = ideas_fixture();
+    app.focus_panel(3);
+    app.handle(Key::Char('f'), &mut FakeScreen::typing(&["Bug"]));
+    open_ideas(&mut app);
+    let rows = texts(&app, 4).join("\n");
+    assert!(rows.contains("Show sandbox failures") && rows.contains("Explain queued work"), "{rows}");
+    assert!(app.subtitle(3).contains("kind: Bug"));
+}
+
+#[test]
+fn ideas_show_the_source_session_and_reason_even_when_the_session_is_gone() {
+    let (_fixture, mut app) = ideas_fixture();
+    open_ideas(&mut app);
+    let rows = texts(&app, 4).join("\n");
+    for text in ["Check isolation", SESSION_B, OPENCODE_SESSION, "Failures should be visible", "Show what happens next"] {
+        assert!(rows.contains(text), "missing {text}: {rows}");
+    }
+    assert!(rows.contains("not running"), "{rows}");
+}
+
+#[test]
+fn ideas_with_no_source_do_not_claim_to_come_from_the_viewed_session() {
+    let (_fixture, mut app) = ideas_fixture();
+    for item in &mut app.todos.items {
+        item.0.remove("source");
+    }
+    app.build();
+    open_ideas(&mut app);
+    let rows = texts(&app, 4).join("\n");
+    assert!(rows.contains("Unknown session"), "{rows}");
+    assert!(!rows.contains(SESSION_A) && !rows.contains("Check isolation"), "{rows}");
+}
+
+#[test]
+fn ideas_details_do_not_attribute_a_missing_source_to_the_user() {
+    let (_fixture, mut app) = ideas_fixture();
+    for item in &mut app.todos.items {
+        item.0.remove("source");
+    }
+    app.build();
+    open_ideas(&mut app);
+    app.handle(Key::Enter, &mut FakeScreen::default());
+    let rows = settings_screen_rows(&render(&mut app, 160, 45)).join("\n");
+    assert!(rows.contains("Unknown session"), "{rows}");
+    assert!(rows.contains("Show sandbox failures") && rows.contains("Failures should be visible"), "{rows}");
+    assert!(!rows.contains("filed by you"), "{rows}");
+    app.handle(Key::Esc, &mut FakeScreen::default());
+    assert_eq!(app.focus, 4);
+}
+
+#[test]
+fn ideas_recognize_sources_running_outside_the_managed_session_list() {
+    let (fixture, mut app) = ideas_fixture();
+    let greywall = project_checkout(&fixture, "greywall");
+    let mut reporter = external_session(SESSION_B, "waiting", "greywall", greywall.to_str().unwrap(), 10);
+    reporter["label"] = json!("External reporter");
+    fixture.snapshot(json!([reporter]));
+    app.build();
+    open_ideas(&mut app);
+    let rows = texts(&app, 4).join("\n");
+    assert!(rows.contains("External reporter"), "{rows}");
+    assert!(!rows.contains(&format!("session {SESSION_B} · not running")), "{rows}");
+}
+
+#[test]
+fn ideas_header_link_opens_the_pane_without_breaking_the_status_link() {
+    let (_fixture, mut app) = ideas_fixture();
+    let rows = settings_screen_rows(&render(&mut app, 160, 45));
+    let idea_column = rows[0].find("? 2 ideas").expect("global idea count") as u16;
+    assert!(rows[0].contains("[4]"), "the counter identifies its pane: {}", rows[0]);
+    app.handle(Key::Click { x: idea_column, y: 0, double: false }, &mut FakeScreen::default());
+    assert_eq!(app.focus, 4);
+    render(&mut app, 160, 45);
+    let (start, _, action) = app.hit_actions[&0];
+    assert_eq!(action, "status");
+    app.handle(Key::Click { x: start, y: 0, double: false }, &mut FakeScreen::default());
+    assert_eq!(app.focus, 0);
+    app.handle(Key::Esc, &mut FakeScreen::default());
+    assert_eq!(app.focus, 4);
+}
+
+#[test]
+fn ideas_participate_in_panel_navigation_and_the_action_palette() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    app.focus_panel(3);
+    for (key, expected) in [(Key::Tab, 4), (Key::Tab, 1), (Key::BackTab, 4), (Key::BackTab, 3), (Key::F(4), 4)] {
+        app.handle(key, &mut FakeScreen::default());
+        assert_eq!(app.focus, expected);
+    }
+    assert!(app.palette_entries().iter().any(|entry| entry.starts_with("-\t4\t")), "Ideas can be opened from the action palette");
+}
+
+#[test]
+fn ideas_approve_only_the_selected_proposal_without_dispatching_work() {
+    let (fixture, mut app) = ideas_fixture();
+    open_ideas(&mut app);
+    app.handle(Key::Down, &mut FakeScreen::default());
+    app.handle(Key::Char('y'), &mut FakeScreen::default());
+    let stored = TodoList::load();
+    assert_eq!(item_titled(&stored, "Explain queued work").status(), "todo");
+    assert_eq!(item_titled(&stored, "Show sandbox failures").status(), "proposed");
+    app.build();
+    assert!(!texts(&app, 4).join("\n").contains("Explain queued work"));
+    assert!(fixture.calls("cockpit say").is_empty() && fixture.calls("cockpit background").is_empty());
+    assert!(app.todos.queued.is_empty());
+}
+
+#[test]
+fn ideas_decline_only_the_selected_proposal_and_remember_the_decline() {
+    let (fixture, mut app) = ideas_fixture();
+    open_ideas(&mut app);
+    app.handle(Key::Char('n'), &mut FakeScreen::default());
+    let stored = TodoList::load();
+    assert!(stored.items.iter().all(|item| item.text() != "Show sandbox failures"));
+    assert_eq!(item_titled(&stored, "Explain queued work").status(), "proposed");
+    queue_update(json!({"action": "propose", "text": "Show sandbox failures", "why": "Again", "session": SESSION_B}), &project_checkout(&fixture, "greywall"));
+    app.todos.apply_updates();
+    assert!(app.todos.items.iter().all(|item| item.text() != "Show sandbox failures"));
+    assert!(app.todos.queued.is_empty());
+}
+
+#[test]
+fn ideas_show_an_empty_state_and_clear_the_counter_after_the_last_decision() {
+    let (_fixture, mut app) = ideas_fixture();
+    open_ideas(&mut app);
+    app.handle(Key::Down, &mut FakeScreen::default());
+    app.handle(Key::Char('y'), &mut FakeScreen::default());
+    app.handle(Key::Char('n'), &mut FakeScreen::default());
+    app.build();
+    let rows = settings_screen_rows(&render(&mut app, 160, 45));
+    assert!(rows.iter().any(|row| row.contains("No ideas waiting")), "{rows:?}");
+    assert!(!rows[0].contains("? 1 idea") && !rows[0].contains("? 2 ideas"), "{}", rows[0]);
+}
+
+#[test]
+fn ideas_layout_stays_within_short_and_narrow_terminal_buffers() {
+    let (_fixture, mut app) = ideas_fixture();
+    open_ideas(&mut app);
+    for panel in 0..=4 {
+        app.focus_panel(panel);
+        for (width, height) in [(20, 8), (40, 12), (60, 24), (160, 45)] {
+            let _ = render(&mut app, width, height);
+            assert!(app.layout(height).iter().sum::<u16>() <= height.saturating_sub(2));
+        }
+    }
 }
 
 #[test]
