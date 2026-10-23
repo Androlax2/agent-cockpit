@@ -10,7 +10,6 @@ pub enum SidebarRow {
     Team { task: TaskKey },
     Session { session_id: String },
     PlannedQa { task: TaskKey },
-    UnavailableMember { task: TaskKey, session_id: String, role: Role },
 }
 
 pub fn list<'a>(snapshot: &'a Value, key: &str) -> &'a [Value] {
@@ -59,8 +58,8 @@ pub fn project_name(snapshot: &Value, task: &TaskKey, sessions: &[Session]) -> S
         .unwrap_or_else(|| task.project.rsplit(['/', ':']).next().unwrap_or(&task.project).trim_end_matches(".git").into())
 }
 
-pub fn member_count(snapshot: &Value, task: &TaskKey) -> usize {
-    list(snapshot, "members").iter().filter(|member| task_of(member).as_ref() == Some(task)).count()
+pub fn member_count(snapshot: &Value, task: &TaskKey, sessions: &[Session]) -> usize {
+    sessions.iter().filter(|session| member_task(snapshot, session).as_ref() == Some(task)).count()
 }
 
 pub fn has_qa_plan(snapshot: &Value, task: &TaskKey) -> bool {
@@ -188,7 +187,7 @@ pub fn grouped_rows(snapshot: &Value, sessions: &[Session], collapsed: &HashSet<
                     let id = member["session_id"].as_str().ok_or_else(|| TeamError::new(ErrorCode::Invalid, "team member lacks session identity"))?;
                     if let Some(session) = sessions.iter().find(|session| matches_session(session, id)) {
                         rows.push(SidebarRow::Session { session_id: session.session.clone() });
-                    } else { rows.push(SidebarRow::UnavailableMember { task: task.clone(), session_id: id.into(), role }); }
+                    }
                 }
             }
             if has_qa_plan(snapshot, task) && !list(snapshot, "members").iter().any(|member| task_of(member).as_ref() == Some(task) && role(member) == Some(Role::Qa)) {

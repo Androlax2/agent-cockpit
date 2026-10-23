@@ -3245,19 +3245,115 @@ fn team_sidebar_keeps_identical_titles_in_separate_tasks() {
 }
 
 #[test]
-fn team_sidebar_distinguishes_planned_qa_and_missing_members() {
+fn team_sidebar_hides_missing_members_but_keeps_planned_qa() {
     let fixture = Fixture::new();
     sidebar_sessions(&fixture);
     let mut state = sidebar_snapshot();
     state["members"][0]["session_id"] = json!("missing-designer");
     state["qa_plans"] = json!([{"project":SIDEBAR_PROJECT,"task_id":"1d3fd318","agent":"claude"}]);
     team_host(&fixture, state, vec![]);
-    let app = fixture.app();
+    let mut app = fixture.app();
     let shown = texts(&app, 1).join("\n");
-    for expected in ["Designer", "Unavailable", "missing-designer", "QA planned", "Fresh reviewer starts at handoff", "2 linked"] {
+    for expected in ["Developer", "1 linked", "QA planned", "Fresh reviewer starts at handoff"] {
         assert!(shown.contains(expected), "missing {expected}: {shown}");
     }
+    assert!(!shown.contains("Designer") && !shown.contains("Unavailable") && !shown.contains("missing-designer"), "{shown}");
     assert_eq!(app.sessions.len(), 3, "a planned or unavailable member is not a live session");
+    open_team_view(&mut app);
+    assert_eq!(app.team_view.as_ref().unwrap().member(0)["session_id"], "missing-designer");
+}
+
+#[test]
+fn team_sidebar_hides_completed_teams_only_when_members_are_inactive() {
+    for (state, background, command, task_cwd, task_status, is_visible) in [
+        ("waiting", 0, "", "/r/project-a", "done", false),
+        ("working", 0, "", "/r/project-a", "done", true),
+        ("needs-you", 0, "", "/r/project-a", "done", true),
+        ("waiting", 1, "", "/r/project-a", "done", true),
+        ("waiting", 0, "running", "/r/project-a", "done", true),
+        ("waiting", 0, "", "/another/project-a", "done", true),
+        ("waiting", 0, "", "/r/project-a", "doing", true),
+    ] {
+        let fixture = Fixture::new();
+        let mut developer = session(OPENCODE_SESSION, state, "project-a", "/r/project-a", 2);
+        developer["background"] = json!(background);
+        developer["ask_to_run"] = json!(command);
+        fixture.snapshot(json!([developer]));
+        team_host(&fixture, sidebar_snapshot(), vec![]);
+        let mut app = fixture.app();
+        app.todos.items = vec![Item(json!({"id":"1d3fd318","project":"project-a","cwd":task_cwd,"status":task_status,"text":"Team task"}).as_object().unwrap().clone())];
+        app.redraw();
+        let shown = texts(&app, 1).join("\n");
+        assert_eq!(shown.contains("Team:"), is_visible, "{state}/{background}/{command}/{task_cwd}/{task_status}: {shown}");
+    }
+}
+
+#[test]
+fn team_sidebar_completed_sleeping_team_keeps_unresolved_alerts_visible() {
+    for has_alert in [false, true] {
+        let fixture = Fixture::new();
+        fixture.snapshot(json!([]));
+        asleep_note(&fixture, OPENCODE_SESSION, util::now_secs()-120, util::now_secs()-60);
+        let mut state = sidebar_snapshot();
+        for member in state["members"].as_array_mut().unwrap() { member["project"] = json!(TEAM_PROJECT); }
+        for session in state["sessions"].as_array_mut().unwrap() { session["project"] = json!(TEAM_PROJECT); }
+        if has_alert {
+            state["escalations"] = json!([{"project":TEAM_PROJECT,"task_id":"1d3fd318","thread_id":"t1","status":"open","reason":"Review blocker"}]);
+        }
+        team_host(&fixture, state, vec![]);
+        let mut app = fixture.app();
+        app.todos.items = vec![Item(json!({"id":"1d3fd318","project":"project-a","cwd":"/r/project-a","status":"done","text":"Team task"}).as_object().unwrap().clone())];
+        app.redraw();
+        let shown = texts(&app, 1).join("\n");
+        assert_eq!(shown.contains("Team:"), has_alert, "{shown}");
+        if has_alert {
+            assert!(shown.contains("Review blocker"), "{shown}");
+            app.handle(Key::Char('n'), &mut FakeScreen::default());
+            app.handle(Key::Char('i'), &mut FakeScreen::default());
+            assert!(app.team_view.is_some());
+        }
+        assert!(fixture.calls("cockpit").is_empty());
+    }
+}
+
+#[test]
+fn team_sidebar_search_omits_completed_inactive_members_but_keeps_filtered_active_teams() {
+    for attention_only in [false, true] {
+        let fixture = Fixture::new();
+        fixture.snapshot(json!([session(OPENCODE_SESSION, "waiting", "project-a", "/r/project-a", 2),
+            session(SESSION_A, "waiting", "project-a", "/r/project-a", 1)]));
+        fixture.shim("fzf", &format!("cat > '{}'; exit 1", fixture.path("picker-input").display()));
+        let mut state = sidebar_snapshot();
+        state["members"][0]["task_id"] = json!("0123abcd");
+        team_host(&fixture, state, vec![]);
+        let mut app = fixture.app();
+        app.todos.items = vec![Item(json!({"id":"1d3fd318","project":"project-a","cwd":"/r/project-a","status":"done","text":"Completed team"}).as_object().unwrap().clone())];
+        app.redraw();
+        sidebar_select(&mut app, "Team: 0123abcd");
+        app.handle(Key::Enter, &mut FakeScreen::default());
+        if attention_only { continuity_action(&mut app, "1\tattention-filter", &[]); }
+        app.handle(Key::Char('/'), &mut FakeScreen::default());
+        let choices = fs::read_to_string(fixture.path("picker-input")).unwrap();
+        assert!(!choices.contains(OPENCODE_SESSION), "{choices}");
+        assert!(choices.contains(SESSION_A), "{choices}");
+    }
+}
+
+#[test]
+fn team_sidebar_hiding_a_completed_team_cannot_retarget_session_actions() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(OPENCODE_SESSION, "waiting", "project-a", "/r/project-a", 2),
+        session(SESSION_B, "waiting", "project-a", "/r/project-a", 3)]));
+    team_host(&fixture, sidebar_snapshot(), vec![]);
+    let mut app = fixture.app();
+    sidebar_select(&mut app, "Developer");
+    app.todos.items = vec![Item(json!({"id":"1d3fd318","project":"project-a","cwd":"/r/project-a","status":"done","text":"Team task"}).as_object().unwrap().clone())];
+    app.redraw();
+    assert!(app.selected_session().is_none());
+    for key in [Key::Enter, Key::Char('x'), Key::Char('U')] {
+        app.handle(key, &mut FakeScreen::answering(&[Key::Char('y')]));
+    }
+    assert!(fixture.calls("cockpit").is_empty());
 }
 
 #[test]
@@ -3513,7 +3609,7 @@ fn team_sidebar_non_session_rows_cannot_run_session_actions() {
     state["qa_plans"] = json!([{"project":SIDEBAR_PROJECT,"task_id":"1d3fd318","agent":"claude"}]);
     team_host(&fixture, state, vec![]);
     let mut app = fixture.app();
-    for target in ["Team: 1d3fd318", "Designer · Unavailable", "QA planned · Fresh"] {
+    for target in ["Team: 1d3fd318", "QA planned · Fresh"] {
         sidebar_select(&mut app,target);
         for key in [Key::Char('x'),Key::Char('r'),Key::Char('s'),Key::Char('U'),Key::Char('e'),Key::Char('$'),Key::Char('C'),Key::Char('+')] {
             app.handle(key, &mut FakeScreen::answering(&[Key::Char('y')]));
