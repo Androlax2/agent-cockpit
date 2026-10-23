@@ -993,10 +993,11 @@ impl App {
             match child.try_wait() {
                 Ok(None) => self.pending.push((command, child)),
                 Ok(Some(status)) => {
-                    has_ended = true;
                     if status.success() {
+                        has_ended |= command != "subscription-sweep";
                         continue;
                     }
+                    has_ended = true;
                     let mut errors = String::new();
                     if let Some(mut stderr) = child.stderr.take() {
                         let _ = stderr.read_to_string(&mut errors);

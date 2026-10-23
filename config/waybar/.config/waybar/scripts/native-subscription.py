@@ -206,10 +206,10 @@ def launch_claude(generation, launcher):
     require_default_claude_auth()
     if re.fullmatch(r"[0-9a-f]{32}", generation) is None or os.environ.get("COCKPIT_SUBSCRIPTION_ROUTE") != generation:
         raise ValueError("invalid routing generation")
-    key = os.environ.get("CLAUDE_ANSWERS_KEY", "")
+    key = os.environ.get("COCKPIT_ANSWERS_KEY", os.environ.get("CLAUDE_ANSWERS_KEY", ""))
     if re.fullmatch(r"[A-Za-z0-9-]{1,255}", key) is None:
         raise ValueError("invalid project answers key")
-    root = Path(os.environ.get("CLAUDE_ANSWERS_DIR") or str(Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")) / "claude-answers"))
+    root = Path(os.environ.get("COCKPIT_ANSWERS_DIR") or os.environ.get("CLAUDE_ANSWERS_DIR") or str(Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")) / "cockpit-answers"))
     path = root / key / "subscriptions" / f"{generation}.json"
     metadata = path.lstat()
     if metadata.st_uid != os.getuid() or metadata.st_mode & 0o077:

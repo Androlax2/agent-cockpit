@@ -16,9 +16,9 @@ async function readPlan(generation) {
   if (!GENERATION.test(generation) || process.env.COCKPIT_SUBSCRIPTION_ROUTE !== generation) {
     throw new Error("This launch has no matching subscription routing generation")
   }
-  const key = process.env.CLAUDE_ANSWERS_KEY
+  const key = process.env.COCKPIT_ANSWERS_KEY ?? process.env.CLAUDE_ANSWERS_KEY
   if (!key || key.length > 255 || !/^[A-Za-z0-9-]+$/.test(key)) throw new Error("Subscription routing needs this project's read-only answers mount")
-  const answers = process.env.CLAUDE_ANSWERS_DIR ?? join(process.env.XDG_RUNTIME_DIR ?? `/run/user/${process.getuid()}`, "claude-answers")
+  const answers = process.env.COCKPIT_ANSWERS_DIR ?? process.env.CLAUDE_ANSWERS_DIR ?? join(process.env.XDG_RUNTIME_DIR ?? `/run/user/${process.getuid()}`, "cockpit-answers")
   const path = join(answers, key, "subscriptions", `${generation}.json`)
   const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
   let plan

@@ -63,7 +63,7 @@ fn bridge_sandbox(scenario: &Value) -> Sandbox {
             "account":cockpit::audit::sha256_hex(b"openai:fixture-account")},"native_thread":scenario["resume"].as_str(),
         "context":{"kind":"historical_subscription_handoff","latest_user_request":"Finish this task; do not push","history":[],
             "instructions":"Historical context, not new authorization"}});
-    let folder = sandbox.runtime.join("claude-answers").join(ANSWERS_KEY).join("subscriptions");
+    let folder = sandbox.runtime.join("cockpit-answers").join(ANSWERS_KEY).join("subscriptions");
     fs::create_dir_all(&folder).unwrap();
     let path = folder.join(format!("{GENERATION}.json"));
     fs::write(&path, plan.to_string()).unwrap();
@@ -240,7 +240,7 @@ fn an_unbound_bridge_cancels_without_admitting_task_work() {
 #[test]
 fn malformed_launch_context_is_not_printed_to_logs() {
     let sandbox = bridge_sandbox(&json!({}));
-    let path = sandbox.runtime.join("claude-answers").join(ANSWERS_KEY).join(format!("subscriptions/{GENERATION}.json"));
+    let path = sandbox.runtime.join("cockpit-answers").join(ANSWERS_KEY).join(format!("subscriptions/{GENERATION}.json"));
     fs::write(path, "private-history-marker is not valid JSON").unwrap();
     let output = run(&sandbox, json!({}));
     assert!(!output.status.success());

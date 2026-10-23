@@ -329,7 +329,7 @@ fn a_session_restarted_after_its_old_launch_ended_takes_its_new_launch() {
 
 fn subscription_receipt(bench: &mut Bench, generation: &str) -> Result<Value, cockpit::teams::TeamError> {
     let request = serde_json::from_value(json!({"request":"subscription_runtime", "generation":generation})).unwrap();
-    crate::teams::host(&mut bench.registry, request)?.result
+    crate::teams::host(&mut bench.registry, 0, request)?.result
 }
 
 #[test]
@@ -337,7 +337,7 @@ fn subscription_source_inspection_requires_a_live_authenticated_runtime() {
     let mut bench = team_bench();
     let inspect = |bench: &mut Bench| {
         let request = serde_json::from_value(json!({"request":"subscription_source", "session":SESSION_A})).unwrap();
-        crate::teams::host(&mut bench.registry, request).unwrap().result.unwrap()
+        crate::teams::host(&mut bench.registry, 0, request).unwrap().result.unwrap()
     };
     assert_eq!(inspect(&mut bench)["runtime"], "runtime-10");
     bench.world.borrow_mut().sender_runtimes.remove(&10);
@@ -348,7 +348,7 @@ fn subscription_source_inspection_requires_a_live_authenticated_runtime() {
 fn subscription_source_exposes_only_its_authenticated_team_task() {
     let mut bench = linked_team_bench();
     let request = serde_json::from_value(json!({"request":"subscription_source","session":SESSION_A})).unwrap();
-    let source = crate::teams::host(&mut bench.registry, request).unwrap().result.unwrap();
+    let source = crate::teams::host(&mut bench.registry, 0, request).unwrap().result.unwrap();
     assert_eq!(source["team_task"], "1d3fd318");
 }
 
@@ -482,6 +482,20 @@ fn subscription_prompt_admission_requires_completed_binding_and_the_real_sender(
     let task_state = fs::read(cockpit::paths::todo()).unwrap();
     fs::write(cockpit::paths::todo(),"{\"items\":[]}").unwrap();
     assert!(bench.registry.request_from("subscription-initial-gate",&raw,40).is_err(),"termination after inbox preparation still blocks the initial task start");
+    fs::write(cockpit::paths::todo(),&task_state).unwrap();
+    let todo_path = cockpit::paths::todo();
+    let (ready,waiting) = std::sync::mpsc::channel();
+    let completing = std::thread::spawn(move || {
+        let writer = fs::OpenOptions::new().create(true).truncate(false).write(true).open(todo_path.with_extension("lock")).unwrap();
+        writer.lock().unwrap();
+        ready.send(()).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        fs::write(todo_path,"{\"items\":[]}").unwrap();
+    });
+    waiting.recv().unwrap();
+    let admitted = bench.registry.request_from("subscription-initial-gate",&raw,40);
+    completing.join().unwrap();
+    assert!(admitted.is_err(),"initial admission must serialize behind an in-flight task termination writer");
     fs::write(cockpit::paths::todo(),task_state).unwrap();
     assert!(bench.registry.request_from("subscription-initial-gate",&raw,40).is_ok());
     assert_eq!(cockpit::prompts::count(CODEX_SESSION),0);
@@ -560,7 +574,7 @@ fn host_subscription_binding_stays_paused_until_retirement_and_every_store_commi
     bench.registry.report_from(parse_session(&json!({"session":CODEX_SESSION,"native_thread":SESSION_A,"agent":"codex",
         "project":"project-a","cwd":directory,"state":"working"}).to_string()).unwrap(), 40).unwrap();
     let request = json!({"request":"subscription_bind","origin":SESSION_A,"generation":transition.generation});
-    let bind = |bench: &mut Bench| crate::teams::host(&mut bench.registry, serde_json::from_value(request.clone()).unwrap());
+    let bind = |bench: &mut Bench| crate::teams::host(&mut bench.registry, 0, serde_json::from_value(request.clone()).unwrap());
     assert!(bind(&mut bench).is_err(), "a live source must remain the only executable owner");
     assert!(TodoList::load().busy(task_owner));
     bench.world.borrow_mut().sender_runtimes.remove(&10);

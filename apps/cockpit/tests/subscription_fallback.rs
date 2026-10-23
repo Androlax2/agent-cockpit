@@ -443,7 +443,7 @@ fn native_launch_plans_are_private_and_come_only_from_a_pending_route() {
     let output = sandbox.run(env!("CARGO_BIN_EXE_cockpit-subscription"), &["prepare-plan",SESSION_A,&transition.generation], &[]);
     assert!(output.status.success(), "{}", stderr(&output));
     let plan_path = std::path::PathBuf::from(stdout(&output).trim());
-    assert!(plan_path.starts_with(sandbox.runtime.join("claude-answers")));
+    assert!(plan_path.starts_with(sandbox.runtime.join("cockpit-answers")));
     let plan: Value = serde_json::from_slice(&fs::read(&plan_path).unwrap()).unwrap();
     assert_eq!(plan["generation"], transition.generation);
     assert_eq!(plan["selection"]["model"], "gpt-6.1-sol");
@@ -555,9 +555,9 @@ fn typed_and_issue_assignments_follow_a_subscription_replacement_without_requeue
     for issue in [false, true] {
         let key = if issue { "owner/repo#12" } else { "1797cdd6" };
         let assignment = json!({"id":key,"text":"Finish this task","status":"doing","session":SESSION_A,"updated":100});
-        let mut todos = TodoList { items: if issue { Vec::new() } else { vec![Item(assignment.as_object().unwrap().clone())] },
-            issues: if issue { json!({key:assignment}).as_object().unwrap().clone() } else { Default::default() },
-            queued: Default::default(), declined: Vec::new() };
+        let mut todos = TodoList::default();
+        todos.items = if issue { Vec::new() } else { vec![Item(assignment.as_object().unwrap().clone())] };
+        todos.issues = if issue { json!({key:assignment}).as_object().unwrap().clone() } else { Default::default() };
         let replacement = binding("codex").session;
         assert!(todos.transfer_subscription_task(key, SESSION_A, &replacement).unwrap());
         assert!(!todos.transfer_subscription_task(key, SESSION_A, &replacement).unwrap());

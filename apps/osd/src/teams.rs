@@ -553,7 +553,7 @@ pub fn host(registry: &mut Registry, peer: u32, request: cockpit::teams::HostReq
                 row["subscription_account"] = json!(registry.system.runtime_subscription_account(&entry.runtime));
                 let member = VerifiedSession { session_id:session.clone(), agent:entry.agent, runtime:entry.runtime,
                     project:canonical_project(&entry.cwd)? };
-                open_and_restore(registry)?;
+                open_and_restore(registry,false)?;
                 row["team_task"] = store::context(registry.teams.as_ref().expect("opened above"), &member)?["task"]["task_id"].clone();
                 row
             } else { Value::Null };
@@ -663,7 +663,7 @@ fn bind_subscription(registry: &mut Registry, origin: &str, generation: &str) ->
     let task = cockpit::teams::TaskKey { project:project.clone(),task_id:route.task.clone() };
     let source_member = VerifiedSession { session_id:source.session.clone(),agent:source.agent.clone(),project:project.clone(),runtime:pending.source.runtime.clone() };
     let replacement_member = VerifiedSession { session_id:session.into(),agent:pending.target.agent.clone(),project,runtime:runtime.into() };
-    open_and_restore(registry)?;
+    open_and_restore(registry,true)?;
     let connection = registry.teams.as_ref().expect("opened above");
     let source_context = store::context(connection, &source_member)?;
     let replacement_context = store::context(connection, &replacement_member)?;

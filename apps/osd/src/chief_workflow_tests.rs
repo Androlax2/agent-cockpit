@@ -133,7 +133,10 @@ syncBuiltinESMExports()
 const [plugin, directory, log] = process.argv.slice(2)
 const {default: definition} = await import(plugin)
 async function* stream() { await new Promise(() => {}) }
+const storage = new Map()
 const cleanup = await definition.setup({
+  storage:{get:async key=>storage.get(key),set:async(key,value)=>storage.set(key,value),remove:async key=>storage.delete(key)},
+  integration:{connection:{active:async()=>undefined,resolve:async()=>undefined}},
   location:{directory}, event:{subscribe:()=>stream()}, tool:{hook:async()=>({dispose:async()=>{}})},
   session:{hook:async()=>({dispose:async()=>{}}), synthetic:async(input)=>{appendFileSync(log,JSON.stringify(input)+'\n'); return {id:input.id}}},
 })

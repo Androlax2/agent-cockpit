@@ -334,7 +334,7 @@ fn routed_claude_launch_uses_the_protected_exact_selection_only_with_included_bi
         let sandbox = claude_fixture();
         let evidence: Value = serde_json::from_slice(&collect(&sandbox, "claude").stdout).unwrap();
         let generation = "a".repeat(32);
-        let folder = sandbox.runtime.join("claude-answers").join(ANSWERS_KEY).join("subscriptions");
+        let folder = sandbox.runtime.join("cockpit-answers").join(ANSWERS_KEY).join("subscriptions");
         fs::create_dir_all(&folder).unwrap();
         let plan = json!({"version":1,"generation":generation,"directory":sandbox.home,"session_id":SESSION_A,
             "selection":{"agent":"claude","provider":"anthropic","model":"claude-opus-4-7","variant":"high",

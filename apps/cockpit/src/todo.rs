@@ -554,7 +554,7 @@ impl TodoList {
         self.try_save_locked()
     }
 
-    fn lock_writer() -> std::io::Result<fs::File> {
+    pub fn lock_writer() -> std::io::Result<fs::File> {
         use std::os::unix::fs::OpenOptionsExt;
         let path = paths::todo();
         fs::create_dir_all(path.parent().unwrap())?;

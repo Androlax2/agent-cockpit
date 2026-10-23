@@ -63,7 +63,7 @@ fn run_host_command(bench: &mut Bench, listener: &UnixListener, arguments: &[&st
                 let mut bytes = Vec::new();
                 stream.read_to_end(&mut bytes).unwrap();
                 let request = serde_json::from_slice(&bytes).unwrap();
-                let reply = crate::teams::host(&mut bench.registry,request).unwrap();
+                let reply = crate::teams::host(&mut bench.registry,0,request).unwrap();
                 stream.write_all(&serde_json::to_vec(&reply).unwrap()).unwrap();
             },
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => (),
