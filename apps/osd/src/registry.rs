@@ -806,10 +806,9 @@ impl RunRequests {
         let is_known = self.current == id || self.queue.iter().any(|queued| queued == id) || self.running.iter().any(|run| run == id);
         if is_known {
             match phase {
-                "running" if self.current != id || !self.asked_input => {
+                "running" => {
                     system.run(&["cockpit", "approval-pane", "close", id], &[0]);
                 }
-                "running" => { system.run(&["cockpit", "attention-answered", id], &[0]); }
                 "input" => { system.run(&["cockpit", "approval-pane", id], &[0]); }
                 _ => {}
             }
@@ -866,7 +865,7 @@ impl RunRequests {
         match phase {
             "done" => self.finish(system, banners),
             // Approved and running without needing Theo: the next request is shown now, this one
-            // runs on with its pane. One that asked for input keeps his attention to its end.
+            // runs on unseen. One that asked for input keeps his floating window to its end.
             "running" if !self.asked_input => {
                 if let Some(mut window) = self.window.take() {
                     if window.running() {
@@ -885,7 +884,7 @@ impl RunRequests {
 
     /// The floating window while the approval needs Theo (his yes, or input the running command
     /// asks for), he is off the cockpit, and not gaming. Once he approved, it closes while the
-    /// command just runs; the pane under the cockpit's session keeps showing the output. A window
+    /// command just runs; the cockpit pane also hides whenever it resumes. A window
     /// open when he answered input stays to the command's end, but one closed meanwhile (the
     /// cockpit's workspace, or Theo) is not opened again: reopened, it followed him to every
     /// workspace he went to. One Theo closes while it asks stays closed until the next question.

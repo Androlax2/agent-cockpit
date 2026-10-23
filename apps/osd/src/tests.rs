@@ -2300,7 +2300,7 @@ fn approving_hides_the_pane_until_the_command_needs_input() {
 }
 
 #[test]
-fn after_an_answer_the_pane_stays_until_the_command_ends() {
+fn after_an_answer_the_pane_hides_until_the_next_question() {
     let mut bench = Bench::new();
     bench.registry.run_request(RUN_A).unwrap();
     bench.registry.run_phase(RUN_A, "running");
@@ -2309,10 +2309,13 @@ fn after_an_answer_the_pane_stays_until_the_command_ends() {
     let closes_before_answer = bench.commands().iter().filter(|command| **command == close).count();
     bench.registry.run_phase(RUN_A, "running");
     bench.registry.tick_queues();
-    assert_eq!(bench.commands().iter().filter(|command| **command == close).count(), closes_before_answer,
-               "answering the command's prompt hid its output");
+    assert_eq!(bench.commands().iter().filter(|command| **command == close).count(), closes_before_answer + 1,
+               "pane stayed open after the command resumed");
+    bench.registry.run_phase(RUN_A, "input");
+    let show = vec!["cockpit".to_string(), "approval-pane".into(), RUN_A.into()];
+    assert_eq!(bench.commands().iter().filter(|command| **command == show).count(), 3);
     bench.registry.run_phase(RUN_A, "done");
-    assert_eq!(bench.commands().iter().filter(|command| **command == close).count(), closes_before_answer + 1);
+    assert_eq!(bench.commands().iter().filter(|command| **command == close).count(), closes_before_answer + 2);
 }
 
 #[test]
@@ -2398,13 +2401,12 @@ fn a_finished_request_closes_the_pane_and_starts_the_next() {
 }
 
 #[test]
-fn answering_command_input_returns_attention_without_closing_its_output() {
+fn answering_command_input_hides_its_pane() {
     let mut bench = Bench::new();
     bench.registry.run_request(RUN_A).unwrap();
     bench.registry.run_phase(RUN_A, "input");
     bench.registry.run_phase(RUN_A, "running");
-    assert!(bench.commands().contains(&vec!["cockpit".into(), "attention-answered".into(), RUN_A.into()]));
-    assert!(!bench.commands().contains(&vec!["cockpit".into(), "approval-pane".into(), "close".into(), RUN_A.into()]));
+    assert!(bench.commands().contains(&vec!["cockpit".into(), "approval-pane".into(), "close".into(), RUN_A.into()]));
 }
 
 #[test]
