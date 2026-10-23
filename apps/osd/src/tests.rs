@@ -2240,6 +2240,29 @@ fn ask_to_run_phases_follow_the_requesting_session_until_done() {
 }
 
 #[test]
+fn answering_a_background_command_clears_its_queued_input_status() {
+    for starts_queued in [false, true] {
+        let mut bench = Bench::new();
+        bench.report(SESSION_A, json!({"state": "working"}));
+        fs::write(cockpit::approval::held_request(RUN_A, "request"), json!({"answers": ANSWERS_KEY, "session": SESSION_A}).to_string()).unwrap();
+        if starts_queued {
+            bench.registry.run_request(RUN_B).unwrap();
+        }
+        bench.registry.run_request(RUN_A).unwrap();
+        bench.registry.run_phase(RUN_A, "running");
+        if !starts_queued {
+            bench.registry.run_request(RUN_B).unwrap();
+        }
+        bench.registry.run_phase(RUN_A, "input");
+        assert_eq!(bench.snapshot()[0]["ask_to_run"], "input");
+        bench.registry.run_phase(RUN_A, "running");
+        assert_eq!(bench.snapshot()[0]["ask_to_run"], "running", "starts_queued={starts_queued}");
+        bench.registry.run_phase(RUN_B, "done");
+        assert_eq!(bench.snapshot()[0]["ask_to_run"], "running", "an answered question must not be offered again");
+    }
+}
+
+#[test]
 fn an_abandoned_ask_to_run_disappears_from_its_session_card() {
     let mut bench = Bench::new();
     bench.report(SESSION_A, json!({"state": "working"}));

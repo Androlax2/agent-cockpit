@@ -807,6 +807,7 @@ impl RunRequests {
         if is_known {
             match phase {
                 "running" => {
+                    self.waiting_input.retain(|run| run != id);
                     system.run(&["cockpit", "approval-pane", "close", id], &[0]);
                 }
                 "input" => { system.run(&["cockpit", "approval-pane", id], &[0]); }
