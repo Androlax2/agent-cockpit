@@ -4,6 +4,9 @@ use crate::registry::Registry;
 use cockpit::teams::{AgentAction, ErrorCode, HostAction, TeamError, TeamReply, VerifiedSession, store};
 use serde_json::{Value, json};
 use std::fs;
+use std::io::Read;
+use std::os::fd::AsRawFd;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -53,6 +56,22 @@ pub(crate) fn live_sessions(registry: &mut Registry) -> Result<Vec<VerifiedSessi
     let live: Vec<VerifiedSession> = rows.into_iter().filter(|(_, _, _, runtime)| registry.system.runtime_is_live(runtime))
         .filter_map(|(session_id, agent, cwd, runtime)| Some(VerifiedSession { session_id, agent, project: canonical_project(&cwd).ok()?, runtime }))
         .collect();
+    reconcile_sleep(registry)?;
+    // Continuation must commit before startup recovery sees a changed member runtime.
+    for session in &live {
+        let Some(entry) = registry.sessions.get(&session.session_id) else { continue };
+        if entry.resume_token.is_empty() { continue; }
+        let token = entry.resume_token.clone();
+        let Ok(checkout) = fs::canonicalize(&entry.cwd) else { continue };
+        let checkout = checkout.to_string_lossy().into_owned();
+        let connection = registry.teams.as_mut().expect("opened above");
+        let Some(permit) = store::sleep::permit(connection, &token)? else { continue };
+        let is_acknowledgement = permit.state == "bound" && permit.replacement_runtime.as_deref() == Some(&session.runtime);
+        if is_acknowledgement || (permit.note_recorded && !registry.system.runtime_is_live(&permit.old_runtime)
+            && matching_sleep_note(&permit, now_ms())) {
+            store::sleep::bind(connection, &token, session, &checkout, now_ms())?;
+        }
+    }
     if is_opened {
         store::recover(registry.teams.as_mut().expect("opened above"), &live, now_ms())?;
     }
@@ -66,6 +85,82 @@ pub(crate) fn live_sessions(registry: &mut Registry) -> Result<Vec<VerifiedSessi
         }
     }
     Ok(live)
+}
+
+fn ended(session: &str) -> bool {
+    match fs::read_to_string(cockpit::paths::ended_sessions()) {
+        Ok(text) => text.lines().any(|line| line.trim() == session),
+        Err(error) => error.kind() != std::io::ErrorKind::NotFound,
+    }
+}
+
+/// Pin the private directory, then open its file without following a final symlink. Linux flags
+/// match the daemon's existing direct O_NONBLOCK use; no extra dependency is needed.
+fn matching_sleep_note(permit: &store::sleep::SleepPermit, now: i64) -> bool {
+    if cockpit::agents::of_session_id(&permit.session_id).is_none() || permit.expires_at <= now || ended(&permit.session_id) {
+        return false;
+    }
+    const O_NOFOLLOW: i32 = 0x20000;
+    const O_DIRECTORY: i32 = 0x10000;
+    const O_NONBLOCK: i32 = 0x800;
+    let read_note = || -> std::io::Result<Option<Value>> {
+        let directory = fs::OpenOptions::new().read(true).custom_flags(O_NOFOLLOW | O_DIRECTORY)
+            .open(cockpit::paths::asleep_dir())?;
+        let directory_metadata = directory.metadata()?;
+        let owner = fs::metadata("/proc/self")?.uid();
+        if directory_metadata.uid() != owner || directory_metadata.mode() & 0o077 != 0 { return Ok(None); }
+        let file = fs::OpenOptions::new().read(true).custom_flags(O_NOFOLLOW | O_NONBLOCK)
+            .open(format!("/proc/self/fd/{}/{}", directory.as_raw_fd(), permit.session_id))?;
+        let metadata = file.metadata()?;
+        if !metadata.is_file() || metadata.uid() != owner || metadata.mode() & 0o077 != 0 || metadata.nlink() != 1
+            || metadata.len() > cockpit::teams::client::REQUEST_MAX as u64 { return Ok(None); }
+        let mut input = Vec::new();
+        file.take(cockpit::teams::client::REQUEST_MAX as u64 + 1).read_to_end(&mut input)?;
+        if input.len() > cockpit::teams::client::REQUEST_MAX { return Ok(None); }
+        Ok(serde_json::from_slice(&input).ok())
+    };
+    let note = match read_note() {
+        Ok(Some(note)) => note,
+        _ => return false,
+    };
+    let slept_at = note["slept_at"].as_i64().and_then(|seconds| seconds.checked_mul(1000));
+    let lifetime = cockpit::sleep::EXPIRY_S * 1000;
+    note["session"].as_str() == Some(&permit.session_id) && note["agent"].as_str() == Some(&permit.agent)
+        && note["team_resume"].as_str() == Some(&permit.token)
+        && note["cwd"].as_str().and_then(|cwd| fs::canonicalize(cwd).ok()).as_deref() == Some(std::path::Path::new(&permit.checkout))
+        && slept_at.is_some_and(|slept_at| slept_at >= permit.expires_at - lifetime - 1000
+            && slept_at <= now + 1000 && now.saturating_sub(slept_at) < lifetime)
+}
+
+fn reconcile_sleep(registry: &mut Registry) -> Result<(), TeamError> {
+    let connection = registry.teams.as_mut().expect("opened above");
+    store::sleep::expire_wakes(connection, now_ms())?;
+    for permit in store::sleep::prepared_records(connection)? {
+        let is_old_live = registry.system.runtime_is_live(&permit.old_runtime);
+        // Preparation precedes note creation. Only this live, unrecorded phase may lack a note;
+        // sleep-recorded is the durable barrier after which deletion always cancels permission.
+        let is_preparing = !permit.note_recorded && permit.state == "prepared"
+            && is_old_live && permit.expires_at > now_ms() && !ended(&permit.session_id);
+        if is_preparing { continue; }
+        if !permit.note_recorded || !matching_sleep_note(&permit, now_ms()) {
+            store::sleep::cancel(connection, &permit.session_id, &permit.token)?;
+        }
+    }
+    Ok(())
+}
+
+fn start_sleep_wakes(registry: &mut Registry) -> Result<(), TeamError> {
+    reconcile_sleep(registry)?;
+    let connection = registry.teams.as_mut().expect("opened above");
+    for permit in store::sleep::pending_wakes(connection, now_ms())? {
+        if !permit.note_recorded || registry.system.runtime_is_live(&permit.old_runtime)
+            || !matching_sleep_note(&permit, now_ms()) { continue; }
+        if store::sleep::reserve_wake(connection, &permit.session_id, &permit.token, now_ms())?
+            && !registry.system.start_detached(&["cockpit", "wake", &permit.session_id]) {
+            store::sleep::mark_failed(connection, &permit.session_id, &permit.token, "could not start cockpit wake")?;
+        }
+    }
+    Ok(())
 }
 
 /// The live sessions' folders: approved recruits start in the asker's.
@@ -183,6 +278,7 @@ pub fn host_snapshot(registry: &mut Registry) -> Result<Value, TeamError> {
     // The cockpit asks every 10 s: starts that never reported turn failed here, and a start queued
     // before a daemon restart goes out.
     start_spawns(registry)?;
+    start_sleep_wakes(registry)?;
     let mut sessions = Vec::new();
     for session in &live {
         let entry = registry.sessions.get(&session.session_id);
@@ -192,6 +288,13 @@ pub fn host_snapshot(registry: &mut Registry) -> Result<Value, TeamError> {
     }
     let mut state = store::snapshot(database(registry, &live)?, None, None, 100)?;
     state["sessions"] = json!(sessions);
+    let mut sleeps = Vec::new();
+    for permit in store::sleep::prepared_records(registry.teams.as_ref().expect("opened above"))? {
+        let mut status = store::sleep::status(registry.teams.as_ref().expect("opened above"), &permit.session_id, &permit.token)?;
+        status["session_id"] = json!(permit.session_id);
+        sleeps.push(status);
+    }
+    state["sleeps"] = json!(sleeps);
     Ok(state)
 }
 
@@ -199,7 +302,59 @@ pub fn host(registry: &mut Registry, request: cockpit::teams::HostRequest) -> Re
     match request {
         cockpit::teams::HostRequest::Control { action } => host_control(registry, &action),
         cockpit::teams::HostRequest::Snapshot => Ok(TeamReply { request_id: "snapshot".into(), result: Ok(host_snapshot(registry)?) }),
+        request => sleep_control(registry, request),
     }
+}
+
+fn sleep_control(registry: &mut Registry, request: cockpit::teams::HostRequest) -> Result<TeamReply, TeamError> {
+    use cockpit::teams::HostRequest;
+    let is_recording = matches!(&request, HostRequest::SleepRecorded { .. });
+    let live = live_sessions(registry)?;
+    let session_id = match &request {
+        HostRequest::PrepareSleep { session_id } | HostRequest::CancelSleep { session_id, .. }
+        | HostRequest::SleepRecorded { session_id, .. } | HostRequest::BeginWake { session_id, .. }
+        | HostRequest::SleepStatus { session_id, .. } => session_id,
+        _ => unreachable!(),
+    };
+    if cockpit::agents::of_session_id(session_id).is_none() {
+        return Err(TeamError::new(ErrorCode::Invalid, "invalid sleep session id"));
+    }
+    let result = match request {
+        HostRequest::PrepareSleep { session_id } => {
+            let member = live.iter().find(|member| member.session_id == session_id).ok_or_else(unauthorized)?;
+            let entry = registry.sessions.get(&session_id).ok_or_else(unauthorized)?;
+            let checkout = fs::canonicalize(&entry.cwd)?.to_string_lossy().into_owned();
+            let token = store::sleep::prepare(registry.teams.as_mut().expect("opened above"), member, &checkout, now_ms())?;
+            json!({"token":token})
+        },
+        HostRequest::CancelSleep { session_id, token } => {
+            store::sleep::cancel(registry.teams.as_mut().expect("opened above"), &session_id, &token)?;
+            json!({"state":"cancelled"})
+        },
+        HostRequest::SleepStatus { session_id, token } => store::sleep::status(registry.teams.as_ref().expect("opened above"), &session_id, &token)?,
+        HostRequest::SleepRecorded { session_id, token } | HostRequest::BeginWake { session_id, token } => {
+            let connection = registry.teams.as_mut().expect("opened above");
+            let permit = store::sleep::permit(connection, &token)?.filter(|permit| permit.session_id == session_id)
+                .ok_or_else(|| TeamError::new(ErrorCode::NotFound, "sleep continuation not found"))?;
+            if !matching_sleep_note(&permit, now_ms()) {
+                return Err(TeamError::new(ErrorCode::Conflict, "matching protected sleep note required"));
+            }
+            // Both transitions are host-only. Record while the old process lives; launch only after it died.
+            if is_recording {
+                if !registry.system.runtime_is_live(&permit.old_runtime) { return Err(unauthorized()); }
+                store::sleep::record_note(connection, &session_id, &token)?;
+                json!({"state":"prepared"})
+            } else {
+                if !permit.note_recorded || registry.system.runtime_is_live(&permit.old_runtime) {
+                    return Err(TeamError::new(ErrorCode::Conflict, "sleep note is not recorded or old runtime is still live"));
+                }
+                store::sleep::begin_wake(connection, &session_id, &token, now_ms())?;
+                store::sleep::status(connection, &session_id, &token)?
+            }
+        },
+        _ => unreachable!(),
+    };
+    Ok(TeamReply { request_id: "sleep".into(), result: Ok(result) })
 }
 
 /// Host UI only: reached through a socket no sandbox can open.

@@ -2,6 +2,17 @@ use cockpit::teams::{AgentAction, Proposal};
 use serde_json::json;
 
 #[test]
+fn sandbox_cannot_prepare_or_cancel_team_sleep() {
+    for request in ["prepare_sleep", "cancel_sleep", "begin_wake", "sleep_status", "sleep_recorded"] {
+        let mut host = json!({"request":request,"session_id":"aaaaaaaa-0000-4000-8000-000000000000"});
+        if request != "prepare_sleep" { host["token"] = json!("a".repeat(32)); }
+        assert!(serde_json::from_value::<cockpit::teams::HostRequest>(host.clone()).is_ok(), "{request}");
+        assert!(serde_json::from_value::<AgentAction>(host).is_err());
+        assert!(serde_json::from_value::<AgentAction>(json!({"action":request})).is_err());
+    }
+}
+
+#[test]
 fn agent_messages_cannot_smuggle_host_approval_fields() {
     let valid = json!({"action":"send","message":{"task":{"project":"project-a","task_id":"1d3fd318"},
         "submission_key":"notice-1","recipient":"aaaaaaaa-0000-4000-8000-000000000000","kind":"notice","body":"Check this frame.","thread_id":null,"handoff_id":null}});

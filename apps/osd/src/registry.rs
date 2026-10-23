@@ -166,6 +166,7 @@ pub struct Report {
     /// Set only by the daemon from the sender's launcher incarnation, never parsed from a report.
     pub runtime: Option<String>,
     pub spawn_token: Option<String>,
+    pub resume_token: Option<String>,
     pub target: BTreeMap<String, String>,
 }
 
@@ -269,7 +270,7 @@ pub fn parse_session(raw: &str) -> Result<Report, String> {
         agents: report.get("agents").and_then(Value::as_u64),
         background: report.get("background").and_then(Value::as_u64),
         apps: report.get("apps").and_then(Value::as_str).map(str::to_string),
-        agent: report.get("agent").and_then(Value::as_str).map(str::to_string), native_thread, runtime: None, spawn_token: None, target,
+        agent: report.get("agent").and_then(Value::as_str).map(str::to_string), native_thread, runtime: None, spawn_token: None, resume_token: None, target,
     })
 }
 
@@ -409,6 +410,7 @@ pub trait System {
     fn default_agent(&mut self) -> Option<String> { None }
     /// trusted_spawn_token for the process that sent a report.
     fn sender_spawn_token(&mut self, _sender: u32) -> Option<String> { None }
+    fn sender_resume_token(&mut self, _sender: u32) -> Option<String> { None }
     /// Starts a command and does not wait for it: false when it could not start.
     fn start_detached(&mut self, _command: &[&str]) -> bool { false }
     fn quiet(&mut self) -> bool {
@@ -1087,6 +1089,8 @@ pub struct Entry {
     pub runtime: String,
     /// The team start this launch belongs to (COCKPIT_TEAM_SPAWN), empty for others.
     pub spawn_token: String,
+    /// Only the authenticated outside-sandbox launcher can supply this continuation.
+    pub resume_token: String,
 }
 
 pub struct Registry {
@@ -1219,6 +1223,7 @@ impl Registry {
         }
         report.runtime = runtime;
         report.spawn_token = self.system.sender_spawn_token(sender);
+        report.resume_token = self.system.sender_resume_token(sender);
         // The session's folder is where its sandbox started, never the one the report claims: a
         // claimed folder of another project would make a restart resume the session there, in that
         // project's sandbox with its token (security audit 2026-10-19, M1).
@@ -1231,6 +1236,8 @@ impl Registry {
                              &format!("claimed {claimed:?}, outside {started_in:?} where its sandbox started"));
             }
             report.cwd = started_in;
+        } else {
+            report.cwd = self.system.sender_directory(sender);
         }
         if !self.sessions.contains_key(&report.session) {
             cockpit::audit::record("daemon", "session.first_report", "ok", json!({
@@ -1258,9 +1265,15 @@ impl Registry {
         let mut entry = self.sessions.remove(&session).unwrap();
         if let Some(runtime) = report.runtime.as_ref().filter(|runtime| **runtime != entry.runtime) {
             entry.runtime = runtime.clone();
+            entry.resume_token.clear();
+            // A new launch must establish its own host checkout, not inherit the old one's proof.
+            entry.cwd.clear();
         }
         if let Some(token) = report.spawn_token.as_ref() {
             entry.spawn_token = token.clone();
+        }
+        if let Some(token) = report.resume_token.as_ref() {
+            entry.resume_token = token.clone();
         }
         if let Some(native) = report.native_thread.as_ref().filter(|native| **native != entry.native_thread) {
             entry.native_thread = native.clone();
@@ -1938,6 +1951,11 @@ pub fn trusted_spawn_token(table: &dyn Processes, sender: &str) -> Option<String
     (token.len() == 32 && token.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))).then_some(token)
 }
 
+pub fn trusted_resume_token(table: &dyn Processes, sender: &str) -> Option<String> {
+    let token = table.environment(&first_process_outside(table, sender)?).remove("COCKPIT_TEAM_RESUME")?;
+    (token.len() == 32 && token.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))).then_some(token)
+}
+
 /// The folder the sender's sandbox started in: the working directory of its first process outside
 /// the sandbox (greywall, bwrap), which nothing inside can change.
 pub fn sandbox_directory(table: &dyn Processes, sender: &str) -> Option<String> {
@@ -2181,6 +2199,9 @@ impl System for RealSystem {
     }
     fn sender_spawn_token(&mut self, sender: u32) -> Option<String> {
         trusted_spawn_token(&Proc, &sender.to_string())
+    }
+    fn sender_resume_token(&mut self, sender: u32) -> Option<String> {
+        trusted_resume_token(&Proc, &sender.to_string())
     }
     fn start_detached(&mut self, command: &[&str]) -> bool {
         let Some((program, arguments)) = command.split_first() else { return false };

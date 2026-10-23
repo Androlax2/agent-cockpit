@@ -20,6 +20,7 @@ pub struct SleepPermit {
     pub expires_at: i64,
     pub state: String,
     pub replacement_runtime: Option<String>,
+    pub note_recorded: bool,
 }
 
 pub(super) fn migrate(connection: &Connection) -> Result<(), TeamError> {
@@ -27,9 +28,12 @@ pub(super) fn migrate(connection: &Connection) -> Result<(), TeamError> {
         token TEXT PRIMARY KEY, session_id TEXT NOT NULL, agent TEXT NOT NULL, project TEXT NOT NULL,
         checkout TEXT NOT NULL, old_runtime TEXT NOT NULL, task_key TEXT NOT NULL, role TEXT NOT NULL,
         epoch TEXT NOT NULL, expires_at INTEGER NOT NULL, state TEXT NOT NULL,
-        replacement_runtime TEXT, started_at INTEGER, error TEXT NOT NULL DEFAULT '');
+        replacement_runtime TEXT, started_at INTEGER, error TEXT NOT NULL DEFAULT '', note_recorded INTEGER NOT NULL DEFAULT 0);
         CREATE UNIQUE INDEX IF NOT EXISTS one_sleep_continuation ON sleep_permits(session_id)
             WHERE state IN ('prepared','launch_requested','waking','failed');")?;
+    let has_recorded = connection.prepare("PRAGMA table_info(sleep_permits)")?.query_map([], |row| row.get::<_, String>(1))?
+        .collect::<Result<Vec<_>, _>>()?.iter().any(|name| name == "note_recorded");
+    if !has_recorded { connection.execute("ALTER TABLE sleep_permits ADD COLUMN note_recorded INTEGER NOT NULL DEFAULT 0", [])?; }
     Ok(())
 }
 
@@ -38,11 +42,11 @@ fn read_permit(row: &rusqlite::Row<'_>) -> rusqlite::Result<SleepPermit> {
     let role = role_of(&role).ok_or_else(|| rusqlite::Error::InvalidColumnType(7, "role".into(), rusqlite::types::Type::Text))?;
     Ok(SleepPermit { token: row.get(0)?, session_id: row.get(1)?, agent: row.get(2)?, project: row.get(3)?,
         checkout: row.get(4)?, old_runtime: row.get(5)?, task_key: row.get(6)?, role, epoch: row.get(8)?,
-        expires_at: row.get(9)?, state: row.get(10)?, replacement_runtime: row.get(11)? })
+        expires_at: row.get(9)?, state: row.get(10)?, replacement_runtime: row.get(11)?, note_recorded: row.get(12)? })
 }
 
-fn permit(connection: &Connection, token: &str) -> Result<Option<SleepPermit>, TeamError> {
-    Ok(connection.query_row("SELECT token,session_id,agent,project,checkout,old_runtime,task_key,role,epoch,expires_at,state,replacement_runtime
+pub fn permit(connection: &Connection, token: &str) -> Result<Option<SleepPermit>, TeamError> {
+    Ok(connection.query_row("SELECT token,session_id,agent,project,checkout,old_runtime,task_key,role,epoch,expires_at,state,replacement_runtime,note_recorded
         FROM sleep_permits WHERE token=?1", [token], read_permit).optional()?)
 }
 
@@ -134,9 +138,16 @@ pub fn bind(connection: &mut Connection, token: &str, replacement: &VerifiedSess
 
 /// Protected records for host note reconciliation; failed launches are included, never retried.
 pub fn prepared_records(connection: &Connection) -> Result<Vec<SleepPermit>, TeamError> {
-    let mut statement = connection.prepare("SELECT token,session_id,agent,project,checkout,old_runtime,task_key,role,epoch,expires_at,state,replacement_runtime
+    let mut statement = connection.prepare("SELECT token,session_id,agent,project,checkout,old_runtime,task_key,role,epoch,expires_at,state,replacement_runtime,note_recorded
         FROM sleep_permits WHERE state IN ('prepared','launch_requested','waking','failed') ORDER BY expires_at,token")?;
     Ok(statement.query_map([], read_permit)?.collect::<Result<_, _>>()?)
+}
+
+/// Host acknowledgement that the matching protected sleep note was durably written before exit.
+pub fn record_note(connection: &mut Connection, session: &str, token: &str) -> Result<(), TeamError> {
+    let changed = connection.execute("UPDATE sleep_permits SET note_recorded=1 WHERE session_id=?1 AND token=?2 AND state='prepared'", params![session, token])?;
+    if changed != 1 { return Err(TeamError::new(ErrorCode::Conflict, "sleep preparation is no longer recordable")); }
+    Ok(())
 }
 
 pub fn pending_wakes(connection: &Connection, now_ms: i64) -> Result<Vec<SleepPermit>, TeamError> {

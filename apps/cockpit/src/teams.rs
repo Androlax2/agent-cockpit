@@ -86,6 +86,11 @@ pub enum HostAction {
 pub enum HostRequest {
     Control { action: HostAction },
     Snapshot,
+    PrepareSleep { session_id: String },
+    SleepRecorded { session_id: String, token: String },
+    CancelSleep { session_id: String, token: String },
+    BeginWake { session_id: String, token: String },
+    SleepStatus { session_id: String, token: String },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -55,6 +55,33 @@ fn poll_interval() -> std::time::Duration {
     std::time::Duration::from_millis(std::env::var("COCKPIT_TEAM_POLL_MS").ok().and_then(|value| value.parse().ok()).unwrap_or(3000))
 }
 
+fn sleep_request(arguments: &[String]) -> Result<cockpit::teams::HostRequest, String> {
+    use cockpit::teams::HostRequest;
+    if arguments.len() != 2 || cockpit::agents::of_session_id(&arguments[1]).is_none() {
+        return Err("sleep commands need one valid session id; tokens belong in stdin JSON".into());
+    }
+    let session_id = arguments[1].clone();
+    if arguments[0] == "sleep-prepare" { return Ok(HostRequest::PrepareSleep { session_id }); }
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Token { token: String }
+    let mut input = Vec::new();
+    io::stdin().take(client::REQUEST_MAX as u64 + 1).read_to_end(&mut input).map_err(|_| "cannot read sleep token JSON")?;
+    if input.len() > client::REQUEST_MAX { return Err("team request exceeds 32 KiB".into()); }
+    let payload: Token = serde_json::from_slice(&input).map_err(|_| "invalid sleep token JSON")?;
+    let token = payload.token;
+    if token.len() != 32 || !token.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)) {
+        return Err("invalid sleep token".into());
+    }
+    Ok(match arguments[0].as_str() {
+        "sleep-recorded" => HostRequest::SleepRecorded { session_id, token },
+        "sleep-cancel" => HostRequest::CancelSleep { session_id, token },
+        "sleep-begin-wake" => HostRequest::BeginWake { session_id, token },
+        "sleep-status" => HostRequest::SleepStatus { session_id, token },
+        _ => return Err("unknown sleep command".into()),
+    })
+}
+
 /// Claude's background hook (asyncRewake, at SessionStart and Stop): waits for this session's next
 /// approved message, which the daemon hands out only while the session is idle, then wakes Claude
 /// with it (exit 2, the text on stderr). The receipt follows the text, so a crash in between leaves
@@ -104,6 +131,14 @@ fn watch() -> i32 {
 
 fn main() {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
+    if arguments.first().is_some_and(|verb| verb.starts_with("sleep-")) {
+        let request = sleep_request(&arguments).unwrap_or_else(|error| { eprintln!("cockpit-team: {error}"); std::process::exit(2) });
+        match client::host_request(&request).and_then(|reply| reply.result) {
+            Ok(result) => println!("{result}"),
+            Err(error) => { eprintln!("cockpit-team: {}", escape_hiding(&error.to_string(), "", "")); std::process::exit(1); },
+        }
+        return;
+    }
     if arguments == ["prepare"] {
         if let Err(error) = client::prepare() {
             eprintln!("cockpit-team: {}", escape_hiding(&error.to_string(), "", ""));

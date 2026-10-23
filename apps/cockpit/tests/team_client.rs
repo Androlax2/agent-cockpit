@@ -8,6 +8,55 @@ use std::process::Stdio;
 use std::time::Duration;
 
 #[test]
+fn sleep_cli_uses_host_socket_and_stdin_tokens() {
+    for (verb, request) in [("sleep-prepare", "prepare_sleep"), ("sleep-cancel", "cancel_sleep"),
+        ("sleep-begin-wake", "begin_wake"), ("sleep-status", "sleep_status"), ("sleep-recorded", "sleep_recorded")] {
+        let sandbox = Sandbox::new();
+        let folder = sandbox.runtime.join("claude-team-host");
+        std::fs::create_dir_all(&folder).unwrap();
+        let listener = UnixListener::bind(folder.join("host.sock")).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let mut child = sandbox.command(env!("CARGO_BIN_EXE_cockpit-team"), &[]).args([verb, "aaaaaaaa-0000-4000-8000-000000000000"])
+            .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+        if verb != "sleep-prepare" { child.stdin.take().unwrap().write_all(json!({"token":"a".repeat(32)}).to_string().as_bytes()).unwrap(); }
+        drop(child.stdin.take());
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let sent = loop {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut sent = String::new();
+                stream.read_to_string(&mut sent).unwrap();
+                stream.write_all(b"{\"request_id\":\"sleep\",\"result\":{\"Ok\":{\"state\":\"prepared\"}}}").unwrap();
+                break sent;
+            }
+            if child.try_wait().unwrap().is_some() || std::time::Instant::now() >= deadline { break String::new(); }
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        let output = child.wait_with_output().unwrap();
+        assert!(output.status.success(), "{verb}: {}", stderr(&output));
+        let sent: Value = serde_json::from_str(&sent).unwrap();
+        assert_eq!(sent["request"], request);
+        assert_eq!(sent["session_id"], "aaaaaaaa-0000-4000-8000-000000000000");
+    }
+}
+
+#[test]
+fn sleep_cli_rejects_bad_ids_argv_tokens_and_oversized_stdin() {
+    for arguments in [vec!["sleep-status", "../escape"], vec!["sleep-status", "aaaaaaaa-0000-4000-8000-000000000000", "secret-token"]] {
+        let sandbox = Sandbox::new();
+        let output = sandbox.command(env!("CARGO_BIN_EXE_cockpit-team"), &[]).args(arguments).output().unwrap();
+        assert_eq!(output.status.code(), Some(2));
+        assert!(!stderr(&output).contains("secret-token"));
+    }
+    let sandbox = Sandbox::new();
+    let mut child = sandbox.command(env!("CARGO_BIN_EXE_cockpit-team"), &[]).args(["sleep-status", "aaaaaaaa-0000-4000-8000-000000000000"])
+        .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    child.stdin.take().unwrap().write_all(&vec![b'x'; 32769]).unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    assert!(stderr(&output).contains("32 KiB"));
+}
+
+#[test]
 fn prefilled_requests_use_the_read_only_answers_socket_and_never_self_approve() {
     let sandbox = Sandbox::new();
     let source = sandbox.root.join("host.sock");

@@ -117,6 +117,7 @@ struct World {
     default_agent: Option<String>,
     /// sender pid -> COCKPIT_TEAM_SPAWN in its launch's host environment
     spawn_tokens: HashMap<u32, String>,
+    resume_tokens: HashMap<u32, String>,
     /// start_detached commands, in order
     started: Vec<Vec<String>>,
     /// start_detached reports that nothing could be started
@@ -178,6 +179,7 @@ impl System for FakeSystem {
     fn runtime_is_live(&mut self, runtime: &str) -> bool { self.0.borrow().sender_runtimes.values().any(|known| known == runtime) }
     fn default_agent(&mut self) -> Option<String> { self.0.borrow().default_agent.clone() }
     fn sender_spawn_token(&mut self, sender: u32) -> Option<String> { self.0.borrow().spawn_tokens.get(&sender).cloned() }
+    fn sender_resume_token(&mut self, sender: u32) -> Option<String> { self.0.borrow().resume_tokens.get(&sender).cloned() }
     fn start_detached(&mut self, command: &[&str]) -> bool {
         self.0.borrow_mut().started.push(command.iter().map(|part| part.to_string()).collect());
         !self.0.borrow().start_fails
@@ -487,6 +489,199 @@ fn only_host_processes_may_use_the_team_host_socket() {
     assert!(crate::teams::host_peer_allowed(&tree, "30"));
     assert!(!crate::teams::host_peer_allowed(&tree, "50"));
     assert!(!crate::teams::host_peer_allowed(&tree, "999"));
+}
+
+fn sleep_host(bench: &mut Bench, request: &str, token: Option<&str>) -> Result<Value, cockpit::teams::TeamError> {
+    let mut value = json!({"request":request,"session_id":SESSION_A});
+    if let Some(token) = token { value["token"] = json!(token); }
+    crate::teams::host(&mut bench.registry, serde_json::from_value(value).unwrap()).and_then(|reply| reply.result)
+}
+
+fn prepare_team_sleep(bench: &mut Bench) -> String {
+    use std::os::unix::fs::PermissionsExt;
+    let result = sleep_host(bench, "prepare_sleep", None).unwrap();
+    let token = result["token"].as_str().unwrap().to_string();
+    let folder = cockpit::paths::asleep_dir();
+    fs::create_dir_all(&folder).unwrap();
+    fs::set_permissions(&folder, fs::Permissions::from_mode(0o700)).unwrap();
+    let note = folder.join(SESSION_A);
+    fs::write(&note, json!({"session":SESSION_A,"agent":"claude","cwd":bench.registry.sessions[SESSION_A].cwd,
+        "slept_at":cockpit::util::now() as i64,"team_resume":token}).to_string()).unwrap();
+    fs::set_permissions(note, fs::Permissions::from_mode(0o600)).unwrap();
+    sleep_host(bench, "sleep_recorded", Some(&token)).unwrap();
+    token
+}
+
+fn sleeping_team_bench() -> (Bench, String) {
+    let mut bench = linked_team_bench();
+    let token = prepare_team_sleep(&mut bench);
+    bench.world.borrow_mut().sender_runtimes.remove(&10);
+    (bench, token)
+}
+
+fn resumed_session_reports(bench: &mut Bench, token: &str) {
+    bench.world.borrow_mut().resume_tokens.insert(40, token.into());
+    spawned_session_reports(bench, 40, SESSION_A, "");
+}
+
+#[test]
+fn resume_token_in_report_or_inner_environment_is_not_trusted() {
+    let token = "a".repeat(32);
+    let report = parse_session(&json!({"session":SESSION_A,"project":"p","resume_token":token}).to_string()).unwrap();
+    assert!(report.resume_token.is_none());
+    let tree = Tree(vec![("50", Some("30"), "sandbox", environment(&[("COCKPIT_TEAM_RESUME", &token)])),
+        ("30", None, "host", environment(&[]))]);
+    assert_eq!(crate::registry::trusted_resume_token(&tree, "50"), None);
+    let tree = Tree(vec![("50", Some("30"), "sandbox", environment(&[])),
+        ("30", None, "host", environment(&[("COCKPIT_TEAM_RESUME", &token)]))]);
+    assert_eq!(crate::registry::trusted_resume_token(&tree, "50"), Some(token));
+}
+
+#[test]
+fn verified_sleep_replacement_rejoins_before_startup_recovery() {
+    let (mut bench, token) = sleeping_team_bench();
+    send_to_designer(&mut bench, "while-asleep");
+    bench.registry.teams = None;
+    resumed_session_reports(&mut bench, &token);
+    let delivery = crate::teams::request(&mut bench.registry, 40, cockpit::teams::AgentAction::Receive).unwrap().result.unwrap();
+    assert!(delivery["dispatch_id"].is_string(), "{delivery}");
+    assert_eq!(sleep_host(&mut bench, "sleep_status", Some(&token)).unwrap()["state"], "bound");
+    fs::remove_file(cockpit::paths::asleep_dir().join(SESSION_A)).unwrap();
+    assert_eq!(sleep_host(&mut bench, "sleep_status", Some(&token)).unwrap()["state"], "bound");
+    bench.world.borrow_mut().sender_runtimes.remove(&40);
+    bench.world.borrow_mut().resume_tokens.insert(41, token.clone());
+    spawned_session_reports(&mut bench, 41, SESSION_A, "");
+    crate::teams::live_sessions(&mut bench.registry).unwrap();
+    assert_eq!(cockpit::teams::store::member_runtime(bench.registry.teams.as_ref().unwrap(), SESSION_A).unwrap().as_deref(), Some("runtime-40"));
+}
+
+#[test]
+fn resume_refuses_live_old_runtime_or_different_checkout() {
+    let mut bench = linked_team_bench();
+    let token = prepare_team_sleep(&mut bench);
+    bench.world.borrow_mut().resume_tokens.insert(40, token.clone());
+    // The authenticated registry rejects replacement while the old launch still lives.
+    bench.world.borrow_mut().sender_targets.insert(40, target(&[("tmux_pane", "%40")]));
+    bench.world.borrow_mut().sender_runtimes.insert(40, "runtime-40".into());
+    let report = parse_session(&json!({"session":SESSION_A,"project":"p","cwd":"/elsewhere"}).to_string()).unwrap();
+    assert!(bench.registry.report_from(report, 40).is_err());
+    bench.world.borrow_mut().sender_runtimes.remove(&10);
+    let other_checkout = bench.fixture.root.join("home/IdeaProjects/.parallel/project-a/other");
+    fs::create_dir_all(&other_checkout).unwrap();
+    bench.world.borrow_mut().sender_directories.insert(40, other_checkout.to_string_lossy().into());
+    // No cwd claim: the daemon must still take the replacement's actual host checkout.
+    let report = parse_session(&json!({"session":SESSION_A,"project":"project-a","state":"waiting"}).to_string()).unwrap();
+    bench.registry.report_from(report, 40).unwrap();
+    crate::teams::live_sessions(&mut bench.registry).unwrap();
+    assert_ne!(sleep_host(&mut bench, "sleep_status", Some(&token)).unwrap()["state"], "bound");
+}
+
+#[test]
+fn sleep_resume_after_registry_loss_still_checks_old_process_death() {
+    let mut bench = linked_team_bench();
+    let token = prepare_team_sleep(&mut bench);
+    bench.registry.sessions.remove(SESSION_A);
+    resumed_session_reports(&mut bench, &token);
+    crate::teams::live_sessions(&mut bench.registry).unwrap();
+    assert_eq!(sleep_host(&mut bench, "sleep_status", Some(&token)).unwrap()["state"], "prepared");
+    assert_eq!(cockpit::teams::store::member_runtime(bench.registry.teams.as_ref().unwrap(), SESSION_A).unwrap().as_deref(), Some("runtime-10"));
+}
+
+#[test]
+fn deleted_or_replaced_sleep_record_blocks_reattachment() {
+    for change in ["delete", "replace", "symlink", "ended", "expired", "public"] {
+        let (mut bench, token) = sleeping_team_bench();
+        let note = cockpit::paths::asleep_dir().join(SESSION_A);
+        match change {
+            "delete" => fs::remove_file(&note).unwrap(),
+            "replace" => fs::write(&note, "{}").unwrap(),
+            "symlink" => { let original = note.with_extension("old"); fs::rename(&note, &original).unwrap(); std::os::unix::fs::symlink(original, &note).unwrap(); },
+            "ended" => fs::write(cockpit::paths::ended_sessions(), format!("{SESSION_A}\n")).unwrap(),
+            "expired" => { let mut value: Value = serde_json::from_str(&fs::read_to_string(&note).unwrap()).unwrap(); value["slept_at"] = json!(1); fs::write(&note, value.to_string()).unwrap(); },
+            "public" => { use std::os::unix::fs::PermissionsExt; fs::set_permissions(&note, fs::Permissions::from_mode(0o644)).unwrap(); },
+            _ => unreachable!(),
+        }
+        resumed_session_reports(&mut bench, &token);
+        crate::teams::live_sessions(&mut bench.registry).unwrap();
+        assert_eq!(sleep_host(&mut bench, "sleep_status", Some(&token)).unwrap()["state"], "cancelled", "{change}");
+    }
+}
+
+#[test]
+fn queued_team_message_launches_one_sleep_wake() {
+    let (mut bench, token) = sleeping_team_bench();
+    send_to_designer(&mut bench, "while-asleep");
+    assert!(started(&bench).is_empty(), "agent request never synchronously launches a wake");
+    for _ in 0..2 { crate::teams::host_snapshot(&mut bench.registry).unwrap(); }
+    assert_eq!(started(&bench), vec![vec!["cockpit", "wake", SESSION_A]]);
+    assert_eq!(sleep_host(&mut bench, "sleep_status", Some(&token)).unwrap()["state"], "launch_requested");
+    sleep_host(&mut bench, "begin_wake", Some(&token)).unwrap();
+    assert!(sleep_host(&mut bench, "begin_wake", Some(&token)).is_err());
+}
+
+#[test]
+fn wake_failure_keeps_queue_and_reports_error() {
+    let (mut bench, token) = sleeping_team_bench();
+    send_to_designer(&mut bench, "while-asleep");
+    bench.world.borrow_mut().start_fails = true;
+    let snapshot = crate::teams::host_snapshot(&mut bench.registry).unwrap();
+    assert_eq!(snapshot["sleeps"][0]["state"], "failed");
+    assert!(!snapshot["sleeps"][0]["error"].as_str().unwrap().is_empty());
+    assert!(!snapshot.to_string().contains(&token));
+    assert_eq!(snapshot["messages"][0]["state"], "queued");
+}
+
+#[test]
+fn daemon_restart_does_not_repeat_a_requested_wake() {
+    let (mut bench, token) = sleeping_team_bench();
+    send_to_designer(&mut bench, "while-asleep");
+    crate::teams::host_snapshot(&mut bench.registry).unwrap();
+    bench.registry.teams = None;
+    crate::teams::host_snapshot(&mut bench.registry).unwrap();
+    assert_eq!(started(&bench).len(), 1);
+    bench.registry.teams.as_ref().unwrap().execute("UPDATE sleep_permits SET started_at=0", []).unwrap();
+    let snapshot = crate::teams::host_snapshot(&mut bench.registry).unwrap();
+    assert_eq!(snapshot["sleeps"][0]["state"], "failed");
+    assert_eq!(sleep_host(&mut bench, "sleep_status", Some(&token)).unwrap()["error"], "wake acknowledgement timed out");
+    assert_eq!(started(&bench).len(), 1);
+}
+
+#[test]
+fn newly_prepared_sleep_waits_for_explicit_note_recording() {
+    let mut bench = linked_team_bench();
+    let token = sleep_host(&mut bench, "prepare_sleep", None).unwrap()["token"].as_str().unwrap().to_string();
+    crate::teams::host_snapshot(&mut bench.registry).unwrap();
+    assert_eq!(sleep_host(&mut bench, "sleep_status", Some(&token)).unwrap()["state"], "prepared");
+    assert!(sleep_host(&mut bench, "sleep_recorded", Some(&token)).is_err());
+    bench.world.borrow_mut().sender_runtimes.remove(&10);
+    crate::teams::host_snapshot(&mut bench.registry).unwrap();
+    assert_eq!(sleep_host(&mut bench, "sleep_status", Some(&token)).unwrap()["state"], "cancelled");
+}
+
+#[test]
+fn sleep_without_pre_exit_note_acknowledgement_is_cancelled() {
+    let mut bench = linked_team_bench();
+    let token = prepare_team_sleep(&mut bench);
+    // Simulate a caller that died after writing the note but before acknowledging it.
+    bench.registry.teams.as_ref().unwrap().execute("UPDATE sleep_permits SET note_recorded=0", []).unwrap();
+    bench.world.borrow_mut().sender_runtimes.remove(&10);
+    resumed_session_reports(&mut bench, &token);
+    crate::teams::host_snapshot(&mut bench.registry).unwrap();
+    assert_eq!(sleep_host(&mut bench, "sleep_status", Some(&token)).unwrap()["state"], "cancelled");
+    assert!(started(&bench).is_empty());
+}
+
+#[test]
+fn sleep_preparation_tolerates_an_existing_non_team_note_directory() {
+    use std::os::unix::fs::PermissionsExt;
+    let mut bench = linked_team_bench();
+    let token = sleep_host(&mut bench, "prepare_sleep", None).unwrap()["token"].as_str().unwrap().to_string();
+    fs::create_dir_all(cockpit::paths::asleep_dir()).unwrap();
+    fs::set_permissions(cockpit::paths::asleep_dir(), fs::Permissions::from_mode(0o755)).unwrap();
+    fs::write(cockpit::paths::asleep_dir().join(SESSION_B), json!({"agent":"claude","slept_at":1}).to_string()).unwrap();
+    crate::teams::host_snapshot(&mut bench.registry).unwrap();
+    assert_eq!(sleep_host(&mut bench, "sleep_status", Some(&token)).unwrap()["state"], "prepared");
+    assert_eq!(prepare_team_sleep(&mut bench), token);
 }
 
 #[test]
