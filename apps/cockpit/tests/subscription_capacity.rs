@@ -65,3 +65,25 @@ fn codex_requires_backend_confirmation_of_included_usage_not_credits() {
 fn unknown_provider_is_not_assumed_to_have_a_subscription() {
     assert_eq!(subscription_capacity_of("other", "unknown", &claude(0.0), NOW, None, NOW, true), SubscriptionCapacity::Unknown);
 }
+
+#[test]
+fn malformed_new_limits_cannot_be_hidden_by_legacy_windows() {
+    let mut usage = claude(10.0);
+    usage["limits"] = json!({"percent": 100});
+    assert_eq!(subscription_capacity_of("claude", "claude-sonnet-4-6", &usage, NOW, None, NOW, true), SubscriptionCapacity::Unknown);
+}
+
+#[test]
+fn native_routing_matches_the_shared_provider_contract_cases() {
+    let cases: Value = serde_json::from_str(include_str!("fixtures/subscription-fallback/capacity-cases.json")).unwrap();
+    for case in cases.as_array().unwrap() {
+        let mut usage = case["usage"].clone();
+        if case["provider"] == "openai" { usage["ordinary_usage_allowed"] = case["usage"]["rate_limit"]["allowed"].clone(); }
+        let actual = subscription_capacity_of(case["provider"].as_str().unwrap(), case["model"].as_str().unwrap(), &usage, NOW, None, NOW, true);
+        let expected = match case["expected"].as_str().unwrap() {
+            "available" => SubscriptionCapacity::Available, "exhausted" => SubscriptionCapacity::Exhausted,
+            "unknown" => SubscriptionCapacity::Unknown, _ => panic!("invalid fixture expectation"),
+        };
+        assert_eq!(actual, expected, "{}", case["name"]);
+    }
+}

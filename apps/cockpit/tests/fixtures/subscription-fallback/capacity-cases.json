@@ -1,0 +1,14 @@
+[
+  {"name":"fractional remaining capacity","provider":"anthropic","model":"claude-sonnet-4-6","usage":{"five_hour":{"utilization":99.6,"resets_at":"2099-01-01T00:00:00Z"}},"expected":"available"},
+  {"name":"confirmed exhaustion","provider":"anthropic","model":"claude-sonnet-4-6","usage":{"five_hour":{"utilization":100,"resets_at":"2099-01-01T00:00:00Z"}},"expected":"exhausted"},
+  {"name":"unrelated model limit","provider":"anthropic","model":"claude-sonnet-4-6","usage":{"five_hour":{"utilization":10,"resets_at":"2099-01-01T00:00:00Z"},"seven_day_opus":{"utilization":100,"resets_at":"2099-01-01T00:00:00Z"}},"expected":"available"},
+  {"name":"applicable model limit","provider":"anthropic","model":"claude-opus-4-7","usage":{"five_hour":{"utilization":10,"resets_at":"2099-01-01T00:00:00Z"},"seven_day_opus":{"utilization":100,"resets_at":"2099-01-01T00:00:00Z"}},"expected":"exhausted"},
+  {"name":"malformed limits cannot hide","provider":"anthropic","model":"claude-sonnet-4-6","usage":{"limits":{},"five_hour":{"utilization":10,"resets_at":"2099-01-01T00:00:00Z"}},"expected":"unknown"},
+  {"name":"unknown scoped model","provider":"anthropic","model":"claude-opus-4-7","usage":{"model_scoped":[{"display_name":"Unknown","utilization":10,"resets_at":"2099-01-01T00:00:00Z"}]},"expected":"unknown"},
+  {"name":"passed reset is not recovery","provider":"anthropic","model":"claude-opus-4-7","usage":{"five_hour":{"utilization":100,"resets_at":"2020-01-01T00:00:00Z"}},"expected":"unknown"},
+  {"name":"missing reset","provider":"anthropic","model":"claude-opus-4-7","usage":{"five_hour":{"utilization":10}},"expected":"unknown"},
+  {"name":"included codex usage","provider":"openai","model":"gpt-6.1-sol","usage":{"rate_limit":{"allowed":true,"primary_window":{"used_percent":30,"reset_at":1800003600}}},"expected":"available"},
+  {"name":"credits are not included usage","provider":"openai","model":"gpt-6.1-sol","usage":{"rate_limit":{"allowed":false,"primary_window":{"used_percent":30,"reset_at":1800003600}}},"expected":"exhausted"},
+  {"name":"missing backend permission","provider":"openai","model":"gpt-6.1-sol","usage":{"rate_limit":{"primary_window":{"used_percent":30,"reset_at":1800003600}}},"expected":"unknown"},
+  {"name":"fractional reset violates epoch schema","provider":"openai","model":"gpt-6.1-sol","usage":{"rate_limit":{"allowed":true,"primary_window":{"used_percent":30,"reset_at":1800003600.5}}},"expected":"unknown"}
+]

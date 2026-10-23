@@ -12,6 +12,7 @@ import { spawn } from "node:child_process"
 import { createHash, randomUUID } from "node:crypto"
 import { closeSync, constants, fstatSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
+import { setupSubscriptionRouting } from "../lib/subscription-routing.ts"
 
 // Where ~/.claude/hooks points: inside an opencode sandbox ~/.claude stays hidden, and greywall makes
 // no link there, only the folder the link points to.
@@ -25,6 +26,14 @@ export default {
   setup: async (ctx: any) => {
     const directory: string = ctx.location?.directory ?? process.cwd()
     const cockpitSession = process.env.CLAUDE_CODE_SESSION_ID
+    let subscriptionRouting = { handle: async (_event: any) => {}, close: () => {} }
+    if (cockpitSession?.startsWith("ses_")) {
+      try {
+        subscriptionRouting = await setupSubscriptionRouting(ctx, cockpitSession)
+      } catch {
+        console.error("cockpit plugin: subscription fallback disabled because its saved route could not be loaded; preserve it and reconcile")
+      }
+    }
     // A subagent runs in a session of its own, with a parent: what it asks shows on its root's card.
     const parentOf = new Map<string, string>()
     const shells = new Map<string, string>()
@@ -286,7 +295,10 @@ export default {
     // Not awaited: setup must return for opencode to take prompts.
     const subscription = new AbortController()
     void (async () => {
-      for await (const event of ctx.event.subscribe({ signal: subscription.signal })) handle(event)
+      for await (const event of ctx.event.subscribe({ signal: subscription.signal })) {
+        handle(event)
+        void subscriptionRouting.handle(event).catch(() => console.error("cockpit plugin: subscription fallback paused; inspect its saved route"))
+      }
     })().catch((error: unknown) => {
       if (!subscription.signal.aborted) console.error("cockpit plugin: event stream ended", error)
     })
@@ -294,6 +306,7 @@ export default {
       subscription.abort()
       if (teamTimer) clearInterval(teamTimer)
       await billingHook.dispose()
+      await subscriptionRouting.close()
     }
   },
 }

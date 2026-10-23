@@ -125,9 +125,12 @@ rejections. An unusable existing connection pauses routing with an explicit reas
 - Distinguish confirmed subscription exhaustion from transient 429s, authentication
   errors and model/network failures. Resume the unfinished request exactly once;
   do not replay completed tool calls or a consumed inbox item.
-- Reuse host quota decisions via an authenticated, session-bound exchange. A plugin
-  cannot read another provider's hidden credentials or forge a trusted host route.
-  A sandbox request cannot switch other sessions or acquire team authority.
+- Resolve the active connection through OpenCode's existing integration API and
+  probe quota for that connection inside its private server. Persist session-local
+  routing intent through `ctx.storage`; native CLI quota caches cannot establish
+  an OpenCode connection's capacity. The plugin neither copies credentials between
+  providers nor refreshes them itself. This replaces the initially planned host
+  route exchange; it grants no cross-session or team authority.
 - A manual model/variant/connection selection cancels the pending automatic return.
   A changed connection requires fresh matching evidence before any automatic switch.
 - Same-session model switching does not need a transcript export/import or a team

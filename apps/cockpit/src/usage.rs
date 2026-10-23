@@ -34,6 +34,7 @@ pub fn subscription_capacity_of(provider: &str, model: &str, usage: &Value, fetc
     let mut states = Vec::new();
     match provider {
         "claude" | "anthropic" => {
+            if usage.get("limits").is_some_and(|limits| !limits.is_array()) { return Unknown; }
             let Some(family) = ["opus", "sonnet", "haiku"].into_iter().find(|family| model.starts_with(&format!("claude-{family}-"))) else {
                 return Unknown;
             };
