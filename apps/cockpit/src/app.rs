@@ -944,9 +944,6 @@ impl App {
         if !self.team_known {
             return format!("cannot tell yet whether {} is in a team: try again in a moment", session.project);
         }
-        if self.team_roles.contains_key(&session.session) {
-            return format!("{} is in a team: teammates stay awake (a woken session would lose its team)", session.project);
-        }
         let started = Command::new("cockpit").args(["sleep", &session.session])
             .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).spawn();
         match started {
@@ -1051,7 +1048,7 @@ impl App {
         }
         let context = sleep::SleepContext {
             now: now as i64, enabled: settings::is_on("idle-sleep"), after_s: sleep::after_minutes() * 60,
-            viewed: current_session(), team_members: self.team_roles.keys().cloned().collect(),
+            viewed: current_session(),
         };
         let eligible: Vec<Session> = self.running_sessions.iter()
             .filter(|session| self.sleep_asked.get(&session.session) != Some(&session.since))

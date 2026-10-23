@@ -394,6 +394,10 @@ fn started(bench: &Bench) -> Vec<Vec<String>> { bench.world.borrow().started.clo
 
 /// A session started by the cockpit reports from peer `peer`, its launch carrying `token`.
 fn spawned_session_reports(bench: &mut Bench, peer: u32, session: &str, token: &str) {
+    spawned_agent_reports(bench, peer, session, "claude", token);
+}
+
+fn spawned_agent_reports(bench: &mut Bench, peer: u32, session: &str, agent: &str, token: &str) {
     let project = bench.fixture.root.join("home/IdeaProjects/project-a");
     {
         let mut world = bench.world.borrow_mut();
@@ -402,7 +406,7 @@ fn spawned_session_reports(bench: &mut Bench, peer: u32, session: &str, token: &
         world.sender_runtimes.insert(peer, format!("runtime-{peer}"));
         if !token.is_empty() { world.spawn_tokens.insert(peer, token.into()); }
     }
-    let report = parse_session(&json!({"session": session, "agent": "claude", "project": "project-a", "cwd": project, "state": "waiting"}).to_string()).unwrap();
+    let report = parse_session(&json!({"session": session, "agent": agent, "project": "project-a", "cwd": project, "state": "waiting"}).to_string()).unwrap();
     bench.registry.report_from(report, peer).unwrap();
 }
 
@@ -492,23 +496,31 @@ fn only_host_processes_may_use_the_team_host_socket() {
 }
 
 fn sleep_host(bench: &mut Bench, request: &str, token: Option<&str>) -> Result<Value, cockpit::teams::TeamError> {
-    let mut value = json!({"request":request,"session_id":SESSION_A});
+    sleep_host_for(bench, SESSION_A, request, token)
+}
+
+fn sleep_host_for(bench: &mut Bench, session: &str, request: &str, token: Option<&str>) -> Result<Value, cockpit::teams::TeamError> {
+    let mut value = json!({"request":request,"session_id":session});
     if let Some(token) = token { value["token"] = json!(token); }
     crate::teams::host(&mut bench.registry, serde_json::from_value(value).unwrap()).and_then(|reply| reply.result)
 }
 
 fn prepare_team_sleep(bench: &mut Bench) -> String {
+    prepare_member_sleep(bench, SESSION_A)
+}
+
+fn prepare_member_sleep(bench: &mut Bench, session: &str) -> String {
     use std::os::unix::fs::PermissionsExt;
-    let result = sleep_host(bench, "prepare_sleep", None).unwrap();
+    let result = sleep_host_for(bench, session, "prepare_sleep", None).unwrap();
     let token = result["token"].as_str().unwrap().to_string();
     let folder = cockpit::paths::asleep_dir();
     fs::create_dir_all(&folder).unwrap();
     fs::set_permissions(&folder, fs::Permissions::from_mode(0o700)).unwrap();
-    let note = folder.join(SESSION_A);
-    fs::write(&note, json!({"session":SESSION_A,"agent":"claude","cwd":bench.registry.sessions[SESSION_A].cwd,
+    let note = folder.join(session);
+    fs::write(&note, json!({"session":session,"agent":bench.registry.sessions[session].agent,"cwd":bench.registry.sessions[session].cwd,
         "slept_at":cockpit::util::now() as i64,"team_resume":token}).to_string()).unwrap();
     fs::set_permissions(note, fs::Permissions::from_mode(0o600)).unwrap();
-    sleep_host(bench, "sleep_recorded", Some(&token)).unwrap();
+    sleep_host_for(bench, session, "sleep_recorded", Some(&token)).unwrap();
     token
 }
 
@@ -617,6 +629,95 @@ fn queued_team_message_launches_one_sleep_wake() {
     assert_eq!(sleep_host(&mut bench, "sleep_status", Some(&token)).unwrap()["state"], "launch_requested");
     sleep_host(&mut bench, "begin_wake", Some(&token)).unwrap();
     assert!(sleep_host(&mut bench, "begin_wake", Some(&token)).is_err());
+}
+
+#[test]
+fn approved_teammate_sleep_wakes_and_delivers_once_through_native_receipt() {
+    use cockpit::teams::{AgentAction, MessageKind, Submission, TaskKey, TransportOutcome};
+    for (session, peer, sender, agent, role) in [(SESSION_A, 10, 20, "claude", "designer"),
+        (OPENCODE_SESSION, 20, 10, "opencode", "developer")] {
+        let mut bench = linked_team_bench();
+        let before = crate::teams::request(&mut bench.registry, peer, AgentAction::Context).unwrap().result.unwrap();
+        let snapshot = crate::teams::host_snapshot(&mut bench.registry).unwrap();
+        let member = snapshot["members"].as_array().unwrap().iter().find(|member| member["session_id"] == session).unwrap().clone();
+        assert_eq!(member["role"], role);
+        let token = prepare_member_sleep(&mut bench, session);
+        assert!(sleep_host_for(&mut bench, session, "begin_wake", Some(&token)).is_err(), "old process still lives");
+        bench.world.borrow_mut().sender_runtimes.remove(&peer);
+        let task: TaskKey = serde_json::from_value(before["task"].clone()).unwrap();
+        let message = Submission { task, submission_key: "while-asleep".into(), recipient: session.into(), kind: MessageKind::Notice,
+            body: "The frame is ready.".into(), thread_id: None, handoff_id: None };
+        crate::teams::request(&mut bench.registry, sender, AgentAction::Send { message }).unwrap().result.unwrap();
+        assert!(started(&bench).is_empty());
+        for _ in 0..2 { crate::teams::host_snapshot(&mut bench.registry).unwrap(); }
+        assert_eq!(started(&bench), vec![vec!["cockpit", "wake", session]]);
+        sleep_host_for(&mut bench, session, "begin_wake", Some(&token)).unwrap();
+        assert!(cockpit::paths::asleep_dir().join(session).exists(), "note retained until binding acknowledgement");
+        bench.registry.teams = None;
+        bench.world.borrow_mut().resume_tokens.insert(40, token.clone());
+        spawned_agent_reports(&mut bench, 40, session, agent, "");
+        let after = crate::teams::request(&mut bench.registry, 40, AgentAction::Context).unwrap().result.unwrap();
+        assert_eq!(after, before, "same approved identity, task and roles");
+        let snapshot = crate::teams::host_snapshot(&mut bench.registry).unwrap();
+        let replacement = snapshot["members"].as_array().unwrap().iter().find(|member| member["session_id"] == session).unwrap();
+        assert_eq!(replacement["epoch"], member["epoch"]);
+        assert_eq!(replacement["runtime"], "runtime-40");
+        assert_eq!(replacement["agent"], agent);
+        assert_ne!(replacement["runtime"], member["runtime"]);
+        assert_eq!(sleep_host_for(&mut bench, session, "sleep_status", Some(&token)).unwrap()["state"], "bound");
+        fs::remove_file(cockpit::paths::asleep_dir().join(session)).unwrap();
+        let delivery = crate::teams::request(&mut bench.registry, 40, AgentAction::Receive).unwrap().result.unwrap();
+        assert!(delivery["text"].as_str().unwrap().contains("The frame is ready."));
+        assert!(crate::teams::request(&mut bench.registry, 40, AgentAction::Receive).unwrap().result.unwrap().is_null());
+        let receipt = AgentAction::Receipt { dispatch_id: delivery["dispatch_id"].as_str().unwrap().into(),
+            outcome: TransportOutcome::Received { native_id: "native-message-1".into() } };
+        crate::teams::request(&mut bench.registry, 40, receipt.clone()).unwrap().result.unwrap();
+        crate::teams::request(&mut bench.registry, 40, receipt).unwrap().result.unwrap();
+        bench.report(session, json!({"state":"working"}));
+        bench.report(session, json!({"state":"waiting"}));
+        assert!(crate::teams::request(&mut bench.registry, 40, AgentAction::Receive).unwrap().result.unwrap().is_null());
+        let snapshot = crate::teams::host_snapshot(&mut bench.registry).unwrap();
+        assert_eq!(snapshot["messages"].as_array().unwrap().len(), 1);
+        assert_eq!(snapshot["messages"][0]["state"], "received");
+        let connection = bench.registry.teams.as_ref().unwrap();
+        let attempts: i64 = connection.query_row("SELECT count(*) FROM attempts", [], |row| row.get(0)).unwrap();
+        let receipts: i64 = connection.query_row("SELECT count(*) FROM attempts WHERE state='received' AND native_id='native-message-1'", [], |row| row.get(0)).unwrap();
+        assert_eq!((attempts, receipts), (1, 1));
+        assert_eq!(started(&bench), vec![vec!["cockpit", "wake", session]]);
+    }
+}
+
+#[test]
+fn revoked_teammate_sleep_never_wakes_or_rejoins() {
+    use cockpit::teams::{AgentAction, HostAction};
+    let (mut bench, token) = sleeping_team_bench();
+    send_to_designer(&mut bench, "while-asleep");
+    let context = crate::teams::request(&mut bench.registry, 20, AgentAction::Context).unwrap().result.unwrap();
+    let task = serde_json::from_value(context["task"].clone()).unwrap();
+    crate::teams::host_control(&mut bench.registry, &HostAction::Unlink { request_id: "revoke-sleeper".into(), task, session_id: SESSION_A.into() }).unwrap().result.unwrap();
+    for _ in 0..2 { crate::teams::host_snapshot(&mut bench.registry).unwrap(); }
+    assert!(started(&bench).is_empty());
+    resumed_session_reports(&mut bench, &token);
+    let context = crate::teams::request(&mut bench.registry, 40, AgentAction::Context).unwrap().result.unwrap();
+    assert!(context["members"].as_array().unwrap().is_empty());
+    assert!(crate::teams::request(&mut bench.registry, 40, AgentAction::Receive).unwrap().result.unwrap().is_null());
+    let snapshot = crate::teams::host_snapshot(&mut bench.registry).unwrap();
+    assert_eq!(snapshot["messages"][0]["state"], "cancelled");
+    assert_eq!(sleep_host(&mut bench, "sleep_status", Some(&token)).unwrap()["state"], "cancelled");
+}
+
+#[test]
+fn manually_resumed_teammate_without_permit_cannot_claim_sleeping_queue() {
+    use cockpit::teams::AgentAction;
+    let (mut bench, token) = sleeping_team_bench();
+    send_to_designer(&mut bench, "while-asleep");
+    spawned_session_reports(&mut bench, 40, SESSION_A, "");
+    let context = crate::teams::request(&mut bench.registry, 40, AgentAction::Context).unwrap().result.unwrap();
+    assert!(context["task"].is_null());
+    assert!(context["members"].as_array().unwrap().is_empty());
+    assert!(crate::teams::request(&mut bench.registry, 40, AgentAction::Receive).unwrap().result.unwrap().is_null());
+    assert_ne!(sleep_host(&mut bench, "sleep_status", Some(&token)).unwrap()["state"], "bound");
+    assert_eq!(cockpit::teams::store::member_runtime(bench.registry.teams.as_ref().unwrap(), SESSION_A).unwrap().as_deref(), Some("runtime-10"));
 }
 
 #[test]

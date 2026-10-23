@@ -28,7 +28,7 @@ conversation when Theo or the cockpit needs it again.
 ### Non-goals
 
 - ~~No manual "sleep now" key~~: added later at Theo's request: `s` sleeps the selected session at once,
-  skipping the idle delay but keeping the typed-text, background-work, conversation and team checks.
+  skipping the idle delay but keeping the typed-text, background-work, conversation and team-safety checks.
 - No freezing / thawing.
 - Waking does not need to be fast; a few seconds of resume is accepted.
 - Waking with the current CLAUDE.md, settings and sandbox (not the ones the session started
@@ -55,9 +55,10 @@ All of these must hold; any doubt means "stay awake" (fail safe toward keeping t
 - It is a managed session: not `terminal` (started with `t`), not external.
 - Pinned sessions sleep too (Theo's choice, after the first version kept them awake).
 - It is not the session on screen in workspace 6.
-- It is not a member of a team (team bindings are tied to the running process: `osd/teams.rs`
-  `open_and_restore` and `teams/store.rs` refuse a changed runtime, so a resumed teammate would
-  lose its team).
+- Team membership is known. Approved Claude and opencode teammates may sleep through the
+  [protected sleep handoff](2026-10-23-team-member-sleep-design.md): no pending or uncertain
+  team delivery, host preparation and a recorded sleep note before exit. Unknown membership
+  or failed preparation keeps the session awake.
 - No message is queued for it (`prompts::count` is zero) and no todo is assigned to it.
 - Its input box is empty, checked on the pane right before the exit, the same way
   `cockpit-left` checks for a draft (cursor line against `agent_<name>_prompt_start`). If the
@@ -76,12 +77,14 @@ minute is enough.
 
 - Reuse the agent's own exit path (`agent_*_exit` / `exit_session`), **not** `cockpit exit`:
   a sleep must not append the id to `ended-sessions`.
-- Before exiting, write a durable sleep note in `~/.local/state/cockpit/asleep/<session-id>`
+- Before exiting, prepare through the host team service and write a durable sleep note in `~/.local/state/cockpit/asleep/<session-id>`
   holding what a resume needs: agent, conversation/session id, project, cwd, effort, billing
   (`credits`), role, pinned flag, the time it fell asleep. State dir, not `$XDG_RUNTIME_DIR`:
-  a sleeping session must survive a reboot and a cockpit reload.
-- If the exit fails or a check fails at the last moment, delete the note and leave the session
-  alone; log why.
+  a sleeping session must survive a reboot and a cockpit reload. For teammates it also holds
+  a protected one-use resume permit; the host acknowledges the recorded note before exit.
+- If a check fails at the last moment or exit fails with the old process still alive, cancel
+  preparation, delete the note and leave the session alone; log why. If the process is already
+  gone, preserve its resume metadata rather than claiming cancellation succeeded.
 - Log each sleep and wake with `log_event` (session, project, idle time).
 
 ## While asleep
@@ -103,8 +106,11 @@ minute is enough.
 
 Wake = resume the same conversation through the existing resume path, detached unless Theo is
 opening it (Claude: `claude --resume <id>` with its effort and billing; opencode:
-`opencode --standalone --session <id>`), then delete the sleep note. The card then follows the
-existing `restarting` → replacement flow.
+`opencode --standalone --session <id>`). For non-team sessions, delete the sleep note after launch.
+For teammates, retain it until the daemon acknowledges the verified replacement and consumes the
+one-use permit, preserving task, role and membership epoch. The card follows the existing
+`restarting` → replacement flow. A live-session restart or arbitrary history resume does not
+reattach a team: it still requires fresh approval.
 
 Everything that reaches a session wakes it first, then proceeds as today:
 
@@ -115,6 +121,9 @@ Everything that reaches a session wakes it first, then proceeds as today:
   a dead session today, never be dropped silently.
 - **The todo queue** treats an asleep session of the project as eligible (it has been idle long
   enough by definition), wakes it and hands it the item.
+- **Team messages** queued for an authorized sleeping teammate trigger one bounded detached
+  wake; native delivery and its receipt happen only after verified reattachment. Revocation,
+  explicit exit and expiry cancel the sleep permission; uncertain deliveries are never replayed.
 - **The phone page** lists asleep sessions with an asleep state, and can wake one (explicit
   wake action) or message it (wake, then deliver). Today `remote.rs` only knows sessions from the
   snapshot and refuses others ("no such session"); it must also read the sleep notes.
@@ -145,7 +154,8 @@ Everything that reaches a session wakes it first, then proceeds as today:
 
 ## Calls made without Theo (check these)
 
-- Team members, the session on screen and terminal sessions never sleep (pinned ones do, by Theo's later choice).
+- The session on screen and terminal sessions never sleep (pinned ones do, by Theo's later choice).
+  The original team-member exclusion is superseded by the protected sleep handoff linked above.
 - Sleep notes live in `~/.local/state/cockpit/asleep/` and survive reboots; asleep cards are not
   part of the `B` restore offer.
 - `x` on an asleep card ends it for good; `r` wakes it.

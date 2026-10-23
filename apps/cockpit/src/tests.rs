@@ -2100,11 +2100,13 @@ fn dispatch_sleep_asks_once_per_idle_spell() {
 }
 
 #[test]
-fn dispatch_sleep_sleeps_no_one_before_team_membership_is_known() {
+fn unknown_membership_blocks_manual_and_automatic_sleep() {
     let fixture = Fixture::new();
     fixture.snapshot(idle_rows(&[(SESSION_A, 7200)]));
     let mut app = fixture.app();
     app.check_team();
+    app.handle(Key::Char('s'), &mut FakeScreen::default());
+    assert!(app.message.contains("cannot tell yet"), "{}", app.message);
     app.dispatch_sleep();
     std::thread::sleep(Duration::from_millis(200));
     assert!(fixture.calls("cockpit").is_empty(), "no team service: a team member could be put to sleep");
@@ -2139,16 +2141,26 @@ fn s_shows_why_a_session_stays_awake_without_logging_an_error() {
 }
 
 #[test]
-fn s_keeps_a_team_member_awake() {
+fn s_can_sleep_a_known_teammate() {
     let fixture = Fixture::new();
     fixture.snapshot(json!([session(SESSION_B, "waiting", "project-a", "/r/project-a", 1)]));
     team_host(&fixture, team_snapshot(), vec![]);
     let mut app = fixture.app();
     app.check_team();
     app.handle(Key::Char('s'), &mut FakeScreen::default());
-    std::thread::sleep(Duration::from_millis(200));
-    assert!(fixture.calls("cockpit").is_empty(), "{:?}", fixture.calls("cockpit"));
-    assert!(app.message.contains("team"), "{}", app.message);
+    assert_eq!(fixture.wait_for_calls("cockpit", 1), vec![format!("cockpit sleep {SESSION_B}")]);
+    assert!(app.message.contains("to sleep"), "{}", app.message);
+}
+
+#[test]
+fn known_team_member_can_sleep() {
+    let fixture = Fixture::new();
+    fixture.snapshot(idle_rows(&[(SESSION_B, 7200)]));
+    team_host(&fixture, team_snapshot(), vec![]);
+    let mut app = fixture.app();
+    app.check_team();
+    app.dispatch_sleep();
+    assert_eq!(fixture.wait_for_calls("cockpit", 1), vec![format!("cockpit sleep {SESSION_B}")]);
 }
 
 #[test]
