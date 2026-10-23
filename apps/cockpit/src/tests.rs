@@ -1139,6 +1139,31 @@ fn activity_labels_follow_reported_state_without_guessing() {
 }
 
 #[test]
+fn background_work_keeps_a_waiting_session_working() {
+    for (agents, background) in [(1, 0), (0, 1), (2, 3)] {
+        let mut row = session(SESSION_A, "waiting", "shop", "/r/shop", 1);
+        row["agents"] = json!(agents);
+        row["background"] = json!(background);
+        let reported = sessions::Session::from_value(&row).unwrap();
+        assert_eq!(sessions::activity_label(&reported), "Working");
+        assert!(!sessions::is_idle(&reported, sessions::IDLE_AFTER_S + 2));
+    }
+}
+
+#[test]
+fn background_work_does_not_hide_requests_for_attention() {
+    for (state, phase, expected) in [
+        ("waiting", "approval", "Approval needed"),
+        ("waiting", "input", "Input needed"),
+        ("needs-you", "", "Needs you"),
+        ("waiting", "running", "Command running"),
+    ] {
+        let reported = sessions::Session { state: state.into(), ask_to_run: phase.into(), background: 1, ..Default::default() };
+        assert_eq!(sessions::activity_label(&reported), expected);
+    }
+}
+
+#[test]
 fn activity_text_does_not_reuse_stale_requests_or_completed_outcomes() {
     for state in ["working", "waiting", "unknown"] {
         let mut row = session(SESSION_A, state, "dotfiles", "/r/dotfiles", 1);

@@ -475,6 +475,7 @@ pub fn activity_label(session: &Session) -> &'static str {
     }
     match session.state.as_str() {
         "working" => "Working",
+        "waiting" if session.agents > 0 || session.background > 0 => "Working",
         "waiting" => "Ready",
         _ => "Status unknown",
     }

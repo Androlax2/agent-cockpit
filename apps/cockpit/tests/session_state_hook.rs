@@ -788,6 +788,20 @@ fn a_finished_turn_counts_its_background_agents_apart_from_other_background_work
 }
 
 #[test]
+fn background_notifications_update_counts_without_finishing_another_turn() {
+    for tasks in [json!([{"type": "shell"}]), json!([])] {
+        let mut test = HookTest::new();
+        let folder = test.sandbox.root.join("notes");
+        fs::create_dir(&folder).unwrap();
+        test.run_hook(with_session(json!({"hook_event_name": "Notification", "notification_type": "background_work", "message": "", "background_tasks": tasks}), &folder.to_string_lossy()), &[]);
+        let report = test.received().last().unwrap().clone();
+        assert_eq!(report["background"], json!(tasks.as_array().unwrap().len()));
+        assert!(report.get("state").is_none(), "{report}");
+        assert_ne!(report["turn_complete"], json!(true));
+    }
+}
+
+#[test]
 fn a_finished_turn_without_a_task_list_reports_no_count() {
     assert_eq!(background_reported(json!({"hook_event_name": "Stop"})), (None, None));
 }

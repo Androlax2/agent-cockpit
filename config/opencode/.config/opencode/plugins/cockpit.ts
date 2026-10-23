@@ -27,6 +27,7 @@ export default {
     const cockpitSession = process.env.CLAUDE_CODE_SESSION_ID
     // A subagent runs in a session of its own, with a parent: what it asks shows on its root's card.
     const parentOf = new Map<string, string>()
+    const shells = new Map<string, string>()
     const started = new Set<string>()
     const pendingBilling = new Map<string, { providerID: string; modelID: string; billing: BillingMode }>()
     const recordBilling = (messageID: string, billing: BillingMode) => {
@@ -106,9 +107,33 @@ export default {
     if (cockpitSession?.startsWith("ses")) report(cockpitSession, { hook_event_name: "SessionStart" })
 
     const isTopLevel = (sessionID: string) => !parentOf.has(sessionID)
+    const backgroundTasks = (sessionID: string) => [...shells.values()]
+      .filter((owner) => rootOf(owner) === rootOf(sessionID))
+      .map(() => ({ type: "shell" }))
+    const reportBackground = (sessionID: string) => report(sessionID, {
+      hook_event_name: "Notification", notification_type: "background_work", message: "",
+      background_tasks: backgroundTasks(sessionID),
+    })
     const handle = (event: { type: string; data: any }) => {
       const { type, data } = event
       switch (type) {
+        case "shell.created": {
+          const sessionID = data.info.metadata?.sessionID
+          if (typeof sessionID === "string" && data.info.status === "running") {
+            shells.set(data.info.id, sessionID)
+            reportBackground(sessionID)
+          }
+          break
+        }
+        case "shell.exited":
+        case "shell.deleted": {
+          const sessionID = shells.get(data.id)
+          if (sessionID) {
+            shells.delete(data.id)
+            reportBackground(sessionID)
+          }
+          break
+        }
         case "session.step.started": {
           const pending = pendingBilling.get(data.sessionID)
           pendingBilling.delete(data.sessionID)
@@ -131,12 +156,22 @@ export default {
         case "session.execution.failed":
         case "session.execution.interrupted":
           pendingBilling.delete(data.sessionID)
-          if (isTopLevel(data.sessionID)) report(data.sessionID, { hook_event_name: "Stop" })
+          if (isTopLevel(data.sessionID)) report(data.sessionID, { hook_event_name: "Stop", background_tasks: backgroundTasks(data.sessionID) })
           break
-        case "session.deleted":
+        case "session.deleted": {
           pendingBilling.delete(data.sessionID)
+          const root = rootOf(data.sessionID)
+          let removedShell = false
+          for (const [id, owner] of shells) {
+            if (owner === data.sessionID || (isTopLevel(data.sessionID) && rootOf(owner) === root)) {
+              shells.delete(id)
+              removedShell = true
+            }
+          }
           if (isTopLevel(data.sessionID) && started.delete(data.sessionID)) send(data.sessionID, { hook_event_name: "SessionEnd" })
+          else if (removedShell && started.has(root)) reportBackground(root)
           break
+        }
         case "permission.asked":
           report(data.sessionID, {
             hook_event_name: "Notification",

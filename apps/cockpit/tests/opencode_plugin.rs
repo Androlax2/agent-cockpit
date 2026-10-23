@@ -146,6 +146,52 @@ fn finished(session: &str) -> Value {
     event("session.execution.succeeded", json!({"sessionID": session}))
 }
 
+fn shell_created(id: &str, session: &str) -> Value {
+    event("shell.created", json!({"info": {"id": id, "status": "running", "command": "make test", "cwd": "/x/proj", "shell": "/bin/bash", "file": "/x/output", "metadata": {"sessionID": session}, "time": {"started": 1}}}))
+}
+
+#[test]
+fn background_shells_are_reported_until_the_last_one_exits() {
+    let run = run(json!([
+        created(ROOT, None),
+        shell_created("sh_1", ROOT),
+        shell_created("sh_2", ROOT),
+        finished(ROOT),
+        event("shell.exited", json!({"id": "sh_1", "status": "exited", "exit": 0})),
+        event("shell.exited", json!({"id": "sh_2", "status": "timeout"})),
+    ]), "");
+    let stop = run.payloads.iter().find(|payload| payload["hook_event_name"] == "Stop").unwrap();
+    assert_eq!(stop["background_tasks"].as_array().map(Vec::len), Some(2));
+    let updates: Vec<_> = run.payloads.iter().filter(|payload| payload["notification_type"] == "background_work").collect();
+    assert_eq!(updates.iter().map(|payload| payload["background_tasks"].as_array().unwrap().len()).collect::<Vec<_>>(), [1, 2, 1, 0]);
+}
+
+#[test]
+fn a_late_shell_exit_does_not_restart_a_deleted_session() {
+    let run = run(json!([
+        created(ROOT, None), created(CHILD, Some(ROOT)),
+        shell_created("sh_1", ROOT), shell_created("sh_2", CHILD),
+        event("session.deleted", json!({"sessionID": ROOT})),
+        event("shell.exited", json!({"id": "sh_1", "status": "killed"})),
+        event("shell.deleted", json!({"id": "sh_2"})),
+    ]), "");
+    assert_eq!(names(&run), ["SessionStart", "Notification", "Notification", "SessionEnd"]);
+}
+
+#[test]
+fn a_childs_shell_is_reported_on_the_root_and_deletion_clears_it() {
+    let run = run(json!([
+        created(ROOT, None), created(CHILD, Some(ROOT)),
+        shell_created("sh_1", CHILD), finished(ROOT),
+        event("shell.deleted", json!({"id": "sh_1"})),
+        event("shell.exited", json!({"id": "sh_unrelated", "status": "killed"})),
+    ]), "");
+    let updates: Vec<_> = run.payloads.iter().filter(|payload| payload["notification_type"] == "background_work").collect();
+    assert_eq!(updates.len(), 2);
+    assert!(updates.iter().all(|payload| payload["session_id"] == ROOT));
+    assert_eq!(updates[1]["background_tasks"], json!([]));
+}
+
 fn names(run: &Run) -> Vec<&str> {
     run.payloads.iter().map(|payload| payload["hook_event_name"].as_str().unwrap()).collect()
 }

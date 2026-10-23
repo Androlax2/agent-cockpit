@@ -1481,6 +1481,17 @@ fn label_updates_publish_without_changing_activity_or_pending_questions() {
 }
 
 #[test]
+fn background_updates_preserve_pending_question_banners() {
+    let mut bench = Bench::new();
+    bench.report(SESSION_A, json!({"state": "needs-you", "message": "Allow this command?", "sticky": true, "background": 1}));
+    let dropped = bench.dropped();
+    bench.report(SESSION_A, json!({"agents": 0, "background": 0}));
+    assert_eq!(bench.snapshot()[0]["state"], "needs-you");
+    assert_eq!(bench.snapshot()[0]["background"], 0);
+    assert_eq!(bench.dropped(), dropped, "background completion must not dismiss a question banner");
+}
+
+#[test]
 fn labels_survive_reports_without_labels_and_daemon_restarts() {
     let mut bench = Bench::new();
     bench.report(SESSION_A, json!({"state": "working", "label": "Free disk space"}));

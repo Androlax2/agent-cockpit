@@ -268,6 +268,7 @@ case $event in
         # Requests for a human stick and turn the session red; turn-end notices leave it waiting;
         # anything informational (auth, quota, computer use, plugins) shows its message and keeps the state.
         case $(jq -r '.notification_type // ""' <<<"$payload") in
+            background_work) read -r agents background < <(background_of "$payload") || true ;;
             permission_prompt | worker_permission_prompt | elicitation_dialog | elicitation_url_dialog | agent_needs_input)
                 state=needs-you; sticky=true; needs_input=false ;;
             idle_prompt) state=waiting; sticky=true ;;

@@ -1409,6 +1409,7 @@ impl Registry {
 
         match message {
             None if report.label.is_some() => {}
+            None if report.state.is_none() && (report.agents.is_some() || report.background.is_some()) => {}
             None => {
                 self.banners.drop_banner(&session);
                 self.held.remove(&session);
