@@ -216,4 +216,6 @@ fn help_shows_how_to_recruit() {
     let sandbox = Sandbox::new();
     let help = stdout(&sandbox.command(env!("CARGO_BIN_EXE_cockpit-team"), &[]).arg("--help").output().unwrap());
     assert!(help.lines().any(|line| line.trim().starts_with("{\"action\":\"recruit\"")), "{help}");
+    assert!(help.contains("automatically") && help.contains("every project"), "{help}");
+    assert!(!help.contains("Theo approves"), "{help}");
 }

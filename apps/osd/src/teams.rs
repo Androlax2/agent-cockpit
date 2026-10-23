@@ -74,6 +74,7 @@ pub(crate) fn live_sessions(registry: &mut Registry) -> Result<Vec<VerifiedSessi
     }
     if is_opened {
         store::recover(registry.teams.as_mut().expect("opened above"), &live, now_ms())?;
+        start_spawns(registry)?;
     }
     // A session the cockpit started for an approved team takes its role at its first verified request.
     let tokens: Vec<(String, VerifiedSession)> = live.iter().filter_map(|session| registry.sessions.get(&session.session_id)
@@ -217,13 +218,13 @@ fn start_sleep_wakes(registry: &mut Registry) -> Result<(), TeamError> {
     Ok(())
 }
 
-/// The live sessions' folders: approved recruits start in the asker's.
+/// Only existing launch directories reach the store; a deleted subfolder can still identify a project.
 fn folders(registry: &Registry, live: &[VerifiedSession]) -> std::collections::HashMap<String, String> {
-    live.iter().filter_map(|session| registry.sessions.get(&session.session_id).filter(|entry| !entry.cwd.is_empty())
+    live.iter().filter_map(|session| registry.sessions.get(&session.session_id).filter(|entry| std::path::Path::new(&entry.cwd).is_dir())
         .map(|entry| (session.session_id.clone(), entry.cwd.clone()))).collect()
 }
 
-/// Starts what approvals and handoffs queued (never waiting for it), and closes replaced QA sessions.
+/// Starts queued recruits and handoffs without waiting, and closes replaced QA sessions.
 /// A start is recorded before the next pass, so nothing is started twice.
 pub fn start_spawns(registry: &mut Registry) -> Result<(), TeamError> {
     let Some(connection) = registry.teams.as_mut() else { return Ok(()) };
@@ -280,8 +281,9 @@ pub fn request(registry: &mut Registry, peer: u32, action: AgentAction) -> Resul
         AgentAction::Receive => "receive", AgentAction::Receipt { .. } => "receipt", AgentAction::Assess { .. } => "assess",
         AgentAction::Handoff { .. } => "handoff", AgentAction::Recruit { .. } => "recruit",
     };
-    // Recruits run in the default agent as it stands now; Theo sees and approves that choice.
+    // The host chooses the default agent; the requesting session cannot choose one.
     let default_agent = if matches!(action, AgentAction::Recruit { .. }) { registry.system.default_agent() } else { None };
+    let directories = if matches!(action, AgentAction::Recruit { .. }) { folders(registry, &live) } else { Default::default() };
     // The Developer's real folder, where a fresh QA's copy comes from (never the handoff's own claim).
     let developer_folder = registry.sessions.get(&sender.session_id).map(|entry| entry.cwd.clone()).filter(|cwd| !cwd.is_empty());
     // The daemon's own view of the recipient decides whether it may be woken: never the adapter's claim.
@@ -303,8 +305,7 @@ pub fn request(registry: &mut Registry, peer: u32, action: AgentAction) -> Resul
         AgentAction::Assess { .. } => store::assess(connection, &sender, &action, now_ms()),
         AgentAction::Handoff { .. } => store::handoff_in(connection, &sender, &action, developer_folder.as_deref(), now_ms()),
         AgentAction::Recruit { recruitment } => {
-            let agent = default_agent.as_deref().ok_or_else(|| TeamError::new(ErrorCode::Unavailable, "cannot read the default agent from the cockpit settings"))?;
-            store::recruit(connection, &sender, recruitment, agent, &live, now_ms())
+            store::recruit(connection, &sender, recruitment, default_agent.as_deref(), &live, &directories, now_ms())
         },
         AgentAction::Receipt { dispatch_id, outcome } => {
             store::finish_for(connection, &sender, dispatch_id, outcome, now_ms())?;
@@ -314,7 +315,7 @@ pub fn request(registry: &mut Registry, peer: u32, action: AgentAction) -> Resul
     if !matches!(kind, "context" | "receive") || result.as_ref().is_ok_and(|reply| reply.result.as_ref().is_ok_and(|value| !value.is_null())) {
         record(kind, Some(&sender), result.as_ref().is_ok_and(|reply| reply.result.is_ok()));
     }
-    if kind == "handoff" && result.as_ref().is_ok_and(|reply| reply.result.is_ok()) {
+    if matches!(kind, "handoff" | "recruit") && result.as_ref().is_ok_and(|reply| reply.result.is_ok()) {
         start_spawns(registry)?;
     }
     result
