@@ -70,6 +70,19 @@ fn with_session(payload: Value, cwd: &str) -> Value {
     payload
 }
 
+#[test]
+fn a_routed_claude_prompt_is_stopped_when_the_gate_is_missing_or_refuses() {
+    for gate in ["exit 127", "echo '{\"continue\":false,\"stopReason\":\"Ownership pending\"}'"] {
+        let mut test = HookTest::new();
+        test.sandbox.shim("cockpit-subscription", gate);
+        let output = test.run_hook(with_session(json!({"hook_event_name":"UserPromptSubmit","prompt":"Continue"}), "/x/proj"),
+            &[("COCKPIT_SUBSCRIPTION_ROUTE", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")]);
+        assert!(output.status.success(), "{}", stderr(&output));
+        assert_eq!(serde_json::from_slice::<Value>(&output.stdout).unwrap()["continue"], false);
+        assert!(test.received().is_empty(), "a denied prompt must not report work as started");
+    }
+}
+
 /// A stand-in process named "claude": a copy of bash under that name.
 fn fake_claude(root: &Path) -> PathBuf {
     fake_agent(root, "claude")

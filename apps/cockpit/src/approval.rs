@@ -114,7 +114,7 @@ const NO_ANSWER: &str = "the OSD daemon took the request but did not answer: it 
                          Ask Theo to run `cockpit reload` (it restarts the daemon on its new build).";
 
 /// One message to the daemon on the report socket, and its one-line answer.
-fn ask_daemon(line: &str, timeout: Duration) -> Result<String, Refusal> {
+pub(crate) fn ask_daemon(line: &str, timeout: Duration) -> Result<String, Refusal> {
     use std::net::Shutdown;
     use std::os::unix::net::UnixStream;
     let socket = paths::osd_report_socket();

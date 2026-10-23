@@ -105,6 +105,8 @@ pub enum HostRequest {
     ChiefNativeObservation { session: VerifiedSession, idle: bool, pending_input: bool, observed_at_ms: i64 },
     /// An explicit host attestation after the required real draft/queue verification.
     VerifyChiefAdmission { session: VerifiedSession, adapter: String, evidence: String },
+    /// Runtime discovery only; this grants neither task execution nor team membership.
+    SubscriptionRuntime { generation: String },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -167,6 +167,7 @@ pub struct Report {
     pub runtime: Option<String>,
     pub spawn_token: Option<String>,
     pub resume_token: Option<String>,
+    pub subscription_token: Option<String>,
     pub target: BTreeMap<String, String>,
 }
 
@@ -270,7 +271,7 @@ pub fn parse_session(raw: &str) -> Result<Report, String> {
         agents: report.get("agents").and_then(Value::as_u64),
         background: report.get("background").and_then(Value::as_u64),
         apps: report.get("apps").and_then(Value::as_str).map(str::to_string),
-        agent: report.get("agent").and_then(Value::as_str).map(str::to_string), native_thread, runtime: None, spawn_token: None, resume_token: None, target,
+        agent: report.get("agent").and_then(Value::as_str).map(str::to_string), native_thread, runtime: None, spawn_token: None, resume_token: None, subscription_token: None, target,
     })
 }
 
@@ -411,6 +412,7 @@ pub trait System {
     /// trusted_spawn_token for the process that sent a report.
     fn sender_spawn_token(&mut self, _sender: u32) -> Option<String> { None }
     fn sender_resume_token(&mut self, _sender: u32) -> Option<String> { None }
+    fn sender_subscription_token(&mut self, _sender: u32) -> Option<String> { None }
     /// Starts a command and does not wait for it: false when it could not start.
     fn start_detached(&mut self, _command: &[&str]) -> bool { false }
     fn quiet(&mut self) -> bool {
@@ -1084,6 +1086,8 @@ pub struct Entry {
     pub spawn_token: String,
     /// Only the authenticated outside-sandbox launcher can supply this continuation.
     pub resume_token: String,
+    pub subscription_token: String,
+    pub subscription_directory: String,
 }
 
 pub struct Registry {
@@ -1110,6 +1114,22 @@ pub fn snapshot_path() -> PathBuf {
 }
 
 impl Registry {
+    pub fn subscription_runtime(&mut self, generation: &str) -> Result<Value, String> {
+        if generation.len() != 32 || !generation.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)) {
+            return Err("invalid subscription routing generation".into());
+        }
+        let candidates: Vec<_> = self.sessions.iter().filter(|(_, entry)| entry.subscription_token == generation
+            && !entry.runtime.is_empty() && !entry.subscription_directory.is_empty() && matches!(entry.agent.as_str(), "claude" | "codex"))
+            .map(|(session, entry)| (session.clone(), entry.clone())).collect();
+        let live: Vec<_> = candidates.into_iter().filter(|(_, entry)| self.system.runtime_is_live(&entry.runtime)).collect();
+        match live.as_slice() {
+            [] => Ok(Value::Null),
+            [(session, entry)] => Ok(json!({"session":session,"agent":entry.agent,"runtime":entry.runtime,
+                "cwd":entry.subscription_directory,"native_thread":entry.native_thread})),
+            _ => Err("more than one live runtime claimed the subscription routing generation; no replacement authorized".into()),
+        }
+    }
+
     pub fn new(system: Box<dyn System>, banners: Box<dyn Banners>) -> Self {
         let mut registry = Registry { system, banners, sessions: BTreeMap::new(), held: BTreeMap::new(), runs: RunRequests::default(),
                                       guides: GuideRequests::default(), recent_written: (0.0, Vec::new()), project_cache: HashMap::new(), teams: None,
@@ -1159,6 +1179,9 @@ impl Registry {
     /// A run or guide request, or a todo update, from the report socket: held (hold_request) or
     /// queued (queue_todo_update) with the folder the sender's sandbox started in.
     pub fn request_from(&mut self, kind: &str, raw: &str, sender: u32) -> Result<(), String> {
+        if kind == "subscription-gate" {
+            return self.subscription_gate(raw, sender);
+        }
         if kind == "session-request" {
             return self.report_from(parse_session(raw)?, sender);
         }
@@ -1169,6 +1192,28 @@ impl Registry {
         };
         audit_request(kind, raw, started_in.as_deref(), sender, &result);
         result
+    }
+
+    fn subscription_gate(&mut self, raw: &str, sender: u32) -> Result<(), String> {
+        let request: Value = serde_json::from_str(raw).map_err(|_| "invalid subscription admission request")?;
+        if !request.as_object().is_some_and(|request| request.len() == 1) {
+            return Err("subscription admission takes only a routing generation".into());
+        }
+        let generation = request["generation"].as_str().ok_or("missing subscription routing generation")?;
+        if self.system.sender_subscription_token(sender).as_deref() != Some(generation) {
+            return Err("this launch has no matching subscription routing generation".into());
+        }
+        let runtime = self.system.sender_runtime(sender).ok_or("subscription sender has no verified runtime")?;
+        let receipt = self.subscription_runtime(generation)?;
+        let session = receipt["session"].as_str().ok_or("subscription replacement has not reported yet")?;
+        if receipt["runtime"].as_str() != Some(&runtime) {
+            return Err("subscription admission belongs to another runtime".into());
+        }
+        let routes = cockpit::subscription_fallback::RoutingStore::load(&paths::subscription_routes())?;
+        if !routes.execution_allowed(generation, session, &runtime) {
+            return Err("subscription replacement waits for verified task ownership binding".into());
+        }
+        Ok(())
     }
 
     fn take_request(&mut self, kind: &str, raw: &str, started_in: &str, sender: u32) -> Result<(), String> {
@@ -1252,6 +1297,12 @@ impl Registry {
         report.runtime = runtime;
         report.spawn_token = self.system.sender_spawn_token(sender);
         report.resume_token = self.system.sender_resume_token(sender);
+        report.subscription_token = Some(self.system.sender_subscription_token(sender).unwrap_or_default());
+        if report.subscription_token.as_ref().is_some_and(|token| !token.is_empty()) {
+            // A replacement must not inherit a retired launch's checkout when its report omits cwd.
+            report.cwd = Some(self.system.sender_directory(sender).filter(|directory| !directory.is_empty())
+                .ok_or("subscription launch has no verified working directory")?);
+        }
         // The session's folder is where its sandbox started, never the one the report claims: a
         // claimed folder of another project would make a restart resume the session there, in that
         // project's sandbox with its token (security audit 2026-10-19, M1).
@@ -1302,6 +1353,10 @@ impl Registry {
         }
         if let Some(token) = report.resume_token.as_ref() {
             entry.resume_token = token.clone();
+        }
+        if let Some(token) = report.subscription_token.as_ref() {
+            entry.subscription_token = token.clone();
+            entry.subscription_directory = if token.is_empty() { String::new() } else { report.cwd.clone().unwrap_or_default() };
         }
         if let Some(native) = report.native_thread.as_ref().filter(|native| **native != entry.native_thread) {
             entry.native_thread = native.clone();
@@ -1985,6 +2040,12 @@ pub fn trusted_resume_token(table: &dyn Processes, sender: &str) -> Option<Strin
     (token.len() == 32 && token.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))).then_some(token)
 }
 
+/// A routing generation belongs to the host launch, never to a sandbox's report or environment.
+pub fn trusted_subscription_token(table: &dyn Processes, sender: &str) -> Option<String> {
+    let token = table.environment(&first_process_outside(table, sender)?).remove("COCKPIT_SUBSCRIPTION_ROUTE")?;
+    (token.len() == 32 && token.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))).then_some(token)
+}
+
 /// The folder the sender's sandbox started in: the working directory of its first process outside
 /// the sandbox (greywall, bwrap), which nothing inside can change.
 pub fn sandbox_directory(table: &dyn Processes, sender: &str) -> Option<String> {
@@ -2231,6 +2292,9 @@ impl System for RealSystem {
     }
     fn sender_resume_token(&mut self, sender: u32) -> Option<String> {
         trusted_resume_token(&Proc, &sender.to_string())
+    }
+    fn sender_subscription_token(&mut self, sender: u32) -> Option<String> {
+        trusted_subscription_token(&Proc, &sender.to_string())
     }
     fn start_detached(&mut self, command: &[&str]) -> bool {
         let Some((program, arguments)) = command.split_first() else { return false };

@@ -99,6 +99,7 @@ pub fn usage_script() -> PathBuf { home().join(".config/waybar/scripts/claude-us
 pub fn credentials() -> PathBuf { home().join(".claude/.credentials.json") }
 pub fn view_state() -> PathBuf { state_dir().join("view.json") }
 pub fn continuity() -> PathBuf { state_dir().join("continuity.json") }
+pub fn subscription_routes() -> PathBuf { state_dir().join("subscriptions/routes.json") }
 pub fn usage_archive() -> PathBuf { state_dir().join("usage.sqlite") }
 pub fn alerts() -> PathBuf { state_dir().join("alerts.json") }
 pub fn log() -> PathBuf { state_dir().join("log") }

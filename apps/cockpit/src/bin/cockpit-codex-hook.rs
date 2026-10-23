@@ -7,6 +7,8 @@ use std::io::{self, Read};
 
 const HOOK_MAX_BYTES: u64 = 65536;
 
+enum HookOutcome { Idle, TeamDelivery(Value), Paused(Value) }
+
 fn question(text: &str) -> Result<&str, String> {
     if text.trim().is_empty() || text.chars().count() > 300 || text.chars().any(char::is_control)
         || text.contains("#(") || text.contains("#{") {
@@ -76,14 +78,20 @@ fn team_delivery() -> Option<Value> {
     }
 }
 
-fn report() -> Result<Option<Value>, String> {
+fn report() -> Result<HookOutcome, String> {
     let mut input = Vec::new();
     io::stdin().take(HOOK_MAX_BYTES + 1).read_to_end(&mut input).map_err(|error| error.to_string())?;
     if input.len() as u64 > HOOK_MAX_BYTES {
         return Err("Codex hook payload exceeds 64 KiB".into());
     }
     let payload = serde_json::from_slice(&input).map_err(|error| format!("invalid Codex hook JSON: {error}"))?;
-    let Some(mut report) = codex::translate_hook(&payload)? else { return Ok(None) };
+    let Some(mut report) = codex::translate_hook(&payload)? else { return Ok(HookOutcome::Idle) };
+    if payload["hook_event_name"] == "UserPromptSubmit" {
+        if let Ok(generation) = std::env::var("COCKPIT_SUBSCRIPTION_ROUTE") {
+            let gate = cockpit::subscription_fallback::prompt_gate(&generation);
+            if gate["continue"] == false { return Ok(HookOutcome::Paused(gate)); }
+        }
+    }
     update_question(&payload, &mut report)?;
     report["terminal"] = json!(std::env::var("COCKPIT_TERMINAL").is_ok_and(|value| value == "1"));
     file(&report)?;
@@ -93,7 +101,7 @@ fn report() -> Result<Option<Value>, String> {
         report["state"] = json!("working");
         file(&report)?;
     }
-    Ok(delivery)
+    Ok(delivery.map_or(HookOutcome::Idle, HookOutcome::TeamDelivery))
 }
 
 fn file(report: &Value) -> Result<(), String> {
@@ -105,8 +113,9 @@ fn file(report: &Value) -> Result<(), String> {
 
 fn main() {
     match report() {
-        Ok(None) => println!("{{}}"),
-        Ok(Some(delivery)) => {
+        Ok(HookOutcome::Idle) => println!("{{}}"),
+        Ok(HookOutcome::Paused(gate)) => println!("{gate}"),
+        Ok(HookOutcome::TeamDelivery(delivery)) => {
             // Output is not proof of native continuation acceptance; chief scheduling keeps Codex unavailable.
             let dispatch_id = delivery["dispatch_id"].as_str().unwrap_or_default().to_string();
             let text = format!("{}\n", json!({"decision": "block", "reason": delivery["text"]}));

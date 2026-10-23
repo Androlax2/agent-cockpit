@@ -118,6 +118,7 @@ struct World {
     /// sender pid -> COCKPIT_TEAM_SPAWN in its launch's host environment
     spawn_tokens: HashMap<u32, String>,
     resume_tokens: HashMap<u32, String>,
+    subscription_tokens: HashMap<u32, String>,
     /// start_detached commands, in order
     started: Vec<Vec<String>>,
     /// start_detached reports that nothing could be started
@@ -180,6 +181,7 @@ impl System for FakeSystem {
     fn default_agent(&mut self) -> Option<String> { self.0.borrow().default_agent.clone() }
     fn sender_spawn_token(&mut self, sender: u32) -> Option<String> { self.0.borrow().spawn_tokens.get(&sender).cloned() }
     fn sender_resume_token(&mut self, sender: u32) -> Option<String> { self.0.borrow().resume_tokens.get(&sender).cloned() }
+    fn sender_subscription_token(&mut self, sender: u32) -> Option<String> { self.0.borrow().subscription_tokens.get(&sender).cloned() }
     fn start_detached(&mut self, command: &[&str]) -> bool {
         self.0.borrow_mut().started.push(command.iter().map(|part| part.to_string()).collect());
         !self.0.borrow().start_fails
@@ -316,6 +318,121 @@ fn a_session_restarted_after_its_old_launch_ended_takes_its_new_launch() {
     let restarted = parse_session(&json!({"session": SESSION_A, "agent": "claude", "project": "project-a", "state": "waiting"}).to_string()).unwrap();
     bench.registry.report_from(restarted, 11).unwrap();
     assert_eq!(bench.registry.sessions[SESSION_A].runtime, "runtime-11");
+}
+
+fn subscription_receipt(bench: &mut Bench, generation: &str) -> Result<Value, cockpit::teams::TeamError> {
+    let request = serde_json::from_value(json!({"request":"subscription_runtime", "generation":generation})).unwrap();
+    crate::teams::host(&mut bench.registry, request)?.result
+}
+
+#[test]
+fn subscription_receipts_use_the_launch_token_not_a_report_claim() {
+    let mut bench = team_bench();
+    let generation = "a".repeat(32);
+    let report = json!({"session":SESSION_A,"agent":"claude","project":"project-a","state":"working",
+        "cwd":bench.registry.sessions[SESSION_A].cwd,"subscription_token":generation});
+    bench.registry.report_from(parse_session(&report.to_string()).unwrap(), 10).unwrap();
+    assert!(subscription_receipt(&mut bench, &generation).unwrap().is_null());
+    bench.world.borrow_mut().subscription_tokens.insert(10, generation.clone());
+    bench.registry.report_from(parse_session(&report.to_string()).unwrap(), 10).unwrap();
+    let receipt = subscription_receipt(&mut bench, &generation).unwrap();
+    assert_eq!(receipt["session"], SESSION_A);
+    assert_eq!(receipt["runtime"], "runtime-10");
+    assert_eq!(receipt["cwd"], bench.registry.sessions[SESSION_A].cwd);
+    assert!(receipt.get("model").is_none(), "runtime provenance must not invent model/account evidence");
+}
+
+#[test]
+fn subscription_receipts_refuse_multiple_live_replacements() {
+    let mut bench = team_bench();
+    let generation = "b".repeat(32);
+    for (peer, session) in [(10, SESSION_A), (30, SESSION_B)] {
+        bench.world.borrow_mut().subscription_tokens.insert(peer, generation.clone());
+        let report = json!({"session":session,"project":"project-a","state":"working"});
+        bench.registry.report_from(parse_session(&report.to_string()).unwrap(), peer).unwrap();
+    }
+    assert!(subscription_receipt(&mut bench, &generation).is_err());
+}
+
+#[test]
+fn an_ended_launch_cannot_supply_a_subscription_receipt() {
+    let mut bench = team_bench();
+    let generation = "c".repeat(32);
+    bench.world.borrow_mut().subscription_tokens.insert(10, generation.clone());
+    bench.registry.report_from(parse_session(&json!({"session":SESSION_A,"project":"project-a","state":"working"}).to_string()).unwrap(), 10).unwrap();
+    bench.world.borrow_mut().sender_runtimes.remove(&10);
+    assert!(subscription_receipt(&mut bench, &generation).unwrap().is_null());
+}
+
+#[test]
+fn a_subscription_restart_without_a_claimed_folder_uses_its_new_launch_folder() {
+    let mut bench = team_bench();
+    let generation = "d".repeat(32);
+    let other_folder = bench.fixture.root.join("other-checkout").display().to_string();
+    {
+        let mut world = bench.world.borrow_mut();
+        world.sender_runtimes.remove(&10);
+        world.sender_targets.insert(11, target(&[("tmux_pane", "%10")]));
+        world.sender_runtimes.insert(11, "runtime-11".into());
+        world.sender_directories.insert(11, other_folder.clone());
+        world.subscription_tokens.insert(11, generation.clone());
+    }
+    bench.registry.report_from(parse_session(&json!({"session":SESSION_A,"project":"project-a","state":"working"}).to_string()).unwrap(), 11).unwrap();
+    assert_eq!(subscription_receipt(&mut bench, &generation).unwrap()["cwd"], other_folder);
+}
+
+#[test]
+fn a_live_replacement_cannot_keep_a_previous_launch_generation() {
+    let mut bench = team_bench();
+    let generation = "e".repeat(32);
+    bench.world.borrow_mut().subscription_tokens.insert(10, generation.clone());
+    let report = || parse_session(&json!({"session":SESSION_A,"project":"project-a","state":"working"}).to_string()).unwrap();
+    bench.registry.report_from(report(), 10).unwrap();
+    bench.world.borrow_mut().subscription_tokens.remove(&10);
+    bench.registry.report_from(report(), 10).unwrap();
+    assert!(subscription_receipt(&mut bench, &generation).unwrap().is_null());
+}
+
+#[test]
+fn subscription_prompt_admission_requires_completed_binding_and_the_real_sender() {
+    use cockpit::subscription_fallback::{Binding, Observation, RoutingStore, Selection};
+    use cockpit::usage::SubscriptionCapacity::{Available, Exhausted};
+    let mut bench = team_bench();
+    let directory = bench.registry.sessions[SESSION_A].cwd.clone();
+    let source = Binding { session:SESSION_A.into(), runtime:"runtime-10".into(), native_thread:None,
+        selection:Selection { agent:"claude".into(), provider:"anthropic".into(), model:"claude-opus-4-7".into(),
+            variant:Some("high".into()), account:"a".repeat(64) } };
+    let selection = Selection { agent:"codex".into(), provider:"openai".into(), model:"gpt-6.1-sol".into(),
+        variant:Some("high".into()), account:"b".repeat(64) };
+    let replacement = Binding { session:CODEX_SESSION.into(),runtime:"runtime-40".into(),selection:selection.clone(),native_thread:Some(SESSION_A.into()) };
+    let mut routes = RoutingStore::load(&cockpit::paths::subscription_routes()).unwrap();
+    routes.track(source.clone(), &directory, "1d3fd318", 100).unwrap();
+    let transition = routes.reconcile(&[Observation { binding:source.clone(),session:cockpit::sessions::Session {
+        session:SESSION_A.into(),agent:"claude".into(),state:"waiting".into(),cwd:directory.clone(),tmux_pane:"%10".into(),
+        ..Default::default() }, current_capacity:Exhausted,original_capacity:Exhausted,alternate:Some((selection,Available)),
+        has_pending_work:true,prompt_clear:true,manual_override:false }], 101).unwrap().remove(0);
+    routes.mark_retired(SESSION_A, &transition.generation).unwrap();
+    routes.mark_submitted(SESSION_A, &transition.generation).unwrap();
+    {
+        let mut world = bench.world.borrow_mut();
+        world.sender_runtimes.remove(&10);
+        world.sender_targets.insert(40,target(&[("tmux_pane","%40")]));
+        world.sender_runtimes.insert(40,"runtime-40".into());
+        world.sender_directories.insert(40,directory.clone());
+        world.subscription_tokens.insert(40,transition.generation.clone());
+    }
+    bench.registry.report_from(parse_session(&json!({"session":CODEX_SESSION,"native_thread":SESSION_A,"agent":"codex",
+        "project":"project-a","cwd":directory,"state":"working"}).to_string()).unwrap(), 40).unwrap();
+    let raw = json!({"generation":transition.generation}).to_string();
+    drop(routes);
+    assert!(bench.registry.request_from("subscription-gate", &raw, 40).is_err());
+    let mut routes = RoutingStore::load(&cockpit::paths::subscription_routes()).unwrap();
+    routes.record_runtime(&transition.generation, replacement, &directory).unwrap();
+    routes.finish(SESSION_A, &transition.generation).unwrap();
+    drop(routes);
+    assert!(bench.registry.request_from("subscription-gate", &raw, 40).is_ok());
+    assert!(bench.registry.request_from("subscription-gate", &raw, 30).is_err(), "another sandbox must not reuse admission");
+    assert!(bench.registry.request_from("subscription-gate", &json!({"generation":"f".repeat(32)}).to_string(), 40).is_err());
 }
 
 #[test]
@@ -2817,6 +2934,18 @@ fn the_pane_comes_from_the_first_process_outside_the_sandbox() {
         ("20", None, "host", environment(&[])),
     ]);
     assert_eq!(trusted_target(&tree, "50"), Some(target(&[("tmux_pane", "%7"), ("kitty_pid", "4242")])));
+}
+
+#[test]
+fn subscription_generations_ignore_the_sandbox_environment() {
+    for host_generation in ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "", "BAD", "../generation"] {
+        let tree = Tree(vec![
+            ("50", Some("30"), "sandbox", environment(&[("COCKPIT_SUBSCRIPTION_ROUTE", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")])),
+            ("30", None, "host", environment(&[("COCKPIT_SUBSCRIPTION_ROUTE", host_generation)])),
+        ]);
+        let expected = (host_generation.len() == 32).then(|| host_generation.to_string());
+        assert_eq!(trusted_subscription_token(&tree, "50"), expected);
+    }
 }
 
 #[test]

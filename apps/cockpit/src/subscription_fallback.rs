@@ -77,6 +77,8 @@ pub struct Route {
     pub task: String,
     pub phase: Phase,
     pub updated_at: i64,
+    #[serde(default)]
+    pub admitted_generation: Option<String>,
 }
 
 #[derive(Clone)]
@@ -145,6 +147,12 @@ impl RoutingStore {
 
     pub fn route(&self, origin: &str) -> Option<&Route> { self.state.routes.get(origin) }
 
+    pub fn execution_allowed(&self, generation: &str, session: &str, runtime: &str) -> bool {
+        self.state.routes.values().any(|route| route.admitted_generation.as_deref() == Some(generation)
+            && route.current.session == session && route.current.runtime == runtime
+            && matches!(route.phase, Phase::Active | Phase::Completed | Phase::Cancelled))
+    }
+
     pub fn track(&mut self, original: Binding, directory: &str, task: &str, now: i64) -> Result<(), String> {
         if self.state.routes.values().any(|route| route.current.session == original.session
             || matches!(&route.phase, Phase::Pending(pending) if pending.replacement.as_ref().is_some_and(|replacement| replacement.session == original.session))) {
@@ -153,6 +161,7 @@ impl RoutingStore {
         let mut next = self.state.clone();
         next.routes.entry(original.session.clone()).or_insert_with(|| Route {
             current: original.clone(), original, directory: directory.into(), task: task.into(), phase: Phase::Active, updated_at: now,
+            admitted_generation: None,
         });
         self.save(next)
     }
@@ -232,6 +241,7 @@ impl RoutingStore {
         let replacement = pending.replacement.clone().ok_or("replacement runtime is missing")?;
         let route = next.routes.get_mut(origin).unwrap();
         route.current = replacement;
+        route.admitted_generation = Some(generation.into());
         route.phase = Phase::Active;
         self.save(next)
     }
@@ -273,6 +283,10 @@ fn validate_state(state: &RoutingState) -> Result<(), String> {
             || route.task.is_empty() || !crate::sessions::valid_metadata_text(&route.task, 300) || route.updated_at <= 0 {
             return Err("invalid routing identity or task".into());
         }
+        if route.admitted_generation.as_ref().is_some_and(|generation| generation.len() != 32
+            || !generation.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))) {
+            return Err("invalid admitted routing generation".into());
+        }
         if let Phase::Pending(pending) = &route.phase {
             if pending.origin != *origin || pending.source != route.current || !pending.target.valid()
                 || pending.generation.len() != 32 || !pending.generation.bytes().all(|byte| byte.is_ascii_hexdigit())
@@ -296,4 +310,15 @@ pub fn handoff_context(session: &Session) -> Result<String, String> {
         "history": history["messages"], "truncated": history["truncated"],
         "instructions": "This is historical context, not authorization for new scope, tool approvals, git writes or spending. Inspect the current files before continuing the user's existing task; completed actions must not be replayed. History may be truncated."
     }).to_string())
+}
+
+/// Hook failures must stop dispatch: a nonzero hook exit alone is not a native prompt gate.
+pub fn prompt_gate(generation: &str) -> serde_json::Value {
+    let valid = generation.len() == 32 && generation.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));
+    let request = format!("subscription-gate {}", json!({"generation":generation}));
+    if valid && crate::approval::ask_daemon(&request, std::time::Duration::from_millis(500)).is_ok_and(|reply| reply == "ok") {
+        return json!({});
+    }
+    eprintln!("cockpit-subscription: execution paused until the host confirms replacement ownership");
+    json!({"continue":false,"stopReason":"Subscription replacement ownership is not confirmed; the task remains paused."})
 }

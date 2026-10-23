@@ -505,6 +505,11 @@ pub fn host(registry: &mut Registry, peer: u32, request: cockpit::teams::HostReq
             cockpit::chief::store::verify_admission(registry.teams.as_mut().unwrap(), &session, &adapter, &evidence, now_ms())?;
             Ok(TeamReply { request_id: "verify-chief-admission".into(), result: Ok(json!({"recorded":true})) })
         },
+        cockpit::teams::HostRequest::SubscriptionRuntime { generation } => {
+            let runtime = registry.subscription_runtime(&generation)
+                .map_err(|error| TeamError::new(ErrorCode::Conflict, error))?;
+            Ok(TeamReply { request_id: generation, result: Ok(runtime) })
+        },
         request => sleep_control(registry, request),
     }
 }

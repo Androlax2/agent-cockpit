@@ -76,6 +76,17 @@ report_socket="${XDG_RUNTIME_DIR:-/tmp}/cockpit-report/osd-report.sock"
 [[ -S $report_socket ]] || report_socket="${XDG_RUNTIME_DIR:-/tmp}/claude-report/osd-report.sock"
 toast_id_file="$HOME/.cache/claude/toast-$session.id"
 
+if [[ $event == UserPromptSubmit && ${COCKPIT_AGENT:-claude} == claude ]]; then
+    generation=${COCKPIT_SUBSCRIPTION_ROUTE:-$(inherited COCKPIT_SUBSCRIPTION_ROUTE || true)}
+    if [[ -n $generation ]]; then
+        if ! gate=$(timeout 2 cockpit-subscription gate "$generation") \
+            || ! jq -e 'type == "object" and (length == 0)' <<<"$gate" >/dev/null 2>&1; then
+            printf '%s\n' '{"continue":false,"stopReason":"Subscription replacement ownership is not confirmed; the task remains paused."}'
+            exit 0
+        fi
+    fi
+fi
+
 # What a turn left in the repository, worked out here, inside the session's sandbox: git reads the
 # repository's own configuration, which the session can write, so it must never run outside.
 turn_head_file="$HOME/.cache/claude/turn-$session.head"

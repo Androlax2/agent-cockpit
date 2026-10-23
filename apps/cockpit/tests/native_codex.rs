@@ -123,6 +123,17 @@ fn native_hook_fails_visibly_when_report_is_not_accepted() {
 }
 
 #[test]
+fn a_routed_codex_prompt_is_stopped_when_ownership_cannot_be_confirmed() {
+    let sandbox = Sandbox::new();
+    let output = sandbox.run_with_input(env!("CARGO_BIN_EXE_cockpit-codex-hook"), &[],
+        &[("COCKPIT_SUBSCRIPTION_ROUTE", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")],
+        &json!({"hook_event_name":"UserPromptSubmit","session_id":NATIVE_THREAD,"cwd":"/projects/demo","prompt":"Continue the task"}).to_string());
+    assert!(output.status.success(), "{}", common::sandbox::stderr(&output));
+    let decision: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(decision["continue"], false);
+}
+
+#[test]
 fn native_codex_is_an_explicit_agent_not_a_claude_uuid_alias() {
     let agent = cockpit::agents::find("codex").expect("native Codex must be registered");
     assert_eq!(agent.name, "codex");

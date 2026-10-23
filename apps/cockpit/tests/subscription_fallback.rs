@@ -200,6 +200,45 @@ fn repeated_verified_receipts_are_idempotent_but_other_checkouts_are_rejected() 
 }
 
 #[test]
+fn replacement_execution_waits_for_ownership_binding_and_the_matching_runtime() {
+    let sandbox = Sandbox::new();
+    let mut store = RoutingStore::load(&sandbox.state.join("subscriptions/routes.json")).unwrap();
+    let source = binding("claude");
+    let replacement = binding("codex");
+    store.track(source.clone(), "/projects/demo", "1797cdd6", 100).unwrap();
+    let transition = store.reconcile(&[observation(&source, Exhausted)], 101).unwrap().remove(0);
+    let allowed = |store: &RoutingStore, runtime: &str| store.execution_allowed(&transition.generation, &replacement.session, runtime);
+    assert!(!allowed(&store, &replacement.runtime));
+    store.mark_retired(&source.session, &transition.generation).unwrap();
+    store.mark_submitted(&source.session, &transition.generation).unwrap();
+    store.record_runtime(&transition.generation, replacement.clone(), "/projects/demo").unwrap();
+    assert!(!allowed(&store, &replacement.runtime), "a receipt is not completed ownership transfer");
+    store.finish(&source.session, &transition.generation).unwrap();
+    assert!(allowed(&store, &replacement.runtime));
+    assert!(!allowed(&store, "impostor-runtime"));
+    assert!(!store.execution_allowed(&"f".repeat(32), &replacement.session, &replacement.runtime));
+    drop(store);
+    let restored = RoutingStore::load(&sandbox.state.join("subscriptions/routes.json")).unwrap();
+    assert!(allowed(&restored, &replacement.runtime));
+}
+
+#[test]
+fn preparing_a_return_holds_execution_of_the_previous_replacement() {
+    let sandbox = Sandbox::new();
+    let mut store = RoutingStore::load(&sandbox.state.join("subscriptions/routes.json")).unwrap();
+    let source = binding("claude");
+    let replacement = binding("codex");
+    store.track(source.clone(), "/projects/demo", "1797cdd6", 100).unwrap();
+    let transition = store.reconcile(&[observation(&source, Exhausted)], 101).unwrap().remove(0);
+    store.mark_retired(&source.session, &transition.generation).unwrap();
+    store.mark_submitted(&source.session, &transition.generation).unwrap();
+    store.record_runtime(&transition.generation, replacement.clone(), "/projects/demo").unwrap();
+    store.finish(&source.session, &transition.generation).unwrap();
+    store.reconcile(&[observation(&replacement, Available)], 102).unwrap();
+    assert!(!store.execution_allowed(&transition.generation, &replacement.session, &replacement.runtime));
+}
+
+#[test]
 fn a_forked_child_cannot_keep_the_dispatcher_lock_after_its_owner_releases_it() {
     let sandbox = Sandbox::new();
     let path = sandbox.state.join("subscriptions/routes.json");
@@ -244,6 +283,44 @@ fn message(role: &str, text: &str) -> Value {
 
 fn context(sandbox: &Sandbox) -> std::process::Output {
     sandbox.run(env!("CARGO_BIN_EXE_cockpit-subscription"), &["context", SESSION_A], &[])
+}
+
+#[test]
+fn claude_status_retains_the_exact_model_id_for_subscription_return() {
+    let sandbox = Sandbox::new();
+    let script = repo().join("config/claude/.claude/statusline-command.sh");
+    let output = sandbox.run_with_input("bash", &[script.to_str().unwrap()], &[("CLAUDE_EFFORT", "xhigh")],
+        &json!({"session_id":SESSION_A,"cwd":"/projects/demo","model":{"id":"claude-opus-4-7","display_name":"Opus"}}).to_string());
+    assert!(output.status.success(), "{}", stderr(&output));
+    let cache: Value = serde_json::from_slice(&fs::read(sandbox.home.join(format!(".cache/claude/statusline-{SESSION_A}.json"))).unwrap()).unwrap();
+    assert_eq!(cache["model_id"], "claude-opus-4-7");
+    assert_eq!(cache["model"], "Opus");
+    assert_eq!(cache["effort"], "xhigh");
+}
+
+#[test]
+fn the_native_prompt_gate_stops_on_unavailable_or_refused_admission() {
+    for reply in [None, Some("refused: ownership transfer is pending")] {
+        let sandbox = Sandbox::new();
+        let _daemon = reply.map(|reply| ReportSocket::start(&sandbox.runtime.join("claude-report/osd-report.sock"), reply));
+        let output = sandbox.run(env!("CARGO_BIN_EXE_cockpit-subscription"), &["gate", &"a".repeat(32)], &[]);
+        assert!(output.status.success(), "{}", stderr(&output));
+        let decision: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(decision["continue"], false);
+    }
+}
+
+#[test]
+fn the_native_prompt_gate_releases_only_after_an_explicit_host_grant() {
+    let sandbox = Sandbox::new();
+    let daemon = ReportSocket::start(&sandbox.runtime.join("claude-report/osd-report.sock"), "ok");
+    let generation = "b".repeat(32);
+    let output = sandbox.run(env!("CARGO_BIN_EXE_cockpit-subscription"), &["gate", &generation], &[]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(serde_json::from_slice::<Value>(&output.stdout).unwrap(), json!({}));
+    let requests = daemon.received(std::time::Duration::from_secs(1));
+    let payload: Value = serde_json::from_str(requests[0].strip_prefix("subscription-gate ").unwrap()).unwrap();
+    assert_eq!(payload, json!({"generation":generation}));
 }
 
 #[test]

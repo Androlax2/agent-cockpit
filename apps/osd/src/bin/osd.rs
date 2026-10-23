@@ -370,7 +370,7 @@ fn handle_connection(received: Received, registry: &Rc<RefCell<Registry>>) {
                 Err(error) => eprintln!("osd: bad session report: {error}"),
             },
             // Explicit requests wait for acceptance; transport success alone says nothing about it.
-            "run-request" | "guide-request" | "todo-update" | "session-request" => {
+            "run-request" | "guide-request" | "todo-update" | "session-request" | "subscription-gate" => {
                 let reply = match registry.borrow_mut().request_from(kind, rest, sender) {
                     Ok(()) => "ok".to_string(),
                     Err(reason) => {
