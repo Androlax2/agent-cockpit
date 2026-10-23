@@ -666,48 +666,53 @@ def save_registry(registry, original):
                 replacement.unlink()
 
 
+def enrollment_candidate(arguments, registry):
+    if (not isinstance(arguments.repository, str) or not REPOSITORY_NAME.fullmatch(arguments.repository)
+            or not isinstance(arguments.project, str) or not re.fullmatch(r'[a-zA-Z0-9][a-zA-Z0-9._-]*', arguments.project)
+            or any(type(value) is not int or value <= 0 for value in [arguments.repository_id, arguments.inspector_app_id])):
+        deny('invalid_enrollment')
+    apps = [app for app in registry.get('inspector_apps', [])
+            if app['app_id'] == arguments.inspector_app_id
+            and app['owner_login'].lower() == arguments.repository.split('/')[0].lower()]
+    if not apps:
+        deny('inspector_unavailable')
+    if len(apps) != 1:
+        deny('ambiguous_inspector_enrollment')
+    app = apps[0]
+    if arguments.repository_id not in app['approved_repository_ids']:
+        deny('inspector_repository_unapproved')
+    root = checkout_root(arguments.checkout)
+    existing = None
+    for record in registry['repositories']:
+        if record['project'] == arguments.project and record['repository_id'] != arguments.repository_id:
+            deny('project_already_enrolled')
+        if record['repository_id'] == arguments.repository_id:
+            if record['project'] != arguments.project:
+                deny('repository_already_enrolled')
+            existing = record
+        elif any(binding['path'] == str(root) for binding in record['checkouts']):
+            deny('checkout_already_enrolled')
+    candidate = copy.deepcopy(existing) if existing else {
+        'project': arguments.project, 'repository_id': arguments.repository_id, 'checkouts': [], 'mirror_edges': [],
+    }
+    candidate.pop('inspector_app', None)
+    candidate.update(canonical_name=arguments.repository, inspector_app_id=app['app_id'], installation_id=app['installation_id'])
+    git_dir, common_dir = metadata_locations(root)
+    binding = {'path': str(root), 'git_dir': str(git_dir), 'common_dir': str(common_dir)}
+    candidate['checkouts'] = [entry for entry in candidate['checkouts'] if entry['path'] != str(root)] + [binding]
+    return candidate, existing, root
+
+
 def enroll_repository(arguments):
     report = {'mode': 'read_only', 'enrollment_saved': False, 'rollout_enabled': False}
     try:
-        if (not REPOSITORY_NAME.fullmatch(arguments.repository)
-                or not re.fullmatch(r'[a-zA-Z0-9][a-zA-Z0-9._-]*', arguments.project)
-                or any(value <= 0 for value in [arguments.repository_id, arguments.inspector_app_id,
-                                                arguments.history_ruleset, arguments.default_pr_ruleset])):
+        if any(value <= 0 for value in [arguments.history_ruleset, arguments.default_pr_ruleset]):
             deny('invalid_enrollment')
         registry, original = load_registry()
         if original is not None and registry_path().read_bytes() != original:
             deny('registry_changed')
-        apps = [app for app in registry.get('inspector_apps', [])
-                if app['app_id'] == arguments.inspector_app_id
-                and app['owner_login'].lower() == arguments.repository.split('/')[0].lower()]
-        if not apps:
-            deny('inspector_unavailable')
-        if len(apps) != 1:
-            deny('ambiguous_inspector_enrollment')
-        app = apps[0]
-        if arguments.repository_id not in app['approved_repository_ids']:
-            deny('inspector_repository_unapproved')
-        root = checkout_root(arguments.checkout)
-        existing = None
-        for record in registry['repositories']:
-            if record['project'] == arguments.project and record['repository_id'] != arguments.repository_id:
-                deny('project_already_enrolled')
-            if record['repository_id'] == arguments.repository_id:
-                if record['project'] != arguments.project:
-                    deny('repository_already_enrolled')
-                existing = record
-            elif any(binding['path'] == str(root) for binding in record['checkouts']):
-                deny('checkout_already_enrolled')
-        candidate = copy.deepcopy(existing) if existing else {
-            'project': arguments.project, 'repository_id': arguments.repository_id, 'checkouts': [], 'mirror_edges': [],
-        }
-        candidate.pop('inspector_app', None)
-        candidate.update(canonical_name=arguments.repository, inspector_app_id=app['app_id'],
-                         installation_id=app['installation_id'],
-                         baseline_rulesets={'history': arguments.history_ruleset, 'default_pr': arguments.default_pr_ruleset})
-        git_dir, common_dir = metadata_locations(root)
-        binding = {'path': str(root), 'git_dir': str(git_dir), 'common_dir': str(common_dir)}
-        candidate['checkouts'] = [entry for entry in candidate['checkouts'] if entry['path'] != str(root)] + [binding]
+        candidate, existing, root = enrollment_candidate(arguments, registry)
+        candidate['baseline_rulesets'] = {'history': arguments.history_ruleset, 'default_pr': arguments.default_pr_ruleset}
         deadline = time.monotonic() + CHECK_DEADLINE_SECONDS
         digests = inspect_remote_chain(root, candidate, deadline, set())
         verify_protection_snapshot(candidate, read_protection_snapshot(bind_inspector(candidate, registry), deadline))
