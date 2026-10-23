@@ -1,0 +1,24 @@
+/* Cockpit · existing terminal · Dark */
+:root {
+  --color-background: #1A1B26;
+  --color-foreground: #C0CAF5;
+  --color-secondary: #A9B1D6;
+  --color-selection: #414868;
+  --color-blue: #7AA2F7;
+  --color-cyan: #7DCFFF;
+  --color-green: #9ECE6A;
+  --color-amber: #E0AF68;
+  --color-red: #F7768E;
+  --color-purple: #BB9AF7;
+  --space-none: 0;
+  --space-cell: 8;
+  --space-line: 18;
+  --space-inset: 16;
+  --space-panel: 24;
+  --type-body: 12;
+  --type-heading: 14;
+  --type-line-height: 18;
+  --stroke-hairline: 1;
+  --radius-square: 0;
+  --type-family: "JetBrainsMono Nerd Font";
+}
