@@ -42,6 +42,379 @@ fn own_teams(connection: &mut Connection, live: &[VerifiedSession], proposal: &L
     }
 }
 
+fn activate(connection: &mut Connection, sender: &VerifiedSession, proposal: &LinkProposal, live: &[VerifiedSession]) -> String {
+    let pending = links::propose(connection, sender, proposal, live, 0).unwrap().result.unwrap();
+    let approval = link_approval(connection, &pending, &format!("approve-{}", proposal.submission_key));
+    store::control(connection, &approval, live, 1).unwrap().result.unwrap()["link_id"].as_str().unwrap().into()
+}
+
+fn note(link_id: &str, key: &str) -> teams::LinkSubmission {
+    teams::LinkSubmission { link_id: link_id.into(), submission_key: key.into(), kind: MessageKind::Notice,
+        body: "Coordinate work".into(), thread_id: None }
+}
+
+#[test]
+fn approved_link_delivers_without_team_membership() {
+    if isolated("approved_link_delivers_without_team_membership") { return; }
+    let (mut connection, _, live, proposal) = proposal_fixture();
+    let link = activate(&mut connection, &live[0], &proposal, &live);
+    activate(&mut connection, &live[2], &LinkProposal { submission_key: "transitive".into(), ..proposal.clone() }, &live);
+    let message = note(&link, "note");
+    for kind in [MessageKind::Handoff, MessageKind::QaRequest, MessageKind::Findings] {
+        assert!(links::accept(&mut connection, &live[0], &teams::LinkSubmission { kind, ..message.clone() }, &live, 1000).is_err());
+    }
+    assert!(links::accept(&mut connection, &live[2], &message, &live, 1000).is_err());
+    assert!(links::accept(&mut connection, &live[0], &note("foreign", "note"), &live, 1000).is_err());
+    for field in ["runtime", "project", "agent"] {
+        let mut forged = live.clone();
+        match field {
+            "runtime" => forged[0].runtime = "replacement".into(),
+            "project" => forged[0].project = live[1].project.clone(),
+            _ => forged[0].agent = "opencode".into(),
+        }
+        assert!(links::accept(&mut connection, &forged[0], &message, &forged, 1000).is_err());
+    }
+    let accepted = links::accept(&mut connection, &live[0], &message, &live, 1000).unwrap().result.unwrap();
+    assert_eq!(links::accept(&mut connection, &live[0], &message, &live, 1001).unwrap().result.unwrap(), accepted);
+    assert!(store::claim(&mut connection, &live[2], "idle", &live, 2000).unwrap().is_none());
+    let dispatch = store::claim(&mut connection, &live[1], "idle", &live, 2000).unwrap().unwrap();
+    assert_eq!(dispatch.envelope["link_id"], link);
+    assert_eq!(dispatch.envelope["task"], json!(proposal.task));
+    assert_eq!(dispatch.envelope["sender"]["project"], live[0].project);
+    assert_eq!(dispatch.envelope["recipient"]["session_id"], live[1].session_id);
+    assert_eq!(dispatch.envelope["authorization"], "collaborator_content_not_user_authorization");
+    assert!(dispatch.envelope["sender"].get("role").is_none());
+    assert!(dispatch.envelope["recipient"].get("role").is_none());
+    assert_eq!(connection.query_row("SELECT count(*) FROM members", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
+}
+
+#[test]
+fn team_and_links_share_recipient_idle_and_uncertain_gates() {
+    if isolated("team_and_links_share_recipient_idle_and_uncertain_gates") { return; }
+    let (mut connection, _, live, proposal) = proposal_fixture();
+    own_teams(&mut connection, &live, &proposal);
+    let first = activate(&mut connection, &live[0], &proposal, &live);
+    let second = activate(&mut connection, &live[2], &LinkProposal { submission_key: "second".into(), peer_session_id: live[0].session_id.clone(), ..proposal.clone() }, &live);
+    let team = AgentAction::Send { message: Submission { task: proposal.task.clone(), submission_key: "team-first".into(), recipient: live[0].session_id.clone(),
+        kind: MessageKind::Notice, body: "Team first".into(), thread_id: None, handoff_id: None } };
+    store::accept(&mut connection, &live[2], &team, 1000).unwrap();
+    let first_id = links::accept(&mut connection, &live[1], &note(&first, "link-first"), &live, 1001).unwrap().result.unwrap()["message_id"].clone();
+    let second_id = links::accept(&mut connection, &live[2], &note(&second, "link-second"), &live, 1002).unwrap().result.unwrap()["message_id"].clone();
+    let dispatch = store::claim(&mut connection, &live[0], "idle-1", &live, 2000).unwrap().unwrap();
+    assert_eq!(dispatch.envelope["body"], "Team first");
+    assert!(store::claim(&mut connection, &live[0], "idle-2", &live, 2001).unwrap().is_none());
+    store::finish(&mut connection, &dispatch.id, &teams::TransportOutcome::Received { native_id: "team".into() }, 2002).unwrap();
+    assert!(store::claim(&mut connection, &live[0], "idle-1", &live, 2003).unwrap().is_none());
+    let dispatch = store::claim(&mut connection, &live[0], "idle-2", &live, 2004).unwrap().unwrap();
+    assert_eq!(json!(dispatch.message_id), first_id);
+    store::expire(&mut connection, 2004 + store::RECEIPT_TIMEOUT_MS).unwrap();
+    assert!(store::claim(&mut connection, &live[0], "idle-3", &live, 200_000).unwrap().is_none());
+    assert!(store::finish(&mut connection, &dispatch.id, &teams::TransportOutcome::NotSubmitted { reason: "late".into() }, 200_001).is_err());
+    store::finish(&mut connection, &dispatch.id, &teams::TransportOutcome::Received { native_id: "link".into() }, 200_002).unwrap();
+    assert_eq!(json!(store::claim(&mut connection, &live[0], "idle-3", &live, 200_003).unwrap().unwrap().message_id), second_id);
+}
+
+#[test]
+fn link_threads_are_scope_bound_and_retry_does_not_consume_rounds() {
+    if isolated("link_threads_are_scope_bound_and_retry_does_not_consume_rounds") { return; }
+    let (mut connection, _, live, proposal) = proposal_fixture();
+    own_teams(&mut connection, &live, &proposal);
+    let link = activate(&mut connection, &live[0], &proposal, &live);
+    let foreign = activate(&mut connection, &live[2], &LinkProposal { submission_key: "foreign".into(), ..proposal.clone() }, &live);
+    let mut thread_id = None;
+    for round in 1..=3 {
+        let question = teams::LinkSubmission { kind: MessageKind::Clarification, thread_id: thread_id.clone(), ..note(&link, &format!("question-{round}")) };
+        let accepted = links::accept(&mut connection, &live[0], &question, &live, round * 60_001).unwrap().result.unwrap();
+        assert_eq!(links::accept(&mut connection, &live[0], &question, &live, round * 60_001).unwrap().result.unwrap(), accepted);
+        assert_eq!(accepted["round"], round);
+        thread_id = Some(accepted["thread_id"].as_str().unwrap().into());
+        let answer = teams::LinkSubmission { kind: MessageKind::Reply, thread_id: thread_id.clone(), ..note(&link, &format!("answer-{round}")) };
+        assert!(links::accept(&mut connection, &live[0], &answer, &live, round * 60_001).is_err());
+        assert!(links::accept(&mut connection, &live[1], &teams::LinkSubmission { link_id: foreign.clone(), ..answer.clone() }, &live, round * 60_001).is_err());
+        links::accept(&mut connection, &live[1], &answer, &live, round * 60_001).unwrap();
+        assert!(links::assess(&mut connection, &live[1], &link, thread_id.as_deref().unwrap(), false).is_err());
+        assert!(links::assess(&mut connection, &live[0], &foreign, thread_id.as_deref().unwrap(), false).is_err());
+        let assessed = links::assess(&mut connection, &live[0], &link, thread_id.as_deref().unwrap(), false).unwrap().result.unwrap();
+        assert_eq!(assessed["status"], if round == 3 { "escalated" } else { "awaiting_followup" });
+    }
+    assert_eq!(connection.query_row("SELECT count(*) FROM escalations WHERE status='open'", [], |row| row.get::<_, i64>(0)).unwrap(), 1);
+}
+
+#[test]
+fn link_retry_closure_recovery_and_identity_checks_fail_closed() {
+    if isolated("link_retry_closure_recovery_and_identity_checks_fail_closed") { return; }
+    let (mut connection, _, live, proposal) = proposal_fixture();
+    let link = activate(&mut connection, &live[0], &proposal, &live);
+    links::accept(&mut connection, &live[0], &note(&link, "note"), &live, 1000).unwrap();
+    assert!(store::claim(&mut connection, &live[1], "idle", &live[1..], 2000).unwrap().is_none());
+    let original = fs::read(cockpit::paths::todo()).unwrap();
+    fs::write(cockpit::paths::todo(), "{broken").unwrap();
+    assert!(store::claim(&mut connection, &live[1], "idle", &live, 2000).unwrap().is_none());
+    assert!(links::accept(&mut connection, &live[0], &note(&link, "blocked"), &live, 2000).is_err());
+    fs::write(cockpit::paths::todo(), original).unwrap();
+    let mut now = 2000;
+    for delay in [2000, 10_000, 30_000] {
+        let dispatch = store::claim(&mut connection, &live[1], "idle", &live, now).unwrap().unwrap();
+        store::finish(&mut connection, &dispatch.id, &teams::TransportOutcome::NotSubmitted { reason: "safe".into() }, now).unwrap();
+        assert!(store::claim(&mut connection, &live[1], "idle", &live, now + delay - 1).unwrap().is_none());
+        now += delay;
+    }
+    let dispatch = store::claim(&mut connection, &live[1], "idle", &live, now).unwrap().unwrap();
+    store::finish(&mut connection, &dispatch.id, &teams::TransportOutcome::NotSubmitted { reason: "fourth".into() }, now).unwrap();
+    assert!(store::claim(&mut connection, &live[1], "next", &live, now + 100_000).unwrap().is_none());
+    links::accept(&mut connection, &live[0], &note(&link, "uncertain"), &live, now + 100_000).unwrap();
+    let dispatch = store::claim(&mut connection, &live[1], "next", &live, now + 100_000).unwrap().unwrap();
+    links::invalidate_work(&mut connection, &proposal.task, "done").unwrap();
+    store::recover(&mut connection, &live, now + 100_001).unwrap();
+    assert!(store::finish(&mut connection, &dispatch.id, &teams::TransportOutcome::NotSubmitted { reason: "late".into() }, now + 100_002).is_err());
+    store::finish(&mut connection, &dispatch.id, &teams::TransportOutcome::Received { native_id: "late".into() }, now + 100_003).unwrap();
+    assert!(store::claim(&mut connection, &live[1], "later", &live, now + 200_000).unwrap().is_none());
+}
+
+#[test]
+fn link_messages_share_budget_queue_and_submission_keys_with_teams() {
+    if isolated("link_messages_share_budget_queue_and_submission_keys_with_teams") { return; }
+    let (mut connection, _, live, proposal) = proposal_fixture();
+    own_teams(&mut connection, &live, &proposal);
+    let first = activate(&mut connection, &live[0], &proposal, &live);
+    let second = activate(&mut connection, &live[2], &LinkProposal { submission_key: "second".into(), ..proposal.clone() }, &live);
+    let team = AgentAction::Send { message: Submission { task: proposal.task.clone(), submission_key: "shared-key".into(), recipient: live[2].session_id.clone(),
+        kind: MessageKind::Notice, body: "Team".into(), thread_id: None, handoff_id: None } };
+    store::accept(&mut connection, &live[0], &team, 1000).unwrap();
+    assert_eq!(links::accept(&mut connection, &live[0], &note(&first, "shared-key"), &live, 1000).unwrap_err().code, ErrorCode::Conflict);
+    for index in 0..7 {
+        let message = note(&first, &format!("budget-{index}"));
+        links::accept(&mut connection, &live[0], &message, &live, 1000).unwrap();
+        links::accept(&mut connection, &live[0], &message, &live, 1000).unwrap();
+    }
+    assert_eq!(links::accept(&mut connection, &live[0], &note(&first, "overflow"), &live, 1000).unwrap_err().code, ErrorCode::Limit);
+    let AgentAction::Send { mut message } = team else { unreachable!() };
+    message.submission_key = "budget-0".into();
+    assert_eq!(store::accept(&mut connection, &live[0], &AgentAction::Send { message }, 1000).unwrap_err().code, ErrorCode::Conflict);
+    for index in 8..100 {
+        let (link, sender) = if index % 2 == 0 { (&first, &live[0]) } else { (&second, &live[2]) };
+        links::accept(&mut connection, sender, &note(link, &format!("pending-{index}")), &live, index * 60_001).unwrap();
+    }
+    assert_eq!(links::accept(&mut connection, &live[2], &note(&second, "full"), &live, 7_000_000).unwrap_err().code, ErrorCode::Limit);
+    assert_eq!(connection.query_row("SELECT count(*) FROM messages", [], |row| row.get::<_, i64>(0)).unwrap(), 100);
+}
+
+#[test]
+fn recovery_cancels_replaced_link_identities_but_preserves_team_delivery() {
+    if isolated("recovery_cancels_replaced_link_identities_but_preserves_team_delivery") { return; }
+    let (mut connection, _, live, proposal) = proposal_fixture();
+    own_teams(&mut connection, &live, &proposal);
+    let link = activate(&mut connection, &live[0], &proposal, &live);
+    links::accept(&mut connection, &live[1], &note(&link, "link"), &live, 1000).unwrap();
+    let team = AgentAction::Send { message: Submission { task: proposal.task.clone(), submission_key: "team".into(), recipient: live[0].session_id.clone(),
+        kind: MessageKind::Notice, body: "Healthy team".into(), thread_id: None, handoff_id: None } };
+    store::accept(&mut connection, &live[2], &team, 1001).unwrap();
+    store::recover(&mut connection, &[live[0].clone(), live[2].clone()], 2000).unwrap();
+    assert_eq!(connection.query_row("SELECT state FROM messages WHERE scope_kind='link'", [], |row| row.get::<_, String>(0)).unwrap(), "queued");
+    let mut changed = live.clone();
+    changed[1].runtime = "replacement".into();
+    assert!(links::accept(&mut connection, &changed[1], &note(&link, "new"), &changed, 2000).is_err());
+    assert!(links::accept(&mut connection, &live[0], &note(&link, "new"), &changed, 2000).is_err());
+    store::recover(&mut connection, &changed, 2001).unwrap();
+    assert_eq!(connection.query_row("SELECT state FROM messages WHERE scope_kind='link'", [], |row| row.get::<_, String>(0)).unwrap(), "cancelled");
+    assert_eq!(store::claim(&mut connection, &live[0], "idle", &changed, 2002).unwrap().unwrap().envelope["body"], "Healthy team");
+}
+
+#[test]
+fn closure_and_claim_are_ordered_across_connections() {
+    if isolated("closure_and_claim_are_ordered_across_connections") { return; }
+    use std::sync::{Arc, Barrier};
+    let (mut connection, mut todos, live, proposal) = proposal_fixture();
+    for close_first in [true, false] {
+        let proposal = LinkProposal { submission_key: format!("order-{close_first}"), ..proposal.clone() };
+        let link = activate(&mut connection, &live[0], &proposal, &live);
+        links::accept(&mut connection, &live[0], &note(&link, &format!("note-{close_first}")), &live, 1000).unwrap();
+        let boundary = Arc::new(Barrier::new(2));
+        let peer_boundary = boundary.clone();
+        let task = proposal.task.clone();
+        let recipient = live[1].clone();
+        let current = live.clone();
+        let other = store::open(&cockpit::paths::team_database()).unwrap();
+        let worker = std::thread::spawn(move || {
+            let mut other = other;
+            if close_first {
+                links::invalidate_work(&mut other, &task, "done").unwrap();
+                peer_boundary.wait();
+                None
+            } else {
+                let dispatch = store::claim(&mut other, &recipient, "idle", &current, 2000).unwrap();
+                peer_boundary.wait();
+                dispatch
+            }
+        });
+        boundary.wait();
+        if close_first {
+            assert!(store::claim(&mut connection, &live[1], "idle", &live, 2001).unwrap().is_none());
+            worker.join().unwrap();
+        } else {
+            links::invalidate_work(&mut connection, &proposal.task, "done").unwrap();
+            let dispatch = worker.join().unwrap().unwrap();
+            assert_eq!(connection.query_row("SELECT state FROM messages WHERE id=?1", [&dispatch.message_id], |row| row.get::<_, String>(0)).unwrap(), "submitting");
+            store::finish(&mut connection, &dispatch.id, &teams::TransportOutcome::NotSubmitted { reason: "safe failure after closure".into() }, 2002).unwrap();
+            assert_eq!(connection.query_row("SELECT state FROM messages WHERE id=?1", [&dispatch.message_id], |row| row.get::<_, String>(0)).unwrap(), "cancelled");
+            assert!(store::claim(&mut connection, &live[1], "new-idle", &live, 100_000).unwrap().is_none());
+        }
+        assert!(todos.set_status(&proposal.task.task_id, "todo", ""));
+    }
+}
+
+#[test]
+fn delivery_migration_preserves_receipts_and_reconciles_multiple_inflight() {
+    let sandbox = Sandbox::new();
+    let path = sandbox.root.join("protected/teams.sqlite");
+    let connection = store::open(&path).unwrap();
+    connection.execute_batch("DROP TABLE delivery_recipients; ALTER TABLE threads DROP COLUMN link_id; ALTER TABLE threads DROP COLUMN scope_kind;
+        DROP INDEX one_inflight_delivery; CREATE UNIQUE INDEX one_inflight_delivery ON messages(recipient,recipient_epoch) WHERE state='submitting';
+        PRAGMA user_version=3;
+        INSERT INTO teams VALUES ('task','project','1234abcd',1);
+        INSERT INTO members VALUES ('task','recipient','developer','claude','runtime','epoch','old-idle');").unwrap();
+    for (id, state) in [("one", "submitting"), ("two", "submitting"), ("received", "received"), ("queued", "queued")] {
+        connection.execute("INSERT INTO messages (id,task_key,sender,recipient,sender_epoch,recipient_epoch,submission_key,fingerprint,envelope,state,next_at,created_at,recipient_runtime)
+            VALUES (?1,'task','sender','recipient','sender-epoch',?1,?1,'fingerprint','{}',?2,0,0,'runtime')", (id, state)).unwrap();
+        if state != "queued" {
+            connection.execute("INSERT INTO attempts VALUES (?1,?1,1,?2,?3,9,1)", (id, state, if state == "received" { Some("native-receipt") } else { None })).unwrap();
+        }
+    }
+    drop(connection);
+    let connection = store::open(&path).unwrap();
+    for table in ["messages", "attempts"] {
+        assert_eq!(connection.query_row(&format!("SELECT count(*) FROM {table} WHERE state='uncertain'"), [], |row| row.get::<_, i64>(0)).unwrap(), 2);
+    }
+    assert_eq!(connection.query_row("SELECT native_id FROM attempts WHERE id='received'", [], |row| row.get::<_, String>(0)).unwrap(), "native-receipt");
+    assert_eq!(connection.query_row("SELECT state FROM messages WHERE id='queued'", [], |row| row.get::<_, String>(0)).unwrap(), "queued");
+    assert_eq!(connection.query_row("SELECT last_idle_turn FROM delivery_recipients WHERE session_id='recipient' AND runtime='runtime'", [], |row| row.get::<_, String>(0)).unwrap(), "old-idle");
+    connection.execute("UPDATE messages SET state='submitting' WHERE id='one'", []).unwrap();
+    assert!(connection.execute("UPDATE messages SET state='submitting' WHERE id='two'", []).is_err());
+}
+
+#[test]
+fn concurrent_open_reads_schema_version_after_the_migration_writer_commits() {
+    let sandbox = Sandbox::new();
+    let path = sandbox.root.join("protected/teams.sqlite");
+    let mut connection = store::open(&path).unwrap();
+    // Another migrator has completed its DDL but has not yet published the version.
+    connection.execute_batch("PRAGMA user_version=1;").unwrap();
+    let transaction = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).unwrap();
+    transaction.execute_batch("PRAGMA user_version=4;").unwrap();
+    let boundary = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let reader_boundary = boundary.clone();
+    let reader = std::thread::spawn(move || {
+        reader_boundary.wait();
+        store::open(&path)
+    });
+    boundary.wait();
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    assert!(!reader.is_finished(), "open did not wait for the schema writer");
+    transaction.commit().unwrap();
+    let opened = reader.join().unwrap().unwrap();
+    assert_eq!(opened.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0)).unwrap(), 4);
+}
+
+#[test]
+fn link_only_queue_never_authorizes_team_sleep_wake_or_runtime_rebinding() {
+    if isolated("link_only_queue_never_authorizes_team_sleep_wake_or_runtime_rebinding") { return; }
+    let (mut connection, _, live, proposal) = proposal_fixture();
+    own_teams(&mut connection, &live, &proposal);
+    let link = activate(&mut connection, &live[0], &proposal, &live);
+    let checkout = live[0].project.trim_start_matches("path:");
+    let token = store::sleep::prepare(&mut connection, &live[0], checkout, 1000).unwrap().unwrap();
+    links::accept(&mut connection, &live[1], &note(&link, "sleeping"), &live, 1001).unwrap();
+    assert!(store::sleep::pending_wakes(&connection, 1002).unwrap().is_empty());
+    assert!(!store::sleep::reserve_wake(&mut connection, &live[0].session_id, &token, 1002).unwrap());
+    store::sleep::begin_wake(&mut connection, &live[0].session_id, &token, 1003).unwrap();
+    let mut replacement = live[0].clone();
+    replacement.runtime = "replacement".into();
+    assert!(store::sleep::bind(&mut connection, &token, &replacement, checkout, 1004).unwrap());
+    assert_eq!(connection.query_row("SELECT recipient_runtime FROM messages WHERE scope_kind='link'", [], |row| row.get::<_, String>(0)).unwrap(), live[0].runtime);
+}
+
+#[test]
+fn link_only_escalation_is_visible_in_host_history() {
+    if isolated("link_only_escalation_is_visible_in_host_history") { return; }
+    let (mut connection, _, live, proposal) = proposal_fixture();
+    let link = activate(&mut connection, &live[0], &proposal, &live);
+    let mut thread_id = None;
+    for round in 1..=3 {
+        let question = teams::LinkSubmission { kind: MessageKind::Clarification, thread_id: thread_id.clone(), ..note(&link, &format!("question-{round}")) };
+        let accepted = links::accept(&mut connection, &live[0], &question, &live, round * 60_001).unwrap().result.unwrap();
+        thread_id = Some(accepted["thread_id"].as_str().unwrap().into());
+        let answer = teams::LinkSubmission { kind: MessageKind::Reply, thread_id: thread_id.clone(), ..note(&link, &format!("answer-{round}")) };
+        links::accept(&mut connection, &live[1], &answer, &live, round * 60_001).unwrap();
+        links::assess(&mut connection, &live[0], &link, thread_id.as_deref().unwrap(), false).unwrap();
+    }
+    let history = store::snapshot(&connection, None, None, 100).unwrap();
+    assert_eq!(history["escalations"].as_array().unwrap().len(), 1);
+    assert_eq!(history["escalations"][0]["project"], proposal.task.project);
+    assert_eq!(history["escalations"][0]["link_id"], link);
+}
+
+#[test]
+fn claim_reads_authoritative_todo_only_after_waiting_for_the_writer() {
+    if isolated("claim_reads_authoritative_todo_only_after_waiting_for_the_writer") { return; }
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static WAITING: AtomicBool = AtomicBool::new(false);
+    let (mut connection, _, live, proposal) = proposal_fixture();
+    let link = activate(&mut connection, &live[0], &proposal, &live);
+    links::accept(&mut connection, &live[0], &note(&link, "note"), &live, 1000).unwrap();
+    let mut other = store::open(&cockpit::paths::team_database()).unwrap();
+    other.busy_handler(Some(|_| { WAITING.store(true, Ordering::SeqCst); std::thread::sleep(std::time::Duration::from_millis(1)); true })).unwrap();
+    let writer = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).unwrap();
+    let reader = std::thread::spawn(move || store::claim(&mut other, &live[1], "idle", &live, 2000));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !WAITING.load(Ordering::SeqCst) && !reader.is_finished() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    let waited = WAITING.load(Ordering::SeqCst);
+    fs::write(cockpit::paths::todo(), "{broken").unwrap();
+    writer.commit().unwrap();
+    assert!(reader.join().unwrap().unwrap().is_none());
+    assert!(waited, "claim bypassed the authoritative lifecycle writer");
+    assert_eq!(connection.query_row("SELECT count(*) FROM attempts", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
+    assert!(!connection.query_row("SELECT last_error FROM messages", [], |row| row.get::<_, String>(0)).unwrap().is_empty());
+}
+
+#[test]
+fn delivery_migration_failure_rolls_back_receipts_gates_and_schema() {
+    let sandbox = Sandbox::new();
+    let path = sandbox.root.join("protected/teams.sqlite");
+    let connection = store::open(&path).unwrap();
+    connection.execute_batch("PRAGMA user_version=3; DROP TABLE delivery_recipients;
+        ALTER TABLE threads DROP COLUMN scope_kind;
+        DROP INDEX one_inflight_delivery; CREATE UNIQUE INDEX one_inflight_delivery ON messages(recipient,recipient_epoch) WHERE state='submitting';").unwrap();
+    // The last ALTER in migration will collide; earlier DDL and reconciliation must roll back.
+    for id in ["one", "two"] {
+        connection.execute("INSERT INTO messages (id,task_key,sender,recipient,sender_epoch,recipient_epoch,submission_key,fingerprint,envelope,state,next_at,created_at,recipient_runtime)
+            VALUES (?1,'task','sender','recipient','sender-epoch',?1,?1,'fingerprint','{}','submitting',0,0,'runtime')", [id]).unwrap();
+        connection.execute("INSERT INTO attempts VALUES (?1,?1,1,'submitting',NULL,NULL,1)", [id]).unwrap();
+    }
+    let before = team_state(&connection);
+    drop(connection);
+    assert!(store::open(&path).is_err());
+    let connection = Connection::open(path).unwrap();
+    assert_eq!(team_state(&connection), before);
+    assert_eq!(connection.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0)).unwrap(), 3);
+    assert_eq!(connection.query_row("SELECT count(*) FROM sqlite_master WHERE name='delivery_recipients'", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
+    assert_eq!(connection.query_row("SELECT count(*) FROM pragma_table_info('threads') WHERE name='scope_kind'", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
+}
+
+#[test]
+fn unrelated_sender_cannot_probe_link_work_errors() {
+    if isolated("unrelated_sender_cannot_probe_link_work_errors") { return; }
+    let (mut connection, _, live, proposal) = proposal_fixture();
+    let link = activate(&mut connection, &live[0], &proposal, &live);
+    fs::write(cockpit::paths::todo(), "{broken").unwrap();
+    let unknown = links::accept(&mut connection, &live[2], &note("unknown", "probe"), &live, 1000).unwrap_err();
+    let known = links::accept(&mut connection, &live[2], &note(&link, "probe"), &live, 1000).unwrap_err();
+    assert_eq!(serde_json::to_value(known).unwrap(), serde_json::to_value(&unknown).unwrap());
+    let known = links::assess(&mut connection, &live[2], &link, "probe", true).unwrap_err();
+    assert_eq!(serde_json::to_value(known).unwrap(), serde_json::to_value(unknown).unwrap());
+}
+
 #[test]
 fn cross_project_developers_require_exact_host_approval() {
     if isolated("cross_project_developers_require_exact_host_approval") { return; }
@@ -542,7 +915,7 @@ fn lifecycle_reads_authoritative_todo_after_acquiring_write_boundary() {
 fn lifecycle_closure_preserves_uncertain_deliveries_and_other_work() {
     if isolated("lifecycle_closure_preserves_uncertain_deliveries_and_other_work") { return; }
     let (mut connection, _, task) = lifecycle_fixture();
-    connection.execute("UPDATE messages SET recipient_epoch='other-epoch'", []).unwrap();
+    connection.execute("UPDATE messages SET recipient_runtime='other-runtime'", []).unwrap();
     let other = TaskKey { task_id: "abcdef12".into(), ..task.clone() };
     link_fixture::approve(&connection, &other.project, &other.task_id);
     connection.execute("INSERT INTO teams VALUES ('team','path:/unrelated','1234abcd',7)", []).unwrap();

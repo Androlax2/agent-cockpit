@@ -1,6 +1,6 @@
 //! Protected shared-work identity and schema; no link grants team membership.
 
-use super::{ErrorCode, HostAction, LinkProposal, TaskKey, TeamError, TeamReply, VerifiedSession, store};
+use super::{AgentAction, ErrorCode, HostAction, LinkProposal, LinkSubmission, MessageKind, TaskKey, TeamError, TeamReply, VerifiedSession, store};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde_json::{Value, json};
 
@@ -180,6 +180,129 @@ pub fn control(connection: &mut Connection, action: &HostAction, live: &[Verifie
     Ok(TeamReply { request_id: request_id.clone(), result: Ok(response) })
 }
 
+pub(super) struct ActiveLink {
+    task: TaskKey,
+    epoch: String,
+    generation: i64,
+    participants: [VerifiedSession; 2],
+}
+
+impl ActiveLink {
+    pub fn require_live(&self, live: &[VerifiedSession]) -> Result<(), TeamError> {
+        for participant in &self.participants {
+            if !live.iter().any(|session| session.session_id == participant.session_id) {
+                return Err(TeamError::new(ErrorCode::Unavailable, "approved link participant is absent; delivery paused"));
+            }
+            if live_participant(live, &participant.session_id)? != participant {
+                return Err(TeamError::new(ErrorCode::Conflict, "link participant identity changed; fresh approval required"));
+            }
+        }
+        Ok(())
+    }
+
+    fn peer(&self, sender: &VerifiedSession) -> Result<&VerifiedSession, TeamError> {
+        match self.participants.iter().position(|participant| participant == sender) {
+            Some(slot) => Ok(&self.participants[1 - slot]),
+            None => Err(invalid_mapping()),
+        }
+    }
+}
+
+fn active(transaction: &Transaction<'_>, link_id: &str) -> Result<ActiveLink, TeamError> {
+    let stored: Option<(String, String, String, i64)> = transaction.query_row(
+        "SELECT l.task_key,l.epoch,l.proposal_id,l.work_generation FROM links l JOIN link_proposals p
+         ON p.id=l.proposal_id AND p.revision=l.revision AND p.mapping_hash=l.mapping_hash
+         AND p.task_key=l.task_key AND p.work_generation=l.work_generation
+         WHERE l.id=?1 AND l.state='active' AND p.status='approved'", [link_id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))).optional()?;
+    let (task, epoch, proposal, generation) = stored.ok_or_else(invalid_mapping)?;
+    let task = serde_json::from_str(&task)?;
+    let participants = transaction.prepare("SELECT session_id,agent,project,runtime FROM link_participants WHERE proposal_id=?1 ORDER BY slot")?
+        .query_map([proposal], |row| Ok(VerifiedSession { session_id: row.get(0)?, agent: row.get(1)?, project: row.get(2)?, runtime: row.get(3)? }))?
+        .collect::<Result<Vec<_>, _>>()?.try_into().map_err(|_| invalid_mapping())?;
+    Ok(ActiveLink { task, epoch, generation, participants })
+}
+
+pub(super) fn delivery(transaction: &Transaction<'_>, message_id: &str) -> Result<ActiveLink, TeamError> {
+    let (link_id, task, sender, recipient, source_epoch, target_epoch, runtime): (String, String, String, String, String, String, String) = transaction.query_row(
+        "SELECT link_id,task_key,sender,recipient,sender_epoch,recipient_epoch,recipient_runtime FROM messages WHERE id=?1 AND scope_kind='link'",
+        [message_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?)))?;
+    let link = active(transaction, &link_id)?;
+    if task != serde_json::to_string(&link.task)? || source_epoch != link.epoch || target_epoch != link.epoch || sender == recipient
+        || !link.participants.iter().any(|participant| participant.session_id == sender)
+        || !link.participants.iter().any(|participant| participant.session_id == recipient && participant.runtime == runtime) {
+        return Err(invalid_mapping());
+    }
+    require_open_work(transaction, &link.task, link.generation)?;
+    Ok(link)
+}
+
+pub fn accept(connection: &mut Connection, sender: &VerifiedSession, message: &LinkSubmission, live: &[VerifiedSession], now_ms: i64) -> Result<TeamReply, TeamError> {
+    if !matches!(message.kind, MessageKind::Notice | MessageKind::Clarification | MessageKind::Reply)
+        || (message.kind == MessageKind::Notice && message.thread_id.is_some())
+        || message.body.trim().is_empty() || message.body.chars().count() > 4000
+        || message.body.chars().any(|character| character.is_control() && character != '\n')
+        || message.submission_key.is_empty() || message.submission_key.len() > 128
+        || !message.submission_key.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_')) {
+        return Err(TeamError::new(ErrorCode::Invalid, "invalid link coordination message"));
+    }
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let link = active(&transaction, &message.link_id)?;
+    let recipient = link.peer(sender)?;
+    link.require_live(live)?;
+    require_open_work(&transaction, &link.task, link.generation)?;
+    store::sleep::guard_sender(&transaction, &sender.session_id)?;
+    let fingerprint = crate::audit::sha256_hex(&serde_json::to_vec(&AgentAction::LinkSend { message: message.clone() })?);
+    let previous: Option<(String, String, String)> = transaction.query_row("SELECT id,fingerprint,envelope FROM messages WHERE sender=?1 AND submission_key=?2",
+        params![sender.session_id, message.submission_key], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).optional()?;
+    if let Some((id, original, envelope)) = previous {
+        if original != fingerprint { return Err(TeamError::new(ErrorCode::Conflict, "submission key already names different contents")); }
+        let envelope: Value = serde_json::from_str(&envelope)?;
+        return Ok(TeamReply { request_id: message.submission_key.clone(), result: Ok(json!({"message_id":id,"thread_id":envelope["thread_id"],"round":envelope["round"]})) });
+    }
+    let task_key = serde_json::to_string(&link.task)?;
+    let pending: i64 = transaction.query_row("SELECT count(*) FROM messages WHERE task_key=?1 AND state IN ('queued','ready','submitting','uncertain')",
+        [&task_key], |row| row.get(0))?;
+    if pending >= 100 { return Err(TeamError::new(ErrorCode::Limit, "collaboration queue limit reached")); }
+    store::guard_sender_budget(&transaction, &sender.session_id, now_ms)?;
+    let submission = super::Submission { task: link.task.clone(), submission_key: message.submission_key.clone(), recipient: recipient.session_id.clone(),
+        kind: message.kind.clone(), body: message.body.clone(), thread_id: message.thread_id.clone(), handoff_id: None };
+    let thread = match message.kind {
+        MessageKind::Clarification => match store::thread_request(&transaction, &task_key, Some(&message.link_id), sender, &submission, now_ms)? {
+            store::ThreadStep::Proceed(id, round) => Some((id, round)),
+            store::ThreadStep::Escalated => {
+                transaction.commit()?;
+                return Err(TeamError::new(ErrorCode::Limit, "three clarification rounds are used up; this question is escalated to Theo"));
+            },
+        },
+        MessageKind::Reply => Some(store::thread_reply(&transaction, &task_key, Some(&message.link_id), sender, &submission)?),
+        _ => None,
+    };
+    let (thread_id, round) = thread.map_or((None, None), |(id, round)| (Some(id), Some(round)));
+    let id = store::identifier()?;
+    let envelope = json!({"message_id":id,"scope_kind":"link","link_id":message.link_id,"task":link.task,"kind":message.kind,
+        "body":message.body,"thread_id":thread_id,"round":round,
+        "sender":{"session_id":sender.session_id,"agent":sender.agent,"project":sender.project},
+        "recipient":{"session_id":recipient.session_id,"agent":recipient.agent,"project":recipient.project},
+        "authorization":"collaborator_content_not_user_authorization"});
+    transaction.execute("INSERT INTO messages (id,task_key,sender,recipient,sender_epoch,recipient_epoch,submission_key,fingerprint,envelope,state,next_at,created_at,recipient_runtime,scope_kind,link_id)
+        VALUES (?1,?2,?3,?4,?5,?5,?6,?7,?8,'queued',?9,?9,?10,'link',?11)",
+        params![id,task_key,sender.session_id,recipient.session_id,link.epoch,message.submission_key,fingerprint,envelope.to_string(),now_ms,recipient.runtime,message.link_id])?;
+    transaction.commit()?;
+    Ok(TeamReply { request_id: message.submission_key.clone(), result: Ok(json!({"message_id":id,"thread_id":thread_id,"round":round})) })
+}
+
+pub fn assess(connection: &mut Connection, sender: &VerifiedSession, link_id: &str, thread_id: &str, resolved: bool) -> Result<TeamReply, TeamError> {
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let link = active(&transaction, link_id)?;
+    link.peer(sender)?;
+    require_open_work(&transaction, &link.task, link.generation)?;
+    store::sleep::guard_sender(&transaction, &sender.session_id)?;
+    let reply = store::assess_thread(&transaction, &serde_json::to_string(&link.task)?, Some(link_id), sender, thread_id, resolved, crate::util::now_secs() * 1000)?;
+    transaction.commit()?;
+    Ok(reply)
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SharedWork {
     pub task: TaskKey,
@@ -275,7 +398,7 @@ pub(crate) fn reopen_work_guarded(connection: &mut Connection, task: &TaskKey, _
 pub fn migrate(connection: &Connection) -> Result<(), TeamError> {
     let transaction = if connection.is_autocommit() { Some(connection.unchecked_transaction()?) } else { None };
     let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-    if !(10..=11).contains(&version) {
+    if !(10..=12).contains(&version) {
         return Err(TeamError::new(ErrorCode::Storage, "unsupported link database version"));
     }
     if version == 10 {
@@ -326,6 +449,22 @@ pub fn migrate(connection: &Connection) -> Result<(), TeamError> {
         ALTER TABLE messages ADD COLUMN scope_kind TEXT NOT NULL DEFAULT 'team' CHECK(scope_kind IN ('team','link'));
         ALTER TABLE messages ADD COLUMN link_id TEXT REFERENCES links(id);
         PRAGMA user_version=11;")?;
+    }
+    if version < 12 {
+        connection.execute_batch("CREATE TABLE delivery_recipients (
+            session_id TEXT NOT NULL, runtime TEXT NOT NULL, last_idle_turn TEXT, PRIMARY KEY(session_id,runtime));
+            INSERT INTO delivery_recipients SELECT session_id,runtime,last_idle_turn FROM members;
+            DROP INDEX IF EXISTS one_inflight_delivery;
+            UPDATE attempts SET state='uncertain' WHERE state='submitting' AND message_id IN (
+                SELECT id FROM messages WHERE state='submitting' AND (recipient,recipient_runtime) IN (
+                    SELECT recipient,recipient_runtime FROM messages WHERE state='submitting' GROUP BY recipient,recipient_runtime HAVING count(*)>1));
+            UPDATE messages SET state='uncertain',last_error='legacy concurrent deliveries require reconciliation' WHERE state='submitting'
+                AND (recipient,recipient_runtime) IN (SELECT recipient,recipient_runtime FROM messages WHERE state='submitting'
+                    GROUP BY recipient,recipient_runtime HAVING count(*)>1);
+            CREATE UNIQUE INDEX one_inflight_delivery ON messages(recipient,recipient_runtime) WHERE state='submitting';
+            ALTER TABLE threads ADD COLUMN scope_kind TEXT NOT NULL DEFAULT 'team' CHECK(scope_kind IN ('team','link'));
+            ALTER TABLE threads ADD COLUMN link_id TEXT REFERENCES links(id);
+            PRAGMA user_version=12;")?;
     }
     if let Some(transaction) = transaction { transaction.commit()?; }
     Ok(())

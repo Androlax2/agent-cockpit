@@ -231,7 +231,7 @@ fn team_context_exposes_only_own_identity_before_link_approval() {
 }
 
 #[test]
-fn team_link_routes_use_authenticated_sender_and_fail_closed_until_delivery_exists() {
+fn team_link_routes_use_authenticated_sender_and_deliver_without_membership() {
     use cockpit::teams::{AgentAction, HostAction};
     let mut bench = team_bench();
     let second = bench.fixture.root.join("home/IdeaProjects/project-b");
@@ -253,10 +253,27 @@ fn team_link_routes_use_authenticated_sender_and_fail_closed_until_delivery_exis
     assert!(serde_json::from_value::<AgentAction>(approve.clone()).is_err());
     let active = crate::teams::host(&mut bench.registry, std::process::id(), cockpit::teams::HostRequest::Control {
         action: serde_json::from_value::<HostAction>(approve).unwrap() }).unwrap().result.unwrap();
-    for action in [json!({"action":"link_send","message":{"link_id":active["link_id"],"submission_key":"note","kind":"notice","body":"Ready"}}),
-        json!({"action":"link_assess","link_id":active["link_id"],"thread_id":"thread","resolved":true})] {
-        assert!(crate::teams::request(&mut bench.registry, 10, serde_json::from_value(action).unwrap()).is_err());
-    }
+    let send = json!({"action":"link_send","message":{"link_id":active["link_id"],"submission_key":"note","kind":"clarification","body":"Ready?"}});
+    assert!(crate::teams::request(&mut bench.registry, 30, serde_json::from_value(send.clone()).unwrap()).is_err());
+    let accepted = crate::teams::request(&mut bench.registry, 10, serde_json::from_value(send).unwrap()).unwrap().result.unwrap();
+    // Restore a link-only runtime from the protected approval after daemon state loss.
+    bench.registry.sessions.get_mut(OPENCODE_SESSION).unwrap().runtime.clear();
+    bench.registry.teams = None;
+    let delivery = crate::teams::request(&mut bench.registry, 20, AgentAction::Receive).unwrap().result.unwrap();
+    assert_eq!(delivery["envelope"]["message_id"], accepted["message_id"]);
+    assert_eq!(delivery["envelope"]["sender"]["project"], format!("path:{}", first.display()));
+    assert!(delivery["envelope"]["sender"].get("role").is_none());
+    let reply = json!({"action":"link_send","message":{"link_id":active["link_id"],"submission_key":"answer","kind":"reply","body":"Ready","thread_id":accepted["thread_id"]}});
+    crate::teams::request(&mut bench.registry, 20, serde_json::from_value(reply).unwrap()).unwrap();
+    let assess = json!({"action":"link_assess","link_id":active["link_id"],"thread_id":accepted["thread_id"],"resolved":true});
+    assert!(crate::teams::request(&mut bench.registry, 20, serde_json::from_value(assess.clone()).unwrap()).is_err());
+    assert_eq!(crate::teams::request(&mut bench.registry, 10, serde_json::from_value(assess).unwrap()).unwrap().result.unwrap()["status"], "resolved");
+    let task = cockpit::teams::TaskKey { project: format!("path:{}", first.display()), task_id: "1d3fd318".into() };
+    cockpit::teams::links::invalidate_work(bench.registry.teams.as_mut().unwrap(), &task, "done").unwrap();
+    // Native Receive already authorized this handoff; closure cannot retract its receipt.
+    crate::teams::request(&mut bench.registry, 20, AgentAction::Receipt { dispatch_id: delivery["dispatch_id"].as_str().unwrap().into(),
+        outcome: cockpit::teams::TransportOutcome::Received { native_id: "native-note".into() } }).unwrap();
+    assert!(crate::teams::request(&mut bench.registry, 10, AgentAction::Receive).unwrap().result.unwrap().is_null());
     let mut errors = Vec::new();
     for (peer, owner) in [(SESSION_C, format!("path:{}", first.display())), (SESSION_B, "path:/unrelated".into()), (OPENCODE_SESSION, format!("path:{}", first.display()))] {
         bench.world.borrow_mut().sender_runtimes.remove(&20);
@@ -348,6 +365,33 @@ fn after_a_daemon_restart_linked_members_keep_receiving() {
     bench.registry.teams = None;
     let delivery = crate::teams::request(&mut bench.registry, 10, cockpit::teams::AgentAction::Receive).unwrap().result.unwrap();
     assert!(delivery["text"].as_str().unwrap().contains("The frame is ready."));
+}
+
+#[test]
+fn stale_link_runtime_does_not_prevent_restoring_a_healthy_team() {
+    use cockpit::teams::{AgentAction, HostAction, LinkProposal, Member, Proposal, Role, TaskKey};
+    let mut bench = linked_team_bench();
+    let project = bench.fixture.root.join("home/IdeaProjects/project-a");
+    fs::write(cockpit::paths::todo(), json!({"items":[{"id":"1d3fd318","project":"project-a","cwd":project,"text":"Joint work","status":"doing"}]}).to_string()).unwrap();
+    let task = TaskKey { project: format!("path:{}", project.display()), task_id: "1d3fd318".into() };
+    let pending = crate::teams::request(&mut bench.registry, 10, AgentAction::LinkPropose { proposal: LinkProposal {
+        submission_key: "link".into(), task: task.clone(), peer_session_id: SESSION_B.into(), purpose: "Coordinate".into() } }).unwrap().result.unwrap();
+    let hash = bench.registry.teams.as_ref().unwrap().query_row("SELECT mapping_hash FROM link_proposals", [], |row| row.get::<_, String>(0)).unwrap();
+    crate::teams::host_control(&mut bench.registry, &HostAction::LinkApprove { request_id: "link-approval".into(),
+        proposal_id: pending["proposal_id"].as_str().unwrap().into(), expected_revision: 1, mapping_hash: hash }).unwrap();
+    bench.world.borrow_mut().sender_runtimes.insert(10, "runtime-replacement".into());
+    bench.registry.sessions.get_mut(SESSION_A).unwrap().runtime = "runtime-replacement".into();
+    let pending = crate::teams::request(&mut bench.registry, 10, AgentAction::Propose { proposal: Proposal {
+        submission_key: "new-team".into(), task, reason: "Approve replacement".into(), members: vec![
+            Member { session_id: SESSION_A.into(), role: Role::Designer }, Member { session_id: OPENCODE_SESSION.into(), role: Role::Developer }] } }).unwrap().result.unwrap();
+    crate::teams::host_control(&mut bench.registry, &HostAction::Approve { request_id: "new-team-approval".into(),
+        proposal_id: pending["proposal_id"].as_str().unwrap().into(), expected_revision: 1, mapping_hash: pending["mapping_hash"].as_str().unwrap().into() }).unwrap();
+    send_to_designer(&mut bench, "healthy-team");
+    bench.registry.sessions.get_mut(SESSION_A).unwrap().runtime.clear();
+    bench.registry.teams = None;
+    let delivery = crate::teams::request(&mut bench.registry, 10, AgentAction::Receive).unwrap().result.unwrap();
+    assert!(delivery["dispatch_id"].is_string());
+    assert_eq!(delivery["envelope"]["sender"]["session_id"], OPENCODE_SESSION);
 }
 
 #[test]
@@ -1036,7 +1080,7 @@ fn verified_sleep_replacement_rejoins_before_startup_recovery() {
     bench.world.borrow_mut().resume_tokens.insert(41, token.clone());
     spawned_session_reports(&mut bench, 41, SESSION_A, "");
     crate::teams::live_sessions(&mut bench.registry).unwrap();
-    assert_eq!(cockpit::teams::store::member_runtime(bench.registry.teams.as_ref().unwrap(), SESSION_A).unwrap().as_deref(), Some("runtime-40"));
+    assert_eq!(cockpit::teams::store::approved_runtimes(bench.registry.teams.as_ref().unwrap(), SESSION_A).unwrap(), ["runtime-40"]);
 }
 
 #[test]
@@ -1068,7 +1112,7 @@ fn sleep_resume_after_registry_loss_still_checks_old_process_death() {
     resumed_session_reports(&mut bench, &token);
     crate::teams::live_sessions(&mut bench.registry).unwrap();
     assert_eq!(sleep_host(&mut bench, "sleep_status", Some(&token)).unwrap()["state"], "prepared");
-    assert_eq!(cockpit::teams::store::member_runtime(bench.registry.teams.as_ref().unwrap(), SESSION_A).unwrap().as_deref(), Some("runtime-10"));
+    assert_eq!(cockpit::teams::store::approved_runtimes(bench.registry.teams.as_ref().unwrap(), SESSION_A).unwrap(), ["runtime-10"]);
 }
 
 #[test]
@@ -1189,7 +1233,7 @@ fn manually_resumed_teammate_without_permit_cannot_claim_sleeping_queue() {
     assert!(context["members"].as_array().unwrap().is_empty());
     assert!(crate::teams::request(&mut bench.registry, 40, AgentAction::Receive).unwrap().result.unwrap().is_null());
     assert_ne!(sleep_host(&mut bench, "sleep_status", Some(&token)).unwrap()["state"], "bound");
-    assert_eq!(cockpit::teams::store::member_runtime(bench.registry.teams.as_ref().unwrap(), SESSION_A).unwrap().as_deref(), Some("runtime-10"));
+    assert_eq!(cockpit::teams::store::approved_runtimes(bench.registry.teams.as_ref().unwrap(), SESSION_A).unwrap(), ["runtime-10"]);
 }
 
 #[test]

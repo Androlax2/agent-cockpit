@@ -376,9 +376,9 @@ fn sleep_preparation_serializes_with_real_sqlite_sends_and_claims() {
     connection.execute_batch("ROLLBACK").unwrap();
     let token = store::sleep::prepare(&mut connection, &live()[0], SLEEP_CHECKOUT, 3001).unwrap().unwrap();
     store::accept(&mut other, &live()[1], &message("incoming"), 3002).unwrap();
-    assert!(store::claim(&mut other, &live()[0], "idle", 3003).unwrap().is_none());
+    assert!(store::claim(&mut other, &live()[0], "idle", &live(), 3003).unwrap().is_none());
     store::sleep::cancel(&mut connection, DESIGNER, &token).unwrap();
-    let dispatch = store::claim(&mut other, &live()[0], "idle", 3004).unwrap().unwrap();
+    let dispatch = store::claim(&mut other, &live()[0], "idle", &live(), 3004).unwrap().unwrap();
     assert!(store::sleep::prepare(&mut connection, &live()[0], SLEEP_CHECKOUT, 3005).is_err());
     assert_eq!(connection.query_row("SELECT count(*) FROM attempts WHERE id=?1", [&dispatch.id], |row| row.get::<_, i64>(0)).unwrap(), 1);
 }
@@ -405,7 +405,7 @@ fn sleep_pauses_structured_collaboration_actions() {
     let thread = ask(&mut connection, "question", None).unwrap()["thread_id"].as_str().unwrap().to_string();
     answer(&mut connection, "answer", &thread).unwrap();
     for (index, recipient) in [0, 1].into_iter().enumerate() {
-        let dispatch = store::claim(&mut connection, &live()[recipient], "idle", 3001).unwrap().unwrap();
+        let dispatch = store::claim(&mut connection, &live()[recipient], "idle", &live(), 3001).unwrap().unwrap();
         store::finish(&mut connection, &dispatch.id, &TransportOutcome::Received { native_id: format!("native-{index}") }, 3002).unwrap();
     }
     let token = store::sleep::prepare(&mut connection, &live()[1], SLEEP_CHECKOUT, 3003).unwrap().unwrap();
@@ -468,7 +468,7 @@ fn sleep_prepare_pauses_sends_and_claims_but_accepts_incoming_messages() {
     let token = store::sleep::prepare(&mut connection, &live()[0], SLEEP_CHECKOUT, 3000).unwrap().unwrap();
     assert_eq!(store::sleep::prepare(&mut connection, &live()[0], SLEEP_CHECKOUT, 3001).unwrap(), Some(token.clone()));
     store::accept(&mut connection, &live()[1], &message("incoming"), 3002).unwrap();
-    assert!(store::claim(&mut connection, &live()[0], "idle", 3003).unwrap().is_none());
+    assert!(store::claim(&mut connection, &live()[0], "idle", &live(), 3003).unwrap().is_none());
     let outgoing = AgentAction::Send { message: Submission { task: task(), submission_key: "outgoing".into(), recipient: DEVELOPER.into(),
         kind: MessageKind::Notice, body: "not while asleep".into(), thread_id: None, handoff_id: None } };
     assert!(store::accept(&mut connection, &live()[0], &outgoing, 3003).is_err());
@@ -497,7 +497,7 @@ fn sleep_bind_preserves_role_epoch_and_queued_messages() {
     let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
     linked(&mut connection);
     store::accept(&mut connection, &live()[1], &message("received"), 3000).unwrap();
-    let old_attempt = store::claim(&mut connection, &live()[0], "idle", 3000).unwrap().unwrap();
+    let old_attempt = store::claim(&mut connection, &live()[0], "idle", &live(), 3000).unwrap().unwrap();
     let receipt = TransportOutcome::Received { native_id: "native-old".into() };
     store::finish_for(&mut connection, &live()[0], &old_attempt.id, &receipt, 3001).unwrap();
     let epoch: String = connection.query_row("SELECT epoch FROM members WHERE session_id=?1", [DESIGNER], |row| row.get(0)).unwrap();
@@ -514,10 +514,10 @@ fn sleep_bind_preserves_role_epoch_and_queued_messages() {
     assert_eq!(store::context(&connection, &replacement).unwrap()["task"]["task_id"], "1d3fd318");
     assert_eq!(connection.query_row("SELECT epoch FROM members WHERE session_id=?1", [DESIGNER], |row| row.get::<_, String>(0)).unwrap(), epoch);
     assert!(store::finish_for(&mut connection, &replacement, &old_attempt.id, &receipt, 3008).is_err());
-    let dispatch = store::claim(&mut connection, &replacement, "idle", 3008).unwrap().unwrap();
+    let dispatch = store::claim(&mut connection, &replacement, "idle", &current, 3008).unwrap().unwrap();
     assert!(store::finish_for(&mut connection, &live()[0], &dispatch.id, &receipt, 3009).is_err());
     store::finish_for(&mut connection, &replacement, &dispatch.id, &receipt, 3009).unwrap();
-    assert!(store::claim(&mut connection, &replacement, "next", 3010).unwrap().is_none());
+    assert!(store::claim(&mut connection, &replacement, "next", &current, 3010).unwrap().is_none());
 }
 
 #[test]
@@ -577,10 +577,10 @@ fn sleep_cancel_restores_normal_delivery() {
     let token = store::sleep::prepare(&mut connection, &live()[0], SLEEP_CHECKOUT, 3000).unwrap().unwrap();
     store::accept(&mut connection, &live()[1], &message("incoming"), 3001).unwrap();
     store::sleep::cancel(&mut connection, QA, &token).unwrap();
-    assert!(store::claim(&mut connection, &live()[0], "idle", 3002).unwrap().is_none());
+    assert!(store::claim(&mut connection, &live()[0], "idle", &live(), 3002).unwrap().is_none());
     store::sleep::cancel(&mut connection, DESIGNER, &token).unwrap();
     store::sleep::cancel(&mut connection, DESIGNER, &token).unwrap();
-    assert!(store::claim(&mut connection, &live()[0], "idle", 3003).unwrap().is_some());
+    assert!(store::claim(&mut connection, &live()[0], "idle", &live(), 3003).unwrap().is_some());
 }
 
 #[test]
@@ -589,10 +589,10 @@ fn sleep_recovery_does_not_resend_uncertain_attempts() {
     let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
     linked(&mut connection);
     store::accept(&mut connection, &live()[1], &message("uncertain"), 3000).unwrap();
-    let dispatch = store::claim(&mut connection, &live()[0], "idle", 3000).unwrap().unwrap();
+    let dispatch = store::claim(&mut connection, &live()[0], "idle", &live(), 3000).unwrap().unwrap();
     store::recover(&mut connection, &live(), 3001).unwrap();
     assert!(store::sleep::prepare(&mut connection, &live()[0], SLEEP_CHECKOUT, 3002).is_err());
-    assert!(store::claim(&mut connection, &live()[0], "next", 5000).unwrap().is_none());
+    assert!(store::claim(&mut connection, &live()[0], "next", &live(), 5000).unwrap().is_none());
     assert_eq!(connection.query_row("SELECT state FROM attempts WHERE id=?1", [&dispatch.id], |row| row.get::<_, String>(0)).unwrap(), "uncertain");
 }
 
@@ -706,15 +706,15 @@ fn messages_claim_one_wake_per_idle_turn_and_preserve_collaborator_provenance() 
     linked(&mut connection);
     store::accept(&mut connection, &live()[1], &message("notice-1"), 3000).unwrap();
     store::accept(&mut connection, &live()[1], &message("notice-2"), 3000).unwrap();
-    let dispatch = store::claim(&mut connection, &live()[0], "idle-1", 3000).unwrap().unwrap();
+    let dispatch = store::claim(&mut connection, &live()[0], "idle-1", &live(), 3000).unwrap().unwrap();
     assert_eq!(dispatch.envelope["sender"]["session_id"], DEVELOPER);
     assert_eq!(dispatch.envelope["sender"]["role"], "developer");
     assert_eq!(dispatch.envelope["task"]["task_id"], "1d3fd318");
     assert_eq!(dispatch.envelope["authorization"], "collaborator_content_not_user_authorization");
-    assert!(store::claim(&mut connection, &live()[0], "idle-1", 3000).unwrap().is_none());
+    assert!(store::claim(&mut connection, &live()[0], "idle-1", &live(), 3000).unwrap().is_none());
     store::finish(&mut connection, &dispatch.id, &TransportOutcome::Received { native_id: "native-admission-1".into() }, 3001).unwrap();
-    assert!(store::claim(&mut connection, &live()[0], "idle-1", 3001).unwrap().is_none());
-    assert!(store::claim(&mut connection, &live()[0], "idle-2", 3002).unwrap().is_some());
+    assert!(store::claim(&mut connection, &live()[0], "idle-1", &live(), 3001).unwrap().is_none());
+    assert!(store::claim(&mut connection, &live()[0], "idle-2", &live(), 3002).unwrap().is_some());
 }
 
 #[test]
@@ -725,11 +725,11 @@ fn crash_after_claim_escalates_uncertainty_instead_of_resending() {
     linked(&mut connection);
     store::accept(&mut connection, &live()[1], &message("notice-1"), 3000).unwrap();
     store::accept(&mut connection, &live()[1], &message("notice-2"), 3000).unwrap();
-    store::claim(&mut connection, &live()[0], "idle-1", 3000).unwrap().unwrap();
+    store::claim(&mut connection, &live()[0], "idle-1", &live(), 3000).unwrap().unwrap();
     drop(connection);
     let mut connection = store::open(&path).unwrap();
     store::recover(&mut connection, &live(), 4000).unwrap();
-    assert!(store::claim(&mut connection, &live()[0], "idle-2", 100_000).unwrap().is_none());
+    assert!(store::claim(&mut connection, &live()[0], "idle-2", &live(), 100_000).unwrap().is_none());
     assert_eq!(store::snapshot(&connection, Some(&task()), None, 100).unwrap()["messages"][0]["state"], "uncertain");
 }
 
@@ -742,16 +742,16 @@ fn safe_retry_budget_and_backoff_survive_restarts() {
     store::accept(&mut connection, &live()[1], &message("notice-1"), 3000).unwrap();
     let mut next_at = 3000;
     for delay in [2000, 10_000, 30_000] {
-        let dispatch = store::claim(&mut connection, &live()[0], "idle-1", next_at).unwrap().unwrap();
+        let dispatch = store::claim(&mut connection, &live()[0], "idle-1", &live(), next_at).unwrap().unwrap();
         store::finish(&mut connection, &dispatch.id, &TransportOutcome::NotSubmitted { reason: "native inbox unavailable".into() }, next_at).unwrap();
         drop(connection);
         connection = store::open(&path).unwrap();
-        assert!(store::claim(&mut connection, &live()[0], "idle-1", next_at + delay - 1).unwrap().is_none());
+        assert!(store::claim(&mut connection, &live()[0], "idle-1", &live(), next_at + delay - 1).unwrap().is_none());
         next_at += delay;
     }
-    let dispatch = store::claim(&mut connection, &live()[0], "idle-1", next_at).unwrap().unwrap();
+    let dispatch = store::claim(&mut connection, &live()[0], "idle-1", &live(), next_at).unwrap().unwrap();
     store::finish(&mut connection, &dispatch.id, &TransportOutcome::NotSubmitted { reason: "still unavailable".into() }, next_at).unwrap();
-    assert!(store::claim(&mut connection, &live()[0], "idle-2", next_at + 1_000_000).unwrap().is_none());
+    assert!(store::claim(&mut connection, &live()[0], "idle-2", &live(), next_at + 1_000_000).unwrap().is_none());
     let state = store::snapshot(&connection, Some(&task()), None, 100).unwrap();
     assert_eq!(state["messages"][0]["state"], "failed");
     assert_eq!(state["messages"][0]["attempts"], 4);
@@ -763,14 +763,14 @@ fn unlink_cancels_pending_retries_and_relink_does_not_revive_them() {
     let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
     linked(&mut connection);
     store::accept(&mut connection, &live()[1], &message("notice-1"), 3000).unwrap();
-    let dispatch = store::claim(&mut connection, &live()[0], "idle-1", 3000).unwrap().unwrap();
+    let dispatch = store::claim(&mut connection, &live()[0], "idle-1", &live(), 3000).unwrap().unwrap();
     store::finish(&mut connection, &dispatch.id, &TransportOutcome::NotSubmitted { reason: "offline".into() }, 3000).unwrap();
     store::control(&mut connection, &HostAction::Unlink { request_id: "unlink-1".into(), task: task(), session_id: DESIGNER.into() }, &live(), 3001).unwrap();
     let mut fresh = proposal();
     fresh.submission_key = "relink".into();
     let request = propose(&mut connection, &fresh);
     approve(&mut connection, &request).unwrap();
-    assert!(store::claim(&mut connection, &live()[0], "idle-2", 10_000).unwrap().is_none());
+    assert!(store::claim(&mut connection, &live()[0], "idle-2", &live(), 10_000).unwrap().is_none());
     assert_eq!(store::snapshot(&connection, Some(&task()), None, 100).unwrap()["messages"][0]["state"], "cancelled");
 }
 
@@ -781,12 +781,12 @@ fn duplicate_receipts_cannot_reset_the_delivery_or_wake_again() {
     let mut connection = store::open(&path).unwrap();
     linked(&mut connection);
     store::accept(&mut connection, &live()[1], &message("notice-1"), 3000).unwrap();
-    let dispatch = store::claim(&mut connection, &live()[0], "idle-1", 3000).unwrap().unwrap();
+    let dispatch = store::claim(&mut connection, &live()[0], "idle-1", &live(), 3000).unwrap().unwrap();
     store::finish(&mut connection, &dispatch.id, &TransportOutcome::Received { native_id: "native-admission-1".into() }, 3001).unwrap();
     drop(connection);
     let mut connection = store::open(&path).unwrap();
     store::finish(&mut connection, &dispatch.id, &TransportOutcome::Received { native_id: "native-admission-1".into() }, 3002).unwrap();
-    assert!(store::claim(&mut connection, &live()[0], "idle-2", 3002).unwrap().is_none());
+    assert!(store::claim(&mut connection, &live()[0], "idle-2", &live(), 3002).unwrap().is_none());
     assert_eq!(store::snapshot(&connection, Some(&task()), None, 100).unwrap()["messages"][0]["state"], "received");
 }
 
@@ -798,7 +798,7 @@ fn a_replaced_recipient_runtime_cannot_claim_old_messages() {
     store::accept(&mut connection, &live()[1], &message("notice-1"), 3000).unwrap();
     let mut replacement = live()[0].clone();
     replacement.runtime = "new-runtime".into();
-    assert!(store::claim(&mut connection, &replacement, "idle-1", 3001).unwrap().is_none());
+    assert!(store::claim(&mut connection, &replacement, "idle-1", &[replacement.clone(), live()[1].clone(), live()[2].clone()], 3001).unwrap().is_none());
 }
 
 #[test]
@@ -807,7 +807,7 @@ fn only_the_addressed_runtime_can_acknowledge_a_delivery() {
     let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
     linked(&mut connection);
     store::accept(&mut connection, &live()[1], &message("notice-1"), 3000).unwrap();
-    let dispatch = store::claim(&mut connection, &live()[0], "idle-1", 3000).unwrap().unwrap();
+    let dispatch = store::claim(&mut connection, &live()[0], "idle-1", &live(), 3000).unwrap().unwrap();
     let received = TransportOutcome::Received { native_id: "native-1".into() };
     assert!(store::finish_for(&mut connection, &live()[2], &dispatch.id, &received, 3001).is_err());
     assert_eq!(store::snapshot(&connection, Some(&task()), None, 100).unwrap()["messages"][0]["state"], "submitting");
@@ -822,12 +822,12 @@ fn a_delivery_without_receipt_becomes_uncertain_after_two_minutes() {
     linked(&mut connection);
     store::accept(&mut connection, &live()[1], &message("notice-1"), 3000).unwrap();
     store::accept(&mut connection, &live()[1], &message("notice-2"), 3000).unwrap();
-    store::claim(&mut connection, &live()[0], "idle-1", 3000).unwrap().unwrap();
+    store::claim(&mut connection, &live()[0], "idle-1", &live(), 3000).unwrap().unwrap();
     store::expire(&mut connection, 3000 + 119_999).unwrap();
     assert_eq!(store::snapshot(&connection, Some(&task()), None, 100).unwrap()["messages"][0]["state"], "submitting");
     store::expire(&mut connection, 3000 + 120_000).unwrap();
     assert_eq!(store::snapshot(&connection, Some(&task()), None, 100).unwrap()["messages"][0]["state"], "uncertain");
-    assert!(store::claim(&mut connection, &live()[0], "idle-2", 500_000).unwrap().is_none());
+    assert!(store::claim(&mut connection, &live()[0], "idle-2", &live(), 500_000).unwrap().is_none());
 }
 
 #[test]
@@ -836,7 +836,7 @@ fn delivered_text_labels_collaborator_provenance_and_denies_authority() {
     let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
     linked(&mut connection);
     store::accept(&mut connection, &live()[1], &message("notice-1"), 3000).unwrap();
-    let dispatch = store::claim(&mut connection, &live()[0], "idle-1", 3000).unwrap().unwrap();
+    let dispatch = store::claim(&mut connection, &live()[0], "idle-1", &live(), 3000).unwrap().unwrap();
     let text = cockpit::teams::envelope_text(&dispatch.envelope);
     assert!(text.contains("developer"), "{text}");
     assert!(text.contains("1d3fd318"), "{text}");
@@ -917,7 +917,7 @@ fn duplicate_replies_and_transport_retries_do_not_advance_rounds() {
     let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
     linked(&mut connection);
     let thread = ask(&mut connection, "q1", None).unwrap()["thread_id"].as_str().unwrap().to_string();
-    let dispatch = store::claim(&mut connection, &live()[0], "idle-1", 3000).unwrap().unwrap();
+    let dispatch = store::claim(&mut connection, &live()[0], "idle-1", &live(), 3000).unwrap().unwrap();
     store::finish(&mut connection, &dispatch.id, &TransportOutcome::NotSubmitted { reason: "busy".into() }, 3000).unwrap();
     answer(&mut connection, "a1", &thread).unwrap();
     answer(&mut connection, "a1", &thread).unwrap();
@@ -939,7 +939,7 @@ fn a_delivered_notice_carries_a_reply_command_addressed_to_its_sender() {
     let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
     linked(&mut connection);
     store::accept(&mut connection, &live()[1], &message("notice-1"), 3000).unwrap();
-    let dispatch = store::claim(&mut connection, &live()[0], "idle-1", 3000).unwrap().unwrap();
+    let dispatch = store::claim(&mut connection, &live()[0], "idle-1", &live(), 3000).unwrap().unwrap();
     let AgentAction::Send { message } = reply_action(&cockpit::teams::envelope_text(&dispatch.envelope)) else { panic!("not a send") };
     assert_eq!((message.recipient.as_str(), message.kind, message.task.task_id.as_str()), (DEVELOPER, MessageKind::Notice, task().task_id.as_str()));
 }
@@ -950,7 +950,7 @@ fn a_delivered_clarification_offers_a_reply_in_its_thread() {
     let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
     linked(&mut connection);
     let thread = ask(&mut connection, "q1", None).unwrap()["thread_id"].as_str().unwrap().to_string();
-    let dispatch = store::claim(&mut connection, &live()[0], "idle-1", 3000).unwrap().unwrap();
+    let dispatch = store::claim(&mut connection, &live()[0], "idle-1", &live(), 3000).unwrap().unwrap();
     let AgentAction::Send { message } = reply_action(&cockpit::teams::envelope_text(&dispatch.envelope)) else { panic!("not a send") };
     assert_eq!((message.kind, message.thread_id, message.recipient.as_str()), (MessageKind::Reply, Some(thread), DEVELOPER));
 }
@@ -972,7 +972,7 @@ fn a_delivered_clarification_names_its_thread_and_round() {
     let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
     linked(&mut connection);
     let thread = ask(&mut connection, "q1", None).unwrap()["thread_id"].as_str().unwrap().to_string();
-    let dispatch = store::claim(&mut connection, &live()[0], "idle-1", 3000).unwrap().unwrap();
+    let dispatch = store::claim(&mut connection, &live()[0], "idle-1", &live(), 3000).unwrap().unwrap();
     let text = cockpit::teams::envelope_text(&dispatch.envelope);
     assert!(text.contains(&format!("Thread: {thread} (round 1 of 3)")), "{text}");
 }
@@ -1170,7 +1170,7 @@ fn findings_on_a_superseded_review_stay_attached_to_its_original_commit() {
     let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
     linked(&mut connection);
     let old = hand_off(&mut connection, "h1", COMMIT_A).unwrap()["handoff_id"].as_str().unwrap().to_string();
-    store::claim(&mut connection, &live()[2], "idle-1", 3000).unwrap().unwrap();
+    store::claim(&mut connection, &live()[2], "idle-1", &live(), 3000).unwrap().unwrap();
     hand_off(&mut connection, "h2", COMMIT_B).unwrap();
     let findings = Submission { task: task(), submission_key: "f1".into(), recipient: DEVELOPER.into(), kind: MessageKind::Findings,
         body: "Focus is lost after rejecting a request.".into(), thread_id: None, handoff_id: Some(old) };
@@ -1202,7 +1202,7 @@ fn a_qa_request_tells_qa_to_review_without_changing_product_code() {
     let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
     linked(&mut connection);
     hand_off(&mut connection, "h1", COMMIT_A).unwrap();
-    let dispatch = store::claim(&mut connection, &live()[2], "idle-1", 3000).unwrap().unwrap();
+    let dispatch = store::claim(&mut connection, &live()[2], "idle-1", &live(), 3000).unwrap().unwrap();
     let text = cockpit::teams::envelope_text(&dispatch.envelope);
     assert!(text.contains(COMMIT_A) && text.contains("feature/team-links") && text.contains("frame-approval"), "{text}");
     assert!(text.contains("do not change product code"), "{text}");
@@ -1237,12 +1237,12 @@ fn reconciling_an_uncertain_delivery_never_resends_it() {
         let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
         linked(&mut connection);
         let message = store::accept(&mut connection, &live()[1], &message("notice-1"), 3000).unwrap().result.unwrap();
-        let dispatch = store::claim(&mut connection, &live()[0], "idle-1", 3000).unwrap().unwrap();
+        let dispatch = store::claim(&mut connection, &live()[0], "idle-1", &live(), 3000).unwrap().unwrap();
         store::finish(&mut connection, &dispatch.id, &TransportOutcome::Uncertain { reason: "no receipt".into() }, 3001).unwrap();
         store::control(&mut connection, &HostAction::Reconcile { request_id: format!("reconcile-{decision}"),
             message_id: message["message_id"].as_str().unwrap().into(), decision: decision.into() }, &live(), 3002).unwrap();
         assert_eq!(store::snapshot(&connection, Some(&task()), None, 100).unwrap()["messages"][0]["state"], state);
-        assert!(store::claim(&mut connection, &live()[0], "idle-2", 500_000).unwrap().is_none(), "{decision}");
+        assert!(store::claim(&mut connection, &live()[0], "idle-2", &live(), 500_000).unwrap().is_none(), "{decision}");
     }
 }
 
@@ -1263,7 +1263,7 @@ fn a_failed_delivery_can_be_cancelled_but_never_marked_received_or_retried() {
     linked(&mut connection);
     let accepted = store::accept(&mut connection,&live()[1],&message("failed-notice"),3000).unwrap().result.unwrap();
     for now in [3000,5000,15000,45000] {
-        let dispatch = store::claim(&mut connection,&live()[0],"idle-1",now).unwrap().unwrap();
+        let dispatch = store::claim(&mut connection,&live()[0],"idle-1", &live(),now).unwrap().unwrap();
         store::finish(&mut connection,&dispatch.id,&TransportOutcome::NotSubmitted {reason:"inbox unavailable".into()},now).unwrap();
     }
     let id = accepted["message_id"].as_str().unwrap();
@@ -1275,7 +1275,7 @@ fn a_failed_delivery_can_be_cancelled_but_never_marked_received_or_retried() {
     assert_eq!(state["messages"][0]["attempts"],4);
     assert_eq!(cockpit::teams::view::TeamView::attention(&state),0);
     assert!(cockpit::teams::sidebar::attention(&state,&task()).is_none());
-    assert!(store::claim(&mut connection,&live()[0],"idle-2",500000).unwrap().is_none());
+    assert!(store::claim(&mut connection,&live()[0],"idle-2", &live(),500000).unwrap().is_none());
 }
 
 #[test]
@@ -1284,14 +1284,14 @@ fn uncertain_deliveries_stay_visible_after_more_than_one_hundred_messages() {
     let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
     linked(&mut connection);
     store::accept(&mut connection, &live()[1], &message("first"), 1000).unwrap();
-    let dispatch = store::claim(&mut connection, &live()[0], "idle-0", 1000).unwrap().unwrap();
+    let dispatch = store::claim(&mut connection, &live()[0], "idle-0", &live(), 1000).unwrap().unwrap();
     store::finish(&mut connection, &dispatch.id, &TransportOutcome::Uncertain { reason: "no receipt".into() }, 1000).unwrap();
     for index in 1..=120i64 {
         let now = 100_000 + index * 60_001;
         let to_qa = Submission { task: task(), submission_key: format!("n{index}"), recipient: QA.into(), kind: MessageKind::Notice,
             body: "Ready for review.".into(), thread_id: None, handoff_id: None };
         store::accept(&mut connection, &live()[1], &AgentAction::Send { message: to_qa }, now).unwrap();
-        let dispatch = store::claim(&mut connection, &live()[2], &format!("idle-{index}"), now).unwrap().unwrap();
+        let dispatch = store::claim(&mut connection, &live()[2], &format!("idle-{index}"), &live(), now).unwrap().unwrap();
         store::finish(&mut connection, &dispatch.id, &TransportOutcome::Received { native_id: format!("native-{index}") }, now).unwrap();
     }
     let messages = store::snapshot(&connection, Some(&task()), None, 100).unwrap()["messages"].as_array().unwrap().clone();
@@ -1323,7 +1323,7 @@ fn a_delivery_that_failed_after_unlink_is_cancelled_not_requeued() {
     let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
     linked(&mut connection);
     store::accept(&mut connection, &live()[1], &message("notice-1"), 3000).unwrap();
-    let dispatch = store::claim(&mut connection, &live()[0], "idle-1", 3000).unwrap().unwrap();
+    let dispatch = store::claim(&mut connection, &live()[0], "idle-1", &live(), 3000).unwrap().unwrap();
     store::control(&mut connection, &HostAction::Unlink { request_id: "unlink".into(), task: task(), session_id: DESIGNER.into() }, &live(), 3001).unwrap();
     store::finish(&mut connection, &dispatch.id, &TransportOutcome::NotSubmitted { reason: "closed".into() }, 3002).unwrap();
     assert_eq!(store::snapshot(&connection, Some(&task()), None, 100).unwrap()["messages"][0]["state"], "cancelled");
@@ -1363,7 +1363,7 @@ fn replaced_sender_runtime_invalidates_pending_messages() {
     let mut replacements = live();
     replacements[1].runtime = "replacement-runtime".into();
     store::recover(&mut connection, &replacements, 3001).unwrap();
-    assert!(store::claim(&mut connection, &live()[0], "idle-1", 3001).unwrap().is_none());
+    assert!(store::claim(&mut connection, &live()[0], "idle-1", &live(), 3001).unwrap().is_none());
     assert_eq!(store::snapshot(&connection, Some(&task()), None, 100).unwrap()["messages"][0]["state"], "cancelled");
 }
 
@@ -1404,7 +1404,7 @@ fn concurrent_claims_do_not_duplicate_native_wake_attempts() {
         std::thread::spawn(move || {
             let mut connection = store::open(&path).unwrap();
             barrier.wait();
-            store::claim(&mut connection, &live()[0], "idle-1", 3000)
+            store::claim(&mut connection, &live()[0], "idle-1", &live(), 3000)
         })
     }).collect();
     let outcomes: Vec<_> = workers.into_iter().map(|worker| worker.join().unwrap()).collect();
@@ -1644,7 +1644,7 @@ fn an_existing_version_1_store_opens_and_gains_recruit_columns() {
     drop(old);
     std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o600)).unwrap();
     let connection = store::open(&path).unwrap();
-    assert_eq!(connection.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0)).unwrap(), 11);
+    assert_eq!(connection.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0)).unwrap(), 12);
     connection.prepare("SELECT recruits, spawn_agent FROM proposals").unwrap();
 }
 
@@ -1897,7 +1897,7 @@ fn spawned_qa_exits_after_reporting_without_losing_its_findings() {
     assert_eq!(store::accept(&mut connection, &qa, &action, 3400).unwrap().result.unwrap()["message_id"], first["message_id"]);
     store::mark_qa_exited(&connection, &qa.session_id).unwrap();
     store::recover(&mut connection, &live(), 3500).unwrap();
-    let dispatch = store::claim(&mut connection, &live()[1], "developer-idle", 3600).unwrap().unwrap();
+    let dispatch = store::claim(&mut connection, &live()[1], "developer-idle", &live(), 3600).unwrap().unwrap();
     assert_eq!(dispatch.envelope["body"], "No findings.");
 }
 

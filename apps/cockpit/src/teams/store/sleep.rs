@@ -88,7 +88,7 @@ pub fn prepare(connection: &mut Connection, member: &VerifiedSession, checkout: 
             && membership_matches(&transaction, &existing, &runtime)? { return Ok(Some(token)); }
         return Err(TeamError::new(ErrorCode::Conflict, "sleep continuation already exists or expired; cancel it first"));
     }
-    let pending: bool = transaction.query_row("SELECT EXISTS(SELECT 1 FROM messages WHERE task_key=?1 AND
+    let pending: bool = transaction.query_row("SELECT EXISTS(SELECT 1 FROM messages WHERE (scope_kind='link' OR (scope_kind='team' AND task_key=?1)) AND
         (sender=?2 OR recipient=?2) AND state IN ('queued','ready','submitting','uncertain'))
         OR EXISTS(SELECT 1 FROM chief_inbox WHERE recipient=?2 AND state IN ('queued','submitting','uncertain'))",
         params![task_key, member.session_id], |row| row.get(0))?;
@@ -129,7 +129,7 @@ pub fn bind(connection: &mut Connection, token: &str, replacement: &VerifiedSess
         || !membership_matches(&transaction, &permit, &permit.old_runtime)? { return Ok(false); }
     transaction.execute("UPDATE members SET runtime=?2,last_idle_turn=NULL WHERE session_id=?1 AND epoch=?3 AND runtime=?4",
         params![permit.session_id, replacement.runtime, permit.epoch, permit.old_runtime])?;
-    transaction.execute("UPDATE messages SET recipient_runtime=?2 WHERE recipient=?1 AND task_key=?3 AND recipient_epoch=?4
+    transaction.execute("UPDATE messages SET recipient_runtime=?2 WHERE scope_kind='team' AND recipient=?1 AND task_key=?3 AND recipient_epoch=?4
         AND recipient_runtime=?5 AND state='queued'", params![permit.session_id, replacement.runtime, permit.task_key, permit.epoch, permit.old_runtime])?;
     transaction.execute("UPDATE sleep_permits SET state='bound',replacement_runtime=?2 WHERE token=?1", params![token, replacement.runtime])?;
     schedule_qa(&transaction, &permit.task_key, now_ms)?;
@@ -157,9 +157,9 @@ pub fn pending_wakes(connection: &Connection, now_ms: i64) -> Result<Vec<SleepPe
         if permit.state != "prepared" || permit.expires_at <= now_ms || !membership_matches(connection, &permit, &permit.old_runtime)? { continue; }
         let deliverable: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM messages q
             JOIN members s ON s.task_key=q.task_key AND s.session_id=q.sender AND s.epoch=q.sender_epoch
-            WHERE q.recipient=?1 AND q.task_key=?2 AND q.recipient_epoch=?3 AND q.recipient_runtime=?4
+            WHERE q.scope_kind='team' AND q.recipient=?1 AND q.task_key=?2 AND q.recipient_epoch=?3 AND q.recipient_runtime=?4
             AND q.state='queued' AND q.next_at<=?5 AND NOT EXISTS(SELECT 1 FROM messages u
-                WHERE u.recipient=q.recipient AND u.recipient_epoch=q.recipient_epoch AND u.state IN ('submitting','uncertain')))",
+                WHERE u.recipient=q.recipient AND u.recipient_runtime=q.recipient_runtime AND u.state IN ('submitting','uncertain')))",
             params![permit.session_id, permit.task_key, permit.epoch, permit.old_runtime, now_ms], |row| row.get(0))?;
         if deliverable { wakes.push(permit); }
     }
@@ -172,6 +172,8 @@ pub fn reserve_wake(connection: &mut Connection, session: &str, token: &str, now
     let Some(permit) = permit(&transaction, token)? else { return Ok(false) };
     if permit.session_id != session || permit.state != "prepared" || permit.expires_at <= now_ms
         || !membership_matches(&transaction, &permit, &permit.old_runtime)? { return Ok(false); }
+    // Recheck at the writer boundary: a prior host snapshot is not wake authorization.
+    if !pending_wakes(&transaction, now_ms)?.iter().any(|pending| pending.token == token) { return Ok(false); }
     transaction.execute("UPDATE sleep_permits SET state='launch_requested',started_at=?2 WHERE token=?1", params![token, now_ms])?;
     transaction.commit()?;
     Ok(true)

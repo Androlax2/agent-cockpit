@@ -32,16 +32,14 @@ fn open_and_restore(registry: &mut Registry, replay_sources: bool) -> Result<boo
     let missing: Vec<String> = registry.sessions.iter().filter(|(_, entry)| entry.runtime.is_empty()).map(|(id, _)| id.clone()).collect();
     for session in missing {
         let connection = registry.teams.as_ref().expect("opened above");
-        let member_runtime = store::member_runtime(connection, &session)?;
+        let mut runtimes = store::approved_runtimes(connection, &session)?;
         let chief_runtime = cockpit::chief::store::runtime(connection, &session)?;
-        let runtime = match (member_runtime, chief_runtime) {
-            (Some(member), Some(chief)) if member != chief => continue,
-            (Some(runtime), _) | (_, Some(runtime)) => runtime,
-            _ => continue,
-        };
-        if registry.system.runtime_is_live(&runtime) {
-            if let Some(entry) = registry.sessions.get_mut(&session) { entry.runtime = runtime; }
-        }
+        if let Some(runtime) = chief_runtime { runtimes.push(runtime); }
+        runtimes.sort();
+        runtimes.dedup();
+        let live: Vec<_> = runtimes.into_iter().filter(|runtime| registry.system.runtime_is_live(runtime)).collect();
+        let [runtime] = live.as_slice() else { continue };
+        if let Some(entry) = registry.sessions.get_mut(&session) { entry.runtime = runtime.clone(); }
     }
     Ok(is_opened)
 }
@@ -357,14 +355,16 @@ pub fn request(registry: &mut Registry, peer: u32, action: AgentAction) -> Resul
         AgentAction::Chief { .. } | AgentAction::NativeTelemetry { .. } => Err(TeamError::new(ErrorCode::Unavailable, "action is unavailable here")),
         AgentAction::Propose { proposal } => store::propose(connection, &sender, proposal, &live, now_ms()),
         AgentAction::LinkPropose { proposal } => cockpit::teams::links::propose(connection, &sender, proposal, &live, now_ms()),
-        AgentAction::LinkSend { .. } | AgentAction::LinkAssess { .. } => Err(TeamError::new(ErrorCode::Unavailable, "link messaging is not implemented")),
+        AgentAction::LinkSend { message } => cockpit::teams::links::accept(connection, &sender, message, &live, now_ms()),
+        AgentAction::LinkAssess { link_id, thread_id, resolved } => cockpit::teams::links::assess(connection, &sender, link_id, thread_id, *resolved),
         AgentAction::Send { .. } => store::accept(connection, &sender, &action, now_ms()),
         AgentAction::Receive => {
             store::expire(connection, now_ms())?;
             cockpit::chief::store::observe(connection, &chief_live, now_ms())?;
             if is_subscription_held { return Ok(TeamReply { request_id:"receive".into(),result:Ok(Value::Null) }); }
             let Some(turn) = turn else { return Ok(TeamReply { request_id: "receive".into(), result: Ok(Value::Null) }) };
-            let dispatch = match store::claim(connection, &sender, &turn, now_ms())? {
+            // The native Receive handoff shares the TODO closure boundary.
+            let dispatch = match store::claim(connection, &sender, &turn, &live, now_ms())? {
                 Some(dispatch) => Some(dispatch),
                 None => cockpit::chief::store::claim(connection, &sender, &turn, now_ms())?,
             };
