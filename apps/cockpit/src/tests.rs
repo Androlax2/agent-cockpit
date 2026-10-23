@@ -3167,6 +3167,160 @@ fn team_snapshot() -> Value {
             {"session_id": SESSION_B, "agent": "claude", "project": TEAM_PROJECT, "project_name": "project-a", "label": "", "state": "waiting"}]})
 }
 
+const SIDEBAR_PROJECT: &str = "path:/r/project-a";
+
+fn sidebar_snapshot() -> Value {
+    let mut state = team_snapshot();
+    state["proposals"] = json!([]);
+    state["members"] = json!([
+        {"session_id":SESSION_A,"role":"designer","agent":"claude","project":SIDEBAR_PROJECT,"task_id":"1d3fd318","runtime":"r1","epoch":"e1"},
+        {"session_id":OPENCODE_SESSION,"role":"developer","agent":"opencode","project":SIDEBAR_PROJECT,"task_id":"1d3fd318","runtime":"r2","epoch":"e2"}]);
+    for session in state["sessions"].as_array_mut().unwrap() { session["project"] = json!(SIDEBAR_PROJECT); session["cwd"] = json!("/r/project-a"); }
+    state["handoffs"] = json!([]);
+    state["qa_plans"] = json!([]);
+    state["spawns"] = json!([]);
+    state
+}
+
+fn sidebar_sessions(fixture: &Fixture) {
+    let mut designer = session(SESSION_A, "waiting", "project-a", "/r/project-a", 1);
+    designer["label"] = json!("Design session");
+    let mut developer = session(OPENCODE_SESSION, "working", "project-a", "/r/project-a", 2);
+    developer["label"] = json!("Build session");
+    developer["agent"] = json!("opencode");
+    let mut independent = session(SESSION_B, "waiting", "project-a", "/r/project-a", 3);
+    independent["label"] = json!("Independent session");
+    fixture.snapshot(json!([designer,developer,independent]));
+}
+
+#[test]
+fn team_sidebar_groups_members_without_duplicate_cards() {
+    let fixture = Fixture::new();
+    sidebar_sessions(&fixture);
+    team_host(&fixture, sidebar_snapshot(), vec![]);
+    let mut app = fixture.app();
+    let shown = texts(&app, 1).join("\n");
+    for expected in ["Team: 1d3fd318", "2 linked", "Designer", "Developer", "Independent sessions"] {
+        assert!(shown.contains(expected), "missing {expected}: {shown}");
+    }
+    for name in ["Design session", "Build session", "Independent session"] {
+        assert_eq!(app.panels[1].lines.iter().filter(|line| line.item.is_some() && line.texts().contains(name)).count(), 1, "{name}: {shown}");
+    }
+    assert_eq!(app.sessions.len(), 3);
+    render(&mut app, 80, 60);
+    assert!(!fixture.calls("cockpit").iter().any(|call| call.contains(" open ") || call.contains(" view ")));
+}
+
+#[test]
+fn team_sidebar_keeps_identical_titles_in_separate_tasks() {
+    let fixture = Fixture::new();
+    sidebar_sessions(&fixture);
+    let mut state = sidebar_snapshot();
+    state["members"][1]["task_id"] = json!("0123abcd");
+    team_host(&fixture, state, vec![]);
+    let mut app = fixture.app();
+    app.todos.items = ["1d3fd318", "0123abcd"].iter().map(|id| Item(json!({"id":id,"project":"project-a","text":"Shared title","cwd":"/r/project-a"}).as_object().unwrap().clone())).collect();
+    app.redraw();
+    let shown = texts(&app, 1).join("\n");
+    assert_eq!(app.panels[1].lines.iter().filter(|line| line.texts().contains("Team: Shared title")).count(), 2, "{shown}");
+}
+
+#[test]
+fn team_sidebar_distinguishes_planned_qa_and_missing_members() {
+    let fixture = Fixture::new();
+    sidebar_sessions(&fixture);
+    let mut state = sidebar_snapshot();
+    state["members"][0]["session_id"] = json!("missing-designer");
+    state["qa_plans"] = json!([{"project":SIDEBAR_PROJECT,"task_id":"1d3fd318","agent":"claude"}]);
+    team_host(&fixture, state, vec![]);
+    let app = fixture.app();
+    let shown = texts(&app, 1).join("\n");
+    for expected in ["Designer", "Unavailable", "missing-designer", "QA planned", "Fresh reviewer starts at handoff", "2 linked"] {
+        assert!(shown.contains(expected), "missing {expected}: {shown}");
+    }
+    assert_eq!(app.sessions.len(), 3, "a planned or unavailable member is not a live session");
+}
+
+#[test]
+fn team_sidebar_reports_unavailable_links_without_hiding_sessions() {
+    let fixture = Fixture::new();
+    sidebar_sessions(&fixture);
+    let mut app = fixture.app();
+    let shown = texts(&app, 1).join("\n");
+    assert!(shown.contains("Team links unavailable"), "{shown}");
+    assert!(!shown.contains("Independent sessions"), "unknown membership isn't independent");
+    assert_eq!(app.sessions.len(), 3);
+    team_host(&fixture, sidebar_snapshot(), vec![]);
+    app.team_checked = 0.0;
+    app.check_team();
+    app.redraw();
+    assert!(texts(&app, 1).join("\n").contains("Team: 1d3fd318"));
+    fs::remove_file(fixture.path("run/claude-team-host/host.sock")).unwrap();
+    app.team_checked = 0.0;
+    app.check_team();
+    app.redraw();
+    let shown = texts(&app, 1).join("\n");
+    assert!(shown.contains("Team links unavailable") && !shown.contains("Team: 1d3fd318"), "{shown}");
+}
+
+#[test]
+fn team_sidebar_does_not_infer_activity_or_completion() {
+    let fixture = Fixture::new();
+    sidebar_sessions(&fixture);
+    let mut state = sidebar_snapshot();
+    state["handoffs"] = json!([{"project":SIDEBAR_PROJECT,"task_id":"1d3fd318","handoff_id":"h1","status":"current","created_at":1,"payload":{"commit":"abc","tests":"all passed"}}]);
+    team_host(&fixture, state, vec![]);
+    let app = fixture.app();
+    let shown = texts(&app, 1).join("\n");
+    assert!(shown.contains("No activity update"), "{shown}");
+    assert!(shown.contains("Turn ended"), "{shown}");
+    assert!(shown.contains("Handoff submitted"), "{shown}");
+    for forbidden in ["QA approved", "handoff complete", "deployed", "Waiting for developer"] { assert!(!shown.contains(forbidden), "{shown}"); }
+}
+
+#[test]
+fn team_sidebar_title_uses_task_entry_or_exact_id() {
+    let fixture = Fixture::new();
+    sidebar_sessions(&fixture);
+    team_host(&fixture, sidebar_snapshot(), vec![]);
+    let mut app = fixture.app();
+    app.todos.items = vec![Item(json!({"id":"1d3fd318","project":"project-a","cwd":"/another/project-a","text":"Wrong project title"}).as_object().unwrap().clone())];
+    app.redraw();
+    assert!(texts(&app, 1).join("\n").contains("Team: 1d3fd318"));
+    app.todos.items[0].0.insert("cwd".into(), json!("/r/project-a"));
+    app.redraw();
+    assert!(texts(&app, 1).join("\n").contains("Team: Wrong project title"));
+}
+
+#[test]
+fn team_sidebar_attention_filter_keeps_team_context() {
+    let fixture = Fixture::new();
+    sidebar_sessions(&fixture);
+    let mut state = sidebar_snapshot();
+    state["escalations"] = json!([{"project":SIDEBAR_PROJECT,"task_id":"1d3fd318","thread_id":"t1","status":"open","reason":"Need Theo to choose frame"}]);
+    team_host(&fixture, state, vec![]);
+    let mut app = fixture.app();
+    continuity_action(&mut app, "1\tattention-filter", &[]);
+    app.redraw();
+    let shown = texts(&app, 1).join("\n");
+    for expected in ["2 linked", "Design session", "Build session", "Need Theo to choose frame"] { assert!(shown.contains(expected), "{shown}"); }
+    assert!(!shown.contains("Independent session") && !shown.contains("Unavailable"), "{shown}");
+}
+
+#[test]
+fn team_sidebar_selected_details_keep_full_member_identity_and_handoff() {
+    let fixture = Fixture::new();
+    sidebar_sessions(&fixture);
+    team_host(&fixture, sidebar_snapshot(), vec![]);
+    let mut app = fixture.app();
+    app.panels[1].selected = app.panels[1].lines.iter().find(|line| line.texts().contains("Build session")).unwrap().item.unwrap();
+    render(&mut app, 40, 60);
+    let details = app.panels[1].fixed_bottom.iter().map(|line| line.texts()).collect::<Vec<_>>().join("\n");
+    for expected in [OPENCODE_SESSION, "opencode", "Developer", "No handoff recorded", "Build session"] {
+        assert!(details.contains(expected), "missing {expected}: {details}");
+    }
+}
+
 fn open_team_view(app: &mut App) {
     app.handle(Key::Char(':'), &mut FakeScreen::typing(&["1\tteam"]));
     assert!(app.team_view.is_some(), "{}", app.message);
@@ -8511,6 +8665,7 @@ fn external_sessions_reject_terminal_controls_without_running_commands() {
         fixture.snapshot(json!([row]));
         let mut app = fixture.app();
         app.sessions = sessions::reported();
+        app.sidebar_rows = vec![crate::teams::sidebar::SidebarRow::Session { session_id:SESSION_A.into() }];
         assert_eq!(app.sessions.len(), 1);
         for key in [Key::Enter, Key::Char('r'), Key::Char('e'), Key::Char('$'), Key::Char('C'), Key::Char('x')] {
             app.handle(key.clone(), &mut FakeScreen::answering(&[Key::Char('y')]));
@@ -8533,6 +8688,7 @@ fn external_sessions_do_not_advertise_or_expose_terminal_controls() {
     fixture.write(&format!("home/.cache/claude/statusline-{SESSION_A}.json"), r#"{"effort":"high","context":95}"#);
     let mut app = fixture.app();
     app.sessions = sessions::reported();
+    app.sidebar_rows = vec![crate::teams::sidebar::SidebarRow::Session { session_id:SESSION_A.into() }];
     assert_eq!(app.sessions.len(), 1);
     let hints = app.sessions_hints();
     assert!(hints.iter().all(|(key, _)| !["⏎", "r", "e", "C", "x", "n"].contains(key)), "{hints:?}");

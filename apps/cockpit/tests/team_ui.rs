@@ -2,6 +2,8 @@
 
 use cockpit::teams::view::{Row, TeamView};
 use serde_json::{Value, json};
+use cockpit::{sessions::Session, teams::{TaskKey, sidebar::{self, SidebarRow}}};
+use std::collections::HashSet;
 
 const DESIGNER: &str = "aaaaaaaa-0000-4000-8000-000000000000";
 const DEVELOPER: &str = "ses_3f2a9c0b1ffeQkTz8mWn4rJd2L";
@@ -163,4 +165,32 @@ fn a_recruit_request_is_summed_up_first_and_a_long_brief_cannot_push_it_away() {
     assert_eq!(detail[0], "Starts: new designer in /home/theo/IdeaProjects/project-a · a fresh QA at each handoff · agent claude");
     let designer = detail.iter().find(|line| line.starts_with("new designer")).unwrap();
     assert!(!designer.contains('\n') && designer.contains("line⏎line"), "{designer}");
+}
+
+#[test]
+fn sidebar_keeps_same_task_ids_in_different_projects_and_resolves_launch_aliases() {
+    let state = json!({"members":[
+        {"session_id":DESIGNER,"project":"path:/a/shop","task_id":"1d3fd318","role":"designer"},
+        {"session_id":DEVELOPER,"project":"path:/b/shop","task_id":"1d3fd318","role":"developer"}],
+        "sessions":[{"session_id":DESIGNER,"project":"path:/a/shop","project_name":"shop"},
+            {"session_id":DEVELOPER,"project":"path:/b/shop","project_name":"shop"}],"qa_plans":[]});
+    let sessions = vec![Session { session:"launch-designer".into(), conversation:Some(DESIGNER.into()), project:"shop".into(), ..Session::default() },
+        Session { session:DEVELOPER.into(), project:"shop".into(), ..Session::default() }];
+    let rows = sidebar::grouped_rows(&state, &sessions, &HashSet::new()).unwrap();
+    assert_eq!(rows, [SidebarRow::Team { task:TaskKey { project:"path:/a/shop".into(),task_id:"1d3fd318".into() } },
+        SidebarRow::Session { session_id:"launch-designer".into() },
+        SidebarRow::Team { task:TaskKey { project:"path:/b/shop".into(),task_id:"1d3fd318".into() } },
+        SidebarRow::Session { session_id:DEVELOPER.into() }]);
+}
+
+#[test]
+fn sidebar_findings_are_attached_to_the_current_handoff_not_interpreted_as_approval() {
+    let task = TaskKey { project:PROJECT.into(),task_id:"1d3fd318".into() };
+    let mut state = json!({"handoffs":[{"project":PROJECT,"task_id":"1d3fd318","handoff_id":"h2","status":"current"}],
+        "messages":[{"state":"delivered","envelope":json!({"kind":"findings","task":task,"handoff":{"id":"h1"},"body":"QA approved"}).to_string()}]});
+    assert_eq!(sidebar::handoff_summary(&state, &task), "Handoff submitted");
+    state["messages"][0]["envelope"] = json!(json!({"kind":"findings","task":task,"handoff":{"id":"h2"},"body":"QA approved"}).to_string());
+    assert_eq!(sidebar::handoff_summary(&state, &task), "QA findings received");
+    state.as_object_mut().unwrap().remove("handoffs");
+    assert_eq!(sidebar::handoff_summary(&state, &task), "Handoff evidence unavailable");
 }

@@ -251,6 +251,8 @@ pub struct PanelState {
     pub scroll: usize,
 }
 
+enum TeamLinks { Loading, Ready(Value), Unavailable }
+
 impl PanelState {
     fn content_height(&self) -> usize {
         self.fixed_top.len() + self.lines.len() + self.fixed_bottom.len()
@@ -750,6 +752,9 @@ pub struct App {
     /// Whether the last team check succeeded: until then anyone may be a member, and no one sleeps.
     team_known: bool,
     pub(crate) team_checked: f64,
+    team_links: TeamLinks,
+    pub(crate) sidebar_rows: Vec<crate::teams::sidebar::SidebarRow>,
+    collapsed_teams: HashSet<String>,
     pub(crate) pairing: Option<Pairing>,
     pub restore: Vec<Restorable>,
     pub held: Vec<String>,
@@ -857,7 +862,8 @@ impl App {
             history: History::default(), view: ViewState::load(), usage: Refresher::new(), alerts: BudgetAlerts::new(util::send_notice),
             costs: Costs::default(), reviews: Reviews::default(), todos, errors: ErrorReporter::new(),
             claude_status: ProviderStatus::default(), codex_status: ProviderStatus::new(Provider::Codex), panels: Default::default(), focus: 1, previous_panel: 1,
-            help_open: false, has_pane_focus: true, attention_only: false, message, exiting: Vec::new(), restarting_cards: HashMap::new(), labelled: Default::default(), menu: None, session_details: None, todo_composer: None, settings_menu: None, team_view: None, team_attention: 0, team_roles: HashMap::new(), qa_sessions: HashSet::new(), team_known: false, team_checked: 0.0, pairing: None, restore: Vec::new(),
+            help_open: false, has_pane_focus: true, attention_only: false, message, exiting: Vec::new(), restarting_cards: HashMap::new(), labelled: Default::default(), menu: None, session_details: None, todo_composer: None, settings_menu: None, team_view: None, team_attention: 0, team_roles: HashMap::new(), qa_sessions: HashSet::new(), team_known: false, team_checked: 0.0,
+            team_links: TeamLinks::Loading, sidebar_rows: Vec::new(), collapsed_teams: HashSet::new(), pairing: None, restore: Vec::new(),
             held: Vec::new(), held_checked: 0.0, queue_checked: 0.0, sleep_checked: 0.0, sleep_asked: HashMap::new(), gaming: util::gaming,
             disk_usage: util::fullest_disk, disk: None, disk_checked: 0.0, restore_checked: 0.0, start_files: Vec::new(),
             width: DEFAULT_COLUMN_WIDTH, sessions: Vec::new(), running_sessions: Vec::new(), windows: Vec::new(), quota_rows: Vec::new(), review_rows: Vec::new(), todo_entries: Vec::new(), idea_entries: Vec::new(),
@@ -1141,6 +1147,7 @@ impl App {
     /// Everything read again (sessions, usage, plan), then drawn.
     pub fn build(&mut self) {
         self.refresh();
+        self.check_team();
         self.redraw();
     }
 
@@ -1558,7 +1565,9 @@ impl App {
     }
 
     fn build_sessions(&mut self) {
-        let mut selected_id = self.sessions.get(self.panels[1].selected).map(|session| session.session.clone());
+        use crate::teams::sidebar::{self, SidebarRow};
+        let selected_row = self.sidebar_rows.get(self.panels[1].selected).cloned();
+        let mut selected_id = self.selected_session().map(|session| session.session);
         let gathered = match self.gathered.take() {
             Some(gathered) => gathered,
             None => self.gather_sessions(),
@@ -1575,11 +1584,27 @@ impl App {
             session.pinned = self.view.pinned.contains(&session.session);
         }
         self.running_sessions = sessions::grouped_by_project(running.clone());
-        if self.attention_only {
-            running.retain(|session| self.is_actionable(session, util::now_secs()));
-        }
         // A card keeps its place: pinned first, then in the order the sessions started.
         let running = sessions::grouped_by_project(running);
+        let mut rows = match &self.team_links {
+            TeamLinks::Ready(snapshot) => sidebar::grouped_rows(snapshot, &running, &self.collapsed_teams).unwrap_or_default(),
+            _ => running.iter().map(|session| SidebarRow::Session { session_id: session.session.clone() }).collect(),
+        };
+        if self.attention_only {
+            let mut keep_team = false;
+            rows.retain(|row| match row {
+                SidebarRow::Team { task } => {
+                    keep_team = matches!(&self.team_links, TeamLinks::Ready(snapshot) if sidebar::attention(snapshot, task).is_some()
+                        || running.iter().any(|session| sidebar::member_task(snapshot, session).as_ref() == Some(task) && self.is_actionable(session, util::now_secs())));
+                    keep_team
+                },
+                SidebarRow::Session { session_id } => running.iter().find(|session| session.session == *session_id).is_some_and(|session| {
+                    if matches!(&self.team_links, TeamLinks::Ready(snapshot) if sidebar::membership(snapshot, session).is_some()) { keep_team }
+                    else { self.is_actionable(session, util::now_secs()) }
+                }),
+                _ => keep_team,
+            });
+        }
         let current = current_session();
         let mut lines = Vec::new();
         if now() - self.restore_checked > RESTORE_CHECK_S {
@@ -1643,7 +1668,83 @@ impl App {
             lines.push(Line::default());
         }
         self.session_task_titles.clear();
-        for (index, session) in running.iter().enumerate() {
+        for session in &running {
+            let branch = self.session_branches.get(&session.session).map(String::as_str).unwrap_or("");
+            self.session_task_titles.insert(session.session.clone(), self.session_task_title(session, branch));
+        }
+        let link_notice = match &self.team_links {
+            TeamLinks::Loading => Some("Loading team links…"),
+            TeamLinks::Unavailable => Some("Team links unavailable"),
+            TeamLinks::Ready(snapshot) if !rows.iter().any(|row| matches!(row, SidebarRow::Team { .. })) && sidebar::list(snapshot, "members").is_empty() => {
+                Some("No linked teams")
+            },
+            _ => None,
+        };
+        let mut project = String::new();
+        let mut has_team = false;
+        let mut has_independent_heading = false;
+        for (index, row) in rows.iter().enumerate() {
+            let session = if let SidebarRow::Session { session_id } = row { running.iter().find(|session| session.session == *session_id) } else { None };
+            let task = match row {
+                SidebarRow::Team { task } | SidebarRow::PlannedQa { task } | SidebarRow::UnavailableMember { task, .. } => Some(task.clone()),
+                _ => session.and_then(|session| match &self.team_links { TeamLinks::Ready(snapshot) => sidebar::member_task(snapshot, session), _ => None }),
+            };
+            let row_project = session.map(|session| session.project.clone()).unwrap_or_else(|| match (&self.team_links, &task) {
+                (TeamLinks::Ready(snapshot), Some(task)) => sidebar::project_name(snapshot, task, &running), _ => String::new(),
+            });
+            if row_project != project {
+                if !project.is_empty() { lines.push(Line::default()); }
+                project = row_project;
+                has_team = false;
+                has_independent_heading = false;
+                let count = running.iter().filter(|session| session.project == project).count();
+                let mut heading = Line::new(vec![segment(0, sidebar::shown(&project), bold(project_color(&project))),
+                    segment(width_of(&sidebar::shown(&project)) as u16 + 1, format!("· {count} session{}", if count == 1 { "" } else { "s" }), dim(FG_DARK))]);
+                heading.right = Self::time_spent_text(self.costs.time_spent(&project)).iter().map(|text| part(text, dim(FG_DARK))).collect();
+                lines.push(heading);
+            }
+            if let (TeamLinks::Ready(snapshot), Some(task)) = (&self.team_links, &task) {
+                let tint = if sidebar::attention(snapshot, task).is_some() { YELLOW } else { CYAN };
+                let mut team_line = |text: String, column, color| lines.push(Line { segments: vec![segment(column, text, style(color))], item: Some(index), ..Line::default() });
+                match row {
+                    SidebarRow::Team { .. } => {
+                        has_team = true;
+                        let marker = if self.collapsed_teams.contains(&sidebar::task_key(task)) { "▸" } else { "▾" };
+                        team_line(format!("{marker} Team: {}", self.team_task_title(snapshot, task)), 0, tint);
+                        team_line(format!("{} linked{}", sidebar::member_count(snapshot, task), if sidebar::has_qa_plan(snapshot, task) { " · QA planned" } else { "" }), 2, FG_DARK);
+                        let reason = sidebar::attention(snapshot, task).or_else(|| running.iter().find(|session| sidebar::member_task(snapshot, session).as_ref() == Some(task) && self.is_actionable(session, util::now_secs()))
+                            .map(|session| format!("Needs you: {}", sidebar::activity(session))));
+                        if let Some(reason) = reason { team_line(reason, 2, YELLOW); }
+                        team_line(sidebar::handoff_summary(snapshot, task), 2, FG_DARK);
+                        continue;
+                    },
+                    SidebarRow::PlannedQa { .. } => {
+                        team_line(format!("└ {}", sidebar::qa_status(snapshot, task)), 2, FG_DARK);
+                        continue;
+                    },
+                    SidebarRow::UnavailableMember { session_id, role, .. } => {
+                        team_line(format!("│ {} · Unavailable", sidebar::role_label(*role)), 2, FG_DARK);
+                        team_line(sidebar::shown(session_id), 4, FG_DARK);
+                        team_line("Waiting reason unavailable".into(), 4, FG_DARK);
+                        continue;
+                    },
+                    SidebarRow::Session { .. } => {
+                        let Some(session) = session else { continue };
+                        let role = sidebar::membership(snapshot, session).and_then(sidebar::role).map(sidebar::role_label).unwrap_or("Member");
+                        let accent = (session.session == current).then_some(style(BLUE));
+                        let role_tint = if session.needs_attention() { YELLOW } else if session.state == "working" { BLUE } else { FG_DARK };
+                        lines.push(Line { segments: vec![segment(2, format!("│ {role} · {}", sidebar::status(session)), style(role_tint))], item: Some(index), accent, ..Line::default() });
+                        lines.push(Line { segments: vec![segment(2, "│", dim(FG_DARK)), segment(4, sidebar::shown(self.session_display_title(session)), bold(FG))], item: Some(index), accent, ..Line::default() });
+                        lines.push(Line { segments: vec![segment(2, "│", dim(FG_DARK)), segment(4, sidebar::activity(session), style(if session.needs_attention() { YELLOW } else { FG_DARK }))], item: Some(index), accent, ..Line::default() });
+                        continue;
+                    },
+                }
+            }
+            let Some(session) = session else { continue };
+            if has_team && !has_independent_heading {
+                lines.push(Line::new(vec![segment(0, "Independent sessions", dim(FG_DARK))]));
+                has_independent_heading = true;
+            }
             let needs_attention = session.needs_attention();
             let dependency = self.session_dependency_activity(session);
             let activity = dependency.as_ref().map(|(badge, _)| *badge).unwrap_or_else(|| sessions::activity_label(session));
@@ -1668,13 +1769,6 @@ impl App {
             // with branch names kept below so short replies cannot replace their identity.
             let indent: u16 = if grouped { 2 } else { 0 };
             let rail = if grouped { vec![segment(0, "│", dim(project_color(&session.project)))] } else { vec![] };
-            let time_spent = Self::time_spent_text(self.costs.time_spent(&session.project));
-            if session.group_position == 0 {
-                let mut heading = Line::new(vec![segment(0, &session.project, bold(project_color(&session.project))),
-                                                  segment(width_of(&session.project) as u16 + 1, format!("· {} session{}", session.group_size, if session.group_size == 1 { "" } else { "s" }), dim(FG_DARK))]);
-                heading.right = time_spent.iter().map(|text| part(text, dim(FG_DARK))).collect();
-                lines.push(heading);
-            }
             let task_title = self.session_task_title(session, branch);
             self.session_task_titles.insert(session.session.clone(), task_title.clone());
             let display_title = self.session_display_title(session);
@@ -1703,17 +1797,23 @@ impl App {
                 lines.push(Line::default());
             }
         }
-        if running.is_empty() {
+        if rows.is_empty() {
             lines.push(Line::new(vec![segment(0, "No running session.", dim(FG_DARK))]));
-            lines.push(Line::new(vec![segment(0, "a  start one in a project", dim(FG_DARK))]));
+            lines.push(Line::new(vec![segment(0, format!("a  start one in a project{}", link_notice.map(|notice| format!(" · {notice}")).unwrap_or_default()), dim(FG_DARK))]));
+        } else if let Some(notice) = link_notice {
+            lines.push(Line::new(vec![segment(0, notice, style(FG_DARK))]));
         }
-        self.sessions = running;
+        self.sessions = running.into_iter().filter(|session| !self.attention_only || self.is_actionable(session, util::now_secs())
+            || matches!(&self.team_links, TeamLinks::Ready(snapshot) if sidebar::membership(snapshot, session).is_some())).collect();
+        self.sidebar_rows = rows;
         let panel = &mut self.panels[1];
-        let selected_index = selected_id.as_ref().and_then(|id| self.sessions.iter().position(|session| &session.session == id));
+        let selected_index = selected_id.as_ref().and_then(|id| self.sidebar_rows.iter().position(|row| matches!(row, SidebarRow::Session { session_id } if session_id == id)))
+            .or_else(|| selected_row.as_ref().and_then(|selected| self.sidebar_rows.iter().position(|row| row == selected)))
+            .or_else(|| selected_row.is_none().then(|| self.sidebar_rows.iter().position(|row| matches!(row, SidebarRow::Session { .. }))).flatten());
         if let Some(index) = selected_index {
             panel.selected = index;
         }
-        panel.items = self.sessions.len();
+        panel.items = self.sidebar_rows.len();
         panel.clamp();
         panel.lines = lines;
         self.panels[1].fixed_top = self.session_summary_lines();
@@ -1778,7 +1878,15 @@ impl App {
     }
 
     fn selected_session_detail_lines(&self) -> Vec<Line> {
-        let Some(session) = self.sessions.get(self.panels[1].selected) else { return vec![] };
+        use crate::teams::sidebar::{self, SidebarRow};
+        if let (TeamLinks::Ready(snapshot), Some(SidebarRow::Team { task } | SidebarRow::PlannedQa { task } | SidebarRow::UnavailableMember { task, .. })) =
+            (&self.team_links, self.sidebar_rows.get(self.panels[1].selected)) {
+            return vec![Line::new(vec![segment(0, format!("Selected team: {}", self.team_task_title(snapshot, task)), bold(CYAN))]),
+                Line::new(vec![segment(0, sidebar::shown(&format!("{} / {}", task.project, task.task_id)), style(FG_DARK))]),
+                Line::new(vec![segment(0, sidebar::attention(snapshot, task).unwrap_or_else(|| sidebar::handoff_summary(snapshot, task)), style(FG_DARK))])];
+        }
+        let Some(selected) = self.selected_session() else { return vec![] };
+        let session = &selected;
         let branch = self.session_branches.get(&session.session).map(String::as_str).unwrap_or("");
         let task_title = self.session_task_titles.get(&session.session).map(String::as_str).unwrap_or(&session.project);
         let mut lines = Vec::new();
@@ -1885,6 +1993,20 @@ impl App {
             lines.push(Line::new(vec![segment(0, text, if needs_attention { style(YELLOW) } else { dim(FG_DARK) })]));
         }
         lines.push(Line { right: badges, ..Line::default() });
+        if let TeamLinks::Ready(snapshot) = &self.team_links {
+            if let Some(member) = sidebar::membership(snapshot, session) {
+                if let Some(task) = sidebar::task_of(member) {
+                    let role = sidebar::role(member).map(sidebar::role_label).unwrap_or("Member");
+                    lines.insert(0, Line::new(vec![segment(0, format!("{} / {role} · {}", self.team_task_title(snapshot, &task), self.session_display_title(session)), bold(CYAN))]));
+                    lines.push(Line::new(vec![segment(0, format!("{} · {} · {}", session.agent, session.session, task.task_id), style(FG_DARK))]));
+                    lines.push(Line::new(vec![segment(0, sidebar::handoff_summary(snapshot, &task), style(FG_DARK))]));
+                    for line in &mut lines {
+                        for (_, text, _) in &mut line.segments { *text = sidebar::shown(text); }
+                        for part in &mut line.right { part.text = sidebar::shown(&part.text); }
+                    }
+                }
+            }
+        }
         lines
     }
 
@@ -1943,7 +2065,22 @@ impl App {
     }
 
     pub(crate) fn selected_session(&self) -> Option<Session> {
-        self.sessions.get(self.panels[1].selected).cloned()
+        let crate::teams::sidebar::SidebarRow::Session { session_id } = self.sidebar_rows.get(self.panels[1].selected)? else { return None };
+        self.sessions.iter().find(|session| session.session == *session_id).cloned()
+    }
+
+    fn team_task_title(&self, snapshot: &Value, task: &crate::teams::TaskKey) -> String {
+        use crate::teams::sidebar;
+        let belongs = |cwd: &str| !cwd.is_empty() && (task.project == format!("path:{cwd}")
+            || sidebar::list(snapshot, "sessions").iter().any(|session| session["project"] == task.project && session["cwd"] == cwd));
+        if let Some(item) = self.todos.items.iter().find(|item| item.id() == task.task_id && belongs(&item.cwd())) {
+            if !item.text().trim().is_empty() { return sidebar::shown(&item.text()); }
+        }
+        if let Some(issue) = self.reviews.issues().iter().find(|issue| issue.key() == task.task_id
+            && self.reviews.checkouts.get(&issue.full_repository).is_some_and(|cwd| belongs(cwd))) {
+            return sidebar::shown(&issue.title);
+        }
+        sidebar::shown(&task.task_id)
     }
 
     fn find_session(&mut self, screen: &mut dyn Screen) -> String {
@@ -1963,7 +2100,8 @@ impl App {
     }
 
     fn open_session_details(&mut self) {
-        let Some(session) = self.sessions.get(self.panels[1].selected) else { return };
+        let Some(selected) = self.selected_session() else { return };
+        let session = &selected;
         let title = self.session_task_titles.get(&session.session).map(String::as_str).unwrap_or(&session.project);
         let branch = self.session_branches.get(&session.session).map(String::as_str).unwrap_or("");
         let mut text = format!("Task: {}\nOriginal title: {title}\nProject: {} / {branch}\nActivity: {}\n\n",
@@ -3254,6 +3392,12 @@ impl App {
             let recolor = |style: Style, fg: u8| -> Style {
                 if !highlighted { return style; }
                 if index == 0 { return style.bg(color(BG_HIGHLIGHT)); }
+                let linked_member = index == 1 && line.item.and_then(|item| self.sidebar_rows.get(item)).is_some_and(|row| match row {
+                    crate::teams::sidebar::SidebarRow::Session { session_id } => matches!(&self.team_links, TeamLinks::Ready(snapshot)
+                        if self.sessions.iter().find(|session| session.session == *session_id).is_some_and(|session| crate::teams::sidebar::membership(snapshot, session).is_some())),
+                    _ => false,
+                });
+                if linked_member { return style.fg(color(FG)).bg(color(BG_HIGHLIGHT)).remove_modifier(Modifier::DIM); }
                 let preserve_state = index == 1 && (style.fg == Some(color(RED)) || style.fg == Some(color(BLUE)) || style.fg == Some(color(YELLOW)));
                 if preserve_state { style.bg(color(BG_HIGHLIGHT)) } else { style.fg(color(fg)).bg(color(BG_HIGHLIGHT)) }
             };
@@ -3735,12 +3879,23 @@ impl App {
             self.team_attention = 0;
             self.team_roles.clear();
             self.team_known = false;
+            self.team_links = TeamLinks::Unavailable;
             return;
         }
         let Ok(snapshot) = Self::team_snapshot() else {
             self.team_known = false;
+            self.team_roles.clear();
+            self.team_attention = 0;
+            self.team_links = TeamLinks::Unavailable;
             return;
         };
+        if crate::teams::sidebar::grouped_rows(&snapshot, &[], &HashSet::new()).is_err() {
+            self.team_known = false;
+            self.team_roles.clear();
+            self.team_attention = 0;
+            self.team_links = TeamLinks::Unavailable;
+            return;
+        }
         self.team_known = true;
         self.team_attention = crate::teams::view::TeamView::attention(&snapshot);
         self.qa_sessions = snapshot["members"].as_array().into_iter().flatten()
@@ -3749,6 +3904,7 @@ impl App {
             .filter_map(|row| row["session_id"].as_str().map(str::to_string)).collect();
         self.team_roles = snapshot["members"].as_array().into_iter().flatten().filter_map(|member| Some((member["session_id"].as_str()?.to_string(),
             format!("team {} · {}", member["role"].as_str()?, member["task_id"].as_str()?)))).collect();
+        self.team_links = TeamLinks::Ready(snapshot);
     }
 
     fn open_team_view(&mut self) -> String {
