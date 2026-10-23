@@ -5509,6 +5509,34 @@ fn project_folder(fixture: &Fixture, name: &str) -> PathBuf {
 }
 
 #[test]
+fn legacy_and_canonical_queues_are_consumed_once_without_replaying_an_add() {
+    let fixture = Fixture::new();
+    let project = project_folder(&fixture, "runway");
+    for (filename, title) in [("claude-todo-updates.jsonl", "old producer"), ("cockpit-todo-updates.jsonl", "new producer")] {
+        fixture.write(&format!("run/{filename}"), &format!("{}\n", json!({"action": "add", "text": title, "started_in": project})));
+    }
+    let mut todos = TodoList::load();
+    assert_eq!(todos.apply_updates(), 2);
+    assert_eq!(todos.apply_updates(), 0);
+    assert_eq!(TodoList::load().items.len(), 2);
+    assert!(!fixture.path("run/claude-todo-updates.jsonl").exists());
+    assert!(!fixture.path("run/cockpit-todo-updates.jsonl").exists());
+}
+
+#[test]
+fn the_combined_queues_share_the_existing_two_hundred_update_limit() {
+    let fixture = Fixture::new();
+    let project = project_folder(&fixture, "runway");
+    for filename in ["claude-todo-updates.jsonl", "cockpit-todo-updates.jsonl"] {
+        let lines = (0..150).map(|index| format!("{}\n", json!({"action": "add", "text": format!("{filename} {index}"), "started_in": project}))).collect::<String>();
+        fixture.write(&format!("run/{filename}"), &lines);
+    }
+    let mut todos = TodoList::load();
+    assert_eq!(todos.apply_updates(), 200);
+    assert_eq!(todos.items.len(), 200);
+}
+
+#[test]
 fn todo_categories_survive_updates_and_reloading() {
     let fixture = Fixture::new();
     let runway = project_folder(&fixture, "runway");

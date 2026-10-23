@@ -17,7 +17,9 @@ Enabled/active intent and the timer's last-run stamp are preserved, and old unit
 are stopped and disabled. Finish or decline outstanding approvals before the
 first migration; conflicting state locations stop it before anything is moved.
 
-Shared state/runtime paths use `cockpit-*`, with old paths retained as aliases.
+Shared state/runtime paths use `cockpit-*`. Existing private phone state and
+stuck-exit captures stay physically beneath the legacy sandbox masks, with
+canonical aliases pointing there; moving them would expose them to old sandboxes.
 The shared `runs` and `designs` caches are addressed through `~/.cache/cockpit/`;
 existing caches are linked rather than moved out of old sandboxes' parent mounts.
 The rest of `~/.cache/claude/` stays untouched. Agent-neutral `COCKPIT_*` configuration wins
@@ -26,6 +28,12 @@ formats, existing tmux/session identifiers, and the protected `claude-audit`
 folder deliberately stay unchanged. Restart sessions whose existing sandbox
 cannot read the new command files; the migration preserves mounted directory
 inodes, but cannot add new file mounts to an already-running sandbox.
+
+The todo queue is a special case: it is consumed by renaming and deleting its
+file, so it must never be a symlink. During transition the sole sidebar consumes
+the old and new queues exactly once, with the existing combined update limit.
+Finish or close outstanding guides before deployment; a deferred OSD restart
+also waits for guides so their windows and results are not orphaned.
 
 Workspace 6 is a cockpit for every Claude Code session on the machine. `cockpit` keeps a tmux session, `claude-manager`, with a column of panels on the left and the selected session on the right. Every session runs inside greywall; Claude Code hooks report each session's state to the OSD daemon, which keeps the registry the column reads.
 

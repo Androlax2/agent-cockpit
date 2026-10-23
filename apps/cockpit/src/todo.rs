@@ -901,16 +901,24 @@ impl TodoList {
     /// decides the sender's project (security audit 2026-10-19, M4); only add, propose and after
     /// reach another project's list. Refusals are logged.
     pub fn apply_updates(&mut self) -> usize {
-        let path = paths::todo_updates();
-        if !path.exists() {
-            return 0;
+        let mut queues = vec![paths::todo_updates()];
+        // Old daemons may still write their queue until the deferred restart completes.
+        if std::env::var_os("COCKPIT_TODO_UPDATES").is_none() && std::env::var_os("CLAUDE_TODO_UPDATES").is_none() {
+            queues.push(paths::runtime_dir().join("claude-todo-updates.jsonl"));
         }
-        let taken = path.with_extension(format!("jsonl.{}", std::process::id()));
-        let lines = match fs::rename(&path, &taken).and_then(|_| fs::read_to_string(&taken)) {
-            Ok(text) => text,
-            Err(_) => return 0,
-        };
-        let _ = fs::remove_file(&taken);
+        let mut lines = String::new();
+        for path in queues {
+            if !path.exists() { continue; }
+            let taken = path.with_extension(format!("jsonl.{}", std::process::id()));
+            match fs::rename(&path, &taken).and_then(|_| fs::read_to_string(&taken)) {
+                Ok(text) => {
+                    lines.push_str(&text);
+                    if !text.is_empty() && !text.ends_with('\n') { lines.push('\n'); }
+                }
+                Err(_) => continue,
+            }
+            let _ = fs::remove_file(&taken);
+        }
         let line_count = lines.lines().count();
         if line_count > APPLY_MAX_LINES {
             util::log_event("WARN", &format!("todo: {} queued updates dropped past the first {APPLY_MAX_LINES}", line_count - APPLY_MAX_LINES));

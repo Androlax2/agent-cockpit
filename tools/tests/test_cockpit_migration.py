@@ -48,8 +48,9 @@ class MigrationTests(unittest.TestCase):
         self.assertEqual((new / "push.json").read_bytes(), b'{"subscriptions":["kept"]}')
         self.assertEqual(new.stat().st_mode & 0o777, 0o700)
         self.assertEqual((new / "devices.json").stat().st_mode & 0o777, 0o600)
-        self.assertTrue(old.is_symlink())
-        self.assertEqual(old.resolve(), new)
+        self.assertFalse(old.is_symlink(), "old sandbox masks protect this physical directory")
+        self.assertTrue(new.is_symlink())
+        self.assertEqual(new.resolve(), old)
         second = self.run_migration()
         self.assertEqual(second.returncode, 0, second.stderr)
 
@@ -148,6 +149,48 @@ class MigrationTests(unittest.TestCase):
         self.assertIn("in-flight", output.stderr)
         self.assertFalse((self.state / "claude-remote").is_symlink())
 
+    def test_an_unfinished_guide_blocks_deployment_before_paths_change(self):
+        self.seed(self.state / "claude-remote/devices.json")
+        self.seed(self.runtime / "claude-requests/012345abcdef.guide", json.dumps({"answers": "project-one", "steps": []}))
+        output = self.run_migration()
+        self.assertNotEqual(output.returncode, 0)
+        self.assertIn("in-flight guide", output.stderr)
+        self.assertFalse((self.state / "cockpit-remote").exists())
+
+    def test_a_completed_guide_does_not_block_deployment(self):
+        self.seed(self.runtime / "claude-requests/012345abcdef.guide", json.dumps({"answers": "project-one"}))
+        self.seed(self.runtime / "claude-answers/project-one/guides/012345abcdef.result", '{"status":"done"}')
+        output = self.run_migration()
+        self.assertEqual(output.returncode, 0, output.stderr)
+
+    def test_queue_consumption_cannot_remove_a_compatibility_symlink_or_block_a_retry(self):
+        old = self.seed(self.runtime / "claude-todo-updates.jsonl", '{"action":"add","text":"once"}\n')
+        output = self.run_migration()
+        self.assertEqual(output.returncode, 0, output.stderr)
+        self.assertFalse(old.is_symlink(), "a consumer renames and deletes this queue")
+        self.assertEqual(old.read_text(), '{"action":"add","text":"once"}\n')
+        old.rename(old.with_suffix(".consumed"))
+        new = self.seed(self.runtime / "cockpit-todo-updates.jsonl", "next update")
+        new.rename(new.with_suffix(".consumed"))
+        output = self.run_migration()
+        self.assertEqual(output.returncode, 0, output.stderr)
+
+    def test_legacy_and_canonical_queues_can_coexist_without_a_migration_collision(self):
+        old = self.seed(self.runtime / "claude-todo-updates.jsonl", "legacy update")
+        new = self.seed(self.runtime / "cockpit-todo-updates.jsonl", "canonical update")
+        output = self.run_migration()
+        self.assertEqual(output.returncode, 0, output.stderr)
+        self.assertEqual(old.read_text(), "legacy update")
+        self.assertEqual(new.read_text(), "canonical update")
+
+    def test_consuming_the_canonical_queue_does_not_leave_a_dangling_migration_alias(self):
+        output = self.run_migration()
+        self.assertEqual(output.returncode, 0, output.stderr)
+        queue = self.seed(self.runtime / "cockpit-todo-updates.jsonl", "consumed update")
+        queue.rename(queue.with_suffix(".consumed"))
+        output = self.run_migration()
+        self.assertEqual(output.returncode, 0, output.stderr)
+
     def service_fixture(self, units):
         self.units = self.root / "units.json"
         self.units.write_text(json.dumps(units))
@@ -159,13 +202,25 @@ from pathlib import Path
 path = Path(os.environ["TEST_UNITS"])
 units = json.loads(path.read_text())
 args = [arg for arg in sys.argv[1:] if arg not in ["--user", "--quiet"]]
-action, unit = args
-state = units.setdefault(unit, {"active": False, "enabled": False})
+action, unit = args[:2]
+state = units.get(unit, {"active": False, "enabled": False})
+if action == "show":
+    prop = next(arg.split("=", 1)[1] for arg in args if arg.startswith("--property="))
+    if prop == "LoadState": print("loaded" if unit in units else "not-found")
+    elif prop == "ActiveState": print(state.get("state", "active" if state["active"] else "inactive"))
+    else: sys.exit(9)
+    sys.exit(0)
 if action in ["is-active", "is-enabled"]:
     flag = state["active" if action == "is-active" else "enabled"]
     print(("active" if action == "is-active" else "enabled") if flag else "disabled")
     sys.exit(0 if flag else 1)
-if action in ["start", "stop"]: state["active"] = action == "start"
+if action == "start" and os.environ.get("TEST_FAIL_START") and Path(os.environ["TEST_FAIL_START"]).exists():
+    print("injected start failure", file=sys.stderr)
+    sys.exit(1)
+units[unit] = state
+if action in ["start", "stop"]:
+    state["active"] = action == "start"
+    if "state" in state: state["state"] = "active" if state["active"] else "inactive"
 elif action in ["enable", "disable"]: state["enabled"] = action == "enable"
 else: sys.exit(9)
 units.setdefault("calls", []).append([action, unit])
@@ -190,7 +245,7 @@ path.write_text(json.dumps(units))
         calls = units["calls"]
         self.assertLess(calls.index(["stop", "claude-remote.service"]), calls.index(["start", "cockpit-remote.service"]))
         again = self.apply_service_migration()
-        self.assertEqual(again["calls"], calls, "an already-migrated service was restarted")
+        self.assertEqual(again["calls"].count(["start", "cockpit-remote.service"]), 1, "an already-migrated service was restarted")
 
     def test_inactive_disabled_services_stay_inactive_and_disabled(self):
         self.service_fixture({})
@@ -208,6 +263,34 @@ path.write_text(json.dumps(units))
         units = json.loads(self.units.read_text())
         self.assertTrue(units["claude-remote.service"]["active"])
         self.assertNotIn("calls", units)
+
+    def test_activating_legacy_services_are_stopped_before_the_new_services_start(self):
+        self.service_fixture({"claude-remote.service": {"active": False, "state": "activating", "enabled": True},
+                              "claude-health-check.service": {"active": False, "state": "activating", "enabled": False}})
+        units = self.apply_service_migration()
+        self.assertEqual(units["claude-remote.service"]["state"], "inactive")
+        self.assertTrue(units["cockpit-remote.service"]["active"])
+        self.assertEqual(units["claude-health-check.service"]["state"], "inactive")
+        self.assertTrue(units["cockpit-health-check.service"]["active"])
+        calls = units["calls"]
+        self.assertLess(calls.index(["stop", "claude-remote.service"]), calls.index(["start", "cockpit-remote.service"]))
+
+    def test_a_failed_start_retains_original_intent_for_a_successful_retry(self):
+        self.service_fixture({"claude-remote.service": {"active": True, "enabled": True}})
+        failure = self.seed(self.root / "fail-start")
+        self.environment["TEST_FAIL_START"] = str(failure)
+        for mode in ["--prepare", "--apply"]:
+            output = self.run_migration(mode)
+            self.assertEqual(output.returncode, 0, output.stderr)
+        output = self.run_migration("--services")
+        self.assertNotEqual(output.returncode, 0)
+        self.assertTrue((self.runtime / "cockpit-name-services.json").exists())
+        failure.unlink()
+        units = self.apply_service_migration()
+        self.assertTrue(units["cockpit-remote.service"]["active"])
+        self.assertTrue(units["cockpit-remote.service"]["enabled"])
+        self.assertFalse(units["claude-remote.service"]["active"])
+        self.assertFalse((self.runtime / "cockpit-name-services.json").exists())
 
 
 if __name__ == "__main__":

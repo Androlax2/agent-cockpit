@@ -882,7 +882,7 @@ impl Remote {
     }
 
     fn todo_updates(&self) -> Vec<Value> {
-        fs::read_to_string(self.sandbox.runtime.join("claude-todo-updates.jsonl")).unwrap_or_default().lines()
+        fs::read_to_string(self.sandbox.runtime.join("cockpit-todo-updates.jsonl")).unwrap_or_default().lines()
             .map(|line| serde_json::from_str(line).unwrap()).collect()
     }
 }

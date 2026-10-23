@@ -1466,8 +1466,15 @@ restart_osd_when_idle() {
         log_event INFO manager "osd.service restart already waiting: this one leaves"
         return 0
     fi
-    local awaited reported=""
-    while awaited=$(awaited_approvals) && [[ -n $awaited ]]; do
+    local awaited guides reported="" migration_tool
+    migration_tool="$(dirname "$(readlink -f "$0")")/../../../../tools/migrate-cockpit-names.py"
+    while true; do
+        awaited=$(awaited_approvals)
+        if ! guides=$(python3 "$migration_tool" --check-guides 2>&1); then
+            [[ -z $awaited ]] || awaited+=$'\n'
+            awaited+="$guides"
+        fi
+        [[ -n $awaited ]] || break
         if [[ $awaited != "$reported" ]]; then
             log_event INFO manager "osd.service restart waits on $(paste -sd ' ' <<< "$awaited")"
             reported=$awaited

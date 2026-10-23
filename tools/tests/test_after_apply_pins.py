@@ -43,7 +43,7 @@ class AfterApplyPinTests(unittest.TestCase):
         (self.home / ".local/bin").mkdir(parents=True)
         for command in ["stow"]:
             self.fake(self.bin / command, "exit 0")
-        self.fake(self.bin / "systemctl", 'case "$2" in is-active|is-enabled) exit 1;; esac; exit 0')
+        self.fake(self.bin / "systemctl", 'case "$2" in show) echo not-found; exit 0;; is-active|is-enabled) exit 1;; esac; exit 0')
         runtime = root / "run"
         runtime.mkdir()
         state = self.home / ".local/state"

@@ -30,14 +30,15 @@
 
 ## Exact migration map
 
-- `$XDG_STATE_HOME/claude-{remote,stuck-exits}` → `cockpit-{remote,stuck-exits}` in the same state home (`COCKPIT_STATE_HOME` wins).
+- Canonical `$XDG_STATE_HOME/cockpit-{remote,stuck-exits}` aliases point to existing protected `claude-*` directories (`COCKPIT_STATE_HOME` wins). Never move these secrets/captures out from beneath already-running sandboxes' legacy masks. Fresh installations create canonical physical directories and legacy aliases; both names are denied in fresh sandboxes.
 - Canonical cache paths are `~/.cache/cockpit/{runs,designs}`. Existing caches stay physically under `.cache/claude` with canonical symlinks pointing to them: old sandboxes mount the parent `.cache/claude`, so moving its children would break their access. Fresh caches use canonical physical directories with legacy aliases. Other `.cache/claude` entries remain untouched.
 - `$XDG_RUNTIME_DIR/claude-{report,team-host,answers,runs,requests}` → corresponding `cockpit-*` directories. Move, do not copy, preserving existing mounted inodes; leave exact legacy symlinks.
-- `$XDG_RUNTIME_DIR/claude-{todo-updates.jsonl,todo-editor.lock}` → corresponding `cockpit-*` files, also preserving inode and legacy aliases.
+- The editor lock moves to `cockpit-todo-editor.lock` with its inode and legacy alias preserved. Todo queues are never moved or aliased: new producers use `cockpit-todo-updates.jsonl`, old producers may finish writing `claude-todo-updates.jsonl`, and the new sole consumer explicitly drains both real files once under the existing combined 200-line cap. Explicit queue overrides stay single-queue.
 - Preserve an existing `$XDG_DATA_HOME/systemd/timers/stamp-claude-health-check.timer` as `stamp-cockpit-health-check.timer` (default data home `~/.local/share`) so the timer does not forget its last run. Do not create a stamp for a new installation.
 - Transient away markers and draft filenames transition at their explicit readers/writers, not through glob-based host migration. Outstanding requests/results keep their JSON formats and identifiers.
 - Canonical configuration: `COCKPIT_{REMOTE_DIR,REMOTE_ADDRESS,TODO_PATH,TODO_UPDATES,DESIGNS_DIR,RUNS_DIR,ANSWERS_DIR,ANSWERS_KEY,DOTFILES_WORK,DOTFILES_LIVE,GREYWALL_WORK,GREYPROXY_WORK,REVIEWS_FIXTURE,HEALTH_COCKPIT,HEALTH_DOTFILES}`, with each old `CLAUDE_*` spelling accepted as fallback. `CLAUDE_GUIDES_DIR` is already unused and is not a migration input.
-- Keep phone cookie `claude_phone` (if used by the existing server), public routes, wire formats, request ids and agent-owned retry/session identifiers stable; changing those would break existing conversations rather than rename a command.
+- Keep phone cookie `claude_remote`, public routes, wire formats, request ids and agent-owned retry/session identifiers stable; changing those would break existing conversations rather than rename a command.
+- Refuse deployment while held guides have no result. Deferred OSD restart also checks guide completion, including guides opened after initial preflight. Transfer legacy services using explicit systemd states and stop installed legacy units even when they are activating or waiting to restart.
 
 ---
 

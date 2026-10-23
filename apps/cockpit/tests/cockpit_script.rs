@@ -2642,7 +2642,7 @@ fn export_commits(work: &Path, messages: &[&str]) {
 }
 
 fn queued_todo_updates(manager: &Manager) -> Vec<Value> {
-    fs::read_to_string(manager.sandbox.runtime.join("claude-todo-updates.jsonl")).unwrap_or_default()
+    fs::read_to_string(manager.sandbox.runtime.join("cockpit-todo-updates.jsonl")).unwrap_or_default()
         .lines().map(|line| serde_json::from_str(line).unwrap()).collect()
 }
 
@@ -3086,6 +3086,21 @@ fn an_approval_ask_to_run_still_waits_for_holds_the_restart() {
     std::thread::sleep(std::time::Duration::from_secs(3));
     assert_eq!(restarts(&manager), 0);
     fs::File::options().write(true).open(&beat).unwrap().set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(600)).unwrap();
+    finish(waiter, std::time::Duration::from_secs(10));
+    assert_eq!(restarts(&manager), 1);
+}
+
+#[test]
+fn an_unfinished_guide_holds_the_daemon_restart_until_its_result_exists() {
+    let manager = Manager::new();
+    let binary = osd_daemon(&manager, 3600, 60);
+    let request = manager.sandbox.runtime.join("cockpit-requests/012345abcdef.guide");
+    fs::write(&request, json!({"answers": ANSWERS_KEY}).to_string()).unwrap();
+    let waiter = manager.sandbox.command(bin().join("cockpit"), &[("COCKPIT_OSD_BINARY", &binary)])
+        .arg("restart-osd-when-idle").stdout(std::process::Stdio::null()).spawn().unwrap();
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    assert_eq!(restarts(&manager), 0, "the guide would be orphaned by the daemon restart");
+    fs::write(manager.sandbox.answers("guides").join("012345abcdef.result"), r#"{"status":"done"}"#).unwrap();
     finish(waiter, std::time::Duration::from_secs(10));
     assert_eq!(restarts(&manager), 1);
 }

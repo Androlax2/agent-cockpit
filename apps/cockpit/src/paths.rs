@@ -111,7 +111,7 @@ pub fn settings() -> PathBuf { state_dir().join("settings.json") }
 /// directory, which no sandbox sees (security audit 2026-10-19, M4).
 pub fn todo_updates() -> PathBuf {
     cockpit_env("COCKPIT_TODO_UPDATES", "CLAUDE_TODO_UPDATES").map(PathBuf::from)
-        .unwrap_or_else(|_| cockpit_runtime("cockpit-todo-updates.jsonl", "claude-todo-updates.jsonl"))
+        .unwrap_or_else(|_| runtime_dir().join("cockpit-todo-updates.jsonl"))
 }
 pub fn error_reports() -> PathBuf { state_dir().join("error-reports.json") }
 pub fn error_report_dir() -> PathBuf { state_dir().join("error-reports") }
