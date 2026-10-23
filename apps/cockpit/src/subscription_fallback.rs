@@ -87,6 +87,15 @@ pub struct Route {
     pub retired_sessions: Vec<String>,
 }
 
+impl Route {
+    fn owns_session(&self, session: &str) -> bool {
+        matches!(self.phase, Phase::Active | Phase::Pending(_) | Phase::Paused(_))
+            && (self.current.session == session || self.retired_sessions.iter().any(|retired| retired == session)
+                || (self.original.session == session && self.original.session != self.current.session)
+                || matches!(&self.phase, Phase::Pending(pending) if pending.replacement.as_ref().is_some_and(|replacement| replacement.session == session)))
+    }
+}
+
 #[derive(Clone)]
 pub struct Observation {
     pub binding: Binding,
@@ -147,6 +156,14 @@ pub fn read_routes(path: &Path) -> Result<Vec<Route>, String> {
     Ok(read_state(path)?.routes.into_values().collect())
 }
 
+pub fn message_target(session: &str) -> Result<(String, bool), String> {
+    let agent = agents::of_session_id(session).ok_or("invalid message session identity")?;
+    if agent.name == "opencode" { return Ok((session.into(), false)); }
+    let routes = read_routes(&crate::paths::subscription_routes())?;
+    Ok(routes.iter().find(|route| route.owns_session(session)).map_or_else(|| (session.into(), false),
+        |route| (route.current.session.clone(), matches!(route.phase, Phase::Pending(_) | Phase::Paused(_)))))
+}
+
 impl RoutingStore {
     pub fn load(path: &Path) -> Result<Self, String> {
         let parent = path.parent().ok_or("routing path has no parent")?;
@@ -166,9 +183,7 @@ impl RoutingStore {
     pub fn routes(&self) -> impl Iterator<Item = &Route> { self.state.routes.values() }
 
     pub fn prompt_destination<'a>(&'a self, session: &'a str) -> &'a str {
-        self.routes().find(|route| matches!(route.phase, Phase::Active | Phase::Pending(_) | Phase::Paused(_))
-            && (route.current.session == session || route.retired_sessions.iter().any(|retired| retired == session)
-                || matches!(&route.phase, Phase::Pending(pending) if pending.replacement.as_ref().is_some_and(|replacement| replacement.session == session))))
+        self.routes().find(|route| route.owns_session(session))
             .map_or(session, |route| route.current.session.as_str())
     }
 

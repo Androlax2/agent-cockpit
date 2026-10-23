@@ -326,6 +326,9 @@ pub fn request(registry: &mut Registry, peer: u32, action: AgentAction) -> Resul
         .filter(|entry| !entry.needs_input && entry.state == "waiting")
         .map(|entry| format!("{}:{}", entry.state, entry.since));
     let chief_live = if matches!(action, AgentAction::Receive) { crate::chief::workers(registry)? } else { Vec::new() };
+    let is_subscription_held = matches!(action, AgentAction::Receive)
+        && cockpit::subscription_fallback::message_target(&sender.session_id)
+            .map_err(|error| TeamError::new(ErrorCode::Unavailable, format!("subscription messaging is paused: {error}")))?.1;
     let result = database(registry, &live).and_then(|connection| match &action {
         AgentAction::Context => Ok(TeamReply { request_id: "context".into(), result: Ok(store::context(connection, &sender)?) }),
         AgentAction::QaResult { result } => store::qa_result(connection,&sender,result,now_ms()),
@@ -335,6 +338,7 @@ pub fn request(registry: &mut Registry, peer: u32, action: AgentAction) -> Resul
         AgentAction::Receive => {
             store::expire(connection, now_ms())?;
             cockpit::chief::store::observe(connection, &chief_live, now_ms())?;
+            if is_subscription_held { return Ok(TeamReply { request_id:"receive".into(),result:Ok(Value::Null) }); }
             let Some(turn) = turn else { return Ok(TeamReply { request_id: "receive".into(), result: Ok(Value::Null) }) };
             let dispatch = match store::claim(connection, &sender, &turn, now_ms())? {
                 Some(dispatch) => Some(dispatch),

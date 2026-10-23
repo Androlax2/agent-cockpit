@@ -7367,10 +7367,17 @@ fn automatic_actions_leave_routing_held_sessions_and_their_work_untouched() {
 }
 
 #[test]
-fn late_messages_to_retired_sessions_follow_the_active_owner_without_terminal_replay() {
-    use crate::subscription_fallback::{Binding, Phase, RoutingStore};
-    let (fixture, mut app) = queue_fixture("waiting", 7200);
+fn remote_messages_queue_while_subscription_ownership_is_pending() {
+    let (fixture, _app) = queue_fixture("waiting", 7200);
     prepare_subscription_hold();
+    let outcome = crate::remote::message(SESSION_A, "Stop before pushing this change").unwrap();
+    assert!(outcome.contains("queued"), "{outcome}");
+    assert_eq!(crate::prompts::oldest(SESSION_A).unwrap().0, "Stop before pushing this change");
+    assert!(fixture.calls("cockpit").is_empty());
+}
+
+fn activate_subscription_replacement() -> &'static str {
+    use crate::subscription_fallback::{Binding, Phase, RoutingStore};
     let mut routes = RoutingStore::load(&crate::paths::subscription_routes()).unwrap();
     let Phase::Pending(pending) = routes.route(SESSION_A).unwrap().phase.clone() else { unreachable!() };
     let replacement = "cdx_c214e8c0c9458f09ea4300974071bcad955995188f33264e341800f8a2bb5fcb";
@@ -7380,6 +7387,29 @@ fn late_messages_to_retired_sessions_follow_the_active_owner_without_terminal_re
         selection:pending.target,native_thread:Some(SESSION_A.into()) }, "/r/runway").unwrap();
     routes.finish(SESSION_A, &pending.generation).unwrap();
     drop(routes);
+    replacement
+}
+
+#[test]
+fn remote_messages_addressed_to_a_retired_session_follow_its_active_replacement() {
+    let (fixture, _app) = queue_fixture("waiting", 7200);
+    prepare_subscription_hold();
+    let replacement = activate_subscription_replacement();
+    let mut row = session(replacement, "working", "runway", "/r/runway", 1);
+    row["agent"] = json!("codex");
+    fixture.snapshot(json!([row]));
+    let outcome = crate::remote::message(SESSION_A, "A message for the logical task").unwrap();
+    assert!(outcome.contains("queued"), "{outcome}");
+    assert_eq!(crate::prompts::count(SESSION_A), 0);
+    assert_eq!(crate::prompts::oldest(replacement).unwrap().0, "A message for the logical task");
+    assert!(fixture.calls("cockpit").is_empty());
+}
+
+#[test]
+fn late_messages_to_retired_sessions_follow_the_active_owner_without_terminal_replay() {
+    let (fixture, mut app) = queue_fixture("waiting", 7200);
+    prepare_subscription_hold();
+    let replacement = activate_subscription_replacement();
     crate::prompts::add(SESSION_A, "Message arriving after ownership binding").unwrap();
     app.dispatch_subscription_routes();
     app.dispatch_subscription_routes();

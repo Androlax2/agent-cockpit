@@ -1078,6 +1078,29 @@ fn say_sends_at_the_prompt_and_queues_while_working() {
 }
 
 #[test]
+fn say_queues_during_a_subscription_handoff_without_touching_the_retiring_terminal() {
+    use cockpit::subscription_fallback::{Binding, Observation, RoutingStore, Selection};
+    use cockpit::usage::SubscriptionCapacity::{Available, Exhausted};
+    let manager = Manager::new();
+    let directory = manager.project.to_str().unwrap();
+    let source = Binding { session:SESSION_A.into(),runtime:"runtime-source".into(),native_thread:None,
+        selection:Selection { agent:"claude".into(),provider:"anthropic".into(),model:"claude-opus-4-7".into(),variant:Some("high".into()),account:"a".repeat(64) } };
+    let alternate = Selection { agent:"codex".into(),provider:"openai".into(),model:"gpt-6.1-sol".into(),variant:Some("high".into()),account:"b".repeat(64) };
+    let mut routes = RoutingStore::load(&manager.sandbox.state.join("cockpit/subscriptions/routes.json")).unwrap();
+    routes.track(source.clone(), directory, "1797cdd6", 100).unwrap();
+    routes.reconcile(&[Observation { binding:source,session:cockpit::sessions::Session { session:SESSION_A.into(),agent:"claude".into(),
+        cwd:directory.into(),state:"waiting".into(),tmux_pane:"%4".into(), ..Default::default() },current_capacity:Exhausted,original_capacity:Exhausted,
+        alternate:Some((alternate,Available)),has_pending_work:true,prompt_clear:true,manual_override:false }], 101).unwrap();
+    drop(routes);
+    let output = manager.run(&["say", SESSION_A, "Do not push the unfinished change"], &[("SHIM_PANE_TEXT",IDLE)]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(manager.tmux_calls("send-keys").is_empty());
+    let queue = manager.sandbox.state.join(format!("cockpit/prompt-queue/{SESSION_A}"));
+    let queued = fs::read_dir(queue).unwrap().next().unwrap().unwrap().path();
+    assert_eq!(fs::read_to_string(queued).unwrap(), "Do not push the unfinished change");
+}
+
+#[test]
 fn multiline_messages_are_pasted_once_before_the_agents_submit_keys() {
     for (agent, state, screen, submit) in [
         ("claude", "waiting", IDLE, "Enter"),

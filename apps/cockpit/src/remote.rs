@@ -662,26 +662,30 @@ pub fn colours_only(text: &str) -> String {
 /// A message for a session: said at its prompt now, or queued for the end of its turn while it
 /// works (as the column's m).
 pub fn message(id: &str, message: &str) -> Result<String, String> {
-    let row = session_row(id);
-    let is_asleep = row.is_none() && asleep_note(id).is_some();
-    if row.is_none() && !is_asleep {
+    let (destination, is_held) = crate::subscription_fallback::message_target(id)?;
+    let row = session_row(&destination);
+    let is_asleep = row.is_none() && asleep_note(&destination).is_some();
+    if row.is_none() && !is_asleep && !is_held {
         return Err("no such session".into());
     }
     let message = message_text(message, "a message")?;
     let is_working = row.as_ref().is_some_and(|row| text(row, "state") == "working");
-    let outcome = if is_working {
-        prompts::add(id, &message)?;
+    let outcome = if is_held {
+        prompts::add(&destination, &message)?;
+        "queued until subscription ownership is bound".to_string()
+    } else if is_working {
+        prompts::add(&destination, &message)?;
         "queued for the end of its turn".to_string()
     } else {
         // For an asleep session `cockpit say` checks that it can wake (folder, conversation) before
         // it queues the message and wakes it in the background, so a failure reaches the phone.
-        let error = util::manager(&["say", id, &message]);
+        let error = util::manager(&["say", &destination, &message]);
         if !error.is_empty() {
             return Err(error);
         }
         if is_asleep { "queued; it wakes now".to_string() } else { "sent".to_string() }
     };
-    audit::record("remote", "remote.message", "ok", json!({"session": id, "message": audit::fingerprint(&message), "outcome": outcome}));
+    audit::record("remote", "remote.message", "ok", json!({"session": destination, "requested_session":id, "message": audit::fingerprint(&message), "outcome": outcome}));
     Ok(outcome)
 }
 

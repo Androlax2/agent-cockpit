@@ -803,14 +803,8 @@ open_variants() { # id
 
 # A message for a session without opening it; each agent says when it takes one (agent_*_say).
 say_to_session() { # id message
-    local id=$1 message=$2 pane waking=""
+    local id=$1 message=$2 pane waking="" routing subscription_helper
     message=${message//$'\r\n'/$'\n'}
-    pane=$(session_field "$id" tmux_pane)
-    if [[ -z $pane ]]; then
-        # Asleep, or restarting with no pane yet: the message waits for the new process.
-        if is_asleep "$id"; then waking=asleep; elif is_restarting "$id"; then waking=restarting; fi
-        [[ -n $waking ]] || { echo "cockpit: session $id has no tmux pane" >&2; return 1; }
-    fi
     if [[ -z $message || ${#message} -gt 4000 ]]; then
         echo "cockpit: a message is at most 4000 characters" >&2
         return 1
@@ -819,6 +813,20 @@ say_to_session() { # id message
     if [[ ${message//$'\n'/} == *[[:cntrl:]]* ]]; then
         echo "cockpit: a message cannot carry control characters" >&2
         return 1
+    fi
+    subscription_helper="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/cockpit-subscription"
+    routing=$("$subscription_helper" message-target "$id") || return
+    id=$(jq -er '.session' <<<"$routing") || return
+    if jq -e '.held == true' <<<"$routing" >/dev/null; then
+        printf '%s' "$message" | "$subscription_helper" queue-message "$id" || return
+        echo "queued until subscription ownership is bound"
+        return 0
+    fi
+    pane=$(session_field "$id" tmux_pane)
+    if [[ -z $pane ]]; then
+        # Asleep, or restarting with no pane yet: the message waits for the new process.
+        if is_asleep "$id"; then waking=asleep; elif is_restarting "$id"; then waking=restarting; fi
+        [[ -n $waking ]] || { echo "cockpit: session $id has no tmux pane" >&2; return 1; }
     fi
     if [[ -n $waking ]]; then
         if [[ $waking == asleep ]]; then
@@ -839,7 +847,7 @@ say_to_session() { # id message
 queue_prompt_ask() { # [pane]
     # In the popup, the client's active pane is the one Alt+Q was pressed in: the binding cannot
     # pass #{pane_id} (tmux leaves it empty in a command nested in if -F).
-    local pane=${1:-} session text folder
+    local pane=${1:-} session text
     [[ -n $pane ]] || pane=$(tmux display-message -p '#{pane_id}' 2>/dev/null || true)
     if [[ $(tmux display-message -p -t "$pane" '#{@role}' 2>/dev/null) == viewer ]]; then
         session=$(cat "$CURRENT" 2>/dev/null || true)
@@ -859,9 +867,7 @@ queue_prompt_ask() { # [pane]
         read -r -p "One line, without control characters. Enter closes. " _ || true
         return 1
     fi
-    folder="${XDG_STATE_HOME:-$HOME/.local/state}/cockpit/prompt-queue/$session"
-    mkdir -p "$folder"
-    printf '%s' "$text" > "$folder/$(date +%s%N).txt"
+    printf '%s' "$text" | "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/cockpit-subscription" queue-message "$session" || return
     log_event INFO sessions "prompt queued for $(session_field "$session" project)"
     audit_event manager prompt.queued queued "session=$session" "fp:text=$text"
 }

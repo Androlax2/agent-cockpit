@@ -425,6 +425,36 @@ fn protected_plan_retries_never_replace_conflicting_or_exposed_context() {
 }
 
 #[test]
+fn direct_messages_queue_on_the_pending_owner_then_resolve_the_active_replacement() {
+    let (sandbox, transition) = prepared_claude_route();
+    let binary = env!("CARGO_BIN_EXE_cockpit-subscription");
+    let target = sandbox.run(binary, &["message-target", SESSION_A], &[]);
+    assert!(target.status.success(), "{}", stderr(&target));
+    assert_eq!(serde_json::from_slice::<Value>(&target.stdout).unwrap(), json!({"session":SESSION_A,"held":true}));
+    let queued = sandbox.run_with_input(binary, &["queue-message", SESSION_A], &[], "A user instruction during handoff");
+    assert!(queued.status.success(), "{}", stderr(&queued));
+    let source_queue = sandbox.state.join(format!("cockpit/prompt-queue/{SESSION_A}"));
+    let first = fs::read_dir(&source_queue).unwrap().next().unwrap().unwrap().path();
+    assert_eq!(fs::read_to_string(first).unwrap(), "A user instruction during handoff");
+    let mut store = RoutingStore::load(&sandbox.state.join("cockpit/subscriptions/routes.json")).unwrap();
+    store.mark_retired(SESSION_A, &transition.generation).unwrap();
+    store.mark_submitted(SESSION_A, &transition.generation).unwrap();
+    let replacement = binding("codex");
+    store.record_runtime(&transition.generation, replacement.clone(), sandbox.root.to_str().unwrap()).unwrap();
+    store.finish(SESSION_A, &transition.generation).unwrap();
+    drop(store);
+    let target = sandbox.run(binary, &["message-target", SESSION_A], &[]);
+    assert!(target.status.success(), "{}", stderr(&target));
+    assert_eq!(serde_json::from_slice::<Value>(&target.stdout).unwrap(), json!({"session":replacement.session,"held":false}));
+    let queued = sandbox.run_with_input(binary, &["queue-message", SESSION_A], &[], "A later user instruction");
+    assert!(queued.status.success(), "{}", stderr(&queued));
+    let target_queue = sandbox.state.join(format!("cockpit/prompt-queue/{}", replacement.session));
+    let later = fs::read_dir(&target_queue).unwrap().next().unwrap().unwrap().path();
+    assert_eq!(fs::read_to_string(later).unwrap(), "A later user instruction");
+    assert_eq!(fs::read_dir(&source_queue).unwrap().count(), 1);
+}
+
+#[test]
 fn subscription_task_ownership_moves_once_and_keeps_the_previous_assignment_in_its_trail() {
     use cockpit::{continuity::{Continuity, TaskSnapshot}, todo::{Entry, Item}};
     let sandbox = Sandbox::new();

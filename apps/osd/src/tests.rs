@@ -436,6 +436,35 @@ fn subscription_prompt_admission_requires_completed_binding_and_the_real_sender(
 }
 
 #[test]
+fn subscription_holds_leave_team_messages_queued_instead_of_waking_the_retiring_worker() {
+    use cockpit::subscription_fallback::{Binding, Observation, RoutingStore, Selection};
+    use cockpit::usage::SubscriptionCapacity::{Available, Exhausted};
+    let mut bench = linked_team_bench();
+    send_to_designer(&mut bench, "notice-during-native-handoff");
+    let directory = bench.registry.sessions[SESSION_A].cwd.clone();
+    let source = Binding { session:SESSION_A.into(),runtime:"runtime-10".into(),native_thread:None,
+        selection:Selection { agent:"claude".into(),provider:"anthropic".into(),model:"claude-opus-4-7".into(),variant:Some("high".into()),account:"a".repeat(64) } };
+    let alternate = Selection { agent:"codex".into(),provider:"openai".into(),model:"gpt-6.1-sol".into(),variant:Some("high".into()),account:"b".repeat(64) };
+    let mut observed = Observation { binding:source.clone(),session:cockpit::sessions::Session { session:SESSION_A.into(),agent:"claude".into(),
+        cwd:directory.clone(),state:"waiting".into(),tmux_pane:"%10".into(), ..Default::default() },current_capacity:Exhausted,original_capacity:Exhausted,
+        alternate:Some((alternate,Available)),has_pending_work:true,prompt_clear:true,manual_override:false };
+    let mut routes = RoutingStore::load(&cockpit::paths::subscription_routes()).unwrap();
+    routes.track(source, &directory, "1d3fd318", 100).unwrap();
+    routes.reconcile(&[observed.clone()], 101).unwrap();
+    drop(routes);
+    let held = crate::teams::request(&mut bench.registry, 10, cockpit::teams::AgentAction::Receive).unwrap().result.unwrap();
+    assert!(held.is_null(), "a pending route must not take a fresh collaborator turn");
+    let snapshot = crate::teams::host_snapshot(&mut bench.registry).unwrap();
+    assert_eq!(snapshot["messages"][0]["state"], "queued");
+    let mut routes = RoutingStore::load(&cockpit::paths::subscription_routes()).unwrap();
+    observed.manual_override = true;
+    routes.reconcile(&[observed], 102).unwrap();
+    drop(routes);
+    let released = crate::teams::request(&mut bench.registry, 10, cockpit::teams::AgentAction::Receive).unwrap().result.unwrap();
+    assert!(released["dispatch_id"].is_string());
+}
+
+#[test]
 fn host_subscription_binding_stays_paused_until_retirement_and_every_store_commit() {
     use cockpit::subscription_fallback::{Binding, Observation, RoutingStore, Selection};
     use cockpit::usage::SubscriptionCapacity::{Available, Exhausted};
