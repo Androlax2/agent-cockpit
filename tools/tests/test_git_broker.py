@@ -140,6 +140,88 @@ class BrokerFramingTests(BrokerFixture):
             self.assertFalse(socket_path.exists())
 
 
+class BrokerPushPolicyTests(BrokerFixture):
+    def command(self, ref=b'refs/heads/feature/nested', old=b'0' * 40, new=b'1' * 40,
+                capabilities=b'report-status side-band-64k'):
+        payload = old + b' ' + new + b' ' + ref
+        if capabilities is not None:
+            payload += b'\0' + capabilities
+        return f'{len(payload) + 4:04x}'.encode() + payload
+
+    def validate(self, encoded):
+        self.assertTrue(hasattr(self.broker, 'validate_push'), 'receive-pack policy is missing')
+        body = io.BytesIO(encoded)
+        result = self.broker.validate_push(body, default_branch='main')
+        self.assertEqual(body.tell(), 0, 'forwarding must retain the exact original bytes')
+        self.assertEqual(body.read(), encoded)
+        return result
+
+    def test_new_and_nested_feature_updates_preserve_opaque_pack(self):
+        encoded = self.command() + self.command(b'refs/heads/other', old=b'2' * 40,
+                                                capabilities=None) + b'0000PACK\x00opaque'
+        self.assertEqual(self.validate(encoded), ['refs/heads/feature/nested', 'refs/heads/other'])
+
+    def test_delete_default_tag_and_duplicate_refs_deny(self):
+        for encoded in [self.command(new=b'0' * 40), self.command(b'refs/heads/main'),
+                        self.command(b'refs/tags/v1'), self.command() + self.command(capabilities=None)]:
+            with self.subTest(encoded=encoded), self.assertRaises(self.broker.RequestDenied):
+                self.validate(encoded + b'0000PACK')
+
+    def test_malformed_or_unsupported_receive_commands_deny(self):
+        for encoded in [b'', b'0000', b'0001', b'0002', b'0003', b'ffffshort', b'zzzz',
+                        self.command()[:-1], self.command(old=b'1' * 64) + b'0000',
+                        self.command(new=b'g' * 40) + b'0000',
+                        self.command(capabilities=b'push-options') + b'0000',
+                        self.command(capabilities=b'object-format=sha256') + b'0000',
+                        b'000epush-cert\n0000',
+                        self.command() + self.command(b'refs/heads/next') + b'0000']:
+            with self.subTest(encoded=encoded), self.assertRaises(self.broker.RequestDenied):
+                self.validate(encoded)
+
+    def test_invalid_ref_names_cannot_reach_forwarding(self):
+        for suffix in [b'', b'.hidden', b'foo..bar', b'foo@{bar', b'foo.lock', b'foo/.bar',
+                       b'foo//bar', b'foo/', b'foo.', b'foo bar', b'foo\\bar', b'foo\x7f',
+                       b'foo:bar', b'foo?bar', b'foo*bar', b'foo[bar']:
+            with self.subTest(suffix=suffix), self.assertRaises(self.broker.RequestDenied):
+                self.validate(self.command(b'refs/heads/' + suffix) + b'0000')
+
+    def test_ref_and_prefix_limits_apply_before_pack(self):
+        commands = [self.command(f'refs/heads/branch-{number}'.encode(), capabilities=None)
+                    for number in range(1025)]
+        with self.assertRaises(self.broker.RequestDenied):
+            self.validate(b''.join(commands) + b'0000')
+        commands = [self.command(b'refs/heads/' + str(number).encode() + b'x' * 1100,
+                                 capabilities=None) for number in range(1000)]
+        with self.assertRaises(self.broker.RequestDenied):
+            self.validate(b''.join(commands) + b'0000')
+
+
+class BrokerDispatchTests(BrokerFixture):
+    def test_fixed_routes_never_accept_a_client_destination(self):
+        self.assertTrue(hasattr(self.broker, 'git_route'), 'fixed Git routes are missing')
+        cases = [(self.header(action='git.fetch'), 'POST', '/acme/project.git/git-upload-pack'),
+                 (self.header(action='git.push'), 'POST', '/acme/project.git/git-receive-pack'),
+                 (self.header(action='git.advertise', service='receive-pack'), 'GET',
+                  '/acme/project.git/info/refs?service=git-receive-pack')]
+        for header, method, path in cases:
+            with self.subTest(header=header):
+                route = self.broker.git_route(header, 'acme/project')
+                self.assertEqual(route['method'], method)
+                self.assertEqual(route['url'], 'https://github.com' + path)
+        for name in ['//evil/repo', 'acme/../evil', 'acme/project?token=x', 'acme/project\r\nX: x']:
+            with self.subTest(name=name), self.assertRaises(self.broker.RequestDenied):
+                self.broker.git_route(self.header(), name)
+
+    def test_receive_pack_rejects_upload_protocol_versions(self):
+        self.assertTrue(hasattr(self.broker, 'git_route'), 'fixed Git routes are missing')
+        for action in ['git.push', 'git.advertise']:
+            header = self.header(action=action, protocol=2)
+            if action == 'git.advertise':
+                header['service'] = 'receive-pack'
+            with self.assertRaises(self.broker.RequestDenied):
+                self.broker.git_route(header, 'acme/project')
+
+
 class BrokerChannelTests(BrokerFixture):
     def setUp(self):
         super().setUp()
@@ -179,6 +261,7 @@ class BrokerChannelTests(BrokerFixture):
         report = {key: self.binding[key] for key in ['checkout', 'repository_id', 'canonical_name',
                                                    'git_dir', 'common_dir', 'configuration_digest']}
         self.report = report | {'mode': 'verified', 'identity_verified': True, 'rate_verified': True,
+                                'default_branch': 'main',
                                 'credential_roles_verified': ['read', 'forward']}
         inspector = patch.object(self.access, 'inspect_access', side_effect=lambda *args, **kwargs: self.report.copy())
         inspector.start()
@@ -257,6 +340,18 @@ class BrokerChannelTests(BrokerFixture):
         self.assertEqual(body, b'')
         for secret in [self.binding['capability'], 'SYNTHETIC_FORWARD_SECRET', 'SYNTHETIC_PROJECT_SECRET']:
             self.assertNotIn(secret, json.dumps(response))
+
+    def test_direct_push_cannot_bypass_receive_command_validation(self):
+        self.start()
+        payload = b'0' * 40 + b' ' + b'1' * 40 + b' refs/heads/main'
+        body = f'{len(payload) + 4:04x}'.encode() + payload + b'0000'
+        response, _ = self.exchange(self.header(action='git.push', body_length=len(body)), body=body)
+        self.assertEqual(response['code'], 'push_ref_denied')
+
+    def test_direct_receive_advertisement_rejects_upload_protocol(self):
+        self.start()
+        response, _ = self.exchange(self.header(action='git.advertise', service='receive-pack', protocol=2))
+        self.assertEqual(response['code'], 'unsupported_git_protocol')
 
     def test_revoked_generation_stops_accepting_requests(self):
         _, worker, failures = self.start()

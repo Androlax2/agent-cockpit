@@ -1,4 +1,5 @@
 import importlib.util
+from contextlib import ExitStack
 import json
 import os
 from pathlib import Path
@@ -42,6 +43,94 @@ class GithubRateTests(unittest.TestCase):
         self.observe(remaining=6)
         with self.assertRaisesRegex(self.rate.RateDenied, '^rate_quota_exhausted$'):
             self.reserve()
+
+    def test_only_eight_upstream_requests_can_hold_slots(self):
+        self.assertTrue(hasattr(self.rate, 'request_slot'), 'shared upstream slots are missing')
+        with ExitStack() as slots:
+            for _ in range(8):
+                slots.enter_context(self.rate.request_slot())
+            with self.assertRaisesRegex(self.rate.RateDenied, '^upstream_busy$'):
+                with self.rate.request_slot():
+                    self.fail('ninth upstream request was admitted')
+        with self.rate.request_slot():
+            pass
+
+    def test_repository_write_lock_is_shared_with_another_process(self):
+        self.assertTrue(hasattr(self.rate, 'repository_write'), 'repository write lock is missing')
+        script = ('import importlib.util\n'
+                  f'spec = importlib.util.spec_from_file_location("rate", {str(MODULE)!r})\n'
+                  'rate = importlib.util.module_from_spec(spec)\nspec.loader.exec_module(rate)\n'
+                  'try:\n with rate.repository_write(42): pass\n'
+                  'except rate.RateDenied as error:\n print(str(error))\n')
+        with self.rate.repository_write(42):
+            result = subprocess.run([sys.executable, '-I', '-c', script], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip(), 'repository_write_busy')
+            with self.rate.repository_write(99):
+                pass
+        with self.rate.repository_write(42):
+            pass
+
+    def test_mutation_spacing_and_minute_limit_are_global(self):
+        self.assertTrue(hasattr(self.rate, 'admit_mutation'), 'mutation pacing is missing')
+        now = time.time()
+        monotonic = time.monotonic()
+        with patch.object(self.rate.time, 'time', return_value=now), \
+                patch.object(self.rate.time, 'monotonic', return_value=monotonic):
+            self.rate.admit_mutation()
+            with self.assertRaisesRegex(self.rate.RateDenied, '^mutation_paced$'):
+                self.rate.admit_mutation()
+        for second in range(1, 30):
+            with patch.object(self.rate.time, 'time', return_value=now + second), \
+                    patch.object(self.rate.time, 'monotonic', return_value=monotonic + second):
+                self.rate.admit_mutation()
+        with patch.object(self.rate.time, 'time', return_value=now + 30), \
+                patch.object(self.rate.time, 'monotonic', return_value=monotonic + 30):
+            with self.assertRaisesRegex(self.rate.RateDenied, '^mutation_paced$'):
+                self.rate.admit_mutation()
+
+    def test_hour_limit_survives_boot_change(self):
+        self.assertTrue(hasattr(self.rate, 'admit_mutation'), 'mutation pacing is missing')
+        now, monotonic = time.time(), time.monotonic()
+        for index in range(300):
+            with patch.object(self.rate.time, 'time', return_value=now + index * 3), \
+                    patch.object(self.rate.time, 'monotonic', return_value=monotonic + index * 3):
+                self.rate.admit_mutation()
+        path = self.rate.ledger_path()
+        saved = json.loads(path.read_text())
+        saved['boot'] = 'old-boot'
+        path.write_text(json.dumps(saved))
+        with patch.object(self.rate.time, 'time', return_value=now + 1000), \
+                patch.object(self.rate.time, 'monotonic', return_value=1):
+            with self.assertRaisesRegex(self.rate.RateDenied, '^mutation_paced$'):
+                self.rate.admit_mutation()
+
+    def test_mutation_pacing_survives_another_process(self):
+        self.assertTrue(hasattr(self.rate, 'admit_mutation'), 'mutation pacing is missing')
+        now = time.time()
+        with self.rate.locked_state() as state:
+            state['mutations'] = [{'wall': now - 2 * index,
+                                   'monotonic': state['monotonic'] - 2 * index, 'boot': state['boot']}
+                                  for index in reversed(range(30))]
+        script = ('import importlib.util\n'
+                  f'spec = importlib.util.spec_from_file_location("rate", {str(MODULE)!r})\n'
+                  'rate = importlib.util.module_from_spec(spec)\nspec.loader.exec_module(rate)\n'
+                  'try:\n rate.admit_mutation()\n'
+                  'except rate.RateDenied as error:\n print(str(error))\n')
+        result = subprocess.run([sys.executable, '-I', '-c', script], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), 'mutation_paced')
+
+    def test_forward_wall_clock_jump_cannot_evade_mutation_spacing(self):
+        self.assertTrue(hasattr(self.rate, 'admit_mutation'), 'mutation pacing is missing')
+        now, monotonic = time.time(), time.monotonic()
+        with patch.object(self.rate.time, 'time', return_value=now), \
+                patch.object(self.rate.time, 'monotonic', return_value=monotonic):
+            self.rate.admit_mutation()
+        with patch.object(self.rate.time, 'time', return_value=now + 7200), \
+                patch.object(self.rate.time, 'monotonic', return_value=monotonic + 0.1):
+            with self.assertRaisesRegex(self.rate.RateDenied, '^mutation_paced$'):
+                self.rate.admit_mutation()
 
     def test_automated_checks_and_writes_preserve_the_approved_twenty_percent(self):
         self.rate.observe('installation:77', {'x-ratelimit-resource': 'core', 'x-ratelimit-limit': '100',

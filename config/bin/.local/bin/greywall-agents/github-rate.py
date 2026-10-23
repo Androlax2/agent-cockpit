@@ -52,6 +52,14 @@ def validate_state(state):
             or any(not isinstance(state.get(key), dict) for key in ['buckets', 'reservations', 'scheduled'])
             or any(not finite_number(state.get(key)) for key in ['wall', 'monotonic'])):
         deny('rate_ledger_invalid')
+    mutations = state.get('mutations', [])
+    if (not isinstance(mutations, list) or len(mutations) > 300
+            or any(not isinstance(entry, dict) or set(entry) != {'wall', 'monotonic', 'boot'}
+                   or not finite_number(entry['wall']) or entry['wall'] > state['wall']
+                   or not finite_number(entry['monotonic']) or not isinstance(entry['boot'], str)
+                   or (entry['boot'] == state['boot'] and entry['monotonic'] > state['monotonic'])
+                   for entry in mutations)):
+        deny('rate_ledger_invalid')
     for bucket, observed in state['buckets'].items():
         if (not valid_bucket(bucket) or not isinstance(observed, dict)
                 or any(type(observed.get(key)) is not int for key in ['remaining', 'server_remaining', 'limit', 'reset'])
@@ -115,8 +123,11 @@ def locked_state():
                     deny('rate_ledger_invalid')
             validate_state(state)
         if state is None or state['boot'] != boot:
+            mutations = [] if state is None else state.get('mutations', [])
+            if state is not None and wall < state['wall']:
+                deny('rate_clock_changed')
             state = {'version': 1, 'boot': boot, 'buckets': {}, 'reservations': {}, 'scheduled': {},
-                     'wall': wall, 'monotonic': monotonic}
+                     'wall': wall, 'monotonic': monotonic, 'mutations': mutations}
         if wall < state['wall'] or monotonic < state['monotonic']:
             deny('rate_clock_changed')
         state.update(wall=wall, monotonic=monotonic)
@@ -135,6 +146,56 @@ def locked_state():
         finally:
             if replacement is not None and replacement.exists():
                 replacement.unlink()
+
+
+@contextmanager
+def exclusive_slot(names, reason):
+    directory = ledger_path().parent / 'dispatch'
+    if any(ancestor.is_symlink() for ancestor in [directory, *directory.parents]):
+        deny('rate_ledger_untrusted')
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    metadata = directory.stat()
+    if metadata.st_uid != os.getuid() or metadata.st_mode & 0o077:
+        deny('rate_ledger_untrusted')
+    for name in names:
+        descriptor = os.open(directory / name, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+        with os.fdopen(descriptor, 'rb') as lock:
+            metadata = os.fstat(lock.fileno())
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid() or metadata.st_mode & 0o077:
+                deny('rate_ledger_untrusted')
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                continue
+            yield
+            return
+    deny(reason)
+
+
+def request_slot():
+    return exclusive_slot([f'upstream-{number}' for number in range(8)], 'upstream_busy')
+
+
+def repository_write(repository_id):
+    if type(repository_id) is not int or repository_id <= 0:
+        deny('rate_repository_invalid')
+    return exclusive_slot([f'repository-{repository_id}'], 'repository_write_busy')
+
+
+def admit_mutation():
+    """Persist pacing before dispatch; uncertain/failed writes never refund it."""
+    with locked_state() as state:
+        def age(entry):
+            elapsed = state['wall'] - entry['wall']
+            if entry['boot'] == state['boot']:
+                elapsed = min(elapsed, state['monotonic'] - entry['monotonic'])
+            return elapsed
+
+        recent = [entry for entry in state.get('mutations', []) if age(entry) < 3600]
+        if (len(recent) >= 300 or sum(age(entry) < 60 for entry in recent) >= 30
+                or any(age(entry) < 1 for entry in recent)):
+            deny('mutation_paced')
+        state['mutations'] = recent + [{key: state[key] for key in ['wall', 'monotonic', 'boot']}]
 
 
 def valid_bucket(bucket):
