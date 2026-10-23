@@ -25,6 +25,11 @@ from urllib.parse import parse_qs, quote, urlsplit
 CHECK_DEADLINE_SECONDS = 30
 PROBE_BRANCH = 'agents/protection-probe/future'
 APP_TOKENS = {}
+# Rebuilds require fresh canaries; a matching version string is not capability proof.
+VERIFIED_GREYWALL_BUILDS = {
+    '8e70830bb9583707b2958174c46367e5fb8b59d9402a9b2e5531b1da438fa739':
+        '4a0601220357e5e29228d20872f5574dd24a45d8',
+}
 REPOSITORY_NAME = re.compile(r'[A-Za-z0-9_-][A-Za-z0-9._-]*/[A-Za-z0-9_-][A-Za-z0-9._-]*\Z')
 GITHUB_REMOTE = re.compile(
     r'(?:https://github\.com/|git@github\.com:|ssh://git@github\.com/)'
@@ -291,6 +296,35 @@ def trusted_program(name):
     if not executable:
         deny('inspector_dependency_unavailable')
     return executable
+
+
+def check_greywall_dependency():
+    report = {'mode': 'read_only', 'reason': 'read_only_dependency_missing'}
+    try:
+        executable = identity_path(Path.home() / '.local/bin/greywall')
+        descriptor = os.open(executable, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(descriptor, 'rb') as binary:
+            before = os.fstat(binary.fileno())
+            if (not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid()
+                    or before.st_mode & 0o022 or not before.st_mode & stat.S_IXUSR):
+                return report
+            digest = hashlib.sha256()
+            for chunk in iter(lambda: binary.read(1024 * 1024), b''):
+                digest.update(chunk)
+            after = os.fstat(binary.fileno())
+        current = executable.lstat()
+        identities = [(metadata.st_dev, metadata.st_ino, metadata.st_mode, metadata.st_uid, metadata.st_size,
+                       metadata.st_mtime_ns, metadata.st_ctime_ns) for metadata in (before, after, current)]
+        if any(identity != identities[0] for identity in identities[1:]):
+            return report
+        fingerprint = digest.hexdigest()
+        revision = VERIFIED_GREYWALL_BUILDS.get(fingerprint)
+        if revision is None:
+            return report
+        return {'mode': 'verified', 'reason': 'read_only_dependency_verified',
+                'greywall_sha256': fingerprint, 'greywall_revision': revision}
+    except (OSError, AccessDenied):
+        return report
 
 
 def sign_app_jwt(app, deadline):
@@ -961,6 +995,7 @@ def enroll_repository(arguments):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest='command', required=True)
+    commands.add_parser('check-greywall')
     inspect = commands.add_parser('inspect')
     inspect.add_argument('--checkout', required=True, type=Path)
     enroll = commands.add_parser('enroll')
@@ -972,8 +1007,12 @@ def main():
     enroll.add_argument('--history-ruleset', required=True, type=int)
     enroll.add_argument('--default-pr-ruleset', required=True, type=int)
     arguments = parser.parse_args()
-    report = (enroll_repository(arguments) if arguments.command == 'enroll'
-              else inspect_access(arguments.checkout, purpose='inspection'))
+    if arguments.command == 'check-greywall':
+        report = check_greywall_dependency()
+    elif arguments.command == 'enroll':
+        report = enroll_repository(arguments)
+    else:
+        report = inspect_access(arguments.checkout, purpose='inspection')
     print(json.dumps(report, sort_keys=True))
     return 0 if report['mode'] == 'verified' else 1
 

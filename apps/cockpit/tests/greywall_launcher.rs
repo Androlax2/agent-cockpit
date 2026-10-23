@@ -87,7 +87,9 @@ impl Launch {
         // Logs its arguments, then runs the command after -- when it exists (the fake opencode).
         write_executable(&sandbox.home.join(".local/bin/greywall"), "#!/bin/sh\nprintf '%s' \"${GREYWALL_NO_PROMPT:-}\" > \"$HOME/greywall-no-prompt\"\nprintf 'greywall %s (api key: %s)\\n' \"$(printf '%s' \"$*\" | tr '\\n' ' ')\" \"${ANTHROPIC_API_KEY:-none}\" >> \"$SHIM_LOG\"\n\
                                                                      while [ \"$1\" != -- ]; do shift; done; shift\n\
-                                                                     if [ \"$1\" = env ] || [ -x \"$1\" ]; then exec \"$@\"; fi\n");
+                                                                      if [ \"$1\" = env ] || [ -x \"$1\" ]; then exec \"$@\"; fi\n");
+        write_executable(&sandbox.home.join(".local/bin/greywall-agents/git-access.py"),
+            "import os, sys\nassert sys.argv[1:] == ['check-greywall']\nsys.exit(1 if os.environ.get('SHIM_GREYWALL_DEPENDENCY_MISSING') else 0)\n");
         // Records its arguments and the environment it got, one line each.
         write_executable(&sandbox.home.join(".opencode/bin/opencode"), "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$HOME/opencode-arguments\"\n\
                                                                           env > \"$HOME/opencode-environment\"\n");
@@ -142,6 +144,21 @@ fn every_agent_keeps_reviewed_profiles_without_a_drift_merge_prompt() {
         launch.run_agent(agent, &[("GREYWALL_NO_PROMPT", "")], &[]);
         let no_prompt = fs::read_to_string(launch.sandbox.home.join("greywall-no-prompt")).unwrap();
         assert_eq!(no_prompt, "1", "{agent} must disable greywall's profile merge prompt");
+    }
+}
+
+#[test]
+fn read_only_dependency_missing_never_starts_a_writable_sandbox() {
+    for &agent in AGENTS.iter() {
+        let launch = Launch::new();
+        let output = launch.sandbox.command(bin().join("greywall-agents").join(agent),
+            &[("SHIM_GREYWALL_DEPENDENCY_MISSING", "1")])
+            .current_dir(&launch.project).output().unwrap();
+        assert_eq!(output.status.code(), Some(77), "{agent}: {}", stderr(&output));
+        assert!(stderr(&output).contains("read_only_dependency_missing"), "{agent}: {}", stderr(&output));
+        assert!(launch.sandbox.calls("greywall").is_empty(), "{agent}: sandbox started");
+        assert!(launch.sandbox.calls("secret-tool").is_empty(), "{agent}: credentials accessed before refusal");
+        assert!(!launch.sandbox.home.join(format!("{agent}-environment")).exists(), "{agent}: agent started");
     }
 }
 
@@ -208,6 +225,20 @@ fn git_metadata_is_checked_again_after_a_pointer_changes() {
         assert_eq!(output.status.code(), Some(1), "{agent}: {}", stderr(&output));
         assert!(launch.sandbox.calls("greywall").is_empty());
         assert!(launch.sandbox.calls("secret-tool").is_empty());
+    }
+}
+
+#[test]
+fn missing_dependency_checker_never_falls_back_to_the_old_launcher() {
+    for &agent in AGENTS.iter() {
+        let launch = Launch::new();
+        fs::remove_file(launch.sandbox.home.join(".local/bin/greywall-agents/git-access.py")).unwrap();
+        let output = launch.sandbox.command(bin().join("greywall-agents").join(agent), &[])
+            .current_dir(&launch.project).output().unwrap();
+        assert_eq!(output.status.code(), Some(77), "{agent}: {}", stderr(&output));
+        assert!(stderr(&output).contains("read_only_dependency_missing"), "{agent}: {}", stderr(&output));
+        assert!(launch.sandbox.calls("greywall").is_empty(), "{agent}");
+        assert!(launch.sandbox.calls("secret-tool").is_empty(), "{agent}");
     }
 }
 
