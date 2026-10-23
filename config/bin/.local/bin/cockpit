@@ -2018,7 +2018,8 @@ team_spawn_session() { # token role dir commit|- brief
 git_in_sandbox() { # dir git-arguments...
     local directory=$1
     shift
-    (cd "$directory" && "$GREYWALL" --auto-profile --profile claude -- git "$@")
+    # Drift merges rewrite the stowed, reviewed profile and dirty the running copy.
+    (cd "$directory" && GREYWALL_NO_PROMPT=1 "$GREYWALL" --auto-profile --profile claude -- git "$@")
 }
 
 # A session reviewing pull request <number>, at its head in a clone (the sidebar's c on a
@@ -2061,7 +2062,7 @@ clone_leftovers() { # clone
     if IFS=$'\t' read -r name clone < <(reviewed_clone_of "$1"); then
         report=$(reviewed_clone_report "$1" "$(live_checkout_of "$name")") || { echo "unreadable"; return; }
     else
-        report=$(cd "$1" && "$GREYWALL" --auto-profile --profile claude -- sh -c \
+        report=$(cd "$1" && GREYWALL_NO_PROMPT=1 "$GREYWALL" --auto-profile --profile claude -- sh -c \
             'git status --porcelain 2>/dev/null | head -1; echo "-- commits"; git log --branches --not --remotes --oneline 2>/dev/null | head -1' 2>/dev/null) \
             || { echo "unreadable"; return; }
     fi
@@ -2075,7 +2076,7 @@ clone_leftovers() { # clone
 # the card's counter do. Without that, every clone whose work was applied stayed forever.
 reviewed_clone_report() { # clone live
     # shellcheck disable=SC2016
-    (cd "$1" && "$GREYWALL" --auto-profile --profile claude --allow-read-path "$2" -- sh -c '
+    (cd "$1" && GREYWALL_NO_PROMPT=1 "$GREYWALL" --auto-profile --profile claude --allow-read-path "$2" -- sh -c '
         git status --porcelain 2>/dev/null | head -1
         echo "-- commits"
         git fetch -q "$1" +main:refs/remotes/origin/main || exit 1
@@ -2251,7 +2252,7 @@ git_popup() { # dir
     mkdir -p "$lazygit_home/config/lazygit" "$lazygit_home/state"
     if [[ -f $HOME/.config/lazygit/config.yml ]]; then cp "$HOME/.config/lazygit/config.yml" "$lazygit_home/config/lazygit/config.yml"; fi
     tmux display-popup -E -w 92% -h 92% -d "$directory" -T " lazygit · $(basename "$directory") · push with U in the column " \
-        env XDG_CONFIG_HOME="$lazygit_home/config" XDG_STATE_HOME="$lazygit_home/state" GIT_SSL_CAINFO="$HOME/.cache/agent-ca/bundle.pem" \
+        env GREYWALL_NO_PROMPT=1 XDG_CONFIG_HOME="$lazygit_home/config" XDG_STATE_HOME="$lazygit_home/state" GIT_SSL_CAINFO="$HOME/.cache/agent-ca/bundle.pem" \
         "$HOME/.local/bin/greywall" --auto-profile --profile claude --allow-path "$lazygit_home" -- lazygit
 }
 
@@ -2313,7 +2314,7 @@ apply_run() { # clone
     live=$(live_checkout_of "$name")
     echo "Exporting the commits $live lacks, inside greywall …"
     # shellcheck disable=SC2016
-    if ! (cd "$clone" && "$GREYWALL" --auto-profile --profile claude --allow-read-path "$live" -- sh -c \
+    if ! (cd "$clone" && GREYWALL_NO_PROMPT=1 "$GREYWALL" --auto-profile --profile claude --allow-read-path "$live" -- sh -c \
             'git fetch -q "$1" main:refs/remotes/origin/main && rm -f .outgoing/*.patch && git format-patch -q --ignore-if-in-upstream -o .outgoing refs/remotes/origin/main' \
             sh "$live"); then
         echo "The export failed (above): nothing applied."

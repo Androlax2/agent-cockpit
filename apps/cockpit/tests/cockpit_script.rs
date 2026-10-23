@@ -191,7 +191,7 @@ impl Manager {
         sandbox.shim("cockpit-team", r#"[[ $1 == sleep-prepare ]] && { echo '{"token":null}'; exit 0; }; exit 1"#);
         sandbox.shim("osd-show", "");
         // greywall runs the command as it is: the sandbox is not what these tests check.
-        sandbox.shim("greywall", r#"[[ $1 == --version ]] && exit 1; while [[ $# -gt 0 && $1 != -- ]]; do shift; done; shift; exec "$@""#);
+        sandbox.shim("greywall", r#"[[ $1 == --version ]] && exit 1; printf 'profile-prompt %s\n' "${GREYWALL_NO_PROMPT:-unset}" >> "$SHIM_LOG"; while [[ $# -gt 0 && $1 != -- ]]; do shift; done; shift; exec "$@""#);
         sandbox.env.insert("COCKPIT_GREYWALL".into(), sandbox.shims.join("greywall").display().to_string());
         // Claude stays in its pane until SHIM_CLAUDE_EXIT_AFTER keys were sent (by default it never
         // leaves); the pane reading (classify) is the real one.
@@ -1525,7 +1525,19 @@ fn lazygit_runs_inside_greywall() {
     manager.run(&["git", &path_str(&manager.project)], &[]);
     let popup = manager.tmux_calls("display-popup").pop().expect("no popup");
     assert!(popup.contains("/.local/bin/greywall --auto-profile --profile claude"), "{popup}");
+    assert!(popup.contains("env GREYWALL_NO_PROMPT=1 "), "{popup}");
     assert!(popup.ends_with("-- lazygit"), "{popup}");
+}
+
+#[test]
+fn parallel_git_keeps_the_reviewed_profile_without_prompting() {
+    let manager = Manager::new();
+    manager.git_repository();
+    let clones = manager.sandbox.root.join("clones");
+    let output = manager.run(&["parallel", &path_str(&manager.project), "feat/profile"],
+        &[("COCKPIT_CLONES", &path_str(&clones)), ("GREYWALL_NO_PROMPT", "")]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(manager.calls("profile-prompt"), ["profile-prompt 1"]);
 }
 
 #[test]
@@ -1975,6 +1987,15 @@ fn without_a_yes_no_clone_is_deleted() {
     let clones = Clones::new();
     clones.review("\n");
     assert!(clones.root.join("clean").exists());
+}
+
+#[test]
+fn clone_sweep_keeps_the_reviewed_profile_without_prompting() {
+    let clones = Clones::new();
+    clones.run(&["clones-sweep"], &[("GREYWALL_NO_PROMPT", "")], "");
+    let prompts = clones.manager.calls("profile-prompt");
+    assert!(!prompts.is_empty());
+    assert!(prompts.iter().all(|call| call == "profile-prompt 1"), "{prompts:?}");
 }
 
 #[test]
@@ -2923,6 +2944,18 @@ fn the_sweep_keeps_a_dotfiles_clone_with_a_commit_live_main_lacks() {
 }
 
 #[test]
+fn reviewed_clone_sweep_keeps_the_reviewed_profile_without_prompting() {
+    let manager = Manager::new();
+    let (live, work) = dotfiles_pair(&manager);
+    let (clones, _) = parallel_dotfiles_clone(&manager, &live);
+    let output = manager.sandbox.run_with_input(bin().join("cockpit"), &["clones-sweep"],
+        &[("CLAUDE_DOTFILES_LIVE", &path_str(&live)), ("CLAUDE_DOTFILES_WORK", &path_str(&work)),
+          ("COCKPIT_CLONES", &path_str(&clones)), ("GREYWALL_NO_PROMPT", "")], "");
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(manager.calls("profile-prompt"), ["profile-prompt 1"]);
+}
+
+#[test]
 fn apply_dotfiles_takes_a_parallel_clones_commits() {
     let manager = Manager::new();
     let (live, work) = dotfiles_pair(&manager);
@@ -2957,6 +2990,18 @@ fn u_on_a_dotfiles_clone_exports_only_what_live_main_lacks_then_applies_it() {
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
     assert!(stdout(&output).contains("1 commit(s)"), "the applied commit was exported again: {}", stdout(&output));
     assert_eq!(git_output(&live, &["log", "--format=%s", "-3"]), "Add waiting\nAdd applied\ninit");
+}
+
+#[test]
+fn apply_export_keeps_the_reviewed_profile_without_prompting() {
+    let manager = Manager::new();
+    let (live, work) = dotfiles_pair(&manager);
+    let (clones, clone) = parallel_dotfiles_clone(&manager, &live);
+    let output = manager.sandbox.run_with_input(bin().join("cockpit"), &["apply-run", &path_str(&clone)],
+        &[("CLAUDE_DOTFILES_LIVE", &path_str(&live)), ("CLAUDE_DOTFILES_WORK", &path_str(&work)),
+          ("COCKPIT_CLONES", &path_str(&clones)), ("GREYWALL_NO_PROMPT", "")], "\n\n");
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(manager.calls("profile-prompt"), ["profile-prompt 1"]);
 }
 
 #[test]
