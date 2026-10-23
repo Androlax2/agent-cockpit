@@ -542,7 +542,7 @@ class MobileBrowserTests(unittest.TestCase):
                                                  "author": {"login": "sam"}, "updatedAt": "2026-10-19T10:00:00Z"}]) + "'")
         self.open_paired()
         self.page.set_viewport_size({"width": 320, "height": 640})
-        for label, content in [("Todo", "Unbroken"), ("Pull requests", "LongName")]:
+        for label, content in [("Todo", "Unbroken"), ("Pull requests", "longname")]:
             with self.subTest(tab=label):
                 self.page.get_by_role("button", name=label, exact=True).tap()
                 expect(self.page.locator("#work .card")).to_contain_text(content)
