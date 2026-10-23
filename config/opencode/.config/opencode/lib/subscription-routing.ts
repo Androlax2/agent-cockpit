@@ -124,6 +124,37 @@ export async function setupSubscriptionRouting(ctx: any, sessionID: string) {
     if (model.providerID === "openai" && !account) return
     return { model: { ...model }, connection: connection.id, ...(account ? { account } : {}) }
   }
+  const billingEligible = async (selected: Owner): Promise<boolean> => {
+    if (selected.model.providerID !== "anthropic") return true
+    try {
+      const connection = await ctx.integration.connection.active("anthropic")
+      if (connection?.id !== selected.connection || connection.type !== "credential") return false
+      const credential = await ctx.integration.connection.resolve(connection)
+      if (credential?.type !== "oauth" || typeof credential.access !== "string" || !credential.access
+        || !Number.isFinite(credential.expires) || credential.expires <= Date.now()) return false
+      const response = await fetch("https://api.anthropic.com/api/oauth/profile", {
+        headers: { Authorization: `Bearer ${credential.access}`, Accept: "application/json", "anthropic-beta": "oauth-2025-04-20" },
+        signal: AbortSignal.any([controller.signal, AbortSignal.timeout(15000)]), redirect: "error",
+      })
+      if (!response.ok || !response.body) throw new Error("profile unavailable")
+      const chunks: Uint8Array[] = []
+      let bytes = 0
+      for await (const chunk of response.body) {
+        bytes += chunk.length
+        if (bytes > 1024 * 1024) throw new Error("profile exceeds the safe size")
+        chunks.push(chunk)
+      }
+      const profile = JSON.parse(Buffer.concat(chunks).toString("utf8"))
+      const current = await ctx.integration.connection.active("anthropic")
+      if (stopped || current?.id !== selected.connection || current.type !== "credential") return false
+      const resolved = await ctx.integration.connection.resolve(current)
+      return resolved?.type === "oauth" && resolved.access === credential.access
+        && profile?.organization?.has_extra_usage_enabled === false
+    } catch {
+      console.warn("cockpit plugin: cannot verify Claude extra usage is disabled; automatic Claude routing paused")
+      return false
+    }
+  }
   const quota = async (selected: Owner, force = false): Promise<Capacity> => {
     const connection = await ctx.integration.connection.active(selected.model.providerID)
     if (connection?.id !== selected.connection || connection.type !== "credential") return "unknown"
@@ -204,6 +235,7 @@ export async function setupSubscriptionRouting(ctx: any, sessionID: string) {
   }
   const admit = async () => {
     if (!route?.target || !route.inboxID || stopped) return
+    if (!await billingEligible(route.target)) return
     if (!sameConnection(await owner(route.target.model), route.target)) {
       route = undefined
       await save()
@@ -241,7 +273,7 @@ export async function setupSubscriptionRouting(ctx: any, sessionID: string) {
     if (!models.some((model: any) => model.enabled && model.capabilities?.tools
       && model.providerID === target.model.providerID && model.id === target.model.id
       && (!target.model.variant || model.variants?.some((variant: any) => variant.id === target.model.variant)))
-      || !sameConnection(await owner(target.model), target)) return
+      || !sameConnection(await owner(target.model), target) || !await billingEligible(target)) return
     if (!route || stopped || inputVersion !== requestedInput) return
     route.target = target
     route.inboxID = `msg_cockpitquota${randomBytes(16).toString("hex")}`
@@ -409,6 +441,9 @@ export async function setupSubscriptionRouting(ctx: any, sessionID: string) {
       || event.model.providerID === "openai" && accountOf(credential) !== expected.account
       || hasApiKey || hostname !== expectedHost) {
       throw new Error("Automatic subscription continuation paused after an account, endpoint or API billing change")
+    }
+    if (!await billingEligible(expected)) {
+      throw new Error("Automatic Claude continuation requires confirmed disabled extra usage")
     }
   }
   registrations.push(await ctx.session.hook("http.request", guardBilling))

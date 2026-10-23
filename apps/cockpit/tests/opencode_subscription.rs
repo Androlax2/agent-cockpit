@@ -28,6 +28,10 @@ let waiting = false
 let release = () => {}
 globalThis.fetch = async (url, input) => {
   if (input.headers.Authorization !== 'Bearer fixture-token') throw new Error('wrong auth transport')
+  if (url === 'https://api.anthropic.com/api/oauth/profile') {
+    if (config.profileUnavailable) throw new Error('profile unavailable')
+    return new Response(JSON.stringify({organization:{has_extra_usage_enabled:config.extraUsage ?? false}}))
+  }
   if (url === 'https://api.anthropic.com/api/oauth/usage') return new Response(JSON.stringify({
     five_hour:{utilization:config.targetUsed ?? 10,resets_at:'2099-01-01T00:00:00Z'},
     seven_day:{utilization:10,resets_at:'2099-01-01T00:00:00Z'},
@@ -89,6 +93,7 @@ for (const step of config.steps ?? []) {
   if(step.history) messages.splice(0,messages.length,...step.history)
   if(step.targetMethod) config.targetMethod=step.targetMethod
   if(step.sourceMethod) config.sourceMethod=step.sourceMethod
+  if(step.extraUsage!==undefined) config.extraUsage=step.extraUsage
   if(step.retry){
     const event={sessionID:root,model:{...model},error:{status:429,type:'rate_limit'},attempt:2,decision:{retry:true,delay:1000}}
     await hooks.get('retry')(event)
@@ -170,6 +175,25 @@ fn opencode_rejects_api_key_unusable_and_wrong_account_alternatives() {
 fn transient_rate_limits_do_not_switch_a_subscription_with_confirmed_capacity() {
     let result = run(json!({"sourceUsed":20,"steps":[failed()]}));
     assert!(result["calls"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn paid_or_unconfirmed_claude_overage_blocks_automatic_fallback() {
+    for restriction in [json!({"extraUsage":true}), json!({"extraUsage":"false"}), json!({"profileUnavailable":true})] {
+        let mut scenario = restriction;
+        scenario["steps"] = json!([failed()]);
+        assert!(run(scenario)["calls"].as_array().unwrap().is_empty());
+    }
+}
+
+#[test]
+fn enabling_claude_overage_blocks_return_and_outgoing_automatic_requests() {
+    let result = run(json!({"original":{"providerID":"anthropic","id":"claude-opus-4-7"},
+        "targetUsed":100,"sourceUsed":10,"steps":[failed(),{"extraUsage":true,"targetUsed":10,"poll":true}]}));
+    assert_eq!(result["model"]["providerID"], "openai");
+    let result = run(json!({"steps":[failed(),{"extraUsage":true,"request":{}},
+        {"request":{"kind":"title"}},{"request":{"kind":"compaction"}}]}));
+    assert_eq!(result["blockedRequests"], 3);
 }
 
 #[test]

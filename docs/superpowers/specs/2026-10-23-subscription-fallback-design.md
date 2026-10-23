@@ -14,6 +14,13 @@ Cover native Claude Code, native Codex CLI, and OpenCode sessions using those
 subscriptions where the provider actually supports subscription authentication.
 No Gemini integration or automatic API spending.
 
+Theo chose the included-usage-only billing policy: automatic fallback or return
+to Claude requires fresh confirmation that the execution account's paid extra
+usage is disabled. Enabled, missing or unverified billing settings block Claude
+as a destination, including OpenCode Anthropic continuation. Do not change account
+billing settings. Confirmed included-quota exhaustion may still route away from
+Claude to an eligible Codex subscription.
+
 ## OpenCode connection confirmed by Theo
 
 Theo showed OpenCode's `/connect` account selector with an already connected

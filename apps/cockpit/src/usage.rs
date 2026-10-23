@@ -15,6 +15,8 @@ pub const USAGE_REFRESH_S: f64 = 300.0;
 pub enum SubscriptionCapacity { Available, Exhausted, Unknown }
 
 /// Routing needs raw, account-matched evidence; rounded display rows cannot establish capacity.
+/// Claude collectors must attach the same-account live OAuth profile as `routing_profile`;
+/// `fetched` must be no newer than either observation, never the cached CLI account metadata.
 pub fn subscription_capacity_of(provider: &str, model: &str, usage: &Value, fetched: i64,
                                 failed: Option<i64>, now: i64, account_matches: bool) -> SubscriptionCapacity {
     use SubscriptionCapacity::*;
@@ -89,6 +91,8 @@ pub fn subscription_capacity_of(provider: &str, model: &str, usage: &Value, fetc
     }
     if states.is_empty() || states.contains(&Unknown) { Unknown }
     else if states.contains(&Exhausted) { Exhausted }
+    else if matches!(provider, "claude" | "anthropic")
+        && usage["routing_profile"]["organization"]["has_extra_usage_enabled"].as_bool() != Some(false) { Unknown }
     else { Available }
 }
 

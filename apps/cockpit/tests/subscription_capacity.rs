@@ -4,7 +4,8 @@ use serde_json::{Value, json};
 const NOW: i64 = 1_800_000_000;
 
 fn claude(used: f64) -> Value {
-    json!({"five_hour": {"utilization": used, "resets_at": "2027-01-15T09:00:00Z"},
+    json!({"routing_profile":{"organization":{"has_extra_usage_enabled":false}},
+           "five_hour": {"utilization": used, "resets_at": "2027-01-15T09:00:00Z"},
            "seven_day": {"utilization": 20, "resets_at": "2027-01-20T09:00:00Z"}})
 }
 
@@ -22,6 +23,19 @@ fn unrelated_model_exhaustion_does_not_block_the_selected_model() {
     for (model, expected) in [("claude-sonnet-4-6", SubscriptionCapacity::Available),
                               ("claude-opus-4-7", SubscriptionCapacity::Exhausted)] {
         assert_eq!(subscription_capacity_of("claude", model, &usage, NOW, None, NOW, true), expected);
+    }
+}
+
+#[test]
+fn native_claude_capacity_requires_confirmed_disabled_extra_usage() {
+    for enabled in [json!(true), Value::Null, json!("false")] {
+        let mut usage = claude(10.0);
+        usage["routing_profile"]["organization"]["has_extra_usage_enabled"] = enabled;
+        assert_eq!(subscription_capacity_of("claude", "claude-sonnet-4-6", &usage, NOW, None, NOW, true),
+                   SubscriptionCapacity::Unknown);
+        usage["five_hour"]["utilization"] = json!(100);
+        assert_eq!(subscription_capacity_of("claude", "claude-sonnet-4-6", &usage, NOW, None, NOW, true),
+                   SubscriptionCapacity::Exhausted);
     }
 }
 
@@ -78,6 +92,9 @@ fn native_routing_matches_the_shared_provider_contract_cases() {
     let cases: Value = serde_json::from_str(include_str!("fixtures/subscription-fallback/capacity-cases.json")).unwrap();
     for case in cases.as_array().unwrap() {
         let mut usage = case["usage"].clone();
+        if case["provider"] == "anthropic" {
+            usage["routing_profile"] = json!({"organization":{"has_extra_usage_enabled":false}});
+        }
         if case["provider"] == "openai" { usage["ordinary_usage_allowed"] = case["usage"]["rate_limit"]["allowed"].clone(); }
         let actual = subscription_capacity_of(case["provider"].as_str().unwrap(), case["model"].as_str().unwrap(), &usage, NOW, None, NOW, true);
         let expected = match case["expected"].as_str().unwrap() {
