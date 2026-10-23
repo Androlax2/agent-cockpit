@@ -482,6 +482,7 @@ impl Costs {
             }
             state.scanned_at = now();
             state.scanning = false;
+            crate::app::refresh::background_changed();
         });
     }
 

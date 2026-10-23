@@ -295,6 +295,7 @@ impl Reviews {
             }
             state.loading.remove(&scope);
             state.by_scope.insert(scope, Fetched { rows, issues, error, fetched_at: now() });
+            crate::app::refresh::background_changed();
         });
         true
     }

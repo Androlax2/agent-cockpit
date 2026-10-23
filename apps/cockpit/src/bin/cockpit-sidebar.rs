@@ -4,6 +4,7 @@
 
 
 use cockpit::app::{self, App, Key, Screen};
+use cockpit::app::refresh::{self, Changes, Schedule, Watcher};
 use cockpit::{costs, usage, util};
 use crossterm::event::{DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste, EnableFocusChange, EnableMouseCapture};
 use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode};
@@ -61,21 +62,61 @@ fn run() -> io::Result<()> {
     let mut app = App::new();
     let _ = Command::new("cockpit").arg("sweep").stdout(Stdio::null()).stderr(Stdio::null()).status();
     app.history.refresh();
-    let mut last_tick: Option<Instant> = None;
+    let mut watcher = match Watcher::new(refresh::inputs()) {
+        Ok(watcher) => Some(watcher),
+        Err(error) => {
+            util::log_event("WARN", &format!("sidebar input watch: {error}; using 250 ms polling"));
+            None
+        }
+    };
+    let started = Instant::now();
+    let mut repaired_at = Instant::now();
+    let mut schedule = Schedule::default();
     loop {
-        if last_tick.is_none_or(|at| at.elapsed() >= app::POLL_INTERVAL) || app.viewed_changed() {
+        let changes = match watcher.as_mut().map(Watcher::changes).transpose() {
+            Ok(changes) => changes.unwrap_or_default(),
+            Err(error) => {
+                util::log_event("WARN", &format!("sidebar input watch: {error}; using 250 ms polling"));
+                watcher = None;
+                Changes { refresh: true, immediate: true }
+            }
+        };
+        if repaired_at.elapsed() >= refresh::SAFETY_INTERVAL {
+            let replacement = Watcher::new(refresh::inputs());
+            match replacement {
+                Ok(replacement) => {
+                    if watcher.is_none() { util::log_event("INFO", "sidebar input watch restored"); }
+                    watcher = Some(replacement);
+                }
+                Err(error) => {
+                    if watcher.is_some() {
+                        util::log_event("WARN", &format!("sidebar input watch: {error}; using 250 ms polling"));
+                    }
+                    watcher = None;
+                }
+            }
+            repaired_at = Instant::now();
+        }
+        let full = schedule.due(started.elapsed(), changes, watcher.is_some());
+        let maintenance = schedule.maintenance_due(started.elapsed());
+        let background = refresh::take_background_changed();
+        if full {
             app.tick();
             screen.draw(&mut app);
-            last_tick = Some(Instant::now());
+        } else if maintenance {
+            app.maintain();
+            screen.draw(&mut app);
+        } else if background {
+            app.redraw();
+            screen.draw(&mut app);
         }
         if let Some(key) = screen.next_key(Some(app::VIEW_CHECK_INTERVAL)) {
             app.handle(key, &mut screen);
-            // Drawn from what the last tick read; the next tick, within POLL_INTERVAL, reads again.
             app.redraw();
             screen.draw(&mut app);
         }
         if app.collect_manager() {
-            app.redraw();
+            app.tick();
             screen.draw(&mut app);
         }
     }

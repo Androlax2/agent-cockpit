@@ -118,6 +118,7 @@ impl ProviderStatus {
                 state.error = error;
                 state.fetched_at = now();
                 state.fetching = false;
+                crate::app::refresh::background_changed();
                 previous
             };
             if let Some(current) = current {

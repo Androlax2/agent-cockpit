@@ -300,6 +300,7 @@ pub enum Key {
     /// tmux moved its focus into the column or out of it (focus-events).
     FocusGained,
     FocusLost,
+    Resize,
 }
 
 /// Keep the inspected text stable even if the source session changes or disappears.
@@ -877,6 +878,14 @@ impl App {
     }
 
     pub fn tick(&mut self) {
+        self.shown_session = current_session();
+        self.refresh();
+        self.maintain();
+    }
+
+    /// Time-driven work and presentation from the last gathered sessions. Unlike tick(), this
+    /// does not reread every session's inputs or spawn tmux merely because a second passed.
+    pub fn maintain(&mut self) {
         if self.todo_recovery_pending {
             match crate::todo_editor::recover(&mut self.todos) {
                 Ok(None) => (),
@@ -890,8 +899,6 @@ impl App {
                 }
             }
         }
-        self.shown_session = current_session();
-        self.refresh();
         self.todos.apply_updates();
         self.errors.tick(sessions::reported);
         self.claude_status.tick();
@@ -3360,6 +3367,7 @@ impl App {
     }
 
     pub fn handle(&mut self, key: Key, screen: &mut dyn Screen) {
+        if key == Key::Resize { return; }
         if matches!(key, Key::FocusGained | Key::FocusLost) {
             self.has_pane_focus = key == Key::FocusGained;
             return;
@@ -4205,7 +4213,7 @@ pub fn read_key(timeout: Option<Duration>, last_click: &mut Option<(Instant, u16
             Event::FocusGained => return Some(Key::FocusGained),
             Event::Paste(text) => return Some(Key::Paste(text)),
             Event::FocusLost => return Some(Key::FocusLost),
-            Event::Resize(..) => return None,
+            Event::Resize(..) => return Some(Key::Resize),
             _ => continue,
         }
     }

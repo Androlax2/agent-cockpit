@@ -8,6 +8,14 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+static BACKGROUND_CHANGED: AtomicBool = AtomicBool::new(false);
+
+/// Called explicitly after publishing a worker result; the terminal consumes it without cloning
+/// provider summaries or review lists on each input wait.
+pub fn background_changed() { BACKGROUND_CHANGED.store(true, Ordering::Release); }
+pub fn take_background_changed() -> bool { BACKGROUND_CHANGED.swap(false, Ordering::Acquire) }
 
 pub const SAFETY_INTERVAL: Duration = Duration::from_secs(5);
 const CHANGE_INTERVAL: Duration = Duration::from_millis(250);
@@ -32,6 +40,21 @@ impl Target {
     fn matches(&self, path: &Path) -> bool {
         path == self.path || self.path.starts_with(path) || (self.tree && path.starts_with(&self.path))
     }
+}
+
+pub fn inputs() -> Vec<Target> {
+    use crate::{paths, remote};
+    let mut targets = vec![Target::file(paths::current(), true)];
+    for path in [paths::snapshot(), paths::usage_cache(), paths::codex_usage_cache(), paths::todo_updates(),
+        paths::game_frozen(), paths::loading_state(), paths::todo(), paths::settings(), paths::view_state(),
+        paths::recent_sessions(), paths::history(), paths::credentials(), remote::state_dir().join("devices.json")] {
+        targets.push(Target::file(path, false));
+    }
+    for path in [paths::statusline_dir(), paths::designs(), paths::restarting_dir(), paths::asleep_dir(),
+        paths::ended_sessions(), paths::state_dir().join("prompt-queue"), paths::state_dir().join("restart-when-idle")] {
+        targets.push(Target::tree(path));
+    }
+    targets
 }
 
 pub struct Watcher {
@@ -140,10 +163,19 @@ impl Watcher {
 #[derive(Default)]
 pub struct Schedule {
     last_full: Option<Duration>,
+    last_maintenance: Option<Duration>,
     dirty: bool,
 }
 
 impl Schedule {
+    pub fn maintenance_due(&mut self, now: Duration) -> bool {
+        if self.last_maintenance.is_none_or(|last| now.saturating_sub(last) >= Duration::from_secs(1)) {
+            self.last_maintenance = Some(now);
+            return true;
+        }
+        false
+    }
+
     pub fn due(&mut self, now: Duration, changes: Changes, healthy: bool) -> bool {
         self.dirty |= changes.refresh;
         let elapsed = self.last_full.map(|last| now.saturating_sub(last));
@@ -251,5 +283,15 @@ mod tests {
         schedule.due(Duration::ZERO, Changes::default(), false);
         assert!(!schedule.due(Duration::from_millis(200), Changes::default(), false));
         assert!(schedule.due(Duration::from_millis(250), Changes::default(), false));
+    }
+
+    #[test]
+    fn maintenance_keeps_running_without_any_input_changes() {
+        let mut schedule = Schedule::default();
+        assert!(schedule.maintenance_due(Duration::ZERO));
+        assert!(!schedule.maintenance_due(Duration::from_millis(40)));
+        assert!(schedule.maintenance_due(Duration::from_secs(1)));
+        assert!(!schedule.maintenance_due(Duration::from_millis(1040)));
+        assert!(schedule.maintenance_due(Duration::from_secs(2)));
     }
 }
