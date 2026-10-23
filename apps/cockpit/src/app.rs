@@ -4,6 +4,7 @@
 use crate::agents::{self, Feature};
 use crate::continuity::Continuity;
 mod continuity_ui;
+pub mod refresh;
 use crate::costs::Costs;
 use crate::errors::ErrorReporter;
 use crate::paths;
