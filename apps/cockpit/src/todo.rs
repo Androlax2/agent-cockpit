@@ -677,7 +677,7 @@ impl TodoList {
     }
 
     /// A blocked report (claude-todo blocked) from a session of any project: an item of agent-cockpit,
-    /// queued so the agent-cockpit session takes it when idle. The reporter is the project of the folder
+    /// queued for a fresh agent-cockpit session on the next tick. The reporter is the project of the folder
     /// the sender's sandbox started in. The same open report is filed once; a project has at most
     /// BLOCKED_OPEN_MAX open and files at most BLOCKED_DAILY_MAX a day.
     fn file_blocked_report(&mut self, update: &Map<String, Value>, session: &str, started_in: &str, reporter: &str) -> Result<(), String> {

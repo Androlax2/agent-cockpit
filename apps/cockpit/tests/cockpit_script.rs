@@ -1439,6 +1439,35 @@ fn a_background_session_gets_its_own_tmux_session_and_leaves_the_viewer_alone() 
 }
 
 #[test]
+fn background_handoffs_started_in_the_same_second_get_distinct_sessions() {
+    let manager = Manager::new();
+    manager.sandbox.shim("date", r#"
+case $1 in
+    +%s) echo 1792713600 ;;
+    +%s%N) printf '1792713600%s\n' "$(/usr/bin/date +%N)" ;;
+    *) exec /usr/bin/date "$@" ;;
+esac
+"#);
+    manager.sandbox.shim("tmux", r#"
+if [[ $1 == new-session ]]; then
+    while (( $# )); do
+        if [[ $1 == -s ]]; then mkdir "$XDG_RUNTIME_DIR/$2"; exit $?; fi
+        shift
+    done
+fi
+"#);
+    for prompt in ["first handoff", "second handoff"] {
+        let result = manager.run(&["background", &path_str(&manager.project), prompt], &[]);
+        assert!(result.status.success(), "{prompt}: {}", stderr(&result));
+    }
+    let launches = manager.tmux_calls("new-session");
+    assert_eq!(launches.len(), 2);
+    let names: Vec<_> = launches.iter().map(|call| call.split_whitespace().nth(4).unwrap()).collect();
+    assert_ne!(names[0], names[1]);
+    for name in names { assert!(manager.sandbox.runtime.join(name).is_dir()); }
+}
+
+#[test]
 fn restore_resumes_each_session_and_skips_a_gone_folder() {
     let manager = Manager::new();
     let result = manager.run(&["restore", &path_str(&manager.project), SESSION_A, "/no/such/dir", SESSION_B], &[]);

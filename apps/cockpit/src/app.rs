@@ -1062,16 +1062,20 @@ impl App {
         }
     }
 
-    /// Every half minute: a session idle at its prompt for QUEUE_IDLE_S, with nothing given to it
-    /// still in progress, gets its project's first queued item. Not the session Theo has on screen
-    /// in the cockpit: he may be about to type in it.
+    /// Handed work starts fresh sessions on each tick. Every half minute, an idle session with no
+    /// assigned work gets its project's first ordinary queued item. Not the session Theo has on
+    /// screen in the cockpit: he may be about to type in it.
     pub fn dispatch_queue(&mut self) {
         let now = util::now();
-        if now - self.queue_checked < QUEUE_CHECK_S || self.todos.queued.is_empty() {
+        if self.todos.queued.is_empty() {
+            return;
+        }
+        let context = self.queue_context();
+        self.start_sessions_for_handed_work(&context);
+        if now - self.queue_checked < QUEUE_CHECK_S {
             return;
         }
         self.queue_checked = now;
-        let context = self.queue_context();
         let idle: Vec<Session> = self.all_sessions().into_iter()
             .filter(|session| queue::block(session, &context, self.todos.busy(&session.session), prompts::count(&session.session) > 0).is_none())
             .collect();
@@ -1092,28 +1096,22 @@ impl App {
                                              &session.session[..8.min(session.session.len())], (now as i64 - session.since) / 60));
             self.message = format!("queue: gave {} its next item", session.project);
         }
-        self.start_sessions_for_handed_work(&context);
     }
 
-    /// Work a session handed over (across a link, or once what it waited on is done) for a project
-    /// where no session runs: a background session starts for it, as h does, one item per project
-    /// per check. Theo's own Q items keep waiting for a session he starts.
+    /// Handed work and setup blockers get fresh background sessions on every tick, before idle
+    /// sessions can absorb them. Theo's own Q items keep waiting for a session he starts.
     fn start_sessions_for_handed_work(&mut self, context: &queue::QueueContext) {
         if !context.enabled || context.gaming {
             return;
         }
-        let running: HashSet<String> = self.all_sessions().iter().map(|session| project_name(&util::repository_root(&session.cwd))).collect();
         let mut handed: Vec<Entry> = self.todos.items.iter()
-            .filter(|item| item.status() == "todo" && self.todos.is_queued(&item.id()) && !item.queued_by().is_empty() && !item.is_waiting() && !item.is_design())
+            .filter(|item| item.status() == "todo" && self.todos.is_queued(&item.id())
+                && (!item.queued_by().is_empty() || item.is_blocked_report()) && !item.is_waiting() && !item.is_design())
             .map(|item| Entry::Typed(item.clone())).collect();
         handed.sort_by(todo::queue_order);
-        let mut started = HashSet::new();
         for entry in handed {
             let Entry::Typed(item) = &entry else { continue };
             let project = project_name(&util::repository_root(&item.cwd()));
-            if running.contains(&project) || !started.insert(project.clone()) {
-                continue;
-            }
             let directory = match start_directory(&item.cwd()) {
                 Ok(directory) => directory,
                 Err(error) => { util::log_event("WARN", &format!("queue: cannot start a session for {}: {error}", item.id())); continue }
@@ -1125,7 +1123,7 @@ impl App {
             manager_in_background(&["--agent", &agent, "background", &directory, &todo::with_todo_note(&todo::prompt_of(&entry), &item.id())]);
             self.todos.set_status(&item.id(), "doing", "");
             if let Err(error) = self.record_task_assignment(&entry, None) { self.continuity_error = Some(error); }
-            util::log_event("INFO", &format!("queue: no session in {project}, started one for {} ({})", item.id(), item.queued_by()));
+            util::log_event("INFO", &format!("queue: started a fresh session in {project} for {} ({})", item.id(), item.queued_by()));
             crate::audit::record("column", "queue.session_started", "ok", serde_json::json!({"id": item.id(), "project": project, "queued_by": item.queued_by()}));
             self.message = format!("queue: started a session in {project} for handed work");
         }

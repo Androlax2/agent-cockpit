@@ -70,7 +70,7 @@ agent_claude_new_with_prompt() { # dir prompt
 }
 
 agent_claude_background() { # dir prompt
-    tmux new-session -d -s "claude-retry-bg-$(date +%s)" -x 200 -y 50 -c "$1" \
+    tmux new-session -d -s "claude-retry-bg-$(date +%s%N)" -x 200 -y 50 -c "$1" \
         env -u COCKPIT_TEAM_RESUME COCKPIT_INSIDE=1 COCKPIT_CREDITS="$launch_credits" COCKPIT_TEAM_SPAWN="$launch_team_spawn" fish -ic 'claude $argv' -- "$2"
 }
 
