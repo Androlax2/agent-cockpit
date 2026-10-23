@@ -30,7 +30,8 @@
 //! An id is a typed item's 8 hex characters, or a GitHub issue as owner/repo#12. The list is read
 //! from ~/.local/state/cockpit/todo.json; the sandbox cannot write there, so changes go to
 //! the OSD daemon on its report socket, which queues them with the folder the session's sandbox
-//! started in, and the cockpit's column applies them. CLAUDE_TODO_PATH overrides the list (tests).
+//! started in, and the cockpit's column applies them. Submission is not confirmation of a save:
+//! the column may reject an update, including for rate limits. CLAUDE_TODO_PATH overrides the list (tests).
 
 use cockpit::{approval, paths, todo_images};
 use cockpit::todo::{Category, Item, STACK_REPOS};
@@ -68,7 +69,10 @@ const USAGE: &str = "    cockpit-todo list [--all]        the items of this dire
                                     greywall.json denies you is a blocked report, not this
     cockpit-todo greywall '<title>' …  the same as stack greywall
     cockpit-todo delete <id>         remove an item a session filed in this project (never one Theo wrote)
-    cockpit-todo show <id>           an item with its notes and the paths of its pasted images";
+    cockpit-todo show <id>           an item with its notes and the paths of its pasted images
+
+Changes are submitted to the cockpit, not saved immediately. The column may reject them,
+including for rate limits. Check cockpit-todo list --all to confirm an item was saved.";
 
 fn todo_path() -> PathBuf {
     paths::cockpit_env("COCKPIT_TODO_PATH", "CLAUDE_TODO_PATH").map(PathBuf::from).unwrap_or_else(|_| paths::todo())
@@ -218,24 +222,28 @@ fn file(action: &str, repo: Option<&str>, title: &str, why: Option<String>, note
             update.insert(key.into(), json!(value.chars().take(4000).collect::<String>()));
         }
     }
-    match append(update) {
-        Ok(()) if action == "propose" => { println!("Proposed to Theo in {}'s list (Theo approves or declines it).", target.unwrap_or_else(project)); 0 }
-        Ok(()) if action == "stack" => { println!("Proposed to Theo in {}'s list (Theo approves or declines it).", repo.unwrap_or_default()); 0 }
-        Ok(()) if action == "blocked" => { println!("Reported in the agent-cockpit list and queued for its session. Tell Theo what you could not do; don't work around it."); 0 }
-        Ok(()) => match target.filter(|target| *target != project()) {
+    if let Err(error) = append(update) {
+        eprintln!("cockpit-todo: {error}");
+        return 1;
+    }
+    println!("Submitted to the cockpit; not yet saved. The column may reject it, including for rate limits. Check cockpit-todo list --all to confirm.");
+    match action {
+        "propose" => println!("If accepted, it goes to Theo in {}'s list (Theo approves or declines it).", target.unwrap_or_else(project)),
+        "stack" => println!("If accepted, it goes to Theo in {}'s list (Theo approves or declines it).", repo.unwrap_or_default()),
+        "blocked" => println!("If accepted, it goes to the agent-cockpit list and queue for its session. Tell Theo what you could not do; don't work around it."),
+        _ => match target.filter(|target| *target != project()) {
             Some(target) => {
                 if after.is_empty() {
-                    println!("Added to {target}'s list and queued: an idle {target} session takes it up, or a new one starts. You are told when it is done.");
+                    println!("If accepted, it goes to {target}'s list and queue: an idle {target} session takes it up, or a new one starts. You are told when it is done.");
                 } else {
-                    println!("Added to {target}'s list; it joins the queue once {} done. You are told when it is done.", after.join(", ") + if after.len() > 1 { " are" } else { " is" });
+                    println!("If accepted, it goes to {target}'s list; it joins the queue once {} done. You are told when it is done.", after.join(", ") + if after.len() > 1 { " are" } else { " is" });
                 }
-                0
             }
-            None if !after.is_empty() => { println!("Added to {}'s list; it joins the queue once {} done.", project(), after.join(", ") + if after.len() > 1 { " are" } else { " is" }); 0 }
-            None => { println!("Added to {}'s list.", project()); 0 }
+            None if !after.is_empty() => println!("If accepted, it goes to {}'s list; it joins the queue once {} done.", project(), after.join(", ") + if after.len() > 1 { " are" } else { " is" }),
+            None => println!("If accepted, it goes to {}'s list.", project()),
         },
-        Err(error) => { eprintln!("cockpit-todo: {error}"); 1 }
     }
+    0
 }
 
 fn list(everything: bool) -> i32 {

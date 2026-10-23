@@ -349,14 +349,41 @@ fn add_names_another_project_and_the_items_it_waits_on() {
 }
 
 #[test]
-fn add_hands_work_to_any_project_and_says_it_is_queued_there() {
+fn add_hands_work_to_any_project_without_claiming_it_is_already_queued() {
     let sandbox = Sandbox::new();
     let daemon = daemon(&sandbox, "ok");
     let output = claude_todo(&sandbox, &["add", "strict mode", "--project", "dotfiles"], &checkout(&sandbox, "runway"));
     assert_eq!(output.status.code(), Some(0), "{}", String::from_utf8_lossy(&output.stderr));
-    assert!(String::from_utf8_lossy(&output.stdout).contains("Added to dotfiles's list and queued"), "{}", String::from_utf8_lossy(&output.stdout));
+    assert!(stdout(&output).contains("If accepted, it goes to dotfiles's list and queue"), "{}", stdout(&output));
     let sent = updates(&daemon).remove(0);
     assert_eq!((sent["action"].clone(), sent["project"].clone()), (json!("add"), json!("dotfiles")));
+}
+
+#[test]
+fn filing_acknowledges_submission_not_a_saved_item() {
+    let sandbox = Sandbox::new();
+    let _daemon = daemon(&sandbox, "ok");
+    let runway = checkout(&sandbox, "runway");
+    for arguments in [
+        vec!["add", "Title"],
+        vec!["add", "Title", "--project", "runway"],
+        vec!["add", "Title", "--project", "dotfiles"],
+        vec!["add", "Title", "--after", "0123abcd"],
+        vec!["add", "Title", "--project", "dotfiles", "--after", "0123abcd"],
+        vec!["propose", "Title", "--why", "reason"],
+        vec!["propose", "Title", "--why", "reason", "--project", "dotfiles"],
+        vec!["stack", "greyproxy", "Title", "--why", "reason"],
+        vec!["greywall", "Title", "--why", "reason"],
+        vec!["blocked", "Title", "--why", "reason"],
+    ] {
+        let output = claude_todo(&sandbox, &arguments, &runway);
+        assert_eq!(output.status.code(), Some(0), "{arguments:?}: {}", stderr(&output));
+        let message = stdout(&output);
+        assert!(message.starts_with("Submitted") && message.contains("not yet saved"), "{arguments:?}: {message}");
+        assert!(message.contains("may reject") && message.contains("rate limits"), "{arguments:?}: {message}");
+        assert!(message.contains("cockpit-todo list --all"), "{arguments:?}: {message}");
+        assert!(!message.contains("Added to") && !message.contains("Proposed to") && !message.contains("Reported in"), "{arguments:?}: {message}");
+    }
 }
 
 #[test]
