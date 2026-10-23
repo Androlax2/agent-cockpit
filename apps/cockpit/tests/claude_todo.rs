@@ -2,6 +2,9 @@
 //! list, hands its changes to the OSD daemon on the report socket.
 
 mod common;
+#[path = "common/link_fixture.rs"]
+mod link_fixture;
+use cockpit::teams::store::Connection as LinkConnection;
 use common::sandbox::*;
 
 use serde_json::{Value, json};
@@ -36,6 +39,35 @@ fn start_and_done_append_an_update_with_the_session() {
     let recorded: Vec<(Value, Value, Value)> = updates(&daemon).into_iter()
         .map(|update| (update["action"].clone(), update["id"].clone(), update["session"].clone())).collect();
     assert_eq!(recorded, [(json!("doing"), json!("0123abcd"), json!(SESSION_A)), (json!("done"), json!("o/runway#12"), json!(SESSION_A))]);
+}
+
+#[test]
+fn cli_done_closes_shared_work_when_the_host_processes_its_update() {
+    if std::env::var_os("TODO_LINK_COMPLETION_CHILD").is_none() {
+        let sandbox = Sandbox::new();
+        let output = sandbox.command(std::env::current_exe().unwrap(), &[("TODO_LINK_COMPLETION_CHILD", "1")])
+            .args(["--exact", "cli_done_closes_shared_work_when_the_host_processes_its_update", "--nocapture"]).output().unwrap();
+        assert!(output.status.success(), "{}\n{}", stdout(&output), stderr(&output));
+        return;
+    }
+    let project = cockpit::paths::home().join("IdeaProjects/project");
+    fs::create_dir_all(project.join(".git")).unwrap();
+    let mut todos = cockpit::todo::TodoList::load();
+    let id = todos.add("project", project.to_str().unwrap(), "Joint work");
+    let connection = cockpit::teams::store::open(&cockpit::paths::team_database()).unwrap();
+    link_fixture::approve(&connection, &format!("path:{}", project.display()), &id);
+    let daemon = ReportSocket::start(&cockpit::paths::osd_report_socket(), "ok");
+    let output = std::process::Command::new(bin().join("cockpit-todo")).args(["done", &id])
+        .env("CLAUDE_CODE_SESSION_ID", SESSION_A).current_dir(&project).output().unwrap();
+    assert!(output.status.success(), "{}", stderr(&output));
+    let mut records = updates(&daemon);
+    assert_eq!(records.len(), 1);
+    records[0]["started_in"] = json!(project);
+    fs::write(cockpit::paths::todo_updates(), format!("{}\n", records[0])).unwrap();
+    assert_eq!(todos.apply_updates(), 1);
+    assert_eq!(todos.status_of(&id), "done");
+    assert!(todos.set_status(&id, "todo", ""));
+    assert_eq!(link_fixture::state(&connection, &id), "closed");
 }
 
 #[test]

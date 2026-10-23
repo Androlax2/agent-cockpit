@@ -1200,7 +1200,10 @@ impl App {
                 util::log_event("WARN", &format!("queue: cannot give {key} to {}: {error}", session.project));
                 continue;
             }
-            self.todos.set_status(&key, "doing", &session.session);
+            if !self.todos.set_status(&key, "doing", &session.session) {
+                self.message = format!("queue: sent {key}, but cannot save its status");
+                continue;
+            }
             if let Err(error) = self.record_task_assignment(&entry, Some(&session)) { self.continuity_error = Some(error); }
             util::log_event("INFO", &format!("queue: {key} given to {} ({}), idle for {} min", session.project,
                                              &session.session[..8.min(session.session.len())], (now as i64 - session.since) / 60));
@@ -1235,7 +1238,10 @@ impl App {
             };
             let token=match queue::reserve_task(&directory,&item.id(),None,true) {Ok(token)=>token,Err(error)=>{util::log_event("WARN",&format!("queue: {error}"));continue;}};
             if let Err(error)=queue::launch_reserved(&token,&["--agent", &agent, "background", &directory, &todo::with_todo_note(&todo::prompt_of(&entry), &item.id())],true) {util::log_event("WARN",&error);continue;}
-            self.todos.set_status(&item.id(), "doing", "");
+            if !self.todos.set_status(&item.id(), "doing", "") {
+                self.message = format!("queue: started session, but cannot save status for {}", item.id());
+                continue;
+            }
             if let Err(error) = self.record_task_assignment(&entry, None) { self.continuity_error = Some(error); }
             util::log_event("INFO", &format!("queue: started a fresh session in {project} for {} ({})", item.id(), item.queued_by()));
             crate::audit::record("column", "queue.session_started", "ok", serde_json::json!({"id": item.id(), "project": project, "queued_by": item.queued_by()}));
@@ -3231,7 +3237,7 @@ impl App {
                 Some(Entry::Typed(item)) => {
                     if item.0.contains_key("chief_assignment") { return "chief-owned work requires host reconciliation".into(); }
                     let token=self.todos.manual_reservation(&item.id());
-                    self.todos.remove(&item.id());
+                    if let Err(error) = self.todos.remove(&item.id()) { return format!("cannot remove TODO: {error}"); }
                     if let Err(error)=queue::release_manual(&item.cwd(),&item.id(),token.as_deref()) {return error;}
                     "removed".into()
                 }
@@ -3249,7 +3255,7 @@ impl App {
                     }
                     if !self.todos.set_status(&entry.key(), status, "") {
                         if status=="doing" {if let Err(error)=queue::release_manual(&directory,&entry.key(),token.as_deref()) {return error;}}
-                        return "chief-owned work: completion/ownership requires host reconciliation".into();
+                        return "cannot mark TODO; chief-owned work requires host reconciliation, otherwise check the log".into();
                     }
                     if status=="doing" {self.todos.record_manual_reservation(&entry.key(),token.as_deref().expect("reservation obtained"));}
                     if status!="doing" {if let Err(error)=queue::release_manual(&directory,&entry.key(),token.as_deref()) {return error;}}
@@ -3333,7 +3339,9 @@ impl App {
                 format!("starting a session in {}", project_name(&directory))
             }
         };
-        self.todos.set_status(&key, "doing", running.as_ref().map(|s| s.session.as_str()).unwrap_or(""));
+        if !self.todos.set_status(&key, "doing", running.as_ref().map(|s| s.session.as_str()).unwrap_or("")) {
+            return format!("{outcome}; cannot save TODO status");
+        }
         if let Err(error) = self.record_task_assignment(entry, running.as_ref()) {
             self.continuity_error = Some(error.clone());
             return format!("{outcome}; task trail unavailable: {error}");
@@ -3358,7 +3366,9 @@ impl App {
         let (branch, text) = todo::handoff_of(entry);
         let token=match queue::reserve_task(&directory,&key,None,false) {Ok(token)=>token,Err(error)=>return error};
         if let Err(error)=queue::launch_reserved(&token,&["--agent", &agent, "parallel", &directory, &branch, &text],true) {return error;}
-        self.todos.set_status(&key, "doing", "");
+        if !self.todos.set_status(&key, "doing", "") {
+            return "starting a new session; cannot save TODO status".into();
+        }
         if let Err(error) = self.record_task_assignment(entry, None) { self.continuity_error = Some(error); }
         format!("starting a new session in a clone of {} (branch {branch})", project_name(&directory))
     }

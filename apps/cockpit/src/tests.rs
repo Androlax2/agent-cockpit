@@ -95,6 +95,126 @@ fn check_fixture_server_panic(test_name: &str, unwind: bool) {
     }
 }
 
+#[path = "../tests/common/link_fixture.rs"]
+mod link_fixture;
+use crate::teams::store::Connection as LinkConnection;
+
+thread_local! {
+    static TODO_SAVE_BARRIER: std::cell::RefCell<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>> = const { std::cell::RefCell::new(None) };
+}
+
+pub(crate) fn pause_todo_before_json() {
+    if let Some((reached, resume)) = TODO_SAVE_BARRIER.with(|barrier| barrier.borrow_mut().take()) {
+        reached.send(()).unwrap();
+        resume.recv().unwrap();
+    }
+}
+
+#[test]
+fn todo_terminal_mutations_exclude_reopening_until_json_is_durable() {
+    use crate::teams::{TaskKey, links, store};
+    let mut violations = Vec::new();
+    for action in ["done", "remove", "retention"] {
+        let fixture = Fixture::new();
+        let project = fixture.root.join("project");
+        fs::create_dir_all(project.join(".git")).unwrap();
+        let mut todos = TodoList::load();
+        let id = todos.add("project", project.to_str().unwrap(), "Joint work");
+        let task = TaskKey { project: format!("path:{}", project.display()), task_id: id.clone() };
+        let mut connection = store::open(&crate::paths::team_database()).unwrap();
+        link_fixture::approve(&connection, &task.project, &id);
+        let mut reopening = todos.clone();
+        let (reached, before_json) = std::sync::mpsc::channel();
+        let (resume, released) = std::sync::mpsc::channel();
+        let terminal_id = id.clone();
+        let terminal = std::thread::spawn(move || {
+            TODO_SAVE_BARRIER.with(|barrier| *barrier.borrow_mut() = Some((reached, released)));
+            match action {
+                "done" => todos.set_status(&terminal_id, "done", ""),
+                "remove" => todos.remove(&terminal_id).is_ok(),
+                "retention" => {
+                    todos.items[0].0.insert("status".into(), json!("done"));
+                    todos.items[0].0.insert("updated".into(), json!(0));
+                    todos.try_save().is_ok()
+                }
+                _ => unreachable!(),
+            }
+        });
+        before_json.recv_timeout(Duration::from_secs(5)).unwrap();
+        let generation: i64 = connection.query_row("SELECT generation FROM link_work", [], |row| row.get(0)).unwrap();
+        assert_eq!(generation, 5, "barrier must follow durable invalidation");
+        assert_eq!(TodoList::load().status_of(&id), "todo", "barrier must precede terminal JSON");
+        let reopened_during_mutation = reopening.set_status(&id, "todo", "");
+        let transaction = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).unwrap();
+        let admitted_generation = if let Ok((_, generation)) = links::enroll_work(&transaction, &task) {
+            transaction.execute("INSERT INTO link_proposals (id,sender,submission_key,fingerprint,task_key,purpose,revision,mapping_hash,work_generation,status,created_at)
+                SELECT 'during-proposal','a','during-request','fingerprint',task_key,purpose,1,'during-hash',?1,'approved',20 FROM link_proposals WHERE id=?2",
+                (generation, format!("{id}-approved"))).unwrap();
+            transaction.execute("INSERT INTO link_participants SELECT 'during-proposal',slot,session_id,agent,project,runtime FROM link_participants WHERE proposal_id=?1",
+                [format!("{id}-approved")]).unwrap();
+            transaction.execute("INSERT INTO links VALUES ('during-link','during-proposal',1,'during-hash',?1,?2,'a','b','during-epoch','active',NULL,20,NULL)",
+                (serde_json::to_string(&task).unwrap(), generation)).unwrap();
+            Some(generation)
+        } else { None };
+        transaction.commit().unwrap();
+        resume.send(()).unwrap();
+        assert!(terminal.join().unwrap(), "{action} must complete after the barrier is released");
+        if action == "done" { assert_eq!(TodoList::load().status_of(&id), "done"); }
+        else { assert!(TodoList::load().items.is_empty()); }
+        assert!(reopening.set_status(&id, "todo", ""));
+        let survived = admitted_generation.is_some_and(|generation| {
+            let transaction = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).unwrap();
+            link_fixture::state(&transaction, "during-link") == "active" && links::require_open_work(&transaction, &task, generation).is_ok()
+        });
+        if reopened_during_mutation || admitted_generation.is_some() || survived {
+            violations.push(format!("{action}: concurrent reopen={reopened_during_mutation}, admitted={admitted_generation:?}, usable after terminal/reopen={survived}"));
+        }
+        assert_eq!(link_fixture::state(&connection, &id), "closed");
+    }
+    assert!(violations.is_empty(), "{}", violations.join("\n"));
+}
+
+#[test]
+fn todo_reopening_excludes_terminal_mutations_across_its_json_boundary() {
+    for action in ["done", "remove", "retention"] {
+        let fixture = Fixture::new();
+        let project = fixture.root.join("project");
+        fs::create_dir_all(project.join(".git")).unwrap();
+        let mut todos = TodoList::load();
+        let id = todos.add("project", project.to_str().unwrap(), "Joint work");
+        let connection = crate::teams::store::open(&crate::paths::team_database()).unwrap();
+        link_fixture::approve(&connection, &format!("path:{}", project.display()), &id);
+        assert!(todos.set_status(&id, "done", ""));
+        let mut reopening = todos.clone();
+        let reopen_id = id.clone();
+        let (reached, before_json) = std::sync::mpsc::channel();
+        let (resume, released) = std::sync::mpsc::channel();
+        let opener = std::thread::spawn(move || {
+            TODO_SAVE_BARRIER.with(|barrier| *barrier.borrow_mut() = Some((reached, released)));
+            reopening.set_status(&reopen_id, "todo", "")
+        });
+        before_json.recv_timeout(Duration::from_secs(5)).unwrap();
+        let concurrent_terminal_succeeded = match action {
+            "done" => todos.set_status(&id, "done", ""),
+            "remove" => todos.remove(&id).is_ok(),
+            "retention" => {
+                todos.items[0].0.insert("updated".into(), json!(0));
+                todos.try_save().is_ok()
+            }
+            _ => unreachable!(),
+        };
+        let generation: i64 = connection.query_row("SELECT generation FROM link_work", [], |row| row.get(0)).unwrap();
+        let status_before_release = TodoList::load().status_of(&id);
+        resume.send(()).unwrap();
+        assert!(opener.join().unwrap());
+        assert!(!concurrent_terminal_succeeded, "{action} bypassed the reopen guard");
+        assert_eq!(generation, 5, "{action} changed lifecycle during reopening");
+        assert_eq!(status_before_release, "done", "{action} changed JSON during reopening");
+        assert_eq!(TodoList::load().status_of(&id), "todo");
+        assert_eq!(link_fixture::state(&connection, &id), "closed");
+    }
+}
+
 #[test]
 fn fixture_server_panic_during_test_unwind_does_not_abort() {
     check_fixture_server_panic("fixture_server_panic_during_test_unwind_does_not_abort", true);
@@ -103,6 +223,225 @@ fn fixture_server_panic_during_test_unwind_does_not_abort() {
 #[test]
 fn fixture_server_panic_without_test_unwind_fails_the_test() {
     check_fixture_server_panic("fixture_server_panic_without_test_unwind_fails_the_test", false);
+}
+
+#[test]
+fn todo_completion_closes_links_before_daemon_observation() {
+    for via in ["status", "queued-cli", "apply-trailer", "host-ui"] {
+        let fixture = Fixture::new();
+        let project = fixture.root.join("project");
+        fs::create_dir_all(project.join(".git")).unwrap();
+        let mut app = fixture.app();
+        let id = app.todos.add("project", project.to_str().unwrap(), "Joint work");
+        let connection = crate::teams::store::open(&crate::paths::team_database()).unwrap();
+        link_fixture::approve(&connection, &format!("path:{}", project.display()), &id);
+        match via {
+            "status" => assert!(app.todos.set_status(&id, "done", SESSION_A)),
+            "queued-cli" | "apply-trailer" => {
+                let mut update = json!({"action": "done", "id": id, "started_in": project});
+                if via == "queued-cli" { update["session"] = json!(SESSION_A); }
+                queue_update(update, &project);
+                assert_eq!(app.todos.apply_updates(), 1);
+            }
+            "host-ui" => {
+                app.build();
+                app.focus_panel(3);
+                app.handle(Key::Char('d'), &mut FakeScreen::default());
+                assert_eq!(app.todos.status_of(&id), "done");
+            }
+            _ => unreachable!(),
+        }
+        assert!(app.todos.set_status(&id, "todo", ""));
+        drop(connection);
+        let mut connection = crate::teams::store::open(&crate::paths::team_database()).unwrap();
+        assert_eq!(link_fixture::state(&connection, &id), "closed", "{via}");
+        let queued_state: String = connection.query_row("SELECT state FROM messages WHERE id=?1", [format!("{id}-queued")], |row| row.get(0)).unwrap();
+        assert_eq!(queued_state, "cancelled", "{via}");
+        let pending: String = connection.query_row("SELECT status FROM link_proposals WHERE id=?1", [format!("{id}-pending")], |row| row.get(0)).unwrap();
+        assert_eq!(pending, "closed", "{via}");
+        let mut approve_old_proposal = || -> Result<(), crate::teams::TeamError> {
+            let transaction = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            let task = crate::teams::TaskKey { project: format!("path:{}", project.display()), task_id: id.clone() };
+            crate::teams::links::require_open_work(&transaction, &task, 4)?;
+            transaction.execute("INSERT INTO links SELECT 'old-approval',id,revision,mapping_hash,task_key,work_generation,'a','b','old-epoch','active',NULL,30,NULL
+                FROM link_proposals WHERE id=?1", [format!("{id}-pending")])?;
+            Ok(transaction.commit()?)
+        };
+        assert!(approve_old_proposal().is_err(), "{via}");
+    }
+}
+
+#[test]
+fn todo_link_storage_failure_never_reports_done_or_removed() {
+    for (key, failure) in [('d', "link_work"), ('x', "link_work"), ('d', "messages"), ('x', "messages"), ('d', "json"), ('x', "json")] {
+        let fixture = Fixture::new();
+        let project = fixture.root.join("project");
+        fs::create_dir_all(project.join(".git")).unwrap();
+        let mut app = fixture.app();
+        let id = app.todos.add("project", project.to_str().unwrap(), "Joint work");
+        let connection = crate::teams::store::open(&crate::paths::team_database()).unwrap();
+        link_fixture::approve(&connection, &format!("path:{}", project.display()), &id);
+        if failure == "json" {
+            let path = crate::paths::todo();
+            fs::remove_file(&path).unwrap();
+            fs::create_dir(&path).unwrap();
+        } else {
+            connection.execute_batch(&format!("CREATE TRIGGER fail_closure BEFORE UPDATE ON {failure} BEGIN SELECT RAISE(ABORT,'fixture closure failure'); END;")).unwrap();
+        }
+        assert!(!app.todos.set_status(&id, "done", ""));
+        app.build();
+        app.focus_panel(3);
+        app.handle(Key::Char(key), &mut FakeScreen::default());
+        assert!(app.message.contains("cannot"), "{}", app.message);
+        assert_eq!(app.todos.status_of(&id), "todo");
+        assert_eq!(app.todos.items.len(), 1);
+        if failure != "json" { assert_eq!(TodoList::load().items.len(), 1); }
+        assert_eq!(link_fixture::state(&connection, &id), if failure == "json" { "closed" } else { "active" });
+    }
+}
+
+#[test]
+fn todo_failed_json_save_preserves_closure_without_notifying_or_releasing_work() {
+    let fixture = Fixture::new();
+    let project = fixture.root.join("project");
+    fs::create_dir_all(project.join(".git")).unwrap();
+    let mut todos = TodoList::load();
+    let id = todos.add("project", project.to_str().unwrap(), "Joint work");
+    let waiting = todos.add("project", project.to_str().unwrap(), "Dependent work");
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "project", project.to_str().unwrap(), 1)]));
+    todos.items[0].0.extend(json!({"link": "other→project", "reporter": "project", "reporter_session": SESSION_A, "started_in": project}).as_object().unwrap().clone());
+    todos.items[1].0.insert("after".into(), json!([id]));
+    todos.save();
+    let before = todos.clone();
+    let connection = crate::teams::store::open(&crate::paths::team_database()).unwrap();
+    link_fixture::approve(&connection, &format!("path:{}", project.display()), &id);
+    let path = crate::paths::todo();
+    fs::remove_file(&path).unwrap();
+    fs::create_dir(&path).unwrap();
+    assert!(!todos.set_status(&id, "done", ""));
+    assert_eq!(todos.items, before.items);
+    assert!(!todos.is_queued(&waiting));
+    assert_eq!(crate::prompts::count(SESSION_A), 0);
+    assert_eq!(link_fixture::state(&connection, &id), "closed");
+    let generation: i64 = connection.query_row("SELECT generation FROM link_work", [], |row| row.get(0)).unwrap();
+    assert_eq!(generation, 5);
+    fs::remove_dir(&path).unwrap();
+    todos.save();
+    assert_eq!(connection.query_row("SELECT generation FROM link_work", [], |row| row.get::<_, i64>(0)).unwrap(), 5);
+    assert_eq!(connection.query_row("SELECT state FROM link_work", [], |row| row.get::<_, String>(0)).unwrap(), "done");
+}
+
+#[test]
+fn todo_deletion_and_retention_close_links_even_from_stale_snapshots() {
+    for via in ["remove", "queued-delete", "retention"] {
+        let fixture = Fixture::new();
+        let project = fixture.root.join("project");
+        fs::create_dir_all(project.join(".git")).unwrap();
+        let mut todos = TodoList::load();
+        let id = todos.add("project", project.to_str().unwrap(), "Joint work");
+        todos.items[0].0.insert("source".into(), json!(format!("session {SESSION_A}")));
+        todos.save();
+        let mut stale = todos.clone();
+        let connection = crate::teams::store::open(&crate::paths::team_database()).unwrap();
+        link_fixture::approve(&connection, &format!("path:{}", project.display()), &id);
+        match via {
+            "remove" => todos.remove(&id).unwrap(),
+            "queued-delete" => {
+                queue_update(json!({"action": "delete", "id": id, "session": SESSION_A}), &project);
+                assert_eq!(todos.apply_updates(), 1);
+            }
+            "retention" => {
+                todos.items[0].0.insert("status".into(), json!("done"));
+                todos.items[0].0.insert("updated".into(), json!(0));
+                todos.try_save().unwrap();
+            }
+            _ => unreachable!(),
+        }
+        assert!(TodoList::load().items.is_empty(), "{via}");
+        assert_eq!(link_fixture::state(&connection, &id), "closed", "{via}");
+        stale.try_save().unwrap();
+        assert_eq!(link_fixture::state(&connection, &id), "closed", "{via}");
+        assert_eq!(connection.query_row("SELECT generation FROM link_work", [], |row| row.get::<_, i64>(0)).unwrap(), 5);
+        assert_ne!(connection.query_row("SELECT state FROM link_work", [], |row| row.get::<_, String>(0)).unwrap(), "open");
+    }
+}
+
+#[test]
+fn todo_retention_refuses_to_drop_work_when_closure_cannot_commit() {
+    let fixture = Fixture::new();
+    let project = fixture.root.join("project");
+    fs::create_dir_all(project.join(".git")).unwrap();
+    let mut todos = TodoList::load();
+    let id = todos.add("project", project.to_str().unwrap(), "Joint work");
+    let connection = crate::teams::store::open(&crate::paths::team_database()).unwrap();
+    link_fixture::approve(&connection, &format!("path:{}", project.display()), &id);
+    todos.items[0].0.insert("status".into(), json!("done"));
+    todos.items[0].0.insert("updated".into(), json!(0));
+    connection.execute_batch("CREATE TRIGGER fail_closure BEFORE UPDATE ON link_work BEGIN SELECT RAISE(ABORT,'fixture closure failure'); END;").unwrap();
+    assert!(todos.try_save().is_err());
+    assert_eq!(todos.items.len(), 1);
+    assert_eq!(TodoList::load().items.len(), 1);
+}
+
+#[test]
+fn todo_existing_unreadable_or_truncated_store_is_not_absent() {
+    for damage in ["directory", "truncated", "invalid", "private", "missing-table"] {
+        let fixture = Fixture::new();
+        let project = fixture.root.join("project");
+        fs::create_dir_all(project.join(".git")).unwrap();
+        let mut todos = TodoList::load();
+        let id = todos.add("project", project.to_str().unwrap(), "Joint work");
+        let path = crate::paths::team_database();
+        let connection = crate::teams::store::open(&path).unwrap();
+        if damage == "missing-table" { connection.execute_batch("DROP TABLE link_work;").unwrap(); }
+        drop(connection);
+        match damage {
+            "directory" => { fs::remove_file(&path).unwrap(); fs::create_dir(&path).unwrap(); }
+            "truncated" => fs::write(&path, "").unwrap(),
+            "invalid" => fs::write(&path, "not sqlite").unwrap(),
+            "private" => fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap(),
+            "missing-table" => (),
+            _ => unreachable!(),
+        }
+        assert!(!todos.set_status(&id, "done", ""), "{damage}");
+        assert!(todos.remove(&id).is_err(), "{damage}");
+        assert_eq!(TodoList::load().status_of(&id), "todo");
+    }
+}
+
+#[test]
+fn todo_failed_reopen_save_does_not_publish_open_lifecycle() {
+    let fixture = Fixture::new();
+    let project = fixture.root.join("project");
+    fs::create_dir_all(project.join(".git")).unwrap();
+    let mut todos = TodoList::load();
+    let id = todos.add("project", project.to_str().unwrap(), "Joint work");
+    let connection = crate::teams::store::open(&crate::paths::team_database()).unwrap();
+    link_fixture::approve(&connection, &format!("path:{}", project.display()), &id);
+    assert!(todos.set_status(&id, "done", ""));
+    let path = crate::paths::todo();
+    fs::remove_file(&path).unwrap();
+    fs::create_dir(&path).unwrap();
+    assert!(!todos.set_status(&id, "todo", ""));
+    assert_eq!(todos.status_of(&id), "done");
+    assert_eq!(connection.query_row("SELECT state FROM link_work", [], |row| row.get::<_, String>(0)).unwrap(), "done");
+}
+
+#[test]
+fn todo_reopening_after_move_keeps_original_owner_closed() {
+    let fixture = Fixture::new();
+    let project = fixture.root.join("project");
+    let other = fixture.root.join("other");
+    for path in [&project, &other] { fs::create_dir_all(path.join(".git")).unwrap(); }
+    let mut todos = TodoList::load();
+    let id = todos.add("project", project.to_str().unwrap(), "Joint work");
+    let connection = crate::teams::store::open(&crate::paths::team_database()).unwrap();
+    link_fixture::approve(&connection, &format!("path:{}", project.display()), &id);
+    assert!(todos.set_status(&id, "done", ""));
+    todos.move_to(&id, "other", other.to_str().unwrap()).unwrap();
+    assert!(todos.set_status(&id, "todo", ""));
+    assert_eq!(connection.query_row("SELECT state FROM link_work", [], |row| row.get::<_, String>(0)).unwrap(), "done");
+    assert_eq!(link_fixture::state(&connection, &id), "closed");
 }
 
 #[test]
@@ -861,7 +1200,7 @@ fn continuity_pruned_tasks_open_archived_details_instead_of_being_recreated() {
     let key = app.todos.add("shop", "/r/shop", "Archived task");
     app.todos.set_status(&key, "doing", SESSION_A);
     app.build();
-    app.todos.remove(&key);
+    app.todos.remove(&key).unwrap();
     app.build();
     continuity_action(&mut app, "1\ttask-trail", &[]);
     app.handle(Key::Enter, &mut FakeScreen::typing(&["0"]));
@@ -8281,7 +8620,7 @@ fn a_fixed_report_does_not_reach_a_session_outside_its_folder_or_whose_folder_is
         let (mut todos, id) = report_blocked_by_session_a(&fixture, &started_in, &cwd, true);
         todos.set_status(&id, "done", "");
         assert_eq!(crate::prompts::count(SESSION_A), 0, "{case}");
-        todos.remove(&id);
+        todos.remove(&id).unwrap();
     }
 }
 

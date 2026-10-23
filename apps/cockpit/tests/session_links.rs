@@ -1,7 +1,10 @@
 mod common;
+#[path = "common/link_fixture.rs"]
+mod link_fixture;
 use common::sandbox::Sandbox;
 use cockpit::{teams::{self, TaskKey, links, store}, todo};
 use rusqlite::Connection;
+use rusqlite::Connection as LinkConnection;
 use serde_json::json;
 use std::{fs, path::Path};
 
@@ -199,4 +202,200 @@ fn store_open_rolls_back_legacy_and_link_changes_on_migration_failure() {
     assert_eq!(connection.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0)).unwrap(), 1);
     assert_eq!(connection.query_row("SELECT count(*) FROM pragma_table_info('proposals') WHERE name='spawn_agent'", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
     assert_eq!(connection.query_row("SELECT count(*) FROM sqlite_master WHERE name='link_work'", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
+}
+
+fn isolated(name: &str) -> bool {
+    if std::env::var_os("SESSION_LINKS_LIFECYCLE_CHILD").is_some() { return false; }
+    let sandbox = Sandbox::new();
+    let output = sandbox.command(std::env::current_exe().unwrap(), &[("SESSION_LINKS_LIFECYCLE_CHILD", "1")])
+        .args(["--exact", name, "--nocapture"]).output().unwrap();
+    assert!(output.status.success(), "{}\n{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+    true
+}
+
+fn lifecycle_fixture() -> (Connection, todo::TodoList, TaskKey) {
+    let project = checkout(&cockpit::paths::home().join("IdeaProjects/project"));
+    let mut todos = todo::TodoList::load();
+    let id = todos.add("project", &project, "Joint work");
+    let task = TaskKey { project: format!("path:{project}"), task_id: id };
+    let connection = store::open(&cockpit::paths::team_database()).unwrap();
+    link_fixture::approve(&connection, &task.project, &task.task_id);
+    (connection, todos, task)
+}
+
+#[test]
+fn lifecycle_checks_reject_old_approvals_and_missing_history() {
+    if isolated("lifecycle_checks_reject_old_approvals_and_missing_history") { return; }
+    let (mut connection, mut todos, task) = lifecycle_fixture();
+    assert!(todos.set_status(&task.task_id, "done", ""));
+    assert!(todos.set_status(&task.task_id, "todo", ""));
+    let approve_old_proposal = |connection: &mut Connection| {
+        let transaction = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        links::require_open_work(&transaction, &task, 4)?;
+        transaction.execute("INSERT INTO links SELECT 'old-approval',id,revision,mapping_hash,task_key,work_generation,'a','b','old-epoch','active',NULL,30,NULL
+            FROM link_proposals WHERE id=?1", [format!("{}-pending", task.task_id)])?;
+        transaction.commit().map_err(teams::TeamError::from)
+    };
+    assert!(approve_old_proposal(&mut connection).is_err());
+    assert_eq!(link_fixture::state(&connection, &task.task_id), "closed");
+    connection.execute_batch("PRAGMA foreign_keys=OFF; DROP TRIGGER retain_link_work; DELETE FROM link_work;").unwrap();
+    let transaction = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).unwrap();
+    assert!(links::enroll_work(&transaction, &task).is_err());
+    assert!(links::require_open_work(&transaction, &task, 4).is_err());
+    drop(transaction);
+    assert!(links::reopen_work(&mut connection, &task).is_err());
+}
+
+#[test]
+fn lifecycle_reads_authoritative_todo_after_acquiring_write_boundary() {
+    if isolated("lifecycle_reads_authoritative_todo_after_acquiring_write_boundary") { return; }
+    let (mut connection, _, task) = lifecycle_fixture();
+    let snapshot = todo::read_shared_work(&task).unwrap();
+    let path = cockpit::paths::todo();
+    for document in ["{broken".to_string(), "{}".to_string(), json!({"items": []}).to_string(),
+        json!({"items": [{"id": task.task_id, "project": "project", "cwd": snapshot.task.project.trim_start_matches("path:"), "text": "Joint work", "status": "done"}]}).to_string()] {
+        fs::write(&path, document).unwrap();
+        let transaction = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).unwrap();
+        assert!(links::require_open_work(&transaction, &task, 4).is_err());
+        assert!(links::enroll_work(&transaction, &task).is_err());
+        drop(transaction);
+        assert!(links::reopen_work(&mut connection, &task).is_err());
+    }
+}
+
+#[test]
+fn lifecycle_closure_preserves_uncertain_deliveries_and_other_work() {
+    if isolated("lifecycle_closure_preserves_uncertain_deliveries_and_other_work") { return; }
+    let (mut connection, _, task) = lifecycle_fixture();
+    connection.execute("UPDATE messages SET recipient_epoch='other-epoch'", []).unwrap();
+    let other = TaskKey { task_id: "abcdef12".into(), ..task.clone() };
+    link_fixture::approve(&connection, &other.project, &other.task_id);
+    connection.execute("INSERT INTO teams VALUES ('team','path:/unrelated','1234abcd',7)", []).unwrap();
+    links::invalidate_work(&mut connection, &task, "done").unwrap();
+    assert_eq!(link_fixture::state(&connection, &other.task_id), "active");
+    for (initial, expected) in [("queued", "cancelled"), ("retry", "cancelled"), ("ready", "cancelled"), ("submitting", "submitting"), ("uncertain", "uncertain"), ("received", "received")] {
+        let state: String = connection.query_row("SELECT state FROM messages WHERE id=?1", [format!("{}-{initial}", task.task_id)], |row| row.get(0)).unwrap();
+        assert_eq!(state, expected);
+    }
+    assert_eq!(connection.query_row("SELECT state FROM attempts WHERE id=?1", [format!("{}-attempt", task.task_id)], |row| row.get::<_, String>(0)).unwrap(), "not_submitted");
+    assert_eq!(connection.query_row("SELECT revision FROM teams WHERE task_key='team'", [], |row| row.get::<_, i64>(0)).unwrap(), 7);
+}
+
+#[test]
+fn lifecycle_enrollment_cannot_reset_a_committed_completion() {
+    if isolated("lifecycle_enrollment_cannot_reset_a_committed_completion") { return; }
+    let project = checkout(&cockpit::paths::home().join("IdeaProjects/project"));
+    let mut todos = todo::TodoList::load();
+    let id = todos.add("project", &project, "New shared work");
+    let task = TaskKey { project: format!("path:{project}"), task_id: id };
+    let mut connection = store::open(&cockpit::paths::team_database()).unwrap();
+    let transaction = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).unwrap();
+    let (work, generation) = links::enroll_work(&transaction, &task).unwrap();
+    assert_eq!(work.title, "New shared work");
+    assert_eq!(generation, 0);
+    transaction.commit().unwrap();
+    links::invalidate_work(&mut connection, &task, "done").unwrap();
+    // The JSON still says todo, as it would after a crash between invalidation and its save.
+    let transaction = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).unwrap();
+    assert!(links::enroll_work(&transaction, &task).is_err());
+    assert!(links::require_open_work(&transaction, &task, 0).is_err());
+    transaction.commit().unwrap();
+    assert!(todos.set_status(&task.task_id, "todo", ""));
+    let transaction = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).unwrap();
+    assert_eq!(links::enroll_work(&transaction, &task).unwrap().1, 1);
+    assert!(links::require_open_work(&transaction, &task, 0).is_err());
+    assert!(links::require_open_work(&transaction, &task, 1).is_ok());
+}
+
+#[test]
+fn lifecycle_authorization_waits_for_writer_before_reading_todo() {
+    if isolated("lifecycle_authorization_waits_for_writer_before_reading_todo") { return; }
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static WAITING: AtomicBool = AtomicBool::new(false);
+    let (mut connection, _, task) = lifecycle_fixture();
+    for enrollment in [false, true] {
+        WAITING.store(false, Ordering::SeqCst);
+        let original = fs::read(cockpit::paths::todo()).unwrap();
+        let transaction = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).unwrap();
+        let task = task.clone();
+        let path = cockpit::paths::team_database();
+        let reader = std::thread::spawn(move || {
+            let mut connection = Connection::open(path).unwrap();
+            connection.busy_handler(Some(|_| {
+                WAITING.store(true, Ordering::SeqCst);
+                std::thread::sleep(std::time::Duration::from_millis(1));
+                true
+            })).unwrap();
+            // Even a deferred caller must acquire the writer boundary before reading JSON.
+            let transaction = connection.transaction().unwrap();
+            if enrollment { links::enroll_work(&transaction, &task).map(|_| ()) }
+            else { links::require_open_work(&transaction, &task, 4).map(|_| ()) }
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !WAITING.load(Ordering::SeqCst) && !reader.is_finished() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        let waited = WAITING.load(Ordering::SeqCst);
+        fs::write(cockpit::paths::todo(), "{broken").unwrap();
+        transaction.commit().unwrap();
+        assert!(reader.join().unwrap().is_err(), "authorized a pre-transaction snapshot");
+        assert!(waited, "authorization bypassed the lifecycle writer");
+        fs::write(cockpit::paths::todo(), original).unwrap();
+    }
+}
+
+#[test]
+fn lifecycle_invalidation_and_final_authorization_share_the_writer_boundary() {
+    if isolated("lifecycle_invalidation_and_final_authorization_share_the_writer_boundary") { return; }
+    let (mut connection, _, task) = lifecycle_fixture();
+    let mut closer = store::open(&cockpit::paths::team_database()).unwrap();
+    closer.busy_timeout(std::time::Duration::ZERO).unwrap();
+    let claim = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).unwrap();
+    links::require_open_work(&claim, &task, 4).unwrap();
+    assert!(links::invalidate_work(&mut closer, &task, "done").is_err());
+    claim.commit().unwrap();
+    links::invalidate_work(&mut closer, &task, "done").unwrap();
+    let claim = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).unwrap();
+    assert!(links::require_open_work(&claim, &task, 4).is_err());
+}
+
+#[test]
+fn lifecycle_host_mutation_guard_is_shared_across_processes() {
+    if let Ok(operation) = std::env::var("LIFECYCLE_GUARD_OPERATION") {
+        let task: TaskKey = serde_json::from_str(&std::env::var("LIFECYCLE_GUARD_TASK").unwrap()).unwrap();
+        let mut connection = store::open(&cockpit::paths::team_database()).unwrap();
+        match operation.as_str() {
+            "reopen" => assert!(links::reopen_work(&mut connection, &task).is_err()),
+            "invalidate" => assert!(links::invalidate_work(&mut connection, &task, "done").is_err()),
+            "save" => assert!(!todo::TodoList::load().set_status(&task.task_id, "done", "")),
+            _ => unreachable!(),
+        }
+        return;
+    }
+    if isolated("lifecycle_host_mutation_guard_is_shared_across_processes") { return; }
+    use std::os::{fd::AsRawFd, unix::fs::OpenOptionsExt};
+    let (mut connection, _, task) = lifecycle_fixture();
+    links::invalidate_work(&mut connection, &task, "done").unwrap();
+    let before = fs::read(cockpit::paths::todo()).unwrap();
+    let guard = fs::OpenOptions::new().create(true).write(true).truncate(false).mode(0o600)
+        .open(cockpit::paths::todo().with_extension("mutation.lock")).unwrap();
+    assert_eq!(unsafe { libc::flock(guard.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) }, 0);
+    let mut failures = Vec::new();
+    for operation in ["reopen", "invalidate", "save"] {
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .env("LIFECYCLE_GUARD_OPERATION", operation).env("LIFECYCLE_GUARD_TASK", serde_json::to_string(&task).unwrap())
+            .args(["--exact", "lifecycle_host_mutation_guard_is_shared_across_processes", "--nocapture"])
+            .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn().unwrap();
+        let output = common::sandbox::finish(child, std::time::Duration::from_secs(5));
+        if !output.status.success() {
+            failures.push(format!("{operation}: {}\n{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr)));
+        }
+    }
+    drop(guard);
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+    assert_eq!(fs::read(cockpit::paths::todo()).unwrap(), before);
+    assert_eq!(connection.query_row("SELECT generation FROM link_work", [], |row| row.get::<_, i64>(0)).unwrap(), 5);
+    links::reopen_work(&mut connection, &task).unwrap();
+    let transaction = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).unwrap();
+    assert!(links::require_open_work(&transaction, &task, 5).is_ok());
 }

@@ -23,6 +23,10 @@ const CODEX_SESSION: &str = "cdx_c214e8c0c9458f09ea4300974071bcad955995188f33264
 
 static ENVIRONMENT: Mutex<()> = Mutex::new(());
 
+#[path = "../../cockpit/tests/common/link_fixture.rs"]
+mod link_fixture;
+use cockpit::teams::store::Connection as LinkConnection;
+
 /// A temporary HOME, runtime and state folder, the run and guide queues in `root`.
 struct Fixture {
     root: PathBuf,
@@ -3431,6 +3435,27 @@ fn a_todo_update_is_queued_with_the_folder_its_sandbox_started_in() {
     bench.registry.request_from("todo-update", &raw, 500).unwrap();
     let queued: Value = serde_json::from_str(fs::read_to_string(cockpit::paths::todo_updates()).unwrap().trim()).unwrap();
     assert_eq!(queued["started_in"], "/home/theo/IdeaProjects/opusline");
+}
+
+#[test]
+fn todo_completion_invalidates_links_only_for_the_daemon_verified_owner() {
+    let mut bench = Bench::new();
+    let project = cockpit::paths::home().join("IdeaProjects/project");
+    let foreign = cockpit::paths::home().join("IdeaProjects/foreign");
+    for path in [&project, &foreign] { fs::create_dir_all(path.join(".git")).unwrap(); }
+    let mut todos = cockpit::todo::TodoList::load();
+    let id = todos.add("project", project.to_str().unwrap(), "Joint work");
+    let connection = cockpit::teams::store::open(&cockpit::paths::team_database()).unwrap();
+    link_fixture::approve(&connection, &format!("path:{}", project.display()), &id);
+    for (sender, applied, state) in [(&foreign, 0, "active"), (&project, 1, "closed")] {
+        bench.world.borrow_mut().sender_directories.insert(500, sender.display().to_string());
+        let raw = json!({"action": "done", "id": id, "session": SESSION_A, "started_in": project}).to_string();
+        bench.registry.request_from("todo-update", &raw, 500).unwrap();
+        assert_eq!(todos.apply_updates(), applied);
+        assert_eq!(link_fixture::state(&connection, &id), state);
+    }
+    assert!(todos.set_status(&id, "todo", ""));
+    assert_eq!(link_fixture::state(&connection, &id), "closed");
 }
 
 #[test]

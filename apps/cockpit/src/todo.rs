@@ -206,6 +206,69 @@ impl Item {
 
 const RESULT_MAX: usize = 1000;
 
+pub(crate) struct MutationGuard {
+    _lock: fs::File,
+}
+
+/// Held across the SQLite commit and JSON replacement; never unlink the stable lock inode.
+pub(crate) fn lock_mutations() -> std::io::Result<MutationGuard> {
+    use std::os::{fd::AsRawFd, unix::fs::{OpenOptionsExt, PermissionsExt}};
+    let path = paths::todo().with_extension("mutation.lock");
+    fs::create_dir_all(path.parent().unwrap())?;
+    let lock = fs::OpenOptions::new().create(true).read(true).write(true).truncate(false)
+        .mode(0o600).custom_flags(libc::O_NOFOLLOW).open(path)?;
+    let metadata = lock.metadata()?;
+    if !metadata.is_file() || metadata.permissions().mode() & 0o077 != 0 {
+        return Err(std::io::Error::other("TODO mutation lock must be a private regular file"));
+    }
+    if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        let error = std::io::Error::last_os_error();
+        return Err(if error.kind() == std::io::ErrorKind::WouldBlock {
+            std::io::Error::new(error.kind(), "another TODO mutation is in progress; retry")
+        } else { error });
+    }
+    Ok(MutationGuard { _lock: lock })
+}
+
+fn tracked_work(connection: &rusqlite::Connection, id: &str) -> Result<Vec<crate::teams::TaskKey>, crate::teams::TeamError> {
+    Ok(connection.prepare("SELECT project,task_id FROM link_work WHERE task_id=?1")?
+        .query_map([id], |row| Ok(crate::teams::TaskKey { project: row.get(0)?, task_id: row.get(1)? }))?
+        .collect::<Result<_, _>>()?)
+}
+
+fn invalidate_item(item: &Item, reason: &str, guard: &MutationGuard) -> Result<(), crate::teams::TeamError> {
+    use crate::teams::{TaskKey, canonical_project, links, store};
+    let path = paths::team_database();
+    let existing = store::open_existing(&path)?;
+    let canonical = canonical_project(&item.cwd()).ok();
+    // Real typed work participates in the same SQLite boundary as initial enrollment, even
+    // before its first proposal. A nonexistent checkout cannot authorize a link.
+    let mut connection = match existing {
+        Some(connection) => connection,
+        None if canonical.is_some() => store::open(&path)?,
+        None => return Ok(()),
+    };
+    let mut tasks = tracked_work(&connection, &item.id())?;
+    if let Some(project) = canonical {
+        let task = TaskKey { project, task_id: item.id() };
+        if !tasks.contains(&task) { tasks.push(task); }
+    }
+    for task in tasks { links::invalidate_work_guarded(&mut connection, &task, reason, guard)?; }
+    Ok(())
+}
+
+fn reopen_item(item: &Item, guard: &MutationGuard) -> Result<(), crate::teams::TeamError> {
+    use crate::teams::{canonical_project, links, store};
+    let Some(mut connection) = store::open_existing(&paths::team_database())? else { return Ok(()) };
+    let tasks = tracked_work(&connection, &item.id())?;
+    if tasks.is_empty() { return Ok(()); }
+    let project = canonical_project(&item.cwd())?;
+    for task in tasks.into_iter().filter(|task| task.project == project) {
+        links::reopen_work_guarded(&mut connection, &task, guard)?;
+    }
+    Ok(())
+}
+
 /// A row of the Todo panel: a typed item or an issue, with its status and priority.
 #[derive(Clone, Debug)]
 pub enum Entry {
@@ -570,8 +633,8 @@ impl TodoList {
     }
 
     pub fn try_save(&mut self) -> std::io::Result<()> {
-        let _writer = Self::lock_writer()?;
-        self.try_save_locked()
+        let guard = lock_mutations()?;
+        self.save_guarded(&guard)
     }
 
     pub fn lock_writer() -> std::io::Result<fs::File> {
@@ -602,9 +665,12 @@ impl TodoList {
             && self.original["issues"].as_object().is_none_or(Map::is_empty)
     }
 
-    fn try_save_locked(&mut self) -> std::io::Result<()> {
-        let path = paths::todo();
+    fn save_guarded(&mut self, guard: &MutationGuard) -> std::io::Result<()> {
         let oldest = now_secs() - DONE_KEPT_DAYS * 86400;
+        for item in self.items.iter().filter(|item| item.status() == "done" && item.updated() < oldest) {
+            invalidate_item(item, "done", guard).map_err(std::io::Error::other)?;
+        }
+        let previous = self.clone();
         self.items.retain(|item| item.status() != "done" || item.updated() >= oldest);
         self.issues.retain(|_, value| value.get("status").and_then(Value::as_str) != Some("done")
             || value.get("updated").and_then(Value::as_i64).unwrap_or(0) >= oldest);
@@ -618,7 +684,16 @@ impl TodoList {
         let current = self.encoded();
         let latest = Self::read_for_update(true)?;
         let merged = merge_todos(&self.original, &current, &latest);
-        util::write_json(&path, &merged)?;
+        let path = paths::todo();
+        #[cfg(test)]
+        crate::tests::pause_todo_before_json();
+        let saved = util::write_json(&path, &merged)
+            .and_then(|()| fs::File::open(&path)?.sync_all())
+            .and_then(|()| fs::File::open(path.parent().unwrap())?.sync_all());
+        if let Err(error) = saved {
+            *self = previous;
+            return Err(error);
+        }
         *self = Self::load();
         let mut kept: HashSet<String> = self.items.iter().flat_map(|item| item.images().into_values()).collect();
         kept.extend(crate::todo_editor::draft_images());
@@ -636,10 +711,10 @@ impl TodoList {
         let initial = self.can_initialize();
         // Remember host ownership even if locking, reading or persisting the projection fails.
         self.apply_chief_projection(work);
-        let _writer = Self::lock_writer()?;
+        let guard = lock_mutations()?;
         let mut projected = Self::from_data(Self::read_for_update(initial)?);
         let changed = projected.apply_chief_projection(work);
-        if changed || !paths::todo().is_file() { projected.try_save_locked()?; }
+        if changed || !paths::todo().is_file() { projected.save_guarded(&guard)?; }
         *self = projected;
         Ok(())
     }
@@ -790,9 +865,17 @@ impl TodoList {
         self.declined.iter().any(|declined| normalized(declined) == title)
     }
 
-    pub fn remove(&mut self, id: &str) {
+    pub fn remove(&mut self, id: &str) -> Result<(), String> {
+        let guard = lock_mutations().map_err(|error| format!("cannot remove todo: {error}"))?;
+        let item = self.items.iter().find(|item| item.id() == id).ok_or_else(|| format!("{id} is not in the list"))?;
+        invalidate_item(item, "deleted", &guard).map_err(|error| format!("cannot invalidate shared work: {error}"))?;
+        let previous = self.clone();
         self.items.retain(|item| item.id() != id);
-        self.save();
+        if let Err(error) = self.save_guarded(&guard) {
+            *self = previous;
+            return Err(format!("cannot save the todo list: {error}"));
+        }
+        Ok(())
     }
 
     pub fn manual_reservation(&self, key: &str) -> Option<String> {
@@ -826,7 +909,7 @@ impl TodoList {
     pub fn set_status(&mut self, key: &str, status: &str, session: &str) -> bool {
         if !STATUSES.contains(&status) || self.chief_controls(key) { return false; }
         let result = (|| -> std::io::Result<bool> {
-            let _writer = Self::lock_writer()?;
+            let guard = lock_mutations()?;
             let initial = self.can_initialize();
             let latest = Self::read_for_update(initial)?;
             let disk = Self::from_data(latest.clone());
@@ -837,11 +920,17 @@ impl TodoList {
             let mut updated = Self::from_data(merge_todos(&self.original,&self.encoded(),&latest));
             updated.original = disk.original;
             let mut finished = None;
+            let mut reopening = None;
             if issue_key().is_match(key) {
                 updated.issues.insert(key.into(),json!({"status":status,"updated":now_secs(),"session":session}));
             } else {
                 // A proposal becomes work only through Theo's approval, never a session's status change.
                 let Some(item) = updated.items.iter_mut().find(|item|item.id()==key && item.status()!=PROPOSED) else { return Ok(false) };
+                if status == "done" {
+                    invalidate_item(item, "done", &guard).map_err(std::io::Error::other)?;
+                } else {
+                    reopening = Some(item.clone());
+                }
                 let is_finished = item.status()!="done" && status=="done";
                 let session = if session.is_empty() { item.session() } else { session.to_string() };
                 item.0.insert("status".into(),json!(status));
@@ -850,8 +939,9 @@ impl TodoList {
                 if is_finished { finished = Some(item.clone()); }
             }
             let released = finished.as_ref().map(|item|updated.release_waiting_on(item)).unwrap_or_default();
-            updated.try_save_locked()?;
+            updated.save_guarded(&guard)?;
             *self = updated;
+            if let Some(item) = reopening { reopen_item(&item, &guard).map_err(std::io::Error::other)?; }
             if let Some(finished) = finished {
                 if finished.is_blocked_report() {
                     tell_reporter_to_retry(&finished);
@@ -1316,7 +1406,7 @@ impl TodoList {
             if !is_session_filed {
                 return Err(format!("{id} deleted by a session of {sender_project}, which did not file it there"));
             }
-            self.remove(id);
+            self.remove(id)?;
             util::log_event("INFO", &format!("todo {id} deleted by a session of {sender_project}"));
             Ok(())
         } else {

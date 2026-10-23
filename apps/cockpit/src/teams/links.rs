@@ -1,13 +1,97 @@
 //! Protected shared-work identity and schema; no link grants team membership.
 
 use super::{ErrorCode, TaskKey, TeamError};
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SharedWork {
     pub task: TaskKey,
     pub title: String,
     pub status: String,
+}
+
+/// Enroll new work inside the proposal's transaction. Existing closure evidence is never reset.
+pub fn enroll_work(transaction: &Transaction<'_>, task: &TaskKey) -> Result<(SharedWork, i64), TeamError> {
+    lock_work(transaction)?;
+    let work = crate::todo::read_shared_work(task)?;
+    let task_key = serde_json::to_string(task)?;
+    let lifecycle = work_generation(transaction, task)?;
+    if let Some((generation, state)) = lifecycle {
+        if state != "open" { return Err(TeamError::new(ErrorCode::Conflict, "shared work is closed; explicitly reopen the TODO first")); }
+        return Ok((work, generation));
+    }
+    refuse_lost_history(transaction, &task_key)?;
+    transaction.execute("INSERT INTO link_work VALUES (?1,?2,?3,0,'open',?4)",
+        params![task_key, task.project, task.task_id, crate::util::now_secs() * 1000])?;
+    Ok((work, 0))
+}
+
+/// Approval, intake and final dispatch must call this in their committing transaction.
+/// It never enrolls missing lifecycle rows or trusts an earlier TODO snapshot.
+pub fn require_open_work(transaction: &Transaction<'_>, task: &TaskKey, generation: i64) -> Result<SharedWork, TeamError> {
+    lock_work(transaction)?;
+    match work_generation(transaction, task)? {
+        Some((current, state)) if current == generation && state == "open" => crate::todo::read_shared_work(task),
+        _ => Err(TeamError::new(ErrorCode::Conflict, "shared work lifecycle is closed, missing or stale")),
+    }
+}
+
+fn lock_work(transaction: &Transaction<'_>) -> Result<(), TeamError> {
+    // Also acquire the writer boundary if a future caller accidentally begins a deferred transaction.
+    transaction.execute("UPDATE link_work SET updated_at=updated_at WHERE 0", [])?;
+    Ok(())
+}
+
+fn work_generation(connection: &Connection, task: &TaskKey) -> Result<Option<(i64, String)>, TeamError> {
+    Ok(connection.query_row("SELECT generation,state FROM link_work WHERE task_key=?1 AND project=?2 AND task_id=?3",
+        params![serde_json::to_string(task)?, task.project, task.task_id], |row| Ok((row.get(0)?, row.get(1)?))).optional()?)
+}
+
+fn refuse_lost_history(connection: &Connection, task_key: &str) -> Result<(), TeamError> {
+    let has_history: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM link_proposals WHERE task_key=?1)
+        OR EXISTS(SELECT 1 FROM links WHERE task_key=?1)", [task_key], |row| row.get(0))?;
+    if has_history { return Err(TeamError::new(ErrorCode::Storage, "shared work lifecycle history is missing; approvals cannot be restored")); }
+    Ok(())
+}
+
+/// Standalone host lifecycle closure. Use TodoList for JSON mutations so its guard spans both writes.
+pub fn invalidate_work(connection: &mut Connection, task: &TaskKey, reason: &str) -> Result<(), TeamError> {
+    let guard = crate::todo::lock_mutations()?;
+    invalidate_work_guarded(connection, task, reason, &guard)
+}
+
+pub(crate) fn invalidate_work_guarded(connection: &mut Connection, task: &TaskKey, reason: &str, _guard: &crate::todo::MutationGuard) -> Result<(), TeamError> {
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let task_key = serde_json::to_string(task)?;
+    if work_generation(&transaction, task)?.is_none() { refuse_lost_history(&transaction, &task_key)?; }
+    let state = match reason { "done" => "done", "deleted" => "deleted", _ => "blocked" };
+    let now = crate::util::now_secs() * 1000;
+    transaction.execute("INSERT INTO link_work (task_key,project,task_id,generation,state,updated_at) VALUES (?1,?2,?3,1,?4,?5)
+        ON CONFLICT(task_key) DO UPDATE SET generation=generation+1,state=excluded.state,updated_at=excluded.updated_at",
+        params![task_key, task.project, task.task_id, state, now])?;
+    transaction.execute("UPDATE links SET state='closed',closure_reason=?2,closed_at=?3 WHERE task_key=?1 AND state='active'",
+        params![task_key, reason, now])?;
+    transaction.execute("UPDATE link_proposals SET status='closed',closure_reason=?2 WHERE task_key=?1 AND status='pending'", params![task_key, reason])?;
+    transaction.execute("UPDATE messages SET state='cancelled',last_error=?2 WHERE scope_kind='link'
+        AND link_id IN (SELECT id FROM links WHERE task_key=?1) AND state IN ('queued','ready')", params![task_key, reason])?;
+    transaction.commit()?;
+    Ok(())
+}
+
+/// Recheck already durable open JSON. TodoList holds the same guard across its explicit reopen.
+pub fn reopen_work(connection: &mut Connection, task: &TaskKey) -> Result<(), TeamError> {
+    let guard = crate::todo::lock_mutations()?;
+    reopen_work_guarded(connection, task, &guard)
+}
+
+pub(crate) fn reopen_work_guarded(connection: &mut Connection, task: &TaskKey, _guard: &crate::todo::MutationGuard) -> Result<(), TeamError> {
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    crate::todo::read_shared_work(task)?;
+    let changed = transaction.execute("UPDATE link_work SET state='open',updated_at=?2 WHERE task_key=?1 AND project=?3 AND task_id=?4",
+        params![serde_json::to_string(task)?, crate::util::now_secs() * 1000, task.project, task.task_id])?;
+    if changed != 1 { return Err(TeamError::new(ErrorCode::Storage, "shared work lifecycle is missing")); }
+    transaction.commit()?;
+    Ok(())
 }
 
 /// Version 11 is atomic both standalone and within store initialization's transaction.

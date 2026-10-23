@@ -30,6 +30,19 @@ pub(crate) fn identifier() -> Result<String, TeamError> {
 }
 
 pub fn open(path: &Path) -> Result<Connection, TeamError> {
+    open_database(path, true)
+}
+
+/// A missing store is distinct from damaged or inaccessible collaboration history.
+pub fn open_existing(path: &Path) -> Result<Option<Connection>, TeamError> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => open_database(path, false).map(Some),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn open_database(path: &Path, create: bool) -> Result<Connection, TeamError> {
     let parent = path.parent().filter(|parent| !parent.as_os_str().is_empty())
         .ok_or_else(|| TeamError::new(ErrorCode::Invalid, "team database needs a protected directory"))?;
     for component in path.ancestors() {
@@ -44,14 +57,16 @@ pub fn open(path: &Path) -> Result<Connection, TeamError> {
     if fs::metadata(parent)?.permissions().mode() & 0o077 != 0 {
         return Err(TeamError::new(ErrorCode::Storage, "team state directory must be private (0700)"));
     }
-    let file = OpenOptions::new().read(true).write(true).create(true).truncate(false).mode(0o600)
+    let file = OpenOptions::new().read(true).write(true).create(create).truncate(false).mode(0o600)
         .custom_flags(libc::O_NOFOLLOW).open(path)?;
     if !file.metadata()?.is_file() || file.metadata()?.permissions().mode() & 0o077 != 0 {
         return Err(TeamError::new(ErrorCode::Storage, "team database must be a private regular file"));
     }
-    let mut connection = Connection::open(path)?;
+    let flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE | if create { rusqlite::OpenFlags::SQLITE_OPEN_CREATE } else { rusqlite::OpenFlags::empty() };
+    let mut connection = Connection::open_with_flags(path, flags)?;
     connection.busy_timeout(Duration::from_millis(250))?;
     let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if !create && version == 0 { return Err(TeamError::new(ErrorCode::Storage, "existing collaboration database has no lifecycle schema")); }
     if !(0..=11).contains(&version) { return Err(TeamError::new(ErrorCode::Storage, "unsupported team database version")); }
     connection.execute_batch("PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;")?;
     migrate(&mut connection)?;
