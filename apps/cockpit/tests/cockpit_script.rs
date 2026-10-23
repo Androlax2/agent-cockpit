@@ -50,6 +50,22 @@ const BUSY_WITHOUT_PROMPT: &str = "✻ Flowing… (11s)\n";
 const DIALOG: &str = " Bash command\n   npm test\n Do you want to proceed?\n ❯ 1. Yes\n   2. No\n";
 
 #[test]
+fn show_keeps_waybar_signals_inside_the_test_sandbox() {
+    let mut manager = Manager::new();
+    let outside_commands = manager.sandbox.root.join("outside-commands");
+    let escaped_signal = manager.sandbox.root.join("escaped-signal");
+    write_executable(&outside_commands.join("pkill"), &format!("#!/bin/sh\ntouch '{}'\n", escaped_signal.display()));
+    let path = format!("{}:{}:{}", manager.sandbox.shims.display(), outside_commands.display(), manager.sandbox.env["PATH"]);
+    manager.sandbox.env.insert("PATH".into(), path);
+
+    let output = manager.run(&["show"], &[("SHIM_WS", "2")]);
+
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(!escaped_signal.exists(), "cockpit show sent a signal outside the test sandbox");
+    assert_eq!(manager.calls("pkill"), ["pkill -x -USR1 waybar"]);
+}
+
+#[test]
 fn reload_restores_bar_visibility_for_the_active_workspace() {
     for (workspace, shown, wanted) in [("6", "1", "0"), ("6", "0", "0"), ("2", "0", "1"), ("2", "1", "1")] {
         let manager = Manager::new();
@@ -197,6 +213,7 @@ impl Manager {
         require_release_programs();
         let mut sandbox = Sandbox::new();
         sandbox.shim("tmux", FAKE_TMUX);
+        sandbox.shim("pkill", "exit 0");
         let roles = sandbox.root.join("roles");
         sandbox.env.insert("SHIM_ROLES".into(), roles.display().to_string());
         // Never Theo's opencode database, wherever XDG_DATA_HOME points.
