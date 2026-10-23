@@ -8,6 +8,7 @@
 # private devices, fail-closed isolation, Git/startup protection, trusted SSH includes and reviewed
 # profile preservation, including the explicit env-glob exception (#9, #11–#18).
 # fa0aec2 fixes helper network namespace ownership and fails closed on helper readiness (#19).
+# 48cd9da rejects symlinked hooks-path ancestors before creating directories (#20).
 #   make greywall-patch
 # Move the pins below to the next tip of that branch, or to an upstream release once it ships them.
 # Sessions started before the install keep the old mounts: restart them afterwards.
@@ -16,8 +17,8 @@ set -euo pipefail
 build_dir="${XDG_CACHE_HOME:-$HOME/.cache}/dotfiles-build/greywall"
 target="$HOME/.local/bin/greywall"
 
-greywall_commit=fa0aec2131a0086b09f2763155d8f7e8f377b73e # branch dotfiles
-greywall_sha256=47f90b1564529e81a35d0ee5b10980960ad629e3f6d1f50faff52ab0e921ed61
+greywall_commit=48cd9da6d85e4fd359a2df76d30bf472a7437743 # branch dotfiles
+greywall_sha256=daebb789ad5574a4fe57a5a32b82f7d21f2606a5f68149fdef601718dc4b9482
 # The tun2socks greywall embeds, as its Makefile pins it (same file v0.3.7's release ships).
 tun2socks_url=https://github.com/xjasonlyu/tun2socks/releases/download/v2.5.2/tun2socks-linux-amd64.zip
 tun2socks_sha256=4aa7737009a9f06b9f4957c4fc12932ae0cd2039471d2ae4e5d4666ffeb40a2e
