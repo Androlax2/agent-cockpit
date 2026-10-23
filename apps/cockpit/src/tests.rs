@@ -120,6 +120,9 @@ impl Fixture {
             // COCKPIT_STATE_HOME too: set in opencode sessions, it would win over the
             // XDG_STATE_HOME above and point the tests at Theo's real state.
             for name in ["COCKPIT_STATE_HOME", "COCKPIT_HISTORY", "COCKPIT_TRANSCRIPTS", "CLAUDE_TODO_UPDATES", "CLAUDE_REVIEWS_FIXTURE",
+                         "COCKPIT_ANSWERS_KEY", "COCKPIT_ANSWERS_DIR", "COCKPIT_RUNS_DIR", "COCKPIT_REMOTE_DIR", "COCKPIT_REMOTE_ADDRESS",
+                         "COCKPIT_TODO_PATH", "COCKPIT_TODO_UPDATES", "COCKPIT_DESIGNS_DIR", "COCKPIT_DOTFILES_WORK",
+                         "COCKPIT_GREYWALL_WORK", "COCKPIT_GREYPROXY_WORK", "COCKPIT_REVIEWS_FIXTURE",
                          "COCKPIT_CLONES", "COCKPIT_BOOT_TIME", "COCKPIT_GREYPROXY_DB", "CLAUDE_GREYWALL_WORK", "CLAUDE_GREYPROXY_WORK", "HYPRLAND_INSTANCE_SIGNATURE"] {
                 std::env::remove_var(name);
             }

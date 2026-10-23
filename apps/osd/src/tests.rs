@@ -43,7 +43,7 @@ impl Fixture {
             std::env::set_var("CLAUDE_AUDIT_JOURNAL", "off");
             std::env::set_var("CLAUDE_RUNS_DIR", root.join("queue"));
             std::env::set_var("CLAUDE_ANSWERS_DIR", root.join("answers"));
-            for name in ["COCKPIT_CLONES", "HYPRLAND_INSTANCE_SIGNATURE"] {
+            for name in ["COCKPIT_CLONES", "HYPRLAND_INSTANCE_SIGNATURE", "COCKPIT_ANSWERS_DIR", "COCKPIT_ANSWERS_KEY", "COCKPIT_RUNS_DIR"] {
                 std::env::remove_var(name);
             }
         }
