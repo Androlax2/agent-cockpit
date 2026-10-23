@@ -27,12 +27,12 @@ class GithubRateTests(unittest.TestCase):
         self.bucket = 'installation:77:core'
         self.key = 'a' * 64
 
-    def observe(self, principal='installation:77', remaining=100, resource='core'):
-        return self.rate.observe(principal, {'x-ratelimit-resource': resource, 'x-ratelimit-limit': '5000',
+    def observe(self, principal='installation:77', remaining=100, resource='core', limit=5000):
+        return self.rate.observe(principal, {'x-ratelimit-resource': resource, 'x-ratelimit-limit': str(limit),
                                             'x-ratelimit-remaining': str(remaining),
                                             'x-ratelimit-reset': str(int(time.time()) + 3600)})
 
-    def reserve(self, costs=None, purpose='write', repository_id=42):
+    def reserve(self, costs=None, purpose='inspection', repository_id=42):
         return self.rate.reserve(costs or {self.bucket: 7}, purpose=purpose, repository_id=repository_id,
                                  deadline=time.monotonic() + 30, evidence_key=self.key)
 
@@ -42,6 +42,33 @@ class GithubRateTests(unittest.TestCase):
         self.observe(remaining=6)
         with self.assertRaisesRegex(self.rate.RateDenied, '^rate_quota_exhausted$'):
             self.reserve()
+
+    def test_automated_checks_and_writes_preserve_the_approved_twenty_percent(self):
+        self.rate.observe('installation:77', {'x-ratelimit-resource': 'core', 'x-ratelimit-limit': '100',
+                                            'x-ratelimit-remaining': '100', 'x-ratelimit-reset': str(int(time.time()) + 3600)})
+        for purpose in ['admission', 'scheduled', 'write']:
+            with self.subTest(purpose=purpose), self.assertRaisesRegex(self.rate.RateDenied, '^rate_headroom_reserved$'):
+                self.reserve({self.bucket: 81}, purpose=purpose)
+        self.reserve({self.bucket: 80}, purpose='write')
+
+    def test_read_only_inspection_can_use_the_reserve_without_authorizing_a_write(self):
+        self.rate.observe('installation:77', {'x-ratelimit-resource': 'core', 'x-ratelimit-limit': '100',
+                                            'x-ratelimit-remaining': '100', 'x-ratelimit-reset': str(int(time.time()) + 3600)})
+        self.reserve({self.bucket: 80}, purpose='write')
+        with self.assertRaisesRegex(self.rate.RateDenied, '^rate_headroom_reserved$'):
+            self.reserve({self.bucket: 1}, purpose='write')
+        result = self.reserve({self.bucket: 20}, purpose='inspection')
+        self.assertIsNone(result['cached'])
+
+    def test_new_server_observations_can_stop_prepaid_dispatch_at_the_reserve(self):
+        headers = {'x-ratelimit-resource': 'core', 'x-ratelimit-limit': '100',
+                   'x-ratelimit-remaining': '100', 'x-ratelimit-reset': str(int(time.time()) + 3600)}
+        self.rate.observe('installation:77', headers)
+        reservation = self.reserve({self.bucket: 80}, purpose='write')['reservation']
+        self.rate.charge(reservation, self.bucket, 79)
+        self.rate.observe('installation:77', headers | {'x-ratelimit-remaining': '20'})
+        with self.assertRaisesRegex(self.rate.RateDenied, '^rate_headroom_reserved$'):
+            self.rate.charge(reservation, self.bucket)
 
     def test_app_installation_bucket_is_shared_across_repo_tokens(self):
         self.observe(remaining=10)
@@ -69,14 +96,14 @@ class GithubRateTests(unittest.TestCase):
             self.reserve({'app:123:core': 1})
 
     def test_each_write_still_spends_a_fresh_inspection(self):
-        self.observe(remaining=14)
-        first = self.reserve()
-        second = self.reserve()
+        self.observe(remaining=18, limit=20)
+        first = self.reserve(purpose='write')
+        second = self.reserve(purpose='write')
         self.assertNotEqual(first['reservation'], second['reservation'])
         self.assertIsNone(first['cached'])
         self.assertIsNone(second['cached'])
         with self.assertRaises(self.rate.RateDenied):
-            self.reserve()
+            self.reserve(purpose='write')
 
     def test_extra_pages_are_charged_before_request_and_never_truncate_into_success(self):
         self.observe(remaining=2)
@@ -94,14 +121,24 @@ class GithubRateTests(unittest.TestCase):
 
     def test_server_reconciliation_cannot_restore_reserved_capacity(self):
         self.observe(remaining=10)
-        self.reserve()
+        reservation = self.reserve()['reservation']
+        self.rate.charge(reservation, self.bucket)
         self.observe(remaining=9)
         with self.assertRaises(self.rate.RateDenied):
             self.reserve({self.bucket: 4})
         self.reserve({self.bucket: 3})
 
+    def test_external_usage_is_subtracted_before_remaining_reserved_requests(self):
+        self.observe(remaining=10)
+        reservation = self.reserve()['reservation']
+        self.rate.charge(reservation, self.bucket)
+        self.observe(remaining=8)
+        with self.assertRaisesRegex(self.rate.RateDenied, '^rate_quota_exhausted$'):
+            self.reserve({self.bucket: 3})
+        self.reserve({self.bucket: 2})
+
     def test_scheduled_checks_coalesce_by_repository_not_session(self):
-        self.observe(remaining=7)
+        self.observe(remaining=9, limit=10)
         first = self.reserve(purpose='scheduled')
         evidence = {'repository_id': 42, 'default_branch': 'main', 'evidence_digest': 'b' * 64}
         self.rate.finish(first['reservation'], evidence=evidence)
@@ -116,13 +153,13 @@ class GithubRateTests(unittest.TestCase):
             self.reserve(purpose='write')
 
     def test_simultaneous_scheduled_scans_are_not_duplicated(self):
-        self.observe()
+        self.observe(limit=100)
         self.reserve(purpose='scheduled')
         with self.assertRaisesRegex(self.rate.RateDenied, '^scheduled_check_in_progress$'):
             self.reserve(purpose='scheduled')
 
     def test_expired_or_changed_evidence_never_renews_a_session(self):
-        self.observe(remaining=7)
+        self.observe(remaining=9, limit=10)
         first = self.reserve(purpose='scheduled')
         self.rate.finish(first['reservation'], evidence={'repository_id': 42, 'default_branch': 'main', 'evidence_digest': 'b' * 64})
         with patch.object(self.rate.time, 'monotonic', return_value=time.monotonic() + 301):
@@ -146,7 +183,7 @@ class GithubRateTests(unittest.TestCase):
                               deadline=time.monotonic() - 1, evidence_key=self.key)
 
     def test_a_reservation_that_expires_after_creation_cannot_spend_or_cache(self):
-        self.observe()
+        self.observe(limit=100)
         reservation = self.reserve(purpose='scheduled')['reservation']
         future = time.monotonic() + 31
         with patch.object(self.rate.time, 'monotonic', return_value=future):
@@ -191,6 +228,17 @@ class GithubRateTests(unittest.TestCase):
             with self.assertRaisesRegex(self.rate.RateDenied, '^rate_quota_exhausted$'):
                 self.rate.charge(old, self.bucket)
 
+    def test_operation_readiness_holds_fresh_credit_if_the_server_window_changed(self):
+        now = int(time.time())
+        self.rate.observe('installation:77', {'x-ratelimit-resource': 'core', 'x-ratelimit-limit': '5000',
+                                            'x-ratelimit-remaining': '7', 'x-ratelimit-reset': str(now + 10)})
+        old = self.reserve()['reservation']
+        with patch.object(self.rate.time, 'time', return_value=now + 11):
+            self.observe(remaining=7)
+            self.rate.ready(old, {self.bucket: 7})
+            with self.assertRaisesRegex(self.rate.RateDenied, '^rate_quota_exhausted$'):
+                self.reserve()
+
     def test_wall_clock_rollback_cannot_restore_quota_or_expired_evidence(self):
         self.observe()
         with patch.object(self.rate.time, 'time', return_value=time.time() - 60):
@@ -223,7 +271,7 @@ class GithubRateTests(unittest.TestCase):
             self.reserve()
 
     def test_cross_process_reservations_cannot_overspend_the_same_principal(self):
-        self.observe(remaining=7)
+        self.observe(remaining=9, limit=10)
         program = ('import importlib.util,time\n'
                    f'spec=importlib.util.spec_from_file_location("rate", {str(MODULE)!r})\n'
                    'rate=importlib.util.module_from_spec(spec);spec.loader.exec_module(rate)\n'
