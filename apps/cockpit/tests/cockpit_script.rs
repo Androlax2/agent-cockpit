@@ -3754,6 +3754,35 @@ fn apply_takes_a_parallel_clones_commits_into_the_running_copy_of_its_repository
 }
 
 #[test]
+fn apply_logs_a_dirty_running_copy_as_a_warning_without_changing_it() {
+    for command in ["apply", "apply-dotfiles"] {
+        for is_staged in [false, true] {
+            let manager = Manager::new();
+            let live = manager.sandbox.home.join("agent-cockpit");
+            let clones = manager.sandbox.root.join("clones");
+            let clone = clones.join("agent-cockpit/todo-d5a7ff0f");
+            reviewed_pair(&live, &clone);
+            fs::write(live.join("README"), "edited by hand\n").unwrap();
+            if is_staged {
+                git_output(&live, &["add", "README"]);
+            }
+            let before = git_output(&live, &["status", "--porcelain"]);
+            let output = manager.sandbox.run_with_input(bin().join("cockpit"), &[command, &path_str(&clone)],
+                &[("COCKPIT_CLONES", &path_str(&clones))], "y\n");
+            assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+            assert!(stderr(&output).contains("uncommitted changes"), "{}", stderr(&output));
+            assert_eq!(git_output(&live, &["log", "-1", "--format=%s"]), "init");
+            assert_eq!(git_output(&live, &["status", "--porcelain"]), before);
+            assert_eq!(fs::read_to_string(live.join("README")).unwrap(), "edited by hand\n");
+            assert_eq!(fs::read_dir(clone.join(".outgoing")).unwrap().count(), 1);
+            let lines = manager.log_lines();
+            assert!(lines.iter().any(|line| line.contains(&format!(" WARN manager: {command} ")) && line.contains("-> exit 1")), "{lines:?}");
+            assert!(!lines.iter().any(|line| line.contains(" ERROR ")), "{lines:?}");
+        }
+    }
+}
+
+#[test]
 fn apply_refuses_a_repository_whose_running_copy_is_missing() {
     let manager = Manager::new();
     let (live, work) = (manager.sandbox.root.join("elsewhere/vitals"), manager.sandbox.home.join("IdeaProjects/vitals"));

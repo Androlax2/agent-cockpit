@@ -2296,6 +2296,8 @@ apply_reviewed() { # [clone]
     fi
     if ! git -C "$live" diff --quiet || ! git -C "$live" diff --cached --quiet; then
         echo "Refused: $live has uncommitted changes; commit or stash them first." >&2
+        # Protecting local edits is an expected refusal, not a cockpit error to hand off for repair.
+        if [[ $log_command == apply-dotfiles || $log_command == apply ]]; then log_failure_level=WARN; fi
         return 1
     fi
     subjects=$(grep -h '^Subject: ' "$copies"/*.patch | sed 's/^Subject: //' | cat -v)
