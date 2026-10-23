@@ -25,6 +25,7 @@ use std::process::{Command, Stdio};
 
 mod conversation;
 pub use conversation::conversation;
+pub(crate) use conversation::handoff_history;
 
 pub const DEFAULT_ADDRESS: &str = "127.0.0.1:7380";
 const PAIRING_VALID_S: i64 = 600;

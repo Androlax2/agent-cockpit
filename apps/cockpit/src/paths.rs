@@ -73,6 +73,7 @@ pub fn restarting_dir() -> PathBuf { runtime_dir().join("cockpit.restarting") }
 pub fn phone_away() -> PathBuf { cockpit_runtime("cockpit-remote-away", "claude-remote-away") }
 pub fn usage_cache() -> PathBuf { runtime_dir().join("claude-usage.json") }
 pub fn codex_usage_cache() -> PathBuf { runtime_dir().join("codex-usage.json") }
+pub fn codex_session_script() -> PathBuf { home().join(".config/waybar/scripts/codex-session.py") }
 /// Sessions' reports and requests: the one FIFO the sandboxes can write (greywall allowWrite).
 pub fn osd_fifo() -> PathBuf { runtime_dir().join("osd.fifo") }
 /// Everything else the OSD daemon takes (banners, focus, clearing, phases, volume): only programs

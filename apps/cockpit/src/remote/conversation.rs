@@ -14,13 +14,33 @@ const MESSAGES_MAX: usize = 100;
 
 /// Visible conversation text for an active session, without reasoning or tool payloads.
 pub fn conversation(id: &str) -> Result<Value, String> {
+    history(id, false)
+}
+
+pub(crate) fn handoff_history(id: &str) -> Result<Value, String> {
+    history(id, true)
+}
+
+fn history(id: &str, keep_request: bool) -> Result<Value, String> {
     if !agents::is_session_id(id) { return Err("no such session".into()); }
     let row = session_row(id).ok_or("no such session")?;
+    let codex = if text(&row, "agent") == "codex" {
+        let native = row["native_thread"].as_str().ok_or("Codex native thread is unavailable")?;
+        if crate::codex::cockpit_id(native)? != id { return Err("Codex thread identity mismatch".into()); }
+        Some(crate::codex::session_snapshot(native)?)
+    } else { None };
     let (messages, truncated) = match agents::get(&text(&row, "agent")).name {
         "claude" => claude_messages(id, text(&row, "state") == "working"),
         "opencode" => opencode_messages(id),
+        "codex" => {
+            let snapshot = codex.as_ref().expect("read above for native Codex");
+            Ok((snapshot["messages"].as_array().unwrap().clone(), snapshot["truncated"].as_bool().unwrap_or(true)))
+        },
         _ => Err("conversation history is not supported for this agent".into()),
     }?;
+    let latest_user = codex.as_ref().and_then(|snapshot| snapshot["latest_user"].as_str()).map(str::to_string)
+        .or_else(|| messages.iter().rev().find(|message| message["role"] == "user")
+            .and_then(|message| message["text"].as_str()).map(str::to_string));
     let mut messages: VecDeque<Value> = messages.into();
     let mut truncated = truncated;
     while messages.len() > MESSAGES_MAX {
@@ -40,7 +60,9 @@ pub fn conversation(id: &str) -> Result<Value, String> {
         message["text"] = json!(&content[start..]);
         truncated = true;
     }
-    Ok(json!({"messages": messages, "truncated": truncated}))
+    let mut history = json!({"messages": messages, "truncated": truncated});
+    if keep_request { history["latest_user"] = json!(latest_user); }
+    Ok(history)
 }
 
 fn visible_text(content: &Value) -> String {

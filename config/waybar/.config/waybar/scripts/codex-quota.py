@@ -30,17 +30,24 @@ def cancellation_handler(signum, frame):
 
 
 @contextmanager
-def app_server():
+def app_server(*, execution=False):
     home = Path.home()
     binary = home / ".local/npm/bin/codex"
     if not binary.is_file() or not os.access(binary, os.X_OK):
         raise QuotaError("Codex CLI missing; install it at ~/.local/npm/bin/codex")
-    quota_home = Path(os.environ.get("XDG_DATA_HOME") or home / ".local/share") / "codex-quota"
-    quota_home.mkdir(mode=0o700, parents=True, exist_ok=True)
-    quota_home.chmod(0o700)
+    if execution:
+        quota_home = Path(os.environ.get("CODEX_HOME") or home / ".codex")
+        if not quota_home.is_dir():
+            raise QuotaError("Native Codex home is unavailable")
+        arguments = [str(binary), "app-server"]
+    else:
+        quota_home = Path(os.environ.get("XDG_DATA_HOME") or home / ".local/share") / "codex-quota"
+        quota_home.mkdir(mode=0o700, parents=True, exist_ok=True)
+        quota_home.chmod(0o700)
+        arguments = [str(binary), "app-server", "-c", 'cli_auth_credentials_store="file"']
     environment = dict(os.environ, CODEX_HOME=str(quota_home))
     process = subprocess.Popen(
-        [str(binary), "app-server", "-c", 'cli_auth_credentials_store="file"'],
+        arguments,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,

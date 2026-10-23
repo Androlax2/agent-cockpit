@@ -1,0 +1,9 @@
+#!/bin/sh
+# The subscription router, built with the other cockpit programs.
+here=$(dirname "$(readlink -f "$0")")
+binary="$here/../../../../apps/target/release/$(basename "$0")"
+if [ ! -x "$binary" ]; then
+    echo "$(basename "$0") is not built yet: make -C ~/agent-cockpit build" >&2
+    exit 1
+fi
+exec "$binary" "$@"

@@ -3,6 +3,24 @@
 use crate::audit;
 use serde_json::{Value, json};
 use std::path::Path;
+use std::process::Command;
+
+/// The CLI's read-only history API handles both legacy rollouts and paginated threads.
+pub fn session_snapshot(native_thread: &str) -> Result<Value, String> {
+    cockpit_id(native_thread)?;
+    let output = Command::new("python3").arg(crate::paths::codex_session_script()).arg(native_thread)
+        .output().map_err(|error| format!("cannot read Codex conversation: {error}"))?;
+    if !output.status.success() { return Err("Codex conversation history is unavailable".into()); }
+    if output.stdout.len() > 1024 * 1024 { return Err("Codex conversation history exceeds the safe size".into()); }
+    let snapshot: Value = serde_json::from_slice(&output.stdout).map_err(|_| "Codex conversation history is invalid")?;
+    if snapshot["thread"].as_str() != Some(native_thread) { return Err("Codex thread identity mismatch".into()); }
+    let messages = snapshot["messages"].as_array().ok_or("Codex conversation messages are unavailable")?;
+    if messages.iter().any(|message| !matches!(message["role"].as_str(), Some("user" | "assistant"))
+        || !message["text"].is_string() || !message["id"].is_string()) {
+        return Err("Codex conversation contains an invalid visible message".into());
+    }
+    Ok(snapshot)
+}
 
 /// Namespace native threads so a Codex UUID cannot alias a Claude conversation. Only a lowercase
 /// UUID is a thread: anything else (a leading "-") would reach `codex resume` as an option.

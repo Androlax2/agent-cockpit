@@ -20,6 +20,7 @@ pub mod sessions;
 pub mod settings;
 pub mod sleep;
 pub mod status;
+pub mod subscription_fallback;
 pub mod teams;
 pub mod todo;
 pub mod todo_requests;

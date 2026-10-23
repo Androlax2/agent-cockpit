@@ -545,6 +545,39 @@ fn the_phone_reads_only_visible_conversation_text_in_order() {
 }
 
 #[test]
+fn the_phone_reads_native_codex_history_through_a_verified_thread_mapping() {
+    let remote = Remote::start();
+    let secret = remote.paired();
+    let native = "aaaaaaaa-0000-4000-8000-000000000000";
+    let session = cockpit::codex::cockpit_id(native).unwrap();
+    fs::write(remote.sandbox.runtime.join("cockpit.json"), json!({"sessions":[{
+        "session":session, "agent":"codex", "native_thread":native, "state":"waiting"
+    }]}).to_string()).unwrap();
+    fs::write(remote.sandbox.home.join("snapshot.json"), json!({"thread":native, "model":"gpt-6.1-sol", "effort":"high",
+        "messages":[{"id":"request", "role":"user", "text":"Continue this work"}], "latest_user":"Continue this work", "truncated":false
+    }).to_string()).unwrap();
+    remote.sandbox.shim("python3", r#"cat "$HOME/snapshot.json""#);
+    assert_eq!(remote.get_json(&secret, &format!("/api/conversation/{session}")), json!({
+        "messages":[{"id":"request", "role":"user", "text":"Continue this work"}], "truncated":false
+    }));
+    assert_eq!(remote.sandbox.calls("python3"), [format!("python3 {} {native}", remote.sandbox.home.join(".config/waybar/scripts/codex-session.py").display())]);
+}
+
+#[test]
+fn a_native_thread_mapping_mismatch_is_refused_before_reading_history() {
+    let remote = Remote::start();
+    let secret = remote.paired();
+    let session = cockpit::codex::cockpit_id("aaaaaaaa-0000-4000-8000-000000000000").unwrap();
+    fs::write(remote.sandbox.runtime.join("cockpit.json"), json!({"sessions":[{
+        "session":session, "agent":"codex", "native_thread":"bbbbbbbb-0000-4000-8000-000000000000", "state":"waiting"
+    }]}).to_string()).unwrap();
+    remote.sandbox.shim("python3", "exit 99");
+    let (status, _, body) = remote.request("GET", &format!("/api/conversation/{session}"), Some(&secret), None, false);
+    assert_eq!(status, 409, "{body}");
+    assert!(remote.sandbox.calls("python3").is_empty());
+}
+
+#[test]
 fn conversation_access_requires_pairing_and_an_active_session() {
     let remote = Remote::start();
     let secret = remote.paired();
