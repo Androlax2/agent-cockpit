@@ -312,6 +312,54 @@ pub fn handoff_context(session: &Session) -> Result<String, String> {
     }).to_string())
 }
 
+pub fn prepare_launch_plan(origin: &str, generation: &str) -> Result<PathBuf, String> {
+    let store = RoutingStore::load(&crate::paths::subscription_routes())?;
+    let route = store.route(origin).ok_or("no such subscription route")?;
+    let Phase::Pending(pending) = &route.phase else { return Err("routing generation is not pending".into()) };
+    if pending.generation != generation || pending.stage != Stage::Prepared || pending.target.agent == "opencode" {
+        return Err("launch plan requires a matching prepared native transition".into());
+    }
+    let session = crate::sessions::reported().into_iter().find(|session| session.session == pending.source.session
+        && session.agent == pending.source.selection.agent && session.cwd == route.directory).ok_or("source session or checkout changed")?;
+    let directory = fs::canonicalize(&route.directory).map_err(|error| format!("cannot resolve launch checkout: {error}"))?;
+    let repository = util::repository_root(directory.to_str().ok_or("launch checkout is not UTF-8")?);
+    let key: String = repository.chars().map(|character| if character.is_ascii_alphanumeric() { character } else { '-' }).collect();
+    if !crate::approval::valid_answers_key(&key) { return Err("launch checkout has no valid answers key".into()); }
+    let context: serde_json::Value = serde_json::from_str(&handoff_context(&session)?).map_err(|_| "invalid historical handoff context")?;
+    let native_thread = if pending.direction == Direction::Return { route.original.native_thread.as_deref() } else { None };
+    let bytes = serde_json::to_vec(&json!({"version":1,"generation":generation,"directory":directory,
+        "selection":pending.target,"native_thread":native_thread,"context":context})).map_err(|error| error.to_string())?;
+    if bytes.len() > 1024 * 1024 { return Err("launch plan exceeds 1 MiB".into()); }
+    let folder = crate::approval::answers_dir(&key, "subscriptions");
+    fs::DirBuilder::new().recursive(true).mode(0o700).create(&folder).map_err(|error| error.to_string())?;
+    let path = folder.join(format!("{generation}.json"));
+    let temporary = folder.join(format!(".plan-{}", util::token_hex(12)));
+    let mut file = OpenOptions::new().create_new(true).write(true).mode(0o600).open(&temporary).map_err(|error| error.to_string())?;
+    let result = (|| -> Result<(), String> {
+        file.write_all(&bytes).and_then(|_| file.sync_all()).map_err(|error| error.to_string())?;
+        // Publish without replacing a plan whose admission status might already be uncertain.
+        match fs::hard_link(&temporary, &path) {
+            Ok(()) => (),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                use std::io::Read;
+                use std::os::unix::fs::MetadataExt;
+                let existing = util::open_untrusted(&path).map_err(|error| error.to_string())?;
+                let metadata = existing.metadata().map_err(|error| error.to_string())?;
+                let mut previous = Vec::new();
+                existing.take(1024 * 1024 + 1).read_to_end(&mut previous).map_err(|error| error.to_string())?;
+                if metadata.uid() != unsafe { libc::geteuid() } || metadata.mode() & 0o777 != 0o600 || previous != bytes {
+                    return Err("existing protected launch plan conflicts with this transition".into());
+                }
+            }
+            Err(error) => return Err(format!("cannot publish protected launch plan: {error}")),
+        }
+        File::open(&folder).and_then(|folder| folder.sync_all()).map_err(|error| error.to_string())
+    })();
+    fs::remove_file(&temporary).map_err(|error| format!("cannot remove temporary launch plan: {error}"))?;
+    result?;
+    Ok(path)
+}
+
 /// Hook failures must stop dispatch: a nonzero hook exit alone is not a native prompt gate.
 pub fn prompt_gate(generation: &str) -> serde_json::Value {
     let valid = generation.len() == 32 && generation.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));

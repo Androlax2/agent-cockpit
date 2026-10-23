@@ -16,6 +16,7 @@ codex_launch() { # directory native-arguments...
     size=$(detached_size)
     tmux new-session -d -s "$name" -x "${size% *}" -y "${size#* }" -c "$directory" \
         env -u CLAUDE_CODE_SESSION_ID COCKPIT_INSIDE=1 COCKPIT_AGENT=codex COCKPIT_TEAM_SPAWN="${launch_team_spawn:-}" \
+        COCKPIT_SUBSCRIPTION_ROUTE="${launch_subscription_route:-}" \
         sh -c '"$@"; result=$?; if [ "$result" -ne 0 ]; then cockpit log manager ERROR "native Codex exited with status $result in $PWD"; fi; exit "$result"' \
         codex "$CODEX_LAUNCHER" "$@" || return
     printf '%s\n' "$name"

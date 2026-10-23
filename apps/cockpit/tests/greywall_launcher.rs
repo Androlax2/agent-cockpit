@@ -260,6 +260,32 @@ fn native_codex_uses_project_guards_without_learning_or_hook_bypass() {
 }
 
 #[test]
+fn routed_codex_starts_the_private_bridge_inside_its_existing_sandbox() {
+    let launch = Launch::new();
+    launch.sandbox.shim("node", "printf '%s\\n' \"$@\" > \"$HOME/bridge-arguments\"");
+    write_executable(&launch.sandbox.home.join(".local/bin/greywall"),
+        "#!/bin/sh\nprintf 'greywall %s\\n' \"$*\" >> \"$SHIM_LOG\"\nwhile [ \"$1\" != -- ]; do shift; done\nshift\nexec \"$@\"\n");
+    let generation = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let invocation = launch.run_agent("codex", &[("COCKPIT_SUBSCRIPTION_ROUTE",generation)], &[]);
+    assert!(invocation.contains("--profile codex"), "{invocation}");
+    assert!(invocation.contains("--settings "), "{invocation}");
+    assert!(!invocation.contains("dangerously"), "{invocation}");
+    let arguments = fs::read_to_string(launch.sandbox.home.join("bridge-arguments")).unwrap();
+    assert_eq!(arguments, format!("{}/agent-cockpit/config/codex/.codex/cockpit-bridge.mjs\n{generation}\n", launch.sandbox.home.display()));
+    assert!(!launch.sandbox.home.join("codex-arguments").exists());
+}
+
+#[test]
+fn routed_codex_rejects_cli_arguments_that_could_override_the_protected_plan() {
+    let launch = Launch::new();
+    let output = launch.sandbox.command(bin().join("greywall-agents/codex"),
+        &[("COCKPIT_SUBSCRIPTION_ROUTE","aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")])
+        .args(["--model","unverified-model"]).current_dir(&launch.project).output().unwrap();
+    assert!(!output.status.success());
+    assert!(launch.sandbox.calls("greywall").is_empty());
+}
+
+#[test]
 fn native_codex_cannot_open_opencodes_state_and_other_agents_cannot_open_codex_state() {
     for agent in ["claude", "opencode", "codex"] {
         let launch = Launch::new();

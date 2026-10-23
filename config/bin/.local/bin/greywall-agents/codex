@@ -4,6 +4,16 @@ agent=codex
 own_folders="~/.codex/**"
 export COCKPIT_AGENT=codex
 . "$(dirname "$0")/launcher-common.sh"
+if [ -n "${COCKPIT_SUBSCRIPTION_ROUTE:-}" ]; then
+    if [ "$#" -ne 0 ]; then
+        echo "codex launcher: routed launches take their model and conversation only from the protected launch plan." >&2
+        exit 1
+    fi
+    # The capability-authenticated server and its TUI share this sandbox, never the host daemon.
+    # shellcheck disable=SC2086
+    exec "$HOME/.local/bin/greywall" --profile codex $greywall_options -- \
+        node "$HOME/agent-cockpit/config/codex/.codex/cockpit-bridge.mjs" "$COCKPIT_SUBSCRIPTION_ROUTE"
+fi
 # Never connect a private namespace to a shared daemon whose socket belongs to another launch.
 # shellcheck disable=SC2086
 exec "$HOME/.local/bin/greywall" --profile codex $greywall_options -- "$HOME/.local/npm/bin/codex" --no-daemon "$@"

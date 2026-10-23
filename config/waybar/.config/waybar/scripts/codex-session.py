@@ -22,6 +22,18 @@ def read_session(native):
         thread = protocol["request"](process, 2, "thread/read", {"threadId": native, "includeTurns": False}).get("thread")
         if not isinstance(thread, dict) or thread.get("id") != native:
             raise QuotaError("Codex thread identity does not match the requested conversation")
+        history_mode = thread.get("historyMode", "legacy")
+        if history_mode not in ("legacy", "paginated"):
+            raise QuotaError("Codex conversation history mode is unavailable")
+        legacy_entries = None
+        if history_mode == "legacy":
+            legacy = protocol["request"](process, 3, "thread/read", {"threadId": native, "includeTurns": True}).get("thread")
+            if not isinstance(legacy, dict) or legacy.get("id") != native:
+                raise QuotaError("Codex thread identity does not match the requested conversation")
+            turns = legacy.get("turns")
+            if not isinstance(turns, list) or any(not isinstance(turn, dict) or not isinstance(turn.get("items"), list) for turn in turns):
+                raise QuotaError("Codex conversation history format is unavailable")
+            legacy_entries = [{"item": item} for turn in reversed(turns) for item in reversed(turn["items"])]
         messages = []
         latest_user = None
         consumed = 0
@@ -32,7 +44,7 @@ def read_session(native):
             parameters = {"threadId": native, "limit": 20, "sortDirection": "desc"}
             if cursor is not None:
                 parameters["cursor"] = cursor
-            result = protocol["request"](process, page + 3, "thread/items/list", parameters)
+            result = {"data": legacy_entries} if legacy_entries is not None else protocol["request"](process, page + 3, "thread/items/list", parameters)
             consumed += len(json.dumps(result).encode())
             if consumed > SOURCE_MAX:
                 truncated = True

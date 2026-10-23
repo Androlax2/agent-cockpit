@@ -2,6 +2,12 @@ use cockpit::{sessions, subscription_fallback};
 
 fn run() -> Result<(), String> {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
+    if let [command, origin, generation] = arguments.as_slice() {
+        if command == "prepare-plan" {
+            println!("{}", subscription_fallback::prepare_launch_plan(origin, generation)?.display());
+            return Ok(());
+        }
+    }
     let [command, id] = arguments.as_slice() else { return Err("usage: cockpit-subscription context <session> | gate <generation>".into()) };
     if command == "gate" {
         println!("{}", subscription_fallback::prompt_gate(id));

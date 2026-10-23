@@ -323,6 +323,96 @@ fn the_native_prompt_gate_releases_only_after_an_explicit_host_grant() {
     assert_eq!(payload, json!({"generation":generation}));
 }
 
+fn prepared_claude_route() -> (Sandbox, cockpit::subscription_fallback::Transition) {
+    let sandbox = claude_history(&[message("user", "Finish this task without pushing")]);
+    let directory = sandbox.root.to_str().unwrap();
+    fs::write(sandbox.runtime.join("cockpit.json"), json!({"sessions":[{
+        "session":SESSION_A,"agent":"claude","state":"waiting","cwd":directory,"task":"Finish this task"
+    }]}).to_string()).unwrap();
+    let path = sandbox.state.join("cockpit/subscriptions/routes.json");
+    let mut store = RoutingStore::load(&path).unwrap();
+    let source = binding("claude");
+    store.track(source.clone(), directory, "1797cdd6", 100).unwrap();
+    let mut observed = observation(&source, Exhausted);
+    observed.session.cwd = directory.into();
+    let transition = store.reconcile(&[observed], 101).unwrap().remove(0);
+    drop(store);
+    (sandbox, transition)
+}
+
+#[test]
+fn native_launch_plans_are_private_and_come_only_from_a_pending_route() {
+    let (sandbox, transition) = prepared_claude_route();
+    let directory = sandbox.root.to_str().unwrap();
+    let output = sandbox.run(env!("CARGO_BIN_EXE_cockpit-subscription"), &["prepare-plan",SESSION_A,&transition.generation], &[]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let plan_path = std::path::PathBuf::from(stdout(&output).trim());
+    assert!(plan_path.starts_with(sandbox.runtime.join("claude-answers")));
+    let plan: Value = serde_json::from_slice(&fs::read(&plan_path).unwrap()).unwrap();
+    assert_eq!(plan["generation"], transition.generation);
+    assert_eq!(plan["selection"]["model"], "gpt-6.1-sol");
+    assert_eq!(plan["directory"], directory);
+    assert_eq!(plan["context"]["latest_user_request"], "Finish this task without pushing");
+    use std::os::unix::fs::PermissionsExt;
+    assert_eq!(fs::metadata(&plan_path).unwrap().permissions().mode() & 0o777, 0o600);
+    let repeated = sandbox.run(env!("CARGO_BIN_EXE_cockpit-subscription"), &["prepare-plan",SESSION_A,&transition.generation], &[]);
+    assert!(repeated.status.success(), "{}", stderr(&repeated));
+    assert_eq!(stdout(&repeated), stdout(&output));
+    let invalid = sandbox.run(env!("CARGO_BIN_EXE_cockpit-subscription"), &["prepare-plan",SESSION_A,&"f".repeat(32)], &[]);
+    assert!(!invalid.status.success());
+    assert_eq!(fs::read_dir(plan_path.parent().unwrap()).unwrap().count(), 1);
+}
+
+#[test]
+fn protected_plan_retries_never_replace_conflicting_or_exposed_context() {
+    use std::os::unix::fs::PermissionsExt;
+    for exposed in [false, true] {
+        let (sandbox, transition) = prepared_claude_route();
+        let arguments = ["prepare-plan", SESSION_A, &transition.generation];
+        let output = sandbox.run(env!("CARGO_BIN_EXE_cockpit-subscription"), &arguments, &[]);
+        assert!(output.status.success(), "{}", stderr(&output));
+        let path = std::path::PathBuf::from(stdout(&output).trim());
+        if exposed { fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap(); }
+        else { fs::write(&path, "conflicting-private-context").unwrap(); }
+        let previous = fs::read(&path).unwrap();
+        let output = sandbox.run(env!("CARGO_BIN_EXE_cockpit-subscription"), &arguments, &[]);
+        assert!(!output.status.success());
+        assert_eq!(fs::read(&path).unwrap(), previous);
+        assert!(!stderr(&output).contains("conflicting-private-context"));
+        assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 1);
+    }
+}
+
+#[test]
+fn a_native_return_plan_keeps_the_original_codex_thread_and_model() {
+    let sandbox = claude_history(&[message("user", "Continue the unfinished change")]);
+    let directory = sandbox.root.to_str().unwrap();
+    let mut store = RoutingStore::load(&sandbox.state.join("cockpit/subscriptions/routes.json")).unwrap();
+    let original = binding("codex");
+    store.track(original.clone(), directory, "1797cdd6", 100).unwrap();
+    let mut exhausted = observation(&original, Exhausted);
+    exhausted.session.cwd = directory.into();
+    let transition = store.reconcile(&[exhausted], 101).unwrap().remove(0);
+    store.mark_retired(&original.session, &transition.generation).unwrap();
+    store.mark_submitted(&original.session, &transition.generation).unwrap();
+    store.record_runtime(&transition.generation, binding("claude"), directory).unwrap();
+    store.finish(&original.session, &transition.generation).unwrap();
+    let mut recovered = observation(&binding("claude"), Available);
+    recovered.session.cwd = directory.into();
+    recovered.original_capacity = Available;
+    let transition = store.reconcile(&[recovered], 102).unwrap().remove(0);
+    drop(store);
+    fs::write(sandbox.runtime.join("cockpit.json"), json!({"sessions":[{
+        "session":SESSION_A,"agent":"claude","state":"waiting","cwd":sandbox.root,"task":"Continue the change"
+    }]}).to_string()).unwrap();
+    let output = sandbox.run(env!("CARGO_BIN_EXE_cockpit-subscription"), &["prepare-plan",&original.session,&transition.generation], &[]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let plan: Value = serde_json::from_slice(&fs::read(stdout(&output).trim()).unwrap()).unwrap();
+    assert_eq!(plan["native_thread"], "aaaaaaaa-0000-4000-8000-000000000000");
+    assert_eq!(plan["selection"]["model"], "gpt-6.1-sol");
+    assert_eq!(plan["selection"]["variant"], "high");
+}
+
 #[test]
 fn handoff_context_preserves_the_latest_user_request_outside_the_visible_tail() {
     let mut records = vec![message("user", "Finish only this task; do not push")];
