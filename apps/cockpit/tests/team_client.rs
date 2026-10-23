@@ -219,3 +219,110 @@ fn help_shows_how_to_recruit() {
     assert!(help.contains("automatically") && help.contains("every project"), "{help}");
     assert!(!help.contains("Theo approves"), "{help}");
 }
+
+fn link_actions() -> Vec<(&'static str, Value)> {
+    vec![("link-propose", json!({"action":"link_propose","proposal":{"submission_key":"joint","task":{"project":"path:/project-a","task_id":"1d3fd318"},
+        "peer_session_id":"aaaaaaaa-0000-4000-8000-000000000000","purpose":"Coordinate shared work"}})),
+        ("link-send", json!({"action":"link_send","message":{"link_id":"link-1","submission_key":"note","kind":"notice","body":"Ready"}})),
+        ("link-assess", json!({"action":"link_assess","link_id":"link-1","thread_id":"thread-1","resolved":true}))]
+}
+
+fn cli_input(sandbox: &Sandbox, verb: &str, input: &[u8]) -> std::process::Output {
+    let mut child = sandbox.command(env!("CARGO_BIN_EXE_cockpit-team"), &[]).arg(verb)
+        .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    let _ = child.stdin.take().unwrap().write_all(input);
+    child.wait_with_output().unwrap()
+}
+
+#[test]
+fn link_cli_actions_use_existing_authenticated_transport() {
+    for (verb, action) in link_actions() {
+        let sandbox = Sandbox::new();
+        let requests = sandbox.team_socket(Value::Null);
+        let output = cli_input(&sandbox, verb, action.to_string().as_bytes());
+        assert!(output.status.success(), "{verb}: {}", stderr(&output));
+        let sent = requests.lock().unwrap()[0].clone();
+        let expected = serde_json::from_value::<cockpit::teams::AgentAction>(action).unwrap();
+        assert_eq!(sent, serde_json::to_value(expected).unwrap());
+    }
+}
+
+#[test]
+fn link_cli_rejects_mismatches_unknown_fields_and_host_actions_before_transport() {
+    let sandbox = Sandbox::new();
+    let requests = sandbox.team_socket(Value::Null);
+    for (verb, action) in link_actions() {
+        let wrong = cli_input(&sandbox, verb, b"{\"action\":\"context\"}");
+        assert!(stderr(&wrong).contains("command and JSON action do not match"), "{}", stderr(&wrong));
+        let mut forged = action;
+        forged["sender"] = json!("forged");
+        let output = cli_input(&sandbox, verb, forged.to_string().as_bytes());
+        assert_eq!(output.status.code(), Some(2));
+        assert!(stderr(&output).contains("unknown field"), "{}", stderr(&output));
+    }
+    for action in ["link_approve", "link_edit", "link_reject", "link_revoke"] {
+        let output = cli_input(&sandbox, "link-send", json!({"action":action}).to_string().as_bytes());
+        assert_eq!(output.status.code(), Some(2));
+        let output = cli_input(&sandbox, &action.replace('_', "-"), b"");
+        assert!(stderr(&output).contains("not an agent action"));
+    }
+    assert!(requests.lock().unwrap().is_empty());
+}
+
+#[test]
+fn link_cli_keeps_shared_request_and_reply_bounds() {
+    for (verb, _) in link_actions() {
+        let sandbox = Sandbox::new();
+        let output = cli_input(&sandbox, verb, &vec![b'x'; client::REQUEST_MAX + 1]);
+        assert_eq!(output.status.code(), Some(2));
+        assert!(stderr(&output).contains("32 KiB"), "{}", stderr(&output));
+    }
+    let sandbox = Sandbox::new();
+    sandbox.team_socket(json!({"padding":"x".repeat(client::AGENT_REPLY_MAX)}));
+    let output = sandbox.command(env!("CARGO_BIN_EXE_cockpit-team"), &[]).arg("receive").output().unwrap();
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("team reply exceeds its limit"));
+}
+
+#[test]
+fn agent_reply_limit_counts_the_daemon_newline() {
+    for (json_bytes, accepted) in [(65_535, true), (65_536, false)] {
+        let sandbox = Sandbox::new();
+        let source = sandbox.root.join("framed.sock");
+        let listener = UnixListener::bind(&source).unwrap();
+        client::publish_socket(&source, sandbox.answers("teams").parent().unwrap()).unwrap();
+        let mut reply = json!({"request_id":"context","result":{"Ok":{"padding":""}}});
+        let padding_bytes = json_bytes - reply.to_string().len();
+        reply["result"]["Ok"]["padding"] = json!("x".repeat(padding_bytes));
+        let wire = format!("{reply}\n");
+        assert_eq!(wire.len(), json_bytes + 1);
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = String::new();
+            stream.read_to_string(&mut request).unwrap();
+            stream.write_all(wire.as_bytes()).unwrap();
+        });
+        let output = sandbox.command(env!("CARGO_BIN_EXE_cockpit-team"), &[]).arg("context").output().unwrap();
+        server.join().unwrap();
+        assert_eq!(output.status.success(), accepted, "{json_bytes} JSON bytes: {}", stderr(&output));
+        if accepted {
+            assert_eq!(serde_json::from_slice::<Value>(&output.stdout).unwrap()["padding"].as_str().unwrap().len(), padding_bytes);
+        } else {
+            assert!(stderr(&output).contains("team reply exceeds its limit"));
+        }
+    }
+}
+
+#[test]
+fn link_help_explains_explicit_addressing_closure_and_no_permission_relay() {
+    let sandbox = Sandbox::new();
+    let help = stdout(&sandbox.command(env!("CARGO_BIN_EXE_cockpit-team"), &[]).arg("--help").output().unwrap());
+    for (verb, action) in link_actions() {
+        assert!(help.contains(verb), "missing {verb}");
+        let discriminator = action["action"].as_str().unwrap();
+        assert!(help.lines().filter_map(|line| serde_json::from_str::<Value>(line.trim()).ok()).any(|example| example["action"] == discriminator));
+    }
+    assert!(help.contains("explicit link_id"));
+    assert!(help.contains("TODO done") && help.contains("reopening"));
+    assert!(help.contains("cannot relay Theo's permission"));
+}

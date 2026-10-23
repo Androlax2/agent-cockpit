@@ -246,6 +246,11 @@ fn team_link_routes_use_authenticated_sender_and_deliver_without_membership() {
     let pending = crate::teams::request(&mut bench.registry, 10, action).unwrap().result.unwrap();
     assert_eq!(pending["status"], "pending");
     assert!(!pending.to_string().contains(OPENCODE_SESSION));
+    let before = crate::teams::request(&mut bench.registry, 10, AgentAction::Context).unwrap().result.unwrap();
+    assert_eq!(before["links"], json!({"approved":[],"proposals":[pending.clone()]}));
+    assert!(!before.to_string().contains(OPENCODE_SESSION));
+    let peer_context = crate::teams::request(&mut bench.registry, 20, AgentAction::Context).unwrap().result.unwrap();
+    assert_eq!(peer_context["links"], json!({"approved":[],"proposals":[]}));
     let connection = bench.registry.teams.as_ref().unwrap();
     let (sender, hash): (String, String) = connection.query_row("SELECT sender,mapping_hash FROM link_proposals", [], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
     assert_eq!(sender, SESSION_A);
@@ -253,6 +258,15 @@ fn team_link_routes_use_authenticated_sender_and_deliver_without_membership() {
     assert!(serde_json::from_value::<AgentAction>(approve.clone()).is_err());
     let active = crate::teams::host(&mut bench.registry, std::process::id(), cockpit::teams::HostRequest::Control {
         action: serde_json::from_value::<HostAction>(approve).unwrap() }).unwrap().result.unwrap();
+    for peer in [10, 20] {
+        let context = crate::teams::request(&mut bench.registry, peer, AgentAction::Context).unwrap().result.unwrap();
+        assert!(context["task"].is_null());
+        assert_eq!(context["members"], json!([]));
+        assert_eq!(context["links"]["approved"][0]["link_id"], active["link_id"]);
+        assert!(!context.to_string().contains("runtime-"));
+    }
+    let outsider = crate::teams::request(&mut bench.registry, 30, AgentAction::Context).unwrap().result.unwrap();
+    assert_eq!(outsider["links"], json!({"approved":[],"proposals":[]}));
     let send = json!({"action":"link_send","message":{"link_id":active["link_id"],"submission_key":"note","kind":"clarification","body":"Ready?"}});
     assert!(crate::teams::request(&mut bench.registry, 30, serde_json::from_value(send.clone()).unwrap()).is_err());
     let accepted = crate::teams::request(&mut bench.registry, 10, serde_json::from_value(send).unwrap()).unwrap().result.unwrap();
@@ -263,6 +277,9 @@ fn team_link_routes_use_authenticated_sender_and_deliver_without_membership() {
     assert_eq!(delivery["envelope"]["message_id"], accepted["message_id"]);
     assert_eq!(delivery["envelope"]["sender"]["project"], format!("path:{}", first.display()));
     assert!(delivery["envelope"]["sender"].get("role").is_none());
+    assert!(delivery["text"].as_str().unwrap().starts_with("[Cockpit link message"));
+    assert!(delivery["text"].as_str().unwrap().contains("cockpit-team link-send"));
+    assert!(crate::teams::request(&mut bench.registry, 20, AgentAction::Receive).unwrap().result.unwrap().is_null());
     let reply = json!({"action":"link_send","message":{"link_id":active["link_id"],"submission_key":"answer","kind":"reply","body":"Ready","thread_id":accepted["thread_id"]}});
     crate::teams::request(&mut bench.registry, 20, serde_json::from_value(reply).unwrap()).unwrap();
     let assess = json!({"action":"link_assess","link_id":active["link_id"],"thread_id":accepted["thread_id"],"resolved":true});

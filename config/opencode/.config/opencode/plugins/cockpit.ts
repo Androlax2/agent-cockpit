@@ -252,7 +252,14 @@ export default {
     // OpenCode's screen shows a synthetic message only as this one line: who wrote and how it starts.
     const teamRow = (envelope: any) => {
       const plain = (value: unknown) => String(value ?? "?").replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").replace(/\s+/g, " ").trim()
-      const row = `Team message from ${plain(envelope?.sender?.role)} (${plain(envelope?.sender?.agent)}): ${plain(envelope?.body)}`
+      // Match approval::is_hiding before whitespace normalization and the visible row's length cap.
+      const visible = (value: unknown) => plain(String(value ?? "?").replace(
+        /[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u00ad\u034f\u115f\u1160\u200b-\u200f\u2028-\u202e\u2060-\u2069\u2800\u3164\ufe00-\ufe0f\ufeff\uffa0\u{e0000}-\u{e007f}]/gu,
+        (character) => `\\u${character.codePointAt(0)!.toString(16).padStart(4, "0")}`,
+      ))
+      const row = envelope?.scope_kind === "link"
+        ? `Link message from ${visible(envelope?.sender?.session_id)} (${visible(envelope?.sender?.project)}): ${visible(envelope?.body)}`
+        : `Team message from ${plain(envelope?.sender?.role)} (${plain(envelope?.sender?.agent)}): ${plain(envelope?.body)}`
       return row.length > 160 ? `${row.slice(0, 159)}…` : row
     }
     const deliverTeamMessage = async () => {

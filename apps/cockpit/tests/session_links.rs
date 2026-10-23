@@ -1,6 +1,8 @@
 mod common;
 #[path = "common/link_fixture.rs"]
 mod link_fixture;
+#[path = "common/link_history.rs"]
+mod link_history;
 use common::sandbox::Sandbox;
 use cockpit::{teams::{self, TaskKey, links, store}, todo};
 use rusqlite::Connection;
@@ -51,6 +53,81 @@ fn activate(connection: &mut Connection, sender: &VerifiedSession, proposal: &Li
 fn note(link_id: &str, key: &str) -> teams::LinkSubmission {
     teams::LinkSubmission { link_id: link_id.into(), submission_key: key.into(), kind: MessageKind::Notice,
         body: "Coordinate work".into(), thread_id: None }
+}
+
+#[test]
+fn link_context_is_bound_to_participant_identity_and_preserves_own_team() {
+    if isolated("link_context_is_bound_to_participant_identity_and_preserves_own_team") { return; }
+    let (mut connection, _, live, proposal) = proposal_fixture();
+    own_teams(&mut connection, &live, &proposal);
+    let team_before = store::context(&connection, &live[0]).unwrap();
+    let link = activate(&mut connection, &live[0], &proposal, &live);
+    let foreign = activate(&mut connection, &live[2], &LinkProposal { submission_key: "foreign".into(), ..proposal.clone() }, &live);
+    let context = store::context(&connection, &live[0]).unwrap();
+    assert_eq!(context["task"], team_before["task"]);
+    assert_eq!(context["members"], team_before["members"]);
+    assert_eq!(context["links"]["approved"].as_array().unwrap().len(), 1);
+    let approved = &context["links"]["approved"][0];
+    assert_eq!(approved["link_id"], link);
+    assert_eq!(approved["task"], json!(proposal.task));
+    assert_eq!(approved["purpose"], "Coordinate shared work");
+    assert_eq!(approved["peer"], json!({"session_id":live[1].session_id,"agent":"claude","project":live[1].project}));
+    assert_eq!(approved["status"], "active");
+    assert!(!context.to_string().contains(&foreign));
+    for field in ["runtime", "project", "agent"] {
+        let mut changed = live[0].clone();
+        match field { "runtime" => changed.runtime = "replacement".into(), "project" => changed.project = "path:/other".into(), _ => changed.agent = "codex".into() }
+        let context = store::context(&connection, &changed).unwrap();
+        assert_eq!(context["links"], json!({"approved":[],"proposals":[]}), "{field}");
+    }
+    store::control(&mut connection, &HostAction::LinkRevoke { request_id:"revoke".into(), link_id:link }, &live, 100).unwrap();
+    let context = store::context(&connection, &live[0]).unwrap();
+    assert_eq!(context["links"]["approved"][0]["status"], "closed");
+    assert_eq!(context["links"]["approved"][0]["closure_reason"], "revoked");
+}
+
+#[test]
+fn link_context_shows_only_requesters_own_status_receipts() {
+    if isolated("link_context_shows_only_requesters_own_status_receipts") { return; }
+    let (mut connection, _, live, proposal) = proposal_fixture();
+    let pending = links::propose(&mut connection, &live[0], &proposal, &live, 0).unwrap().result.unwrap();
+    links::propose(&mut connection, &live[2], &LinkProposal { submission_key:"other".into(), ..proposal.clone() }, &live, 0).unwrap();
+    for status in ["pending", "rejected"] {
+        if status == "rejected" {
+            store::control(&mut connection, &HostAction::LinkReject { request_id:"reject".into(), proposal_id:pending["proposal_id"].as_str().unwrap().into(), expected_revision:1 }, &live, 1).unwrap();
+        }
+        let context = store::context(&connection, &live[0]).unwrap();
+        assert_eq!(context["links"], json!({"approved":[],"proposals":[{"proposal_id":pending["proposal_id"],"revision":1,"status":status}]}));
+        assert!(!context.to_string().contains(&live[1].session_id));
+        assert_eq!(store::context(&connection, &live[1]).unwrap()["links"], json!({"approved":[],"proposals":[]}));
+    }
+}
+
+#[test]
+fn historical_context_is_byte_bounded_without_hiding_current_links_or_pending_requests() {
+    if isolated("historical_context_is_byte_bounded_without_hiding_current_links_or_pending_requests") { return; }
+    let (mut connection, _, live, proposal) = proposal_fixture();
+    own_teams(&mut connection, &live, &proposal);
+    let active = activate(&mut connection, &live[0], &proposal, &live);
+    let pending = links::propose(&mut connection, &live[0], &LinkProposal { submission_key:"still-pending".into(), ..proposal.clone() }, &live, 0).unwrap().result.unwrap();
+    // The current records are older than all the terminal history: newest-N must not hide them.
+    let history = LinkProposal { peer_session_id:live[2].session_id.clone(), ..proposal.clone() };
+    link_history::populate(&mut connection, &live, &history);
+    link_history::fill_reply_boundary(&mut connection, &live, &history);
+    let context = store::context(&connection, &live[0]).unwrap();
+    let reply = teams::TeamReply { request_id:"context".into(), result:Ok(context.clone()) };
+    let framed_reply = format!("{}\n", serde_json::to_string(&reply).unwrap());
+    assert!(framed_reply.len() <= teams::client::AGENT_REPLY_MAX, "framed Context has {} bytes, exceeding the native transport cap", framed_reply.len());
+    let approved = context["links"]["approved"].as_array().unwrap();
+    let proposals = context["links"]["proposals"].as_array().unwrap();
+    assert!(approved.iter().any(|link| link["link_id"] == active && link["status"] == "active" && link["purpose"] == proposal.purpose));
+    assert!(proposals.contains(&pending));
+    assert_eq!(context["members"].as_array().unwrap().len(), 2);
+    assert_eq!(approved.len() as u64 + context["links"]["omitted_history"]["approved"].as_u64().unwrap(), 42);
+    assert_eq!(proposals.len() as u64 + context["links"]["omitted_history"]["proposals"].as_u64().unwrap(), 83);
+    assert_eq!(connection.query_row("SELECT count(*) FROM links WHERE state='closed'", [], |row| row.get::<_, i64>(0)).unwrap(), 40);
+    assert_eq!(connection.query_row("SELECT count(*) FROM link_proposals WHERE status='rejected'", [], |row| row.get::<_, i64>(0)).unwrap(), 40);
+    assert_eq!(store::context(&connection, &live[1]).unwrap()["links"]["approved"].as_array().unwrap().len(), 1);
 }
 
 #[test]

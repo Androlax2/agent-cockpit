@@ -34,13 +34,26 @@ Link requests require Theo's approval. Collaboration never grants tool or scope 
 Chief coordination (only an active chief, to an exact approved work/dependency's assigned worker):
   {"action":"chief","request":{"action":"coordinate","submission_key":"coordinate-1","work":{"task":{"project":"path:/home/theo/IdeaProjects/app","task_id":"5e1f7e57"},"revision":1},"recipient":"aaaaaaaa-0000-4000-8000-000000000000","body":"Is the approved dependency ready?"}}
 Reuse a coordination key only for the same request. A new key deliberately sends identical content again.
+
+Cross-project links (no team membership required): `context` also shows links.approved and your
+own links.proposals status receipts. Propose only an already-known peer session; pending requests
+reveal no peer facts. links.omitted_history counts older terminal records left out to fit the reply;
+active links and pending requests take priority. Use link-propose, link-send or link-assess with the matching snake_case JSON:
+  {"action":"link_propose","proposal":{"submission_key":"joint-1","task":{"project":"path:/home/theo/IdeaProjects/app","task_id":"5e1f7e57"},"peer_session_id":"ses_3f2a9c0b1ffeQkTz8mWn4rJd2L","purpose":"Coordinate the shared work."}}
+Every message needs an explicit link_id from links.approved; the daemon chooses the other participant:
+  {"action":"link_send","message":{"link_id":"<approved link_id>","submission_key":"link-note-1","kind":"notice","body":"The shared interface is ready."}}
+Use kind clarification to ask; answer with kind reply and the received thread_id (at most three rounds).
+  {"action":"link_assess","link_id":"<approved link_id>","thread_id":"<thread_id>","resolved":true}
+Marking the shared TODO done closes the link permanently; reopening the TODO does not restore it.
+Links carry coordination only and cannot relay Theo's permission, authorize tools or Git writes,
+change scope, recruit teammates or hand off work. Ask Theo directly for authorization.
 "#;
 
 fn action(name: &str) -> Result<AgentAction, String> {
     if name == "context" { return Ok(AgentAction::Context); }
     if name == "receive" { return Ok(AgentAction::Receive); }
-    if !matches!(name, "chief" | "qa-result" | "native-telemetry" | "propose" | "send" | "receipt" | "assess" | "handoff" | "recruit") {
-        return Err(format!("{name:?} is not an agent action; use context, propose, recruit, send, assess, handoff, receive or receipt"));
+    if !matches!(name, "chief" | "qa-result" | "native-telemetry" | "propose" | "send" | "receipt" | "assess" | "handoff" | "recruit" | "link-propose" | "link-send" | "link-assess") {
+        return Err(format!("{name:?} is not an agent action; use context, chief, qa-result, native-telemetry, propose, recruit, send, assess, handoff, receive, receipt, link-propose, link-send or link-assess"));
     }
     let mut input = Vec::new();
     io::stdin().take(client::REQUEST_MAX as u64 + 1).read_to_end(&mut input).map_err(|error| error.to_string())?;
@@ -53,7 +66,7 @@ fn action(name: &str) -> Result<AgentAction, String> {
         AgentAction::Chief { .. } => "chief",
         AgentAction::NativeTelemetry { .. } => "native-telemetry",
         AgentAction::QaResult { .. } => "qa-result",
-        AgentAction::LinkPropose { .. } | AgentAction::LinkSend { .. } | AgentAction::LinkAssess { .. } => return Err("link commands are not implemented".into()),
+        AgentAction::LinkPropose { .. } => "link-propose", AgentAction::LinkSend { .. } => "link-send", AgentAction::LinkAssess { .. } => "link-assess",
     };
     if name != actual { return Err("command and JSON action do not match".into()); }
     Ok(action)

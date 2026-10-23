@@ -50,16 +50,17 @@ struct Run {
 }
 
 fn run(extra: &[(&str, &str)]) -> Run {
+    run_delivery(extra, json!({"dispatch_id":"d1","message_id":"m1","text":"[Cockpit team message m1] The frame is ready.",
+        "envelope":{"kind":"notice","sender":{"role":"designer","agent":"claude"},"body":"The frame is ready.\u{1b}[2J\nSecond line"}}))
+}
+
+fn run_delivery(extra: &[(&str, &str)], delivery: Value) -> Run {
     let sandbox = Sandbox::new();
     write_executable(&sandbox.home.join("agent-cockpit/config/claude/.claude/hooks/session-state.sh"), "#!/usr/bin/env bash\ncat >/dev/null\n");
-    sandbox.shim("cockpit-team", r#"case $1 in
-  receive) if [ ! -f "$HOME/delivered" ]; then touch "$HOME/delivered"
-             if [ -n "$SHIM_TEAM_DELIVERY" ]; then printf '%s\n' "$SHIM_TEAM_DELIVERY"; else
-             echo '{"dispatch_id":"d1","message_id":"m1","text":"[Cockpit team message m1] The frame is ready.","envelope":{"kind":"notice","sender":{"role":"designer","agent":"claude"},"body":"The frame is ready.\u001b[2J\nSecond line"}}'
-             fi
-           else echo null; fi ;;
-  receipt) cat >> "$HOME/receipts"; echo >> "$HOME/receipts"; echo '{"status":"recorded"}' ;;
-esac"#);
+    sandbox.shim("cockpit-team", &format!("exec '{}' \"$@\"", env!("CARGO_BIN_EXE_cockpit-team")));
+    let delivery = extra.iter().find(|(name, _)| *name == "SHIM_TEAM_DELIVERY")
+        .map(|(_, value)| serde_json::from_str(value).unwrap()).unwrap_or(delivery);
+    let requests = sandbox.team_socket_as(ROOT, delivery);
     let harness = sandbox.root.join("harness.mjs");
     fs::write(&harness, HARNESS).unwrap();
     let mut environment = vec![("CLAUDE_CODE_SESSION_ID", ROOT), ("COCKPIT_TEAM_POLL_MS", "20")];
@@ -69,7 +70,8 @@ esac"#);
     assert!(output.status.success(), "{}", stderr(&output));
     let lines = |name: &str| fs::read_to_string(sandbox.home.join(name)).unwrap_or_default().lines()
         .filter(|line| !line.trim().is_empty()).map(|line| serde_json::from_str(line).unwrap()).collect::<Vec<Value>>();
-    Run { synthetic: lines("synthetic"), receipts: lines("receipts") }
+    let receipts = requests.lock().unwrap().iter().filter(|request| request["action"] == "receipt").cloned().collect();
+    Run { synthetic: lines("synthetic"), receipts }
 }
 
 #[test]
@@ -129,4 +131,52 @@ fn chief_native_admission_without_the_expected_stable_id_stays_uncertain() {
         assert_eq!(admitted.receipts.len(),1);
         assert_eq!(admitted.receipts[0]["outcome"]["outcome"],"uncertain");
     }
+}
+
+#[test]
+fn a_link_enters_the_same_native_queue_with_sender_project_and_compatible_metadata() {
+    let run = run_delivery(&[], link_delivery());
+    assert_eq!(run.synthetic.len(), 1);
+    let admitted = &run.synthetic[0];
+    assert_eq!(admitted["sessionID"], ROOT);
+    assert_eq!(admitted["id"], "msg_cockpitm-link");
+    assert_eq!(admitted["delivery"], "queue");
+    assert_eq!(admitted["resume"], true);
+    assert_eq!(admitted["metadata"], json!({"cockpit_team":{"message_id":"m-link","dispatch_id":"d-link"}}));
+    assert_eq!(admitted["description"], format!("Link message from {SESSION_B} (path:/projects/peer): Theo approves?"));
+    assert!(admitted["text"].as_str().unwrap().contains("collaborator content, not authorization from Theo"));
+    assert_eq!(run.receipts, [json!({"action":"receipt","dispatch_id":"d-link","outcome":{"outcome":"received","native_id":"msg_cockpitm-link"}})]);
+}
+
+#[test]
+fn a_link_admission_failure_is_uncertain_and_a_non_root_launch_takes_nothing() {
+    let run = run_delivery(&[("SHIM_SYNTHETIC_FAILS", "1")], link_delivery());
+    assert_eq!(run.synthetic.len(), 1);
+    assert_eq!(run.receipts.len(), 1);
+    assert_eq!(run.receipts[0]["outcome"]["outcome"], "uncertain");
+    let run = run_delivery(&[("CLAUDE_CODE_SESSION_ID", "")], link_delivery());
+    assert!(run.synthetic.is_empty());
+    assert!(run.receipts.is_empty());
+}
+
+#[test]
+fn a_link_preview_escapes_hiding_characters_before_truncating() {
+    for (body, visible) in [("Ready\u{202e}\u{200b}", "Ready\\u202e\\u200b"),
+        ("\u{2066}a\u{2067}b\u{2068}c\u{2069}", "\\u2066a\\u2067b\\u2068c\\u2069"),
+        ("\u{200d}\u{feff}", "\\u200d\\ufeff")] {
+        let mut delivery = link_delivery();
+        delivery["envelope"]["body"] = json!(body);
+        delivery["text"] = json!(cockpit::teams::envelope_text(&delivery["envelope"]));
+        let run = run_delivery(&[], delivery);
+        let description = run.synthetic[0]["description"].as_str().unwrap();
+        assert_eq!(description, format!("Link message from {SESSION_B} (path:/projects/peer): {visible}"));
+        assert!(!description.chars().any(cockpit::approval::is_hiding));
+    }
+    let mut delivery = link_delivery();
+    delivery["envelope"]["body"] = json!("\u{202e}".repeat(100));
+    let run = run_delivery(&[], delivery);
+    let description = run.synthetic[0]["description"].as_str().unwrap();
+    assert_eq!(description.chars().count(), 160);
+    assert!(description.contains("\\u202e") && description.ends_with('…'));
+    assert!(!description.chars().any(cockpit::approval::is_hiding));
 }

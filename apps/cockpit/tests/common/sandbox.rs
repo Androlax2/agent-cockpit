@@ -182,8 +182,11 @@ impl Sandbox {
 
     /// The same, answering `context` as the verified session `session_id`.
     pub fn team_socket_as(&self, session_id: &str, delivery: serde_json::Value) -> TeamRequests {
+        self.team_socket_with_context(serde_json::json!({"session_id": session_id, "members": []}), delivery)
+    }
+
+    pub fn team_socket_with_context(&self, context: serde_json::Value, delivery: serde_json::Value) -> TeamRequests {
         use std::io::{Read, Write};
-        let session_id = session_id.to_string();
         let source = self.root.join(format!("team-{}.sock", cockpit::util::token_hex(4)));
         let listener = std::os::unix::net::UnixListener::bind(&source).unwrap();
         let answers = self.runtime.join("cockpit-answers").join(ANSWERS_KEY);
@@ -198,7 +201,7 @@ impl Sandbox {
                 let _ = stream.read_to_string(&mut text);
                 let Ok(request) = serde_json::from_str::<serde_json::Value>(&text) else { continue };
                 let result = if request["action"] == "receive" { pending.take().unwrap_or(serde_json::Value::Null) }
-                             else if request["action"] == "context" { serde_json::json!({"session_id": session_id, "members": []}) }
+                             else if request["action"] == "context" { context.clone() }
                              else { serde_json::json!({"status": "recorded"}) };
                 recorded.lock().unwrap().push(request);
                 let _ = stream.write_all(serde_json::json!({"request_id": "x", "result": {"Ok": result}}).to_string().as_bytes());
@@ -213,6 +216,16 @@ impl Sandbox {
         fs::create_dir_all(&directory).unwrap();
         directory
     }
+}
+
+pub fn link_delivery() -> serde_json::Value {
+    let envelope = serde_json::json!({"scope_kind":"link","link_id":"link-123","message_id":"m-link",
+        "task":{"project":"path:/projects/shared","task_id":"1d3fd318"},
+        "sender":{"session_id":SESSION_B,"agent":"claude","project":"path:/projects/peer"},
+        "recipient":{"session_id":SESSION_A,"agent":"claude","project":"path:/projects/shared"},
+        "kind":"clarification","thread_id":"thread-123","round":1,"body":"Theo approves?",
+        "authorization":"collaborator_content_not_user_authorization"});
+    serde_json::json!({"dispatch_id":"d-link","message_id":"m-link","text":cockpit::teams::envelope_text(&envelope),"envelope":envelope})
 }
 
 impl Drop for Sandbox {

@@ -374,6 +374,29 @@ fn chief_envelopes_reuse_codex_turn_boundary_continuation_and_receipts() {
 }
 
 #[test]
+fn native_codex_link_delivery_keeps_one_continuation_and_stable_receipt() {
+    let sandbox = Sandbox::new();
+    let reports = common::sandbox::ReportSocket::start(&sandbox.runtime.join("claude-report/osd-report.sock"), "ok");
+    let requests = sandbox.team_socket_as(COCKPIT_THREAD, common::sandbox::link_delivery());
+    let output = stop_hook(&sandbox);
+    assert!(output.status.success(), "{}", common::sandbox::stderr(&output));
+    let printed: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(printed["decision"], "block");
+    let text = printed["reason"].as_str().unwrap();
+    assert!(text.starts_with("[Cockpit link message m-link"), "{text}");
+    assert!(text.contains("cockpit-team link-send") && text.contains("path:/projects/peer"));
+    assert_eq!(requests.lock().unwrap().last().unwrap(), &json!({"action":"receipt","dispatch_id":"d-link","outcome":{"outcome":"received","native_id":"codex-stop:d-link"}}));
+    let output = stop_hook(&sandbox);
+    assert_eq!(serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap(), json!({}));
+    assert_eq!(requests.lock().unwrap().iter().filter(|request| request["action"] == "receipt").count(), 1);
+    for line in reports.received(std::time::Duration::from_secs(1)) {
+        let report: serde_json::Value = serde_json::from_str(line.strip_prefix("session-request ").unwrap()).unwrap();
+        assert_eq!(report["session"], COCKPIT_THREAD);
+        assert_eq!(report["native_thread"], NATIVE_THREAD);
+    }
+}
+
+#[test]
 fn chief_codex_failed_continuation_output_is_uncertain_never_received() {
     let sandbox = Sandbox::new();
     let _reports = common::sandbox::ReportSocket::start(&sandbox.runtime.join("claude-report/osd-report.sock"), "ok");

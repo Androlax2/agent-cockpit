@@ -42,6 +42,63 @@ fn receipt(id: &str, revision: i64, status: &str) -> Value {
     json!({"proposal_id":id,"revision":revision,"status":status})
 }
 
+/// Approved routing facts and the requester's own status receipts, bound to its exact identity.
+pub fn context(connection: &Connection, sender: &VerifiedSession) -> Result<Value, TeamError> {
+    let mut approved = Vec::new();
+    let mut approved_count = 0;
+    let mut statement = connection.prepare("SELECT l.id,l.task_key,p.purpose,l.state,l.closure_reason,peer.session_id,peer.agent,peer.project,count(*) OVER ()
+        FROM links l JOIN link_proposals p ON p.id=l.proposal_id
+        JOIN link_participants own ON own.proposal_id=l.proposal_id
+        JOIN link_participants peer ON peer.proposal_id=l.proposal_id AND peer.slot!=own.slot
+        WHERE own.session_id=?1 AND own.agent=?2 AND own.project=?3 AND own.runtime=?4
+        ORDER BY (l.state='active') DESC,l.created_at DESC,l.id DESC LIMIT 30")?;
+    let mut rows = statement.query(params![sender.session_id,sender.agent,sender.project,sender.runtime])?;
+    while let Some(row) = rows.next()? {
+        approved_count = row.get::<_, i64>(8)?;
+        let task: TaskKey = serde_json::from_str(&row.get::<_, String>(1)?)?;
+        approved.push(json!({"link_id":row.get::<_, String>(0)?,"task":task,"purpose":row.get::<_, String>(2)?,
+            "status":row.get::<_, String>(3)?,"closure_reason":row.get::<_, Option<String>>(4)?,
+            "peer":{"session_id":row.get::<_, String>(5)?,"agent":row.get::<_, String>(6)?,"project":row.get::<_, String>(7)?}}));
+    }
+    let mut proposals = Vec::new();
+    let mut proposal_count = 0;
+    let mut statement = connection.prepare("SELECT p.id,p.revision,p.status,count(*) OVER () FROM link_proposals p
+        JOIN link_participants own ON own.proposal_id=p.id AND own.session_id=p.sender
+        WHERE p.sender=?1 AND own.agent=?2 AND own.project=?3 AND own.runtime=?4
+        ORDER BY (p.status='pending') DESC,p.created_at DESC,p.id DESC LIMIT 30")?;
+    let mut rows = statement.query(params![sender.session_id,sender.agent,sender.project,sender.runtime])?;
+    while let Some(row) = rows.next()? {
+        proposal_count = row.get::<_, i64>(3)?;
+        proposals.push(receipt(&row.get::<_, String>(0)?, row.get(1)?, &row.get::<_, String>(2)?));
+    }
+    // Approval/intake cap active links and pending requests at ten each; history cannot displace them.
+    let omitted_approved = approved_count - approved.len() as i64;
+    let omitted_proposals = proposal_count - proposals.len() as i64;
+    let mut context = json!({"approved":approved,"proposals":proposals});
+    if omitted_approved + omitted_proposals > 0 {
+        context["omitted_history"] = json!({"approved":omitted_approved,"proposals":omitted_proposals});
+    }
+    bound_context(&mut context, super::client::AGENT_REPLY_MAX)?;
+    Ok(context)
+}
+
+/// Leave room for the enclosing Context reply without discarding active routing or pending receipts.
+pub(super) fn bound_context(context: &mut Value, budget: usize) -> Result<(), TeamError> {
+    while serde_json::to_vec(context)?.len() > budget {
+        let removable = [("approved", "active"), ("proposals", "pending")].into_iter().find_map(|(field, current)| {
+            context[field].as_array().expect("context collection").iter().rposition(|entry| entry["status"] != current).map(|index| (field, index))
+        });
+        let Some((field, index)) = removable else {
+            return Err(TeamError::new(ErrorCode::Limit, "current collaboration context exceeds the reply limit"));
+        };
+        context[field].as_array_mut().expect("context collection").remove(index);
+        if context.get("omitted_history").is_none() { context["omitted_history"] = json!({"approved":0,"proposals":0}); }
+        let omitted = context["omitted_history"][field].as_u64().expect("history count");
+        context["omitted_history"][field] = json!(omitted + 1);
+    }
+    Ok(())
+}
+
 pub fn propose(connection: &mut Connection, sender: &VerifiedSession, proposal: &LinkProposal, live: &[VerifiedSession], now_ms: i64) -> Result<TeamReply, TeamError> {
     if live_participant(live, &sender.session_id)? != sender { return Err(invalid_mapping()); }
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;

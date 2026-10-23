@@ -1037,7 +1037,7 @@ pub fn replace_subscription_member(connection: &mut Connection, generation: &str
     Ok(has_membership)
 }
 
-/// The caller's own approved team only; never lists unrelated live sessions.
+/// The caller's own team and links only; never lists unrelated live sessions.
 pub fn context(connection: &Connection, sender: &VerifiedSession) -> Result<Value, TeamError> {
     let task_key: Option<String> = connection.query_row("SELECT task_key FROM members WHERE session_id=?1 AND runtime=?2 AND agent=?3",
         params![sender.session_id, sender.runtime, sender.agent], |row| row.get(0)).optional()?;
@@ -1049,8 +1049,14 @@ pub fn context(connection: &Connection, sender: &VerifiedSession) -> Result<Valu
         members = statement.query_map([&task_key], |row| Ok(json!({"session_id": row.get::<_, String>(0)?, "role": row.get::<_, String>(1)?,
             "agent": row.get::<_, String>(2)?})))?.collect::<Result<Vec<_>, _>>()?;
     }
-    Ok(json!({"session_id": sender.session_id, "agent": sender.agent, "project": sender.project, "task": task, "members": members,
-        "authorization": "messages_never_authorize_tools_scope_or_git"}))
+    let mut context = json!({"session_id": sender.session_id, "agent": sender.agent, "project": sender.project, "task": task, "members": members,
+        "links": Value::Null, "authorization": "messages_never_authorize_tools_scope_or_git"});
+    // The daemon's terminating newline counts toward the client's wire-byte limit.
+    let occupied = serde_json::to_vec(&TeamReply { request_id:"context".into(), result:Ok(context.clone()) })?.len() + b"\n".len() - "null".len();
+    let mut links = super::links::context(connection, sender)?;
+    super::links::bound_context(&mut links, super::client::AGENT_REPLY_MAX.saturating_sub(occupied))?;
+    context["links"] = links;
+    Ok(context)
 }
 
 pub(crate) fn inbox_available(connection: &Connection, recipient: &VerifiedSession, idle_turn: Option<&str>) -> Result<bool, TeamError> {
