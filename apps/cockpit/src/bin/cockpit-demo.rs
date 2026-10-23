@@ -1,7 +1,7 @@
 //! A made-up Agent Cockpit for the README screenshots (tools/capture-claude.sh).
 //!
-//!     claude-demo build <root>   everything the column reads, invented, under <root>
-//!     claude-demo session        a still picture of a session for the demo's session pane
+//!     cockpit-demo build <root>   everything the column reads, invented, under <root>
+//!     cockpit-demo session        a still picture of a session for the demo's session pane
 //!
 //! build writes home/ (statusline facts, history, plan name, parallel clones), run/ (the session
 //! snapshot, plan usage, the viewed session), state/ (todo list), repos/ (git checkouts with their
@@ -212,13 +212,13 @@ fn main() {
         ["build", root] => {
             let root = std::path::absolute(root).unwrap_or_else(|_| root.into());
             if let Err(error) = build(&root) {
-                eprintln!("claude-demo: {error}");
+                eprintln!("cockpit-demo: {error}");
                 std::process::exit(1);
             }
         }
         ["session"] => session(),
         _ => {
-            eprintln!("usage: claude-demo build <root> | claude-demo session");
+            eprintln!("usage: cockpit-demo build <root> | cockpit-demo session");
             std::process::exit(2);
         }
     }

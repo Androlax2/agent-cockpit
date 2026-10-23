@@ -23,7 +23,7 @@ impl Remote {
         sandbox.shim("qrencode", "");
         // capture-pane shows the file pane.txt, as a session's pane would.
         sandbox.shim("tmux", r#"[[ $1 == capture-pane ]] && cat "$XDG_RUNTIME_DIR/pane.txt" 2>/dev/null; exit 0"#);
-        let mut server = sandbox.command(env!("CARGO_BIN_EXE_claude-remote"), &[("CLAUDE_REMOTE_ADDRESS", "127.0.0.1:0")]).arg("serve")
+        let mut server = sandbox.command(env!("CARGO_BIN_EXE_cockpit-remote"), &[("CLAUDE_REMOTE_ADDRESS", "127.0.0.1:0")]).arg("serve")
             .stdout(Stdio::piped()).spawn().unwrap();
         let mut line = String::new();
         BufReader::new(server.stdout.take().unwrap()).read_line(&mut line).unwrap();

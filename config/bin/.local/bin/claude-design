@@ -1,12 +1,3 @@
 #!/bin/sh
-# A Rust program of agent-cockpit (apps/, built with `make build` into apps/target/release): this
-# runs the build named like this script, found next to it through the stow link.
-here=$(dirname "$(readlink -f "$0")")
-binary="$here/../../../../apps/target/release/$(basename "$0")"
-if [ ! -x "$binary" ]; then
-    echo "$(basename "$0") is not built yet: make -C ~/agent-cockpit build" >&2
-    # In a terminal pane of its own the message stays on screen instead of a dead pane.
-    [ $# -eq 0 ] && [ -t 1 ] && exec sleep 3600
-    exit 1
-fi
-exec "$binary" "$@"
+# Compatibility for sessions started before the cockpit command rename.
+exec "$(dirname "$(readlink -f "$0")")/cockpit-design" "$@"

@@ -1,4 +1,4 @@
-//! The "still there?" screen of the Claude workspace: claude-idle-prompt <seconds>.
+//! The "still there?" screen of the agent workspace: cockpit-idle-prompt <seconds>.
 //!
 //! A layer-shell window over the whole screen (Hyprland blurs what is behind it, apps/claude.lua)
 //! with a card in the middle: the question, a countdown, and what to do. Any key, click or mouse
@@ -85,7 +85,7 @@ fn activate(app: &Application, seconds: u32, outcome: Rc<Cell<u8>>) {
 fn main() -> glib::ExitCode {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     let Some(seconds) = arguments.first().filter(|_| arguments.len() == 1).and_then(|text| text.parse::<u32>().ok()) else {
-        eprintln!("usage: claude-idle-prompt <seconds>");
+        eprintln!("usage: cockpit-idle-prompt <seconds>");
         return glib::ExitCode::from(2);
     };
     // Until answered, the countdown is what ends it.

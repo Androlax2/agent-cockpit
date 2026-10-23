@@ -9,7 +9,7 @@ use std::path::Path;
 const PRINT_RED_ON_ENTER: &str = r#"stty -echo; printf ready; read line; printf '\033[31mred\033[0m\n'; sleep 1"#;
 
 fn relay(script: &str) -> Terminal {
-    let mut terminal = Terminal::start(Path::new(env!("CARGO_BIN_EXE_claude-fade")), &["sh", "-c", script], &[]);
+    let mut terminal = Terminal::start(Path::new(env!("CARGO_BIN_EXE_cockpit-fade")), &["sh", "-c", script], &[]);
     terminal.pump(5.0, Some(b"ready"));
     terminal
 }

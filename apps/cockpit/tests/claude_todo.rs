@@ -12,7 +12,7 @@ use std::time::Duration;
 
 fn claude_todo(sandbox: &Sandbox, arguments: &[&str], cwd: &Path) -> Output {
     let todo = sandbox.state.join("todo.json").display().to_string();
-    sandbox.command(bin().join("claude-todo"), &[("CLAUDE_TODO_PATH", &todo), ("CLAUDE_CODE_SESSION_ID", SESSION_A)])
+    sandbox.command(bin().join("cockpit-todo"), &[("CLAUDE_TODO_PATH", &todo), ("CLAUDE_CODE_SESSION_ID", SESSION_A)])
         .args(arguments).current_dir(cwd).output().unwrap()
 }
 
@@ -205,7 +205,7 @@ fn greywall_without_a_reason_or_with_design_sends_no_update() {
 fn help_says_stack_code_goes_to_its_repository_and_config_blocks_to_blocked() {
     let sandbox = Sandbox::new();
     let usage = stdout(&claude_todo(&sandbox, &["stack", "--help"], &sandbox.root));
-    assert!(usage.contains("claude-todo stack <repo> '<title>'") && usage.contains("greyproxy"), "{usage}");
+    assert!(usage.contains("cockpit-todo stack <repo> '<title>'") && usage.contains("greyproxy"), "{usage}");
     assert!(usage.contains("greywall.json"), "{usage}");
 }
 
@@ -287,7 +287,7 @@ fn help_prints_the_usage_and_files_nothing() {
     for arguments in [vec!["--help"], vec!["-h"], vec!["help"], vec!["add", "--help"], vec!["propose", "-h"], vec!["blocked", "--help"], vec!["add", "--help", "--kind", "bug"]] {
         let output = claude_todo(&sandbox, &arguments, &sandbox.root);
         assert_eq!(output.status.code(), Some(0), "{arguments:?}");
-        assert!(String::from_utf8_lossy(&output.stdout).contains("claude-todo add '<title>'"), "{arguments:?}");
+        assert!(String::from_utf8_lossy(&output.stdout).contains("cockpit-todo add '<title>'"), "{arguments:?}");
     }
     assert!(updates(&daemon).is_empty());
 }

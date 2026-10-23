@@ -1,4 +1,4 @@
-//! claude-fade: runs a command (the cockpit's session pane: its nested tmux client) on a terminal of
+//! cockpit-fade: runs a command (the cockpit's session pane: its nested tmux client) on a terminal of
 //! its own and relays both ways. While the pane is out of focus (tmux's focus-out, ESC [ O, on the
 //! way in) every colour the command draws gets dim added on its way out, so the whole session fades,
 //! colours included, which tmux's window-style cannot do. Keystrokes pass through untouched.
@@ -151,7 +151,7 @@ fn spawn(command: &[String]) -> std::io::Result<(i32, i32)> {
     if pid == 0 {
         unsafe {
             libc::execvp(pointers[0], pointers.as_ptr());
-            let message = b"claude-fade: the command could not start\n";
+            let message = b"cockpit-fade: the command could not start\n";
             libc::write(2, message.as_ptr().cast(), message.len());
             libc::_exit(127);
         }
@@ -251,13 +251,13 @@ fn relay(command: &[String]) -> std::io::Result<i32> {
 fn main() {
     let command: Vec<String> = std::env::args().skip(1).collect();
     if command.is_empty() {
-        eprintln!("usage: claude-fade <command> [argument…]");
+        eprintln!("usage: cockpit-fade <command> [argument…]");
         std::process::exit(2);
     }
     match relay(&command) {
         Ok(code) => std::process::exit(code),
         Err(error) => {
-            eprintln!("claude-fade: {error}");
+            eprintln!("cockpit-fade: {error}");
             std::process::exit(1);
         }
     }

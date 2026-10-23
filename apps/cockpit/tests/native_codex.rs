@@ -192,7 +192,7 @@ fn native_codex_missing_thread_refuses_instead_of_resuming_last() {
 fn native_codex_todo_updates_are_attributed_to_its_namespaced_session() {
     let sandbox = Sandbox::new();
     let daemon = common::sandbox::ReportSocket::start(&sandbox.runtime.join("claude-report/osd-report.sock"), "ok");
-    let output = sandbox.command(env!("CARGO_BIN_EXE_claude-todo"), &[("COCKPIT_AGENT", "codex"), ("CODEX_THREAD_ID", NATIVE_THREAD)])
+    let output = sandbox.command(env!("CARGO_BIN_EXE_cockpit-todo"), &[("COCKPIT_AGENT", "codex"), ("CODEX_THREAD_ID", NATIVE_THREAD)])
         .env_remove("CLAUDE_CODE_SESSION_ID").args(["start", "0123abcd"]).current_dir(&sandbox.root).output().unwrap();
     assert!(output.status.success(), "{}", common::sandbox::stderr(&output));
     let recorded = daemon.received(std::time::Duration::from_secs(1));
@@ -234,7 +234,7 @@ fn native_codex_guides_are_attributed_to_the_same_cockpit_session() {
 #[test]
 fn native_codex_design_role_uses_its_own_session_file() {
     let sandbox = Sandbox::new();
-    let output = sandbox.command(env!("CARGO_BIN_EXE_claude-design"), &[("COCKPIT_AGENT", "codex"), ("CODEX_THREAD_ID", NATIVE_THREAD)])
+    let output = sandbox.command(env!("CARGO_BIN_EXE_cockpit-design"), &[("COCKPIT_AGENT", "codex"), ("CODEX_THREAD_ID", NATIVE_THREAD)])
         .env_remove("CLAUDE_CODE_SESSION_ID").args(["role", "developer"]).output().unwrap();
     assert!(output.status.success(), "{}", common::sandbox::stderr(&output));
     assert_eq!(std::fs::read_to_string(sandbox.home.join(format!(".cache/claude/designs/{COCKPIT_THREAD}.role"))).unwrap(), "developer");

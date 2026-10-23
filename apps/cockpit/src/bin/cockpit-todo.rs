@@ -1,31 +1,31 @@
-//! claude-todo: Theo's todo list (the cockpit's Todo panel), for Claude inside the sandbox.
+//! cockpit-todo: Theo's todo list (the cockpit's Todo panel), for agents inside the sandbox.
 //!
-//!     claude-todo list [--all]        the items of this directory's project (--all: every project)
-//!     claude-todo start <id>          mark it in progress
-//!     claude-todo done <id> [--summary '<branch, commit, PR>']
+//!     cockpit-todo list [--all]        the items of this directory's project (--all: every project)
+//!     cockpit-todo start <id>          mark it in progress
+//!     cockpit-todo done <id> [--summary '<branch, commit, PR>']
 //!                                     mark it done; the summary reaches what waited on it
-//!     claude-todo todo <id>           back to to do
-//!     claude-todo add '<title>' [--notes '<details>'] [--design] [--kind <kind>] [--project <name>] [--after <id>]…
+//!     cockpit-todo todo <id>           back to to do
+//!     cockpit-todo add '<title>' [--notes '<details>'] [--design] [--kind <kind>] [--project <name>] [--after <id>]…
 //!                                     a new item for this directory's project, or with --project for
 //!                                     another one, To do and queued there; --after: it waits until
 //!                                     those items are done, then joins the queue
-//!     claude-todo after <id> <other>… make an item wait until the others are done, then queue it
-//!     claude-todo propose '<title>' --why '<reason>' [--notes '<details>'] [--design] [--kind <kind>] [--project <name>]
+//!     cockpit-todo after <id> <other>… make an item wait until the others are done, then queue it
+//!     cockpit-todo propose '<title>' --why '<reason>' [--notes '<details>'] [--design] [--kind <kind>] [--project <name>]
 //!                                     an idea for Theo to approve or decline (the Proposed tab)
 //!                                     --design: work for the project's designer session
 //!                                     --project: for another project, a checkout in ~/IdeaProjects
-//!     claude-todo blocked '<what you could not do>' --why '<what stopped you>' [--notes '<details>']
+//!     cockpit-todo blocked '<what you could not do>' --why '<what stopped you>' [--notes '<details>']
 //!                                     from any project: greywall, cockpit, the launcher or
 //!                                     another part of Theo's setup kept you from doing something;
 //!                                     filed in the agent-cockpit list and queued for its session
-//!     claude-todo stack <repo> '<title>' --why '<reason>' [--notes '<details>'] [--kind <kind>]
+//!     cockpit-todo stack <repo> '<title>' --why '<reason>' [--notes '<details>'] [--kind <kind>]
 //!                                     from any project: a security hole, bug or improvement in the own
 //!                                     code of a sandbox stack repository (greywall, greyproxy; not
 //!                                     greywall.json, which is a blocked report); proposed in that
 //!                                     repository's list for Theo to approve
-//!     claude-todo greywall '<title>' …  the same as stack greywall
-//!     claude-todo delete <id>         remove an item a session filed in this project (never one Theo wrote)
-//!     claude-todo show <id>           an item with its notes, the paths of its pasted images and, for a proposal, why
+//!     cockpit-todo greywall '<title>' …  the same as stack greywall
+//!     cockpit-todo delete <id>         remove an item a session filed in this project (never one Theo wrote)
+//!     cockpit-todo show <id>           an item with its notes, the paths of its pasted images and, for a proposal, why
 //!
 //! An id is a typed item's 8 hex characters, or a GitHub issue as owner/repo#12. The list is read
 //! from ~/.local/state/cockpit/todo.json; the sandbox cannot write there, so changes go to
@@ -40,35 +40,35 @@ use serde_json::{Value, json};
 use std::fs;
 use std::path::PathBuf;
 
-const USAGE: &str = "    claude-todo list [--all]        the items of this directory's project (--all: every project)
-    claude-todo start <id>          mark it in progress
-    claude-todo done <id> [--summary '<branch, commit, PR>']
+const USAGE: &str = "    cockpit-todo list [--all]        the items of this directory's project (--all: every project)
+    cockpit-todo start <id>          mark it in progress
+    cockpit-todo done <id> [--summary '<branch, commit, PR>']
                                     mark it done; the summary reaches the items waiting on it and,
                                     for an item another project's session filed, that session
-    claude-todo todo <id>           back to to do
-    claude-todo add '<title>' [--notes '<details>'] [--design] [--kind <kind>] [--project <name>] [--after <id>]…
+    cockpit-todo todo <id>           back to to do
+    cockpit-todo add '<title>' [--notes '<details>'] [--design] [--kind <kind>] [--project <name>] [--after <id>]…
                                     --project: another project (its folder name in ~/IdeaProjects): To do
                                     and queued in its list, so an idle session there (or a new one) takes it up
                                     --after: it waits until those items are done, then joins the queue
-    claude-todo after <id> <other>… make an item (yours, or another project's to do) wait until the
+    cockpit-todo after <id> <other>… make an item (yours, or another project's to do) wait until the
                                     others are done; then it joins the queue on its own
-    claude-todo propose '<title>' --why '<reason>' [--notes '<details>'] [--design] [--kind <kind>] [--project <name>]
+    cockpit-todo propose '<title>' --why '<reason>' [--notes '<details>'] [--design] [--kind <kind>] [--project <name>]
                                     an idea for Theo to approve or decline; one Theo declined is not filed again
                                     --design: work for the project's designer session (a gap in the design)
                                     --kind: task (default), feature, bug, improvement, chore, research
                                     --project: work for another project (its folder name in ~/IdeaProjects):
                                     proposed in that project's list for Theo to approve
-    claude-todo blocked '<what you could not do>' --why '<what stopped you>' [--notes '<details>']
+    cockpit-todo blocked '<what you could not do>' --why '<what stopped you>' [--notes '<details>']
                                     the setup (greywall, cockpit, the launcher…) blocked you:
                                     filed in the agent-cockpit list and queued for its session
-    claude-todo stack <repo> '<title>' --why '<reason>' [--notes '<details>'] [--kind <kind>]
+    cockpit-todo stack <repo> '<title>' --why '<reason>' [--notes '<details>'] [--kind <kind>]
                                     a security hole, bug or improvement in the own code of a sandbox stack
                                     repository, from any project: <repo> is the one the code is in (greywall,
                                     greyproxy); proposed in its list for Theo to approve. A path or host
                                     greywall.json denies you is a blocked report, not this
-    claude-todo greywall '<title>' …  the same as stack greywall
-    claude-todo delete <id>         remove an item a session filed in this project (never one Theo wrote)
-    claude-todo show <id>           an item with its notes and the paths of its pasted images";
+    cockpit-todo greywall '<title>' …  the same as stack greywall
+    cockpit-todo delete <id>         remove an item a session filed in this project (never one Theo wrote)
+    cockpit-todo show <id>           an item with its notes and the paths of its pasted images";
 
 fn todo_path() -> PathBuf {
     std::env::var("CLAUDE_TODO_PATH").map(PathBuf::from).unwrap_or_else(|_| paths::todo())
@@ -103,7 +103,7 @@ fn read_list() -> Value {
 fn show(id: &str) -> i32 {
     let data = read_list();
     let Some(item) = data.get("items").and_then(Value::as_array).into_iter().flatten().find(|item| item.get("id").and_then(Value::as_str) == Some(id)) else {
-        eprintln!("claude-todo: no item {id}");
+        eprintln!("cockpit-todo: no item {id}");
         return 1;
     };
     let field = |key: &str| item.get(key).and_then(Value::as_str).unwrap_or("").to_string();
@@ -168,11 +168,11 @@ fn file_arguments(action: &str, repo: Option<&str>, title: &str, arguments: &[&s
             "--notes" if notes.is_none() => notes = Some(value.to_string()),
             "--project" if matches!(action, "propose" | "add") && target.is_none() => target = Some(value.to_string()),
             "--after" if action == "add" => {
-                if value.len() != 8 || !value.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f')) { eprintln!("claude-todo: --after takes an item id, not {value:?}"); return 2 }
+                if value.len() != 8 || !value.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f')) { eprintln!("cockpit-todo: --after takes an item id, not {value:?}"); return 2 }
                 after.push(value.to_string());
             }
             "--kind" if action != "blocked" && category.is_none() => {
-                let Some(parsed) = Category::parse(value) else { eprintln!("claude-todo: invalid kind {value:?}\n{USAGE}"); return 2 };
+                let Some(parsed) = Category::parse(value) else { eprintln!("cockpit-todo: invalid kind {value:?}\n{USAGE}"); return 2 };
                 category = Some(parsed);
             }
             _ => { eprintln!("{USAGE}"); return 2 }
@@ -234,7 +234,7 @@ fn file(action: &str, repo: Option<&str>, title: &str, why: Option<String>, note
             None if !after.is_empty() => { println!("Added to {}'s list; it joins the queue once {} done.", project(), after.join(", ") + if after.len() > 1 { " are" } else { " is" }); 0 }
             None => { println!("Added to {}'s list.", project()); 0 }
         },
-        Err(error) => { eprintln!("claude-todo: {error}"); 1 }
+        Err(error) => { eprintln!("cockpit-todo: {error}"); 1 }
     }
 }
 
@@ -253,7 +253,7 @@ fn list(everything: bool) -> i32 {
         let waits_on: Vec<&str> = item.get("after").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).collect();
         let waiting = if waits_on.is_empty() || status == "done" { String::new() } else { format!("  (waits on {})", waits_on.join(", ")) };
         println!("{} {}  {status:<8}  [{}] {item_project}: {}{waiting}{}", glyph(&status), item.get("id").and_then(Value::as_str).unwrap_or(""), category_label(item),
-                 item.get("text").and_then(Value::as_str).unwrap_or(""), if has_notes { "  (notes: claude-todo show)" } else { "" });
+                 item.get("text").and_then(Value::as_str).unwrap_or(""), if has_notes { "  (notes: cockpit-todo show)" } else { "" });
         shown += 1;
     }
     for (key, value) in data.get("issues").and_then(Value::as_object).into_iter().flatten() {
@@ -285,7 +285,7 @@ fn main() {
             update.insert("summary".into(), json!(summary.chars().take(1000).collect::<String>()));
             match append(update) {
                 Ok(()) => { println!("{id} marked done with its summary (the column applies it)."); 0 }
-                Err(error) => { eprintln!("claude-todo: {error}"); 1 }
+                Err(error) => { eprintln!("cockpit-todo: {error}"); 1 }
             }
         }
         ["after", id, others @ ..] if item_key.is_match(id) && !others.is_empty() && others.len() <= 5 && others.iter().all(|other| item_key.is_match(other)) => {
@@ -295,7 +295,7 @@ fn main() {
             update.insert("after".into(), json!(others));
             match append(update) {
                 Ok(()) => { println!("{id} waits on {} (the column applies it); it joins the queue once they are done.", others.join(", ")); 0 }
-                Err(error) => { eprintln!("claude-todo: {error}"); 1 }
+                Err(error) => { eprintln!("cockpit-todo: {error}"); 1 }
             }
         }
         [action @ ("start" | "done" | "todo"), id] if key.is_match(id) => {
@@ -308,7 +308,7 @@ fn main() {
                     println!("{id} marked {} (the column applies it).", if *action == "start" { "in progress" } else { action });
                     0
                 }
-                Err(error) => { eprintln!("claude-todo: {error}"); 1 }
+                Err(error) => { eprintln!("cockpit-todo: {error}"); 1 }
             }
         }
         ["delete", id] if item_key.is_match(id) => {
@@ -317,14 +317,14 @@ fn main() {
             update.insert("id".into(), json!(id));
             match append(update) {
                 Ok(()) => { println!("{id} deleted (the column applies it; only items a session filed in this project)."); 0 }
-                Err(error) => { eprintln!("claude-todo: {error}"); 1 }
+                Err(error) => { eprintln!("cockpit-todo: {error}"); 1 }
             }
         }
         ["show", id] if key.is_match(id) => show(id),
         [action @ ("add" | "propose" | "blocked"), title, rest @ ..] if !title.trim().is_empty() => file_arguments(action, None, title, rest),
         ["stack", repo, title, rest @ ..] if STACK_REPOS.contains(repo) && !title.trim().is_empty() => file_arguments("stack", Some(repo), title, rest),
         ["stack", repo, ..] if !STACK_REPOS.contains(repo) => {
-            eprintln!("claude-todo: {repo:?} is not a stack repository (one of: {}); work for another project goes through propose --project\n{USAGE}", STACK_REPOS.join(", "));
+            eprintln!("cockpit-todo: {repo:?} is not a stack repository (one of: {}); work for another project goes through propose --project\n{USAGE}", STACK_REPOS.join(", "));
             2
         }
         ["greywall", title, rest @ ..] if !title.trim().is_empty() => file_arguments("stack", Some("greywall"), title, rest),

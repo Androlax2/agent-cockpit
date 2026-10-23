@@ -1,4 +1,4 @@
-//! claude-guide <id>: steps Claude handed Theo to do by hand (ask-to-guide), one at a time.
+//! cockpit-guide <id>: steps an agent handed Theo to do by hand (ask-to-guide), one at a time.
 //!
 //! Started by the OSD daemon outside the sandbox, in a floating kitty window of its own (class
 //! claude-guide) that Theo moves wherever he needs it. The guide comes from the sandbox: it is read
@@ -533,7 +533,7 @@ fn run_loop(guide: &mut Guide) -> io::Result<String> {
 fn main() {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     if arguments.len() != 1 {
-        eprintln!("usage: claude-guide <id>");
+        eprintln!("usage: cockpit-guide <id>");
         std::process::exit(1);
     }
     let mut guide = match read_guide(&arguments[0]) {
@@ -548,7 +548,7 @@ fn main() {
         Ok(message) => println!("{message}"),
         Err(error) => {
             let _ = leave();
-            eprintln!("claude-guide: {error}");
+            eprintln!("cockpit-guide: {error}");
         }
     }
     std::thread::sleep(Duration::from_millis(1500));

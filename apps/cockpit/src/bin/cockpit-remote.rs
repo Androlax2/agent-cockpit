@@ -1,4 +1,4 @@
-//! claude-remote: the phone page for the Claude sessions of this computer (cockpit::remote).
+//! cockpit-remote: the phone page for this computer's agent sessions (cockpit::remote).
 //!
 //!     claude-remote serve     the page on 127.0.0.1:7380 (CLAUDE_REMOTE_ADDRESS), for `tailscale
 //!                             serve` to publish on the tailnet only; refuses any other address
@@ -108,7 +108,7 @@ fn handle(mut request: Request) {
             Some(secret) => respond(request, 303, "text/plain", "paired".into(), &[
                 header("Set-Cookie", &format!("{COOKIE}={secret}; Path=/; Max-Age=31536000; Secure; HttpOnly; SameSite=Strict")),
                 header("Location", "/")]),
-            None => respond(request, 403, "text/plain", "This link is used or expired: run claude-remote pair again on the computer.".into(), &[]),
+            None => respond(request, 403, "text/plain", "This link is used or expired: run cockpit-remote pair again on the computer.".into(), &[]),
         }
         return;
     }
@@ -126,7 +126,7 @@ fn handle(mut request: Request) {
         return;
     }
     let Some(phone) = cookie_secret(&request).and_then(|secret| remote::paired_phone(&secret)) else {
-        respond(request, 401, "text/plain", "This phone is not paired: run claude-remote pair on the computer and open its link here.".into(), &[]);
+        respond(request, 401, "text/plain", "This phone is not paired: run cockpit-remote pair on the computer and open its link here.".into(), &[]);
         return;
     };
     if method == Method::Post && header_value(&request, "X-Claude-Remote").as_deref() != Some("1") {
@@ -256,11 +256,11 @@ fn serve() -> Result<(), String> {
         .map_err(|error| format!("not an address: {error}"))?;
     // Tailscale serve publishes it on the tailnet; bound anywhere else, the LAN would reach it.
     if !address.ip().is_loopback() {
-        return Err(format!("refusing {address}: claude-remote listens on a loopback address only (tailscale serve publishes it)"));
+        return Err(format!("refusing {address}: cockpit-remote listens on a loopback address only (tailscale serve publishes it)"));
     }
     let server = Server::http(address).map_err(|error| format!("cannot listen on {address}: {error}"))?;
     if let Ok(bound) = server.server_addr().to_ip().ok_or(()) {
-        println!("claude-remote listening on {bound}");
+        println!("cockpit-remote listening on {bound}");
     }
     std::thread::spawn(watch_for_notifications);
     // A few workers: a slow tmux or cockpit call for one phone does not stall the others.
@@ -312,7 +312,7 @@ fn pair(name: &str) -> Result<(), String> {
 fn list_phones() {
     let phones = remote::phones();
     if phones.is_empty() {
-        println!("No phone is paired: claude-remote pair [name].");
+        println!("No phone is paired: cockpit-remote pair [name].");
     }
     for phone in phones {
         println!("{}  {:<20} last seen {}", phone["id"].as_str().unwrap_or(""), phone["name"].as_str().unwrap_or(""), remote::seen_ago(phone["last_seen"].as_i64()));
@@ -331,10 +331,10 @@ fn main() {
         }
         ["unpair"] => remote::unpair_all().map(|()| println!("Every phone forgotten.")).map_err(|error| error.to_string()),
         ["unpair", id] => remote::unpair(id).map(|name| println!("{name} forgotten.")),
-        _ => Err("usage: claude-remote serve | pair [name] | phones | unpair [id]".into()),
+        _ => Err("usage: cockpit-remote serve | pair [name] | phones | unpair [id]".into()),
     };
     if let Err(error) = result {
-        eprintln!("claude-remote: {error}");
+        eprintln!("cockpit-remote: {error}");
         std::process::exit(1);
     }
 }

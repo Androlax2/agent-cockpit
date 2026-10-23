@@ -1,4 +1,4 @@
-//! claude-run-approve <id>: the approval terminal for a command Claude asked to run (ask-to-run).
+//! cockpit-run-approve <id>: the approval terminal for a command an agent asked to run (ask-to-run).
 //!
 //! Started by the OSD daemon outside the sandbox, in a tmux session of its own (claude-run-<id>),
 //! shown in the cockpit and, while it needs Theo, in a floating window; it reports asking /
@@ -161,7 +161,7 @@ fn approve(id: &str) -> i32 {
 fn main() {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     if arguments.len() != 1 {
-        eprintln!("usage: claude-run-approve <id>");
+        eprintln!("usage: cockpit-run-approve <id>");
         std::process::exit(1);
     }
     let status = approve(&arguments[0]);

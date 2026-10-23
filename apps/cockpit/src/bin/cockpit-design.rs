@@ -1,9 +1,9 @@
-//! claude-design: which Claude Design canvas this session works on, for the cockpit's card.
+//! cockpit-design: which Claude Design canvas this session works on, for the cockpit's card.
 //!
-//!     claude-design link <canvas url> '<canvas title>'
-//!     claude-design unlink
-//!     claude-design show
-//!     claude-design role designer|developer|none
+//!     cockpit-design link <canvas url> '<canvas title>'
+//!     cockpit-design unlink
+//!     cockpit-design show
+//!     cockpit-design role designer|developer|none
 //!
 //! role: what the session does in a project with FigCraft designs (the figcraft-design and
 //! design-first skills set it at their start), in ~/.cache/claude/designs/<session id>.role: the
@@ -19,20 +19,20 @@ use cockpit::util::{collapse, now_secs, write_json};
 use cockpit::paths;
 use serde_json::{Value, json};
 
-const USAGE: &str = "    claude-design link <canvas url> '<canvas title>'
-    claude-design unlink
-    claude-design show
-    claude-design role designer|developer|none";
+const USAGE: &str = "    cockpit-design link <canvas url> '<canvas title>'
+    cockpit-design unlink
+    cockpit-design show
+    cockpit-design role designer|developer|none";
 
 fn main() {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     let session = cockpit::agents::current_session_id().unwrap_or_else(|error| {
-        eprintln!("claude-design: {error}");
+        eprintln!("cockpit-design: {error}");
         std::process::exit(2);
     });
     // Any agent's id (it names the card's files): an opencode design session needs its role too.
     if !cockpit::agents::is_session_id(&session) {
-        eprintln!("claude-design: no session id (CLAUDE_CODE_SESSION_ID); run it from a session of the cockpit");
+        eprintln!("cockpit-design: no session id (CLAUDE_CODE_SESSION_ID); run it from a session of the cockpit");
         std::process::exit(2);
     }
     let path = paths::designs().join(format!("{session}.json"));
@@ -41,10 +41,10 @@ fn main() {
         ["link", url, title] => {
             let title: String = collapse(title).chars().take(80).collect();
             match canvas_address(url).filter(|_| !title.is_empty()) {
-                None => { eprintln!("claude-design: give the canvas address (claude.ai/artifact/<id>) and its title"); 2 }
+                None => { eprintln!("cockpit-design: give the canvas address (claude.ai/artifact/<id>) and its title"); 2 }
                 Some(url) => match write_json(&path, &json!({"url": url, "title": title, "at": now_secs()})) {
                     Ok(()) => { println!("This session's card now shows the canvas {title:?}; o in the cockpit opens it."); 0 }
-                    Err(error) => { eprintln!("claude-design: {error}"); 1 }
+                    Err(error) => { eprintln!("cockpit-design: {error}"); 1 }
                 },
             }
         }
@@ -56,7 +56,7 @@ fn main() {
         ["role", role @ ("designer" | "developer")] => {
             match std::fs::create_dir_all(paths::designs()).and_then(|_| std::fs::write(paths::designs().join(format!("{session}.role")), role)) {
                 Ok(()) => { println!("This session's card now shows it as the {role}."); 0 }
-                Err(error) => { eprintln!("claude-design: {error}"); 1 }
+                Err(error) => { eprintln!("cockpit-design: {error}"); 1 }
             }
         }
         ["role", "none"] => {

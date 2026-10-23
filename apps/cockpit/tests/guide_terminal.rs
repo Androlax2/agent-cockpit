@@ -29,7 +29,7 @@ fn guide(steps: Value, fields: Value) -> (PathBuf, &'static str) {
 }
 
 fn start(root: &Path, id: &str) -> Terminal {
-    Terminal::start(Path::new(env!("CARGO_BIN_EXE_claude-guide")), &[id],
+    Terminal::start(Path::new(env!("CARGO_BIN_EXE_cockpit-guide")), &[id],
                     &[("CLAUDE_GUIDES_DIR", &root.join("guides")), ("CLAUDE_ANSWERS_DIR", &root.join("answers")), ("XDG_RUNTIME_DIR", &root.join("run")), ("PATH", Path::new("/usr/bin:/bin")),
                       ("XDG_STATE_HOME", &root.join("state")), ("COCKPIT_STATE_HOME", &root.join("state")), ("CLAUDE_AUDIT_JOURNAL", Path::new("off"))])
 }
@@ -80,10 +80,10 @@ fn unusable_guides_are_refused() {
         (json!([{"text": "x"}]), json!({"answers": "../../elsewhere"}), "names no answers folder"),
     ] {
         let (root, id) = guide(steps, fields);
-        let output = std::process::Command::new(env!("CARGO_BIN_EXE_claude-guide")).arg(id).env("XDG_RUNTIME_DIR", root.join("run")).env("CLAUDE_ANSWERS_DIR", root.join("answers")).env("XDG_STATE_HOME", root.join("state")).env("COCKPIT_STATE_HOME", root.join("state")).env("CLAUDE_AUDIT_JOURNAL", "off").output().unwrap();
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_cockpit-guide")).arg(id).env("XDG_RUNTIME_DIR", root.join("run")).env("CLAUDE_ANSWERS_DIR", root.join("answers")).env("XDG_STATE_HOME", root.join("state")).env("COCKPIT_STATE_HOME", root.join("state")).env("CLAUDE_AUDIT_JOURNAL", "off").output().unwrap();
         assert!(String::from_utf8_lossy(&output.stdout).contains(reason), "{reason}");
         let _ = fs::remove_dir_all(root);
     }
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_claude-guide")).arg("../etc").output().unwrap();
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_cockpit-guide")).arg("../etc").output().unwrap();
     assert!(String::from_utf8_lossy(&output.stdout).contains("not a guide id"));
 }
