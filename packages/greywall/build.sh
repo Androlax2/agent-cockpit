@@ -4,9 +4,8 @@
 # read greyproxy's CA key and session key, and ~/.ssh/id_*. Since e639a75 also: a per-run proxy
 # secret and greyproxy's API token (fork PR #1), masks checked at start-up and kept out of Landlock
 # (#3), denyRead paths that appear after the start stay unreadable (#4), and greyproxy's data dir
-# masked where GREYPROXY_DATA_HOME moves it (#5). Since bb85cd4: the host-side bridges relay inside
-# greywall instead of one socat per bridge, and tun2socks dials the proxy socket directly (#7);
-# bf1d8fd sends DNS bridge queries over IPv4, where greyproxy's DNS listens (#8).
+# masked where GREYPROXY_DATA_HOME moves it (#5). c3732c8 restores the socat bridges (#10), removing
+# the custom relay from #7/#8 after its DNS regression; localhost DNS still resolves over IPv4.
 #   make greywall-patch
 # Move the pins below to the next tip of that branch, or to an upstream release once it ships them.
 # Sessions started before the install keep the old mounts: restart them afterwards.
@@ -15,8 +14,8 @@ set -euo pipefail
 build_dir="${XDG_CACHE_HOME:-$HOME/.cache}/dotfiles-build/greywall"
 target="$HOME/.local/bin/greywall"
 
-greywall_commit=bf1d8fd87c5b8af9ad414ee8e01c0c06f6b330f0 # branch dotfiles
-greywall_sha256=3aeba32d2decad0fa15ba91927c792749241f8b56d472d3f4e822207650d40ba
+greywall_commit=c3732c8014761fc546a17d999fc895a84cc7074f # branch dotfiles
+greywall_sha256=2e8c1fbc40a3fc38c4a17349b63686b6b0c16df41c0dadd4f67eec9f3e1e0169
 # The tun2socks greywall embeds, as its Makefile pins it (same file v0.3.7's release ships).
 tun2socks_url=https://github.com/xjasonlyu/tun2socks/releases/download/v2.5.2/tun2socks-linux-amd64.zip
 tun2socks_sha256=4aa7737009a9f06b9f4957c4fc12932ae0cd2039471d2ae4e5d4666ffeb40a2e
