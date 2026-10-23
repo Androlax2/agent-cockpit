@@ -52,8 +52,41 @@ for reviewed in $reviewed_repositories; do
     esac
 done
 
-project_root=$(git rev-parse --show-toplevel 2>/dev/null || pwd -P)
+refuse_git_metadata() {
+    echo "$agent launcher: unsupported Git metadata for $project_root: $1" >&2
+    echo "Use a self-contained clone (git clone --no-local <source> <destination>), not an external worktree or gitdir. No extra access was granted." >&2
+    exit 1
+}
+
+if project_root=$(git rev-parse --show-toplevel 2>/dev/null); then
+    has_git_repository=true
+else
+    has_git_repository=false
+    project_root=$(pwd -P)
+    if [ -n "${GIT_DIR:-}${GIT_COMMON_DIR:-}${GIT_WORK_TREE:-}" ]; then
+        refuse_git_metadata "cannot resolve the repository selected by the Git environment"
+    fi
+    metadata_parent=$project_root
+    while [ "$metadata_parent" != / ]; do
+        if [ -e "$metadata_parent/.git" ] || [ -L "$metadata_parent/.git" ]; then
+            refuse_git_metadata "cannot resolve the repository at $metadata_parent/.git"
+        fi
+        metadata_parent=$(dirname "$metadata_parent")
+    done
+fi
 project_root=$(realpath -e -- "$project_root") || exit 1
+# The saved default-deny policy cannot read external metadata; pointers must never add grants.
+if "$has_git_repository"; then
+    for metadata_kind in --absolute-git-dir --git-common-dir; do
+        metadata_path=$(git -C "$project_root" rev-parse --path-format=absolute "$metadata_kind" 2>/dev/null) \
+            && metadata_path=$(realpath -e -- "$metadata_path") \
+            || refuse_git_metadata "cannot resolve $metadata_kind"
+        case "$metadata_path" in
+            "$project_root"/*) ;;
+            *) refuse_git_metadata "$metadata_kind resolves outside the checkout: $metadata_path" ;;
+        esac
+    done
+fi
 # A parallel clone (cockpit' +, <clones>/<repo>/<name>) is its repository's project: same
 # GitHub token, same name everywhere.
 clones_dir="${COCKPIT_CLONES:-$HOME/IdeaProjects/.parallel}"

@@ -130,6 +130,72 @@ fn every_agent_keeps_reviewed_profiles_without_a_drift_merge_prompt() {
 }
 
 #[test]
+fn external_git_metadata_is_refused_before_credentials_or_sandbox_start() {
+    for layout in ["gitfile", "relative-gitfile", "symlink", "commondir", "linked-worktree", "broken-gitfile", "environment"] {
+        for &agent in AGENTS.iter() {
+            let launch = Launch::new();
+            let metadata = launch.project.with_file_name("proj-a-metadata");
+            match layout {
+                "linked-worktree" => {
+                    assert!(Command::new("git").arg("-C").arg(&launch.project)
+                        .args(["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-qm", "fixture"])
+                        .status().unwrap().success());
+                    assert!(Command::new("git").arg("-C").arg(&launch.project)
+                        .args(["worktree", "add", "--detach", "-q"]).arg(&metadata).status().unwrap().success());
+                }
+                "broken-gitfile" => {
+                    fs::rename(launch.project.join(".git"), &metadata).unwrap();
+                    fs::write(launch.project.join(".git"), "gitdir: ../missing-metadata\n").unwrap();
+                }
+                _ => {
+                    fs::rename(launch.project.join(".git"), &metadata).unwrap();
+                    match layout {
+                        "gitfile" => fs::write(launch.project.join(".git"), format!("gitdir: {}\n", metadata.display())).unwrap(),
+                        "relative-gitfile" => fs::write(launch.project.join(".git"), "gitdir: ../proj-a-metadata\n").unwrap(),
+                        "symlink" => std::os::unix::fs::symlink(&metadata, launch.project.join(".git")).unwrap(),
+                        "environment" => (),
+                        "commondir" => {
+                            fs::create_dir(launch.project.join(".git")).unwrap();
+                            fs::copy(metadata.join("HEAD"), launch.project.join(".git/HEAD")).unwrap();
+                            fs::write(launch.project.join(".git/commondir"), "../../proj-a-metadata\n").unwrap();
+                        }
+                        _ => unreachable!(),
+                    }
+                }
+            }
+            let checkout = if layout == "linked-worktree" { &metadata } else { &launch.project };
+            let mut command = launch.sandbox.command(bin().join("greywall-agents").join(agent), &[]);
+            if layout == "environment" {
+                command.env("GIT_DIR", &metadata).env("GIT_WORK_TREE", &launch.project);
+            }
+            let output = command.current_dir(checkout).output().unwrap();
+            assert_eq!(output.status.code(), Some(1), "{agent} {layout}: {}", stderr(&output));
+            assert!(stderr(&output).contains("Git metadata") && stderr(&output).contains("--no-local"), "{}", stderr(&output));
+            assert!(launch.sandbox.calls("secret-tool").is_empty(), "{agent} {layout}: credentials looked up");
+            assert!(launch.sandbox.calls("greywall").is_empty(), "{agent} {layout}: sandbox started");
+            assert!(!launch.sandbox.runtime.join("greywall-agents").exists(), "settings written before refusal");
+        }
+    }
+}
+
+#[test]
+fn git_metadata_is_checked_again_after_a_pointer_changes() {
+    for &agent in AGENTS.iter() {
+        let launch = Launch::new();
+        launch.run_agent(agent, &[], &[]);
+        let metadata = launch.project.with_file_name("external-metadata");
+        fs::rename(launch.project.join(".git"), &metadata).unwrap();
+        fs::write(launch.project.join(".git"), format!("gitdir: {}\n", metadata.display())).unwrap();
+        launch.sandbox.reset_log();
+        let output = launch.sandbox.command(bin().join("greywall-agents").join(agent), &[])
+            .current_dir(&launch.project).output().unwrap();
+        assert_eq!(output.status.code(), Some(1), "{agent}: {}", stderr(&output));
+        assert!(launch.sandbox.calls("greywall").is_empty());
+        assert!(launch.sandbox.calls("secret-tool").is_empty());
+    }
+}
+
+#[test]
 fn build_tools_share_a_budget_without_restricting_the_interactive_agent() {
     for &agent in AGENTS.iter() {
         let launch = Launch::new();
