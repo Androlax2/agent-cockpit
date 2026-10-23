@@ -150,13 +150,35 @@ class MigrationTests(unittest.TestCase):
                          (self.runtime / "cockpit-runs/012345abcdef.asking").read_bytes())
         self.assertFalse((self.state / "claude-remote").is_symlink())
 
-    def test_an_unfinished_guide_blocks_deployment_before_paths_change(self):
-        self.seed(self.state / "claude-remote/devices.json")
-        self.seed(self.runtime / "claude-requests/012345abcdef.guide", json.dumps({"answers": "project-one", "steps": []}))
+    def test_an_unfinished_guide_survives_path_migration_without_losing_progress(self):
+        request = self.seed(self.runtime / "claude-requests/012345abcdef.guide",
+                            json.dumps({"answers": "project-one", "session": "session-one", "steps": []}))
+        progress = self.seed(self.runtime / "claude-answers/project-one/guides/012345abcdef.progress", '{"step":2}')
+        inodes = (request.stat().st_ino, progress.stat().st_ino)
         output = self.run_migration()
+        self.assertEqual(output.returncode, 0, output.stderr)
+        canonical_request = self.runtime / "cockpit-requests" / request.name
+        canonical_progress = self.runtime / "cockpit-answers/project-one/guides" / progress.name
+        self.assertEqual((canonical_request.stat().st_ino, canonical_progress.stat().st_ino), inodes)
+        self.assertEqual(canonical_progress.read_text(), '{"step":2}')
+        self.assertFalse(progress.with_suffix(".result").exists(), "migration must not answer the guide")
+        self.assertEqual(self.run_migration().returncode, 0)
+
+    def test_only_the_daemon_restart_is_blocked_and_identifies_the_guide_owner(self):
+        self.seed(self.runtime / "cockpit-requests/012345abcdef.guide",
+                  json.dumps({"answers": "project-one", "session": "session-one", "title": "Approve test app"}))
+        output = self.run_migration("--check-guides")
         self.assertNotEqual(output.returncode, 0)
         self.assertIn("in-flight guide", output.stderr)
-        self.assertFalse((self.state / "cockpit-remote").exists())
+        self.assertIn("session-one", output.stderr)
+        self.assertIn("Approve test app", output.stderr)
+        self.assertIn("daemon restart", output.stderr)
+
+    def test_a_guide_without_a_valid_answer_folder_still_blocks_the_restart(self):
+        self.seed(self.runtime / "cockpit-requests/012345abcdef.guide", '{"answers":"../outside"}')
+        output = self.run_migration("--check-guides")
+        self.assertNotEqual(output.returncode, 0)
+        self.assertIn("no valid answer folder", output.stderr)
 
     def test_a_completed_guide_does_not_block_deployment(self):
         self.seed(self.runtime / "claude-requests/012345abcdef.guide", json.dumps({"answers": "project-one"}))

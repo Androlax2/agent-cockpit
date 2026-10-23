@@ -60,12 +60,13 @@ def check_guides():
             request = json.loads(guide.read_text())
             if not isinstance(request, dict):
                 raise ValueError(f"invalid guide request: {guide.name}")
+            owner = json.dumps({field: request.get(field) for field in ["session", "project", "title"]})
             key = request.get("answers", "")
             if not isinstance(key, str) or not key or len(key) > 255 or not all(character.isascii() and (character.isalnum() or character == "-") for character in key):
-                raise ValueError(f"guide {guide.name} has no valid answer folder; resolve it before restarting the daemon")
+                raise ValueError(f"guide {guide.name} {owner} has no valid answer folder; resolve it before the daemon restart")
             if not any((runtime / name / key / "guides" / f"{guide.stem}.result").is_file()
                        for name in ["claude-answers", "cockpit-answers"]):
-                raise ValueError(f"in-flight guide {guide.stem}: finish or close it before applying or restarting the daemon")
+                raise ValueError(f"in-flight guide {guide.stem} {owner}: daemon restart deferred until it finishes or closes")
 
 
 def check_queues():
@@ -170,8 +171,9 @@ def main():
     parser.add_argument("mode", choices=["--check", "--apply", "--prepare", "--services", "--check-guides"])
     # Treat the mode as a value, not an argparse option.
     args = parser.parse_args(["--", *sys.argv[1:]])
-    check_guides()
     if args.mode == "--check-guides":
+        # Path migration preserves inodes; only a daemon restart would forget the live guide.
+        check_guides()
         return
     pairs = path_pairs()
     # Serialize host migrations; this does not grant any sandbox access to private state.

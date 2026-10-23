@@ -115,12 +115,21 @@ fn a_guide_waiting_on_the_legacy_answers_path_receives_its_result_after_migratio
     let daemon = fixture.listen();
     let asking = fixture.ask(STEPS, "5");
     let guide = AskToGuide::filed(&daemon);
+    let request = fixture.sandbox.runtime.join("cockpit-requests").join(format!("{}.guide", guide["id"].as_str().unwrap()));
+    fs::write(&request, guide.to_string()).unwrap();
+    let progress = old.join(ANSWERS_KEY).join("guides").join(format!("{}.progress", guide["id"].as_str().unwrap()));
+    fs::create_dir_all(progress.parent().unwrap()).unwrap();
+    fs::write(&progress, json!({"step": 4, "total": 5, "done": 3}).to_string()).unwrap();
     let migration = fixture.sandbox.run("python3", &[repo().join("tools/migrate-cockpit-names.py").to_str().unwrap(), "--apply"], &[]);
     assert!(migration.status.success(), "{}", stderr(&migration));
-    fixture.write_beside(&guide, "result", json!({"status": "done", "total": 5}));
+    assert_eq!(fs::read_to_string(&request).unwrap(), guide.to_string());
+    assert_eq!(fs::read_to_string(&progress).unwrap(), json!({"step": 4, "total": 5, "done": 3}).to_string());
+    fixture.write_beside(&guide, "result", json!({"status": "done", "total": 5,
+        "answers": [{"step": 4, "question": "Which email?", "answer": "kept@example.com"}]}));
     let output = finish(asking, TIMEOUT);
     assert_eq!(output.status.code(), Some(0), "{}", stdout(&output));
     assert!(stdout(&output).contains("Theo did every step"));
+    assert_eq!(stdout(&output).matches("Theo answered: kept@example.com").count(), 1);
 }
 
 #[test]

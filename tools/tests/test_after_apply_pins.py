@@ -1,3 +1,4 @@
+import json
 import os
 from pathlib import Path
 import shutil
@@ -104,6 +105,26 @@ class AfterApplyPinTests(unittest.TestCase):
         result = self.after_apply()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertFalse([call for call in self.calls() if call.startswith("rebuilt")], self.calls())
+
+    def test_another_sessions_open_guide_does_not_block_an_unrelated_deployment(self):
+        runtime = Path(self.environment["XDG_RUNTIME_DIR"])
+        requests = runtime / "cockpit-requests"
+        requests.mkdir()
+        request = requests / "012345abcdef.guide"
+        content = json.dumps({"answers": "project-one", "session": "session-one", "title": "Approve test app"})
+        request.write_text(content)
+        progress = runtime / "cockpit-answers/project-one/guides/012345abcdef.progress"
+        progress.parent.mkdir(parents=True)
+        progress.write_text('{"step":2}')
+        self.environment["OPENCODE_SESSION_ID"] = "session-two"
+        git(self.repository, "commit", "-q", "--allow-empty", "-m", "Unrelated deployment")
+        for attempt in range(2):
+            with self.subTest(attempt=attempt):
+                result = self.after_apply()
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(request.read_text(), content)
+                self.assertEqual(progress.read_text(), '{"step":2}')
+                self.assertFalse(progress.with_suffix(".result").exists())
 
     def assert_behind_its_pin_fails(self, tool):
         self.install(tool, "0" * 40)
