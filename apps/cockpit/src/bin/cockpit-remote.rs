@@ -1,12 +1,12 @@
 //! cockpit-remote: the phone page for this computer's agent sessions (cockpit::remote).
 //!
-//!     claude-remote serve     the page on 127.0.0.1:7380 (CLAUDE_REMOTE_ADDRESS), for `tailscale
+//!     cockpit-remote serve     the page on 127.0.0.1:7380 (COCKPIT_REMOTE_ADDRESS), for `tailscale
 //!                             serve` to publish on the tailnet only; refuses any other address
-//!     claude-remote pair [name]   a one-time link and its QR code, to open on the phone (10 minutes)
-//!     claude-remote phones        the paired phones: id, name, last seen
-//!     claude-remote unpair [id]   forgets that phone, or every phone
+//!     cockpit-remote pair [name]   a one-time link and its QR code, to open on the phone (10 minutes)
+//!     cockpit-remote phones        the paired phones: id, name, last seen
+//!     cockpit-remote unpair [id]   forgets that phone, or every phone
 //!
-//! Run by claude-remote.service. Every request but /health, /pair/<code> and /pair-code needs a paired phone's secret (its
+//! Run by cockpit-remote.service. Every request but /health, /pair/<code> and /pair-code needs a paired phone's secret (its
 //! cookie); every POST also the X-Claude-Remote header, which another site cannot send.
 
 use cockpit::remote;

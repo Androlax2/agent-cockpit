@@ -1,7 +1,7 @@
 //! cockpit-guide <id>: steps an agent handed Theo to do by hand (ask-to-guide), one at a time.
 //!
 //! Started by the OSD daemon outside the sandbox, in a floating kitty window of its own (class
-//! claude-guide) that Theo moves wherever he needs it. The guide comes from the sandbox: it is read
+//! cockpit-guide) that Theo moves wherever he needs it. The guide comes from the sandbox: it is read
 //! once, from the daemon's copy (approval::held_request), which no sandbox reaches, and checked; hidden characters are shown escaped; links open only on Ctrl+O, values
 //! are copied only on Ctrl+Y; a run: step goes through the same approval as ask-to-run: nothing runs
 //! without Theo's "Run it". The text box under the step is always open: the answer when the step

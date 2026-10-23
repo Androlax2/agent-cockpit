@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import socket
 import tempfile
 import unittest
 
@@ -87,6 +88,49 @@ class MigrationTests(unittest.TestCase):
         self.assertEqual(output.returncode, 0, output.stderr)
         self.assertEqual((self.runtime / "cockpit-report").stat().st_ino, inode)
         self.assertEqual(old.stat().st_ino, inode)
+
+    def test_an_open_report_listener_is_reachable_through_both_paths_after_migration(self):
+        old = self.runtime / "claude-report"
+        old.mkdir()
+        with socket.socket(socket.AF_UNIX) as listener:
+            listener.bind(str(old / "osd-report.sock"))
+            listener.listen()
+            result = self.run_migration()
+            self.assertEqual(result.returncode, 0, result.stderr)
+            for folder in ["claude-report", "cockpit-report"]:
+                with socket.socket(socket.AF_UNIX) as client:
+                    client.connect(str(self.runtime / folder / "osd-report.sock"))
+                    with listener.accept()[0] as connection:
+                        client.sendall(b"session report")
+                        self.assertEqual(connection.recv(100), b"session report")
+
+    def test_an_existing_timer_stamp_is_preserved(self):
+        old = self.seed(self.home / ".local/share/systemd/timers/stamp-claude-health-check.timer", "last run")
+        timestamp = old.stat().st_mtime_ns
+        result = self.run_migration()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        new = old.with_name("stamp-cockpit-health-check.timer")
+        self.assertEqual(new.stat().st_mtime_ns, timestamp)
+        self.assertEqual(new.read_text(), "last run")
+
+    def test_existing_cache_children_stay_under_the_old_parent_mount(self):
+        old = self.seed(self.home / ".cache/claude/runs/012345abcdef.waiting")
+        inode = old.parent.stat().st_ino
+        result = self.run_migration()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        canonical = self.home / ".cache/cockpit/runs"
+        self.assertFalse(old.parent.is_symlink(), "old parent-mounted sandboxes must not follow a link outside their mount")
+        self.assertTrue(canonical.is_symlink())
+        self.assertEqual(canonical.stat().st_ino, inode)
+        self.assertEqual((canonical / old.name).read_text(), "private-data")
+        self.assertEqual(self.run_migration().returncode, 0)
+
+    def test_repeated_apply_does_not_block_on_requests_that_need_no_path_migration(self):
+        result = self.run_migration()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.seed(self.runtime / "cockpit-runs/012345abcdef.asking", "a new approval")
+        result = self.run_migration()
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_custom_override_folders_are_not_moved(self):
         custom = self.seed(self.root / "custom/devices.json")

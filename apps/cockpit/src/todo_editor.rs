@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 fn lock_file() -> io::Result<fs::File> {
     fs::OpenOptions::new().create(true).append(true)
-        .open(paths::runtime_dir().join("claude-todo-editor.lock"))
+        .open(paths::cockpit_runtime("cockpit-todo-editor.lock", "claude-todo-editor.lock"))
 }
 
 pub(crate) fn lock() -> io::Result<fs::File> {

@@ -39,6 +39,20 @@ fn start_and_done_append_an_update_with_the_session() {
 }
 
 #[test]
+fn both_command_names_report_each_update_once_after_migration() {
+    let sandbox = Sandbox::new();
+    let daemon = daemon(&sandbox, "ok");
+    for command in ["claude-todo", "cockpit-todo"] {
+        let output = sandbox.command(bin().join(command), &[("CLAUDE_CODE_SESSION_ID", SESSION_A)])
+            .args(["start", "0123abcd"]).current_dir(&sandbox.root).output().unwrap();
+        assert!(output.status.success(), "{command}: {}", stderr(&output));
+    }
+    let recorded = updates(&daemon);
+    assert_eq!(recorded.len(), 2);
+    assert!(recorded.iter().all(|update| update["action"] == "doing" && update["id"] == "0123abcd"));
+}
+
+#[test]
 fn delete_appends_an_update_with_the_item_and_the_session() {
     let sandbox = Sandbox::new();
     let daemon = daemon(&sandbox, "ok");

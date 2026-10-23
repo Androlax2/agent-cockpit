@@ -178,7 +178,7 @@ fn integrated_native_terminal_recovers_a_crashed_draft_and_releases_the_reload_l
     fixture.terminal.type_keys(b"\x1b[Z\x1b[C\x1b[C\t\t");
     fixture.terminal.type_keys(b"\x1b[200~first\nsecond\x1b[201~");
     fixture.terminal.pump(0.5, None);
-    let lock = fs::File::open(fixture.root.join("run/claude-todo-editor.lock")).unwrap();
+    let lock = fs::File::open(fixture.root.join("run/cockpit-todo-editor.lock")).unwrap();
     assert!(lock.try_lock().is_err(), "reload could interrupt live native input");
     assert!(fixture.stored().is_none(), "draft became work before save/recovery");
     fixture.terminal.child.kill().unwrap();
@@ -230,7 +230,7 @@ fn reviewed_native_terminal_cancel_cleanup_rejects_input_and_save_for_add_and_ed
             fs::remove_dir(&buffer).unwrap();
             fixture.terminal.type_keys(b"\x1b");
             fixture.terminal.pump(0.4, None);
-            let lock = fs::File::open(fixture.root.join("run/claude-todo-editor.lock")).unwrap();
+            let lock = fs::File::open(fixture.root.join("run/cockpit-todo-editor.lock")).unwrap();
             assert!(lock.try_lock().is_ok(), "Esc retry did not release the reload lock");
             assert_eq!(fs::read_dir(&directory).unwrap().count(), 0);
         }

@@ -106,6 +106,24 @@ fn a_pasted_image_comes_back_as_a_path_in_the_answers_folder() {
 }
 
 #[test]
+fn a_guide_waiting_on_the_legacy_answers_path_receives_its_result_after_migration() {
+    let fixture = AskToGuide::new();
+    let old = fixture.sandbox.runtime.join("claude-answers");
+    let new = fixture.sandbox.runtime.join("cockpit-answers");
+    fs::remove_file(&old).unwrap();
+    fs::rename(&new, &old).unwrap();
+    let daemon = fixture.listen();
+    let asking = fixture.ask(STEPS, "5");
+    let guide = AskToGuide::filed(&daemon);
+    let migration = fixture.sandbox.run("python3", &[repo().join("tools/migrate-cockpit-names.py").to_str().unwrap(), "--apply"], &[]);
+    assert!(migration.status.success(), "{}", stderr(&migration));
+    fixture.write_beside(&guide, "result", json!({"status": "done", "total": 5}));
+    let output = finish(asking, TIMEOUT);
+    assert_eq!(output.status.code(), Some(0), "{}", stdout(&output));
+    assert!(stdout(&output).contains("Theo did every step"));
+}
+
+#[test]
 fn stuck_exits_3_with_the_note() {
     let fixture = AskToGuide::new();
     let daemon = fixture.listen();

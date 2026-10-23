@@ -1,4 +1,4 @@
-"""Real-browser phone regressions against an isolated claude-remote server.
+"""Real-browser phone regressions against an isolated cockpit-remote server.
 
 After `make cockpit`, run with a Python environment containing Playwright:
     python apps/cockpit/tests/mobile_browser.py -v
@@ -18,7 +18,7 @@ from playwright.sync_api import expect, sync_playwright
 
 
 REPO = Path(__file__).resolve().parents[3]
-BINARY = REPO / "apps/target/release/claude-remote"
+BINARY = REPO / "apps/target/release/cockpit-remote"
 SESSION = "aaaaaaaa-0000-4000-8000-000000000000"
 
 
@@ -48,8 +48,8 @@ class MobileBrowserTests(unittest.TestCase):
         self.environment = dict(os.environ, HOME=str(self.home),
                                 XDG_RUNTIME_DIR=str(self.runtime), XDG_STATE_HOME=str(self.state),
                                 COCKPIT_STATE_HOME=str(self.state),
-                                CLAUDE_REMOTE_DIR=str(self.state / "claude-remote"),
-                                CLAUDE_REMOTE_ADDRESS="127.0.0.1:0", CLAUDE_AUDIT_JOURNAL="off",
+                                COCKPIT_REMOTE_DIR=str(self.state / "cockpit-remote"),
+                                COCKPIT_REMOTE_ADDRESS="127.0.0.1:0", CLAUDE_AUDIT_JOURNAL="off",
                                 PATH=f"{self.shims}:{os.environ['PATH']}")
         self.shim("tailscale", "echo '{\"Self\":{\"DNSName\":\"test.ts.net\"}}'")
         self.shim("qrencode", "exit 0")
@@ -301,7 +301,7 @@ class MobileBrowserTests(unittest.TestCase):
         self.page.get_by_placeholder("Notes (optional)").fill("Phone regression")
         with self.page.expect_response("**/api/todos"):
             self.page.get_by_role("button", name="Add", exact=True).tap()
-        update = json.loads((self.runtime / "claude-todo-updates.jsonl").read_text().splitlines()[0])
+        update = json.loads((self.runtime / "cockpit-todo-updates.jsonl").read_text().splitlines()[0])
         self.assertEqual((update["text"], update["category"]), ("Fix cart", "bug"))
         expect(self.page.get_by_placeholder("A new item")).to_have_value("")
 
@@ -316,10 +316,10 @@ class MobileBrowserTests(unittest.TestCase):
         self.page.get_by_role("button", name="Todo", exact=True).tap()
         self.page.locator("#work .todo-card summary").tap()
         self.page.get_by_role("button", name="Mark done", exact=True).tap()
-        self.assertFalse((self.runtime / "claude-todo-updates.jsonl").exists())
+        self.assertFalse((self.runtime / "cockpit-todo-updates.jsonl").exists())
         with self.page.expect_response("**/api/todos/aaaa1111/done"):
             self.page.get_by_role("button", name="Tap again: done", exact=True).tap()
-        update = json.loads((self.runtime / "claude-todo-updates.jsonl").read_text().splitlines()[0])
+        update = json.loads((self.runtime / "cockpit-todo-updates.jsonl").read_text().splitlines()[0])
         self.assertEqual((update["action"], update["id"]), ("done", "aaaa1111"))
 
     def test_the_project_filter_shows_only_its_items(self):

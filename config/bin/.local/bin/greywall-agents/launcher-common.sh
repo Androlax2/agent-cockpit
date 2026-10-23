@@ -19,6 +19,7 @@ prepare_cockpit_folder() {
         printf '%s\n' "$2"
     else
         mkdir -p -m 700 "$1" || return 1
+        mkdir -p "$(dirname "$2")" || return 1
         [ -L "$2" ] || ln -s "$1" "$2" || return 1
         printf '%s\n' "$1"
     fi
@@ -61,6 +62,10 @@ case "$project_root" in
     *) project_name=$(basename "$project_root") ;;
 esac
 greywall_options="--allow-path $CHROME_CONFIG_HOME"
+for cache_name in runs designs; do
+    cockpit_cache=$(prepare_cockpit_folder "$HOME/.cache/cockpit/$cache_name" "$HOME/.cache/claude/$cache_name") || exit 1
+    greywall_options="$greywall_options --allow-path $cockpit_cache"
+done
 
 # Greywall's private /tmp keeps Go verification writable without exposing the host's build
 # or module caches to writes or letting a session poison artifacts used outside the sandbox.

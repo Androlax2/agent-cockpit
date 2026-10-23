@@ -17,6 +17,17 @@ struct Remote {
 }
 
 impl Remote {
+    fn restart(&mut self) {
+        self.server.kill().unwrap();
+        self.server.wait().unwrap();
+        let mut server = self.sandbox.command(env!("CARGO_BIN_EXE_cockpit-remote"), &[("COCKPIT_REMOTE_ADDRESS", "127.0.0.1:0")])
+            .arg("serve").stdout(Stdio::piped()).spawn().unwrap();
+        let mut line = String::new();
+        BufReader::new(server.stdout.take().unwrap()).read_line(&mut line).unwrap();
+        self.port = line.trim().rsplit(':').next().unwrap().parse().unwrap();
+        self.server = server;
+    }
+
     fn start() -> Remote {
         let sandbox = Sandbox::new();
         sandbox.shim("tailscale", r#"echo '{"Self": {"DNSName": "box.tail1234.ts.net."}}'"#);
@@ -675,6 +686,28 @@ fn a_phone_turns_its_notifications_on_and_off() {
     assert!(takes_notifications(&remote, &secret));
     remote.request("POST", "/api/push/unsubscribe", Some(&secret), Some(json!({})), true);
     assert!(!takes_notifications(&remote, &secret));
+}
+
+#[test]
+fn an_existing_phone_keeps_its_cookie_and_subscription_across_the_path_migration() {
+    let mut remote = Remote::start();
+    let old = remote.sandbox.state.join("claude-remote");
+    let new = remote.sandbox.state.join("cockpit-remote");
+    fs::remove_file(&old).unwrap();
+    fs::rename(&new, &old).unwrap();
+    remote.restart();
+    let secret = remote.paired();
+    let (status, _, body) = remote.request("POST", "/api/push/subscribe", Some(&secret),
+        Some(subscription("https://web.push.apple.com/QGuQ")), true);
+    assert_eq!(status, 200, "{body}");
+    let before = fs::read(old.join("devices.json")).unwrap();
+    let migration = remote.sandbox.run("python3", &[repo().join("tools/migrate-cockpit-names.py").to_str().unwrap(), "--apply"], &[]);
+    assert!(migration.status.success(), "{}", stderr(&migration));
+    assert_eq!(fs::read(new.join("devices.json")).unwrap(), before);
+    remote.restart();
+    let (status, _, body) = remote.request("GET", "/api/state", Some(&secret), None, false);
+    assert_eq!(status, 200, "{body}");
+    assert!(serde_json::from_str::<Value>(&body).unwrap()["push"].as_bool().unwrap());
 }
 
 #[test]

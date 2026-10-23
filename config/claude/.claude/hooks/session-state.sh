@@ -72,7 +72,8 @@ input_file="$HOME/.cache/claude/input-$session.question"
 pending_input_file="$input_file.pending"
 # A socket, not the FIFO: the daemon learns which process sent the report and takes the tmux pane
 # from where it really runs (a sandbox could otherwise claim another session's pane).
-report_socket="${XDG_RUNTIME_DIR:-/tmp}/claude-report/osd-report.sock"
+report_socket="${XDG_RUNTIME_DIR:-/tmp}/cockpit-report/osd-report.sock"
+[[ -S $report_socket ]] || report_socket="${XDG_RUNTIME_DIR:-/tmp}/claude-report/osd-report.sock"
 toast_id_file="$HOME/.cache/claude/toast-$session.id"
 
 # What a turn left in the repository, worked out here, inside the session's sandbox: git reads the
@@ -113,7 +114,7 @@ COMMAND_START='(^|[;&|]|\band|\bor|\s'"'"')\s*'
 TEST_COMMAND="${COMMAND_START}(make (test|check)|cargo (test|nextest)|(npm|pnpm|yarn|bun)( run)? test|pytest|(vendor/bin/)?phpunit|composer test|php artisan test|go test|vitest|jest)\\b"
 checks_of_turn() { # transcript
     [[ -r $1 ]] || return 0
-    tail -n 3000 "$1" | jq -Rnr --arg tests "$TEST_COMMAND" --arg todo "${COMMAND_START}claude-todo done\\b" '
+    tail -n 3000 "$1" | jq -Rnr --arg tests "$TEST_COMMAND" --arg todo "${COMMAND_START}(cockpit-todo|claude-todo) done\\b" '
         [inputs | fromjson? | select(type == "object")] as $entries
         | ($entries | to_entries
            | map(select(.value.type == "user" and ((.value.message.content | type) == "string"

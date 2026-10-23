@@ -31,7 +31,7 @@
 ## Exact migration map
 
 - `$XDG_STATE_HOME/claude-{remote,stuck-exits}` → `cockpit-{remote,stuck-exits}` in the same state home (`COCKPIT_STATE_HOME` wins).
-- `~/.cache/claude/{runs,designs}` → `~/.cache/cockpit/{runs,designs}`. Other `.cache/claude` entries remain Claude-owned.
+- Canonical cache paths are `~/.cache/cockpit/{runs,designs}`. Existing caches stay physically under `.cache/claude` with canonical symlinks pointing to them: old sandboxes mount the parent `.cache/claude`, so moving its children would break their access. Fresh caches use canonical physical directories with legacy aliases. Other `.cache/claude` entries remain untouched.
 - `$XDG_RUNTIME_DIR/claude-{report,team-host,answers,runs,requests}` → corresponding `cockpit-*` directories. Move, do not copy, preserving existing mounted inodes; leave exact legacy symlinks.
 - `$XDG_RUNTIME_DIR/claude-{todo-updates.jsonl,todo-editor.lock}` → corresponding `cockpit-*` files, also preserving inode and legacy aliases.
 - Preserve an existing `$XDG_DATA_HOME/systemd/timers/stamp-claude-health-check.timer` as `stamp-cockpit-health-check.timer` (default data home `~/.local/share`) so the timer does not forget its last run. Do not create a stamp for a new installation.

@@ -19,7 +19,7 @@ def path_pairs():
              (state / "claude-stuck-exits", state / "cockpit-stuck-exits", "directory")]
     timers = Path(os.environ.get("XDG_DATA_HOME", home / ".local/share")) / "systemd/timers"
     pairs.append((timers / "stamp-claude-health-check.timer", timers / "stamp-cockpit-health-check.timer", "optional-file"))
-    pairs.extend((home / ".cache/claude" / name, home / ".cache/cockpit" / name, "directory")
+    pairs.extend((home / ".cache/claude" / name, home / ".cache/cockpit" / name, "cache-directory")
                  for name in ["runs", "designs"])
     pairs.extend((runtime / f"claude-{name}", runtime / f"cockpit-{name}", "directory")
                  for name in ["report", "team-host", "answers", "runs", "requests"])
@@ -40,13 +40,15 @@ def check_paths(pairs):
         if old.is_symlink():
             if os.readlink(old) != str(new) or not new_exists:
                 raise ValueError(f"unexpected legacy symlink: {old}")
-        elif old_exists and new_exists:
+        elif old_exists and new_exists and not (kind == "cache-directory" and new.is_symlink() and os.readlink(new) == str(old)):
             raise ValueError(f"migration conflict: both {old} and {new} exist")
-        for path in [new] + ([] if old.is_symlink() else [old]):
+        if new.is_symlink() and not (kind == "cache-directory" and os.readlink(new) == str(old) and old.is_dir() and not old.is_symlink()):
+            raise ValueError(f"unexpected canonical symlink: {new}")
+        for path in ([] if new.is_symlink() else [new]) + ([] if old.is_symlink() else [old]):
             if not path.exists() and not path.is_symlink():
                 continue
             metadata = path.lstat()
-            matches_kind = stat.S_ISDIR(metadata.st_mode) if kind == "directory" else stat.S_ISREG(metadata.st_mode)
+            matches_kind = stat.S_ISDIR(metadata.st_mode) if kind in ["directory", "cache-directory"] else stat.S_ISREG(metadata.st_mode)
             if not matches_kind or metadata.st_uid != os.getuid():
                 raise ValueError(f"unexpected type or owner: {path}")
 
@@ -62,21 +64,25 @@ def check_pending(pairs):
 
 def migrate(pairs):
     for old, new, kind in pairs:
-        if old.is_symlink():
+        if old.is_symlink() or (kind == "cache-directory" and new.is_symlink()):
             continue
         if kind == "optional-file" and not old.exists() and not new.exists():
             continue
         new.parent.mkdir(parents=True, exist_ok=True)
         old.parent.mkdir(parents=True, exist_ok=True)
+        if kind == "cache-directory" and old.exists():
+            # Old sandboxes mount the cache's parent, not each child: moving a child would hide it.
+            new.symlink_to(old, target_is_directory=True)
+            continue
         if old.exists():
             old.rename(new)
         elif not new.exists():
-            if kind == "directory":
+            if kind in ["directory", "cache-directory"]:
                 new.mkdir(mode=0o700)
             else:
                 new.touch(mode=0o600)
         # Keep the moved directory inode: already-mounted sandbox folders see the same contents.
-        old.symlink_to(new, target_is_directory=kind == "directory")
+        old.symlink_to(new, target_is_directory=kind in ["directory", "cache-directory"])
 
 
 UNITS = ["remote.service", "health-check.timer", "health-check.service"]
@@ -140,7 +146,8 @@ def main():
     with (runtime / "cockpit-name-migration.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         check_paths(pairs)
-        check_pending(pairs)
+        if any(old.exists() and not old.is_symlink() and not new.is_symlink() for old, new, _ in pairs):
+            check_pending(pairs)
         snapshot = runtime / "cockpit-name-services.json"
         if args.mode == "--prepare":
             prepare_services(snapshot)

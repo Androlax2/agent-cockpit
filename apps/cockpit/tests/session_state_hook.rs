@@ -603,8 +603,10 @@ fn a_turn_whose_last_test_run_failed_says_so() {
 
 #[test]
 fn a_turn_that_passed_its_tests_and_closed_a_todo_says_both() {
-    let outcome = stop_outcome(&[("fix it", &[("ask-to-run --why 'x' 'make cockpit; and make test'", false), ("claude-todo done 8e50f7a0", false)])]);
-    assert_eq!(outcome.as_deref(), Some("tests passed · todo done"));
+    for command in ["claude-todo done 8e50f7a0", "cockpit-todo done 8e50f7a0"] {
+        let outcome = stop_outcome(&[("fix it", &[("ask-to-run --why 'x' 'make cockpit; and make test'", false), (command, false)])]);
+        assert_eq!(outcome.as_deref(), Some("tests passed · todo done"), "{command}");
+    }
 }
 
 #[test]

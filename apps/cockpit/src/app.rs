@@ -113,7 +113,7 @@ const PALETTE_ONLY: [(&str, &str, &str); 23] = [
     ("0", "codex-status-page", "open status.openai.com: OpenAI's incidents and each product's state (Codex)"),
     ("1", "remote", "toggle Remote Control (phone / claude.ai/code) for the selected session"),
     ("1", "drop-queued", "drop the messages queued for the selected session"),
-    ("-", "pair-phone", "a QR code that pairs a phone with the phone page (claude-remote), once, within 10 minutes (also in S)"),
+    ("-", "pair-phone", "a QR code that pairs a phone with the phone page (cockpit-remote), once, within 10 minutes (also in S)"),
 ];
 const LEGEND: [(&str, &str); 24] = [
     ("●", "working"), ("○", "waiting for you"), ("!", "needs you: permission or question"), ("·", "running, state unknown"),
@@ -128,9 +128,9 @@ const LEGEND: [(&str, &str); 24] = [
     ("↑2 unapplied", "a reviewed clone's commits its running copy (~/dotfiles, ~/agent-cockpit, ~/vitals) lacks: U shows them and applies them after a yes"),
     ("↑2 unpushed (running copy)", "on a reviewed clone's card, commits its running copy holds and GitHub lacks: U pushes them after a yes"),
     ("▭ terminal", "started with \"this terminal\": no ⌘R, restore, queue or error hand-off; ask-to-run still asks for approval"),
-    ("✎ designer ⌨ developer", "its role in a project designed in FigCraft (claude-design role): design to-dos go to the designer"),
-    ("✎ design", "a to-do for the designer session: a gap a developer found in the design (claude-todo --design)"),
-    ("⛔ opusline", "a session of that project was blocked by the setup (claude-todo blocked): queued for agent-cockpit"),
+    ("✎ designer ⌨ developer", "its role in a project designed in FigCraft (cockpit-design role): design to-dos go to the designer"),
+    ("✎ design", "a to-do for the designer session: a gap a developer found in the design (cockpit-todo --design)"),
+    ("⛔ opusline", "a session of that project was blocked by the setup (cockpit-todo blocked): queued for agent-cockpit"),
     ("⬆", "Claude updated itself: r restarts on the new version"),
     ("/compact", "context over 90%: /compact in the session before it gets slow and costly"), ("high ▾", "effort level: click to change it"),
 ];
@@ -2940,7 +2940,7 @@ impl App {
                       ("+", "raise a typed item's priority: ! then !! up to !!!!"), ("-", "lower it"), ("x", "remove a typed item"),
                       ("! ↓", "raised and low priority; an issue's comes from its labels (P0/P1/urgent/high, P3/P4/low)"),
                       ("? • ◐ ✓", "proposed · to do · in progress · done; ◇ an open GitHub issue still to do"),
-                      ("", "Claude marks items itself with claude-todo (start, done, add) and proposes ideas (propose)")],
+                      ("", "Agents mark items with cockpit-todo (start, done, add) and propose ideas (propose)")],
         }
     }
 
@@ -4037,7 +4037,7 @@ pub(crate) fn parse_editor_text(text: &str) -> Option<(String, String)> {
 
 /// Read-only text in a tmux popup (less: q closes it).
 fn show_in_popup(text: &str) {
-    let path = crate::paths::runtime_dir().join(format!("claude-todo-{}.txt", util::token_hex(4)));
+    let path = crate::paths::runtime_dir().join(format!("cockpit-todo-{}.txt", util::token_hex(4)));
     if fs::write(&path, text).is_err() {
         return;
     }

@@ -90,7 +90,7 @@ fn main() -> glib::ExitCode {
     };
     // Until answered, the countdown is what ends it.
     let outcome = Rc::new(Cell::new(TIMED_OUT));
-    let app = Application::builder().application_id("dotfiles.claude-idle-prompt").flags(gio::ApplicationFlags::NON_UNIQUE).build();
+    let app = Application::builder().application_id("dotfiles.cockpit-idle-prompt").flags(gio::ApplicationFlags::NON_UNIQUE).build();
     let activated_outcome = outcome.clone();
     app.connect_activate(move |app| activate(app, seconds, activated_outcome.clone()));
     // claude-idle.sh cancel: activity resumed, which is an answer.

@@ -1,5 +1,32 @@
 # Agent Cockpit
 
+## Command names and upgrades
+
+Agent-neutral commands now use `cockpit-`: `cockpit-todo`, `cockpit-remote`,
+`cockpit-design`, `cockpit-guide`, `cockpit-run-approve`, `cockpit-fade`,
+`cockpit-demo`, `cockpit-needs-input`, `cockpit-session-label`,
+`cockpit-health-check`, and `cockpit-idle-prompt`. Every old `claude-*` spelling
+below remains a forwarding alias; `claude-sessions` forwards to `cockpit` too.
+Claude Code updates, Claude usage, and `claude-audit` retain their names.
+
+`cockpit apply` and `make install` run the checked migration in
+[`tools/migrate-cockpit-names.py`](tools/migrate-cockpit-names.py). Existing phone
+pairing and push subscriptions survive. The phone unit becomes
+`cockpit-remote.service`; the weekly timer becomes `cockpit-health-check.timer`.
+Enabled/active intent and the timer's last-run stamp are preserved, and old units
+are stopped and disabled. Finish or decline outstanding approvals before the
+first migration; conflicting state locations stop it before anything is moved.
+
+Shared state/runtime paths use `cockpit-*`, with old paths retained as aliases.
+The shared `runs` and `designs` caches are addressed through `~/.cache/cockpit/`;
+existing caches are linked rather than moved out of old sandboxes' parent mounts.
+The rest of `~/.cache/claude/` stays untouched. Agent-neutral `COCKPIT_*` configuration wins
+over its old `CLAUDE_*` spelling; old overrides still work. Phone cookies, request
+formats, existing tmux/session identifiers, and the protected `claude-audit`
+folder deliberately stay unchanged. Restart sessions whose existing sandbox
+cannot read the new command files; the migration preserves mounted directory
+inodes, but cannot add new file mounts to an already-running sandbox.
+
 Workspace 6 is a cockpit for every Claude Code session on the machine. `cockpit` keeps a tmux session, `claude-manager`, with a column of panels on the left and the selected session on the right. Every session runs inside greywall; Claude Code hooks report each session's state to the OSD daemon, which keeps the registry the column reads.
 
 ![The cockpit: plan usage, grouped sessions, pull requests and the todo list beside a session](assets/claude-cockpit.png)
@@ -197,4 +224,3 @@ git clone ~/agent-cockpit ~/IdeaProjects/agent-cockpit   # where sessions work
 The running copy, `~/agent-cockpit`, changes only through `cockpit apply <clone>` after a yes.
 The machine's own configuration (Hyprland, Waybar, fish, tmux, Claude's rules and skills) is in
 [dotfiles](https://github.com/Androlax2/dotfiles), which calls the cockpit by its commands.
-

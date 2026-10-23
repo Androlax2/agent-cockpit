@@ -116,6 +116,14 @@ LOG_FILE="${XDG_STATE_HOME:-$HOME/.local/state}/cockpit/log"
 LOG_MAX_BYTES=1048576
 LOG_LINE_MAX=300
 HOOK_LOG_FILE="$HOME/.cache/claude/hook.log"
+RUNS_DIR="${COCKPIT_RUNS_DIR-${CLAUDE_RUNS_DIR:-$HOME/.cache/cockpit/runs}}"
+if [[ ! -d $RUNS_DIR && -z ${COCKPIT_RUNS_DIR+x} && -z ${CLAUDE_RUNS_DIR+x} && -d $HOME/.cache/claude/runs ]]; then
+    RUNS_DIR="$HOME/.cache/claude/runs"
+fi
+REQUESTS_DIR="${XDG_RUNTIME_DIR:-/tmp}/cockpit-requests"
+if [[ ! -d $REQUESTS_DIR && -d ${XDG_RUNTIME_DIR:-/tmp}/claude-requests ]]; then
+    REQUESTS_DIR="${XDG_RUNTIME_DIR:-/tmp}/claude-requests"
+fi
 CURRENT="${XDG_RUNTIME_DIR:-/tmp}/cockpit.current"
 ATTENTION="${XDG_RUNTIME_DIR:-/tmp}/cockpit.attention"
 # The sandbox scopes game-performance froze for a game, one per line; its `off` thaws them.
@@ -1443,8 +1451,8 @@ awaited_approvals() {
     local name id stamp touched
     while read -r name; do
         id=${name#claude-run-}
-        stamp="$HOME/.cache/claude/runs/$id.waiting"
-        [[ -e $stamp ]] || stamp="${XDG_RUNTIME_DIR:-/tmp}/claude-requests/$id.request"
+        stamp="$RUNS_DIR/$id.waiting"
+        [[ -e $stamp ]] || stamp="$REQUESTS_DIR/$id.request"
         if touched=$(stat -c %Y "$stamp" 2>/dev/null) && (( $(date +%s) - touched > OSD_APPROVAL_ABANDONED_S )); then
             continue
         fi
@@ -1537,7 +1545,7 @@ sweep_caches() {
     # One status-line file per session ever run, and toast ids of sessions long gone.
     find "$HOME/.cache/claude" -maxdepth 1 \( -name 'statusline-*.json' -o -name 'toast-*.id' \) -mtime +7 -delete 2>/dev/null || true
     # Run requests and their results (ask-to-run).
-    find "$HOME/.cache/claude/runs" -maxdepth 1 -type f -mtime +7 -delete 2>/dev/null || true
+    find -H "$RUNS_DIR" -maxdepth 1 -type f -mtime +7 -delete 2>/dev/null || true
     find "$HOME/.cache/claude/guides" -maxdepth 1 -type f -mtime +7 -delete 2>/dev/null || true
 }
 
@@ -2032,7 +2040,7 @@ approval_pane() { # id | close [id]
     # sandbox): it only decides under which session the pane shows; the command and its project
     # show in the pane.
     local session
-    session=$(jq -r '.session // empty' "${XDG_RUNTIME_DIR:-/tmp}/claude-requests/$1.request" 2>/dev/null || true)
+    session=$(jq -r '.session // empty' "$REQUESTS_DIR/$1.request" 2>/dev/null || true)
     # Any agent's id: an opencode session's request recorded with none showed under every session
     # (and a window started meanwhile at the viewer's height plus this pane's showed taller).
     is_session_id "$session" || session=""

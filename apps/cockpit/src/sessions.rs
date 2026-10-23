@@ -76,7 +76,7 @@ pub fn role_of(session_id: &str) -> String {
 /// The first message of a design session: link the card, watch the comments, then wait.
 pub fn design_prompt(url: &str) -> String {
     format!("This is a design session for the Claude Design canvas {url}. First read it with the Artifact tool, then run \
-             claude-design link {url} '<the canvas title>' so the cockpit's card shows it, and watch the canvas's comments \
+             cockpit-design link {url} '<the canvas title>' so the cockpit's card shows it, and watch the canvas's comments \
              with ArtifactComments so the comments I leave there reach you. Then tell me in one line what the canvas holds and wait \
              for what I want changed; after each change, say in one line what changed.")
 }
