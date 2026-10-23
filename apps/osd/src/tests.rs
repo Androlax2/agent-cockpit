@@ -3101,6 +3101,35 @@ fn a_todo_sender_cannot_forge_host_approval_or_a_receipt_destination() {
 }
 
 #[test]
+fn report_filings_use_daemon_verified_receipts_for_success_and_open_caps() {
+    for action in ["blocked", "stack"] {
+        let mut bench = Bench::new();
+        let (folder, key) = project_folder(&bench);
+        bench.world.borrow_mut().sender_directories.insert(500, folder.clone());
+        fs::create_dir_all(cockpit::paths::greyproxy_work().join(".git")).unwrap();
+        let mut todos = cockpit::todo::TodoList::load();
+        for number in 0..4 {
+            let id = format!("{number:012x}");
+            let raw = json!({"action": action, "repo": "greyproxy", "text": format!("Work {number}"), "why": "Broken",
+                             "request_id": id, "host_approved": true, "receipt_key": "another-project"}).to_string();
+            bench.registry.request_from("todo-update", &raw, 500).unwrap();
+            let should_save = number < 3;
+            assert_eq!(todos.apply_updates(), usize::from(should_save));
+            let path = cockpit::approval::answers_dir(&key, "todos").join(format!("{id}.json"));
+            let receipt = cockpit::util::read_json(&path).unwrap();
+            assert_eq!(receipt["outcome"], if should_save { "accepted" } else { "rejected" });
+            assert_eq!(receipt["can_approve"], false);
+            if should_save {
+                assert!(cockpit::todo::TodoList::load().items.iter().any(|item| receipt["id"] == item.id()));
+            } else {
+                assert!(receipt["reason"].as_str().unwrap().contains("3 already open"));
+            }
+            assert!(!cockpit::approval::answers_dir("another-project", "todos").join(format!("{id}.json")).exists());
+        }
+    }
+}
+
+#[test]
 fn todo_retention_uses_the_daemons_clock_not_the_senders() {
     let mut bench = Bench::new();
     bench.world.borrow_mut().sender_directories.insert(500, "/r/greywall".into());

@@ -58,11 +58,9 @@ const DONE_KEPT_DAYS: i64 = 7;
 /// Open "blocked" reports one project may have in the agent-cockpit list at once: a session stuck in a
 /// loop must not flood it.
 const BLOCKED_OPEN_MAX: usize = 3;
-const BLOCKED_DAILY_MAX: usize = 5;
 /// The same caps for the proposals one project files in another project's list (claude-todo stack,
 /// claude-todo propose --project).
 const ELSEWHERE_OPEN_MAX: usize = 3;
-const ELSEWHERE_DAILY_MAX: usize = 5;
 /// Updates read per apply: the rest of a flood is dropped, and logged.
 const APPLY_MAX_LINES: usize = 200;
 
@@ -679,7 +677,7 @@ impl TodoList {
     /// A blocked report (claude-todo blocked) from a session of any project: an item of agent-cockpit,
     /// queued for a fresh agent-cockpit session on the next tick. The reporter is the project of the folder
     /// the sender's sandbox started in. The same open report is filed once; a project has at most
-    /// BLOCKED_OPEN_MAX open and files at most BLOCKED_DAILY_MAX a day.
+    /// BLOCKED_OPEN_MAX open.
     fn file_blocked_report(&mut self, update: &Map<String, Value>, session: &str, started_in: &str, reporter: &str) -> Result<(), String> {
         let field = |key: &str, limit: usize| multiline(update.get(key).and_then(Value::as_str).unwrap_or(""), limit);
         let what = util::collapse(&field("text", 300));
@@ -689,15 +687,13 @@ impl TodoList {
         let title: String = format!("{reporter}: {what}").chars().take(300).collect();
         let reports_of_reporter: Vec<&Item> = self.items.iter().filter(|item| item.is_blocked_report() && item.reporter() == reporter).collect();
         let open_reports: Vec<&&Item> = reports_of_reporter.iter().filter(|item| item.status() != "done").collect();
-        if open_reports.iter().any(|item| item.text() == util::collapse(&without_controls(&title))) {
+        if let Some(existing) = open_reports.iter().find(|item| item.text() == util::collapse(&without_controls(&title))).map(|item| item.id()) {
+            self.remember_filing(&existing, update);
+            self.try_save().map_err(|error| format!("cannot save reused blocked report: {error}"))?;
             return Ok(());
         }
         if open_reports.len() >= BLOCKED_OPEN_MAX {
             return Err(format!("blocked report from {reporter} dropped: {BLOCKED_OPEN_MAX} already open"));
-        }
-        let filed_today = reports_of_reporter.iter().filter(|item| now_secs() - item.created() < 86_400).count();
-        if filed_today >= BLOCKED_DAILY_MAX {
-            return Err(format!("blocked report from {reporter} dropped: {BLOCKED_DAILY_MAX} filed in the last day"));
         }
         let cockpit_work = paths::cockpit_work().to_string_lossy().into_owned();
         let id = self.add_unsaved("agent-cockpit", &cockpit_work, &title);
@@ -712,7 +708,8 @@ impl TodoList {
             item.0.insert("started_in".into(), json!(started_in));
         }
         self.queued.insert(id.clone());
-        self.save();
+        self.remember_filing(&id, update);
+        self.try_save().map_err(|error| format!("cannot save blocked report: {error}"))?;
         util::log_event("INFO", &format!("todo {id}: {reporter} reported being blocked, queued for agent-cockpit: {}", what.chars().take(60).collect::<String>()));
         crate::audit::record("column", "blocked.filed", "queued", json!({"id": id, "reporter": reporter, "started_in": started_in,
                                                                       "text": crate::audit::fingerprint(&what)}));
@@ -853,9 +850,6 @@ impl TodoList {
         if !is_approved && open_reports.len() >= ELSEWHERE_OPEN_MAX {
             return Err(format!("proposal from {reporter} for {project} dropped: {ELSEWHERE_OPEN_MAX} already open"));
         }
-        if !is_approved && reports_of_reporter.iter().filter(|item| now_secs() - item.created() < 86_400).count() >= ELSEWHERE_DAILY_MAX {
-            return Err(format!("proposal from {reporter} for {project} dropped: {ELSEWHERE_DAILY_MAX} filed in the last day"));
-        }
         let id = self.add_unsaved(&project, &checkout.to_string_lossy(), &title);
         if let Some(item) = self.items.iter_mut().find(|item| item.id() == id) {
             let notes = format!("{}\n\nReported from a session started in {started_in}.", field("notes", NOTES_MAX));
@@ -945,10 +939,10 @@ impl TodoList {
             match result {
                 Ok(id) => {
                     applied += 1;
-                    if matches!(update["action"].as_str(), Some("add" | "propose")) {
+                    if matches!(update["action"].as_str(), Some("add" | "propose" | "blocked" | "stack")) {
                         let item = self.items.iter().find(|item| id.as_deref() == Some(item.id().as_str()));
                         crate::todo_requests::finish(&update, if item.is_some() { "accepted" } else { "skipped" }, item,
-                            item.is_some_and(|item| self.is_queued(&item.id())), "");
+                            item.is_some_and(|item| self.is_queued(&item.id())), if item.is_some() { "" } else { "proposal already declined; no item added" });
                     }
                     crate::audit::record("column", "todo.applied", "ok", fields);
                 }

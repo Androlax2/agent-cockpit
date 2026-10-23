@@ -44,10 +44,50 @@ fn a_transport_acknowledgment_does_not_claim_a_handoff_was_saved() {
     let daemon = daemon(&sandbox, "ok");
     let output = claude_todo(&sandbox, &["add", "Deploy pinned greywall", "--project", "agent-cockpit"], &sandbox.root);
     let text = stdout(&output);
+    assert_eq!(output.status.code(), Some(124), "{text}");
     assert!(text.contains("pending"), "{text}");
     assert!(!text.contains("Added to") && !text.contains("and queued"), "{text}");
     let recorded = updates(&daemon);
     assert!(recorded[0]["request_id"].as_str().is_some_and(|id| id.len() == 12));
+}
+
+const FILINGS: &[&[&str]] = &[
+    &["add", "Work"],
+    &["add", "Work", "--project", "greyproxy"],
+    &["propose", "Work", "--why", "Needed"],
+    &["blocked", "Work", "--why", "Unavailable"],
+    &["stack", "greyproxy", "Work", "--why", "Broken"],
+    &["greywall", "Work", "--why", "Broken"],
+];
+
+#[test]
+fn filing_returns_the_persisted_result_instead_of_transport_success() {
+    use std::process::Stdio;
+    for arguments in FILINGS {
+        for (outcome, code) in [("accepted", 0), ("rejected", 1)] {
+            let sandbox = Sandbox::new();
+            let daemon = daemon(&sandbox, "ok");
+            let child = sandbox.command(bin().join("cockpit-todo"), &[("CLAUDE_CODE_SESSION_ID", SESSION_A)])
+                .args(*arguments).current_dir(&sandbox.root).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+            let recorded = updates(&daemon);
+            let id = recorded[0]["request_id"].as_str().expect("every filing needs a receipt");
+            let result = json!({"request_id": id, "outcome": outcome,
+                               "id": if outcome == "accepted" { Some("1234abcd") } else { None },
+                               "project": "greyproxy", "state": if outcome == "accepted" { Some("queued") } else { None },
+                               "status": if outcome == "accepted" { Some("todo") } else { None },
+                               "reason": if outcome == "accepted" { "" } else { "3 already open" }});
+            cockpit::util::write_json(&sandbox.answers("todos").join(format!("{id}.json")), &result).unwrap();
+            let output = finish(child, Duration::from_secs(10));
+            assert_eq!(output.status.code(), Some(code), "{arguments:?}: {}{}", stdout(&output), stderr(&output));
+            let text = stdout(&output);
+            assert!(text.contains(outcome), "{arguments:?}: {text}");
+            if outcome == "accepted" {
+                assert!(text.contains("1234abcd") && text.contains("greyproxy"), "{text}");
+            } else {
+                assert!(text.contains("3 already open"), "{text}");
+            }
+        }
+    }
 }
 
 #[test]
@@ -160,7 +200,7 @@ fn propose_files_an_idea_with_why_and_notes() {
     let sandbox = Sandbox::new();
     let daemon = daemon(&sandbox, "ok");
     let output = claude_todo(&sandbox, &["propose", "Cache the usage fetch", "--why", "it runs every minute", "--notes", "use the ETag"], &sandbox.root);
-    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(output.status.code(), Some(124));
     let update = &updates(&daemon)[0];
     assert_eq!((update["action"].as_str(), update["why"].as_str(), update["notes"].as_str()),
                (Some("propose"), Some("it runs every minute"), Some("use the ETag")));
@@ -186,8 +226,8 @@ fn an_idea_theo_declined_is_not_proposed_again() {
 fn design_marks_an_item_for_the_designer_session() {
     let sandbox = Sandbox::new();
     let daemon = daemon(&sandbox, "ok");
-    assert_eq!(claude_todo(&sandbox, &["add", "Empty state of the order list", "--design", "--notes", "no frame for 0 orders"], &sandbox.root).status.code(), Some(0));
-    assert_eq!(claude_todo(&sandbox, &["propose", "Error state", "--why", "the API fails often", "--design"], &sandbox.root).status.code(), Some(0));
+    assert_eq!(claude_todo(&sandbox, &["add", "Empty state of the order list", "--design", "--notes", "no frame for 0 orders"], &sandbox.root).status.code(), Some(124));
+    assert_eq!(claude_todo(&sandbox, &["propose", "Error state", "--why", "the API fails often", "--design"], &sandbox.root).status.code(), Some(124));
     let filed = updates(&daemon);
     assert_eq!(filed.iter().map(|update| update["kind"].as_str()).collect::<Vec<_>>(), [Some("design"), Some("design")]);
     assert_eq!(filed[0]["notes"].as_str(), Some("no frame for 0 orders"));
@@ -206,7 +246,7 @@ fn blocked_files_a_report_with_what_stopped_the_session() {
     let sandbox = Sandbox::new();
     let daemon = daemon(&sandbox, "ok");
     let output = claude_todo(&sandbox, &["blocked", "Push the release tag", "--why", "greywall hides ~/.ssh"], &sandbox.root);
-    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(output.status.code(), Some(124));
     let update = &updates(&daemon)[0];
     assert_eq!((update["action"].as_str(), update["why"].as_str()), (Some("blocked"), Some("greywall hides ~/.ssh")));
 }
@@ -216,8 +256,7 @@ fn greywall_is_stack_greywall_with_its_kind_and_reason() {
     let sandbox = Sandbox::new();
     let daemon = daemon(&sandbox, "ok");
     let output = claude_todo(&sandbox, &["greywall", "Security: masks lose to later binds", "--why", "~/.ssh/id_* readable", "--kind", "bug", "--notes", "linux.go"], &sandbox.root);
-    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
-    assert!(stdout(&output).contains("greywall"), "{}", stdout(&output));
+    assert_eq!(output.status.code(), Some(124), "{}", stderr(&output));
     let update = &updates(&daemon)[0];
     assert_eq!((update["action"].as_str(), update["why"].as_str(), update["category"].as_str(), update["notes"].as_str()),
                (Some("stack"), Some("~/.ssh/id_* readable"), Some("bug"), Some("linux.go")));
@@ -229,8 +268,7 @@ fn stack_names_the_repository_the_report_is_for() {
     let sandbox = Sandbox::new();
     let daemon = daemon(&sandbox, "ok");
     let output = claude_todo(&sandbox, &["stack", "greyproxy", "Security: the built-in rule opens the API", "--why", "any sandbox reaches it", "--kind", "bug"], &sandbox.root);
-    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
-    assert!(stdout(&output).contains("greyproxy's list"), "{}", stdout(&output));
+    assert_eq!(output.status.code(), Some(124), "{}", stderr(&output));
     let update = &updates(&daemon)[0];
     assert_eq!((update["action"].as_str(), update["repo"].as_str(), update["text"].as_str()),
                (Some("stack"), Some("greyproxy"), Some("Security: the built-in rule opens the API")));
@@ -271,8 +309,7 @@ fn propose_with_project_names_the_project_it_is_for() {
     let sandbox = Sandbox::new();
     let daemon = daemon(&sandbox, "ok");
     let output = claude_todo(&sandbox, &["propose", "Pin the greywall build", "--why", "builds drift", "--project", "dotfiles"], &sandbox.root);
-    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
-    assert!(stdout(&output).contains("dotfiles's list"), "{}", stdout(&output));
+    assert_eq!(output.status.code(), Some(124), "{}", stderr(&output));
     let update = &updates(&daemon)[0];
     assert_eq!((update["action"].as_str(), update["project"].as_str()), (Some("propose"), Some("dotfiles")));
 }
@@ -297,7 +334,7 @@ fn add_and_propose_file_each_kind_without_losing_design_routing() {
             let mut arguments = vec![action, "Fix the empty state", "--kind", kind, "--design", "--notes", "Keep the notes"];
             if action == "propose" { arguments.extend(["--why", "It is broken"]); }
             let output = claude_todo(&sandbox, &arguments, &sandbox.root);
-            assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+            assert_eq!(output.status.code(), Some(124), "{}", stderr(&output));
         }
     }
     let filed = updates(&daemon);
@@ -328,7 +365,7 @@ fn flag_names_in_titles_and_notes_are_literal_text() {
     let sandbox = Sandbox::new();
     let daemon = daemon(&sandbox, "ok");
     for arguments in [vec!["add", "--design"], vec!["add", "Title", "--notes", "--design"], vec!["add", "--kind", "--kind", "bug"]] {
-        assert_eq!(claude_todo(&sandbox, &arguments, &sandbox.root).status.code(), Some(0));
+        assert_eq!(claude_todo(&sandbox, &arguments, &sandbox.root).status.code(), Some(124));
     }
     let filed = updates(&daemon);
     assert!(filed.iter().all(|update| update.get("kind").is_none()));
@@ -371,7 +408,7 @@ fn add_names_another_project_and_the_items_it_waits_on() {
     let daemon = daemon(&sandbox, "ok");
     let greywall = checkout(&sandbox, "greywall");
     let output = claude_todo(&sandbox, &["add", "client secret", "--project", "greyproxy", "--after", "0123abcd", "--after", "4567abcd"], &greywall);
-    assert_eq!(output.status.code(), Some(0), "{}", String::from_utf8_lossy(&output.stderr));
+    assert_eq!(output.status.code(), Some(124), "{}", String::from_utf8_lossy(&output.stderr));
     let sent = updates(&daemon).remove(0);
     assert_eq!((sent["action"].clone(), sent["project"].clone(), sent["after"].clone()), (json!("add"), json!("greyproxy"), json!(["0123abcd", "4567abcd"])));
 }
@@ -381,14 +418,14 @@ fn add_hands_work_to_any_project_without_claiming_it_is_already_queued() {
     let sandbox = Sandbox::new();
     let daemon = daemon(&sandbox, "ok");
     let output = claude_todo(&sandbox, &["add", "strict mode", "--project", "dotfiles"], &checkout(&sandbox, "runway"));
-    assert_eq!(output.status.code(), Some(0), "{}", String::from_utf8_lossy(&output.stderr));
-    assert!(stdout(&output).contains("If accepted, it goes to dotfiles's list and queue"), "{}", stdout(&output));
+    assert_eq!(output.status.code(), Some(124), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(stdout(&output).contains("no saved result"), "{}", stdout(&output));
     let sent = updates(&daemon).remove(0);
     assert_eq!((sent["action"].clone(), sent["project"].clone()), (json!("add"), json!("dotfiles")));
 }
 
 #[test]
-fn filing_acknowledges_submission_not_a_saved_item() {
+fn unconfirmed_filings_time_out_without_claiming_a_saved_item() {
     let sandbox = Sandbox::new();
     let _daemon = daemon(&sandbox, "ok");
     let runway = checkout(&sandbox, "runway");
@@ -405,11 +442,11 @@ fn filing_acknowledges_submission_not_a_saved_item() {
         vec!["blocked", "Title", "--why", "reason"],
     ] {
         let output = claude_todo(&sandbox, &arguments, &runway);
-        assert_eq!(output.status.code(), Some(0), "{arguments:?}: {}", stderr(&output));
+        assert_eq!(output.status.code(), Some(124), "{arguments:?}: {}", stderr(&output));
         let message = stdout(&output);
         assert!(message.starts_with("Submitted") && message.contains("not yet saved"), "{arguments:?}: {message}");
-        assert!(message.contains("may reject") && message.contains("rate limits"), "{arguments:?}: {message}");
-        assert!(message.contains("cockpit-todo list --all"), "{arguments:?}: {message}");
+        assert!(message.contains("Do not file a duplicate"), "{arguments:?}: {message}");
+        assert!(message.contains("cockpit-todo receipt"), "{arguments:?}: {message}");
         assert!(!message.contains("Added to") && !message.contains("Proposed to") && !message.contains("Reported in"), "{arguments:?}: {message}");
     }
 }

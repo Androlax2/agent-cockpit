@@ -7577,20 +7577,42 @@ fn the_same_open_report_is_filed_once_and_a_project_gets_three_at_most() {
 }
 
 #[test]
-fn a_project_files_at_most_five_blocked_reports_a_day() {
+fn completed_blocked_reports_do_not_limit_new_filings() {
     let fixture = Fixture::new();
     let mut todos = TodoList::load();
     for round in 0..3 {
         for what in ["one", "two", "three"] {
             report_blocked(&fixture, "opusline", &format!("{what} {round}"));
         }
-        todos.apply_updates();
+        assert_eq!(todos.apply_updates(), 3, "round {round}");
         let open: Vec<String> = todos.items.iter().filter(|item| item.is_blocked_report() && item.status() != "done").map(|item| item.id()).collect();
         for id in open {
             todos.set_status(&id, "done", "s1");
         }
     }
-    assert_eq!(todos.items.iter().filter(|item| item.is_blocked_report()).count(), 5);
+    assert_eq!(todos.items.iter().filter(|item| item.is_blocked_report()).count(), 9);
+}
+
+#[test]
+fn completed_cross_project_items_do_not_limit_new_filings() {
+    for action in ["add", "propose", "stack"] {
+        let fixture = Fixture::new();
+        let reporter = project_folder(&fixture, "runway");
+        project_checkout(&fixture, "greyproxy");
+        stack_checkout(&fixture, "greyproxy");
+        let mut todos = TodoList::load();
+        for number in 0..6 {
+            let title = format!("work {number}");
+            let mut update = json!({"action": action, "text": title, "why": "needed"});
+            update[if action == "stack" { "repo" } else { "project" }] = json!("greyproxy");
+            queue_update(update, &reporter);
+            assert_eq!(todos.apply_updates(), 1, "{action} filing {number}");
+            let id = item_titled(&todos, &title).id();
+            if action != "add" { todos.approve(&id); }
+            assert!(todos.set_status(&id, "done", ""));
+        }
+        assert_eq!(TodoList::load().items.len(), 6, "{action}");
+    }
 }
 
 /// A report from SESSION_A, which worked in `cwd` (running or since ended), filed from `started_in`.
@@ -7883,11 +7905,9 @@ fn an_approved_capped_handoff_is_saved_queued_and_receipted_once() {
     let fixture = Fixture::new();
     let (greywall, _) = greywall_and_greyproxy(&fixture);
     let mut todos = TodoList::load();
-    for number in 0..5 {
+    for number in 0..3 {
         file_in_greyproxy(&greywall, &format!("earlier {number}"), json!({}));
         todos.apply_updates();
-        let id = item_titled(&todos, &format!("earlier {number}")).id();
-        todos.set_status(&id, "done", "");
     }
     let mut request = json!({"action": "add", "project": "greyproxy", "text": "Deploy pinned greywall",
                              "request_id": "123456abcdef", "session": SESSION_A}).as_object().unwrap().clone();
@@ -7897,7 +7917,8 @@ fn an_approved_capped_handoff_is_saved_queued_and_receipted_once() {
     let receipt_path = crate::todo_requests::receipt_path(&request).unwrap();
     let rejected = util::read_json(&receipt_path).unwrap();
     assert_eq!(rejected["outcome"], "rejected");
-    assert!(rejected["reason"].as_str().unwrap().contains("last day"));
+    assert!(rejected["reason"].as_str().unwrap().contains("3 already open"));
+    assert_eq!(rejected["can_approve"], true);
     crate::todo_requests::approve("123456abcdef").unwrap();
     assert_eq!(todos.apply_updates(), 1);
     let saved = TodoList::load();
@@ -7932,6 +7953,52 @@ fn a_handoff_save_failure_is_rejected_and_never_dispatchable() {
     let receipt = util::read_json(&crate::todo_requests::receipt_path(&request).unwrap()).unwrap();
     assert_eq!(receipt["outcome"], "rejected");
     assert!(receipt["reason"].as_str().unwrap().contains("save"));
+}
+
+#[test]
+fn report_filings_receive_the_saved_id_including_duplicates() {
+    for action in ["blocked", "stack"] {
+        let fixture = Fixture::new();
+        let reporter = project_folder(&fixture, "runway");
+        stack_checkout(&fixture, "greyproxy");
+        let mut todos = TodoList::load();
+        let mut saved_id = None;
+        for request_id in ["123456abcdef", "abcdef123456"] {
+            let mut request = json!({"action": action, "repo": "greyproxy", "text": "Work", "why": "Broken",
+                                     "request_id": request_id}).as_object().unwrap().clone();
+            crate::todo_requests::hold(&mut request, reporter.to_str().unwrap(), "runway").unwrap();
+            queue_update(json!(request), &reporter);
+            assert_eq!(todos.apply_updates(), 1, "{action}");
+            let receipt = util::read_json(&crate::todo_requests::receipt_path(&request).unwrap()).unwrap();
+            let saved = TodoList::load();
+            assert_eq!(saved.items.len(), 1, "{action}");
+            let id = saved.items[0].id();
+            assert_eq!(receipt["outcome"], "accepted", "{action}: {receipt}");
+            assert_eq!(receipt["id"], id);
+            if let Some(previous) = &saved_id { assert_eq!(&id, previous); }
+            saved_id = Some(id);
+        }
+    }
+}
+
+#[test]
+fn report_filing_save_failures_are_rejected_and_never_dispatchable() {
+    for action in ["blocked", "stack"] {
+        let fixture = Fixture::new();
+        let reporter = project_folder(&fixture, "runway");
+        stack_checkout(&fixture, "greyproxy");
+        let mut request = json!({"action": action, "repo": "greyproxy", "text": "Work", "why": "Broken",
+                                 "request_id": "123456abcdef"}).as_object().unwrap().clone();
+        crate::todo_requests::hold(&mut request, reporter.to_str().unwrap(), "runway").unwrap();
+        queue_update(json!(request), &reporter);
+        fs::create_dir_all(crate::paths::todo()).unwrap();
+        let mut todos = TodoList::load();
+        assert_eq!(todos.apply_updates(), 0, "{action}");
+        assert!(todos.items.is_empty() && todos.queued.is_empty());
+        let receipt = util::read_json(&crate::todo_requests::receipt_path(&request).unwrap()).unwrap();
+        assert_eq!(receipt["outcome"], "rejected");
+        assert!(receipt["reason"].as_str().unwrap().contains("save"));
+    }
 }
 
 #[test]

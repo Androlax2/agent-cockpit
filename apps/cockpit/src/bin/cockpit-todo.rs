@@ -30,8 +30,8 @@
 //! An id is a typed item's 8 hex characters, or a GitHub issue as owner/repo#12. The list is read
 //! from ~/.local/state/cockpit/todo.json; the sandbox cannot write there, so changes go to
 //! the OSD daemon on its report socket, which queues them with the folder the session's sandbox
-//! started in, and the cockpit's column applies them. Submission is not confirmation of a save:
-//! the column may reject an update, including for rate limits. CLAUDE_TODO_PATH overrides the list (tests).
+//! started in, and the cockpit's column applies them. Filing waits for its saved receipt; a rejection
+//! fails, and an unconfirmed request times out with exit 124. CLAUDE_TODO_PATH overrides the list (tests).
 
 use cockpit::{approval, paths, todo_images};
 use cockpit::todo::{Category, Item, STACK_REPOS};
@@ -40,9 +40,10 @@ use regex::Regex;
 use serde_json::{Value, json};
 use std::fs;
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 const USAGE: &str = "    cockpit-todo list [--all]        the items of this directory's project (--all: every project)
-    cockpit-todo receipt <request-id>  saved/rejected/pending result of an add or proposal
+    cockpit-todo receipt <request-id>  saved/rejected/pending result of any filing
     cockpit-todo approve-request <request-id>
                                      host only, through ask-to-run: approve the exact capped handoff
     cockpit-todo start <id>          mark it in progress
@@ -74,8 +75,9 @@ const USAGE: &str = "    cockpit-todo list [--all]        the items of this dire
     cockpit-todo delete <id>         remove an item a session filed in this project (never one Theo wrote)
     cockpit-todo show <id>           an item with its notes and the paths of its pasted images
 
-Changes are submitted to the cockpit, not saved immediately. The column may reject them,
-including for rate limits. Check cockpit-todo list --all to confirm an item was saved.";
+Filing commands wait up to five seconds for a saved result. Rejections exit 1 with the reason.
+Unconfirmed requests exit 124: check cockpit-todo receipt <request-id>; do not file a duplicate.
+Blocker reports and cross-project filings allow three open items per reporting project; there is no daily limit.";
 
 fn todo_path() -> PathBuf {
     paths::cockpit_env("COCKPIT_TODO_PATH", "CLAUDE_TODO_PATH").map(PathBuf::from).unwrap_or_else(|_| paths::todo())
@@ -201,6 +203,10 @@ fn file(action: &str, repo: Option<&str>, title: &str, why: Option<String>, note
         println!("Theo already declined this idea; it is not filed again.");
         return 0;
     }
+    if approval::own_answers_key().is_none() {
+        eprintln!("cockpit-todo: no answers key; restart this session before filing items");
+        return 1;
+    }
     let mut update = serde_json::Map::new();
     update.insert("action".into(), json!(action));
     update.insert("text".into(), json!(collapse(title).chars().take(300).collect::<String>()));
@@ -225,37 +231,14 @@ fn file(action: &str, repo: Option<&str>, title: &str, why: Option<String>, note
             update.insert(key.into(), json!(value.chars().take(4000).collect::<String>()));
         }
     }
-    let request_id = matches!(action, "add" | "propose").then(|| cockpit::util::token_hex(6));
-    if let Some(id) = &request_id {
-        update.insert("request_id".into(), json!(id));
-        println!("Submitted request {id}; pending transport confirmation. Check: cockpit-todo receipt {id}");
-    }
+    let request_id = cockpit::util::token_hex(6);
+    update.insert("request_id".into(), json!(request_id));
+    println!("Submitted request {request_id}; pending confirmation, not yet saved. Check: cockpit-todo receipt {request_id}");
     if let Err(error) = append(update) {
         eprintln!("cockpit-todo: {error}");
         return 1;
     }
-    println!("Submitted to the cockpit; not yet saved. The column may reject it, including for rate limits. Check cockpit-todo list --all to confirm.");
-    if let Some(id) = request_id {
-        println!("Request {id} submitted; pending acceptance, not yet saved. Check: cockpit-todo receipt {id}");
-        println!("If rejected by a filing cap, request host approval through ask-to-run: cockpit-todo approve-request {id}");
-    }
-    match action {
-        "propose" => println!("If accepted, it goes to Theo in {}'s list (Theo approves or declines it).", target.unwrap_or_else(project)),
-        "stack" => println!("If accepted, it goes to Theo in {}'s list (Theo approves or declines it).", repo.unwrap_or_default()),
-        "blocked" => println!("If accepted, it goes to the agent-cockpit list and queue for its session. Tell Theo what you could not do; don't work around it."),
-        _ => match target.filter(|target| *target != project()) {
-            Some(target) => {
-                if after.is_empty() {
-                    println!("If accepted, it goes to {target}'s list and queue: an idle {target} session takes it up, or a new one starts. You are told when it is done.");
-                } else {
-                    println!("If accepted, it goes to {target}'s list; it joins the queue once {} done. You are told when it is done.", after.join(", ") + if after.len() > 1 { " are" } else { " is" });
-                }
-            }
-            None if !after.is_empty() => println!("If accepted, it goes to {}'s list; it joins the queue once {} done.", project(), after.join(", ") + if after.len() > 1 { " are" } else { " is" }),
-            None => println!("If accepted, it goes to {}'s list.", project()),
-        },
-    }
-    0
+    wait_for_receipt(&request_id)
 }
 
 fn list(everything: bool) -> i32 {
@@ -287,6 +270,19 @@ fn list(everything: bool) -> i32 {
     0
 }
 
+fn wait_for_receipt(id: &str) -> i32 {
+    let Some(key) = approval::own_answers_key() else { return receipt(id); };
+    let path = approval::answers_dir(&key, "todos").join(format!("{id}.json"));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        if cockpit::util::read_json(&path).is_some_and(|result| matches!(result["outcome"].as_str(), Some("accepted" | "skipped" | "rejected"))) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    receipt(id)
+}
+
 fn receipt(id: &str) -> i32 {
     let Some(key) = approval::own_answers_key() else {
         eprintln!("cockpit-todo: no answers key; restart this session before checking receipts");
@@ -294,13 +290,18 @@ fn receipt(id: &str) -> i32 {
     };
     let path = approval::answers_dir(&key, "todos").join(format!("{id}.json"));
     let Some(result) = cockpit::util::read_json(&path) else {
-        println!("Request {id}: pending or unknown; no saved result. Do not file a duplicate.");
+        println!("Request {id}: pending or unknown; no saved result. Do not file a duplicate. Check: cockpit-todo receipt {id}");
         return 124;
     };
     println!("{result}");
     match result["outcome"].as_str() {
         Some("accepted" | "skipped") => 0,
-        Some("rejected") => 1,
+        Some("rejected") => {
+            if result["can_approve"] == true {
+                println!("Request host approval through ask-to-run: cockpit-todo approve-request {id}");
+            }
+            1
+        }
         _ => 124,
     }
 }

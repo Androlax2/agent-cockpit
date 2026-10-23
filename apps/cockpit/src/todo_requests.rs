@@ -50,8 +50,8 @@ pub fn hold(request: &mut Map<String, Value>, started_in: &str, key: &str) -> Re
     if !approval::valid_id(&id) || !approval::valid_answers_key(key) {
         return Err("invalid todo request id or answers key".into());
     }
-    if !matches!(request.get("action").and_then(Value::as_str), Some("add" | "propose")) {
-        return Err("only add/propose take a filing request id".into());
+    if !matches!(request.get("action").and_then(Value::as_str), Some("add" | "propose" | "blocked" | "stack")) {
+        return Err("only add/propose/blocked/stack take a filing request id".into());
     }
     request.insert("receipt_key".into(), json!(key));
     request.insert("at".into(), json!(util::now_secs()));
@@ -104,9 +104,11 @@ pub fn finish(request: &Value, outcome: &str, item: Option<&crate::todo::Item>, 
     if !is_retained(request) { return; }
     if outcome != "accepted" && util::read_json(&path).is_some_and(|receipt| receipt["outcome"] == "accepted") { return; }
     let state = item.map(|item| if queued { "queued" } else if !item.after().is_empty() { "waiting" } else { "saved" });
+    let can_approve = outcome == "rejected" && fields.get("action").and_then(Value::as_str) == Some("add")
+        && fields.get("project").and_then(Value::as_str).is_some() && reason.ends_with("3 already open");
     let receipt = json!({"request_id": id, "outcome": outcome, "id": item.map(|item| item.id()),
                          "project": item.map(|item| item.project()).or_else(|| fields.get("project").and_then(Value::as_str).map(str::to_string)),
-                         "state": state, "status": item.map(|item| item.status()), "reason": reason});
+                          "state": state, "status": item.map(|item| item.status()), "reason": reason, "can_approve": can_approve});
     if let Err(error) = util::write_json(&path, &receipt) {
         util::log_event("WARN", &format!("todo receipt {id} could not be written: {error}"));
     }
