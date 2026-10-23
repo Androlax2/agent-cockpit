@@ -10,8 +10,13 @@
 
 **Spec:** `docs/superpowers/specs/2026-10-23-subscription-fallback-design.md`
 
-**Status:** Implementation approved by Theo ("Go"); Tasks 1–3 verified in the
-execution ledger. Theo confirmed an existing OpenCode
+**Status (2026-10-24):** Tasks 1–6 and final review fixes verified by focused
+regressions and `make test`; Task 7 reviewed application is pending.
+Fresh review identified ten release-blocking findings, addressed with account,
+interruption, admission, message-delivery, recovery and public-entry regressions.
+Dedicated successful-transition audit/waiting-reason polish is deferred.
+Exact commands, failures, host probes and rulings are in the execution ledger.
+Theo confirmed an existing OpenCode
 Anthropic `Claude OAuth` connection through `/connect`; keep OpenCode fallback in
 the same conversation using existing connected accounts. Verify actual active
 connection/billing/quota rather than treating the label as sufficient evidence.
@@ -120,8 +125,8 @@ Do not build authentication, copy tokens or bypass provider rejections.
 
 **Interfaces:** Existing logs/audit events and message area report fallback, waiting, return and failure without exposing history/account secrets. No new UI layout or settings screen.
 
-- [ ] Add complete public-entry fake-runtime journeys: Claude → Codex → original Claude model, Codex → Claude → original Codex model, and OpenCode subscription-model fallback → exact original provider/model/variant in the same conversation. Include user cancellation, both exhausted, recovery, team member and restart during uncertain launch.
-- [ ] Run focused tests, then `cargo test --manifest-path apps/Cargo.toml`. Record exact output and failures; never disable a test. Do not run standalone install/build commands without current authorization.
-- [ ] Run `git diff --check`, review the whole branch and show the diff stat. Commit completed requested changes with `Todo: 1797cdd6`; do not push.
+- [x] Add complete public-entry fake-runtime journeys: Claude → Codex → original Claude model, Codex → Claude → original Codex model, and OpenCode subscription-model fallback → exact original provider/model/variant in the same conversation. Include user cancellation, both exhausted, recovery, team member and restart during uncertain launch.
+- [x] Run focused tests, then the full suite through `make test` (release Cargo workspace tests). Final local result: Python 35 / OK, cockpit library 596 passed, daemon library 206 passed, all integration targets passed. Exact output is in the execution ledger; no test disabled.
+- [x] Run `git diff --check`, review the whole branch and show the diff stat. Commit completed requested changes with `Todo: 1797cdd6`; do not push.
 - [ ] Export with `git format-patch origin/main -o .outgoing`; use `ask-to-run --cwd <clone-root>` for reviewed `cockpit apply <clone-root>`, explaining host launcher/hook changes and the rebuild/reload it performs. Never bypass approval.
 - [ ] Run host `make -C ~/agent-cockpit test` through `ask-to-run` and report verbatim results. Check `cockpit-todo list`; mark `1797cdd6` done only after the requested behavior is implemented and verified.

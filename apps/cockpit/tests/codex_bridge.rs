@@ -14,6 +14,7 @@ const HARNESS: &str = r#"
 import {appendFileSync} from 'node:fs'
 const [module,generation,scenario] = process.argv.slice(2)
 const config=JSON.parse(scenario)
+let accountReads=0
 if(config.holdStderr)process.env.SHIM_HOLD_STDERR='1'
 globalThis.WebSocket=class extends EventTarget {
   static OPEN=1
@@ -31,14 +32,18 @@ globalThis.WebSocket=class extends EventTarget {
     if(request.method==='initialized')return
     let result
     if(request.method==='initialize')result={userAgent:'fixture'}
-    else if(request.method==='account/read')result={account:{type:config.apiKey?'apiKey':'chatgpt',email:'fixture@example.invalid',planType:'plus'}}
+    else if(request.method==='account/read')result={account:{type:config.apiKey?'apiKey':'chatgpt',email:'fixture@example.invalid',planType:'plus'},
+      workspaceRouting:{chatgptAccountId:config.executionMismatch || config.changeBeforeAdmission && ++accountReads>1?'another-account':'fixture-account'}}
     else if(request.method==='account/rateLimits/read')result={accountId:config.wrongAccount?'wrong-account':'fixture-account',ordinaryUsageAllowed:config.included??true,
       rateLimitsByLimitId:{codex:{limitId:'codex',primary:{usedPercent:config.used??10,windowDurationMins:300,resetsAt:config.pastReset?1:Math.floor(Date.now()/1000)+3600},secondary:null}}}
     else if(request.method==='model/list')result={data:config.missingModel?[]:[{id:'gpt-6.1-sol',model:'gpt-6.1-sol',displayName:'Fixture model',description:'Fixture',hidden:false,isDefault:true,
       defaultReasoningEffort:'high',supportedReasoningEfforts:[{reasoningEffort:'high',description:'High'},{reasoningEffort:'xhigh',description:'Extra high'}]}],nextCursor:null}
     else if(['thread/start','thread/resume'].includes(request.method))result={thread:{id:config.invalidThread?'--last':(request.params.threadId??'aaaaaaaa-0000-4000-8000-000000000000'),turns:[]},
       model:config.wrongModel?'another-model':request.params.model,modelProvider:'openai',reasoningEffort:request.params.config.model_reasoning_effort,cwd:request.params.cwd}
-    else if(request.method==='turn/start')result={turn:{id:'turn_fixture',status:'inProgress',items:[]}}
+    else if(request.method==='turn/start'){
+      appendFileSync(process.env.SHIM_LOG,`admitted prompt ${request.params.input[0].text}\n`)
+      result={turn:{id:'turn_fixture',status:'inProgress',items:[]}}
+    }
     else throw new Error('Unexpected or mutating RPC: '+request.method)
     if(config.approval && request.method==='turn/start')queueMicrotask(()=>this.dispatchEvent(new MessageEvent('message',{data:JSON.stringify({
       id:'approval_fixture',method:'item/commandExecution/requestApproval',params:{threadId:'aaaaaaaa-0000-4000-8000-000000000000'}})})))
@@ -88,10 +93,13 @@ assert sys.argv[sys.argv.index('--remote')+1]=='ws://127.0.0.1:47111'
 assert sys.argv[sys.argv.index('--remote-auth-token-env')+1]=='COCKPIT_CODEX_BRIDGE_TOKEN'
 assert hashlib.sha256(os.environ['COCKPIT_CODEX_BRIDGE_TOKEN'].encode()).hexdigest()==(home/'control-fingerprint').read_text()
 (home/'tui-started').write_text(' '.join(sys.argv[1:]))
+if os.environ.get('SHIM_WAIT_INBOX'): time.sleep(1.5)
+(home/'tui-finished').touch()
 "#);
     sandbox.shim("cockpit-codex-hook", &format!("exec '{}'", env!("CARGO_BIN_EXE_cockpit-codex-hook")));
     let decision = if scenario["denyGate"] == true { r#"{"continue":false,"stopReason":"Ownership pending"}"# } else { "{}" };
     sandbox.shim("cockpit-subscription", &format!("printf '%s\\n' '{decision}'"));
+    sandbox.shim("cockpit-team", "printf 'null\\n'");
     sandbox
 }
 
@@ -122,6 +130,7 @@ fn a_private_bridge_prepares_then_binds_before_starting_the_native_tui() {
     assert!(calls.find("rpc thread/start").unwrap() < calls.find("cockpit-subscription gate").unwrap());
     assert!(calls.find("cockpit-subscription gate").unwrap() < calls.find("rpc turn/start").unwrap());
     assert!(calls.find("rpc turn/start").unwrap() < calls.find("native --remote").unwrap());
+    assert!(calls.contains(&format!("{GENERATION}.inbox.json")), "the first continuation must include handoff-time user instructions");
     assert!(!launch.contains("Read the historical"), "the terminal must attach, not admit a second prompt");
     let reported = reports.received(std::time::Duration::from_secs(1));
     assert!(reported.iter().any(|line| line.contains("cdx_c214e8c0c9458f09ea4300974071bcad955995188f33264e341800f8a2bb5fcb")));
@@ -131,7 +140,7 @@ fn a_private_bridge_prepares_then_binds_before_starting_the_native_tui() {
 
 #[test]
 fn a_private_bridge_never_starts_work_on_api_credit_or_unconfirmed_capacity() {
-    for scenario in [json!({"apiKey":true}), json!({"wrongAccount":true}), json!({"used":100}),
+    for scenario in [json!({"executionMismatch":true}), json!({"apiKey":true}), json!({"wrongAccount":true}), json!({"used":100}),
         json!({"pastReset":true}), json!({"included":false}), json!({"missingModel":true}), json!({"wrongModel":true})] {
         let sandbox = bridge_sandbox(&scenario);
         let _reports = ReportSocket::start(&sandbox.runtime.join("claude-report/osd-report.sock"), "ok");
@@ -140,6 +149,51 @@ fn a_private_bridge_never_starts_work_on_api_credit_or_unconfirmed_capacity() {
         assert!(!sandbox.home.join("tui-started").exists());
         assert!(sandbox.home.join("server-stopped").exists());
     }
+}
+
+#[test]
+fn the_bridge_rechecks_execution_identity_immediately_before_task_admission() {
+    let scenario = json!({"changeBeforeAdmission":true});
+    let sandbox = bridge_sandbox(&scenario);
+    let _reports = ReportSocket::start(&sandbox.runtime.join("claude-report/osd-report.sock"), "ok");
+    let output = run(&sandbox, scenario);
+    assert!(!output.status.success());
+    assert!(!fs::read_to_string(&sandbox.log).unwrap().contains("rpc turn/start"));
+}
+
+#[test]
+fn the_private_bridge_admits_later_user_messages_once_with_a_native_turn_receipt() {
+    for fail_first_receive in [false,true] {
+    let sandbox = bridge_sandbox(&json!({}));
+    sandbox.shim("cockpit-team", r#"if [[ $1 == receipt ]]; then cat > "$HOME/user-receipt.json"; printf 'null\n';
+elif [[ ! -e $HOME/inbox-claimed ]]; then touch "$HOME/inbox-claimed"; printf '{"dispatch_id":"prompt_fixture","text":"Stop before pushing"}\n';
+else printf 'null\n'; fi"#);
+    if fail_first_receive {
+        let broker = sandbox.shims.join("cockpit-team");
+        let script = fs::read_to_string(&broker).unwrap();
+        write_executable(&broker,&script.replacen("if [[ $1 == receipt ]]", "if [[ ! -e $HOME/first-receive-failed ]]; then touch \"$HOME/first-receive-failed\"; exit 7; fi\nif [[ $1 == receipt ]]",1));
+    }
+    let _reports = ReportSocket::start(&sandbox.runtime.join("claude-report/osd-report.sock"), "ok");
+    let output = bridge_command(&sandbox,json!({})).env("SHIM_WAIT_INBOX","1").output().unwrap();
+    assert!(output.status.success(),"{}",stderr(&output));
+    let calls = fs::read_to_string(&sandbox.log).unwrap();
+    assert_eq!(calls.lines().filter(|line| *line == "rpc turn/start").count(),2);
+    assert!(calls.contains("admitted prompt Stop before pushing"));
+    let receipt: Value = serde_json::from_slice(&fs::read(sandbox.home.join("user-receipt.json")).unwrap()).unwrap();
+    assert_eq!(receipt["dispatch_id"],"prompt_fixture");
+    assert_eq!(receipt["outcome"]["outcome"],"received");
+    }
+}
+
+#[test]
+fn an_unavailable_inbox_never_kills_the_running_native_terminal() {
+    let sandbox = bridge_sandbox(&json!({}));
+    sandbox.shim("cockpit-team","exit 7");
+    let _reports = ReportSocket::start(&sandbox.runtime.join("claude-report/osd-report.sock"),"ok");
+    let output = bridge_command(&sandbox,json!({})).env("SHIM_WAIT_INBOX","1").output().unwrap();
+    assert!(output.status.success(),"{}",stderr(&output));
+    assert!(sandbox.home.join("tui-finished").exists());
+    assert!(stderr(&output).contains("inbox paused"));
 }
 
 #[test]

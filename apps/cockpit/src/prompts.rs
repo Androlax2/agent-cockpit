@@ -95,6 +95,46 @@ pub fn oldest(session: &str) -> Option<(String, PathBuf)> {
     Some((text.trim().to_string(), path))
 }
 
+pub fn claim_native(session: &str, runtime: &str) -> Result<Option<serde_json::Value>, String> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let folder = folder(session).ok_or("invalid native message recipient")?;
+    let outbox = folder.join("native-delivery.json");
+    if outbox.exists() { return Ok(None); }
+    let Some(queued) = pending(session).into_iter().next() else { return Ok(None) };
+    let bytes = crate::util::read_untrusted(&queued,(PROMPT_MAX * 4 + 1) as u64).map_err(|error| error.to_string())?;
+    if bytes.len() > PROMPT_MAX * 4 { return Err("native message exceeds its safe size".into()); }
+    let text = String::from_utf8(bytes).map_err(|_| "native message is not UTF-8")?;
+    let dispatch_id = format!("prompt_{}",crate::util::token_hex(16));
+    let delivery = serde_json::json!({"dispatch_id":dispatch_id,"text":text,"runtime":runtime,
+        "queued":queued.file_name().and_then(|name| name.to_str()).ok_or("invalid native message name")?});
+    let mut file = fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&outbox).map_err(|error| error.to_string())?;
+    file.write_all(delivery.to_string().as_bytes()).and_then(|_| file.sync_all()).map_err(|error| error.to_string())?;
+    fs::File::open(&folder).and_then(|folder| folder.sync_all()).map_err(|error| error.to_string())?;
+    fs::remove_file(queued).map_err(|error| error.to_string())?;
+    fs::File::open(&folder).and_then(|folder| folder.sync_all()).map_err(|error| error.to_string())?;
+    Ok(Some(serde_json::json!({"dispatch_id":dispatch_id,"text":text})))
+}
+
+pub fn receipt_native(session: &str, runtime: &str, dispatch_id: &str) -> Result<(), String> {
+    let folder = folder(session).ok_or("invalid native message recipient")?;
+    let outbox = folder.join("native-delivery.json");
+    let bytes = crate::util::read_untrusted(&outbox,32768).map_err(|error| error.to_string())?;
+    let saved: serde_json::Value = serde_json::from_slice(&bytes).map_err(|_| "invalid native message receipt state")?;
+    if saved["dispatch_id"] != dispatch_id || saved["runtime"] != runtime { return Err("native message receipt belongs to another delivery or runtime".into()); }
+    let name = saved["queued"].as_str().ok_or("native message has no source name")?;
+    if !name.strip_suffix(".txt").is_some_and(|stamp| !stamp.is_empty() && stamp.bytes().all(|byte| byte.is_ascii_digit())) {
+        return Err("invalid native message source name".into());
+    }
+    match fs::remove_file(folder.join(name)) {
+        Ok(()) => (),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+        Err(error) => return Err(error.to_string()),
+    }
+    fs::remove_file(outbox).map_err(|error| error.to_string())?;
+    fs::File::open(folder).and_then(|folder| folder.sync_all()).map_err(|error| error.to_string())
+}
+
 pub fn clear(session: &str) {
     if let Some(folder) = folder(session) {
         let _ = fs::remove_dir_all(folder);

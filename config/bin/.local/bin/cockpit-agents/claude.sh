@@ -44,6 +44,7 @@ claude_launch_detached() { # dir claude-arguments...
     if [[ -n ${launch_team_resume:-} ]]; then resume_environment+=(COCKPIT_TEAM_RESUME="$launch_team_resume"); fi
     tmux new-session -d -s "claude-retry-restart-$(date +%s%N)" -x "${size% *}" -y "${size#* }" -c "$directory" \
         env -u COCKPIT_TEAM_RESUME COCKPIT_INSIDE=1 COCKPIT_CREDITS="$launch_credits" COCKPIT_TEAM_SPAWN="$launch_team_spawn" "${resume_environment[@]}" \
+        COCKPIT_SUBSCRIPTION_ROUTE="${launch_subscription_route:-}" \
         fish -ic 'claude $argv; or cockpit log manager ERROR "claude exited with status $status in $PWD"' -- "$@"
 }
 

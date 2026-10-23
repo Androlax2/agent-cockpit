@@ -71,6 +71,17 @@ fn with_session(payload: Value, cwd: &str) -> Value {
 }
 
 #[test]
+fn a_quota_failed_native_turn_stays_pending_instead_of_becoming_completed_work() {
+    let mut test = HookTest::new();
+    let output = test.run_hook(with_session(json!({"hook_event_name":"StopFailure","error":"rate_limit"}),"/x/proj"),&[]);
+    assert!(output.status.success(),"{}",stderr(&output));
+    let reports = test.received();
+    assert_eq!(reports[0]["state"],"waiting");
+    assert_eq!(reports[0]["quota_stopped"],true);
+    assert_ne!(reports[0]["turn_complete"],true);
+}
+
+#[test]
 fn a_routed_claude_prompt_is_stopped_when_the_gate_is_missing_or_refuses() {
     for gate in ["exit 127", "echo '{\"continue\":false,\"stopReason\":\"Ownership pending\"}'"] {
         let mut test = HookTest::new();

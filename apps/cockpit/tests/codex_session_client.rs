@@ -30,7 +30,8 @@ for line in sys.stdin:
         result = {'thread':{'id': os.environ.get('SHIM_WRONG_THREAD','aaaaaaaa-0000-4000-8000-000000000000'),
             'model':'gpt-6.1-sol', 'modelProvider':'openai', 'reasoningEffort':'high',
             'historyMode':'legacy' if legacy else 'paginated',
-            'turns':[{'id':'turn', 'items':[entry['item'] for entry in reversed(items)]}] if include_turns and legacy else []}}
+            'turns':[{'id':'turn','status':os.environ.get('SHIM_TURN_STATUS','completed'),
+                'error':{'codexErrorInfo':os.environ.get('SHIM_TURN_ERROR')}, 'items':[entry['item'] for entry in reversed(items)]}] if include_turns and legacy else []}}
     elif method == 'thread/items/list':
         if os.environ.get('SHIM_LEGACY') == '1':
             print(json.dumps({'id':request['id'],'error':{'code':-32600,'message':'thread/items/list is not supported yet'}}),flush=True)
@@ -88,6 +89,18 @@ fn legacy_history_uses_supported_read_only_turns_without_enabling_migration() {
         {"id":"reply","role":"assistant","text":"Current result"}
     ]));
     assert!(!fs::read_to_string(&sandbox.log).unwrap().contains("thread/items/list"));
+}
+
+#[test]
+fn only_a_verified_failed_quota_turn_marks_an_unassigned_codex_task_pending() {
+    for (status,error,expected) in [("failed","usageLimitExceeded",true),("failed","rateLimitExceeded",true),
+        ("completed","usageLimitExceeded",false),("interrupted","usageLimitExceeded",false),("failed","serverError",false)] {
+        let sandbox = sandbox(json!([]));
+        let output = sandbox.command("python3",&[("SHIM_LEGACY","1"),("SHIM_TURN_STATUS",status),("SHIM_TURN_ERROR",error)])
+            .arg(waybar_scripts().join("codex-session.py")).arg(THREAD).output().unwrap();
+        assert!(output.status.success(),"{}",stderr(&output));
+        assert_eq!(serde_json::from_slice::<Value>(&output.stdout).unwrap()["quota_stopped"],expected);
+    }
 }
 
 #[test]

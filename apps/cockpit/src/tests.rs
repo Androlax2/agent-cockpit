@@ -7335,6 +7335,15 @@ fn prepare_subscription_hold() {
 }
 
 #[test]
+fn subscription_poll_starts_one_background_sweep_without_blocking_the_sidebar() {
+    let (fixture, mut app) = queue_fixture("waiting", 7200);
+    app.poll_subscription_routes();
+    app.poll_subscription_routes();
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(fixture.calls("cockpit").iter().filter(|call| call.contains("subscription-sweep")).count(), 1);
+}
+
+#[test]
 fn automatic_actions_leave_routing_held_sessions_and_their_work_untouched() {
     for action in ["queue", "prompt", "restart", "sleep"] {
         let (fixture, mut app) = queue_fixture("waiting", 7200);
@@ -7386,6 +7395,8 @@ fn activate_subscription_replacement() -> &'static str {
     routes.record_runtime(&pending.generation, Binding { session:replacement.into(),runtime:"runtime-replacement".into(),
         selection:pending.target,native_thread:Some(SESSION_A.into()) }, "/r/runway").unwrap();
     routes.finish(SESSION_A, &pending.generation).unwrap();
+    routes.confirm_initial_admission(SESSION_A, &pending.generation).unwrap();
+    routes.start_initial_turn(SESSION_A,&pending.generation).unwrap();
     drop(routes);
     replacement
 }
@@ -7418,6 +7429,21 @@ fn late_messages_to_retired_sessions_follow_the_active_owner_without_terminal_re
     assert_eq!(crate::prompts::count(replacement), 1);
     assert_eq!(crate::prompts::oldest(replacement).unwrap().0, "Message arriving after ownership binding");
     assert!(fixture.calls("cockpit").is_empty(), "the retired terminal must never receive these messages");
+}
+
+#[test]
+fn routed_codex_messages_wait_for_the_authenticated_inbox_instead_of_unsupported_say() {
+    let (fixture, mut app) = queue_fixture("waiting",7200);
+    prepare_subscription_hold();
+    let replacement = activate_subscription_replacement();
+    let mut row = session(replacement,"waiting","runway","/r/runway",util::now() as i64);
+    row["agent"] = json!("codex");
+    app.running_sessions = vec![sessions::Session::from_value(&row).unwrap()];
+    crate::prompts::add(replacement,"A later user instruction").unwrap();
+    app.dispatch_subscription_routes();
+    app.dispatch_prompts();
+    assert_eq!(crate::prompts::count(replacement),1);
+    assert!(fixture.calls("cockpit").is_empty());
 }
 
 #[test]

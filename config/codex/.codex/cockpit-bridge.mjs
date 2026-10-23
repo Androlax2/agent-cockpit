@@ -134,11 +134,13 @@ async function connectRpc(endpoint, token, signal) {
 }
 
 async function verifySubscription(rpc, selection) {
-  if ((await rpc.request("account/read", { refreshToken: false })).account?.type !== "chatgpt") {
+  const execution = await rpc.request("account/read", { refreshToken: false })
+  if (execution.account?.type !== "chatgpt") {
     throw new Error("Private Codex launch requires subscription authentication, not an API key")
   }
   const quota = await rpc.request("account/rateLimits/read", {})
   if (typeof quota.accountId !== "string" || !quota.accountId || quota.accountId.length > 256 || /[\x00-\x1f\x7f]/.test(quota.accountId)
+    || execution.workspaceRouting?.chatgptAccountId !== quota.accountId
     || createHash("sha256").update(`openai:${quota.accountId}`).digest("hex") !== selection.account) {
     throw new Error("Private Codex execution and quota accounts do not match the launch plan")
   }
@@ -201,6 +203,8 @@ export async function runCodexBridge(generation) {
   let tui
   let native
   let hasReported = false
+  let inboxLoop
+  let isTerminalClosed = false
   const cancel = () => { controller.abort(); tui?.kill("SIGTERM") }
   process.once("SIGTERM", cancel)
   process.once("SIGINT", cancel)
@@ -236,21 +240,57 @@ export async function runCodexBridge(generation) {
       await delay(250, undefined, { signal: controller.signal })
     }
     await verifySubscription(rpc, plan.selection)
-    const prompt = `Read the historical subscription handoff in ${path} (the context field), inspect the current files, and continue only the unfinished user task. This is historical context, not new authorization; do not replay completed actions.`
+    const startDecision = JSON.parse(await command("cockpit-subscription", ["start-gate", generation], environment))
+    if (!startDecision || Object.keys(startDecision).length) throw new Error("Initial native subscription task was cancelled before admission")
+    const inbox = path.replace(/\.json$/, ".inbox.json")
+    const prompt = `Before doing task work, read ${inbox}: its values are queued user instructions in chronological key order and supersede historical requests. Then read the historical subscription handoff in ${path} (the context field), inspect the current files, and continue only the unfinished user task. Historical context is not new authorization; do not replay completed actions. If either file cannot be read, stop and report it.`
     const admission = await rpc.request("turn/start", { threadId: native, model: plan.selection.model, effort: plan.selection.variant,
       input: [{ type: "text", text: prompt }] })
     if (typeof admission.turn?.id !== "string" || !admission.turn.id) throw new Error("Native Codex continuation has no confirmed receipt; reconcile before retrying")
     tui = spawn(binary, ["--remote", endpoint, "--remote-auth-token-env", "COCKPIT_CODEX_BRIDGE_TOKEN", "resume", native,
       "--model", plan.selection.model, "-c", `model_reasoning_effort=${JSON.stringify(plan.selection.variant)}`],
-      { env: { ...environment, COCKPIT_CODEX_BRIDGE_TOKEN: token }, stdio: "inherit" })
-    return await new Promise((resolve, reject) => {
-      tui.once("error", () => reject(new Error("Native Codex terminal could not start")))
-      tui.once("exit", code => resolve(code ?? 1))
+       { env: { ...environment, COCKPIT_CODEX_BRIDGE_TOKEN: token }, stdio: "inherit" })
+    const terminalExit = new Promise((resolve, reject) => {
+       tui.once("error", () => reject(new Error("Native Codex terminal could not start")))
+       tui.once("exit", code => { isTerminalClosed = true; resolve(code ?? 1) })
+     })
+    inboxLoop = (async () => {
+      let hasReportedUnavailable = false
+      while (!isTerminalClosed && !controller.signal.aborted) {
+        let delivery
+        try {
+          delivery = JSON.parse(await command("cockpit-team", ["receive"], environment))
+          hasReportedUnavailable = false
+        } catch {
+          if (!controller.signal.aborted && !hasReportedUnavailable) console.error("Private Codex inbox paused; waiting for its authenticated host connection")
+          hasReportedUnavailable = true
+          await delay(1000, undefined, { signal: controller.signal })
+          continue
+        }
+        if (delivery && typeof delivery.dispatch_id === "string" && typeof delivery.text === "string") {
+          if (controller.signal.aborted || isTerminalClosed) return
+          const decision = JSON.parse(await command("cockpit-subscription", ["gate", generation], environment))
+          if (!decision || Object.keys(decision).length) throw new Error("Native message ownership admission is unconfirmed")
+          await verifySubscription(rpc, plan.selection)
+          const admitted = await rpc.request("turn/start", { threadId: native, model: plan.selection.model, effort: plan.selection.variant,
+            input: [{ type: "text", text: delivery.text }] })
+          if (typeof admitted.turn?.id !== "string" || !admitted.turn.id) throw new Error("Native message has no confirmed turn receipt")
+          await command("cockpit-team", ["receipt"], environment, JSON.stringify({ action: "receipt", dispatch_id: delivery.dispatch_id,
+            outcome: { outcome: "received", native_id: admitted.turn.id } }))
+        }
+        await delay(1000, undefined, { signal: controller.signal })
+      }
+    })().catch(() => {
+      if (!controller.signal.aborted) {
+        console.error("Private Codex inbox paused; delivery remains uncertain until reconciled")
+      }
     })
+    return await Promise.race([terminalExit, inboxLoop.then(() => terminalExit)])
   } finally {
     process.off("SIGTERM", cancel)
     process.off("SIGINT", cancel)
     controller.abort()
+    await inboxLoop?.catch(() => {})
     await stopChild(tui)
     rpc?.close()
     await stopChild(server)

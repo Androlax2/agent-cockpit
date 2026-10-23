@@ -482,6 +482,47 @@ launch_credits=0
 launch_team_spawn=
 launch_team_resume=
 
+subscription_route() ( # origin generation
+    local origin=$1 generation=$2 helper folder status stage ticket directory agent attempt failure
+    [[ $generation =~ ^[0-9a-f]{32}$ ]] || { echo "cockpit: invalid subscription generation" >&2; return 1; }
+    helper="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/cockpit-subscription"
+    folder="${COCKPIT_STATE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}}/cockpit/subscriptions"
+    umask 077
+    mkdir -p "$folder"
+    exec 9>"$folder/$generation.dispatch.lock"
+    flock -n 9 || return 0
+    status=$("$helper" route-status "$origin" "$generation" 9>&-) || return
+    stage=$(jq -er '.stage' <<<"$status") || return
+    [[ $stage != Active ]] || return 0
+    if [[ $stage == Prepared ]]; then
+        "$helper" prepare-plan "$origin" "$generation" 9>&- >/dev/null || return
+        "$helper" retire "$origin" "$generation" 9>&- || return
+        stage=Retired
+    fi
+    if [[ $stage == Retired ]]; then
+        ticket=$("$helper" submit "$origin" "$generation" 9>&-) || return
+        directory=$(jq -er '.directory' <<<"$ticket") || return
+        agent=$(jq -er '.agent' <<<"$ticket") || return
+        launch_subscription_route=$generation
+        launch_credits=0
+        launch_team_spawn=
+        case $agent in
+            claude) claude_launch_detached "$directory" 9>&- || return ;;
+            codex) codex_launch "$directory" 9>&- >/dev/null || return ;;
+            *) echo "cockpit: unsupported native subscription destination" >&2; return 1 ;;
+        esac
+    elif [[ $stage != Submitted && $stage != Bound ]]; then
+        echo "cockpit: subscription route is not launchable" >&2
+        return 1
+    fi
+    for ((attempt=0; attempt<120; attempt++)); do
+        if failure=$("$helper" bind "$origin" "$generation" 9>&- 2>&1); then return 0; fi
+        sleep 0.25
+    done
+    echo "cockpit: subscription handoff remains paused; no second launch will be attempted: $failure" >&2
+    return 1
+)
+
 new_session() {
     local directory=$1 existing
     shift
@@ -817,6 +858,11 @@ say_to_session() { # id message
     subscription_helper="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/cockpit-subscription"
     routing=$("$subscription_helper" message-target "$id") || return
     id=$(jq -er '.session' <<<"$routing") || return
+    if jq -e '.native_inbox == true' <<<"$routing" >/dev/null; then
+        printf '%s' "$message" | "$subscription_helper" queue-message "$id" || return
+        echo "queued for the native subscription inbox"
+        return 0
+    fi
     if jq -e '.held == true' <<<"$routing" >/dev/null; then
         printf '%s' "$message" | "$subscription_helper" queue-message "$id" || return
         echo "queued until subscription ownership is bound"
@@ -1432,6 +1478,7 @@ restore_remote_control() { # id woke_at
 # billing is refused for an agent without the feature.
 restart_session() { # id [effort] [detached] [credits|subscription]
     local id=$1 effort=${2:-} detached=${3:-} billing=${4:-} directory note
+    "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/cockpit-subscription" cancel-session "$id" || return
     # A live pane first: a note can outlive its process by the length of the sleep's exit.
     if [[ -z $(session_field "$id" tmux_pane) ]] && is_asleep "$id"; then
         [[ -z $effort && -z $billing ]] || { echo "cockpit: $id is asleep; wake it before changing its effort or billing" >&2; return 1; }
@@ -1729,7 +1776,7 @@ doctor() {
     echo "hooks"
     if [[ -x $(readlink -f "$HOME/.claude/hooks/session-state.sh") ]]; then report ok "~/.claude/hooks/session-state.sh resolves"; else report fail "~/.claude/hooks/session-state.sh does not resolve" "cd ~/agent-cockpit/config && stow --no-folding -t ~ --restow claude"; fi
     local event missing_events=""
-    for event in SessionStart UserPromptSubmit PostToolUse Notification Stop SessionEnd; do
+    for event in SessionStart UserPromptSubmit PostToolUse Notification Stop StopFailure SessionEnd; do
         jq -e --arg event "$event" '[.hooks[$event][]?.hooks[]?.command] | any(test("session-state.sh"))' "$HOME/.claude/settings.json" >/dev/null 2>&1 \
             || missing_events="$missing_events $event"
     done
@@ -2745,6 +2792,8 @@ case ${1:-attach} in
     exit)
         [[ ${2:-} =~ ^[A-Za-z0-9_-]+$ ]] || { echo "cockpit: invalid session id" >&2; exit 1; }
         is_exiting_asleep=false
+        "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/cockpit-subscription" cancel-session "${2:?usage: cockpit exit <session-id>}" || exit
+        # A live pane first: a note can outlive its process by the length of the sleep's exit.
         if [[ -z $(session_field "${2:?usage: cockpit exit <session-id>}" tmux_pane) ]] && is_asleep "$2"; then
             is_exiting_asleep=true
         fi
@@ -2790,6 +2839,13 @@ case ${1:-attach} in
     push-run) push_run "${2:?usage: cockpit push-run <dir>}" ;;
     apply|apply-dotfiles) apply_reviewed "${2:-}" "${3:-}" ;;
     apply-run) apply_run "${2:?usage: cockpit apply-run <reviewed clone>}" ;;
+    subscription-sweep)
+        folder="${COCKPIT_STATE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}}/cockpit/subscriptions"
+        mkdir -p "$folder"
+        exec 9>"$folder/sweep.lock"
+        if flock -n 9; then "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/cockpit-subscription" sweep; fi
+        ;;
+    subscription-route) subscription_route "${2:?usage: cockpit subscription-route <origin> <generation>}" "${3:?}" ;;
     team-spawn) team_spawn_session "${2:?usage: cockpit team-spawn <token> <role> <dir> <commit|-> <brief>}" "${3:?}" "${4:?}" "${5:?}" "${6:-}" ;;
     parallel) parallel_session "${2:?usage: cockpit parallel <dir> <branch> [prompt]}" "${3:?usage: cockpit parallel <dir> <branch> [prompt]}" "${4:-}" ;;
     review) review_session "${2:?usage: cockpit review <dir> <pr-number>}" "${3:?usage: cockpit review <dir> <pr-number>}" ;;

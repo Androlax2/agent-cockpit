@@ -56,6 +56,32 @@ fn unconfirmed_or_exhausted_alternatives_leave_the_original_owner_pending() {
 }
 
 #[test]
+fn cancelling_a_pending_native_route_prevents_late_retirement_and_admission() {
+    let sandbox = Sandbox::new();
+    let mut store = RoutingStore::load(&sandbox.root.join("routes.json")).unwrap();
+    let source = binding("claude");
+    store.track(source.clone(), "/projects/demo", "1797cdd6", 100).unwrap();
+    let transition = store.reconcile(&[observation(&source, Exhausted)], 101).unwrap().remove(0);
+    store.cancel(&source.session).unwrap();
+    assert!(store.mark_retired(&source.session, &transition.generation).is_err());
+    assert!(!store.execution_allowed(&transition.generation, &source.session, &source.runtime));
+}
+
+#[test]
+fn manual_cancellation_and_completed_tasks_stop_pending_native_launches() {
+    for command in ["cancel-session", "sweep"] {
+        let (sandbox, _) = prepared_claude_route();
+        sandbox.shim("cockpit", "exit 0");
+        let arguments = if command == "sweep" { vec![command] } else { vec![command, SESSION_A] };
+        let output = sandbox.run(env!("CARGO_BIN_EXE_cockpit-subscription"), &arguments, &[]);
+        assert!(output.status.success(), "{}", stderr(&output));
+        let routes = cockpit::subscription_fallback::read_routes(&sandbox.state.join("cockpit/subscriptions/routes.json")).unwrap();
+        assert!(matches!(routes[0].phase, Phase::Cancelled | Phase::Completed));
+        assert!(sandbox.calls("cockpit").is_empty());
+    }
+}
+
+#[test]
 fn uncertain_launches_survive_restarts_without_being_submitted_again() {
     let sandbox = Sandbox::new();
     let path = sandbox.state.join("subscriptions/routes.json");
@@ -384,6 +410,15 @@ fn the_native_prompt_gate_releases_only_after_an_explicit_host_grant() {
     assert_eq!(payload, json!({"generation":generation}));
 }
 
+#[test]
+fn native_bootstrap_waits_for_the_ownership_gate_before_releasing_the_first_prompt() {
+    let sandbox = Sandbox::new();
+    let _daemon = ReportSocket::start(&sandbox.runtime.join("claude-report/osd-report.sock"), "ok");
+    let output = sandbox.run(env!("CARGO_BIN_EXE_cockpit-subscription"), &["await-gate", &"a".repeat(32)], &[]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(serde_json::from_slice::<Value>(&output.stdout).unwrap(), json!({}));
+}
+
 fn prepared_claude_route() -> (Sandbox, cockpit::subscription_fallback::Transition) {
     let sandbox = claude_history(&[message("user", "Finish this task without pushing")]);
     let directory = sandbox.root.to_str().unwrap();
@@ -425,6 +460,22 @@ fn native_launch_plans_are_private_and_come_only_from_a_pending_route() {
 }
 
 #[test]
+fn a_published_plan_survives_source_exit_after_retirement_intent() {
+    let (sandbox, transition) = prepared_claude_route();
+    let binary = env!("CARGO_BIN_EXE_cockpit-subscription");
+    let arguments = ["prepare-plan",SESSION_A,&transition.generation];
+    let first = sandbox.run(binary,&arguments,&[]);
+    assert!(first.status.success(), "{}", stderr(&first));
+    let mut store = RoutingStore::load(&sandbox.state.join("cockpit/subscriptions/routes.json")).unwrap();
+    store.mark_retirement_started(SESSION_A,&transition.generation).unwrap();
+    drop(store);
+    fs::write(sandbox.runtime.join("cockpit.json"), "{\"sessions\":[]}").unwrap();
+    let retry = sandbox.run(binary,&arguments,&[]);
+    assert!(retry.status.success(), "{}", stderr(&retry));
+    assert_eq!(stdout(&first),stdout(&retry));
+}
+
+#[test]
 fn protected_plan_retries_never_replace_conflicting_or_exposed_context() {
     use std::os::unix::fs::PermissionsExt;
     for exposed in [false, true] {
@@ -462,10 +513,12 @@ fn direct_messages_queue_on_the_pending_owner_then_resolve_the_active_replacemen
     let replacement = binding("codex");
     store.record_runtime(&transition.generation, replacement.clone(), sandbox.root.to_str().unwrap()).unwrap();
     store.finish(SESSION_A, &transition.generation).unwrap();
+    store.confirm_initial_admission(SESSION_A, &transition.generation).unwrap();
+    store.start_initial_turn(SESSION_A,&transition.generation).unwrap();
     drop(store);
     let target = sandbox.run(binary, &["message-target", SESSION_A], &[]);
     assert!(target.status.success(), "{}", stderr(&target));
-    assert_eq!(serde_json::from_slice::<Value>(&target.stdout).unwrap(), json!({"session":replacement.session,"held":false}));
+    assert_eq!(serde_json::from_slice::<Value>(&target.stdout).unwrap(), json!({"session":replacement.session,"held":false,"native_inbox":true}));
     let queued = sandbox.run_with_input(binary, &["queue-message", SESSION_A], &[], "A later user instruction");
     assert!(queued.status.success(), "{}", stderr(&queued));
     let target_queue = sandbox.state.join(format!("cockpit/prompt-queue/{}", replacement.session));
@@ -545,6 +598,45 @@ fn a_native_return_plan_keeps_the_original_codex_thread_and_model() {
     assert_eq!(plan["native_thread"], "aaaaaaaa-0000-4000-8000-000000000000");
     assert_eq!(plan["selection"]["model"], "gpt-6.1-sol");
     assert_eq!(plan["selection"]["variant"], "high");
+}
+
+#[test]
+fn claude_plans_use_a_stable_new_session_or_resume_the_exact_original_session() {
+    for returning in [false, true] {
+        let sandbox = Sandbox::new();
+        let source = binding("codex");
+        let history = json!({"thread":source.native_thread,"messages":[{"id":"user-fixture","role":"user","text":"Finish the task"}],
+            "latest_user":"Finish the task","truncated":false});
+        sandbox.shim("python3", &format!("printf '%s\\n' '{}'", history));
+        let directory = sandbox.root.to_str().unwrap();
+        fs::write(sandbox.runtime.join("cockpit.json"), json!({"sessions":[{"session":source.session,"native_thread":source.native_thread,
+            "agent":"codex","state":"waiting","cwd":directory}]}).to_string()).unwrap();
+        let mut store = RoutingStore::load(&sandbox.state.join("cockpit/subscriptions/routes.json")).unwrap();
+        let original = if returning { binding("claude") } else { source.clone() };
+        store.track(original.clone(), directory, "1797cdd6", 100).unwrap();
+        if returning {
+            let mut observed = observation(&original, Exhausted);
+            observed.session.cwd = directory.into();
+            let first = store.reconcile(&[observed], 101).unwrap().remove(0);
+            store.mark_retired(&original.session, &first.generation).unwrap();
+            store.mark_submitted(&original.session, &first.generation).unwrap();
+            store.record_runtime(&first.generation, source.clone(), directory).unwrap();
+            store.finish(&original.session, &first.generation).unwrap();
+        }
+        let mut observed = observation(&source, Exhausted);
+        observed.session.cwd = directory.into();
+        observed.original_capacity = if returning { Available } else { Exhausted };
+        let next = store.reconcile(&[observed], 102).unwrap().remove(0);
+        drop(store);
+        let output = sandbox.run(env!("CARGO_BIN_EXE_cockpit-subscription"), &["prepare-plan", &original.session, &next.generation], &[]);
+        assert!(output.status.success(), "{}", stderr(&output));
+        let plan: Value = serde_json::from_slice(&fs::read(stdout(&output).trim()).unwrap()).unwrap();
+        assert_eq!(plan["resume"], returning);
+        let id = plan["session_id"].as_str().unwrap();
+        assert!(cockpit::codex::cockpit_id(id).is_ok());
+        if returning { assert_eq!(id, SESSION_A); }
+        else { assert_eq!(id.replace('-', ""), next.generation); }
+    }
 }
 
 #[test]

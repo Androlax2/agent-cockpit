@@ -26,6 +26,22 @@ fn claude_launch_does_not_wait_for_profile_drift_input() {
 }
 
 #[test]
+fn routed_claude_cannot_bypass_the_protected_plan_or_its_failed_billing_check() {
+    for arguments in [vec![], vec!["--model", "another-model"]] {
+        let launch = Launch::new();
+        let helper = launch.sandbox.home.join(".config/waybar/scripts/native-subscription.py");
+        fs::remove_file(&helper).unwrap();
+        fs::write(helper, "import sys\nsys.exit(7)\n").unwrap();
+        let output = launch.sandbox.command(bin().join("greywall-agents/claude"), &[("COCKPIT_SUBSCRIPTION_ROUTE", &"a".repeat(32))])
+            .args(&arguments).current_dir(&launch.project).output().unwrap();
+        assert!(!output.status.success());
+        assert!(!launch.sandbox.home.join("claude-arguments").exists());
+        assert!(launch.sandbox.calls("greywall").is_empty());
+        if arguments.is_empty() { assert_eq!(output.status.code(), Some(7)); }
+    }
+}
+
+#[test]
 fn no_session_starts_in_a_running_copy() {
     // Security audit C1: a session there could write code the host runs, unreviewed.
     for repository in REVIEWED_REPOSITORIES {
@@ -257,6 +273,24 @@ fn native_codex_uses_project_guards_without_learning_or_hook_bypass() {
     let environment = std::fs::read_to_string(launch.sandbox.home.join("codex-environment")).unwrap();
     assert!(environment.contains("COCKPIT_AGENT=codex\n"));
     assert!(environment.contains("CLAUDE_ANSWERS_KEY="));
+}
+
+#[test]
+fn native_launchers_replace_inherited_account_claims_with_host_collected_identity() {
+    for agent in ["claude","codex"] {
+        for overridden in [false,true] {
+        let launch = Launch::new();
+        let helper = launch.sandbox.home.join(".config/waybar/scripts/native-subscription.py");
+        fs::remove_file(&helper).unwrap();
+        fs::write(&helper, "import sys\nassert sys.argv[1]=='identity'\nprint('a'*64)\n").unwrap();
+        write_executable(&launch.sandbox.home.join(".local/bin/greywall"), "#!/bin/sh\nprintf '%s' \"$COCKPIT_SUBSCRIPTION_ACCOUNT\" > \"$HOME/execution-account\"\n");
+        let output = launch.sandbox.command(bin().join(format!("greywall-agents/{agent}")), &[("COCKPIT_SUBSCRIPTION_ACCOUNT",&"b".repeat(64))])
+            .args(if overridden { if agent == "claude" {vec!["--settings","{}"]} else {vec!["-c","model_provider=unverified"]} } else {vec![]})
+            .current_dir(&launch.project).output().unwrap();
+        assert!(output.status.success(), "{}", stderr(&output));
+        assert_eq!(fs::read_to_string(launch.sandbox.home.join("execution-account")).unwrap(),if overridden {String::new()} else {"a".repeat(64)});
+    }
+    }
 }
 
 #[test]

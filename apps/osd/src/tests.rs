@@ -9,6 +9,9 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::{Mutex, MutexGuard};
 
+#[path = "subscription_roundtrip_test.rs"]
+mod subscription_roundtrip;
+
 const SESSION_A: &str = "aaaaaaaa-0000-4000-8000-000000000000";
 const SESSION_B: &str = "bbbbbbbb-0000-4000-8000-000000000000";
 const SESSION_C: &str = "cccccccc-0000-4000-8000-000000000000";
@@ -119,6 +122,8 @@ struct World {
     spawn_tokens: HashMap<u32, String>,
     resume_tokens: HashMap<u32, String>,
     subscription_tokens: HashMap<u32, String>,
+    subscription_accounts: HashMap<String,String>,
+    blocked_native_input: bool,
     /// start_detached commands, in order
     started: Vec<Vec<String>>,
     /// start_detached reports that nothing could be started
@@ -182,6 +187,8 @@ impl System for FakeSystem {
     fn sender_spawn_token(&mut self, sender: u32) -> Option<String> { self.0.borrow().spawn_tokens.get(&sender).cloned() }
     fn sender_resume_token(&mut self, sender: u32) -> Option<String> { self.0.borrow().resume_tokens.get(&sender).cloned() }
     fn sender_subscription_token(&mut self, sender: u32) -> Option<String> { self.0.borrow().subscription_tokens.get(&sender).cloned() }
+    fn native_input_clear(&mut self, _: &cockpit::sessions::Session) -> bool { !self.0.borrow().blocked_native_input }
+    fn runtime_subscription_account(&mut self, runtime: &str) -> Option<String> { self.0.borrow().subscription_accounts.get(runtime).cloned() }
     fn start_detached(&mut self, command: &[&str]) -> bool {
         self.0.borrow_mut().started.push(command.iter().map(|part| part.to_string()).collect());
         !self.0.borrow().start_fails
@@ -326,6 +333,37 @@ fn subscription_receipt(bench: &mut Bench, generation: &str) -> Result<Value, co
 }
 
 #[test]
+fn subscription_source_inspection_requires_a_live_authenticated_runtime() {
+    let mut bench = team_bench();
+    let inspect = |bench: &mut Bench| {
+        let request = serde_json::from_value(json!({"request":"subscription_source", "session":SESSION_A})).unwrap();
+        crate::teams::host(&mut bench.registry, request).unwrap().result.unwrap()
+    };
+    assert_eq!(inspect(&mut bench)["runtime"], "runtime-10");
+    bench.world.borrow_mut().sender_runtimes.remove(&10);
+    assert!(inspect(&mut bench).is_null());
+}
+
+#[test]
+fn subscription_source_exposes_only_its_authenticated_team_task() {
+    let mut bench = linked_team_bench();
+    let request = serde_json::from_value(json!({"request":"subscription_source","session":SESSION_A})).unwrap();
+    let source = crate::teams::host(&mut bench.registry, request).unwrap().result.unwrap();
+    assert_eq!(source["team_task"], "1d3fd318");
+}
+
+#[test]
+fn native_quota_stop_evidence_clears_when_a_new_turn_starts() {
+    let mut bench = team_bench();
+    let report = |quota_stopped| parse_session(&json!({"session":SESSION_A,"project":"project-a","state":"waiting",
+        "quota_stopped":quota_stopped}).to_string()).unwrap();
+    bench.registry.report_from(report(true),10).unwrap();
+    assert_eq!(bench.registry.snapshot_rows()[0]["quota_stopped"],true);
+    bench.registry.report_from(report(false),10).unwrap();
+    assert_eq!(bench.registry.snapshot_rows()[0]["quota_stopped"],false);
+}
+
+#[test]
 fn subscription_receipts_use_the_launch_token_not_a_report_claim() {
     let mut bench = team_bench();
     let generation = "a".repeat(32);
@@ -430,7 +468,28 @@ fn subscription_prompt_admission_requires_completed_binding_and_the_real_sender(
     routes.record_runtime(&transition.generation, replacement, &directory).unwrap();
     routes.finish(SESSION_A, &transition.generation).unwrap();
     drop(routes);
+    let saved_task = fs::read(cockpit::paths::todo()).unwrap();
+    fs::write(cockpit::paths::todo(), "{\"items\":[]}").unwrap();
+    assert!(bench.registry.request_from("subscription-gate", &raw, 40).is_err(), "deleted tasks must not receive the first automatic continuation");
+    fs::write(cockpit::paths::todo(), saved_task).unwrap();
+    cockpit::prompts::add(CODEX_SESSION, "Stop before publishing; review the files first").unwrap();
     assert!(bench.registry.request_from("subscription-gate", &raw, 40).is_ok());
+    assert_eq!(cockpit::prompts::count(CODEX_SESSION), 1, "startup readiness must not consume instructions before the actual turn starts");
+    assert!(cockpit::subscription_fallback::message_target(CODEX_SESSION).unwrap().1);
+    cockpit::prompts::add(CODEX_SESSION, "A later instruction").unwrap();
+    assert!(bench.registry.request_from("subscription-gate", &raw, 40).is_ok());
+    assert_eq!(cockpit::prompts::count(CODEX_SESSION), 2, "repeated readiness checks must not consume later messages");
+    let task_state = fs::read(cockpit::paths::todo()).unwrap();
+    fs::write(cockpit::paths::todo(),"{\"items\":[]}").unwrap();
+    assert!(bench.registry.request_from("subscription-initial-gate",&raw,40).is_err(),"termination after inbox preparation still blocks the initial task start");
+    fs::write(cockpit::paths::todo(),task_state).unwrap();
+    assert!(bench.registry.request_from("subscription-initial-gate",&raw,40).is_ok());
+    assert_eq!(cockpit::prompts::count(CODEX_SESSION),0);
+    let routes = RoutingStore::load(&cockpit::paths::subscription_routes()).unwrap();
+    let inbox = cockpit::subscription_fallback::prepare_admission_inbox(routes.route(SESSION_A).unwrap(),&transition.generation).unwrap();
+    let saved: Value = serde_json::from_slice(&fs::read(inbox).unwrap()).unwrap();
+    assert_eq!(saved.as_object().unwrap().values().cloned().collect::<Vec<_>>(),vec![json!("Stop before publishing; review the files first"),json!("A later instruction")]);
+    drop(routes);
     assert!(bench.registry.request_from("subscription-gate", &raw, 30).is_err(), "another sandbox must not reuse admission");
     assert!(bench.registry.request_from("subscription-gate", &json!({"generation":"f".repeat(32)}).to_string(), 40).is_err());
 }
@@ -469,11 +528,13 @@ fn host_subscription_binding_stays_paused_until_retirement_and_every_store_commi
     use cockpit::subscription_fallback::{Binding, Observation, RoutingStore, Selection};
     use cockpit::usage::SubscriptionCapacity::{Available, Exhausted};
     use cockpit::{continuity::{Continuity, TaskSnapshot}, todo::{Entry, TodoList}};
+    for task_owner in [SESSION_A, OPENCODE_SESSION] {
+    let next_owner = if task_owner == SESSION_A { CODEX_SESSION } else { OPENCODE_SESSION };
     let mut bench = linked_team_bench();
     let directory = bench.registry.sessions[SESSION_A].cwd.clone();
     let source_session = cockpit::sessions::Session::from_value(&bench.registry.snapshot_rows().into_iter().find(|row| row["session"] == SESSION_A).unwrap()).unwrap();
     let mut todos = TodoList::load();
-    assert!(todos.set_status("1d3fd318", "doing", SESSION_A));
+    assert!(todos.set_status("1d3fd318", "doing", task_owner));
     let task = TaskSnapshot::from_entry(&Entry::Typed(todos.items[0].clone()), "");
     let mut continuity = Continuity::load(&cockpit::paths::continuity()).unwrap();
     continuity.assign(&task, &source_session, 100).unwrap();
@@ -501,7 +562,7 @@ fn host_subscription_binding_stays_paused_until_retirement_and_every_store_commi
     let request = json!({"request":"subscription_bind","origin":SESSION_A,"generation":transition.generation});
     let bind = |bench: &mut Bench| crate::teams::host(&mut bench.registry, serde_json::from_value(request.clone()).unwrap());
     assert!(bind(&mut bench).is_err(), "a live source must remain the only executable owner");
-    assert!(TodoList::load().busy(SESSION_A));
+    assert!(TodoList::load().busy(task_owner));
     bench.world.borrow_mut().sender_runtimes.remove(&10);
     let saved_todo = fs::read(cockpit::paths::todo()).unwrap();
     fs::write(cockpit::paths::todo(), "corrupt ownership state").unwrap();
@@ -514,14 +575,14 @@ fn host_subscription_binding_stays_paused_until_retirement_and_every_store_commi
     let conflicting_prompt = target_queue.join(source_prompt.file_name().unwrap());
     fs::write(&conflicting_prompt, "A distinct existing instruction").unwrap();
     assert!(bind(&mut bench).is_err(), "a partial transfer must not open the execution gate");
-    assert!(TodoList::load().busy(CODEX_SESSION));
+    assert!(TodoList::load().busy(next_owner));
     assert!(bench.registry.request_from("subscription-gate", &json!({"generation":transition.generation}).to_string(), 40).is_err());
     fs::remove_file(conflicting_prompt).unwrap();
     cockpit::prompts::add(SESSION_A, "A later instruction while the transfer is paused").unwrap();
     bench.registry.teams = None;
     bind(&mut bench).unwrap().result.unwrap();
     bind(&mut bench).unwrap().result.unwrap();
-    assert!(TodoList::load().busy(CODEX_SESSION));
+    assert!(TodoList::load().busy(next_owner));
     assert!(!TodoList::load().busy(SESSION_A));
     let continuity = Continuity::load(&cockpit::paths::continuity()).unwrap();
     let active: Vec<_> = continuity.tasks()["1d3fd318"].assignments.iter().filter(|assignment| assignment.active).collect();
@@ -532,7 +593,35 @@ fn host_subscription_binding_stays_paused_until_retirement_and_every_store_commi
     let team = crate::teams::request(&mut bench.registry, 40, cockpit::teams::AgentAction::Context).unwrap().result.unwrap();
     assert_eq!(team["task"]["task_id"], "1d3fd318");
     assert!(team["members"].as_array().unwrap().iter().any(|member| member["session_id"] == CODEX_SESSION && member["role"] == "designer"));
+    assert!(cockpit::subscription_fallback::message_target(CODEX_SESSION).unwrap().1,
+        "ordinary delivery must stay held until the first inbox has been claimed");
     assert!(bench.registry.request_from("subscription-gate", &json!({"generation":transition.generation}).to_string(), 40).is_ok());
+    assert!(bench.registry.request_from("subscription-initial-gate", &json!({"generation":transition.generation}).to_string(), 40).is_ok());
+    assert!(!cockpit::subscription_fallback::message_target(CODEX_SESSION).unwrap().1);
+    let message = "A user message arriving after initial native admission";
+    cockpit::prompts::add(CODEX_SESSION,message).unwrap();
+    let still_working = crate::teams::request(&mut bench.registry,40,cockpit::teams::AgentAction::Receive).unwrap().result.unwrap();
+    assert!(still_working.is_null());
+    bench.registry.report_from(parse_session(&json!({"session":CODEX_SESSION,"native_thread":SESSION_A,"agent":"codex",
+        "project":"project-a","cwd":directory,"state":"waiting"}).to_string()).unwrap(),40).unwrap();
+    bench.world.borrow_mut().blocked_native_input = true;
+    let drafted = crate::teams::request(&mut bench.registry,40,cockpit::teams::AgentAction::Receive).unwrap().result.unwrap();
+    assert!(drafted.is_null(),"an unsent native draft must block background message admission");
+    bench.world.borrow_mut().blocked_native_input = false;
+    let delivery = crate::teams::request(&mut bench.registry,40,cockpit::teams::AgentAction::Receive).unwrap().result.unwrap();
+    assert_eq!(delivery["text"],message);
+    assert!(delivery["dispatch_id"].as_str().unwrap().starts_with("prompt_"));
+    assert_eq!(cockpit::prompts::count(CODEX_SESSION),0);
+    let repeated = crate::teams::request(&mut bench.registry,40,cockpit::teams::AgentAction::Receive).unwrap().result.unwrap();
+    assert!(repeated.is_null(),"an uncertain native user delivery must never replay");
+    let receipt = cockpit::teams::AgentAction::Receipt { dispatch_id:delivery["dispatch_id"].as_str().unwrap().into(),
+        outcome:cockpit::teams::TransportOutcome::Received { native_id:"native-later-turn".into() } };
+    assert!(crate::teams::request(&mut bench.registry,30,receipt.clone()).is_err(),"another runtime cannot acknowledge a user delivery");
+    crate::teams::request(&mut bench.registry,40,receipt).unwrap().result.unwrap();
+    cockpit::prompts::add(CODEX_SESSION,"Another message while the admitted turn starts").unwrap();
+    let during_admission = crate::teams::request(&mut bench.registry,40,cockpit::teams::AgentAction::Receive).unwrap().result.unwrap();
+    assert!(during_admission.is_null(),"admission reserves the idle boundary until a fresh native turn-end report");
+    }
 }
 
 #[test]
@@ -2989,6 +3078,18 @@ fn team_runtime_proof_changes_when_a_launcher_pid_is_reused_or_the_machine_reboo
     tree.start = "1000".into();
     tree.boot = "boot-b".into();
     assert!(!runtime_is_live(&tree, &original));
+}
+
+#[test]
+fn execution_account_proof_comes_from_the_live_host_launcher_not_the_sandbox() {
+    let expected = "a".repeat(64);
+    let mut tree = TimedTree { tree:Tree(vec![
+        ("50",Some("30"),"sandbox",environment(&[("COCKPIT_SUBSCRIPTION_ACCOUNT",&"b".repeat(64))])),
+        ("30",None,"host",environment(&[("COCKPIT_SUBSCRIPTION_ACCOUNT",&expected)]))]),start:"1000".into(),boot:"boot-a".into() };
+    let runtime = trusted_runtime(&tree,"50").unwrap();
+    assert_eq!(runtime_subscription_account(&tree,&runtime),Some(expected));
+    tree.start = "1001".into();
+    assert_eq!(runtime_subscription_account(&tree,&runtime),None);
 }
 
 #[test]

@@ -329,6 +329,40 @@ pub fn request(registry: &mut Registry, peer: u32, action: AgentAction) -> Resul
     let is_subscription_held = matches!(action, AgentAction::Receive)
         && cockpit::subscription_fallback::message_target(&sender.session_id)
             .map_err(|error| TeamError::new(ErrorCode::Unavailable, format!("subscription messaging is paused: {error}")))?.1;
+    if sender.agent == "codex" {
+        if let AgentAction::Receipt { dispatch_id, outcome } = &action {
+            if dispatch_id.starts_with("prompt_") {
+                if !matches!(outcome, cockpit::teams::TransportOutcome::Received { .. }) {
+                    return Err(TeamError::new(ErrorCode::Conflict,"native user message delivery is uncertain; reconcile before retrying"));
+                }
+                cockpit::prompts::receipt_native(&sender.session_id,&sender.runtime,dispatch_id)
+                    .map_err(|error| TeamError::new(ErrorCode::Storage,error))?;
+                return Ok(TeamReply { request_id:dispatch_id.clone(),result:Ok(Value::Null) });
+            }
+        }
+        if matches!(action,AgentAction::Receive) && !is_subscription_held && turn.is_some() {
+            let routes = cockpit::subscription_fallback::RoutingStore::load(&cockpit::paths::subscription_routes())
+                .map_err(|error| TeamError::new(ErrorCode::Storage,error))?;
+            if routes.routes().any(|route| route.current.session == sender.session_id && route.current.runtime == sender.runtime
+                && route.initial_admitted && matches!(route.phase,cockpit::subscription_fallback::Phase::Active)) {
+                let session = registry.snapshot_rows().iter().find(|row| row["session"] == sender.session_id)
+                    .and_then(cockpit::sessions::Session::from_value).ok_or_else(unauthorized)?;
+                if session.needs_attention() || session.agents != 0 || session.background != 0 || session.ask_to_run == "running"
+                    || !registry.system.native_input_clear(&session) {
+                    return Ok(TeamReply { request_id:"receive".into(),result:Ok(Value::Null) });
+                }
+                if let Some(delivery) = cockpit::prompts::claim_native(&sender.session_id,&sender.runtime)
+                    .map_err(|error| TeamError::new(ErrorCode::Storage,error))? {
+                    if let Some(entry) = registry.sessions.get_mut(&sender.session_id) { entry.state = "working".into(); }
+                    registry.publish();
+                    return Ok(TeamReply { request_id:"receive".into(),result:Ok(delivery) });
+                }
+                if cockpit::prompts::folder(&sender.session_id).is_some_and(|folder| folder.join("native-delivery.json").exists()) {
+                    return Ok(TeamReply { request_id:"receive".into(),result:Ok(Value::Null) });
+                }
+            }
+        }
+    }
     let result = database(registry, &live).and_then(|connection| match &action {
         AgentAction::Context => Ok(TeamReply { request_id: "context".into(), result: Ok(store::context(connection, &sender)?) }),
         AgentAction::QaResult { result } => store::qa_result(connection,&sender,result,now_ms()),
@@ -509,6 +543,22 @@ pub fn host(registry: &mut Registry, peer: u32, request: cockpit::teams::HostReq
             cockpit::chief::store::verify_admission(registry.teams.as_mut().unwrap(), &session, &adapter, &evidence, now_ms())?;
             Ok(TeamReply { request_id: "verify-chief-admission".into(), result: Ok(json!({"recorded":true})) })
         },
+        cockpit::teams::HostRequest::SubscriptionSource { session } => {
+            let entry = registry.sessions.get(&session).cloned();
+            let value = if entry.as_ref().is_some_and(|entry| !entry.runtime.is_empty()
+                && registry.system.runtime_is_live(&entry.runtime)) {
+                let mut row = registry.snapshot_rows().into_iter().find(|row| row["session"] == session).unwrap_or(Value::Null);
+                let entry = entry.unwrap();
+                row["runtime"] = json!(entry.runtime);
+                row["subscription_account"] = json!(registry.system.runtime_subscription_account(&entry.runtime));
+                let member = VerifiedSession { session_id:session.clone(), agent:entry.agent, runtime:entry.runtime,
+                    project:canonical_project(&entry.cwd)? };
+                open_and_restore(registry)?;
+                row["team_task"] = store::context(registry.teams.as_ref().expect("opened above"), &member)?["task"]["task_id"].clone();
+                row
+            } else { Value::Null };
+            Ok(TeamReply { request_id: session, result: Ok(value) })
+        },
         cockpit::teams::HostRequest::SubscriptionRuntime { generation } => {
             let runtime = registry.subscription_runtime(&generation)
                 .map_err(|error| TeamError::new(ErrorCode::Conflict, error))?;
@@ -607,13 +657,25 @@ fn bind_subscription(registry: &mut Registry, origin: &str, generation: &str) ->
     let source = cockpit::sessions::Session { session:pending.source.session.clone(),agent:pending.source.selection.agent.clone(),
         cwd:route.directory.clone(),branch:pending.source_branch.clone(),repository:pending.source_repository.clone(), ..Default::default() };
     let mut todos = cockpit::todo::TodoList::load_checked().map_err(storage)?;
-    let has_todo_transfer = todos.transfer_subscription_task(&route.task, &source.session, session).map_err(storage)?;
+    if !route.is_session_task() && todos.status_of(&route.task) != "doing" { return Err(conflict("subscription task is missing or no longer in progress")); }
     let mut continuity = cockpit::continuity::Continuity::load(&cockpit::paths::continuity()).map_err(storage)?;
     let project = canonical_project(&route.directory)?;
     let task = cockpit::teams::TaskKey { project:project.clone(),task_id:route.task.clone() };
     let source_member = VerifiedSession { session_id:source.session.clone(),agent:source.agent.clone(),project:project.clone(),runtime:pending.source.runtime.clone() };
     let replacement_member = VerifiedSession { session_id:session.into(),agent:pending.target.agent.clone(),project,runtime:runtime.into() };
     open_and_restore(registry)?;
+    let connection = registry.teams.as_ref().expect("opened above");
+    let source_context = store::context(connection, &source_member)?;
+    let replacement_context = store::context(connection, &replacement_member)?;
+    let owner = todos.items.iter().find(|item| item.id() == route.task).map(|item| item.session())
+        .or_else(|| todos.issues.get(&route.task).and_then(|issue| issue["session"].as_str()).map(str::to_string));
+    let has_other_team_owner = owner.as_deref().is_some_and(|owner| owner != source.session && owner != session
+        && [&source_context, &replacement_context].iter().any(|context| context["task"] == json!(task)
+            && context["members"].as_array().is_some_and(|members| members.iter().any(|member| member["session_id"] == owner))));
+    let has_todo_transfer = if has_other_team_owner {
+        if todos.status_of(&route.task) != "doing" { return Err(conflict("subscription team task is no longer in progress")); }
+        false
+    } else { todos.transfer_subscription_task(&route.task, &source.session, session).map_err(storage)? };
     store::replace_subscription_member(registry.teams.as_mut().expect("opened above"), generation, &task, &source_member, &replacement_member)?;
     continuity.transfer_subscription_task(&route.task, &source, &replacement, now_ms() / 1000).map_err(storage)?;
     if has_todo_transfer { todos.try_save()?; }

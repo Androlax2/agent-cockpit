@@ -84,6 +84,38 @@ fn reload_restores_bar_visibility_for_the_active_workspace() {
 }
 
 #[test]
+fn native_routing_manager_retires_before_launch_and_never_relaunches_a_submitted_generation() {
+    for stage in ["Prepared", "Submitted"] {
+        let manager = Manager::new();
+        let directory = manager.sandbox.root.join("manager");
+        fs::create_dir_all(&directory).unwrap();
+        let executable = directory.join("cockpit");
+        copy_executable(&bin().join("cockpit"), &executable);
+        write_executable(&directory.join("cockpit-subscription"), &format!(r#"#!/bin/sh
+printf 'route-helper %s\n' "$*" >> "$SHIM_LOG"
+case "$1" in
+ route-status) printf '{{"stage":"{stage}"}}\n';;
+ prepare-plan) printf 'protected-plan\n';;
+ retire) touch "$HOME/retired";;
+ submit) test -e "$HOME/retired" || exit 8; printf '{{"agent":"codex","directory":"%s"}}\n' "$HOME";;
+ bind) printf '{{"bound":true}}\n';;
+ *) exit 9;;
+esac
+"#));
+        let output = manager.sandbox.command(executable, &[]).env("COCKPIT_AGENTS_DIR", bin().join("cockpit-agents"))
+            .args(["subscription-route", SESSION_A, &"a".repeat(32)]).output().unwrap();
+        assert!(output.status.success(), "{}", stderr(&output));
+        let calls = fs::read_to_string(&manager.sandbox.log).unwrap();
+        if stage == "Prepared" {
+            assert!(calls.find("route-helper retire").unwrap() < calls.find("tmux new-session").unwrap());
+            assert!(calls.find("route-helper submit").unwrap() < calls.find("tmux new-session").unwrap());
+            assert!(calls.find("tmux new-session").unwrap() < calls.find("route-helper bind").unwrap());
+            assert!(calls.contains("COCKPIT_SUBSCRIPTION_ROUTE=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
+        } else { assert!(!calls.contains("tmux new-session")); }
+    }
+}
+
+#[test]
 fn reload_waits_for_the_todo_editor_before_replacing_the_sidebar() {
     let manager = Manager::new();
     let lock = fs::File::create(manager.runtime_file("claude-todo-editor.lock")).unwrap();
@@ -1098,6 +1130,37 @@ fn say_queues_during_a_subscription_handoff_without_touching_the_retiring_termin
     let queue = manager.sandbox.state.join(format!("cockpit/prompt-queue/{SESSION_A}"));
     let queued = fs::read_dir(queue).unwrap().next().unwrap().unwrap().path();
     assert_eq!(fs::read_to_string(queued).unwrap(), "Do not push the unfinished change");
+    let mut routes = RoutingStore::load(&manager.sandbox.state.join("cockpit/subscriptions/routes.json")).unwrap();
+    let cockpit::subscription_fallback::Phase::Pending(transition) = routes.route(SESSION_A).unwrap().phase.clone() else { panic!("route disappeared") };
+    routes.mark_retired(SESSION_A,&transition.generation).unwrap();
+    routes.mark_submitted(SESSION_A,&transition.generation).unwrap();
+    let replacement = cockpit::codex::cockpit_id(SESSION_A).unwrap();
+    routes.record_runtime(&transition.generation,Binding { session:replacement.clone(),runtime:"runtime-replacement".into(),
+        native_thread:Some(SESSION_A.into()),selection:transition.target },directory).unwrap();
+    routes.finish(SESSION_A,&transition.generation).unwrap();
+    routes.confirm_initial_admission(SESSION_A,&transition.generation).unwrap();
+    routes.start_initial_turn(SESSION_A,&transition.generation).unwrap();
+    drop(routes);
+    let output = manager.run(&["say",SESSION_A,"A message after ownership transfer"],&[]);
+    assert!(output.status.success(),"{}",stderr(&output));
+    assert_eq!(fs::read_dir(manager.sandbox.state.join(format!("cockpit/prompt-queue/{replacement}"))).unwrap().count(),1);
+}
+
+#[test]
+fn explicit_lifecycle_changes_cancel_subscription_return() {
+    use cockpit::subscription_fallback::{Binding, Phase, RoutingStore, Selection};
+    for arguments in [vec!["exit", SESSION_A], vec!["restart", SESSION_A, "", "detached"], vec!["billing", SESSION_A, "subscription"]] {
+    let manager = Manager::new();
+    let path = manager.sandbox.state.join("cockpit/subscriptions/routes.json");
+    let mut routes = RoutingStore::load(&path).unwrap();
+    routes.track(Binding { session:SESSION_A.into(),runtime:"runtime-source".into(),native_thread:None,
+        selection:Selection { agent:"claude".into(),provider:"anthropic".into(),model:"claude-opus-4-7".into(),variant:Some("high".into()),account:"a".repeat(64) } },
+        manager.project.to_str().unwrap(), "1797cdd6", 100).unwrap();
+    drop(routes);
+    let output = manager.run(&arguments, &[("SHIM_PANE_TEXT",IDLE)]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(matches!(RoutingStore::load(&path).unwrap().route(SESSION_A).unwrap().phase, Phase::Cancelled));
+    }
 }
 
 #[test]

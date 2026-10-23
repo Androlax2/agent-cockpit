@@ -26,6 +26,7 @@ def read_session(native):
         if history_mode not in ("legacy", "paginated"):
             raise QuotaError("Codex conversation history mode is unavailable")
         legacy_entries = None
+        quota_stopped = False
         if history_mode == "legacy":
             legacy = protocol["request"](process, 3, "thread/read", {"threadId": native, "includeTurns": True}).get("thread")
             if not isinstance(legacy, dict) or legacy.get("id") != native:
@@ -34,6 +35,10 @@ def read_session(native):
             if not isinstance(turns, list) or any(not isinstance(turn, dict) or not isinstance(turn.get("items"), list) for turn in turns):
                 raise QuotaError("Codex conversation history format is unavailable")
             legacy_entries = [{"item": item} for turn in reversed(turns) for item in reversed(turn["items"])]
+            if turns:
+                last = turns[-1]
+                error = last.get("error")
+                quota_stopped = last.get("status") == "failed" and isinstance(error, dict) and error.get("codexErrorInfo") in ("usageLimitExceeded", "rateLimitExceeded")
         messages = []
         latest_user = None
         consumed = 0
@@ -103,7 +108,8 @@ def read_session(native):
         messages[0]["text"] = messages[0]["text"].encode()[-TEXT_MAX:].decode("utf-8", errors="ignore")
         truncated = True
     return {"thread": native, "model": thread.get("model"), "provider": thread.get("modelProvider"),
-            "effort": thread.get("reasoningEffort"), "messages": messages, "latest_user": latest_user, "truncated": truncated}
+            "effort": thread.get("reasoningEffort"), "messages": messages, "latest_user": latest_user, "truncated": truncated,
+            "quota_stopped": quota_stopped}
 
 
 def main():

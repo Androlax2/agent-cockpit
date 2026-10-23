@@ -27,10 +27,11 @@ let sourceUsed = config.sourceUsed ?? 100
 let waiting = false
 let release = () => {}
 globalThis.fetch = async (url, input) => {
+  if(config.holdQuota){config.holdQuota=false;waiting=true;await new Promise(resolve=>release=resolve)}
   if (input.headers.Authorization !== 'Bearer fixture-token') throw new Error('wrong auth transport')
   if (url === 'https://api.anthropic.com/api/oauth/profile') {
     if (config.profileUnavailable) throw new Error('profile unavailable')
-    return new Response(JSON.stringify({organization:{has_extra_usage_enabled:config.extraUsage ?? false}}))
+    return new Response(JSON.stringify({account:{uuid:config.anthropicAccount??'anthropic-fixture'},organization:{uuid:'org-fixture',has_extra_usage_enabled:config.extraUsage ?? false}}))
   }
   if (url === 'https://api.anthropic.com/api/oauth/usage') return new Response(JSON.stringify({
     five_hour:{utilization:config.targetUsed ?? 10,resets_at:'2099-01-01T00:00:00Z'},
@@ -90,6 +91,7 @@ for (const step of config.steps ?? []) {
   if(step.manual){model=step.manual;now+=301000}
   if(step.permission!==undefined) config.permission=step.permission
   if(step.accountID) config.accountID=step.accountID
+  if(step.anthropicAccount) config.anthropicAccount=step.anthropicAccount
   if(step.history) messages.splice(0,messages.length,...step.history)
   if(step.targetMethod) config.targetMethod=step.targetMethod
   if(step.sourceMethod) config.sourceMethod=step.sourceMethod
@@ -123,6 +125,29 @@ console.log(JSON.stringify({calls,model,original,messages,retries,blockedRequest
 
 fn failed() -> Value {
     json!({"event":{"id":"evt_fixture_failure", "type":"session.execution.failed", "data":{"sessionID":ROOT, "error":{"status":429, "type":"rate_limit"}}}})
+}
+
+#[test]
+fn interrupting_subscription_recovery_never_resumes_the_cancelled_work() {
+    let interrupted = json!({"event":{"type":"session.execution.interrupted","data":{"sessionID":ROOT}}});
+    for scenario in [
+        json!({"targetUsed":100,"steps":[failed(),interrupted,{"targetUsed":10,"poll":true}]}),
+        json!({"busy":true,"steps":[{"startBusy":true},interrupted,{"release":true,"poll":true}]}),
+        json!({"holdQuota":true,"steps":[{"startBusy":true},interrupted,{"release":true,"poll":true}]}),
+    ] {
+        let result = run(scenario);
+        assert!(result["calls"].as_array().unwrap().is_empty(), "{result}");
+    }
+}
+
+#[test]
+fn anthropic_reauthentication_under_the_same_connection_cancels_return() {
+    let original = json!({"providerID":"anthropic","id":"claude-opus-4-7","variant":"high"});
+    let result = run(json!({"original":original,"targetUsed":100,"sourceUsed":10,"steps":[failed(),
+        {"anthropicAccount":"another-account","targetUsed":10,"poll":true}]}));
+    let switches = result["calls"].as_array().unwrap().iter().filter(|call| call["kind"] == "switch").count();
+    assert_eq!(switches, 1, "{result}");
+    assert_eq!(result["model"]["providerID"], "openai");
 }
 
 fn run(scenario: Value) -> Value {

@@ -79,7 +79,7 @@ toast_id_file="$HOME/.cache/claude/toast-$session.id"
 if [[ $event == UserPromptSubmit && ${COCKPIT_AGENT:-claude} == claude ]]; then
     generation=${COCKPIT_SUBSCRIPTION_ROUTE:-$(inherited COCKPIT_SUBSCRIPTION_ROUTE || true)}
     if [[ -n $generation ]]; then
-        if ! gate=$(timeout 2 cockpit-subscription gate "$generation") \
+        if ! gate=$(timeout 2 cockpit-subscription start-gate "$generation") \
             || ! jq -e 'type == "object" and (length == 0)' <<<"$gate" >/dev/null 2>&1; then
             printf '%s\n' '{"continue":false,"stopReason":"Subscription replacement ownership is not confirmed; the task remains paused."}'
             exit 0
@@ -206,6 +206,7 @@ message=
 outcome=
 turn_id=
 turn_complete=false
+quota_stopped=
 repository=
 branch=
 repository_reported=false
@@ -246,6 +247,7 @@ case $event in
         state=working
         ;;
     SessionStart)
+        quota_stopped=false
         rm -f "$turn_id_file" "$turn_done_file"
         rm -f "$input_file" "$pending_input_file"
         needs_input=false
@@ -258,6 +260,7 @@ case $event in
         esac
         ;;
     UserPromptSubmit)
+        quota_stopped=false
         start_turn
         state=working
         # The commit the turn starts from, to tell what it did when it stops.
@@ -288,6 +291,7 @@ case $event in
         esac
         ;;
     Stop)
+        quota_stopped=false
         turn_id=$(cat "$turn_id_file" 2>/dev/null || true)
         if [[ ! $turn_id =~ ^[0-9a-f]{32}$ ]]; then
             start_turn
@@ -305,6 +309,16 @@ case $event in
         checks=$(checks_of_turn "$(jq -r '.transcript_path // ""' <<<"$payload")")
         if [[ -n $checks ]]; then outcome="${outcome:+$outcome · }$checks"; fi
         ;;
+    StopFailure)
+        state=waiting
+        message="Provider failure; task remains pending"
+        quota_stopped=false
+        if [[ $(jq -r '.error // ""' <<<"$payload") == rate_limit ]]; then
+            quota_stopped=true
+            message="Subscription limit; task remains pending"
+        fi
+        read -r agents background < <(background_of "$payload") || true
+        ;;
     SessionEnd)
         rm -f "$input_file" "$pending_input_file"
         needs_input=false
@@ -317,7 +331,7 @@ case $event in
         ;;
 esac
 
-if [[ $event == SessionStart || $event == Stop ]]; then
+if [[ $event == SessionStart || $event == Stop || $event == StopFailure ]]; then
     repository_reported=true
     origin=$(git -C "$cwd" remote get-url origin 2>/dev/null || true)
     origin=${origin%.git}
@@ -334,7 +348,7 @@ if [[ $event == SessionStart || $event == Stop ]]; then
 fi
 
 case $event in
-    NeedsInput | PostToolUse | Stop | Notification | UserPromptSubmit)
+    NeedsInput | PostToolUse | Stop | StopFailure | Notification | UserPromptSubmit)
         [[ $event == Notification ]] || needs_input=false
         # A real dialog supersedes a saved chat question; restore it after the dialog/turn ends.
         if [[ -f $input_file && ! ( $event == Notification && $needs_input == false ) ]]; then
@@ -351,6 +365,7 @@ report=$(jq -cn \
     --arg task "$task" --arg label "$label" --arg message "$message" --arg outcome "$outcome" --argjson sticky "$sticky" --argjson terminal "$terminal" --argjson credits "$credits" --arg unpushed "$unpushed" --arg agents "$agents" --arg background "$background" --arg apps "$(craft_apps)" --arg agent "$agent" \
     --arg needs_input "$needs_input" --arg kitty_pid "${KITTY_PID:-}" --arg kitty_window "${KITTY_WINDOW_ID:-}" \
     --arg turn_id "$turn_id" --argjson turn_complete "$turn_complete" \
+    --arg quota_stopped "$quota_stopped" \
     --arg repository "$repository" --arg branch "$branch" --argjson repository_reported "$repository_reported" \
     --arg kitty_listen "${KITTY_LISTEN_ON:-}" --arg tmux_pane "${TMUX_PANE:-}" \
     '{$session, $state, $project, $cwd, $task, $label, $message, $outcome, $sticky, $terminal,
@@ -358,7 +373,8 @@ report=$(jq -cn \
      | with_entries(select(.value != "" and .value != false))
      | if $unpushed == "" then . else .unpushed = ($unpushed | tonumber) end
      | if $agents == "" then . else .agents = ($agents | tonumber) | .background = ($background | tonumber) end
-     | if $agent == "" then . else .agent = $agent end
+      | if $agent == "" then . else .agent = $agent end
+      | if $quota_stopped == "" then . else .quota_stopped = ($quota_stopped == "true") end
       | if $needs_input == "" then . else .needs_input = ($needs_input == "true") end
       | if $turn_complete then .turn_id = $turn_id | .turn_complete = true else . end
       | if $repository_reported then .repository = $repository | .branch = $branch else . end

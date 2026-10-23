@@ -107,6 +107,7 @@ pub enum HostRequest {
     VerifyChiefAdmission { session: VerifiedSession, adapter: String, evidence: String },
     /// Runtime discovery only; this grants neither task execution nor team membership.
     SubscriptionRuntime { generation: String },
+    SubscriptionSource { session: String },
     /// Retired-source replacement: bind all task ownership before opening its prompt gate.
     SubscriptionBind { origin: String, generation: String },
 }

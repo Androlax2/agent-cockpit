@@ -31,6 +31,10 @@ const isOwner = (owner: any): owner is Owner => isModel(owner?.model) && typeof 
 const accountOf = (credential: any) => typeof credential?.metadata?.accountID === "string" && credential.metadata.accountID.length > 0
   ? createHash("sha256").update(`openai:${credential.metadata.accountID}`).digest("hex") : undefined
 
+const anthropicAccount = (profile: any) => [profile?.organization?.uuid, profile?.account?.uuid]
+  .every(value => typeof value === "string" && value.length > 0 && value.length <= 256)
+  ? createHash("sha256").update(`anthropic:${profile.organization.uuid}:${profile.account.uuid}`).digest("hex") : undefined
+
 const sameConnection = (left: Owner | undefined, right: Owner) => !!left && left.connection === right.connection
   && left.model.providerID === right.model.providerID && left.account === right.account
 
@@ -63,6 +67,8 @@ export function subscriptionCapacity(provider: string, model: string, usage: any
     const scoped = (name: unknown) => typeof name === "string" ? ["opus", "sonnet", "haiku"].find(family =>
       name.toLowerCase() === family || name.toLowerCase().startsWith(`claude ${family}`)) : undefined
     if (Array.isArray(usage?.limits)) {
+      if (usage.limits.some((limit: any) => ["session", "weekly_all"].includes(limit?.kind)
+        && window(limit, "percent") === "exhausted")) return "exhausted"
       for (const limit of usage.limits) {
         if (limit.kind === "session" || limit.kind === "weekly_all") states.push(window(limit, "percent"))
         else if (limit.kind === "weekly_scoped") {
@@ -120,9 +126,34 @@ export async function setupSubscriptionRouting(ctx: any, sessionID: string) {
       || typeof connection.id !== "string" || !connection.id || connection.id.length > 200) return
     const credential = await ctx.integration.connection.resolve(connection)
     if (credential?.type !== "oauth") return
-    const account = model.providerID === "openai" ? accountOf(credential) : undefined
-    if (model.providerID === "openai" && !account) return
+    let account = model.providerID === "openai" ? accountOf(credential) : undefined
+    if (model.providerID === "anthropic") {
+      try {
+        account = anthropicAccount(await claudeProfile(credential))
+        const current = await ctx.integration.connection.active("anthropic")
+        if (current?.id !== connection.id || (await ctx.integration.connection.resolve(current))?.access !== credential.access) return
+      } catch { return }
+    }
+    if (!account) return
     return { model: { ...model }, connection: connection.id, ...(account ? { account } : {}) }
+  }
+  const claudeProfile = async (credential: any) => {
+    if (typeof credential.access !== "string" || !credential.access || !Number.isFinite(credential.expires) || credential.expires <= Date.now()) {
+      throw new Error("Claude authentication is unconfirmed")
+    }
+    const response = await fetch("https://api.anthropic.com/api/oauth/profile", {
+      headers: { Authorization: `Bearer ${credential.access}`, Accept: "application/json", "anthropic-beta": "oauth-2025-04-20" },
+      signal: AbortSignal.any([controller.signal, AbortSignal.timeout(15000)]), redirect: "error",
+    })
+    if (!response.ok || !response.body) throw new Error("profile unavailable")
+    const chunks: Uint8Array[] = []
+    let bytes = 0
+    for await (const chunk of response.body) {
+      bytes += chunk.length
+      if (bytes > 1024 * 1024) throw new Error("profile exceeds the safe size")
+      chunks.push(chunk)
+    }
+    return JSON.parse(Buffer.concat(chunks).toString("utf8"))
   }
   const billingEligible = async (selected: Owner): Promise<boolean> => {
     if (selected.model.providerID !== "anthropic") return true
@@ -132,23 +163,12 @@ export async function setupSubscriptionRouting(ctx: any, sessionID: string) {
       const credential = await ctx.integration.connection.resolve(connection)
       if (credential?.type !== "oauth" || typeof credential.access !== "string" || !credential.access
         || !Number.isFinite(credential.expires) || credential.expires <= Date.now()) return false
-      const response = await fetch("https://api.anthropic.com/api/oauth/profile", {
-        headers: { Authorization: `Bearer ${credential.access}`, Accept: "application/json", "anthropic-beta": "oauth-2025-04-20" },
-        signal: AbortSignal.any([controller.signal, AbortSignal.timeout(15000)]), redirect: "error",
-      })
-      if (!response.ok || !response.body) throw new Error("profile unavailable")
-      const chunks: Uint8Array[] = []
-      let bytes = 0
-      for await (const chunk of response.body) {
-        bytes += chunk.length
-        if (bytes > 1024 * 1024) throw new Error("profile exceeds the safe size")
-        chunks.push(chunk)
-      }
-      const profile = JSON.parse(Buffer.concat(chunks).toString("utf8"))
+      const profile = await claudeProfile(credential)
       const current = await ctx.integration.connection.active("anthropic")
       if (stopped || current?.id !== selected.connection || current.type !== "credential") return false
       const resolved = await ctx.integration.connection.resolve(current)
       return resolved?.type === "oauth" && resolved.access === credential.access
+        && anthropicAccount(profile) === selected.account
         && profile?.organization?.has_extra_usage_enabled === false
     } catch {
       console.warn("cockpit plugin: cannot verify Claude extra usage is disabled; automatic Claude routing paused")
@@ -162,11 +182,12 @@ export async function setupSubscriptionRouting(ctx: any, sessionID: string) {
     if (credential?.type !== "oauth" || typeof credential.access !== "string" || !credential.access
       || !Number.isFinite(credential.expires) || credential.expires <= Date.now()) return "unknown"
     if (selected.model.providerID === "openai" && accountOf(credential) !== selected.account) return "unknown"
+    if (selected.model.providerID === "anthropic" && !sameConnection(await owner(selected.model), selected)) return "unknown"
     const cacheKey = `subscription-quota/${selected.model.providerID}/${selected.connection}`
     const cached = await ctx.storage.get(cacheKey)
     const now = Date.now()
     if (!force && cached && Number.isFinite(cached.fetched) && cached.fetched <= now && now - cached.fetched < 300000
-      && (selected.model.providerID !== "openai" || cached.account === selected.account)) {
+      && cached.account === selected.account) {
       if (cached.failed || cached.matched !== true) return "unknown"
       const usage = cached.usage
       const resets = selected.model.providerID === "openai"
@@ -202,7 +223,8 @@ export async function setupSubscriptionRouting(ctx: any, sessionID: string) {
       const body = JSON.parse(Buffer.concat(chunks).toString("utf8"))
       const current = await ctx.integration.connection.active(selected.model.providerID)
       if (stopped || current?.id !== selected.connection) return "unknown"
-      const matched = selected.model.providerID === "anthropic" || body.account_id === credential.metadata.accountID
+       const matched = selected.model.providerID === "anthropic"
+         ? sameConnection(await owner(selected.model), selected) : body.account_id === credential.metadata.accountID
       const usage = selected.model.providerID === "openai" ? { rate_limit: body.rate_limit } : {
         five_hour: body.five_hour, seven_day: body.seven_day, seven_day_opus: body.seven_day_opus,
         seven_day_sonnet: body.seven_day_sonnet, seven_day_haiku: body.seven_day_haiku,
@@ -378,6 +400,12 @@ export async function setupSubscriptionRouting(ctx: any, sessionID: string) {
       return
     }
     if (stopped || event.data?.sessionID !== sessionID) return
+    if (event.type === "session.execution.interrupted") {
+      inputVersion++
+      route = undefined
+      await save()
+      return
+    }
     if (event.type === "session.deleted") { route = undefined; await save(); stopped = true; controller.abort(); clearInterval(timer); return }
     if (event.type === "session.model.selected" && isModel(event.data.model)) {
       const seen = await ctx.storage.get(seenKey) ?? {}
@@ -391,11 +419,13 @@ export async function setupSubscriptionRouting(ctx: any, sessionID: string) {
       return
     }
     if (event.type === "session.execution.failed" && event.data.error?.status === 429) {
+      const failedInput = inputVersion
       if (event.id && route?.lastFailure === event.id) return
       const info = await ctx.session.get({ sessionID })
       if (!isModel(info.model)) return
       const selected = await owner(info.model)
       if (!selected || await quota(selected, true) !== "exhausted") return
+      if (stopped || inputVersion !== failedInput) return
       if (!route) route = { version: 1, original: selected, current: selected, phase: "waiting", pendingFailure: true }
       route.pendingFailure = true
       route.lastFailure = event.id

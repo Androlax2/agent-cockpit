@@ -157,20 +157,23 @@ fn native_codex_background_starts_its_own_sandbox_launcher() {
 }
 
 #[test]
-fn codex_detached_launches_pass_only_the_host_selected_route_generation() {
+fn native_detached_launches_pass_only_the_host_selected_route_generation() {
+    for agent in ["claude", "codex"] {
     for routed in [false, true] {
         let sandbox = Sandbox::new();
         sandbox.shim("tmux", "");
         let script = r#"source "$1"; require_plain_directory() { :; }; detached_size() { echo '132 40'; };
-            launch_subscription_route=$3; codex_launch "$2""#;
+            launch_credits=0; launch_team_spawn=''; launch_subscription_route=$3; "$4" "$2""#;
         let generation = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
         let output = sandbox.command("bash", &[("COCKPIT_SUBSCRIPTION_ROUTE","bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")])
-            .args(["-c", script, "bash"]).arg(common::sandbox::bin().join("cockpit-agents/codex.sh"))
-            .arg(&sandbox.root).arg(if routed { generation } else { "" }).output().unwrap();
+            .args(["-c", script, "bash"]).arg(common::sandbox::bin().join(format!("cockpit-agents/{agent}.sh")))
+            .arg(&sandbox.root).arg(if routed { generation } else { "" })
+            .arg(if agent == "claude" { "claude_launch_detached" } else { "codex_launch" }).output().unwrap();
         assert!(output.status.success(), "{}", common::sandbox::stderr(&output));
         let calls = sandbox.calls("tmux").join("\n");
         assert!(calls.contains(&format!("COCKPIT_SUBSCRIPTION_ROUTE={}", if routed { generation } else { "" })), "{calls}");
         assert!(!calls.contains("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"), "inherited route must not select a protected launch");
+    }
     }
 }
 

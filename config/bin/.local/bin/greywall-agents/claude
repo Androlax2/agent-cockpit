@@ -1,6 +1,10 @@
 #!/bin/sh
 # Keep this launcher separate from the binary replaced by vendor updates.
 agent=claude
+if [ -n "${COCKPIT_SUBSCRIPTION_ROUTE:-}" ] && { [ "$#" -ne 0 ] || [ "${COCKPIT_CREDITS:-}" = 1 ]; }; then
+    echo "claude launcher: routed launches require the protected subscription plan, without arguments or API billing." >&2
+    exit 1
+fi
 # Sessions do not update Claude Code: they cannot write ~/.local/share/claude/versions (greywall.json),
 # and a file planted there must never be run with Theo's rights. claude-update.timer updates it
 # outside the sandbox through the installed claude.
@@ -40,7 +44,25 @@ COCKPIT_BILLING=subscription
 [ "${COCKPIT_CREDITS:-}" != 1 ] || COCKPIT_BILLING=api
 COCKPIT_BILLING_STARTED_AT=$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)
 export COCKPIT_BILLING COCKPIT_BILLING_STARTED_AT
+if [ -n "${COCKPIT_SUBSCRIPTION_ROUTE:-}" ]; then
+    gate='{"hooks":[{"type":"command","command":"cockpit-subscription await-gate \"$COCKPIT_SUBSCRIPTION_ROUTE\"","timeout":35}]}'
+    team_settings="{\"hooks\":{\"SessionStart\":[$gate,{\"hooks\":[{\"type\":\"command\",\"command\":\"cockpit-team watch\",\"asyncRewake\":true,\"timeout\":86400}]}],\"Stop\":$team_watch}}"
+    # The host verifies the execution account immediately before entering the existing sandbox.
+    # shellcheck disable=SC2086
+    exec python3 "$HOME/.config/waybar/scripts/native-subscription.py" launch-claude "$COCKPIT_SUBSCRIPTION_ROUTE" \
+        "$HOME/.local/bin/greywall" $greywall_options -- "$HOME/.local/bin/claude" \
+        --mcp-config "$figcraft_mcp_config" --settings "$team_settings"
+fi
+
 # greywall_options is split on spaces on purpose: every path in it is under $HOME or
 # $XDG_RUNTIME_DIR, which have none.
+COCKPIT_SUBSCRIPTION_ACCOUNT=
+if [ "${COCKPIT_CREDITS:-}" != 1 ]; then
+    COCKPIT_SUBSCRIPTION_ACCOUNT=$(python3 "$HOME/.config/waybar/scripts/native-subscription.py" identity claude 2>/dev/null) || COCKPIT_SUBSCRIPTION_ACCOUNT=
+fi
+for argument in "$@"; do
+    case "$argument" in --settings|--settings=*|--setting-sources|--setting-sources=*) COCKPIT_SUBSCRIPTION_ACCOUNT= ;; esac
+done
+export COCKPIT_SUBSCRIPTION_ACCOUNT
 # shellcheck disable=SC2086
 exec "$HOME/.local/bin/greywall" $greywall_options -- "$HOME/.local/bin/claude" "$@" --mcp-config "$figcraft_mcp_config" --settings "$team_settings"

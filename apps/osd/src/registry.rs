@@ -145,6 +145,7 @@ pub struct Report {
     pub sticky: bool,
     /// An explicit blocking chat question, independent of the agent's on-screen dialog state.
     pub needs_input: Option<bool>,
+    pub quota_stopped: Option<bool>,
     /// Started with "this terminal" (the claude function's t): the cockpit shows it but leaves it out
     /// of what acts on every session (restart-all, the reboot restore, the queue, the hand-off).
     pub terminal: bool,
@@ -267,6 +268,7 @@ pub fn parse_session(raw: &str) -> Result<Report, String> {
         terminal: report.get("terminal").and_then(Value::as_bool).unwrap_or(false),
         credits: report.get("credits").and_then(Value::as_bool),
         needs_input: report.get("needs_input").and_then(Value::as_bool),
+        quota_stopped: report.get("quota_stopped").and_then(Value::as_bool),
         unpushed: report.get("unpushed").and_then(Value::as_u64),
         agents: report.get("agents").and_then(Value::as_u64),
         background: report.get("background").and_then(Value::as_u64),
@@ -406,6 +408,8 @@ pub trait System {
     fn sender_directory(&mut self, sender: u32) -> Option<String>;
     fn sender_runtime(&mut self, _sender: u32) -> Option<String> { None }
     fn runtime_is_live(&mut self, _runtime: &str) -> bool { false }
+    fn runtime_subscription_account(&mut self, _runtime: &str) -> Option<String> { None }
+    fn native_input_clear(&mut self, _session: &cockpit::sessions::Session) -> bool { false }
     /// The cockpit's default agent for new sessions (Settings, `default-agent`): "claude" without a
     /// settings file, None when it cannot be read or names no known agent.
     fn default_agent(&mut self) -> Option<String> { None }
@@ -1054,6 +1058,7 @@ impl GuideRequests {
 pub struct Entry {
     pub state: String,
     pub needs_input: bool,
+    pub quota_stopped: bool,
     pub project: String,
     pub cwd: String,
     pub task: String,
@@ -1179,8 +1184,8 @@ impl Registry {
     /// A run or guide request, or a todo update, from the report socket: held (hold_request) or
     /// queued (queue_todo_update) with the folder the sender's sandbox started in.
     pub fn request_from(&mut self, kind: &str, raw: &str, sender: u32) -> Result<(), String> {
-        if kind == "subscription-gate" {
-            return self.subscription_gate(raw, sender);
+        if matches!(kind,"subscription-gate" | "subscription-initial-gate") {
+            return self.subscription_gate(raw, sender,kind == "subscription-initial-gate");
         }
         if kind == "session-request" {
             return self.report_from(parse_session(raw)?, sender);
@@ -1194,7 +1199,7 @@ impl Registry {
         result
     }
 
-    fn subscription_gate(&mut self, raw: &str, sender: u32) -> Result<(), String> {
+    fn subscription_gate(&mut self, raw: &str, sender: u32,initial: bool) -> Result<(), String> {
         let request: Value = serde_json::from_str(raw).map_err(|_| "invalid subscription admission request")?;
         if !request.as_object().is_some_and(|request| request.len() == 1) {
             return Err("subscription admission takes only a routing generation".into());
@@ -1209,9 +1214,21 @@ impl Registry {
         if receipt["runtime"].as_str() != Some(&runtime) {
             return Err("subscription admission belongs to another runtime".into());
         }
-        let routes = cockpit::subscription_fallback::RoutingStore::load(&paths::subscription_routes())?;
+        let mut routes = cockpit::subscription_fallback::RoutingStore::load(&paths::subscription_routes())?;
         if !routes.execution_allowed(generation, session, &runtime) {
             return Err("subscription replacement waits for verified task ownership binding".into());
+        }
+        let route = routes.routes().find(|route| route.admitted_generation.as_deref() == Some(generation))
+            .cloned().ok_or("subscription admission route disappeared")?;
+        if !route.initial_admitted || initial && !route.initial_started {
+            if !route.is_session_task() && cockpit::todo::TodoList::load_checked()?.status_of(&route.task) != "doing" {
+                return Err("subscription task is missing or no longer in progress".into());
+            }
+            routes.confirm_initial_admission(&route.original.session, generation)?;
+        }
+        if initial && !route.initial_started {
+            cockpit::subscription_fallback::prepare_admission_inbox(&route, generation)?;
+            routes.start_initial_turn(&route.original.session,generation)?;
         }
         Ok(())
     }
@@ -1362,6 +1379,7 @@ impl Registry {
             entry.native_thread = native.clone();
             changed = true;
         }
+        if let Some(quota_stopped) = report.quota_stopped { entry.quota_stopped = quota_stopped; }
         if let Some(needs_input) = report.needs_input.filter(|needs_input| *needs_input != entry.needs_input) {
             entry.needs_input = needs_input;
             changed = true;
@@ -1630,7 +1648,7 @@ impl Registry {
         let mut rows: Vec<Value> = self.sessions.iter().map(|(session, entry)| {
             let mut row = json!({"session": session, "state": entry.state, "project": entry.project, "cwd": entry.cwd, "task": entry.task, "label": entry.label,
                                  "since": entry.since as i64, "started": entry.started as i64, "update": entry.update,
-                                  "request": entry.request, "detail": entry.detail, "full_request": entry.full_request, "outcome": entry.outcome, "needs_input": entry.needs_input,
+                                  "request": entry.request, "detail": entry.detail, "full_request": entry.full_request, "outcome": entry.outcome, "needs_input": entry.needs_input, "quota_stopped":entry.quota_stopped,
                                   "repository": entry.repository, "branch": entry.branch, "last_result": entry.last_result, "reports_turns": entry.reports_turns,
                                  "terminal": entry.terminal, "credits": entry.credits, "unpushed": entry.unpushed,
                                   "agents": entry.agents, "background": entry.background, "apps": entry.apps, "agent": entry.agent,
@@ -1732,6 +1750,7 @@ impl Registry {
                 Ok((session, Entry {
                     state, project: project.into(), cwd, task: row.get("task").and_then(Value::as_str).unwrap_or("").into(), since,
                     needs_input: row.get("needs_input").and_then(Value::as_bool).unwrap_or(false),
+                    quota_stopped: row.get("quota_stopped").and_then(Value::as_bool).unwrap_or(false),
                     label,
                     repository: repository.into(), branch: branch.into(), last_result,
                     reports_turns: row.get("reports_turns").and_then(Value::as_bool).unwrap_or(false),
@@ -1998,6 +2017,14 @@ pub fn runtime_is_live(table: &dyn Processes, runtime: &str) -> bool {
     let mut parts = runtime.split(':');
     let (Some(_boot), Some(pid), Some(_started), None) = (parts.next(),parts.next(),parts.next(),parts.next()) else { return false };
     runtime_of_process(table, pid).as_deref() == Some(runtime)
+}
+
+pub fn runtime_subscription_account(table: &dyn Processes, runtime: &str) -> Option<String> {
+    if !runtime_is_live(table, runtime) { return None; }
+    let pid = runtime.split(':').nth(1)?;
+    if table.pid_namespace(pid)? != table.pid_namespace("self")? { return None; }
+    let account = table.environment(pid).remove("COCKPIT_SUBSCRIPTION_ACCOUNT")?;
+    (account.len() == 64 && account.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))).then_some(account)
 }
 
 /// Where a session report really comes from: the focus target (tmux pane, kitty window) in the
@@ -2283,6 +2310,15 @@ impl System for RealSystem {
     }
     fn runtime_is_live(&mut self, runtime: &str) -> bool {
         runtime_is_live(&Proc, runtime)
+    }
+    fn runtime_subscription_account(&mut self, runtime: &str) -> Option<String> {
+        runtime_subscription_account(&Proc, runtime)
+    }
+    fn native_input_clear(&mut self, session: &cockpit::sessions::Session) -> bool {
+        match cockpit::subscription_fallback::native::input_boundary(session) {
+            Ok(target) => target.is_some(),
+            Err(error) => { cockpit::util::log_event("WARN",&format!("native subscription inbox input check failed: {error}")); false },
+        }
     }
     fn default_agent(&mut self) -> Option<String> {
         default_agent_in(&cockpit::paths::settings())

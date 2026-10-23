@@ -1,5 +1,7 @@
 //! Explicit subscription-routing decisions and bounded historical handoffs.
 
+pub mod native;
+
 use crate::{remote, sessions::Session};
 use serde_json::json;
 use crate::{agents, usage::SubscriptionCapacity, util};
@@ -67,6 +69,8 @@ pub struct Transition {
     pub direction: Direction,
     pub stage: Stage,
     pub replacement: Option<Binding>,
+    #[serde(default)]
+    pub retirement_started: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -84,10 +88,20 @@ pub struct Route {
     #[serde(default)]
     pub admitted_generation: Option<String>,
     #[serde(default)]
+    pub initial_admitted: bool,
+    #[serde(default)]
+    pub initial_started: bool,
+    #[serde(default)]
     pub retired_sessions: Vec<String>,
 }
 
 impl Route {
+    pub fn is_session_task(&self) -> bool {
+        self.task == format!("native-session:{}",self.original.session)
+    }
+    pub fn awaiting_initial_admission(&self) -> bool {
+        self.admitted_generation.is_some() && !self.initial_started
+    }
     fn owns_session(&self, session: &str) -> bool {
         matches!(self.phase, Phase::Active | Phase::Pending(_) | Phase::Paused(_))
             && (self.current.session == session || self.retired_sessions.iter().any(|retired| retired == session)
@@ -172,7 +186,12 @@ pub fn message_target(session: &str) -> Result<(String, bool), String> {
     if agent.name == "opencode" { return Ok((session.into(), false)); }
     let routes = read_routes(&crate::paths::subscription_routes())?;
     Ok(routes.iter().find(|route| route.owns_session(session)).map_or_else(|| (session.into(), false),
-        |route| (route.current.session.clone(), matches!(route.phase, Phase::Pending(_) | Phase::Paused(_)))))
+         |route| (route.current.session.clone(), route.awaiting_initial_admission() || matches!(route.phase, Phase::Pending(_) | Phase::Paused(_)))))
+}
+
+pub fn has_native_inbox(session: &str) -> Result<bool, String> {
+    Ok(read_routes(&crate::paths::subscription_routes())?.iter().any(|route| route.current.session == session
+        && route.current.selection.agent == "codex" && route.initial_admitted && matches!(route.phase, Phase::Active)))
 }
 
 impl RoutingStore {
@@ -201,7 +220,7 @@ impl RoutingStore {
     pub fn execution_allowed(&self, generation: &str, session: &str, runtime: &str) -> bool {
         self.state.routes.values().any(|route| route.admitted_generation.as_deref() == Some(generation)
             && route.current.session == session && route.current.runtime == runtime
-            && matches!(route.phase, Phase::Active | Phase::Completed | Phase::Cancelled))
+            && (matches!(route.phase, Phase::Active) || route.initial_admitted && matches!(route.phase, Phase::Completed | Phase::Cancelled)))
     }
 
     pub fn track(&mut self, original: Binding, directory: &str, task: &str, now: i64) -> Result<(), String> {
@@ -214,6 +233,8 @@ impl RoutingStore {
         next.routes.entry(original.session.clone()).or_insert_with(|| Route {
             current: original.clone(), original, directory: directory.into(), task: task.into(), phase: Phase::Active, updated_at: now,
             admitted_generation: None,
+            initial_admitted: false,
+            initial_started: false,
             retired_sessions: Vec::new(),
         });
         self.save(next)
@@ -244,7 +265,7 @@ impl RoutingStore {
             if let Some((target, direction)) = target {
                 let transition = Transition { origin: origin.clone(), generation: util::token_hex(16), source: route.current.clone(),
                     source_repository: observed.session.repository.clone(), source_branch: observed.session.branch.clone(),
-                    target, direction, stage: Stage::Prepared, replacement: None };
+                    target, direction, stage: Stage::Prepared, replacement: None, retirement_started: false };
                 route.phase = Phase::Pending(transition.clone());
                 route.updated_at = now;
                 transitions.push(transition);
@@ -256,6 +277,22 @@ impl RoutingStore {
 
     pub fn mark_retired(&mut self, origin: &str, generation: &str) -> Result<(), String> {
         self.advance(origin, generation, Stage::Prepared, Stage::Retired)
+    }
+
+    pub fn mark_retirement_started(&mut self, origin: &str, generation: &str) -> Result<(), String> {
+        let mut next = self.state.clone();
+        let pending = pending_mut(&mut next, origin, generation)?;
+        if pending.stage != Stage::Prepared { return Err("subscription source is not prepared for retirement".into()); }
+        pending.retirement_started = true;
+        self.save(next)
+    }
+
+    pub fn cancel(&mut self, origin: &str) -> Result<(), String> {
+        let mut next = self.state.clone();
+        let route = next.routes.get_mut(origin).ok_or("no such subscription route")?;
+        route.phase = Phase::Cancelled;
+        route.updated_at = util::now() as i64;
+        self.save(next)
     }
 
     pub fn mark_submitted(&mut self, origin: &str, generation: &str) -> Result<(), String> {
@@ -300,7 +337,29 @@ impl RoutingStore {
         }
         route.current = replacement;
         route.admitted_generation = Some(generation.into());
+        route.initial_admitted = false;
+        route.initial_started = false;
         route.phase = Phase::Active;
+        self.save(next)
+    }
+
+    pub fn confirm_initial_admission(&mut self, origin: &str, generation: &str) -> Result<(), String> {
+        let mut next = self.state.clone();
+        let route = next.routes.get_mut(origin).ok_or("no such subscription route")?;
+        if !matches!(route.phase, Phase::Active) || route.admitted_generation.as_deref() != Some(generation) {
+            return Err("automatic subscription admission was cancelled".into());
+        }
+        route.initial_admitted = true;
+        self.save(next)
+    }
+
+    pub fn start_initial_turn(&mut self, origin: &str, generation: &str) -> Result<(), String> {
+        let mut next = self.state.clone();
+        let route = next.routes.get_mut(origin).ok_or("no such subscription route")?;
+        if !route.initial_admitted || !matches!(route.phase,Phase::Active) || route.admitted_generation.as_deref() != Some(generation) {
+            return Err("initial subscription turn is no longer authorized".into());
+        }
+        route.initial_started = true;
         self.save(next)
     }
 
@@ -383,16 +442,40 @@ pub fn prepare_launch_plan(origin: &str, generation: &str) -> Result<PathBuf, St
     if pending.generation != generation || pending.stage != Stage::Prepared || pending.target.agent == "opencode" {
         return Err("launch plan requires a matching prepared native transition".into());
     }
-    let session = crate::sessions::reported().into_iter().find(|session| session.session == pending.source.session
-        && session.agent == pending.source.selection.agent && session.cwd == route.directory).ok_or("source session or checkout changed")?;
     let directory = fs::canonicalize(&route.directory).map_err(|error| format!("cannot resolve launch checkout: {error}"))?;
     let repository = util::repository_root(directory.to_str().ok_or("launch checkout is not UTF-8")?);
     let key: String = repository.chars().map(|character| if character.is_ascii_alphanumeric() { character } else { '-' }).collect();
     if !crate::approval::valid_answers_key(&key) { return Err("launch checkout has no valid answers key".into()); }
+    if pending.retirement_started {
+        use std::os::unix::fs::MetadataExt;
+        use std::io::Read;
+        let path = crate::approval::answers_dir(&key, "subscriptions").join(format!("{generation}.json"));
+        let file = util::open_untrusted(&path).map_err(|error| error.to_string())?;
+        let metadata = file.metadata().map_err(|error| error.to_string())?;
+        let mut bytes = Vec::new();
+        file.take(1024 * 1024 + 1).read_to_end(&mut bytes).map_err(|error| error.to_string())?;
+        if bytes.len() > 1024 * 1024 || metadata.mode() & 0o777 != 0o600 || metadata.uid() != unsafe { libc::geteuid() } {
+            return Err("retirement recovery plan is not bounded and private".into());
+        }
+        let plan: serde_json::Value = serde_json::from_slice(&bytes).map_err(|_| "invalid retirement recovery plan")?;
+        if plan["version"] != 1 || plan["generation"] != generation || plan["directory"] != json!(directory)
+            || plan["selection"] != json!(pending.target) || plan["context"]["source_session"] != pending.source.session
+            || plan["context"]["kind"] != "historical_subscription_handoff" {
+            return Err("retirement recovery plan does not match the persisted intent".into());
+        }
+        return Ok(path);
+    }
+    let session = crate::sessions::reported().into_iter().find(|session| session.session == pending.source.session
+        && session.agent == pending.source.selection.agent && session.cwd == route.directory).ok_or("source session or checkout changed")?;
     let context: serde_json::Value = serde_json::from_str(&handoff_context(&session)?).map_err(|_| "invalid historical handoff context")?;
     let native_thread = if pending.direction == Direction::Return { route.original.native_thread.as_deref() } else { None };
+    let session_id = if pending.target.agent == "claude" {
+        Some(if pending.direction == Direction::Return { route.original.session.clone() }
+            else { format!("{}-{}-{}-{}-{}", &generation[..8], &generation[8..12], &generation[12..16], &generation[16..20], &generation[20..]) })
+    } else { None };
     let bytes = serde_json::to_vec(&json!({"version":1,"generation":generation,"directory":directory,
-        "selection":pending.target,"native_thread":native_thread,"context":context})).map_err(|error| error.to_string())?;
+        "selection":pending.target,"native_thread":native_thread,"session_id":session_id,
+        "resume":pending.direction == Direction::Return,"context":context})).map_err(|error| error.to_string())?;
     if bytes.len() > 1024 * 1024 { return Err("launch plan exceeds 1 MiB".into()); }
     let folder = crate::approval::answers_dir(&key, "subscriptions");
     fs::DirBuilder::new().recursive(true).mode(0o700).create(&folder).map_err(|error| error.to_string())?;
@@ -424,13 +507,79 @@ pub fn prepare_launch_plan(origin: &str, generation: &str) -> Result<PathBuf, St
     Ok(path)
 }
 
+/// Called under the routing lock: durable publication precedes removal from the ordinary queue.
+pub fn prepare_admission_inbox(route: &Route, generation: &str) -> Result<PathBuf, String> {
+    if route.admitted_generation.as_deref() != Some(generation) { return Err("inbox requires a bound generation".into()); }
+    let repository = util::repository_root(&route.directory);
+    let key: String = repository.chars().map(|character| if character.is_ascii_alphanumeric() { character } else { '-' }).collect();
+    if !crate::approval::valid_answers_key(&key) { return Err("invalid subscription inbox project".into()); }
+    let folder = crate::approval::answers_dir(&key, "subscriptions");
+    fs::DirBuilder::new().recursive(true).mode(0o700).create(&folder).map_err(|error| error.to_string())?;
+    let path = folder.join(format!("{generation}.inbox.json"));
+    let messages: BTreeMap<String, String> = match util::read_untrusted(&path, 256 * 1024 + 1) {
+        Ok(bytes) if bytes.len() <= 256 * 1024 => serde_json::from_slice(&bytes).map_err(|_| "invalid subscription inbox")?,
+        Ok(_) => return Err("subscription inbox exceeds 256 KiB".into()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            for retired in &route.retired_sessions { crate::prompts::transfer_subscription_prompts(retired, &route.current.session)?; }
+            let mut messages = BTreeMap::new();
+            for queued in crate::prompts::pending(&route.current.session) {
+                let bytes = util::read_untrusted(&queued, (crate::prompts::PROMPT_MAX * 4 + 1) as u64).map_err(|error| error.to_string())?;
+                if bytes.len() > crate::prompts::PROMPT_MAX * 4 { return Err("queued instruction exceeds its bound".into()); }
+                let text = String::from_utf8(bytes).map_err(|_| "queued instruction is not UTF-8")?;
+                messages.insert(queued.file_name().and_then(|name| name.to_str()).ok_or("invalid queued instruction name")?.to_string(), text);
+            }
+            let bytes = serde_json::to_vec(&messages).map_err(|error| error.to_string())?;
+            if bytes.len() > 256 * 1024 { return Err("subscription inbox exceeds 256 KiB".into()); }
+            let temporary = folder.join(format!(".inbox-{}", util::token_hex(12)));
+            let mut file = OpenOptions::new().create_new(true).write(true).mode(0o600).open(&temporary).map_err(|error| error.to_string())?;
+            file.write_all(&bytes).and_then(|_| file.sync_all()).map_err(|error| error.to_string())?;
+            fs::rename(&temporary, &path).map_err(|error| error.to_string())?;
+            File::open(&folder).and_then(|folder| folder.sync_all()).map_err(|error| error.to_string())?;
+            messages
+        },
+        Err(error) => return Err(error.to_string()),
+    };
+    let queue = crate::prompts::folder(&route.current.session).ok_or("invalid inbox owner")?;
+    for (name, text) in messages {
+        if !name.strip_suffix(".txt").is_some_and(|stamp| !stamp.is_empty() && stamp.bytes().all(|byte| byte.is_ascii_digit())) {
+            return Err("invalid queued instruction name".into());
+        }
+        let queued = queue.join(name);
+        match util::read_untrusted(&queued, (crate::prompts::PROMPT_MAX * 4 + 1) as u64) {
+            Ok(bytes) if bytes == text.as_bytes() => fs::remove_file(queued).map_err(|error| error.to_string())?,
+            Ok(_) => return Err("queued instruction changed during admission".into()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+    if queue.exists() { File::open(queue).and_then(|queue| queue.sync_all()).map_err(|error| error.to_string())?; }
+    Ok(path)
+}
+
 /// Hook failures must stop dispatch: a nonzero hook exit alone is not a native prompt gate.
 pub fn prompt_gate(generation: &str) -> serde_json::Value {
-    let valid = generation.len() == 32 && generation.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));
-    let request = format!("subscription-gate {}", json!({"generation":generation}));
-    if valid && crate::approval::ask_daemon(&request, std::time::Duration::from_millis(500)).is_ok_and(|reply| reply == "ok") {
-        return json!({});
-    }
+    if admission_confirmed(generation,false) { return json!({}); }
     eprintln!("cockpit-subscription: execution paused until the host confirms replacement ownership");
     json!({"continue":false,"stopReason":"Subscription replacement ownership is not confirmed; the task remains paused."})
+}
+
+pub fn initial_prompt_gate(generation: &str) -> serde_json::Value {
+    if admission_confirmed(generation,true) { return json!({}); }
+    json!({"continue":false,"stopReason":"Initial subscription task start is not confirmed; the task remains paused."})
+}
+
+fn admission_confirmed(generation: &str,initial: bool) -> bool {
+    let valid = generation.len() == 32 && generation.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));
+    let kind = if initial {"subscription-initial-gate"} else {"subscription-gate"};
+    let request = format!("{kind} {}", json!({"generation":generation}));
+    valid && crate::approval::ask_daemon(&request, std::time::Duration::from_millis(500)).is_ok_and(|reply| reply == "ok")
+}
+
+pub fn await_prompt_gate(generation: &str) -> serde_json::Value {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while std::time::Instant::now() < deadline {
+        if admission_confirmed(generation,false) { return json!({}); }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+    prompt_gate(generation)
 }

@@ -811,6 +811,7 @@ pub struct App {
     subscription_held: HashSet<String>,
     subscription_directories: HashSet<String>,
     subscription_error: Option<String>,
+    subscription_polled_at: Option<f64>,
     /// craft app -> the checkout folders its running instances serve (sessions::craft_roots).
     pub(crate) craft_roots: HashMap<String, HashSet<String>>,
     pub(crate) todo_counts: [usize; 5],
@@ -880,6 +881,7 @@ impl App {
             session_task_titles: HashMap::new(), session_branches: HashMap::new(),
             session_queued: HashMap::new(), session_roots: HashMap::new(),
             todo_scope: String::new(), shown_session: String::new(), todo_tab: TODO_TAB_OPEN, todo_tabs: HashMap::new(), todo_categories: HashMap::new(), saved_todo_scope: None, todo_jump: None, todo_counts: [0; 5], prompts_sent: HashMap::new(), subscription_held: HashSet::new(), subscription_directories: HashSet::new(), subscription_error: None, craft_roots: HashMap::new(), hit_lines: HashMap::new(), hit_actions: HashMap::new(),
+            subscription_polled_at: None,
             gathered: None, pending: Vec::new(), plan: String::new(), craft_checked: 0.0, running_copies_unpushed: HashMap::new(), running_copies_checked: 0.0, todo_recovery_pending, idea_header_range: None,
         }
     }
@@ -937,6 +939,7 @@ impl App {
         self.redraw();
         self.push_viewed_state();
         self.dispatch_subscription_routes();
+        self.poll_subscription_routes();
         self.dispatch_queue();
         self.dispatch_prompts();
         self.dispatch_sleep();
@@ -1016,6 +1019,15 @@ impl App {
         has_ended
     }
 
+    pub fn poll_subscription_routes(&mut self) {
+        let now = util::now();
+        if self.subscription_polled_at.is_some_and(|last| now - last < 60.0)
+            || self.pending.iter().any(|(command, _)| command == "subscription-sweep") { return; }
+        self.subscription_polled_at = Some(now);
+        let error = self.manager_async(&["subscription-sweep"]);
+        if !error.is_empty() { util::log_event("WARN", &error); }
+    }
+
     pub fn dispatch_subscription_routes(&mut self) {
         use crate::subscription_fallback::{self, Direction, Phase};
         let result = (|| -> Result<(), String> {
@@ -1038,6 +1050,10 @@ impl App {
                         self.subscription_directories.insert(route.directory.clone());
                     }
                     Phase::Active => {
+                        if route.awaiting_initial_admission() {
+                            self.subscription_held.insert(route.current.session.clone());
+                            self.subscription_directories.insert(route.directory.clone());
+                        }
                         for retired in &route.retired_sessions {
                             prompts::transfer_subscription_prompts(retired, &route.current.session)?;
                         }
@@ -1090,6 +1106,11 @@ impl App {
                 && session.since > self.prompts_sent.get(&session.session).copied().unwrap_or(0))
             .cloned().collect();
         for session in ready {
+            match crate::subscription_fallback::has_native_inbox(&session.session) {
+                Ok(true) => continue,
+                Ok(false) => (),
+                Err(error) => { util::log_event("WARN", &format!("native message delivery paused: {error}")); continue; },
+            }
             let Some((text, path)) = prompts::oldest(&session.session) else { continue };
             let error = manager(&["say", &session.session, &text]);
             if !error.is_empty() {

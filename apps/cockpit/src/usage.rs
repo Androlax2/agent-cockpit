@@ -41,6 +41,9 @@ pub fn subscription_capacity_of(provider: &str, model: &str, usage: &Value, fetc
                 return Unknown;
             };
             if let Some(limits) = usage["limits"].as_array() {
+                // An exhausted all-model window is conclusive even when another scope is unknown.
+                if limits.iter().any(|limit| matches!(limit["kind"].as_str(), Some("session" | "weekly_all"))
+                    && claude_window(limit, "percent") == Exhausted) { return Exhausted; }
                 for limit in limits {
                     match limit["kind"].as_str() {
                         Some("session" | "weekly_all") => states.push(claude_window(limit, "percent")),
