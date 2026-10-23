@@ -729,7 +729,7 @@ type_into_pane() { # pane text
 # pause: in one burst Claude's input takes them as a paste and the Enter becomes a newline, so the
 # command never runs (claude-auto-retry's SUBMIT_DELAY_MS, src/tmux.js, documents the same).
 submit_to_pane() { # pane text
-    type_into_pane "$1" "$2" || return 1
+    type_into_pane "$1" "$2" || return $?
     sleep 0.15
     tmux send-keys -t "$1" Enter
 }
