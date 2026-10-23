@@ -44,11 +44,6 @@
         "action": "allow"
       },
       {
-        "destination": "storage.googleapis.com",
-        "port": "443",
-        "action": "allow"
-      },
-      {
         "destination": "claude.ai",
         "port": "443",
         "action": "allow"
@@ -90,21 +85,6 @@
       },
       {
         "destination": "fonts.gstatic.com",
-        "port": "443",
-        "action": "allow"
-      },
-      {
-        "destination": "drivemcp.googleapis.com",
-        "port": "443",
-        "action": "allow"
-      },
-      {
-        "destination": "calendarmcp.googleapis.com",
-        "port": "443",
-        "action": "allow"
-      },
-      {
-        "destination": "gmailmcp.googleapis.com",
         "port": "443",
         "action": "allow"
       }
