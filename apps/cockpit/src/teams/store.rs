@@ -2,6 +2,9 @@
 
 pub mod sleep;
 
+#[cfg(test)]
+mod tests;
+
 use super::{AgentAction, Dispatch, ErrorCode, HostAction, MessageKind, Proposal, Role, TaskKey, TeamError, TeamReply, TransportOutcome, VerifiedSession};
 use crate::{agents, audit};
 use ring::rand::{SecureRandom, SystemRandom};

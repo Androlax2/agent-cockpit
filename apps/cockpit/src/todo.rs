@@ -670,6 +670,24 @@ impl TodoList {
         for item in self.items.iter().filter(|item| item.status() == "done" && item.updated() < oldest) {
             invalidate_item(item, "done", guard).map_err(std::io::Error::other)?;
         }
+        let path = paths::team_database();
+        let mut connection = match crate::teams::store::open_existing(&path).map_err(std::io::Error::other)? {
+            Some(connection) => connection,
+            None => crate::teams::store::open(&path).map_err(std::io::Error::other)?,
+        };
+        // Keep enrollment and final claim out until this snapshot is durable; explicit terminal
+        // mutations have already committed their tombstones before reaching this boundary.
+        let snapshot_boundary = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(std::io::Error::other)?;
+        {
+            let mut tracked = snapshot_boundary.prepare("SELECT task_id FROM link_work WHERE state='open'").map_err(std::io::Error::other)?;
+            let ids = tracked.query_map([], |row| row.get::<_, String>(0)).map_err(std::io::Error::other)?;
+            for id in ids {
+                let id = id.map_err(std::io::Error::other)?;
+                if !self.items.iter().any(|item| item.id() == id && matches!(item.status().as_str(), "todo" | "doing")) {
+                    return Err(std::io::Error::other(format!("stale TODO snapshot would close shared work {id} without invalidation; reload the list")));
+                }
+            }
+        }
         let previous = self.clone();
         self.items.retain(|item| item.status() != "done" || item.updated() >= oldest);
         self.issues.retain(|_, value| value.get("status").and_then(Value::as_str) != Some("done")
@@ -695,6 +713,7 @@ impl TodoList {
             return Err(error);
         }
         *self = Self::load();
+        drop(snapshot_boundary);
         let mut kept: HashSet<String> = self.items.iter().flat_map(|item| item.images().into_values()).collect();
         kept.extend(crate::todo_editor::draft_images());
         crate::todo_images::sweep(&kept);

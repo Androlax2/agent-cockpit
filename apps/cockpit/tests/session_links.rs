@@ -56,6 +56,52 @@ fn note(link_id: &str, key: &str) -> teams::LinkSubmission {
 }
 
 #[test]
+fn stale_recent_done_priority_save_cannot_pause_and_revive_a_new_approval() {
+    if isolated("stale_recent_done_priority_save_cannot_pause_and_revive_a_new_approval") { return; }
+    let (mut connection, mut current, live, proposal) = proposal_fixture();
+    assert!(current.set_status(&proposal.task.task_id, "done", ""));
+    let mut stale = todo::TodoList::load();
+    assert!(current.set_status(&proposal.task.task_id, "todo", ""));
+    assert_stale_save_preserves_open_work(&mut connection, &mut current, &live, &proposal, || stale.change_priority(&proposal.task.task_id, 1));
+}
+
+#[test]
+fn stale_omission_edit_save_cannot_remove_newly_approved_work() {
+    if isolated("stale_omission_edit_save_cannot_remove_newly_approved_work") { return; }
+    let mut stale = todo::TodoList::load();
+    let other = stale.add("other", "/untracked", "Other work");
+    let (mut connection, mut current, live, proposal) = proposal_fixture();
+    assert_stale_save_preserves_open_work(&mut connection, &mut current, &live, &proposal, || {
+        assert!(stale.edit(&other, "Edited other work", "Unrelated notes"));
+    });
+}
+
+fn assert_stale_save_preserves_open_work(connection: &mut Connection, current: &mut todo::TodoList, live: &[VerifiedSession], proposal: &LinkProposal, save: impl FnOnce()) {
+    let link = activate(connection, &live[0], proposal, live);
+    let pending = links::propose(connection, &live[2], &LinkProposal { submission_key:"pending-after-snapshot".into(), ..proposal.clone() }, live, 0).unwrap().result.unwrap();
+    let approval = link_approval(connection, &pending, "late-approval");
+    let queued = links::accept(connection, &live[0], &note(&link, "queued-after-snapshot"), live, 1000).unwrap().result.unwrap();
+    let before = fs::read(cockpit::paths::todo()).unwrap();
+    save();
+    assert_eq!(fs::read(cockpit::paths::todo()).unwrap(), before, "a stale terminal/removal snapshot must be rejected before JSON publication");
+    assert_eq!(todo::TodoList::load().status_of(&proposal.task.task_id), "todo");
+    assert!(current.set_status(&proposal.task.task_id, "todo", ""));
+    let dispatch = store::claim(connection, &live[1], "still-open", live, 2000).unwrap().unwrap();
+    assert_eq!(json!(dispatch.message_id), queued["message_id"]);
+    store::finish(connection, &dispatch.id, &teams::TransportOutcome::Received { native_id:"received".into() }, 2001).unwrap();
+    // A real terminal transition still closes this exact approval and its pending peer request.
+    let safe = links::accept(connection, &live[0], &note(&link, "safe-before-done"), live, 61_001).unwrap().result.unwrap();
+    assert!(current.set_status(&proposal.task.task_id, "done", ""));
+    assert!(current.set_status(&proposal.task.task_id, "todo", ""));
+    assert_eq!(connection.query_row("SELECT state FROM links WHERE id=?1", [&link], |row| row.get::<_, String>(0)).unwrap(), "closed");
+    assert_eq!(connection.query_row("SELECT status FROM link_proposals WHERE id=?1", [pending["proposal_id"].as_str().unwrap()], |row| row.get::<_, String>(0)).unwrap(), "closed");
+    assert_eq!(connection.query_row("SELECT state FROM messages WHERE id=?1", [safe["message_id"].as_str().unwrap()], |row| row.get::<_, String>(0)).unwrap(), "cancelled");
+    assert_eq!(store::control(connection, &approval, live, 62_000).unwrap_err().code, ErrorCode::Conflict);
+    assert!(links::accept(connection, &live[0], &note(&link, "cannot-revive"), live, 62_001).is_err());
+    assert!(store::claim(connection, &live[1], "after-reopen", live, 62_002).unwrap().is_none());
+}
+
+#[test]
 fn link_context_is_bound_to_participant_identity_and_preserves_own_team() {
     if isolated("link_context_is_bound_to_participant_identity_and_preserves_own_team") { return; }
     let (mut connection, _, live, proposal) = proposal_fixture();
@@ -393,29 +439,6 @@ fn delivery_migration_preserves_receipts_and_reconciles_multiple_inflight() {
     assert_eq!(connection.query_row("SELECT last_idle_turn FROM delivery_recipients WHERE session_id='recipient' AND runtime='runtime'", [], |row| row.get::<_, String>(0)).unwrap(), "old-idle");
     connection.execute("UPDATE messages SET state='submitting' WHERE id='one'", []).unwrap();
     assert!(connection.execute("UPDATE messages SET state='submitting' WHERE id='two'", []).is_err());
-}
-
-#[test]
-fn concurrent_open_reads_schema_version_after_the_migration_writer_commits() {
-    let sandbox = Sandbox::new();
-    let path = sandbox.root.join("protected/teams.sqlite");
-    let mut connection = store::open(&path).unwrap();
-    // Another migrator has completed its DDL but has not yet published the version.
-    connection.execute_batch("PRAGMA user_version=1;").unwrap();
-    let transaction = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).unwrap();
-    transaction.execute_batch("PRAGMA user_version=4;").unwrap();
-    let boundary = std::sync::Arc::new(std::sync::Barrier::new(2));
-    let reader_boundary = boundary.clone();
-    let reader = std::thread::spawn(move || {
-        reader_boundary.wait();
-        store::open(&path)
-    });
-    boundary.wait();
-    std::thread::sleep(std::time::Duration::from_millis(50));
-    assert!(!reader.is_finished(), "open did not wait for the schema writer");
-    transaction.commit().unwrap();
-    let opened = reader.join().unwrap().unwrap();
-    assert_eq!(opened.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0)).unwrap(), 4);
 }
 
 #[test]

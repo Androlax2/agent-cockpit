@@ -97,6 +97,7 @@ fn check_fixture_server_panic(test_name: &str, unwind: bool) {
 
 #[path = "../tests/common/link_fixture.rs"]
 mod link_fixture;
+mod session_link_saves;
 use crate::teams::store::Connection as LinkConnection;
 
 thread_local! {
@@ -145,29 +146,20 @@ fn todo_terminal_mutations_exclude_reopening_until_json_is_durable() {
         assert_eq!(generation, 5, "barrier must follow durable invalidation");
         assert_eq!(TodoList::load().status_of(&id), "todo", "barrier must precede terminal JSON");
         let reopened_during_mutation = reopening.set_status(&id, "todo", "");
-        let transaction = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).unwrap();
-        let admitted_generation = if let Ok((_, generation)) = links::enroll_work(&transaction, &task) {
-            transaction.execute("INSERT INTO link_proposals (id,sender,submission_key,fingerprint,task_key,purpose,revision,mapping_hash,work_generation,status,created_at)
-                SELECT 'during-proposal','a','during-request','fingerprint',task_key,purpose,1,'during-hash',?1,'approved',20 FROM link_proposals WHERE id=?2",
-                (generation, format!("{id}-approved"))).unwrap();
-            transaction.execute("INSERT INTO link_participants SELECT 'during-proposal',slot,session_id,agent,project,runtime FROM link_participants WHERE proposal_id=?1",
-                [format!("{id}-approved")]).unwrap();
-            transaction.execute("INSERT INTO links VALUES ('during-link','during-proposal',1,'during-hash',?1,?2,'a','b','during-epoch','active',NULL,20,NULL)",
-                (serde_json::to_string(&task).unwrap(), generation)).unwrap();
-            Some(generation)
-        } else { None };
-        transaction.commit().unwrap();
+        let transaction = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate);
+        assert!(matches!(transaction, Err(rusqlite::Error::SqliteFailure(error, _)) if error.code == rusqlite::ErrorCode::DatabaseBusy),
+            "enrollment and final claim must wait until terminal JSON is durable");
+        drop(transaction);
         resume.send(()).unwrap();
         assert!(terminal.join().unwrap(), "{action} must complete after the barrier is released");
         if action == "done" { assert_eq!(TodoList::load().status_of(&id), "done"); }
         else { assert!(TodoList::load().items.is_empty()); }
         assert!(reopening.set_status(&id, "todo", ""));
-        let survived = admitted_generation.is_some_and(|generation| {
-            let transaction = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).unwrap();
-            link_fixture::state(&transaction, "during-link") == "active" && links::require_open_work(&transaction, &task, generation).is_ok()
-        });
-        if reopened_during_mutation || admitted_generation.is_some() || survived {
-            violations.push(format!("{action}: concurrent reopen={reopened_during_mutation}, admitted={admitted_generation:?}, usable after terminal/reopen={survived}"));
+        let transaction = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).unwrap();
+        assert!(links::require_open_work(&transaction, &task, 4).is_err());
+        drop(transaction);
+        if reopened_during_mutation {
+            violations.push(format!("{action}: concurrent reopen={reopened_during_mutation}"));
         }
         assert_eq!(link_fixture::state(&connection, &id), "closed");
     }
