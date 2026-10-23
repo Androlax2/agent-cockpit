@@ -7369,6 +7369,90 @@ fn altered_requests_and_another_senders_request_id_are_refused() {
 }
 
 #[test]
+fn expired_todo_request_ids_reject_changed_ownership_or_content() {
+    for changed in ["text", "notes", "started_in", "receipt_key", "session"] {
+        let fixture = Fixture::new();
+        let (greywall, greyproxy) = greywall_and_greyproxy(&fixture);
+        let mut request = json!({"action": "add", "project": "greyproxy", "text": "Deploy", "notes": "Original notes",
+                                 "request_id": "123456abcdef", "session": SESSION_A}).as_object().unwrap().clone();
+        crate::todo_requests::hold(&mut request, &greywall.display().to_string(), "greywall").unwrap();
+        let expired_at = json!(util::now_secs() - 86_401);
+        request.insert("at".into(), expired_at);
+        let held = crate::approval::held_request("123456abcdef", "todo");
+        util::write_json(&held, &json!(request)).unwrap();
+        queue_update(json!(request), &greywall);
+        let mut todos = TodoList::load();
+        assert_eq!(todos.apply_updates(), 1);
+        let id = item_titled(&todos, "Deploy").id();
+
+        let mut fresh = json!({"action": "add", "text": "Unrelated", "request_id": "abcdef123456"}).as_object().unwrap().clone();
+        crate::todo_requests::hold(&mut fresh, &greywall.display().to_string(), "greywall").unwrap();
+        assert!(!held.exists(), "expired request must still be cleaned up");
+
+        let sender = if changed == "started_in" { &greyproxy } else { &greywall };
+        let key = if changed == "receipt_key" { "another-key" } else { "greywall" };
+        if !matches!(changed, "started_in" | "receipt_key") { request.insert(changed.into(), json!("Changed")); }
+        crate::todo_requests::hold(&mut request, &sender.display().to_string(), key).unwrap();
+        queue_update(json!(request), sender);
+        let mut todos = TodoList::load();
+        assert_eq!(todos.apply_updates(), 0, "changed {changed} must not acknowledge the older task");
+        let receipt = util::read_json(&crate::todo_requests::receipt_path(&request).unwrap()).unwrap();
+        assert_eq!(receipt["outcome"], "rejected", "{changed}: {receipt}");
+        assert!(receipt["reason"].as_str().unwrap().contains("different request"), "{receipt}");
+        assert_eq!(TodoList::load().items.len(), 1);
+        assert_eq!(TodoList::load().items[0].id(), id);
+    }
+}
+
+#[test]
+fn an_exact_todo_request_replay_after_expiry_stays_bound_to_its_saved_task() {
+    let fixture = Fixture::new();
+    let (greywall, _) = greywall_and_greyproxy(&fixture);
+    let mut request = json!({"action": "add", "project": "greyproxy", "text": "Deploy", "request_id": "123456abcdef"})
+        .as_object().unwrap().clone();
+    crate::todo_requests::hold(&mut request, &greywall.display().to_string(), "greywall").unwrap();
+    request.insert("at".into(), json!(util::now_secs() - 86_401));
+    util::write_json(&crate::approval::held_request("123456abcdef", "todo"), &json!(request)).unwrap();
+    queue_update(json!(request), &greywall);
+    let mut todos = TodoList::load();
+    assert_eq!(todos.apply_updates(), 1);
+    let id = item_titled(&todos, "Deploy").id();
+    todos.set_status(&id, "done", "");
+
+    let mut fresh = json!({"action": "add", "text": "Unrelated", "request_id": "abcdef123456"}).as_object().unwrap().clone();
+    crate::todo_requests::hold(&mut fresh, &greywall.display().to_string(), "greywall").unwrap();
+    crate::todo_requests::hold(&mut request, &greywall.display().to_string(), "greywall").unwrap();
+    queue_update(json!(request), &greywall);
+    let mut todos = TodoList::load();
+    assert_eq!(todos.apply_updates(), 1);
+    let receipt = util::read_json(&crate::todo_requests::receipt_path(&request).unwrap()).unwrap();
+    assert_eq!(receipt["id"], id);
+    assert_eq!(receipt["outcome"], "accepted");
+    assert_eq!(todos.items.len(), 1);
+    assert_eq!(todos.items[0].status(), "done");
+    assert!(!todos.is_queued(&id));
+}
+
+#[test]
+fn legacy_unbound_todo_request_ids_require_a_fresh_request() {
+    let fixture = Fixture::new();
+    let (greywall, greyproxy) = greywall_and_greyproxy(&fixture);
+    let mut todos = TodoList::load();
+    let id = todos.add("greyproxy", &greyproxy.display().to_string(), "Deploy");
+    todos.items.iter_mut().find(|item| item.id() == id).unwrap().0.insert("filing_requests".into(), json!(["123456abcdef"]));
+    todos.save();
+    let mut request = json!({"action": "add", "project": "greyproxy", "text": "Changed", "request_id": "123456abcdef"})
+        .as_object().unwrap().clone();
+    crate::todo_requests::hold(&mut request, &greywall.display().to_string(), "greywall").unwrap();
+    queue_update(json!(request), &greywall);
+    assert_eq!(todos.apply_updates(), 0);
+    let receipt = util::read_json(&crate::todo_requests::receipt_path(&request).unwrap()).unwrap();
+    assert_eq!(receipt["outcome"], "rejected");
+    assert!(receipt["reason"].as_str().unwrap().contains("fresh request"));
+    assert_eq!(TodoList::load().items.len(), 1);
+}
+
+#[test]
 fn an_existing_target_task_is_reused_even_when_another_project_filed_it() {
     let fixture = Fixture::new();
     let (greywall, greyproxy) = greywall_and_greyproxy(&fixture);

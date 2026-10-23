@@ -936,14 +936,16 @@ impl TodoList {
             let mut fields = json!({"update": crate::audit::fingerprint(line), "action": update.get("action"), "id": update.get("id"),
                                     "started_in": update.get("started_in"), "claimed_session": update.get("session")});
             let previous = self.clone();
-            let accepted = self.filing_id(&update);
-            let result = if accepted.is_some() { self.try_save().map_err(|error| format!("cannot save reused todo: {error}")) }
-                else if position >= APPLY_MAX_LINES { Err("todo update batch limit reached; retry".into()) } else { self.apply_update(line) };
+            let result = match self.filing_id(&update) {
+                Err(reason) => Err(reason),
+                Ok(Some(id)) => self.try_save().map(|()| Some(id)).map_err(|error| format!("cannot save reused todo: {error}")),
+                Ok(None) if position >= APPLY_MAX_LINES => Err("todo update batch limit reached; retry".into()),
+                Ok(None) => self.apply_update(line).and_then(|()| self.filing_id(&update)),
+            };
             match result {
-                Ok(()) => {
+                Ok(id) => {
                     applied += 1;
                     if matches!(update["action"].as_str(), Some("add" | "propose")) {
-                        let id = self.filing_id(&update);
                         let item = self.items.iter().find(|item| id.as_deref() == Some(item.id().as_str()));
                         crate::todo_requests::finish(&update, if item.is_some() { "accepted" } else { "skipped" }, item,
                             item.is_some_and(|item| self.is_queued(&item.id())), "");
@@ -962,19 +964,30 @@ impl TodoList {
         applied
     }
 
-    fn filing_id(&self, update: &Value) -> Option<String> {
-        if !crate::todo_requests::is_retained(update) { return None; }
-        let request_id = update.get("request_id")?;
-        self.items.iter().find(|item| item.0.get("filing_requests").and_then(Value::as_array)
-            .is_some_and(|requests| requests.contains(request_id))).map(Item::id)
+    fn filing_id(&self, update: &Value) -> Result<Option<String>, String> {
+        if !crate::todo_requests::is_retained(update) { return Ok(None); }
+        let Some(identity) = crate::todo_requests::filing_identity(update) else { return Ok(None) };
+        for item in &self.items {
+            let Some(requests) = item.0.get("filing_requests").and_then(Value::as_array) else { continue };
+            for previous in requests {
+                if previous == &identity["request_id"] {
+                    return Err("todo request id has no durable ownership binding; file a fresh request".into());
+                }
+                if previous.get("request_id") == Some(&identity["request_id"]) {
+                    return if previous == &identity { Ok(Some(item.id())) }
+                        else { Err("todo request id is already owned by a different request".into()) };
+                }
+            }
+        }
+        Ok(None)
     }
 
     fn remember_filing(&mut self, id: &str, update: &Map<String, Value>) {
         if !crate::todo_requests::is_retained(&Value::Object(update.clone())) { return; }
-        let request_id = update["request_id"].clone();
+        let Some(identity) = crate::todo_requests::filing_identity(&Value::Object(update.clone())) else { return };
         let item = self.items.iter_mut().find(|item| item.id() == id).unwrap();
         let requests = item.0.entry("filing_requests").or_insert_with(|| json!([])).as_array_mut().unwrap();
-        if !requests.contains(&request_id) { requests.push(request_id); }
+        if !requests.contains(&identity) { requests.push(identity); }
     }
 
     fn apply_update(&mut self, line: &str) -> Result<(), String> {

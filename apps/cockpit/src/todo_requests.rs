@@ -118,6 +118,15 @@ pub fn is_retained(request: &Value) -> bool {
     is_approved(fields) || util::read_json(&approval::held_request(id, "todo")) == Some(request.clone())
 }
 
+pub fn filing_identity(request: &Value) -> Option<Value> {
+    let mut fields = request.as_object()?.clone();
+    let id = fields.get("request_id")?.as_str()?.to_string();
+    // Retention timestamps and later host approval do not change the sender's original request.
+    fields.remove("at");
+    fields.remove("host_approved");
+    Some(json!({"request_id": id, "sha256": crate::audit::sha256_hex(json!(fields).to_string().as_bytes())}))
+}
+
 /// Called on the host through ask-to-run; only the protected daemon copy supplies task content.
 pub fn approve(id: &str) -> Result<(), String> {
     if !approval::valid_id(id) { return Err("invalid todo request id".into()); }
