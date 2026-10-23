@@ -915,6 +915,183 @@ class EnrollmentTests(AppInspectionFixture):
         self.assertEqual(self.requests, [])
 
 
+class RuntimeCredentialTests(AppInspectionFixture):
+    def setUp(self):
+        super().setUp()
+        now = int(self.access.time.time())
+        self.tokens = {'project-read': 'SYNTHETIC_READ_TOKEN', 'project-forward': 'SYNTHETIC_FORWARD_TOKEN'}
+        self.profiles = [
+            {'id': 'project-read', 'role': 'read', 'kind': 'fine_grained_pat', 'repository_id': 42, 'actor_id': 88,
+             'permissions': {name: 'read' for name in ['metadata', 'contents', 'issues', 'pull_requests', 'checks', 'statuses', 'actions']}},
+            {'id': 'project-forward', 'role': 'forward', 'kind': 'fine_grained_pat', 'repository_id': 42, 'actor_id': 88,
+             'permissions': {'metadata': 'read', 'contents': 'write', 'issues': 'write', 'pull_requests': 'write'}},
+        ]
+        for profile in self.profiles:
+            profile.update(setup_approved=True, key_epoch='fixture-epoch', reviewed_at=now - 60,
+                           valid_until=now + 3600, expires_at=now + 7200,
+                           fingerprint=self.access.hashlib.sha256(self.tokens[profile['id']].encode()).hexdigest())
+        self.record['credential_roles'] = {'read': 'project-read', 'forward': 'project-forward'}
+        self.keyring_reads = []
+        self.runtime_requests = []
+        self.runtime_scopes = ''
+        self.runtime_actor = 88
+        self.runtime_repository = 42
+        self.missing_credentials = set()
+        self.save_profiles()
+
+    def save_profiles(self):
+        self.document = {'version': 1, 'repositories': [self.record], 'inspector_apps': [self.app],
+                         'runtime_credentials': self.profiles}
+        self.registry.write_text(json.dumps(self.document))
+
+    def inspect_runtime(self, purpose='admission', before_runtime=None):
+        actual_run = subprocess.run
+
+        def command(arguments, **kwargs):
+            if Path(arguments[0]).name != 'secret-tool':
+                return actual_run(arguments, **kwargs)
+            self.assertEqual(arguments[1:4], ['lookup', 'service', 'cockpit-github-runtime'])
+            credential_id = arguments[arguments.index('credential') + 1]
+            self.assertEqual(arguments[arguments.index('repository') + 1], '42')
+            self.assertEqual(arguments[arguments.index('epoch') + 1], 'fixture-epoch')
+            self.keyring_reads.append(credential_id)
+            if credential_id in self.missing_credentials:
+                return subprocess.CompletedProcess(arguments, 1, b'', b'SYNTHETIC_KEYRING_ERROR')
+            return subprocess.CompletedProcess(arguments, 0, (self.tokens[credential_id] + '\n').encode(), b'')
+
+        def request(method, path, token, deadline, body=None):
+            if token not in self.tokens.values():
+                return self.request(method, path, token, deadline, body)
+            if before_runtime:
+                before_runtime()
+            self.runtime_requests.append((method, path))
+            if path == '/user':
+                return 200, {'id': self.runtime_actor}, {'x-oauth-scopes': self.runtime_scopes}
+            if path == '/repos/acme/project':
+                return 200, {'id': self.runtime_repository, 'full_name': 'acme/project', 'owner': {'id': 9}}, {}
+            self.fail(f'unexpected runtime request {method} {path}')
+
+        with patch.dict(os.environ, self.environment, clear=True), \
+                patch.object(self.access.subprocess, 'run', side_effect=command), \
+                patch.object(self.access, 'api_request', side_effect=request), \
+                patch.object(self.access, 'sign_app_jwt', return_value='SYNTHETIC_APP_JWT'):
+            return self.access.inspect_access(self.project, purpose=purpose)
+
+    def test_read_and_write_credentials_have_distinct_verified_roles(self):
+        report = self.inspect_runtime()
+        self.assertEqual(report['mode'], 'verified', report)
+        self.assertEqual(self.keyring_reads, ['project-read', 'project-forward'])
+        self.assertEqual(report['credential_roles_verified'], ['read', 'forward'])
+        self.assertEqual(report['request_counts']['runtime'], 4)
+        self.assertNotIn('SYNTHETIC', json.dumps(report))
+
+    def test_untrusted_legacy_pat_is_not_admitted(self):
+        del self.record['credential_roles']
+        self.save_profiles()
+        report = self.inspect_runtime()
+        self.assertEqual(report['mode'], 'read_only')
+        self.assertEqual(report['reason'], 'runtime_credential_unavailable')
+        self.assertEqual(self.keyring_reads, [])
+
+    def test_read_role_never_accepts_a_write_token_or_privileged_grants(self):
+        for permission, level in [('contents', 'write'), ('checks', 'write'), ('statuses', 'write'),
+                                  ('actions', 'write'), ('administration', 'read'), ('workflows', 'write')]:
+            with self.subTest(permission=permission):
+                self.profiles[0]['permissions'][permission] = level
+                self.save_profiles()
+                report = self.inspect_runtime()
+                self.assertEqual(report['reason'], 'runtime_grants_unapproved', report)
+                self.assertEqual(self.keyring_reads, [])
+                self.profiles[0]['permissions'].pop(permission)
+                if permission not in {'administration', 'workflows'}:
+                    self.profiles[0]['permissions'][permission] = 'read'
+
+    def test_forward_role_rejects_workflows_administration_and_status_writes(self):
+        for permission in ['workflows', 'administration', 'checks', 'statuses', 'actions']:
+            with self.subTest(permission=permission):
+                self.profiles[1]['permissions'][permission] = 'write'
+                self.save_profiles()
+                report = self.inspect_runtime()
+                self.assertEqual(report['reason'], 'runtime_grants_unapproved', report)
+                self.assertEqual(self.keyring_reads, [])
+                del self.profiles[1]['permissions'][permission]
+
+    def test_expired_unapproved_or_wrong_repository_enrollment_denies_before_keyring(self):
+        for key, value in [('setup_approved', False), ('valid_until', 1), ('expires_at', 1),
+                           ('repository_id', 99), ('kind', 'classic_pat')]:
+            with self.subTest(key=key):
+                original = self.profiles[0][key]
+                self.profiles[0][key] = value
+                self.save_profiles()
+                report = self.inspect_runtime()
+                self.assertEqual(report['mode'], 'read_only', report)
+                self.assertEqual(self.keyring_reads, [])
+                self.profiles[0][key] = original
+
+    def test_keyring_replacement_cannot_keep_an_old_approved_fingerprint(self):
+        self.tokens['project-read'] = 'SYNTHETIC_REPLACEMENT_TOKEN'
+        report = self.inspect_runtime()
+        self.assertEqual(report['reason'], 'runtime_credential_mismatch', report)
+        self.assertEqual(self.runtime_requests, [])
+
+    def test_server_actor_repository_or_classic_scope_mismatch_denies(self):
+        for attribute, value in [('runtime_actor', 99), ('runtime_repository', 99), ('runtime_scopes', 'repo')]:
+            with self.subTest(attribute=attribute):
+                original = getattr(self, attribute)
+                setattr(self, attribute, value)
+                report = self.inspect_runtime()
+                self.assertEqual(report['mode'], 'read_only', report)
+                self.assertNotIn('SYNTHETIC', json.dumps(report))
+                setattr(self, attribute, original)
+
+    def test_one_secret_cannot_back_both_read_and_forward_roles(self):
+        self.profiles[1]['fingerprint'] = self.profiles[0]['fingerprint']
+        self.save_profiles()
+        report = self.inspect_runtime()
+        self.assertEqual(report['reason'], 'runtime_roles_not_separate', report)
+        self.assertEqual(self.keyring_reads, [])
+
+    def test_runtime_revocation_during_inspection_invalidates_the_result(self):
+        def revoke():
+            self.document['runtime_credentials'][0]['setup_approved'] = False
+            self.registry.write_text(json.dumps(self.document))
+
+        report = self.inspect_runtime(before_runtime=revoke)
+        self.assertEqual(report['mode'], 'read_only', report)
+        self.assertEqual(report['reason'], 'registry_changed')
+        self.assertNotIn('credential_roles_verified', report)
+
+    def test_runtime_enrollment_expiring_during_the_check_never_reports_verified(self):
+        now = self.access.time.time()
+        with patch.object(self.access.time, 'time', return_value=now) as clock:
+            report = self.inspect_runtime(before_runtime=lambda: setattr(clock, 'return_value', now + 3601))
+        self.assertEqual(report['mode'], 'read_only', report)
+        self.assertEqual(report['reason'], 'runtime_enrollment_expired')
+
+    def test_each_write_checks_roles_again_even_when_app_authentication_is_cached(self):
+        self.assertEqual(self.inspect_runtime(purpose='write')['mode'], 'verified')
+        self.profiles[0]['setup_approved'] = False
+        self.save_profiles()
+        report = self.inspect_runtime(purpose='write')
+        self.assertEqual(report['mode'], 'read_only', report)
+        self.assertEqual(self.keyring_reads, ['project-read', 'project-forward'])
+        self.assertEqual(sum(method == 'GET' and path == '/repos/acme/project'
+                             for method, path, token, body in self.requests), 2)
+
+    def test_missing_forward_secret_never_falls_back_to_the_read_token(self):
+        self.missing_credentials.add('project-forward')
+        report = self.inspect_runtime()
+        self.assertEqual(report['reason'], 'runtime_credential_unavailable', report)
+        self.assertNotIn('SYNTHETIC', json.dumps(report))
+        self.assertEqual(self.keyring_reads, ['project-read', 'project-forward'])
+
+    def test_protection_only_inspection_never_reads_runtime_credentials(self):
+        report = self.inspect_runtime(purpose='inspection')
+        self.assertEqual(report['mode'], 'verified')
+        self.assertNotIn('credential_roles_verified', report)
+        self.assertEqual(self.keyring_reads, [])
+
+
 if __name__ == '__main__':
     unittest.main()
 import base64
