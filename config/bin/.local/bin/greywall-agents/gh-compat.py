@@ -269,6 +269,21 @@ def update_branch_actions(arguments):
              'expected_head_sha': read_pull_request_head(number, canonical)})]
 
 
+def readiness_actions(arguments):
+    parser = Parser(add_help=False)
+    parser.add_argument('group', choices=['pr'])
+    parser.add_argument('operation', choices=['ready'])
+    parser.add_argument('number')
+    parser.add_argument('-R', '--repo')
+    parser.add_argument('--undo', action='store_true')
+    options = parser.parse_args(arguments)
+    canonical = os.environ.get('COCKPIT_GITHUB_REPOSITORY')
+    if canonical is None or (options.repo is not None and repository_name(options.repo) != repository_name(canonical)):
+        raise ClientDenied('repository_not_enrolled')
+    number = target_number(options.number, canonical, 'pr')
+    return [('pull_request.draft' if options.undo else 'pull_request.ready', {'number': number})]
+
+
 def is_native_read(arguments):
     commands = {('pr', 'list'), ('pr', 'view'), ('pr', 'checks'), ('pr', 'diff'), ('pr', 'status'),
                 ('issue', 'list'), ('issue', 'view'), ('issue', 'status'), ('repo', 'view'),
@@ -400,6 +415,8 @@ def main(arguments=None):
             actions = review_actions(arguments)
         elif arguments[:2] == ['pr', 'update-branch']:
             actions = update_branch_actions(arguments)
+        elif arguments[:2] == ['pr', 'ready']:
+            actions = readiness_actions(arguments)
         else:
             actions = command_actions(arguments)
         for action, fields in actions:
