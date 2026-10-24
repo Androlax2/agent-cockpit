@@ -249,7 +249,10 @@ def inspect_metadata(root, binding, deadline):
     if worktree_config.exists() or worktree_config.is_symlink():
         extra, digest = read_config(worktree_config, deadline)
         entries.extend(extra)
-        digests.append(digest)
+        # Greywall creates an empty config.worktree when it starts a writable sandbox; with no
+        # settings it changes nothing, so only a file with settings joins the identity digest.
+        if extra:
+            digests.append(digest)
     for key, value in entries:
         if key.lower() == 'core.worktree' and identity_path(git_dir / value) != root:
             deny('git_metadata_changed')
@@ -1262,6 +1265,13 @@ def supervise(session, command, *, check_interval=300, inspection_timeout=30, ha
                   file=sys.stderr)
         for process in reversed(children):
             stop(process)
+        if reason is not None and broker.poll() is not None:
+            # Only the broker's stable reason line is relayed; anything else it wrote is dropped.
+            for line in broker.stderr.read(4096).decode('utf-8', 'replace').splitlines():
+                if re.fullmatch(r'git-broker: [a-z_]{1,80}', line):
+                    print(line, file=sys.stderr)
+        for stream in [broker.stdout, broker.stderr]:
+            stream.close()
         for leftover in [channel / 'capability']:
             try:
                 leftover.unlink()
@@ -1270,7 +1280,7 @@ def supervise(session, command, *, check_interval=300, inspection_timeout=30, ha
         return status
 
     broker = subprocess.Popen(broker_command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                              stderr=subprocess.DEVNULL, preexec_fn=die_with_parent(parent))
+                              stderr=subprocess.PIPE, preexec_fn=die_with_parent(parent))
     children.append(broker)
     if not select.select([broker.stdout], [], [], broker_ready_timeout)[0] or not broker.stdout.readline():
         return finish(77, 'broker_unavailable')

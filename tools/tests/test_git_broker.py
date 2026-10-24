@@ -139,7 +139,8 @@ class BrokerFramingTests(BrokerFixture):
             ], capture_output=True, text=True, env=os.environ | {'GH_TOKEN': 'SYNTHETIC_WRITE_TOKEN'})
             self.assertEqual(result.returncode, 77, result.stdout + result.stderr)
             self.assertEqual(result.stdout, '')
-            self.assertEqual(result.stderr, 'git-broker: broker_channel_unavailable\n')
+            self.assertRegex(result.stderr, r'\Agit-broker: [a-z_]+\n\Z')
+            self.assertNotIn('SYNTHETIC', result.stderr)
             self.assertFalse(socket_path.exists())
 
 

@@ -77,6 +77,17 @@ class SessionEntryTests(unittest.TestCase):
         self.assertIn('Git push through the broker is unavailable', result.stderr)
         self.assertFalse(any(key.endswith('.insteadOf') for key, _ in self.routes()))
 
+    def test_adapter_loopback_bypasses_the_sandbox_proxy(self):
+        result = self.run_entry(self.broker_environment() | {'http_proxy': 'http://proxy:1', 'HTTP_PROXY': 'http://proxy:1',
+                                                             'NO_PROXY': 'internal.example', 'no_proxy': 'internal.example'})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        seen = json.loads(self.seen.read_text())
+        for name in ['NO_PROXY', 'no_proxy']:
+            entries = seen[name].split(',')
+            self.assertIn('127.0.0.1', entries)
+            self.assertIn('internal.example', entries)
+        self.assertEqual(seen['http_proxy'], 'http://proxy:1')
+
     def test_agent_exit_status_is_preserved(self):
         self.agent = [sys.executable, '-c', 'import sys; sys.exit(9)']
         self.assertEqual(self.run_entry(self.broker_environment()).returncode, 9)

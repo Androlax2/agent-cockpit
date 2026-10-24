@@ -1014,7 +1014,11 @@ def main():
         if termination is not None:
             print('git-broker: ' + termination, file=sys.stderr)
             return 77
-    except (RequestDenied, OSError):
+    except RequestDenied as error:
+        # Stable codes only (no request data); the supervisor relays this one line.
+        print('git-broker: ' + str(error), file=sys.stderr)
+        return 77
+    except OSError:
         print('git-broker: broker_channel_unavailable', file=sys.stderr)
         return 77
     except Exception:
