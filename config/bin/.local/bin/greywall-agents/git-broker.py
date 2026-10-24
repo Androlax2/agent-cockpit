@@ -711,10 +711,21 @@ def read_binding(path):
     return binding
 
 
+RENEWABLE_FIELDS = ('checked_at', 'checked_wall')
+
+
 def check_live_binding(path, expected, access):
+    """The supervisor may only advance the check times after a passing scheduled inspection.
+
+    `expected` is updated in place so a renewal can never be followed by an older timestamp.
+    """
     binding = read_binding(path)
-    if binding != expected or binding['revoked'] or binding['mode'] != 'verified':
+    if (any(binding[field] != expected[field] for field in BINDING_FIELDS - set(RENEWABLE_FIELDS))
+            or any(binding[field] < expected[field] for field in RENEWABLE_FIELDS)
+            or binding['revoked'] or binding['mode'] != 'verified'):
         raise RequestDenied('admission_revoked')
+    for field in RENEWABLE_FIELDS:
+        expected[field] = binding[field]
     if (binding['boot_id'] != Path('/proc/sys/kernel/random/boot_id').read_text().strip()
             or not 0 <= time.monotonic() - binding['checked_at'] < 600
             or not 0 <= time.time() - binding['checked_wall'] < 600):
