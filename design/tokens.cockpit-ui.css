@@ -1,0 +1,15 @@
+/* Cockpit · Mode 1 */
+:root {
+  --color-bg: #1A1B26;
+  --color-card: #24283B;
+  --color-selection: #414868;
+  --color-line: #363C55;
+  --color-fg: #C0CAF5;
+  --color-dim: #979FBE;
+  --color-blue: #7AA2F7;
+  --color-cyan: #7DCFFF;
+  --color-green: #9ECE6A;
+  --color-amber: #E0AF68;
+  --color-red: #F7768E;
+  --color-purple: #BB9AF7;
+}
