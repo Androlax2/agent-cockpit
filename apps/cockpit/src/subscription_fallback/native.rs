@@ -185,8 +185,27 @@ pub fn observe(id: &str) -> Result<Value, String> {
     let has_pending_work = if store.route(id).is_some_and(|route| route.is_session_task()) || existing.is_some_and(|route| route.is_session_task()) {
         source["session"]["quota_stopped"] == true || session.state == "working"
     } else {tasks.contains(&task)};
-    let transitions = store.reconcile(&[Observation { binding, session, current_capacity, original_capacity, alternate,
-        has_pending_work, prompt_clear:source["prompt_clear"] == true, manual_override:false }], util::now() as i64)?;
+    let observed = Observation { binding, session, current_capacity, original_capacity, alternate,
+        has_pending_work, prompt_clear:source["prompt_clear"] == true, manual_override:false };
+    let transitions = store.reconcile(std::slice::from_ref(&observed), util::now() as i64)?;
+    let Some(route) = store.routes().find(|route| route.current.session == id || route.original.session == id).cloned() else {
+        return Ok(json!(transitions));
+    };
+    let reason = if transitions.is_empty() && matches!(route.phase, Phase::Active) {
+        super::waiting_reason(&observed, route.current.selection != route.original.selection)
+    } else { None };
+    if store.set_waiting(&route.original.session, reason.as_deref())? {
+        if let Some(reason) = &reason {
+            crate::audit::record("subscription", "subscription.waiting", "paused", json!({"origin":route.original.session,
+                "task":route.task, "agent":route.current.selection.agent, "reason":reason}));
+        }
+    }
+    for transition in &transitions {
+        crate::audit::record("subscription", "subscription.switch_prepared", "ok", json!({"origin":transition.origin,
+            "generation":transition.generation, "direction":format!("{:?}", transition.direction),
+            "from_agent":transition.source.selection.agent, "from_model":transition.source.selection.model,
+            "to_agent":transition.target.agent, "to_model":transition.target.model}));
+    }
     Ok(json!(transitions))
 }
 
@@ -211,7 +230,14 @@ pub fn sweep() -> Result<(), String> {
         let Phase::Pending(pending) = route.phase else { continue };
         let status = Command::new("cockpit").args(["subscription-route", &pending.origin, &pending.generation])
             .status().map_err(|error| format!("cannot dispatch subscription handoff: {error}"))?;
-        if !status.success() { util::log_event("WARN", &format!("subscription handoff {} remains pending", pending.generation)); }
+        if !status.success() {
+            util::log_event("WARN", &format!("subscription handoff {} remains pending", pending.generation));
+            let mut store = RoutingStore::load(&paths::subscription_routes())?;
+            if store.set_waiting(&pending.origin, Some("the hand-off to the other subscription did not complete; it will retry"))? {
+                crate::audit::record("subscription", "subscription.handoff_paused", "paused", json!({"origin":pending.origin,
+                    "generation":pending.generation, "task":route.task, "stage":format!("{:?}", pending.stage)}));
+            }
+        }
     }
     Ok(())
 }

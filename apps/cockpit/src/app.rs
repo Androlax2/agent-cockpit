@@ -811,6 +811,8 @@ pub struct App {
     subscription_held: HashSet<String>,
     subscription_directories: HashSet<String>,
     subscription_error: Option<String>,
+    /// origin -> the waiting reason last shown, so each reason appears once.
+    subscription_waiting_shown: HashMap<String, String>,
     subscription_polled_at: Option<f64>,
     /// craft app -> the checkout folders its running instances serve (sessions::craft_roots).
     pub(crate) craft_roots: HashMap<String, HashSet<String>>,
@@ -881,7 +883,7 @@ impl App {
             session_task_titles: HashMap::new(), session_branches: HashMap::new(),
             session_queued: HashMap::new(), session_roots: HashMap::new(),
             todo_scope: String::new(), shown_session: String::new(), todo_tab: TODO_TAB_OPEN, todo_tabs: HashMap::new(), todo_categories: HashMap::new(), saved_todo_scope: None, todo_jump: None, todo_counts: [0; 5], prompts_sent: HashMap::new(), subscription_held: HashSet::new(), subscription_directories: HashSet::new(), subscription_error: None, craft_roots: HashMap::new(), hit_lines: HashMap::new(), hit_actions: HashMap::new(),
-            subscription_polled_at: None,
+            subscription_polled_at: None, subscription_waiting_shown: HashMap::new(),
             gathered: None, pending: Vec::new(), plan: String::new(), craft_checked: 0.0, running_copies_unpushed: HashMap::new(), running_copies_checked: 0.0, todo_recovery_pending, idea_header_range: None,
         }
     }
@@ -1029,6 +1031,18 @@ impl App {
         if !error.is_empty() { util::log_event("WARN", &error); }
     }
 
+    fn show_subscription_waiting(&mut self, routes: &[crate::subscription_fallback::Route]) {
+        let waiting: HashMap<String, String> = routes.iter()
+            .filter_map(|route| Some((route.original.session.clone(), route.waiting.clone()?))).collect();
+        use crate::subscription_fallback::Phase;
+        for route in routes.iter().filter(|route| matches!(route.phase, Phase::Active | Phase::Pending(_))) {
+            let Some(reason) = &route.waiting else { continue };
+            if self.subscription_waiting_shown.get(&route.original.session) == Some(reason) { continue; }
+            self.message = format!("{}: subscription switch waiting: {reason}", project_name(&util::repository_root(&route.directory)));
+        }
+        self.subscription_waiting_shown = waiting;
+    }
+
     pub fn dispatch_subscription_routes(&mut self) {
         use crate::subscription_fallback::{self, Direction, Phase};
         let result = (|| -> Result<(), String> {
@@ -1062,6 +1076,7 @@ impl App {
                     Phase::Cancelled | Phase::Completed => unreachable!(),
                 }
             }
+            self.show_subscription_waiting(&routes);
             Ok(())
         })();
         let error = result.err();

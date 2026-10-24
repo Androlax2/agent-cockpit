@@ -93,6 +93,9 @@ pub struct Route {
     pub initial_started: bool,
     #[serde(default)]
     pub retired_sessions: Vec<String>,
+    /// Why an automatic switch cannot happen yet, for the cockpit's message line.
+    #[serde(default)]
+    pub waiting: Option<String>,
 }
 
 impl Route {
@@ -130,6 +133,26 @@ impl Observation {
             && !session.terminal && !session.credits && !session.restarting && session.asleep.is_none()
             && !session.is_external() && session.agents == 0 && session.background == 0
     }
+}
+
+/// `returning`: the route already runs on its alternate. None when nothing is blocked.
+pub fn waiting_reason(observed: &Observation, returning: bool) -> Option<String> {
+    use SubscriptionCapacity::{Available, Exhausted};
+    let reason = if returning && observed.original_capacity == Available {
+        (!observed.safe_boundary()).then_some("waiting for the session to finish its turn before returning to the original model")
+    } else if observed.current_capacity != Exhausted {
+        None
+    } else {
+        match &observed.alternate {
+            None => Some("the other subscription's account or quota could not be read"),
+            Some((_, Exhausted)) => Some("both subscriptions are exhausted"),
+            Some((_, Available)) => (!observed.safe_boundary())
+                .then_some("waiting for the session to finish its turn and clear any typed draft"),
+            Some((selection, _)) if selection.agent == "claude" => Some("Claude quota is unconfirmed or its paid extra usage is on"),
+            Some(_) => Some("Codex quota is unconfirmed"),
+        }
+    };
+    reason.map(str::to_string)
 }
 
 /// Input-row evidence only: callers must also verify the runtime, idle state and absence of dialogs/work.
@@ -235,6 +258,7 @@ impl RoutingStore {
             admitted_generation: None,
             initial_admitted: false,
             initial_started: false,
+            waiting: None,
             retired_sessions: Vec::new(),
         });
         self.save(next)
@@ -285,6 +309,16 @@ impl RoutingStore {
         if pending.stage != Stage::Prepared { return Err("subscription source is not prepared for retirement".into()); }
         pending.retirement_started = true;
         self.save(next)
+    }
+
+    /// True when the reason changed, so callers audit and show it only once.
+    pub fn set_waiting(&mut self, origin: &str, reason: Option<&str>) -> Result<bool, String> {
+        let mut next = self.state.clone();
+        let route = next.routes.get_mut(origin).ok_or("no such subscription route")?;
+        if route.waiting.as_deref() == reason { return Ok(false); }
+        route.waiting = reason.map(str::to_string);
+        self.save(next)?;
+        Ok(true)
     }
 
     pub fn cancel(&mut self, origin: &str) -> Result<(), String> {

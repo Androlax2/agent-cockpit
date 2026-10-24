@@ -194,6 +194,13 @@ elif args[0] not in ('select-pane','list-panes'): raise AssertionError('unexpect
     assert!(!bench.world.borrow().sender_runtimes.contains_key(&40));
     assert!(bench.registry.request_from("subscription-gate",&json!({"generation":returned.admitted_generation}).to_string(),11).is_ok());
     assert!(bench.registry.request_from("subscription-initial-gate",&json!({"generation":returned.admitted_generation}).to_string(),11).is_ok());
+    let switched: Vec<Value> = fs::read_dir(cockpit::audit::dir()).unwrap().flatten()
+        .filter(|entry| entry.file_name().to_string_lossy().ends_with(".jsonl"))
+        .flat_map(|entry| fs::read_to_string(entry.path()).unwrap().lines().map(|line| serde_json::from_str::<Value>(line).unwrap()).collect::<Vec<_>>())
+        .filter(|event| event["event"] == "subscription.switched").collect();
+    assert_eq!(switched.iter().map(|event| event["direction"].as_str().unwrap()).collect::<Vec<_>>(), ["Fallback","Return"]);
+    assert_eq!(switched[1]["to_agent"], original_agent);
+    assert!(switched.iter().all(|event| !event.to_string().contains(&"a".repeat(64)) && !event.to_string().contains(&"b".repeat(64))));
     }
     }
 }

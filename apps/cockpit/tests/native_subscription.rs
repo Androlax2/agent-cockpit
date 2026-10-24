@@ -205,6 +205,7 @@ fn native_command(sandbox: &Sandbox, row: Value, arguments: &[&str]) -> std::pro
     use std::time::{Duration, Instant};
     let folder = sandbox.runtime.join("claude-team-host");
     fs::create_dir_all(&folder).unwrap();
+    let _ = fs::remove_file(folder.join("host.sock"));
     let listener = UnixListener::bind(folder.join("host.sock")).unwrap();
     listener.set_nonblocking(true).unwrap();
     let stop = Arc::new(AtomicBool::new(false));
@@ -397,6 +398,85 @@ fn native_launch_tickets_are_persisted_once_after_retirement_and_fresh_target_ch
     assert_eq!(ticket["agent"], "codex");
     assert_eq!(ticket["directory"], sandbox.home.display().to_string());
     assert!(!sandbox.run(binary, &arguments, &[]).status.success());
+}
+
+fn exhaustion_fixture(claude_used: u8, codex_used: u8) -> (Sandbox, Value) {
+    let sandbox = claude_fixture();
+    let mut row = source_row(&sandbox);
+    row["subscription_account"] = json!("a".repeat(64));
+    fs::write(sandbox.runtime.join("cockpit.json"), json!({"sessions":[row]}).to_string()).unwrap();
+    sandbox.shim("cockpit", "exit 0");
+    write_executable(&sandbox.shims.join("tmux"), "#!/bin/sh\ncase $1 in\n display-message) echo '2 5 0 claude-retry-restart-123';;\n capture-pane) printf '❯ \\n';;\nesac\n");
+    let cache = sandbox.home.join(".cache/claude");
+    fs::create_dir_all(&cache).unwrap();
+    fs::write(cache.join(format!("statusline-{SESSION_A}.json")), json!({"model_id":"claude-opus-4-7","effort":"high","updated":cockpit::util::now()}).to_string()).unwrap();
+    fs::create_dir_all(sandbox.state.join("cockpit")).unwrap();
+    fs::write(sandbox.state.join("cockpit/todo.json"), json!({"items":[{"id":"1797cdd6","text":"Finish the task","status":"doing","session":SESSION_A}]}).to_string()).unwrap();
+    write_executable(&sandbox.shims.join("python3"), &format!(r#"#!/bin/sh
+case "$2" in
+ claude) printf '{{"account":"{}","fetched":%s,"usage":{{"five_hour":{{"utilization":{claude_used},"resets_at":"2099-01-01T00:00:00Z"}},"routing_profile":{{"organization":{{"has_extra_usage_enabled":false}}}}}}}}\n' "$(date +%s)";;
+ codex) printf '{{"account":"{}","fetched":%s,"usage":{{"rate_limit":{{"primary_window":{{"used_percent":{codex_used},"reset_at":4102444800}}}},"ordinary_usage_allowed":true}},"models":[{{"model":"gpt-fixture","isDefault":true,"defaultReasoningEffort":"high","supportedReasoningEfforts":[{{"reasoningEffort":"high"}}]}}]}}\n' "$(date +%s)";;
+ *) exit 1;;
+esac
+"#, "a".repeat(64), "b".repeat(64)));
+    (sandbox, row)
+}
+
+fn audit_events(sandbox: &Sandbox) -> Vec<Value> {
+    let folder = sandbox.state.join("claude-audit");
+    fs::read_dir(&folder).into_iter().flatten().flatten()
+        .filter(|entry| entry.file_name().to_string_lossy().ends_with(".jsonl"))
+        .flat_map(|entry| fs::read_to_string(entry.path()).unwrap().lines().map(|line| serde_json::from_str::<Value>(line).unwrap()).collect::<Vec<_>>())
+        .filter(|event| event["event"].as_str().is_some_and(|name| name.starts_with("subscription.")))
+        .collect()
+}
+
+#[test]
+fn a_blocked_switch_records_its_reason_once_and_audits_it_without_identities() {
+    let (sandbox, row) = exhaustion_fixture(100, 100);
+    for _ in 0..2 {
+        let output = native_command(&sandbox, row.clone(), &["observe", SESSION_A]);
+        assert!(output.status.success(), "{}", stderr(&output));
+    }
+    let routes = cockpit::subscription_fallback::read_routes(&sandbox.state.join("cockpit/subscriptions/routes.json")).unwrap();
+    assert_eq!(routes[0].waiting.as_deref(), Some("both subscriptions are exhausted"));
+    let events = audit_events(&sandbox);
+    assert_eq!(events.len(), 1, "an unchanged reason is audited once: {events:?}");
+    assert_eq!(events[0]["event"], "subscription.waiting");
+    assert_eq!(events[0]["reason"], "both subscriptions are exhausted");
+    let text = events[0].to_string();
+    assert!(!text.contains(&"a".repeat(64)) && !text.contains(&"b".repeat(64)), "account fingerprints must not reach the audit log");
+}
+
+#[test]
+fn a_prepared_switch_clears_the_reason_and_audits_its_direction() {
+    let (sandbox, row) = exhaustion_fixture(100, 100);
+    assert!(native_command(&sandbox, row.clone(), &["observe", SESSION_A]).status.success());
+    let provider = sandbox.shims.join("python3");
+    let codex_recovered = fs::read_to_string(&provider).unwrap().replace("\"used_percent\":100", "\"used_percent\":10");
+    write_executable(&provider, &codex_recovered);
+    assert!(native_command(&sandbox, row, &["observe", SESSION_A]).status.success());
+    let routes = cockpit::subscription_fallback::read_routes(&sandbox.state.join("cockpit/subscriptions/routes.json")).unwrap();
+    assert!(matches!(routes[0].phase, cockpit::subscription_fallback::Phase::Pending(_)));
+    assert_eq!(routes[0].waiting, None);
+    let events = audit_events(&sandbox);
+    let prepared = events.iter().find(|event| event["event"] == "subscription.switch_prepared").expect("no switch audit");
+    assert_eq!(prepared["direction"], "Fallback");
+    assert_eq!(prepared["from_agent"], "claude");
+    assert_eq!(prepared["to_agent"], "codex");
+}
+
+#[test]
+fn a_handoff_the_manager_cannot_finish_is_audited_and_shown_as_waiting() {
+    let (sandbox, row) = exhaustion_fixture(100, 10);
+    sandbox.shim("cockpit", "exit 1");
+    let output = native_command(&sandbox, row, &["sweep"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let routes = cockpit::subscription_fallback::read_routes(&sandbox.state.join("cockpit/subscriptions/routes.json")).unwrap();
+    assert_eq!(routes[0].waiting.as_deref(), Some("the hand-off to the other subscription did not complete; it will retry"));
+    let paused: Vec<_> = audit_events(&sandbox).into_iter().filter(|event| event["event"] == "subscription.handoff_paused").collect();
+    assert_eq!(paused.len(), 1);
+    assert_eq!(paused[0]["generation"].as_str().map(str::len), Some(32));
 }
 
 #[test]

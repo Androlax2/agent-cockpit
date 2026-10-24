@@ -27,6 +27,46 @@ fn observation(binding: &Binding, capacity: SubscriptionCapacity) -> Observation
 }
 
 #[test]
+fn a_blocked_switch_names_why_it_waits() {
+    use cockpit::subscription_fallback::waiting_reason;
+    let source = binding("claude");
+    let mut observed = observation(&source, Exhausted);
+    assert_eq!(waiting_reason(&observed, false), None, "a switch that can happen now is not waiting");
+    observed.prompt_clear = false;
+    assert_eq!(waiting_reason(&observed, false).as_deref(), Some("waiting for the session to finish its turn and clear any typed draft"));
+    observed.prompt_clear = true;
+    observed.alternate = None;
+    assert_eq!(waiting_reason(&observed, false).as_deref(), Some("the other subscription's account or quota could not be read"));
+    observed.alternate = Some((selection("codex"), Exhausted));
+    assert_eq!(waiting_reason(&observed, false).as_deref(), Some("both subscriptions are exhausted"));
+    observed.alternate = Some((selection("codex"), Unknown));
+    assert_eq!(waiting_reason(&observed, false).as_deref(), Some("Codex quota is unconfirmed"));
+    let mut from_codex = observation(&binding("codex"), Exhausted);
+    from_codex.alternate = Some((selection("claude"), Unknown));
+    assert_eq!(waiting_reason(&from_codex, false).as_deref(), Some("Claude quota is unconfirmed or its paid extra usage is on"));
+    let mut healthy = observation(&source, Available);
+    healthy.prompt_clear = false;
+    assert_eq!(waiting_reason(&healthy, false), None, "an unexhausted session with a draft is not waiting for anything");
+    healthy.original_capacity = Available;
+    assert_eq!(waiting_reason(&healthy, true).as_deref(), Some("waiting for the session to finish its turn before returning to the original model"));
+}
+
+#[test]
+fn waiting_reasons_persist_and_report_only_real_changes() {
+    let sandbox = Sandbox::new();
+    let mut store = RoutingStore::load(&sandbox.state.join("subscriptions/routes.json")).unwrap();
+    let source = binding("claude");
+    store.track(source.clone(), "/projects/demo", "1797cdd6", 100).unwrap();
+    assert!(store.set_waiting(&source.session, Some("both subscriptions are exhausted")).unwrap());
+    assert!(!store.set_waiting(&source.session, Some("both subscriptions are exhausted")).unwrap());
+    drop(store);
+    let routes = cockpit::subscription_fallback::read_routes(&sandbox.state.join("subscriptions/routes.json")).unwrap();
+    assert_eq!(routes[0].waiting.as_deref(), Some("both subscriptions are exhausted"));
+    let mut store = RoutingStore::load(&sandbox.state.join("subscriptions/routes.json")).unwrap();
+    assert!(store.set_waiting(&source.session, None).unwrap());
+}
+
+#[test]
 fn exhausted_native_subscriptions_choose_the_other_subscription_in_both_directions() {
     for agent in ["claude", "codex"] {
         let sandbox = Sandbox::new();

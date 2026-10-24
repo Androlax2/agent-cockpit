@@ -681,6 +681,9 @@ fn bind_subscription(registry: &mut Registry, origin: &str, generation: &str) ->
     if has_todo_transfer { todos.try_save()?; }
     cockpit::prompts::transfer_subscription_prompts(&source.session, session).map_err(storage)?;
     routes.finish(origin, generation).map_err(storage)?;
+    cockpit::audit::record("daemon", "subscription.switched", "ok", json!({"origin":origin, "generation":generation,
+        "task":route.task, "direction":format!("{:?}", pending.direction), "from_agent":pending.source.selection.agent,
+        "to_agent":pending.target.agent, "to_model":pending.target.model, "session":session}));
     registry.publish();
     Ok(TeamReply { request_id:generation.into(),result:Ok(json!({"session":session,"bound":true})) })
 }

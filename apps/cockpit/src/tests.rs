@@ -7335,6 +7335,23 @@ fn prepare_subscription_hold() {
 }
 
 #[test]
+fn a_waiting_subscription_switch_shows_its_reason_once_in_the_message_line() {
+    use crate::subscription_fallback::{Binding, RoutingStore, Selection};
+    let (_fixture, mut app) = queue_fixture("waiting", 7200);
+    let source = Binding { session:SESSION_A.into(),runtime:"runtime-source".into(),native_thread:None,
+        selection:Selection { agent:"claude".into(),provider:"anthropic".into(),model:"claude-opus-4-7".into(),variant:Some("high".into()),account:"a".repeat(64) } };
+    let mut store = RoutingStore::load(&crate::paths::subscription_routes()).unwrap();
+    store.track(source, "/r/runway", "1797cdd6", 100).unwrap();
+    store.set_waiting(SESSION_A, Some("both subscriptions are exhausted")).unwrap();
+    drop(store);
+    app.dispatch_subscription_routes();
+    assert_eq!(app.message, "runway: subscription switch waiting: both subscriptions are exhausted");
+    app.message.clear();
+    app.dispatch_subscription_routes();
+    assert!(app.message.is_empty(), "an unchanged reason must not keep reappearing");
+}
+
+#[test]
 fn subscription_poll_starts_one_background_sweep_without_blocking_the_sidebar() {
     let (fixture, mut app) = queue_fixture("waiting", 7200);
     app.poll_subscription_routes();
