@@ -24,7 +24,7 @@ use ratatui::style::{Modifier, Style};
 use regex::Regex;
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -540,7 +540,10 @@ fn main() {
         Ok((found, answers_folder)) => Guide::new(&arguments[0], &found, answers_folder),
         Err(reason) => {
             println!("Cannot show guide {}: {reason}.", arguments[0]);
-            std::thread::sleep(Duration::from_secs(5));
+            // The pause keeps the window open long enough to read; piped output has no reader to wait for.
+            if io::stdout().is_terminal() {
+                std::thread::sleep(Duration::from_secs(5));
+            }
             std::process::exit(1);
         }
     };

@@ -23,7 +23,7 @@ build: ## Build the Rust programs in apps/ (the column, the osd daemon, the appr
 test: ## Build the OSD classifier and run the test suite
 	python3 -m unittest discover -s tools/tests -p 'test_*.py'
 	$(build_runner) cargo build --release --quiet --manifest-path apps/Cargo.toml -p osd --bin osd
-	$(build_runner) cargo test --release --quiet --manifest-path apps/Cargo.toml
+	$(build_runner) cargo nextest run --release --cargo-quiet --status-level fail --manifest-path apps/Cargo.toml
 
 install: build ## Link every package into your home and reload the user units
 	python3 tools/migrate-cockpit-names.py --prepare

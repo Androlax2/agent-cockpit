@@ -87,3 +87,11 @@ fn unusable_guides_are_refused() {
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_cockpit-guide")).arg("../etc").output().unwrap();
     assert!(String::from_utf8_lossy(&output.stdout).contains("not a guide id"));
 }
+
+#[test]
+fn a_refusal_without_a_terminal_exits_without_the_reading_pause() {
+    let started = std::time::Instant::now();
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_claude-guide")).arg("../etc").output().unwrap();
+    assert!(String::from_utf8_lossy(&output.stdout).contains("not a guide id"));
+    assert!(started.elapsed() < std::time::Duration::from_secs(2), "took {:?}", started.elapsed());
+}
