@@ -1697,9 +1697,11 @@ pub fn require_task_mapping(connection: &Connection, session: &VerifiedSession, 
 
 fn require_unreserved(connection: &Connection, task: &crate::teams::TaskKey, worker: Option<&str>) -> Result<(), TeamError> {
     connection.execute("DELETE FROM scheduling_reservations WHERE owner='chief' AND token IN (SELECT id FROM chief_assignments WHERE state IN ('completed','cancelled'))", [])?;
+    // Only a pending legacy launch may still pick any session of its project; observed "doing" work
+    // without a session reserves its own task, and per-worker busy checks cover whoever runs it.
     let owner: Option<(String, String)> = connection.query_row(
         "SELECT owner,worker FROM scheduling_reservations WHERE ((project=?1 OR project='') AND task_id=?2)
-            OR (worker<>'' AND worker=?3) OR ((project=?1 OR project='') AND worker='' AND owner<>'chief') LIMIT 1",
+            OR (worker<>'' AND worker=?3) OR ((project=?1 OR project='') AND worker='' AND owner='legacy') LIMIT 1",
         params![task.project, task.task_id, worker.unwrap_or("")], |row| Ok((row.get(0)?, row.get(1)?))).optional()?;
     if let Some((owner, worker)) = owner { return Err(conflict(&format!("work already reserved by {owner}: {worker}"))); }
     Ok(())

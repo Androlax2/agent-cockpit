@@ -472,6 +472,26 @@ fn an_unknown_legacy_launch_reserves_its_project_until_the_worker_is_known() {
 }
 
 #[test]
+fn a_doing_issue_without_a_session_does_not_block_dispatch_in_other_projects() {
+    let (mut connection, live) = setup();
+    let mut todos = cockpit::todo::TodoList::default();
+    todos.issues.insert("org/elsewhere#50".into(), serde_json::json!({"status":"doing","session":""}));
+    store::reconcile_todos(&mut connection, &todos, NOW).unwrap();
+    dispatch(&mut connection, &live, "unrelated-issue", "aaaaaaaa", 'b').unwrap();
+}
+
+#[test]
+fn a_doing_todo_without_a_session_reserves_only_its_own_task() {
+    let (mut connection, live) = setup();
+    let mut todos = cockpit::todo::TodoList::default();
+    todos.items.push(cockpit::todo::Item(serde_json::json!({"id":"cccccccc", "text":"started elsewhere", "cwd":"/project-a",
+        "status":"doing"}).as_object().unwrap().clone()));
+    store::reconcile_todos(&mut connection, &todos, NOW).unwrap();
+    dispatch(&mut connection, &live, "other-task", "aaaaaaaa", 'b').unwrap();
+    assert!(dispatch(&mut connection, &live, "same-task", "cccccccc", 'c').is_err());
+}
+
+#[test]
 fn upgrade_seeds_existing_chief_claims_before_any_legacy_reservation() {
     let (mut connection, live) = setup();
     dispatch(&mut connection, &live, "existing-claim", "aaaaaaaa", 'b').unwrap();
