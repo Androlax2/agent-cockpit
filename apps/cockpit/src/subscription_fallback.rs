@@ -138,7 +138,7 @@ pub fn native_input_is_clear(agent: &str, line: &str, cursor_column: u16) -> boo
     if cursor_column != 2 { return false; }
     match agent {
         "codex" => line == "\x1b[1m›\x1b[0m \x1b[2mAsk Codex to do anything\x1b[0m",
-        "claude" => line == "❯ ",
+        "claude" => line == "❯ " || line == "❯\u{a0}",
         _ => false,
     }
 }

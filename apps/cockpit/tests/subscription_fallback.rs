@@ -187,6 +187,10 @@ fn native_input_checks_reject_drafts_even_when_the_cursor_is_at_home() {
         ("claude", "❯ ", 2, true),
         ("claude", "❯ Do not continue yet", 2, false),
         ("claude", "❯ ", 7, false),
+        // Claude Code 2.1.309 draws its empty prompt with a no-break space (live capture 2026-10-24).
+        ("claude", "❯\u{a0}", 2, true),
+        ("claude", "❯\u{a0}Do not continue yet", 2, false),
+        ("claude", "❯\u{a0}", 7, false),
         ("opencode", "❯ ", 2, false),
     ] {
         assert_eq!(native_input_is_clear(agent, line, cursor), clear, "{agent}/{line:?}/{cursor}");
