@@ -648,6 +648,8 @@ fn bind_subscription(registry: &mut Registry, origin: &str, generation: &str) ->
     routes.record_runtime(generation, binding, &route.directory).map_err(storage)?;
     let source = cockpit::sessions::Session { session:pending.source.session.clone(),agent:pending.source.selection.agent.clone(),
         cwd:route.directory.clone(),branch:pending.source_branch.clone(),repository:pending.source_repository.clone(), ..Default::default() };
+    // Taken before any store commits: a busy TODO writer fails the bind closed with nothing moved.
+    let todo_guard = cockpit::todo::lock_mutations().map_err(|error| storage(format!("cannot serialize subscription task transfer: {error}")))?;
     let mut todos = cockpit::todo::TodoList::load_checked().map_err(storage)?;
     if !route.is_session_task() && todos.status_of(&route.task) != "doing" { return Err(conflict("subscription task is missing or no longer in progress")); }
     let mut continuity = cockpit::continuity::Continuity::load(&cockpit::paths::continuity()).map_err(storage)?;
@@ -670,7 +672,8 @@ fn bind_subscription(registry: &mut Registry, origin: &str, generation: &str) ->
     } else { todos.transfer_subscription_task(&route.task, &source.session, session).map_err(storage)? };
     store::replace_subscription_member(registry.teams.as_mut().expect("opened above"), generation, &task, &source_member, &replacement_member)?;
     continuity.transfer_subscription_task(&route.task, &source, &replacement, now_ms() / 1000).map_err(storage)?;
-    if has_todo_transfer { todos.try_save()?; }
+    if has_todo_transfer { todos.save_guarded(&todo_guard)?; }
+    drop(todo_guard);
     cockpit::prompts::transfer_subscription_prompts(&source.session, session).map_err(storage)?;
     routes.finish(origin, generation).map_err(storage)?;
     cockpit::audit::record("daemon", "subscription.switched", "ok", json!({"origin":origin, "generation":generation,

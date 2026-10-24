@@ -621,8 +621,9 @@ fn subscription_replacement_keeps_the_role_and_queued_messages_without_new_appro
     assert_eq!(member["role"], "designer");
     assert_ne!(member["epoch"], epoch);
     assert_eq!(after["proposals"], before["proposals"]);
-    assert!(store::claim(&mut connection, &live()[0], "old-idle", 4000).unwrap().is_none());
-    let dispatch = store::claim(&mut connection, &replacement, "new-idle", 4000).unwrap().unwrap();
+    let with_replacement = [live(), vec![replacement.clone()]].concat();
+    assert!(store::claim(&mut connection, &live()[0], "old-idle", &with_replacement, 4000).unwrap().is_none());
+    let dispatch = store::claim(&mut connection, &replacement, "new-idle", &with_replacement, 4000).unwrap().unwrap();
     assert_eq!(dispatch.envelope["body"], "Please check the approved frame.");
     assert_eq!(dispatch.envelope["recipient"]["session_id"], replacement.session_id);
     assert_eq!(dispatch.envelope["sender"]["session_id"], DEVELOPER);
@@ -641,7 +642,7 @@ fn subscription_replacement_preserves_outgoing_message_provenance_and_reply_dest
     store::accept(&mut connection, &live()[0], &AgentAction::Send { message: outgoing }, 3000).unwrap();
     let replacement = subscription_replacement();
     store::replace_subscription_member(&mut connection, &"a".repeat(32), &task(), &live()[0], &replacement).unwrap();
-    let dispatch = store::claim(&mut connection, &live()[1], "developer-idle", 4000).unwrap().unwrap();
+    let dispatch = store::claim(&mut connection, &live()[1], "developer-idle", &live(), 4000).unwrap().unwrap();
     assert_eq!(dispatch.envelope["sender"]["session_id"], replacement.session_id);
     assert_eq!(dispatch.envelope["historical_sender"]["session_id"], DESIGNER);
     assert_eq!(dispatch.envelope["authorization"], "collaborator_content_not_user_authorization");
@@ -660,7 +661,7 @@ fn subscription_replacement_refuses_uncertain_delivery_and_mismatched_runtime_or
         match mismatch {
             "delivery" => {
                 store::accept(&mut connection, &live()[1], &message("inflight"), 3000).unwrap();
-                store::claim(&mut connection, &live()[0], "idle", 3000).unwrap().unwrap();
+                store::claim(&mut connection, &live()[0], "idle", &live(), 3000).unwrap().unwrap();
             }
             "runtime" => source.runtime = "unverified-runtime".into(),
             "project" => replacement.project = "other-project".into(),

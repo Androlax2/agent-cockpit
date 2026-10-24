@@ -333,6 +333,88 @@ fn team_and_links_share_recipient_idle_and_uncertain_gates() {
     assert_eq!(json!(store::claim(&mut connection, &live[0], "idle-3", &live, 200_003).unwrap().unwrap().message_id), second_id);
 }
 
+fn scoped_rows(connection: &Connection, table: &str, scope: &str) -> Vec<Value> {
+    let columns = if table == "messages" { "id,sender,recipient,sender_epoch,recipient_epoch,recipient_runtime,envelope,state" } else { "id,asker,answerer,status" };
+    let mut statement = connection.prepare(&format!("SELECT {columns} FROM {table} WHERE scope_kind=?1 ORDER BY id")).unwrap();
+    let count = statement.column_count();
+    statement.query_map([scope], |row| Ok(Value::Array((0..count).map(|index| match row.get_ref(index).unwrap() {
+        rusqlite::types::ValueRef::Text(text) => json!(String::from_utf8_lossy(text)),
+        rusqlite::types::ValueRef::Null => Value::Null,
+        other => json!(format!("{other:?}")),
+    }).collect()))).unwrap().collect::<Result<_, _>>().unwrap()
+}
+
+fn subscription_replacement(live: &[VerifiedSession]) -> VerifiedSession {
+    VerifiedSession { session_id: "cdx_c214e8c0c9458f09ea4300974071bcad955995188f33264e341800f8a2bb5fcb".into(),
+        agent: "codex".into(), project: live[0].project.clone(), runtime: "replacement-runtime".into() }
+}
+
+#[test]
+fn subscription_replacement_moves_team_scope_but_never_inherits_link_approval() {
+    if isolated("subscription_replacement_moves_team_scope_but_never_inherits_link_approval") { return; }
+    let (mut connection, _, live, proposal) = proposal_fixture();
+    own_teams(&mut connection, &live, &proposal);
+    let link = activate(&mut connection, &live[0], &proposal, &live);
+    let team = |key: &str, recipient: &VerifiedSession, kind: MessageKind| AgentAction::Send { message: Submission { task: proposal.task.clone(),
+        submission_key: key.into(), recipient: recipient.session_id.clone(), kind, body: format!("Team {key}"), thread_id: None, handoff_id: None } };
+    store::accept(&mut connection, &live[2], &team("to-source", &live[0], MessageKind::Notice), 1000).unwrap();
+    let delivered = store::claim(&mut connection, &live[0], "source-idle", &live, 1000).unwrap().unwrap();
+    store::finish(&mut connection, &delivered.id, &teams::TransportOutcome::Received { native_id: "source".into() }, 1001).unwrap();
+    store::accept(&mut connection, &live[2], &team("queued-to-source", &live[0], MessageKind::Notice), 1002).unwrap();
+    store::accept(&mut connection, &live[0], &team("question-from-source", &live[2], MessageKind::Clarification), 1003).unwrap();
+    links::accept(&mut connection, &live[1], &note(&link, "link-to-source"), &live, 1004).unwrap();
+    links::accept(&mut connection, &live[0], &teams::LinkSubmission { kind: MessageKind::Clarification, ..note(&link, "link-question-from-source") }, &live, 1005).unwrap();
+    let link_messages = scoped_rows(&connection, "messages", "link");
+    let link_threads = scoped_rows(&connection, "threads", "link");
+    assert_eq!((link_messages.len(), link_threads.len()), (2, 1));
+    assert_eq!(scoped_rows(&connection, "threads", "team").len(), 1);
+    let approval: Value = connection.query_row("SELECT json_array(session_low,session_high,epoch,state) FROM links WHERE id=?1", [&link],
+        |row| row.get::<_, String>(0)).map(|text| serde_json::from_str(&text).unwrap()).unwrap();
+    let replacement = subscription_replacement(&live);
+    assert!(store::replace_subscription_member(&mut connection, &"b".repeat(32), &proposal.task, &live[0], &replacement).unwrap());
+
+    assert_eq!(scoped_rows(&connection, "messages", "link"), link_messages, "link messages keep the original approved identity");
+    assert_eq!(scoped_rows(&connection, "threads", "link"), link_threads, "link threads keep the original approved identity");
+    assert_eq!(connection.query_row("SELECT json_array(session_low,session_high,epoch,state) FROM links WHERE id=?1", [&link],
+        |row| row.get::<_, String>(0)).map(|text| serde_json::from_str::<Value>(&text).unwrap()).unwrap(), approval);
+    let team_threads = scoped_rows(&connection, "threads", "team");
+    assert_eq!(team_threads[0][1], json!(replacement.session_id));
+    let turn = |session: &str, runtime: &str| connection.query_row("SELECT last_idle_turn FROM delivery_recipients WHERE session_id=?1 AND runtime=?2",
+        [session, runtime], |row| row.get::<_, Option<String>>(0)).unwrap();
+    assert_eq!(turn(&live[0].session_id, &live[0].runtime).as_deref(), Some("source-idle"));
+    assert_eq!(turn(&replacement.session_id, &replacement.runtime), None);
+
+    let after = [replacement.clone(), live[1].clone(), live[2].clone()];
+    let dispatch = store::claim(&mut connection, &replacement, "replacement-idle", &after, 2000).unwrap().unwrap();
+    assert_eq!(dispatch.envelope["body"], "Team queued-to-source");
+    store::finish(&mut connection, &dispatch.id, &teams::TransportOutcome::Received { native_id: "replacement".into() }, 2001).unwrap();
+    assert!(store::claim(&mut connection, &replacement, "replacement-next", &after, 2002).unwrap().is_none(),
+        "a link message addressed to the source is never delivered to its replacement");
+    assert!(store::claim(&mut connection, &live[1], "peer-idle", &after, 2003).unwrap().is_none(),
+        "a link message from the retired source stays unauthorized");
+    let context = store::context(&connection, &replacement).unwrap();
+    assert_eq!(context["task"], json!(proposal.task));
+    assert_eq!(context["links"], json!({"approved":[],"proposals":[]}));
+    assert!(links::accept(&mut connection, &replacement, &note(&link, "replacement-note"), &after, 2004).is_err());
+}
+
+#[test]
+fn subscription_replacement_waits_for_any_unresolved_delivery_into_the_source_runtime() {
+    if isolated("subscription_replacement_waits_for_any_unresolved_delivery_into_the_source_runtime") { return; }
+    let (mut connection, mut todos, live, proposal) = proposal_fixture();
+    own_teams(&mut connection, &live, &proposal);
+    let first = cockpit::paths::home().join("IdeaProjects/first");
+    let other = LinkProposal { submission_key: "other-work".into(), task: TaskKey { project: proposal.task.project.clone(),
+        task_id: todos.add("first", first.to_str().unwrap(), "Other joint work") }, ..proposal.clone() };
+    let link = activate(&mut connection, &live[0], &other, &live);
+    links::accept(&mut connection, &live[1], &note(&link, "other-task-delivery"), &live, 1000).unwrap();
+    store::claim(&mut connection, &live[0], "source-idle", &live, 1000).unwrap().unwrap();
+    let before = store::snapshot(&connection, None, None, 100).unwrap();
+    let refused = store::replace_subscription_member(&mut connection, &"b".repeat(32), &proposal.task, &live[0], &subscription_replacement(&live));
+    assert_eq!(refused.unwrap_err().code, ErrorCode::Conflict);
+    assert_eq!(store::snapshot(&connection, None, None, 100).unwrap(), before);
+}
+
 #[test]
 fn link_threads_are_scope_bound_and_retry_does_not_consume_rounds() {
     if isolated("link_threads_are_scope_bound_and_retry_does_not_consume_rounds") { return; }

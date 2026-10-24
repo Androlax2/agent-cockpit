@@ -1211,7 +1211,7 @@ impl Registry {
         let route = routes.routes().find(|route| route.admitted_generation.as_deref() == Some(generation))
             .cloned().ok_or("subscription admission route disappeared")?;
         let _task_writer = if !route.is_session_task() && (!route.initial_admitted || initial && !route.initial_started) {
-            Some(cockpit::todo::TodoList::lock_writer().map_err(|error| format!("cannot serialize subscription task admission: {error}"))?)
+            Some(cockpit::todo::lock_mutations().map_err(|error| format!("cannot serialize subscription task admission: {error}"))?)
         } else {None};
         if !route.initial_admitted || initial && !route.initial_started {
             if !route.is_session_task() && cockpit::todo::TodoList::load_checked()?.status_of(&route.task) != "doing" {

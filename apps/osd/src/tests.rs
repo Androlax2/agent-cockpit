@@ -634,17 +634,21 @@ fn subscription_prompt_admission_requires_completed_binding_and_the_real_sender(
     fs::write(cockpit::paths::todo(),&task_state).unwrap();
     let todo_path = cockpit::paths::todo();
     let (ready,waiting) = std::sync::mpsc::channel();
+    let (admitted_tx,admitted_rx) = std::sync::mpsc::channel::<()>();
     let completing = std::thread::spawn(move || {
-        let writer = fs::OpenOptions::new().create(true).truncate(false).write(true).open(todo_path.with_extension("lock")).unwrap();
-        writer.lock().unwrap();
+        let writer = cockpit::todo::lock_mutations().unwrap();
         ready.send(()).unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        admitted_rx.recv().unwrap();
         fs::write(todo_path,"{\"items\":[]}").unwrap();
+        drop(writer);
     });
     waiting.recv().unwrap();
     let admitted = bench.registry.request_from("subscription-initial-gate",&raw,40);
+    admitted_tx.send(()).unwrap();
     completing.join().unwrap();
-    assert!(admitted.is_err(),"initial admission must serialize behind an in-flight task termination writer");
+    assert!(admitted.as_ref().is_err_and(|error| error.contains("another TODO mutation")),
+        "initial admission must fail closed behind the same guard an in-flight task termination writer holds: {admitted:?}");
+    assert!(bench.registry.request_from("subscription-initial-gate",&raw,40).is_err(),"the terminated task must not start after the writer releases");
     fs::write(cockpit::paths::todo(),task_state).unwrap();
     assert!(bench.registry.request_from("subscription-initial-gate",&raw,40).is_ok());
     assert_eq!(cockpit::prompts::count(CODEX_SESSION),0);
@@ -785,6 +789,56 @@ fn host_subscription_binding_stays_paused_until_retirement_and_every_store_commi
     let during_admission = crate::teams::request(&mut bench.registry,40,cockpit::teams::AgentAction::Receive).unwrap().result.unwrap();
     assert!(during_admission.is_null(),"admission reserves the idle boundary until a fresh native turn-end report");
     }
+}
+
+#[test]
+fn subscription_bind_fails_closed_before_any_commit_while_a_todo_mutation_holds_the_guard() {
+    use cockpit::subscription_fallback::{Binding, Observation, RoutingStore, Selection};
+    use cockpit::usage::SubscriptionCapacity::{Available, Exhausted};
+    use cockpit::{continuity::{Continuity, TaskSnapshot}, todo::{Entry, TodoList}};
+    let mut bench = linked_team_bench();
+    let directory = bench.registry.sessions[SESSION_A].cwd.clone();
+    let source_session = cockpit::sessions::Session::from_value(&bench.registry.snapshot_rows().into_iter().find(|row| row["session"] == SESSION_A).unwrap()).unwrap();
+    let mut todos = TodoList::load();
+    assert!(todos.set_status("1d3fd318", "doing", SESSION_A));
+    let task = TaskSnapshot::from_entry(&Entry::Typed(todos.items[0].clone()), "");
+    let mut continuity = Continuity::load(&cockpit::paths::continuity()).unwrap();
+    continuity.assign(&task, &source_session, 100).unwrap();
+    let source = Binding { session:SESSION_A.into(), runtime:"runtime-10".into(), native_thread:None,
+        selection:Selection { agent:"claude".into(), provider:"anthropic".into(), model:"claude-opus-4-7".into(), variant:Some("high".into()), account:"a".repeat(64) } };
+    let target_selection = Selection { agent:"codex".into(), provider:"openai".into(), model:"gpt-6.1-sol".into(), variant:Some("high".into()), account:"b".repeat(64) };
+    let mut routes = RoutingStore::load(&cockpit::paths::subscription_routes()).unwrap();
+    routes.track(source.clone(), &directory, "1d3fd318", 100).unwrap();
+    let transition = routes.reconcile(&[Observation { binding:source,session:source_session,current_capacity:Exhausted,
+        original_capacity:Exhausted,alternate:Some((target_selection,Available)),has_pending_work:true,prompt_clear:true,manual_override:false }], 101).unwrap().remove(0);
+    routes.mark_retired(SESSION_A, &transition.generation).unwrap();
+    routes.mark_submitted(SESSION_A, &transition.generation).unwrap();
+    drop(routes);
+    {
+        let mut world = bench.world.borrow_mut();
+        world.sender_runtimes.remove(&10);
+        world.sender_targets.insert(40,target(&[("tmux_pane","%40")]));
+        world.sender_runtimes.insert(40,"runtime-40".into());
+        world.sender_directories.insert(40,directory.clone());
+        world.subscription_tokens.insert(40,transition.generation.clone());
+    }
+    bench.registry.report_from(parse_session(&json!({"session":CODEX_SESSION,"native_thread":SESSION_A,"agent":"codex",
+        "project":"project-a","cwd":directory,"state":"working"}).to_string()).unwrap(), 40).unwrap();
+    let request = json!({"request":"subscription_bind","origin":SESSION_A,"generation":transition.generation});
+    let bind = |bench: &mut Bench| crate::teams::host(&mut bench.registry, 0, serde_json::from_value(request.clone()).unwrap());
+    let designer = |bench: &mut Bench| crate::teams::host_snapshot(&mut bench.registry).unwrap()["members"].as_array().unwrap().iter()
+        .find(|member| member["role"] == "designer").unwrap()["session_id"].clone();
+    let held = cockpit::todo::lock_mutations().unwrap();
+    assert!(bind(&mut bench).is_err(), "the coordinator must not persist TODO ownership around the mutation guard");
+    drop(held);
+    assert_eq!(designer(&mut bench), SESSION_A, "no team role moves while the TODO transfer cannot be persisted");
+    assert!(TodoList::load().busy(SESSION_A));
+    let active: Vec<_> = Continuity::load(&cockpit::paths::continuity()).unwrap().tasks()["1d3fd318"].assignments.iter()
+        .filter(|assignment| assignment.active).map(|assignment| assignment.session.clone()).collect();
+    assert_eq!(active, [SESSION_A]);
+    bind(&mut bench).unwrap().result.unwrap();
+    assert_eq!(designer(&mut bench), CODEX_SESSION);
+    assert!(TodoList::load().busy(CODEX_SESSION));
 }
 
 #[test]

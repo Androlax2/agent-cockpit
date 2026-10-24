@@ -206,12 +206,13 @@ impl Item {
 
 const RESULT_MAX: usize = 1000;
 
-pub(crate) struct MutationGuard {
+pub struct MutationGuard {
     _lock: fs::File,
 }
 
 /// Held across the SQLite commit and JSON replacement; never unlink the stable lock inode.
-pub(crate) fn lock_mutations() -> std::io::Result<MutationGuard> {
+/// Nonblocking: a caller that meets another mutation fails closed and retries later.
+pub fn lock_mutations() -> std::io::Result<MutationGuard> {
     use std::os::{fd::AsRawFd, unix::fs::{OpenOptionsExt, PermissionsExt}};
     let path = paths::todo().with_extension("mutation.lock");
     fs::create_dir_all(path.parent().unwrap())?;
@@ -637,15 +638,6 @@ impl TodoList {
         self.save_guarded(&guard)
     }
 
-    pub fn lock_writer() -> std::io::Result<fs::File> {
-        use std::os::unix::fs::OpenOptionsExt;
-        let path = paths::todo();
-        fs::create_dir_all(path.parent().unwrap())?;
-        let lock = fs::OpenOptions::new().create(true).truncate(false).write(true).mode(0o600).open(path.with_extension("lock"))?;
-        lock.lock()?;
-        Ok(lock)
-    }
-
     fn read_for_update(allow_missing: bool) -> std::io::Result<Value> {
         let data: Value = match fs::read(paths::todo()) {
             Ok(bytes) => serde_json::from_slice(&bytes).map_err(std::io::Error::other)?,
@@ -665,7 +657,7 @@ impl TodoList {
             && self.original["issues"].as_object().is_none_or(Map::is_empty)
     }
 
-    fn save_guarded(&mut self, guard: &MutationGuard) -> std::io::Result<()> {
+    pub fn save_guarded(&mut self, guard: &MutationGuard) -> std::io::Result<()> {
         let oldest = now_secs() - DONE_KEPT_DAYS * 86400;
         for item in self.items.iter().filter(|item| item.status() == "done" && item.updated() < oldest) {
             invalidate_item(item, "done", guard).map_err(std::io::Error::other)?;

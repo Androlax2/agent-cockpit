@@ -994,7 +994,7 @@ pub fn replace_subscription_member(connection: &mut Connection, generation: &str
     let task_key = serde_json::to_string(task)?;
     let fingerprint = audit::sha256_hex(serde_json::to_vec(&(task, source, replacement))?.as_slice());
     let request_id = format!("subscription-{generation}");
-    let transaction = connection.transaction()?;
+    let transaction = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     let previous: Option<(String, String)> = transaction.query_row("SELECT fingerprint,response FROM host_actions WHERE request_id=?1",
         [&request_id], |row| Ok((row.get(0)?, row.get(1)?))).optional()?;
     if let Some((recorded, response)) = previous {
@@ -1009,11 +1009,13 @@ pub fn replace_subscription_member(connection: &mut Connection, generation: &str
     let has_membership = membership.is_some();
     if let Some((bound_task, runtime, agent, epoch)) = membership {
         if bound_task != task_key || runtime != source.runtime || agent != source.agent { return Err(conflict()); }
-        let uncertain: bool = transaction.query_row("SELECT EXISTS(SELECT 1 FROM messages WHERE task_key=?1 AND (sender=?2 OR recipient=?2) AND state IN ('submitting','uncertain'))",
-            params![task_key, source.session_id], |row| row.get(0))?;
+        // The runtime gate is shared by every scope: any unresolved delivery into the source blocks.
+        let uncertain: bool = transaction.query_row("SELECT EXISTS(SELECT 1 FROM messages WHERE state IN ('submitting','uncertain')
+            AND ((recipient=?2 AND recipient_runtime=?3) OR (scope_kind='team' AND task_key=?1 AND (sender=?2 OR recipient=?2))))",
+            params![task_key, source.session_id, source.runtime], |row| row.get(0))?;
         if uncertain { return Err(TeamError::new(ErrorCode::Conflict, "subscription transfer waits for uncertain collaborator delivery to be reconciled")); }
         let next_epoch = identifier()?;
-        let mut statement = transaction.prepare("SELECT id,envelope,sender,recipient FROM messages WHERE task_key=?1 AND (sender=?2 OR recipient=?2) AND state IN ('queued','ready')")?;
+        let mut statement = transaction.prepare("SELECT id,envelope,sender,recipient FROM messages WHERE scope_kind='team' AND task_key=?1 AND (sender=?2 OR recipient=?2) AND state IN ('queued','ready')")?;
         let queued: Vec<(String, String, String, String)> = statement.query_map(params![task_key,source.session_id],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))?.collect::<Result<_, _>>()?;
         drop(statement);
@@ -1033,14 +1035,18 @@ pub fn replace_subscription_member(connection: &mut Connection, generation: &str
             }
             transaction.execute("UPDATE messages SET envelope=?2 WHERE id=?1", params![id,envelope.to_string()])?;
         }
-        transaction.execute("UPDATE threads SET asker=?3 WHERE task_key=?1 AND asker=?2 AND status<>'resolved'", params![task_key,source.session_id,replacement.session_id])?;
-        transaction.execute("UPDATE threads SET answerer=?3 WHERE task_key=?1 AND answerer=?2 AND status<>'resolved'", params![task_key,source.session_id,replacement.session_id])?;
+        // Link approval binds the exact session and runtime; a replacement never inherits it.
+        transaction.execute("UPDATE threads SET asker=?3 WHERE scope_kind='team' AND task_key=?1 AND asker=?2 AND status<>'resolved'", params![task_key,source.session_id,replacement.session_id])?;
+        transaction.execute("UPDATE threads SET answerer=?3 WHERE scope_kind='team' AND task_key=?1 AND answerer=?2 AND status<>'resolved'", params![task_key,source.session_id,replacement.session_id])?;
         transaction.execute("UPDATE handoffs SET developer=?3,developer_epoch=?4 WHERE task_key=?1 AND developer=?2 AND developer_epoch=?5 AND status='current'",
             params![task_key,source.session_id,replacement.session_id,next_epoch,epoch])?;
         transaction.execute("UPDATE spawns SET session_id=?3,agent=?4 WHERE task_key=?1 AND session_id=?2 AND status='started'",
             params![task_key,source.session_id,replacement.session_id,replacement.agent])?;
         transaction.execute("UPDATE members SET session_id=?2,agent=?3,runtime=?4,epoch=?5,last_idle_turn=NULL WHERE task_key=?1 AND session_id=?6",
             params![task_key,replacement.session_id,replacement.agent,replacement.runtime,next_epoch,source.session_id])?;
+        // The source's record stays with its link identity; never erase a turn already used by this runtime.
+        transaction.execute("INSERT INTO delivery_recipients VALUES (?1,?2,NULL) ON CONFLICT(session_id,runtime) DO NOTHING",
+            params![replacement.session_id,replacement.runtime])?;
     }
     transaction.execute("INSERT INTO host_actions (request_id,fingerprint,response) VALUES (?1,?2,?3)", params![request_id,fingerprint,serde_json::to_string(&has_membership)?])?;
     transaction.commit()?;
