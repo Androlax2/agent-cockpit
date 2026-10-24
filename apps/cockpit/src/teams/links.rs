@@ -221,6 +221,7 @@ fn approve(transaction: &Transaction<'_>, id: &str, revision: i64, hash: &str, l
         return Err(TeamError::new(ErrorCode::Conflict, "link identities changed; propose a new link"));
     }
     require_open_work(transaction, &proposal.task, proposal.generation)?;
+    close_replaced_identity_links(transaction, &proposal.task, &participants, now_ms)?;
     for participant in &participants {
         crate::chief::store::require_non_chief(transaction, &participant.session_id)?;
         let active: i64 = transaction.query_row("SELECT count(*) FROM links WHERE state='active' AND (session_low=?1 OR session_high=?1)",
@@ -238,6 +239,26 @@ fn approve(transaction: &Transaction<'_>, id: &str, revision: i64, hash: &str, l
         params![link_id,id,revision,hash,task_key,proposal.generation,low,high,store::identifier()?,now_ms])?;
     transaction.execute("UPDATE link_proposals SET status='approved' WHERE id=?1", [id])?;
     Ok(json!({"link_id":link_id,"proposal_id":id,"status":"active"}))
+}
+
+/// A restarted session gets a new runtime, and its old link can never deliver again (require_live).
+/// Theo approving a fresh link for the same pair and work closes that dead one instead of
+/// refusing the approval as a duplicate; a link whose identities still match stays a conflict.
+fn close_replaced_identity_links(transaction: &Transaction<'_>, task: &TaskKey, participants: &[VerifiedSession; 2], now_ms: i64) -> Result<(), TeamError> {
+    let mut statement = transaction.prepare("SELECT l.id,l.proposal_id FROM links l JOIN link_participants own ON own.proposal_id=l.proposal_id
+        JOIN link_participants peer ON peer.proposal_id=l.proposal_id AND peer.slot!=own.slot
+        WHERE l.state='active' AND l.task_key=?1 AND own.session_id=?2 AND peer.session_id=?3")?;
+    let candidates = statement.query_map(params![serde_json::to_string(task)?, participants[0].session_id, participants[1].session_id],
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?.collect::<Result<Vec<_>, _>>()?;
+    for (link_id, proposal_id) in candidates {
+        let bound = transaction.prepare("SELECT session_id,agent,project,runtime FROM link_participants WHERE proposal_id=?1")?
+            .query_map([&proposal_id], |row| Ok(VerifiedSession { session_id: row.get(0)?, agent: row.get(1)?, project: row.get(2)?, runtime: row.get(3)? }))?
+            .collect::<Result<Vec<_>, _>>()?;
+        if bound.iter().all(|identity| participants.contains(identity)) { continue; }
+        transaction.execute("UPDATE links SET state='closed',closure_reason='identity_replaced',closed_at=?2 WHERE id=?1 AND state='active'", params![link_id,now_ms])?;
+        transaction.execute("UPDATE messages SET state='cancelled',last_error='link identity replaced' WHERE scope_kind='link' AND link_id=?1 AND state IN ('queued','ready')", [&link_id])?;
+    }
+    Ok(())
 }
 
 /// Host socket only. Link controls share the existing host-action replay namespace atomically.

@@ -522,6 +522,43 @@ fn recovery_cancels_replaced_link_identities_but_preserves_team_delivery() {
 }
 
 #[test]
+fn a_restarted_participant_can_be_linked_again_and_the_dead_link_closes() {
+    if isolated("a_restarted_participant_can_be_linked_again_and_the_dead_link_closes") { return; }
+    let (mut connection, _, live, proposal) = proposal_fixture();
+    let old_link = activate(&mut connection, &live[0], &proposal, &live);
+    links::accept(&mut connection, &live[1], &note(&old_link, "before-restart"), &live, 1000).unwrap();
+    let mut restarted = live.clone();
+    restarted[0].runtime = "first-runtime-after-restart".into();
+    assert_eq!(store::context(&connection, &restarted[0]).unwrap()["links"], json!({"approved":[],"proposals":[]}),
+        "a new runtime never inherits the old approval");
+
+    let fresh = LinkProposal { submission_key: "after-restart".into(), ..proposal.clone() };
+    let new_link = activate(&mut connection, &restarted[0], &fresh, &restarted);
+
+    let state = |link: &str| connection.query_row("SELECT state||':'||coalesce(closure_reason,'') FROM links WHERE id=?1", [link], |row| row.get::<_, String>(0)).unwrap();
+    assert_eq!(state(&old_link), "closed:identity_replaced");
+    assert_eq!(state(&new_link), "active:");
+    assert_eq!(connection.query_row("SELECT state FROM messages WHERE scope_kind='link' AND link_id=?1", [&old_link], |row| row.get::<_, String>(0)).unwrap(), "cancelled");
+    let approved = &store::context(&connection, &restarted[0]).unwrap()["links"]["approved"];
+    assert_eq!(approved.as_array().unwrap().len(), 1);
+    assert_eq!(approved[0]["link_id"], json!(new_link));
+    links::accept(&mut connection, &restarted[0], &note(&new_link, "after-restart"), &restarted, 2000).unwrap();
+}
+
+#[test]
+fn a_second_link_for_the_same_live_pair_and_work_is_still_refused() {
+    if isolated("a_second_link_for_the_same_live_pair_and_work_is_still_refused") { return; }
+    let (mut connection, _, live, proposal) = proposal_fixture();
+    let link = activate(&mut connection, &live[0], &proposal, &live);
+    let duplicate = LinkProposal { submission_key: "duplicate".into(), ..proposal.clone() };
+    let pending = links::propose(&mut connection, &live[0], &duplicate, &live, 0).unwrap().result.unwrap();
+    let approval = link_approval(&connection, &pending, "approve-duplicate");
+    let refused = store::control(&mut connection, &approval, &live, 1).unwrap_err();
+    assert_eq!(refused.code, ErrorCode::Conflict);
+    assert_eq!(connection.query_row("SELECT state FROM links WHERE id=?1", [&link], |row| row.get::<_, String>(0)).unwrap(), "active");
+}
+
+#[test]
 fn closure_and_claim_are_ordered_across_connections() {
     if isolated("closure_and_claim_are_ordered_across_connections") { return; }
     use std::sync::{Arc, Barrier};
