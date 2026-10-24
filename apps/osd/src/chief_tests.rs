@@ -616,11 +616,17 @@ const NATIVE_TELEMETRY_HARNESS: &str = r#"
 const [plugin, sessionID, mode] = process.argv.slice(2)
 const {default: definition} = await import(plugin)
 const calls = []
+let route = mode==='other-route'?{type:'session',sessionID:'ses_3f2a9c0b2000AbCdEfGhIjKlMn'}
+  :mode==='home-route'?{type:'home'}:{type:'session',sessionID}
 const pending = () => [{id:'private-id',sessionID,text:'PRIVATE-NATIVE-CONTENT'}]
-const context = {client:{
+const context = {ui:{router:{current:()=>{
+  if(mode==='route-error') throw new Error('PRIVATE-NATIVE-CONTENT')
+  return route
+}}},client:{
   session:{
     active:async (options) => {
       calls.push('active')
+      if(mode==='route-changes') route={type:'session',sessionID:'ses_3f2a9c0b2000AbCdEfGhIjKlMn'}
       if(mode==='error') throw new Error('PRIVATE-NATIVE-CONTENT')
       if(mode==='timeout') return await new Promise((resolve,reject)=>options.signal.addEventListener('abort',()=>reject(new Error('timeout')),{once:true}))
       if(mode==='bad-active') return []
@@ -632,6 +638,7 @@ const context = {client:{
   },
   permission:{list:async (input) => { calls.push(['permissions',input]); return mode==='permission'?pending():[] }},
 }}
+if(mode==='missing-router') delete context.ui.router
 const keepAlive = setInterval(()=>{},1000)
 const cleanup = await definition.setup(context)
 await new Promise(resolve=>setTimeout(resolve,50))
@@ -685,7 +692,9 @@ fn native_telemetry_pipeline(bench: &mut Bench, mode: &str) -> Vec<serde_json::V
     let output = child.wait_with_output().unwrap();
     assert!(output.status.success(),"{}",String::from_utf8_lossy(&output.stderr));
     let calls:Vec<serde_json::Value> = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(calls.len(),4,"producer must read all native pending-input sources");
+    if !matches!(mode,"other-route"|"home-route"|"route-error"|"missing-router") {
+        assert_eq!(calls.len(),4,"producer must read all native pending-input sources");
+    }
     for call in calls.iter().filter(|call|call.is_array()) { assert_eq!(call[1]["sessionID"],OPENCODE_SESSION); }
     assert!(!requests.is_empty(),"production observer never called real cockpit-team IPC");
     assert!(!serde_json::to_string(&requests).unwrap().contains("PRIVATE-NATIVE-CONTENT"));
@@ -695,7 +704,8 @@ fn native_telemetry_pipeline(bench: &mut Bench, mode: &str) -> Vec<serde_json::V
 #[test]
 fn chief_production_native_plugin_to_ipc_derives_availability_without_host_observation() {
     use cockpit::teams::Role;
-    for mode in ["idle","busy","child-busy","inbox","permission","forms","malformed","bad-active","wrong-session","error","timeout"] {
+    for mode in ["idle","busy","child-busy","inbox","permission","forms","malformed","bad-active","wrong-session","error","timeout",
+        "other-route","home-route","route-error","missing-router","route-changes"] {
         let mut bench = team_bench();
         let worker = verified(&mut bench,OPENCODE_SESSION);
         let entry = bench.registry.sessions.get_mut(OPENCODE_SESSION).unwrap();
@@ -706,6 +716,9 @@ fn chief_production_native_plugin_to_ipc_derives_availability_without_host_obser
         }}).unwrap().result.unwrap();
         bench.registry.chief_focus = Some((String::new(),false,false,crate::teams::now_ms()));
         let requests = native_telemetry_pipeline(&mut bench,mode);
+        if matches!(mode,"other-route"|"home-route"|"route-error"|"missing-router"|"route-changes") {
+            assert!(requests[0]["counts"].is_null(),"{mode}: another or unknown visible conversation must invalidate native availability");
+        }
         assert_eq!(requests[0]["action"],"native_telemetry");
         assert!(bench.registry.chief_native.is_empty(),"plugin cannot publish host-native observations");
         let ready = |bench:&mut Bench| crate::chief::workers(&mut bench.registry).unwrap().into_iter().find(|state|state.session==worker).unwrap().ready;

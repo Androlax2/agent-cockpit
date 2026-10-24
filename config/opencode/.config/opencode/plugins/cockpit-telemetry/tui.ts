@@ -29,11 +29,18 @@ export default {
       }
       return items.length
     }
+    const requireVisibleSession = () => {
+      const route = context.ui.router.current()
+      if (route?.type !== "session" || route.sessionID !== sessionID) {
+        throw new Error("native visible session differs from cockpit session")
+      }
+    }
     const sample = async () => {
       if (stopped || sampling) return
       sampling = true
       let counts: Record<string, number> | null = null
       try {
+        requireVisibleSession()
         const options = { signal: AbortSignal.any([cancellation.signal, AbortSignal.timeout(QUERY_TIMEOUT_MS)]) }
         const [active, inbox, permissions, forms] = await Promise.all([
           context.client.session.active(options),
@@ -41,6 +48,8 @@ export default {
           context.client.permission.list({ sessionID }, options),
           context.client.session.form.list({ sessionID }, options),
         ])
+        // Navigation during the native queries must not publish availability for the old view.
+        requireVisibleSession()
         if (!active || typeof active !== "object" || Array.isArray(active) || Object.keys(active).length > MAX_COUNT
           || Object.entries(active).some(([id, state]: [string, any]) => !/^ses_[0-9A-Za-z]{12,40}$/.test(id) || state?.type !== "running")) {
           throw new Error("invalid native activity")
