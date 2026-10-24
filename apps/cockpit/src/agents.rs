@@ -28,6 +28,8 @@ pub enum Feature {
     Dialogs,
     /// The phone interrupts its turn with Escape.
     Interrupt,
+    /// The phone's message dismisses its open question form and carries the answers instead.
+    FormsInChat,
     /// The daemon reads its state from its screen (osd classify's patterns), over stale reports.
     ScreenStates,
     /// An idle session may exit and resume its conversation on demand (sleep.rs).
@@ -66,6 +68,7 @@ impl Feature {
             Feature::RemoteControl => "remote_control",
             Feature::Dialogs => "dialogs",
             Feature::Interrupt => "interrupt",
+            Feature::FormsInChat => "forms_in_chat",
             Feature::ScreenStates => "screen_states",
             Feature::Sleep => "sleep",
         }
@@ -108,7 +111,7 @@ pub static AGENTS: [Agent; 3] = [
         process: Some("opencode"),
         // Escape twice stops its turn (the first only says "esc again to interrupt"). Its permission
         // prompt is not Claude's yes/no menu: remote::answer_opencode answers it.
-        features: &[Feature::Interrupt, Feature::Variants, Feature::Sleep, Feature::Dialogs],
+        features: &[Feature::Interrupt, Feature::Variants, Feature::Sleep, Feature::Dialogs, Feature::FormsInChat],
         interrupt_keys: &["Escape", "Escape"],
         start_files: &["CLAUDE.md", "sandbox", "greywall", "shared launcher", "opencode config", "opencode plugin", "opencode profile",
                        "opencode launcher"],

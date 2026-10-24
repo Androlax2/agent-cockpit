@@ -673,7 +673,17 @@ pub fn message(id: &str, message: &str) -> Result<String, String> {
     }
     let message = message_text(message, "a message")?;
     let is_working = row.as_ref().is_some_and(|row| text(row, "state") == "working");
-    let outcome = if is_held {
+    let is_form = match &row {
+        Some(row) if agents::get(&text(row, "agent")).can(Feature::FormsInChat) && is_dialog(row) => {
+            dismiss_opencode_form(row)?;
+            true
+        }
+        _ => false,
+    };
+    let outcome = if is_form {
+        prompts::add(&destination, &message)?;
+        "its questions are dismissed; your answer is sent at the end of its turn".to_string()
+    } else if is_held {
         prompts::add(&destination, &message)?;
         "queued until subscription ownership is bound".to_string()
     } else if is_working {
@@ -730,10 +740,12 @@ pub fn answer(id: &str, is_yes: bool) -> Result<String, String> {
 /// never a wider grant. A subagent's reject asks for an optional reason first: Enter sends none.
 fn answer_opencode(row: &Value, pane: &str, is_yes: bool) -> Result<String, String> {
     let id = text(row, "session");
-    let is_dialog = text(row, "state") == "needs-you" && !row.get("needs_input").and_then(Value::as_bool).unwrap_or(false);
     let tail = pane_lines(pane, 40)?;
-    if !is_dialog || !tail.contains("Permission required") {
+    if !is_dialog(row) {
         return Err("this session asks nothing now".into());
+    }
+    if !tail.contains("Permission required") {
+        return Err("it asks questions, not a permission: read them in Terminal details and send your answers as a message".into());
     }
     if is_yes {
         if !tail.contains("Allow once") || tail.contains("This will always allow") {
@@ -749,6 +761,24 @@ fn answer_opencode(row: &Value, pane: &str, is_yes: bool) -> Result<String, Stri
     }
     audit::record("remote", "remote.answer", if is_yes { "yes" } else { "no" }, json!({"session": id, "agent": "opencode"}));
     Ok(if is_yes { "approved".into() } else { "declined".into() })
+}
+
+/// A permission or form dialog is open, not an explicit chat question.
+fn is_dialog(row: &Value) -> bool {
+    text(row, "state") == "needs-you" && !row.get("needs_input").and_then(Value::as_bool).unwrap_or(false)
+}
+
+/// opencode's question form (its choices A/B/C…) cannot be filled in from the phone: Escape
+/// dismisses it, and the phone's message carries the answers instead. A permission prompt is
+/// refused, since Escape would reject it: Yes and No answer that one.
+fn dismiss_opencode_form(row: &Value) -> Result<(), String> {
+    let pane = session_pane(&text(row, "session"))?;
+    if pane_lines(&pane, 40)?.contains("Permission required") {
+        return Err("it asks a permission: answer Yes or No first".into());
+    }
+    press(&pane, "Escape")?;
+    audit::record("remote", "remote.dismiss_form", "ok", json!({"session": text(row, "session")}));
+    Ok(())
 }
 
 /// The keys that stop a working session's turn (its agent's interrupt_keys), as in its pane.

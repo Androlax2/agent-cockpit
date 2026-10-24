@@ -438,7 +438,7 @@ fn each_card_carries_what_its_agent_can_do_and_the_agents_are_listed() {
     let cards = remote.get_json(&secret, "/api/state");
     let features = |id: &str| cards["sessions"].as_array().unwrap().iter().find(|card| card["session"] == id).unwrap()["features"].clone();
     assert!(features(SESSION_A).as_array().unwrap().contains(&json!("dialogs")), "{cards}");
-    assert_eq!(features(OPENCODE_SESSION), json!(["interrupt", "variants", "sleep", "dialogs"]));
+    assert_eq!(features(OPENCODE_SESSION), json!(["interrupt", "variants", "sleep", "dialogs", "forms_in_chat"]));
     let agents = remote.get_json(&secret, "/api/agents");
     assert_eq!(agents, json!([{"name": "claude", "label": "Claude Code"}, {"name": "opencode", "label": "opencode"}, {"name": "codex", "label": "Codex CLI"}]));
 }
@@ -948,6 +948,43 @@ fn a_phone_answers_an_opencode_chat_question_through_the_real_manager() {
         Some(&secret), Some(json!({"text": "Use option A"})), true);
     assert_eq!(status, 200, "{body}");
     assert!(remote.sandbox.calls("tmux").contains(&"tmux send-keys -t %5 -l -- Use option A".into()));
+}
+
+const OPENCODE_FORM: &str = "┃ Questions  1 of 3\n┃ Which layout?\n┃   1. A: Sidebar\n┃   2. B: Tabs\n┃ enter select  esc dismiss\n";
+
+#[test]
+fn a_phone_message_dismisses_an_opencode_form_and_queues_the_answers() {
+    let remote = Remote::start();
+    let secret = remote.paired();
+    remote.opencode_session_showing("needs-you", OPENCODE_FORM);
+    let (status, answer) = remote.post_json(&secret, &format!("/api/message/{OPENCODE_SESSION}"), json!({"text": "1: A, 2: C"}));
+    assert_eq!(status, 200, "{answer}");
+    assert_eq!(remote.keys_pressed(), ["tmux send-keys -t %4 Escape"]);
+    let files: Vec<_> = fs::read_dir(remote.sandbox.state.join("cockpit/prompt-queue").join(OPENCODE_SESSION)).unwrap().flatten().collect();
+    assert_eq!(files.len(), 1);
+    assert_eq!(fs::read_to_string(files[0].path()).unwrap(), "1: A, 2: C");
+}
+
+#[test]
+fn a_phone_message_does_not_dismiss_an_opencode_permission() {
+    let remote = Remote::start();
+    let secret = remote.paired();
+    remote.opencode_session_showing("needs-you", OPENCODE_PERMISSION);
+    let (status, answer) = remote.post_json(&secret, &format!("/api/message/{OPENCODE_SESSION}"), json!({"text": "go on"}));
+    assert_eq!(status, 409, "{answer}");
+    assert!(remote.keys_pressed().is_empty());
+    assert!(!remote.sandbox.state.join("cockpit/prompt-queue").exists());
+}
+
+#[test]
+fn yes_on_an_opencode_form_says_to_answer_it_as_a_message() {
+    let remote = Remote::start();
+    let secret = remote.paired();
+    remote.opencode_session_showing("needs-you", OPENCODE_FORM);
+    let (status, body) = remote.answer_opencode(&secret, true);
+    assert_eq!(status, 409, "{body}");
+    assert!(body.contains("send your answers as a message"), "{body}");
+    assert!(remote.keys_pressed().is_empty());
 }
 
 // ---- Work from the phone ----

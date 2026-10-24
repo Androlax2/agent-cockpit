@@ -572,8 +572,10 @@ function renderDetail() {
   const send = document.getElementById("chat-send");
   const isDialog = session.state === "needs-you" && !session.needs_input;
   send.textContent = sendingMessages.has(session.session) ? "Sending…" : session.state === "working" ? "Queue" : "Send";
-  send.disabled = sendingMessages.has(session.session) || isDialog;
-  document.getElementById("chat-reply").placeholder = session.state === "working" ? "Sent after this turn finishes"
+  const canAnswerFormInChat = isDialog && (session.features || []).includes("forms_in_chat");
+  send.disabled = sendingMessages.has(session.session) || (isDialog && !canAnswerFormInChat);
+  document.getElementById("chat-reply").placeholder = canAnswerFormInChat ? "Your answers to its questions (dismisses them)"
+    : session.state === "working" ? "Sent after this turn finishes"
     : session.state === "asleep" ? "Wakes the session and sends this" : "Reply to the agent…";
   const actions = document.getElementById("chat-actions");
   const approvals = state.approvals.filter(approval => approval.session === session.session);
@@ -598,6 +600,7 @@ function renderDetail() {
           buttons.append(button);
         }
         prompt.append(buttons);
+        if (canAnswerFormInChat) prompt.append(element("p", "task", "Questions with choices? Read them in Terminal details and send your answers below: sending dismisses them."));
       } else prompt.append(element("p", "task", "This agent’s permission dialog must be answered on the computer."));
       prompt.append(note); actions.append(prompt);
     }
