@@ -31,6 +31,7 @@ class GhCompatibilityTests(unittest.TestCase):
         self.result = {'request_id': 'b' * 32, 'outcome': 'succeeded', 'number': 7,
                        'html_url': 'https://github.com/acme/project/issues/7'}
         self.response_code = None
+        self.results = []
 
     def start_broker(self, count=1):
         server = socket.socket(socket.AF_UNIX)
@@ -58,7 +59,8 @@ class GhCompatibilityTests(unittest.TestCase):
                         body = json.loads(exact(connection, header['body_length']))
                         self.assertEqual(connection.recv(1), b'')
                         self.requests.append((header, body))
-                        payload = json.dumps(self.result).encode() if self.response_code is None else b''
+                        result = self.results.pop(0) if self.results else self.result
+                        payload = json.dumps(result).encode() if self.response_code is None else b''
                         response = {'status': 200 if self.response_code is None else 403,
                                     'content_type': 'application/json', 'body_length': len(payload)}
                         if self.response_code:
@@ -198,6 +200,36 @@ class GhCompatibilityTests(unittest.TestCase):
         result = self.invoke(['pr', 'update-branch', '7', '--rebase'])
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('command_requires_migration', result.stderr)
+        self.assertEqual(self.requests, [])
+
+    def project_page(self, item_id, status, cursor):
+        return {'request_id': None, 'outcome': 'succeeded', 'next_cursor': cursor, 'items': [{
+            'item_id': item_id, 'values': {'Status': status, 'Effort': 3},
+            'content': {'type': 'Issue', 'title': 'Investigate', 'body': 'Details', 'number': 7,
+                        'repository': 'acme/project', 'url': 'https://github.com/acme/project/issues/7'}}]}
+
+    def test_project_item_list_json_matches_gh_shape_across_pages(self):
+        self.results = [self.project_page('PVTI_a', 'Next', 'cursor-2'), self.project_page('PVTI_b', 'Done', None)]
+        self.start_broker(count=2)
+        result = self.invoke(['project', 'item-list', '1', '--owner', 'acme', '--format', 'json'])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        output = json.loads(result.stdout)
+        self.assertEqual(output['totalCount'], 2)
+        self.assertEqual(output['items'][0], {'id': 'PVTI_a', 'status': 'Next', 'effort': 3, 'content': {
+            'type': 'Issue', 'title': 'Investigate', 'body': 'Details', 'number': 7,
+            'repository': 'acme/project', 'url': 'https://github.com/acme/project/issues/7'}})
+        self.assertEqual([(header['action'], fields) for header, fields in self.requests], [
+            ('project.items.list', {'board_number': 1, 'owner': 'acme'}),
+            ('project.items.list', {'board_number': 1, 'owner': 'acme', 'cursor': 'cursor-2'})])
+
+    def test_project_writes_and_other_project_commands_need_migration(self):
+        for arguments in [['project', 'item-edit', '--id', 'PVTI_a', '--field-id', 'F', '--text', 'x'],
+                          ['project', 'item-delete', '1', '--owner', 'acme', '--id', 'PVTI_a'],
+                          ['project', 'item-list', '1', '--owner', 'acme', '--query', 'status:done']]:
+            with self.subTest(arguments=arguments):
+                result = self.invoke(arguments)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('command_requires_migration', result.stderr)
         self.assertEqual(self.requests, [])
 
     def test_ready_and_undo_emit_typed_actions_without_client_graphql(self):

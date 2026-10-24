@@ -581,6 +581,90 @@ class BrokerChannelTests(BrokerFixture):
                 self.assertNotEqual(status, 0)
         self.assertEqual(len(json.loads(self.run_operator(['pending'])[1])), 1)
 
+    def enable_project_fixture(self, *, scopes='project', enroll_role=True):
+        self.enable_issue_fixture()
+        now = int(time.time())
+        registry, _ = self.access.load_registry()
+        record = registry['repositories'][0]
+        record['project_board'] = {'node_id': 'PVT_board', 'fields': {
+            'PVTF_effort': {'name': 'Effort', 'data_type': 'NUMBER'}}}
+        if enroll_role:
+            record['credential_roles']['project'] = 'board'
+        registry['runtime_credentials'].append({
+            'id': 'board', 'kind': 'classic_project_pat', 'role': 'project', 'repository_id': 42, 'actor_id': 77,
+            'key_epoch': 'fixture-1', 'fingerprint': 'e' * 64, 'setup_approved': True, 'scopes': ['project'],
+            'reviewed_at': now - 60, 'valid_until': now + 3600, 'expires_at': now + 3600,
+            'graphql_accounting': {action: {'setup_approved': True, 'principal': 'user:77', 'max_cost': 1,
+                                            'reviewed_at': now - 60, 'valid_until': now + 1800, 'evidence': 'f' * 64}
+                                   for action in ['project.item.field_set', 'project.items.list']}})
+        path = self.access.registry_path()
+        path.write_text(json.dumps(registry))
+        self.binding['registry_digest'] = hashlib.sha256(path.read_bytes()).hexdigest()
+        self.write_binding()
+        for resource in ['core', 'graphql']:
+            self.rate.observe('user:77', {'x-ratelimit-resource': resource, 'x-ratelimit-limit': '5000',
+                'x-ratelimit-remaining': '5000', 'x-ratelimit-reset': str(now + 3600)})
+        self.project_calls = []
+
+        def upstream(method, path, token, deadline, body=None):
+            self.project_calls.append((method, path, body))
+            headers = {'x-ratelimit-limit': '5000', 'x-ratelimit-remaining': '4990',
+                       'x-ratelimit-reset': str(now + 3600)}
+            if path == '/user':
+                return 200, {'id': 77}, headers | {'x-ratelimit-resource': 'core', 'x-oauth-scopes': scopes}
+            self.assertEqual(path, '/graphql')
+            headers['x-ratelimit-resource'] = 'graphql'
+            if body['query'].startswith('query($item'):
+                return 200, {'data': {'node': {'id': 'PVTI_ours', 'project': {'id': 'PVT_board'},
+                    'content': {'__typename': 'Issue', 'number': 7, 'repository': {'databaseId': 42}}}}}, headers
+            return 200, {'data': {'updateProjectV2ItemFieldValue': {'projectV2Item': {'id': 'PVTI_ours'}}}}, headers
+
+        active = patch.object(self.access, 'github_request', side_effect=upstream)
+        active.start()
+        self.addCleanup(active.stop)
+
+    def project_exchange(self, action='project.item.field_set',
+                         fields=b'{"item_id":"PVTI_ours","field_id":"PVTF_effort","value":3}'):
+        return self.exchange(self.header(action=action, body_length=len(fields)), body=fields)
+
+    def test_project_field_set_uses_host_only_board_role_after_fresh_write_check(self):
+        self.enable_project_fixture()
+        self.start()
+        response, payload = self.project_exchange()
+        self.assertEqual(response['status'], 200, response)
+        self.assertEqual(json.loads(payload)['applied_fields'], {'PVTF_effort': 3})
+        self.assertEqual(self.purposes, ['admission', 'write'])
+        self.assertEqual([call[1] for call in self.project_calls], ['/user', '/graphql', '/user', '/graphql'])
+        self.assertNotIn('SYNTHETIC', payload.decode())
+
+    def test_project_token_with_code_scopes_never_mutates(self):
+        self.enable_project_fixture(scopes='project, repo')
+        self.start()
+        response, _ = self.project_exchange()
+        self.assertEqual(response.get('code'), 'project_credential_scope_invalid')
+        self.assertEqual([call[1] for call in self.project_calls], ['/user'])
+
+    def test_project_actions_require_explicit_board_role_enrollment(self):
+        self.enable_project_fixture(enroll_role=False)
+        self.start()
+        response, _ = self.project_exchange()
+        self.assertEqual(response.get('code'), 'project_role_unavailable')
+        self.assertEqual(self.project_calls, [])
+
+    def test_project_mutation_without_measured_graphql_cost_is_refused(self):
+        self.enable_project_fixture()
+        self.start()
+        response, _ = self.project_exchange('project.item.move', b'{"item_id":"PVTI_ours","after_id":null}')
+        self.assertEqual(response.get('code'), 'graphql_rate_setup_required')
+        self.assertNotIn('updateProjectV2ItemPosition', json.dumps(self.project_calls))
+
+    def test_project_reads_are_funded_without_write_inspection(self):
+        self.enable_project_fixture()
+        self.start()
+        response, _ = self.project_exchange('project.items.list', b'{}')
+        self.assertNotEqual(response.get('code'), 'write_check_denied')
+        self.assertEqual(self.purposes, ['admission'])
+
     def test_pr_comment_cannot_borrow_issue_only_write_grant(self):
         self.enable_issue_fixture()
         self.start()

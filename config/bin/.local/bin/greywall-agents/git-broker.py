@@ -349,18 +349,31 @@ def dispatch_collaboration(access, binding, header, body, output, *, deadline, c
         if record is None:
             raise RequestDenied('action_unavailable')
         profiles = access.runtime_credential_profiles(record, registry)
+        project_profile = (access.project_credential_profile(record, registry)
+                           if header['action'] in actions.PROJECT_ACTIONS else None)
         request_id = None
         intent = None
 
-        def request(method, path, payload=None, *, permission='issues', resource='core'):
+        def request(method, path, payload=None, *, permission='issues', resource='core', role=None, mutation=None):
             nonlocal reservation, dispatched, request_id, intent
             check_live()
-            profile = profiles['read' if method == 'GET' else 'forward']
-            if profile['permissions'].get(permission) != ('read' if method == 'GET' else 'write'):
-                raise RequestDenied('collaboration_role_denied')
+            is_mutation = method != 'GET' if mutation is None else mutation
+            if is_mutation and header['action'] in actions.PROJECT_ACTIONS - actions.PROJECT_MUTATIONS:
+                raise RequestDenied('invalid_action_route')
+            if role == 'project':
+                if project_profile is None or resource != 'graphql':
+                    raise RequestDenied('invalid_action_route')
+                profile = project_profile
+            elif role is None:
+                profile = profiles['forward' if is_mutation else 'read']
+                if profile['permissions'].get(permission) != ('write' if is_mutation else 'read'):
+                    raise RequestDenied('collaboration_role_denied')
+            else:
+                raise RequestDenied('invalid_action_route')
             repository_path = '/repos/' + record['canonical_name']
             if resource == 'graphql':
-                if method != 'POST' or path != '/graphql' or header['action'] not in ('pull_request.ready', 'pull_request.draft'):
+                if (method != 'POST' or path != '/graphql' or header['action'] not in
+                        {'pull_request.ready', 'pull_request.draft'} | actions.PROJECT_ACTIONS):
                     raise RequestDenied('invalid_action_route')
                 operation_cost = graphql_operation_cost(access, profile, header['action'])
             elif resource == 'core' and (path == repository_path or path.startswith(repository_path + '/')):
@@ -369,12 +382,16 @@ def dispatch_collaboration(access, binding, header, body, output, *, deadline, c
                 raise RequestDenied('invalid_action_route')
             bucket = access.runtime_principal(profile) + ':' + resource
             costs = {bucket: operation_cost}
-            needs_head_guard = method != 'GET' and (header['action'].startswith('review.')
-                                                    or header['action'] == 'pull_request.update_branch')
+            # Every board request re-proves the classic token still carries only the project scope.
+            scope_bucket = access.runtime_principal(profile) + ':core' if role == 'project' else None
+            if scope_bucket is not None:
+                costs[scope_bucket] = costs.get(scope_bucket, 0) + 1
+            needs_head_guard = is_mutation and (header['action'].startswith('review.')
+                                                or header['action'] == 'pull_request.update_branch')
             if needs_head_guard:
                 guard_bucket = access.runtime_principal(profiles['read']) + ':core'
                 costs[guard_bucket] = costs.get(guard_bucket, 0) + 1
-            if method == 'GET':
+            if not is_mutation:
                 reservation = rate.reserve(costs, purpose='admission', repository_id=binding['repository_id'],
                                            deadline=min(deadline, time.monotonic() + 30))['reservation']
             else:
@@ -391,6 +408,18 @@ def dispatch_collaboration(access, binding, header, body, output, *, deadline, c
             if resource == 'graphql':
                 graphql_operation_cost(access, profile, header['action'])
             rate.ready(reservation, costs)
+            if scope_bucket is not None:
+                rate.charge(reservation, scope_bucket)
+                scope_status, actor, scope_headers = access.github_request('GET', '/user', token,
+                                                                           min(deadline, time.monotonic() + 30))
+                if rate.observe(access.runtime_principal(profile), scope_headers, status=scope_status) != scope_bucket:
+                    raise RequestDenied('rate_resource_mismatch')
+                scopes = {scope.strip() for scope in scope_headers.get('x-oauth-scopes', '').split(',') if scope.strip()}
+                if (scope_status != 200 or scopes != {'project'} or not isinstance(actor, dict)
+                        or actor.get('id') != profile['actor_id']):
+                    raise RequestDenied('project_credential_scope_invalid')
+                check_live()
+                rate.ready(reservation, {bucket: operation_cost})
             if needs_head_guard:
                 guard_token = access.read_runtime_credential(record, profiles['read'],
                     min(deadline, time.monotonic() + 30), verify_remote=False)
@@ -410,11 +439,11 @@ def dispatch_collaboration(access, binding, header, body, output, *, deadline, c
                     raise RequestDenied('review_head_changed')
                 check_live()
                 rate.ready(reservation, {bucket: operation_cost})
-            if method != 'GET':
+            if is_mutation:
                 rate.admit_mutation()
                 intent, request_id = action_intent(binding, header['action'], fields)
             rate.charge(reservation, bucket, operation_cost)
-            if method != 'GET':
+            if is_mutation:
                 dispatched = True
             status, value, headers = access.github_request(method, path, token, min(deadline, time.monotonic() + 30), payload)
             observed = rate.observe(access.runtime_principal(profile), headers, status=status)
