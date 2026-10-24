@@ -16,7 +16,7 @@ import time
 
 MAX_HEADER = 16 * 1024
 MAX_BODY = 1024 * 1024
-READ_ACTIONS = {'project.items.list', 'project.fields.list'}
+READ_ACTIONS = {'project.items.list', 'project.fields.list', 'credential.read'}
 PR_METADATA_FIELDS = {'labels', 'milestone', 'assignees', 'add_labels', 'remove_labels',
                       'add_assignees', 'remove_assignees'}
 
@@ -86,7 +86,7 @@ def broker_action(action, fields):
         capability = source.read(65)
     if not re.fullmatch(r'[0-9a-f]{64}', capability):
         raise ClientDenied('broker_unavailable')
-    body = json.dumps(fields).encode()
+    body = b'' if fields is None else json.dumps(fields).encode()
     if len(body) > MAX_BODY:
         raise ClientDenied('action_body_too_large')
     header = json.dumps({'version': 1, 'capability': capability,
@@ -323,6 +323,18 @@ def is_native_read(arguments):
             and not any(character in endpoint for character in '%\\?#') and '..' not in endpoint)
 
 
+def broker_read_token():
+    """The session entry strips inherited tokens, so native reads ask the broker for the read role."""
+    try:
+        result = broker_action('credential.read', None)
+    except (ClientDenied, OSError, ValueError):
+        raise ClientDenied('read_credential_unavailable') from None
+    token = result.get('token')
+    if not isinstance(token, str) or not token or any(not 33 <= ord(character) <= 126 for character in token):
+        raise ClientDenied('read_credential_unavailable')
+    return token
+
+
 def native_read(arguments, *, capture_output=False):
     canonical = os.environ.get('COCKPIT_GITHUB_REPOSITORY')
     if canonical is None:
@@ -337,12 +349,10 @@ def native_read(arguments, *, capture_output=False):
             selected = argument.removeprefix('--repo=')
         if selected is not None and repository_name(selected) != repository_name(canonical):
             raise ClientDenied('repository_not_enrolled')
-    token = os.environ.get('GH_TOKEN')
-    if not token:
-        raise ClientDenied('read_credential_unavailable')
+    token = os.environ.get('GH_TOKEN') or broker_read_token()
     environment = {key: value for key, value in os.environ.items()
                    if key not in {'GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN', 'GITHUB_ENTERPRISE_TOKEN', 'GH_PROJECT_TOKEN'}}
-    environment.update(GH_HOST='github.com', GH_REPO=canonical, GH_PROMPT_DISABLED='1')
+    environment.update(GH_HOST='github.com', GH_REPO=canonical, GH_PROMPT_DISABLED='1', GH_TOKEN=token)
     return subprocess.run(['/usr/bin/gh', *arguments], env=environment, capture_output=capture_output)
 
 

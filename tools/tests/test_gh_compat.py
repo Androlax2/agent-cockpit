@@ -56,7 +56,7 @@ class GhCompatibilityTests(unittest.TestCase):
                         connection.settimeout(3)
                         size = struct.unpack('!I', exact(connection, 4))[0]
                         header = json.loads(exact(connection, size))
-                        body = json.loads(exact(connection, header['body_length']))
+                        body = json.loads(exact(connection, header['body_length'])) if header['body_length'] else None
                         self.assertEqual(connection.recv(1), b'')
                         self.requests.append((header, body))
                         result = self.results.pop(0) if self.results else self.result
@@ -321,6 +321,37 @@ class GhCompatibilityTests(unittest.TestCase):
         self.assertEqual(status, 4)
         self.assertEqual(stdout.getvalue(), '7\n')
         self.assertEqual(requests, [['/usr/bin/gh', *arguments]])
+
+    def test_native_read_gets_its_token_from_the_broker_when_none_is_inherited(self):
+        client = self.load_client()
+        self.result = {'token': 'SYNTHETIC_BROKER_READ', 'outcome': 'succeeded', 'request_id': None}
+        self.start_broker()
+        environment = self.environment.copy()
+        environment.pop('GH_TOKEN')
+        tokens = []
+
+        def native(command, **options):
+            tokens.append(options['env'].get('GH_TOKEN'))
+            return subprocess.CompletedProcess(command, 0)
+
+        with patch.dict(os.environ, environment, clear=True), patch.object(subprocess, 'run', side_effect=native):
+            self.assertEqual(client.main(['pr', 'list']), 0)
+        self.assertEqual(tokens, ['SYNTHETIC_BROKER_READ'])
+        self.assertEqual(self.requests[0][0]['action'], 'credential.read')
+        self.assertEqual(self.requests[0][0]['body_length'], 0)
+
+    def test_malformed_broker_token_never_reaches_native_gh(self):
+        client = self.load_client()
+        self.result = {'token': 'bad token\nwith newline', 'outcome': 'succeeded', 'request_id': None}
+        self.start_broker()
+        environment = self.environment.copy()
+        environment.pop('GH_TOKEN')
+        stderr = io.StringIO()
+        with patch.dict(os.environ, environment, clear=True), \
+                patch.object(subprocess, 'run', side_effect=AssertionError('native gh started')), \
+                contextlib.redirect_stderr(stderr):
+            self.assertEqual(client.main(['pr', 'list']), 1)
+        self.assertIn('read_credential_unavailable', stderr.getvalue())
 
     def test_missing_read_token_cannot_fall_back_to_personal_login(self):
         client = self.load_client()
