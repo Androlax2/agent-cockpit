@@ -17,7 +17,7 @@ fn chief_migration_keeps_sleep_continuations_available_on_every_reopen() {
     drop(connection);
     let connection = store::open(&path).unwrap();
     assert!(store::sleep::prepared_records(&connection).unwrap().is_empty());
-    assert_eq!(connection.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0)).unwrap(), 10);
+    assert_eq!(connection.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0)).unwrap(), 12);
 }
 
 fn chief_session(id: &str) -> VerifiedSession {
@@ -206,6 +206,7 @@ fn overlapping_product_state_cannot_authorize_chief_actions_or_resume() {
 #[test]
 fn task1_v3_worker_approvals_upgrade_without_losing_their_identity_or_history() {
     let mut connection = migrated();
+    remove_link_schema(&connection);
     // Recreate the reviewed Task1 shape, which allowed just one row for each session.
     connection.execute_batch("DROP TABLE scheduling_reservations; DROP TABLE chief_admission_verifications;
         DROP TABLE chief_inbox; DROP TABLE chief_observations; DROP TABLE chief_submissions; DROP TABLE inbox_turns;
@@ -263,7 +264,10 @@ fn v2() -> Connection {
 }
 
 fn rows(connection: &Connection, table: &str) -> Vec<Vec<rusqlite::types::Value>> {
-    let mut statement = connection.prepare(&format!("SELECT * FROM {table} ORDER BY 1")).unwrap();
+    let columns = if table == "messages" {
+        "seq,id,task_key,sender,recipient,sender_epoch,recipient_epoch,submission_key,fingerprint,envelope,state,attempts,next_at,created_at,last_error,idle_turn,recipient_runtime"
+    } else { "*" };
+    let mut statement = connection.prepare(&format!("SELECT {columns} FROM {table} ORDER BY 1")).unwrap();
     let count = statement.column_count();
     statement.query_map([], |row| (0..count).map(|index| row.get(index)).collect()).unwrap()
         .collect::<Result<_, _>>().unwrap()
@@ -274,7 +278,7 @@ fn migration_preserves_v2_links_messages_and_spawns() {
     let mut connection = v2();
     let before: Vec<_> = ["teams", "members", "messages", "spawns"].map(|table| rows(&connection, table)).into();
     migrate(&mut connection).unwrap();
-    assert_eq!(version(&connection), 10);
+    assert_eq!(version(&connection), 12);
     for (table, expected) in ["teams", "members", "messages", "spawns"].into_iter().zip(before) {
         assert_eq!(rows(&connection, table), expected, "changed {table}");
     }
@@ -287,15 +291,15 @@ fn migration_reopen_is_idempotent() {
     let schema = rows(&connection, "sqlite_master");
     migrate(&mut connection).unwrap();
     assert_eq!(rows(&connection, "sqlite_master"), schema);
-    assert_eq!(version(&connection), 10);
+    assert_eq!(version(&connection), 12);
 }
 
 #[test]
 fn future_schema_is_refused() {
     let mut connection = Connection::open_in_memory().unwrap();
-    connection.execute_batch("PRAGMA user_version=11;").unwrap();
+    connection.execute_batch("PRAGMA user_version=13;").unwrap();
     assert!(migrate(&mut connection).is_err());
-    assert_eq!(version(&connection), 11);
+    assert_eq!(version(&connection), 13);
     assert!(rows(&connection, "sqlite_master").is_empty());
 }
 
@@ -303,6 +307,32 @@ fn migrated() -> Connection {
     let mut connection = v2();
     migrate(&mut connection).unwrap();
     connection
+}
+
+use common::chief::remove_link_schema;
+
+#[test]
+fn version_ten_upgrade_preserves_chief_and_team_messages_and_receipts() {
+    let mut connection = migrated();
+    let session = chief_session("chief");
+    cockpit::chief::store::host(&mut connection, &ChiefHostAction::Enable {
+        request_id: "enable-v10".into(), session: session.clone(),
+    }, &[live(&session)], 10).unwrap().result.unwrap();
+    remove_link_schema(&connection);
+    connection.execute_batch("INSERT INTO attempts VALUES ('receipt-a','message-a',2,'received','native-a',120,110);").unwrap();
+    let tables = connection.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").unwrap()
+        .query_map([], |row| row.get::<_, String>(0)).unwrap().collect::<Result<Vec<_>, _>>().unwrap();
+    let before: Vec<_> = tables.iter().map(|table| rows(&connection, table)).collect();
+    migrate(&mut connection).unwrap();
+    assert_eq!(version(&connection), 12);
+    for (table, expected) in tables.iter().zip(before) {
+        assert_eq!(rows(&connection, table), expected, "changed {table}");
+    }
+    let scope: (String, Option<String>) = connection.query_row("SELECT scope_kind,link_id FROM messages WHERE id='message-a'", [], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
+    assert_eq!(scope, ("team".into(), None));
+    assert_eq!(connection.query_row("SELECT last_idle_turn FROM delivery_recipients WHERE session_id='session-a'", [], |row| row.get::<_, String>(0)).unwrap(), "turn-a");
+    migrate(&mut connection).unwrap();
+    assert_eq!(version(&connection), 12);
 }
 
 #[test]
@@ -413,9 +443,9 @@ fn open_uses_current_migration_and_keeps_private_path_checks() {
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
     let database = path.join("teams.sqlite");
     let connection = store::open(&database).unwrap();
-    assert_eq!(version(&connection), 10);
+    assert_eq!(version(&connection), 12);
     drop(connection);
-    assert_eq!(version(&store::open(&database).unwrap()), 10);
+    assert_eq!(version(&store::open(&database).unwrap()), 12);
     std::fs::set_permissions(&database, std::fs::Permissions::from_mode(0o644)).unwrap();
     assert!(store::open(&database).is_err());
     std::fs::remove_file(&database).unwrap();

@@ -686,7 +686,7 @@ pub fn accept(connection: &mut Connection, sender: &VerifiedSession, action: &Ag
         "sender":{"session_id":sender.session_id,"role":source.role,"agent":sender.agent},
         "recipient":{"session_id":message.recipient,"role":target.role,"agent":target.agent},
         "authorization":"collaborator_content_not_user_authorization"});
-    transaction.execute("INSERT INTO messages (id,task_key,sender,recipient,sender_epoch,recipient_epoch,submission_key,fingerprint,envelope,state,next_at,created_at,recipient_runtime) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,'queued',?10,?10,?11)",
+    transaction.execute("INSERT INTO messages (id,task_key,sender,recipient,sender_epoch,recipient_epoch,submission_key,fingerprint,envelope,state,next_at,created_at,recipient_runtime,scope_kind) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,'queued',?10,?10,?11,'team')",
         params![id,task_key,sender.session_id,message.recipient,source.epoch,target.epoch,message.submission_key,fingerprint,envelope.to_string(),now_ms,target.runtime])?;
     if is_findings {
         // Keep the membership epoch: the stored report still needs it for delivery after QA exits.
@@ -880,7 +880,7 @@ fn schedule_qa(connection: &Connection, task_key: &str, now_ms: i64) -> Result<b
     let envelope = json!({"message_id": id, "task": task, "kind": MessageKind::QaRequest, "body": reference["summary"], "thread_id": null, "round": null,
         "handoff": reference, "sender": {"session_id": developer.0, "role": "developer", "agent": developer.2},
         "recipient": {"session_id": qa.0, "role": "qa", "agent": qa.2}, "authorization": "collaborator_content_not_user_authorization"});
-    connection.execute("INSERT INTO messages (id,task_key,sender,recipient,sender_epoch,recipient_epoch,submission_key,fingerprint,envelope,state,next_at,created_at,recipient_runtime) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,'queued',?10,?10,?11)",
+    connection.execute("INSERT INTO messages (id,task_key,sender,recipient,sender_epoch,recipient_epoch,submission_key,fingerprint,envelope,state,next_at,created_at,recipient_runtime,scope_kind) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,'queued',?10,?10,?11,'team')",
         params![id, task_key, developer.0, qa.0, developer.1, qa.1, key, audit::sha256_hex(key.as_bytes()), envelope.to_string(), now_ms, qa.3])?;
     Ok(true)
 }
@@ -964,6 +964,11 @@ pub(super) fn assess_thread(transaction: &Connection, task_key: &str, link_id: O
         transaction.execute("UPDATE threads SET status=?2 WHERE id=?1", params![thread_id, next])?;
     }
     Ok(TeamReply { request_id: thread_id.into(), result: Ok(json!({"thread_id": thread_id, "status": next, "round": round})) })
+}
+
+/// The launch a member was bound to, for a daemon that restarted and lost its in-memory copy.
+pub fn member_runtime(connection: &Connection, session: &str) -> Result<Option<String>, TeamError> {
+    Ok(connection.query_row("SELECT runtime FROM members WHERE session_id=?1", [session], |row| row.get(0)).optional()?)
 }
 
 /// Candidates for restart restoration; the daemon must select exactly one live process.
@@ -1068,7 +1073,7 @@ pub(crate) fn inbox_available(connection: &Connection, recipient: &VerifiedSessi
     if sleep::paused(connection, &recipient.session_id)? { return Ok(false); }
     let in_flight: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM messages WHERE recipient=?1 AND state IN ('submitting','uncertain')) OR EXISTS(SELECT 1 FROM chief_inbox WHERE recipient=?1 AND state IN ('submitting','uncertain'))",
         [&recipient.session_id], |row| row.get(0))?;
-    let used: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM inbox_turns WHERE recipient=?1 AND runtime=?2 AND idle_turn=?3) OR EXISTS(SELECT 1 FROM delivery_recipients WHERE session_id=?1 AND runtime=?2 AND last_idle_turn=?3)",
+    let used: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM inbox_turns WHERE recipient=?1 AND runtime=?2 AND idle_turn=?3) OR EXISTS(SELECT 1 FROM delivery_recipients WHERE session_id=?1 AND runtime=?2 AND last_idle_turn=?3) OR EXISTS(SELECT 1 FROM members WHERE session_id=?1 AND runtime=?2 AND last_idle_turn=?3)",
         params![recipient.session_id, recipient.runtime, idle_turn], |row| row.get(0))?;
     Ok(!in_flight && !used)
 }

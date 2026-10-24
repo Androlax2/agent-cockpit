@@ -446,6 +446,16 @@ fn stale_link_runtime_does_not_prevent_restoring_a_healthy_team() {
 }
 
 #[test]
+fn conflicting_team_and_chief_runtime_bindings_still_refuse_restart_restoration() {
+    let mut bench = linked_team_bench();
+    bench.registry.teams.as_ref().unwrap().execute("INSERT INTO chief_worker_bindings VALUES (?1,'claude','path:/project-a','dead-chief-runtime','old-chief-epoch','developer',1,'bound','approval',10)", [SESSION_A]).unwrap();
+    bench.registry.sessions.get_mut(SESSION_A).unwrap().runtime.clear();
+    let live = crate::teams::live_sessions(&mut bench.registry).unwrap();
+    assert!(!live.iter().any(|session| session.session_id == SESSION_A));
+    assert!(bench.registry.sessions[SESSION_A].runtime.is_empty());
+}
+
+#[test]
 fn another_launch_cannot_take_over_a_live_sessions_identity() {
     let mut bench = team_bench();
     bench.world.borrow_mut().sender_targets.insert(99, target(&[("tmux_pane", "%99")]));

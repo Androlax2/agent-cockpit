@@ -154,7 +154,7 @@ fn todo_terminal_mutations_exclude_reopening_until_json_is_durable() {
         assert!(terminal.join().unwrap(), "{action} must complete after the barrier is released");
         if action == "done" { assert_eq!(TodoList::load().status_of(&id), "done"); }
         else { assert!(TodoList::load().items.is_empty()); }
-        assert!(reopening.set_status(&id, "todo", ""));
+        assert_eq!(reopening.set_status(&id, "todo", ""), action == "done", "deleted work cannot be resurrected by a stale snapshot");
         let transaction = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).unwrap();
         assert!(links::require_open_work(&transaction, &task, 4).is_err());
         drop(transaction);
@@ -8256,8 +8256,7 @@ fn chief_interleaved_projection_refuses_agent_done_before_any_completion_side_ef
     let fixture = Fixture::new();
     let (mut stale,id,dependent) = chief_status_fixture(&fixture);
     let path = crate::paths::todo();
-    let writer = fs::OpenOptions::new().create(true).truncate(false).write(true).open(path.with_extension("lock")).unwrap();
-    writer.lock().unwrap();
+    let writer = crate::todo::lock_mutations().unwrap();
     let barrier = Arc::new(Barrier::new(2));
     let entering = barrier.clone();
     let task = id.clone();

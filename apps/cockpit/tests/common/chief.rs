@@ -5,6 +5,18 @@ use cockpit::teams::{TransportOutcome, VerifiedSession, Role, TaskKey};
 use rusqlite::Connection;
 use serde_json::json;
 
+pub fn remove_link_schema(connection: &Connection) {
+    connection.execute_batch("ALTER TABLE messages DROP COLUMN link_id;
+        ALTER TABLE messages DROP COLUMN scope_kind;
+        ALTER TABLE threads DROP COLUMN link_id;
+        ALTER TABLE threads DROP COLUMN scope_kind;
+        DROP TABLE delivery_recipients;
+        DROP TABLE links; DROP TABLE link_participants; DROP TABLE link_proposals; DROP TABLE link_work;
+        DROP INDEX one_inflight_delivery;
+        CREATE UNIQUE INDEX one_inflight_delivery ON messages(recipient,recipient_epoch) WHERE state='submitting';
+        PRAGMA user_version=10;").unwrap();
+}
+
 pub fn work() -> WorkRef {
     WorkRef { task: TaskKey { project: "project-a".into(), task_id: "1d3fd318".into() }, revision: 1 }
 }

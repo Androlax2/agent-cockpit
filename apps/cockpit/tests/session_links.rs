@@ -56,6 +56,76 @@ fn note(link_id: &str, key: &str) -> teams::LinkSubmission {
 }
 
 #[test]
+fn chief_grants_cannot_acquire_link_authority() {
+    if isolated("chief_grants_cannot_acquire_link_authority") { return; }
+    use cockpit::chief::{ChiefHostAction, WorkerState, store as chief};
+    let (mut connection, _, live, proposal) = proposal_fixture();
+    let pending = links::propose(&mut connection, &live[0], &proposal, &live, 0).unwrap().result.unwrap();
+    let approval = link_approval(&connection, &pending, "approve-after-chief");
+    let workers: Vec<_> = live.iter().map(|session| WorkerState { session:session.clone(), role:None, ready:false, blocked_by:vec![], observed_at_ms:0 }).collect();
+    chief::host(&mut connection, &ChiefHostAction::Enable { request_id:"enable".into(), session:live[1].clone() }, &workers, 1).unwrap().result.unwrap();
+    assert!(links::propose(&mut connection, &live[0], &LinkProposal { submission_key:"new-request".into(), ..proposal }, &live, 2).is_err());
+    assert!(store::control(&mut connection, &approval, &live, 3).is_err());
+    assert_eq!(connection.query_row("SELECT count(*) FROM links", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
+}
+
+#[test]
+fn link_approval_neither_authorizes_chief_actions_nor_allows_overlapping_grants() {
+    if isolated("link_approval_neither_authorizes_chief_actions_nor_allows_overlapping_grants") { return; }
+    use cockpit::chief::{ChiefHostAction, ChiefAgentAction, WorkerState, store as chief};
+    let (mut connection, _, live, proposal) = proposal_fixture();
+    activate(&mut connection, &live[0], &proposal, &live);
+    let workers: Vec<_> = live.iter().map(|session| WorkerState { session:session.clone(), role:None, ready:false, blocked_by:vec![], observed_at_ms:0 }).collect();
+    assert_eq!(chief::agent(&mut connection, &live[0], &ChiefAgentAction::Context { after:0, limit:50 }, &workers, 1).unwrap().result.unwrap_err().code, ErrorCode::Unauthorized);
+    assert!(chief::host(&mut connection, &ChiefHostAction::Enable { request_id:"overlap".into(), session:live[0].clone() }, &workers, 2).unwrap().result.is_err());
+}
+
+#[test]
+fn link_delivery_blocks_chief_delivery_until_a_new_native_boundary() {
+    if isolated("link_delivery_blocks_chief_delivery_until_a_new_native_boundary") { return; }
+    assert_link_chief_inbox_exclusion(false);
+}
+
+#[test]
+fn chief_delivery_blocks_link_delivery_until_a_new_native_boundary() {
+    if isolated("chief_delivery_blocks_link_delivery_until_a_new_native_boundary") { return; }
+    assert_link_chief_inbox_exclusion(true);
+}
+
+fn assert_link_chief_inbox_exclusion(chief_first: bool) {
+    use cockpit::chief::{ChiefHostAction, ChiefAgentAction, WorkerState, store as chief};
+    let (mut connection, _, mut live, proposal) = proposal_fixture();
+    live[2].agent = "opencode".into();
+    live[2].session_id = "ses_3f2a9c0b1ffeQkTz8mWn4rJd2L".into();
+    let link = activate(&mut connection, &live[0], &proposal, &live);
+    links::accept(&mut connection, &live[1], &note(&link, "link-notice"), &live, 1000).unwrap();
+    let workers: Vec<_> = live.iter().map(|session| WorkerState { session:session.clone(), role:Some(Role::Developer), ready:true, blocked_by:vec![], observed_at_ms:1000 }).collect();
+    chief::host(&mut connection, &ChiefHostAction::Enable { request_id:"enable".into(), session:live[2].clone() }, &workers, 1000).unwrap().result.unwrap();
+    chief::host(&mut connection, &ChiefHostAction::BindWorker { request_id:"bind".into(), session:live[0].clone(), role:Role::Developer, expected_epoch:None }, &workers, 1000).unwrap().result.unwrap();
+    let mut brief = common::chief::brief();
+    brief.work.task = proposal.task;
+    let work = brief.work.clone();
+    chief::host(&mut connection, &ChiefHostAction::ApproveWork { request_id:"work".into(), approval_hash:brief.approval_hash().unwrap(), brief, expected_revision:0 }, &workers, 1000).unwrap().result.unwrap();
+    common::chief::admit(&mut connection, &workers, &live[2], 1000);
+    chief::agent(&mut connection, &live[2], &ChiefAgentAction::Dispatch { submission_key:"assignment".into(), work, worker:live[0].session_id.clone() }, &workers, 1000).unwrap().result.unwrap();
+    chief::observe(&mut connection, &workers, 1000).unwrap();
+    let first = if chief_first { chief::claim(&mut connection, &live[0], "idle-1", 1000) }
+        else { store::claim(&mut connection, &live[0], "idle-1", &live, 1000) }.unwrap().unwrap();
+    let second = if chief_first { store::claim(&mut connection, &live[0], "idle-2", &live, 1000) }
+        else { chief::claim(&mut connection, &live[0], "idle-2", 1000) }.unwrap();
+    assert!(second.is_none());
+    let received = teams::TransportOutcome::Received { native_id:"native-first".into() };
+    if chief_first { chief::finish_for(&mut connection, &live[0], &first.id, &received, 1001).unwrap(); }
+    else { store::finish_for(&mut connection, &live[0], &first.id, &received, 1001).unwrap(); }
+    let reused = if chief_first { store::claim(&mut connection, &live[0], "idle-1", &live, 1002) }
+        else { chief::claim(&mut connection, &live[0], "idle-1", 1002) }.unwrap();
+    assert!(reused.is_none());
+    let next = if chief_first { store::claim(&mut connection, &live[0], "idle-2", &live, 1002) }
+        else { chief::claim(&mut connection, &live[0], "idle-2", 1002) }.unwrap();
+    assert!(next.is_some());
+}
+
+#[test]
 fn stale_recent_done_priority_save_cannot_pause_and_revive_a_new_approval() {
     if isolated("stale_recent_done_priority_save_cannot_pause_and_revive_a_new_approval") { return; }
     let (mut connection, mut current, live, proposal) = proposal_fixture();
@@ -419,7 +489,7 @@ fn delivery_migration_preserves_receipts_and_reconciles_multiple_inflight() {
     let connection = store::open(&path).unwrap();
     connection.execute_batch("DROP TABLE delivery_recipients; ALTER TABLE threads DROP COLUMN link_id; ALTER TABLE threads DROP COLUMN scope_kind;
         DROP INDEX one_inflight_delivery; CREATE UNIQUE INDEX one_inflight_delivery ON messages(recipient,recipient_epoch) WHERE state='submitting';
-        PRAGMA user_version=3;
+        PRAGMA user_version=11;
         INSERT INTO teams VALUES ('task','project','1234abcd',1);
         INSERT INTO members VALUES ('task','recipient','developer','claude','runtime','epoch','old-idle');").unwrap();
     for (id, state) in [("one", "submitting"), ("two", "submitting"), ("received", "received"), ("queued", "queued")] {
@@ -509,7 +579,7 @@ fn delivery_migration_failure_rolls_back_receipts_gates_and_schema() {
     let sandbox = Sandbox::new();
     let path = sandbox.root.join("protected/teams.sqlite");
     let connection = store::open(&path).unwrap();
-    connection.execute_batch("PRAGMA user_version=3; DROP TABLE delivery_recipients;
+    connection.execute_batch("PRAGMA user_version=11; DROP TABLE delivery_recipients;
         ALTER TABLE threads DROP COLUMN scope_kind;
         DROP INDEX one_inflight_delivery; CREATE UNIQUE INDEX one_inflight_delivery ON messages(recipient,recipient_epoch) WHERE state='submitting';").unwrap();
     // The last ALTER in migration will collide; earlier DDL and reconciliation must roll back.
@@ -523,7 +593,7 @@ fn delivery_migration_failure_rolls_back_receipts_gates_and_schema() {
     assert!(store::open(&path).is_err());
     let connection = Connection::open(path).unwrap();
     assert_eq!(team_state(&connection), before);
-    assert_eq!(connection.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0)).unwrap(), 3);
+    assert_eq!(connection.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0)).unwrap(), 11);
     assert_eq!(connection.query_row("SELECT count(*) FROM sqlite_master WHERE name='delivery_recipients'", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
     assert_eq!(connection.query_row("SELECT count(*) FROM pragma_table_info('threads') WHERE name='scope_kind'", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
 }

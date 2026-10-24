@@ -732,6 +732,12 @@ impl TodoList {
         self.apply_chief_projection(work);
         let guard = lock_mutations()?;
         let mut projected = Self::from_data(Self::read_for_update(initial)?);
+        for claim in work.iter().filter(|claim| claim["status"] == "done"
+            && claim["assignment"].is_string() && claim["worker"].is_string()) {
+            if let Some(item) = projected.items.iter().find(|item| Some(item.id().as_str()) == claim["task_id"].as_str() && item.status() != "done") {
+                invalidate_item(item, "done", &guard).map_err(std::io::Error::other)?;
+            }
+        }
         let changed = projected.apply_chief_projection(work);
         if changed || !paths::todo().is_file() { projected.save_guarded(&guard)?; }
         *self = projected;
@@ -749,6 +755,9 @@ impl TodoList {
             } else { self.items.iter_mut().find(|item| item.id() == key).map(|item| &mut item.0) };
             let Some(fields) = fields else { continue };
             let status = if claim["status"] == "done" { "done" } else { "doing" };
+            if fields.get("status").and_then(Value::as_str) != Some(status) {
+                fields.insert("updated".into(), json!(now_secs()));
+            }
             for (field, value) in [("status",json!(status)), ("session",json!(worker)), ("chief_assignment",json!(assignment))] {
                 if fields.get(field) != Some(&value) { fields.insert(field.into(),value); changed = true; }
             }
@@ -930,7 +939,17 @@ impl TodoList {
         let result = (|| -> std::io::Result<bool> {
             let guard = lock_mutations()?;
             let initial = self.can_initialize();
-            let latest = Self::read_for_update(initial)?;
+            let latest = match Self::read_for_update(initial) {
+                Ok(latest) => latest,
+                Err(error) => {
+                    if status == "done" {
+                        if let Some(item) = self.items.iter().find(|item| item.id() == key && item.status() != PROPOSED) {
+                            invalidate_item(item, "done", &guard).map_err(std::io::Error::other)?;
+                        }
+                    }
+                    return Err(error);
+                }
+            };
             let disk = Self::from_data(latest.clone());
             if disk.chief_controls(key) { return Ok(false); }
             if issue_key().is_match(key) {

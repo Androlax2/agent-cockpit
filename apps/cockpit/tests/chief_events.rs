@@ -75,6 +75,7 @@ fn version_seven_upgrade_preserves_approved_work_and_adds_immutable_proposal_int
     let pending = propose(&mut connection,&live,"before","Scope");
     let brief: WorkBrief = serde_json::from_value(pending["brief"].clone()).unwrap();
     store::host(&mut connection,&ChiefHostAction::ApproveWork {request_id:"approve".into(),approval_hash:brief.approval_hash().unwrap(),brief,expected_revision:0},&live,100).unwrap().result.unwrap();
+    common::chief::remove_link_schema(&connection);
     connection.execute_batch("DROP TRIGGER chief_work_proposal_immutable; DROP TRIGGER chief_work_proposal_no_delete; DROP TABLE chief_work_proposals; PRAGMA user_version=7;").unwrap();
     store::migrate(&mut connection).unwrap();
     assert_eq!(connection.query_row("SELECT state FROM chief_work_revisions",[],|row|row.get::<_,String>(0)).unwrap(),"approved");
@@ -676,6 +677,7 @@ fn context_reads_before_bootstrap_are_bounded_and_cannot_mint_a_mutation_turn() 
 #[test]
 fn schema_eight_active_grants_gain_one_bootstrap_without_an_initial_mutation_allowance() {
     let (mut connection,live) = setup(); let grant = enable_events(&mut connection,&live);
+    common::chief::remove_link_schema(&connection);
     let triggers = connection.prepare("SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'review_%'").unwrap().query_map([],|row|row.get::<_,String>(0)).unwrap().collect::<Result<Vec<_>,_>>().unwrap();
     for trigger in triggers {connection.execute_batch(&format!("DROP TRIGGER {trigger}")).unwrap();}
     connection.execute_batch("DELETE FROM chief_inbox WHERE json_extract(envelope,'$.kind')='chief_wake'; DELETE FROM chief_events WHERE kind='bootstrap';

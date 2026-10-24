@@ -172,6 +172,7 @@ pub fn propose(connection: &mut Connection, sender: &VerifiedSession, proposal: 
 fn insert_proposal(transaction: &Transaction<'_>, sender: &VerifiedSession, proposal: &LinkProposal, live: &[VerifiedSession],
                    revision: i64, parent: Option<&str>, now_ms: i64) -> Result<Value, TeamError> {
     let participants = bind(sender, proposal, live)?;
+    for participant in &participants { crate::chief::store::require_non_chief(transaction, &participant.session_id)?; }
     let (_, generation) = enroll_work(transaction, &proposal.task)?;
     let pending: i64 = transaction.query_row("SELECT count(*) FROM link_proposals WHERE sender=?1 AND status='pending'", [&sender.session_id], |row| row.get(0))?;
     if pending >= 10 { return Err(TeamError::new(ErrorCode::Limit, "pending link request limit reached")); }
@@ -221,6 +222,7 @@ fn approve(transaction: &Transaction<'_>, id: &str, revision: i64, hash: &str, l
     }
     require_open_work(transaction, &proposal.task, proposal.generation)?;
     for participant in &participants {
+        crate::chief::store::require_non_chief(transaction, &participant.session_id)?;
         let active: i64 = transaction.query_row("SELECT count(*) FROM links WHERE state='active' AND (session_low=?1 OR session_high=?1)",
             [&participant.session_id], |row| row.get(0))?;
         if active >= 10 { return Err(TeamError::new(ErrorCode::Limit, "active link limit reached")); }
@@ -326,9 +328,10 @@ fn active(transaction: &Transaction<'_>, link_id: &str) -> Result<ActiveLink, Te
         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))).optional()?;
     let (task, epoch, proposal, generation) = stored.ok_or_else(invalid_mapping)?;
     let task = serde_json::from_str(&task)?;
-    let participants = transaction.prepare("SELECT session_id,agent,project,runtime FROM link_participants WHERE proposal_id=?1 ORDER BY slot")?
+    let participants: [VerifiedSession; 2] = transaction.prepare("SELECT session_id,agent,project,runtime FROM link_participants WHERE proposal_id=?1 ORDER BY slot")?
         .query_map([proposal], |row| Ok(VerifiedSession { session_id: row.get(0)?, agent: row.get(1)?, project: row.get(2)?, runtime: row.get(3)? }))?
         .collect::<Result<Vec<_>, _>>()?.try_into().map_err(|_| invalid_mapping())?;
+    for participant in &participants { crate::chief::store::require_non_chief(transaction, &participant.session_id)?; }
     Ok(ActiveLink { task, epoch, generation, participants })
 }
 
@@ -503,7 +506,7 @@ pub(crate) fn reopen_work_guarded(connection: &mut Connection, task: &TaskKey, _
     Ok(())
 }
 
-/// Version 11 is atomic both standalone and within store initialization's transaction.
+/// Link schema (11) and shared delivery gates (12) join the store's writer transaction.
 pub fn migrate(connection: &Connection) -> Result<(), TeamError> {
     let transaction = if connection.is_autocommit() { Some(connection.unchecked_transaction()?) } else { None };
     let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;

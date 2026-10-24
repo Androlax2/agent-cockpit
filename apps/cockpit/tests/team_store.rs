@@ -2057,7 +2057,7 @@ fn a_store_left_half_migrated_by_a_crash_still_opens_complete() {
     drop(half);
     std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o600)).unwrap();
     let connection = store::open(&path).unwrap();
-    assert_eq!(connection.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0)).unwrap(), 11);
+    assert_eq!(connection.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0)).unwrap(), 12);
     let (recruits, spawn_agent): (String, String) = connection.query_row(
         "SELECT recruits, spawn_agent FROM proposals WHERE id='proposal-a'", [], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
     assert_eq!(recruits, "[{\"role\":\"qa\",\"brief\":\"Review only\"}]");

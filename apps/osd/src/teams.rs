@@ -2,7 +2,7 @@
 
 use crate::registry::Registry;
 use cockpit::teams::{AgentAction, ErrorCode, HostAction, TeamError, TeamReply, VerifiedSession, store};
-use cockpit::teams::canonical_project;
+pub(crate) use cockpit::teams::canonical_project;
 use serde_json::{Value, json};
 use std::fs;
 use std::io::Read;
@@ -33,7 +33,9 @@ fn open_and_restore(registry: &mut Registry, replay_sources: bool) -> Result<boo
     for session in missing {
         let connection = registry.teams.as_ref().expect("opened above");
         let mut runtimes = store::approved_runtimes(connection, &session)?;
+        let member_runtime = store::member_runtime(connection, &session)?;
         let chief_runtime = cockpit::chief::store::runtime(connection, &session)?;
+        if member_runtime.as_ref().zip(chief_runtime.as_ref()).is_some_and(|(member, chief)| member != chief) { continue; }
         if let Some(runtime) = chief_runtime { runtimes.push(runtime); }
         runtimes.sort();
         runtimes.dedup();

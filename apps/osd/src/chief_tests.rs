@@ -378,7 +378,7 @@ fn legacy_host_manual_undo_and_delete_release_only_status_reservations() {
         let id=todos.add("project-a",&directory,"Manual status only");
         let manual=crate::teams::host(&mut bench.registry, std::process::id(),HostRequest::ReserveManual {task_id:id.clone(),directory:directory.clone()}).unwrap().result.unwrap();
         assert!(todos.set_status(&id,"doing",""));
-        if remove {todos.remove(&id);} else {assert!(todos.set_status(&id,"todo",""));}
+        if remove {todos.remove(&id).unwrap();} else {assert!(todos.set_status(&id,"todo",""));}
         crate::teams::host(&mut bench.registry, std::process::id(),HostRequest::ReleaseManual {task_id:id,directory:directory.clone(),token:manual["reservation"].as_str().unwrap().into()}).unwrap().result.unwrap();
         let next=todos.add("project-a",&directory,"Next task");
         let reserved=crate::teams::host(&mut bench.registry, std::process::id(),HostRequest::ReserveTask {task_id:next,directory,worker:None,automatic:false}).unwrap().result.unwrap();

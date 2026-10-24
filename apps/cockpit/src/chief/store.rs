@@ -14,7 +14,7 @@ fn exact_live(session: &VerifiedSession, live: &[WorkerState]) -> bool {
 }
 
 pub fn is_product_worker(connection: &Connection, session: &str) -> Result<bool, TeamError> {
-    Ok(connection.query_row("SELECT EXISTS(SELECT 1 FROM members WHERE session_id=?1) OR EXISTS(SELECT 1 FROM chief_worker_bindings WHERE session_id=?1 AND state='bound') OR EXISTS(SELECT 1 FROM chief_assignments WHERE worker=?1 AND state NOT IN ('completed','cancelled'))",
+    Ok(connection.query_row("SELECT EXISTS(SELECT 1 FROM members WHERE session_id=?1) OR EXISTS(SELECT 1 FROM chief_worker_bindings WHERE session_id=?1 AND state='bound') OR EXISTS(SELECT 1 FROM chief_assignments WHERE worker=?1 AND state NOT IN ('completed','cancelled')) OR EXISTS(SELECT 1 FROM links WHERE state='active' AND (session_low=?1 OR session_high=?1))",
         [session], |row| row.get(0))?)
 }
 

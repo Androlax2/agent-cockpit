@@ -495,6 +495,7 @@ fn a_doing_todo_without_a_session_reserves_only_its_own_task() {
 fn upgrade_seeds_existing_chief_claims_before_any_legacy_reservation() {
     let (mut connection, live) = setup();
     dispatch(&mut connection, &live, "existing-claim", "aaaaaaaa", 'b').unwrap();
+    common::chief::remove_link_schema(&connection);
     connection.execute_batch("DROP TABLE scheduling_reservations; DROP TABLE chief_admission_verifications; PRAGMA user_version=5;").unwrap();
     store::migrate(&mut connection).unwrap();
     assert_eq!(connection.query_row("SELECT owner FROM scheduling_reservations WHERE task_id='aaaaaaaa'", [], |row| row.get::<_,String>(0)).unwrap(), "chief");
@@ -865,14 +866,14 @@ fn team_and_chief_inboxes_exclude_each_other_in_both_directions() {
             connection.execute("UPDATE members SET last_idle_turn='legacy-turn' WHERE session_id=?1", [&session('b').session_id]).unwrap();
             assert!(store::claim(&mut connection, &session('b'), "legacy-turn", NOW).unwrap().is_none(), "migration preserves the team's consumed turn");
         }
-        let first = if chief_first { store::claim(&mut connection, &session('b'), "idle-1", NOW) } else { teams::store::claim(&mut connection, &session('b'), "idle-1", NOW) }.unwrap().unwrap();
-        let second = if chief_first { teams::store::claim(&mut connection, &session('b'), "idle-2", NOW) } else { store::claim(&mut connection, &session('b'), "idle-2", NOW) }.unwrap();
+        let first = if chief_first { store::claim(&mut connection, &session('b'), "idle-1", NOW) } else { teams::store::claim(&mut connection, &session('b'), "idle-1", &sessions, NOW) }.unwrap().unwrap();
+        let second = if chief_first { teams::store::claim(&mut connection, &session('b'), "idle-2", &sessions, NOW) } else { store::claim(&mut connection, &session('b'), "idle-2", NOW) }.unwrap();
         assert!(second.is_none());
         if chief_first { store::finish_for(&mut connection, &session('b'), &first.id, &TransportOutcome::Received { native_id: "n1".into() }, NOW).unwrap(); }
         else { teams::store::finish_for(&mut connection, &session('b'), &first.id, &TransportOutcome::Received { native_id: "n1".into() }, NOW).unwrap(); }
-        let second = if chief_first { teams::store::claim(&mut connection, &session('b'), "idle-1", NOW) } else { store::claim(&mut connection, &session('b'), "idle-1", NOW) }.unwrap();
+        let second = if chief_first { teams::store::claim(&mut connection, &session('b'), "idle-1", &sessions, NOW) } else { store::claim(&mut connection, &session('b'), "idle-1", NOW) }.unwrap();
         assert!(second.is_none());
-        let second = if chief_first { teams::store::claim(&mut connection, &session('b'), "idle-2", NOW) } else { store::claim(&mut connection, &session('b'), "idle-2", NOW) }.unwrap();
+        let second = if chief_first { teams::store::claim(&mut connection, &session('b'), "idle-2", &sessions, NOW) } else { store::claim(&mut connection, &session('b'), "idle-2", NOW) }.unwrap();
         assert!(second.is_some());
     }
 }
