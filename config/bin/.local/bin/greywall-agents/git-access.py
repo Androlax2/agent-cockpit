@@ -13,6 +13,7 @@ import json
 import os
 from pathlib import Path
 import re
+import secrets
 import shutil
 import stat
 import subprocess
@@ -1138,10 +1139,62 @@ def enroll_repository(arguments):
     return report
 
 
+def private_runtime_directory(path):
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    metadata = path.lstat()
+    if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.getuid() or metadata.st_mode & 0o077:
+        deny('untrusted_runtime_directory')
+
+
+def write_private_file(path, content):
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(descriptor, 'w') as target:
+        target.write(content)
+        target.flush()
+        os.fsync(target.fileno())
+
+
+def prepare_session(checkout):
+    """Host launcher step: fresh admission, then a private broker binding or a read-only reason.
+
+    The capability is written only to the per-session channel folder the launcher mounts into that
+    one sandbox; it is never printed. Every launch gets a new session and capability.
+    """
+    report = inspect_access(checkout, purpose='admission')
+    if (report.get('mode') != 'verified' or report.get('identity_verified') is not True
+            or report.get('rate_verified') is not True
+            or report.get('credential_roles_verified') != ['read', 'forward']):
+        reason = report.get('reason') if report.get('mode') != 'verified' else 'admission_incomplete'
+        if not isinstance(reason, str) or not re.fullmatch(r'[a-z_]{1,80}', reason):
+            reason = 'admission_denied'
+        return {'mode': 'read_only', 'reason': reason}
+    _, serialized = load_registry()
+    if serialized is None:
+        return {'mode': 'read_only', 'reason': 'registry_unavailable'}
+    runtime = Path(os.environ.get('XDG_RUNTIME_DIR', f'/run/user/{os.getuid()}'))
+    session = secrets.token_hex(16)
+    control = runtime / 'greywall-agents/git-access'
+    channel = runtime / 'greywall-git-channel' / session
+    for directory in [control, channel.parent, channel]:
+        private_runtime_directory(directory)
+    binding = {field: report[field] for field in ['checkout', 'repository_id', 'canonical_name',
+                                                  'git_dir', 'common_dir', 'configuration_digest']}
+    binding.update(version=1, mode='verified', session=session, generation=secrets.token_hex(16),
+                   capability=secrets.token_hex(32), revoked=False, checked_at=time.monotonic(),
+                   checked_wall=time.time(), boot_id=Path('/proc/sys/kernel/random/boot_id').read_text().strip(),
+                   registry_digest=hashlib.sha256(serialized).hexdigest())
+    write_private_file(channel / 'capability', binding['capability'])
+    write_private_file(control / (session + '.json'), json.dumps(binding))
+    return {'mode': 'verified', 'session': session, 'channel_dir': str(channel),
+            'canonical_name': report['canonical_name']}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest='command', required=True)
     commands.add_parser('check-greywall')
+    prepare = commands.add_parser('prepare')
+    prepare.add_argument('--checkout', required=True, type=Path)
     inspect = commands.add_parser('inspect')
     inspect.add_argument('--checkout', required=True, type=Path)
     enroll = commands.add_parser('enroll')
@@ -1153,6 +1206,9 @@ def main():
     enroll.add_argument('--history-ruleset', required=True, type=int)
     enroll.add_argument('--default-pr-ruleset', required=True, type=int)
     arguments = parser.parse_args()
+    if arguments.command == 'prepare':
+        print(json.dumps(prepare_session(arguments.checkout), sort_keys=True))
+        return 0
     if arguments.command == 'check-greywall':
         report = check_greywall_dependency()
     elif arguments.command == 'enroll':
