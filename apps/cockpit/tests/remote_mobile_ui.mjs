@@ -147,6 +147,32 @@ const tests = {
     assert.equal(conversation.querySelectorAll("img").length, 0);
   },
 
+  async "an image line in a reply shows the image by its place in the reply"() {
+    const page = await startPage({ sessions: SESSIONS, messages: [{ id: "a1", role: "assistant",
+      text: "Before:\n![Login](design/login.png)\nsee ![inline](x.png)\n```\n![code](no.png)\n```\n![](\"onerror=x.png)" }] });
+    page.run('openSession("s1")'); await settle();
+    const images = page.document.getElementById("conversation").querySelectorAll("img");
+    assert.deepEqual(images.map(image => image.src), ["/api/image/s1/a1/0", "/api/image/s1/a1/1"]);
+    assert.equal(images[0].alt, "Login");
+    assert.equal(images[1].alt, "\"onerror=x.png", "an image without alt text is named by its path, as text");
+    assert.match(page.document.getElementById("conversation").textContent, /see !\[inline\]\(x\.png\)/);
+  },
+
+  async "an image that cannot load says which file"() {
+    const page = await startPage({ sessions: SESSIONS, messages: [{ id: "a1", role: "assistant", text: "![Login](design/login.png)" }] });
+    page.run('openSession("s1")'); await settle();
+    const figure = page.document.getElementById("conversation").querySelector("figure");
+    figure.querySelector("img").onerror();
+    assert.equal(figure.querySelector("img").hidden, true);
+    assert.equal(figure.querySelector("figcaption").textContent, "Image not shown: design/login.png");
+  },
+
+  async "your own image lines stay literal"() {
+    const page = await startPage({ sessions: SESSIONS, messages: [{ id: "u1", role: "user", text: "![mine](design/login.png)" }] });
+    page.run('openSession("s1")'); await settle();
+    assert.equal(page.document.getElementById("conversation").querySelectorAll("img").length, 0);
+  },
+
   async "your own messages stay literal"() {
     const page = await startPage({ sessions: SESSIONS, messages: [{ id: "u1", role: "user", text: "Keep **stars** and `ticks`" }] });
     page.run('openSession("s1")'); await settle();

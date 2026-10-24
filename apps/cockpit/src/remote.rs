@@ -6,7 +6,8 @@
 //! codes and secrets is kept, in ~/.local/state/claude-remote (0600; greywall hides it from every
 //! sandbox). `claude-remote phones` lists them; `claude-remote unpair [id]` forgets one, or all.
 //!
-//! From the phone: the session cards, a session's last screen (in colour), a message (queued while
+//! From the phone: the session cards, a session's conversation (with the images its replies show
+//! from its folder, remote/images.rs), its last screen (in colour), a message (queued while
 //! it works, as the column's m), an answer to a permission dialog, Escape for a session that works,
 //! Remote Control on or off, and Run or Decline for an approval that is
 //! asking (claude-run-approve shows the same command from `<id>.asking` and takes the answer from
@@ -24,8 +25,10 @@ use std::sync::Mutex;
 use std::process::{Command, Stdio};
 
 mod conversation;
+mod images;
 pub use conversation::conversation;
 pub(crate) use conversation::handoff_history;
+pub use images::shared_image;
 
 pub const DEFAULT_ADDRESS: &str = "127.0.0.1:7380";
 const PAIRING_VALID_S: i64 = 600;

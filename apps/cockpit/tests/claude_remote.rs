@@ -700,6 +700,93 @@ fn a_partial_streaming_record_does_not_hide_finished_messages() {
     assert_eq!(history["messages"][0]["text"], "Hello");
 }
 
+const PNG: &[u8] = b"\x89PNG\r\n\x1a\n not really pixels";
+
+impl Remote {
+    /// Session A waiting in its folder `checkout`, its last reply `reply`; the folder's path.
+    fn session_replying(&self, reply: &str) -> std::path::PathBuf {
+        let checkout = self.sandbox.home.join("checkout");
+        fs::create_dir_all(checkout.join("design")).unwrap();
+        fs::write(self.sandbox.runtime.join("cockpit.json"), json!({"sessions": [{"session": SESSION_A, "state": "waiting",
+            "project": "proj-a", "tmux_pane": "%4", "cwd": checkout}]}).to_string()).unwrap();
+        self.claude_history(&[json!({"uuid": "u1", "type": "user", "message": {"content": "![mine](design/login.png)"}}),
+                              json!({"uuid": "a1", "type": "assistant", "message": {"content": [{"type": "text", "text": reply}]}})]);
+        checkout
+    }
+
+    /// The status, the headers and the raw body of a GET.
+    fn get_bytes(&self, path: &str, cookie: &str) -> (u16, String, Vec<u8>) {
+        let mut stream = TcpStream::connect(("127.0.0.1", self.port)).unwrap();
+        stream.write_all(format!("GET {path} HTTP/1.0\r\nCookie: claude_remote={cookie}\r\n\r\n").as_bytes()).unwrap();
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).unwrap();
+        let split = response.windows(4).position(|window| window == b"\r\n\r\n").unwrap();
+        let headers = String::from_utf8_lossy(&response[..split]).to_string();
+        (headers.split_whitespace().nth(1).unwrap().parse().unwrap(), headers, response[split + 4..].to_vec())
+    }
+}
+
+#[test]
+fn an_image_line_in_a_reply_shows_that_file_from_the_sessions_folder() {
+    let remote = Remote::start();
+    let secret = remote.paired();
+    let checkout = remote.session_replying("The login screen:\n![Login](design/login.png)\nWhat do you think?");
+    fs::write(checkout.join("design/login.png"), PNG).unwrap();
+    let (status, headers, body) = remote.get_bytes(&format!("/api/image/{SESSION_A}/a1/0"), &secret);
+    assert_eq!(status, 200, "{headers}");
+    assert!(headers.contains("Content-Type: image/png"), "{headers}");
+    assert!(headers.contains("X-Content-Type-Options: nosniff"), "{headers}");
+    assert_eq!(body, PNG);
+}
+
+#[test]
+fn an_image_needs_a_paired_phone() {
+    let remote = Remote::start();
+    let checkout = remote.session_replying("![Login](design/login.png)");
+    fs::write(checkout.join("design/login.png"), PNG).unwrap();
+    assert_eq!(remote.get_bytes(&format!("/api/image/{SESSION_A}/a1/0"), &"0".repeat(64)).0, 401);
+}
+
+#[test]
+fn only_an_image_a_reply_shows_from_inside_the_folder_is_served() {
+    let cases: &[(&str, &str, &str)] = &[
+        ("outside the folder", "![x](../private.png)", "/a1/0"),
+        ("an absolute path elsewhere", "![x](/etc/hostname)", "/a1/0"),
+        ("a symlink out of the folder", "![x](design/link.png)", "/a1/0"),
+        ("not an image", "![x](design/notes.txt)", "/a1/0"),
+        ("SVG, whose markup could run", "![x](design/icon.svg)", "/a1/0"),
+        ("a folder", "![x](design)", "/a1/0"),
+        ("an image the reply does not show", "![x](design/login.png)", "/a1/1"),
+        ("an image line inside fenced code", "```\n![x](design/login.png)\n```", "/a1/0"),
+        ("an image line in your own message", "No image here", "/u1/0"),
+        ("a reply that is not in the conversation", "![x](design/login.png)", "/gone/0"),
+    ];
+    for (what, reply, address) in cases {
+        let remote = Remote::start();
+        let secret = remote.paired();
+        let checkout = remote.session_replying(reply);
+        fs::write(checkout.join("design/login.png"), PNG).unwrap();
+        fs::write(checkout.join("design/notes.txt"), "private notes").unwrap();
+        fs::write(checkout.join("design/icon.svg"), "<svg onload=alert(1)/>").unwrap();
+        fs::write(remote.sandbox.home.join("private.png"), PNG).unwrap();
+        std::os::unix::fs::symlink(remote.sandbox.home.join("private.png"), checkout.join("design/link.png")).unwrap();
+        let (status, headers, body) = remote.get_bytes(&format!("/api/image/{SESSION_A}{address}"), &secret);
+        assert_eq!(status, 404, "{what}: {headers}");
+        assert!(!body.starts_with(b"\x89PNG"), "{what}");
+    }
+}
+
+#[test]
+fn an_image_larger_than_ten_megabytes_is_refused() {
+    let remote = Remote::start();
+    let secret = remote.paired();
+    let checkout = remote.session_replying("![Big](design/big.png)");
+    fs::write(checkout.join("design/big.png"), [PNG, &vec![0; 10 * 1024 * 1024]].concat()).unwrap();
+    let (status, _, body) = remote.get_bytes(&format!("/api/image/{SESSION_A}/a1/0"), &secret);
+    assert_eq!(status, 404);
+    assert!(String::from_utf8_lossy(&body).contains("larger than 10 MB"));
+}
+
 fn subscription(endpoint: &str) -> Value {
     json!({"endpoint": endpoint, "keys": {
         "p256dh": "BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4", "auth": "BTBZMqHH6r4Tts7J_aSIgg"}})

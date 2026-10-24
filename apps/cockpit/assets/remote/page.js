@@ -314,8 +314,26 @@ async function loadScreen() {
   }
 }
 
-// The agent's Markdown, as elements built from text: fenced code, headings, lists, `code` and
-// **bold**. Anything else stays literal; no part of the message becomes markup or a link.
+// The agent's Markdown, as elements built from text: fenced code, headings, lists, `code`,
+// **bold**, and a line that is only ![alt](path), an image from the session's folder. Anything else
+// stays literal; no part of the message becomes markup or a link.
+const imageLine = /^\s*!\[([^\]\n]*)\]\(([^)\s]+)\)\s*$/;
+
+// The server serves an image by its place in the reply (remote/images.rs counts the same lines),
+// never by a path the page could choose.
+function imageNode(alt, path, source) {
+  const figure = element("figure", "message-image");
+  const image = element("img");
+  image.src = source;
+  image.alt = alt || path;
+  image.loading = "lazy";
+  const caption = element("figcaption", "", alt || path);
+  image.onerror = () => { image.hidden = true; caption.textContent = `Image not shown: ${path}`; caption.className = "image-missing"; };
+  image.onclick = () => figure.classList.toggle("expanded");
+  figure.append(image, caption);
+  return figure;
+}
+
 function inlineNodes(text) {
   const nodes = [];
   for (const [index, part] of text.split(/(`[^`\n]+`|\*\*[^*\n]+\*\*)/).entries()) {
@@ -327,8 +345,9 @@ function inlineNodes(text) {
   return nodes;
 }
 
-function messageNodes(text) {
+function messageNodes(text, imageSource) {
   const blocks = [];
+  let images = 0;
   const lines = text.split("\n");
   let paragraph = [];
   let list = null;
@@ -348,9 +367,13 @@ function messageNodes(text) {
       blocks.push(element("pre", "", code.join("\n")));
       continue;
     }
+    const image = imageLine.exec(line);
     const heading = /^#{1,6}\s+(.*)$/.exec(line);
     const item = /^\s*(?:[-*+]|(\d+)[.)])\s+(.*)$/.exec(line);
-    if (heading) {
+    if (image) {
+      endParagraph(); list = null;
+      blocks.push(imageNode(image[1], image[2], imageSource(images++)));
+    } else if (heading) {
       endParagraph(); list = null;
       const block = element("p", "message-heading");
       block.append(...inlineNodes(heading[1]));
@@ -406,7 +429,8 @@ async function loadConversation() {
         const turn = element("article", `chat-turn ${message.role === "user" ? "from-you" : "from-agent"}`);
         turn.dataset.messageId = message.id;
         const text = message.role === "user" ? element("div", "message-text", message.text) : element("div", "message-text formatted");
-        if (message.role !== "user") text.append(...messageNodes(message.text));
+        const imageSource = index => `/api/image/${encodeURIComponent(session)}/${encodeURIComponent(message.id)}/${index}`;
+        if (message.role !== "user") text.append(...messageNodes(message.text, imageSource));
         turn.append(element("div", "speaker", message.role === "user" ? "You" : "Agent"), text);
         return turn;
       });

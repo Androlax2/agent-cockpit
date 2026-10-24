@@ -32,8 +32,17 @@ fn header(name: &str, value: &str) -> Header {
 }
 
 fn respond(request: Request, status: u16, content_type: &str, body: String, extra: &[Header]) {
-    let mut response = Response::from_string(body).with_status_code(status).with_header(header("Content-Type", content_type))
-        .with_header(header("Cache-Control", "no-store"))
+    send(request, status, content_type, body.into_bytes(), "no-store", extra);
+}
+
+/// A shared image: the conversation redraws it with every new reply, so the phone keeps it a minute.
+fn respond_bytes(request: Request, content_type: &str, body: Vec<u8>) {
+    send(request, 200, content_type, body, "private, max-age=60", &[]);
+}
+
+fn send(request: Request, status: u16, content_type: &str, body: Vec<u8>, cache: &str, extra: &[Header]) {
+    let mut response = Response::from_data(body).with_status_code(status).with_header(header("Content-Type", content_type))
+        .with_header(header("Cache-Control", cache))
         .with_header(header("Referrer-Policy", "no-referrer"))
         .with_header(header("X-Content-Type-Options", "nosniff"))
         .with_header(header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; form-action 'none'; base-uri 'none'"));
@@ -59,6 +68,11 @@ fn cookie_secret(request: &Request) -> Option<String> {
 /// An id one of the agents reports (cockpit::agents): Claude Code's UUIDs, opencode's ses_….
 fn is_session_id(id: &str) -> bool {
     cockpit::agents::is_session_id(id)
+}
+
+/// A conversation message's id (Claude's uuid, opencode's msg_…, or `<offset>:<line>`).
+fn is_message_id(id: &str) -> bool {
+    (1..=100).contains(&id.len()) && id.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | ':'))
 }
 
 fn is_todo_id(id: &str) -> bool {
@@ -197,6 +211,12 @@ fn handle(mut request: Request) {
             Ok(conversation) => respond_json(request, 200, conversation),
             Err(message) => respond_json(request, 409, json!({"ok": false, "message": message})),
         },
+        (Method::Get, ["api", "image", id, message_id, index]) if is_session_id(id) && is_message_id(message_id) => {
+            match index.parse().map_err(|_| "not an image number".to_string()).and_then(|index| remote::shared_image(id, message_id, index)) {
+                Ok((content_type, bytes)) => respond_bytes(request, content_type, bytes),
+                Err(message) => respond(request, 404, "text/plain; charset=utf-8", message, &[]),
+            }
+        }
         (Method::Post, ["api", "message", id]) if is_session_id(id) => {
             let id = id.to_string();
             let text = body_json(&mut request).and_then(|body| body.get("text").and_then(Value::as_str).map(str::to_string)).unwrap_or_default();
