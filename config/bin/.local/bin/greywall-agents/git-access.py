@@ -1328,6 +1328,7 @@ def main():
     commands.add_parser('check-greywall')
     prepare = commands.add_parser('prepare')
     prepare.add_argument('--checkout', required=True, type=Path)
+    prepare.add_argument('--shell', action='store_true', help='print shell-quoted git_* assignments')
     run = commands.add_parser('run')
     run.add_argument('--session', required=True)
     run.add_argument('sandbox', nargs=argparse.REMAINDER)
@@ -1343,7 +1344,14 @@ def main():
     enroll.add_argument('--default-pr-ruleset', required=True, type=int)
     arguments = parser.parse_args()
     if arguments.command == 'prepare':
-        print(json.dumps(prepare_session(arguments.checkout), sort_keys=True))
+        result = prepare_session(arguments.checkout)
+        if not arguments.shell:
+            print(json.dumps(result, sort_keys=True))
+            return 0
+        names = {'mode': 'git_mode', 'session': 'git_session', 'channel_dir': 'git_channel',
+                 'canonical_name': 'git_repository', 'reason': 'git_reason'}
+        for key, value in sorted(result.items()):
+            print(names[key] + "='" + str(value).replace("'", "'\\''") + "'")
         return 0
     if arguments.command == 'run':
         sandbox = arguments.sandbox[1:] if arguments.sandbox[:1] == ['--'] else arguments.sandbox

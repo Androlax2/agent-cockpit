@@ -16,9 +16,9 @@ if [ -n "${COCKPIT_SUBSCRIPTION_ROUTE:-}" ]; then
     fi
     # The capability-authenticated server and its TUI share this sandbox, never the host daemon.
     # shellcheck disable=SC2086
-    exec "$HOME/.local/bin/greywall" --profile codex $greywall_options -- \
-        node "$HOME/agent-cockpit/config/codex/.codex/cockpit-bridge.mjs" "$COCKPIT_SUBSCRIPTION_ROUTE"
+    exec $greywall_command --profile codex $greywall_options -- \
+        $sandbox_entry node "$HOME/agent-cockpit/config/codex/.codex/cockpit-bridge.mjs" "$COCKPIT_SUBSCRIPTION_ROUTE"
 fi
 # Never connect a private namespace to a shared daemon whose socket belongs to another launch.
 # shellcheck disable=SC2086
-exec "$HOME/.local/bin/greywall" --profile codex $greywall_options -- "$HOME/.local/npm/bin/codex" --no-daemon "$@"
+exec $greywall_command --profile codex $greywall_options -- $sandbox_entry "$HOME/.local/npm/bin/codex" --no-daemon "$@"

@@ -6,6 +6,10 @@
 # Greywall's drift prompt defaults to merging bundled grants into our reviewed profiles.
 export GREYWALL_NO_PROMPT=1
 
+# No GitHub write token enters a sandbox, whatever the calling environment holds: writes go
+# through the host broker, and native gh reads get only the read-role token from it.
+unset GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN GH_PROJECT_TOKEN
+
 # Chrome writes its crash reports under the config dir even headless; give it one the sandbox allows.
 export CHROME_CONFIG_HOME="$HOME/.cache/chrome-sandbox"
 mkdir -p "$CHROME_CONFIG_HOME"
@@ -234,6 +238,19 @@ mkdir -p "$shims_dir"
 cp "$HOME/.local/share/agent-shims/bin/wl-paste" "$shims_dir/wl-paste.new"
 chmod 755 "$shims_dir/wl-paste.new"
 mv "$shims_dir/wl-paste.new" "$shims_dir/wl-paste"
+# The sandbox side of the Git broker and the gh compatibility client, copied the same way. Every
+# start replaces them, so a session cannot keep an altered copy for the next one.
+for sandbox_file in git-session-entry.py git-broker.py git-adapter.py github-actions.py gh-compat.py; do
+    cp "$HOME/.local/bin/greywall-agents/$sandbox_file" "$shims_dir/$sandbox_file.new" &&
+        mv "$shims_dir/$sandbox_file.new" "$shims_dir/$sandbox_file" || {
+        echo "$agent launcher: cannot install $sandbox_file into the sandbox, not starting." >&2
+        exit 1
+    }
+done
+printf '#!/bin/sh\nexec /usr/bin/python3 -I %s "$@"\n' "$shims_dir/gh-compat.py" > "$shims_dir/gh.new"
+chmod 755 "$shims_dir/gh.new"
+mv "$shims_dir/gh.new" "$shims_dir/gh"
+sandbox_entry="/usr/bin/python3 -I $shims_dir/git-session-entry.py"
 # Only build tools inherit this affinity; the agent itself keeps every available CPU thread.
 # All sessions choose the same half, so more parallel builds do not multiply their CPU budget.
 if ! AGENT_BUILD_CPUS=$(python3 "$HOME/.local/bin/agent-build" --cpu-list); then
@@ -257,23 +274,23 @@ if [ -d "$clipboard_dir" ]; then
     greywall_options="$greywall_options --allow-path $clipboard_dir"
 fi
 
-# A per-project GitHub token from the keyring (make agent-github-token PROJECT=<name>).
-# Without one, gh inside the sandbox stays logged out: the keyring itself is hidden from it.
-# It is passed in as-is, not as a greyproxy placeholder: git sends credentials Basic-encoded,
-# where greyproxy cannot swap a placeholder, so git push needs the real, repo-scoped token.
-github_token=$(secret-tool lookup service agent-gh project "$project_name" 2>/dev/null || true)
-if [ -n "$github_token" ]; then
-    export GH_TOKEN="$github_token"
-    greywall_options="$greywall_options --ignore-secret GH_TOKEN"
+# GitHub write access: a fresh admission check of this checkout (git-access.py prepare). Verified,
+# the sandbox runs under the supervisor (git-access.py run), which owns this session's broker and
+# contains the sandbox on the first failed check; the sandbox sees only its own channel folder,
+# read-only. Otherwise it runs read-only: no broker and no credentials. Never a raw token.
+greywall_command="$HOME/.local/bin/greywall"
+git_mode= git_reason= git_session= git_channel= git_repository=
+if git_admission=$(/usr/bin/python3 -I "$HOME/.local/bin/greywall-agents/git-access.py" prepare --shell \
+        --checkout "$project_root" 2>/dev/null); then
+    eval "$git_admission"
 fi
-
-# A classic token with only the project scope (Project boards, which fine-grained tokens cannot
-# reach), shared by every project. Unlike GH_TOKEN it stays a greyproxy placeholder inside the
-# sandbox: gh sends it in an Authorization header, where greyproxy swaps in the real value.
-project_board_token=$(secret-tool lookup service agent-gh-projects 2>/dev/null || true)
-if [ -n "$project_board_token" ]; then
-    export GH_PROJECT_TOKEN="$project_board_token"
-    greywall_options="$greywall_options --secret GH_PROJECT_TOKEN"
+if [ "$git_mode" = verified ] && [ -n "$git_session" ] && [ -d "$git_channel" ] && [ -n "$git_repository" ]; then
+    greywall_command="/usr/bin/python3 -I $HOME/.local/bin/greywall-agents/git-access.py run --session $git_session -- $greywall_command"
+    greywall_options="$greywall_options --allow-read-path $git_channel"
+    export COCKPIT_GIT_SOCKET="$git_channel/broker.sock" COCKPIT_GIT_CAPABILITY_FILE="$git_channel/capability"
+    export COCKPIT_GITHUB_REPOSITORY="$git_repository"
+else
+    echo "$agent launcher: GitHub access is read-only for this session (${git_reason:-admission_unavailable})." >&2
 fi
 
 # The Console's API key only goes to a credits session (the claude launcher sets it after this);

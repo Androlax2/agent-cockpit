@@ -50,7 +50,7 @@ if [ -n "${COCKPIT_SUBSCRIPTION_ROUTE:-}" ]; then
     # The host verifies the execution account immediately before entering the existing sandbox.
     # shellcheck disable=SC2086
     exec python3 "$HOME/.config/waybar/scripts/native-subscription.py" launch-claude "$COCKPIT_SUBSCRIPTION_ROUTE" \
-        "$HOME/.local/bin/greywall" $greywall_options -- "$HOME/.local/bin/claude" \
+        $greywall_command $greywall_options -- $sandbox_entry "$HOME/.local/bin/claude" \
         --mcp-config "$figcraft_mcp_config" --settings "$team_settings"
 fi
 
@@ -65,4 +65,4 @@ for argument in "$@"; do
 done
 export COCKPIT_SUBSCRIPTION_ACCOUNT
 # shellcheck disable=SC2086
-exec "$HOME/.local/bin/greywall" $greywall_options -- "$HOME/.local/bin/claude" "$@" --mcp-config "$figcraft_mcp_config" --settings "$team_settings"
+exec $greywall_command $greywall_options -- $sandbox_entry "$HOME/.local/bin/claude" "$@" --mcp-config "$figcraft_mcp_config" --settings "$team_settings"

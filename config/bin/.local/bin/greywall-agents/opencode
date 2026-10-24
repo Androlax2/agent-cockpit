@@ -56,8 +56,8 @@ fi
 # greywall_options is split on spaces on purpose: every path in it is under $HOME or
 # $XDG_RUNTIME_DIR, which have none.
 # shellcheck disable=SC2086
-exec "$HOME/.local/bin/greywall" $greywall_options -- \
-    env XDG_STATE_HOME=/tmp/opencode-greywall-state COCKPIT_STATE_HOME="${XDG_STATE_HOME:-$HOME/.local/state}" \
+exec $greywall_command $greywall_options -- \
+    $sandbox_entry env XDG_STATE_HOME=/tmp/opencode-greywall-state COCKPIT_STATE_HOME="${XDG_STATE_HOME:-$HOME/.local/state}" \
     sh -c '
         request=$1
         shift
