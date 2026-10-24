@@ -232,6 +232,38 @@ class GhCompatibilityTests(unittest.TestCase):
                 self.assertIn('command_requires_migration', result.stderr)
         self.assertEqual(self.requests, [])
 
+    def test_pr_merge_pins_native_current_head_and_explicit_method(self):
+        client = self.load_client()
+        self.result = {'request_id': 'b' * 32, 'outcome': 'succeeded', 'merge_commit': 'f' * 40}
+        self.start_broker()
+        native_result = subprocess.CompletedProcess([], 0, json.dumps({'headRefOid': 'a' * 40}).encode(), b'')
+        with patch.dict(os.environ, self.environment), patch.object(subprocess, 'run', return_value=native_result), \
+                contextlib.redirect_stdout(io.StringIO()):
+            status = client.main(['pr', 'merge', '7', '--squash'])
+        self.assertEqual(status, 0)
+        self.assertEqual(self.requests[0][0]['action'], 'pull_request.merge')
+        self.assertEqual(self.requests[0][1], {'number': 7, 'expected_head_sha': 'a' * 40, 'merge_method': 'squash'})
+
+    def test_match_head_commit_is_used_without_a_native_read(self):
+        self.result = {'request_id': 'b' * 32, 'outcome': 'succeeded', 'merge_commit': 'f' * 40}
+        self.start_broker()
+        result = self.invoke(['pr', 'merge', '7', '--merge', '--match-head-commit', 'c' * 40])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.requests[0][1]['expected_head_sha'], 'c' * 40)
+
+    def test_merge_bypass_auto_delete_and_stack_forms_never_reach_broker(self):
+        for arguments, code in [(['pr', 'merge', '7', '--squash', '--admin'], 'command_requires_migration'),
+                                (['pr', 'merge', '7', '--squash', '--auto'], 'command_requires_migration'),
+                                (['pr', 'merge', '7', '--squash', '--delete-branch'], 'command_requires_migration'),
+                                (['pr', 'merge', '7', '--squash', '-d'], 'command_requires_migration'),
+                                (['pr', 'merge', '7'], 'command_requires_migration'),
+                                (['stack', 'merge', '7', '--yes'], 'stack_merge_unproven')]:
+            with self.subTest(arguments=arguments):
+                result = self.invoke(arguments)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(code, result.stderr)
+        self.assertEqual(self.requests, [])
+
     def test_ready_and_undo_emit_typed_actions_without_client_graphql(self):
         self.start_broker(count=2)
         for arguments in [['pr', 'ready', '7'], ['pr', 'ready', '7', '--undo']]:

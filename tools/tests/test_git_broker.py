@@ -1,3 +1,4 @@
+import base64
 import importlib.util
 import contextlib
 import hashlib
@@ -580,6 +581,71 @@ class BrokerChannelTests(BrokerFixture):
                 status, _ = self.run_operator(arguments, 'RESOLVE ' + arguments[2] + ' ' + arguments[4] + '\n')
                 self.assertNotEqual(status, 0)
         self.assertEqual(len(json.loads(self.run_operator(['pending'])[1])), 1)
+
+    def enable_merge_fixture(self, *, head_after_scan='a' * 40):
+        self.enable_review_fixture()
+        now = int(time.time())
+        registry, _ = self.access.load_registry()
+        registry['runtime_credentials'][1]['permissions']['contents'] = 'write'
+        registry['runtime_credentials'][0]['graphql_accounting'] = {'pull_request.merge': {
+            'setup_approved': True, 'principal': 'installation:77', 'max_cost': 1,
+            'reviewed_at': now - 60, 'valid_until': now + 1800, 'evidence': 'd' * 64}}
+        path = self.access.registry_path()
+        path.write_text(json.dumps(registry))
+        self.binding['registry_digest'] = hashlib.sha256(path.read_bytes()).hexdigest()
+        self.write_binding()
+        self.rate.observe('installation:77', {'x-ratelimit-resource': 'graphql', 'x-ratelimit-limit': '5000',
+            'x-ratelimit-remaining': '5000', 'x-ratelimit-reset': str(now + 3600)})
+        self.merge_calls = []
+        policy = base64.b64encode(b'## Git authorization\n\nClaude may merge pull requests.\n').decode()
+
+        def upstream(method, path, token, deadline, body=None):
+            self.merge_calls.append((method, path))
+            headers = {'x-ratelimit-resource': 'graphql' if path == '/graphql' else 'core', 'x-ratelimit-limit': '5000',
+                       'x-ratelimit-remaining': '4900', 'x-ratelimit-reset': str(now + 3600)}
+            if path == '/repos/acme/project':
+                return 200, {'id': 42, 'default_branch': 'main'}, headers
+            if path == '/repos/acme/project/branches/main':
+                return 200, {'commit': {'sha': 'c' * 40}}, headers
+            if path.startswith('/repos/acme/project/contents/CLAUDE.md'):
+                return 200, {'type': 'file', 'encoding': 'base64', 'sha': 'e' * 40, 'content': policy}, headers
+            if path == '/graphql':
+                return 200, {'data': {'repository': {'squashMergeAllowed': True, 'pullRequest': {
+                    'state': 'OPEN', 'isDraft': False, 'isCrossRepository': False, 'headRefOid': 'a' * 40,
+                    'isMergeQueueEnabled': False, 'reviewDecision': None, 'mergeStateStatus': 'CLEAN',
+                    'commits': {'nodes': [{'commit': {'oid': 'a' * 40, 'statusCheckRollup': None}}]}}}}}, headers
+            if path == '/repos/acme/project/pulls/7':
+                return 200, {'id': 207, 'number': 7, 'state': 'open', 'user': {'id': 99},
+                    'html_url': 'https://github.com/acme/project/pull/7',
+                    'head': {'ref': 'feature', 'sha': head_after_scan, 'repo': {'id': 42}},
+                    'base': {'ref': 'main', 'sha': 'b' * 40, 'repo': {'id': 42}}}, headers
+            self.assertEqual((method, path), ('PUT', '/repos/acme/project/pulls/7/merge'))
+            return 200, {'merged': True, 'sha': 'f' * 40}, headers
+
+        active = patch.object(self.access, 'github_request', side_effect=upstream)
+        active.start()
+        self.addCleanup(active.stop)
+
+    def merge_exchange(self):
+        body = json.dumps({'number': 7, 'expected_head_sha': 'a' * 40, 'merge_method': 'squash'}).encode()
+        return self.exchange(self.header(action='pull_request.merge', body_length=len(body)), body=body)
+
+    def test_authorized_merge_rechecks_protection_and_head_before_submission(self):
+        self.enable_merge_fixture()
+        self.start()
+        response, payload = self.merge_exchange()
+        self.assertEqual(response['status'], 200, response)
+        self.assertEqual(json.loads(payload)['merge_commit'], 'f' * 40)
+        self.assertEqual(self.purposes, ['admission', 'write'])
+        self.assertEqual(self.merge_calls[-2:], [('GET', '/repos/acme/project/pulls/7'),
+                                                 ('PUT', '/repos/acme/project/pulls/7/merge')])
+
+    def test_head_advancing_during_merge_scan_prevents_submission(self):
+        self.enable_merge_fixture(head_after_scan='9' * 40)
+        self.start()
+        response, _ = self.merge_exchange()
+        self.assertEqual(response.get('code'), 'review_head_changed')
+        self.assertNotIn(('PUT', '/repos/acme/project/pulls/7/merge'), self.merge_calls)
 
     def enable_project_fixture(self, *, scopes='project', enroll_role=True):
         self.enable_issue_fixture()
