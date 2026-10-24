@@ -240,7 +240,8 @@ def make_server(socket_path, capability_path):
     server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), GitHandler)
     server.broker_socket = socket_path
     server.capability = capability
-    server.spool = Path(capability_path).parent
+    # The capability's channel folder is mounted read-only into the sandbox; spool in private /tmp.
+    server.spool = Path(tempfile.mkdtemp(prefix='cockpit-git-adapter-'))
     server.broker = load_broker()
     return server
 
