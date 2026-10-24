@@ -170,6 +170,7 @@ pub const CLAUDE_WORKSPACE: i64 = 6;
 
 /// Whether Theo is on the Claude workspace right now.
 pub fn claude_workspace_active() -> bool {
+    refresh_hyprland_instance();
     output_of("hyprctl", &["-j", "activeworkspace"]).and_then(|text| serde_json::from_str::<Value>(&text).ok())
         .is_some_and(|workspace| workspace.get("id").and_then(Value::as_i64) == Some(CLAUDE_WORKSPACE))
 }
@@ -344,6 +345,7 @@ pub fn running_hyprland_instance() -> Option<std::ffi::OsString> {
 
 /// Game mode (the gamemode submap) or a game window focused; same rule as the daemon's.
 pub fn gaming() -> bool {
+    refresh_hyprland_instance();
     let submap = output_of("hyprctl", &["submap"]).unwrap_or_default();
     submap.trim() == "gamemode" || active_game().is_some()
 }

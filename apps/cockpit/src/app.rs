@@ -4097,6 +4097,7 @@ impl App {
         if now - self.team_checked < 10.0 { return; }
         self.team_checked = now;
         if self.chief_view.is_some() { self.refresh_chief_view(); }
+        util::refresh_hyprland_instance();
         let workspace = util::output_of("hyprctl", &["-j", "activeworkspace"])
             .and_then(|text| serde_json::from_str::<Value>(&text).ok()).and_then(|workspace|workspace["id"].as_i64());
         if let Some(workspace) = workspace {

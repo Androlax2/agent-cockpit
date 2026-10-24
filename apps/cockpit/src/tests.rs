@@ -10592,3 +10592,36 @@ fn the_palettes_remote_control_is_not_offered_to_an_opencode_session() {
     assert!(fixture.calls("cockpit").is_empty(), "{:?}", fixture.calls("cockpit"));
     assert!(app.message.contains("runs opencode"), "{}", app.message);
 }
+
+/// The column's tmux server can start before Hyprland exports its signature (login autostart):
+/// the workspace checks behind the chief's focus and the queue's viewed-session guard must still
+/// find the running Hyprland instead of reporting the cockpit workspace as inactive.
+#[test]
+fn workspace_checks_find_the_running_hyprland_without_an_inherited_signature() {
+    let fixture = Fixture::new();
+    let instance = fixture.root.join("run/hypr/running_instance");
+    fs::create_dir_all(&instance).unwrap();
+    fs::write(instance.join(".socket.sock"), "").unwrap();
+    fixture.shim("hyprctl", r#"[ "$HYPRLAND_INSTANCE_SIGNATURE" = running_instance ] || exit 1
+case "$*" in *activeworkspace*) echo '{"id": 6}' ;; submap) echo gamemode ;; esac"#);
+    assert!(util::claude_workspace_active());
+    // SAFETY: the fixture holds the environment lock.
+    unsafe { std::env::remove_var("HYPRLAND_INSTANCE_SIGNATURE") };
+    assert!(util::gaming());
+}
+
+#[test]
+fn the_column_publishes_chief_focus_without_an_inherited_hyprland_signature() {
+    let fixture = Fixture::new();
+    let instance = fixture.root.join("run/hypr/running_instance");
+    fs::create_dir_all(&instance).unwrap();
+    fs::write(instance.join(".socket.sock"), "").unwrap();
+    fixture.shim("hyprctl", r#"[ "$HYPRLAND_INSTANCE_SIGNATURE" = running_instance ] || exit 1
+case "$*" in *activeworkspace*) echo '{"id": 6}' ;; esac"#);
+    let requests = team_host(&fixture, team_snapshot(), vec![]);
+    let mut app = fixture.app();
+    app.check_team();
+    let focus: Vec<Value> = requests.lock().unwrap().iter().filter(|request| request["request"] == "chief_focus").cloned().collect();
+    assert_eq!(focus.len(), 1, "the chief never learns Theo's focus: {:?}", requests.lock().unwrap());
+    assert_eq!(focus[0]["workspace_active"], true);
+}
