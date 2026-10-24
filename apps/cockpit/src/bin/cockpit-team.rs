@@ -8,10 +8,6 @@ const HELP: &str = r#"cockpit-team context            your task, your role and y
 cockpit-team <action> < action.json   propose, recruit, send, assess or handoff; the JSON's "action" names the same one
 cockpit-team chief < action.json      nested {"action":"chief","request":{...}} agent request
 cockpit-team chief-host < request.json   host only: {"request":"chief","action":{...}} or chief_snapshot
-cockpit-team qa-result < result.json   {"action":"qa_result","result":{"submission_key":"qa-1","task":{...},"handoff_id":"...","verdict":"pass","tests":[],"findings":"No findings"}}
-
-Reviewed host commands: ask-to-run --evidence '{"assignment":"...","gate":"tests"}' --cwd <protected reviewed checkout> --why '...' '<exact approved command>'
-Reviewed apply: cockpit apply <clone> <assignment-id> (the existing Apply approval displays the exact work/patch binding).
 
 Recipients are session ids from `context`, never role names. Use each submission_key once
 (letters, digits, - or _): resending the same one is a no-op. Task is the object `context` shows.
@@ -31,10 +27,6 @@ The Developer's finished work (requests QA once):
 
 Link requests require Theo's approval. Collaboration never grants tool or scope permissions.
 
-Chief coordination (only an active chief, to an exact approved work/dependency's assigned worker):
-  {"action":"chief","request":{"action":"coordinate","submission_key":"coordinate-1","work":{"task":{"project":"path:/home/theo/IdeaProjects/app","task_id":"5e1f7e57"},"revision":1},"recipient":"aaaaaaaa-0000-4000-8000-000000000000","body":"Is the approved dependency ready?"}}
-Reuse a coordination key only for the same request. A new key deliberately sends identical content again.
-
 Cross-project links (no team membership required): `context` also shows links.approved and your
 own links.proposals status receipts. Propose only an already-known peer session; pending requests
 reveal no peer facts. links.omitted_history counts older terminal records left out to fit the reply;
@@ -52,8 +44,8 @@ change scope, recruit teammates or hand off work. Ask Theo directly for authoriz
 fn action(name: &str) -> Result<AgentAction, String> {
     if name == "context" { return Ok(AgentAction::Context); }
     if name == "receive" { return Ok(AgentAction::Receive); }
-    if !matches!(name, "chief" | "qa-result" | "native-telemetry" | "propose" | "send" | "receipt" | "assess" | "handoff" | "recruit" | "link-propose" | "link-send" | "link-assess") {
-        return Err(format!("{name:?} is not an agent action; use context, chief, qa-result, native-telemetry, propose, recruit, send, assess, handoff, receive, receipt, link-propose, link-send or link-assess"));
+    if !matches!(name, "chief" | "native-telemetry" | "propose" | "send" | "receipt" | "assess" | "handoff" | "recruit" | "link-propose" | "link-send" | "link-assess") {
+        return Err(format!("{name:?} is not an agent action; use context, propose, recruit, send, assess, handoff, receive, receipt, link-propose, link-send or link-assess"));
     }
     let mut input = Vec::new();
     io::stdin().take(client::REQUEST_MAX as u64 + 1).read_to_end(&mut input).map_err(|error| error.to_string())?;
@@ -65,7 +57,6 @@ fn action(name: &str) -> Result<AgentAction, String> {
         AgentAction::Handoff { .. } => "handoff", AgentAction::Recruit { .. } => "recruit",
         AgentAction::Chief { .. } => "chief",
         AgentAction::NativeTelemetry { .. } => "native-telemetry",
-        AgentAction::QaResult { .. } => "qa-result",
         AgentAction::LinkPropose { .. } => "link-propose", AgentAction::LinkSend { .. } => "link-send", AgentAction::LinkAssess { .. } => "link-assess",
     };
     if name != actual { return Err("command and JSON action do not match".into()); }
@@ -177,25 +168,6 @@ fn main() {
         }
         return;
     }
-    if arguments.first().is_some_and(|argument|argument.starts_with("evidence-apply-")) {
-        let result = (|| -> Result<(),cockpit::teams::TeamError> {
-            // Installed host-only helper. The protected database is not mounted into agent sandboxes.
-            let mut connection = cockpit::teams::store::open(&cockpit::paths::team_database())?;
-            let now = cockpit::util::now_secs()*1000;
-            match arguments.as_slice() {
-                [action,assignment,cwd,copies] if action == "evidence-apply-prepare" => {
-                    println!("{}",cockpit::chief::evidence::prepare_apply(&mut connection,assignment,cwd,std::path::Path::new(copies),now)?);
-                },
-                [action,token,installed] if action == "evidence-apply-finish" && matches!(installed.as_str(),"true"|"false") => {
-                    cockpit::chief::evidence::finish_apply(&mut connection,token,installed == "true",now)?;
-                },
-                _ => return Err(cockpit::teams::TeamError::new(cockpit::teams::ErrorCode::Invalid,"invalid reviewed apply producer arguments")),
-            }
-            Ok(())
-        })();
-        if let Err(error) = result { eprintln!("cockpit-team: {}",escape_hiding(&error.to_string(),"","")); std::process::exit(1); }
-        return;
-    }
     if arguments == ["prepare"] {
         if let Err(error) = client::prepare() {
             eprintln!("cockpit-team: {}", escape_hiding(&error.to_string(), "", ""));
@@ -225,12 +197,12 @@ fn main() {
                 | cockpit::teams::HostRequest::ChiefFocus { .. }) {
                 return Err(cockpit::teams::TeamError::new(cockpit::teams::ErrorCode::Invalid, "chief-host requires a chief host request"));
             }
-            if matches!(&request,cockpit::teams::HostRequest::Chief {action:cockpit::chief::ChiefHostAction::AttestEvidence {..}
-                | cockpit::chief::ChiefHostAction::Reconcile {..} | cockpit::chief::ChiefHostAction::ReconcileDelivery {..} | cockpit::chief::ChiefHostAction::ReconcileLaunch {..}}) {
+            if matches!(&request,cockpit::teams::HostRequest::Chief {action:cockpit::chief::ChiefHostAction::ReconcileDelivery {..}
+                | cockpit::chief::ChiefHostAction::ReconcileLaunch {..}}) {
                 use std::io::{BufRead,Write};
-                eprintln!("Host confirmation of exact work/revision/gate/source/result/commit or stopped-worker evidence:\n{}",escape_hiding(&serde_json::to_string_pretty(&request)?,"",""));
+                eprintln!("Host confirmation of exact stopped-target evidence:\n{}",escape_hiding(&serde_json::to_string_pretty(&request)?,"",""));
                 let mut terminal = std::fs::OpenOptions::new().read(true).write(true).open("/dev/tty")?;
-                terminal.write_all(b"Confirm exactly this host attestation/reconciliation? [y/N] ")?;
+                terminal.write_all(b"Confirm exactly this host reconciliation? [y/N] ")?;
                 terminal.flush()?;
                 let mut answer = String::new();
                 std::io::BufReader::new(terminal).read_line(&mut answer)?;

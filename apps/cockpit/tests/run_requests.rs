@@ -597,6 +597,15 @@ fn a_request_names_its_projects_answers_folder() {
 }
 
 #[test]
+fn ask_to_run_rejects_the_removed_evidence_option() {
+    let fixture = AskToRun::new();
+    let output = finish(fixture.ask(&["--evidence", r#"{"assignment":"a","gate":"tests"}"#, "--why", "Runs the tests.", "true"], "1"), TIMEOUT);
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("usage:"), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(fixture.daemon.as_ref().unwrap().received(Duration::from_millis(200)).is_empty(), "a request was filed");
+}
+
+#[test]
 fn a_request_naming_no_answers_folder_or_a_path_is_refused() {
     let fixture = Approve::new();
     for answers in [Value::Null, json!("../../.ssh"), json!("")] {

@@ -1,7 +1,7 @@
 use cockpit::{chief::store::migrate, teams::store};
 use rusqlite::Connection;
-use cockpit::chief::{ChiefAgentAction, ChiefHostAction, WorkBrief, WorkRef, WorkerState};
-use cockpit::teams::{ErrorCode, Role, TaskKey, VerifiedSession};
+use cockpit::chief::{ChiefAgentAction, ChiefHostAction, WorkerState};
+use cockpit::teams::{ErrorCode, VerifiedSession};
 mod common;
 
 #[test]
@@ -13,7 +13,7 @@ fn chief_migration_keeps_sleep_continuations_available_on_every_reopen() {
     connection.execute_batch("DROP TABLE sleep_permits;").unwrap();
     store::migrate(&mut connection).unwrap();
     assert!(store::sleep::prepared_records(&connection).unwrap().is_empty());
-    approve(&mut connection, brief("aaaaaaaa", 1), "after-migration").result.unwrap();
+    cockpit::chief::store::host(&mut connection, &ChiefHostAction::RequestSummary { request_id: "after-migration".into() }, &[], 10).unwrap().result.unwrap();
     drop(connection);
     let connection = store::open(&path).unwrap();
     assert!(store::sleep::prepared_records(&connection).unwrap().is_empty());
@@ -26,214 +26,23 @@ fn chief_session(id: &str) -> VerifiedSession {
 }
 
 fn live(session: &VerifiedSession) -> WorkerState {
-    WorkerState { session: session.clone(), role: None, ready: false, blocked_by: vec!["host_role_unbound".into()], observed_at_ms: 10 }
-}
-
-fn brief(task: &str, revision: i64) -> WorkBrief {
-    WorkBrief { work: WorkRef { task: TaskKey { project: "path:/project-a".into(), task_id: task.into() }, revision },
-        brief: "Implement only the approved scope".into(), role: Role::Developer, prerequisites: vec![], gates: vec![] }
-}
-
-fn approve(connection: &mut Connection, brief: WorkBrief, request: &str) -> cockpit::teams::TeamReply {
-    let approval_hash = brief.approval_hash().unwrap();
-    cockpit::chief::store::host(connection, &ChiefHostAction::ApproveWork { request_id: request.into(), expected_revision: brief.work.revision - 1,
-        brief, approval_hash }, &[], 10).unwrap()
+    WorkerState { session: session.clone(), role: None, ready: true, blocked_by: vec![], observed_at_ms: 10 }
 }
 
 #[test]
-fn host_approval_is_revision_bound_and_preserves_briefs_and_dependency_revisions() {
-    let mut connection = migrated();
-    let first = brief("aaaaaaaa", 1);
-    approve(&mut connection, first.clone(), "first").result.unwrap();
-    let mut dependent = brief("bbbbbbbb", 1);
-    dependent.prerequisites.push(first.work.clone());
-    approve(&mut connection, dependent.clone(), "dependent").result.unwrap();
-    assert_eq!(approve(&mut connection, first.clone(), "stale").result.unwrap_err().code, ErrorCode::Conflict);
-    let mut missing = brief("cccccccc", 1);
-    missing.prerequisites.push(brief("dddddddd", 1).work);
-    assert_eq!(approve(&mut connection, missing, "missing").result.unwrap_err().code, ErrorCode::Conflict);
-    let mut cycle = brief("aaaaaaaa", 2);
-    cycle.prerequisites.push(dependent.work);
-    assert_eq!(approve(&mut connection, cycle, "cycle").result.unwrap_err().code, ErrorCode::Conflict);
-    let mut edited = brief("aaaaaaaa", 2);
-    edited.brief = "Narrow revised scope".into();
-    approve(&mut connection, edited, "edit").result.unwrap();
-    let old: String = connection.query_row("SELECT brief FROM chief_work_revisions WHERE task_id='aaaaaaaa' AND revision=1", [], |row| row.get(0)).unwrap();
-    assert_eq!(serde_json::from_str::<WorkBrief>(&old).unwrap().brief, "Implement only the approved scope");
-    let reply = cockpit::chief::store::host(&mut connection, &ChiefHostAction::RevokeWork { request_id: "stale-revoke".into(), work: first.work }, &[], 10).unwrap();
-    assert_eq!(reply.result.unwrap_err().code, ErrorCode::Conflict);
-}
-
-#[test]
-fn host_bound_worker_rebind_preserves_immutable_identity_and_history() {
-    let mut connection = migrated();
-    let session = chief_session("worker");
-    let reply = cockpit::chief::store::host(&mut connection, &ChiefHostAction::BindWorker {
-        request_id: "bind".into(), session: session.clone(), role: Role::Developer, expected_epoch: None,
-    }, &[live(&session)], 10).unwrap().result.unwrap();
-    let epoch = reply["epoch"].as_str().unwrap().to_string();
-    let mut replacement = session.clone();
-    replacement.runtime = "replacement".into();
-    cockpit::chief::store::host(&mut connection, &ChiefHostAction::BindWorker { request_id: "rebind".into(), session: replacement.clone(),
-        role: Role::Qa, expected_epoch: Some(epoch.clone()) }, &[live(&replacement)], 20).unwrap().result.unwrap();
-    assert_eq!(connection.query_row("SELECT runtime FROM chief_worker_bindings WHERE epoch=?1", [&epoch], |row| row.get::<_, String>(0)).unwrap(), session.runtime);
-    assert_eq!(connection.query_row("SELECT count(*) FROM chief_worker_bindings WHERE session_id=?1", [&session.session_id], |row| row.get::<_, i64>(0)).unwrap(), 2);
-    assert!(connection.execute("UPDATE chief_worker_bindings SET runtime='forged' WHERE epoch=?1", [&epoch]).is_err());
-}
-
-#[test]
-fn chief_reprioritizes_only_approved_unclaimed_work_and_cannot_accept_worker_assignments() {
+fn an_overlapping_team_membership_cannot_authorize_chief_actions_or_resume() {
     let mut connection = migrated();
     let session = chief_session("chief");
     let workers = [live(&session)];
-    cockpit::chief::store::host(&mut connection, &ChiefHostAction::Enable { request_id: "enable".into(), session: session.clone() }, &workers, 10).unwrap().result.unwrap();
-    let first = brief("aaaaaaaa", 1);
-    let second = brief("bbbbbbbb", 1);
-    approve(&mut connection, first.clone(), "first").result.unwrap();
-    approve(&mut connection, second.clone(), "second").result.unwrap();
-    common::chief::admit(&mut connection,&workers,&session,10);
-    let order = ChiefAgentAction::Reprioritize { submission_key: "order".into(), ordered: vec![second.work.clone(), first.work.clone()] };
-    cockpit::chief::store::agent(&mut connection, &session, &order, &workers, 10).unwrap().result.unwrap();
-    let tasks: Vec<String> = connection.prepare("SELECT task_id FROM chief_work_revisions ORDER BY priority").unwrap().query_map([], |row| row.get(0)).unwrap().collect::<Result<_, _>>().unwrap();
-    assert_eq!(tasks, ["bbbbbbbb", "aaaaaaaa"]);
-    connection.execute("INSERT INTO chief_assignments (id,project,task_id,work_revision,worker,worker_runtime,worker_epoch,chief_grant,chief_epoch,state,revision,submission_key,fingerprint,created_at) VALUES ('claim','path:/project-a','aaaaaaaa',1,'worker','runtime','epoch','chief','epoch','working',1,'claim','hash',10)", []).unwrap();
-    let reply = cockpit::chief::store::agent(&mut connection, &session, &ChiefAgentAction::Reprioritize { submission_key: "busy".into(), ordered: vec![first.work] }, &workers, 10).unwrap();
-    assert_eq!(reply.result.unwrap_err().code, ErrorCode::Conflict);
-    assert_eq!(cockpit::chief::store::agent(&mut connection, &session, &ChiefAgentAction::Accept { assignment: "claim".into() }, &workers, 10).unwrap().result.unwrap_err().code, ErrorCode::Unauthorized);
-    cockpit::chief::store::agent(&mut connection, &session, &ChiefAgentAction::Status { assignment: None, summary: "Report, not evidence".into() }, &workers, 10).unwrap().result.unwrap();
-}
-
-#[test]
-fn chief_work_edits_invalidate_dependents_without_rewriting_their_approved_payloads() {
-    let mut connection = migrated();
-    let first = brief("aaaaaaaa", 1);
-    approve(&mut connection, first.clone(), "first").result.unwrap();
-    let mut dependent = brief("bbbbbbbb", 1);
-    dependent.prerequisites.push(first.work);
-    approve(&mut connection, dependent, "dependent").result.unwrap();
-    approve(&mut connection, brief("aaaaaaaa", 2), "edited").result.unwrap();
-    let state: String = connection.query_row("SELECT state FROM chief_work_revisions WHERE task_id='bbbbbbbb'", [], |row| row.get(0)).unwrap();
-    assert_eq!(state, "superseded");
-    let encoded: String = connection.query_row("SELECT brief FROM chief_work_revisions WHERE task_id='bbbbbbbb'", [], |row| row.get(0)).unwrap();
-    assert_eq!(serde_json::from_str::<WorkBrief>(&encoded).unwrap().prerequisites[0].revision, 1);
-}
-
-#[test]
-fn chief_priority_moves_selected_unclaimed_work_before_the_remaining_queue() {
-    let mut connection = migrated();
-    let session = chief_session("chief");
-    let workers = [live(&session)];
-    cockpit::chief::store::host(&mut connection, &ChiefHostAction::Enable { request_id: "enable".into(), session: session.clone() }, &workers, 10).unwrap().result.unwrap();
-    for task in ["aaaaaaaa", "bbbbbbbb", "cccccccc"] { approve(&mut connection, brief(task, 1), task).result.unwrap(); }
-    common::chief::admit(&mut connection,&workers,&session,10);
-    cockpit::chief::store::agent(&mut connection, &session, &ChiefAgentAction::Reprioritize { submission_key: "front".into(), ordered: vec![brief("cccccccc", 1).work] }, &workers, 10).unwrap().result.unwrap();
-    let first: String = connection.query_row("SELECT task_id FROM chief_work_revisions ORDER BY priority,task_id LIMIT 1", [], |row| row.get(0)).unwrap();
-    assert_eq!(first, "cccccccc");
-}
-
-#[test]
-fn chief_host_request_replay_cannot_change_the_approved_role_or_identity() {
-    let mut connection = migrated();
-    let session = chief_session("worker");
-    let mut action = ChiefHostAction::BindWorker { request_id: "bind".into(), session: session.clone(), role: Role::Developer, expected_epoch: None };
-    let first = cockpit::chief::store::host(&mut connection, &action, &[live(&session)], 10).unwrap().result.unwrap();
-    assert_eq!(cockpit::chief::store::host(&mut connection, &action, &[live(&session)], 20).unwrap().result.unwrap(), first);
-    if let ChiefHostAction::BindWorker { role, .. } = &mut action { *role = Role::Qa; }
-    assert_eq!(cockpit::chief::store::host(&mut connection, &action, &[live(&session)], 20).unwrap().result.unwrap_err().code, ErrorCode::Conflict);
-}
-
-#[test]
-fn chief_context_contains_only_approved_bounded_briefs_and_exact_dependencies() {
-    let mut connection = migrated();
-    let first = brief("aaaaaaaa", 1);
-    approve(&mut connection, first.clone(), "first").result.unwrap();
-    let mut dependent = brief("bbbbbbbb", 1);
-    dependent.prerequisites.push(first.work);
-    approve(&mut connection, dependent, "dependent").result.unwrap();
-    let session = chief_session("context");
-    let workers = [live(&session)];
-    cockpit::chief::store::host(&mut connection,&ChiefHostAction::Enable {request_id:"enable-context".into(),session:session.clone()},&workers,10).unwrap().result.unwrap();
-    let first = cockpit::chief::store::agent(&mut connection,&session,&ChiefAgentAction::ContextSnapshot {after:0,limit:1,generation:None},&workers,10).unwrap().result.unwrap();
-    let generation = first["generation"].as_str().unwrap().to_owned();
-    let mut context = |after,limit| cockpit::chief::store::agent(&mut connection,&session,&ChiefAgentAction::ContextSnapshot {after,limit,generation:Some(generation.clone())},&workers,10).unwrap().result;
-    let snapshot = context(2,1).unwrap();
-    assert_eq!(snapshot["records"].as_array().unwrap().len(), 1);
-    assert_eq!(snapshot["records"][0]["brief"], "Implement only the approved scope");
-    assert_eq!(snapshot["next"], 3);
-    assert_eq!(snapshot["has_more"], true);
-    let snapshot = context(3,1).unwrap();
-    assert_eq!(snapshot["records"][0]["prerequisites"][0]["revision"], 1);
-    assert_eq!(snapshot["has_more"], false);
-    assert!(!snapshot.to_string().contains("approval_hash"));
-    assert!(context(0,51).is_err());
-}
-
-#[test]
-fn an_approved_standalone_worker_cannot_acquire_a_chief_grant() {
-    let mut connection = migrated();
-    let session = chief_session("worker");
-    let workers = [live(&session)];
-    cockpit::chief::store::host(&mut connection, &ChiefHostAction::BindWorker { request_id: "bind".into(), session: session.clone(),
-        role: Role::Developer, expected_epoch: None }, &workers, 10).unwrap().result.unwrap();
-    let reply = cockpit::chief::store::host(&mut connection, &ChiefHostAction::Enable { request_id: "enable".into(), session }, &workers, 20).unwrap();
-    assert_eq!(reply.result.unwrap_err().code, ErrorCode::Unauthorized);
-    assert_eq!(connection.query_row("SELECT count(*) FROM chief_grants", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
-    assert_eq!(connection.query_row("SELECT state FROM chief_worker_bindings", [], |row| row.get::<_, String>(0)).unwrap(), "bound");
-}
-
-#[test]
-fn overlapping_product_state_cannot_authorize_chief_actions_or_resume() {
-    for overlap in ["team", "standalone"] {
-        let mut connection = migrated();
-        let session = chief_session("chief");
-        let workers = [live(&session)];
-        let epoch = cockpit::chief::store::host(&mut connection, &ChiefHostAction::Enable { request_id: "enable".into(), session: session.clone() }, &workers, 10).unwrap().result.unwrap()["epoch"].as_str().unwrap().to_string();
-        // Simulate a legacy overlapping record; authorization must not repair or trust it.
-        if overlap == "team" {
-            connection.execute("INSERT INTO members VALUES ('task-a',?1,'qa','claude',?2,'member-epoch',NULL)", rusqlite::params![session.session_id, session.runtime]).unwrap();
-        } else {
-            connection.execute("INSERT INTO chief_worker_bindings VALUES (?1,'claude','path:/project-a',?2,'worker-epoch','developer',1,'bound','original-hash',10)", rusqlite::params![session.session_id, session.runtime]).unwrap();
-        }
-        for action in [ChiefAgentAction::Context { after: 0, limit: 50 }, ChiefAgentAction::Reprioritize { submission_key: "order".into(), ordered: vec![brief("aaaaaaaa", 1).work] }] {
-            assert_eq!(cockpit::chief::store::agent(&mut connection, &session, &action, &workers, 20).unwrap().result.unwrap_err().code, ErrorCode::Unauthorized, "{overlap}");
-        }
-        cockpit::chief::store::host(&mut connection, &ChiefHostAction::Pause { request_id: "pause".into(), expected_epoch: epoch.clone() }, &workers, 20).unwrap().result.unwrap();
-        assert_eq!(cockpit::chief::store::host(&mut connection, &ChiefHostAction::Resume { request_id: "resume".into(), expected_epoch: epoch }, &workers, 30).unwrap().result.unwrap_err().code, ErrorCode::Unauthorized, "{overlap}");
-        assert_eq!(connection.query_row("SELECT state FROM chief_grants", [], |row| row.get::<_, String>(0)).unwrap(), "paused");
+    let epoch = cockpit::chief::store::host(&mut connection, &ChiefHostAction::Enable { request_id: "enable".into(), session: session.clone() }, &workers, 10).unwrap().result.unwrap()["epoch"].as_str().unwrap().to_string();
+    // Simulate a legacy overlapping record; authorization must not repair or trust it.
+    connection.execute("INSERT INTO members VALUES ('task-a',?1,'qa','claude',?2,'member-epoch',NULL)", rusqlite::params![session.session_id, session.runtime]).unwrap();
+    for action in [ChiefAgentAction::Context { after: 0, limit: 50 }, ChiefAgentAction::Status { summary: "Report, not evidence".into() }] {
+        assert_eq!(cockpit::chief::store::agent(&mut connection, &session, &action, &workers, 20).unwrap().result.unwrap_err().code, ErrorCode::Unauthorized);
     }
-}
-
-#[test]
-fn task1_v3_worker_approvals_upgrade_without_losing_their_identity_or_history() {
-    let mut connection = migrated();
-    remove_link_schema(&connection);
-    // Recreate the reviewed Task1 shape, which allowed just one row for each session.
-    connection.execute_batch("DROP TABLE scheduling_reservations; DROP TABLE chief_admission_verifications;
-        DROP TABLE chief_inbox; DROP TABLE chief_observations; DROP TABLE chief_submissions; DROP TABLE inbox_turns;
-        DROP TABLE chief_worker_bindings;
-        CREATE TABLE chief_worker_bindings (
-            session_id TEXT PRIMARY KEY, agent TEXT NOT NULL, project TEXT NOT NULL, runtime TEXT NOT NULL,
-            epoch TEXT NOT NULL UNIQUE, role TEXT NOT NULL CHECK(role IN ('designer','developer','qa')),
-            revision INTEGER NOT NULL CHECK(revision>0), state TEXT NOT NULL CHECK(state IN ('bound','revoked')),
-            approval_hash TEXT NOT NULL, created_at INTEGER NOT NULL);
-        CREATE TRIGGER chief_worker_approval_immutable BEFORE UPDATE OF approval_hash ON chief_worker_bindings
-            BEGIN SELECT RAISE(ABORT,'chief worker approval hash is immutable'); END;
-        PRAGMA user_version=3;").unwrap();
-    let session = chief_session("original");
-    connection.execute("INSERT INTO chief_worker_bindings VALUES (?1,'claude','path:/project-a',?2,'old-epoch','developer',1,'bound','approved-original',10)",
-        rusqlite::params![session.session_id, session.runtime]).unwrap();
-    migrate(&mut connection).unwrap();
-    let mut replacement = session.clone();
-    replacement.runtime = "replacement".into();
-    cockpit::chief::store::host(&mut connection, &ChiefHostAction::BindWorker { request_id: "replace".into(), session: replacement.clone(),
-        role: Role::Qa, expected_epoch: Some("old-epoch".into()) }, &[live(&replacement)], 20).unwrap().result.unwrap();
-    let original: (String, String, String) = connection.query_row("SELECT runtime,approval_hash,state FROM chief_worker_bindings WHERE epoch='old-epoch'", [],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).unwrap();
-    assert_eq!(original, (session.runtime, "approved-original".into(), "revoked".into()));
-    assert!(connection.execute("UPDATE chief_worker_bindings SET runtime='forged' WHERE epoch='old-epoch'", []).is_err());
-    let before = rows(&connection, "sqlite_master");
-    migrate(&mut connection).unwrap();
-    assert_eq!(rows(&connection, "sqlite_master"), before);
+    cockpit::chief::store::host(&mut connection, &ChiefHostAction::Pause { request_id: "pause".into(), expected_epoch: epoch.clone() }, &workers, 20).unwrap().result.unwrap();
+    assert_eq!(cockpit::chief::store::host(&mut connection, &ChiefHostAction::Resume { request_id: "resume".into(), expected_epoch: epoch }, &workers, 30).unwrap().result.unwrap_err().code, ErrorCode::Unauthorized);
+    assert_eq!(connection.query_row("SELECT state FROM chief_grants", [], |row| row.get::<_, String>(0)).unwrap(), "paused");
 }
 
 fn version(connection: &Connection) -> i64 {
@@ -345,45 +154,6 @@ fn only_one_global_chief_including_a_paused_grant_can_exist() {
 }
 
 #[test]
-fn worker_approval_hash_is_immutable_while_revocation_preserves_the_approval() {
-    let connection = migrated();
-    connection.execute_batch("INSERT INTO chief_worker_bindings VALUES
-        ('worker-a','claude','project-a','runtime-a','epoch-a','developer',1,'bound','approved-hash',1);").unwrap();
-    assert!(connection.execute("UPDATE chief_worker_bindings SET approval_hash='forged' WHERE session_id=?1", ["worker-a"]).is_err());
-    assert_eq!(connection.execute("UPDATE chief_worker_bindings SET state='revoked' WHERE session_id=?1", ["worker-a"]).unwrap(), 1);
-    let (state, approval_hash): (String, String) = connection.query_row(
-        "SELECT state,approval_hash FROM chief_worker_bindings WHERE session_id=?1", ["worker-a"],
-        |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
-    assert_eq!(state, "revoked");
-    assert_eq!(approval_hash, "approved-hash");
-}
-
-fn insert_work(connection: &Connection, task: &str, revision: i64, state: &str) -> rusqlite::Result<usize> {
-    connection.execute("INSERT INTO chief_work_revisions (project,task_id,revision,brief,approval_hash,state,created_at)
-        VALUES ('project-a',?1,?2,'approved complete brief','hash',?3,1)", rusqlite::params![task, revision, state])
-}
-
-fn insert_assignment(connection: &Connection, id: &str, task: &str, revision: i64, worker: &str) -> rusqlite::Result<usize> {
-    connection.execute("INSERT INTO chief_assignments (id,project,task_id,work_revision,worker,worker_runtime,worker_epoch,
-        chief_grant,chief_epoch,state,revision,submission_key,fingerprint,created_at)
-        VALUES (?1,'project-a',?2,?3,?4,'runtime-a','epoch-a','chief-a','chief-epoch','queued',1,?1,'fingerprint',1)",
-        rusqlite::params![id, task, revision, worker])
-}
-
-#[test]
-fn open_claims_are_unique_across_revisions_and_per_worker() {
-    let connection = migrated();
-    for (task, revision) in [("task-a", 1), ("task-a", 2), ("task-b", 1)] {
-        insert_work(&connection, task, revision, "revoked").unwrap();
-    }
-    insert_assignment(&connection, "claim-a", "task-a", 1, "worker-a").unwrap();
-    assert!(insert_assignment(&connection, "claim-b", "task-a", 2, "worker-b").is_err());
-    assert!(insert_assignment(&connection, "claim-c", "task-b", 1, "worker-a").is_err());
-    connection.execute_batch("UPDATE chief_assignments SET state='cancelled';").unwrap();
-    insert_assignment(&connection, "claim-b", "task-a", 2, "worker-a").unwrap();
-}
-
-#[test]
 fn uncertain_delivery_blocks_other_chief_traffic_to_the_same_recipient() {
     let connection = migrated();
     let insert = |id: &str, recipient: &str| connection.execute("INSERT INTO chief_delivery_attempts
@@ -395,17 +165,6 @@ fn uncertain_delivery_blocks_other_chief_traffic_to_the_same_recipient() {
     insert("dispatch-c", "worker-b").unwrap();
     connection.execute_batch("UPDATE chief_delivery_attempts SET state='received';").unwrap();
     insert("dispatch-b", "worker-a").unwrap();
-}
-
-#[test]
-fn approved_work_is_immutable_and_active_capacity_is_bounded() {
-    let connection = migrated();
-    for index in 0..256 { insert_work(&connection, &format!("task-{index}"), 1, "approved").unwrap(); }
-    assert!(insert_work(&connection, "one-too-many", 1, "approved").is_err());
-    insert_work(&connection, "revoked-work", 1, "revoked").unwrap();
-    assert!(connection.execute_batch("UPDATE chief_work_revisions SET state='approved' WHERE task_id='revoked-work';").is_err());
-    assert!(connection.execute_batch("UPDATE chief_work_revisions SET brief='wider scope' WHERE task_id='task-0';").is_err());
-    assert!(connection.execute_batch("UPDATE chief_work_revisions SET approval_hash='forged' WHERE task_id='task-0';").is_err());
 }
 
 #[test]
@@ -455,4 +214,151 @@ fn open_uses_current_migration_and_keeps_private_path_checks() {
         }
     }
     std::fs::remove_dir(&path).unwrap();
+}
+
+#[test]
+fn upgrading_clears_dispatch_leftovers() {
+    let mut connection = migrated();
+    let task = cockpit::teams::TaskKey { project: "path:/project-a".into(), task_id: "aaaaaaaa".into() };
+    connection.execute_batch("INSERT INTO scheduling_reservations VALUES ('path:/project-a','aaaaaaaa','worker-a','token-a','chief');
+        INSERT INTO chief_decisions(id,scope_key,decision_key,work,question,recommendation,state,revision,created_at)
+            VALUES ('decision-work','global','missing_evidence','work-a','What next?','Wait','open',1,1);
+        INSERT INTO chief_decisions(id,scope_key,decision_key,question,recommendation,state,revision,created_at)
+            VALUES ('decision-host','host-assignment-a','reconcile','What next?','Wait','open',1,1);
+        INSERT INTO chief_decisions(id,scope_key,decision_key,question,recommendation,state,revision,created_at)
+            VALUES ('decision-kept','global','question','What next?','Wait','open',1,1);
+        INSERT INTO chief_inbox(id,chief_epoch,recipient,recipient_identity,recipient_epoch,work,envelope,state,next_at)
+            VALUES ('inbox-assignment','epoch-a','session-a','{}','epoch-a','null','{\"kind\":\"chief_assignment\"}','queued',1);
+        INSERT INTO chief_inbox(id,chief_epoch,recipient,recipient_identity,recipient_epoch,work,envelope,state,next_at)
+            VALUES ('inbox-wake','epoch-a','session-b','{}','epoch-a','null','{\"kind\":\"chief_wake\"}','queued',1);
+        INSERT INTO chief_delivery_attempts (id,recipient,recipient_runtime,recipient_epoch,kind,envelope,idle_turn,state,started_at) VALUES
+            ('attempt-submitting','session-a','runtime','epoch-a','chief_assignment','{\"kind\":\"chief_assignment\"}','idle-1','submitting',1),
+            ('attempt-uncertain','session-c','runtime','epoch-a','chief_assignment','{\"kind\":\"chief_assignment\"}','idle-1','uncertain',1),
+            ('attempt-received','session-d','runtime','epoch-a','chief_assignment','{\"kind\":\"chief_assignment\"}','idle-1','received',1),
+            ('attempt-wake','session-b','runtime','epoch-a','chief_wake','{\"kind\":\"chief_wake\"}','idle-1','submitting',1);").unwrap();
+    assert!(cockpit::chief::store::reserve_legacy(&mut connection, &task, None, 5).is_err());
+
+    migrate(&mut connection).unwrap();
+
+    let count = |sql: &str| connection.query_row(sql, [], |row| row.get::<_, i64>(0)).unwrap();
+    let text = |sql: &str| connection.query_row(sql, [], |row| row.get::<_, String>(0)).unwrap();
+    assert_eq!(count("SELECT count(*) FROM scheduling_reservations WHERE owner='chief'"), 0);
+    assert_eq!(text("SELECT state FROM chief_decisions WHERE id='decision-work'"), "superseded");
+    assert_eq!(text("SELECT state FROM chief_decisions WHERE id='decision-host'"), "superseded");
+    assert_eq!(text("SELECT state FROM chief_decisions WHERE id='decision-kept'"), "open");
+    assert_eq!(text("SELECT state FROM chief_inbox WHERE id='inbox-assignment'"), "cancelled");
+    assert_eq!(text("SELECT state FROM chief_inbox WHERE id='inbox-wake'"), "queued");
+    assert_eq!(text("SELECT state FROM chief_delivery_attempts WHERE id='attempt-submitting'"), "cancelled");
+    assert_eq!(text("SELECT state FROM chief_delivery_attempts WHERE id='attempt-uncertain'"), "cancelled");
+    assert_eq!(text("SELECT state FROM chief_delivery_attempts WHERE id='attempt-received'"), "received");
+    assert_eq!(text("SELECT state FROM chief_delivery_attempts WHERE id='attempt-wake'"), "submitting");
+    cockpit::chief::store::reserve_legacy(&mut connection, &task, None, 6).unwrap();
+
+    let snapshot = |connection: &Connection| (rows(connection, "scheduling_reservations"), rows(connection, "chief_decisions"),
+        rows(connection, "chief_inbox"), rows(connection, "chief_delivery_attempts"));
+    let before = snapshot(&connection);
+    migrate(&mut connection).unwrap();
+    assert_eq!(before, snapshot(&connection));
+}
+
+fn queue_leftover_assignment(connection: &Connection, session: &VerifiedSession) {
+    connection.execute("INSERT INTO chief_inbox(id,chief_epoch,recipient,recipient_identity,recipient_epoch,work,envelope,state,next_at)
+        VALUES ('inbox-assignment','epoch-a',?1,?2,'epoch-a','null','{\"kind\":\"chief_assignment\"}','queued',1)",
+        rusqlite::params![session.session_id, serde_json::to_string(session).unwrap()]).unwrap();
+}
+
+#[test]
+fn a_queued_leftover_inbox_row_is_cancelled_instead_of_delivered() {
+    let mut connection = migrated();
+    let session = chief_session("chief");
+    queue_leftover_assignment(&connection, &session);
+    assert!(cockpit::chief::store::claim(&mut connection, &session, "idle-1", 10).unwrap().is_none());
+    let state: String = connection.query_row("SELECT state FROM chief_inbox WHERE id='inbox-assignment'", [], |row| row.get(0)).unwrap();
+    assert_eq!(state, "cancelled");
+}
+
+#[test]
+fn a_receipt_for_a_leftover_delivery_never_opens_a_chief_turn() {
+    use cockpit::teams::TransportOutcome;
+    let mut connection = migrated();
+    let session = chief_session("chief");
+    queue_leftover_assignment(&connection, &session);
+    connection.execute_batch("UPDATE chief_inbox SET state='submitting';").unwrap();
+    connection.execute("INSERT INTO chief_delivery_attempts (id,recipient,recipient_runtime,recipient_epoch,kind,envelope,idle_turn,state,started_at)
+        VALUES ('attempt-a',?1,?2,'epoch-a','chief_assignment','{\"kind\":\"chief_assignment\",\"message_id\":\"inbox-assignment\"}','idle-1','submitting',1)",
+        rusqlite::params![session.session_id, session.runtime]).unwrap();
+    cockpit::chief::store::finish_for(&mut connection, &session, "attempt-a", &TransportOutcome::Received { native_id: "native-a".into() }, 10).unwrap();
+    assert_eq!(connection.query_row("SELECT count(*) FROM chief_turns", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
+    assert_eq!(connection.query_row("SELECT state FROM chief_delivery_attempts WHERE id='attempt-a'", [], |row| row.get::<_, String>(0)).unwrap(), "cancelled");
+    assert_eq!(connection.query_row("SELECT state FROM chief_inbox WHERE id='inbox-assignment'", [], |row| row.get::<_, String>(0)).unwrap(), "cancelled");
+}
+
+fn enabled_chief_with_queued_wake() -> (Connection, VerifiedSession) {
+    let mut connection = migrated();
+    let chief = chief_session("chief");
+    let workers = [live(&chief)];
+    cockpit::chief::store::host(&mut connection, &ChiefHostAction::Enable { request_id: "enable".into(), session: chief.clone() }, &workers, 10).unwrap().result.unwrap();
+    cockpit::chief::store::verify_admission(&mut connection, &chief, "opencode-queued-v1", "Controlled test fixture, not a live support claim", 10).unwrap();
+    cockpit::chief::store::observe(&mut connection, &workers, 10).unwrap();
+    (connection, chief)
+}
+
+fn add_team_member_with_queued_message(connection: &Connection, member: &VerifiedSession) {
+    connection.execute_batch("INSERT INTO teams VALUES ('task-x','path:/project-a','bbbbbbbb',1);
+        INSERT INTO members VALUES ('task-x','sender-session','designer','claude','runtime-sender','epoch-sender',NULL);").unwrap();
+    connection.execute("INSERT INTO members VALUES ('task-x',?1,'developer',?2,?3,'epoch-member',NULL)",
+        rusqlite::params![member.session_id, member.agent, member.runtime]).unwrap();
+    connection.execute("INSERT INTO messages(id,task_key,sender,recipient,sender_epoch,recipient_epoch,submission_key,fingerprint,envelope,state,next_at,created_at,recipient_runtime)
+        VALUES ('message-x','task-x','sender-session',?1,'epoch-sender','epoch-member','key-x','fingerprint-x','{\"body\":\"Note\"}','queued',1,1,?2)",
+        rusqlite::params![member.session_id, member.runtime]).unwrap();
+}
+
+#[test]
+fn a_chief_wake_in_flight_blocks_the_team_inbox_of_the_same_session() {
+    use cockpit::teams::TransportOutcome;
+    let (mut connection, chief) = enabled_chief_with_queued_wake();
+    let wake = cockpit::chief::store::claim(&mut connection, &chief, "idle-1", 10).unwrap().expect("queued wake is delivered");
+    assert_eq!(wake.envelope["kind"], "chief_wake");
+    add_team_member_with_queued_message(&connection, &chief);
+    assert!(store::claim(&mut connection, &chief, "idle-2", std::slice::from_ref(&chief), 10).unwrap().is_none(), "a chief wake is in flight");
+    cockpit::chief::store::finish_for(&mut connection, &chief, &wake.id, &TransportOutcome::Received { native_id: "native-wake".into() }, 10).unwrap();
+    assert!(store::claim(&mut connection, &chief, "idle-1", std::slice::from_ref(&chief), 10).unwrap().is_none(), "the idle turn was consumed by the wake");
+    assert!(store::claim(&mut connection, &chief, "idle-2", std::slice::from_ref(&chief), 10).unwrap().is_some());
+}
+
+#[test]
+fn a_team_message_in_flight_blocks_chief_delivery_to_the_same_session() {
+    use cockpit::teams::TransportOutcome;
+    let (mut connection, chief) = enabled_chief_with_queued_wake();
+    add_team_member_with_queued_message(&connection, &chief);
+    let message = store::claim(&mut connection, &chief, "idle-1", std::slice::from_ref(&chief), 10).unwrap().expect("queued team message is delivered");
+    connection.execute("DELETE FROM members WHERE session_id=?1", [&chief.session_id]).unwrap();
+    assert!(cockpit::chief::store::claim(&mut connection, &chief, "idle-2", 10).unwrap().is_none(), "a team message is in flight");
+    store::finish_for(&mut connection, &chief, &message.id, &TransportOutcome::Received { native_id: "native-message".into() }, 10).unwrap();
+    assert!(cockpit::chief::store::claim(&mut connection, &chief, "idle-1", 10).unwrap().is_none(), "the idle turn was consumed by the team message");
+    assert!(cockpit::chief::store::claim(&mut connection, &chief, "idle-2", 10).unwrap().is_some());
+}
+
+#[test]
+fn upgrading_supersedes_delivery_decisions_of_cleared_leftovers_only() {
+    let mut connection = migrated();
+    connection.execute_batch("INSERT INTO chief_inbox(id,chief_epoch,recipient,recipient_identity,recipient_epoch,work,envelope,state,next_at)
+            VALUES ('inbox-assignment','epoch-a','session-a','{}','epoch-a','null','{\"kind\":\"chief_assignment\"}','uncertain',1);
+        INSERT INTO chief_inbox(id,chief_epoch,recipient,recipient_identity,recipient_epoch,work,envelope,state,next_at)
+            VALUES ('inbox-wake','epoch-a','session-b','{}','epoch-a','null','{\"kind\":\"chief_wake\"}','uncertain',1);
+        INSERT INTO chief_decisions(id,scope_key,decision_key,question,recommendation,state,revision,created_at)
+            VALUES ('decision-assignment','host-delivery-inbox-assignment','delivery','Needs recovery','Inspect','open',1,1);
+        INSERT INTO chief_decisions(id,scope_key,decision_key,question,recommendation,state,revision,created_at)
+            VALUES ('decision-wake','host-delivery-inbox-wake','delivery','Needs recovery','Inspect','open',1,1);").unwrap();
+
+    migrate(&mut connection).unwrap();
+
+    let state = |id: &str| connection.query_row("SELECT state FROM chief_decisions WHERE id=?1", [id], |row| row.get::<_, String>(0)).unwrap();
+    assert_eq!(state("decision-assignment"), "superseded");
+    assert_eq!(state("decision-wake"), "open");
+    assert_eq!(connection.query_row("SELECT state FROM chief_inbox WHERE id='inbox-wake'", [], |row| row.get::<_, String>(0)).unwrap(), "uncertain");
+
+    let before = rows(&connection, "chief_decisions");
+    migrate(&mut connection).unwrap();
+    assert_eq!(before, rows(&connection, "chief_decisions"));
 }

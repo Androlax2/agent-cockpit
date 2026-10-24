@@ -20,14 +20,10 @@ fn unauthorized() -> TeamError {
 
 /// Opens the store on first use; a restarted daemon takes each member's launch back from it while
 /// that launch still runs (runtime_is_live re-checks boot, pid and start time).
-fn open_and_restore(registry: &mut Registry, replay_sources: bool) -> Result<bool, TeamError> {
+fn open_and_restore(registry: &mut Registry) -> Result<bool, TeamError> {
     let is_opened = registry.teams.is_none();
     if is_opened {
         registry.teams = Some(store::open(&cockpit::paths::team_database())?);
-    }
-    if replay_sources {
-        cockpit::chief::store::replay_sources(registry.teams.as_mut().expect("opened above"), now_ms())?;
-        cockpit::chief::store::complete_ready(registry.teams.as_mut().expect("opened above"), now_ms())?;
     }
     let missing: Vec<String> = registry.sessions.iter().filter(|(_, entry)| entry.runtime.is_empty()).map(|(id, _)| id.clone()).collect();
     for session in missing {
@@ -47,15 +43,7 @@ fn open_and_restore(registry: &mut Registry, replay_sources: bool) -> Result<boo
 }
 
 pub(crate) fn live_sessions(registry: &mut Registry) -> Result<Vec<VerifiedSession>, TeamError> {
-    load_sessions(registry,true)
-}
-
-pub(crate) fn review_sessions(registry: &mut Registry) -> Result<Vec<VerifiedSession>, TeamError> {
-    load_sessions(registry,false)
-}
-
-fn load_sessions(registry: &mut Registry, replay_sources: bool) -> Result<Vec<VerifiedSession>, TeamError> {
-    let is_opened = open_and_restore(registry,replay_sources)?;
+    let is_opened = open_and_restore(registry)?;
     let rows: Vec<(String, String, String, String)> = registry.sessions.iter()
         .filter(|(_, entry)| !entry.runtime.is_empty() && !entry.cwd.is_empty())
         .map(|(id, entry)| (id.clone(), entry.agent.clone(), entry.cwd.clone(), entry.runtime.clone())).collect();
@@ -300,7 +288,6 @@ pub fn request(registry: &mut Registry, peer: u32, action: AgentAction) -> Resul
         AgentAction::Context => "context", AgentAction::Propose { .. } => "propose", AgentAction::Send { .. } => "send",
         AgentAction::Receive => "receive", AgentAction::Receipt { .. } => "receipt", AgentAction::Assess { .. } => "assess",
         AgentAction::Handoff { .. } => "handoff", AgentAction::Recruit { .. } => "recruit",
-        AgentAction::QaResult { .. } => "qa_result",
         AgentAction::Chief { .. } | AgentAction::NativeTelemetry { .. } => return Err(TeamError::new(ErrorCode::Unavailable, "action is unavailable here")),
         AgentAction::LinkPropose { .. } => "link_propose", AgentAction::LinkSend { .. } => "link_send", AgentAction::LinkAssess { .. } => "link_assess",
     };
@@ -353,7 +340,6 @@ pub fn request(registry: &mut Registry, peer: u32, action: AgentAction) -> Resul
     }
     let result = database(registry, &live).and_then(|connection| match &action {
         AgentAction::Context => Ok(TeamReply { request_id: "context".into(), result: Ok(store::context(connection, &sender)?) }),
-        AgentAction::QaResult { result } => store::qa_result(connection,&sender,result,now_ms()),
         AgentAction::Chief { .. } | AgentAction::NativeTelemetry { .. } => Err(TeamError::new(ErrorCode::Unavailable, "action is unavailable here")),
         AgentAction::Propose { proposal } => store::propose(connection, &sender, proposal, &live, now_ms()),
         AgentAction::LinkPropose { proposal } => cockpit::teams::links::propose(connection, &sender, proposal, &live, now_ms()),
@@ -426,9 +412,6 @@ pub fn host_snapshot(registry: &mut Registry) -> Result<Value, TeamError> {
         sleeps.push(status);
     }
     state["sleeps"] = json!(sleeps);
-    let connection = registry.teams.as_ref().expect("opened above");
-    state["chief_scheduling_owner"] = json!(cockpit::chief::store::scheduling_owned(connection)?);
-    state["chief_owned_work"] = json!(cockpit::chief::store::owned_work(connection)?);
     Ok(state)
 }
 
@@ -449,7 +432,7 @@ pub fn host(registry: &mut Registry, peer: u32, request: cockpit::teams::HostReq
         cockpit::teams::HostRequest::ReserveManual {task_id,directory} => {
             live_sessions(registry)?;
             let task=cockpit::teams::TaskKey {project:canonical_project(&directory)?,task_id};
-            cockpit::chief::WorkRef {task:task.clone(),revision:1}.validate()?;
+            task.validate()?;
             let todos=cockpit::todo::TodoList::load();
             let item=todos.items.iter().find(|item|item.id()==task.task_id);
             if todos.status_of(&task.task_id)!="todo" || match item {
@@ -473,7 +456,7 @@ pub fn host(registry: &mut Registry, peer: u32, request: cockpit::teams::HostReq
         cockpit::teams::HostRequest::ReserveTask { task_id, directory, worker, automatic } => {
             let live = live_sessions(registry)?;
             let task = cockpit::teams::TaskKey { project: canonical_project(&directory)?, task_id };
-            cockpit::chief::WorkRef { task: task.clone(), revision: 1 }.validate()?;
+            task.validate()?;
             if automatic && !crate::chief::legacy_auto_ready(registry,worker.as_deref(),&task.project) {
                 return Err(TeamError::new(ErrorCode::Conflict,"automatic legacy admission is no longer ready"));
             }
@@ -497,6 +480,7 @@ pub fn host(registry: &mut Registry, peer: u32, request: cockpit::teams::HostReq
                         && cockpit::agents::of_session_id(id).is_some_and(|agent|agent.name==note.agent)
                         && canonical_project(&note.cwd).is_ok_and(|project|project==task.project));
                     if !asleep || cockpit::chief::store::is_product_worker(registry.teams.as_ref().unwrap(),id)? { return Err(unauthorized()); }
+                    cockpit::chief::store::require_non_chief(registry.teams.as_ref().unwrap(), id)?;
                     None
                 };
                 let designer = role == Some(cockpit::teams::Role::Designer) || (role.is_none() && cockpit::sessions::role_of(id) == "designer");
@@ -545,7 +529,7 @@ pub fn host(registry: &mut Registry, peer: u32, request: cockpit::teams::HostReq
                 row["subscription_account"] = json!(registry.system.runtime_subscription_account(&entry.runtime));
                 let member = VerifiedSession { session_id:session.clone(), agent:entry.agent, runtime:entry.runtime,
                     project:canonical_project(&entry.cwd)? };
-                open_and_restore(registry,false)?;
+                open_and_restore(registry)?;
                 row["team_task"] = store::context(registry.teams.as_ref().expect("opened above"), &member)?["task"]["task_id"].clone();
                 row
             } else { Value::Null };
@@ -657,7 +641,7 @@ fn bind_subscription(registry: &mut Registry, origin: &str, generation: &str) ->
     let task = cockpit::teams::TaskKey { project:project.clone(),task_id:route.task.clone() };
     let source_member = VerifiedSession { session_id:source.session.clone(),agent:source.agent.clone(),project:project.clone(),runtime:pending.source.runtime.clone() };
     let replacement_member = VerifiedSession { session_id:session.into(),agent:pending.target.agent.clone(),project,runtime:runtime.into() };
-    open_and_restore(registry,true)?;
+    open_and_restore(registry)?;
     let connection = registry.teams.as_ref().expect("opened above");
     let source_context = store::context(connection, &source_member)?;
     let replacement_context = store::context(connection, &replacement_member)?;

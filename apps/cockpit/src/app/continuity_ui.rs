@@ -216,7 +216,7 @@ impl App {
         let snapshot = Self::team_snapshot().ok();
         queue::QueueContext { now: util::now_secs(), enabled: settings::is_on("todo-queue"), gaming: (self.gaming)(),
             viewed: current_session(), workspace_active: util::claude_workspace_active(), qa_sessions: self.qa_sessions.clone(),
-            chief_scheduling_owner: snapshot.filter(|snapshot| snapshot["chief_owned_work"].is_array()).and_then(|snapshot| snapshot["chief_scheduling_owner"].as_bool()) }
+            host_available: snapshot.is_some() }
     }
 
     pub(super) fn open_queue(&mut self) -> String {
@@ -232,11 +232,7 @@ impl App {
         let mut text = format!("Queue · {}\n\n", if self.todo_scope.is_empty() { "all projects" } else { &self.todo_scope });
         if !context.enabled { text += "queue disabled\n\n"; }
         if context.gaming { text += "paused while gaming\n\n"; }
-        match context.chief_scheduling_owner {
-            Some(true) => text += "chief owns scheduling\n\n",
-            None => text += "scheduling ownership unavailable\n\n",
-            _ => {},
-        }
+        if !context.host_available { text += "team host unavailable\n\n"; }
         for entry in &entries {
             let title = match entry { Entry::Typed(item) => item.text(), Entry::Issue { issue, .. } => issue.title.clone() };
             let role = if matches!(entry, Entry::Typed(item) if item.is_design()) { "designer" } else { "developer" };

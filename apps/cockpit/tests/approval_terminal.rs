@@ -25,27 +25,6 @@ fn request(command: &str) -> (PathBuf, String) {
     (root, id)
 }
 
-#[test]
-fn a_bound_run_shows_the_exact_binding_and_never_publishes_an_unverified_checkout() {
-    let (root,id) = request("true");
-    let path = root.join(format!("run/claude-requests/{id}.request"));
-    let mut held: serde_json::Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
-    held["evidence"] = serde_json::json!({"assignment":"assignment-123","gate":"tests"});
-    fs::write(path,held.to_string()).unwrap();
-    let mut terminal = Terminal::start(Path::new(env!("CARGO_BIN_EXE_cockpit-run-approve")), &[&id],
-        &[("CLAUDE_ANSWERS_DIR",&root.join("answers")),("XDG_RUNTIME_DIR",&root.join("run")),
-            ("XDG_STATE_HOME",&root.join("state")),("COCKPIT_STATE_HOME",&root.join("state")),("CLAUDE_AUDIT_JOURNAL",Path::new("off"))]);
-    terminal.pump(10.0,Some(b"Run it?"));
-    assert!(contains(&terminal.screen,b"assignment-123"));
-    assert!(contains(&terminal.screen,b"Evidence unavailable"));
-    let asking: serde_json::Value = serde_json::from_str(&fs::read_to_string(root.join(format!("run/cockpit-runs/{id}.asking"))).unwrap()).unwrap();
-    assert!(asking["why"].as_str().unwrap().contains("assignment-123"),"phone approval must display the binding too");
-    fs::write(root.join(format!("run/cockpit-runs/{id}.remote")),"n").unwrap();
-    terminal.pump(5.0,Some(b"Declined"));
-    let _ = terminal.child.wait();
-    let _ = fs::remove_dir_all(root);
-}
-
 /// Runs the request: waits out the menu's half second, moves to "Run it", confirms. The wait
 /// starts once the last option is drawn (the menu ignores keys from then on, not from the
 /// question line), and Enter waits for "Run it" to show selected: on a busy machine a Down

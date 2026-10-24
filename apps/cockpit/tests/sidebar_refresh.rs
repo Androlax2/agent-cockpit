@@ -82,7 +82,7 @@ fn unopened_chief_controls_do_not_add_host_snapshot_polling() {
         std::thread::spawn(move || for mut stream in listener.incoming().flatten() {
             let mut wire=String::new();if stream.read_to_string(&mut wire).is_err() {continue;}
             let request:serde_json::Value=serde_json::from_str(&wire).unwrap();captured.lock().unwrap().push(request);
-            let reply=cockpit::teams::TeamReply {request_id:"fixture".into(),result:Ok(serde_json::json!({"members":[],"chief_scheduling_owner":false,"chief_owned_work":[]}))};
+            let reply=cockpit::teams::TeamReply {request_id:"fixture".into(),result:Ok(serde_json::json!({"members":[]}))};
             let _=stream.write_all(serde_json::to_string(&reply).unwrap().as_bytes());
         });
     });

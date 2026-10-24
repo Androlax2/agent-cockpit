@@ -49,8 +49,7 @@ fn chief_host_review_pagination_invalidates_on_material_change_not_heartbeat_tim
     let request = |generation: &str| serde_json::from_value::<HostRequest>(json!({"request":"chief_snapshot","after":1,"limit":1,"generation":generation})).unwrap();
     let second = crate::teams::host(&mut bench.registry, std::process::id(),request(generation)).unwrap().result.unwrap();
     assert_ne!(second["invalidated"],true);
-    let session = verified(&mut bench,OPENCODE_SESSION);
-    crate::teams::host(&mut bench.registry, std::process::id(),HostRequest::Chief {action:ChiefHostAction::BindWorker {request_id:"pagination-change".into(),session,role:cockpit::teams::Role::Developer,expected_epoch:None}}).unwrap().result.unwrap();
+    bench.registry.teams.as_ref().unwrap().execute("INSERT INTO chief_decisions(id,scope_key,decision_key,question,recommendation,state,revision,created_at) VALUES ('pagination-change','scope','key','Material host change','Review only','open',1,100)",[]).unwrap();
     let stale = crate::teams::host(&mut bench.registry, std::process::id(),request(generation)).unwrap().result.unwrap();
     assert_eq!(stale["invalidated"],true);
     assert_eq!(stale["next"],0);
@@ -156,7 +155,7 @@ fn chief_summary_production_route_delivers_one_request_and_accepts_only_its_nati
     let entry=bench.registry.sessions.get_mut(OPENCODE_SESSION).unwrap();entry.state="waiting".into();entry.since=(crate::teams::now_ms()/1000) as f64;
     assert!(crate::teams::request(&mut bench.registry,20,AgentAction::Receive).unwrap().result.unwrap().is_null(),"the complete five-minute idle guard still applies");
     let reply = serde_json::from_value::<AgentAction>(json!({"action":"chief","request":{"action":"summary_response","request_id":"host-summary",
-        "sections":{"completed":"None verified","active":"No assignments","decisions":"No host decisions","idle":"No approved work"},"evidence_ids":["unverified-note"]}})).unwrap();
+        "sections":{"completed":"None verified","active":"No assignments","decisions":"No host decisions","idle":"No approved work"}}})).unwrap();
     assert!(crate::teams::request(&mut bench.registry,20,reply.clone()).unwrap().result.is_err());
     admit_chief(&mut bench);
     assert!(crate::teams::request(&mut bench.registry,10,reply.clone()).unwrap().result.is_err());
@@ -165,28 +164,9 @@ fn chief_summary_production_route_delivers_one_request_and_accepts_only_its_nati
     let summary = review["records"].as_array().unwrap().iter().find(|record|record["kind"]=="summary").unwrap();
     assert_eq!(summary["state"],"completed");
     assert_eq!(summary["last_result"]["provenance"],"chief_narrative_unverified");
-    assert_eq!(summary["last_result"]["references"][0]["verified_current"],false);
     bench.registry.tick_queues();
     assert_eq!(bench.registry.teams.as_ref().unwrap().query_row("SELECT count(*) FROM chief_attention",[],|row|row.get::<_,i64>(0)).unwrap(),0);
     assert_eq!(bench.registry.teams.as_ref().unwrap().query_row("SELECT count(*) FROM chief_summary_requests",[],|row|row.get::<_,i64>(0)).unwrap(),1);
-}
-
-#[test]
-fn chief_host_resolve_remains_reachable_when_evidence_replay_hits_decision_capacity() {
-    use cockpit::chief::{store,WorkBrief,WorkRef,GateKind,GateRequirement,WorkerState};
-    use cockpit::teams::{Role,TaskKey};
-    let mut bench = team_bench(); enable(&mut bench,OPENCODE_SESSION); admit_chief(&mut bench);
-    let worker = verified(&mut bench,SESSION_A);
-    let connection = bench.registry.teams.as_mut().unwrap();
-    let brief = WorkBrief {work:WorkRef {task:TaskKey {project:worker.project.clone(),task_id:"aaaaaaaa".into()},revision:1},brief:"Controlled evidence-capacity fixture".into(),role:Role::Developer,prerequisites:vec![],
-        gates:vec![GateRequirement {kind:GateKind::Tests,source:"host_attestation".into(),expected:json!({"commit":"1".repeat(40)})}]};
-    store::host(connection,&ChiefHostAction::ApproveWork {request_id:"capacity-proof-work".into(),approval_hash:brief.approval_hash().unwrap(),brief,expected_revision:0},&[],100).unwrap().result.unwrap();
-    connection.execute("INSERT INTO chief_assignments(id,project,task_id,work_revision,worker,worker_runtime,worker_epoch,chief_grant,chief_epoch,state,revision,submission_key,fingerprint,created_at) VALUES ('capacity-owner',?1,'aaaaaaaa',1,?2,?3,'fixture','fixture','fixture','accepted',1,'fixture','fixture',100)",
-        (&worker.project,&worker.session_id,&worker.runtime)).unwrap();
-    let observation = WorkerState {session:worker,role:Some(Role::Developer),ready:true,blocked_by:vec![],observed_at_ms:101};
-    connection.execute("INSERT OR REPLACE INTO chief_observations VALUES (?1,?2)",(&observation.session.session_id,serde_json::to_string(&observation).unwrap())).unwrap();
-    for index in 0..100 {connection.execute("INSERT INTO chief_decisions(id,scope_key,decision_key,question,recommendation,state,revision,created_at) VALUES (?1,?1,'blocked','Host review needed','Review exact source','open',1,100)",[format!("source-cap-{index}")]).unwrap();}
-    crate::teams::host(&mut bench.registry, std::process::id(),HostRequest::Chief {action:ChiefHostAction::Resolve {request_id:"source-cap-resolve".into(),decision:"source-cap-0".into(),expected_revision:1,resolution:"Host acknowledged this exact decision, no permissions granted".into()}}).unwrap().result.unwrap();
 }
 
 #[test]
@@ -265,28 +245,6 @@ fn chief_resume_requires_the_original_runtime_and_replacement_requires_a_new_hos
     let session = verified(&mut bench, SESSION_A);
     crate::teams::host(&mut bench.registry, std::process::id(), HostRequest::Chief { action: ChiefHostAction::Enable { request_id: "replacement".into(), session } }).unwrap().result.unwrap();
     assert!(context(&mut bench, 10).unwrap().result.is_ok());
-}
-
-#[test]
-fn chief_worker_role_is_host_bound_and_recovers_after_restart_without_membership() {
-    let mut bench = team_bench();
-    enable(&mut bench, SESSION_A);
-    let session = verified(&mut bench, OPENCODE_SESSION);
-    crate::teams::host(&mut bench.registry, std::process::id(), HostRequest::Chief { action: ChiefHostAction::BindWorker {
-        request_id: "worker".into(), session: session.clone(), role: cockpit::teams::Role::Developer, expected_epoch: None,
-    }}).unwrap().result.unwrap();
-    bench.registry.teams = None;
-    bench.registry.sessions.get_mut(OPENCODE_SESSION).unwrap().runtime.clear();
-    let snapshot = crate::teams::host(&mut bench.registry, std::process::id(), HostRequest::ChiefSnapshot { after: 0, limit: 50, generation:None }).unwrap().result.unwrap();
-    let worker = snapshot["records"].as_array().unwrap().iter().find(|row| row["session_id"] == OPENCODE_SESSION).unwrap();
-    assert_eq!(worker["role"], "developer");
-    assert_eq!(bench.registry.sessions[OPENCODE_SESSION].runtime, session.runtime);
-    assert_eq!(context(&mut bench, 20).unwrap().result.unwrap_err().code, ErrorCode::Unauthorized);
-    bench.world.borrow_mut().sender_runtimes.insert(20, "replacement".into());
-    bench.registry.sessions.get_mut(OPENCODE_SESSION).unwrap().runtime.clear();
-    let snapshot = crate::teams::host(&mut bench.registry, std::process::id(), HostRequest::ChiefSnapshot { after: 0, limit: 50, generation:None }).unwrap().result.unwrap();
-    assert!(!snapshot["records"].as_array().unwrap().iter().any(|record|record["kind"]=="worker" && record["session_id"]==OPENCODE_SESSION));
-    assert!(snapshot["records"].as_array().unwrap().iter().any(|record|record["kind"]=="binding" && record["session"]["runtime"]==session.runtime));
 }
 
 #[test]
@@ -395,31 +353,6 @@ fn legacy_host_manual_undo_and_delete_release_only_status_reservations() {
 }
 
 #[test]
-fn chief_proposal_intake_authenticates_sender_and_rejects_noncanonical_projects() {
-    let mut bench = team_bench();
-    let sender = verified(&mut bench,OPENCODE_SESSION);
-    let foreign = bench.fixture.root.join("home/IdeaProjects/foreign");
-    fs::create_dir_all(foreign.join(".git")).unwrap();
-    let foreign_project = crate::teams::canonical_project(foreign.to_str().unwrap()).unwrap();
-    let request = |key: &str, project: &str| AgentAction::Chief {request:serde_json::from_value(json!({"action":"propose_work","submission_key":key,
-        "proposal":{"task":{"project":project,"task_id":"aaaaaaaa"},"brief":"Review only","role":"developer","prerequisites":[],"gates":[]}})).unwrap()};
-    let own = crate::teams::request(&mut bench.registry,20,request("own",&sender.project)).unwrap().result.unwrap();
-    assert_eq!(own["sender"],json!(sender));
-    assert_eq!(crate::teams::request(&mut bench.registry,20,request("foreign",&foreign_project)).unwrap().result.unwrap_err().code,ErrorCode::Unauthorized);
-    assert_eq!(crate::teams::request(&mut bench.registry,99,request("fake",&sender.project)).unwrap_err().code,ErrorCode::Unauthorized);
-    enable(&mut bench,OPENCODE_SESSION);
-    admit_chief(&mut bench);
-    crate::teams::request(&mut bench.registry,20,request("chief-foreign",&foreign_project)).unwrap().result.unwrap();
-    let alias = format!("{foreign_project}/../foreign");
-    assert!(crate::teams::request(&mut bench.registry,20,request("alias",&alias)).unwrap().result.is_err());
-    let review = crate::teams::host(&mut bench.registry, std::process::id(),HostRequest::ChiefSnapshot {after:0,limit:50,generation:None}).unwrap().result.unwrap();
-    let worker = review["records"].as_array().unwrap().iter().find(|record|record["kind"]=="worker" && record["session_id"]==OPENCODE_SESSION).unwrap();
-    assert_eq!(worker["session"]["runtime"],sender.runtime);
-    assert_eq!(worker["native_observation"]["source"],"host_native");
-    assert!(!context(&mut bench,20).unwrap().result.unwrap().to_string().contains("Review only"));
-}
-
-#[test]
 fn chief_host_routes_do_not_allow_team_approval_to_add_an_active_or_paused_chief() {
     use cockpit::teams::{HostAction, Member, Proposal, Role, TaskKey};
     for paused in [false, true] {
@@ -447,42 +380,13 @@ fn chief_host_routes_do_not_allow_team_approval_to_add_an_active_or_paused_chief
 }
 
 #[test]
-fn chief_dispatch_fails_closed_without_host_verified_draft_safe_readiness() {
-    use cockpit::chief::{WorkBrief, WorkRef};
-    use cockpit::teams::{Role, TaskKey};
-    let mut bench = team_bench();
-    enable(&mut bench, OPENCODE_SESSION);
-    admit_chief(&mut bench);
-    let session = verified(&mut bench, SESSION_B);
-    bench.registry.sessions.get_mut(SESSION_B).unwrap().state = "waiting".into();
-    bench.registry.sessions.get_mut(SESSION_B).unwrap().needs_input = false;
-    crate::teams::host(&mut bench.registry, std::process::id(), HostRequest::Chief { action: ChiefHostAction::BindWorker {
-        request_id: "bind".into(), session: session.clone(), role: Role::Developer, expected_epoch: None,
-    }}).unwrap().result.unwrap();
-    let brief = WorkBrief { work: WorkRef { task: TaskKey { project: session.project, task_id: "aaaaaaaa".into() }, revision: 1 },
-        brief: "Approved scope".into(), role: Role::Developer, prerequisites: vec![], gates: vec![] };
-    crate::teams::host(&mut bench.registry, std::process::id(), HostRequest::Chief { action: ChiefHostAction::ApproveWork {
-        request_id: "approve".into(), approval_hash: brief.approval_hash().unwrap(), brief: brief.clone(), expected_revision: 0,
-    }}).unwrap().result.unwrap();
-    let reply = crate::teams::request(&mut bench.registry, 20, AgentAction::Chief { request: ChiefAgentAction::Dispatch {
-        submission_key: "one".into(), work: brief.work, worker: SESSION_B.into(),
-    }}).unwrap();
-    assert_eq!(reply.result.unwrap_err().code, ErrorCode::Conflict);
-    assert_eq!(bench.registry.teams.as_ref().unwrap().query_row("SELECT count(*) FROM chief_assignments", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
-}
-
-#[test]
 fn chief_opencode_readiness_requires_fresh_host_native_and_focus_facts_and_live_proof() {
-    use cockpit::teams::Role;
     let mut bench = team_bench();
     let session = verified(&mut bench, OPENCODE_SESSION);
     let entry = bench.registry.sessions.get_mut(OPENCODE_SESSION).unwrap();
     entry.state = "waiting".into();
     entry.needs_input = false;
     entry.since = (crate::teams::now_ms() / 1000 - 600) as f64;
-    crate::teams::host(&mut bench.registry, std::process::id(), HostRequest::Chief { action: ChiefHostAction::BindWorker {
-        request_id:"bind-ready".into(), session:session.clone(), role:Role::Developer, expected_epoch:None,
-    }}).unwrap().result.unwrap();
     let ready = |bench: &mut Bench| crate::chief::workers(&mut bench.registry).unwrap().into_iter()
         .find(|worker| worker.session == session).unwrap().ready;
     assert!(!ready(&mut bench));
@@ -520,6 +424,37 @@ fn chief_opencode_readiness_requires_fresh_host_native_and_focus_facts_and_live_
     assert!(ready(&mut bench), "an abandoned standalone sleep restores availability");
     bench.registry.chief_native.clear();
     assert!(!ready(&mut bench), "restart discards native observations");
+}
+
+#[test]
+fn a_standalone_session_is_ready_without_a_bound_role() {
+    let mut bench = team_bench();
+    let session = verified(&mut bench, OPENCODE_SESSION);
+    let entry = bench.registry.sessions.get_mut(OPENCODE_SESSION).unwrap();
+    entry.state = "waiting".into();
+    entry.needs_input = false;
+    entry.since = (crate::teams::now_ms() / 1000 - 600) as f64;
+    crate::teams::host(&mut bench.registry, std::process::id(), HostRequest::ChiefFocus { viewed:String::new(), workspace_active:false, gaming:false }).unwrap();
+    crate::teams::host(&mut bench.registry, std::process::id(), HostRequest::ChiefNativeObservation { session:session.clone(), idle:true, pending_input:false, observed_at_ms:crate::teams::now_ms() }).unwrap();
+    crate::teams::host(&mut bench.registry, std::process::id(), HostRequest::VerifyChiefAdmission { session:session.clone(), adapter:"opencode-queued-v1".into(),
+        evidence:"Controlled host proof fixture, not a live support claim".into() }).unwrap();
+    let worker = crate::chief::workers(&mut bench.registry).unwrap().into_iter().find(|worker| worker.session == session).unwrap();
+    assert!(worker.role.is_none());
+    assert!(worker.blocked_by.is_empty(), "{:?}", worker.blocked_by);
+    assert!(worker.ready);
+}
+
+#[test]
+fn an_enabled_chief_leaves_reserve_task_and_reserve_manual_available() {
+    for manual in [false, true] {
+        let mut bench = team_bench();
+        enable(&mut bench, SESSION_A);
+        let directory = bench.registry.sessions[SESSION_B].cwd.clone();
+        let task_id = cockpit::todo::TodoList::load().add("project-a", &directory, "legacy work");
+        let request = if manual { HostRequest::ReserveManual { task_id, directory } }
+            else { HostRequest::ReserveTask { task_id, directory, worker:None, automatic:false } };
+        crate::teams::host(&mut bench.registry, std::process::id(), request).unwrap().result.unwrap();
+    }
 }
 
 #[test]
@@ -561,7 +496,7 @@ fn chief_normal_enable_requires_recorded_host_live_queued_admission_proof() {
         request_id:"no-live-proof".into(), session,
     }}).unwrap();
     assert_eq!(reply.result.unwrap_err().code,ErrorCode::Unavailable);
-    assert!(!cockpit::chief::store::scheduling_owned(bench.registry.teams.as_ref().unwrap()).unwrap());
+    assert_eq!(bench.registry.teams.as_ref().unwrap().query_row("SELECT count(*) FROM chief_grants", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
 }
 
 #[test]
@@ -609,6 +544,23 @@ fn chief_legacy_queue_can_reserve_a_host_sleep_note_but_chief_workers_remain_una
     });
     assert!(result.unwrap().result.is_ok());
     assert!(!crate::chief::workers(&mut bench.registry).unwrap().iter().any(|worker|worker.session.session_id==SESSION_B));
+}
+
+#[test]
+fn a_sleeping_chief_session_cannot_be_reserved_for_a_todo() {
+    let mut bench = team_bench();
+    enable(&mut bench, SESSION_A);
+    let entry = bench.registry.sessions.remove(SESSION_A).unwrap();
+    let id = cockpit::todo::TodoList::load().add("project-a",&entry.cwd,"work for a sleeping chief");
+    let notes = cockpit::paths::asleep_dir();
+    fs::create_dir_all(&notes).unwrap();
+    fs::write(notes.join(SESSION_A),serde_json::json!({"agent":"claude","project":"project-a","cwd":entry.cwd,
+        "idle_since":crate::teams::now_ms()/1000-600,"slept_at":crate::teams::now_ms()/1000}).to_string()).unwrap();
+    bench.registry.chief_focus = Some((String::new(),false,false,crate::teams::now_ms()));
+    let result = crate::teams::host(&mut bench.registry, std::process::id(),HostRequest::ReserveTask {
+        task_id:id,directory:entry.cwd,worker:Some(SESSION_A.into()),automatic:true,
+    });
+    assert!(result.is_err());
 }
 
 // The CLI plugin receives the real connected native client; only its API results are controlled here.
@@ -703,7 +655,6 @@ fn native_telemetry_pipeline(bench: &mut Bench, mode: &str) -> Vec<serde_json::V
 
 #[test]
 fn chief_production_native_plugin_to_ipc_derives_availability_without_host_observation() {
-    use cockpit::teams::Role;
     for mode in ["idle","busy","child-busy","inbox","permission","forms","malformed","bad-active","wrong-session","error","timeout",
         "other-route","home-route","route-error","missing-router","route-changes"] {
         let mut bench = team_bench();
@@ -711,9 +662,6 @@ fn chief_production_native_plugin_to_ipc_derives_availability_without_host_obser
         let entry = bench.registry.sessions.get_mut(OPENCODE_SESSION).unwrap();
         entry.state = "waiting".into(); entry.needs_input = false;
         entry.since = (crate::teams::now_ms()/1000-600) as f64;
-        crate::teams::host(&mut bench.registry, std::process::id(),HostRequest::Chief {action:ChiefHostAction::BindWorker {
-            request_id:"bind-telemetry".into(),session:worker.clone(),role:Role::Developer,expected_epoch:None,
-        }}).unwrap().result.unwrap();
         bench.registry.chief_focus = Some((String::new(),false,false,crate::teams::now_ms()));
         let requests = native_telemetry_pipeline(&mut bench,mode);
         if matches!(mode,"other-route"|"home-route"|"route-error"|"missing-router"|"route-changes") {
@@ -754,7 +702,7 @@ fn chief_runtime_telemetry_cannot_impersonate_another_source_or_host_authority()
     assert!(bench.registry.chief_native.is_empty());
     let worker = verified(&mut bench,OPENCODE_SESSION);
     assert!(!cockpit::chief::store::admission_verified(bench.registry.teams.as_ref().unwrap(),&worker).unwrap());
-    assert!(!cockpit::chief::store::scheduling_owned(bench.registry.teams.as_ref().unwrap()).unwrap());
+    assert_eq!(bench.registry.teams.as_ref().unwrap().query_row("SELECT count(*) FROM chief_grants", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
 }
 
 #[test]
@@ -776,9 +724,6 @@ fn chief_native_telemetry_expires_by_host_receipt_time_and_cannot_refresh_by_rep
     let entry = bench.registry.sessions.get_mut(OPENCODE_SESSION).unwrap();
     entry.state = "waiting".into(); entry.needs_input = false;
     entry.since = (crate::teams::now_ms()/1000-600) as f64;
-    crate::teams::host(&mut bench.registry, std::process::id(),HostRequest::Chief {action:ChiefHostAction::BindWorker {
-        request_id:"bind-expiry".into(),session:worker.clone(),role:cockpit::teams::Role::Developer,expected_epoch:None,
-    }}).unwrap().result.unwrap();
     crate::teams::host(&mut bench.registry, std::process::id(),HostRequest::VerifyChiefAdmission {
         session:worker.clone(),adapter:"opencode-queued-v1".into(),evidence:"Controlled host proof fixture".into(),
     }).unwrap().result.unwrap();
@@ -824,9 +769,6 @@ fn chief_and_legacy_readiness_scope_host_requests_to_the_protected_owner() {
                 bench.world.borrow_mut().sender_directories.insert(10,directory.clone());
             }
             let worker = verified(&mut bench,OPENCODE_SESSION);
-            crate::teams::host(&mut bench.registry, std::process::id(),HostRequest::Chief {action:ChiefHostAction::BindWorker {
-                request_id:"bind-request-owner".into(),session:worker.clone(),role:cockpit::teams::Role::Developer,expected_epoch:None,
-            }}).unwrap().result.unwrap();
             crate::teams::host(&mut bench.registry, std::process::id(),HostRequest::VerifyChiefAdmission {
                 session:worker.clone(),adapter:"opencode-queued-v1".into(),evidence:"Controlled host proof fixture".into(),
             }).unwrap().result.unwrap();
@@ -864,38 +806,4 @@ fn chief_and_legacy_readiness_scope_host_requests_to_the_protected_owner() {
             assert_eq!(reserved.is_ok_and(|reply|reply.result.is_ok()),!related,"legacy {kind}: {owner}");
         }
     }
-}
-
-#[test]
-fn chief_receipts_route_by_persisted_owner_and_only_the_assigned_runtime_accepts() {
-    use cockpit::chief::{store, WorkBrief, WorkRef};
-    use cockpit::teams::{Role, TaskKey, TransportOutcome};
-    let mut bench = team_bench();
-    enable(&mut bench, OPENCODE_SESSION);
-    admit_chief(&mut bench);
-    let sender = verified(&mut bench, OPENCODE_SESSION);
-    let worker = verified(&mut bench, SESSION_B);
-    crate::teams::host(&mut bench.registry, std::process::id(), HostRequest::Chief { action: ChiefHostAction::BindWorker {
-        request_id: "bind".into(), session: worker.clone(), role: Role::Developer, expected_epoch: None,
-    }}).unwrap().result.unwrap();
-    let brief = WorkBrief { work: WorkRef { task: TaskKey { project: worker.project.clone(), task_id: "aaaaaaaa".into() }, revision: 1 },
-        brief: "Approved scope".into(), role: Role::Developer, prerequisites: vec![], gates: vec![] };
-    crate::teams::host(&mut bench.registry, std::process::id(), HostRequest::Chief { action: ChiefHostAction::ApproveWork {
-        request_id: "approve".into(), approval_hash: brief.approval_hash().unwrap(), brief: brief.clone(), expected_revision: 0,
-    }}).unwrap().result.unwrap();
-    // Controlled store fixture only; the real daemon's readiness remains false.
-    let mut live = crate::chief::workers(&mut bench.registry).unwrap();
-    for state in &mut live { state.ready = true; state.blocked_by.clear(); state.role = Some(Role::Developer); }
-    let connection = bench.registry.teams.as_mut().unwrap();
-    let now = crate::teams::now_ms();
-    let assigned = store::agent(connection, &sender, &ChiefAgentAction::Dispatch { submission_key: "one".into(), work: brief.work, worker: worker.session_id.clone() }, &live, now).unwrap().result.unwrap();
-    store::observe(connection, &live, now).unwrap();
-    let delivery = store::claim(connection, &worker, "idle-1", now).unwrap().unwrap();
-    let receipt = AgentAction::Receipt { dispatch_id: delivery.id.clone(), outcome: TransportOutcome::Received { native_id: "native-1".into() } };
-    assert!(crate::teams::request(&mut bench.registry, 20, receipt.clone()).is_err());
-    crate::teams::request(&mut bench.registry, 30, receipt).unwrap().result.unwrap();
-    let action = AgentAction::Chief { request: ChiefAgentAction::Accept { assignment: assigned["assignment"].as_str().unwrap().into() } };
-    assert!(crate::teams::request(&mut bench.registry, 10, action.clone()).unwrap().result.is_err());
-    crate::teams::request(&mut bench.registry, 30, action).unwrap().result.unwrap();
-    assert_eq!(bench.registry.teams.as_ref().unwrap().query_row("SELECT state FROM chief_assignments", [], |row| row.get::<_, String>(0)).unwrap(), "accepted");
 }

@@ -92,7 +92,7 @@ const GLOBAL_HELP: [(&str, &str); 15] = [
 ];
 /// Rare actions with no key, only in the : list: the panel they run in ("-" for none), a name, a label.
 const PALETTE_ONLY: [(&str, &str, &str); 24] = [
-    ("-", "chief", "Chief: global coordination, exact work approvals, workers, decisions and requested summary"),
+    ("-", "chief", "Chief: global coordination, workers, decisions and requested summary"),
     ("1", "team", "teams and shared-work links: approve, edit, reject or revoke; resolve escalations and read message history"),
     ("1", "attention-filter", "show actionable sessions / show all; deferred items remain counted"),
     ("1", "defer-20m", "remind me of this explicit question in twenty minutes (never approve)"),
@@ -922,11 +922,6 @@ impl App {
                 }
             }
         }
-        if let Ok(snapshot) = Self::team_snapshot() {
-            if let Some(work) = snapshot["chief_owned_work"].as_array() {
-                if let Err(error) = self.todos.project_chief(work) { self.continuity_error = Some(format!("chief projection: {error}")); }
-            }
-        }
         self.todos.apply_updates();
         self.check_team();
         self.errors.tick(|| sessions::reported().into_iter()
@@ -1214,7 +1209,7 @@ impl App {
     /// Handed work and setup blockers get fresh background sessions on every tick, before idle
     /// sessions can absorb them. Theo's own Q items keep waiting for a session he starts.
     fn start_sessions_for_handed_work(&mut self, context: &queue::QueueContext) {
-        if !context.enabled || context.gaming || context.chief_scheduling_owner != Some(false) {
+        if !context.enabled || context.gaming || !context.host_available {
             return;
         }
         let mut handed: Vec<Entry> = self.todos.items.iter()
@@ -1252,10 +1247,8 @@ impl App {
     /// The project's first queued item still to do: typed items of its project, issues of its
     /// repository.
     fn next_queued(&self, session: &Session) -> Option<Entry> {
-        let snapshot = Self::team_snapshot().ok()?;
-        let protected = snapshot["chief_owned_work"].as_array()?;
         queue::candidates(session, &self.todos, &self.reviews.issues(), &self.reviews.checkouts).into_iter()
-            .find(|entry| !protected.iter().any(|work| work["task_id"].as_str() == Some(entry.key().as_str())))
+            .next()
     }
 
     /// Everything read again (sessions, usage, plan), then drawn.
@@ -3235,7 +3228,6 @@ impl App {
             },
             Key::Char('x') => match entry {
                 Some(Entry::Typed(item)) => {
-                    if item.0.contains_key("chief_assignment") { return "chief-owned work requires host reconciliation".into(); }
                     let token=self.todos.manual_reservation(&item.id());
                     if let Err(error) = self.todos.remove(&item.id()) { return format!("cannot remove TODO: {error}"); }
                     if let Err(error)=queue::release_manual(&item.cwd(),&item.id(),token.as_deref()) {return error;}
@@ -3255,7 +3247,7 @@ impl App {
                     }
                     if !self.todos.set_status(&entry.key(), status, "") {
                         if status=="doing" {if let Err(error)=queue::release_manual(&directory,&entry.key(),token.as_deref()) {return error;}}
-                        return "cannot mark TODO; chief-owned work requires host reconciliation, otherwise check the log".into();
+                        return "cannot mark TODO; check the log".into();
                     }
                     if status=="doing" {self.todos.record_manual_reservation(&entry.key(),token.as_deref().expect("reservation obtained"));}
                     if status!="doing" {if let Err(error)=queue::release_manual(&directory,&entry.key(),token.as_deref()) {return error;}}

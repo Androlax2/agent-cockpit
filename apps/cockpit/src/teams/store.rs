@@ -79,48 +79,45 @@ pub fn migrate(connection: &mut Connection) -> Result<(), TeamError> {
 
 fn migrate_with(connection: &mut Connection, create: bool) -> Result<(), TeamError> {
     let transaction = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-    let connection = &transaction;
+    upgrade_schema(&transaction, create)?;
+    super::links::migrate(&transaction)?;
+    crate::chief::store::clear_dispatch_leftovers(&transaction)?;
+    transaction.commit()?;
+    Ok(())
+}
+
+fn upgrade_schema(connection: &rusqlite::Transaction<'_>, create: bool) -> Result<(), TeamError> {
     let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
     if !create && version == 0 { return Err(TeamError::new(ErrorCode::Storage, "existing collaboration database has no lifecycle schema")); }
     if !(0..=12).contains(&version) { return Err(TeamError::new(ErrorCode::Storage, "unsupported team database version")); }
     sleep::migrate(connection)?;
-    if version >= 10 { super::links::migrate(connection)?; transaction.commit()?; return Ok(()); }
+    if version >= 10 { return Ok(()); }
     if version == 9 {
         crate::chief::store::upgrade_launches(connection)?;
         connection.execute_batch("PRAGMA user_version=10;")?;
-        super::links::migrate(connection)?;
-        transaction.commit()?;
         return Ok(());
     }
     if version == 8 {
         crate::chief::store::upgrade_events(connection)?;
         connection.execute_batch("PRAGMA user_version=10;")?;
-        super::links::migrate(connection)?;
-        transaction.commit()?;
         return Ok(());
     }
     crate::chief::store::upgrade_review(connection)?;
     if version == 7 {
         crate::chief::store::upgrade_events(connection)?;
         connection.execute_batch("PRAGMA user_version=10;")?;
-        super::links::migrate(connection)?;
-        transaction.commit()?;
         return Ok(());
     }
     crate::chief::store::upgrade_evidence(connection)?;
     if version == 6 {
         crate::chief::store::upgrade_events(connection)?;
         connection.execute_batch("PRAGMA user_version=10;")?;
-        super::links::migrate(connection)?;
-        transaction.commit()?;
         return Ok(());
     }
     if version == 5 {
         crate::chief::store::upgrade_scheduling(connection)?;
         crate::chief::store::upgrade_events(connection)?;
         connection.execute_batch("PRAGMA user_version=10;")?;
-        super::links::migrate(connection)?;
-        transaction.commit()?;
         return Ok(());
     }
     if version == 3 || version == 4 {
@@ -129,8 +126,6 @@ fn migrate_with(connection: &mut Connection, create: bool) -> Result<(), TeamErr
         crate::chief::store::upgrade_scheduling(connection)?;
         crate::chief::store::upgrade_events(connection)?;
         connection.execute_batch("PRAGMA user_version=10;")?;
-        super::links::migrate(connection)?;
-        transaction.commit()?;
         return Ok(());
     }
     connection.execute_batch("CREATE TABLE IF NOT EXISTS teams (task_key TEXT PRIMARY KEY, project TEXT NOT NULL, task_id TEXT NOT NULL, revision INTEGER NOT NULL);
@@ -162,7 +157,7 @@ fn migrate_with(connection: &mut Connection, create: bool) -> Result<(), TeamErr
         CREATE TABLE IF NOT EXISTS team_qa (task_key TEXT PRIMARY KEY, brief TEXT NOT NULL, agent TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS qa_exits (session_id TEXT PRIMARY KEY, status TEXT NOT NULL);")?;
     // Version 2: a proposal can carry recruits (teammates to start on approval) and the agent they run in.
-    let columns: Vec<String> = transaction.prepare("SELECT name FROM pragma_table_info('proposals')")?
+    let columns: Vec<String> = connection.prepare("SELECT name FROM pragma_table_info('proposals')")?
         .query_map([], |row| row.get(0))?.collect::<Result<_, _>>()?;
     for (column, definition) in [("recruits", "TEXT NOT NULL DEFAULT '[]'"), ("spawn_agent", "TEXT NOT NULL DEFAULT ''")] {
         if !columns.iter().any(|existing| existing == column) {
@@ -174,8 +169,6 @@ fn migrate_with(connection: &mut Connection, create: bool) -> Result<(), TeamErr
     crate::chief::store::upgrade_scheduling(connection)?;
     crate::chief::store::upgrade_events(connection)?;
     connection.execute_batch("PRAGMA user_version=10;")?;
-    super::links::migrate(connection)?;
-    transaction.commit()?;
     Ok(())
 }
 
@@ -758,51 +751,10 @@ pub fn handoff_in(connection: &mut Connection, sender: &VerifiedSession, action:
     let id = identifier()?;
     transaction.execute("INSERT INTO handoffs VALUES (?1,?2,?3,?4,?5,?6,?7,'current',?8)",
         params![id, task_key, sender.session_id, developer.epoch, handoff.submission_key, fingerprint, serde_json::to_string(handoff)?, now_ms])?;
-    crate::chief::store::bind_handoff(&transaction,&id,&handoff.task,&handoff.commit)?;
     let is_spawned = spawn_qa(&transaction, &task_key, &id, &handoff.commit, folder, now_ms)?;
     let is_requested = schedule_qa(&transaction, &task_key, now_ms)?;
-    crate::chief::store::complete_ready_in(&transaction,now_ms)?;
     transaction.commit()?;
     Ok(TeamReply { request_id: handoff.submission_key.clone(), result: Ok(json!({"handoff_id": id, "qa_requested": is_requested, "qa_spawned": is_spawned})) })
-}
-
-pub fn qa_result(connection: &mut Connection, sender: &VerifiedSession, result: &super::QaResult, now_ms: i64) -> Result<TeamReply, TeamError> {
-    let valid_key = |key: &str| !key.is_empty() && key.len() <= 128 && key.bytes().all(|byte|byte.is_ascii_alphanumeric() || matches!(byte,b'-'|b'_'));
-    if !valid_key(&result.submission_key) || !valid_key(&result.handoff_id) || result.tests.len() > 30
-        || result.tests.iter().any(|test|!valid_text(test,1000)) || !valid_text(&result.findings,4000) || sender.project != result.task.project {
-        return Err(TeamError::new(ErrorCode::Invalid,"invalid structured QA attestation"));
-    }
-    let task_key = serde_json::to_string(&result.task)?;
-    let transaction = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-    sleep::guard_sender(&transaction, &sender.session_id)?;
-    let qa = member(&transaction,&task_key,&sender.session_id)?.filter(|member|member.role == "qa" && member.runtime == sender.runtime && member.agent == sender.agent)
-        .ok_or_else(||TeamError::new(ErrorCode::Unauthorized,"only the current approved QA runtime may attest its review"))?;
-    let reference = handoff_reference(&transaction,&task_key,&result.handoff_id)?;
-    let authorized: bool = transaction.query_row("SELECT EXISTS(SELECT 1 FROM handoffs h JOIN members dev ON dev.task_key=h.task_key AND dev.session_id=h.developer AND dev.epoch=h.developer_epoch
-        WHERE h.id=?1 AND h.status='current') AND (EXISTS(SELECT 1 FROM messages WHERE recipient=?2 AND recipient_epoch=?3 AND json_extract(envelope,'$.handoff.id')=?1 AND state!='cancelled')
-        OR EXISTS(SELECT 1 FROM spawns WHERE session_id=?2 AND handoff_id=?1 AND status='bound'))",
-        params![result.handoff_id,sender.session_id,qa.epoch], |row|row.get(0))?;
-    if reference["status"] != "current" || !authorized { return Err(TeamError::new(ErrorCode::Conflict,"QA handoff or reviewer approval is superseded")); }
-    let work: String = transaction.query_row("SELECT work FROM chief_handoffs WHERE handoff_id=?1", [&result.handoff_id], |row|row.get(0))?;
-    let fingerprint = audit::sha256_hex(&serde_json::to_vec(result)?);
-    let identity = serde_json::to_string(sender)?;
-    let old: Option<(String,String)> = transaction.query_row("SELECT fingerprint,evidence_id FROM chief_qa_results WHERE sender=?1 AND submission_key=?2", params![identity,result.submission_key], |row|Ok((row.get(0)?,row.get(1)?))).optional()?;
-    let id = if let Some((original,id)) = old {
-        if original != fingerprint { return Err(TeamError::new(ErrorCode::Conflict,"QA submission key reused with conflicting contents")); }
-        id
-    } else {
-        let id = identifier()?;
-        let evidence = crate::chief::Evidence { id:id.clone(), work:serde_json::from_str(&work)?, kind:crate::chief::GateKind::Qa,
-            commit:reference["commit"].as_str().ok_or_else(||TeamError::new(ErrorCode::Storage,"missing handoff commit"))?.into(), source:"qa".into(),
-            result:json!({"verdict":result.verdict,"tests":result.tests,"findings":result.findings,"handoff_id":result.handoff_id,
-                "reviewer":sender.session_id,"reviewer_runtime":sender.runtime,"reviewer_epoch":qa.epoch,"provenance":"approved_reviewer_attestation_not_test_execution"}) };
-        crate::chief::store::record_evidence_in(&transaction,&evidence,now_ms)?;
-        transaction.execute("INSERT INTO chief_qa_results VALUES (?1,?2,?3,?4)", params![identity,result.submission_key,fingerprint,id])?;
-        id
-    };
-    crate::chief::store::complete_ready_in(&transaction,now_ms)?;
-    transaction.commit()?;
-    Ok(TeamReply { request_id:result.submission_key.clone(), result:Ok(json!({"evidence_id":id})) })
 }
 
 /// A team that asked for QA gets a fresh QA per handoff: the unstarted older one is cancelled, the
@@ -832,8 +784,6 @@ fn spawn_qa(transaction: &Connection, task_key: &str, handoff_id: &str, commit: 
     let findings: Vec<String> = findings.query_map([task_key], |row| row.get::<_, String>(0))?.collect::<Result<_, _>>()?;
     let mut reference = handoff_reference(transaction, task_key, handoff_id)?;
     reference["task"] = serde_json::from_str(task_key)?;
-    reference["structured_qa_required"] = transaction.query_row("SELECT EXISTS(SELECT 1 FROM chief_handoffs WHERE handoff_id=?1)",
-        [handoff_id], |row| row.get::<_, bool>(0))?.into();
     transaction.execute("INSERT INTO spawns (token,task_key,role,agent,directory,commit_id,brief,handoff_id,status,created_at) VALUES (?1,?2,'qa',?3,?4,?5,?6,?7,'pending',?8)",
         params![identifier()?, task_key, agent, folder, commit, super::qa_brief_text(&standing, &reference, &findings), handoff_id, now_ms])?;
     Ok(true)

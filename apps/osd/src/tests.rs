@@ -448,7 +448,7 @@ fn stale_link_runtime_does_not_prevent_restoring_a_healthy_team() {
 #[test]
 fn conflicting_team_and_chief_runtime_bindings_still_refuse_restart_restoration() {
     let mut bench = linked_team_bench();
-    bench.registry.teams.as_ref().unwrap().execute("INSERT INTO chief_worker_bindings VALUES (?1,'claude','path:/project-a','dead-chief-runtime','old-chief-epoch','developer',1,'bound','approval',10)", [SESSION_A]).unwrap();
+    bench.registry.teams.as_ref().unwrap().execute("INSERT INTO chief_grants VALUES ('legacy-chief',?1,'claude','path:/project-a','dead-chief-runtime','old-chief-epoch',1,'paused','approval',10)", [SESSION_A]).unwrap();
     bench.registry.sessions.get_mut(SESSION_A).unwrap().runtime.clear();
     let live = crate::teams::live_sessions(&mut bench.registry).unwrap();
     assert!(!live.iter().any(|session| session.session_id == SESSION_A));

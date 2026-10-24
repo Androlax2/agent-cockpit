@@ -7,55 +7,6 @@ const DESIGNER: &str = "aaaaaaaa-0000-4000-8000-000000000000";
 const DEVELOPER: &str = "ses_3f2a9c0b1ffeQkTz8mWn4rJd2L";
 const QA: &str = "bbbbbbbb-0000-4000-8000-000000000000";
 
-#[test]
-fn structured_qa_is_current_reviewer_attestation_not_proof_of_test_execution() {
-    use cockpit::chief::{ChiefHostAction, GateKind, GateRequirement, WorkBrief, WorkRef};
-    use cockpit::teams::{QaResult, QaVerdict};
-    let sandbox = Sandbox::new();
-    let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
-    linked(&mut connection);
-    let brief = WorkBrief { work:WorkRef { task:task(), revision:1 }, brief:"Review exactly this commit".into(), role:Role::Developer,
-        prerequisites:vec![], gates:vec![GateRequirement { kind:GateKind::Qa, source:"qa".into(), expected:serde_json::json!({"commit":COMMIT_A}) },
-            GateRequirement { kind:GateKind::Tests, source:"host_attestation".into(), expected:serde_json::json!({"commit":COMMIT_A}) }] };
-    cockpit::chief::store::host(&mut connection, &ChiefHostAction::ApproveWork { request_id:"approve-work".into(), approval_hash:brief.approval_hash().unwrap(), brief, expected_revision:0 }, &[], 2500).unwrap().result.unwrap();
-    let handoff = hand_off(&mut connection,"qa-handoff",COMMIT_A).unwrap();
-    let result = QaResult { submission_key:"qa-result".into(), task:task(), handoff_id:handoff["handoff_id"].as_str().unwrap().into(),
-        verdict:QaVerdict::Pass, tests:vec!["make test: passed".into()], findings:"No findings".into() };
-    assert!(store::qa_result(&mut connection,&live()[1],&result,3100).is_err());
-    let mut wrong_runtime = live()[2].clone();
-    wrong_runtime.runtime = "wrong-runtime".into();
-    assert!(store::qa_result(&mut connection,&wrong_runtime,&result,3100).is_err());
-    let mut findings = result.clone();
-    findings.submission_key = "qa-findings".into();
-    findings.verdict = QaVerdict::Findings;
-    findings.findings = "A regression remains".into();
-    store::qa_result(&mut connection,&live()[2],&findings,3090).unwrap().result.unwrap();
-    assert!(cockpit::chief::store::complete_ready(&mut connection,3091).unwrap().is_empty());
-    store::qa_result(&mut connection,&live()[2],&result,3100).unwrap().result.unwrap();
-    assert_eq!(connection.query_row("SELECT count(*) FROM chief_evidence WHERE kind='tests'", [], |row|row.get::<_,i64>(0)).unwrap(),0);
-    assert!(cockpit::chief::store::complete_ready(&mut connection,3200).unwrap().is_empty());
-    let work = cockpit::chief::WorkRef {task:task(),revision:1};
-    let test_attestation = cockpit::chief::Evidence {id:"verified-tests".into(),work,kind:GateKind::Tests,commit:COMMIT_A.into(),source:"host_attestation".into(),
-        result:serde_json::json!({"passed":true,"note":"Theo verified tests for this exact commit"})};
-    cockpit::chief::store::host(&mut connection,&ChiefHostAction::AttestEvidence {request_id:"attest-tests".into(),evidence:test_attestation},&[],3201).unwrap().result.unwrap();
-    assert_eq!(connection.query_row("SELECT state FROM chief_work_revisions",[],|row|row.get::<_,String>(0)).unwrap(),"completed");
-    let chief=VerifiedSession {session_id:"ses_summary000000000000".into(),agent:"opencode".into(),project:"project-a".into(),runtime:"summary-runtime".into()};
-    let workers=vec![cockpit::chief::WorkerState {session:chief.clone(),role:None,ready:false,blocked_by:vec!["host_role_unbound".into()],observed_at_ms:3201}];
-    cockpit::chief::store::host(&mut connection,&ChiefHostAction::Enable {request_id:"summary-chief".into(),session:chief.clone()},&workers,3201).unwrap().result.unwrap();
-    cockpit::chief::store::host(&mut connection,&ChiefHostAction::RequestSummary {request_id:"qa-summary".into()},&workers,3201).unwrap().result.unwrap();
-    common::chief::admit(&mut connection,&workers,&chief,3201);
-    let proof:String=connection.query_row("SELECT id FROM chief_evidence WHERE kind='qa' ORDER BY rowid DESC LIMIT 1",[],|row|row.get(0)).unwrap();
-    let response=serde_json::from_value(serde_json::json!({"action":"summary_response","request_id":"qa-summary","sections":{"completed":"QA current","active":"None","decisions":"None","idle":"None"},"evidence_ids":[proof]})).unwrap();
-    cockpit::chief::store::agent(&mut connection,&chief,&response,&workers,3201).unwrap().result.unwrap();
-    let snapshot=cockpit::chief::store::snapshot(&connection,&workers,0,50).unwrap();
-    assert_eq!(snapshot["records"].as_array().unwrap().iter().find(|record|record["kind"]=="summary").unwrap()["last_result"]["references"][0]["verified_current"],true);
-    hand_off(&mut connection,"qa-new-handoff",COMMIT_B).unwrap();
-    let snapshot=cockpit::chief::store::snapshot(&connection,&workers,0,50).unwrap();
-    assert_eq!(snapshot["records"].as_array().unwrap().iter().find(|record|record["kind"]=="summary").unwrap()["last_result"]["references"][0]["verified_current"],false);
-    assert_eq!(connection.query_row("SELECT state FROM chief_work_revisions",[],|row|row.get::<_,String>(0)).unwrap(),"approved");
-    assert!(store::qa_result(&mut connection,&live()[2],&result,3300).is_err());
-}
-
 fn task() -> TaskKey { TaskKey { project: "project-a".into(), task_id: "1d3fd318".into() } }
 
 fn live() -> Vec<VerifiedSession> {

@@ -2,33 +2,6 @@ use super::*;
 use crate::teams::{self, HostAction, LinkProposal, TaskKey, VerifiedSession, links, store};
 
 #[test]
-fn chief_completion_closes_links_and_refuses_projection_when_invalidation_fails() {
-    for fail_closure in [false, true] {
-        let fixture = Fixture::new();
-        let project = fixture.root.join("project");
-        fs::create_dir_all(project.join(".git")).unwrap();
-        let mut todos = TodoList::load();
-        let id = todos.add("project", project.to_str().unwrap(), "Joint work");
-        let connection = store::open(&crate::paths::team_database()).unwrap();
-        link_fixture::approve(&connection, &format!("path:{}", project.display()), &id);
-        if fail_closure {
-            connection.execute_batch("CREATE TRIGGER refuse_projection BEFORE UPDATE ON link_work BEGIN SELECT RAISE(ABORT,'closure refused'); END;").unwrap();
-        }
-        let result = todos.project_chief(&[json!({"task_id":id,"assignment":"chief-work","worker":SESSION_A,"status":"done"})]);
-        if fail_closure {
-            assert!(result.is_err());
-            assert_eq!(TodoList::load().status_of(&id), "todo");
-            assert_eq!(link_fixture::state(&connection, &id), "active");
-        } else {
-            result.unwrap();
-            assert_eq!(TodoList::load().status_of(&id), "done");
-            assert_eq!(link_fixture::state(&connection, &id), "closed");
-            assert_eq!(connection.query_row("SELECT state FROM messages WHERE id=?1", [format!("{id}-queued")], |row| row.get::<_, String>(0)).unwrap(), "cancelled");
-        }
-    }
-}
-
-#[test]
 fn todo_first_snapshot_save_excludes_initial_link_enrollment_until_json_is_durable() {
     let fixture = Fixture::new();
     let project = fixture.root.join("project");

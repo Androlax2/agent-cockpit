@@ -64,7 +64,7 @@ pub(crate) fn workers(registry: &mut Registry) -> Result<Vec<WorkerState>, TeamE
 }
 
 fn workers_at(registry: &mut Registry, now: i64, observe: bool) -> Result<Vec<WorkerState>, TeamError> {
-    let live = if observe {teams::live_sessions(registry)?} else {teams::review_sessions(registry)?};
+    let live = teams::live_sessions(registry)?;
     let gaming = registry.system.gaming();
     let connection = registry.teams.as_ref().expect("live_sessions opens the protected store");
     let workers = live.into_iter().map(|session| {
@@ -73,7 +73,6 @@ fn workers_at(registry: &mut Registry, now: i64, observe: bool) -> Result<Vec<Wo
         if teams::sleep_operation_is_live(&session.session_id)? || cockpit::teams::store::sleep::paused(connection, &session.session_id)? {
             blocked_by.push("host_sleep_in_progress".into());
         }
-        if role.is_none() { blocked_by.push("host_role_unbound".into()); }
         if session.agent != "opencode" {
             blocked_by.push("native_admission_unverified_for_adapter".into());
         } else if !store::admission_verified(connection, &session)? {
@@ -143,18 +142,6 @@ pub fn request(registry: &mut Registry, peer: u32, request: ChiefAgentAction) ->
     let live = workers(registry)?;
     let sessions = live.iter().map(|worker| worker.session.clone()).collect::<Vec<_>>();
     let sender = teams::verified_sender(registry, peer, &sessions)?;
-    if let ChiefAgentAction::ProposeWork { submission_key, proposal } = &request {
-        let validation = request.validate().and_then(|_| {
-            for task in std::iter::once(&proposal.task).chain(proposal.prerequisites.iter().map(|work|&work.task)) {
-                let canonical = task.project.strip_prefix("path:").map(teams::canonical_project).transpose()?;
-                if canonical.as_deref() != Some(task.project.as_str()) {
-                    return Err(TeamError::new(ErrorCode::Invalid,"work proposals require canonical host project identities"));
-                }
-            }
-            Ok(())
-        });
-        if let Err(error) = validation { return Ok(TeamReply {request_id:submission_key.clone(),result:Err(error)}); }
-    }
     store::agent(registry.teams.as_mut().expect("opened above"), &sender, &request, &live, teams::now_ms())
 }
 
@@ -172,16 +159,6 @@ pub fn host(registry: &mut Registry, action: &ChiefHostAction) -> Result<TeamRep
             }
             if !verified { return Ok(TeamReply { request_id:request_id.clone(), result:Err(TeamError::new(
                 cockpit::teams::ErrorCode::Unavailable,"host live OpenCode draft/queue verification is required before chief activation")) }); }
-        }
-    }
-    // Work may belong to a project without a running session, but must still name its real host path.
-    if let ChiefHostAction::ApproveWork { request_id, brief, .. } = action {
-        for work in std::iter::once(&brief.work).chain(brief.prerequisites.iter()) {
-            let canonical = work.task.project.strip_prefix("path:").map(teams::canonical_project).transpose()?;
-            if canonical.as_deref() != Some(work.task.project.as_str()) {
-                return Ok(TeamReply { request_id: request_id.clone(),
-                    result: Err(cockpit::teams::TeamError::new(cockpit::teams::ErrorCode::Invalid, "chief work requires a canonical host project")) });
-            }
         }
     }
     store::host(registry.teams.as_mut().expect("opened above"), action, &live, teams::now_ms())
@@ -231,7 +208,7 @@ pub fn tick(registry: &mut Registry, now_ms: i64) -> Result<(), TeamError> {
     for decision in pending {
         // Durable pending attention survives restarts; presentation history only deduplicates this daemon.
         if registry.chief_attention_presentations.contains_key(&decision) {continue;}
-        registry.banners.raise_notice(&crate::registry::Notice {id:format!("chief-decision-{decision}"),title:"Chief · host decision needed".into(),message:"Review the protected chief decisions. No evidence or permission has been granted.".into()});
+        registry.banners.raise_notice(&crate::registry::Notice {id:format!("chief-decision-{decision}"),title:"Chief · host decision needed".into(),message:"Review the protected chief decisions. No permission has been granted.".into()});
         registry.chief_attention_presentations.insert(decision.clone(),true);
         connection.execute("UPDATE chief_attention SET notified_at=coalesce(notified_at,?2) WHERE decision=?1",(decision.as_str(),now_ms))?;
     }

@@ -354,23 +354,21 @@ fn a_finished_codex_turn_without_team_messages_stays_idle() {
 }
 
 #[test]
-fn chief_envelopes_reuse_codex_turn_boundary_continuation_and_receipts() {
-    for kind in ["chief_assignment", "chief_coordinate"] {
-        let sandbox = Sandbox::new();
-        let _reports = common::sandbox::ReportSocket::start(&sandbox.runtime.join("claude-report/osd-report.sock"), "ok");
-        let requests = sandbox.team_socket(json!({"dispatch_id": "chief_d1", "message_id": "assignment1",
-            "text": "Chief collaborator; approved scope only", "envelope": {"kind": kind}}));
-        let output = stop_hook(&sandbox);
-        assert!(output.status.success());
-        let printed: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-        assert_eq!(printed["decision"], "block");
-        assert_eq!(printed["reason"], "Chief collaborator; approved scope only");
-        let requests = requests.lock().unwrap();
-        let receipts = requests.iter().filter(|request| request["action"] == "receipt").collect::<Vec<_>>();
-        assert_eq!(receipts.len(), 1);
-        assert_eq!(receipts[0]["dispatch_id"], "chief_d1");
-        assert_eq!(receipts[0]["outcome"]["native_id"], "codex-stop:chief_d1");
-    }
+fn a_chief_wake_reuses_codex_turn_boundary_continuation_and_receipts() {
+    let sandbox = Sandbox::new();
+    let _reports = common::sandbox::ReportSocket::start(&sandbox.runtime.join("claude-report/osd-report.sock"), "ok");
+    let requests = sandbox.team_socket(json!({"dispatch_id": "chief_d1", "message_id": "wake1",
+        "text": "Chief collaborator; wake only", "envelope": {"kind": "chief_wake"}}));
+    let output = stop_hook(&sandbox);
+    assert!(output.status.success());
+    let printed: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(printed["decision"], "block");
+    assert_eq!(printed["reason"], "Chief collaborator; wake only");
+    let requests = requests.lock().unwrap();
+    let receipts = requests.iter().filter(|request| request["action"] == "receipt").collect::<Vec<_>>();
+    assert_eq!(receipts.len(), 1);
+    assert_eq!(receipts[0]["dispatch_id"], "chief_d1");
+    assert_eq!(receipts[0]["outcome"]["native_id"], "codex-stop:chief_d1");
 }
 
 #[test]
@@ -400,8 +398,8 @@ fn native_codex_link_delivery_keeps_one_continuation_and_stable_receipt() {
 fn chief_codex_failed_continuation_output_is_uncertain_never_received() {
     let sandbox = Sandbox::new();
     let _reports = common::sandbox::ReportSocket::start(&sandbox.runtime.join("claude-report/osd-report.sock"), "ok");
-    let requests = sandbox.team_socket(json!({"dispatch_id":"chief_failed", "message_id":"assignment1", "text":"approved task",
-        "envelope":{"kind":"chief_assignment"}}));
+    let requests = sandbox.team_socket(json!({"dispatch_id":"chief_failed", "message_id":"wake1", "text":"chief wake",
+        "envelope":{"kind":"chief_wake"}}));
     let full = std::fs::OpenOptions::new().write(true).open("/dev/full").unwrap();
     let mut child = sandbox.command(env!("CARGO_BIN_EXE_cockpit-codex-hook"), &[])
         .stdin(Stdio::piped()).stdout(Stdio::from(full)).stderr(Stdio::piped()).spawn().unwrap();

@@ -633,7 +633,7 @@ impl Fixture {
             let request: crate::teams::HostRequest = serde_json::from_str(&text).unwrap();
             crate::chief::store::reconcile_todos(&mut connection, &TodoList::load(), 0).unwrap();
             let result = match request {
-                crate::teams::HostRequest::Snapshot => Ok(json!({"members":[], "chief_scheduling_owner":false,"chief_owned_work":[]})),
+                crate::teams::HostRequest::Snapshot => Ok(json!({"members":[]})),
                 crate::teams::HostRequest::ReserveManual {task_id,directory} => {
                     let task=crate::teams::TaskKey {project:format!("path:{directory}"),task_id};
                     crate::chief::store::reserve_legacy_kind(&mut connection,&task,None,true,0).map(|token|json!({"reservation":token}))
@@ -3628,10 +3628,8 @@ const TEAM_PROJECT: &str = "remote:git@github.com:example/project-a.git";
 
 /// A fake daemon on the host-only team socket: snapshots answer `snapshot`, controls take the
 /// next of `replies` (success by default). Records every request.
-fn team_host(fixture: &Fixture, mut snapshot: Value, replies: Vec<Value>) -> HostRequests {
+fn team_host(fixture: &Fixture, snapshot: Value, replies: Vec<Value>) -> HostRequests {
     use std::io::{Read, Write};
-    if snapshot.get("chief_scheduling_owner").is_none() { snapshot["chief_scheduling_owner"] = json!(false); }
-    if snapshot.get("chief_owned_work").is_none() { snapshot["chief_owned_work"] = json!([]); }
     let mut connection = rusqlite::Connection::open_in_memory().unwrap();
     crate::chief::store::migrate(&mut connection).unwrap();
     let requests = HostRequests::default();
@@ -3642,12 +3640,9 @@ fn team_host(fixture: &Fixture, mut snapshot: Value, replies: Vec<Value>) -> Hos
         let _ = stream.read_to_string(&mut text);
         let request: Value = serde_json::from_str(&text).unwrap();
         let result = if request["request"] == "snapshot" { json!({"Ok": snapshot}) }
-                      else if snapshot["chief_scheduling_owner"] == true && matches!(request["request"].as_str(), Some("reserve_task" | "reserve_resume")) {
-                          json!({"Err":{"code":"conflict", "message":"chief owns scheduling"}})
-                      }
-                      else if request["request"] == "reserve_task" {
+                      else if matches!(request["request"].as_str(), Some("reserve_task" | "reserve_resume")) {
                           let task = crate::teams::TaskKey { project: format!("path:{}", request["directory"].as_str().unwrap()),
-                              task_id: request["task_id"].as_str().unwrap().into() };
+                              task_id: request["task_id"].as_str().unwrap_or("resume").into() };
                           json!(crate::chief::store::reserve_legacy(&mut connection, &task, request["worker"].as_str(), 0)
                               .map(|token| json!({"reservation": token})))
                       }
@@ -8132,7 +8127,7 @@ fn continuity_queue_view_keeps_priority_and_designer_routes_without_network_call
 fn continuity_queue_idle_boundary_is_exactly_five_minutes() {
     let fixture = Fixture::new();
     let context = crate::queue::QueueContext { now: 1000, enabled: true, gaming: false, viewed: String::new(), workspace_active: false,
-        qa_sessions: Default::default(), chief_scheduling_owner:Some(false) };
+        qa_sessions: Default::default(), host_available:true };
     for (since, remaining) in [(701, Some(1)), (700, None), (699, None)] {
         let reported = sessions::Session::from_value(&session(SESSION_A, "waiting", "runway", "/r/runway", since)).unwrap();
         assert_eq!(crate::queue::block(&reported, &context, false, false), remaining.map(|remaining| crate::queue::QueueBlock::Idle { remaining }));
@@ -8141,12 +8136,16 @@ fn continuity_queue_idle_boundary_is_exactly_five_minutes() {
 }
 
 #[test]
-fn chief_unknown_host_blocks_automatic_and_manual_handoffs() {
+fn an_unreachable_team_host_blocks_queue_sends() {
     let (fixture, mut app) = queue_fixture("waiting", 600);
     let id = app.todos.add("runway", "/r/runway", "protected queue");
     app.todos.toggle_queued(&id);
     let entry = Entry::Typed(app.todos.items.iter().find(|item| item.id() == id).unwrap().clone());
     let _ = fs::remove_file(crate::paths::team_host_socket());
+    let reported = sessions::Session::from_value(&session(SESSION_A, "waiting", "runway", "/r/runway", 1)).unwrap();
+    let context = crate::queue::QueueContext { now:util::now_secs(), enabled:true, gaming:false, viewed:String::new(),
+        workspace_active:false, qa_sessions:Default::default(), host_available:false };
+    assert_eq!(crate::queue::block(&reported, &context, false, false), Some(crate::queue::QueueBlock::HostUnavailable));
     app.dispatch_queue();
     assert_eq!(app.todos.status_of(&id), "todo");
     assert!(app.hand_to_claude(&entry, &mut FakeScreen::default()).contains("unavailable"));
@@ -8155,9 +8154,9 @@ fn chief_unknown_host_blocks_automatic_and_manual_handoffs() {
 }
 
 #[test]
-fn chief_two_sidebars_yield_both_queue_sends_and_handed_work_spawns() {
+fn an_enabled_chief_keeps_the_todo_queue_sending() {
     let fixture = Fixture::new();
-    team_host(&fixture, json!({"members":[], "chief_scheduling_owner":true, "chief_owned_work":[]}), vec![]);
+    team_host(&fixture, json!({"members":[]}), vec![]);
     fixture.snapshot(json!([session(SESSION_A, "waiting", "runway", "/r/runway", util::now_secs()-600)]));
     let mut first = fixture.app();
     first.gaming = || false;
@@ -8170,174 +8169,31 @@ fn chief_two_sidebars_yield_both_queue_sends_and_handed_work_spawns() {
     second.gaming = || false;
     first.dispatch_queue();
     second.dispatch_queue();
-    assert_eq!(first.todos.status_of(&id), "todo");
-    assert_eq!(second.todos.status_of(&handed), "todo");
-    assert!(fixture.calls("cockpit").is_empty());
+    assert_eq!(first.todos.status_of(&id), "doing");
+    assert_eq!(TodoList::load().status_of(&handed), "doing");
+    assert_eq!(fixture.wait_for_calls("cockpit", 2).len(), 2);
 }
 
 #[test]
-fn chief_projection_repairs_failed_save_and_keeps_agent_done_from_releasing_dependencies() {
-    use crate::chief::{store,ChiefHostAction,ChiefAgentAction,WorkBrief,WorkRef,WorkerState};
-    use crate::teams::{Role,VerifiedSession,TaskKey};
-    let fixture = Fixture::new();
-    let mut todos = TodoList::load();
-    let id = todos.add("runway", "/r/runway", "approved work");
-    let dependent = todos.add("runway", "/r/runway", "unapproved dependent");
-    todos.items.iter_mut().find(|item| item.id() == dependent).unwrap().0.insert("after".into(), json!([id]));
-    todos.save();
-    let mut connection = rusqlite::Connection::open(fixture.root.join("chief.sqlite")).unwrap();
-    store::migrate(&mut connection).unwrap();
-    let mut identities = [SESSION_A,SESSION_B].map(|session| VerifiedSession { session_id:session.into(),agent:"claude".into(),
-        project:"path:/r/runway".into(),runtime:format!("runtime-{session}") });
-    identities[0].session_id="ses_chiefprojection00000000000".into();
-    identities[0].agent="opencode".into();
-    // Protected-store fixture, not a claim that the Claude native adapter is dispatchable.
-    let live = identities.iter().map(|session| WorkerState { session:session.clone(),role:Some(Role::Developer),ready:true,blocked_by:vec![],observed_at_ms:1000 }).collect::<Vec<_>>();
-    store::host(&mut connection,&ChiefHostAction::Enable { request_id:"enable".into(),session:identities[0].clone() },&live,1000).unwrap().result.unwrap();
-    store::host(&mut connection,&ChiefHostAction::BindWorker { request_id:"bind".into(),session:identities[1].clone(),role:Role::Developer,expected_epoch:None },&live,1000).unwrap().result.unwrap();
-    let brief = WorkBrief { work:WorkRef { task:TaskKey { project:"path:/r/runway".into(),task_id:id.clone() },revision:1 },
-        brief:"approved scope".into(),role:Role::Developer,prerequisites:vec![],gates:vec![] };
-    store::host(&mut connection,&ChiefHostAction::ApproveWork { request_id:"approve".into(),approval_hash:brief.approval_hash().unwrap(),brief:brief.clone(),expected_revision:0 },&live,1000).unwrap().result.unwrap();
-    store::verify_admission(&mut connection,&identities[0],"opencode-queued-v1","Controlled native-admission fixture; not live support proof",1000).unwrap();
-    store::observe(&mut connection,&live,1000).unwrap();
-    let bootstrap = store::claim(&mut connection,&identities[0],"projection-bootstrap",1000).unwrap().unwrap();
-    store::finish_for(&mut connection,&identities[0],&bootstrap.id,&crate::teams::TransportOutcome::Received {native_id:"projection-native".into()},1000).unwrap();
-    let dispatch = ChiefAgentAction::Dispatch { submission_key:"claim-before-json".into(),work:brief.work,worker:SESSION_B.into() };
-    let claim = store::agent(&mut connection,&identities[0],&dispatch,&live,1000).unwrap().result.unwrap();
-    let backup = fixture.root.join("todo-before-projection.json");
-    fs::rename(crate::paths::todo(),&backup).unwrap();
-    fs::create_dir(crate::paths::todo()).unwrap();
-    assert!(todos.project_chief(&store::owned_work(&connection).unwrap()).is_err());
-    fs::remove_dir(crate::paths::todo()).unwrap();
-    fs::rename(backup,crate::paths::todo()).unwrap();
-    drop(connection);
-    let mut connection = rusqlite::Connection::open(fixture.root.join("chief.sqlite")).unwrap();
-    store::recover(&mut connection,1000).unwrap();
-    let mut restarted = TodoList::load();
-    restarted.project_chief(&store::owned_work(&connection).unwrap()).unwrap();
-    assert_eq!(restarted.items.iter().find(|item| item.id() == id).unwrap().session(),SESSION_B);
-    assert!(!restarted.set_status(&id,"done",SESSION_B));
-    assert!(restarted.items.iter().find(|item| item.id() == dependent).unwrap().is_waiting());
-    assert_eq!(store::agent(&mut connection,&identities[0],&dispatch,&live,1000).unwrap().result.unwrap(),claim);
-    assert_eq!(connection.query_row("SELECT count(*) FROM chief_assignments",[],|row|row.get::<_,i64>(0)).unwrap(),1);
-    assert!(fixture.calls("cockpit").is_empty());
-}
-
-#[test]
-fn chief_projection_and_stale_sidebar_save_do_not_overwrite_other_todo_edits() {
+fn a_todo_with_a_leftover_chief_assignment_field_can_change_status() {
     let _fixture = Fixture::new();
-    let mut first = TodoList::load();
-    let id = first.add("runway", "/r/runway", "first");
-    let mut stale = TodoList::load();
-    let other = first.add("runway", "/r/runway", "new from another sidebar");
-    stale.edit(&id, "edited", "notes");
-    let saved = TodoList::load();
-    assert_eq!(saved.items.iter().find(|item| item.id() == id).unwrap().text(), "edited");
-    assert!(saved.items.iter().any(|item| item.id() == other));
-}
-
-fn chief_status_fixture(fixture: &Fixture) -> (TodoList,String,String) {
-    fixture.snapshot(json!([session(SESSION_B,"waiting","source",fixture.root.to_str().unwrap(),1)]));
     let mut todos = TodoList::load();
-    let id = todos.add("runway",fixture.root.to_str().unwrap(),"chief work");
-    let dependent = todos.add("runway",fixture.root.to_str().unwrap(),"dependent");
-    let item = todos.items.iter_mut().find(|item|item.id()==id).unwrap();
-    item.0.insert("link".into(),json!("source"));
-    item.0.insert("reporter_session".into(),json!(SESSION_B));
-    item.0.insert("started_in".into(),json!(fixture.root));
-    todos.items.iter_mut().find(|item|item.id()==dependent).unwrap().0.insert("after".into(),json!([id]));
+    let id = todos.add("runway", "/r/runway", "old chief work");
+    todos.items.iter_mut().find(|item| item.id() == id).unwrap().0.insert("chief_assignment".into(), json!("x"));
     todos.save();
-    (todos,id,dependent)
+    assert!(TodoList::load().items.iter().all(|item| !item.0.contains_key("chief_assignment")), "loading drops the removed field");
+    assert!(todos.set_status(&id, "done", SESSION_A));
+    assert_eq!(TodoList::load().status_of(&id), "done");
 }
 
 #[test]
-fn chief_interleaved_projection_refuses_agent_done_before_any_completion_side_effect() {
-    use std::sync::{Arc,Barrier};
+fn an_enabled_chief_allows_archived_resume() {
     let fixture = Fixture::new();
-    let (mut stale,id,dependent) = chief_status_fixture(&fixture);
-    let path = crate::paths::todo();
-    let writer = crate::todo::lock_mutations().unwrap();
-    let barrier = Arc::new(Barrier::new(2));
-    let entering = barrier.clone();
-    let task = id.clone();
-    let agent = std::thread::spawn(move || {
-        entering.wait();
-        stale.set_status(&task,"done",SESSION_A)
-    });
-    barrier.wait();
-    // Let the competing done operation reach the held writer lock. The old code emitted a prompt here.
-    for _ in 0..100 {
-        if crate::prompts::count(SESSION_B)>0 { break; }
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    let premature_prompts = crate::prompts::count(SESSION_B);
-    // The other writer persists a protected host projection while holding the production writer lock.
-    let mut projected:Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-    let item = projected["items"].as_array_mut().unwrap().iter_mut().find(|item|item["id"]==id).unwrap();
-    item["status"] = json!("doing"); item["session"] = json!(SESSION_A); item["chief_assignment"] = json!("interleaved-claim");
-    crate::util::write_json(&path,&projected).unwrap();
-    drop(writer);
-    assert!(!agent.join().unwrap());
-    assert_eq!(premature_prompts,0);
-    assert_eq!(crate::prompts::count(SESSION_B),0);
-    let saved = TodoList::load();
-    assert_eq!(saved.status_of(&id),"doing");
-    let waiting = saved.items.iter().find(|item|item.id()==dependent).unwrap();
-    assert_eq!(waiting.after(),[id]); assert!(waiting.inputs().is_empty()); assert!(!saved.is_queued(&dependent));
-}
-
-#[test]
-fn chief_failed_projection_keeps_its_in_memory_ownership_before_agent_done() {
-    let fixture = Fixture::new();
-    let (mut todos,id,dependent) = chief_status_fixture(&fixture);
-    let path = crate::paths::todo();
-    let backup = fixture.root.join("unprojected.json");
-    fs::rename(&path,&backup).unwrap(); fs::create_dir(&path).unwrap();
-    assert!(todos.project_chief(&[json!({"task_id":id,"assignment":"unsaved-claim","worker":SESSION_A})]).is_err());
-    assert!(!todos.set_status(&id,"done",SESSION_A));
-    fs::remove_dir(&path).unwrap(); fs::rename(backup,&path).unwrap();
-    // Restoring an older disk image must not erase the assignment already learned in memory.
-    assert!(!todos.set_status(&id,"done",SESSION_A));
-    assert_eq!(todos.status_of(&id),"doing");
-    assert!(todos.items.iter().find(|item|item.id()==dependent).unwrap().is_waiting());
-    assert_eq!(crate::prompts::count(SESSION_B),0);
-    let saved = TodoList::load();
-    assert_eq!(saved.status_of(&id),"todo");
-    assert!(saved.items.iter().find(|item|item.id()==dependent).unwrap().is_waiting());
-}
-
-#[test]
-fn chief_unknown_disk_ownership_refuses_done_without_notifications_or_dependency_release() {
-    for mode in ["missing","malformed","unreadable","removed-item"] {
-        let fixture = Fixture::new();
-        let (mut todos,id,dependent) = chief_status_fixture(&fixture);
-        let path = crate::paths::todo();
-        fs::remove_file(&path).unwrap();
-        match mode {
-            "malformed" => fs::write(&path,b"not JSON").unwrap(),
-            "unreadable" => fs::create_dir(&path).unwrap(),
-            "removed-item" => {
-                fs::write(&path,json!({"items":[],"issues":{}}).to_string()).unwrap();
-                todos.set_result(&id,"agent summary must not resurrect an unknown source");
-            },
-            _ => {},
-        }
-        assert!(!todos.set_status(&id,"done",SESSION_A),"{mode}");
-        assert_eq!(todos.status_of(&id),"todo");
-        assert!(todos.items.iter().find(|item|item.id()==dependent).unwrap().is_waiting());
-        assert_eq!(crate::prompts::count(SESSION_B),0);
-    }
-}
-
-#[test]
-fn chief_archived_resume_cannot_bypass_the_scheduling_owner() {
-    let fixture = Fixture::new();
-    team_host(&fixture, json!({"members":[], "chief_scheduling_owner":true,"chief_owned_work":[]}), vec![]);
+    team_host(&fixture, json!({"members":[]}), vec![]);
     fixture.write("home/.claude/history.jsonl", &json!({"sessionId":SESSION_A,"project":"/r/runway","timestamp":1000,"display":"archived"}).to_string());
     let mut app = fixture.app();
     app.handle(Key::Char('H'), &mut FakeScreen::typing(&["0"]));
-    assert!(app.message.contains("chief owns"), "{}", app.message);
-    assert!(fixture.calls("cockpit").is_empty());
+    assert_eq!(fixture.wait_for_calls("cockpit", 1), [format!("cockpit resume /r/runway {SESSION_A}")]);
 }
 
 #[test]

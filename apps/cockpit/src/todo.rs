@@ -483,7 +483,7 @@ fn merge_todos(original: &Value, current: &Value, latest: &Value) -> Value {
         }
     }
     for key in previous.keys().filter(|key| !edited.contains_key(*key)) {
-        if items.get(key).is_none_or(|item| item.get("chief_assignment").is_none()) { items.remove(key); }
+        items.remove(key);
     }
     let mut merged = merge_fields(original, current, latest);
     let mut ordered = Vec::new();
@@ -558,6 +558,7 @@ impl TodoList {
         for item in data.get("items").and_then(Value::as_array).into_iter().flatten() {
             let Some(object) = item.as_object() else { continue };
             let mut object = object.clone();
+            object.remove("chief_assignment");
             let valid = object.get("text").and_then(Value::as_str).is_some_and(|text| !text.is_empty())
                 && object.get("id").and_then(Value::as_str).is_some_and(|id| typed_id().is_match(id));
             if !valid {
@@ -715,46 +716,6 @@ impl TodoList {
     fn encoded(&self) -> Value {
         json!({"items":self.items.iter().map(|item| Value::Object(item.0.clone())).collect::<Vec<_>>(),
             "issues":self.issues,"queued":self.queued,"declined":self.declined})
-    }
-
-    /// Only the authenticated host snapshot supplies this projection. Never creates missing tasks.
-    pub fn project_chief(&mut self, work: &[Value]) -> std::io::Result<()> {
-        let initial = self.can_initialize();
-        // Remember host ownership even if locking, reading or persisting the projection fails.
-        self.apply_chief_projection(work);
-        let guard = lock_mutations()?;
-        let mut projected = Self::from_data(Self::read_for_update(initial)?);
-        for claim in work.iter().filter(|claim| claim["status"] == "done"
-            && claim["assignment"].is_string() && claim["worker"].is_string()) {
-            if let Some(item) = projected.items.iter().find(|item| Some(item.id().as_str()) == claim["task_id"].as_str() && item.status() != "done") {
-                invalidate_item(item, "done", &guard).map_err(std::io::Error::other)?;
-            }
-        }
-        let changed = projected.apply_chief_projection(work);
-        if changed || !paths::todo().is_file() { projected.save_guarded(&guard)?; }
-        *self = projected;
-        Ok(())
-    }
-
-    fn apply_chief_projection(&mut self, work: &[Value]) -> bool {
-        let mut changed = false;
-        for claim in work {
-            let Some(key) = claim["task_id"].as_str() else { continue };
-            let Some(assignment) = claim["assignment"].as_str() else { continue };
-            let Some(worker) = claim["worker"].as_str() else { continue };
-            let fields = if issue_key().is_match(key) {
-                self.issues.entry(key.to_string()).or_insert(json!({})).as_object_mut()
-            } else { self.items.iter_mut().find(|item| item.id() == key).map(|item| &mut item.0) };
-            let Some(fields) = fields else { continue };
-            let status = if claim["status"] == "done" { "done" } else { "doing" };
-            if fields.get("status").and_then(Value::as_str) != Some(status) {
-                fields.insert("updated".into(), json!(now_secs()));
-            }
-            for (field, value) in [("status",json!(status)), ("session",json!(worker)), ("chief_assignment",json!(assignment))] {
-                if fields.get(field) != Some(&value) { fields.insert(field.into(),value); changed = true; }
-            }
-        }
-        changed
     }
 
     pub(crate) fn save_editor(&mut self, draft: &crate::todo_editor::Draft, title: &str, notes: &str) -> std::io::Result<()> {
@@ -927,7 +888,7 @@ impl TodoList {
 
     /// Status of a typed item (its id) or an issue ("owner/repo#12"); false when unknown.
     pub fn set_status(&mut self, key: &str, status: &str, session: &str) -> bool {
-        if !STATUSES.contains(&status) || self.chief_controls(key) { return false; }
+        if !STATUSES.contains(&status) { return false; }
         let result = (|| -> std::io::Result<bool> {
             let guard = lock_mutations()?;
             let initial = self.can_initialize();
@@ -943,7 +904,6 @@ impl TodoList {
                 }
             };
             let disk = Self::from_data(latest.clone());
-            if disk.chief_controls(key) { return Ok(false); }
             if issue_key().is_match(key) {
                 if self.issues.contains_key(key) && !disk.issues.contains_key(key) { return Ok(false); }
             } else if !disk.items.iter().any(|item|item.id()==key) { return Ok(false); }
@@ -986,11 +946,6 @@ impl TodoList {
             Ok(true)
         })();
         result.unwrap_or_else(|error| { util::log_event("WARN",&format!("cannot safely change todo {key} status: {error}")); false })
-    }
-
-    fn chief_controls(&self, key: &str) -> bool {
-        self.items.iter().any(|item|item.id()==key && item.0.contains_key("chief_assignment"))
-            || self.issues.get(key).is_some_and(|issue|issue.get("chief_assignment").is_some())
     }
 
     /// What a session says it did, kept on the item for whoever waited on it.

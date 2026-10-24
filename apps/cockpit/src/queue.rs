@@ -14,12 +14,12 @@ pub struct QueueContext {
     pub viewed: String,
     pub workspace_active: bool,
     pub qa_sessions: HashSet<String>,
-    pub chief_scheduling_owner: Option<bool>,
+    pub host_available: bool,
 }
 
 #[derive(Debug, PartialEq)]
 pub enum QueueBlock {
-    ChiefOwned, OwnershipUnknown,
+    HostUnavailable,
     Disabled, Gaming, External, Terminal, Qa, MissingDirectory, Unknown, Working,
     NeedsInput, CommandRunning, Busy, PendingMessage, Viewed, Idle { remaining: i64 },
 }
@@ -27,8 +27,7 @@ pub enum QueueBlock {
 impl fmt::Display for QueueBlock {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::ChiefOwned => formatter.write_str("chief owns scheduling"),
-            Self::OwnershipUnknown => formatter.write_str("scheduling ownership unavailable"),
+            Self::HostUnavailable => formatter.write_str("team host unavailable"),
             Self::Disabled => formatter.write_str("queue disabled"),
             Self::Gaming => formatter.write_str("paused while gaming"),
             Self::External => formatter.write_str("no terminal target"),
@@ -50,11 +49,7 @@ impl fmt::Display for QueueBlock {
 pub fn block(session: &Session, context: &QueueContext, busy: bool, has_pending_message: bool) -> Option<QueueBlock> {
     if !context.enabled { return Some(QueueBlock::Disabled); }
     if context.gaming { return Some(QueueBlock::Gaming); }
-    match context.chief_scheduling_owner {
-        Some(false) => {},
-        Some(true) => return Some(QueueBlock::ChiefOwned),
-        None => return Some(QueueBlock::OwnershipUnknown),
-    }
+    if !context.host_available { return Some(QueueBlock::HostUnavailable); }
     if session.is_external() { return Some(QueueBlock::External); }
     if session.terminal { return Some(QueueBlock::Terminal); }
     if context.qa_sessions.contains(&session.session) { return Some(QueueBlock::Qa); }

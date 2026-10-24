@@ -178,193 +178,72 @@ Sessions of one repository (parallel clones included) that you link to one task 
 - **Authority**: a team message is collaborator content, labelled as such. It never approves tool use, scope changes, installs, permissions, Git writes, merges or releases; those still need you, as before. Sessions reach the team service only through a socket hard-linked into their own project's read-only answers folder; the daemon identifies the sender from the kernel and its launcher, never from what it claims. Your controls go through a second socket no sandbox can reach.
 - The cards show `team <role> · <task>`, and the Sessions summary says when the team needs you. Not yet: waking a Codex session that is already idle (it gets messages when its next turn ends).
 
-## Global dispatcher Chief
+## Global Chief
 
-**Off by default. Keep it off until reviewed host application and live OpenCode
-queue/draft verification pass.** Source tests use controlled transports and proof
-fixtures; they do not establish live support. Chief coordinates already-running
-agents across projects, not product implementation, new agent launches or host commands.
+**Off by default.** The Chief is one OpenCode session you pick, working for all projects.
+It reads a bounded view of what your running agents are doing and reports back to you.
+It does not start work, hand out todos, approve anything or run host commands: the todo
+queue keeps starting work, with or without the Chief. The next step, answering agents that
+stop to ask a question, is planned: see the
+[design](docs/superpowers/specs/2026-10-24-autonomous-chief-design.md).
 
-### Controls and approved work
+### Turning it on and off
 
-Open `:` → **chief**. Its root has **Decisions**, **Work**, **Workers and roles**,
-**Chief controls**, and **Request summary**. Use arrows or `j`/`k`, Enter to inspect,
-Esc to go back, and Page Up/Down to read long records.
+Open `:` → **chief**. The root has **Decisions**, **Workers**, **Chief controls** and
+**Request summary**. Arrows or `j`/`k` move, Enter inspects, Esc goes back, Page Up/Down
+read long records.
 
-- **Chief controls → Select chief** reviews an exact live, standalone session and
-  runtime. Enter opens a separate confirmation; only `y` submits. It does not
-  start an agent. Enable refuses activation without recorded host live queued-
-  admission verification. The chief cannot also be a product worker/team member.
-- **Workers and roles → worker → Bind role** binds a standalone Designer,
-  Developer or QA to an exact runtime; existing approved team roles still apply.
-  Selection and role binding are **not admission verification or readiness**.
-- **Work → Awaiting approval** lists immutable agent proposals. Space selects
-  exact revisions; Enter inspects; `a` reviews the selected bounded backlog.
-  Read the full briefs, prerequisite revisions and gates, then Enter and `y` to
-  approve. Changed records invalidate review. A batch consists of independent
-  requests: successful earlier approvals remain if a later one fails; remaining
-  actions are shown unsent, never silently retried.
-- **Work → Approved → work** offers Revoke and Evidence. Evidence shows required
-  gates and accepted records; Import selects an existing protected source, not a
-  caller-supplied result/path. Attest is available only for an already-approved
-  `host_attestation` gate, with a note, separate unchecked assertion and confirmation.
-- **Decisions → decision** offers Resolve with note and, for an uncertain/blocked
-  assignment, Recovery. A note or resolution grants no tool, scope or execution
-  permission. Recovery requires exact revision-bound confirmation that the work
-  was handled, or that the old worker is stopped and cannot execute it.
+- **Chief controls → Select chief** lists the live standalone sessions. Enter opens a
+  separate confirmation; only `y` enables. It does not start an agent, and the session
+  cannot also be a team member.
+- **Pause chief** stops new Chief actions and wake-ups; **Resume chief** revalidates the
+  exact session first. **Disable chief** revokes its access and cancels unsent Chief
+  messages. None of them touches your agents, teams or the todo queue.
+- **Readiness**: only an OpenCode session whose native queued inbox the host has verified
+  for that exact runtime can be woken (Claude and Codex stay watch-only). **Workers** shows
+  each session and why it is, or is not, ready (busy, stale observation, sleeping, queued
+  admission not verified). Unknown or stale facts count as not ready, and a stale Chief shows
+  as **Unavailable** while its grant is kept. There is no replacement or fallback Chief.
 
-Todo existence, priority, queue status, agent text and a worker's “done” are not
-work authorization. Approval binds the whole brief/hash, role, exact prerequisite
-revisions and gate expectations. Edits require new approval and invalidate affected
-dependents; the chief cannot waive gates or widen scope. Inapplicable gates must be
-decided as part of that exact approval, not inferred from missing evidence.
+### What the Chief does
 
-### Preparing proposals with the existing CLI
+- **Wake-ups.** When something material changes (a worker becomes available or blocked, a
+  decision you answered, a requested summary) the daemon sends the Chief one short message
+  through OpenCode's native queued inbox. It queues behind a running turn and never types
+  into a draft. Wake-ups are at least 30 seconds apart; progress and idle status never
+  trigger one. The receipt only proves the message was admitted.
+- **Context.** `cockpit-team chief` accepts the Chief's JSON requests from inside its
+  session. `context` returns at most 50 records per page, with a cursor, about the workers
+  and recent events. The Chief only reads: it has no tool, scope or permission grants, and
+  at most 20 actions per admitted turn.
+- **Status.** A `status` request records a short, unverified status line among the Chief's events.
+- **Decisions.** A `decision` request (a key, a question, a recommendation) asks you
+  something. Repeating the same key updates the open decision instead of adding another.
+  Up to 100 can be open. Only decisions notify you.
+- **Summaries.** **Request summary** asks the Chief once for a completed / active /
+  decisions / idle summary, sent back with `summary_response`. It waits up to 15 minutes
+  for admission and 2 minutes for the answer after that; a timeout keeps the previous
+  result. There is no automatic summary stream.
 
-Inside a verified session, `cockpit-team chief` accepts the tagged agent request
-below. Replace the example canonical **primary project path**, task id and full
-reviewed commit before submitting; the repeated `1` commit is only sample data.
-Project identity is `path:<canonical host path>`, not a display name or clone path.
-Task ids are eight lowercase hex todo ids or `owner/repository#number` issues.
+### Decisions and recovery
 
-```json
-{
-  "action": "chief",
-  "request": {
-    "action": "propose_work",
-    "submission_key": "app-work-1",
-    "proposal": {
-      "task": {"project": "path:/home/theo/IdeaProjects/app", "task_id": "example/app#8"},
-      "brief": "Implement only the agreed bounded change; no installs or deployment.",
-      "role": "developer",
-      "prerequisites": [],
-      "gates": [{
-        "kind": "tests",
-        "source": "host_attestation",
-        "expected": {"commit": "1111111111111111111111111111111111111111"}
-      }]
-    }
-  }
-}
-```
+**Decisions → a decision** shows the Chief's question and recommendation, labelled as
+untrusted narrative, and lets you **Resolve** it with a note. A note grants nothing: no
+tool, scope or execution permission, and it answers no permission prompt. Decisions that
+cannot be reached or delivered appear here too.
 
-```bash
-cockpit-team chief < proposal.json > proposal-result.json
-```
+A wake-up whose delivery is uncertain (the host cannot tell whether OpenCode admitted it)
+is never resent. It shows as a decision to reconcile for the exact message: "handled", or
+"stopped", after a separate confirmation. Neither opens a Chief turn, and no further wake-ups
+are sent until the Chief is disabled and enabled again. The same applies to a legacy launch whose outcome
+is unknown: it keeps its task reserved until you settle that exact launch.
 
-The daemon supplies `brief.work.revision`, `approval_hash`, authenticated sender
-and `agent_proposal_not_authority` provenance. Ordinary workers propose only within
-their own project; the selected, natively admitted chief can prepare cross-project
-work/dependencies. A prerequisite is `{"task":{"project":"path:…","task_id":"…"},"revision":1}`
-and must name a currently approved revision. There is no implicit “approve all queued
-todos” command. Prefer the Chief view for host review/approval of the exact records.
-
-For host-side scripting, the existing `cockpit-team chief-host` takes a separate
-host request. For example, with `jq`, prepare—not automatically approve—the returned
-exact proposal:
-
-```bash
-jq '{request:"chief", action:{action:"approve_work", request_id:"approve-app-1",
-  brief:.brief, approval_hash:.approval_hash,
-  expected_revision:(.brief.work.revision-1)}}' proposal-result.json > approval.json
-# On the host only, after reviewing these exact fields against the protected proposal:
-cockpit-team chief-host < approval.json
-```
-
-Host review can be read with
-`printf '%s\n' '{"request":"chief_snapshot","after":0,"limit":50}' | cockpit-team chief-host`.
-Follow `next` with the returned `generation` while `has_more` is true; an invalidated
-generation requires a fresh read. Agent `chief` and host `chief-host` are separate
-authenticated routes; neither accepts an agent's claimed identity as authority.
-The review projection contains actionable records and their exact historical anchors rather
-than lifetime history. Full retained history is separately paginated through the host-only
-`chief_audit` request with the same `after`, `limit` and `generation` fields; it is never
-assembled as a prerequisite for opening consent controls.
-See [`cockpit-team --help`](apps/cockpit/src/bin/cockpit-team.rs) and the
-[wire types](apps/cockpit/src/chief.rs) for exact schemas. Reuse a request/submission
-key only with identical content; a changed payload needs a new key and fresh review.
-
-### Admission, evidence and recovery limits
-
-Only **OpenCode's native synthetic inbox with `delivery: queue`** is admitted for
-Chief scheduling, subject to live host verification for the exact runtime/adapter.
-It queues behind execution without typing into or inspecting a draft. Claude and
-Codex remain visible **monitor-only** for Chief dispatch, even with bound roles;
-their existing task-team adapters are separate. Sleeping sessions are unavailable.
-There is no generic all-app live or draft-preservation claim.
-
-The private OpenCode runtime reports raw activity and pending inbox, permission
-and form counts through runtime-authenticated IPC. The daemon derives availability;
-these reports are **not independently host-proven truth** and cannot grant scope,
-proof or readiness by assertion. Host-native observations use a separate host-only
-route. Unknown/stale facts fail closed. Both native availability and host focus facts
-expire after 30 seconds; the five-minute host idle guard, role/runtime/ownership,
-pending human messages/approvals, viewed-session, gaming and sleep checks still apply.
-Human input takes precedence; an execution race queues natively, never types over input.
-
-Completion requires every approved gate for the exact revision/commit:
-
-- `host_run` Tests bind the exact command SHA-256, protected reviewed checkout,
-  unchanged before/after identity and host-observed exit status. Use the existing
-  `ask-to-run --evidence '{"assignment":"<assignment-id>","gate":"tests"}' --cwd
-  <protected-reviewed-checkout> --why '…' '<exact-approved-command>'` approval.
-  Reviewed patch correspondence must already be recorded. Supported protected
-  running copies are `~/dotfiles`, `~/agent-cockpit` and `~/vitals`; ordinary sandbox
-  output, arbitrary CI logs and other checkout paths are not generic verified proof.
-- `qa` is a structured `cockpit-team qa-result` from the current approved QA runtime
-  for the current Developer handoff/commit. It is an **approved reviewer attestation**,
-  not independently observed command execution. Free-text findings/tests are not proof.
-- `reviewed_apply` comes from `cockpit apply <clone> <assignment-id>` through the
-  existing displayed Apply approval. It records reviewed patch identity, source-to-live
-  commit correspondence and successful installation, not merely successful `git am`
-  or a Todo trailer. Failed installation does not complete the work.
-- `host_attestation` is Theo's explicit attestation of the exact approved gate,
-  result and commit, not a fallback for another source. Unsupported/missing evidence
-  needs one host decision or revised exact approval, not fabricated execution proof.
-
-Protected sources survive daemon restart and are replayed idempotently. A native
-receipt only confirms admission; worker Accept only confirms ownership. Neither
-completes work. Recorded completion releases dependencies; worker ownership releases
-only after a later fresh safe-idle observation. Changed revision, superseded QA,
-failed evidence or revoked prerequisites block/invalidate dependent work.
-
-The host-owned SQLite ledger (`~/.local/state/claude-audit/teams.sqlite`, hidden from
-sandboxes) permits one open owner per task and worker. Restarts retain queued work;
-a crash after a possible submission is **uncertain**, never blindly resent/reassigned.
-Chief bootstrap also needs a native receipt before mutations are allowed; an uncertain
-wake closes its allowance and requires host review. Explicit non-submission retries
-are bounded (2, 10, 30 seconds). Limits include 256 active work items, 100 open decisions,
-50 records per context page and 20 mutations per admitted chief turn, with at least
-30 seconds between material-work wakes. Progress/idle status cannot create a wake loop.
-
-Only actionable host decisions notify; repeated blockers share one decision rather
-than flooding alerts. **Request summary** explicitly asks once; its narrative and
-unverified references stay labelled, and Enter in the result never regenerates it.
-There is no automatic progress-summary stream. Unanswered decisions can reappear
-after daemon restart under the same identity; recording evidence does not answer them.
-Summary requests wait at most 15 minutes for native admission, including the five-minute idle
-guard. Their two-minute response deadline starts only on the exact native receipt. A timeout
-preserves the previous result timestamp. Changed assignment-linked worker reports reach the
-chief as bounded untrusted reports; identical reports coalesce without progress notifications.
-
-Recovery also identifies exact coordination/stop/wake messages and legacy launch tokens.
-Handled coordination retains the assignment; handled wakes do not open a chief allowance or
-retry themselves. An unknown launch stays reserved until explicit host settlement, even after
-restart. Safe stop requires a note, unchecked-to-checked assertion about that exact launch or
-recipient work, full review and separate confirmation. It never manufactures a worker identity,
-verified delivery or completion. Manual status-only reservations can be undone or deleted without
-claiming that an uncertain launch stopped.
-
-**Off** means no active grant. **Paused** stops new chief actions/wakes while workers
-continue. **Unavailable** retains a grant whose runtime/native capability is missing;
-there is no replacement, recruitment or legacy-dispatch fallback. **Unknown** means
-host state could not be read, not permission to proceed. Use **Chief controls →
-Disable chief** to revoke observation/dispatch access and cancel unsent chief messages.
-Disable/revoke never undo completed effects or kill workers; accepted work and uncertain
-ownership still need safe completion/reconciliation. Revoke requests a stop at a safe
-boundary for running work. The legacy scheduler cannot compete while Chief or an
-unresolved assignment owns scheduling. No extra mounts, credentials, host rights,
-permission bypasses, Git/merge authority or automatic agent replacement are added.
+Everything lives in the host-owned SQLite ledger (`~/.local/state/claude-audit/teams.sqlite`,
+hidden from sandboxes) and survives restarts. Upgrading clears what the earlier dispatching
+Chief left behind: its task reservations, its open work decisions and its unsent messages.
+Agent requests and your controls use two separate sockets; the daemon identifies the sender
+from the kernel, never from what it claims. See [`cockpit-team --help`](apps/cockpit/src/bin/cockpit-team.rs)
+and the [wire types](apps/cockpit/src/chief.rs) for exact schemas.
 
 ## Native Codex CLI
 

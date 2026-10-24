@@ -1,9 +1,8 @@
 #![allow(dead_code)]
 
-use cockpit::chief::{store, WorkerState, GateKind, GateRequirement, WorkBrief, WorkRef};
-use cockpit::teams::{TransportOutcome, VerifiedSession, Role, TaskKey};
+use cockpit::chief::{store, WorkerState};
+use cockpit::teams::{TransportOutcome, VerifiedSession};
 use rusqlite::Connection;
-use serde_json::json;
 
 pub fn remove_link_schema(connection: &Connection) {
     connection.execute_batch("ALTER TABLE messages DROP COLUMN link_id;
@@ -15,16 +14,6 @@ pub fn remove_link_schema(connection: &Connection) {
         DROP INDEX one_inflight_delivery;
         CREATE UNIQUE INDEX one_inflight_delivery ON messages(recipient,recipient_epoch) WHERE state='submitting';
         PRAGMA user_version=10;").unwrap();
-}
-
-pub fn work() -> WorkRef {
-    WorkRef { task: TaskKey { project: "project-a".into(), task_id: "1d3fd318".into() }, revision: 1 }
-}
-
-pub fn brief() -> WorkBrief {
-    WorkBrief { work: work(), brief: "Implement the approved dispatcher contract.".into(), role: Role::Developer,
-        prerequisites: vec![], gates: vec![GateRequirement { kind: GateKind::Tests, source: "host_run".into(),
-            expected: json!({"commit":"1111111111111111111111111111111111111111", "command_fingerprint":"1111111111111111111111111111111111111111111111111111111111111111", "cwd":"/protected/reviewed"}) }] }
 }
 
 pub fn session() -> VerifiedSession {
