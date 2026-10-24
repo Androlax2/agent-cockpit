@@ -414,12 +414,21 @@ class MobileBrowserTests(unittest.TestCase):
                 expect(self.page.locator("#chat-actions .note")).to_have_text(result)
                 self.assertIn(f"send-keys -t %4 {key}", (self.runtime / "keys").read_text())
 
-    def test_opencode_does_not_offer_claude_dialog_controls(self):
+    def test_opencode_permission_is_answered_from_the_phone(self):
         self.snapshot([{"session": SESSION, "project": "shop", "agent": "opencode",
+                        "state": "needs-you", "tmux_pane": "%4"}])
+        (self.runtime / "pane.txt").write_text("┃ △ Permission required\n┃   $ npm test\n┃   Allow once   Always allow   Reject\n")
+        self.open_detail()
+        expect(self.page.get_by_role("button", name="Remote Control: off", exact=True)).to_have_count(0)
+        self.page.get_by_role("button", name="Yes", exact=True).tap()
+        expect(self.page.locator("#chat-actions .note")).to_have_text("approved")
+        self.assertIn("send-keys -t %4 Enter", (self.runtime / "keys").read_text())
+
+    def test_codex_permission_must_be_answered_on_the_computer(self):
+        self.snapshot([{"session": SESSION, "project": "shop", "agent": "codex",
                         "state": "needs-you", "tmux_pane": "%4"}])
         self.open_detail()
         expect(self.page.get_by_role("button", name="Yes", exact=True)).to_have_count(0)
-        expect(self.page.get_by_role("button", name="Remote Control: off", exact=True)).to_have_count(0)
         expect(self.page.locator("#detail")).to_contain_text("must be answered on the computer")
 
     def test_remote_control_reaches_the_session_manager(self):

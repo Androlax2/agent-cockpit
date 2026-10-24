@@ -286,6 +286,65 @@ fn yes_is_refused_when_the_cursor_left_yes() {
     assert!(remote.keys_pressed().is_empty());
 }
 
+const OPENCODE_PERMISSION: &str = "┃ △ Permission required\n┃   $ npm test\n┃\n┃   Allow once   Always allow   Reject   enter select  esc reject\n";
+
+impl Remote {
+    fn opencode_session_showing(&self, state: &str, pane: &str) {
+        fs::write(self.sandbox.runtime.join("cockpit.json"),
+                  json!({"sessions": [{"session": OPENCODE_SESSION, "state": state, "project": "proj-a", "tmux_pane": "%4", "agent": "opencode"}]}).to_string()).unwrap();
+        fs::write(self.sandbox.runtime.join("pane.txt"), pane).unwrap();
+    }
+
+    fn answer_opencode(&self, secret: &str, is_yes: bool) -> (u16, String) {
+        let (status, _, body) = self.request("POST", &format!("/api/answer/{OPENCODE_SESSION}"), Some(secret), Some(json!({"yes": is_yes})), true);
+        (status, body)
+    }
+}
+
+#[test]
+fn yes_and_no_from_the_phone_answer_an_opencode_permission() {
+    for (is_yes, key) in [(true, "Enter"), (false, "Escape")] {
+        let remote = Remote::start();
+        let secret = remote.paired();
+        remote.opencode_session_showing("needs-you", OPENCODE_PERMISSION);
+        let (status, body) = remote.answer_opencode(&secret, is_yes);
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(remote.keys_pressed(), [format!("tmux send-keys -t %4 {key}")]);
+    }
+}
+
+#[test]
+fn no_confirms_an_opencode_subagent_rejection_without_a_reason() {
+    let remote = Remote::start();
+    let secret = remote.paired();
+    remote.opencode_session_showing("needs-you", &format!("{OPENCODE_PERMISSION}┃ △ Reject permission\n"));
+    let (status, body) = remote.answer_opencode(&secret, false);
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(remote.keys_pressed(), ["tmux send-keys -t %4 Escape", "tmux send-keys -t %4 Enter"]);
+}
+
+#[test]
+fn yes_is_refused_when_opencode_selection_shows_always_allow() {
+    let remote = Remote::start();
+    let secret = remote.paired();
+    remote.opencode_session_showing("needs-you", &format!("{OPENCODE_PERMISSION}┃   This will always allow shell for this project.\n"));
+    let (status, body) = remote.answer_opencode(&secret, true);
+    assert_eq!(status, 409, "{body}");
+    assert!(remote.keys_pressed().is_empty());
+}
+
+#[test]
+fn nothing_is_pressed_when_opencode_shows_no_permission_prompt() {
+    for (state, pane) in [("needs-you", "┃  \n"), ("waiting", OPENCODE_PERMISSION)] {
+        let remote = Remote::start();
+        let secret = remote.paired();
+        remote.opencode_session_showing(state, pane);
+        let (status, body) = remote.answer_opencode(&secret, true);
+        assert_eq!(status, 409, "{state}: {body}");
+        assert!(remote.keys_pressed().is_empty(), "{state}");
+    }
+}
+
 #[test]
 fn health_answers_without_a_phone_and_tells_nothing_else() {
     let remote = Remote::start();
@@ -379,7 +438,7 @@ fn each_card_carries_what_its_agent_can_do_and_the_agents_are_listed() {
     let cards = remote.get_json(&secret, "/api/state");
     let features = |id: &str| cards["sessions"].as_array().unwrap().iter().find(|card| card["session"] == id).unwrap()["features"].clone();
     assert!(features(SESSION_A).as_array().unwrap().contains(&json!("dialogs")), "{cards}");
-    assert_eq!(features(OPENCODE_SESSION), json!(["interrupt", "variants", "sleep"]));
+    assert_eq!(features(OPENCODE_SESSION), json!(["interrupt", "variants", "sleep", "dialogs"]));
     let agents = remote.get_json(&secret, "/api/agents");
     assert_eq!(agents, json!([{"name": "claude", "label": "Claude Code"}, {"name": "opencode", "label": "opencode"}, {"name": "codex", "label": "Codex CLI"}]));
 }
@@ -863,17 +922,17 @@ fn a_paired_phone_gets_a_code_that_pairs_its_home_screen_app_once() {
 }
 
 #[test]
-fn yes_and_no_refuse_an_opencode_session() {
+fn yes_and_no_refuse_a_codex_session() {
     // Its permission questions are not Claude's yes/no menu: Enter or Escape could pick another answer.
     for (path, state, body) in [("answer", "needs-you", json!({"yes": true}))] {
         let remote = Remote::start();
         let secret = remote.paired();
         fs::write(remote.sandbox.runtime.join("cockpit.json"),
-                  json!({"sessions": [{"session": SESSION_A, "state": state, "project": "proj-a", "tmux_pane": "%4", "agent": "opencode"}]}).to_string()).unwrap();
+                  json!({"sessions": [{"session": SESSION_A, "state": state, "project": "proj-a", "tmux_pane": "%4", "agent": "codex"}]}).to_string()).unwrap();
         fs::write(remote.sandbox.runtime.join("pane.txt"), DIALOG).unwrap();
         let (status, _, answered) = remote.request("POST", &format!("/api/{path}/{SESSION_A}"), Some(&secret), Some(body), true);
         assert_eq!(status, 409, "{path}: {answered}");
-        assert!(answered.contains("runs opencode"), "{path}: {answered}");
+        assert!(answered.contains("runs codex"), "{path}: {answered}");
         assert!(remote.keys_pressed().is_empty(), "{path}");
     }
 }

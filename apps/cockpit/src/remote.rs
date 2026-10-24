@@ -707,8 +707,11 @@ pub fn wake(id: &str) -> Result<String, String> {
 /// presses Enter only while the dialog is open with its cursor on "1. Yes"; No presses Escape,
 /// Claude's own "no".
 pub fn answer(id: &str, is_yes: bool) -> Result<String, String> {
-    require_feature(id, Feature::Dialogs, "Yes and No")?;
+    let row = require_feature(id, Feature::Dialogs, "Yes and No")?;
     let pane = session_pane(id)?;
+    if agents::get(&text(&row, "agent")).name == "opencode" {
+        return answer_opencode(&row, &pane, is_yes);
+    }
     let tail = pane_lines(&pane, 20)?;
     if pane_state(&tail) != "needs-you" {
         return Err("this session asks nothing now".into());
@@ -718,6 +721,33 @@ pub fn answer(id: &str, is_yes: bool) -> Result<String, String> {
     }
     press(&pane, if is_yes { "Enter" } else { "Escape" })?;
     audit::record("remote", "remote.answer", if is_yes { "yes" } else { "no" }, json!({"session": id}));
+    Ok(if is_yes { "approved".into() } else { "declined".into() })
+}
+
+/// opencode 2's "Permission required" prompt: its selection starts on "Allow once", Enter picks the
+/// selected option and Escape rejects. Its selected option shows only by colour, so Yes is refused
+/// when the "Always allow" explanation is on screen; a selection moved to Reject makes Yes a reject,
+/// never a wider grant. A subagent's reject asks for an optional reason first: Enter sends none.
+fn answer_opencode(row: &Value, pane: &str, is_yes: bool) -> Result<String, String> {
+    let id = text(row, "session");
+    let is_dialog = text(row, "state") == "needs-you" && !row.get("needs_input").and_then(Value::as_bool).unwrap_or(false);
+    let tail = pane_lines(pane, 40)?;
+    if !is_dialog || !tail.contains("Permission required") {
+        return Err("this session asks nothing now".into());
+    }
+    if is_yes {
+        if !tail.contains("Allow once") || tail.contains("This will always allow") {
+            return Err("the prompt's selection is not on \"Allow once\": answer it in the session".into());
+        }
+        press(pane, "Enter")?;
+    } else {
+        press(pane, "Escape")?;
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        if pane_lines(pane, 40)?.contains("Reject permission") {
+            press(pane, "Enter")?;
+        }
+    }
+    audit::record("remote", "remote.answer", if is_yes { "yes" } else { "no" }, json!({"session": id, "agent": "opencode"}));
     Ok(if is_yes { "approved".into() } else { "declined".into() })
 }
 

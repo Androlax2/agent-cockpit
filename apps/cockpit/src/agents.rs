@@ -107,8 +107,8 @@ pub static AGENTS: [Agent; 3] = [
         id_pattern: r"^ses_[0-9A-Za-z]{12,40}$",
         process: Some("opencode"),
         // Escape twice stops its turn (the first only says "esc again to interrupt"). Its permission
-        // questions are not Claude's yes/no menu: no Dialogs.
-        features: &[Feature::Interrupt, Feature::Variants, Feature::Sleep],
+        // prompt is not Claude's yes/no menu: remote::answer_opencode answers it.
+        features: &[Feature::Interrupt, Feature::Variants, Feature::Sleep, Feature::Dialogs],
         interrupt_keys: &["Escape", "Escape"],
         start_files: &["CLAUDE.md", "sandbox", "greywall", "shared launcher", "opencode config", "opencode plugin", "opencode profile",
                        "opencode launcher"],
