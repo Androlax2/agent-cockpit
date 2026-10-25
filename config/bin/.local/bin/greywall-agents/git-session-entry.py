@@ -56,10 +56,6 @@ def main():
                   'reads still work. Relaunch to retry.', file=sys.stderr)
         else:
             environment = routed
-            # Greywall's proxy variables would send the loopback adapter traffic to greyproxy.
-            for name in ['NO_PROXY', 'no_proxy']:
-                entries = [entry for entry in environment.get(name, '').split(',') if entry]
-                environment[name] = ','.join(entries + [host for host in ['127.0.0.1', 'localhost'] if host not in entries])
     os.execvpe(command[0], command, environment)
 
 

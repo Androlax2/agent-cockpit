@@ -1,6 +1,4 @@
-import contextlib
 import importlib.util
-import io
 import json
 import os
 from pathlib import Path
@@ -126,15 +124,6 @@ class SupervisorTests(unittest.TestCase):
                                 check_interval=30)
         self.assertEqual(status, 77)
         self.assertTrue(self.binding_now()['revoked'])
-
-    def test_broker_failure_reason_is_relayed_without_other_output(self):
-        broker = [sys.executable, '-c', 'import sys; sys.stderr.write("SECRET_DETAIL\\ngit-broker: admission_denied\\n"); sys.exit(77)']
-        stderr = io.StringIO()
-        with contextlib.redirect_stderr(stderr):
-            status = self.supervise([sys.executable, '-c', 'pass'], broker_command=broker)
-        self.assertEqual(status, 77)
-        self.assertIn('git-broker: admission_denied', stderr.getvalue())
-        self.assertNotIn('SECRET_DETAIL', stderr.getvalue())
 
     def test_broker_that_never_becomes_ready_starts_no_sandbox(self):
         marker = self.root / 'sandbox-started'

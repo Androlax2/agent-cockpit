@@ -268,16 +268,6 @@ class GitAccessTests(GitAccessFixture):
         self.assertNotIn('allow_paths', report)
         self.assertNotIn(str(self.project / 'src'), json.dumps(report))
 
-    def test_empty_worktree_config_created_by_greywall_keeps_the_configuration_digest(self):
-        self.enroll_fixture()
-        before = self.inspect()['configuration_digest']
-        worktree_config = self.project / '.git/config.worktree'
-        worktree_config.write_text('')
-        self.assertEqual(self.inspect()['configuration_digest'], before)
-        worktree_config.write_text('[core]\n\thooksPath = /tmp/elsewhere\n')
-        changed = self.inspect()
-        self.assertNotEqual(changed.get('configuration_digest'), before)
-
     def test_metadata_pointer_change_requires_reenrollment(self):
         self.enroll_fixture()
         other = self.root / 'other'

@@ -140,10 +140,6 @@ Live acceptance exposed three locally reproduced regressions: first-request slot
 
 Full verification request `e39533f099c1`: `Ran 291 tests in 21.636s`, `OK`, and all Rust suites passed. Collaboration/Projects/merge compatibility, supervisor/launcher integration and independent acceptance remain unfinished. Modified helpers run with host rights once applied; no deployment or production enrollment followed this trial.
 
-## Real-sandbox launch-chain acceptance (trial)
-
-Approved host request `322e75933cf2` ran the new launch chain (prepare → supervisor → broker → real Greywall → sandbox entry → adapter → `gh` compatibility client) against only `Androlax2/cockpit-inspector-trial`, with a throwaway registry and ledger. Inside the real sandbox: no GitHub token present; native fetch and new-branch push through the broker (branch `trial/broker-sandbox-90d2cad43daebcf6`, retained); deletion refused; `gh` read via the broker's read-only token. Killing the supervisor with SIGKILL took down the broker, Greywall and the sandboxed process. Earlier runs found and fixed: sandbox proxy capturing the loopback adapter (entry now sets `NO_PROXY`), Greywall's empty `config.worktree` changing the configuration digest (a settings-free file no longer counts), and hidden broker startup reasons (the broker prints its stable code; the supervisor relays only that line). Not yet run for real: actual agent binaries under the supervisor, Cockpit discovery/restart, scheduled renewal in a long session, and read-only sessions.
-
 ## Remaining rollout acceptance
 
 ### Collaboration/client implementation status
