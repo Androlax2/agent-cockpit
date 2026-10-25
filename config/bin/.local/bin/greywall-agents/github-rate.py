@@ -173,15 +173,12 @@ def observe(principal, headers, *, status=200):
             server_remaining = min(server_remaining, previous['server_remaining'])
             reset = max(reset, previous['reset'])
             blocked_until = max(blocked_until, previous['blocked_until'])
-        outstanding = sum(reservation['costs'].get(bucket, 0) for reservation in state['reservations'].values()
-                          if reservation['windows'].get(bucket) == reset)
-        remaining = min(remaining, max(0, server_remaining - outstanding))
         state['buckets'][bucket] = {'remaining': remaining, 'limit': limit, 'reset': reset,
                                     'server_remaining': server_remaining, 'blocked_until': blocked_until}
     return bucket
 
 
-def require_funds(state, costs, *, purpose):
+def require_funds(state, costs):
     for bucket, cost in costs.items():
         if not valid_bucket(bucket) or type(cost) is not int or cost <= 0:
             deny('rate_cost_invalid')
@@ -190,8 +187,6 @@ def require_funds(state, costs, *, purpose):
             deny('rate_quota_unknown')
         if observed['blocked_until'] > state['wall'] or observed['remaining'] < cost:
             deny('rate_quota_exhausted')
-        if purpose != 'inspection' and observed['remaining'] - cost < (observed['limit'] + 4) // 5:
-            deny('rate_headroom_reserved')
 
 
 def reserve(costs, *, purpose, repository_id, deadline, evidence_key=None):
@@ -215,7 +210,7 @@ def reserve(costs, *, purpose, repository_id, deadline, evidence_key=None):
             if any(entry['purpose'] == 'scheduled' and entry['repository_id'] == repository_id
                    for entry in state['reservations'].values()):
                 deny('scheduled_check_in_progress')
-        require_funds(state, costs, purpose=purpose)
+        require_funds(state, costs)
         for bucket, cost in costs.items():
             state['buckets'][bucket]['remaining'] -= cost
         identifier = secrets.token_hex(16)
@@ -225,59 +220,27 @@ def reserve(costs, *, purpose, repository_id, deadline, evidence_key=None):
         return {'reservation': identifier, 'cached': None}
 
 
-def require_dispatch_funds(state, reservation, bucket, cost):
+def charge(identifier, bucket, cost=1):
     if not valid_bucket(bucket) or type(cost) is not int or cost <= 0:
         deny('rate_cost_invalid')
-    observed = state['buckets'].get(bucket)
-    if observed is None or observed['reset'] <= state['wall']:
-        deny('rate_quota_unknown')
-    if observed['blocked_until'] > state['wall'] or observed['server_remaining'] < cost:
-        deny('rate_quota_exhausted')
-    if reservation['purpose'] != 'inspection' and observed['server_remaining'] - cost < (observed['limit'] + 4) // 5:
-        deny('rate_headroom_reserved')
-    available = (reservation['costs'].get(bucket, 0)
-                 if reservation['windows'].get(bucket) == observed['reset'] else 0)
-    extra = max(0, cost - available)
-    if extra:
-        require_funds(state, {bucket: extra}, purpose=reservation['purpose'])
-    return available, extra
-
-
-def ready(identifier, costs):
-    if not isinstance(costs, dict) or not costs:
-        deny('rate_cost_invalid')
     with locked_state() as state:
         reservation = state['reservations'].get(identifier)
         if reservation is None:
             deny('rate_reservation_expired')
-        allocations = {}
-        for bucket, cost in costs.items():
-            allocations[bucket] = require_dispatch_funds(state, reservation, bucket, cost)
-        for bucket, (available, extra) in allocations.items():
-            state['buckets'][bucket]['remaining'] -= extra
-            reservation['costs'][bucket] = available + extra
-            reservation['windows'][bucket] = state['buckets'][bucket]['reset']
-
-
-def charge(identifier, bucket, cost=1):
-    with locked_state() as state:
-        reservation = state['reservations'].get(identifier)
-        if reservation is None:
-            deny('rate_reservation_expired')
-        available, extra = require_dispatch_funds(state, reservation, bucket, cost)
-        observed = state['buckets'][bucket]
+        observed = state['buckets'].get(bucket)
+        if observed is None or observed['reset'] <= state['wall']:
+            deny('rate_quota_unknown')
+        if observed['blocked_until'] > state['wall'] or observed['server_remaining'] < cost:
+            deny('rate_quota_exhausted')
+        available = (reservation['costs'].get(bucket, 0)
+                     if reservation['windows'].get(bucket) == observed['reset'] else 0)
+        extra = max(0, cost - available)
         if extra:
+            require_funds(state, {bucket: extra})
             state['buckets'][bucket]['remaining'] -= extra
         observed['server_remaining'] -= cost
         reservation['costs'][bucket] = max(0, available - cost)
         reservation['windows'][bucket] = observed['reset']
-
-
-def invalidate_scheduled(repository_id):
-    if type(repository_id) is not int or repository_id <= 0:
-        deny('rate_evidence_invalid')
-    with locked_state() as state:
-        state['scheduled'].pop(str(repository_id), None)
 
 
 def finish(identifier, *, evidence=None):
@@ -293,8 +256,6 @@ def finish(identifier, *, evidence=None):
         elif reservation['purpose'] == 'scheduled':
             state['scheduled'].pop(str(repository_id), None)
         del state['reservations'][identifier]
-        if evidence is not None:
-            return {'checked_at': state['monotonic'], 'expires_at': state['monotonic'] + 300}
 
 
 def estimate_hourly(*, sessions=0, repositories=0, admissions=0, writes=0, advertisements=0,

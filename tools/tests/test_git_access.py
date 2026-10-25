@@ -915,7 +915,7 @@ class EnrollmentTests(AppInspectionFixture):
         self.assertEqual(self.requests, [])
 
 
-class RuntimeCredentialFixture(AppInspectionFixture):
+class RuntimeCredentialTests(AppInspectionFixture):
     def setUp(self):
         super().setUp()
         now = int(self.access.time.time())
@@ -937,17 +937,7 @@ class RuntimeCredentialFixture(AppInspectionFixture):
         self.runtime_actor = 88
         self.runtime_repository = 42
         self.missing_credentials = set()
-        self.app.update(rate_setup_approved=True, rate_buckets={
-            'installation': 'installation:77:core', 'authentication': 'app:123:core'})
         self.save_profiles()
-        spec = importlib.util.spec_from_file_location('cockpit_test_rate', HELPER.with_name('github-rate.py'))
-        self.rate = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(self.rate)
-        self.rate_headers = {'x-ratelimit-resource': 'core', 'x-ratelimit-limit': '5000',
-                             'x-ratelimit-remaining': '5000', 'x-ratelimit-reset': str(now + 3600)}
-        with patch.dict(os.environ, self.environment, clear=True):
-            for principal in ['installation:77', 'app:123', 'user:88']:
-                self.rate.observe(principal, self.rate_headers)
 
     def save_profiles(self):
         self.document = {'version': 1, 'repositories': [self.record], 'inspector_apps': [self.app],
@@ -971,27 +961,22 @@ class RuntimeCredentialFixture(AppInspectionFixture):
 
         def request(method, path, token, deadline, body=None):
             if token not in self.tokens.values():
-                status, result, headers = self.request(method, path, token, deadline, body)
-                return status, result, self.rate_headers | headers
+                return self.request(method, path, token, deadline, body)
             if before_runtime:
                 before_runtime()
             self.runtime_requests.append((method, path))
             if path == '/user':
-                return 200, {'id': self.runtime_actor}, self.rate_headers | {'x-oauth-scopes': self.runtime_scopes}
+                return 200, {'id': self.runtime_actor}, {'x-oauth-scopes': self.runtime_scopes}
             if path == '/repos/acme/project':
-                return 200, {'id': self.runtime_repository, 'full_name': 'acme/project', 'owner': {'id': 9}}, self.rate_headers
+                return 200, {'id': self.runtime_repository, 'full_name': 'acme/project', 'owner': {'id': 9}}, {}
             self.fail(f'unexpected runtime request {method} {path}')
 
         with patch.dict(os.environ, self.environment, clear=True), \
                 patch.object(self.access.subprocess, 'run', side_effect=command), \
-                patch.object(self.access, 'github_request', side_effect=request), \
+                patch.object(self.access, 'api_request', side_effect=request), \
                 patch.object(self.access, 'sign_app_jwt', return_value='SYNTHETIC_APP_JWT'):
-            if purpose == 'write':
-                return self.access.inspect_access(self.project, purpose=purpose, operation_costs={'user:88:core': 1})
             return self.access.inspect_access(self.project, purpose=purpose)
 
-
-class RuntimeCredentialTests(RuntimeCredentialFixture):
     def test_read_and_write_credentials_have_distinct_verified_roles(self):
         report = self.inspect_runtime()
         self.assertEqual(report['mode'], 'verified', report)
@@ -1081,16 +1066,15 @@ class RuntimeCredentialTests(RuntimeCredentialFixture):
         with patch.object(self.access.time, 'time', return_value=now) as clock:
             report = self.inspect_runtime(before_runtime=lambda: setattr(clock, 'return_value', now + 3601))
         self.assertEqual(report['mode'], 'read_only', report)
-        self.assertIn(report['reason'], ['runtime_enrollment_expired', 'rate_headers_uninspectable', 'rate_quota_unknown'])
+        self.assertEqual(report['reason'], 'runtime_enrollment_expired')
 
     def test_each_write_checks_roles_again_even_when_app_authentication_is_cached(self):
-        self.assertEqual(self.inspect_runtime(purpose='write')['mode'], 'verified')
         self.assertEqual(self.inspect_runtime(purpose='write')['mode'], 'verified')
         self.profiles[0]['setup_approved'] = False
         self.save_profiles()
         report = self.inspect_runtime(purpose='write')
         self.assertEqual(report['mode'], 'read_only', report)
-        self.assertEqual(self.keyring_reads, ['project-read', 'project-forward'] * 2)
+        self.assertEqual(self.keyring_reads, ['project-read', 'project-forward'])
         self.assertEqual(sum(method == 'GET' and path == '/repos/acme/project'
                              for method, path, token, body in self.requests), 2)
 
@@ -1106,102 +1090,6 @@ class RuntimeCredentialTests(RuntimeCredentialFixture):
         self.assertEqual(report['mode'], 'verified')
         self.assertNotIn('credential_roles_verified', report)
         self.assertEqual(self.keyring_reads, [])
-
-
-class RateInspectionTests(RuntimeCredentialFixture):
-    def observe(self, principal, remaining):
-        with patch.dict(os.environ, self.environment, clear=True):
-            self.rate.observe(principal, self.rate_headers | {'x-ratelimit-remaining': str(remaining)})
-
-    def test_unapproved_rate_principal_mapping_never_admits_or_reads_runtime_secrets(self):
-        self.app['rate_setup_approved'] = False
-        self.save_profiles()
-        report = self.inspect_runtime()
-        self.assertEqual(report['mode'], 'read_only', report)
-        self.assertEqual(report['reason'], 'rate_setup_unapproved')
-        self.assertEqual(self.requests, [])
-        self.assertEqual(self.keyring_reads, [])
-
-    def test_insufficient_headroom_denies_the_whole_inspection_before_upstream_requests(self):
-        self.observe('installation:77', 1006)
-        report = self.inspect_runtime()
-        self.assertEqual(report['mode'], 'read_only', report)
-        self.assertEqual(report['reason'], 'rate_headroom_reserved')
-        self.assertEqual(self.requests, [])
-        self.assertEqual(self.keyring_reads, [])
-
-    def test_each_write_gets_a_new_funded_check_and_operation_reservation(self):
-        first = self.inspect_runtime(purpose='write')
-        second = self.inspect_runtime(purpose='write')
-        self.assertTrue(first['rate_verified'], first)
-        self.assertTrue(second['rate_verified'], second)
-        self.assertNotEqual(first['rate_reservation'], second['rate_reservation'])
-        self.assertEqual(first['rate_operation_costs'], {'user:88:core': 1})
-        self.assertEqual(len(self.runtime_requests), 8)
-        self.assertEqual(sum(method == 'GET' for method, path, token, body in self.requests), 14)
-
-    def test_scheduled_remote_evidence_coalesces_but_local_identity_is_still_checked(self):
-        first = self.inspect_runtime(purpose='scheduled')
-        self.assertEqual(first['mode'], 'verified', first)
-        counts = len(self.requests), len(self.runtime_requests)
-        second = self.inspect_runtime(purpose='scheduled')
-        self.assertEqual(second['mode'], 'verified', second)
-        self.assertEqual((len(self.requests), len(self.runtime_requests)), counts)
-        self.assertEqual(first['rate_evidence_checked_at'], second['rate_evidence_checked_at'])
-        self.git('-C', str(self.project), 'remote', 'set-url', 'origin', 'https://github.com/acme/another.git')
-        denied = self.inspect_runtime(purpose='scheduled')
-        self.assertEqual(denied['reason'], 'remote_identity_mismatch')
-
-    def test_extra_protection_pages_are_funded_or_the_result_is_read_only(self):
-        self.observe('installation:77', 1008)
-        self.responses['/repos/acme/project/rulesets?includes_parents=true&per_page=100&page=1'] = (200, [{'id': 100}, {'id': 101}] * 50, {})
-        self.responses['/repos/acme/project/rulesets?includes_parents=true&per_page=100&page=2'] = (200, [{'id': 100}] * 100, {})
-        self.responses['/repos/acme/project/rulesets?includes_parents=true&per_page=100&page=3'] = (200, [], {})
-        report = self.inspect_runtime()
-        self.assertEqual(report['mode'], 'read_only', report)
-        self.assertEqual(report['reason'], 'rate_headroom_reserved')
-        self.assertNotIn('credential_roles_verified', report)
-
-    def test_server_resource_mismatch_is_not_silently_charged_to_another_pool(self):
-        self.rate_headers['x-ratelimit-resource'] = 'search'
-        report = self.inspect_runtime()
-        self.assertEqual(report['mode'], 'read_only', report)
-        self.assertEqual(report['reason'], 'rate_resource_mismatch')
-
-    def test_latest_headers_must_still_fund_the_operation_after_the_complete_check(self):
-        def external_usage():
-            if len(self.runtime_requests) == 3:
-                self.rate_headers['x-ratelimit-remaining'] = '1000'
-
-        report = self.inspect_runtime(purpose='write', before_runtime=external_usage)
-        self.assertEqual(report['mode'], 'read_only', report)
-        self.assertEqual(report['reason'], 'rate_headroom_reserved')
-        self.assertNotIn('rate_reservation', report)
-
-    def test_a_late_finished_check_never_publishes_reusable_success(self):
-        finish = self.access.finish_inspection_budget
-        clocks = []
-
-        def delayed_finish(budget, *, evidence=None):
-            result = finish(budget, evidence=evidence)
-            if evidence is not None:
-                clock = patch.object(self.access.time, 'monotonic', return_value=self.access.time.monotonic() + 31)
-                clock.start()
-                clocks.append(clock)
-            return result
-
-        try:
-            with patch.object(self.access, 'finish_inspection_budget', side_effect=delayed_finish), \
-                    contextlib.redirect_stderr(io.StringIO()):
-                report = self.inspect_runtime(purpose='scheduled')
-            self.assertEqual(report['mode'], 'read_only', report)
-            self.assertEqual(report['reason'], 'inspection_timeout')
-            with patch.dict(os.environ, self.environment, clear=True):
-                state = json.loads(self.rate.ledger_path().read_text())
-            self.assertEqual(state['scheduled'], {})
-        finally:
-            for clock in clocks:
-                clock.stop()
 
 
 if __name__ == '__main__':
