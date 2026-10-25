@@ -289,6 +289,30 @@ fn native_codex_task_label_targets_its_own_card() {
 }
 
 #[test]
+fn native_codex_doing_now_targets_its_own_card() {
+    let sandbox = Sandbox::new();
+    let daemon = common::sandbox::ReportSocket::start(&sandbox.runtime.join("claude-report/osd-report.sock"), "ok");
+    sandbox.shim("cockpit-codex-hook", &format!("exec '{}'", env!("CARGO_BIN_EXE_cockpit-codex-hook")));
+    let output = sandbox.command(common::sandbox::bin().join("cockpit-session-doing"),
+        &[("COCKPIT_AGENT", "codex"), ("CODEX_THREAD_ID", NATIVE_THREAD)])
+        .env_remove("CLAUDE_CODE_SESSION_ID").arg("Running the  Rust tests").current_dir(&sandbox.root).output().unwrap();
+    assert!(output.status.success(), "{}", common::sandbox::stderr(&output));
+    let recorded = daemon.received(std::time::Duration::from_secs(1));
+    let report: serde_json::Value = serde_json::from_str(recorded[0].strip_prefix("session-request ").unwrap()).unwrap();
+    assert_eq!(report["session"], COCKPIT_THREAD);
+    assert_eq!(report["doing"], "Running the Rust tests");
+    assert!(report.get("state").is_none());
+}
+
+#[test]
+fn native_codex_tool_use_reports_its_last_tool() {
+    let report = translate_hook(&json!({"hook_event_name": "PostToolUse", "session_id": NATIVE_THREAD, "cwd": "/projects/demo",
+        "tool_name": "Bash", "tool_input": {"command": "cargo nextest run"}})).unwrap().unwrap();
+    assert_eq!(report["last_tool"], "Bash  cargo nextest run");
+    assert_eq!(report["state"], "working");
+}
+
+#[test]
 fn native_codex_question_becomes_answerable_only_after_the_turn_ends() {
     let sandbox = Sandbox::new();
     let daemon = common::sandbox::ReportSocket::start(&sandbox.runtime.join("claude-report/osd-report.sock"), "ok");

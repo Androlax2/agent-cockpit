@@ -54,7 +54,7 @@ pub fn translate_hook(payload: &Value) -> Result<Option<Value>, String> {
         "PermissionRequest" | "Interrupt" => Some("needs-you"),
         "Stop" => Some("waiting"),
         "SessionEnd" => Some("gone"),
-        "TaskLabel" => None,
+        "TaskLabel" | "TaskStep" => None,
         _ => return Err(format!("unsupported Codex hook event {event:?}")),
     };
     let mut report = json!({"session": session, "native_thread": native_thread, "agent": "codex", "cwd": cwd, "project": project});
@@ -64,6 +64,16 @@ pub fn translate_hook(payload: &Value) -> Result<Option<Value>, String> {
     if event == "TaskLabel" {
         let label = payload.get("label").and_then(Value::as_str).ok_or("missing task label")?;
         report["label"] = json!(crate::sessions::validate_task_label(label)?);
+    }
+    if event == "TaskStep" {
+        let doing = payload.get("doing").and_then(Value::as_str).ok_or("missing doing-now status")?;
+        report["doing"] = json!(crate::sessions::validate_doing(doing)?);
+    }
+    if event == "PostToolUse" {
+        if let Some(summary) = payload.get("tool_name").and_then(Value::as_str)
+            .and_then(|tool| crate::sessions::tool_summary(tool, payload.get("tool_input"))) {
+            report["last_tool"] = json!(summary);
+        }
     }
     Ok(Some(report))
 }

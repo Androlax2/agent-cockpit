@@ -136,6 +136,10 @@ pub struct Report {
     pub cwd: Option<String>,
     pub task: Option<String>,
     pub label: Option<String>,
+    /// The agent's own "doing now" for this step (cockpit-session-doing).
+    pub doing: Option<String>,
+    /// The hook's one-line summary of the tool just used, the card's fallback when doing is stale.
+    pub last_tool: Option<String>,
     pub message: Option<String>,
     /// What the turn left in the repository, from the hook (it runs git inside the sandbox).
     pub outcome: Option<String>,
@@ -241,7 +245,7 @@ pub fn parse_session(raw: &str) -> Result<Report, String> {
             return Err(format!("session.{key} is not a count"));
         }
     }
-    for key in ["cwd", "task", "message", "outcome", "label", "branch"] {
+    for key in ["cwd", "task", "message", "outcome", "label", "branch", "doing", "last_tool"] {
         if report.get(key).is_some_and(|value| !value.is_string()) {
             return Err(format!("session.{key} is not a string"));
         }
@@ -266,6 +270,8 @@ pub fn parse_session(raw: &str) -> Result<Report, String> {
         task: text("task"), message: text("message"), outcome: text("outcome"), sticky: report.get("sticky").is_some_and(|s| s.as_bool().unwrap_or(!s.is_null())),
         repository: text("repository"), branch: text("branch"), turn_id: text("turn_id"), turn_complete,
         label: text("label").map(|label| cockpit::sessions::validate_task_label(&label)).transpose()?,
+        doing: text("doing").map(|doing| cockpit::sessions::validate_doing(&doing)).transpose()?,
+        last_tool: text("last_tool").map(|tool| cockpit::sessions::validate_last_tool(&tool)).transpose()?,
         terminal: report.get("terminal").and_then(Value::as_bool).unwrap_or(false),
         credits: report.get("credits").and_then(Value::as_bool),
         needs_input: report.get("needs_input").and_then(Value::as_bool),
@@ -1053,6 +1059,10 @@ pub struct Entry {
     pub cwd: String,
     pub task: String,
     pub label: String,
+    pub doing: String,
+    pub doing_at: f64,
+    pub last_tool: String,
+    pub last_tool_at: f64,
     pub since: f64,
     pub started: f64,
     pub target: BTreeMap<String, String>,
@@ -1467,6 +1477,25 @@ impl Registry {
         if entry.state == "working" && previous_state.as_deref() != Some("working") {
             entry.outcome.clear();
         }
+        // A new turn after a finished one starts without the old step's "doing now"; a session
+        // back from needs-you is still in the same turn and keeps it.
+        if entry.state == "working" && previous_state.as_deref() == Some("waiting") && (!entry.doing.is_empty() || !entry.last_tool.is_empty()) {
+            entry.doing.clear();
+            entry.doing_at = 0.0;
+            entry.last_tool.clear();
+            entry.last_tool_at = 0.0;
+            changed = true;
+        }
+        if let Some(doing) = &report.doing {
+            entry.doing = doing.clone();
+            entry.doing_at = now();
+            changed = true;
+        }
+        if let Some(tool) = &report.last_tool {
+            entry.last_tool = tool.clone();
+            entry.last_tool_at = now();
+            changed = true;
+        }
         if !entry.reports_turns && (report.repository.is_some() || report.turn_id.is_some()) {
             entry.reports_turns = true;
             changed = true;
@@ -1505,7 +1534,7 @@ impl Registry {
         self.drop_pane_predecessors(&session, tmux_pane.as_deref());
 
         match message {
-            None if report.label.is_some() => {}
+            None if report.label.is_some() || report.doing.is_some() => {}
             None if report.state.is_none() && (report.agents.is_some() || report.background.is_some()) => {}
             None => {
                 self.banners.drop_banner(&session);
@@ -1643,6 +1672,7 @@ impl Registry {
         let run_phases = self.runs.session_phases();
         let mut rows: Vec<Value> = self.sessions.iter().map(|(session, entry)| {
             let mut row = json!({"session": session, "state": entry.state, "project": entry.project, "cwd": entry.cwd, "task": entry.task, "label": entry.label,
+                                 "doing": entry.doing, "doing_at": entry.doing_at as i64, "last_tool": entry.last_tool, "last_tool_at": entry.last_tool_at as i64,
                                  "since": entry.since as i64, "started": entry.started as i64, "update": entry.update,
                                   "request": entry.request, "detail": entry.detail, "full_request": entry.full_request, "outcome": entry.outcome, "needs_input": entry.needs_input, "quota_stopped":entry.quota_stopped,
                                   "repository": entry.repository, "branch": entry.branch, "last_result": entry.last_result, "reports_turns": entry.reports_turns,
@@ -1735,6 +1765,10 @@ impl Registry {
                 }
                 let label = row.get("label").and_then(Value::as_str).filter(|label| !label.is_empty())
                     .map(cockpit::sessions::validate_task_label).transpose()?.unwrap_or_default();
+                let doing = row.get("doing").and_then(Value::as_str).filter(|doing| !doing.is_empty())
+                    .map(cockpit::sessions::validate_doing).transpose()?.unwrap_or_default();
+                let last_tool = row.get("last_tool").and_then(Value::as_str).filter(|tool| !tool.is_empty())
+                    .map(cockpit::sessions::validate_last_tool).transpose()?.unwrap_or_default();
                 let repository = row.get("repository").and_then(Value::as_str).unwrap_or("");
                 if !repository.is_empty() && !cockpit::sessions::valid_repository(repository) {
                     return Err("invalid repository in snapshot".into());
@@ -1748,6 +1782,10 @@ impl Registry {
                     needs_input: row.get("needs_input").and_then(Value::as_bool).unwrap_or(false),
                     quota_stopped: row.get("quota_stopped").and_then(Value::as_bool).unwrap_or(false),
                     label,
+                    doing_at: if doing.is_empty() { 0.0 } else { row.get("doing_at").and_then(Value::as_f64).unwrap_or(0.0) },
+                    doing,
+                    last_tool_at: if last_tool.is_empty() { 0.0 } else { row.get("last_tool_at").and_then(Value::as_f64).unwrap_or(0.0) },
+                    last_tool,
                     repository: repository.into(), branch: branch.into(), last_result,
                     reports_turns: row.get("reports_turns").and_then(Value::as_bool).unwrap_or(false),
                     native_thread,

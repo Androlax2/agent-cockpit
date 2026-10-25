@@ -150,6 +150,12 @@ pub struct Session {
     pub cwd: String,
     pub task: String,
     pub label: String,
+    /// What the agent says it is doing in this step (cockpit-session-doing), and when it said so.
+    pub doing: String,
+    pub doing_at: Option<i64>,
+    /// The last tool the agent used, as its hook summarised it ("Bash  cargo test"), and when.
+    pub last_tool: String,
+    pub last_tool_at: Option<i64>,
     pub since: i64,
     pub started: Option<i64>,
     pub tmux_pane: String,
@@ -223,6 +229,10 @@ impl Session {
             cwd: text(row, "cwd"),
             task: text(row, "task"),
             label: text(row, "label"),
+            doing: text(row, "doing"),
+            doing_at: row.get("doing_at").and_then(Value::as_i64).filter(|at| *at > 0),
+            last_tool: text(row, "last_tool"),
+            last_tool_at: row.get("last_tool_at").and_then(Value::as_i64).filter(|at| *at > 0),
             since: row.get("since").and_then(Value::as_f64).map(|since| since as i64).unwrap_or_else(now_secs),
             started: row.get("started").and_then(Value::as_f64).map(|started| started as i64),
             tmux_pane: text(row, "tmux_pane"),
@@ -450,6 +460,79 @@ pub fn validate_task_label(label: &str) -> Result<String, String> {
     Ok(normalized)
 }
 
+pub const DOING_MAX_CHARS: usize = 80;
+pub const LAST_TOOL_MAX_CHARS: usize = 100;
+/// A "doing now" older than this is stale: the card says "no update Nm" and falls back to the last tool.
+pub const DOING_STALE_AFTER_S: i64 = 10 * 60;
+
+/// The agent's own one-line "doing now": 2–12 words, at most 80 characters, no controls or tmux
+/// formats. Rejected, never clipped: the agent rewrites it.
+pub fn validate_doing(doing: &str) -> Result<String, String> {
+    if doing.chars().any(char::is_control) || doing.contains("#(") || doing.contains("#{") {
+        return Err("doing-now status contains controls or tmux formats".into());
+    }
+    let words: Vec<_> = doing.split_whitespace().collect();
+    let normalized = words.join(" ");
+    if !(2..=12).contains(&words.len()) || normalized.chars().count() > DOING_MAX_CHARS {
+        return Err(format!("doing-now status must be 2–12 words and at most {DOING_MAX_CHARS} characters"));
+    }
+    Ok(normalized)
+}
+
+/// A hook's last-tool summary, checked at the daemon's boundary (the hook already made it safe).
+pub fn validate_last_tool(summary: &str) -> Result<String, String> {
+    if summary.trim().is_empty() || summary.chars().count() > LAST_TOOL_MAX_CHARS || summary.chars().any(char::is_control)
+        || summary.contains("#(") || summary.contains("#{") {
+        return Err("last tool is not a short single line without tmux formats".into());
+    }
+    Ok(summary.to_string())
+}
+
+/// "Bash  cargo nextest run" from a tool call: the tool and the first line of what it was given.
+/// Controls become spaces, tmux formats are broken up, and it is cut to fit LAST_TOOL_MAX_CHARS.
+pub fn tool_summary(tool: &str, input: Option<&Value>) -> Option<String> {
+    let tool = tool.trim();
+    if tool.is_empty() {
+        return None;
+    }
+    let field = |key: &str| input.and_then(|input| input.get(key)).and_then(Value::as_str).map(str::trim).filter(|text| !text.is_empty());
+    let detail = field("command").or_else(|| field("file_path")).or_else(|| field("pattern")).or_else(|| field("url"))
+        .or_else(|| field("query")).or_else(|| field("description"))
+        .map(|detail| detail.lines().next().unwrap_or(""));
+    let raw = match detail { Some(detail) => format!("{tool}  {detail}"), None => tool.to_string() };
+    let safe: String = raw.chars().map(|character| if character.is_control() { ' ' } else { character }).collect();
+    let safe = safe.replace("#(", "# (").replace("#{", "# {");
+    let safe = safe.trim();
+    Some(if safe.chars().count() > LAST_TOOL_MAX_CHARS {
+        safe.chars().take(LAST_TOOL_MAX_CHARS - 1).collect::<String>() + "…"
+    } else { safe.to_string() })
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DoingNow {
+    pub text: String,
+    /// When the shown text was published (for the card's age).
+    pub at: i64,
+    /// The agent stopped updating its own status: the card says "no update Nm".
+    pub stale_for: Option<i64>,
+}
+
+/// What the card's first line says the session is doing: the agent's own status while fresh; once
+/// stale, the last tool used after it (or the old status), marked stale; with no status at all,
+/// the last tool.
+pub fn doing_now(session: &Session, now: i64) -> Option<DoingNow> {
+    let tool = session.last_tool_at.filter(|_| !session.last_tool.is_empty()).map(|at| (session.last_tool.clone(), at));
+    let Some(doing_at) = session.doing_at.filter(|_| !session.doing.is_empty()) else {
+        return tool.map(|(text, at)| DoingNow { text, at, stale_for: None });
+    };
+    let age = now - doing_at;
+    if age < DOING_STALE_AFTER_S {
+        return Some(DoingNow { text: session.doing.clone(), at: doing_at, stale_for: None });
+    }
+    let (text, at) = tool.filter(|(_, at)| *at > doing_at).unwrap_or((session.doing.clone(), doing_at));
+    Some(DoingNow { text, at, stale_for: Some(age) })
+}
+
 /// What a session needing you asks: the dialog's lines from its pane, else the hook's sentence.
 pub fn waiting_request(session: &Session) -> String {
     if session.state != "needs-you" {
@@ -501,8 +584,18 @@ pub fn activity_text(session: &Session) -> String {
         "Input needed" => "A running command needs your input",
         "Needs you" => "An answer or permission is needed",
         "Command running" => "An approved command is running",
+        "Working" if session.state == "working" => return doing_now_text(session, now_secs()),
         _ => "",
     }.into()
+}
+
+/// The doing-now line of the card, "no update 18m" appended once the agent stopped updating it.
+pub fn doing_now_text(session: &Session, now: i64) -> String {
+    match doing_now(session, now) {
+        Some(DoingNow { text, stale_for: Some(age), .. }) => format!("{text} · no update {}", util::duration(age)),
+        Some(DoingNow { text, .. }) => text,
+        None => String::new(),
+    }
 }
 
 pub fn next_attention_index(sessions: &[Session], selected: usize) -> Option<usize> {
@@ -817,6 +910,65 @@ mod tests {
 
     fn session(id: &str, project: &str, started: i64, pinned: bool) -> Session {
         Session { session: id.into(), project: project.into(), started: Some(started), pinned, ..Session::default() }
+    }
+
+    fn doing(doing: &str, doing_at: Option<i64>, last_tool: &str, last_tool_at: Option<i64>) -> Session {
+        Session { state: "working".into(), doing: doing.into(), doing_at, last_tool: last_tool.into(), last_tool_at, ..Session::default() }
+    }
+
+    #[test]
+    fn a_fresh_doing_now_status_wins_over_a_newer_tool() {
+        let session = doing("Running the Rust tests", Some(1000), "Bash  cargo nextest run", Some(1100));
+        assert_eq!(doing_now(&session, 1200), Some(DoingNow { text: "Running the Rust tests".into(), at: 1000, stale_for: None }));
+    }
+
+    #[test]
+    fn a_stale_status_falls_back_to_the_last_tool_used_after_it() {
+        let session = doing("Running the Rust tests", Some(1000), "Bash  cargo nextest run", Some(1500));
+        let now = 1000 + 18 * 60;
+        assert_eq!(doing_now(&session, now), Some(DoingNow { text: "Bash  cargo nextest run".into(), at: 1500, stale_for: Some(18 * 60) }));
+        assert_eq!(doing_now_text(&session, now), "Bash  cargo nextest run · no update 18m");
+    }
+
+    #[test]
+    fn a_stale_status_with_no_newer_tool_keeps_its_own_text() {
+        let session = doing("Running the Rust tests", Some(1000), "Read  app.rs", Some(900));
+        assert_eq!(doing_now(&session, 1000 + DOING_STALE_AFTER_S).unwrap().text, "Running the Rust tests");
+    }
+
+    #[test]
+    fn without_a_status_the_last_tool_is_shown_unmarked() {
+        assert_eq!(doing_now(&doing("", None, "Edit  src/app.rs", Some(50)), 5000), Some(DoingNow { text: "Edit  src/app.rs".into(), at: 50, stale_for: None }));
+        assert_eq!(doing_now(&doing("", None, "", None), 5000), None);
+    }
+
+    #[test]
+    fn doing_now_statuses_are_normalized_or_rejected_never_clipped() {
+        assert_eq!(validate_doing("  Running   the tests ").unwrap(), "Running the tests");
+        for invalid in ["Testing".to_string(), "a ".repeat(13), format!("Running {}", "x".repeat(80)), "Running\nthe tests".into(), "Reading #{pane} now".into(), "Reading #(id) now".into()] {
+            assert!(validate_doing(&invalid).is_err(), "accepted {invalid:?}");
+        }
+    }
+
+    #[test]
+    fn tool_summaries_are_one_safe_line_that_fits() {
+        assert_eq!(tool_summary("Bash", Some(&json!({"command": "cargo nextest run\necho done", "description": "Run tests"}))).unwrap(), "Bash  cargo nextest run");
+        assert_eq!(tool_summary("Edit", Some(&json!({"file_path": "/r/app.rs"}))).unwrap(), "Edit  /r/app.rs");
+        assert_eq!(tool_summary("mcp__figcraft__get_node", None).unwrap(), "mcp__figcraft__get_node");
+        assert_eq!(tool_summary("Bash", Some(&json!({"command": "echo #{x} #(y)\tz"}))).unwrap(), "Bash  echo # {x} # (y) z");
+        let long = tool_summary("Bash", Some(&json!({"command": "x".repeat(300)}))).unwrap();
+        assert_eq!(long.chars().count(), LAST_TOOL_MAX_CHARS);
+        assert!(long.ends_with('…'));
+        assert!(validate_last_tool(&long).is_ok());
+        assert_eq!(tool_summary("  ", None), None);
+    }
+
+    #[test]
+    fn a_working_card_says_what_the_agent_is_doing_now() {
+        let session = doing("Drawing the phone states", Some(now_secs()), "", None);
+        assert_eq!(activity_text(&session), "Drawing the phone states");
+        let waiting = Session { state: "waiting".into(), ..session };
+        assert_eq!(activity_text(&waiting), "");
     }
 
     #[test]

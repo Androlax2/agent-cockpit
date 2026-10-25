@@ -2041,6 +2041,65 @@ fn label_updates_publish_without_changing_activity_or_pending_questions() {
 }
 
 #[test]
+fn doing_now_updates_publish_without_changing_activity_or_pending_questions() {
+    let mut bench = Bench::new();
+    bench.report(SESSION_A, json!({"state": "needs-you", "task": "Original user request", "message": "Which option?", "needs_input": true, "sticky": true}));
+    let before = bench.snapshot().remove(0);
+    let dropped = bench.dropped();
+    bench.report(SESSION_A, json!({"doing": "  Waiting for   your answer "}));
+    let after = bench.snapshot().remove(0);
+    assert_eq!(after["doing"], "Waiting for your answer");
+    assert!(after["doing_at"].as_i64().unwrap() > 0);
+    for key in ["state", "since", "task", "request", "needs_input"] {
+        assert_eq!(after[key], before[key], "doing-now changed {key}");
+    }
+    assert_eq!(bench.dropped(), dropped, "doing-now must not dismiss a question banner");
+}
+
+#[test]
+fn the_last_tool_is_kept_with_the_time_it_was_used() {
+    let mut bench = Bench::new();
+    bench.report(SESSION_A, json!({"state": "working", "last_tool": "Bash  cargo nextest run"}));
+    let row = bench.snapshot().remove(0);
+    assert_eq!(row["last_tool"], "Bash  cargo nextest run");
+    assert!(row["last_tool_at"].as_i64().unwrap() > 0);
+}
+
+#[test]
+fn doing_now_and_last_tool_survive_mid_turn_reports_and_daemon_restarts() {
+    let mut bench = Bench::new();
+    bench.report(SESSION_A, json!({"state": "working", "doing": "Running the Rust tests", "last_tool": "Bash  cargo test"}));
+    bench.report(SESSION_A, json!({"state": "needs-you", "message": "Allow?"}));
+    bench.report(SESSION_A, json!({"state": "working"}));
+    bench.report(SESSION_A, json!({"state": "waiting"}));
+    assert_eq!(bench.snapshot()[0]["doing"], "Running the Rust tests");
+    let restored = Registry::new(Box::new(FakeSystem(bench.world.clone())), Box::new(FakeBanners(bench.shown.clone())));
+    let row = restored.snapshot_rows().remove(0);
+    assert_eq!((row["doing"].as_str(), row["last_tool"].as_str()), (Some("Running the Rust tests"), Some("Bash  cargo test")));
+    assert_eq!(row["doing_at"], bench.snapshot()[0]["doing_at"]);
+}
+
+#[test]
+fn a_new_turn_forgets_the_last_turns_doing_now() {
+    let mut bench = Bench::new();
+    bench.report(SESSION_A, json!({"state": "working", "doing": "Running the Rust tests", "last_tool": "Bash  cargo test"}));
+    bench.report(SESSION_A, json!({"state": "waiting"}));
+    bench.report(SESSION_A, json!({"state": "working"}));
+    let row = bench.snapshot().remove(0);
+    assert_eq!((row["doing"].as_str(), row["last_tool"].as_str(), row["doing_at"].as_i64()), (Some(""), Some(""), Some(0)));
+}
+
+#[test]
+fn doing_now_and_last_tool_reports_reject_malformed_or_unsafe_text() {
+    for doing in [json!(false), json!(""), json!("Testing"), json!("a ".repeat(13)), json!("Running\nthe tests"), json!("Reading #{pane} now")] {
+        assert!(parse_session(&json!({"session": SESSION_A, "project": "p", "doing": doing}).to_string()).is_err(), "accepted doing {doing}");
+    }
+    for tool in [json!(1), json!(""), json!("Bash  a\nb"), json!("Bash  #(id)"), json!("x".repeat(101))] {
+        assert!(parse_session(&json!({"session": SESSION_A, "project": "p", "last_tool": tool}).to_string()).is_err(), "accepted tool {tool}");
+    }
+}
+
+#[test]
 fn background_updates_preserve_pending_question_banners() {
     let mut bench = Bench::new();
     bench.report(SESSION_A, json!({"state": "needs-you", "message": "Allow this command?", "sticky": true, "background": 1}));

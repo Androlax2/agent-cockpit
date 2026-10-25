@@ -544,7 +544,7 @@ fn new_sandboxes_can_read_canonical_commands_but_not_either_phone_state_path() {
     let settings = launch.settings();
     let readable = settings["filesystem"]["allowRead"].as_array().unwrap();
     let hidden = settings["filesystem"]["denyRead"].as_array().unwrap();
-    for name in ["cockpit-todo", "cockpit-design", "cockpit-needs-input", "cockpit-session-label"] {
+    for name in ["cockpit-todo", "cockpit-design", "cockpit-needs-input", "cockpit-session-label", "cockpit-session-doing"] {
         assert!(readable.iter().any(|value| value == &format!("~/agent-cockpit/config/bin/.local/bin/{name}")), "{name}");
     }
     for name in ["cockpit-todo", "cockpit-design"] {

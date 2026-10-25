@@ -275,7 +275,11 @@ pub fn git_branch(cwd: &str) -> String {
 }
 
 pub fn age(since: i64) -> String {
-    let seconds = now_secs() - since;
+    duration(now_secs() - since)
+}
+
+/// "45s", "18m", "3h", "2d".
+pub fn duration(seconds: i64) -> String {
     if seconds < 60 {
         format!("{seconds}s")
     } else if seconds < 3600 {

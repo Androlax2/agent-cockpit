@@ -20,6 +20,7 @@
       "~/agent-cockpit/config/bin/.local/bin/cockpit-design",
       "~/agent-cockpit/config/bin/.local/bin/cockpit-needs-input",
       "~/agent-cockpit/config/bin/.local/bin/cockpit-session-label",
+      "~/agent-cockpit/config/bin/.local/bin/cockpit-session-doing",
       "~/agent-cockpit/config/bin/.local/bin/cockpit-team",
       "~/agent-cockpit/apps/target/release/cockpit-team",
       "~/agent-cockpit/config/bin/.local/bin/cockpit-subscription",

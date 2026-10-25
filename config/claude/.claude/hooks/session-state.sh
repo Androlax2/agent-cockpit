@@ -199,9 +199,28 @@ background_of() { # payload: "<agents> <other work>"
         | @tsv' <<<"$1"
 }
 
+# The card's fallback when the agent's own "doing now" goes stale: "Bash  cargo nextest run".
+# Same rules as cockpit::sessions::tool_summary: one line, controls as spaces, tmux formats broken
+# up, at most 100 characters, so the daemon never refuses the report it rides on.
+last_tool_of() { # payload
+    jq -r '(.tool_name // "" | tostring | gsub("^\\s+|\\s+$"; "")) as $tool
+        | if $tool == "" then empty else
+            ((.tool_input // {}) | if type == "object" then . else {} end) as $input
+            | ([$input.command, $input.file_path, $input.pattern, $input.url, $input.query, $input.description]
+               | map(select(type == "string") | gsub("^\\s+|\\s+$"; "") | select(. != "")) | first // null) as $detail
+            | (if $detail == null then $tool else "\($tool)  \($detail | split("\n")[0])" end)
+            | explode | map(if . < 32 or (. >= 127 and . < 160) then 32 else . end) | implode
+            | gsub("#\\("; "# (") | gsub("#\\{"; "# {")
+            | gsub("^\\s+|\\s+$"; "")
+            | if length > 100 then .[:99] + "…" else . end
+          end' <<<"$1"
+}
+
 state=
 task=
 label=
+doing=
+last_tool=
 message=
 outcome=
 turn_id=
@@ -232,6 +251,15 @@ case $event in
             | gsub("\\s+"; " ") | sub("^ +"; "") | sub(" +$"; "")
             | select(length <= 60 and (split(" ") | length >= 3 and length <= 6))' <<<"$payload"); then
             echo "session-state.sh: task label must be 3–6 words, at most 60 characters, without controls or tmux formats" >&2
+            exit 2
+        fi
+        ;;
+    TaskStep)
+        if ! doing=$(jq -er '.doing | select(type == "string")
+            | select((test("[\\x00-\\x1f\\x7f-\\x9f]") | not) and (contains("#(") | not) and (contains("#{") | not))
+            | gsub("\\s+"; " ") | sub("^ +"; "") | sub(" +$"; "")
+            | select(length <= 80 and (split(" ") | length >= 2 and length <= 12))' <<<"$payload"); then
+            echo "session-state.sh: doing-now status must be 2–12 words, at most 80 characters, without controls or tmux formats" >&2
             exit 2
         fi
         ;;
@@ -278,6 +306,7 @@ case $event in
     PostToolUse)
         if [[ -f $turn_done_file ]]; then start_turn; fi
         state=working
+        last_tool=$(last_tool_of "$payload")
         ;;
     Notification)
         message=$(jq -r '.message | gsub("\\s+"; " ")' <<<"$payload")
@@ -364,13 +393,13 @@ esac
 
 report=$(jq -cn \
     --arg session "$session" --arg state "$state" --arg project "$project" --arg cwd "$cwd" \
-    --arg task "$task" --arg label "$label" --arg message "$message" --arg outcome "$outcome" --argjson sticky "$sticky" --argjson terminal "$terminal" --argjson credits "$credits" --arg unpushed "$unpushed" --arg agents "$agents" --arg background "$background" --arg apps "$(craft_apps)" --arg agent "$agent" \
+    --arg task "$task" --arg label "$label" --arg doing "$doing" --arg last_tool "$last_tool" --arg message "$message" --arg outcome "$outcome" --argjson sticky "$sticky" --argjson terminal "$terminal" --argjson credits "$credits" --arg unpushed "$unpushed" --arg agents "$agents" --arg background "$background" --arg apps "$(craft_apps)" --arg agent "$agent" \
     --arg needs_input "$needs_input" --arg kitty_pid "${KITTY_PID:-}" --arg kitty_window "${KITTY_WINDOW_ID:-}" \
     --arg turn_id "$turn_id" --argjson turn_complete "$turn_complete" \
     --arg quota_stopped "$quota_stopped" \
     --arg repository "$repository" --arg branch "$branch" --argjson repository_reported "$repository_reported" \
     --arg kitty_listen "${KITTY_LISTEN_ON:-}" --arg tmux_pane "${TMUX_PANE:-}" \
-    '{$session, $state, $project, $cwd, $task, $label, $message, $outcome, $sticky, $terminal,
+    '{$session, $state, $project, $cwd, $task, $label, $doing, $last_tool, $message, $outcome, $sticky, $terminal,
       $kitty_pid, $kitty_window, $kitty_listen, $tmux_pane}
      | with_entries(select(.value != "" and .value != false))
      | if $unpushed == "" then . else .unpushed = ($unpushed | tonumber) end
@@ -409,13 +438,13 @@ fi
 send_to_osd() {
     [[ -S $report_socket ]] || return 1
     local request=$1 reply
-    case $event in NeedsInput | TaskLabel) request="session-request $report" ;; esac
+    case $event in NeedsInput | TaskLabel | TaskStep) request="session-request $report" ;; esac
     if ! reply=$(printf '%s\n' "$request" | timeout 1 socat -t1 - "UNIX-CONNECT:$report_socket" 2>/dev/null); then
         echo "session-state.sh: osd report socket not answering, is osd running?" >&2
         return 1
     fi
     case $event in
-        NeedsInput | TaskLabel)
+        NeedsInput | TaskLabel | TaskStep)
             if [[ $reply != ok ]]; then
                 echo "session-state.sh: osd did not accept $event: ${reply:-no acknowledgement}" >&2
                 return 1
@@ -435,6 +464,10 @@ if [[ $event == NeedsInput ]]; then
 fi
 if [[ $event == TaskLabel ]]; then
     echo "session-state.sh: cannot publish the task label: osd is not reading $report_socket" >&2
+    exit 1
+fi
+if [[ $event == TaskStep ]]; then
+    echo "session-state.sh: cannot publish the doing-now status: osd is not reading $report_socket" >&2
     exit 1
 fi
 hook_log "falling back to a toast"

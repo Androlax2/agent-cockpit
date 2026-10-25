@@ -281,6 +281,59 @@ fn task_label_rejections_fail_without_touching_existing_question_toasts() {
 }
 
 #[test]
+fn doing_now_wrapper_reports_only_session_metadata_for_both_agents() {
+    for session in [SESSION_A, OPENCODE_SESSION] {
+        let mut test = HookTest::new();
+        let output = test.sandbox.run("bash", &[bin().join("cockpit-session-doing").to_str().unwrap(), "  Running   the Rust tests "], &[("CLAUDE_CODE_SESSION_ID", session)]);
+        assert!(output.status.success(), "{}", stderr(&output));
+        assert!(test.lines.lock().unwrap().iter().all(|line| line.starts_with("session-request ")), "doing-now needs the daemon's acknowledgement");
+        let report = test.received().remove(0);
+        assert_eq!(report["doing"], "Running the Rust tests");
+        assert_eq!(report["session"], session);
+        for field in ["state", "message", "task", "needs_input", "label", "last_tool"] {
+            assert!(report.get(field).is_none(), "doing-now overwrites {field}: {report}");
+        }
+    }
+}
+
+#[test]
+fn doing_now_reports_reject_invalid_text_without_sending_anything() {
+    let mut test = HookTest::new();
+    for doing in ["Testing".to_string(), "a ".repeat(13), format!("Running {}", "x".repeat(80)), "Running\nthe tests".into(), "Reading #(id) output".into()] {
+        let output = test.run_hook(with_session(json!({"hook_event_name": "TaskStep", "doing": doing}), "/x/proj"), &[]);
+        assert_eq!(output.status.code(), Some(2), "{doing:?}");
+    }
+    assert!(test.received().is_empty());
+}
+
+#[test]
+fn doing_now_fails_loudly_when_the_daemon_refuses_it() {
+    let test = HookTest::with_reply("refused: no session target");
+    let output = test.sandbox.run("bash", &[bin().join("cockpit-session-doing").to_str().unwrap(), "Running the tests"], &[("CLAUDE_CODE_SESSION_ID", SESSION_A)]);
+    assert!(!output.status.success(), "doing-now publication falsely succeeded");
+    assert!(test.sandbox.calls("notify-send").is_empty());
+}
+
+#[test]
+fn a_tool_use_reports_a_safe_one_line_summary_of_the_tool() {
+    let mut test = HookTest::new();
+    let long = "x".repeat(300);
+    for (tool, input) in [("Bash", json!({"command": "cargo nextest run\necho done", "description": "Run the tests"})),
+                          ("Edit", json!({"file_path": "/r/app.rs", "old_string": "a"})),
+                          ("mcp__figcraft__get_node", json!({"id": 4})),
+                          ("Bash", json!({"command": "echo #{x} #(y)\tz"})),
+                          ("Bash", json!({"command": long}))] {
+        assert!(test.run_hook(with_session(json!({"hook_event_name": "PostToolUse", "tool_name": tool, "tool_input": input}), "/x/proj"), &[]).status.success());
+    }
+    let summaries: Vec<String> = test.received().iter().map(|report| report["last_tool"].as_str().unwrap().to_string()).collect();
+    assert_eq!(&summaries[..4], ["Bash  cargo nextest run", "Edit  /r/app.rs", "mcp__figcraft__get_node", "Bash  echo # {x} # (y) z"]);
+    assert_eq!(summaries[4].chars().count(), 100);
+    assert!(summaries[4].ends_with('…'));
+    let summary = cockpit::sessions::tool_summary("Bash", Some(&json!({"command": long}))).unwrap();
+    assert_eq!(summaries[4], summary, "the hook and the Rust summary must agree");
+}
+
+#[test]
 fn informational_notification_carries_no_state() {
     let mut test = HookTest::new();
     test.run_hook(
