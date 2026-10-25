@@ -373,7 +373,7 @@ def dispatch_collaboration(access, binding, header, body, output, *, deadline, c
             repository_path = '/repos/' + record['canonical_name']
             if resource == 'graphql':
                 if (method != 'POST' or path != '/graphql' or header['action'] not in
-                        {'pull_request.ready', 'pull_request.draft', 'pull_request.merge'} | actions.PROJECT_ACTIONS):
+                        {'pull_request.ready', 'pull_request.draft'} | actions.PROJECT_ACTIONS):
                     raise RequestDenied('invalid_action_route')
                 operation_cost = graphql_operation_cost(access, profile, header['action'])
             elif resource == 'core' and (path == repository_path or path.startswith(repository_path + '/')):
@@ -387,7 +387,7 @@ def dispatch_collaboration(access, binding, header, body, output, *, deadline, c
             if scope_bucket is not None:
                 costs[scope_bucket] = costs.get(scope_bucket, 0) + 1
             needs_head_guard = is_mutation and (header['action'].startswith('review.')
-                                                or header['action'] in ('pull_request.update_branch', 'pull_request.merge'))
+                                                or header['action'] == 'pull_request.update_branch')
             if needs_head_guard:
                 guard_bucket = access.runtime_principal(profiles['read']) + ':core'
                 costs[guard_bucket] = costs.get(guard_bucket, 0) + 1
@@ -434,8 +434,7 @@ def dispatch_collaboration(access, binding, header, body, output, *, deadline, c
                     raise RequestDenied('review_head_changed')
                 current = actions.verified_pull_request(record, fields['number'], current)
                 if (current['head']['sha'] != fields['expected_head_sha']
-                        or (header['action'] in ('review.create', 'review.submit', 'pull_request.update_branch',
-                                                 'pull_request.merge')
+                        or (header['action'] in ('review.create', 'review.submit', 'pull_request.update_branch')
                             and current['state'] != 'open')):
                     raise RequestDenied('review_head_changed')
                 check_live()

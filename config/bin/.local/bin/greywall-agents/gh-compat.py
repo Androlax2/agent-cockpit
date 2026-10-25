@@ -403,30 +403,6 @@ def relationship_actions(arguments):
              {'number': int(match[1]), 'child_number' if is_child else 'blocker_number': numbers[0]})]
 
 
-def merge_actions(arguments):
-    parser = Parser(add_help=False)
-    parser.add_argument('group', choices=['pr'])
-    parser.add_argument('operation', choices=['merge'])
-    parser.add_argument('number')
-    parser.add_argument('-R', '--repo')
-    methods = parser.add_mutually_exclusive_group(required=True)
-    for flag, method in [('--merge', 'merge'), ('--squash', 'squash'), ('--rebase', 'rebase')]:
-        methods.add_argument(flag, action='store_const', const=method, dest='method')
-    parser.add_argument('--match-head-commit')
-    # --admin, --auto, --delete-branch and friends are intentionally not parsed: they fail as migrations.
-    options = parser.parse_args(arguments)
-    canonical = os.environ.get('COCKPIT_GITHUB_REPOSITORY')
-    if canonical is None or (options.repo is not None and repository_name(options.repo) != repository_name(canonical)):
-        raise ClientDenied('repository_not_enrolled')
-    number = target_number(options.number, canonical, 'pr')
-    head = options.match_head_commit
-    if head is None:
-        head = read_pull_request_head(number, canonical)
-    elif not re.fullmatch(r'[0-9a-f]{40}', head):
-        raise ClientDenied('command_requires_migration')
-    return [('pull_request.merge', {'number': number, 'expected_head_sha': head, 'merge_method': options.method})]
-
-
 def gh_field_key(name):
     # Mirrors gh's camelCase(): only the first character is lowered.
     return name[:1].lower() + name[1:]
@@ -481,8 +457,6 @@ def main(arguments=None):
             return native_read(arguments).returncode
         if arguments[:2] == ['project', 'item-list']:
             return project_item_list(arguments)
-        if arguments[:1] == ['stack'] and 'merge' in arguments[1:2]:
-            raise ClientDenied('stack_merge_unproven')
         if arguments[:1] not in (['issue'], ['pr'], ['api']):
             raise ClientDenied('command_requires_migration')
         if arguments[:1] == ['api']:
@@ -493,8 +467,6 @@ def main(arguments=None):
             actions = update_branch_actions(arguments)
         elif arguments[:2] == ['pr', 'ready']:
             actions = readiness_actions(arguments)
-        elif arguments[:2] == ['pr', 'merge']:
-            actions = merge_actions(arguments)
         else:
             actions = command_actions(arguments)
         for action, fields in actions:

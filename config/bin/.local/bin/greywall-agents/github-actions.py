@@ -1,7 +1,6 @@
 #!/usr/bin/python3 -I
 """Typed collaboration handlers; the broker owns credentials and write admission."""
 
-import base64
 import re
 from functools import partial
 from urllib.parse import quote
@@ -20,16 +19,7 @@ PULL_REQUEST_ACTIONS = {'pull_request.create', 'pull_request.edit', 'pull_reques
 PROJECT_ACTIONS = {'project.item.add', 'project.item.field_set', 'project.item.move',
                    'project.fields.list', 'project.items.list'}
 PROJECT_MUTATIONS = {'project.item.add', 'project.item.field_set', 'project.item.move'}
-MERGE_ACTIONS = {'pull_request.merge'}
-COLLABORATION_ACTIONS = ISSUE_ACTIONS | DISCUSSION_ACTIONS | PULL_REQUEST_ACTIONS | PROJECT_ACTIONS | MERGE_ACTIONS
-MERGE_STATE_QUERY = (
-    'query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){'
-    'mergeCommitAllowed squashMergeAllowed rebaseMergeAllowed pullRequest(number:$number){'
-    'id state isDraft headRefOid baseRefName isCrossRepository mergeStateStatus reviewDecision isMergeQueueEnabled '
-    'commits(last:1){nodes{commit{oid statusCheckRollup{contexts(first:100){pageInfo{hasNextPage} nodes{__typename '
-    '... on CheckRun{name status conclusion isRequired(pullRequestNumber:$number)} '
-    '... on StatusContext{context state isRequired(pullRequestNumber:$number)}}}}}}}}}}')
-MERGE_AUTHORIZATION = 'Claude may merge pull requests'
+COLLABORATION_ACTIONS = ISSUE_ACTIONS | DISCUSSION_ACTIONS | PULL_REQUEST_ACTIONS | PROJECT_ACTIONS
 ITEM_QUERY = ('query($item:ID!){node(id:$item){... on ProjectV2Item{id project{id} content{__typename '
               '... on Issue{number repository{databaseId}} ... on PullRequest{number repository{databaseId}}}}}}')
 FIELDS_QUERY = ('query($project:ID!){node(id:$project){... on ProjectV2{fields(first:100){nodes{'
@@ -283,8 +273,6 @@ def action_fields(action, fields):
         return pull_request_fields(action, fields)
     if action in PROJECT_ACTIONS:
         return project_fields(action, fields)
-    if action in MERGE_ACTIONS:
-        return merge_fields(fields)
     raise ActionDenied('action_unavailable')
 
 
@@ -297,120 +285,7 @@ def perform_action(record, action, fields, request, *, actor_id):
         return pull_request_action(record, action, fields, request, actor_id=actor_id)
     if action in PROJECT_ACTIONS:
         return project_action(record, action, fields, request)
-    if action in MERGE_ACTIONS:
-        return merge_action(record, fields, request)
     raise ActionDenied('action_unavailable')
-
-
-def merge_fields(fields):
-    # No admin, auto-merge, branch-deletion or bypass field exists: unknown keys are refused.
-    if (not isinstance(fields, dict) or set(fields) != {'number', 'expected_head_sha', 'merge_method'}
-            or not positive_number(fields['number'])
-            or not isinstance(fields['expected_head_sha'], str) or not re.fullmatch(r'[0-9a-f]{40}', fields['expected_head_sha'])
-            or fields['merge_method'] not in ('merge', 'squash', 'rebase')):
-        raise ActionDenied('invalid_action_fields')
-    return fields
-
-
-def authorizes_merge(policy):
-    """True only when the default branch's `## Git authorization` section grants merging in words."""
-    section, in_section = [], False
-    for line in policy.splitlines():
-        if line.startswith('## '):
-            if in_section:
-                break
-            in_section = line.strip() == '## Git authorization'
-        elif in_section:
-            section.append(line)
-    return MERGE_AUTHORIZATION in ' '.join(' '.join(section).split())
-
-
-def default_branch_policy(record, request):
-    repository = '/repos/' + record['canonical_name']
-    status, metadata, _ = request('GET', repository, permission='contents')
-    if (status != 200 or not isinstance(metadata, dict) or metadata.get('id') != record['repository_id']
-            or not branch_name(metadata.get('default_branch'))):
-        raise ActionDenied('merge_policy_unavailable')
-    status, branch, _ = request('GET', repository + '/branches/' + quote(metadata['default_branch'], safe=''),
-                                permission='contents')
-    commit = branch.get('commit', {}).get('sha') if isinstance(branch, dict) else None
-    if status != 200 or not isinstance(commit, str) or not re.fullmatch(r'[0-9a-f]{40}', commit):
-        raise ActionDenied('merge_policy_unavailable')
-    status, document, _ = request('GET', repository + '/contents/CLAUDE.md?ref=' + commit, permission='contents')
-    if status == 404:
-        raise ActionDenied('merge_not_authorized')
-    if (status != 200 or not isinstance(document, dict) or document.get('type') != 'file'
-            or document.get('encoding') != 'base64' or not isinstance(document.get('sha'), str)
-            or not re.fullmatch(r'[0-9a-f]{40}', document['sha'])):
-        raise ActionDenied('merge_policy_unavailable')
-    try:
-        policy = base64.b64decode(document['content'], validate=False).decode('utf-8')
-    except (KeyError, TypeError, ValueError, UnicodeError):
-        raise ActionDenied('merge_policy_unavailable') from None
-    if not authorizes_merge(policy):
-        raise ActionDenied('merge_not_authorized')
-    return {'default_commit': commit, 'blob': document['sha']}
-
-
-def required_checks_passing(contexts):
-    if (not isinstance(contexts, dict) or not isinstance(contexts.get('nodes'), list)
-            or not isinstance(contexts.get('pageInfo'), dict) or contexts['pageInfo'].get('hasNextPage') is not False):
-        raise ActionDenied('required_checks_incomplete')
-    for context in contexts['nodes']:
-        if not isinstance(context, dict) or type(context.get('isRequired')) is not bool:
-            raise ActionDenied('required_checks_incomplete')
-        if not context['isRequired']:
-            continue
-        if context.get('__typename') == 'CheckRun':
-            # SKIPPED is refused deliberately: a skipped required check is not treated as proof.
-            passed = context.get('status') == 'COMPLETED' and context.get('conclusion') in ('SUCCESS', 'NEUTRAL')
-        elif context.get('__typename') == 'StatusContext':
-            passed = context.get('state') == 'SUCCESS'
-        else:
-            raise ActionDenied('required_checks_incomplete')
-        if not passed:
-            raise ActionDenied('required_checks_not_passing')
-
-
-def merge_action(record, fields, request):
-    fields = merge_fields(fields)
-    policy = default_branch_policy(record, request)
-    owner, name = record['canonical_name'].split('/')
-    status, result, _ = request('POST', '/graphql', {'query': MERGE_STATE_QUERY,
-                                                     'variables': {'owner': owner, 'name': name, 'number': fields['number']}},
-                                permission='pull_requests', resource='graphql', mutation=False)
-    if (status != 200 or not isinstance(result, dict) or ('errors' in result and result['errors'] != [])
-            or not isinstance(result.get('data'), dict) or not isinstance(result['data'].get('repository'), dict)):
-        raise ActionDenied('merge_state_unavailable')
-    repository = result['data']['repository']
-    pull = repository.get('pullRequest')
-    if not isinstance(pull, dict):
-        raise ActionDenied('pull_request_target_invalid')
-    commits = pull.get('commits', {}).get('nodes') if isinstance(pull.get('commits'), dict) else None
-    commit = commits[0].get('commit') if isinstance(commits, list) and len(commits) == 1 and isinstance(commits[0], dict) else None
-    if (pull.get('state') != 'OPEN' or pull.get('isDraft') is not False or pull.get('isCrossRepository') is not False
-            or pull.get('headRefOid') != fields['expected_head_sha']
-            or not isinstance(commit, dict) or commit.get('oid') != fields['expected_head_sha']):
-        raise ActionDenied('pull_request_head_changed')
-    if pull.get('isMergeQueueEnabled') is not False:
-        raise ActionDenied('merge_queue_requires_review')
-    rollup = commit.get('statusCheckRollup')
-    required_checks_passing({'nodes': [], 'pageInfo': {'hasNextPage': False}} if rollup is None else rollup.get('contexts'))
-    if pull.get('reviewDecision') not in ('APPROVED', None):
-        raise ActionDenied('required_review_missing')
-    if pull.get('mergeStateStatus') not in ('CLEAN', 'HAS_HOOKS', 'UNSTABLE'):
-        raise ActionDenied('pull_request_not_mergeable')
-    allowed = {'merge': 'mergeCommitAllowed', 'squash': 'squashMergeAllowed', 'rebase': 'rebaseMergeAllowed'}
-    if repository.get(allowed[fields['merge_method']]) is not True:
-        raise ActionDenied('merge_method_not_allowed')
-    status, merged, _ = request('PUT', '/repos/' + record['canonical_name'] + '/pulls/' + str(fields['number']) + '/merge',
-                                {'sha': fields['expected_head_sha'], 'merge_method': fields['merge_method']},
-                                permission='contents')
-    if (status != 200 or not isinstance(merged, dict) or merged.get('merged') is not True
-            or not isinstance(merged.get('sha'), str) or not re.fullmatch(r'[0-9a-f]{40}', merged['sha'])):
-        raise ActionDenied('action_outcome_unknown')
-    return {'number': fields['number'], 'merge_commit': merged['sha'], 'head_oid': fields['expected_head_sha'],
-            'policy': policy, 'outcome': 'succeeded'}
 
 
 def opaque_id(value):
