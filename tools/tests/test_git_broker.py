@@ -61,9 +61,7 @@ class BrokerFramingTests(BrokerFixture):
             self.header(headers={'Authorization': 'SYNTHETIC_SECRET'}),
             self.header(version=True), self.header(version=2), self.header(body_length=True),
             self.header(body_length=-1), self.header(capability='SYNTHETIC_SECRET'),
-            # credential.read exists only bare (read role, no selectors); see the spec amendment.
-            self.header(action='credential.read', body_length=1), self.header(action='credential.read', role='forward'),
-            self.header(action='api.request'),
+            self.header(action='credential.read'), self.header(action='api.request'),
             self.header(protocol=3), self.header(protocol=True), self.header(service='receive-pack'),
             self.header(action='git.advertise'),
             self.header(action='git.advertise', service='upload-pack', body_length=1),
@@ -583,61 +581,6 @@ class BrokerChannelTests(BrokerFixture):
                 status, _ = self.run_operator(arguments, 'RESOLVE ' + arguments[2] + ' ' + arguments[4] + '\n')
                 self.assertNotEqual(status, 0)
         self.assertEqual(len(json.loads(self.run_operator(['pending'])[1])), 1)
-
-    def read_credential_exchange(self, body=b''):
-        return self.exchange(self.header(action='credential.read', body_length=len(body)), body=body)
-
-    def test_read_credential_returns_only_the_read_role_token(self):
-        self.enable_review_fixture()
-        roles = []
-
-        def credential(record, profile, deadline, **options):
-            roles.append(profile['role'])
-            return 'SYNTHETIC_READ_TOKEN' if profile['role'] == 'read' else 'SYNTHETIC_WRITE_TOKEN'
-
-        with patch.object(self.access, 'read_runtime_credential', side_effect=credential):
-            self.start()
-            response, payload = self.read_credential_exchange()
-        self.assertEqual(response['status'], 200, response)
-        self.assertEqual(json.loads(payload), {'token': 'SYNTHETIC_READ_TOKEN', 'outcome': 'succeeded', 'request_id': None})
-        self.assertEqual(roles, ['read'])
-        self.assertNotIn('SYNTHETIC_WRITE_TOKEN', payload.decode())
-
-    def test_expired_read_app_token_is_refreshed_through_a_funded_admission_check(self):
-        self.enable_review_fixture()
-        calls = []
-
-        def credential(record, profile, deadline, **options):
-            calls.append('credential')
-            if calls.count('credential') == 1:
-                raise self.access.AccessDenied('runtime_app_token_unavailable')
-            return 'SYNTHETIC_READ_TOKEN'
-
-        with patch.object(self.access, 'read_runtime_credential', side_effect=credential):
-            self.start()
-            response, payload = self.read_credential_exchange()
-        self.assertEqual(response['status'], 200, response)
-        self.assertEqual(self.purposes, ['admission', 'admission'])
-        self.assertEqual(json.loads(payload)['token'], 'SYNTHETIC_READ_TOKEN')
-
-    def test_failed_refresh_refuses_the_token_and_closes_the_session(self):
-        self.enable_review_fixture()
-        with patch.object(self.access, 'read_runtime_credential',
-                          side_effect=self.access.AccessDenied('runtime_app_token_unavailable')):
-            stop, worker, _ = self.start()
-            self.report = self.report | {'mode': 'read_only', 'reason': 'protection_uninspectable'}
-            response, payload = self.read_credential_exchange()
-        self.assertEqual(response.get('code'), 'admission_denied')
-        self.assertEqual(payload, b'')
-        worker.join(2)
-        self.assertTrue(stop.is_set())
-
-    def test_read_credential_with_a_body_is_refused_before_any_lookup(self):
-        self.enable_review_fixture()
-        with patch.object(self.access, 'read_runtime_credential', side_effect=AssertionError('looked up')):
-            self.start()
-            response, _ = self.read_credential_exchange(b'{}')
-        self.assertGreaterEqual(response['status'], 400)
 
     def enable_merge_fixture(self, *, head_after_scan='a' * 40):
         self.enable_review_fixture()

@@ -82,10 +82,6 @@ def request_header(encoded):
             or not isinstance(header['action'], str)
             or type(header['body_length']) is not int or header['body_length'] < 0):
         raise RequestDenied('invalid_header')
-    if header['action'] == 'credential.read':
-        if header.keys() != required or header['body_length'] != 0:
-            raise RequestDenied('invalid_header')
-        return header
     if header['action'] in load_actions().COLLABORATION_ACTIONS:
         if header.keys() != required:
             raise RequestDenied('invalid_header')
@@ -329,43 +325,6 @@ def graphql_operation_cost(access, profile, action):
             or not isinstance(evidence.get('evidence'), str) or not CAPABILITY.fullmatch(evidence['evidence'])):
         raise RequestDenied('graphql_rate_setup_required')
     return evidence['max_cost']
-
-
-def dispatch_read_credential(access, binding, header, body, output, *, deadline, check_live):
-    """Hand the sandbox's native gh the separately enrolled read-only token, never a write role.
-
-    App installation tokens expire hourly; a token with under five minutes left is refreshed
-    through a fresh admission inspection, which is what mints and funds it.
-    """
-    try:
-        registry, serialized = access.load_registry()
-        if serialized is None or hashlib.sha256(serialized).hexdigest() != binding['registry_digest']:
-            raise RequestDenied('admission_revoked')
-        record = next((entry for entry in registry['repositories']
-                       if entry['repository_id'] == binding['repository_id']
-                       and entry['canonical_name'] == binding['canonical_name']), None)
-        if record is None:
-            raise RequestDenied('action_unavailable')
-        profile = access.runtime_credential_profiles(record, registry)['read']
-        check_live()
-        try:
-            token = access.read_runtime_credential(record, profile, time.monotonic() + 300, verify_remote=False)
-        except access.AccessDenied as error:
-            if str(error) != 'runtime_app_token_unavailable':
-                raise
-            report = access.inspect_access(Path(binding['checkout']), purpose='admission')
-            if (report.get('mode') != 'verified' or report.get('identity_verified') is not True
-                    or report.get('credential_roles_verified') != ['read', 'forward']
-                    or any(report.get(field) != binding[field] for field in BINDING_IDENTITY)):
-                raise RequestDenied('admission_denied')
-            check_live()
-            token = access.read_runtime_credential(record, profile, time.monotonic() + 300, verify_remote=False)
-    except access.AccessDenied as error:
-        raise RequestDenied(str(error)) from None
-    encoded = json.dumps({'token': token, 'outcome': 'succeeded', 'request_id': None}).encode()
-    output.write(encoded)
-    output.seek(0)
-    return {'status': 200, 'content_type': 'application/json', 'body_length': len(encoded)}
 
 
 def dispatch_collaboration(access, binding, header, body, output, *, deadline, check_live):
@@ -870,16 +829,14 @@ def serve(decision, socket_path, *, ready=None, stop=None):
             with tempfile.TemporaryFile(dir=spool) as body, tempfile.TemporaryFile(dir=spool) as output:
                 header = read_request(connection, body, deadline=deadline, authorize=authorize)
                 is_collaboration_action = header['action'] in load_actions().COLLABORATION_ACTIONS
-                is_read_credential = header['action'] == 'credential.read'
-                if not is_collaboration_action and not is_read_credential:
+                if not is_collaboration_action:
                     git_route(header, binding['canonical_name'])
                 if header['action'] == 'git.push':
                     default_branch = report.get('default_branch')
                     if not isinstance(default_branch, str) or not default_branch:
                         raise RequestDenied('admission_denied')
                     validate_push(body, default_branch=default_branch)
-                dispatch = (dispatch_read_credential if is_read_credential else
-                            dispatch_collaboration if is_collaboration_action else dispatch_git)
+                dispatch = dispatch_collaboration if is_collaboration_action else dispatch_git
                 response = dispatch(access, binding, header, body, output, deadline=deadline, check_live=check_live)
                 push_completed = header['action'] == 'git.push' or is_collaboration_action
                 encoded = json.dumps(response).encode()
