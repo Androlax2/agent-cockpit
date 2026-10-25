@@ -568,6 +568,131 @@ impl Costs {
     }
 }
 
+/// The days a session report covers, and the window the digest compares with the one before it.
+pub const REPORT_DAYS: i64 = 7;
+const REPORT_TOP_SESSIONS: usize = 15;
+const DIGEST_FLAGGED_SESSIONS: usize = 3;
+/// Every reply re-reads the whole context: past this average, cache reads dominate a session's
+/// cost (43% of all spending in October 2026 came from the 15 sessions above it), and a fresh
+/// session or a compaction does the same work for less.
+const LARGE_CONTEXT_TOKENS: i64 = 400_000;
+/// Cache writes cost 12-20 times a cache read: this share of the prompt means the cache kept being
+/// rebuilt (a model switch, edits above the cached prefix, pauses past its TTL).
+const CACHE_CHURN_SHARE: f64 = 0.10;
+const CACHE_CHURN_MIN_REPLIES: i64 = 10;
+/// Sessions this long carry a context that grew all along; splitting the work keeps each one small.
+const LONG_SESSION_REPLIES: i64 = 1000;
+
+/// One session's usage in a report window: replies, their API-price estimate, and their tokens.
+pub struct SessionUsage {
+    pub session: String,
+    pub project: String,
+    pub replies: i64,
+    pub cost: f64,
+    pub unpriced_replies: i64,
+    /// Every prompt token of every reply: fresh input, cache reads and cache writes.
+    pub prompt_tokens: i64,
+    pub cache_write_tokens: i64,
+}
+
+impl SessionUsage {
+    pub fn average_context(&self) -> i64 {
+        self.prompt_tokens / self.replies.max(1)
+    }
+
+    /// Why the session spent more than its work needed, empty when nothing stands out.
+    pub fn waste_flags(&self) -> Vec<&'static str> {
+        let mut flags = Vec::new();
+        if self.average_context() >= LARGE_CONTEXT_TOKENS {
+            flags.push("large context");
+        }
+        if self.replies >= CACHE_CHURN_MIN_REPLIES && self.prompt_tokens > 0
+            && self.cache_write_tokens as f64 / self.prompt_tokens as f64 >= CACHE_CHURN_SHARE {
+            flags.push("cache churn");
+        }
+        if self.replies >= LONG_SESSION_REPLIES {
+            flags.push("long session");
+        }
+        flags
+    }
+}
+
+/// Each session's usage on the days from `first_day` up to, not including, `end_day` (YYYY-MM-DD),
+/// the most expensive first.
+pub fn session_usage(archive: &Connection, first_day: &str, end_day: &str) -> rusqlite::Result<Vec<SessionUsage>> {
+    let mut statement = archive.prepare(
+        "select session, min(project), count(*), coalesce(sum(cost), 0), count(*) - count(cost),
+                sum(input + cache_read + cache_write_5m + cache_write_1h), sum(cache_write_5m + cache_write_1h)
+         from replies where day >= ?1 and day < ?2 group by session order by 4 desc")?;
+    let rows = statement.query_map([first_day, end_day], |row| Ok(SessionUsage {
+        session: row.get(0)?, project: row.get(1)?, replies: row.get(2)?, cost: row.get(3)?, unpriced_replies: row.get(4)?,
+        prompt_tokens: row.get(5)?, cache_write_tokens: row.get(6)?,
+    }))?;
+    rows.collect()
+}
+
+/// The estimate of the sessions with a waste flag, and of all of them.
+fn flagged_and_total(sessions: &[SessionUsage]) -> (f64, f64) {
+    sessions.iter().fold((0.0, 0.0), |(flagged, total), usage|
+        (flagged + if usage.waste_flags().is_empty() { 0.0 } else { usage.cost }, total + usage.cost))
+}
+
+fn share_text(part: f64, whole: f64) -> String {
+    if whole > 0.0 { format!("{:.0}%", part / whole * 100.0) } else { "–".into() }
+}
+
+fn session_title(session: &str) -> String {
+    let title = sessions::read_title(session);
+    if title.is_empty() { "(untitled)".into() } else { title }
+}
+
+/// The session report as text: the last REPORT_DAYS days up to `today`, the most expensive sessions
+/// with their waste flags, and how much went to flagged sessions against the window before.
+pub fn session_report(archive: &Connection, today: NaiveDate, title_of: impl Fn(&str) -> String) -> rusqlite::Result<String> {
+    let end = (today + Duration::days(1)).to_string();
+    let first = today - Duration::days(REPORT_DAYS - 1);
+    let current = session_usage(archive, &first.to_string(), &end)?;
+    let previous = session_usage(archive, &(first - Duration::days(REPORT_DAYS)).to_string(), &first.to_string())?;
+    let mut out = format!("sessions since {first} · token-based estimates at API prices, not your bill\n");
+    if current.is_empty() {
+        out.push_str("  No recorded usage\n");
+        return Ok(out);
+    }
+    out.push_str(&format!("  {:<18}  {:<44}  {:>9}  {:>7}  {:>7}  flags\n", "project", "session", "estimate", "replies", "context"));
+    for usage in current.iter().take(REPORT_TOP_SESSIONS) {
+        let mut flags = usage.waste_flags().join(", ");
+        if usage.unpriced_replies > 0 {
+            flags.push_str(&format!("{}{} unpriced replies left out", if flags.is_empty() { "" } else { ", " }, usage.unpriced_replies));
+        }
+        out.push_str(&format!("  {:<18}  {:<44}  {:>9}  {:>7}  {:>6}K  {flags}\n",
+                              usage.project.chars().take(18).collect::<String>(), title_of(&usage.session).chars().take(44).collect::<String>(),
+                              money(usage.cost), usage.replies, usage.average_context() / 1000));
+    }
+    if current.len() > REPORT_TOP_SESSIONS {
+        let rest = &current[REPORT_TOP_SESSIONS..];
+        out.push_str(&format!("  and {} more sessions · {}\n", rest.len(), money(rest.iter().map(|usage| usage.cost).sum())));
+    }
+    let (flagged, total) = flagged_and_total(&current);
+    let (previous_flagged, previous_total) = flagged_and_total(&previous);
+    out.push_str(&format!("flagged sessions  {} of {} ({}) · the {REPORT_DAYS} days before: {}\n",
+                          money(flagged), money(total), share_text(flagged, total), share_text(previous_flagged, previous_total)));
+    Ok(out)
+}
+
+/// cockpit-sidebar sessions: the session report, from the archive brought up to date first.
+pub fn print_sessions() -> rusqlite::Result<()> {
+    let mut archive = open_archive(&paths::usage_archive())?;
+    archive_transcripts(&mut archive, &paths::transcripts())?;
+    let opencode = archive_opencode(&mut archive, &paths::opencode_database()).err();
+    backfill_costs(&mut archive)?;
+    let mut out = session_report(&archive, Local::now().date_naive(), session_title)?;
+    if let Some(error) = opencode {
+        out.push_str(&format!("opencode's replies left out: {error}\n"));
+    }
+    write_out(&out);
+    Ok(())
+}
+
 /// Printed in one go; a reader that went away (`| head`) is not an error.
 fn write_out(text: &str) {
     use std::io::Write;
@@ -668,6 +793,20 @@ pub fn digest_lines(archive: &Connection, sessions: &[sessions::Session], review
     let today_cost = sum_from("select sum(cost) from replies where day = ?", today.to_string())?;
     let week_cost = sum_from("select sum(cost) from replies where day >= ?", week_start.to_string())?;
     lines.push(format!("  {bold}Today so far{reset}  {magenta}{}{reset}   {dim}this week{reset} {magenta}{}{reset}", money(today_cost), money(week_cost)));
+    let report_start = today - Duration::days(REPORT_DAYS - 1);
+    let recent = session_usage(archive, &report_start.to_string(), &(today + Duration::days(1)).to_string())?;
+    if !recent.is_empty() {
+        let previous = session_usage(archive, &(report_start - Duration::days(REPORT_DAYS)).to_string(), &report_start.to_string())?;
+        let (flagged, total) = flagged_and_total(&recent);
+        let (previous_flagged, previous_total) = flagged_and_total(&previous);
+        lines.push(format!("  {bold}Last {REPORT_DAYS} days{reset}  {magenta}{}{reset} {dim}·{reset} {} in flagged sessions {dim}(the {REPORT_DAYS} days before: {}){reset}",
+                           money(total), share_text(flagged, total), share_text(previous_flagged, previous_total)));
+        for usage in recent.iter().filter(|usage| !usage.waste_flags().is_empty()).take(DIGEST_FLAGGED_SESSIONS) {
+            lines.push(format!("    {:<18}  {:<44}  {:>8}  {yellow}{}{reset}", usage.project.chars().take(18).collect::<String>(),
+                               session_title(&usage.session).chars().take(44).collect::<String>(), money(usage.cost), usage.waste_flags().join(", ")));
+        }
+        lines.push(format!("    {dim}cockpit-sidebar sessions lists them all{reset}"));
+    }
     let windows = usage::windows();
     if !windows.is_empty() {
         let parts: Vec<String> = windows.iter().filter_map(|window| {
@@ -907,6 +1046,75 @@ mod tests {
         source.execute("update session_message set data = ?, time_updated = ? where id = 'msg_1'",
                        params![opencode_message(1_760_781_600_000, "claude-opus-5-5", 1000, 0.0), 1_760_781_600_000 + 10 * OPENCODE_REREAD_MS]).unwrap();
         assert_eq!(archive_opencode(&mut archive, &database).unwrap(), 1);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    fn session_with(replies: i64, prompt_tokens: i64, cache_write_tokens: i64) -> SessionUsage {
+        SessionUsage { session: "s".into(), project: "shop".into(), replies, cost: 1.0, unpriced_replies: 0, prompt_tokens, cache_write_tokens }
+    }
+
+    #[test]
+    fn each_waste_flag_starts_at_its_threshold() {
+        for (usage, expected) in [
+            (session_with(10, 10 * (LARGE_CONTEXT_TOKENS - 1), 0), vec![]),
+            (session_with(10, 10 * LARGE_CONTEXT_TOKENS, 0), vec!["large context"]),
+            (session_with(10, 1_000_000, 99_999), vec![]),
+            (session_with(10, 1_000_000, 100_000), vec!["cache churn"]),
+            (session_with(CACHE_CHURN_MIN_REPLIES - 1, 1_000_000, 500_000), vec![]),
+            (session_with(LONG_SESSION_REPLIES, LONG_SESSION_REPLIES, 0), vec!["long session"]),
+        ] {
+            assert_eq!(usage.waste_flags(), expected, "{} replies, {} prompt, {} written", usage.replies, usage.prompt_tokens, usage.cache_write_tokens);
+        }
+    }
+
+    #[test]
+    fn a_session_without_replies_has_no_context_to_flag() {
+        assert!(session_with(0, 0, 0).waste_flags().is_empty());
+    }
+
+    /// One reply of `session` on `day`, `context` prompt tokens read from the cache, priced `cost`.
+    fn add_reply(archive: &Connection, key: &str, day: &str, session: &str, context: i64, cost: Option<f64>) {
+        archive.execute("insert into replies values (?1, ?2, ?2 || 'T10:00:00Z', 'claude-opus-5-5', 'shop', ?3, 0, 1000, ?4, 0, 0, 'standard', ?5)",
+                        params![key, day, session, context, cost]).unwrap();
+    }
+
+    fn report_archive() -> (PathBuf, Connection) {
+        let directory = std::env::temp_dir().join(format!("costs-test-{}", util::token_hex(4)));
+        let archive = open_archive(&directory.join("usage.sqlite")).unwrap();
+        (directory, archive)
+    }
+
+    #[test]
+    fn the_session_report_ranks_this_weeks_sessions_and_flags_the_wasteful_one() {
+        let (directory, archive) = report_archive();
+        add_reply(&archive, "a", "2026-10-25", "big", 500_000, Some(30.0));
+        add_reply(&archive, "b", "2026-10-19", "small", 50_000, Some(10.0));
+        add_reply(&archive, "old", "2026-10-18", "older", 50_000, Some(99.0));
+        let report = session_report(&archive, NaiveDate::from_ymd_opt(2026, 10, 25).unwrap(), |session| format!("title of {session}")).unwrap();
+        let big = report.lines().position(|line| line.contains("title of big")).unwrap();
+        let small = report.lines().position(|line| line.contains("title of small")).unwrap();
+        assert!(big < small, "{report}");
+        assert!(report.lines().nth(big).unwrap().contains("$30.00") && report.lines().nth(big).unwrap().ends_with("large context"), "{report}");
+        assert!(!report.lines().nth(small).unwrap().contains("context,") && !report.contains("title of older"), "{report}");
+        assert!(report.contains("flagged sessions  $30.00 of $40.00 (75%) · the 7 days before: 0%"), "{report}");
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn the_session_report_names_unpriced_replies_instead_of_counting_them_free() {
+        let (directory, archive) = report_archive();
+        add_reply(&archive, "priced", "2026-10-25", "s", 0, Some(1.0));
+        add_reply(&archive, "unpriced", "2026-10-25", "s", 0, None);
+        let report = session_report(&archive, NaiveDate::from_ymd_opt(2026, 10, 25).unwrap(), |_| "t".into()).unwrap();
+        assert!(report.contains("1 unpriced replies left out"), "{report}");
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn a_week_without_replies_is_no_recorded_usage_not_a_zero_bill() {
+        let (directory, archive) = report_archive();
+        let report = session_report(&archive, NaiveDate::from_ymd_opt(2026, 10, 25).unwrap(), |_| "t".into()).unwrap();
+        assert!(report.contains("No recorded usage") && !report.contains("$0.00"), "{report}");
         fs::remove_dir_all(directory).unwrap();
     }
 

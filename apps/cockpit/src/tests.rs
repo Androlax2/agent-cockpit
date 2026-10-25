@@ -5984,6 +5984,20 @@ fn the_digest_covers_the_last_day_today_the_waiting_sessions_and_pull_requests()
     assert!(plain.contains("✗ shop#7  Fix"));
 }
 
+#[test]
+fn the_digest_shows_the_weeks_share_spent_in_flagged_sessions() {
+    let fixture = Fixture::new();
+    let reply = |session: &str, context: i64| json!({"timestamp": "2026-10-17T10:00:00Z", "requestId": session, "sessionId": session, "cwd": "/x/shop",
+        "message": {"id": session, "model": "claude-opus-5-5", "usage": {"output_tokens": 100000, "cache_read_input_tokens": context}}}).to_string();
+    fixture.write("home/.claude/projects/p/s.jsonl", &format!("{}\n{}\n", reply("bloated", 500_000), reply("lean", 10_000)));
+    let mut archive = costs::open_archive(&fixture.path("state/usage.sqlite")).unwrap();
+    costs::archive_transcripts(&mut archive, &fixture.path("home/.claude/projects")).unwrap();
+    let digest = costs::digest_lines(&archive, &[], &[], chrono::NaiveDate::from_ymd_opt(2026, 10, 18).unwrap()).unwrap().join("\n");
+    let plain = regex::Regex::new(r"\x1b\[[0-9;]*m").unwrap().replace_all(&digest, "").to_string();
+    assert!(plain.contains("Last 7 days  $4.10 · 51% in flagged sessions (the 7 days before: –)"), "{plain}");
+    assert_eq!(plain.matches("large context").count(), 1, "{plain}");
+}
+
 // ---- Pull requests ----
 
 #[test]

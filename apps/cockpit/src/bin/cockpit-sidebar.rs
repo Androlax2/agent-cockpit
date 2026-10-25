@@ -136,7 +136,8 @@ fn main() {
         ["usage"] => usage::report_forever(),
         ["costs"] => costs::print_costs().map_err(|error| error.to_string()),
         ["digest"] => costs::print_digest().map_err(|error| error.to_string()),
-        _ => Err("usage: cockpit-sidebar [usage|costs|digest]".into()),
+        ["sessions"] => costs::print_sessions().map_err(|error| error.to_string()),
+        _ => Err("usage: cockpit-sidebar [usage|costs|digest|sessions]".into()),
     };
     if let Err(error) = result {
         eprintln!("{error}");
