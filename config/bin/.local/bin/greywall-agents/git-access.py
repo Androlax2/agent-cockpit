@@ -4,7 +4,6 @@
 import argparse
 import base64
 import copy
-import ctypes
 from datetime import datetime, timezone
 import fcntl
 import hashlib
@@ -15,14 +14,11 @@ import os
 from pathlib import Path
 import re
 import secrets
-import select
 import shutil
-import signal
 import stat
 import subprocess
 import sys
 import tempfile
-import threading
 import time
 from urllib.parse import parse_qs, quote, urlsplit
 
@@ -1193,144 +1189,12 @@ def prepare_session(checkout):
             'canonical_name': report['canonical_name']}
 
 
-def die_with_parent(parent):
-    """Child-side setup: the kernel kills this process if the supervisor dies, even by SIGKILL."""
-    def setup():
-        for number in (signal.SIGINT, signal.SIGQUIT):
-            signal.signal(number, signal.SIG_DFL)
-        ctypes.CDLL(None, use_errno=True).prctl(1, signal.SIGKILL)  # PR_SET_PDEATHSIG
-        if os.getppid() != parent:
-            os._exit(77)
-    return setup
-
-
-def write_binding(path, binding):
-    replacement = path.with_name('.' + path.name + '.' + secrets.token_hex(8))
-    write_private_file(replacement, json.dumps(binding))
-    os.replace(replacement, path)
-
-
-def scheduled_check_failure(report, binding):
-    """Return a stable reason when a scheduled report must not renew this binding, else None."""
-    if not isinstance(report, dict) or report.get('mode') != 'verified':
-        reason = report.get('reason') if isinstance(report, dict) else None
-        return reason if isinstance(reason, str) and re.fullmatch(r'[a-z_]{1,80}', reason) else 'admission_denied'
-    if (report.get('identity_verified') is not True or report.get('rate_verified') is not True
-            or report.get('credential_roles_verified') != ['read', 'forward']
-            or any(report.get(field) != binding[field] for field in
-                   ['checkout', 'repository_id', 'canonical_name', 'git_dir', 'common_dir', 'configuration_digest'])):
-        return 'admission_changed'
-    return None
-
-
-def supervise(session, command, *, check_interval=300, inspection_timeout=30, hard_expiry=600,
-              broker_command=None, inspect=None, broker_ready_timeout=30):
-    """Own one sandbox and its broker; renew evidence on each passing check, contain on the first failure.
-
-    Returns the sandbox's exit status, or 77 after containment (the reason goes to stderr).
-    """
-    if not isinstance(session, str) or not re.fullmatch(r'[0-9a-f]{32}', session):
-        deny('invalid_session')
-    runtime = Path(os.environ.get('XDG_RUNTIME_DIR', f'/run/user/{os.getuid()}'))
-    decision = runtime / 'greywall-agents/git-access' / (session + '.json')
-    channel = runtime / 'greywall-git-channel' / session
-    binding = json.loads(decision.read_text())
-    inspect = inspect_access if inspect is None else inspect
-    if broker_command is None:
-        broker_command = [sys.executable, '-I', str(Path(__file__).with_name('git-broker.py')), 'serve',
-                          '--decision', str(decision), '--socket', str(channel / 'broker.sock')]
-    parent = os.getpid()
-    children = []
-
-    def stop(process):
-        if process.poll() is None:
-            process.terminate()
-            try:
-                process.wait(10)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait()
-
-    def finish(status, reason=None):
-        if reason is not None:
-            binding['revoked'] = True
-            try:
-                write_binding(decision, binding)
-            except OSError:
-                pass
-            print(f'git-access supervisor: write access contained ({reason}); relaunch to continue read-only.',
-                  file=sys.stderr)
-        for process in reversed(children):
-            stop(process)
-        for leftover in [channel / 'capability']:
-            try:
-                leftover.unlink()
-            except FileNotFoundError:
-                pass
-        return status
-
-    broker = subprocess.Popen(broker_command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                              stderr=subprocess.DEVNULL, preexec_fn=die_with_parent(parent))
-    children.append(broker)
-    if not select.select([broker.stdout], [], [], broker_ready_timeout)[0] or not broker.stdout.readline():
-        return finish(77, 'broker_unavailable')
-    previous_handlers = {number: signal.signal(number, signal.SIG_IGN) for number in (signal.SIGINT, signal.SIGQUIT)}
-    try:
-        sandbox = subprocess.Popen(command, preexec_fn=die_with_parent(parent))
-        children.append(sandbox)
-        last_success = last_monotonic = time.monotonic()
-        last_wall = time.time()
-        check = None
-        while True:
-            status = sandbox.poll()
-            if status is not None:
-                return finish(128 - status if status < 0 else status)
-            if broker.poll() is not None:
-                return finish(77, 'broker_stopped')
-            now, wall = time.monotonic(), time.time()
-            resumed = abs((wall - last_wall) - (now - last_monotonic)) > 30
-            last_monotonic, last_wall = now, wall
-            if check is None and (now - last_success >= check_interval or resumed):
-                result = {}
-
-                def run_check(result=result):
-                    try:
-                        result['report'] = inspect(Path(binding['checkout']), purpose='scheduled')
-                    except AccessDenied as error:
-                        result['report'] = {'mode': 'read_only', 'reason': str(error)}
-                    except Exception:
-                        result['report'] = {'mode': 'read_only', 'reason': 'inspection_failed'}
-
-                check = (threading.Thread(target=run_check, daemon=True), result, now)
-                check[0].start()
-            if check is not None:
-                thread, result, started = check
-                if 'report' in result:
-                    reason = scheduled_check_failure(result['report'], binding)
-                    if reason is not None:
-                        return finish(77, reason)
-                    binding.update(checked_at=time.monotonic(), checked_wall=time.time())
-                    write_binding(decision, binding)
-                    last_success, check = time.monotonic(), None
-                elif now - started > inspection_timeout:
-                    return finish(77, 'inspection_timeout')
-            if time.monotonic() - last_success >= hard_expiry:
-                return finish(77, 'admission_expired')
-            time.sleep(0.05)
-    finally:
-        for number, handler in previous_handlers.items():
-            signal.signal(number, handler)
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest='command', required=True)
     commands.add_parser('check-greywall')
     prepare = commands.add_parser('prepare')
     prepare.add_argument('--checkout', required=True, type=Path)
-    run = commands.add_parser('run')
-    run.add_argument('--session', required=True)
-    run.add_argument('sandbox', nargs=argparse.REMAINDER)
     inspect = commands.add_parser('inspect')
     inspect.add_argument('--checkout', required=True, type=Path)
     enroll = commands.add_parser('enroll')
@@ -1345,15 +1209,6 @@ def main():
     if arguments.command == 'prepare':
         print(json.dumps(prepare_session(arguments.checkout), sort_keys=True))
         return 0
-    if arguments.command == 'run':
-        sandbox = arguments.sandbox[1:] if arguments.sandbox[:1] == ['--'] else arguments.sandbox
-        if not sandbox:
-            parser.error('run needs a sandbox command after --')
-        try:
-            return supervise(arguments.session, sandbox)
-        except (AccessDenied, OSError, ValueError) as error:
-            print(f'git-access supervisor: cannot start ({type(error).__name__}); no sandbox started.', file=sys.stderr)
-            return 77
     if arguments.command == 'check-greywall':
         report = check_greywall_dependency()
     elif arguments.command == 'enroll':

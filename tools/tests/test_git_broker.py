@@ -1033,37 +1033,6 @@ class BrokerChannelTests(BrokerFixture):
         self.assertFalse(self.socket_path.exists())
         self.assertEqual(failures, [])
 
-    def test_supervisor_renewal_of_check_times_keeps_the_channel_open(self):
-        _, worker, failures = self.start()
-        time.sleep(0.2)
-        self.binding.update(checked_at=time.monotonic(), checked_wall=time.time())
-        self.write_binding()
-        time.sleep(0.5)
-        self.assertTrue(worker.is_alive(), failures)
-        self.assertEqual(self.exchange(self.header())[0]['code'], 'action_unavailable')
-
-    def test_renewal_cannot_change_identity_capability_or_move_time_backwards(self):
-        for field, value in [('capability', 'b' * 64), ('generation', '4' * 32), ('repository_id', 99),
-                             ('checked_at', -1.0), ('checked_wall', -1.0)]:
-            with self.subTest(field=field):
-                self.binding.update(generation=os.urandom(16).hex(), capability=os.urandom(32).hex())
-                self.write_binding()
-                _, worker, _ = self.start()
-                changed = dict(self.binding)
-                changed[field] = changed[field] + value if field.startswith('checked') else value
-                self.decision.write_text(json.dumps(changed))
-                self.decision.chmod(0o600)
-                worker.join(2)
-                self.assertFalse(worker.is_alive(), field)
-
-    def test_unrenewed_session_still_expires_at_the_hard_limit(self):
-        self.binding['checked_at'] -= 599.5
-        self.binding['checked_wall'] -= 599.5
-        self.write_binding()
-        _, worker, _ = self.start()
-        worker.join(3)
-        self.assertFalse(worker.is_alive())
-
     def test_expired_admission_never_publishes_a_socket(self):
         self.binding['checked_at'] -= 601
         self.write_binding()
