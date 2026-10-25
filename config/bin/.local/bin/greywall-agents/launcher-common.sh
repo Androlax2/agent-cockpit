@@ -122,18 +122,52 @@ greywall_options="$greywall_options --proxy-user $agent-$(folder_slug "$project_
 # through a settings file of its own: greywall.json plus those folders in denyWrite. Greywall
 # protects only folders that exist when the sandbox starts, so every project's and clone's folder
 # is made first; a project created later is the gap (a new clone sets aside memory found there).
+#
+# Greywall hands bwrap all its rules as one argument, which Linux caps at 128 KiB, and a rule per
+# folder ever made passed it on 2026-10-25 ("argument list too long"). The folder of a project or
+# clone that is gone gets no rule: a fresh clone sets aside memory found in its folder. A folder
+# outside IdeaProjects and the clones, or one an existing checkout may own (a subfolder's session),
+# keeps its rule.
 claude_projects="$HOME/.claude/projects"
 own_slug=$(folder_slug "$(pwd -P)")
 mkdir -p "$claude_projects/$own_slug"
+checkout_slugs=""
 for folder in "$HOME"/IdeaProjects/*/ "$clones_dir"/*/*/; do
-    [ -d "$folder" ] && mkdir -p "$claude_projects/$(folder_slug "${folder%/}")"
+    [ -d "$folder" ] || continue
+    checkout_slug=$(folder_slug "${folder%/}")
+    mkdir -p "$claude_projects/$checkout_slug"
+    checkout_slugs="$checkout_slugs$checkout_slug
+"
 done
 other_projects=$(for folder in "$claude_projects"/*/; do
     [ -d "$folder" ] && [ "${folder%/}" != "$claude_projects/$own_slug" ] && printf '%s\n' "${folder%/}"
-done)
+done | awk -v checkouts="$checkout_slugs" -v projects="$(folder_slug "$HOME/IdeaProjects")-" \
+        -v clones="$(folder_slug "$clones_dir")-" '
+    BEGIN { split(checkouts, owners, "\n") }
+    {
+        slug = $0
+        sub(/.*\//, "", slug)
+        if (index(slug, projects) != 1 && index(slug, clones) != 1) { print; next }
+        for (i in owners) {
+            if (owners[i] != "" && (slug == owners[i] || index(slug, owners[i] "-") == 1)) { print; next }
+        }
+    }') || {
+    echo "$agent launcher: cannot list the other projects' folders in $claude_projects, not starting." >&2
+    exit 1
+}
 settings_dir="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/greywall-agents"
 settings="$settings_dir/$own_slug.$agent.json"
 mkdir -p "$settings_dir"
+# Each launch stages its files under a name of its own before moving them into place: the restore
+# after login starts every session at once, and shared ".new" names made them collide (2026-10-25:
+# "mv: cannot stat …/bundle.pem.new").
+install_staged() { # staged-file target mode
+    if ! chmod "$3" "$1" || ! mv "$1" "$2"; then
+        rm -f "$1"
+        echo "$agent launcher: cannot install $2, not starting." >&2
+        exit 1
+    fi
+}
 # greywall.json hides some agents' data from every sandbox (opencode's database and credentials
 # from Claude sessions). Hidden, it is an empty folder mounted over the one the agent's profile
 # allows, last, so the agent's own sessions lost what they wrote (opencode's sessions, on
@@ -160,6 +194,7 @@ for env_file in "$PWD"/.env.*; do
     hidden_env_files="$hidden_env_files$env_file
 "
 done
+staged_settings=$(mktemp "$settings.XXXXXX") || exit 1
 if ! jq --arg others "$other_projects" --arg own "${own_folders:-}" \
         --arg hidden_env "$hidden_env_files" --argjson keeps_env_glob "$keeps_env_glob" \
         '.filesystem.denyWrite += ($others | split("\n") | map(select(. != "")))
@@ -168,11 +203,12 @@ if ! jq --arg others "$other_projects" --arg own "${own_folders:-}" \
          | .filesystem.denyRead = ((.filesystem.denyRead + ["~/.config/greywall-agents/figcraft"]) | unique)
          | if $keeps_env_glob or (any(.filesystem.denyRead[]; . == ".env.*") | not) then .
            else .filesystem.denyRead = (.filesystem.denyRead - [".env.*"] + ($hidden_env | split("\n") | map(select(. != "")))) end' \
-        "$HOME/.config/greywall/greywall.json" > "$settings.new"; then
+        "$HOME/.config/greywall/greywall.json" > "$staged_settings"; then
+    rm -f "$staged_settings"
     echo "$agent launcher: cannot write $settings from ~/.config/greywall/greywall.json, not starting." >&2
     exit 1
 fi
-mv "$settings.new" "$settings"
+install_staged "$staged_settings" "$settings" 644
 greywall_options="$greywall_options --settings $settings"
 
 # Theo's answers to this project's ask-to-run and ask-to-guide requests, written outside the
@@ -210,8 +246,9 @@ done
 # ~/.cache/agent-ca is readable but not writable inside the sandbox.
 ca_dir="$HOME/.cache/agent-ca"
 mkdir -p "$ca_dir/php"
-cat /etc/ssl/cert.pem "$HOME/.local/share/greyproxy/ca-cert.pem" > "$ca_dir/bundle.pem.new"
-mv "$ca_dir/bundle.pem.new" "$ca_dir/bundle.pem"
+staged_bundle=$(mktemp "$ca_dir/bundle.pem.XXXXXX") || exit 1
+cat /etc/ssl/cert.pem "$HOME/.local/share/greyproxy/ca-cert.pem" > "$staged_bundle"
+install_staged "$staged_bundle" "$ca_dir/bundle.pem" 644
 printf 'openssl.cafile=%s\ncurl.cainfo=%s\n' "$ca_dir/bundle.pem" "$ca_dir/bundle.pem" > "$ca_dir/php/zz-agent-ca.ini"
 export GIT_SSL_CAINFO="$ca_dir/bundle.pem"
 export CURL_CA_BUNDLE="$ca_dir/bundle.pem"
@@ -225,9 +262,9 @@ export PHP_INI_SCAN_DIR=":$ca_dir/php"
 # writable inside the sandbox) on every start and put first on the sandbox's PATH only.
 shims_dir="$HOME/.cache/agent-shims/bin"
 mkdir -p "$shims_dir"
-cp "$HOME/.local/share/agent-shims/bin/wl-paste" "$shims_dir/wl-paste.new"
-chmod 755 "$shims_dir/wl-paste.new"
-mv "$shims_dir/wl-paste.new" "$shims_dir/wl-paste"
+staged_paste=$(mktemp "$shims_dir/wl-paste.XXXXXX") || exit 1
+cp "$HOME/.local/share/agent-shims/bin/wl-paste" "$staged_paste"
+install_staged "$staged_paste" "$shims_dir/wl-paste" 755
 # Only build tools inherit this affinity; the agent itself keeps every available CPU thread.
 # All sessions choose the same half, so more parallel builds do not multiply their CPU budget.
 if ! AGENT_BUILD_CPUS=$(python3 "$HOME/.local/bin/agent-build" --cpu-list); then

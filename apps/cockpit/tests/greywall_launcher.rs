@@ -354,6 +354,45 @@ fn other_projects_folders_are_read_only_for(agent: &str) {
 }
 
 #[test]
+fn a_gone_checkouts_claude_folder_is_left_out_of_the_read_only_list() {
+    // Greywall hands bwrap one argument, which Linux caps at 128 KiB; a rule per folder ever made
+    // passed it on 2026-10-25 ("argument list too long"). A fresh clone sets aside memory found
+    // in its folder (cockpit set_aside_claude_memory), so a gone checkout's folder needs no rule.
+    let launch = Launch::new();
+    let home = &launch.sandbox.home;
+    let projects = home.join(".claude/projects");
+    let folder_of = |path: &str| projects.join(Launch::slug(home).to_string() + &path.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect::<String>());
+    let gone = [folder_of("/IdeaProjects/gone-project"), folder_of("/IdeaProjects/.parallel/proj-b/gone-clone")];
+    let kept = [folder_of("/IdeaProjects/proj-b"), folder_of("/IdeaProjects/proj-b/apps/web"), folder_of(""), folder_of("/dotfiles")];
+    for folder in gone.iter().chain(&kept) {
+        fs::create_dir_all(folder).unwrap();
+    }
+    launch.run_agent("opencode", &[], &[]);
+    let denied: Vec<String> = launch.settings_of("opencode")["filesystem"]["denyWrite"].as_array().unwrap().iter()
+        .map(|path| path.as_str().unwrap().to_string()).collect();
+    for folder in &gone {
+        assert!(!denied.contains(&folder.display().to_string()), "{} {denied:?}", folder.display());
+    }
+    for folder in &kept {
+        assert!(denied.contains(&folder.display().to_string()), "{} {denied:?}", folder.display());
+    }
+}
+
+#[test]
+fn launches_started_together_never_share_a_temporary_file() {
+    // The restore after login starts every session at once; fixed ".new" names made them
+    // collide (2026-10-25: "mv: cannot stat …/bundle.pem.new", "cp: … wl-paste.new: File exists").
+    let launch = Launch::new();
+    let launches: Vec<_> = (0..12).map(|_| launch.sandbox.command(bin().join("greywall-agents/opencode"), &[])
+        .current_dir(&launch.project).stderr(std::process::Stdio::piped()).spawn().unwrap()).collect();
+    for running in launches {
+        let output = running.wait_with_output().unwrap();
+        let errors = stderr(&output);
+        assert!(output.status.success() && !errors.contains("mv:") && !errors.contains("cp:"), "{errors}");
+    }
+}
+
+#[test]
 fn go_build_cache_stays_in_the_sandbox_instead_of_the_host_home() {
     for &agent in AGENTS.iter() {
         for inherited_cache in ["", "/host/custom-go-cache"] {
