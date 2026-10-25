@@ -33,7 +33,10 @@ OPENCODE_LAUNCHER="${COCKPIT_OPENCODE:-$HOME/.local/bin/greywall-agents/opencode
 # greywall exits 255 for a child ended by a signal, which is how OpenCode's quit ends: the
 # manager's Ctrl-C close (benign) and Theo's own quit in a terminal (a warning, no hand-off,
 # since a crash by a signal looks the same). Any other failure must reach the error hand-off.
-OPENCODE_EPILOGUE='"$@" && exit; code=$?; if [ "$code" = 255 ]; then [ "$(tmux show-options -pqv -t "$TMUX_PANE" @opencode_exit_requested 2>/dev/null)" = 1 ] || cockpit log manager WARN "opencode ended by a signal (status 255) in $PWD: a quit, or a crash"; exit 0; fi; cockpit log manager ERROR "opencode exited with status $code in $PWD"; printf "\n  ✗ opencode exited with status %s\n  any key closes this pane " "$code"; read -r _'
+# Sessions started together (a restore after login) each start a standalone server on opencode's
+# one database, and a loser of that race exits at once ("database is locked"): a failure within
+# 10 s of the start is retried once, after 1 to 3 s; a second failure is reported as any other.
+OPENCODE_EPILOGUE='attempt=1; while :; do started=$(date +%s); "$@" && exit; code=$?; if [ "$code" = 255 ]; then [ "$(tmux show-options -pqv -t "$TMUX_PANE" @opencode_exit_requested 2>/dev/null)" = 1 ] || cockpit log manager WARN "opencode ended by a signal (status 255) in $PWD: a quit, or a crash"; exit 0; fi; if [ "$attempt" = 1 ] && [ $(( $(date +%s) - started )) -lt 10 ]; then attempt=2; cockpit log manager WARN "opencode failed to start (status $code) in $PWD, retrying once"; sleep "$(awk "BEGIN { srand(); printf \"%d\", 1 + rand() * 3 }")"; continue; fi; break; done; cockpit log manager ERROR "opencode exited with status $code in $PWD"; printf "\n  ✗ opencode exited with status %s\n  any key closes this pane " "$code"; read -r _'
 
 start_opencode() { # dir session-id model-ref opencode-arguments...
     local directory=$1 session=$2 model=$3 name size

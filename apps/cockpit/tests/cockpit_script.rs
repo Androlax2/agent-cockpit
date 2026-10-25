@@ -2159,6 +2159,28 @@ fn the_sweep_deletes_only_the_clones_holding_nothing_new_without_asking() {
 }
 
 #[test]
+fn the_sweep_deletes_nothing_and_succeeds_before_the_session_list_exists() {
+    // Right after login the daily sweep can start before the manager writes its snapshot. Without
+    // it no clone is known to be free: the busy one would look like it can go.
+    for snapshot in [None, Some("not json")] {
+        let clones = Clones::new();
+        match snapshot {
+            None => fs::remove_file(&clones.manager.snapshot).unwrap(),
+            Some(content) => fs::write(&clones.manager.snapshot, content).unwrap(),
+        }
+        let directory = clones.manager.sandbox.root.join("clones").display().to_string();
+        let greywall = clones.manager.sandbox.shims.join("greywall").display().to_string();
+        let output = clones.manager.sandbox.run_with_input(bin().join("cockpit"), &["clones-sweep"],
+            &[("COCKPIT_CLONES", directory.as_str()), ("COCKPIT_GREYWALL", greywall.as_str())], "");
+        assert_eq!(output.status.code(), Some(0), "{snapshot:?}: {}", stderr(&output));
+        assert!(String::from_utf8_lossy(&output.stdout).contains("nothing deleted"), "{snapshot:?}");
+        for name in ["clean", "dirty", "unpushed", "busy"] {
+            assert!(clones.root.join(name).exists(), "{snapshot:?}: {name} was deleted");
+        }
+    }
+}
+
+#[test]
 fn the_first_show_of_the_day_sweeps_the_clones_in_the_background() {
     let clones = Clones::new();
     clones.manager.sandbox.shim("pkill", "");
@@ -3827,6 +3849,68 @@ exit "$SHIM_OPENCODE_STATUS"
         let screen = fs::read_to_string(output_file).unwrap();
         assert_eq!(screen.contains("any key closes this pane"), reports_error, "{screen}");
     }
+}
+
+/// Restores several opencode sessions at once; each standalone server opens opencode's database
+/// and a loser of that race exits 1 at once ("database is locked"). The start is retried once.
+fn run_opencode_start(failures: u32, seconds_per_run: u32) -> (Manager, Vec<String>, String) {
+    let manager = Manager::new();
+    manager.with_opencode_session("waiting");
+    manager.sandbox.shim("tmux", &format!(r#"
+case $1 in
+  new-session)
+    while [[ $1 != env ]]; do shift; done
+    env TMUX_PANE=%5 "$@" > "$SHIM_EPILOGUE_OUTPUT" 2>&1 < /dev/null
+    exit 0 ;;
+esac
+{FAKE_TMUX}"#));
+    // A clock that advances seconds_per_run on each launcher run, read through date +%s only.
+    manager.sandbox.shim("date", r#"if [[ $* == +%s ]]; then cat "$SHIM_CLOCK" 2>/dev/null || echo 1000; else exec /usr/bin/date "$@"; fi"#);
+    manager.sandbox.shim("opencode-launcher", r#"
+runs=$(( $(cat "$SHIM_RUNS" 2>/dev/null || echo 0) + 1 )); echo "$runs" > "$SHIM_RUNS"
+echo $(( $(cat "$SHIM_CLOCK" 2>/dev/null || echo 1000) + SHIM_SECONDS )) > "$SHIM_CLOCK"
+(( runs > SHIM_FAILURES )) || exit 1
+"#);
+    let output_file = manager.sandbox.root.join("epilogue-output");
+    let result = manager.run(&["restore", &path_str(&manager.project), OPENCODE_SESSION], &[
+        ("COCKPIT_OPENCODE", &path_str(&manager.sandbox.shims.join("opencode-launcher"))),
+        ("SHIM_EPILOGUE_OUTPUT", &path_str(&output_file)),
+        ("SHIM_RUNS", &path_str(&manager.sandbox.root.join("runs"))),
+        ("SHIM_CLOCK", &path_str(&manager.sandbox.root.join("clock"))),
+        ("SHIM_FAILURES", &failures.to_string()),
+        ("SHIM_SECONDS", &seconds_per_run.to_string()),
+    ]);
+    assert!(result.status.success(), "{}", stderr(&result));
+    let runs = manager.calls("opencode-launcher");
+    let screen = fs::read_to_string(output_file).unwrap_or_default();
+    (manager, runs, screen)
+}
+
+#[test]
+fn an_opencode_start_lost_to_a_locked_database_is_retried_once() {
+    let (manager, runs, screen) = run_opencode_start(1, 1);
+    assert_eq!(runs.len(), 2, "{runs:?}");
+    assert_eq!(runs[0], runs[1], "the retry must resume the same session with the same arguments");
+    let log = manager.log_lines().join("\n");
+    assert!(log.contains("WARN manager: opencode failed to start (status 1)"), "{log}");
+    assert!(!log.contains("ERROR manager: opencode exited"), "{log}");
+    assert!(!screen.contains("any key closes this pane"), "{screen}");
+}
+
+#[test]
+fn an_opencode_start_failing_twice_is_reported_once() {
+    let (manager, runs, screen) = run_opencode_start(2, 1);
+    assert_eq!(runs.len(), 2, "{runs:?}");
+    let log = manager.log_lines().join("\n");
+    assert_eq!(log.matches("ERROR manager: opencode exited with status 1").count(), 1, "{log}");
+    assert!(screen.contains("any key closes this pane"), "{screen}");
+}
+
+#[test]
+fn an_opencode_session_failing_after_it_ran_is_not_restarted() {
+    let (manager, runs, _) = run_opencode_start(1, 60);
+    assert_eq!(runs.len(), 1, "{runs:?}");
+    assert!(manager.log_lines().join("\n").contains("ERROR manager: opencode exited with status 1"));
 }
 
 #[test]

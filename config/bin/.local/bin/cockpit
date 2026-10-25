@@ -2145,7 +2145,13 @@ clones_review() { # [sweep]
         [[ -n $sweep ]] || read -r -p "Enter closes. " _
         return 0
     }
-    in_use=$(jq -r '.sessions[]?.cwd // empty' "$SNAPSHOT" 2>/dev/null)
+    # Without the session list no clone is known to be free (right after login the sweep can
+    # start before the manager writes it): keep every clone, and succeed.
+    if ! in_use=$(jq -r '.sessions[]?.cwd // empty' "$SNAPSHOT" 2>/dev/null); then
+        echo "The session list is not readable yet ($SNAPSHOT): nothing deleted."
+        [[ -n $sweep ]] || read -r -p "Enter closes. " _ || true
+        return 0
+    fi
     # An asleep session wakes in its folder, so a clone it names is not one to delete.
     asleep_in_use=$(jq -r '.cwd // empty' "$ASLEEP_DIR"/* 2>/dev/null || true)
     echo "Clones in $CLONES_DIR"
