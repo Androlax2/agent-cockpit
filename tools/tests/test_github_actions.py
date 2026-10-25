@@ -185,16 +185,15 @@ class DiscussionActionTests(ActionFixture):
 
 
 class PullRequestActionTests(ActionFixture):
-    def request(self, method, path, body=None, *, permission='pull_requests', resource='core'):
+    def request(self, method, path, body=None, *, permission='pull_requests'):
         self.assertEqual(permission, 'contents' if method == 'PUT' and path.endswith('/update-branch') else 'pull_requests')
-        self.resource = resource
         return super().request(method, path, body)
 
     def perform(self, action, fields):
         return self.actions.perform_action(self.record, action, fields, self.request, actor_id=88)
 
     def pull_request(self, **fields):
-        return {'id': 207, 'node_id': 'PR_fixture_207', 'number': 7, 'state': 'open', 'title': 'Change', 'body': 'Details',
+        return {'id': 207, 'number': 7, 'state': 'open', 'title': 'Change', 'body': 'Details',
                 'user': {'id': 99}, 'head': {'ref': 'feature/nested', 'sha': 'a' * 40, 'repo': {'id': 42}},
                 'base': {'ref': 'main', 'sha': 'b' * 40, 'repo': {'id': 42}},
                 'html_url': 'https://github.com/acme/project/pull/7', **fields}
@@ -340,46 +339,6 @@ class PullRequestActionTests(ActionFixture):
         with self.assertRaises(self.actions.ActionDenied):
             self.perform('pull_request.update_branch', {'number': 7, 'expected_head_sha': 'a' * 40, 'rebase': True})
         self.assertEqual(self.writes, [])
-
-    def test_ready_and_draft_use_only_fixed_repository_resolved_graphql_nodes(self):
-        for action, mutation, desired in [('pull_request.ready', 'markPullRequestReadyForReview', False),
-                                          ('pull_request.draft', 'convertPullRequestToDraft', True)]:
-            with self.subTest(action=action):
-                self.responses = {('GET', '/repos/acme/project/pulls/7'): (200, self.pull_request(), {}),
-                    ('POST', '/graphql'): (200, {'data': {mutation: {'pullRequest': {'id': 'PR_fixture_207', 'isDraft': desired}}}}, {})}
-                result = self.perform(action, {'number': 7})
-                self.assertEqual(self.resource, 'graphql')
-                self.assertEqual(self.writes[-1][2], {
-                    'query': 'mutation($id:ID!){' + mutation + '(input:{pullRequestId:$id}){pullRequest{id isDraft}}}',
-                    'variables': {'id': 'PR_fixture_207'}})
-                self.assertEqual(result['applied_fields'], {'is_draft': desired})
-                with self.assertRaises(self.actions.ActionDenied):
-                    self.perform(action, {'number': 7, 'query': 'mutation {anything}'})
-
-    def test_partial_graphql_errors_are_not_success_or_upstream_error_leaks(self):
-        self.responses = {('GET', '/repos/acme/project/pulls/7'): (200, self.pull_request(), {}),
-            ('POST', '/graphql'): (200, {'errors': [{'message': 'SECRET_DETAIL'}],
-                'data': {'markPullRequestReadyForReview': {'pullRequest': {'id': 'PR_fixture_207', 'isDraft': False}}}}, {})}
-        with self.assertRaisesRegex(self.actions.ActionDenied, '^action_outcome_unknown$'):
-            self.perform('pull_request.ready', {'number': 7})
-
-    def test_graphql_node_ids_remain_opaque_variables_not_interpolated_query_text(self):
-        node_id = 'PR:opaque/+='
-        self.responses = {('GET', '/repos/acme/project/pulls/7'): (200, self.pull_request(node_id=node_id), {}),
-            ('POST', '/graphql'): (200, {'data': {'markPullRequestReadyForReview': {
-                'pullRequest': {'id': node_id, 'isDraft': False}}}}, {})}
-        self.perform('pull_request.ready', {'number': 7})
-        self.assertEqual(self.writes[0][2]['variables'], {'id': node_id})
-        self.assertNotIn(node_id, self.writes[0][2]['query'])
-
-    def test_malformed_empty_graphql_errors_are_not_silently_ignored(self):
-        for errors in [None, {}, False]:
-            with self.subTest(errors=errors):
-                self.responses = {('GET', '/repos/acme/project/pulls/7'): (200, self.pull_request(), {}),
-                    ('POST', '/graphql'): (200, {'errors': errors, 'data': {'markPullRequestReadyForReview': {
-                        'pullRequest': {'id': 'PR_fixture_207', 'isDraft': False}}}}, {})}
-                with self.assertRaisesRegex(self.actions.ActionDenied, '^action_outcome_unknown$'):
-                    self.perform('pull_request.ready', {'number': 7})
 
 
 if __name__ == '__main__':

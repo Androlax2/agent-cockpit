@@ -567,7 +567,7 @@ class BrokerChannelTests(BrokerFixture):
                 return 200, {'id': 301, 'commit_id': 'a' * 40, 'state': 'APPROVED', 'user': {'id': 88},
                              'pull_request_url': 'https://api.github.com/repos/acme/project/pulls/7'}, headers
             head = 'a' * 40 if len(self.review_calls) == 1 else self.review_head
-            return 200, {'id': 207, 'node_id': 'PR_fixture_207', 'number': 7, 'state': 'open', 'user': {'id': 99},
+            return 200, {'id': 207, 'number': 7, 'state': 'open', 'user': {'id': 99},
                 'html_url': 'https://github.com/acme/project/pull/7',
                 'head': {'ref': 'feature', 'sha': head, 'repo': {'id': 42}},
                 'base': {'ref': 'main', 'sha': 'b' * 40, 'repo': {'id': 42}}}, headers
@@ -632,50 +632,6 @@ class BrokerChannelTests(BrokerFixture):
         journal = json.loads(records[0].read_text())
         self.assertEqual(journal['target_number'], 7)
         self.assertEqual(journal['head_oid'], 'a' * 40)
-
-    def test_graphql_write_requires_fresh_action_bound_primary_cost_evidence(self):
-        self.enable_review_fixture()
-        self.start()
-        body = b'{"number":7}'
-        response, _ = self.exchange(self.header(action='pull_request.ready', body_length=len(body)), body=body)
-        self.assertEqual(response.get('code'), 'graphql_rate_setup_required')
-        self.assertEqual([entry[0] for entry in self.review_calls], ['GET'])
-
-    def test_ready_funds_measured_graphql_bucket_not_rest_or_inspector(self):
-        self.enable_review_fixture()
-        registry, _ = self.access.load_registry()
-        now = int(time.time())
-        registry['runtime_credentials'][1]['graphql_accounting'] = {'pull_request.ready': {
-            'setup_approved': True, 'principal': 'user:88', 'max_cost': 2,
-            'reviewed_at': now - 60, 'valid_until': now + 1800, 'evidence': 'd' * 64}}
-        path = self.access.registry_path()
-        path.write_text(json.dumps(registry))
-        self.binding['registry_digest'] = hashlib.sha256(path.read_bytes()).hexdigest()
-        self.write_binding()
-        self.rate.observe('user:88', {'x-ratelimit-resource': 'graphql', 'x-ratelimit-limit': '5000',
-            'x-ratelimit-remaining': '5000', 'x-ratelimit-reset': str(now + 3600)})
-        existing_upstream = self.access.github_request.side_effect
-
-        def upstream(method, path, token, deadline, body=None):
-            if path != '/graphql':
-                return existing_upstream(method, path, token, deadline, body)
-            self.review_calls.append((method, path, body))
-            return 200, {'data': {'markPullRequestReadyForReview': {
-                'pullRequest': {'id': 'PR_fixture_207', 'isDraft': False}}}}, {
-                    'x-ratelimit-resource': 'graphql', 'x-ratelimit-limit': '5000',
-                    'x-ratelimit-remaining': '4998', 'x-ratelimit-reset': str(now + 3600)}
-
-        self.start()
-        with patch.object(self.access, 'github_request', side_effect=upstream):
-            body = b'{"number":7}'
-            response, payload = self.exchange(self.header(action='pull_request.ready', body_length=len(body)), body=body)
-        self.assertEqual(response['status'], 200, response)
-        self.assertEqual(json.loads(payload)['applied_fields'], {'is_draft': False})
-        self.assertEqual(self.purposes, ['admission', 'write'])
-        self.assertEqual(self.review_calls[-1][1], '/graphql')
-        with self.rate.locked_state() as state:
-            self.assertEqual(state['buckets']['user:88:graphql']['server_remaining'], 4998)
-            self.assertEqual(state['reservations'], {})
 
     def enable_fixture_forwarding(self):
         self.assertTrue(hasattr(self.broker, 'git_authority'), 'per-request Git authority lookup is missing')

@@ -14,7 +14,6 @@ DISCUSSION_ACTIONS = {'comment.create', 'comment.edit'}
 PULL_REQUEST_ACTIONS = {'pull_request.create', 'pull_request.edit', 'pull_request.close', 'pull_request.reopen',
                         'pull_request.metadata.edit',
                         'pull_request.update_branch',
-                        'pull_request.ready', 'pull_request.draft',
                         'review.create', 'review.submit', 'review.edit', 'review.reply'}
 COLLABORATION_ACTIONS = ISSUE_ACTIONS | DISCUSSION_ACTIONS | PULL_REQUEST_ACTIONS
 
@@ -283,7 +282,6 @@ def pull_request_fields(action, fields):
         'pull_request.edit': {'number', 'title', 'body', 'base'},
         'pull_request.close': {'number'}, 'pull_request.reopen': {'number'},
         'pull_request.update_branch': {'number', 'expected_head_sha'},
-        'pull_request.ready': {'number'}, 'pull_request.draft': {'number'},
         'review.create': {'number', 'expected_head_sha', 'event', 'body', 'comments'},
         'review.submit': {'number', 'expected_head_sha', 'review_id', 'event', 'body'},
         'review.edit': {'number', 'expected_head_sha', 'review_id', 'body'},
@@ -361,25 +359,6 @@ def pull_request_action(record, action, fields, request, *, actor_id):
         if status != 200:
             raise ActionDenied('pull_request_target_invalid')
         current = verified_pull_request(record, number, current)
-    if action in ('pull_request.ready', 'pull_request.draft'):
-        node_id = current.get('node_id')
-        if (current['state'] != 'open' or not bounded_text(node_id, 1024) or not node_id
-                or any(ord(character) < 32 for character in node_id)):
-            raise ActionDenied('pull_request_target_invalid')
-        mutation = 'markPullRequestReadyForReview' if action == 'pull_request.ready' else 'convertPullRequestToDraft'
-        desired = action == 'pull_request.draft'
-        status, result, _ = request('POST', '/graphql', {
-            'query': 'mutation($id:ID!){' + mutation + '(input:{pullRequestId:$id}){pullRequest{id isDraft}}}',
-            'variables': {'id': node_id}}, resource='graphql')
-        if (status != 200 or not isinstance(result, dict) or ('errors' in result and result['errors'] != [])
-                or not isinstance(result.get('data'), dict) or not isinstance(result['data'].get(mutation), dict)
-                or not isinstance(result['data'][mutation].get('pullRequest'), dict)):
-            raise ActionDenied('action_outcome_unknown')
-        changed = result['data'][mutation]['pullRequest']
-        if changed.get('id') != node_id or changed.get('isDraft') is not desired:
-            raise ActionDenied('action_outcome_unknown')
-        return {name: current[name] for name in ['id', 'number', 'html_url', 'state']} | {
-            'outcome': 'succeeded', 'applied_fields': {'is_draft': desired}}
     if action == 'pull_request.update_branch':
         if current['head']['sha'] != fields['expected_head_sha'] or current['state'] != 'open':
             raise ActionDenied('pull_request_head_changed')

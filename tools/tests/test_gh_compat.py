@@ -200,14 +200,6 @@ class GhCompatibilityTests(unittest.TestCase):
         self.assertIn('command_requires_migration', result.stderr)
         self.assertEqual(self.requests, [])
 
-    def test_ready_and_undo_emit_typed_actions_without_client_graphql(self):
-        self.start_broker(count=2)
-        for arguments in [['pr', 'ready', '7'], ['pr', 'ready', '7', '--undo']]:
-            result = self.invoke(arguments)
-            self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual([(header['action'], fields) for header, fields in self.requests], [
-            ('pull_request.ready', {'number': 7}), ('pull_request.draft', {'number': 7})])
-
     def test_issue_edit_metadata_deltas_are_not_replaced_by_empty_fields(self):
         self.start_broker()
         result = self.invoke(['issue', 'edit', '7', '--add-label', 'bug', '--remove-label', 'obsolete',

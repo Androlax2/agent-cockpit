@@ -261,19 +261,6 @@ def sync_action_directory(directory):
         os.close(descriptor)
 
 
-def graphql_operation_cost(access, profile, action):
-    accounting = profile.get('graphql_accounting')
-    evidence = accounting.get(action) if isinstance(accounting, dict) else None
-    if (not isinstance(evidence, dict) or evidence.get('setup_approved') is not True
-            or evidence.get('principal') != access.runtime_principal(profile)
-            or type(evidence.get('max_cost')) is not int or evidence['max_cost'] <= 0
-            or type(evidence.get('reviewed_at')) is not int or type(evidence.get('valid_until')) is not int
-            or not 0 < evidence['reviewed_at'] <= time.time() < evidence['valid_until'] <= profile['valid_until']
-            or not isinstance(evidence.get('evidence'), str) or not CAPABILITY.fullmatch(evidence['evidence'])):
-        raise RequestDenied('graphql_rate_setup_required')
-    return evidence['max_cost']
-
-
 def dispatch_collaboration(access, binding, header, body, output, *, deadline, check_live):
     actions = load_actions()
     rate = access.load_rate()
@@ -299,23 +286,14 @@ def dispatch_collaboration(access, binding, header, body, output, *, deadline, c
         request_id = None
         intent = None
 
-        def request(method, path, payload=None, *, permission='issues', resource='core'):
+        def request(method, path, payload=None, *, permission='issues'):
             nonlocal reservation, dispatched, request_id, intent
             check_live()
             profile = profiles['read' if method == 'GET' else 'forward']
             if profile['permissions'].get(permission) != ('read' if method == 'GET' else 'write'):
                 raise RequestDenied('collaboration_role_denied')
-            repository_path = '/repos/' + record['canonical_name']
-            if resource == 'graphql':
-                if method != 'POST' or path != '/graphql' or header['action'] not in ('pull_request.ready', 'pull_request.draft'):
-                    raise RequestDenied('invalid_action_route')
-                operation_cost = graphql_operation_cost(access, profile, header['action'])
-            elif resource == 'core' and (path == repository_path or path.startswith(repository_path + '/')):
-                operation_cost = 1
-            else:
-                raise RequestDenied('invalid_action_route')
-            bucket = access.runtime_principal(profile) + ':' + resource
-            costs = {bucket: operation_cost}
+            bucket = access.runtime_principal(profile) + ':core'
+            costs = {bucket: 1}
             needs_head_guard = method != 'GET' and (header['action'].startswith('review.')
                                                     or header['action'] == 'pull_request.update_branch')
             if needs_head_guard:
@@ -335,8 +313,6 @@ def dispatch_collaboration(access, binding, header, body, output, *, deadline, c
                     raise RequestDenied('write_check_denied')
             token = access.read_runtime_credential(record, profile, min(deadline, time.monotonic() + 30), verify_remote=False)
             check_live()
-            if resource == 'graphql':
-                graphql_operation_cost(access, profile, header['action'])
             rate.ready(reservation, costs)
             if needs_head_guard:
                 guard_token = access.read_runtime_credential(record, profiles['read'],
@@ -356,11 +332,11 @@ def dispatch_collaboration(access, binding, header, body, output, *, deadline, c
                             and current['state'] != 'open')):
                     raise RequestDenied('review_head_changed')
                 check_live()
-                rate.ready(reservation, {bucket: operation_cost})
+                rate.ready(reservation, {bucket: 1})
             if method != 'GET':
                 rate.admit_mutation()
                 intent, request_id = action_intent(binding, header['action'], fields)
-            rate.charge(reservation, bucket, operation_cost)
+            rate.charge(reservation, bucket)
             if method != 'GET':
                 dispatched = True
             status, value, headers = access.github_request(method, path, token, min(deadline, time.monotonic() + 30), payload)
