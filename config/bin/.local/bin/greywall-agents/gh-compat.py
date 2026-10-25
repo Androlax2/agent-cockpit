@@ -16,7 +16,6 @@ import time
 
 MAX_HEADER = 16 * 1024
 MAX_BODY = 1024 * 1024
-READ_ACTIONS = {'project.items.list', 'project.fields.list'}
 PR_METADATA_FIELDS = {'labels', 'milestone', 'assignees', 'add_labels', 'remove_labels',
                       'add_assignees', 'remove_assignees'}
 
@@ -114,11 +113,9 @@ def broker_action(action, fields):
             raise ClientDenied(code)
         result = json.loads(read_exact(connection, response['body_length'], deadline), object_pairs_hook=unique_fields)
         outcomes = ('succeeded', 'queued') if action == 'pull_request.update_branch' else ('succeeded',)
-        is_read = action in READ_ACTIONS
         if (not isinstance(result, dict) or result.get('outcome') not in outcomes
-                or (is_read and result.get('request_id') is not None)
-                or (not is_read and (not isinstance(result.get('request_id'), str)
-                                     or not re.fullmatch(r'[0-9a-f]{32}', result['request_id'])))):
+                or not isinstance(result.get('request_id'), str)
+                or not re.fullmatch(r'[0-9a-f]{32}', result['request_id'])):
             raise ClientDenied('broker_outcome_unknown')
         if result['outcome'] == 'queued' and result.get('head_oid') != fields['expected_head_sha']:
             raise ClientDenied('broker_outcome_unknown')
@@ -403,51 +400,6 @@ def relationship_actions(arguments):
              {'number': int(match[1]), 'child_number' if is_child else 'blocker_number': numbers[0]})]
 
 
-def gh_field_key(name):
-    # Mirrors gh's camelCase(): only the first character is lowered.
-    return name[:1].lower() + name[1:]
-
-
-def project_item_list(arguments):
-    parser = Parser(add_help=False)
-    parser.add_argument('group', choices=['project'])
-    parser.add_argument('operation', choices=['item-list'])
-    parser.add_argument('number')
-    parser.add_argument('--owner', required=True)
-    parser.add_argument('--format', choices=['json'])
-    parser.add_argument('-L', '--limit', type=int, default=30)
-    options = parser.parse_args(arguments)
-    if not re.fullmatch(r'[1-9][0-9]{0,8}', options.number) or not 0 < options.limit <= 10000:
-        raise ClientDenied('command_requires_migration')
-    selector = {'board_number': int(options.number), 'owner': options.owner}
-    items, cursor = [], None
-    for _ in range(100):
-        page = broker_action('project.items.list', selector | ({'cursor': cursor} if cursor else {}))
-        if not isinstance(page.get('items'), list) or (page.get('next_cursor') is not None
-                                                       and not isinstance(page['next_cursor'], str)):
-            raise ClientDenied('broker_outcome_unknown')
-        items.extend(page['items'])
-        cursor = page['next_cursor']
-        if cursor is None or len(items) >= options.limit:
-            break
-    else:
-        raise ClientDenied('project_read_incomplete')
-    exported = []
-    for item in items[:options.limit]:
-        if not isinstance(item, dict) or not isinstance(item.get('values'), dict):
-            raise ClientDenied('broker_outcome_unknown')
-        exported.append({'id': item.get('item_id'), 'content': item.get('content')}
-                        | {gh_field_key(name): value for name, value in item['values'].items()})
-    if options.format == 'json':
-        print(json.dumps({'items': exported, 'totalCount': len(exported)}))
-    else:
-        for entry in exported:
-            content = entry['content'] or {}
-            print('\t'.join(str(content.get(key, '')) for key in ['type', 'title', 'number', 'repository'])
-                  + '\t' + str(entry['id']))
-    return 0
-
-
 def main(arguments=None):
     completed = 0
     previous_number = None
@@ -455,8 +407,6 @@ def main(arguments=None):
         arguments = sys.argv[1:] if arguments is None else arguments
         if is_native_read(arguments):
             return native_read(arguments).returncode
-        if arguments[:2] == ['project', 'item-list']:
-            return project_item_list(arguments)
         if arguments[:1] not in (['issue'], ['pr'], ['api']):
             raise ClientDenied('command_requires_migration')
         if arguments[:1] == ['api']:

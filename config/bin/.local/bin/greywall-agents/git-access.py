@@ -741,34 +741,6 @@ def runtime_credential_profiles(record, registry):
     return selected
 
 
-def project_credential_profile(record, registry):
-    """Separately enrolled board credential; it is host-only and never a code/collaboration role."""
-    credential_id = record.get('credential_roles', {}).get('project')
-    if credential_id is None:
-        deny('project_role_unavailable')
-    identifier = re.compile(r'[A-Za-z0-9][A-Za-z0-9._-]{0,99}\Z')
-    matches = [profile for profile in registry.get('runtime_credentials', [])
-               if isinstance(profile, dict) and profile.get('id') == credential_id]
-    if not isinstance(credential_id, str) or not identifier.fullmatch(credential_id) or len(matches) != 1:
-        deny('project_role_unavailable')
-    profile = matches[0]
-    now = time.time()
-    if (profile.get('setup_approved') is not True or profile.get('kind') != 'classic_project_pat'
-            or profile.get('role') != 'project' or profile.get('repository_id') != record['repository_id']
-            or type(profile.get('actor_id')) is not int or profile['actor_id'] <= 0
-            or profile.get('scopes') != ['project']
-            or not isinstance(profile.get('key_epoch'), str) or not identifier.fullmatch(profile['key_epoch'])
-            or not isinstance(profile.get('fingerprint'), str) or not re.fullmatch(r'[0-9a-f]{64}', profile['fingerprint'])
-            or any(type(profile.get(field)) is not int for field in ['reviewed_at', 'valid_until', 'expires_at'])
-            or not 0 < profile['reviewed_at'] <= now < profile['valid_until'] <= profile['expires_at']):
-        deny('invalid_project_enrollment')
-    other_fingerprints = {entry.get('fingerprint') for entry in registry.get('runtime_credentials', [])
-                          if isinstance(entry, dict) and entry is not profile}
-    if profile['fingerprint'] in other_fingerprints:
-        deny('runtime_roles_not_separate')
-    return profile
-
-
 def runtime_principal(profile):
     if profile['kind'] == 'github_app':
         return f'installation:{profile["installation_id"]}'
