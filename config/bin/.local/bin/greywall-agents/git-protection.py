@@ -87,22 +87,15 @@ def plan_baselines(repository, existing, owned_ids):
     return plan
 
 
-def preview_protection(access, project, deadline=None, *, enrollment=None):
+def preview_protection(access, project, deadline=None):
     """Inspect using the dedicated App; return a plan, never write authorization."""
     if deadline is None:
         deadline = time.monotonic() + access.CHECK_DEADLINE_SECONDS
     registry, serialized = access.load_registry()
-    if enrollment is not None:
-        if enrollment.project != project:
-            access.deny('invalid_enrollment')
-        record, existing, root = access.enrollment_candidate(enrollment, registry)
-        if existing is not None:
-            access.deny('project_already_enrolled')
-    else:
-        record = next((entry for entry in registry['repositories'] if entry['project'] == project), None)
-        if record is None:
-            access.deny('unregistered_project')
-        root = access.checkout_root(Path(record['checkouts'][0]['path']))
+    record = next((entry for entry in registry['repositories'] if entry['project'] == project), None)
+    if record is None:
+        access.deny('unregistered_project')
+    root = access.checkout_root(Path(record['checkouts'][0]['path']))
     digests = access.inspect_remote_chain(root, record, deadline, set())
     bound = access.bind_inspector(record, registry)
     app = access.inspector_app(bound)
@@ -141,10 +134,8 @@ def preview_protection(access, project, deadline=None, *, enrollment=None):
     if access.inspect_remote_chain(root, record, deadline, set()) != digests:
         access.deny('git_metadata_changed')
     access.remaining_seconds(deadline)
-    binding = next(entry for entry in record['checkouts'] if entry['path'] == str(root))
     return {'mode': 'preview', 'reason': 'protection_plan', 'project': project,
             'repository_id': record['repository_id'], 'canonical_name': record['canonical_name'],
-            'checkout': str(root), 'git_dir': binding['git_dir'], 'common_dir': binding['common_dir'],
             'before': details, 'mutations': mutations, 'rollout_enabled': False,
             'registry_digest': hashlib.sha256(serialized).hexdigest(),
             'configuration_digest': hashlib.sha256(''.join(digests).encode()).hexdigest()}
@@ -181,12 +172,10 @@ def admin_mutation(access, record, mutation, deadline):
     return result
 
 
-def apply_protection(access, project, *, enrollment=None):
-    reviewed = copy.deepcopy(preview_protection(access, project, enrollment=enrollment))
+def apply_protection(access, project):
+    reviewed = copy.deepcopy(preview_protection(access, project))
     print(json.dumps(reviewed, indent=2, sort_keys=True), file=sys.stderr)
     confirmation = f'APPLY {reviewed["canonical_name"]} {reviewed["repository_id"]}'
-    if enrollment is not None:
-        confirmation += ' ' + reviewed['checkout']
     print('Host administration only; no sandbox lease. To apply this exact plan, type:\n' + confirmation, file=sys.stderr)
     try:
         if input() != confirmation:
@@ -194,28 +183,6 @@ def apply_protection(access, project, *, enrollment=None):
     except EOFError:
         access.deny('remediation_not_confirmed')
     expected = reviewed
-    if enrollment is not None:
-        deadline = time.monotonic() + access.CHECK_DEADLINE_SECONDS
-        if preview_protection(access, project, deadline, enrollment=enrollment) != reviewed:
-            access.deny('remediation_plan_changed')
-        registry, serialized = access.load_registry()
-        if hashlib.sha256(serialized).hexdigest() != reviewed['registry_digest']:
-            access.deny('registry_changed')
-        candidate, existing, root = access.enrollment_candidate(enrollment, registry)
-        if existing is not None:
-            access.deny('project_already_enrolled')
-        binding = candidate['checkouts'][0]
-        digests = access.inspect_remote_chain(root, candidate, deadline, set())
-        if (binding['git_dir'] != reviewed['git_dir'] or binding['common_dir'] != reviewed['common_dir']
-                or hashlib.sha256(''.join(digests).encode()).hexdigest() != reviewed['configuration_digest']):
-            access.deny('remediation_plan_changed')
-        candidate['baseline_rulesets'] = {}
-        registry['repositories'].append(candidate)
-        access.save_registry(registry, serialized)
-        updated, serialized = access.load_registry()
-        if updated != registry:
-            access.deny('registry_changed')
-        expected = reviewed | {'registry_digest': hashlib.sha256(serialized).hexdigest()}
     for mutation in reviewed['mutations']:
         deadline = time.monotonic() + access.CHECK_DEADLINE_SECONDS
         current = preview_protection(access, project, deadline)
@@ -271,25 +238,14 @@ def main():
     parser = argparse.ArgumentParser(description='Preview additive protection changes; applying requires explicit host confirmation.')
     parser.add_argument('project')
     parser.add_argument('--apply', action='store_true', help='Apply the reviewed plan using the host admin login, then re-inspect.')
-    parser.add_argument('--bootstrap', action='store_true', help='Prepare a new identity using an already approved App/repository mapping.')
-    parser.add_argument('--checkout', type=Path)
-    parser.add_argument('--repository')
-    parser.add_argument('--repository-id', type=int)
-    parser.add_argument('--inspector-app-id', type=int)
     arguments = parser.parse_args()
-    identity_flags = ['checkout', 'repository', 'repository_id', 'inspector_app_id']
-    if arguments.bootstrap and any(getattr(arguments, flag) is None for flag in identity_flags):
-        parser.error('--bootstrap requires --checkout, --repository, --repository-id and --inspector-app-id')
-    if not arguments.bootstrap and any(getattr(arguments, flag) is not None for flag in identity_flags):
-        parser.error('explicit identity arguments require --bootstrap')
-    enrollment = arguments if arguments.bootstrap else None
     path = Path(__file__).with_name('git-access.py')
     spec = importlib.util.spec_from_file_location('cockpit_git_access', path)
     access = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(access)
     try:
-        report = (apply_protection(access, arguments.project, enrollment=enrollment) if arguments.apply
-                  else preview_protection(access, arguments.project, enrollment=enrollment))
+        report = (apply_protection(access, arguments.project) if arguments.apply
+                  else preview_protection(access, arguments.project))
     except (access.AccessDenied, ValueError) as error:
         report = {'mode': 'read_only', 'reason': str(error), 'rollout_enabled': False}
     except (OSError, UnicodeError):

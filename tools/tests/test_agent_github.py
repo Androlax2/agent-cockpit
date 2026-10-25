@@ -8,7 +8,6 @@ import json
 import subprocess
 import tempfile
 import unittest
-from types import SimpleNamespace
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
 
@@ -142,20 +141,6 @@ class ProtectionPolicyFixture(AppInspectionFixture):
 
 
 class ProtectionPreviewTests(ProtectionPolicyFixture):
-    def test_bootstrap_entry_point_requires_every_identity_argument(self):
-        result = subprocess.run(['bash', str(REPO / 'tools/agent-github.sh'), 'protect', 'project', '--bootstrap'],
-                                env=self.environment, capture_output=True, text=True)
-        self.assertEqual(result.returncode, 2)
-        self.assertIn('--repository-id', result.stderr)
-
-    def test_bootstrap_entry_point_never_overwrites_an_existing_identity(self):
-        result = subprocess.run(['bash', str(REPO / 'tools/agent-github.sh'), 'protect', 'project', '--bootstrap',
-                                 '--checkout', str(self.project), '--repository', 'acme/project',
-                                 '--repository-id', '42', '--inspector-app-id', '123'],
-                                env=self.environment, capture_output=True, text=True)
-        self.assertEqual(result.returncode, 1, result.stderr)
-        self.assertEqual(json.loads(result.stdout)['reason'], 'project_already_enrolled')
-
     def test_preview_is_identity_bound_and_never_mutates_or_grants_access(self):
         self.snapshot['rulesets'][0]['enforcement'] = 'disabled'
         before = self.registry.read_bytes()
@@ -209,7 +194,7 @@ class ProtectionApplyTests(ProtectionPolicyFixture):
         self.snapshot['rulesets'][0]['enforcement'] = 'disabled'
         self.admin_writes = []
 
-    def apply(self, confirmation='APPLY acme/project 42', before_confirm=None, admin=None, enrollment=None):
+    def apply(self, confirmation='APPLY acme/project 42', before_confirm=None, admin=None):
         def answer():
             if before_confirm:
                 before_confirm()
@@ -229,8 +214,6 @@ class ProtectionApplyTests(ProtectionPolicyFixture):
                 patch('builtins.input', side_effect=answer), \
                 contextlib.redirect_stderr(io.StringIO()), \
                 patch.object(self.policy, 'admin_mutation', side_effect=admin or write, create=True):
-            if enrollment is not None:
-                return self.policy.apply_protection(self.access, 'project', enrollment=enrollment)
             return self.policy.apply_protection(self.access, 'project')
 
     def test_apply_requires_exact_confirmation_and_inspector_post_write_proof(self):
@@ -327,65 +310,6 @@ class ProtectionApplyTests(ProtectionPolicyFixture):
         status, report = self.inspect_app()
         self.assertEqual(status, 1)
         self.assertEqual(report['mode'], 'read_only')
-
-    def bootstrap_arguments(self):
-        self.configure_missing_baselines()
-        self.registry.write_text(json.dumps({'version': 1, 'inspector_apps': [self.app], 'repositories': []}))
-        return SimpleNamespace(project='project', checkout=self.project, repository='acme/project',
-                               repository_id=42, inspector_app_id=123)
-
-    def test_bootstrap_checks_explicit_identity_and_both_baselines_before_reporting_verified(self):
-        enrollment = self.bootstrap_arguments()
-        report = self.apply(enrollment=enrollment, admin=self.create_baseline,
-                            confirmation=f'APPLY acme/project 42 {self.project}')
-        self.assertEqual(report['mode'], 'verified')
-        record = json.loads(self.registry.read_text())['repositories'][0]
-        self.assertEqual(record['repository_id'], 42)
-        self.assertEqual(record['checkouts'][0]['path'], str(self.project))
-        self.assertEqual(record['baseline_rulesets'], {'history': 100, 'default_pr': 101})
-
-    def test_cancelled_bootstrap_never_persists_an_identity_or_writes(self):
-        enrollment = self.bootstrap_arguments()
-        original = self.registry.read_bytes()
-        with self.assertRaisesRegex(self.access.AccessDenied, '^remediation_not_confirmed$'):
-            self.apply(enrollment=enrollment)
-        self.assertEqual(self.registry.read_bytes(), original)
-        self.assertEqual(self.admin_writes, [])
-
-    def test_bootstrap_cannot_borrow_an_unapproved_repository_id(self):
-        enrollment = self.bootstrap_arguments()
-        self.app['approved_repository_ids'] = [99]
-        self.registry.write_text(json.dumps({'version': 1, 'inspector_apps': [self.app], 'repositories': []}))
-        with self.assertRaisesRegex(self.access.AccessDenied, '^inspector_repository_unapproved$'):
-            self.apply(enrollment=enrollment)
-        self.assertEqual(self.requests, [])
-
-    def test_failed_bootstrap_keeps_the_prepared_identity_read_only(self):
-        enrollment = self.bootstrap_arguments()
-
-        def fail_write(access, record, mutation, deadline):
-            access.deny('api_http_503')
-
-        with self.assertRaisesRegex(self.access.AccessDenied, '^api_http_503$'):
-            self.apply(enrollment=enrollment, admin=fail_write,
-                       confirmation=f'APPLY acme/project 42 {self.project}')
-        record = json.loads(self.registry.read_text())['repositories'][0]
-        self.assertEqual(record['baseline_rulesets'], {})
-        status, report = self.inspect_app()
-        self.assertEqual(status, 1)
-        self.assertEqual(report['reason'], 'protection_missing')
-
-    def test_bootstrap_confirmation_cannot_silently_rebind_git_metadata(self):
-        enrollment = self.bootstrap_arguments()
-
-        def move_metadata():
-            self.git('-C', str(self.project), 'init', '-q', '--separate-git-dir', str(self.root / 'moved-metadata'))
-
-        with self.assertRaisesRegex(self.access.AccessDenied, '^remediation_plan_changed$'):
-            self.apply(enrollment=enrollment, admin=self.create_baseline, before_confirm=move_metadata,
-                       confirmation=f'APPLY acme/project 42 {self.project}')
-        self.assertEqual(self.admin_writes, [])
-        self.assertEqual(json.loads(self.registry.read_text())['repositories'], [])
 
 
 class AdminTransportTests(ProtectionPolicyFixture):
