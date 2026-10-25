@@ -52,12 +52,6 @@ for reviewed in $reviewed_repositories; do
     esac
 done
 
-if [ ! -f "$HOME/.local/bin/greywall-agents/git-access.py" ] \
-    || ! /usr/bin/python3 -I "$HOME/.local/bin/greywall-agents/git-access.py" check-greywall >/dev/null; then
-    echo "$agent launcher: read_only_dependency_missing; refusing launch before credential lookup." >&2
-    exit 77
-fi
-
 refuse_git_metadata() {
     echo "$agent launcher: unsupported Git metadata for $project_root: $1" >&2
     echo "Use a self-contained clone (git clone --no-local <source> <destination>), not an external worktree or gitdir. No extra access was granted." >&2
