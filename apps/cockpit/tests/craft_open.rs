@@ -96,6 +96,14 @@ fn time_wait_candidate() -> Option<u16> {
     (is_closed && is_unbindable).then_some(port)
 }
 
+fn wait_until_closed(port: u16) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    while TcpStream::connect(("127.0.0.1", port)).is_ok() {
+        assert!(std::time::Instant::now() < deadline, "port {port} still answers 15 s after its instance was signalled");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
 #[test]
 fn allocation_skips_ports_that_refuse_connections_but_cannot_be_bound() {
     let craft = Craft::new();
@@ -335,6 +343,9 @@ fn a_closed_instances_port_is_not_reassigned_to_another_checkout() {
     let original_port = craft.started_port(0);
     let original_pid = fs::read_to_string(craft.sandbox.home.join("figcraft-pids")).unwrap();
     assert!(Command::new("kill").arg(original_pid.trim()).status().unwrap().success());
+    // A signalled instance can still answer for a moment; reopening then rightly meets an
+    // unverified listener (todo eefc1126). The instance is closed once its port is.
+    wait_until_closed(original_port);
     fs::write(craft.sandbox.home.join("figcraft-pids"), "").unwrap();
     let other = craft.other_project("other");
     let output = craft.command(&other, &["figcraft", "--workspace", "2"], &[]).output().unwrap();
