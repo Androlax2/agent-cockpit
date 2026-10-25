@@ -251,6 +251,118 @@ session, Chief escalation.
 **Focus aids** (a "back from a break" recap, a single-task view, a digest screen, quiet hours): Theo
 does not want them for now. Don't build them.
 
+### Round 3: the remaining surfaces
+
+These are on page `10 Remaining surfaces` (previews 14-17), every frame `readyForDev`.
+
+- **Notices** (frame `2081`): one line each, under the tabs, with a coloured left edge and never
+  amber. Examples: a Claude incident (red, `o status`), sessions paused while gaming (blue), disk
+  full (red), sessions that ran before a restart (blue, `B restore`). At most 2 show, then `+N more
+  · s for Status`. **greyproxy holds become a NEEDS YOU card** ("Allow or deny in greyproxy",
+  `G review`), because only Theo can decide them.
+- **Badges:** at most 2 on line 1, before the age, most urgent first: `⟳` restart needed, `↑N`
+  unpushed, `✉N` queued, `⬆` update, `$` on API credits. The selected card adds a meta line with
+  agent, model, effort, ctx %, `◷` background agents, `⇅` remote, billing. Model, effort, ctx,
+  `◷`, `⇅`, `▭` and `◇`/`◆` never sit on line 1.
+- **Missing states:**
+  - restarting: `⟳ Restarting…`, in WORKING;
+  - unseen result: `● Finished · new result`, in QUIET, green dot and bright text until opened;
+  - idle: `○ Idle 25m · waiting for your next message`;
+  - blocked: `↳ Blocked: its todo isn't running · r run it`;
+  - unknown: `· State unknown (no report for 10m)`.
+- **Session details `i`** (frame `2200`): where and who (clone, branch, unpushed, agent, model,
+  effort, ctx, since, billing, ≈ cost), what is around the session, Theo's note, then every action
+  grouped:
+  - Work: `e` `$` `C` `c` `k` `d`;
+  - Code: `g` `U` `+` `o` `t`;
+  - Session: `m` `w` `z` `R` `x`.
+
+  The same keys work on the selected card.
+- **Chief main view** (`s` → Chief, frame `2284`):
+  - On/off with today's numbers and the session it runs as;
+  - keys: `c` pause/resume, `p` pick another chief, `r` summary now, `l` log, `h` habits;
+  - uncertain deliveries are NEEDS YOU rows (`y` it arrived / `x` stop safely);
+  - the chief picker shows readable names and says in words why a row can't be chief
+    (todo `0b6cba5b`).
+- **Team view** (`i` on a team, frame `2335`):
+  - members with role, activity and state;
+  - link requests (`y` / `n` / `e` edit purpose) and failed starts or deliveries (`d` retry /
+    `c` cancel) as NEEDS YOU rows;
+  - history; `u` unlink.
+- **Todo extras** (frame `2390`):
+  - row columns: priority marks, glyph, kind, title, queue place `Q1`, project; `◇` marks a
+    GitHub issue;
+  - the details card shows kind, priority, queue and source, with keys `r` run now, `e`, `+ -`,
+    `Q`, `K`, `m`, `h`, `d`, `x`;
+  - `f` filters by kind and `D` shows done today. Todo's status tabs fold into these sections.
+- **Subscription fallback and cost** (frame `2475`):
+  - an exhausted plan turns its header chip red;
+  - a switched session reads `⇆ Switched to Codex · back on Claude at 18:00` (WORKING); with no
+    plan left it reads `‖ Paused: no plan left · resumes 18:00 by itself` (QUIET; `$` switches it
+    to API credits);
+  - Status → Spending adds "today by session ≈ at API prices" with the waste flags (`⚠ 3 long
+    retries`).
+- **Phone extras** (frames `2498`, `2524`, `2550`):
+  - a "This session" sheet: tell me when it finishes, show the terminal (read-only), Remote
+    Control on/off, Interrupt (tap twice, red outline);
+  - a permission dialog as a pinned card with Yes/No ("other choices: answer on the computer");
+  - a command question (`[y/N]`) as a pinned card ("Yes (tap twice)", never a password);
+  - pairing with 6 digit boxes, the time left, tries, and Pair;
+  - Wake stays a button on an asleep card.
+
+**Rule conflicts, settled by Theo:**
+
+- Keep "Tell me when it finishes" (a phone opt-in per session), the daily digest, and the
+  80%/95% usage alerts.
+- Remove the OSD "Finished" banners, because only needs-you interrupts.
+
+**My calls:**
+
+- Amber: greyproxy holds become needs-you. Disk and incident notices use red. Pins, `$`,
+  `/compact`, `⟳` and `↑` use dim or blue. Footer messages use foreground and confirmations blue.
+  The header's "N need you" becomes amber (it was red).
+- Waybar keeps a dim glyph when nothing runs, because its script must not be empty.
+- The README key list will be rewritten from the key map.
+
+### Key map
+
+One key map for the whole column. It resolves every clash between the redesign and today's keys
+(`app.rs` `App::handle`). Keys work in the focused place only: **in the column, `y`/`n` never
+answer anything.** Approving happens in the pinned ask once the session is open (`⏎` or `→`).
+
+| Key | Where | Does | Was |
+|---|---|---|---|
+| `1` `2` `3` | everywhere (also CMD+1/2/3 from the session) | Sessions, Todo, Ideas tabs | 0-4 panels; F1-F4 and Tab panel cycling go |
+| `s` | everywhere | Status overlay (usage, spending, Chief, PRs, phone, services) | `s` slept the session: now `z` |
+| `?` | everywhere | help for the current tab + legend | same |
+| `esc` | everywhere | close / back | same |
+| `n` | Sessions | next session that needs you | same |
+| `⏎` / `→` | Sessions | open the session (focus its pane and pinned ask) | same; `l` no longer does this |
+| `L` | Sessions | later: hide this ask 20 min, never approves | new (`l` stays vim-right inside lists) |
+| `i` | Sessions, Todo, Ideas | details of the selected item | Todo `i` "in progress" moves into Todo details |
+| `p` | Sessions | pin: pinned cards come first **inside their group**, marked `⚲` | same key; pins no longer jump above NEEDS YOU |
+| `z` | Sessions | put the session to sleep | was `s` |
+| `R` | Sessions | restart the session (confirm) | was `r`; CMD+R (restart all stale) stays |
+| `x` | Sessions | end the session (confirm) | same |
+| `e` `$` `C` `g` `U` `+` | Sessions | effort, billing, /compact, lazygit, push/apply, parallel clone | same; also listed in details `i` |
+| `o` | Sessions | open the session's design canvas | same (Chief overrule `o` exists only in the Chief answers list) |
+| `N` | everywhere | new blank session: project, **agent**, first message | `a` and `O` (agent pick) fold into `N`; Todo's `N` is now `r` |
+| `H` | everywhere | resume a past session (the existing picker) | same |
+| `B` | Sessions, after a reboot | restore the sessions that ran before | same |
+| `P` `W` `G` | everywhere | PR, Claude web, greyproxy windows | same |
+| `S` | everywhere | Settings | same |
+| `t` / `e` | Todo | add / edit (the form) | same |
+| `r` | Todo | run now: start a session on it in a clone | was `N` |
+| `d` | Todo | done / back to To do | same; folding "Done today" is `D` |
+| `f` `K` `m` `Q` `+` `-` `h` | Todo | filter, kind, move, queue, priority, hand over | same, listed in Todo help |
+| `y` / `n` | Ideas | yes, add to To do / no | same |
+| `y` / `n` / `i` | pinned ask (session focused) | approve / decline / details | approval pane keys move here |
+| `a` / `w` | pinned Chief escalation | use the suggestion / write my own | `a` no longer starts sessions |
+| `⏎` / `o` | Status → pull requests | start a review session / open on GitHub | `c` in the old PR panel |
+| `c` `l` `h` | Status → Chief | on/off, answer log, habits | new |
+| `c` | Sessions card with `Chief ✓N` | that session's Chief answers | new |
+| `/` and `:` | — | removed (Theo: no search, better help) | `/` find, `:` palette |
+
 ### Build dependencies and open points
 
 - **"Doing now" does not exist yet.** Theo chose: agents publish a short per-step status (a
