@@ -816,6 +816,24 @@ fn require_unreserved(connection: &Connection, task: &crate::teams::TaskKey, wor
     Ok(())
 }
 
+/// A resumed conversation takes no new work, so the todo it is already doing (observed) is no
+/// conflict: only a second resume, a launch aimed at it or a pending launch of its project is.
+fn require_resumable(connection: &Connection, task: &crate::teams::TaskKey, session: &str) -> Result<(), TeamError> {
+    let owner: Option<(String, String)> = connection.query_row(
+        "SELECT owner,worker FROM scheduling_reservations WHERE ((project=?1 OR project='') AND task_id=?2)
+            OR (worker=?3 AND owner<>'observed') OR ((project=?1 OR project='') AND worker='' AND owner='legacy') LIMIT 1",
+        params![task.project, task.task_id, session], |row| Ok((row.get(0)?, row.get(1)?))).optional()?;
+    if let Some((owner, worker)) = owner { return Err(conflict(&format!("work already reserved by {owner}: {worker}"))); }
+    Ok(())
+}
+
+fn insert_launch(connection: &Connection, task: &crate::teams::TaskKey, worker: Option<&str>, state: &str, now_ms: i64) -> Result<String, TeamError> {
+    let token = crate::teams::store::identifier()?;
+    connection.execute("INSERT INTO scheduling_reservations VALUES (?1,?2,?3,?4,'legacy')", params![task.project,task.task_id,worker.unwrap_or(""),token])?;
+    connection.execute("INSERT INTO legacy_launches VALUES (?1,?2,?3,?4,?5,1,?6)",params![token,task.project,task.task_id,worker,state,now_ms])?;
+    Ok(token)
+}
+
 /// Host-only reservation before any legacy send/spawn. A lost reply is not permission to retry.
 pub fn reserve_legacy(connection: &mut Connection, task: &crate::teams::TaskKey, worker: Option<&str>, _now_ms: i64) -> Result<String, TeamError> {
     reserve_legacy_kind(connection,task,worker,false,_now_ms)
@@ -824,9 +842,16 @@ pub fn reserve_legacy(connection: &mut Connection, task: &crate::teams::TaskKey,
 pub fn reserve_legacy_kind(connection: &mut Connection, task: &crate::teams::TaskKey, worker: Option<&str>, manual: bool, now_ms: i64) -> Result<String, TeamError> {
     let transaction = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     require_unreserved(&transaction, task, worker)?;
-    let token = crate::teams::store::identifier()?;
-    transaction.execute("INSERT INTO scheduling_reservations VALUES (?1,?2,?3,?4,'legacy')", params![task.project,task.task_id,worker.unwrap_or(""),token])?;
-    transaction.execute("INSERT INTO legacy_launches VALUES (?1,?2,?3,?4,?5,1,?6)",params![token,task.project,task.task_id,worker,if manual {"manual"} else {"reserved"},now_ms])?;
+    let token = insert_launch(&transaction, task, worker, if manual {"manual"} else {"reserved"}, now_ms)?;
+    transaction.commit()?;
+    Ok(token)
+}
+
+/// Host-only reservation before resuming `session` (task `resume:<session>`).
+pub fn reserve_resume(connection: &mut Connection, task: &crate::teams::TaskKey, session: &str, now_ms: i64) -> Result<String, TeamError> {
+    let transaction = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    require_resumable(&transaction, task, session)?;
+    let token = insert_launch(&transaction, task, Some(session), "reserved", now_ms)?;
     transaction.commit()?;
     Ok(token)
 }

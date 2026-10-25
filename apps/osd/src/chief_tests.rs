@@ -489,6 +489,28 @@ fn chief_resume_reservation_survives_uncertainty_until_the_real_runtime_returns(
 }
 
 #[test]
+fn resume_is_reserved_while_the_session_is_doing_its_own_todo() {
+    let mut bench = team_bench();
+    let directory = bench.registry.sessions[SESSION_B].cwd.clone();
+    let mut todos = cockpit::todo::TodoList::load();
+    let id = todos.add("project-a", &directory, "work the session left unfinished");
+    todos.set_status(&id, "doing", SESSION_B);
+    bench.registry.sessions.remove(SESSION_B).unwrap();
+    crate::teams::host(&mut bench.registry, std::process::id(), HostRequest::ReserveResume { session:SESSION_B.into(), directory }).unwrap().result.unwrap();
+}
+
+#[test]
+fn resume_is_reserved_while_unassigned_work_is_doing_in_the_project() {
+    let mut bench = team_bench();
+    let directory = bench.registry.sessions[SESSION_B].cwd.clone();
+    let mut todos = cockpit::todo::TodoList::load();
+    let id = todos.add("project-a", &directory, "work nobody claimed");
+    todos.set_status(&id, "doing", "");
+    bench.registry.sessions.remove(SESSION_B).unwrap();
+    crate::teams::host(&mut bench.registry, std::process::id(), HostRequest::ReserveResume { session:SESSION_B.into(), directory }).unwrap().result.unwrap();
+}
+
+#[test]
 fn chief_normal_enable_requires_recorded_host_live_queued_admission_proof() {
     let mut bench = team_bench();
     let session = verified(&mut bench,SESSION_A);

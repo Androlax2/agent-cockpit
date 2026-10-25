@@ -495,7 +495,7 @@ pub fn host(registry: &mut Registry, peer: u32, request: cockpit::teams::HostReq
                 return Err(TeamError::new(ErrorCode::Conflict,"conversation is already live or has no valid native identity"));
             }
             let task = cockpit::teams::TaskKey { project: canonical_project(&directory)?, task_id: format!("resume:{session}") };
-            let token = cockpit::chief::store::reserve_legacy(registry.teams.as_mut().unwrap(), &task, Some(&session), now_ms())?;
+            let token = cockpit::chief::store::reserve_resume(registry.teams.as_mut().unwrap(), &task, &session, now_ms())?;
             Ok(TeamReply { request_id: "reserve-resume".into(), result: Ok(json!({"reservation":token})) })
         },
         cockpit::teams::HostRequest::ChiefFocus { viewed, workspace_active, gaming } => {

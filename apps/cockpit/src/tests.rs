@@ -646,7 +646,7 @@ impl Fixture {
                 },
                 crate::teams::HostRequest::ReserveResume { session, directory } => {
                     let task = crate::teams::TaskKey { project:format!("path:{directory}"), task_id:format!("resume:{session}") };
-                    crate::chief::store::reserve_legacy(&mut connection, &task, Some(&session), 0).map(|token| json!({"reservation":token}))
+                    crate::chief::store::reserve_resume(&mut connection, &task, &session, 0).map(|token| json!({"reservation":token}))
                 },
                 _ => Ok(json!({"recorded":true})),
             };
