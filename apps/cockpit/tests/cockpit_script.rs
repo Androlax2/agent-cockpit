@@ -3153,6 +3153,37 @@ fn apply_dotfiles_refuses_a_folder_that_is_no_reviewed_clone() {
 }
 
 #[test]
+fn apply_refuses_a_worktree_nested_in_a_reviewed_clone() {
+    // A worktree under the clone (.worktrees/<name>) is another checkout: applying "it" must never
+    // fall back to the clone's own .outgoing (2026-10-25: 25 unrelated patches went live that way).
+    let manager = Manager::new();
+    let (live, work) = dotfiles_pair(&manager);
+    let nested = work.join(".worktrees/fix");
+    let added = Command::new("git").arg("-C").arg(&work).args(["worktree", "add", "-q", "-b", "fix"]).arg(&nested).output().unwrap();
+    assert!(added.status.success(), "{}", stderr(&added));
+    for folder in [nested.clone(), nested.join("src")] {
+        fs::create_dir_all(&folder).unwrap();
+        let output = manager.sandbox.run_with_input(bin().join("cockpit"), &["apply-dotfiles", &path_str(&folder)],
+            &[("CLAUDE_DOTFILES_LIVE", &path_str(&live)), ("CLAUDE_DOTFILES_WORK", &path_str(&work))], "y\n");
+        assert_eq!(output.status.code(), Some(1), "{folder:?}");
+        assert!(stderr(&output).contains("not a reviewed clone"), "{}", stderr(&output));
+        assert_eq!(git_output(&live, &["log", "-1", "--format=%s"]), "init", "{folder:?}: the clone's export was applied");
+    }
+    assert!(work.join(".outgoing").read_dir().unwrap().next().is_some(), "the clone's export was consumed");
+}
+
+#[test]
+fn apply_from_a_plain_folder_inside_a_reviewed_clone_still_applies_its_export() {
+    let manager = Manager::new();
+    let (live, work) = dotfiles_pair(&manager);
+    fs::create_dir_all(work.join("docs")).unwrap();
+    let output = manager.sandbox.run_with_input(bin().join("cockpit"), &["apply-dotfiles", &path_str(&work.join("docs"))],
+        &[("CLAUDE_DOTFILES_LIVE", &path_str(&live)), ("CLAUDE_DOTFILES_WORK", &path_str(&work))], "y\n");
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_ne!(git_output(&live, &["log", "-1", "--format=%s"]), "init");
+}
+
+#[test]
 fn u_on_a_dotfiles_clone_exports_only_what_live_main_lacks_then_applies_it() {
     let manager = Manager::new();
     let (live, work) = dotfiles_pair(&manager);

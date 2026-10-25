@@ -2351,15 +2351,29 @@ reviewed_clone_of() { # dir
     for name in "${REVIEWED_REPOSITORIES[@]}"; do
         work=$(work_clone_of "$name")
         case "$1/" in
-            "$work"/*) printf '%s\t%s\n' "$name" "$work"; return 0 ;;
+            "$work"/*)
+                inside_another_checkout "$1" "$work" && return 1
+                printf '%s\t%s\n' "$name" "$work"; return 0 ;;
             "$CLONES_DIR/$name"/*/*)
                 inside=${1#"$CLONES_DIR/$name"/}
                 clone_name=${inside%%/*}
                 [[ $clone_name =~ ^[A-Za-z0-9._-]+$ && $clone_name != . && $clone_name != .. &&
                    -d $CLONES_DIR/$name/$clone_name && ! -L $CLONES_DIR/$name/$clone_name ]] || return 1
+                inside_another_checkout "$1" "$CLONES_DIR/$name/$clone_name" && return 1
                 printf '%s\t%s\n' "$name" "$CLONES_DIR/$name/$clone_name"
                 return 0 ;;
         esac
+    done
+    return 1
+}
+
+# A worktree or repository below a clone's root (.worktrees/<name>) is a checkout of its own: it
+# must never be taken for the clone, whose .outgoing it does not own. Paths only, no git.
+inside_another_checkout() { # dir clone-root
+    local folder=${1%/}
+    while [[ $folder == "$2"/* ]]; do
+        [[ -e $folder/.git || -L $folder/.git ]] && return 0
+        folder=$(dirname "$folder")
     done
     return 1
 }
