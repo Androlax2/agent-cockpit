@@ -7,7 +7,6 @@ import copy
 from datetime import datetime, timezone
 import fcntl
 import hashlib
-import hmac
 import json
 import os
 from pathlib import Path
@@ -600,86 +599,6 @@ def verify_protection_snapshot(record, snapshot):
     return default_branch
 
 
-def runtime_credential_profiles(record, registry):
-    bindings = record.get('credential_roles')
-    if not isinstance(bindings, dict) or not all(role in bindings for role in ['read', 'forward']):
-        deny('runtime_credential_unavailable')
-    profiles = registry.get('runtime_credentials')
-    if not isinstance(profiles, list):
-        deny('runtime_credential_unavailable')
-    identifier = re.compile(r'[A-Za-z0-9][A-Za-z0-9._-]{0,99}\Z')
-    if any(not isinstance(profile, dict) or not isinstance(profile.get('id'), str)
-           or not identifier.fullmatch(profile['id']) for profile in profiles):
-        deny('invalid_runtime_enrollment')
-    if len({profile['id'] for profile in profiles}) != len(profiles):
-        deny('invalid_runtime_enrollment')
-    selected = {}
-    now = time.time()
-    read_permissions = {'metadata', 'contents', 'issues', 'pull_requests', 'checks', 'statuses', 'actions'}
-    write_permissions = {'contents', 'issues', 'pull_requests'}
-    for role in ['read', 'forward']:
-        credential_id = bindings[role]
-        if not isinstance(credential_id, str) or not identifier.fullmatch(credential_id):
-            deny('invalid_runtime_enrollment')
-        profile = next((profile for profile in profiles if profile['id'] == credential_id), None)
-        if profile is None:
-            deny('runtime_credential_unavailable')
-        if (profile.get('setup_approved') is not True or profile.get('kind') != 'fine_grained_pat'
-                or profile.get('role') != role or type(profile.get('repository_id')) is not int
-                or profile['repository_id'] != record['repository_id']
-                or type(profile.get('actor_id')) is not int or profile['actor_id'] <= 0
-                or not isinstance(profile.get('key_epoch'), str) or not identifier.fullmatch(profile['key_epoch'])
-                or not isinstance(profile.get('fingerprint'), str) or not re.fullmatch(r'[0-9a-f]{64}', profile['fingerprint'])):
-            deny('invalid_runtime_enrollment')
-        if (any(type(profile.get(field)) is not int for field in ['reviewed_at', 'valid_until', 'expires_at'])
-                or not 0 < profile['reviewed_at'] <= now < profile['valid_until'] <= profile['expires_at']):
-            deny('runtime_enrollment_expired')
-        permissions = profile.get('permissions')
-        if (not isinstance(permissions, dict) or permissions.get('metadata') != 'read'
-                or set(permissions) - read_permissions
-                or any(level not in ('read', 'write') for level in permissions.values())
-                or (role == 'read' and (set(permissions) != read_permissions
-                                       or any(level != 'read' for level in permissions.values())))
-                or (role == 'forward' and (not any(permissions.get(name) == 'write' for name in write_permissions)
-                                          or any(level == 'write' and name not in write_permissions
-                                                 for name, level in permissions.items())))):
-            deny('runtime_grants_unapproved')
-        selected[role] = profile
-    if selected['read']['id'] == selected['forward']['id'] or selected['read']['fingerprint'] == selected['forward']['fingerprint']:
-        deny('runtime_roles_not_separate')
-    return selected
-
-
-def read_runtime_credential(record, profile, deadline):
-    result = subprocess.run([trusted_program('secret-tool'), 'lookup', 'service', 'cockpit-github-runtime',
-                             'repository', str(record['repository_id']), 'credential', profile['id'],
-                             'epoch', profile['key_epoch']], capture_output=True, env=git_environment(),
-                            timeout=remaining_seconds(deadline))
-    if result.returncode:
-        deny('runtime_credential_unavailable')
-    try:
-        token = result.stdout.decode('ascii').strip()
-    except UnicodeError:
-        deny('runtime_credential_mismatch')
-    if (not token or any(not 33 <= ord(character) <= 126 for character in token)
-            or not hmac.compare_digest(hashlib.sha256(token.encode()).hexdigest(), profile['fingerprint'])):
-        deny('runtime_credential_mismatch')
-    status, actor, headers = api_request('GET', '/user', token, deadline)
-    if status != 200:
-        deny(f'api_http_{status}')
-    if headers.get('x-oauth-scopes', '').strip():
-        deny('runtime_classic_token_forbidden')
-    if not isinstance(actor, dict) or type(actor.get('id')) is not int or actor['id'] != profile['actor_id']:
-        deny('runtime_actor_mismatch')
-    status, repository, headers = api_request('GET', '/repos/' + record['canonical_name'], token, deadline)
-    if status != 200:
-        deny(f'api_http_{status}')
-    if (not isinstance(repository, dict) or type(repository.get('id')) is not int
-            or repository['id'] != record['repository_id'] or repository.get('full_name') != record['canonical_name']):
-        deny('remote_identity_mismatch')
-    return token
-
-
 def inspect_access(checkout, *, purpose):
     if purpose not in {'inspection', 'admission', 'scheduled', 'write'}:
         raise ValueError('invalid inspection purpose')
@@ -700,20 +619,12 @@ def inspect_access(checkout, *, purpose):
                       configuration_digest=hashlib.sha256(''.join(digests).encode()).hexdigest())
         snapshot = read_protection_snapshot(bind_inspector(record, registry), deadline)
         default_branch = verify_protection_snapshot(record, snapshot)
-        if purpose != 'inspection':
-            profiles = runtime_credential_profiles(record, registry)
-            for profile in profiles.values():
-                read_runtime_credential(record, profile, deadline)
-            runtime_credential_profiles(record, registry)
-            snapshot.setdefault('request_counts', {})['runtime'] = 4
         if registry_path().read_bytes() != serialized:
             deny('registry_changed')
         if inspect_remote_chain(root, record, deadline, set()) != digests:
             deny('git_metadata_changed')
         remaining_seconds(deadline)
         report.update(mode='verified', reason='protections_verified', default_branch=default_branch)
-        if purpose != 'inspection':
-            report['credential_roles_verified'] = list(profiles)
         if 'request_counts' in snapshot:
             report['request_counts'] = snapshot['request_counts']
     except AccessDenied as error:
