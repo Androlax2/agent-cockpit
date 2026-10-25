@@ -255,18 +255,6 @@ def require_funds(state, costs, *, purpose):
             deny('rate_headroom_reserved')
 
 
-def backoff(buckets, headers):
-    retry = headers.get('retry-after')
-    seconds = int(retry) if isinstance(retry, str) and re.fullmatch(r'[0-9]{1,10}', retry) else None
-    with locked_state() as state:
-        for bucket in buckets:
-            observed = state['buckets'].get(bucket)
-            if observed is None:
-                deny('rate_quota_unknown')
-            until = observed['reset'] if seconds is None else state['wall'] + max(1, seconds)
-            observed['blocked_until'] = max(observed['blocked_until'], until)
-
-
 def reserve(costs, *, purpose, repository_id, deadline, evidence_key=None):
     if (purpose not in {'inspection', 'admission', 'scheduled', 'write'}
             or type(repository_id) is not int or repository_id <= 0

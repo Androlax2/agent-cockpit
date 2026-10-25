@@ -132,14 +132,6 @@ class GithubRateTests(unittest.TestCase):
             with self.assertRaisesRegex(self.rate.RateDenied, '^mutation_paced$'):
                 self.rate.admit_mutation()
 
-    def test_git_throttle_blocks_already_reserved_requests_without_quota_headers(self):
-        self.assertTrue(hasattr(self.rate, 'backoff'), 'Git secondary backoff is missing')
-        self.observe(remaining=5000)
-        reservation = self.reserve(purpose='write')['reservation']
-        self.rate.backoff([self.bucket], {'retry-after': '60'})
-        with self.assertRaisesRegex(self.rate.RateDenied, '^rate_quota_exhausted$'):
-            self.rate.charge(reservation, self.bucket)
-
     def test_automated_checks_and_writes_preserve_the_approved_twenty_percent(self):
         self.rate.observe('installation:77', {'x-ratelimit-resource': 'core', 'x-ratelimit-limit': '100',
                                             'x-ratelimit-remaining': '100', 'x-ratelimit-reset': str(int(time.time()) + 3600)})
