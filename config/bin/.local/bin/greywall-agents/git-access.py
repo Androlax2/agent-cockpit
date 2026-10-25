@@ -324,13 +324,6 @@ def api_request(method, path, token, deadline, body=None):
             or any(ord(character) < 32 for character in path)
             or (method == 'POST' and not re.fullmatch(r'/app/installations/[1-9][0-9]*/access_tokens', path))):
         deny('inspector_request_forbidden')
-    return github_request(method, path, token, deadline, body)
-
-
-def github_request(method, path, token, deadline, body=None):
-    if (method not in {'GET', 'POST', 'PUT'} or not path.startswith('/') or path.startswith('//')
-            or any(ord(character) < 32 for character in path)):
-        deny('api_request_forbidden')
     if not isinstance(token, str) or not token or any(not 33 <= ord(character) <= 126 for character in token):
         deny('inspector_token_invalid')
     remaining = remaining_seconds(deadline)

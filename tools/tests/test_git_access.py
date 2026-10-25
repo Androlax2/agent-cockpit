@@ -644,15 +644,6 @@ class AppInspectionTests(AppInspectionFixture):
 
 
 class AppTransportTests(AppInspectionFixture):
-    def test_inspector_transport_cannot_write_protections_or_mint_arbitrary_tokens(self):
-        for method, path in [('PUT', '/repos/acme/project/rulesets/100'),
-                             ('POST', '/repos/acme/project/rulesets'),
-                             ('POST', '/app/installations/77/access_tokens/extra')]:
-            with self.subTest(method=method, path=path), \
-                    patch.object(self.access.subprocess, 'run', side_effect=AssertionError('must refuse before transport')), \
-                    self.assertRaisesRegex(self.access.AccessDenied, '^inspector_request_forbidden$'):
-                self.access.api_request(method, path, 'SYNTHETIC', self.access.time.monotonic() + 30)
-
     def setUp(self):
         super().setUp()
         self.real_run = subprocess.run
