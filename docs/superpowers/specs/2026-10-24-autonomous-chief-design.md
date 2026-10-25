@@ -57,8 +57,16 @@ work"; the todo queue already does that well enough. The real need is unblocking
 
 ### 1. Answer stopped agents
 
-Trigger: an OpenCode session goes idle and its last assistant message asks Theo
-something or waits for a go-ahead.
+Trigger (Theo's decision, 2026-10-25): every time an OpenCode session stops
+(idle, flagged needs-input, or an open question form) while its todo is still in
+progress. The Chief reads the stop and decides whether there is anything to answer;
+a stop that asks nothing gets no answer.
+
+Timing (Theo's decision, 2026-10-25): a Chief answer is delivered 30 seconds after
+the agent stopped, instead of the 5-minute wait used for other queued messages.
+These still always block delivery: the session is on Theo's screen, Theo has a
+message queued for it, a permission prompt is open, Theo is gaming. The Chief's
+own turns are not held by the 5-minute guard either.
 
 The Chief reads:
 - the agent's last message;
@@ -147,8 +155,10 @@ No notifications for routine answers.
 - **Overrule:** from that list Theo picks an answer and types the correction. The
   Chief sends the correction to the agent and turns it into a habit.
 - **Escalated decisions** are the only thing that asks for Theo's attention. They
-  show the agent's question, why the Chief did not answer (security, scope, not
-  confident) and its suggested answer if it has one. Theo answers; the answer goes
+  show the agent's question, why the Chief did not answer (category: security,
+  scope or not sure, plus a one-line reason) and its suggested answer if it has
+  one. Theo can send the suggestion as is or write his own answer (matches the UI
+  redesign wireframe for todo 014f67c1). Theo answers; the answer goes
   to the agent and counts as a habit source. A decision closes itself when the
   agent moves on or Theo answers.
 
