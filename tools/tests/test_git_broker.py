@@ -524,63 +524,6 @@ class BrokerChannelTests(BrokerFixture):
         self.assertEqual(response['code'], 'action_reconciliation_required')
         self.assertEqual(self.api_calls, [])
 
-    def run_operator(self, arguments, stdin=''):
-        output = io.StringIO()
-        with patch.object(sys, 'argv', [str(BROKER), *arguments]), \
-                patch.object(sys, 'stdin', io.StringIO(stdin)), contextlib.redirect_stdout(output), \
-                contextlib.redirect_stderr(io.StringIO()):
-            status = self.broker.main()
-        return status, output.getvalue()
-
-    def leave_uncertain_issue_create(self):
-        self.enable_issue_fixture()
-        self.start()
-        body = b'{"title":"Investigate"}'
-        with patch.object(self.access, 'github_request', side_effect=OSError('private upstream error')):
-            response, _ = self.exchange(self.header(action='issue.create', body_length=len(body)), body=body)
-        self.assertEqual(response['code'], 'action_outcome_unknown')
-        return body
-
-    def test_operator_lists_uncertain_actions_without_bodies_or_tokens(self):
-        self.leave_uncertain_issue_create()
-        status, output = self.run_operator(['pending'])
-        self.assertEqual(status, 0)
-        [record] = json.loads(output)
-        self.assertEqual((record['action'], record['repository_id'], record['target_number']), ('issue.create', 42, None))
-        self.assertRegex(record['request_id'], r'^[0-9a-f]{32}$')
-        self.assertNotIn('Investigate', output)
-        self.assertNotIn('SYNTHETIC', output)
-
-    def test_operator_resolution_requires_exact_confirmation_and_then_unblocks(self):
-        body = self.leave_uncertain_issue_create()
-        [record] = json.loads(self.run_operator(['pending'])[1])
-        request_id = record['request_id']
-        for confirmation in ['', 'RESOLVE ' + request_id + ' failed', 'RESOLVE ' + 'f' * 32 + ' succeeded']:
-            with self.subTest(confirmation=confirmation):
-                status, _ = self.run_operator(['resolve', '--request-id', request_id, '--outcome', 'succeeded'], confirmation)
-                self.assertNotEqual(status, 0)
-        self.assertEqual(len(json.loads(self.run_operator(['pending'])[1])), 1)
-        status, _ = self.run_operator(['resolve', '--request-id', request_id, '--outcome', 'succeeded'],
-                                      'RESOLVE ' + request_id + ' succeeded\n')
-        self.assertEqual(status, 0)
-        self.assertEqual(json.loads(self.run_operator(['pending'])[1]), [])
-        journal = self.home / '.local/state/greywall-agents/github-actions'
-        [resolved] = list(journal.glob('*.resolved'))
-        self.assertEqual(json.loads(resolved.read_text())['resolution'], 'succeeded')
-        time.sleep(1.1)  # the uncertain write keeps its pacing slot; resolution never refunds it
-        response, _ = self.exchange(self.header(action='issue.create', body_length=len(body)), body=body)
-        self.assertEqual(response['status'], 200, response)
-
-    def test_operator_resolution_rejects_unknown_ids_and_invalid_outcomes(self):
-        self.leave_uncertain_issue_create()
-        for arguments in [['resolve', '--request-id', 'f' * 32, '--outcome', 'failed'],
-                          ['resolve', '--request-id', '../x', '--outcome', 'failed'],
-                          ['resolve', '--request-id', 'f' * 32, '--outcome', 'maybe']]:
-            with self.subTest(arguments=arguments):
-                status, _ = self.run_operator(arguments, 'RESOLVE ' + arguments[2] + ' ' + arguments[4] + '\n')
-                self.assertNotEqual(status, 0)
-        self.assertEqual(len(json.loads(self.run_operator(['pending'])[1])), 1)
-
     def test_pr_comment_cannot_borrow_issue_only_write_grant(self):
         self.enable_issue_fixture()
         self.start()

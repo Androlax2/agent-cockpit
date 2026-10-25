@@ -253,59 +253,6 @@ def action_intent(binding, action, fields):
     return path, request_id
 
 
-def action_journal_directory():
-    directory = Path.home() / '.local/state/greywall-agents/github-actions'
-    private_directory(directory, create=True)
-    return directory
-
-
-def read_action_record(path):
-    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
-    with os.fdopen(descriptor, 'rb') as source:
-        metadata = os.fstat(source.fileno())
-        if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid() or metadata.st_mode & 0o077:
-            raise RequestDenied('untrusted_action_journal')
-        try:
-            record = json.loads(source.read(MAX_HEADER_BYTES + 1), object_pairs_hook=unique_fields,
-                                parse_constant=reject_constant)
-        except (ValueError, UnicodeError, RecursionError):
-            raise RequestDenied('invalid_action_journal') from None
-    if (not isinstance(record, dict) or not isinstance(record.get('request_id'), str)
-            or not HANDLE.fullmatch(record['request_id']) or record.get('digest') != path.stem
-            or type(record.get('repository_id')) is not int or not isinstance(record.get('action'), str)):
-        raise RequestDenied('invalid_action_journal')
-    return record
-
-
-def pending_actions():
-    """Operator view of uncertain or queued writes; contains digests, never bodies or tokens."""
-    return sorted((read_action_record(path) for path in action_journal_directory().glob('*.pending')),
-                  key=lambda record: (record.get('created_at', 0), record['request_id']))
-
-
-def resolve_action(request_id, outcome, confirmation):
-    """Record an operator's read-only reconciliation; it never retries or mutates GitHub."""
-    if not isinstance(request_id, str) or not HANDLE.fullmatch(request_id) or outcome not in ('succeeded', 'failed'):
-        raise RequestDenied('invalid_resolution')
-    if confirmation.rstrip('\n') != f'RESOLVE {request_id} {outcome}':
-        raise RequestDenied('resolution_not_confirmed')
-    directory = action_journal_directory()
-    matches = [path for path in directory.glob('*.pending') if read_action_record(path)['request_id'] == request_id]
-    if len(matches) != 1:
-        raise RequestDenied('unknown_pending_action')
-    record = read_action_record(matches[0])
-    with load_access().load_rate().repository_write(record['repository_id']):
-        record = read_action_record(matches[0])
-        resolved = directory / (request_id + '.resolved')
-        descriptor = os.open(resolved, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-        with os.fdopen(descriptor, 'w') as journal:
-            json.dump(record | {'resolution': outcome, 'resolved_at': int(time.time())}, journal)
-            journal.flush()
-            os.fsync(journal.fileno())
-        matches[0].unlink()
-        sync_action_directory(directory)
-
-
 def sync_action_directory(directory):
     descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
@@ -900,29 +847,10 @@ def protect_parent():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    commands = parser.add_subparsers(dest='command', required=True)
-    serve_command = commands.add_parser('serve')
-    serve_command.add_argument('--decision', type=Path, required=True)
-    serve_command.add_argument('--socket', type=Path, required=True)
-    commands.add_parser('pending')
-    resolve_command = commands.add_parser('resolve')
-    resolve_command.add_argument('--request-id', required=True)
-    resolve_command.add_argument('--outcome', required=True)
+    parser.add_argument('command', choices=['serve'])
+    parser.add_argument('--decision', type=Path, required=True)
+    parser.add_argument('--socket', type=Path, required=True)
     arguments = parser.parse_args()
-    if arguments.command != 'serve':
-        try:
-            if arguments.command == 'pending':
-                print(json.dumps(pending_actions(), indent=2))
-            else:
-                print(f'Type exactly: RESOLVE {arguments.request_id} {arguments.outcome}', file=sys.stderr)
-                resolve_action(arguments.request_id, arguments.outcome, sys.stdin.readline())
-            return 0
-        except RequestDenied as error:
-            print('git-broker: ' + str(error), file=sys.stderr)
-            return 1
-        except OSError:
-            print('git-broker: action_journal_unavailable', file=sys.stderr)
-            return 1
     try:
         protect_parent()
         termination = serve(arguments.decision, arguments.socket,
