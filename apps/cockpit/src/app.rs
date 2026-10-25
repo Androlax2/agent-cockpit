@@ -1790,7 +1790,7 @@ impl App {
         }
         // Grouped by attention across projects (NEEDS YOU, WORKING, QUIET); a team stays one block.
         let now_secs = util::now_secs();
-        let mut blocks: Vec<(Attention, i64, Vec<SidebarRow>)> = Vec::new();
+        let mut blocks: Vec<(Attention, (bool, i64), Vec<SidebarRow>)> = Vec::new();
         for row in rows {
             let team_task = match (&self.team_links, &row) {
                 (TeamLinks::Ready(_), SidebarRow::Team { task } | SidebarRow::PlannedQa { task }) => Some(task.clone()),
@@ -1800,7 +1800,7 @@ impl App {
             };
             let joins_team = team_task.is_some() && !matches!(row, SidebarRow::Team { .. }) && blocks.last().is_some_and(|(_, _, block)|
                 matches!(block.first(), Some(SidebarRow::Team { task }) if Some(task) == team_task.as_ref()));
-            if joins_team { blocks.last_mut().unwrap().2.push(row); } else { blocks.push((Attention::Quiet, 0, vec![row])); }
+            if joins_team { blocks.last_mut().unwrap().2.push(row); } else { blocks.push((Attention::Quiet, (false, 0), vec![row])); }
         }
         for (group, oldest_ask, block) in &mut blocks {
             let members: Vec<&Session> = block.iter().filter_map(|row| match row {
@@ -1808,10 +1808,12 @@ impl App {
             let team_needs_you = matches!((&self.team_links, block.first()), (TeamLinks::Ready(snapshot), Some(SidebarRow::Team { task })) if sidebar::attention(snapshot, task).is_some());
             *group = members.iter().map(|session| self.session_attention(session, now_secs)).min().unwrap_or(Attention::Quiet);
             if team_needs_you { *group = Attention::NeedsYou; }
-            *oldest_ask = members.iter().filter(|session| self.is_actionable(session, now_secs)).map(|session| session.since).min().unwrap_or(0);
+            let is_pinned = members.iter().any(|session| session.pinned);
+            let oldest = members.iter().filter(|session| self.is_actionable(session, now_secs)).map(|session| session.since).min().unwrap_or(0);
+            *oldest_ask = (!is_pinned, if *group == Attention::NeedsYou { oldest } else { 0 });
         }
-        // Oldest ask first in NEEDS YOU; the others keep their places.
-        blocks.sort_by_key(|(group, oldest_ask, _)| (*group, if *group == Attention::NeedsYou { *oldest_ask } else { 0 }));
+        // Pinned first inside their group, then the oldest ask first in NEEDS YOU; the others keep their places.
+        blocks.sort_by_key(|(group, order, _)| (*group, *order));
         let mut blocks_per_group: HashMap<Attention, usize> = HashMap::new();
         for (group, _, _) in &blocks { *blocks_per_group.entry(*group).or_default() += 1; }
         let row_groups: Vec<Attention> = blocks.iter().flat_map(|(group, _, block)| std::iter::repeat_n(*group, block.len())).collect();
@@ -1968,7 +1970,9 @@ impl App {
             right.push(part(card.age.clone(), if card.stale { style(YELLOW) } else { dim(FG_DARK) }));
             lines.push(Line { segments: vec![segment(0, card.glyph, bold(card.tint)), segment(2, card.doing.clone(), text_style)],
                 right, item: Some(index), accent, ..Line::default() });
-            lines.push(Line { segments: why_segments(&session.project, &sidebar::shown(self.session_display_title(session))), item: Some(index), accent, ..Line::default() });
+            let mut why = why_segments(&session.project, &sidebar::shown(self.session_display_title(session)));
+            if session.pinned { why.insert(0, segment(0, "⚲", dim(FG_DARK))); }
+            lines.push(Line { segments: why, item: Some(index), accent, ..Line::default() });
             if let Some((ask, verb)) = &card.ask { lines.push(ask_bar(index, ask, &card.ask_count, verb)); }
             lines.push(Line::default());
         }

@@ -2348,6 +2348,24 @@ fn needs_you_lists_the_oldest_ask_first() {
 }
 
 #[test]
+fn a_pinned_card_comes_first_inside_its_group_only() {
+    let fixture = Fixture::new();
+    let mut older = session(SESSION_A, "needs-you", "opusline", "/r/opusline", 1);
+    older["since"] = json!(util::now_secs() - 600);
+    let mut pinned = session(SESSION_B, "needs-you", "runway", "/r/runway", 2);
+    pinned["since"] = json!(util::now_secs() - 60);
+    fixture.snapshot(json!([older, pinned, session(OPENCODE_SESSION, "working", "notes", "/r/notes", 3)]));
+    fixture.view(OPENCODE_SESSION);
+    let mut app = fixture.app();
+    app.view.toggle_pin(SESSION_B);
+    app.view.toggle_pin(OPENCODE_SESSION);
+    app.redraw();
+    let order: Vec<&str> = app.sessions.iter().map(|session| session.session.as_str()).collect();
+    assert_eq!(order, [SESSION_B, SESSION_A, OPENCODE_SESSION], "a pin never lifts a card above NEEDS YOU");
+    assert!(card_text(&app, 0).contains("⚲"));
+}
+
+#[test]
 fn two_asks_on_one_card_show_one_bar_with_a_count() {
     let fixture = Fixture::new();
     let mut row = session(SESSION_A, "needs-you", "opusline", "/r/opusline", 1);
