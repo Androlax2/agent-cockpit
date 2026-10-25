@@ -222,6 +222,35 @@ preview of the habit it creates; habits list (`x` delete, `p` project); Status �
   "Chief is off" banner; approval waiting (sudo) vs approved command running; approval timed out;
   Git/GitHub read-only line (`R restart`); session contained (relaunch); GitHub outcome unknown.
 
+**Away from the cockpit** (page `07`, preview 10). A top-centre banner appears only when a
+session needs Theo (no "finished" banners). Several at once merge into one banner with the count
+and the oldest ask. Clicking it focuses workspace 6 with that session selected and its pinned ask
+open. Banners stay held during meetings and games, as today. The waybar chip shows `◐ N` (working,
+nothing for Theo), `! N` (needs you) or nothing. Phone pushes follow the same rule; a tap opens the
+session's pinned ask.
+
+**Finding and starting** (page `08`, preview 11). There is no search. `:` goes away and each of its
+actions moves to a card, to session details (`i`) or to Status; the attention filter, queue and
+updates are replaced by the grouping. `?` shows the current tab's keys, the global keys and a legend
+of the signs. Most work starts from a todo (`r`). `N` starts a blank session: project (recent
+first), agent, first message, own clone. `i` shows why, where and who, what is around the session
+(Chief answers, links, queued messages), Theo's private note, and the session's actions. `l`
+(later) hides an ask for 20 minutes: it waits in QUIET, comes back by itself, and never approves.
+
+**Phone, remaining screens** (`02 Visual`, preview 12): Todo, Status (with a This phone card), New
+session, Chief escalation.
+
+**Smaller windows** (page `09`, preview 13):
+
+- Guide panel: step progress bar, the session it comes from, each link or value in a box with its
+  key, the agent's question above the answer box, `⌘S I'm stuck` always shown.
+- Todo form: a card instead of a black full-screen overlay, the kind as chips.
+- Settings: grouped cards, a one-line explanation per row, on/off pills.
+- "Still there?": a big amber countdown, plus which sessions keep working and what needs Theo.
+
+**Focus aids** (a "back from a break" recap, a single-task view, a digest screen, quiet hours): Theo
+does not want them for now. Don't build them.
+
 ### Build dependencies and open points
 
 - **"Doing now" does not exist yet.** Theo chose: agents publish a short per-step status (a
