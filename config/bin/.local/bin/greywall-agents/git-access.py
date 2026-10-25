@@ -380,14 +380,6 @@ def api_request(method, path, token, deadline, body=None, *, budget=None, bucket
     return result
 
 
-def load_rate():
-    path = Path(__file__).with_name('github-rate.py')
-    spec = importlib.util.spec_from_file_location('cockpit_github_rate', path)
-    rate = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(rate)
-    return rate
-
-
 def github_request(method, path, token, deadline, body=None):
     if (method not in {'GET', 'POST', 'PUT'} or not path.startswith('/') or path.startswith('//')
             or any(ord(character) < 32 for character in path)):
@@ -406,13 +398,8 @@ def github_request(method, path, token, deadline, body=None):
         if body is not None:
             arguments += ['--header', 'Content-Type: application/json', '--data-binary', json.dumps(body)]
         arguments += ['--url', 'https://api.github.com' + path]
-        rate = load_rate()
-        try:
-            with rate.request_slot():
-                result = subprocess.run(arguments, input=f'Authorization: Bearer {token}\n'.encode(), capture_output=True,
-                                        pass_fds=(descriptor,), env=git_environment(), timeout=remaining_seconds(deadline))
-        except rate.RateDenied as error:
-            deny(str(error))
+        result = subprocess.run(arguments, input=f'Authorization: Bearer {token}\n'.encode(), capture_output=True,
+                                pass_fds=(descriptor,), env=git_environment(), timeout=remaining)
         header_file.seek(0)
         headers = {}
         for line in header_file.read().decode('iso-8859-1').splitlines():
@@ -759,7 +746,9 @@ def reserve_inspection_budget(record, registry_bytes, profiles, purpose, deadlin
     if app.get('rate_setup_approved') is not True:
         deny('rate_setup_unapproved')
     path = Path(__file__).with_name('github-rate.py')
-    rate = load_rate()
+    spec = importlib.util.spec_from_file_location('cockpit_github_rate', path)
+    rate = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(rate)
     buckets = app.get('rate_buckets')
     if (not isinstance(buckets, dict) or set(buckets) != {'installation', 'authentication'}
             or buckets['installation'] != f'installation:{app["installation_id"]}:core'

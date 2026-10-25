@@ -23,8 +23,6 @@ import time
 
 MAX_HEADER_BYTES = 16 * 1024
 MAX_GIT_BODY_BYTES = 1024 ** 3
-MAX_COMMAND_BYTES = 1024 ** 2
-MAX_UPDATED_REFS = 1024
 TRANSFER_SECONDS = 15 * 60
 IDLE_SECONDS = 30
 CAPABILITY = re.compile(r'[0-9a-f]{64}\Z')
@@ -88,81 +86,6 @@ def receive_bytes(connection, count, deadline):
         raise RequestDenied('request_timeout')
     connection.settimeout(min(IDLE_SECONDS, remaining))
     return connection.recv(count)
-
-
-def validate_push(body, *, default_branch):
-    """Validate only receive commands; ancestry remains GitHub's responsibility."""
-    body.seek(0)
-    refs = []
-    seen = set()
-    prefix_bytes = 0
-    allowed_capabilities = {b'report-status', b'report-status-v2', b'side-band-64k',
-                            b'quiet', b'atomic', b'ofs-delta', b'object-format=sha1'}
-    try:
-        while True:
-            length_bytes = body.read(4)
-            prefix_bytes += 4
-            if not re.fullmatch(b'[0-9a-fA-F]{4}', length_bytes):
-                raise RequestDenied('invalid_receive_commands')
-            length = int(length_bytes, 16)
-            if prefix_bytes > MAX_COMMAND_BYTES:
-                raise RequestDenied('command_prefix_too_large')
-            if length == 0:
-                if not refs:
-                    raise RequestDenied('invalid_receive_commands')
-                return refs
-            if not 4 < length <= 65520 or len(refs) >= MAX_UPDATED_REFS:
-                raise RequestDenied('invalid_receive_commands')
-            prefix_bytes += length - 4
-            if prefix_bytes > MAX_COMMAND_BYTES:
-                raise RequestDenied('command_prefix_too_large')
-            payload = body.read(length - 4)
-            if len(payload) != length - 4:
-                raise RequestDenied('invalid_receive_commands')
-            command, separator, capabilities = payload.partition(b'\0')
-            if separator:
-                if refs:
-                    raise RequestDenied('invalid_receive_commands')
-                tokens = capabilities.split(b' ')
-                if len(set(tokens)) != len(tokens):
-                    raise RequestDenied('unsupported_push_capability')
-                for token in tokens:
-                    if token not in allowed_capabilities and not re.fullmatch(b'agent=[!-~]+', token):
-                        raise RequestDenied('unsupported_push_capability')
-            match = re.fullmatch(b'([0-9a-f]{40}) ([0-9a-f]{40}) (refs/heads/[^\x00]+)', command)
-            if match is None:
-                raise RequestDenied('invalid_receive_commands')
-            _, new, encoded_ref = match.groups()
-            try:
-                ref = encoded_ref.decode('utf-8')
-            except UnicodeError:
-                raise RequestDenied('invalid_receive_commands') from None
-            if (new == b'0' * 40 or ref == 'refs/heads/' + default_branch or ref in seen
-                    or ref.endswith('.') or '..' in ref or '@{' in ref
-                    or any(ord(character) < 33 or ord(character) == 127 or character in '~^:?*[\\'
-                           for character in ref)
-                    or any(not part or part.startswith('.') or part.endswith('.lock') for part in ref.split('/'))):
-                raise RequestDenied('push_ref_denied')
-            refs.append(ref)
-            seen.add(ref)
-    finally:
-        body.seek(0)
-
-
-def git_route(header, canonical_name):
-    header = request_header(json.dumps(header).encode())
-    if (not isinstance(canonical_name, str)
-            or not re.fullmatch(r'[A-Za-z0-9_-][A-Za-z0-9._-]*/[A-Za-z0-9_-][A-Za-z0-9._-]*', canonical_name)):
-        raise RequestDenied('repository_denied')
-    advertise = header['action'] == 'git.advertise'
-    service = header['service'] if advertise else ('receive-pack' if header['action'] == 'git.push' else 'upload-pack')
-    if service == 'receive-pack' and header.get('protocol', 0) != 0:
-        raise RequestDenied('unsupported_git_protocol')
-    suffix = '/info/refs?service=git-' + service if advertise else '/git-' + service
-    return {'method': 'GET' if advertise else 'POST',
-            'url': 'https://github.com/' + canonical_name + '.git' + suffix,
-            'content_type': 'application/x-git-' + service + '-request',
-            'response_type': 'application/x-git-' + service + ('-advertisement' if advertise else '-result')}
 
 
 def read_exact(connection, count, deadline):
@@ -355,13 +278,7 @@ def serve(decision, socket_path, *, ready=None, stop=None):
     def handle(connection):
         try:
             with tempfile.TemporaryFile(dir=spool) as body:
-                header = read_request(connection, body, deadline=time.monotonic() + TRANSFER_SECONDS, authorize=authorize)
-                git_route(header, binding['canonical_name'])
-                if header['action'] == 'git.push':
-                    default_branch = report.get('default_branch')
-                    if not isinstance(default_branch, str) or not default_branch:
-                        raise RequestDenied('admission_denied')
-                    validate_push(body, default_branch=default_branch)
+                read_request(connection, body, deadline=time.monotonic() + TRANSFER_SECONDS, authorize=authorize)
                 send_error(connection, 'action_unavailable')
         except RequestDenied as error:
             send_error(connection, str(error))

@@ -707,17 +707,6 @@ class AppTransportTests(AppInspectionFixture):
             self.assertTrue(options['input'].startswith(b'Authorization: Bearer '))
         self.assertNotIn('SYNTHETIC', json.dumps(report))
 
-    def test_inspector_does_not_dispatch_when_all_upstream_slots_are_busy(self):
-        self.assertTrue(hasattr(self.access, 'load_rate'), 'shared transport limiter is missing')
-        with patch.dict(os.environ, self.environment, clear=True), contextlib.ExitStack() as slots:
-            rate = self.access.load_rate()
-            for _ in range(8):
-                slots.enter_context(rate.request_slot())
-            status, report = self.inspect_transport()
-        self.assertEqual(status, 1)
-        self.assertEqual(report['reason'], 'upstream_busy')
-        self.assertEqual(self.curl_calls, [])
-
     def test_redirects_are_denied_instead_of_followed(self):
         self.responses['/app/installations/77/access_tokens'] = (302, None, {'location': 'https://evil.invalid/steal'})
         status, report = self.inspect_transport()
