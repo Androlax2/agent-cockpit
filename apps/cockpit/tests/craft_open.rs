@@ -73,7 +73,14 @@ impl Drop for Craft {
     }
 }
 
+/// A port that refuses connections yet cannot be bound. Under a parallel test run another process
+/// can take a freed port before it is checked (todo c67685bf), so a port that does not qualify is
+/// replaced by a fresh one instead of failing the test that needs it.
 fn time_wait_port() -> u16 {
+    (0..20).find_map(|_| time_wait_candidate()).expect("no port stayed closed and unbindable in 20 tries")
+}
+
+fn time_wait_candidate() -> Option<u16> {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
     let port = client.local_addr().unwrap().port();
@@ -83,9 +90,10 @@ fn time_wait_port() -> u16 {
     assert_eq!(peer.read(&mut [0]).unwrap(), 0);
     drop(peer);
     drop(listener);
-    assert!(TcpStream::connect(("127.0.0.1", port)).is_err());
-    assert_eq!(TcpListener::bind(("127.0.0.1", port)).unwrap_err().kind(), std::io::ErrorKind::AddrInUse);
-    port
+    let is_closed = TcpStream::connect(("127.0.0.1", port)).is_err();
+    let is_unbindable = TcpListener::bind(("127.0.0.1", port))
+        .is_err_and(|error| error.kind() == std::io::ErrorKind::AddrInUse);
+    (is_closed && is_unbindable).then_some(port)
 }
 
 #[test]
