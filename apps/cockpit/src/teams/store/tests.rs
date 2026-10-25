@@ -16,7 +16,7 @@ fn concurrent_open_reads_schema_version_after_the_migration_writer_commits() {
     })).unwrap();
     // The migrator has completed its DDL but has not yet published the version.
     let transaction = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).unwrap();
-    transaction.execute_batch("PRAGMA user_version=12;").unwrap();
+    transaction.execute_batch("PRAGMA user_version=13;").unwrap();
     let reader = std::thread::spawn(move || {
         migrate(&mut other)?;
         Ok::<_, TeamError>(other)
@@ -29,7 +29,7 @@ fn concurrent_open_reads_schema_version_after_the_migration_writer_commits() {
     transaction.commit().unwrap();
     let opened = reader.join().unwrap().unwrap();
     assert!(waited, "initialization did not contend with the schema writer");
-    assert_eq!(opened.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0)).unwrap(), 12);
+    assert_eq!(opened.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0)).unwrap(), 13);
     drop(opened);
     drop(connection);
     fs::remove_file(path).unwrap();

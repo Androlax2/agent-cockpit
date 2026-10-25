@@ -1,5 +1,6 @@
 //! Protected Chief contract. Wire types do not confer authorization or readiness.
 
+pub mod bundle;
 pub mod store;
 pub mod view;
 pub use store::reconcile_todos;
@@ -10,6 +11,13 @@ use serde_json::Value;
 
 pub const MAX_OPEN_DECISIONS: usize = 100;
 pub const MAX_CONTEXT_RECORDS: usize = 50;
+/// The limit of a Chief answer, in the words Theo approved. Told to the Chief in its wake text and
+/// appended by the host to every answer the agent receives.
+pub const CHIEF_ANSWER_BOUNDARY: &str = "Chief answer on Theo's behalf. It authorises edits, builds, tests and commits inside your current task only. Installs, dependency changes, pushes, merges, default-branch or other Git writes your project does not already allow, anything outside the task, and anything security-related still need Theo. Permission prompts, ask-to-run and cockpit apply are always Theo's.";
+/// What the host appends to Theo's own answer to an escalation, in place of the Chief's boundary.
+pub const THEO_ANSWER_LABEL: &str = "Answer from Theo, sent through the cockpit Chief view.";
+/// How long a stopped agent keeps its stop to itself (or to Theo) before a Chief answer may reach it.
+pub const CHIEF_ANSWER_GRACE_S: i64 = 30;
 // Reserve space for the TeamReply wrapper and cursors beneath the agent transport's 65,536 bytes.
 const CONTEXT_BYTES: usize = 60_000;
 
@@ -31,6 +39,24 @@ pub enum ChiefAgentAction {
     SummaryResponse { request_id: String, sections: SummarySections },
     Status { summary: String },
     Decision { key: String, question: String, recommendation: String },
+    /// Reply to an open stop; the host delivers it to the stopped agent with `CHIEF_ANSWER_BOUNDARY`.
+    Answer { stop: String, text: String, reason: String },
+    /// Settle an open single-question form with one of its options, named by label or value; the
+    /// agent's plugin replies through OpenCode's form API.
+    AnswerForm { stop: String, choice: String, reason: String },
+    /// Hand an open stop to Theo, who answers it from the Chief view.
+    Escalate { stop: String, category: EscalationCategory, reason: String, #[serde(default)] suggested_answer: Option<String> },
+}
+
+/// Why the Chief did not answer a stop itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EscalationCategory { Security, Scope, NotSure }
+
+impl EscalationCategory {
+    pub fn as_str(self) -> &'static str {
+        match self { Self::Security => "security", Self::Scope => "scope", Self::NotSure => "not_sure" }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -59,6 +85,8 @@ pub enum ChiefHostAction {
     ReconcileDelivery { request_id: String, message: String, expected_revision: i64, evidence: ReconciliationEvidence },
     ReconcileLaunch { request_id: String, token: String, expected_revision: i64, evidence: ReconciliationEvidence },
     Resolve { request_id: String, decision: String, expected_revision: i64, resolution: String },
+    /// Theo's answer to an escalated stop: resolves the decision and queues the text for the stopped agent.
+    AnswerDecision { request_id: String, decision: String, expected_revision: i64, answer: String },
     RequestSummary { request_id: String },
 }
 
@@ -94,6 +122,13 @@ fn session(value: &VerifiedSession) -> Result<(), TeamError> {
     Ok(())
 }
 
+/// The host adds these labels itself; text that already carries one could pass a Chief answer off as
+/// Theo's, or hide where the host's boundary starts.
+fn without_host_labels(value: &str) -> Result<(), TeamError> {
+    if value.contains(CHIEF_ANSWER_BOUNDARY) || value.contains(THEO_ANSWER_LABEL) { return Err(invalid("the host adds the answer labels itself")); }
+    Ok(())
+}
+
 impl ChiefAgentAction {
     pub fn validate(&self) -> Result<(), TeamError> {
         match self {
@@ -106,7 +141,17 @@ impl ChiefAgentAction {
             },
             Self::Status { summary } => text(summary, 4000),
             Self::Decision { key: decision_key, question, recommendation } => {
-                key(decision_key)?; text(question, 1000)?; text(recommendation, 1000)
+                key(decision_key)?;
+                // `escalate` files its decision under `stop-<stop>`; a plain decision must not rewrite or collide with it.
+                if decision_key.starts_with("stop-") { return Err(invalid("decision keys starting with stop- are reserved for escalations")); }
+                text(question, 1000)?; text(recommendation, 1000)
+            },
+            Self::Answer { stop, text: answer, reason } => { key(stop)?; text(answer, 4000)?; without_host_labels(answer)?; text(reason, 300) },
+            Self::AnswerForm { stop, choice, reason } => { key(stop)?; text(choice, 200)?; text(reason, 300) },
+            Self::Escalate { stop, reason, suggested_answer, .. } => {
+                key(stop)?; text(reason, 300)?;
+                if let Some(suggestion) = suggested_answer { text(suggestion, 2000)?; without_host_labels(suggestion)?; }
+                Ok(())
             },
         }
     }
@@ -116,7 +161,7 @@ impl ChiefHostAction {
     pub fn validate(&self) -> Result<(), TeamError> {
         let request_id = match self {
             Self::Enable { request_id, .. } | Self::Pause { request_id, .. } | Self::Resume { request_id, .. }
-            | Self::Disable { request_id, .. } | Self::Resolve { request_id, .. } | Self::RequestSummary { request_id }
+            | Self::Disable { request_id, .. } | Self::Resolve { request_id, .. } | Self::AnswerDecision { request_id, .. } | Self::RequestSummary { request_id }
             | Self::ReconcileDelivery {request_id,..} | Self::ReconcileLaunch {request_id,..} => request_id,
         };
         key(request_id)?;
@@ -128,6 +173,7 @@ impl ChiefHostAction {
                 match evidence { ReconciliationEvidence::Handled { note } | ReconciliationEvidence::SafeStop { note, .. } => text(note, 1000) }
             },
             Self::Resolve { decision, expected_revision, resolution, .. } => { key(decision)?; positive(*expected_revision)?; text(resolution, 1000) },
+            Self::AnswerDecision { decision, expected_revision, answer, .. } => { key(decision)?; positive(*expected_revision)?; text(answer, 4000) },
             Self::RequestSummary { .. } => Ok(()),
         }
     }

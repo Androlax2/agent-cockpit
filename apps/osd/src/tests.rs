@@ -50,7 +50,7 @@ impl Fixture {
             std::env::set_var("CLAUDE_AUDIT_JOURNAL", "off");
             std::env::set_var("CLAUDE_RUNS_DIR", root.join("queue"));
             std::env::set_var("CLAUDE_ANSWERS_DIR", root.join("answers"));
-            for name in ["COCKPIT_CLONES", "HYPRLAND_INSTANCE_SIGNATURE", "COCKPIT_ANSWERS_DIR", "COCKPIT_ANSWERS_KEY", "COCKPIT_RUNS_DIR"] {
+            for name in ["COCKPIT_CLONES", "HYPRLAND_INSTANCE_SIGNATURE", "COCKPIT_ANSWERS_DIR", "COCKPIT_ANSWERS_KEY", "COCKPIT_RUNS_DIR", "COCKPIT_OPENCODE_DB"] {
                 std::env::remove_var(name);
             }
         }
@@ -1663,6 +1663,16 @@ fn the_host_snapshot_lists_verified_sessions() {
 }
 
 #[test]
+fn the_host_snapshot_names_the_chief_session_only_while_a_grant_holds_it() {
+    let mut bench = team_bench();
+    let snapshot = crate::teams::host_snapshot(&mut bench.registry).unwrap();
+    assert!(snapshot["chief_session"].is_null());
+    bench.registry.teams.as_ref().unwrap().execute("INSERT INTO chief_grants VALUES ('chief-grant',?1,'claude','path:/project-a','chief-runtime','chief-epoch',1,'active','approval',10)", [SESSION_A]).unwrap();
+    let snapshot = crate::teams::host_snapshot(&mut bench.registry).unwrap();
+    assert_eq!(snapshot["chief_session"], SESSION_A);
+}
+
+#[test]
 fn a_recipient_pulls_one_message_per_observed_turn_state() {
     let mut bench = linked_team_bench();
     send_to_designer(&mut bench, "notice-1");
@@ -1722,6 +1732,8 @@ fn managed_clones_can_share_a_team_without_executing_repository_git_config() {
 struct Shown {
     raised: Vec<String>,
     dropped: Vec<String>,
+    /// (id, title) of every notice raised.
+    notices: Vec<(String, String)>,
 }
 
 struct FakeBanners(Rc<RefCell<Shown>>);
@@ -1731,7 +1743,9 @@ impl Banners for FakeBanners {
         self.0.borrow_mut().raised.push(banner.session.clone());
     }
     fn raise_notice(&mut self, notice: &Notice) {
-        self.0.borrow_mut().raised.push(notice.id.clone());
+        let mut shown = self.0.borrow_mut();
+        shown.raised.push(notice.id.clone());
+        shown.notices.push((notice.id.clone(), notice.title.clone()));
     }
     fn drop_banner(&mut self, key: &str) {
         self.0.borrow_mut().dropped.push(key.into());
@@ -1780,6 +1794,10 @@ impl Bench {
 
     fn dropped(&self) -> Vec<String> {
         self.shown.borrow().dropped.clone()
+    }
+
+    fn notice_title(&self, id: &str) -> Option<String> {
+        self.shown.borrow().notices.iter().find(|(notice, _)| notice == id).map(|(_, title)| title.clone())
     }
 
     fn windows(&self) -> Vec<Rc<RefCell<FakeWindow>>> {

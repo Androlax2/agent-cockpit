@@ -257,14 +257,48 @@ export default {
         /[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u00ad\u034f\u115f\u1160\u200b-\u200f\u2028-\u202e\u2060-\u2069\u2800\u3164\ufe00-\ufe0f\ufeff\uffa0\u{e0000}-\u{e007f}]/gu,
         (character) => `\\u${character.codePointAt(0)!.toString(16).padStart(4, "0")}`,
       ))
-      const row = envelope?.scope_kind === "link"
+      const row = envelope?.kind === "chief_answer"
+        ? `${envelope?.source === "theo" ? "Theo's answer" : "Chief answer"}: ${visible(envelope?.text)}`
+        : envelope?.scope_kind === "link"
         ? `Link message from ${visible(envelope?.sender?.session_id)} (${visible(envelope?.sender?.project)}): ${visible(envelope?.body)}`
         : `Team message from ${plain(envelope?.sender?.role)} (${plain(envelope?.sender?.agent)}): ${plain(envelope?.body)}`
       return row.length > 160 ? `${row.slice(0, 159)}…` : row
     }
+    // The Chief's choice for an open single-question form, given through OpenCode's form API. Anything
+    // unexpected throws: the reply is then uncertain, never typed or sent as a message instead.
+    const replyToForm = async (choice: unknown): Promise<string> => {
+      const form = ctx.session.form
+      if (typeof form?.list !== "function" || typeof form?.reply !== "function") throw new Error("this OpenCode has no form replies")
+      const pending = await form.list({ sessionID: cockpitSession })
+      if (!Array.isArray(pending)) throw new Error("the form list is malformed")
+      const open = pending.filter((item: any) => item?.sessionID === cockpitSession && (item?.state === undefined || item.state?.status === "pending"))
+      if (open.length !== 1 || typeof open[0].id !== "string" || !open[0].id.startsWith("frm_")) throw new Error(`expected one pending form, found ${open.length}`)
+      const fields = Array.isArray(open[0].fields) ? open[0].fields.filter((field: any) => field?.hidden !== true) : []
+      const field = fields[0]
+      if (fields.length !== 1 || !["string", "multiselect"].includes(field?.type) || typeof field.key !== "string"
+        || !Array.isArray(field.options) || field.options.length === 0) throw new Error("the form is not one visible choice")
+      const wanted = String(choice ?? "")
+      const pick = (same: (text: unknown) => boolean) => field.options.filter((option: any) => same(option?.label) || same(option?.value))
+      let matches = pick((text) => text === wanted)
+      if (matches.length === 0) matches = pick((text) => typeof text === "string" && text.trim().toLowerCase() === wanted.trim().toLowerCase())
+      if (matches.length !== 1 || typeof matches[0].value !== "string") throw new Error("the choice matches no single option")
+      const value = matches[0].value
+      await form.reply({ sessionID: cockpitSession, formID: open[0].id, answer: { [field.key]: field.type === "multiselect" ? [value] : value } })
+      return `form:${open[0].id}`
+    }
     const deliverTeamMessage = async () => {
       const delivery = JSON.parse((await runTeam(["receive"])).trim() || "null")
       if (!delivery?.dispatch_id) return
+      if (delivery.envelope?.kind === "chief_form_reply") {
+        let outcome: Record<string, string>
+        try {
+          outcome = { outcome: "received", native_id: await replyToForm(delivery.envelope.choice) }
+        } catch (error) {
+          outcome = { outcome: "uncertain", reason: String(error).slice(0, 300) }
+        }
+        await receipt(delivery.dispatch_id, outcome)
+        return
+      }
       const inboxID = `msg_cockpit${delivery.message_id}`
       try {
         const admitted = await ctx.session.synthetic({
@@ -277,6 +311,8 @@ export default {
           resume: true,
         })
         if (admitted?.id !== inboxID) throw new Error("native queued admission did not confirm the expected stable inbox id")
+        // The answer replies to the saved question: it must not come back when the answered turn stops.
+        if (delivery.envelope?.kind === "chief_answer") report(cockpitSession!, { hook_event_name: "UserPromptSubmit", source: "chief_answer" })
         await receipt(delivery.dispatch_id, { outcome: "received", native_id: admitted.id })
       } catch (error) {
         // The inbox may have taken it before failing: never resend, let Theo reconcile.

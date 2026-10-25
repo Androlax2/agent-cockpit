@@ -531,7 +531,7 @@ pub(crate) fn reopen_work_guarded(connection: &mut Connection, task: &TaskKey, _
 pub fn migrate(connection: &Connection) -> Result<(), TeamError> {
     let transaction = if connection.is_autocommit() { Some(connection.unchecked_transaction()?) } else { None };
     let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-    if !(10..=12).contains(&version) {
+    if !(10..=13).contains(&version) {
         return Err(TeamError::new(ErrorCode::Storage, "unsupported link database version"));
     }
     if version == 10 {

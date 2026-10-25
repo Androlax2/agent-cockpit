@@ -418,6 +418,43 @@ fn a_system_prompt_does_not_answer_an_explicit_question() {
 }
 
 #[test]
+fn after_a_chief_answer_the_old_needs_input_question_does_not_return() {
+    let mut test = HookTest::new();
+    for payload in [json!({"hook_event_name": "NeedsInput", "message": "Which option?"}),
+        json!({"hook_event_name": "Stop"}),
+        json!({"hook_event_name": "UserPromptSubmit", "source": "system"}),
+        json!({"hook_event_name": "UserPromptSubmit", "source": "chief_answer"}),
+        json!({"hook_event_name": "Stop"})] {
+        let result = test.run_hook(with_session(payload, "/x/proj"), &[("COCKPIT_AGENT", "opencode")]);
+        assert!(result.status.success(), "{}", stderr(&result));
+    }
+    let lines = test.received();
+    assert_eq!(lines[1]["message"], "Which option?");
+    assert_eq!(lines[3]["state"], "working");
+    assert_eq!(lines[3]["needs_input"], false);
+    assert_eq!(lines[4]["state"], "waiting");
+    assert_eq!(lines[4]["needs_input"], false);
+    assert_ne!(lines[4]["message"], "Which option?");
+    assert!(lines[3].get("task").is_none(), "a Chief answer does not rename Theo's task");
+}
+
+#[test]
+fn a_question_asked_after_a_chief_answer_is_kept() {
+    let mut test = HookTest::new();
+    for payload in [json!({"hook_event_name": "NeedsInput", "message": "Which option?"}),
+        json!({"hook_event_name": "Stop"}),
+        json!({"hook_event_name": "NeedsInput", "message": "And the colour?"}),
+        json!({"hook_event_name": "UserPromptSubmit", "source": "chief_answer"}),
+        json!({"hook_event_name": "Stop"})] {
+        let result = test.run_hook(with_session(payload, "/x/proj"), &[("COCKPIT_AGENT", "opencode")]);
+        assert!(result.status.success(), "{}", stderr(&result));
+    }
+    let lines = test.received();
+    assert_eq!(lines[4]["state"], "needs-you");
+    assert_eq!(lines[4]["message"], "And the colour?");
+}
+
+#[test]
 fn the_question_command_requires_the_daemons_acceptance() {
     let test = HookTest::new();
     for reply in ["", "refused: session.cwd contains a tmux format sequence"] {

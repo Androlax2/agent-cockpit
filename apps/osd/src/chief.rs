@@ -2,7 +2,7 @@
 
 use crate::{registry::Registry, teams};
 use cockpit::chief::{ChiefAgentAction, ChiefHostAction, WorkerState, store};
-use cockpit::teams::{TeamError, TeamReply, VerifiedSession, NativeCounts, ErrorCode};
+use cockpit::teams::{TeamError, TeamReply, VerifiedSession, NativeCounts, ErrorCode, TaskKey};
 use serde_json::Value;
 
 #[derive(Clone)]
@@ -92,10 +92,17 @@ fn workers_at(registry: &mut Registry, now: i64, observe: bool) -> Result<Vec<Wo
             has_native_observation = true;
             match &observation.counts {
                 Some(counts) => {
-                    if counts.running_sessions > 0 { blocked_by.push("native_busy".into()); }
-                    if counts.pending_inbox > 0 || counts.pending_permissions > 0 || counts.pending_forms > 0 {
+                    if counts.running_sessions > 0 {
+                        // A runtime waiting on a form still runs the session that asked: only a reply to
+                        // that form may go past it, and only when no permission waits beside it.
+                        let is_at_form = counts.pending_forms > 0 && counts.pending_permissions == 0;
+                        blocked_by.push(if is_at_form { "native_busy_at_form" } else { "native_busy" }.into());
+                    }
+                    if counts.pending_inbox > 0 || counts.pending_permissions > 0 {
                         blocked_by.push("native_inbox_or_input_pending".into());
                     }
+                    // Its own reason: a Chief form reply goes exactly to a session waiting on its form.
+                    if counts.pending_forms > 0 { blocked_by.push("native_form_pending".into()); }
                 },
                 None => blocked_by.push("runtime_native_sample_unavailable".into()),
             }
@@ -120,7 +127,9 @@ fn workers_at(registry: &mut Registry, now: i64, observe: bool) -> Result<Vec<Wo
         if store::legacy_worker_busy(connection, &session.session_id)? { blocked_by.push("legacy_work_in_progress".into()); }
         if let Some(entry) = registry.sessions.get(&session.session_id) {
             if entry.needs_input { blocked_by.push("human_input".into()); }
-            if now / 1000 - (entry.since as i64) < cockpit::queue::QUEUE_IDLE_S { blocked_by.push("idle_guard".into()); }
+            if now / 1000 - (entry.since as i64) < cockpit::queue::QUEUE_IDLE_S && !store::is_chief(connection, &session.session_id)? {
+                blocked_by.push("idle_guard".into());
+            }
             if entry.terminal || entry.agents > 0 || entry.background > 0 { blocked_by.push("unavailable".into()); }
             if registry.pending_host_request_for(Some(&session.session_id),&session.project) {
                 blocked_by.push("host_command_or_approval_pending".into());
@@ -193,24 +202,112 @@ pub fn snapshot(registry: &mut Registry, after: i64, limit: usize, generation: O
     Ok(snapshot)
 }
 
+/// The state boundary at which the session is stopped for the Chief, if it is. A question and a
+/// permission prompt both show as `needs-you`; only fresh native telemetry, received after the stop
+/// began and reporting no open permission, tells them apart, so a missing, stale or older report
+/// means no stop.
+pub(crate) fn stop_boundary(registry: &Registry, session: &VerifiedSession, now_ms: i64) -> Option<String> {
+    let boundary = state_boundary(registry, &session.session_id)?;
+    let entry = &registry.sessions[&session.session_id];
+    if entry.state == "waiting" { return Some(boundary); }
+    // `since` is whole seconds: the stop may have begun up to a second after it.
+    let stopped_by_ms = (entry.since as i64).saturating_add(1).saturating_mul(1000);
+    registry.chief_telemetry.get(&session.session_id)
+        .filter(|observation| observation.session == *session && observation.received_at_ms <= now_ms && now_ms - observation.received_at_ms <= 30_000
+            && observation.received_at_ms >= stopped_by_ms)
+        .and_then(|observation| observation.counts.as_ref())
+        .is_some_and(|counts| counts.pending_permissions == 0)
+        .then_some(boundary)
+}
+
+/// The session's `state:since` boundary while it waits or asks, whatever telemetry says (or fails to).
+///
+/// `since` is whole seconds because the snapshot keeps it that way: a boundary built from the
+/// fractional value would change when the daemon restarts, and the same stop would be recorded twice.
+fn state_boundary(registry: &Registry, session_id: &str) -> Option<String> {
+    let entry = registry.sessions.get(session_id)?;
+    matches!(entry.state.as_str(), "waiting" | "needs-you").then(|| format!("{}:{}", entry.state, entry.since as i64))
+}
+
+/// A stop whose bundle failed is retried at most this often; each try opens the conversation database
+/// on the tick thread.
+const STOP_BUNDLE_RETRY_MS: i64 = 60_000;
+
+fn observe_stops(registry: &mut Registry, live: &[WorkerState], now_ms: i64) -> Result<(), TeamError> {
+    observe_stops_with(registry, live, now_ms, cockpit::todo::TodoList::load)
+}
+
+/// Closes the stops of sessions that moved on, and, while a Chief is enabled, records a stop for every
+/// OpenCode session other than the Chief that sits at a stop boundary while its todo is in progress.
+/// A stop whose bundle cannot be built is not recorded; it is retried after a backoff and logged once
+/// per boundary. The todo list is read only when some session is at a stop boundary.
+///
+/// Moving on means a new `state:since` boundary, a state that is no stop, or a session that is gone.
+/// Missing or stale telemetry only keeps a new stop from being recorded: it is no sign the agent
+/// moved on, and an answer still needs fresh telemetry to be delivered.
+pub(crate) fn observe_stops_with(registry: &mut Registry, live: &[WorkerState], now_ms: i64, load_todos: impl FnOnce() -> cockpit::todo::TodoList) -> Result<(), TeamError> {
+    let connection = registry.teams.as_ref().expect("workers_at opens the protected store");
+    for session_id in store::sessions_with_open_stops(connection)? {
+        let is_live = live.iter().any(|worker| worker.session.session_id == session_id);
+        let current = is_live.then(|| state_boundary(registry, &session_id)).flatten();
+        store::supersede_stops(connection, &session_id, current.as_deref())?;
+    }
+    let Some(chief) = store::chief_session(connection)? else { return Ok(()) };
+    let candidates: Vec<(VerifiedSession, String)> = live.iter()
+        .filter(|worker| worker.session.agent == "opencode" && worker.session.session_id != chief)
+        .filter_map(|worker| Some((worker.session.clone(), stop_boundary(registry, &worker.session, now_ms)?)))
+        .collect();
+    let todos = (!candidates.is_empty()).then(load_todos);
+    let stopped: Vec<(VerifiedSession, String, cockpit::todo::Item)> = candidates.into_iter().filter_map(|(session, boundary)| {
+        let item = todos.as_ref()?.items.iter().find(|item| item.status() == "doing" && item.session() == session.session_id)?;
+        Some((session, boundary, item.clone()))
+    }).collect();
+    let connection = registry.teams.as_mut().expect("workers_at opens the protected store");
+    for (session, boundary, item) in &stopped {
+        if store::stop_recorded(connection, &session.session_id, boundary)? { continue; }
+        let failure = registry.chief_stop_failures.get(&session.session_id).filter(|(failed_boundary, _)| failed_boundary == boundary).map(|(_, at)| *at);
+        if failure.is_some_and(|at| (0..STOP_BUNDLE_RETRY_MS).contains(&(now_ms - at))) { continue; }
+        match cockpit::chief::bundle::stop_bundle(&cockpit::paths::opencode_database(), &session.session_id, item) {
+            Ok(bundle) => {
+                let task = TaskKey { project: session.project.clone(), task_id: item.id() };
+                store::record_stop(connection, session, boundary, &task, &bundle, now_ms)?;
+            },
+            Err(error) => {
+                if failure.is_none() {
+                    cockpit::util::log_as("daemon", "WARN", &format!("chief stop bundle for {} at {boundary} not built: {}", session.session_id, error.message));
+                }
+                registry.chief_stop_failures.insert(session.session_id.clone(), (boundary.clone(), now_ms));
+            },
+        }
+    }
+    registry.chief_stop_failures.retain(|session_id, (failed_boundary, _)| stopped.iter().any(|(session, boundary, _)| session.session_id == *session_id && boundary == failed_boundary));
+    Ok(())
+}
+
 pub fn tick(registry: &mut Registry, now_ms: i64) -> Result<(), TeamError> {
     if registry.teams.is_none() && !cockpit::paths::team_database().is_file() {return Ok(())}
     let observation = workers_at(registry,now_ms,true);
     let Some(connection) = registry.teams.as_mut() else {return observation.map(|_|())};
-    let pending = connection.prepare("SELECT a.decision FROM chief_attention a JOIN chief_decisions d ON d.id=a.decision WHERE d.state='open' ORDER BY a.created_at,a.decision LIMIT ?1")?
-        .query_map([cockpit::chief::MAX_OPEN_DECISIONS as i64],|row|row.get::<_,String>(0))?.collect::<Result<Vec<_>,_>>()?;
+    let pending = connection.prepare("SELECT a.decision,d.category FROM chief_attention a JOIN chief_decisions d ON d.id=a.decision WHERE d.state='open' ORDER BY a.created_at,a.decision LIMIT ?1")?
+        .query_map([cockpit::chief::MAX_OPEN_DECISIONS as i64],|row|Ok((row.get::<_,String>(0)?,row.get::<_,Option<String>>(1)?)))?.collect::<Result<Vec<_>,_>>()?;
     for (decision,is_visible) in &mut registry.chief_attention_presentations {
-        if *is_visible && !pending.contains(decision) {
+        if *is_visible && !pending.iter().any(|(open,_)| open==decision) {
             registry.banners.drop_banner(&format!("notice:chief-decision-{decision}"));
             *is_visible=false;
         }
     }
-    for decision in pending {
+    for (decision,category) in pending {
         // Durable pending attention survives restarts; presentation history only deduplicates this daemon.
         if registry.chief_attention_presentations.contains_key(&decision) {continue;}
-        registry.banners.raise_notice(&crate::registry::Notice {id:format!("chief-decision-{decision}"),title:"Chief · host decision needed".into(),message:"Review the protected chief decisions. No permission has been granted.".into()});
+        let notice = match category.as_deref() {
+            Some(category) => crate::registry::Notice {id:format!("chief-decision-{decision}"),title:format!("Chief · {} question needs you",category.replace('_'," ")),
+                message:"A stopped agent waits for your answer. Review the escalation in the chief view. No permission has been granted.".into()},
+            None => crate::registry::Notice {id:format!("chief-decision-{decision}"),title:"Chief · host decision needed".into(),message:"Review the protected chief decisions. No permission has been granted.".into()},
+        };
+        registry.banners.raise_notice(&notice);
         registry.chief_attention_presentations.insert(decision.clone(),true);
         connection.execute("UPDATE chief_attention SET notified_at=coalesce(notified_at,?2) WHERE decision=?1",(decision.as_str(),now_ms))?;
     }
+    if let Ok(live) = &observation { observe_stops(registry, live, now_ms)?; }
     observation.map(|_|())
 }

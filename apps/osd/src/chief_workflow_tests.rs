@@ -286,3 +286,191 @@ fn ordinary_spawned_qa_keeps_findings_only_reporting_and_automatic_exit() {
     crate::teams::host_snapshot(&mut bench.registry).unwrap();
     assert!(started(&bench).contains(&vec!["cockpit".into(),"exit".into(),NEW_SESSION.into()]));
 }
+
+/// A worker stopped long enough ago for the answer grace, its stop recorded, and a Chief turn admitted.
+fn admitted_stop_bench() -> (Bench, String) {
+    let mut bench = stop_bench();
+    assign_doing_todo(&bench, STOPPED_WORKER);
+    bench.registry.sessions.get_mut(STOPPED_WORKER).unwrap().since = (crate::teams::now_ms()/1000-40) as f64;
+    verify_admission(&mut bench, STOPPED_WORKER);
+    let worker = verified(&mut bench, STOPPED_WORKER);
+    crate::teams::host(&mut bench.registry, std::process::id(), HostRequest::ChiefNativeObservation {
+        session: worker, idle: true, pending_input: false, observed_at_ms: crate::teams::now_ms(),
+    }).unwrap().result.unwrap();
+    bench.registry.tick_queues();
+    let stop: String = bench.registry.teams.as_ref().unwrap().query_row("SELECT id FROM chief_stops WHERE state='open'", [], |row| row.get(0)).unwrap();
+    prepare_chief_boundary(&mut bench);
+    bench.registry.sessions.get_mut(OPENCODE_SESSION).unwrap().since -= 7.0;
+    let wake = crate::teams::request(&mut bench.registry, 20, AgentAction::Receive).unwrap().result.unwrap();
+    assert_eq!(wake["envelope"]["kind"], "chief_wake");
+    crate::teams::request(&mut bench.registry, 20, AgentAction::Receipt { dispatch_id: wake["dispatch_id"].as_str().unwrap().into(),
+        outcome: TransportOutcome::Received { native_id: "chief-answer-wake".into() } }).unwrap().result.unwrap();
+    (bench, stop)
+}
+
+fn answered_stop_bench() -> (Bench, String) {
+    let (mut bench, stop) = admitted_stop_bench();
+    crate::teams::request(&mut bench.registry, 20, AgentAction::Chief { request: ChiefAgentAction::Answer {
+        stop: stop.clone(), text: "Use option A.".into(), reason: "The task notes keep the old API.".into(),
+    }}).unwrap().result.unwrap();
+    (bench, stop)
+}
+
+fn answer_delivery(bench: &Bench) -> String {
+    bench.registry.teams.as_ref().unwrap().query_row("SELECT delivery FROM chief_answers", [], |row| row.get(0)).unwrap()
+}
+
+#[test]
+fn a_chief_answer_is_delivered_through_the_native_queue_with_the_boundary_text() {
+    let (mut bench, stop) = answered_stop_bench();
+    let admitted = native_inbox(&mut bench, STOPPED_WORKER_PEER, STOPPED_WORKER);
+    assert_eq!(admitted.len(), 1, "{admitted:?}");
+    let message: String = bench.registry.teams.as_ref().unwrap().query_row(
+        "SELECT id FROM chief_inbox WHERE json_extract(envelope,'$.kind')='chief_answer'", [], |row| row.get(0)).unwrap();
+    assert_eq!(admitted[0]["id"], format!("msg_cockpit{message}"));
+    let text = admitted[0]["text"].as_str().unwrap();
+    assert!(text.starts_with("Use option A."), "{text}");
+    assert!(text.ends_with(cockpit::chief::CHIEF_ANSWER_BOUNDARY), "{text}");
+    assert_eq!(admitted[0]["description"], "Chief answer: Use option A.");
+    assert_eq!(answer_delivery(&bench), "received");
+    let state: String = bench.registry.teams.as_ref().unwrap().query_row("SELECT state FROM chief_stops WHERE id=?1", [&stop], |row| row.get(0)).unwrap();
+    assert_eq!(state, "answered");
+}
+
+#[test]
+fn theos_answer_to_an_escalation_is_delivered_natively_even_after_the_chief_is_disabled() {
+    let (mut bench, stop) = admitted_stop_bench();
+    let escalated = crate::teams::request(&mut bench.registry, 20, AgentAction::Chief { request: serde_json::from_value(
+        json!({"action":"escalate","stop":stop,"category":"security","reason":"The question touches credentials.","suggested_answer":"Ask Theo."})).unwrap()
+    }).unwrap().result.unwrap();
+    assert_eq!(count(&bench, "SELECT count(*) FROM chief_answers"), 0, "an escalation sends nothing");
+    let epoch: String = bench.registry.teams.as_ref().unwrap().query_row("SELECT epoch FROM chief_grants WHERE state='active'", [], |row| row.get(0)).unwrap();
+    host(&mut bench, ChiefHostAction::Disable { request_id: "disable-before-theo".into(), expected_epoch: epoch });
+    host(&mut bench, ChiefHostAction::AnswerDecision { request_id: "theo-answers".into(), decision: escalated["decision"].as_str().unwrap().into(),
+        expected_revision: 1, answer: "Use the staging credentials and tell me which.".into() });
+    let admitted = native_inbox(&mut bench, STOPPED_WORKER_PEER, STOPPED_WORKER);
+    assert_eq!(admitted.len(), 1, "{admitted:?}");
+    let text = admitted[0]["text"].as_str().unwrap();
+    assert!(text.starts_with("Use the staging credentials"), "{text}");
+    assert!(text.ends_with(cockpit::chief::THEO_ANSWER_LABEL), "{text}");
+    assert!(!text.contains(cockpit::chief::CHIEF_ANSWER_BOUNDARY), "{text}");
+    assert_eq!(admitted[0]["description"], "Theo's answer: Use the staging credentials and tell me which.");
+    assert_eq!(answer_delivery(&bench), "received");
+    assert_eq!(count(&bench, "SELECT count(*) FROM chief_answers WHERE source='theo'"), 1);
+}
+
+fn escalate_stop(bench: &mut Bench, stop: &str) -> String {
+    let escalated = crate::teams::request(&mut bench.registry, 20, AgentAction::Chief { request: serde_json::from_value(
+        json!({"action":"escalate","stop":stop,"category":"scope","reason":"Changing the API is outside the task."})).unwrap()
+    }).unwrap().result.unwrap();
+    escalated["decision"].as_str().unwrap().to_string()
+}
+
+fn stop_and_decision_states(bench: &Bench, stop: &str, decision: &str) -> (String, String) {
+    let connection = bench.registry.teams.as_ref().unwrap();
+    (connection.query_row("SELECT state FROM chief_stops WHERE id=?1", [stop], |row| row.get(0)).unwrap(),
+        connection.query_row("SELECT state FROM chief_decisions WHERE id=?1", [decision], |row| row.get(0)).unwrap())
+}
+
+#[test]
+fn a_telemetry_gap_keeps_an_escalated_question_stop_open_until_its_boundary_changes() {
+    let (mut bench, stop) = admitted_stop_bench();
+    let since = bench.registry.sessions[STOPPED_WORKER].since as i64;
+    bench.registry.teams.as_ref().unwrap().execute("UPDATE chief_stops SET boundary=?2 WHERE id=?1", (&stop, format!("needs-you:{since}"))).unwrap();
+    let entry = bench.registry.sessions.get_mut(STOPPED_WORKER).unwrap();
+    entry.state = "needs-you".into(); entry.needs_input = true;
+    report_worker_permissions(&mut bench, 1, 0);
+    let decision = escalate_stop(&mut bench, &stop);
+    bench.registry.chief_telemetry.remove(STOPPED_WORKER);
+    bench.registry.tick_queues();
+    assert_eq!(stop_and_decision_states(&bench, &stop, &decision), ("escalated".into(), "open".into()), "a restarted daemon has no telemetry yet");
+    let unavailable = serde_json::from_value(json!({"action":"native_telemetry","sequence":2,"counts":null})).unwrap();
+    crate::teams::request(&mut bench.registry, STOPPED_WORKER_PEER, unavailable).unwrap().result.unwrap();
+    bench.registry.tick_queues();
+    assert_eq!(stop_and_decision_states(&bench, &stop, &decision), ("escalated".into(), "open".into()), "the TUI left the session");
+    bench.registry.sessions.get_mut(STOPPED_WORKER).unwrap().since += 5.0;
+    bench.registry.tick_queues();
+    assert_eq!(stop_and_decision_states(&bench, &stop, &decision), ("superseded".into(), "superseded".into()));
+}
+
+#[test]
+fn an_escalation_closes_when_the_agent_moves_on_after_the_chief_is_disabled() {
+    let (mut bench, stop) = admitted_stop_bench();
+    let decision = escalate_stop(&mut bench, &stop);
+    let epoch: String = bench.registry.teams.as_ref().unwrap().query_row("SELECT epoch FROM chief_grants WHERE state='active'", [], |row| row.get(0)).unwrap();
+    host(&mut bench, ChiefHostAction::Disable { request_id: "disable-then-move-on".into(), expected_epoch: epoch });
+    let entry = bench.registry.sessions.get_mut(STOPPED_WORKER).unwrap();
+    entry.state = "working".into(); entry.since += 5.0;
+    bench.registry.tick_queues();
+    assert_eq!(stop_and_decision_states(&bench, &stop, &decision), ("superseded".into(), "superseded".into()));
+    let entry = bench.registry.sessions.get_mut(STOPPED_WORKER).unwrap();
+    entry.state = "waiting".into(); entry.since += 5.0;
+    bench.registry.tick_queues();
+    assert_eq!(count(&bench, "SELECT count(*) FROM chief_stops"), 1, "without a Chief no new stop is recorded");
+}
+
+#[test]
+fn a_chief_answer_never_reaches_a_permission_prompt() {
+    let (mut bench, _) = answered_stop_bench();
+    report_worker_permissions(&mut bench, 1, 0);
+    let entry = bench.registry.sessions.get_mut(STOPPED_WORKER).unwrap();
+    entry.state = "needs-you".into(); entry.needs_input = false;
+    assert!(crate::teams::request(&mut bench.registry, STOPPED_WORKER_PEER, AgentAction::Receive).unwrap().result.unwrap().is_null());
+    assert_eq!(answer_delivery(&bench), "queued");
+}
+
+#[test]
+fn a_chief_answer_reaches_a_session_stopped_at_its_question() {
+    let (mut bench, stop) = answered_stop_bench();
+    let since = bench.registry.sessions[STOPPED_WORKER].since as i64;
+    bench.registry.teams.as_ref().unwrap().execute("UPDATE chief_stops SET boundary=?2 WHERE id=?1", (&stop, format!("needs-you:{since}"))).unwrap();
+    let entry = bench.registry.sessions.get_mut(STOPPED_WORKER).unwrap();
+    entry.state = "needs-you".into(); entry.needs_input = true;
+    assert!(crate::teams::request(&mut bench.registry, STOPPED_WORKER_PEER, AgentAction::Receive).unwrap().result.unwrap().is_null(),
+        "without fresh telemetry an open permission cannot be ruled out");
+    report_worker_permissions(&mut bench, 1, 0);
+    let delivery = crate::teams::request(&mut bench.registry, STOPPED_WORKER_PEER, AgentAction::Receive).unwrap().result.unwrap();
+    assert_eq!(delivery["envelope"]["kind"], "chief_answer", "{delivery}");
+}
+
+/// A runtime waiting on a form or permission still runs its session: OpenCode reports it as running.
+fn report_worker_prompts(bench: &mut Bench, sequence: i64, permissions: u32, forms: u32) {
+    let action = serde_json::from_value(json!({"action":"native_telemetry","sequence":sequence,"counts":{
+        "running_sessions":1,"pending_inbox":0,"pending_permissions":permissions,"pending_forms":forms}})).unwrap();
+    crate::teams::request(&mut bench.registry, STOPPED_WORKER_PEER, action).unwrap().result.unwrap();
+}
+
+/// A worker stopped at an open single-question form, with the Chief's choice for it queued.
+fn form_reply_bench() -> Bench {
+    let (mut bench, stop) = admitted_stop_bench();
+    let since = bench.registry.sessions[STOPPED_WORKER].since as i64;
+    bench.registry.teams.as_ref().unwrap().execute("UPDATE chief_stops SET boundary=?2,bundle=json_set(bundle,'$.question',json(?3)) WHERE id=?1",
+        (&stop, format!("needs-you:{since}"), json!({"header":"Option","question":"Which option?","options":["A","B"],"question_count":1}).to_string())).unwrap();
+    crate::teams::request(&mut bench.registry, 20, AgentAction::Chief { request: ChiefAgentAction::AnswerForm {
+        stop: stop.clone(), choice: "B".into(), reason: "The task notes pick B.".into(),
+    }}).unwrap().result.unwrap();
+    let entry = bench.registry.sessions.get_mut(STOPPED_WORKER).unwrap();
+    entry.state = "needs-you".into(); entry.needs_input = false;
+    bench
+}
+
+#[test]
+fn a_chief_form_reply_reaches_a_session_waiting_on_its_form_and_never_a_permission_prompt() {
+    let mut bench = form_reply_bench();
+    report_worker_prompts(&mut bench, 1, 1, 1);
+    assert!(crate::teams::request(&mut bench.registry, STOPPED_WORKER_PEER, AgentAction::Receive).unwrap().result.unwrap().is_null(),
+        "an open permission prompt holds the reply");
+    report_worker_prompts(&mut bench, 2, 0, 1);
+    let delivery = crate::teams::request(&mut bench.registry, STOPPED_WORKER_PEER, AgentAction::Receive).unwrap().result.unwrap();
+    assert_eq!(delivery["envelope"]["kind"], "chief_form_reply", "{delivery}");
+    assert_eq!(delivery["envelope"]["choice"], "B");
+    assert_eq!(answer_delivery(&bench), "queued", "only the plugin's receipt settles it");
+}
+
+#[test]
+fn a_chief_form_reply_waits_while_the_runtime_is_busy_without_a_form() {
+    let mut bench = form_reply_bench();
+    report_worker_prompts(&mut bench, 1, 0, 0);
+    assert!(crate::teams::request(&mut bench.registry, STOPPED_WORKER_PEER, AgentAction::Receive).unwrap().result.unwrap().is_null());
+    assert_eq!(answer_delivery(&bench), "queued");
+}

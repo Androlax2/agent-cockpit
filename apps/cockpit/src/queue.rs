@@ -14,13 +14,14 @@ pub struct QueueContext {
     pub viewed: String,
     pub workspace_active: bool,
     pub qa_sessions: HashSet<String>,
+    pub chief_session: Option<String>,
     pub host_available: bool,
 }
 
 #[derive(Debug, PartialEq)]
 pub enum QueueBlock {
     HostUnavailable,
-    Disabled, Gaming, External, Terminal, Qa, MissingDirectory, Unknown, Working,
+    Disabled, Gaming, External, Terminal, Qa, Chief, MissingDirectory, Unknown, Working,
     NeedsInput, CommandRunning, Busy, PendingMessage, Viewed, Idle { remaining: i64 },
 }
 
@@ -33,6 +34,7 @@ impl fmt::Display for QueueBlock {
             Self::External => formatter.write_str("no terminal target"),
             Self::Terminal => formatter.write_str("terminal-managed session"),
             Self::Qa => formatter.write_str("QA is reserved for its assigned review"),
+            Self::Chief => formatter.write_str("the Chief's own session"),
             Self::MissingDirectory => formatter.write_str("missing checkout directory"),
             Self::Unknown => formatter.write_str("unknown state"),
             Self::Working => formatter.write_str("still working"),
@@ -53,6 +55,7 @@ pub fn block(session: &Session, context: &QueueContext, busy: bool, has_pending_
     if session.is_external() { return Some(QueueBlock::External); }
     if session.terminal { return Some(QueueBlock::Terminal); }
     if context.qa_sessions.contains(&session.session) { return Some(QueueBlock::Qa); }
+    if context.chief_session.as_deref() == Some(session.session.as_str()) { return Some(QueueBlock::Chief); }
     if session.cwd.is_empty() { return Some(QueueBlock::MissingDirectory); }
     if session.needs_attention() { return Some(QueueBlock::NeedsInput); }
     if session.ask_to_run == "running" { return Some(QueueBlock::CommandRunning); }

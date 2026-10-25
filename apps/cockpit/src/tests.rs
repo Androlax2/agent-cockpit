@@ -8141,7 +8141,7 @@ fn continuity_queue_view_keeps_priority_and_designer_routes_without_network_call
 fn continuity_queue_idle_boundary_is_exactly_five_minutes() {
     let fixture = Fixture::new();
     let context = crate::queue::QueueContext { now: 1000, enabled: true, gaming: false, viewed: String::new(), workspace_active: false,
-        qa_sessions: Default::default(), host_available:true };
+        qa_sessions: Default::default(), chief_session: None, host_available:true };
     for (since, remaining) in [(701, Some(1)), (700, None), (699, None)] {
         let reported = sessions::Session::from_value(&session(SESSION_A, "waiting", "runway", "/r/runway", since)).unwrap();
         assert_eq!(crate::queue::block(&reported, &context, false, false), remaining.map(|remaining| crate::queue::QueueBlock::Idle { remaining }));
@@ -8158,7 +8158,7 @@ fn an_unreachable_team_host_blocks_queue_sends() {
     let _ = fs::remove_file(crate::paths::team_host_socket());
     let reported = sessions::Session::from_value(&session(SESSION_A, "waiting", "runway", "/r/runway", 1)).unwrap();
     let context = crate::queue::QueueContext { now:util::now_secs(), enabled:true, gaming:false, viewed:String::new(),
-        workspace_active:false, qa_sessions:Default::default(), host_available:false };
+        workspace_active:false, qa_sessions:Default::default(), chief_session:None, host_available:false };
     assert_eq!(crate::queue::block(&reported, &context, false, false), Some(crate::queue::QueueBlock::HostUnavailable));
     app.dispatch_queue();
     assert_eq!(app.todos.status_of(&id), "todo");
@@ -8186,6 +8186,30 @@ fn an_enabled_chief_keeps_the_todo_queue_sending() {
     assert_eq!(first.todos.status_of(&id), "doing");
     assert_eq!(TodoList::load().status_of(&handed), "doing");
     assert_eq!(fixture.wait_for_calls("cockpit", 2).len(), 2);
+}
+
+#[test]
+fn the_todo_queue_never_offers_work_to_the_chief_session() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "runway", "/r/runway", util::now_secs() - 600)]));
+    let requests = team_host(&fixture, json!({"members": [], "chief_session": SESSION_A}), vec![]);
+    let mut app = fixture.app();
+    app.gaming = || false;
+    let id = app.todos.add("runway", "/r/runway", "queued");
+    app.todos.toggle_queued(&id);
+    app.dispatch_queue();
+    assert_eq!(app.todos.status_of(&id), "todo");
+    assert!(requests.lock().unwrap().iter().all(|request| request["request"] != "reserve_task"), "{:?}", requests.lock().unwrap());
+    let log = fs::read_to_string(fixture.path("state/cockpit/log")).unwrap_or_default();
+    assert!(!log.contains("queue:"), "{log}");
+    assert!(fixture.calls("cockpit").is_empty());
+
+    let reported = sessions::Session::from_value(&session(SESSION_A, "waiting", "runway", "/r/runway", 1)).unwrap();
+    let context = crate::queue::QueueContext { now: util::now_secs(), enabled: true, gaming: false, viewed: String::new(),
+        workspace_active: false, qa_sessions: Default::default(), chief_session: Some(SESSION_A.into()), host_available: true };
+    let block = crate::queue::block(&reported, &context, false, false);
+    assert_eq!(block, Some(crate::queue::QueueBlock::Chief));
+    assert_eq!(block.unwrap().to_string(), "the Chief's own session");
 }
 
 #[test]

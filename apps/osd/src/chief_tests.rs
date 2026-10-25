@@ -55,6 +55,29 @@ fn chief_host_review_pagination_invalidates_on_material_change_not_heartbeat_tim
     assert_eq!(stale["next"],0);
 }
 
+fn blocked_by_for(bench: &mut Bench, id: &str) -> Vec<String> {
+    let session = verified(bench,id);
+    crate::chief::workers(&mut bench.registry).unwrap().into_iter().find(|worker|worker.session==session).unwrap().blocked_by
+}
+
+#[test]
+fn the_chief_is_woken_without_waiting_for_the_idle_guard() {
+    let mut bench = team_bench(); enable(&mut bench,OPENCODE_SESSION);
+    prepare_chief_boundary(&mut bench);
+    bench.registry.sessions.get_mut(OPENCODE_SESSION).unwrap().since=(crate::teams::now_ms()/1000-40) as f64;
+    assert!(!blocked_by_for(&mut bench,OPENCODE_SESSION).contains(&"idle_guard".to_string()));
+    let dispatch = crate::teams::request(&mut bench.registry,20,AgentAction::Receive).unwrap().result.unwrap();
+    assert_eq!(dispatch["envelope"]["kind"],"chief_wake");
+}
+
+#[test]
+fn workers_still_wait_for_the_idle_guard() {
+    let mut bench = team_bench();
+    prepare_chief_boundary(&mut bench);
+    bench.registry.sessions.get_mut(OPENCODE_SESSION).unwrap().since=(crate::teams::now_ms()/1000-40) as f64;
+    assert!(blocked_by_for(&mut bench,OPENCODE_SESSION).contains(&"idle_guard".to_string()));
+}
+
 #[test]
 fn chief_unavailable_is_one_host_notice_even_without_a_chief_report() {
     let mut bench = team_bench();
@@ -64,6 +87,22 @@ fn chief_unavailable_is_one_host_notice_even_without_a_chief_report() {
     assert_eq!(notices.len(),1);
     bench.registry.tick_queues();
     assert_eq!(bench.raised().into_iter().filter(|id|id.starts_with("chief-decision-")).count(),1);
+}
+
+#[test]
+fn an_escalation_banner_names_its_category() {
+    let mut bench = team_bench();
+    enable(&mut bench,SESSION_A);
+    crate::chief::workers(&mut bench.registry).unwrap();
+    let connection = bench.registry.teams.as_ref().unwrap();
+    for (id,category) in [("esc-security","security"),("esc-scope","scope"),("esc-unsure","not_sure")] {
+        connection.execute("INSERT INTO chief_decisions(id,scope_key,decision_key,question,recommendation,state,revision,created_at,category) VALUES (?1,'scope',?1,'Q','R','open',1,100,?2)",[id,category]).unwrap();
+        connection.execute("INSERT INTO chief_attention(decision,created_at) VALUES (?1,100)",[id]).unwrap();
+    }
+    bench.registry.tick_queues();
+    assert_eq!(bench.notice_title("chief-decision-esc-security").as_deref(),Some("Chief · security question needs you"));
+    assert_eq!(bench.notice_title("chief-decision-esc-scope").as_deref(),Some("Chief · scope question needs you"));
+    assert_eq!(bench.notice_title("chief-decision-esc-unsure").as_deref(),Some("Chief · not sure question needs you"));
 }
 
 fn restart_chief_daemon(bench: &mut Bench) {
@@ -153,7 +192,7 @@ fn chief_summary_production_route_delivers_one_request_and_accepts_only_its_nati
     assert_eq!(crate::teams::host(&mut bench.registry, std::process::id(),request).unwrap().result.unwrap(),first);
     assert!(crate::teams::request(&mut bench.registry,20,AgentAction::Receive).unwrap().result.unwrap().is_null());
     let entry=bench.registry.sessions.get_mut(OPENCODE_SESSION).unwrap();entry.state="waiting".into();entry.since=(crate::teams::now_ms()/1000) as f64;
-    assert!(crate::teams::request(&mut bench.registry,20,AgentAction::Receive).unwrap().result.unwrap().is_null(),"the complete five-minute idle guard still applies");
+    assert!(blocked_by_for(&mut bench,OPENCODE_SESSION).iter().all(|reason|reason!="idle_guard"),"the Chief's own turns skip the idle guard");
     let reply = serde_json::from_value::<AgentAction>(json!({"action":"chief","request":{"action":"summary_response","request_id":"host-summary",
         "sections":{"completed":"None verified","active":"No assignments","decisions":"No host decisions","idle":"No approved work"}}})).unwrap();
     assert!(crate::teams::request(&mut bench.registry,20,reply.clone()).unwrap().result.is_err());
@@ -828,4 +867,252 @@ fn chief_and_legacy_readiness_scope_host_requests_to_the_protected_owner() {
             assert_eq!(reserved.is_ok_and(|reply|reply.result.is_ok()),!related,"legacy {kind}: {owner}");
         }
     }
+}
+
+const STOPPED_WORKER: &str = "ses_3f2a9c0b2000AbCdEfGhIjKlMn";
+const STOPPED_WORKER_PEER: u32 = 40;
+
+/// A second OpenCode session next to the Chief (`OPENCODE_SESSION`), waiting, with a conversation on disk.
+fn stop_bench() -> Bench {
+    let mut bench = team_bench();
+    let project = bench.fixture.root.join("home/IdeaProjects/project-a");
+    {
+        let mut world = bench.world.borrow_mut();
+        world.sender_targets.insert(STOPPED_WORKER_PEER, target(&[("tmux_pane", "%40")]));
+        world.sender_directories.insert(STOPPED_WORKER_PEER, project.to_string_lossy().into_owned());
+        world.sender_runtimes.insert(STOPPED_WORKER_PEER, "runtime-40".into());
+    }
+    let report = parse_session(&json!({"session":STOPPED_WORKER,"agent":"opencode","project":"project-a","cwd":project,"state":"waiting"}).to_string()).unwrap();
+    bench.registry.report_from(report, STOPPED_WORKER_PEER).unwrap();
+    bench.registry.sessions.get_mut(STOPPED_WORKER).unwrap().since = (crate::teams::now_ms()/1000-10) as f64;
+    enable(&mut bench, OPENCODE_SESSION);
+    admit_chief(&mut bench);
+    bench.registry.teams.as_ref().unwrap().execute("UPDATE chief_coordination SET last_admitted_at=last_admitted_at-31000", []).unwrap();
+    write_conversation(&bench, STOPPED_WORKER, &[("user", "Fix login"), ("assistant", "Which option do you want?")]);
+    bench
+}
+
+fn write_conversation(bench: &Bench, session: &str, messages: &[(&str, &str)]) {
+    let path = bench.fixture.root.join("opencode.db");
+    let connection = LinkConnection::open(&path).unwrap();
+    connection.execute_batch("create table if not exists session_message (id text primary key, session_id text, type text, seq integer, data text);").unwrap();
+    for (index, (role, text)) in messages.iter().enumerate() {
+        let data = if *role == "assistant" { json!({"content":[{"type":"text","text":text}]}) } else { json!({"text":text}) };
+        connection.execute("insert into session_message values (?1, ?2, ?3, ?4, ?5)",
+            (format!("{session}-{index}"), session, role, index as i64 + 1, data.to_string())).unwrap();
+    }
+    // SAFETY: the fixture lock held by `bench` keeps every test that touches the environment one at a time.
+    unsafe { std::env::set_var("COCKPIT_OPENCODE_DB", &path); }
+}
+
+fn assign_doing_todo(bench: &Bench, session: &str) -> String {
+    let directory = bench.registry.sessions[STOPPED_WORKER].cwd.clone();
+    let mut todos = cockpit::todo::TodoList::load();
+    let id = todos.add("project-a", &directory, "Fix login");
+    assert!(todos.set_status(&id, "doing", session));
+    id
+}
+
+fn report_worker_permissions(bench: &mut Bench, sequence: i64, permissions: u32) {
+    let action = serde_json::from_value(json!({"action":"native_telemetry","sequence":sequence,"counts":{
+        "running_sessions":0,"pending_inbox":0,"pending_permissions":permissions,"pending_forms":0}})).unwrap();
+    crate::teams::request(&mut bench.registry, STOPPED_WORKER_PEER, action).unwrap().result.unwrap();
+}
+
+fn stop_states(bench: &Bench) -> Vec<(String, String)> {
+    let connection = bench.registry.teams.as_ref().unwrap();
+    let mut statement = connection.prepare("SELECT boundary,state FROM chief_stops ORDER BY created_at,rowid").unwrap();
+    statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?))).unwrap().collect::<Result<_, _>>().unwrap()
+}
+
+fn stop_event_count(bench: &Bench) -> i64 {
+    bench.registry.teams.as_ref().unwrap().query_row("SELECT count(*) FROM chief_events WHERE kind='stop_detected'", [], |row| row.get(0)).unwrap()
+}
+
+fn warnings_about_stops() -> usize {
+    fs::read_to_string(cockpit::paths::log()).unwrap_or_default().lines().filter(|line| line.contains("WARN") && line.contains("stop bundle")).count()
+}
+
+#[test]
+fn a_stopped_worker_with_an_open_todo_wakes_the_chief_with_its_bundle() {
+    let mut bench = stop_bench();
+    let task = assign_doing_todo(&bench, STOPPED_WORKER);
+    bench.registry.tick_queues();
+    let boundary = format!("waiting:{}", bench.registry.sessions[STOPPED_WORKER].since as i64);
+    assert_eq!(stop_states(&bench), [(boundary, "open".to_string())]);
+    assert_eq!(stop_event_count(&bench), 1);
+    prepare_chief_boundary(&mut bench);
+    // A receipt spends its idle boundary, so the Chief needs a new one for this wake.
+    bench.registry.sessions.get_mut(OPENCODE_SESSION).unwrap().since -= 7.0;
+    let dispatch = crate::teams::request(&mut bench.registry, 20, AgentAction::Receive).unwrap().result.unwrap();
+    assert_eq!(dispatch["envelope"]["kind"], "chief_wake");
+    crate::teams::request(&mut bench.registry, 20, AgentAction::Receipt { dispatch_id:dispatch["dispatch_id"].as_str().unwrap().into(),
+        outcome:cockpit::teams::TransportOutcome::Received {native_id:"chief-stop-wake".into()} }).unwrap().result.unwrap();
+    let page = context(&mut bench, 20).unwrap().result.unwrap();
+    let stops: Vec<_> = page["records"].as_array().unwrap().iter().filter(|record| record["kind"] == "stopped_session").collect();
+    assert_eq!(stops.len(), 1, "{page}");
+    assert_eq!(stops[0]["session"], STOPPED_WORKER);
+    assert_eq!(stops[0]["task_id"], task);
+    assert_eq!(stops[0]["bundle"]["last_assistant"], "Which option do you want?");
+    assert_eq!(stops[0]["bundle"]["task_text"], "Fix login");
+}
+
+#[test]
+fn a_stop_without_an_open_todo_is_ignored() {
+    for case in ["no todo", "todo not started", "doing for another session"] {
+        let mut bench = stop_bench();
+        match case {
+            "todo not started" => { let directory = bench.registry.sessions[STOPPED_WORKER].cwd.clone();
+                cockpit::todo::TodoList::load().add("project-a", &directory, "Fix login"); },
+            "doing for another session" => { assign_doing_todo(&bench, SESSION_B); },
+            _ => {},
+        }
+        bench.registry.tick_queues();
+        assert!(stop_states(&bench).is_empty(), "{case}");
+        assert_eq!(stop_event_count(&bench), 0, "{case}");
+    }
+}
+
+#[test]
+fn only_other_opencode_sessions_than_the_chief_can_stop() {
+    let mut bench = stop_bench();
+    let directory = bench.registry.sessions[SESSION_B].cwd.clone();
+    let mut todos = cockpit::todo::TodoList::load();
+    for (session, text) in [(OPENCODE_SESSION, "chief work"), (SESSION_B, "claude work")] {
+        let id = todos.add("project-a", &directory, text);
+        assert!(todos.set_status(&id, "doing", session));
+    }
+    for session in [OPENCODE_SESSION, SESSION_B] { write_conversation(&bench, session, &[("user", "hello"), ("assistant", "done?")]); }
+    bench.registry.sessions.get_mut(SESSION_B).unwrap().since = (crate::teams::now_ms()/1000-10) as f64;
+    bench.registry.tick_queues();
+    assert!(stop_states(&bench).is_empty());
+}
+
+#[test]
+fn a_permission_prompt_is_never_a_chief_stop() {
+    let mut bench = stop_bench();
+    assign_doing_todo(&bench, STOPPED_WORKER);
+    let entry = bench.registry.sessions.get_mut(STOPPED_WORKER).unwrap();
+    entry.state = "needs-you".into(); entry.needs_input = true;
+    bench.registry.tick_queues();
+    assert!(stop_states(&bench).is_empty(), "without native telemetry the prompt cannot be told apart from a question");
+    report_worker_permissions(&mut bench, 1, 1);
+    bench.registry.tick_queues();
+    assert!(stop_states(&bench).is_empty(), "an open permission prompt");
+    report_worker_permissions(&mut bench, 2, 0);
+    bench.registry.chief_telemetry.get_mut(STOPPED_WORKER).unwrap().received_at_ms -= 31_000;
+    bench.registry.tick_queues();
+    assert!(stop_states(&bench).is_empty(), "stale telemetry");
+    report_worker_permissions(&mut bench, 3, 0);
+    bench.registry.tick_queues();
+    let boundary = format!("needs-you:{}", bench.registry.sessions[STOPPED_WORKER].since as i64);
+    assert_eq!(stop_states(&bench), [(boundary, "open".to_string())], "a question with no permission open is a stop");
+}
+
+#[test]
+fn a_question_stop_needs_telemetry_received_after_the_stop() {
+    let mut bench = stop_bench();
+    assign_doing_todo(&bench, STOPPED_WORKER);
+    let entry = bench.registry.sessions.get_mut(STOPPED_WORKER).unwrap();
+    entry.state = "needs-you".into(); entry.needs_input = true;
+    let since = entry.since as i64;
+    report_worker_permissions(&mut bench, 1, 0);
+    bench.registry.chief_telemetry.get_mut(STOPPED_WORKER).unwrap().received_at_ms = since * 1000 + 999;
+    bench.registry.tick_queues();
+    assert!(stop_states(&bench).is_empty(), "a sample from the stop's own second may predate the question");
+    report_worker_permissions(&mut bench, 2, 0);
+    bench.registry.tick_queues();
+    assert_eq!(stop_states(&bench), [(format!("needs-you:{since}"), "open".to_string())]);
+}
+
+#[test]
+fn a_new_state_boundary_supersedes_the_open_stop() {
+    let mut bench = stop_bench();
+    assign_doing_todo(&bench, STOPPED_WORKER);
+    bench.registry.tick_queues();
+    let waiting = format!("waiting:{}", bench.registry.sessions[STOPPED_WORKER].since as i64);
+    let entry = bench.registry.sessions.get_mut(STOPPED_WORKER).unwrap();
+    entry.state = "working".into(); entry.since += 5.0;
+    bench.registry.tick_queues();
+    assert_eq!(stop_states(&bench), [(waiting.clone(), "superseded".to_string())], "an agent that resumed leaves no open stop");
+    let entry = bench.registry.sessions.get_mut(STOPPED_WORKER).unwrap();
+    entry.state = "waiting".into(); entry.since += 5.0;
+    bench.registry.tick_queues();
+    let second = format!("waiting:{}", bench.registry.sessions[STOPPED_WORKER].since as i64);
+    assert_eq!(stop_states(&bench), [(waiting, "superseded".to_string()), (second, "open".to_string())]);
+}
+
+#[test]
+fn the_same_boundary_is_recorded_once() {
+    let mut bench = stop_bench();
+    assign_doing_todo(&bench, STOPPED_WORKER);
+    bench.registry.tick_queues();
+    fs::remove_file(bench.fixture.root.join("opencode.db")).unwrap();
+    for _ in 0..3 { bench.registry.tick_queues(); }
+    assert_eq!(stop_states(&bench).len(), 1);
+    assert_eq!(stop_event_count(&bench), 1);
+    assert_eq!(warnings_about_stops(), 0, "a recorded boundary needs no new bundle");
+}
+
+#[test]
+fn a_failing_bundle_is_retried_no_more_often_than_the_backoff_and_warns_once_per_boundary() {
+    let mut bench = stop_bench();
+    assign_doing_todo(&bench, STOPPED_WORKER);
+    fs::remove_file(bench.fixture.root.join("opencode.db")).unwrap();
+    for _ in 0..3 { bench.registry.tick_queues(); }
+    assert!(stop_states(&bench).is_empty());
+    assert_eq!(warnings_about_stops(), 1);
+    write_conversation(&bench, STOPPED_WORKER, &[("assistant", "Back again")]);
+    bench.registry.tick_queues();
+    assert!(stop_states(&bench).is_empty(), "the history is readable again, but the retry is still backing off");
+    bench.registry.chief_stop_failures.get_mut(STOPPED_WORKER).unwrap().1 -= 61_000;
+    bench.registry.tick_queues();
+    assert_eq!(stop_states(&bench).len(), 1, "the same boundary is retried once the backoff has passed");
+    assert_eq!(warnings_about_stops(), 1, "a retry of the same boundary does not warn again");
+}
+
+#[test]
+fn a_new_boundary_is_tried_at_once_even_while_an_older_one_backs_off() {
+    let mut bench = stop_bench();
+    assign_doing_todo(&bench, STOPPED_WORKER);
+    fs::remove_file(bench.fixture.root.join("opencode.db")).unwrap();
+    bench.registry.tick_queues();
+    assert_eq!(warnings_about_stops(), 1);
+    bench.registry.sessions.get_mut(STOPPED_WORKER).unwrap().since += 5.0;
+    write_conversation(&bench, STOPPED_WORKER, &[("assistant", "Back again")]);
+    bench.registry.tick_queues();
+    assert_eq!(stop_states(&bench).len(), 1);
+}
+
+#[test]
+fn the_same_stop_before_and_after_a_daemon_restart_is_one_stop_and_one_wake() {
+    let mut bench = stop_bench();
+    assign_doing_todo(&bench, STOPPED_WORKER);
+    // The sub-second part is what the snapshot drops, so a restarted daemon reads a different `since`.
+    bench.registry.sessions.get_mut(STOPPED_WORKER).unwrap().since += 0.5;
+    bench.registry.tick_queues();
+    assert_eq!(stop_states(&bench).len(), 1);
+    let entry = bench.registry.sessions.get_mut(STOPPED_WORKER).unwrap();
+    entry.since = entry.since as i64 as f64;
+    bench.registry.tick_queues();
+    assert_eq!(stop_states(&bench), [(format!("waiting:{}", bench.registry.sessions[STOPPED_WORKER].since as i64), "open".to_string())]);
+    assert_eq!(stop_event_count(&bench), 1);
+    let wakes: i64 = bench.registry.teams.as_ref().unwrap().query_row(
+        "SELECT count(*) FROM chief_inbox WHERE json_extract(envelope,'$.kind')='chief_wake' AND state='queued'", [], |row| row.get(0)).unwrap();
+    assert_eq!(wakes, 1);
+}
+
+#[test]
+fn the_todo_list_is_only_read_when_a_session_is_at_a_stop_boundary() {
+    let mut bench = stop_bench();
+    assign_doing_todo(&bench, STOPPED_WORKER);
+    let live = crate::chief::workers(&mut bench.registry).unwrap();
+    let mut loads = 0;
+    bench.registry.sessions.get_mut(STOPPED_WORKER).unwrap().state = "working".into();
+    crate::chief::observe_stops_with(&mut bench.registry, &live, crate::teams::now_ms(), || { loads += 1; cockpit::todo::TodoList::load() }).unwrap();
+    assert_eq!(loads, 0, "a working session is no stop candidate");
+    bench.registry.sessions.get_mut(STOPPED_WORKER).unwrap().state = "waiting".into();
+    crate::chief::observe_stops_with(&mut bench.registry, &live, crate::teams::now_ms(), || { loads += 1; cockpit::todo::TodoList::load() }).unwrap();
+    assert_eq!(loads, 1);
+    assert_eq!(stop_states(&bench).len(), 1);
 }

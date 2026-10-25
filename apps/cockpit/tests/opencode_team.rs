@@ -16,7 +16,8 @@ fn plugin() -> PathBuf {
 }
 
 /// Loads the plugin with a context whose session.synthetic records its input, waits for a few
-/// polls, then unloads it.
+/// polls, then unloads it. With `SHIM_FORMS` set, the context also has OpenCode's form API: `list`
+/// answers that JSON and `reply` records its input (or throws `SHIM_FORM_REPLY_ERROR`).
 const HARNESS: &str = r#"
 import { appendFileSync } from 'node:fs'
 const [plugin, directory] = process.argv.slice(2)
@@ -38,6 +39,16 @@ const ctx = {
     },
   },
 }
+if (process.env.SHIM_FORMS) ctx.session.form = {
+  list: async (input) => {
+    appendFileSync(`${process.env.HOME}/form-lists`, JSON.stringify(input) + '\n')
+    return JSON.parse(process.env.SHIM_FORMS)
+  },
+  reply: async (input) => {
+    appendFileSync(`${process.env.HOME}/form-replies`, JSON.stringify(input) + '\n')
+    if (process.env.SHIM_FORM_REPLY_ERROR) throw new Error(process.env.SHIM_FORM_REPLY_ERROR)
+  },
+}
 const cleanup = await definition.setup(ctx)
 await new Promise((resolve) => setTimeout(resolve, 400))
 if (cleanup) await cleanup()
@@ -47,6 +58,8 @@ process.exit(0)
 struct Run {
     synthetic: Vec<Value>,
     receipts: Vec<Value>,
+    hooks: Vec<Value>,
+    form_replies: Vec<Value>,
 }
 
 fn run(extra: &[(&str, &str)]) -> Run {
@@ -56,7 +69,7 @@ fn run(extra: &[(&str, &str)]) -> Run {
 
 fn run_delivery(extra: &[(&str, &str)], delivery: Value) -> Run {
     let sandbox = Sandbox::new();
-    write_executable(&sandbox.home.join("agent-cockpit/config/claude/.claude/hooks/session-state.sh"), "#!/usr/bin/env bash\ncat >/dev/null\n");
+    write_executable(&sandbox.home.join("agent-cockpit/config/claude/.claude/hooks/session-state.sh"), "#!/usr/bin/env bash\n{ cat; echo; } >> \"$HOME/hooks\"\n");
     sandbox.shim("cockpit-team", &format!("exec '{}' \"$@\"", env!("CARGO_BIN_EXE_cockpit-team")));
     let delivery = extra.iter().find(|(name, _)| *name == "SHIM_TEAM_DELIVERY")
         .map(|(_, value)| serde_json::from_str(value).unwrap()).unwrap_or(delivery);
@@ -71,7 +84,7 @@ fn run_delivery(extra: &[(&str, &str)], delivery: Value) -> Run {
     let lines = |name: &str| fs::read_to_string(sandbox.home.join(name)).unwrap_or_default().lines()
         .filter(|line| !line.trim().is_empty()).map(|line| serde_json::from_str(line).unwrap()).collect::<Vec<Value>>();
     let receipts = requests.lock().unwrap().iter().filter(|request| request["action"] == "receipt").cloned().collect();
-    Run { synthetic: lines("synthetic"), receipts }
+    Run { synthetic: lines("synthetic"), receipts, hooks: lines("hooks"), form_replies: lines("form-replies") }
 }
 
 #[test]
@@ -177,4 +190,134 @@ fn a_link_preview_escapes_hiding_characters_before_truncating() {
     assert_eq!(description.chars().count(), 160);
     assert!(description.contains("\\u202e") && description.ends_with('…'));
     assert!(!description.chars().any(cockpit::approval::is_hiding));
+}
+
+fn chief_answer_delivery() -> Value {
+    let envelope = json!({"message_id":"answer1","kind":"chief_answer","stop":"stop1","answer":"log1","text":"Use option A.\nThen run the tests."});
+    json!({"dispatch_id":"chief_a1","message_id":"answer1","text":cockpit::teams::envelope_text(&envelope),"envelope":envelope})
+}
+
+#[test]
+fn a_chief_answer_enters_the_native_queue_described_as_a_chief_answer() {
+    let run = run_delivery(&[], chief_answer_delivery());
+    assert_eq!(run.synthetic.len(), 1);
+    let admitted = &run.synthetic[0];
+    assert_eq!(admitted["id"], "msg_cockpitanswer1");
+    assert_eq!(admitted["delivery"], "queue");
+    assert_eq!(admitted["description"], "Chief answer: Use option A. Then run the tests.");
+    assert!(admitted["text"].as_str().unwrap().ends_with(cockpit::chief::CHIEF_ANSWER_BOUNDARY));
+    assert_eq!(run.receipts, [json!({"action":"receipt","dispatch_id":"chief_a1","outcome":{"outcome":"received","native_id":"msg_cockpitanswer1"}})]);
+}
+
+#[test]
+fn a_theo_answer_enters_the_native_queue_described_as_his_own() {
+    let envelope = json!({"message_id":"answer2","kind":"chief_answer","source":"theo","stop":"stop1","answer":"log1","text":"Use option B."});
+    let delivery = json!({"dispatch_id":"chief_a2","message_id":"answer2","text":cockpit::teams::envelope_text(&envelope),"envelope":envelope});
+    let run = run_delivery(&[], delivery);
+    assert_eq!(run.synthetic.len(), 1);
+    assert_eq!(run.synthetic[0]["description"], "Theo's answer: Use option B.");
+    assert!(run.synthetic[0]["text"].as_str().unwrap().ends_with(cockpit::chief::THEO_ANSWER_LABEL));
+    assert_eq!(run.receipts[0]["outcome"]["outcome"], "received");
+}
+
+#[test]
+fn a_delivered_chief_answer_clears_the_saved_question() {
+    let run = run_delivery(&[], chief_answer_delivery());
+    let answered: Vec<_> = run.hooks.iter().filter(|payload| payload["source"] == "chief_answer").collect();
+    assert_eq!(answered.len(), 1, "{:?}", run.hooks);
+    assert_eq!(answered[0]["hook_event_name"], "UserPromptSubmit");
+    assert_eq!(answered[0]["session_id"], ROOT);
+    assert!(answered[0].get("prompt").is_none(), "a Chief answer does not rename Theo's task");
+}
+
+#[test]
+fn an_unconfirmed_chief_answer_leaves_the_saved_question() {
+    for extra in [("SHIM_SYNTHETIC_FAILS", "1"), ("SHIM_SYNTHETIC_REPLY", "{\"id\":\"another-message\"}")] {
+        let run = run_delivery(&[extra], chief_answer_delivery());
+        assert_eq!(run.receipts[0]["outcome"]["outcome"], "uncertain");
+        assert!(run.hooks.iter().all(|payload| payload["source"] != "chief_answer"), "{:?}", run.hooks);
+    }
+}
+
+#[test]
+fn a_team_message_does_not_clear_the_saved_question() {
+    let run = run(&[]);
+    assert!(run.hooks.iter().all(|payload| payload["source"] != "chief_answer"), "{:?}", run.hooks);
+}
+
+fn form_reply_delivery(choice: &str) -> Value {
+    let envelope = json!({"message_id":"form1","kind":"chief_form_reply","source":"chief","stop":"stop1","answer":"log1","choice":choice});
+    json!({"dispatch_id":"chief_f1","message_id":"form1","text":cockpit::teams::envelope_text(&envelope),"envelope":envelope})
+}
+
+fn pending_form(fields: Value) -> String {
+    json!([{"id":"frm_01abc","sessionID":ROOT,"title":"Which option?","fields":fields}]).to_string()
+}
+
+fn choice_field(kind: &str) -> Value {
+    json!({"key":"q0","type":kind,"title":"Option","options":[{"value":"a","label":"Option A"},{"value":"b","label":"Option B","description":"Keeps the old API"}]})
+}
+
+fn assert_uncertain_without_typing(run: &Run) {
+    assert_eq!(run.receipts.len(), 1, "{:?}", run.receipts);
+    assert_eq!(run.receipts[0]["dispatch_id"], "chief_f1");
+    assert_eq!(run.receipts[0]["outcome"]["outcome"], "uncertain", "{:?}", run.receipts);
+    assert!(run.synthetic.is_empty(), "a form reply never becomes a message: {:?}", run.synthetic);
+}
+
+#[test]
+fn a_chief_form_answer_replies_to_the_open_form_by_id() {
+    for (kind, choice, answer) in [("string", "Option B", json!("b")), ("string", " option b ", json!("b")), ("string", "b", json!("b")),
+        ("multiselect", "Option A", json!(["a"]))] {
+        let fields = json!([choice_field(kind), {"key":"note","type":"string","hidden":true}]);
+        let run = run_delivery(&[("SHIM_FORMS", &pending_form(fields))], form_reply_delivery(choice));
+        assert_eq!(run.form_replies, [json!({"sessionID":ROOT,"formID":"frm_01abc","answer":{"q0":answer}})], "{kind} {choice}");
+        assert_eq!(run.receipts, [json!({"action":"receipt","dispatch_id":"chief_f1","outcome":{"outcome":"received","native_id":"form:frm_01abc"}})]);
+        assert!(run.synthetic.is_empty(), "{:?}", run.synthetic);
+    }
+}
+
+#[test]
+fn a_form_answer_for_a_settled_form_reports_uncertain_and_never_types() {
+    let settled = run_delivery(&[("SHIM_FORMS", "[]")], form_reply_delivery("Option B"));
+    assert_uncertain_without_typing(&settled);
+    assert!(settled.form_replies.is_empty());
+    let raced = run_delivery(&[("SHIM_FORMS", &pending_form(json!([choice_field("string")]))),
+        ("SHIM_FORM_REPLY_ERROR", "FormAlreadySettledError: form frm_01abc is already answered")], form_reply_delivery("Option B"));
+    assert_uncertain_without_typing(&raced);
+    assert!(raced.receipts[0]["outcome"]["reason"].as_str().unwrap().contains("FormAlreadySettledError"));
+}
+
+#[test]
+fn a_form_answer_without_the_form_api_is_uncertain_and_never_types() {
+    let run = run_delivery(&[], form_reply_delivery("Option B"));
+    assert_uncertain_without_typing(&run);
+}
+
+#[test]
+fn a_form_answer_whose_choice_matches_no_single_option_is_uncertain() {
+    let ambiguous = json!([{"key":"q0","type":"string","options":[{"value":"Option B","label":"First"},{"value":"x","label":"Option B"}]}]);
+    for (fields, choice) in [(json!([choice_field("string")]), "Option C"), (json!([choice_field("string")]), "Option"), (ambiguous, "Option B")] {
+        let run = run_delivery(&[("SHIM_FORMS", &pending_form(fields))], form_reply_delivery(choice));
+        assert_uncertain_without_typing(&run);
+        assert!(run.form_replies.is_empty(), "{choice}");
+    }
+}
+
+#[test]
+fn a_form_that_is_not_one_visible_choice_is_uncertain() {
+    let two_forms = json!([{"id":"frm_1","sessionID":ROOT,"title":"One","fields":[choice_field("string")]},
+        {"id":"frm_2","sessionID":ROOT,"title":"Two","fields":[choice_field("string")]}]).to_string();
+    let forms = [
+        pending_form(json!([choice_field("string"), {"key":"q1","type":"string","options":[{"value":"c","label":"C"}]}])),
+        pending_form(json!([{"key":"q0","type":"string","title":"Free text"}])),
+        pending_form(json!([{"key":"q0","type":"boolean"}])),
+        two_forms,
+        json!({"data":[]}).to_string(),
+    ];
+    for form in &forms {
+        let run = run_delivery(&[("SHIM_FORMS", form)], form_reply_delivery("Option B"));
+        assert_uncertain_without_typing(&run);
+        assert!(run.form_replies.is_empty(), "{form}");
+    }
 }

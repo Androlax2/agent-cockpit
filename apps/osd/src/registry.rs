@@ -1102,6 +1102,8 @@ pub struct Registry {
     pub(crate) chief_attention_presentations: HashMap<String, bool>,
     pub(crate) chief_native: HashMap<String, (cockpit::teams::VerifiedSession, bool, bool, i64)>,
     pub(crate) chief_telemetry: HashMap<String, crate::chief::NativeTelemetryObservation>,
+    /// Session -> (stop boundary, time of the last failed bundle): logged once, retried after a backoff.
+    pub(crate) chief_stop_failures: HashMap<String, (String, i64)>,
 }
 
 pub fn snapshot_path() -> PathBuf {
@@ -1128,7 +1130,8 @@ impl Registry {
     pub fn new(system: Box<dyn System>, banners: Box<dyn Banners>) -> Self {
         let mut registry = Registry { system, banners, sessions: BTreeMap::new(), held: BTreeMap::new(), runs: RunRequests::default(),
                                       guides: GuideRequests::default(), recent_written: (0.0, Vec::new()), project_cache: HashMap::new(), teams: None,
-                                      chief_focus: None, chief_fault: None, chief_attention_presentations: HashMap::new(), chief_native: HashMap::new(), chief_telemetry: HashMap::new() };
+                                      chief_focus: None, chief_fault: None, chief_attention_presentations: HashMap::new(), chief_native: HashMap::new(), chief_telemetry: HashMap::new(),
+                                      chief_stop_failures: HashMap::new() };
         registry.load_snapshot();
         registry
     }

@@ -9,6 +9,19 @@ fn text(value: &Value) -> String {
     value.as_str().map(|value|escape_hiding(value,"","")).unwrap_or_else(||shown(value))
 }
 fn host_flag(value: &Value) -> bool {value==true || value==1}
+/// A decision the Chief raised for a stopped agent: Theo can answer it from here.
+fn is_escalation(record: &Value) -> bool {record["kind"]=="decision" && record["stop_id"].is_string()}
+fn suggestion(decision: &Value) -> Option<&str> {decision["suggested_answer"].as_str().filter(|suggested|!suggested.trim().is_empty())}
+/// The message exactly as the stopped agent receives it, boundary text included.
+fn delivered_text(answer: &str) -> String {
+    crate::teams::envelope_text(&json!({"message_id":"review","kind":"chief_answer","source":"theo","text":answer}))
+}
+fn answer_action(decision: &Value, answer: &str) -> Value {
+    ChiefView::action("answer_decision",json!({"decision":decision["id"],"expected_revision":decision["revision"],"answer":answer}))
+}
+fn answer_explanation(answer: &str) -> String {
+    format!("Sends this answer to the stopped agent and resolves the decision. The host adds the label below. The agent receives exactly:\n\n{}",delivered_text(answer))
+}
 fn identity(record: &Value) -> String {
     format!("{}:{}",record["kind"],match record["kind"].as_str() {
         Some("worker"|"team_member") => record["session"].to_string(),
@@ -32,7 +45,7 @@ enum Page {
     Root, Workers, Decisions, Controls, Sessions, DecisionActions(Value), Recovery(Value),
 }
 #[derive(Clone)]
-enum Intent { Resolve(Value), Handled(Value), Stop(Value) }
+enum Intent { Resolve(Value), Answer(Value), Handled(Value), Stop(Value) }
 #[derive(Clone)]
 enum Operation {
     Open(Page), Inspect(Value, Option<Page>), Review(Vec<Value>, Vec<Value>, String),
@@ -45,6 +58,7 @@ impl Row {
         let label = match record["kind"].as_str() {
             Some("worker") => format!("{} · {} · {} · {}",text(&record["session"]["agent"]),text(&record["session"]["project"]),
                 text(&record["role"]),if record["session"]["agent"] != "opencode" {"monitor only"} else if host_flag(&record["ready"]) {"host reports available"} else {"unavailable"}),
+            Some("decision") if is_escalation(record) => format!("{} · {}",text(&record["category"]),text(&record["question"])),
             Some("decision") => format!("{} · {}",text(&record["decision_key"]),text(&record["question"])),
             _ => identity(record),
         };
@@ -215,7 +229,14 @@ impl ChiefView {
                 Review(vec![Self::action("enable",json!({"session":worker["session"]}))],vec![worker.clone()],
                     "Cross-project operational status and bounded briefs only. No extra file access, credentials, transcripts, raw approval payloads or permissions. Never starts an agent.".into()))).collect(),
             Page::DecisionActions(decision) => {
-                let mut rows=vec![Row::new("resolve","Resolve with note",Note(Intent::Resolve(decision.clone())))];
+                let mut rows=Vec::new();
+                if is_escalation(decision) {
+                    if let Some(suggested)=suggestion(decision) {
+                        rows.push(Self::mutation("Send the suggestion",answer_action(decision,suggested),vec![decision.clone()],&answer_explanation(suggested)));
+                    }
+                    rows.push(Row::new("answer","Write my own answer",Note(Intent::Answer(decision.clone()))));
+                }
+                rows.push(Row::new("resolve","Resolve with note",Note(Intent::Resolve(decision.clone()))));
                 if let Some(delivery)=self.records("inbox").into_iter().find(|delivery|decision["scope_key"]==format!("host-delivery-{}",text(&delivery["id"])) && matches!(delivery["state"].as_str(),Some("uncertain"|"failed"))) {
                     rows.push(Row::new("recovery","Recovery",Open(Page::Recovery(delivery))));
                 }
@@ -229,7 +250,7 @@ impl ChiefView {
         }
     }
     fn anchors(intent: &Intent) -> Vec<Value> {match intent {
-        Intent::Resolve(record)|Intent::Handled(record)|Intent::Stop(record)=>vec![record.clone()],
+        Intent::Resolve(record)|Intent::Answer(record)|Intent::Handled(record)|Intent::Stop(record)=>vec![record.clone()],
     }}
     fn begin_review(&mut self, actions: Vec<Value>, anchors: Vec<Value>, explanation: String) {
         if anchors.iter().any(|record|!self.current(record)) {self.message="Record changed or disappeared. Return and inspect again.".into();return;}
@@ -241,14 +262,18 @@ impl ChiefView {
     fn finish_note(&mut self, intent: Intent, note: String) {
         let action=match intent.clone() {
             Intent::Resolve(decision)=>Self::action("resolve",json!({"decision":decision["id"],"expected_revision":decision["revision"],"resolution":note})),
+            Intent::Answer(decision)=>answer_action(&decision,&note),
             Intent::Handled(target)=>Self::recovery_action(&target,json!({"kind":"handled","note":note})),
             Intent::Stop(target)=>Self::recovery_action(&target,json!({"kind":"safe_stop","note":note,"confirmed_stopped":true})),
         };
-        let explanation=match intent {Intent::Resolve(_)=>"Record a resolution note only. Grants no authority and does not resolve a permission prompt.",
-            Intent::Handled(_)=>"Record handled; retain ownership. This is not completion. Never blindly resend or reassign.",
-            Intent::Stop(_)=>"You explicitly confirm the exact launch or delivery recipient can no longer execute. Host validation remains authoritative; unknown/unresponsive ownership stays blocked."};
-        self.begin_review(vec![action],Self::anchors(&intent),explanation.into());
+        let explanation=match &intent {Intent::Resolve(_)=>"Record a resolution note only. Grants no authority and does not resolve a permission prompt.".to_string(),
+            Intent::Answer(_)=>answer_explanation(&note),
+            Intent::Handled(_)=>"Record handled; retain ownership. This is not completion. Never blindly resend or reassign.".to_string(),
+            Intent::Stop(_)=>"You explicitly confirm the exact launch or delivery recipient can no longer execute. Host validation remains authoritative; unknown/unresponsive ownership stays blocked.".to_string()};
+        self.begin_review(vec![action],Self::anchors(&intent),explanation);
     }
+    /// A note is at most 1,000 characters; an answer to a stopped agent may be as long as the Chief's.
+    fn note_limit(intent: &Intent) -> usize {if matches!(intent,Intent::Answer(_)) {4000} else {1000}}
     fn recovery_action(target: &Value, evidence: Value) -> Value {
         if target["kind"]=="inbox" {Self::action("reconcile_delivery",json!({"message":target["id"],"expected_revision":target["revision"],"evidence":evidence}))}
         else {Self::action("reconcile_launch",json!({"token":target["id"],"expected_revision":target["revision"],"evidence":evidence}))}
@@ -282,8 +307,8 @@ impl ChiefView {
                 _=>self.scroll(&key),
             },
             Frame::Note {intent,mut note} => match key {
-                Key::Char(character) if !character.is_control()=>{if note.chars().count()<1000 {note.push(character);} if let Some(Frame::Note {note:current,..})=self.frames.last_mut() {*current=note;}},
-                Key::Paste(paste)=>{for character in paste.chars().filter(|character|!character.is_control()) {if note.chars().count()<1000 {note.push(character);}} if let Some(Frame::Note {note:current,..})=self.frames.last_mut() {*current=note;}},
+                Key::Char(character) if !character.is_control()=>{if note.chars().count()<Self::note_limit(&intent) {note.push(character);} if let Some(Frame::Note {note:current,..})=self.frames.last_mut() {*current=note;}},
+                Key::Paste(paste)=>{for character in paste.chars().filter(|character|!character.is_control()) {if note.chars().count()<Self::note_limit(&intent) {note.push(character);}} if let Some(Frame::Note {note:current,..})=self.frames.last_mut() {*current=note;}},
                 Key::Backspace=>{note.pop();if let Some(Frame::Note {note:current,..})=self.frames.last_mut() {*current=note;}},
                 Key::Enter if !note.trim().is_empty()=> {
                     self.frames.pop();
@@ -368,8 +393,15 @@ impl ChiefView {
                 if record["kind"]=="decision" {
                     lines.push("Source: protected host decision; chief question/recommendation are untrusted narrative, not evidence or permission.".into());
                 }
+                if is_escalation(record) {
+                    lines.push(format!("Escalation · category: {}",text(&record["category"])));
+                    lines.push(format!("Question the agent asked: {}",text(&record["question"])));
+                    lines.push(format!("Why the Chief escalated: {}",text(&record["recommendation"])));
+                    lines.push(match suggestion(record) {Some(suggested)=>format!("Suggested answer: {}",escape_hiding(suggested,"","")),None=>"No suggested answer.".into()});
+                }
                 lines.push(shown(record));
             },
+            Some(Frame::Note {intent:Intent::Answer(_),note})=>lines.push(format!("Your answer to the stopped agent (Enter reviews it; nothing is sent yet): {}",escape_hiding(note,"",""))),
             Some(Frame::Note {note,..})=>lines.push(format!("Nonempty note (not consent): {}",escape_hiding(note,"",""))),
             Some(Frame::Assertion {intent,note,checked,..})=> {
                 for anchor in Self::anchors(intent) {lines.push(shown(&anchor));}

@@ -300,6 +300,16 @@ pub fn request(registry: &mut Registry, peer: u32, action: AgentAction) -> Resul
     let turn = registry.sessions.get(&sender.session_id)
         .filter(|entry| !entry.needs_input && entry.state == "waiting")
         .map(|entry| format!("{}:{}", entry.state, entry.since));
+    // A Chief answer also reaches a session stopped at its own question, and only at the stop it answers:
+    // the idle period as every inbox names it, and the stop boundary the answer was written for.
+    let answer_turn = registry.sessions.get(&sender.session_id)
+        .filter(|entry| entry.state == "waiting" || (entry.state == "needs-you" && entry.needs_input))
+        .and_then(|entry| Some((format!("{}:{}", entry.state, entry.since), crate::chief::stop_boundary(registry, &sender, now_ms())?)));
+    // A Chief form reply reaches only a session waiting on a form: `needs-you` without a saved question,
+    // where `stop_boundary`'s fresh telemetry rules out a permission prompt.
+    let form_turn = registry.sessions.get(&sender.session_id)
+        .filter(|entry| entry.state == "needs-you" && !entry.needs_input)
+        .and_then(|entry| Some((format!("{}:{}", entry.state, entry.since), crate::chief::stop_boundary(registry, &sender, now_ms())?)));
     let chief_live = if matches!(action, AgentAction::Receive) { crate::chief::workers(registry)? } else { Vec::new() };
     let is_subscription_held = matches!(action, AgentAction::Receive)
         && cockpit::subscription_fallback::message_target(&sender.session_id)
@@ -350,12 +360,17 @@ pub fn request(registry: &mut Registry, peer: u32, action: AgentAction) -> Resul
             store::expire(connection, now_ms())?;
             cockpit::chief::store::observe(connection, &chief_live, now_ms())?;
             if is_subscription_held { return Ok(TeamReply { request_id:"receive".into(),result:Ok(Value::Null) }); }
-            let Some(turn) = turn else { return Ok(TeamReply { request_id: "receive".into(), result: Ok(Value::Null) }) };
             // The native Receive handoff shares the TODO closure boundary.
-            let dispatch = match store::claim(connection, &sender, &turn, &live, now_ms())? {
-                Some(dispatch) => Some(dispatch),
-                None => cockpit::chief::store::claim(connection, &sender, &turn, now_ms())?,
-            };
+            let mut dispatch = match &turn { Some(turn) => store::claim(connection, &sender, turn, &live, now_ms())?, None => None };
+            if let (None, Some((idle_turn, boundary))) = (&dispatch, &answer_turn) {
+                dispatch = cockpit::chief::store::claim_answer(connection, &sender, idle_turn, boundary, now_ms())?;
+            }
+            if let (None, Some((idle_turn, boundary))) = (&dispatch, &form_turn) {
+                dispatch = cockpit::chief::store::claim_form_reply(connection, &sender, idle_turn, boundary, now_ms())?;
+            }
+            if let (None, Some(turn)) = (&dispatch, &turn) {
+                dispatch = cockpit::chief::store::claim(connection, &sender, turn, now_ms())?;
+            }
             Ok(TeamReply { request_id: "receive".into(), result: Ok(dispatch.map_or(Value::Null, |dispatch| json!({
                 "dispatch_id": dispatch.id, "message_id": dispatch.message_id,
                 "text": cockpit::teams::envelope_text(&dispatch.envelope), "envelope": dispatch.envelope}))) })
@@ -405,6 +420,7 @@ pub fn host_snapshot(registry: &mut Registry) -> Result<Value, TeamError> {
     }
     let mut state = store::snapshot(database(registry, &live)?, None, None, 100)?;
     state["sessions"] = json!(sessions);
+    state["chief_session"] = json!(cockpit::chief::store::chief_session(registry.teams.as_ref().expect("opened above"))?);
     let mut sleeps = Vec::new();
     for permit in store::sleep::prepared_records(registry.teams.as_ref().expect("opened above"))? {
         let mut status = store::sleep::status(registry.teams.as_ref().expect("opened above"), &permit.session_id, &permit.token)?;

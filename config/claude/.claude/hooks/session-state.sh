@@ -272,6 +272,8 @@ case $event in
             needs_input=false
             task=$(jq -r '.prompt // "" | split("\n")[0] | gsub("\\s+"; " ") | .[:60]' <<<"$payload")
         fi
+        # A delivered Chief answer replies to the saved question; one asked since then is still pending.
+        if [[ $(jq -r '.source // ""' <<<"$payload") == chief_answer ]]; then rm -f "$input_file"; fi
         ;;
     PostToolUse)
         if [[ -f $turn_done_file ]]; then start_turn; fi

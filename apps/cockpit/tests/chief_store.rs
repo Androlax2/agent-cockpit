@@ -17,7 +17,7 @@ fn chief_migration_keeps_sleep_continuations_available_on_every_reopen() {
     drop(connection);
     let connection = store::open(&path).unwrap();
     assert!(store::sleep::prepared_records(&connection).unwrap().is_empty());
-    assert_eq!(connection.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0)).unwrap(), 12);
+    assert_eq!(connection.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0)).unwrap(), 13);
 }
 
 fn chief_session(id: &str) -> VerifiedSession {
@@ -87,7 +87,7 @@ fn migration_preserves_v2_links_messages_and_spawns() {
     let mut connection = v2();
     let before: Vec<_> = ["teams", "members", "messages", "spawns"].map(|table| rows(&connection, table)).into();
     migrate(&mut connection).unwrap();
-    assert_eq!(version(&connection), 12);
+    assert_eq!(version(&connection), 13);
     for (table, expected) in ["teams", "members", "messages", "spawns"].into_iter().zip(before) {
         assert_eq!(rows(&connection, table), expected, "changed {table}");
     }
@@ -100,15 +100,15 @@ fn migration_reopen_is_idempotent() {
     let schema = rows(&connection, "sqlite_master");
     migrate(&mut connection).unwrap();
     assert_eq!(rows(&connection, "sqlite_master"), schema);
-    assert_eq!(version(&connection), 12);
+    assert_eq!(version(&connection), 13);
 }
 
 #[test]
 fn future_schema_is_refused() {
     let mut connection = Connection::open_in_memory().unwrap();
-    connection.execute_batch("PRAGMA user_version=13;").unwrap();
+    connection.execute_batch("PRAGMA user_version=14;").unwrap();
     assert!(migrate(&mut connection).is_err());
-    assert_eq!(version(&connection), 13);
+    assert_eq!(version(&connection), 14);
     assert!(rows(&connection, "sqlite_master").is_empty());
 }
 
@@ -133,7 +133,7 @@ fn version_ten_upgrade_preserves_chief_and_team_messages_and_receipts() {
         .query_map([], |row| row.get::<_, String>(0)).unwrap().collect::<Result<Vec<_>, _>>().unwrap();
     let before: Vec<_> = tables.iter().map(|table| rows(&connection, table)).collect();
     migrate(&mut connection).unwrap();
-    assert_eq!(version(&connection), 12);
+    assert_eq!(version(&connection), 13);
     for (table, expected) in tables.iter().zip(before) {
         assert_eq!(rows(&connection, table), expected, "changed {table}");
     }
@@ -141,7 +141,7 @@ fn version_ten_upgrade_preserves_chief_and_team_messages_and_receipts() {
     assert_eq!(scope, ("team".into(), None));
     assert_eq!(connection.query_row("SELECT last_idle_turn FROM delivery_recipients WHERE session_id='session-a'", [], |row| row.get::<_, String>(0)).unwrap(), "turn-a");
     migrate(&mut connection).unwrap();
-    assert_eq!(version(&connection), 12);
+    assert_eq!(version(&connection), 13);
 }
 
 #[test]
@@ -184,13 +184,99 @@ fn open_decisions_are_bounded_and_deduplicated() {
 
 #[test]
 fn failed_migration_rolls_back_all_ddl_and_version_changes() {
-    let mut connection = v2();
-    connection.execute_batch("CREATE TABLE chief_assignments (injected_failure TEXT);").unwrap();
-    let before = rows(&connection, "sqlite_master");
-    assert!(migrate(&mut connection).is_err());
-    assert_eq!(version(&connection), 2);
-    assert_eq!(rows(&connection, "sqlite_master"), before);
-    assert!(connection.is_autocommit());
+    // chief_grants fails the first step; chief_inbox_v13 fails the version 13 step after every earlier step succeeded.
+    for injected in ["chief_grants", "chief_inbox_v13"] {
+        let mut connection = v2();
+        connection.execute_batch(&format!("CREATE TABLE {injected} (injected_failure TEXT);")).unwrap();
+        let before = rows(&connection, "sqlite_master");
+        assert!(migrate(&mut connection).is_err(), "{injected}");
+        assert_eq!(version(&connection), 2, "{injected}");
+        assert_eq!(rows(&connection, "sqlite_master"), before, "{injected}");
+        assert!(connection.is_autocommit());
+    }
+}
+
+const DROPPED_DISPATCH_TABLES: [&str; 10] = ["chief_evidence", "chief_assignments", "chief_work_revisions", "chief_work_proposals", "chief_sources",
+    "chief_handoffs", "chief_apply_reviews", "chief_qa_results", "chief_submissions", "chief_worker_bindings"];
+
+fn table_exists(connection: &Connection, table: &str) -> bool {
+    connection.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)", [table], |row| row.get(0)).unwrap()
+}
+
+fn columns(connection: &Connection, table: &str) -> Vec<String> {
+    connection.prepare("SELECT name FROM pragma_table_info(?1) ORDER BY cid").unwrap()
+        .query_map([table], |row| row.get(0)).unwrap().collect::<Result<_, _>>().unwrap()
+}
+
+fn schema_shape(connection: &Connection) -> Vec<(String, String, Vec<String>)> {
+    let objects: Vec<(String, String)> = connection.prepare("SELECT type,name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name").unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?))).unwrap().collect::<Result<_, _>>().unwrap();
+    objects.into_iter().map(|(kind, name)| { let found = if kind == "table" { columns(connection, &name) } else { Vec::new() }; (kind, name, found) }).collect()
+}
+
+#[test]
+fn version_12_with_dispatch_leftovers_upgrades_to_13_keeping_wakes_and_decisions() {
+    let mut connection = migrated();
+    common::chief::restore_version_12_dispatch_schema(&connection);
+    connection.execute_batch("PRAGMA foreign_keys=ON;
+        INSERT INTO chief_work_revisions VALUES ('path:/project-a','aaaaaaaa',1,'Brief','hash','approved',0,1);
+        INSERT INTO chief_assignments VALUES ('assignment-a','path:/project-a','aaaaaaaa',1,'worker-a','runtime','epoch-w','grant','epoch-a','queued',1,'key','print',1,NULL);
+        INSERT INTO chief_evidence VALUES ('evidence-a','path:/project-a','aaaaaaaa',1,'tests','commit','host_run','source','result',1);
+        INSERT INTO chief_sources VALUES ('source-a','evidence','hash',0,1);
+        INSERT INTO chief_inbox(id,assignment,chief_epoch,recipient,recipient_identity,recipient_epoch,work,envelope,state,next_at)
+            VALUES ('inbox-assignment','assignment-a','epoch-a','session-a','{}','epoch-a','null','{\"kind\":\"chief_assignment\"}','queued',1);
+        INSERT INTO chief_inbox(id,chief_epoch,recipient,recipient_identity,recipient_epoch,work,envelope,state,next_at)
+            VALUES ('inbox-wake','epoch-a','session-b','{}','epoch-a','null','{\"kind\":\"chief_wake\"}','queued',1);
+        INSERT INTO chief_delivery_attempts (id,assignment,recipient,recipient_runtime,recipient_epoch,kind,envelope,idle_turn,state,started_at)
+            VALUES ('attempt-wake','assignment-a','session-b','runtime','epoch-a','chief_wake','{\"kind\":\"chief_wake\"}','idle-1','received',1);
+        INSERT INTO chief_decisions(id,scope_key,decision_key,question,recommendation,state,revision,created_at)
+            VALUES ('decision-open','global','question','What next?','Wait','open',1,1);").unwrap();
+    assert_eq!(version(&connection), 12);
+
+    migrate(&mut connection).unwrap();
+
+    assert_eq!(version(&connection), 13);
+    for table in DROPPED_DISPATCH_TABLES { assert!(!table_exists(&connection, table), "{table} survived"); }
+    for table in ["chief_stops", "chief_answers"] { assert!(table_exists(&connection, table), "{table} missing"); }
+    for table in ["chief_inbox", "chief_delivery_attempts"] { assert!(!columns(&connection, table).contains(&"assignment".to_string()), "{table} kept assignment"); }
+    for column in ["session_id", "stop_id", "category", "suggested_answer"] {
+        assert!(columns(&connection, "chief_decisions").contains(&column.to_string()), "decision column {column} missing");
+    }
+    let text = |sql: &str| connection.query_row(sql, [], |row| row.get::<_, String>(0)).unwrap();
+    assert_eq!(text("SELECT state FROM chief_inbox WHERE id='inbox-wake'"), "queued");
+    assert_eq!(text("SELECT state FROM chief_inbox WHERE id='inbox-assignment'"), "cancelled");
+    assert_eq!(text("SELECT state FROM chief_delivery_attempts WHERE id='attempt-wake'"), "received");
+    assert_eq!(text("SELECT state FROM chief_decisions WHERE id='decision-open'"), "open");
+    let names: Vec<String> = connection.prepare("SELECT name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'").unwrap()
+        .query_map([], |row| row.get(0)).unwrap().collect::<Result<_, _>>().unwrap();
+    for name in ["chief_inbox_inflight", "chief_one_queued_wake", "chief_one_inflight_recipient", "review_chief_inbox_INSERT", "review_chief_delivery_attempts_DELETE"] {
+        assert!(names.contains(&name.to_string()), "{name} missing");
+    }
+    assert!(names.iter().all(|name| !DROPPED_DISPATCH_TABLES.iter().any(|table| name.contains(table))), "a dropped table left an object behind");
+    assert_eq!(connection.prepare("PRAGMA foreign_key_check").unwrap().query_map([], |row| row.get::<_, String>(0)).unwrap().count(), 0);
+
+    let snapshot = |connection: &Connection| (schema_shape(connection), rows(connection, "chief_inbox"), rows(connection, "chief_delivery_attempts"), rows(connection, "chief_decisions"));
+    let before = snapshot(&connection);
+    migrate(&mut connection).unwrap();
+    assert_eq!(before, snapshot(&connection));
+    assert_eq!(version(&connection), 13);
+}
+
+#[test]
+fn a_fresh_database_is_created_at_version_13() {
+    let mut fresh = Connection::open_in_memory().unwrap();
+    fresh.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+    migrate(&mut fresh).unwrap();
+    assert_eq!(version(&fresh), 13);
+    for table in DROPPED_DISPATCH_TABLES { assert!(!table_exists(&fresh, table), "{table} exists in a fresh database"); }
+    let dangling: i64 = fresh.query_row("SELECT count(*) FROM sqlite_master WHERE sql LIKE '%chief_assignments%' OR sql LIKE '%chief_work_revisions%'", [], |row| row.get(0)).unwrap();
+    assert_eq!(dangling, 0);
+
+    let mut upgraded = migrated();
+    common::chief::restore_version_12_dispatch_schema(&upgraded);
+    upgraded.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+    migrate(&mut upgraded).unwrap();
+    assert_eq!(schema_shape(&fresh), schema_shape(&upgraded));
 }
 
 #[test]
@@ -202,9 +288,9 @@ fn open_uses_current_migration_and_keeps_private_path_checks() {
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
     let database = path.join("teams.sqlite");
     let connection = store::open(&database).unwrap();
-    assert_eq!(version(&connection), 12);
+    assert_eq!(version(&connection), 13);
     drop(connection);
-    assert_eq!(version(&store::open(&database).unwrap()), 12);
+    assert_eq!(version(&store::open(&database).unwrap()), 13);
     std::fs::set_permissions(&database, std::fs::Permissions::from_mode(0o644)).unwrap();
     assert!(store::open(&database).is_err());
     std::fs::remove_file(&database).unwrap();

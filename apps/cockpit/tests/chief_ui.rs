@@ -367,3 +367,75 @@ fn short_narrow_lists_keep_the_selected_root_action_visible() {
     keys(&mut app,&mut screen,&[Key::Down,Key::Down,Key::Down]);
     assert!(rendered(&mut app,32,8).contains("Request summary"));
 }
+
+fn escalation(suggestion: Option<&str>) -> Value {
+    let mut record = decision();
+    for (field, value) in [("id", json!("decision-esc")), ("scope_key", json!("chief-epoch-1")), ("decision_key", json!("stop-stop-1")),
+        ("session_id", worker()["session"]["session_id"].clone()), ("stop_id", json!("stop-1")), ("category", json!("scope")),
+        ("question", json!("Which option do you want?")), ("recommendation", json!("Changing the API is outside the task.")),
+        ("suggested_answer", json!(suggestion)), ("revision", json!(3))] {
+        record[field] = value;
+    }
+    record
+}
+
+#[test]
+fn a_decision_with_a_suggestion_offers_send_suggestion_and_write_my_own() {
+    let host=Host::new(vec![escalation(Some("Keep the old API."))]);let (mut app,mut screen)=host.open();
+    app.handle(Key::Enter,&mut screen);
+    let list=rendered(&mut app,160,40);assert!(list.contains("scope")&&list.contains("Which option do you want?"),"{list}");
+    app.handle(Key::Enter,&mut screen);
+    let detail=rendered(&mut app,160,60);
+    for expected in ["scope","Changing the API is outside the task.","Which option do you want?","Keep the old API."] {assert!(detail.contains(expected),"{expected}: {detail}");}
+    app.handle(Key::Enter,&mut screen);
+    let actions=rendered(&mut app,160,40);
+    assert!(actions.contains("Send the suggestion")&&actions.contains("Write my own answer"),"{actions}");
+    keys(&mut app,&mut screen,&[Key::Enter,Key::Enter,Key::Char('y')]);
+    let request=&host.mutations()[0]["action"];
+    assert_eq!(request["action"],"answer_decision");assert_eq!(request["decision"],"decision-esc");
+    assert_eq!(request["expected_revision"],3);assert_eq!(request["answer"],"Keep the old API.");
+}
+
+#[test]
+fn a_decision_without_a_suggestion_only_offers_to_write_an_answer() {
+    let host=Host::new(vec![escalation(None)]);let (mut app,mut screen)=host.open();
+    keys(&mut app,&mut screen,&[Key::Enter,Key::Enter,Key::Enter]);
+    let actions=rendered(&mut app,160,40);
+    assert!(actions.contains("Write my own answer")&&!actions.contains("Send the suggestion"),"{actions}");
+}
+
+#[test]
+fn a_plain_decision_offers_no_answer_to_an_agent() {
+    let host=Host::new(vec![decision()]);let (mut app,mut screen)=host.open();
+    keys(&mut app,&mut screen,&[Key::Enter,Key::Enter,Key::Enter]);
+    let actions=rendered(&mut app,160,40);
+    assert!(actions.contains("Resolve with note")&&!actions.contains("Write my own answer")&&!actions.contains("Send the suggestion"),"{actions}");
+}
+
+#[test]
+fn the_answer_review_shows_the_exact_text_to_send() {
+    let host=Host::new(vec![escalation(Some("Keep the old API."))]);let (mut app,mut screen)=host.open();
+    keys(&mut app,&mut screen,&[Key::Enter,Key::Enter,Key::Enter,Key::Down,Key::Enter]);
+    type_note(&mut app,&mut screen,"Use option B, then run the tests.");
+    assert!(host.mutations().is_empty(),"typing the answer sends nothing");
+    let review=rendered(&mut app,220,80);
+    for expected in ["Use option B, then run the tests.","Answer from Theo, sent through the cockpit Chief view."] {
+        assert!(review.contains(expected),"{expected}: {review}");
+    }
+    for forbidden in ["Chief answer on Theo's behalf.","still need Theo"] {
+        assert!(!review.contains(forbidden),"{forbidden}: {review}");
+    }
+    keys(&mut app,&mut screen,&[Key::Enter,Key::Char('y')]);
+    let request=&host.mutations()[0]["action"];
+    assert_eq!(request["action"],"answer_decision");assert_eq!(request["answer"],"Use option B, then run the tests.");
+}
+
+#[test]
+fn an_escalation_changed_during_review_invalidates_the_answer() {
+    let host=Host::new(vec![escalation(Some("Keep the old API."))]);let (mut app,mut screen)=host.open();
+    keys(&mut app,&mut screen,&[Key::Enter,Key::Enter,Key::Enter,Key::Enter,Key::Enter]);
+    host.snapshot.lock().unwrap()["records"][0]["revision"]=json!(4);
+    host.snapshot.lock().unwrap()["records"][0]["suggested_answer"]=json!("Change the API instead.");
+    app.handle(Key::Char('y'),&mut screen);
+    assert!(host.mutations().is_empty(),"a decision changed during review must invalidate pending consent");
+}

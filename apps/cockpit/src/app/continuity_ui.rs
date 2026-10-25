@@ -216,6 +216,7 @@ impl App {
         let snapshot = Self::team_snapshot().ok();
         queue::QueueContext { now: util::now_secs(), enabled: settings::is_on("todo-queue"), gaming: (self.gaming)(),
             viewed: current_session(), workspace_active: util::claude_workspace_active(), qa_sessions: self.qa_sessions.clone(),
+            chief_session: snapshot.as_ref().and_then(|snapshot| snapshot["chief_session"].as_str().map(str::to_string)),
             host_available: snapshot.is_some() }
     }
 

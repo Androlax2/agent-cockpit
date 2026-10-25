@@ -183,8 +183,9 @@ Sessions of one repository (parallel clones included) that you link to one task 
 **Off by default.** The Chief is one OpenCode session you pick, working for all projects.
 It reads a bounded view of what your running agents are doing and reports back to you.
 It does not start work, hand out todos, approve anything or run host commands: the todo
-queue keeps starting work, with or without the Chief. The next step, answering agents that
-stop to ask a question, is planned: see the
+queue keeps starting work, with or without the Chief. It can answer an agent that stopped to
+ask a question, within a fixed boundary, and hands everything else to you: see
+[Stopped agents](#stopped-agents), and the
 [design](docs/superpowers/specs/2026-10-24-autonomous-chief-design.md).
 
 ### Turning it on and off
@@ -224,6 +225,72 @@ read long records.
   decisions / idle summary, sent back with `summary_response`. It waits up to 15 minutes
   for admission and 2 minutes for the answer after that; a timeout keeps the previous
   result. There is no automatic summary stream.
+
+### Stopped agents
+
+When an OpenCode session stops (waiting, or at a question of its own) while its todo is in
+progress, the daemon records the stop and wakes the Chief with a masked account of it:
+the last 20 conversation messages, the todo text and notes, and the question form the agent
+has open. Tool output and attachments never reach the Chief, and secrets are masked. A
+permission prompt is never a stop. The record is closed as soon as the agent moves on, even
+while the Chief is disabled; a daemon restart or a gap in the session's telemetry does not close it.
+
+For each stop the Chief does one of these things:
+
+- **Nothing**, when the agent asks nothing.
+- **Answers** (`answer`: stop, text of at most 4,000 characters, a one-line reason). The
+  answer waits at least 30 seconds after the stop, so you or the agent can act first, and then
+  goes through the session's native queued inbox, which never types into a draft. It is held
+  while you view the session, a prompt of yours is queued, a permission prompt is open or
+  you are gaming. If the agent resumed meanwhile, or the session was restarted, it is dropped
+  and never sent. A paused Chief's answer waits: after **Resume** it goes out if the agent
+  still sits at the same stop. Disabling the Chief drops its unsent answers. An open question
+  form (`question` tool) is never answered with a chat message.
+- **Answers a question form** (`answer_form`: stop, choice, a one-line reason), only for a form
+  with a single question. The choice must match one option the form shows, exactly. The daemon
+  hands it to OpenCode's form API, which settles the form; nothing is typed. If the open form is
+  not the one the stop shows, or anything else does not match, the reply is not given and its
+  delivery is logged uncertain. The same 30-second wait and holds apply. A form with several
+  questions, or one that only takes free text, is escalated.
+- **Escalates** (`escalate`: stop, a category, a reason of at most 300 characters and an
+  optional suggested answer of at most 2,000). Use it for anything security-related
+  (`security`), anything that would change the task's scope (`scope`), and when it is not
+  confident (`not_sure`).
+
+Every Chief answer ends with this text, added by the daemon and not by the Chief:
+
+> Chief answer on Theo's behalf. It authorises edits, builds, tests and commits inside your
+> current task only. Installs, dependency changes, pushes, merges, default-branch or other Git
+> writes your project does not already allow, anything outside the task, and anything
+> security-related still need Theo. Permission prompts, ask-to-run and cockpit apply are
+> always Theo's.
+
+Each answer is logged (session, stop, the question's first 300 characters, the answer, the
+reason, who wrote it, and whether it was queued, received, uncertain or cancelled). A delivery
+whose outcome is uncertain is never resent.
+
+### Answering an escalation
+
+An escalation is a decision and notifies you like one; its banner names the category. In
+**Decisions** it shows as `<category> · <the agent's question>`. Open it to read the category,
+the question the agent asked, the Chief's reason and its suggested answer, then press Enter for
+its actions:
+
+- **Send the suggestion** (only when the Chief gave one) and **Write my own answer** (up to
+  4,000 characters, typed on a single line) open a frozen review that shows the exact message
+  the agent will receive. Enter, then `y`, sends it: the decision is resolved and the answer is
+  queued in the same step.
+- **Resolve with note** records a note and sends nothing.
+
+Your answer ends with the daemon-added line "Answer from Theo, sent through the cockpit Chief
+view." and not with the Chief's boundary text: it is your own answer, not one the Chief gave for you. The
+agent's OpenCode screen shows it as "Theo's answer: ...". It takes the same route as the Chief's,
+with the same readiness checks, but it does not
+wait the 30 seconds and does not need the Chief to be enabled or active: you answered on
+purpose. If the session restarted or the agent already moved on, the answer is refused and the
+decision closes by itself. An escalated question form has to be answered in the session itself.
+The decision key prefix `stop-` is reserved for escalations; the Chief cannot use it for a plain
+decision.
 
 ### Decisions and recovery
 
