@@ -108,7 +108,7 @@ agent-opencode-key: ## Store the Anthropic API key opencode sessions use, a grey
 agent_github = tools/agent-github.sh
 ALLOW_WORKFLOWS ?= 0
 
-.PHONY: agent-github-token agent-github-board-token agent-github-relogin agent-github-protect agent-github-check agent-github-inspect agent-github-enroll \
+.PHONY: agent-github-token agent-github-board-token agent-github-relogin agent-github-protect agent-github-check \
 	    agent-dashboard-tailnet-grant agent-dashboard-tailnet agent-dashboard-tailnet-off
 
 agent-github-token: ## Create a repo-only token without workflow write access (opt in: ALLOW_WORKFLOWS=1)
@@ -127,15 +127,6 @@ agent-github-protect: ## Require pull requests and block force pushes on the pro
 
 agent-github-check: ## [read-only] Check that each agent token reaches only its repo and that gh keeps no token in hosts.yml
 	@$(agent_github) check
-
-agent-github-inspect: ## [read-only] Inspect an explicitly enrolled checkout: make agent-github-inspect CHECKOUT=/path/to/checkout
-	@test -n "$(CHECKOUT)" || { echo "usage: make agent-github-inspect CHECKOUT=<checkout path>"; exit 2; }
-	@$(agent_github) inspect --checkout "$(CHECKOUT)"
-
-agent-github-enroll: ## Enroll with explicit project/repo/App/ruleset IDs and host confirmation; see docs/security/git-access-runbook.md
-	@$(agent_github) enroll --checkout "$(CHECKOUT)" --project "$(PROJECT)" --repository "$(REPOSITORY)" \
-		--repository-id "$(REPOSITORY_ID)" --inspector-app-id "$(INSPECTOR_APP_ID)" \
-		--history-ruleset "$(HISTORY_RULESET)" --default-pr-ruleset "$(DEFAULT_PR_RULESET)"
 
 # greyproxy's dashboard listens on localhost only; `tailscale serve` publishes it to this tailnet
 # (and nowhere else) so pending network requests can be approved from the phone. It has no login:
