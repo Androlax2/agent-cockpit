@@ -25,7 +25,6 @@ from urllib.parse import parse_qs, quote, urlsplit
 CHECK_DEADLINE_SECONDS = 30
 PROBE_BRANCH = 'agents/protection-probe/future'
 APP_TOKENS = {}
-RUNTIME_APP_TOKENS = {}
 # Rebuilds require fresh canaries; a matching version string is not capability proof.
 VERIFIED_GREYWALL_BUILDS = {
     '8e70830bb9583707b2958174c46367e5fb8b59d9402a9b2e5531b1da438fa739':
@@ -328,17 +327,12 @@ def check_greywall_dependency():
         return report
 
 
-def sign_app_jwt(app, deadline, *, service='cockpit-github-inspector'):
-    if service not in {'cockpit-github-inspector', 'cockpit-github-runtime-app'}:
-        deny('app_key_service_invalid')
-    result = subprocess.run([trusted_program('secret-tool'), 'lookup', 'service', service,
+def sign_app_jwt(app, deadline):
+    result = subprocess.run([trusted_program('secret-tool'), 'lookup', 'service', 'cockpit-github-inspector',
                              'app', app['client_id']], capture_output=True, env=git_environment(),
                             timeout=remaining_seconds(deadline))
     if result.returncode or not result.stdout:
         deny('inspector_key_unavailable')
-    if service == 'cockpit-github-runtime-app' and not hmac.compare_digest(
-            hashlib.sha256(result.stdout.rstrip(b'\n') + b'\n').hexdigest(), app['fingerprint']):
-        deny('runtime_credential_mismatch')
 
     def encode(content):
         return base64.urlsafe_b64encode(content).rstrip(b'=')
@@ -361,14 +355,12 @@ def sign_app_jwt(app, deadline, *, service='cockpit-github-inspector'):
     return (unsigned + b'.' + encode(signature.stdout)).decode('ascii')
 
 
-def api_request(method, path, token, deadline, body=None, *, budget=None, bucket=None, unmetered_authentication=False):
+def api_request(method, path, token, deadline, body=None, *, budget=None, bucket=None):
     if (method not in {'GET', 'POST'} or not path.startswith('/') or path.startswith('//')
             or any(ord(character) < 32 for character in path)
             or (method == 'POST' and not re.fullmatch(r'/app/installations/[1-9][0-9]*/access_tokens', path))):
         deny('inspector_request_forbidden')
-    if unmetered_authentication and not (path == '/app' or re.fullmatch(r'/app/installations/[1-9][0-9]*(?:/access_tokens)?', path)):
-        deny('authentication_accounting_invalid')
-    if budget is not None and not unmetered_authentication:
+    if budget is not None:
         try:
             budget['module'].charge(budget['reservation'], bucket)
         except budget['module'].RateDenied as error:
@@ -376,12 +368,7 @@ def api_request(method, path, token, deadline, body=None, *, budget=None, bucket
         except OSError:
             deny('rate_ledger_unavailable')
     result = github_request(method, path, token, deadline, body)
-    if unmetered_authentication:
-        if any(name.startswith('x-ratelimit-') for name in result[2]):
-            deny('authentication_accounting_changed')
-        if result[0] in (403, 429) or 'retry-after' in result[2]:
-            deny('authentication_throttled')
-    if budget is not None and not unmetered_authentication:
+    if budget is not None:
         try:
             observed = budget['module'].observe(bucket.rsplit(':', 1)[0], result[2], status=result[0])
         except budget['module'].RateDenied as error:
@@ -402,7 +389,7 @@ def load_rate():
 
 
 def github_request(method, path, token, deadline, body=None):
-    if (method not in {'GET', 'POST', 'PUT', 'PATCH'} or not path.startswith('/') or path.startswith('//')
+    if (method not in {'GET', 'POST', 'PUT'} or not path.startswith('/') or path.startswith('//')
             or any(ord(character) < 32 for character in path)):
         deny('api_request_forbidden')
     if not isinstance(token, str) or not token or any(not 33 <= ord(character) <= 126 for character in token):
@@ -499,7 +486,7 @@ def inspector_token(record, app, deadline, *, budget=None):
     if cached and cached['expires'] > time.time() + remaining_seconds(deadline):
         return cached['token'], cache_key, 0
     jwt = sign_app_jwt(app, deadline)
-    accounting = authentication_accounting(app, f'/app/installations/{app["installation_id"]}/access_tokens', budget)
+    accounting = {} if budget is None else {'budget': budget, 'bucket': budget['buckets']['authentication']}
     status, minted, headers = api_request('POST', f'/app/installations/{app["installation_id"]}/access_tokens',
                                          jwt, deadline, {'repository_ids': [record['repository_id']],
                                                          'permissions': app['permissions']}, **accounting)
@@ -708,19 +695,12 @@ def runtime_credential_profiles(record, registry):
         profile = next((profile for profile in profiles if profile['id'] == credential_id), None)
         if profile is None:
             deny('runtime_credential_unavailable')
-        is_read_app = role == 'read' and profile.get('kind') == 'github_app'
-        if (profile.get('setup_approved') is not True or profile.get('kind') not in ('fine_grained_pat', 'github_app')
-                or (profile.get('kind') == 'github_app' and not is_read_app)
+        if (profile.get('setup_approved') is not True or profile.get('kind') != 'fine_grained_pat'
                 or profile.get('role') != role or type(profile.get('repository_id')) is not int
                 or profile['repository_id'] != record['repository_id']
-                or (not is_read_app and (type(profile.get('actor_id')) is not int or profile['actor_id'] <= 0))
+                or type(profile.get('actor_id')) is not int or profile['actor_id'] <= 0
                 or not isinstance(profile.get('key_epoch'), str) or not identifier.fullmatch(profile['key_epoch'])
                 or not isinstance(profile.get('fingerprint'), str) or not re.fullmatch(r'[0-9a-f]{64}', profile['fingerprint'])):
-            deny('invalid_runtime_enrollment')
-        if is_read_app and (any(type(profile.get(field)) is not int or profile[field] <= 0
-                                for field in ['app_id', 'installation_id', 'owner_id'])
-                            or not isinstance(profile.get('client_id'), str)
-                            or not re.fullmatch(r'[A-Za-z0-9_]+', profile['client_id'])):
             deny('invalid_runtime_enrollment')
         if (any(type(profile.get(field)) is not int for field in ['reviewed_at', 'valid_until', 'expires_at'])
                 or not 0 < profile['reviewed_at'] <= now < profile['valid_until'] <= profile['expires_at']):
@@ -741,78 +721,7 @@ def runtime_credential_profiles(record, registry):
     return selected
 
 
-def runtime_principal(profile):
-    if profile['kind'] == 'github_app':
-        return f'installation:{profile["installation_id"]}'
-    return f'user:{profile["actor_id"]}'
-
-
-def authentication_accounting(profile, path, budget):
-    if budget is None:
-        return {}
-    evidence = profile.get('authentication_accounting')
-    if evidence is None:
-        bucket = profile.get('authentication_bucket') or budget.get('buckets', {}).get('authentication')
-        if bucket is None:
-            deny('authentication_accounting_unknown')
-        return {'budget': budget, 'bucket': bucket}
-    if (not isinstance(evidence, dict) or evidence.get('mode') != 'no_primary_headers'
-            or type(evidence.get('reviewed_at')) is not int or type(evidence.get('valid_until')) is not int
-            or not 0 < evidence['reviewed_at'] <= time.time() < evidence['valid_until']
-            or not isinstance(evidence.get('evidence'), str) or not re.fullmatch(r'[0-9a-f]{64}', evidence['evidence'])
-            or not isinstance(evidence.get('paths'), list) or path not in evidence['paths']
-            or not (path == '/app' or re.fullmatch(r'/app/installations/[1-9][0-9]*(?:/access_tokens)?', path))):
-        deny('authentication_accounting_unknown')
-    return {'budget': budget, 'unmetered_authentication': True}
-
-
-def read_app_credential(record, profile, deadline, *, budget=None):
-    jwt = sign_app_jwt(profile, deadline, service='cockpit-github-runtime-app')
-    status, app, _ = api_request('GET', '/app', jwt, deadline, **authentication_accounting(profile, '/app', budget))
-    if (status != 200 or not isinstance(app, dict) or app.get('id') != profile['app_id']
-            or app.get('client_id') != profile['client_id'] or app.get('permissions') != profile['permissions']):
-        deny('runtime_app_mismatch')
-    installation_path = f'/app/installations/{profile["installation_id"]}'
-    status, installation, _ = api_request('GET', installation_path, jwt, deadline,
-                                         **authentication_accounting(profile, installation_path, budget))
-    if (status != 200 or not isinstance(installation, dict) or installation.get('app_id') != profile['app_id']
-            or installation.get('account', {}).get('id') != profile['owner_id']
-            or installation.get('permissions') != profile['permissions']
-            or installation.get('repository_selection') != 'selected' or installation.get('suspended_at') is not None):
-        deny('runtime_app_mismatch')
-    status, minted, _ = api_request('POST', installation_path + '/access_tokens', jwt, deadline,
-                                   {'repository_ids': [record['repository_id']], 'permissions': profile['permissions']},
-                                   **authentication_accounting(profile, installation_path + '/access_tokens', budget))
-    if (status != 201 or not isinstance(minted, dict) or minted.get('permissions') != profile['permissions']
-            or not isinstance(minted.get('repositories'), list)
-            or len(minted['repositories']) != 1 or minted['repositories'][0].get('id') != record['repository_id']
-            or not isinstance(minted.get('token'), str) or not minted['token']
-            or any(not 33 <= ord(character) <= 126 for character in minted['token'])):
-        deny('runtime_app_token_invalid')
-    try:
-        expiry = datetime.fromisoformat(minted['expires_at'].replace('Z', '+00:00'))
-        if expiry.tzinfo is None or not time.time() + remaining_seconds(deadline) < expiry.timestamp() <= time.time() + 3660:
-            deny('runtime_app_token_invalid')
-    except (KeyError, TypeError, ValueError, AttributeError):
-        deny('runtime_app_token_invalid')
-    accounting = {} if budget is None else {'budget': budget, 'bucket': runtime_principal(profile) + ':core'}
-    status, repository, _ = api_request('GET', '/repos/' + record['canonical_name'], minted['token'], deadline, **accounting)
-    if (status != 200 or not isinstance(repository, dict) or repository.get('id') != record['repository_id']
-            or repository.get('full_name') != record['canonical_name']
-            or repository.get('owner', {}).get('id') != profile['owner_id']):
-        deny('remote_identity_mismatch')
-    RUNTIME_APP_TOKENS[json.dumps(profile, sort_keys=True)] = {'token': minted['token'], 'expires': expiry.timestamp()}
-    return minted['token']
-
-
 def read_runtime_credential(record, profile, deadline, *, budget=None, verify_remote=True):
-    if profile.get('kind') == 'github_app':
-        if not verify_remote:
-            cached = RUNTIME_APP_TOKENS.get(json.dumps(profile, sort_keys=True))
-            if cached is None or cached['expires'] <= time.time() + remaining_seconds(deadline):
-                deny('runtime_app_token_unavailable')
-            return cached['token']
-        return read_app_credential(record, profile, deadline, budget=budget)
     result = subprocess.run([trusted_program('secret-tool'), 'lookup', 'service', 'cockpit-github-runtime',
                              'repository', str(record['repository_id']), 'credential', profile['id'],
                              'epoch', profile['key_epoch']], capture_output=True, env=git_environment(),
@@ -845,7 +754,7 @@ def read_runtime_credential(record, profile, deadline, *, budget=None, verify_re
     return token
 
 
-def reserve_inspection_budget(record, registry_bytes, profiles, purpose, deadline, operation_costs, *, unmetered_operation=False):
+def reserve_inspection_budget(record, registry_bytes, profiles, purpose, deadline, operation_costs):
     app = inspector_app(record)
     if app.get('rate_setup_approved') is not True:
         deny('rate_setup_unapproved')
@@ -853,31 +762,19 @@ def reserve_inspection_budget(record, registry_bytes, profiles, purpose, deadlin
     rate = load_rate()
     buckets = app.get('rate_buckets')
     if (not isinstance(buckets, dict) or set(buckets) != {'installation', 'authentication'}
-            or buckets['installation'] != f'installation:{app["installation_id"]}:core'):
-        deny('rate_principal_unapproved')
-    auth = authentication_accounting(app, f'/app/installations/{app["installation_id"]}/access_tokens', {'buckets': buckets})
-    if not auth.get('unmetered_authentication') and (not rate.valid_bucket(buckets['authentication'])
+            or buckets['installation'] != f'installation:{app["installation_id"]}:core'
+            or not rate.valid_bucket(buckets['authentication'])
             or not buckets['authentication'].startswith((f'app:{app["app_id"]}:', f'installation:{app["installation_id"]}:'))):
         deny('rate_principal_unapproved')
     costs = {buckets['installation']: 7}
     cached = APP_TOKENS.get(inspector_cache_key(record, app))
-    if not auth.get('unmetered_authentication') and (cached is None or cached['expires'] <= time.time() + remaining_seconds(deadline)):
+    if cached is None or cached['expires'] <= time.time() + remaining_seconds(deadline):
         costs[buckets['authentication']] = costs.get(buckets['authentication'], 0) + 1
     for profile in profiles.values():
-        bucket = runtime_principal(profile) + ':core'
-        costs[bucket] = costs.get(bucket, 0) + (1 if profile['kind'] == 'github_app' else 2)
-        if profile['kind'] == 'github_app':
-            for authentication_path in ['/app', f'/app/installations/{profile["installation_id"]}',
-                         f'/app/installations/{profile["installation_id"]}/access_tokens']:
-                authentication = authentication_accounting(profile, authentication_path, {})
-                if not authentication.get('unmetered_authentication'):
-                    auth_bucket = authentication['bucket']
-                    if not rate.valid_bucket(auth_bucket) or not auth_bucket.startswith(
-                            (f'app:{profile["app_id"]}:', f'installation:{profile["installation_id"]}:')):
-                        deny('rate_principal_unapproved')
-                    costs[auth_bucket] = costs.get(auth_bucket, 0) + 1
+        bucket = f'user:{profile["actor_id"]}:core'
+        costs[bucket] = costs.get(bucket, 0) + 2
     if purpose == 'write':
-        if not isinstance(operation_costs, dict) or (not operation_costs and not unmetered_operation):
+        if not isinstance(operation_costs, dict) or not operation_costs:
             deny('rate_operation_cost_unknown')
         for bucket, cost in operation_costs.items():
             if (not rate.valid_bucket(bucket) or not bucket.startswith(f'user:{profiles["forward"]["actor_id"]}:')
@@ -906,7 +803,7 @@ def finish_inspection_budget(budget, *, evidence=None):
         deny('rate_ledger_unavailable')
 
 
-def inspect_access(checkout, *, purpose, operation_costs=None, unmetered_operation=False):
+def inspect_access(checkout, *, purpose, operation_costs=None):
     if purpose not in {'inspection', 'admission', 'scheduled', 'write'}:
         raise ValueError('invalid inspection purpose')
     report = {'mode': 'read_only', 'identity_verified': False}
@@ -928,8 +825,7 @@ def inspect_access(checkout, *, purpose, operation_costs=None, unmetered_operati
         bound = bind_inspector(record, registry)
         if purpose != 'inspection':
             profiles = runtime_credential_profiles(record, registry)
-            budget = reserve_inspection_budget(bound, serialized, profiles, purpose, deadline, operation_costs,
-                                                unmetered_operation=unmetered_operation)
+            budget = reserve_inspection_budget(bound, serialized, profiles, purpose, deadline, operation_costs)
         if budget is not None and budget['cached'] is not None:
             default_branch = budget['cached']['default_branch']
             snapshot = {'request_counts': {'app_auth': 0, 'installation': 0, 'runtime': 0}}
@@ -941,9 +837,7 @@ def inspect_access(checkout, *, purpose, operation_costs=None, unmetered_operati
             for profile in profiles.values():
                 read_runtime_credential(record, profile, deadline, budget=budget, verify_remote=budget['cached'] is None)
             runtime_credential_profiles(record, registry)
-            snapshot.setdefault('request_counts', {})['runtime'] = sum(
-                4 if profile['kind'] == 'github_app' else (2 if budget['cached'] is None else 0)
-                for profile in profiles.values())
+            snapshot.setdefault('request_counts', {})['runtime'] = 4 if budget['cached'] is None else 0
         if registry_path().read_bytes() != serialized:
             deny('registry_changed')
         if inspect_remote_chain(root, record, deadline, set()) != digests:
@@ -959,8 +853,7 @@ def inspect_access(checkout, *, purpose, operation_costs=None, unmetered_operati
                 budget.update(completed)
         if budget is not None and purpose == 'write':
             try:
-                if operation_costs:
-                    budget['module'].ready(budget['reservation'], operation_costs)
+                budget['module'].ready(budget['reservation'], operation_costs)
             except budget['module'].RateDenied as error:
                 deny(str(error))
             except OSError:

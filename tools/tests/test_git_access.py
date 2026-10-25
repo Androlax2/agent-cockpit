@@ -644,18 +644,6 @@ class AppInspectionTests(AppInspectionFixture):
 
 
 class AppTransportTests(AppInspectionFixture):
-    def test_low_level_collaboration_patch_does_not_widen_inspector_authority(self):
-        path = '/repos/acme/project/issues/7'
-        self.responses[path] = (200, {'number': 7}, {})
-        with patch.dict(os.environ, self.environment, clear=True), \
-                patch.object(self.access.subprocess, 'run', side_effect=self.external_process), \
-                patch.object(self.access, 'trusted_program', side_effect=lambda name: '/usr/bin/' + name):
-            status, result, _ = self.access.github_request('PATCH', path, 'SYNTHETIC_COLLAB',
-                self.access.time.monotonic() + 30, {'state': 'closed'})
-            self.assertEqual((status, result), (200, {'number': 7}))
-            with self.assertRaisesRegex(self.access.AccessDenied, '^inspector_request_forbidden$'):
-                self.access.api_request('PATCH', path, 'SYNTHETIC_INSPECTOR', self.access.time.monotonic() + 30)
-
     def test_inspector_transport_cannot_write_protections_or_mint_arbitrary_tokens(self):
         for method, path in [('PUT', '/repos/acme/project/rulesets/100'),
                              ('POST', '/repos/acme/project/rulesets'),
@@ -1015,57 +1003,6 @@ class RuntimeCredentialFixture(AppInspectionFixture):
 
 
 class RuntimeCredentialTests(RuntimeCredentialFixture):
-    def test_admission_supports_separate_read_app_and_headerless_authentication(self):
-        now = int(self.access.time.time())
-        read = self.profiles[0]
-        read.update(kind='github_app', app_id=456, client_id='IvReadApp', installation_id=78, owner_id=9,
-                    authentication_accounting={'mode': 'no_primary_headers', 'reviewed_at': now - 60,
-                        'valid_until': now + 3600, 'evidence': 'a' * 64,
-                        'paths': ['/app', '/app/installations/78', '/app/installations/78/access_tokens']})
-        del read['actor_id']
-        self.app['rate_buckets']['authentication'] = None
-        self.app['authentication_accounting'] = {'mode': 'no_primary_headers', 'reviewed_at': now - 60,
-            'valid_until': now + 3600, 'evidence': 'b' * 64, 'paths': ['/app/installations/77/access_tokens']}
-        self.save_profiles()
-        actual_run = subprocess.run
-        paths = []
-
-        def command(arguments, **options):
-            if Path(arguments[0]).name == 'secret-tool':
-                return subprocess.CompletedProcess(arguments, 0, b'SYNTHETIC_FORWARD_TOKEN', b'')
-            return actual_run(arguments, **options)
-
-        def request(method, path, token, deadline, body=None):
-            paths.append(path)
-            if path == '/app':
-                return 200, {'id': 456, 'client_id': 'IvReadApp', 'permissions': read['permissions']}, {}
-            if path == '/app/installations/78':
-                return 200, {'app_id': 456, 'account': {'id': 9}, 'permissions': read['permissions'],
-                             'repository_selection': 'selected', 'suspended_at': None}, {}
-            if path == '/app/installations/78/access_tokens':
-                return 201, {'token': 'SYNTHETIC_READ_APP', 'permissions': read['permissions'], 'repositories': [{'id': 42}],
-                    'expires_at': self.access.datetime.fromtimestamp(now + 3500, self.access.timezone.utc).isoformat()}, {}
-            if token in ('SYNTHETIC_READ_APP', 'SYNTHETIC_FORWARD_TOKEN'):
-                if path == '/user':
-                    return 200, {'id': 88}, self.rate_headers
-                return 200, {'id': 42, 'full_name': 'acme/project', 'owner': {'id': 9}}, self.rate_headers
-            status, value, headers = self.request(method, path, token, deadline, body)
-            return status, value, {} if path.endswith('/access_tokens') else self.rate_headers | headers
-
-        with patch.dict(os.environ, self.environment, clear=True), \
-                patch.object(self.access.subprocess, 'run', side_effect=command), \
-                patch.object(self.access, 'github_request', side_effect=request), \
-                patch.object(self.access, 'sign_app_jwt', return_value='SYNTHETIC_APP_JWT'):
-            self.rate.observe('installation:78', self.rate_headers)
-            report = self.access.inspect_access(self.project, purpose='write', operation_costs={}, unmetered_operation=True)
-            self.assertEqual(report['mode'], 'verified', report)
-            self.assertEqual(report['request_counts']['runtime'], 6)
-            before = paths.copy()
-            token = self.access.read_runtime_credential(self.record, read, self.access.time.monotonic() + 30, verify_remote=False)
-            self.assertEqual(token, 'SYNTHETIC_READ_APP')
-            self.assertEqual(paths, before)
-            self.rate.finish(report['rate_reservation'])
-
     def test_read_and_write_credentials_have_distinct_verified_roles(self):
         report = self.inspect_runtime()
         self.assertEqual(report['mode'], 'verified', report)

@@ -165,22 +165,13 @@ class GitTransportProcessTests(unittest.TestCase):
         spec.loader.exec_module(self.broker)
         self.header = {'version': 1, 'capability': 'a' * 64, 'action': 'git.fetch', 'body_length': 4, 'protocol': 2}
 
-    def run_transport(self, deadline=None, check_live=lambda: None, *, read_before_dispatch=False):
+    def run_transport(self, deadline=None, check_live=lambda: None):
         with tempfile.TemporaryFile(dir=self.scratch.name) as body, tempfile.TemporaryFile(dir=self.scratch.name) as output:
             body.write(b'0000')
-            if read_before_dispatch:
-                body.seek(0)
-                body.read(1)
-                body.seek(0)
             response = self.broker.run_git_transport(self.header, {'canonical_name': 'acme/project'},
                                                      'SYNTHETIC_FORWARD_SECRET', body, output,
                                                      deadline=deadline or time.monotonic() + 5, check_live=check_live)
             return response, output.read()
-
-    def test_worker_sends_complete_body_after_parent_buffered_validation(self):
-        response, _ = self.run_transport(read_before_dispatch=True)
-        self.assertEqual(response['status'], 200)
-        self.assertEqual(self.requests[0][2], b'0000')
 
     def test_worker_performs_verified_tls_through_host_proxy_and_fixed_route(self):
         response, content = self.run_transport()

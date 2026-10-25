@@ -108,8 +108,6 @@ def main():
                 if len(encoded) > 16 * 1024:
                     raise TransportDenied('transport_control_invalid')
                 control = json.loads(encoded, object_pairs_hook=broker.unique_fields, parse_constant=broker.reject_constant)
-                # Parent buffered validation can leave the inherited descriptor past its logical position.
-                body.seek(0)
                 response = transfer(control, body, output)
             except TransportDenied as error:
                 response = {'code': 'upstream_transport_failed'}

@@ -55,14 +55,6 @@ class GithubRateTests(unittest.TestCase):
         with self.rate.request_slot():
             pass
 
-    def test_first_request_can_record_quota_in_a_fresh_home(self):
-        previous_umask = os.umask(0o022)
-        try:
-            with self.rate.request_slot():
-                self.assertEqual(self.observe(), 'installation:77:core')
-        finally:
-            os.umask(previous_umask)
-
     def test_repository_write_lock_is_shared_with_another_process(self):
         self.assertTrue(hasattr(self.rate, 'repository_write'), 'repository write lock is missing')
         script = ('import importlib.util\n'

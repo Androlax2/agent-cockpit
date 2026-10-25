@@ -153,10 +153,6 @@ def exclusive_slot(names, reason):
     directory = ledger_path().parent / 'dispatch'
     if any(ancestor.is_symlink() for ancestor in [directory, *directory.parents]):
         deny('rate_ledger_untrusted')
-    directory.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    parent_metadata = directory.parent.stat()
-    if parent_metadata.st_uid != os.getuid() or parent_metadata.st_mode & 0o077:
-        deny('rate_ledger_untrusted')
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     metadata = directory.stat()
     if metadata.st_uid != os.getuid() or metadata.st_mode & 0o077:

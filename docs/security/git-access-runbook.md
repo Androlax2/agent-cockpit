@@ -106,12 +106,6 @@ Registry version 1 has `repositories` plus a host-reviewed `inspector_apps` list
 
 ## Controlled App trial: approval required before setup
 
-### Runtime credential trial findings
-
-The separately approved read App is `5447614` (client `Iv23liiOBFyj1kkMkEoi`, installation `174624868`), distinct from the inspector. Host-only live verification confirmed Metadata/Contents/Issues/Pull requests/Checks/Commit statuses/Actions **read**, a minted token scoped to the sole trial repository `1430990603`, and successful Checks API access. Zero checks on the trial commit is not evidence of passing required CI. Fine-grained PAT setup could not offer Checks, matching GitHub's documented limitation; the current PAT-only runtime validator therefore still needs read-App support.
-
-Host trial request `03a0cff3f08e` verified the stored Contents-write PAT fingerprint and trial repository, then read upload-pack and receive-pack advertisements (HTTP 200, 882 and 522 bytes). Neither Git response exposed rate headers; sampled REST core usage stayed at 13 before/after each advertisement. This does not establish fetch/push costs or absence of secondary limits. Request `e4098ad7b028` found no rate headers on App JWT identity/installation/token-mint requests, while installation-token repository/commit/Checks requests each incremented the installation core counter by one. Positive-cost/observed-bucket assumptions in the implementation need explicit reconciliation with this evidence. No guessed cost profile, production enrollment or live broker push is authorized by these observations.
-
 Initial trial record (2026-10-23): Theo approved creating private `Androlax2/cockpit-inspector-trial` with a generated README only (repository ID `1430990603`, owner `39646949`, default branch `main`). GitHub's rulesets GET returned HTTP 403: "Upgrade to GitHub Pro or make this repository public to enable this feature." At that point no App, key, token, installation or ruleset existed, and the trial stopped for an explicit visibility decision. This entitlement result under the host setup identity was not App permission proof; no production repository changed.
 
 Subsequent approved trial actions: Theo chose public visibility for **this README-only trial only**, after a host command verified its ID/content. Active, empty-bypass test baselines are `25720025` (all-branch history) and `25720027` (default PR). Test App `5441353` / client `Iv23liqaSlHsDhJTpHbW`, installation `174470802`, was created/installed only on this trial with Metadata read + Administration read. Its key was validated and stored host-side; no secret entered the project/chat.
@@ -130,29 +124,7 @@ Further live steps need the relevant separate approvals. None is authorized mere
 
 Do not paste a key/token into chat, a command argument, a repository file or `.handoff/`. The signer reads its private key host-side and passes it to OpenSSL through an anonymous file descriptor. Curl receives authorization through stdin, disables curl configuration and does not follow redirects. Tests use synthetic keys and fake HTTP responses only.
 
-## Trial broker transport acceptance
-
-Approved host request `7464a4ec263a` exercised the real broker, adapter and private HTTPS worker against only `Androlax2/cockpit-inspector-trial`, using an ephemeral private registry. Native shallow fetch and new-branch push succeeded; deletion was refused with `push_ref_denied`, and reconciliation confirmed the branch unchanged. Retained branch: `trial/broker-live-23f82c3887bc434b`, commit `8cdc5e66f6665b56a88c96c981ecd39aa54551e1`. Four earlier announced failed-attempt branches were confirmed absent before retrying. Direct-host measurement branch `trial/broker-rate-34b7fd966cafcb94` is also retained.
-
-The distinct read App verifies its identity, installation, exact read grants, scoped minted repository and key fingerprint. Dispatch uses only a profile-bound cached read token after funded inspection. Headerless App-authentication and Git endpoints require explicit, expiring endpoint/action evidence; newly appearing primary headers invalidate that evidence. This is trial evidence, not production quota approval.
-
-Live acceptance exposed three locally reproduced regressions: first-request slot setup created a nonprivate ledger parent; shallow push boundary packets were rejected; parent buffered reads left the inherited transport descriptor past the logical body start. Private initialization, bounded shallow-prefix parsing and worker-side rewind fixed these without relaxing quota, ref or protection checks.
-
-Full verification request `e39533f099c1`: `Ran 291 tests in 21.636s`, `OK`, and all Rust suites passed. Collaboration/Projects/merge compatibility, supervisor/launcher integration and independent acceptance remain unfinished. Modified helpers run with host rights once applied; no deployment or production enrollment followed this trial.
-
 ## Remaining rollout acceptance
-
-### Collaboration/client implementation status
-
-The uninstalled `github-actions.py` and sandbox-only `gh-compat.py` now cover typed issue metadata/lifecycle/relationships, owned discussion edits, basic same-repository PR lifecycle/metadata, current-head-pinned review creation/submission/edits/replies, and merge-forward branch updates. Every mutative API request independently inspects and funds admission. Final head guards after inspection prevent a review/update from using a head that advanced during the scan. Updates acknowledged asynchronously remain explicitly queued with a pending journal, not falsely completed or automatically resubmitted.
-
-The client preserves native read command arguments/JSON/jq/exit status using only the separately verified read role, refuses personal-login fallback, reads body files/stdin locally, resolves named milestones and same-repo relationship IDs, and reports composite partial outcomes. It is **not installed into launcher PATH**. Missing readiness/draft/Project/merge/stack forms still fail visibly; required unsupported forms block cutover. Relationship ID resolution currently reads paginated issue catalogs and needs workload/capacity acceptance.
-
-Host journals record request ID, repository/action, target number, expected head and content digests, never bodies or tokens. Unknown/queued intents block the same request until reconciliation; operator reconciliation tooling is still unfinished. Broker admission failures now invalidate the live channel immediately and preserve containment even when the client-facing write result must be uncertain. Contention/pacing refusal is not confused with failed protection evidence.
-
-Full host request `be62757923a2` passed: `Ran 354 tests in 25.615s`, `OK`, and all Rust suites. Earlier request `16b94f387668` failed unchanged test `a_closed_instances_port_is_not_reassigned_to_another_checkout` (`30 passed; 1 failed` in `craft_open`); exact isolated rerun `8b98be1def00` passed, and the final whole-suite rerun passed without disabling it. Flake investigation proposal: `eefc1126`.
-
-These helpers execute with host rights only after review/apply. Live collaboration/Project grants, production enrollment, launcher/supervisor integration and independent security acceptance remain separate gates. No such rollout followed these tests.
 
 - Run the full test suite and obtain independent security review before deployment. The author's self-review is not independent certification.
 - Prove real Greywall recursive read-only project/metadata mounts and per-session socket isolation. Metadata pinning alone permits index/ref updates and is not that proof. No PATH shim or missing token substitutes for filesystem enforcement.
