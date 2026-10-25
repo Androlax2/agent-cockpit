@@ -717,6 +717,11 @@ impl Screen for FakeScreen {
     }
 }
 
+/// Each line's texts and its right-aligned parts.
+fn texts_with_badges(app: &App, panel: usize) -> Vec<String> {
+    app.panels[panel].lines.iter().map(|line| format!("{} {}", line.texts(), line.right.iter().map(|part| part.text.as_str()).collect::<Vec<_>>().join(" "))).collect()
+}
+
 fn texts(app: &App, panel: usize) -> Vec<String> {
     app.panels[panel].lines.iter().chain(&app.panels[panel].fixed_bottom).map(|line| line.texts()).collect()
 }
@@ -778,11 +783,11 @@ fn continuity_opening_a_session_marks_its_result_seen() {
     let fixture = Fixture::new();
     fixture.snapshot(json!([continuity_result_row("11111111111111111111111111111111", "waiting")]));
     let mut app = fixture.app();
-    assert!(texts(&app, 1).join("\n").contains("unseen result"));
+    assert!(texts_with_badges(&app, 1).join("\n").contains("unseen result"));
     app.handle(Key::FocusLost, &mut FakeScreen::default());
     app.handle(Key::Enter, &mut FakeScreen::default());
     app.build();
-    assert!(!texts(&fixture.app(), 1).join("\n").contains("unseen result"));
+    assert!(!texts_with_badges(&fixture.app(), 1).join("\n").contains("unseen result"));
 }
 
 #[test]
@@ -796,7 +801,7 @@ fn continuity_opening_a_session_leaves_its_question_unanswered() {
     app.handle(Key::FocusLost, &mut FakeScreen::default());
     app.handle(Key::Enter, &mut FakeScreen::default());
     app.build();
-    assert!(texts(&app, 1).join("\n").contains("new question"));
+    assert!(texts_with_badges(&app, 1).join("\n").contains("new question"));
 }
 
 #[test]
@@ -805,10 +810,10 @@ fn continuity_a_reviewed_result_is_unseen_again_after_the_next_turn() {
     fixture.snapshot(json!([continuity_result_row("11111111111111111111111111111111", "waiting")]));
     let mut app = fixture.app();
     continuity_action(&mut app, "1\treviewed", &[]);
-    assert!(!texts(&fixture.app(), 1).join("\n").contains("unseen result"));
+    assert!(!texts_with_badges(&fixture.app(), 1).join("\n").contains("unseen result"));
     fixture.snapshot(json!([continuity_result_row("22222222222222222222222222222222", "working")]));
     app.build();
-    assert!(texts(&app, 1).join("\n").contains("unseen result"));
+    assert!(texts_with_badges(&app, 1).join("\n").contains("unseen result"));
     assert_eq!(app.sessions[0].state, "working");
 }
 
@@ -827,12 +832,12 @@ fn continuity_a_result_and_a_question_are_separate_updates() {
     row["full_request"] = json!("Should failures be retried?");
     fixture.snapshot(json!([row.clone()]));
     app.build();
-    assert!(texts(&app, 1).join("\n").contains("new question"));
+    assert!(texts_with_badges(&app, 1).join("\n").contains("new question"));
     row["needs_input"] = json!(false);
     row["state"] = json!("working");
     fixture.snapshot(json!([row]));
     app.build();
-    assert!(!texts(&app, 1).join("\n").contains("new question"));
+    assert!(!texts_with_badges(&app, 1).join("\n").contains("new question"));
 }
 
 #[test]
@@ -914,7 +919,7 @@ fn continuity_reviewing_a_captured_result_does_not_acknowledge_a_later_result() 
     app.build();
     app.handle(Key::Enter, &mut FakeScreen::typing(&["0"]));
     app.redraw();
-    assert!(texts(&app, 1).join("\n").contains("unseen result"));
+    assert!(texts_with_badges(&app, 1).join("\n").contains("unseen result"));
 }
 
 #[test]
@@ -927,7 +932,7 @@ fn continuity_a_failed_acknowledgement_leaves_the_result_unseen() {
     fs::create_dir_all(&path).unwrap();
     continuity_action(&mut app, "1\treviewed", &[]);
     assert!(app.message.contains("cannot save continuity"));
-    assert!(texts(&app, 1).join("\n").contains("unseen result"));
+    assert!(texts_with_badges(&app, 1).join("\n").contains("unseen result"));
 }
 
 fn continuity_saved(fixture: &Fixture) -> Value {
@@ -1673,7 +1678,7 @@ fn activity_text_does_not_reuse_stale_requests_or_completed_outcomes() {
 }
 
 #[test]
-fn attention_navigation_targets_requests_without_reordering_sessions() {
+fn attention_navigation_walks_the_asks_without_reordering_sessions() {
     let fixture = Fixture::new();
     let mut approval = session(SESSION_B, "working", "dotfiles", "/r/dotfiles", 2);
     approval["ask_to_run"] = json!("approval");
@@ -1686,7 +1691,8 @@ fn attention_navigation_targets_requests_without_reordering_sessions() {
     ]));
     let mut app = fixture.app();
     let order: Vec<_> = app.sessions.iter().map(|session| session.session.clone()).collect();
-    for (count, expected) in [SESSION_B, OPENCODE_SESSION, SESSION_B].into_iter().enumerate() {
+    // NEEDS YOU lists the oldest ask first, and the selection starts on it.
+    for (count, expected) in [OPENCODE_SESSION, SESSION_B, OPENCODE_SESSION].into_iter().enumerate() {
         app.handle(Key::Char('n'), &mut FakeScreen::default());
         assert_eq!(app.sessions[app.panels[1].selected].session, expected);
         assert_eq!(fixture.wait_for_calls("cockpit", count + 1)[count], format!("cockpit attend {expected}"));
@@ -1794,15 +1800,15 @@ fn sessions_needing_attention_keep_amber_markers_even_when_selected() {
                     assert_eq!(buffer[(1, row)].symbol(), "▌", "{state}/{phase}: missing attention rail");
                     assert_eq!(buffer[(1, row)].fg, color(YELLOW));
                 }
-                let marker_column = if grouped { 4 } else { 2 };
-                assert_eq!(buffer[(marker_column, first)].symbol(), "!");
-                assert_eq!(buffer[(marker_column, first)].fg, color(YELLOW));
-                let text: String = (0..width).map(|column| buffer[(column, first)].symbol()).collect();
-                let expected_label = match phase { "approval" => "Approval needed", "input" => "Input needed", _ => "Needs you" };
+                assert_eq!(buffer[(2, first)].symbol(), "!");
+                assert_eq!(buffer[(2, first)].fg, color(YELLOW));
+                let bar = *app.hit_lines.iter().filter(|(_, (panel, item))| *panel == 1 && *item == Some(0)).map(|(row, _)| row).max().unwrap();
+                let text: String = (0..width).map(|column| buffer[(column, bar)].symbol()).collect();
+                let expected_label = match phase { "approval" => "Approve a command", "input" => "A running command needs your input", _ => "An answer or permission is needed" };
                 assert!(text.contains(expected_label), "{state}/{phase}: {text}");
-                let label_start = (0..width).find(|column| buffer[(*column, first)].symbol() == &expected_label[..1]).unwrap();
-                assert_eq!(buffer[(label_start, first)].fg, color(YELLOW));
-                assert!(buffer[(label_start, first)].modifier.contains(Modifier::BOLD));
+                let label_start = (0..width).find(|column| buffer[(*column, bar)].symbol() == &expected_label[..1]).unwrap();
+                assert_eq!(buffer[(label_start, bar)].bg, color(YELLOW), "the ask keeps its amber bar when selected");
+                assert!(buffer[(label_start, bar)].modifier.contains(Modifier::BOLD));
                 assert_eq!(app.sessions[0].state, state, "attention must not replace the agent's state");
             }
         }
@@ -1819,8 +1825,8 @@ fn running_commands_do_not_ask_for_attention() {
     let buffer = render(&mut app, 100, 45);
     let text: String = (0..45).flat_map(|row| (0..100).map(move |column| (column, row)))
         .map(|position| buffer[position].symbol()).collect();
-    assert!(!text.contains("Needs you"));
-    let marker = (0..45).find(|row| buffer[(2, *row)].symbol() == "●").unwrap();
+    assert!(!text.contains("NEEDS YOU"));
+    let marker = (0..45).find(|row| buffer[(2, *row)].symbol() == "▶").unwrap();
     assert_eq!(buffer[(2, marker)].fg, crate::app::color(crate::app::BLUE));
 }
 
@@ -1833,7 +1839,7 @@ fn running_commands_use_a_working_marker_even_when_the_agent_is_ready() {
     let mut app = fixture.app();
     let buffer = render(&mut app, 100, 40);
     let row = app.hit_lines.iter().filter(|(_, (panel, item))| *panel == 1 && *item == Some(0)).map(|(row, _)| *row).min().unwrap();
-    assert_eq!(buffer[(2, row)].symbol(), "●");
+    assert_eq!(buffer[(2, row)].symbol(), "▶");
     assert_eq!(buffer[(2, row)].fg, crate::app::color(crate::app::BLUE));
 }
 
@@ -2287,21 +2293,104 @@ fn a_digit_picks_an_effort_level_directly() {
     assert_eq!(fixture.wait_for_calls("cockpit", 1), vec![format!("cockpit restart {SESSION_A} low")]);
 }
 
+/// Every line of one card (its item), joined.
+fn card_text(app: &App, item: usize) -> String {
+    app.panels[1].lines.iter().filter(|line| line.item == Some(item)).map(|line| line.texts()).collect::<Vec<_>>().join("\n")
+}
+
+fn card_age(app: &App, item: usize) -> String {
+    app.panels[1].lines.iter().find(|line| line.item == Some(item)).expect("a card").right.iter().map(|part| part.text.as_str()).collect()
+}
+
 #[test]
-fn a_repository_with_several_sessions_gets_one_heading_and_railed_cards() {
+fn sessions_are_grouped_by_attention_across_projects_with_counts() {
     let fixture = Fixture::new();
-    for (folder, branch) in [("opusline", "feat/report-sender"), ("clone", "feat/net-amounts")] {
-        fixture.write(&format!("repos/{folder}/.git/HEAD"), &format!("ref: refs/heads/{branch}\n"));
-    }
-    let opusline = fixture.path("repos/opusline").display().to_string();
-    let clone = fixture.path("repos/clone").display().to_string();
-    fixture.snapshot(json!([session(SESSION_A, "waiting", "opusline", &opusline, 1), session(SESSION_B, "working", "opusline", &clone, 2)]));
+    let mut asking = session(SESSION_A, "needs-you", "opusline", "/r/opusline", 1);
+    asking["request"] = json!("Which layout?");
+    let mut finished = opencode_session("waiting", "runway", 0);
+    finished["since"] = json!(util::now_secs());
+    fixture.snapshot(json!([finished, asking, session(SESSION_B, "working", "notes", "/r/notes", 2)]));
     let app = fixture.app();
-    let lines = texts(&app, 1);
-    assert_eq!(lines[0], "opusline· 2 sessions");
-    assert!(lines.contains(&"│●feat/net-amounts".to_string()));
-    let last_card = app.panels[1].lines.iter().rposition(|line| line.item.is_some()).unwrap();
-    assert!(!lines[..=last_card].contains(&String::new()), "no gap between the cards of one repository");
+    let headings: Vec<String> = app.panels[1].lines.iter().filter(|line| line.item.is_none() && !line.texts().is_empty()).map(|line| line.texts()).collect();
+    assert_eq!(&headings[..3], ["NEEDS YOU · 1", "WORKING · 1", "QUIET · 1"]);
+    let order: Vec<String> = app.sidebar_rows.iter().map(|row| match row { crate::teams::sidebar::SidebarRow::Session { session_id } => session_id.clone(), _ => String::new() }).collect();
+    assert_eq!(order, [SESSION_A, SESSION_B, OPENCODE_SESSION]);
+}
+
+#[test]
+fn a_card_reads_doing_now_then_project_and_task_then_the_ask() {
+    let fixture = Fixture::new();
+    let mut asking = session(SESSION_A, "needs-you", "opusline", "/r/opusline", 1);
+    asking["request"] = json!("Which layout?");
+    asking["label"] = json!("Improve the cockpit UI");
+    asking["doing"] = json!("Asking which layout to sketch");
+    asking["doing_at"] = json!(util::now_secs());
+    fixture.snapshot(json!([asking]));
+    let app = fixture.app();
+    let lines: Vec<&crate::app::Line> = app.panels[1].lines.iter().filter(|line| line.item == Some(0)).collect();
+    assert_eq!(lines[0].texts(), "!Asking which layout to sketch");
+    assert_eq!(lines[1].texts(), "opusline › Improve the cockpit UI");
+    assert_eq!(lines[2].texts(), " Which layout?");
+    assert_eq!(lines[2].right[0].text, "⏎ answer ");
+    assert_eq!(lines[2].fill.unwrap().1.bg, crate::app::style(crate::app::BLACK).bg(ratatui::style::Color::Indexed(crate::app::YELLOW)).bg);
+}
+
+#[test]
+fn needs_you_lists_the_oldest_ask_first() {
+    let fixture = Fixture::new();
+    let mut newer = session(SESSION_A, "needs-you", "opusline", "/r/opusline", 1);
+    newer["since"] = json!(util::now_secs() - 60);
+    let mut older = session(SESSION_B, "needs-you", "runway", "/r/runway", 2);
+    older["since"] = json!(util::now_secs() - 600);
+    fixture.snapshot(json!([newer, older]));
+    let app = fixture.app();
+    assert!(matches!(&app.sidebar_rows[0], crate::teams::sidebar::SidebarRow::Session { session_id } if session_id == SESSION_B));
+}
+
+#[test]
+fn two_asks_on_one_card_show_one_bar_with_a_count() {
+    let fixture = Fixture::new();
+    let mut row = session(SESSION_A, "needs-you", "opusline", "/r/opusline", 1);
+    row["request"] = json!("Which layout?");
+    row["ask_to_run"] = json!("approval");
+    fixture.snapshot(json!([row]));
+    let app = fixture.app();
+    let bars: Vec<&crate::app::Line> = app.panels[1].lines.iter().filter(|line| line.fill.is_some()).collect();
+    assert_eq!(bars.len(), 1);
+    assert_eq!(bars[0].texts(), " Approve a command   1 of 2");
+    assert_eq!(bars[0].right[0].text, "⏎ review ");
+}
+
+#[test]
+fn a_stale_doing_now_shows_the_last_tool_and_how_long_since_an_update() {
+    let fixture = Fixture::new();
+    let mut row = session(SESSION_A, "working", "opusline", "/r/opusline", 1);
+    row["doing"] = json!("Running the Rust tests");
+    row["doing_at"] = json!(util::now_secs() - 18 * 60);
+    row["last_tool"] = json!("Bash  cargo nextest run");
+    row["last_tool_at"] = json!(util::now_secs() - 60);
+    fixture.snapshot(json!([row]));
+    let app = fixture.app();
+    assert!(card_text(&app, 0).starts_with("◐Bash  cargo nextest run"), "{}", card_text(&app, 0));
+    assert_eq!(card_age(&app, 0), "no update 18m");
+}
+
+#[test]
+fn a_long_task_is_cut_before_the_project_name() {
+    let fixture = Fixture::new();
+    let mut row = session(SESSION_A, "working", "stray-coop", "/r/stray-coop", 1);
+    row["label"] = json!("Investigate true online co-op on Steam");
+    fixture.snapshot(json!([row]));
+    let mut app = fixture.app();
+    let screen = buffer_text(&render(&mut app, 30, 20));
+    assert!(screen.contains("stray-coop › Investig"), "{screen}");
+}
+
+#[test]
+fn project_names_are_never_amber() {
+    for project in ["a", "b", "c", "d", "e", "opusline", "runway", "dotfiles"] {
+        assert_ne!(crate::app::project_color(project), crate::app::YELLOW, "{project}");
+    }
 }
 
 #[test]
@@ -2317,9 +2406,8 @@ fn grouped_todo_cards_keep_the_task_title_after_short_replies() {
     fixture.snapshot(json!([row, session(SESSION_B, "working", "opusline", "/r/opusline", 2)]));
     let app = fixture.app();
     let lines = texts(&app, 1);
-    assert!(lines.contains(&"│○Fix FigCraft reconnect".to_string()), "{lines:?}");
-    assert!(lines.iter().any(|line| line.contains("todo-1234abcd")), "{lines:?}");
-    assert!(!lines.contains(&"│Yes".to_string()), "{lines:?}");
+    assert!(lines.contains(&"opusline › Fix FigCraft reconnect".to_string()), "{lines:?}");
+    assert!(!lines.iter().any(|line| line.contains("Yes")), "{lines:?}");
 }
 
 #[test]
@@ -2336,8 +2424,7 @@ fn native_titles_identify_tasks_before_long_todo_prompts() {
     row["task"] = json!("Yes");
     fixture.snapshot(json!([row]));
     let app = fixture.app();
-    let first_card = app.panels[1].lines.iter().find(|line| line.item == Some(0)).unwrap();
-    assert!(first_card.texts().contains("Free disk space"), "{}", first_card.texts());
+    assert!(card_text(&app, 0).contains("dotfiles › Free disk space"), "{}", card_text(&app, 0));
     assert!(!texts(&app, 1).iter().any(|line| line.contains("Yes")));
 }
 
@@ -2352,9 +2439,8 @@ fn short_labels_keep_the_original_task_title_in_details_and_search() {
     fixture.snapshot(json!([row]));
     fixture.shim("fzf", &format!("cat > '{}'", fixture.path("picker-input").display()));
     let mut app = fixture.app();
-    let first = app.panels[1].lines.iter().find(|line| line.item == Some(0)).unwrap();
-    assert!(first.texts().contains("Free disk space"));
-    assert!(!first.texts().contains("Finding disk"));
+    assert!(card_text(&app, 0).contains("Free disk space"));
+    assert!(!card_text(&app, 0).contains("Finding disk"));
     assert_eq!(app.session_task_titles[OPENCODE_SESSION], original);
     assert!(app.panels[1].fixed_bottom.iter().any(|line| line.texts().contains(original)));
     app.handle(Key::Char('/'), &mut FakeScreen::default());
@@ -2363,9 +2449,8 @@ fn short_labels_keep_the_original_task_title_in_details_and_search() {
 }
 
 #[test]
-fn generic_activity_filler_is_absent_without_shifting_session_rows() {
+fn generic_activity_filler_is_absent_from_cards() {
     let fixture = Fixture::new();
-    let mut expected_rows = None;
     for state in ["working", "waiting", "needs-you", "working"] {
         let mut row = session(SESSION_A, state, "dotfiles", "/r/dotfiles", 1);
         row["label"] = json!("Fix session navigation");
@@ -2374,9 +2459,8 @@ fn generic_activity_filler_is_absent_without_shifting_session_rows() {
         let app = fixture.app();
         let content = texts(&app, 1).join("\n");
         assert!(!content.contains("The agent is working") && !content.contains("Ready for your next instruction"));
-        let positions: Vec<_> = app.panels[1].lines.iter().enumerate().filter_map(|(position, line)| line.item.map(|item| (position, item))).collect();
-        if let Some(expected) = &expected_rows { assert_eq!(&positions, expected); } else { expected_rows = Some(positions); }
-        assert!(app.panels[1].lines.iter().find(|line| line.item == Some(0)).unwrap().texts().contains("Fix session navigation"));
+        let item = app.sidebar_rows.iter().position(|row| matches!(row, crate::teams::sidebar::SidebarRow::Session { session_id } if session_id == SESSION_A)).unwrap();
+        assert!(card_text(&app, item).contains("Fix session navigation"));
         if state == "needs-you" { assert!(content.contains("Which layout do you prefer?")); }
     }
 }
@@ -2392,10 +2476,9 @@ fn compact_session_cards_separate_task_identity_from_reported_activity() {
     fixture.snapshot(json!([row, ready]));
     let app = fixture.app();
     let rows: Vec<_> = app.panels[1].lines.iter().filter(|line| line.item == Some(1)).collect();
-    assert_eq!(rows.len(), 2);
-    assert!(rows[0].texts().contains("other"));
-    assert!(rows[1].texts().is_empty(), "ordinary ready sessions reserve a quiet second row");
-    assert!(rows[0].right.iter().all(|part| part.text == "Ready"));
+    assert_eq!(rows.len(), 2, "a quiet card has no ask line");
+    assert_eq!(rows[0].texts(), "✓Finished");
+    assert_eq!(rows[1].texts(), "other");
     assert!(!texts(&app, 1).iter().any(|line| line.contains("Proceed")));
 }
 
@@ -2405,9 +2488,9 @@ fn todo_dependencies_replace_ready_and_idle_on_session_cards() {
     fixture.write("repos/clone/.git/HEAD", "ref: refs/heads/todo-1234abcd\n");
     let clone = fixture.path("repos/clone").display().to_string();
     for (blocker_status, expected_badge, expected_detail) in [
-        ("doing", "Waiting on TODO", "Waiting on TODO: Fix profile drift"),
-        ("todo", "Blocked · TODO not running", "Blocked by TODO: Fix profile drift"),
-        ("done", "Ready", ""),
+        ("doing", "queued", "↳Waiting on: Fix profile drift"),
+        ("todo", "blocked", "↳Blocked by: Fix profile drift"),
+        ("done", "", "✓Finished"),
     ] {
         for (assigned, since) in [(true, util::now_secs()), (false, 1)] {
             fixture.write("state/cockpit/todo.json", &json!({"items": [
@@ -2420,10 +2503,11 @@ fn todo_dependencies_replace_ready_and_idle_on_session_cards() {
             row["since"] = json!(if blocker_status == "done" { util::now_secs() } else { since });
             fixture.snapshot(json!([row, session(SESSION_B, "working", "opusline", "/r/opusline", 2)]));
             let app = fixture.app();
-            let rows: Vec<_> = app.panels[1].lines.iter().filter(|line| line.item == Some(0)).collect();
+            let item = app.sidebar_rows.iter().position(|row| matches!(row, crate::teams::sidebar::SidebarRow::Session { session_id } if session_id == SESSION_A)).unwrap();
+            let rows: Vec<_> = app.panels[1].lines.iter().filter(|line| line.item == Some(item)).collect();
             assert_eq!(rows.len(), 2);
-            assert_eq!(rows[0].right[0].text, expected_badge, "{blocker_status}, assigned={assigned}");
-            assert_eq!(rows[1].texts(), format!("│{expected_detail}"));
+            if !expected_badge.is_empty() { assert_eq!(rows[0].right[0].text, expected_badge, "{blocker_status}, assigned={assigned}"); }
+            assert_eq!(rows[0].texts(), expected_detail);
             if blocker_status != "done" {
                 assert!(rows[0].right.iter().all(|part| part.style.fg != crate::app::style(crate::app::GREEN).fg));
                 let summary = app.panels[1].fixed_top.iter().map(|line| line.texts()).collect::<Vec<_>>().join("\n");
@@ -2446,8 +2530,8 @@ fn todo_dependencies_prioritize_stopped_blockers_and_ignore_completed_ones() {
     fixture.snapshot(json!([session(SESSION_A, "waiting", "opusline", "/r/opusline", 1)]));
     let app = fixture.app();
     let rows: Vec<_> = app.panels[1].lines.iter().filter(|line| line.item == Some(0)).collect();
-    assert_eq!(rows[0].right[0].text, "Blocked · TODO not running");
-    assert_eq!(rows[1].texts(), "Blocked by TODO: Stopped fix · +1 more");
+    assert_eq!(rows[0].right[0].text, "blocked");
+    assert_eq!(rows[0].texts(), "↳Blocked by: Stopped fix · +1 more");
 }
 
 #[test]
@@ -2458,17 +2542,17 @@ fn todo_dependencies_do_not_override_active_or_attention_statuses() {
          "session": SESSION_A, "after": ["abcd1234"]},
         {"id": "abcd1234", "text": "Fix profile drift", "status": "todo"}
     ]}).to_string());
-    for (state, command, badge) in [
-        ("working", "", "Working"), ("waiting", "approval", "Approval needed"),
-        ("waiting", "input", "Input needed"), ("needs-you", "", "Needs you"),
-        ("waiting", "running", "Command running"),
+    for (state, command, first_line) in [
+        ("working", "", "◐Working"), ("waiting", "approval", "!Waiting for you"),
+        ("waiting", "input", "!Waiting for you"), ("needs-you", "", "!Waiting for you"),
+        ("waiting", "running", "▶Running your approved command"),
     ] {
         let mut row = session(SESSION_A, state, "opusline", "/r/opusline", 1);
         row["ask_to_run"] = json!(command);
         fixture.snapshot(json!([row]));
         let app = fixture.app();
         let card = app.panels[1].lines.iter().find(|line| line.item == Some(0)).unwrap();
-        assert_eq!(card.right[0].text, badge);
+        assert_eq!(card.texts(), first_line);
         assert!(!texts(&app, 1).iter().any(|text| text.contains("Blocked by TODO")));
     }
 }
@@ -2481,9 +2565,8 @@ fn ready_sessions_left_alone_past_the_idle_threshold_show_as_idle_not_ready() {
     fixture.snapshot(json!([idle]));
     let app = fixture.app();
     let card = app.panels[1].lines.iter().find(|line| line.item == Some(0)).unwrap();
-    let badge = card.right.iter().map(|part| part.text.as_str()).collect::<String>();
-    assert!(badge.starts_with("Idle "), "badge was {badge:?}");
-    assert!(card.right.iter().all(|part| part.style.fg != crate::app::style(crate::app::GREEN).fg));
+    assert_eq!(card.texts(), "✓Finished");
+    assert!(card.segments.iter().all(|segment| segment.2.fg != crate::app::style(crate::app::GREEN).fg), "an idle card is not green");
 }
 
 #[test]
@@ -2520,12 +2603,13 @@ fn an_asleep_note_shows_as_an_asleep_card() {
     asleep_note(&fixture, SESSION_A, now - 7200, now - 3600);
     let app = fixture.app();
     assert_eq!(app.sessions.len(), 1);
-    assert!(asleep_badge(&app).starts_with("Asleep "), "badge was {:?}", asleep_badge(&app));
+    assert_eq!(card_text(&app, 0).lines().next(), Some("☾Asleep"));
+    assert_eq!(asleep_badge(&app), "1h");
     assert_eq!(app.running_sessions.len(), 1);
 }
 
 #[test]
-fn an_asleep_card_keeps_its_place_among_its_projects_sessions() {
+fn an_asleep_card_waits_in_quiet() {
     let fixture = Fixture::new();
     let now = util::now_secs();
     let mut later = session(SESSION_B, "working", "runway", "/r/runway", now - 5000);
@@ -2538,7 +2622,7 @@ fn an_asleep_card_keeps_its_place_among_its_projects_sessions() {
     fixture.write(&format!("state/cockpit/asleep/{SESSION_A}"), &note.to_string());
     let app = fixture.app();
     let order: Vec<&str> = app.sessions.iter().map(|session| session.session.as_str()).collect();
-    assert_eq!(order, [SESSION_A, SESSION_B], "it started first, so it stays first even though it went idle last");
+    assert_eq!(order, [SESSION_B, SESSION_A], "an asleep card waits in QUIET, below the working one");
     note.as_object_mut().unwrap().remove("started");
     fixture.write(&format!("state/cockpit/asleep/{SESSION_A}"), &note.to_string());
     let app = fixture.app();
@@ -2894,10 +2978,12 @@ fn narrow_attention_cards_keep_the_marker_and_distinct_task_names() {
         let mut app = fixture.app();
         for (selected, expected) in [(0, "Cach"), (1, "Mode")] {
             app.panels[1].selected = selected;
-            let buffer = render(&mut app, width, 12);
-            let row = app.hit_lines.iter().filter(|(_, (panel, item))| *panel == 1 && *item == Some(selected)).map(|(row, _)| *row).min().unwrap();
-            let text: String = (0..width).map(|column| buffer[(column, row)].symbol()).collect();
-            assert!(text.contains('!') && text.contains(expected), "{width} columns: {text}");
+            let buffer = render(&mut app, width, 24);
+            let rows: Vec<u16> = app.hit_lines.iter().filter(|(_, (panel, item))| *panel == 1 && *item == Some(selected)).map(|(row, _)| *row).collect();
+            let line = |row: u16| (0..width).map(|column| buffer[(column, row)].symbol()).collect::<String>();
+            let first = line(*rows.iter().min().unwrap());
+            assert!(first.contains('!'), "{width} columns: {first}");
+            assert!(rows.iter().any(|row| line(*row).contains(expected)), "{width} columns: {:?}", rows.iter().map(|row| line(*row)).collect::<Vec<_>>());
         }
     }
 }
@@ -2938,13 +3024,14 @@ fn routine_session_details_belong_only_to_the_selected_task() {
     second["unpushed"] = json!(3);
     fixture.snapshot(json!([first, second]));
     let mut app = fixture.app();
+    // The working session lists first.
     let first_render = buffer_rows(&render(&mut app, 140, 40)).join("\n");
-    assert!(first_render.contains("↑8 unpushed"));
-    assert!(!first_render.contains("↑3 unpushed"));
+    assert!(first_render.contains("↑3 unpushed"));
+    assert!(!first_render.contains("↑8 unpushed"));
     app.panels[1].selected = 1;
     let second_render = buffer_rows(&render(&mut app, 140, 40)).join("\n");
-    assert!(second_render.contains("↑3 unpushed"));
-    assert!(!second_render.contains("↑8 unpushed"));
+    assert!(second_render.contains("↑8 unpushed"));
+    assert!(!second_render.contains("↑3 unpushed"));
     assert!(app.panels[1].lines.iter().all(|line| line.right.iter().all(|part| !part.text.contains("unpushed"))));
 }
 
@@ -2981,7 +3068,7 @@ fn selected_session_identity_survives_new_sessions_pins_and_state_changes() {
     let second = session(SESSION_B, "working", "dotfiles", "/r/second", 3);
     fixture.snapshot(json!([first.clone(), second.clone()]));
     let mut app = fixture.app();
-    app.panels[1].selected = 1;
+    app.panels[1].selected = app.sessions.iter().position(|session| session.session == SESSION_B).unwrap();
     let mut updated = second;
     updated["state"] = json!("needs-you");
     fixture.snapshot(json!([session(OPENCODE_SESSION, "working", "dotfiles", "/r/third", 1), first.clone(), updated.clone()]));
@@ -3180,9 +3267,8 @@ fn grouped_opencode_cards_use_the_session_title_not_the_last_reply() {
     fixture.snapshot(json!([row, session(SESSION_A, "working", "opusline", "/r/opusline", 2)]));
     let app = fixture.app();
     let lines = texts(&app, 1);
-    assert!(lines.contains(&"│○Improve invoice layout".to_string()), "{lines:?}");
-    assert!(lines.iter().any(|line| line.contains("parallel-1249")), "{lines:?}");
-    assert!(!lines.contains(&"│Proceed".to_string()), "{lines:?}");
+    assert!(lines.contains(&"opusline › Improve invoice layout".to_string()), "{lines:?}");
+    assert!(!lines.iter().any(|line| line.contains("Proceed")), "{lines:?}");
 }
 
 #[test]
@@ -3702,7 +3788,7 @@ fn team_sidebar_groups_members_without_duplicate_cards() {
     team_host(&fixture, sidebar_snapshot(), vec![]);
     let mut app = fixture.app();
     let shown = texts(&app, 1).join("\n");
-    for expected in ["Team: 1d3fd318", "2 linked", "Designer", "Developer", "Independent sessions"] {
+    for expected in ["› 1d3fd318", "Team of 2", "Designer", "Developer"] {
         assert!(shown.contains(expected), "missing {expected}: {shown}");
     }
     for name in ["Design session", "Build session", "Independent session"] {
@@ -3743,7 +3829,7 @@ fn team_sidebar_keeps_identical_titles_in_separate_tasks() {
     app.todos.items = ["1d3fd318", "0123abcd"].iter().map(|id| Item(json!({"id":id,"project":"project-a","text":"Shared title","cwd":"/r/project-a"}).as_object().unwrap().clone())).collect();
     app.redraw();
     let shown = texts(&app, 1).join("\n");
-    assert_eq!(app.panels[1].lines.iter().filter(|line| line.texts().contains("Team: Shared title")).count(), 2, "{shown}");
+    assert_eq!(app.panels[1].lines.iter().filter(|line| line.texts().contains("› Shared title")).count(), 2, "{shown}");
 }
 
 #[test]
@@ -3756,7 +3842,7 @@ fn team_sidebar_hides_missing_members_but_keeps_planned_qa() {
     team_host(&fixture, state, vec![]);
     let mut app = fixture.app();
     let shown = texts(&app, 1).join("\n");
-    for expected in ["Developer", "1 linked", "QA planned", "Fresh reviewer starts at handoff"] {
+    for expected in ["Developer", "Team of 1", "QA planned", "Fresh reviewer starts at handoff"] {
         assert!(shown.contains(expected), "missing {expected}: {shown}");
     }
     assert!(!shown.contains("Designer") && !shown.contains("Unavailable") && !shown.contains("missing-designer"), "{shown}");
@@ -3786,7 +3872,7 @@ fn team_sidebar_hides_completed_teams_only_when_members_are_inactive() {
         app.todos.items = vec![Item(json!({"id":"1d3fd318","project":"project-a","cwd":task_cwd,"status":task_status,"text":"Team task"}).as_object().unwrap().clone())];
         app.redraw();
         let shown = texts(&app, 1).join("\n");
-        assert_eq!(shown.contains("Team:"), is_visible, "{state}/{background}/{command}/{task_cwd}/{task_status}: {shown}");
+        assert_eq!(shown.contains("Team of"), is_visible, "{state}/{background}/{command}/{task_cwd}/{task_status}: {shown}");
     }
 }
 
@@ -3807,7 +3893,7 @@ fn team_sidebar_completed_sleeping_team_keeps_unresolved_alerts_visible() {
         app.todos.items = vec![Item(json!({"id":"1d3fd318","project":"project-a","cwd":"/r/project-a","status":"done","text":"Team task"}).as_object().unwrap().clone())];
         app.redraw();
         let shown = texts(&app, 1).join("\n");
-        assert_eq!(shown.contains("Team:"), has_alert, "{shown}");
+        assert_eq!(shown.contains("Team of"), has_alert, "{shown}");
         if has_alert {
             assert!(shown.contains("Review blocker"), "{shown}");
             app.handle(Key::Char('n'), &mut FakeScreen::default());
@@ -3831,7 +3917,7 @@ fn team_sidebar_search_omits_completed_inactive_members_but_keeps_filtered_activ
         let mut app = fixture.app();
         app.todos.items = vec![Item(json!({"id":"1d3fd318","project":"project-a","cwd":"/r/project-a","status":"done","text":"Completed team"}).as_object().unwrap().clone())];
         app.redraw();
-        sidebar_select(&mut app, "Team: 0123abcd");
+        sidebar_select(&mut app, "› 0123abcd");
         app.handle(Key::Enter, &mut FakeScreen::default());
         if attention_only { continuity_action(&mut app, "1\tattention-filter", &[]); }
         app.handle(Key::Char('/'), &mut FakeScreen::default());
@@ -3871,13 +3957,13 @@ fn team_sidebar_reports_unavailable_links_without_hiding_sessions() {
     app.team_checked = 0.0;
     app.check_team();
     app.redraw();
-    assert!(texts(&app, 1).join("\n").contains("Team: 1d3fd318"));
+    assert!(texts(&app, 1).join("\n").contains("› 1d3fd318"));
     fs::remove_file(crate::paths::team_host_socket()).unwrap();
     app.team_checked = 0.0;
     app.check_team();
     app.redraw();
     let shown = texts(&app, 1).join("\n");
-    assert!(shown.contains("Team links unavailable") && !shown.contains("Team: 1d3fd318"), "{shown}");
+    assert!(shown.contains("Team links unavailable") && !shown.contains("› 1d3fd318"), "{shown}");
 }
 
 #[test]
@@ -3889,8 +3975,6 @@ fn team_sidebar_does_not_infer_activity_or_completion() {
     team_host(&fixture, state, vec![]);
     let app = fixture.app();
     let shown = texts(&app, 1).join("\n");
-    assert!(shown.contains("No activity update"), "{shown}");
-    assert!(shown.contains("Turn ended"), "{shown}");
     assert!(shown.contains("Handoff submitted"), "{shown}");
     for forbidden in ["QA approved", "handoff complete", "deployed", "Waiting for developer"] { assert!(!shown.contains(forbidden), "{shown}"); }
 }
@@ -3903,10 +3987,10 @@ fn team_sidebar_title_uses_task_entry_or_exact_id() {
     let mut app = fixture.app();
     app.todos.items = vec![Item(json!({"id":"1d3fd318","project":"project-a","cwd":"/another/project-a","text":"Wrong project title"}).as_object().unwrap().clone())];
     app.redraw();
-    assert!(texts(&app, 1).join("\n").contains("Team: 1d3fd318"));
+    assert!(texts(&app, 1).join("\n").contains("› 1d3fd318"));
     app.todos.items[0].0.insert("cwd".into(), json!("/r/project-a"));
     app.redraw();
-    assert!(texts(&app, 1).join("\n").contains("Team: Wrong project title"));
+    assert!(texts(&app, 1).join("\n").contains("› Wrong project title"));
 }
 
 #[test]
@@ -3920,7 +4004,7 @@ fn team_sidebar_attention_filter_keeps_team_context() {
     continuity_action(&mut app, "1\tattention-filter", &[]);
     app.redraw();
     let shown = texts(&app, 1).join("\n");
-    for expected in ["2 linked", "Design session", "Build session", "Need Theo to choose frame"] { assert!(shown.contains(expected), "{shown}"); }
+    for expected in ["Team of 2", "Design session", "Build session", "Need Theo to choose frame"] { assert!(shown.contains(expected), "{shown}"); }
     assert!(!shown.contains("Independent session") && !shown.contains("Unavailable"), "{shown}");
 }
 
@@ -3944,7 +4028,7 @@ fn sidebar_select(app: &mut App, text: &str) {
 }
 
 fn sidebar_fold(app: &mut App) {
-    sidebar_select(app, "Team: 1d3fd318");
+    sidebar_select(app, "› 1d3fd318");
     app.handle(Key::Enter, &mut FakeScreen::default());
     app.redraw();
 }
@@ -3956,7 +4040,7 @@ fn team_sidebar_enter_toggles_without_opening_or_waking() {
     team_host(&fixture, sidebar_snapshot(), vec![]);
     let mut app = fixture.app();
     sidebar_fold(&mut app);
-    assert!(texts(&app, 1).iter().any(|text| text.starts_with("▸ Team:")));
+    assert!(texts(&app, 1).iter().any(|text| text.contains("▸ Team of")));
     assert!(!app.panels[1].lines.iter().any(|line| line.texts().contains("Build session")));
     assert!(app.selected_session().is_none());
     app.handle(Key::Enter, &mut FakeScreen::default());
@@ -3983,7 +4067,7 @@ fn team_sidebar_next_attention_expands_the_correct_team() {
     app.handle(Key::Char('n'), &mut FakeScreen::default());
     app.redraw();
     assert_eq!(app.selected_session().unwrap().session, OPENCODE_SESSION);
-    assert!(texts(&app,1).iter().any(|text| text.starts_with("▾ Team:")));
+    assert!(texts(&app,1).iter().any(|text| text.contains("▾ Team of")));
     assert_eq!(fixture.wait_for_calls("cockpit",1), [format!("cockpit attend {OPENCODE_SESSION}")]);
 }
 
@@ -3997,7 +4081,7 @@ fn team_sidebar_search_finds_a_collapsed_member() {
     app.handle(Key::Char('/'), &mut FakeScreen::typing(&[&format!("{OPENCODE_SESSION}\tproject-a\tBuild session")]));
     app.redraw();
     assert_eq!(app.selected_session().unwrap().session, OPENCODE_SESSION);
-    assert!(texts(&app,1).iter().any(|text| text.starts_with("▾ Team:")));
+    assert!(texts(&app,1).iter().any(|text| text.contains("▾ Team of")));
     assert!(fixture.calls("cockpit").is_empty());
     app.handle(Key::Char('U'), &mut FakeScreen::default());
     assert_eq!(fixture.wait_for_calls("cockpit",1), ["cockpit push /r/project-a"]);
@@ -4052,8 +4136,10 @@ fn team_sidebar_old_attention_request_shows_state_age() {
     fixture.snapshot(json!([developer]));
     team_host(&fixture,sidebar_snapshot(),vec![]);
     let app = fixture.app();
-    let request = app.panels[1].lines.iter().find(|line| line.texts().contains("Choose old frame")).unwrap().texts();
-    assert!(request.contains("state 2h"),"{request}");
+    assert!(app.panels[1].lines.iter().any(|line| line.texts().contains("Choose old frame")));
+    let member = app.panels[1].lines.iter().find(|line| line.texts().starts_with("Developer")).unwrap();
+    let status: String = member.right.iter().map(|part| part.text.as_str()).collect();
+    assert!(status.ends_with("2h"), "{status}");
 }
 
 #[test]
@@ -4111,7 +4197,7 @@ fn team_sidebar_non_session_rows_cannot_run_session_actions() {
     state["qa_plans"] = json!([{"project":SIDEBAR_PROJECT,"task_id":"1d3fd318","agent":"claude"}]);
     team_host(&fixture, state, vec![]);
     let mut app = fixture.app();
-    for target in ["Team: 1d3fd318", "QA planned · Fresh"] {
+    for target in ["› 1d3fd318", "QA planned · Fresh"] {
         sidebar_select(&mut app,target);
         for key in [Key::Char('x'),Key::Char('r'),Key::Char('s'),Key::Char('U'),Key::Char('e'),Key::Char('$'),Key::Char('C'),Key::Char('+')] {
             app.handle(key, &mut FakeScreen::answering(&[Key::Char('y')]));
@@ -4121,10 +4207,10 @@ fn team_sidebar_non_session_rows_cannot_run_session_actions() {
     assert!(app.menu.is_none());
     render(&mut app,80,60);
     let rows = buffer_rows(&render(&mut app,80,60));
-    let heading_y = rows.iter().position(|row| row.contains("Team: 1d3fd318")).unwrap() as u16;
+    let heading_y = rows.iter().position(|row| row.contains("› 1d3fd318")).unwrap() as u16;
     app.handle(Key::Click {x:8,y:heading_y,double:true}, &mut FakeScreen::default());
     app.redraw();
-    assert!(texts(&app,1).iter().any(|text| text.starts_with("▸ Team:")));
+    assert!(texts(&app,1).iter().any(|text| text.contains("▸ Team of")));
     assert!(fixture.calls("cockpit").is_empty());
 }
 
@@ -4141,7 +4227,7 @@ fn team_sidebar_next_attention_reaches_task_only_blockers() {
     app.handle(Key::Char('n'), &mut FakeScreen::default());
     app.redraw();
     assert!(app.selected_session().is_none());
-    assert!(texts(&app,1).iter().any(|text| text.starts_with("▾ Team:")));
+    assert!(texts(&app,1).iter().any(|text| text.contains("▾ Team of")));
     app.handle(Key::Char('i'), &mut FakeScreen::default());
     assert!(app.team_view.is_some(), "task attention must be actionable");
     assert!(fixture.calls("cockpit").is_empty());
@@ -4163,11 +4249,11 @@ fn team_sidebar_failed_wake_stays_reachable_when_collapsed_or_filtered() {
         sidebar_fold(&mut app);
         if filtered { continuity_action(&mut app,"1\tattention-filter",&[]); }
         let shown = texts(&app,1).join("\n");
-        assert!(shown.contains("▸ Team: 1d3fd318") && shown.contains("Developer wake failed: launcher refused"),"{shown}");
+        assert!(shown.contains("▸ Team of") && shown.contains("› 1d3fd318") && shown.contains("Developer wake failed: launcher refused"),"{shown}");
         app.handle(Key::Char('n'),&mut FakeScreen::default());
         app.redraw();
         assert!(app.selected_session().is_none());
-        assert!(texts(&app,1).iter().any(|line| line.starts_with("▾ Team: 1d3fd318")));
+        assert!(texts(&app,1).iter().any(|line| line.contains("▾ Team of")));
         app.handle(Key::Char('i'),&mut FakeScreen::default());
         assert!(app.team_view.is_some());
         for _ in 0..2 { app.handle(Key::Down,&mut FakeScreen::default()); }
@@ -4192,7 +4278,7 @@ fn team_sidebar_unicode_and_small_buffers_preserve_attention() {
         let rows = buffer_rows(&buffer).join("\n");
         assert!(!rows.contains('\u{1b}'), "{rows:?}");
         if width >= 40 {
-            assert!(rows.contains("Needs you") && rows.contains("Choose frame"), "{rows}");
+            assert!(rows.contains("NEEDS YOU") && rows.contains("Choose frame"), "{rows}");
             assert!(rows.contains('…'), "{rows}");
             let selected = (0..60).find(|y| buffer_rows(&buffer)[*y].contains("Developer")).unwrap() as u16;
             let cell = &buffer[(8,selected)];
@@ -4247,7 +4333,7 @@ fn team_sidebar_fold_retains_sleeping_and_restarting_members_without_side_effect
         sidebar_fold(&mut app);
         app.handle(Key::Enter,&mut FakeScreen::default());
         app.redraw();
-        assert!(texts(&app,1).iter().any(|text| text.contains(if state == "asleep" {"Asleep"} else {"Restarting"})),"{:?}",texts(&app,1));
+        assert!(texts_with_badges(&app,1).iter().any(|text| text.contains(if state == "asleep" {"Asleep"} else {"Restarting"})),"{:?}",texts_with_badges(&app,1));
         assert!(fixture.calls("cockpit").is_empty(),"{state}: {:?}",fixture.calls("cockpit"));
     }
 }
@@ -11057,7 +11143,7 @@ fn a_restarting_opencode_card_keeps_its_title_before_its_first_report() {
     fixture.shim("tmux", &format!("printf 'claude-retry-opencode-7\\t%%5\\t{clone}\\tarchlinux\\t100\\t{OPENCODE_SESSION}\\n'"));
     let app = fixture.app();
     let lines = texts(&app, 1);
-    assert!(lines.contains(&"│·Improve invoice layout".to_string()), "{lines:?}");
+    assert!(lines.contains(&"clone › Improve invoice layout".to_string()), "{lines:?}");
 }
 
 #[test]

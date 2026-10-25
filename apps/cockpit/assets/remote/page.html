@@ -22,7 +22,7 @@
   #updated[data-state="offline"] { color: var(--yellow); }
   h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); margin: 24px 0 10px; overflow-wrap: anywhere; text-wrap: balance; }
   .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin-bottom: 12px; border-left: 3px solid var(--line); }
-  .card.needs-you { border-left-color: var(--red); } .card.waiting { border-left-color: var(--yellow); }
+  .card.needs-you { border-left-color: var(--yellow); }
   .card.working { border-left-color: var(--blue); } .card.approval { border-left-color: var(--red); }
   .row { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; }
   .project { font-weight: 600; min-width: 0; overflow-wrap: anywhere; } .state { font-size: 12px; color: var(--dim); font-variant-numeric: tabular-nums; }
@@ -44,6 +44,25 @@
   button:active { opacity: .8; }
   :is(button, a, input, textarea, select, summary):focus-visible { outline: 2px solid var(--cyan); outline-offset: 3px; }
   .session-card { display: block; width: 100%; text-align: left; font-weight: normal; }
+  .session-card.needs-you { border: 1px solid var(--yellow); }
+  .session-card.working, .session-card.quiet { border-left-color: var(--line); }
+  .list-heading { display: flex; justify-content: space-between; align-items: center; }
+  .need-pill { background: var(--yellow); color: #1a1b26; font-weight: 700; font-size: 14px; border-radius: 16px; padding: 4px 14px; font-variant-numeric: tabular-nums; }
+  .group-heading { font-size: 13px; letter-spacing: .06em; text-transform: uppercase; color: var(--dim); margin: 18px 0 8px; }
+  .group-heading.needs-you { color: var(--yellow); }
+  .now { align-items: baseline; }
+  .glyph { flex: none; width: 1.2em; font-weight: 700; } .glyph.needs-you { color: var(--yellow); } .glyph.working { color: var(--blue); } .glyph.quiet { color: var(--green); }
+  .doing { flex: 1; min-width: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .quiet .doing { font-weight: normal; color: var(--dim); }
+  .state.stale { color: var(--yellow); }
+  .why-line { display: flex; min-width: 0; margin: 2px 0 0 1.2em; font-size: 15px; white-space: nowrap; }
+  .card-project { flex: none; font-weight: 600; } .separator { flex: none; color: var(--dim); }
+  .card-task { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--dim); }
+  .ask-bar { display: flex; justify-content: space-between; align-items: center; gap: 12px; min-height: 44px; margin-top: 10px; padding: 8px 14px;
+             border-radius: 8px; background: var(--yellow); color: #1a1b26; font-weight: 700; }
+  .ask { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .ask-verb { flex: none; font-weight: 500; }
+  .quiet-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; color: var(--dim); padding: 8px 4px; }
+  .show-quiet { flex: none; background: none; border: none; color: var(--blue); min-height: 44px; }
   .session-card.asleep { margin-bottom: 8px; } button.wake { display: block; width: 100%; margin-bottom: 12px; }
   .overview { color: var(--dim); font-size: 14px; margin: 0 0 12px; }
   .refresh { flex: none; font-size: 13px; min-width: 80px; }

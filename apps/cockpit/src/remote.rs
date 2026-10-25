@@ -569,6 +569,14 @@ fn asleep_note(id: &str) -> Option<sleep::Asleep> {
     sleep::asleep().into_iter().find(|note| note.session == id)
 }
 
+/// The card's first line while it works: the agent's own step, else its last tool, else empty.
+fn doing_of(session: &sessions::Session, now: i64) -> String {
+    if sessions::attention_group(session) == "quiet" {
+        return String::new();
+    }
+    sessions::doing_now(session, now).map(|doing| doing.text).unwrap_or_default()
+}
+
 /// The card of a session that sleeps: no process, so no row in the snapshot; "since" is when it
 /// fell asleep.
 fn asleep_card(note: &sleep::Asleep) -> Value {
@@ -580,6 +588,7 @@ fn asleep_card(note: &sleep::Asleep) -> Value {
         "remote_control": note.remote,
         "agent": note.agent,
         "features": agents::get(&note.agent).feature_names(),
+        "group": "quiet",
     })
 }
 
@@ -590,7 +599,8 @@ pub fn state() -> Value {
     let titles = titles.get_or_insert_with(sessions::History::default);
     let ids: Vec<String> = rows.iter().map(|row| text(row, "session")).filter(|id| agents::is_session_id(id)).collect();
     titles.load_titles(&ids, ids.len());
-    let mut cards: Vec<Value> = rows.iter().map(|row| json!({
+    let now = util::now_secs();
+    let mut cards: Vec<Value> = rows.iter().map(|row| (row, sessions::Session::from_value(row).unwrap_or_default())).map(|(row, session)| json!({
         "session": text(row, "session"), "project": text(row, "project"), "state": text(row, "state"), "task": text(row, "task"),
         "title": card_title(row, titles),
         "request": text(row, "request"), "detail": text(row, "detail"), "since": row.get("since"), "outcome": text(row, "outcome"),
@@ -599,6 +609,12 @@ pub fn state() -> Value {
         "remote_control": has_remote_control(row),
         "agent": Some(text(row, "agent")).filter(|agent| !agent.is_empty()).unwrap_or_else(|| agents::DEFAULT.into()),
         "features": agents::get(&text(row, "agent")).feature_names(),
+        "group": sessions::attention_group(&session),
+        "ask_to_run": session.ask_to_run.clone(),
+        "doing": doing_of(&session, now),
+        "doing_since": sessions::doing_now(&session, now).map(|doing| doing.at),
+        "stale_for": sessions::doing_now(&session, now).and_then(|doing| doing.stale_for),
+        "last_outcome": session.last_result.as_ref().map(|result| result.outcome.clone()).unwrap_or_default(),
     })).collect();
     let in_snapshot: HashSet<String> = rows.iter().map(|row| text(row, "session")).collect();
     cards.extend(sleep::asleep().iter().filter(|note| !in_snapshot.contains(&note.session)).map(asleep_card));

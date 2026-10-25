@@ -589,6 +589,20 @@ pub fn activity_text(session: &Session) -> String {
     }.into()
 }
 
+/// The session list's group, shared by the column and the phone: "needs-you", "working" or "quiet".
+pub fn attention_group(session: &Session) -> &'static str {
+    if session.asleep.is_some() {
+        return "quiet";
+    }
+    if session.needs_attention() {
+        return "needs-you";
+    }
+    match activity_label(session) {
+        "Working" | "Command running" | "Restarting" => "working",
+        _ => "quiet",
+    }
+}
+
 /// The doing-now line of the card, "no update 18m" appended once the agent stopped updating it.
 pub fn doing_now_text(session: &Session, now: i64) -> String {
     match doing_now(session, now) {

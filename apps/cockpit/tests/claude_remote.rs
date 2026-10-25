@@ -569,6 +569,23 @@ fn a_card_is_titled_by_its_session_label_first() {
 }
 
 #[test]
+fn a_card_carries_its_attention_group_and_doing_now() {
+    let remote = Remote::start();
+    let secret = remote.paired();
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+    let rows = json!([
+        {"session": SESSION_A, "state": "working", "project": "proj-a", "doing": "Running the tests", "doing_at": now - 60},
+        {"session": SESSION_B, "state": "waiting", "project": "proj-b", "ask_to_run": "approval", "doing": "Waiting to apply", "doing_at": now},
+    ]);
+    fs::write(remote.sandbox.runtime.join("cockpit.json"), json!({"sessions": rows}).to_string()).unwrap();
+    let cards = remote.get_json(&secret, "/api/state")["sessions"].clone();
+    let card = |id: &str| cards.as_array().unwrap().iter().find(|card| card["session"] == id).unwrap().clone();
+    assert_eq!((card(SESSION_A)["group"].as_str(), card(SESSION_A)["doing"].as_str()), (Some("working"), Some("Running the tests")));
+    assert_eq!(card(SESSION_A)["stale_for"], Value::Null);
+    assert_eq!((card(SESSION_B)["group"].as_str(), card(SESSION_B)["ask_to_run"].as_str()), (Some("needs-you"), Some("approval")));
+}
+
+#[test]
 fn a_card_without_a_label_is_titled_by_its_agent() {
     let remote = Remote::start();
     let secret = remote.paired();

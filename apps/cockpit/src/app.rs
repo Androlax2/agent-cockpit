@@ -45,7 +45,8 @@ pub const CYAN: u8 = 6;
 pub const FG_DARK: u8 = 7;
 pub const BG_HIGHLIGHT: u8 = 8;
 pub const FG: u8 = 15;
-const PROJECT_COLORS: [u8; 5] = [MAGENTA, CYAN, GREEN, BLUE, YELLOW];
+// No YELLOW: amber means "needs you" and nothing else.
+const PROJECT_COLORS: [u8; 4] = [MAGENTA, CYAN, GREEN, BLUE];
 const HEADER_LINES: u16 = 1;
 const MIN_PANEL_LINES: u16 = 4;
 const MIN_SESSION_TITLE_WIDTH: usize = 8;
@@ -237,6 +238,9 @@ pub struct Line {
     pub right: Vec<Part>,
     pub item: Option<usize>,
     pub accent: Option<Style>,
+    /// A bar painted from this column to the right edge (the amber "needs you" ask); its texts keep
+    /// their own colours on a selected card.
+    pub fill: Option<(u16, Style)>,
 }
 
 impl Line {
@@ -252,6 +256,48 @@ impl Line {
 
 fn segment(column: u16, text: impl Into<String>, style: Style) -> (u16, String, Style) {
     (column, text.into(), style)
+}
+
+/// Where a session stands for Theo: the session list's groups, in their order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Attention { NeedsYou, Working, Quiet }
+
+impl Attention {
+    fn heading(self) -> &'static str {
+        match self { Attention::NeedsYou => "NEEDS YOU", Attention::Working => "WORKING", Attention::Quiet => "QUIET" }
+    }
+}
+
+/// One session card's content: line 1 (glyph, doing now, age), and the ask bar when it needs Theo.
+struct Card {
+    group: Attention,
+    glyph: &'static str,
+    tint: u8,
+    doing: String,
+    age: String,
+    stale: bool,
+    ask: Option<(String, &'static str)>,
+    ask_count: String,
+}
+
+/// Line 2 of a card: `project › task`, the task cut first, never the project.
+fn why_segments(project: &str, task: &str) -> Vec<(u16, String, Style)> {
+    let project = crate::teams::sidebar::shown(project);
+    let column = 2 + width_of(&project) as u16;
+    let mut segments = vec![segment(2, project.clone(), bold(project_color(&project)))];
+    if !task.is_empty() && task != project {
+        segments.push(segment(column, " › ", dim(FG_DARK)));
+        segments.push(segment(column + 3, task, style(FG_DARK)));
+    }
+    segments
+}
+
+/// Line 3 of a card that needs Theo: the exact ask on an amber bar, with the key that acts on it.
+fn ask_bar(item: usize, ask: &str, count: &str, verb: &str) -> Line {
+    let bar = on(BLACK, YELLOW);
+    let text = if count.is_empty() { ask.to_string() } else { format!("{ask}   {count}") };
+    Line { segments: vec![segment(2, format!(" {text}"), bar.add_modifier(Modifier::BOLD))],
+           right: vec![part(format!("⏎ {verb} "), bar)], item: Some(item), accent: Some(bold(YELLOW)), fill: Some((2, bar)) }
 }
 
 #[derive(Default)]
@@ -1742,6 +1788,35 @@ impl App {
                 _ => keep_team,
             });
         }
+        // Grouped by attention across projects (NEEDS YOU, WORKING, QUIET); a team stays one block.
+        let now_secs = util::now_secs();
+        let mut blocks: Vec<(Attention, i64, Vec<SidebarRow>)> = Vec::new();
+        for row in rows {
+            let team_task = match (&self.team_links, &row) {
+                (TeamLinks::Ready(_), SidebarRow::Team { task } | SidebarRow::PlannedQa { task }) => Some(task.clone()),
+                (TeamLinks::Ready(snapshot), SidebarRow::Session { session_id }) => running.iter().find(|session| session.session == *session_id)
+                    .and_then(|session| sidebar::member_task(snapshot, session)),
+                _ => None,
+            };
+            let joins_team = team_task.is_some() && !matches!(row, SidebarRow::Team { .. }) && blocks.last().is_some_and(|(_, _, block)|
+                matches!(block.first(), Some(SidebarRow::Team { task }) if Some(task) == team_task.as_ref()));
+            if joins_team { blocks.last_mut().unwrap().2.push(row); } else { blocks.push((Attention::Quiet, 0, vec![row])); }
+        }
+        for (group, oldest_ask, block) in &mut blocks {
+            let members: Vec<&Session> = block.iter().filter_map(|row| match row {
+                SidebarRow::Session { session_id } => running.iter().find(|session| session.session == *session_id), _ => None }).collect();
+            let team_needs_you = matches!((&self.team_links, block.first()), (TeamLinks::Ready(snapshot), Some(SidebarRow::Team { task })) if sidebar::attention(snapshot, task).is_some());
+            *group = members.iter().map(|session| self.session_attention(session, now_secs)).min().unwrap_or(Attention::Quiet);
+            if team_needs_you { *group = Attention::NeedsYou; }
+            *oldest_ask = members.iter().filter(|session| self.is_actionable(session, now_secs)).map(|session| session.since).min().unwrap_or(0);
+        }
+        // Oldest ask first in NEEDS YOU; the others keep their places.
+        blocks.sort_by_key(|(group, oldest_ask, _)| (*group, if *group == Attention::NeedsYou { *oldest_ask } else { 0 }));
+        let mut blocks_per_group: HashMap<Attention, usize> = HashMap::new();
+        for (group, _, _) in &blocks { *blocks_per_group.entry(*group).or_default() += 1; }
+        let row_groups: Vec<Attention> = blocks.iter().flat_map(|(group, _, block)| std::iter::repeat_n(*group, block.len())).collect();
+        let row_ends_block: Vec<bool> = blocks.iter().flat_map(|(_, _, block)| (0..block.len()).map(move |position| position + 1 == block.len())).collect();
+        let rows: Vec<SidebarRow> = blocks.into_iter().flat_map(|(_, _, block)| block).collect();
         let current = current_session();
         let mut lines = Vec::new();
         if now() - self.restore_checked > RESTORE_CHECK_S {
@@ -1817,132 +1892,85 @@ impl App {
             },
             _ => None,
         };
-        let mut project = String::new();
-        let mut has_team = false;
-        let mut has_independent_heading = false;
+        let mut group = None;
         for (index, row) in rows.iter().enumerate() {
             let session = if let SidebarRow::Session { session_id } = row { running.iter().find(|session| session.session == *session_id) } else { None };
-            let task = match row {
-                SidebarRow::Team { task } | SidebarRow::PlannedQa { task } => Some(task.clone()),
-                _ => session.and_then(|session| match &self.team_links { TeamLinks::Ready(snapshot) => sidebar::member_task(snapshot, session), _ => None }),
+            let team_task = match (&self.team_links, row) {
+                (TeamLinks::Ready(_), SidebarRow::Team { task } | SidebarRow::PlannedQa { task }) => Some(task.clone()),
+                (TeamLinks::Ready(snapshot), _) => session.and_then(|session| sidebar::member_task(snapshot, session)),
+                _ => None,
             };
-            let row_project = session.map(|session| session.project.clone()).unwrap_or_else(|| match (&self.team_links, &task) {
-                (TeamLinks::Ready(snapshot), Some(task)) => sidebar::project_name(snapshot, task, &running), _ => String::new(),
-            });
-            if row_project != project {
-                if !project.is_empty() { lines.push(Line::default()); }
-                project = row_project;
-                has_team = false;
-                has_independent_heading = false;
-                let count = running.iter().filter(|session| session.project == project).count();
-                let mut heading = Line::new(vec![segment(0, sidebar::shown(&project), bold(project_color(&project))),
-                    segment(width_of(&sidebar::shown(&project)) as u16 + 1, format!("· {count} session{}", if count == 1 { "" } else { "s" }), dim(FG_DARK))]);
-                heading.right = Self::time_spent_text(self.costs.time_spent(&project)).iter().map(|text| part(text, dim(FG_DARK))).collect();
-                lines.push(heading);
+            let row_group = row_groups.get(index).copied().unwrap_or(Attention::Quiet);
+            if group != Some(row_group) {
+                group = Some(row_group);
+                let count = blocks_per_group.get(&row_group).copied().unwrap_or(0);
+                let tint = if row_group == Attention::NeedsYou { bold(YELLOW) } else { bold(FG_DARK) };
+                lines.push(Line::new(vec![segment(0, format!("{} · {count}", row_group.heading()), tint)]));
             }
-            if let (TeamLinks::Ready(snapshot), Some(task)) = (&self.team_links, &task) {
-                let tint = if sidebar::attention(snapshot, task).is_some() { YELLOW } else { CYAN };
-                let mut team_line = |text: String, column, color| lines.push(Line { segments: vec![segment(column, text, style(color))], item: Some(index), ..Line::default() });
+            if let (TeamLinks::Ready(snapshot), Some(task)) = (&self.team_links, &team_task) {
                 match row {
                     SidebarRow::Team { .. } => {
-                        has_team = true;
+                        let members: Vec<&Session> = running.iter().filter(|session| sidebar::member_task(snapshot, session).as_ref() == Some(task)).collect();
                         let marker = if self.collapsed_teams.contains(&sidebar::task_key(task)) { "▸" } else { "▾" };
-                        team_line(format!("{marker} Team: {}", self.team_task_title(snapshot, task)), 0, tint);
-                        team_line(format!("{} linked{}", sidebar::member_count(snapshot, task, &running), if sidebar::has_qa_plan(snapshot, task) { " · QA planned" } else { "" }), 2, FG_DARK);
-                        let reason = sidebar::attention(snapshot, task).or_else(|| running.iter().find(|session| sidebar::member_task(snapshot, session).as_ref() == Some(task) && self.is_actionable(session, util::now_secs()))
-                            .map(|session| format!("Needs you: {}", sidebar::activity(session))));
-                        if let Some(reason) = reason { team_line(reason, 2, YELLOW); }
-                        team_line(sidebar::handoff_summary(snapshot, task), 2, FG_DARK);
+                        let (glyph, tint) = match row_group {
+                            Attention::NeedsYou => ("!", YELLOW),
+                            Attention::Working => ("◐", BLUE),
+                            Attention::Quiet => ("✓", GREEN),
+                        };
+                        let age = members.iter().map(|session| session.started.unwrap_or(session.since)).min().map(util::age).unwrap_or_default();
+                        let accent = (row_group == Attention::NeedsYou).then_some(bold(YELLOW));
+                        lines.push(Line { segments: vec![segment(0, glyph, bold(tint)), segment(2, format!("{marker} Team of {}", sidebar::member_count(snapshot, task, &running)), bold(FG))],
+                            right: vec![part(age, dim(FG_DARK))], item: Some(index), accent, ..Line::default() });
+                        let project = sidebar::project_name(snapshot, task, &running);
+                        lines.push(Line { segments: why_segments(&project, &self.team_task_title(snapshot, task)), item: Some(index), accent, ..Line::default() });
+                        let reason = sidebar::attention(snapshot, task).map(|reason| reason.trim_start_matches("Needs you: ").to_string());
+                        if let Some(reason) = reason { lines.push(ask_bar(index, &reason, "", "open")); }
+                        if sidebar::has_qa_plan(snapshot, task) || snapshot["handoffs"].as_array().is_some_and(|handoffs| !handoffs.is_empty()) {
+                            lines.push(Line { segments: vec![segment(2, sidebar::handoff_summary(snapshot, task), dim(FG_DARK))], item: Some(index), accent, ..Line::default() });
+                        }
+                        if members.is_empty() || self.collapsed_teams.contains(&sidebar::task_key(task)) { lines.push(Line::default()); }
                         continue;
                     },
                     SidebarRow::PlannedQa { .. } => {
-                        team_line(format!("└ {}", sidebar::qa_status(snapshot, task)), 2, FG_DARK);
+                        lines.push(Line { segments: vec![segment(2, "QA        ", style(FG_DARK)), segment(12, sidebar::qa_status(snapshot, task), dim(FG_DARK))], item: Some(index), ..Line::default() });
+                        if row_ends_block.get(index).copied().unwrap_or(true) { lines.push(Line::default()); }
                         continue;
                     },
                     SidebarRow::Session { .. } => {
                         let Some(session) = session else { continue };
                         let role = sidebar::membership(snapshot, session).and_then(sidebar::role).map(sidebar::role_label).unwrap_or("Member");
                         let accent = (session.session == current).then_some(style(BLUE));
-                        let role_tint = if session.needs_attention() { YELLOW } else if session.state == "working" { BLUE } else { FG_DARK };
-                        lines.push(Line { segments: vec![segment(2, format!("│ {role} · {}", sidebar::status(session)), style(role_tint))], item: Some(index), accent, ..Line::default() });
-                        lines.push(Line { segments: vec![segment(2, "│", dim(FG_DARK)), segment(4, sidebar::shown(self.session_display_title(session)), bold(FG))], item: Some(index), accent, ..Line::default() });
-                        lines.push(Line { segments: vec![segment(2, "│", dim(FG_DARK)), segment(4, sidebar::activity(session), style(if session.needs_attention() { YELLOW } else { FG_DARK }))], item: Some(index), accent, ..Line::default() });
+                        let card = self.session_card(session, now_secs);
+                        let tint = if card.ask.is_some() { YELLOW } else if card.group == Attention::Working { BLUE } else { FG_DARK };
+                        // A member's own step while it works, else its title: the line still says which session it is.
+                        let has_step = card.group == Attention::Working && sessions::doing_now(session, now_secs).is_some();
+                        let (shown, status) = if has_step { (card.doing.clone(), card.age.clone()) }
+                            else { (sidebar::shown(self.session_display_title(session)), format!("{} {}", card.doing.split(" · ").next().unwrap_or(""), card.age)) };
+                        lines.push(Line { segments: vec![segment(2, format!("{role:<10}"), style(tint)), segment(12, shown, if card.ask.is_some() { style(YELLOW) } else { style(FG) })],
+                            right: vec![part(status, dim(FG_DARK))], item: Some(index), accent, ..Line::default() });
+                        if let Some((ask, verb)) = &card.ask { lines.push(ask_bar(index, ask, &card.ask_count, verb)); }
+                        if row_ends_block.get(index).copied().unwrap_or(true) { lines.push(Line::default()); }
                         continue;
                     },
                 }
             }
             let Some(session) = session else { continue };
-            if has_team && !has_independent_heading {
-                lines.push(Line::new(vec![segment(0, "Independent sessions", dim(FG_DARK))]));
-                has_independent_heading = true;
-            }
-            let needs_attention = session.needs_attention();
-            let dependency = self.session_dependency_activity(session);
-            let activity = dependency.as_ref().map(|(badge, _)| *badge).unwrap_or_else(|| sessions::activity_label(session));
-            let is_idle = !needs_attention && dependency.is_none() && sessions::is_idle(session, util::now_secs());
-            let is_asleep = session.asleep.is_some();
-            let tint = bold(if needs_attention { YELLOW } else if is_idle || is_asleep { FG_DARK } else { match activity {
-                "Working" | "Command running" => BLUE,
-                "Ready" => GREEN,
-                "Restarting" => CYAN,
-                _ => FG_DARK,
-            } });
-            let accent = (needs_attention || session.session == current).then_some(tint);
-            let glyph = if needs_attention { "!" } else { match activity {
-                "Working" | "Command running" => "●",
-                "Ready" => "○",
-                "Restarting" => "⟳",
-                _ => "·",
-            } };
-            let branch = self.session_branches.get(&session.session).map(String::as_str).unwrap_or("");
-            let grouped = session.group_size > 1;
-            // Sessions of one repository share a heading; task titles identify their cards,
-            // with branch names kept below so short replies cannot replace their identity.
-            let indent: u16 = if grouped { 2 } else { 0 };
-            let rail = if grouped { vec![segment(0, "│", dim(project_color(&session.project)))] } else { vec![] };
-            let task_title = self.session_task_title(session, branch);
-            self.session_task_titles.insert(session.session.clone(), task_title.clone());
-            let display_title = self.session_display_title(session);
-            let segments = if grouped {
-                [rail.clone(), vec![segment(2, glyph, tint), segment(4, display_title, bold(FG))]].concat()
-            } else {
-                vec![segment(0, glyph, tint), segment(2, display_title, bold(FG))]
-            };
-            let activity_badge = match session.asleep {
-                Some(slept_at) => format!("Asleep {}", util::age(slept_at)),
-                None if is_idle => format!("Idle {}", util::age(session.since)),
-                None => activity.to_string(),
-            };
-            let title_column = segments.iter().map(|(column, _, _)| *column as usize).max().unwrap_or(0);
-            let chief_count = self.chief_answers.get(&session.session).map(|answers| format!("Chief ✓{}", answers.count));
-            let (chief_on_line_one, chief_on_line_two) = match chief_count {
-                Some(count) if width_of(&count) + 2 + width_of(&activity_badge) <= session_card_right_room(self.width, title_column) => (Some(count), None),
-                other => (None, other),
-            };
-            let mut line_one_right: Vec<Part> = chief_on_line_one.into_iter().map(|count| part(count, dim(FG_DARK))).collect();
-            line_one_right.push(part(activity_badge, tint));
-            lines.push(Line { segments, right: line_one_right, item: Some(index), accent });
+            let card = self.session_card(session, now_secs);
+            let accent = if card.ask.is_some() { Some(bold(YELLOW)) } else { (session.session == current).then_some(bold(BLUE)) };
+            let task_title = self.session_task_title(session, self.session_branches.get(&session.session).map(String::as_str).unwrap_or(""));
+            self.session_task_titles.insert(session.session.clone(), task_title);
+            let text_style = if card.group == Attention::Quiet { style(FG_DARK) } else { bold(FG) };
+            // Until the grouping replaces continuity updates (todo f192c901), an unseen result or new question stays marked.
             let updates = self.continuity.as_ref().ok().map(|state| state.updates()).unwrap_or_default();
-            let labels: Vec<&str> = updates.iter().filter(|update| update.session == session.session).map(|update|
-                match update.kind { crate::continuity::UpdateKind::Result => "unseen result", crate::continuity::UpdateKind::Question => "new question" }).collect();
-            let mut activity_text = dependency.map(|(_, detail)| detail).unwrap_or_else(|| sessions::activity_text(session));
-            if let Some(expiry) = self.session_deferred_until(session, util::now_secs()) {
-                activity_text = format!("deferred until {} · {activity_text}", chrono::DateTime::from_timestamp(expiry, 0)
-                    .map(|time| time.with_timezone(&chrono::Local).format("%H:%M").to_string()).unwrap_or_else(|| expiry.to_string()));
-            }
-            if !labels.is_empty() { activity_text = format!("{}{}{}", labels.join(" · "), if activity_text.is_empty() { "" } else { " · " }, activity_text); }
-            let activity_segments = match chief_on_line_two {
-                Some(count) => {
-                    let prefix = format!("{count} · ");
-                    let activity_column = 2 + indent + width_of(&prefix) as u16;
-                    vec![segment(2 + indent, prefix, dim(FG_DARK)), segment(activity_column, activity_text, if needs_attention { style(YELLOW) } else { dim(FG_DARK) })]
-                },
-                None => vec![segment(2 + indent, activity_text, if needs_attention { style(YELLOW) } else { dim(FG_DARK) })],
-            };
-            lines.push(Line { segments: [rail, activity_segments].concat(), right: vec![], item: Some(index), accent });
-            if session.group_position == session.group_size - 1 {
-                lines.push(Line::default());
-            }
+            let mut right: Vec<Part> = updates.iter().filter(|update| update.session == session.session).map(|update| part(
+                match update.kind { crate::continuity::UpdateKind::Result => "unseen result", crate::continuity::UpdateKind::Question => "new question" }, style(MAGENTA))).collect();
+            if let Some(answers) = self.chief_answers.get(&session.session) { right.push(part(format!("Chief ✓{}", answers.count), dim(FG_DARK))); }
+            right.push(part(card.age.clone(), if card.stale { style(YELLOW) } else { dim(FG_DARK) }));
+            lines.push(Line { segments: vec![segment(0, card.glyph, bold(card.tint)), segment(2, card.doing.clone(), text_style)],
+                right, item: Some(index), accent, ..Line::default() });
+            lines.push(Line { segments: why_segments(&session.project, &sidebar::shown(self.session_display_title(session))), item: Some(index), accent, ..Line::default() });
+            if let Some((ask, verb)) = &card.ask { lines.push(ask_bar(index, ask, &card.ask_count, verb)); }
+            lines.push(Line::default());
         }
         if rows.is_empty() {
             lines.push(Line::new(vec![segment(0, "No running session.", dim(FG_DARK))]));
@@ -1952,6 +1980,9 @@ impl App {
         }
         self.sessions = running.into_iter().filter(|session| !self.attention_only || self.is_actionable(session, util::now_secs())
             || matches!(&self.team_links, TeamLinks::Ready(snapshot) if sidebar::membership(snapshot, session).is_some())).collect();
+        // In the list's order, so walking the sessions follows what Theo sees.
+        let row_position = |session: &Session| rows.iter().position(|row| matches!(row, SidebarRow::Session { session_id } if *session_id == session.session)).unwrap_or(usize::MAX);
+        self.sessions.sort_by_key(|session| row_position(session));
         self.sidebar_rows = rows;
         self.sidebar_session_tasks = match &self.team_links {
             TeamLinks::Ready(snapshot) => self.sessions.iter().filter_map(|session| sidebar::member_task(snapshot, session).map(|task| (session.session.clone(),task))).collect(),
@@ -1981,6 +2012,91 @@ impl App {
                 }
             }
         }
+    }
+
+    fn session_attention(&self, session: &Session, now: i64) -> Attention {
+        if self.is_actionable(session, now) {
+            return Attention::NeedsYou;
+        }
+        if session.asleep.is_some() || session.needs_attention() {
+            return Attention::Quiet;
+        }
+        match sessions::activity_label(session) {
+            "Working" | "Command running" | "Restarting" => Attention::Working,
+            _ => Attention::Quiet,
+        }
+    }
+
+    fn session_card(&self, session: &Session, now: i64) -> Card {
+        let group = self.session_attention(session, now);
+        let doing_now = sessions::doing_now(session, now);
+        let doing_text = doing_now.as_ref().map(|doing| crate::teams::sidebar::shown(&doing.text));
+        let stale_for = doing_now.as_ref().and_then(|doing| doing.stale_for);
+        let mut card = Card { group, glyph: "·", tint: FG_DARK, doing: String::new(), age: util::age(session.since), stale: false, ask: None, ask_count: String::new() };
+        if let Some(slept_at) = session.asleep {
+            (card.glyph, card.tint, card.doing, card.age) = ("☾", GREEN, "Asleep".into(), util::age(slept_at));
+            return card;
+        }
+        if group == Attention::NeedsYou {
+            let mut asks: Vec<(String, &'static str)> = Vec::new();
+            match session.ask_to_run.as_str() {
+                "approval" => asks.push(("Approve a command".into(), "review")),
+                "input" => asks.push(("A running command needs your input".into(), "answer")),
+                _ => {}
+            }
+            let request = util::collapse(&sessions::waiting_request(session));
+            if !request.is_empty() {
+                asks.push((crate::teams::sidebar::shown(&request), "answer"));
+            } else if session.state == "needs-you" && asks.is_empty() {
+                asks.push(("An answer or permission is needed".into(), "answer"));
+            }
+            if asks.is_empty() {
+                asks.push(("Answer a question".into(), "answer"));
+            }
+            if asks.len() > 1 { card.ask_count = format!("1 of {}", asks.len()); }
+            card.ask = asks.into_iter().next();
+            (card.glyph, card.tint) = ("!", YELLOW);
+            card.doing = doing_text.unwrap_or_else(|| "Waiting for you".into());
+            return card;
+        }
+        if session.restarting {
+            (card.glyph, card.tint, card.doing) = ("⟳", CYAN, "Restarting: back in a few seconds".into());
+            return card;
+        }
+        if let Some((badge, detail)) = self.session_dependency_activity(session) {
+            card.glyph = "↳";
+            card.doing = detail.replacen("Waiting on TODO", "Waiting on", 1).replacen("Blocked by TODO", "Blocked by", 1);
+            card.age = if badge == "Waiting on TODO" { "queued".into() } else { "blocked".into() };
+            return card;
+        }
+        if let Some(expiry) = self.session_deferred_until(session, now) {
+            let until = chrono::DateTime::from_timestamp(expiry, 0)
+                .map(|time| time.with_timezone(&chrono::Local).format("%H:%M").to_string()).unwrap_or_else(|| expiry.to_string());
+            card.doing = format!("Ask hidden until {until}");
+            return card;
+        }
+        match sessions::activity_label(session) {
+            "Command running" => {
+                (card.glyph, card.tint, card.doing) = ("▶", BLUE, "Running your approved command".into());
+            },
+            "Working" => {
+                (card.glyph, card.tint) = ("◐", BLUE);
+                card.doing = doing_text.unwrap_or_else(|| "Working".into());
+                if let Some(stale_for) = stale_for {
+                    (card.age, card.stale) = (format!("no update {}", util::duration(stale_for)), true);
+                } else if let Some(doing) = &doing_now {
+                    card.age = util::age(doing.at);
+                }
+            },
+            "Ready" => {
+                (card.glyph, card.tint) = ("✓", if sessions::is_idle(session, now) { FG_DARK } else { GREEN });
+                let outcome = session.last_result.as_ref().map(|result| result.outcome.trim()).filter(|outcome| !outcome.is_empty())
+                    .or(Some(session.outcome.trim()).filter(|outcome| !outcome.is_empty()));
+                card.doing = match outcome { Some(outcome) => format!("Finished · {}", crate::teams::sidebar::shown(outcome)), None => "Finished".into() };
+            },
+            _ => card.doing = "Status unknown".into(),
+        }
+        card
     }
 
     fn session_dependency_activity(&self, session: &Session) -> Option<(&'static str, String)> {
@@ -2860,7 +2976,7 @@ impl App {
             right.push(part(reviews::review_age(&row.updated), dim(FG_DARK)));
             right.retain(|p| !p.text.is_empty());
             lines.push(Line { segments: vec![segment(0, &label, bold(MAGENTA)), segment(1 + width_of(&label) as u16, &row.title, style(FG_DARK))],
-                              right, item: Some(index), accent: None });
+                              right, item: Some(index), accent: None, fill: None });
         }
         let panel = &mut self.panels[2];
         panel.items = self.review_rows.len();
@@ -3067,7 +3183,7 @@ impl App {
                     segments: vec![segment(0, glyph, glyph_style), segment(2, &mark, mark_style),
                                    segment(7, match item.category() { Some(todo::Category::Task) => "", Some(category) => category.label(), None => "Unknown ?" }, faded.unwrap_or(style(if item.category() == Some(todo::Category::Bug) { RED } else { FG_DARK }))),
                                    segment(start, if scope.is_empty() { format!("{} {}", fit(&item.project(), 9), item.text()) } else { item.text() }, faded.unwrap_or(style(FG)))],
-                    right, item: Some(index), accent: None,
+                    right, item: Some(index), accent: None, fill: None,
                 },
                 Entry::Issue { issue, .. } => {
                     let label = format!("{}#{}", issue.repository, issue.number);
@@ -3079,7 +3195,7 @@ impl App {
                         segments: vec![segment(0, glyph, glyph_style), segment(2, &mark, mark_style),
                                        segment(7, &label, faded.unwrap_or(bold(MAGENTA))),
                                        segment(8 + width_of(&label) as u16, &issue.title, faded.unwrap_or(style(FG_DARK)))],
-                        right, item: Some(index), accent: None,
+                        right, item: Some(index), accent: None, fill: None,
                     }
                 }
             };
@@ -3664,7 +3780,7 @@ impl App {
             } else { line };
             let highlighted = focused && line.item.is_some() && line.item == Some(panel.selected);
             let recolor = |style: Style, fg: u8| -> Style {
-                if !highlighted { return style; }
+                if !highlighted || line.fill.is_some() { return style; }
                 if index == 0 { return style.bg(color(BG_HIGHLIGHT)); }
                 let linked_member = index == 1 && line.item.and_then(|item| self.sidebar_rows.get(item)).is_some_and(|row| match row {
                     crate::teams::sidebar::SidebarRow::Session { session_id } => matches!(&self.team_links, TeamLinks::Ready(snapshot)
@@ -3677,6 +3793,9 @@ impl App {
             };
             if highlighted {
                 put(buffer, row, 1, &" ".repeat(inner), on(FG, BG_HIGHLIGHT));
+            }
+            if let Some((column, fill)) = line.fill {
+                put(buffer, row, 2 + column, &" ".repeat(inner.saturating_sub(2 + column as usize)), fill);
             }
             if let Some(accent) = line.accent {
                 put(buffer, row, 1, "▌", recolor(accent, BLUE));

@@ -197,29 +197,95 @@ function updateAttentionBadge() {
   else button.setAttribute("aria-label", "Sessions");
 }
 
+// The column's project colours (app.rs PROJECT_COLORS): never amber, which means "needs you".
+const PROJECT_COLOURS = ["#bb9af7", "#7dcfff", "#9ece6a", "#7aa2f7"];
+function projectColour(project) {
+  let sum = 0;
+  for (const character of project) sum += character.codePointAt(0);
+  return PROJECT_COLOURS[sum % PROJECT_COLOURS.length];
+}
+
+// The exact ask on a card that needs you, and what tapping it does.
+function askOf(session) {
+  const approval = state.approvals.find((candidate) => candidate.session === session.session);
+  if (approval) return { text: `Approve: ${approval.command}`, verb: "Review" };
+  if (session.ask_to_run === "approval") return { text: "Approve a command", verb: "Review" };
+  if (session.ask_to_run === "input") return { text: "A running command needs your input", verb: "Answer" };
+  const request = session.detail || session.request;
+  if (request) return { text: request, verb: "Answer" };
+  return { text: session.needs_input ? "Answer a question" : "An answer or permission is needed", verb: "Answer" };
+}
+
+function groupOf(session) {
+  if (state.approvals.some((approval) => approval.session === session.session)) return "needs-you";
+  return session.group || (session.state === "needs-you" ? "needs-you" : session.state === "working" ? "working" : "quiet");
+}
+
+// Line 1 of a card: its sign, what it does now, and how long it has (or "no update 18m").
+function nowLine(session, group) {
+  if (session.state === "asleep") return { glyph: "☾", text: "Asleep", age: age(session.since) };
+  if (group === "needs-you") return { glyph: "!", text: session.doing || "Waiting for you", age: age(session.since) };
+  if (group === "working") {
+    const stale = session.stale_for ? `no update ${age(Date.now() / 1000 - session.stale_for)}` : "";
+    if (session.ask_to_run === "running") return { glyph: "▶", text: "Running your approved command", age: age(session.since) };
+    return { glyph: "◐", text: session.doing || "Working", age: stale || age(session.doing_since || session.since), stale: Boolean(stale) };
+  }
+  const outcome = session.last_outcome || session.outcome;
+  return { glyph: "✓", text: outcome ? `Finished · ${outcome}` : "Finished", age: age(session.since) };
+}
+
+let isQuietShown = false;
+
+function sessionCard(session, group) {
+  const card = element("button", `card session-card ${group}`);
+  const now = nowLine(session, group);
+  const row = element("span", "row now");
+  row.append(element("span", `glyph ${group}`, now.glyph), element("span", "doing", now.text), element("span", now.stale ? "state stale" : "state", now.age));
+  const why = element("span", "why-line");
+  const project = element("span", "card-project", session.project);
+  project.style.color = projectColour(session.project);
+  why.append(project);
+  const task = session.title || session.task;
+  if (task && task !== session.project) why.append(element("span", "separator", " › "), element("span", "card-task", task));
+  card.append(row, why);
+  if (group === "needs-you") {
+    const ask = askOf(session);
+    const bar = element("span", "ask-bar");
+    bar.append(element("span", "ask", ask.text), element("span", "ask-verb", `${ask.verb} ›`));
+    card.append(bar);
+  }
+  if (session.queued) card.append(element("span", "task", `${session.queued} message${session.queued === 1 ? "" : "s"} queued`));
+  card.onclick = () => openSession(session.session);
+  return card;
+}
+
 function renderList() {
   const box = document.getElementById("list");
-  box.replaceChildren(element("h2", "", "Sessions"));
-  if (state.sessions.length === 0) box.append(element("div", "empty", "No active sessions. Start a new session above to get going."));
-  else {
-    const needsYou = state.sessions.filter((session) => session.state === "needs-you").length;
-    box.append(element("p", "overview", `${state.sessions.length} active · ${needsYou ? `${needsYou} need you` : "Nothing needs your attention"}`));
+  const heading = element("div", "list-heading");
+  heading.append(element("h2", "", "Sessions"));
+  box.replaceChildren(heading);
+  if (state.sessions.length === 0) { box.append(element("div", "empty", "No active sessions. Start a new session above to get going.")); return; }
+  const groups = { "needs-you": [], working: [], quiet: [] };
+  for (const session of state.sessions) groups[groupOf(session)].push(session);
+  groups["needs-you"].sort((a, b) => (a.since || 0) - (b.since || 0));
+  if (groups["needs-you"].length) heading.append(element("span", "need-pill", `${groups["needs-you"].length} need you`));
+  for (const [group, title] of [["needs-you", "Needs you"], ["working", "Working"]]) {
+    if (!groups[group].length) continue;
+    box.append(element("h3", `group-heading ${group}`, `${title} · ${groups[group].length}`));
+    for (const session of groups[group]) box.append(sessionCard(session, group));
   }
-  const order = { "needs-you": 0, waiting: 1, working: 2 };
-  const sessions = [...state.sessions].sort((a, b) => (order[a.state] ?? 3) - (order[b.state] ?? 3));
-  for (const session of sessions) {
-    const card = element("button", `card session-card ${session.state}`);
-    const row = element("span", "row");
-    row.append(element("span", "project", session.title || session.project));
-    row.append(element("span", "state", statusLabel(session)));
-    card.append(row);
-    if (session.title) card.append(element("span", "card-project", session.project));
-    if (session.task && session.task !== session.title) card.append(element("span", "task", session.task));
-    if (session.needs_input || session.request) card.append(element("span", "preview", session.detail || session.request || "Open to reply"));
-    if (session.queued) card.append(element("span", "task", `${session.queued} message${session.queued === 1 ? "" : "s"} queued`));
-    if (session.state === "waiting" && session.outcome) card.append(element("span", "outcome", session.outcome));
-    card.onclick = () => openSession(session.session);
-    box.append(card);
+  const quiet = groups.quiet;
+  if (!quiet.length) return;
+  const kinds = [...new Set(quiet.map((session) => session.state === "asleep" ? "asleep" : "finished"))].join(", ");
+  const fold = element("div", "quiet-row");
+  const toggle = element("button", "show-quiet", isQuietShown ? "Hide ‹" : "Show ›");
+  toggle.setAttribute("aria-expanded", String(isQuietShown));
+  toggle.onclick = () => { isQuietShown = !isQuietShown; renderList(); };
+  fold.append(element("span", "", `Quiet · ${quiet.length} (${kinds})`), toggle);
+  box.append(fold);
+  if (!isQuietShown) return;
+  for (const session of quiet) {
+    box.append(sessionCard(session, "quiet"));
     if (session.state === "asleep") {
       const note = element("div", "note");
       box.append(wakeButton(session, note), note);

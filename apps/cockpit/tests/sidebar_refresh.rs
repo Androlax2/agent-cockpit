@@ -118,7 +118,8 @@ fn a_background_provider_result_appears_before_the_next_maintenance_tick() {
 fn atomic_snapshot_replacements_update_the_real_sidebar_promptly() {
     let mut sidebar = Sidebar::new();
     sidebar.terminal.pump(1.0, None);
-    for project in ["Watch-first", "Watch-second"] {
+    // Names that share no prefix: the terminal redraws only the cells that change.
+    for project in ["First-watch", "Second-watch"] {
         sidebar.terminal.screen.clear();
         sidebar.atomic_snapshot(project);
         sidebar.terminal.pump(0.6, Some(project.as_bytes()));

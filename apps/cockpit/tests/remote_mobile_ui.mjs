@@ -76,7 +76,8 @@ const ASLEEP = [{ session: "s1", project: "Shop", agent: "claude", state: "aslee
 const tests = {
   async "the back gesture returns from a session to the list"() {
     const page = await startPage({ sessions: SESSIONS });
-    page.roots.list.querySelector("button").onclick(); await settle();
+    page.roots.list.querySelector(".show-quiet").onclick();
+    page.roots.list.querySelector(".session-card").onclick(); await settle();
     assert.equal(page.roots.detail.hidden, false);
     assert.equal(page.location.hash, "#session=s1");
     page.history.back(); await settle();
@@ -197,21 +198,51 @@ const tests = {
     assert.equal(jump.hidden, true);
   },
 
-  async "a card leads with what the session does, then its project"() {
-    const page = await startPage({ sessions: [{ ...SESSIONS[0], title: "Remote access to desktop from phone" }] });
-    const card = page.roots.list.querySelector("button");
-    assert.equal(card.querySelector(".project").textContent, "Remote access to desktop from phone");
+  async "a card leads with what the session does, then project › task"() {
+    const page = await startPage({ sessions: [{ ...SESSIONS[0], state: "working", group: "working", doing: "Running the tests",
+                                                title: "Remote access to desktop from phone" }] });
+    const card = page.roots.list.querySelector(".session-card");
+    assert.equal(card.querySelector(".doing").textContent, "Running the tests");
     assert.equal(card.querySelector(".card-project").textContent, "Shop");
+    assert.equal(card.querySelector(".card-task").textContent, "Remote access to desktop from phone");
+    assert.equal(card.querySelector(".ask-bar"), null, "only a card that needs you has an ask");
     page.run('openSession("s1")'); await settle();
     assert.equal(page.document.getElementById("chat-heading").textContent, "Remote access to desktop from phone");
-    assert.equal(page.document.getElementById("chat-status").textContent, "Shop · Ready");
+    assert.equal(page.document.getElementById("chat-status").textContent, "Shop · Working");
   },
 
   async "a card without a title shows its project alone"() {
-    const page = await startPage({ sessions: SESSIONS });
-    const card = page.roots.list.querySelector("button");
-    assert.equal(card.querySelector(".project").textContent, "Shop");
-    assert.equal(card.querySelector(".card-project"), null);
+    const page = await startPage({ sessions: [{ ...SESSIONS[0], state: "working", group: "working" }] });
+    const card = page.roots.list.querySelector(".session-card");
+    assert.equal(card.querySelector(".card-project").textContent, "Shop");
+    assert.equal(card.querySelector(".card-task"), null);
+  },
+
+  async "sessions are grouped by attention, oldest ask first, quiet folded"() {
+    const now = Math.floor(Date.now() / 1000);
+    const page = await startPage({
+      sessions: [{ session: "q", project: "Notes", state: "waiting", group: "quiet", since: now, features: [] },
+                 { session: "w", project: "Shop", state: "working", group: "working", since: now, features: [] },
+                 { session: "n2", project: "Blog", state: "needs-you", group: "needs-you", request: "Which layout?", since: now - 60, features: [] },
+                 { session: "n1", project: "Cockpit", state: "waiting", group: "quiet", since: now - 600, features: [] }],
+      approvals: [{ id: "a1", session: "n1", project: "Cockpit", command: "cockpit apply" }],
+    });
+    const list = page.roots.list;
+    assert.deepEqual(list.querySelectorAll(".group-heading").map(node => node.textContent), ["Needs you · 2", "Working · 1"]);
+    assert.equal(list.querySelector(".need-pill").textContent, "2 need you");
+    const asks = list.querySelectorAll(".ask-bar").map(bar => bar.textContent);
+    assert.deepEqual(asks, ["Approve: cockpit applyReview ›", "Which layout?Answer ›"]);
+    assert.equal(list.querySelectorAll(".session-card").length, 3, "quiet stays folded");
+    assert.equal(list.querySelector(".quiet-row").children[0].textContent, "Quiet · 1 (finished)");
+    list.querySelector(".show-quiet").onclick();
+    assert.equal(page.roots.list.querySelectorAll(".session-card").length, 4);
+  },
+
+  async "a working card says how long since its agent updated its step"() {
+    const page = await startPage({ sessions: [{ session: "w", project: "Shop", state: "working", group: "working", doing: "Bash  cargo test",
+                                                stale_for: 18 * 60, features: [] }] });
+    const card = page.roots.list.querySelector(".session-card");
+    assert.equal(card.querySelector(".stale").textContent, "no update 18m");
   },
 
   async "a command's question shows what it printed and the question"() {
@@ -304,7 +335,8 @@ const tests = {
 
   async "an asleep session shows its age and a Wake button in the list"() {
     const page = await startPage({ sessions: ASLEEP });
-    assert.match(page.roots.list.textContent, /asleep · 2h00/);
+    page.roots.list.querySelector(".show-quiet").onclick();
+    assert.match(page.roots.list.textContent, /☾Asleep2h00/);
     await page.button(page.roots.list, "Wake").onclick(); await settle();
     assert.deepEqual(page.server.requests.filter(request => request.path === "/api/wake/s1"), [{ path: "/api/wake/s1", method: "POST" }]);
   },
