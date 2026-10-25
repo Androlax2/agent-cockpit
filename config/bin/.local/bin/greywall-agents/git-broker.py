@@ -110,7 +110,7 @@ def validate_push(body, *, default_branch):
             if prefix_bytes > MAX_COMMAND_BYTES:
                 raise RequestDenied('command_prefix_too_large')
             if length == 0:
-                if not refs and body.read(1):
+                if not refs:
                     raise RequestDenied('invalid_receive_commands')
                 return refs
             if not 4 < length <= 65520 or len(refs) >= MAX_UPDATED_REFS:
@@ -125,7 +125,7 @@ def validate_push(body, *, default_branch):
             if separator:
                 if refs:
                     raise RequestDenied('invalid_receive_commands')
-                tokens = capabilities.removeprefix(b' ').split(b' ')
+                tokens = capabilities.split(b' ')
                 if len(set(tokens)) != len(tokens):
                     raise RequestDenied('unsupported_push_capability')
                 for token in tokens:
@@ -251,7 +251,6 @@ def dispatch_git(access, binding, header, body, output, *, deadline, check_live)
     requires_write_check = header['action'] == 'git.push' or header.get('service') == 'receive-pack'
     reservation = None
     dispatched = False
-    updated_refs = []
     try:
         with rate.repository_write(binding['repository_id']) if requires_write_check else nullcontext():
             check_live()
@@ -268,7 +267,7 @@ def dispatch_git(access, binding, header, body, output, *, deadline, check_live)
                 default = report.get('default_branch')
                 if not isinstance(default, str) or not default:
                     raise RequestDenied('write_check_denied')
-                updated_refs = validate_push(body, default_branch=default)
+                validate_push(body, default_branch=default)
             if not requires_write_check:
                 reservation = rate.reserve(costs, purpose='admission', repository_id=binding['repository_id'],
                                            deadline=min(deadline, time.monotonic() + 30))['reservation']
@@ -277,7 +276,7 @@ def dispatch_git(access, binding, header, body, output, *, deadline, check_live)
             with rate.request_slot():
                 check_live()
                 rate.ready(reservation, costs)
-                if updated_refs:
+                if header['action'] == 'git.push':
                     rate.admit_mutation()
                 for bucket, cost in costs.items():
                     rate.charge(reservation, bucket, cost)
