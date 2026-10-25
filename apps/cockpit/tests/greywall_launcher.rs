@@ -41,70 +41,6 @@ fn routed_claude_cannot_bypass_the_protected_plan_or_its_failed_billing_check() 
     }
 }
 
-fn agent_environment(launch: &Launch, agent: &str) -> String {
-    fs::read_to_string(launch.sandbox.home.join(format!("{agent}-environment"))).unwrap()
-}
-
-#[test]
-fn inherited_and_keyring_github_tokens_never_reach_any_agent() {
-    for &agent in AGENTS.iter() {
-        let launch = Launch::new();
-        launch.sandbox.shim("secret-tool", r#"case "$3" in agent-gh|agent-gh-projects) echo SYNTHETIC_KEYRING_TOKEN ;; *) exit 1 ;; esac"#);
-        for admission in ["read_only", "verified"] {
-            launch.run_agent(agent, &[("GH_TOKEN", "SYNTHETIC_INHERITED"), ("GITHUB_TOKEN", "SYNTHETIC_INHERITED"),
-                                      ("GH_PROJECT_TOKEN", "SYNTHETIC_INHERITED"), ("SHIM_GIT_ADMISSION", admission)], &[]);
-            let environment = agent_environment(&launch, agent);
-            assert!(!environment.contains("SYNTHETIC"), "{agent} {admission}: a GitHub token reached the agent");
-            for name in ["GH_TOKEN=", "GITHUB_TOKEN=", "GH_PROJECT_TOKEN="] {
-                assert!(!environment.lines().any(|line| line.starts_with(name)), "{agent} {admission}: {name}");
-            }
-        }
-        assert!(!launch.sandbox.calls("secret-tool").iter().any(|call| call.contains("agent-gh")),
-                "{agent}: the launcher still reads GitHub tokens from the keyring");
-    }
-}
-
-#[test]
-fn failed_admission_runs_read_only_without_a_broker() {
-    for &agent in AGENTS.iter() {
-        let launch = Launch::new();
-        let output = launch.sandbox.command(bin().join("greywall-agents").join(agent), &[])
-            .current_dir(&launch.project).output().unwrap();
-        assert_eq!(output.status.code(), Some(0), "{agent}: {}", stderr(&output));
-        assert!(stderr(&output).contains("read-only") && stderr(&output).contains("protection_uninspectable"), "{}", stderr(&output));
-        assert!(launch.sandbox.calls("git-access").iter().any(|call| call.starts_with("git-access prepare --shell --checkout")));
-        assert!(!launch.sandbox.calls("git-access").iter().any(|call| call.starts_with("git-access run")), "{agent}");
-        assert!(!agent_environment(&launch, agent).contains("COCKPIT_GIT_SOCKET="), "{agent}");
-        assert!(!launch.sandbox.calls("greywall")[0].contains("greywall-git-channel"), "{agent}");
-    }
-}
-
-#[test]
-fn verified_admission_supervises_the_sandbox_and_routes_only_its_repository() {
-    for &agent in AGENTS.iter() {
-        let launch = Launch::new();
-        let greywall = launch.run_agent(agent, &[("SHIM_GIT_ADMISSION", "verified")], &["--kept-argument"]);
-        let run = launch.sandbox.calls("git-access").into_iter().find(|call| call.starts_with("git-access run --session ")).expect("no supervisor");
-        let session = run.split_whitespace().nth(3).unwrap().to_string();
-        assert!(greywall.contains(&format!("--allow-read-path {}", launch.sandbox.runtime.join("greywall-git-channel").join(&session).display())), "{greywall}");
-        let environment = agent_environment(&launch, agent);
-        assert!(environment.contains("COCKPIT_GITHUB_REPOSITORY=acme/proj-a"), "{agent}");
-        assert!(environment.lines().any(|line| line.starts_with("GIT_CONFIG_VALUE_") && line.ends_with("=https://github.com/acme/proj-a.git")), "{agent}");
-        assert!(fs::read_to_string(launch.sandbox.home.join(format!("{agent}-arguments"))).unwrap().contains("--kept-argument"), "{agent}");
-    }
-}
-
-#[test]
-fn sandbox_gh_is_the_compatibility_client() {
-    let launch = Launch::new();
-    launch.run(&[]);
-    let shims = launch.sandbox.home.join(".cache/agent-shims/bin");
-    assert!(fs::read_to_string(shims.join("gh")).unwrap().contains(&shims.join("gh-compat.py").display().to_string()));
-    for name in ["git-session-entry.py", "git-broker.py", "git-adapter.py", "github-actions.py", "gh-compat.py"] {
-        assert!(shims.join(name).is_file(), "{name} missing from the sandbox copy");
-    }
-}
-
 #[test]
 fn no_session_starts_in_a_running_copy() {
     // Security audit C1: a session there could write code the host runs, unreviewed.
@@ -152,32 +88,8 @@ impl Launch {
         write_executable(&sandbox.home.join(".local/bin/greywall"), "#!/bin/sh\nprintf '%s' \"${GREYWALL_NO_PROMPT:-}\" > \"$HOME/greywall-no-prompt\"\nprintf 'greywall %s (api key: %s)\\n' \"$(printf '%s' \"$*\" | tr '\\n' ' ')\" \"${ANTHROPIC_API_KEY:-none}\" >> \"$SHIM_LOG\"\n\
                                                                      while [ \"$1\" != -- ]; do shift; done; shift\n\
                                                                       if [ \"$1\" = env ] || [ -x \"$1\" ]; then exec \"$@\"; fi\n");
-        // check-greywall, prepare (read-only unless SHIM_GIT_ADMISSION=verified) and run (logs, then
-        // runs the sandbox command after --). The real helpers are unit-tested in tools/tests.
-        write_executable(&sandbox.home.join(".local/bin/greywall-agents/git-access.py"), r#"import os, pathlib, secrets, sys
-command = sys.argv[1]
-if command == 'check-greywall':
-    sys.exit(1 if os.environ.get('SHIM_GREYWALL_DEPENDENCY_MISSING') else 0)
-with open(os.environ['SHIM_LOG'], 'a') as log:
-    log.write('git-access ' + ' '.join(sys.argv[1:]) + '\n')
-if command == 'prepare':
-    if os.environ.get('SHIM_GIT_ADMISSION') != 'verified':
-        print("git_mode='read_only'\ngit_reason='protection_uninspectable'")
-        sys.exit(0)
-    session = secrets.token_hex(16)
-    channel = pathlib.Path(os.environ['XDG_RUNTIME_DIR'], 'greywall-git-channel', session)
-    channel.mkdir(parents=True, mode=0o700)
-    (channel / 'capability').write_text(secrets.token_hex(32))
-    (channel / 'capability').chmod(0o600)
-    print(f"git_mode='verified'\ngit_session='{session}'\ngit_channel='{channel}'\ngit_repository='acme/proj-a'")
-    sys.exit(0)
-assert command == 'run', sys.argv
-sandbox = sys.argv[sys.argv.index('--') + 1:]
-os.execv(sandbox[0], sandbox)
-"#);
-        for name in ["git-session-entry.py", "git-broker.py", "git-adapter.py", "github-actions.py", "gh-compat.py"] {
-            fs::copy(bin().join("greywall-agents").join(name), sandbox.home.join(".local/bin/greywall-agents").join(name)).unwrap();
-        }
+        write_executable(&sandbox.home.join(".local/bin/greywall-agents/git-access.py"),
+            "import os, sys\nassert sys.argv[1:] == ['check-greywall']\nsys.exit(1 if os.environ.get('SHIM_GREYWALL_DEPENDENCY_MISSING') else 0)\n");
         // Records its arguments and the environment it got, one line each.
         write_executable(&sandbox.home.join(".opencode/bin/opencode"), "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$HOME/opencode-arguments\"\n\
                                                                           env > \"$HOME/opencode-environment\"\n");

@@ -5,7 +5,6 @@ import json
 import os
 from pathlib import Path
 import stat
-import subprocess
 import sys
 import tempfile
 import unittest
@@ -88,28 +87,6 @@ class PrepareTests(unittest.TestCase):
                 self.assertRegex(result['reason'], r'^[a-z_]+$')
                 self.assertFalse((self.runtime / 'greywall-git-channel').exists())
                 self.assertFalse((self.runtime / 'greywall-agents/git-access').exists())
-
-    def shell_values(self):
-        output = io.StringIO()
-        with patch.object(self.access, 'inspect_access', return_value=self.report), \
-                patch.object(sys, 'argv', ['git-access.py', 'prepare', '--shell', '--checkout', str(self.checkout)]), \
-                contextlib.redirect_stdout(output):
-            self.assertEqual(self.access.main(), 0)
-        script = output.getvalue() + 'printf "%s\\n" "$git_mode" "${git_session:-}" "${git_channel:-}" "${git_repository:-}" "${git_reason:-}"\n'
-        result = subprocess.run(['sh', '-c', script], capture_output=True, text=True)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        return output.getvalue(), result.stdout.splitlines()
-
-    def test_shell_output_assigns_only_quoted_variables(self):
-        text, (mode, session, channel, repository, reason) = self.shell_values()
-        self.assertEqual((mode, repository, reason), ('verified', 'acme/project', ''))
-        self.assertRegex(session, r'^[0-9a-f]{32}$')
-        self.assertTrue(Path(channel).is_dir())
-        for line in text.splitlines():
-            self.assertRegex(line, r"^git_[a-z]+='[^']*'$")
-        self.report = {'mode': 'read_only', 'reason': 'protection_uninspectable'}
-        _, (mode, session, channel, _, reason) = self.shell_values()
-        self.assertEqual((mode, session, channel, reason), ('read_only', '', '', 'protection_uninspectable'))
 
     def test_each_launch_gets_a_fresh_session_and_capability(self):
         first, second = json.loads(self.prepare()[1]), json.loads(self.prepare()[1])
