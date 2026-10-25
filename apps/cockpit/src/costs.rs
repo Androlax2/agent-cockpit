@@ -40,6 +40,8 @@ const MODEL_PRICES: &[(&str, [f64; 5])] = &[
     ("gpt-5.4", [2.5, 15.0, 0.25, 0.0, 0.0]),
     ("gpt-5.5", [5.0, 30.0, 0.5, 0.0, 0.0]),
     ("gpt-6-astra", [10.0, 50.0, 1.0, 12.5, 12.5]),
+    // Fast mode, checked 2026-10-25: https://developers.openai.com/api/docs/pricing?latest-pricing=fast
+    ("gpt-6-astra-fast", [20.0, 100.0, 2.0, 25.0, 25.0]),
     ("gpt-6.1-sol", [2.0, 10.0, 0.1, 2.5, 2.5]),
     // https://ai.google.dev/gemini-api/docs/pricing (2026-10-20); cache storage is time-based,
     // not a per-reply token charge, and cannot be recovered from these transcripts.
@@ -164,6 +166,11 @@ pub fn open_archive(path: &Path) -> rusqlite::Result<Connection> {
     if archive.query_row("pragma user_version", [], |row| row.get::<_, i64>(0))? < 2 {
         archive.execute_batch("delete from files; pragma user_version = 2;")?;
     }
+    // Version 3 prices opencode's local-model replies at zero, which only its database tells
+    // (the provider is not archived): it is read once more from the start.
+    if archive.query_row("pragma user_version", [], |row| row.get::<_, i64>(0))? < 3 {
+        archive.execute_batch("delete from databases; pragma user_version = 3;")?;
+    }
     Ok(archive)
 }
 
@@ -224,9 +231,12 @@ pub fn archive_transcripts(archive: &mut Connection, transcripts: &Path) -> rusq
     Ok(added)
 }
 
-/// New replies added, a known one's project corrected; returns how many rows changed.
+/// New replies added, a known one's project corrected and its missing price filled; returns how
+/// many rows changed.
 fn insert_replies(transaction: &Transaction, rows: &[Reply]) -> rusqlite::Result<usize> {
-    let mut insert = transaction.prepare("insert into replies values (?,?,?,?,?,?,?,?,?,?,?,?,?) on conflict(key) do update set project = excluded.project where project != excluded.project")?;
+    let mut insert = transaction.prepare("insert into replies values (?,?,?,?,?,?,?,?,?,?,?,?,?) on conflict(key) do update
+        set project = excluded.project, cost = coalesce(replies.cost, excluded.cost)
+        where project != excluded.project or (replies.cost is null and excluded.cost is not null)")?;
     let mut changed = 0;
     for row in rows {
         changed += insert.execute(params![row.key, row.day, row.at, row.model, row.project, row.session, row.input, row.output,
@@ -238,6 +248,7 @@ fn insert_replies(transaction: &Transaction, rows: &[Reply]) -> rusqlite::Result
 /// One assistant message of opencode 2's database (session_message.data) as an archive row: a reply
 /// that completed, with tokens, or None. Priced like a Claude reply from its tokens (opencode's own
 /// cost is 0 on a subscription); a model without a known price keeps opencode's cost when it has one.
+/// A model of the "local" provider runs on this machine: it costs nothing at any API price.
 pub fn opencode_reply_row(id: &str, session: &str, data: &str, cwd: &str) -> Option<Reply> {
     let message: Value = serde_json::from_str(data).ok()?;
     if message.pointer("/time/completed").is_none() {
@@ -253,7 +264,11 @@ pub fn opencode_reply_row(id: &str, session: &str, data: &str, cwd: &str) -> Opt
     }
     let usage = serde_json::json!({"input_tokens": input, "output_tokens": output, "cache_read_input_tokens": cache_read,
                                    "cache_creation_input_tokens": cache_write});
-    let cost = reply_cost(model, &usage).or_else(|| message.get("cost").and_then(Value::as_f64).filter(|cost| *cost > 0.0));
+    let cost = if message.pointer("/model/providerID").and_then(Value::as_str) == Some("local") {
+        Some(0.0)
+    } else {
+        reply_cost(model, &usage).or_else(|| message.get("cost").and_then(Value::as_f64).filter(|cost| *cost > 0.0))
+    };
     let project = Path::new(cwd).file_name().map(|name| name.to_string_lossy().into_owned()).filter(|name| !name.is_empty()).unwrap_or("?".into());
     Some(Reply {
         key: format!("opencode:{id}"), day: created.with_timezone(&Local).date_naive().to_string(),
@@ -880,7 +895,7 @@ mod tests {
         for (model, expected) in [
             ("claude-opus-4-5", 25.55), ("gpt-5.3-codex", 14.1925),
             ("gpt-5.4", 15.275), ("gpt-5.5", 30.55),
-            ("gpt-6-astra", 51.1), ("gpt-6.1-sol", 10.21),
+            ("gpt-6-astra", 51.1), ("gpt-6-astra-fast", 102.2), ("gpt-6.1-sol", 10.21),
             ("gemini-3.1-pro-preview", 12.22),
         ] {
             let cost = reply_cost(model, &usage).unwrap_or_else(|| panic!("no price for {model}"));
@@ -959,6 +974,34 @@ mod tests {
         assert_eq!(row.cost, Some(0.42));
         let unpriced = opencode_reply_row("msg_2", "ses_1", &opencode_message(1_760_781_600_000, "gpt-7", 1000, 0.0), "/x/shop").unwrap();
         assert_eq!(unpriced.cost, None);
+    }
+
+    fn local_message(created_ms: i64) -> String {
+        let mut message: Value = serde_json::from_str(&opencode_message(created_ms, "qwen38", 1000, 0.0)).unwrap();
+        message["model"]["providerID"] = json!("local");
+        message.to_string()
+    }
+
+    #[test]
+    fn a_local_models_reply_costs_nothing() {
+        let row = opencode_reply_row("msg_1", "ses_1", &local_message(1_760_781_600_000), "/x/shop").unwrap();
+        assert_eq!(row.cost, Some(0.0));
+    }
+
+    #[test]
+    fn an_archive_from_before_version_3_prices_its_local_replies_from_opencodes_database() {
+        let directory = std::env::temp_dir().join(format!("costs-test-{}", util::token_hex(4)));
+        let (database, source) = opencode_database(&directory);
+        add_opencode_reply(&source, "msg_1", 5, &local_message(1_760_781_600_000));
+        {
+            let mut archive = open_archive(&directory.join("usage.sqlite")).unwrap();
+            archive_opencode(&mut archive, &database).unwrap();
+            archive.execute_batch("update replies set cost = null; update databases set read_until = 10 * 60000; pragma user_version = 2;").unwrap();
+        }
+        let mut archive = open_archive(&directory.join("usage.sqlite")).unwrap();
+        assert_eq!(archive_opencode(&mut archive, &database).unwrap(), 1);
+        assert_eq!(archive.query_row("select cost from replies where key = 'opencode:msg_1'", [], |row| row.get::<_, Option<f64>>(0)).unwrap(), Some(0.0));
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
