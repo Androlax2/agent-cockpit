@@ -2,6 +2,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import re
 import socket
 import ssl
 import subprocess
@@ -140,6 +141,17 @@ class DockerBuildTests(unittest.TestCase):
         command = json.loads(next(line[line.index('['):] for line in text.splitlines() if line.startswith('RUN ') and '[' in line))
         self.assertEqual(command[-3:], ['printf', '%s', 'a $literal'])
         self.assertEqual(text.count('CURL_CA_BUNDLE='), 2)
+
+    def test_non_root_build_processes_can_read_public_trust_mounts(self):
+        self.dockerfile.write_text('FROM ubuntu\nUSER 1000\nRUN test -r "$CURL_CA_BUNDLE"\n')
+        result = self.build()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        mounts = re.findall(r'--mount=([^\s]+)', self.records()[-1]['text'])
+        self.assertEqual(len(mounts), 3)
+        for mount in mounts:
+            fields = dict(part.split('=', 1) for part in mount.split(','))
+            mode = int(fields.get('mode', '0400'), 8)
+            self.assertTrue(mode & 0o004, f'non-root apt/PHP cannot read {mount}')
 
     def test_shell_run_keeps_quoting_pipeline_and_continuation_comments(self):
         self.dockerfile.write_text('FROM ubuntu\nRUN printf "%s" "a b" | cat && \\\n# comment\n    echo "$HOME"\n')

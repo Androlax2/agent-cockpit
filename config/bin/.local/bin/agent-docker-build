@@ -60,7 +60,8 @@ def docker_command():
 
 
 def transform_dockerfile(source):
-    mounts = ' '.join(f'--mount=type=secret,id={name},target={target},required=true'
+    # These are public trust inputs; apt drops to _apt when fetching HTTPS indexes.
+    mounts = ' '.join(f'--mount=type=secret,id={name},target={target},mode=0444,required=true'
                       for name, target in SECRET_TARGETS.items())
     assignments = [f'{name}={value}' for name, value in TRUST_ENV.items()]
     output = []
