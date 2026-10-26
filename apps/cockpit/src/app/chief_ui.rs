@@ -1,12 +1,13 @@
 //! Host IPC and existing terminal rendering for Chief; no store access or command runner.
 use super::*;
 use serde_json::json;
-use crate::{chief::{ChiefHostAction, view::{ChiefView, Effect}}, teams::{HostRequest, TeamError, ErrorCode}};
+use crate::{chief::{ChiefHostAction, view::{ChiefView, Effect, ListLine, Tone}}, teams::{HostRequest, TeamError, ErrorCode}};
 
 fn snapshot() -> Result<Value, TeamError> {
     // A changing generation restarts the complete read, never mixes pages or advances an event cursor.
     for _ in 0..3 {
         let mut records=Vec::new(); let mut after=0; let mut generation=None; let mut envelope=None;
+        let mut session_names=serde_json::Map::new();
         for _ in 0..512 {
             let page=crate::teams::client::host_request(&HostRequest::ChiefSnapshot {after,limit:50,generation:generation.clone()})?.result?;
             if page["invalidated"]==true {break;}
@@ -19,8 +20,10 @@ fn snapshot() -> Result<Value, TeamError> {
             let batch=page["records"].as_array().ok_or_else(||TeamError::new(ErrorCode::Unavailable,"Chief snapshot records are missing"))?;
             records.extend(batch.iter().cloned());
             if envelope.is_none() {envelope=Some(page.clone());}
+            if let Some(names)=page["session_names"].as_object() {session_names.extend(names.clone());}
             if page["has_more"]==false {
-                let mut complete=envelope.expect("first page is present");complete["records"]=json!(records);complete["has_more"]=json!(false);return Ok(complete);
+                let mut complete=envelope.expect("first page is present");complete["records"]=json!(records);complete["has_more"]=json!(false);
+                complete["session_names"]=json!(session_names);return Ok(complete);
             }
             let next=page["next"].as_i64().filter(|next|*next>after).ok_or_else(||TeamError::new(ErrorCode::Unavailable,"Chief snapshot cursor did not advance"))?;
             after=next;
@@ -40,6 +43,13 @@ impl App {
                 self.chief_view=Some(view);String::new()
             },
         }
+    }
+    /// Opens the Chief view on its answers list, for one session or for all of them.
+    pub(super) fn open_chief_answers(&mut self, session_id: Option<&str>) -> String {
+        let message=self.open_chief_view();
+        let card_count=session_id.and_then(|id|self.chief_answers.get(id)).map_or(0,|answers|answers.count);
+        if let Some(view)=self.chief_view.as_mut() {view.open_answers(session_id.map(str::to_string));view.card_count=card_count;}
+        message
     }
     pub(super) fn refresh_chief_view(&mut self) -> bool {
         match snapshot() {
@@ -83,6 +93,15 @@ impl App {
     }
 }
 
+fn list_style(line: &ListLine) -> Style {
+    match (line.tone,line.selected) {
+        (_,true)=>on(FG,BG_HIGHLIGHT),
+        (Tone::Dim,false)=>dim(FG_DARK),
+        (Tone::Normal,false)=>style(FG),
+    }
+}
+fn alert_style(line: &ListLine) -> Style {if line.selected {on(RED,BG_HIGHLIGHT)} else {style(RED)}}
+
 pub(super) fn draw(view: &mut ChiefView, buffer: &mut Buffer) {
     let (width,height)=(buffer.area.width,buffer.area.height);
     if width<8 || height<8 {return;}
@@ -97,14 +116,24 @@ pub(super) fn draw(view: &mut ChiefView, buffer: &mut Buffer) {
     let footer:Vec<_>=footer_text.lines().flat_map(|line|wrap_detail_text(line,body)).take(bottom.saturating_sub(top+2) as usize).collect();
     let footer_start=bottom.saturating_sub(footer.len() as u16);
     let available=footer_start.saturating_sub(top+1) as usize;
-    let (title,lines)=if is_list {
-        let (title,lines)=view.list_window(available);(title,lines.iter().map(|line|fit(line,body)).collect::<Vec<_>>())
-    } else {("Chief · global coordination".into(),view.detail().iter().flat_map(|line|wrap_detail_text(line,body)).collect())};
+    let (title,lines):(String,Vec<(String,Style,Vec<(usize,usize)>,Style)>)=if is_list {
+        let (title,lines)=view.list_window(available);
+        (title,lines.iter().map(|line|(fit(&line.text,body),list_style(line),line.alerts.clone(),alert_style(line))).collect())
+    } else {("Chief · global coordination".into(),view.detail().iter().flat_map(|line|wrap_detail_text(line,body)).map(|line|(line,style(FG),Vec::new(),style(FG))).collect())};
     put(buffer,top,3,&fit(&title,body),bold(BLUE));
     view.page_step=available.max(1).min(5);
     let first=view.clamp_scroll(lines.len().saturating_sub(available));
-    for (offset,line) in lines.iter().skip(first).take(available).enumerate() {
-        put(buffer,top+1+offset as u16,3,line,if is_list && line.starts_with('>') {on(FG,BG_HIGHLIGHT)} else {style(FG)});
+    for (offset,(line,line_style,alerts,alert)) in lines.iter().skip(first).take(available).enumerate() {
+        let row=top+1+offset as u16;
+        put(buffer,row,3,line,*line_style);
+        let characters:Vec<char>=line.chars().collect();
+        for (start,end) in alerts {
+            let (start,end)=((*start).min(characters.len()),(*end).min(characters.len()));
+            if start<end {
+                let before:String=characters[..start].iter().collect();let word:String=characters[start..end].iter().collect();
+                put(buffer,row,3+width_of(&before) as u16,&word,*alert);
+            }
+        }
     }
     for (offset,line) in footer.iter().enumerate() {put(buffer,footer_start+offset as u16,3,line,dim(FG_DARK));}
     put(buffer,bottom,1,&format!("└{}┘","─".repeat(inner)),style(BLUE));

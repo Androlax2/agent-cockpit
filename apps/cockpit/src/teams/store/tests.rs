@@ -29,7 +29,7 @@ fn concurrent_open_reads_schema_version_after_the_migration_writer_commits() {
     transaction.commit().unwrap();
     let opened = reader.join().unwrap().unwrap();
     assert!(waited, "initialization did not contend with the schema writer");
-    assert_eq!(opened.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0)).unwrap(), 13);
+    assert_eq!(opened.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0)).unwrap(), 14);
     drop(opened);
     drop(connection);
     fs::remove_file(path).unwrap();

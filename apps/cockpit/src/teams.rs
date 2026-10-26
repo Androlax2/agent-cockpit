@@ -279,6 +279,13 @@ pub fn envelope_text(envelope: &Value) -> String {
         let closing = if envelope["source"] == "theo" { crate::chief::THEO_ANSWER_LABEL } else { crate::chief::CHIEF_ANSWER_BOUNDARY };
         return format!("{}\n\n{}", crate::approval::escape_hiding(envelope["text"].as_str().unwrap_or("?"), "", ""), closing);
     }
+    if envelope["kind"] == "chief_correction" {
+        let escaped = |field: &str| crate::approval::escape_hiding(envelope[field].as_str().unwrap_or("?"), "", "");
+        // The excerpt is the Chief's text: with its double quotes made single ones it cannot close the
+        // host's quote and pass its own words off as Theo's. A backslash escape could itself be forged.
+        let excerpt = escaped("answer_excerpt").replace('"', "'");
+        return format!("Correction from Theo to an earlier Chief answer (\"{excerpt}\"): {}\n\n{}", escaped("text"), crate::chief::CORRECTION_LABEL);
+    }
     if envelope["kind"] == "chief_form_reply" {
         return format!("Chief form choice: {}", crate::approval::escape_hiding(envelope["choice"].as_str().unwrap_or("?"), "", ""));
     }

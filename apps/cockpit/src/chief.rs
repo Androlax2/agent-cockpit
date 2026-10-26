@@ -16,6 +16,8 @@ pub const MAX_CONTEXT_RECORDS: usize = 50;
 pub const CHIEF_ANSWER_BOUNDARY: &str = "Chief answer on Theo's behalf. It authorises edits, builds, tests and commits inside your current task only. Installs, dependency changes, pushes, merges, default-branch or other Git writes your project does not already allow, anything outside the task, and anything security-related still need Theo. Permission prompts, ask-to-run and cockpit apply are always Theo's.";
 /// What the host appends to Theo's own answer to an escalation, in place of the Chief's boundary.
 pub const THEO_ANSWER_LABEL: &str = "Answer from Theo, sent through the cockpit Chief view.";
+/// What the host appends to Theo's correction of an earlier Chief answer.
+pub const CORRECTION_LABEL: &str = "Correction from Theo, sent through the cockpit Chief view. Treat it as a new instruction inside your current task. If following it means undoing work or changing the task's scope, stop and ask Theo.";
 /// How long a stopped agent keeps its stop to itself (or to Theo) before a Chief answer may reach it.
 pub const CHIEF_ANSWER_GRACE_S: i64 = 30;
 // Reserve space for the TeamReply wrapper and cursors beneath the agent transport's 65,536 bytes.
@@ -87,6 +89,8 @@ pub enum ChiefHostAction {
     Resolve { request_id: String, decision: String, expected_revision: i64, resolution: String },
     /// Theo's answer to an escalated stop: resolves the decision and queues the text for the stopped agent.
     AnswerDecision { request_id: String, decision: String, expected_revision: i64, answer: String },
+    /// Theo's correction of a sent answer: queued for the session that got the answer, once per answer.
+    Overrule { request_id: String, answer: String, correction: String },
     RequestSummary { request_id: String },
 }
 
@@ -125,7 +129,7 @@ fn session(value: &VerifiedSession) -> Result<(), TeamError> {
 /// The host adds these labels itself; text that already carries one could pass a Chief answer off as
 /// Theo's, or hide where the host's boundary starts.
 fn without_host_labels(value: &str) -> Result<(), TeamError> {
-    if value.contains(CHIEF_ANSWER_BOUNDARY) || value.contains(THEO_ANSWER_LABEL) { return Err(invalid("the host adds the answer labels itself")); }
+    if value.contains(CHIEF_ANSWER_BOUNDARY) || value.contains(THEO_ANSWER_LABEL) || value.contains(CORRECTION_LABEL) { return Err(invalid("the host adds the answer labels itself")); }
     Ok(())
 }
 
@@ -162,7 +166,7 @@ impl ChiefHostAction {
         let request_id = match self {
             Self::Enable { request_id, .. } | Self::Pause { request_id, .. } | Self::Resume { request_id, .. }
             | Self::Disable { request_id, .. } | Self::Resolve { request_id, .. } | Self::AnswerDecision { request_id, .. } | Self::RequestSummary { request_id }
-            | Self::ReconcileDelivery {request_id,..} | Self::ReconcileLaunch {request_id,..} => request_id,
+            | Self::ReconcileDelivery {request_id,..} | Self::ReconcileLaunch {request_id,..} | Self::Overrule { request_id, .. } => request_id,
         };
         key(request_id)?;
         match self {
@@ -174,6 +178,11 @@ impl ChiefHostAction {
             },
             Self::Resolve { decision, expected_revision, resolution, .. } => { key(decision)?; positive(*expected_revision)?; text(resolution, 1000) },
             Self::AnswerDecision { decision, expected_revision, answer, .. } => { key(decision)?; positive(*expected_revision)?; text(answer, 4000) },
+            Self::Overrule { answer, correction, .. } => {
+                key(answer)?; text(correction, 2000)?;
+                if correction.contains('\n') { return Err(invalid("a correction is a single line")); }
+                without_host_labels(correction)
+            },
             Self::RequestSummary { .. } => Ok(()),
         }
     }

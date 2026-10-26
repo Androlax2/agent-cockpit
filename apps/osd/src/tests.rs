@@ -1663,6 +1663,22 @@ fn the_host_snapshot_lists_verified_sessions() {
 }
 
 #[test]
+fn the_host_snapshot_carries_chief_answer_counts() {
+    let mut bench = team_bench();
+    assert_eq!(crate::teams::host_snapshot(&mut bench.registry).unwrap()["chief_answers"], json!([]));
+    let connection = bench.registry.teams.as_ref().unwrap();
+    connection.execute("INSERT INTO chief_stops(id,session_id,runtime,boundary,project,task_id,bundle,state,created_at) VALUES ('stop-a',?1,'runtime-10','waiting:1','path:/project-a','1d3fd318','{}','answered',10)", [SESSION_A]).unwrap();
+    for (id, source, delivery, created_at) in [("answer-1", "chief", "received", 20), ("answer-2", "chief", "queued", 30), ("answer-theo", "theo", "received", 40), ("answer-cancelled", "chief", "cancelled", 50)] {
+        connection.execute("INSERT INTO chief_answers(id,stop_id,session_id,question,answer,reason,source,delivery,created_at) VALUES (?1,'stop-a',?2,?3,'Use A.','Because.',?4,?5,?6)",
+            (id, SESSION_A, format!("Question {id}?"), source, delivery, created_at)).unwrap();
+    }
+    let snapshot = crate::teams::host(&mut bench.registry, std::process::id(), cockpit::teams::HostRequest::Snapshot).unwrap().result.unwrap();
+    assert_eq!(snapshot["chief_answers"], json!([{"session_id": SESSION_A, "count": 2, "recent": [
+        {"created_at_ms": 30, "question": "Question answer-2?", "answer": "Use A.", "delivery": "queued"},
+        {"created_at_ms": 20, "question": "Question answer-1?", "answer": "Use A.", "delivery": "received"}]}]));
+}
+
+#[test]
 fn the_host_snapshot_names_the_chief_session_only_while_a_grant_holds_it() {
     let mut bench = team_bench();
     let snapshot = crate::teams::host_snapshot(&mut bench.registry).unwrap();

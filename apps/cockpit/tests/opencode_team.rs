@@ -221,6 +221,23 @@ fn a_theo_answer_enters_the_native_queue_described_as_his_own() {
 }
 
 #[test]
+fn a_correction_is_delivered_through_the_native_queue_with_its_row_label() {
+    let envelope = json!({"message_id":"correction1","kind":"chief_correction","source":"theo","epoch":"theo","overrule":"overrule1",
+        "answer_excerpt":"Use option A.","text":"Keep option A but leave the public API untouched."});
+    let delivery = json!({"dispatch_id":"chief_c1","message_id":"correction1","text":cockpit::teams::envelope_text(&envelope),"envelope":envelope});
+    let run = run_delivery(&[], delivery);
+    assert_eq!(run.synthetic.len(), 1);
+    let admitted = &run.synthetic[0];
+    assert_eq!(admitted["id"], "msg_cockpitcorrection1");
+    assert_eq!(admitted["delivery"], "queue");
+    assert_eq!(admitted["resume"], true);
+    assert_eq!(admitted["description"], "Theo's correction: Keep option A but leave the public API untouched.");
+    assert!(admitted["text"].as_str().unwrap().ends_with(cockpit::chief::CORRECTION_LABEL));
+    assert_eq!(run.receipts, [json!({"action":"receipt","dispatch_id":"chief_c1","outcome":{"outcome":"received","native_id":"msg_cockpitcorrection1"}})]);
+    assert!(run.hooks.iter().all(|payload| payload["source"] != "chief_answer"), "a correction answers no saved question: {:?}", run.hooks);
+}
+
+#[test]
 fn a_delivered_chief_answer_clears_the_saved_question() {
     let run = run_delivery(&[], chief_answer_delivery());
     let answered: Vec<_> = run.hooks.iter().filter(|payload| payload["source"] == "chief_answer").collect();

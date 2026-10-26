@@ -141,7 +141,7 @@ impl App {
             if let TrailTarget::Task(key) = &target {
                 if let Some(entry) = self.todo_entries.iter().find(|entry| task_key(entry) == *key) { text = format!("{}\n\n{text}", todo_details(entry)); }
             }
-            self.session_details = Some(SessionDetails { title: "Task trail".into(), text, scroll: 0, actions: Vec::new() });
+            self.session_details = Some(SessionDetails { title: "Task trail".into(), text, scroll: 0, actions: Vec::new(), chief_answers_of: None });
             return String::new();
         }
         let key = if keys.len() == 1 { keys[0].clone() } else {
@@ -189,7 +189,7 @@ impl App {
             text += &format!("{}#{} · {}{}\n", pr.repository, pr.number, pr.title, if present { "" } else { " (last known; current state unavailable)" });
             if !pr.url.is_empty() { actions.push(DetailAction::OpenPr(id)); }
         }
-        self.session_details = Some(SessionDetails { title: "Task trail".into(), text, scroll: 0, actions });
+        self.session_details = Some(SessionDetails { title: "Task trail".into(), text, scroll: 0, actions, chief_answers_of: None });
         String::new()
     }
 
@@ -207,7 +207,7 @@ impl App {
         } else if let Some(record) = self.continuity.as_ref().ok().and_then(|state| state.tasks().get(key)) {
             self.session_details = Some(SessionDetails { title: "Archived task".into(),
                 text: format!("Archived task\n{}\n{}\nLast recorded status: {}\n\n{}\n\nThe source item is no longer available; it was not recreated.",
-                    record.snapshot.title, key, record.snapshot.status, record.snapshot.notes), scroll: 0, actions: Vec::new() });
+                    record.snapshot.title, key, record.snapshot.status, record.snapshot.notes), scroll: 0, actions: Vec::new(), chief_answers_of: None });
         }
         String::new()
     }
@@ -260,7 +260,7 @@ impl App {
         if self.todos.queued.iter().any(|key| key.contains('#') && !issues.iter().any(|issue| issue.key() == *key)) {
             text += "\nQueued issue data unavailable: not loaded, stale, or closed.\n";
         }
-        self.session_details = Some(SessionDetails { title: "Queue".into(), text, scroll: 0, actions: Vec::new() });
+        self.session_details = Some(SessionDetails { title: "Queue".into(), text, scroll: 0, actions: Vec::new(), chief_answers_of: None });
         String::new()
     }
 
@@ -316,7 +316,7 @@ impl App {
         if self.running_sessions.iter().any(|candidate| candidate.session == session && !candidate.is_external()) {
             actions.push(DetailAction::OpenSession(session));
         } else { text += "\n\nArchived session; no live terminal target."; }
-        self.session_details = Some(SessionDetails { title: "Updates".into(), text, scroll: 0, actions });
+        self.session_details = Some(SessionDetails { title: "Updates".into(), text, scroll: 0, actions, chief_answers_of: None });
         String::new()
     }
 

@@ -72,15 +72,16 @@ fn rendered(app: &mut App, width: u16, height: u16) -> String {
 fn first_control_review(app: &mut App, screen: &mut TestScreen) { keys(app,screen,&[Key::Down,Key::Down,Key::Enter,Key::Enter]); }
 
 #[test]
-fn the_chief_root_offers_only_decisions_workers_controls_and_summary() {
+fn the_chief_root_offers_only_needs_you_answers_controls_workers_and_summary() {
     let host = Host::new(vec![]); let (mut app,_) = host.open();
     let mut buffer = Buffer::empty(Rect::new(0,0,120,45)); app.render(&mut buffer);
     let lines: Vec<String> = (0..45).map(|row|(0..120).map(|column|buffer[(column,row)].symbol()).collect::<String>()).collect();
-    let root: Vec<String> = lines.iter().filter(|line|["Decisions","Work","Chief controls","Request summary"].iter().any(|label|line.contains(label)))
+    let root: Vec<String> = lines.iter().filter(|line|["Needs you","Answers","Work","Chief controls","Request summary"].iter().any(|label|line.contains(label)))
         .map(|line|line.trim().trim_matches('│').trim().trim_start_matches('>').trim().to_string()).collect();
-    assert_eq!(root.len(),4,"{lines:#?}");
-    assert!(root[0].starts_with("Decisions"),"{root:?}");
-    assert_eq!(root[1..],["Workers","Chief controls","Request summary"],"{root:?}");
+    assert_eq!(root.len(),5,"{lines:#?}");
+    assert!(root[0].starts_with("Needs you"),"{root:?}");
+    assert!(root[1].starts_with("Answers"),"{root:?}");
+    assert_eq!(root[2..],["Chief controls","Workers","Request summary"],"{root:?}");
     let text = rendered(&mut app,120,45);
     for forbidden in ["Approve","Attest","Bind role","Workers and roles"] {assert!(!text.contains(forbidden),"{forbidden}: {text}");}
 }
@@ -145,7 +146,7 @@ fn summary_request_does_not_enable_progress_notifications() {
     let host=Host::new(vec![json!({"kind":"summary","state":"completed","last_completed_at_ms":12345,
         "last_result":{"provenance":"chief_narrative_unverified","sections":{"completed":"Worker claim only"}}})]);
     let (mut app,mut screen)=host.open();
-    keys(&mut app,&mut screen,&[Key::Down,Key::Down,Key::Down,Key::Enter,Key::Enter,Key::Enter]);
+    keys(&mut app,&mut screen,&[Key::Down,Key::Down,Key::Down,Key::Down,Key::Enter,Key::Enter,Key::Enter]);
     let requests=host.mutations(); assert_eq!(requests.len(),1); assert_eq!(requests[0]["action"]["action"],"request_summary");
     let text=rendered(&mut app,120,45); assert!(text.contains("12345")&&text.contains("chief_narrative_unverified"),"{text}");
 }
@@ -364,7 +365,7 @@ fn actual_chief_view_reviews_current_records_without_loading_terminal_history() 
 #[test]
 fn short_narrow_lists_keep_the_selected_root_action_visible() {
     let host=Host::new(vec![]);let (mut app,mut screen)=host.open();
-    keys(&mut app,&mut screen,&[Key::Down,Key::Down,Key::Down]);
+    keys(&mut app,&mut screen,&[Key::Down,Key::Down,Key::Down,Key::Down]);
     assert!(rendered(&mut app,32,8).contains("Request summary"));
 }
 
@@ -438,4 +439,311 @@ fn an_escalation_changed_during_review_invalidates_the_answer() {
     host.snapshot.lock().unwrap()["records"][0]["suggested_answer"]=json!("Change the API instead.");
     app.handle(Key::Char('y'),&mut screen);
     assert!(host.mutations().is_empty(),"a decision changed during review must invalidate pending consent");
+}
+
+const SESSION: &str = "ses_3f2a9c0b1ffeQkTz8mWn4rJd2L";
+const ANSWER_TIME_MS: i64 = 1_761_000_000_000;
+fn answer(id: &str, delivery: &str) -> Value {
+    json!({"kind":"answer","id":id,"stop_id":"stop-1","session_id":SESSION,"project":PROJECT,"task_id":"1234abcd",
+        "question":"Which option do you want?","answer":"Use option B.","reason":"The task names option B.","source":"chief",
+        "delivery":delivery,"created_at_ms":ANSWER_TIME_MS,"overrule":null})
+}
+fn clock(milliseconds: i64) -> String {
+    chrono::DateTime::from_timestamp_millis(milliseconds).unwrap().with_timezone(&chrono::Local).format("%H:%M").to_string()
+}
+fn name_the_session(host: &Host, name: &str) { host.snapshot.lock().unwrap()["session_names"] = json!({SESSION: name}); }
+fn lines_of(app: &mut App, width: u16, height: u16) -> Vec<String> {
+    let mut buffer = Buffer::empty(Rect::new(0,0,width,height)); app.render(&mut buffer);
+    (0..height).map(|row|(0..width).map(|column|buffer[(column,row)].symbol().to_string()).collect::<String>()).collect()
+}
+fn cell_of(app: &mut App, needle: &str) -> ratatui::buffer::Cell { cell_at(app,needle,0) }
+/// The cell `offset` characters into the first screen line that holds `needle`.
+fn cell_at(app: &mut App, needle: &str, offset: usize) -> ratatui::buffer::Cell {
+    let (width,height)=(120,45); let mut buffer = Buffer::empty(Rect::new(0,0,width,height)); app.render(&mut buffer);
+    for row in 0..height {
+        let line: String = (0..width).map(|column|buffer[(column,row)].symbol().to_string()).collect();
+        if let Some(byte) = line.find(needle) { return buffer[((line[..byte].chars().count()+offset) as u16,row)].clone(); }
+    }
+    panic!("{needle} is not on the screen");
+}
+fn open_answers(host: &Host) -> (App, TestScreen) {
+    let (mut app,mut screen) = host.open(); keys(&mut app,&mut screen,&[Key::Down,Key::Enter]); (app,screen)
+}
+
+#[test]
+fn the_root_shows_needs_you_and_answers_counts() {
+    let host=Host::new(vec![decision(),escalation(None),answer("answer-1","received"),answer("answer-2","queued"),answer("answer-3","uncertain")]);
+    let (mut app,_)=host.open();
+    let text=rendered(&mut app,120,45);
+    for expected in ["Needs you · 2","Answers · 3"] {assert!(text.contains(expected),"{expected}: {text}");}
+    assert!(!text.contains("Decisions"),"{text}");
+}
+
+#[test]
+fn the_answers_page_lists_rows_newest_first() {
+    let mut oldest=answer("answer-old","received");oldest["created_at_ms"]=json!(ANSWER_TIME_MS-7_200_000);oldest["question"]=json!("Oldest question");
+    let mut newest=answer("answer-new","uncertain");newest["created_at_ms"]=json!(ANSWER_TIME_MS);newest["question"]=json!("Newest question");newest["answer"]=json!("Use\noption B.");
+    let mut waiting=answer("answer-wait","queued");waiting["created_at_ms"]=json!(ANSWER_TIME_MS-3_600_000);waiting["question"]=json!("Waiting question");
+    let host=Host::new(vec![oldest,newest,waiting]);name_the_session(&host,"Fix login · a-project");
+    let (mut app,_)=open_answers(&host);
+    let text=lines_of(&mut app,120,45).join("\n");
+    let positions: Vec<usize>=["Newest question","Waiting question","Oldest question"].iter().map(|question|text.find(question).unwrap_or_else(||panic!("{question}: {text}"))).collect();
+    assert!(positions[0]<positions[1]&&positions[1]<positions[2],"{text}");
+    for expected in [format!("{} · Fix login · a-project · Newest question",clock(ANSWER_TIME_MS)).as_str(),"Chief: Use option B.","not sure · The task names option B.","waiting · The task names option B.","sent · The task names option B."] {
+        assert!(text.contains(expected),"{expected}: {text}");
+    }
+    assert!(text.contains("Answers · 3")||text.contains("Chief · Answers"),"{text}");
+    assert!(text.contains("o overrule · ⏎ reason · esc back"),"{text}");
+    assert_eq!(cell_of(&mut app,"not sure").fg,ratatui::style::Color::Indexed(cockpit::app::RED));
+    let reason=cell_at(&mut app,"waiting · The task names option B.","waiting · ".chars().count());
+    assert!(reason.fg!=ratatui::style::Color::Indexed(cockpit::app::RED)&&reason.modifier.contains(ratatui::style::Modifier::DIM),"only the word not sure is red");
+    let sent=cell_of(&mut app,"waiting ·");
+    assert!(sent.modifier.contains(ratatui::style::Modifier::DIM)&&sent.fg!=ratatui::style::Color::Indexed(cockpit::app::RED));
+}
+
+#[test]
+fn an_overruled_answer_shows_the_correction_delivery_on_its_third_line() {
+    let mut overruled=answer("answer-1","received");
+    overruled["overrule"]=json!({"id":"overrule-1","correction":"Use option C.","delivery":"queued","created_at_ms":ANSWER_TIME_MS+1000});
+    let host=Host::new(vec![overruled]);let (mut app,_)=open_answers(&host);
+    let text=rendered(&mut app,120,45);
+    assert!(text.contains("overruled · waiting"),"{text}");
+}
+
+#[test]
+fn an_empty_answers_page_says_no_chief_answers_yet() {
+    let host=Host::new(vec![]);let (mut app,_)=open_answers(&host);
+    let text=rendered(&mut app,120,45);
+    assert!(text.contains("No Chief answers yet."),"{text}");
+}
+
+#[test]
+fn a_long_answer_row_stays_on_one_line_and_escaped() {
+    let mut long=answer("answer-1","received");long["answer"]=json!(format!("{}\u{202e}\u{1b}[2J END",
+        "Very long answer. ".repeat(200)));
+    let host=Host::new(vec![long]);let (mut app,_)=open_answers(&host);
+    let lines=lines_of(&mut app,100,30);
+    assert_eq!(lines.iter().filter(|line|line.contains("Chief: Very long answer.")).count(),1,"{lines:#?}");
+    assert!(lines.iter().find(|line|line.contains("Chief: Very long")).unwrap().trim_end().trim_end_matches('│').trim_end().ends_with('…'),"{lines:#?}");
+    let text=lines.join("\n");assert!(!text.contains('\u{202e}')&&!text.contains('\u{1b}'),"{text}");
+}
+
+#[test]
+fn overruling_shows_the_exact_text_then_sends_it() {
+    let host=Host::new(vec![answer("answer-1","received")]);let (mut app,mut screen)=open_answers(&host);
+    app.handle(Key::Char('o'),&mut screen);
+    type_note(&mut app,&mut screen,"Use option C instead.");
+    assert!(host.mutations().is_empty(),"typing the correction sends nothing");
+    let review=rendered(&mut app,260,90);
+    for expected in ["Correction from Theo to an earlier Chief answer (","\"Use option B.\"","Use option C instead.",
+        "Correction from Theo, sent through the cockpit Chief view. Treat it as a new instruction inside your current task."] {
+        assert!(review.contains(expected),"{expected}: {review}");
+    }
+    app.handle(Key::Char('y'),&mut screen);assert!(host.mutations().is_empty(),"y does nothing before the separate confirmation");
+    keys(&mut app,&mut screen,&[Key::Enter,Key::Char('y')]);
+    let requests=host.mutations();assert_eq!(requests.len(),1);
+    let request=&requests[0]["action"];
+    assert_eq!(request["action"],"overrule");assert_eq!(request["answer"],"answer-1");assert_eq!(request["correction"],"Use option C instead.");
+}
+
+#[test]
+fn the_detail_action_overrules_an_uncertain_answer_too() {
+    let host=Host::new(vec![answer("answer-1","uncertain")]);let (mut app,mut screen)=open_answers(&host);
+    app.handle(Key::Enter,&mut screen);
+    let detail=rendered(&mut app,160,60);
+    for expected in ["Which option do you want?","Use option B.","The task names option B.","not sure"] {assert!(detail.contains(expected),"{expected}: {detail}");}
+    keys(&mut app,&mut screen,&[Key::Enter,Key::Enter]);
+    type_note(&mut app,&mut screen,"Use option C.");
+    keys(&mut app,&mut screen,&[Key::Enter,Key::Char('y')]);
+    assert_eq!(host.mutations()[0]["action"]["action"],"overrule");
+}
+
+#[test]
+fn an_answer_not_sent_yet_says_why_it_cannot_be_overruled() {
+    let mut overruled=answer("answer-4","received");
+    overruled["overrule"]=json!({"id":"overrule-1","correction":"Use option C.","delivery":"received","created_at_ms":1});
+    let mut theirs=answer("answer-5","received");theirs["source"]=json!("theo");
+    for (record,reason) in [(answer("answer-1","queued"),"Not sent yet"),(answer("answer-2","cancelled"),"Cancelled"),
+            (overruled,"Already overruled"),(theirs,"This answer is yours")] {
+        let host=Host::new(vec![record]);let (mut app,mut screen)=open_answers(&host);
+        app.handle(Key::Char('o'),&mut screen);
+        let text=rendered(&mut app,120,45);
+        assert!(text.contains(reason),"{reason}: {text}");
+        app.handle(Key::Char('x'),&mut screen);
+        assert!(!rendered(&mut app,120,45).contains("Your correction"),"no note box opens");
+        keys(&mut app,&mut screen,&[Key::Enter,Key::Enter]);
+        assert!(host.mutations().is_empty());
+    }
+}
+
+#[test]
+fn a_changed_answer_invalidates_an_open_overrule_review() {
+    let host=Host::new(vec![answer("answer-1","uncertain")]);let (mut app,mut screen)=open_answers(&host);
+    app.handle(Key::Char('o'),&mut screen);type_note(&mut app,&mut screen,"Use option C.");app.handle(Key::Enter,&mut screen);
+    host.snapshot.lock().unwrap()["records"][0]["delivery"]=json!("received");
+    app.handle(Key::Char('y'),&mut screen);
+    assert!(host.mutations().is_empty(),"an answer changed during review must invalidate pending consent");
+    assert!(rendered(&mut app,160,70).contains("changed"));
+}
+
+#[test]
+fn answers_name_the_session_not_its_id() {
+    let mut escalated=escalation(None);escalated["session_id"]=json!(SESSION);
+    let host=Host::new(vec![answer("answer-1","received"),escalated]);name_the_session(&host,"Fix the login bug · a-long-canonical-project");
+    let (mut app,mut screen)=host.open();
+    let needs_you={app.handle(Key::Enter,&mut screen);rendered(&mut app,160,45)};
+    assert!(needs_you.contains("Fix the login bug · a-long-canonical-project")&&!needs_you.contains(SESSION),"{needs_you}");
+    keys(&mut app,&mut screen,&[Key::Enter]);
+    let detail=rendered(&mut app,160,60);assert!(detail.contains("Session: Fix the login bug · a-long-canonical-project"),"{detail}");
+    keys(&mut app,&mut screen,&[Key::Esc,Key::Esc,Key::Down,Key::Enter]);
+    let list=rendered(&mut app,160,45);assert!(list.contains("Fix the login bug · a-long-canonical-project")&&!list.contains(SESSION),"{list}");
+    app.handle(Key::Enter,&mut screen);
+    let detail=rendered(&mut app,160,60);assert!(detail.contains("Fix the login bug · a-long-canonical-project")&&!detail.contains(SESSION),"{detail}");
+}
+
+#[test]
+fn a_session_without_a_name_falls_back_to_the_end_of_its_id() {
+    let host=Host::new(vec![answer("answer-1","received")]);let (mut app,_)=open_answers(&host);
+    let text=rendered(&mut app,160,45);
+    assert!(text.contains("ses_…Jd2L")||text.contains(&format!("ses_…{}",&SESSION[SESSION.len()-6..])),"{text}");
+    assert!(!text.contains(SESSION),"{text}");
+}
+
+#[test]
+fn an_agent_chosen_session_label_is_escaped_and_cut_to_one_line() {
+    let host=Host::new(vec![answer("answer-1","received")]);
+    name_the_session(&host,&format!("Line one\nline two \u{202e}{} · project","x".repeat(400)));
+    let (mut app,_)=open_answers(&host);
+    let lines=lines_of(&mut app,160,45);
+    let text=lines.join("\n");assert!(!text.contains('\u{202e}'),"{text}");
+    assert_eq!(lines.iter().filter(|line|line.contains("Line one line two")).count(),1,"{text}");
+    assert!(!text.contains(&"x".repeat(350)),"{text}");
+}
+
+#[test]
+fn session_names_from_every_page_of_the_snapshot_are_kept() {
+    let host=Host::new(vec![answer("answer-1","received")]);
+    let mut first=snapshot(vec![]);first["has_more"]=json!(true);first["next"]=json!(1);first["session_names"]=json!({"ses_other0000000000":"Other · elsewhere"});
+    let mut second=snapshot(vec![answer("answer-1","received")]);second["session_names"]=json!({SESSION:"Second page name · project"});
+    host.pages.lock().unwrap().extend([first,second]);
+    let (mut app,mut screen)=host.open();keys(&mut app,&mut screen,&[Key::Down,Key::Enter]);
+    let text=rendered(&mut app,160,45);assert!(text.contains("Second page name · project"),"{text}");
+}
+
+#[test]
+fn the_answers_page_can_be_limited_to_one_session() {
+    let mut other=answer("answer-2","received");other["session_id"]=json!("ses_other0000000000");other["question"]=json!("Question of another session");
+    let mut state=snapshot(vec![answer("answer-1","received"),other]);state["session_names"]=json!({SESSION:"Fix the login bug · project"});
+    let mut view=cockpit::chief::view::ChiefView::new(state);view.open_answers(Some(SESSION.into()));
+    let (title,lines)=view.list_window(30);
+    assert_eq!(title,"Answers · Fix the login bug · project");
+    let text=lines.iter().map(|line|line.text.clone()).collect::<Vec<_>>().join("\n");
+    assert_eq!(lines[0].text,format!("> {} · Which option do you want?",clock(ANSWER_TIME_MS)));
+    assert_eq!(lines[1].text,"  Chief: Use option B.");
+    assert!(text.contains("Which option do you want?")&&!text.contains("Question of another session"),"{text}");
+    assert_eq!(view.footer(),"o overrule · ⏎ reason · esc back");
+}
+
+#[test]
+fn the_answers_page_of_one_session_states_the_card_count_and_its_rule() {
+    let mut state=snapshot(vec![answer("answer-1","received")]);state["session_names"]=json!({SESSION:"Fix the login bug · project"});
+    let mut view=cockpit::chief::view::ChiefView::new(state);
+    view.open_answers(Some(SESSION.into()));view.card_count=4;
+    assert_eq!(view.list_window(30).0,"Answers · Fix the login bug · project · Chief ✓4 this task");
+    view.card_count=0;
+    assert_eq!(view.list_window(30).0,"Answers · Fix the login bug · project");
+}
+
+#[test]
+fn the_selected_row_stays_on_screen_below_a_stale_line() {
+    let decisions: Vec<Value>=(0..10).map(|number|{let mut record=decision();record["id"]=json!(format!("decision-{number}"));record["question"]=json!(format!("Question {number}"));record}).collect();
+    let mut view=cockpit::chief::view::ChiefView::new(snapshot(decisions));
+    view.handle(Key::Enter);
+    for _ in 0..9 {view.handle(Key::Down);}
+    view.read_failed("host went away".into());
+    let (_,lines)=view.list_window(8);
+    let text=lines.iter().map(|line|line.text.clone()).collect::<Vec<_>>().join("\n");
+    assert!(text.contains("> ")&&text.contains("Question 9"),"{text}");
+    assert!(lines.len()<=8,"{text}");
+}
+
+#[test]
+fn a_tall_row_at_the_bottom_still_fits_the_window() {
+    let answers: Vec<Value>=(0..5).map(|number|{let mut record=answer(&format!("answer-{number}"),"received");record["created_at_ms"]=json!(ANSWER_TIME_MS-number*60_000);record["question"]=json!(format!("Question {number}"));record}).collect();
+    let mut view=cockpit::chief::view::ChiefView::new(snapshot(answers));
+    view.open_answers(None);
+    for _ in 0..4 {view.handle(Key::Down);}
+    let (_,lines)=view.list_window(5);
+    let text=lines.iter().map(|line|line.text.clone()).collect::<Vec<_>>().join("\n");
+    assert!(lines.len()<=5&&text.contains("> ")&&text.contains("Question 4")&&text.contains("sent ·"),"{text}");
+}
+
+#[test]
+fn an_escalation_detail_shows_no_raw_record_json() {
+    let mut escalated=escalation(Some("Keep the old API."));escalated["session_id"]=json!(SESSION);
+    let host=Host::new(vec![escalated]);name_the_session(&host,"Fix the login bug · project");
+    let (mut app,mut screen)=host.open();keys(&mut app,&mut screen,&[Key::Enter,Key::Enter]);
+    let detail=rendered(&mut app,160,60);
+    assert!(detail.contains("Session: Fix the login bug · project")&&detail.contains("Keep the old API."),"{detail}");
+    for forbidden in ["session_id",SESSION,"{","\"kind\""] {assert!(!detail.contains(forbidden),"{forbidden}: {detail}");}
+}
+
+#[test]
+fn the_answers_count_shows_a_plus_when_the_snapshot_hit_its_cap() {
+    for (count,expected) in [(199,"Answers · 199"),(200,"Answers · 200+")] {
+        let answers: Vec<Value>=(0..count).map(|number|answer(&format!("answer-{number}"),"received")).collect();
+        let host=Host::new(answers);let (mut app,_)=host.open();
+        let text=rendered(&mut app,120,45);assert!(text.contains(expected)&&(count==200||!text.contains("199+")),"{expected}: {text}");
+    }
+}
+
+fn older_clock(milliseconds: i64) -> String {
+    chrono::DateTime::from_timestamp_millis(milliseconds).unwrap().with_timezone(&chrono::Local).format("%a %d %b %H:%M").to_string()
+}
+fn summary_record(previous_completed_at_ms: Value) -> Value {
+    json!({"kind":"summary","state":"completed","last_completed_at_ms":ANSWER_TIME_MS,"previous_completed_at_ms":previous_completed_at_ms,
+        "last_result":{"provenance":"chief_narrative_unverified","sections":{"completed":"Worker claim only"}}})
+}
+fn answer_at(id: &str, question: &str, created_at_ms: i64) -> Value {
+    let mut record=answer(id,"received");record["question"]=json!(question);record["created_at_ms"]=json!(created_at_ms);record
+}
+fn open_summary(host: &Host) -> (App, TestScreen) {
+    let (mut app,mut screen)=host.open();
+    keys(&mut app,&mut screen,&[Key::Down,Key::Down,Key::Down,Key::Down,Key::Enter,Key::Enter,Key::Enter]);
+    (app,screen)
+}
+
+#[test]
+fn a_summary_lists_the_answers_since_the_previous_summary() {
+    let since=ANSWER_TIME_MS-3_600_000;
+    let mut records=vec![summary_record(json!(since)),answer_at("old","Before the last summary",since-1_000)];
+    for index in 0..7 {records.push(answer_at(&format!("new-{index}"),&format!("Question {index}"),since+1_000*(index+1)));}
+    let mut theo=answer_at("theo","Theo answered this",since+500);theo["source"]=json!("theo");records.push(theo);
+    let mut cancelled=answer_at("cancelled","Never delivered",since+600);cancelled["delivery"]=json!("cancelled");records.push(cancelled);
+    let host=Host::new(records);name_the_session(&host,"Fix login · shop");
+    let (mut app,_)=open_summary(&host);
+    let text=lines_of(&mut app,160,60).join("\n");
+    assert!(text.contains(&format!("Answers since {}",older_clock(since))),"{text}");
+    assert!(text.contains("Fix login · shop · Question 6 → Use option B."),"{text}");
+    assert!(text.contains("Fix login · shop · Question 2 → Use option B."),"{text}");
+    for hidden in ["Question 1 →","Question 0 →","Before the last summary","Theo answered this","Never delivered"] {assert!(!text.contains(hidden),"{hidden}: {text}");}
+    assert!(text.contains("+2 more"),"{text}");
+}
+
+#[test]
+fn a_summary_without_a_previous_one_looks_back_24_hours() {
+    let now=chrono::Utc::now().timestamp_millis();
+    let host=Host::new(vec![summary_record(Value::Null),answer_at("recent","Asked an hour ago",now-3_600_000),answer_at("stale","Asked two days ago",now-172_800_000)]);
+    let (mut app,_)=open_summary(&host);
+    let text=lines_of(&mut app,160,60).join("\n");
+    assert!(text.contains("Answers since")&&text.contains("Asked an hour ago → Use option B."),"{text}");
+    assert!(!text.contains("Asked two days ago"),"{text}");
+}
+
+#[test]
+fn a_summary_says_when_the_chief_answered_nothing_since() {
+    let host=Host::new(vec![summary_record(json!(ANSWER_TIME_MS)),answer_at("old","Long ago",ANSWER_TIME_MS-1_000)]);
+    let (mut app,_)=open_summary(&host);
+    let text=rendered(&mut app,160,60);
+    assert!(text.contains(&format!("No Chief answers since {}",older_clock(ANSWER_TIME_MS))),"{text}");
 }

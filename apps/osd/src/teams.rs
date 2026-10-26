@@ -362,6 +362,10 @@ pub fn request(registry: &mut Registry, peer: u32, action: AgentAction) -> Resul
             if is_subscription_held { return Ok(TeamReply { request_id:"receive".into(),result:Ok(Value::Null) }); }
             // The native Receive handoff shares the TODO closure boundary.
             let mut dispatch = match &turn { Some(turn) => store::claim(connection, &sender, turn, &live, now_ms())?, None => None };
+            // Theo's correction goes out before any Chief answer.
+            if let (None, Some((idle_turn, boundary))) = (&dispatch, &answer_turn) {
+                dispatch = cockpit::chief::store::claim_correction(connection, &sender, idle_turn, boundary, now_ms())?;
+            }
             if let (None, Some((idle_turn, boundary))) = (&dispatch, &answer_turn) {
                 dispatch = cockpit::chief::store::claim_answer(connection, &sender, idle_turn, boundary, now_ms())?;
             }
@@ -428,6 +432,7 @@ pub fn host_snapshot(registry: &mut Registry) -> Result<Value, TeamError> {
         sleeps.push(status);
     }
     state["sleeps"] = json!(sleeps);
+    state["chief_answers"] = json!(cockpit::chief::store::answer_counts(registry.teams.as_ref().expect("opened above"))?);
     Ok(state)
 }
 

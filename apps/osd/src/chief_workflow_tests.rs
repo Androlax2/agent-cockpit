@@ -474,3 +474,41 @@ fn a_chief_form_reply_waits_while_the_runtime_is_busy_without_a_form() {
     assert!(crate::teams::request(&mut bench.registry, STOPPED_WORKER_PEER, AgentAction::Receive).unwrap().result.unwrap().is_null());
     assert_eq!(answer_delivery(&bench), "queued");
 }
+
+#[test]
+fn theo_overrules_a_chief_answer_end_to_end() {
+    let (mut bench, _stop) = answered_stop_bench();
+    assert_eq!(native_inbox(&mut bench, STOPPED_WORKER_PEER, STOPPED_WORKER).len(), 1, "the Chief's answer went out first");
+    let answer: String = bench.registry.teams.as_ref().unwrap().query_row("SELECT id FROM chief_answers", [], |row| row.get(0)).unwrap();
+    let correction = "Keep option A but leave the public API untouched.";
+    let entry = bench.registry.sessions.get_mut(STOPPED_WORKER).unwrap();
+    entry.state = "working".into(); entry.since += 2.0;
+    host(&mut bench, ChiefHostAction::Overrule { request_id: "theo-overrules".into(), answer: answer.clone(), correction: correction.into() });
+    assert!(crate::teams::request(&mut bench.registry, STOPPED_WORKER_PEER, AgentAction::Receive).unwrap().result.unwrap().is_null(),
+        "the agent is mid-turn: the correction waits for its next stop");
+    let overrule_delivery = |bench: &Bench| -> String { bench.registry.teams.as_ref().unwrap().query_row("SELECT delivery FROM chief_overrules", [], |row| row.get(0)).unwrap() };
+    assert_eq!(overrule_delivery(&bench), "queued");
+    let entry = bench.registry.sessions.get_mut(STOPPED_WORKER).unwrap();
+    entry.state = "waiting".into(); entry.since += 3.0;
+    let admitted = native_inbox(&mut bench, STOPPED_WORKER_PEER, STOPPED_WORKER);
+    assert_eq!(admitted.len(), 1, "{admitted:?}");
+    let message: String = bench.registry.teams.as_ref().unwrap().query_row(
+        "SELECT id FROM chief_inbox WHERE json_extract(envelope,'$.kind')='chief_correction'", [], |row| row.get(0)).unwrap();
+    assert_eq!(admitted[0]["id"], format!("msg_cockpit{message}"));
+    assert_eq!(admitted[0]["text"], format!("Correction from Theo to an earlier Chief answer (\"Use option A.\"): {correction}\n\n{}", cockpit::chief::CORRECTION_LABEL));
+    assert_eq!(admitted[0]["description"], format!("Theo's correction: {correction}"));
+    assert_eq!(overrule_delivery(&bench), "received");
+    assert_eq!(answer_delivery(&bench), "received", "the overruled answer keeps its own delivery");
+}
+
+#[test]
+fn a_correction_for_a_session_that_is_gone_is_cancelled_on_the_next_tick() {
+    let (mut bench, _stop) = answered_stop_bench();
+    assert_eq!(native_inbox(&mut bench, STOPPED_WORKER_PEER, STOPPED_WORKER).len(), 1);
+    let answer: String = bench.registry.teams.as_ref().unwrap().query_row("SELECT id FROM chief_answers", [], |row| row.get(0)).unwrap();
+    host(&mut bench, ChiefHostAction::Overrule { request_id: "overrule-gone".into(), answer, correction: "Leave the public API untouched.".into() });
+    let live: Vec<_> = crate::chief::workers(&mut bench.registry).unwrap().into_iter().filter(|worker| worker.session.session_id != STOPPED_WORKER).collect();
+    crate::chief::observe_stops_with(&mut bench.registry, &live, crate::teams::now_ms(), cockpit::todo::TodoList::load).unwrap();
+    assert_eq!(count(&bench, "SELECT count(*) FROM chief_overrules WHERE delivery='cancelled'"), 1);
+    assert_eq!(count(&bench, "SELECT count(*) FROM chief_inbox WHERE json_extract(envelope,'$.kind')='chief_correction' AND state='cancelled'"), 1);
+}

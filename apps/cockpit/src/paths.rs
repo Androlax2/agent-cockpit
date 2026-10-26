@@ -103,6 +103,8 @@ pub fn subscription_routes() -> PathBuf { state_dir().join("subscriptions/routes
 pub fn usage_archive() -> PathBuf { state_dir().join("usage.sqlite") }
 pub fn alerts() -> PathBuf { state_dir().join("alerts.json") }
 pub fn log() -> PathBuf { state_dir().join("log") }
+/// When the daily digest last printed (epoch ms), next to the cockpit script's digest-day.
+pub fn chief_digest_at() -> PathBuf { state_dir().join("chief-digest-at") }
 pub fn todo() -> PathBuf { state_dir().join("todo.json") }
 pub fn todo_images() -> PathBuf { state_dir().join("todo-images") }
 pub fn team_database() -> PathBuf { crate::audit::dir().join("teams.sqlite") }

@@ -82,6 +82,7 @@ fn migrate_with(connection: &mut Connection, create: bool) -> Result<(), TeamErr
     upgrade_schema(&transaction, create)?;
     super::links::migrate(&transaction)?;
     crate::chief::store::upgrade_to_13(&transaction)?;
+    crate::chief::store::upgrade_to_14(&transaction)?;
     crate::chief::store::clear_dispatch_leftovers(&transaction)?;
     transaction.commit()?;
     Ok(())
@@ -90,7 +91,7 @@ fn migrate_with(connection: &mut Connection, create: bool) -> Result<(), TeamErr
 fn upgrade_schema(connection: &rusqlite::Transaction<'_>, create: bool) -> Result<(), TeamError> {
     let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
     if !create && version == 0 { return Err(TeamError::new(ErrorCode::Storage, "existing collaboration database has no lifecycle schema")); }
-    if !(0..=13).contains(&version) { return Err(TeamError::new(ErrorCode::Storage, "unsupported team database version")); }
+    if !(0..=14).contains(&version) { return Err(TeamError::new(ErrorCode::Storage, "unsupported team database version")); }
     sleep::migrate(connection)?;
     if version >= 10 { return Ok(()); }
     if version == 9 {

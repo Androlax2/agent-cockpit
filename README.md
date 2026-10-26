@@ -61,7 +61,7 @@ Above the cards, the Sessions panel warns about requests greyproxy is holding, a
 
 Idle sessions sleep: a session idle at its prompt for `idle-sleep-after` minutes (default 60, at least 30; `S` Sleep after (minutes)) is exited, to free its memory, and stays as an `Asleep` card with the time it has slept. Opening it, `m` or Alt+Q on it, a todo handed to it (queued or `h`), `r`, or the phone's Wake button resumes the same conversation (Remote Control comes back if it was on), and `x` forgets it for good; `s` puts the selected session to sleep at once (the same checks, without waiting for the idle time). It never sleeps with text typed in its input box, background shells or work running, on screen, as a `t` terminal session or a Codex one, or with a queued message or a todo in progress; any doubt keeps it awake (`cockpit logs` says why). Approved Claude and opencode teammates may sleep too: incoming team messages wake them in the same task and role, using a verified one-use sleep handoff. Unknown membership or pending/uncertain team delivery keeps them awake. This continuation applies only to cockpit-managed sleep/wake; restarting a live teammate or manually resuming history still requires fresh team approval. Sleeping idle sessions can be turned off (`S` Sleep idle sessions, `cockpit setting idle-sleep on|off`). The notes behind the cards are in `~/.local/state/cockpit/asleep/` and survive a reboot; one older than 7 days is dropped and its card goes, the session staying resumable with `H`. A clone with an asleep session is not offered by `K`.
 
-Sessions keys: Enter opens a session, `n` peeks at the next one waiting for you, `a` starts one in a project, `A` / `+` another one on the same repository in its own clone, `r` restarts in place, `e` changes the effort, `$` bills the session to the Console's API credits or back to the subscription (it restarts on the same conversation; restarts and the reboot restore keep it; the key comes from the keyring, `make agent-anthropic-key`, and stays a greyproxy placeholder in the sandbox; with no key the session does not start), `x` exits, `s` puts it to sleep now (see below), `R` toggles Remote Control, `p` pins, `g` opens lazygit (inside greywall: review and commit, but no push, since the sandbox has no SSH key), `U` pushes the session's branch to its GitHub origin with your key after a yes (hooks off, settings that could run a program reset); on a clone of a running copy (`~/dotfiles`, `~/agent-cockpit`, `~/vitals`) it exports, inside greywall, the commits the running copy lacks and runs `cockpit apply` on them, `C` sends `/compact`, `z` zooms, `Y` / `N` answer a permission request, `m` sends a message (while the session works it waits, `✉ N queued` on the card, and goes out when the turn ends, one per turn; Alt+Q inside a session does the same, `M` drops the queue), `f` keeps only the sessions waiting for you. Everywhere: `O` starts an opencode session in a project (also a bare `opencode` in a terminal, which asks like `claude`; `cockpit --agent opencode new|parallel`): its card wears `◇ opencode` and opens, restarts, exits, comes back after a reboot and takes messages like a Claude one, while `e`, `$`, `C` and the `:` list's Remote Control say they are Claude Code's; `H` resumes a past session (searchable), `/` filters, `:` lists every action, `D` shows the daily digest, `S` the settings (on or off, also `cockpit setting`: the phone on lock, the todo queue, errors handed to agent-cockpit, freezing sessions while gaming, the idle lock on workspace 6, sleeping idle sessions (`idle-sleep`) and how long they idle first (`idle-sleep-after`: Enter cycles 30, 60, 120, 240 minutes), the daily digest, each todo link between projects; and under Phone, the phone page: whether its server answers and the tailnet publishes it, Pair a phone, and the paired phones with when each was last seen, `x` forgets one after a yes), `K` lists the clones of `A`, `+` and reviews and deletes, after a yes, those with no session, no uncommitted change and nothing unpushed (checked by git inside greywall), `P` `W` `G` open the pull requests, Claude on the web and greyproxy's dashboard, `?` the help.
+Sessions keys: Enter opens a session, `n` peeks at the next one waiting for you, `a` starts one in a project, `A` / `+` another one on the same repository in its own clone, `r` restarts in place, `e` changes the effort, `$` bills the session to the Console's API credits or back to the subscription (it restarts on the same conversation; restarts and the reboot restore keep it; the key comes from the keyring, `make agent-anthropic-key`, and stays a greyproxy placeholder in the sandbox; with no key the session does not start), `x` exits, `s` puts it to sleep now (see below), `R` toggles Remote Control, `p` pins, `g` opens lazygit (inside greywall: review and commit, but no push, since the sandbox has no SSH key), `U` pushes the session's branch to its GitHub origin with your key after a yes (hooks off, settings that could run a program reset); on a clone of a running copy (`~/dotfiles`, `~/agent-cockpit`, `~/vitals`) it exports, inside greywall, the commits the running copy lacks and runs `cockpit apply` on them, `C` sends `/compact`, `c` lists the answers the Chief gave it, `z` zooms, `Y` / `N` answer a permission request, `m` sends a message (while the session works it waits, `✉ N queued` on the card, and goes out when the turn ends, one per turn; Alt+Q inside a session does the same, `M` drops the queue), `f` keeps only the sessions waiting for you. Everywhere: `O` starts an opencode session in a project (also a bare `opencode` in a terminal, which asks like `claude`; `cockpit --agent opencode new|parallel`): its card wears `◇ opencode` and opens, restarts, exits, comes back after a reboot and takes messages like a Claude one, while `e`, `$`, `C` and the `:` list's Remote Control say they are Claude Code's; `H` resumes a past session (searchable), `/` filters, `:` lists every action, `D` shows the daily digest, `S` the settings (on or off, also `cockpit setting`: the phone on lock, the todo queue, errors handed to agent-cockpit, freezing sessions while gaming, the idle lock on workspace 6, sleeping idle sessions (`idle-sleep`) and how long they idle first (`idle-sleep-after`: Enter cycles 30, 60, 120, 240 minutes), the daily digest, each todo link between projects; and under Phone, the phone page: whether its server answers and the tailnet publishes it, Pair a phone, and the paired phones with when each was last seen, `x` forgets one after a yes), `K` lists the clones of `A`, `+` and reviews and deletes, after a yes, those with no session, no uncommitted change and nothing unpushed (checked by git inside greywall), `P` `W` `G` open the pull requests, Claude on the web and greyproxy's dashboard, `?` the help.
 
 Moving around (⌘ is the physical Command key, which keyd turns into Ctrl): ⌘Tab between the column and the session, ⌘1/2/3 to a panel from inside the session, `l` or → into the session, and ← back to the column from the start of Claude's prompt (an empty prompt, or the cursor before the first character). Anywhere else in the session the arrows are Claude's, to move in your text. The side with the keys is the lit one: the session's title line turns into a filled bar, or the column's focused panel keeps its blue border (it greys while you are in the session), and the divider between them is orange on the focused side. The other pane fades, colours included: the column fades itself, and the session goes through `claude-fade`, a relay between the pane and its nested tmux client that adds dim to every colour while the focus is elsewhere.
 
@@ -190,9 +190,10 @@ ask a question, within a fixed boundary, and hands everything else to you: see
 
 ### Turning it on and off
 
-Open `:` → **chief**. The root has **Decisions**, **Workers**, **Chief controls** and
-**Request summary**. Arrows or `j`/`k` move, Enter inspects, Esc goes back, Page Up/Down
-read long records.
+Open `:` → **chief**. The root has **Needs you · N** (open decisions), **Answers · N**,
+**Chief controls**, **Workers** and **Request summary**. Arrows or `j`/`k` move, Enter
+inspects, Esc goes back, Page Up/Down read long records. `c` on a session card opens the
+Answers list of that session directly.
 
 - **Chief controls → Select chief** lists the live standalone sessions. Enter opens a
   separate confirmation; only `y` enables. It does not start an agent, and the session
@@ -272,7 +273,8 @@ whose outcome is uncertain is never resent.
 ### Answering an escalation
 
 An escalation is a decision and notifies you like one; its banner names the category. In
-**Decisions** it shows as `<category> · <the agent's question>`. Open it to read the category,
+**Needs you** it shows as `<session> · <category> · <the agent's question>`. Sessions are named
+`<label> · <project>`, or `ses_…` and the last six characters of the id when the host has no name. Open it to read the category,
 the question the agent asked, the Chief's reason and its suggested answer, then press Enter for
 its actions:
 
@@ -292,9 +294,60 @@ decision closes by itself. An escalated question form has to be answered in the 
 The decision key prefix `stop-` is reserved for escalations; the Chief cannot use it for a plain
 decision.
 
+### Answers and overruling
+
+**Answers** lists what the Chief (and you) told stopped agents, newest first, three lines each:
+`HH:MM · <session> · <question>`, then `Chief: <answer>` (`Theo: <answer>` for an answer you
+sent), then (dim) the delivery and the Chief's reason. Delivery reads `waiting` (queued), `sent`,
+`not sure` (that word in red: the host cannot tell whether the agent got it) or `cancelled`. An
+overruled answer adds `· overruled · <delivery>` to that line: the delivery of your correction, in
+the same words. The
+host lists the newest 200 answers; the count reads `200+` when there may be older ones. Every line is cut to one line with `…`. An empty list says
+"No Chief answers yet." Enter shows the reason and details.
+
+Press `o` on a Chief answer that was sent (or whose delivery is not sure) to overrule it. You type
+one line of up to 2,000 characters, then a frozen review shows the exact message the agent will
+receive: "Correction from Theo to an earlier Chief answer ("<the first 200 characters of that
+answer>"): <your correction>" followed by the daemon-added label. Enter, then `y`, sends it; if the
+answer changed meanwhile the review is invalidated. Each answer can be overruled once, so a
+correction that was cancelled (the session restarted or closed before it got it) cannot be retried:
+`o` says "Already overruled"; send the agent a message instead. `o` on any other answer says why in
+words: "Not sent yet", "Cancelled", "Already overruled" or "This answer is yours". Esc goes back.
+
+The correction goes out at the session's next chat stop. A Chief chat answer still unsent that the
+Chief wrote before your correction is dropped; one it wrote after (knowing the correction) goes
+out, and so does a reply to an open question form: the correction cannot reach a session waiting
+on a form, so the form reply settles it and the correction follows at the next chat stop. An OpenCode session still running a plugin from
+before this change shows the correction as a generic team message; restart it (`r`) to get the
+correction's own label.
+
+On the session cards, `Chief ✓N` (dim, never amber) counts the answers the Chief gave that session
+for its current task: on the right of the first line, before the activity and age, or in front of
+the second line when the first has no room. It is hidden at 0, repeated in the selected card's
+badges, and refreshes every 10 seconds. `i` on the card adds a "Chief answers" block with the three
+newest answers (`HH:MM · <question>`, `Chief: <answer>`, each cut to one line with `…`) and
+`c all answers`; `c` on the card opens the Answers list filtered to that session, captioned
+`Answers · <session> · Chief ✓N this task` (no `✓` part at 0): the list holds every answer the host
+keeps for the session, Theo's and earlier tasks' included, while `N` counts the Chief's for the
+current task only. A team member's row in its team shows no count; selected, its badges and `i`
+show it like any card's.
+
+The daily digest (`D`, and the first time the cockpit opens each day) ends with what the Chief did since
+the digest last printed: `Chief answered N, escalated M, overruled K since <time>` (K leaves out
+corrections that were cancelled), up to five lines
+`<session> · <question> → <answer>` (newest first, each one line cut with `…`), then `+K more`. When
+nothing happened it says `Chief: nothing answered since <time>`. The time reads `HH:MM` today,
+`yesterday HH:MM` the day before and `Wed 14 Oct 09:05` earlier. The digest reads the team database
+read-only; if that is missing or locked, one line `Chief: unavailable (<reason>)` replaces the
+section, the rest of the digest is unchanged, and the next digest still covers the same answers.
+When the digest prints, it saves the time in `chief-digest-at` next to `digest-day` in the cockpit
+state folder; with no file (or an unreadable one) it looks back 24 hours. A requested summary (Chief
+view, Request summary) lists the same up to five lines under `Answers since <time>`, counted from the
+previous completed summary (24 hours back when there is none).
+
 ### Decisions and recovery
 
-**Decisions → a decision** shows the Chief's question and recommendation, labelled as
+**Needs you → a decision** shows the Chief's question and recommendation, labelled as
 untrusted narrative, and lets you **Resolve** it with a note. A note grants nothing: no
 tool, scope or execution permission, and it answers no permission prompt. Decisions that
 cannot be reached or delivered appear here too.

@@ -5977,7 +5977,7 @@ fn the_digest_covers_the_last_day_today_the_waiting_sessions_and_pull_requests()
     costs::archive_transcripts(&mut archive, &fixture.path("home/.claude/projects")).unwrap();
     let waiting = sessions::Session { session: "w".into(), state: "needs-you".into(), project: "runway".into(), task: "Deploy".into(), ..Default::default() };
     let review = reviews::Review { repository: "shop".into(), number: 7, title: "Fix".into(), ci: "failing".into(), ..Default::default() };
-    let digest = costs::digest_lines(&archive, &[waiting], &[review], chrono::NaiveDate::from_ymd_opt(2026, 10, 18).unwrap()).unwrap().join("\n");
+    let digest = costs::digest_lines(&archive, &[waiting], &[review], chrono::NaiveDate::from_ymd_opt(2026, 10, 18).unwrap(), &costs::ChiefSection::Unavailable("test".into())).unwrap().join("\n");
     let plain = regex::Regex::new(r"\x1b\[[0-9;]*m").unwrap().replace_all(&digest, "").to_string();
     assert!(plain.contains("Yesterday  $8.00 at API prices · 1 session"), "{plain}");
     assert!(plain.contains("! runway"));
@@ -5992,10 +5992,83 @@ fn the_digest_shows_the_weeks_share_spent_in_flagged_sessions() {
     fixture.write("home/.claude/projects/p/s.jsonl", &format!("{}\n{}\n", reply("bloated", 500_000), reply("lean", 10_000)));
     let mut archive = costs::open_archive(&fixture.path("state/usage.sqlite")).unwrap();
     costs::archive_transcripts(&mut archive, &fixture.path("home/.claude/projects")).unwrap();
-    let digest = costs::digest_lines(&archive, &[], &[], chrono::NaiveDate::from_ymd_opt(2026, 10, 18).unwrap()).unwrap().join("\n");
+    let digest = costs::digest_lines(&archive, &[], &[], chrono::NaiveDate::from_ymd_opt(2026, 10, 18).unwrap(), &costs::ChiefSection::Unavailable("test".into())).unwrap().join("\n");
     let plain = regex::Regex::new(r"\x1b\[[0-9;]*m").unwrap().replace_all(&digest, "").to_string();
     assert!(plain.contains("Last 7 days  $4.10 · 51% in flagged sessions (the 7 days before: –)"), "{plain}");
     assert_eq!(plain.matches("large context").count(), 1, "{plain}");
+}
+
+fn digest_with_chief(sessions: &[sessions::Session], chief: &costs::ChiefSection) -> String {
+    let fixture = Fixture::new();
+    let archive = costs::open_archive(&fixture.path("state/usage.sqlite")).unwrap();
+    let digest = costs::digest_lines(&archive, sessions, &[], chrono::NaiveDate::from_ymd_opt(2026, 10, 18).unwrap(), chief).unwrap().join("\n");
+    regex::Regex::new(r"\x1b\[[0-9;]*m").unwrap().replace_all(&digest, "").to_string()
+}
+
+fn local_ms(day: u32, hour: u32, minute: u32) -> i64 {
+    use chrono::TimeZone;
+    chrono::Local.with_ymd_and_hms(2026, 10, day, hour, minute, 0).unwrap().timestamp_millis()
+}
+
+fn digest_answer(session_id: &str, question: &str, answer: &str) -> crate::chief::store::DigestAnswer {
+    crate::chief::store::DigestAnswer { session_id: session_id.into(), question: question.into(), answer: answer.into() }
+}
+
+#[test]
+fn the_digest_lists_chief_answers_since_the_last_digest() {
+    let named = sessions::Session { session: "ses_3f2a9c0b1ffeQkTz8mWn4rJd2L".into(), label: "Fix login".into(), project: "shop".into(), ..Default::default() };
+    let digest = crate::chief::store::ChiefDigest { answered: 3, escalated: 1, overruled: 2, more: 0, lines: vec![
+        digest_answer("ses_3f2a9c0b1ffeQkTz8mWn4rJd2L", "Which option?", "Use option B."),
+        digest_answer("ses_unknown0000000000abcdef", "Keep the flag?", "Yes, keep it.")] };
+    let plain = digest_with_chief(&[named], &costs::ChiefSection::Answers { since_ms: local_ms(18, 8, 12), digest });
+    assert!(plain.contains("Chief answered 3, escalated 1, overruled 2 since 08:12"), "{plain}");
+    assert!(plain.contains("    Fix login · shop · Which option? → Use option B."), "{plain}");
+    assert!(plain.contains("    ses_…abcdef · Keep the flag? → Yes, keep it."), "{plain}");
+    assert!(!plain.contains("more"), "{plain}");
+}
+
+#[test]
+fn the_digest_names_yesterday_and_older_start_times() {
+    let empty = || crate::chief::store::ChiefDigest { answered: 0, escalated: 0, overruled: 0, more: 0, lines: vec![] };
+    let yesterday = digest_with_chief(&[], &costs::ChiefSection::Answers { since_ms: local_ms(17, 22, 30), digest: empty() });
+    assert!(yesterday.contains("Chief: nothing answered since yesterday 22:30"), "{yesterday}");
+    let older = digest_with_chief(&[], &costs::ChiefSection::Answers { since_ms: local_ms(14, 9, 5), digest: empty() });
+    assert!(older.contains("Chief: nothing answered since Wed 14 Oct 09:05"), "{older}");
+}
+
+#[test]
+fn the_digest_says_when_the_chief_answered_nothing() {
+    let digest = crate::chief::store::ChiefDigest { answered: 0, escalated: 0, overruled: 0, more: 0, lines: vec![] };
+    let plain = digest_with_chief(&[], &costs::ChiefSection::Answers { since_ms: local_ms(18, 8, 12), digest });
+    assert!(plain.contains("Chief: nothing answered since 08:12"), "{plain}");
+    assert!(!plain.contains("Chief answered"), "{plain}");
+}
+
+#[test]
+fn the_digest_leaves_the_rest_intact_when_the_chief_is_unavailable() {
+    let plain = digest_with_chief(&[], &costs::ChiefSection::Unavailable("no team database yet".into()));
+    assert!(plain.contains("Chief: unavailable (no team database yet)"), "{plain}");
+    assert!(plain.contains("Today so far"), "{plain}");
+}
+
+#[test]
+fn the_digest_shows_at_most_five_answers_then_a_count() {
+    let lines = (0..5).map(|index| digest_answer("ses_abcdefghijkl", &format!("Question {index}?"), "Yes.")).collect();
+    let digest = crate::chief::store::ChiefDigest { answered: 12, escalated: 0, overruled: 0, more: 7, lines };
+    let plain = digest_with_chief(&[], &costs::ChiefSection::Answers { since_ms: local_ms(18, 8, 12), digest });
+    assert_eq!(plain.matches("→ Yes.").count(), 5, "{plain}");
+    assert!(plain.contains("    +7 more"), "{plain}");
+}
+
+#[test]
+fn a_chief_answer_in_the_digest_is_escaped_and_cut_to_one_line() {
+    let hostile = digest_answer("ses_abcdefghijkl", &format!("Line one\nline two \x1b[2J {}", "q".repeat(500)), &"a".repeat(2000));
+    let digest = crate::chief::store::ChiefDigest { answered: 1, escalated: 0, overruled: 0, more: 0, lines: vec![hostile] };
+    let plain = digest_with_chief(&[], &costs::ChiefSection::Answers { since_ms: local_ms(18, 8, 12), digest });
+    let line = plain.lines().find(|line| line.contains("Line one")).unwrap();
+    assert!(line.contains("Line one line two \\u001b[2J"), "{line}");
+    assert!(line.ends_with('…') && line.chars().count() <= 100, "{line}");
+    assert!(!plain.contains('\x1b'), "{plain}");
 }
 
 // ---- Pull requests ----
@@ -11131,4 +11204,221 @@ case "$*" in *activeworkspace*) echo '{"id": 6}' ;; esac"#);
     let focus: Vec<Value> = requests.lock().unwrap().iter().filter(|request| request["request"] == "chief_focus").cloned().collect();
     assert_eq!(focus.len(), 1, "the chief never learns Theo's focus: {:?}", requests.lock().unwrap());
     assert_eq!(focus[0]["workspace_active"], true);
+}
+
+// ---- Chief answers on the session cards, in the details and behind c ----
+
+fn chief_answer(minutes_ago: i64, question: &str, answer: &str) -> Value {
+    json!({"created_at_ms": (util::now_secs() - minutes_ago * 60) * 1000, "question": question, "answer": answer, "delivery": "received"})
+}
+
+/// A team host whose snapshot carries `chief_answers` for the given sessions: (session, count, recent).
+fn chief_answers_host(fixture: &Fixture, counts: Vec<(&str, u32, Vec<Value>)>) {
+    let mut snapshot = team_snapshot();
+    snapshot["members"] = json!([]);
+    snapshot["chief_answers"] = json!(counts.into_iter().map(|(session, count, recent)| json!({"session_id": session, "count": count, "recent": recent})).collect::<Vec<_>>());
+    team_host(fixture, snapshot, vec![]);
+}
+
+fn card_of(app: &App, session: &str) -> crate::app::Line {
+    let index = app.sessions.iter().position(|candidate| candidate.session == session).unwrap();
+    app.panels[1].lines.iter().find(|line| line.item == Some(index)).cloned().unwrap()
+}
+
+#[test]
+fn a_card_shows_how_many_answers_the_chief_gave() {
+    use ratatui::style::Modifier;
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "dotfiles", "/r/dotfiles", 1)]));
+    chief_answers_host(&fixture, vec![(SESSION_A, 2, vec![chief_answer(3, "Which?", "A.")])]);
+    let mut app = fixture.app();
+    app.check_team();
+    app.build();
+    let card = card_of(&app, SESSION_A);
+    let count = card.right.iter().find(|part| part.text == "Chief ✓2").unwrap_or_else(|| panic!("no Chief ✓2 in {:?}", card.right.iter().map(|part| &part.text).collect::<Vec<_>>()));
+    assert!(count.style.add_modifier.contains(Modifier::DIM), "the count is not dim");
+    assert_eq!(count.style.fg, crate::app::style(crate::app::FG_DARK).fg);
+    assert_ne!(count.style.fg, crate::app::style(crate::app::YELLOW).fg);
+    assert_eq!(card.right[0].text, "Chief ✓2", "the count comes before the activity and age");
+    assert_eq!(card.right.len(), 2);
+    app.panels[1].selected = 0;
+    render(&mut app, 100, 40);
+    let badges = app.panels[1].fixed_bottom.iter().flat_map(|line| line.right.iter()).find(|part| part.text == "Chief ✓2").expect("badge in the selected card");
+    assert!(badges.style.add_modifier.contains(Modifier::DIM));
+}
+
+#[test]
+fn a_card_without_chief_answers_shows_no_count() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "dotfiles", "/r/dotfiles", 1), session(SESSION_B, "waiting", "dotfiles", "/r/dotfiles", 2)]));
+    chief_answers_host(&fixture, vec![(SESSION_B, 1, vec![chief_answer(1, "Which?", "A.")]), (SESSION_A, 0, vec![])]);
+    let mut app = fixture.app();
+    app.check_team();
+    app.build();
+    app.panels[1].selected = app.sessions.iter().position(|candidate| candidate.session == SESSION_B).unwrap();
+    let rendered = buffer_rows(&render(&mut app, 100, 40)).join("\n");
+    assert_eq!(rendered.matches("Chief ✓").count(), 2, "one card line and one selected badge for the single session with answers: {rendered}");
+    assert!(card_of(&app, SESSION_A).right.iter().all(|part| !part.text.contains("Chief")));
+    assert!(!texts(&app, 1).iter().any(|text| text.contains("✓0")));
+}
+
+#[test]
+fn a_card_without_room_on_line_one_puts_the_count_in_line_two() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "needs-you", "dotfiles", "/r/dotfiles", 1)]));
+    chief_answers_host(&fixture, vec![(SESSION_A, 3, vec![chief_answer(1, "Which?", "A.")])]);
+    let mut app = fixture.app();
+    app.check_team();
+    app.width = 26;
+    app.build();
+    let index = 0;
+    let lines: Vec<_> = app.panels[1].lines.iter().filter(|line| line.item == Some(index)).collect();
+    assert!(lines[0].right.iter().all(|part| !part.text.contains("Chief")));
+    assert!(lines[1].texts().starts_with("Chief ✓3 · "), "{}", lines[1].texts());
+}
+
+#[test]
+fn a_gone_team_host_clears_the_chief_counts() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "dotfiles", "/r/dotfiles", 1)]));
+    chief_answers_host(&fixture, vec![(SESSION_A, 2, vec![chief_answer(1, "Which?", "A.")])]);
+    let mut app = fixture.app();
+    app.check_team();
+    app.build();
+    assert!(card_of(&app, SESSION_A).right.iter().any(|part| part.text == "Chief ✓2"));
+    fs::remove_file(crate::paths::team_host_socket()).unwrap();
+    app.team_checked = 0.0;
+    app.check_team();
+    app.build();
+    assert!(card_of(&app, SESSION_A).right.iter().all(|part| !part.text.contains("Chief")));
+}
+
+fn open_details(app: &mut App) -> String {
+    render(app, 100, 50);
+    app.handle(Key::Char('i'), &mut FakeScreen::default());
+    buffer_rows(&render(app, 100, 50)).join("\n")
+}
+
+#[test]
+fn session_details_list_the_recent_chief_answers() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "dotfiles", "/r/dotfiles", 1)]));
+    chief_answers_host(&fixture, vec![(SESSION_A, 4, vec![
+        chief_answer(1, "Which database?", "Use SQLite."),
+        chief_answer(5, "Which port?", "Use 8080."),
+        chief_answer(9, "Which name?", "Call it ledger."),
+    ])]);
+    let mut app = fixture.app();
+    app.check_team();
+    app.build();
+    let details = open_details(&mut app);
+    for expected in ["Chief answers", "Which database?", "Chief: Use SQLite.", "Which port?", "Chief: Use 8080.", "Which name?", "Chief: Call it ledger.", "c all answers"] {
+        assert!(details.contains(expected), "{expected} missing:\n{details}");
+    }
+    let newest = details.find("Which database?").unwrap();
+    assert!(newest < details.find("Which port?").unwrap() && details.find("Which port?").unwrap() < details.find("Which name?").unwrap());
+}
+
+#[test]
+fn session_details_without_chief_answers_have_no_chief_block() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "dotfiles", "/r/dotfiles", 1)]));
+    chief_answers_host(&fixture, vec![]);
+    let mut app = fixture.app();
+    app.check_team();
+    app.build();
+    let details = open_details(&mut app);
+    assert!(!details.contains("Chief answers") && !details.contains("c all answers"), "{details}");
+}
+
+#[test]
+fn c_opens_the_answers_of_the_selected_session() {
+    const SESSION_C: &str = "cccccccc-0000-4000-8000-00000000beef";
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "dotfiles", "/r/dotfiles", 1), session(SESSION_C, "waiting", "dotfiles", "/r/dotfiles", 2)]));
+    chief_answers_host(&fixture, vec![(SESSION_C, 1, vec![chief_answer(1, "Which?", "A.")])]);
+    let mut app = fixture.app();
+    app.check_team();
+    app.build();
+    app.panels[1].selected = app.sessions.iter().position(|candidate| candidate.session == SESSION_C).unwrap();
+    app.handle(Key::Char('c'), &mut FakeScreen::default());
+    let rendered = buffer_rows(&render(&mut app, 100, 40)).join("\n");
+    assert!(rendered.contains("Answers · ses_…00beef · Chief ✓1 this task"), "the caption states the card's rule: {rendered}");
+}
+
+#[test]
+fn c_on_a_session_without_answers_opens_an_empty_list() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "dotfiles", "/r/dotfiles", 1)]));
+    chief_answers_host(&fixture, vec![]);
+    let mut app = fixture.app();
+    app.check_team();
+    app.build();
+    app.handle(Key::Char('c'), &mut FakeScreen::default());
+    let rendered = buffer_rows(&render(&mut app, 100, 40)).join("\n");
+    assert!(rendered.contains("Answers ·") && rendered.contains("No Chief answers yet."), "{rendered}");
+}
+
+#[test]
+fn a_long_answer_stays_on_one_line_with_an_ellipsis() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "dotfiles", "/r/dotfiles", 1)]));
+    let long = format!("ab\u{202e}{}", "x".repeat(2000));
+    chief_answers_host(&fixture, vec![(SESSION_A, 1, vec![chief_answer(1, "Which?", &long)])]);
+    let mut app = fixture.app();
+    app.check_team();
+    app.build();
+    let details = open_details(&mut app);
+    assert!(!details.contains('\u{202e}'), "the bidi character reached the screen");
+    let rows: Vec<&str> = details.lines().filter(|row| row.contains("xxxx")).collect();
+    assert_eq!(rows.len(), 1, "the answer wrapped:\n{details}");
+    assert!(rows[0].contains("Chief: ab\\u202e") && rows[0].trim_end_matches(|c: char| c == ' ' || c == '│').ends_with('…'), "{}", rows[0]);
+}
+
+#[test]
+fn session_details_show_at_most_three_chief_answers() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "dotfiles", "/r/dotfiles", 1)]));
+    chief_answers_host(&fixture, vec![(SESSION_A, 4, vec![
+        chief_answer(1, "Question one?", "A."), chief_answer(2, "Question two?", "B."),
+        chief_answer(3, "Question three?", "C."), chief_answer(4, "Question four?", "D."),
+    ])]);
+    let mut app = fixture.app();
+    app.check_team();
+    app.build();
+    let details = open_details(&mut app);
+    for shown in ["Question one?", "Question two?", "Question three?"] { assert!(details.contains(shown), "{shown} missing:\n{details}"); }
+    assert!(!details.contains("Question four?"), "a fourth answer showed:\n{details}");
+}
+
+#[test]
+fn c_in_the_session_details_opens_the_answers_of_that_session() {
+    const SESSION_C: &str = "cccccccc-0000-4000-8000-00000000beef";
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "dotfiles", "/r/dotfiles", 1), session(SESSION_C, "waiting", "dotfiles", "/r/dotfiles", 2)]));
+    chief_answers_host(&fixture, vec![(SESSION_C, 1, vec![chief_answer(1, "Which?", "A.")])]);
+    let mut app = fixture.app();
+    app.check_team();
+    app.build();
+    app.panels[1].selected = app.sessions.iter().position(|candidate| candidate.session == SESSION_C).unwrap();
+    let details = open_details(&mut app);
+    assert!(details.contains("c all answers"));
+    app.handle(Key::Char('c'), &mut FakeScreen::default());
+    let rendered = buffer_rows(&render(&mut app, 100, 40)).join("\n");
+    assert!(rendered.contains("Answers · ses_…00beef") && !rendered.contains("Session details"), "{rendered}");
+    assert!(!rendered.contains("✓0"), "no count on a session without answers: {rendered}");
+}
+
+#[test]
+fn c_in_the_session_details_without_chief_answers_does_nothing() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "dotfiles", "/r/dotfiles", 1)]));
+    chief_answers_host(&fixture, vec![]);
+    let mut app = fixture.app();
+    app.check_team();
+    app.build();
+    open_details(&mut app);
+    app.handle(Key::Char('c'), &mut FakeScreen::default());
+    let rendered = buffer_rows(&render(&mut app, 100, 40)).join("\n");
+    assert!(rendered.contains("Session details") && !rendered.contains("Answers ·"), "{rendered}");
 }

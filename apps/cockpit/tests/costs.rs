@@ -337,3 +337,78 @@ fn fifo_metadata_is_quarantined_without_blocking_valid_evidence() {
     let rejected = fs::read_dir(directory.join("rejected")).unwrap().next().unwrap().unwrap().path();
     assert!(fs::symlink_metadata(rejected).unwrap().file_type().is_fifo());
 }
+
+fn digest_sandbox() -> Sandbox {
+    let sandbox = archived_replies();
+    let reviews = sandbox.home.join("reviews.json");
+    fs::write(&reviews, "[]").unwrap();
+    let mut sandbox = sandbox;
+    sandbox.env.insert("COCKPIT_REVIEWS_FIXTURE".into(), reviews.display().to_string());
+    sandbox
+}
+
+fn digest_text(sandbox: &Sandbox) -> String {
+    let output = sandbox.run(env!("CARGO_BIN_EXE_cockpit-sidebar"), &["digest"], &[]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let colours = regex::Regex::new(r"\x1b\[[0-9;]*m").unwrap();
+    colours.replace_all(&String::from_utf8(output.stdout).unwrap(), "").to_string()
+}
+
+fn now_ms() -> i64 { chrono::Utc::now().timestamp_millis() }
+
+fn team_database_with_answer(sandbox: &Sandbox, created_at: i64) {
+    let connection = cockpit::teams::store::open(&sandbox.state.join("claude-audit/teams.sqlite")).unwrap();
+    connection.execute("INSERT INTO chief_stops(id,session_id,runtime,boundary,project,task_id,bundle,state,created_at) VALUES ('stop-a','ses_abcdefghijkl','runtime-a','b','path:/shop','task-a','{}','answered',?1)", [created_at]).unwrap();
+    connection.execute("INSERT INTO chief_answers(id,stop_id,session_id,question,answer,reason,source,delivery,created_at) VALUES ('answer-a','stop-a','ses_abcdefghijkl','Which option?','Use option B.','Because.','chief','received',?1)", [created_at]).unwrap();
+}
+
+#[test]
+fn a_missing_team_database_leaves_the_digest_intact() {
+    let sandbox = digest_sandbox();
+    let digest = digest_text(&sandbox);
+    assert!(digest.contains("Chief: unavailable ("), "{digest}");
+    assert!(digest.contains("Today so far"), "{digest}");
+    assert!(!sandbox.state.join("claude-audit/teams.sqlite").exists(), "reading the digest must not create the team database");
+    assert!(!sandbox.state.join("cockpit/chief-digest-at").exists(), "answers nobody saw must not move the since-time");
+}
+
+#[test]
+fn a_locked_team_database_leaves_the_digest_intact() {
+    let sandbox = digest_sandbox();
+    team_database_with_answer(&sandbox, now_ms() - 60_000);
+    let mut blocker = rusqlite::Connection::open(sandbox.state.join("claude-audit/teams.sqlite")).unwrap();
+    blocker.execute_batch("PRAGMA locking_mode=EXCLUSIVE;").unwrap();
+    let transaction = blocker.transaction_with_behavior(rusqlite::TransactionBehavior::Exclusive).unwrap();
+    transaction.execute("UPDATE chief_answers SET reason='locked'", []).unwrap();
+    let digest = digest_text(&sandbox);
+    assert!(digest.contains("Chief: unavailable ("), "{digest}");
+    assert!(digest.contains("Today so far"), "{digest}");
+    assert!(!sandbox.state.join("cockpit/chief-digest-at").exists());
+}
+
+#[test]
+fn printing_the_digest_moves_the_since_time() {
+    let sandbox = digest_sandbox();
+    team_database_with_answer(&sandbox, now_ms() - 3_600_000);
+    let first = digest_text(&sandbox);
+    assert!(first.contains("Chief answered 1, escalated 0, overruled 0 since"), "{first}");
+    assert!(first.contains("ses_…ghijkl · Which option? → Use option B."), "{first}");
+    let since_file = sandbox.state.join("cockpit/chief-digest-at");
+    let written: i64 = fs::read_to_string(&since_file).unwrap().trim().parse().unwrap();
+    assert!((now_ms() - written).abs() < 60_000, "{written}");
+    let second = digest_text(&sandbox);
+    assert!(second.contains("Chief: nothing answered since"), "{second}");
+    assert!(!second.contains("Which option?"), "{second}");
+}
+
+#[test]
+fn an_unreadable_since_time_falls_back_to_the_last_24_hours() {
+    let sandbox = digest_sandbox();
+    team_database_with_answer(&sandbox, now_ms() - 3_600_000);
+    fs::create_dir_all(sandbox.state.join("cockpit")).unwrap();
+    fs::write(sandbox.state.join("cockpit/chief-digest-at"), "yesterday-ish").unwrap();
+    let digest = digest_text(&sandbox);
+    assert!(digest.contains("Chief answered 1,"), "{digest}");
+    let written: i64 = fs::read_to_string(sandbox.state.join("cockpit/chief-digest-at")).unwrap().trim().parse().unwrap();
+    assert!((now_ms() - written).abs() < 60_000, "{written}");
+}

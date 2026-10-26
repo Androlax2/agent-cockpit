@@ -55,6 +55,26 @@ fn chief_host_review_pagination_invalidates_on_material_change_not_heartbeat_tim
     assert_eq!(stale["next"],0);
 }
 
+#[test]
+fn the_chief_snapshot_names_sessions() {
+    let mut bench = team_bench();
+    enable(&mut bench,SESSION_A);
+    let connection = bench.registry.teams.as_ref().unwrap();
+    connection.execute("INSERT INTO chief_stops(id,session_id,runtime,boundary,project,task_id,bundle,state,created_at) VALUES ('stop-b',?1,'runtime-30','waiting:1','path:/project-a','1d3fd318','{}','answered',10)", [SESSION_B]).unwrap();
+    connection.execute("INSERT INTO chief_answers(id,stop_id,session_id,question,answer,reason,source,delivery,created_at) VALUES ('answer-b','stop-b',?1,'Which?','A.','Because.','chief','received',20)", [SESSION_B]).unwrap();
+    bench.registry.sessions.get_mut(SESSION_A).unwrap().label = "Fix login".into();
+    bench.registry.sessions.get_mut(SESSION_B).unwrap().label = String::new();
+    let snapshot = |bench: &mut Bench| crate::teams::host(&mut bench.registry, std::process::id(), HostRequest::ChiefSnapshot {after:0,limit:50,generation:None}).unwrap().result.unwrap();
+    let names = snapshot(&mut bench)["session_names"].clone();
+    assert_eq!(names[SESSION_A], "Fix login · project-a");
+    assert!(names.get(SESSION_B).is_none(), "a session without a label has no name: {names}");
+    assert!(names.get(OPENCODE_SESSION).is_none());
+    bench.registry.sessions.get_mut(SESSION_B).unwrap().label = "Review PR".into();
+    bench.registry.sessions.get_mut(SESSION_B).unwrap().runtime = String::new();
+    assert!(crate::teams::live_sessions(&mut bench.registry).unwrap().iter().all(|session| session.session_id != SESSION_B), "the session is no longer live");
+    assert_eq!(snapshot(&mut bench)["session_names"][SESSION_B], "Review PR · project-a", "a session an answer refers to is named while it is not live");
+}
+
 fn blocked_by_for(bench: &mut Bench, id: &str) -> Vec<String> {
     let session = verified(bench,id);
     crate::chief::workers(&mut bench.registry).unwrap().into_iter().find(|worker|worker.session==session).unwrap().blocked_by

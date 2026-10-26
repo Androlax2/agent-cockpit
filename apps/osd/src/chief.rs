@@ -199,7 +199,23 @@ pub fn snapshot(registry: &mut Registry, after: i64, limit: usize, generation: O
     }
     snapshot["records"] = page;
     snapshot["coordination_error"] = serde_json::json!(registry.chief_fault);
+    snapshot["session_names"] = session_names(registry, &live, snapshot["records"].as_array().expect("bounded page"));
     Ok(snapshot)
+}
+
+/// `<label> · <project>` for every live session and every session a record in the page refers to.
+/// A session the registry does not know, or that has no label, is left out so callers fall back to the id.
+fn session_names(registry: &Registry, live: &[WorkerState], records: &[Value]) -> Value {
+    let mut names = serde_json::Map::new();
+    let referenced = records.iter().filter_map(|record| record["session_id"].as_str().or_else(|| record["session"]["session_id"].as_str()));
+    let live_ids = live.iter().map(|worker| worker.session.session_id.as_str());
+    for session_id in referenced.chain(live_ids) {
+        let Some(entry) = registry.sessions.get(session_id) else { continue };
+        if entry.label.is_empty() { continue; }
+        let name = if entry.project.is_empty() { entry.label.clone() } else { format!("{} · {}", entry.label, entry.project) };
+        names.insert(session_id.to_string(), Value::String(name));
+    }
+    Value::Object(names)
 }
 
 /// The state boundary at which the session is stopped for the Chief, if it is. A question and a
@@ -237,7 +253,8 @@ fn observe_stops(registry: &mut Registry, live: &[WorkerState], now_ms: i64) -> 
     observe_stops_with(registry, live, now_ms, cockpit::todo::TodoList::load)
 }
 
-/// Closes the stops of sessions that moved on, and, while a Chief is enabled, records a stop for every
+/// Withdraws Theo's corrections whose session is gone or restarted, closes the stops of sessions that
+/// moved on, and, while a Chief is enabled, records a stop for every
 /// OpenCode session other than the Chief that sits at a stop boundary while its todo is in progress.
 /// A stop whose bundle cannot be built is not recorded; it is retried after a backoff and logged once
 /// per boundary. The todo list is read only when some session is at a stop boundary.
@@ -246,6 +263,7 @@ fn observe_stops(registry: &mut Registry, live: &[WorkerState], now_ms: i64) -> 
 /// Missing or stale telemetry only keeps a new stop from being recorded: it is no sign the agent
 /// moved on, and an answer still needs fresh telemetry to be delivered.
 pub(crate) fn observe_stops_with(registry: &mut Registry, live: &[WorkerState], now_ms: i64, load_todos: impl FnOnce() -> cockpit::todo::TodoList) -> Result<(), TeamError> {
+    store::cancel_stranded_corrections(registry.teams.as_mut().expect("workers_at opens the protected store"), live, now_ms)?;
     let connection = registry.teams.as_ref().expect("workers_at opens the protected store");
     for session_id in store::sessions_with_open_stops(connection)? {
         let is_live = live.iter().any(|worker| worker.session.session_id == session_id);

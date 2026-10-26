@@ -214,6 +214,17 @@ pub struct Part {
     pub action: Option<&'static str>,
 }
 
+/// How many answers the Chief gave a session, and its newest few for the details.
+struct ChiefAnswers {
+    count: usize,
+    recent: Vec<Value>,
+}
+
+/// The cells right of a session card's title that its badges may use, at least a short title being kept.
+fn session_card_right_room(width: u16, title_column: usize) -> usize {
+    (width as usize).saturating_sub(4 + title_column + MIN_SESSION_TITLE_WIDTH + 2)
+}
+
 fn part(text: impl Into<String>, style: Style) -> Part {
     Part { text: text.into(), style, action: None }
 }
@@ -315,6 +326,8 @@ struct SessionDetails {
     text: String,
     scroll: usize,
     actions: Vec<DetailAction>,
+    /// The session whose Chief answers `c` opens from here; set only when it has some.
+    chief_answers_of: Option<String>,
 }
 
 #[derive(Clone)]
@@ -788,6 +801,8 @@ pub struct App {
     pub(crate) session_task_titles: HashMap<String, String>,
     session_branches: HashMap<String, String>,
     session_queued: HashMap<String, usize>,
+    /// What the Chief answered per session, as the team host last reported it; only sessions with answers.
+    chief_answers: HashMap<String, ChiefAnswers>,
     session_roots: HashMap<String, String>,
     pub(crate) windows: Vec<Window>,
     quota_rows: Vec<usage::QuotaRow>,
@@ -881,7 +896,7 @@ impl App {
             disk_usage: util::fullest_disk, disk: None, disk_checked: 0.0, restore_checked: 0.0, start_files: Vec::new(),
             width: DEFAULT_COLUMN_WIDTH, sessions: Vec::new(), running_sessions: Vec::new(), windows: Vec::new(), quota_rows: Vec::new(), review_rows: Vec::new(), todo_entries: Vec::new(), idea_entries: Vec::new(),
             session_task_titles: HashMap::new(), session_branches: HashMap::new(),
-            session_queued: HashMap::new(), session_roots: HashMap::new(),
+            session_queued: HashMap::new(), chief_answers: HashMap::new(), session_roots: HashMap::new(),
             todo_scope: String::new(), shown_session: String::new(), todo_tab: TODO_TAB_OPEN, todo_tabs: HashMap::new(), todo_categories: HashMap::new(), saved_todo_scope: None, todo_jump: None, todo_counts: [0; 5], prompts_sent: HashMap::new(), subscription_held: HashSet::new(), subscription_directories: HashSet::new(), subscription_error: None, craft_roots: HashMap::new(), hit_lines: HashMap::new(), hit_actions: HashMap::new(),
             subscription_polled_at: None, subscription_waiting_shown: HashMap::new(),
             gathered: None, pending: Vec::new(), plan: String::new(), craft_checked: 0.0, running_copies_unpushed: HashMap::new(), running_copies_checked: 0.0, todo_recovery_pending, idea_header_range: None,
@@ -1898,7 +1913,15 @@ impl App {
                 None if is_idle => format!("Idle {}", util::age(session.since)),
                 None => activity.to_string(),
             };
-            lines.push(Line { segments, right: vec![part(activity_badge, tint)], item: Some(index), accent });
+            let title_column = segments.iter().map(|(column, _, _)| *column as usize).max().unwrap_or(0);
+            let chief_count = self.chief_answers.get(&session.session).map(|answers| format!("Chief ✓{}", answers.count));
+            let (chief_on_line_one, chief_on_line_two) = match chief_count {
+                Some(count) if width_of(&count) + 2 + width_of(&activity_badge) <= session_card_right_room(self.width, title_column) => (Some(count), None),
+                other => (None, other),
+            };
+            let mut line_one_right: Vec<Part> = chief_on_line_one.into_iter().map(|count| part(count, dim(FG_DARK))).collect();
+            line_one_right.push(part(activity_badge, tint));
+            lines.push(Line { segments, right: line_one_right, item: Some(index), accent });
             let updates = self.continuity.as_ref().ok().map(|state| state.updates()).unwrap_or_default();
             let labels: Vec<&str> = updates.iter().filter(|update| update.session == session.session).map(|update|
                 match update.kind { crate::continuity::UpdateKind::Result => "unseen result", crate::continuity::UpdateKind::Question => "new question" }).collect();
@@ -1908,7 +1931,15 @@ impl App {
                     .map(|time| time.with_timezone(&chrono::Local).format("%H:%M").to_string()).unwrap_or_else(|| expiry.to_string()));
             }
             if !labels.is_empty() { activity_text = format!("{}{}{}", labels.join(" · "), if activity_text.is_empty() { "" } else { " · " }, activity_text); }
-            lines.push(Line { segments: [rail, vec![segment(2 + indent, activity_text, if needs_attention { style(YELLOW) } else { dim(FG_DARK) })]].concat(), right: vec![], item: Some(index), accent });
+            let activity_segments = match chief_on_line_two {
+                Some(count) => {
+                    let prefix = format!("{count} · ");
+                    let activity_column = 2 + indent + width_of(&prefix) as u16;
+                    vec![segment(2 + indent, prefix, dim(FG_DARK)), segment(activity_column, activity_text, if needs_attention { style(YELLOW) } else { dim(FG_DARK) })]
+                },
+                None => vec![segment(2 + indent, activity_text, if needs_attention { style(YELLOW) } else { dim(FG_DARK) })],
+            };
+            lines.push(Line { segments: [rail, activity_segments].concat(), right: vec![], item: Some(index), accent });
             if session.group_position == session.group_size - 1 {
                 lines.push(Line::default());
             }
@@ -2079,6 +2110,9 @@ impl App {
         }
         if session.pinned {
             badges.push(part("⚲", style(YELLOW)));
+        }
+        if let Some(answers) = self.chief_answers.get(&session.session) {
+            badges.push(part(format!("Chief ✓{}", answers.count), dim(FG_DARK)));
         }
         badges.push(part(age(session.since), dim(FG_DARK)));
         let mut right = Vec::new();
@@ -2308,6 +2342,14 @@ impl App {
         if !session.outcome.is_empty() {
             text += &format!("Last turn:\n{}\n\n", session.outcome);
         }
+        if let Some(answers) = self.chief_answers.get(&session.session) {
+            let room = (self.width as usize).saturating_sub(6).max(2);
+            text += "Chief answers\n";
+            for answer in answers.recent.iter().take(3) {
+                for line in crate::chief::view::recent_answer_lines(answer, room) { text += &format!("{line}\n"); }
+            }
+            text += "c all answers\n\n";
+        }
         if let TeamLinks::Ready(snapshot) = &self.team_links {
             if let Some(task) = crate::teams::sidebar::member_task(snapshot, session) {
                 let member = crate::teams::sidebar::membership(snapshot, session).expect("task came from membership");
@@ -2324,7 +2366,8 @@ impl App {
                 }
             }
         }
-        self.session_details = Some(SessionDetails { title: "Session details".into(), text, scroll: 0, actions: Vec::new() });
+        let chief_answers_of = self.chief_answers.contains_key(&session.session).then(|| session.session.clone());
+        self.session_details = Some(SessionDetails { title: "Session details".into(), text, scroll: 0, actions: Vec::new(), chief_answers_of });
     }
 
     /// The selected session's keys, most pressing first: what its card asks for (an approval, a
@@ -2357,7 +2400,9 @@ impl App {
         } else if selected.unpushed > 0 {
             hints.push(("U", "push"));
         }
-        hints.extend([("⏎", "open"), ("n", "Next needing me"), ("/", "find"), ("i", "details"), ("e", "effort"), ("g", "git"), ("+", "another"), ("x", "exit")]);
+        hints.extend([("⏎", "open"), ("n", "Next needing me"), ("/", "find"), ("i", "details")]);
+        if self.chief_answers.contains_key(&selected.session) { hints.push(("c", "Chief answers")); }
+        hints.extend([("e", "effort"), ("g", "git"), ("+", "another"), ("x", "exit")]);
         if !selected.session.is_empty() && selected.is_external() {
             hints.retain(|(key, _)| !session_key_requires_terminal(if *key == "⏎" { Key::Enter } else { Key::Char(key.chars().next().unwrap()) }));
             if self.attention_indices(util::now_secs()).is_empty() {
@@ -2375,6 +2420,7 @@ impl App {
         vec![("⏎", "show the session and move the cursor into it"), ("n", "Next needing me: focus its approval or question, return to Active Sessions after answering"),
              ("/", "find a session by project or task without opening it or changing list order"),
              ("i", "read the complete task, request and metadata; arrows scroll and Escape closes"),
+             ("c", "what the Chief answered this session (Chief ✓N on its card), newest first; o there overrules one"),
              ("x", "exit the session: Ctrl-C twice, then killed if it lingers"), ("r", "restart in place: same conversation, new process"),
              ("s", "sleep now: it exits to free its memory and keeps its card; opening or messaging it resumes the conversation"),
              ("⌘R", "restart the sessions started before a change they lack (badge ⟳ restart), when they wait at their prompt; busy ones are named and left alone"),
@@ -2424,6 +2470,10 @@ impl App {
             }).unwrap_or_default(),
             Key::Char('/') => self.find_session(screen),
             Key::Char('i') => { self.open_session_details(); String::new() }
+            Key::Char('c') => match session {
+                Some(s) => self.open_chief_answers(Some(&s.session)),
+                None => String::new(),
+            },
             Key::Char('p') => {
                 if let Some(s) = known {
                     self.view.toggle_pin(&s.session);
@@ -2918,7 +2968,7 @@ impl App {
                 self.session_details = Some(SessionDetails {
                     title: "Idea".into(),
                     text: format!("{}\n\n{}", self.idea_source(&item), todo_details(&Entry::Typed(item))),
-                    scroll: 0, actions: Vec::new(),
+                    scroll: 0, actions: Vec::new(), chief_answers_of: None,
                 });
                 String::new()
             }
@@ -3634,7 +3684,7 @@ impl App {
             let mut right_width = 0;
             let right_room = if index == 1 && line.item.is_some() {
                 let title_column = line.segments.iter().map(|(column, _, _)| *column as usize).max().unwrap_or(0);
-                (width as usize).saturating_sub(4 + title_column + MIN_SESSION_TITLE_WIDTH + 2)
+                session_card_right_room(width, title_column)
             } else if index == 3 && line.item.is_some() {
                 let title_column = line.segments.last().map(|segment| segment.0 as usize).unwrap_or(0);
                 (width as usize).saturating_sub(4 + title_column + 12 + 2)
@@ -3906,6 +3956,10 @@ impl App {
                 Key::Char('g') => details.scroll = 0,
                 Key::Char('G') => details.scroll = usize::MAX,
                 Key::Esc | Key::Enter | Key::Char('i') => self.session_details = None,
+                Key::Char('c') => if let Some(session) = details.chief_answers_of.take() {
+                    self.session_details = None;
+                    self.message = self.open_chief_answers(Some(&session));
+                },
                 _ => {}
             }
             return;
@@ -4113,6 +4167,7 @@ impl App {
         let now = util::now();
         if now - self.team_checked < 10.0 { return; }
         self.team_checked = now;
+        self.chief_answers.clear();
         if self.chief_view.is_some() { self.refresh_chief_view(); }
         util::refresh_hyprland_instance();
         let workspace = util::output_of("hyprctl", &["-j", "activeworkspace"])
@@ -4144,6 +4199,10 @@ impl App {
             return;
         }
         self.team_known = true;
+        self.chief_answers = snapshot["chief_answers"].as_array().into_iter().flatten().filter_map(|entry| {
+            let count = entry["count"].as_u64().filter(|count| *count > 0)? as usize;
+            Some((entry["session_id"].as_str()?.to_string(), ChiefAnswers { count, recent: entry["recent"].as_array().cloned().unwrap_or_default() }))
+        }).collect();
         self.team_attention = crate::teams::view::TeamView::attention(&snapshot);
         self.qa_sessions = snapshot["members"].as_array().into_iter().flatten()
             .chain(snapshot["spawns"].as_array().into_iter().flatten())

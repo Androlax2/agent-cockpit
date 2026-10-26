@@ -3,6 +3,8 @@
 //! transcripts. Same schema and keys as the Python column, so the archive carries over. opencode's
 //! replies join them from its database (archive_opencode), keyed "opencode:<message id>".
 
+use crate::chief::store::{self as chief_store, ChiefDigest};
+use crate::chief::view as chief_view;
 use crate::paths;
 use crate::reviews;
 use crate::sessions;
@@ -763,9 +765,46 @@ pub fn print_costs() -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// What the digest says about the Chief: its answers since `since_ms`, or why they could not be read.
+pub enum ChiefSection {
+    Answers { since_ms: i64, digest: ChiefDigest },
+    Unavailable(String),
+}
+
+/// The name of a session in the digest, `<label> · <project>`, or the end of its id when it has no label.
+fn digest_session_name(sessions: &[sessions::Session], session_id: &str) -> String {
+    match sessions.iter().find(|session| session.session == session_id && !session.label.is_empty()) {
+        Some(session) if session.project.is_empty() => session.label.clone(),
+        Some(session) => format!("{} · {}", session.label, session.project),
+        None => chief_view::fallback_session_name(session_id),
+    }
+}
+
+fn chief_digest_lines(sessions: &[sessions::Session], chief: &ChiefSection, today: NaiveDate) -> Vec<String> {
+    let (bold, dim, yellow, reset) = ("\x1b[1m", "\x1b[2m", "\x1b[33m", "\x1b[0m");
+    let (since_ms, digest) = match chief {
+        ChiefSection::Unavailable(reason) => return vec![format!("  {yellow}Chief: unavailable ({}){reset}", chief_view::one_line(reason, 80)), String::new()],
+        ChiefSection::Answers { since_ms, digest } => (*since_ms, digest),
+    };
+    let since = chief_view::since_label(since_ms, today);
+    if digest.answered == 0 && digest.escalated == 0 && digest.overruled == 0 {
+        return vec![format!("  {bold}Chief{reset}: nothing answered since {since}"), String::new()];
+    }
+    let mut lines = vec![format!("  {bold}Chief{reset} answered {}, escalated {}, overruled {} since {since}", digest.answered, digest.escalated, digest.overruled)];
+    for answer in &digest.lines {
+        let name = digest_session_name(sessions, &answer.session_id);
+        lines.push(format!("    {}", chief_view::answer_summary_line(&name, &answer.question, &answer.answer, chief_view::DIGEST_LINE_WIDTH - 4)));
+    }
+    if digest.more > 0 {
+        lines.push(format!("    {dim}+{} more{reset}", digest.more));
+    }
+    lines.push(String::new());
+    lines
+}
+
 /// The morning digest as ANSI text: the last day with work before today, today so far, the plan's
-/// usage, the sessions waiting for you, and the pull requests (failing CI first).
-pub fn digest_lines(archive: &Connection, sessions: &[sessions::Session], reviews: &[reviews::Review], today: NaiveDate) -> rusqlite::Result<Vec<String>> {
+/// usage, the sessions waiting for you, the pull requests (failing CI first), and what the Chief answered.
+pub fn digest_lines(archive: &Connection, sessions: &[sessions::Session], reviews: &[reviews::Review], today: NaiveDate, chief: &ChiefSection) -> rusqlite::Result<Vec<String>> {
     let (bold, dim, reset) = ("\x1b[1m", "\x1b[2m", "\x1b[0m");
     let (red, green, yellow, blue, magenta) = ("\x1b[31m", "\x1b[32m", "\x1b[33m", "\x1b[34m", "\x1b[35m");
     let mut lines = vec![String::new(), format!("  {bold}{blue}Claude · {}{reset}", today.format("%A %d %B")), String::new()];
@@ -856,7 +895,22 @@ pub fn digest_lines(archive: &Connection, sessions: &[sessions::Session], review
         }
         lines.push(String::new());
     }
+    lines.extend(chief_digest_lines(sessions, chief, today));
     Ok(lines)
+}
+
+/// When the last digest printed, or 24 hours ago when no digest did (or its note is unreadable or from the future).
+fn chief_digest_since(now_ms: i64) -> i64 {
+    fs::read_to_string(paths::chief_digest_at()).ok().and_then(|text| text.trim().parse::<i64>().ok())
+        .filter(|since_ms| (1..=now_ms).contains(since_ms)).unwrap_or(now_ms - chief_view::DEFAULT_LOOKBACK_MS)
+}
+
+fn chief_section(since_ms: i64) -> ChiefSection {
+    let answers = chief_store::open_read_only(&paths::team_database()).and_then(|connection| chief_store::answers_since(&connection, since_ms));
+    match answers {
+        Ok(digest) => ChiefSection::Answers { since_ms, digest },
+        Err(error) => ChiefSection::Unavailable(error.message),
+    }
 }
 
 /// cockpit-sidebar digest: the morning digest (cockpit digest shows it).
@@ -870,8 +924,17 @@ pub fn print_digest() -> rusqlite::Result<()> {
     if let Err(error) = crate::billing::import(&mut archive) { eprintln!("billing metadata: {error}"); }
     let repositories: Vec<String> = reviews::session_checkouts("").into_keys().collect();
     let (rows, _) = reviews::fetch_reviews(&repositories);
-    let lines = digest_lines(&archive, &sessions::reported(), &rows, Local::now().date_naive())?;
+    // Taken before the answers are read: an answer given while the digest builds shows twice rather than never.
+    let printed_at_ms = chrono::Utc::now().timestamp_millis();
+    let chief = chief_section(chief_digest_since(printed_at_ms));
+    let lines = digest_lines(&archive, &sessions::reported(), &rows, Local::now().date_naive(), &chief)?;
     write_out(&(lines.join("\n") + "\n"));
+    // Answers that could not be read were not shown, so the next digest still has to cover them.
+    if matches!(chief, ChiefSection::Answers { .. }) {
+        let note = paths::chief_digest_at();
+        let written = note.parent().map_or(Ok(()), fs::create_dir_all).and_then(|()| fs::write(&note, printed_at_ms.to_string()));
+        if let Err(error) = written { util::log_event("ERROR", &format!("digest: cannot save when it printed: {error}")); }
+    }
     Ok(())
 }
 

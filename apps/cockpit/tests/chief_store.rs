@@ -17,7 +17,7 @@ fn chief_migration_keeps_sleep_continuations_available_on_every_reopen() {
     drop(connection);
     let connection = store::open(&path).unwrap();
     assert!(store::sleep::prepared_records(&connection).unwrap().is_empty());
-    assert_eq!(connection.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0)).unwrap(), 13);
+    assert_eq!(connection.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0)).unwrap(), 14);
 }
 
 fn chief_session(id: &str) -> VerifiedSession {
@@ -87,7 +87,7 @@ fn migration_preserves_v2_links_messages_and_spawns() {
     let mut connection = v2();
     let before: Vec<_> = ["teams", "members", "messages", "spawns"].map(|table| rows(&connection, table)).into();
     migrate(&mut connection).unwrap();
-    assert_eq!(version(&connection), 13);
+    assert_eq!(version(&connection), 14);
     for (table, expected) in ["teams", "members", "messages", "spawns"].into_iter().zip(before) {
         assert_eq!(rows(&connection, table), expected, "changed {table}");
     }
@@ -100,15 +100,15 @@ fn migration_reopen_is_idempotent() {
     let schema = rows(&connection, "sqlite_master");
     migrate(&mut connection).unwrap();
     assert_eq!(rows(&connection, "sqlite_master"), schema);
-    assert_eq!(version(&connection), 13);
+    assert_eq!(version(&connection), 14);
 }
 
 #[test]
 fn future_schema_is_refused() {
     let mut connection = Connection::open_in_memory().unwrap();
-    connection.execute_batch("PRAGMA user_version=14;").unwrap();
+    connection.execute_batch("PRAGMA user_version=15;").unwrap();
     assert!(migrate(&mut connection).is_err());
-    assert_eq!(version(&connection), 14);
+    assert_eq!(version(&connection), 15);
     assert!(rows(&connection, "sqlite_master").is_empty());
 }
 
@@ -133,7 +133,7 @@ fn version_ten_upgrade_preserves_chief_and_team_messages_and_receipts() {
         .query_map([], |row| row.get::<_, String>(0)).unwrap().collect::<Result<Vec<_>, _>>().unwrap();
     let before: Vec<_> = tables.iter().map(|table| rows(&connection, table)).collect();
     migrate(&mut connection).unwrap();
-    assert_eq!(version(&connection), 13);
+    assert_eq!(version(&connection), 14);
     for (table, expected) in tables.iter().zip(before) {
         assert_eq!(rows(&connection, table), expected, "changed {table}");
     }
@@ -141,7 +141,7 @@ fn version_ten_upgrade_preserves_chief_and_team_messages_and_receipts() {
     assert_eq!(scope, ("team".into(), None));
     assert_eq!(connection.query_row("SELECT last_idle_turn FROM delivery_recipients WHERE session_id='session-a'", [], |row| row.get::<_, String>(0)).unwrap(), "turn-a");
     migrate(&mut connection).unwrap();
-    assert_eq!(version(&connection), 13);
+    assert_eq!(version(&connection), 14);
 }
 
 #[test]
@@ -235,7 +235,7 @@ fn version_12_with_dispatch_leftovers_upgrades_to_13_keeping_wakes_and_decisions
 
     migrate(&mut connection).unwrap();
 
-    assert_eq!(version(&connection), 13);
+    assert_eq!(version(&connection), 14);
     for table in DROPPED_DISPATCH_TABLES { assert!(!table_exists(&connection, table), "{table} survived"); }
     for table in ["chief_stops", "chief_answers"] { assert!(table_exists(&connection, table), "{table} missing"); }
     for table in ["chief_inbox", "chief_delivery_attempts"] { assert!(!columns(&connection, table).contains(&"assignment".to_string()), "{table} kept assignment"); }
@@ -259,15 +259,15 @@ fn version_12_with_dispatch_leftovers_upgrades_to_13_keeping_wakes_and_decisions
     let before = snapshot(&connection);
     migrate(&mut connection).unwrap();
     assert_eq!(before, snapshot(&connection));
-    assert_eq!(version(&connection), 13);
+    assert_eq!(version(&connection), 14);
 }
 
 #[test]
-fn a_fresh_database_is_created_at_version_13() {
+fn a_fresh_database_is_created_at_version_14() {
     let mut fresh = Connection::open_in_memory().unwrap();
     fresh.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
     migrate(&mut fresh).unwrap();
-    assert_eq!(version(&fresh), 13);
+    assert_eq!(version(&fresh), 14);
     for table in DROPPED_DISPATCH_TABLES { assert!(!table_exists(&fresh, table), "{table} exists in a fresh database"); }
     let dangling: i64 = fresh.query_row("SELECT count(*) FROM sqlite_master WHERE sql LIKE '%chief_assignments%' OR sql LIKE '%chief_work_revisions%'", [], |row| row.get(0)).unwrap();
     assert_eq!(dangling, 0);
@@ -288,9 +288,9 @@ fn open_uses_current_migration_and_keeps_private_path_checks() {
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
     let database = path.join("teams.sqlite");
     let connection = store::open(&database).unwrap();
-    assert_eq!(version(&connection), 13);
+    assert_eq!(version(&connection), 14);
     drop(connection);
-    assert_eq!(version(&store::open(&database).unwrap()), 13);
+    assert_eq!(version(&store::open(&database).unwrap()), 14);
     std::fs::set_permissions(&database, std::fs::Permissions::from_mode(0o644)).unwrap();
     assert!(store::open(&database).is_err());
     std::fs::remove_file(&database).unwrap();
@@ -447,4 +447,236 @@ fn upgrading_supersedes_delivery_decisions_of_cleared_leftovers_only() {
     let before = rows(&connection, "chief_decisions");
     migrate(&mut connection).unwrap();
     assert_eq!(before, rows(&connection, "chief_decisions"));
+}
+
+fn insert_stop(connection: &Connection, id: &str, session_id: &str, task_id: &str, created_at: i64) {
+    connection.execute("INSERT INTO chief_stops(id,session_id,runtime,boundary,project,task_id,bundle,state,created_at) VALUES (?1,?2,'runtime-a',?1,'path:/project-a',?3,'{}','answered',?4)",
+        rusqlite::params![id, session_id, task_id, created_at]).unwrap();
+}
+
+fn insert_answer(connection: &Connection, id: &str, stop_id: &str, session_id: &str, source: &str, delivery: &str, created_at: i64) {
+    connection.execute("INSERT INTO chief_answers(id,stop_id,session_id,question,answer,reason,source,delivery,created_at) VALUES (?1,?2,?3,?4,?5,'Because.',?6,?7,?8)",
+        rusqlite::params![id, stop_id, session_id, format!("Question {id}?"), format!("Answer {id}."), source, delivery, created_at]).unwrap();
+}
+
+fn answer_records(connection: &Connection) -> Vec<serde_json::Value> {
+    let mut records = Vec::new();
+    let mut after = 0;
+    loop {
+        let page = cockpit::chief::store::snapshot(connection, &[], after, 50).unwrap();
+        records.extend(page["records"].as_array().unwrap().iter().filter(|record| record["kind"] == "answer").cloned());
+        if page["has_more"] != true { return records; }
+        after = page["next"].as_i64().unwrap();
+    }
+}
+
+#[test]
+fn version_13_upgrades_to_14_with_an_empty_overrule_log() {
+    let mut connection = migrated();
+    insert_stop(&connection, "stop-a", "session-a", "task-a", 10);
+    insert_answer(&connection, "answer-a", "stop-a", "session-a", "chief", "received", 20);
+    connection.execute_batch("DROP INDEX chief_answers_by_session; DROP INDEX chief_answers_by_created_at; DROP TABLE chief_overrules; PRAGMA user_version=13;").unwrap();
+    assert!(!index_exists(&connection, "chief_answers_by_created_at"));
+    assert!(!table_exists(&connection, "chief_overrules"));
+
+    migrate(&mut connection).unwrap();
+
+    assert_eq!(version(&connection), 14);
+    assert!(table_exists(&connection, "chief_overrules"));
+    for index in ["chief_answers_by_session", "chief_answers_by_created_at"] {
+        assert!(index_exists(&connection, index), "{index} missing after the upgrade");
+    }
+    assert_eq!(rows(&connection, "chief_overrules").len(), 0);
+    assert_eq!(rows(&connection, "chief_answers").len(), 1);
+    let before = (schema_shape(&connection), rows(&connection, "chief_answers"));
+    migrate(&mut connection).unwrap();
+    assert_eq!(before, (schema_shape(&connection), rows(&connection, "chief_answers")));
+    assert_eq!(version(&connection), 14);
+}
+
+#[test]
+fn an_overrule_needs_an_existing_answer_and_is_one_per_answer() {
+    let connection = migrated();
+    connection.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+    let overrule = |id: &str, answer: &str| connection.execute("INSERT INTO chief_overrules(id,answer_id,session_id,runtime,correction,delivery,created_at) VALUES (?1,?2,'session-a','runtime-a','Do B.','queued',30)", [id, answer]);
+    assert!(overrule("overrule-a", "missing").is_err());
+    insert_stop(&connection, "stop-a", "session-a", "task-a", 10);
+    insert_answer(&connection, "answer-a", "stop-a", "session-a", "chief", "received", 20);
+    overrule("overrule-a", "answer-a").unwrap();
+    assert!(overrule("overrule-b", "answer-a").is_err());
+}
+
+#[test]
+fn the_review_lists_chief_answers_newest_first_and_bounded() {
+    let connection = migrated();
+    insert_stop(&connection, "stop-a", "session-a", "task-a", 10);
+    for index in 0..250 {
+        let delivery = ["queued", "received", "uncertain", "cancelled"][index % 4];
+        let source = if index % 5 == 0 { "theo" } else { "chief" };
+        insert_answer(&connection, &format!("answer-{index:03}"), "stop-a", "session-a", source, delivery, 100 + index as i64);
+    }
+    let records = answer_records(&connection);
+    assert_eq!(records.len(), 200);
+    let ids: Vec<&str> = records.iter().map(|record| record["id"].as_str().unwrap()).collect();
+    let expected: Vec<String> = (50..250).rev().map(|index| format!("answer-{index:03}")).collect();
+    assert_eq!(ids, expected.iter().map(String::as_str).collect::<Vec<_>>());
+    let newest = &records[0];
+    assert_eq!(newest["stop_id"], "stop-a");
+    assert_eq!(newest["session_id"], "session-a");
+    assert_eq!(newest["project"], "path:/project-a");
+    assert_eq!(newest["task_id"], "task-a");
+    assert_eq!(newest["question"], "Question answer-249?");
+    assert_eq!(newest["answer"], "Answer answer-249.");
+    assert_eq!(newest["reason"], "Because.");
+    assert_eq!(newest["source"], "chief");
+    assert_eq!(newest["delivery"], "received");
+    assert_eq!(newest["created_at_ms"], 349);
+    assert!(newest["overrule"].is_null());
+    let deliveries: std::collections::BTreeSet<&str> = records.iter().map(|record| record["delivery"].as_str().unwrap()).collect();
+    assert_eq!(deliveries.len(), 4, "every delivery state is listed");
+    assert!(records.iter().any(|record| record["source"] == "theo"));
+}
+
+#[test]
+fn an_overruled_answer_carries_its_correction() {
+    let connection = migrated();
+    insert_stop(&connection, "stop-a", "session-a", "task-a", 10);
+    insert_answer(&connection, "answer-a", "stop-a", "session-a", "chief", "received", 20);
+    insert_answer(&connection, "answer-b", "stop-a", "session-a", "chief", "received", 21);
+    connection.execute("INSERT INTO chief_overrules(id,answer_id,session_id,runtime,correction,delivery,created_at) VALUES ('overrule-a','answer-a','session-a','runtime-a','Do B instead.','queued',30)", []).unwrap();
+    let records = answer_records(&connection);
+    assert!(records[0]["overrule"].is_null(), "{}", records[0]);
+    assert_eq!(records[1]["id"], "answer-a");
+    assert_eq!(records[1]["overrule"], serde_json::json!({"id":"overrule-a","correction":"Do B instead.","delivery":"queued","created_at_ms":30}));
+}
+
+#[test]
+fn the_summary_record_names_the_previous_completed_summary() {
+    let connection = migrated();
+    let summary = |connection: &Connection| cockpit::chief::store::snapshot(connection, &[], 0, 50).unwrap()["records"].as_array().unwrap().iter()
+        .find(|record| record["kind"] == "summary").cloned().unwrap();
+    assert!(summary(&connection)["previous_completed_at_ms"].is_null());
+    let complete = |id: &str, completed_at: i64| connection.execute("INSERT INTO chief_summary_requests(id,epoch,state,created_at,deadline,completed_at,response) VALUES (?1,'epoch-a','completed',?2,?2,?2,'{}')", rusqlite::params![id, completed_at]).unwrap();
+    complete("summary-a", 100);
+    assert!(summary(&connection)["previous_completed_at_ms"].is_null());
+    complete("summary-b", 200);
+    complete("summary-c", 300);
+    let record = summary(&connection);
+    assert_eq!(record["last_completed_at_ms"], 300);
+    assert_eq!(record["previous_completed_at_ms"], 200);
+}
+
+fn counts(connection: &Connection) -> Vec<(String, u32, Vec<String>)> {
+    cockpit::chief::store::answer_counts(connection).unwrap().into_iter()
+        .map(|count| (count.session_id, count.count, count.recent.iter().map(|recent| recent["question"].as_str().unwrap().to_string()).collect())).collect()
+}
+
+#[test]
+fn answer_counts_count_chief_answers_of_the_current_task_only() {
+    let connection = migrated();
+    insert_stop(&connection, "stop-old", "session-a", "task-old", 10);
+    insert_stop(&connection, "stop-new", "session-a", "task-new", 100);
+    insert_answer(&connection, "old-1", "stop-old", "session-a", "chief", "received", 20);
+    insert_answer(&connection, "new-1", "stop-new", "session-a", "chief", "queued", 110);
+    insert_answer(&connection, "new-2", "stop-new", "session-a", "chief", "received", 120);
+    insert_answer(&connection, "new-3", "stop-new", "session-a", "chief", "uncertain", 130);
+    insert_answer(&connection, "new-4", "stop-new", "session-a", "chief", "received", 140);
+    insert_answer(&connection, "new-theo", "stop-new", "session-a", "theo", "received", 150);
+    insert_answer(&connection, "new-cancelled", "stop-new", "session-a", "chief", "cancelled", 160);
+    insert_stop(&connection, "stop-b", "session-b", "task-b", 50);
+    insert_answer(&connection, "b-1", "stop-b", "session-b", "chief", "received", 60);
+    insert_stop(&connection, "stop-c", "session-c", "task-c", 50);
+    insert_answer(&connection, "c-theo", "stop-c", "session-c", "theo", "received", 60);
+
+    assert_eq!(counts(&connection), [
+        ("session-a".to_string(), 4, vec!["Question new-4?".to_string(), "Question new-3?".to_string(), "Question new-2?".to_string()]),
+        ("session-b".to_string(), 1, vec!["Question b-1?".to_string()]),
+    ]);
+    let recent = &cockpit::chief::store::answer_counts(&connection).unwrap()[0].recent[0];
+    assert_eq!(recent, &serde_json::json!({"created_at_ms":140,"question":"Question new-4?","answer":"Answer new-4.","delivery":"received"}));
+}
+
+#[test]
+fn a_session_that_went_back_to_an_earlier_task_counts_only_that_task() {
+    let connection = migrated();
+    insert_stop(&connection, "stop-1", "session-a", "task-1", 10);
+    insert_stop(&connection, "stop-2", "session-a", "task-2", 20);
+    insert_stop(&connection, "stop-3", "session-a", "task-1", 30);
+    insert_answer(&connection, "one", "stop-1", "session-a", "chief", "received", 11);
+    insert_answer(&connection, "two", "stop-2", "session-a", "chief", "received", 21);
+    insert_answer(&connection, "three", "stop-3", "session-a", "chief", "received", 31);
+    assert_eq!(counts(&connection), [("session-a".to_string(), 2, vec!["Question three?".to_string(), "Question one?".to_string()])]);
+}
+
+fn index_exists(connection: &Connection, index: &str) -> bool {
+    connection.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='index' AND name=?1)", [index], |row| row.get(0)).unwrap()
+}
+
+#[test]
+fn an_overrule_delivery_must_be_a_known_state() {
+    let connection = migrated();
+    insert_stop(&connection, "stop-a", "session-a", "task-a", 10);
+    insert_answer(&connection, "answer-a", "stop-a", "session-a", "chief", "received", 20);
+    let overrule = |delivery: &str| connection.execute("INSERT INTO chief_overrules(id,answer_id,session_id,runtime,correction,delivery,created_at) VALUES ('overrule-a','answer-a','session-a','runtime-a','Do B.',?1,30)", [delivery]);
+    assert!(overrule("sent").is_err());
+    assert!(overrule("received").is_ok());
+}
+
+#[test]
+fn answers_with_the_same_time_keep_their_insertion_order_newest_first() {
+    let connection = migrated();
+    insert_stop(&connection, "stop-a", "session-a", "task-a", 10);
+    for id in ["first", "second", "third"] {
+        insert_answer(&connection, id, "stop-a", "session-a", "chief", "received", 50);
+    }
+    let ids: Vec<String> = answer_records(&connection).iter().map(|record| record["id"].as_str().unwrap().to_string()).collect();
+    assert_eq!(ids, ["third", "second", "first"]);
+    assert_eq!(counts(&connection), [("session-a".to_string(), 3, vec!["Question third?".to_string(), "Question second?".to_string(), "Question first?".to_string()])]);
+}
+
+#[test]
+fn answers_since_counts_what_the_chief_did_after_the_given_time() {
+    let connection = migrated();
+    insert_stop(&connection, "stop-a", "session-a", "task-a", 10);
+    for (id, source, delivery, created_at) in [("before", "chief", "received", 90), ("sent", "chief", "received", 110), ("waiting", "chief", "queued", 120),
+        ("cancelled", "chief", "cancelled", 130), ("theo", "theo", "received", 140), ("uncertain", "chief", "uncertain", 150)] {
+        insert_answer(&connection, id, "stop-a", "session-a", source, delivery, created_at);
+    }
+    let escalate = |id: &str, category: Option<&str>, created_at: i64| connection.execute("INSERT INTO chief_decisions(id,scope_key,decision_key,question,recommendation,state,revision,created_at,category)
+        VALUES (?1,?1,?1,'Which?','Pick one.','open',1,?2,?3)", rusqlite::params![id, created_at, category]).unwrap();
+    escalate("old-escalation", Some("scope"), 90);
+    escalate("escalation", Some("security"), 115);
+    escalate("plain-decision", None, 116);
+    connection.execute("INSERT INTO chief_overrules(id,answer_id,session_id,runtime,correction,delivery,created_at) VALUES ('overrule-a','sent','session-a','runtime-a','Do B.','queued',160)", []).unwrap();
+
+    let digest = cockpit::chief::store::answers_since(&connection, 100).unwrap();
+    assert_eq!((digest.answered, digest.escalated, digest.overruled), (3, 1, 1));
+    let questions: Vec<&str> = digest.lines.iter().map(|line| line.question.as_str()).collect();
+    assert_eq!(questions, ["Question uncertain?", "Question waiting?", "Question sent?"]);
+    assert_eq!((digest.lines[0].session_id.as_str(), digest.lines[0].answer.as_str(), digest.more), ("session-a", "Answer uncertain.", 0));
+}
+
+#[test]
+fn answers_since_leaves_cancelled_corrections_out_of_the_overruled_count() {
+    let connection = migrated();
+    insert_stop(&connection, "stop-a", "session-a", "task-a", 10);
+    for (answer, overrule, delivery) in [("kept", "overrule-kept", "received"), ("dropped", "overrule-dropped", "cancelled")] {
+        insert_answer(&connection, answer, "stop-a", "session-a", "chief", "received", 110);
+        connection.execute("INSERT INTO chief_overrules(id,answer_id,session_id,runtime,correction,delivery,created_at) VALUES (?1,?2,'session-a','runtime-a','Do B.',?3,160)",
+            [overrule, answer, delivery]).unwrap();
+    }
+    assert_eq!(cockpit::chief::store::answers_since(&connection, 100).unwrap().overruled, 1, "a cancelled correction never reached the agent");
+}
+
+#[test]
+fn answers_since_lists_the_newest_five_and_counts_the_rest() {
+    let connection = migrated();
+    insert_stop(&connection, "stop-a", "session-a", "task-a", 10);
+    for index in 0..8 {
+        insert_answer(&connection, &format!("answer-{index}"), "stop-a", "session-a", "chief", "received", 100 + index);
+    }
+    let digest = cockpit::chief::store::answers_since(&connection, 0).unwrap();
+    assert_eq!((digest.answered, digest.lines.len(), digest.more), (8, 5, 3));
+    assert_eq!(digest.lines[0].question, "Question answer-7?");
+    assert_eq!(digest.lines[4].question, "Question answer-3?");
 }

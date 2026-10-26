@@ -38,7 +38,7 @@ pub fn host(connection: &mut Connection, action: &ChiefHostAction, live: &[Worke
         ChiefHostAction::Enable { request_id, .. } | ChiefHostAction::Pause { request_id, .. }
         | ChiefHostAction::Resume { request_id, .. } | ChiefHostAction::Disable { request_id, .. }
         | ChiefHostAction::Resolve { request_id, .. } | ChiefHostAction::AnswerDecision { request_id, .. } | ChiefHostAction::RequestSummary { request_id }
-        | ChiefHostAction::ReconcileDelivery {request_id,..} | ChiefHostAction::ReconcileLaunch {request_id,..} => request_id.clone(),
+        | ChiefHostAction::ReconcileDelivery {request_id,..} | ChiefHostAction::ReconcileLaunch {request_id,..} | ChiefHostAction::Overrule { request_id, .. } => request_id.clone(),
     };
     let result = (|| {
         action.validate()?;
@@ -51,7 +51,7 @@ pub fn host(connection: &mut Connection, action: &ChiefHostAction, live: &[Worke
             return Ok(serde_json::from_str(&response)?);
         }
         let response = host_action(&transaction, action, live, now_ms)?;
-        if !matches!(action,ChiefHostAction::Enable {..}|ChiefHostAction::Resolve {..}|ChiefHostAction::AnswerDecision {..}|ChiefHostAction::RequestSummary {..}) {
+        if !matches!(action,ChiefHostAction::Enable {..}|ChiefHostAction::Resolve {..}|ChiefHostAction::AnswerDecision {..}|ChiefHostAction::Overrule {..}|ChiefHostAction::RequestSummary {..}) {
             coordination_event(&transaction,"host_control_changed",&json!({"source":"host","request_id":request_id}),now_ms)?;
         }
         transaction.execute("INSERT INTO chief_actions VALUES (?1,?2,?3,?4)", params![request_id, fingerprint, serde_json::to_string(&response)?, now_ms])?;
@@ -142,6 +142,7 @@ fn host_action(connection: &Connection, action: &ChiefHostAction, live: &[Worker
             coordination_event(connection,"decision_resolved",&json!({"decision":decision,"decision_revision":expected_revision+1}),now_ms)?;
             Ok(json!({"decision":decision,"state":"resolved","answer":queued["answer"],"delivery":"queued","grants_authority":false}))
         },
+        ChiefHostAction::Overrule { answer, correction, .. } => queue_correction(connection, live, answer, correction, now_ms),
         ChiefHostAction::RequestSummary { request_id } => {
             let pending: i64 = connection.query_row("SELECT count(*) FROM chief_summary_requests WHERE state IN ('queued','pending')",[],|row|row.get(0))?;
             if pending >= 1 { return Err(TeamError::new(ErrorCode::Limit,"a bounded summary request is already pending")); }
@@ -236,10 +237,12 @@ pub fn recover(connection: &mut Connection, now_ms: i64) -> Result<(), TeamError
     Ok(())
 }
 
-/// A Chief answer whose delivery the inbox no longer knows the outcome of is logged as uncertain.
+/// A Chief answer or Theo's correction whose delivery the inbox no longer knows the outcome of is logged as uncertain.
 fn log_uncertain_answers(connection: &Connection) -> Result<(), TeamError> {
     connection.execute("UPDATE chief_answers SET delivery='uncertain' WHERE delivery='queued' AND id IN (SELECT json_extract(envelope,'$.answer')
         FROM chief_inbox WHERE state='uncertain' AND json_extract(envelope,'$.kind') IN ('chief_answer','chief_form_reply'))", [])?;
+    connection.execute("UPDATE chief_overrules SET delivery='uncertain' WHERE delivery='queued' AND id IN (SELECT json_extract(envelope,'$.overrule')
+        FROM chief_inbox WHERE state='uncertain' AND json_extract(envelope,'$.kind')='chief_correction')", [])?;
     Ok(())
 }
 
@@ -351,6 +354,106 @@ pub(crate) fn upgrade_to_13(connection: &Connection) -> Result<(), TeamError> {
     Ok(())
 }
 
+/// Version 14 adds the log of Theo's corrections to Chief answers and the indexes behind the per-session counts and the newest-answers review.
+pub(crate) fn upgrade_to_14(connection: &Connection) -> Result<(), TeamError> {
+    let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version >= 14 { return Ok(()); }
+    connection.execute_batch("CREATE TABLE IF NOT EXISTS chief_overrules (
+            id TEXT PRIMARY KEY, answer_id TEXT NOT NULL UNIQUE REFERENCES chief_answers(id),
+            session_id TEXT NOT NULL, runtime TEXT NOT NULL, correction TEXT NOT NULL,
+            delivery TEXT NOT NULL CHECK(delivery IN ('queued','received','uncertain','cancelled')),
+            created_at INTEGER NOT NULL, finished_at INTEGER);
+        CREATE INDEX IF NOT EXISTS chief_answers_by_session ON chief_answers(session_id, created_at);
+        CREATE INDEX IF NOT EXISTS chief_answers_by_created_at ON chief_answers(created_at);
+        PRAGMA user_version=14;")?;
+    Ok(())
+}
+
+/// How many answers the Chief gave a session in its current task, with the newest few for the session card.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct AnswerCount {
+    pub session_id: String,
+    pub count: u32,
+    pub recent: Vec<Value>,
+}
+
+/// Counts `source='chief'` answers that were not cancelled and whose stop belongs to the task of the
+/// session's latest stop. Theo's own answers and answers of earlier tasks never count.
+pub fn answer_counts(connection: &Connection) -> Result<Vec<AnswerCount>, TeamError> {
+    let mut statement = connection.prepare("WITH latest_task AS (
+            SELECT session_id, task_id FROM (
+                SELECT session_id, task_id, row_number() OVER (PARTITION BY session_id ORDER BY created_at DESC, rowid DESC) AS recency FROM chief_stops)
+            WHERE recency=1),
+        counted AS (
+            SELECT a.session_id AS session_id, a.created_at AS created_at, a.rowid AS answer_rowid, a.question AS question, a.answer AS answer, a.delivery AS delivery
+            FROM chief_answers a JOIN chief_stops s ON s.id=a.stop_id JOIN latest_task l ON l.session_id=a.session_id AND l.task_id=s.task_id
+            WHERE a.source='chief' AND a.delivery!='cancelled'),
+        ranked AS (
+            SELECT *, count(*) OVER (PARTITION BY session_id) AS total,
+                row_number() OVER (PARTITION BY session_id ORDER BY created_at DESC, answer_rowid DESC) AS recency
+            FROM counted)
+        SELECT session_id,total,created_at,question,answer,delivery FROM ranked WHERE recency<=3 ORDER BY session_id,recency")?;
+    let mut counts: Vec<AnswerCount> = Vec::new();
+    let rows = statement.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, u32>(1)?, json!({
+        "created_at_ms": row.get::<_, i64>(2)?, "question": row.get::<_, String>(3)?,
+        "answer": row.get::<_, String>(4)?, "delivery": row.get::<_, String>(5)?}))))?;
+    for row in rows {
+        let (session_id, count, recent) = row?;
+        match counts.last_mut() {
+            Some(last) if last.session_id == session_id => last.recent.push(recent),
+            _ => counts.push(AnswerCount { session_id, count, recent: vec![recent] }),
+        }
+    }
+    Ok(counts)
+}
+
+/// What the Chief did since a time, for the daily digest: counts, and the newest few answers.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChiefDigest {
+    pub answered: u32,
+    pub escalated: u32,
+    pub overruled: u32,
+    pub lines: Vec<DigestAnswer>,
+    /// Answers counted in `answered` that `lines` leaves out.
+    pub more: u32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DigestAnswer {
+    pub session_id: String,
+    pub question: String,
+    pub answer: String,
+}
+
+pub const DIGEST_ANSWER_LINES: usize = 5;
+
+/// Answers the Chief gave after `since_ms` and did not cancel, the escalations it raised and the
+/// corrections Theo made in the same time, less those cancelled before they reached the agent. Theo's own answers are not the Chief's.
+pub fn answers_since(connection: &Connection, since_ms: i64) -> Result<ChiefDigest, TeamError> {
+    let count = |sql: &str| -> Result<u32, TeamError> { Ok(connection.query_row(sql, [since_ms], |row| row.get(0))?) };
+    let answered = count("SELECT count(*) FROM chief_answers WHERE source='chief' AND delivery!='cancelled' AND created_at>?1")?;
+    let escalated = count("SELECT count(*) FROM chief_decisions WHERE category IS NOT NULL AND created_at>?1")?;
+    let overruled = count("SELECT count(*) FROM chief_overrules WHERE delivery!='cancelled' AND created_at>?1")?;
+    let lines = connection.prepare("SELECT session_id,question,answer FROM chief_answers WHERE source='chief' AND delivery!='cancelled' AND created_at>?1
+            ORDER BY created_at DESC,rowid DESC LIMIT ?2")?
+        .query_map(params![since_ms, DIGEST_ANSWER_LINES as i64], |row| Ok(DigestAnswer { session_id: row.get(0)?, question: row.get(1)?, answer: row.get(2)? }))?
+        .collect::<Result<Vec<_>, _>>()?;
+    let more = answered.saturating_sub(lines.len() as u32);
+    Ok(ChiefDigest { answered, escalated, overruled, lines, more })
+}
+
+/// The team database for reading only, with a short wait on a lock: it is never created or migrated here.
+pub fn open_read_only(path: &std::path::Path) -> Result<Connection, TeamError> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => {},
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Err(TeamError::new(ErrorCode::NotFound, "no team database yet")),
+        Err(error) => return Err(error.into()),
+    }
+    let connection = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX)?;
+    connection.busy_timeout(std::time::Duration::from_millis(250))?;
+    Ok(connection)
+}
+
 pub(crate) fn upgrade_launches(connection: &Connection) -> Result<(),TeamError> {
     connection.execute_batch("CREATE TABLE IF NOT EXISTS legacy_launches(token TEXT PRIMARY KEY,project TEXT NOT NULL,task_id TEXT NOT NULL,worker TEXT,
         state TEXT NOT NULL CHECK(state IN ('manual','reserved','submitting','uncertain','submitted','released')),revision INTEGER NOT NULL,created_at INTEGER NOT NULL);
@@ -410,6 +513,29 @@ fn cancel_answer(connection: &Connection, message_id: &str) -> Result<(), TeamEr
     Ok(())
 }
 
+/// Withdraws queued corrections whose session is no longer live, or is live under another runtime:
+/// neither will ever get them. Each overrule is cancelled together with its inbox row.
+pub fn cancel_stranded_corrections(connection: &mut Connection, live: &[WorkerState], now_ms: i64) -> Result<(), TeamError> {
+    let transaction = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let queued = transaction.prepare("SELECT i.id,i.envelope,o.session_id,o.runtime FROM chief_inbox i JOIN chief_overrules o ON o.id=json_extract(i.envelope,'$.overrule')
+        WHERE i.state='queued' AND json_extract(i.envelope,'$.kind')='chief_correction' AND o.delivery='queued'")?
+        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?)))?
+        .collect::<Result<Vec<_>, _>>()?;
+    for (message_id, envelope, session_id, runtime) in queued {
+        let is_reachable = live.iter().any(|worker| worker.session.session_id == session_id && worker.session.runtime == runtime);
+        if !is_reachable { cancel_correction(&transaction, &message_id, &serde_json::from_str(&envelope)?, now_ms)?; }
+    }
+    transaction.commit()?;
+    Ok(())
+}
+
+/// Withdraws a queued correction whose session restarted or is gone: the new runtime never got the answer it corrects.
+fn cancel_correction(connection: &Connection, message_id: &str, envelope: &Value, now_ms: i64) -> Result<(), TeamError> {
+    connection.execute("UPDATE chief_inbox SET state='cancelled' WHERE id=?1 AND state='queued'", [message_id])?;
+    connection.execute("UPDATE chief_overrules SET delivery='cancelled',finished_at=?2 WHERE id=?1 AND delivery='queued'", params![envelope["overrule"].as_str(), now_ms])?;
+    Ok(())
+}
+
 /// Who wrote an answer. The Chief's answers need the Chief's grant and the 30 s grace; Theo's, given
 /// on purpose from the Chief view, need neither (every readiness check still applies).
 enum AnswerAuthor<'a> { Chief { epoch: &'a str }, Theo }
@@ -464,6 +590,39 @@ fn queue_answer(connection: &Connection, live: &[WorkerState], author: AnswerAut
         params![answer_id, stop, session_id, question, text, reason, source, now_ms])?;
     connection.execute("UPDATE chief_stops SET state='answered' WHERE id=?1", [stop])?;
     Ok(json!({"answer":answer_id,"stop":stop,"delivery":"queued"}))
+}
+
+/// What a correction quotes of the answer it corrects: whitespace collapsed, at most 200 characters.
+/// The Chief view reuses it so its review shows the text the agent will receive.
+pub fn answer_excerpt(answer: &str) -> String { excerpt(&answer.split_whitespace().collect::<Vec<_>>().join(" "), 200) }
+
+/// Queues Theo's correction of an answer the session already got (or may have got), for the runtime
+/// that got it. The inbox row is written in the same transaction: its triggers bump the review generation.
+fn queue_correction(connection: &Connection, live: &[WorkerState], answer: &str, correction: &str, now_ms: i64) -> Result<Value, TeamError> {
+    let record: Option<(String, String, String, String, String, bool)> = connection.query_row("SELECT a.session_id,s.runtime,a.answer,a.delivery,a.source,
+            EXISTS(SELECT 1 FROM chief_overrules o WHERE o.answer_id=a.id) FROM chief_answers a JOIN chief_stops s ON s.id=a.stop_id WHERE a.id=?1", [answer],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?))).optional()?;
+    let (session_id, runtime, answer_text, delivery, source, is_overruled) = record.ok_or_else(|| TeamError::new(ErrorCode::NotFound, "answer not found"))?;
+    if source != "chief" { return Err(conflict("this answer is yours, not the Chief's; send the agent a new message instead")); }
+    if is_overruled { return Err(conflict("the answer is already overruled")); }
+    match delivery.as_str() {
+        "received" | "uncertain" => {},
+        "queued" => return Err(conflict("the answer is not sent yet; it cannot be overruled")),
+        _ => return Err(conflict("the answer was cancelled; it never reached the agent")),
+    }
+    let worker = live.iter().find(|worker| worker.session.session_id == session_id).ok_or_else(|| conflict("the session is not live"))?;
+    if worker.session.runtime != runtime { return Err(conflict("the session was restarted since this answer; the correction would reach an agent that never got it")); }
+    let overrule_id = crate::teams::store::identifier()?;
+    let message_id = crate::teams::store::identifier()?;
+    let answer_excerpt = answer_excerpt(&answer_text);
+    let envelope = json!({"message_id":message_id,"kind":"chief_correction","epoch":THEO_ANSWER_EPOCH,"source":"theo",
+        "overrule":overrule_id,"answer_excerpt":answer_excerpt,"text":correction});
+    connection.execute("INSERT INTO chief_overrules(id,answer_id,session_id,runtime,correction,delivery,created_at) VALUES (?1,?2,?3,?4,?5,'queued',?6)",
+        params![overrule_id, answer, session_id, runtime, correction, now_ms])?;
+    connection.execute("INSERT INTO chief_inbox(id,chief_epoch,recipient,recipient_identity,recipient_epoch,work,envelope,state,next_at) VALUES (?1,?2,?3,?4,?2,'null',?5,'queued',?6)",
+        params![message_id, THEO_ANSWER_EPOCH, session_id, serde_json::to_string(&worker.session)?, envelope.to_string(), now_ms])?;
+    coordination_event(connection, "answer_overruled", &json!({"answer":answer,"overrule":overrule_id,"session":session_id}), now_ms)?;
+    Ok(json!({"overrule":overrule_id,"answer":answer,"delivery":"queued"}))
 }
 
 /// The bundle's option the Chief named, matched as the plugin matches: exactly, then trimmed and
@@ -644,7 +803,7 @@ pub fn claim(connection: &mut Connection, recipient: &VerifiedSession, idle_turn
     loop {
         let candidate: Option<(String, String, String, String, String)> = transaction.query_row(
             "SELECT id,recipient_identity,recipient_epoch,chief_epoch,envelope FROM chief_inbox WHERE recipient=?1 AND state='queued' AND next_at<=?2
-                AND coalesce(json_extract(envelope,'$.kind'),'') NOT IN ('chief_answer','chief_form_reply') ORDER BY rowid LIMIT 1",
+                AND coalesce(json_extract(envelope,'$.kind'),'') NOT IN ('chief_answer','chief_form_reply','chief_correction') ORDER BY rowid LIMIT 1",
             params![recipient.session_id,now_ms], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?))).optional()?;
         let Some((message_id, identity, epoch, chief_epoch, envelope)) = candidate else { transaction.commit()?; return Ok(None) };
         let identity = serde_json::from_str::<VerifiedSession>(&identity)?;
@@ -664,7 +823,7 @@ pub fn claim(connection: &mut Connection, recipient: &VerifiedSession, idle_turn
                 InboxValidation::Ready
             } else { InboxValidation::Deferred }
         } else {
-            // Only the coordination wake is deliverable here (answers go through `claim_answer`); any other
+            // Only the coordination wake is deliverable here (answers and corrections go through `claim_reply`); any other
             // queued kind is a leftover and is cancelled.
             InboxValidation::Obsolete
         };
@@ -711,6 +870,12 @@ pub fn claim_form_reply(connection: &mut Connection, recipient: &VerifiedSession
     claim_reply(connection, recipient, idle_turn, boundary, "chief_form_reply", &FORM_REPLY_IGNORES, now_ms)
 }
 
+/// Hands the session Theo's correction of an earlier answer, ready as Theo's own answers are: at any
+/// stop of the runtime that got the answer. A restarted session never gets it.
+pub fn claim_correction(connection: &mut Connection, recipient: &VerifiedSession, idle_turn: &str, boundary: &str, now_ms: i64) -> Result<Option<crate::teams::Dispatch>, TeamError> {
+    claim_reply(connection, recipient, idle_turn, boundary, "chief_correction", &ANSWER_IGNORES, now_ms)
+}
+
 fn claim_reply(connection: &mut Connection, recipient: &VerifiedSession, idle_turn: &str, boundary: &str, kind: &str, ignores: &[&str], now_ms: i64) -> Result<Option<crate::teams::Dispatch>, TeamError> {
     if idle_turn.is_empty() || idle_turn.len() > 128 || idle_turn.chars().any(char::is_control) { return Err(TeamError::new(ErrorCode::Invalid, "missing verified idle turn")); }
     let transaction = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -723,11 +888,22 @@ fn claim_reply(connection: &mut Connection, recipient: &VerifiedSession, idle_tu
         let Some((message_id, identity, envelope)) = candidate else { transaction.commit()?; return Ok(None) };
         let identity = serde_json::from_str::<VerifiedSession>(&identity)?;
         let envelope = serde_json::from_str::<Value>(&envelope)?;
-        let stop: Option<(String, String, String)> = transaction.query_row("SELECT runtime,boundary,state FROM chief_stops WHERE id=?1", [envelope["stop"].as_str()],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).optional()?;
-        let answers_this_stop = identity == *recipient && stop.is_some_and(|(runtime, stop_boundary, state)|
-            state == "answered" && runtime == recipient.runtime && stop_boundary == boundary);
-        if !answers_this_stop { cancel_answer(&transaction, &message_id)?; continue; }
+        if kind == "chief_correction" {
+            let runtime: Option<String> = transaction.query_row("SELECT runtime FROM chief_overrules WHERE id=?1 AND delivery='queued'", [envelope["overrule"].as_str()], |row| row.get(0)).optional()?;
+            if identity != *recipient || runtime.as_ref() != Some(&recipient.runtime) { cancel_correction(&transaction, &message_id, &envelope, now_ms)?; continue; }
+        } else {
+            let stop: Option<(String, String, String)> = transaction.query_row("SELECT runtime,boundary,state FROM chief_stops WHERE id=?1", [envelope["stop"].as_str()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).optional()?;
+            let answers_this_stop = identity == *recipient && stop.is_some_and(|(runtime, stop_boundary, state)|
+                state == "answered" && runtime == recipient.runtime && stop_boundary == boundary);
+            // Theo corrected the session after the Chief wrote this chat answer: the Chief must not contradict him.
+            // A form reply is never cancelled here: the correction is claimed only at a chat stop, so the
+            // session would stay on its form.
+            let is_overtaken: bool = kind == "chief_answer" && envelope["source"] != "theo" && transaction.query_row("SELECT EXISTS(SELECT 1 FROM chief_overrules o
+                JOIN chief_answers a ON a.id=?1 JOIN chief_stops s ON s.id=a.stop_id
+                WHERE o.session_id=s.session_id AND o.created_at>=s.created_at AND o.created_at>a.created_at)", [envelope["answer"].as_str()], |row| row.get(0))?;
+            if !answers_this_stop || is_overtaken { cancel_answer(&transaction, &message_id)?; continue; }
+        }
         if !answer_ready(&transaction, recipient, &envelope, boundary, ignores, &live, now_ms)? { transaction.commit()?; return Ok(None); }
         let id = format!("chief_{}", crate::teams::store::identifier()?);
         transaction.execute("UPDATE chief_inbox SET state='submitting',attempts=attempts+1 WHERE id=?1", [&message_id])?;
@@ -779,20 +955,29 @@ pub fn finish_for(connection: &mut Connection, recipient: &VerifiedSession, disp
     if state == "received" || state == "not_submitted" || state == "cancelled" { return Ok(()); }
     let envelope: Value = serde_json::from_str(&envelope)?;
     let message_id = envelope["message_id"].as_str().ok_or_else(|| conflict("missing inbox identity"))?;
-    if envelope["kind"]=="chief_answer" || envelope["kind"]=="chief_form_reply" {
-        // The plugin admits an answer under the stable id `msg_cockpit<message id>` and settles a form as
-        // `form:<form id>`; any other receipt is no proof.
-        let is_proof = |native_id: &str| if envelope["kind"]=="chief_answer" { native_id==format!("msg_cockpit{message_id}") } else { native_id.starts_with("form:frm_") };
+    if envelope["kind"]=="chief_answer" || envelope["kind"]=="chief_form_reply" || envelope["kind"]=="chief_correction" {
+        // The plugin admits an answer or a correction under the stable id `msg_cockpit<message id>` and
+        // settles a form as `form:<form id>`; any other receipt is no proof.
+        let is_proof = |native_id: &str| if envelope["kind"]=="chief_form_reply" { native_id.starts_with("form:frm_") } else { native_id==format!("msg_cockpit{message_id}") };
+        let is_correction = envelope["kind"]=="chief_correction";
         match outcome {
             TransportOutcome::Received {native_id} if state=="submitting" && is_proof(native_id) => {
                 transaction.execute("UPDATE chief_delivery_attempts SET state='received',native_id=?2,finished_at=?3 WHERE id=?1",params![dispatch_id,native_id,now_ms])?;
                 transaction.execute("UPDATE chief_inbox SET state='received' WHERE id=?1",[message_id])?;
-                transaction.execute("UPDATE chief_answers SET delivery='received' WHERE id=?1",[envelope["answer"].as_str()])?;
+                if is_correction {
+                    transaction.execute("UPDATE chief_overrules SET delivery='received',finished_at=?2 WHERE id=?1",params![envelope["overrule"].as_str(),now_ms])?;
+                } else {
+                    transaction.execute("UPDATE chief_answers SET delivery='received' WHERE id=?1",[envelope["answer"].as_str()])?;
+                }
             },
             _ => {
                 transaction.execute("UPDATE chief_delivery_attempts SET state='uncertain',receipt=?2,finished_at=?3 WHERE id=?1",params![dispatch_id,serde_json::to_string(outcome)?,now_ms])?;
                 transaction.execute("UPDATE chief_inbox SET state='uncertain' WHERE id=?1",[message_id])?;
-                transaction.execute("UPDATE chief_answers SET delivery='uncertain' WHERE id=?1 AND delivery<>'received'",[envelope["answer"].as_str()])?;
+                if is_correction {
+                    transaction.execute("UPDATE chief_overrules SET delivery='uncertain',finished_at=?2 WHERE id=?1 AND delivery<>'received'",params![envelope["overrule"].as_str(),now_ms])?;
+                } else {
+                    transaction.execute("UPDATE chief_answers SET delivery='uncertain' WHERE id=?1 AND delivery<>'received'",[envelope["answer"].as_str()])?;
+                }
                 decision_record(&transaction,&format!("host-delivery-{message_id}"),"delivery","Exact native delivery needs host recovery; handling is not verified delivery or completion.","Inspect the exact delivery and recipient. Confirm handled, or explicitly confirm safe stop before cancellation.",now_ms)?;
             },
         }
@@ -1084,7 +1269,17 @@ fn review_records(connection: &Connection, live: &[WorkerState], after: i64, lim
         UNION ALL SELECT 15,'summary',json_object('kind','summary','state',coalesce((SELECT state FROM chief_summary_requests ORDER BY created_at DESC,rowid DESC LIMIT 1),'unavailable'),
             'request',json((SELECT json_object('id',id,'state',state,'created_at_ms',created_at,'deadline_ms',deadline) FROM chief_summary_requests ORDER BY created_at DESC,rowid DESC LIMIT 1)),
             'last_completed_at_ms',(SELECT completed_at FROM chief_summary_requests WHERE state='completed' ORDER BY completed_at DESC LIMIT 1),
+            'previous_completed_at_ms',(SELECT completed_at FROM chief_summary_requests WHERE state='completed' ORDER BY completed_at DESC LIMIT 1 OFFSET 1),
             'last_result',json((SELECT response FROM chief_summary_requests WHERE state='completed' ORDER BY completed_at DESC LIMIT 1)))
+        UNION ALL SELECT 16,printf('%019d%019d',9223372036854775807-created_at,9223372036854775807-answer_rowid),json_object('kind','answer','id',id,'stop_id',stop_id,
+            'session_id',session_id,'project',project,'task_id',task_id,'question',question,'answer',answer,'reason',reason,'source',source,'delivery',delivery,
+            'created_at_ms',created_at,'overrule',json(CASE WHEN overrule_id IS NULL THEN NULL ELSE json_object('id',overrule_id,'correction',correction,
+                'delivery',overrule_delivery,'created_at_ms',overrule_created_at) END))
+            FROM (SELECT a.rowid AS answer_rowid,a.id AS id,a.stop_id AS stop_id,a.session_id AS session_id,s.project AS project,s.task_id AS task_id,a.question AS question,
+                    a.answer AS answer,a.reason AS reason,a.source AS source,a.delivery AS delivery,a.created_at AS created_at,
+                    o.id AS overrule_id,o.correction AS correction,o.delivery AS overrule_delivery,o.created_at AS overrule_created_at
+                FROM chief_answers a JOIN chief_stops s ON s.id=a.stop_id LEFT JOIN chief_overrules o ON o.answer_id=a.id
+                ORDER BY a.created_at DESC,a.rowid DESC LIMIT 200)
         ) SELECT record FROM records ORDER BY category,identity LIMIT ?2 OFFSET ?3")?;
     let encoded = statement.query_map(params![serde_json::to_string(live)?,limit as i64 + 1,after,audit],|row|row.get::<_,String>(0))?.collect::<Result<Vec<_>,_>>()?;
     let records = encoded.iter().map(|record|Ok(serde_json::from_str::<Value>(record)?)).collect::<Result<Vec<_>,TeamError>>()?;
@@ -1131,11 +1326,11 @@ pub fn clear_dispatch_leftovers(transaction: &rusqlite::Transaction<'_>) -> Resu
         AND (work IS NOT NULL OR assignment IS NOT NULL OR scope_key LIKE 'host-assignment-%')", [])?;
     transaction.execute("UPDATE chief_decisions SET state='superseded',revision=revision+1 WHERE state='open'
         AND scope_key IN (SELECT 'host-delivery-'||id FROM chief_inbox WHERE state IN ('queued','submitting','uncertain')
-            AND coalesce(json_extract(envelope,'$.kind'),'') NOT IN ('chief_wake','chief_answer','chief_form_reply'))", [])?;
+            AND coalesce(json_extract(envelope,'$.kind'),'') NOT IN ('chief_wake','chief_answer','chief_form_reply','chief_correction'))", [])?;
     transaction.execute("UPDATE chief_inbox SET state='cancelled' WHERE state IN ('queued','submitting','uncertain')
-        AND coalesce(json_extract(envelope,'$.kind'),'') NOT IN ('chief_wake','chief_answer','chief_form_reply')", [])?;
+        AND coalesce(json_extract(envelope,'$.kind'),'') NOT IN ('chief_wake','chief_answer','chief_form_reply','chief_correction')", [])?;
     transaction.execute("UPDATE chief_delivery_attempts SET state='cancelled' WHERE state IN ('submitting','uncertain')
-        AND coalesce(kind,'') NOT IN ('chief_wake','chief_answer','chief_form_reply')", [])?;
+        AND coalesce(kind,'') NOT IN ('chief_wake','chief_answer','chief_form_reply','chief_correction')", [])?;
     Ok(())
 }
 
