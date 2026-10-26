@@ -56,7 +56,6 @@ def docker_command():
     for name in ('DOCKER_CONTEXT', 'BUILDX_BUILDER', 'BUILDKIT_HOST'):
         os.environ.pop(name, None)
     os.environ['DOCKER_BUILDKIT'] = '1'
-    os.environ['COMPOSE_BAKE'] = 'false'
     return ['docker', '--host', endpoint]
 
 
@@ -85,7 +84,8 @@ def transform_dockerfile(source):
             if not pending:
                 output.append(line)
             continue
-        continued = line.rstrip().endswith('\\')
+        trimmed = line.rstrip()
+        continued = (len(trimmed) - len(trimmed.rstrip('\\'))) % 2 == 1
         pending += line.rstrip()[:-1] if continued else line
         if continued:
             continue
@@ -223,11 +223,14 @@ def main():
             model['secrets'].update({name: {'file': str(path)} for name, path in secrets.items()})
             override = directory / 'compose.json'
             override.write_text(json.dumps(escape_compose(model)))
-            command = [*docker, 'compose', '--progress', 'plain', '-f', str(override),
-                       'build', '--builder', 'default']
+            definition = subprocess.check_output([*docker, 'compose', '-f', str(override),
+                                                  'build', '--print', arguments.service], text=True)
+            bake = directory / 'bake.json'
+            bake.write_text(definition)
+            command = [*docker, 'buildx', 'bake', '--builder', 'default', '--progress', 'plain',
+                       '-f', str(bake), f'--allow=fs.read={directory}', '--load']
             if arguments.no_cache:
                 command.append('--no-cache')
-            command.append(arguments.service)
         else:
             command = [*docker, 'build', '--builder', 'default', '--progress', 'plain', '-f', str(dockerfile)]
             for name, path in secrets.items():

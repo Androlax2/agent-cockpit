@@ -1,6 +1,7 @@
 import json
 import os
 from pathlib import Path
+import signal
 import socket
 import ssl
 import subprocess
@@ -28,6 +29,16 @@ else:
         dockerfile = pathlib.Path(service['build']['dockerfile'])
         secrets = {key: pathlib.Path(value['file']).read_text() for key, value in model['secrets'].items()
                    if 'file' in value}
+        if '--print' in arguments:
+            print(json.dumps({'group': {'default': {'targets': ['web']}}, 'target': {'web': {
+                'context': service['build']['context'], 'dockerfile': str(dockerfile),
+                'secret': [{'id': key, 'src': value['file']} for key, value in model['secrets'].items() if 'file' in value]}}}))
+    elif 'bake' in arguments:
+        filename = pathlib.Path(arguments[arguments.index('-f') + 1])
+        definition = json.loads(filename.read_text())
+        target = definition['target']['web']
+        dockerfile = pathlib.Path(target['dockerfile'])
+        secrets = {secret['id']: pathlib.Path(secret['src']).read_text() for secret in target['secret']}
     else:
         filename = pathlib.Path(arguments[arguments.index('-f') + 1])
         dockerfile = filename
@@ -41,7 +52,11 @@ else:
     record['ignore'] = ignore.read_text() if ignore.exists() else None
 with open(os.environ['DOCKER_LOG'], 'a') as output:
     output.write(json.dumps(record) + '\\n')
-sys.exit(0 if 'config' in arguments else int(os.environ.get('BUILD_STATUS', '0')))
+if os.environ.get('WAIT_FOR_SIGNAL'):
+    import time
+    print('BUILD_READY', flush=True)
+    time.sleep(30)
+sys.exit(0 if 'config' in arguments or '--print' in arguments else int(os.environ.get('BUILD_STATUS', '0')))
 '''
 
 
@@ -147,6 +162,29 @@ class DockerBuildTests(unittest.TestCase):
         self.assertFalse(Path(self.records()[-1]['filename']).exists())
         self.assertEqual(self.dockerfile.read_text(), self.original)
 
+    def test_sigterm_cleans_the_generated_inputs(self):
+        process = subprocess.Popen([sys.executable, str(RUNNER), 'build', str(self.context)],
+                                   cwd=self.project, env=self.environment | {'WAIT_FOR_SIGNAL': '1'},
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            self.assertEqual(process.stdout.readline().strip(), 'BUILD_READY')
+            generated = Path(self.records()[-1]['filename'])
+            self.assertTrue(generated.exists())
+            process.send_signal(signal.SIGTERM)
+            _, error = process.communicate(timeout=5)
+            self.assertEqual(process.returncode, 130, error)
+            self.assertFalse(generated.exists())
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.communicate()
+
+    def test_an_escaped_trailing_backslash_is_not_a_continuation(self):
+        self.dockerfile.write_text('FROM ubuntu\nRUN printf hello\\\\\n')
+        result = self.build()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self.records()[-1]['text'].endswith('printf hello\\\\\n'))
+
     def test_unsupported_syntax_fails_before_docker(self):
         for content in ['FROM ubuntu\nRUN <<EOF\necho hi\nEOF\n', 'FROM ubuntu\nSHELL ["fish", "-c"]\n',
                         '# escape=`\nFROM ubuntu\nRUN echo hi\n', 'FROM ubuntu\nONBUILD RUN echo hi\n',
@@ -199,7 +237,7 @@ class DockerBuildTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         records = self.records()
         self.assertIn('custom.yaml', records[0]['arguments'])
-        record = records[-1]
+        record = next(record for record in records if 'model' in record)
         model = record['model']
         self.assertEqual(list(model['services']), ['web'])
         self.assertEqual(model['services']['web']['image'], 'sail-8.4/app')
@@ -211,6 +249,15 @@ class DockerBuildTests(unittest.TestCase):
         self.assertNotIn('do-not-serialize', json.dumps(model))
         self.assertFalse(Path(record['filename']).exists())
         self.assertEqual(self.dockerfile.read_text(), self.original)
+
+    def test_compose_grants_only_its_generated_directory_to_bake(self):
+        result = self.run_helper('compose', 'web', environment={'COMPOSE_MODEL': json.dumps(self.compose_model())})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        record = self.records()[-1]
+        self.assertIn('bake', record['arguments'])
+        grants = [argument for argument in record['arguments'] if argument.startswith('--allow=')]
+        self.assertEqual(grants, [f'--allow=fs.read={Path(record["filename"]).parent}'])
+        self.assertNotIn('BUILDX_BAKE_ENTITLEMENTS_FS=0', str(record))
 
     def test_compose_refuses_unsupported_contexts_before_building(self):
         for extra in [{'context': 'https://example.com/repo.git'}, {'dockerfile_inline': 'FROM ubuntu'},

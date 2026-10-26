@@ -84,6 +84,7 @@ impl Launch {
             fs::write(file, content).unwrap();
         }
         copy_executable(&bin().join("agent-build"), &sandbox.home.join(".local/bin/agent-build"));
+        copy_executable(&bin().join("agent-docker-build"), &sandbox.home.join(".local/bin/agent-docker-build"));
         // Logs its arguments, then runs the command after -- when it exists (the fake opencode).
         write_executable(&sandbox.home.join(".local/bin/greywall"), "#!/bin/sh\nprintf '%s' \"${GREYWALL_NO_PROMPT:-}\" > \"$HOME/greywall-no-prompt\"\nprintf 'greywall %s (api key: %s)\\n' \"$(printf '%s' \"$*\" | tr '\\n' ' ')\" \"${ANTHROPIC_API_KEY:-none}\" >> \"$SHIM_LOG\"\n\
                                                                      while [ \"$1\" != -- ]; do shift; done; shift\n\
@@ -971,6 +972,43 @@ fn sessions_can_read_the_stowed_label_helper_without_exposing_the_bin_directory(
 /// proj-a's own daemon socket, at its checkout's root.
 fn bind_proj_a_daemon_socket(launch: &Launch) {
     std::os::unix::net::UnixListener::bind(launch.project.join(".agent-docker.sock")).unwrap();
+}
+
+#[test]
+fn docker_build_trust_is_available_for_project_and_clone_sessions() {
+    for folder in ["IdeaProjects/proj-a", "IdeaProjects/.parallel/proj-a/p1"] {
+        let launch = Launch::new();
+        bind_proj_a_daemon_socket(&launch);
+        let relay = launch.sandbox.home.join("IdeaProjects/.parallel/proj-a/.agent-docker");
+        fs::create_dir_all(&relay).unwrap();
+        std::os::unix::net::UnixListener::bind(relay.join("docker.sock")).unwrap();
+        let (_, environment) = start_claude_in(&launch, folder);
+        let bundle = launch.sandbox.home.join(".cache/agent-ca/bundle.pem");
+        assert!(environment.contains(&format!("AGENT_DOCKER_CA_BUNDLE={}", bundle.display())), "{folder}: missing build CA bundle");
+        let helper = launch.sandbox.home.join(".cache/agent-shims/bin/agent-docker-build");
+        let output = Command::new(&helper).arg("--help").output().expect("helper installed");
+        assert!(output.status.success(), "{}", stderr(&output));
+        assert!(String::from_utf8_lossy(&output.stdout).contains("compose"));
+    }
+}
+
+#[test]
+fn a_missing_docker_build_helper_prevents_a_docker_enabled_launch() {
+    let launch = Launch::new();
+    bind_proj_a_daemon_socket(&launch);
+    fs::remove_file(launch.sandbox.home.join(".local/bin/agent-docker-build")).unwrap();
+    let output = launch.sandbox.command(bin().join("greywall-agents/claude"), &[])
+        .current_dir(&launch.project).output().unwrap();
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("Docker build trust helper"), "{}", stderr(&output));
+    assert!(launch.sandbox.calls("greywall").is_empty());
+}
+
+#[test]
+fn a_session_without_docker_does_not_inherit_build_trust_configuration() {
+    let launch = Launch::new();
+    launch.run_agent("opencode", &[("AGENT_DOCKER_CA_BUNDLE", "/other/project/bundle.pem")], &[]);
+    assert!(!launch.opencode_saw("environment").iter().any(|line| line.starts_with("AGENT_DOCKER_CA_BUNDLE=")));
 }
 
 #[test]

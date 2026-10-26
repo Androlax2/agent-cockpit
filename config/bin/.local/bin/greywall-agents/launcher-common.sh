@@ -319,6 +319,7 @@ unset ANTHROPIC_API_KEY
 # the clones (agent-docker-clones-relay@), mounted whole: never the repository's checkout.
 docker_socket="$project_root/.agent-docker.sock"
 docker_socket_mount=
+unset AGENT_DOCKER_CA_BUNDLE
 case "$project_root" in
     "$clones_dir"/*/*)
         docker_socket="$clones_dir/$project_name/.agent-docker/docker.sock"
@@ -328,6 +329,14 @@ case "$project_root" in
 esac
 if [ -S "$docker_socket" ]; then
     export DOCKER_HOST="unix://$docker_socket"
+    docker_build_copy=$(mktemp "$shims_dir/agent-docker-build.XXXXXX") || exit 1
+    if ! cp "$HOME/.local/bin/agent-docker-build" "$docker_build_copy" || ! chmod 755 "$docker_build_copy" ||
+            ! mv "$docker_build_copy" "$shims_dir/agent-docker-build"; then
+        rm -f "$docker_build_copy"
+        echo "$agent launcher: cannot install the Docker build trust helper, not starting." >&2
+        exit 1
+    fi
+    export AGENT_DOCKER_CA_BUNDLE="$ca_dir/bundle.pem"
     # Build steps and containers live in the daemon's network namespace, where greyproxy is
     # 10.0.2.2, not the 127.0.0.1 the daemon itself uses. The client injects this proxy into
     # both, as build arguments and as container environment.
