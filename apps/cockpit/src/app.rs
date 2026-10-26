@@ -4,6 +4,7 @@
 use crate::agents::{self, Feature};
 use crate::continuity::Continuity;
 mod continuity_ui;
+mod new_session;
 mod chief_ui;
 pub mod refresh;
 use crate::costs::Costs;
@@ -76,69 +77,44 @@ const EDITOR_HELP_MARK: &str = "#── everything from this line on is left out
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 pub const EFFORT_LEVELS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
 const PANEL_NAMES: [&str; 5] = ["Status", "Sessions", "Pull requests", "Todo", "Ideas"];
-const PANEL_KEYS: [&str; 5] = ["s", "1", "p", "2", "3"];
 /// The tabs' panels, in the order of their keys 1, 2, 3.
 const TAB_PANELS: [usize; 3] = [1, 3, 4];
 const GLOBAL_HINTS: [(&str, &str); 3] = [("s", "status"), (":", "actions"), ("?", "help")];
 /// ⌘ in key hints: the physical Command key, which keyd turns into Ctrl (system/etc/keyd).
 const GLOBAL_HELP: &[(&str, &str)] = &[
-    ("1 2 3", "tabs: Sessions, Todo, Ideas; also click a tab"), ("s", "Status over the tabs: usage, spending, pull requests (p), services; s or Esc closes"),
+    ("1 2 3", "Sessions · Todo · Ideas"), ("s", "Status: usage, spending, Chief, PRs, phone"),
+    ("?", "this help (for the tab you're on)"), ("esc", "close / back"),
+    ("N", "new blank session (project, agent, first message)"),
     ("H", "resume a past session, searched by project and prompt"),
-    ("⌘1 ⌘2 ⌘3", "a tab from inside the session (tmux)"), ("j/k ↑↓", "move inside the tab"),
-    (":", "every action, searchable; includes new-with-agent to override the default"), ("a", "new session in a project using the default agent from Settings (S)"),
-    ("O", "new opencode session in a project, overriding the default agent: same sandbox, card and keys; e opens its native effort picker, while $, remote and /compact stay Claude-only"),
-    ("S", "settings: default agent, OpenCode model and model-specific effort; on/off choices; and the phone page, pairing (QR code), forgetting a phone (x)"),
-    ("P W G", "windows on top: pull requests, Claude on the web, greyproxy (also Super+Ctrl+P/A/G)"),
-    ("≈ $ today", "all of today's usage at API token prices, subscription included: an estimate, not your bill; the split, week and month in Status"),
-    ("⌘⇥", "cursor between the column and the session (tmux)"),
-    ("→  ←", "into the session; ← from the session comes back"),
-    ("q ⌘C", "close the manager window; sessions keep running"),
+    ("S", "settings: default agent, models, on/off choices, phone pairing"),
+    ("P W G", "windows on top: pull requests, Claude on the web, greyproxy"),
+    ("⌘1 ⌘2 ⌘3", "a tab from inside the session"), ("→ ←", "into the session and back"),
+    (":", "the actions that have no key yet: digest, design session, clones, status pages"),
+    ("q", "close the column; sessions keep running"),
 ];
-/// Rare actions with no key, only in the : list: the panel they run in ("-" for none), a name, a label.
-const PALETTE_ONLY: [(&str, &str, &str); 24] = [
-    ("-", "chief", "Chief: global coordination, workers, decisions and requested summary"),
-    ("1", "team", "teams and shared-work links: approve, edit, reject or revoke; resolve escalations and read message history"),
+/// Actions with no key yet, only in the : list: the panel they run in ("-" for none), a name, a
+/// label. The designer places them next (todo 5a82d5dd); the attention filter, queue, updates and
+/// "reviewed" go once the grouping has replaced them (todo 86822093).
+const PALETTE_ONLY: [(&str, &str, &str); 13] = [
     ("1", "attention-filter", "show actionable sessions / show all; deferred items remain counted"),
-    ("1", "defer-20m", "remind me of this explicit question in twenty minutes (never approve)"),
     ("2", "defer-20m", "remind me of this PR review in twenty minutes"),
-    ("1", "bring-back", "bring the selected question back to attention now"),
     ("2", "bring-back", "bring the selected PR review back now"),
-    ("1", "task-trail", "follow the selected session's tasks, results and PRs"),
     ("2", "task-trail", "follow the selected PR's linked tasks and sessions"),
     ("3", "task-trail", "follow the selected task's sessions, results and PRs"),
     ("-", "queue", "explain queued work and what each session is waiting for"),
     ("-", "updates", "unseen results, questions and archived return notes"),
     ("1", "reviewed", "mark the selected session's currently displayed updates reviewed (not answered)"),
-    ("1", "return-note", "write your session return note (never sent to the agent)"),
-    ("1", "clear-return-note", "explicitly remove your session return note"),
-    ("-", "new-with-agent", "new session with an explicit agent: pick a project, then Claude Code or opencode"),
     ("-", "digest", "the digest: yesterday, today, plan usage, who waits, pull requests (also once a day by itself)"),
     ("-", "design", "a design session: a Claude Design canvas, worked on by a session in a project (link, then project)"),
     ("-", "clones", "the clones of + and reviews: delete those with no session, no uncommitted change and nothing unpushed (also once a day by itself)"),
     ("0", "status-page", "open status.claude.com: Anthropic's incidents and each product's state"),
     ("0", "codex-status-page", "open status.openai.com: OpenAI's incidents and each product's state (Codex)"),
-    ("1", "remote", "toggle Remote Control (phone / claude.ai/code) for the selected session"),
-    ("1", "drop-queued", "drop the messages queued for the selected session"),
-    ("-", "pair-phone", "a QR code that pairs a phone with the phone page (cockpit-remote), once, within 10 minutes (also in S)"),
 ];
-const LEGEND: [(&str, &str); 24] = [
-    ("●", "working"), ("○", "waiting for you"), ("!", "needs you: permission or question"), ("·", "running, state unknown"),
-    ("▌", "shown in the session pane; red means the session needs you"), ("⚲", "pinned"), ("⇅", "remote controlled"), ("◇ opencode", "run by opencode instead of Claude Code (O starts one)"),
-    ("◆ figcraft", "connected to FigCraft, which is open for this session's project (craft-open)"),
-    ("◷ 2 agents + background", "background agents, and other background work (shells, monitors), still running when its turn ended"),
-    ("ask-to-run: approval / running / input", "this session's command awaits approval, runs outside the sandbox, or needs your input; clears when finished"),
-    ("! Needs you", "amber marker and rail: this session needs approval, input, or an answer; cards keep their place"),
-    ("✉ 2 queued", "messages waiting for the end of its turn, sent one per turn (m, Alt+Q; M drops them)"),
-    ("↑2 unpushed", "commits on no remote yet: U pushes the branch"),
-    ("⏱ 1h20 today · 34h", "time spent with Claude (and opencode) on the project, today and in all: the gaps under 5 minutes between its sessions' replies"),
-    ("↑2 unapplied", "a reviewed clone's commits its running copy (~/dotfiles, ~/agent-cockpit, ~/vitals) lacks: U shows them and applies them after a yes"),
-    ("↑2 unpushed (running copy)", "on a reviewed clone's card, commits its running copy holds and GitHub lacks: U pushes them after a yes"),
-    ("▭ terminal", "started with \"this terminal\": no ⌘R, restore, queue or error hand-off; ask-to-run still asks for approval"),
-    ("✎ designer ⌨ developer", "its role in a project designed in FigCraft (cockpit-design role): design to-dos go to the designer"),
-    ("✎ design", "a to-do for the designer session: a gap a developer found in the design (cockpit-todo --design)"),
-    ("⛔ opusline", "a session of that project was blocked by the setup (cockpit-todo blocked): queued for agent-cockpit"),
-    ("⬆", "Claude updated itself: r restarts on the new version"),
-    ("/compact", "context over 90%: /compact in the session before it gets slow and costly"), ("high ▾", "effort level: click to change it"),
+/// What the signs on a session card mean: Sessions help's last section.
+const LEGEND: &[(&str, &str)] = &[
+    ("!", "needs you"), ("◐", "working"), ("✓", "finished"), ("☾", "asleep"), ("↳", "waits on a todo"),
+    ("⇄", "linked"), ("◆", "the Chief"), ("▶", "your approved command runs"), ("‖", "later: its ask is hidden"),
+    ("⟳", "restart needed"), ("⚲", "pinned"), ("↑2", "unpushed commits"), ("✉2", "queued messages"),
 ];
 
 pub fn color(index: u8) -> Color {
@@ -370,6 +346,7 @@ pub enum Key {
 }
 
 /// Keep the inspected text stable even if the source session changes or disappears.
+#[derive(Default)]
 struct SessionDetails {
     title: String,
     text: String,
@@ -377,6 +354,27 @@ struct SessionDetails {
     actions: Vec<DetailAction>,
     /// The session whose Chief answers `c` opens from here; set only when it has some.
     chief_answers_of: Option<String>,
+    /// Session details (`i`): the session its keys act on, and those keys by group, drawn as key caps.
+    session: Option<String>,
+    key_groups: Vec<(&'static str, Vec<(&'static str, &'static str)>)>,
+}
+
+/// Session details' keys, grouped as frame 2200 draws them; they work on the selected card too.
+const SESSION_DETAIL_KEYS: [(&str, &[(&str, &str)]); 3] = [
+    ("WORK", &[("e", "effort"), ("$", "billing: subscription / API"), ("C", "/compact"), ("c", "Chief answers"), ("k", "links"), ("d", "drop queued")]),
+    ("CODE", &[("g", "lazygit"), ("U", "push / apply"), ("+", "parallel clone"), ("o", "design canvas"), ("t", "task trail")]),
+    ("SESSION", &[("m", "remote control"), ("w", "my note"), ("z", "sleep"), ("R", "restart"), ("x", "end")]),
+];
+
+enum DetailRow {
+    Heading(String),
+    Text(String),
+    Keys(Vec<(&'static str, &'static str)>),
+}
+
+fn is_detail_heading(line: &str) -> bool {
+    let heading = line.split(" (").next().unwrap_or(line);
+    heading.len() > 2 && heading.chars().all(|character| character.is_ascii_uppercase() || " &".contains(character))
 }
 
 #[derive(Clone)]
@@ -397,8 +395,8 @@ impl SessionDetails {
         let inner = width.saturating_sub(4) as usize;
         let body_width = inner.saturating_sub(2).max(2);
         let body_height = (bottom.saturating_sub(top + 3) as usize).max(1);
-        let wrapped = wrap_detail_text(&self.text, body_width);
-        self.scroll = self.scroll.min(wrapped.len().saturating_sub(body_height));
+        let rows = self.rows(body_width);
+        self.scroll = self.scroll.min(rows.len().saturating_sub(body_height));
         for row in top..=bottom {
             put(buffer, row, 1, &" ".repeat((width - 2) as usize), on(FG, BLACK));
             put(buffer, row, 1, "│", style(BLUE));
@@ -406,16 +404,53 @@ impl SessionDetails {
         }
         put(buffer, top, 1, &format!("┌{}┐", "─".repeat(inner)), style(BLUE));
         put(buffer, top, 3, &fit(&self.title, inner.saturating_sub(2)), bold(BLUE));
-        for (offset, line) in wrapped.iter().skip(self.scroll).take(body_height).enumerate() {
-            put(buffer, top + 1 + offset as u16, 3, line, style(FG));
+        for (offset, line) in rows.iter().skip(self.scroll).take(body_height).enumerate() {
+            let row = top + 1 + offset as u16;
+            match line {
+                DetailRow::Heading(text) => { put(buffer, row, 3, text, bold(FG_DARK)); }
+                DetailRow::Text(text) => { put(buffer, row, 3, text, style(FG)); }
+                DetailRow::Keys(keys) => {
+                    let mut column = 3;
+                    for (key, label) in keys {
+                        put(buffer, row, column, &format!(" {key} "), on(FG, BG_HIGHLIGHT).add_modifier(Modifier::BOLD));
+                        column += width_of(key) as u16 + 3;
+                        put(buffer, row, column, label, style(FG_DARK));
+                        column += width_of(label) as u16 + 2;
+                    }
+                }
+            }
         }
-        let progress = format!("{}–{} / {}", self.scroll + 1, (self.scroll + body_height).min(wrapped.len()), wrapped.len());
+        let progress = format!("{}–{} / {}", self.scroll + 1, (self.scroll + body_height).min(rows.len()), rows.len());
         if bottom - 2 > top + body_height as u16 {
             put(buffer, bottom - 2, 3, &fit(&progress, body_width), dim(FG_DARK));
         }
-        put(buffer, bottom - 1, 3, &fit(if self.actions.is_empty() { "↑↓ scroll  g/G top/end  Esc close" }
-            else { "↑↓ scroll  Enter actions  Esc close" }, body_width), dim(FG_DARK));
+        let footer = if self.session.is_some() { "esc back · the same keys work on the selected card without opening i" }
+            else if self.actions.is_empty() { "↑↓ scroll  g/G top/end  Esc close" } else { "↑↓ scroll  Enter actions  Esc close" };
+        put(buffer, bottom - 1, 3, &fit(footer, body_width), dim(FG_DARK));
         put(buffer, bottom, 1, &format!("└{}┘", "─".repeat(inner)), style(BLUE));
+    }
+
+    /// The text wrapped to `width` (capitalised lines become headings), then each key group
+    /// flowed into as few rows of key caps as fit.
+    fn rows(&self, width: usize) -> Vec<DetailRow> {
+        let mut rows: Vec<DetailRow> = wrap_detail_text(&self.text, width).into_iter()
+            .map(|line| if is_detail_heading(&line) { DetailRow::Heading(line) } else { DetailRow::Text(line) }).collect();
+        for (heading, keys) in &self.key_groups {
+            rows.push(DetailRow::Heading((*heading).into()));
+            let mut current: Vec<(&str, &str)> = Vec::new();
+            let mut used = 0;
+            for &(key, label) in keys {
+                let cell = width_of(key) + 3 + width_of(label) + 2;
+                if !current.is_empty() && used + cell > width {
+                    rows.push(DetailRow::Keys(std::mem::take(&mut current)));
+                    used = 0;
+                }
+                current.push((key, label));
+                used += cell;
+            }
+            if !current.is_empty() { rows.push(DetailRow::Keys(current)); }
+        }
+        rows
     }
 }
 
@@ -808,6 +843,7 @@ pub struct App {
     pub(crate) menu: Option<EffortMenu>,
     session_details: Option<SessionDetails>,
     todo_composer: Option<TodoComposer>,
+    new_session: Option<new_session::NewSession>,
     pub(crate) settings_menu: Option<SettingsMenu>,
     /// The Team view (: team), from the daemon's host-only team socket.
     pub(crate) team_view: Option<crate::teams::view::TeamView>,
@@ -940,7 +976,7 @@ impl App {
             history: History::default(), view: ViewState::load(), usage: Refresher::new(), alerts: BudgetAlerts::new(util::send_notice),
             costs: Costs::default(), reviews: Reviews::default(), todos, errors: ErrorReporter::new(),
             claude_status: ProviderStatus::default(), codex_status: ProviderStatus::new(Provider::Codex), panels: Default::default(), focus: 1, previous_panel: 1,
-            help_open: false, has_pane_focus: true, attention_only: false, message, exiting: Vec::new(), restarting_cards: HashMap::new(), labelled: Default::default(), menu: None, session_details: None, todo_composer: None, settings_menu: None, team_view: None, chief_view: None, team_attention: 0, team_roles: HashMap::new(), qa_sessions: HashSet::new(), team_known: false, team_checked: 0.0,
+            help_open: false, has_pane_focus: true, attention_only: false, message, exiting: Vec::new(), restarting_cards: HashMap::new(), labelled: Default::default(), menu: None, session_details: None, todo_composer: None, new_session: None, settings_menu: None, team_view: None, chief_view: None, team_attention: 0, team_roles: HashMap::new(), qa_sessions: HashSet::new(), team_known: false, team_checked: 0.0,
             team_links: TeamLinks::Loading, sidebar_rows: Vec::new(), tab_ranges: Vec::new(), collapsed_teams: HashSet::new(), sidebar_selection_lost: false, sidebar_session_tasks: HashMap::new(), pairing: None, restore: Vec::new(),
             held: Vec::new(), held_checked: 0.0, queue_checked: 0.0, sleep_checked: 0.0, sleep_asked: HashMap::new(), gaming: util::gaming,
             disk_usage: util::fullest_disk, disk: None, disk_checked: 0.0, restore_checked: 0.0, start_files: Vec::new(),
@@ -2115,9 +2151,8 @@ impl App {
             return card;
         }
         if let Some(expiry) = self.session_deferred_until(session, now) {
-            let until = chrono::DateTime::from_timestamp(expiry, 0)
-                .map(|time| time.with_timezone(&chrono::Local).format("%H:%M").to_string()).unwrap_or_else(|| expiry.to_string());
-            card.doing = format!("Ask hidden until {until}");
+            let minutes = ((expiry - now).max(0) + 59) / 60;
+            (card.glyph, card.doing) = ("‖", format!("Later · back in {minutes}m"));
             return card;
         }
         match sessions::activity_label(session) {
@@ -2487,25 +2522,54 @@ impl App {
     fn open_session_details(&mut self) {
         let Some(selected) = self.selected_session() else { return };
         let session = &selected;
-        let title = self.session_task_titles.get(&session.session).map(String::as_str).unwrap_or(&session.project);
+        let now = util::now_secs();
+        let card = self.session_card(session, now);
+        let original = self.session_task_titles.get(&session.session).map(String::as_str).unwrap_or(&session.project);
         let branch = self.session_branches.get(&session.session).map(String::as_str).unwrap_or("");
-        let mut text = format!("Task: {}\nOriginal title: {title}\nProject: {} / {branch}\nActivity: {}\n\n",
-                                self.session_display_title(session), session.project, sessions::activity_label(session));
-        if let Ok(continuity) = &self.continuity {
-            if let Some(note) = continuity.note(&session.session) { text += &format!("Your note: {note}\n\n"); }
+        let shown = self.session_display_title(session);
+        let mut text = if shown == session.project { format!("{shown}\n") } else { format!("{} › {shown}\n", session.project) };
+        if original != self.session_display_title(session) && original != session.project { text += &format!("Task: {original}\n"); }
+        text += "\nWHERE & WHO\n";
+        let mut place = Vec::new();
+        if sessions::clone_name(&session.cwd).is_some() || !branch.is_empty() {
+            if let Some(clone) = sessions::clone_name(&session.cwd) { place.push(format!("clone {clone}")); }
+            if !branch.is_empty() { place.push(format!("branch {branch}")); }
+        } else if !session.cwd.is_empty() { place.push(session.cwd.clone()); }
+        if session.unpushed > 0 { place.push(format!("↑{} unpushed", session.unpushed)); }
+        if !place.is_empty() { text += &format!("{}\n", place.join(" · ")); }
+        let facts = &session.facts;
+        let mut who = vec![session.agent().label.to_string()];
+        if !facts.model.is_empty() { who.push(facts.model.clone()); }
+        if !facts.effort.is_empty() { who.push(format!("effort {}", facts.effort)); }
+        if let Some(context) = facts.context { who.push(format!("ctx {}%", context.round())); }
+        if session.since > 0 {
+            who.push(format!("since {}", chrono::DateTime::from_timestamp(session.since, 0)
+                .map(|time| time.with_timezone(&chrono::Local).format("%H:%M").to_string()).unwrap_or_default()));
         }
+        text += &format!("{}\nBilling: {}\n\nAROUND IT\n", who.join(" · "),
+            if session.credits { "API credits" } else { "subscription" });
+        let mut around = Vec::new();
+        if let Some(answers) = self.chief_answers.get(&session.session) { around.push(format!("◆ Chief answered {}", answers.count)); }
+        if let Some(team) = self.team_roles.get(&session.session) { around.push(format!("⇄ {team}")); }
+        let queued = self.session_queued.get(&session.session).copied().unwrap_or(0);
+        if queued > 0 { around.push(format!("✉ {queued} queued message{}", if queued == 1 { "" } else { "s" })); }
+        if let Some(background) = sessions::background_badge(session) { around.push(format!("◷ {background}")); }
+        if facts.remote { around.push("⇅ remote control on".into()); }
+        text += &format!("{}\n\nMY NOTE (never sent to the agent)\n", if around.is_empty() { "nothing else around it".into() } else { around.join(" · ") });
+        let note = self.continuity.as_ref().ok().and_then(|continuity| continuity.note(&session.session).map(str::to_string));
+        text += &format!("{}\n\n", note.unwrap_or_else(|| "none · w writes one".into()));
         if session.needs_attention() {
             let request = if !session.full_request.is_empty() { session.full_request.clone() }
                 else if !session.request.is_empty() { session.request.clone() }
                 else { sessions::activity_text(session) };
-            text += &format!("Request:\n{request}\n\n");
+            text += &format!("ITS ASK\n{request}\n\n");
         }
         if !session.outcome.is_empty() {
-            text += &format!("Last turn:\n{}\n\n", session.outcome);
+            text += &format!("LAST TURN\n{}\n\n", session.outcome);
         }
         if let Some(answers) = self.chief_answers.get(&session.session) {
             let room = (self.width as usize).saturating_sub(6).max(2);
-            text += "Chief answers\n";
+            text += "CHIEF ANSWERS\n";
             for answer in answers.recent.iter().take(3) {
                 for line in crate::chief::view::recent_answer_lines(answer, room) { text += &format!("{line}\n"); }
             }
@@ -2520,15 +2584,15 @@ impl App {
             }
         }
         if session.last_result.is_none() && !session.reports_turns { text += "Result tracking unavailable; restart to enable\n\n"; }
-        for line in self.selected_session_detail_lines() {
-            for part in line.right {
-                if part.action != Some("session-details") && !part.text.is_empty() {
-                    text += &format!("{}\n", part.text);
-                }
-            }
-        }
-        let chief_answers_of = self.chief_answers.contains_key(&session.session).then(|| session.session.clone());
-        self.session_details = Some(SessionDetails { title: "Session details".into(), text, scroll: 0, actions: Vec::new(), chief_answers_of });
+        let agent = session.agent();
+        let key_groups = SESSION_DETAIL_KEYS.iter().map(|(heading, keys)| (*heading, keys.iter().copied().filter(|(key, _)| {
+            let key = Key::Char(key.chars().next().unwrap());
+            !(session.is_external() && session_key_requires_terminal(key.clone()))
+                && (key != Key::Char('c') || self.chief_answers.contains_key(&session.session))
+                && key_feature(key, agent).is_none_or(|(feature, _)| agent.can(feature))
+        }).collect())).collect();
+        self.session_details = Some(SessionDetails { title: format!("{} {}", card.glyph, card.doing), text, session: Some(session.session.clone()),
+            key_groups, ..Default::default() });
     }
 
     /// The selected session's keys, most pressing first: what its card asks for (an approval, a
@@ -2578,22 +2642,12 @@ impl App {
     }
 
     fn sessions_help() -> Vec<(&'static str, &'static str)> {
-        vec![("⏎", "show the session and move the cursor into it"), ("n", "Next needing me: focus its approval or question, return to Active Sessions after answering"),
-             ("/", "find a session by project or task without opening it or changing list order"),
-             ("i", "read the complete task, request and metadata; arrows scroll and Escape closes"),
-             ("c", "what the Chief answered this session (Chief ✓N on its card), newest first; o there overrules one"),
-             ("x", "exit the session: Ctrl-C twice, then killed if it lingers"), ("r", "restart in place: same conversation, new process"),
-             ("z", "sleep now: it exits to free its memory and keeps its card; opening or messaging it resumes the conversation"),
-             ("⌘R", "restart the sessions started before a change they lack (badge ⟳ restart), when they wait at their prompt; busy ones are named and left alone"),
-             ("p", "pin on top"),
-             ("e", "effort level: Claude restarts on it (or click the card's level); opencode opens its native picker without restarting"),
-             ("$", "bill the session to the Console's API credits, or back to the subscription: it restarts on the same conversation (badge $ credits)"),
-             ("g", "lazygit on the session's repository, in a popup (q closes it)"),
-             ("U", "push the session's branch to origin with your SSH key, after a yes (lazygit's sandbox cannot)"),
-             ("+", "another session on this repository, on its own branch in a separate clone, using the default agent"),
-             ("C", "/compact in the session, when it waits (the /compact badge suggests it)"),
+        vec![("⏎", "open the selected session"), ("n", "next session that needs you"),
+             ("l", "later: hide this ask for 20 min (never approves)"), ("i", "details of the selected session"),
+             ("N", "new blank session (project, agent, first message)"), ("R", "restart the session"), ("x", "end the session"),
+             ("p", "pin: first inside its group"), ("⌘R", "restart every session that lacks a change (⟳), once it waits"),
              ("B", "after a reboot: bring back the sessions that were running"),
-             ("o", "open the Claude Design canvas a design session works on (◆ on its card)")]
+             ("", "its other keys (effort, push, note, sleep…) are listed in i and work on the card too")]
     }
 
     pub(crate) fn handle_sessions(&mut self, key: Key, screen: &mut dyn Screen) -> String {
@@ -2611,7 +2665,7 @@ impl App {
             }
         }
         let session = self.selected_session();
-        if let Some(s) = session.as_ref().filter(|s| s.restarting) && matches!(key, Key::Enter | Key::Char('r' | 'e' | '$' | 'C' | 'x' | 's')) {
+        if let Some(s) = session.as_ref().filter(|s| s.restarting) && matches!(key, Key::Enter | Key::Char('r' | 'R' | 'e' | '$' | 'C' | 'x' | 'z')) {
             return format!("{} is restarting: wait for it to come back", s.project);
         }
         if session.as_ref().is_some_and(|session| session.is_external()) && session_key_requires_terminal(key.clone()) {
@@ -2641,7 +2695,19 @@ impl App {
                 }
                 String::new()
             }
-            Key::Char('r') => match known {
+            Key::Char('l') => self.toggle_later(),
+            Key::Char('t') => match session {
+                Some(s) => self.open_task_trail_of_session(&s.session, screen),
+                None => String::new(),
+            },
+            Key::Char('w') => match session {
+                Some(s) => self.write_note(&s, screen),
+                None => String::new(),
+            },
+            Key::Char('m') => self.toggle_remote(),
+            Key::Char('d') => self.drop_queued(screen),
+            Key::Char('k') => self.open_team_view(),
+            Key::Char('r' | 'R') => match known {
                 Some(s) if self.confirm(screen, &format!("restart {}? same conversation, new process", s.project)) => {
                     manager_in_background(&["restart", &s.session]);
                     format!("restarting {} …", s.project)
@@ -3129,7 +3195,7 @@ impl App {
                 self.session_details = Some(SessionDetails {
                     title: "Idea".into(),
                     text: format!("{}\n\n{}", self.idea_source(&item), todo_details(&Entry::Typed(item))),
-                    scroll: 0, actions: Vec::new(), chief_answers_of: None,
+                    scroll: 0, actions: Vec::new(), chief_answers_of: None, ..Default::default()
                 });
                 String::new()
             }
@@ -3418,7 +3484,7 @@ impl App {
                 Some(entry) => self.hand_to_claude(&entry, screen),
                 None => String::new(),
             },
-            Key::Char('N') => match entry {
+            Key::Char('r') => match entry {
                 Some(entry) if entry.status() == todo::PROPOSED => "approve it first (y)".into(),
                 Some(entry) => self.hand_to_new_session(&entry, screen),
                 None => String::new(),
@@ -3599,7 +3665,7 @@ impl App {
             todo::PROPOSED => vec![("y", "approve"), ("n", "decline"), ("⏎", "details"), ("e", "edit"), ("[ ]", "tabs")],
             "doing" => vec![("d", "done"), ("⏎", "details"), ("i", "back to to do"), ("e", "edit"), ("t", "add"), ("[ ]", "tabs")],
             "done" => vec![("⏎", "details"), ("d", "back to to do"), ("t", "add"), ("[ ]", "tabs")],
-            _ => vec![("h", "to a session"), ("N", "to a new session"), ("⏎", "details"), ("Q", "queue"), ("i", "doing"), ("d", "done"), ("e", "edit"), ("t", "add"), ("[ ]", "tabs")],
+            _ => vec![("r", "run now"), ("h", "to a session"), ("⏎", "details"), ("Q", "queue"), ("i", "doing"), ("d", "done"), ("e", "edit"), ("t", "add"), ("[ ]", "tabs")],
         };
         hints.extend([("K", "kind"), ("m", "move"), ("f", "filter kind")]);
         hints
@@ -3607,7 +3673,7 @@ impl App {
 
     fn panel_help(index: usize) -> Vec<(&'static str, &'static str)> {
         match index {
-            0 => vec![],
+            0 => vec![("p", "its pull requests"), ("c", "the Chief: on / off"), ("l", "the Chief's answer log"), ("s", "back to the tab")],
             1 => Self::sessions_help(),
             2 => vec![("⏎", "open the pull request in the pull requests window"),
                       ("c", "a session reviewing it, in its own clone of the repository, using the default agent"),
@@ -3619,7 +3685,7 @@ impl App {
             _ => vec![("⏎", "the item's details: title, notes, why Claude proposed it, who filed it, when"),
                       ("[ ]", "previous / next tab: Open (Proposed, To do and In progress together) · Proposed · To do · In progress · Done"),
                       ("h", "hand the item over: the session on screen if it is on the item's project (a parallel clone too), Claude Code or opencode alike, else the project's running session, or a new one using the default agent"),
-                      ("N", "hand the item to a new session using the default agent, in a parallel clone of its repository on a branch named after it (todo-<id>, issue-<n>), never to a running one"),
+                      ("r", "run now: a new session on it using the default agent, in a parallel clone of its repository on a branch named after it (todo-<id>, issue-<n>), never a running one"),
                       ("e", "edit Kind, Title and Notes in one form; Tab / Shift+Tab fields, arrows choose Kind; CMD+S saves, Esc cancels"),
                       ("K", "change kind: Task, Feature, Bug, Improvement, Chore, Research; Design/Blocked routing stays unchanged"),
                       ("m", "move a typed item to another project, picked like a new session's; not while it is in progress"),
@@ -3717,6 +3783,11 @@ impl App {
         }
         if let Some(composer) = self.todo_composer.as_ref() {
             composer.draw(buffer);
+            self.hit_lines.clear();
+            self.hit_actions.clear();
+        }
+        if let Some(form) = self.new_session.as_ref() {
+            form.draw(buffer);
             self.hit_lines.clear();
             self.hit_actions.clear();
         }
@@ -3957,34 +4028,46 @@ impl App {
         }
     }
 
+    /// `?`: the open tab's keys, then the keys that work everywhere (minus those the tab already
+    /// lists), then, on Sessions, what the card signs mean.
+    pub(crate) fn help_sections(&self) -> (String, Vec<(&'static str, Vec<(&'static str, &'static str)>)>) {
+        let tab = if self.is_status_open() { 0 } else { self.focus };
+        let this_tab = Self::panel_help(tab);
+        let everywhere = GLOBAL_HELP.iter().copied().filter(|(key, _)| !this_tab.iter().any(|(own, _)| own == key)).collect();
+        let mut sections = vec![("THIS TAB", this_tab), ("EVERYWHERE", everywhere)];
+        if tab == 1 { sections.push(("WHAT THE SIGNS MEAN", LEGEND.to_vec())); }
+        (format!("Help · {}", PANEL_NAMES[tab]), sections)
+    }
+
     fn draw_help(&self, buffer: &mut Buffer) {
         let (width, height) = (buffer.area.width, buffer.area.height);
-        let mut rows: Vec<(String, Option<String>)> = Vec::new();
-        let mut sections: Vec<(String, Vec<(&str, &str)>)> = vec![("Everywhere".into(), GLOBAL_HELP.to_vec())];
-        for index in 0..PANEL_NAMES.len() {
-            sections.push((format!("[{}] {}", PANEL_KEYS[index], PANEL_NAMES[index]), Self::panel_help(index)));
-        }
-        sections.push(("Glyphs".into(), LEGEND.to_vec()));
-        for (title, entries) in sections {
-            rows.push((title, None));
-            rows.extend(entries.into_iter().map(|(key, label)| (key.to_string(), Some(label.to_string()))));
-            rows.push((String::new(), Some(String::new())));
-        }
+        let (title, sections) = self.help_sections();
         let box_height = height.saturating_sub(HEADER_LINES + 1);
+        let last = HEADER_LINES + box_height.saturating_sub(1);
         for line in 0..box_height {
-            put(buffer, HEADER_LINES + line, 0, &" ".repeat(width.saturating_sub(1) as usize), on(FG, BG_HIGHLIGHT));
+            put(buffer, HEADER_LINES + line, 0, &" ".repeat(width.saturating_sub(1) as usize), on(FG, BLACK));
         }
-        for (index, (key, label)) in rows.iter().take(box_height.saturating_sub(2) as usize).enumerate() {
-            let row = HEADER_LINES + 1 + index as u16;
-            match label {
-                None => put(buffer, row, 2, key, on(MAGENTA, BG_HIGHLIGHT).add_modifier(Modifier::BOLD)),
-                Some(label) => {
-                    put(buffer, row, 2, key, on(YELLOW, BG_HIGHLIGHT).add_modifier(Modifier::BOLD));
-                    put(buffer, row, 11, label, on(FG_DARK, BG_HIGHLIGHT));
+        let key_width = sections.iter().flat_map(|(_, entries)| entries.iter()).map(|(key, _)| width_of(key)).max().unwrap_or(1) as u16 + 2;
+        let label_width = width.saturating_sub(key_width + 5) as usize;
+        let mut row = HEADER_LINES + 1;
+        put(buffer, row, 2, &title, bold(FG));
+        for (heading, entries) in sections {
+            row += 1;
+            if row >= last { break; }
+            put(buffer, row, 2, heading, bold(FG_DARK));
+            for (key, label) in entries {
+                for (index, piece) in approval::wrap(label, label_width.max(8)).into_iter().enumerate() {
+                    row += 1;
+                    if row >= last { break; }
+                    if index == 0 && !key.is_empty() {
+                        put(buffer, row, 2, &format!(" {key} "), on(FG, BG_HIGHLIGHT).add_modifier(Modifier::BOLD));
+                    }
+                    put(buffer, row, 2 + key_width + 1, &piece, style(FG_DARK));
                 }
             }
         }
-        put(buffer, HEADER_LINES + box_height.saturating_sub(1), 2, "any key closes", on(FG_DARK, BG_HIGHLIGHT).add_modifier(Modifier::DIM));
+        put(buffer, last, 2, " esc ", on(FG, BG_HIGHLIGHT).add_modifier(Modifier::BOLD));
+        put(buffer, last, 8, "close", dim(FG_DARK));
     }
 
     /// Asks a y/n question in the footer; true on y.
@@ -4091,14 +4174,35 @@ impl App {
             self.handle_composer(key);
             return;
         }
+        if self.new_session.is_some() {
+            self.message = self.handle_new_session(key);
+            return;
+        }
         if matches!(key, Key::Paste(_)) && self.chief_view.as_ref().is_none_or(|view|view.suspended) { return; }
         if self.session_details.as_ref().is_some_and(|details| !details.actions.is_empty()) && key == Key::Enter {
             self.message = self.pick_detail_action(screen);
             return;
         }
+        // Session details: its keys close it and act on the session, as on the card.
+        if let Some(details) = self.session_details.as_ref().filter(|details| details.session.is_some()) {
+            let is_detail_key = matches!(&key, Key::Char(character) if details.key_groups.iter()
+                .any(|(_, keys)| keys.iter().any(|(own, _)| own.starts_with(*character))));
+            if is_detail_key {
+                let session = details.session.clone();
+                self.session_details = None;
+                if self.selected_session().map(|selected| selected.session) != session {
+                    self.message = "the selected session changed: press i on it again".into();
+                    return;
+                }
+                self.message = self.handle_sessions(key, screen);
+                return;
+            }
+        }
         if let Some(details) = self.session_details.as_mut() {
             match key {
                 Key::Down | Key::Char('j') => details.scroll = details.scroll.saturating_add(1),
+                Key::PageUp => details.scroll = 0,
+                Key::PageDown => details.scroll = usize::MAX,
                 Key::Up | Key::Char('k') => details.scroll = details.scroll.saturating_sub(1),
                 Key::Char('g') => details.scroll = 0,
                 Key::Char('G') => details.scroll = usize::MAX,
@@ -4149,7 +4253,9 @@ impl App {
                 self.panels[self.focus].move_by(1);
                 if self.focus == 1 { self.sidebar_selection_lost = false; }
             },
-            Key::Char('k') | Key::Up => {
+            // In Sessions `k` opens the selected card's links (Theo, 2026-10-26); ↑ moves up there.
+            Key::Char('k') if self.focus != 1 => self.panels[self.focus].move_by(-1),
+            Key::Up => {
                 self.panels[self.focus].move_by(-1);
                 if self.focus == 1 { self.sidebar_selection_lost = false; }
             },
@@ -4172,19 +4278,7 @@ impl App {
                     }
                 }
             }
-            Key::Char('a') => {
-                if let Some(directory) = screen.outside(&mut || pick_project()).filter(|d| !d.is_empty()) {
-                    self.message = match settings::launch_agent() {
-                        Ok(agent) => self.manager_async(&["--agent", &agent, "new", &directory]),
-                        Err(error) => error,
-                    };
-                }
-            }
-            Key::Char('O') => {
-                if let Some(directory) = screen.outside(&mut || pick_project()).filter(|d| !d.is_empty()) {
-                    self.message = self.manager_async(&["--agent", "opencode", "new", &directory]);
-                }
-            }
+            Key::Char('N') => self.open_new_session(),
             Key::Char('S') => self.settings_menu = Some(SettingsMenu::new()),
             Key::Char('H') => {
                 let past = self.past_sessions();
@@ -4255,18 +4349,9 @@ impl App {
     }
 
     fn run_palette_only(&mut self, name: &str, screen: &mut dyn Screen) -> String {
-        let known = self.selected_session().filter(|s| s.state != "unknown");
         match name {
-            "return-note" | "clear-return-note" | "updates" | "reviewed" | "queue" | "task-trail" | "defer-20m" | "bring-back" | "attention-filter" => self.run_continuity_action(name, screen),
-            "new-with-agent" => {
-                let Some(directory) = screen.outside(&mut || pick_project()).filter(|directory| !directory.is_empty()) else { return String::new() };
-                let Some(agent) = screen.outside(&mut || pick_agent()) else { return String::new() };
-                self.manager_async(&["--agent", &agent, "new", &directory])
-            }
+            "updates" | "reviewed" | "queue" | "task-trail" | "defer-20m" | "bring-back" | "attention-filter" => self.run_continuity_action(name, screen),
             "digest" => self.manager_async(&["digest"]),
-            "team" => self.open_team_view(),
-            "chief" => self.open_chief_view(),
-            "pair-phone" => self.start_pairing(),
             "design" => self.start_design_session(screen),
             "clones" => {
                 manager_in_background(&["clones"]);
@@ -4280,24 +4365,32 @@ impl App {
                 let _ = util::spawn_detached(Command::new("xdg-open").arg(status::CODEX_PAGE));
                 "opening status.openai.com …".into()
             }
-            "remote" => match known {
-                Some(s) if s.is_external() => "external session: no terminal target; use its own window".into(),
-                Some(s) if !s.agent().can(Feature::RemoteControl) => format!("Remote Control is not {}'s to do: {} runs {}", s.agent().label, s.project, s.agent().name),
-                Some(s) => {
-                    manager_in_background(&["remote", &s.session]);
-                    format!("toggling remote control for {} …", s.project)
-                }
-                None => String::new(),
-            },
-            "drop-queued" => match known {
-                Some(s) if prompts::count(&s.session) == 0 => "no prompt queued for it".into(),
-                Some(s) if self.confirm(screen, &format!("drop the {} prompt(s) queued for {}?", prompts::count(&s.session), s.project)) => {
-                    prompts::clear(&s.session);
-                    "queued prompts dropped".into()
-                }
-                _ => String::new(),
-            },
             _ => panic!("no palette action named {name}"),
+        }
+    }
+
+    /// `m` on a card: Remote Control (phone / claude.ai/code) on or off.
+    fn toggle_remote(&mut self) -> String {
+        match self.selected_session().filter(|s| s.state != "unknown") {
+            Some(s) if s.is_external() => "external session: no terminal target; use its own window".into(),
+            Some(s) if !s.agent().can(Feature::RemoteControl) => format!("Remote Control is not {}'s to do: {} runs {}", s.agent().label, s.project, s.agent().name),
+            Some(s) => {
+                manager_in_background(&["remote", &s.session]);
+                format!("toggling remote control for {} …", s.project)
+            }
+            None => String::new(),
+        }
+    }
+
+    /// `d` on a card: drop the messages queued for it, after a yes.
+    fn drop_queued(&mut self, screen: &mut dyn Screen) -> String {
+        match self.selected_session().filter(|s| s.state != "unknown") {
+            Some(s) if prompts::count(&s.session) == 0 => "no prompt queued for it".into(),
+            Some(s) if self.confirm(screen, &format!("drop the {} prompt(s) queued for {}?", prompts::count(&s.session), s.project)) => {
+                prompts::clear(&s.session);
+                "queued prompts dropped".into()
+            }
+            _ => String::new(),
         }
     }
 
@@ -4837,7 +4930,7 @@ fn fzf(prompt: &str, lines: &[String], extra: &[&str]) -> Option<String> {
 }
 
 fn session_key_requires_terminal(key: Key) -> bool {
-    matches!(key, Key::Enter | Key::Char('r' | 'e' | '$' | 'C' | 'x' | 's'))
+    matches!(key, Key::Enter | Key::Char('r' | 'R' | 'e' | '$' | 'C' | 'x' | 'z' | 'm'))
 }
 
 /// The card keys that need a feature of the session's agent, and what they do, named for a
@@ -4849,6 +4942,7 @@ fn key_feature(key: Key, agent: &agents::Agent) -> Option<(Feature, &'static str
         Key::Char('e') => Some((Feature::Effort, "the effort level")),
         Key::Char('$') => Some((Feature::Billing, "billing to API credits")),
         Key::Char('C') => Some((Feature::Compact, "/compact")),
+        Key::Char('m') => Some((Feature::RemoteControl, "Remote Control")),
         _ => None,
     }
 }

@@ -22,29 +22,7 @@ impl App {
                 .filter(|update| update.session == session.session).map(|update| update.identity).collect();
             return self.review_updates(&session.session, &identities);
         }
-        let note = match name {
-            "return-note" => {
-                let note = input_line(screen, "Your return note (empty cancels)> ");
-                if note.is_empty() { return "unchanged".into(); }
-                Some(note)
-            }
-            "clear-return-note" => None,
-            _ => return format!("unknown continuity action: {name}"),
-        };
-        match self.continuity.as_mut().unwrap().set_note(&session, note.as_deref()) {
-            Ok(changed) => {
-                self.continuity_error = None;
-                if changed {
-                    crate::audit::record("column", "continuity.note", "ok", serde_json::json!({"session":session.session,
-                        "text":crate::audit::fingerprint(note.as_deref().unwrap_or(""))}));
-                }
-                if note.is_some() { "return note saved".into() } else { "return note cleared".into() }
-            }
-            Err(error) => {
-                if error.starts_with("cannot save") { self.continuity_error = Some(error.clone()); }
-                error
-            }
-        }
+        format!("unknown continuity action: {name}")
     }
 
     pub(super) fn all_sessions(&self) -> Vec<Session> {
@@ -65,6 +43,48 @@ impl App {
 
     pub(crate) fn attention_indices(&self, now: i64) -> Vec<usize> {
         self.sessions.iter().enumerate().filter(|(_, session)| self.is_actionable(session, now)).map(|(index, _)| index).collect()
+    }
+
+    /// `l` on a card: hide its ask for 20 minutes, or bring a hidden one back. Never answers or approves.
+    pub(super) fn toggle_later(&mut self) -> String {
+        if let Err(error) = &self.continuity { return format!("Continuity unavailable: {error}"); }
+        let Some(session) = self.selected_session() else { return String::new() };
+        let is_hidden = self.session_deferred_until(&session, util::now_secs()).is_some();
+        let message = self.change_deferral(if is_hidden { "bring-back" } else { "defer-20m" });
+        self.build_sessions();
+        message
+    }
+
+    pub(super) fn open_task_trail_of_session(&mut self, session: &str, screen: &mut dyn Screen) -> String {
+        if let Err(error) = &self.continuity { return format!("Continuity unavailable: {error}"); }
+        self.open_task_trail(TrailTarget::Session(session.to_string()), screen)
+    }
+
+    /// `w`: Theo's private note on a session, never sent to the agent. Empty keeps it; `-` removes it.
+    pub(super) fn write_note(&mut self, session: &Session, screen: &mut dyn Screen) -> String {
+        let Ok(continuity) = &self.continuity else { return "Continuity unavailable".into() };
+        let prompt = if continuity.note(&session.session).is_some() { "My note (never sent; empty keeps it, - removes it)> " }
+            else { "My note (never sent to the agent; empty cancels)> " };
+        let typed = input_line(screen, prompt);
+        let note = match typed.as_str() {
+            "" => return "unchanged".into(),
+            "-" => None,
+            _ => Some(typed),
+        };
+        match self.continuity.as_mut().unwrap().set_note(session, note.as_deref()) {
+            Ok(changed) => {
+                self.continuity_error = None;
+                if changed {
+                    crate::audit::record("column", "continuity.note", "ok", serde_json::json!({"session":session.session,
+                        "text":crate::audit::fingerprint(note.as_deref().unwrap_or(""))}));
+                }
+                if note.is_some() { "note saved".into() } else { "note removed".into() }
+            }
+            Err(error) => {
+                if error.starts_with("cannot save") { self.continuity_error = Some(error.clone()); }
+                error
+            }
+        }
     }
 
     fn change_deferral(&mut self, name: &str) -> String {
@@ -89,8 +109,8 @@ impl App {
             Ok(_) => {
                 self.continuity_error = None;
                 crate::audit::record("column", "continuity.deferral", "ok", serde_json::json!({"action":name,"target":target.storage_key()}));
-                if name == "bring-back" { "reminder restored; nothing was answered or approved".into() }
-                else { "deferred for twenty minutes; question/review remains unresolved".into() }
+                if name == "bring-back" { "brought back; nothing was answered or approved".into() }
+                else { "later: back in 20 min; nothing was answered or approved".into() }
             }
             Err(error) => { self.continuity_error = Some(error.clone()); error }
         }
@@ -141,7 +161,7 @@ impl App {
             if let TrailTarget::Task(key) = &target {
                 if let Some(entry) = self.todo_entries.iter().find(|entry| task_key(entry) == *key) { text = format!("{}\n\n{text}", todo_details(entry)); }
             }
-            self.session_details = Some(SessionDetails { title: "Task trail".into(), text, scroll: 0, actions: Vec::new(), chief_answers_of: None });
+            self.session_details = Some(SessionDetails { title: "Task trail".into(), text, scroll: 0, actions: Vec::new(), chief_answers_of: None, ..Default::default() });
             return String::new();
         }
         let key = if keys.len() == 1 { keys[0].clone() } else {
@@ -189,7 +209,7 @@ impl App {
             text += &format!("{}#{} · {}{}\n", pr.repository, pr.number, pr.title, if present { "" } else { " (last known; current state unavailable)" });
             if !pr.url.is_empty() { actions.push(DetailAction::OpenPr(id)); }
         }
-        self.session_details = Some(SessionDetails { title: "Task trail".into(), text, scroll: 0, actions, chief_answers_of: None });
+        self.session_details = Some(SessionDetails { title: "Task trail".into(), text, scroll: 0, actions, chief_answers_of: None, ..Default::default() });
         String::new()
     }
 
@@ -207,7 +227,7 @@ impl App {
         } else if let Some(record) = self.continuity.as_ref().ok().and_then(|state| state.tasks().get(key)) {
             self.session_details = Some(SessionDetails { title: "Archived task".into(),
                 text: format!("Archived task\n{}\n{}\nLast recorded status: {}\n\n{}\n\nThe source item is no longer available; it was not recreated.",
-                    record.snapshot.title, key, record.snapshot.status, record.snapshot.notes), scroll: 0, actions: Vec::new(), chief_answers_of: None });
+                    record.snapshot.title, key, record.snapshot.status, record.snapshot.notes), scroll: 0, actions: Vec::new(), chief_answers_of: None, ..Default::default() });
         }
         String::new()
     }
@@ -260,7 +280,7 @@ impl App {
         if self.todos.queued.iter().any(|key| key.contains('#') && !issues.iter().any(|issue| issue.key() == *key)) {
             text += "\nQueued issue data unavailable: not loaded, stale, or closed.\n";
         }
-        self.session_details = Some(SessionDetails { title: "Queue".into(), text, scroll: 0, actions: Vec::new(), chief_answers_of: None });
+        self.session_details = Some(SessionDetails { title: "Queue".into(), text, scroll: 0, actions: Vec::new(), chief_answers_of: None, ..Default::default() });
         String::new()
     }
 
@@ -316,7 +336,7 @@ impl App {
         if self.running_sessions.iter().any(|candidate| candidate.session == session && !candidate.is_external()) {
             actions.push(DetailAction::OpenSession(session));
         } else { text += "\n\nArchived session; no live terminal target."; }
-        self.session_details = Some(SessionDetails { title: "Updates".into(), text, scroll: 0, actions, chief_answers_of: None });
+        self.session_details = Some(SessionDetails { title: "Updates".into(), text, scroll: 0, actions, chief_answers_of: None, ..Default::default() });
         String::new()
     }
 

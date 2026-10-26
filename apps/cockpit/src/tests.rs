@@ -763,6 +763,13 @@ fn external_session(id: &str, state: &str, project: &str, cwd: &str, started: i6
 
 // ---- Sessions ----
 
+/// `w` on the selected card: Theo's note, typed as `text`.
+fn write_note(app: &mut App, text: &str) {
+    app.focus_panel(1);
+    app.handle(Key::Char('w'), &mut FakeScreen::typing(&[text]));
+    app.redraw();
+}
+
 fn continuity_action(app: &mut App, action: &str, answers: &[&str]) {
     let mut typed = vec![action];
     typed.extend_from_slice(answers);
@@ -870,7 +877,7 @@ fn continuity_archived_results_can_be_reviewed_without_opening_an_exited_session
     let fixture = Fixture::new();
     fixture.snapshot(json!([continuity_result_row("11111111111111111111111111111111", "waiting")]));
     let mut app = fixture.app();
-    continuity_action(&mut app, "1\treturn-note", &["My next step"]);
+    write_note(&mut app, "My next step");
     fixture.snapshot(json!([]));
     app.build();
     continuity_action(&mut app, "-\tupdates", &["0"]);
@@ -1487,7 +1494,7 @@ fn continuity_return_notes_persist_without_becoming_agent_messages() {
     let fixture = Fixture::new();
     fixture.snapshot(json!([session(SESSION_A, "waiting", "shop", "/r/shop", 1)]));
     let mut app = fixture.app();
-    continuity_action(&mut app, "1\treturn-note", &["Review the migration first."]);
+    write_note(&mut app, "Review the migration first.");
     assert!(texts(&app, 1).join("\n").contains("Your note: Review the migration first."));
     assert!(texts(&fixture.app(), 1).join("\n").contains("Review the migration first."));
     assert!(!fixture.calls("cockpit").iter().any(|call| call.contains(" say ")));
@@ -1500,10 +1507,10 @@ fn continuity_cancel_preserves_a_note_and_clear_explicitly_removes_it() {
     let fixture = Fixture::new();
     fixture.snapshot(json!([session(SESSION_A, "waiting", "shop", "/r/shop", 1)]));
     let mut app = fixture.app();
-    continuity_action(&mut app, "1\treturn-note", &["Keep me"]);
-    continuity_action(&mut app, "1\treturn-note", &[""]);
+    write_note(&mut app, "Keep me");
+    write_note(&mut app, "");
     assert!(texts(&app, 1).join("\n").contains("Keep me"));
-    continuity_action(&mut app, "1\tclear-return-note", &[]);
+    write_note(&mut app, "-");
     assert!(!texts(&fixture.app(), 1).join("\n").contains("Keep me"));
 }
 
@@ -1513,9 +1520,9 @@ fn continuity_note_validation_preserves_the_previous_note() {
     fixture.snapshot(json!([session(SESSION_A, "waiting", "shop", "/r/shop", 1)]));
     let mut app = fixture.app();
     let accepted = "é".repeat(280);
-    continuity_action(&mut app, "1\treturn-note", &[&accepted]);
+    write_note(&mut app, &accepted);
     for rejected in ["é".repeat(281), "bad\u{1b}note".into(), "bad\nnote".into(), "#{pane}".into(), "#(run)".into()] {
-        continuity_action(&mut app, "1\treturn-note", &[&rejected]);
+        write_note(&mut app, &rejected);
         assert!(app.message.contains("invalid return note"), "{}", app.message);
     }
     let saved: Value = serde_json::from_str(&fs::read_to_string(fixture.path("state/cockpit/continuity.json")).unwrap()).unwrap();
@@ -1529,7 +1536,7 @@ fn continuity_invalid_state_is_preserved_and_warns_after_other_keys() {
     for contents in ["not json", "{\"version\":2}", "{}"] {
         let path = fixture.write("state/cockpit/continuity.json", contents);
         let mut app = fixture.app();
-        continuity_action(&mut app, "1\treturn-note", &["Do not overwrite"]);
+        write_note(&mut app, "Do not overwrite");
         app.handle(Key::Down, &mut FakeScreen::default());
         let rows = buffer_rows(&render(&mut app, 100, 40)).join("\n");
         assert!(rows.contains("Continuity unavailable"), "{rows}");
@@ -1546,14 +1553,14 @@ fn continuity_symlink_and_oversized_state_are_not_overwritten() {
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::os::unix::fs::symlink(&target, &path).unwrap();
     let mut app = fixture.app();
-    continuity_action(&mut app, "1\treturn-note", &["Must fail"]);
+    write_note(&mut app, "Must fail");
     assert!(fs::symlink_metadata(&path).unwrap().file_type().is_symlink());
     assert_eq!(fs::read_to_string(target).unwrap(), "{\"version\":1}");
     assert!(app.message.contains("Continuity unavailable"));
     fs::remove_file(&path).unwrap();
     fs::write(&path, " ".repeat(16 * 1024 * 1024 + 1)).unwrap();
     let mut app = fixture.app();
-    continuity_action(&mut app, "1\treturn-note", &["Must fail"]);
+    write_note(&mut app, "Must fail");
     assert!(app.message.contains("Continuity unavailable"));
     assert_eq!(fs::metadata(path).unwrap().len(), 16 * 1024 * 1024 + 1);
 }
@@ -1564,11 +1571,10 @@ fn continuity_notes_preserve_unknown_state_and_are_not_written_during_render() {
     fixture.snapshot(json!([session(SESSION_A, "waiting", "shop", "/r/shop", 1)]));
     let path = fixture.write("state/cockpit/continuity.json", &json!({"version":1,"sessions":{},"tasks":{},"prs":{},"future":{"keep":true}}).to_string());
     let mut app = fixture.app();
-    continuity_action(&mut app, "1\treturn-note", &["Keep me"]);
+    write_note(&mut app, "Keep me");
     let before = fs::metadata(&path).unwrap().modified().unwrap();
     for (width, height) in [(30,12), (60,24), (100,40)] {
         render(&mut app, width, height);
-        assert!(app.palette_entries().iter().any(|entry| entry.contains("return-note")));
     }
     assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), before);
     let saved: Value = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
@@ -1583,7 +1589,7 @@ fn continuity_named_pipe_state_is_refused_without_blocking() {
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     assert!(std::process::Command::new("mkfifo").arg(&path).status().unwrap().success());
     let mut app = fixture.app();
-    continuity_action(&mut app, "1\treturn-note", &["Must fail"]);
+    write_note(&mut app, "Must fail");
     assert!(app.message.contains("Continuity unavailable"));
     use std::os::unix::fs::FileTypeExt;
     assert!(fs::symlink_metadata(path).unwrap().file_type().is_fifo());
@@ -1594,7 +1600,7 @@ fn continuity_session_exit_preserves_the_note_without_giving_it_to_a_new_session
     let fixture = Fixture::new();
     fixture.snapshot(json!([session(SESSION_A, "waiting", "shop", "/r/shop", 1)]));
     let mut app = fixture.app();
-    continuity_action(&mut app, "1\treturn-note", &["Only for the old conversation"]);
+    write_note(&mut app, "Only for the old conversation");
     fixture.snapshot(json!([session(SESSION_B, "waiting", "shop", "/r/shop", 2)]));
     app.build();
     assert!(!texts(&app, 1).join("\n").contains("Only for the old conversation"));
@@ -1608,11 +1614,11 @@ fn continuity_failed_note_save_keeps_the_in_memory_note() {
     let fixture = Fixture::new();
     fixture.snapshot(json!([session(SESSION_A, "waiting", "shop", "/r/shop", 1)]));
     let mut app = fixture.app();
-    continuity_action(&mut app, "1\treturn-note", &["Original"]);
+    write_note(&mut app, "Original");
     let path = fixture.path("state/cockpit/continuity.json");
     fs::rename(&path, path.with_extension("backup")).unwrap();
     fs::create_dir(&path).unwrap();
-    continuity_action(&mut app, "1\treturn-note", &["Replacement"]);
+    write_note(&mut app, "Replacement");
     assert!(app.message.contains("cannot save continuity"));
     assert!(texts(&app, 1).join("\n").contains("Your note: Original"));
 }
@@ -2185,13 +2191,13 @@ fn enter_on_pair_a_phone_shows_a_one_time_link_and_its_qr_code() {
 }
 
 #[test]
-fn pair_phone_in_the_palette_shows_the_qr_code_and_says_when_the_phone_opened_it() {
+fn pairing_from_settings_says_when_the_phone_opened_it() {
     let fixture = Fixture::new();
     phone_page(&fixture, json!([]));
-    fixture.shim("fzf", "grep 'pairs a phone'");
     let mut app = fixture.app();
-    app.handle(Key::Char(':'), &mut FakeScreen::default());
-    assert!(app.pairing.is_some(), "pair-phone in the : list shows no QR code");
+    open_settings_row(&mut app, SettingsRow::PairPhone);
+    app.handle(Key::Enter, &mut FakeScreen::default());
+    assert!(app.pairing.is_some(), "Pair a phone in Settings shows no QR code");
     fixture.write("state/claude-remote/devices.json", &json!({"devices": [phone("iPhone", "aa11")]}).to_string());
     app.tick();
     assert_eq!(app.pairing.as_ref().and_then(|pairing| pairing.paired.as_deref()), Some("iPhone"));
@@ -3181,7 +3187,7 @@ fn request_detail_popup_reveals_the_complete_request_without_session_actions() {
         let mut app = fixture.app();
         app.handle(Key::Char('i'), &mut FakeScreen::default());
         let beginning = buffer_rows(&render(&mut app, width, 16)).join("\n");
-        assert!(beginning.contains("Session details"), "details did not open: {beginning}");
+        assert!(beginning.contains("WHERE & WHO"), "details did not open: {beginning}");
         let mut seen = String::new();
         for _ in 0..160 {
             app.handle(Key::Down, &mut FakeScreen::default());
@@ -3192,7 +3198,7 @@ fn request_detail_popup_reveals_the_complete_request_without_session_actions() {
         }
         assert_eq!(app.sessions[app.panels[1].selected].session, SESSION_A);
         app.handle(Key::Enter, &mut FakeScreen::default());
-        assert!(!buffer_rows(&render(&mut app, width, 16)).join("\n").contains("Session details"));
+        assert!(!buffer_rows(&render(&mut app, width, 16)).join("\n").contains("WHERE & WHO"));
     }
     assert!(fixture.calls("cockpit").is_empty());
 }
@@ -3251,8 +3257,8 @@ fn request_detail_popup_wraps_long_unicode_tokens_and_stays_readable_when_short(
         }
         assert!(seen.contains('设') && seen.contains('认') && seen.contains("ENDOFREQUEST"));
         assert!(!seen.contains('\u{fffd}'));
-        app.handle(Key::Char('g'), &mut FakeScreen::default());
-        assert!(buffer_rows(&render(&mut app, width, height)).iter().any(|line| line.contains("Task:")));
+        app.handle(Key::PageUp, &mut FakeScreen::default());
+        assert!(buffer_rows(&render(&mut app, width, height)).iter().any(|line| line.contains("WHERE & WHO")));
     }
     assert!(fixture.calls("cockpit").is_empty());
 }
@@ -3678,13 +3684,114 @@ fn right_moves_into_the_session_from_any_panel() {
 #[test]
 fn the_palette_runs_the_chosen_action_in_its_panel() {
     let fixture = Fixture::new();
-    fixture.shim("fzf", "grep 'Next needing me'");
+    fixture.shim("fzf", "grep 'next session that needs you'");
     let mut app = fixture.app();
     app.focus_panel(3);
     assert!(app.palette_entries().iter().any(|entry| entry.starts_with("2\tc\t")));
     app.handle(Key::Char(':'), &mut FakeScreen::default());
     assert_eq!(app.focus, 1);
     assert_eq!(app.message, "nothing needs you");
+}
+
+#[test]
+fn help_shows_the_sessions_keys_then_everywhere_then_what_the_signs_mean() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    app.focus_panel(1);
+    app.handle(Key::Char('?'), &mut FakeScreen::default());
+    let text = buffer_rows(&render(&mut app, 90, 60)).join("\n");
+    let order: Vec<usize> = ["Help · Sessions", "THIS TAB", "later: hide this ask for 20 min (never approves)",
+        "EVERYWHERE", "Sessions · Todo · Ideas", "WHAT THE SIGNS MEAN", "your approved command runs", "esc  close"]
+        .iter().map(|needle| text.find(needle).unwrap_or_else(|| panic!("{needle} missing:\n{text}"))).collect();
+    assert!(order.windows(2).all(|pair| pair[0] < pair[1]), "{text}");
+    assert_eq!(text.matches("new blank session").count(), 1, "N listed twice:\n{text}");
+    app.handle(Key::Esc, &mut FakeScreen::default());
+    assert!(!buffer_rows(&render(&mut app, 90, 60)).join("\n").contains("Help · Sessions"));
+}
+
+#[test]
+fn help_on_todo_shows_todos_keys_and_no_card_signs() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    app.focus_panel(3);
+    app.handle(Key::Char('?'), &mut FakeScreen::default());
+    let text = buffer_rows(&render(&mut app, 90, 70)).join("\n");
+    assert!(text.contains("Help · Todo") && text.contains("raise a typed item's priority"), "{text}");
+    assert!(text.contains("new blank session") && !text.contains("WHAT THE SIGNS MEAN"), "{text}");
+}
+
+#[test]
+fn l_hides_a_question_for_twenty_minutes_in_quiet_and_l_again_brings_it_back() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([continuity_question_row(SESSION_A, "Which provider?")]));
+    let mut app = fixture.app();
+    app.focus_panel(1);
+    app.handle(Key::Char('l'), &mut FakeScreen::default());
+    assert_eq!(app.message, "later: back in 20 min; nothing was answered or approved");
+    let rows = buffer_rows(&render(&mut app, 110, 45)).join("\n");
+    assert!(rows.contains("‖ Later · back in 20m") && rows.contains("QUIET"), "{rows}");
+    app.handle(Key::Char('l'), &mut FakeScreen::default());
+    assert_eq!(app.message, "brought back; nothing was answered or approved");
+    assert!(buffer_rows(&render(&mut app, 110, 45)).join("\n").contains("NEEDS YOU"));
+    assert!(!fixture.calls("cockpit").iter().any(|call| call.contains(" say ")));
+}
+
+#[test]
+fn l_never_hides_a_command_waiting_for_approval() {
+    let fixture = Fixture::new();
+    let mut row = continuity_question_row(SESSION_A, "Which provider?");
+    row["ask_to_run"] = json!("approval");
+    fixture.snapshot(json!([row]));
+    let mut app = fixture.app();
+    app.focus_panel(1);
+    app.handle(Key::Char('l'), &mut FakeScreen::default());
+    assert!(app.message.contains("approvals and command input stay immediate"), "{}", app.message);
+    assert!(buffer_rows(&render(&mut app, 110, 45)).join("\n").contains("NEEDS YOU"));
+}
+
+#[test]
+fn w_writes_a_private_note_and_a_dash_removes_it() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "runway", "/r/runway", 1)]));
+    let mut app = fixture.app();
+    app.focus_panel(1);
+    app.handle(Key::Char('w'), &mut FakeScreen::typing(&["check the gate after lunch"]));
+    assert_eq!(app.message, "note saved");
+    assert_eq!(continuity_saved(&fixture)["sessions"][SESSION_A]["note"], "check the gate after lunch");
+    app.handle(Key::Char('w'), &mut FakeScreen::typing(&[""]));
+    assert_eq!(app.message, "unchanged");
+    app.handle(Key::Char('w'), &mut FakeScreen::typing(&["-"]));
+    assert_eq!(app.message, "note removed");
+    assert!(continuity_saved(&fixture)["sessions"][SESSION_A]["note"].is_null());
+    assert!(!fixture.calls("cockpit").iter().any(|call| call.contains(" say ")));
+}
+
+#[test]
+fn d_on_a_card_drops_its_queued_messages_after_a_yes() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "working", "runway", "/r/runway", 1)]));
+    crate::prompts::add(SESSION_A, "queued thought").unwrap();
+    let mut app = fixture.app();
+    app.focus_panel(1);
+    app.handle(Key::Char('d'), &mut FakeScreen::answering(&[Key::Char('n')]));
+    assert_eq!(crate::prompts::count(SESSION_A), 1);
+    app.handle(Key::Char('d'), &mut FakeScreen::answering(&[Key::Char('y')]));
+    assert_eq!(crate::prompts::count(SESSION_A), 0);
+}
+
+#[test]
+fn k_on_a_card_opens_its_links_and_up_still_moves() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "working", "runway", "/r/runway", 1), session(SESSION_B, "working", "shop", "/r/shop", 2)]));
+    let mut app = fixture.app();
+    app.focus_panel(1);
+    app.panels[1].selected = 1;
+    app.handle(Key::Char('k'), &mut FakeScreen::default());
+    assert_eq!(app.panels[1].selected, 1);
+    assert!(app.team_view.is_some() || app.message.starts_with("Team view"), "{}", app.message);
+    app.team_view = None;
+    app.handle(Key::Up, &mut FakeScreen::default());
+    assert_eq!(app.panels[1].selected, 0);
 }
 
 #[test]
@@ -3709,12 +3816,13 @@ fn the_palette_opens_codexs_official_status_page() {
 
 #[test]
 fn the_rare_actions_are_left_without_a_key() {
-    // The audit of October 2026 took these off the keyboard: they live in the : list only.
+    // The audit of October 2026 took these off the keyboard; the redesign key map gave R, m and N
+    // a meaning again (restart, remote control, new session).
     let fixture = Fixture::new();
     fixture.snapshot(json!([session(SESSION_A, "needs-you", "runway", "/r/runway", 1)]));
     crate::prompts::add(SESSION_A, "queued thought").unwrap();
     let mut app = fixture.app();
-    for (panel, key) in [(1, 'R'), (1, 'M'), (1, 'Y'), (1, 'N'), (1, 'm'), (1, 'f'), (1, 'A'), (1, 'V'), (1, 'D'), (1, 'K'), (1, '/'), (0, 'o'), (0, 'r'), (2, 'r')] {
+    for (panel, key) in [(1, 'M'), (1, 'Y'), (1, 'f'), (1, 'A'), (1, 'V'), (1, 'D'), (1, 'K'), (1, '/'), (0, 'o'), (0, 'r'), (2, 'r')] {
         app.focus_panel(panel);
         app.handle(Key::Char(key), &mut FakeScreen::answering(&[Key::Char('y')]));
         assert_eq!(app.message, "", "{key} did something in panel {panel}");
@@ -4357,7 +4465,7 @@ fn team_sidebar_fold_retains_sleeping_and_restarting_members_without_side_effect
 }
 
 fn open_team_view(app: &mut App) {
-    app.handle(Key::Char(':'), &mut FakeScreen::typing(&["1\tteam"]));
+    { app.focus_panel(1); app.handle(Key::Char('k'), &mut FakeScreen::default()); }
     assert!(app.team_view.is_some(), "{}", app.message);
 }
 
@@ -4650,10 +4758,10 @@ fn a_failed_team_start_is_dismissed_after_a_yes() {
 }
 
 #[test]
-fn the_team_view_lives_in_the_palette_without_a_key() {
+fn the_team_view_left_the_palette_for_k_on_a_card() {
     let fixture = Fixture::new();
     let app = fixture.app();
-    assert!(app.palette_entries().iter().any(|entry| entry.starts_with("1\tteam\t")));
+    assert!(!app.palette_entries().iter().any(|entry| entry.starts_with("1\tteam\t")));
 }
 
 #[test]
@@ -4664,7 +4772,7 @@ fn typing_a_palette_actions_name_puts_it_first() {
     let app = fixture.app();
     // The fixture's PATH has a stand-in fzf: rank with the real one.
     let real_fzf = ["/usr/bin/fzf", "/usr/local/bin/fzf"].into_iter().find(|path| Path::new(path).exists()).expect("fzf is installed");
-    for name in ["team", "digest", "clones"] {
+    for name in ["queue", "digest", "clones"] {
         let mut fzf = std::process::Command::new(real_fzf).args(crate::app::fzf_arguments("action> ", &crate::app::PALETTE_FZF_OPTIONS)).args(["--filter", name])
             .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).spawn().expect("fzf is installed");
         fzf.stdin.take().unwrap().write_all(app.palette_entries().join("\n").as_bytes()).unwrap();
@@ -4743,7 +4851,7 @@ fn a_missing_team_service_is_said_and_nothing_opens() {
     let fixture = Fixture::new();
     let mut app = fixture.app();
     fs::remove_file(crate::paths::team_host_socket()).unwrap();
-    app.handle(Key::Char(':'), &mut FakeScreen::typing(&["1\tteam"]));
+    { app.focus_panel(1); app.handle(Key::Char('k'), &mut FakeScreen::default()); }
     assert!(app.team_view.is_none());
     assert!(app.message.contains("unavailable"), "{}", app.message);
 }
@@ -8738,7 +8846,7 @@ fn a_quiet_session_starts_with_open() {
 fn each_todo_tab_starts_with_the_key_that_moves_its_items_along() {
     let fixture = Fixture::new();
     let mut app = fixture.app();
-    for (tab, first) in [(1, "y"), (2, "h"), (3, "d"), (4, "⏎")] {
+    for (tab, first) in [(1, "y"), (2, "r"), (3, "d"), (4, "⏎")] {
         app.todo_tab = tab;
         assert_eq!(app.todo_hints()[0].0, first, "tab {tab}");
     }
@@ -10847,7 +10955,7 @@ fn n_hands_the_item_to_a_new_session_in_a_clone_even_with_one_running() {
     app.build();
     app.focus_panel(3);
     app.panels[3].selected = 0;
-    app.handle(Key::Char('N'), &mut FakeScreen::typing(&["claude"]));
+    app.handle(Key::Char('r'), &mut FakeScreen::typing(&["claude"]));
     let call = fixture.wait_for_calls("cockpit", 1).remove(0);
     assert!(call.starts_with(&format!("cockpit --agent claude parallel /r/runway todo-{healthcheck} ")) && call.contains("add a healthcheck"), "{call}");
     assert!(!call.contains(" say "), "sent to the running session: {call}");
@@ -10929,39 +11037,71 @@ fn opencode_session(state: &str, project: &str, started: i64) -> Value {
     row
 }
 
-#[test]
-fn capital_o_starts_opencode_in_the_picked_project() {
-    let fixture = Fixture::new();
-    fs::create_dir_all(fixture.root.join("home/IdeaProjects/runway")).unwrap();
-    fixture.shim("fzf", "head -n 1");
-    let mut app = fixture.app();
-    app.handle(Key::Char('O'), &mut FakeScreen::default());
-    let project = fixture.root.join("home/IdeaProjects/runway");
-    assert_eq!(fixture.wait_for_calls("cockpit", 1), vec![format!("cockpit --agent opencode new {}", project.display())]);
+fn type_text(app: &mut App, text: &str) {
+    for character in text.chars() { app.handle(Key::Char(character), &mut FakeScreen::default()); }
 }
 
 #[test]
-fn a_uses_the_saved_default_without_an_agent_prompt() {
+fn n_starts_a_blank_session_in_its_own_clone_with_the_first_message() {
+    let fixture = Fixture::new();
+    for project in ["runway", "shop"] { fs::create_dir_all(fixture.root.join("home/IdeaProjects").join(project)).unwrap(); }
+    let mut app = fixture.app();
+    app.handle(Key::Char('N'), &mut FakeScreen::default());
+    let form = buffer_rows(&render(&mut app, 90, 50)).join("\n");
+    assert!(form.contains("New session") && form.contains("PROJECT") && form.contains("[x] in its own clone (recommended)"), "{form}");
+    type_text(&mut app, "sho");
+    app.handle(Key::Tab, &mut FakeScreen::default());
+    app.handle(Key::Tab, &mut FakeScreen::default());
+    type_text(&mut app, "Look at the proxy");
+    app.handle(Key::Ctrl('s'), &mut FakeScreen::default());
+    let call = fixture.wait_for_calls("cockpit", 1).remove(0);
+    let shop = fixture.root.join("home/IdeaProjects/shop");
+    assert!(call.starts_with(&format!("cockpit --agent claude parallel {} parallel-", shop.display())) && call.ends_with(" Look at the proxy"), "{call}");
+    assert!(!buffer_rows(&render(&mut app, 90, 50)).join("\n").contains("New session"));
+}
+
+#[test]
+fn n_without_its_own_clone_starts_the_picked_agent_in_the_project() {
+    let fixture = Fixture::new();
+    let project = fixture.root.join("home/IdeaProjects/runway");
+    fs::create_dir_all(&project).unwrap();
+    let mut app = fixture.app();
+    app.handle(Key::Char('N'), &mut FakeScreen::default());
+    app.handle(Key::Tab, &mut FakeScreen::default());
+    app.handle(Key::Right, &mut FakeScreen::default());
+    for _ in 0..2 { app.handle(Key::Tab, &mut FakeScreen::default()); }
+    app.handle(Key::Char(' '), &mut FakeScreen::default());
+    app.handle(Key::Ctrl('s'), &mut FakeScreen::default());
+    assert_eq!(fixture.wait_for_calls("cockpit", 1), vec![format!("cockpit --agent {} new {}", agents::AGENTS[1].name, project.display())]);
+}
+
+#[test]
+fn n_preselects_the_saved_default_agent() {
     for agent in agents::names() {
         let fixture = Fixture::new();
         let project = fixture.root.join("home/IdeaProjects/runway");
         fs::create_dir_all(&project).unwrap();
         fixture.write("state/cockpit/settings.json", &json!({"default-agent":agent}).to_string());
         let mut app = fixture.app();
-        app.handle(Key::Char('a'), &mut FakeScreen::typing(&[&project.display().to_string()]));
-        assert_eq!(fixture.wait_for_calls("cockpit", 1), vec![format!("cockpit --agent {agent} new {}", project.display())]);
+        app.handle(Key::Char('N'), &mut FakeScreen::default());
+        app.handle(Key::Ctrl('s'), &mut FakeScreen::default());
+        assert!(fixture.wait_for_calls("cockpit", 1)[0].starts_with(&format!("cockpit --agent {agent} parallel {} ", project.display())));
     }
 }
 
 #[test]
-fn an_explicit_agent_pick_can_be_cancelled_without_starting_a_session() {
+fn escape_closes_the_new_session_form_without_starting_anything() {
     let fixture = Fixture::new();
-    let project = fixture.root.join("home/IdeaProjects/runway");
-    fs::create_dir_all(&project).unwrap();
+    fs::create_dir_all(fixture.root.join("home/IdeaProjects/runway")).unwrap();
     let mut app = fixture.app();
-    app.handle(Key::Char(':'), &mut FakeScreen::typing(&["-\tnew-with-agent\tnew with an explicit agent", &project.display().to_string()]));
+    app.handle(Key::Char('N'), &mut FakeScreen::default());
+    type_text(&mut app, "zzz");
+    app.handle(Key::Ctrl('s'), &mut FakeScreen::default());
+    assert_eq!(app.message, "no project matches: change the filter");
+    app.handle(Key::Esc, &mut FakeScreen::default());
     std::thread::sleep(Duration::from_millis(200));
     assert!(fixture.calls("cockpit").is_empty(), "{:?}", fixture.calls("cockpit"));
+    assert!(!buffer_rows(&render(&mut app, 90, 50)).join("\n").contains("New session"));
 }
 
 #[test]
@@ -11000,7 +11140,7 @@ fn h_with_invalid_defaults_leaves_the_item_to_do() {
 }
 
 #[test]
-fn n_starts_opencode_in_a_clone_when_it_is_the_saved_default() {
+fn r_starts_opencode_in_a_clone_when_it_is_the_saved_default() {
     let fixture = Fixture::new();
     fixture.write("state/cockpit/settings.json", r#"{"default-agent":"opencode"}"#);
     let mut app = fixture.app();
@@ -11008,7 +11148,7 @@ fn n_starts_opencode_in_a_clone_when_it_is_the_saved_default() {
     app.build();
     app.focus_panel(3);
     app.panels[3].selected = 0;
-    app.handle(Key::Char('N'), &mut FakeScreen::default());
+    app.handle(Key::Char('r'), &mut FakeScreen::default());
     assert!(fixture.wait_for_calls("cockpit", 1)[0].starts_with(&format!("cockpit --agent opencode parallel /r/runway todo-{healthcheck} ")));
 }
 
@@ -11027,7 +11167,7 @@ fn hand_off_from_a_deleted_clone(fixture: &Fixture, key: char) -> (App, String) 
 
 #[test]
 fn an_item_from_a_deleted_clone_starts_from_its_repositorys_checkout() {
-    for (key, command) in [('N', "parallel"), ('h', "background")] {
+    for (key, command) in [('r', "parallel"), ('h', "background")] {
         let fixture = Fixture::new();
         let checkout = fixture.path("home/IdeaProjects/runway");
         fs::create_dir_all(&checkout).unwrap();
@@ -11040,7 +11180,7 @@ fn an_item_from_a_deleted_clone_starts_from_its_repositorys_checkout() {
 
 #[test]
 fn an_item_from_a_deleted_clone_without_a_checkout_stays_to_do() {
-    for key in ['N', 'h'] {
+    for key in ['r', 'h'] {
         let fixture = Fixture::new();
         let (app, healthcheck) = hand_off_from_a_deleted_clone(&fixture, key);
         assert!(fixture.calls("cockpit").is_empty(), "{key}");
@@ -11205,13 +11345,12 @@ fn a_message_can_be_queued_for_an_opencode_session() {
 }
 
 #[test]
-fn the_palettes_remote_control_is_not_offered_to_an_opencode_session() {
+fn m_refuses_remote_control_for_an_opencode_session() {
     let fixture = Fixture::new();
     fixture.snapshot(json!([opencode_session("waiting", "runway", 1)]));
-    fixture.shim("fzf", "grep 'toggle Remote Control'");
     let mut app = fixture.app();
     app.focus_panel(1);
-    app.handle(Key::Char(':'), &mut FakeScreen::default());
+    app.handle(Key::Char('m'), &mut FakeScreen::default());
     std::thread::sleep(Duration::from_millis(100));
     assert!(fixture.calls("cockpit").is_empty(), "{:?}", fixture.calls("cockpit"));
     assert!(app.message.contains("runs opencode"), "{}", app.message);
@@ -11344,6 +11483,37 @@ fn open_details(app: &mut App) -> String {
 }
 
 #[test]
+fn session_details_show_why_where_whats_around_my_note_then_the_keys_by_group() {
+    let fixture = Fixture::new();
+    let mut row = session(SESSION_A, "working", "runway", "/r/runway", 1);
+    row["unpushed"] = json!(3);
+    fixture.snapshot(json!([row]));
+    crate::prompts::add(SESSION_A, "queued thought").unwrap();
+    let mut app = fixture.app();
+    app.build();
+    let details = open_details(&mut app);
+    let order: Vec<usize> = ["runway", "WHERE & WHO", "↑3 unpushed", "Billing: subscription", "AROUND IT", "✉ 1 queued message",
+        "MY NOTE (never sent to the agent)", "none · w writes one", "WORK", "drop queued", "CODE", "lazygit", "SESSION",
+        "remote control", "esc back · the same keys work on the selected card"]
+        .iter().map(|needle| details.find(needle).unwrap_or_else(|| panic!("{needle} missing:\n{details}"))).collect();
+    assert!(order.windows(2).all(|pair| pair[0] < pair[1]), "{details}");
+    assert!(!details.contains("Chief answers"), "no answers, no c:\n{details}");
+}
+
+#[test]
+fn a_key_in_the_session_details_closes_them_and_acts_on_the_session() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "runway", "/r/runway", 1)]));
+    let mut app = fixture.app();
+    app.build();
+    open_details(&mut app);
+    app.handle(Key::Char('w'), &mut FakeScreen::typing(&["after lunch"]));
+    assert_eq!(app.message, "note saved");
+    assert!(!buffer_rows(&render(&mut app, 100, 50)).join("\n").contains("WHERE & WHO"));
+    assert!(open_details(&mut app).contains("after lunch"));
+}
+
+#[test]
 fn session_details_list_the_recent_chief_answers() {
     let fixture = Fixture::new();
     fixture.snapshot(json!([session(SESSION_A, "waiting", "dotfiles", "/r/dotfiles", 1)]));
@@ -11464,6 +11634,6 @@ fn c_in_the_session_details_without_chief_answers_does_nothing() {
     open_details(&mut app);
     app.handle(Key::Char('c'), &mut FakeScreen::default());
     let rendered = buffer_rows(&render(&mut app, 100, 40)).join("\n");
-    assert!(rendered.contains("Session details") && !rendered.contains("Answers ·"), "{rendered}");
+    assert!(rendered.contains("WHERE & WHO") && !rendered.contains("Answers ·"), "{rendered}");
 }
 

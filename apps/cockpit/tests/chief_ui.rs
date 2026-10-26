@@ -57,12 +57,14 @@ impl Host {
         Self {root,snapshot,requests,pages,_lock:lock}
     }
     fn open(&self) -> (App, TestScreen) {
-        let mut app = App::new(); let mut screen = TestScreen {picks:VecDeque::from(["-\tchief".into()])};
-        app.handle(Key::Char(':'),&mut screen); (app,screen)
+        let mut app = App::new(); let mut screen = TestScreen {picks:VecDeque::new()};
+        open_chief(&mut app,&mut screen); (app,screen)
     }
     fn mutations(&self) -> Vec<Value> { self.requests.lock().unwrap().iter().filter(|request|request["request"]=="chief").cloned().collect() }
 }
 impl Drop for Host { fn drop(&mut self) { fs::remove_dir_all(&self.root).unwrap(); } }
+/// The Chief lives in Status (s, then c), from wherever the column is.
+fn open_chief(app: &mut App, screen: &mut TestScreen) { keys(app,screen,&[Key::Esc,Key::Char('s'),Key::Char('c')]); }
 fn keys(app: &mut App, screen: &mut TestScreen, keys: &[Key]) {for key in keys {app.handle(key.clone(),screen);}}
 fn rendered(app: &mut App, width: u16, height: u16) -> String {
     let mut buffer = Buffer::empty(Rect::new(0,0,width,height)); app.render(&mut buffer);
@@ -113,6 +115,7 @@ fn live_but_unsupported_or_unverified_chiefs_are_unavailable() {
 fn root_cancel_restores_focus_and_tab_does_not_submit() {
     let host=Host::new(vec![chief("active",true)]); let (mut app,mut screen)=host.open(); first_control_review(&mut app,&mut screen);
     app.handle(Key::Enter,&mut screen);
+    app.focus=1;
     let before=app.focus; app.handle(Key::Tab,&mut screen); assert_ne!(app.focus,before);
     app.handle(Key::BackTab,&mut screen); assert_eq!(app.focus,before);
     app.handle(Key::Char('n'),&mut screen); assert!(host.mutations().is_empty());
@@ -133,11 +136,11 @@ fn suspended_chief_cycles_all_four_panels_without_retaining_confirmation() {
                 assert_eq!(app.focus,*expected,"{key:?} from panel {}",index+1);
                 assert!(host.mutations().is_empty());
             }
-            screen.picks.push_back("-\tchief".into()); app.handle(Key::Char(':'),&mut screen);
+            open_chief(&mut app,&mut screen);
             app.handle(Key::Char('y'),&mut screen);
             assert!(host.mutations().is_empty(),"suspended confirmation must be reset");
             app.handle(Key::Esc,&mut screen);
-            assert_eq!(app.focus,index+1,"closing Chief restores the ordinary panel");
+            assert_eq!(app.focus,0,"closing Chief returns to Status, where it opened");
         }
     }
 }
@@ -167,7 +170,7 @@ fn paused_and_unavailable_states_are_not_off() {
     let host=Host::new(vec![chief("paused",true)]);let (mut app,mut screen)=host.open();
     assert!(rendered(&mut app,120,45).contains("Paused"));
     host.snapshot.lock().unwrap()["records"]=json!([chief("active",false)]);
-    app.handle(Key::Esc,&mut screen);screen.picks.push_back("-\tchief".into());app.handle(Key::Char(':'),&mut screen);
+    app.handle(Key::Esc,&mut screen);open_chief(&mut app,&mut screen);
     assert!(rendered(&mut app,120,45).contains("Unavailable"));
     keys(&mut app,&mut screen,&[Key::Down,Key::Down,Key::Enter]);
     let controls=rendered(&mut app,120,45);assert!(controls.contains("Disable chief")&&!controls.contains("Select chief"),"{controls}");
@@ -215,7 +218,7 @@ fn host_sqlite_numeric_live_flag_preserves_pause_resume_controls() {
 fn suspended_confirmation_requires_separate_confirmation_again_on_return() {
     let host=Host::new(vec![chief("active",true)]);let (mut app,mut screen)=host.open();first_control_review(&mut app,&mut screen);
     keys(&mut app,&mut screen,&[Key::Enter,Key::Tab]);
-    screen.picks.push_back("-\tchief".into());app.handle(Key::Char(':'),&mut screen);
+    open_chief(&mut app,&mut screen);
     app.handle(Key::Char('y'),&mut screen);assert!(host.mutations().is_empty());
     keys(&mut app,&mut screen,&[Key::Enter,Key::Char('y')]);assert_eq!(host.mutations().len(),1);
 }
@@ -296,7 +299,7 @@ fn chief_decisions_preserve_selection_scroll_and_human_prompts_on_refresh() {
     app.handle(Key::Tab,&mut screen);
     host.snapshot.lock().unwrap()["records"][1]["question"]=json!("Updated host evidence on second decision");
     host.snapshot.lock().unwrap()["records"][1]["revision"]=json!(5);
-    screen.picks.push_back("-\tchief".into());app.handle(Key::Char(':'),&mut screen);
+    open_chief(&mut app,&mut screen);
     let after=rendered(&mut app,65,20);assert!(!after.contains("FIRST DECISION"));
     // The refresh must not reset this detail to its first page.
     assert!(!after.contains("Chief · Off"),"{after}");

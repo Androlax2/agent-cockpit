@@ -428,6 +428,12 @@ pub fn running_copy_unpushed(live: &Path) -> usize {
 }
 
 /// The card's "◷ 3 agents + background": its background work, agents counted; None without any.
+/// The clone a session works in (`~/IdeaProjects/.parallel/<repository>/<clone>`), by its folder name.
+pub fn clone_name(cwd: &str) -> Option<String> {
+    let inside = Path::new(cwd).strip_prefix(paths::clones_dir()).ok()?;
+    inside.components().nth(1).map(|clone| clone.as_os_str().to_string_lossy().into_owned())
+}
+
 pub fn background_badge(session: &Session) -> Option<String> {
     let agents = match session.agents {
         0 => None,
