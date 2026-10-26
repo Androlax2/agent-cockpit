@@ -185,7 +185,17 @@ function sessionsNeedingYou() {
   return waiting.size;
 }
 
+function updateTabBadges() {
+  for (const [name, count] of [["todo", state.counts?.todo || 0], ["ideas", state.counts?.ideas || 0]]) {
+    const badge = document.getElementById(`tab-${name}`)?.querySelector(".badge");
+    if (!badge) continue;
+    badge.textContent = count ? String(count) : "";
+    badge.hidden = count === 0;
+  }
+}
+
 function updateAttentionBadge() {
+  updateTabBadges();
   const count = sessionsNeedingYou();
   document.title = count ? `(${count}) Agent Cockpit` : "Agent Cockpit";
   const button = document.getElementById("tab-sessions");
@@ -813,7 +823,8 @@ function renderPairing(message) {
 
 // ---- Tabs: Sessions, Todo, Pull requests, Usage ----
 
-const TABS = [["sessions", "Sessions"], ["todo", "Todo"], ["pulls", "Pull requests"], ["usage", "Usage"]];
+// Pull requests and usage live in Status, as on the column.
+const TABS = [["sessions", "Sessions"], ["todo", "Todo"], ["ideas", "Ideas"], ["status", "Status"]];
 let tab = "sessions";
 let projectChoices = null; // fetched once: the projects a session or an item can go to
 
@@ -856,8 +867,8 @@ function renderTabs() {
     const button = element("button", name === tab ? "tab active" : "tab", label);
     button.id = `tab-${name}`;
     if (name === tab) button.setAttribute("aria-current", "page");
-    if (name === "sessions") {
-      const badge = element("span", "badge");
+    if (name !== "status") {
+      const badge = element("span", `badge ${name}`);
       badge.setAttribute("aria-hidden", "true");
       button.append(badge);
     }
@@ -881,7 +892,7 @@ function showTab(name) {
   document.getElementById("work").replaceChildren(box);
   box.setAttribute("aria-busy", "true");
   box.replaceChildren(element("div", "loading", `Loading ${TABS.find(([key]) => key === name)[1].toLowerCase()}…`));
-  const views = { todo: renderTodos, pulls: renderPulls, usage: renderUsage };
+  const views = { todo: renderTodos, ideas: renderIdeas, status: renderStatus };
   views[name](box).catch((error) => {
     const retry = element("button", "no", "Retry");
     retry.onclick = () => showTab(name);
@@ -1135,6 +1146,32 @@ async function renderPulls(box, isRefresh) {
 function hours(seconds) {
   const minutes = Math.round((seconds || 0) / 60);
   return minutes < 60 ? `${minutes}m` : `${Math.floor(minutes / 60)}h${String(minutes % 60).padStart(2, "0")}`;
+}
+
+async function renderIdeas(box) {
+  const ideas = await getJson("/api/ideas");
+  const nodes = [];
+  if (ideas.length === 0) nodes.push(element("div", "empty", "No idea waiting for you."));
+  else nodes.push(element("p", "overview", "Say yes or no on the computer (Ideas, y / n)."));
+  for (const idea of ideas) {
+    const card = element("article", "card idea");
+    card.append(element("div", "todo-title", idea.text));
+    const project = element("div", "card-project", idea.project);
+    project.style.color = projectColour(idea.project);
+    card.append(project);
+    if (idea.why) card.append(element("div", "notes", idea.why));
+    const meta = [idea.kind, idea.source ? `from ${idea.source}` : "", idea.created ? age(idea.created) : ""].filter(Boolean).join(" · ");
+    if (meta) card.append(element("div", "task", meta));
+    nodes.push(card);
+  }
+  box.replaceChildren(...nodes);
+}
+
+async function renderStatus(box) {
+  const usage = element("div");
+  const pulls = element("div");
+  await Promise.all([renderUsage(usage), renderPulls(pulls)]);
+  box.replaceChildren(usage, element("h2", "", "Pull requests"), pulls);
 }
 
 async function renderUsage(box) {

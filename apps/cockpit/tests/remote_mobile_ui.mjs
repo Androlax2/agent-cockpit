@@ -54,7 +54,7 @@ async function startPage({ sessions, approvals = [], inputs = [], messages = [],
       server.requests.push({ path, method: options.method });
       if (options.method === "POST") server.posts.push({ path, body: options.body === undefined ? undefined : JSON.parse(options.body) });
       if (path.startsWith("/api/input/") && options.method !== "POST") return { status: 200, ok: true, text: async () => inputOutput };
-      const body = path === "/api/state" ? { sessions: server.sessions, approvals: server.approvals, inputs: server.inputs }
+      const body = path === "/api/state" ? { sessions: server.sessions, approvals: server.approvals, inputs: server.inputs, counts: server.counts }
         : path.startsWith("/api/conversation/") ? { messages: server.messages, truncated: false }
         : path === "/api/projects" || path === "/api/agents" ? [] : { ok: true, message: "sent" };
       return { status: 200, ok: true, json: async () => structuredClone(body), text: async () => "" };
@@ -122,6 +122,17 @@ const tests = {
     assert.equal(tab.querySelector(".badge").hidden, false);
     assert.equal(tab.getAttribute("aria-label"), "Sessions, 2 need you");
     assert.equal(page.document.title, "(2) Agent Cockpit");
+  },
+
+  async "the tabs are Sessions, Todo, Ideas and Status, with the column's counts"() {
+    const page = await startPage({ sessions: SESSIONS });
+    page.server.counts = { todo: 5, ideas: 3 };
+    await page.run("refresh()");
+    const tabs = page.roots.tabs.querySelectorAll("button");
+    assert.deepEqual(tabs.map(tab => tab.id), ["tab-sessions", "tab-todo", "tab-ideas", "tab-status"]);
+    assert.equal(page.document.getElementById("tab-todo").querySelector(".badge").textContent, "5");
+    assert.equal(page.document.getElementById("tab-ideas").querySelector(".badge").textContent, "3");
+    assert.equal(page.document.getElementById("tab-status").querySelector(".badge"), null);
   },
 
   async "the badge disappears once nothing needs you"() {

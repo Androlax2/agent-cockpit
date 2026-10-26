@@ -184,6 +184,7 @@ fn handle(mut request: Request) {
             outcome(request, remote::start_session(&field("project"), &field("prompt"), is_in_clone, &field("agent")));
         }
         (Method::Get, ["api", "todos"]) => respond_json(request, 200, json!(remote::todos())),
+        (Method::Get, ["api", "ideas"]) => respond_json(request, 200, json!(remote::ideas())),
         (Method::Post, ["api", "todos"]) => {
             let body = body_json(&mut request).unwrap_or(json!({}));
             let field = |name: &str| body.get(name).and_then(Value::as_str).unwrap_or("").to_string();

@@ -618,7 +618,7 @@ pub fn state() -> Value {
     })).collect();
     let in_snapshot: HashSet<String> = rows.iter().map(|row| text(row, "session")).collect();
     cards.extend(sleep::asleep().iter().filter(|note| !in_snapshot.contains(&note.session)).map(asleep_card));
-    json!({"sessions": cards, "approvals": asking_approvals(), "inputs": waiting_inputs()})
+    json!({"sessions": cards, "approvals": asking_approvals(), "inputs": waiting_inputs(), "counts": tab_counts()})
 }
 
 /// A session's row when its agent has `feature` (as cockpit' require_feature).
@@ -902,6 +902,25 @@ pub fn todos() -> Vec<Value> {
 /// column stays the only writer of todo.json. `started_in` is the project's folder.
 fn queue_todo_update(update: Value) -> Result<(), String> {
     crate::todo_requests::append_update(&update)
+}
+
+/// The ideas agents proposed, waiting for Theo (the Ideas tab). The phone only reads them: a yes or
+/// a no stays on the computer, where only Theo can give it.
+pub fn ideas() -> Vec<Value> {
+    let list = todo::TodoList::load();
+    let mut ideas: Vec<&todo::Item> = list.items.iter().filter(|item| item.status() == todo::PROPOSED).collect();
+    ideas.sort_by_key(|item| std::cmp::Reverse(item.created()));
+    ideas.into_iter().map(|item| json!({
+        "id": item.id(), "project": item.project(), "text": item.text(), "why": item.why(), "source": item.source(),
+        "kind": item.category().map(todo::Category::label), "created": item.created(),
+    })).collect()
+}
+
+/// How many items the Todo and Ideas tabs hold, for their badges.
+fn tab_counts() -> Value {
+    let list = todo::TodoList::load();
+    let count = |statuses: &[&str]| list.items.iter().filter(|item| statuses.contains(&item.status().as_str())).count();
+    json!({"todo": count(&["todo", "doing"]), "ideas": count(&[todo::PROPOSED])})
 }
 
 /// A new item in a project's list (the column adds it within a second or two).

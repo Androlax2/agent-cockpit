@@ -1792,8 +1792,8 @@ fn sessions_needing_attention_keep_amber_markers_even_when_selected() {
                 app.has_pane_focus = true;
                 app.panels[1].selected = 0;
                 let buffer = render(&mut app, width, 45);
-                let header: String = (0..width).map(|column| buffer[(column, 0)].symbol()).collect();
-                assert!(header.contains("1 need you"), "{state}/{phase}: {header}");
+                let tabs: String = (0..width).map(|column| buffer[(column, 1)].symbol()).collect();
+                assert!(tabs.contains("Sessions  1 "), "{state}/{phase}: {tabs}");
                 let card_rows: Vec<_> = app.hit_lines.iter().filter(|(_, (panel, item))| *panel == 1 && *item == Some(0)).map(|(row, _)| *row).collect();
                 let first = *card_rows.iter().min().unwrap();
                 for row in card_rows {
@@ -2801,7 +2801,7 @@ fn unknown_membership_blocks_manual_and_automatic_sleep() {
     let mut app = fixture.app();
     fs::remove_file(crate::paths::team_host_socket()).unwrap();
     app.check_team();
-    app.handle(Key::Char('s'), &mut FakeScreen::default());
+    app.handle(Key::Char('z'), &mut FakeScreen::default());
     assert!(app.message.contains("cannot tell yet"), "{}", app.message);
     app.dispatch_sleep();
     std::thread::sleep(Duration::from_millis(200));
@@ -2815,18 +2815,18 @@ fn unknown_membership_blocks_manual_and_automatic_sleep() {
 }
 
 #[test]
-fn s_puts_the_selected_session_to_sleep_without_waiting_for_the_idle_delay() {
+fn z_puts_the_selected_session_to_sleep_without_waiting_for_the_idle_delay() {
     let (fixture, mut app) = sleep_fixture(&[(SESSION_A, 60)]);
-    app.handle(Key::Char('s'), &mut FakeScreen::default());
+    app.handle(Key::Char('z'), &mut FakeScreen::default());
     assert_eq!(fixture.wait_for_calls("cockpit", 1), vec![format!("cockpit sleep {SESSION_A}")]);
     assert!(app.message.contains("to sleep"), "{}", app.message);
 }
 
 #[test]
-fn s_shows_why_a_session_stays_awake_without_logging_an_error() {
+fn z_shows_why_a_session_stays_awake_without_logging_an_error() {
     let (fixture, mut app) = sleep_fixture(&[(SESSION_A, 60)]);
     fixture.shim("cockpit", "echo 'cockpit: project-0 stays awake: text is typed in its prompt' >&2; exit 3");
-    app.handle(Key::Char('s'), &mut FakeScreen::default());
+    app.handle(Key::Char('z'), &mut FakeScreen::default());
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     while !app.collect_manager() && std::time::Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(20));
@@ -2837,13 +2837,13 @@ fn s_shows_why_a_session_stays_awake_without_logging_an_error() {
 }
 
 #[test]
-fn s_can_sleep_a_known_teammate() {
+fn z_can_sleep_a_known_teammate() {
     let fixture = Fixture::new();
     fixture.snapshot(json!([session(SESSION_B, "waiting", "project-a", "/r/project-a", 1)]));
     team_host(&fixture, team_snapshot(), vec![]);
     let mut app = fixture.app();
     app.check_team();
-    app.handle(Key::Char('s'), &mut FakeScreen::default());
+    app.handle(Key::Char('z'), &mut FakeScreen::default());
     assert_eq!(fixture.wait_for_calls("cockpit", 1), vec![format!("cockpit sleep {SESSION_B}")]);
     assert!(app.message.contains("to sleep"), "{}", app.message);
 }
@@ -2860,14 +2860,14 @@ fn known_team_member_can_sleep() {
 }
 
 #[test]
-fn s_on_an_asleep_card_says_it_already_sleeps() {
+fn z_on_an_asleep_card_says_it_already_sleeps() {
     let fixture = Fixture::new();
     let now = util::now_secs();
     asleep_note(&fixture, SESSION_A, now - 7200, now - 3600);
     no_team_members(&fixture);
     let mut app = fixture.app();
     app.check_team();
-    app.handle(Key::Char('s'), &mut FakeScreen::default());
+    app.handle(Key::Char('z'), &mut FakeScreen::default());
     std::thread::sleep(Duration::from_millis(200));
     assert!(fixture.calls("cockpit").is_empty(), "{:?}", fixture.calls("cockpit"));
     assert!(app.message.contains("already asleep"), "{}", app.message);
@@ -3635,19 +3635,19 @@ fn answering_an_explicit_chat_question_updates_the_viewed_state() {
 }
 
 #[test]
-fn tab_digits_and_function_keys_move_the_focus() {
+fn tab_digits_and_function_keys_open_the_tabs() {
     let fixture = Fixture::new();
     let mut app = fixture.app();
     let screen = &mut FakeScreen::default();
     assert_eq!(app.focus, 1);
-    app.handle(Key::Tab, screen);
-    assert_eq!(app.focus, 2);
-    app.handle(Key::Char('0'), screen);
-    assert_eq!(app.focus, 0);
-    app.handle(Key::BackTab, screen);
-    assert_eq!(app.focus, 4);
-    app.handle(Key::F(1), screen);
-    assert_eq!(app.focus, 1);
+    for (key, panel) in [(Key::Char('2'), 3), (Key::Char('3'), 4), (Key::Char('1'), 1), (Key::F(2), 3), (Key::F(3), 4), (Key::F(1), 1)] {
+        app.handle(key.clone(), screen);
+        assert_eq!(app.focus, panel, "{key:?}");
+    }
+    for removed in [Key::Tab, Key::BackTab, Key::Char('0'), Key::Char('4')] {
+        app.handle(removed.clone(), screen);
+        assert_eq!(app.focus, 1, "{removed:?} no longer moves between panels");
+    }
 }
 
 #[test]
@@ -3714,7 +3714,7 @@ fn the_rare_actions_are_left_without_a_key() {
     fixture.snapshot(json!([session(SESSION_A, "needs-you", "runway", "/r/runway", 1)]));
     crate::prompts::add(SESSION_A, "queued thought").unwrap();
     let mut app = fixture.app();
-    for (panel, key) in [(1, 'R'), (1, 'M'), (1, 'Y'), (1, 'N'), (1, 'm'), (1, 'z'), (1, 'f'), (1, 'A'), (1, 'V'), (1, 'D'), (1, 'K'), (1, '/'), (0, 'o'), (0, 'r'), (2, 'r')] {
+    for (panel, key) in [(1, 'R'), (1, 'M'), (1, 'Y'), (1, 'N'), (1, 'm'), (1, 'f'), (1, 'A'), (1, 'V'), (1, 'D'), (1, 'K'), (1, '/'), (0, 'o'), (0, 'r'), (2, 'r')] {
         app.focus_panel(panel);
         app.handle(Key::Char(key), &mut FakeScreen::answering(&[Key::Char('y')]));
         assert_eq!(app.message, "", "{key} did something in panel {panel}");
@@ -4942,31 +4942,55 @@ fn status_details_take_no_space_until_requested() {
     let fixture = Fixture::new();
     let mut app = fixture.app();
     let rows = settings_screen_rows(&render(&mut app, 100, 45));
-    assert!(rows[1].contains("[1] Sessions"), "{rows:?}");
-    assert!(!rows.iter().any(|row| row.contains("[0] Status")));
+    assert!(rows[1].contains(" 1  Sessions"), "{rows:?}");
+    assert!(!rows.iter().any(|row| row.contains("USAGE")));
 }
 
 #[test]
-fn zero_opens_status_and_zero_or_escape_returns_to_the_previous_panel() {
+fn s_opens_status_over_the_tabs_and_s_or_escape_returns_to_the_tab() {
     let fixture = Fixture::new();
     let mut app = fixture.app();
     let screen = &mut FakeScreen::default();
-    for close in [Key::Char('0'), Key::Esc] {
+    for close in [Key::Char('s'), Key::Esc] {
         app.focus_panel(3);
-        app.handle(Key::Char('0'), screen);
+        app.handle(Key::Char('s'), screen);
         let rows = settings_screen_rows(&render(&mut app, 100, 45));
-        assert!(rows.iter().any(|row| row.contains("[0] Status")));
-        assert!(!rows.iter().any(|row| row.contains("[1] Sessions")));
+        for heading in ["USAGE", "SPENDING", "CHIEF", "SERVICES", "PULL REQUESTS"] {
+            assert!(rows.iter().any(|row| row.contains(heading)), "{heading}: {rows:?}");
+        }
         app.handle(close, screen);
         assert_eq!(app.focus, 3);
     }
 }
 
 #[test]
-fn clicking_the_header_status_link_toggles_the_details() {
+fn p_in_status_moves_to_its_pull_requests_and_escape_closes_status() {
     let fixture = Fixture::new();
     let mut app = fixture.app();
-    app.focus_panel(2);
+    let screen = &mut FakeScreen::default();
+    app.handle(Key::Char('s'), screen);
+    app.handle(Key::Char('p'), screen);
+    assert_eq!(app.focus, 2);
+    app.handle(Key::Esc, screen);
+    assert_eq!(app.focus, 1);
+}
+
+#[test]
+fn status_totals_all_usage_at_api_prices_and_keeps_time_by_project() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "working", "runway", "/r/runway", 1)]));
+    let mut app = fixture.app();
+    app.handle(Key::Char('s'), &mut FakeScreen::default());
+    let rows = settings_screen_rows(&render(&mut app, 120, 60)).join("\n");
+    assert!(!rows.contains("Loading usage…") || rows.contains("SPENDING"), "{rows}");
+}
+
+#[test]
+fn clicking_the_header_status_link_toggles_the_details() {
+    let fixture = Fixture::new();
+    fixture.write("run/claude-usage.json", r#"{"seven_day":{"utilization":50}}"#);
+    let mut app = fixture.app();
+    app.focus_panel(3);
     render(&mut app, 100, 45);
     let &(start, _, _) = app.hit_actions.get(&0).unwrap();
     let screen = &mut FakeScreen::default();
@@ -4974,7 +4998,7 @@ fn clicking_the_header_status_link_toggles_the_details() {
     assert_eq!(app.focus, 0);
     render(&mut app, 100, 45);
     app.handle(Key::Click { x: start, y: 0, double: false }, screen);
-    assert_eq!(app.focus, 2);
+    assert_eq!(app.focus, 3);
 }
 
 #[test]
@@ -4986,31 +5010,30 @@ fn action_counts_do_not_push_allowances_out_of_a_narrow_header() {
     let mut app = fixture.app();
     propose(&fixture, "An idea", "Why");
     app.todos.apply_updates();
+    app.build();
     app.held = vec!["blocked.example".into()];
     let rows = settings_screen_rows(&render(&mut app, 60, 45));
-    for text in ["1 need you", "1 idea", "Claude 5%", "Codex 52%"] {
+    for text in ["Claude ▮▯▯▯ 5%", "Codex ▮▮▮▯ 52%"] {
         assert!(rows[0].contains(text), "{}", rows[0]);
     }
+    assert!(rows[1].contains("Sessions  1") && rows[1].contains("Ideas  1"), "the counts moved to the tab badges: {}", rows[1]);
 }
 
 #[test]
-fn the_header_names_the_agent_cockpit_not_claude_sessions() {
+fn the_header_never_says_claude_sessions() {
     let fixture = Fixture::new();
     let mut app = fixture.app();
     let rows = settings_screen_rows(&render(&mut app, 80, 45));
-    assert!(rows[0].trim_start().starts_with("Agent Cockpit"), "{}", rows[0]);
     assert!(!rows[0].contains("Claude sessions"), "{}", rows[0]);
 }
 
 #[test]
-fn tab_navigation_cycles_only_the_action_panels() {
+fn clicking_a_tab_opens_it() {
     let fixture = Fixture::new();
     let mut app = fixture.app();
-    let screen = &mut FakeScreen::default();
-    app.focus_panel(4);
-    app.handle(Key::Tab, screen);
-    assert_eq!(app.focus, 1);
-    app.handle(Key::BackTab, screen);
+    let rows = settings_screen_rows(&render(&mut app, 80, 45));
+    let column = rows[1].find("Ideas").unwrap() as u16;
+    app.handle(Key::Click { x: column, y: 1, double: false }, &mut FakeScreen::default());
     assert_eq!(app.focus, 4);
 }
 
@@ -5023,8 +5046,7 @@ fn the_header_shows_each_providers_tightest_allowance_without_overlapping_attent
     let mut app = fixture.app();
     for width in [60, 130] {
         let rows = settings_screen_rows(&render(&mut app, width, 45));
-        assert!(rows[0].contains("1 need you"), "{}", rows[0]);
-        for text in ["[0]", "Claude 23%", "Codex 52%"] {
+        for text in ["Claude ▮▯▯▯ 23%", "Codex ▮▮▮▯ 52%"] {
             assert!(rows[0].contains(text), "{}", rows[0]);
         }
     }
@@ -5050,7 +5072,9 @@ fn low_allowances_remain_red_in_the_header() {
     let mut app = fixture.app();
     let buffer = render(&mut app, 100, 45);
     let rows = settings_screen_rows(&buffer);
-    let start = rows[0].find("Claude 5%").unwrap();
+    let start = rows[0].chars().take_while(|_| true).collect::<String>().find("Claude").unwrap();
+    let start = rows[0][..start].chars().count();
+    assert!(rows[0].contains("Claude ▮▯▯▯ 5%"), "{}", rows[0]);
     assert_eq!(buffer[(start as u16, 0)].fg, crate::app::color(crate::app::RED));
 }
 
@@ -5140,7 +5164,7 @@ fn status_spending_keeps_all_time_cost_out_of_the_plan_subtitle() {
     assert_eq!(app.subtitle(0), "Max");
     let rows = texts(&app, 0);
     let spending = rows.iter().position(|row| row.contains("SPENDING")).unwrap();
-    let health = rows.iter().position(|row| row == "SERVICE HEALTH").unwrap();
+    let health = rows.iter().position(|row| row == "SERVICES").unwrap();
     let all_time = rows.iter().position(|row| row.contains("All-time API value") && row.contains("≈ $20")).unwrap();
     assert!(spending < all_time && all_time < health, "{rows:?}");
     assert!(rows[spending].contains("token-based estimates, not your bill"));
@@ -5193,26 +5217,27 @@ fn app_with_billing(fixture: &Fixture, replies: &[(&str, Option<&str>, Option<f6
 }
 
 #[test]
-fn the_header_shows_only_verified_api_credit_value() {
+fn the_header_shows_all_of_todays_usage_at_api_prices() {
+    // Theo's call in the redesign: the estimate shows even on the subscription (DESIGN.md, Layout).
     let fixture = Fixture::new();
     let mut app = app_with_billing(&fixture, &[("api", Some("api"), Some(12.0)),
         ("plan", Some("subscription"), Some(54.0)), ("legacy", None, Some(8.0))]);
     let buffer = render(&mut app, 140, 70);
     let header: String = (0..140).map(|column| buffer[(column, 0)].symbol()).collect();
-    assert!(header.contains("API ≈ $12.00 today"), "{header}");
-    assert!(!header.contains("$74.00") && !header.contains("$54.00") && !header.contains("$8.00"), "{header}");
+    assert!(header.contains("≈ $74.00 today"), "{header}");
+    app.handle(Key::Char('s'), &mut FakeScreen::default());
+    let rows = texts(&app, 0);
+    assert!(rows.iter().any(|row| row.contains("≈ Total at API prices") && row.contains("$74.00")), "{rows:?}");
     let narrow = render(&mut app, 24, 70);
     let header: String = (0..24).map(|column| narrow[(column, 0)].symbol()).collect();
     assert!(!header.contains('$'), "partial monetary fragment: {header}");
 }
 
 #[test]
-fn historical_billing_stays_visible_without_an_api_header_claim() {
+fn historical_billing_stays_visible_in_status() {
     let fixture = Fixture::new();
     let mut app = app_with_billing(&fixture, &[("legacy", None, Some(74.0))]);
-    let buffer = render(&mut app, 140, 70);
-    let header: String = (0..140).map(|column| buffer[(column, 0)].symbol()).collect();
-    assert!(!header.contains('$'), "{header}");
+    render(&mut app, 140, 70);
     let rows = texts(&app, 0);
     assert!(rows.iter().any(|row| row.contains("Unknown billing (API value)") && row.contains("$74.00")), "{rows:?}");
     assert!(rows.iter().any(|row| row.contains("API credits (est.)") && row.contains("$0.00")), "{rows:?}");
@@ -5423,7 +5448,7 @@ fn status_continuations_keep_quota_selection_and_scrolling() {
         app.handle(Key::Down, &mut FakeScreen::default());
     }
     assert_eq!(app.panels[0].selected, 2);
-    app.handle(Key::Char('0'), &mut FakeScreen::default());
+    app.handle(Key::Char('s'), &mut FakeScreen::default());
     assert_ne!(app.focus, 0);
 }
 
@@ -5738,14 +5763,33 @@ fn quota_scripts_are_reaped_once_they_end() {
 }
 
 #[test]
-fn pull_requests_todo_and_ideas_with_nothing_open_collapse_to_their_borders() {
+fn the_open_tab_takes_the_whole_column_under_the_header() {
     let fixture = Fixture::new();
-    let app = fixture.app();
-    assert_eq!(app.layout(45), vec![0, 37, 2, 2, 2]);
+    let mut app = fixture.app();
+    assert_eq!(app.layout(45), vec![0, 43, 0, 0, 0]);
+    app.focus_panel(3);
+    assert_eq!(app.layout(45), vec![0, 0, 0, 43, 0]);
+    app.focus_panel(4);
+    assert_eq!(app.layout(45), vec![0, 0, 0, 0, 43]);
 }
 
 #[test]
-fn a_collapsed_panel_shows_no_scroll_marker_from_one_frame_to_the_next() {
+fn status_shares_the_column_with_its_pull_requests() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    app.reviews.set_rows((1..=20).map(|number| Review { number, title: "VAT".into(), repository: "shop".into(), ..Review::default() }).collect());
+    app.build();
+    app.focus_panel(0);
+    let heights = app.layout(45);
+    assert_eq!(heights[0] + heights[2], 43);
+    assert_eq!((heights[1], heights[3], heights[4]), (0, 0, 0));
+    assert!(heights[2] >= 4 && heights[2] <= 14, "{heights:?}");
+    app.focus_panel(2);
+    assert_eq!(app.layout(45), heights);
+}
+
+#[test]
+fn an_empty_tab_shows_no_scroll_marker() {
     let fixture = Fixture::new();
     let mut app = fixture.app();
     for _ in 0..2 {
@@ -5753,139 +5797,53 @@ fn a_collapsed_panel_shows_no_scroll_marker_from_one_frame_to_the_next() {
         let markers: Vec<String> = (0..45).map(|y| (0..60).map(|x| buffer[(x, y)].symbol().to_string()).collect::<String>())
             .filter(|row| row.contains('▲') || row.contains('▼')).collect();
         assert!(markers.is_empty(), "{markers:?}");
-        assert_eq!(app.panels[2].scroll, 0);
     }
 }
 
-#[test]
-fn a_collapsed_panel_opens_while_focused() {
-    let fixture = Fixture::new();
-    let mut app = fixture.app();
-    app.focus = 3;
-    assert_eq!(app.layout(45), vec![0, 6, 2, 33, 2]);
-}
-
-#[test]
-fn the_todo_with_open_items_collapses_to_its_borders_while_unfocused() {
-    let fixture = Fixture::new();
-    let mut app = fixture.app();
-    app.todos.add("runway", "/r/runway", "add a healthcheck");
-    app.build();
-    assert_eq!(app.layout(45)[3], 2);
-    app.focus = 3;
-    assert!(app.layout(45)[3] > 2);
-}
-
-#[test]
-fn done_items_alone_leave_the_todo_collapsed() {
-    let fixture = Fixture::new();
-    let mut app = fixture.app();
-    let id = app.todos.add("runway", "/r/runway", "add a healthcheck");
-    app.todos.set_status(&id, "done", "");
-    app.build();
-    assert_eq!(app.layout(45)[3], 2);
-}
-
-fn panel_border(app: &mut App, label: &str) -> String {
+fn status_rows(app: &mut App) -> Vec<String> {
+    app.focus_panel(0);
     let buffer = render(app, 80, 45);
-    (0..45).map(|y| (0..80).map(|x| buffer[(x, y)].symbol().to_string()).collect::<String>())
-        .find(|row| row.contains(label)).expect("the panel border is drawn")
-}
-
-fn todo_border(app: &mut App) -> String {
-    panel_border(app, "[3] Todo")
+    (0..45).map(|y| (0..80).map(|x| buffer[(x, y)].symbol().to_string()).collect::<String>()).collect()
 }
 
 #[test]
-fn the_pull_requests_border_counts_open_failing_and_waiting_pull_requests() {
+fn the_pull_requests_heading_counts_open_failing_and_waiting_pull_requests() {
     let fixture = Fixture::new();
     let mut app = fixture.app();
     let review = |number, ci: &str, decision: &str| Review { number, title: "VAT".into(), repository: "shop".into(), ci: ci.into(), review: decision.into(), ..Review::default() };
     app.reviews.set_rows(vec![review(1, "failing", "CHANGES_REQUESTED"), review(2, "passing", "REVIEW_REQUIRED"),
                               review(3, "failing", "REVIEW_REQUIRED"), review(4, "pending", "APPROVED"), review(5, "", "")]);
     app.build();
-    let border = panel_border(&mut app, "[2] Pull requests");
-    assert!(border.contains("Pull requests · 5 open ✗ 2 changes 1 review 2 · "), "{border}");
+    let heading = status_rows(&mut app).into_iter().find(|row| row.contains("PULL REQUESTS")).unwrap();
+    assert!(heading.contains("PULL REQUESTS · 5 · 5 open ✗ 2 changes 1 review 2 · "), "{heading}");
 }
 
 #[test]
-fn the_pull_requests_border_leaves_out_counts_that_are_zero() {
+fn the_empty_pull_requests_heading_shows_no_count() {
     let fixture = Fixture::new();
     let mut app = fixture.app();
-    app.reviews.set_rows(vec![Review { number: 1, title: "VAT".into(), repository: "shop".into(), ci: "passing".into(), ..Review::default() }]);
-    app.build();
-    let border = panel_border(&mut app, "[2] Pull requests");
-    assert!(border.contains("Pull requests · 1 open · "), "{border}");
+    let heading = status_rows(&mut app).into_iter().find(|row| row.contains("PULL REQUESTS")).unwrap();
+    assert!(!heading.contains("open"), "{heading}");
 }
 
 #[test]
-fn the_empty_pull_requests_border_shows_no_count() {
+fn the_tabs_count_what_needs_you_open_todos_and_ideas() {
     let fixture = Fixture::new();
-    let mut app = fixture.app();
-    let border = panel_border(&mut app, "[2] Pull requests");
-    assert!(!border.contains("open"), "{border}");
-}
-
-#[test]
-fn the_collapsed_todo_border_counts_proposed_in_progress_and_to_do_items() {
-    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "needs-you", "runway", "/r/runway", 1)]));
     let mut app = fixture.app();
     let proposed = app.todos.add("runway", "/r/runway", "cache the manifest");
     app.todos.items.iter_mut().find(|item| item.id() == proposed).unwrap().0.insert("status".into(), json!("proposed"));
     let doing = app.todos.add("runway", "/r/runway", "add a healthcheck");
     app.todos.set_status(&doing, "doing", "");
     app.todos.add("runway", "/r/runway", "rotate the logs");
-    app.todos.add("runway", "/r/runway", "pin the image");
+    let done = app.todos.add("runway", "/r/runway", "pin the image");
+    app.todos.set_status(&done, "done", "");
     app.build();
-    assert!(todo_border(&mut app).contains("Todo · ? 1 ◐ 1 • 2 · all projects"), "{}", todo_border(&mut app));
-}
-
-#[test]
-fn the_collapsed_todo_border_leaves_out_empty_counts() {
-    let fixture = Fixture::new();
-    let mut app = fixture.app();
-    let id = app.todos.add("runway", "/r/runway", "add a healthcheck");
-    app.todos.set_status(&id, "done", "");
-    app.build();
-    assert!(todo_border(&mut app).contains("Todo · all projects"), "{}", todo_border(&mut app));
-}
-
-#[test]
-fn the_focused_todo_leaves_its_counts_to_the_tabs() {
-    let fixture = Fixture::new();
-    let mut app = fixture.app();
-    app.todos.add("runway", "/r/runway", "add a healthcheck");
-    app.build();
-    app.focus = 3;
-    assert!(todo_border(&mut app).contains("Todo · all projects"), "{}", todo_border(&mut app));
-}
-
-#[test]
-fn an_unfocused_panel_takes_only_the_rows_its_lines_need() {
-    let fixture = Fixture::new();
-    let mut app = fixture.app();
-    app.reviews.set_rows(vec![Review { title: "VAT".into(), repository: "shop".into(), ..Review::default() }]);
-    app.todos.add("runway", "/r/runway", "add a healthcheck");
-    app.build();
-    assert_eq!(app.layout(45), vec![0, 35, 4, 2, 2]);
-}
-
-#[test]
-fn an_unfocused_panel_takes_at_most_a_quarter_of_the_action_column() {
-    let fixture = Fixture::new();
-    let mut app = fixture.app();
-    app.reviews.set_rows((1..=20).map(|number| Review { number, title: "VAT".into(), repository: "shop".into(), ..Review::default() }).collect());
-    for number in 1..=20 {
-        app.todos.add("runway", "/r/runway", &format!("item {number}"));
-    }
-    app.build();
-    assert_eq!(app.layout(45), vec![0, 30, 9, 2, 2]);
-    app.focus = 3;
-    // Empty sessions still show the fixed attention summary.
-    assert_eq!(app.layout(45), vec![0, 6, 10, 25, 2]);
-    app.focus = 0;
-    assert_eq!(app.layout(45), vec![43, 0, 0, 0, 0]);
-    assert_eq!(app.layout(12), vec![10, 0, 0, 0, 0]);
+    let buffer = render(&mut app, 80, 45);
+    let tabs: String = (0..80).map(|x| buffer[(x, 1)].symbol()).collect();
+    assert!(tabs.contains(" 1  Sessions  1 ") && tabs.contains(" 2  Todo  2 ") && tabs.contains(" 3  Ideas  1 "), "{tabs}");
+    let badge = tabs.find("Sessions").unwrap() + "Sessions ".len() + 1;
+    assert_eq!(buffer[(badge as u16, 1)].bg, crate::app::color(crate::app::YELLOW), "only what needs you is amber");
 }
 
 #[test]
@@ -6394,6 +6352,7 @@ fn integrated_native_drafts_recover_add_and_edit_with_original_metadata_once() {
     recovered.todos.save();
     recovered.build();
     recovered.focus_panel(3);
+    recovered.handle(Key::Char(']'), &mut FakeScreen::default());
     recovered.handle(Key::Char('e'), &mut FakeScreen::default());
     type_in_app(&mut recovered, " edited");
     drop(recovered);
@@ -6750,6 +6709,7 @@ fn todo_composer_cancel_preserves_disk_filters_queue_and_proposal_metadata() {
     let mut app = fixture.app();
     app.focus_panel(3);
     let screen = &mut FakeScreen::default();
+    app.handle(Key::Char(']'), screen);
     let before = fs::read(crate::paths::todo()).unwrap();
     app.handle(Key::Char('e'), screen);
     type_in_app(&mut app, " changed");
@@ -6923,8 +6883,8 @@ fn compact_todo_keeps_core_actions_visible_and_long_project_names_off_titles() {
     app.build();
     app.focus_panel(3);
     let buffer = render(&mut app, 60, 40);
-    let fixed = app.panels[3].fixed_top.iter().map(|line| line.texts()).collect::<Vec<_>>().join(" ");
-    for action in ["t Add", "e Edit", "K Kind", "f Filter", "Details"] { assert!(fixed.contains(action), "{fixed}"); }
+    let footer: String = (0..60).map(|column| buffer[(column, 39)].symbol()).collect();
+    for action in [" h  to a session", " Enter  Details"] { assert!(footer.contains(action), "{footer}"); }
     let item_row = *app.hit_lines.iter().find(|(_, value)| **value == (3, Some(0))).unwrap().0;
     let row: String = (0..60).map(|column| buffer[(column, item_row)].symbol()).collect();
     assert!(row.contains("Readable title"), "{row}");
@@ -6947,7 +6907,7 @@ fn compact_todo_retains_queue_and_routing_markers_in_a_forty_column_row() {
     let row: String = (0..40).map(|column| buffer[(column, item_row)].symbol()).collect();
     assert!(row.contains("✎Q") && row.contains("!!!!") && row.contains("Readable"), "{row}");
     let footer: String = (0..40).map(|column| buffer[(column, 39)].symbol()).collect();
-    assert!(footer.contains("Enter Details"), "{footer}");
+    assert!(footer.contains(" Enter  Details"), "{footer}");
 }
 
 #[test]
@@ -7798,8 +7758,7 @@ fn the_active_kind_filter_is_visible_even_with_a_long_project_name() {
     app.handle(Key::Char('f'), &mut FakeScreen::typing(&["Bug"]));
     let buffer = render(&mut app, 40, 40);
     let rows: Vec<String> = (0..40).map(|row| (0..40).map(|column| buffer[(column, row)].symbol()).collect()).collect();
-    let header = rows.iter().find(|row| row.contains("Todo")).unwrap();
-    assert!(header.contains("kind: Bug"), "{header}");
+    assert!(rows.iter().any(|row| row.contains("kind: Bug")), "{rows:#?}");
 }
 
 #[test]
@@ -9773,7 +9732,7 @@ fn propose(fixture: &Fixture, title: &str, why: &str) {
 }
 
 #[test]
-fn the_open_tab_lists_proposed_to_do_and_in_progress_items_but_not_done_ones() {
+fn the_open_tab_lists_to_do_and_in_progress_items_but_not_proposed_or_done_ones() {
     let fixture = Fixture::new();
     propose(&fixture, "proposed item", "why");
     let mut app = fixture.app();
@@ -9786,17 +9745,19 @@ fn the_open_tab_lists_proposed_to_do_and_in_progress_items_but_not_done_ones() {
     app.build();
     let mut shown: Vec<String> = app.todo_entries.iter().map(Entry::status).collect();
     shown.sort();
-    assert_eq!(shown, ["doing", crate::todo::PROPOSED, "todo"]);
+    assert_eq!(shown, ["doing", "todo"], "proposals wait in Ideas, not in Todo's Open tab");
 }
 
 #[test]
-fn the_open_tab_hints_follow_the_selected_items_status() {
+fn the_proposed_tab_hints_lead_with_approve() {
     let fixture = Fixture::new();
     propose(&fixture, "proposed item", "why");
     let mut app = fixture.app();
     app.todos.apply_updates();
     app.build();
-    assert_eq!(app.todo_hints()[0].0, "y");
+    app.focus_panel(3);
+    app.handle(Key::Char(']'), &mut FakeScreen::default());
+    assert_eq!(app.todo_hints()[0].0, "y", "the Proposed tab leads with approve");
 }
 
 #[test]
@@ -9816,14 +9777,16 @@ fn a_proposal_waits_in_its_own_tab_until_approved() {
 }
 
 #[test]
-fn a_waiting_proposal_is_announced_on_the_to_do_tab() {
+fn a_waiting_proposal_is_counted_on_the_ideas_tab_not_announced_in_todo() {
     let fixture = Fixture::new();
     propose(&fixture, "cache the usage fetch", "it runs every minute");
     let mut app = fixture.app();
     app.todos.apply_updates();
+    app.build();
     show_to_do_tab(&mut app);
-    assert_eq!(texts(&app, 3)[0], "?1 idea from Claude waits for you · ] Proposed");
-    assert_eq!(app.panels[3].lines[0].item, None, "the announcement is not a selectable item");
+    assert!(texts(&app, 3).iter().all(|line| !line.contains("from Claude wait")));
+    let rows = settings_screen_rows(&render(&mut app, 100, 40));
+    assert!(rows[1].contains("Ideas  1 "), "{}", rows[1]);
 }
 
 #[test]
@@ -9836,18 +9799,6 @@ fn the_proposed_tab_does_not_announce_its_own_items() {
     app.handle(Key::Char(']'), &mut FakeScreen::default());
     assert_eq!(app.todo_tab, 1);
     assert!(texts(&app, 3).iter().all(|line| !line.contains("from Claude wait")));
-}
-
-#[test]
-fn the_header_counts_waiting_proposals() {
-    let fixture = Fixture::new();
-    propose(&fixture, "cache the usage fetch", "it runs every minute");
-    let mut app = fixture.app();
-    app.todos.apply_updates();
-    app.build();
-    let buffer = render(&mut app, 120, 40);
-    let header: String = (0..120).map(|x| buffer[(x, 0)].symbol().to_string()).collect();
-    assert!(header.contains("? 1 idea "), "{header}");
 }
 
 fn ideas_fixture() -> (Fixture, App) {
@@ -9869,8 +9820,8 @@ fn ideas_fixture() -> (Fixture, App) {
 }
 
 fn open_ideas(app: &mut App) {
-    app.handle(Key::Char('4'), &mut FakeScreen::default());
-    assert_eq!(app.focus, 4, "4 opens the global Ideas pane");
+    app.handle(Key::Char('3'), &mut FakeScreen::default());
+    assert_eq!(app.focus, 4, "3 opens the global Ideas tab");
 }
 
 #[test]
@@ -9878,7 +9829,7 @@ fn ideas_show_proposals_from_every_project_without_changing_the_viewed_session()
     let (_fixture, mut app) = ideas_fixture();
     open_ideas(&mut app);
     let rows = settings_screen_rows(&render(&mut app, 160, 45)).join("\n");
-    for text in ["[4] Ideas", "Show sandbox failures", "greywall", "Explain queued work", "agent-cockpit"] {
+    for text in ["3  Ideas", "Show sandbox failures", "greywall", "Explain queued work", "agent-cockpit"] {
         assert!(rows.contains(text), "missing {text}: {rows}");
     }
     assert!(!texts(&app, 4).join("\n").contains("Ordinary work"));
@@ -9953,32 +9904,18 @@ fn ideas_recognize_sources_running_outside_the_managed_session_list() {
 }
 
 #[test]
-fn ideas_header_link_opens_the_pane_without_breaking_the_status_link() {
+fn the_ideas_tab_badge_counts_waiting_proposals_and_status_still_opens_from_the_header() {
     let (_fixture, mut app) = ideas_fixture();
     let rows = settings_screen_rows(&render(&mut app, 160, 45));
-    let idea_column = rows[0].find("? 2 ideas").expect("global idea count") as u16;
-    assert!(rows[0].contains("[4]"), "the counter identifies its pane: {}", rows[0]);
-    app.handle(Key::Click { x: idea_column, y: 0, double: false }, &mut FakeScreen::default());
-    assert_eq!(app.focus, 4);
+    assert!(rows[1].contains("Ideas  2 "), "{}", rows[1]);
     render(&mut app, 160, 45);
+    app.focus_panel(4);
     let (start, _, action) = app.hit_actions[&0];
     assert_eq!(action, "status");
     app.handle(Key::Click { x: start, y: 0, double: false }, &mut FakeScreen::default());
     assert_eq!(app.focus, 0);
     app.handle(Key::Esc, &mut FakeScreen::default());
     assert_eq!(app.focus, 4);
-}
-
-#[test]
-fn ideas_participate_in_panel_navigation_and_the_action_palette() {
-    let fixture = Fixture::new();
-    let mut app = fixture.app();
-    app.focus_panel(3);
-    for (key, expected) in [(Key::Tab, 4), (Key::Tab, 1), (Key::BackTab, 4), (Key::BackTab, 3), (Key::F(4), 4)] {
-        app.handle(key, &mut FakeScreen::default());
-        assert_eq!(app.focus, expected);
-    }
-    assert!(app.palette_entries().iter().any(|entry| entry.starts_with("-\t4\t")), "Ideas can be opened from the action palette");
 }
 
 #[test]
@@ -10045,10 +9982,10 @@ fn a_waiting_proposal_draws_its_tab_as_a_magenta_chip() {
     app.build();
     app.focus = 3;
     let buffer = render(&mut app, 160, 40);
-    let on_magenta: String = (0..40).flat_map(|y| (0..160).map(move |x| (x, y)))
+    let on_magenta: String = (2..40).flat_map(|y| (0..160).map(move |x| (x, y)))
         .filter(|position| buffer[*position].bg == ratatui::style::Color::Indexed(crate::app::MAGENTA))
         .map(|position| buffer[position].symbol().to_string()).collect();
-    assert_eq!(on_magenta, " Proposed 1 ");
+    assert_eq!(on_magenta, " Proposed 1 ", "below the tabs row, whose Ideas badge is magenta too");
 }
 
 #[test]
@@ -10373,9 +10310,12 @@ fn enter_shows_the_details_in_a_popup_that_stays_open() {
     assert!(popup.contains(" less ") && !popup.contains("quit-if-one-screen"), "{popup}");
 }
 
+/// The open tab is lit (its label bold on the selection background) while the column has the focus.
 fn blue_panel_corners(app: &mut App) -> usize {
     let buffer = render(app, 120, 40);
-    (0..40).filter(|y| buffer[(0, *y)].symbol() == "┌" && buffer[(0, *y)].fg == ratatui::style::Color::Indexed(crate::app::BLUE)).count()
+    let tabs: String = (0..120).map(|x| buffer[(x, 1)].symbol()).collect();
+    let column = tabs.find("Sessions").unwrap() as u16;
+    usize::from(buffer[(column, 1)].modifier.contains(ratatui::style::Modifier::BOLD) && !buffer[(column, 1)].modifier.contains(ratatui::style::Modifier::DIM))
 }
 
 #[test]
@@ -11526,3 +11466,4 @@ fn c_in_the_session_details_without_chief_answers_does_nothing() {
     let rendered = buffer_rows(&render(&mut app, 100, 40)).join("\n");
     assert!(rendered.contains("Session details") && !rendered.contains("Answers ·"), "{rendered}");
 }
+

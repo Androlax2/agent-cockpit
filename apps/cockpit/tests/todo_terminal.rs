@@ -90,7 +90,7 @@ fn native_todo_form_decodes_paste_resize_cancel_and_command_s() {
     let mut fixture = ComposerTerminal::new();
     fixture.terminal.pump(5.0, Some(b"Todo"));
     assert!(contains(&fixture.terminal.screen, b"\x1b[?2004h"), "bracketed paste was not enabled");
-    fixture.terminal.type_keys(b"3t");
+    fixture.terminal.type_keys(b"2t");
     fixture.terminal.pump(5.0, Some(b"Add TODO"));
     assert!(contains(&fixture.terminal.screen, b"Add TODO"), "{}", String::from_utf8_lossy(&fixture.terminal.screen));
     fixture.terminal.type_keys("\x1b[200~qtdjk123 café 界\x1b[201~".as_bytes());
@@ -133,7 +133,7 @@ fn reviewed_native_form_saves_to_its_origin_after_the_view_changes() {
         fixture.restart();
         fixture.view_session("aaaaaaaa-0000-4000-8000-000000000000");
         fixture.view_session(other_session);
-        fixture.terminal.type_keys(b"3");
+        fixture.terminal.type_keys(b"2");
         fixture.terminal.pump(0.3, None);
         fixture.pick_kind("Bug");
         fixture.terminal.type_keys(b"]]]");
@@ -172,7 +172,7 @@ fn reviewed_native_form_saves_to_its_origin_after_the_view_changes() {
 fn integrated_native_terminal_recovers_a_crashed_draft_and_releases_the_reload_lock() {
     let mut fixture = ComposerTerminal::new();
     fixture.terminal.pump(5.0, Some(b"Todo"));
-    fixture.terminal.type_keys(b"3t");
+    fixture.terminal.type_keys(b"2t");
     fixture.terminal.pump(5.0, Some(b"Add TODO"));
     fixture.terminal.type_keys("\x1b[200~Recovered café 界\x1b[201~".as_bytes());
     fixture.terminal.type_keys(b"\x1b[Z\x1b[C\x1b[C\t\t");
@@ -204,7 +204,7 @@ fn reviewed_native_terminal_cancel_cleanup_rejects_input_and_save_for_add_and_ed
     for (edit, retry) in [(false, false), (true, false), (false, true), (true, true)] {
         let mut fixture = ComposerTerminal::new();
         fixture.terminal.pump(5.0, Some(b"Todo"));
-        fixture.terminal.type_keys(b"3t");
+        fixture.terminal.type_keys(b"2t");
         fixture.terminal.pump(5.0, Some(b"Add TODO"));
         if edit {
             fixture.terminal.type_keys(b"original title\x13");

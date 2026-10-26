@@ -586,6 +586,23 @@ fn a_card_carries_its_attention_group_and_doing_now() {
 }
 
 #[test]
+fn the_phone_reads_waiting_ideas_and_the_tab_counts() {
+    let remote = Remote::start();
+    let secret = remote.paired();
+    let list = json!({"items": [
+        {"id": "aaaa1111", "project": "proj-a", "text": "Cache the manifest", "status": "proposed", "why": "it is slow", "source": "session s1", "created": 2},
+        {"id": "bbbb2222", "project": "proj-a", "text": "Rotate the logs", "status": "todo", "created": 1},
+        {"id": "cccc3333", "project": "proj-a", "text": "Old", "status": "done", "created": 1}]});
+    let path = remote.sandbox.state.join("cockpit/todo.json");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(&path, list.to_string()).unwrap();
+    let ideas = remote.get_json(&secret, "/api/ideas");
+    assert_eq!(ideas.as_array().unwrap().len(), 1);
+    assert_eq!((ideas[0]["text"].as_str(), ideas[0]["why"].as_str()), (Some("Cache the manifest"), Some("it is slow")));
+    assert_eq!(remote.get_json(&secret, "/api/state")["counts"], json!({"todo": 1, "ideas": 1}));
+}
+
+#[test]
 fn a_card_without_a_label_is_titled_by_its_agent() {
     let remote = Remote::start();
     let secret = remote.paired();

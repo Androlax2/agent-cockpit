@@ -96,7 +96,7 @@ sleep 1.5
 shot_windows claude-cockpit cockpit-demo
 
 # 2. The cockpit on Todo
-demo_tmux send-keys -t "$sidebar" 3
+demo_tmux send-keys -t "$sidebar" 2
 sleep 1.5
 shot_windows claude-cockpit-todo cockpit-demo
 demo_tmux send-keys -t "$sidebar" 1
