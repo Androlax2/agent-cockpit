@@ -831,6 +831,7 @@ pub struct App {
     pub focus: usize,
     previous_panel: usize,
     pub help_open: bool,
+    help_scroll: usize,
     /// Whether tmux's focus is in the column: out of it, nothing there is drawn as focused.
     pub has_pane_focus: bool,
     attention_only: bool,
@@ -976,7 +977,7 @@ impl App {
             history: History::default(), view: ViewState::load(), usage: Refresher::new(), alerts: BudgetAlerts::new(util::send_notice),
             costs: Costs::default(), reviews: Reviews::default(), todos, errors: ErrorReporter::new(),
             claude_status: ProviderStatus::default(), codex_status: ProviderStatus::new(Provider::Codex), panels: Default::default(), focus: 1, previous_panel: 1,
-            help_open: false, has_pane_focus: true, attention_only: false, message, exiting: Vec::new(), restarting_cards: HashMap::new(), labelled: Default::default(), menu: None, session_details: None, todo_composer: None, new_session: None, settings_menu: None, team_view: None, chief_view: None, team_attention: 0, team_roles: HashMap::new(), qa_sessions: HashSet::new(), team_known: false, team_checked: 0.0,
+            help_open: false, help_scroll: 0, has_pane_focus: true, attention_only: false, message, exiting: Vec::new(), restarting_cards: HashMap::new(), labelled: Default::default(), menu: None, session_details: None, todo_composer: None, new_session: None, settings_menu: None, team_view: None, chief_view: None, team_attention: 0, team_roles: HashMap::new(), qa_sessions: HashSet::new(), team_known: false, team_checked: 0.0,
             team_links: TeamLinks::Loading, sidebar_rows: Vec::new(), tab_ranges: Vec::new(), collapsed_teams: HashSet::new(), sidebar_selection_lost: false, sidebar_session_tasks: HashMap::new(), pairing: None, restore: Vec::new(),
             held: Vec::new(), held_checked: 0.0, queue_checked: 0.0, sleep_checked: 0.0, sleep_asked: HashMap::new(), gaming: util::gaming,
             disk_usage: util::fullest_disk, disk: None, disk_checked: 0.0, restore_checked: 0.0, start_files: Vec::new(),
@@ -4039,7 +4040,7 @@ impl App {
         (format!("Help · {}", PANEL_NAMES[tab]), sections)
     }
 
-    fn draw_help(&self, buffer: &mut Buffer) {
+    fn draw_help(&mut self, buffer: &mut Buffer) {
         let (width, height) = (buffer.area.width, buffer.area.height);
         let (title, sections) = self.help_sections();
         let box_height = height.saturating_sub(HEADER_LINES + 1);
@@ -4049,25 +4050,29 @@ impl App {
         }
         let key_width = sections.iter().flat_map(|(_, entries)| entries.iter()).map(|(key, _)| width_of(key)).max().unwrap_or(1) as u16 + 2;
         let label_width = width.saturating_sub(key_width + 5) as usize;
-        let mut row = HEADER_LINES + 1;
-        put(buffer, row, 2, &title, bold(FG));
+        let mut lines = vec![Line::new(vec![segment(2, title, bold(FG))])];
         for (heading, entries) in sections {
-            row += 1;
-            if row >= last { break; }
-            put(buffer, row, 2, heading, bold(FG_DARK));
+            lines.push(Line::new(vec![segment(2, heading, bold(FG_DARK))]));
             for (key, label) in entries {
                 for (index, piece) in approval::wrap(label, label_width.max(8)).into_iter().enumerate() {
-                    row += 1;
-                    if row >= last { break; }
+                    let mut parts = Vec::new();
                     if index == 0 && !key.is_empty() {
-                        put(buffer, row, 2, &format!(" {key} "), on(FG, BG_HIGHLIGHT).add_modifier(Modifier::BOLD));
+                        parts.push(segment(2, format!(" {key} "), on(FG, BG_HIGHLIGHT).add_modifier(Modifier::BOLD)));
                     }
-                    put(buffer, row, 2 + key_width + 1, &piece, style(FG_DARK));
+                    parts.push(segment(2 + key_width + 1, piece, style(FG_DARK)));
+                    lines.push(Line::new(parts));
                 }
             }
         }
+        let visible = last.saturating_sub(HEADER_LINES + 1) as usize;
+        self.help_scroll = self.help_scroll.min(lines.len().saturating_sub(visible));
+        for (index, line) in lines.iter().skip(self.help_scroll).take(visible).enumerate() {
+            for (column, text, tint) in &line.segments {
+                put(buffer, HEADER_LINES + 1 + index as u16, *column, text, *tint);
+            }
+        }
         put(buffer, last, 2, " esc ", on(FG, BG_HIGHLIGHT).add_modifier(Modifier::BOLD));
-        put(buffer, last, 8, "close", dim(FG_DARK));
+        put(buffer, last, 8, "close · ↑↓ scroll", dim(FG_DARK));
     }
 
     /// Asks a y/n question in the footer; true on y.
@@ -4235,7 +4240,11 @@ impl App {
             return;
         }
         if self.help_open {
-            self.help_open = false;
+            match key {
+                Key::Down | Key::Char('j') => self.help_scroll = self.help_scroll.saturating_add(1),
+                Key::Up | Key::Char('k') => self.help_scroll = self.help_scroll.saturating_sub(1),
+                _ => self.help_open = false,
+            }
             return;
         }
         // CMD+1/2/3 from the session arrive as F1-F3 (tmux.conf).
@@ -4261,7 +4270,7 @@ impl App {
             },
             // From any panel, as ← comes back from the session (tmux.conf).
             Key::Right => { let _ = Command::new("cockpit").arg("focus-viewer").status(); }
-            Key::Char('?') => self.help_open = true,
+            Key::Char('?') => { self.help_open = true; self.help_scroll = 0; }
             Key::Char(':') => {
                 let entries = self.palette_entries();
                 if let Some(choice) = screen.outside(&mut || pick_action(&entries)) {

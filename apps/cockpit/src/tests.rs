@@ -3721,6 +3721,49 @@ fn help_on_todo_shows_todos_keys_and_no_card_signs() {
 }
 
 #[test]
+fn help_scrolls_to_the_last_sign_and_back_in_a_short_terminal() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    app.handle(Key::Char('?'), &mut FakeScreen::default());
+    for _ in 0..200 {
+        app.handle(Key::Down, &mut FakeScreen::default());
+        render(&mut app, 45, 18);
+    }
+    let bottom = buffer_rows(&render(&mut app, 45, 18)).join("\n");
+    assert!(app.help_open && bottom.contains("queued messages"), "{bottom}");
+    for _ in 0..200 { app.handle(Key::Up, &mut FakeScreen::default()); }
+    let top = buffer_rows(&render(&mut app, 45, 18)).join("\n");
+    assert!(top.contains("Help · Sessions") && top.contains("THIS TAB"), "{top}");
+    app.handle(Key::Esc, &mut FakeScreen::default());
+    app.handle(Key::Char('?'), &mut FakeScreen::default());
+    assert!(buffer_rows(&render(&mut app, 45, 18)).join("\n").contains("Help · Sessions"));
+}
+
+#[test]
+fn queue_details_cannot_drop_a_sessions_prompts() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "runway", "/r/runway", 1)]));
+    crate::prompts::add(SESSION_A, "keep this").unwrap();
+    let mut app = fixture.app();
+    continuity_action(&mut app, "-\tqueue", &[]);
+    app.handle(Key::Char('d'), &mut FakeScreen::answering(&[Key::Char('y')]));
+    assert_eq!(crate::prompts::count(SESSION_A), 1);
+}
+
+#[test]
+fn vanished_session_details_cannot_act_on_the_replacement_selection() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "runway", "/r/runway", 1)]));
+    let mut app = fixture.app();
+    app.handle(Key::Char('i'), &mut FakeScreen::default());
+    crate::prompts::add(SESSION_B, "keep this").unwrap();
+    fixture.snapshot(json!([session(SESSION_B, "waiting", "runway", "/r/runway", 2)]));
+    app.build();
+    app.handle(Key::Char('d'), &mut FakeScreen::answering(&[Key::Char('y')]));
+    assert_eq!(crate::prompts::count(SESSION_B), 1);
+}
+
+#[test]
 fn l_hides_a_question_for_twenty_minutes_in_quiet_and_l_again_brings_it_back() {
     let fixture = Fixture::new();
     fixture.snapshot(json!([continuity_question_row(SESSION_A, "Which provider?")]));
@@ -11684,4 +11727,3 @@ fn c_in_the_session_details_without_chief_answers_does_nothing() {
     let rendered = buffer_rows(&render(&mut app, 100, 40)).join("\n");
     assert!(rendered.contains("WHERE & WHO") && !rendered.contains("Answers ·"), "{rendered}");
 }
-
