@@ -17,7 +17,7 @@ fn chief_migration_keeps_sleep_continuations_available_on_every_reopen() {
     drop(connection);
     let connection = store::open(&path).unwrap();
     assert!(store::sleep::prepared_records(&connection).unwrap().is_empty());
-    assert_eq!(connection.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0)).unwrap(), 14);
+    assert_eq!(connection.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0)).unwrap(), 15);
 }
 
 fn chief_session(id: &str) -> VerifiedSession {
@@ -87,7 +87,7 @@ fn migration_preserves_v2_links_messages_and_spawns() {
     let mut connection = v2();
     let before: Vec<_> = ["teams", "members", "messages", "spawns"].map(|table| rows(&connection, table)).into();
     migrate(&mut connection).unwrap();
-    assert_eq!(version(&connection), 14);
+    assert_eq!(version(&connection), 15);
     for (table, expected) in ["teams", "members", "messages", "spawns"].into_iter().zip(before) {
         assert_eq!(rows(&connection, table), expected, "changed {table}");
     }
@@ -100,15 +100,15 @@ fn migration_reopen_is_idempotent() {
     let schema = rows(&connection, "sqlite_master");
     migrate(&mut connection).unwrap();
     assert_eq!(rows(&connection, "sqlite_master"), schema);
-    assert_eq!(version(&connection), 14);
+    assert_eq!(version(&connection), 15);
 }
 
 #[test]
 fn future_schema_is_refused() {
     let mut connection = Connection::open_in_memory().unwrap();
-    connection.execute_batch("PRAGMA user_version=15;").unwrap();
+    connection.execute_batch("PRAGMA user_version=16;").unwrap();
     assert!(migrate(&mut connection).is_err());
-    assert_eq!(version(&connection), 15);
+    assert_eq!(version(&connection), 16);
     assert!(rows(&connection, "sqlite_master").is_empty());
 }
 
@@ -133,7 +133,7 @@ fn version_ten_upgrade_preserves_chief_and_team_messages_and_receipts() {
         .query_map([], |row| row.get::<_, String>(0)).unwrap().collect::<Result<Vec<_>, _>>().unwrap();
     let before: Vec<_> = tables.iter().map(|table| rows(&connection, table)).collect();
     migrate(&mut connection).unwrap();
-    assert_eq!(version(&connection), 14);
+    assert_eq!(version(&connection), 15);
     for (table, expected) in tables.iter().zip(before) {
         assert_eq!(rows(&connection, table), expected, "changed {table}");
     }
@@ -141,7 +141,7 @@ fn version_ten_upgrade_preserves_chief_and_team_messages_and_receipts() {
     assert_eq!(scope, ("team".into(), None));
     assert_eq!(connection.query_row("SELECT last_idle_turn FROM delivery_recipients WHERE session_id='session-a'", [], |row| row.get::<_, String>(0)).unwrap(), "turn-a");
     migrate(&mut connection).unwrap();
-    assert_eq!(version(&connection), 14);
+    assert_eq!(version(&connection), 15);
 }
 
 #[test]
@@ -235,7 +235,7 @@ fn version_12_with_dispatch_leftovers_upgrades_to_13_keeping_wakes_and_decisions
 
     migrate(&mut connection).unwrap();
 
-    assert_eq!(version(&connection), 14);
+    assert_eq!(version(&connection), 15);
     for table in DROPPED_DISPATCH_TABLES { assert!(!table_exists(&connection, table), "{table} survived"); }
     for table in ["chief_stops", "chief_answers"] { assert!(table_exists(&connection, table), "{table} missing"); }
     for table in ["chief_inbox", "chief_delivery_attempts"] { assert!(!columns(&connection, table).contains(&"assignment".to_string()), "{table} kept assignment"); }
@@ -259,15 +259,15 @@ fn version_12_with_dispatch_leftovers_upgrades_to_13_keeping_wakes_and_decisions
     let before = snapshot(&connection);
     migrate(&mut connection).unwrap();
     assert_eq!(before, snapshot(&connection));
-    assert_eq!(version(&connection), 14);
+    assert_eq!(version(&connection), 15);
 }
 
 #[test]
-fn a_fresh_database_is_created_at_version_14() {
+fn a_fresh_database_is_created_at_version_15() {
     let mut fresh = Connection::open_in_memory().unwrap();
     fresh.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
     migrate(&mut fresh).unwrap();
-    assert_eq!(version(&fresh), 14);
+    assert_eq!(version(&fresh), 15);
     for table in DROPPED_DISPATCH_TABLES { assert!(!table_exists(&fresh, table), "{table} exists in a fresh database"); }
     let dangling: i64 = fresh.query_row("SELECT count(*) FROM sqlite_master WHERE sql LIKE '%chief_assignments%' OR sql LIKE '%chief_work_revisions%'", [], |row| row.get(0)).unwrap();
     assert_eq!(dangling, 0);
@@ -288,9 +288,9 @@ fn open_uses_current_migration_and_keeps_private_path_checks() {
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
     let database = path.join("teams.sqlite");
     let connection = store::open(&database).unwrap();
-    assert_eq!(version(&connection), 14);
+    assert_eq!(version(&connection), 15);
     drop(connection);
-    assert_eq!(version(&store::open(&database).unwrap()), 14);
+    assert_eq!(version(&store::open(&database).unwrap()), 15);
     std::fs::set_permissions(&database, std::fs::Permissions::from_mode(0o644)).unwrap();
     assert!(store::open(&database).is_err());
     std::fs::remove_file(&database).unwrap();
@@ -481,7 +481,7 @@ fn version_13_upgrades_to_14_with_an_empty_overrule_log() {
 
     migrate(&mut connection).unwrap();
 
-    assert_eq!(version(&connection), 14);
+    assert_eq!(version(&connection), 15);
     assert!(table_exists(&connection, "chief_overrules"));
     for index in ["chief_answers_by_session", "chief_answers_by_created_at"] {
         assert!(index_exists(&connection, index), "{index} missing after the upgrade");
@@ -491,7 +491,7 @@ fn version_13_upgrades_to_14_with_an_empty_overrule_log() {
     let before = (schema_shape(&connection), rows(&connection, "chief_answers"));
     migrate(&mut connection).unwrap();
     assert_eq!(before, (schema_shape(&connection), rows(&connection, "chief_answers")));
-    assert_eq!(version(&connection), 14);
+    assert_eq!(version(&connection), 15);
 }
 
 #[test]
@@ -679,4 +679,171 @@ fn answers_since_lists_the_newest_five_and_counts_the_rest() {
     assert_eq!((digest.answered, digest.lines.len(), digest.more), (8, 5, 3));
     assert_eq!(digest.lines[0].question, "Question answer-7?");
     assert_eq!(digest.lines[4].question, "Question answer-3?");
+}
+
+fn insert_habit(connection: &Connection, id: &str, text: &str, project: Option<&str>, origin_project: Option<&str>, created_at: i64) {
+    connection.execute("INSERT INTO chief_habits(id,text,project,origin_project,source,source_kind,source_id,state,created_at,changed_at) VALUES (?1,?2,?3,?4,'overrule','overrule',?5,'active',?6,?6)",
+        rusqlite::params![id, text, project, origin_project, format!("overrule-{id}"), created_at]).unwrap();
+}
+
+fn habit_action(connection: &mut Connection, action: ChiefHostAction, now: i64) -> Result<serde_json::Value, cockpit::teams::TeamError> {
+    cockpit::chief::store::host(connection, &action, &[], now).unwrap().result
+}
+
+fn habit_state(connection: &Connection, id: &str) -> (Option<String>, String, i64) {
+    connection.query_row("SELECT project,state,changed_at FROM chief_habits WHERE id=?1", [id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).unwrap()
+}
+
+fn habit_records(connection: &Connection) -> Vec<serde_json::Value> {
+    let mut records = Vec::new();
+    let mut after = 0;
+    loop {
+        let page = cockpit::chief::store::snapshot(connection, &[], after, 50).unwrap();
+        records.extend(page["records"].as_array().unwrap().iter().filter(|record| record["kind"] == "habit").cloned());
+        if page["has_more"] != true { return records; }
+        after = page["next"].as_i64().unwrap();
+    }
+}
+
+#[test]
+fn answers_since_lists_the_newest_three_active_habits_and_counts_them_all() {
+    let connection = migrated();
+    insert_habit(&connection, "before", "Seen before.", None, None, 90);
+    for (index, project) in [None, Some("path:/shop"), None, Some("path:/shop")].into_iter().enumerate() {
+        insert_habit(&connection, &format!("habit-{index}"), &format!("Habit {index}."), project, project, 110 + index as i64);
+    }
+    insert_habit(&connection, "gone", "Deleted.", None, None, 200);
+    connection.execute("UPDATE chief_habits SET state='deleted' WHERE id='gone'", []).unwrap();
+
+    let digest = cockpit::chief::store::answers_since(&connection, 100).unwrap();
+
+    assert_eq!(digest.new_habits, 4, "deleted habits and those before the since-time are not new");
+    let shown: Vec<(&str, Option<&str>)> = digest.habits.iter().map(|habit| (habit.text.as_str(), habit.project.as_deref())).collect();
+    assert_eq!(shown, [("Habit 3.", Some("path:/shop")), ("Habit 2.", None), ("Habit 1.", Some("path:/shop"))]);
+}
+
+#[test]
+fn version_14_upgrades_to_15_with_an_empty_habit_list() {
+    let mut connection = migrated();
+    insert_stop(&connection, "stop-a", "session-a", "task-a", 10);
+    insert_answer(&connection, "answer-a", "stop-a", "session-a", "chief", "received", 20);
+    connection.execute_batch("DROP INDEX chief_habits_by_state; DROP TABLE chief_habits; ALTER TABLE chief_answers DROP COLUMN habits; PRAGMA user_version=14;").unwrap();
+    assert!(!table_exists(&connection, "chief_habits"));
+
+    migrate(&mut connection).unwrap();
+
+    assert_eq!(version(&connection), 15);
+    assert!(table_exists(&connection, "chief_habits"));
+    assert!(index_exists(&connection, "chief_habits_by_state"));
+    assert_eq!(rows(&connection, "chief_habits").len(), 0);
+    let habits: String = connection.query_row("SELECT habits FROM chief_answers WHERE id='answer-a'", [], |row| row.get(0)).unwrap();
+    assert_eq!(habits, "[]");
+    let before = (schema_shape(&connection), rows(&connection, "chief_answers"));
+    migrate(&mut connection).unwrap();
+    assert_eq!(before, (schema_shape(&connection), rows(&connection, "chief_answers")));
+    assert_eq!(version(&connection), 15);
+}
+
+#[test]
+fn deleting_and_restoring_a_habit() {
+    let mut connection = migrated();
+    insert_habit(&connection, "habit-a", "Never touch the public API.", Some("path:/project-a"), Some("path:/project-a"), 10);
+    let deleted = habit_action(&mut connection, ChiefHostAction::DeleteHabit { request_id: "delete-1".into(), habit: "habit-a".into() }, 500).unwrap();
+    assert_eq!((deleted["habit"].as_str(), deleted["state"].as_str()), (Some("habit-a"), Some("deleted")));
+    assert_eq!(habit_state(&connection, "habit-a"), (Some("path:/project-a".to_string()), "deleted".to_string(), 500));
+    habit_action(&mut connection, ChiefHostAction::RestoreHabit { request_id: "restore-1".into(), habit: "habit-a".into() }, 600).unwrap();
+    assert_eq!(habit_state(&connection, "habit-a"), (Some("path:/project-a".to_string()), "active".to_string(), 600));
+    let missing = habit_action(&mut connection, ChiefHostAction::DeleteHabit { request_id: "delete-2".into(), habit: "no-such-habit".into() }, 700).unwrap_err();
+    assert_eq!(missing.code, ErrorCode::NotFound);
+}
+
+#[test]
+fn rescoping_toggles_between_its_project_and_everywhere() {
+    let mut connection = migrated();
+    insert_habit(&connection, "habit-a", "Prefer small commits.", Some("path:/project-a"), Some("path:/project-a"), 10);
+    insert_habit(&connection, "habit-b", "Keep replies short.", None, None, 11);
+    let rescope = |connection: &mut Connection, request: &str, habit: &str, everywhere: bool, now: i64|
+        habit_action(connection, ChiefHostAction::RescopeHabit { request_id: request.into(), habit: habit.into(), everywhere }, now);
+
+    rescope(&mut connection, "rescope-1", "habit-a", true, 500).unwrap();
+    assert_eq!(habit_state(&connection, "habit-a"), (None, "active".to_string(), 500));
+    rescope(&mut connection, "rescope-2", "habit-a", false, 600).unwrap();
+    assert_eq!(habit_state(&connection, "habit-a"), (Some("path:/project-a".to_string()), "active".to_string(), 600));
+    let error = rescope(&mut connection, "rescope-3", "habit-b", false, 700).unwrap_err();
+    assert_eq!(error.code, ErrorCode::Conflict);
+    assert!(error.message.contains("no project to scope to"), "{}", error.message);
+    assert_eq!(habit_state(&connection, "habit-b"), (None, "active".to_string(), 11));
+}
+
+#[test]
+fn the_review_lists_habits_and_the_habits_an_answer_used() {
+    let connection = migrated();
+    insert_stop(&connection, "stop-a", "session-a", "task-a", 10);
+    insert_answer(&connection, "answer-a", "stop-a", "session-a", "chief", "received", 20);
+    insert_answer(&connection, "answer-b", "stop-a", "session-a", "chief", "received", 21);
+    insert_habit(&connection, "habit-a", "Never touch the public API.", Some("path:/project-a"), Some("path:/project-a"), 30);
+    insert_habit(&connection, "habit-b", "Keep replies short.", None, None, 40);
+    connection.execute("UPDATE chief_habits SET state='deleted', changed_at=50 WHERE id='habit-b'", []).unwrap();
+    connection.execute("UPDATE chief_answers SET habits='[\"habit-a\",\"habit-b\",\"gone\"]' WHERE id='answer-a'", []).unwrap();
+
+    let records = habit_records(&connection);
+    assert_eq!(records.iter().map(|record| record["id"].as_str().unwrap()).collect::<Vec<_>>(), ["habit-b", "habit-a"], "newest first, deleted ones included");
+    assert_eq!(records[1], serde_json::json!({"kind":"habit","id":"habit-a","text":"Never touch the public API.","project":"path:/project-a","origin_project":"path:/project-a",
+        "source":"overrule","source_kind":"overrule","reason":null,"source_id":"overrule-habit-a","state":"active","created_at_ms":30,"changed_at_ms":30,
+        "session_id":null,"stopped_at_ms":null}), "an overrule the review no longer holds names no session");
+    assert_eq!((records[0]["state"].as_str(), records[0]["project"].is_null(), records[0]["changed_at_ms"].as_i64()), (Some("deleted"), true, Some(50)));
+
+    let answers = answer_records(&connection);
+    assert_eq!(answers[0]["id"], "answer-b");
+    assert_eq!(answers[0]["habits"], serde_json::json!([]));
+    assert_eq!(answers[1]["habits"], serde_json::json!([{"id":"habit-a","text":"Never touch the public API."},{"id":"habit-b","text":"Keep replies short."}]),
+        "an unknown habit id is left out");
+}
+
+#[test]
+fn a_habit_names_the_session_its_source_came_from() {
+    let connection = migrated();
+    insert_stop(&connection, "stop-a", "session-a", "task-a", 10);
+    insert_stop(&connection, "stop-b", "session-b", "task-b", 15);
+    insert_answer(&connection, "answer-a", "stop-a", "session-a", "theo", "received", 20);
+    insert_answer(&connection, "answer-c", "stop-b", "session-b", "chief", "received", 21);
+    connection.execute("INSERT INTO chief_overrules(id,answer_id,session_id,runtime,correction,delivery,created_at) VALUES ('overrule-c','answer-c','session-b','runtime-a','Use C.','queued',22)", []).unwrap();
+    for (id, kind, source_id, created_at) in [("habit-o", "overrule", "overrule-c", 30), ("habit-a", "theo_answer", "answer-a", 31), ("habit-m", "theo_message", "stop-b", 32)] {
+        connection.execute("INSERT INTO chief_habits(id,text,project,origin_project,source,source_kind,source_id,state,created_at,changed_at) VALUES (?1,'A habit.',NULL,NULL,?2,?3,?4,'active',?5,?5)",
+            rusqlite::params![id, if kind == "overrule" { "overrule" } else { "theo_answer" }, kind, source_id, created_at]).unwrap();
+    }
+    let records = habit_records(&connection);
+    let named: Vec<_> = records.iter().map(|record| (record["id"].as_str().unwrap(), record["session_id"].as_str(), record["stopped_at_ms"].as_i64())).collect();
+    assert_eq!(named, [("habit-m", Some("session-b"), Some(15)), ("habit-a", Some("session-a"), None), ("habit-o", Some("session-b"), None)]);
+}
+
+#[test]
+fn the_habit_review_is_the_newest_two_hundred() {
+    let connection = migrated();
+    for index in 0..250 {
+        insert_habit(&connection, &format!("habit-{index:03}"), "A habit.", None, None, 100 + index);
+    }
+    let records = habit_records(&connection);
+    assert_eq!(records.len(), 200);
+    assert_eq!(records[0]["id"], "habit-249");
+    assert_eq!(records[199]["id"], "habit-050");
+}
+
+#[test]
+fn habit_changes_move_the_review_generation() {
+    let mut connection = migrated();
+    insert_habit(&connection, "habit-a", "Prefer small commits.", Some("path:/project-a"), Some("path:/project-a"), 10);
+    let generation = |connection: &Connection| cockpit::chief::store::audit_page(connection, &[], 0, 50, None, 100).unwrap()["generation"].as_str().unwrap().to_string();
+    let mut seen = vec![generation(&connection)];
+    let steps = [
+        ChiefHostAction::DeleteHabit { request_id: "g-1".into(), habit: "habit-a".into() },
+        ChiefHostAction::RestoreHabit { request_id: "g-2".into(), habit: "habit-a".into() },
+        ChiefHostAction::RescopeHabit { request_id: "g-3".into(), habit: "habit-a".into(), everywhere: true },
+    ];
+    for (index, step) in steps.into_iter().enumerate() {
+        habit_action(&mut connection, step, 500 + index as i64).unwrap();
+        let current = generation(&connection);
+        assert!(!seen.contains(&current), "step {index} did not move the generation");
+        seen.push(current);
+    }
 }

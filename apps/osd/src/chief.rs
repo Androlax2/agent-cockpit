@@ -285,7 +285,11 @@ pub(crate) fn observe_stops_with(registry: &mut Registry, live: &[WorkerState], 
         if store::stop_recorded(connection, &session.session_id, boundary)? { continue; }
         let failure = registry.chief_stop_failures.get(&session.session_id).filter(|(failed_boundary, _)| failed_boundary == boundary).map(|(_, at)| *at);
         if failure.is_some_and(|at| (0..STOP_BUNDLE_RETRY_MS).contains(&(now_ms - at))) { continue; }
-        match cockpit::chief::bundle::stop_bundle(&cockpit::paths::opencode_database(), &session.session_id, item) {
+        let (instructions, warnings) = project_instructions(&session.project);
+        if failure.is_none() {
+            for warning in warnings { cockpit::util::log_as("daemon", "WARN", &format!("chief stop for {} at {boundary}: {warning}", session.session_id)); }
+        }
+        match cockpit::chief::bundle::stop_bundle(&cockpit::paths::opencode_database(), &session.session_id, item, instructions) {
             Ok(bundle) => {
                 let task = TaskKey { project: session.project.clone(), task_id: item.id() };
                 store::record_stop(connection, session, boundary, &task, &bundle, now_ms)?;
@@ -300,6 +304,15 @@ pub(crate) fn observe_stops_with(registry: &mut Registry, live: &[WorkerState], 
     }
     registry.chief_stop_failures.retain(|session_id, (failed_boundary, _)| stopped.iter().any(|(session, boundary, _)| session.session_id == *session_id && boundary == failed_boundary));
     Ok(())
+}
+
+/// The instruction files at the root a canonical project key (`path:<abs>`) names. Any other key names
+/// no directory: nothing is read and the caller logs the warning.
+pub(crate) fn project_instructions(project: &str) -> (Vec<cockpit::chief::bundle::InstructionFile>, Vec<String>) {
+    match project.strip_prefix("path:") {
+        Some(root) => cockpit::chief::bundle::instruction_files(std::path::Path::new(root)),
+        None => (Vec::new(), vec![format!("project key {project} is no path; instruction files not read")]),
+    }
 }
 
 pub fn tick(registry: &mut Registry, now_ms: i64) -> Result<(), TeamError> {

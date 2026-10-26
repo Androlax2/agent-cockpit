@@ -401,6 +401,83 @@ fn printing_the_digest_moves_the_since_time() {
     assert!(!second.contains("Which option?"), "{second}");
 }
 
+fn team_database_with_habit(sandbox: &Sandbox, created_at: i64) {
+    let connection = cockpit::teams::store::open(&sandbox.state.join("claude-audit/teams.sqlite")).unwrap();
+    connection.execute("INSERT INTO chief_habits(id,text,project,origin_project,source,source_kind,source_id,state,created_at,changed_at)
+        VALUES ('habit-a','Always run the tests first.','path:/home/theo/IdeaProjects/shop','path:/home/theo/IdeaProjects/shop','overrule','overrule','overrule-a','active',?1,?1)", [created_at]).unwrap();
+}
+
+fn habits_seen_at(sandbox: &Sandbox) -> Option<String> {
+    fs::read_to_string(sandbox.state.join("cockpit/chief-habits-seen-at")).ok()
+}
+
+#[test]
+fn a_printed_digest_clears_new_habits() {
+    let sandbox = digest_sandbox();
+    let created_at = now_ms() - 3_600_000;
+    team_database_with_habit(&sandbox, created_at);
+    let started = now_ms();
+    let first = digest_text(&sandbox);
+    assert!(first.contains("  New habits: 1\n    Always run the tests first. · shop"), "{first}");
+    let seen: i64 = habits_seen_at(&sandbox).expect("a printed habits section marks them seen").trim().parse().unwrap();
+    assert!(seen >= started && seen <= now_ms(), "the time the digest read them: {seen}");
+    let second = digest_text(&sandbox);
+    assert!(!second.contains("New habits"), "{second}");
+}
+
+#[test]
+fn a_digest_that_lists_some_new_habits_keeps_the_rest_new() {
+    let sandbox = digest_sandbox();
+    let connection = cockpit::teams::store::open(&sandbox.state.join("claude-audit/teams.sqlite")).unwrap();
+    let base = now_ms() - 3_600_000;
+    for index in 0..5_i64 {
+        connection.execute("INSERT INTO chief_habits(id,text,project,origin_project,source,source_kind,source_id,state,created_at,changed_at)
+            VALUES (?1,?2,NULL,NULL,'overrule','overrule','overrule-a','active',?3,?3)", rusqlite::params![format!("habit-{index}"), format!("Habit number {index}."), base + index * 1_000]).unwrap();
+    }
+    let first = digest_text(&sandbox);
+    assert!(first.contains("New habits: 5"), "{first}");
+    let seen: i64 = habits_seen_at(&sandbox).expect("a printed habits section marks the listed ones seen").trim().parse().unwrap();
+    assert_eq!(seen, base + 2 * 1_000 - 1, "just before the oldest listed habit, so the two unlisted ones stay new");
+}
+
+#[test]
+fn a_digest_listing_fewer_habits_never_moves_the_seen_time_back() {
+    let sandbox = digest_sandbox();
+    let connection = cockpit::teams::store::open(&sandbox.state.join("claude-audit/teams.sqlite")).unwrap();
+    let base = now_ms() - 3_600_000;
+    for index in 0..4_i64 {
+        connection.execute("INSERT INTO chief_habits(id,text,project,origin_project,source,source_kind,source_id,state,created_at,changed_at)
+            VALUES (?1,?2,NULL,NULL,'overrule','overrule','overrule-a','active',?3,?3)", rusqlite::params![format!("habit-{index}"), format!("Habit number {index}."), base + index * 1_000]).unwrap();
+    }
+    let later = base + 3_500;
+    fs::create_dir_all(sandbox.state.join("cockpit")).unwrap();
+    fs::write(sandbox.state.join("cockpit/chief-habits-seen-at"), later.to_string()).unwrap();
+    digest_text(&sandbox);
+    assert_eq!(habits_seen_at(&sandbox).unwrap().trim(), later.to_string());
+}
+
+#[test]
+fn a_digest_without_new_habits_leaves_them_unseen() {
+    let sandbox = digest_sandbox();
+    team_database_with_answer(&sandbox, now_ms() - 3_600_000);
+    digest_text(&sandbox);
+    assert_eq!(habits_seen_at(&sandbox), None);
+}
+
+#[test]
+fn an_unavailable_database_keeps_habits_new() {
+    let sandbox = digest_sandbox();
+    team_database_with_habit(&sandbox, now_ms() - 60_000);
+    let mut blocker = rusqlite::Connection::open(sandbox.state.join("claude-audit/teams.sqlite")).unwrap();
+    blocker.execute_batch("PRAGMA locking_mode=EXCLUSIVE;").unwrap();
+    let transaction = blocker.transaction_with_behavior(rusqlite::TransactionBehavior::Exclusive).unwrap();
+    transaction.execute("UPDATE chief_habits SET text='locked'", []).unwrap();
+    let digest = digest_text(&sandbox);
+    assert!(digest.contains("Chief: unavailable ("), "{digest}");
+    assert!(!digest.contains("New habits"), "{digest}");
+    assert_eq!(habits_seen_at(&sandbox), None);
+}
+
 #[test]
 fn an_unreadable_since_time_falls_back_to_the_last_24_hours() {
     let sandbox = digest_sandbox();

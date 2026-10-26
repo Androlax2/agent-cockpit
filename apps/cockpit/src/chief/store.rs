@@ -38,7 +38,8 @@ pub fn host(connection: &mut Connection, action: &ChiefHostAction, live: &[Worke
         ChiefHostAction::Enable { request_id, .. } | ChiefHostAction::Pause { request_id, .. }
         | ChiefHostAction::Resume { request_id, .. } | ChiefHostAction::Disable { request_id, .. }
         | ChiefHostAction::Resolve { request_id, .. } | ChiefHostAction::AnswerDecision { request_id, .. } | ChiefHostAction::RequestSummary { request_id }
-        | ChiefHostAction::ReconcileDelivery {request_id,..} | ChiefHostAction::ReconcileLaunch {request_id,..} | ChiefHostAction::Overrule { request_id, .. } => request_id.clone(),
+        | ChiefHostAction::ReconcileDelivery {request_id,..} | ChiefHostAction::ReconcileLaunch {request_id,..} | ChiefHostAction::Overrule { request_id, .. }
+        | ChiefHostAction::DeleteHabit { request_id, .. } | ChiefHostAction::RestoreHabit { request_id, .. } | ChiefHostAction::RescopeHabit { request_id, .. } => request_id.clone(),
     };
     let result = (|| {
         action.validate()?;
@@ -51,7 +52,8 @@ pub fn host(connection: &mut Connection, action: &ChiefHostAction, live: &[Worke
             return Ok(serde_json::from_str(&response)?);
         }
         let response = host_action(&transaction, action, live, now_ms)?;
-        if !matches!(action,ChiefHostAction::Enable {..}|ChiefHostAction::Resolve {..}|ChiefHostAction::AnswerDecision {..}|ChiefHostAction::Overrule {..}|ChiefHostAction::RequestSummary {..}) {
+        if !matches!(action,ChiefHostAction::Enable {..}|ChiefHostAction::Resolve {..}|ChiefHostAction::AnswerDecision {..}|ChiefHostAction::Overrule {..}|ChiefHostAction::RequestSummary {..}
+            |ChiefHostAction::DeleteHabit {..}|ChiefHostAction::RestoreHabit {..}|ChiefHostAction::RescopeHabit {..}) {
             coordination_event(&transaction,"host_control_changed",&json!({"source":"host","request_id":request_id}),now_ms)?;
         }
         transaction.execute("INSERT INTO chief_actions VALUES (?1,?2,?3,?4)", params![request_id, fingerprint, serde_json::to_string(&response)?, now_ms])?;
@@ -139,10 +141,13 @@ fn host_action(connection: &Connection, action: &ChiefHostAction, live: &[Worker
             let queued = queue_answer(connection, live, AnswerAuthor::Theo, &stop, Reply::Text(answer), &format!("Theo answered escalation {decision}"), now_ms)?;
             connection.execute("UPDATE chief_decisions SET state='resolved',revision=revision+1,resolution=?3,resolved_at=?4 WHERE id=?1 AND revision=?2",
                 params![decision,expected_revision,format!("Answered by Theo: {answer}"),now_ms])?;
-            coordination_event(connection,"decision_resolved",&json!({"decision":decision,"decision_revision":expected_revision+1}),now_ms)?;
+            coordination_event(connection,"decision_resolved",&json!({"decision":decision,"decision_revision":expected_revision+1,"answer":queued["answer"]}),now_ms)?;
             Ok(json!({"decision":decision,"state":"resolved","answer":queued["answer"],"delivery":"queued","grants_authority":false}))
         },
         ChiefHostAction::Overrule { answer, correction, .. } => queue_correction(connection, live, answer, correction, now_ms),
+        ChiefHostAction::DeleteHabit { habit, .. } => change_habit(connection, habit, HabitChange::State("deleted"), now_ms),
+        ChiefHostAction::RestoreHabit { habit, .. } => change_habit(connection, habit, HabitChange::State("active"), now_ms),
+        ChiefHostAction::RescopeHabit { habit, everywhere, .. } => change_habit(connection, habit, HabitChange::Scope { everywhere: *everywhere }, now_ms),
         ChiefHostAction::RequestSummary { request_id } => {
             let pending: i64 = connection.query_row("SELECT count(*) FROM chief_summary_requests WHERE state IN ('queued','pending')",[],|row|row.get(0))?;
             if pending >= 1 { return Err(TeamError::new(ErrorCode::Limit,"a bounded summary request is already pending")); }
@@ -369,6 +374,27 @@ pub(crate) fn upgrade_to_14(connection: &Connection) -> Result<(), TeamError> {
     Ok(())
 }
 
+/// Version 15 adds Theo's habits and the list of habits each answer used.
+/// A habit's `project` is a canonical project key, or NULL for everywhere; `origin_project` keeps the first one so a rescope can go back.
+/// `source` is what Theo did (an overrule or his own answer); `source_kind` says where the host saw it: an overrule, his answer to an
+/// escalation, or his message in a stopped session's bundle. `reason` is the Chief's, NULL for overrule habits.
+pub(crate) fn upgrade_to_15(connection: &Connection) -> Result<(), TeamError> {
+    let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version >= 15 { return Ok(()); }
+    connection.execute_batch("CREATE TABLE IF NOT EXISTS chief_habits (
+            id TEXT PRIMARY KEY, text TEXT NOT NULL, project TEXT, origin_project TEXT,
+            source TEXT NOT NULL CHECK(source IN ('overrule','theo_answer')),
+            source_kind TEXT NOT NULL CHECK(source_kind IN ('overrule','theo_answer','theo_message')), source_id TEXT NOT NULL, reason TEXT,
+            state TEXT NOT NULL CHECK(state IN ('active','deleted')),
+            created_at INTEGER NOT NULL, changed_at INTEGER NOT NULL);
+        CREATE INDEX IF NOT EXISTS chief_habits_by_state ON chief_habits(state, created_at);")?;
+    if !has_column(connection, "chief_answers", "habits")? {
+        connection.execute_batch("ALTER TABLE chief_answers ADD COLUMN habits TEXT NOT NULL DEFAULT '[]';")?;
+    }
+    connection.execute_batch("PRAGMA user_version=15;")?;
+    Ok(())
+}
+
 /// How many answers the Chief gave a session in its current task, with the newest few for the session card.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct AnswerCount {
@@ -416,6 +442,17 @@ pub struct ChiefDigest {
     pub lines: Vec<DigestAnswer>,
     /// Answers counted in `answered` that `lines` leaves out.
     pub more: u32,
+    /// The newest few habits Theo has had since, of `new_habits` in all.
+    pub habits: Vec<DigestHabit>,
+    pub new_habits: u32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DigestHabit {
+    pub text: String,
+    /// The canonical project, or `None` for everywhere.
+    pub project: Option<String>,
+    pub created_at_ms: i64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -426,9 +463,11 @@ pub struct DigestAnswer {
 }
 
 pub const DIGEST_ANSWER_LINES: usize = 5;
+pub const DIGEST_HABIT_LINES: usize = 3;
 
 /// Answers the Chief gave after `since_ms` and did not cancel, the escalations it raised and the
 /// corrections Theo made in the same time, less those cancelled before they reached the agent. Theo's own answers are not the Chief's.
+/// Habits count when created since and still active.
 pub fn answers_since(connection: &Connection, since_ms: i64) -> Result<ChiefDigest, TeamError> {
     let count = |sql: &str| -> Result<u32, TeamError> { Ok(connection.query_row(sql, [since_ms], |row| row.get(0))?) };
     let answered = count("SELECT count(*) FROM chief_answers WHERE source='chief' AND delivery!='cancelled' AND created_at>?1")?;
@@ -439,7 +478,11 @@ pub fn answers_since(connection: &Connection, since_ms: i64) -> Result<ChiefDige
         .query_map(params![since_ms, DIGEST_ANSWER_LINES as i64], |row| Ok(DigestAnswer { session_id: row.get(0)?, question: row.get(1)?, answer: row.get(2)? }))?
         .collect::<Result<Vec<_>, _>>()?;
     let more = answered.saturating_sub(lines.len() as u32);
-    Ok(ChiefDigest { answered, escalated, overruled, lines, more })
+    let new_habits = count("SELECT count(*) FROM chief_habits WHERE state='active' AND created_at>?1")?;
+    let habits = connection.prepare("SELECT text,project,created_at FROM chief_habits WHERE state='active' AND created_at>?1 ORDER BY created_at DESC,rowid DESC LIMIT ?2")?
+        .query_map(params![since_ms, DIGEST_HABIT_LINES as i64], |row| Ok(DigestHabit { text: row.get(0)?, project: row.get(1)?, created_at_ms: row.get(2)? }))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(ChiefDigest { answered, escalated, overruled, lines, more, habits, new_habits })
 }
 
 /// The team database for reading only, with a short wait on a lock: it is never created or migrated here.
@@ -536,9 +579,10 @@ fn cancel_correction(connection: &Connection, message_id: &str, envelope: &Value
     Ok(())
 }
 
-/// Who wrote an answer. The Chief's answers need the Chief's grant and the 30 s grace; Theo's, given
-/// on purpose from the Chief view, need neither (every readiness check still applies).
-enum AnswerAuthor<'a> { Chief { epoch: &'a str }, Theo }
+/// Who wrote an answer. The Chief's answers need the Chief's grant and the 30 s grace, and name the
+/// habits they relied on; Theo's, given on purpose from the Chief view, need neither (every readiness
+/// check still applies).
+enum AnswerAuthor<'a> { Chief { epoch: &'a str, habits: &'a [String] }, Theo }
 
 /// What a Theo answer carries where a Chief answer carries its grant epoch. No grant has this epoch,
 /// so disabling the Chief never cancels Theo's answer.
@@ -551,10 +595,11 @@ enum Reply<'a> { Text(&'a str), FormChoice(&'a str) }
 /// an open stop; Theo answers an escalated one. A restarted session is a different runtime: the
 /// answer would reach an agent that never asked.
 fn queue_answer(connection: &Connection, live: &[WorkerState], author: AnswerAuthor, stop: &str, reply: Reply, reason: &str, now_ms: i64) -> Result<Value, TeamError> {
-    let (epoch, source, required_state) = match author {
-        AnswerAuthor::Chief { epoch } => (epoch, "chief", "open"),
-        AnswerAuthor::Theo => (THEO_ANSWER_EPOCH, "theo", "escalated"),
+    let (epoch, source, required_state, habits) = match author {
+        AnswerAuthor::Chief { epoch, habits } => (epoch, "chief", "open", habits),
+        AnswerAuthor::Theo => (THEO_ANSWER_EPOCH, "theo", "escalated", &[][..]),
     };
+    require_citable_habits(connection, stop, habits)?;
     let record: Option<(String, String, String, String)> = connection.query_row("SELECT session_id,runtime,state,bundle FROM chief_stops WHERE id=?1", [stop],
         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))).optional()?;
     let (session_id, runtime, state, bundle) = record.ok_or_else(|| TeamError::new(ErrorCode::NotFound, "stop not found"))?;
@@ -586,8 +631,8 @@ fn queue_answer(connection: &Connection, live: &[WorkerState], author: AnswerAut
     };
     connection.execute("INSERT INTO chief_inbox(id,chief_epoch,recipient,recipient_identity,recipient_epoch,work,envelope,state,next_at) VALUES (?1,?2,?3,?4,?2,'null',?5,'queued',?6)",
         params![message_id, epoch, session_id, serde_json::to_string(&worker.session)?, envelope.to_string(), now_ms])?;
-    connection.execute("INSERT INTO chief_answers(id,stop_id,session_id,question,answer,reason,source,delivery,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,'queued',?8)",
-        params![answer_id, stop, session_id, question, text, reason, source, now_ms])?;
+    connection.execute("INSERT INTO chief_answers(id,stop_id,session_id,question,answer,reason,source,delivery,created_at,habits) VALUES (?1,?2,?3,?4,?5,?6,?7,'queued',?8,?9)",
+        params![answer_id, stop, session_id, question, text, reason, source, now_ms, serde_json::to_string(habits)?])?;
     connection.execute("UPDATE chief_stops SET state='answered' WHERE id=?1", [stop])?;
     Ok(json!({"answer":answer_id,"stop":stop,"delivery":"queued"}))
 }
@@ -596,13 +641,112 @@ fn queue_answer(connection: &Connection, live: &[WorkerState], author: AnswerAut
 /// The Chief view reuses it so its review shows the text the agent will receive.
 pub fn answer_excerpt(answer: &str) -> String { excerpt(&answer.split_whitespace().collect::<Vec<_>>().join(" "), 200) }
 
+pub const HABIT_TEXT_LIMIT: usize = 500;
+/// A habit's text: Theo's words on one line, at most 500 characters (cut with `…`).
+pub fn habit_text(correction: &str) -> String { excerpt(&correction.split_whitespace().collect::<Vec<_>>().join(" "), HABIT_TEXT_LIMIT) }
+
+/// Every habit an answer names must be active and apply to the stop's project (its own or everywhere).
+fn require_citable_habits(connection: &Connection, stop: &str, habits: &[String]) -> Result<(), TeamError> {
+    if habits.is_empty() { return Ok(()); }
+    let project: Option<String> = connection.query_row("SELECT project FROM chief_stops WHERE id=?1", [stop], |row| row.get(0)).optional()?;
+    let project = project.ok_or_else(|| TeamError::new(ErrorCode::NotFound, "stop not found"))?;
+    for habit in habits {
+        let record: Option<(Option<String>, String)> = connection.query_row("SELECT project,state FROM chief_habits WHERE id=?1", [habit],
+            |row| Ok((row.get(0)?, row.get(1)?))).optional()?;
+        let Some((habit_project, state)) = record else { return Err(TeamError::new(ErrorCode::Invalid, "the answer names a habit that does not exist")) };
+        if state != "active" { return Err(TeamError::new(ErrorCode::Invalid, "the answer names a habit Theo deleted")); }
+        if habit_project.is_some_and(|habit_project| habit_project != project) {
+            return Err(TeamError::new(ErrorCode::Invalid, "the answer names a habit of another project"));
+        }
+    }
+    Ok(())
+}
+
+/// What makes two habit texts the same habit: trimmed, whitespace collapsed, case ignored.
+fn habit_key(text: &str) -> String { habit_text(text).to_lowercase() }
+
+/// Records a preference Theo showed himself. `source_id` is his answer to an escalation, or a stop whose
+/// bundle holds a message of his (`BundleMessage::from_theo`: no launch prompt, brief or cockpit prompt); the habit's
+/// project is that stop's project or, for his answer only, everywhere. The same habit already active in that scope is kept as
+/// it is; one Theo deleted in a scope it would reach again is refused.
+fn add_habit(connection: &Connection, text: &str, project: Option<&str>, source_id: &str, reason: &str, now_ms: i64) -> Result<Value, TeamError> {
+    let answer_project: Option<String> = connection.query_row("SELECT s.project FROM chief_answers a JOIN chief_stops s ON s.id=a.stop_id WHERE a.id=?1 AND a.source='theo'",
+        [source_id], |row| row.get(0)).optional()?;
+    let (source_project, source_kind) = match answer_project {
+        Some(project) => (project, "theo_answer"),
+        None => {
+            let stop: Option<(String, String)> = connection.query_row("SELECT project,bundle FROM chief_stops WHERE id=?1", [source_id], |row| Ok((row.get(0)?, row.get(1)?))).optional()?;
+            let (project, bundle) = stop.ok_or_else(|| TeamError::new(ErrorCode::NotFound, "source_id names neither an answer of Theo's nor a stop"))?;
+            let bundle: super::bundle::StopBundle = serde_json::from_str(&bundle)?;
+            if !bundle.recent.iter().any(|message| message.role == "user" && message.from_theo && !message.text.trim().is_empty()) {
+                return Err(TeamError::new(ErrorCode::Invalid, "this stop shows no message from Theo; only his own words make a habit"));
+            }
+            (project, "theo_message")
+        },
+    };
+    if project.is_some_and(|project| project != source_project) {
+        return Err(TeamError::new(ErrorCode::Invalid, "a habit applies to its source's project or everywhere"));
+    }
+    if project.is_none() && source_kind == "theo_message" {
+        return Err(TeamError::new(ErrorCode::Invalid, "only Theo widens a habit from a message (p)"));
+    }
+    let text = habit_text(text);
+    let same_text = habits_like(connection, &text)?;
+    if let Some(id) = active_habit_in(&same_text, project) {
+        return Ok(json!({"habit":id,"state":"active","project":project,"added":false}));
+    }
+    // A deleted project habit would come back through an everywhere one, and a deleted everywhere one through any project.
+    let reaches_deleted = same_text.iter().any(|(_, habit_project, state)| state == "deleted"
+        && (habit_project.is_none() || project.is_none() || habit_project.as_deref() == project));
+    if reaches_deleted { return Err(conflict("Theo deleted this habit; the Chief does not add it back")); }
+    let id = crate::teams::store::identifier()?;
+    connection.execute("INSERT INTO chief_habits(id,text,project,origin_project,source,source_kind,source_id,reason,state,created_at,changed_at) VALUES (?1,?2,?3,?4,'theo_answer',?5,?6,?7,'active',?8,?8)",
+        params![id, text, project, source_project, source_kind, source_id, reason, now_ms])?;
+    coordination_event(connection, "habit_changed", &json!({"habit":id,"state":"active","project":project}), now_ms)?;
+    Ok(json!({"habit":id,"state":"active","project":project,"added":true}))
+}
+
+/// Every habit, in any scope or state, that is the same habit as `text`: (id, project, state).
+fn habits_like(connection: &Connection, text: &str) -> Result<Vec<(String, Option<String>, String)>, TeamError> {
+    let wanted = habit_key(text);
+    Ok(connection.prepare("SELECT id,text,project,state FROM chief_habits ORDER BY created_at,rowid")?
+        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, Option<String>>(2)?, row.get::<_, String>(3)?)))?
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter().filter(|(_, habit, _, _)| habit_key(habit) == wanted)
+        .map(|(id, _, habit_project, state)| (id, habit_project, state)).collect())
+}
+
+fn active_habit_in<'a>(same_text: &'a [(String, Option<String>, String)], project: Option<&str>) -> Option<&'a str> {
+    same_text.iter().find(|(_, habit_project, state)| state == "active" && habit_project.as_deref() == project).map(|(id, _, _)| id.as_str())
+}
+
+enum HabitChange { State(&'static str), Scope { everywhere: bool } }
+
+/// Changes one habit and records it as an event: `chief_habits` has no review triggers, so the event is what moves the review generation.
+/// A change to what the habit already is writes nothing. The event wakes no Chief: habits reach it with its next context.
+fn change_habit(connection: &Connection, habit: &str, change: HabitChange, now_ms: i64) -> Result<Value, TeamError> {
+    let record: Option<(Option<String>, Option<String>, String)> = connection.query_row("SELECT project,origin_project,state FROM chief_habits WHERE id=?1", [habit],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).optional()?;
+    let (project, origin_project, state) = record.ok_or_else(|| TeamError::new(ErrorCode::NotFound, "habit not found"))?;
+    let (new_project, new_state) = match change {
+        HabitChange::State(new_state) => (project.clone(), new_state.to_string()),
+        HabitChange::Scope { everywhere: true } => (None, state.clone()),
+        HabitChange::Scope { everywhere: false } => (Some(origin_project.ok_or_else(|| conflict("no project to scope to"))?), state.clone()),
+    };
+    if (&new_project, &new_state) != (&project, &state) {
+        connection.execute("UPDATE chief_habits SET project=?2,state=?3,changed_at=?4 WHERE id=?1", params![habit, new_project, new_state, now_ms])?;
+        coordination_event(connection, "habit_changed", &json!({"habit":habit,"state":new_state,"project":new_project}), now_ms)?;
+    }
+    Ok(json!({"habit":habit,"state":new_state,"project":new_project}))
+}
+
 /// Queues Theo's correction of an answer the session already got (or may have got), for the runtime
 /// that got it. The inbox row is written in the same transaction: its triggers bump the review generation.
 fn queue_correction(connection: &Connection, live: &[WorkerState], answer: &str, correction: &str, now_ms: i64) -> Result<Value, TeamError> {
-    let record: Option<(String, String, String, String, String, bool)> = connection.query_row("SELECT a.session_id,s.runtime,a.answer,a.delivery,a.source,
-            EXISTS(SELECT 1 FROM chief_overrules o WHERE o.answer_id=a.id) FROM chief_answers a JOIN chief_stops s ON s.id=a.stop_id WHERE a.id=?1", [answer],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?))).optional()?;
-    let (session_id, runtime, answer_text, delivery, source, is_overruled) = record.ok_or_else(|| TeamError::new(ErrorCode::NotFound, "answer not found"))?;
+    let record: Option<(String, String, String, String, String, bool, String)> = connection.query_row("SELECT a.session_id,s.runtime,a.answer,a.delivery,a.source,
+            EXISTS(SELECT 1 FROM chief_overrules o WHERE o.answer_id=a.id),s.project FROM chief_answers a JOIN chief_stops s ON s.id=a.stop_id WHERE a.id=?1", [answer],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?))).optional()?;
+    let (session_id, runtime, answer_text, delivery, source, is_overruled, project) = record.ok_or_else(|| TeamError::new(ErrorCode::NotFound, "answer not found"))?;
     if source != "chief" { return Err(conflict("this answer is yours, not the Chief's; send the agent a new message instead")); }
     if is_overruled { return Err(conflict("the answer is already overruled")); }
     match delivery.as_str() {
@@ -621,6 +765,11 @@ fn queue_correction(connection: &Connection, live: &[WorkerState], answer: &str,
         params![overrule_id, answer, session_id, runtime, correction, now_ms])?;
     connection.execute("INSERT INTO chief_inbox(id,chief_epoch,recipient,recipient_identity,recipient_epoch,work,envelope,state,next_at) VALUES (?1,?2,?3,?4,?2,'null',?5,'queued',?6)",
         params![message_id, THEO_ANSWER_EPOCH, session_id, serde_json::to_string(&worker.session)?, envelope.to_string(), now_ms])?;
+    let habit = habit_text(correction);
+    if active_habit_in(&habits_like(connection, &habit)?, Some(&project)).is_none() {
+        connection.execute("INSERT INTO chief_habits(id,text,project,origin_project,source,source_kind,source_id,state,created_at,changed_at) VALUES (?1,?2,?3,?3,'overrule','overrule',?4,'active',?5,?5)",
+            params![crate::teams::store::identifier()?, habit, project, overrule_id, now_ms])?;
+    }
     coordination_event(connection, "answer_overruled", &json!({"answer":answer,"overrule":overrule_id,"session":session_id}), now_ms)?;
     Ok(json!({"overrule":overrule_id,"answer":answer,"delivery":"queued"}))
 }
@@ -733,7 +882,7 @@ fn schedule_wake(connection: &Connection, now_ms: i64) -> Result<(), TeamError> 
             session_id:row.get(1)?,agent:row.get(2)?,project:row.get(3)?,runtime:row.get(4)?},row.get(5)?,row.get(6)?,row.get(7)?))).optional()?;
     let Some((epoch,chief,delivered,last_admitted,failed)) = grant else {return Ok(())};
     if failed || last_admitted.is_some_and(|last|now_ms<last.saturating_add(30_000)) {return Ok(())}
-    let pending: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM chief_events WHERE seq>?1 AND kind NOT IN ('status','coordinate','reprioritized'))",[delivered],|row|row.get(0))?;
+    let pending: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM chief_events WHERE seq>?1 AND kind NOT IN ('status','coordinate','reprioritized','habit_changed'))",[delivered],|row|row.get(0))?;
     if !pending {return Ok(())}
     let exists: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM chief_inbox WHERE chief_epoch=?1 AND json_extract(envelope,'$.kind')='chief_wake' AND state IN ('queued','submitting','uncertain'))",[&epoch],|row|row.get(0))?;
     if exists {return Ok(())}
@@ -1026,6 +1175,10 @@ pub fn agent(connection: &mut Connection, sender: &VerifiedSession, action: &Chi
         let epoch: Option<String> = transaction.query_row("SELECT epoch FROM chief_grants WHERE session_id=?1 AND agent=?2 AND project=?3 AND runtime=?4 AND state='active'",
             params![sender.session_id, sender.agent, sender.project, sender.runtime], |row| row.get(0)).optional()?;
         let epoch = epoch.ok_or_else(unauthorized)?;
+        // A citation the host refuses is a malformed answer, refused like one before the budget is charged.
+        if let ChiefAgentAction::Answer { stop, habits, .. } | ChiefAgentAction::AnswerForm { stop, habits, .. } = action {
+            require_citable_habits(&transaction, stop, habits)?;
+        }
         let budget_turn = if !matches!(action,ChiefAgentAction::Context {..}|ChiefAgentAction::ContextSnapshot {..}) {Some(charge_mutation(&transaction,&epoch)?)} else {None};
         transaction.commit()?;
         // Failed actions still consume their allowance, but never leave partially applied mutations.
@@ -1059,8 +1212,9 @@ pub fn agent(connection: &mut Connection, sender: &VerifiedSession, action: &Chi
                 record_status(&transaction, &epoch, summary, now_ms)?;
                 json!({"status": "recorded"})
             },
-            ChiefAgentAction::Answer { stop, text, reason } => queue_answer(&transaction, live, AnswerAuthor::Chief { epoch: &epoch }, stop, Reply::Text(text), reason, now_ms)?,
-            ChiefAgentAction::AnswerForm { stop, choice, reason } => queue_answer(&transaction, live, AnswerAuthor::Chief { epoch: &epoch }, stop, Reply::FormChoice(choice), reason, now_ms)?,
+            ChiefAgentAction::Answer { stop, text, reason, habits } => queue_answer(&transaction, live, AnswerAuthor::Chief { epoch: &epoch, habits }, stop, Reply::Text(text), reason, now_ms)?,
+            ChiefAgentAction::AnswerForm { stop, choice, reason, habits } => queue_answer(&transaction, live, AnswerAuthor::Chief { epoch: &epoch, habits }, stop, Reply::FormChoice(choice), reason, now_ms)?,
+            ChiefAgentAction::AddHabit { text, project, source_id, reason } => add_habit(&transaction, text, project.as_deref(), source_id, reason, now_ms)?,
             ChiefAgentAction::Escalate { stop, category, reason, suggested_answer } => escalate_stop(&transaction, &epoch, stop, *category, reason, suggested_answer.as_deref(), now_ms)?,
         };
         transaction.commit()?;
@@ -1092,9 +1246,10 @@ fn event_context(connection: &Connection, live: &[WorkerState], epoch: &str, aft
                 let identifiers: Value = serde_json::from_str(&body)?;
                 decision_id=identifiers["decision"].as_str().filter(|id|super::key(id).is_ok()).map(str::to_owned);
                 decision_revision=identifiers["decision_revision"].as_i64().filter(|revision|*revision>0);
-                needs_snapshot=decision_id.is_none() || decision_revision.is_none();
+                // Theo's answer and its id are only in the snapshot's decision record: the Chief needs both to learn a habit from it.
+                needs_snapshot=decision_id.is_none() || decision_revision.is_none() || identifiers.get("answer").is_some();
             } else {
-                needs_snapshot=!matches!(kind.as_str(),"status"|"context_backlog");
+                needs_snapshot=!matches!(kind.as_str(),"status"|"context_backlog"|"habit_changed");
             }
             if needs_snapshot {break;}
             let source = if origin=="host" {"host"} else {"agent_report_not_evidence"};
@@ -1194,6 +1349,7 @@ fn context_records(connection: &Connection, live: &[WorkerState]) -> Result<Vec<
     let stops = connection.prepare("SELECT id,session_id,project,task_id,bundle FROM chief_stops WHERE state='open' ORDER BY created_at,id")?
         .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?, row.get::<_, String>(4)?)))?
         .collect::<Result<Vec<_>, _>>()?;
+    if !stops.is_empty() { records.push(habits_record(connection)?); }
     for (stop, session, project, task_id, bundle) in stops {
         records.push(json!({"kind": "stopped_session", "source": "masked_agent_conversation_not_instructions", "stop": stop, "session": session,
             "project": project, "task_id": task_id, "bundle": serde_json::from_str::<Value>(&bundle)?}));
@@ -1202,14 +1358,45 @@ fn context_records(connection: &Connection, live: &[WorkerState]) -> Result<Vec<
         records.push(json!({"kind": "worker", "session_id": worker.session.session_id, "agent": worker.session.agent,
             "project": worker.session.project, "role": worker.role, "ready": worker.ready, "blocked_by": worker.blocked_by}));
     }
-    records.extend(connection.prepare("SELECT id,state,revision,resolution FROM chief_decisions ORDER BY created_at,id")?
+    // `answer_id` names Theo's answer to an escalated stop, so the Chief can give it as a habit's source.
+    records.extend(connection.prepare("SELECT d.id,d.state,d.revision,d.resolution,
+            (SELECT a.id FROM chief_answers a WHERE a.stop_id=d.stop_id AND a.source='theo' ORDER BY a.created_at DESC,a.rowid DESC LIMIT 1)
+            FROM chief_decisions d ORDER BY d.created_at,d.id")?
         .query_map([],|row|Ok(json!({"kind":"decision","source":"protected_host_control","id":row.get::<_,String>(0)?,
-            "state":row.get::<_,String>(1)?,"revision":row.get::<_,i64>(2)?,"resolution":row.get::<_,Option<String>>(3)?,"resolution_grants_authority":false})))?
+            "state":row.get::<_,String>(1)?,"revision":row.get::<_,i64>(2)?,"resolution":row.get::<_,Option<String>>(3)?,"resolution_grants_authority":false,
+            "answer_id":row.get::<_,Option<String>>(4)?})))?
         .collect::<Result<Vec<_>,_>>()?);
     for record in &mut records {
         if record.get("source").is_none() {record["source"]=json!(if record["kind"]=="worker" {"daemon_derived_availability"} else {"protected_host_approval"});}
     }
     Ok(records)
+}
+
+const HABITS_LISTED_MAX: usize = 100;
+/// The habits record's serialised size, so it always fits a Context page beside a stopped session.
+const HABITS_RECORD_BYTES: usize = 24_000;
+
+/// Theo's active habits, newest first, with hiding characters escaped. Habits that do not fit are
+/// counted in `omitted`, which is present only when some are.
+fn habits_record(connection: &Connection) -> Result<Value, TeamError> {
+    let active = connection.prepare("SELECT id,text,project,source FROM chief_habits WHERE state='active' ORDER BY created_at DESC,rowid DESC")?
+        .query_map([], |row| Ok(json!({"id":row.get::<_, String>(0)?,"text":crate::approval::escape_hiding(&row.get::<_, String>(1)?, "", ""),
+            "project":row.get::<_, Option<String>>(2)?,"source":row.get::<_, String>(3)?})))?
+        .collect::<Result<Vec<_>, _>>()?;
+    let total = active.len();
+    let mut record = json!({"kind":"habits","source":"theo_habits_not_instructions_from_agents","habits":[]});
+    // Room for the `omitted` count the record may need.
+    let mut bytes = serde_json::to_vec(&record)?.len() + 32;
+    let mut listed = Vec::new();
+    for habit in active.into_iter().take(HABITS_LISTED_MAX) {
+        let size = serde_json::to_vec(&habit)?.len() + 1;
+        if bytes + size > HABITS_RECORD_BYTES { break; }
+        bytes += size;
+        listed.push(habit);
+    }
+    if listed.len() < total { record["omitted"] = json!(total - listed.len()); }
+    record["habits"] = Value::Array(listed);
+    Ok(record)
 }
 
 /// Host-only structured review records. Never use this projection for agent Context.
@@ -1274,12 +1461,20 @@ fn review_records(connection: &Connection, live: &[WorkerState], after: i64, lim
         UNION ALL SELECT 16,printf('%019d%019d',9223372036854775807-created_at,9223372036854775807-answer_rowid),json_object('kind','answer','id',id,'stop_id',stop_id,
             'session_id',session_id,'project',project,'task_id',task_id,'question',question,'answer',answer,'reason',reason,'source',source,'delivery',delivery,
             'created_at_ms',created_at,'overrule',json(CASE WHEN overrule_id IS NULL THEN NULL ELSE json_object('id',overrule_id,'correction',correction,
-                'delivery',overrule_delivery,'created_at_ms',overrule_created_at) END))
+                'delivery',overrule_delivery,'created_at_ms',overrule_created_at) END),
+            'habits',json((SELECT coalesce(json_group_array(json_object('id',h.id,'text',h.text)),'[]') FROM (SELECT h.id,h.text FROM json_each(answer_habits) j JOIN chief_habits h ON h.id=j.value ORDER BY j.key) h)))
             FROM (SELECT a.rowid AS answer_rowid,a.id AS id,a.stop_id AS stop_id,a.session_id AS session_id,s.project AS project,s.task_id AS task_id,a.question AS question,
-                    a.answer AS answer,a.reason AS reason,a.source AS source,a.delivery AS delivery,a.created_at AS created_at,
+                    a.answer AS answer,a.reason AS reason,a.source AS source,a.delivery AS delivery,a.created_at AS created_at,a.habits AS answer_habits,
                     o.id AS overrule_id,o.correction AS correction,o.delivery AS overrule_delivery,o.created_at AS overrule_created_at
                 FROM chief_answers a JOIN chief_stops s ON s.id=a.stop_id LEFT JOIN chief_overrules o ON o.answer_id=a.id
                 ORDER BY a.created_at DESC,a.rowid DESC LIMIT 200)
+        UNION ALL SELECT 17,printf('%019d%019d',9223372036854775807-created_at,9223372036854775807-rowid),json_object('kind','habit','id',id,'text',text,'project',project,
+            'origin_project',origin_project,'source',source,'source_kind',source_kind,'reason',reason,'source_id',source_id,'state',state,'created_at_ms',created_at,'changed_at_ms',changed_at,
+            'session_id',CASE source_kind WHEN 'overrule' THEN (SELECT o.session_id FROM chief_overrules o WHERE o.id=h.source_id)
+                WHEN 'theo_answer' THEN (SELECT a.session_id FROM chief_answers a WHERE a.id=h.source_id)
+                ELSE (SELECT s.session_id FROM chief_stops s WHERE s.id=h.source_id) END,
+            'stopped_at_ms',CASE WHEN source_kind='theo_message' THEN (SELECT s.created_at FROM chief_stops s WHERE s.id=h.source_id) END)
+            FROM (SELECT rowid,* FROM chief_habits ORDER BY created_at DESC,rowid DESC LIMIT 200) h
         ) SELECT record FROM records ORDER BY category,identity LIMIT ?2 OFFSET ?3")?;
     let encoded = statement.query_map(params![serde_json::to_string(live)?,limit as i64 + 1,after,audit],|row|row.get::<_,String>(0))?.collect::<Result<Vec<_>,_>>()?;
     let records = encoded.iter().map(|record|Ok(serde_json::from_str::<Value>(record)?)).collect::<Result<Vec<_>,TeamError>>()?;

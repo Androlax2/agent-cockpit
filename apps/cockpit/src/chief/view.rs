@@ -36,6 +36,11 @@ pub fn fallback_session_name(session_id: &str) -> String {
 pub fn answer_summary_line(session_name: &str, question: &str, answer: &str, width: usize) -> String {
     one_line(&format!("{} · {} → {}",one_line(session_name,NAME_LIMIT.min(30)),one_line(question,40),one_line(answer,LINE_LIMIT)),width)
 }
+/// `<habit> · <project name | everywhere>` on one escaped line of at most `width` characters, the habit cut so its scope stays readable.
+pub fn habit_summary_line(text: &str, project: Option<&str>, width: usize) -> String {
+    let scope=one_line(&scope_name(&project.map_or(Value::Null,|project|Value::String(project.into()))),30);
+    one_line(&format!("{} · {scope}",one_line(text,width.saturating_sub(scope.chars().count()+3))),width)
+}
 /// When a "since" time started: `HH:MM` on `today`, `yesterday HH:MM` the day before, otherwise `Wed 14 Oct 09:05`.
 pub fn since_label(since_ms: i64, today: chrono::NaiveDate) -> String {
     let Some(moment)=chrono::DateTime::from_timestamp_millis(since_ms).map(|moment|moment.with_timezone(&chrono::Local)) else {return "an unknown time".into()};
@@ -95,7 +100,20 @@ fn correction_text(answer: &Value, correction: &str) -> String {
     crate::teams::envelope_text(&json!({"message_id":"review","kind":"chief_correction","source":"theo","answer_excerpt":quoted,"text":correction}))
 }
 fn correction_explanation(answer: &Value, correction: &str) -> String {
-    format!("Sends this correction to the agent that got the Chief's answer. The host adds the label below. The agent receives exactly:\n\n{}",correction_text(answer,correction))
+    format!("Sends this correction to the agent that got the Chief's answer. The host adds the label below. The agent receives exactly:\n\n{}\n\nAdds a habit: {} · {}",
+        correction_text(answer,correction),escape_hiding(&crate::chief::store::habit_text(correction),"",""),scope_name(&answer["project"]))
+}
+/// A project key as Theo reads it (its last path part), or `everywhere` for none.
+fn scope_name(project: &Value) -> String {
+    match project.as_str() {Some(project)=>crate::teams::view::short_project(project),None=>"everywhere".into()}
+}
+fn habit_source(habit: &Value) -> String {
+    match habit["source_kind"].as_str() {
+        Some("overrule")=>"from your overrule".into(),
+        Some("theo_answer")=>"from your answer".into(),
+        Some("theo_message")=>"from your message".into(),
+        _=>format!("from {}",field(habit,"source_kind")),
+    }
 }
 fn answer_explanation(answer: &str) -> String {
     format!("Sends this answer to the stopped agent and resolves the decision. The host adds the label below. The agent receives exactly:\n\n{}",delivered_text(answer))
@@ -122,6 +140,8 @@ struct Guard { scope: Scope, records: Vec<Value> }
 enum Page {
     Root, Workers, Decisions, Controls, Sessions, DecisionActions(Value), Recovery(Value),
     Answers(Option<String>), AnswerActions(Value),
+    /// Habits created after this time (epoch ms, when Theo last saw them before opening the page) are new.
+    Habits(i64),
 }
 #[derive(Clone)]
 enum Intent { Resolve(Value), Answer(Value), Handled(Value), Stop(Value), Overrule(Value) }
@@ -132,16 +152,20 @@ enum Operation {
 }
 #[derive(Clone, Copy, PartialEq)]
 pub enum Tone { Normal, Dim }
-/// One screen line of a list, with what the terminal needs to style it. `alerts` are character
-/// ranges of `text` that are drawn red.
+/// How a marked part of a list line is drawn: red for an alert, purple and bold for what the Chief
+/// learned, or a project's colour.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Mark { Alert, Learned, Project(u8) }
+/// One screen line of a list, with what the terminal needs to style it. `marks` are character
+/// ranges of `text` drawn in their own style.
 #[derive(Clone)]
-pub struct ListLine { pub text: String, pub tone: Tone, pub selected: bool, pub alerts: Vec<(usize, usize)> }
+pub struct ListLine { pub text: String, pub tone: Tone, pub selected: bool, pub marks: Vec<(usize, usize, Mark)> }
 impl ListLine {
-    fn plain(text: String) -> Self { Self {text,tone:Tone::Normal,selected:false,alerts:Vec::new()} }
+    fn plain(text: String) -> Self { Self {text,tone:Tone::Normal,selected:false,marks:Vec::new()} }
 }
-struct Row { key: String, label: String, operation: Operation, more: Vec<ListLine> }
+struct Row { key: String, label: String, label_marks: Vec<(usize, usize, Mark)>, operation: Operation, more: Vec<ListLine> }
 impl Row {
-    fn new(key: &str, label: &str, operation: Operation) -> Self { Self {key:key.into(),label:label.into(),operation,more:Vec::new()} }
+    fn new(key: &str, label: &str, operation: Operation) -> Self { Self {key:key.into(),label:label.into(),label_marks:Vec::new(),operation,more:Vec::new()} }
     fn height(&self) -> usize { 1+self.more.len() }
     fn record(record: &Value, operation: Operation) -> Self {
         let label = match record["kind"].as_str() {
@@ -151,7 +175,7 @@ impl Row {
             Some("decision") => format!("{} · {}",text(&record["decision_key"]),text(&record["question"])),
             _ => identity(record),
         };
-        Self {key:identity(record),label,operation,more:Vec::new()}
+        Self {key:identity(record),label,label_marks:Vec::new(),operation,more:Vec::new()}
     }
 }
 #[derive(Clone)]
@@ -173,13 +197,20 @@ pub struct ChiefView {
     read_error: Option<String>,
     /// The `Chief ✓N` of the session card the answers page was opened from; 0 shows no count.
     pub card_count: usize,
+    /// When Theo last saw his habits (epoch ms); `None` when never, so the last 24 hours count as new.
+    pub habits_seen_ms: Option<i64>,
+    /// The habit `u` restores and the row it was on, offered only until the next key.
+    undo: Option<(String, String)>,
+    /// The row selected before the last habit change, to return to when the host refuses it.
+    selection_before_change: Option<Option<String>>,
 }
-pub enum Effect { None, Close, Submit(Vec<crate::chief::ChiefHostAction>), Summary }
+/// `Change` is sent at once, without a review: a habit edit Theo can undo. `HabitsSeen` saves when Theo saw his habits (epoch ms).
+pub enum Effect { None, Close, Submit(Vec<crate::chief::ChiefHostAction>), Summary, Change(crate::chief::ChiefHostAction), HabitsSeen(i64) }
 
 impl ChiefView {
     pub fn new(snapshot: Value) -> Self {
         Self {snapshot,frames:vec![Frame::Browse {page:Page::Root,selected:Some("decisions".into())}],
-            message:String::new(),suspended:false,page_step:1,read_error:None,card_count:0}
+            message:String::new(),suspended:false,page_step:1,read_error:None,card_count:0,habits_seen_ms:None,undo:None,selection_before_change:None}
     }
     fn records(&self, kind: &str) -> Vec<Value> {
         self.snapshot["records"].as_array().into_iter().flatten().filter(|record|record["kind"]==kind).cloned().collect()
@@ -219,16 +250,52 @@ impl ChiefView {
         if name_session {row.label=answer_title(answer,Some(&self.session_name(answer["session_id"].as_str())));}
         let author=match answer["source"].as_str() {Some("chief")=>"Chief".to_string(),Some("theo")=>"Theo".to_string(),_=>field(answer,"source")};
         let mut status=delivery_word(&answer["delivery"]);
-        let mut alerts=Vec::new();
-        if answer["delivery"]=="uncertain" {alerts.push((0,status.chars().count()));}
+        let mut marks=Vec::new();
+        if answer["delivery"]=="uncertain" {marks.push((0,status.chars().count(),Mark::Alert));}
         if !answer["overrule"].is_null() {
             status.push_str(" · overruled · ");
             let correction=delivery_word(&answer["overrule"]["delivery"]);
-            if answer["overrule"]["delivery"]=="uncertain" {let start=status.chars().count();alerts.push((start,start+correction.chars().count()));}
+            if answer["overrule"]["delivery"]=="uncertain" {let start=status.chars().count();marks.push((start,start+correction.chars().count(),Mark::Alert));}
             status.push_str(&correction);
         }
+        let habits=answer["habits"].as_array().cloned().unwrap_or_default();
+        let details=match habits.split_first() {
+            None=>format!("{status} · {}",field(answer,"reason")),
+            Some((first,rest))=> {
+                // A long reason would push the habits off the line.
+                let mut details=format!("{status} · {} · habits: {}",one_line(answer["reason"].as_str().unwrap_or("?"),80),one_line(first["text"].as_str().unwrap_or("?"),60));
+                if !rest.is_empty() {details.push_str(&format!(" +{}",rest.len()));}
+                details
+            },
+        };
         row.more=vec![ListLine::plain(format!("{author}: {}",field(answer,"answer"))),
-            ListLine {text:format!("{status} · {}",field(answer,"reason")),tone:Tone::Dim,selected:false,alerts}];
+            ListLine {text:details,tone:Tone::Dim,selected:false,marks}];
+        row
+    }
+    fn habits_since(&self) -> i64 {
+        self.habits_seen_ms.unwrap_or_else(||chrono::Utc::now().timestamp_millis()-DEFAULT_LOOKBACK_MS)
+    }
+    /// Active habits, newest first: the host also sends deleted ones, for undo.
+    fn active_habits(&self) -> Vec<Value> {
+        let mut habits: Vec<Value>=self.records("habit").into_iter().filter(|habit|habit["state"]=="active").collect();
+        habits.sort_by_key(|habit|std::cmp::Reverse(habit["created_at_ms"].as_i64().unwrap_or(0)));
+        habits
+    }
+    fn habits_label(&self) -> String {
+        let habits=self.active_habits();
+        let since=self.habits_since();
+        let fresh=habits.iter().filter(|habit|habit["created_at_ms"].as_i64().is_some_and(|created|created>since)).count();
+        if fresh==0 {format!("Habits · {}",habits.len())} else {format!("Habits · {} · {fresh} new",habits.len())}
+    }
+    fn habit_row(habit: &Value, since: i64) -> Row {
+        let mut row=Row::record(habit,Operation::Inspect(habit.clone(),None));
+        let habit_text=one_line(habit["text"].as_str().unwrap_or("?"),crate::chief::store::HABIT_TEXT_LIMIT);
+        if habit["created_at_ms"].as_i64().is_some_and(|created|created>since) {
+            row.label=format!("new {habit_text}");row.label_marks=vec![(0,3,Mark::Learned)];
+        } else {row.label=habit_text;}
+        let scope=scope_name(&habit["project"]);
+        let marks=if habit["project"].is_string() {vec![(0,scope.chars().count(),Mark::Project(crate::app::project_color(&scope)))]} else {Vec::new()};
+        row.more=vec![ListLine {text:format!("{scope} · {} · {}",habit_source(habit),clock(&habit["created_at_ms"])),tone:Tone::Dim,selected:false,marks}];
         row
     }
     fn chiefs(&self) -> Vec<Value> { self.records("chief").into_iter().filter(|chief|chief["state"]!="disabled").collect() }
@@ -311,6 +378,7 @@ impl ChiefView {
     }
     pub fn results(&mut self, content: String) {self.frames.push(Frame::Results {content,scroll:0});}
     pub fn fail(&mut self, message: String) {
+        self.undo=None;
         self.message=escape_hiding(&message,"","");
         if let Some(Frame::Review {invalid,..})=self.frames.last_mut() {*invalid=true;}
     }
@@ -342,6 +410,7 @@ impl ChiefView {
         match page {
             Page::Root => vec![Row::new("decisions",&format!("Needs you · {}",Self::attention(&self.snapshot)),Open(Page::Decisions)),
                 Row::new("answers",&self.answers_label(),Open(Page::Answers(None))),
+                Row::new("habits",&self.habits_label(),Open(Page::Habits(self.habits_since()))),
                 Row::new("controls","Chief controls",Open(Page::Controls)),
                 Row::new("workers","Workers",Open(Page::Workers)),Row::new("summary","Request summary",Summary)],
             Page::Workers => self.records("worker").into_iter().map(|record|Row::record(&record,Inspect(record.clone(),None))).collect(),
@@ -353,6 +422,7 @@ impl ChiefView {
                 answers.sort_by_key(|answer|std::cmp::Reverse(answer["created_at_ms"].as_i64().unwrap_or(0)));
                 answers.iter().map(|answer|self.answer_row(answer,session.is_none())).collect()
             },
+            Page::Habits(since) => self.active_habits().iter().map(|habit|Self::habit_row(habit,*since)).collect(),
             Page::AnswerActions(answer) => vec![Row::new("overrule","Overrule",Note(Intent::Overrule(answer.clone())))],
             Page::Controls => {
                 let chiefs=self.chiefs();
@@ -425,8 +495,54 @@ impl ChiefView {
         if target["kind"]=="inbox" {Self::action("reconcile_delivery",json!({"message":target["id"],"expected_revision":target["revision"],"evidence":evidence}))}
         else {Self::action("reconcile_launch",json!({"token":target["id"],"expected_revision":target["revision"],"evidence":evidence}))}
     }
+    /// Opens the Habits page: it marks as new what Theo had not seen, and from now on nothing is.
+    /// Seen means read by the host: a stale page, or one without a read time, marks nothing as seen.
+    fn open_habits(&mut self) -> Effect {
+        let since=self.habits_since();
+        self.open(Page::Habits(since));
+        let Some(read_at_ms)=self.snapshot["read_at_ms"].as_i64().filter(|_|self.read_error.is_none()) else {return Effect::None};
+        self.habits_seen_ms=self.habits_seen_ms.max(Some(read_at_ms));
+        Effect::HabitsSeen(read_at_ms)
+    }
+    fn request_id() -> String {format!("chief-ui-{}",crate::util::token_hex(12))}
+    fn select(&mut self, key: Option<String>) {
+        if let Some(Frame::Browse {selected,..})=self.frames.last_mut() {*selected=key;}
+    }
+    /// A habit change the host refused: the undo offer goes, and the selection returns to the row it was on.
+    pub fn habit_change_failed(&mut self, message: String) {
+        if let Some(previous)=self.selection_before_change.take() {self.select(previous);}
+        self.fail(message);
+    }
+    fn current_selection(&self) -> Option<String> {
+        match self.frames.last() {Some(Frame::Browse {selected,..})=>selected.clone(),_=>None}
+    }
+    fn habit_key(&mut self, key: &Key, rows: &[Row], index: Option<usize>, undo: Option<(String,String)>) -> Effect {
+        use crate::chief::ChiefHostAction::*;
+        self.selection_before_change=Some(self.current_selection());
+        if *key==Key::Char('u') {
+            let Some((habit,row))=undo else {return Effect::None};
+            self.select(Some(row));
+            return Effect::Change(RestoreHabit {request_id:Self::request_id(),habit});
+        }
+        let Some(index)=index else {return Effect::None};
+        let Operation::Inspect(habit,_)=&rows[index].operation else {return Effect::None};
+        let Some(id)=habit["id"].as_str().map(str::to_string) else {return Effect::None};
+        match key {
+            Key::Char('x')=> {
+                let next=rows.get(index+1).or_else(||index.checked_sub(1).and_then(|previous|rows.get(previous))).map(|row|row.key.clone());
+                self.select(next);
+                self.undo=Some((id.clone(),rows[index].key.clone()));
+                self.message="Deleted · u undo".into();
+                Effect::Change(DeleteHabit {request_id:Self::request_id(),habit:id})
+            },
+            Key::Char('p')=>Effect::Change(RescopeHabit {request_id:Self::request_id(),habit:id,everywhere:habit["project"].is_string()}),
+            _=>Effect::None,
+        }
+    }
     pub fn handle(&mut self, key: Key) -> Effect {
         self.message.clear();
+        let undo=self.undo.take();
+        self.selection_before_change=None;
         let Some(frame)=self.frames.last().cloned() else {return Effect::Close};
         match frame {
             Frame::Browse {page,selected} => {
@@ -437,7 +553,10 @@ impl ChiefView {
                         let next=index.map(|index|if down {(index+1).min(rows.len().saturating_sub(1))} else {index.saturating_sub(1)}).unwrap_or(0);
                         if let Some(Frame::Browse {selected,..})=self.frames.last_mut() {*selected=rows.get(next).map(|row|row.key.clone());}
                     },
+                    Key::Char('h') if matches!(page,Page::Root)=>return self.open_habits(),
+                    Key::Char('x'|'u'|'p') if matches!(page,Page::Habits(_))=>return self.habit_key(&key,&rows,index,undo),
                     Key::Enter => if let Some(index)=index {match rows[index].operation.clone() {
+                        Operation::Open(Page::Habits(_))=>return self.open_habits(),
                         Operation::Open(page)=>self.open(page),
                         Operation::Inspect(record,actions)=>self.frames.push(Frame::Detail {record,actions,scroll:0}),
                         Operation::Review(actions,anchors,explanation)=>self.begin_review(actions,anchors,explanation),
@@ -513,6 +632,7 @@ impl ChiefView {
                 count=>format!("Answers · {} · Chief ✓{count} this task",self.session_name(Some(session))),
             },
             Page::Answers(None)=>"Chief · Answers".into(),
+            Page::Habits(_)=>"Chief · Habits".into(),
             _=>format!("Chief · {}",self.status()),
         };
         let mut lines=Vec::new();
@@ -521,8 +641,11 @@ impl ChiefView {
         if !self.snapshot["coordination_error"].is_null() {lines.push(ListLine::plain(format!("Host failure: {}",shown(&self.snapshot["coordination_error"]))));}
         let available=height.saturating_sub(lines.len()).max(1);
         let rows=self.rows(page);
-        if rows.is_empty() {lines.push(ListLine::plain(
-            if matches!(page,Page::Answers(_)) {"No Chief answers yet.".into()} else {"Nothing available. Missing records never imply readiness.".into()}));}
+        if rows.is_empty() {lines.push(ListLine::plain(match page {
+            Page::Answers(_)=>"No Chief answers yet.".into(),
+            Page::Habits(_)=>"No habits yet. The Chief learns them from your answers and overrules.".into(),
+            _=>"Nothing available. Missing records never imply readiness.".into(),
+        }));}
         let position=selected.as_ref().and_then(|key|rows.iter().position(|row|row.key==*key)).unwrap_or(0);
         let mut first=position;
         let mut used=rows.get(position).map_or(0,Row::height);
@@ -530,9 +653,9 @@ impl ChiefView {
         let limit=lines.len()+available;
         for row in rows.iter().skip(first) {
             let is_selected=selected.as_ref()==Some(&row.key);
-            lines.push(ListLine {selected:is_selected,..ListLine::plain(format!("{} {}",if is_selected {">"} else {" "},row.label))});
-            lines.extend(row.more.iter().map(|line|ListLine {text:format!("  {}",line.text),selected:is_selected,
-                alerts:line.alerts.iter().map(|(start,end)|(start+2,end+2)).collect(),..line.clone()}));
+            let shifted=|marks: &[(usize,usize,Mark)]| marks.iter().map(|(start,end,mark)|(start+2,end+2,*mark)).collect();
+            lines.push(ListLine {selected:is_selected,marks:shifted(&row.label_marks),..ListLine::plain(format!("{} {}",if is_selected {">"} else {" "},row.label))});
+            lines.extend(row.more.iter().map(|line|ListLine {text:format!("  {}",line.text),selected:is_selected,marks:shifted(&line.marks),..line.clone()}));
             if lines.len()>=limit {break;}
         }
         lines.truncate(limit);
@@ -573,7 +696,9 @@ impl ChiefView {
                     lines.push(format!("Why the Chief escalated: {}",text(&record["recommendation"])));
                     lines.push(match suggestion(record) {Some(suggested)=>format!("Suggested answer: {}",escape_hiding(suggested,"","")),None=>"No suggested answer.".into()});
                 }
-                if record["kind"]=="answer" {lines.extend(self.answer_detail(record));} else if !is_escalation(record) {lines.push(shown(record));}
+                if record["kind"]=="answer" {lines.extend(self.answer_detail(record));}
+                else if record["kind"]=="habit" {lines.extend(self.habit_detail(record));}
+                else if !is_escalation(record) {lines.push(shown(record));}
             },
             Some(Frame::Note {intent:Intent::Overrule(_),note})=>lines.push(format!("Your correction to the Chief's answer (Enter reviews it; nothing is sent yet): {}",escape_hiding(note,"",""))),
             Some(Frame::Note {intent:Intent::Answer(_),note})=>lines.push(format!("Your answer to the stopped agent (Enter reviews it; nothing is sent yet): {}",escape_hiding(note,"",""))),
@@ -618,6 +743,38 @@ impl ChiefView {
         }
         lines
     }
+    /// Where a habit came from: the overrule and the answer it corrected, Theo's answer, or the stop that showed his message.
+    fn habit_detail(&self, habit: &Value) -> Vec<String> {
+        let mut lines=vec![format!("Habit: {}",text(&habit["text"])),format!("Applies to: {}",scope_name(&habit["project"]))];
+        let answers=self.records("answer");
+        let not_held="It is older than the newest 200 answers this view holds.";
+        match habit["source_kind"].as_str() {
+            Some("overrule")=> {
+                lines.push("From your overrule".into());
+                match answers.iter().find(|answer|answer["overrule"]["id"]==habit["source_id"]) {
+                    Some(answer)=>lines.extend([format!("Your correction: {}",text(&answer["overrule"]["correction"])),
+                        format!("The Chief's answer it corrected: {}",text(&answer["answer"])),format!("Question the agent asked: {}",text(&answer["question"]))]),
+                    None=>lines.push(format!("The overruled answer is not shown. {not_held}")),
+                }
+            },
+            Some("theo_answer")=> {
+                lines.push("From your answer".into());
+                match answers.iter().find(|answer|answer["id"]==habit["source_id"]) {
+                    Some(answer)=>lines.extend([format!("Your answer: {}",text(&answer["answer"])),format!("Question the agent asked: {}",text(&answer["question"]))]),
+                    None=>lines.push(format!("Your answer is not shown. {not_held}")),
+                }
+            },
+            Some("theo_message")=> {
+                lines.push("From your message in a stopped session".into());
+                if let Some(stopped)=habit["stopped_at_ms"].as_i64() {lines.push(format!("Stopped at {}",since_label(stopped,chrono::Local::now().date_naive())));}
+            },
+            _=>lines.push(format!("Source: {}",text(&habit["source_kind"]))),
+        }
+        lines.push(format!("Session: {}",self.session_name(habit["session_id"].as_str())));
+        if let Some(created)=habit["created_at_ms"].as_i64() {lines.push(format!("Added {}",since_label(created,chrono::Local::now().date_naive())));}
+        if let Some(reason)=habit["reason"].as_str().filter(|reason|!reason.trim().is_empty()) {lines.push(format!("Why the Chief added it: {}",escape_hiding(reason,"","")));}
+        lines
+    }
     fn answer_detail(&self, answer: &Value) -> Vec<String> {
         let mut lines=vec![
             format!("Session: {}",self.session_name(answer["session_id"].as_str())),
@@ -634,6 +791,7 @@ impl ChiefView {
     }
     pub fn footer(&self) -> &str {match self.frames.last() {
         Some(Frame::Browse {page:Page::Answers(_),..})=>"o overrule · ⏎ reason · esc back",
+        Some(Frame::Browse {page:Page::Habits(_),..})=>"x delete · p project/everywhere · ⏎ source · esc back",
         Some(Frame::Browse {..})=>"j/k ↑↓ move · Enter open · Esc back",
         Some(Frame::Note {..})=>"Enter accepts note, not action · Esc cancel",
         Some(Frame::Assertion {..})=>"Space toggle assertion · Enter review · PgUp/PgDn scroll · Esc cancel",

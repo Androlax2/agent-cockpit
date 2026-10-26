@@ -39,15 +39,20 @@ fn fenced(text: &str) -> String {
     format!("```text\n{}\n```", text.replace("```", "'''"))
 }
 
+/// How every error hand-off begins, typed into a session or as a new one's first message.
+pub const HANDOFF_START: &str = "cockpit logged an error (sent automatically by the cockpit's error hand-off).";
+
+pub fn is_handoff(text: &str) -> bool { text.starts_with(HANDOFF_START) }
+
 pub fn prompt(error: &str, context: &[String]) -> String {
-    format!("cockpit logged an error (sent automatically by the cockpit's error hand-off). Find the cause in \
+    format!("{HANDOFF_START} Find the cause in \
              agent-cockpit and fix it, with a regression test. Ask me before anything that needs ask-to-run. {UNTRUSTED}\n\n\
              Error:\n{}\n\nThe log before it (~/.local/state/cockpit/log):\n{}", fenced(error), fenced(&context.join("\n")))
 }
 
 /// The one line `say` can type: the instructions, and where the error and its log wait.
 fn message(report_path: &str) -> String {
-    format!("cockpit logged an error (sent automatically by the cockpit's error hand-off). Find the cause in \
+    format!("{HANDOFF_START} Find the cause in \
              agent-cockpit and fix it, with a regression test. Ask me before anything that needs ask-to-run. {UNTRUSTED} \
              The error and the log before it: {report_path}")
 }

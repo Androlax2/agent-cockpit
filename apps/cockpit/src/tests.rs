@@ -6187,7 +6187,7 @@ fn digest_answer(session_id: &str, question: &str, answer: &str) -> crate::chief
 #[test]
 fn the_digest_lists_chief_answers_since_the_last_digest() {
     let named = sessions::Session { session: "ses_3f2a9c0b1ffeQkTz8mWn4rJd2L".into(), label: "Fix login".into(), project: "shop".into(), ..Default::default() };
-    let digest = crate::chief::store::ChiefDigest { answered: 3, escalated: 1, overruled: 2, more: 0, lines: vec![
+    let digest = crate::chief::store::ChiefDigest { answered: 3, escalated: 1, overruled: 2, more: 0, habits: vec![], new_habits: 0, lines: vec![
         digest_answer("ses_3f2a9c0b1ffeQkTz8mWn4rJd2L", "Which option?", "Use option B."),
         digest_answer("ses_unknown0000000000abcdef", "Keep the flag?", "Yes, keep it.")] };
     let plain = digest_with_chief(&[named], &costs::ChiefSection::Answers { since_ms: local_ms(18, 8, 12), digest });
@@ -6199,7 +6199,7 @@ fn the_digest_lists_chief_answers_since_the_last_digest() {
 
 #[test]
 fn the_digest_names_yesterday_and_older_start_times() {
-    let empty = || crate::chief::store::ChiefDigest { answered: 0, escalated: 0, overruled: 0, more: 0, lines: vec![] };
+    let empty = || crate::chief::store::ChiefDigest { answered: 0, escalated: 0, overruled: 0, more: 0, habits: vec![], new_habits: 0, lines: vec![] };
     let yesterday = digest_with_chief(&[], &costs::ChiefSection::Answers { since_ms: local_ms(17, 22, 30), digest: empty() });
     assert!(yesterday.contains("Chief: nothing answered since yesterday 22:30"), "{yesterday}");
     let older = digest_with_chief(&[], &costs::ChiefSection::Answers { since_ms: local_ms(14, 9, 5), digest: empty() });
@@ -6208,7 +6208,7 @@ fn the_digest_names_yesterday_and_older_start_times() {
 
 #[test]
 fn the_digest_says_when_the_chief_answered_nothing() {
-    let digest = crate::chief::store::ChiefDigest { answered: 0, escalated: 0, overruled: 0, more: 0, lines: vec![] };
+    let digest = crate::chief::store::ChiefDigest { answered: 0, escalated: 0, overruled: 0, more: 0, habits: vec![], new_habits: 0, lines: vec![] };
     let plain = digest_with_chief(&[], &costs::ChiefSection::Answers { since_ms: local_ms(18, 8, 12), digest });
     assert!(plain.contains("Chief: nothing answered since 08:12"), "{plain}");
     assert!(!plain.contains("Chief answered"), "{plain}");
@@ -6224,7 +6224,7 @@ fn the_digest_leaves_the_rest_intact_when_the_chief_is_unavailable() {
 #[test]
 fn the_digest_shows_at_most_five_answers_then_a_count() {
     let lines = (0..5).map(|index| digest_answer("ses_abcdefghijkl", &format!("Question {index}?"), "Yes.")).collect();
-    let digest = crate::chief::store::ChiefDigest { answered: 12, escalated: 0, overruled: 0, more: 7, lines };
+    let digest = crate::chief::store::ChiefDigest { answered: 12, escalated: 0, overruled: 0, more: 7, habits: vec![], new_habits: 0, lines };
     let plain = digest_with_chief(&[], &costs::ChiefSection::Answers { since_ms: local_ms(18, 8, 12), digest });
     assert_eq!(plain.matches("→ Yes.").count(), 5, "{plain}");
     assert!(plain.contains("    +7 more"), "{plain}");
@@ -6233,11 +6233,59 @@ fn the_digest_shows_at_most_five_answers_then_a_count() {
 #[test]
 fn a_chief_answer_in_the_digest_is_escaped_and_cut_to_one_line() {
     let hostile = digest_answer("ses_abcdefghijkl", &format!("Line one\nline two \x1b[2J {}", "q".repeat(500)), &"a".repeat(2000));
-    let digest = crate::chief::store::ChiefDigest { answered: 1, escalated: 0, overruled: 0, more: 0, lines: vec![hostile] };
+    let digest = crate::chief::store::ChiefDigest { answered: 1, escalated: 0, overruled: 0, more: 0, habits: vec![], new_habits: 0, lines: vec![hostile] };
     let plain = digest_with_chief(&[], &costs::ChiefSection::Answers { since_ms: local_ms(18, 8, 12), digest });
     let line = plain.lines().find(|line| line.contains("Line one")).unwrap();
     assert!(line.contains("Line one line two \\u001b[2J"), "{line}");
     assert!(line.ends_with('…') && line.chars().count() <= 100, "{line}");
+    assert!(!plain.contains('\x1b'), "{plain}");
+}
+
+fn digest_habit(text: &str, project: Option<&str>) -> crate::chief::store::DigestHabit {
+    crate::chief::store::DigestHabit { text: text.into(), project: project.map(str::to_string), created_at_ms: 0 }
+}
+
+fn digest_with_habits(answered: u32, habits: Vec<crate::chief::store::DigestHabit>, new_habits: u32) -> String {
+    let lines = (0..answered).map(|index| digest_answer("ses_abcdefghijkl", &format!("Question {index}?"), "Yes.")).collect();
+    let digest = crate::chief::store::ChiefDigest { answered, escalated: 0, overruled: 0, more: 0, lines, habits, new_habits };
+    digest_with_chief(&[], &costs::ChiefSection::Answers { since_ms: local_ms(18, 8, 12), digest })
+}
+
+#[test]
+fn the_digest_lists_new_habits() {
+    let habits = vec![digest_habit("Always run the tests first.", Some("path:/home/theo/IdeaProjects/shop")), digest_habit("Keep replies short.", None)];
+    for answered in [1, 0] {
+        let plain = digest_with_habits(answered, habits.clone(), 2);
+        let lines: Vec<&str> = plain.lines().collect();
+        let header = lines.iter().position(|line| *line == "  New habits: 2").unwrap_or_else(|| panic!("{plain}"));
+        assert_eq!(lines[header + 1..header + 3], ["    Always run the tests first. · shop", "    Keep replies short. · everywhere"], "{plain}");
+        let answers = lines.iter().position(|line| line.contains("Chief")).unwrap();
+        assert!(answers < header, "the habits follow the Chief's answers: {plain}");
+    }
+}
+
+#[test]
+fn the_digest_shows_at_most_three_habits() {
+    let habits = (0..3).map(|index| digest_habit(&format!("Habit {index}."), None)).collect();
+    let plain = digest_with_habits(1, habits, 7);
+    assert!(plain.contains("  New habits: 7"), "{plain}");
+    assert_eq!(plain.matches("· everywhere").count(), 3, "{plain}");
+}
+
+#[test]
+fn a_digest_without_new_habits_has_no_habit_lines() {
+    let plain = digest_with_habits(1, vec![], 0);
+    assert!(!plain.contains("New habits"), "{plain}");
+    assert!(!plain.contains("everywhere"), "{plain}");
+}
+
+#[test]
+fn a_habit_in_the_digest_is_escaped_and_cut_to_one_line() {
+    let hostile = digest_habit(&format!("Line one\nline two \x1b[2J {}", "h".repeat(600)), Some("path:/home/theo/IdeaProjects/shop"));
+    let plain = digest_with_habits(0, vec![hostile], 1);
+    let line = plain.lines().find(|line| line.contains("Line one")).unwrap();
+    assert!(line.contains("Line one line two \\u001b[2J"), "{line}");
+    assert!(line.ends_with("… · shop") && line.chars().count() <= 100, "{line}");
     assert!(!plain.contains('\x1b'), "{plain}");
 }
 

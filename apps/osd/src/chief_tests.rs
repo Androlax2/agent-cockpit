@@ -978,6 +978,38 @@ fn a_stopped_worker_with_an_open_todo_wakes_the_chief_with_its_bundle() {
 }
 
 #[test]
+fn a_stop_wakes_the_chief_with_habits_and_instructions() {
+    let mut bench = stop_bench();
+    let project = bench.registry.sessions[STOPPED_WORKER].cwd.clone();
+    fs::write(std::path::Path::new(&project).join("AGENTS.md"), "Run make test before every commit.").unwrap();
+    let project_key = cockpit::teams::canonical_project(&project).unwrap();
+    bench.registry.teams.as_ref().unwrap().execute("INSERT INTO chief_habits(id,text,project,origin_project,source,source_kind,source_id,state,created_at,changed_at)
+        VALUES ('habit-a','Prefer small commits.',?1,?1,'overrule','overrule','overrule-a','active',100,100)", [&project_key]).unwrap();
+    assign_doing_todo(&bench, STOPPED_WORKER);
+    bench.registry.tick_queues();
+    prepare_chief_boundary(&mut bench);
+    bench.registry.sessions.get_mut(OPENCODE_SESSION).unwrap().since -= 7.0;
+    let dispatch = crate::teams::request(&mut bench.registry, 20, AgentAction::Receive).unwrap().result.unwrap();
+    assert_eq!(dispatch["envelope"]["kind"], "chief_wake");
+    crate::teams::request(&mut bench.registry, 20, AgentAction::Receipt { dispatch_id:dispatch["dispatch_id"].as_str().unwrap().into(),
+        outcome:cockpit::teams::TransportOutcome::Received {native_id:"chief-habit-wake".into()} }).unwrap().result.unwrap();
+    let page = context(&mut bench, 20).unwrap().result.unwrap();
+    let records = page["records"].as_array().unwrap();
+    let habits = records.iter().find(|record| record["kind"] == "habits").unwrap_or_else(|| panic!("{page}"));
+    assert_eq!(habits["habits"], json!([{"id":"habit-a","text":"Prefer small commits.","project":project_key,"source":"overrule"}]));
+    let stop = records.iter().find(|record| record["kind"] == "stopped_session").unwrap();
+    assert_eq!(stop["bundle"]["instructions"], json!([{"path":"AGENTS.md","text":"Run make test before every commit."}]));
+}
+
+#[test]
+fn a_project_key_without_a_path_reads_no_instruction_files() {
+    let (instructions, warnings) = crate::chief::project_instructions("/etc");
+    assert!(instructions.is_empty());
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(warnings[0].contains("/etc"), "{warnings:?}");
+}
+
+#[test]
 fn a_stop_without_an_open_todo_is_ignored() {
     for case in ["no todo", "todo not started", "doing for another session"] {
         let mut bench = stop_bench();

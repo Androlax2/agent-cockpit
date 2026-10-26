@@ -11,6 +11,8 @@ use serde_json::Value;
 
 pub const MAX_OPEN_DECISIONS: usize = 100;
 pub const MAX_CONTEXT_RECORDS: usize = 50;
+/// How many habits one answer may name as the ones it relied on.
+pub const MAX_CITED_HABITS: usize = 5;
 /// The limit of a Chief answer, in the words Theo approved. Told to the Chief in its wake text and
 /// appended by the host to every answer the agent receives.
 pub const CHIEF_ANSWER_BOUNDARY: &str = "Chief answer on Theo's behalf. It authorises edits, builds, tests and commits inside your current task only. Installs, dependency changes, pushes, merges, default-branch or other Git writes your project does not already allow, anything outside the task, and anything security-related still need Theo. Permission prompts, ask-to-run and cockpit apply are always Theo's.";
@@ -22,6 +24,20 @@ pub const CORRECTION_LABEL: &str = "Correction from Theo, sent through the cockp
 pub const CHIEF_ANSWER_GRACE_S: i64 = 30;
 // Reserve space for the TeamReply wrapper and cursors beneath the agent transport's 65,536 bytes.
 const CONTEXT_BYTES: usize = 60_000;
+
+/// When Theo last saw his habits, on the Habits page or in a digest (epoch ms); a missing or unreadable note, or one from the future, counts as never.
+pub fn habits_seen_ms() -> Option<i64> {
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    std::fs::read_to_string(crate::paths::chief_habits_seen_at()).ok().and_then(|text| text.trim().parse::<i64>().ok()).filter(|seen_ms| (1..=now_ms).contains(seen_ms))
+}
+
+/// Saves when Theo saw his habits, never earlier than the time already saved: the page and the digest each read them at their own time.
+pub fn save_habits_seen(seen_ms: i64) -> std::io::Result<()> {
+    if habits_seen_ms().is_some_and(|saved_ms| saved_ms >= seen_ms) { return Ok(()); }
+    let note = crate::paths::chief_habits_seen_at();
+    if let Some(folder) = note.parent() { std::fs::create_dir_all(folder)?; }
+    std::fs::write(note, seen_ms.to_string())
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -42,10 +58,14 @@ pub enum ChiefAgentAction {
     Status { summary: String },
     Decision { key: String, question: String, recommendation: String },
     /// Reply to an open stop; the host delivers it to the stopped agent with `CHIEF_ANSWER_BOUNDARY`.
-    Answer { stop: String, text: String, reason: String },
+    /// `habits` names the habits the answer relied on.
+    Answer { stop: String, text: String, reason: String, #[serde(default)] habits: Vec<String> },
     /// Settle an open single-question form with one of its options, named by label or value; the
     /// agent's plugin replies through OpenCode's form API.
-    AnswerForm { stop: String, choice: String, reason: String },
+    AnswerForm { stop: String, choice: String, reason: String, #[serde(default)] habits: Vec<String> },
+    /// Record a lasting preference Theo showed in his own answer (`source_id`: his answer or the stop
+    /// whose bundle shows it), for one project or, with no project, everywhere.
+    AddHabit { text: String, project: Option<String>, source_id: String, reason: String },
     /// Hand an open stop to Theo, who answers it from the Chief view.
     Escalate { stop: String, category: EscalationCategory, reason: String, #[serde(default)] suggested_answer: Option<String> },
 }
@@ -91,6 +111,11 @@ pub enum ChiefHostAction {
     AnswerDecision { request_id: String, decision: String, expected_revision: i64, answer: String },
     /// Theo's correction of a sent answer: queued for the session that got the answer, once per answer.
     Overrule { request_id: String, answer: String, correction: String },
+    /// Theo deletes a habit; the Chief stops using it and never adds it back by itself.
+    DeleteHabit { request_id: String, habit: String },
+    RestoreHabit { request_id: String, habit: String },
+    /// Theo widens a habit to every project, or narrows it back to the project it came from.
+    RescopeHabit { request_id: String, habit: String, everywhere: bool },
     RequestSummary { request_id: String },
 }
 
@@ -133,6 +158,15 @@ fn without_host_labels(value: &str) -> Result<(), TeamError> {
     Ok(())
 }
 
+fn cited_habits(habits: &[String]) -> Result<(), TeamError> {
+    if habits.len() > MAX_CITED_HABITS { return Err(invalid("an answer names at most 5 habits")); }
+    for (index, habit) in habits.iter().enumerate() {
+        key(habit)?;
+        if habits[..index].contains(habit) { return Err(invalid("an answer names each habit once")); }
+    }
+    Ok(())
+}
+
 impl ChiefAgentAction {
     pub fn validate(&self) -> Result<(), TeamError> {
         match self {
@@ -150,8 +184,19 @@ impl ChiefAgentAction {
                 if decision_key.starts_with("stop-") { return Err(invalid("decision keys starting with stop- are reserved for escalations")); }
                 text(question, 1000)?; text(recommendation, 1000)
             },
-            Self::Answer { stop, text: answer, reason } => { key(stop)?; text(answer, 4000)?; without_host_labels(answer)?; text(reason, 300) },
-            Self::AnswerForm { stop, choice, reason } => { key(stop)?; text(choice, 200)?; text(reason, 300) },
+            Self::Answer { stop, text: answer, reason, habits } => { key(stop)?; text(answer, 4000)?; without_host_labels(answer)?; text(reason, 300)?; cited_habits(habits) },
+            Self::AnswerForm { stop, choice, reason, habits } => { key(stop)?; text(choice, 200)?; text(reason, 300)?; cited_habits(habits) },
+            Self::AddHabit { text: habit, project, source_id, reason } => {
+                text(habit, 500)?;
+                if habit.contains('\n') { return Err(invalid("a habit is a single line")); }
+                // The host stores the habit with its whitespace collapsed: check what it would store.
+                without_host_labels(&store::habit_text(habit))?;
+                if let Some(project) = project {
+                    text(project, 300)?;
+                    if project.contains('\n') { return Err(invalid("a project key is a single line")); }
+                }
+                key(source_id)?; text(reason, 300)
+            },
             Self::Escalate { stop, reason, suggested_answer, .. } => {
                 key(stop)?; text(reason, 300)?;
                 if let Some(suggestion) = suggested_answer { text(suggestion, 2000)?; without_host_labels(suggestion)?; }
@@ -166,7 +211,8 @@ impl ChiefHostAction {
         let request_id = match self {
             Self::Enable { request_id, .. } | Self::Pause { request_id, .. } | Self::Resume { request_id, .. }
             | Self::Disable { request_id, .. } | Self::Resolve { request_id, .. } | Self::AnswerDecision { request_id, .. } | Self::RequestSummary { request_id }
-            | Self::ReconcileDelivery {request_id,..} | Self::ReconcileLaunch {request_id,..} | Self::Overrule { request_id, .. } => request_id,
+            | Self::ReconcileDelivery {request_id,..} | Self::ReconcileLaunch {request_id,..} | Self::Overrule { request_id, .. }
+            | Self::DeleteHabit { request_id, .. } | Self::RestoreHabit { request_id, .. } | Self::RescopeHabit { request_id, .. } => request_id,
         };
         key(request_id)?;
         match self {
@@ -183,6 +229,7 @@ impl ChiefHostAction {
                 if correction.contains('\n') { return Err(invalid("a correction is a single line")); }
                 without_host_labels(correction)
             },
+            Self::DeleteHabit { habit, .. } | Self::RestoreHabit { habit, .. } | Self::RescopeHabit { habit, .. } => key(habit),
             Self::RequestSummary { .. } => Ok(()),
         }
     }

@@ -24,7 +24,7 @@ fn shown(value: &Value) -> String {
 }
 
 /// "remote:git@github.com:example/project-a.git" → "project-a".
-fn short_project(canonical: &str) -> String {
+pub(crate) fn short_project(canonical: &str) -> String {
     let tail = canonical.rsplit(['/', ':']).next().unwrap_or(canonical);
     shown(&Value::String(tail.trim_end_matches(".git").to_string()))
 }

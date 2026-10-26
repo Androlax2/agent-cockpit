@@ -195,9 +195,9 @@ ask a question, within a fixed boundary, and hands everything else to you: see
 ### Turning it on and off
 
 Open `:` → **chief**. The root has **Needs you · N** (open decisions), **Answers · N**,
-**Chief controls**, **Workers** and **Request summary**. Arrows or `j`/`k` move, Enter
-inspects, Esc goes back, Page Up/Down read long records. `c` on a session card opens the
-Answers list of that session directly.
+**Habits · N** (see [Habits](#habits)), **Chief controls**, **Workers** and **Request summary**.
+Arrows or `j`/`k` move, Enter inspects, `h` opens Habits, Esc goes back, Page Up/Down read long
+records. `c` on a session card opens the Answers list of that session directly.
 
 - **Chief controls → Select chief** lists the live standalone sessions. Enter opens a
   separate confirmation; only `y` enables. It does not start an agent, and the session
@@ -302,7 +302,8 @@ decision.
 
 **Answers** lists what the Chief (and you) told stopped agents, newest first, three lines each:
 `HH:MM · <session> · <question>`, then `Chief: <answer>` (`Theo: <answer>` for an answer you
-sent), then (dim) the delivery and the Chief's reason. Delivery reads `waiting` (queued), `sent`,
+sent), then (dim) the delivery and the Chief's reason, and `· habits: <first habit…> +N` when the
+answer relied on habits. Delivery reads `waiting` (queued), `sent`,
 `not sure` (that word in red: the host cannot tell whether the agent got it) or `cancelled`. An
 overruled answer adds `· overruled · <delivery>` to that line: the delivery of your correction, in
 the same words. The
@@ -312,7 +313,9 @@ host lists the newest 200 answers; the count reads `200+` when there may be olde
 Press `o` on a Chief answer that was sent (or whose delivery is not sure) to overrule it. You type
 one line of up to 2,000 characters, then a frozen review shows the exact message the agent will
 receive: "Correction from Theo to an earlier Chief answer ("<the first 200 characters of that
-answer>"): <your correction>" followed by the daemon-added label. Enter, then `y`, sends it; if the
+answer>"): <your correction>" followed by the daemon-added label, and under it
+`Adds a habit: <your correction> · <project | everywhere>`: the exact habit it stores (your words on
+one line, cut to 500 characters with `…`). Enter, then `y`, sends it; if the
 answer changed meanwhile the review is invalidated. Each answer can be overruled once, so a
 correction that was cancelled (the session restarted or closed before it got it) cannot be retried:
 `o` says "Already overruled"; send the agent a message instead. `o` on any other answer says why in
@@ -341,13 +344,37 @@ the digest last printed: `Chief answered N, escalated M, overruled K since <time
 corrections that were cancelled), up to five lines
 `<session> · <question> → <answer>` (newest first, each one line cut with `…`), then `+K more`. When
 nothing happened it says `Chief: nothing answered since <time>`. The time reads `HH:MM` today,
-`yesterday HH:MM` the day before and `Wed 14 Oct 09:05` earlier. The digest reads the team database
+`yesterday HH:MM` the day before and `Wed 14 Oct 09:05` earlier. Then, when habits were added in the
+same time (and are still active), `New habits: N` and up to three lines
+`<habit> · <project | everywhere>` (newest first, each one line cut with `…`); with none, no habit
+lines. A digest that printed them saves when it read them in `chief-habits-seen-at`, so they stop
+showing as new in the Chief view; when it counted more than it listed, it saves only up to the
+oldest one listed, so the rest stay new (that time never moves back). The digest reads the team database
 read-only; if that is missing or locked, one line `Chief: unavailable (<reason>)` replaces the
-section, the rest of the digest is unchanged, and the next digest still covers the same answers.
+section, the rest of the digest is unchanged, and the next digest still covers the same answers and
+habits (both files stay as they were).
 When the digest prints, it saves the time in `chief-digest-at` next to `digest-day` in the cockpit
 state folder; with no file (or an unreadable one) it looks back 24 hours. A requested summary (Chief
 view, Request summary) lists the same up to five lines under `Answers since <time>`, counted from the
 previous completed summary (24 hours back when there is none).
+
+### Habits
+
+**Habits** lists what the Chief learned about how you work, newest first, two lines each: the
+habit (with `new` in purple bold in front when it is new), then (dim) the project it applies to,
+in that project's colour, or `everywhere`, where it came from (`from your overrule`,
+`from your answer`, `from your message`) and `HH:MM`. Every overrule adds one; the Chief adds others
+from your own answers and messages. A habit from a stop message stays in that stop's project; only
+you widen it to everywhere (`p`). The root row reads `Habits · N · K new`; new means added since
+you last opened this page or a digest listed them (`chief-habits-seen-at` in the cockpit state
+folder; with no file, the last 24 hours; an open view rereads it on each refresh). Opening the page saves the time, the tags stay until you leave it. An empty list says
+"No habits yet. The Chief learns them from your answers and overrules."
+
+`x` deletes the selected habit at once, without a review, and shows `Deleted · u undo`: `u` brings
+it back in place, any other key ends the offer. The Chief never adds a deleted habit back by itself.
+`p` moves a habit between its project and everywhere. Enter shows where it came from (your
+correction and the answer it corrected, your answer, or the stopped session and when it stopped)
+and the Chief's reason for adding it. Habit text cannot be edited.
 
 ### Decisions and recovery
 

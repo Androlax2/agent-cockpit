@@ -22,6 +22,10 @@ struct Host {
     snapshot: Arc<Mutex<Value>>,
     requests: Arc<Mutex<Vec<Value>>>,
     pages: Arc<Mutex<VecDeque<Value>>>,
+    /// The records the host holds after each next mutation, in order: the fixture's view of what the host changed.
+    after_mutations: Arc<Mutex<VecDeque<Vec<Value>>>>,
+    /// Replies to the next mutations, in order; `{"error":…}` fails one. Otherwise the host records it.
+    mutation_replies: Arc<Mutex<VecDeque<Value>>>,
     _lock: std::sync::MutexGuard<'static, ()>,
 }
 impl Host {
@@ -45,16 +49,23 @@ impl Host {
         let pages = Arc::new(Mutex::new(VecDeque::<Value>::new()));
         let (state, calls) = (snapshot.clone(),requests.clone());
         let read_pages=pages.clone();
+        let after_mutations = Arc::new(Mutex::new(VecDeque::<Vec<Value>>::new()));
+        let changes=after_mutations.clone();
+        let mutation_replies = Arc::new(Mutex::new(VecDeque::<Value>::new()));
+        let replies=mutation_replies.clone();
         std::thread::spawn(move || for mut stream in listener.incoming().flatten() {
             let mut wire = String::new(); stream.read_to_string(&mut wire).unwrap();
             let request: Value = serde_json::from_str(&wire).unwrap(); calls.lock().unwrap().push(request.clone());
             let result = if request["request"] == "chief_snapshot" { read_pages.lock().unwrap().pop_front().unwrap_or_else(||state.lock().unwrap().clone()) }
-                else { json!({"recorded":true}) };
+                else {
+                    if let Some(records)=changes.lock().unwrap().pop_front() {state.lock().unwrap()["records"]=json!(records);}
+                    replies.lock().unwrap().pop_front().unwrap_or_else(||json!({"recorded":true}))
+                };
             let result = if let Some(message)=result["error"].as_str() {Err(cockpit::teams::TeamError::new(cockpit::teams::ErrorCode::Storage,message))} else {Ok(result)};
             let reply = serde_json::to_value(cockpit::teams::TeamReply {request_id:"fixture".into(),result}).unwrap();
             stream.write_all(reply.to_string().as_bytes()).unwrap();
         });
-        Self {root,snapshot,requests,pages,_lock:lock}
+        Self {root,snapshot,requests,pages,after_mutations,mutation_replies,_lock:lock}
     }
     fn open(&self) -> (App, TestScreen) {
         let mut app = App::new(); let mut screen = TestScreen {picks:VecDeque::new()};
@@ -71,19 +82,20 @@ fn rendered(app: &mut App, width: u16, height: u16) -> String {
     buffer.content.iter().map(|cell|cell.symbol()).collect::<String>()
 }
 // Opens Chief controls and then the first control; with an active chief that is the Pause review.
-fn first_control_review(app: &mut App, screen: &mut TestScreen) { keys(app,screen,&[Key::Down,Key::Down,Key::Enter,Key::Enter]); }
+fn first_control_review(app: &mut App, screen: &mut TestScreen) { keys(app,screen,&[Key::Down,Key::Down,Key::Down,Key::Enter,Key::Enter]); }
 
 #[test]
-fn the_chief_root_offers_only_needs_you_answers_controls_workers_and_summary() {
+fn the_chief_root_offers_only_needs_you_answers_habits_controls_workers_and_summary() {
     let host = Host::new(vec![]); let (mut app,_) = host.open();
     let mut buffer = Buffer::empty(Rect::new(0,0,120,45)); app.render(&mut buffer);
     let lines: Vec<String> = (0..45).map(|row|(0..120).map(|column|buffer[(column,row)].symbol()).collect::<String>()).collect();
-    let root: Vec<String> = lines.iter().filter(|line|["Needs you","Answers","Work","Chief controls","Request summary"].iter().any(|label|line.contains(label)))
+    let root: Vec<String> = lines.iter().filter(|line|["Needs you","Answers","Habits","Work","Chief controls","Request summary"].iter().any(|label|line.contains(label)))
         .map(|line|line.trim().trim_matches('│').trim().trim_start_matches('>').trim().to_string()).collect();
-    assert_eq!(root.len(),5,"{lines:#?}");
+    assert_eq!(root.len(),6,"{lines:#?}");
     assert!(root[0].starts_with("Needs you"),"{root:?}");
     assert!(root[1].starts_with("Answers"),"{root:?}");
-    assert_eq!(root[2..],["Chief controls","Workers","Request summary"],"{root:?}");
+    assert!(root[2].starts_with("Habits"),"{root:?}");
+    assert_eq!(root[3..],["Chief controls","Workers","Request summary"],"{root:?}");
     let text = rendered(&mut app,120,45);
     for forbidden in ["Approve","Attest","Bind role","Workers and roles"] {assert!(!text.contains(forbidden),"{forbidden}: {text}");}
 }
@@ -149,7 +161,7 @@ fn summary_request_does_not_enable_progress_notifications() {
     let host=Host::new(vec![json!({"kind":"summary","state":"completed","last_completed_at_ms":12345,
         "last_result":{"provenance":"chief_narrative_unverified","sections":{"completed":"Worker claim only"}}})]);
     let (mut app,mut screen)=host.open();
-    keys(&mut app,&mut screen,&[Key::Down,Key::Down,Key::Down,Key::Down,Key::Enter,Key::Enter,Key::Enter]);
+    keys(&mut app,&mut screen,&[Key::Down,Key::Down,Key::Down,Key::Down,Key::Down,Key::Enter,Key::Enter,Key::Enter]);
     let requests=host.mutations(); assert_eq!(requests.len(),1); assert_eq!(requests[0]["action"]["action"],"request_summary");
     let text=rendered(&mut app,120,45); assert!(text.contains("12345")&&text.contains("chief_narrative_unverified"),"{text}");
 }
@@ -172,7 +184,7 @@ fn paused_and_unavailable_states_are_not_off() {
     host.snapshot.lock().unwrap()["records"]=json!([chief("active",false)]);
     app.handle(Key::Esc,&mut screen);open_chief(&mut app,&mut screen);
     assert!(rendered(&mut app,120,45).contains("Unavailable"));
-    keys(&mut app,&mut screen,&[Key::Down,Key::Down,Key::Enter]);
+    keys(&mut app,&mut screen,&[Key::Down,Key::Down,Key::Down,Key::Enter]);
     let controls=rendered(&mut app,120,45);assert!(controls.contains("Disable chief")&&!controls.contains("Select chief"),"{controls}");
     app.handle(Key::Enter,&mut screen);let review=rendered(&mut app,150,60);
     for expected in ["verified-native-runtime","grant-epoch-1","Workers and teams continue","grant-hash"] {assert!(review.contains(expected),"{review}");}
@@ -211,7 +223,7 @@ fn exact_launch_and_message_recovery_keep_separate_unchecked_stop_consent() {
 fn host_sqlite_numeric_live_flag_preserves_pause_resume_controls() {
     let mut grant=chief("active",true);grant["live_verified"]=json!(1);
     let host=Host::new(vec![grant]);let (mut app,mut screen)=host.open();
-    keys(&mut app,&mut screen,&[Key::Down,Key::Down,Key::Enter]);
+    keys(&mut app,&mut screen,&[Key::Down,Key::Down,Key::Down,Key::Enter]);
     assert!(rendered(&mut app,120,45).contains("Pause chief"));
 }
 #[test]
@@ -236,7 +248,7 @@ fn enable_pause_and_resume_submit_only_after_exact_runtime_review_and_confirmati
     for (grant,expected) in [(None,"enable"),(Some(chief("active",true)),"pause"),(Some(chief("paused",true)),"resume")] {
         let mut records=vec![worker()];if let Some(grant)=grant {records.push(grant);}
         let host=Host::new(records);let (mut app,mut screen)=host.open();
-        keys(&mut app,&mut screen,&[Key::Down,Key::Down,Key::Enter,Key::Enter]);
+        keys(&mut app,&mut screen,&[Key::Down,Key::Down,Key::Down,Key::Enter,Key::Enter]);
         if expected=="enable" {app.handle(Key::Enter,&mut screen);}
         let review=rendered(&mut app,180,80);assert!(review.contains("verified-native-runtime"),"{review}");
         app.handle(Key::Char('y'),&mut screen);assert!(host.mutations().is_empty());
@@ -281,7 +293,7 @@ fn host_storage_failure_rejects_confirmation_and_preserves_visible_failure() {
 #[test]
 fn team_bound_worker_cannot_be_selected_chief() {
     let host=Host::new(vec![worker(),json!({"kind":"team_member","session":worker()["session"],"role":"qa","epoch":"team-epoch","team_revision":3,"task":{"project":PROJECT,"task_id":"1234abcd"}})]);
-    let (mut app,mut screen)=host.open();keys(&mut app,&mut screen,&[Key::Down,Key::Down,Key::Enter,Key::Enter]);
+    let (mut app,mut screen)=host.open();keys(&mut app,&mut screen,&[Key::Down,Key::Down,Key::Down,Key::Enter,Key::Enter]);
     assert!(rendered(&mut app,150,60).contains("Nothing available"));
     keys(&mut app,&mut screen,&[Key::Enter,Key::Enter]);assert!(host.mutations().is_empty());
 }
@@ -368,7 +380,7 @@ fn actual_chief_view_reviews_current_records_without_loading_terminal_history() 
 #[test]
 fn short_narrow_lists_keep_the_selected_root_action_visible() {
     let host=Host::new(vec![]);let (mut app,mut screen)=host.open();
-    keys(&mut app,&mut screen,&[Key::Down,Key::Down,Key::Down,Key::Down]);
+    keys(&mut app,&mut screen,&[Key::Down,Key::Down,Key::Down,Key::Down,Key::Down]);
     assert!(rendered(&mut app,32,8).contains("Request summary"));
 }
 
@@ -712,7 +724,7 @@ fn answer_at(id: &str, question: &str, created_at_ms: i64) -> Value {
 }
 fn open_summary(host: &Host) -> (App, TestScreen) {
     let (mut app,mut screen)=host.open();
-    keys(&mut app,&mut screen,&[Key::Down,Key::Down,Key::Down,Key::Down,Key::Enter,Key::Enter,Key::Enter]);
+    keys(&mut app,&mut screen,&[Key::Down,Key::Down,Key::Down,Key::Down,Key::Down,Key::Enter,Key::Enter,Key::Enter]);
     (app,screen)
 }
 
@@ -749,4 +761,338 @@ fn a_summary_says_when_the_chief_answered_nothing_since() {
     let (mut app,_)=open_summary(&host);
     let text=rendered(&mut app,160,60);
     assert!(text.contains(&format!("No Chief answers since {}",older_clock(ANSWER_TIME_MS))),"{text}");
+}
+
+const PROJECT_NAME: &str = "a-long-canonical-project";
+const SEEN_AT_MS: i64 = ANSWER_TIME_MS;
+fn habit(id: &str, text: &str, project: Option<&str>, created_at_ms: i64) -> Value {
+    json!({"kind":"habit","id":id,"text":text,"project":project,"origin_project":PROJECT,"source":"overrule","source_kind":"overrule",
+        "source_id":format!("overrule-{id}"),"reason":null,"state":"active","created_at_ms":created_at_ms,"changed_at_ms":created_at_ms,
+        "session_id":SESSION,"stopped_at_ms":null})
+}
+fn deleted(mut record: Value) -> Value { record["state"]=json!("deleted"); record }
+fn habits_seen_at(milliseconds: i64) {
+    let path=cockpit::paths::chief_habits_seen_at(); fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(path,milliseconds.to_string()).unwrap();
+}
+fn open_habits(host: &Host) -> (App, TestScreen) {
+    let (mut app,mut screen)=host.open(); app.handle(Key::Char('h'),&mut screen); (app,screen)
+}
+fn selected_line(app: &mut App) -> String {
+    lines_of(app,120,45).into_iter().find(|line|line.contains("│ > ")).unwrap_or_default()
+}
+
+#[test]
+fn the_root_shows_habits_and_how_many_are_new() {
+    let host=Host::new(vec![habit("habit-old","Old habit.",Some(PROJECT),SEEN_AT_MS-1_000),habit("habit-a","New habit A.",Some(PROJECT),SEEN_AT_MS+1_000),
+        habit("habit-b","New habit B.",None,SEEN_AT_MS+2_000),deleted(habit("habit-gone","Deleted habit.",None,SEEN_AT_MS+3_000))]);
+    habits_seen_at(SEEN_AT_MS);
+    let (mut app,_)=host.open();
+    let text=rendered(&mut app,120,45);
+    assert!(text.contains("Habits · 3 · 2 new"),"{text}");
+}
+
+#[test]
+fn the_root_shows_no_new_count_when_every_habit_was_seen() {
+    let host=Host::new(vec![habit("habit-old","Old habit.",Some(PROJECT),SEEN_AT_MS-1_000)]);
+    habits_seen_at(SEEN_AT_MS);
+    let (mut app,_)=host.open();
+    let text=rendered(&mut app,120,45);
+    assert!(text.contains("Habits · 1")&&!text.contains("Habits · 1 · "),"{text}");
+}
+
+#[test]
+fn without_a_seen_time_habits_of_the_last_24_hours_are_new() {
+    let now=chrono::Utc::now().timestamp_millis();
+    let host=Host::new(vec![habit("habit-recent","Recent habit.",None,now-3_600_000),habit("habit-stale","Stale habit.",None,now-172_800_000)]);
+    let (mut app,_)=host.open();
+    assert!(rendered(&mut app,120,45).contains("Habits · 2 · 1 new"));
+}
+
+#[test]
+fn h_opens_the_habits_page() {
+    let host=Host::new(vec![habit("habit-a","Always run the tests first.",Some(PROJECT),SEEN_AT_MS)]);
+    let (mut app,_)=open_habits(&host);
+    let text=rendered(&mut app,120,45);
+    for expected in ["Chief · Habits","Always run the tests first.","x delete · p project/everywhere · ⏎ source · esc back"] {assert!(text.contains(expected),"{expected}: {text}");}
+}
+
+#[test]
+fn habit_rows_show_new_text_scope_source_and_time() {
+    let mut answered=habit("habit-b","Prefer small commits.",None,SEEN_AT_MS-60_000);answered["source"]=json!("theo_answer");answered["source_kind"]=json!("theo_answer");
+    let mut messaged=habit("habit-c","Write tests first.",None,SEEN_AT_MS-120_000);messaged["source"]=json!("theo_answer");messaged["source_kind"]=json!("theo_message");
+    let host=Host::new(vec![habit("habit-a","Always run the tests first.",Some(PROJECT),SEEN_AT_MS+60_000),answered,messaged]);
+    habits_seen_at(SEEN_AT_MS);
+    let (mut app,_)=open_habits(&host);
+    let text=lines_of(&mut app,120,45).join("\n");
+    for expected in ["new Always run the tests first.",&format!("{PROJECT_NAME} · from your overrule · {}",clock(SEEN_AT_MS+60_000)),
+        &format!("everywhere · from your answer · {}",clock(SEEN_AT_MS-60_000)),&format!("everywhere · from your message · {}",clock(SEEN_AT_MS-120_000))] {
+        assert!(text.contains(expected),"{expected}: {text}");
+    }
+    assert!(!text.contains("new Prefer small commits.")&&text.contains("Prefer small commits."),"an old habit has no new tag: {text}");
+    let tag=cell_of(&mut app,"new Always");
+    assert_eq!(tag.fg,ratatui::style::Color::Indexed(cockpit::app::MAGENTA));
+    assert!(tag.modifier.contains(ratatui::style::Modifier::BOLD),"new is bold");
+    let habit_text=cell_at(&mut app,"new Always","new ".chars().count());
+    assert_ne!(habit_text.fg,ratatui::style::Color::Indexed(cockpit::app::MAGENTA),"only the word new is purple");
+    // This project used to hash to amber: project colours never use it.
+    let project=cell_of(&mut app,&format!("{PROJECT_NAME} · from"));
+    assert_eq!(project.fg,ratatui::style::Color::Indexed(cockpit::app::project_color(PROJECT_NAME)));
+    assert_ne!(project.fg,ratatui::style::Color::Indexed(cockpit::app::YELLOW),"never amber");
+    let scope=cell_of(&mut app,"everywhere · from your answer");
+    assert!(scope.modifier.contains(ratatui::style::Modifier::DIM)&&scope.fg!=ratatui::style::Color::Indexed(cockpit::app::MAGENTA),"everywhere is dim: line 2 of an unselected row");
+    let mut buffer=Buffer::empty(Rect::new(0,0,120,45));app.render(&mut buffer);
+    let page_rows=lines_of(&mut app,120,45).iter().enumerate().filter(|(_,line)|line.contains("from your")||line.contains(" first.")||line.contains("commits.")).map(|(row,_)|row as u16).collect::<Vec<_>>();
+    assert_eq!(page_rows.len(),6);
+    for row in page_rows {assert!((0..120).all(|column|buffer[(column,row)].fg!=ratatui::style::Color::Indexed(cockpit::app::YELLOW)),"never amber");}
+}
+
+#[test]
+fn a_habit_text_is_escaped_to_one_line() {
+    let host=Host::new(vec![habit("habit-a","Keep\nit \u{202e}short\u{1b}[2J.",None,SEEN_AT_MS)]);
+    let (mut app,_)=open_habits(&host);
+    let text=rendered(&mut app,120,45);
+    assert!(text.contains("Keep it ")&&!text.contains('\u{202e}')&&!text.contains('\u{1b}'),"{text}");
+}
+
+#[test]
+fn an_empty_habit_list_explains_where_habits_come_from() {
+    let host=Host::new(vec![deleted(habit("habit-gone","Deleted habit.",None,SEEN_AT_MS))]);
+    let (mut app,_)=open_habits(&host);
+    let text=rendered(&mut app,120,45);
+    assert!(text.contains("No habits yet. The Chief learns them from your answers and overrules.")&&!text.contains("Deleted habit."),"{text}");
+}
+
+#[test]
+fn x_deletes_at_once_and_u_undoes() {
+    let first=habit("habit-a","Always run the tests first.",Some(PROJECT),SEEN_AT_MS);
+    let host=Host::new(vec![first.clone()]);
+    host.after_mutations.lock().unwrap().extend([vec![deleted(first.clone())],vec![first]]);
+    let (mut app,mut screen)=open_habits(&host);
+    app.handle(Key::Char('x'),&mut screen);
+    let mutations=host.mutations();assert_eq!(mutations.len(),1,"x submits without a review");
+    assert_eq!((mutations[0]["action"]["action"].as_str(),mutations[0]["action"]["habit"].as_str()),(Some("delete_habit"),Some("habit-a")));
+    let text=rendered(&mut app,120,45);assert!(text.contains("Deleted · u undo")&&!text.contains("CONFIRM")&&!text.contains("Host result"),"{text}");
+    app.handle(Key::Char('u'),&mut screen);
+    let mutations=host.mutations();assert_eq!(mutations.len(),2);
+    assert_eq!((mutations[1]["action"]["action"].as_str(),mutations[1]["action"]["habit"].as_str()),(Some("restore_habit"),Some("habit-a")));
+    let text=rendered(&mut app,120,45);assert!(text.contains("Always run the tests first.")&&!text.contains("Deleted · u undo"),"{text}");
+}
+
+#[test]
+fn the_undo_offer_ends_with_the_next_key() {
+    let first=habit("habit-a","Always run the tests first.",Some(PROJECT),SEEN_AT_MS);
+    let host=Host::new(vec![first.clone(),habit("habit-b","Prefer small commits.",None,SEEN_AT_MS-1_000)]);
+    host.after_mutations.lock().unwrap().push_back(vec![deleted(first),habit("habit-b","Prefer small commits.",None,SEEN_AT_MS-1_000)]);
+    let (mut app,mut screen)=open_habits(&host);
+    keys(&mut app,&mut screen,&[Key::Char('x'),Key::Char('j')]);
+    assert!(!rendered(&mut app,120,45).contains("u undo"));
+    app.handle(Key::Char('u'),&mut screen);
+    assert_eq!(host.mutations().len(),1,"u does nothing once another key was pressed");
+}
+
+#[test]
+fn after_deleting_a_habit_the_next_one_is_selected() {
+    let records=vec![habit("habit-a","Habit A.",None,SEEN_AT_MS),habit("habit-b","Habit B.",None,SEEN_AT_MS-1_000),habit("habit-c","Habit C.",None,SEEN_AT_MS-2_000)];
+    let host=Host::new(records.clone());
+    let mut without_b=records.clone();without_b[1]=deleted(without_b[1].clone());
+    host.after_mutations.lock().unwrap().extend([without_b,records]);
+    let (mut app,mut screen)=open_habits(&host);
+    keys(&mut app,&mut screen,&[Key::Down,Key::Char('x')]);
+    assert!(selected_line(&mut app).contains("Habit C."),"{:#?}",lines_of(&mut app,120,45));
+    app.handle(Key::Char('u'),&mut screen);
+    let lines=lines_of(&mut app,120,45);
+    assert!(selected_line(&mut app).contains("Habit B."),"u restores it in place and selects it: {lines:#?}");
+    let positions: Vec<usize>=["Habit A.","Habit B.","Habit C."].iter().map(|text|lines.iter().position(|line|line.contains(text)).unwrap()).collect();
+    assert!(positions[0]<positions[1]&&positions[1]<positions[2],"{lines:#?}");
+}
+
+#[test]
+fn deleting_the_last_habit_shows_the_empty_text() {
+    let only=habit("habit-a","Always run the tests first.",None,SEEN_AT_MS);
+    let host=Host::new(vec![only.clone()]);host.after_mutations.lock().unwrap().push_back(vec![deleted(only)]);
+    let (mut app,mut screen)=open_habits(&host);
+    app.handle(Key::Char('x'),&mut screen);
+    let text=rendered(&mut app,120,45);
+    assert!(text.contains("No habits yet.")&&text.contains("Deleted · u undo")&&!text.contains("Always run the tests first."),"{text}");
+}
+
+#[test]
+fn p_toggles_a_habit_between_its_project_and_everywhere() {
+    for (project,everywhere) in [(Some(PROJECT),true),(None,false)] {
+        let host=Host::new(vec![habit("habit-a","Always run the tests first.",project,SEEN_AT_MS)]);
+        let (mut app,mut screen)=open_habits(&host);
+        app.handle(Key::Char('p'),&mut screen);
+        let mutations=host.mutations();assert_eq!(mutations.len(),1,"p submits without a review");
+        let action=&mutations[0]["action"];
+        assert_eq!((action["action"].as_str(),action["habit"].as_str(),action["everywhere"].as_bool()),(Some("rescope_habit"),Some("habit-a"),Some(everywhere)));
+        assert!(!rendered(&mut app,120,45).contains("Host result"));
+    }
+}
+
+#[test]
+fn a_failed_habit_change_says_so_and_offers_no_undo() {
+    let host=Host::new(vec![habit("habit-a","Always run the tests first.",None,SEEN_AT_MS)]);
+    let (mut app,mut screen)=open_habits(&host);
+    host.mutation_replies.lock().unwrap().push_back(json!({"error":"no project to scope to"}));
+    app.handle(Key::Char('p'),&mut screen);
+    let text=rendered(&mut app,120,45);
+    assert!(text.contains("no project to scope to")&&!text.contains("u undo"),"{text}");
+    host.mutation_replies.lock().unwrap().push_back(json!({"error":"habit not found"}));
+    app.handle(Key::Char('x'),&mut screen);
+    let text=rendered(&mut app,120,45);
+    assert!(text.contains("habit not found")&&!text.contains("u undo"),"{text}");
+}
+
+#[test]
+fn enter_shows_where_a_habit_came_from() {
+    let mut corrected=answer("answer-1","received");
+    corrected["overrule"]=json!({"id":"overrule-habit-a","correction":"Never touch the public API.","delivery":"received","created_at_ms":ANSWER_TIME_MS+1000});
+    let mut theirs=answer("answer-theo","received");theirs["source"]=json!("theo");theirs["answer"]=json!("Keep the old endpoint.");
+    let mut from_answer=habit("habit-b","Keep the old endpoint.",None,SEEN_AT_MS);from_answer["source"]=json!("theo_answer");from_answer["source_kind"]=json!("theo_answer");
+    from_answer["source_id"]=json!("answer-theo");from_answer["reason"]=json!("Theo said so twice.");
+    let mut from_message=habit("habit-c","Write tests first.",None,SEEN_AT_MS);from_message["source"]=json!("theo_answer");from_message["source_kind"]=json!("theo_message");
+    from_message["source_id"]=json!("stop-9");from_message["stopped_at_ms"]=json!(ANSWER_TIME_MS);
+    for (record,expected) in [
+        (habit("habit-a","Never touch the public API.",Some(PROJECT),SEEN_AT_MS),vec!["From your overrule","Your correction: Never touch the public API.","The Chief's answer it corrected: Use option B.","Session: Fix login · shop"]),
+        (from_answer,vec!["From your answer","Your answer: Keep the old endpoint.","Why the Chief added it: Theo said so twice.","Session: Fix login · shop"]),
+        (from_message,vec!["From your message","Session: Fix login · shop",&format!("Stopped at {}",cockpit::chief::view::since_label(ANSWER_TIME_MS,chrono::Local::now().date_naive()))]),
+    ] {
+        let host=Host::new(vec![record,corrected.clone(),theirs.clone()]);name_the_session(&host,"Fix login · shop");
+        let (mut app,mut screen)=open_habits(&host);
+        app.handle(Key::Enter,&mut screen);
+        let detail=rendered(&mut app,200,60);
+        for line in expected {assert!(detail.contains(line),"{line}: {detail}");}
+        for forbidden in ["\"kind\"","source_id"] {assert!(!detail.contains(forbidden),"{forbidden}: {detail}");}
+    }
+}
+
+#[test]
+fn the_overrule_review_previews_the_exact_habit_it_stores() {
+    let correction=format!("{}\u{202e} END","Use option C and keep the tests green. ".repeat(20));
+    for (project,scope) in [(json!(PROJECT),PROJECT_NAME),(Value::Null,"everywhere")] {
+        let mut sent=answer("answer-1","received");sent["project"]=project;
+        let mut view=cockpit::chief::view::ChiefView::new(snapshot(vec![sent]));
+        view.open_answers(None);
+        view.handle(Key::Char('o'));view.handle(Key::Paste(correction.clone()));view.handle(Key::Enter);
+        let review=view.detail().join("\n");
+        let stored=cockpit::chief::store::habit_text(&correction);
+        assert!(stored.chars().count()==500&&stored.ends_with('…'),"the fixture is cut");
+        let expected=format!("Adds a habit: {} · {scope}",cockpit::approval::escape_hiding(&stored,"",""));
+        assert!(review.contains(&expected),"{expected}\n{review}");
+        assert!(!review.contains('\u{202e}'),"{review}");
+    }
+}
+
+#[test]
+fn an_answer_row_names_the_habits_it_used() {
+    let mut used=answer("answer-1","received");
+    used["habits"]=json!([{"id":"habit-a","text":"Always run the tests first."},{"id":"habit-b","text":"Prefer small commits."},{"id":"habit-c","text":"Keep replies short."}]);
+    let mut single=answer("answer-2","received");single["created_at_ms"]=json!(ANSWER_TIME_MS-60_000);single["habits"]=json!([{"id":"habit-b","text":"Prefer small commits."}]);
+    let mut none=answer("answer-3","received");none["created_at_ms"]=json!(ANSWER_TIME_MS-120_000);none["habits"]=json!([]);
+    let host=Host::new(vec![used,single,none]);let (mut app,_)=open_answers(&host);
+    let lines=lines_of(&mut app,160,45);let text=lines.join("\n");
+    assert!(text.contains("sent · The task names option B. · habits: Always run the tests first. +2"),"{text}");
+    assert!(text.contains("sent · The task names option B. · habits: Prefer small commits.│")||lines.iter().any(|line|line.trim_end().trim_end_matches('│').trim_end().ends_with("habits: Prefer small commits.")),"{text}");
+    assert_eq!(lines.iter().filter(|line|line.contains("habits:")).count(),2,"an answer without habits names none: {text}");
+}
+
+#[test]
+fn opening_the_habits_page_clears_new() {
+    let host=Host::new(vec![habit("habit-a","Always run the tests first.",None,SEEN_AT_MS+60_000)]);
+    habits_seen_at(SEEN_AT_MS);
+    let before=chrono::Utc::now().timestamp_millis();
+    let (mut app,mut screen)=open_habits(&host);
+    assert!(rendered(&mut app,120,45).contains("new Always run the tests first."),"the page tags what was new when it opened");
+    let saved: i64=fs::read_to_string(cockpit::paths::chief_habits_seen_at()).unwrap().trim().parse().unwrap();
+    assert!(saved>=before,"opening the page saves when Theo saw the habits");
+    app.handle(Key::Esc,&mut screen);
+    let root=rendered(&mut app,120,45);
+    assert!(root.contains("Habits · 1")&&!root.contains("Habits · 1 · "),"{root}");
+}
+
+#[test]
+fn no_project_colour_is_amber() {
+    for project in ["a-long-canonical-project","vitals","agent-cockpit","dotfiles","shop","webshop","x","yy"] {
+        assert_ne!(cockpit::app::project_color(project),cockpit::app::YELLOW,"{project}");
+    }
+}
+
+#[test]
+fn opening_habits_after_a_failed_read_keeps_them_new() {
+    let host=Host::new(vec![habit("habit-a","Always run the tests first.",None,SEEN_AT_MS+60_000)]);
+    habits_seen_at(SEEN_AT_MS);
+    let (mut app,mut screen)=host.open();
+    app.handle(Key::Tab,&mut screen);
+    host.pages.lock().unwrap().push_back(json!({"error":"database unavailable"}));
+    screen.picks.push_back("-\tchief".into());app.handle(Key::Char(':'),&mut screen);
+    app.handle(Key::Char('h'),&mut screen);
+    let saved=fs::read_to_string(cockpit::paths::chief_habits_seen_at()).unwrap();
+    assert_eq!(saved.trim(),SEEN_AT_MS.to_string(),"a stale page must not mark habits as seen");
+}
+
+#[test]
+fn opening_habits_saves_when_the_habits_were_read() {
+    let host=Host::new(vec![habit("habit-a","Always run the tests first.",None,SEEN_AT_MS+60_000)]);
+    let (mut app,mut screen)=host.open();
+    std::thread::sleep(Duration::from_millis(30));
+    let after_read=chrono::Utc::now().timestamp_millis();
+    app.handle(Key::Char('h'),&mut screen);
+    let saved: i64=fs::read_to_string(cockpit::paths::chief_habits_seen_at()).unwrap().trim().parse().unwrap();
+    assert!(saved<after_read,"a habit added after the read stays new: saved {saved}, read before {after_read}");
+}
+
+#[test]
+fn an_open_view_rereads_when_a_digest_showed_the_habits() {
+    let host=Host::new(vec![habit("habit-a","Always run the tests first.",None,SEEN_AT_MS+60_000)]);
+    habits_seen_at(SEEN_AT_MS);
+    let (mut app,mut screen)=host.open();
+    assert!(rendered(&mut app,120,45).contains("Habits · 1 · 1 new"));
+    habits_seen_at(SEEN_AT_MS+120_000);
+    keys(&mut app,&mut screen,&[Key::Down,Key::Down,Key::Down,Key::Down,Key::Down,Key::Enter,Key::Esc]);
+    let root=rendered(&mut app,120,45);
+    assert!(root.contains("Habits · 1")&&!root.contains("Habits · 1 · "),"a refresh picks up the digest's seen time: {root}");
+}
+
+#[test]
+fn saving_when_habits_were_seen_never_moves_it_back() {
+    let _host=Host::new(vec![]);
+    habits_seen_at(SEEN_AT_MS);
+    cockpit::chief::save_habits_seen(SEEN_AT_MS-60_000).unwrap();
+    assert_eq!(fs::read_to_string(cockpit::paths::chief_habits_seen_at()).unwrap().trim(),SEEN_AT_MS.to_string());
+    cockpit::chief::save_habits_seen(SEEN_AT_MS+60_000).unwrap();
+    assert_eq!(fs::read_to_string(cockpit::paths::chief_habits_seen_at()).unwrap().trim(),(SEEN_AT_MS+60_000).to_string());
+}
+
+#[test]
+fn saving_when_habits_were_seen_overwrites_a_future_or_garbage_note() {
+    let _host=Host::new(vec![]);
+    let future=chrono::Utc::now().timestamp_millis()+86_400_000;
+    for note in [future.to_string(),"not a time".to_string()] {
+        let path=cockpit::paths::chief_habits_seen_at(); fs::create_dir_all(path.parent().unwrap()).unwrap(); fs::write(&path,&note).unwrap();
+        cockpit::chief::save_habits_seen(SEEN_AT_MS).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap().trim(),SEEN_AT_MS.to_string(),"{note}");
+    }
+}
+
+#[test]
+fn opening_habits_never_moves_the_seen_time_back_in_memory() {
+    use cockpit::chief::view::ChiefView;
+    let mut view=ChiefView::new(json!({"records":[habit("habit-a","Always run the tests first.",None,SEEN_AT_MS+60_000)],"read_at_ms":SEEN_AT_MS}));
+    view.habits_seen_ms=Some(SEEN_AT_MS+120_000);
+    view.handle(Key::Char('h'));
+    assert_eq!(view.habits_seen_ms,Some(SEEN_AT_MS+120_000));
+}
+
+#[test]
+fn a_failed_restore_selects_the_row_it_left() {
+    let first=habit("habit-a","Habit A.",None,SEEN_AT_MS);let second=habit("habit-b","Habit B.",None,SEEN_AT_MS-1_000);
+    let host=Host::new(vec![first.clone(),second.clone()]);
+    host.after_mutations.lock().unwrap().push_back(vec![deleted(first),second]);
+    let (mut app,mut screen)=open_habits(&host);
+    app.handle(Key::Char('x'),&mut screen);
+    host.mutation_replies.lock().unwrap().push_back(json!({"error":"habit not found"}));
+    app.handle(Key::Char('u'),&mut screen);
+    assert!(rendered(&mut app,120,45).contains("habit not found"));
+    assert!(selected_line(&mut app).contains("Habit B."),"{:#?}",lines_of(&mut app,120,45));
 }

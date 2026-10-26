@@ -105,6 +105,8 @@ pub fn alerts() -> PathBuf { state_dir().join("alerts.json") }
 pub fn log() -> PathBuf { state_dir().join("log") }
 /// When the daily digest last printed (epoch ms), next to the cockpit script's digest-day.
 pub fn chief_digest_at() -> PathBuf { state_dir().join("chief-digest-at") }
+/// When Theo last saw his habits (epoch ms): habits created after it are new.
+pub fn chief_habits_seen_at() -> PathBuf { state_dir().join("chief-habits-seen-at") }
 pub fn todo() -> PathBuf { state_dir().join("todo.json") }
 pub fn todo_images() -> PathBuf { state_dir().join("todo-images") }
 pub fn team_database() -> PathBuf { crate::audit::dir().join("teams.sqlite") }

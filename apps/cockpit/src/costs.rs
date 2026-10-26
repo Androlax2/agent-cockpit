@@ -781,22 +781,30 @@ fn digest_session_name(sessions: &[sessions::Session], session_id: &str) -> Stri
 }
 
 fn chief_digest_lines(sessions: &[sessions::Session], chief: &ChiefSection, today: NaiveDate) -> Vec<String> {
-    let (bold, dim, yellow, reset) = ("\x1b[1m", "\x1b[2m", "\x1b[33m", "\x1b[0m");
+    let (bold, dim, yellow, magenta, reset) = ("\x1b[1m", "\x1b[2m", "\x1b[33m", "\x1b[35m", "\x1b[0m");
     let (since_ms, digest) = match chief {
         ChiefSection::Unavailable(reason) => return vec![format!("  {yellow}Chief: unavailable ({}){reset}", chief_view::one_line(reason, 80)), String::new()],
         ChiefSection::Answers { since_ms, digest } => (*since_ms, digest),
     };
     let since = chief_view::since_label(since_ms, today);
+    let mut lines = Vec::new();
     if digest.answered == 0 && digest.escalated == 0 && digest.overruled == 0 {
-        return vec![format!("  {bold}Chief{reset}: nothing answered since {since}"), String::new()];
+        lines.push(format!("  {bold}Chief{reset}: nothing answered since {since}"));
+    } else {
+        lines.push(format!("  {bold}Chief{reset} answered {}, escalated {}, overruled {} since {since}", digest.answered, digest.escalated, digest.overruled));
+        for answer in &digest.lines {
+            let name = digest_session_name(sessions, &answer.session_id);
+            lines.push(format!("    {}", chief_view::answer_summary_line(&name, &answer.question, &answer.answer, chief_view::DIGEST_LINE_WIDTH - 4)));
+        }
+        if digest.more > 0 {
+            lines.push(format!("    {dim}+{} more{reset}", digest.more));
+        }
     }
-    let mut lines = vec![format!("  {bold}Chief{reset} answered {}, escalated {}, overruled {} since {since}", digest.answered, digest.escalated, digest.overruled)];
-    for answer in &digest.lines {
-        let name = digest_session_name(sessions, &answer.session_id);
-        lines.push(format!("    {}", chief_view::answer_summary_line(&name, &answer.question, &answer.answer, chief_view::DIGEST_LINE_WIDTH - 4)));
-    }
-    if digest.more > 0 {
-        lines.push(format!("    {dim}+{} more{reset}", digest.more));
+    if digest.new_habits > 0 {
+        lines.push(format!("  {bold}{magenta}New habits{reset}: {}", digest.new_habits));
+        for habit in &digest.habits {
+            lines.push(format!("    {}", chief_view::habit_summary_line(&habit.text, habit.project.as_deref(), chief_view::DIGEST_LINE_WIDTH - 4)));
+        }
     }
     lines.push(String::new());
     lines
@@ -913,6 +921,14 @@ fn chief_section(since_ms: i64) -> ChiefSection {
     }
 }
 
+/// Up to when the digest showed Theo his new habits: all of them when it listed them all, else only
+/// down to the oldest it listed, so the ones it counted but left out stay new.
+fn habits_seen_after_digest(digest: &chief_store::ChiefDigest, printed_at_ms: i64) -> Option<i64> {
+    if digest.new_habits == 0 { return None; }
+    if digest.new_habits as usize <= digest.habits.len() { return Some(printed_at_ms); }
+    digest.habits.last().map(|oldest_listed| oldest_listed.created_at_ms - 1)
+}
+
 /// cockpit-sidebar digest: the morning digest (cockpit digest shows it).
 pub fn print_digest() -> rusqlite::Result<()> {
     let mut archive = open_archive(&paths::usage_archive())?;
@@ -930,10 +946,13 @@ pub fn print_digest() -> rusqlite::Result<()> {
     let lines = digest_lines(&archive, &sessions::reported(), &rows, Local::now().date_naive(), &chief)?;
     write_out(&(lines.join("\n") + "\n"));
     // Answers that could not be read were not shown, so the next digest still has to cover them.
-    if matches!(chief, ChiefSection::Answers { .. }) {
+    if let ChiefSection::Answers { digest, .. } = &chief {
         let note = paths::chief_digest_at();
         let written = note.parent().map_or(Ok(()), fs::create_dir_all).and_then(|()| fs::write(&note, printed_at_ms.to_string()));
         if let Err(error) = written { util::log_event("ERROR", &format!("digest: cannot save when it printed: {error}")); }
+        if let Some(seen_ms) = habits_seen_after_digest(digest, printed_at_ms) {
+            if let Err(error) = crate::chief::save_habits_seen(seen_ms) { util::log_event("ERROR", &format!("digest: cannot save that it showed the habits: {error}")); }
+        }
     }
     Ok(())
 }

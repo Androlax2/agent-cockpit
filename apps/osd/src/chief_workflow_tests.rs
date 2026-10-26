@@ -311,7 +311,7 @@ fn admitted_stop_bench() -> (Bench, String) {
 fn answered_stop_bench() -> (Bench, String) {
     let (mut bench, stop) = admitted_stop_bench();
     crate::teams::request(&mut bench.registry, 20, AgentAction::Chief { request: ChiefAgentAction::Answer {
-        stop: stop.clone(), text: "Use option A.".into(), reason: "The task notes keep the old API.".into(),
+        stop: stop.clone(), text: "Use option A.".into(), reason: "The task notes keep the old API.".into(), habits: vec![],
     }}).unwrap().result.unwrap();
     (bench, stop)
 }
@@ -447,7 +447,7 @@ fn form_reply_bench() -> Bench {
     bench.registry.teams.as_ref().unwrap().execute("UPDATE chief_stops SET boundary=?2,bundle=json_set(bundle,'$.question',json(?3)) WHERE id=?1",
         (&stop, format!("needs-you:{since}"), json!({"header":"Option","question":"Which option?","options":["A","B"],"question_count":1}).to_string())).unwrap();
     crate::teams::request(&mut bench.registry, 20, AgentAction::Chief { request: ChiefAgentAction::AnswerForm {
-        stop: stop.clone(), choice: "B".into(), reason: "The task notes pick B.".into(),
+        stop: stop.clone(), choice: "B".into(), reason: "The task notes pick B.".into(), habits: vec![],
     }}).unwrap().result.unwrap();
     let entry = bench.registry.sessions.get_mut(STOPPED_WORKER).unwrap();
     entry.state = "needs-you".into(); entry.needs_input = false;
