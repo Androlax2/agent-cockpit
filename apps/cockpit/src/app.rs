@@ -1921,7 +1921,7 @@ impl App {
                         };
                         let age = members.iter().map(|session| session.started.unwrap_or(session.since)).min().map(util::age).unwrap_or_default();
                         let accent = (row_group == Attention::NeedsYou).then_some(bold(YELLOW));
-                        lines.push(Line { segments: vec![segment(0, glyph, bold(tint)), segment(2, format!("{marker} Team of {}", sidebar::member_count(snapshot, task, &running)), bold(FG))],
+                        lines.push(Line { segments: vec![segment(0, glyph, bold(tint)), segment(2, match sidebar::member_count(snapshot, task, &running) { 0 => format!("{marker} Team"), count => format!("{marker} Team of {count}") }, bold(FG))],
                             right: vec![part(age, dim(FG_DARK))], item: Some(index), accent, ..Line::default() });
                         let project = sidebar::project_name(snapshot, task, &running);
                         lines.push(Line { segments: why_segments(&project, &self.team_task_title(snapshot, task)), item: Some(index), accent, ..Line::default() });
@@ -1964,13 +1964,24 @@ impl App {
             let text_style = if card.group == Attention::Quiet { style(FG_DARK) } else { bold(FG) };
             // Until the grouping replaces continuity updates (todo f192c901), an unseen result or new question stays marked.
             let updates = self.continuity.as_ref().ok().map(|state| state.updates()).unwrap_or_default();
-            let mut right: Vec<Part> = updates.iter().filter(|update| update.session == session.session).map(|update| part(
-                match update.kind { crate::continuity::UpdateKind::Result => "unseen result", crate::continuity::UpdateKind::Question => "new question" }, style(MAGENTA))).collect();
-            if let Some(answers) = self.chief_answers.get(&session.session) { right.push(part(format!("Chief ✓{}", answers.count), dim(FG_DARK))); }
+            // Chief ✓N leads line one when it fits beside the age, else it opens line two.
+            let chief_count = self.chief_answers.get(&session.session).map(|answers| format!("Chief ✓{}", answers.count));
+            let (chief_on_line_one, chief_on_line_two) = match chief_count {
+                Some(count) if width_of(&count) + 2 + width_of(&card.age) <= session_card_right_room(self.width, 2) => (Some(count), None),
+                other => (None, other),
+            };
+            let mut right: Vec<Part> = chief_on_line_one.into_iter().map(|count| part(count, dim(FG_DARK))).collect();
+            right.extend(updates.iter().filter(|update| update.session == session.session).map(|update| part(
+                match update.kind { crate::continuity::UpdateKind::Result => "unseen result", crate::continuity::UpdateKind::Question => "new question" }, style(MAGENTA))));
             right.push(part(card.age.clone(), if card.stale { style(YELLOW) } else { dim(FG_DARK) }));
             lines.push(Line { segments: vec![segment(0, card.glyph, bold(card.tint)), segment(2, card.doing.clone(), text_style)],
                 right, item: Some(index), accent, ..Line::default() });
             let mut why = why_segments(&session.project, &sidebar::shown(self.session_display_title(session)));
+            if let Some(count) = chief_on_line_two {
+                let shift = width_of(&count) as u16 + 3;
+                for segment in &mut why { segment.0 += shift; }
+                why.insert(0, segment(2, format!("{count} · "), dim(FG_DARK)));
+            }
             if session.pinned { why.insert(0, segment(0, "⚲", dim(FG_DARK))); }
             lines.push(Line { segments: why, item: Some(index), accent, ..Line::default() });
             if let Some((ask, verb)) = &card.ask { lines.push(ask_bar(index, ask, &card.ask_count, verb)); }

@@ -11325,7 +11325,7 @@ fn chief_answers_host(fixture: &Fixture, counts: Vec<(&str, u32, Vec<Value>)>) {
 }
 
 fn card_of(app: &App, session: &str) -> crate::app::Line {
-    let index = app.sessions.iter().position(|candidate| candidate.session == session).unwrap();
+    let index = app.sidebar_rows.iter().position(|row| matches!(row, crate::teams::sidebar::SidebarRow::Session { session_id } if session_id == session)).unwrap();
     app.panels[1].lines.iter().find(|line| line.item == Some(index)).cloned().unwrap()
 }
 
@@ -11345,7 +11345,7 @@ fn a_card_shows_how_many_answers_the_chief_gave() {
     assert_ne!(count.style.fg, crate::app::style(crate::app::YELLOW).fg);
     assert_eq!(card.right[0].text, "Chief ✓2", "the count comes before the activity and age");
     assert_eq!(card.right.len(), 2);
-    app.panels[1].selected = 0;
+    app.panels[1].selected = app.sidebar_rows.iter().position(|row| matches!(row, crate::teams::sidebar::SidebarRow::Session { session_id } if session_id == SESSION_A)).unwrap();
     render(&mut app, 100, 40);
     let badges = app.panels[1].fixed_bottom.iter().flat_map(|line| line.right.iter()).find(|part| part.text == "Chief ✓2").expect("badge in the selected card");
     assert!(badges.style.add_modifier.contains(Modifier::DIM));
@@ -11359,7 +11359,7 @@ fn a_card_without_chief_answers_shows_no_count() {
     let mut app = fixture.app();
     app.check_team();
     app.build();
-    app.panels[1].selected = app.sessions.iter().position(|candidate| candidate.session == SESSION_B).unwrap();
+    app.panels[1].selected = app.sidebar_rows.iter().position(|row| matches!(row, crate::teams::sidebar::SidebarRow::Session { session_id } if session_id == SESSION_B)).unwrap();
     let rendered = buffer_rows(&render(&mut app, 100, 40)).join("\n");
     assert_eq!(rendered.matches("Chief ✓").count(), 2, "one card line and one selected badge for the single session with answers: {rendered}");
     assert!(card_of(&app, SESSION_A).right.iter().all(|part| !part.text.contains("Chief")));
@@ -11375,7 +11375,7 @@ fn a_card_without_room_on_line_one_puts_the_count_in_line_two() {
     app.check_team();
     app.width = 26;
     app.build();
-    let index = 0;
+    let index = app.sidebar_rows.iter().position(|row| matches!(row, crate::teams::sidebar::SidebarRow::Session { session_id } if session_id == SESSION_A)).unwrap();
     let lines: Vec<_> = app.panels[1].lines.iter().filter(|line| line.item == Some(index)).collect();
     assert!(lines[0].right.iter().all(|part| !part.text.contains("Chief")));
     assert!(lines[1].texts().starts_with("Chief ✓3 · "), "{}", lines[1].texts());
@@ -11444,7 +11444,7 @@ fn c_opens_the_answers_of_the_selected_session() {
     let mut app = fixture.app();
     app.check_team();
     app.build();
-    app.panels[1].selected = app.sessions.iter().position(|candidate| candidate.session == SESSION_C).unwrap();
+    app.panels[1].selected = app.sidebar_rows.iter().position(|row| matches!(row, crate::teams::sidebar::SidebarRow::Session { session_id } if session_id == SESSION_C)).unwrap();
     app.handle(Key::Char('c'), &mut FakeScreen::default());
     let rendered = buffer_rows(&render(&mut app, 100, 40)).join("\n");
     assert!(rendered.contains("Answers · ses_…00beef · Chief ✓1 this task"), "the caption states the card's rule: {rendered}");
@@ -11504,7 +11504,7 @@ fn c_in_the_session_details_opens_the_answers_of_that_session() {
     let mut app = fixture.app();
     app.check_team();
     app.build();
-    app.panels[1].selected = app.sessions.iter().position(|candidate| candidate.session == SESSION_C).unwrap();
+    app.panels[1].selected = app.sidebar_rows.iter().position(|row| matches!(row, crate::teams::sidebar::SidebarRow::Session { session_id } if session_id == SESSION_C)).unwrap();
     let details = open_details(&mut app);
     assert!(details.contains("c all answers"));
     app.handle(Key::Char('c'), &mut FakeScreen::default());
