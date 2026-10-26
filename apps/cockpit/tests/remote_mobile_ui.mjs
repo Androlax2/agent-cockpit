@@ -17,6 +17,10 @@ class Element {
     this.children.splice(index, 0, child); child.parent = this;
   }
   getBoundingClientRect() { return { top: 0, bottom: 100 }; }
+  getClientRects() {
+    for (let node = this; node; node = node.parent) { if (node.hidden) return []; }
+    return [this.getBoundingClientRect()];
+  }
   setAttribute(name, value) { this.attributes[name] = String(value); }
   removeAttribute(name) { delete this.attributes[name]; }
   getAttribute(name) { return this.attributes[name]; }
@@ -59,6 +63,7 @@ async function startPage({ sessions, approvals = [], inputs = [], messages = [],
     window: { navigator: {}, matchMedia: () => ({ matches: false }), addEventListener: (name, handler) => { listeners[name] = handler; } },
     fetch: async (path, options = {}) => {
       server.requests.push({ path, method: options.method });
+      if (path === "/api/state" && server.unpaired) return { status: 401, ok: false, text: async () => "Pair this phone again" };
       if (options.method === "POST") server.posts.push({ path, body: options.body === undefined ? undefined : JSON.parse(options.body) });
       if (path === "/api/chief" && options.method === "POST" && server.chiefPost) return server.chiefPost();
       if (path === "/api/chief" && options.method !== "POST" && server.chiefFetch) return server.chiefFetch();
@@ -86,6 +91,32 @@ const ASLEEP = [{ session: "s1", project: "Shop", agent: "claude", state: "aslee
                   features: ["dialogs", "interrupt", "remote_control"] }];
 
 const tests = {
+  async "expired pairing closes Chief and history cannot reopen cached actions"() {
+    const page = await startPage({ sessions: SESSIONS });
+    page.run('openChief("habits"); openChief("answers")');
+    page.server.unpaired = true;
+    await page.run("refresh()");
+    assert.equal(page.roots.pairing.hidden, false);
+    assert.equal(page.roots.chief.hidden, true);
+    assert.equal(page.roots.detail.inert, false);
+    page.history.back();
+    assert.equal(page.roots.chief.hidden, true);
+    page.run('openChief("habits")');
+    assert.equal(page.roots.chief.hidden, true);
+  },
+
+  async "notification navigation closes Chief for the same or another session"() {
+    for (const target of ["s1", "s2"]) {
+      const page = await startPage({ sessions: [...SESSIONS, { ...SESSIONS[0], session: "s2", project: "Other" }] });
+      page.run('openSession("s1"); openChief("answers", "s1")');
+      page.run(`openSession("${target}")`);
+      assert.equal(page.roots.chief.hidden, true);
+      assert.equal(page.roots.detail.inert, false);
+      assert.equal(page.run("opened"), target);
+      assert.equal(page.location.hash, `#session=${target}`);
+    }
+  },
+
   async "Chief Status updates while open and shows host loss and recovery"() {
     const page = await startPage({ sessions: SESSIONS, chief: { status: "Active", today: { answered: 5, escalated: 1 }, counts: [], answers: [], habits: [], escalations: [] } });
     page.run('showTab("status")'); await settle();

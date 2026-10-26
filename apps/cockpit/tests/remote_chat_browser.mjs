@@ -16,6 +16,8 @@ let history = { messages: [{ id: "user", role: "user", text: "Make the mobile co
   { id: "agent", role: "assistant", text: "Ready for your reply.\n\n<img src=x onerror=alert(1)> stays plain text." }], truncated: false };
 let approvals = [];
 let inputs = [];
+let isPaired = true;
+const otherSession = { ...session, session: "s2", project: "Other session" };
 let chief = { status: "Active", today: { answered: 1, escalated: 1 }, counts: [], answers: [], habits: [], escalations: [] };
 const inputOutput = "1 commit(s) for /home/theo/agent-cockpit, the running copy of agent-cockpit the host runs:\n  [PATCH] chore(cockpit): drop the claude-sessions name\n\n apps/cockpit/tests/cockpit_script.rs  | 34 ----------\n config/bin/.local/bin/claude-sessions |  7 ---\n 3 files changed, 61 deletions(-)\n";
 const posts = [];
@@ -30,12 +32,16 @@ const server = createServer((request, response) => {
     response.end(readFileSync(new URL(path === "/" ? "../assets/remote/page.html" : "../assets/remote/page.js", import.meta.url))); return;
   }
   response.setHeader("Content-Type", "application/json");
+  if (path === "/api/state" && !isPaired) { response.statusCode = 401; response.end("Pair this phone again"); return; }
   if (request.method === "POST") {
     let text = ""; request.on("data", chunk => { text += chunk; });
     request.on("end", () => { posts.push({ path, body: JSON.parse(text) }); response.end(JSON.stringify({ ok: true, message: "sent" })); }); return;
   }
   if (path.startsWith("/api/input/")) { response.setHeader("Content-Type", "text/plain"); response.end(inputOutput); return; }
-  const data = path === "/api/state" ? { sessions: [session], approvals, inputs } : path === "/api/chief" ? chief : path.startsWith("/api/conversation/") ? history : [];
+  const data = path === "/api/state" ? { sessions: [session, otherSession], approvals, inputs }
+    : path === "/api/chief" ? chief : path.startsWith("/api/conversation/") ? history
+    : path === "/api/usage" ? { windows: [], cost: { today: 0, week: 0, month: 0 } }
+    : path === "/api/pulls" ? { pulls: [] } : [];
   response.end(JSON.stringify(data));
 });
 await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
@@ -181,7 +187,31 @@ try {
     assert.equal(await evaluate('Array.from(document.querySelectorAll(".chief-habit button")).every(button => button.getBoundingClientRect().height >= 44)'), true, "habit actions retain touch targets");
     await capture(`mobile-chief-habits-${width}.png`);
   }
-  console.log("real Chromium: 390px/320px layouts, safe text, reply, approval confirmation, focus, reading position, formatting, growing reply, options panel and back gesture passed");
+  await evaluate('history.replaceState(null, "", "/"); closeSession(); showTab("status")');
+  for (let attempt = 0; attempt < 100 && !(await evaluate('document.querySelector("#chief-status button") !== null')); attempt++) await new Promise(resolve => setTimeout(resolve, 20));
+  for (const label of ["Habits", "Answer log"]) {
+    await evaluate(`Array.from(document.querySelectorAll("#chief-status button")).find(button => button.textContent === "${label}").click()`);
+    await evaluate('history.back()');
+    for (let attempt = 0; attempt < 100 && !(await evaluate('document.querySelector("#chief").hidden')); attempt++) await new Promise(resolve => setTimeout(resolve, 20));
+    assert.equal(await evaluate('document.activeElement.textContent'), label, "Back restores the Status opener, not a hidden session control");
+  }
+  for (const target of ["s1", "s2"]) {
+    await evaluate('openSession("s1"); openChief("answers", "s1")');
+    await evaluate(`navigator.serviceWorker.dispatchEvent(new MessageEvent("message", { data: { session: "${target}" } }))`);
+    assert.equal(await evaluate('document.querySelector("#chief").hidden'), true, "notification target is not covered by Chief");
+    assert.equal(await evaluate('document.querySelector("#detail").inert'), false);
+    assert.equal(await evaluate('opened'), target);
+  }
+  await evaluate('openChief("habits"); openChief("answers")');
+  isPaired = false;
+  await evaluate('refresh()');
+  assert.equal(await evaluate('document.querySelector("#chief").hidden'), true, "expired pairing closes Chief");
+  assert.equal(await evaluate('document.querySelector("#pairing").hidden'), false);
+  assert.equal(await evaluate('document.querySelector("#tabs").inert'), false);
+  await evaluate('new Promise(resolve => { window.addEventListener("popstate", resolve, { once: true }); history.back(); })');
+  assert.equal(await evaluate('document.querySelector("#chief").hidden'), true, "history cannot reopen Chief while unpaired");
+  await capture("mobile-chief-expired-pairing.png");
+  console.log("real Chromium: 390px/320px layouts, safe text, reply, approval confirmation, focus, reading position, formatting, growing reply, options panel, back gesture, Chief notification navigation and expired pairing passed");
 } finally {
   browser.kill();
   server.closeAllConnections(); await new Promise(resolve => server.close(resolve));

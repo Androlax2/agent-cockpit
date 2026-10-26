@@ -20,6 +20,7 @@ const loadingConversations = new WeakMap();
 let chiefState = null;
 let chiefError = "Loading Chief…";
 let chiefPage = null;
+let chiefOpener = null;
 let chiefUndo = null;
 const chiefDrafts = new Map();
 const chiefSubmitted = new Set();
@@ -184,7 +185,7 @@ function renderSessionChief() {
   box.dataset.look = look;
   if (!box.querySelector(".chief-records")) {
     const log = element("button", "chief-log");
-    log.onclick = () => openChief("answers", opened);
+    log.onclick = () => openChief("answers", opened, log);
     box.append(element("div", "note chief-notice"), element("div", "chief-records"), log);
   }
   box.querySelector(".chief-notice").textContent = chiefError;
@@ -192,7 +193,9 @@ function renderSessionChief() {
   const log = box.querySelector(".chief-log"); log.hidden = count === 0; log.textContent = `Chief ✓${count} · answers`;
 }
 
-function openChief(page, session = null) {
+function openChief(page, session = null, opener = null) {
+  if (!isPaired) return;
+  chiefOpener = opener;
   chiefPage = { page, session };
   history.pushState({ chief: chiefPage }, "", `#chief=${page}${session ? `&session=${encodeURIComponent(session)}` : ""}`);
   renderChief();
@@ -202,6 +205,7 @@ function openChief(page, session = null) {
 function renderChief() {
   const box = document.getElementById("chief");
   if (!box) return;
+  if (!isPaired) chiefPage = null;
   box.hidden = !chiefPage;
   for (const id of ["detail", "list", "work", "starter", "phone", "approvals", "tabs"]) {
     const background = document.getElementById(id);
@@ -1021,6 +1025,10 @@ function renderPhone() {
 
 // An unpaired phone (the Home Screen app, first time): where to paste the code.
 function renderPairing(message) {
+  chiefPage = null; chiefOpener = null; chiefState = null;
+  ++chiefReadSequence;
+  renderChief();
+  document.getElementById("chief")?.replaceChildren();
   for (const id of ["approvals", "list", "detail", "phone", "starter", "work", "tabs"]) document.getElementById(id).hidden = true;
   const box = document.getElementById("pairing");
   if (!box.hidden) return;
@@ -1418,7 +1426,7 @@ function renderChiefStatus(chief) {
     const today = chiefState.today;
     chief.append(element("p", "", `${chiefState.status}${today ? ` · answered ${today.answered} today · ${today.escalated} sent to you` : " · today's counts unavailable"}`));
     for (const [page, label] of [["answers", "Answer log"], ["habits", "Habits"]]) {
-      const button = element("button", "", label); button.onclick = () => openChief(page); chief.append(button);
+      const button = element("button", "", label); button.onclick = () => openChief(page, null, button); chief.append(button);
     }
   }
 }
@@ -1526,6 +1534,7 @@ async function refresh() {
 // of leaving the page.
 function openSession(session) {
   if (!session) return;
+  chiefPage = null; chiefOpener = null; renderChief();
   if (tab !== "sessions") showTab("sessions");
   if (sessionInAddress() !== session) history.pushState({ isSessionView: true }, "", `#session=${encodeURIComponent(session)}`);
   showSession(session);
@@ -1561,12 +1570,14 @@ window.addEventListener("popstate", () => {
   const wasChief = chiefPage;
   chiefPage = history.state?.chief || null;
   renderChief();
+  if (!isPaired) return;
   if (chiefPage) return;
   const session = sessionInAddress();
   if (session !== null && tab === "sessions") showSession(session);
   else if (session === null && opened !== null) closeSession();
   if (wasChief) {
-    const trigger = document.getElementById("detail").querySelector(".chief-log") || document.getElementById("tab-status");
+    const trigger = [chiefOpener, document.getElementById("detail").querySelector(".chief-log"), document.getElementById(`tab-${tab}`)]
+      .find(button => button && button.getClientRects().length > 0);
     trigger?.focus();
   }
 });
