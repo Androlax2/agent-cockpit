@@ -603,6 +603,26 @@ fn cancel_member_messages(connection: &Connection, task_key: &str, session: &str
     Ok(())
 }
 
+/// Called inside TODO reconciliation's transaction; a runtime change alone never releases a member.
+pub(crate) fn release_completed_task(transaction: &rusqlite::Transaction<'_>, project: Option<&str>, task_id: &str) -> Result<(), TeamError> {
+    let task_keys: Vec<String> = transaction.prepare("SELECT task_key FROM teams WHERE task_id=?1 AND (?2 IS NULL OR project=?2)")?
+        .query_map(params![task_id, project], |row| row.get(0))?.collect::<Result<_, _>>()?;
+    for task_key in task_keys {
+        let members: Vec<String> = transaction.prepare("SELECT session_id FROM members WHERE task_key=?1")?
+            .query_map([&task_key], |row| row.get(0))?.collect::<Result<_, _>>()?;
+        for session in &members { cancel_member_messages(transaction, &task_key, session)?; }
+        if transaction.execute("DELETE FROM members WHERE task_key=?1", [&task_key])? > 0 {
+            transaction.execute("UPDATE teams SET revision=revision+1 WHERE task_key=?1", [&task_key])?;
+        }
+        // Late starts and approvals must not recreate the completed team's memberships.
+        transaction.execute("UPDATE spawns SET status='superseded' WHERE task_key=?1 AND status IN ('pending','started')", [&task_key])?;
+        transaction.execute("UPDATE proposals SET status='superseded' WHERE task_key=?1 AND status='pending'", [&task_key])?;
+        transaction.execute("UPDATE handoffs SET status='superseded' WHERE task_key=?1 AND status='current'", [&task_key])?;
+        transaction.execute("DELETE FROM team_qa WHERE task_key=?1", [&task_key])?;
+    }
+    Ok(())
+}
+
 struct ActiveMember { role: String, epoch: String, agent: String, runtime: String }
 
 /// One sender budget across both collaboration scopes; call after replay detection, before insertion.

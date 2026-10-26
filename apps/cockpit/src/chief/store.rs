@@ -1648,6 +1648,7 @@ pub fn reconcile_todos(connection: &mut Connection, todos: &crate::todo::TodoLis
                 params![project,task,item.session(),crate::teams::store::identifier()?])?;
             transaction.execute("UPDATE scheduling_reservations SET worker=?3 WHERE project=?1 AND task_id=?2 AND worker=''", params![project,task,item.session()])?;
         } else if item.status() == "done" {
+            crate::teams::store::release_completed_task(&transaction, Some(&project), &task)?;
             transaction.execute("DELETE FROM scheduling_reservations WHERE project=?1 AND task_id=?2 AND token NOT IN (SELECT token FROM legacy_launches WHERE state IN ('reserved','submitting','uncertain'))", params![project,task])?;
         }
     }
@@ -1659,6 +1660,7 @@ pub fn reconcile_todos(connection: &mut Connection, todos: &crate::todo::TodoLis
             transaction.execute("UPDATE scheduling_reservations SET worker=?2 WHERE task_id=?1 AND worker=''",
                 params![task,issue["session"].as_str().unwrap_or("")])?;
         } else if issue["status"] == "done" {
+            crate::teams::store::release_completed_task(&transaction, None, task)?;
             transaction.execute("DELETE FROM scheduling_reservations WHERE task_id=?1 AND token NOT IN (SELECT token FROM legacy_launches WHERE state IN ('reserved','submitting','uncertain'))", [task])?;
         }
     }
