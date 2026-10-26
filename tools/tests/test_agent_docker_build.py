@@ -153,6 +153,13 @@ class DockerBuildTests(unittest.TestCase):
             mode = int(fields.get('mode', '0400'), 8)
             self.assertTrue(mode & 0o004, f'non-root apt/PHP cannot read {mount}')
 
+    def test_node_fetch_uses_the_existing_proxy_only_during_build_steps(self):
+        result = self.build()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        text = self.records()[-1]['text']
+        self.assertIn('NODE_USE_ENV_PROXY=1', text)
+        self.assertNotIn('\nENV ', text)
+
     def test_shell_run_keeps_quoting_pipeline_and_continuation_comments(self):
         self.dockerfile.write_text('FROM ubuntu\nRUN printf "%s" "a b" | cat && \\\n# comment\n    echo "$HOME"\n')
         result = self.build()
@@ -196,6 +203,44 @@ class DockerBuildTests(unittest.TestCase):
         result = self.build()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(self.records()[-1]['text'].endswith('printf hello\\\\\n'))
+
+    def test_three_trailing_backslashes_do_not_merge_run_instructions(self):
+        self.dockerfile.write_text('FROM ubuntu\nRUN printf hello' + '\\' * 3 + '\nRUN echo second\n')
+        result = self.build()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = self.records()[-1]['text'].splitlines()
+        self.assertEqual(sum(line.startswith('RUN ') for line in lines), 2)
+        self.assertTrue(lines[-1].endswith('echo second'))
+
+    def test_leading_shell_bracket_test_is_not_exec_json(self):
+        self.dockerfile.write_text('FROM ubuntu\nRUN [ -d /tmp ] && echo ok\n')
+        result = self.build()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        command = self.records()[-1]['text'].split('; ', 1)[1]
+        executed = subprocess.run(['/bin/sh', '-c', command], capture_output=True, text=True)
+        self.assertEqual(executed.returncode, 0, executed.stderr)
+        self.assertEqual(executed.stdout, 'ok\n')
+
+    def test_php_preserves_inherited_scan_paths_in_shell_and_exec_run(self):
+        for inherited, expected in [(None, ':/run/agent-build-trust/php'),
+                                    ('', '/run/agent-build-trust/php'),
+                                    ('/custom/php:/extensions', '/custom/php:/extensions:/run/agent-build-trust/php')]:
+            for instruction in ['RUN printf "%s" "$PHP_INI_SCAN_DIR"',
+                                'RUN ["python3", "-c", "import os; print(os.environ[\\"PHP_INI_SCAN_DIR\\"], end=\\"\\")"]']:
+                with self.subTest(inherited=inherited, instruction=instruction):
+                    self.dockerfile.write_text('FROM ubuntu\n' + instruction + '\n')
+                    result = self.build()
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    run = next(line for line in self.records()[-1]['text'].splitlines() if line.startswith('RUN '))
+                    body = re.sub(r'^RUN (?:--mount=\S+ )+', '', run)
+                    command = json.loads(body) if body.startswith('[') else ['/bin/sh', '-c', body]
+                    environment = os.environ.copy()
+                    environment.pop('PHP_INI_SCAN_DIR', None)
+                    if inherited is not None:
+                        environment['PHP_INI_SCAN_DIR'] = inherited
+                    executed = subprocess.run(command, env=environment, capture_output=True, text=True)
+                    self.assertEqual(executed.returncode, 0, executed.stderr)
+                    self.assertEqual(executed.stdout, expected)
 
     def test_unsupported_syntax_fails_before_docker(self):
         for content in ['FROM ubuntu\nRUN <<EOF\necho hi\nEOF\n', 'FROM ubuntu\nSHELL ["fish", "-c"]\n',

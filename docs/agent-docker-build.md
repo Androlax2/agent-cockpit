@@ -37,6 +37,8 @@ Every supported `RUN` receives required secret mounts under
 Python Requests and Node, plus temporary apt and PHP configuration. These settings
 are not Dockerfile `ENV` instructions and do not modify the image's system CA
 store. Installing or upgrading `ca-certificates` remains possible during the step.
+PHP's existing scan directories are preserved. `NODE_USE_ENV_PROXY=1` enables
+Node/Corepack's use of the existing proxy settings during build steps only.
 
 The generated Dockerfile and build configuration live in a private temporary
 directory outside the build context. They are removed when Docker exits or the

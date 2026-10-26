@@ -26,9 +26,9 @@ TRUST_ENV = {
     'CURL_CA_BUNDLE': SECRET_TARGETS['agent-build-ca'],
     'GIT_SSL_CAINFO': SECRET_TARGETS['agent-build-ca'],
     'NODE_EXTRA_CA_CERTS': SECRET_TARGETS['agent-build-ca'],
+    'NODE_USE_ENV_PROXY': '1',
     'REQUESTS_CA_BUNDLE': SECRET_TARGETS['agent-build-ca'],
     'APT_CONFIG': SECRET_TARGETS['agent-build-apt'],
-    'PHP_INI_SCAN_DIR': f':{TRUST_ROOT}/php',
 }
 BUILD_FIELDS = {
     'context', 'dockerfile', 'args', 'target', 'secrets', 'ssh', 'labels',
@@ -64,6 +64,9 @@ def transform_dockerfile(source):
     mounts = ' '.join(f'--mount=type=secret,id={name},target={target},mode=0444,required=true'
                       for name, target in SECRET_TARGETS.items())
     assignments = [f'{name}={value}' for name, value in TRUST_ENV.items()]
+    # An unset scan path means PHP's compiled default; an explicitly empty one means none.
+    exports = (f'export {shlex.join(assignments)} '
+               f'PHP_INI_SCAN_DIR="${{PHP_INI_SCAN_DIR-:}}${{PHP_INI_SCAN_DIR:+:}}{TRUST_ROOT}/php"; ')
     output = []
     pending = ''
     start = 0
@@ -86,7 +89,8 @@ def transform_dockerfile(source):
                 output.append(line)
             continue
         trimmed = line.rstrip()
-        continued = (len(trimmed) - len(trimmed.rstrip('\\'))) % 2 == 1
+        # Match BuildKit: an escape token preceded by another is not a continuation.
+        continued = trimmed.endswith('\\') and not trimmed.endswith('\\\\')
         pending += line.rstrip()[:-1] if continued else line
         if continued:
             continue
@@ -109,13 +113,18 @@ def transform_dockerfile(source):
                 raise ValueError(f'{location}: unsupported RUN flag syntax')
             flags.append(flag[1])
             body = flag[2]
+        command = None
         if body.startswith('['):
-            command = json.loads(body)
+            try:
+                command = json.loads(body)
+            except json.JSONDecodeError:
+                pass  # BuildKit treats non-JSON bracket expressions as shell form.
+        if command is not None:
             if not isinstance(command, list) or not command or not all(isinstance(arg, str) for arg in command):
                 raise ValueError(f'{location}: invalid exec RUN')
-            body = json.dumps(['/usr/bin/env', *assignments, *command])
+            body = json.dumps(['/bin/sh', '-c', exports + 'exec "$@"', 'agent-docker-build', *command])
         else:
-            body = f'export {shlex.join(assignments)}; {body}'
+            body = exports + body
         output.append(' '.join(['RUN', *flags, mounts, body]))
     if pending:
         raise ValueError(f'{source}:{start}: unfinished continuation')
