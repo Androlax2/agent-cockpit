@@ -55,10 +55,7 @@ const NOTES_MAX: usize = 4000;
 const WHY_MAX: usize = 600;
 const DECLINED_KEPT: usize = 200;
 const DONE_KEPT_DAYS: i64 = 7;
-/// Open "blocked" reports one project may have in the agent-cockpit list at once: a session stuck in a
-/// loop must not flood it.
-const BLOCKED_OPEN_MAX: usize = 3;
-/// The same caps for the proposals one project files in another project's list (claude-todo stack,
+/// Open items one project files in another project's list (claude-todo stack,
 /// claude-todo propose --project).
 const ELSEWHERE_OPEN_MAX: usize = 3;
 /// Updates read per apply: the rest of a flood is dropped, and logged.
@@ -990,8 +987,8 @@ impl TodoList {
 
     /// A blocked report (claude-todo blocked) from a session of any project: an item of agent-cockpit,
     /// queued for a fresh agent-cockpit session on the next tick. The reporter is the project of the folder
-    /// the sender's sandbox started in. The same open report is filed once; a project has at most
-    /// BLOCKED_OPEN_MAX open.
+    /// the sender's sandbox started in. Reuse duplicates, but keep distinct failures visible;
+    /// request retention and queue limits bound floods independently of unresolved reports.
     fn file_blocked_report(&mut self, update: &Map<String, Value>, session: &str, started_in: &str, reporter: &str) -> Result<(), String> {
         let field = |key: &str, limit: usize| multiline(update.get(key).and_then(Value::as_str).unwrap_or(""), limit);
         let what = util::collapse(&field("text", 300));
@@ -1005,9 +1002,6 @@ impl TodoList {
             self.remember_filing(&existing, update);
             self.try_save().map_err(|error| format!("cannot save reused blocked report: {error}"))?;
             return Ok(());
-        }
-        if open_reports.len() >= BLOCKED_OPEN_MAX {
-            return Err(format!("blocked report from {reporter} dropped: {BLOCKED_OPEN_MAX} already open"));
         }
         let cockpit_work = paths::cockpit_work().to_string_lossy().into_owned();
         let id = self.add_unsaved("agent-cockpit", &cockpit_work, &title);
@@ -1033,8 +1027,8 @@ impl TodoList {
     /// A problem in the own code of a sandbox stack repository (claude-todo stack <repo>) from a
     /// session of any project: a proposal in that repository's list, which becomes work only once
     /// Theo approves it. Blocks from greywall.json stay blocked reports for agent-cockpit. An unknown
-    /// repository, or one without its checkout, is refused, never filed elsewhere. Same caps as
-    /// blocked reports, per reporting project.
+    /// repository, or one without its checkout, is refused, never filed elsewhere. Open proposals
+    /// are capped per reporting project.
     fn file_stack_proposal(&mut self, repo: &str, update: &Map<String, Value>, session: &str, started_in: &str, reporter: &str) -> Result<(), String> {
         let checkout = stack_checkout(repo)
             .ok_or_else(|| format!("stack report from {reporter} refused: {:?} is not a stack repository", repo.chars().take(60).collect::<String>()))?;

@@ -9004,15 +9004,18 @@ fn a_blocked_report_lands_queued_in_the_agent_cockpit_list() {
 }
 
 #[test]
-fn the_same_open_report_is_filed_once_and_a_project_gets_three_at_most() {
+fn distinct_blocked_reports_survive_three_open_reports_and_duplicates_are_reused() {
     let fixture = Fixture::new();
-    for what in ["one", "one", "two", "three", "four"] {
+    for what in ["one", "two", "three", "four", "one", "four"] {
         report_blocked(&fixture, "opusline", what);
     }
     let mut todos = TodoList::load();
     todos.apply_updates();
     let texts: Vec<String> = todos.items.iter().filter(|item| item.is_blocked_report()).map(|item| item.text()).collect();
-    assert_eq!(texts, ["opusline: one", "opusline: two", "opusline: three"]);
+    assert_eq!(texts, ["opusline: one", "opusline: two", "opusline: three", "opusline: four"]);
+    let saved = TodoList::load();
+    assert_eq!(saved.items.len(), 4);
+    assert!(saved.items.iter().all(|item| saved.is_queued(&item.id())));
 }
 
 #[test]

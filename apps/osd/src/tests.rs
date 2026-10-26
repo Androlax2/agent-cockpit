@@ -3777,7 +3777,7 @@ fn report_filings_use_daemon_verified_receipts_for_success_and_open_caps() {
             let raw = json!({"action": action, "repo": "greyproxy", "text": format!("Work {number}"), "why": "Broken",
                              "request_id": id, "host_approved": true, "receipt_key": "another-project"}).to_string();
             bench.registry.request_from("todo-update", &raw, 500).unwrap();
-            let should_save = number < 3;
+            let should_save = action == "blocked" || number < 3;
             assert_eq!(todos.apply_updates(), usize::from(should_save));
             let path = cockpit::approval::answers_dir(&key, "todos").join(format!("{id}.json"));
             let receipt = cockpit::util::read_json(&path).unwrap();
@@ -3791,6 +3791,27 @@ fn report_filings_use_daemon_verified_receipts_for_success_and_open_caps() {
             assert!(!cockpit::approval::answers_dir("another-project", "todos").join(format!("{id}.json")).exists());
         }
     }
+}
+
+#[test]
+fn blocked_report_floods_are_bounded_by_request_retention() {
+    let mut bench = Bench::new();
+    let (folder, key) = project_folder(&bench);
+    bench.world.borrow_mut().sender_directories.insert(500, folder);
+    let mut todos = cockpit::todo::TodoList::load();
+    for number in 0..64 {
+        let raw = json!({"action": "blocked", "text": format!("Failure {number}"), "why": "Broken",
+                         "request_id": format!("{number:012x}")}).to_string();
+        bench.registry.request_from("todo-update", &raw, 500).unwrap();
+        assert_eq!(todos.apply_updates(), 1);
+    }
+    let raw = json!({"action": "blocked", "text": "Overflow", "why": "Broken",
+                     "request_id": "abcdef123456"}).to_string();
+    let error = bench.registry.request_from("todo-update", &raw, 500).unwrap_err();
+    assert!(error.contains("too many retained todo requests"), "{error}");
+    assert_eq!(todos.apply_updates(), 0);
+    assert_eq!(cockpit::todo::TodoList::load().items.len(), 64);
+    assert!(!cockpit::approval::answers_dir(&key, "todos").join("abcdef123456.json").exists());
 }
 
 #[test]
