@@ -8,7 +8,8 @@
 #
 # --workspace <n>: the workspace Theo picked for a new window. Approving from the cockpit would
 # otherwise open it on the cockpit's workspace (6), which is refused. An already open window stays
-# where it is.
+# where it is. On a workspace already showing another checkout's FigCraft, the new window joins it
+# as a Hyprland tab (hypr/apps/craft.lua); each tab stays its own confined process.
 #
 # --session <id>: reconnect that session even if its tools are still listed: its sandbox and MCP
 # connection may predate this checkout's port. The cockpit restarts it once its turn ends
