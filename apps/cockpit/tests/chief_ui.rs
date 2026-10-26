@@ -1148,7 +1148,8 @@ fn opening_habits_after_a_failed_read_keeps_them_new() {
     let (mut app,mut screen)=host.open();
     app.handle(Key::Tab,&mut screen);
     host.pages.lock().unwrap().push_back(json!({"error":"database unavailable"}));
-    screen.picks.push_back("-\tchief".into());app.handle(Key::Char(':'),&mut screen);
+    app.handle(Key::Esc,&mut screen);
+    app.handle(Key::Char('c'),&mut screen);
     app.handle(Key::Char('h'),&mut screen);
     let saved=fs::read_to_string(cockpit::paths::chief_habits_seen_at()).unwrap();
     assert_eq!(saved.trim(),SEEN_AT_MS.to_string(),"a stale page must not mark habits as seen");

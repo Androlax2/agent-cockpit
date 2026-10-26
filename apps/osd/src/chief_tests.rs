@@ -352,9 +352,11 @@ fn fetched_issue_manual_status_uses_the_real_app_and_host_then_releases() {
         let index=app.todo_entries.iter().position(|entry|entry.key()=="owner/project-a#42").unwrap();
         for _ in 0..index {app.handle(Key::Down,&mut QuietScreen);}
         app.handle(Key::Char('i'),&mut QuietScreen);
+        app.handle(Key::Char('i'),&mut QuietScreen);
         let todos=cockpit::todo::TodoList::load();
         assert_eq!(todos.status_of("owner/project-a#42"),"doing");
         let token=todos.manual_reservation("owner/project-a#42").unwrap();
+        app.handle(Key::Char('i'),&mut QuietScreen);
         app.handle(Key::Char('i'),&mut QuietScreen);
         assert_eq!(cockpit::todo::TodoList::load().status_of("owner/project-a#42"),"todo");
         token

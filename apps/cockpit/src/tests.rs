@@ -771,9 +771,16 @@ fn write_note(app: &mut App, text: &str) {
 }
 
 fn continuity_action(app: &mut App, action: &str, answers: &[&str]) {
-    let mut typed = vec![action];
-    typed.extend_from_slice(answers);
-    app.handle(Key::Char(':'), &mut FakeScreen::typing(&typed));
+    let (panel, action) = action.split_once('\t').expect("action context");
+    let panel = panel.parse::<usize>().unwrap_or(1);
+    app.focus_panel(panel);
+    let key = match action {
+        "updates" => 'u', "queue" => 'Q', "reviewed" => 'v',
+        "defer-20m" | "bring-back" => 'l',
+        "task-trail" => if panel == 3 { 'T' } else { 't' },
+        _ => panic!("unknown test action {action}"),
+    };
+    app.handle(Key::Char(key), &mut FakeScreen::typing(answers));
     app.redraw();
 }
 
@@ -783,6 +790,98 @@ fn continuity_result_row(turn: &str, state: &str) -> Value {
     row["branch"] = json!("feat/vat");
     row["last_result"] = json!({"id":turn,"completed_at":util::now_secs(),"outcome":"tests passed","repository":"acme/shop","branch":"feat/vat"});
     row
+}
+
+#[test]
+fn palette_homes_sessions_queue_and_updates_work_without_a_selection() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    app.handle(Key::Char('u'), &mut FakeScreen::default());
+    assert_eq!(app.message, "no unseen updates or return notes");
+    app.handle(Key::Char('Q'), &mut FakeScreen::default());
+    assert!(buffer_rows(&render(&mut app, 100, 45)).join("\n").contains("Queue"));
+}
+
+#[test]
+fn palette_homes_status_enter_runs_the_selected_service_or_utility() {
+    for (label, program, expected) in [
+        ("Claude", "xdg-open", "xdg-open https://status.claude.com/"),
+        ("Codex", "xdg-open", "xdg-open https://status.openai.com/"),
+        ("Daily digest", "cockpit", "cockpit digest"),
+        ("Clones review", "cockpit", "cockpit clones"),
+    ] {
+        let fixture = Fixture::new();
+        let mut app = fixture.app();
+        app.focus_panel(0);
+        let services = app.panels[0].lines.iter().position(|line| line.texts() == "SERVICES").unwrap();
+        let target = app.panels[0].lines.iter().skip(services).find(|line| line.texts().contains(label) && line.item.is_some())
+            .and_then(|line| line.item).expect("selectable action");
+        for _ in 0..target { app.handle(Key::Down, &mut FakeScreen::default()); }
+        render(&mut app, 40, 18);
+        app.handle(Key::Enter, &mut FakeScreen::default());
+        assert_eq!(fixture.wait_for_calls(program, 1), vec![expected]);
+    }
+}
+
+fn select_status_action(app: &mut App, label: &str) {
+    app.focus_panel(0);
+    let services = app.panels[0].lines.iter().position(|line| line.texts() == "SERVICES").unwrap();
+    let target = app.panels[0].lines.iter().skip(services).find(|line| line.texts().contains(label) && line.item.is_some())
+        .and_then(|line| line.item).expect("selectable Status action");
+    app.panels[0].selected = target;
+}
+
+#[test]
+fn palette_homes_sessions_updates_include_archived_return_notes() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([continuity_result_row("11111111111111111111111111111111", "waiting")]));
+    let mut app = fixture.app();
+    write_note(&mut app, "My next step");
+    fixture.snapshot(json!([]));
+    app.build();
+    app.handle(Key::Char('u'), &mut FakeScreen::typing(&["0"]));
+    let text = buffer_rows(&render(&mut app, 100, 45)).join("\n");
+    assert!(text.contains("tests passed") && text.contains("My next step") && text.contains("Archived"), "{text}");
+}
+
+#[test]
+fn palette_homes_sessions_details_review_only_the_updates_they_displayed() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([continuity_result_row("11111111111111111111111111111111", "waiting")]));
+    let mut app = fixture.app();
+    app.handle(Key::Char('i'), &mut FakeScreen::default());
+    fixture.snapshot(json!([continuity_result_row("22222222222222222222222222222222", "waiting")]));
+    app.build();
+    app.handle(Key::Char('v'), &mut FakeScreen::default());
+    assert!(app.message.contains("marked reviewed"), "{}", app.message);
+    app.build();
+    assert!(texts_with_badges(&app, 1).join("\n").contains("unseen result"));
+}
+
+#[test]
+fn palette_homes_sessions_card_review_leaves_the_question_unanswered() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([continuity_question_row(SESSION_A, "Which provider?")]));
+    let mut app = fixture.app();
+    app.handle(Key::Char('v'), &mut FakeScreen::default());
+    app.build();
+    assert!(app.message.contains("marked reviewed"), "{}", app.message);
+    assert!(app.sessions[0].needs_attention());
+    assert!(!texts_with_badges(&app, 1).join("\n").contains("new question"));
+    assert!(fixture.calls("cockpit").is_empty());
+}
+
+#[test]
+fn palette_homes_sessions_details_open_cross_session_views() {
+    for key in ['u', 'Q'] {
+        let fixture = Fixture::new();
+        fixture.snapshot(json!([continuity_result_row("11111111111111111111111111111111", "waiting")]));
+        let mut app = fixture.app();
+        app.handle(Key::Char('i'), &mut FakeScreen::default());
+        app.handle(Key::Char(key), &mut FakeScreen::typing(&["0"]));
+        let text = buffer_rows(&render(&mut app, 100, 45)).join("\n");
+        assert!(text.contains(if key == 'u' { "Latest turn" } else { "Queue" }), "{text}");
+    }
 }
 
 #[test]
@@ -1214,11 +1313,10 @@ fn continuity_pruned_tasks_open_archived_details_instead_of_being_recreated() {
 }
 
 #[test]
-fn continuity_the_attention_filter_still_delivers_queued_messages_to_hidden_sessions() {
+fn continuity_grouping_still_delivers_queued_messages_to_quiet_sessions() {
     let fixture = Fixture::new();
     fixture.snapshot(json!([session(SESSION_A, "waiting", "runway", "/r/runway", 1), continuity_question_row(SESSION_B, "Retry failures?")]));
     let mut app = fixture.app();
-    continuity_action(&mut app, "1\tattention-filter", &[]);
     crate::prompts::add(SESSION_A, "follow-up").unwrap();
     app.build();
     app.dispatch_prompts();
@@ -1226,12 +1324,11 @@ fn continuity_the_attention_filter_still_delivers_queued_messages_to_hidden_sess
 }
 
 #[test]
-fn continuity_the_attention_filter_hands_a_task_to_the_hidden_viewed_session() {
+fn continuity_grouping_hands_a_task_to_the_quiet_viewed_session() {
     let fixture = Fixture::new();
     fixture.snapshot(json!([session(SESSION_A, "waiting", "runway", "/r/runway", 1), continuity_question_row(SESSION_B, "Retry failures?")]));
     fixture.view(SESSION_A);
     let mut app = fixture.app();
-    continuity_action(&mut app, "1\tattention-filter", &[]);
     app.todos.add("runway", "/r/runway", "add a healthcheck");
     hand_over_first_item(&mut app);
     let calls = fixture.wait_for_calls("cockpit", 1);
@@ -1310,8 +1407,7 @@ fn continuity_deferral_keeps_questions_visible_but_out_of_attention_navigation()
     assert!(app.sessions.iter().any(|session| session.session == SESSION_A));
     app.handle(Key::Char('n'), &mut FakeScreen::default());
     assert_eq!(app.sessions[app.panels[1].selected].session, SESSION_B);
-    continuity_action(&mut app,"1\tattention-filter",&[]);
-    assert_eq!(app.sessions.iter().map(|session| session.session.as_str()).collect::<Vec<_>>(), [SESSION_B]);
+    assert_eq!(app.sessions.len(), 2, "Later keeps both sessions reachable");
     let rows = buffer_rows(&render(&mut app,110,45)).join("\n");
     assert!(rows.contains("1 deferred"), "{rows}");
     assert!(!fixture.calls("cockpit").iter().any(|call| call.contains(" say ")));
@@ -1439,6 +1535,47 @@ fn continuity_pr_deferral_tracks_head_revision_and_review_decision() {
 }
 
 #[test]
+fn palette_homes_pr_later_keeps_the_row_reachable_and_toggles_back() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    app.reviews.set_rows(reviews::parse_reviews(&json!([{"number":61,"title":"VAT","url":"https://github.com/acme/shop/pull/61","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","reviewDecision":"REVIEW_REQUIRED"}]).to_string(), "acme/shop"));
+    app.build();
+    app.focus_panel(2);
+    let before = util::now_secs();
+    app.handle(Key::Char('l'), &mut FakeScreen::default());
+    app.redraw();
+    let expiry = continuity_saved(&fixture)["deferrals"]["pr:acme/shop#61"]["expires_at"].as_i64().expect("saved deferral");
+    assert!((before + 1200..=util::now_secs() + 1200).contains(&expiry));
+    assert_eq!(app.panels[2].items, 1);
+    assert!(texts_with_badges(&app, 2).join("\n").contains("Later"));
+    app.handle(Key::Char('l'), &mut FakeScreen::default());
+    assert!(continuity_saved(&fixture)["deferrals"].as_object().unwrap().is_empty());
+    app.handle(Key::Char('t'), &mut FakeScreen::default());
+    assert!(buffer_rows(&render(&mut app, 100, 45)).join("\n").contains("Task trail"));
+    assert!(fixture.calls("cockpit").is_empty());
+}
+
+#[test]
+fn palette_homes_trails_todo_details_keep_the_inspected_task() {
+    for details in [false, true] {
+        let fixture = Fixture::new();
+        let mut app = fixture.app();
+        let first = app.todos.add("shop", "/r/shop", "Original task");
+        let second = app.todos.add("shop", "/r/shop", "Other task");
+        app.build();
+        app.focus_panel(3);
+        app.panels[3].selected = app.todo_entries.iter().position(|entry| entry.key() == first).unwrap();
+        if details {
+            app.handle(Key::Char('i'), &mut FakeScreen::default());
+            app.panels[3].selected = app.todo_entries.iter().position(|entry| entry.key() == second).unwrap();
+        }
+        app.handle(Key::Char('T'), &mut FakeScreen::default());
+        let text = buffer_rows(&render(&mut app, 100, 45)).join("\n");
+        assert!(text.contains("Task trail") && text.contains("Original task"), "{text}");
+    }
+}
+
+#[test]
 fn continuity_deferral_boundary_is_exactly_twenty_minutes() {
     let fixture = Fixture::new();
     let question = continuity_question_row(SESSION_A,"Which provider?");
@@ -1466,8 +1603,7 @@ fn continuity_deferred_questions_still_block_automatic_queue_work() {
     let key=app.todos.add("shop","/r/shop","Queued job");
     app.todos.toggle_queued(&key);
     continuity_action(&mut app,"1\tdefer-20m",&[]);
-    continuity_action(&mut app,"1\tattention-filter",&[]);
-    assert!(app.sessions.is_empty());
+    assert_eq!(app.sessions.len(), 1);
     app.dispatch_queue();
     assert_eq!(app.todos.status_of(&key),"todo");
     assert!(fixture.calls("cockpit").is_empty());
@@ -2453,7 +2589,7 @@ fn native_titles_identify_tasks_before_long_todo_prompts() {
 }
 
 #[test]
-fn short_labels_keep_the_original_task_title_in_details_and_search() {
+fn short_labels_keep_the_original_task_title_in_details() {
     let fixture = Fixture::new();
     let original = "Finding disk space hogs and freeing storage without removing project data";
     opencode_database_with(&fixture, &[(OPENCODE_SESSION, "/r/dotfiles", original, None, 2_000_000, None)]);
@@ -2461,15 +2597,14 @@ fn short_labels_keep_the_original_task_title_in_details_and_search() {
     row["label"] = json!("Free disk space");
     row["task"] = json!("Yes");
     fixture.snapshot(json!([row]));
-    fixture.shim("fzf", &format!("cat > '{}'", fixture.path("picker-input").display()));
     let mut app = fixture.app();
     assert!(card_text(&app, 0).contains("Free disk space"));
     assert!(!card_text(&app, 0).contains("Finding disk"));
     assert_eq!(app.session_task_titles[OPENCODE_SESSION], original);
     assert!(app.panels[1].fixed_bottom.iter().any(|line| line.texts().contains(original)));
-    app.handle(Key::Char('/'), &mut FakeScreen::default());
-    let search = fs::read_to_string(fixture.path("picker-input")).unwrap();
-    assert!(search.contains("Free disk space") && search.contains(original));
+    app.handle(Key::Char('i'), &mut FakeScreen::default());
+    let details = buffer_rows(&render(&mut app, 140, 60)).join("\n");
+    assert!(details.contains("Free disk space") && details.contains(original));
 }
 
 #[test]
@@ -3060,22 +3195,19 @@ fn routine_session_details_belong_only_to_the_selected_task() {
 }
 
 #[test]
-fn finding_a_session_selects_its_id_without_opening_it() {
+fn arrow_navigation_selects_a_session_without_opening_it() {
     let fixture = Fixture::new();
     fixture.snapshot(json!([session(SESSION_A, "waiting", "dotfiles", "/r/first", 1), session(SESSION_B, "waiting", "dotfiles", "/r/second", 2)]));
-    fixture.shim("fzf", &format!("cat > '{}'; printf '{SESSION_B}\\tdotfiles\\tSame task\\n'", fixture.path("picker-input").display()));
     let mut app = fixture.app();
     let order: Vec<_> = app.sessions.iter().map(|session| session.session.clone()).collect();
-    app.handle(Key::Char('/'), &mut FakeScreen::default());
+    app.handle(Key::Down, &mut FakeScreen::default());
     assert_eq!(app.sessions[app.panels[1].selected].session, SESSION_B);
     assert!(fixture.calls("cockpit").is_empty());
-    let picker_input = fs::read_to_string(fixture.path("picker-input")).unwrap();
-    assert!(picker_input.contains(SESSION_A) && picker_input.contains(SESSION_B) && picker_input.contains("dotfiles"));
     assert_eq!(app.sessions.iter().map(|session| session.session.clone()).collect::<Vec<_>>(), order);
 }
 
 #[test]
-fn cancelling_session_search_keeps_the_selection_and_list_order() {
+fn retired_search_keeps_the_selection_and_list_order() {
     let fixture = Fixture::new();
     fixture.snapshot(json!([session(SESSION_A, "waiting", "dotfiles", "/r/first", 1), session(SESSION_B, "waiting", "dotfiles", "/r/second", 2)]));
     let mut app = fixture.app();
@@ -3682,13 +3814,12 @@ fn right_moves_into_the_session_from_any_panel() {
 }
 
 #[test]
-fn the_palette_runs_the_chosen_action_in_its_panel() {
+fn sessions_next_attention_works_after_switching_tabs() {
     let fixture = Fixture::new();
-    fixture.shim("fzf", "grep 'next session that needs you'");
     let mut app = fixture.app();
     app.focus_panel(3);
-    assert!(app.palette_entries().iter().any(|entry| entry.starts_with("2\tc\t")));
-    app.handle(Key::Char(':'), &mut FakeScreen::default());
+    app.handle(Key::Char('1'), &mut FakeScreen::default());
+    app.handle(Key::Char('n'), &mut FakeScreen::default());
     assert_eq!(app.focus, 1);
     assert_eq!(app.message, "nothing needs you");
 }
@@ -3704,7 +3835,7 @@ fn help_shows_the_sessions_keys_then_everywhere_then_what_the_signs_mean() {
         "EVERYWHERE", "Sessions · Todo · Ideas", "WHAT THE SIGNS MEAN", "your approved command runs", "esc  close"]
         .iter().map(|needle| text.find(needle).unwrap_or_else(|| panic!("{needle} missing:\n{text}"))).collect();
     assert!(order.windows(2).all(|pair| pair[0] < pair[1]), "{text}");
-    assert_eq!(text.matches("new blank session").count(), 1, "N listed twice:\n{text}");
+    assert_eq!(text.matches("new session: blank or Claude Design canvas").count(), 1, "N listed twice:\n{text}");
     app.handle(Key::Esc, &mut FakeScreen::default());
     assert!(!buffer_rows(&render(&mut app, 90, 60)).join("\n").contains("Help · Sessions"));
 }
@@ -3717,7 +3848,7 @@ fn help_on_todo_shows_todos_keys_and_no_card_signs() {
     app.handle(Key::Char('?'), &mut FakeScreen::default());
     let text = buffer_rows(&render(&mut app, 90, 70)).join("\n");
     assert!(text.contains("Help · Todo") && text.contains("raise a typed item's priority"), "{text}");
-    assert!(text.contains("new blank session") && !text.contains("WHAT THE SIGNS MEAN"), "{text}");
+    assert!(text.contains("new session: blank or Claude Design canvas") && !text.contains("WHAT THE SIGNS MEAN"), "{text}");
 }
 
 #[test]
@@ -3838,21 +3969,21 @@ fn k_on_a_card_opens_its_links_and_up_still_moves() {
 }
 
 #[test]
-fn the_palette_runs_an_action_that_has_no_key() {
+fn status_opens_claudes_official_status_page() {
     let fixture = Fixture::new();
-    fixture.shim("fzf", "grep 'status.claude.com'");
     let mut app = fixture.app();
-    app.handle(Key::Char(':'), &mut FakeScreen::default());
+    select_status_action(&mut app, "Claude");
+    app.handle(Key::Enter, &mut FakeScreen::default());
     assert_eq!(app.focus, 0);
     assert_eq!(fixture.wait_for_calls("xdg-open", 1), vec![format!("xdg-open {}", crate::status::PAGE)]);
 }
 
 #[test]
-fn the_palette_opens_codexs_official_status_page() {
+fn status_opens_codexs_official_status_page() {
     let fixture = Fixture::new();
-    fixture.shim("fzf", "grep 'status.openai.com'");
     let mut app = fixture.app();
-    app.handle(Key::Char(':'), &mut FakeScreen::default());
+    select_status_action(&mut app, "Codex");
+    app.handle(Key::Enter, &mut FakeScreen::default());
     assert_eq!(app.focus, 0);
     assert_eq!(fixture.wait_for_calls("xdg-open", 1), vec!["xdg-open https://status.openai.com/".to_string()]);
 }
@@ -4074,12 +4205,10 @@ fn team_sidebar_completed_sleeping_team_keeps_unresolved_alerts_visible() {
 }
 
 #[test]
-fn team_sidebar_search_omits_completed_inactive_members_but_keeps_filtered_active_teams() {
-    for attention_only in [false, true] {
+fn team_sidebar_omits_completed_inactive_members_but_keeps_active_teams() {
         let fixture = Fixture::new();
         fixture.snapshot(json!([session(OPENCODE_SESSION, "waiting", "project-a", "/r/project-a", 2),
             session(SESSION_A, "waiting", "project-a", "/r/project-a", 1)]));
-        fixture.shim("fzf", &format!("cat > '{}'; exit 1", fixture.path("picker-input").display()));
         let mut state = sidebar_snapshot();
         state["members"][0]["task_id"] = json!("0123abcd");
         team_host(&fixture, state, vec![]);
@@ -4087,13 +4216,10 @@ fn team_sidebar_search_omits_completed_inactive_members_but_keeps_filtered_activ
         app.todos.items = vec![Item(json!({"id":"1d3fd318","project":"project-a","cwd":"/r/project-a","status":"done","text":"Completed team"}).as_object().unwrap().clone())];
         app.redraw();
         sidebar_select(&mut app, "› 0123abcd");
-        app.handle(Key::Enter, &mut FakeScreen::default());
-        if attention_only { continuity_action(&mut app, "1\tattention-filter", &[]); }
-        app.handle(Key::Char('/'), &mut FakeScreen::default());
-        let choices = fs::read_to_string(fixture.path("picker-input")).unwrap();
-        assert!(!choices.contains(OPENCODE_SESSION), "{choices}");
-        assert!(choices.contains(SESSION_A), "{choices}");
-    }
+        app.redraw();
+        let choices = texts(&app, 1).join("\n");
+        assert!(!choices.contains("Developer"), "{choices}");
+        assert!(choices.contains("Designer"), "{choices}");
 }
 
 #[test]
@@ -4163,18 +4289,17 @@ fn team_sidebar_title_uses_task_entry_or_exact_id() {
 }
 
 #[test]
-fn team_sidebar_attention_filter_keeps_team_context() {
+fn team_sidebar_attention_group_keeps_team_context() {
     let fixture = Fixture::new();
     sidebar_sessions(&fixture);
     let mut state = sidebar_snapshot();
     state["escalations"] = json!([{"project":SIDEBAR_PROJECT,"task_id":"1d3fd318","thread_id":"t1","status":"open","reason":"Need Theo to choose frame"}]);
     team_host(&fixture, state, vec![]);
     let mut app = fixture.app();
-    continuity_action(&mut app, "1\tattention-filter", &[]);
     app.redraw();
     let shown = texts(&app, 1).join("\n");
     for expected in ["Team of 2", "Design session", "Build session", "Need Theo to choose frame"] { assert!(shown.contains(expected), "{shown}"); }
-    assert!(!shown.contains("Independent session") && !shown.contains("Unavailable"), "{shown}");
+    assert!(shown.contains("Independent session") && !shown.contains("Unavailable"), "{shown}");
 }
 
 #[test]
@@ -4241,14 +4366,15 @@ fn team_sidebar_next_attention_expands_the_correct_team() {
 }
 
 #[test]
-fn team_sidebar_search_finds_a_collapsed_member() {
+fn team_sidebar_expansion_reaches_a_collapsed_member() {
     let fixture = Fixture::new();
     sidebar_sessions(&fixture);
     team_host(&fixture, sidebar_snapshot(), vec![]);
     let mut app = fixture.app();
     sidebar_fold(&mut app);
-    app.handle(Key::Char('/'), &mut FakeScreen::typing(&[&format!("{OPENCODE_SESSION}\tproject-a\tBuild session")]));
+    app.handle(Key::Enter, &mut FakeScreen::default());
     app.redraw();
+    sidebar_select(&mut app, "Build session");
     assert_eq!(app.selected_session().unwrap().session, OPENCODE_SESSION);
     assert!(texts(&app,1).iter().any(|text| text.contains("▾ Team of")));
     assert!(fixture.calls("cockpit").is_empty());
@@ -4257,7 +4383,7 @@ fn team_sidebar_search_finds_a_collapsed_member() {
 }
 
 #[test]
-fn team_sidebar_filtered_search_opens_only_the_requested_member() {
+fn team_sidebar_grouped_navigation_acts_only_on_the_selected_member() {
     for (key,expected) in [(Key::Enter,format!("cockpit open {SESSION_A}")),
         (Key::Char('x'),format!("cockpit exit {SESSION_A}")),(Key::Char('U'),"cockpit push /r/design".into())] {
         let fixture = Fixture::new();
@@ -4271,10 +4397,8 @@ fn team_sidebar_filtered_search_opens_only_the_requested_member() {
         state["members"][1]["task_id"] = json!("0123abcd");
         team_host(&fixture,state,vec![]);
         let mut app = fixture.app();
-        continuity_action(&mut app,"1\tattention-filter",&[]);
         sidebar_select(&mut app,"Build session");
-        assert!(!app.panels[1].lines.iter().any(|line| line.texts().contains("Design session")));
-        app.handle(Key::Char('/'),&mut FakeScreen::typing(&[&format!("{SESSION_A}\tproject-a\tDesign session")]));
+        sidebar_select(&mut app,"Design session");
         app.redraw();
         assert_eq!(app.selected_session().map(|session| session.session),Some(SESSION_A.into()));
         assert!(app.panels[1].lines.iter().any(|line| line.texts().contains("Design session")));
@@ -4284,14 +4408,14 @@ fn team_sidebar_filtered_search_opens_only_the_requested_member() {
 }
 
 #[test]
-fn team_sidebar_unavailable_search_target_cannot_reuse_previous_actions() {
+fn team_sidebar_disappeared_member_cannot_reuse_previous_actions() {
     let fixture = Fixture::new();
     sidebar_sessions(&fixture);
     team_host(&fixture,sidebar_snapshot(),vec![]);
     let mut app = fixture.app();
     sidebar_select(&mut app,"Build session");
-    app.handle(Key::Char('/'),&mut FakeScreen::typing(&["missing-session\tMissing"]));
-    app.redraw();
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "project-a", "/r/project-a", 1)]));
+    app.build();
     assert!(app.selected_session().is_none());
     for key in [Key::Enter,Key::Char('x'),Key::Char('U')] { app.handle(key,&mut FakeScreen::answering(&[Key::Char('y')])); }
     assert!(fixture.calls("cockpit").is_empty(),"{:?}",fixture.calls("cockpit"));
@@ -4347,8 +4471,6 @@ fn team_sidebar_refresh_preserves_selected_session_identity() {
     app.handle(Key::Char('p'), &mut FakeScreen::default());
     app.build();
     assert_eq!(app.selected_session().unwrap().session, OPENCODE_SESSION);
-    continuity_action(&mut app,"1\tattention-filter",&[]);
-    continuity_action(&mut app,"1\tattention-filter",&[]);
     sidebar_select(&mut app, "Build session");
     fixture.snapshot(json!([session(SESSION_A,"waiting","project-a","/r/project-a",1),session(SESSION_B,"waiting","project-a","/r/project-a",3)]));
     app.build();
@@ -4403,8 +4525,7 @@ fn team_sidebar_next_attention_reaches_task_only_blockers() {
 }
 
 #[test]
-fn team_sidebar_failed_wake_stays_reachable_when_collapsed_or_filtered() {
-    for filtered in [false,true] {
+fn team_sidebar_failed_wake_stays_reachable_when_collapsed() {
         let fixture = Fixture::new();
         fixture.snapshot(json!([session(SESSION_A,"waiting","project-a","/r/project-a",1)]));
         fixture.write(&format!("state/cockpit/asleep/{OPENCODE_SESSION}"),&json!({
@@ -4416,7 +4537,6 @@ fn team_sidebar_failed_wake_stays_reachable_when_collapsed_or_filtered() {
         team_host(&fixture,state,vec![]);
         let mut app = fixture.app();
         sidebar_fold(&mut app);
-        if filtered { continuity_action(&mut app,"1\tattention-filter",&[]); }
         let shown = texts(&app,1).join("\n");
         assert!(shown.contains("▸ Team of") && shown.contains("› 1d3fd318") && shown.contains("Developer wake failed: launcher refused"),"{shown}");
         app.handle(Key::Char('n'),&mut FakeScreen::default());
@@ -4429,7 +4549,6 @@ fn team_sidebar_failed_wake_stays_reachable_when_collapsed_or_filtered() {
         let details = app.team_view.as_ref().unwrap().detail().join("\n");
         assert!(details.contains("launcher refused") && details.contains(OPENCODE_SESSION),"{details}");
         assert!(fixture.calls("cockpit").is_empty(),"no wake/open/attend: {:?}",fixture.calls("cockpit"));
-    }
 }
 
 #[test]
@@ -4798,31 +4917,6 @@ fn a_failed_team_start_is_dismissed_after_a_yes() {
     app.handle(Key::Char('d'), &mut FakeScreen::answering(&[Key::Char('y')]));
     let dismiss = controls(&requests).pop().expect("no dismiss");
     assert_eq!((dismiss["action"].clone(), dismiss["token"].clone()), (json!("dismiss"), json!("t1")));
-}
-
-#[test]
-fn the_team_view_left_the_palette_for_k_on_a_card() {
-    let fixture = Fixture::new();
-    let app = fixture.app();
-    assert!(!app.palette_entries().iter().any(|entry| entry.starts_with("1\tteam\t")));
-}
-
-#[test]
-fn typing_a_palette_actions_name_puts_it_first() {
-    // Theo typed "team" in : and the Team view sat two thirds down an unsorted fuzzy list.
-    use std::io::Write;
-    let fixture = Fixture::new();
-    let app = fixture.app();
-    // The fixture's PATH has a stand-in fzf: rank with the real one.
-    let real_fzf = ["/usr/bin/fzf", "/usr/local/bin/fzf"].into_iter().find(|path| Path::new(path).exists()).expect("fzf is installed");
-    for name in ["queue", "digest", "clones"] {
-        let mut fzf = std::process::Command::new(real_fzf).args(crate::app::fzf_arguments("action> ", &crate::app::PALETTE_FZF_OPTIONS)).args(["--filter", name])
-            .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).spawn().expect("fzf is installed");
-        fzf.stdin.take().unwrap().write_all(app.palette_entries().join("\n").as_bytes()).unwrap();
-        let ranked = String::from_utf8(fzf.wait_with_output().unwrap().stdout).unwrap();
-        let first = ranked.lines().next().unwrap_or("");
-        assert_eq!(first.split('\t').nth(1), Some(name), "{name}: {first}");
-    }
 }
 
 #[test]
@@ -5265,11 +5359,11 @@ fn status_groups_confirmed_windows_in_aligned_columns_at_each_terminal_width() {
         assert!(rows.iter().any(|row| row.contains("Fable weekly")), "{rows:?}");
         assert!(!rows.iter().any(|row| row.contains("Available")), "{rows:?}");
         assert_eq!(rows.iter().filter(|row| row.contains("window-average pace")).count(), 1);
-        let quota_lines: Vec<_> = app.panels[0].lines.iter().filter(|line| line.item.is_some()).cloned().collect();
+        let quota_lines: Vec<_> = app.panels[0].lines.iter().filter(|line| line.item.is_some_and(|index| index < 4)).cloned().collect();
         for (index, label) in [(0, "5-hour"), (1, "Weekly"), (2, "Fable weekly"), (3, "Weekly")] {
             assert!(quota_lines.iter().any(|line| line.item == Some(index) && line.texts().contains(label)));
         }
-        assert_eq!(app.panels[0].items, 4);
+        assert_eq!(app.panels[0].items, 8, "four quotas and four Status actions");
         assert!(!quota_lines.iter().any(|line| line.item == Some(3) && line.texts().contains("5-hour")));
         for line in &app.panels[0].lines {
             for adjacent in line.segments.windows(2) {
@@ -5446,7 +5540,7 @@ fn usage_loading_does_not_imply_a_verified_zero() {
 }
 
 #[test]
-fn healthy_services_share_a_line_only_when_they_fit() {
+fn healthy_services_are_independently_selectable_at_every_width() {
     let fixture = Fixture::new();
     let feed = fixture.write("status.json", r#"{"status":{"indicator":"none","description":"All Systems Operational"}}"#);
     unsafe {
@@ -5463,7 +5557,9 @@ fn healthy_services_share_a_line_only_when_they_fit() {
         app.redraw();
         let rows = texts(&app, 0);
         assert!(!rows.iter().any(|row| row.contains("All Systems Operational")));
-        assert_eq!(rows.iter().filter(|row| row.contains("Operational")).count(), if width == 40 { 2 } else { 1 }, "{rows:?}");
+        assert_eq!(rows.iter().filter(|row| row.contains("Operational")).count(), 2, "{rows:?}");
+        let service_items: Vec<_> = app.panels[0].lines.iter().filter(|line| line.texts().contains("Operational")).map(|line| line.item.unwrap()).collect();
+        assert_ne!(service_items[0], service_items[1]);
         let buffer = render(&mut app, width, 60);
         let rendered: Vec<String> = (0..60).map(|y| (0..width).map(|x| buffer[(x, y)].symbol()).collect()).collect();
         assert!(rendered.iter().any(|row| row.contains("Claude") && row.contains("Operational")));
@@ -5598,7 +5694,7 @@ fn status_continuations_keep_quota_selection_and_scrolling() {
         assert!(rows.iter().any(|row| row.contains(if index == 0 { "5-hour" } else if index == 1 { "Long scoped model" } else { "Weekly" })), "{rows:#?}");
         app.handle(Key::Down, &mut FakeScreen::default());
     }
-    assert_eq!(app.panels[0].selected, 2);
+    assert_eq!(app.panels[0].selected, 3, "navigation continues into Services");
     app.handle(Key::Char('s'), &mut FakeScreen::default());
     assert_ne!(app.focus, 0);
 }
@@ -5774,7 +5870,7 @@ fn quota_colors_follow_remaining_capacity_for_both_providers() {
         fixture.write("run/claude-usage.json", &json!({"five_hour": {"utilization": 100 - remaining}}).to_string());
         fixture.write("run/codex-usage.json", &json!({"rate_limit": {"primary_window": {"used_percent": 100 - remaining, "limit_window_seconds": 18000}}}).to_string());
         let app = fixture.app();
-        for row in app.panels[0].lines.iter().filter(|line| line.item.is_some()) {
+        for row in app.panels[0].lines.iter().filter(|line| line.item.is_some_and(|index| index < 2)) {
             assert_eq!(row.segments[1].2.fg, Some(Color::Indexed(color)), "{}: {remaining}% left", row.segments[0].1);
         }
     }
@@ -6486,7 +6582,7 @@ fn pull_requests_come_from_gh_without_bots_and_open_in_the_cockpit_window() {
     }
     app.build();
     app.focus_panel(2);
-    app.handle(Key::Enter, &mut FakeScreen::default());
+    app.handle(Key::Char('o'), &mut FakeScreen::default());
     assert_eq!(fixture.calls("hyprctl"), vec!["hyprctl -j activeworkspace".to_string(), r#"hyprctl eval OPEN_IN_SCRATCHPAD("prs", "https://github.com/o/r/pull/3")"#.to_string()]);
 }
 
@@ -7432,6 +7528,7 @@ fn i_and_d_set_in_progress_and_done_and_toggle_back() {
     app.focus_panel(3);
     let mut statuses = Vec::new();
     for key in ['i', 'i', 'd', 'd'] {
+        if key == 'i' { app.handle(Key::Char('i'), &mut FakeScreen::default()); }
         app.handle(Key::Char(key), &mut FakeScreen::default());
         statuses.push(TodoList::load().items[0].status());
     }
@@ -7443,6 +7540,7 @@ fn i_and_d_set_in_progress_and_done_and_toggle_back() {
 fn deleting_manual_status_work_releases_the_project_for_another_task() {
     let fixture=Fixture::new();let mut app=fixture.app();
     app.todos.add("runway","/r","manual work");app.build();app.focus_panel(3);
+    app.handle(Key::Char('i'),&mut FakeScreen::default());
     app.handle(Key::Char('i'),&mut FakeScreen::default());
     assert_eq!(TodoList::load().items[0].status(),"doing");
     app.handle(Key::Char('x'),&mut FakeScreen::default());
@@ -8230,23 +8328,32 @@ fn a_link_that_is_not_a_canvas_is_ignored_on_the_card() {
 #[test]
 fn the_design_action_starts_a_design_session_on_the_canvas_in_the_chosen_project() {
     let fixture = Fixture::new();
+    let project = fixture.root.join("home/IdeaProjects/opusline");
+    fs::create_dir_all(&project).unwrap();
     let mut app = fixture.app();
     let chat_link = "https://claude.ai/chat/7efffff6-0466-41ab-83d1-3f1d403d357d?artifact=d31175a3-dc24-4166-aa81-2ccdf5efe83a";
-    app.handle(Key::Char(':'), &mut FakeScreen::typing(&["-\tdesign", chat_link, "/r/opusline"]));
+    app.handle(Key::Char('N'), &mut FakeScreen::default());
+    for key in [Key::BackTab, Key::Right, Key::Tab, Key::Tab] { app.handle(key, &mut FakeScreen::default()); }
+    type_text(&mut app, chat_link);
+    app.handle(Key::Ctrl('s'), &mut FakeScreen::default());
     assert_eq!(app.message, "starting a design session in opusline …");
     let log = {
         fixture.wait_for_calls("cockpit", 1);
         fs::read_to_string(fixture.path("calls.log")).unwrap()
     };
-    assert!(log.contains(&format!("cockpit new /r/opusline This is a design session for the Claude Design canvas {CANVAS}")), "{log}");
+    assert!(log.contains(&format!("cockpit new {} This is a design session for the Claude Design canvas {CANVAS}", project.display())), "{log}");
     assert!(log.contains(&format!("cockpit-design link {CANVAS}")) && log.contains("ArtifactComments"));
 }
 
 #[test]
 fn the_design_action_refuses_a_link_that_is_not_a_canvas() {
     let fixture = Fixture::new();
+    fs::create_dir_all(fixture.root.join("home/IdeaProjects/opusline")).unwrap();
     let mut app = fixture.app();
-    app.handle(Key::Char(':'), &mut FakeScreen::typing(&["-\tdesign", "https://example.com/x"]));
+    app.handle(Key::Char('N'), &mut FakeScreen::default());
+    for key in [Key::BackTab, Key::Right, Key::Tab, Key::Tab] { app.handle(key, &mut FakeScreen::default()); }
+    type_text(&mut app, "https://example.com/x");
+    app.handle(Key::Ctrl('s'), &mut FakeScreen::default());
     assert!(app.message.starts_with("not a canvas link"));
     std::thread::sleep(Duration::from_millis(200));
     assert!(fixture.calls("cockpit").is_empty());
@@ -8803,10 +8910,12 @@ fn no_pause_line_without_a_game() {
 }
 
 #[test]
-fn the_clone_review_is_in_the_action_list() {
+fn the_clone_review_is_in_status_utilities() {
     let fixture = Fixture::new();
-    let app = fixture.app();
-    assert!(app.palette_entries().iter().any(|entry| entry.starts_with("-\tclones\t")), "{:?}", app.palette_entries());
+    let mut app = fixture.app();
+    select_status_action(&mut app, "Clones review");
+    app.handle(Key::Enter, &mut FakeScreen::default());
+    assert_eq!(fixture.wait_for_calls("cockpit", 1), ["cockpit clones"]);
 }
 
 #[test]
@@ -10552,15 +10661,17 @@ fn a_queued_prompt_waits_for_the_end_of_the_turn_one_per_turn() {
 }
 
 #[test]
-fn enter_shows_the_details_in_a_popup_that_stays_open() {
+fn enter_shows_todo_details_in_the_column_until_dismissed() {
     let fixture = Fixture::new();
     let mut app = fixture.app();
     app.todos.add("p", "/p", "short item");
     app.build();
     app.focus_panel(3);
     app.handle(Key::Enter, &mut FakeScreen::default());
-    let popup = fixture.calls("tmux").into_iter().find(|call| call.contains("display-popup")).expect("no popup");
-    assert!(popup.contains(" less ") && !popup.contains("quit-if-one-screen"), "{popup}");
+    assert!(buffer_rows(&render(&mut app, 80, 40)).join("\n").contains("short item"));
+    assert!(!fixture.calls("tmux").iter().any(|call| call.contains("display-popup")));
+    app.handle(Key::Esc, &mut FakeScreen::default());
+    assert!(!buffer_rows(&render(&mut app, 80, 40)).join("\n").contains("Todo details"));
 }
 
 /// The open tab is lit (its label bold on the selection background) while the column has the focus.
@@ -11187,6 +11298,144 @@ fn type_text(app: &mut App, text: &str) {
 }
 
 #[test]
+fn palette_homes_canvas_validates_the_link_before_launching_in_the_project() {
+    for link in ["not-a-link", "https://claude.ai/artifacts/123"] {
+        let fixture = Fixture::new();
+        let project = fixture.root.join("home/IdeaProjects/runway");
+        fs::create_dir_all(&project).unwrap();
+        let mut app = fixture.app();
+        app.handle(Key::Char('N'), &mut FakeScreen::default());
+        for key in [Key::BackTab, Key::Right, Key::Tab, Key::Tab] { app.handle(key, &mut FakeScreen::default()); }
+        type_text(&mut app, link);
+        app.handle(Key::Ctrl('s'), &mut FakeScreen::default());
+        assert!(app.message.contains("not a canvas link"), "{}", app.message);
+        assert!(buffer_rows(&render(&mut app, 100, 45)).join("\n").contains("Canvas link"));
+        app.handle(Key::Esc, &mut FakeScreen::default());
+        assert!(fixture.calls("cockpit").is_empty());
+    }
+}
+
+#[test]
+fn palette_homes_canvas_uses_the_existing_canvas_launcher() {
+    let fixture = Fixture::new();
+    let project = fixture.root.join("home/IdeaProjects/runway");
+    fs::create_dir_all(&project).unwrap();
+    let mut app = fixture.app();
+    app.handle(Key::Char('N'), &mut FakeScreen::default());
+    for key in [Key::BackTab, Key::Right, Key::Tab, Key::Tab] { app.handle(key, &mut FakeScreen::default()); }
+    let link = "https://claude.ai/artifact/12345678-1234-1234-1234-123456789abc";
+    type_text(&mut app, link);
+    app.handle(Key::Ctrl('s'), &mut FakeScreen::default());
+    let call = fixture.wait_for_calls("cockpit", 1).remove(0);
+    assert!(call.starts_with(&format!("cockpit new {} ", project.display())) && call.contains(link), "{call}");
+}
+
+#[test]
+fn palette_homes_canvas_round_trip_keeps_blank_session_choices() {
+    for (steps, agent) in [(0, "claude"), (1, "opencode"), (2, "codex")] {
+        let fixture = Fixture::new();
+        let project = fixture.root.join("home/IdeaProjects/runway");
+        fs::create_dir_all(&project).unwrap();
+        let mut app = fixture.app();
+        app.handle(Key::Char('N'), &mut FakeScreen::default());
+        type_text(&mut app, "runway");
+        app.handle(Key::Tab, &mut FakeScreen::default());
+        for _ in 0..steps { app.handle(Key::Right, &mut FakeScreen::default()); }
+        app.handle(Key::Tab, &mut FakeScreen::default());
+        type_text(&mut app, "Keep this message");
+        for key in [Key::Tab, Key::Char(' '), Key::Tab, Key::Right, Key::Tab, Key::Tab] {
+            app.handle(key, &mut FakeScreen::default());
+        }
+        type_text(&mut app, "unfinished link");
+        for key in [Key::Tab, Key::Left, Key::Ctrl('s')] { app.handle(key, &mut FakeScreen::default()); }
+        assert_eq!(fixture.wait_for_calls("cockpit", 1), vec![format!("cockpit --agent {agent} new {} Keep this message", project.display())]);
+    }
+}
+
+#[test]
+fn retired_palette_and_search_keys_never_open_a_picker() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    for panel in 0..5 {
+        app.focus_panel(panel);
+        let mut screen = FakeScreen::typing(&["unused"]);
+        app.handle(Key::Char(':'), &mut screen);
+        app.handle(Key::Char('/'), &mut screen);
+        assert_eq!(screen.typed.len(), 1);
+    }
+}
+
+#[test]
+fn new_session_keeps_the_focused_field_visible_in_a_short_column() {
+    let fixture = Fixture::new();
+    for index in 0..8 { fs::create_dir_all(fixture.root.join(format!("home/IdeaProjects/project-{index}"))).unwrap(); }
+    let mut app = fixture.app();
+    app.handle(Key::Char('N'), &mut FakeScreen::default());
+    for key in [Key::BackTab, Key::Right, Key::Tab, Key::Tab] { app.handle(key, &mut FakeScreen::default()); }
+    let canvas = buffer_rows(&render(&mut app, 40, 18)).join("\n");
+    assert!(canvas.contains("Canvas link"), "{canvas}");
+    assert!(canvas.contains("default agent") && canvas.contains("without a new clone"), "{canvas}");
+    for key in [Key::Tab, Key::Left, Key::Tab, Key::Tab, Key::Tab] { app.handle(key, &mut FakeScreen::default()); }
+    type_text(&mut app, "Visible message");
+    let blank = buffer_rows(&render(&mut app, 40, 18)).join("\n");
+    assert!(blank.contains("FIRST MESSAGE") && blank.contains("Visible message"), "{blank}");
+}
+
+#[test]
+fn status_refresh_does_not_turn_a_quota_selection_into_an_action() {
+    let fixture = Fixture::new();
+    fixture.write("run/claude-usage.json", r#"{"limits":[{"kind":"session","percent":0},{"kind":"weekly_all","percent":0},{"kind":"weekly_scoped","percent":0,"scope":{"model":{"display_name":"Extra"}}}]}"#);
+    let mut app = fixture.app();
+    app.focus_panel(0);
+    for _ in 0..3 { app.handle(Key::Down, &mut FakeScreen::default()); }
+    fs::remove_file(fixture.path("run/claude-usage.json")).unwrap();
+    app.build();
+    app.handle(Key::Enter, &mut FakeScreen::default());
+    assert_eq!(app.message, "Status selection changed: choose a row");
+    assert!(fixture.calls("cockpit").is_empty() && fixture.calls("xdg-open").is_empty());
+    select_status_action(&mut app, "Clones review");
+    app.handle(Key::Up, &mut FakeScreen::default());
+    app.handle(Key::Down, &mut FakeScreen::default());
+    fixture.write("run/claude-usage.json", r#"{"five_hour":{"utilization":0},"seven_day":{"utilization":0}}"#);
+    app.build();
+    app.handle(Key::Enter, &mut FakeScreen::default());
+    assert_eq!(fixture.wait_for_calls("cockpit", 1), ["cockpit clones"]);
+}
+
+#[test]
+fn todo_detail_trail_reports_unavailable_continuity_without_crashing() {
+    let fixture = Fixture::new();
+    fixture.write("state/cockpit/continuity.json", "not json");
+    let mut app = fixture.app();
+    app.todos.add("runway", "/r/runway", "Task to inspect");
+    app.build();
+    app.focus_panel(3);
+    app.handle(Key::Char('i'), &mut FakeScreen::default());
+    app.handle(Key::Char('T'), &mut FakeScreen::default());
+    assert!(app.message.starts_with("Continuity unavailable:"), "{}", app.message);
+}
+
+#[test]
+fn todo_detail_status_action_keeps_its_target_after_reselection_or_removal() {
+    for removed in [false, true] {
+        let fixture = Fixture::new();
+        let mut app = fixture.app();
+        let original = app.todos.add("runway", "/r/runway", "Original task");
+        let other = app.todos.add("runway", "/r/runway", "Other task");
+        app.build();
+        app.focus_panel(3);
+        app.panels[3].selected = app.todo_entries.iter().position(|entry| entry.key() == original).unwrap();
+        app.handle(Key::Char('i'), &mut FakeScreen::default());
+        if removed { app.todos.remove(&original).unwrap(); app.build(); }
+        app.panels[3].selected = app.todo_entries.iter().position(|entry| entry.key() == other).unwrap();
+        app.handle(Key::Char('i'), &mut FakeScreen::default());
+        assert_eq!(app.todos.status_of(&other), "todo");
+        if removed { assert_eq!(app.message, "This todo is no longer available"); }
+        else { assert_eq!(app.todos.status_of(&original), "doing"); }
+    }
+}
+
+#[test]
 fn n_starts_a_blank_session_in_its_own_clone_with_the_first_message() {
     let fixture = Fixture::new();
     for project in ["runway", "shop"] { fs::create_dir_all(fixture.root.join("home/IdeaProjects").join(project)).unwrap(); }
@@ -11334,7 +11583,7 @@ fn an_item_from_a_deleted_clone_without_a_checkout_stays_to_do() {
 }
 
 #[test]
-fn c_reviews_a_pull_request_with_the_saved_default() {
+fn enter_reviews_a_pull_request_with_the_saved_default() {
     let fixture = Fixture::new();
     fixture.write("state/cockpit/settings.json", r#"{"default-agent":"opencode"}"#);
     let mut app = fixture.app();
@@ -11342,19 +11591,19 @@ fn c_reviews_a_pull_request_with_the_saved_default() {
     app.review_rows = vec![Review { number: 42, repository: "shop".into(), full_repository: "acme/shop".into(), ..Default::default() }];
     app.focus_panel(2);
     app.panels[2].selected = 0;
-    app.handle(Key::Char('c'), &mut FakeScreen::default());
+    app.handle(Key::Enter, &mut FakeScreen::default());
     assert_eq!(fixture.wait_for_calls("cockpit", 1), vec!["cockpit --agent opencode review /r/shop 42".to_string()]);
 }
 
 #[test]
-fn c_reviews_a_pull_request_of_a_mixed_case_repository_in_its_checkout() {
+fn enter_reviews_a_pull_request_of_a_mixed_case_repository_in_its_checkout() {
     let fixture = Fixture::new();
     let mut app = fixture.app();
     app.reviews.checkouts.insert("Acme/Shop".into(), "/r/shop".into());
     app.review_rows = reviews::parse_reviews(r#"[{"number": 61, "title": "VAT", "url": "https://github.com/Acme/Shop/pull/61"}]"#, "Acme/Shop");
     app.focus_panel(2);
     app.panels[2].selected = 0;
-    app.handle(Key::Char('c'), &mut FakeScreen::default());
+    app.handle(Key::Enter, &mut FakeScreen::default());
     assert_eq!(fixture.wait_for_calls("cockpit", 1), vec!["cockpit --agent claude review /r/shop 61".to_string()]);
 }
 

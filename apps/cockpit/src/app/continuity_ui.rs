@@ -4,7 +4,6 @@ use crate::continuity::{TaskSnapshot, TrailTarget, DeferralTarget, task_key};
 impl App {
     pub(super) fn run_continuity_action(&mut self, name: &str, screen: &mut dyn Screen) -> String {
         if name == "queue" { return self.open_queue(); }
-        if name == "attention-filter" { self.attention_only = !self.attention_only; return "attention filter toggled".into(); }
         if let Err(error) = &self.continuity { return format!("Continuity unavailable: {error}"); }
         if name == "updates" { return self.open_updates(screen); }
         if name == "defer-20m" || name == "bring-back" { return self.change_deferral(name); }
@@ -48,10 +47,14 @@ impl App {
     /// `l` on a card: hide its ask for 20 minutes, or bring a hidden one back. Never answers or approves.
     pub(super) fn toggle_later(&mut self) -> String {
         if let Err(error) = &self.continuity { return format!("Continuity unavailable: {error}"); }
-        let Some(session) = self.selected_session() else { return String::new() };
-        let is_hidden = self.session_deferred_until(&session, util::now_secs()).is_some();
+        let is_hidden = match self.focus {
+            1 => self.selected_session().is_some_and(|session| self.session_deferred_until(&session, util::now_secs()).is_some()),
+            2 => self.review_rows.get(self.panels[2].selected).and_then(DeferralTarget::review)
+                .and_then(|target| self.continuity.as_ref().ok()?.deferred_until(&target, util::now_secs())).is_some(),
+            _ => return String::new(),
+        };
         let message = self.change_deferral(if is_hidden { "bring-back" } else { "defer-20m" });
-        self.build_sessions();
+        if self.focus == 2 { self.build_reviews(); } else { self.build_sessions(); }
         message
     }
 
@@ -150,7 +153,10 @@ impl App {
     }
 
     pub(super) fn open_task_trail(&mut self, target: TrailTarget, screen: &mut dyn Screen) -> String {
-        let state = self.continuity.as_ref().unwrap();
+        let state = match &self.continuity {
+            Ok(state) => state,
+            Err(error) => return format!("Continuity unavailable: {error}"),
+        };
         let keys: Vec<_> = state.tasks().iter().filter(|(key, record)| match &target {
             TrailTarget::Task(task) => *key == task,
             TrailTarget::Session(session) => record.assignments.iter().any(|assignment| assignment.session == *session),
@@ -284,7 +290,7 @@ impl App {
         String::new()
     }
 
-    fn review_updates(&mut self, session: &str, identities: &Vec<String>) -> String {
+    pub(super) fn review_updates(&mut self, session: &str, identities: &Vec<String>) -> String {
         match self.continuity.as_mut().map_err(|error| error.clone()).and_then(|state| state.reviewed(session, identities)) {
             Ok(changed) => {
                 self.continuity_error = None;

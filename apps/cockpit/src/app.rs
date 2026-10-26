@@ -79,36 +79,29 @@ pub const EFFORT_LEVELS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
 const PANEL_NAMES: [&str; 5] = ["Status", "Sessions", "Pull requests", "Todo", "Ideas"];
 /// The tabs' panels, in the order of their keys 1, 2, 3.
 const TAB_PANELS: [usize; 3] = [1, 3, 4];
-const GLOBAL_HINTS: [(&str, &str); 3] = [("s", "status"), (":", "actions"), ("?", "help")];
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StatusAction { ClaudeStatus, CodexStatus, Digest, Clones }
+
+impl StatusAction {
+    fn hint(self) -> &'static str {
+        match self {
+            Self::ClaudeStatus => "Claude status page", Self::CodexStatus => "Codex status page",
+            Self::Digest => "daily digest", Self::Clones => "clones review",
+        }
+    }
+}
+const GLOBAL_HINTS: [(&str, &str); 2] = [("s", "status"), ("?", "help")];
 /// ⌘ in key hints: the physical Command key, which keyd turns into Ctrl (system/etc/keyd).
 const GLOBAL_HELP: &[(&str, &str)] = &[
     ("1 2 3", "Sessions · Todo · Ideas"), ("s", "Status: usage, spending, Chief, PRs, phone"),
     ("?", "this help (for the tab you're on)"), ("esc", "close / back"),
-    ("N", "new blank session (project, agent, first message)"),
+    ("N", "new session: blank or Claude Design canvas"),
     ("H", "resume a past session, searched by project and prompt"),
     ("S", "settings: default agent, models, on/off choices, phone pairing"),
     ("P W G", "windows on top: pull requests, Claude on the web, greyproxy"),
     ("⌘1 ⌘2 ⌘3", "a tab from inside the session"), ("→ ←", "into the session and back"),
-    (":", "the actions that have no key yet: digest, design session, clones, status pages"),
     ("q", "close the column; sessions keep running"),
-];
-/// Actions with no key yet, only in the : list: the panel they run in ("-" for none), a name, a
-/// label. The designer places them next (todo 5a82d5dd); the attention filter, queue, updates and
-/// "reviewed" go once the grouping has replaced them (todo 86822093).
-const PALETTE_ONLY: [(&str, &str, &str); 13] = [
-    ("1", "attention-filter", "show actionable sessions / show all; deferred items remain counted"),
-    ("2", "defer-20m", "remind me of this PR review in twenty minutes"),
-    ("2", "bring-back", "bring the selected PR review back now"),
-    ("2", "task-trail", "follow the selected PR's linked tasks and sessions"),
-    ("3", "task-trail", "follow the selected task's sessions, results and PRs"),
-    ("-", "queue", "explain queued work and what each session is waiting for"),
-    ("-", "updates", "unseen results, questions and archived return notes"),
-    ("1", "reviewed", "mark the selected session's currently displayed updates reviewed (not answered)"),
-    ("-", "digest", "the digest: yesterday, today, plan usage, who waits, pull requests (also once a day by itself)"),
-    ("-", "design", "a design session: a Claude Design canvas, worked on by a session in a project (link, then project)"),
-    ("-", "clones", "the clones of + and reviews: delete those with no session, no uncommitted change and nothing unpushed (also once a day by itself)"),
-    ("0", "status-page", "open status.claude.com: Anthropic's incidents and each product's state"),
-    ("0", "codex-status-page", "open status.openai.com: OpenAI's incidents and each product's state (Codex)"),
 ];
 /// What the signs on a session card mean: Sessions help's last section.
 const LEGEND: &[(&str, &str)] = &[
@@ -356,12 +349,14 @@ struct SessionDetails {
     chief_answers_of: Option<String>,
     /// Session details (`i`): the session its keys act on, and those keys by group, drawn as key caps.
     session: Option<String>,
+    todo: Option<String>,
+    displayed_updates: Vec<String>,
     key_groups: Vec<(&'static str, Vec<(&'static str, &'static str)>)>,
 }
 
 /// Session details' keys, grouped as frame 2200 draws them; they work on the selected card too.
 const SESSION_DETAIL_KEYS: [(&str, &[(&str, &str)]); 3] = [
-    ("WORK", &[("e", "effort"), ("$", "billing: subscription / API"), ("C", "/compact"), ("c", "Chief answers"), ("k", "links"), ("d", "drop queued")]),
+    ("WORK", &[("e", "effort"), ("$", "billing: subscription / API"), ("C", "/compact"), ("c", "Chief answers"), ("k", "links"), ("d", "drop queued"), ("u", "updates"), ("Q", "queue explanations"), ("v", "mark displayed updates reviewed")]),
     ("CODE", &[("g", "lazygit"), ("U", "push / apply"), ("+", "parallel clone"), ("o", "design canvas"), ("t", "task trail")]),
     ("SESSION", &[("m", "remote control"), ("w", "my note"), ("z", "sleep"), ("R", "restart"), ("x", "end")]),
 ];
@@ -831,10 +826,11 @@ pub struct App {
     pub focus: usize,
     previous_panel: usize,
     pub help_open: bool,
+    status_actions: Vec<Option<StatusAction>>,
+    status_selection_lost: bool,
     help_scroll: usize,
     /// Whether tmux's focus is in the column: out of it, nothing there is drawn as focused.
     pub has_pane_focus: bool,
-    attention_only: bool,
     pub message: String,
     /// Sessions told to exit (x): off the list at once, back with a warning if the exit fails.
     pub(crate) exiting: Vec<Exiting>,
@@ -978,10 +974,11 @@ impl App {
         Self {
             continuity: Continuity::load(&paths::continuity()),
             continuity_error: None,
+            status_actions: Vec::new(), status_selection_lost: false,
             history: History::default(), view: ViewState::load(), usage: Refresher::new(), alerts: BudgetAlerts::new(util::send_notice),
             costs: Costs::default(), reviews: Reviews::default(), todos, errors: ErrorReporter::new(),
             claude_status: ProviderStatus::default(), codex_status: ProviderStatus::new(Provider::Codex), panels: Default::default(), focus: 1, previous_panel: 1,
-            help_open: false, help_scroll: 0, has_pane_focus: true, attention_only: false, message, exiting: Vec::new(), restarting_cards: HashMap::new(), labelled: Default::default(), menu: None, session_details: None, todo_composer: None, new_session: None, settings_menu: None, team_view: None, chief_view: None, team_attention: 0, team_roles: HashMap::new(), qa_sessions: HashSet::new(), team_known: false, team_checked: 0.0,
+            help_open: false, help_scroll: 0, has_pane_focus: true, message, exiting: Vec::new(), restarting_cards: HashMap::new(), labelled: Default::default(), menu: None, session_details: None, todo_composer: None, new_session: None, settings_menu: None, team_view: None, chief_view: None, team_attention: 0, team_roles: HashMap::new(), qa_sessions: HashSet::new(), team_known: false, team_checked: 0.0,
             team_links: TeamLinks::Loading, sidebar_rows: Vec::new(), tab_ranges: Vec::new(), collapsed_teams: HashSet::new(), sidebar_selection_lost: false, sidebar_session_tasks: HashMap::new(), pairing: None, restore: Vec::new(),
             held: Vec::new(), held_checked: 0.0, queue_checked: 0.0, handed_refused: HashSet::new(), sleep_checked: 0.0, sleep_asked: HashMap::new(), gaming: util::gaming,
             disk_usage: util::fullest_disk, disk: None, disk_checked: 0.0, restore_checked: 0.0, start_files: Vec::new(),
@@ -1429,6 +1426,9 @@ impl App {
     // ---- Status ----
 
     fn build_status(&mut self) {
+        let selected_action = self.status_actions.get(self.panels[0].selected).copied();
+        let previous_selection = self.panels[0].selected;
+        self.status_actions = vec![None; self.quota_rows.len()];
         let room = self.width.saturating_sub(4) as usize;
         let labels: Vec<_> = self.quota_rows.iter().map(|quota| {
             let window = quota.label.split_once(" · ").map_or("Quota", |(_, window)| window);
@@ -1627,17 +1627,25 @@ impl App {
             segment(32, " h ", on(FG, BG_HIGHLIGHT).add_modifier(Modifier::BOLD)), segment(36, "habits", dim(FG_DARK))]));
         lines.push(Line::default());
         lines.push(Line::new(vec![segment(0, "SERVICES", bold(FG_DARK))]));
-        let mut claude = provider_status_lines(&self.claude_status, room);
-        let mut codex = provider_status_lines(&self.codex_status, room);
-        let claude_width = claude[0].segments.iter().map(|(column, text, _)| *column as usize + width_of(text)).max().unwrap_or(0);
-        let codex_width = codex[0].segments.iter().map(|(column, text, _)| *column as usize + width_of(text)).max().unwrap_or(0);
-        if claude.len() == 1 && codex.len() == 1 && claude_width + 4 + codex_width <= room {
-            claude[0].segments.extend(codex.remove(0).segments.into_iter().map(|(column, text, tint)| (column + claude_width as u16 + 4, text, tint)));
+        for (provider, action) in [(&self.claude_status, StatusAction::ClaudeStatus), (&self.codex_status, StatusAction::CodexStatus)] {
+            let index = self.status_actions.len();
+            self.status_actions.push(Some(action));
+            lines.extend(provider_status_lines(provider, room).into_iter().map(|mut line| { line.item = Some(index); line }));
         }
-        lines.extend(claude);
-        lines.extend(codex);
+        lines.push(Line::default());
+        lines.push(Line::new(vec![segment(0, "UTILITIES", bold(FG_DARK))]));
+        for (label, action) in [("Daily digest", StatusAction::Digest), ("Clones review / cleanup", StatusAction::Clones)] {
+            let index = self.status_actions.len();
+            self.status_actions.push(Some(action));
+            lines.push(Line { segments: vec![segment(0, label, style(FG))], item: Some(index), ..Default::default() });
+        }
         let panel = &mut self.panels[0];
-        panel.items = self.quota_rows.len();
+        panel.items = self.status_actions.len();
+        if let Some(Some(action)) = selected_action {
+            panel.selected = self.status_actions.iter().position(|candidate| *candidate == Some(action)).expect("all Status actions remain available");
+        } else if selected_action == Some(None) && previous_selection >= self.quota_rows.len() {
+            self.status_selection_lost = true;
+        }
         panel.clamp();
         panel.lines = lines;
     }
@@ -1857,21 +1865,6 @@ impl App {
                     .and_then(|session| sidebar::member_task(snapshot, session)).is_some_and(|task| hidden_tasks.contains(&task)),
             });
         }
-        if self.attention_only {
-            let mut keep_team = false;
-            rows.retain(|row| match row {
-                SidebarRow::Team { task } => {
-                    keep_team = matches!(&self.team_links, TeamLinks::Ready(snapshot) if sidebar::attention(snapshot, task).is_some()
-                        || running.iter().any(|session| sidebar::member_task(snapshot, session).as_ref() == Some(task) && self.is_actionable(session, util::now_secs())));
-                    keep_team
-                },
-                SidebarRow::Session { session_id } => running.iter().find(|session| session.session == *session_id).is_some_and(|session| {
-                    if matches!(&self.team_links, TeamLinks::Ready(snapshot) if sidebar::membership(snapshot, session).is_some()) { keep_team }
-                    else { self.is_actionable(session, util::now_secs()) }
-                }),
-                _ => keep_team,
-            });
-        }
         // Grouped by attention across projects (NEEDS YOU, WORKING, QUIET); a team stays one block.
         let now_secs = util::now_secs();
         let mut blocks: Vec<(Attention, (bool, i64), Vec<SidebarRow>)> = Vec::new();
@@ -2077,8 +2070,7 @@ impl App {
         } else if let Some(notice) = link_notice {
             lines.push(Line::new(vec![segment(0, notice, style(FG_DARK))]));
         }
-        self.sessions = running.into_iter().filter(|session| !self.attention_only || self.is_actionable(session, util::now_secs())
-            || matches!(&self.team_links, TeamLinks::Ready(snapshot) if sidebar::membership(snapshot, session).is_some())).collect();
+        self.sessions = running;
         // In the list's order, so walking the sessions follows what Theo sees.
         let row_position = |session: &Session| rows.iter().position(|row| matches!(row, SidebarRow::Session { session_id } if *session_id == session.session)).unwrap_or(usize::MAX);
         self.sessions.sort_by_key(|session| row_position(session));
@@ -2411,7 +2403,6 @@ impl App {
             let deferred = continuity.deferred_count(util::now_secs());
             if deferred > 0 { attention += &format!(" · {deferred} deferred"); }
         }
-        if self.attention_only { attention += " · attention filter"; }
         let mut counts = format!("{working} working · {ready} ready");
         if waiting > 0 { counts += &format!(" · {waiting} waiting on TODO"); }
         if blocked > 0 { counts += &format!(" · {blocked} blocked"); }
@@ -2464,32 +2455,6 @@ impl App {
             return sidebar::shown(&issue.title);
         }
         sidebar::shown(&task.task_id)
-    }
-
-    fn find_session(&mut self, screen: &mut dyn Screen) -> String {
-        let entries: Vec<String> = self.sessions.iter().filter(|session| {
-            !matches!(&self.team_links, TeamLinks::Ready(snapshot) if crate::teams::sidebar::member_task(snapshot, session)
-                .is_some_and(|task| self.team_is_inactive(snapshot, &task, &self.sessions)))
-        }).map(|session| {
-            let title = self.session_task_titles.get(&session.session).map(String::as_str).unwrap_or(&session.project);
-            let branch = self.session_branches.get(&session.session).map(String::as_str).unwrap_or("");
-            format!("{}\t{}\t{}\t{title}\t{branch}", session.session, util::collapse(&session.project), self.session_display_title(session))
-        }).collect();
-        if let Some(chosen) = screen.outside(&mut || fzf("find session> ", &entries, &["--delimiter", "\t", "--with-nth", "2.."])) {
-            if let Some(id) = chosen.split('\t').next() {
-                use crate::teams::sidebar::{self, SidebarRow};
-                let filtered_team = self.attention_only && self.sessions.iter().find(|session| session.session == id).is_some_and(|session| {
-                    matches!(&self.team_links, TeamLinks::Ready(snapshot) if sidebar::member_task(snapshot, session).is_some_and(|task|
-                        !self.sidebar_rows.iter().any(|row| matches!(row, SidebarRow::Team { task: visible } if visible == &task))))
-                });
-                if filtered_team { self.attention_only = false; }
-                if !self.select_sidebar_target(SidebarRow::Session { session_id: id.into() }) {
-                    return "Selected session unavailable; choose a row".into();
-                }
-                if filtered_team { return "Attention filter cleared to show the selected session".into(); }
-            }
-        }
-        String::new()
     }
 
     fn select_sidebar_target(&mut self, target: crate::teams::sidebar::SidebarRow) -> bool {
@@ -2609,8 +2574,15 @@ impl App {
                 && (key != Key::Char('c') || self.chief_answers.contains_key(&session.session))
                 && key_feature(key, agent).is_none_or(|(feature, _)| agent.can(feature))
         }).collect())).collect();
+        let displayed_updates = match &self.continuity {
+            Ok(state) => state.updates().into_iter().filter(|update| update.session == session.session).map(|update| {
+                text += &format!("\nUNSEEN UPDATE\n{}\n", update.text);
+                update.identity
+            }).collect(),
+            Err(error) => { text += &format!("\nUpdates unavailable: {error}\n"); Vec::new() }
+        };
         self.session_details = Some(SessionDetails { title: format!("{} {}", card.glyph, card.doing), text, session: Some(session.session.clone()),
-            key_groups, ..Default::default() });
+            key_groups, displayed_updates, ..Default::default() });
     }
 
     /// The selected session's keys, most pressing first: what its card asks for (an approval, a
@@ -2662,14 +2634,22 @@ impl App {
     fn sessions_help() -> Vec<(&'static str, &'static str)> {
         vec![("⏎", "open the selected session"), ("n", "next session that needs you"),
              ("l", "later: hide this ask for 20 min (never approves)"), ("i", "details of the selected session"),
-             ("N", "new blank session (project, agent, first message)"), ("R", "restart the session"), ("x", "end the session"),
+              ("N", "new session: blank or Claude Design canvas"), ("R", "restart the session"), ("x", "end the session"),
              ("p", "pin: first inside its group"), ("⌘R", "restart every session that lacks a change (⟳), once it waits"),
              ("B", "after a reboot: bring back the sessions that were running"),
+             ("u", "updates: unseen results, questions and archived return notes"),
+             ("Q", "queue: what is waiting and why"), ("v", "mark displayed updates reviewed; never answer or approve"),
              ("", "its other keys (effort, push, note, sleep…) are listed in i and work on the card too")]
     }
 
     pub(crate) fn handle_sessions(&mut self, key: Key, screen: &mut dyn Screen) -> String {
         use crate::teams::sidebar::{self, SidebarRow};
+        match key {
+            Key::Char('u') => return self.run_continuity_action("updates", screen),
+            Key::Char('Q') => return self.run_continuity_action("queue", screen),
+            Key::Char('v') => return self.run_continuity_action("reviewed", screen),
+            _ => {}
+        }
         if key == Key::Char('n') { return self.next_sidebar_attention(); }
         if !self.sidebar_selection_lost {
             if let Some(SidebarRow::Team { task } | SidebarRow::PlannedQa { task }) = self.sidebar_rows.get(self.panels[1].selected).cloned() {
@@ -2701,7 +2681,6 @@ impl App {
                 let opened = self.manager_async(&["open", &s.session]);
                 self.mark_result_seen(&s.session).unwrap_or(opened)
             }).unwrap_or_default(),
-            Key::Char('/') => self.find_session(screen),
             Key::Char('i') => { self.open_session_details(); String::new() }
             Key::Char('c') => match session {
                 Some(s) => self.open_chief_answers(Some(&s.session)),
@@ -3083,8 +3062,8 @@ impl App {
             let label = format!("{}#{}", row.repository, row.number);
             let mut right = Vec::new();
             if let Ok(state) = &self.continuity {
-                if let Some(deferral) = state.saved_deferral(&format!("pr:{}#{}", row.full_repository, row.number)) {
-                    if deferral.expires_at > util::now_secs() { right.push(part("deferred", style(CYAN))); }
+                if let Some(expiry) = crate::continuity::DeferralTarget::review(row).and_then(|target| state.deferred_until(&target, util::now_secs())) {
+                    right.push(part(format!("Later · back in {}", util::duration((expiry - util::now_secs()).max(0))), style(CYAN)));
                 }
             }
             if row.draft {
@@ -3136,11 +3115,13 @@ impl App {
         scope + if self.reviews.current().2 { "  ⟳" } else { "" }
     }
 
-    pub(crate) fn handle_reviews(&mut self, key: Key, _screen: &mut dyn Screen) -> String {
+    pub(crate) fn handle_reviews(&mut self, key: Key, screen: &mut dyn Screen) -> String {
         let row = self.review_rows.get(self.panels[2].selected).cloned();
         match key {
-            Key::Enter => row.map(|row| open_in_scratchpad("prs", &row.url)).unwrap_or_default(),
-            Key::Char('c') => match row {
+            Key::Char('o') => row.map(|row| open_in_scratchpad("prs", &row.url)).unwrap_or_default(),
+            Key::Char('l') => self.toggle_later(),
+            Key::Char('t') => self.run_continuity_action("task-trail", screen),
+            Key::Enter => match row {
                 Some(row) => match self.reviews.checkouts.iter().find(|(repository, _)| repository.eq_ignore_ascii_case(&row.full_repository)).map(|(_, checkout)| checkout) {
                     None => format!("no local checkout of {}: start a session there first", row.repository),
                     Some(checkout) => {
@@ -3406,6 +3387,14 @@ impl App {
         let entry = self.todo_entries.get(self.panels[3].selected).cloned();
         let viewed = current_session();
         match key {
+            Key::Char('T') => self.run_continuity_action("task-trail", screen),
+            Key::Char('i') => {
+                if let Some(entry) = entry {
+                    self.session_details = Some(SessionDetails { title: "Todo details".into(), text: todo_details(&entry),
+                        todo: Some(crate::continuity::task_key(&entry)), key_groups: vec![("ACTIONS", vec![("T", "task trail"), ("i", "in progress / back to do")])], ..Default::default() });
+                }
+                String::new()
+            },
             Key::Esc if self.saved_todo_scope.is_some() => {
                 self.saved_todo_scope = None;
                 self.build_todo();
@@ -3516,26 +3505,7 @@ impl App {
                 }
                 _ => String::new(),
             },
-            Key::Char(pressed @ ('i' | 'd')) => match entry {
-                Some(entry) => {
-                    let target = if pressed == 'i' { "doing" } else { "done" };
-                    let status = if self.todos.status_of(&entry.key()) == target { "todo" } else { target };
-                    let directory = match &entry { Entry::Typed(item) => item.cwd(), Entry::Issue { issue, .. } => self.reviews.checkouts.get(&issue.full_repository).cloned().unwrap_or_default() };
-                    let mut token=self.todos.manual_reservation(&entry.key());
-                    if status == "doing" {
-                        token=Some(match queue::reserve_manual(&directory, &entry.key()) {Ok(token)=>token,Err(error)=>return error});
-                        self.todos.record_manual_reservation(&entry.key(),token.as_deref().expect("reservation obtained"));
-                    }
-                    if !self.todos.set_status(&entry.key(), status, "") {
-                        if status=="doing" {if let Err(error)=queue::release_manual(&directory,&entry.key(),token.as_deref()) {return error;}}
-                        return "cannot mark TODO; check the log".into();
-                    }
-                    if status=="doing" {self.todos.record_manual_reservation(&entry.key(),token.as_deref().expect("reservation obtained"));}
-                    if status!="doing" {if let Err(error)=queue::release_manual(&directory,&entry.key(),token.as_deref()) {return error;}}
-                    match status { "doing" => "in progress", "done" => "done", _ => "back to do" }.into()
-                }
-                None => String::new(),
-            },
+            Key::Char('d') => entry.map(|entry| self.toggle_todo_status(&entry, "done")).unwrap_or_default(),
             Key::Char(pressed @ ('+' | '-')) => match entry {
                 Some(Entry::Typed(item)) => {
                     self.todos.change_priority(&item.id(), if pressed == '+' { 1 } else { -1 });
@@ -3548,13 +3518,7 @@ impl App {
                 Some(Entry::Issue { .. }) => "an issue's priority comes from its labels on GitHub".into(),
                 None => String::new(),
             },
-            Key::Enter => match entry {
-                Some(entry) => {
-                    show_in_popup(&todo_details(&entry));
-                    String::new()
-                }
-                None => String::new(),
-            },
+            Key::Enter => self.handle_todo(Key::Char('i'), screen),
             Key::Char('Q') => match entry {
                 Some(entry) if entry.status() == "todo" => {
                     if self.todos.toggle_queued(&entry.key()) { "queued: an idle session of its project takes it up".into() } else { "out of the queue".into() }
@@ -3564,6 +3528,23 @@ impl App {
             },
             _ => String::new(),
         }
+    }
+
+    fn toggle_todo_status(&mut self, entry: &Entry, target: &str) -> String {
+        let status = if self.todos.status_of(&entry.key()) == target { "todo" } else { target };
+        let directory = match entry { Entry::Typed(item) => item.cwd(), Entry::Issue { issue, .. } => self.reviews.checkouts.get(&issue.full_repository).cloned().unwrap_or_default() };
+        let mut token = self.todos.manual_reservation(&entry.key());
+        if status == "doing" {
+            token = Some(match queue::reserve_manual(&directory, &entry.key()) { Ok(token) => token, Err(error) => return error });
+            self.todos.record_manual_reservation(&entry.key(), token.as_deref().expect("reservation obtained"));
+        }
+        if !self.todos.set_status(&entry.key(), status, "") {
+            if status == "doing" { if let Err(error) = queue::release_manual(&directory, &entry.key(), token.as_deref()) { return error; } }
+            return "cannot mark TODO; check the log".into();
+        }
+        if status == "doing" { self.todos.record_manual_reservation(&entry.key(), token.as_deref().expect("reservation obtained")); }
+        if status != "doing" { if let Err(error) = queue::release_manual(&directory, &entry.key(), token.as_deref()) { return error; } }
+        match status { "doing" => "in progress", "done" => "done", _ => "back to do" }.into()
     }
 
     /// The item to the project's running session, or to a new one; then it is in progress.
@@ -3663,9 +3644,15 @@ impl App {
 
     fn panel_hints(&self, index: usize) -> Vec<(&'static str, &'static str)> {
         match index {
-            0 => vec![("Esc", "close"), ("p", "pull requests"), ("c", "chief"), ("l", "answer log")],
+            0 => {
+                let mut hints = vec![("Esc", "close"), ("p", "pull requests"), ("c", "chief"), ("l", "answer log")];
+                if !self.status_selection_lost && let Some(Some(action)) = self.status_actions.get(self.panels[0].selected) {
+                    hints.insert(0, ("⏎", action.hint()));
+                }
+                hints
+            },
             1 => self.sessions_hints(),
-            2 => vec![("⏎", "open"), ("c", "review"), ("P", "list"), ("Esc", "close")],
+            2 => vec![("⏎", "review"), ("o", "GitHub"), ("l", "later / bring back"), ("t", "trail"), ("Esc", "close")],
             4 => vec![("y", "approve"), ("n", "decline"), ("⏎", "details")],
             _ => self.todo_hints(),
         }
@@ -3681,9 +3668,9 @@ impl App {
         };
         let mut hints = match status {
             todo::PROPOSED => vec![("y", "approve"), ("n", "decline"), ("⏎", "details"), ("e", "edit"), ("[ ]", "tabs")],
-            "doing" => vec![("d", "done"), ("⏎", "details"), ("i", "back to to do"), ("e", "edit"), ("t", "add"), ("[ ]", "tabs")],
+            "doing" => vec![("d", "done"), ("i", "details"), ("T", "trail"), ("e", "edit"), ("t", "add"), ("[ ]", "tabs")],
             "done" => vec![("⏎", "details"), ("d", "back to to do"), ("t", "add"), ("[ ]", "tabs")],
-            _ => vec![("r", "run now"), ("h", "to a session"), ("⏎", "details"), ("Q", "queue"), ("i", "doing"), ("d", "done"), ("e", "edit"), ("t", "add"), ("[ ]", "tabs")],
+            _ => vec![("r", "run now"), ("h", "to a session"), ("i", "details"), ("T", "trail"), ("Q", "queue"), ("d", "done"), ("e", "edit"), ("t", "add"), ("[ ]", "tabs")],
         };
         hints.extend([("K", "kind"), ("m", "move"), ("f", "filter kind")]);
         hints
@@ -3691,10 +3678,11 @@ impl App {
 
     fn panel_help(index: usize) -> Vec<(&'static str, &'static str)> {
         match index {
-            0 => vec![("p", "its pull requests"), ("c", "the Chief: on / off"), ("l", "the Chief's answer log"), ("s", "back to the tab")],
+            0 => vec![("⏎", "open selected service status, daily digest or clones review"), ("↑↓", "select a service or utility"), ("p", "its pull requests"), ("c", "the Chief: on / off"), ("l", "the Chief's answer log"), ("s", "back to the tab")],
             1 => Self::sessions_help(),
-            2 => vec![("⏎", "open the pull request in the pull requests window"),
-                      ("c", "a session reviewing it, in its own clone of the repository, using the default agent"),
+            2 => vec![("o", "open the pull request in the pull requests window"),
+                      ("⏎", "a session reviewing it, in its own clone of the repository, using the default agent"),
+                      ("l", "later for 20 minutes / bring back now; never marks reviewed"), ("t", "task trail for this pull request"),
                       ("P", "the pull requests window on the viewed session's repository (or your review requests)"),
                       ("✓ ● ✗", "CI passing, running, failing"), ("approved", "review state: approved, changes (requested), review (required)")],
             4 => vec![("y", "approve the selected idea: it moves to its project's To do, without starting work"),
@@ -3711,7 +3699,7 @@ impl App {
                       ("y n", "approve or decline an idea Claude proposed; a declined idea is not proposed again"),
                       ("Q", "queue it (again: unqueue): a session of its project idle for 5 min at its prompt takes the first queued item, by priority, one at a time"),
                       ("t", "add an item for the viewed session's project (or pick a project): Kind, Title and Notes; CMD+S saves, Esc cancels"),
-                      ("i", "mark in progress (h does it too); i again: back to to do"),
+                      ("i", "details; i inside details marks in progress / back to do"), ("T", "task trail (also inside details)"),
                       ("d", "mark done, or back to to do; done items stay 7 days, dimmed at the bottom"),
                       ("+", "raise a typed item's priority: ! then !! up to !!!!"), ("-", "lower it"), ("x", "remove a typed item"),
                       ("! ↓", "raised and low priority; an issue's comes from its labels (P0/P1/urgent/high, P3/P4/low)"),
@@ -4156,6 +4144,7 @@ impl App {
         self.focus_panel(panel_index);
         if let Some(item) = item {
             self.panels[panel_index].selected = item;
+            if panel_index == 0 { self.status_selection_lost = false; }
             if panel_index == 1 { self.sidebar_selection_lost = false; }
         }
         if let Some((start, end, "effort")) = self.hit_actions.get(&y).copied() {
@@ -4174,6 +4163,22 @@ impl App {
     fn handle_panel(&mut self, key: Key, screen: &mut dyn Screen) -> String {
         match self.focus {
             0 => match key {
+                Key::Enter => {
+                    if self.status_selection_lost { return "Status selection changed: choose a row".into(); }
+                    match self.status_actions.get(self.panels[0].selected).copied().flatten() {
+                        Some(StatusAction::ClaudeStatus) => {
+                            let _ = util::spawn_detached(Command::new("xdg-open").arg(status::PAGE));
+                            "opening status.claude.com …".into()
+                        },
+                        Some(StatusAction::CodexStatus) => {
+                            let _ = util::spawn_detached(Command::new("xdg-open").arg(status::CODEX_PAGE));
+                            "opening status.openai.com …".into()
+                        },
+                        Some(StatusAction::Digest) => self.manager_async(&["digest"]),
+                        Some(StatusAction::Clones) => { manager_in_background(&["clones"]); String::new() },
+                        None => String::new(),
+                    }
+                },
                 Key::Char('c') => self.open_chief_view(),
                 Key::Char('l') => self.open_chief_answers(None),
                 Key::Char('h') => {
@@ -4206,6 +4211,24 @@ impl App {
             return;
         }
         if matches!(key, Key::Paste(_)) && self.chief_view.as_ref().is_none_or(|view|view.suspended) { return; }
+        if let Some(todo) = self.session_details.as_ref().and_then(|details| details.todo.clone()) {
+            if key == Key::Char('T') {
+                self.message = self.open_task_trail(crate::continuity::TrailTarget::Task(todo), screen);
+                return;
+            }
+            if key == Key::Char('i') {
+                self.session_details = None;
+                let Some(index) = self.todo_entries.iter().position(|entry| crate::continuity::task_key(entry) == todo) else {
+                    self.message = "This todo is no longer available".into();
+                    return;
+                };
+                self.focus_panel(3);
+                self.panels[3].selected = index;
+                let entry = self.todo_entries[index].clone();
+                self.message = self.toggle_todo_status(&entry, "doing");
+                return;
+            }
+        }
         if self.session_details.as_ref().is_some_and(|details| !details.actions.is_empty()) && key == Key::Enter {
             self.message = self.pick_detail_action(screen);
             return;
@@ -4216,12 +4239,15 @@ impl App {
                 .any(|(_, keys)| keys.iter().any(|(own, _)| own.starts_with(*character))));
             if is_detail_key {
                 let session = details.session.clone();
+                let displayed_updates = details.displayed_updates.clone();
                 self.session_details = None;
                 if self.selected_session().map(|selected| selected.session) != session {
                     self.message = "the selected session changed: press i on it again".into();
                     return;
                 }
-                self.message = self.handle_sessions(key, screen);
+                self.message = if key == Key::Char('v') {
+                    self.review_updates(session.as_deref().expect("session details have a target"), &displayed_updates)
+                } else { self.handle_sessions(key, screen) };
                 return;
             }
         }
@@ -4282,33 +4308,22 @@ impl App {
             Key::Char(digit @ '1'..='3') => self.focus_panel(TAB_PANELS[digit as usize - '1' as usize]),
             Key::Char('j') | Key::Down => {
                 self.panels[self.focus].move_by(1);
+                if self.focus == 0 { self.status_selection_lost = false; }
                 if self.focus == 1 { self.sidebar_selection_lost = false; }
             },
             // In Sessions `k` opens the selected card's links (Theo, 2026-10-26); ↑ moves up there.
-            Key::Char('k') if self.focus != 1 => self.panels[self.focus].move_by(-1),
+            Key::Char('k') if self.focus != 1 => {
+                self.panels[self.focus].move_by(-1);
+                if self.focus == 0 { self.status_selection_lost = false; }
+            },
             Key::Up => {
                 self.panels[self.focus].move_by(-1);
+                if self.focus == 0 { self.status_selection_lost = false; }
                 if self.focus == 1 { self.sidebar_selection_lost = false; }
             },
             // From any panel, as ← comes back from the session (tmux.conf).
             Key::Right => { let _ = Command::new("cockpit").arg("focus-viewer").status(); }
             Key::Char('?') => { self.help_open = true; self.help_scroll = 0; }
-            Key::Char(':') => {
-                let entries = self.palette_entries();
-                if let Some(choice) = screen.outside(&mut || pick_action(&entries)) {
-                    if let Some((panel, key)) = choice.split_once('\t') {
-                        if let Ok(panel) = panel.parse::<usize>() {
-                            self.focus_panel(panel);
-                        }
-                        if PALETTE_ONLY.iter().any(|(_, name, _)| *name == key) {
-                            self.message = self.run_palette_only(key, screen);
-                        } else {
-                            let key = if key == "⏎" { Key::Enter } else { key.chars().next().map(Key::Char).unwrap_or(Key::Esc) };
-                            self.handle(key, screen);
-                        }
-                    }
-                }
-            }
             Key::Char('N') => self.open_new_session(),
             Key::Char('S') => self.settings_menu = Some(SettingsMenu::new()),
             Key::Char('H') => {
@@ -4333,71 +4348,10 @@ impl App {
         }
     }
 
-    /// The design action of the : list: the canvas link, then the project; the session links its card and watches the comments.
-    pub(crate) fn start_design_session(&mut self, screen: &mut dyn Screen) -> String {
-        let typed = input_line(screen, "Claude Design canvas (its claude.ai link, empty cancels)> ");
-        if typed.is_empty() {
-            return String::new();
-        }
-        let Some(url) = sessions::canvas_address(&typed) else {
-            return "not a canvas link: claude.ai/artifact/<id>, or a chat link with ?artifact=<id>".into();
-        };
-        let directory = screen.outside(&mut || pick_project()).unwrap_or_default();
-        if directory.is_empty() {
-            return String::new();
-        }
-        manager_in_background(&["new", &directory, &sessions::design_prompt(&url)]);
-        format!("starting a design session in {} …", project_name(&directory))
-    }
-
-    /// Every single-key action from the help tables: "panel\tkey\tlabel" lines for fzf
-    /// ("-" for anywhere).
-    pub(crate) fn palette_entries(&self) -> Vec<String> {
-        let is_external = self.selected_session().is_some_and(|session| session.is_external());
-        let mut entries: Vec<String> = GLOBAL_HELP.iter()
-            .filter(|(key, _)| key.chars().count() == 1 && !":?".contains(*key))
-            .map(|(key, label)| format!("-\t{key}\t{:<13} {key:<2} {label}", "everywhere"))
-            .collect();
-        for index in 0..PANEL_NAMES.len() {
-            for (key, label) in Self::panel_help(index) {
-                if index == 1 && is_external
-                    && session_key_requires_terminal(if key == "⏎" { Key::Enter } else { Key::Char(key.chars().next().unwrap()) }) {
-                    continue;
-                }
-                if key.chars().count() == 1 || key == "⏎" {
-                    entries.push(format!("{index}\t{key}\t{:<13} {key:<2} {label}", PANEL_NAMES[index]));
-                }
-            }
-        }
-        for (panel, name, label) in PALETTE_ONLY {
-            if name == "remote" && is_external {
-                continue;
-            }
-            let scope = panel.parse::<usize>().map_or("everywhere", |index| PANEL_NAMES[index]);
-            entries.push(format!("{panel}\t{name}\t{scope:<13}    {label}"));
-        }
-        entries
-    }
-
-    fn run_palette_only(&mut self, name: &str, screen: &mut dyn Screen) -> String {
-        match name {
-            "updates" | "reviewed" | "queue" | "task-trail" | "defer-20m" | "bring-back" | "attention-filter" => self.run_continuity_action(name, screen),
-            "digest" => self.manager_async(&["digest"]),
-            "design" => self.start_design_session(screen),
-            "clones" => {
-                manager_in_background(&["clones"]);
-                String::new()
-            }
-            "status-page" => {
-                let _ = util::spawn_detached(Command::new("xdg-open").arg(status::PAGE));
-                "opening status.claude.com …".into()
-            }
-            "codex-status-page" => {
-                let _ = util::spawn_detached(Command::new("xdg-open").arg(status::CODEX_PAGE));
-                "opening status.openai.com …".into()
-            }
-            _ => panic!("no palette action named {name}"),
-        }
+    fn launch_design_session(&mut self, directory: &str, canvas_link: &str) -> Result<String, String> {
+        let url = sessions::canvas_address(canvas_link).ok_or_else(|| "not a canvas link: claude.ai/artifact/<id>, or a chat link with ?artifact=<id>".to_string())?;
+        manager_in_background(&["new", directory, &sessions::design_prompt(&url)]);
+        Ok(format!("starting a design session in {} …", project_name(directory)))
     }
 
     /// `m` on a card: Remote Control (phone / claude.ai/code) on or off.
@@ -5009,16 +4963,6 @@ fn pick_agent() -> Option<String> {
     fzf("agent> ", &names, &[]).filter(|agent| agents::find(agent).is_some())
 }
 
-/// "panel\tkey" of the chosen action.
-/// Ranked by match (fzf() turns sorting off for the lists whose order matters), on the shown text.
-pub(crate) const PALETTE_FZF_OPTIONS: [&str; 5] = ["--sort", "--delimiter", "\t", "--with-nth", "3.."];
-
-fn pick_action(entries: &[String]) -> Option<String> {
-    let chosen = fzf("action> ", entries, &PALETTE_FZF_OPTIONS)?;
-    let mut fields = chosen.splitn(3, '\t');
-    Some(format!("{}\t{}", fields.next()?, fields.next()?))
-}
-
 /// The index of the chosen past session.
 fn pick_past_session(past: &[(PastSession, String)]) -> Option<String> {
     let lines: Vec<String> = past.iter().enumerate().map(|(index, (entry, title))| {
@@ -5051,18 +4995,6 @@ pub(crate) fn parse_editor_text(text: &str) -> Option<(String, String)> {
     }
     let notes = lines.collect::<Vec<_>>().join("\n").trim().to_string();
     Some((title, notes))
-}
-
-/// Read-only text in a tmux popup (less: q closes it).
-fn show_in_popup(text: &str) {
-    let path = crate::paths::runtime_dir().join(format!("cockpit-todo-{}.txt", util::token_hex(4)));
-    if fs::write(&path, text).is_err() {
-        return;
-    }
-    let _ = Command::new("tmux").args(["display-popup", "-E", "-w", "70%", "-h", "60%", "-T", " todo · q closes "])
-        // No --quit-if-one-screen: a short text would close the popup the moment it opened.
-        .args(["less", "-R", "--no-init"]).arg(&path).status();
-    let _ = fs::remove_file(&path);
 }
 
 fn todo_context(item: &todo::Item) -> String {
