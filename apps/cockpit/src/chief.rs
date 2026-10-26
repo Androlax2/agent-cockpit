@@ -9,6 +9,42 @@ use crate::teams::{ErrorCode, Role, TeamError, VerifiedSession};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// A complete host review, never a mixture of pagination generations.
+pub fn host_snapshot() -> Result<Value, TeamError> {
+    use crate::teams::{HostRequest, client::host_request};
+    for _ in 0..3 {
+        let read_at_ms = chrono::Utc::now().timestamp_millis();
+        let mut records = Vec::new();
+        let (mut after, mut generation, mut envelope) = (0, None, None);
+        let mut session_names = serde_json::Map::new();
+        for _ in 0..512 {
+            let page = host_request(&HostRequest::ChiefSnapshot {after, limit:50, generation:generation.clone()})?.result?;
+            if page["invalidated"] == true {break;}
+            if page["projection"] != "host_review" || page["cursor_kind"] != "snapshot_offset" {
+                return Err(TeamError::new(ErrorCode::Unavailable, "Chief host review projection is missing"));
+            }
+            let current = page["generation"].as_str().ok_or_else(||TeamError::new(ErrorCode::Unavailable,"Chief snapshot generation is missing"))?.to_string();
+            if generation.as_ref().is_some_and(|generation|generation != &current) {break;}
+            generation = Some(current);
+            let batch = page["records"].as_array().ok_or_else(||TeamError::new(ErrorCode::Unavailable,"Chief snapshot records are missing"))?;
+            records.extend(batch.iter().cloned());
+            if envelope.is_none() {envelope = Some(page.clone());}
+            if let Some(names) = page["session_names"].as_object() {session_names.extend(names.clone());}
+            if page["has_more"] == false {
+                let mut complete = envelope.expect("first page is present");
+                complete["records"] = serde_json::json!(records);
+                complete["has_more"] = serde_json::json!(false);
+                complete["session_names"] = serde_json::json!(session_names);
+                complete["read_at_ms"] = serde_json::json!(read_at_ms);
+                return Ok(complete);
+            }
+            after = page["next"].as_i64().filter(|next|*next > after)
+                .ok_or_else(||TeamError::new(ErrorCode::Unavailable,"Chief snapshot cursor did not advance"))?;
+        }
+    }
+    Err(TeamError::new(ErrorCode::Unavailable,"Chief host snapshot changed repeatedly or exceeded its bounded read; try opening again"))
+}
+
 pub const MAX_OPEN_DECISIONS: usize = 100;
 pub const MAX_CONTEXT_RECORDS: usize = 50;
 /// How many habits one answer may name as the ones it relied on.

@@ -17,6 +17,226 @@ const sendingMessages = new Set();
 let shownConversation = "";
 let conversationRequest = 0;
 const loadingConversations = new WeakMap();
+let chiefState = null;
+let chiefError = "Loading Chief…";
+let chiefPage = null;
+let chiefUndo = null;
+const chiefDrafts = new Map();
+const chiefSubmitted = new Set();
+let chiefRequestSequence = 0;
+let chiefReadSequence = 0;
+
+function chiefRecords(kind) {
+  return chiefState?.[kind] || [];
+}
+
+function chiefCount(session) {
+  return chiefRecords("counts").find(count => count.session_id === session)?.count || 0;
+}
+
+function chiefScope(project) {
+  return project ? project.replace(/\/$/, "").split("/").pop() : "all projects";
+}
+
+async function refreshChief() {
+  const sequence = ++chiefReadSequence;
+  try {
+    const fresh = await getJson("/api/chief");
+    if (![fresh.answers, fresh.habits, fresh.escalations].every(Array.isArray)) throw new Error("Chief data unavailable");
+    if (sequence !== chiefReadSequence) return;
+    chiefState = fresh; chiefError = "";
+  } catch (error) {
+    if (sequence !== chiefReadSequence) return;
+    chiefState = null; chiefError = `Chief unavailable · ${error.message || error}`;
+  }
+}
+
+function chiefIdentity(record) {
+  const session = state.sessions.find(session => session.session === record.session_id);
+  return chiefState?.session_names?.[record.session_id] || session?.title || session?.project || `ses_…${record.session_id.slice(-6)}`;
+}
+
+function updateChiefCards(box, records, build) {
+  const previous = Array.from(box.children);
+  const wanted = records.map(record => {
+    const look = JSON.stringify(record);
+    const kept = previous.find(node => node.dataset.recordId === record.id && node.dataset.look === look);
+    if (kept) return kept;
+    const node = build(record); node.dataset.recordId = record.id; node.dataset.look = look;
+    return node;
+  });
+  for (const node of previous) { if (!wanted.includes(node)) box.removeChild(node); }
+  for (const [index, node] of wanted.entries()) {
+    if (box.children[index] !== node) box.insertBefore(node, box.children[index] || null);
+  }
+}
+
+function chiefButton(label, action, kind, record, note) {
+  const button = element("button", "", label);
+  const expected = JSON.stringify(record);
+  const submission = `${action.action}:${record.id}:${expected}`;
+  button.disabled = chiefSubmitted.has(submission);
+  button.onclick = async () => {
+    if (button.disabled || chiefSubmitted.has(submission)) return;
+    const current = chiefRecords(kind).find(current => current.id === record.id);
+    if (!current || JSON.stringify(current) !== expected) {
+      note.textContent = "This changed. Refresh and read it again."; note.dataset.kind = "error"; return;
+    }
+    if (pendingPosts.has("/api/chief")) { note.textContent = "Another Chief action is still pending."; return; }
+    chiefSubmitted.add(submission); button.disabled = true;
+    const request_id = `phone-chief-${Date.now()}-${++chiefRequestSequence}-${Math.random().toString(36).slice(2)}`;
+    const result = await post("/api/chief", { action: { ...action, request_id }, expected: record }, note);
+    if (result.ok && action.action === "delete_habit") chiefUndo = record.id;
+    if (result.ok && action.action === "restore_habit") chiefUndo = null;
+    if (!result.ok && result.outcome_uncertain === false) {
+      chiefSubmitted.delete(submission); button.disabled = false;
+      note.textContent = `${result.message} Nothing was sent; correct the input or refresh.`;
+    } else if (!result.ok) {
+      note.textContent = `${result.message} Refresh and inspect the outcome before another action.`;
+    }
+    await refreshChief(); renderSessionChief(); renderChief();
+  };
+  return button;
+}
+
+function chiefEditor(kind, record) {
+  const isCorrection = kind === "answers";
+  const key = `${kind}:${record.id}`;
+  const box = element("section", "chief-editor");
+  if (isCorrection) box.append(element("p", "task", `To: ${chiefIdentity(record)} · ${chiefScope(record.project)}`));
+  const input = element("textarea", "chief-input");
+  input.value = chiefDrafts.get(key) || ""; input.maxLength = isCorrection ? 2000 : 4000;
+  const preview = element("p", "chief-suggestion");
+  const note = element("div", "note"); note.id = `chief-note-${++controlSequence}`;
+  input.setAttribute("aria-describedby", note.id);
+  box.append(labelControl(isCorrection ? "Your correction" : "Your answer", input), preview);
+  const buttons = element("div", "buttons");
+  const update = () => {
+    chiefDrafts.set(key, input.value);
+    const habit = Array.from(input.value.trim().replace(/\s+/g, " "));
+    preview.textContent = isCorrection ? `Becomes a habit (${chiefScope(record.project)}): ${habit.length > 500 ? habit.slice(0, 499).join("") + "…" : habit.join("")}` : "";
+    const action = isCorrection ? { action: "overrule", answer: record.id, correction: input.value }
+      : { action: "answer_decision", decision: record.id, expected_revision: record.revision, answer: input.value };
+    const send = chiefButton(isCorrection ? "Send correction" : "Send answer", action, kind, record, note);
+    send.disabled = send.disabled || !input.value.trim();
+    buttons.replaceChildren(send);
+  };
+  input.oninput = update;
+  input.onkeydown = event => { if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) event.preventDefault(); };
+  update();
+  const label = isCorrection ? chiefState?.correction_label : chiefState?.answer_label;
+  if (label) box.append(element("p", "note", label));
+  box.append(buttons, note);
+  return box;
+}
+
+function chiefEscalation(record) {
+  const section = element("section", "chief-escalation-actions");
+  const card = element("article", "card chief-escalation");
+  const category = { security: "Security", scope: "Scope", unsure: "Not sure", uncertain: "Not sure" }[record.category] || record.category;
+  card.append(element("div", "question", `! Chief needs you · ${category}`), element("p", "message-text", `Agent asks: “${record.question}”`),
+    element("p", "task", record.recommendation));
+  section.append(card);
+  const note = element("div", "note");
+  if (record.suggested_answer?.trim()) {
+    card.append(element("p", "chief-suggestion", `◆ Chief suggests: ${record.suggested_answer}`));
+    const use = chiefButton("Use the suggestion", { action: "answer_decision", decision: record.id, expected_revision: record.revision, answer: record.suggested_answer }, "escalations", record, note);
+    use.className = "chief-use"; section.append(use);
+  }
+  const own = element("button", "chief-own", "Write my own answer");
+  own.onclick = () => { own.hidden = true; const editor = chiefEditor("escalations", record); section.append(editor); editor.querySelector("textarea").focus(); };
+  section.append(own, note);
+  return section;
+}
+
+function chiefAnswer(record) {
+  const card = element("article", "card chief-answer");
+  card.append(element("div", "task", `${chiefIdentity(record)} · ${chiefScope(record.project)}`));
+  card.append(element("div", "project", record.question), element("p", "message-text", `${record.source === "theo" ? "You" : "Chief"}: ${record.answer}`));
+  const habits = (record.habits || []).map(habit => habit.text).join(" · ");
+  card.append(element("p", "task", `${record.reason || ""}${habits ? ` · Habit used: ${habits}` : ""}`));
+  card.append(element("p", "task", `${new Date(record.created_at_ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} · ${record.delivery}`));
+  if (record.overrule) card.append(element("p", "task", `Overruled: ${record.overrule.correction} · ${record.overrule.delivery}`));
+  if (record.source === "chief" && !record.overrule && ["received", "uncertain"].includes(record.delivery)) {
+    const overrule = element("button", "chief-overrule", "Overrule");
+    overrule.onclick = () => { overrule.hidden = true; const editor = chiefEditor("answers", record); card.append(editor); editor.querySelector("textarea").focus(); };
+    card.append(overrule);
+  }
+  return card;
+}
+
+function chiefHabit(record) {
+  const card = element("article", "card chief-habit");
+  const since = chiefState.habits_seen_ms ?? Date.now() - 86400000;
+  card.append(element("div", "project", `${record.created_at_ms > since ? "NEW · " : ""}${record.text}`), element("div", "task", chiefScope(record.project)));
+  const note = element("div", "note");
+  card.append(chiefButton("Delete", { action: "delete_habit", habit: record.id }, "habits", record, note), note);
+  return card;
+}
+
+function renderSessionChief() {
+  const box = document.getElementById("session-chief");
+  if (!box || !opened) return;
+  const escalations = chiefRecords("escalations").filter(record => record.session_id === opened);
+  const count = chiefCount(opened);
+  const look = JSON.stringify([opened, escalations, count, chiefError]);
+  if (box.dataset.look === look) return;
+  box.dataset.look = look;
+  if (!box.querySelector(".chief-records")) {
+    const log = element("button", "chief-log");
+    log.onclick = () => openChief("answers", opened);
+    box.append(element("div", "note chief-notice"), element("div", "chief-records"), log);
+  }
+  box.querySelector(".chief-notice").textContent = chiefError;
+  updateChiefCards(box.querySelector(".chief-records"), escalations, chiefEscalation);
+  const log = box.querySelector(".chief-log"); log.hidden = count === 0; log.textContent = `Chief ✓${count} · answers`;
+}
+
+function openChief(page, session = null) {
+  chiefPage = { page, session };
+  history.pushState({ chief: chiefPage }, "", `#chief=${page}${session ? `&session=${encodeURIComponent(session)}` : ""}`);
+  renderChief();
+  document.getElementById("chief").querySelector(".back").focus();
+}
+
+function renderChief() {
+  const box = document.getElementById("chief");
+  if (!box) return;
+  box.hidden = !chiefPage;
+  for (const id of ["detail", "list", "work", "starter", "phone", "approvals", "tabs"]) {
+    const background = document.getElementById(id);
+    if (background) background.inert = Boolean(chiefPage);
+  }
+  document.getElementById("refresh-view").disabled = Boolean(chiefPage);
+  if (!chiefPage) { box.dataset.page = ""; return; }
+  const records = chiefRecords(chiefPage.page).filter(record => !chiefPage.session || record.session_id === chiefPage.session);
+  const scroll = box.scrollTop;
+  const page = JSON.stringify(chiefPage);
+  if (box.dataset.page !== page) {
+    box.dataset.page = page;
+    const back = element("button", "back", "‹ Back"); back.onclick = () => history.back();
+    const title = element("h2", "chat-heading", chiefPage.page === "habits" ? "Chief habits" : "Chief answers");
+    const error = element("p", "warning chief-error"); error.setAttribute("role", "alert");
+    box.replaceChildren(back, title, element("p", "task chief-context"), error, element("p", "empty chief-empty"),
+      element("div", "chief-records"), element("p", "note chief-cap"), element("div", "chief-undo"));
+  }
+  const active = records.filter(record => chiefPage.page !== "habits" || record.state === "active");
+  box.querySelector(".chief-context").textContent = chiefPage.session ? chiefIdentity({ session_id: chiefPage.session }) : "";
+  box.querySelector(".chief-error").textContent = chiefError;
+  box.querySelector(".chief-empty").textContent = chiefError || active.length ? "" : chiefPage.page === "habits" ? "No habits yet. The Chief learns from your answers and overrules." : "No Chief answers yet.";
+  updateChiefCards(box.querySelector(".chief-records"), active, chiefPage.page === "habits" ? chiefHabit : chiefAnswer);
+  box.querySelector(".chief-cap").textContent = chiefPage.page === "answers" && chiefRecords("answers").length >= 200 ? "Showing the newest 200 answers." : "";
+  const undo = box.querySelector(".chief-undo");
+  const deleted = chiefRecords("habits").find(habit => habit.id === chiefUndo && habit.state === "deleted");
+  const undoLook = JSON.stringify(chiefPage.page === "habits" ? deleted : null);
+  if (undo.dataset.look !== undoLook) {
+    undo.dataset.look = undoLook; undo.replaceChildren();
+    if (chiefPage.page === "habits" && deleted) {
+      const note = element("div", "note"); undo.append(chiefButton("Undo delete", { action: "restore_habit", habit: deleted.id }, "habits", deleted, note), note);
+    }
+  }
+  box.scrollTop = scroll;
+}
 
 function statusLabel(session) {
   if (session.state === "asleep") return `asleep · ${age(session.since)}`;
@@ -182,6 +402,7 @@ function sessionsNeedingYou() {
   const waiting = new Set(state.sessions.filter((session) => session.state === "needs-you").map((session) => session.session));
   for (const approval of state.approvals) waiting.add(approval.session || approval.id);
   for (const input of state.inputs || []) waiting.add(input.id);
+  for (const escalation of chiefRecords("escalations")) waiting.add(escalation.session_id);
   return waiting.size;
 }
 
@@ -217,6 +438,8 @@ function projectColour(project) {
 
 // The exact ask on a card that needs you, and what tapping it does.
 function askOf(session) {
+  const escalation = chiefRecords("escalations").find(record => record.session_id === session.session);
+  if (escalation) return { text: `Chief needs you: ${escalation.question}`, verb: "Answer" };
   const approval = state.approvals.find((candidate) => candidate.session === session.session);
   if (approval) return { text: `Approve: ${approval.command}`, verb: "Review" };
   if (session.ask_to_run === "approval") return { text: "Approve a command", verb: "Review" };
@@ -227,6 +450,7 @@ function askOf(session) {
 }
 
 function groupOf(session) {
+  if (chiefRecords("escalations").some(record => record.session_id === session.session)) return "needs-you";
   if (state.approvals.some((approval) => approval.session === session.session)) return "needs-you";
   return session.group || (session.state === "needs-you" ? "needs-you" : session.state === "working" ? "working" : "quiet");
 }
@@ -258,6 +482,8 @@ function sessionCard(session, group) {
   const task = session.title || session.task;
   if (task && task !== session.project) why.append(element("span", "separator", " › "), element("span", "card-task", task));
   card.append(row, why);
+  const answered = chiefCount(session.session);
+  if (answered) card.append(element("span", "task", `Chief ✓${answered}`));
   if (group === "needs-you") {
     const ask = askOf(session);
     const bar = element("span", "ask-bar");
@@ -639,11 +865,14 @@ function renderDetail() {
     const refreshTerminal = element("button", "", "Refresh terminal"); refreshTerminal.onclick = loadScreen;
     terminal.append(refreshTerminal, screen, screenNote); terminal.ontoggle = () => { if (terminal.open) loadScreen(); };
     panel.append(controls, terminal);
-    box.replaceChildren(header, panel, reading, error, actions, composer);
+    const chief = element("section", "session-chief"); chief.id = "session-chief";
+    chief.setAttribute("aria-label", "Chief answers and escalations");
+    box.replaceChildren(header, chief, panel, reading, error, actions, composer);
     if (message.value) fitMessage();
     loadConversation();
   }
   document.getElementById("chat-heading").textContent = session.title || session.project;
+  renderSessionChief();
   document.getElementById("chat-status").textContent = `${session.title ? `${session.project} · ` : ""}${statusLabel(session)}${session.queued ? ` · ${session.queued} queued` : ""}`;
   const send = document.getElementById("chat-send");
   const isDialog = session.state === "needs-you" && !session.needs_input;
@@ -879,6 +1108,7 @@ function renderTabs() {
 }
 
 function showTab(name) {
+  chiefPage = null; renderChief();
   tab = name;
   opened = null;
   forgetSessionAddress();
@@ -1171,7 +1401,26 @@ async function renderStatus(box) {
   const usage = element("div");
   const pulls = element("div");
   await Promise.all([renderUsage(usage), renderPulls(pulls)]);
-  box.replaceChildren(usage, element("h2", "", "Pull requests"), pulls);
+  const chief = element("section", "card chief-status");
+  chief.id = "chief-status";
+  renderChiefStatus(chief);
+  box.replaceChildren(usage, chief, element("h2", "", "Pull requests"), pulls);
+}
+
+function renderChiefStatus(chief) {
+  if (!chief) return;
+  const look = JSON.stringify([chiefError, chiefState?.status, chiefState?.today]);
+  if (chief.dataset.look === look) return;
+  chief.dataset.look = look; chief.replaceChildren();
+  chief.append(element("h2", "", "Chief"));
+  if (chiefError) chief.append(element("p", "warning", chiefError));
+  else {
+    const today = chiefState.today;
+    chief.append(element("p", "", `${chiefState.status}${today ? ` · answered ${today.answered} today · ${today.escalated} sent to you` : " · today's counts unavailable"}`));
+    for (const [page, label] of [["answers", "Answer log"], ["habits", "Habits"]]) {
+      const button = element("button", "", label); button.onclick = () => openChief(page); chief.append(button);
+    }
+  }
 }
 
 async function renderUsage(box) {
@@ -1241,9 +1490,13 @@ async function refresh() {
     if (!response.ok) throw new Error(await response.text());
     const before = detailLook();
     state = await response.json();
-    updateAttentionBadge();
     const wasPaired = isPaired;
     isPaired = true;
+    await refreshChief();
+    renderChiefStatus(document.getElementById("chief-status"));
+    updateAttentionBadge();
+    renderChief();
+    renderSessionChief();
     document.getElementById("updated").textContent = `Updated ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
     document.getElementById("updated").dataset.state = "online";
     if (!wasPaired) {
@@ -1305,9 +1558,17 @@ function forgetSessionAddress() {
 }
 
 window.addEventListener("popstate", () => {
+  const wasChief = chiefPage;
+  chiefPage = history.state?.chief || null;
+  renderChief();
+  if (chiefPage) return;
   const session = sessionInAddress();
   if (session !== null && tab === "sessions") showSession(session);
   else if (session === null && opened !== null) closeSession();
+  if (wasChief) {
+    const trigger = document.getElementById("detail").querySelector(".chief-log") || document.getElementById("tab-status");
+    trigger?.focus();
+  }
 });
 // A notification's link opens straight on its session: an entry for the list goes beneath it.
 if (sessionInAddress() !== null) {

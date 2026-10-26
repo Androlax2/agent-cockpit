@@ -10,8 +10,15 @@ class Element {
   get textContent() { return (this.content || "") + this.children.map(child => child.textContent).join(""); }
   append(...children) { for (const child of children) child.parent = this; this.children.push(...children); }
   replaceChildren(...children) { this.content = ""; this.children = []; this.append(...children); }
+  removeChild(child) { this.children.splice(this.children.indexOf(child), 1); child.parent = null; }
+  insertBefore(child, before) {
+    if (child.parent) child.parent.removeChild(child);
+    const index = before === null ? this.children.length : this.children.indexOf(before);
+    this.children.splice(index, 0, child); child.parent = this;
+  }
   getBoundingClientRect() { return { top: 0, bottom: 100 }; }
   setAttribute(name, value) { this.attributes[name] = String(value); }
+  removeAttribute(name) { delete this.attributes[name]; }
   getAttribute(name) { return this.attributes[name]; }
   querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
   querySelectorAll(selector) {
@@ -26,8 +33,8 @@ class Element {
 
 const settle = async () => { for (let index = 0; index < 20; index++) await Promise.resolve(); };
 
-async function startPage({ sessions, approvals = [], inputs = [], messages = [], hash = "", inputOutput = "" }) {
-  const roots = Object.fromEntries(["approvals", "list", "detail", "phone", "phone-content", "starter", "updated", "tabs", "work", "pairing", "view-title", "refresh-view"].map(id => [id, new Element()]));
+async function startPage({ sessions, approvals = [], inputs = [], messages = [], hash = "", inputOutput = "", chief = { status: "Off", answers: [], habits: [], escalations: [], counts: [] } }) {
+  const roots = Object.fromEntries(["approvals", "list", "detail", "chief", "phone", "phone-content", "starter", "updated", "tabs", "work", "pairing", "view-title", "refresh-view"].map(id => [id, new Element()]));
   const document = {
     title: "", createElement: tag => new Element(tag),
     getElementById: id => roots[id] || Object.values(roots).map(root => root.querySelector(`#${id}`)).find(Boolean),
@@ -45,7 +52,7 @@ async function startPage({ sessions, approvals = [], inputs = [], messages = [],
     replaceState(state, _title, url) { entries[position] = { state, hash: hashOf(url) }; location.hash = hashOf(url); },
     back() { if (position === 0) return; position--; location.hash = entries[position].hash; listeners.popstate?.(); },
   };
-  const server = { sessions, approvals, inputs, messages, posts: [], requests: [] };
+  const server = { sessions, approvals, inputs, messages, chief, posts: [], requests: [] };
   const context = vm.createContext({
     document, console, URL, Map, Set, Promise, JSON, history, location, navigator: {}, setInterval: () => {},
     decodeURIComponent, encodeURIComponent,
@@ -53,9 +60,14 @@ async function startPage({ sessions, approvals = [], inputs = [], messages = [],
     fetch: async (path, options = {}) => {
       server.requests.push({ path, method: options.method });
       if (options.method === "POST") server.posts.push({ path, body: options.body === undefined ? undefined : JSON.parse(options.body) });
+      if (path === "/api/chief" && options.method === "POST" && server.chiefPost) return server.chiefPost();
+      if (path === "/api/chief" && options.method !== "POST" && server.chiefFetch) return server.chiefFetch();
+      if (path === "/api/chief" && options.method !== "POST") return { status: server.chiefError ? 503 : 200, ok: !server.chiefError, json: async () => structuredClone(server.chief), text: async () => "Chief host offline" };
       if (path.startsWith("/api/input/") && options.method !== "POST") return { status: 200, ok: true, text: async () => inputOutput };
       const body = path === "/api/state" ? { sessions: server.sessions, approvals: server.approvals, inputs: server.inputs, counts: server.counts }
         : path.startsWith("/api/conversation/") ? { messages: server.messages, truncated: false }
+        : path === "/api/usage" ? { windows: [], cost: { today: 0, week: 0, month: 0 } }
+        : path === "/api/pulls" ? { pulls: [] }
         : path === "/api/projects" || path === "/api/agents" ? [] : { ok: true, message: "sent" };
       return { status: 200, ok: true, json: async () => structuredClone(body), text: async () => "" };
     },
@@ -74,6 +86,148 @@ const ASLEEP = [{ session: "s1", project: "Shop", agent: "claude", state: "aslee
                   features: ["dialogs", "interrupt", "remote_control"] }];
 
 const tests = {
+  async "Chief Status updates while open and shows host loss and recovery"() {
+    const page = await startPage({ sessions: SESSIONS, chief: { status: "Active", today: { answered: 5, escalated: 1 }, counts: [], answers: [], habits: [], escalations: [] } });
+    page.run('showTab("status")'); await settle();
+    assert.ok(page.roots.work.textContent.includes("answered 5 today"));
+    page.server.chiefError = true; await page.run("refresh()"); await settle();
+    assert.ok(page.roots.work.textContent.includes("Chief unavailable"));
+    assert.ok(!page.roots.work.textContent.includes("answered 5 today"));
+    page.server.chiefError = false; page.server.chief.today.answered = 0;
+    await page.run("refresh()"); await settle();
+    assert.ok(page.roots.work.textContent.includes("answered 0 today"));
+  },
+
+  async "an older Chief response cannot overwrite a newer unavailable state"() {
+    const page = await startPage({ sessions: SESSIONS });
+    const reads = [];
+    page.server.chiefFetch = () => new Promise(resolve => reads.push(resolve));
+    const oldRead = page.run("refreshChief()"); const newRead = page.run("refreshChief()");
+    reads[1]({ ok: false, status: 503, text: async () => "Host lost" }); await newRead;
+    reads[0]({ ok: true, status: 200, json: async () => ({ status: "Active", answers: [], habits: [], escalations: [] }) }); await oldRead;
+    assert.equal(page.run("chiefState"), null);
+    assert.ok(page.run("chiefError").includes("Host lost"));
+  },
+
+  async "unrelated Chief answers preserve the correction editor node and draft"() {
+    const record = { id: "a1", session_id: "s1", project: "path:/Shop", question: "Which?", answer: "B", reason: "Smallest", source: "chief", delivery: "received", overrule: null, habits: [], created_at_ms: 1 };
+    const page = await startPage({ sessions: SESSIONS, chief: { status: "Active", counts: [], escalations: [], habits: [], answers: [record] } });
+    page.run('openChief("answers")'); page.button(page.roots.chief, "Overrule").onclick();
+    const input = page.roots.chief.querySelector(".chief-input"); input.value = "Keep typing"; input.oninput();
+    page.server.chief.answers.unshift({ ...record, id: "a2", session_id: "s2" });
+    await page.run("refresh()"); await settle();
+    assert.equal(page.roots.chief.querySelector(".chief-input"), input);
+    assert.equal(input.value, "Keep typing");
+  },
+
+  async "global Chief answers identify the recipient before and during correction"() {
+    const record = { id: "a1", session_id: "s1", project: "path:/Shop", question: "Which?", answer: "B", reason: "Smallest", source: "chief", delivery: "received", overrule: null, habits: [], created_at_ms: 1 };
+    const page = await startPage({ sessions: SESSIONS, chief: { status: "Active", session_names: { s1: "Checkout developer · Shop" }, counts: [], escalations: [], habits: [], answers: [record] } });
+    page.run('openChief("answers")');
+    assert.ok(page.roots.chief.querySelector(".chief-answer").textContent.includes("Checkout developer · Shop"));
+    page.button(page.roots.chief, "Overrule").onclick();
+    assert.ok(page.roots.chief.querySelector(".chief-editor").textContent.includes("Checkout developer · Shop"));
+  },
+
+  async "a definitive Chief rejection allows corrected input but uncertain delivery does not"() {
+    for (const uncertain of [false, true]) {
+      const chief = { status: "Active", counts: [], answers: [], habits: [], escalations: [{ id: "d1", revision: 4, session_id: "s1", category: "scope", question: "Continue?", suggested_answer: null }] };
+      const page = await startPage({ sessions: SESSIONS, chief });
+      page.server.chiefPost = async () => ({ ok: false, status: 409, json: async () => ({ ok: false, message: "Rejected", outcome_uncertain: uncertain }) });
+      page.run('openSession("s1")'); page.button(page.roots.detail, "Write my own answer").onclick();
+      const input = page.roots.detail.querySelector(".chief-input"); input.value = "Bad\ttext"; input.oninput();
+      await page.button(page.roots.detail, "Send answer").onclick(); await settle();
+      input.value = "Corrected text"; input.oninput();
+      assert.equal(page.button(page.roots.detail, "Send answer").disabled, uncertain);
+    }
+  },
+  async "Chief escalations are session scoped and submit the exact suggestion once"() {
+    const chief = { status: "Active", counts: [], answers: [], habits: [], escalations: [
+      { id: "d1", revision: 4, session_id: "s1", category: "security", question: "Rotate token?", recommendation: "Security needs you.", suggested_answer: "Rotate it." },
+      { id: "d2", revision: 1, session_id: "s2", category: "scope", question: "OTHER SESSION", suggested_answer: null },
+    ] };
+    const page = await startPage({ sessions: SESSIONS, chief });
+    page.run('openSession("s1")'); await settle();
+    assert.ok(page.roots.detail.textContent.includes("Chief needs you · Security"));
+    assert.ok(!page.roots.detail.textContent.includes("OTHER SESSION"));
+    const use = page.button(page.roots.detail, "Use the suggestion");
+    await use.onclick(); await use.onclick(); await settle();
+    const posts = page.server.posts.filter(post => post.path === "/api/chief");
+    assert.equal(posts.length, 1);
+    assert.equal(posts[0].body.action.answer, "Rotate it.");
+    assert.equal(posts[0].body.action.expected_revision, 4);
+    assert.deepEqual(posts[0].body.expected, chief.escalations[0]);
+  },
+
+  async "a Chief answer draft survives refresh and Enter does not send"() {
+    const chief = { status: "Active", counts: [], answers: [], habits: [], escalations: [
+      { id: "d1", revision: 4, session_id: "s1", category: "scope", question: "Continue?", suggested_answer: null },
+    ] };
+    const page = await startPage({ sessions: SESSIONS, chief });
+    page.run('openSession("s1")'); await settle();
+    assert.equal(page.button(page.roots.detail, "Use the suggestion"), undefined);
+    page.button(page.roots.detail, "Write my own answer").onclick();
+    const input = page.roots.detail.querySelector(".chief-input");
+    input.value = "Keep this draft"; input.oninput();
+    input.onkeydown?.({ key: "Enter", preventDefault() {} });
+    await page.run("refresh()"); await settle();
+    assert.equal(page.roots.detail.querySelector(".chief-input").value, "Keep this draft");
+    assert.equal(page.server.posts.length, 0);
+    const oldSend = page.button(page.roots.detail, "Send answer");
+    page.server.chief.escalations[0].revision = 5;
+    await page.run("refresh()"); await settle();
+    await oldSend.onclick();
+    assert.equal(page.server.posts.length, 0, "a stale button cannot answer a refreshed decision");
+  },
+
+  async "Chief answers navigate back to the same session and overrule explicitly"() {
+    const chief = { status: "Active", counts: [{ session_id: "s1", count: 1 }], escalations: [], habits: [], answers: [
+      { id: "a1", session_id: "s1", project: "path:/Shop", question: "Which fix?", answer: "Use B.", reason: "Smallest fix", source: "chief", delivery: "received", overrule: null, habits: [], created_at_ms: 1 },
+    ] };
+    const page = await startPage({ sessions: SESSIONS, chief });
+    page.run('openSession("s1")'); await settle();
+    page.button(page.roots.detail, "Chief ✓1 · answers").onclick(); await settle();
+    assert.equal(page.roots.detail.inert, true, "only the Chief page is keyboard reachable");
+    assert.ok(page.roots.chief.textContent.includes("Which fix?"));
+    page.button(page.roots.chief, "Overrule").onclick();
+    const input = page.roots.chief.querySelector(".chief-input"); input.value = "Use C."; input.oninput();
+    assert.ok(page.roots.chief.textContent.includes("Becomes a habit (Shop): Use C."));
+    await page.button(page.roots.chief, "Send correction").onclick();
+    assert.equal(page.server.posts[0].body.action.correction, "Use C.");
+    page.history.back(); await settle();
+    assert.equal(page.run("opened"), "s1");
+    assert.equal(page.roots.chief.hidden, true);
+    assert.equal(page.roots.detail.hidden, false);
+    assert.equal(page.roots.detail.inert, false);
+  },
+
+  async "Chief failure is visible without making the session list offline"() {
+    const page = await startPage({ sessions: SESSIONS }); page.server.chiefError = true;
+    await page.run("refresh()"); page.run('openSession("s1")'); await settle();
+    assert.ok(page.roots.detail.textContent.includes("Chief unavailable"));
+    assert.equal(page.roots.updated.dataset.state, "online");
+    assert.equal(page.button(page.roots.detail, "Use the suggestion"), undefined);
+  },
+
+  async "Chief habits delete once and offer undo with the refreshed deleted record"() {
+    const habit = { id: "h1", text: "Run tests first", project: "path:/Shop", state: "active", created_at_ms: Date.now(), changed_at_ms: 1 };
+    const page = await startPage({ sessions: SESSIONS, chief: { status: "Active", counts: [], answers: [], escalations: [], habits: [habit] } });
+    page.run('openChief("habits")'); await settle();
+    const remove = page.button(page.roots.chief, "Delete");
+    await remove.onclick(); await remove.onclick(); await settle();
+    assert.equal(page.server.posts.length, 1);
+    assert.equal(page.server.posts[0].body.action.action, "delete_habit");
+    page.server.chief.habits[0].state = "deleted"; await page.run("refresh()"); await settle();
+    await page.button(page.roots.chief, "Undo delete").onclick();
+    assert.equal(page.server.posts[1].body.action.action, "restore_habit");
+    assert.equal(page.server.posts[1].body.expected.state, "deleted");
+  },
+
+  async "an empty Chief log says so"() {
+    const page = await startPage({ sessions: SESSIONS });
+    page.run('openChief("answers", "s1")'); await settle();
+    assert.ok(page.roots.chief.textContent.includes("No Chief answers yet"));
+  },
   async "the back gesture returns from a session to the list"() {
     const page = await startPage({ sessions: SESSIONS });
     page.roots.list.querySelector(".show-quiet").onclick();
@@ -365,7 +519,9 @@ const tests = {
   },
 };
 
+const failures = [];
 for (const [name, test] of Object.entries(tests)) {
-  try { await test(); } catch (error) { error.message = `${name}: ${error.message}`; throw error; }
+  try { await test(); } catch (error) { error.message = `${name}: ${error.message}`; failures.push(error); }
 }
+if (failures.length) throw new AggregateError(failures, `${failures.length} mobile checks failed`);
 console.log(`mobile page: ${Object.keys(tests).length} navigation, badge, formatting and reading checks passed`);

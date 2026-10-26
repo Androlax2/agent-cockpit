@@ -155,7 +155,7 @@ pub enum Tone { Normal, Dim }
 /// How a marked part of a list line is drawn: red for an alert, purple and bold for what the Chief
 /// learned, or a project's colour.
 #[derive(Clone, Copy, PartialEq, Debug)]
-pub enum Mark { Alert, Learned, Project(u8) }
+pub enum Mark { Alert, Attention, Learned, Project(u8) }
 /// One screen line of a list, with what the terminal needs to style it. `marks` are character
 /// ranges of `text` drawn in their own style.
 #[derive(Clone)]
@@ -182,7 +182,7 @@ impl Row {
 enum Frame {
     Browse {page:Page, selected:Option<String>},
     Detail {record:Value, actions:Option<Page>, scroll:usize},
-    Note {intent:Intent, note:String},
+    Note {intent:Intent, note:String, scroll:usize},
     Assertion {intent:Intent, note:String, checked:bool, scroll:usize},
     Review {actions:Vec<Value>, guards:Vec<Guard>, content:String, scroll:usize, confirm:bool, invalid:bool},
     Summary {scroll:usize},
@@ -311,6 +311,22 @@ impl ChiefView {
             _ => "Unknown chief state — host review required".into(),
         }
     }
+    pub fn status_lines(&self) -> Vec<String> {
+        let status = self.status();
+        let summary = match (self.snapshot["today"]["answered"].as_u64(), self.snapshot["today"]["escalated"].as_u64()) {
+            (Some(answered), Some(escalated)) if self.read_error.is_none() => format!("{status} · answered {answered} today · {escalated} sent to you"),
+            _ => format!("{status} · today's counts unavailable"),
+        };
+        let mut lines = vec![summary];
+        if let Some(chief) = self.chiefs().first() {
+            lines.push(format!("Runs as {}", self.session_name(chief["session"]["session_id"].as_str())));
+        }
+        if let Some(answer) = self.records("answer").iter().filter(|answer| answer["source"] == "chief" && answer["delivery"] != "cancelled")
+            .max_by_key(|answer| answer["created_at_ms"].as_i64()) {
+            lines.push(format!("Last: {} · {} · {}", field(answer, "answer"), self.session_name(answer["session_id"].as_str()), clock(&answer["created_at_ms"])));
+        }
+        lines
+    }
     fn unavailable_reason(&self, chief: &Value) -> Option<String> {
         self.records("worker").iter().find(|worker|worker["session"]==chief["session"])
             .and_then(|worker|worker["blocked_by"].as_array()).and_then(|blockers|blockers.iter().find(|blocker|matches!(blocker.as_str(),Some(
@@ -390,7 +406,8 @@ impl ChiefView {
         self.message=message.into();
     }
     pub fn submission_pending(&self, key: &Key) -> bool {
-        *key==Key::Char('y') && matches!(self.frames.last(),Some(Frame::Review {confirm:true,invalid:false,..}))
+        (*key==Key::Char('y') && matches!(self.frames.last(),Some(Frame::Review {confirm:true,invalid:false,..})))
+            || (*key==Key::Ctrl('s') && matches!(self.frames.last(),Some(Frame::Note {intent:Intent::Overrule(_),note,..}) if !note.trim().is_empty()))
     }
     fn open(&mut self, page: Page) {
         let selected=self.rows(&page).first().map(|row|row.key.clone()); self.frames.push(Frame::Browse {page,selected});
@@ -399,20 +416,51 @@ impl ChiefView {
         !self.records("team_member").iter().any(|member|member["session"]["session_id"]==worker["session"]["session_id"])
             && !self.chiefs().iter().any(|chief|chief["session"]["session_id"]==worker["session"]["session_id"])
     }
+    fn picker_row(&self, worker: Value) -> Row {
+        let reason = if !self.chiefs().is_empty() {Some("disable the current Chief in Chief controls first")}
+            else if worker["session"]["agent"] != "opencode" {Some("no native inbox")}
+            else if !host_flag(&worker["ready"]) {Some("waiting for verified availability")}
+            else if worker["blocked_by"].as_array().is_none_or(|blockers| !blockers.is_empty()) {Some("host reports this session blocked")}
+            else {None};
+        let operation = match reason {
+            Some(_) => Operation::Inspect(worker.clone(), None),
+            None => Operation::Review(vec![Self::action("enable",json!({"session":worker["session"]}))],vec![worker.clone()],
+                "Cross-project operational status and bounded briefs only. No extra file access, credentials, transcripts, raw approval payloads or permissions. Never starts an agent.".into()),
+        };
+        let mut row = Row::record(&worker, operation);
+        row.label = self.session_name(worker["session"]["session_id"].as_str());
+        row.more = vec![ListLine::plain(format!("{} · {}",field(&worker["session"],"agent"),
+            reason.map(|reason|format!("can't be Chief: {reason}")).unwrap_or_else(||"ready".into())))];
+        row
+    }
     fn action(action: &str, fields: Value) -> Value {
         let mut payload=fields; payload["action"]=json!(action); payload["request_id"]=json!(format!("chief-ui-{}",crate::util::token_hex(12))); payload
     }
     fn mutation(label: &str, action: Value, anchors: Vec<Value>, explanation: &str) -> Row {
         Row::new(label,label,Operation::Review(vec![action],anchors,explanation.into()))
     }
+    fn recovery_target(&self, decision: &Value) -> Option<Value> {
+        self.records("inbox").into_iter().find(|delivery|decision["scope_key"]==format!("host-delivery-{}",text(&delivery["id"])) && matches!(delivery["state"].as_str(),Some("uncertain"|"failed")))
+            .or_else(||self.records("legacy_launch").into_iter().find(|launch|decision["scope_key"]==format!("host-launch-{}",text(&launch["id"])) && launch["state"]!="released"))
+    }
     fn rows(&self, page: &Page) -> Vec<Row> {
         use Operation::*;
         match page {
-            Page::Root => vec![Row::new("decisions",&format!("Needs you · {}",Self::attention(&self.snapshot)),Open(Page::Decisions)),
+            Page::Root => {
+                let mut rows=vec![Row::new("decisions",&format!("Needs you · {}",Self::attention(&self.snapshot)),Open(Page::Decisions)),
                 Row::new("answers",&self.answers_label(),Open(Page::Answers(None))),
                 Row::new("habits",&self.habits_label(),Open(Page::Habits(self.habits_since()))),
                 Row::new("controls","Chief controls",Open(Page::Controls)),
-                Row::new("workers","Workers",Open(Page::Workers)),Row::new("summary","Request summary",Summary)],
+                Row::new("workers","Workers",Open(Page::Workers)),Row::new("summary","Request summary",Summary)];
+                for decision in self.records("decision").into_iter().filter(|decision|decision["state"]=="open" && self.recovery_target(decision).is_some()) {
+                    let mut row=self.decision_row(&decision,Inspect(decision.clone(),Some(Page::DecisionActions(decision.clone()))));
+                    row.label=format!("! {}",field(&decision,"question"));
+                    row.label_marks=vec![(0,row.label.chars().count(),Mark::Attention)];
+                    row.more=vec![ListLine::plain("y it arrived · x stop safely · i details".into())];
+                    rows.push(row);
+                }
+                rows
+            },
             Page::Workers => self.records("worker").into_iter().map(|record|Row::record(&record,Inspect(record.clone(),None))).collect(),
             Page::Decisions => self.records("decision").into_iter().filter(|record|record["state"]=="open")
                 .map(|record|self.decision_row(&record,Inspect(record.clone(),Some(Page::DecisionActions(record.clone()))))).collect(),
@@ -440,9 +488,7 @@ impl ChiefView {
                 rows
             },
             Page::Sessions => self.records("worker").into_iter().filter(|worker|self.standalone(worker))
-                .map(|worker|Row::record(&worker,
-                Review(vec![Self::action("enable",json!({"session":worker["session"]}))],vec![worker.clone()],
-                    "Cross-project operational status and bounded briefs only. No extra file access, credentials, transcripts, raw approval payloads or permissions. Never starts an agent.".into()))).collect(),
+                .map(|worker|self.picker_row(worker)).collect(),
             Page::DecisionActions(decision) => {
                 let mut rows=Vec::new();
                 if is_escalation(decision) {
@@ -452,11 +498,8 @@ impl ChiefView {
                     rows.push(Row::new("answer","Write my own answer",Note(Intent::Answer(decision.clone()))));
                 }
                 rows.push(Row::new("resolve","Resolve with note",Note(Intent::Resolve(decision.clone()))));
-                if let Some(delivery)=self.records("inbox").into_iter().find(|delivery|decision["scope_key"]==format!("host-delivery-{}",text(&delivery["id"])) && matches!(delivery["state"].as_str(),Some("uncertain"|"failed"))) {
-                    rows.push(Row::new("recovery","Recovery",Open(Page::Recovery(delivery))));
-                }
-                if let Some(launch)=self.records("legacy_launch").into_iter().find(|launch|decision["scope_key"]==format!("host-launch-{}",text(&launch["id"])) && launch["state"]!="released") {
-                    rows.push(Row::new("recovery","Recovery",Open(Page::Recovery(launch))));
+                if let Some(target)=self.recovery_target(decision) {
+                    rows.push(Row::new("recovery","Recovery",Open(Page::Recovery(target))));
                 }
                 rows
             },
@@ -554,20 +597,42 @@ impl ChiefView {
                         if let Some(Frame::Browse {selected,..})=self.frames.last_mut() {*selected=rows.get(next).map(|row|row.key.clone());}
                     },
                     Key::Char('h') if matches!(page,Page::Root)=>return self.open_habits(),
+                    Key::Char('y'|'x'|'i') if matches!(page,Page::Root)=> {
+                        if let Some(index)=index {
+                            if let Operation::Inspect(record,actions)=rows[index].operation.clone() {
+                                if key==Key::Char('i') {self.frames.push(Frame::Detail {record,actions,scroll:0});}
+                                else if let Some(target)=self.recovery_target(&record) {
+                                    self.frames.push(Frame::Note {intent:if key==Key::Char('y') {Intent::Handled(target)} else {Intent::Stop(target)},note:String::new(),scroll:0});
+                                }
+                            }
+                        }
+                    },
+                    Key::Char('l') if matches!(page,Page::Root)=>self.open(Page::Answers(None)),
+                    Key::Char('p') if matches!(page,Page::Root)=>self.open(Page::Sessions),
+                    Key::Char('r') if matches!(page,Page::Root)=>{self.frames.push(Frame::Summary {scroll:0});return Effect::Summary;},
+                    Key::Char('c') if matches!(page,Page::Root)=> {
+                        if let Some(control)=self.rows(&Page::Controls).into_iter().next() {
+                            match control.operation {
+                                Operation::Review(actions,anchors,explanation)=>self.begin_review(actions,anchors,explanation),
+                                Operation::Open(page)=>self.open(page),
+                                _=>{},
+                            }
+                        }
+                    },
                     Key::Char('x'|'u'|'p') if matches!(page,Page::Habits(_))=>return self.habit_key(&key,&rows,index,undo),
                     Key::Enter => if let Some(index)=index {match rows[index].operation.clone() {
                         Operation::Open(Page::Habits(_))=>return self.open_habits(),
                         Operation::Open(page)=>self.open(page),
                         Operation::Inspect(record,actions)=>self.frames.push(Frame::Detail {record,actions,scroll:0}),
                         Operation::Review(actions,anchors,explanation)=>self.begin_review(actions,anchors,explanation),
-                        Operation::Note(intent)=>self.frames.push(Frame::Note {intent,note:String::new()}),
+                        Operation::Note(intent)=>self.frames.push(Frame::Note {intent,note:String::new(),scroll:0}),
                         Operation::Summary=>{self.frames.push(Frame::Summary {scroll:0});return Effect::Summary;},
                     }},
                     Key::Char('o') if matches!(page,Page::Answers(_))=>if let Some(index)=index {
                         if let Operation::Inspect(answer,_)=&rows[index].operation {
                             match overrule_block(answer) {
                                 Some(reason)=>self.message=format!("Cannot overrule: {reason}."),
-                                None=>self.frames.push(Frame::Note {intent:Intent::Overrule(answer.clone()),note:String::new()}),
+                                None=>self.frames.push(Frame::Note {intent:Intent::Overrule(answer.clone()),note:String::new(),scroll:0}),
                             }
                         }
                     },
@@ -580,17 +645,28 @@ impl ChiefView {
                 Key::Esc=>{self.frames.pop();},
                 _=>self.scroll(&key),
             },
-            Frame::Note {intent,mut note} => match key {
-                Key::Char(character) if !character.is_control()=>{if note.chars().count()<Self::note_limit(&intent) {note.push(character);} if let Some(Frame::Note {note:current,..})=self.frames.last_mut() {*current=note;}},
-                Key::Paste(paste)=>{for character in paste.chars().filter(|character|!character.is_control()) {if note.chars().count()<Self::note_limit(&intent) {note.push(character);}} if let Some(Frame::Note {note:current,..})=self.frames.last_mut() {*current=note;}},
-                Key::Backspace=>{note.pop();if let Some(Frame::Note {note:current,..})=self.frames.last_mut() {*current=note;}},
+            Frame::Note {intent,mut note,..} => match key {
+                Key::Ctrl('s') if matches!(intent,Intent::Overrule(_)) && !note.trim().is_empty()=> {
+                    let Intent::Overrule(answer)=intent else {unreachable!()};
+                    if self.read_error.is_some() || !self.current(&answer) || overrule_block(&answer).is_some() {
+                        self.message="Answer changed or unavailable. Cancel and open it again.".into();
+                        return Effect::None;
+                    }
+                    let action=crate::chief::ChiefHostAction::Overrule {request_id:Self::request_id(),answer:answer["id"].as_str().expect("answer has identity").into(),correction:note};
+                    if let Err(error)=action.validate() {self.fail(error.message);return Effect::None;}
+                    self.frames.pop();
+                    return Effect::Submit(vec![action]);
+                },
+                Key::Char(character) if !character.is_control()=>{if note.chars().count()<Self::note_limit(&intent) {note.push(character);} if let Some(Frame::Note {note:current,scroll,..})=self.frames.last_mut() {*current=note;*scroll=usize::MAX;}},
+                Key::Paste(paste)=>{for character in paste.chars().filter(|character|!character.is_control()) {if note.chars().count()<Self::note_limit(&intent) {note.push(character);}} if let Some(Frame::Note {note:current,scroll,..})=self.frames.last_mut() {*current=note;*scroll=usize::MAX;}},
+                Key::Backspace=>{note.pop();if let Some(Frame::Note {note:current,scroll,..})=self.frames.last_mut() {*current=note;*scroll=usize::MAX;}},
                 Key::Enter if !note.trim().is_empty()=> {
                     self.frames.pop();
                     if matches!(intent,Intent::Stop(_)) {self.frames.push(Frame::Assertion {intent,note,checked:false,scroll:0});}
                     else {self.finish_note(intent,note);}
                 },
                 Key::Esc=>{self.frames.pop();},
-                _=>{},
+                _=>self.scroll(&key),
             },
             Frame::Assertion {intent,note,checked,..}=>match key {
                 Key::Char(' ')=>if let Some(Frame::Assertion {checked,..})=self.frames.last_mut() {*checked=!*checked;},
@@ -616,16 +692,17 @@ impl ChiefView {
         if self.frames.is_empty() {Effect::Close} else {Effect::None}
     }
     fn scroll(&mut self, key: &Key) {
-        let scroll=match self.frames.last_mut() {Some(Frame::Detail {scroll,..}|Frame::Review {scroll,..}|Frame::Assertion {scroll,..}|Frame::Summary {scroll}|Frame::Results {scroll,..})=>scroll,_=>return};
+        let scroll=match self.frames.last_mut() {Some(Frame::Note {scroll,..}|Frame::Detail {scroll,..}|Frame::Review {scroll,..}|Frame::Assertion {scroll,..}|Frame::Summary {scroll}|Frame::Results {scroll,..})=>scroll,_=>return};
         match key {Key::PageDown=>*scroll=scroll.saturating_add(self.page_step),Key::PageUp=>*scroll=scroll.saturating_sub(self.page_step),_=>{}}
     }
     pub fn clamp_scroll(&mut self, maximum: usize) -> usize {
-        match self.frames.last_mut() {Some(Frame::Detail {scroll,..}|Frame::Review {scroll,..}|Frame::Assertion {scroll,..}|Frame::Summary {scroll}|Frame::Results {scroll,..})=>{*scroll=(*scroll).min(maximum);*scroll},_=>0}
+        match self.frames.last_mut() {Some(Frame::Note {scroll,..}|Frame::Detail {scroll,..}|Frame::Review {scroll,..}|Frame::Assertion {scroll,..}|Frame::Summary {scroll}|Frame::Results {scroll,..})=>{*scroll=(*scroll).min(maximum);*scroll},_=>0}
     }
     pub fn is_list(&self) -> bool {matches!(self.frames.last(),Some(Frame::Browse {..}))}
     pub fn list_window(&self, height: usize) -> (String,Vec<ListLine>) {
         let Some(Frame::Browse {page,selected})=self.frames.last() else {return (String::new(),Vec::new())};
         let caption=match page {
+            Page::Sessions=>"Pick another Chief".into(),
             Page::Workers=>"Chief · Workers".into(),Page::Controls=>format!("Chief controls · {}",self.status()),
             Page::Answers(Some(session))=>match self.card_count {
                 0=>format!("Answers · {}",self.session_name(Some(session))),
@@ -639,6 +716,11 @@ impl ChiefView {
         if let Some(error)=&self.read_error {lines.push(ListLine::plain(format!("Stale · {error}")));}
         if !self.message.is_empty() {lines.push(ListLine::plain(self.message.clone()));}
         if !self.snapshot["coordination_error"].is_null() {lines.push(ListLine::plain(format!("Host failure: {}",shown(&self.snapshot["coordination_error"]))));}
+        if matches!(page,Page::Root) && height>12 {
+            lines.extend(self.status_lines().into_iter().map(ListLine::plain));
+            lines.push(ListLine::plain("c pause/resume · p pick Chief · r summary now".into()));
+            lines.push(ListLine::plain("l answer log · h habits".into()));
+        }
         let available=height.saturating_sub(lines.len()).max(1);
         let rows=self.rows(page);
         if rows.is_empty() {lines.push(ListLine::plain(match page {
@@ -700,8 +782,14 @@ impl ChiefView {
                 else if record["kind"]=="habit" {lines.extend(self.habit_detail(record));}
                 else if !is_escalation(record) {lines.push(shown(record));}
             },
-            Some(Frame::Note {intent:Intent::Overrule(_),note})=>lines.push(format!("Your correction to the Chief's answer (Enter reviews it; nothing is sent yet): {}",escape_hiding(note,"",""))),
-            Some(Frame::Note {intent:Intent::Answer(_),note})=>lines.push(format!("Your answer to the stopped agent (Enter reviews it; nothing is sent yet): {}",escape_hiding(note,"",""))),
+            Some(Frame::Note {intent:Intent::Overrule(answer),note,..})=> {
+                lines.push(format!("Overrule: {}",text(&answer["question"])));
+                lines.push(format!("Chief answered: {}",text(&answer["answer"])));
+                lines.push(String::new());
+                lines.push(format!("Your correction: {}",escape_hiding(note,"","")));
+                lines.push(format!("Becomes a habit ({}): {}",scope_name(&answer["project"]),escape_hiding(&crate::chief::store::habit_text(note),"","")));
+            },
+            Some(Frame::Note {intent:Intent::Answer(_),note,..})=>lines.push(format!("Your answer to the stopped agent (Enter reviews it; nothing is sent yet): {}",escape_hiding(note,"",""))),
             Some(Frame::Note {note,..})=>lines.push(format!("Nonempty note (not consent): {}",escape_hiding(note,"",""))),
             Some(Frame::Assertion {intent,note,checked,..})=> {
                 for anchor in Self::anchors(intent) {lines.push(shown(&anchor));}
@@ -790,6 +878,8 @@ impl ChiefView {
         lines
     }
     pub fn footer(&self) -> &str {match self.frames.last() {
+        Some(Frame::Browse {page:Page::Root,..})=>"c pause/resume · p pick · r summary · l log · h habits · ⏎ open · esc back",
+        Some(Frame::Note {intent:Intent::Overrule(_),..})=>"⌘S send · PgUp/Dn scroll · Enter review · Esc cancel",
         Some(Frame::Browse {page:Page::Answers(_),..})=>"o overrule · ⏎ reason · esc back",
         Some(Frame::Browse {page:Page::Habits(_),..})=>"x delete · p project/everywhere · ⏎ source · esc back",
         Some(Frame::Browse {..})=>"j/k ↑↓ move · Enter open · Esc back",

@@ -131,6 +131,7 @@ fn handle(mut request: Request) {
     let static_file = match (&method, path.as_str()) {
         (Method::Get, "/") => Some(("text/html; charset=utf-8", PAGE)),
         (Method::Get, "/page.js") => Some(("text/javascript; charset=utf-8", SCRIPT)),
+        (Method::Get, "/tokens.css") => Some(("text/css; charset=utf-8", include_str!("../../../../design/tokens.cockpit-ui.css"))),
         (Method::Get, "/sw.js") => Some(("text/javascript; charset=utf-8", SERVICE_WORKER)),
         (Method::Get, "/manifest.webmanifest") => Some(("application/manifest+json", MANIFEST)),
         _ => None,
@@ -149,6 +150,17 @@ fn handle(mut request: Request) {
     }
     let parts: Vec<&str> = path.trim_start_matches('/').split('/').collect();
     match (&method, parts.as_slice()) {
+        (Method::Get, ["api", "chief"]) => match remote::chief_state() {
+            Ok(state)=>respond_json(request,200,state),
+            Err(message)=>respond_json(request,503,json!({"ok":false,"message":message})),
+        },
+        (Method::Post, ["api", "chief"]) => {
+            let result=body_json(&mut request).ok_or_else(||json!({"ok":false,"message":"Invalid Chief request","outcome_uncertain":false})).and_then(remote::chief_action);
+            match result {
+                Ok(message)=>respond_json(request,200,json!({"ok":true,"message":message})),
+                Err(failure)=>respond_json(request,409,failure),
+            }
+        },
         (Method::Get, ["api", "state"]) => {
             let mut state = remote::state();
             state["push"] = json!(remote::push_targets().iter().any(|(id, _)| *id == phone));

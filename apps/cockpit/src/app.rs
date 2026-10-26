@@ -849,6 +849,7 @@ pub struct App {
     /// The Team view (: team), from the daemon's host-only team socket.
     pub(crate) team_view: Option<crate::teams::view::TeamView>,
     chief_view: Option<crate::chief::view::ChiefView>,
+    chief_status: Result<Value, String>,
     /// Team requests, escalations and uncertain deliveries waiting for Theo; session -> "team role · task".
     team_attention: usize,
     team_roles: HashMap<String, String>,
@@ -983,7 +984,7 @@ impl App {
             disk_usage: util::fullest_disk, disk: None, disk_checked: 0.0, restore_checked: 0.0, start_files: Vec::new(),
             width: DEFAULT_COLUMN_WIDTH, sessions: Vec::new(), running_sessions: Vec::new(), windows: Vec::new(), quota_rows: Vec::new(), review_rows: Vec::new(), todo_entries: Vec::new(), idea_entries: Vec::new(),
             session_task_titles: HashMap::new(), session_branches: HashMap::new(),
-            session_queued: HashMap::new(), chief_answers: HashMap::new(), session_roots: HashMap::new(),
+            session_queued: HashMap::new(), chief_answers: HashMap::new(), chief_status: Err("Not read yet".into()), session_roots: HashMap::new(),
             todo_scope: String::new(), shown_session: String::new(), todo_tab: TODO_TAB_OPEN, todo_tabs: HashMap::new(), todo_categories: HashMap::new(), saved_todo_scope: None, todo_jump: None, todo_counts: [0; 5], prompts_sent: HashMap::new(), subscription_held: HashSet::new(), subscription_directories: HashSet::new(), subscription_error: None, craft_roots: HashMap::new(), hit_lines: HashMap::new(), hit_actions: HashMap::new(),
             subscription_polled_at: None, subscription_waiting_shown: HashMap::new(),
             gathered: None, pending: Vec::new(), plan: String::new(), craft_checked: 0.0, running_copies_unpushed: HashMap::new(), running_copies_checked: 0.0, todo_recovery_pending,
@@ -993,6 +994,7 @@ impl App {
     /// A panel taking the focus shows from its top: while small it scrolled to keep its selection
     /// in view, and that scroll would otherwise stay once it is big again.
     pub fn focus_panel(&mut self, index: usize) {
+        if index == 0 { self.refresh_chief_status(); }
         if TAB_PANELS.contains(&self.focus) {
             self.previous_panel = self.focus;
         }
@@ -1602,12 +1604,16 @@ impl App {
         }
         lines.push(Line::default());
         lines.push(Line::new(vec![segment(0, "CHIEF", bold(FG_DARK))]));
-        let answered: usize = self.chief_answers.values().map(|answers| answers.count).sum();
-        let chief_text = if answered == 0 { "No answers from the Chief yet".to_string() }
-            else { format!("Answered {answered} for {} session{}", self.chief_answers.len(), if self.chief_answers.len() == 1 { "" } else { "s" }) };
-        lines.push(Line::new(vec![segment(0, chief_text, style(FG))]));
+        let chief_lines = match &self.chief_status {
+            Ok(snapshot) => crate::chief::view::ChiefView::new(snapshot.clone()).status_lines(),
+            Err(error) => vec![format!("Chief unavailable · {}", crate::chief::view::one_line(error, 160))],
+        };
+        for text in chief_lines {
+            for line in wrap_detail_text(&text, room.max(2)) { lines.push(Line::new(vec![segment(0, line, style(FG))])); }
+        }
         lines.push(Line::new(vec![segment(0, " c ", on(FG, BG_HIGHLIGHT).add_modifier(Modifier::BOLD)), segment(4, "Chief view", dim(FG_DARK)),
-            segment(16, " l ", on(FG, BG_HIGHLIGHT).add_modifier(Modifier::BOLD)), segment(20, "answer log", dim(FG_DARK))]));
+            segment(16, " l ", on(FG, BG_HIGHLIGHT).add_modifier(Modifier::BOLD)), segment(20, "answer log", dim(FG_DARK)),
+            segment(32, " h ", on(FG, BG_HIGHLIGHT).add_modifier(Modifier::BOLD)), segment(36, "habits", dim(FG_DARK))]));
         lines.push(Line::default());
         lines.push(Line::new(vec![segment(0, "SERVICES", bold(FG_DARK))]));
         let mut claude = provider_status_lines(&self.claude_status, room);
@@ -4159,6 +4165,11 @@ impl App {
             0 => match key {
                 Key::Char('c') => self.open_chief_view(),
                 Key::Char('l') => self.open_chief_answers(None),
+                Key::Char('h') => {
+                    let message=self.open_chief_view();
+                    self.handle_chief_key(Key::Char('h'));
+                    message
+                },
                 _ => String::new(),
             },
             1 => self.handle_sessions(key, screen),
@@ -4417,6 +4428,7 @@ impl App {
         if now - self.team_checked < 10.0 { return; }
         self.team_checked = now;
         self.chief_answers.clear();
+        if self.focus == 0 { self.refresh_chief_status(); }
         if self.chief_view.is_some() { self.refresh_chief_view(); }
         util::refresh_hyprland_instance();
         let workspace = util::output_of("hyprctl", &["-j", "activeworkspace"])

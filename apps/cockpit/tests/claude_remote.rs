@@ -122,11 +122,100 @@ impl Drop for Remote {
 #[test]
 fn an_unpaired_phone_gets_no_data() {
     let remote = Remote::start();
-    for path in ["/api/state", "/api/push/key", &format!("/api/screen/{SESSION_A}")] {
+    for path in ["/api/state", "/api/chief", "/api/push/key", &format!("/api/screen/{SESSION_A}")] {
         assert_eq!(remote.request("GET", path, None, None, false).0, 401, "{path}");
         assert_eq!(remote.request("GET", path, Some(&"0".repeat(64)), None, false).0, 401, "{path} with a made-up secret");
     }
     assert_eq!(remote.request("POST", "/api/pairing-code", Some(&"0".repeat(64)), Some(json!({})), true).0, 401);
+}
+
+struct ChiefHost {
+    snapshot: std::sync::Arc<std::sync::Mutex<Value>>,
+    mutations: std::sync::Arc<std::sync::Mutex<Vec<Value>>>,
+}
+
+impl Remote {
+    fn chief_host(&self) -> ChiefHost {
+        use std::{os::unix::net::UnixListener, sync::{Arc, Mutex}};
+        let directory=self.sandbox.runtime.join("cockpit-team-host");fs::create_dir_all(&directory).unwrap();
+        let listener=UnixListener::bind(directory.join("host.sock")).unwrap();
+        let snapshot=Arc::new(Mutex::new(json!({"records":[
+            {"kind":"decision","id":"decision-1","revision":4,"state":"open","stop_id":"stop-1","session_id":SESSION_A,
+                "category":"security","question":"Rotate the token?","recommendation":"Security needs Theo.","suggested_answer":"Rotate it.","runtime":"PRIVATE"},
+            {"kind":"chief","state":"active","live_verified":true,"session":{"session_id":SESSION_A,"runtime":"PRIVATE"},"approval_hash":"PRIVATE"},
+            {"kind":"inbox","id":"message-1","envelope":{"secret":"PRIVATE"}}
+        ],"generation":"one","projection":"host_review","cursor_kind":"snapshot_offset","has_more":false,"next":3,
+            "today":{"since_ms":1,"answered":5,"escalated":1},"session_names":{SESSION_A:"Rotate token · project"}})));
+        let mutations=Arc::new(Mutex::new(Vec::new()));
+        let (state,calls)=(snapshot.clone(),mutations.clone());
+        std::thread::spawn(move || for mut stream in listener.incoming().flatten() {
+            let mut text=String::new();stream.read_to_string(&mut text).unwrap();
+            let request:Value=serde_json::from_str(&text).unwrap();
+            let result=if request["request"]=="chief_snapshot" {Ok(state.lock().unwrap().clone())} else {
+                calls.lock().unwrap().push(request);
+                if state.lock().unwrap()["fail_mutations"]==true {Err(cockpit::teams::TeamError::new(cockpit::teams::ErrorCode::Storage,"uncertain delivery"))}
+                else {Ok(json!({"recorded":true}))}
+            };
+            let reply=cockpit::teams::TeamReply {request_id:"fixture".into(),result};
+            stream.write_all(serde_json::to_string(&reply).unwrap().as_bytes()).unwrap();
+        });
+        ChiefHost {snapshot,mutations}
+    }
+}
+
+#[test]
+fn the_phone_chief_projection_excludes_host_credentials_and_envelopes() {
+    let remote=Remote::start();let _host=remote.chief_host();let secret=remote.paired();
+    let (status,_,body)=remote.request("GET","/api/chief",Some(&secret),None,false);
+    assert_eq!(status,200,"{body}");
+    assert!(!body.contains("PRIVATE") && !body.contains("approval_hash") && !body.contains("envelope"),"{body}");
+    let state:Value=serde_json::from_str(&body).unwrap();
+    assert_eq!(state["escalations"][0]["question"],"Rotate the token?");
+    assert_eq!(state["today"]["answered"],5);
+}
+
+#[test]
+fn the_phone_chief_action_requires_the_displayed_revision_and_page_header() {
+    let remote=Remote::start();let host=remote.chief_host();let secret=remote.paired();
+    let shown=remote.get_json(&secret,"/api/chief");
+    let payload=json!({"action":{"action":"answer_decision","request_id":"phone-test","decision":"decision-1","expected_revision":4,"answer":"Rotate it."},"expected":shown["escalations"][0]});
+    assert_eq!(remote.request("POST","/api/chief",Some(&secret),Some(payload.clone()),false).0,403);
+    let (status,body)=remote.post_json(&secret,"/api/chief",payload.clone());
+    assert_eq!(status,200,"{body}");assert_eq!(host.mutations.lock().unwrap().len(),1);
+    assert_eq!(host.mutations.lock().unwrap()[0]["action"],payload["action"]);
+    host.snapshot.lock().unwrap()["records"][0]["revision"]=json!(5);
+    let (status,body)=remote.post_json(&secret,"/api/chief",payload);
+    assert_ne!(status,200);assert!(body.to_string().contains("changed"),"{body}");
+    assert_eq!(host.mutations.lock().unwrap().len(),1);
+}
+
+#[test]
+fn the_phone_chief_refuses_unlisted_actions_and_invalid_answers() {
+    let remote=Remote::start();let host=remote.chief_host();let secret=remote.paired();
+    for action in [json!({"action":"disable","request_id":"phone-disable","expected_epoch":"epoch"}),
+        json!({"action":"unknown"}),json!({"action":"answer_decision","request_id":"phone-empty","decision":"decision-1","expected_revision":4,"answer":""})] {
+        let (status,body)=remote.post_json(&secret,"/api/chief",json!({"action":action,"expected":{}}));
+        assert_eq!(status,409);
+        assert_eq!(body["outcome_uncertain"],false,"{body}");
+    }
+    assert!(host.mutations.lock().unwrap().is_empty());
+}
+
+#[test]
+fn the_phone_chief_reports_an_unavailable_host_instead_of_empty_data() {
+    let remote=Remote::start();let secret=remote.paired();
+    let (status,_,body)=remote.request("GET","/api/chief",Some(&secret),None,false);
+    assert_eq!(status,503,"{body}");
+}
+
+#[test]
+fn the_phone_never_retries_an_uncertain_chief_action() {
+    let remote=Remote::start();let host=remote.chief_host();let secret=remote.paired();
+    let shown=remote.get_json(&secret,"/api/chief");host.snapshot.lock().unwrap()["fail_mutations"]=json!(true);
+    let (status,body)=remote.post_json(&secret,"/api/chief",json!({"action":{"action":"answer_decision","request_id":"phone-uncertain","decision":"decision-1","expected_revision":4,"answer":"Rotate it."},"expected":shown["escalations"][0]}));
+    assert_eq!(status,409);assert!(body.to_string().contains("uncertain"));
+    assert_eq!(body["outcome_uncertain"],true);
+    assert_eq!(host.mutations.lock().unwrap().len(),1);
 }
 
 #[test]

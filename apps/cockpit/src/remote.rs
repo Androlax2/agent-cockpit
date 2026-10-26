@@ -592,6 +592,74 @@ fn asleep_card(note: &sleep::Asleep) -> Value {
     })
 }
 
+fn chief_fields(record: &Value, fields: &[&str]) -> Value {
+    Value::Object(fields.iter().map(|field| ((*field).to_string(),record[*field].clone())).collect())
+}
+
+fn chief_display_record(record: &Value) -> Value {
+    match record["kind"].as_str() {
+        Some("decision") => chief_fields(record,&["id","revision","state","session_id","category","question","recommendation","suggested_answer"]),
+        Some("answer") => {
+            let mut shown=chief_fields(record,&["id","session_id","project","question","answer","reason","source","delivery","created_at_ms"]);
+            shown["overrule"]=if record["overrule"].is_null() {Value::Null} else {chief_fields(&record["overrule"],&["id","correction","delivery","created_at_ms"])};
+            shown["habits"]=json!(record["habits"].as_array().into_iter().flatten().map(|habit|chief_fields(habit,&["id","text"])).collect::<Vec<_>>());
+            shown
+        },
+        Some("habit") => chief_fields(record,&["id","text","project","origin_project","source_kind","state","created_at_ms","changed_at_ms"]),
+        _ => Value::Null,
+    }
+}
+
+/// Display-only Chief data for a paired phone, never the protected host projection itself.
+pub fn chief_state() -> Result<Value,String> {
+    let snapshot=crate::chief::host_snapshot().map_err(|error|error.message)?;
+    let records=snapshot["records"].as_array().ok_or("Chief records unavailable")?;
+    let select=|kind: &str| records.iter().filter(|record|record["kind"]==kind)
+        .filter(|record|kind!="decision" || (record["state"]=="open" && record["stop_id"].is_string()))
+        .map(chief_display_record).collect::<Vec<_>>();
+    let mut answers=select("answer");answers.sort_by_key(|answer|std::cmp::Reverse(answer["created_at_ms"].as_i64()));
+    let mut habits=select("habit");habits.sort_by_key(|habit|std::cmp::Reverse(habit["created_at_ms"].as_i64()));
+    let status=crate::chief::view::ChiefView::new(snapshot.clone()).status();
+    Ok(json!({"status":status,"today":snapshot["today"],"session_names":snapshot["session_names"],
+        "escalations":select("decision"),"answers":answers,"habits":habits,"counts":snapshot["chief_counts"],"read_at_ms":snapshot["read_at_ms"],
+        "habits_seen_ms":crate::chief::habits_seen_ms(),"answer_label":crate::chief::THEO_ANSWER_LABEL,"correction_label":crate::chief::CORRECTION_LABEL}))
+}
+
+/// Only the Chief actions the phone displays, against the exact record Theo read.
+pub fn chief_action(payload: Value) -> Result<String,Value> {
+    use crate::chief::ChiefHostAction;
+    let prepare=|| -> Result<ChiefHostAction,String> {
+        let action:ChiefHostAction=serde_json::from_value(payload["action"].clone()).map_err(|error|format!("Invalid Chief action: {error}"))?;
+        action.validate().map_err(|error|error.message)?;
+        let (kind,id)=match &action {
+            ChiefHostAction::AnswerDecision {decision,..}=>("decision",decision),
+            ChiefHostAction::Overrule {answer,..}=>("answer",answer),
+            ChiefHostAction::DeleteHabit {habit,..}|ChiefHostAction::RestoreHabit {habit,..}|ChiefHostAction::RescopeHabit {habit,..}=>("habit",habit),
+            _=>return Err("This Chief action is not available from the phone".into()),
+        };
+        let snapshot=crate::chief::host_snapshot().map_err(|error|error.message)?;
+        let record=snapshot["records"].as_array().into_iter().flatten().find(|record|record["kind"]==kind && record["id"].as_str()==Some(id.as_str()))
+            .ok_or("Chief record disappeared. Refresh before answering.")?;
+        if payload["expected"].is_null() || chief_display_record(record)!=payload["expected"] {
+            return Err("Chief record changed. Refresh and read it again.".into());
+        }
+        if let ChiefHostAction::AnswerDecision {expected_revision,..}=&action {
+            if record["state"]!="open" || !record["stop_id"].is_string() || record["revision"].as_i64()!=Some(*expected_revision) {
+                return Err("Chief decision changed or cannot be answered.".into());
+            }
+        }
+        Ok(action)
+    };
+    let action=prepare().map_err(|message|json!({"ok":false,"message":message,"outcome_uncertain":false}))?;
+    let reply=crate::teams::client::host_request(&crate::teams::HostRequest::Chief {action})
+        .map_err(|error|json!({"ok":false,"message":error.message,"outcome_uncertain":true}))?;
+    reply.result.map_err(|error| {
+        let uncertain=matches!(error.code,crate::teams::ErrorCode::Storage|crate::teams::ErrorCode::Unavailable);
+        json!({"ok":false,"message":error.message,"outcome_uncertain":uncertain})
+    })?;
+    Ok("Recorded by the Chief host".into())
+}
+
 /// What the page shows: the session cards (the sleeping ones last) and the approvals asking.
 pub fn state() -> Value {
     let rows = snapshot_sessions();

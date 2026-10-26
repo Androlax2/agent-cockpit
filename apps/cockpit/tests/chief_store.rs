@@ -459,6 +459,29 @@ fn insert_answer(connection: &Connection, id: &str, stop_id: &str, session_id: &
         rusqlite::params![id, stop_id, session_id, format!("Question {id}?"), format!("Answer {id}."), source, delivery, created_at]).unwrap();
 }
 
+#[test]
+fn todays_chief_counts_include_midnight_and_resolved_escalations_beyond_the_answer_cap() {
+    use chrono::TimeZone;
+    let connection = migrated();
+    let midnight = chrono::Local.with_ymd_and_hms(2026, 10, 26, 0, 0, 0).single().unwrap().timestamp_millis();
+    insert_stop(&connection, "stop-today", "session-a", "task-a", midnight);
+    for index in 0..205 {
+        insert_answer(&connection, &format!("today-{index}"), "stop-today", "session-a", "chief", "received", midnight + index);
+    }
+    for (id, source, delivery, created) in [("yesterday", "chief", "received", midnight - 1),
+        ("cancelled", "chief", "cancelled", midnight + 1), ("theo", "theo", "received", midnight + 2)] {
+        insert_answer(&connection, id, "stop-today", "session-a", source, delivery, created);
+    }
+    for (id, category, state, created) in [("resolved", Some("scope"), "resolved", midnight),
+        ("old", Some("security"), "open", midnight - 1), ("ordinary", None, "open", midnight + 1)] {
+        connection.execute("INSERT INTO chief_decisions(id,scope_key,decision_key,question,recommendation,state,revision,created_at,category)
+            VALUES (?1,?1,?1,'Which?','Pick one.',?2,1,?3,?4)", rusqlite::params![id, state, created, category]).unwrap();
+    }
+    let page = cockpit::chief::store::snapshot_page(&connection, &[], 0, 50, None, midnight + 3600_000).unwrap();
+    assert_eq!(page["today"], serde_json::json!({"since_ms":midnight,"answered":205,"escalated":1}));
+    assert_eq!(page["chief_counts"], serde_json::json!([{"session_id":"session-a","count":206}]));
+}
+
 fn answer_records(connection: &Connection) -> Vec<serde_json::Value> {
     let mut records = Vec::new();
     let mut after = 0;

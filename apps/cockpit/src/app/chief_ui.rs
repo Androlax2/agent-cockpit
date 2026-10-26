@@ -1,40 +1,12 @@
 //! Host IPC and existing terminal rendering for Chief; no store access or command runner.
 use super::*;
 use serde_json::json;
-use crate::{chief::{ChiefHostAction, view::{ChiefView, Effect, ListLine, Mark, Tone}}, teams::{HostRequest, TeamError, ErrorCode}};
+use crate::{chief::{host_snapshot as snapshot, ChiefHostAction, view::{ChiefView, Effect, ListLine, Mark, Tone}}, teams::HostRequest};
 
-fn snapshot() -> Result<Value, TeamError> {
-    // A changing generation restarts the complete read, never mixes pages or advances an event cursor.
-    for _ in 0..3 {
-        let read_at_ms=chrono::Utc::now().timestamp_millis();
-        let mut records=Vec::new(); let mut after=0; let mut generation=None; let mut envelope=None;
-        let mut session_names=serde_json::Map::new();
-        for _ in 0..512 {
-            let page=crate::teams::client::host_request(&HostRequest::ChiefSnapshot {after,limit:50,generation:generation.clone()})?.result?;
-            if page["invalidated"]==true {break;}
-            if page["projection"]!="host_review" || page["cursor_kind"]!="snapshot_offset" {
-                return Err(TeamError::new(ErrorCode::Unavailable,"Chief host review projection is missing"));
-            }
-            let current=page["generation"].as_str().ok_or_else(||TeamError::new(ErrorCode::Unavailable,"Chief snapshot generation is missing"))?.to_string();
-            if generation.as_ref().is_some_and(|generation|generation!=&current) {break;}
-            generation=Some(current);
-            let batch=page["records"].as_array().ok_or_else(||TeamError::new(ErrorCode::Unavailable,"Chief snapshot records are missing"))?;
-            records.extend(batch.iter().cloned());
-            if envelope.is_none() {envelope=Some(page.clone());}
-            if let Some(names)=page["session_names"].as_object() {session_names.extend(names.clone());}
-            if page["has_more"]==false {
-                let mut complete=envelope.expect("first page is present");complete["records"]=json!(records);complete["has_more"]=json!(false);
-                complete["session_names"]=json!(session_names);
-                // Taken before the read: a habit added meanwhile shows as new twice rather than never.
-                complete["read_at_ms"]=json!(read_at_ms);return Ok(complete);
-            }
-            let next=page["next"].as_i64().filter(|next|*next>after).ok_or_else(||TeamError::new(ErrorCode::Unavailable,"Chief snapshot cursor did not advance"))?;
-            after=next;
-        }
-    }
-    Err(TeamError::new(ErrorCode::Unavailable,"Chief host snapshot changed repeatedly or exceeded its bounded read; try opening again"))
-}
 impl App {
+    pub(super) fn refresh_chief_status(&mut self) {
+        self.chief_status = snapshot().map_err(|error| error.message);
+    }
     pub(super) fn open_chief_view(&mut self) -> String {
         if let Some(view)=self.chief_view.as_mut() {view.suspended=false;self.refresh_chief_view();return String::new();}
         match snapshot() {
@@ -113,7 +85,7 @@ fn list_style(line: &ListLine) -> Style {
     }
 }
 fn mark_style(line: &ListLine, mark: Mark) -> Style {
-    let (color,is_bold)=match mark {Mark::Alert=>(RED,false),Mark::Learned=>(MAGENTA,true),Mark::Project(color)=>(color,false)};
+    let (color,is_bold)=match mark {Mark::Alert=>(RED,false),Mark::Attention=>(YELLOW,true),Mark::Learned=>(MAGENTA,true),Mark::Project(color)=>(color,false)};
     let marked=if line.selected {on(color,BG_HIGHLIGHT)} else {style(color)};
     if is_bold {marked.add_modifier(Modifier::BOLD)} else {marked}
 }

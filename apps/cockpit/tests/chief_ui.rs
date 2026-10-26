@@ -171,6 +171,32 @@ fn worker() -> Value {
         "role":null,"ready":false,"blocked_by":["host_native_observation_missing","admission_not_verified","pending_human_input"],
         "observed_at_ms":1,"observation_provenance":"daemon_derived_availability","native_observation":{"source":"runtime_report","runtime_report":{"provenance":"runtime_report_not_independently_proven"}}})
 }
+
+#[test]
+fn status_shows_host_daily_counts_instead_of_session_totals() {
+    let host = Host::new(vec![chief("active", true), answer("answer-1", "received")]);
+    host.snapshot.lock().unwrap()["today"] = json!({"since_ms":1,"answered":205,"escalated":3});
+    let mut app = App::new();
+    let mut screen = TestScreen::default();
+    app.handle(Key::Char('s'), &mut screen);
+    app.build();
+    let text = rendered(&mut app, 100, 80);
+    assert!(text.contains("answered 205 today · 3 sent to you"), "{text}");
+    assert!(text.contains("Last: Use option B."), "{text}");
+}
+
+#[test]
+fn status_does_not_call_a_missing_chief_host_off() {
+    let host = Host::new(vec![]);
+    std::fs::remove_file(cockpit::paths::team_host_socket()).unwrap();
+    let mut app = App::new();
+    let mut screen = TestScreen::default();
+    app.handle(Key::Char('s'), &mut screen);
+    app.build();
+    let text = rendered(&mut app, 100, 80);
+    assert!(text.contains("Chief unavailable"), "{text}");
+    drop(host);
+}
 fn chief(state: &str, live: bool) -> Value {
     json!({"kind":"chief","session":worker()["session"],"epoch":"grant-epoch-1","revision":2,"state":state,"live_verified":live,"approval_hash":"grant-hash","created_at_ms":1})
 }
@@ -246,7 +272,8 @@ fn escaped_long_details_remain_inspectable_on_a_narrow_short_screen() {
 #[test]
 fn enable_pause_and_resume_submit_only_after_exact_runtime_review_and_confirmation() {
     for (grant,expected) in [(None,"enable"),(Some(chief("active",true)),"pause"),(Some(chief("paused",true)),"resume")] {
-        let mut records=vec![worker()];if let Some(grant)=grant {records.push(grant);}
+        let mut ready=worker();ready["ready"]=json!(true);ready["blocked_by"]=json!([]);
+        let mut records=vec![ready];if let Some(grant)=grant {records.push(grant);}
         let host=Host::new(records);let (mut app,mut screen)=host.open();
         keys(&mut app,&mut screen,&[Key::Down,Key::Down,Key::Down,Key::Enter,Key::Enter]);
         if expected=="enable" {app.handle(Key::Enter,&mut screen);}
@@ -562,6 +589,100 @@ fn overruling_shows_the_exact_text_then_sends_it() {
 }
 
 #[test]
+fn command_s_sends_the_visible_correction_after_a_fresh_read() {
+    let host=Host::new(vec![answer("answer-1","received")]);let (mut app,mut screen)=open_answers(&host);
+    keys(&mut app,&mut screen,&[Key::Char('o'),Key::Paste("Use option C instead.".into())]);
+    let text=rendered(&mut app,100,40);
+    for expected in ["Use option B.","Becomes a habit", "Use option C instead.","⌘S"] {assert!(text.contains(expected),"{expected}: {text}");}
+    app.handle(Key::Ctrl('s'),&mut screen);
+    assert_eq!(host.mutations().len(),1);
+    assert_eq!(host.mutations()[0]["action"]["correction"],"Use option C instead.");
+    app.handle(Key::Ctrl('s'),&mut screen);
+    assert_eq!(host.mutations().len(),1,"a second save must not resend");
+}
+
+#[test]
+fn command_s_refuses_a_correction_when_its_answer_changed() {
+    let host=Host::new(vec![answer("answer-1","received")]);let (mut app,mut screen)=open_answers(&host);
+    keys(&mut app,&mut screen,&[Key::Char('o'),Key::Paste("Use C.".into())]);
+    host.snapshot.lock().unwrap()["records"][0]["overrule"]=json!({"correction":"Already corrected"});
+    app.handle(Key::Ctrl('s'),&mut screen);
+    assert!(host.mutations().is_empty());
+    assert!(rendered(&mut app,100,40).contains("changed"));
+}
+
+#[test]
+fn a_long_correction_editor_keeps_the_draft_and_habit_preview_scrollable() {
+    let mut long=answer("answer-1","received");long["question"]=json!("Question ".repeat(150));long["answer"]=json!("Original answer ".repeat(100));
+    let host=Host::new(vec![long]);let (mut app,mut screen)=open_answers(&host);
+    keys(&mut app,&mut screen,&[Key::Char('o'),Key::Paste("Use C.".into())]);
+    let text=rendered(&mut app,40,14);
+    assert!(text.contains("Use C."),"{text}");
+    assert!(text.contains("Becomes a habit"),"{text}");
+    for _ in 0..60 {app.handle(Key::PageUp,&mut screen);}
+    assert!(rendered(&mut app,40,14).contains("Question"));
+    for _ in 0..60 {app.handle(Key::PageDown,&mut screen);}
+    assert!(rendered(&mut app,40,14).contains("Use C."));
+    assert!(host.mutations().is_empty());
+}
+
+#[test]
+fn chief_shortcuts_open_their_scoped_pages_without_approving() {
+    for (key,expected) in [('l',"Chief · Answers"),('h',"Chief · Habits"),('p',"Pick another Chief"),('c',"Frozen review"),('r',"Requested summary")] {
+        let host=Host::new(vec![chief("active",true)]);let (mut app,mut screen)=host.open();
+        app.handle(Key::Char(key),&mut screen);
+        assert!(rendered(&mut app,100,60).contains(expected),"shortcut {key}");
+        assert_eq!(host.mutations().len(),usize::from(key=='r'));
+    }
+}
+
+#[test]
+fn status_h_opens_habits_without_opening_the_chief_menu() {
+    let host=Host::new(vec![]);let mut app=App::new();let mut screen=TestScreen::default();
+    keys(&mut app,&mut screen,&[Key::Char('s'),Key::Char('h')]);
+    assert!(rendered(&mut app,100,40).contains("No habits yet"));
+    assert!(host.mutations().is_empty());
+}
+
+#[test]
+fn the_chief_picker_names_unsupported_sessions_and_cannot_enable_them() {
+    let mut unsupported=worker();unsupported["session"]["agent"]=json!("claude");
+    let host=Host::new(vec![unsupported]);name_the_session(&host,"NAS proxy recovery · homelab");
+    let (mut app,mut screen)=host.open();app.handle(Key::Char('p'),&mut screen);
+    let text=rendered(&mut app,100,40);
+    assert!(text.contains("NAS proxy recovery"),"{text}");
+    assert!(text.contains("no native inbox"),"{text}");
+    keys(&mut app,&mut screen,&[Key::Enter,Key::Enter,Key::Char('y')]);
+    assert!(host.mutations().is_empty());
+}
+
+#[test]
+fn a_current_chief_is_not_silently_replaced_from_the_picker() {
+    let mut other=worker();other["session"]["session_id"]=json!("ses_other00000000000000000000");other["ready"]=json!(true);other["blocked_by"]=json!([]);
+    let host=Host::new(vec![chief("active",true),other]);let (mut app,mut screen)=host.open();
+    app.handle(Key::Char('p'),&mut screen);
+    assert!(rendered(&mut app,120,40).contains("disable the current Chief"));
+    keys(&mut app,&mut screen,&[Key::Enter,Key::Enter,Key::Char('y')]);
+    assert!(host.mutations().is_empty());
+}
+
+#[test]
+fn uncertain_delivery_shortcuts_start_evidence_only_on_the_selected_row() {
+    for key in ['y','x'] {
+        let (decision,delivery)=uncertain_delivery();
+        let host=Host::new(vec![decision,delivery]);let (mut app,mut screen)=host.open();
+        app.handle(Key::Char(key),&mut screen);
+        assert!(!rendered(&mut app,120,50).contains("Nonempty note"));
+        for _ in 0..6 {app.handle(Key::Down,&mut screen);}
+        let text=rendered(&mut app,120,50);
+        assert!(text.contains("y it arrived · x stop safely · i details"),"{text}");
+        app.handle(Key::Char(key),&mut screen);
+        assert!(rendered(&mut app,120,50).contains("Nonempty note"));
+        assert!(host.mutations().is_empty());
+    }
+}
+
+#[test]
 fn the_detail_action_overrules_an_uncertain_answer_too() {
     let host=Host::new(vec![answer("answer-1","uncertain")]);let (mut app,mut screen)=open_answers(&host);
     app.handle(Key::Enter,&mut screen);
@@ -638,10 +759,12 @@ fn an_agent_chosen_session_label_is_escaped_and_cut_to_one_line() {
 #[test]
 fn session_names_from_every_page_of_the_snapshot_are_kept() {
     let host=Host::new(vec![answer("answer-1","received")]);
+    let mut app=App::new();let mut screen=TestScreen::default();
+    app.handle(Key::Char('s'),&mut screen);
     let mut first=snapshot(vec![]);first["has_more"]=json!(true);first["next"]=json!(1);first["session_names"]=json!({"ses_other0000000000":"Other · elsewhere"});
     let mut second=snapshot(vec![answer("answer-1","received")]);second["session_names"]=json!({SESSION:"Second page name · project"});
     host.pages.lock().unwrap().extend([first,second]);
-    let (mut app,mut screen)=host.open();keys(&mut app,&mut screen,&[Key::Down,Key::Enter]);
+    keys(&mut app,&mut screen,&[Key::Char('c'),Key::Down,Key::Enter]);
     let text=rendered(&mut app,160,45);assert!(text.contains("Second page name · project"),"{text}");
 }
 

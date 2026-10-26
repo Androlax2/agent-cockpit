@@ -1408,6 +1408,19 @@ pub fn snapshot_page(connection: &Connection, live: &[WorkerState], after: i64, 
     }
     let mut result = snapshot(connection,live,after,limit)?;
     result["generation"] = json!(current);
+    let now = chrono::DateTime::from_timestamp_millis(now_ms)
+        .ok_or_else(|| super::invalid("invalid Chief snapshot time"))?.with_timezone(&chrono::Local);
+    // Local days may cross a DST change, so a fixed 24-hour lookback is not midnight.
+    let midnight = now.date_naive().and_hms_opt(0, 0, 0).expect("midnight is valid")
+        .and_local_timezone(chrono::Local).earliest().ok_or_else(|| super::invalid("local midnight is unavailable"))?.timestamp_millis();
+    let answered: i64 = connection.query_row("SELECT count(*) FROM chief_answers WHERE source='chief' AND delivery!='cancelled' AND created_at>=?1 AND created_at<=?2",
+        params![midnight,now_ms], |row| row.get(0))?;
+    let escalated: i64 = connection.query_row("SELECT count(*) FROM chief_decisions WHERE category IS NOT NULL AND created_at>=?1 AND created_at<=?2",
+        params![midnight,now_ms], |row| row.get(0))?;
+    result["today"] = json!({"since_ms":midnight,"answered":answered,"escalated":escalated});
+    if after==0 {
+        result["chief_counts"]=json!(answer_counts(connection)?.into_iter().map(|count|json!({"session_id":count.session_id,"count":count.count})).collect::<Vec<_>>());
+    }
     Ok(result)
 }
 

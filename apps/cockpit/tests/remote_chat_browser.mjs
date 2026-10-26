@@ -16,10 +16,15 @@ let history = { messages: [{ id: "user", role: "user", text: "Make the mobile co
   { id: "agent", role: "assistant", text: "Ready for your reply.\n\n<img src=x onerror=alert(1)> stays plain text." }], truncated: false };
 let approvals = [];
 let inputs = [];
+let chief = { status: "Active", today: { answered: 1, escalated: 1 }, counts: [], answers: [], habits: [], escalations: [] };
 const inputOutput = "1 commit(s) for /home/theo/agent-cockpit, the running copy of agent-cockpit the host runs:\n  [PATCH] chore(cockpit): drop the claude-sessions name\n\n apps/cockpit/tests/cockpit_script.rs  | 34 ----------\n config/bin/.local/bin/claude-sessions |  7 ---\n 3 files changed, 61 deletions(-)\n";
 const posts = [];
 const server = createServer((request, response) => {
   const path = request.url;
+  if (path === "/tokens.css") {
+    response.setHeader("Content-Type", "text/css");
+    response.end(readFileSync(new URL("../../../design/tokens.cockpit-ui.css", import.meta.url))); return;
+  }
   if (path === "/" || path === "/page.js") {
     response.setHeader("Content-Type", path === "/" ? "text/html" : "text/javascript");
     response.end(readFileSync(new URL(path === "/" ? "../assets/remote/page.html" : "../assets/remote/page.js", import.meta.url))); return;
@@ -30,7 +35,7 @@ const server = createServer((request, response) => {
     request.on("end", () => { posts.push({ path, body: JSON.parse(text) }); response.end(JSON.stringify({ ok: true, message: "sent" })); }); return;
   }
   if (path.startsWith("/api/input/")) { response.setHeader("Content-Type", "text/plain"); response.end(inputOutput); return; }
-  const data = path === "/api/state" ? { sessions: [session], approvals, inputs } : path.startsWith("/api/conversation/") ? history : [];
+  const data = path === "/api/state" ? { sessions: [session], approvals, inputs } : path === "/api/chief" ? chief : path.startsWith("/api/conversation/") ? history : [];
   response.end(JSON.stringify(data));
 });
 await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
@@ -140,6 +145,42 @@ try {
   assert.equal(await evaluate('document.querySelector(".question").textContent'), "Apply these 1 commit(s) to /home/theo/agent-cockpit? [y/N]");
   assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, "a long question must not widen the page");
   await capture("mobile-command-question.png");
+  inputs = [];
+  chief.escalations = [{ id: "decision-1", revision: 4, session_id: "s1", category: "security", question: "Should I rotate the greyproxy API token now?",
+    recommendation: "Security questions always come to you.", suggested_answer: "Yes, rotate it and update the dashboard config." }];
+  chief.counts = [{ session_id: "s1", count: 1 }];
+  chief.answers = [{ id: "answer-1", session_id: "s1", project: "path:/homelab", question: "Which DNS fix should I keep?", answer: "Keep the Unbound one.",
+    source: "chief", reason: "Smallest fix", delivery: "received", overrule: null, habits: [], created_at_ms: Date.now() }];
+  await evaluate('refresh().then(() => openSession("s1"))');
+  assert.equal(await evaluate('document.querySelector(".chief-escalation .question").textContent'), "! Chief needs you · Security");
+  for (const width of [390, 320]) {
+    await cdp("Emulation.setDeviceMetricsOverride", { width, height: 844, deviceScaleFactor: 1, mobile: true });
+    assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, "Chief text must wrap without widening the phone");
+    assert.equal(await evaluate('document.querySelector(".chief-use").getBoundingClientRect().top >= document.querySelector(".chief-escalation").getBoundingClientRect().bottom'), true, "escalation actions sit below the bordered explanation");
+    assert.equal(await evaluate('document.querySelector(".chief-log").getBoundingClientRect().bottom <= document.querySelector("#session-chief").getBoundingClientRect().bottom'), true, "the answer log stays visible below a normal escalation");
+    await capture(`mobile-chief-escalation-${width}.png`);
+  }
+  await evaluate('document.querySelector(".chief-log").click()');
+  assert.equal(await evaluate('document.activeElement.textContent'), "‹ Back");
+  assert.equal(await evaluate('document.querySelector("#detail").inert'), true);
+  assert.equal(await evaluate('document.querySelector(".chief-answer").getBoundingClientRect().top - document.querySelector(".chief-context").getBoundingClientRect().bottom < 32'), true, "empty status messages must not add a blank section above the answers");
+  await capture("mobile-chief-answers.png");
+  await evaluate('document.querySelector(".chief-overrule").click()');
+  assert.equal(await evaluate('document.activeElement.className'), "chief-input");
+  await capture("mobile-chief-overrule.png");
+  await evaluate('history.back()');
+  for (let attempt = 0; attempt < 100 && !(await evaluate('document.querySelector("#chief").hidden')); attempt++) await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(await evaluate('document.activeElement.className'), "chief-log");
+  chief.habits = [{ id: "habit-1", text: "Keep boot-time host overrides for the NAS", project: "path:/homelab", state: "active", created_at_ms: Date.now() },
+    { id: "habit-2", text: "Run tests before applying", project: null, state: "active", created_at_ms: 1 }];
+  await evaluate('refresh().then(() => openChief("habits"))');
+  assert.equal(await evaluate('document.querySelectorAll(".chief-habit").length'), 2);
+  for (const width of [390, 320]) {
+    await cdp("Emulation.setDeviceMetricsOverride", { width, height: 844, deviceScaleFactor: 1, mobile: true });
+    assert.equal(await evaluate('document.querySelector("#chief").scrollWidth <= innerWidth'), true, "habit text wraps at phone widths");
+    assert.equal(await evaluate('Array.from(document.querySelectorAll(".chief-habit button")).every(button => button.getBoundingClientRect().height >= 44)'), true, "habit actions retain touch targets");
+    await capture(`mobile-chief-habits-${width}.png`);
+  }
   console.log("real Chromium: 390px/320px layouts, safe text, reply, approval confirmation, focus, reading position, formatting, growing reply, options panel and back gesture passed");
 } finally {
   browser.kill();

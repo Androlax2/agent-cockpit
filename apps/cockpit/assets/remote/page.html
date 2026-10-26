@@ -6,6 +6,7 @@
 <meta name="theme-color" content="#1a1b26">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <link rel="manifest" href="/manifest.webmanifest">
+<link rel="stylesheet" href="/tokens.css">
 <title>Agent Cockpit</title>
 <style>
   :root { color-scheme: dark; --bg: #1a1b26; --card: #24283b; --fg: #c0caf5; --dim: #979fbe; --red: #f7768e; --yellow: #e0af68;
@@ -170,6 +171,28 @@
   .tag.kind-improvement { color: var(--cyan); } .tag.kind-research { color: #bb9af7; }
   .todo-details { padding-bottom: 16px; border-top: 1px solid var(--line); }
   .todo-card.finished { opacity: .5; }
+  .chief-suggestion { color: var(--color-purple); overflow-wrap: anywhere; }
+  .chief-escalation { border: 1px solid var(--yellow); padding: 12px; margin: 0; font-size: 14px; }
+  .chief-escalation p, .chief-escalation .question { margin: 0; }
+  .chief-escalation p + p { margin-top: 4px; }
+  .chief-escalation-actions { margin-bottom: 10px; }
+  .chief-escalation-actions button, .chief-answer button, .chief-status button { display: block; width: 100%; margin-top: 10px; }
+  #chief p:empty, .session-chief .note:empty { display: none; }
+  .chief-answer, .chief-habit { padding: 12px; }
+  .chief-answer p { margin: 4px 0; }
+  .chief-habit { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 10px; align-items: center; }
+  .chief-habit .project, .chief-habit .task { grid-column: 1; margin: 0; }
+  .chief-habit button { grid-column: 2; grid-row: 1 / span 2; background: transparent; }
+  .chief-habit .note { grid-column: 1 / -1; }
+  .chief-habit .note:empty { display: none; }
+  button.chief-use { background: var(--yellow); color: var(--bg); }
+  .chief-own, .chief-overrule { background: transparent; }
+  .session-chief { flex-shrink: 0; max-height: 50dvh; overflow-y: auto; }
+  .session-chief:empty { display: none; }
+  #chief:not([hidden]) { position: fixed; z-index: 6; inset: 0; width: min(100%, 760px); margin-inline: auto; overflow-y: auto;
+    background: var(--bg); padding: calc(16px + env(safe-area-inset-top)) 16px calc(24px + env(safe-area-inset-bottom)); }
+  #chief .chat-heading { margin-bottom: 12px; }
+  body:has(#chief:not([hidden])) :is(.app-header, nav, #detail) { display: none; }
   @media (max-height: 500px) {
     #detail:not([hidden]) { gap: 4px; }
     .session-more { max-height: 40dvh; }
@@ -187,6 +210,7 @@
 <div id="starter"></div>
 <div id="list"></div>
 <div id="detail" hidden></div>
+<section id="chief" aria-label="Chief" hidden></section>
 <details id="phone" class="phone-settings"><summary>Notifications &amp; pairing</summary><div id="phone-content"></div></details>
 <div id="work" hidden></div>
 <div id="pairing" hidden></div>
