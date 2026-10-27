@@ -2353,6 +2353,17 @@ fn the_session_tree_of_claude_2_1_300_is_read_right() {
 }
 
 #[test]
+fn only_processes_named_exactly_waybar_are_signalled() {
+    let words = |parts: &[&str]| parts.iter().map(|part| part.to_string()).collect::<Vec<_>>();
+    let tree = ProcessTree(BTreeMap::from([
+        ("30".into(), ("waybar".into(), words(&["waybar"]), HashMap::new())),
+        ("31".into(), ("waybar-helper".into(), words(&["waybar-helper"]), HashMap::new())),
+        ("32".into(), ("bash".into(), words(&["bash", "-c", "waybar"]), HashMap::new())),
+    ]));
+    assert_eq!(waybar_pids_in(&tree), ["30"]);
+}
+
+#[test]
 fn an_opencode_server_does_not_keep_the_pane_it_was_started_from_live() {
     let pane = |id: &str| HashMap::from([("TMUX_PANE".to_string(), id.to_string())]);
     let words = |parts: &[&str]| parts.iter().map(|part| part.to_string()).collect::<Vec<_>>();

@@ -400,6 +400,10 @@ impl Window for Child {
 pub trait System {
     /// A command; false (and logged) when it fails or exits with another code than `ok`.
     fn run(&mut self, command: &[&str], ok: &[i32]) -> bool;
+    /// Tells waybar the session snapshot changed (RTMIN+16), only processes named exactly waybar.
+    fn signal_waybar(&mut self) {
+        self.run(&["pkill", "-x", "-RTMIN+16", "waybar"], &[0, 1]);
+    }
     fn tmux(&mut self, arguments: &[&str]) -> Option<String>;
     fn open_window(&mut self, command: &[&str]) -> Option<Box<dyn Window>>;
     fn claude_workspace_active(&mut self) -> bool;
@@ -1704,8 +1708,7 @@ impl Registry {
         let path = snapshot_path();
         let _ = cockpit::util::write_json(&path, &json!({"sessions": self.snapshot_rows()}));
         self.remember_sessions();
-        // Exit 1 is "no waybar running", not an error.
-        self.system.run(&["pkill", "-x", "-RTMIN+16", "waybar"], &[0, 1]);
+        self.system.signal_waybar();
     }
 
     /// recent-sessions.json for the column's "bring them back" after a reboot: refreshed when the
@@ -1949,13 +1952,29 @@ pub struct RealSystem {
     /// One /proc scan for both live_session_ids and claude_panes within PROCESS_SCAN_FRESH: each
     /// walked every process on its own, twice every PRUNE_INTERVAL_S.
     process_scan: Option<(Instant, HashSet<String>, HashSet<String>)>,
+    /// waybar's pids and when they were last looked up: `pkill -x waybar` walked every process
+    /// (about 40 ms) on each publish, dozens of times a minute.
+    waybar: (Option<Instant>, Vec<String>),
 }
 
 const PROCESS_SCAN_FRESH: Duration = Duration::from_millis(500);
+/// How long "no waybar runs" is believed before every process is walked again.
+const WAYBAR_ABSENT_FRESH: Duration = Duration::from_secs(30);
 
 impl RealSystem {
     pub fn new() -> Self {
-        RealSystem { chief_launches: HashMap::new(), gaming_cache: (None, false), meeting_cache: (None, Default::default()), process_scan: None }
+        RealSystem { chief_launches: HashMap::new(), gaming_cache: (None, false), meeting_cache: (None, Default::default()), process_scan: None,
+                     waybar: (None, Vec::new()) }
+    }
+
+    fn waybar_pids(&mut self) -> Vec<String> {
+        let (scanned, pids) = &self.waybar;
+        let is_still_waybar = !pids.is_empty() && pids.iter().all(|pid| Proc.comm(pid) == "waybar");
+        let is_absence_fresh = pids.is_empty() && scanned.is_some_and(|at| at.elapsed() < WAYBAR_ABSENT_FRESH);
+        if !is_still_waybar && !is_absence_fresh {
+            self.waybar = (Some(Instant::now()), waybar_pids_in(&Proc));
+        }
+        self.waybar.1.clone()
     }
 
     /// The live session ids and the Claude panes, from one /proc scan.
@@ -1970,6 +1989,11 @@ impl RealSystem {
         self.process_scan = Some((Instant::now(), ids.clone(), panes.clone()));
         (ids, panes)
     }
+}
+
+/// The processes named exactly waybar, as `pkill -x waybar` picks them.
+pub fn waybar_pids_in(table: &dyn Processes) -> Vec<String> {
+    table.pids().into_iter().filter(|pid| table.comm(pid) == "waybar").collect()
 }
 
 /// A command's exit code, stdout and stderr, or None when it cannot start or outlives `timeout`.
@@ -2265,6 +2289,15 @@ impl System for RealSystem {
             }
             Some(_) => true,
         }
+    }
+
+    fn signal_waybar(&mut self) {
+        let pids = self.waybar_pids();
+        if pids.is_empty() { return; }
+        let mut command = vec!["kill", "-s", "RTMIN+16"];
+        command.extend(pids.iter().map(String::as_str));
+        // Exit 1: a waybar exited between the name check and the signal; the next publish rescans.
+        if !self.run(&command, &[0, 1]) { self.waybar = (None, Vec::new()); }
     }
 
     fn tmux(&mut self, arguments: &[&str]) -> Option<String> {
