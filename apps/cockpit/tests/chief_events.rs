@@ -454,20 +454,23 @@ fn snapshot_page_two_survives_worker_availability_changes_between_turns() {
     }
     admit_events(&mut connection,&live,"bootstrap",100);
     let first = store::agent(&mut connection,&live[0].session,&ChiefAgentAction::ContextSnapshot {after:0,limit:50,generation:None},&live,100).unwrap().result.unwrap();
+    store::agent(&mut connection,&live[0].session,&ChiefAgentAction::Decision {
+        key:"after-freeze".into(),question:"A decision arrived after page one".into(),recommendation:"Read it through the event feed".into(),
+    },&live,101).unwrap().result.unwrap();
     live[1].blocked_by=vec!["native_busy".into()];
     for worker in &mut live {worker.observed_at_ms=30_100;}
     admit_events(&mut connection,&live,"snapshot-boundary",30_100);
     let second = store::agent(&mut connection,&live[0].session,&ChiefAgentAction::ContextSnapshot {after:first["next"].as_i64().unwrap(),limit:50,generation:Some(first["generation"].as_str().unwrap().into())},&live,30_100).unwrap().result.unwrap();
     assert_ne!(second["invalidated"],true);
+    assert_eq!(second["event_cursor"],first["event_cursor"]);
     assert_eq!(first["records"].as_array().unwrap().len()+second["records"].as_array().unwrap().len(),63);
 }
 
 #[test]
 fn a_new_snapshot_replaces_the_frozen_copy_and_retires_its_generation() {
-    let (mut connection,mut live) = setup(); enable_events(&mut connection,&live); admit_events(&mut connection,&live,"bootstrap",100);
+    let (mut connection,live) = setup(); enable_events(&mut connection,&live); admit_events(&mut connection,&live,"bootstrap",100);
     let restart = ChiefAgentAction::ContextSnapshot {after:0,limit:1,generation:None};
     let old = store::agent(&mut connection,&live[0].session,&restart,&live,100).unwrap().result.unwrap();
-    live[1].blocked_by=vec!["native_busy".into()];
     store::agent(&mut connection,&live[0].session,&restart,&live,100).unwrap().result.unwrap();
     assert_eq!(connection.query_row("SELECT count(*) FROM chief_context_snapshots",[],|row|row.get::<_,i64>(0)).unwrap(),1);
     let stale = store::agent(&mut connection,&live[0].session,&ChiefAgentAction::ContextSnapshot {after:1,limit:1,generation:Some(old["generation"].as_str().unwrap().into())},&live,100).unwrap().result.unwrap();

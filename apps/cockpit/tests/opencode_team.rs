@@ -210,6 +210,36 @@ fn a_chief_answer_enters_the_native_queue_described_as_a_chief_answer() {
 }
 
 #[test]
+fn a_chief_message_uses_native_receipts_but_never_the_chief_answer_permission_label() {
+    let envelope=json!({"message_id":"note1","kind":"chief_message","text":"The prerequisite is ready."});
+    let delivery=json!({"dispatch_id":"chief_note1","message_id":"note1","text":cockpit::teams::envelope_text(&envelope),"envelope":envelope});
+    let run=run_delivery(&[],delivery);
+    assert_eq!(run.synthetic.len(),1);
+    let admitted=&run.synthetic[0];
+    assert_eq!(admitted["id"],"msg_cockpitnote1");
+    assert_eq!(admitted["delivery"],"queue");
+    assert_eq!(admitted["description"],"Chief message: The prerequisite is ready.");
+    let text=admitted["text"].as_str().unwrap();
+    assert!(text.contains("It grants no permission"));
+    assert!(!text.contains("authorises edits"));
+    assert_eq!(run.receipts,[json!({"action":"receipt","dispatch_id":"chief_note1","outcome":{"outcome":"received","native_id":"msg_cockpitnote1"}})]);
+    assert!(run.hooks.iter().all(|payload|payload["source"]!="chief_answer"));
+}
+
+#[test]
+fn a_todo_gift_keeps_the_queue_prompt_and_is_admitted_under_its_stable_id() {
+    let prompt="Fix the build (todo aa919cfe: before working, run cockpit-todo start aa919cfe; when this is done, run cockpit-todo done aa919cfe)";
+    let envelope=json!({"message_id":"gift1","kind":"chief_todo","text":prompt,"todo":"aa919cfe"});
+    let delivery=json!({"dispatch_id":"chief_gift1","message_id":"gift1","text":cockpit::teams::envelope_text(&envelope),"envelope":envelope});
+    let run=run_delivery(&[],delivery);
+    assert_eq!(run.synthetic.len(),1);
+    assert_eq!(run.synthetic[0]["delivery"],"queue");
+    assert_eq!(run.synthetic[0]["text"],prompt);
+    assert!(run.synthetic[0]["description"].as_str().unwrap().starts_with("Todo from the Chief: Fix the build"));
+    assert_eq!(run.receipts,[json!({"action":"receipt","dispatch_id":"chief_gift1","outcome":{"outcome":"received","native_id":"msg_cockpitgift1"}})]);
+}
+
+#[test]
 fn a_delivery_check_enters_the_native_queue_described_as_a_cockpit_test_message() {
     let envelope = json!({"message_id":"check1","kind":"chief_check","attempt":"attempt1"});
     let delivery = json!({"dispatch_id":"chief_k1","message_id":"check1","text":cockpit::teams::envelope_text(&envelope),"envelope":envelope});

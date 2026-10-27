@@ -384,6 +384,8 @@ pub fn request(registry: &mut Registry, peer: u32, action: AgentAction) -> Resul
             }
         }
     }
+    let gift_ready = matches!(action,AgentAction::Receive) && turn.is_some()
+        && crate::chief::legacy_auto_ready(registry,Some(&sender.session_id),&sender.project,false).is_ok();
     let result = database(registry, &live).and_then(|connection| match &action {
         AgentAction::Context => Ok(TeamReply { request_id: "context".into(), result: Ok(store::context(connection, &sender)?) }),
         AgentAction::Chief { .. } | AgentAction::NativeTelemetry { .. } => Err(TeamError::new(ErrorCode::Unavailable, "action is unavailable here")),
@@ -411,6 +413,9 @@ pub fn request(registry: &mut Registry, peer: u32, action: AgentAction) -> Resul
             if let (None, Some(turn)) = (&dispatch, &turn) {
                 dispatch = cockpit::chief::store::claim_check(connection, &sender, turn, now_ms())?;
             }
+            if gift_ready && let (None,Some(turn))=(&dispatch,&turn) {
+                dispatch=cockpit::chief::store::claim_todo_gift(connection,&sender,turn,now_ms())?;
+            }
             if let (None, Some(turn)) = (&dispatch, &turn) {
                 dispatch = cockpit::chief::store::claim(connection, &sender, turn, now_ms())?;
             }
@@ -437,6 +442,15 @@ pub fn request(registry: &mut Registry, peer: u32, action: AgentAction) -> Resul
     }
     if matches!(kind, "handoff" | "recruit") && result.as_ref().is_ok_and(|reply| reply.result.is_ok()) {
         start_spawns(registry)?;
+    }
+    if let Ok(reply) = &result && let Ok(delivery) = &reply.result && matches!(delivery["envelope"]["kind"].as_str(),Some("chief_message"|"chief_todo")) {
+        let message = &delivery["envelope"];
+        cockpit::audit::record("daemon","chief.message_submitting","ok",json!({"message":message["message_id"],"session":sender.session_id,"reason":message["reason"]}));
+        registry.banners.raise_notice(&crate::registry::Notice {
+            id:format!("chief-message-{}",message["message_id"].as_str().unwrap_or("")),
+            title:format!("Chief · sending a message to {}",sender.project.rsplit('/').next().unwrap_or(&sender.project)),
+            message:format!("{}. No permission has been granted.",cockpit::approval::escape_hiding(message["reason"].as_str().unwrap_or("Coordination"),"","")),
+        });
     }
     result
 }
@@ -535,10 +549,17 @@ pub fn host(registry: &mut Registry, peer: u32, request: cockpit::teams::HostReq
             let live = live_sessions(registry)?;
             let task = cockpit::teams::TaskKey { project: canonical_project(&directory)?, task_id };
             task.validate()?;
+            cockpit::chief::store::expire_todo_gifts(registry.teams.as_ref().unwrap(),&live,now_ms())?;
             let chief_request = match (&worker, registry.teams.as_ref()) {
                 (None, Some(connection)) => cockpit::chief::store::open_session_start(connection, &task.project, &task.task_id, now_ms())?,
                 _ => None,
             };
+            if automatic {
+                let has_gift: bool = registry.teams.as_ref().unwrap().query_row(
+                    "SELECT EXISTS(SELECT 1 FROM chief_session_starts WHERE project=?1 AND task_id=?2 AND worker IS NOT NULL AND state='requested' AND created_at>?3)",
+                    (&task.project,&task.task_id,now_ms()-cockpit::chief::SESSION_START_OPEN_MS), |row|row.get(0))?;
+                if has_gift {return Err(TeamError::new(ErrorCode::Conflict,"the Chief's todo gift waits for its exact native recipient"));}
+            }
             if automatic {
                 if let Err(reason) = crate::chief::legacy_auto_ready(registry,worker.as_deref(),&task.project,chief_request.is_some()) {
                     return Err(TeamError::new(ErrorCode::Conflict,format!("{}: {reason}", cockpit::queue::SESSION_NOT_READY)));

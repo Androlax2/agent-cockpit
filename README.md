@@ -308,6 +308,34 @@ applies, and the session gets no extra permission. A request the queue does not 
 (`chief.session_start_requested`, `chief.session_started`), and a banner tells you when a
 session starts. A refused fresh start now names its reason in the log.
 
+### Giving an idle session a todo or a message
+
+The active Chief can target a live OpenCode session without linking a team:
+
+```json
+{"action":"chief","request":{"action":"give_todo","todo":"aa919cfe","session":"ses_worker","reason":"This fix is next."}}
+{"action":"chief","request":{"action":"message","session":"ses_worker","text":"The prerequisite is ready.","reason":"Resume the current task."}}
+```
+
+Send these through `cockpit-team chief`. `give_todo` uses the same todo rules as `start_session`;
+the session must belong to that todo's project. The host applies the usual queue idle checks, sends
+the normal todo prompt through the native inbox, and marks the item doing. It starts no session and does not use the hourly
+session-start allowance. One gift can wait per session and per todo.
+
+`message` carries up to 2,000 characters, with a reason of up to 300. It grants **no permission**:
+the host labels it as the Chief's, not Theo's, and appends that boundary itself. One message can
+wait per session, at most 20 an hour across projects. The native inbox admits it only at an idle
+boundary, never over a permission or question form, a restart, or Theo's queued input. It can
+resume the session's existing task without reassigning it. A native receipt proves admission,
+not task completion; an uncertain delivery is never resent. Requests are audited, a banner says
+when a message is being sent, and Chief context records show its delivery state.
+
+Gifts and unclaimed messages lapse after ten minutes and are bound to the session runtime they
+named: a restarted conversation does not inherit them. Neither action wakes a sleeping session.
+Chief snapshot page one freezes the record list and event cursor; later pages read that copy,
+then the Chief catches up through the event feed. A new snapshot replaces the old one, so saved
+snapshots occupy at most one row.
+
 ### Answering an escalation
 
 An escalation is a decision and notifies you like one; its banner names the category. In

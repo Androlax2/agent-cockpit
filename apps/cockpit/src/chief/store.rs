@@ -39,6 +39,13 @@ pub(crate) fn ensure_session_starts(connection: &Connection) -> Result<(), TeamE
     if !has_column(connection, "chief_session_starts", "theo_queued")? {
         connection.execute_batch("ALTER TABLE chief_session_starts ADD COLUMN theo_queued INTEGER NOT NULL DEFAULT 0;")?;
     }
+    // A request with a worker gives the todo to that live session instead of starting one.
+    if !has_column(connection, "chief_session_starts", "worker")? {
+        connection.execute_batch("ALTER TABLE chief_session_starts ADD COLUMN worker TEXT;")?;
+    }
+    if !has_column(connection, "chief_session_starts", "worker_runtime")? {
+        connection.execute_batch("ALTER TABLE chief_session_starts ADD COLUMN worker_runtime TEXT;")?;
+    }
     Ok(())
 }
 
@@ -351,6 +358,7 @@ pub fn observe(connection: &mut Connection, live: &[WorkerState], now_ms: i64) -
         if worker.observed_at_ms > now_ms { continue; }
         transaction.execute("INSERT INTO chief_observations VALUES (?1,?2)", params![worker.session.session_id, serde_json::to_string(worker)?])?;
     }
+    expire_todo_gifts(&transaction,&live.iter().map(|worker|worker.session.clone()).collect::<Vec<_>>(),now_ms)?;
     transaction.execute("UPDATE chief_inbox SET state='uncertain' WHERE id IN (SELECT json_extract(envelope,'$.message_id') FROM chief_delivery_attempts WHERE state='submitting' AND started_at<=?1)", [now_ms.saturating_sub(crate::teams::store::RECEIPT_TIMEOUT_MS)])?;
     transaction.execute("UPDATE chief_delivery_attempts SET state='uncertain',finished_at=?2 WHERE state='submitting' AND started_at<=?1", params![now_ms.saturating_sub(crate::teams::store::RECEIPT_TIMEOUT_MS),now_ms])?;
     log_uncertain_answers(&transaction)?;
@@ -984,13 +992,11 @@ fn escalate_stop(connection: &Connection, epoch: &str, stop: &str, category: Esc
     Ok(json!({"decision":id,"revision":1,"stop":stop,"state":"escalated"}))
 }
 
-/// Records the Chief's request; the queue's next pass starts the session through the usual
-/// reservation, which then skips only the rule that no session of the project may be live.
-/// Any todo still to do qualifies, queued or not, except one waiting on others or for the designer;
-/// one a session of the Chief's own project filed needs Theo's Q first, so the Chief cannot start
-/// work it gave itself. Todos Theo queued himself with Q do not count against `starts_per_hour`:
-/// the Q is host-recorded, so it holds where the Chief's word that Theo asked would not.
-fn request_session_start(connection: &Connection, todos: &crate::todo::TodoList, chief_project: &str, epoch: &str, todo: &str, project: &str, reason: &str, starts_per_hour: i64, now_ms: i64) -> Result<Value, TeamError> {
+/// The todo the Chief may start a session for or give to a session, with its canonical project and
+/// whether Theo queued it himself. Any todo still to do qualifies, queued or not, except one waiting
+/// on others or for the designer; one a session of the Chief's own project filed needs Theo's Q
+/// first, so the Chief cannot start work it gave itself.
+fn chief_startable_todo(todos: &crate::todo::TodoList, chief_project: &str, todo: &str) -> Result<(String, bool), TeamError> {
     let item = todos.items.iter().find(|item| item.id() == todo).ok_or_else(|| TeamError::new(ErrorCode::NotFound, "no todo has this id"))?;
     if item.status() != "todo" || item.is_waiting() || item.is_design() {
         return Err(conflict("the Chief starts sessions only for todos still to do, waiting on nothing and not for the designer"));
@@ -1000,14 +1006,36 @@ fn request_session_start(connection: &Connection, todos: &crate::todo::TodoList,
     if item.is_filed_from(chief_folder) && !is_theo_queued {
         return Err(conflict("a todo the Chief filed waits until Theo queues it with Q"));
     }
-    let canonical = crate::teams::canonical_project(&item.cwd())?;
-    if canonical.rsplit('/').next() != Some(project) { return Err(conflict("the todo belongs to another project")); }
+    Ok((crate::teams::canonical_project(&item.cwd())?, is_theo_queued))
+}
+
+/// Lapses the requests the queue did not act on in time, then refuses a second one for the todo.
+fn require_no_waiting_request(connection: &Connection, project: &str, todo: &str, now_ms: i64) -> Result<(), TeamError> {
     connection.execute("UPDATE chief_session_starts SET state='expired' WHERE state='requested' AND created_at<=?1",
         [now_ms.saturating_sub(super::SESSION_START_OPEN_MS)])?;
-    if connection.query_row("SELECT EXISTS(SELECT 1 FROM chief_session_starts WHERE state='requested' AND project=?1 AND task_id=?2)", params![canonical, todo], |row| row.get::<_, bool>(0))? {
+    if connection.query_row("SELECT EXISTS(SELECT 1 FROM chief_session_starts WHERE state='requested' AND project=?1 AND task_id=?2)", params![project, todo], |row| row.get::<_, bool>(0))? {
         return Err(conflict("a session start already waits for this todo"));
     }
-    let recent: i64 = connection.query_row("SELECT count(*) FROM chief_session_starts WHERE created_at>?1 AND theo_queued=0", [now_ms.saturating_sub(3_600_000)], |row| row.get(0))?;
+    Ok(())
+}
+
+/// The live session the Chief names, never the Chief itself.
+fn chief_target<'a>(live: &'a [WorkerState], chief: &VerifiedSession, session: &str) -> Result<&'a WorkerState, TeamError> {
+    let worker = live.iter().find(|worker| worker.session.session_id == session).ok_or_else(|| TeamError::new(ErrorCode::NotFound, "no live session has this id"))?;
+    if worker.session.session_id == chief.session_id { return Err(conflict("the Chief cannot send work or messages to itself")); }
+    if worker.session.agent != "opencode" { return Err(conflict("Chief messages and todo gifts require a live OpenCode session")); }
+    Ok(worker)
+}
+
+/// Records the Chief's request; the queue's next pass starts the session through the usual
+/// reservation, which then skips only the rule that no session of the project may be live.
+/// Todos Theo queued himself with Q do not count against `starts_per_hour`: the Q is host-recorded,
+/// so it holds where the Chief's word that Theo asked would not.
+fn request_session_start(connection: &Connection, todos: &crate::todo::TodoList, chief_project: &str, epoch: &str, todo: &str, project: &str, reason: &str, starts_per_hour: i64, now_ms: i64) -> Result<Value, TeamError> {
+    let (canonical, is_theo_queued) = chief_startable_todo(todos, chief_project, todo)?;
+    if canonical.rsplit('/').next() != Some(project) { return Err(conflict("the todo belongs to another project")); }
+    require_no_waiting_request(connection, &canonical, todo, now_ms)?;
+    let recent: i64 = connection.query_row("SELECT count(*) FROM chief_session_starts WHERE created_at>?1 AND theo_queued=0 AND worker IS NULL", [now_ms.saturating_sub(3_600_000)], |row| row.get(0))?;
     if !is_theo_queued && recent >= starts_per_hour {
         return Err(TeamError::new(ErrorCode::Limit, &format!("the Chief may request at most {starts_per_hour} session starts an hour (Theo's chief-starts-per-hour); todos Theo queued with Q do not count")));
     }
@@ -1018,18 +1046,148 @@ fn request_session_start(connection: &Connection, todos: &crate::todo::TodoList,
     Ok(json!({"request": id, "state": "requested", "project": canonical, "todo": todo}))
 }
 
-/// The open Chief request to start a session for this task, as (request id, reason).
+/// Records the Chief's request to give a todo to a live session of its project. Its native inbox
+/// takes it once the usual queue admission and reservation checks pass; a
+/// gift starts no session, so it does not count against the hourly session starts.
+fn request_todo_gift(connection: &Connection, todos: &crate::todo::TodoList, live: &[WorkerState], chief: &VerifiedSession, epoch: &str, todo: &str, session: &str, reason: &str, now_ms: i64) -> Result<Value, TeamError> {
+    let (canonical, is_theo_queued) = chief_startable_todo(todos, &chief.project, todo)?;
+    let worker = chief_target(live, chief, session)?;
+    if worker.session.project != canonical { return Err(conflict("the session works in another project than the todo")); }
+    require_no_waiting_request(connection, &canonical, todo, now_ms)?;
+    if connection.query_row("SELECT EXISTS(SELECT 1 FROM chief_session_starts WHERE state='requested' AND worker=?1)", [session], |row| row.get::<_, bool>(0))? {
+        return Err(conflict("a todo the Chief gave already waits for this session"));
+    }
+    let id = crate::teams::store::identifier()?;
+    require_task_mapping(connection, &worker.session, &crate::teams::TaskKey {project: canonical.clone(), task_id: todo.into()})?;
+    connection.execute("INSERT INTO chief_session_starts(id,epoch,project,task_id,reason,state,created_at,theo_queued,worker,worker_runtime) VALUES (?1,?2,?3,?4,?5,'requested',?6,?7,?8,?9)",
+        params![id, epoch, canonical, todo, reason, now_ms, is_theo_queued, session, worker.session.runtime])?;
+    coordination_event(connection, "todo_gift_requested", &json!({"source":"chief","request":id,"project":canonical,"task_id":todo,"session":session,"reason":reason}), now_ms)?;
+    Ok(json!({"request": id, "state": "requested", "project": canonical, "todo": todo, "session": session}))
+}
+
+/// The open Chief request to start a fresh session for this task, as (request id, reason).
 pub fn open_session_start(connection: &Connection, project: &str, task_id: &str, now_ms: i64) -> Result<Option<(String, String)>, TeamError> {
-    Ok(connection.query_row("SELECT id,reason FROM chief_session_starts WHERE state='requested' AND project=?1 AND task_id=?2 AND created_at>?3",
+    Ok(connection.query_row("SELECT id,reason FROM chief_session_starts WHERE state='requested' AND project=?1 AND task_id=?2 AND worker IS NULL AND created_at>?3",
         params![project, task_id, now_ms.saturating_sub(super::SESSION_START_OPEN_MS)], |row| Ok((row.get(0)?, row.get(1)?))).optional()?)
 }
 
-/// The todo ids the Chief asked a session for that the queue has not acted on yet: the queue starts
-/// them even when Theo did not queue them.
+/// The todo ids the Chief asked a fresh session for that the queue has not acted on yet: the queue
+/// starts them even when Theo did not queue them.
 pub fn open_session_start_tasks(connection: &Connection, now_ms: i64) -> Result<std::collections::HashSet<String>, TeamError> {
-    Ok(connection.prepare("SELECT task_id FROM chief_session_starts WHERE state='requested' AND created_at>?1")?
+    Ok(connection.prepare("SELECT task_id FROM chief_session_starts WHERE state='requested' AND worker IS NULL AND created_at>?1")?
         .query_map([now_ms.saturating_sub(super::SESSION_START_OPEN_MS)], |row| row.get(0))?
         .collect::<Result<_, _>>()?)
+}
+
+/// Retire gifts that can no longer be admitted, before checking exclusivity or native delivery.
+pub fn expire_todo_gifts(connection: &Connection, live: &[VerifiedSession], now_ms: i64) -> Result<(), TeamError> {
+    connection.execute("UPDATE chief_session_starts SET state='expired' WHERE state='requested' AND worker IS NOT NULL
+        AND (created_at<=?1 OR epoch IN (SELECT epoch FROM chief_grants WHERE state='disabled'))",[now_ms.saturating_sub(super::SESSION_START_OPEN_MS)])?;
+    let gifts=connection.prepare("SELECT id,worker,worker_runtime FROM chief_session_starts WHERE state='requested' AND worker IS NOT NULL")?
+        .query_map([],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,String>(2)?)))?.collect::<Result<Vec<_>,_>>()?;
+    for (id,worker,runtime) in gifts {
+        if !live.iter().any(|session|session.session_id==worker && session.runtime==runtime) {
+            connection.execute("UPDATE chief_session_starts SET state='expired' WHERE id=?1",[id])?;
+        }
+    }
+    Ok(())
+}
+
+/// A gift is claimed and reserved by its exact native recipient, not by a column cache or a shell
+/// command that can retarget after a restart. All mutations share the inbox transaction.
+pub fn claim_todo_gift(connection: &mut Connection, recipient: &VerifiedSession, idle_turn: &str, now_ms: i64) -> Result<Option<crate::teams::Dispatch>, TeamError> {
+    if idle_turn.is_empty() || idle_turn.len()>128 || idle_turn.chars().any(char::is_control) {return Err(super::invalid("missing verified idle turn"));}
+    let pending: bool=connection.query_row("SELECT EXISTS(SELECT 1 FROM chief_session_starts WHERE state='requested' AND worker=?1 AND worker_runtime=?2)",
+        params![recipient.session_id,recipient.runtime],|row|row.get(0))?;
+    if !pending {return Ok(None);}
+    // Same lock order as ordinary TODO mutations: TODO first, then SQLite. Keep it until the
+    // conditional todo -> doing transition is durable, so a concurrent completion cannot be reopened.
+    let guard=crate::todo::lock_mutations().map_err(|error|TeamError::new(ErrorCode::Storage,error.to_string()))?;
+    let transaction=connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let live=observed(&transaction)?;
+    expire_todo_gifts(&transaction,&live.iter().map(|worker|worker.session.clone()).collect::<Vec<_>>(),now_ms)?;
+    if !crate::teams::store::inbox_available(&transaction,recipient,Some(idle_turn))? {transaction.commit()?;return Ok(None);}
+    let ready=live.iter().any(|worker|worker.session==*recipient && worker.session.agent=="opencode" && worker.observed_at_ms<=now_ms && now_ms-worker.observed_at_ms<=30_000
+        && worker.blocked_by.iter().all(|reason|reason=="live_queued_admission_verification_required"));
+    if !ready {transaction.commit()?;return Ok(None);}
+    let gift: Option<(String,String,String,String)> = transaction.query_row("SELECT s.id,s.task_id,s.epoch,g.project FROM chief_session_starts s JOIN chief_grants g ON g.epoch=s.epoch
+        WHERE s.state='requested' AND s.worker=?1 AND s.worker_runtime=?2 AND g.state='active'",params![recipient.session_id,recipient.runtime],
+        |row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?))).optional()?;
+    let Some((request,todo,epoch,chief_project))=gift else {transaction.commit()?;return Ok(None)};
+    let mut todos=crate::todo::TodoList::load_checked().map_err(|error|TeamError::new(ErrorCode::Storage,error))?;
+    let role=worker_role(&transaction,recipient)?;
+    if matches!(role,Some(crate::teams::Role::Designer|crate::teams::Role::Qa)) || crate::sessions::role_of(&recipient.session_id)=="designer" {
+        transaction.execute("UPDATE chief_session_starts SET state='expired' WHERE id=?1",[request])?;
+        transaction.commit()?;return Ok(None);
+    }
+    let (project,_)=match chief_startable_todo(&todos,&chief_project,&todo) {
+        Ok(eligible)=>eligible,
+        Err(error) if matches!(error.code,ErrorCode::NotFound|ErrorCode::Conflict) => {
+            transaction.execute("UPDATE chief_session_starts SET state='expired' WHERE id=?1",[request])?;
+            transaction.commit()?;return Ok(None);
+        },
+        Err(error)=>return Err(error),
+    };
+    if project!=recipient.project {
+        transaction.execute("UPDATE chief_session_starts SET state='expired' WHERE id=?1",[request])?;
+        transaction.commit()?;return Ok(None);
+    }
+    let task=crate::teams::TaskKey {project,task_id:todo.clone()};
+    if let Err(error)=require_task_mapping(&transaction,recipient,&task).and_then(|()|require_unreserved(&transaction,&task,Some(&recipient.session_id))) {
+        if matches!(error.code,ErrorCode::Unauthorized|ErrorCode::Conflict) {
+            transaction.execute("UPDATE chief_session_starts SET state='expired' WHERE id=?1",[request])?;
+            transaction.commit()?;return Ok(None);
+        }
+        return Err(error);
+    }
+    let item=todos.items.iter().find(|item|item.id()==todo).expect("startable todo exists");
+    let prompt=crate::todo::with_todo_note(&crate::todo::prompt_of(&crate::todo::Entry::Typed(item.clone())),&todo);
+    super::text(&prompt,crate::prompts::PROMPT_MAX)?;
+    let token=insert_launch(&transaction,&task,Some(&recipient.session_id),"submitting",now_ms)?;
+    let message_id=crate::teams::store::identifier()?;
+    let id=format!("chief_{}",crate::teams::store::identifier()?);
+    let envelope=json!({"message_id":message_id,"kind":"chief_todo","epoch":epoch,"text":prompt,"todo":todo,"reservation":token});
+    transaction.execute("INSERT INTO chief_inbox(id,chief_epoch,recipient,recipient_identity,recipient_epoch,work,envelope,state,next_at,attempts)
+        VALUES (?1,?2,?3,?4,?2,'null',?5,'submitting',?6,1)",params![message_id,epoch,recipient.session_id,serde_json::to_string(recipient)?,envelope.to_string(),now_ms])?;
+    transaction.execute("INSERT INTO chief_delivery_attempts(id,recipient,recipient_runtime,recipient_epoch,kind,envelope,idle_turn,state,started_at)
+        VALUES (?1,?2,?3,?4,'chief_todo',?5,?6,'submitting',?7)",params![id,recipient.session_id,recipient.runtime,epoch,envelope.to_string(),idle_turn,now_ms])?;
+    crate::teams::store::record_inbox_turn(&transaction,recipient,idle_turn)?;
+    mark_session_started(&transaction,&request,&token,now_ms)?;
+    transaction.commit()?;
+    let item=todos.items.iter_mut().find(|item|item.id()==todo).expect("startable todo still locked");
+    item.0.insert("status".into(),json!("doing"));
+    item.0.insert("session".into(),json!(recipient.session_id));
+    item.0.insert("updated".into(),json!(now_ms/1000));
+    todos.save_guarded(&guard).map_err(|error|TeamError::new(ErrorCode::Storage,format!("todo gift reserved but status could not be saved: {error}; delivery needs review")))?;
+    Ok(Some(crate::teams::Dispatch {id,message_id,envelope}))
+}
+
+/// Records the Chief's message for a live session; its native inbox takes it only when idle.
+/// Bound to the session's current runtime: a restart lapses it.
+fn request_message(connection: &Connection, live: &[WorkerState], chief: &VerifiedSession, epoch: &str, session: &str, text: &str, reason: &str, now_ms: i64) -> Result<Value, TeamError> {
+    let worker = chief_target(live, chief, session)?;
+    connection.execute("UPDATE chief_inbox SET state='cancelled' WHERE state='queued' AND json_extract(envelope,'$.kind')='chief_message'
+        AND json_extract(envelope,'$.expires_at')<=?1", [now_ms])?;
+    let waiting: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM chief_inbox WHERE recipient=?1 AND state IN ('queued','submitting','uncertain')
+        AND json_extract(envelope,'$.kind')='chief_message')", [session], |row|row.get(0))?;
+    if waiting {return Err(conflict("a Chief message already waits for this session"));}
+    let recent: i64 = connection.query_row("SELECT count(*) FROM chief_events WHERE kind='chief_message_requested' AND created_at>?1",
+        [now_ms.saturating_sub(3_600_000)], |row|row.get(0))?;
+    if recent >= super::CHIEF_MESSAGES_PER_HOUR {return Err(TeamError::new(ErrorCode::Limit,"the Chief may send at most 20 messages an hour"));}
+    let id = crate::teams::store::identifier()?;
+    let envelope = json!({"message_id":id,"kind":"chief_message","epoch":epoch,"text":text,"reason":reason,
+        "expires_at":now_ms.saturating_add(super::SESSION_START_OPEN_MS)});
+    connection.execute("INSERT INTO chief_inbox(id,chief_epoch,recipient,recipient_identity,recipient_epoch,work,envelope,state,next_at)
+        VALUES (?1,?2,?3,?4,?2,'null',?5,'queued',?6)",
+        params![id,epoch,session,serde_json::to_string(&worker.session)?,envelope.to_string(),now_ms])?;
+    coordination_event(connection,"chief_message_requested",&json!({"source":"chief","request":id,"session":session,"reason":reason}),now_ms)?;
+    Ok(json!({"request":id,"state":"queued","session":session}))
+}
+
+/// What the session receives: the Chief's text, then the host's boundary, which the Chief cannot
+/// leave out or word differently.
+pub fn message_prompt(text: &str) -> String {
+    format!("Message from the cockpit Chief:\n{}\n\n{}", crate::approval::escape_hiding(text, "", ""), super::CHIEF_MESSAGE_BOUNDARY)
 }
 
 pub fn mark_session_started(connection: &Connection, request: &str, token: &str, now_ms: i64) -> Result<(), TeamError> {
@@ -1186,7 +1344,19 @@ pub fn claim(connection: &mut Connection, recipient: &VerifiedSession, idle_turn
         let Some((message_id, identity, epoch, chief_epoch, envelope)) = candidate else { transaction.commit()?; return Ok(None) };
         let identity = serde_json::from_str::<VerifiedSession>(&identity)?;
         let mut envelope = serde_json::from_str::<Value>(&envelope)?;
-        let validation = if envelope["kind"]=="chief_wake" {
+        let validation = if envelope["kind"]=="chief_message" {
+            if identity != *recipient || envelope["expires_at"].as_i64().is_none_or(|deadline|deadline<=now_ms) {
+                InboxValidation::Obsolete
+            } else {
+                let active: bool = transaction.query_row("SELECT EXISTS(SELECT 1 FROM chief_grants WHERE epoch=?1 AND state='active')",[&chief_epoch],|row|row.get(0))?;
+                let launching: bool = transaction.query_row("SELECT EXISTS(SELECT 1 FROM scheduling_reservations r JOIN legacy_launches l ON l.token=r.token
+                    WHERE r.worker=?1 AND l.state IN ('reserved','submitting','uncertain'))",[&recipient.session_id],|row|row.get(0))?;
+                // Coordination can resume the current task, but cannot overtake a launch or another native turn.
+                let ready = live.iter().any(|worker|worker.session==identity && worker.observed_at_ms<=now_ms && now_ms-worker.observed_at_ms<=30_000
+                    && worker.blocked_by.iter().all(|reason|matches!(reason.as_str(),"live_queued_admission_verification_required"|"legacy_work_in_progress")));
+                if active && ready && !launching {InboxValidation::Ready} else {InboxValidation::Deferred}
+            }
+        } else if envelope["kind"]=="chief_wake" {
             let active: bool = transaction.query_row("SELECT EXISTS(SELECT 1 FROM chief_grants WHERE epoch=?1 AND state='active' AND session_id=?2 AND runtime=?3)",params![chief_epoch,identity.session_id,identity.runtime],|row|row.get(0))?;
             let used_boundary: bool = transaction.query_row("SELECT EXISTS(SELECT 1 FROM chief_turns WHERE epoch=?1 AND idle_turn=?2)",params![chief_epoch,idle_turn],|row|row.get(0))?;
             if !active || used_boundary { InboxValidation::Deferred }
@@ -1370,6 +1540,28 @@ pub fn finish_for(connection: &mut Connection, recipient: &VerifiedSession, disp
     if state == "received" || state == "not_submitted" || state == "cancelled" { return Ok(()); }
     let envelope: Value = serde_json::from_str(&envelope)?;
     let message_id = envelope["message_id"].as_str().ok_or_else(|| conflict("missing inbox identity"))?;
+    if envelope["kind"]=="chief_message" || envelope["kind"]=="chief_todo" {
+        match outcome {
+            TransportOutcome::Received {native_id} if state=="submitting" && *native_id==format!("msg_cockpit{message_id}") => {
+                transaction.execute("UPDATE chief_delivery_attempts SET state='received',native_id=?2,finished_at=?3 WHERE id=?1",params![dispatch_id,native_id,now_ms])?;
+                transaction.execute("UPDATE chief_inbox SET state='received' WHERE id=?1",[message_id])?;
+                if envelope["kind"]=="chief_todo" {
+                    transaction.execute("UPDATE legacy_launches SET state='submitted',revision=revision+1 WHERE token=?1 AND state='submitting'",[envelope["reservation"].as_str()])?;
+                }
+                coordination_event(&transaction,"chief_message_received",&json!({"message":message_id,"session":recipient.session_id}),now_ms)?;
+            },
+            _ => {
+                transaction.execute("UPDATE chief_delivery_attempts SET state='uncertain',receipt=?2,finished_at=?3 WHERE id=?1",params![dispatch_id,serde_json::to_string(outcome)?,now_ms])?;
+                transaction.execute("UPDATE chief_inbox SET state='uncertain' WHERE id=?1",[message_id])?;
+                if envelope["kind"]=="chief_todo" {
+                    transaction.execute("UPDATE legacy_launches SET state='uncertain',revision=revision+1 WHERE token=?1 AND state='submitting'",[envelope["reservation"].as_str()])?;
+                }
+                decision_record(&transaction,&format!("host-delivery-{message_id}"),"delivery","Chief message delivery is uncertain; it will not be resent.","Inspect the exact delivery before settling it.",now_ms)?;
+            },
+        }
+        transaction.commit()?;
+        return Ok(());
+    }
     if envelope["kind"]=="chief_answer" || envelope["kind"]=="chief_form_reply" || envelope["kind"]=="chief_correction" {
         // The plugin admits an answer or a correction under the stable id `msg_cockpit<message id>` and
         // settles a form as `form:<form id>`; any other receipt is no proof.
@@ -1503,6 +1695,11 @@ pub fn agent(connection: &mut Connection, sender: &VerifiedSession, action: &Chi
                 let starts_per_hour = crate::settings::chief_starts_per_hour().map_err(|error| TeamError::new(ErrorCode::Storage, &error))?;
                 request_session_start(&transaction, &todos, &sender.project, &epoch, todo, project, reason, starts_per_hour, now_ms)?
             },
+            ChiefAgentAction::GiveTodo { todo, session, reason } => {
+                let todos = crate::todo::TodoList::load_checked().map_err(|error| TeamError::new(ErrorCode::Storage, error))?;
+                request_todo_gift(&transaction, &todos, live, sender, &epoch, todo, session, reason, now_ms)?
+            },
+            ChiefAgentAction::Message { session, text, reason } => request_message(&transaction, live, sender, &epoch, session, text, reason, now_ms)?,
         };
         transaction.commit()?;
         Ok(response)
@@ -1637,7 +1834,7 @@ fn invalidated_snapshot() -> Value {
 fn freeze_context(connection: &Connection, live: &[WorkerState], epoch: &str, event_cursor: i64, now_ms: i64) -> Result<(String, Vec<Value>), TeamError> {
     let records = context_records(connection,live)?;
     let encoded = serde_json::to_string(&records)?;
-    let generation = crate::audit::sha256_hex(encoded.as_bytes());
+    let generation = crate::teams::store::identifier()?;
     connection.execute("DELETE FROM chief_context_snapshots",[])?;
     connection.execute("INSERT INTO chief_context_snapshots(epoch,generation,event_cursor,records,created_at) VALUES (?1,?2,?3,?4,?5)",
         params![epoch,generation,event_cursor,encoded,now_ms])?;
@@ -1688,6 +1885,14 @@ fn context_records(connection: &Connection, live: &[WorkerState]) -> Result<Vec<
     for record in &mut records {
         if record.get("source").is_none() {record["source"]=json!(if record["kind"]=="worker" {"daemon_derived_availability"} else {"protected_host_approval"});}
     }
+    records.extend(connection.prepare("SELECT id,recipient,state FROM chief_inbox WHERE json_extract(envelope,'$.kind')='chief_message'
+        AND (state IN ('queued','submitting','uncertain','failed') OR rowid IN (SELECT rowid FROM chief_inbox WHERE json_extract(envelope,'$.kind')='chief_message' ORDER BY rowid DESC LIMIT 20)) ORDER BY rowid")?
+        .query_map([],|row|Ok(json!({"kind":"chief_message","source":"protected_delivery_ledger","id":row.get::<_,String>(0)?,"session":row.get::<_,String>(1)?,"state":row.get::<_,String>(2)?})))?
+        .collect::<Result<Vec<_>,_>>()?);
+    records.extend(connection.prepare("SELECT id,task_id,worker,state FROM chief_session_starts WHERE worker IS NOT NULL
+        AND (state='requested' OR rowid IN (SELECT rowid FROM chief_session_starts WHERE worker IS NOT NULL ORDER BY rowid DESC LIMIT 20)) ORDER BY rowid")?
+        .query_map([],|row|Ok(json!({"kind":"todo_gift","source":"protected_dispatch_ledger","id":row.get::<_,String>(0)?,"todo":row.get::<_,String>(1)?,"session":row.get::<_,String>(2)?,"state":row.get::<_,String>(3)?})))?
+        .collect::<Result<Vec<_>,_>>()?);
     Ok(records)
 }
 
@@ -1856,11 +2061,11 @@ pub fn clear_dispatch_leftovers(transaction: &rusqlite::Transaction<'_>) -> Resu
         AND (work IS NOT NULL OR assignment IS NOT NULL OR scope_key LIKE 'host-assignment-%')", [])?;
     transaction.execute("UPDATE chief_decisions SET state='superseded',revision=revision+1 WHERE state='open'
         AND scope_key IN (SELECT 'host-delivery-'||id FROM chief_inbox WHERE state IN ('queued','submitting','uncertain')
-            AND coalesce(json_extract(envelope,'$.kind'),'') NOT IN ('chief_wake','chief_answer','chief_form_reply','chief_correction'))", [])?;
+            AND coalesce(json_extract(envelope,'$.kind'),'') NOT IN ('chief_wake','chief_answer','chief_form_reply','chief_correction','chief_message','chief_todo'))", [])?;
     transaction.execute("UPDATE chief_inbox SET state='cancelled' WHERE state IN ('queued','submitting','uncertain')
-        AND coalesce(json_extract(envelope,'$.kind'),'') NOT IN ('chief_wake','chief_answer','chief_form_reply','chief_correction')", [])?;
+        AND coalesce(json_extract(envelope,'$.kind'),'') NOT IN ('chief_wake','chief_answer','chief_form_reply','chief_correction','chief_message','chief_todo')", [])?;
     transaction.execute("UPDATE chief_delivery_attempts SET state='cancelled' WHERE state IN ('submitting','uncertain')
-        AND coalesce(kind,'') NOT IN ('chief_wake','chief_answer','chief_form_reply','chief_correction')", [])?;
+        AND coalesce(kind,'') NOT IN ('chief_wake','chief_answer','chief_form_reply','chief_correction','chief_message','chief_todo')", [])?;
     Ok(())
 }
 

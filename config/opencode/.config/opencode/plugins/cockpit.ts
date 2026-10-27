@@ -273,6 +273,10 @@ export default {
       ))
       const row = envelope?.kind === "chief_answer"
         ? `${envelope?.source === "theo" ? "Theo's answer" : "Chief answer"}: ${visible(envelope?.text)}`
+        : envelope?.kind === "chief_message"
+        ? `Chief message: ${visible(envelope?.text)}`
+        : envelope?.kind === "chief_todo"
+        ? `Todo from the Chief: ${visible(envelope?.text)}`
         : envelope?.kind === "chief_correction"
         ? `Theo's correction: ${visible(envelope?.text)}`
         : envelope?.kind === "chief_check"

@@ -1613,6 +1613,277 @@ fn session_start_states(bench: &Bench) -> Vec<String> {
         .query_map([], |row| row.get(0)).unwrap().collect::<Result<Vec<_>, _>>().unwrap()
 }
 
+fn chief_gives_todo(bench: &mut Bench, todo: &str, session: &str) -> Result<serde_json::Value, cockpit::teams::TeamError> {
+    crate::teams::request(&mut bench.registry, 20, AgentAction::Chief { request: ChiefAgentAction::GiveTodo {
+        todo: todo.into(), session: session.into(), reason: "Take the next queued fix.".into(),
+    }}).and_then(|reply| reply.result)
+}
+
+const MESSAGE_WORKER: &str = "ses_3f2a9c0b2000AbCdEfGhIjKlMn";
+
+fn idle_message_worker(bench: &mut Bench) {
+    let directory = bench.registry.sessions[SESSION_B].cwd.clone();
+    {
+        let mut world = bench.world.borrow_mut();
+        world.sender_targets.insert(40, target(&[("tmux_pane", "%40")]));
+        world.sender_directories.insert(40, directory.clone());
+        world.sender_runtimes.insert(40, "runtime-40".into());
+    }
+    let report = parse_session(&json!({"session":MESSAGE_WORKER,"agent":"opencode","project":"project-a","cwd":directory,"state":"waiting"}).to_string()).unwrap();
+    bench.registry.report_from(report, 40).unwrap();
+    bench.registry.sessions.get_mut(MESSAGE_WORKER).unwrap().since = (crate::teams::now_ms()/1000-600) as f64;
+    let session = verified(bench, MESSAGE_WORKER);
+    crate::teams::host(&mut bench.registry, std::process::id(), HostRequest::ChiefNativeObservation {
+        session, idle: true, pending_input: false, observed_at_ms: crate::teams::now_ms(),
+    }).unwrap();
+}
+
+#[test]
+fn a_chief_todo_gift_is_delivered_natively_to_its_exact_runtime_not_a_fresh_session() {
+    let mut bench = admitted_chief_bench();
+    idle_message_worker(&mut bench);
+    let todo = project_todo(&bench, "aa919cfe", json!({}), false);
+    chief_gives_todo(&mut bench, &todo, MESSAGE_WORKER).unwrap();
+    assert!(reserve_fresh_session(&mut bench, &todo).is_err());
+    let delivery=crate::teams::request(&mut bench.registry,40,AgentAction::Receive).unwrap().result.unwrap();
+    assert_eq!(delivery["envelope"]["kind"],"chief_todo");
+    assert!(delivery["text"].as_str().unwrap().contains(&format!("cockpit-todo start {todo}")));
+    assert_eq!(cockpit::todo::TodoList::load().status_of(&todo),"doing");
+    assert_eq!(session_start_states(&bench), vec!["started"]);
+    crate::teams::request(&mut bench.registry,40,AgentAction::Receipt {
+        dispatch_id:delivery["dispatch_id"].as_str().unwrap().into(),outcome:cockpit::teams::TransportOutcome::Received {
+            native_id:format!("msg_cockpit{}",delivery["message_id"].as_str().unwrap()),
+        },
+    }).unwrap().result.unwrap();
+    let state:String=bench.registry.teams.as_ref().unwrap().query_row("SELECT state FROM legacy_launches WHERE token=?1",[delivery["envelope"]["reservation"].as_str()],|row|row.get(0)).unwrap();
+    assert_eq!(state,"submitted");
+}
+
+#[test]
+fn expired_or_disabled_or_restarted_gifts_do_not_block_ordinary_queued_work() {
+    for obsolete in ["expired","disabled","restarted"] {
+        let mut bench=admitted_chief_bench();idle_message_worker(&mut bench);
+        let todo=project_todo(&bench,"aa919cfe",json!({}),true);
+        chief_gives_todo(&mut bench,&todo,MESSAGE_WORKER).unwrap();
+        let connection=bench.registry.teams.as_ref().unwrap();
+        match obsolete {
+            "expired" => {connection.execute("UPDATE chief_session_starts SET created_at=0",[]).unwrap();},
+            "disabled" => {connection.execute("UPDATE chief_grants SET state='disabled'",[]).unwrap();},
+            "restarted" => {bench.registry.sessions.get_mut(MESSAGE_WORKER).unwrap().runtime="runtime-new".into();bench.world.borrow_mut().sender_runtimes.insert(40,"runtime-new".into());},
+            _=>unreachable!(),
+        }
+        let directory=bench.registry.sessions[MESSAGE_WORKER].cwd.clone();
+        let reserved=crate::teams::host(&mut bench.registry,std::process::id(),HostRequest::ReserveTask {
+            task_id:todo,directory,worker:Some(MESSAGE_WORKER.into()),automatic:true,
+        }).unwrap().result;
+        assert!(reserved.is_ok(),"{obsolete}: {reserved:?}");
+    }
+}
+
+#[test]
+fn expired_or_restarted_todo_gifts_never_reach_the_native_inbox() {
+    for obsolete in ["expired","restarted"] {
+        let mut bench=admitted_chief_bench();idle_message_worker(&mut bench);
+        let todo=project_todo(&bench,"aa919cfe",json!({}),false);
+        chief_gives_todo(&mut bench,&todo,MESSAGE_WORKER).unwrap();
+        if obsolete=="expired" {bench.registry.teams.as_ref().unwrap().execute("UPDATE chief_session_starts SET created_at=0",[]).unwrap();}
+        else {bench.registry.sessions.get_mut(MESSAGE_WORKER).unwrap().runtime="runtime-new".into();bench.world.borrow_mut().sender_runtimes.insert(40,"runtime-new".into());}
+        let delivery=crate::teams::request(&mut bench.registry,40,AgentAction::Receive).unwrap().result.unwrap();
+        assert!(delivery.is_null(),"{obsolete}: {delivery}");
+        assert_eq!(cockpit::todo::TodoList::load().status_of(&todo),"todo");
+    }
+}
+
+#[test]
+fn an_invalidated_todo_gift_is_retired_without_reopening_work_or_blocking_messages() {
+    for invalidation in ["done","waiting","deleted"] {
+        let mut bench=admitted_chief_bench();idle_message_worker(&mut bench);
+        let todo=project_todo(&bench,"aa919cfe",json!({}),false);
+        chief_gives_todo(&mut bench,&todo,MESSAGE_WORKER).unwrap();
+        chief_messages(&mut bench,MESSAGE_WORKER).unwrap();
+        let mut todos=cockpit::todo::TodoList::load();
+        if invalidation=="done" {assert!(todos.set_status(&todo,"done",""));}
+        else {
+            if invalidation=="deleted" {todos.items.retain(|item|item.id()!=todo);}
+            else {todos.items.iter_mut().find(|item|item.id()==todo).unwrap().0.insert("after".into(),json!(["bb919cfe"]));}
+            todos.try_save().unwrap();
+        }
+        let reply=crate::teams::request(&mut bench.registry,40,AgentAction::Receive).unwrap().result.unwrap();
+        assert_eq!(reply["envelope"]["kind"],"chief_message","{invalidation}");
+        assert_eq!(session_start_states(&bench),vec!["expired"]);
+        assert_ne!(cockpit::todo::TodoList::load().status_of(&todo),"doing");
+    }
+}
+
+#[test]
+fn a_designer_never_takes_a_coding_todo_gift() {
+    let mut bench=admitted_chief_bench();idle_message_worker(&mut bench);
+    let todo=project_todo(&bench,"aa919cfe",json!({}),false);
+    chief_gives_todo(&mut bench,&todo,MESSAGE_WORKER).unwrap();
+    fs::create_dir_all(cockpit::paths::designs()).unwrap();
+    fs::write(cockpit::paths::designs().join(format!("{MESSAGE_WORKER}.role")),"designer").unwrap();
+    let reply=crate::teams::request(&mut bench.registry,40,AgentAction::Receive).unwrap().result.unwrap();
+    assert!(reply.is_null());
+    assert_eq!(cockpit::todo::TodoList::load().status_of(&todo),"todo");
+}
+
+#[test]
+fn a_qa_session_never_takes_a_todo_gift_even_for_its_teams_task() {
+    let mut bench=admitted_chief_bench();idle_message_worker(&mut bench);
+    let todo=project_todo(&bench,"aa919cfe",json!({}),false);
+    chief_gives_todo(&mut bench,&todo,MESSAGE_WORKER).unwrap();
+    let worker=verified(&mut bench,MESSAGE_WORKER);
+    let task=serde_json::to_string(&cockpit::teams::TaskKey {project:worker.project.clone(),task_id:todo.clone()}).unwrap();
+    let connection=bench.registry.teams.as_ref().unwrap();
+    connection.execute("INSERT INTO teams(task_key,project,task_id,revision) VALUES (?1,?2,?3,1)",(&task,&worker.project,&todo)).unwrap();
+    connection.execute("INSERT INTO members(task_key,session_id,role,agent,runtime,epoch) VALUES (?1,?2,'qa','opencode',?3,'qa-epoch')",(&task,MESSAGE_WORKER,&worker.runtime)).unwrap();
+    let reply=crate::teams::request(&mut bench.registry,40,AgentAction::Receive).unwrap().result.unwrap();
+    assert!(reply.is_null());
+    assert_eq!(cockpit::todo::TodoList::load().status_of(&todo),"todo");
+}
+
+#[test]
+fn a_todo_gift_cannot_claim_while_theos_todo_mutation_holds_the_lock() {
+    let mut bench=admitted_chief_bench();idle_message_worker(&mut bench);
+    let todo=project_todo(&bench,"aa919cfe",json!({}),false);
+    chief_gives_todo(&mut bench,&todo,MESSAGE_WORKER).unwrap();
+    let guard=cockpit::todo::lock_mutations().unwrap();
+    let reply=crate::teams::request(&mut bench.registry,40,AgentAction::Receive);
+    assert_eq!(reply.unwrap_err().code,ErrorCode::Storage);
+    assert_eq!(reservations_of(&bench,&todo),0);
+    drop(guard);
+    assert!(cockpit::todo::TodoList::load().set_status(&todo,"done",""));
+    let reply=crate::teams::request(&mut bench.registry,40,AgentAction::Receive).unwrap().result.unwrap();
+    assert!(reply.is_null());
+    assert_eq!(cockpit::todo::TodoList::load().status_of(&todo),"done");
+}
+
+fn chief_messages(bench: &mut Bench, session: &str) -> Result<serde_json::Value, cockpit::teams::TeamError> {
+    crate::teams::request(&mut bench.registry, 20, AgentAction::Chief { request: ChiefAgentAction::Message {
+        session: session.into(), text: "The prerequisite is ready.".into(), reason: "Resume the current task.".into(),
+    }}).and_then(|reply| reply.result)
+}
+
+#[test]
+fn a_chief_message_waits_for_idle_native_delivery_without_a_team() {
+    let mut bench = admitted_chief_bench();
+    idle_message_worker(&mut bench);
+    chief_messages(&mut bench, MESSAGE_WORKER).unwrap();
+    let reply = crate::teams::request(&mut bench.registry, 40, AgentAction::Receive).unwrap().result.unwrap();
+    assert_eq!(reply["envelope"]["kind"], "chief_message");
+    assert!(reply["text"].as_str().unwrap().contains("It grants no permission"));
+    assert!(!reply["text"].as_str().unwrap().contains("authorises edits"));
+    let message = reply["message_id"].as_str().unwrap();
+    assert_eq!(bench.notice_title(&format!("chief-message-{message}")).as_deref(),Some("Chief · sending a message to project-a"));
+    crate::teams::request(&mut bench.registry,40,AgentAction::Receipt {
+        dispatch_id:reply["dispatch_id"].as_str().unwrap().into(),
+        outcome:cockpit::teams::TransportOutcome::Received {native_id:format!("msg_cockpit{message}")},
+    }).unwrap().result.unwrap();
+    let state: String = bench.registry.teams.as_ref().unwrap().query_row("SELECT state FROM chief_inbox WHERE id=?1",[message],|row|row.get(0)).unwrap();
+    assert_eq!(state,"received");
+    assert!(crate::teams::request(&mut bench.registry,40,AgentAction::Receive).unwrap().result.unwrap().is_null());
+}
+
+#[test]
+fn chief_messages_do_not_bypass_idle_input_focus_restart_or_gaming_checks() {
+    for block in ["busy","input","permission","form","viewed","gaming","restart","fresh","launch"] {
+        let mut bench = admitted_chief_bench();
+        idle_message_worker(&mut bench);
+        chief_messages(&mut bench,MESSAGE_WORKER).unwrap();
+        match block {
+            "busy" => bench.registry.sessions.get_mut(MESSAGE_WORKER).unwrap().state="working".into(),
+            "input" => {let entry=bench.registry.sessions.get_mut(MESSAGE_WORKER).unwrap();entry.state="needs-you".into();entry.needs_input=true;},
+            "permission"|"form" => {
+                let session=verified(&mut bench,MESSAGE_WORKER);
+                crate::teams::request(&mut bench.registry,40,AgentAction::NativeTelemetry {sequence:1,counts:Some(cockpit::teams::NativeCounts {
+                    running_sessions:0,pending_inbox:0,pending_permissions:u32::from(block=="permission"),pending_forms:u32::from(block=="form"),
+                })}).unwrap();
+                assert_eq!(session.session_id,MESSAGE_WORKER);
+            },
+            "viewed" => bench.registry.chief_focus=Some((MESSAGE_WORKER.into(),true,false,crate::teams::now_ms())),
+            "gaming" => bench.registry.chief_focus=Some((String::new(),false,true,crate::teams::now_ms())),
+            "restart" => {bench.registry.sessions.get_mut(MESSAGE_WORKER).unwrap().runtime="runtime-new".into();bench.world.borrow_mut().sender_runtimes.insert(40,"runtime-new".into());},
+            "fresh" => bench.registry.sessions.get_mut(MESSAGE_WORKER).unwrap().since=(crate::teams::now_ms()/1000) as f64,
+            "launch" => {
+                let session=verified(&mut bench,MESSAGE_WORKER);
+                cockpit::chief::store::reserve_legacy(bench.registry.teams.as_mut().unwrap(),&cockpit::teams::TaskKey {
+                    project:session.project,task_id:"aa919cfe".into(),
+                },Some(MESSAGE_WORKER),crate::teams::now_ms()).unwrap();
+            },
+            _ => unreachable!(),
+        }
+        let reply=crate::teams::request(&mut bench.registry,40,AgentAction::Receive).unwrap().result.unwrap();
+        assert!(reply.is_null(),"{block}: {reply}");
+    }
+}
+
+#[test]
+fn a_chief_message_can_resume_an_idle_sessions_current_task_without_reassigning_it() {
+    let mut bench=admitted_chief_bench();idle_message_worker(&mut bench);
+    bench.registry.teams.as_ref().unwrap().execute("INSERT INTO scheduling_reservations VALUES ('path:/project-a','aa919cfe',?1,'existing-task','observed')",[MESSAGE_WORKER]).unwrap();
+    chief_messages(&mut bench,MESSAGE_WORKER).unwrap();
+    let delivery=crate::teams::request(&mut bench.registry,40,AgentAction::Receive).unwrap().result.unwrap();
+    assert_eq!(delivery["envelope"]["kind"],"chief_message");
+    assert_eq!(reservations_of(&bench,"aa919cfe"),1);
+}
+
+#[test]
+fn uncertain_chief_message_delivery_is_not_retried_or_replaced() {
+    let mut bench=admitted_chief_bench(); idle_message_worker(&mut bench);
+    chief_messages(&mut bench,MESSAGE_WORKER).unwrap();
+    let delivery=crate::teams::request(&mut bench.registry,40,AgentAction::Receive).unwrap().result.unwrap();
+    crate::teams::request(&mut bench.registry,40,AgentAction::Receipt {
+        dispatch_id:delivery["dispatch_id"].as_str().unwrap().into(),
+        outcome:cockpit::teams::TransportOutcome::Received {native_id:"not-the-stable-message-id".into()},
+    }).unwrap().result.unwrap();
+    assert_eq!(chief_messages(&mut bench,MESSAGE_WORKER).unwrap_err().code,ErrorCode::Conflict);
+    assert!(crate::teams::request(&mut bench.registry,40,AgentAction::Receive).unwrap().result.unwrap().is_null());
+}
+
+#[test]
+fn chief_messages_and_todo_gifts_require_the_chief_and_a_live_opencode_target() {
+    for target in [SESSION_B,OPENCODE_SESSION,"ses_missing"] {
+        let mut bench=admitted_chief_bench();
+        assert!(chief_messages(&mut bench,target).is_err(),"{target}");
+        let todo=project_todo(&bench,"aa919cfe",json!({}),false);
+        assert!(chief_gives_todo(&mut bench,&todo,target).is_err(),"{target}");
+    }
+    let mut bench=admitted_chief_bench();idle_message_worker(&mut bench);
+    let reply=crate::teams::request(&mut bench.registry,10,AgentAction::Chief {request:ChiefAgentAction::Message {
+        session:MESSAGE_WORKER.into(),text:"Resume".into(),reason:"Ready".into(),
+    }}).unwrap();
+    assert_eq!(reply.result.unwrap_err().code,ErrorCode::Unauthorized);
+}
+
+#[test]
+fn chief_messages_are_bounded_to_one_waiting_per_session_and_twenty_an_hour() {
+    let mut bench=admitted_chief_bench();idle_message_worker(&mut bench);
+    chief_messages(&mut bench,MESSAGE_WORKER).unwrap();
+    assert_eq!(chief_messages(&mut bench,MESSAGE_WORKER).unwrap_err().code,ErrorCode::Conflict);
+    let connection=bench.registry.teams.as_ref().unwrap();
+    connection.execute("UPDATE chief_inbox SET state='received' WHERE json_extract(envelope,'$.kind')='chief_message'",[]).unwrap();
+    for index in 0..19 {
+        connection.execute("INSERT INTO chief_events(id,source,submission_key,fingerprint,kind,body,created_at) VALUES (?1,'host',?1,'fixture','chief_message_requested','{}',?2)",
+            (format!("earlier-message-{index}"),crate::teams::now_ms())).unwrap();
+    }
+    assert_eq!(chief_messages(&mut bench,MESSAGE_WORKER).unwrap_err().code,ErrorCode::Limit);
+}
+
+#[test]
+fn a_chief_message_left_unclaimed_for_ten_minutes_is_cancelled() {
+    let mut bench=admitted_chief_bench();idle_message_worker(&mut bench);
+    chief_messages(&mut bench,MESSAGE_WORKER).unwrap();
+    bench.registry.teams.as_ref().unwrap().execute("UPDATE chief_inbox SET envelope=json_set(envelope,'$.expires_at',0) WHERE json_extract(envelope,'$.kind')='chief_message'",[]).unwrap();
+    assert!(crate::teams::request(&mut bench.registry,40,AgentAction::Receive).unwrap().result.unwrap().is_null());
+}
+
+#[test]
+fn a_todo_gift_still_waits_for_theos_q_for_chief_filed_work() {
+    let mut bench=admitted_chief_bench();idle_message_worker(&mut bench);
+    let todo=project_todo(&bench,"aa919cfe",json!({"source":"session ses_chief"}),true);
+    assert_eq!(chief_gives_todo(&mut bench,&todo,MESSAGE_WORKER).unwrap_err().code,ErrorCode::Conflict);
+}
+
 #[test]
 fn a_queued_handed_todo_gets_no_fresh_session_while_its_project_runs_and_the_refusal_says_why() {
     let mut bench = admitted_chief_bench();

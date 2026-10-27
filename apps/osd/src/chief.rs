@@ -195,6 +195,16 @@ pub fn request(registry: &mut Registry, peer: u32, request: ChiefAgentAction) ->
             cockpit::util::log_as("daemon", "INFO", &format!("chief: asked for a fresh session for {todo} in {project}: {reason}"));
         }
     }
+    let coordination = match &request {
+        ChiefAgentAction::GiveTodo {todo,session,reason} => Some(("chief.todo_gift_requested",serde_json::json!({"todo":todo,"session":session,"reason":reason}))),
+        ChiefAgentAction::Message {session,text,reason} => Some(("chief.message_requested",serde_json::json!({"session":session,"text_sha256":cockpit::audit::sha256_hex(text.as_bytes()),"reason":reason}))),
+        _ => None,
+    };
+    if let Some((event,mut fields)) = coordination {
+        fields["chief"] = serde_json::json!(sender.session_id);
+        fields["refusal"] = serde_json::json!(reply.result.as_ref().err().map(|error|&error.message));
+        cockpit::audit::record("daemon",event,if reply.result.is_ok() {"ok"} else {"refused"},fields);
+    }
     Ok(reply)
 }
 

@@ -87,6 +87,14 @@ fn context_pages_reject_oversize_records_instead_of_truncating() {
 }
 
 #[test]
+fn chief_messages_reject_empty_oversized_or_host_labelled_text() {
+    for text in [String::new(),"a".repeat(2001),chief::THEO_ANSWER_LABEL.into(),chief::CHIEF_ANSWER_BOUNDARY.into(),chief::CHIEF_MESSAGE_BOUNDARY.into()] {
+        assert!(ChiefAgentAction::Message {session:"ses_worker".into(),text,reason:"Resume".into()}.validate().is_err());
+    }
+    assert!(ChiefAgentAction::GiveTodo {todo:"not-a-todo".into(),session:"ses_worker".into(),reason:"Ready".into()}.validate().is_err());
+}
+
+#[test]
 fn start_session_names_one_todo_id_its_project_folder_and_a_short_reason() {
     let start = |todo: &str, project: &str, reason: &str| serde_json::from_value::<ChiefAgentAction>(json!({"action":"start_session","todo":todo,"project":project,"reason":reason})).unwrap();
     assert!(start("aa919cfe", "agent-cockpit", "Theo needs it today.").validate().is_ok());
