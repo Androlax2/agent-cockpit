@@ -15,21 +15,24 @@ pub struct Watched {
     pub role: &'static str,
     /// The process name as /proc/<pid>/comm shows it (15 characters at most).
     pub comm: &'static str,
+    /// Share of one core, or None: greyproxy's CPU follows the agents' own traffic, so freezing
+    /// them only hid it (its first trip on 2026-10-27 was that).
+    pub cpu_limit_percent: Option<f64>,
     pub rss_limit_kb: u64,
 }
 
 const GIB_KB: u64 = 1024 * 1024;
 
+/// osd sat at 30-45% of a core during the storm and near 6% after its fixes.
 pub const WATCHED: &[Watched] = &[
-    Watched { role: "osd", comm: "osd", rss_limit_kb: 3 * GIB_KB / 2 },
-    Watched { role: "sidebar", comm: "cockpit-sidebar", rss_limit_kb: 3 * GIB_KB / 2 },
-    Watched { role: "greyproxy", comm: "greyproxy", rss_limit_kb: 3 * GIB_KB },
+    Watched { role: "osd", comm: "osd", cpu_limit_percent: Some(50.0), rss_limit_kb: 3 * GIB_KB / 2 },
+    Watched { role: "sidebar", comm: "cockpit-sidebar", cpu_limit_percent: Some(50.0), rss_limit_kb: 3 * GIB_KB / 2 },
+    Watched { role: "greyproxy", comm: "greyproxy", cpu_limit_percent: None, rss_limit_kb: 3 * GIB_KB },
 ];
 
-/// Share of one core; osd sat at 30-45% during the storm and near 6% after its fixes.
-pub const CPU_LIMIT_PERCENT: f64 = 50.0;
-/// Over a limit for this many checks in a row (a minute apart) before anything is frozen.
-pub const SUSTAINED_CHECKS: usize = 3;
+/// Over a limit for this long, in real time, before anything is frozen: counted in seconds, not
+/// checks, since a check run by hand between two timer runs must not shorten it.
+pub const SUSTAINED_S: i64 = 180;
 /// A leak: memory grown by LEAK_STEP or more at each of this many checks in a row.
 pub const LEAK_GROWTHS: usize = 10;
 pub const LEAK_STEP: f64 = 1.10;
@@ -129,14 +132,18 @@ fn cpu_percent(before: &Sample, after: &Sample) -> Option<f64> {
 
 /// Why a process has been over its limits long enough to act, or None.
 pub fn over_limit(history: &[Sample], watched: &Watched) -> Option<String> {
-    let recent_cpu: Vec<f64> = history.windows(2).rev().take(SUSTAINED_CHECKS).filter_map(|pair| cpu_percent(&pair[0], &pair[1])).collect();
-    if recent_cpu.len() == SUSTAINED_CHECKS && recent_cpu.iter().all(|percent| *percent > CPU_LIMIT_PERCENT) {
-        let lowest = recent_cpu.iter().copied().fold(f64::INFINITY, f64::min);
-        return Some(format!("CPU at {lowest:.0}% or more of a core for {SUSTAINED_CHECKS} checks (limit {CPU_LIMIT_PERCENT:.0}%)"));
+    let latest = history.last()?;
+    if let Some(limit) = watched.cpu_limit_percent {
+        let busy: Vec<&[Sample]> = history.windows(2).rev()
+            .take_while(|pair| cpu_percent(&pair[0], &pair[1]).is_some_and(|percent| percent > limit)).collect();
+        if busy.last().is_some_and(|earliest| latest.at - earliest[0].at >= SUSTAINED_S) {
+            let lowest = busy.iter().filter_map(|pair| cpu_percent(&pair[0], &pair[1])).fold(f64::INFINITY, f64::min);
+            return Some(format!("CPU at {lowest:.0}% or more of a core for {} minutes (limit {limit:.0}%)", SUSTAINED_S / 60));
+        }
     }
-    let recent_rss: Vec<u64> = history.iter().rev().take(SUSTAINED_CHECKS).map(|sample| sample.rss_kb).collect();
-    if recent_rss.len() == SUSTAINED_CHECKS && recent_rss.iter().all(|rss| *rss > watched.rss_limit_kb) {
-        return Some(format!("memory at {} MiB for {SUSTAINED_CHECKS} checks (limit {} MiB)", history.last()?.rss_kb / 1024, watched.rss_limit_kb / 1024));
+    let heavy_since = history.iter().rev().take_while(|sample| sample.rss_kb > watched.rss_limit_kb).last();
+    if heavy_since.is_some_and(|earliest| latest.at - earliest.at >= SUSTAINED_S) {
+        return Some(format!("memory at {} MiB for {} minutes (limit {} MiB)", latest.rss_kb / 1024, SUSTAINED_S / 60, watched.rss_limit_kb / 1024));
     }
     let growths = history.windows(2).rev().take_while(|pair| pair[1].rss_kb as f64 >= pair[0].rss_kb as f64 * LEAK_STEP).count();
     if growths >= LEAK_GROWTHS {
@@ -149,7 +156,8 @@ pub fn over_limit(history: &[Sample], watched: &Watched) -> Option<String> {
 /// Under every limit at the latest check.
 pub fn is_calm(history: &[Sample], watched: &Watched) -> bool {
     let Some(latest) = history.last() else { return true };
-    let is_cpu_calm = history.len() < 2 || cpu_percent(&history[history.len() - 2], latest).is_none_or(|percent| percent <= CPU_LIMIT_PERCENT);
+    let is_cpu_calm = history.len() < 2 || watched.cpu_limit_percent.is_none_or(|limit|
+        cpu_percent(&history[history.len() - 2], latest).is_none_or(|percent| percent <= limit));
     is_cpu_calm && latest.rss_kb <= watched.rss_limit_kb
 }
 
@@ -216,10 +224,29 @@ mod tests {
         assert_eq!(over_limit(&busy(6, 10), OSD), None);
     }
 
+    /// The first live trip (2026-10-27): two checks run by hand between timer runs made 70 s of
+    /// samples count as three checks.
     #[test]
-    fn memory_over_the_limit_for_three_checks_trips_it() {
-        let history: Vec<Sample> = (0..3).map(|minute| sample(minute, 0, 1600)).collect();
+    fn checks_seconds_apart_do_not_shorten_the_three_minutes() {
+        let history: Vec<Sample> = [0, 11, 61, 73].iter().map(|&at| Sample { at, pid: "42".into(), cpu_ticks: at as u64 * 95, rss_kb: 0 }).collect();
+        assert_eq!(over_limit(&history, OSD), None);
+    }
+
+    #[test]
+    fn greyproxys_cpu_follows_the_agents_traffic_and_never_trips_it() {
+        assert_eq!(over_limit(&busy(95, 10), &WATCHED[2]), None);
+    }
+
+    #[test]
+    fn memory_over_the_limit_for_three_minutes_trips_it() {
+        let history: Vec<Sample> = (0..=3).map(|minute| sample(minute, 0, 1600)).collect();
         assert!(over_limit(&history, OSD).is_some_and(|reason| reason.starts_with("memory at 1600 MiB")));
+    }
+
+    #[test]
+    fn memory_over_the_limit_for_two_minutes_does_not() {
+        let history: Vec<Sample> = (0..=2).map(|minute| sample(minute, 0, 1600)).collect();
+        assert_eq!(over_limit(&history, OSD), None);
     }
 
     #[test]
