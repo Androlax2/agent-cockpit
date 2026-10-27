@@ -337,12 +337,15 @@ its Notes frame), page `12 Teams & Chief tabs (visual)`, previews 18-19. Ready f
   NEEDS YOU (uncertain deliveries, `y` / `x` / `i`); NOW (what it is deciding or waiting for);
   TODAY (answers, escalations, pauses; `⏎` opens that session, `o` overrules an answer).
 - **Sessions** (frame `3737`): the team block stays (teams are never split) but keeps only role,
-  doing now and age per member, plus `5 team details`. `i` on a team opens 5 with that team
+  doing now and age per member, plus `4 team details`. `i` on a team opens 4 with that team
   selected. **Status** keeps one Chief line pointing to 5 (frame `3803`).
 - Member states: live (blue `●`), asleep (`◌`, dim), gone (red `✕`, with `⏎ re-attach`), planned
   (`○`, dim). Team names are cyan. Selected rows use foreground text on the selection background.
 - Edge states (frame `3973`): no teams, team data unavailable (red, `R retry`, never shown as
   independent sessions), loading, long task names, ended team, Chief off, no chief yet, a quiet day.
+- Data the host does not record yet (when a member joined, restart and membership events, Chief
+  pause history): build the slots and hide them until the data exists. RECENT and TODAY show only
+  events that carry a time today (handoffs, escalations, starts, Chief answers).
 - Not in this round: the phone versions of both tabs.
 
 **Rule conflicts, settled by Theo:**
