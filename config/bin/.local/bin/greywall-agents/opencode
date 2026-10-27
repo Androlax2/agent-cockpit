@@ -5,6 +5,10 @@ agent=opencode
 own_folders="~/.local/share/opencode/** ~/.config/opencode/**"
 # Sessions do not update opencode, for the reason the claude launcher gives for Claude Code.
 export OPENCODE_DISABLE_AUTOUPDATE=1
+# CLI calls from agent tools already have Greywall's namespaces and service context.
+if [ "${GREYWALL_SANDBOX:-}" = 1 ]; then
+    exec "$HOME/.opencode/bin/opencode" "$@"
+fi
 . "$(dirname "$0")/launcher-common.sh"
 greywall_options="--auto-profile --profile opencode $greywall_options"
 

@@ -69,7 +69,7 @@ struct Launch {
 impl Launch {
     fn new() -> Launch {
         let mut sandbox = Sandbox::new();
-        for name in ["CLAUDE_CODE_SESSION_ID", "COCKPIT_OPENCODE_MODEL"] {
+        for name in ["CLAUDE_CODE_SESSION_ID", "COCKPIT_OPENCODE_MODEL", "GREYWALL_SANDBOX"] {
             sandbox.env.insert(name.into(), String::new());
         }
         let project = sandbox.home.join("IdeaProjects/proj-a");
@@ -875,6 +875,44 @@ fn a_project_name_becomes_a_proxy_identity_of_letters_digits_and_dashes() {
     let launch = Launch::new();
     let (started, _) = start_claude_in(&launch, "IdeaProjects/site.v2+beta");
     assert!(started.contains("--proxy-user claude-site-v2-beta "), "{started}");
+}
+
+#[test]
+fn opencode_api_inside_greywall_keeps_the_existing_sandbox_context() {
+    let launch = Launch::new();
+    let path = format!("/api/session/{OPENCODE_SESSION}/model");
+    let model = r#"{"model":{"providerID":"openai","id":"gpt-6.1-sol"}}"#;
+    let arguments = ["api", "--server", "http://127.0.0.1:4096", "post", &path, "--data", model];
+    let config = r#"{"model":"openai/gpt-6.1-sol"}"#;
+    let output = launch.sandbox.command(bin().join("greywall-agents/opencode"), &[
+        ("GREYWALL_SANDBOX", "1"), ("XDG_STATE_HOME", "/tmp/opencode-greywall-state"),
+        ("OPENCODE_CONFIG_CONTENT", config), ("CLAUDE_CODE_SESSION_ID", OPENCODE_SESSION),
+        ("COCKPIT_OPENCODE_MODEL", "invalid-inherited-launch-preference"),
+    ]).args(arguments).current_dir(&launch.project).output().unwrap();
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(launch.opencode_saw("arguments"), arguments);
+    let environment = launch.opencode_saw("environment");
+    for expected in ["GREYWALL_SANDBOX=1", "XDG_STATE_HOME=/tmp/opencode-greywall-state",
+                     &format!("OPENCODE_CONFIG_CONTENT={config}"), &format!("CLAUDE_CODE_SESSION_ID={OPENCODE_SESSION}")] {
+        assert!(environment.iter().any(|line| line == expected), "missing {expected}: {environment:?}");
+    }
+    assert!(launch.sandbox.calls("greywall").is_empty());
+    assert!(launch.sandbox.calls("git-access").is_empty());
+    assert!(launch.sandbox.calls("secret-tool").is_empty());
+    assert!(!launch.sandbox.home.join(".claude/projects").exists());
+    assert!(!launch.sandbox.runtime.join("greywall-agents").exists());
+}
+
+#[test]
+fn opencode_inside_greywall_preserves_cli_failures_without_relaunching() {
+    let launch = Launch::new();
+    write_executable(&launch.sandbox.home.join(".opencode/bin/opencode"),
+        "#!/bin/sh\necho 'fixture API connection failed' >&2\nexit 7\n");
+    let output = launch.sandbox.command(bin().join("greywall-agents/opencode"), &[("GREYWALL_SANDBOX", "1")])
+        .args(["api", "get", "/api/info"]).current_dir(&launch.project).output().unwrap();
+    assert_eq!(output.status.code(), Some(7));
+    assert!(stderr(&output).contains("fixture API connection failed"));
+    assert!(launch.sandbox.calls("greywall").is_empty());
 }
 
 #[test]
