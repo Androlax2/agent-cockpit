@@ -1297,6 +1297,10 @@ sleep_session() { # id
         return 3
     fi
     if ! exit_session "$id"; then
+        if [[ $agent == opencode ]]; then
+            log_event WARN sleep "$project conversation-wide exit failed; its sleep note is retained"
+            return 1
+        fi
         # An exit that finished just before the last-resort kill fails it: the session is gone
         # all the same, and only the note can wake it.
         if [[ -n $target ]] && tmux has-session -t "=$target" 2>/dev/null; then

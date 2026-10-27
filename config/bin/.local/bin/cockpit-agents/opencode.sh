@@ -36,12 +36,12 @@ OPENCODE_LAUNCHER="${COCKPIT_OPENCODE:-$HOME/.local/bin/greywall-agents/opencode
 # Sessions started together (a restore after login) each start a standalone server on opencode's
 # one database, and a loser of that race exits at once ("database is locked"): a failure within
 # 10 s of the start is retried once, after 1 to 3 s; a second failure is reported as any other.
-OPENCODE_EPILOGUE='attempt=1; while :; do started=$(date +%s); "$@" && exit; code=$?; if [ "$code" = 255 ]; then [ "$(tmux show-options -pqv -t "$TMUX_PANE" @opencode_exit_requested 2>/dev/null)" = 1 ] || cockpit log manager WARN "opencode ended by a signal (status 255) in $PWD: a quit, or a crash"; exit 0; fi; if [ "$attempt" = 1 ] && [ $(( $(date +%s) - started )) -lt 10 ]; then attempt=2; cockpit log manager WARN "opencode failed to start (status $code) in $PWD, retrying once"; sleep "$(awk "BEGIN { srand(); printf \"%d\", 1 + rand() * 3 }")"; continue; fi; break; done; cockpit log manager ERROR "opencode exited with status $code in $PWD"; printf "\n  ✗ opencode exited with status %s\n  any key closes this pane " "$code"; read -r _'
+OPENCODE_EPILOGUE='attempt=1; while :; do started=$(date +%s); "$@" && exit; code=$?; if [ "$code" = 255 ]; then [ "$(tmux show-options -pqv -t "$TMUX_PANE" @opencode_exit_requested 2>/dev/null)" = 1 ] || cockpit log manager WARN "opencode ended by a signal (status 255) in $PWD: a quit, or a crash"; exit 0; fi; if [ "$attempt" = 1 ] && [ $(( $(date +%s) - started )) -lt 10 ]; then attempt=2; cockpit log manager WARN "opencode failed to start (status $code) in $PWD, retrying once"; sleep "$(awk "BEGIN { srand(); printf \"%d\", 1 + rand() * 3 }")"; continue; fi; break; done; cockpit log manager ERROR "opencode exited with status $code in $PWD"; tmux set-option -p -t "$TMUX_PANE" @opencode_launch_failed 1 || exit "$code"; printf "\n  ✗ opencode exited with status %s\n  any key closes this pane " "$code"; read -r _'
 
 # The ID is stamped by start_opencode before a plugin can report; a snapshot can lag or name a
 # different pane. Do not use it to authorize either another launch or exit keys.
-opencode_conversation_panes() { # session-id; target<TAB>pane for each live managed copy
-    local inventory target pane dead identity
+opencode_conversation_panes() { # session-id [include-failed]; target<TAB>pane
+    local inventory target pane dead identity failed
     inventory=$(LC_ALL=C tmux list-panes -a -F '#{session_name}	#{pane_id}	#{pane_dead}' 2>&1) || {
         case $inventory in
             'error connecting to '*' (No such file or directory)'|'no server running on '*) return 0 ;;
@@ -55,9 +55,28 @@ opencode_conversation_panes() { # session-id; target<TAB>pane for each live mana
             echo "cockpit: cannot identify managed OpenCode pane $pane" >&2
             return 1
         }
-        [[ $identity == "CLAUDE_CODE_SESSION_ID=$1" ]] && printf '%s\t%s\n' "$target" "$pane"
+        [[ $identity == "CLAUDE_CODE_SESSION_ID=$1" ]] || continue
+        if [[ ${2:-} != include-failed ]]; then
+            failed=$(tmux show-options -pqv -t "$pane" @opencode_launch_failed) || return
+            [[ $failed != 1 ]] || continue
+        fi
+        printf '%s\t%s\n' "$target" "$pane"
     done <<< "$inventory"
     return 0
+}
+
+opencode_require_stopped() { # id [id-only]; reported panes may refuse actions, never authorize keys
+    local alive pane
+    alive=$(timeout --signal=KILL 1s osd liveness "$1" "") || alive=unknown
+    if [[ $alive == none && ${2:-} != id-only ]]; then
+        pane=$(session_field "$1" tmux_pane)
+        if [[ $pane =~ ^%[0-9]+$ ]]; then
+            alive=$(timeout --signal=KILL 1s osd liveness "" "$pane") || alive=unknown
+        fi
+    fi
+    [[ $alive == none ]] && return 0
+    echo "cockpit: OpenCode conversation $1 may still run outside its managed panes; close it there first" >&2
+    return 1
 }
 
 start_opencode() ( # dir session-id model-ref opencode-arguments...
@@ -74,6 +93,7 @@ start_opencode() ( # dir session-id model-ref opencode-arguments...
         printf '%s\n' "${existing%%$'\t'*}"
         return 0
     fi
+    opencode_require_stopped "$session" || return
     name="$OPENCODE_TMUX_PREFIX$(date +%s%N)"
     size=$(detached_size)
     if [[ -n ${COCKPIT_TERMINAL:-} ]]; then
@@ -211,8 +231,8 @@ exit_opencode_conversation() ( # id
     umask 077
     exec 8>"${XDG_RUNTIME_DIR:-/tmp}/cockpit-opencode-session-$id.lock"
     flock 8 || return
-    copies=$(opencode_conversation_panes "$id") || return
-    [[ -n $copies ]] || return 0
+    copies=$(opencode_conversation_panes "$id" include-failed) || return
+    [[ -n $copies ]] || { opencode_require_stopped "$id"; return; }
     while IFS=$'\t' read -r target pane; do
         identity=$(tmux show-environment -t "=$target" CLAUDE_CODE_SESSION_ID) || { failed=1; continue; }
         if [[ $identity != "CLAUDE_CODE_SESSION_ID=$id" ]]; then
@@ -223,11 +243,12 @@ exit_opencode_conversation() ( # id
         thaw_frozen_pane "$pane"
         agent_opencode_exit "$target" "$pane" "$id" || failed=1
     done <<< "$copies"
-    remaining=$(opencode_conversation_panes "$id") || return
+    remaining=$(opencode_conversation_panes "$id" include-failed) || return
     if [[ -n $remaining ]]; then
         echo "cockpit: a managed copy of OpenCode conversation $id is still running" >&2
         return 1
     fi
+    opencode_require_stopped "$id" id-only || return
     return "$failed"
 )
 

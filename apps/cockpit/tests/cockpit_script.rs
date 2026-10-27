@@ -267,7 +267,10 @@ impl Manager {
         sandbox.env.insert("COCKPIT_GREYWALL".into(), sandbox.shims.join("greywall").display().to_string());
         // Claude stays in its pane until SHIM_CLAUDE_EXIT_AFTER keys were sent (by default it never
         // leaves); the pane reading (classify) is the real one.
-        sandbox.shim("osd", &format!(r#"if [[ $1 == liveness ]]; then
+        sandbox.shim("osd", &format!(r#"if [[ $1 == liveness && -n $2 && -z $3 ]]; then
+  echo "${{SHIM_CONVERSATION_LIVENESS:-none}}"
+elif [[ $1 == liveness ]]; then
+  if [[ -f $SHIM_CONVERSATION_PANES ]] && ! awk -F '\t' -v pane="$3" '$2==pane && $4==0 {{found=1}} END {{exit !found}}' "$SHIM_CONVERSATION_PANES"; then echo none;exit 0;fi
   if (( $(grep -c "send-keys" "$SHIM_LOG") < ${{SHIM_CLAUDE_EXIT_AFTER:-99}} )); then echo "by pane"; else echo none; fi
 else exec {} "$@"; fi"#, bin().join("osd").display()));
         let project = sandbox.root.join("proj-a");
@@ -2237,7 +2240,8 @@ fn the_first_show_of_the_day_sweeps_the_clones_in_the_background() {
 
 #[test]
 fn restart_all_without_ids_includes_the_calling_session_and_other_agents() {
-    let manager = Manager::new();
+    let mut manager = Manager::new();
+    manager.with_conversation_panes(&format!("claude-retry-opencode-100\t%5\t{OPENCODE_SESSION}\t0\n"));
     fs::write(&manager.snapshot, json!({"sessions": [
         {"session": SESSION_A, "agent": "claude", "state": "working", "project": "proj-a", "cwd": path_str(&manager.project), "tmux_pane": "%4"},
         {"session": OPENCODE_SESSION, "agent": "opencode", "state": "waiting", "project": "proj-a", "cwd": path_str(&manager.project), "tmux_pane": "%5"}
@@ -3781,6 +3785,10 @@ impl Manager {
         self.sandbox.env.insert("SHIM_CONVERSATION_PANES".into(),path_str(&inventory));
         self.sandbox.shim("tmux-conversations",&format!(r#"
 case $1 in
+  set-option)
+    if [[ $5 == @opencode_launch_failed ]]; then printf '%s\n' "$6" > "$SHIM_CONVERSATION_PANES.failed-$4";exit 0;fi ;;
+  show-options)
+    if [[ $5 == @opencode_launch_failed ]]; then cat "$SHIM_CONVERSATION_PANES.failed-$4" 2>/dev/null || true;exit 0;fi ;;
   has-session)
     target=${{3#=}}
     if [[ $target == claude-retry-opencode-* ]]; then
@@ -3986,6 +3994,66 @@ fn opencode_restore_waits_for_an_in_progress_exit_before_starting() {
     assert_eq!(manager.opencode_starts().len(),1);
 }
 
+#[test]
+fn opencode_live_legacy_launches_are_refused_instead_of_duplicated_or_falsely_exited() {
+    for action in ["resume","exit","restart"] {
+        let mut manager=Manager::new();manager.with_opencode_session("working");manager.with_conversation_panes("");
+        let directory=path_str(&manager.project);
+        let arguments=if action=="resume" {vec![action,directory.as_str(),OPENCODE_SESSION]} else {vec![action,OPENCODE_SESSION]};
+        let result=manager.run(&arguments,&[("SHIM_CONVERSATION_LIVENESS","by id")]);
+        assert!(!result.status.success(),"{action}: {}",stderr(&result));
+        assert!(manager.opencode_starts().is_empty(),"{action}");
+        assert!(manager.tmux_calls("send-keys").is_empty(),"{action}");
+    }
+}
+
+#[test]
+fn opencode_reported_legacy_panes_can_refuse_actions_but_never_receive_exit_keys() {
+    for action in ["resume","exit","restart"] {
+        let manager=Manager::new();manager.with_opencode_session("working");
+        let directory=path_str(&manager.project);
+        let arguments=if action=="resume" {vec![action,directory.as_str(),OPENCODE_SESSION]} else {vec![action,OPENCODE_SESSION]};
+        let result=manager.run(&arguments,&[]);
+        assert!(!result.status.success(),"{action}: {}",stderr(&result));
+        assert!(manager.opencode_starts().is_empty(),"{action}");
+        assert!(manager.tmux_calls("send-keys").is_empty(),"{action}");
+    }
+}
+
+#[test]
+fn opencode_unknown_process_liveness_refuses_launch_and_exit() {
+    for action in ["restore","exit"] {
+        let mut manager=Manager::new();manager.with_conversation_panes("");
+        let directory=path_str(&manager.project);
+        let arguments=if action=="restore" {vec![action,directory.as_str(),OPENCODE_SESSION]} else {vec![action,OPENCODE_SESSION]};
+        let result=manager.run(&arguments,&[("SHIM_CONVERSATION_LIVENESS","unknown")]);
+        assert!(!result.status.success(),"{action}: {}",stderr(&result));
+        assert!(manager.opencode_starts().is_empty(),"{action}");
+        assert!(manager.tmux_calls("send-keys").is_empty(),"{action}");
+    }
+}
+
+#[test]
+fn opencode_exit_includes_the_error_pane_after_a_final_launch_failure() {
+    let mut manager=Manager::new();
+    manager.with_conversation_panes(&format!("claude-retry-opencode-100\t%81\t{OPENCODE_SESSION}\t0\n"));
+    fs::write(manager.runtime_file("conversation-panes.failed-%81"),"1").unwrap();
+    let result=manager.run(&["exit",OPENCODE_SESSION],&[]);
+    assert!(result.status.success(),"{}",stderr(&result));
+    assert!(manager.tmux_calls("send-keys").iter().any(|call|call=="tmux send-keys -t %81 Escape Escape"));
+}
+
+#[test]
+fn opencode_sleep_never_claims_success_when_another_managed_copy_survives() {
+    let mut manager=Manager::new();
+    manager.with_idle_session_row(json!({"session":OPENCODE_SESSION,"agent":"opencode","tmux_pane":"%81"}));
+    manager.with_processes("4242 1 sh\n5000 4242 opencode");
+    manager.with_conversation_panes(&format!("claude-retry-opencode-100\t%81\t{OPENCODE_SESSION}\t0\nclaude-retry-opencode-200\t%91\t{OPENCODE_SESSION}\t0\n"));
+    let result=manager.sleep_with(OPENCODE_SESSION,&[("SHIM_PANE_TEXT","done\n┃  \n"),("SHIM_CURSOR","3 1"),("SHIM_EXIT_FAIL_PANE","%91")]);
+    assert!(!result.status.success(),"{}",stderr(&result));
+    assert!(!manager.log_lines().iter().any(|line|line.contains(" asleep after ")));
+}
+
 /// The launcher a start runs, as the fake tmux logs it.
 fn opencode_launcher(manager: &Manager) -> String {
     path_str(&manager.sandbox.home.join(".local/bin/greywall-agents/opencode"))
@@ -4150,12 +4218,17 @@ exit "$SHIM_OPENCODE_STATUS"
 /// Restores several opencode sessions at once; each standalone server opens opencode's database
 /// and a loser of that race exits 1 at once ("database is locked"). The start is retried once.
 fn run_opencode_start(failures: u32, seconds_per_run: u32) -> (Manager, Vec<String>, String) {
-    let manager = Manager::new();
-    manager.with_opencode_session("waiting");
+    let mut manager = Manager::new();manager.with_conversation_panes("");
     manager.sandbox.shim("tmux", &format!(r#"
 case $1 in
   new-session)
-    while [[ $1 != env ]]; do shift; done
+    name= id=
+    while [[ $1 != env ]]; do
+      case $1 in -s) name=$2;shift ;; -e) id=${{2#CLAUDE_CODE_SESSION_ID=}};shift ;; esac
+      shift
+    done
+    printf '%s\t%%5\t%s\t0\n' "$name" "$id" > "$SHIM_CONVERSATION_PANES"
+    rm -f "$SHIM_CONVERSATION_PANES.failed-%5"
     env TMUX_PANE=%5 "$@" > "$SHIM_EPILOGUE_OUTPUT" 2>&1 < /dev/null
     exit 0 ;;
 esac
@@ -4168,14 +4241,15 @@ echo $(( $(cat "$SHIM_CLOCK" 2>/dev/null || echo 1000) + SHIM_SECONDS )) > "$SHI
 (( runs > SHIM_FAILURES )) || exit 1
 "#);
     let output_file = manager.sandbox.root.join("epilogue-output");
-    let result = manager.run(&["restore", &path_str(&manager.project), OPENCODE_SESSION], &[
+    for (name,value) in [
         ("COCKPIT_OPENCODE", &path_str(&manager.sandbox.shims.join("opencode-launcher"))),
         ("SHIM_EPILOGUE_OUTPUT", &path_str(&output_file)),
         ("SHIM_RUNS", &path_str(&manager.sandbox.root.join("runs"))),
         ("SHIM_CLOCK", &path_str(&manager.sandbox.root.join("clock"))),
         ("SHIM_FAILURES", &failures.to_string()),
         ("SHIM_SECONDS", &seconds_per_run.to_string()),
-    ]);
+    ] { manager.sandbox.env.insert(name.into(),value.clone()); }
+    let result = manager.run(&["restore", &path_str(&manager.project), OPENCODE_SESSION], &[]);
     assert!(result.status.success(), "{}", stderr(&result));
     let runs = manager.calls("opencode-launcher");
     let screen = fs::read_to_string(output_file).unwrap_or_default();
@@ -4200,6 +4274,16 @@ fn an_opencode_start_failing_twice_is_reported_once() {
     let log = manager.log_lines().join("\n");
     assert_eq!(log.matches("ERROR manager: opencode exited with status 1").count(), 1, "{log}");
     assert!(screen.contains("any key closes this pane"), "{screen}");
+}
+
+#[test]
+fn opencode_resume_starts_again_after_the_final_startup_failure() {
+    let (manager,runs,_)=run_opencode_start(2,1);
+    assert_eq!(runs.len(),2);
+    let resumed=manager.run(&["resume",&path_str(&manager.project),OPENCODE_SESSION],&[]);
+    assert!(resumed.status.success(),"{}",stderr(&resumed));
+    assert_eq!(manager.opencode_starts().len(),2);
+    assert_eq!(manager.calls("opencode-launcher").len(),3);
 }
 
 #[test]
@@ -5078,8 +5162,11 @@ impl Manager {
 #[test]
 fn team_restart_relaunches_with_the_hosts_restart_permit() {
     for (id, agent, detached) in [(SESSION_A, "claude", ""), (SESSION_A, "claude", "detached"), (OPENCODE_SESSION, "opencode", "detached")] {
-        let manager = Manager::new();
-        if agent == "opencode" { manager.with_opencode_session("waiting"); }
+        let mut manager = Manager::new();
+        if agent == "opencode" {
+            manager.with_opencode_session("waiting");
+            manager.with_conversation_panes(&format!("claude-retry-opencode-100\t%5\t{OPENCODE_SESSION}\t0\n"));
+        }
         manager.grant_restart_permit();
         let output = manager.run(&["restart", id, "", detached], &[("SHIM_PANE_TEXT", IDLE), ("SHIM_EXIT_AFTER", "1"), ("SHIM_CLAUDE_EXIT_AFTER", "1")]);
         assert!(output.status.success(), "{agent} {detached}: {}", stderr(&output));
@@ -5329,7 +5416,8 @@ fn sleep_keeps_a_claude_session_with_no_conversation() {
 
 #[test]
 fn sleep_puts_an_opencode_session_to_sleep() {
-    let manager = Manager::new();
+    let mut manager = Manager::new();
+    manager.with_conversation_panes(&format!("claude-retry-opencode-100\t%5\t{OPENCODE_SESSION}\t0\n"));
     manager.with_processes("  4242     1 fish\n  5000  4242 opencode");
     fs::write(&manager.snapshot, json!({"sessions": [{"session": OPENCODE_SESSION, "state": "waiting", "project": "proj-a", "cwd": path_str(&manager.project),
         "tmux_pane": "%5", "agent": "opencode", "task": "Port it", "since": SLEEP_SINCE}]}).to_string()).unwrap();
@@ -5848,7 +5936,8 @@ impl Manager {
 
 #[test]
 fn sleep_puts_an_idle_opencode_sandbox_to_sleep() {
-    let manager = Manager::new();
+    let mut manager = Manager::new();
+    manager.with_conversation_panes(&format!("claude-retry-opencode-100\t%5\t{OPENCODE_SESSION}\t0\n"));
     let result = manager.sleep_opencode_with_processes(OPENCODE_TREE);
     assert_eq!(result.status.code(), Some(0), "{}", stderr(&result));
 }
@@ -5892,7 +5981,8 @@ impl Manager {
 
 #[test]
 fn sleep_reads_a_real_empty_opencode_prompt_as_empty() {
-    let manager = Manager::new();
+    let mut manager = Manager::new();
+    manager.with_conversation_panes(&format!("claude-retry-opencode-100\t%5\t{OPENCODE_SESSION}\t0\n"));
     let result = manager.sleep_opencode_at(&opencode_prompt_screen(""), "5 64");
     assert_eq!(result.status.code(), Some(0), "{}", stderr(&result));
 }
