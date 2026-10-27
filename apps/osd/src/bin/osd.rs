@@ -57,6 +57,29 @@ const REPORT_MAX_BYTES: usize = 1 << 20;
 const REPORT_READERS_MAX: usize = 16;
 /// A FIFO line longer than this is no command: dropped, so a writer cannot grow the buffer forever.
 const FIFO_LINE_MAX: usize = 65_536;
+const LOAD_REPORT_INTERVAL_S: u32 = 60;
+
+thread_local! {
+    static LOAD: RefCell<osd::load::LoadMeter> = RefCell::default();
+}
+
+/// Runs main-thread work and counts its time under `kind` for the minute's load report.
+fn measured<T>(kind: &str, work: impl FnOnce() -> T) -> T {
+    let started = std::time::Instant::now();
+    let result = work();
+    LOAD.with(|meter| meter.borrow_mut().record(kind, started.elapsed()));
+    result
+}
+
+fn report_load() {
+    let elapsed = Duration::from_secs(LOAD_REPORT_INTERVAL_S.into());
+    LOAD.with(|meter| {
+        let mut meter = meter.borrow_mut();
+        let level = if meter.busy_percent(elapsed) > osd::load::BUSY_WARN_PERCENT { "WARN" } else { "INFO" };
+        cockpit::util::log_as("daemon", level, &meter.summary(elapsed));
+        meter.clear();
+    });
+}
 
 fn icon_dir() -> PathBuf {
     cockpit::paths::home().join(".config/waybar/icons")
@@ -391,7 +414,7 @@ fn handle_connection(received: Received, registry: &Rc<RefCell<Registry>>) {
 
 fn listen_for_reports(registry: &Rc<RefCell<Registry>>) {
     match report_listener() {
-        Ok(listener) => serve(listener, registry, REPORT_MAX_BYTES, handle_connection),
+        Ok(listener) => serve(listener, "report", registry, REPORT_MAX_BYTES, handle_connection),
         Err(error) => eprintln!("osd: no report socket: {error}"),
     }
 }
@@ -428,7 +451,7 @@ fn listen_for_team_host(registry: &Rc<RefCell<Registry>>) {
     let path = cockpit::paths::team_host_socket();
     let _ = std::fs::remove_file(&path);
     match std::os::unix::net::UnixListener::bind(&path) {
-        Ok(listener) => serve(listener, registry, 65_536, handle_team_host_connection),
+        Ok(listener) => serve(listener, "host", registry, 65_536, handle_team_host_connection),
         Err(error) => eprintln!("osd: no team host socket, team approvals unavailable: {error}"),
     }
 }
@@ -458,10 +481,10 @@ fn listen_for_teams(registry: &Rc<RefCell<Registry>>) {
             eprintln!("osd: team socket not linked into {}: {error}", project.path().display());
         }
     }
-    serve(listener, registry, cockpit::teams::client::REQUEST_MAX, handle_team_connection);
+    serve(listener, "team", registry, cockpit::teams::client::REQUEST_MAX, handle_team_connection);
 }
 
-fn serve(listener: std::os::unix::net::UnixListener, registry: &Rc<RefCell<Registry>>, max_bytes: usize, handler: fn(Received, &Rc<RefCell<Registry>>)) {
+fn serve(listener: std::os::unix::net::UnixListener, label: &'static str, registry: &Rc<RefCell<Registry>>, max_bytes: usize, handler: fn(Received, &Rc<RefCell<Registry>>)) {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
     let _ = listener.set_nonblocking(true);
@@ -512,7 +535,8 @@ fn serve(listener: std::os::unix::net::UnixListener, registry: &Rc<RefCell<Regis
         while (&wake_reader).read(&mut drained).is_ok_and(|count| count > 0) {}
         let ready: Vec<Received> = std::mem::take(&mut *finished.lock().unwrap());
         for received in ready {
-            handler(received, &registry);
+            let kind = format!("{label}:{}", osd::load::kind_of(&received.text));
+            measured(&kind, || handler(received, &registry));
         }
         glib::ControlFlow::Continue
     });
@@ -536,12 +560,16 @@ fn activate(app: &Application) {
     {
         let registry = registry.clone();
         glib::timeout_add_seconds_local(1, move || {
-            registry.borrow_mut().tick_queues();
+            measured("tick", || registry.borrow_mut().tick_queues());
             glib::ControlFlow::Continue
         });
     }
     glib::timeout_add_seconds_local(registry::PRUNE_INTERVAL_S, move || {
-        registry.borrow_mut().prune_dead();
+        measured("prune", || registry.borrow_mut().prune_dead());
+        glib::ControlFlow::Continue
+    });
+    glib::timeout_add_seconds_local(LOAD_REPORT_INTERVAL_S, || {
+        report_load();
         glib::ControlFlow::Continue
     });
 }
