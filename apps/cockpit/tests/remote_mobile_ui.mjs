@@ -288,6 +288,22 @@ const tests = {
     assert.equal(page.button(page.roots.chief, "Send").disabled, false);
   },
 
+  async "a typed phone answer survives its question changing"() {
+    const page = await startPage({ sessions: SESSIONS, chief: inboxChief() });
+    page.run('openInbox()'); await settle();
+    page.button(page.roots.chief, "Write my own").onclick(); await settle();
+    const input = page.roots.chief.querySelector(".chief-input"); input.value = "My long answer"; input.oninput();
+    page.server.chief.escalations[0].revision = 4;
+    await page.run("refresh()"); await settle();
+    const text = page.roots.chief.textContent;
+    assert.ok(text.includes("The question changed; your draft is kept below.") && text.includes("My long answer"), text);
+    page.button(page.roots.chief, "Write my own").onclick(); await settle();
+    assert.equal(page.roots.chief.querySelector(".chief-input").value, "My long answer");
+    await page.button(page.roots.chief, "Send").onclick(); await page.button(page.roots.chief, "Tap again to send").onclick(); await settle();
+    const post = page.server.posts.find(post => post.path === "/api/chief");
+    assert.deepEqual([post.body.action.answer, post.body.action.expected_revision], ["My long answer", 4]);
+  },
+
   async "Chief escalations are session scoped and submit the exact suggestion once"() {
     const chief = { status: "Active", counts: [], answers: [], habits: [], escalations: [
       { id: "d1", revision: 4, session_id: "s1", category: "security", question: "Rotate token?", recommendation: "Security needs you.", suggested_answer: "Rotate it." },

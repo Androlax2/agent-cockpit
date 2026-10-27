@@ -1714,3 +1714,37 @@ fn a_definite_refusal_says_nothing_was_sent() {
     let card = rendered(&mut app, 100, 40);
     assert!(card.contains("decision revision is stale") && card.contains("Nothing was sent.") && !card.contains("may have arrived"), "{card}");
 }
+
+#[test]
+fn a_typed_answer_survives_its_question_changing() {
+    let host = inbox_host(vec![inbox_question("decision-a", 3, Some("Go on."))]);
+    let (mut app, mut screen) = host.open();
+    app.handle(Key::Char('w'), &mut screen);
+    app.handle(Key::Paste("Wait, I'll restart osd myself.".into()), &mut screen);
+    let mut changed = inbox_question("decision-a", 4, Some("Go on."));
+    changed["recommendation"] = json!("The guide closed; osd can restart now.");
+    host.snapshot.lock().unwrap()["records"] = json!([changed]);
+    app.handle(Key::Ctrl('s'), &mut screen);
+    assert!(host.mutations().is_empty(), "the old revision is never sent");
+    let card = rendered(&mut app, 100, 40);
+    assert!(card.contains("The question changed; your draft is kept below.") && card.contains("osd can restart now")
+        && card.contains("Wait, I'll restart osd myself."), "{card}");
+    app.handle(Key::Char('w'), &mut screen);
+    app.handle(Key::Ctrl('s'), &mut screen);
+    let sent = &host.mutations()[0]["action"];
+    assert_eq!((&sent["answer"], &sent["expected_revision"]), (&json!("Wait, I'll restart osd myself."), &json!(4)));
+}
+
+#[test]
+fn leaving_write_my_own_keeps_the_draft_for_later() {
+    let host = inbox_host(vec![inbox_question("decision-a", 3, Some("Go on."))]);
+    let (mut app, mut screen) = host.open();
+    app.handle(Key::Char('w'), &mut screen);
+    app.handle(Key::Paste("Half an answer".into()), &mut screen);
+    app.handle(Key::Esc, &mut screen);
+    assert!(rendered(&mut app, 100, 40).contains("Half an answer"));
+    app.handle(Key::Char('w'), &mut screen);
+    app.handle(Key::Paste(", finished.".into()), &mut screen);
+    app.handle(Key::Ctrl('s'), &mut screen);
+    assert_eq!(host.mutations()[0]["action"]["answer"], "Half an answer, finished.");
+}

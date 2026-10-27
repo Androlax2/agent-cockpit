@@ -85,13 +85,15 @@ pub struct Inbox {
     notice: Option<String>,
     /// Theo's own ticks per question, kept until it is answered or gone.
     done: HashMap<String, usize>,
+    /// What Theo typed for each question: never dropped because the question changed.
+    drafts: HashMap<String, String>,
 }
 
 const ANSWER_LIMIT: usize = 4000;
 
 impl Inbox {
     pub fn new(snapshot: &Value, now_ms: i64) -> Self {
-        let mut inbox=Self {decision:None,read_revision:None,stage:Stage::Empty,notice:None,done:HashMap::new()};
+        let mut inbox=Self {decision:None,read_revision:None,stage:Stage::Empty,notice:None,done:HashMap::new(),drafts:HashMap::new()};
         inbox.show_first(snapshot,now_ms);
         inbox
     }
@@ -105,6 +107,8 @@ impl Inbox {
         let id=self.decision.as_deref()?;
         snapshot["records"].as_array()?.iter().find(|record|record["kind"]=="decision" && record["id"].as_str()==Some(id))
     }
+    fn draft(&self) -> Option<&String> { self.decision.as_ref().and_then(|id|self.drafts.get(id)).filter(|text|!text.trim().is_empty()) }
+    fn keep_draft(&mut self, text: &str) { if let Some(id)=&self.decision {self.drafts.insert(id.clone(),text.to_string());} }
     fn done_count(&self) -> usize { self.decision.as_ref().and_then(|id|self.done.get(id)).copied().unwrap_or(0) }
 
     /// The host's view changed: a question answered elsewhere or changed sends Theo back to read.
@@ -117,7 +121,7 @@ impl Inbox {
             Some(record) if record["state"]=="open"=>{
                 if let Some(id)=&self.decision {self.done.remove(id);}
                 self.read_revision=record["revision"].as_i64();self.stage=Stage::Question;
-                self.notice=Some("This question changed. Read it again.".into());
+                self.notice=Some(if self.draft().is_some() {"The question changed; your draft is kept below."} else {"This question changed. Read it again."}.into());
             },
             _=>{
                 if let Some(id)=self.decision.take() {self.done.remove(&id);}
@@ -129,7 +133,7 @@ impl Inbox {
     /// The host recorded the answer.
     pub fn sent(&mut self, snapshot: &Value) {
         let to=self.current(snapshot).map(|record|place_text(&place(snapshot,record))).unwrap_or_default();
-        if let Some(id)=&self.decision {self.done.remove(id);}
+        if let Some(id)=&self.decision {self.done.remove(id);self.drafts.remove(id);}
         self.stage=Stage::Sent {to};self.notice=None;
     }
     /// The question is put off: show the next one, or nothing.
@@ -163,7 +167,7 @@ impl Inbox {
         match self.stage.clone() {
             Stage::Question=>match (key,record) {
                 (Key::Char('a'),Some(_)) if !steps.is_empty()=>self.stage=Stage::Step,
-                (Key::Char('w'),Some(_))=>self.stage=Stage::Write {text:String::new(),from_last:false},
+                (Key::Char('w'),Some(_))=>self.stage=Stage::Write {text:self.draft().cloned().unwrap_or_default(),from_last:false},
                 (Key::Char('l'),Some(record))=>return Outcome::Later(crate::chief::ChiefHostAction::LaterDecision {
                     request_id:format!("chief-ui-{}",crate::util::token_hex(12)),decision:record["id"].as_str().unwrap_or("").into(),
                     expected_revision:self.read_revision.unwrap_or(0)}),
@@ -189,11 +193,12 @@ impl Inbox {
                     let action=self.answer(&record,text);
                     match action.validate() {Ok(())=>return Outcome::Send(action),Err(error)=>self.notice=Some(error.message)}
                 },
-                Key::Char(character) if !character.is_control()=>{if text.chars().count()<ANSWER_LIMIT {text.push(character);} self.stage=Stage::Write {text,from_last};},
-                Key::Paste(paste)=>{for character in paste.chars().filter(|character|*character=='\n' || !character.is_control()) {if text.chars().count()<ANSWER_LIMIT {text.push(character);}} self.stage=Stage::Write {text,from_last};},
-                Key::Enter=>{if text.chars().count()<ANSWER_LIMIT {text.push('\n');} self.stage=Stage::Write {text,from_last};},
-                Key::Backspace=>{text.pop();self.stage=Stage::Write {text,from_last};},
-                Key::Esc=>self.stage=if from_last {Stage::Step} else {Stage::Question},
+                Key::Char(character) if !character.is_control()=>{if text.chars().count()<ANSWER_LIMIT {text.push(character);} self.keep_draft(&text);self.stage=Stage::Write {text,from_last};},
+                Key::Paste(paste)=>{for character in paste.chars().filter(|character|*character=='\n' || !character.is_control()) {if text.chars().count()<ANSWER_LIMIT {text.push(character);}} self.keep_draft(&text);self.stage=Stage::Write {text,from_last};},
+                Key::Enter=>{if text.chars().count()<ANSWER_LIMIT {text.push('\n');} self.keep_draft(&text);self.stage=Stage::Write {text,from_last};},
+                Key::Backspace=>{text.pop();self.keep_draft(&text);self.stage=Stage::Write {text,from_last};},
+                // Esc from edit first returns to the message unchanged; Esc from write my own keeps the draft.
+                Key::Esc=>{if from_last {if let Some(id)=&self.decision {self.drafts.remove(id);}} self.stage=if from_last {Stage::Step} else {Stage::Question};},
                 _=>{},
             },
             Stage::Sent {..}=>match key {
@@ -279,8 +284,13 @@ impl Inbox {
                     for (index,step) in steps.iter().enumerate() {lines.push(Line::Text(vec![(format!("{}  {}",index+1,step.text),Ink::Normal)]));}
                     keys.push(("a".into(),"do this, step by step".into(),true));
                 }
+                if let Some(draft)=self.draft() {
+                    lines.push(Line::Blank);
+                    lines.push(Line::Text(vec![("YOUR DRAFT".into(),Ink::Heading)]));
+                    for line in escape_hiding(draft,"","").split('\n') {lines.push(Line::Text(vec![(line.to_string(),Ink::Current)]));}
+                }
                 lines.push(Line::Blank);
-                keys.extend([("w".into(),"write my own".into(),false),("l".into(),"later".into(),false),("i".into(),"full details".into(),false)]);
+                keys.extend([("w".into(),if self.draft().is_some() {"continue my answer"} else {"write my own"}.into(),false),("l".into(),"later".into(),false),("i".into(),"full details".into(),false)]);
                 lines.push(Line::Keys(keys));
                 lines.push(Line::Blank);
                 lines.push(Line::Text(vec![("Written by the Chief: check it before acting.".into(),Ink::Dim)]));

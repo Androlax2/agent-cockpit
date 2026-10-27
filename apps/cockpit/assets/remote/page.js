@@ -152,6 +152,7 @@ function chiefEscalation(record) {
 
 // ---- The Chief inbox (DESIGN.md "Chief inbox", frame 3238): one question at a time, step by step ----
 let inbox = null; // { decision, revision, stage, done: {id: n}, text, fromLast, sentTo, notice, armed }
+const inboxDrafts = new Map(); // what Theo typed per question: never dropped because the question changed
 
 function inboxSteps(record) {
   const clean = value => typeof value === "string" && value.trim() ? value.trim() : null;
@@ -204,7 +205,10 @@ function inboxCheck() {
   if (!current) { delete inbox.done[inbox.decision]; inboxShowFirst("That question was answered or withdrawn elsewhere."); return; }
   if (current.revision !== inbox.revision) {
     delete inbox.done[inbox.decision];
-    Object.assign(inbox, { revision: current.revision, stage: "question", notice: "This question changed. Read it again.", armed: false });
+    if (inbox.stage === "write" && inbox.text.trim()) inboxDrafts.set(inbox.decision, inbox.text);
+    const kept = inboxDrafts.get(inbox.decision)?.trim();
+    Object.assign(inbox, { revision: current.revision, stage: "question", armed: false,
+      notice: kept ? "The question changed; your draft is kept below." : "This question changed. Read it again." });
   }
 }
 
@@ -232,7 +236,7 @@ function inboxSendButton(label, record, answer) {
     const to = inboxPlace(record);
     try {
       await inboxPost({ action: "answer_decision", decision: record.id, expected_revision: inbox.revision, answer }, record,
-        () => { delete inbox.done[record.id]; Object.assign(inbox, { stage: "sent", sentTo: to.project ? `${to.project} › ${to.task}` : to.task, notice: "" }); });
+        () => { delete inbox.done[record.id]; inboxDrafts.delete(record.id); Object.assign(inbox, { stage: "sent", sentTo: to.project ? `${to.project} › ${to.task}` : to.task, notice: "" }); });
     } finally { inbox.sending = false; }
   };
   return send;
@@ -298,7 +302,9 @@ function renderInbox(box) {
       const start = element("button", "chief-use", "Do this, step by step"); start.onclick = () => inboxGo({ stage: "step" });
       card.append(start);
     }
-    const own = element("button", "chief-own", "Write my own"); own.onclick = () => inboxGo({ stage: "write", text: "", fromLast: false });
+    const draft = inboxDrafts.get(record.id) || "";
+    if (draft.trim()) card.append(element("p", "chief-heading", "Your draft"), element("p", "message-text chief-current", draft));
+    const own = element("button", "chief-own", "Write my own"); own.onclick = () => inboxGo({ stage: "write", text: draft, fromLast: false });
     const later = element("button", "chief-own", "Later");
     later.onclick = () => inboxPost({ action: "later_decision", decision: record.id, expected_revision: inbox.revision }, record, () => inboxShowFirst());
     const details = element("button", "chief-details", "Full details ›");
@@ -330,7 +336,7 @@ function renderInbox(box) {
   const input = element("textarea", "chief-input"); input.maxLength = 4000; input.value = inbox.text;
   const buttons = element("div", "buttons");
   const update = () => buttons.replaceChildren(inboxSendButton("Send", record, input.value));
-  input.oninput = () => { inbox.text = input.value; inbox.armed = false; update(); };
+  input.oninput = () => { inbox.text = input.value; inbox.armed = false; if (!inbox.fromLast) inboxDrafts.set(record.id, input.value); update(); };
   input.onkeydown = event => { if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) event.preventDefault(); };
   const place = inboxPlace(record);
   card.append(labelControl("Your answer", input), element("p", "note", `Goes to ${place.project ? `${place.project} › ${place.task}` : place.task}, exactly as written.`));
