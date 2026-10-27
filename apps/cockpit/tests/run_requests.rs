@@ -370,6 +370,30 @@ fn an_approved_command_reaches_the_running_hyprland_when_the_approval_terminal_h
 }
 
 #[test]
+fn approved_commands_inherit_the_approval_id() {
+    let fixture = Approve::new();
+    fixture.sandbox.shim("script", r#"printf 'approval id: %s\n' "${COCKPIT_APPROVAL_ID:-missing}" > "$3""#);
+    let request_id = fixture.file_default();
+    fixture.approve(&request_id, "y\n");
+    assert_eq!(fixture.result(&request_id).unwrap()["output"], format!("approval id: {request_id}"));
+}
+
+#[test]
+fn pairing_credentials_are_redacted_from_approval_results() {
+    let fixture = Approve::new();
+    fixture.sandbox.shim("script", r#"printf '%s\n' 'https://fixture.invalid/pair/0123456789abcdef0123456789abcdef' 'Or type this code in the Home Screen app within 2 minutes: 123 456' > "$3""#);
+    let request_id = fixture.file_default();
+    fixture.approve(&request_id, "y\n");
+    let result = fixture.result(&request_id).unwrap();
+    let output = result["output"].as_str().unwrap();
+    assert!(!output.contains("0123456789abcdef"), "{output}");
+    assert!(!output.contains("123 456"), "{output}");
+    assert_eq!(result["redacted"], 2);
+    let output_file = result["output_file"].as_str().unwrap();
+    assert_eq!(fs::read_to_string(output_file).unwrap(), output);
+}
+
+#[test]
 fn secrets_in_the_output_are_redacted_before_they_go_back() {
     let fixture = Approve::new();
     // The fake `script` prints what it ran: a command that echoes a token stands for one that prints it.

@@ -506,6 +506,7 @@ pub fn run(command: &str, cwd: &str, log_path: &Path, request: Option<&str>) -> 
     // run could differ.
     let mut command_line = Command::new("script");
     command_line.args(["-qfec", &inner]).arg(log_path).env("SHELL", "/bin/sh")
+        .env("COCKPIT_APPROVAL_ID", request.unwrap_or("guide"))
         // A progress bar redraws one line without ending it, which reads as a command waiting for
         // an answer (waits_for_input): builds print plain lines here.
         .env("CARGO_TERM_PROGRESS_WHEN", "never")
@@ -616,6 +617,7 @@ pub fn recorded_output(log_path: &Path) -> String {
 /// a password, secret, token or key. Matched values become [redacted]; names and the rest stay, so
 /// Claude still sees what happened.
 static SECRET_SHAPES: LazyLock<Vec<Regex>> = LazyLock::new(|| [
+    r"/pair/[0-9a-fA-F]{32}\b",
     r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----[\s\S]*?(?:-----END [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----|\z)",
     r"\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}",
     r"\bwhsec_[A-Za-z0-9+/=]{16,}",
@@ -635,6 +637,7 @@ static SECRET_SHAPES: LazyLock<Vec<Regex>> = LazyLock::new(|| [
 /// The value after a name that says it is secret, or after an Authorization scheme, or the
 /// password in scheme://user:password@host.
 static SECRET_VALUES: LazyLock<Vec<Regex>> = LazyLock::new(|| [
+    r"(?im)(Or type this code in the Home Screen app within [0-9]+ minutes:[ \t]*)[0-9]{3}[ \t]*[0-9]{3}\b",
     r#"(?i)((?:authorization|proxy-authorization)\s*:\s*(?:bearer|basic|token)\s+)[^\s"']+"#,
     r#"(?i)((?:set-)?cookie\s*:\s*)[^\n]+"#,
     // JSON: a quoted secret value may hold spaces ("token": "…", Docker's "auth": "…").

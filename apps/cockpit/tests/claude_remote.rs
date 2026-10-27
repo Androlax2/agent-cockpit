@@ -241,6 +241,20 @@ fn an_unpaired_phone_loads_the_page_itself_to_paste_a_code() {
 }
 
 #[test]
+fn pairing_from_an_approval_is_refused_without_replacing_the_existing_code() {
+    let remote = Remote::start();
+    let original_code = remote.pairing_code();
+    for name in ["claude-remote", "cockpit-remote"] {
+        let output = remote.sandbox.run(bin().join(name), &["pair"], &[("COCKPIT_APPROVAL_ID", "0123456789ab")]);
+        assert_eq!(output.status.code(), Some(1), "{}", stdout(&output));
+        assert!(stderr(&output).contains("Pair a phone"), "{}", stderr(&output));
+        assert!(!stdout(&output).contains("/pair/"));
+    }
+    let (status, _, _) = remote.request("GET", &format!("/pair/{original_code}"), None, None, false);
+    assert_eq!(status, 303);
+}
+
+#[test]
 fn a_pairing_link_works_once() {
     let remote = Remote::start();
     let code = remote.pairing_code();

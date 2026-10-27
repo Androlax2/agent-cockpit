@@ -67,6 +67,11 @@ pub(crate) fn read_private(name: &str) -> Value {
 /// Also a 6-digit code for typing into the Home Screen app (scanned links open in Safari, which
 /// keeps cookies apart from it): valid 2 minutes, and 5 wrong tries cancel it.
 pub fn new_pairing_code(name: &str) -> std::io::Result<(String, String)> {
+    // Approval output goes back to the agent; a pairing code would give it approval authority.
+    if std::env::var_os("COCKPIT_APPROVAL_ID").is_some() {
+        return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied,
+            "Pair a phone from the cockpit or your own terminal, not through ask-to-run or a guide: pairing credentials must not reach the agent."));
+    }
     let code = util::token_hex(16);
     let digits = format!("{:06}", u32::from_str_radix(&util::token_hex(4), 16).unwrap_or(0) % 1_000_000);
     let now = util::now_secs();
