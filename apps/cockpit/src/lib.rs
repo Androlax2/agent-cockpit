@@ -10,6 +10,7 @@ pub mod costs;
 pub mod continuity;
 pub mod billing;
 pub mod errors;
+pub mod failsafe;
 pub mod paths;
 pub mod prompts;
 pub mod push;

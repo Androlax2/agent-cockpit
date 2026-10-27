@@ -86,6 +86,7 @@ pub fn osd_host_fifo() -> PathBuf { runtime_dir().join("osd-host.fifo") }
 pub fn osd_report_socket() -> PathBuf { cockpit_runtime("cockpit-report", "claude-report").join("osd-report.sock") }
 /// The Claude sessions' scopes game-performance froze for a game, one per line; gone after it.
 pub fn game_frozen() -> PathBuf { runtime_dir().join("game-performance.frozen") }
+pub fn failsafe_state() -> PathBuf { runtime_dir().join("cockpit-failsafe.json") }
 pub fn history() -> PathBuf { from_env("COCKPIT_HISTORY", home().join(".claude/history.jsonl")) }
 pub fn transcripts() -> PathBuf { from_env("COCKPIT_TRANSCRIPTS", home().join(".claude/projects")) }
 /// opencode's sessions and messages ($XDG_DATA_HOME/opencode/opencode.db), which its sandboxes write.

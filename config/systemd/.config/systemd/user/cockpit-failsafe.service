@@ -1,0 +1,8 @@
+[Unit]
+Description=Cockpit failsafe: freeze the agent sessions while osd, the sidebar or greyproxy stays over its limits (~/.local/bin/cockpit-failsafe)
+After=osd.service
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/cockpit-failsafe check
+TimeoutStartSec=2min

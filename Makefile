@@ -48,6 +48,7 @@ after-apply: ## Relink, rebuild and reload when apps/ changed, rebuild greywall 
 	systemctl --user daemon-reload
 	python3 tools/migrate-cockpit-names.py --services
 	@if ! git diff --quiet "$(BEFORE)" HEAD -- apps; then cockpit reload; fi
+	systemctl --user start cockpit-failsafe.timer
 	@if ! git diff --quiet "$(BEFORE)" HEAD -- packages/greywall/build.sh; then $(MAKE) greywall-patch; fi
 	@if ! git diff --quiet "$(BEFORE)" HEAD -- packages/greyproxy/build.sh; then $(MAKE) greyproxy-patch; fi
 	@packages/greywall/check.sh

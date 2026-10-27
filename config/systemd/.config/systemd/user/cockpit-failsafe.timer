@@ -1,0 +1,10 @@
+[Unit]
+Description=Check the cockpit processes once a minute (cockpit-failsafe check)
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target
