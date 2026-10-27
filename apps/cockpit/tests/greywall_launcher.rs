@@ -458,7 +458,7 @@ fn cargo_registry_cache_stays_in_the_sandbox_instead_of_the_host_home() {
         for inherited_cache in ["", "/host/custom-cargo-home"] {
             let launch = Launch::new();
             let started = launch.run_agent(agent, &[("CARGO_HOME", inherited_cache)], &[]);
-            let environment = agent_environment(&launch, agent);
+            let environment = fs::read_to_string(launch.sandbox.home.join(format!("{agent}-environment"))).unwrap();
             assert!(environment.lines().any(|line| line == "CARGO_HOME=/tmp/greywall-cargo"),
                 "{agent} did not redirect Cargo's writable registry (inherited {inherited_cache:?})");
             assert!(!started.contains("--allow-path /tmp/greywall-cargo"), "{started}");
