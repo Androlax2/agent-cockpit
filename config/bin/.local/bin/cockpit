@@ -1230,7 +1230,7 @@ sleep_session() { # id
     if ! permit=$(cockpit-team sleep-prepare "$id" 2>/dev/null) ||
             ! jq -e 'type == "object" and has("token") and (.token == null or (.token | type == "string" and length > 0))' >/dev/null 2>&1 <<< "$permit"; then
         log_event WARN sleep "$project stays awake: team membership preparation unavailable or refused"
-        echo "cockpit: $project stays awake: team membership preparation unavailable or refused" >&2
+        [[ -n ${COCKPIT_LOG_STDERR:-} ]] || echo "cockpit: $project stays awake: team membership preparation unavailable or refused" >&2
         return 3
     fi
     token=$(jq -r '.token // empty' <<< "$permit")
@@ -1273,7 +1273,8 @@ sleep_session() { # id
             cancel_sleep_permit "$id" "$permit"
             log_event WARN sleep "$project vanished before recording; its sleep note is retained"
         fi
-        echo "cockpit: $project stays awake: team sleep recording failed" >&2
+        log_event WARN sleep "$project stays awake: team sleep recording failed"
+        [[ -n ${COCKPIT_LOG_STDERR:-} ]] || echo "cockpit: $project stays awake: team sleep recording failed" >&2
         return 3
     fi
     reason=$(sleep_blocker "$id" "$pane")
@@ -1285,7 +1286,7 @@ sleep_session() { # id
             log_event WARN sleep "$project vanished before exit; its sleep note is retained"
         fi
         log_event INFO sleep "$project stays awake: $reason"
-        echo "cockpit: $project stays awake: $reason" >&2
+        [[ -n ${COCKPIT_LOG_STDERR:-} ]] || echo "cockpit: $project stays awake: $reason" >&2
         return 3
     fi
     if ! exit_session "$id"; then
@@ -2765,7 +2766,9 @@ if [[ $log_command == label-state || $log_command == focus-viewer ]]; then
     # Called on every view change: only their failures are worth a line (40% of the log were these).
     trap 'log_status=$?; ((log_status)) && log_event ERROR manager "$log_command $log_arguments -> exit $log_status ($(( ($(date +%s%N) - log_started) / 1000000 )) ms)"' EXIT
 elif [[ $log_command != idle && $log_command != log && $log_command != logs ]]; then
-    trap 'log_status=$?; log_event "$( ((log_status)) && echo "$log_failure_level" || echo INFO)" manager "$log_command $log_arguments -> exit $log_status ($(( ($(date +%s%N) - log_started) / 1000000 )) ms)"' EXIT
+    trap 'log_status=$?
+    if [[ $log_command == sleep && $log_status == 3 ]]; then log_failure_level=INFO; fi
+    log_event "$( ((log_status)) && echo "$log_failure_level" || echo INFO)" manager "$log_command $log_arguments -> exit $log_status ($(( ($(date +%s%N) - log_started) / 1000000 )) ms)"' EXIT
 fi
 if [[ -n ${COCKPIT_LOG_STDERR:-} ]]; then
     exec 2> >(while IFS= read -r line; do log_event ERROR manager "$line"; done)

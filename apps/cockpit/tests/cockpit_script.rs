@@ -5391,6 +5391,43 @@ fn a_refused_sleep_run_by_hand_still_says_why() {
 }
 
 #[test]
+fn team_sleep_refusal_is_not_promoted_to_a_background_error() {
+    for failure in ["prepare", "recorded"] {
+        for background in [false, true] {
+            let manager = Manager::new();
+            manager.with_idle_session();
+            manager.team_sleep_cli();
+            let mut environment = vec![("SHIM_TEAM_FAIL", failure)];
+            if background { environment.push(("COCKPIT_LOG_STDERR", "1")); }
+            let result = manager.sleep_with(SESSION_A, &environment);
+            assert_eq!(result.status.code(), Some(3), "{failure}: {}", stderr(&result));
+            assert!(manager.tmux_calls("send-keys").is_empty());
+            assert!(!manager.asleep_note(SESSION_A).exists());
+            let lines = manager.log_lines();
+            assert!(!lines.iter().any(|line| line.contains(" ERROR ")), "{failure}, background={background}: {lines:?}");
+            assert!(lines.iter().any(|line| line.contains(" INFO manager: sleep ") && line.contains("-> exit 3")), "{lines:?}");
+            assert!(lines.iter().any(|line| line.contains("sleep: proj-a stays awake:")), "{lines:?}");
+            if !background { assert!(stderr(&result).contains("stays awake:"), "{}", stderr(&result)); }
+        }
+    }
+}
+
+#[test]
+fn unexpected_team_sleep_failure_still_logs_an_error() {
+    let manager = Manager::new();
+    manager.with_idle_session();
+    manager.team_sleep_cli();
+    manager.sandbox.shim("jq", r#"
+if [[ $1 == -r && $2 == '.token // empty' ]]; then exit 42; fi
+exec /usr/bin/jq "$@"
+"#);
+    let result = manager.sleep_with(SESSION_A, &[("COCKPIT_LOG_STDERR", "1")]);
+    assert_eq!(result.status.code(), Some(42));
+    assert!(manager.log_lines().iter().any(|line| line.contains(" ERROR manager: sleep ") && line.contains("-> exit 42")));
+    assert!(manager.calls("cockpit-team").contains(&format!("cockpit-team sleep-cancel {SESSION_A}")));
+}
+
+#[test]
 fn exit_of_an_asleep_session_drops_its_queued_messages() {
     let manager = Manager::new();
     manager.put_to_sleep(SESSION_A, "claude", false);
