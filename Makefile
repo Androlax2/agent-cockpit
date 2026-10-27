@@ -38,7 +38,8 @@ system: ## [sudo] Copy system/ into /: each changed file shows its diff and asks
 # cockpit apply runs this in the running copy after git am, with BEFORE the commit it started from.
 # A new greywall or greyproxy pin is built and installed too: sessions are flagged for a restart once
 # greywall changes (the column watches it), greyproxy restarts on its new build. The last lines fail
-# loud whenever either installed binary is not the pinned build, whatever changed.
+# loud whenever either installed binary is not the pinned build, whatever changed, or greyproxy's
+# conversation tracking (a core of CPU with busy sessions) cannot be kept off.
 after-apply: ## Relink, rebuild and reload when apps/ changed, rebuild greywall or greyproxy when its pin did: make after-apply BEFORE=<commit>
 	@test -n "$(BEFORE)" || { echo "usage: make after-apply BEFORE=<commit before the apply>"; exit 2; }
 	python3 tools/migrate-cockpit-names.py --prepare
@@ -53,6 +54,7 @@ after-apply: ## Relink, rebuild and reload when apps/ changed, rebuild greywall 
 	@if ! git diff --quiet "$(BEFORE)" HEAD -- packages/greyproxy/build.sh; then $(MAKE) greyproxy-patch; fi
 	@packages/greywall/check.sh
 	@packages/greyproxy/check.sh
+	@packages/greyproxy/settings.sh
 
 handoff-install: ## Install what an agent left in .handoff/ (checksums, diff, then asks; runs with your rights)
 	@tools/handoff-install.sh

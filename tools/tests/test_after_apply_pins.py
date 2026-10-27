@@ -1,9 +1,11 @@
+import http.server
 import json
 import os
 from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+import threading
 import unittest
 
 
@@ -45,6 +47,7 @@ class AfterApplyPinTests(unittest.TestCase):
         for command in ["stow"]:
             self.fake(self.bin / command, "exit 0")
         self.fake(self.bin / "systemctl", 'case "$2" in show) echo not-found; exit 0;; is-active|is-enabled) exit 1;; esac; exit 0')
+        self.fake(self.bin / "curl", """printf '{"conversations":{"enabled":false}}'""")
         runtime = root / "run"
         runtime.mkdir()
         state = self.home / ".local/state"
@@ -126,6 +129,12 @@ class AfterApplyPinTests(unittest.TestCase):
                 self.assertEqual(progress.read_text(), '{"step":2}')
                 self.assertFalse(progress.with_suffix(".result").exists())
 
+    def test_every_apply_checks_greyproxy_conversation_tracking_is_off(self):
+        git(self.repository, "commit", "-q", "--allow-empty", "-m", "Something else")
+        result = self.after_apply()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("greyproxy conversation tracking is off", result.stdout)
+
     def assert_behind_its_pin_fails(self, tool):
         self.install(tool, "0" * 40)
         git(self.repository, "commit", "-q", "--allow-empty", "-m", "Something else")
@@ -184,6 +193,83 @@ class GreyproxyRestartTests(unittest.TestCase):
         result = self.restart()
         self.assertEqual(result.returncode, 1)
         self.assertIn("the restart failed. Roll back", result.stderr)
+
+
+class FakeGreyproxySettings(http.server.BaseHTTPRequestHandler):
+    """greyproxy's /api/settings: GET answers the conversation tracking state, PUT changes it."""
+
+    def log_message(self, *arguments):
+        pass
+
+    def answer(self, status, body):
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(json.dumps(body).encode())
+
+    def do_GET(self):
+        self.server.requests.append(("GET", self.headers.get("Authorization"), None))
+        self.answer(200, {"conversations": {"enabled": self.server.tracking}, "theme": "system"})
+
+    def do_PUT(self):
+        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        self.server.requests.append(("PUT", self.headers.get("Authorization"), body))
+        if self.server.refuses:
+            self.answer(500, {"error": "no"})
+            return
+        self.server.tracking = body["conversations"]["enabled"]
+        self.answer(200, {"conversations": {"enabled": self.server.tracking}})
+
+
+class GreyproxySettingsTests(unittest.TestCase):
+    """packages/greyproxy/settings.sh against a fake greyproxy API."""
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.data_home = Path(self.directory.name) / "greyproxy"
+        self.data_home.mkdir()
+        self.server = http.server.HTTPServer(("127.0.0.1", 0), FakeGreyproxySettings)
+        self.server.tracking, self.server.refuses, self.server.requests = True, False, []
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.environment = {**os.environ, "GREYPROXY_DATA_HOME": str(self.data_home),
+                            "GREYPROXY_API_URL": f"http://127.0.0.1:{self.server.server_port}/api"}
+
+    def tearDown(self):
+        self.server.shutdown()
+        self.server.server_close()
+        self.directory.cleanup()
+
+    def settings(self):
+        return subprocess.run([str(REPO / "packages/greyproxy/settings.sh")], env=self.environment, capture_output=True, text=True)
+
+    def test_tracking_left_on_is_turned_off(self):
+        result = self.settings()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(self.server.tracking)
+        self.assertIn(("PUT", None, {"conversations": {"enabled": False}}), self.server.requests)
+
+    def test_tracking_already_off_is_left_alone(self):
+        self.server.tracking = False
+        result = self.settings()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([method for method, _, _ in self.server.requests], ["GET"])
+
+    def test_the_api_token_is_sent_when_greyproxy_has_one(self):
+        (self.data_home / "api-token").write_text("abc123")
+        self.settings()
+        self.assertEqual({token for _, token, _ in self.server.requests}, {"Bearer abc123"})
+
+    def test_a_refused_change_fails_the_apply_loudly(self):
+        self.server.refuses = True
+        result = self.settings()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("refused to turn conversation tracking off", result.stderr)
+
+    def test_an_unreachable_greyproxy_fails_the_apply_loudly(self):
+        self.environment["GREYPROXY_API_URL"] = "http://127.0.0.1:9/api"
+        result = self.settings()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("Conversation tracking may still be on", result.stderr)
 
 
 if __name__ == "__main__":
