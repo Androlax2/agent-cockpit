@@ -3761,6 +3761,109 @@ impl Manager {
     fn opencode_starts(&self) -> Vec<String> {
         self.tmux_calls("new-session").into_iter().filter(|call| call.contains("-s claude-retry-opencode-")).collect()
     }
+
+    /// Host tmux state, independent of plugin reports: target, pane, conversation, dead.
+    fn with_conversation_panes(&mut self, panes: &str) {
+        let inventory=self.runtime_file("conversation-panes");
+        fs::write(&inventory,panes).unwrap();
+        self.sandbox.env.insert("SHIM_CONVERSATION_PANES".into(),path_str(&inventory));
+        self.sandbox.shim("tmux",&format!(r#"
+case $1 in
+  list-panes)
+    if [[ $2 == -a && $* == *pane_dead* && $* != *pane_current_path* ]]; then
+      [[ $SHIM_INVENTORY_FAIL != yes ]] || exit 1
+      awk -F '\t' '{{printf "%s\t%s\t%s\n",$1,$2,$4}}' "$SHIM_CONVERSATION_PANES"
+      exit 0
+    fi ;;
+  show-environment)
+    id=$(awk -F '\t' -v target="${{3#=}}" '$1==target {{print $3;exit}}' "$SHIM_CONVERSATION_PANES")
+    [[ -n $id ]] || exit 1
+    printf 'CLAUDE_CODE_SESSION_ID=%s\n' "$id"
+    exit 0 ;;
+  new-session)
+    if [[ $SHIM_CHECK_LAUNCH_FD == yes && -e /proc/$$/fd/8 ]]; then
+      echo 'conversation lock leaked into the launcher' >&2
+      exit 1
+    fi
+    name= id=
+    while (( $# )); do
+      case $1 in -s) name=$2;shift ;; -e) id=${{2#CLAUDE_CODE_SESSION_ID=}};shift ;; esac
+      shift
+    done
+    sleep 0.1
+    printf '%s\t%%50\t%s\t0\n' "$name" "$id" >> "$SHIM_CONVERSATION_PANES"
+    exit 0 ;;
+esac
+{FAKE_TMUX}"#));
+    }
+}
+
+#[test]
+fn opencode_resume_reuses_its_live_pane_before_any_plugin_report() {
+    let mut manager=Manager::new();
+    manager.with_conversation_panes(&format!("claude-retry-opencode-100\t%81\t{OPENCODE_SESSION}\t0\n"));
+    let result=manager.run(&["resume",&path_str(&manager.project),OPENCODE_SESSION],&[]);
+    assert!(result.status.success(),"{}",stderr(&result));
+    assert!(manager.opencode_starts().is_empty());
+    assert!(manager.tmux_calls("respawn-pane").iter().any(|call|call.ends_with("attach-session -t =claude-retry-opencode-100")));
+}
+
+#[test]
+fn opencode_restore_reuses_a_live_conversation_without_a_snapshot_row() {
+    let mut manager=Manager::new();
+    manager.with_conversation_panes(&format!("claude-retry-opencode-100\t%81\t{OPENCODE_SESSION}\t0\n"));
+    let result=manager.run(&["restore",&path_str(&manager.project),OPENCODE_SESSION],&[]);
+    assert!(result.status.success(),"{}",stderr(&result));
+    assert!(manager.opencode_starts().is_empty());
+}
+
+#[test]
+fn opencode_concurrent_resume_and_restore_launch_only_once_before_reporting() {
+    let mut manager=Manager::new();manager.with_conversation_panes("");
+    let directory=path_str(&manager.project);
+    std::thread::scope(|scope| {
+        let resume=scope.spawn(||manager.run(&["resume",&directory,OPENCODE_SESSION],&[]));
+        let restore=scope.spawn(||manager.run(&["restore",&directory,OPENCODE_SESSION],&[]));
+        for result in [resume.join().unwrap(),restore.join().unwrap()] {assert!(result.status.success(),"{}",stderr(&result));}
+    });
+    assert_eq!(manager.opencode_starts().len(),1);
+}
+
+#[test]
+fn opencode_dead_panes_do_not_prevent_a_fresh_resume() {
+    let mut manager=Manager::new();
+    manager.with_conversation_panes(&format!("claude-retry-opencode-100\t%81\t{OPENCODE_SESSION}\t1\n"));
+    let result=manager.run(&["resume",&path_str(&manager.project),OPENCODE_SESSION],&[]);
+    assert!(result.status.success(),"{}",stderr(&result));
+    assert_eq!(manager.opencode_starts().len(),1);
+}
+
+#[test]
+fn opencode_inventory_failure_never_authorizes_a_second_launch() {
+    for action in ["resume","restore"] {
+        let mut manager=Manager::new();manager.with_conversation_panes("");
+        let result=manager.run(&[action,&path_str(&manager.project),OPENCODE_SESSION],&[("SHIM_INVENTORY_FAIL","yes")]);
+        assert!(!result.status.success(),"{action}");
+        assert!(manager.opencode_starts().is_empty(),"{action}");
+    }
+}
+
+#[test]
+fn opencode_wake_reuses_the_conversation_if_its_sleep_note_is_stale() {
+    let mut manager=Manager::new();manager.put_to_sleep(OPENCODE_SESSION,"opencode",false);
+    manager.with_conversation_panes(&format!("claude-retry-opencode-100\t%81\t{OPENCODE_SESSION}\t0\n"));
+    let result=manager.run(&["wake",OPENCODE_SESSION],&[]);
+    assert!(result.status.success(),"{}",stderr(&result));
+    assert!(manager.opencode_starts().is_empty());
+    assert!(!manager.asleep_note(OPENCODE_SESSION).exists());
+}
+
+#[test]
+fn opencode_launch_does_not_inherit_the_conversation_lock_descriptor() {
+    let mut manager=Manager::new();manager.with_conversation_panes("");
+    let result=manager.run(&["restore",&path_str(&manager.project),OPENCODE_SESSION],&[("SHIM_CHECK_LAUNCH_FD","yes")]);
+    assert!(result.status.success(),"{}",stderr(&result));
+    assert_eq!(manager.opencode_starts().len(),1);
 }
 
 /// The launcher a start runs, as the fake tmux logs it.

@@ -38,11 +38,39 @@ OPENCODE_LAUNCHER="${COCKPIT_OPENCODE:-$HOME/.local/bin/greywall-agents/opencode
 # 10 s of the start is retried once, after 1 to 3 s; a second failure is reported as any other.
 OPENCODE_EPILOGUE='attempt=1; while :; do started=$(date +%s); "$@" && exit; code=$?; if [ "$code" = 255 ]; then [ "$(tmux show-options -pqv -t "$TMUX_PANE" @opencode_exit_requested 2>/dev/null)" = 1 ] || cockpit log manager WARN "opencode ended by a signal (status 255) in $PWD: a quit, or a crash"; exit 0; fi; if [ "$attempt" = 1 ] && [ $(( $(date +%s) - started )) -lt 10 ]; then attempt=2; cockpit log manager WARN "opencode failed to start (status $code) in $PWD, retrying once"; sleep "$(awk "BEGIN { srand(); printf \"%d\", 1 + rand() * 3 }")"; continue; fi; break; done; cockpit log manager ERROR "opencode exited with status $code in $PWD"; printf "\n  ✗ opencode exited with status %s\n  any key closes this pane " "$code"; read -r _'
 
-start_opencode() { # dir session-id model-ref opencode-arguments...
-    local directory=$1 session=$2 model=$3 name size
+# The ID is stamped by start_opencode before a plugin can report; a snapshot can lag or name a
+# different pane. Do not use it to authorize either another launch or exit keys.
+opencode_conversation_panes() { # session-id; target<TAB>pane for each live managed copy
+    local inventory target pane dead identity
+    inventory=$(tmux list-panes -a -F '#{session_name}	#{pane_id}	#{pane_dead}') || {
+        echo "cockpit: cannot inspect OpenCode's managed panes" >&2
+        return 1
+    }
+    while IFS=$'\t' read -r target pane dead; do
+        [[ $target =~ ^claude-retry-opencode-[0-9]+$ && $pane =~ ^%[0-9]+$ && $dead == 0 ]] || continue
+        identity=$(tmux show-environment -t "=$target" CLAUDE_CODE_SESSION_ID) || {
+            echo "cockpit: cannot identify managed OpenCode pane $pane" >&2
+            return 1
+        }
+        [[ $identity == "CLAUDE_CODE_SESSION_ID=$1" ]] && printf '%s\t%s\n' "$target" "$pane"
+    done <<< "$inventory"
+    return 0
+}
+
+start_opencode() ( # dir session-id model-ref opencode-arguments...
+    local directory=$1 session=$2 model=$3 name size existing
     local -a terminal_environment=()
     shift 3
     require_plain_directory "$directory"
+    agent_opencode_is_session_id "$session" || { echo "cockpit: not an OpenCode session id" >&2; return 1; }
+    umask 077
+    exec 8>"${XDG_RUNTIME_DIR:-/tmp}/cockpit-opencode-session-$session.lock"
+    flock 8 || return
+    existing=$(opencode_conversation_panes "$session") || return
+    if [[ -n $existing ]]; then
+        printf '%s\n' "${existing%%$'\t'*}"
+        return 0
+    fi
     name="$OPENCODE_TMUX_PREFIX$(date +%s%N)"
     size=$(detached_size)
     if [[ -n ${COCKPIT_TERMINAL:-} ]]; then
@@ -53,9 +81,9 @@ start_opencode() { # dir session-id model-ref opencode-arguments...
     if [[ -n ${launch_team_resume:-} ]]; then terminal_environment+=(COCKPIT_TEAM_RESUME="$launch_team_resume"); fi
     tmux new-session -d -s "$name" -x "${size% *}" -y "${size#* }" -c "$directory" -e "CLAUDE_CODE_SESSION_ID=$session" \
         env -u COCKPIT_OPENCODE_MODEL -u COCKPIT_TEAM_RESUME COCKPIT_INSIDE=1 CLAUDE_CODE_SESSION_ID="$session" "${terminal_environment[@]}" \
-        sh -c "$OPENCODE_EPILOGUE" opencode "$OPENCODE_LAUNCHER" --standalone --session "$session" "$@" || return
+        sh -c "$OPENCODE_EPILOGUE" opencode "$OPENCODE_LAUNCHER" --standalone --session "$session" "$@" 8>&- || return
     printf '%s\n' "$name"
-}
+)
 
 opencode_default_model() {
     local model effort
@@ -150,20 +178,23 @@ agent_opencode_detached() { # dir prompt
 }
 
 agent_opencode_resume() { # dir id
-    view_session "$(start_opencode "$1" "$2" "")"
+    local target
+    target=$(start_opencode "$1" "$2" "") || return
+    view_session "$target" || return
     label_panes "$(basename "$1")"
     focus_viewer
 }
 
 # opencode makes its session at the first prompt, so a session it reported has a conversation.
 agent_opencode_restart() { # id dir [effort] [detached]
-    local id=$1 directory=$2 detached=${4:-}
+    local id=$1 directory=$2 detached=${4:-} target
     exit_session "$id" || return 1
     if [[ $detached == detached ]]; then
         start_opencode "$directory" "$id" "" >/dev/null
         return
     fi
-    view_session "$(start_opencode "$directory" "$id" "")"
+    target=$(start_opencode "$directory" "$id" "") || return
+    view_session "$target" || return
     label_panes "$(basename "$directory")"
 }
 
