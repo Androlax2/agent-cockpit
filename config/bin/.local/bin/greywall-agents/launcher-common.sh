@@ -282,13 +282,7 @@ mkdir -p "$shims_dir"
 staged_paste=$(mktemp "$shims_dir/wl-paste.XXXXXX") || exit 1
 cp "$HOME/.local/share/agent-shims/bin/wl-paste" "$staged_paste"
 install_staged "$staged_paste" "$shims_dir/wl-paste" 755
-# Only build tools inherit this affinity; the agent itself keeps every available CPU thread.
-# All sessions choose the same half, so more parallel builds do not multiply their CPU budget.
-if ! AGENT_BUILD_CPUS=$(python3 "$HOME/.local/bin/agent-build" --cpu-list); then
-    echo "$agent launcher: cannot determine the shared build CPU budget, not starting." >&2
-    exit 1
-fi
-export AGENT_BUILD_CPUS
+# Only build tools run at the lowest priority; the agent itself keeps its normal one.
 build_runner_copy=$(mktemp "$shims_dir/agent-build.XXXXXX") || exit 1
 if ! cp "$HOME/.local/bin/agent-build" "$build_runner_copy" || ! chmod 755 "$build_runner_copy" ||
         ! mv "$build_runner_copy" "$shims_dir/agent-build"; then

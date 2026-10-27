@@ -213,7 +213,7 @@ fn git_metadata_is_checked_again_after_a_pointer_changes() {
 }
 
 #[test]
-fn build_tools_share_a_budget_without_restricting_the_interactive_agent() {
+fn build_tools_run_at_the_lowest_priority_on_every_cpu_without_restricting_the_interactive_agent() {
     for &agent in AGENTS.iter() {
         let launch = Launch::new();
         let available_cpus = unsafe {
@@ -221,19 +221,20 @@ fn build_tools_share_a_budget_without_restricting_the_interactive_agent() {
             assert_eq!(libc::sched_getaffinity(0, std::mem::size_of_val(&affinity), &mut affinity), 0);
             (0..libc::CPU_SETSIZE as usize).filter(|cpu| libc::CPU_ISSET(*cpu, &affinity)).collect::<Vec<_>>()
         };
-        let expected_cpus = &available_cpus[..(available_cpus.len() / 2).max(1)];
-        let probe = "#!/usr/bin/env python3\nimport json, os, subprocess\n\
-                     print(json.dumps({'cpus': sorted(os.sched_getaffinity(0)), 'build': json.loads(subprocess.check_output(['cargo', 'test'], text=True))}))\n";
+        let scheduling_probe = "{'cpus': sorted(os.sched_getaffinity(0)), 'nice': os.getpriority(os.PRIO_PROCESS, 0), 'idle': os.sched_getscheduler(0) == os.SCHED_IDLE}";
+        let probe = format!("#!/usr/bin/env python3\nimport json, os, subprocess\n\
+                             print(json.dumps({{'agent': {scheduling_probe}, 'build': json.loads(subprocess.check_output(['cargo', 'test'], text=True))}}))\n");
         let agent_path = match agent { "opencode" => ".opencode/bin/opencode", "codex" => ".local/npm/bin/codex", _ => ".local/bin/claude" };
-        write_executable(&launch.sandbox.home.join(agent_path), probe);
-        launch.sandbox.shim("cargo", "python3 -c 'import json, os; print(json.dumps({\"cpus\": sorted(os.sched_getaffinity(0)), \"nice\": os.getpriority(os.PRIO_PROCESS, 0)}))'");
+        write_executable(&launch.sandbox.home.join(agent_path), &probe);
+        launch.sandbox.shim("cargo", &format!("python3 -c \"import json, os; print(json.dumps({scheduling_probe}))\""));
         let output = launch.sandbox.command(bin().join("greywall-agents").join(agent), &[])
             .current_dir(&launch.project).output().unwrap();
         assert!(output.status.success(), "{agent}: {}", stderr(&output));
         let observed: serde_json::Value = serde_json::from_str(&stdout(&output)).unwrap();
-        assert_eq!(observed["cpus"], serde_json::json!(available_cpus), "{agent}: interactive agent was restricted");
-        assert_eq!(observed["build"]["cpus"], serde_json::json!(expected_cpus), "{agent}: build was not restricted");
-        assert!(observed["build"]["nice"].as_i64().unwrap() >= 10, "{agent}: {observed}");
+        assert_eq!(observed["agent"]["cpus"], serde_json::json!(available_cpus), "{agent}: interactive agent was restricted");
+        assert_eq!(observed["build"]["cpus"], serde_json::json!(available_cpus), "{agent}: build was pinned");
+        assert_eq!(observed["build"]["nice"], serde_json::json!(19), "{agent}: {observed}");
+        assert_eq!(observed["build"]["idle"], serde_json::json!(true), "{agent}: {observed}");
     }
 }
 

@@ -1,38 +1,22 @@
 #!/usr/bin/env python3
-"""Keep background build tools on a shared CPU set, below interactive work."""
+"""Run background build tools at the lowest CPU priority, below interactive work."""
 
 import os
 from pathlib import Path
-import re
 import shutil
 import sys
 
 
-def default_cpus():
-    available_cpus = sorted(os.sched_getaffinity(0))
-    return available_cpus[:max(1, len(available_cpus) // 2)]
+LOWEST_NICE = 19
 
 
 def main():
     invoked_name = Path(sys.argv[0]).name
     is_shim = invoked_name != "agent-build"
     arguments = [invoked_name, *sys.argv[1:]] if is_shim else sys.argv[1:]
-    if not is_shim and arguments == ["--cpu-list"]:
-        print(",".join(map(str, default_cpus())))
-        return 0
     if not arguments:
         print("usage: agent-build COMMAND [ARGUMENTS...]", file=sys.stderr)
         return 2
-
-    configured_cpus = os.environ.get("AGENT_BUILD_CPUS")
-    if configured_cpus is None:
-        build_cpus = set(default_cpus())
-    else:
-        if not re.fullmatch(r"[0-9]+(?:,[0-9]+)*", configured_cpus):
-            raise ValueError("AGENT_BUILD_CPUS must be a nonempty comma-separated CPU list")
-        build_cpus = {int(cpu) for cpu in configured_cpus.split(",")}
-        if not build_cpus <= os.sched_getaffinity(0):
-            raise ValueError("AGENT_BUILD_CPUS includes unavailable CPU threads")
 
     search_path = os.environ.get("PATH", os.defpath)
     if is_shim:
@@ -45,15 +29,17 @@ def main():
         print(f"agent-build: command not found: {arguments[0]}", file=sys.stderr)
         return 127
 
-    os.sched_setaffinity(0, build_cpus)
-    os.setpriority(os.PRIO_PROCESS, 0, max(10, os.getpriority(os.PRIO_PROCESS, 0)))
-    os.environ["AGENT_BUILD_CPUS"] = ",".join(map(str, sorted(build_cpus)))
+    # Nice alone only orders tasks inside one cgroup, and every session has its own. A waking
+    # normal task preempts a SCHED_IDLE one and treats its CPU as free, across cgroups too.
+    # Builds keep every CPU thread they were given: idle cores are better used than reserved.
+    os.setpriority(os.PRIO_PROCESS, 0, LOWEST_NICE)
+    os.sched_setscheduler(0, os.SCHED_IDLE, os.sched_param(0))
     os.execv(executable, arguments)
 
 
 if __name__ == "__main__":
     try:
         sys.exit(main())
-    except (OSError, ValueError) as error:
+    except OSError as error:
         print(f"agent-build: {error}", file=sys.stderr)
         sys.exit(126)
