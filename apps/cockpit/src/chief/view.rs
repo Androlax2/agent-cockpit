@@ -203,7 +203,8 @@ pub struct ChiefView {
     undo: Option<(String, String)>,
     /// The row selected before the last habit change, to return to when the host refuses it.
     selection_before_change: Option<Option<String>>,
-    pending_start: Option<crate::chief::ChiefHostAction>,
+    /// Theo's Start and the attempt id the snapshot showed when he sent it; cleared once the host shows another.
+    pending_start: Option<(crate::chief::ChiefHostAction, Option<String>)>,
     startup_error: Option<String>,
     startup_scroll: usize,
 }
@@ -312,18 +313,20 @@ impl ChiefView {
     }
     pub fn startup_phase(&self) -> &str {
         if self.read_error.is_some() {return "unavailable";}
-        if self.pending_start.is_some() {return if self.startup_error.is_some() {"checking"} else {"starting"};}
+        if self.pending_start.is_some() {return if self.startup_error.is_some() {"unconfirmed"} else {"starting"};}
         match self.snapshot["startup"]["state"].as_str() {
             None if self.snapshot["startup"].is_null()=>"off",
+            Some("ended")=>"off",
             Some("starting")=>"starting",
             Some("failed") if self.snapshot["startup"]["can_retry"]==true=>"failed",
             _=>"checking",
         }
     }
     pub fn startup_action_label(&self) -> Option<&'static str> {
-        match self.startup_phase() {"off"=>Some("Start Chief"),"failed"=>Some("Try again"),_=>None}
+        match self.startup_phase() {"off"=>Some("Start Chief"),"failed"=>Some("Try again"),"unconfirmed"=>Some("Send again"),_=>None}
     }
     pub fn startup_failed(&mut self, error: String) {self.startup_error=Some(escape_hiding(&error,"",""));}
+    pub fn startup_acknowledged(&mut self) {self.startup_error=None;}
     pub fn suspend_pending_start(&mut self) -> bool {
         if self.pending_start.is_none() {return false;}
         self.frames=vec![Frame::Browse {page:Page::Root,selected:Some("decisions".into())}];
@@ -336,6 +339,7 @@ impl ChiefView {
             "starting"=>("Starting Chief…","Opening its OpenCode session.","You can leave this view. We'll keep track of this launch."),
             "failed"=>("Chief could not start","","No session remains. You can try again."),
             "unavailable"=>("Chief status unavailable","Waiting for a trustworthy host snapshot.","You can leave this view while we check."),
+            "unconfirmed"=>("Checking Chief…","The host has not confirmed this start yet.","Sends the same request again; it cannot start a second Chief."),
             _=>("Checking Chief…","Its session may have started. Waiting to confirm that Chief is ready.","You can leave this view while we check."),
         };
         let mut lines=vec![heading.into(),String::new(),explanation.into()];
@@ -404,8 +408,8 @@ impl ChiefView {
     pub fn refresh(&mut self, snapshot: Value) {
         self.snapshot=snapshot;
         self.read_error=None;
-        if let Some(crate::chief::ChiefHostAction::Start {previous_attempt,..})=&self.pending_start {
-            if !self.chiefs().is_empty() || self.snapshot["startup"]["id"].as_str().is_some_and(|id|Some(id)!=previous_attempt.as_deref()) {
+        if let Some((_,seen))=&self.pending_start {
+            if !self.chiefs().is_empty() || self.snapshot["startup"]["id"].as_str().is_some_and(|id|Some(id)!=seen.as_deref()) {
                 self.pending_start=None;self.startup_error=None;self.startup_scroll=0;
             }
         }
@@ -642,9 +646,15 @@ impl ChiefView {
     pub fn handle(&mut self, key: Key) -> Effect {
         if self.startup_root() {
             if key==Key::Char('c') {
+                // Resending the unconfirmed request keeps its id: the host replays it instead of starting twice.
+                if self.startup_phase()=="unconfirmed" {
+                    return Effect::Start(self.pending_start.as_ref().expect("unconfirmed start is pending").0.clone());
+                }
                 if self.startup_action_label().is_some() {
-                    let action=crate::chief::ChiefHostAction::Start {request_id:format!("chief-ui-{}",crate::util::token_hex(12)),previous_attempt:self.snapshot["startup"]["id"].as_str().map(str::to_string)};
-                    self.pending_start=Some(action.clone());self.startup_error=None;self.startup_scroll=0;
+                    let seen=self.snapshot["startup"]["id"].as_str().map(str::to_string);
+                    let previous_attempt=seen.clone().filter(|_|self.snapshot["startup"]["state"]=="failed");
+                    let action=crate::chief::ChiefHostAction::Start {request_id:format!("chief-ui-{}",crate::util::token_hex(12)),previous_attempt};
+                    self.pending_start=Some((action.clone(),seen));self.startup_error=None;self.startup_scroll=0;
                     return Effect::Start(action);
                 }
                 return Effect::None;
@@ -962,6 +972,7 @@ impl ChiefView {
         if self.startup_root() {return match self.startup_phase() {
             "off"=>"c Start Chief · l log · h habits · ⏎ open · esc back",
             "failed"=>"c Try again · l log · h habits · ⏎ open · esc back",
+            "unconfirmed"=>"c Send again · l log · h habits · ⏎ open · esc back",
             _=>"Startup pending · l log · h habits · ⏎ open · esc back",
         };}
         match self.frames.last() {

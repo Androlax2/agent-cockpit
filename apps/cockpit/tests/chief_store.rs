@@ -9,6 +9,40 @@ fn start_chief(connection: &mut Connection, request: &str, previous: Option<&str
     cockpit::chief::store::host(connection, &action, &[], 100).unwrap().result
 }
 
+fn settle(connection: &mut Connection, request: &str, attempt: &str, revision: i64, stopped: bool) -> Result<serde_json::Value, cockpit::teams::TeamError> {
+    let action: ChiefHostAction = serde_json::from_value(serde_json::json!({"action":"settle_startup","request_id":request,"attempt":attempt,"expected_revision":revision,
+        "evidence":{"kind":"safe_stop","note":"No tmux session or process for the reserved id","confirmed_stopped":stopped}})).expect("SettleStartup protocol");
+    cockpit::chief::store::host(connection, &action, &[], 200).unwrap().result
+}
+
+#[test]
+fn a_host_confirmed_stop_settles_a_stuck_check_so_retry_is_offered() {
+    let mut connection = migrated();
+    let first = start_chief(&mut connection, "first", None).unwrap();
+    connection.execute("UPDATE chief_startup SET state='checking',revision=revision+1", []).unwrap();
+    let id = first["id"].as_str().unwrap();
+    assert_eq!(settle(&mut connection, "unconfirmed", id, 2, false).unwrap_err().code, ErrorCode::Conflict);
+    assert_eq!(settle(&mut connection, "stale", id, 1, true).unwrap_err().code, ErrorCode::Conflict);
+    let settled = settle(&mut connection, "settle", id, 2, true).unwrap();
+    assert_eq!(settled["state"], "failed");
+    assert_eq!(settled["can_retry"], true);
+    assert!(start_chief(&mut connection, "retry", Some(id)).is_ok());
+}
+
+#[test]
+fn an_attempt_whose_chief_was_disabled_is_ended_and_start_needs_no_retry_reference() {
+    let mut connection = migrated();
+    let first = start_chief(&mut connection, "first", None).unwrap();
+    connection.execute("UPDATE chief_startup SET state='active',revision=revision+1", []).unwrap();
+    let ended = cockpit::chief::store::startup(&connection).unwrap().unwrap();
+    assert_eq!(ended["state"], "ended");
+    assert_eq!(ended["can_retry"], false);
+    assert!(settle(&mut connection, "settle-ended", first["id"].as_str().unwrap(), 2, true).is_err());
+    let second = start_chief(&mut connection, "second", None).unwrap();
+    assert_eq!(second["state"], "starting");
+    assert_ne!(second["id"], first["id"]);
+}
+
 #[test]
 fn repeated_and_distinct_start_requests_reserve_only_one_chief() {
     let mut connection = migrated();

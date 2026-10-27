@@ -389,10 +389,8 @@ fn advance_startup(registry: &mut Registry, live: &[WorkerState]) -> Result<(), 
     }
     let action = ChiefHostAction::Enable {request_id:format!("chief-start-{attempt}"),session:worker.session.clone()};
     match host(registry, &action)?.result {
+        // A replayed success whose grant was disabled meanwhile still settles as activated: the store reports it ended.
         Ok(_) => {
-            if store::chief_session(registry.teams.as_ref().expect("opened above"))?.as_deref() != Some(session) {
-                return startup_outcome(registry, attempt, "checking", Some("Chief activation was disabled; the existing session is still being tracked"));
-            }
             registry.teams.as_ref().expect("opened above").execute("UPDATE chief_startup SET identity=?2 WHERE id=?1", (attempt,serde_json::to_string(&worker.session)?))?;
             startup_outcome(registry, attempt, "active", None)
         },

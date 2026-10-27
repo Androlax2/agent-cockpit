@@ -49,7 +49,8 @@ impl App {
             },
             Effect::Start(action)=> {
                 let result=crate::teams::client::host_request(&HostRequest::Chief {action}).and_then(|reply|reply.result);
-                if let Err(error)=result {self.chief_view.as_mut().expect("Chief is open").startup_failed(error.message);}
+                let view=self.chief_view.as_mut().expect("Chief is open");
+                match result {Ok(_)=>view.startup_acknowledged(),Err(error)=>view.startup_failed(error.message)}
                 self.refresh_chief_view();
             },
             Effect::Summary=> {

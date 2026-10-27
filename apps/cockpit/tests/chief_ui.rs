@@ -149,17 +149,44 @@ fn chief_startup_keeps_existing_decisions_reachable_without_a_session_picker() {
 }
 
 #[test]
-fn closing_and_reopening_keeps_an_unacknowledged_chief_start_locked() {
+fn an_ended_attempt_offers_start_chief_again() {
+    let host = Host::new(vec![]);
+    host.snapshot.lock().unwrap()["startup"] = json!({"id":"attempt-1","state":"ended","can_retry":false,"error":null});
+    let (mut app, mut screen) = host.open();
+    assert!(rendered(&mut app, 60, 22).contains("Start Chief"));
+    app.handle(Key::Char('c'), &mut screen);
+    assert_eq!(host.mutations()[0]["action"]["previous_attempt"], Value::Null);
+}
+
+#[test]
+fn an_unconfirmed_start_is_resent_with_the_same_request_and_never_claims_a_session() {
+    let host = Host::new(vec![]);
+    host.snapshot.lock().unwrap()["startup"] = Value::Null;
+    host.mutation_replies.lock().unwrap().push_back(json!({"error":"acknowledgement lost"}));
+    let (mut app, mut screen) = host.open();
+    app.handle(Key::Char('c'), &mut screen);
+    let shown = rendered(&mut app, 80, 24);
+    assert!(shown.contains("not confirmed") && !shown.contains("may have started"), "{shown}");
+    app.handle(Key::Char('c'), &mut screen);
+    let mutations = host.mutations();
+    assert_eq!(mutations.len(), 2);
+    assert_eq!(mutations[0]["action"]["request_id"], mutations[1]["action"]["request_id"]);
+}
+
+#[test]
+fn closing_and_reopening_keeps_an_unacknowledged_chief_start_as_the_same_request() {
     let host = Host::new(vec![]);
     host.snapshot.lock().unwrap()["startup"] = Value::Null;
     host.mutation_replies.lock().unwrap().push_back(json!({"error":"acknowledgement lost"}));
     let (mut app, mut screen) = host.open();
     keys(&mut app, &mut screen, &[Key::Char('c'),Key::Esc]);
     open_chief(&mut app, &mut screen);
-    app.handle(Key::Char('c'), &mut screen);
     assert_eq!(host.mutations().len(), 1);
     let shown = rendered(&mut app, 80, 24);
-    assert!(shown.contains("Checking Chief") && shown.contains("acknowledgement lost"), "{shown}");
+    assert!(shown.contains("not confirmed") && shown.contains("acknowledgement lost"), "{shown}");
+    app.handle(Key::Char('c'), &mut screen);
+    let mutations = host.mutations();
+    assert_eq!(mutations[0]["action"]["request_id"], mutations[1]["action"]["request_id"]);
 }
 
 #[test]

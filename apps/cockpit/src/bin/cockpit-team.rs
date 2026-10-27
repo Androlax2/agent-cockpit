@@ -199,7 +199,7 @@ fn main() {
                 return Err(cockpit::teams::TeamError::new(cockpit::teams::ErrorCode::Invalid, "chief-host requires a chief host request"));
             }
             if matches!(&request,cockpit::teams::HostRequest::Chief {action:cockpit::chief::ChiefHostAction::ReconcileDelivery {..}
-                | cockpit::chief::ChiefHostAction::ReconcileLaunch {..}}) {
+                | cockpit::chief::ChiefHostAction::ReconcileLaunch {..} | cockpit::chief::ChiefHostAction::SettleStartup {..}}) {
                 use std::io::{BufRead,Write};
                 eprintln!("Host confirmation of exact stopped-target evidence:\n{}",escape_hiding(&serde_json::to_string_pretty(&request)?,"",""));
                 let mut terminal = std::fs::OpenOptions::new().read(true).write(true).open("/dev/tty")?;

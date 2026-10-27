@@ -117,7 +117,7 @@ fn only_confirmed_prelaunch_failure_allows_chief_retry() {
 }
 
 #[test]
-fn a_replayed_activation_cannot_hide_a_concurrent_disable() {
+fn a_chief_disabled_during_activation_ends_the_attempt_so_start_is_offered_again() {
     let mut bench = team_bench();
     let startup = start(&mut bench, "start");
     crate::chief::tick(&mut bench.registry, crate::teams::now_ms()).unwrap();
@@ -132,8 +132,30 @@ fn a_replayed_activation_cannot_hide_a_concurrent_disable() {
     crate::chief::host(&mut bench.registry, &ChiefHostAction::Disable { request_id:"disable".into(),expected_epoch:enabled["epoch"].as_str().unwrap().into() }).unwrap().result.unwrap();
     crate::chief::tick(&mut bench.registry, crate::teams::now_ms()).unwrap();
     let result = cockpit::chief::store::startup(bench.registry.teams.as_ref().unwrap()).unwrap().unwrap();
-    assert_eq!(result["state"], "checking");
-    assert_eq!(result["can_retry"], false);
+    assert_eq!(result["state"], "ended");
+    assert!(cockpit::chief::store::chief_session(bench.registry.teams.as_ref().unwrap()).unwrap().is_none());
+    let again = start(&mut bench, "start-again");
+    assert_eq!(again["state"], "starting");
+    assert_ne!(again["session_id"], startup["session_id"]);
+}
+
+#[test]
+fn start_use_disable_then_start_again_launches_a_new_chief() {
+    let mut bench = team_bench();
+    let first = start(&mut bench, "start");
+    crate::chief::tick(&mut bench.registry, crate::teams::now_ms()).unwrap();
+    report_reserved_chief(&mut bench, &first, first["directory"].as_str().unwrap());
+    let session = verified(&mut bench, first["session_id"].as_str().unwrap());
+    crate::teams::host(&mut bench.registry, std::process::id(), HostRequest::VerifyChiefAdmission {
+        session,adapter:"opencode-queued-v1".into(),evidence:"Controlled fixture".into(),
+    }).unwrap().result.unwrap();
+    crate::chief::tick(&mut bench.registry, crate::teams::now_ms()).unwrap();
+    let epoch = bench.registry.teams.as_ref().unwrap().query_row("SELECT epoch FROM chief_grants WHERE state='active'", [], |row|row.get::<_,String>(0)).unwrap();
+    crate::chief::host(&mut bench.registry, &ChiefHostAction::Disable { request_id:"disable".into(),expected_epoch:epoch }).unwrap().result.unwrap();
+    assert_eq!(cockpit::chief::store::startup(bench.registry.teams.as_ref().unwrap()).unwrap().unwrap()["state"], "ended");
+    start(&mut bench, "start-again");
+    crate::chief::tick(&mut bench.registry, crate::teams::now_ms()).unwrap();
+    assert_eq!(bench.world.borrow().started.iter().filter(|command|command.contains(&"chief-start".into())).count(), 2);
 }
 
 #[test]

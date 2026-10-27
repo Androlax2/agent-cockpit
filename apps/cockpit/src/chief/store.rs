@@ -20,7 +20,9 @@ pub(crate) fn upgrade_to_16(connection: &Connection) -> Result<(), TeamError> {
 
 /// Protected host startup state; absence never means an in-flight launch failed.
 pub fn startup(connection: &Connection) -> Result<Option<Value>, TeamError> {
-    let encoded: Option<String> = connection.query_row("SELECT json_object('id',id,'session_id',session_id,'directory',directory,'state',state,
+    // An activated attempt whose grant was later disabled is over: Start may begin a new one.
+    let encoded: Option<String> = connection.query_row("SELECT json_object('id',id,'session_id',session_id,'directory',directory,
+        'state',CASE WHEN state='active' AND NOT EXISTS(SELECT 1 FROM chief_grants g WHERE g.session_id=chief_startup.session_id AND g.state IN ('active','paused')) THEN 'ended' ELSE state END,
         'revision',revision,'created_at_ms',created_at,'error',error,'session',json(identity),'can_retry',json(CASE state WHEN 'failed' THEN 'true' ELSE 'false' END))
         FROM chief_startup WHERE singleton=1", [], |row| row.get(0)).optional()?;
     encoded.map(|value|serde_json::from_str(&value).map_err(TeamError::from)).transpose()
@@ -54,7 +56,7 @@ pub fn require_non_chief(connection: &Connection, session: &str) -> Result<(), T
 
 pub fn host(connection: &mut Connection, action: &ChiefHostAction, live: &[WorkerState], now_ms: i64) -> Result<TeamReply, TeamError> {
     let request_id = match action {
-        ChiefHostAction::Start { request_id, .. } | ChiefHostAction::Enable { request_id, .. } | ChiefHostAction::Pause { request_id, .. }
+        ChiefHostAction::Start { request_id, .. } | ChiefHostAction::SettleStartup { request_id, .. } | ChiefHostAction::Enable { request_id, .. } | ChiefHostAction::Pause { request_id, .. }
         | ChiefHostAction::Resume { request_id, .. } | ChiefHostAction::Disable { request_id, .. }
         | ChiefHostAction::Resolve { request_id, .. } | ChiefHostAction::AnswerDecision { request_id, .. } | ChiefHostAction::RequestSummary { request_id }
         | ChiefHostAction::ReconcileDelivery {request_id,..} | ChiefHostAction::ReconcileLaunch {request_id,..} | ChiefHostAction::Overrule { request_id, .. }
@@ -91,7 +93,8 @@ fn host_action(connection: &Connection, action: &ChiefHostAction, live: &[Worker
                 if matches!(previous["state"].as_str(), Some("starting" | "checking")) {
                     return Ok(previous.clone());
                 }
-                if previous["can_retry"] != true || previous_attempt.as_deref() != previous["id"].as_str() {
+                let is_ended = previous["state"] == "ended" && previous_attempt.as_deref().is_none_or(|attempt|previous["id"].as_str() == Some(attempt));
+                if !is_ended && (previous["can_retry"] != true || previous_attempt.as_deref() != previous["id"].as_str()) {
                     return Err(conflict("retry must name the current conclusively failed Chief startup"));
                 }
             } else if previous_attempt.is_some() {
@@ -105,6 +108,16 @@ fn host_action(connection: &Connection, action: &ChiefHostAction, live: &[Worker
                 ON CONFLICT(singleton) DO UPDATE SET id=excluded.id,session_id=excluded.session_id,state='starting',revision=chief_startup.revision+1,
                 directory=excluded.directory,created_at=excluded.created_at,error=NULL,identity=NULL", params![id,session_id,now_ms,directory.to_string_lossy()])?;
             Ok(startup(connection)?.expect("inserted Chief startup"))
+        },
+        ChiefHostAction::SettleStartup { attempt, expected_revision, evidence, .. } => {
+            let super::ReconciliationEvidence::SafeStop { note, confirmed_stopped: true } = evidence else {
+                return Err(conflict("settling a Chief startup needs a confirmed safe stop"));
+            };
+            if connection.execute("UPDATE chief_startup SET state='failed',revision=revision+1,error=?3 WHERE id=?1 AND revision=?2 AND state IN ('starting','checking')",
+                params![attempt,expected_revision,format!("Theo confirmed no Chief session remains: {note}")])? != 1 {
+                return Err(conflict("exact unresolved Chief startup revision is required"));
+            }
+            Ok(startup(connection)?.expect("settled Chief startup"))
         },
         ChiefHostAction::Enable { session, .. } => {
             if !exact_live(session, live) || is_product_worker(connection, &session.session_id)? {
