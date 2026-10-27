@@ -405,6 +405,8 @@ pub trait System {
         self.run(&["pkill", "-x", "-RTMIN+16", "waybar"], &[0, 1]);
     }
     fn tmux(&mut self, arguments: &[&str]) -> Option<String>;
+    /// Successful inventory (including a confirmed absent server), or an inconclusive probe.
+    fn approval_terminals(&mut self) -> Option<HashSet<String>>;
     fn open_window(&mut self, command: &[&str]) -> Option<Box<dyn Window>>;
     fn claude_workspace_active(&mut self) -> bool;
     fn gaming(&mut self) -> bool;
@@ -633,6 +635,7 @@ pub struct RunRequests {
     /// Theo closed the window himself: it stays closed until the command asks him something new.
     dismissed: bool,
     window: Option<Box<dyn Window>>,
+    recovery_pending: bool,
 }
 
 fn run_session(id: &str) -> String {
@@ -710,7 +713,67 @@ fn write_abandoned(id: &str) {
     }
 }
 
+fn write_lost_result(id: &str) -> bool {
+    let Some(path) = run_result(id) else {
+        log(&format!("cannot report lost result for {id}: it names no answers folder"));
+        return false;
+    };
+    if path.exists() {
+        return true;
+    }
+    if let Err(error) = cockpit::util::write_json(&path, &json!({"status": "result_lost"})) {
+        log(&format!("cannot report lost result for {id}: {error}"));
+        return false;
+    }
+    if let Err(error) = cockpit::util::write_json(&path.with_extension("phase"), &json!({"phase": "done"})) {
+        log(&format!("cannot clear lost command status for {id}: {error}"));
+    }
+    cockpit::audit::record("daemon", "run.result_lost", "unknown", json!({"id": id}));
+    true
+}
+
+fn saved_run_phase(id: &str) -> Option<String> {
+    cockpit::util::read_json(&run_result(id)?.with_extension("phase"))?
+        .get("phase")?.as_str().filter(|phase| RUN_PHASES.contains(phase)).map(str::to_string)
+}
+
 impl RunRequests {
+    /// Reattach monitoring only: a held request never authorizes replaying its command.
+    fn recover(&mut self, system: &mut dyn System) {
+        let directory = paths::cockpit_runtime("cockpit-requests", "claude-requests");
+        let entries = match fs::read_dir(&directory) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+            Err(error) => { log(&format!("cannot recover approval requests: {error}")); return; }
+        };
+        let Some(terminals) = system.approval_terminals() else {
+            self.recovery_pending = true;
+            return;
+        };
+        self.recovery_pending = false;
+        for entry in entries {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(error) => { log(&format!("cannot read held approval request: {error}")); continue; }
+            };
+            let name = entry.file_name();
+            let Some(id) = name.to_str().and_then(|name| name.strip_suffix(".request"))
+                .filter(|id| cockpit::approval::valid_id(id)) else { continue };
+            if self.current == id || self.queue.iter().chain(&self.running).any(|known| known == id) { continue; }
+            if run_result(id).is_none_or(|path| path.exists()) { continue; }
+            if !terminals.contains(&run_session(id)) {
+                if !write_lost_result(id) { self.running.push(id.into()); }
+                continue;
+            }
+            match saved_run_phase(id).as_deref() {
+                Some("asking") => self.queue.push(id.into()),
+                Some("input") => { self.running.push(id.into()); self.waiting_input.push(id.into()); }
+                _ => self.running.push(id.into()),
+            }
+        }
+        self.next(system);
+    }
+
     fn session_phases(&self) -> HashMap<String, &'static str> {
         let mut phases = HashMap::new();
         let current_phase = match self.phase.as_str() {
@@ -777,6 +840,14 @@ impl RunRequests {
         }
         while !self.queue.is_empty() {
             let id = self.queue.remove(0);
+            match saved_run_phase(&id).as_deref() {
+                Some("running" | "done") if run_result(&id).is_some_and(|path| !path.exists()) => {
+                    self.running.push(id);
+                    continue;
+                }
+                Some("input") => { self.attend(system, &id, "input"); return; }
+                _ => {}
+            }
             let abandoned = is_abandoned(&id);
             if abandoned || run_result(&id).is_none_or(|result| result.exists()) {
                 if abandoned {
@@ -810,6 +881,18 @@ impl RunRequests {
             return;
         }
         let is_known = self.current == id || self.queue.iter().any(|queued| queued == id) || self.running.iter().any(|run| run == id);
+        if phase == "done" && is_known && run_result(id).is_some_and(|path| !path.exists()) {
+            // A notification is not the result: the wrapper may still fail to save its receipt.
+            self.queue.retain(|queued| queued != id);
+            self.waiting_input.retain(|run| run != id);
+            if !self.running.iter().any(|run| run == id) { self.running.push(id.into()); }
+            if self.current == id {
+                self.finish(system, banners);
+            } else {
+                system.run(&["cockpit", "approval-pane", "close", id], &[0]);
+            }
+            return;
+        }
         if is_known {
             match phase {
                 "running" => {
@@ -935,23 +1018,51 @@ impl RunRequests {
     /// Every second: the window follows the workspace and the games, and an approval whose tmux
     /// session ended (closed by hand, crashed) is cleared.
     pub fn tick(&mut self, system: &mut dyn System, banners: &mut dyn Banners) {
+        if self.recovery_pending { self.recover(system); }
+        let terminals = if self.current.is_empty() && self.queue.is_empty() && self.running.is_empty() {
+            None
+        } else { system.approval_terminals() };
+        let gone = |id: &str| terminals.as_ref().is_some_and(|sessions| !sessions.contains(&run_session(id)));
         for id in self.queue.clone() {
+            if let Some(phase) = saved_run_phase(&id).filter(|phase| phase != "asking") {
+                self.phase_changed(system, banners, &id, &phase);
+                continue;
+            }
             let target = format!("={}", run_session(&id));
             let abandoned = is_abandoned(&id);
-            if abandoned || run_result(&id).is_some_and(|result| result.exists()) || system.tmux(&["has-session", "-t", &target]).is_none() {
+            if abandoned || run_result(&id).is_some_and(|result| result.exists()) || gone(&id) {
                 if abandoned {
                     write_abandoned(&id);
+                } else if !write_lost_result(&id) {
+                    continue;
                 }
                 system.run(&["tmux", "kill-session", "-t", &target], &[0, 1]);
                 self.phase_changed(system, banners, &id, "done");
             }
         }
-        // A running command whose tmux session ended (closed by hand, crashed) is forgotten.
+        // Losing the terminal cannot establish the command's outcome, even if its log says it ended.
         for id in self.running.clone() {
-            if system.tmux(&["has-session", "-t", &format!("={}", run_session(&id))]).is_none() {
+            let phase = saved_run_phase(&id);
+            if phase.as_deref() == Some("input") && !self.waiting_input.contains(&id) {
+                self.phase_changed(system, banners, &id, "input");
+            } else if phase.as_deref() == Some("running") && self.waiting_input.contains(&id) {
+                self.phase_changed(system, banners, &id, "running");
+            }
+            if run_result(&id).is_some_and(|path| path.exists()) {
+                self.phase_changed(system, banners, &id, "done");
+                continue;
+            }
+            if gone(&id) {
+                if !write_lost_result(&id) { continue; }
                 self.running.retain(|run| *run != id);
                 self.waiting_input.retain(|run| *run != id);
                 system.run(&["cockpit", "approval-pane", "close", &id], &[0]);
+            }
+        }
+        if !self.current.is_empty() {
+            if let Some(phase) = saved_run_phase(&self.current).filter(|phase| *phase != self.phase) {
+                let id = self.current.clone();
+                self.phase_changed(system, banners, &id, &phase);
             }
         }
         if !self.current.is_empty() {
@@ -962,8 +1073,8 @@ impl RunRequests {
                 write_abandoned(&self.current);
                 system.run(&["tmux", "kill-session", "-t", &target], &[0, 1]);
                 self.finish(system, banners);
-            } else if system.tmux(&["has-session", "-t", &target]).is_none() {
-                self.finish(system, banners);
+            } else if gone(&self.current) {
+                if write_lost_result(&self.current) { self.finish(system, banners); }
             } else {
                 self.show(system);
             }
@@ -1159,6 +1270,7 @@ impl Registry {
                                       chief_focus: None, chief_fault: None, chief_attention_presentations: HashMap::new(), chief_native: HashMap::new(), chief_telemetry: HashMap::new(),
                                       chief_stop_failures: HashMap::new(), resolved_todos: Default::default(), live_session_passes: 0, live_session_cache: None };
         registry.load_snapshot();
+        registry.runs.recover(registry.system.as_mut());
         registry
     }
 
@@ -2302,6 +2414,12 @@ pub fn is_game(submap: &str, window_class: &str) -> bool {
     submap == "gamemode" || GAME_CLASS.is_match(window_class)
 }
 
+pub(crate) fn tmux_server_absent(code: i32, stderr: &str) -> bool {
+    let message = stderr.trim();
+    code == 1 && (message == "no sessions" || message.starts_with("no server running on ")
+        || (message.starts_with("error connecting to ") && message.ends_with(" (No such file or directory)")))
+}
+
 impl System for RealSystem {
     fn run(&mut self, command: &[&str], ok: &[i32]) -> bool {
         match output_within(command, COMMAND_TIMEOUT) {
@@ -2330,6 +2448,14 @@ impl System for RealSystem {
         let mut command = vec!["tmux"];
         command.extend_from_slice(arguments);
         output_within(&command, COMMAND_TIMEOUT).filter(|(code, _, _)| *code == 0).map(|(_, stdout, _)| stdout)
+    }
+
+    fn approval_terminals(&mut self) -> Option<HashSet<String>> {
+        match output_within(&["env", "LC_ALL=C", "tmux", "list-sessions", "-F", "#{session_name}"], COMMAND_TIMEOUT) {
+            Some((0, stdout, _)) => Some(stdout.lines().map(str::to_string).collect()),
+            Some((code, _, stderr)) if tmux_server_absent(code, &stderr) => Some(HashSet::new()),
+            _ => None,
+        }
     }
 
     fn open_window(&mut self, command: &[&str]) -> Option<Box<dyn Window>> {

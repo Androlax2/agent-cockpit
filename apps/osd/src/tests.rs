@@ -56,11 +56,6 @@ impl Fixture {
         }
         // Run and guide requests as the daemon holds them (hold_request), naming their answers folder.
         fs::create_dir_all(root.join("run/claude-requests")).unwrap();
-        for id in [RUN_A, RUN_B] {
-            for extension in ["request", "guide"] {
-                fs::write(root.join("run/claude-requests").join(format!("{id}.{extension}")), json!({"answers": ANSWERS_KEY}).to_string()).unwrap();
-            }
-        }
         Fixture { root, _lock: lock }
     }
 
@@ -117,6 +112,11 @@ struct World {
     clients: String,
     environments: HashMap<String, HashMap<String, String>>,
     dead_pids: HashSet<String>,
+    missing_tmux_sessions: HashSet<String>,
+    approval_terminals: HashSet<String>,
+    tmux_probe_failed: bool,
+    tmux_server_missing: bool,
+    phase_on_tmux_probe: Option<(String, String)>,
     /// sender pid -> the focus target its trusted ancestor carries
     sender_targets: HashMap<u32, BTreeMap<String, String>>,
     sender_directories: HashMap<u32, String>,
@@ -145,18 +145,39 @@ struct FakeSystem(Rc<RefCell<World>>);
 
 impl System for FakeSystem {
     fn run(&mut self, command: &[&str], _ok: &[i32]) -> bool {
-        self.0.borrow_mut().commands.push(command.iter().map(|part| part.to_string()).collect());
+        let mut world = self.0.borrow_mut();
+        world.commands.push(command.iter().map(|part| part.to_string()).collect());
+        if command.starts_with(&["tmux", "new-session"]) {
+            world.approval_terminals.insert(command[4].into());
+        }
         true
     }
 
     fn tmux(&mut self, arguments: &[&str]) -> Option<String> {
-        let world = self.0.borrow();
+        let mut world = self.0.borrow_mut();
+        if matches!(arguments[0], "has-session" | "list-sessions")
+            && let Some((id, phase)) = world.phase_on_tmux_probe.take() {
+            fs::write(cockpit::approval::answers_dir(ANSWERS_KEY, "runs").join(format!("{id}.phase")), json!({"phase":phase}).to_string()).unwrap();
+        }
         match arguments[0] {
+            "has-session" | "list-sessions" if world.tmux_probe_failed || world.tmux_server_missing => None,
+            "has-session" if world.missing_tmux_sessions.contains(arguments[2]) => None,
+            "list-sessions" => Some(world.approval_terminals.iter()
+                .filter(|session| !world.missing_tmux_sessions.contains(&format!("={session}")))
+                .cloned().collect::<Vec<_>>().join("\n")),
             "capture-pane" => Some(world.pane_tails.get(arguments[3]).cloned().unwrap_or_default()),
             "display-message" => world.session_name.clone(),
             "list-clients" => Some(world.clients.clone()),
             _ => Some(String::new()),
         }
+    }
+
+    fn approval_terminals(&mut self) -> Option<HashSet<String>> {
+        if self.0.borrow().tmux_server_missing && !self.0.borrow().tmux_probe_failed {
+            return Some(HashSet::new());
+        }
+        self.tmux(&["list-sessions", "-F", "#{session_name}"])
+            .map(|sessions| sessions.lines().map(str::to_string).collect())
     }
 
     fn open_window(&mut self, command: &[&str]) -> Option<Box<dyn Window>> {
@@ -2044,6 +2065,11 @@ impl Bench {
         let world = Rc::new(RefCell::new(world));
         let shown = Rc::new(RefCell::new(Shown::default()));
         let registry = Registry::new(Box::new(FakeSystem(world.clone())), Box::new(FakeBanners(shown.clone())));
+        for id in [RUN_A, RUN_B] {
+            for extension in ["request", "guide"] {
+                fs::write(cockpit::approval::held_request(id, extension), json!({"answers": ANSWERS_KEY}).to_string()).unwrap();
+            }
+        }
         Bench { fixture, world, shown, registry, sleep_guards: HashMap::new() }
     }
 
@@ -2793,6 +2819,201 @@ fn the_daemon_writes_its_messages_to_the_shared_log() {
 }
 
 #[test]
+fn a_vanished_approval_reports_its_lost_result_instead_of_waiting_forever() {
+    for phase in ["asking", "running", "input"] {
+        let mut bench = Bench::new();
+        bench.registry.run_request(RUN_A).unwrap();
+        bench.registry.run_phase(RUN_A, phase);
+        bench.world.borrow_mut().missing_tmux_sessions.insert(format!("=claude-run-{RUN_A}"));
+        bench.registry.tick_queues();
+        assert_eq!(result_status(&bench, RUN_A).as_deref(), Some("result_lost"), "{phase}");
+        let result = cockpit::util::read_json(&bench.fixture.answers("runs").join(format!("{RUN_A}.result"))).unwrap();
+        assert!(result.get("exit").is_none(), "a missing result must not invent a command exit: {result}");
+        let status = cockpit::util::read_json(&bench.fixture.answers("runs").join(format!("{RUN_A}.phase"))).unwrap();
+        assert_eq!(status["phase"], "done");
+        assert_eq!(started_sessions(&bench).len(), 1, "the command must never be replayed");
+    }
+}
+
+#[test]
+fn a_vanished_queued_approval_reports_a_lost_result_without_displacing_the_current_one() {
+    let mut bench = Bench::new();
+    bench.registry.run_request(RUN_A).unwrap();
+    bench.registry.run_request(RUN_B).unwrap();
+    bench.world.borrow_mut().missing_tmux_sessions.insert(format!("=claude-run-{RUN_B}"));
+    bench.registry.tick_queues();
+    assert_eq!(result_status(&bench, RUN_B).as_deref(), Some("result_lost"));
+    assert_eq!(bench.registry.runs.current, RUN_A);
+}
+
+#[test]
+fn a_completed_approval_keeps_its_result_when_its_terminal_disappears() {
+    let mut bench = Bench::new();
+    bench.registry.run_request(RUN_A).unwrap();
+    bench.registry.run_phase(RUN_A, "running");
+    let path = bench.fixture.answers("runs").join(format!("{RUN_A}.result"));
+    let result = json!({"status":"ran", "exit":0, "output":"finished"});
+    fs::write(&path, result.to_string()).unwrap();
+    bench.world.borrow_mut().missing_tmux_sessions.insert(format!("=claude-run-{RUN_A}"));
+    bench.registry.tick_queues();
+    assert_eq!(cockpit::util::read_json(&path), Some(result));
+}
+
+#[test]
+fn a_daemon_restart_reports_old_lost_results_without_replaying_commands() {
+    for phase in ["asking", "running", "input", "done"] {
+        let mut bench = Bench::new();
+        fs::write(bench.fixture.answers("runs").join(format!("{RUN_A}.phase")), json!({"phase":phase}).to_string()).unwrap();
+        bench.world.borrow_mut().missing_tmux_sessions.insert(format!("=claude-run-{RUN_A}"));
+        bench.registry = Registry::new(Box::new(FakeSystem(bench.world.clone())), Box::new(FakeBanners(bench.shown.clone())));
+        assert_eq!(result_status(&bench, RUN_A).as_deref(), Some("result_lost"), "{phase}");
+        assert!(started_sessions(&bench).is_empty(), "recovery must not run a command");
+    }
+}
+
+#[test]
+fn a_daemon_restart_keeps_monitoring_live_approval_terminals_without_relaunching_them() {
+    for phase in ["asking", "running", "input"] {
+        let mut bench = Bench::new();
+        fs::write(bench.fixture.answers("runs").join(format!("{RUN_A}.phase")), json!({"phase":phase}).to_string()).unwrap();
+        bench.world.borrow_mut().approval_terminals.insert(format!("claude-run-{RUN_A}"));
+        bench.registry = Registry::new(Box::new(FakeSystem(bench.world.clone())), Box::new(FakeBanners(bench.shown.clone())));
+        assert_eq!(result_status(&bench, RUN_A), None, "a live terminal must not be declared lost");
+        bench.world.borrow_mut().missing_tmux_sessions.insert(format!("=claude-run-{RUN_A}"));
+        bench.registry.tick_queues();
+        assert_eq!(result_status(&bench, RUN_A).as_deref(), Some("result_lost"), "{phase}");
+        assert!(started_sessions(&bench).is_empty());
+    }
+}
+
+#[test]
+fn recovery_handles_dead_terminals_even_without_readable_phase_data() {
+    for phase in [None, Some("broken json")] {
+        let mut bench = Bench::new();
+        if let Some(text) = phase {
+            fs::write(bench.fixture.answers("runs").join(format!("{RUN_A}.phase")), text).unwrap();
+        }
+        bench.world.borrow_mut().missing_tmux_sessions.insert(format!("=claude-run-{RUN_A}"));
+        bench.registry = Registry::new(Box::new(FakeSystem(bench.world.clone())), Box::new(FakeBanners(bench.shown.clone())));
+        assert_eq!(result_status(&bench, RUN_A).as_deref(), Some("result_lost"));
+        assert!(started_sessions(&bench).is_empty());
+    }
+}
+
+#[test]
+fn recovery_does_not_abandon_a_command_that_was_approved_during_the_terminal_probe() {
+    let mut bench = Bench::new();
+    fs::write(bench.fixture.answers("runs").join(format!("{RUN_A}.phase")), json!({"phase":"asking"}).to_string()).unwrap();
+    heartbeat(&bench, RUN_A, 600);
+    {
+        let mut world = bench.world.borrow_mut();
+        world.approval_terminals.insert(format!("claude-run-{RUN_A}"));
+        world.phase_on_tmux_probe = Some((RUN_A.into(), "running".into()));
+    }
+    bench.registry = Registry::new(Box::new(FakeSystem(bench.world.clone())), Box::new(FakeBanners(bench.shown.clone())));
+    bench.registry.tick_queues();
+    assert_eq!(result_status(&bench, RUN_A), None);
+    assert!(bench.registry.runs.running.contains(&RUN_A.to_string()));
+    assert!(!bench.commands().iter().any(|command| command.starts_with(&["tmux".into(), "kill-session".into()])));
+}
+
+#[test]
+fn a_done_notification_without_a_result_keeps_monitoring_until_terminal_death() {
+    for phase in ["asking", "running", "input"] {
+        let mut bench = Bench::new();
+        bench.registry.run_request(RUN_A).unwrap();
+        bench.registry.run_phase(RUN_A, phase);
+        bench.registry.run_phase(RUN_A, "done");
+        bench.registry.tick_queues();
+        assert_eq!(result_status(&bench, RUN_A), None);
+        bench.world.borrow_mut().missing_tmux_sessions.insert(format!("=claude-run-{RUN_A}"));
+        bench.registry.tick_queues();
+        assert_eq!(result_status(&bench, RUN_A).as_deref(), Some("result_lost"), "{phase}");
+    }
+}
+
+#[test]
+fn a_failed_recovery_probe_cannot_expire_a_potentially_approved_command() {
+    let mut bench = Bench::new();
+    fs::write(bench.fixture.answers("runs").join(format!("{RUN_A}.phase")), json!({"phase":"asking"}).to_string()).unwrap();
+    heartbeat(&bench, RUN_A, 600);
+    bench.world.borrow_mut().tmux_probe_failed = true;
+    bench.registry = Registry::new(Box::new(FakeSystem(bench.world.clone())), Box::new(FakeBanners(bench.shown.clone())));
+    assert_eq!(result_status(&bench, RUN_A), None);
+    assert!(!bench.commands().iter().any(|command| command.starts_with(&["tmux".into(), "kill-session".into()])));
+    fs::write(bench.fixture.answers("runs").join(format!("{RUN_A}.phase")), json!({"phase":"running"}).to_string()).unwrap();
+    bench.world.borrow_mut().approval_terminals.insert(format!("claude-run-{RUN_A}"));
+    bench.world.borrow_mut().tmux_probe_failed = false;
+    bench.registry.tick_queues();
+    assert_eq!(result_status(&bench, RUN_A), None);
+    assert!(bench.registry.runs.running.contains(&RUN_A.to_string()));
+}
+
+#[test]
+fn tmux_server_absence_is_not_confused_with_other_probe_failures() {
+    for (code, stderr, absent) in [
+        (1, "no server running on /tmp/tmux-1000/default\n", true),
+        (1, "error connecting to /tmp/tmux-1000/default (No such file or directory)\n", true),
+        (1, "no sessions\n", true),
+        (1, "error connecting to /tmp/tmux-1000/default (Permission denied)\n", false),
+        (1, "server exited unexpectedly\n", false),
+        (127, "tmux: command not found\n", false),
+    ] {
+        assert_eq!(tmux_server_absent(code, stderr), absent, "{code}: {stderr}");
+    }
+}
+
+#[test]
+fn losing_the_tmux_server_reports_lost_results_during_monitoring_and_recovery() {
+    for restart in [false, true] {
+        let mut bench = Bench::new();
+        bench.registry.run_request(RUN_A).unwrap();
+        bench.registry.run_phase(RUN_A, "running");
+        fs::write(bench.fixture.answers("runs").join(format!("{RUN_A}.phase")), json!({"phase":"running"}).to_string()).unwrap();
+        bench.world.borrow_mut().tmux_server_missing = true;
+        if restart {
+            bench.registry = Registry::new(Box::new(FakeSystem(bench.world.clone())), Box::new(FakeBanners(bench.shown.clone())));
+        } else {
+            bench.registry.tick_queues();
+        }
+        assert_eq!(result_status(&bench, RUN_A).as_deref(), Some("result_lost"), "restart={restart}");
+        assert_eq!(started_sessions(&bench).len(), 1);
+    }
+}
+
+#[test]
+fn recovered_running_commands_show_input_requested_without_a_fifo_notification() {
+    let mut bench = Bench::new();
+    bench.world.borrow_mut().approval_terminals.insert(format!("claude-run-{RUN_A}"));
+    let phase_path = bench.fixture.answers("runs").join(format!("{RUN_A}.phase"));
+    fs::write(&phase_path, json!({"phase":"running"}).to_string()).unwrap();
+    bench.registry = Registry::new(Box::new(FakeSystem(bench.world.clone())), Box::new(FakeBanners(bench.shown.clone())));
+    fs::write(&phase_path, json!({"phase":"input"}).to_string()).unwrap();
+    bench.registry.tick_queues();
+    assert_eq!(bench.registry.runs.current, RUN_A);
+    assert_eq!(bench.registry.runs.phase, "input");
+    assert!(!bench.windows().is_empty());
+    assert!(started_sessions(&bench).is_empty());
+}
+
+#[test]
+fn a_failed_terminal_probe_does_not_publish_a_lost_result() {
+    let mut bench = Bench::new();
+    bench.registry.run_request(RUN_A).unwrap();
+    bench.registry.run_phase(RUN_A, "running");
+    bench.world.borrow_mut().tmux_probe_failed = true;
+    bench.registry.tick_queues();
+    assert_eq!(result_status(&bench, RUN_A), None);
+    assert!(bench.registry.runs.running.contains(&RUN_A.to_string()));
+    bench.registry = Registry::new(Box::new(FakeSystem(bench.world.clone())), Box::new(FakeBanners(bench.shown.clone())));
+    assert_eq!(result_status(&bench, RUN_A), None);
+    bench.world.borrow_mut().tmux_probe_failed = false;
+    bench.world.borrow_mut().missing_tmux_sessions.insert(format!("=claude-run-{RUN_A}"));
+    bench.registry.tick_queues();
+    assert_eq!(result_status(&bench, RUN_A).as_deref(), Some("result_lost"));
+}
+
+#[test]
 fn a_waiting_session_carries_what_it_asks_until_it_moves_on() {
     let mut bench = Bench::new();
     bench.report(SESSION_A, json!({"state": "needs-you", "message": "Claude needs your permission to use Bash", "sticky": true}));
@@ -3177,10 +3398,12 @@ fn ask_to_run_phases_follow_the_requesting_session_until_done() {
     assert_eq!(phase(&bench, SESSION_A), "running");
     bench.registry.run_phase(RUN_A, "input");
     assert_eq!(phase(&bench, SESSION_A), "input", "input remains visible while another approval is shown");
+    fs::write(bench.fixture.answers("runs").join(format!("{RUN_B}.result")), json!({"status":"ran", "exit":0}).to_string()).unwrap();
     bench.registry.run_phase(RUN_B, "done");
     assert_eq!(phase(&bench, SESSION_B), "");
     bench.registry.run_phase(RUN_A, "running");
     assert_eq!(phase(&bench, SESSION_A), "running");
+    fs::write(bench.fixture.answers("runs").join(format!("{RUN_A}.result")), json!({"status":"ran", "exit":0}).to_string()).unwrap();
     bench.registry.run_phase(RUN_A, "done");
     assert_eq!(phase(&bench, SESSION_A), "");
 }
@@ -3487,6 +3710,7 @@ fn a_command_that_ends_while_running_on_closes_its_own_pane() {
     bench.registry.run_request(RUN_A).unwrap();
     bench.registry.run_request(RUN_B).unwrap();
     bench.registry.run_phase(RUN_A, "running");
+    fs::write(bench.fixture.answers("runs").join(format!("{RUN_A}.result")), json!({"status":"ran", "exit":0}).to_string()).unwrap();
     bench.registry.run_phase(RUN_A, "done");
     assert!(bench.commands().contains(&vec!["cockpit".to_string(), "approval-pane".into(), "close".into(), RUN_A.into()]));
     assert!(bench.registry.runs.running.is_empty());

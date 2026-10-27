@@ -70,6 +70,10 @@ fn wait_for_result(answers_key: &str, id: &str) -> i32 {
     }
     let _ = std::fs::remove_file(&heartbeat);
     let result: Value = std::fs::read_to_string(&path).ok().and_then(|text| serde_json::from_str(&text).ok()).unwrap_or(json!({}));
+    if result.get("status").and_then(Value::as_str) == Some("result_lost") {
+        println!("The approval terminal ended without a final result; command outcome unknown. Do not retry automatically: inspect what already ran with Theo first.");
+        return 1;
+    }
     if result.get("status").and_then(Value::as_str) == Some("abandoned") {
         println!("The request was dropped: nobody waited for its answer for a while, so Theo's approval window closed. Ask again if it is still needed.");
         return TIMED_OUT;

@@ -47,7 +47,7 @@ impl AskToRun {
 
     fn ask(&self, arguments: &[&str], wait: &str) -> Child {
         let runs = self.runs.display().to_string();
-        self.sandbox.command(bin().join("ask-to-run"), &[("CLAUDE_RUNS_DIR", &runs), ("ASK_TO_RUN_WAIT_S", wait)])
+        self.sandbox.command(env!("CARGO_BIN_EXE_ask-to-run"), &[("CLAUDE_RUNS_DIR", &runs), ("ASK_TO_RUN_WAIT_S", wait)])
             .args(arguments).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap()
     }
 
@@ -119,6 +119,19 @@ fn a_long_output_shows_its_end_and_where_the_rest_is() {
     let shown = stdout(&finish(asking, TIMEOUT));
     assert!(shown.contains("[first 380 of 500 lines left out; the whole output is in /answers/runs/x.output]"), "{shown}");
     assert!(shown.contains("line 500") && !shown.contains("line 380\n"), "{shown}");
+}
+
+#[test]
+fn a_lost_result_reports_an_unknown_outcome_without_suggesting_a_retry() {
+    let fixture = AskToRun::new();
+    fs::write(answers(&fixture.sandbox).join("0123456789ab.result"), json!({"status":"result_lost"}).to_string()).unwrap();
+    let output = finish(fixture.ask(&["--wait", "0123456789ab"], "0"), TIMEOUT);
+    let shown = stdout(&output);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(shown.contains("command outcome unknown"), "{shown}");
+    assert!(shown.contains("Do not retry automatically"), "{shown}");
+    assert!(!shown.contains("ask-to-run --wait"), "{shown}");
+    assert!(fixture.daemon.as_ref().unwrap().received(Duration::from_millis(10)).is_empty());
 }
 
 #[test]
