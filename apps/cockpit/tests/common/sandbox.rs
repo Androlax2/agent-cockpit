@@ -143,7 +143,7 @@ impl Sandbox {
     pub fn command(&self, program: impl AsRef<std::ffi::OsStr>, extra: &[(&str, &str)]) -> Command {
         let mut command = Command::new(program);
         // New launchers export canonical settings; tests must not inherit the caller's paths/key.
-        for name in ["COCKPIT_ANSWERS_KEY", "COCKPIT_ANSWERS_DIR", "COCKPIT_RUNS_DIR", "COCKPIT_REMOTE_DIR", "COCKPIT_REMOTE_ADDRESS",
+        for name in ["COCKPIT_APPROVAL_ID", "COCKPIT_ANSWERS_KEY", "COCKPIT_ANSWERS_DIR", "COCKPIT_RUNS_DIR", "COCKPIT_REMOTE_DIR", "COCKPIT_REMOTE_ADDRESS",
                      "COCKPIT_TODO_PATH", "COCKPIT_TODO_UPDATES", "COCKPIT_DESIGNS_DIR", "COCKPIT_DOTFILES_LIVE", "COCKPIT_DOTFILES_WORK",
                      "COCKPIT_GREYWALL_WORK", "COCKPIT_GREYPROXY_WORK", "COCKPIT_REVIEWS_FIXTURE", "COCKPIT_HEALTH_COCKPIT", "COCKPIT_HEALTH_DOTFILES"] {
             command.env_remove(name);
