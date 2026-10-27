@@ -65,6 +65,12 @@ pub(crate) fn workers(registry: &mut Registry) -> Result<Vec<WorkerState>, TeamE
 
 fn workers_at(registry: &mut Registry, now: i64, observe: bool) -> Result<Vec<WorkerState>, TeamError> {
     let live = teams::live_sessions(registry)?;
+    workers_among(registry, live, now, observe)
+}
+
+/// The workers among sessions the caller's own live_sessions() already verified: a team request
+/// must not pay for that pass twice.
+pub(crate) fn workers_among(registry: &mut Registry, live: Vec<VerifiedSession>, now: i64, observe: bool) -> Result<Vec<WorkerState>, TeamError> {
     let gaming = registry.system.gaming();
     let connection = registry.teams.as_ref().expect("live_sessions opens the protected store");
     let workers = live.into_iter().map(|session| {
