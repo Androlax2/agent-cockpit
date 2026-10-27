@@ -136,6 +136,7 @@ pub enum ReconciliationEvidence {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ChiefHostAction {
+    Start { request_id: String, previous_attempt: Option<String> },
     Enable { request_id: String, session: VerifiedSession },
     Pause { request_id: String, expected_epoch: String },
     Resume { request_id: String, expected_epoch: String },
@@ -245,13 +246,14 @@ impl ChiefAgentAction {
 impl ChiefHostAction {
     pub fn validate(&self) -> Result<(), TeamError> {
         let request_id = match self {
-            Self::Enable { request_id, .. } | Self::Pause { request_id, .. } | Self::Resume { request_id, .. }
+            Self::Start { request_id, .. } | Self::Enable { request_id, .. } | Self::Pause { request_id, .. } | Self::Resume { request_id, .. }
             | Self::Disable { request_id, .. } | Self::Resolve { request_id, .. } | Self::AnswerDecision { request_id, .. } | Self::RequestSummary { request_id }
             | Self::ReconcileDelivery {request_id,..} | Self::ReconcileLaunch {request_id,..} | Self::Overrule { request_id, .. }
             | Self::DeleteHabit { request_id, .. } | Self::RestoreHabit { request_id, .. } | Self::RescopeHabit { request_id, .. } => request_id,
         };
         key(request_id)?;
         match self {
+            Self::Start { previous_attempt, .. } => previous_attempt.as_deref().map_or(Ok(()), key),
             Self::Enable { session: verified, .. } => session(verified),
             Self::Pause { expected_epoch, .. } | Self::Resume { expected_epoch, .. } | Self::Disable { expected_epoch, .. } => key(expected_epoch),
             Self::ReconcileDelivery {message:target,expected_revision,evidence,..} | Self::ReconcileLaunch {token:target,expected_revision,evidence,..} => {

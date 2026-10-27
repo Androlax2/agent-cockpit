@@ -345,6 +345,63 @@ pub fn tick(registry: &mut Registry, now_ms: i64) -> Result<(), TeamError> {
         registry.chief_attention_presentations.insert(decision.clone(),true);
         connection.execute("UPDATE chief_attention SET notified_at=coalesce(notified_at,?2) WHERE decision=?1",(decision.as_str(),now_ms))?;
     }
-    if let Ok(live) = &observation { observe_stops(registry, live, now_ms)?; }
+    if let Ok(live) = &observation {
+        advance_startup(registry, live)?;
+        observe_stops(registry, live, now_ms)?;
+    }
     observation.map(|_|())
+}
+
+fn advance_startup(registry: &mut Registry, live: &[WorkerState]) -> Result<(), TeamError> {
+    let connection = registry.teams.as_ref().expect("opened by observation");
+    let Some(startup) = store::startup(connection)? else { return Ok(()) };
+    let state = startup["state"].as_str().expect("stored startup state");
+    if !matches!(state, "starting" | "checking") { return Ok(()); }
+    let attempt = startup["id"].as_str().expect("stored startup id");
+    let session = startup["session_id"].as_str().expect("stored startup session");
+    let directory = startup["directory"].as_str().expect("stored startup directory");
+    if state == "starting" {
+        // Claim before dispatch: a daemon crash here leaves Checking, never a second process.
+        if connection.execute("UPDATE chief_startup SET state='checking',revision=revision+1 WHERE id=?1 AND state='starting'", [attempt])? == 0 { return Ok(()); }
+        if let Err(error) = registry.system.start_chief(session, directory) {
+            startup_outcome(registry, attempt, "failed", Some(&error))?;
+        }
+        return Ok(());
+    }
+    if let Some(result) = registry.system.chief_launch_result(session) {
+        match result {
+            Ok((0, _)) => {},
+            Ok((code, error)) => {
+                let error = format!("Chief launcher exited with status {code}: {error}");
+                // Exit 2 is reserved for pre-launch failures. Any later failure is uncertain.
+                let absent = !live.iter().any(|worker|worker.session.session_id==session)
+                    && !registry.system.live_session_ids().contains(session);
+                let next = if code==2 && absent { "failed" } else { "checking" };
+                startup_outcome(registry, attempt, next, Some(&error))?;
+                if next=="failed" { return Ok(()); }
+            },
+            Err(error) => startup_outcome(registry, attempt, "checking", Some(&error))?,
+        }
+    }
+    let Some(worker) = live.iter().find(|worker|worker.session.session_id==session) else { return Ok(()); };
+    if worker.session.agent != "opencode" || worker.session.project != format!("path:{directory}") {
+        return startup_outcome(registry, attempt, "checking", Some("The reported Chief session does not match its reserved agent and folder"));
+    }
+    let action = ChiefHostAction::Enable {request_id:format!("chief-start-{attempt}"),session:worker.session.clone()};
+    match host(registry, &action)?.result {
+        Ok(_) => {
+            if store::chief_session(registry.teams.as_ref().expect("opened above"))?.as_deref() != Some(session) {
+                return startup_outcome(registry, attempt, "checking", Some("Chief activation was disabled; the existing session is still being tracked"));
+            }
+            registry.teams.as_ref().expect("opened above").execute("UPDATE chief_startup SET identity=?2 WHERE id=?1", (attempt,serde_json::to_string(&worker.session)?))?;
+            startup_outcome(registry, attempt, "active", None)
+        },
+        Err(error) => startup_outcome(registry, attempt, "checking", Some(&error.message)),
+    }
+}
+
+fn startup_outcome(registry: &Registry, attempt: &str, state: &str, error: Option<&str>) -> Result<(), TeamError> {
+    registry.teams.as_ref().expect("startup store opened").execute("UPDATE chief_startup SET state=?2,error=?3,revision=revision+1
+        WHERE id=?1 AND state='checking' AND (state!=?2 OR error IS NOT ?3)", (attempt,state,error))?;
+    Ok(())
 }

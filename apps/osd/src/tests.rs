@@ -132,6 +132,7 @@ struct World {
     started: Vec<Vec<String>>,
     /// start_detached reports that nothing could be started
     start_fails: bool,
+    chief_results: HashMap<String, Result<(i32, String), String>>,
 }
 
 impl World {
@@ -196,6 +197,13 @@ impl System for FakeSystem {
     fn start_detached(&mut self, command: &[&str]) -> bool {
         self.0.borrow_mut().started.push(command.iter().map(|part| part.to_string()).collect());
         !self.0.borrow().start_fails
+    }
+    fn start_chief(&mut self, session: &str, directory: &str) -> Result<(), String> {
+        if self.start_detached(&["cockpit", "--agent", "opencode", "chief-start", session, directory]) { Ok(()) }
+        else { Err("fixture launcher missing".into()) }
+    }
+    fn chief_launch_result(&mut self, session: &str) -> Option<Result<(i32, String), String>> {
+        self.0.borrow_mut().chief_results.remove(session)
     }
 }
 

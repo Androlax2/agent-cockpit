@@ -5,6 +5,171 @@ use cockpit::teams::{AgentAction, ErrorCode, HostRequest, VerifiedSession};
 #[path = "chief_workflow_tests.rs"]
 mod workflow;
 
+fn start(bench: &mut Bench, request: &str) -> serde_json::Value {
+    crate::teams::host(&mut bench.registry, std::process::id(), HostRequest::Chief {
+        action: ChiefHostAction::Start { request_id: request.into(), previous_attempt: None },
+    }).unwrap().result.unwrap()
+}
+
+#[test]
+fn chief_start_dispatches_only_once_across_repeated_requests_and_ticks() {
+    let mut bench = team_bench();
+    let first = start(&mut bench, "start-one");
+    start(&mut bench, "start-two");
+    for _ in 0..3 { crate::chief::tick(&mut bench.registry, crate::teams::now_ms()).unwrap(); }
+    let world = bench.world.borrow();
+    let launches: Vec<_> = world.started.iter().filter(|command|command.iter().any(|argument|argument=="chief-start")).collect();
+    assert_eq!(launches.len(), 1);
+    assert!(launches[0].contains(&first["session_id"].as_str().unwrap().to_string()));
+    let startup = cockpit::chief::store::startup(bench.registry.teams.as_ref().unwrap()).unwrap().unwrap();
+    assert_eq!(startup["state"], "checking");
+    assert_eq!(startup["can_retry"], false);
+}
+
+#[test]
+fn chief_snapshot_reads_never_dispatch_a_reserved_start() {
+    let mut bench = team_bench();
+    start(&mut bench, "start");
+    for _ in 0..2 { crate::chief::snapshot(&mut bench.registry, 0, 50, None).unwrap(); }
+    assert!(bench.world.borrow().started.iter().all(|command|!command.iter().any(|argument|argument=="chief-start")));
+}
+
+#[test]
+fn chief_launch_that_cannot_start_returns_its_error_and_allows_retry() {
+    let mut bench = team_bench();
+    bench.world.borrow_mut().start_fails = true;
+    start(&mut bench, "start");
+    crate::chief::tick(&mut bench.registry, crate::teams::now_ms()).unwrap();
+    let startup = cockpit::chief::store::startup(bench.registry.teams.as_ref().unwrap()).unwrap().unwrap();
+    assert_eq!(startup["state"], "failed");
+    assert_eq!(startup["can_retry"], true);
+    assert!(startup["error"].as_str().is_some_and(|message|!message.is_empty()));
+}
+
+fn report_reserved_chief(bench: &mut Bench, startup: &serde_json::Value, directory: &str) {
+    fs::create_dir_all(directory).unwrap();
+    bench.world.borrow_mut().sender_targets.insert(40, target(&[("tmux_pane", "%40")]));
+    bench.world.borrow_mut().sender_directories.insert(40, directory.into());
+    bench.world.borrow_mut().sender_runtimes.insert(40, "runtime-chief".into());
+    let report = parse_session(&json!({"session":startup["session_id"],"agent":"opencode","project":"cockpit-chief","cwd":directory,"state":"waiting"}).to_string()).unwrap();
+    bench.registry.report_from(report, 40).unwrap();
+}
+
+#[test]
+fn chief_activation_waits_for_admission_then_enables_the_same_reserved_session() {
+    let mut bench = team_bench();
+    let startup = start(&mut bench, "start");
+    crate::chief::tick(&mut bench.registry, crate::teams::now_ms()).unwrap();
+    report_reserved_chief(&mut bench, &startup, startup["directory"].as_str().unwrap());
+    crate::chief::tick(&mut bench.registry, crate::teams::now_ms()).unwrap();
+    let waiting = cockpit::chief::store::startup(bench.registry.teams.as_ref().unwrap()).unwrap().unwrap();
+    assert_eq!(waiting["state"], "checking");
+    assert!(waiting["error"].as_str().unwrap().contains("verification"));
+    let session = verified(&mut bench, startup["session_id"].as_str().unwrap());
+    crate::teams::host(&mut bench.registry, std::process::id(), HostRequest::VerifyChiefAdmission {
+        session:session.clone(),adapter:"opencode-queued-v1".into(),evidence:"Controlled host-verification fixture".into(),
+    }).unwrap().result.unwrap();
+    for _ in 0..2 { crate::chief::tick(&mut bench.registry, crate::teams::now_ms()).unwrap(); }
+    let connection = bench.registry.teams.as_ref().unwrap();
+    let active = cockpit::chief::store::startup(connection).unwrap().unwrap();
+    assert_eq!(active["state"], "active");
+    assert_eq!(active["session"], json!(session));
+    assert_eq!(connection.query_row("SELECT count(*) FROM chief_grants", [], |row|row.get::<_,i64>(0)).unwrap(), 1);
+    assert_eq!(bench.world.borrow().started.iter().filter(|command|command.contains(&"chief-start".into())).count(), 1);
+}
+
+#[test]
+fn chief_report_from_another_folder_cannot_activate_the_reservation() {
+    let mut bench = team_bench();
+    let startup = start(&mut bench, "start");
+    crate::chief::tick(&mut bench.registry, crate::teams::now_ms()).unwrap();
+    let other = bench.fixture.root.join("other-project");
+    report_reserved_chief(&mut bench, &startup, other.to_str().unwrap());
+    crate::chief::tick(&mut bench.registry, crate::teams::now_ms()).unwrap();
+    let connection = bench.registry.teams.as_ref().unwrap();
+    assert!(cockpit::chief::store::chief_session(connection).unwrap().is_none());
+    assert_eq!(cockpit::chief::store::startup(connection).unwrap().unwrap()["can_retry"], false);
+}
+
+#[test]
+fn a_claimed_chief_start_is_not_relaunched_after_store_reopen() {
+    let mut bench = team_bench();
+    start(&mut bench, "start");
+    crate::chief::tick(&mut bench.registry, crate::teams::now_ms()).unwrap();
+    bench.registry.teams = None;
+    for _ in 0..2 { crate::chief::tick(&mut bench.registry, crate::teams::now_ms()).unwrap(); }
+    assert_eq!(bench.world.borrow().started.iter().filter(|command|command.contains(&"chief-start".into())).count(), 1);
+    assert_eq!(cockpit::chief::store::startup(bench.registry.teams.as_ref().unwrap()).unwrap().unwrap()["can_retry"], false);
+}
+
+#[test]
+fn only_confirmed_prelaunch_failure_allows_chief_retry() {
+    for (exit, expected) in [(2, "failed"), (3, "checking"), (-1, "checking")] {
+        let mut bench = team_bench();
+        let startup = start(&mut bench, "start");
+        crate::chief::tick(&mut bench.registry, crate::teams::now_ms()).unwrap();
+        bench.world.borrow_mut().chief_results.insert(startup["session_id"].as_str().unwrap().into(), Ok((exit,"launch cause".into())));
+        crate::chief::tick(&mut bench.registry, crate::teams::now_ms()).unwrap();
+        let result = cockpit::chief::store::startup(bench.registry.teams.as_ref().unwrap()).unwrap().unwrap();
+        assert_eq!(result["state"], expected);
+        assert!(result["error"].as_str().unwrap().contains("launch cause"));
+    }
+}
+
+#[test]
+fn a_replayed_activation_cannot_hide_a_concurrent_disable() {
+    let mut bench = team_bench();
+    let startup = start(&mut bench, "start");
+    crate::chief::tick(&mut bench.registry, crate::teams::now_ms()).unwrap();
+    report_reserved_chief(&mut bench, &startup, startup["directory"].as_str().unwrap());
+    let session = verified(&mut bench, startup["session_id"].as_str().unwrap());
+    crate::teams::host(&mut bench.registry, std::process::id(), HostRequest::VerifyChiefAdmission {
+        session:session.clone(),adapter:"opencode-queued-v1".into(),evidence:"Controlled fixture".into(),
+    }).unwrap().result.unwrap();
+    let enabled = crate::chief::host(&mut bench.registry, &ChiefHostAction::Enable {
+        request_id:format!("chief-start-{}", startup["id"].as_str().unwrap()),session,
+    }).unwrap().result.unwrap();
+    crate::chief::host(&mut bench.registry, &ChiefHostAction::Disable { request_id:"disable".into(),expected_epoch:enabled["epoch"].as_str().unwrap().into() }).unwrap().result.unwrap();
+    crate::chief::tick(&mut bench.registry, crate::teams::now_ms()).unwrap();
+    let result = cockpit::chief::store::startup(bench.registry.teams.as_ref().unwrap()).unwrap().unwrap();
+    assert_eq!(result["state"], "checking");
+    assert_eq!(result["can_retry"], false);
+}
+
+#[test]
+fn chief_crash_after_dispatch_claim_cannot_launch_on_recovery() {
+    let mut bench = team_bench();
+    start(&mut bench, "start");
+    bench.registry.teams.as_ref().unwrap().execute("UPDATE chief_startup SET state='checking',revision=revision+1", []).unwrap();
+    bench.registry.teams = None;
+    crate::chief::tick(&mut bench.registry, crate::teams::now_ms()).unwrap();
+    let result = cockpit::chief::store::startup(bench.registry.teams.as_ref().unwrap()).unwrap().unwrap();
+    assert_eq!(result["state"], "checking");
+    assert_eq!(result["can_retry"], false);
+    assert!(bench.world.borrow().started.iter().all(|command|!command.contains(&"chief-start".into())));
+}
+
+#[test]
+fn chief_activation_replay_never_transfers_the_grant_to_a_restarted_runtime() {
+    let mut bench = team_bench();
+    let startup = start(&mut bench, "start");
+    crate::chief::tick(&mut bench.registry, crate::teams::now_ms()).unwrap();
+    report_reserved_chief(&mut bench, &startup, startup["directory"].as_str().unwrap());
+    let session = verified(&mut bench, startup["session_id"].as_str().unwrap());
+    crate::teams::host(&mut bench.registry, std::process::id(), HostRequest::VerifyChiefAdmission {
+        session:session.clone(),adapter:"opencode-queued-v1".into(),evidence:"Controlled fixture".into(),
+    }).unwrap().result.unwrap();
+    crate::chief::host(&mut bench.registry, &ChiefHostAction::Enable {
+        request_id:format!("chief-start-{}", startup["id"].as_str().unwrap()),session:session.clone(),
+    }).unwrap().result.unwrap();
+    bench.world.borrow_mut().sender_runtimes.insert(40, "runtime-chief-restarted".into());
+    bench.registry.sessions.get_mut(&session.session_id).unwrap().runtime = "runtime-chief-restarted".into();
+    crate::chief::tick(&mut bench.registry, crate::teams::now_ms()).unwrap();
+    let connection = bench.registry.teams.as_ref().unwrap();
+    assert_eq!(cockpit::chief::store::startup(connection).unwrap().unwrap()["state"], "checking");
+    assert_eq!(connection.query_row("SELECT runtime FROM chief_grants WHERE session_id=?1", [&session.session_id], |row|row.get::<_,String>(0)).unwrap(), "runtime-chief");
+}
+
 fn verified(bench: &mut Bench, id: &str) -> VerifiedSession {
     crate::teams::live_sessions(&mut bench.registry).unwrap().into_iter().find(|session| session.session_id == id).unwrap()
 }

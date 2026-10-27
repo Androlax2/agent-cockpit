@@ -426,6 +426,8 @@ pub trait System {
     fn sender_subscription_token(&mut self, _sender: u32) -> Option<String> { None }
     /// Starts a command and does not wait for it: false when it could not start.
     fn start_detached(&mut self, _command: &[&str]) -> bool { false }
+    fn start_chief(&mut self, _session: &str, _directory: &str) -> Result<(), String> { Err("Chief launcher unavailable".into()) }
+    fn chief_launch_result(&mut self, _session: &str) -> Option<Result<(i32, String), String>> { None }
     fn quiet(&mut self) -> bool {
         self.in_meeting() || self.gaming()
     }
@@ -1939,6 +1941,7 @@ impl Registry {
 // ---- The real system ----
 
 pub struct RealSystem {
+    chief_launches: HashMap<String, std::sync::mpsc::Receiver<Result<(i32, String), String>>>,
     gaming_cache: (Option<Instant>, bool),
     /// When khal was last asked, and its answer so far: khal runs on a thread of its own, never on
     /// the GTK loop (it takes a few hundred ms to start; security audit 2026-10-19, performance 4).
@@ -1952,7 +1955,7 @@ const PROCESS_SCAN_FRESH: Duration = Duration::from_millis(500);
 
 impl RealSystem {
     pub fn new() -> Self {
-        RealSystem { gaming_cache: (None, false), meeting_cache: (None, Default::default()), process_scan: None }
+        RealSystem { chief_launches: HashMap::new(), gaming_cache: (None, false), meeting_cache: (None, Default::default()), process_scan: None }
     }
 
     /// The live session ids and the Claude panes, from one /proc scan.
@@ -2382,5 +2385,34 @@ impl System for RealSystem {
             Ok(mut child) => { std::thread::spawn(move || child.wait()); true },
             Err(error) => { log(&format!("could not start {program}: {error}")); false },
         }
+    }
+    fn start_chief(&mut self, session: &str, directory: &str) -> Result<(), String> {
+        let mut child = Command::new("cockpit").args(["--agent", "opencode", "chief-start", session, directory])
+            .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).spawn().map_err(|error|error.to_string())?;
+        let (sender, receiver) = std::sync::mpsc::channel();
+        self.chief_launches.insert(session.into(), receiver);
+        std::thread::spawn(move || {
+            use std::io::Read;
+            let mut stderr = child.stderr.take().expect("piped launcher stderr");
+            let mut bytes = Vec::new();
+            let result = (|| {
+                stderr.by_ref().take(8192).read_to_end(&mut bytes).map_err(|error|error.to_string())?;
+                std::io::copy(&mut stderr, &mut std::io::sink()).map_err(|error|error.to_string())?;
+                let status = child.wait().map_err(|error|error.to_string())?;
+                Ok((status.code().unwrap_or(-1), String::from_utf8_lossy(&bytes).trim().to_string()))
+            })();
+            let _ = sender.send(result);
+        });
+        Ok(())
+    }
+    fn chief_launch_result(&mut self, session: &str) -> Option<Result<(i32, String), String>> {
+        let receiver = self.chief_launches.get(session)?;
+        let result = match receiver.try_recv() {
+            Ok(result) => result,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return None,
+            Err(error) => Err(error.to_string()),
+        };
+        self.chief_launches.remove(session);
+        Some(result)
     }
 }

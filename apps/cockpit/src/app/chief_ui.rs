@@ -44,7 +44,14 @@ impl App {
         if view.submission_pending(&key) && !self.refresh_chief_view() {return true;}
         let effect=self.chief_view.as_mut().expect("Chief is open").handle(key);
         match effect {
-            Effect::None=>{},Effect::Close=>self.chief_view=None,
+            Effect::None=>{},Effect::Close=> {
+                if !self.chief_view.as_mut().expect("Chief is open").suspend_pending_start() {self.chief_view=None;}
+            },
+            Effect::Start(action)=> {
+                let result=crate::teams::client::host_request(&HostRequest::Chief {action}).and_then(|reply|reply.result);
+                if let Err(error)=result {self.chief_view.as_mut().expect("Chief is open").startup_failed(error.message);}
+                self.refresh_chief_view();
+            },
             Effect::Summary=> {
                 let action=ChiefHostAction::RequestSummary {request_id:format!("chief-ui-{}",util::token_hex(12))};
                 let result=crate::teams::client::host_request(&HostRequest::Chief {action}).and_then(|reply|reply.result);
@@ -93,6 +100,7 @@ fn mark_style(line: &ListLine, mark: Mark) -> Style {
 pub(super) fn draw(view: &mut ChiefView, buffer: &mut Buffer) {
     let (width,height)=(buffer.area.width,buffer.area.height);
     if width<8 || height<8 {return;}
+    if view.startup_screen() {draw_startup(view,buffer);return;}
     let (top,bottom)=(HEADER_LINES,height-2);let inner=width.saturating_sub(4) as usize;let body=inner.saturating_sub(2).max(1);
     for row in top..=bottom {
         put(buffer,row,1,&" ".repeat((width-2) as usize),on(FG,BLACK));
@@ -125,4 +133,29 @@ pub(super) fn draw(view: &mut ChiefView, buffer: &mut Buffer) {
     }
     for (offset,line) in footer.iter().enumerate() {put(buffer,footer_start+offset as u16,3,line,dim(FG_DARK));}
     put(buffer,bottom,1,&format!("└{}┘","─".repeat(inner)),style(BLUE));
+}
+
+fn draw_startup(view: &mut ChiefView, buffer: &mut Buffer) {
+    let (width,height)=(buffer.area.width,buffer.area.height);
+    let body=width.saturating_sub(6) as usize;
+    let top=HEADER_LINES;
+    put(buffer,top,2,"‹ Status",style(BLUE));
+    let mut lines=Vec::new();
+    for (index,line) in view.startup_lines().iter().enumerate() {
+        let appearance=if line.starts_with("[c] ") {on(BLACK,BLUE)}
+            else if index==0 {bold(match view.startup_phase() {"failed"|"unavailable"=>RED,"off"=>FG,_=>BLUE})}
+            else if line.starts_with("You can leave") || line.starts_with("Creates its own") || line.starts_with("No session remains") || line=="Starting…" {dim(FG_DARK)}
+            else {style(FG)};
+        lines.extend(wrap_detail_text(line,body).into_iter().map(|text|(text,appearance)));
+    }
+    let available=height.saturating_sub(top+5) as usize;
+    view.page_step=available.max(1).min(5);
+    let first=view.clamp_scroll(lines.len().saturating_sub(available));
+    for (offset,(line,appearance)) in lines.iter().skip(first).take(available).enumerate() {
+        let row=top+2+offset as u16;
+        if line.starts_with("[c] ") {put(buffer,row,3,&" ".repeat(body),*appearance);}
+        put(buffer,row,3,line,*appearance);
+        if line.starts_with("[c] ") {put(buffer,row,3,"[c]",on(FG,BLACK));}
+    }
+    put(buffer,height-3,2,&fit(view.footer(),body),dim(FG_DARK));
 }

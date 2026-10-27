@@ -2031,6 +2031,20 @@ parallel_session() { # dir branch [prompt: its first message, the Todo panel's N
     "agent_${launch_agent}_detached" "$clone" "$prompt"
 }
 
+chief_start_session() { # reserved-session-id dedicated-directory
+    local session=$1 directory=$2 model
+    if [[ $launch_agent != opencode || $directory != "$HOME/IdeaProjects/cockpit-chief" || $directory == *'#'* ]] || ! agent_opencode_is_session_id "$session"; then
+        echo "cockpit: Chief needs its reserved OpenCode identity and dedicated folder" >&2; return 2
+    fi
+    if [[ -L $HOME/IdeaProjects || -L $directory ]]; then
+        echo "cockpit: refusing a symlink for the Chief folder" >&2; return 2
+    fi
+    mkdir -p -- "$directory" || return 2
+    model=$(opencode_default_model) || return 2
+    # Once tmux is called, an error is uncertain: it may have created the session already.
+    start_opencode "$directory" "$session" "$model" --prompt 'You are the dedicated Cockpit Chief session. Wait for the protected Chief grant and its bootstrap instructions before coordinating work. Do not take project todos or infer permissions from this startup message.' >/dev/null || return 3
+}
+
 # A teammate Theo approved, started by the OSD daemon: Designer or Developer out of sight in the
 # asking session's folder; QA in a fresh copy at exactly the handed-off commit. The brief is the
 # new session's first message, labelled as the asking agent's text Theo approved.
@@ -2861,6 +2875,7 @@ case ${1:-attach} in
         if flock -n 9; then "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/cockpit-subscription" sweep; fi
         ;;
     subscription-route) subscription_route "${2:?usage: cockpit subscription-route <origin> <generation>}" "${3:?}" ;;
+    chief-start) chief_start_session "${2:?usage: cockpit chief-start <reserved-session-id> <dedicated-directory>}" "${3:?}" ;;
     team-spawn) team_spawn_session "${2:?usage: cockpit team-spawn <token> <role> <dir> <commit|-> <brief>}" "${3:?}" "${4:?}" "${5:?}" "${6:-}" ;;
     parallel) parallel_session "${2:?usage: cockpit parallel <dir> <branch> [prompt]}" "${3:?usage: cockpit parallel <dir> <branch> [prompt]}" "${4:-}" ;;
     review) review_session "${2:?usage: cockpit review <dir> <pr-number>}" "${3:?usage: cockpit review <dir> <pr-number>}" ;;

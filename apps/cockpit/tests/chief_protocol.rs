@@ -3,6 +3,24 @@ use cockpit::teams::{AgentAction, Role};
 use serde_json::json;
 
 #[test]
+fn chief_start_only_accepts_a_host_request_and_an_exact_retry_reference() {
+    let start = json!({"action":"start","request_id":"start-1","previous_attempt":null});
+    let action = serde_json::from_value::<ChiefHostAction>(start.clone()).expect("host Start action");
+    assert!(action.validate().is_ok());
+    for field in ["directory", "session", "agent"] {
+        let mut invalid = start.clone();
+        invalid[field] = json!("caller-controlled");
+        assert!(serde_json::from_value::<ChiefHostAction>(invalid).is_err(), "{field}");
+    }
+    for (field, value) in [("request_id", "bad request"), ("previous_attempt", "../attempt")] {
+        let mut invalid = start.clone();
+        invalid[field] = json!(value);
+        assert!(serde_json::from_value::<ChiefHostAction>(invalid).unwrap().validate().is_err());
+    }
+    assert!(serde_json::from_value::<ChiefAgentAction>(start).is_err());
+}
+
+#[test]
 fn agents_cannot_approve_work_or_claim_a_chief_team_role() {
     assert!(serde_json::from_value::<AgentAction>(json!({"action":"chief","request":{"action":"approve_work"}})).is_err());
     assert!(serde_json::from_value::<Role>(json!("chief")).is_err());

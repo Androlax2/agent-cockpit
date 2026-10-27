@@ -6,6 +6,25 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::{Value, json};
 
 fn conflict(message: &str) -> TeamError { TeamError::new(ErrorCode::Conflict, message) }
+
+pub(crate) fn upgrade_to_16(connection: &Connection) -> Result<(), TeamError> {
+    let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version >= 16 { return Ok(()); }
+    connection.execute_batch("CREATE TABLE IF NOT EXISTS chief_startup (
+        singleton INTEGER PRIMARY KEY CHECK(singleton=1), id TEXT NOT NULL UNIQUE, session_id TEXT NOT NULL UNIQUE, directory TEXT NOT NULL,
+        state TEXT NOT NULL CHECK(state IN ('starting','checking','active','failed')),
+        revision INTEGER NOT NULL, created_at INTEGER NOT NULL, error TEXT, identity TEXT);
+        PRAGMA user_version=16;")?;
+    Ok(())
+}
+
+/// Protected host startup state; absence never means an in-flight launch failed.
+pub fn startup(connection: &Connection) -> Result<Option<Value>, TeamError> {
+    let encoded: Option<String> = connection.query_row("SELECT json_object('id',id,'session_id',session_id,'directory',directory,'state',state,
+        'revision',revision,'created_at_ms',created_at,'error',error,'session',json(identity),'can_retry',json(CASE state WHEN 'failed' THEN 'true' ELSE 'false' END))
+        FROM chief_startup WHERE singleton=1", [], |row| row.get(0)).optional()?;
+    encoded.map(|value|serde_json::from_str(&value).map_err(TeamError::from)).transpose()
+}
 fn unauthorized() -> TeamError { TeamError::new(ErrorCode::Unauthorized, "no active chief grant for this verified runtime") }
 
 fn exact_live(session: &VerifiedSession, live: &[WorkerState]) -> bool {
@@ -35,7 +54,7 @@ pub fn require_non_chief(connection: &Connection, session: &str) -> Result<(), T
 
 pub fn host(connection: &mut Connection, action: &ChiefHostAction, live: &[WorkerState], now_ms: i64) -> Result<TeamReply, TeamError> {
     let request_id = match action {
-        ChiefHostAction::Enable { request_id, .. } | ChiefHostAction::Pause { request_id, .. }
+        ChiefHostAction::Start { request_id, .. } | ChiefHostAction::Enable { request_id, .. } | ChiefHostAction::Pause { request_id, .. }
         | ChiefHostAction::Resume { request_id, .. } | ChiefHostAction::Disable { request_id, .. }
         | ChiefHostAction::Resolve { request_id, .. } | ChiefHostAction::AnswerDecision { request_id, .. } | ChiefHostAction::RequestSummary { request_id }
         | ChiefHostAction::ReconcileDelivery {request_id,..} | ChiefHostAction::ReconcileLaunch {request_id,..} | ChiefHostAction::Overrule { request_id, .. }
@@ -44,7 +63,7 @@ pub fn host(connection: &mut Connection, action: &ChiefHostAction, live: &[Worke
     let result = (|| {
         action.validate()?;
         let fingerprint = crate::audit::sha256_hex(&serde_json::to_vec(action)?);
-        let transaction = connection.transaction()?;
+        let transaction = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let previous: Option<(String, String)> = transaction.query_row("SELECT fingerprint,response FROM chief_actions WHERE request_id=?1", [&request_id],
             |row| Ok((row.get(0)?, row.get(1)?))).optional()?;
         if let Some((old, response)) = previous {
@@ -52,7 +71,7 @@ pub fn host(connection: &mut Connection, action: &ChiefHostAction, live: &[Worke
             return Ok(serde_json::from_str(&response)?);
         }
         let response = host_action(&transaction, action, live, now_ms)?;
-        if !matches!(action,ChiefHostAction::Enable {..}|ChiefHostAction::Resolve {..}|ChiefHostAction::AnswerDecision {..}|ChiefHostAction::Overrule {..}|ChiefHostAction::RequestSummary {..}
+        if !matches!(action,ChiefHostAction::Start {..}|ChiefHostAction::Enable {..}|ChiefHostAction::Resolve {..}|ChiefHostAction::AnswerDecision {..}|ChiefHostAction::Overrule {..}|ChiefHostAction::RequestSummary {..}
             |ChiefHostAction::DeleteHabit {..}|ChiefHostAction::RestoreHabit {..}|ChiefHostAction::RescopeHabit {..}) {
             coordination_event(&transaction,"host_control_changed",&json!({"source":"host","request_id":request_id}),now_ms)?;
         }
@@ -65,6 +84,28 @@ pub fn host(connection: &mut Connection, action: &ChiefHostAction, live: &[Worke
 
 fn host_action(connection: &Connection, action: &ChiefHostAction, live: &[WorkerState], now_ms: i64) -> Result<Value, TeamError> {
     match action {
+        ChiefHostAction::Start { previous_attempt, .. } => {
+            if chief_session(connection)?.is_some() { return Err(conflict("a global chief is already enabled")); }
+            let previous = startup(connection)?;
+            if let Some(previous) = previous.as_ref() {
+                if matches!(previous["state"].as_str(), Some("starting" | "checking")) {
+                    return Ok(previous.clone());
+                }
+                if previous["can_retry"] != true || previous_attempt.as_deref() != previous["id"].as_str() {
+                    return Err(conflict("retry must name the current conclusively failed Chief startup"));
+                }
+            } else if previous_attempt.is_some() {
+                return Err(conflict("Chief startup attempt does not exist"));
+            }
+            let id = crate::teams::store::identifier()?;
+            let countdown = !(now_ms as u64).wrapping_mul(4096).wrapping_add(1) & 0xffffffffffff;
+            let session_id = format!("ses_{countdown:012x}{}", &id[..14]);
+            let directory = crate::paths::home().join("IdeaProjects/cockpit-chief");
+            connection.execute("INSERT INTO chief_startup(singleton,id,session_id,directory,state,revision,created_at) VALUES (1,?1,?2,?4,'starting',1,?3)
+                ON CONFLICT(singleton) DO UPDATE SET id=excluded.id,session_id=excluded.session_id,state='starting',revision=chief_startup.revision+1,
+                directory=excluded.directory,created_at=excluded.created_at,error=NULL,identity=NULL", params![id,session_id,now_ms,directory.to_string_lossy()])?;
+            Ok(startup(connection)?.expect("inserted Chief startup"))
+        },
         ChiefHostAction::Enable { session, .. } => {
             if !exact_live(session, live) || is_product_worker(connection, &session.session_id)? {
                 return Err(unauthorized());
@@ -1288,7 +1329,7 @@ fn context_recovery_snapshot(connection: &Connection, live: &[WorkerState], afte
 
 fn review_generation(connection: &Connection, live: &[WorkerState], now_ms: i64) -> Result<String, TeamError> {
     let revision: i64 = connection.query_row("SELECT revision FROM chief_review_generation WHERE id=1",[],|row|row.get(0))?;
-    Ok(crate::audit::sha256_hex(&serde_json::to_vec(&(revision,material_workers(live,now_ms)))?))
+    Ok(crate::audit::sha256_hex(&serde_json::to_vec(&(revision,startup(connection)?,material_workers(live,now_ms)))?))
 }
 
 fn bounded_chief_snapshot(connection: &Connection, live: &[WorkerState], epoch: &str, after: i64, limit: usize, generation: Option<&str>, now_ms: i64) -> Result<Value, TeamError> {
@@ -1425,7 +1466,9 @@ pub fn snapshot_page(connection: &Connection, live: &[WorkerState], after: i64, 
 }
 
 pub fn snapshot(connection: &Connection, live: &[WorkerState], after: i64, limit: usize) -> Result<Value, TeamError> {
-    review_records(connection,live,after,limit,false)
+    let mut snapshot = review_records(connection,live,after,limit,false)?;
+    snapshot["startup"] = startup(connection)?.unwrap_or(Value::Null);
+    Ok(snapshot)
 }
 
 pub fn audit_page(connection: &Connection, live: &[WorkerState], after: i64, limit: usize, generation: Option<&str>, now_ms: i64) -> Result<Value, TeamError> {

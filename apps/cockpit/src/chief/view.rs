@@ -203,14 +203,18 @@ pub struct ChiefView {
     undo: Option<(String, String)>,
     /// The row selected before the last habit change, to return to when the host refuses it.
     selection_before_change: Option<Option<String>>,
+    pending_start: Option<crate::chief::ChiefHostAction>,
+    startup_error: Option<String>,
+    startup_scroll: usize,
 }
 /// `Change` is sent at once, without a review: a habit edit Theo can undo. `HabitsSeen` saves when Theo saw his habits (epoch ms).
-pub enum Effect { None, Close, Submit(Vec<crate::chief::ChiefHostAction>), Summary, Change(crate::chief::ChiefHostAction), HabitsSeen(i64) }
+pub enum Effect { None, Close, Start(crate::chief::ChiefHostAction), Submit(Vec<crate::chief::ChiefHostAction>), Summary, Change(crate::chief::ChiefHostAction), HabitsSeen(i64) }
 
 impl ChiefView {
     pub fn new(snapshot: Value) -> Self {
         Self {snapshot,frames:vec![Frame::Browse {page:Page::Root,selected:Some("decisions".into())}],
-            message:String::new(),suspended:false,page_step:1,read_error:None,card_count:0,habits_seen_ms:None,undo:None,selection_before_change:None}
+            message:String::new(),suspended:false,page_step:1,read_error:None,card_count:0,habits_seen_ms:None,undo:None,selection_before_change:None,
+            pending_start:None,startup_error:None,startup_scroll:0}
     }
     fn records(&self, kind: &str) -> Vec<Value> {
         self.snapshot["records"].as_array().into_iter().flatten().filter(|record|record["kind"]==kind).cloned().collect()
@@ -299,10 +303,56 @@ impl ChiefView {
         row
     }
     fn chiefs(&self) -> Vec<Value> { self.records("chief").into_iter().filter(|chief|chief["state"]!="disabled").collect() }
+    fn startup_root(&self) -> bool {
+        matches!(self.frames.last(),Some(Frame::Browse {page:Page::Root,..})) && self.chiefs().is_empty() && self.snapshot.get("startup").is_some()
+    }
+    pub fn startup_screen(&self) -> bool {
+        // Existing recovery decisions must remain reachable even while Chief is off.
+        self.startup_root() && !self.records("decision").iter().any(|record|record["state"]=="open")
+    }
+    pub fn startup_phase(&self) -> &str {
+        if self.read_error.is_some() {return "unavailable";}
+        if self.pending_start.is_some() {return if self.startup_error.is_some() {"checking"} else {"starting"};}
+        match self.snapshot["startup"]["state"].as_str() {
+            None if self.snapshot["startup"].is_null()=>"off",
+            Some("starting")=>"starting",
+            Some("failed") if self.snapshot["startup"]["can_retry"]==true=>"failed",
+            _=>"checking",
+        }
+    }
+    pub fn startup_action_label(&self) -> Option<&'static str> {
+        match self.startup_phase() {"off"=>Some("Start Chief"),"failed"=>Some("Try again"),_=>None}
+    }
+    pub fn startup_failed(&mut self, error: String) {self.startup_error=Some(escape_hiding(&error,"",""));}
+    pub fn suspend_pending_start(&mut self) -> bool {
+        if self.pending_start.is_none() {return false;}
+        self.frames=vec![Frame::Browse {page:Page::Root,selected:Some("decisions".into())}];
+        self.suspend();
+        true
+    }
+    pub fn startup_lines(&self) -> Vec<String> {
+        let (heading, explanation, helper)=match self.startup_phase() {
+            "off"=>("Chief is off","Chief handles routine questions from your agents and brings important decisions to you.","Creates its own OpenCode session in a dedicated folder."),
+            "starting"=>("Starting Chief…","Opening its OpenCode session.","You can leave this view. We'll keep track of this launch."),
+            "failed"=>("Chief could not start","","No session remains. You can try again."),
+            "unavailable"=>("Chief status unavailable","Waiting for a trustworthy host snapshot.","You can leave this view while we check."),
+            _=>("Checking Chief…","Its session may have started. Waiting to confirm that Chief is ready.","You can leave this view while we check."),
+        };
+        let mut lines=vec![heading.into(),String::new(),explanation.into()];
+        if let Some(error)=self.read_error.as_deref().or(self.startup_error.as_deref()).or(self.snapshot["startup"]["error"].as_str()) {
+            lines.push(escape_hiding(error,"",""));
+        }
+        lines.push(String::new());
+        if let Some(action)=self.startup_action_label() {lines.push(format!("[c] {action}"));lines.push(String::new());}
+        else if self.startup_phase()=="starting" {lines.push("Starting…".into());lines.push(String::new());}
+        lines.push(helper.into());
+        lines
+    }
     pub fn status(&self) -> String {
         if self.read_error.is_some() {return "Unknown / host review unavailable — retained records are stale".into();}
         let chiefs=self.chiefs();
         match chiefs.as_slice() {
+            [] if self.snapshot.get("startup").is_some()=>match self.startup_phase() {"off"=>"Off","starting"=>"Starting","failed"=>"Could not start",_=>"Checking"}.into(),
             [] => "Off".into(),
             [chief] if !host_flag(&chief["live_verified"]) => format!("Unavailable · retained {} grant",text(&chief["state"])),
             [chief] if self.unavailable_reason(chief).is_some() => format!("Unavailable · retained {} grant · {}",text(&chief["state"]),self.unavailable_reason(chief).expect("reason checked")),
@@ -354,6 +404,11 @@ impl ChiefView {
     pub fn refresh(&mut self, snapshot: Value) {
         self.snapshot=snapshot;
         self.read_error=None;
+        if let Some(crate::chief::ChiefHostAction::Start {previous_attempt,..})=&self.pending_start {
+            if !self.chiefs().is_empty() || self.snapshot["startup"]["id"].as_str().is_some_and(|id|Some(id)!=previous_attempt.as_deref()) {
+                self.pending_start=None;self.startup_error=None;self.startup_scroll=0;
+            }
+        }
         let selected: Vec<_> = self.frames.iter().map(|frame|match frame {
             Frame::Browse {page,selected} => Some(selected.as_ref().filter(|key|self.rows(page).iter().any(|row|row.key==**key)).cloned()),
             _ => None,
@@ -406,7 +461,8 @@ impl ChiefView {
         self.message=message.into();
     }
     pub fn submission_pending(&self, key: &Key) -> bool {
-        (*key==Key::Char('y') && matches!(self.frames.last(),Some(Frame::Review {confirm:true,invalid:false,..})))
+        (*key==Key::Char('c') && self.startup_root() && self.startup_action_label().is_some())
+            || (*key==Key::Char('y') && matches!(self.frames.last(),Some(Frame::Review {confirm:true,invalid:false,..})))
             || (*key==Key::Ctrl('s') && matches!(self.frames.last(),Some(Frame::Note {intent:Intent::Overrule(_),note,..}) if !note.trim().is_empty()))
     }
     fn open(&mut self, page: Page) {
@@ -451,7 +507,8 @@ impl ChiefView {
                 Row::new("answers",&self.answers_label(),Open(Page::Answers(None))),
                 Row::new("habits",&self.habits_label(),Open(Page::Habits(self.habits_since()))),
                 Row::new("controls","Chief controls",Open(Page::Controls)),
-                Row::new("workers","Workers",Open(Page::Workers)),Row::new("summary","Request summary",Summary)];
+                 Row::new("workers","Workers",Open(Page::Workers)),Row::new("summary","Request summary",Summary)];
+                if self.chiefs().is_empty() && self.snapshot.get("startup").is_some() {rows.retain(|row|row.key!="controls");}
                 for decision in self.records("decision").into_iter().filter(|decision|decision["state"]=="open" && self.recovery_target(decision).is_some()) {
                     let mut row=self.decision_row(&decision,Inspect(decision.clone(),Some(Page::DecisionActions(decision.clone()))));
                     row.label=format!("! {}",field(&decision,"question"));
@@ -474,7 +531,7 @@ impl ChiefView {
             Page::AnswerActions(answer) => vec![Row::new("overrule","Overrule",Note(Intent::Overrule(answer.clone())))],
             Page::Controls => {
                 let chiefs=self.chiefs();
-                if chiefs.is_empty() {return vec![Row::new("select","Select chief",Open(Page::Sessions))];}
+                if chiefs.is_empty() {return if self.snapshot.get("startup").is_some() {Vec::new()} else {vec![Row::new("select","Select chief",Open(Page::Sessions))]};}
                 let mut rows=Vec::new();
                 if let [chief]=chiefs.as_slice() {
                     if host_flag(&chief["live_verified"]) {
@@ -583,6 +640,27 @@ impl ChiefView {
         }
     }
     pub fn handle(&mut self, key: Key) -> Effect {
+        if self.startup_root() {
+            if key==Key::Char('c') {
+                if self.startup_action_label().is_some() {
+                    let action=crate::chief::ChiefHostAction::Start {request_id:format!("chief-ui-{}",crate::util::token_hex(12)),previous_attempt:self.snapshot["startup"]["id"].as_str().map(str::to_string)};
+                    self.pending_start=Some(action.clone());self.startup_error=None;self.startup_scroll=0;
+                    return Effect::Start(action);
+                }
+                return Effect::None;
+            }
+            if key==Key::Char('p') {return Effect::None;}
+            if self.startup_screen() {
+                match key {
+                    Key::Esc=>return Effect::Close,
+                    Key::PageDown=>self.startup_scroll=self.startup_scroll.saturating_add(self.page_step),
+                    Key::PageUp=>self.startup_scroll=self.startup_scroll.saturating_sub(self.page_step),
+                    Key::Char('l'|'h'|'r')=>{},
+                    _=>return Effect::None,
+                }
+                if matches!(key,Key::PageDown|Key::PageUp) {return Effect::None;}
+            }
+        }
         self.message.clear();
         let undo=self.undo.take();
         self.selection_before_change=None;
@@ -696,9 +774,10 @@ impl ChiefView {
         match key {Key::PageDown=>*scroll=scroll.saturating_add(self.page_step),Key::PageUp=>*scroll=scroll.saturating_sub(self.page_step),_=>{}}
     }
     pub fn clamp_scroll(&mut self, maximum: usize) -> usize {
+        if self.startup_screen() {self.startup_scroll=self.startup_scroll.min(maximum);return self.startup_scroll;}
         match self.frames.last_mut() {Some(Frame::Note {scroll,..}|Frame::Detail {scroll,..}|Frame::Review {scroll,..}|Frame::Assertion {scroll,..}|Frame::Summary {scroll}|Frame::Results {scroll,..})=>{*scroll=(*scroll).min(maximum);*scroll},_=>0}
     }
-    pub fn is_list(&self) -> bool {matches!(self.frames.last(),Some(Frame::Browse {..}))}
+    pub fn is_list(&self) -> bool {!self.startup_screen() && matches!(self.frames.last(),Some(Frame::Browse {..}))}
     pub fn list_window(&self, height: usize) -> (String,Vec<ListLine>) {
         let Some(Frame::Browse {page,selected})=self.frames.last() else {return (String::new(),Vec::new())};
         let caption=match page {
@@ -718,7 +797,7 @@ impl ChiefView {
         if !self.snapshot["coordination_error"].is_null() {lines.push(ListLine::plain(format!("Host failure: {}",shown(&self.snapshot["coordination_error"]))));}
         if matches!(page,Page::Root) && height>12 {
             lines.extend(self.status_lines().into_iter().map(ListLine::plain));
-            lines.push(ListLine::plain("c pause/resume · p pick Chief · r summary now".into()));
+            lines.push(ListLine::plain(if self.startup_root() {self.footer()} else {"c pause/resume · p pick Chief · r summary now"}.into()));
             lines.push(ListLine::plain("l answer log · h habits".into()));
         }
         let available=height.saturating_sub(lines.len()).max(1);
@@ -744,6 +823,7 @@ impl ChiefView {
         (caption,lines)
     }
     pub fn detail(&self) -> Vec<String> {
+        if self.startup_screen() {return self.startup_lines();}
         let mut lines=vec![format!("Chief · {}",self.status())];
         if let Some(error)=&self.read_error {lines.push(format!("Host read failure: {error}"));}
         if !self.snapshot["coordination_error"].is_null() {lines.push(format!("Host failure: {}",shown(&self.snapshot["coordination_error"])));}
@@ -877,7 +957,14 @@ impl ChiefView {
         lines.push(match overrule_block(answer) {Some(reason)=>format!("Overrule: not possible. {reason}."),None=>"Enter opens Overrule.".into()});
         lines
     }
-    pub fn footer(&self) -> &str {match self.frames.last() {
+    pub fn footer(&self) -> &str {
+        if self.startup_screen() {return "PgUp/Dn scroll · esc back";}
+        if self.startup_root() {return match self.startup_phase() {
+            "off"=>"c Start Chief · l log · h habits · ⏎ open · esc back",
+            "failed"=>"c Try again · l log · h habits · ⏎ open · esc back",
+            _=>"Startup pending · l log · h habits · ⏎ open · esc back",
+        };}
+        match self.frames.last() {
         Some(Frame::Browse {page:Page::Root,..})=>"c pause/resume · p pick · r summary · l log · h habits · ⏎ open · esc back",
         Some(Frame::Note {intent:Intent::Overrule(_),..})=>"⌘S send · PgUp/Dn scroll · Enter review · Esc cancel",
         Some(Frame::Browse {page:Page::Answers(_),..})=>"o overrule · ⏎ reason · esc back",

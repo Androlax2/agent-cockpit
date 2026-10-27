@@ -85,6 +85,84 @@ fn rendered(app: &mut App, width: u16, height: u16) -> String {
 fn first_control_review(app: &mut App, screen: &mut TestScreen) { keys(app,screen,&[Key::Down,Key::Down,Key::Down,Key::Enter,Key::Enter]); }
 
 #[test]
+fn chief_start_is_explicit_and_repeated_keys_cannot_queue_another_launch() {
+    let host = Host::new(vec![]);
+    host.snapshot.lock().unwrap()["startup"] = Value::Null;
+    let (mut app, mut screen) = host.open();
+    assert!(rendered(&mut app, 60, 22).contains("Start Chief"));
+    keys(&mut app, &mut screen, &[Key::Enter,Key::Char('p')]);
+    assert!(host.mutations().is_empty());
+    keys(&mut app, &mut screen, &[Key::Char('c'),Key::Char('c'),Key::Enter]);
+    let mutations = host.mutations();
+    assert_eq!(mutations.len(), 1);
+    assert_eq!(mutations[0]["action"]["action"], "start");
+    assert_eq!(mutations[0]["action"]["previous_attempt"], Value::Null);
+    assert!(rendered(&mut app, 60, 22).contains("Starting Chief"));
+}
+
+#[test]
+fn reopening_chief_tracks_the_host_attempt_without_launching() {
+    let host = Host::new(vec![]);
+    host.snapshot.lock().unwrap()["startup"] = json!({"id":"attempt-1","state":"checking","can_retry":false,"error":"Waiting for verified admission"});
+    let (mut app, mut screen) = host.open();
+    keys(&mut app, &mut screen, &[Key::Char('c'),Key::Enter,Key::Esc]);
+    open_chief(&mut app, &mut screen);
+    let shown = rendered(&mut app, 80, 24);
+    assert!(shown.contains("Checking Chief") && shown.contains("Waiting for verified admission"), "{shown}");
+    assert!(host.mutations().is_empty());
+}
+
+#[test]
+fn chief_retry_names_the_failed_attempt_and_stays_disabled_until_new_evidence() {
+    let host = Host::new(vec![]);
+    host.snapshot.lock().unwrap()["startup"] = json!({"id":"attempt-1","state":"failed","can_retry":true,"error":"Launcher missing"});
+    let (mut app, mut screen) = host.open();
+    assert!(rendered(&mut app, 60, 22).contains("Try again"));
+    keys(&mut app, &mut screen, &[Key::Char('c'),Key::Char('c')]);
+    assert_eq!(host.mutations().len(), 1);
+    assert_eq!(host.mutations()[0]["action"]["previous_attempt"], "attempt-1");
+    assert!(!rendered(&mut app, 60, 22).contains("Try again"));
+}
+
+#[test]
+fn a_failed_prestart_snapshot_read_blocks_chief_start() {
+    let host = Host::new(vec![]);
+    host.snapshot.lock().unwrap()["startup"] = Value::Null;
+    let (mut app, mut screen) = host.open();
+    host.pages.lock().unwrap().push_back(json!({"error":"host disconnected"}));
+    app.handle(Key::Char('c'), &mut screen);
+    assert!(host.mutations().is_empty());
+    let shown = rendered(&mut app, 80, 24);
+    assert!(shown.contains("unavailable") && !shown.contains("[c] Start Chief"), "{shown}");
+}
+
+#[test]
+fn chief_startup_keeps_existing_decisions_reachable_without_a_session_picker() {
+    let host = Host::new(vec![decision()]);
+    host.snapshot.lock().unwrap()["startup"] = Value::Null;
+    let (mut app, mut screen) = host.open();
+    let shown = rendered(&mut app, 100, 30);
+    assert!(shown.contains("Needs you"));
+    assert!(!shown.contains("pick Chief") && !shown.contains("Chief controls"), "{shown}");
+    keys(&mut app, &mut screen, &[Key::Enter,Key::Enter]);
+    assert!(host.mutations().is_empty());
+}
+
+#[test]
+fn closing_and_reopening_keeps_an_unacknowledged_chief_start_locked() {
+    let host = Host::new(vec![]);
+    host.snapshot.lock().unwrap()["startup"] = Value::Null;
+    host.mutation_replies.lock().unwrap().push_back(json!({"error":"acknowledgement lost"}));
+    let (mut app, mut screen) = host.open();
+    keys(&mut app, &mut screen, &[Key::Char('c'),Key::Esc]);
+    open_chief(&mut app, &mut screen);
+    app.handle(Key::Char('c'), &mut screen);
+    assert_eq!(host.mutations().len(), 1);
+    let shown = rendered(&mut app, 80, 24);
+    assert!(shown.contains("Checking Chief") && shown.contains("acknowledgement lost"), "{shown}");
+}
+
+#[test]
 fn the_chief_root_offers_only_needs_you_answers_habits_controls_workers_and_summary() {
     let host = Host::new(vec![]); let (mut app,_) = host.open();
     let mut buffer = Buffer::empty(Rect::new(0,0,120,45)); app.render(&mut buffer);
