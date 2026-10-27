@@ -963,6 +963,25 @@ fn invalid_startup_preferences_never_reach_opencode() {
 }
 
 #[test]
+fn opencode_tools_use_the_native_cli_without_starting_another_sandbox() {
+    let launch = Launch::new();
+    launch.sandbox.shim("opencode", "echo 'nested host launcher selected' >&2; exit 77");
+    write_executable(&launch.sandbox.home.join(".opencode/bin/opencode"), r#"#!/bin/sh
+if [ "$1" != api ]; then
+    exec opencode api post "/api/session/$CLAUDE_CODE_SESSION_ID/model" --data '{"providerID":"fixture","id":"test-model"}'
+fi
+printf '%s\n' "$@" > "$HOME/opencode-api-arguments"
+env > "$HOME/opencode-api-environment"
+"#);
+    launch.run_agent("opencode", &[("CLAUDE_CODE_SESSION_ID", OPENCODE_SESSION)], &[]);
+    assert_eq!(launch.opencode_saw("api-arguments"), ["api", "post", &format!("/api/session/{OPENCODE_SESSION}/model"),
+        "--data", r#"{"providerID":"fixture","id":"test-model"}"#]);
+    assert!(launch.opencode_saw("api-environment").contains(&"XDG_STATE_HOME=/tmp/opencode-greywall-state".into()));
+    assert_eq!(launch.sandbox.calls("greywall").len(), 1);
+    assert!(launch.sandbox.calls("opencode").is_empty());
+}
+
+#[test]
 fn opencodes_server_registration_stays_in_the_sandboxs_private_tmp() {
     // Each greywall launch has its own network: a service.json shared between them makes
     // unreachable servers replace each other. Data, config and cache stay shared.

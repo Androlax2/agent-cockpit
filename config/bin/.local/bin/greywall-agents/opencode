@@ -61,6 +61,8 @@ exec "$HOME/.local/bin/greywall" $greywall_options -- \
     sh -c '
         request=$1
         shift
+        # Tools already run sandboxed; calling the host launcher again would prepare a nested sandbox.
+        export PATH="$HOME/.opencode/bin:$PATH"
         if [ -n "$request" ]; then
             "$HOME/.opencode/bin/opencode" api --standalone post /api/session --data "$request" >/dev/null || exit $?
         fi
