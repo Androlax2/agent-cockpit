@@ -10205,6 +10205,22 @@ fn a_refused_handed_item_is_not_asked_for_again_on_every_tick() {
 }
 
 #[test]
+fn ticks_with_nothing_to_start_ask_the_daemon_for_no_snapshot() {
+    let fixture = Fixture::new();
+    let (greywall, _) = greywall_and_greyproxy(&fixture);
+    file_in_greyproxy(&greywall, "Refused handoff", json!({}));
+    let requests = refusing_scheduler(&fixture);
+    let mut app = fixture.app();
+    app.gaming = || false;
+    app.todos.apply_updates();
+    app.dispatch_queue();
+    let snapshots = || requests.lock().unwrap().iter().filter(|request| request["request"] == "snapshot").count();
+    let before = snapshots();
+    for _ in 0..5 { app.dispatch_queue(); }
+    assert_eq!(snapshots(), before);
+}
+
+#[test]
 fn a_refused_handed_item_is_asked_for_again_at_the_next_queue_check() {
     let fixture = Fixture::new();
     let (greywall, _) = greywall_and_greyproxy(&fixture);

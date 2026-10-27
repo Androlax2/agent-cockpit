@@ -1333,12 +1333,19 @@ impl App {
         if self.todos.queued.is_empty() {
             return;
         }
-        let context = self.queue_context();
-        if now - self.queue_checked >= QUEUE_CHECK_S {
+        let is_check_due = now - self.queue_checked >= QUEUE_CHECK_S;
+        if is_check_due {
             self.handed_refused.clear();
         }
-        self.start_sessions_for_handed_work(&context);
-        if now - self.queue_checked < QUEUE_CHECK_S {
+        let handed = self.handed_work();
+        // The context asks the daemon for a full team snapshot and runs hyprctl: not on every tick
+        // when there is nothing to start.
+        if handed.is_empty() && !is_check_due {
+            return;
+        }
+        let context = self.queue_context();
+        self.start_sessions_for_handed_work(&context, handed);
+        if !is_check_due {
             return;
         }
         self.queue_checked = now;
@@ -1370,25 +1377,36 @@ impl App {
 
     /// Handed work and setup blockers get fresh background sessions on every tick, before idle
     /// sessions can absorb them. Theo's own Q items keep waiting for a session he starts.
-    fn start_sessions_for_handed_work(&mut self, context: &queue::QueueContext) {
-        if !context.enabled || context.gaming || !context.host_available {
-            return;
-        }
+    /// The handed items that could start a session now: not refused since the last queue check,
+    /// and not in a project whose subscription handoff is under way.
+    fn handed_work(&self) -> Vec<Entry> {
         let mut handed: Vec<Entry> = self.todos.items.iter()
             .filter(|item| item.status() == "todo" && self.todos.is_queued(&item.id())
                 && (!item.queued_by().is_empty() || item.is_blocked_report()) && !item.is_waiting() && !item.is_design()
                 && !self.handed_refused.contains(&item.id()))
+            .filter(|item| {
+                let project = project_name(&util::repository_root(&item.cwd()));
+                self.subscription_error.is_none() && !self.subscription_directories.iter().any(|directory| project_name(&util::repository_root(directory)) == project)
+            })
             .map(|item| Entry::Typed(item.clone())).collect();
         handed.sort_by(todo::queue_order);
+        handed
+    }
+
+    fn start_sessions_for_handed_work(&mut self, context: &queue::QueueContext, handed: Vec<Entry>) {
+        if !context.enabled || context.gaming || !context.host_available {
+            return;
+        }
         for entry in handed {
             let Entry::Typed(item) = &entry else { continue };
             let project = project_name(&util::repository_root(&item.cwd()));
-            if self.subscription_error.is_some() || self.subscription_directories.iter().any(|directory| project_name(&util::repository_root(directory)) == project) {
-                continue;
-            }
             let directory = match start_directory(&item.cwd()) {
                 Ok(directory) => directory,
-                Err(error) => { util::log_event("WARN", &format!("queue: cannot start a session for {}: {error}", item.id())); continue }
+                Err(error) => {
+                    util::log_event("WARN", &format!("queue: cannot start a session for {}: {error}", item.id()));
+                    self.handed_refused.insert(item.id());
+                    continue
+                }
             };
             let agent = match settings::launch_agent() {
                 Ok(agent) => agent,
@@ -1399,7 +1417,11 @@ impl App {
                 self.handed_refused.insert(item.id());
                 continue;
             }};
-            if let Err(error)=queue::launch_reserved(&token,&["--agent", &agent, "background", &directory, &todo::with_todo_note(&todo::prompt_of(&entry), &item.id())],true) {util::log_event("WARN",&error);continue;}
+            if let Err(error)=queue::launch_reserved(&token,&["--agent", &agent, "background", &directory, &todo::with_todo_note(&todo::prompt_of(&entry), &item.id())],true) {
+                util::log_event("WARN",&error);
+                self.handed_refused.insert(item.id());
+                continue;
+            }
             if !self.todos.set_status(&item.id(), "doing", "") {
                 self.message = format!("queue: started session, but cannot save status for {}", item.id());
                 continue;
