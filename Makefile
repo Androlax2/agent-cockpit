@@ -74,7 +74,7 @@ greyproxy-patch: ## Build, test, install and restart greyproxy from the fork (ke
 
 agent_docker = tools/agent-docker.sh
 
-.PHONY: agent-docker-setup agent-docker-add agent-docker-remove agent-docker-status
+.PHONY: agent-docker-setup agent-docker-add agent-docker-remove agent-docker-grant agent-docker-status
 
 # One rootless Docker daemon per project for agents running in greywall (tools/agent-docker.sh).
 # The units and the agent_docker_egress firewall table come from system/.
@@ -88,6 +88,10 @@ agent-docker-add: ## [sudo] Give a project its own isolated Docker daemon: make 
 agent-docker-remove: ## [no undo] Delete a project's agent daemon, its user, images and containers: make agent-docker-remove PROJECT=runway
 	@test -n "$(PROJECT)" || { echo "usage: make agent-docker-remove PROJECT=<folder in ~/IdeaProjects>"; exit 2; }
 	sudo $(agent_docker) remove "$(PROJECT)"
+
+agent-docker-grant: ## [sudo] Let a non-root container user write named folders: make agent-docker-grant PROJECT=stadeo CONTAINER_UID=1000 FOLDERS="storage bootstrap/cache"
+	@test -n "$(PROJECT)" -a -n "$(CONTAINER_UID)" -a -n "$(FOLDERS)" || { echo 'usage: make agent-docker-grant PROJECT=<folder in ~/IdeaProjects> CONTAINER_UID=<uid> FOLDERS="<folder>..."'; exit 2; }
+	sudo $(agent_docker) grant "$(PROJECT)" "$(CONTAINER_UID)" $(FOLDERS)
 
 agent-docker-status: ## [read-only] List the agent Docker daemons and whether their sockets are up
 	@$(agent_docker) status

@@ -124,6 +124,35 @@ remove() {
     echo "agent-docker: $name removed (its images and containers are gone; greyproxy rules for $name-docker are kept)"
 }
 
+# Only the daemon's own user (root in its containers) has the ACL that add() grants; a
+# container process running as another uid (Sail's web server runs as sail, uid 1000) maps to a
+# subordinate host uid that sees the project as "others" and cannot write. This grants that
+# uid write access to the named folders only, in the project and its existing clones.
+grant() { # project container-uid relative-path...
+    local name=$1 container_uid=$2 user=agent-$1 relative start count host_uid target
+    shift 2
+    require_valid_name "$name"
+    [[ $container_uid =~ ^[0-9]+$ ]] && (( container_uid >= 1 && container_uid <= 65535 )) \
+        || die "container uid must be between 1 and 65535 (0 already has access): $container_uid"
+    (( $# > 0 )) || die "name at least one folder, relative to the project (e.g. storage bootstrap/cache)"
+    for relative in "$@"; do
+        [[ $relative =~ ^[A-Za-z0-9._/-]+$ && $relative != /* && /$relative/ != */../* && /$relative/ != */./* ]] \
+            || die "not a plain relative folder: $relative"
+    done
+    require_root
+    IFS=: read -r _ start count < <(grep "^$user:" /etc/subuid) || die "no subordinate uids for $user: run make agent-docker-add PROJECT=$name first"
+    (( container_uid <= count )) || die "container uid $container_uid is outside $user's $count subordinate uids"
+    host_uid=$((start + container_uid - 1))
+    for relative in "$@"; do
+        for target in "$PROJECTS_DIR/$name/$relative" "$CLONES_DIR/$name"/*/"$relative"; do
+            [[ -e $target ]] || continue
+            [[ -d $target && ! -L $target ]] || die "not a folder: $target"
+            setfacl -R -m "u:$host_uid:rwX,d:u:$host_uid:rwX" "$target"
+            echo "agent-docker: container uid $container_uid ($user's host uid $host_uid) can write $target"
+        done
+    done
+}
+
 status() {
     local user name socket clones_socket
     if [[ -r $CA_BUNDLE ]]; then
@@ -144,6 +173,8 @@ case ${1:-} in
     setup) setup ;;
     add) add "${2:?usage: agent-docker.sh add <project>}" ;;
     remove) remove "${2:?usage: agent-docker.sh remove <project>}" ;;
+    grant) (( $# >= 4 )) || { echo "usage: agent-docker.sh grant <project> <container uid> <folder>..." >&2; exit 2; }
+        grant "${@:2}" ;;
     status) status ;;
-    *) echo "usage: agent-docker.sh setup | add <project> | remove <project> | status" >&2; exit 2 ;;
+    *) echo "usage: agent-docker.sh setup | add <project> | remove <project> | grant <project> <container uid> <folder>... | status" >&2; exit 2 ;;
 esac
