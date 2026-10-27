@@ -1102,6 +1102,14 @@ fn doctor_flags_an_enabled_shared_opencode_service() {
 }
 
 #[test]
+fn exit_closes_an_opencode_pane_that_has_not_reported_its_session_yet() {
+    let manager = Manager::new();
+    let result = manager.run(&["exit", "claude-retry-opencode-19"], &[("SHIM_EXIT_AFTER", "1")]);
+    assert!(result.status.success(), "{}", stderr(&result));
+    assert!(manager.tmux_calls("send-keys").iter().any(|call| call == "tmux send-keys -t %4 C-c"), "{:?}", manager.calls("tmux"));
+}
+
+#[test]
 fn compact_is_typed_only_at_the_prompt() {
     let manager = Manager::new();
     assert_eq!(manager.run(&["compact", SESSION_A], &[("SHIM_PANE_TEXT", IDLE)]).status.code(), Some(0));

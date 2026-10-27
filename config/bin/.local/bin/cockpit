@@ -2802,7 +2802,10 @@ case ${1:-attach} in
     exit)
         [[ ${2:-} =~ ^[A-Za-z0-9_-]+$ ]] || { echo "cockpit: invalid session id" >&2; exit 1; }
         is_exiting_asleep=false
-        "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/cockpit-subscription" cancel-session "${2:?usage: cockpit exit <session-id>}" || exit
+        # A starting pane (claude-retry-*) has no session yet, so no subscription route to cancel.
+        if [[ $2 != claude-retry-* ]]; then
+            "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/cockpit-subscription" cancel-session "$2" || exit
+        fi
         # A live pane first: a note can outlive its process by the length of the sleep's exit.
         if [[ -z $(session_field "${2:?usage: cockpit exit <session-id>}" tmux_pane) ]] && is_asleep "$2"; then
             is_exiting_asleep=true
