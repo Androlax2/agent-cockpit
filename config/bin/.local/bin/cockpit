@@ -1827,7 +1827,7 @@ doctor() {
         report fail "agent sandboxes still paused after a game" "game-performance off"
     fi
     for unit in claude-update.timer elephant.service walker.service; do
-        if [[ $(systemctl --user is-active "$unit" 2>/dev/null) == active ]]; then report ok "$unit active"; else report fail "$unit not active" "systemctl --user enable --now $unit (units in .handoff/systemd-user until installed)"; fi
+        if [[ $(systemctl --user is-active "$unit" 2>/dev/null) == active ]]; then report ok "$unit active"; else report fail "$unit not active" "systemctl --user reset-failed $unit; systemctl --user enable --now $unit"; fi
     done
     local versions_dir=${CLAUDE_VERSIONS_DIR:-$HOME/.local/share/claude/versions} link=${CLAUDE_LINK:-$HOME/.local/bin/claude} newest linked
     # || true: no version there (grep matches nothing) must not stop the doctor half-way (pipefail).

@@ -1110,6 +1110,16 @@ fn exit_closes_an_opencode_pane_that_has_not_reported_its_session_yet() {
 }
 
 #[test]
+fn doctor_fix_for_an_inactive_unit_clears_a_start_limit_first() {
+    let manager = Manager::new();
+    manager.sandbox.shim("systemctl", "[ \"$3\" = walker.service ] && { echo failed; exit 3; }; echo active");
+    let output = stdout(&manager.run(&["doctor"], &[]));
+    let fail = output.lines().position(|line| line.contains("walker.service not active")).expect(&output);
+    let fix = output.lines().nth(fail + 1).unwrap();
+    assert_eq!(fix.trim(), "fix: systemctl --user reset-failed walker.service; systemctl --user enable --now walker.service");
+}
+
+#[test]
 fn compact_is_typed_only_at_the_prompt() {
     let manager = Manager::new();
     assert_eq!(manager.run(&["compact", SESSION_A], &[("SHIM_PANE_TEXT", IDLE)]).status.code(), Some(0));
