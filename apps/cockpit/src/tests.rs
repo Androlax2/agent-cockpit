@@ -12511,3 +12511,66 @@ fn the_todo_form_is_a_card_over_the_column_with_kind_chips() {
     assert_eq!(buffer[(task_column, chips as u16)].bg, crate::app::color(crate::app::BLUE), "the selected kind is a blue chip");
     assert!(!rows.iter().any(|row| row.contains("[ Add")), "no button row: ⌘S saves");
 }
+
+// ---- Session details, frame 2200 (todo 501023cd) ----
+
+fn details_with_costs(fixture: &Fixture, costs: &[(&str, f64)]) -> App {
+    let archive = costs::open_archive(&fixture.path("state/cockpit/usage.sqlite")).unwrap();
+    let stamp = chrono::Local::now();
+    for (index, (session, cost)) in costs.iter().enumerate() {
+        archive.execute("insert into replies values (?, ?, ?, 'claude-opus-5-5', 'runway', ?, 0, 1000, 0, 0, 0, 'standard', ?)",
+            rusqlite::params![format!("reply-{index}"), stamp.date_naive().to_string(), stamp.to_rfc3339(), session, cost]).unwrap();
+    }
+    drop(archive);
+    let mut app = fixture.app();
+    app.costs.tick();
+    for _ in 0..200 {
+        if !app.costs.is_loading() { break; }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(!app.costs.is_loading(), "usage scan did not finish");
+    app.build();
+    app
+}
+
+#[test]
+fn session_details_name_the_plan_and_what_the_session_cost_today_at_api_prices() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "working", "runway", "/r/runway", 1)]));
+    let mut app = details_with_costs(&fixture, &[(SESSION_A, 3.0), (SESSION_A, 1.2), ("someone-else", 9.0)]);
+    app.plan = "Max".into();
+    let details = open_details(&mut app);
+    assert!(details.contains("Billing: Claude Max (subscription) · ≈ $4.20 at API prices today"), "{details}");
+}
+
+#[test]
+fn session_details_leave_out_a_cost_they_do_not_know() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "working", "runway", "/r/runway", 1)]));
+    let mut app = details_with_costs(&fixture, &[("someone-else", 9.0)]);
+    let details = open_details(&mut app);
+    let billing = details.lines().find(|line| line.contains("Billing:")).expect("a billing line");
+    assert!(billing.contains("Billing: subscription") && !billing.contains('$'), "{billing}");
+}
+
+#[test]
+fn session_details_say_why_with_the_project_and_the_todo_the_session_works_on() {
+    let fixture = Fixture::new();
+    fixture.write("state/cockpit/todo.json", &json!({"items": [
+        {"id": "b77a0881", "project": "runway", "cwd": "/r/runway", "text": "Run agents without you", "status": "doing", "session": SESSION_A}
+    ]}).to_string());
+    let mut row = session(SESSION_A, "working", "runway", "/r/runway", 1);
+    row["label"] = json!("Running the Rust tests");
+    fixture.snapshot(json!([row]));
+    let mut app = fixture.app();
+    app.build();
+    render(&mut app, 100, 50);
+    app.handle(Key::Char('i'), &mut FakeScreen::default());
+    let buffer = render(&mut app, 100, 50);
+    let rows = buffer_rows(&buffer);
+    let why = rows.iter().position(|row| row.contains("runway ›")).unwrap_or_else(|| panic!("{rows:#?}"));
+    assert!(rows[why].contains("runway › Running the Rust tests · todo b77a0881"), "{}", rows[why]);
+    let column = rows[why].find("runway").map(|byte| rows[why][..byte].chars().count()).unwrap() as u16;
+    assert_eq!(buffer[(column, why as u16)].fg, crate::app::color(crate::app::BLUE), "the project stands out");
+    assert_eq!(buffer[(column + 9, why as u16)].fg, crate::app::color(crate::app::FG_DARK), "the task reads quieter");
+}

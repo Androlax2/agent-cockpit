@@ -402,6 +402,8 @@ struct SessionDetails {
     todo: Option<String>,
     displayed_updates: Vec<String>,
     key_groups: Vec<(&'static str, Vec<(&'static str, &'static str)>)>,
+    /// Session details: the project the first paragraph (why) starts with, drawn bold blue before the dim rest.
+    lead: Option<String>,
 }
 
 /// Session details' keys, grouped as frame 2200 draws them; they work on the selected card too.
@@ -449,10 +451,16 @@ impl SessionDetails {
         }
         put(buffer, top, 1, &format!("┌{}┐", "─".repeat(inner)), style(BLUE));
         put(buffer, top, 3, &fit(&self.title, inner.saturating_sub(2)), bold(BLUE));
-        for (offset, line) in rows.iter().skip(self.scroll).take(body_height).enumerate() {
-            let row = top + 1 + offset as u16;
+        let why_rows = if self.lead.is_some() { rows.iter().position(|row| matches!(row, DetailRow::Text(text) if text.is_empty())).unwrap_or(0) } else { 0 };
+        for (offset, line) in rows.iter().enumerate().skip(self.scroll).take(body_height) {
+            let row = top + 1 + (offset - self.scroll) as u16;
             match line {
                 DetailRow::Heading(text) => { put(buffer, row, 3, text, bold(FG_DARK)); }
+                DetailRow::Text(text) if offset < why_rows => {
+                    let project = self.lead.as_deref().filter(|project| offset == 0 && text.starts_with(*project)).unwrap_or("");
+                    put(buffer, row, 3, &text[..project.len()], bold(BLUE));
+                    put(buffer, row, 3 + width_of(project) as u16, &text[project.len()..], style(FG_DARK));
+                }
                 DetailRow::Text(text) => { put(buffer, row, 3, text, style(FG)); }
                 DetailRow::Keys(keys) => {
                     let mut column = 3;
@@ -480,6 +488,8 @@ impl SessionDetails {
     fn rows(&self, width: usize) -> Vec<DetailRow> {
         let mut rows: Vec<DetailRow> = wrap_detail_text(&self.text, width).into_iter()
             .map(|line| if is_detail_heading(&line) { DetailRow::Heading(line) } else { DetailRow::Text(line) }).collect();
+        // One blank line, not two, between the text and the first group of keys.
+        while self.session.is_some() && rows.len() > 1 && rows[rows.len() - 2..].iter().all(|row| matches!(row, DetailRow::Text(text) if text.is_empty())) { rows.pop(); }
         for (heading, keys) in &self.key_groups {
             rows.push(DetailRow::Heading((*heading).into()));
             let mut current: Vec<(&str, &str)> = Vec::new();
@@ -995,7 +1005,7 @@ pub struct App {
     /// responsive while they run; an error shows once one ends (collect_manager).
     pending: Vec<(String, std::process::Child)>,
     /// The plan's name (usage::plan, from the credentials file), read once a tick.
-    plan: String,
+    pub(crate) plan: String,
     /// When craft_roots was last asked of pgrep (CRAFT_CHECK_S).
     craft_checked: f64,
     /// Commits each running copy with a card on screen holds and GitHub lacks
@@ -2689,7 +2699,11 @@ impl App {
         let original = self.session_task_titles.get(&session.session).map(String::as_str).unwrap_or(&session.project);
         let branch = self.session_branches.get(&session.session).map(String::as_str).unwrap_or("");
         let shown = self.session_display_title(session);
-        let mut text = if shown == session.project { format!("{shown}\n") } else { format!("{} › {shown}\n", session.project) };
+        let todo = self.todos.items.iter().find(|item| item.session() == session.session).map(|item| item.id())
+            .or_else(|| branch.strip_prefix("todo-").filter(|id| self.todos.items.iter().any(|item| item.id() == *id)).map(str::to_string));
+        let mut text = if shown == session.project { session.project.clone() } else { format!("{} › {shown}", session.project) };
+        if let Some(todo) = &todo { text += &format!(" · todo {todo}"); }
+        text += "\n";
         if original != self.session_display_title(session) && original != session.project { text += &format!("Task: {original}\n"); }
         text += "\nWHERE & WHO\n";
         let mut place = Vec::new();
@@ -2708,8 +2722,11 @@ impl App {
             who.push(format!("since {}", chrono::DateTime::from_timestamp(session.since, 0)
                 .map(|time| time.with_timezone(&chrono::Local).format("%H:%M").to_string()).unwrap_or_default()));
         }
-        text += &format!("{}\nBilling: {}\n\nAROUND IT\n", who.join(" · "),
-            if session.credits { "API credits" } else { "subscription" });
+        let plan = if session.credits { "API credits".to_string() }
+            else if session.agent().name == "claude" && !self.plan.is_empty() { format!("Claude {} (subscription)", self.plan) }
+            else { "subscription".to_string() };
+        let cost = self.costs.session_today(&session.session).map(|cost| format!(" · ≈ ${cost:.2} at API prices today")).unwrap_or_default();
+        text += &format!("{}\nBilling: {plan}{cost}\n\nAROUND IT\n", who.join(" · "));
         let mut around = Vec::new();
         if let Some(answers) = self.chief_answers.get(&session.session) { around.push(format!("◆ Chief answered {}", answers.count)); }
         if let Some(team) = self.team_roles.get(&session.session) { around.push(format!("⇄ {team}")); }
@@ -2761,7 +2778,7 @@ impl App {
             Err(error) => { text += &format!("\nUpdates unavailable: {error}\n"); Vec::new() }
         };
         self.session_details = Some(SessionDetails { title: format!("{} {}", card.glyph, card.doing), text, session: Some(session.session.clone()),
-            key_groups, displayed_updates, ..Default::default() });
+            key_groups, displayed_updates, lead: Some(session.project.clone()), ..Default::default() });
     }
 
     /// The selected session's keys, most pressing first: what its card asks for (an approval, a

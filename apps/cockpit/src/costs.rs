@@ -388,6 +388,12 @@ pub fn time_with_claude(archive: &Connection, since: &[f64]) -> rusqlite::Result
     Ok(since.iter().map(|from| merged.iter().map(|(start, end)| (end - start.max(*from)).max(0.0)).sum()).collect())
 }
 
+/// What each session's priced replies on `day` would cost at API prices, by session id.
+pub fn session_costs(archive: &Connection, day: &str) -> rusqlite::Result<HashMap<String, f64>> {
+    let mut statement = archive.prepare("select session, sum(cost) from replies where day = ? and cost is not null group by session")?;
+    statement.query_map([day], |row| Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?)))?.collect()
+}
+
 /// Cost per day, output tokens of replies without a known price per model, and the all-time cost.
 pub fn archived_costs(archive: &Connection) -> rusqlite::Result<(HashMap<String, f64>, HashMap<String, i64>, f64)> {
     let mut days = HashMap::new();
@@ -452,6 +458,8 @@ struct State {
     /// Seconds spent with Claude per project (active_seconds): today, and all the archive holds.
     active_today: HashMap<String, f64>,
     active_all_time: HashMap<String, f64>,
+    /// What each session's replies today would cost at API prices, by session id.
+    session_today: HashMap<String, f64>,
     /// Seconds with Claude, all sessions together (time_with_claude): today, this week, this month.
     time_together: [f64; 3],
     error: String,
@@ -521,7 +529,7 @@ impl Costs {
                     billing_error = format!("billing metadata: {error}");
                 }
                 Ok((archived_costs(&archive)?, archived_billing_totals(&archive)?, active_seconds(&archive, &today)?, active_seconds(&archive, "0000-00-00")?,
-                    time_with_claude(&archive, &starts)?))
+                    time_with_claude(&archive, &starts)?, session_costs(&archive, &today)?))
             });
             let mut state = shared.lock().unwrap();
             if opencode_error != state.opencode_error && !opencode_error.is_empty() {
@@ -529,7 +537,8 @@ impl Costs {
             }
             state.opencode_error = opencode_error;
             match result {
-                Ok(((days, _, all_time), billing, active_today, active_all_time, together)) => {
+                Ok(((days, _, all_time), billing, active_today, active_all_time, together, session_today)) => {
+                    state.session_today = session_today;
                     state.time_together = [together[0], together[1], together[2]];
                     state.days = days;
                     state.all_time = all_time;
@@ -578,6 +587,11 @@ impl Costs {
     pub fn time_spent(&self, project: &str) -> (f64, f64) {
         let state = self.state.lock().unwrap();
         (state.active_today.get(project).copied().unwrap_or(0.0), state.active_all_time.get(project).copied().unwrap_or(0.0))
+    }
+
+    /// What the session's replies today would cost at API prices; None when none was priced.
+    pub fn session_today(&self, session: &str) -> Option<f64> {
+        self.state.lock().unwrap().session_today.get(session).copied()
     }
 
     pub fn error(&self) -> String {
