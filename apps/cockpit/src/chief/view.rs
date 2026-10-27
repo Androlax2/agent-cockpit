@@ -246,6 +246,14 @@ impl ChiefView {
         self.show_inbox();
         true
     }
+    /// Opens the inbox on this question, as the 5 Chief tab selected it; false when it needs no answer now.
+    pub fn open_inbox_on(&mut self, decision: &str) -> bool {
+        let mut inbox=super::inbox::Inbox::new(&self.snapshot,Self::now_ms());
+        if !inbox.show(&self.snapshot,Self::now_ms(),decision) {return false;}
+        self.inbox=Some(inbox);self.inbox_scroll=0;
+        self.frames.push(Frame::Inbox);
+        true
+    }
     pub fn inbox_active(&self) -> bool {matches!(self.frames.last(),Some(Frame::Inbox)) && self.inbox.is_some()}
     pub fn inbox_lines(&self) -> Vec<super::inbox::Line> {
         self.inbox.as_ref().map(|inbox|inbox.lines(&self.snapshot,Self::now_ms())).unwrap_or_default()

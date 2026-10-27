@@ -4,9 +4,9 @@ use super::*;
 use crate::chief::view::{ChiefView, one_line};
 use serde_json::json;
 
-/// A row of the tab that acts: an open decision (NEEDS YOU, or an escalation in TODAY), or an answer.
+/// A row of the tab that acts: an open decision in NEEDS YOU, or in TODAY an answer or a question sent to Theo.
 #[derive(Clone)]
-pub(crate) enum ChiefRow { Decision(Value), Answer(Value) }
+pub(crate) enum ChiefRow { Decision(Value), Answer(Value), Sent(Value) }
 
 const TODAY_SHOWN: usize = 4;
 const TEXT_LIMIT: usize = 200;
@@ -46,6 +46,9 @@ fn open_decisions(snapshot: &Value) -> Vec<&Value> {
     open
 }
 
+/// The tab's badge: a grant is on, as the team host's `chief_badge` reports it on the other tabs.
+pub(super) fn has_active_grant(snapshot: &Value) -> bool { chief(snapshot).is_some_and(|chief| chief["state"] == "active") }
+
 pub(super) fn needs_you(snapshot: &Value) -> usize { ChiefView::attention(snapshot, now_ms()) }
 
 fn is_live(chief: &Value) -> bool { chief["live_verified"] == true || chief["live_verified"] == 1 }
@@ -77,7 +80,8 @@ pub(super) fn help() -> Vec<(&'static str, &'static str)> {
          ("j k", "move across what needs you and today's feed"),
          ("y x i", "on an undelivered message: it arrived, stop safely, details"),
          ("⏎", "on an escalation: answer it; on an answer: open that session"),
-         ("o", "on an answer: overrule it"), ("◆ ◇", "the Chief on · off")]
+         ("o", "on an answer: overrule it"), ("◆ ◇", "the Chief on · off, on its card"),
+         ("● ○", "the tab's badge: a Chief grant on · none or paused; ? when the team host does not answer")]
 }
 
 fn keys_line(keys: &[(&str, String)]) -> Line {
@@ -236,7 +240,7 @@ impl App {
         }
         for decision in records(snapshot, "decision").filter(|decision| decision["category"].is_string()) {
             let Some(at) = decision["created_at_ms"].as_i64().filter(|at| *at >= since) else { continue };
-            today.push((at, format!("Sent to you: {} · {}", category(decision), text(&decision["question"])), ChiefRow::Decision(decision.clone())));
+            today.push((at, format!("Sent to you: {} · {}", category(decision), text(&decision["question"])), ChiefRow::Sent(decision.clone())));
         }
         today.sort_by_key(|(at, _, _)| std::cmp::Reverse(*at));
         today
@@ -247,8 +251,10 @@ impl App {
         match self.chief_tab_rows.get(self.panels[CHIEF_PANEL].selected) {
             Some(ChiefRow::Decision(decision)) if decision["state"] == "open" && self.chief_status.as_ref().is_ok_and(|snapshot| ChiefView::new(snapshot.clone()).is_recovery(decision)) =>
                 hints.extend([("y", "it arrived"), ("x", "stop safely"), ("i", "details")]),
-            Some(ChiefRow::Decision(_)) => hints.extend([("⏎", "answer"), ("i", "details")]),
+            Some(ChiefRow::Decision(decision)) if is_escalation(decision) => hints.extend([("⏎", "answer"), ("i", "details")]),
+            Some(ChiefRow::Decision(_)) => hints.push(("i", "details")),
             Some(ChiefRow::Answer(_)) => hints.extend([("⏎", "open that session"), ("o", "overrule an answer")]),
+            Some(ChiefRow::Sent(_)) => hints.push(("⏎", "open that session")),
             None => {},
         }
         hints
@@ -291,9 +297,18 @@ impl App {
                 if let Some(view) = self.chief_view.as_mut() { view.act_on_decision(&decision, &key); }
                 if self.chief_view.as_ref().is_some_and(ChiefView::at_root) { self.chief_view = None; }
             },
-            (Key::Enter, Some(ChiefRow::Decision(decision))) if is_escalation(&decision) => { self.open_chief_view(); },
-            (Key::Enter, Some(ChiefRow::Answer(answer))) => {
-                let Some(session) = answer["session_id"].as_str() else { return "That answer names no session".into() };
+            (Key::Enter, Some(ChiefRow::Decision(decision))) if is_escalation(&decision) => {
+                self.open_chief_for_tab();
+                let id = decision["id"].as_str().unwrap_or_default();
+                if !self.chief_view.as_mut().is_some_and(|view| view.open_inbox_on(id)) {
+                    if self.chief_view.as_ref().is_some_and(ChiefView::at_root) { self.chief_view = None; }
+                    self.refresh_chief_status();
+                    self.build_chief_tab();
+                    return "That question no longer needs you".into();
+                }
+            },
+            (Key::Enter, Some(ChiefRow::Answer(record) | ChiefRow::Sent(record))) => {
+                let Some(session) = record["session_id"].as_str() else { return "That row names no session".into() };
                 if !self.all_sessions().iter().any(|candidate| candidate.session == session) { return "That session is no longer running".into(); }
                 return self.manager_async(&["open", session]);
             },

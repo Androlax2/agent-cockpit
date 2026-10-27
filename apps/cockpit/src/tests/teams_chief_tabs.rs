@@ -250,3 +250,51 @@ fn the_sessions_team_block_keeps_role_doing_now_and_age_and_points_to_teams() {
     assert!(block.iter().any(|text| text.starts_with("NEEDS YOU")) && block.iter().position(|text| text.starts_with("NEEDS YOU")) < Some(members),
         "a pending link request puts the team in NEEDS YOU: {block:?}");
 }
+
+#[test]
+fn narrow_tabs_never_drop_an_amber_badge() {
+    let fixture = Fixture::new();
+    let mut state = team_state();
+    state["chief_badge"] = json!({"state": "active", "needs_you": 3});
+    let (mut app, _) = team_app(&fixture, state);
+    for width in [40, 32] {
+        let buffer = render(&mut app, width, 30);
+        let amber: Vec<String> = (0..width).filter(|x| buffer[(*x, 1)].bg == crate::app::color(crate::app::YELLOW))
+            .map(|x| buffer[(x, 1)].symbol().to_string()).collect::<Vec<_>>().join("").split_whitespace().map(str::to_string).collect();
+        assert_eq!(amber, ["1", "3"], "width {width}: {}", buffer_rows(&buffer)[1]);
+    }
+}
+
+#[test]
+fn the_chief_badge_says_unknown_when_the_team_host_does_not_answer() {
+    let fixture = Fixture::new();
+    sidebar_sessions(&fixture);
+    let mut app = fixture.app();
+    let tabs = tabs_row(&mut app, 100);
+    assert!(tabs.contains(" 5  Chief  ? "), "{tabs}");
+}
+
+#[test]
+fn a_teams_full_log_holds_only_that_teams_messages_and_links() {
+    let fixture = Fixture::new();
+    let mut state = team_state();
+    let other = json!({"task": {"project": SIDEBAR_PROJECT, "task_id": "0123abcd"}, "kind": "notice", "body": "Elsewhere",
+        "sender": {"session_id": SESSION_B, "role": "developer"}, "recipient": {"session_id": "x", "role": "qa"}});
+    state["messages"].as_array_mut().unwrap().push(json!({"seq": 2, "message_id": "m2", "envelope": other.to_string(), "state": "received", "attempts": 1, "next_at": 0, "error": ""}));
+    state["link_proposals"].as_array_mut().unwrap().push(json!({"proposal_id": "lp2", "sender": SESSION_B, "status": "closed", "task": {"project": "path:/r/other", "task_id": "77"},
+        "participants": [{"session_id": SESSION_B}, {"session_id": "y"}]}));
+    let (mut app, _) = team_app(&fixture, state);
+    press(&mut app, &[Key::Char('4'), Key::Enter, Key::Char('l')]);
+    let log = &app.team_view.as_ref().unwrap().snapshot;
+    assert_eq!(log["messages"].as_array().unwrap().iter().map(|message| message["message_id"].clone()).collect::<Vec<_>>(), [json!("m1")]);
+    assert_eq!(log["link_proposals"].as_array().unwrap().iter().map(|proposal| proposal["proposal_id"].clone()).collect::<Vec<_>>(), [json!("lp1")]);
+}
+
+#[test]
+fn team_names_on_the_cards_are_cyan() {
+    let fixture = Fixture::new();
+    let (mut app, _) = team_app(&fixture, team_state());
+    press(&mut app, &[Key::Char('4')]);
+    let card = app.panels[TEAMS_PANEL].lines.iter().find(|line| line.item.is_some() && line.texts().contains("Session list redesign")).unwrap();
+    assert_eq!(card.segments[1].2.fg, Some(crate::app::color(crate::app::CYAN)));
+}

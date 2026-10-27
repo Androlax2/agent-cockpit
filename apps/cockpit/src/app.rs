@@ -4011,7 +4011,10 @@ impl App {
         self.hit_actions.clear();
         self.tab_ranges.clear();
         let (width, height) = (buffer.area.width, buffer.area.height);
+        // The Teams tab's divider is as wide as the column.
+        let is_resized = self.width != width;
         self.width = width;
+        if is_resized && self.focus == TEAMS_PANEL { self.build_teams(); }
         self.panels[1].fixed_top = self.session_summary_lines();
         self.panels[1].fixed_bottom = self.selected_session_detail_lines();
         self.todo_fixed_lines(self.layout(height)[3]);
@@ -4252,13 +4255,19 @@ impl App {
         let needing = self.running_sessions.iter().filter(|session| self.is_actionable(session, util::now_secs())).count() + usize::from(!self.held.is_empty());
         let open_todos = self.todo_counts[TODO_TAB_TO_DO] + self.todo_counts[TODO_TAB_IN_PROGRESS];
         let teams = if self.teams_tab.needs_you > 0 { count(self.teams_tab.needs_you, amber) } else { count(self.teams_tab.live, style(FG_DARK)) };
-        let (chief_needs_you, is_chief_on) = match (&self.team_links, &self.chief_status) {
-            (_, Ok(snapshot)) if matches!(self.focus, 0 | CHIEF_PANEL) => (chief_tab::needs_you(snapshot), chief_tab::is_on(snapshot)),
-            (TeamLinks::Ready(snapshot), _) => (snapshot["chief_badge"]["needs_you"].as_u64().unwrap_or(0) as usize, snapshot["chief_badge"]["state"] == "active"),
-            _ => (0, false),
+        // None: neither snapshot answered, which is not the same as off.
+        let chief_badge = match (&self.team_links, &self.chief_status) {
+            (_, Ok(snapshot)) if matches!(self.focus, 0 | CHIEF_PANEL) => Some((chief_tab::needs_you(snapshot), chief_tab::has_active_grant(snapshot))),
+            (TeamLinks::Ready(snapshot), _) if snapshot["chief_badge"].is_object() =>
+                Some((snapshot["chief_badge"]["needs_you"].as_u64().unwrap_or(0) as usize, snapshot["chief_badge"]["state"] == "active")),
+            _ => None,
         };
-        let chief = if chief_needs_you > 0 { count(chief_needs_you, amber) }
-            else if is_chief_on { ("●".into(), style(GREEN)) } else { ("○".into(), style(FG_DARK)) };
+        let chief = match chief_badge {
+            Some((needs_you, _)) if needs_you > 0 => count(needs_you, amber),
+            Some((_, true)) => ("●".into(), style(GREEN)),
+            Some((_, false)) => ("○".into(), style(FG_DARK)),
+            None => ("?".into(), dim(FG_DARK)),
+        };
         [count(needing, amber), count(open_todos, style(FG_DARK)), count(self.idea_entries.len(), on(BLACK, MAGENTA).add_modifier(Modifier::BOLD)), teams, chief]
     }
 
@@ -4278,10 +4287,12 @@ impl App {
             _ => 0,
         };
         let total = |shown: &[u8; 5]| (0..5).filter(|index| shown[*index] > 0).map(|index| tab_width(index, shown[index]) + 1).sum::<u16>();
-        for level in [2, 1, 0] {
+        // Names go first, then plain badges, then tabs with nothing for Theo; an amber badge stays.
+        let is_amber = |index: usize| !badges[index].0.is_empty() && badges[index].1.bg == Some(color(YELLOW));
+        for (level, may_fold) in [(2, &(|_: usize| true) as &dyn Fn(usize) -> bool), (1, &|index| !is_amber(index)), (0, &|index| !is_amber(index))] {
             for index in (0..5).rev() {
                 if total(&shown) <= width { break; }
-                if TAB_PANELS[index] != self.focus { shown[index] = level; }
+                if TAB_PANELS[index] != self.focus && may_fold(index) && shown[index] > level { shown[index] = level; }
             }
         }
         put(buffer, row, 0, &" ".repeat(width.saturating_sub(1) as usize), Style::default());

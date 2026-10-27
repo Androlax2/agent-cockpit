@@ -1556,15 +1556,13 @@ fn a_question_put_off_while_on_screen_counts_after_the_open_ones() {
 }
 
 #[test]
-fn enter_on_needs_you_with_only_put_off_questions_shows_the_empty_card() {
+fn a_question_put_off_waits_in_the_needs_you_count_and_offers_nothing_to_answer() {
     let host = inbox_host(vec![put_off("decision-a")]);
-    let (mut app, mut screen) = host.open_inbox();
-    let root = rendered(&mut app, 100, 40);
-    assert!(root.contains("Needs you · 0 · 1 later"), "{root}");
-    app.handle(Key::Enter, &mut screen);
-    let empty = rendered(&mut app, 100, 40);
-    assert!(empty.contains("✓ Nothing needs you") && !empty.contains("Wait."), "{empty}");
+    let (mut app, _) = host.open_inbox();
+    let tab = rendered(&mut app, 100, 40);
+    assert!(tab.contains("NEEDS YOU · 0 · 1 later") && !tab.contains("Wait.") && !tab.contains("Chief needs you"), "{tab}");
 }
+
 
 #[test]
 fn steps_are_done_one_by_one_and_only_y_on_the_last_sends_its_exact_message() {
@@ -1869,4 +1867,34 @@ fn enter_on_an_answer_whose_session_ended_says_so_and_opens_nothing() {
     let (mut app, mut screen) = host.open();
     app.handle(Key::Enter, &mut screen);
     assert!(rendered(&mut app, 120, 45).contains("That session is no longer running"));
+}
+
+#[test]
+fn enter_on_a_needs_you_question_opens_that_question_not_the_oldest() {
+    let mut older = escalation(None); older["id"] = json!("decision-old"); older["question"] = json!("The older question?"); older["created_at_ms"] = json!(1);
+    let mut newer = escalation(None); newer["id"] = json!("decision-new"); newer["question"] = json!("The newer question?"); newer["created_at_ms"] = json!(2);
+    let host = Host::new(vec![chief("active", true), older, newer]);
+    let (mut app, mut screen) = host.open();
+    keys(&mut app, &mut screen, &[Key::Char('j'), Key::Enter]);
+    let card = rendered(&mut app, 120, 45);
+    assert!(card.contains("Chief needs you · 2 of 2"), "{card}");
+}
+
+#[test]
+fn a_question_sent_today_opens_its_session_never_the_chief_root() {
+    let mut sent = escalation(None); sent["state"] = json!("answered"); sent["created_at_ms"] = json!(chrono::Utc::now().timestamp_millis());
+    let host = Host::new(vec![chief("active", true), sent]);
+    let (mut app, mut screen) = host.open();
+    assert!(rendered(&mut app, 120, 45).contains("Sent to you: Scope"));
+    app.handle(Key::Enter, &mut screen);
+    let shown = rendered(&mut app, 120, 45);
+    assert!(shown.contains("That session is no longer running") && !shown.contains("Request summary"), "{shown}");
+}
+
+#[test]
+fn the_chief_badge_is_the_grant_on_every_tab_even_when_its_session_is_unavailable() {
+    let host = Host::new(vec![chief("active", false)]);
+    let (mut app, _) = host.open();
+    let text = rendered(&mut app, 120, 45);
+    assert!(text.contains(" 5  Chief  ● ") && text.contains("Unavailable"), "{text}");
 }

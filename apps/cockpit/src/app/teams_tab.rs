@@ -262,7 +262,7 @@ impl App {
                 .map(util::age).unwrap_or_default(),
         };
         right.push(part(age, dim(FG_DARK)));
-        let title_style = if group == Group::Ended { style(FG_DARK) } else { bold(FG) };
+        let title_style = if group == Group::Ended { dim(CYAN) } else { bold(CYAN) };
         let mut lines = vec![Line { segments: vec![segment(0, glyph, bold(tint)), segment(2, self.team_task_title(snapshot, task), title_style)], right, item, ..Line::default() }];
         let project = sidebar::project_name(snapshot, task, &self.running_sessions);
         let mut why = why_segments(&project, &sidebar::shown(&task.task_id));
@@ -432,7 +432,7 @@ impl App {
             Row::Escalation(_) => "Resolve it with a note for the team.".into(),
             Row::Uncertain(_) => "No receipt. It is never sent twice: say it arrived, or cancel it.".into(),
             Row::FailedDelivery(index) => format!("{} It is not retried.", text(&view.message(index)["error"])),
-            Row::FailedStart(_) => "It is never started again by itself: cancel clears it.".into(),
+            Row::FailedStart(_) => "It is never started again by itself: dismiss clears it.".into(),
             Row::FailedWake(index) => format!("{} Queued messages are kept.", text(&snapshot["sleeps"][index]["error"])),
             Row::Member(_) | Row::Link(_) | Row::Message(_) => String::new(),
         }
@@ -445,7 +445,7 @@ impl App {
             Row::Escalation(_) => &[("e", "resolve with a note", 's')],
             Row::Uncertain(_) => &[("y", "it arrived", 'h'), ("c", "cancel", 'c')],
             Row::FailedDelivery(_) => &[("c", "cancel", 'c')],
-            Row::FailedStart(_) => &[("c", "cancel", 'd')],
+            Row::FailedStart(_) => &[("c", "dismiss", 'd')],
             Row::FailedWake(_) | Row::Member(_) | Row::Link(_) | Row::Message(_) => &[],
         }
     }
@@ -523,6 +523,7 @@ impl App {
     pub(super) fn open_teams_tab_on(&mut self, task: &TaskKey) -> String {
         self.focus_panel(TEAMS_PANEL);
         self.teams_tab.inside = None;
+        self.teams_tab.show_ended = false;
         self.build_teams();
         if !self.teams_tab.teams.contains(task) {
             self.teams_tab.show_ended = true;
@@ -590,7 +591,7 @@ impl App {
                 String::new()
             },
             (Key::Char('l'), _) => {
-                let mut view = TeamView::new(snapshot);
+                let mut view = TeamView::new(Self::team_log(&snapshot, &task));
                 view.is_history = true;
                 self.team_view = Some(view);
                 String::new()
@@ -607,6 +608,22 @@ impl App {
             },
             _ => String::new(),
         }
+    }
+
+    /// The full log of one team: its messages, and the links its task or its members take part in.
+    fn team_log(snapshot: &Value, task: &TaskKey) -> Value {
+        let members: Vec<Value> = Self::team_members(snapshot, task).iter().map(|(_, member)| member["session_id"].clone()).collect();
+        let mut log = snapshot.clone();
+        if let Some(messages) = log["messages"].as_array_mut() {
+            messages.retain(|message| sidebar::task_of(&envelope(message)["task"]).as_ref() == Some(task));
+        }
+        for field in ["links", "link_proposals"] {
+            if let Some(records) = log[field].as_array_mut() {
+                records.retain(|record| sidebar::task_of(&record["task"]).as_ref() == Some(task) || members.contains(&record["sender"])
+                    || record["participants"].as_array().into_iter().flatten().any(|participant| members.contains(&participant["session_id"])));
+            }
+        }
+        log
     }
 
     /// Runs the Team view's action for a row without showing that view, then reads the teams again.

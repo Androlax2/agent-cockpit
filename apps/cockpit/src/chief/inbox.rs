@@ -116,6 +116,12 @@ impl Inbox {
             None=>{self.decision=None;self.read_revision=None;self.stage=Stage::Empty;},
         }
     }
+    /// Shows this open question first instead of the oldest; false when it is not one.
+    pub fn show(&mut self, snapshot: &Value, now_ms: i64, id: &str) -> bool {
+        let Some(question)=questions(snapshot,now_ms).into_iter().find(|question|question["id"].as_str()==Some(id)) else {return false};
+        self.decision=Some(id.to_string());self.read_revision=question["revision"].as_i64();self.stage=Stage::Question;
+        true
+    }
     fn current<'a>(&self, snapshot: &'a Value) -> Option<&'a Value> {
         let id=self.decision.as_deref()?;
         snapshot["records"].as_array()?.iter().find(|record|record["kind"]=="decision" && record["id"].as_str()==Some(id))
