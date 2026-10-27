@@ -280,6 +280,30 @@ fn linked(connection: &mut rusqlite::Connection) {
 const SLEEP_CHECKOUT: &str = "/home/theo/IdeaProjects/project-a";
 
 #[test]
+fn restart_never_takes_over_a_membership_whose_bound_process_still_runs() {
+    let sandbox = Sandbox::new();
+    let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+    linked(&mut connection);
+    let mut other = live()[0].clone();
+    other.runtime = "another-process".into();
+    let refusal = store::sleep::prepare_restart(&mut connection, &other, SLEEP_CHECKOUT, 3000, &|_| true).unwrap_err();
+    assert_eq!(refusal.code, cockpit::teams::ErrorCode::Unauthorized);
+    assert_eq!(store::approved_runtimes(&connection, DESIGNER).unwrap(), [live()[0].runtime.clone()]);
+}
+
+#[test]
+fn restart_recovery_never_moves_a_membership_paused_for_sleep() {
+    let sandbox = Sandbox::new();
+    let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+    linked(&mut connection);
+    store::sleep::prepare(&mut connection, &live()[0], SLEEP_CHECKOUT, 3000).unwrap().unwrap();
+    let mut woken = live()[0].clone();
+    woken.runtime = "woken-without-binding".into();
+    assert!(store::sleep::prepare_restart(&mut connection, &woken, SLEEP_CHECKOUT, 3001, &|_| false).is_err());
+    assert_eq!(store::approved_runtimes(&connection, DESIGNER).unwrap(), [live()[0].runtime.clone()]);
+}
+
+#[test]
 fn sleep_launch_reservation_and_timeout_survive_recovery_without_retry() {
     for failure in ["timeout", "launch"] {
         let sandbox = Sandbox::new();

@@ -1272,6 +1272,21 @@ fn a_relaunch_without_a_restart_permit_still_needs_fresh_approval() {
 }
 
 #[test]
+fn a_prepared_restart_recovers_a_membership_an_unprepared_relaunch_left_on_a_dead_process() {
+    use cockpit::teams::AgentAction;
+    let mut bench = linked_team_bench();
+    let before = crate::teams::request(&mut bench.registry, 10, AgentAction::Context).unwrap().result.unwrap();
+    bench.world.borrow_mut().sender_runtimes.remove(&10);
+    spawned_session_reports(&mut bench, 30, SESSION_A, "");
+    let token = prepare_restart(&mut bench, SESSION_A);
+    bench.world.borrow_mut().sender_runtimes.remove(&30);
+    resumed_session_reports(&mut bench, &token);
+    let after = crate::teams::request(&mut bench.registry, 40, AgentAction::Context).unwrap().result.unwrap();
+    assert_eq!(after, before, "same task, roles and teammates after the recovering restart");
+    designer_notices_developer(&mut bench, 40, "after-recovery").unwrap();
+}
+
+#[test]
 fn a_restart_permit_binds_one_relaunch_only() {
     let mut bench = linked_team_bench();
     let token = prepare_restart(&mut bench, SESSION_A);

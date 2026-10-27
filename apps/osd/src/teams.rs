@@ -623,9 +623,21 @@ fn sleep_control(registry: &mut Registry, request: cockpit::teams::HostRequest) 
             let member = live.iter().find(|member| member.session_id == session_id).ok_or_else(unauthorized)?;
             let entry = registry.sessions.get(&session_id).ok_or_else(unauthorized)?;
             let checkout = fs::canonicalize(&entry.cwd)?.to_string_lossy().into_owned();
-            let connection = registry.teams.as_mut().expect("opened above");
-            let token = if is_restart { store::sleep::prepare_restart(connection, member, &checkout, now_ms())? }
-                        else { store::sleep::prepare(connection, member, &checkout, now_ms())? };
+            let token = if is_restart {
+                let bound_runtime = store::member_runtime(registry.teams.as_ref().expect("opened above"), &session_id)?;
+                let is_bound_runtime_live = bound_runtime.as_deref().is_some_and(|runtime| registry.system.runtime_is_live(runtime));
+                let connection = registry.teams.as_mut().expect("opened above");
+                // A binding that changed since the check above counts as live: never take it over unverified.
+                let (token, is_recovered) = store::sleep::prepare_restart(connection, member, &checkout, now_ms(),
+                    &|runtime| Some(runtime) != bound_runtime.as_deref() || is_bound_runtime_live)?;
+                if is_recovered {
+                    crate::registry::log(&format!("team membership of {session_id} recovered from dead runtime {} for its restart",
+                        bound_runtime.as_deref().unwrap_or("")));
+                }
+                token
+            } else {
+                store::sleep::prepare(registry.teams.as_mut().expect("opened above"), member, &checkout, now_ms())?
+            };
             json!({"token":token})
         },
         HostRequest::CancelSleep { session_id, token } => {

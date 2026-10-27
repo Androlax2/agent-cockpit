@@ -77,8 +77,29 @@ pub fn prepare(connection: &mut Connection, member: &VerifiedSession, checkout: 
 }
 
 /// The daemon binds it only to a relaunch of the same session in `checkout`, once `old_runtime` died.
-pub fn prepare_restart(connection: &mut Connection, member: &VerifiedSession, checkout: &str, now_ms: i64) -> Result<Option<String>, TeamError> {
-    prepare_continuation(connection, member, checkout, now_ms, "restart", RESTART_LIFETIME_MS)
+/// `is_live` is the daemon's process check: a membership an earlier unprepared restart left on a
+/// dead runtime first moves to `member`'s verified live runtime, so this restart carries it again.
+/// Returns the permit and whether such a dead binding was recovered.
+pub fn prepare_restart(connection: &mut Connection, member: &VerifiedSession, checkout: &str, now_ms: i64, is_live: &dyn Fn(&str) -> bool)
+        -> Result<(Option<String>, bool), TeamError> {
+    let is_recovered = recover_dead_binding(connection, member, is_live)?;
+    Ok((prepare_continuation(connection, member, checkout, now_ms, "restart", RESTART_LIFETIME_MS)?, is_recovered))
+}
+
+fn recover_dead_binding(connection: &mut Connection, member: &VerifiedSession, is_live: &dyn Fn(&str) -> bool) -> Result<bool, TeamError> {
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let bound: Option<(String, String, String, String, String)> = transaction.query_row(
+        "SELECT m.task_key,m.epoch,m.agent,m.runtime,t.project FROM members m JOIN teams t ON t.task_key=m.task_key WHERE m.session_id=?1",
+        [&member.session_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))).optional()?;
+    let Some((task_key, epoch, agent, runtime, project)) = bound else { return Ok(false) };
+    if runtime == member.runtime || member.runtime.is_empty() || runtime.is_empty() || is_live(&runtime)
+        || member.agent != agent || member.project != project || paused(&transaction, &member.session_id)? { return Ok(false); }
+    transaction.execute("UPDATE members SET runtime=?2,last_idle_turn=NULL WHERE session_id=?1 AND epoch=?3 AND runtime=?4",
+        params![member.session_id, member.runtime, epoch, runtime])?;
+    transaction.execute("UPDATE messages SET recipient_runtime=?2 WHERE scope_kind='team' AND recipient=?1 AND task_key=?3 AND recipient_epoch=?4
+        AND recipient_runtime=?5 AND state='queued'", params![member.session_id, member.runtime, task_key, epoch, runtime])?;
+    transaction.commit()?;
+    Ok(true)
 }
 
 fn prepare_continuation(connection: &mut Connection, member: &VerifiedSession, checkout: &str, now_ms: i64, kind: &str, lifetime_ms: i64) -> Result<Option<String>, TeamError> {
