@@ -869,6 +869,9 @@ pub struct App {
     pub held: Vec<String>,
     pub(crate) held_checked: f64,
     pub(crate) queue_checked: f64,
+    /// Handed items the scheduler refused: retried at the next queue check, not on every tick,
+    /// where each refusal cost the daemon a full live-session scan (about 25 a second).
+    handed_refused: HashSet<String>,
     pub(crate) sleep_checked: f64,
     /// session -> the idle start `cockpit sleep` was asked about: a refusal is not asked again
     /// until the session worked and went idle again.
@@ -980,7 +983,7 @@ impl App {
             claude_status: ProviderStatus::default(), codex_status: ProviderStatus::new(Provider::Codex), panels: Default::default(), focus: 1, previous_panel: 1,
             help_open: false, help_scroll: 0, has_pane_focus: true, attention_only: false, message, exiting: Vec::new(), restarting_cards: HashMap::new(), labelled: Default::default(), menu: None, session_details: None, todo_composer: None, new_session: None, settings_menu: None, team_view: None, chief_view: None, team_attention: 0, team_roles: HashMap::new(), qa_sessions: HashSet::new(), team_known: false, team_checked: 0.0,
             team_links: TeamLinks::Loading, sidebar_rows: Vec::new(), tab_ranges: Vec::new(), collapsed_teams: HashSet::new(), sidebar_selection_lost: false, sidebar_session_tasks: HashMap::new(), pairing: None, restore: Vec::new(),
-            held: Vec::new(), held_checked: 0.0, queue_checked: 0.0, sleep_checked: 0.0, sleep_asked: HashMap::new(), gaming: util::gaming,
+            held: Vec::new(), held_checked: 0.0, queue_checked: 0.0, handed_refused: HashSet::new(), sleep_checked: 0.0, sleep_asked: HashMap::new(), gaming: util::gaming,
             disk_usage: util::fullest_disk, disk: None, disk_checked: 0.0, restore_checked: 0.0, start_files: Vec::new(),
             width: DEFAULT_COLUMN_WIDTH, sessions: Vec::new(), running_sessions: Vec::new(), windows: Vec::new(), quota_rows: Vec::new(), review_rows: Vec::new(), todo_entries: Vec::new(), idea_entries: Vec::new(),
             session_task_titles: HashMap::new(), session_branches: HashMap::new(),
@@ -1279,6 +1282,9 @@ impl App {
             return;
         }
         let context = self.queue_context();
+        if now - self.queue_checked >= QUEUE_CHECK_S {
+            self.handed_refused.clear();
+        }
         self.start_sessions_for_handed_work(&context);
         if now - self.queue_checked < QUEUE_CHECK_S {
             return;
@@ -1318,7 +1324,8 @@ impl App {
         }
         let mut handed: Vec<Entry> = self.todos.items.iter()
             .filter(|item| item.status() == "todo" && self.todos.is_queued(&item.id())
-                && (!item.queued_by().is_empty() || item.is_blocked_report()) && !item.is_waiting() && !item.is_design())
+                && (!item.queued_by().is_empty() || item.is_blocked_report()) && !item.is_waiting() && !item.is_design()
+                && !self.handed_refused.contains(&item.id()))
             .map(|item| Entry::Typed(item.clone())).collect();
         handed.sort_by(todo::queue_order);
         for entry in handed {
@@ -1335,7 +1342,11 @@ impl App {
                 Ok(agent) => agent,
                 Err(error) => { util::log_event("WARN", &format!("queue: cannot start a session for {}: {error}", item.id())); return }
             };
-            let token=match queue::reserve_task(&directory,&item.id(),None,true) {Ok(token)=>token,Err(error)=>{util::log_event("WARN",&format!("queue: {error}"));continue;}};
+            let token=match queue::reserve_task(&directory,&item.id(),None,true) {Ok(token)=>token,Err(error)=>{
+                util::log_event("WARN",&format!("queue: {} not started, retried at the next queue check: {error}", item.id()));
+                self.handed_refused.insert(item.id());
+                continue;
+            }};
             if let Err(error)=queue::launch_reserved(&token,&["--agent", &agent, "background", &directory, &todo::with_todo_note(&todo::prompt_of(&entry), &item.id())],true) {util::log_event("WARN",&error);continue;}
             if !self.todos.set_status(&item.id(), "doing", "") {
                 self.message = format!("queue: started session, but cannot save status for {}", item.id());

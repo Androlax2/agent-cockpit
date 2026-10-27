@@ -9854,6 +9854,57 @@ fn handed_work_starts_each_item_once_after_the_previous_launch_has_a_known_worke
     assert_eq!(fixture.calls("cockpit").len(), 2);
 }
 
+/// A scheduler that refuses every automatic reservation and records each request.
+fn refusing_scheduler(fixture: &Fixture) -> HostRequests {
+    use std::io::{Read, Write};
+    let requests = HostRequests::default();
+    let recorded = requests.clone();
+    fixture.serve(move |mut stream| {
+        let mut text = String::new();
+        let _ = stream.read_to_string(&mut text);
+        let request: Value = serde_json::from_str(&text).unwrap();
+        let result = if request["request"] == "reserve_task" {
+            json!({"Err": {"code": "conflict", "message": "automatic legacy admission is no longer ready"}})
+        } else { json!({"Ok": {"recorded": true}}) };
+        recorded.lock().unwrap().push(request);
+        let _ = stream.write_all(json!({"request_id": "x", "result": result}).to_string().as_bytes());
+    });
+    requests
+}
+
+fn reserve_requests(requests: &HostRequests) -> usize {
+    requests.lock().unwrap().iter().filter(|request| request["request"] == "reserve_task").count()
+}
+
+#[test]
+fn a_refused_handed_item_is_not_asked_for_again_on_every_tick() {
+    let fixture = Fixture::new();
+    let (greywall, _) = greywall_and_greyproxy(&fixture);
+    file_in_greyproxy(&greywall, "Refused handoff", json!({}));
+    let requests = refusing_scheduler(&fixture);
+    let mut app = fixture.app();
+    app.gaming = || false;
+    app.todos.apply_updates();
+    for _ in 0..5 { app.dispatch_queue(); }
+    assert_eq!(reserve_requests(&requests), 1);
+    assert_eq!(app.todos.status_of(&item_titled(&app.todos, "Refused handoff").id()), "todo");
+}
+
+#[test]
+fn a_refused_handed_item_is_asked_for_again_at_the_next_queue_check() {
+    let fixture = Fixture::new();
+    let (greywall, _) = greywall_and_greyproxy(&fixture);
+    file_in_greyproxy(&greywall, "Refused handoff", json!({}));
+    let requests = refusing_scheduler(&fixture);
+    let mut app = fixture.app();
+    app.gaming = || false;
+    app.todos.apply_updates();
+    app.dispatch_queue();
+    app.queue_checked = 0.0;
+    app.dispatch_queue();
+    assert_eq!(reserve_requests(&requests), 2);
+}
+
 #[test]
 fn handed_work_preserves_queue_off_and_gaming_pauses() {
     for (enabled, gaming) in [(false, false), (true, true)] {
