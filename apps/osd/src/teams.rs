@@ -75,6 +75,7 @@ fn open_and_restore(registry: &mut Registry) -> Result<bool, TeamError> {
 }
 
 pub(crate) fn live_sessions(registry: &mut Registry) -> Result<Vec<VerifiedSession>, TeamError> {
+    registry.live_session_passes += 1;
     let is_opened = open_and_restore(registry)?;
     let rows: Vec<(String, String, String, String)> = registry.sessions.iter()
         .filter(|(_, entry)| !entry.runtime.is_empty() && !entry.cwd.is_empty())

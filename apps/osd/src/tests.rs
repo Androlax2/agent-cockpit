@@ -241,6 +241,21 @@ fn team_requests_reuse_the_todo_list_while_todo_json_is_unchanged() {
     assert_eq!(bench.registry.resolved_todos.loads, loads);
 }
 
+/// Budget: sessions poll these every few seconds, so each pays for one live-session pass, not more
+/// (a Receive ran two on 2026-10-27, the largest share of osd's CPU).
+#[test]
+fn each_polled_team_request_runs_one_live_session_pass() {
+    use cockpit::teams::AgentAction;
+    for (peer, action) in [(10, AgentAction::Receive), (10, AgentAction::Context),
+                           (20, AgentAction::NativeTelemetry { sequence: 1, counts: None })] {
+        let mut bench = team_bench();
+        crate::teams::live_sessions(&mut bench.registry).unwrap();
+        let passes = bench.registry.live_session_passes;
+        let _ = crate::teams::request(&mut bench.registry, peer, action.clone());
+        assert_eq!(bench.registry.live_session_passes - passes, 1, "{action:?}");
+    }
+}
+
 #[test]
 fn a_changed_todo_json_is_reconciled_at_the_next_team_request() {
     let mut bench = team_bench();
@@ -2463,6 +2478,36 @@ fn only_processes_named_exactly_waybar_are_signalled() {
         ("32".into(), ("bash".into(), words(&["bash", "-c", "waybar"]), HashMap::new())),
     ]));
     assert_eq!(waybar_pids_in(&tree), ["30"]);
+}
+
+/// A process table that counts its full walks.
+struct CountedWalks(ProcessTree, std::cell::Cell<u32>);
+
+impl Processes for CountedWalks {
+    fn pids(&self) -> Vec<String> { self.1.set(self.1.get() + 1); self.0.pids() }
+    fn comm(&self, pid: &str) -> String { self.0.0.get(pid).map(|process| process.0.clone()).unwrap_or_default() }
+    fn command(&self, pid: &str) -> Vec<String> { self.0.command(pid) }
+    fn environment(&self, pid: &str) -> HashMap<String, String> { self.0.environment(pid) }
+}
+
+/// Budget: every snapshot publish signals waybar, dozens of times a minute; walking every process
+/// for it cost ~40 ms each (pkill) on 2026-10-27.
+#[test]
+fn signalling_waybar_again_walks_no_process_list() {
+    let table = CountedWalks(ProcessTree(BTreeMap::from([("30".into(), ("waybar".into(), vec!["waybar".into()], HashMap::new()))])), Default::default());
+    let mut waybar = WaybarPids::default();
+    for _ in 0..5 { assert_eq!(waybar.current(&table), ["30"]); }
+    assert_eq!(table.1.get(), 1);
+}
+
+#[test]
+fn a_restarted_waybar_is_found_again() {
+    let mut table = CountedWalks(ProcessTree(BTreeMap::from([("30".into(), ("waybar".into(), vec!["waybar".into()], HashMap::new()))])), Default::default());
+    let mut waybar = WaybarPids::default();
+    waybar.current(&table);
+    table.0.0.remove("30");
+    table.0.0.insert("41".into(), ("waybar".into(), vec!["waybar".into()], HashMap::new()));
+    assert_eq!(waybar.current(&table), ["41"]);
 }
 
 #[test]
