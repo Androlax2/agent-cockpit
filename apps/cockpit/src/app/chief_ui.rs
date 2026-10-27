@@ -6,6 +6,7 @@ use crate::{chief::{host_snapshot as snapshot, ChiefHostAction, view::{ChiefView
 impl App {
     pub(super) fn refresh_chief_status(&mut self) {
         self.chief_status = snapshot().map_err(|error| error.message);
+        self.chief_habits_seen_ms = crate::chief::habits_seen_ms();
     }
     pub(super) fn open_chief_view(&mut self) -> String {
         if let Some(view)=self.chief_view.as_mut() {view.suspended=false;self.refresh_chief_view();return String::new();}
@@ -109,6 +110,12 @@ impl App {
                 self.chief_view.as_mut().expect("Chief is open").results(results.join("\n\n"));
             },
         }
+        // The root list is the 5 Chief tab now: going back to it goes back to the tab.
+        if self.chief_view.as_ref().is_some_and(ChiefView::at_root) {
+            self.chief_view = None;
+            self.refresh_chief_status();
+            self.build_chief_tab();
+        }
         true
     }
 }
@@ -170,7 +177,7 @@ fn draw_startup(view: &mut ChiefView, buffer: &mut Buffer) {
     let body=width.saturating_sub(6) as usize;
     let top=HEADER_LINES;
     for row in top..height-1 {put(buffer,row,0,&" ".repeat(width as usize),style(FG));}
-    put(buffer,top,2,"‹ Status",style(BLUE));
+    put(buffer,top,2,"‹ Chief",style(BLUE));
     let mut lines=Vec::new();
     for (index,line) in view.startup_lines().iter().enumerate() {
         let appearance=if is_startup_action(line) {on(BLACK,BLUE)}

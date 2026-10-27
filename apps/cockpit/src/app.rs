@@ -6,6 +6,8 @@ use crate::continuity::Continuity;
 mod continuity_ui;
 mod new_session;
 mod chief_ui;
+mod chief_tab;
+mod teams_tab;
 pub mod refresh;
 use crate::costs::Costs;
 use crate::errors::ErrorReporter;
@@ -75,9 +77,11 @@ const TODO_TAB_IN_PROGRESS: usize = 3;
 const EDITOR_HELP_MARK: &str = "#── everything from this line on is left out ──";
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 pub const EFFORT_LEVELS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
-const PANEL_NAMES: [&str; 5] = ["Status", "Sessions", "Pull requests", "Todo", "Ideas"];
-/// The tabs' panels, in the order of their keys 1, 2, 3.
-const TAB_PANELS: [usize; 3] = [1, 3, 4];
+const PANEL_NAMES: [&str; 7] = ["Status", "Sessions", "Pull requests", "Todo", "Ideas", "Teams", "Chief"];
+/// The tabs' panels, in the order of their keys 1 to 5.
+const TAB_PANELS: [usize; 5] = [1, 3, 4, TEAMS_PANEL, CHIEF_PANEL];
+pub(crate) const TEAMS_PANEL: usize = 5;
+pub(crate) const CHIEF_PANEL: usize = 6;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum StatusAction { ClaudeStatus, CodexStatus, Digest, Clones }
@@ -93,7 +97,7 @@ impl StatusAction {
 const GLOBAL_HINTS: [(&str, &str); 2] = [("s", "status"), ("?", "help")];
 /// ⌘ in key hints: the physical Command key, which keyd turns into Ctrl (system/etc/keyd).
 const GLOBAL_HELP: &[(&str, &str)] = &[
-    ("1 2 3", "Sessions · Todo · Ideas"), ("s", "Status: usage, spending, Chief, PRs, phone"),
+    ("1 2 3 4 5", "Sessions · Todo · Ideas · Teams · Chief"), ("s", "Status: usage, spending, Chief, PRs, phone"),
     ("?", "this help (for the tab you're on)"), ("esc", "close / back"),
     ("N", "new session: blank or Claude Design canvas"),
     ("H", "resume a past session, searched by project and prompt"),
@@ -149,11 +153,11 @@ pub fn width_of(text: &str) -> usize {
 
 /// The text cut to `available` cells, with an ellipsis when cut.
 pub fn fit(text: &str, available: usize) -> String {
-    if available <= 1 {
-        return String::new();
-    }
     if width_of(text) <= available {
         return text.to_string();
+    }
+    if available <= 1 {
+        return String::new();
     }
     let mut kept = String::new();
     let mut used = 0;
@@ -893,7 +897,7 @@ pub struct App {
     pub errors: ErrorReporter,
     pub claude_status: ProviderStatus,
     pub codex_status: ProviderStatus,
-    pub panels: [PanelState; 5],
+    pub panels: [PanelState; 7],
     pub focus: usize,
     previous_panel: usize,
     pub help_open: bool,
@@ -917,6 +921,8 @@ pub struct App {
     pub(crate) team_view: Option<crate::teams::view::TeamView>,
     chief_view: Option<crate::chief::view::ChiefView>,
     chief_status: Result<Value, String>,
+    /// When Theo last saw his habits, read with chief_status: the 5 Chief tab's "habits (N new)".
+    chief_habits_seen_ms: Option<i64>,
     /// Team requests, escalations and uncertain deliveries waiting for Theo; session -> "team role · task".
     team_attention: usize,
     team_roles: HashMap<String, String>,
@@ -925,6 +931,10 @@ pub struct App {
     team_known: bool,
     pub(crate) team_checked: f64,
     team_links: TeamLinks,
+    /// The 4 Teams tab: what its list and, inside a team, its rows show (teams_tab).
+    pub(crate) teams_tab: teams_tab::TeamsTab,
+    /// The 5 Chief tab's rows that act: needs-you decisions and today's answers (chief_tab).
+    chief_tab_rows: Vec<chief_tab::ChiefRow>,
     pub(crate) sidebar_rows: Vec<crate::teams::sidebar::SidebarRow>,
     /// Where each tab sits on the tabs row (start, end, panel), for clicks.
     tab_ranges: Vec<(u16, u16, usize)>,
@@ -1059,12 +1069,12 @@ impl App {
             costs: Costs::default(), reviews: Reviews::default(), todos, errors: ErrorReporter::new(),
             claude_status: ProviderStatus::default(), codex_status: ProviderStatus::new(Provider::Codex), panels: Default::default(), focus: 1, previous_panel: 1,
             help_open: false, help_scroll: 0, has_pane_focus: true, message, exiting: Vec::new(), restarting_cards: HashMap::new(), labelled: Default::default(), menu: None, session_details: None, todo_composer: None, new_session: None, settings_menu: None, team_view: None, chief_view: None, team_attention: 0, team_roles: HashMap::new(), qa_sessions: HashSet::new(), team_known: false, team_checked: 0.0,
-            team_links: TeamLinks::Loading, sidebar_rows: Vec::new(), tab_ranges: Vec::new(), collapsed_teams: HashSet::new(), sidebar_selection_lost: false, sidebar_session_tasks: HashMap::new(), pairing: None, restore: Vec::new(),
+            team_links: TeamLinks::Loading, teams_tab: Default::default(), chief_tab_rows: Vec::new(), sidebar_rows: Vec::new(), tab_ranges: Vec::new(), collapsed_teams: HashSet::new(), sidebar_selection_lost: false, sidebar_session_tasks: HashMap::new(), pairing: None, restore: Vec::new(),
             held: Vec::new(), held_since: None, held_checked: 0.0, notices: Vec::new(), is_confirming: false, queue_checked: 0.0, handed_refused: HashSet::new(), chief_requested: HashSet::new(), chief_requests_checked: 0.0, sleep_checked: 0.0, sleep_asked: HashMap::new(), gaming: util::gaming,
             disk_usage: util::fullest_disk, disk: None, disk_checked: 0.0, restore_checked: 0.0, start_files: Vec::new(),
             width: DEFAULT_COLUMN_WIDTH, sessions: Vec::new(), running_sessions: Vec::new(), windows: Vec::new(), quota_rows: Vec::new(), review_rows: Vec::new(), todo_entries: Vec::new(), idea_entries: Vec::new(),
             session_task_titles: HashMap::new(), session_branches: HashMap::new(),
-            session_queued: HashMap::new(), chief_answers: HashMap::new(), chief_status: Err("Not read yet".into()), session_roots: HashMap::new(),
+            session_queued: HashMap::new(), chief_answers: HashMap::new(), chief_status: Err("Not read yet".into()), chief_habits_seen_ms: None, session_roots: HashMap::new(),
             todo_scope: String::new(), shown_session: String::new(), todo_tab: TODO_TAB_OPEN, todo_tabs: HashMap::new(), todo_categories: HashMap::new(), saved_todo_scope: None, todo_jump: None, todo_counts: [0; 5], prompts_sent: HashMap::new(), subscription_held: HashSet::new(), subscription_directories: HashSet::new(), subscription_error: None, craft_roots: HashMap::new(), hit_lines: HashMap::new(), hit_actions: HashMap::new(),
             subscription_polled_at: None, subscription_waiting_shown: HashMap::new(),
             gathered: None, pending: Vec::new(), plan: String::new(), craft_checked: 0.0, running_copies_unpushed: HashMap::new(), running_copies_checked: 0.0, todo_recovery_pending,
@@ -1074,7 +1084,15 @@ impl App {
     /// A panel taking the focus shows from its top: while small it scrolled to keep its selection
     /// in view, and that scroll would otherwise stay once it is big again.
     pub fn focus_panel(&mut self, index: usize) {
-        if index == 0 { self.refresh_chief_status(); }
+        if matches!(index, 0 | CHIEF_PANEL) { self.refresh_chief_status(); }
+        if index == CHIEF_PANEL {
+            // Back on the Chief: what was left open there (Tab away from a review) shows again.
+            if self.chief_view.as_ref().is_some_and(|view| view.suspended) {
+                self.chief_view.as_mut().expect("checked above").suspended = false;
+                self.refresh_chief_view();
+            }
+            self.build_chief_tab();
+        }
         if TAB_PANELS.contains(&self.focus) {
             self.previous_panel = self.focus;
         }
@@ -1509,6 +1527,8 @@ impl App {
         self.build_reviews();
         self.build_todo();
         self.build_ideas();
+        self.build_teams();
+        if self.focus == CHIEF_PANEL { self.build_chief_tab(); }
     }
 
     /// A duration as the column shows it: "42m", "3h05", then "34h".
@@ -1748,17 +1768,14 @@ impl App {
             }
         }
         lines.push(Line::default());
+        // One line; everything else about the Chief is on the 5 Chief tab (frame 3803).
         lines.push(Line::new(vec![segment(0, "CHIEF", bold(FG_DARK))]));
-        let chief_lines = match &self.chief_status {
-            Ok(snapshot) => crate::chief::view::ChiefView::new(snapshot.clone()).status_lines(),
-            Err(error) => vec![format!("Chief unavailable · {}", crate::chief::view::one_line(error, 160))],
+        let chief_line = match &self.chief_status {
+            Ok(snapshot) => chief_tab::status_line(snapshot),
+            Err(error) => format!("Chief unavailable · {}", crate::chief::view::one_line(error, 160)),
         };
-        for text in chief_lines {
-            for line in wrap_detail_text(&text, room.max(2)) { lines.push(Line::new(vec![segment(0, line, style(FG))])); }
-        }
-        lines.push(Line::new(vec![segment(0, " c ", on(FG, BG_HIGHLIGHT).add_modifier(Modifier::BOLD)), segment(4, "Chief view", dim(FG_DARK)),
-            segment(16, " l ", on(FG, BG_HIGHLIGHT).add_modifier(Modifier::BOLD)), segment(20, "answer log", dim(FG_DARK)),
-            segment(32, " h ", on(FG, BG_HIGHLIGHT).add_modifier(Modifier::BOLD)), segment(36, "habits", dim(FG_DARK))]));
+        lines.push(Line { segments: vec![segment(0, chief_line, style(FG))],
+            right: vec![part(" 5 ", on(FG, BG_HIGHLIGHT).add_modifier(Modifier::BOLD)), part("Chief tab", dim(FG_DARK))], ..Line::default() });
         lines.push(Line::default());
         lines.push(Line::new(vec![segment(0, "SERVICES", bold(FG_DARK))]));
         for (provider, action) in [(&self.claude_status, StatusAction::ClaudeStatus), (&self.codex_status, StatusAction::CodexStatus)] {
@@ -2077,6 +2094,8 @@ impl App {
             _ => None,
         };
         let mut group = None;
+        // A team's own ask closes its block, under the members (frame 3737).
+        let mut team_ask: Option<Line> = None;
         let held_cards = usize::from(!self.held.is_empty());
         if held_cards > 0 {
             group = Some(Attention::NeedsYou);
@@ -2100,31 +2119,36 @@ impl App {
             }
             if let (TeamLinks::Ready(snapshot), Some(task)) = (&self.team_links, &team_task) {
                 match row {
+                    // Frame 3737: the block keeps role, doing now and age per member; messages,
+                    // handoffs, links and history are on the 4 Teams tab.
                     SidebarRow::Team { .. } => {
-                        let members: Vec<&Session> = running.iter().filter(|session| sidebar::member_task(snapshot, session).as_ref() == Some(task)).collect();
-                        let marker = if self.collapsed_teams.contains(&sidebar::task_key(task)) { "▸" } else { "▾" };
-                        let (glyph, tint) = match row_group {
-                            Attention::NeedsYou => ("!", YELLOW),
-                            Attention::Working => ("◐", BLUE),
-                            Attention::Quiet => ("✓", GREEN),
-                        };
-                        let age = members.iter().map(|session| session.started.unwrap_or(session.since)).min().map(util::age).unwrap_or_default();
+                        let members = sidebar::member_count(snapshot, task, &running);
+                        let is_folded = self.collapsed_teams.contains(&sidebar::task_key(task));
+                        let marker = if is_folded { "▸" } else { "▾" };
                         let accent = (row_group == Attention::NeedsYou).then_some(bold(YELLOW));
-                        lines.push(Line { segments: vec![segment(0, glyph, bold(tint)), segment(2, match sidebar::member_count(snapshot, task, &running) { 0 => format!("{marker} Team"), count => format!("{marker} Team of {count}") }, bold(FG))],
-                            right: vec![part(age, dim(FG_DARK))], item: Some(index), accent, ..Line::default() });
-                        let project = sidebar::project_name(snapshot, task, &running);
-                        lines.push(Line { segments: why_segments(&project, &self.team_task_title(snapshot, task)), item: Some(index), accent, ..Line::default() });
-                        let reason = sidebar::attention(snapshot, task).map(|reason| reason.trim_start_matches("Needs you: ").to_string());
-                        if let Some(reason) = reason { lines.push(ask_bar(Some(index), &reason, "", "⏎ open")); }
-                        if sidebar::has_qa_plan(snapshot, task) || snapshot["handoffs"].as_array().is_some_and(|handoffs| !handoffs.is_empty()) {
-                            lines.push(Line { segments: vec![segment(2, sidebar::handoff_summary(snapshot, task), dim(FG_DARK))], item: Some(index), accent, ..Line::default() });
+                        lines.push(Line { segments: vec![segment(0, format!("{marker} {}", self.team_task_title(snapshot, task)), bold(CYAN))],
+                            right: vec![part(" 4 ", on(FG, BG_HIGHLIGHT).add_modifier(Modifier::BOLD)), part("team details", dim(FG_DARK))],
+                            item: Some(index), accent, ..Line::default() });
+                        let project = sidebar::shown(&sidebar::project_name(snapshot, task, &running));
+                        lines.push(Line { segments: vec![segment(2, format!("{project} › {}", sidebar::shown(&task.task_id)), dim(FG_DARK))], item: Some(index), accent, ..Line::default() });
+                        team_ask = sidebar::attention(snapshot, task).map(|reason| ask_bar(Some(index), &format!("! {}", reason.trim_start_matches("Needs you: ")), "", "⏎ answer"));
+                        if members == 0 || is_folded {
+                            lines.extend(team_ask.take());
+                            lines.push(Line::default());
                         }
-                        if members.is_empty() || self.collapsed_teams.contains(&sidebar::task_key(task)) { lines.push(Line::default()); }
                         continue;
                     },
                     SidebarRow::PlannedQa { .. } => {
-                        lines.push(Line { segments: vec![segment(2, "QA        ", style(FG_DARK)), segment(12, sidebar::qa_status(snapshot, task), dim(FG_DARK))], item: Some(index), ..Line::default() });
-                        if row_ends_block.get(index).copied().unwrap_or(true) { lines.push(Line::default()); }
+                        let (text, status) = match sidebar::qa_status(snapshot, task).as_str() {
+                            "QA planned · Fresh reviewer starts at handoff" => ("Starts at the next handoff".to_string(), "planned"),
+                            other => (other.trim_start_matches("QA ").to_string(), ""),
+                        };
+                        lines.push(Line { segments: vec![segment(1, "○", dim(FG_DARK)), segment(3, "QA", style(FG_DARK)), segment(14, text, dim(FG_DARK))],
+                            right: vec![part(status, dim(FG_DARK))], item: Some(index), ..Line::default() });
+                        if row_ends_block.get(index).copied().unwrap_or(true) {
+                            lines.extend(team_ask.take());
+                            lines.push(Line::default());
+                        }
                         continue;
                     },
                     SidebarRow::Session { .. } => {
@@ -2132,15 +2156,20 @@ impl App {
                         let role = sidebar::membership(snapshot, session).and_then(sidebar::role).map(sidebar::role_label).unwrap_or("Member");
                         let accent = (session.session == current).then_some(style(BLUE));
                         let card = self.session_card(session, now_secs);
-                        let tint = if card.ask.is_some() { YELLOW } else if card.group == Attention::Working { BLUE } else { FG_DARK };
+                        let (glyph, tint) = if card.ask.is_some() { ("!", YELLOW) } else if session.asleep.is_some() { ("◌", FG_DARK) }
+                            else if session.restarting { ("⟳", BLUE) } else { ("●", BLUE) };
                         // A member's own step while it works, else its title: the line still says which session it is.
                         let has_step = card.group == Attention::Working && sessions::doing_now(session, now_secs).is_some();
-                        let (shown, status) = if has_step { (card.doing.clone(), card.age.clone()) }
-                            else { (sidebar::shown(self.session_display_title(session)), format!("{} {}", card.doing.split(" · ").next().unwrap_or(""), card.age)) };
-                        lines.push(Line { segments: vec![segment(2, format!("{role:<10}"), style(tint)), segment(12, shown, if card.ask.is_some() { style(YELLOW) } else { style(FG) })],
-                            right: vec![part(status, dim(FG_DARK))], item: Some(index), accent, ..Line::default() });
-                        if let Some((ask, verb)) = &card.ask { lines.push(ask_bar(Some(index), ask, &card.ask_count, &format!("⏎ {verb}"))); }
-                        if row_ends_block.get(index).copied().unwrap_or(true) { lines.push(Line::default()); }
+                        let shown = if has_step || card.ask.is_some() || session.asleep.is_some() || session.restarting { card.doing.clone() }
+                            else { sidebar::shown(self.session_display_title(session)) };
+                        let age_tint = if card.group == Attention::Working { style(BLUE) } else { dim(FG_DARK) };
+                        lines.push(Line { segments: vec![segment(1, glyph, bold(tint)), segment(3, role, bold(FG)), segment(14, shown, style(FG))],
+                            right: vec![part(card.age.clone(), age_tint)], item: Some(index), accent, ..Line::default() });
+                        if let Some((ask, verb)) = &card.ask { lines.push(ask_bar(Some(index), &format!("! {role}: {ask}"), &card.ask_count, &format!("⏎ {verb}"))); }
+                        if row_ends_block.get(index).copied().unwrap_or(true) {
+                            lines.extend(team_ask.take());
+                            lines.push(Line::default());
+                        }
                         continue;
                     },
                 }
@@ -2632,7 +2661,7 @@ impl App {
             counts += &format!(" · {outdated} restart available");
         }
         if self.team_attention > 0 {
-            counts += &format!(" · team: {} {} you (: team)", self.team_attention, if self.team_attention == 1 { "needs" } else { "need" });
+            counts += &format!(" · team: {} {} you (4 Teams)", self.team_attention, if self.team_attention == 1 { "needs" } else { "need" });
         }
         vec![
             Line::new(vec![segment(0, attention, bold(if needing > 0 { YELLOW } else { FG_DARK }))]),
@@ -2874,7 +2903,7 @@ impl App {
         if key == Key::Char('n') { return self.next_sidebar_attention(); }
         if !self.sidebar_selection_lost {
             if let Some(SidebarRow::Team { task } | SidebarRow::PlannedQa { task }) = self.sidebar_rows.get(self.panels[1].selected).cloned() {
-                if key == Key::Char('i') { return self.open_team_view(); }
+                if key == Key::Char('i') { return self.open_teams_tab_on(&task); }
                 if key == Key::Enter && matches!(self.sidebar_rows.get(self.panels[1].selected), Some(SidebarRow::Team { .. })) {
                     let key = sidebar::task_key(&task);
                     if !self.collapsed_teams.remove(&key) { self.collapsed_teams.insert(key); }
@@ -3879,7 +3908,7 @@ impl App {
     fn panel_hints(&self, index: usize) -> Vec<(&'static str, &'static str)> {
         match index {
             0 => {
-                let mut hints = vec![("Esc", "close"), ("p", "pull requests"), ("c", "chief"), ("l", "answer log"), ("h", "habits")];
+                let mut hints = vec![("Esc", "close"), ("p", "pull requests"), ("5", "Chief tab")];
                 if !self.status_selection_lost && let Some(Some(action)) = self.status_actions.get(self.panels[0].selected) {
                     hints.insert(0, ("⏎", action.hint()));
                 }
@@ -3888,6 +3917,8 @@ impl App {
             1 => self.sessions_hints(),
             2 => vec![("⏎", "review"), ("o", "GitHub"), ("l", "later / bring back"), ("t", "trail"), ("Esc", "close")],
             4 => vec![("y", "approve"), ("n", "decline"), ("i", "details")],
+            TEAMS_PANEL => self.teams_hints(),
+            CHIEF_PANEL => self.chief_tab_hints(),
             _ => self.todo_hints(),
         }
     }
@@ -3912,7 +3943,7 @@ impl App {
 
     fn panel_help(index: usize) -> Vec<(&'static str, &'static str)> {
         match index {
-            0 => vec![("⏎", "open selected service status, daily digest or clones review"), ("↑↓", "select a service or utility"), ("p", "its pull requests"), ("c", "the Chief: on / off"), ("l", "the Chief's answer log"), ("s", "back to the tab")],
+            0 => vec![("⏎", "open selected service status, daily digest or clones review"), ("↑↓", "select a service or utility"), ("p", "its pull requests"), ("5", "the Chief tab: on / off, answers, habits"), ("s", "back to the tab")],
             1 => Self::sessions_help(),
             2 => vec![("o", "open the pull request in the pull requests window"),
                       ("⏎", "a session reviewing it, in its own clone of the repository, using the default agent"),
@@ -3922,6 +3953,8 @@ impl App {
             4 => vec![("y", "approve the selected idea: it moves to its project's To do, without starting work"),
                       ("n", "decline the selected idea; the declined title will not be proposed again"),
                       ("i ⏎", "the full idea, reason, notes and source session from any project")],
+            TEAMS_PANEL => teams_tab::help(),
+            CHIEF_PANEL => chief_tab::help(),
             _ => vec![("⏎", "the item's details: title, notes, why Claude proposed it, who filed it, when"),
                       ("[ ]", "previous / next tab: Open (Proposed, To do and In progress together) · Proposed · To do · In progress · Done"),
                       ("h", "hand the item over: the session on screen if it is on the item's project (a parallel clone too), Claude Code or opencode alike, else the project's running session, or a new one using the default agent"),
@@ -3948,6 +3981,7 @@ impl App {
             1 => String::new(),
             2 => self.reviews_subtitle(),
             4 => "all projects".into(),
+            TEAMS_PANEL | CHIEF_PANEL => String::new(),
             _ => self.todo_subtitle(),
         }
     }
@@ -4005,7 +4039,7 @@ impl App {
             self.hit_lines.clear();
             self.hit_actions.clear();
         }
-        if let Some(view) = self.team_view.as_ref() {
+        if let Some(view) = self.team_view.as_ref().filter(|view| !view.hidden) {
             draw_team_view(view, buffer);
             self.hit_lines.clear();
             self.hit_actions.clear();
@@ -4102,7 +4136,7 @@ impl App {
                     _ => false,
                 });
                 if linked_member { return style.fg(color(FG)).bg(color(BG_HIGHLIGHT)).remove_modifier(Modifier::DIM); }
-                let preserve_state = index == 1 && (style.fg == Some(color(RED)) || style.fg == Some(color(BLUE)) || style.fg == Some(color(YELLOW)));
+                let preserve_state = matches!(index, 1 | TEAMS_PANEL | CHIEF_PANEL) && (style.fg == Some(color(RED)) || style.fg == Some(color(BLUE)) || style.fg == Some(color(YELLOW)));
                 if preserve_state { style.bg(color(BG_HIGHLIGHT)) } else { style.fg(color(fg)).bg(color(BG_HIGHLIGHT)) }
             };
             if highlighted {
@@ -4210,30 +4244,68 @@ impl App {
         }
     }
 
-    /// `[1] Sessions 2  [2] Todo 5  [3] Ideas 3`: key caps, badges (amber only for what needs you),
-    /// the open tab on the selection background, its subtitle at the right.
-    fn draw_tabs(&mut self, buffer: &mut Buffer, row: u16, width: u16) {
+    /// The five tabs' badges: amber only for what needs you; otherwise Todo's open items, Ideas'
+    /// proposals, Teams' live teams and the Chief on (green ●) or off (○).
+    fn tab_badges(&self) -> [(String, Style); 5] {
+        let amber = on(BLACK, YELLOW).add_modifier(Modifier::BOLD);
+        let count = |count: usize, tint: Style| if count > 0 { (count.to_string(), tint) } else { (String::new(), tint) };
         let needing = self.running_sessions.iter().filter(|session| self.is_actionable(session, util::now_secs())).count() + usize::from(!self.held.is_empty());
         let open_todos = self.todo_counts[TODO_TAB_TO_DO] + self.todo_counts[TODO_TAB_IN_PROGRESS];
-        let ideas = self.idea_entries.len();
+        let teams = if self.teams_tab.needs_you > 0 { count(self.teams_tab.needs_you, amber) } else { count(self.teams_tab.live, style(FG_DARK)) };
+        let (chief_needs_you, is_chief_on) = match (&self.team_links, &self.chief_status) {
+            (_, Ok(snapshot)) if matches!(self.focus, 0 | CHIEF_PANEL) => (chief_tab::needs_you(snapshot), chief_tab::is_on(snapshot)),
+            (TeamLinks::Ready(snapshot), _) => (snapshot["chief_badge"]["needs_you"].as_u64().unwrap_or(0) as usize, snapshot["chief_badge"]["state"] == "active"),
+            _ => (0, false),
+        };
+        let chief = if chief_needs_you > 0 { count(chief_needs_you, amber) }
+            else if is_chief_on { ("●".into(), style(GREEN)) } else { ("○".into(), style(FG_DARK)) };
+        [count(needing, amber), count(open_todos, style(FG_DARK)), count(self.idea_entries.len(), on(BLACK, MAGENTA).add_modifier(Modifier::BOLD)), teams, chief]
+    }
+
+    /// `1 Sessions 2  2 Todo 5  3 Ideas 3  4 Teams 1  5 Chief ●`: key caps and badges, the open tab
+    /// on the selection background, its subtitle at the right when there is room. Too wide for the
+    /// column, the inactive tabs fold to key cap and badge from the right; the open one never does.
+    fn draw_tabs(&mut self, buffer: &mut Buffer, row: u16, width: u16) {
+        const NAMES: [&str; 5] = ["Sessions", "Todo", "Ideas", "Teams", "Chief"];
+        let badges = self.tab_badges();
+        let badge_width = |index: usize| if badges[index].0.is_empty() { 0 } else { 1 + 2 + width_of(&badges[index].0) as u16 };
+        // How much of each tab shows: 3 in full, 2 key cap and badge, 1 key cap, 0 nothing.
+        let mut shown = [3u8; 5];
+        let tab_width = |index: usize, shown: u8| match shown {
+            3 => 3 + 1 + width_of(NAMES[index]) as u16 + badge_width(index),
+            2 => 3 + badge_width(index),
+            1 => 3,
+            _ => 0,
+        };
+        let total = |shown: &[u8; 5]| (0..5).filter(|index| shown[*index] > 0).map(|index| tab_width(index, shown[index]) + 1).sum::<u16>();
+        for level in [2, 1, 0] {
+            for index in (0..5).rev() {
+                if total(&shown) <= width { break; }
+                if TAB_PANELS[index] != self.focus { shown[index] = level; }
+            }
+        }
         put(buffer, row, 0, &" ".repeat(width.saturating_sub(1) as usize), Style::default());
         let mut column = 0u16;
-        for (key, panel, name, count, badge) in [("1", 1, "Sessions", needing, on(BLACK, YELLOW)), ("2", 3, "Todo", open_todos, on(FG, BG_HIGHLIGHT)),
-                                                  ("3", 4, "Ideas", ideas, on(BLACK, MAGENTA))] {
+        for index in (0..5).filter(|index| shown[*index] > 0) {
+            let panel = TAB_PANELS[index];
             let is_open = self.focus == panel;
-            let ground = if is_open { on(FG, BG_HIGHLIGHT).add_modifier(Modifier::BOLD) } else { style(FG_DARK) };
-            let badge_text = if count > 0 { format!(" {count} ") } else { String::new() };
-            let tab_width = 1 + 3 + 1 + width_of(name) as u16 + if badge_text.is_empty() { 0 } else { 1 + width_of(&badge_text) as u16 } + 1;
+            let tab_width = tab_width(index, shown[index]);
             if column + tab_width >= width { break; }
-            let start = column;
-            put(buffer, row, column, &" ".repeat(tab_width as usize), if is_open { ground } else { Style::default() });
-            put(buffer, row, column + 1, &format!(" {key} "), on(FG, BG_HIGHLIGHT).add_modifier(Modifier::BOLD));
-            put(buffer, row, column + 5, name, ground);
-            if !badge_text.is_empty() {
-                put(buffer, row, column + 6 + width_of(name) as u16, &badge_text, badge.add_modifier(Modifier::BOLD));
+            let ground = if is_open { on(FG, BG_HIGHLIGHT).add_modifier(Modifier::BOLD) } else { style(FG_DARK) };
+            if is_open { put(buffer, row, column, &" ".repeat(tab_width as usize), ground); }
+            put(buffer, row, column, &format!(" {} ", index + 1), on(FG, BG_HIGHLIGHT).add_modifier(Modifier::BOLD));
+            let mut end = column + 3;
+            if shown[index] == 3 {
+                put(buffer, row, end + 1, NAMES[index], ground);
+                end += 1 + width_of(NAMES[index]) as u16;
             }
+            let (badge, tint) = &badges[index];
+            if !badge.is_empty() && shown[index] >= 2 {
+                let tint = if is_open && tint.bg.is_none() { tint.bg(color(BG_HIGHLIGHT)) } else { *tint };
+                put(buffer, row, end + 1, &format!(" {badge} "), tint);
+            }
+            self.tab_ranges.push((column, column + tab_width + 1, panel));
             column += tab_width + 1;
-            self.tab_ranges.push((start, column, panel));
         }
         // Todo shows its scope and filter on its own first lines.
         let subtitle = if self.is_status_open() { "Status".to_string() } else if self.focus == 3 { String::new() } else { self.subtitle(self.focus) };
@@ -4413,20 +4485,13 @@ impl App {
                         None => String::new(),
                     }
                 },
-                Key::Char('c') => self.open_chief_view(),
-                Key::Char('l') => self.open_chief_answers(None),
-                Key::Char('h') => {
-                    let message=self.open_chief_view();
-                    // Habits asked for directly: the question inbox stays one esc away.
-                    if let Some(view)=self.chief_view.as_mut() {view.leave_inbox();}
-                    self.handle_chief_key(Key::Char('h'));
-                    message
-                },
                 _ => String::new(),
             },
             1 => self.handle_sessions(key, screen),
             2 => self.handle_reviews(key, screen),
             4 => self.handle_ideas(key),
+            TEAMS_PANEL => self.handle_teams(key, screen),
+            CHIEF_PANEL => self.handle_chief_tab(key),
             _ => self.handle_todo(key, screen),
         }
     }
@@ -4507,7 +4572,7 @@ impl App {
         if self.chief_view.is_some() && self.handle_chief_key(key.clone()) {
             return;
         }
-        if self.team_view.is_some() {
+        if self.team_view.as_ref().is_some_and(|view| !view.hidden) {
             self.message = self.handle_team_view(key, screen);
             return;
         }
@@ -4531,8 +4596,8 @@ impl App {
             }
             return;
         }
-        // CMD+1/2/3 from the session arrive as F1-F3 (tmux.conf).
-        if let Key::F(number @ 1..=3) = key {
+        // CMD+1/2/3 from the session arrive as F1-F3 (tmux.conf); F4 and F5 open Teams and Chief.
+        if let Key::F(number @ 1..=5) = key {
             self.focus_panel(TAB_PANELS[number as usize - 1]);
             return;
         }
@@ -4541,7 +4606,12 @@ impl App {
             Key::Char('s') => self.focus_panel(if self.is_status_open() { self.previous_panel } else { 0 }),
             Key::Esc if self.is_status_open() => self.focus_panel(self.previous_panel),
             Key::Char('p') if self.focus == 0 => self.focus_panel(2),
-            Key::Char(digit @ '1'..='3') => self.focus_panel(TAB_PANELS[digit as usize - '1' as usize]),
+            // "4 team details" on a team block: the Teams tab opens on that team.
+            Key::Char('4') if self.focus == 1 && self.selected_sidebar_task().is_some() => {
+                let task = self.selected_sidebar_task().expect("checked above");
+                self.message = self.open_teams_tab_on(&task);
+            },
+            Key::Char(digit @ '1'..='5') => self.focus_panel(TAB_PANELS[digit as usize - '1' as usize]),
             Key::Char('j') | Key::Down => {
                 self.panels[self.focus].move_by(1);
                 if self.focus == 0 { self.status_selection_lost = false; }
@@ -4629,7 +4699,8 @@ impl App {
         if now - self.team_checked < 10.0 { return; }
         self.team_checked = now;
         self.chief_answers.clear();
-        if self.focus == 0 { self.refresh_chief_status(); }
+        // The full Chief snapshot is read only while it shows; the tab's badge comes with the team snapshot.
+        if matches!(self.focus, 0 | CHIEF_PANEL) { self.refresh_chief_status(); }
         if self.chief_view.is_some() { self.refresh_chief_view(); }
         util::refresh_hyprland_instance();
         let workspace = util::output_of("hyprctl", &["-j", "activeworkspace"])
@@ -5499,7 +5570,8 @@ mod tests {
     fn fit_cuts_with_an_ellipsis_by_cell_width() {
         assert_eq!(fit("Checkout totals", 8), "Checkou…");
         assert_eq!(fit("short", 8), "short");
-        assert_eq!(fit("x", 1), "");
+        assert_eq!(fit("x", 1), "x");
+        assert_eq!(fit("xy", 1), "");
     }
 
     #[test]

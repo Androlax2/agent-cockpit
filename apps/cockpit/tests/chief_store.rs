@@ -1039,3 +1039,15 @@ fn a_populated_version_16_database_upgrades_to_17_keeping_its_decisions() {
     assert_eq!(version(&connection), 17);
     assert_eq!(decision_record(&connection, "decision-a")["suggested_answer"], "Go on.");
 }
+
+#[test]
+fn the_tab_badge_names_the_grant_state_and_counts_open_decisions_not_put_off() {
+    let connection = migrated();
+    assert_eq!(cockpit::chief::store::badge(&connection, 1_000).unwrap(), serde_json::json!({"state": null, "needs_you": 0}));
+    connection.execute("INSERT INTO chief_grants VALUES ('epoch-1','ses-chief','opencode','path:/p','runtime','epoch-1',1,'paused','hash',1)", []).unwrap();
+    for (id, state, later) in [("open", "open", None), ("later", "open", Some(5_000)), ("back", "open", Some(500)), ("done", "superseded", None)] {
+        connection.execute("INSERT INTO chief_decisions(id,scope_key,decision_key,question,recommendation,state,revision,created_at,later_until) VALUES (?1,?1,?1,'Q','R',?2,1,1,?3)",
+            rusqlite::params![id, state, later]).unwrap();
+    }
+    assert_eq!(cockpit::chief::store::badge(&connection, 1_000).unwrap(), serde_json::json!({"state": "paused", "needs_you": 2}));
+}

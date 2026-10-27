@@ -478,6 +478,7 @@ pub fn host_snapshot(registry: &mut Registry) -> Result<Value, TeamError> {
     let mut state = store::snapshot(database(registry, &live)?, None, None, 100)?;
     state["sessions"] = json!(sessions);
     state["chief_session"] = json!(cockpit::chief::store::chief_session(registry.teams.as_ref().expect("opened above"))?);
+    state["chief_badge"] = cockpit::chief::store::badge(registry.teams.as_ref().expect("opened above"), now_ms())?;
     let mut sleeps = Vec::new();
     for permit in store::sleep::prepared_records(registry.teams.as_ref().expect("opened above"))? {
         let mut status = store::sleep::status(registry.teams.as_ref().expect("opened above"), &permit.session_id, &permit.token)?;

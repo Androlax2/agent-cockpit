@@ -55,6 +55,10 @@ The screenshots come from `tools/capture-claude.sh`, which builds a made-up cock
 | Status → `p` | Pull requests | CI and review state; Enter starts a review in a separate clone, `o` opens GitHub, `l` sets Later / brings it back, `t` opens its task trail |
 | `2` | Todo | Typed items and open GitHub issues of the viewed project, by priority and status tabs (`[` / `]`). `t` adds, `e` edits, `i` / Enter opens details, `T` opens the task trail, `r` runs now in a new clone, `h` hands to a session, `Q` queues, `d` marks done, and `m` moves a typed item to another project. Inside details, `i` toggles In progress / To do |
 | `3` | Ideas | Global proposals; `y` approves, `n` declines, `i` / Enter shows details |
+| `4` | Teams | The teams, grouped NEEDS YOU, WORKING, then `▸ Ended today` (`D` shows it), and the selected team below: members (live `●`, asleep `◌`, gone `✕`, planned `○`), what needs you, messages and handoffs in flight, and today's events. Enter goes into a team: `j`/`k` move, Enter on a member opens its session, `y` / `n` / `e` approve, reject or edit a request, `c` cancels a failed delivery or start, `l` the full log, `u` unlinks a member, Esc back. `i` or `4` on a team in Sessions opens it here. When the team host does not answer, it says so in red; `R` asks again |
+| `5` | Chief | On or off with today's numbers and the session it runs as; `c` pause / resume (start when off), `p` pick another chief, `r` summary now, `l` answer log, `h` habits. NEEDS YOU lists open decisions (`y` it arrived, `x` stop safely, `i` details; Enter answers an escalation), NOW what the Chief waits for, TODAY its answers and what it sent you (Enter opens that session, `o` overrules an answer). Status keeps one Chief line |
+
+The Teams and Chief tab badges: amber for what needs you, otherwise the number of live teams, and the Chief on (green `●`) or off (`○`). A narrow column folds the other tabs to their key cap and badge, from the right; the open tab keeps its name.
 
 Todo's title-and-notes form supports `CMD+V` for clipboard images. PNGs are kept in `~/.local/state/cockpit/todo-images/`, readable but not writable by sessions. Deleting an image marker drops it; unreferenced images are removed after an hour. A handed-off session reads the images through `cockpit-todo show`.
 
@@ -200,22 +204,22 @@ ask a question, within a fixed boundary, and hands everything else to you: see
 
 ### Turning it on and off
 
-Open Status (`s`) → Chief (`c`). The root has **Needs you · N** (open decisions; questions put off with
-Later show apart as `· M later` until they come back), **Answers · N**,
-**Habits · N** (see [Habits](#habits)), **Chief controls**, **Workers** and **Request summary**.
-Arrows or `j`/`k` move, Enter inspects, `h` opens Habits, Esc goes back, Page Up/Down read long
-records. `c` on a session card opens the Answers list of that session directly.
+Open the Chief tab (`5`). It shows **NEEDS YOU · N** (open decisions; questions put off with
+Later show apart as `· M later` until they come back), what the Chief waits for now and today's
+answers; `l` opens the answer log, `h` [Habits](#habits) (`habits (N new)`), `r` a summary.
+Arrows or `j`/`k` move, Esc goes back, Page Up/Down read long records. `c` on a session card opens
+the Answers list of that session directly.
 
-- **Chief controls → Select chief** lists the live standalone sessions. Enter opens a
+- **`p` pick another chief** lists the live standalone sessions. Enter opens a
   separate confirmation; only `y` enables. It does not start an agent, and the session
   cannot also be a team member.
-- **Pause chief** stops new Chief actions and wake-ups; **Resume chief** revalidates the
+- **`c`** pauses or resumes, after the same review and confirmation (it disables a chief that is no
+  longer live). **Pause** stops new Chief actions and wake-ups; **Resume** revalidates the
   exact session first. **Disable chief** revokes its access and cancels unsent Chief
   messages. None of them touches your agents, teams or the todo queue.
 - **Readiness**: only an OpenCode session whose native queued inbox the host has verified
-  for that exact runtime can be woken (Claude and Codex stay watch-only). **Workers** shows
-  each session and why it is, or is not, ready (busy, stale observation, sleeping, queued
-  admission not verified). Unknown or stale facts count as not ready, and a stale Chief shows
+  for that exact runtime can be woken (Claude and Codex stay watch-only). The `p` list shows
+  each session and why it can, or cannot, be the Chief. Unknown or stale facts count as not ready, and a stale Chief shows
   as **Unavailable** while its grant is kept. There is no replacement or fallback Chief.
 
 ### What the Chief does

@@ -13,6 +13,8 @@ pub struct TeamView {
     pub selected: usize,
     pub detail_scroll: usize,
     pub snapshot_error: Option<String>,
+    /// The 4 Teams tab acts through this view without showing it: nothing draws it or routes keys to it.
+    pub hidden: bool,
 }
 
 fn shown(value: &Value) -> String {
@@ -47,7 +49,7 @@ fn link_block(snapshot: &Value, record: &Value) -> Option<String> {
 
 impl TeamView {
     pub fn new(snapshot: Value) -> Self {
-        TeamView { snapshot, is_history: false, selected: 0, detail_scroll: 0, snapshot_error: None }
+        TeamView { snapshot, is_history: false, selected: 0, detail_scroll: 0, snapshot_error: None, hidden: false }
     }
 
     fn list(&self, key: &str) -> &[Value] {

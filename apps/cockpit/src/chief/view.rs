@@ -289,6 +289,28 @@ impl ChiefView {
         let selected=self.rows(&page).first().map(|row|row.key.clone());
         self.frames=vec![Frame::Browse {page,selected}];
     }
+    /// Back on the root list, which the 5 Chief tab replaces: the tab closes the view there.
+    pub fn at_root(&self) -> bool {
+        matches!(self.frames.as_slice(),[Frame::Browse {page:Page::Root,..}]) && !self.startup_screen()
+    }
+    /// Selects a record's row on the page shown, as the 5 Chief tab picked it.
+    pub fn select_record(&mut self, record: &Value) {self.select(Some(identity(record)));}
+    /// `y` it arrived, `x` stop safely or `i` details on a decision the 5 Chief tab shows.
+    pub fn act_on_decision(&mut self, decision: &Value, key: &Key) {
+        match key {
+            Key::Char('i')=>self.frames.push(Frame::Detail {record:decision.clone(),actions:Some(Page::DecisionActions(decision.clone())),scroll:0}),
+            Key::Char(choice @ ('y'|'x'))=>if let Some(target)=self.recovery_target(decision) {
+                self.frames.push(Frame::Note {intent:if *choice=='y' {Intent::Handled(target)} else {Intent::Stop(target)},note:String::new(),scroll:0});
+            },
+            _=>{},
+        }
+    }
+    pub fn is_recovery(&self, decision: &Value) -> bool {self.recovery_target(decision).is_some()}
+    /// Active habits Theo has not seen yet.
+    pub fn new_habits(&self) -> usize {
+        let since=self.habits_since();
+        self.active_habits().iter().filter(|habit|habit["created_at_ms"].as_i64().is_some_and(|created|created>since)).count()
+    }
     /// Open decisions that need Theo now: a question put off with Later counts once it comes back.
     pub fn attention(snapshot: &Value, now_ms: i64) -> usize {
         snapshot["records"].as_array().into_iter().flatten()
@@ -304,7 +326,7 @@ impl ChiefView {
         self.frames.push(Frame::Inbox);
     }
     /// `<label> · <project>` from the host, escaped and cut to one line; the end of the id when the host has no name.
-    fn session_name(&self, session_id: Option<&str>) -> String {
+    pub fn session_name(&self, session_id: Option<&str>) -> String {
         let Some(session_id)=session_id else {return "unknown session".into()};
         match self.snapshot["session_names"][session_id].as_str().map(|name|one_line(name,NAME_LIMIT)).filter(|name|!name.is_empty()) {
             Some(name)=>name,
@@ -932,7 +954,7 @@ impl ChiefView {
                 0=>format!("Answers · {}",self.session_name(Some(session))),
                 count=>format!("Answers · {} · Chief ✓{count} this task",self.session_name(Some(session))),
             },
-            Page::Answers(None)=>"Chief · Answers".into(),
+            Page::Answers(None)=>format!("Chief · {}",self.answers_label()),
             Page::Habits(_)=>"Chief · Habits".into(),
             _=>format!("Chief · {}",self.status()),
         };

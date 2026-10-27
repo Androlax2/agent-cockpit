@@ -98,6 +98,7 @@ fn check_fixture_server_panic(test_name: &str, unwind: bool) {
 #[path = "../tests/common/link_fixture.rs"]
 mod link_fixture;
 mod session_link_saves;
+mod teams_chief_tabs;
 use crate::teams::store::Connection as LinkConnection;
 
 thread_local! {
@@ -3779,11 +3780,12 @@ fn tab_digits_and_function_keys_open_the_tabs() {
     let mut app = fixture.app();
     let screen = &mut FakeScreen::default();
     assert_eq!(app.focus, 1);
-    for (key, panel) in [(Key::Char('2'), 3), (Key::Char('3'), 4), (Key::Char('1'), 1), (Key::F(2), 3), (Key::F(3), 4), (Key::F(1), 1)] {
+    for (key, panel) in [(Key::Char('2'), 3), (Key::Char('3'), 4), (Key::Char('4'), 5), (Key::Char('5'), 6), (Key::Char('1'), 1),
+                         (Key::F(2), 3), (Key::F(3), 4), (Key::F(4), 5), (Key::F(5), 6), (Key::F(1), 1)] {
         app.handle(key.clone(), screen);
         assert_eq!(app.focus, panel, "{key:?}");
     }
-    for removed in [Key::Tab, Key::BackTab, Key::Char('0'), Key::Char('4')] {
+    for removed in [Key::Tab, Key::BackTab, Key::Char('0'), Key::Char('6')] {
         app.handle(removed.clone(), screen);
         assert_eq!(app.focus, 1, "{removed:?} no longer moves between panels");
     }
@@ -4089,7 +4091,7 @@ fn team_sidebar_groups_members_without_duplicate_cards() {
     team_host(&fixture, sidebar_snapshot(), vec![]);
     let mut app = fixture.app();
     let shown = texts(&app, 1).join("\n");
-    for expected in ["› 1d3fd318", "Team of 2", "Designer", "Developer"] {
+    for expected in ["› 1d3fd318", "▾ 1d3fd318", "Designer", "Developer"] {
         assert!(shown.contains(expected), "missing {expected}: {shown}");
     }
     for name in ["Design session", "Build session", "Independent session"] {
@@ -4130,7 +4132,7 @@ fn team_sidebar_keeps_identical_titles_in_separate_tasks() {
     app.todos.items = ["1d3fd318", "0123abcd"].iter().map(|id| Item(json!({"id":id,"project":"project-a","text":"Shared title","cwd":"/r/project-a"}).as_object().unwrap().clone())).collect();
     app.redraw();
     let shown = texts(&app, 1).join("\n");
-    assert_eq!(app.panels[1].lines.iter().filter(|line| line.texts().contains("› Shared title")).count(), 2, "{shown}");
+    assert_eq!(app.panels[1].lines.iter().filter(|line| line.texts().contains("▾ Shared title")).count(), 2, "{shown}");
 }
 
 #[test]
@@ -4143,7 +4145,7 @@ fn team_sidebar_hides_missing_members_but_keeps_planned_qa() {
     team_host(&fixture, state, vec![]);
     let mut app = fixture.app();
     let shown = texts(&app, 1).join("\n");
-    for expected in ["Developer", "Team of 1", "QA planned", "Fresh reviewer starts at handoff"] {
+    for expected in ["Developer", "▾ 1d3fd318", "QA", "Starts at the next handoff"] {
         assert!(shown.contains(expected), "missing {expected}: {shown}");
     }
     assert!(!shown.contains("Designer") && !shown.contains("Unavailable") && !shown.contains("missing-designer"), "{shown}");
@@ -4173,7 +4175,7 @@ fn team_sidebar_hides_completed_teams_only_when_members_are_inactive() {
         app.todos.items = vec![Item(json!({"id":"1d3fd318","project":"project-a","cwd":task_cwd,"status":task_status,"text":"Team task"}).as_object().unwrap().clone())];
         app.redraw();
         let shown = texts(&app, 1).join("\n");
-        assert_eq!(shown.contains("Team of"), is_visible, "{state}/{background}/{command}/{task_cwd}/{task_status}: {shown}");
+        assert_eq!(shown.contains("› 1d3fd318"), is_visible, "{state}/{background}/{command}/{task_cwd}/{task_status}: {shown}");
     }
 }
 
@@ -4194,12 +4196,13 @@ fn team_sidebar_completed_sleeping_team_keeps_unresolved_alerts_visible() {
         app.todos.items = vec![Item(json!({"id":"1d3fd318","project":"project-a","cwd":"/r/project-a","status":"done","text":"Team task"}).as_object().unwrap().clone())];
         app.redraw();
         let shown = texts(&app, 1).join("\n");
-        assert_eq!(shown.contains("Team of"), has_alert, "{shown}");
+        assert_eq!(shown.contains("▾ Team task"), has_alert, "{shown}");
         if has_alert {
             assert!(shown.contains("Review blocker"), "{shown}");
             app.handle(Key::Char('n'), &mut FakeScreen::default());
             app.handle(Key::Char('i'), &mut FakeScreen::default());
-            assert!(app.team_view.is_some());
+            assert_eq!(app.focus, 5, "i on a team opens the Teams tab");
+            assert!(texts(&app, 5).join("\n").contains("! Escalated: Review blocker"), "{:?}", texts(&app, 5));
         }
         assert!(fixture.calls("cockpit").is_empty());
     }
@@ -4286,7 +4289,7 @@ fn team_sidebar_title_uses_task_entry_or_exact_id() {
     assert!(texts(&app, 1).join("\n").contains("› 1d3fd318"));
     app.todos.items[0].0.insert("cwd".into(), json!("/r/project-a"));
     app.redraw();
-    assert!(texts(&app, 1).join("\n").contains("› Wrong project title"));
+    assert!(texts(&app, 1).join("\n").contains("▾ Wrong project title"));
 }
 
 #[test]
@@ -4299,7 +4302,7 @@ fn team_sidebar_attention_group_keeps_team_context() {
     let mut app = fixture.app();
     app.redraw();
     let shown = texts(&app, 1).join("\n");
-    for expected in ["Team of 2", "Design session", "Build session", "Need Theo to choose frame"] { assert!(shown.contains(expected), "{shown}"); }
+    for expected in ["▾ 1d3fd318", "Design session", "Build session", "Need Theo to choose frame"] { assert!(shown.contains(expected), "{shown}"); }
     assert!(shown.contains("Independent session") && !shown.contains("Unavailable"), "{shown}");
 }
 
@@ -4335,7 +4338,7 @@ fn team_sidebar_enter_toggles_without_opening_or_waking() {
     team_host(&fixture, sidebar_snapshot(), vec![]);
     let mut app = fixture.app();
     sidebar_fold(&mut app);
-    assert!(texts(&app, 1).iter().any(|text| text.contains("▸ Team of")));
+    assert!(texts(&app, 1).iter().any(|text| text.contains("▸ 1d3fd318")));
     assert!(!app.panels[1].lines.iter().any(|line| line.texts().contains("Build session")));
     assert!(app.selected_session().is_none());
     app.handle(Key::Enter, &mut FakeScreen::default());
@@ -4362,7 +4365,7 @@ fn team_sidebar_next_attention_expands_the_correct_team() {
     app.handle(Key::Char('n'), &mut FakeScreen::default());
     app.redraw();
     assert_eq!(app.selected_session().unwrap().session, OPENCODE_SESSION);
-    assert!(texts(&app,1).iter().any(|text| text.contains("▾ Team of")));
+    assert!(texts(&app,1).iter().any(|text| text.contains("▾ 1d3fd318")));
     assert_eq!(fixture.wait_for_calls("cockpit",1), [format!("cockpit attend {OPENCODE_SESSION}")]);
 }
 
@@ -4377,7 +4380,7 @@ fn team_sidebar_expansion_reaches_a_collapsed_member() {
     app.redraw();
     sidebar_select(&mut app, "Build session");
     assert_eq!(app.selected_session().unwrap().session, OPENCODE_SESSION);
-    assert!(texts(&app,1).iter().any(|text| text.contains("▾ Team of")));
+    assert!(texts(&app,1).iter().any(|text| text.contains("▾ 1d3fd318")));
     assert!(fixture.calls("cockpit").is_empty());
     app.handle(Key::Char('U'), &mut FakeScreen::default());
     assert_eq!(fixture.wait_for_calls("cockpit",1), ["cockpit push /r/project-a"]);
@@ -4398,7 +4401,7 @@ fn team_sidebar_grouped_navigation_acts_only_on_the_selected_member() {
         state["members"][1]["task_id"] = json!("0123abcd");
         team_host(&fixture,state,vec![]);
         let mut app = fixture.app();
-        sidebar_select(&mut app,"Build session");
+        sidebar_select(&mut app,"Developer: Choose frame");
         sidebar_select(&mut app,"Design session");
         app.redraw();
         assert_eq!(app.selected_session().map(|session| session.session),Some(SESSION_A.into()));
@@ -4431,7 +4434,7 @@ fn team_sidebar_old_attention_request_shows_state_age() {
     team_host(&fixture,sidebar_snapshot(),vec![]);
     let app = fixture.app();
     assert!(app.panels[1].lines.iter().any(|line| line.texts().contains("Choose old frame")));
-    let member = app.panels[1].lines.iter().find(|line| line.texts().starts_with("Developer")).unwrap();
+    let member = app.panels[1].lines.iter().find(|line| line.texts().starts_with("!Developer")).unwrap();
     let status: String = member.right.iter().map(|part| part.text.as_str()).collect();
     assert!(status.ends_with("2h"), "{status}");
 }
@@ -4448,8 +4451,10 @@ fn team_sidebar_failed_delivery_can_be_cancelled_from_task_attention() {
     app.handle(Key::Char('n'),&mut FakeScreen::default());
     app.redraw();
     app.handle(Key::Char('i'),&mut FakeScreen::default());
-    assert!(app.team_view.as_ref().unwrap().detail().join("\n").contains("cancel"));
-    app.handle(Key::Char('h'),&mut FakeScreen::answering(&[Key::Char('y')]));
+    assert!(texts(&app, 5).join("\n").contains("! Message to QA failed"), "{:?}", texts(&app, 5));
+    app.handle(Key::Enter,&mut FakeScreen::default());
+    app.redraw();
+    app.handle(Key::Char('y'),&mut FakeScreen::answering(&[Key::Char('y')]));
     assert!(controls(&requests).is_empty(),"failed delivery cannot be marked received");
     app.handle(Key::Char('c'),&mut FakeScreen::answering(&[Key::Char('n')]));
     assert!(controls(&requests).is_empty(),"cancellation needs confirmation");
@@ -4489,7 +4494,7 @@ fn team_sidebar_non_session_rows_cannot_run_session_actions() {
     state["qa_plans"] = json!([{"project":SIDEBAR_PROJECT,"task_id":"1d3fd318","agent":"claude"}]);
     team_host(&fixture, state, vec![]);
     let mut app = fixture.app();
-    for target in ["› 1d3fd318", "QA planned · Fresh"] {
+    for target in ["› 1d3fd318", "Starts at the next handoff"] {
         sidebar_select(&mut app,target);
         for key in [Key::Char('x'),Key::Char('r'),Key::Char('s'),Key::Char('U'),Key::Char('e'),Key::Char('$'),Key::Char('C'),Key::Char('+')] {
             app.handle(key, &mut FakeScreen::answering(&[Key::Char('y')]));
@@ -4502,7 +4507,7 @@ fn team_sidebar_non_session_rows_cannot_run_session_actions() {
     let heading_y = rows.iter().position(|row| row.contains("› 1d3fd318")).unwrap() as u16;
     app.handle(Key::Click {x:8,y:heading_y,double:true}, &mut FakeScreen::default());
     app.redraw();
-    assert!(texts(&app,1).iter().any(|text| text.contains("▸ Team of")));
+    assert!(texts(&app,1).iter().any(|text| text.contains("▸ 1d3fd318")));
     assert!(fixture.calls("cockpit").is_empty());
 }
 
@@ -4519,9 +4524,10 @@ fn team_sidebar_next_attention_reaches_task_only_blockers() {
     app.handle(Key::Char('n'), &mut FakeScreen::default());
     app.redraw();
     assert!(app.selected_session().is_none());
-    assert!(texts(&app,1).iter().any(|text| text.contains("▾ Team of")));
+    assert!(texts(&app,1).iter().any(|text| text.contains("▾ 1d3fd318")));
     app.handle(Key::Char('i'), &mut FakeScreen::default());
-    assert!(app.team_view.is_some(), "task attention must be actionable");
+    assert_eq!(app.focus, 5, "task attention must be actionable in the Teams tab");
+    assert!(texts(&app, 5).join("\n").contains("Escalated: Choose the frame"), "{:?}", texts(&app, 5));
     assert!(fixture.calls("cockpit").is_empty());
 }
 
@@ -4539,16 +4545,15 @@ fn team_sidebar_failed_wake_stays_reachable_when_collapsed() {
         let mut app = fixture.app();
         sidebar_fold(&mut app);
         let shown = texts(&app,1).join("\n");
-        assert!(shown.contains("▸ Team of") && shown.contains("› 1d3fd318") && shown.contains("Developer wake failed: launcher refused"),"{shown}");
+        assert!(shown.contains("▸ 1d3fd318") && shown.contains("› 1d3fd318") && shown.contains("Developer wake failed: launcher refused"),"{shown}");
         app.handle(Key::Char('n'),&mut FakeScreen::default());
         app.redraw();
         assert!(app.selected_session().is_none());
-        assert!(texts(&app,1).iter().any(|line| line.contains("▾ Team of")));
+        assert!(texts(&app,1).iter().any(|line| line.contains("▾ 1d3fd318")));
         app.handle(Key::Char('i'),&mut FakeScreen::default());
-        assert!(app.team_view.is_some());
-        for _ in 0..2 { app.handle(Key::Down,&mut FakeScreen::default()); }
-        let details = app.team_view.as_ref().unwrap().detail().join("\n");
-        assert!(details.contains("launcher refused") && details.contains(OPENCODE_SESSION),"{details}");
+        assert_eq!(app.focus, 5);
+        let details = texts(&app, 5).join("\n");
+        assert!(details.contains("! Developer did not wake") && details.contains("launcher refused"),"{details}");
         assert!(fixture.calls("cockpit").is_empty(),"no wake/open/attend: {:?}",fixture.calls("cockpit"));
 }
 
@@ -4557,11 +4562,11 @@ fn team_sidebar_unicode_and_small_buffers_preserve_attention() {
     let fixture = Fixture::new();
     let mut developer = session(OPENCODE_SESSION,"needs-you","project-a","/r/project-a",2);
     developer["label"] = json!(format!("Review 界{}\u{1b}[2J", "界".repeat(50)));
-    developer["request"] = json!("Choose frame\u{1b}[2J");
+    developer["request"] = json!(format!("Choose frame {}\u{1b}[2J", "界".repeat(50)));
     fixture.snapshot(json!([session(SESSION_A,"waiting","project-a","/r/project-a",1),developer]));
     team_host(&fixture, sidebar_snapshot(), vec![]);
     let mut app = fixture.app();
-    sidebar_select(&mut app,"Review 界");
+    sidebar_select(&mut app,"Developer");
     for width in [80,40,24,8,1] {
         let buffer = render(&mut app,width,60);
         let rows = buffer_rows(&buffer).join("\n");
@@ -6015,11 +6020,15 @@ fn quota_scripts_are_reaped_once_they_end() {
 fn the_open_tab_takes_the_whole_column_under_the_header() {
     let fixture = Fixture::new();
     let mut app = fixture.app();
-    assert_eq!(app.layout(45), vec![0, 43, 0, 0, 0]);
+    assert_eq!(app.layout(45), vec![0, 43, 0, 0, 0, 0, 0]);
     app.focus_panel(3);
-    assert_eq!(app.layout(45), vec![0, 0, 0, 43, 0]);
+    assert_eq!(app.layout(45), vec![0, 0, 0, 43, 0, 0, 0]);
     app.focus_panel(4);
-    assert_eq!(app.layout(45), vec![0, 0, 0, 0, 43]);
+    assert_eq!(app.layout(45), vec![0, 0, 0, 0, 43, 0, 0]);
+    app.focus_panel(5);
+    assert_eq!(app.layout(45), vec![0, 0, 0, 0, 0, 43, 0]);
+    app.focus_panel(6);
+    assert_eq!(app.layout(45), vec![0, 0, 0, 0, 0, 0, 43]);
 }
 
 #[test]

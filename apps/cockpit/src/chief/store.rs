@@ -82,6 +82,14 @@ pub fn chief_session(connection: &Connection) -> Result<Option<String>, TeamErro
     Ok(connection.query_row("SELECT session_id FROM chief_grants WHERE state IN ('active','paused')", [], |row| row.get(0)).optional()?)
 }
 
+/// What the column's 5 Chief tab badge needs on every tab, without the full Chief snapshot: the
+/// grant's state (active, paused, or null without one) and the open decisions not put off.
+pub fn badge(connection: &Connection, now_ms: i64) -> Result<Value, TeamError> {
+    let state: Option<String> = connection.query_row("SELECT state FROM chief_grants WHERE state IN ('active','paused')", [], |row| row.get(0)).optional()?;
+    let needs_you: i64 = connection.query_row("SELECT count(*) FROM chief_decisions WHERE state='open' AND (later_until IS NULL OR later_until<=?1)", [now_ms], |row| row.get(0))?;
+    Ok(json!({"state": state, "needs_you": needs_you}))
+}
+
 pub fn require_non_chief(connection: &Connection, session: &str) -> Result<(), TeamError> {
     if is_chief(connection, session)? {
         return Err(TeamError::new(ErrorCode::Unauthorized, "disable the chief grant before acquiring a product-worker role"));

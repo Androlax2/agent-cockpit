@@ -567,11 +567,12 @@ pub fn snapshot(connection: &Connection, task: Option<&TaskKey>, after: Option<i
         ORDER BY created_at,id")?;
     let proposals = proposals.query_map(params![task_key, limit.min(100) as i64], |row| Ok(json!({"proposal_id":row.get::<_,String>(0)?,"project":row.get::<_,String>(1)?,"task_id":row.get::<_,String>(2)?,
         "mapping":row.get::<_,String>(3)?,"mapping_hash":row.get::<_,String>(4)?,"revision":row.get::<_,i64>(5)?,"status":row.get::<_,String>(6)?,"reason":row.get::<_,String>(7)?,"sender":row.get::<_,String>(8)?,"created_by":row.get::<_,String>(9)?,"parent_id":row.get::<_,Option<String>>(10)?,"recruits":row.get::<_,String>(11)?,"spawn_agent":row.get::<_,String>(12)?})))?.collect::<Result<Vec<_>,_>>()?;
-    let mut messages = connection.prepare("SELECT seq,id,envelope,state,attempts,next_at,last_error FROM messages WHERE (?1 IS NULL OR task_key=?1) AND (?2 IS NULL OR seq>?2)
+    let mut messages = connection.prepare("SELECT seq,id,envelope,state,attempts,next_at,last_error,created_at FROM messages WHERE (?1 IS NULL OR task_key=?1) AND (?2 IS NULL OR seq>?2)
         AND (state IN ('uncertain','failed') OR seq IN (SELECT seq FROM messages WHERE (?1 IS NULL OR task_key=?1) AND (?2 IS NULL OR seq>?2) ORDER BY seq DESC LIMIT ?3))
         ORDER BY seq")?;
     let messages = messages.query_map(params![task_key, after, limit.min(100) as i64], |row| Ok(json!({"seq":row.get::<_,i64>(0)?,"message_id":row.get::<_,String>(1)?,
-        "envelope":row.get::<_,String>(2)?,"state":row.get::<_,String>(3)?,"attempts":row.get::<_,i64>(4)?,"next_at":row.get::<_,i64>(5)?,"error":row.get::<_,String>(6)?})))?.collect::<Result<Vec<_>,_>>()?;
+        "envelope":row.get::<_,String>(2)?,"state":row.get::<_,String>(3)?,"attempts":row.get::<_,i64>(4)?,"next_at":row.get::<_,i64>(5)?,"error":row.get::<_,String>(6)?,
+        "created_at":row.get::<_,i64>(7)?})))?.collect::<Result<Vec<_>,_>>()?;
     let mut escalations = connection.prepare("SELECT e.thread_id,e.reason,e.status,e.note,e.created_at,
         json_extract(e.task_key,'$.project'),json_extract(e.task_key,'$.task_id'),thread.link_id
         FROM escalations e JOIN threads thread ON thread.id=e.thread_id WHERE (?1 IS NULL OR e.task_key=?1)

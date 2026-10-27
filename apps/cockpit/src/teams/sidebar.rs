@@ -71,6 +71,15 @@ pub fn attention(snapshot: &Value, task: &TaskKey) -> Option<String> {
     if list(snapshot, "proposals").iter().filter(scoped).any(|proposal| proposal["status"] == "pending") {
         return Some("Needs you: approve team links".into());
     }
+    let is_member = |id: &Value| list(snapshot, "members").iter().filter(scoped).any(|member| member["session_id"] == *id);
+    if let Some(link) = list(snapshot, "link_proposals").iter().find(|proposal| proposal["status"] == "pending"
+        && (task_of(&proposal["task"]).as_ref() == Some(task) || is_member(&proposal["sender"]))) {
+        let role = list(snapshot, "members").iter().find(|member| member["session_id"] == link["sender"])
+            .and_then(role).map(role_label).unwrap_or("A member");
+        let peer = link["participants"].as_array().into_iter().flatten().find(|participant| participant["session_id"] != link["sender"])
+            .map(|participant| super::view::short_project(participant["project"].as_str().unwrap_or(""))).filter(|peer| !peer.is_empty());
+        return Some(match peer { Some(peer) => format!("Needs you: {role}: approve a link to {peer}"), None => format!("Needs you: {role}: approve a link request") });
+    }
     if let Some(escalation) = list(snapshot, "escalations").iter().filter(scoped).find(|entry| entry["status"] == "open") {
         return Some(format!("Needs you: {}", shown(escalation["reason"].as_str().unwrap_or("Open escalation"))));
     }

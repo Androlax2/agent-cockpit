@@ -72,25 +72,33 @@ impl Host {
         let mut app = App::new(); let mut screen = TestScreen {picks:VecDeque::new()};
         open_chief(&mut app,&mut screen); (app,screen)
     }
+    /// The tab's first needs-you row is the oldest escalation: ⏎ answers it in the inbox card.
+    /// The tab's c with no chief yet: the startup screen, sending a start only where it offers one.
+    fn open_startup(&self) -> (App, TestScreen) {
+        let (mut app, mut screen) = self.open(); app.handle(Key::Char('c'), &mut screen); (app, screen)
+    }
+    fn open_inbox(&self) -> (App, TestScreen) {
+        let (mut app, mut screen) = self.open(); app.handle(Key::Enter, &mut screen); (app, screen)
+    }
     fn mutations(&self) -> Vec<Value> { self.requests.lock().unwrap().iter().filter(|request|request["request"]=="chief").cloned().collect() }
 }
 impl Drop for Host { fn drop(&mut self) { fs::remove_dir_all(&self.root).unwrap(); } }
-/// The Chief lives in Status (s, then c), from wherever the column is.
-fn open_chief(app: &mut App, screen: &mut TestScreen) { keys(app,screen,&[Key::Esc,Key::Char('s'),Key::Char('c')]); }
+/// The Chief lives in its own tab (5), from wherever the column is.
+fn open_chief(app: &mut App, screen: &mut TestScreen) { keys(app,screen,&[Key::Esc,Key::Char('5')]); }
 fn keys(app: &mut App, screen: &mut TestScreen, keys: &[Key]) {for key in keys {app.handle(key.clone(),screen);}}
 fn rendered(app: &mut App, width: u16, height: u16) -> String {
     let mut buffer = Buffer::empty(Rect::new(0,0,width,height)); app.render(&mut buffer);
     buffer.content.iter().map(|cell|cell.symbol()).collect::<String>()
 }
-// Opens Chief controls and then the first control; with an active chief that is the Pause review.
-fn first_control_review(app: &mut App, screen: &mut TestScreen) { keys(app,screen,&[Key::Down,Key::Down,Key::Down,Key::Enter,Key::Enter]); }
+// The tab's c: with an active chief that is the Pause review.
+fn first_control_review(app: &mut App, screen: &mut TestScreen) { keys(app,screen,&[Key::Char('c')]); }
 
 #[test]
 fn chief_start_is_explicit_and_repeated_keys_cannot_queue_another_launch() {
     let host = Host::new(vec![]);
     host.snapshot.lock().unwrap()["startup"] = Value::Null;
     let (mut app, mut screen) = host.open();
-    assert!(rendered(&mut app, 60, 22).contains("Start Chief"));
+    assert!(rendered(&mut app, 60, 22).contains("c start chief"));
     keys(&mut app, &mut screen, &[Key::Enter,Key::Char('p')]);
     assert!(host.mutations().is_empty());
     keys(&mut app, &mut screen, &[Key::Char('c'),Key::Char('c'),Key::Enter]);
@@ -108,6 +116,8 @@ fn reopening_chief_tracks_the_host_attempt_without_launching() {
     let (mut app, mut screen) = host.open();
     keys(&mut app, &mut screen, &[Key::Char('c'),Key::Enter,Key::Esc]);
     open_chief(&mut app, &mut screen);
+    assert!(rendered(&mut app, 80, 24).contains("◇ Chief · Checking"));
+    app.handle(Key::Char('c'), &mut screen);
     let shown = rendered(&mut app, 80, 24);
     assert!(shown.contains("Checking Chief") && shown.contains("Waiting for verified admission"), "{shown}");
     assert!(host.mutations().is_empty());
@@ -127,7 +137,7 @@ fn checking_offers_no_test_message_before_the_chief_session_is_live() {
     let host = Host::new(vec![]);
     let mut startup = checking(Value::Null); startup["check_session"] = Value::Null;
     host.snapshot.lock().unwrap()["startup"] = startup;
-    let (mut app, mut screen) = host.open();
+    let (mut app, mut screen) = host.open_startup();
     assert!(!rendered(&mut app, 100, 24).contains("Send test message"));
     keys(&mut app, &mut screen, &[Key::Char('t'),Key::Char('y'),Key::Char('n')]);
     assert!(host.mutations().is_empty() && verifications(&host).is_empty());
@@ -137,7 +147,7 @@ fn checking_offers_no_test_message_before_the_chief_session_is_live() {
 fn t_sends_one_test_message_for_the_attempt_and_a_repeat_reuses_its_request() {
     let host = Host::new(vec![]);
     host.snapshot.lock().unwrap()["startup"] = checking(Value::Null);
-    let (mut app, mut screen) = host.open();
+    let (mut app, mut screen) = host.open_startup();
     assert!(rendered(&mut app, 100, 24).contains("[t] Send test message"));
     keys(&mut app, &mut screen, &[Key::Char('t'),Key::Char('t')]);
     let mutations = host.mutations();
@@ -156,7 +166,7 @@ fn y_without_a_received_test_message_does_nothing() {
     for check in [Value::Null, json!({"id":"check-1","state":"queued","session":worker()["session"]})] {
         let host = Host::new(vec![]);
         host.snapshot.lock().unwrap()["startup"] = checking(check);
-        let (mut app, mut screen) = host.open();
+        let (mut app, mut screen) = host.open_startup();
         app.handle(Key::Char('y'), &mut screen);
         assert!(verifications(&host).is_empty());
     }
@@ -166,7 +176,7 @@ fn y_without_a_received_test_message_does_nothing() {
 fn a_received_test_message_asks_theo_and_y_verifies_that_exact_session() {
     let host = Host::new(vec![]);
     host.snapshot.lock().unwrap()["startup"] = checking(received_check());
-    let (mut app, mut screen) = host.open();
+    let (mut app, mut screen) = host.open_startup();
     let shown = rendered(&mut app, 100, 24);
     for expected in ["Test message sent. Look at the Chief pane: did it appear?","[y] It arrived","[n] Didn't arrive"] {assert!(shown.contains(expected), "{expected}: {shown}");}
     app.handle(Key::Enter, &mut screen);
@@ -183,7 +193,7 @@ fn a_received_test_message_asks_theo_and_y_verifies_that_exact_session() {
 fn n_does_not_verify_and_offers_another_test_message() {
     let host = Host::new(vec![]);
     host.snapshot.lock().unwrap()["startup"] = checking(received_check());
-    let (mut app, mut screen) = host.open();
+    let (mut app, mut screen) = host.open_startup();
     app.handle(Key::Char('n'), &mut screen);
     assert!(verifications(&host).is_empty());
     let shown = rendered(&mut app, 100, 24);
@@ -199,7 +209,7 @@ fn checking_names_the_admission_wait_in_plain_words() {
     let host = Host::new(vec![]);
     host.snapshot.lock().unwrap()["startup"] = json!({"id":"attempt-1","state":"checking","can_retry":false,
         "error":"host live OpenCode draft/queue verification is required before chief activation"});
-    let (mut app, _) = host.open();
+    let (mut app, _) = host.open_startup();
     let shown = rendered(&mut app, 100, 24);
     assert!(shown.contains("Waiting to confirm Chief can receive messages from your agents."), "{shown}");
     assert!(!shown.contains("draft/queue"), "{shown}");
@@ -211,15 +221,16 @@ fn the_startup_screen_hides_the_status_view_behind_it() {
     host.snapshot.lock().unwrap()["startup"] = json!({"id":"attempt-1","state":"checking","can_retry":false,"error":"Waiting for verified admission"});
     let (mut app, mut screen) = host.open();
     let (width, height) = (80, 24);
-    let startup_copy = ["‹ Status","Checking Chief…","Its session may have started. Waiting to confirm that Chief is ready.",
+    let startup_copy = ["‹ Chief","Checking Chief…","Its session may have started. Waiting to confirm that Chief is ready.",
         "Waiting for verified admission","You can leave this view while we check.","PgUp/Dn scroll · esc back"];
     let owned_rows = 1..usize::from(height-1);
-    app.handle(Key::Esc, &mut screen);
+    keys(&mut app, &mut screen, &[Key::Esc, Key::Char('s')]);
     app.build();
     let status = lines_of(&mut app, width, height);
     assert!(status[owned_rows.clone()].iter().filter(|line|!line.trim().is_empty() && !startup_copy.contains(&line.trim())).count() > 3,
         "the fixture must put Status text where the startup screen draws: {status:#?}");
     open_chief(&mut app, &mut screen);
+    app.handle(Key::Char('c'), &mut screen);
     let startup = lines_of(&mut app, width, height);
     for row in owned_rows {
         let line = startup[row].trim();
@@ -254,7 +265,7 @@ fn chief_retry_names_the_failed_attempt_and_stays_disabled_until_new_evidence() 
     let host = Host::new(vec![]);
     host.snapshot.lock().unwrap()["startup"] = json!({"id":"attempt-1","state":"failed","can_retry":true,"error":"Launcher missing"});
     let (mut app, mut screen) = host.open();
-    assert!(rendered(&mut app, 60, 22).contains("Try again"));
+    assert!(rendered(&mut app, 60, 22).contains("c try again"));
     keys(&mut app, &mut screen, &[Key::Char('c'),Key::Char('c')]);
     assert_eq!(host.mutations().len(), 1);
     assert_eq!(host.mutations()[0]["action"]["previous_attempt"], "attempt-1");
@@ -279,8 +290,8 @@ fn chief_startup_keeps_existing_decisions_reachable_without_a_session_picker() {
     host.snapshot.lock().unwrap()["startup"] = Value::Null;
     let (mut app, mut screen) = host.open();
     let shown = rendered(&mut app, 100, 30);
-    assert!(shown.contains("Needs you"));
-    assert!(!shown.contains("pick Chief") && !shown.contains("Chief controls"), "{shown}");
+    assert!(shown.contains("NEEDS YOU · 1") && shown.contains("Confirm ownership"), "{shown}");
+    assert!(!shown.contains("pick") && !shown.contains("Chief controls"), "{shown}");
     keys(&mut app, &mut screen, &[Key::Enter,Key::Enter]);
     assert!(host.mutations().is_empty());
 }
@@ -290,7 +301,7 @@ fn an_ended_attempt_offers_start_chief_again() {
     let host = Host::new(vec![]);
     host.snapshot.lock().unwrap()["startup"] = json!({"id":"attempt-1","state":"ended","can_retry":false,"error":null});
     let (mut app, mut screen) = host.open();
-    assert!(rendered(&mut app, 60, 22).contains("Start Chief"));
+    assert!(rendered(&mut app, 60, 22).contains("c start chief"));
     app.handle(Key::Char('c'), &mut screen);
     assert_eq!(host.mutations()[0]["action"]["previous_attempt"], Value::Null);
 }
@@ -314,33 +325,32 @@ fn an_unconfirmed_start_is_resent_with_the_same_request_and_never_claims_a_sessi
 fn closing_and_reopening_keeps_an_unacknowledged_chief_start_as_the_same_request() {
     let host = Host::new(vec![]);
     host.snapshot.lock().unwrap()["startup"] = Value::Null;
-    host.mutation_replies.lock().unwrap().push_back(json!({"error":"acknowledgement lost"}));
+    host.mutation_replies.lock().unwrap().extend([json!({"error":"acknowledgement lost"}),json!({"error":"acknowledgement lost again"})]);
     let (mut app, mut screen) = host.open();
     keys(&mut app, &mut screen, &[Key::Char('c'),Key::Esc]);
     open_chief(&mut app, &mut screen);
     assert_eq!(host.mutations().len(), 1);
-    let shown = rendered(&mut app, 80, 24);
-    assert!(shown.contains("Cockpit hasn't confirmed this start yet.") && shown.contains("acknowledgement lost"), "{shown}");
     app.handle(Key::Char('c'), &mut screen);
+    let shown = rendered(&mut app, 80, 24);
+    assert!(shown.contains("Cockpit hasn't confirmed this start yet.") && shown.contains("acknowledgement lost again"), "{shown}");
     let mutations = host.mutations();
     assert_eq!(mutations[0]["action"]["request_id"], mutations[1]["action"]["request_id"]);
 }
 
 #[test]
-fn the_chief_root_offers_only_needs_you_answers_habits_controls_workers_and_summary() {
-    let host = Host::new(vec![]); let (mut app,_) = host.open();
-    let mut buffer = Buffer::empty(Rect::new(0,0,120,45)); app.render(&mut buffer);
-    let lines: Vec<String> = (0..45).map(|row|(0..120).map(|column|buffer[(column,row)].symbol()).collect::<String>()).collect();
-    let root: Vec<String> = lines.iter().filter(|line|["Needs you","Answers","Habits","Work","Chief controls","Request summary"].iter().any(|label|line.contains(label)))
-        .map(|line|line.trim().trim_matches('│').trim().trim_start_matches('>').trim().to_string()).collect();
-    assert_eq!(root.len(),6,"{lines:#?}");
-    assert!(root[0].starts_with("Needs you"),"{root:?}");
-    assert!(root[1].starts_with("Answers"),"{root:?}");
-    assert!(root[2].starts_with("Habits"),"{root:?}");
-    assert_eq!(root[3..],["Chief controls","Workers","Request summary"],"{root:?}");
-    let text = rendered(&mut app,120,45);
-    for forbidden in ["Approve","Attest","Bind role","Workers and roles"] {assert!(!text.contains(forbidden),"{forbidden}: {text}");}
+fn the_chief_tab_shows_its_state_and_its_keys_and_never_approves() {
+    let host = Host::new(vec![chief("active",true)]);
+    host.snapshot.lock().unwrap()["today"] = json!({"since_ms":1,"answered":5,"escalated":1});
+    name_the_session(&host, "Chief: run agents without you · agent-cockpit");
+    let (mut app,_) = host.open();
+    let text = lines_of(&mut app,120,45).join("\n");
+    for expected in ["◆ Chief · On · answered 5 today · 1 sent to you","Runs as Chief: run agents without you · agent-cockpit · opencode",
+        " c  pause"," p  pick another chief"," r  summary now"," l  answer log"," h  habits","TODAY","Nothing decided yet today."] {
+        assert!(text.contains(expected),"{expected}: {text}");
+    }
+    for forbidden in ["Approve","Attest","Bind role","Workers and roles","Chief controls"] {assert!(!text.contains(forbidden),"{forbidden}: {text}");}
 }
+
 
 #[test]
 fn narrow_review_and_confirmation_keep_cancel_and_action_instructions_visible() {
@@ -375,35 +385,30 @@ fn root_cancel_restores_focus_and_tab_does_not_submit() {
     app.handle(Key::Char('n'),&mut screen); assert!(host.mutations().is_empty());
 }
 #[test]
-fn suspended_chief_cycles_all_four_panels_without_retaining_confirmation() {
-    for (key, cycles) in [
-        (Key::Tab, [[2,3,4,1], [3,4,1,2], [4,1,2,3], [1,2,3,4]]),
-        (Key::BackTab, [[4,3,2,1], [1,4,3,2], [2,1,4,3], [3,2,1,4]]),
-    ] {
-        for (index, cycle) in cycles.iter().enumerate() {
-            let host=Host::new(vec![chief("active",true)]); let (mut app,mut screen)=host.open();
-            first_control_review(&mut app,&mut screen);
-            app.handle(Key::Enter,&mut screen);
-            app.focus=index+1;
-            for expected in cycle {
-                app.handle(key.clone(),&mut screen);
-                assert_eq!(app.focus,*expected,"{key:?} from panel {}",index+1);
-                assert!(host.mutations().is_empty());
-            }
-            open_chief(&mut app,&mut screen);
-            app.handle(Key::Char('y'),&mut screen);
-            assert!(host.mutations().is_empty(),"suspended confirmation must be reset");
-            app.handle(Key::Esc,&mut screen);
-            assert_eq!(app.focus,0,"closing Chief returns to Status, where it opened");
-        }
+fn a_suspended_review_needs_its_confirmation_again_after_tab_cycling() {
+    for key in [Key::Tab, Key::BackTab] {
+        let host=Host::new(vec![chief("active",true)]); let (mut app,mut screen)=host.open();
+        first_control_review(&mut app,&mut screen);
+        app.handle(Key::Enter,&mut screen);
+        let before=app.focus;
+        app.handle(key.clone(),&mut screen);
+        assert_ne!(app.focus,before,"{key:?} leaves the Chief for another panel");
+        assert!(host.mutations().is_empty());
+        open_chief(&mut app,&mut screen);
+        app.handle(Key::Char('c'),&mut screen);
+        app.handle(Key::Char('y'),&mut screen);
+        assert!(host.mutations().is_empty(),"suspended confirmation must be reset");
+        app.handle(Key::Esc,&mut screen);
+        assert_eq!(app.focus,6,"closing the review returns to the Chief tab");
     }
 }
+
 #[test]
 fn summary_request_does_not_enable_progress_notifications() {
     let host=Host::new(vec![json!({"kind":"summary","state":"completed","last_completed_at_ms":12345,
         "last_result":{"provenance":"chief_narrative_unverified","sections":{"completed":"Worker claim only"}}})]);
     let (mut app,mut screen)=host.open();
-    keys(&mut app,&mut screen,&[Key::Down,Key::Down,Key::Down,Key::Down,Key::Down,Key::Enter,Key::Enter,Key::Enter]);
+    keys(&mut app,&mut screen,&[Key::Char('r'),Key::Enter,Key::Enter]);
     let requests=host.mutations(); assert_eq!(requests.len(),1); assert_eq!(requests[0]["action"]["action"],"request_summary");
     let text=rendered(&mut app,120,45); assert!(text.contains("12345")&&text.contains("chief_narrative_unverified"),"{text}");
 }
@@ -415,17 +420,19 @@ fn worker() -> Value {
 }
 
 #[test]
-fn status_shows_host_daily_counts_instead_of_session_totals() {
-    let host = Host::new(vec![chief("active", true), answer("answer-1", "received")]);
+fn status_shows_one_chief_line_pointing_to_the_chief_tab() {
+    let host = Host::new(vec![chief("active", true), answer("answer-1", "received"), escalation(None)]);
     host.snapshot.lock().unwrap()["today"] = json!({"since_ms":1,"answered":205,"escalated":3});
     let mut app = App::new();
     let mut screen = TestScreen::default();
     app.handle(Key::Char('s'), &mut screen);
     app.build();
-    let text = rendered(&mut app, 100, 80);
-    assert!(text.contains("answered 205 today · 3 sent to you"), "{text}");
-    assert!(text.contains("Last: Use option B."), "{text}");
+    let text = lines_of(&mut app, 100, 80).join("\n");
+    let line = text.lines().find(|line| line.contains("◆ On")).unwrap_or_else(|| panic!("{text}"));
+    assert!(line.contains("◆ On · 205 answered today · 1 needs you") && line.contains(" 5 ") && line.contains("Chief tab"), "{line}");
+    assert!(!text.contains("Last: Use option B.") && !text.contains("Runs as"), "{text}");
 }
+
 
 #[test]
 fn status_does_not_call_a_missing_chief_host_off() {
@@ -448,17 +455,18 @@ fn type_note(app: &mut App, screen: &mut TestScreen, note: &str) {
 #[test]
 fn paused_and_unavailable_states_are_not_off() {
     let host=Host::new(vec![chief("paused",true)]);let (mut app,mut screen)=host.open();
-    assert!(rendered(&mut app,120,45).contains("Paused"));
+    let paused=rendered(&mut app,120,45);
+    assert!(paused.contains("◇ Chief · Paused · c resume") && paused.contains("While it is off, sessions ask you directly."),"{paused}");
     host.snapshot.lock().unwrap()["records"]=json!([chief("active",false)]);
     app.handle(Key::Esc,&mut screen);open_chief(&mut app,&mut screen);
-    assert!(rendered(&mut app,120,45).contains("Unavailable"));
-    keys(&mut app,&mut screen,&[Key::Down,Key::Down,Key::Down,Key::Enter]);
-    let controls=rendered(&mut app,120,45);assert!(controls.contains("Disable chief")&&!controls.contains("Select chief"),"{controls}");
-    app.handle(Key::Enter,&mut screen);let review=rendered(&mut app,150,60);
+    let unavailable=rendered(&mut app,120,45);
+    assert!(unavailable.contains("Unavailable") && unavailable.contains(" c  disable"),"{unavailable}");
+    app.handle(Key::Char('c'),&mut screen);let review=rendered(&mut app,150,60);
     for expected in ["verified-native-runtime","grant-epoch-1","Workers and teams continue","grant-hash"] {assert!(review.contains(expected),"{review}");}
     keys(&mut app,&mut screen,&[Key::Enter,Key::Char('y')]);
     assert_eq!(host.mutations()[0]["action"]["expected_epoch"],"grant-epoch-1");
 }
+
 fn decision() -> Value {
     json!({"kind":"decision","id":"decision-1","scope_key":"scope-1","decision_key":"uncertain_delivery","work":null,"assignment":null,
         "question":"Confirm ownership","recommendation":"Check worker (chief recommendation)","state":"open","revision":4,"resolution":null,"created_at_ms":1,"resolved_at_ms":null})
@@ -474,7 +482,7 @@ fn exact_launch_and_message_recovery_keep_separate_unchecked_stop_consent() {
         let mut decision=decision();decision["scope_key"]=json!(scope);
         let target=json!({"kind":kind,"id":"target-1","state":"uncertain","revision":3,"project":PROJECT,"task_id":"1234abcd","worker":null,"recipient":worker()["session"]});
         let host=Host::new(vec![decision,target]);let (mut app,mut screen)=host.open();
-        keys(&mut app,&mut screen,&[Key::Enter,Key::Enter,Key::Enter,Key::Down,Key::Enter,Key::Down,Key::Enter]);
+        keys(&mut app,&mut screen,&[Key::Char('x')]);
         type_note(&mut app,&mut screen,"Checked this exact target");
         let assertion=rendered(&mut app,160,70);
         assert!(assertion.contains("[ ]") && assertion.contains("target-1"),"{assertion}");
@@ -491,21 +499,23 @@ fn exact_launch_and_message_recovery_keep_separate_unchecked_stop_consent() {
 fn host_sqlite_numeric_live_flag_preserves_pause_resume_controls() {
     let mut grant=chief("active",true);grant["live_verified"]=json!(1);
     let host=Host::new(vec![grant]);let (mut app,mut screen)=host.open();
-    keys(&mut app,&mut screen,&[Key::Down,Key::Down,Key::Down,Key::Enter]);
-    assert!(rendered(&mut app,120,45).contains("Pause chief"));
+    assert!(rendered(&mut app,120,45).contains("◆ Chief · On"));
+    app.handle(Key::Char('c'),&mut screen);
+    assert!(rendered(&mut app,120,45).contains("New chief actions and automatic wake-ups stop."));
 }
 #[test]
 fn suspended_confirmation_requires_separate_confirmation_again_on_return() {
     let host=Host::new(vec![chief("active",true)]);let (mut app,mut screen)=host.open();first_control_review(&mut app,&mut screen);
     keys(&mut app,&mut screen,&[Key::Enter,Key::Tab]);
     open_chief(&mut app,&mut screen);
+    app.handle(Key::Char('c'),&mut screen);
     app.handle(Key::Char('y'),&mut screen);assert!(host.mutations().is_empty());
     keys(&mut app,&mut screen,&[Key::Enter,Key::Char('y')]);assert_eq!(host.mutations().len(),1);
 }
 #[test]
 fn escaped_long_details_remain_inspectable_on_a_narrow_short_screen() {
     let mut record=decision();record["recommendation"]=json!(format!("{}\u{1b}[2J \u{202e} END-OF-EXACT-DECISION","Long bounded scope ".repeat(40)));
-    let host=Host::new(vec![record]);let (mut app,mut screen)=host.open();keys(&mut app,&mut screen,&[Key::Enter,Key::Enter]);
+    let host=Host::new(vec![record]);let (mut app,mut screen)=host.open();keys(&mut app,&mut screen,&[Key::Char('i')]);
     let mut all=String::new();for _ in 0..250 {all.push_str(&rendered(&mut app,32,8));app.handle(Key::PageDown,&mut screen);}
     for expected in ["END-OF-EXACT-DECISION","\\u001b","decision_key"] {assert!(all.contains(expected),"missing {expected}: {all}");}
     assert!(!all.contains('\u{1b}')&&!all.contains('\u{202e}'));assert!(host.mutations().is_empty());
@@ -517,8 +527,7 @@ fn enable_pause_and_resume_submit_only_after_exact_runtime_review_and_confirmati
         let mut ready=worker();ready["ready"]=json!(true);ready["blocked_by"]=json!([]);
         let mut records=vec![ready];if let Some(grant)=grant {records.push(grant);}
         let host=Host::new(records);let (mut app,mut screen)=host.open();
-        keys(&mut app,&mut screen,&[Key::Down,Key::Down,Key::Down,Key::Enter,Key::Enter]);
-        if expected=="enable" {app.handle(Key::Enter,&mut screen);}
+        if expected=="enable" {keys(&mut app,&mut screen,&[Key::Char('p'),Key::Enter]);} else {app.handle(Key::Char('c'),&mut screen);}
         let review=rendered(&mut app,180,80);assert!(review.contains("verified-native-runtime"),"{review}");
         app.handle(Key::Char('y'),&mut screen);assert!(host.mutations().is_empty());
         keys(&mut app,&mut screen,&[Key::Enter,Key::Char('y')]);
@@ -531,7 +540,7 @@ fn resolve_and_handled_notes_never_act_as_completion_or_permission() {
     for handled in [false,true] {
         let (delivery_decision,delivery)=uncertain_delivery();
         let host=Host::new(vec![delivery_decision,delivery]);let (mut app,mut screen)=host.open();
-        keys(&mut app,&mut screen,&[Key::Enter,Key::Enter,Key::Enter]);
+        keys(&mut app,&mut screen,&[Key::Char('i'),Key::Enter]);
         if handled {keys(&mut app,&mut screen,&[Key::Down,Key::Enter]);}
         app.handle(Key::Enter,&mut screen);type_note(&mut app,&mut screen,"Observed by Theo");
         assert!(host.mutations().is_empty());let review=rendered(&mut app,180,80);
@@ -562,7 +571,7 @@ fn host_storage_failure_rejects_confirmation_and_preserves_visible_failure() {
 #[test]
 fn team_bound_worker_cannot_be_selected_chief() {
     let host=Host::new(vec![worker(),json!({"kind":"team_member","session":worker()["session"],"role":"qa","epoch":"team-epoch","team_revision":3,"task":{"project":PROJECT,"task_id":"1234abcd"}})]);
-    let (mut app,mut screen)=host.open();keys(&mut app,&mut screen,&[Key::Down,Key::Down,Key::Down,Key::Enter,Key::Enter]);
+    let (mut app,mut screen)=host.open();keys(&mut app,&mut screen,&[Key::Char('p')]);
     assert!(rendered(&mut app,150,60).contains("Nothing available"));
     keys(&mut app,&mut screen,&[Key::Enter,Key::Enter]);assert!(host.mutations().is_empty());
 }
@@ -574,7 +583,7 @@ fn chief_decisions_preserve_selection_scroll_and_human_prompts_on_refresh() {
     let host=Host::new(vec![first,second]);
     let session=worker()["session"]["session_id"].as_str().unwrap().to_string();
     cockpit::prompts::add(&session,"Human prompt stays queued").unwrap();let prompt=cockpit::prompts::oldest(&session).unwrap();
-    let (mut app,mut screen)=host.open();keys(&mut app,&mut screen,&[Key::Enter,Key::Down,Key::Enter]);
+    let (mut app,mut screen)=host.open();keys(&mut app,&mut screen,&[Key::Char('j'),Key::Char('i')]);
     let _=rendered(&mut app,65,20);app.handle(Key::PageDown,&mut screen);
     let before=rendered(&mut app,65,20);assert!(!before.contains("FIRST DECISION"));
     app.handle(Key::Tab,&mut screen);
@@ -628,16 +637,16 @@ fn actual_chief_view_reviews_current_records_without_loading_terminal_history() 
     assert!(!records.iter().any(|record|record["kind"]=="decision" && record["question"]=="Old resolved question"),"resolved history must not be loaded");
     let host=Host::new(records.clone());*host.snapshot.lock().unwrap()=page;
     let (mut app,mut screen)=host.open();
-    keys(&mut app,&mut screen,&[Key::Enter]);let list=rendered(&mut app,160,70);
+    let list=rendered(&mut app,160,70);
     assert!(list.contains("Current open question")&&!list.contains("Old resolved question"),"{list}");
-    keys(&mut app,&mut screen,&[Key::Enter,Key::Enter,Key::Enter]);type_note(&mut app,&mut screen,"Checked by Theo");
+    keys(&mut app,&mut screen,&[Key::Char('i'),Key::Enter,Key::Enter]);type_note(&mut app,&mut screen,"Checked by Theo");
     assert!(rendered(&mut app,160,70).contains("Current open question"));app.handle(Key::Enter,&mut screen);
     store::agent(&mut connection,&chief,&ask("current-question","Materially changed question"),&live,400).unwrap().result.unwrap();
     *host.snapshot.lock().unwrap()=store::snapshot_page(&connection,&live,0,50,None,400).unwrap();
     app.handle(Key::Char('y'),&mut screen);
     assert!(host.mutations().is_empty(),"a decision changed during review must invalidate pending consent");
     assert!(rendered(&mut app,160,70).contains("changed"));
-    keys(&mut app,&mut screen,&[Key::Esc,Key::Esc,Key::Esc,Key::Enter,Key::Enter,Key::Enter]);type_note(&mut app,&mut screen,"Checked the changed question");
+    keys(&mut app,&mut screen,&[Key::Esc,Key::Esc,Key::Esc,Key::Char('i'),Key::Enter,Key::Enter]);type_note(&mut app,&mut screen,"Checked the changed question");
     keys(&mut app,&mut screen,&[Key::Enter,Key::Char('y')]);
     let action:ChiefHostAction=serde_json::from_value(host.mutations()[0]["action"].clone()).unwrap();
     store::host(&mut connection,&action,&live,401).unwrap().result.unwrap();
@@ -647,11 +656,13 @@ fn actual_chief_view_reviews_current_records_without_loading_terminal_history() 
 }
 
 #[test]
-fn short_narrow_lists_keep_the_selected_root_action_visible() {
-    let host=Host::new(vec![]);let (mut app,mut screen)=host.open();
-    keys(&mut app,&mut screen,&[Key::Down,Key::Down,Key::Down,Key::Down,Key::Down]);
-    assert!(rendered(&mut app,32,8).contains("Request summary"));
+fn a_short_narrow_chief_tab_keeps_the_selected_row_visible() {
+    let records: Vec<Value>=(1..=4).map(|number| {let mut record=decision();record["id"]=json!(format!("decision-{number}"));record["question"]=json!(format!("Question number {number}"));record}).collect();
+    let host=Host::new(records);let (mut app,mut screen)=host.open();
+    keys(&mut app,&mut screen,&[Key::Char('j'),Key::Char('j'),Key::Char('j')]);
+    assert!(rendered(&mut app,32,12).contains("Question number 4"));
 }
+
 
 fn escalation(suggestion: Option<&str>) -> Value {
     let mut record = decision();
@@ -690,7 +701,7 @@ fn a_decision_without_a_suggestion_only_offers_to_write_an_answer() {
 #[test]
 fn a_plain_decision_offers_no_answer_to_an_agent() {
     let host=Host::new(vec![decision()]);let (mut app,mut screen)=host.open();
-    keys(&mut app,&mut screen,&[Key::Enter,Key::Enter,Key::Enter]);
+    keys(&mut app,&mut screen,&[Key::Char('i'),Key::Enter]);
     let actions=rendered(&mut app,160,40);
     assert!(actions.contains("Resolve with note")&&!actions.contains("Write my own answer")&&!actions.contains("Send the suggestion"),"{actions}");
 }
@@ -749,18 +760,18 @@ fn cell_at(app: &mut App, needle: &str, offset: usize) -> ratatui::buffer::Cell 
     panic!("{needle} is not on the screen");
 }
 fn open_answers(host: &Host) -> (App, TestScreen) {
-    let (mut app,mut screen) = host.open(); keys(&mut app,&mut screen,&[Key::Down,Key::Enter]); (app,screen)
+    let (mut app,mut screen) = host.open(); keys(&mut app,&mut screen,&[Key::Char('l')]); (app,screen)
 }
 
 #[test]
-fn the_root_shows_needs_you_and_answers_counts() {
+fn the_chief_tab_counts_what_needs_you() {
     let host=Host::new(vec![decision(),escalation(None),answer("answer-1","received"),answer("answer-2","queued"),answer("answer-3","uncertain")]);
-    let (mut app,mut screen)=host.open();
-    app.handle(Key::Esc,&mut screen);
+    let (mut app,_)=host.open();
     let text=rendered(&mut app,120,45);
-    for expected in ["Needs you · 2","Answers · 3"] {assert!(text.contains(expected),"{expected}: {text}");}
+    assert!(text.contains("NEEDS YOU · 2"),"{text}");
     assert!(!text.contains("Decisions"),"{text}");
 }
+
 
 #[test]
 fn the_answers_page_lists_rows_newest_first() {
@@ -878,12 +889,13 @@ fn chief_shortcuts_open_their_scoped_pages_without_approving() {
 }
 
 #[test]
-fn status_h_opens_habits_without_opening_the_chief_menu() {
+fn the_chief_tab_h_opens_habits_without_any_change() {
     let host=Host::new(vec![]);let mut app=App::new();let mut screen=TestScreen::default();
-    keys(&mut app,&mut screen,&[Key::Char('s'),Key::Char('h')]);
+    keys(&mut app,&mut screen,&[Key::Char('5'),Key::Char('h')]);
     assert!(rendered(&mut app,100,40).contains("No habits yet"));
     assert!(host.mutations().is_empty());
 }
+
 
 #[test]
 fn the_chief_picker_names_unsupported_sessions_and_cannot_enable_them() {
@@ -911,17 +923,20 @@ fn a_current_chief_is_not_silently_replaced_from_the_picker() {
 fn uncertain_delivery_shortcuts_start_evidence_only_on_the_selected_row() {
     for key in ['y','x'] {
         let (decision,delivery)=uncertain_delivery();
-        let host=Host::new(vec![decision,delivery]);let (mut app,mut screen)=host.open();
-        app.handle(Key::Char(key),&mut screen);
-        assert!(!rendered(&mut app,120,50).contains("Nonempty note"));
-        for _ in 0..6 {app.handle(Key::Down,&mut screen);}
+        let mut today=answer("answer-today","received");today["created_at_ms"]=json!(chrono::Utc::now().timestamp_millis());
+        let host=Host::new(vec![decision,delivery,today]);let (mut app,mut screen)=host.open();
         let text=rendered(&mut app,120,50);
-        assert!(text.contains("y it arrived · x stop safely · i details"),"{text}");
+        assert!(text.contains(" y  it arrived") && text.contains(" x  stop safely") && text.contains(" i  details"),"{text}");
+        app.handle(Key::Char('j'),&mut screen);
+        app.handle(Key::Char(key),&mut screen);
+        assert!(!rendered(&mut app,120,50).contains("Nonempty note"),"today's answer is selected");
+        app.handle(Key::Char('k'),&mut screen);
         app.handle(Key::Char(key),&mut screen);
         assert!(rendered(&mut app,120,50).contains("Nonempty note"));
         assert!(host.mutations().is_empty());
     }
 }
+
 
 #[test]
 fn the_detail_action_overrules_an_uncertain_answer_too() {
@@ -967,12 +982,12 @@ fn a_changed_answer_invalidates_an_open_overrule_review() {
 fn answers_name_the_session_not_its_id() {
     let mut escalated=escalation(None);escalated["session_id"]=json!(SESSION);
     let host=Host::new(vec![answer("answer-1","received"),escalated]);name_the_session(&host,"Fix the login bug · a-long-canonical-project");
-    let (mut app,mut screen)=host.open();
+    let (mut app,mut screen)=host.open_inbox();
     let needs_you=rendered(&mut app,160,45);
     assert!(needs_you.contains("a-long-canonical-project › Fix the login bug")&&!needs_you.contains(SESSION),"{needs_you}");
     keys(&mut app,&mut screen,&[Key::Char('i')]);
     let detail=rendered(&mut app,160,60);assert!(detail.contains("Session: Fix the login bug · a-long-canonical-project"),"{detail}");
-    keys(&mut app,&mut screen,&[Key::Esc,Key::Esc,Key::Down,Key::Enter]);
+    keys(&mut app,&mut screen,&[Key::Esc,Key::Esc,Key::Char('l')]);
     let list=rendered(&mut app,160,45);assert!(list.contains("Fix the login bug · a-long-canonical-project")&&!list.contains(SESSION),"{list}");
     app.handle(Key::Enter,&mut screen);
     let detail=rendered(&mut app,160,60);assert!(detail.contains("Fix the login bug · a-long-canonical-project")&&!detail.contains(SESSION),"{detail}");
@@ -1001,11 +1016,10 @@ fn an_agent_chosen_session_label_is_escaped_and_cut_to_one_line() {
 fn session_names_from_every_page_of_the_snapshot_are_kept() {
     let host=Host::new(vec![answer("answer-1","received")]);
     let mut app=App::new();let mut screen=TestScreen::default();
-    app.handle(Key::Char('s'),&mut screen);
     let mut first=snapshot(vec![]);first["has_more"]=json!(true);first["next"]=json!(1);first["session_names"]=json!({"ses_other0000000000":"Other · elsewhere"});
     let mut second=snapshot(vec![answer("answer-1","received")]);second["session_names"]=json!({SESSION:"Second page name · project"});
     host.pages.lock().unwrap().extend([first,second]);
-    keys(&mut app,&mut screen,&[Key::Char('c'),Key::Down,Key::Enter]);
+    keys(&mut app,&mut screen,&[Key::Char('5'),Key::Char('l')]);
     let text=rendered(&mut app,160,45);assert!(text.contains("Second page name · project"),"{text}");
 }
 
@@ -1071,7 +1085,7 @@ fn an_escalation_detail_shows_no_raw_record_json() {
 fn the_answers_count_shows_a_plus_when_the_snapshot_hit_its_cap() {
     for (count,expected) in [(199,"Answers · 199"),(200,"Answers · 200+")] {
         let answers: Vec<Value>=(0..count).map(|number|answer(&format!("answer-{number}"),"received")).collect();
-        let host=Host::new(answers);let (mut app,_)=host.open();
+        let host=Host::new(answers);let (mut app,_)=open_answers(&host);
         let text=rendered(&mut app,120,45);assert!(text.contains(expected)&&(count==200||!text.contains("199+")),"{expected}: {text}");
     }
 }
@@ -1088,7 +1102,7 @@ fn answer_at(id: &str, question: &str, created_at_ms: i64) -> Value {
 }
 fn open_summary(host: &Host) -> (App, TestScreen) {
     let (mut app,mut screen)=host.open();
-    keys(&mut app,&mut screen,&[Key::Down,Key::Down,Key::Down,Key::Down,Key::Down,Key::Enter,Key::Enter,Key::Enter]);
+    keys(&mut app,&mut screen,&[Key::Char('r')]);
     (app,screen)
 }
 
@@ -1147,30 +1161,32 @@ fn selected_line(app: &mut App) -> String {
 }
 
 #[test]
-fn the_root_shows_habits_and_how_many_are_new() {
+fn the_chief_tab_shows_habits_and_how_many_are_new() {
     let host=Host::new(vec![habit("habit-old","Old habit.",Some(PROJECT),SEEN_AT_MS-1_000),habit("habit-a","New habit A.",Some(PROJECT),SEEN_AT_MS+1_000),
         habit("habit-b","New habit B.",None,SEEN_AT_MS+2_000),deleted(habit("habit-gone","Deleted habit.",None,SEEN_AT_MS+3_000))]);
     habits_seen_at(SEEN_AT_MS);
     let (mut app,_)=host.open();
     let text=rendered(&mut app,120,45);
-    assert!(text.contains("Habits · 3 · 2 new"),"{text}");
+    assert!(text.contains(" h  habits (2 new)"),"{text}");
 }
 
+
 #[test]
-fn the_root_shows_no_new_count_when_every_habit_was_seen() {
+fn the_chief_tab_shows_no_new_count_when_every_habit_was_seen() {
     let host=Host::new(vec![habit("habit-old","Old habit.",Some(PROJECT),SEEN_AT_MS-1_000)]);
     habits_seen_at(SEEN_AT_MS);
     let (mut app,_)=host.open();
     let text=rendered(&mut app,120,45);
-    assert!(text.contains("Habits · 1")&&!text.contains("Habits · 1 · "),"{text}");
+    assert!(text.contains(" h  habits")&&!text.contains("new)"),"{text}");
 }
+
 
 #[test]
 fn without_a_seen_time_habits_of_the_last_24_hours_are_new() {
     let now=chrono::Utc::now().timestamp_millis();
     let host=Host::new(vec![habit("habit-recent","Recent habit.",None,now-3_600_000),habit("habit-stale","Stale habit.",None,now-172_800_000)]);
     let (mut app,_)=host.open();
-    assert!(rendered(&mut app,120,45).contains("Habits · 2 · 1 new"));
+    assert!(rendered(&mut app,120,45).contains(" h  habits (1 new)"));
 }
 
 #[test]
@@ -1371,8 +1387,8 @@ fn opening_the_habits_page_clears_new() {
     let saved: i64=fs::read_to_string(cockpit::paths::chief_habits_seen_at()).unwrap().trim().parse().unwrap();
     assert!(saved>=before,"opening the page saves when Theo saw the habits");
     app.handle(Key::Esc,&mut screen);
-    let root=rendered(&mut app,120,45);
-    assert!(root.contains("Habits · 1")&&!root.contains("Habits · 1 · "),"{root}");
+    let tab=rendered(&mut app,120,45);
+    assert!(tab.contains(" h  habits")&&!tab.contains("new)"),"{tab}");
 }
 
 #[test]
@@ -1412,11 +1428,11 @@ fn an_open_view_rereads_when_a_digest_showed_the_habits() {
     let host=Host::new(vec![habit("habit-a","Always run the tests first.",None,SEEN_AT_MS+60_000)]);
     habits_seen_at(SEEN_AT_MS);
     let (mut app,mut screen)=host.open();
-    assert!(rendered(&mut app,120,45).contains("Habits · 1 · 1 new"));
+    assert!(rendered(&mut app,120,45).contains(" h  habits (1 new)"));
     habits_seen_at(SEEN_AT_MS+120_000);
-    keys(&mut app,&mut screen,&[Key::Down,Key::Down,Key::Down,Key::Down,Key::Down,Key::Enter,Key::Esc]);
-    let root=rendered(&mut app,120,45);
-    assert!(root.contains("Habits · 1")&&!root.contains("Habits · 1 · "),"a refresh picks up the digest's seen time: {root}");
+    keys(&mut app,&mut screen,&[Key::Char('r'),Key::Esc]);
+    let tab=rendered(&mut app,120,45);
+    assert!(tab.contains(" h  habits")&&!tab.contains("new)"),"a refresh picks up the digest's seen time: {tab}");
 }
 
 #[test]
@@ -1488,7 +1504,7 @@ fn inbox_host(records: Vec<Value>) -> Host {
 #[test]
 fn status_chief_opens_the_question_card_when_the_chief_needs_theo() {
     let host = inbox_host(vec![inbox_question("decision-a", 3, Some("Go on."))]);
-    let (mut app, _) = host.open();
+    let (mut app, _) = host.open_inbox();
     let card = rendered(&mut app, 100, 40);
     for expected in ["! Chief needs you · 1 of 1", "agent-cockpit › Persist Stadeo team", "Not sure · asked 4m ago", "WHAT'S GOING ON",
         "osd won't restart", "◆ CHIEF SUGGESTS · 1 step", "1 Go on.", "do this, step by step", "write my own", "later", "full details",
@@ -1500,7 +1516,7 @@ fn status_chief_opens_the_question_card_when_the_chief_needs_theo() {
 #[test]
 fn without_a_question_status_chief_opens_the_chief_root() {
     let host = inbox_host(vec![]);
-    let (mut app, _) = host.open();
+    let (mut app, _) = host.open_inbox();
     assert!(!rendered(&mut app, 100, 40).contains("Chief needs you"));
 }
 
@@ -1511,7 +1527,7 @@ fn a_deferred_question_is_not_counted_until_it_comes_back() {
     let mut returned = inbox_question("decision-c", 3, Some("Retry."));
     returned["later_until_ms"] = json!(chrono::Utc::now().timestamp_millis() - 1_000);
     let host = inbox_host(vec![inbox_question("decision-a", 3, Some("Go on.")), deferred, returned]);
-    let (mut app, _) = host.open();
+    let (mut app, _) = host.open_inbox();
     assert!(rendered(&mut app, 100, 40).contains("! Chief needs you · 1 of 2 · 1 later"));
 }
 
@@ -1524,9 +1540,9 @@ fn put_off(id: &str) -> Value {
 #[test]
 fn the_root_counts_a_put_off_question_apart_from_the_ones_that_need_theo() {
     let host = inbox_host(vec![inbox_question("decision-a", 3, Some("Go on.")), put_off("decision-b")]);
-    let (mut app, mut screen) = host.open();
+    let (mut app, mut screen) = host.open_inbox();
     app.handle(Key::Esc, &mut screen);
-    assert!(rendered(&mut app, 100, 40).contains("Needs you · 1 · 1 later"));
+    assert!(rendered(&mut app, 100, 40).contains("NEEDS YOU · 1 · 1 later"));
 }
 
 #[test]
@@ -1542,7 +1558,7 @@ fn a_question_put_off_while_on_screen_counts_after_the_open_ones() {
 #[test]
 fn enter_on_needs_you_with_only_put_off_questions_shows_the_empty_card() {
     let host = inbox_host(vec![put_off("decision-a")]);
-    let (mut app, mut screen) = host.open();
+    let (mut app, mut screen) = host.open_inbox();
     let root = rendered(&mut app, 100, 40);
     assert!(root.contains("Needs you · 0 · 1 later"), "{root}");
     app.handle(Key::Enter, &mut screen);
@@ -1553,7 +1569,7 @@ fn enter_on_needs_you_with_only_put_off_questions_shows_the_empty_card() {
 #[test]
 fn steps_are_done_one_by_one_and_only_y_on_the_last_sends_its_exact_message() {
     let host = inbox_host(vec![two_steps("decision-a")]);
-    let (mut app, mut screen) = host.open();
+    let (mut app, mut screen) = host.open_inbox();
     assert!(rendered(&mut app, 100, 40).contains("◆ CHIEF SUGGESTS · 2 steps"));
     app.handle(Key::Char('a'), &mut screen);
     let step = rendered(&mut app, 100, 40);
@@ -1577,7 +1593,7 @@ fn steps_are_done_one_by_one_and_only_y_on_the_last_sends_its_exact_message() {
 #[test]
 fn without_chief_steps_the_suggestion_is_one_step_and_the_reason_the_situation() {
     let host = inbox_host(vec![inbox_question("decision-a", 3, Some("Go on."))]);
-    let (mut app, mut screen) = host.open();
+    let (mut app, mut screen) = host.open_inbox();
     app.handle(Key::Char('a'), &mut screen);
     assert!(rendered(&mut app, 100, 40).contains("STEP 1 OF 1 · SEND TO THE AGENT"));
     app.handle(Key::Char('y'), &mut screen);
@@ -1587,7 +1603,7 @@ fn without_chief_steps_the_suggestion_is_one_step_and_the_reason_the_situation()
 #[test]
 fn a_question_without_a_suggestion_offers_only_write_my_own() {
     let host = inbox_host(vec![inbox_question("decision-a", 3, None)]);
-    let (mut app, mut screen) = host.open();
+    let (mut app, mut screen) = host.open_inbox();
     let card = rendered(&mut app, 100, 40);
     assert!(!card.contains("do this, step by step") && card.contains("write my own"), "{card}");
     app.handle(Key::Char('a'), &mut screen);
@@ -1597,7 +1613,7 @@ fn a_question_without_a_suggestion_offers_only_write_my_own() {
 #[test]
 fn write_my_own_sends_exactly_what_theo_typed_with_cmd_s() {
     let host = inbox_host(vec![inbox_question("decision-a", 3, Some("Go on."))]);
-    let (mut app, mut screen) = host.open();
+    let (mut app, mut screen) = host.open_inbox();
     app.handle(Key::Char('w'), &mut screen);
     app.handle(Key::Paste("Wait, I'll restart osd myself.".into()), &mut screen);
     let box_ = rendered(&mut app, 100, 40);
@@ -1611,7 +1627,7 @@ fn write_my_own_sends_exactly_what_theo_typed_with_cmd_s() {
 #[test]
 fn edit_first_prefills_the_message_and_esc_returns_to_the_last_step_unchanged() {
     let host = inbox_host(vec![inbox_question("decision-a", 3, Some("Go on."))]);
-    let (mut app, mut screen) = host.open();
+    let (mut app, mut screen) = host.open_inbox();
     keys(&mut app, &mut screen, &[Key::Char('a'), Key::Char('e')]);
     assert!(rendered(&mut app, 100, 40).contains("YOUR ANSWER"));
     keys(&mut app, &mut screen, &[Key::Backspace, Key::Esc]);
@@ -1625,7 +1641,7 @@ fn edit_first_prefills_the_message_and_esc_returns_to_the_last_step_unchanged() 
 fn after_sending_the_inbox_waits_for_n_before_the_next_question() {
     let host = inbox_host(vec![inbox_question("decision-a", 3, Some("Go on.")), inbox_question("decision-b", 2, Some("Allow it."))]);
     host.after_mutations.lock().unwrap().push_back(vec![inbox_question("decision-b", 2, Some("Allow it."))]);
-    let (mut app, mut screen) = host.open();
+    let (mut app, mut screen) = host.open_inbox();
     keys(&mut app, &mut screen, &[Key::Char('a'), Key::Char('y')]);
     let sent = rendered(&mut app, 100, 40);
     assert!(sent.contains("✓ Sent to agent-cockpit › Persist Stadeo team") && sent.contains("NEXT · 1 OF 1") && sent.contains("next question")
@@ -1639,7 +1655,7 @@ fn after_sending_the_inbox_waits_for_n_before_the_next_question() {
 fn the_last_sent_question_leaves_the_empty_card_with_todays_count() {
     let host = inbox_host(vec![inbox_question("decision-a", 3, Some("Go on."))]);
     host.after_mutations.lock().unwrap().push_back(vec![]);
-    let (mut app, mut screen) = host.open();
+    let (mut app, mut screen) = host.open_inbox();
     keys(&mut app, &mut screen, &[Key::Char('a'), Key::Char('y'), Key::Char('n')]);
     let empty = rendered(&mut app, 100, 40);
     assert!(empty.contains("✓ Nothing needs you") && empty.contains("The Chief answered 5 questions today.") && empty.contains("what it answered"), "{empty}");
@@ -1648,7 +1664,7 @@ fn the_last_sent_question_leaves_the_empty_card_with_todays_count() {
 #[test]
 fn later_puts_the_question_off_through_the_host_without_answering() {
     let host = inbox_host(vec![inbox_question("decision-a", 3, Some("Go on."))]);
-    let (mut app, mut screen) = host.open();
+    let (mut app, mut screen) = host.open_inbox();
     app.handle(Key::Char('l'), &mut screen);
     let mutations = host.mutations();
     assert_eq!(mutations.len(), 1);
@@ -1659,7 +1675,7 @@ fn later_puts_the_question_off_through_the_host_without_answering() {
 #[test]
 fn a_question_that_changed_while_on_a_step_returns_to_the_card_and_never_sends_the_old_revision() {
     let host = inbox_host(vec![two_steps("decision-a")]);
-    let (mut app, mut screen) = host.open();
+    let (mut app, mut screen) = host.open_inbox();
     keys(&mut app, &mut screen, &[Key::Char('a'), Key::Char('d')]);
     let mut changed = two_steps("decision-a"); changed["revision"] = json!(4);
     host.snapshot.lock().unwrap()["records"] = json!([changed]);
@@ -1672,7 +1688,7 @@ fn a_question_that_changed_while_on_a_step_returns_to_the_card_and_never_sends_t
 #[test]
 fn full_details_keeps_the_raw_source_and_esc_returns_to_the_card() {
     let host = inbox_host(vec![inbox_question("decision-a", 3, Some("Go on."))]);
-    let (mut app, mut screen) = host.open();
+    let (mut app, mut screen) = host.open_inbox();
     app.handle(Key::Char('i'), &mut screen);
     let detail = rendered(&mut app, 120, 50);
     assert!(detail.contains("Why the Chief escalated") && detail.contains("untrusted narrative"), "{detail}");
@@ -1685,7 +1701,7 @@ fn a_narrow_column_wraps_the_card_and_keeps_its_keys() {
     let mut record = two_steps("decision-a");
     record["situation"] = json!("The fix is in, but the agent can't finish its last check: osd won't restart while your Stadeo guide is open, so it waits for you.");
     let host = inbox_host(vec![record]);
-    let (mut app, mut screen) = host.open();
+    let (mut app, mut screen) = host.open_inbox();
     app.handle(Key::Char('a'), &mut screen);
     app.handle(Key::Char('d'), &mut screen);
     let last = lines_of(&mut app, 40, 22).join("\n");
@@ -1696,7 +1712,7 @@ fn a_narrow_column_wraps_the_card_and_keeps_its_keys() {
 fn the_sent_card_names_where_the_answer_went_when_it_was_the_last_question() {
     let host = inbox_host(vec![inbox_question("decision-a", 3, Some("Go on."))]);
     host.after_mutations.lock().unwrap().push_back(vec![]);
-    let (mut app, mut screen) = host.open();
+    let (mut app, mut screen) = host.open_inbox();
     keys(&mut app, &mut screen, &[Key::Char('a'), Key::Char('y')]);
     let sent = rendered(&mut app, 100, 40);
     assert!(sent.contains("✓ Sent to agent-cockpit › Persist Stadeo team"), "{sent}");
@@ -1710,7 +1726,7 @@ fn the_sent_card_names_the_answered_session_not_the_next_one() {
     let host = inbox_host(vec![inbox_question("decision-a", 3, Some("Go on.")), other.clone()]);
     host.snapshot.lock().unwrap()["session_names"] = json!({SESSION: "Persist Stadeo team · agent-cockpit", "ses_otherSession000000000": "Game launcher · stray-coop"});
     host.after_mutations.lock().unwrap().push_back(vec![other]);
-    let (mut app, mut screen) = host.open();
+    let (mut app, mut screen) = host.open_inbox();
     keys(&mut app, &mut screen, &[Key::Char('a'), Key::Char('y')]);
     let sent = rendered(&mut app, 100, 40);
     assert!(sent.contains("✓ Sent to agent-cockpit › Persist Stadeo team") && sent.contains("stray-coop › Game launcher"), "{sent}");
@@ -1721,7 +1737,7 @@ fn a_short_column_keeps_the_question_keys_and_says_there_is_more() {
     let mut record = two_steps("decision-a");
     record["situation"] = json!("The fix is in, but the agent can't finish its last check: osd won't restart while your Stadeo guide is open, so it waits for you to close it first.");
     let host = inbox_host(vec![record]);
-    let (mut app, _) = host.open();
+    let (mut app, _) = host.open_inbox();
     let card = lines_of(&mut app, 40, 18).join("\n");
     assert!(card.contains("do this") && card.contains("write my own") && card.contains("more"), "{card}");
 }
@@ -1730,12 +1746,13 @@ fn a_short_column_keeps_the_question_keys_and_says_there_is_more() {
 fn the_empty_card_shows_a_question_that_arrives_while_it_is_open() {
     let host = inbox_host(vec![inbox_question("decision-a", 3, Some("Go on."))]);
     host.after_mutations.lock().unwrap().push_back(vec![]);
-    let (mut app, mut screen) = host.open();
+    let (mut app, mut screen) = host.open_inbox();
     keys(&mut app, &mut screen, &[Key::Char('a'), Key::Char('y'), Key::Char('n')]);
     assert!(rendered(&mut app, 100, 40).contains("Nothing needs you"));
     app.handle(Key::Tab, &mut screen);
     host.snapshot.lock().unwrap()["records"] = json!([inbox_question("decision-new", 1, Some("Retry."))]);
     open_chief(&mut app, &mut screen);
+    app.handle(Key::Enter, &mut screen);
     let card = rendered(&mut app, 100, 40);
     assert!(card.contains("! Chief needs you · 1 of 1") && card.contains("Retry."), "{card}");
 }
@@ -1744,7 +1761,7 @@ fn the_empty_card_shows_a_question_that_arrives_while_it_is_open() {
 fn a_definite_refusal_says_nothing_was_sent() {
     let host = inbox_host(vec![inbox_question("decision-a", 3, Some("Go on."))]);
     host.mutation_replies.lock().unwrap().push_back(json!({"error":"decision revision is stale or already answered","code":"conflict"}));
-    let (mut app, mut screen) = host.open();
+    let (mut app, mut screen) = host.open_inbox();
     keys(&mut app, &mut screen, &[Key::Char('a'), Key::Char('y')]);
     let card = rendered(&mut app, 100, 40);
     assert!(card.contains("decision revision is stale") && card.contains("Nothing was sent.") && !card.contains("may have arrived"), "{card}");
@@ -1753,7 +1770,7 @@ fn a_definite_refusal_says_nothing_was_sent() {
 #[test]
 fn a_typed_answer_survives_its_question_changing() {
     let host = inbox_host(vec![inbox_question("decision-a", 3, Some("Go on."))]);
-    let (mut app, mut screen) = host.open();
+    let (mut app, mut screen) = host.open_inbox();
     app.handle(Key::Char('w'), &mut screen);
     app.handle(Key::Paste("Wait, I'll restart osd myself.".into()), &mut screen);
     let mut changed = inbox_question("decision-a", 4, Some("Go on."));
@@ -1773,7 +1790,7 @@ fn a_typed_answer_survives_its_question_changing() {
 #[test]
 fn leaving_write_my_own_keeps_the_draft_for_later() {
     let host = inbox_host(vec![inbox_question("decision-a", 3, Some("Go on."))]);
-    let (mut app, mut screen) = host.open();
+    let (mut app, mut screen) = host.open_inbox();
     app.handle(Key::Char('w'), &mut screen);
     app.handle(Key::Paste("Half an answer".into()), &mut screen);
     app.handle(Key::Esc, &mut screen);
@@ -1785,10 +1802,71 @@ fn leaving_write_my_own_keeps_the_draft_for_later() {
 }
 
 #[test]
-fn status_h_opens_habits_even_when_a_question_waits() {
+fn the_chief_tab_h_opens_habits_even_when_a_question_waits() {
     let _host = inbox_host(vec![inbox_question("decision-a", 3, Some("Go on.")), habit("habit-a","Always run the tests first.",Some(PROJECT),SEEN_AT_MS)]);
     let mut app = App::new(); let mut screen = TestScreen::default();
-    keys(&mut app, &mut screen, &[Key::Esc, Key::Char('s'), Key::Char('h')]);
+    keys(&mut app, &mut screen, &[Key::Esc, Key::Char('5'), Key::Char('h')]);
     let shown = rendered(&mut app, 100, 40);
     assert!(shown.contains("Always run the tests first.") && !shown.contains("! Chief needs you"), "{shown}");
+}
+
+fn answered_today(id: &str, text: &str, seconds_ago: i64) -> Value {
+    let mut record = answer(id, "received");
+    record["created_at_ms"] = json!(chrono::Utc::now().timestamp_millis() - seconds_ago * 1000);
+    record["answer"] = json!(text);
+    record
+}
+
+#[test]
+fn the_chief_tab_feed_lists_today_newest_first_and_folds_the_rest() {
+    let mut records = vec![chief("active", true)];
+    for index in 0..5 { records.push(answered_today(&format!("today-{index}"), &format!("Answer number {index}"), 10 - index)); }
+    let mut old = answer("old", "received"); old["created_at_ms"] = json!(chrono::Utc::now().timestamp_millis() - 2 * 86_400_000); old["answer"] = json!("Old answer");
+    records.push(old);
+    let mut theo = answered_today("theo", "Mine", 20); theo["source"] = json!("theo");
+    records.push(theo);
+    let host = Host::new(records); name_the_session(&host, "Fix login · shop");
+    let (mut app, _) = host.open();
+    let text = lines_of(&mut app, 120, 45).join("\n");
+    let positions: Vec<usize> = ["Answered Fix login · shop: Answer number 4", "Answered Fix login · shop: Answer number 3", "Answered Fix login · shop: Answer number 1"]
+        .iter().map(|line| text.find(line).unwrap_or_else(|| panic!("{line}: {text}"))).collect();
+    assert!(positions[0] < positions[1] && positions[1] < positions[2], "{text}");
+    assert!(!text.contains("Answer number 0") && !text.contains("Old answer") && text.contains("+ 2 earlier · l answer log"), "{text}");
+}
+
+#[test]
+fn theos_own_answers_and_escalations_sent_today_show_in_the_feed() {
+    let mut theo = answered_today("theo", "Mine", 20); theo["source"] = json!("theo");
+    let mut sent = escalation(None); sent["created_at_ms"] = json!(chrono::Utc::now().timestamp_millis());
+    let host = Host::new(vec![chief("active", true), theo, sent]); name_the_session(&host, "Fix login · shop");
+    let (mut app, _) = host.open();
+    let text = lines_of(&mut app, 120, 45).join("\n");
+    assert!(text.contains("You answered Fix login · shop: Mine") && text.contains("Sent to you: Scope · Which option do you want?"), "{text}");
+}
+
+#[test]
+fn now_names_the_session_that_has_not_read_the_chiefs_answer_yet() {
+    let mut waiting = answered_today("waiting", "Use option B.", 180); waiting["delivery"] = json!("queued");
+    let host = Host::new(vec![chief("active", true), waiting]); name_the_session(&host, "Fix login · shop");
+    let (mut app, _) = host.open();
+    let text = lines_of(&mut app, 120, 45).join("\n");
+    assert!(text.contains("NOW · 1") && text.contains("◐ Waiting for Fix login · shop to read its answer"), "{text}");
+}
+
+#[test]
+fn o_on_an_answer_in_the_feed_overrules_that_answer_and_never_sends_without_review() {
+    let host = Host::new(vec![chief("active", true), answered_today("today-1", "Use option B.", 5)]);
+    let (mut app, mut screen) = host.open();
+    app.handle(Key::Char('o'), &mut screen);
+    let note = rendered(&mut app, 120, 45);
+    assert!(note.contains("Overrule: Which option do you want?") && note.contains("Chief answered: Use option B."), "{note}");
+    assert!(host.mutations().is_empty());
+}
+
+#[test]
+fn enter_on_an_answer_whose_session_ended_says_so_and_opens_nothing() {
+    let host = Host::new(vec![chief("active", true), answered_today("today-1", "Use option B.", 5)]);
+    let (mut app, mut screen) = host.open();
+    app.handle(Key::Enter, &mut screen);
+    assert!(rendered(&mut app, 120, 45).contains("That session is no longer running"));
 }

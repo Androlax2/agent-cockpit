@@ -188,7 +188,7 @@ impl Item {
             .filter_map(|(number, file)| Some((number.parse().ok()?, file.as_str().filter(|file| crate::todo_images::is_file_name(file))?.to_string())))
             .collect()
     }
-    fn updated(&self) -> i64 { self.0.get("updated").and_then(Value::as_i64).unwrap_or(0) }
+    pub(crate) fn updated(&self) -> i64 { self.0.get("updated").and_then(Value::as_i64).unwrap_or(0) }
     /// The projects a session of another project handed it across (claude-todo add --project),
     /// such as "greywall→greyproxy"; empty for everything else.
     pub fn link(&self) -> String { self.text_of("link") }
