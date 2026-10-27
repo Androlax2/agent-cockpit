@@ -592,7 +592,7 @@ fn chief_decisions_preserve_selection_scroll_and_human_prompts_on_refresh() {
 fn only_unresolved_decisions_count_as_chief_attention() {
     let mut resolved=decision();resolved["state"]=json!("resolved");
     let state=snapshot(vec![decision(),resolved,json!({"kind":"event","event_kind":"progress","body":"success"})]);
-    assert_eq!(cockpit::chief::view::ChiefView::attention(&state),1);
+    assert_eq!(cockpit::chief::view::ChiefView::attention(&state,chrono::Utc::now().timestamp_millis()),1);
 }
 
 #[test]
@@ -1512,7 +1512,42 @@ fn a_deferred_question_is_not_counted_until_it_comes_back() {
     returned["later_until_ms"] = json!(chrono::Utc::now().timestamp_millis() - 1_000);
     let host = inbox_host(vec![inbox_question("decision-a", 3, Some("Go on.")), deferred, returned]);
     let (mut app, _) = host.open();
-    assert!(rendered(&mut app, 100, 40).contains("1 of 2"));
+    assert!(rendered(&mut app, 100, 40).contains("! Chief needs you · 1 of 2 · 1 later"));
+}
+
+fn put_off(id: &str) -> Value {
+    let mut question = inbox_question(id, 3, Some("Wait."));
+    question["later_until_ms"] = json!(chrono::Utc::now().timestamp_millis() + 600_000);
+    question
+}
+
+#[test]
+fn the_root_counts_a_put_off_question_apart_from_the_ones_that_need_theo() {
+    let host = inbox_host(vec![inbox_question("decision-a", 3, Some("Go on.")), put_off("decision-b")]);
+    let (mut app, mut screen) = host.open();
+    app.handle(Key::Esc, &mut screen);
+    assert!(rendered(&mut app, 100, 40).contains("Needs you · 1 · 1 later"));
+}
+
+#[test]
+fn a_question_put_off_while_on_screen_counts_after_the_open_ones() {
+    use cockpit::chief::{inbox::Line, view::ChiefView};
+    let mut view = ChiefView::new(snapshot(vec![inbox_question("decision-a", 3, Some("Go on.")), inbox_question("decision-b", 3, Some("Allow it.")), put_off("decision-c")]));
+    assert!(view.open_inbox());
+    view.refresh(snapshot(vec![put_off("decision-a"), inbox_question("decision-b", 3, Some("Allow it.")), put_off("decision-c")]));
+    let Some(Line::Text(header)) = view.inbox_lines().into_iter().next() else { panic!("the card starts with its header") };
+    assert_eq!(header[0].0, "! Chief needs you · 2 of 2 · 1 later");
+}
+
+#[test]
+fn enter_on_needs_you_with_only_put_off_questions_shows_the_empty_card() {
+    let host = inbox_host(vec![put_off("decision-a")]);
+    let (mut app, mut screen) = host.open();
+    let root = rendered(&mut app, 100, 40);
+    assert!(root.contains("Needs you · 0 · 1 later"), "{root}");
+    app.handle(Key::Enter, &mut screen);
+    let empty = rendered(&mut app, 100, 40);
+    assert!(empty.contains("✓ Nothing needs you") && !empty.contains("Wait."), "{empty}");
 }
 
 #[test]

@@ -244,6 +244,8 @@ const tests = {
     const page = await startPage({ sessions: SESSIONS, chief });
     page.run('showTab("status")'); await settle();
     assert.ok(page.button(page.roots.work, "Needs you · 1"));
+    page.run('openInbox()'); await settle();
+    assert.ok(page.roots.chief.textContent.includes("! Chief needs you · 1 of 1 · 1 later"));
   },
 
   async "the session's Chief question opens the inbox and never sends on one tap"() {

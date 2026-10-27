@@ -200,7 +200,8 @@ ask a question, within a fixed boundary, and hands everything else to you: see
 
 ### Turning it on and off
 
-Open Status (`s`) → Chief (`c`). The root has **Needs you · N** (open decisions), **Answers · N**,
+Open Status (`s`) → Chief (`c`). The root has **Needs you · N** (open decisions; questions put off with
+Later show apart as `· M later` until they come back), **Answers · N**,
 **Habits · N** (see [Habits](#habits)), **Chief controls**, **Workers** and **Request summary**.
 Arrows or `j`/`k` move, Enter inspects, `h` opens Habits, Esc goes back, Page Up/Down read long
 records. `c` on a session card opens the Answers list of that session directly.

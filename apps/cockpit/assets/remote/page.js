@@ -244,7 +244,9 @@ function inboxSendButton(label, record, answer) {
 
 function inboxContext(box, record, total, position) {
   const dots = Array.from({ length: Math.min(total, 8) }, (_, index) => index === position ? "●" : "○").join("");
-  box.append(element("div", "question", `! Chief needs you · ${position + 1} of ${total}  ${dots}`));
+  const now = Date.now();
+  const later = chiefRecords("escalations").filter(other => other.id !== record.id && other.later_until_ms != null && other.later_until_ms > now).length;
+  box.append(element("div", "question", `! Chief needs you · ${position + 1} of ${total}${later ? ` · ${later} later` : ""}  ${dots}`));
   const place = inboxPlace(record);
   const context = element("p", "project");
   if (place.project) context.append(element("span", "project-name", place.project), element("span", "task", " › "));

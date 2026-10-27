@@ -33,14 +33,27 @@ pub fn situation(decision: &Value) -> String {
     plain(&decision["situation"]).or_else(||plain(&decision["recommendation"])).unwrap_or_default()
 }
 
+/// Whether Theo put this decision off with Later and it has not come back yet.
+pub fn is_put_off(record: &Value, now_ms: i64) -> bool {
+    record["later_until_ms"].as_i64().is_some_and(|until|until>now_ms)
+}
+fn open_escalations(snapshot: &Value) -> impl Iterator<Item = &Value> {
+    snapshot["records"].as_array().into_iter().flatten()
+        .filter(|record|record["kind"]=="decision" && record["state"]=="open" && record["stop_id"].is_string())
+}
 /// Open escalated questions that are not put off, oldest first.
 pub fn questions(snapshot: &Value, now_ms: i64) -> Vec<Value> {
-    let mut open: Vec<Value> = snapshot["records"].as_array().into_iter().flatten()
-        .filter(|record|record["kind"]=="decision" && record["state"]=="open" && record["stop_id"].is_string())
-        .filter(|record|record["later_until_ms"].as_i64().is_none_or(|until|until<=now_ms))
-        .cloned().collect();
+    let mut open: Vec<Value> = open_escalations(snapshot).filter(|record|!is_put_off(record,now_ms)).cloned().collect();
     open.sort_by_key(|record|(record["created_at_ms"].as_i64().unwrap_or(0),record["id"].as_str().unwrap_or("").to_string()));
     open
+}
+/// Open escalated questions put off with Later, apart from `except` (the one on screen).
+pub fn put_off_count(snapshot: &Value, now_ms: i64, except: Option<&str>) -> usize {
+    open_escalations(snapshot).filter(|record|is_put_off(record,now_ms) && record["id"].as_str()!=except).count()
+}
+/// ` · N later` when questions are put off, otherwise nothing.
+pub fn later_suffix(count: usize) -> String {
+    if count==0 {String::new()} else {format!(" · {count} later")}
 }
 
 fn category_words(category: &Value) -> String {
@@ -218,10 +231,15 @@ impl Inbox {
 
     fn header(&self, snapshot: &Value, now_ms: i64, lines: &mut Vec<Line>) {
         let open=questions(snapshot,now_ms);
-        let position=self.decision.as_ref().and_then(|id|open.iter().position(|record|record["id"].as_str()==Some(id.as_str())));
-        let total=open.len().max(position.map_or(0,|index|index+1));
-        let dots: String=(0..total.min(8)).map(|index|if Some(index)==position {'●'} else {'○'}).collect();
-        lines.push(Line::Text(vec![(format!("! Chief needs you · {} of {}",position.map_or(1,|index|index+1),total.max(1)),Ink::Attention),(format!("  {dots}"),Ink::Dim)]));
+        let current=self.decision.as_deref();
+        // A question put off elsewhere while it is on screen still counts here, after the open ones.
+        let (position,total)=match open.iter().position(|record|record["id"].as_str()==current) {
+            Some(index)=>(index,open.len()),
+            None=>(open.len(),open.len()+1),
+        };
+        let later=later_suffix(put_off_count(snapshot,now_ms,current));
+        let dots: String=(0..total.min(8)).map(|index|if index==position {'●'} else {'○'}).collect();
+        lines.push(Line::Text(vec![(format!("! Chief needs you · {} of {total}{later}",position+1),Ink::Attention),(format!("  {dots}"),Ink::Dim)]));
     }
     fn context(snapshot: &Value, record: &Value, now_ms: i64, lines: &mut Vec<Line>) {
         let (project,task)=place(snapshot,record);

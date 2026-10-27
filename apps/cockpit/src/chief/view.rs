@@ -243,8 +243,7 @@ impl ChiefView {
     /// Opens the inbox on the oldest question that needs Theo; false when none does.
     pub fn open_inbox(&mut self) -> bool {
         if super::inbox::questions(&self.snapshot,Self::now_ms()).is_empty() {return false;}
-        self.inbox=Some(super::inbox::Inbox::new(&self.snapshot,Self::now_ms()));self.inbox_scroll=0;
-        self.frames.push(Frame::Inbox);
+        self.show_inbox();
         true
     }
     pub fn inbox_active(&self) -> bool {matches!(self.frames.last(),Some(Frame::Inbox)) && self.inbox.is_some()}
@@ -289,8 +288,19 @@ impl ChiefView {
         let selected=self.rows(&page).first().map(|row|row.key.clone());
         self.frames=vec![Frame::Browse {page,selected}];
     }
-    pub fn attention(snapshot: &Value) -> usize {
-        snapshot["records"].as_array().into_iter().flatten().filter(|record|record["kind"]=="decision" && record["state"]=="open").count()
+    /// Open decisions that need Theo now: a question put off with Later counts once it comes back.
+    pub fn attention(snapshot: &Value, now_ms: i64) -> usize {
+        snapshot["records"].as_array().into_iter().flatten()
+            .filter(|record|record["kind"]=="decision" && record["state"]=="open" && !super::inbox::is_put_off(record,now_ms)).count()
+    }
+    fn attention_label(&self) -> String {
+        let now_ms=Self::now_ms();
+        format!("Needs you · {}{}",Self::attention(&self.snapshot,now_ms),super::inbox::later_suffix(super::inbox::put_off_count(&self.snapshot,now_ms,None)))
+    }
+    /// The inbox even with nothing to answer, where it says so.
+    fn show_inbox(&mut self) {
+        self.inbox=Some(super::inbox::Inbox::new(&self.snapshot,Self::now_ms()));self.inbox_scroll=0;
+        self.frames.push(Frame::Inbox);
     }
     /// `<label> · <project>` from the host, escaped and cut to one line; the end of the id when the host has no name.
     fn session_name(&self, session_id: Option<&str>) -> String {
@@ -625,7 +635,7 @@ impl ChiefView {
         use Operation::*;
         match page {
             Page::Root => {
-                let mut rows=vec![Row::new("decisions",&format!("Needs you · {}",Self::attention(&self.snapshot)),Open(Page::Decisions)),
+                let mut rows=vec![Row::new("decisions",&self.attention_label(),Open(Page::Decisions)),
                 Row::new("answers",&self.answers_label(),Open(Page::Answers(None))),
                 Row::new("habits",&self.habits_label(),Open(Page::Habits(self.habits_since()))),
                 Row::new("controls","Chief controls",Open(Page::Controls)),
@@ -829,6 +839,7 @@ impl ChiefView {
                     },
                     Key::Char('x'|'u'|'p') if matches!(page,Page::Habits(_))=>return self.habit_key(&key,&rows,index,undo),
                     Key::Enter if matches!(page,Page::Root) && index.is_some_and(|index|rows[index].key=="decisions") && self.open_inbox()=>{},
+                    Key::Enter if matches!(page,Page::Root) && index.is_some_and(|index|rows[index].key=="decisions") && Self::attention(&self.snapshot,Self::now_ms())==0=>self.show_inbox(),
                     Key::Enter => if let Some(index)=index {match rows[index].operation.clone() {
                         Operation::Open(Page::Habits(_))=>return self.open_habits(),
                         Operation::Open(page)=>self.open(page),
