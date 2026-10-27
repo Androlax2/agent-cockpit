@@ -1,6 +1,9 @@
 #!/bin/sh
 # A Rust program of agent-cockpit (apps/, built with `make build` into apps/target/release): this
 # runs the canonical build, found next to it through the stow link.
+# A boot-time user service may start before the desktop imports ~/.local/bin into PATH.
+case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) PATH="$HOME/.local/bin:$PATH" ;; esac
+export PATH
 here=$(dirname "$(readlink -f "$0")")
 binary="$here/../../../../apps/target/release/$(basename "$0")"
 if [ ! -x "$binary" ]; then

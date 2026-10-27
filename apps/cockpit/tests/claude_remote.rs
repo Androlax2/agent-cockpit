@@ -1113,6 +1113,36 @@ fn yes_on_an_opencode_form_says_to_answer_it_as_a_message() {
 // ---- Work from the phone ----
 
 #[test]
+fn phone_replies_reach_the_pane_with_a_boot_time_service_path() {
+    let mut remote = Remote::start();
+    let secret = remote.paired();
+    remote.session_in("waiting", IDLE);
+
+    // Run the installed launcher layout, without the interactive shell's ~/.local/bin on PATH.
+    let install = remote.sandbox.root.join("install");
+    let launcher = install.join("config/bin/.local/bin/cockpit-remote");
+    fs::create_dir_all(launcher.parent().unwrap()).unwrap();
+    copy_executable(&bin().join("cockpit-remote"), &launcher);
+    let binary = install.join("apps/target/release/cockpit-remote");
+    fs::create_dir_all(binary.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_cockpit-remote"), &binary).unwrap();
+    remote.server.kill().unwrap();
+    remote.server.wait().unwrap();
+    let path = format!("{}:/usr/local/bin:/usr/bin", remote.sandbox.shims.display());
+    let mut server = remote.sandbox.command(&launcher, &[
+        ("PATH", &path), ("COCKPIT_REMOTE_ADDRESS", "127.0.0.1:0"),
+    ]).arg("serve").current_dir(&remote.sandbox.home).stdout(Stdio::piped()).spawn().unwrap();
+    let mut line = String::new();
+    BufReader::new(server.stdout.take().unwrap()).read_line(&mut line).unwrap();
+    remote.port = line.trim().rsplit(':').next().unwrap().parse().unwrap();
+    remote.server = server;
+
+    let (status, answer) = remote.post_json(&secret, &format!("/api/message/{SESSION_A}"), json!({"text": "yes"}));
+    assert_eq!(status, 200, "{answer}");
+    assert_eq!(remote.keys_pressed(), ["tmux send-keys -t %4 -l -- yes", "tmux send-keys -t %4 Enter"]);
+}
+
+#[test]
 fn multiline_phone_replies_reach_each_agents_paste_unchanged() {
     for (agent, session, pane) in [("claude", SESSION_A, "%4"), ("opencode", OPENCODE_SESSION, "%5")] {
         let remote = Remote::start();
