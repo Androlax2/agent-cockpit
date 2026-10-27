@@ -2169,7 +2169,9 @@ pub fn claude_processes(table: &dyn Processes) -> Vec<String> {
     let mut found: Vec<String> = table.pids().into_iter().filter(|pid| {
         let name = table.comm(pid);
         if agents::AGENTS.iter().any(|agent| agent.process == Some(name.as_str())) {
-            return true;
+            // `opencode serve` holds no conversation. The shared `serve --service` outlives the pane
+            // it was started from, and its stale TMUX_PANE pinned a session to that dead pane.
+            return table.command(pid).get(1).map(String::as_str) != Some("serve");
         }
         if name != "claude" && !version.is_match(&name) {
             return false;

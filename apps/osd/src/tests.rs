@@ -2345,6 +2345,19 @@ fn the_session_tree_of_claude_2_1_300_is_read_right() {
 }
 
 #[test]
+fn an_opencode_server_does_not_keep_the_pane_it_was_started_from_live() {
+    let pane = |id: &str| HashMap::from([("TMUX_PANE".to_string(), id.to_string())]);
+    let words = |parts: &[&str]| parts.iter().map(|part| part.to_string()).collect::<Vec<_>>();
+    let tree = ProcessTree(BTreeMap::from([
+        ("20".into(), ("opencode".into(), words(&["/home/t/.opencode/bin/opencode", "serve", "--service"]), pane("%75"))),
+        ("21".into(), ("opencode".into(), words(&["/home/t/.opencode/bin/opencode", "--standalone", "--session", OPENCODE_SESSION]), pane("%81"))),
+        ("22".into(), ("opencode".into(), words(&["/home/t/.opencode/bin/opencode", "serve", "--stdio", "--port", "0"]), pane("%81"))),
+    ]));
+    assert_eq!(claude_processes(&tree), ["21"]);
+    assert_eq!(claude_panes_in(&tree), set(&["%81"]));
+}
+
+#[test]
 fn an_opencode_process_keeps_its_pane_alive() {
     let pane = HashMap::from([("TMUX_PANE".to_string(), "%21".to_string())]);
     let tree = ProcessTree(BTreeMap::from([
