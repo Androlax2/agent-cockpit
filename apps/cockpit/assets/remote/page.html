@@ -186,6 +186,16 @@
   .chief-habit .note { grid-column: 1 / -1; }
   .chief-habit .note:empty { display: none; }
   button.chief-use { background: var(--yellow); color: var(--bg); }
+  .chief-inbox { padding: 16px; }
+  .chief-inbox > * { margin: 0 0 8px; }
+  .chief-inbox button { display: block; width: 100%; min-height: 44px; margin-top: 10px; }
+  .chief-inbox .question { color: var(--yellow); font-weight: 600; }
+  .chief-inbox .project-name { color: var(--blue); font-weight: 600; }
+  .chief-heading { color: var(--dim); font-size: 13px; font-weight: 600; text-transform: uppercase; }
+  .chief-steps { margin: 0 0 8px; padding: 8px 12px 8px 32px; background: var(--bg); border-radius: 6px; }
+  .chief-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .chief-inbox button.chief-details { background: none; border: none; color: var(--blue); text-align: left; padding: 0; width: auto; }
+  .chief-current { border: 1px solid var(--blue); border-radius: 6px; padding: 10px 12px; overflow-wrap: anywhere; }
   .chief-own, .chief-overrule { background: transparent; }
   .session-chief { flex-shrink: 0; max-height: 50dvh; overflow-y: auto; }
   .session-chief:empty { display: none; }

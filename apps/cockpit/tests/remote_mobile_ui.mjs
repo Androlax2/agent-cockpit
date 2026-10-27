@@ -84,6 +84,14 @@ async function startPage({ sessions, approvals = [], inputs = [], messages = [],
   return { roots, document, history, location, server, run, button };
 }
 
+function inboxChief({ steps = [{ text: "Close your Stadeo guide" }, { text: "Tell the agent to go on", message: "Go on: restart osd and run your check." }] } = {}) {
+  return { status: "Active", today: { answered: 5, escalated: 1 }, counts: [], answers: [], habits: [],
+    session_names: { s1: "Persist Stadeo team · agent-cockpit" },
+    escalations: [{ id: "d1", revision: 3, state: "open", session_id: "s1", category: "not_sure", question: "Restart osd?",
+      recommendation: "The fix is in, but osd won't restart while your guide is open.", suggested_answer: "Go on.", later_until_ms: null,
+      created_at_ms: Date.now() - 240000, situation: null, steps }] };
+}
+
 const INPUT = { id: "0123456789ab", command: "cockpit apply /clone", prompt: "Apply these 1 commit(s)? [y/N]" };
 const SESSIONS = [{ session: "s1", project: "Shop", agent: "claude", state: "waiting", features: ["dialogs"] }];
 
@@ -165,13 +173,90 @@ const tests = {
       const chief = { status: "Active", counts: [], answers: [], habits: [], escalations: [{ id: "d1", revision: 4, session_id: "s1", category: "scope", question: "Continue?", suggested_answer: null }] };
       const page = await startPage({ sessions: SESSIONS, chief });
       page.server.chiefPost = async () => ({ ok: false, status: 409, json: async () => ({ ok: false, message: "Rejected", outcome_uncertain: uncertain }) });
-      page.run('openSession("s1")'); page.button(page.roots.detail, "Write my own answer").onclick();
-      const input = page.roots.detail.querySelector(".chief-input"); input.value = "Bad\ttext"; input.oninput();
-      await page.button(page.roots.detail, "Send answer").onclick(); await settle();
-      input.value = "Corrected text"; input.oninput();
-      assert.equal(page.button(page.roots.detail, "Send answer").disabled, uncertain);
+      page.run('openSession("s1")'); page.button(page.roots.detail, "Write my own answer").onclick(); await settle();
+      const input = page.roots.chief.querySelector(".chief-input"); input.value = "Bad\ttext"; input.oninput();
+      await page.button(page.roots.chief, "Send").onclick(); await page.button(page.roots.chief, "Tap again to send").onclick(); await settle();
+      const corrected = page.roots.chief.querySelector(".chief-input"); corrected.value = "Corrected text"; corrected.oninput();
+      assert.equal(page.button(page.roots.chief, "Send").disabled, uncertain);
     }
   },
+  async "Chief inbox opens from Status with the question card"() {
+    const page = await startPage({ sessions: SESSIONS, chief: inboxChief() });
+    page.run('showTab("status")'); await settle();
+    page.button(page.roots.work, "Needs you · 1").onclick(); await settle();
+    const text = page.roots.chief.textContent;
+    for (const expected of ["! Chief needs you · 1 of 1", "agent-cockpit", "Persist Stadeo team", "Not sure · asked 4m ago", "What's going on",
+      "osd won't restart", "◆ Chief suggests · 2 steps", "Close your Stadeo guide", "Written by the Chief: check it before acting."]) {
+      assert.ok(text.includes(expected), `${expected}: ${text}`);
+    }
+    for (const label of ["Do this, step by step", "Write my own", "Later", "Full details ›"]) assert.ok(page.button(page.roots.chief, label), label);
+  },
+
+  async "Chief inbox steps end with a second-tap send of the exact message, once"() {
+    const page = await startPage({ sessions: SESSIONS, chief: inboxChief() });
+    page.run('openInbox()'); await settle();
+    page.button(page.roots.chief, "Do this, step by step").onclick(); await settle();
+    assert.ok(page.roots.chief.textContent.includes("Step 1 of 2"));
+    page.button(page.roots.chief, "Done, next step").onclick(); await settle();
+    assert.ok(page.roots.chief.textContent.includes("Step 2 of 2 · Send to the agent"));
+    assert.ok(page.roots.chief.textContent.includes("Go on: restart osd and run your check."));
+    await page.button(page.roots.chief, "Send").onclick(); await settle();
+    assert.equal(page.server.posts.length, 0, "the first tap only arms");
+    const again = page.button(page.roots.chief, "Tap again to send");
+    await Promise.all([again.onclick(), again.onclick()]); await settle();
+    const posts = page.server.posts.filter(post => post.path === "/api/chief");
+    assert.equal(posts.length, 1);
+    assert.deepEqual([posts[0].body.action.action, posts[0].body.action.answer, posts[0].body.action.expected_revision], ["answer_decision", "Go on: restart osd and run your check.", 3]);
+    assert.deepEqual(posts[0].body.expected, page.server.chief.escalations[0]);
+    assert.ok(page.roots.chief.textContent.includes("✓ Sent to agent-cockpit › Persist Stadeo team"));
+    assert.ok(page.button(page.roots.chief, "Stop here"));
+  },
+
+  async "Chief inbox edit first prefills and Back keeps the message"() {
+    const page = await startPage({ sessions: SESSIONS, chief: inboxChief({ steps: null }) });
+    page.run('openInbox()'); await settle();
+    page.button(page.roots.chief, "Do this, step by step").onclick(); await settle();
+    page.button(page.roots.chief, "Edit first").onclick(); await settle();
+    const input = page.roots.chief.querySelector(".chief-input");
+    assert.equal(input.value, "Go on.");
+    input.value = "Changed"; input.oninput();
+    page.button(page.roots.chief, "Back").onclick(); await settle();
+    assert.ok(page.roots.chief.textContent.includes("Go on."));
+    assert.ok(!page.roots.chief.textContent.includes("Changed"));
+  },
+
+  async "Chief inbox write my own needs a second tap and Later puts it off"() {
+    const page = await startPage({ sessions: SESSIONS, chief: inboxChief() });
+    page.run('openInbox()'); await settle();
+    page.button(page.roots.chief, "Write my own").onclick(); await settle();
+    const input = page.roots.chief.querySelector(".chief-input"); input.value = "I'll do it"; input.oninput();
+    await page.button(page.roots.chief, "Send").onclick();
+    assert.equal(page.server.posts.length, 0);
+    page.button(page.roots.chief, "Back").onclick(); await settle();
+    await page.button(page.roots.chief, "Later").onclick(); await settle();
+    const posts = page.server.posts.filter(post => post.path === "/api/chief");
+    assert.deepEqual([posts[0].body.action.action, posts[0].body.action.decision, posts[0].body.action.expected_revision], ["later_decision", "d1", 3]);
+  },
+
+  async "a deferred Chief question is not counted until it comes back"() {
+    const chief = inboxChief();
+    chief.escalations.push({ ...chief.escalations[0], id: "d2", later_until_ms: Date.now() + 600000 });
+    const page = await startPage({ sessions: SESSIONS, chief });
+    page.run('showTab("status")'); await settle();
+    assert.ok(page.button(page.roots.work, "Needs you · 1"));
+  },
+
+  async "the session's Chief question opens the inbox and never sends on one tap"() {
+    const page = await startPage({ sessions: SESSIONS, chief: inboxChief() });
+    page.run('openSession("s1")'); await settle();
+    assert.ok(page.roots.detail.textContent.includes("Chief needs you"));
+    assert.equal(page.button(page.roots.detail, "Use the suggestion"), undefined);
+    page.button(page.roots.detail, "Do this, step by step").onclick(); await settle();
+    assert.equal(page.roots.chief.hidden, false);
+    assert.ok(page.roots.chief.textContent.includes("Step 1 of 2"));
+    assert.equal(page.server.posts.length, 0);
+  },
+
   async "Chief escalations are session scoped and submit the exact suggestion once"() {
     const chief = { status: "Active", counts: [], answers: [], habits: [], escalations: [
       { id: "d1", revision: 4, session_id: "s1", category: "security", question: "Rotate token?", recommendation: "Security needs you.", suggested_answer: "Rotate it." },
@@ -181,7 +266,9 @@ const tests = {
     page.run('openSession("s1")'); await settle();
     assert.ok(page.roots.detail.textContent.includes("Chief needs you · Security"));
     assert.ok(!page.roots.detail.textContent.includes("OTHER SESSION"));
-    const use = page.button(page.roots.detail, "Use the suggestion");
+    page.button(page.roots.detail, "Do this, step by step").onclick(); await settle();
+    await page.button(page.roots.chief, "Send").onclick();
+    const use = page.button(page.roots.chief, "Tap again to send");
     await use.onclick(); await use.onclick(); await settle();
     const posts = page.server.posts.filter(post => post.path === "/api/chief");
     assert.equal(posts.length, 1);
@@ -196,15 +283,17 @@ const tests = {
     ] };
     const page = await startPage({ sessions: SESSIONS, chief });
     page.run('openSession("s1")'); await settle();
-    assert.equal(page.button(page.roots.detail, "Use the suggestion"), undefined);
-    page.button(page.roots.detail, "Write my own answer").onclick();
-    const input = page.roots.detail.querySelector(".chief-input");
+    assert.equal(page.button(page.roots.detail, "Do this, step by step"), undefined);
+    page.button(page.roots.detail, "Write my own answer").onclick(); await settle();
+    const input = page.roots.chief.querySelector(".chief-input");
     input.value = "Keep this draft"; input.oninput();
     input.onkeydown?.({ key: "Enter", preventDefault() {} });
     await page.run("refresh()"); await settle();
-    assert.equal(page.roots.detail.querySelector(".chief-input").value, "Keep this draft");
+    assert.equal(page.roots.chief.querySelector(".chief-input"), input);
+    assert.equal(input.value, "Keep this draft");
     assert.equal(page.server.posts.length, 0);
-    const oldSend = page.button(page.roots.detail, "Send answer");
+    await page.button(page.roots.chief, "Send").onclick();
+    const oldSend = page.button(page.roots.chief, "Tap again to send");
     page.server.chief.escalations[0].revision = 5;
     await page.run("refresh()"); await settle();
     await oldSend.onclick();

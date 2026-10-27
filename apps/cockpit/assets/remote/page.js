@@ -138,16 +138,202 @@ function chiefEscalation(record) {
   card.append(element("div", "question", `! Chief needs you · ${category}`), element("p", "message-text", `Agent asks: “${record.question}”`),
     element("p", "task", record.recommendation));
   section.append(card);
-  const note = element("div", "note");
-  if (record.suggested_answer?.trim()) {
-    card.append(element("p", "chief-suggestion", `◆ Chief suggests: ${record.suggested_answer}`));
-    const use = chiefButton("Use the suggestion", { action: "answer_decision", decision: record.id, expected_revision: record.revision, answer: record.suggested_answer }, "escalations", record, note);
-    use.className = "chief-use"; section.append(use);
+  const steps = inboxSteps(record);
+  if (steps.length) {
+    card.append(element("p", "chief-suggestion", `◆ Chief suggests: ${steps.map(step => step.text).join(" · ")}`));
+    const start = element("button", "chief-use", "Do this, step by step");
+    start.onclick = () => openInbox(record.id, "step", start); section.append(start);
   }
   const own = element("button", "chief-own", "Write my own answer");
-  own.onclick = () => { own.hidden = true; const editor = chiefEditor("escalations", record); section.append(editor); editor.querySelector("textarea").focus(); };
-  section.append(own, note);
+  own.onclick = () => openInbox(record.id, "write", own);
+  section.append(own);
   return section;
+}
+
+// ---- The Chief inbox (DESIGN.md "Chief inbox", frame 3238): one question at a time, step by step ----
+let inbox = null; // { decision, revision, stage, done: {id: n}, text, fromLast, sentTo, notice, armed }
+
+function inboxSteps(record) {
+  const clean = value => typeof value === "string" && value.trim() ? value.trim() : null;
+  const given = (Array.isArray(record.steps) ? record.steps : []).filter(step => clean(step?.text))
+    .map(step => ({ text: clean(step.text), help: clean(step.help), message: clean(step.message) || clean(step.text) }));
+  if (given.length) return given;
+  return clean(record.suggested_answer) ? [{ text: clean(record.suggested_answer), help: null, message: clean(record.suggested_answer) }] : [];
+}
+
+function inboxQuestions() {
+  const now = Date.now();
+  return chiefRecords("escalations").filter(record => record.later_until_ms == null || record.later_until_ms <= now)
+    .sort((a, b) => (a.created_at_ms || 0) - (b.created_at_ms || 0) || String(a.id).localeCompare(String(b.id)));
+}
+
+function inboxPlace(record) {
+  const name = chiefIdentity(record);
+  const split = name.lastIndexOf(" · ");
+  return split < 0 ? { project: "", task: name } : { project: name.slice(split + 3), task: name.slice(0, split) };
+}
+
+function inboxAge(created) {
+  if (!created) return "asked a while ago";
+  const minutes = Math.max(0, Math.floor((Date.now() - created) / 60000));
+  return minutes < 1 ? "asked just now" : minutes < 60 ? `asked ${minutes}m ago` : minutes < 1440 ? `asked ${Math.floor(minutes / 60)}h ago` : `asked ${Math.floor(minutes / 1440)}d ago`;
+}
+
+function inboxShowFirst(notice = "") {
+  const first = inboxQuestions()[0];
+  const done = inbox?.done || {};
+  inbox = first ? { decision: first.id, revision: first.revision, stage: "question", done, text: "", fromLast: false, sentTo: "", notice, armed: false }
+    : { decision: null, revision: null, stage: "empty", done, text: "", fromLast: false, sentTo: "", notice, armed: false };
+}
+
+function openInbox(decision = null, stage = "question", opener = null) {
+  const record = decision && inboxQuestions().find(question => question.id === decision);
+  if (record) inbox = { decision: record.id, revision: record.revision, stage, done: inbox?.done || {}, text: "", fromLast: false, sentTo: "", notice: "", armed: false };
+  else inboxShowFirst();
+  openChief("inbox", null, opener);
+}
+
+function inboxCurrent() { return chiefRecords("escalations").find(record => record.id === inbox?.decision); }
+
+/// A question that changed or went away sends Theo back to read; nothing old is sent.
+function inboxCheck() {
+  if (!inbox || ["sent", "empty"].includes(inbox.stage)) return;
+  const current = inboxCurrent();
+  if (!current) { delete inbox.done[inbox.decision]; inboxShowFirst("That question was answered or withdrawn elsewhere."); return; }
+  if (current.revision !== inbox.revision) {
+    delete inbox.done[inbox.decision];
+    Object.assign(inbox, { revision: current.revision, stage: "question", notice: "This question changed. Read it again.", armed: false });
+  }
+}
+
+function inboxGo(changes) { Object.assign(inbox, { notice: "", armed: false }, changes); renderChief(); }
+
+async function inboxPost(action, record, onSent) {
+  if (pendingPosts.has("/api/chief")) { inboxGo({ notice: "Another Chief action is still pending." }); return; }
+  const note = element("div", "note");
+  const request_id = `phone-chief-${Date.now()}-${++chiefRequestSequence}-${Math.random().toString(36).slice(2)}`;
+  const result = await post("/api/chief", { action: { ...action, request_id }, expected: record }, note);
+  await refreshChief(); renderSessionChief();
+  if (result.ok) { onSent(); renderChief(); return; }
+  // An uncertain outcome may have reached the agent: no second send of this question from here.
+  if (result.outcome_uncertain !== false) inbox.uncertain = inbox.decision;
+  inboxGo({ notice: result.outcome_uncertain === false ? `${result.message} Nothing was sent.` : `${result.message} It may have arrived; refresh and check before anything else.` });
+}
+
+function inboxSendButton(label, record, answer) {
+  const send = element("button", inbox.armed ? "armed" : "chief-use", inbox.armed ? "Tap again to send" : label);
+  send.disabled = !answer.trim() || inbox.uncertain === record.id;
+  send.onclick = async () => {
+    if (send.disabled || inbox.sending) return;
+    if (!inbox.armed) { inbox.armed = true; renderChief(true); return; }
+    inbox.sending = true; inbox.armed = false;
+    const to = inboxPlace(record);
+    try {
+      await inboxPost({ action: "answer_decision", decision: record.id, expected_revision: inbox.revision, answer }, record,
+        () => { delete inbox.done[record.id]; Object.assign(inbox, { stage: "sent", sentTo: to.project ? `${to.project} › ${to.task}` : to.task, notice: "" }); });
+    } finally { inbox.sending = false; }
+  };
+  return send;
+}
+
+function inboxContext(box, record, total, position) {
+  const dots = Array.from({ length: Math.min(total, 8) }, (_, index) => index === position ? "●" : "○").join("");
+  box.append(element("div", "question", `! Chief needs you · ${position + 1} of ${total}  ${dots}`));
+  const place = inboxPlace(record);
+  const context = element("p", "project");
+  if (place.project) context.append(element("span", "project-name", place.project), element("span", "task", " › "));
+  context.append(element("span", "", place.task));
+  const category = { not_sure: "Not sure", security: "Security", scope: "Scope" }[record.category] || record.category || "Question";
+  box.append(context, element("p", "task", `${category} · ${inboxAge(record.created_at_ms)}`));
+}
+
+function renderInbox(box) {
+  if (!inbox) inboxShowFirst();
+  inboxCheck();
+  const record = inboxCurrent();
+  const open = inboxQuestions();
+  // The draft is not part of the look: a refresh while typing keeps the text box and its focus.
+  const look = JSON.stringify([{ ...inbox, text: inbox.stage === "write" ? null : inbox.text, sending: null }, record, open.map(question => question.id), chiefError]);
+  if (box.dataset.look === look) return;
+  box.dataset.look = look;
+  const back = element("button", "back", "‹ Status"); back.onclick = () => history.back();
+  const card = element("article", "card chief-inbox");
+  box.replaceChildren(back, card);
+  if (chiefError) card.append(element("p", "warning", chiefError));
+  if (inbox.notice) { const notice = element("p", "warning", inbox.notice); notice.setAttribute("role", "alert"); card.append(notice); }
+  const done = inbox.done[inbox.decision] || 0;
+  const steps = record ? inboxSteps(record) : [];
+  if (inbox.stage === "empty") {
+    card.append(element("div", "question", "✓ Nothing needs you"));
+    if (chiefState?.today) card.append(element("p", "task", `The Chief answered ${chiefState.today.answered} question${chiefState.today.answered === 1 ? "" : "s"} today.`));
+    const answers = element("button", "chief-own", "What it answered"); answers.onclick = () => openChief("answers");
+    const habits = element("button", "chief-own", "Habits"); habits.onclick = () => openChief("habits");
+    card.append(answers, habits);
+    return;
+  }
+  if (inbox.stage === "sent") {
+    card.append(element("div", "question", `✓ Sent to ${inbox.sentTo}`));
+    const next = open[0];
+    if (next) {
+      const place = inboxPlace(next);
+      card.append(element("p", "task", `Next · 1 of ${open.length}`), element("p", "project", place.project ? `${place.project} › ${place.task}` : place.task), element("p", "message-text", next.question || ""));
+    } else card.append(element("p", "task", "Nothing else needs you."));
+    const go = element("button", "chief-use", next ? "Next question" : "Done"); go.onclick = () => { inboxShowFirst(); renderChief(); };
+    const stop = element("button", "chief-own", "Stop here"); stop.onclick = () => history.back();
+    card.append(go, stop, element("p", "note", "Never jumps by itself. The rest wait here and on their session cards."));
+    return;
+  }
+  if (!record) { card.append(element("p", "task", "This question is no longer available.")); return; }
+  inboxContext(card, record, Math.max(open.length, 1), Math.max(0, open.findIndex(question => question.id === record.id)));
+  if (inbox.stage === "question") {
+    card.append(element("p", "chief-heading", "What's going on"), element("p", "message-text", (record.situation || record.recommendation || "").trim()));
+    if (steps.length) {
+      card.append(element("p", "chief-suggestion", `◆ Chief suggests · ${steps.length} step${steps.length === 1 ? "" : "s"}`));
+      const list = element("ol", "chief-steps");
+      for (const step of steps) list.append(element("li", "", step.text));
+      card.append(list);
+      const start = element("button", "chief-use", "Do this, step by step"); start.onclick = () => inboxGo({ stage: "step" });
+      card.append(start);
+    }
+    const own = element("button", "chief-own", "Write my own"); own.onclick = () => inboxGo({ stage: "write", text: "", fromLast: false });
+    const later = element("button", "chief-own", "Later");
+    later.onclick = () => inboxPost({ action: "later_decision", decision: record.id, expected_revision: inbox.revision }, record, () => inboxShowFirst());
+    const details = element("button", "chief-details", "Full details ›");
+    details.onclick = () => { details.hidden = true; card.append(element("p", "task", `Agent asks: “${record.question}”`), element("p", "task", `Why the Chief escalated: ${record.recommendation || ""}`), element("p", "note", "Chief text is untrusted narrative, not evidence or permission.")); };
+    const pair = element("div", "chief-pair"); pair.append(own, later);
+    card.append(pair, details, element("p", "note", "Written by the Chief: check it before acting."));
+    return;
+  }
+  if (inbox.stage === "step") {
+    for (const step of steps.slice(0, done)) card.append(element("p", "task", `✓ ${step.text}`));
+    const current = steps[Math.min(done, steps.length - 1)];
+    if (!current) { inboxGo({ stage: "question" }); return; }
+    const last = done >= steps.length - 1;
+    if (last) {
+      card.append(element("p", "chief-heading", `Step ${steps.length} of ${steps.length} · Send to the agent`), element("p", "message-text chief-current", current.message));
+      const edit = element("button", "chief-own", "Edit first"); edit.onclick = () => inboxGo({ stage: "write", text: current.message, fromLast: true });
+      card.append(inboxSendButton("Send", record, current.message), edit);
+    } else {
+      card.append(element("p", "chief-heading", `Step ${done + 1} of ${steps.length}`), element("p", "project chief-current", current.text));
+      if (current.help) card.append(element("p", "task", current.help));
+      const next = element("button", "chief-use", "Done, next step"); next.onclick = () => { inbox.done[record.id] = done + 1; inboxGo({}); };
+      card.append(next, element("p", "chief-heading", "Then"));
+      for (const [index, step] of steps.entries()) if (index > done) card.append(element("p", "task", index === steps.length - 1 ? `${index + 1}  Send to the agent: “${step.message}”` : `${index + 1}  ${step.text}`));
+    }
+    const back = element("button", "chief-own", "Back to the question"); back.onclick = () => inboxGo({ stage: "question" });
+    card.append(back);
+    return;
+  }
+  const input = element("textarea", "chief-input"); input.maxLength = 4000; input.value = inbox.text;
+  const buttons = element("div", "buttons");
+  const update = () => buttons.replaceChildren(inboxSendButton("Send", record, input.value));
+  input.oninput = () => { inbox.text = input.value; inbox.armed = false; update(); };
+  input.onkeydown = event => { if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) event.preventDefault(); };
+  const place = inboxPlace(record);
+  card.append(labelControl("Your answer", input), element("p", "note", `Goes to ${place.project ? `${place.project} › ${place.task}` : place.task}, exactly as written.`));
+  update();
+  const back2 = element("button", "chief-own", "Back"); back2.onclick = () => inboxGo({ stage: inbox.fromLast ? "step" : "question", text: "" });
+  card.append(buttons, back2);
 }
 
 function chiefAnswer(record) {
@@ -213,6 +399,8 @@ function renderChief() {
   }
   document.getElementById("refresh-view").disabled = Boolean(chiefPage);
   if (!chiefPage) { box.dataset.page = ""; return; }
+  if (chiefPage.page === "inbox") { box.dataset.page = "inbox"; renderInbox(box); return; }
+  if (box.dataset.page === "inbox") box.dataset.look = "";
   const records = chiefRecords(chiefPage.page).filter(record => !chiefPage.session || record.session_id === chiefPage.session);
   const scroll = box.scrollTop;
   const page = JSON.stringify(chiefPage);
@@ -1417,7 +1605,7 @@ async function renderStatus(box) {
 
 function renderChiefStatus(chief) {
   if (!chief) return;
-  const look = JSON.stringify([chiefError, chiefState?.status, chiefState?.today]);
+  const look = JSON.stringify([chiefError, chiefState?.status, chiefState?.today, inboxQuestions().map(record => record.id)]);
   if (chief.dataset.look === look) return;
   chief.dataset.look = look; chief.replaceChildren();
   chief.append(element("h2", "", "Chief"));
@@ -1425,6 +1613,8 @@ function renderChiefStatus(chief) {
   else {
     const today = chiefState.today;
     chief.append(element("p", "", `${chiefState.status}${today ? ` · answered ${today.answered} today · ${today.escalated} sent to you` : " · today's counts unavailable"}`));
+    const waiting = inboxQuestions().length;
+    if (waiting) { const needs = element("button", "chief-use", `Needs you · ${waiting}`); needs.onclick = () => openInbox(null, "question", needs); chief.append(needs); }
     for (const [page, label] of [["answers", "Answer log"], ["habits", "Habits"]]) {
       const button = element("button", "", label); button.onclick = () => openChief(page, null, button); chief.append(button);
     }

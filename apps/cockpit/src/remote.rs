@@ -598,7 +598,7 @@ fn chief_fields(record: &Value, fields: &[&str]) -> Value {
 
 fn chief_display_record(record: &Value) -> Value {
     match record["kind"].as_str() {
-        Some("decision") => chief_fields(record,&["id","revision","state","session_id","category","question","recommendation","suggested_answer","later_until_ms"]),
+        Some("decision") => chief_fields(record,&["id","revision","state","session_id","category","question","recommendation","suggested_answer","later_until_ms","created_at_ms","situation","steps"]),
         Some("answer") => {
             let mut shown=chief_fields(record,&["id","session_id","project","question","answer","reason","source","delivery","created_at_ms"]);
             shown["overrule"]=if record["overrule"].is_null() {Value::Null} else {chief_fields(&record["overrule"],&["id","correction","delivery","created_at_ms"])};

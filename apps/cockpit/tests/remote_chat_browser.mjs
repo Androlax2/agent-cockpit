@@ -166,6 +166,18 @@ try {
     assert.equal(await evaluate('document.querySelector(".chief-log").getBoundingClientRect().bottom <= document.querySelector("#session-chief").getBoundingClientRect().bottom'), true, "the answer log stays visible below a normal escalation");
     await capture(`mobile-chief-escalation-${width}.png`);
   }
+  await evaluate('document.querySelector(".chief-use").click()');
+  await evaluate('history.back()');
+  await evaluate('openInbox()');
+  for (const width of [390, 320]) {
+    await cdp("Emulation.setDeviceMetricsOverride", { width, height: 844, deviceScaleFactor: 1, mobile: true });
+    assert.equal(await evaluate('document.querySelector(".chief-inbox .question").textContent.startsWith("! Chief needs you · 1 of 1")'), true);
+    assert.equal(await evaluate('document.querySelector("#chief").scrollWidth <= innerWidth'), true, "the inbox card wraps at phone widths");
+    assert.equal(await evaluate('Array.from(document.querySelectorAll(".chief-inbox button")).every(button => button.getBoundingClientRect().height >= 44)'), true, "inbox actions keep touch targets");
+    await capture(`mobile-chief-inbox-${width}.png`);
+  }
+  await evaluate('history.back()');
+  for (let attempt = 0; attempt < 100 && !(await evaluate('document.querySelector("#chief").hidden')); attempt++) await new Promise(resolve => setTimeout(resolve, 20));
   await evaluate('document.querySelector(".chief-log").click()');
   assert.equal(await evaluate('document.activeElement.textContent'), "‹ Back");
   assert.equal(await evaluate('document.querySelector("#detail").inert'), true);
