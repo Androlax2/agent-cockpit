@@ -113,6 +113,39 @@ fn reopening_chief_tracks_the_host_attempt_without_launching() {
 }
 
 #[test]
+fn checking_names_the_admission_wait_in_plain_words() {
+    let host = Host::new(vec![]);
+    host.snapshot.lock().unwrap()["startup"] = json!({"id":"attempt-1","state":"checking","can_retry":false,
+        "error":"host live OpenCode draft/queue verification is required before chief activation"});
+    let (mut app, _) = host.open();
+    let shown = rendered(&mut app, 100, 24);
+    assert!(shown.contains("Waiting to confirm Chief can receive messages from your agents."), "{shown}");
+    assert!(!shown.contains("draft/queue"), "{shown}");
+}
+
+#[test]
+fn the_startup_screen_hides_the_status_view_behind_it() {
+    let host = Host::new(vec![]);
+    host.snapshot.lock().unwrap()["startup"] = json!({"id":"attempt-1","state":"checking","can_retry":false,"error":"Waiting for verified admission"});
+    let (mut app, mut screen) = host.open();
+    let (width, height) = (80, 24);
+    let startup_copy = ["‹ Status","Checking Chief…","Its session may have started. Waiting to confirm that Chief is ready.",
+        "Waiting for verified admission","You can leave this view while we check.","PgUp/Dn scroll · esc back"];
+    let owned_rows = 1..usize::from(height-1);
+    app.handle(Key::Esc, &mut screen);
+    app.build();
+    let status = lines_of(&mut app, width, height);
+    assert!(status[owned_rows.clone()].iter().filter(|line|!line.trim().is_empty() && !startup_copy.contains(&line.trim())).count() > 3,
+        "the fixture must put Status text where the startup screen draws: {status:#?}");
+    open_chief(&mut app, &mut screen);
+    let startup = lines_of(&mut app, width, height);
+    for row in owned_rows {
+        let line = startup[row].trim();
+        assert!(line.is_empty() || startup_copy.contains(&line), "Status text survives on row {row}: {line:?}\n{startup:#?}");
+    }
+}
+
+#[test]
 fn chief_retry_names_the_failed_attempt_and_stays_disabled_until_new_evidence() {
     let host = Host::new(vec![]);
     host.snapshot.lock().unwrap()["startup"] = json!({"id":"attempt-1","state":"failed","can_retry":true,"error":"Launcher missing"});

@@ -9,6 +9,13 @@ fn text(value: &Value) -> String {
     value.as_str().map(|value|escape_hiding(value,"","")).unwrap_or_else(||shown(value))
 }
 fn host_flag(value: &Value) -> bool {value==true || value==1}
+/// Plain words for a known host startup reason; the host store and snapshot keep the raw text.
+fn plain_startup_reason(reason: &str) -> &str {
+    match reason {
+        "host live OpenCode draft/queue verification is required before chief activation"=>"Waiting to confirm Chief can receive messages from your agents.",
+        _=>reason,
+    }
+}
 /// A decision the Chief raised for a stopped agent: Theo can answer it from here.
 fn is_escalation(record: &Value) -> bool {record["kind"]=="decision" && record["stop_id"].is_string()}
 fn suggestion(decision: &Value) -> Option<&str> {decision["suggested_answer"].as_str().filter(|suggested|!suggested.trim().is_empty())}
@@ -343,7 +350,7 @@ impl ChiefView {
             _=>("Checking Chief…","Its session may have started. Waiting to confirm that Chief is ready.","You can leave this view while we check."),
         };
         let mut lines=vec![heading.into(),String::new(),explanation.into()];
-        if let Some(error)=self.read_error.as_deref().or(self.startup_error.as_deref()).or(self.snapshot["startup"]["error"].as_str()) {
+        if let Some(error)=self.read_error.as_deref().or(self.startup_error.as_deref()).or(self.snapshot["startup"]["error"].as_str().map(plain_startup_reason)) {
             lines.push(escape_hiding(error,"",""));
         }
         lines.push(String::new());

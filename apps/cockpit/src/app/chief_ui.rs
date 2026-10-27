@@ -140,6 +140,7 @@ fn draw_startup(view: &mut ChiefView, buffer: &mut Buffer) {
     let (width,height)=(buffer.area.width,buffer.area.height);
     let body=width.saturating_sub(6) as usize;
     let top=HEADER_LINES;
+    for row in top..height-1 {put(buffer,row,0,&" ".repeat(width as usize),on(FG,BLACK));}
     put(buffer,top,2,"‹ Status",style(BLUE));
     let mut lines=Vec::new();
     for (index,line) in view.startup_lines().iter().enumerate() {
