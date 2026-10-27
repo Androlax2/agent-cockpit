@@ -29,6 +29,15 @@ pub fn take_spawns() -> String {
 
 /// Busy time above this share of the minute is logged as a warning, not as information.
 pub const BUSY_WARN_PERCENT: f64 = 5.0;
+/// Above this share Theo sees a banner: about 8-16% is normal with ten busy agents, the sidebar
+/// retry storm of 2026-10-27 was far above it.
+pub const BUSY_ALERT_PERCENT: f64 = 25.0;
+pub const ALERT_EVERY: Duration = Duration::from_secs(3600);
+
+/// Whether a minute this busy deserves a banner, given when the last one was shown.
+pub fn should_alert(busy_percent: f64, since_last_alert: Option<Duration>) -> bool {
+    busy_percent > BUSY_ALERT_PERCENT && since_last_alert.is_none_or(|elapsed| elapsed >= ALERT_EVERY)
+}
 const KINDS_SHOWN: usize = 6;
 
 #[derive(Default)]
@@ -100,6 +109,14 @@ mod tests {
         let mut meter = LoadMeter::default();
         meter.record("tick", Duration::from_secs(3));
         assert_eq!(meter.busy_percent(Duration::from_secs(60)), 5.0);
+    }
+
+    #[test]
+    fn a_minute_over_the_alert_share_raises_a_banner_at_most_hourly() {
+        assert!(should_alert(30.0, None));
+        assert!(!should_alert(20.0, None), "normal load with many agents");
+        assert!(!should_alert(30.0, Some(Duration::from_secs(600))), "shown ten minutes ago");
+        assert!(should_alert(30.0, Some(ALERT_EVERY)));
     }
 
     #[test]

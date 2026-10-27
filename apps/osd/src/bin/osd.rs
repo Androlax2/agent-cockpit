@@ -61,6 +61,7 @@ const LOAD_REPORT_INTERVAL_S: u32 = 60;
 
 thread_local! {
     static LOAD: RefCell<osd::load::LoadMeter> = RefCell::default();
+    static LAST_LOAD_ALERT: RefCell<Option<std::time::Instant>> = const { RefCell::new(None) };
 }
 
 /// Runs main-thread work and counts its time under `kind` for the minute's load report.
@@ -71,14 +72,25 @@ fn measured<T>(kind: &str, work: impl FnOnce() -> T) -> T {
     result
 }
 
-fn report_load() {
+fn report_load(registry: &Rc<RefCell<Registry>>) {
     let elapsed = Duration::from_secs(LOAD_REPORT_INTERVAL_S.into());
-    LOAD.with(|meter| {
+    let (busy_percent, summary) = LOAD.with(|meter| {
         let mut meter = meter.borrow_mut();
-        let level = if meter.busy_percent(elapsed) > osd::load::BUSY_WARN_PERCENT { "WARN" } else { "INFO" };
-        cockpit::util::log_as("daemon", level, &format!("{}; commands run: {}", meter.summary(elapsed), osd::load::take_spawns()));
+        let report = (meter.busy_percent(elapsed), meter.summary(elapsed));
         meter.clear();
+        report
     });
+    let level = if busy_percent > osd::load::BUSY_WARN_PERCENT { "WARN" } else { "INFO" };
+    cockpit::util::log_as("daemon", level, &format!("{summary}; commands run: {}", osd::load::take_spawns()));
+    let since_last_alert = LAST_LOAD_ALERT.with(|last| last.borrow().map(|at| at.elapsed()));
+    if osd::load::should_alert(busy_percent, since_last_alert) {
+        LAST_LOAD_ALERT.with(|last| *last.borrow_mut() = Some(std::time::Instant::now()));
+        registry.borrow_mut().banners.raise_notice(&Notice {
+            id: "osd-load".into(),
+            title: format!("Cockpit daemon busy {busy_percent:.0}% of the last minute"),
+            message: format!("{summary}. A recent change may have made it poll too much; see the cockpit log."),
+        });
+    }
 }
 
 fn icon_dir() -> PathBuf {
@@ -564,12 +576,15 @@ fn activate(app: &Application) {
             glib::ControlFlow::Continue
         });
     }
-    glib::timeout_add_seconds_local(registry::PRUNE_INTERVAL_S, move || {
-        measured("prune", || registry.borrow_mut().prune_dead());
-        glib::ControlFlow::Continue
-    });
-    glib::timeout_add_seconds_local(LOAD_REPORT_INTERVAL_S, || {
-        report_load();
+    {
+        let registry = registry.clone();
+        glib::timeout_add_seconds_local(registry::PRUNE_INTERVAL_S, move || {
+            measured("prune", || registry.borrow_mut().prune_dead());
+            glib::ControlFlow::Continue
+        });
+    }
+    glib::timeout_add_seconds_local(LOAD_REPORT_INTERVAL_S, move || {
+        report_load(&registry);
         glib::ControlFlow::Continue
     });
 }
