@@ -53,6 +53,17 @@ impl App {
                 match result {Ok(_)=>view.startup_acknowledged(),Err(error)=>view.startup_failed(error.message)}
                 self.refresh_chief_view();
             },
+            Effect::SendCheck(action)=> {
+                let result=crate::teams::client::host_request(&HostRequest::Chief {action}).and_then(|reply|reply.result);
+                self.refresh_chief_view();
+                if let Err(error)=result {self.chief_view.as_mut().expect("Chief is open").check_failed(format!("Test message not sent: {}",error.message));}
+            },
+            Effect::ConfirmCheck(session,evidence)=> {
+                let request=HostRequest::VerifyChiefAdmission {session,adapter:crate::chief::ADMISSION_ADAPTER.into(),evidence};
+                let result=crate::teams::client::host_request(&request).and_then(|reply|reply.result);
+                self.refresh_chief_view();
+                if let Err(error)=result {self.chief_view.as_mut().expect("Chief is open").check_failed(format!("Not recorded: {}. Press y again once you are sure.",error.message));}
+            },
             Effect::Summary=> {
                 let action=ChiefHostAction::RequestSummary {request_id:format!("chief-ui-{}",util::token_hex(12))};
                 let result=crate::teams::client::host_request(&HostRequest::Chief {action}).and_then(|reply|reply.result);
@@ -144,7 +155,7 @@ fn draw_startup(view: &mut ChiefView, buffer: &mut Buffer) {
     put(buffer,top,2,"‹ Status",style(BLUE));
     let mut lines=Vec::new();
     for (index,line) in view.startup_lines().iter().enumerate() {
-        let appearance=if line.starts_with("[c] ") {on(BLACK,BLUE)}
+        let appearance=if is_startup_action(line) {on(BLACK,BLUE)}
             else if index==0 {bold(match view.startup_phase() {"failed"|"unavailable"=>RED,"off"=>FG,_=>BLUE})}
             else if line.starts_with("You can leave") || line.starts_with("Creates its own") || line.starts_with("No session remains") || line=="Starting…" {dim(FG_DARK)}
             else {style(FG)};
@@ -155,9 +166,15 @@ fn draw_startup(view: &mut ChiefView, buffer: &mut Buffer) {
     let first=view.clamp_scroll(lines.len().saturating_sub(available));
     for (offset,(line,appearance)) in lines.iter().skip(first).take(available).enumerate() {
         let row=top+2+offset as u16;
-        if line.starts_with("[c] ") {put(buffer,row,3,&" ".repeat(body),*appearance);}
+        if is_startup_action(line) {put(buffer,row,3,&" ".repeat(body),*appearance);}
         put(buffer,row,3,line,*appearance);
-        if line.starts_with("[c] ") {put(buffer,row,3,"[c]",on(FG,BLACK));}
+        if is_startup_action(line) {put(buffer,row,3,&line[..3],on(FG,BLACK));}
     }
     put(buffer,height-3,2,&fit(view.footer(),body),dim(FG_DARK));
+}
+
+/// A `[k] Label` line: one action and the key cap that activates it.
+fn is_startup_action(line: &str) -> bool {
+    let bytes=line.as_bytes();
+    bytes.len()>4 && bytes[0]==b'[' && bytes[1].is_ascii_lowercase() && bytes[2]==b']' && bytes[3]==b' '
 }

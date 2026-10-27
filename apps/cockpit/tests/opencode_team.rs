@@ -210,6 +210,18 @@ fn a_chief_answer_enters_the_native_queue_described_as_a_chief_answer() {
 }
 
 #[test]
+fn a_delivery_check_enters_the_native_queue_described_as_a_cockpit_test_message() {
+    let envelope = json!({"message_id":"check1","kind":"chief_check","attempt":"attempt1"});
+    let delivery = json!({"dispatch_id":"chief_k1","message_id":"check1","text":cockpit::teams::envelope_text(&envelope),"envelope":envelope});
+    let run = run_delivery(&[], delivery);
+    assert_eq!(run.synthetic.len(), 1);
+    assert_eq!(run.synthetic[0]["id"], "msg_cockpitcheck1");
+    assert_eq!(run.synthetic[0]["delivery"], "queue");
+    assert_eq!(run.synthetic[0]["description"], "Cockpit delivery check: a test message from Theo");
+    assert_eq!(run.receipts, [json!({"action":"receipt","dispatch_id":"chief_k1","outcome":{"outcome":"received","native_id":"msg_cockpitcheck1"}})]);
+}
+
+#[test]
 fn a_theo_answer_enters_the_native_queue_described_as_his_own() {
     let envelope = json!({"message_id":"answer2","kind":"chief_answer","source":"theo","stop":"stop1","answer":"log1","text":"Use option B."});
     let delivery = json!({"dispatch_id":"chief_a2","message_id":"answer2","text":cockpit::teams::envelope_text(&envelope),"envelope":envelope});

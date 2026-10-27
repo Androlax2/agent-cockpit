@@ -173,7 +173,7 @@ pub fn host(registry: &mut Registry, action: &ChiefHostAction) -> Result<TeamRep
                 if worker.session.agent == "opencode" && store::admission_verified(connection,&worker.session)? { verified = true; }
             }
             if !verified { return Ok(TeamReply { request_id:request_id.clone(), result:Err(TeamError::new(
-                cockpit::teams::ErrorCode::Unavailable,"host live OpenCode draft/queue verification is required before chief activation")) }); }
+                cockpit::teams::ErrorCode::Unavailable,cockpit::chief::ADMISSION_REQUIRED)) }); }
         }
     }
     store::host(registry.teams.as_mut().expect("opened above"), action, &live, teams::now_ms())
@@ -386,6 +386,10 @@ fn advance_startup(registry: &mut Registry, live: &[WorkerState]) -> Result<(), 
     let Some(worker) = live.iter().find(|worker|worker.session.session_id==session) else { return Ok(()); };
     if worker.session.agent != "opencode" || worker.session.project != format!("path:{directory}") {
         return startup_outcome(registry, attempt, "checking", Some("The reported Chief session does not match its reserved agent and folder"));
+    }
+    // Started from one action, the Chief needs its own session's verification, not any other session's.
+    if !store::admission_verified(connection, &worker.session)? {
+        return startup_outcome(registry, attempt, "checking", Some(cockpit::chief::ADMISSION_REQUIRED));
     }
     let action = ChiefHostAction::Enable {request_id:format!("chief-start-{attempt}"),session:worker.session.clone()};
     match host(registry, &action)?.result {

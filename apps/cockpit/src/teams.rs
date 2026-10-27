@@ -289,6 +289,9 @@ pub fn envelope_text(envelope: &Value) -> String {
         let excerpt = escaped("answer_excerpt").replace('"', "'");
         return format!("Correction from Theo to an earlier Chief answer (\"{excerpt}\"): {}\n\n{}", escaped("text"), crate::chief::CORRECTION_LABEL);
     }
+    if envelope["kind"] == "chief_check" {
+        return format!("[Cockpit delivery check {}]\nA test message from the Cockpit: Theo checks that messages reach this session. Nothing else to do: answer only \"Received.\"", envelope["message_id"].as_str().unwrap_or("?"));
+    }
     if envelope["kind"] == "chief_form_reply" {
         return format!("Chief form choice: {}", crate::approval::escape_hiding(envelope["choice"].as_str().unwrap_or("?"), "", ""));
     }

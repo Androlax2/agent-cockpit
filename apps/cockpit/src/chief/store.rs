@@ -23,11 +23,25 @@ pub fn startup(connection: &Connection) -> Result<Option<Value>, TeamError> {
     // An activated attempt whose grant was later disabled is over: Start may begin a new one.
     let encoded: Option<String> = connection.query_row("SELECT json_object('id',id,'session_id',session_id,'directory',directory,
         'state',CASE WHEN state='active' AND NOT EXISTS(SELECT 1 FROM chief_grants g WHERE g.session_id=chief_startup.session_id AND g.state IN ('active','paused')) THEN 'ended' ELSE state END,
-        'revision',revision,'created_at_ms',created_at,'error',error,'session',json(identity),'can_retry',json(CASE state WHEN 'failed' THEN 'true' ELSE 'false' END))
+        'revision',revision,'created_at_ms',created_at,'error',error,'session',json(identity),'can_retry',json(CASE state WHEN 'failed' THEN 'true' ELSE 'false' END),
+        'check',json((SELECT json_object('id',i.id,'state',i.state,'session',json(i.recipient_identity)) FROM chief_inbox i
+            WHERE json_extract(i.envelope,'$.kind')='chief_check' AND i.chief_epoch=chief_startup.id ORDER BY i.rowid DESC LIMIT 1)))
         FROM chief_startup WHERE singleton=1", [], |row| row.get(0)).optional()?;
     encoded.map(|value|serde_json::from_str(&value).map_err(TeamError::from)).transpose()
 }
 fn unauthorized() -> TeamError { TeamError::new(ErrorCode::Unauthorized, "no active chief grant for this verified runtime") }
+
+/// The unresolved startup attempt and its exact live reserved session, while that session still lacks
+/// its own admission verification: the only target of Theo's delivery check.
+fn check_target(connection: &Connection, live: &[WorkerState]) -> Result<Option<(String, VerifiedSession)>, TeamError> {
+    let Some(startup) = startup(connection)? else { return Ok(None) };
+    if startup["state"] != "checking" || chief_session(connection)?.is_some() { return Ok(None); }
+    let (Some(attempt), Some(session_id), Some(directory)) = (startup["id"].as_str(), startup["session_id"].as_str(), startup["directory"].as_str()) else { return Ok(None) };
+    let Some(worker) = live.iter().find(|worker| worker.session.session_id == session_id && worker.session.agent == "opencode"
+        && worker.session.project == format!("path:{directory}")) else { return Ok(None) };
+    if is_product_worker(connection, session_id)? || admission_verified(connection, &worker.session)? { return Ok(None); }
+    Ok(Some((attempt.to_string(), worker.session.clone())))
+}
 
 fn exact_live(session: &VerifiedSession, live: &[WorkerState]) -> bool {
     live.iter().any(|worker| worker.session == *session)
@@ -56,7 +70,8 @@ pub fn require_non_chief(connection: &Connection, session: &str) -> Result<(), T
 
 pub fn host(connection: &mut Connection, action: &ChiefHostAction, live: &[WorkerState], now_ms: i64) -> Result<TeamReply, TeamError> {
     let request_id = match action {
-        ChiefHostAction::Start { request_id, .. } | ChiefHostAction::SettleStartup { request_id, .. } | ChiefHostAction::Enable { request_id, .. } | ChiefHostAction::Pause { request_id, .. }
+        ChiefHostAction::Start { request_id, .. } | ChiefHostAction::SettleStartup { request_id, .. } | ChiefHostAction::SendCheck { request_id, .. }
+        | ChiefHostAction::Enable { request_id, .. } | ChiefHostAction::Pause { request_id, .. }
         | ChiefHostAction::Resume { request_id, .. } | ChiefHostAction::Disable { request_id, .. }
         | ChiefHostAction::Resolve { request_id, .. } | ChiefHostAction::AnswerDecision { request_id, .. } | ChiefHostAction::RequestSummary { request_id }
         | ChiefHostAction::ReconcileDelivery {request_id,..} | ChiefHostAction::ReconcileLaunch {request_id,..} | ChiefHostAction::Overrule { request_id, .. }
@@ -73,7 +88,7 @@ pub fn host(connection: &mut Connection, action: &ChiefHostAction, live: &[Worke
             return Ok(serde_json::from_str(&response)?);
         }
         let response = host_action(&transaction, action, live, now_ms)?;
-        if !matches!(action,ChiefHostAction::Start {..}|ChiefHostAction::Enable {..}|ChiefHostAction::Resolve {..}|ChiefHostAction::AnswerDecision {..}|ChiefHostAction::Overrule {..}|ChiefHostAction::RequestSummary {..}
+        if !matches!(action,ChiefHostAction::Start {..}|ChiefHostAction::SendCheck {..}|ChiefHostAction::Enable {..}|ChiefHostAction::Resolve {..}|ChiefHostAction::AnswerDecision {..}|ChiefHostAction::Overrule {..}|ChiefHostAction::RequestSummary {..}
             |ChiefHostAction::DeleteHabit {..}|ChiefHostAction::RestoreHabit {..}|ChiefHostAction::RescopeHabit {..}) {
             coordination_event(&transaction,"host_control_changed",&json!({"source":"host","request_id":request_id}),now_ms)?;
         }
@@ -118,6 +133,19 @@ fn host_action(connection: &Connection, action: &ChiefHostAction, live: &[Worker
                 return Err(conflict("exact unresolved Chief startup revision is required"));
             }
             Ok(startup(connection)?.expect("settled Chief startup"))
+        },
+        ChiefHostAction::SendCheck { attempt, .. } => {
+            let Some((attempt, session)) = check_target(connection, live)?.filter(|(current, _)| current == attempt) else {
+                return Err(TeamError::new(ErrorCode::Unavailable, "this Chief startup has no live session waiting for a delivery check"));
+            };
+            let pending: Option<String> = connection.query_row("SELECT id FROM chief_inbox WHERE json_extract(envelope,'$.kind')='chief_check'
+                AND chief_epoch=?1 AND state IN ('queued','submitting')", [&attempt], |row| row.get(0)).optional()?;
+            if let Some(pending) = pending { return Ok(json!({"check": pending})); }
+            let id = crate::teams::store::identifier()?;
+            let envelope = json!({"message_id": id, "kind": "chief_check", "attempt": attempt});
+            connection.execute("INSERT INTO chief_inbox(id,chief_epoch,recipient,recipient_identity,recipient_epoch,work,envelope,state,next_at) VALUES (?1,?2,?3,?4,?2,'null',?5,'queued',?6)",
+                params![id, attempt, session.session_id, serde_json::to_string(&session)?, envelope.to_string(), now_ms])?;
+            Ok(json!({"check": id}))
         },
         ChiefHostAction::Enable { session, .. } => {
             if !exact_live(session, live) || is_product_worker(connection, &session.session_id)? {
@@ -1006,7 +1034,7 @@ pub fn claim(connection: &mut Connection, recipient: &VerifiedSession, idle_turn
     loop {
         let candidate: Option<(String, String, String, String, String)> = transaction.query_row(
             "SELECT id,recipient_identity,recipient_epoch,chief_epoch,envelope FROM chief_inbox WHERE recipient=?1 AND state='queued' AND next_at<=?2
-                AND coalesce(json_extract(envelope,'$.kind'),'') NOT IN ('chief_answer','chief_form_reply','chief_correction') ORDER BY rowid LIMIT 1",
+                AND coalesce(json_extract(envelope,'$.kind'),'') NOT IN ('chief_answer','chief_form_reply','chief_correction','chief_check') ORDER BY rowid LIMIT 1",
             params![recipient.session_id,now_ms], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?))).optional()?;
         let Some((message_id, identity, epoch, chief_epoch, envelope)) = candidate else { transaction.commit()?; return Ok(None) };
         let identity = serde_json::from_str::<VerifiedSession>(&identity)?;
@@ -1050,6 +1078,32 @@ pub fn claim(connection: &mut Connection, recipient: &VerifiedSession, idle_turn
         transaction.commit()?;
         return Ok(Some(crate::teams::Dispatch { id, message_id, envelope }));
     }
+}
+
+/// Hands the reserved Chief session Theo's delivery check, once per idle turn like every other inbox. A
+/// check for another runtime or a settled attempt is cancelled, never delivered.
+pub fn claim_check(connection: &mut Connection, recipient: &VerifiedSession, idle_turn: &str, now_ms: i64) -> Result<Option<crate::teams::Dispatch>, TeamError> {
+    if idle_turn.is_empty() || idle_turn.len() > 128 || idle_turn.chars().any(char::is_control) { return Err(TeamError::new(ErrorCode::Invalid, "missing verified idle turn")); }
+    let transaction = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    if !crate::teams::store::inbox_available(&transaction, recipient, Some(idle_turn))? { return Ok(None); }
+    let candidate: Option<(String, String, String)> = transaction.query_row(
+        "SELECT id,recipient_identity,envelope FROM chief_inbox WHERE recipient=?1 AND state='queued' AND json_extract(envelope,'$.kind')='chief_check' ORDER BY rowid LIMIT 1",
+        [&recipient.session_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).optional()?;
+    let Some((message_id, identity, envelope)) = candidate else { transaction.commit()?; return Ok(None) };
+    let envelope: Value = serde_json::from_str(&envelope)?;
+    let is_current: bool = transaction.query_row("SELECT EXISTS(SELECT 1 FROM chief_startup WHERE id=?1 AND state='checking')", [envelope["attempt"].as_str()], |row| row.get(0))?;
+    if serde_json::from_str::<VerifiedSession>(&identity)? != *recipient || !is_current {
+        transaction.execute("UPDATE chief_inbox SET state='cancelled' WHERE id=?1", [&message_id])?;
+        transaction.commit()?;
+        return Ok(None);
+    }
+    let id = format!("chief_{}", crate::teams::store::identifier()?);
+    transaction.execute("UPDATE chief_inbox SET state='submitting',attempts=attempts+1 WHERE id=?1", [&message_id])?;
+    transaction.execute("INSERT INTO chief_delivery_attempts (id,recipient,recipient_runtime,recipient_epoch,kind,envelope,idle_turn,state,started_at) VALUES (?1,?2,?3,?4,'chief_check',?5,?6,'submitting',?7)",
+        params![id, recipient.session_id, recipient.runtime, envelope["attempt"].as_str(), envelope.to_string(), idle_turn, now_ms])?;
+    crate::teams::store::record_inbox_turn(&transaction, recipient, idle_turn)?;
+    transaction.commit()?;
+    Ok(Some(crate::teams::Dispatch { id, message_id, envelope }))
 }
 
 /// Readiness reasons a Chief answer may ignore: the answer is meant for a session that just stopped
@@ -1182,6 +1236,22 @@ pub fn finish_for(connection: &mut Connection, recipient: &VerifiedSession, disp
                     transaction.execute("UPDATE chief_answers SET delivery='uncertain' WHERE id=?1 AND delivery<>'received'",[envelope["answer"].as_str()])?;
                 }
                 decision_record(&transaction,&format!("host-delivery-{message_id}"),"delivery","Exact native delivery needs host recovery; handling is not verified delivery or completion.","Inspect the exact delivery and recipient. Confirm handled, or explicitly confirm safe stop before cancellation.",now_ms)?;
+            },
+        }
+        transaction.commit()?;
+        return Ok(());
+    }
+    if envelope["kind"]=="chief_check" {
+        // Only the stable inbox id proves native admission. Anything else ends this check without a
+        // delivery decision: Theo sends another one.
+        match outcome {
+            TransportOutcome::Received {native_id} if state=="submitting" && *native_id==format!("msg_cockpit{message_id}") => {
+                transaction.execute("UPDATE chief_delivery_attempts SET state='received',native_id=?2,finished_at=?3 WHERE id=?1",params![dispatch_id,native_id,now_ms])?;
+                transaction.execute("UPDATE chief_inbox SET state='received' WHERE id=?1",[message_id])?;
+            },
+            _ => {
+                transaction.execute("UPDATE chief_delivery_attempts SET state='cancelled',receipt=?2,finished_at=?3 WHERE id=?1",params![dispatch_id,serde_json::to_string(outcome)?,now_ms])?;
+                transaction.execute("UPDATE chief_inbox SET state='cancelled' WHERE id=?1",[message_id])?;
             },
         }
         transaction.commit()?;
@@ -1481,6 +1551,7 @@ pub fn snapshot_page(connection: &Connection, live: &[WorkerState], after: i64, 
 pub fn snapshot(connection: &Connection, live: &[WorkerState], after: i64, limit: usize) -> Result<Value, TeamError> {
     let mut snapshot = review_records(connection,live,after,limit,false)?;
     snapshot["startup"] = startup(connection)?.unwrap_or(Value::Null);
+    if let Some((_, session)) = check_target(connection, live)? { snapshot["startup"]["check_session"] = json!(session); }
     Ok(snapshot)
 }
 

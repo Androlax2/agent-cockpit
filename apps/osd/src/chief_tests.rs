@@ -78,6 +78,85 @@ fn chief_activation_waits_for_admission_then_enables_the_same_reserved_session()
     assert_eq!(bench.world.borrow().started.iter().filter(|command|command.contains(&"chief-start".into())).count(), 1);
 }
 
+fn send_check(bench: &mut Bench, request: &str, attempt: &str) -> Result<serde_json::Value, cockpit::teams::TeamError> {
+    crate::chief::host(&mut bench.registry, &ChiefHostAction::SendCheck { request_id: request.into(), attempt: attempt.into() }).unwrap().result
+}
+
+fn shown_startup(bench: &mut Bench) -> serde_json::Value {
+    crate::chief::snapshot(&mut bench.registry, 0, 50, None).unwrap()["startup"].clone()
+}
+
+fn checks(bench: &Bench) -> i64 {
+    bench.registry.teams.as_ref().unwrap().query_row("SELECT count(*) FROM chief_inbox WHERE json_extract(envelope,'$.kind')='chief_check'", [], |row|row.get(0)).unwrap()
+}
+
+fn grants(bench: &Bench) -> i64 {
+    bench.registry.teams.as_ref().unwrap().query_row("SELECT count(*) FROM chief_grants", [], |row|row.get(0)).unwrap()
+}
+
+#[test]
+fn no_delivery_check_is_offered_or_sent_before_the_reserved_chief_is_live() {
+    let mut bench = team_bench();
+    let startup = start(&mut bench, "start");
+    crate::chief::tick(&mut bench.registry, crate::teams::now_ms()).unwrap();
+    assert!(shown_startup(&mut bench)["check_session"].is_null());
+    assert!(send_check(&mut bench, "check-1", startup["id"].as_str().unwrap()).is_err());
+    assert_eq!(checks(&bench), 0);
+}
+
+#[test]
+fn a_delivery_check_reaches_only_the_exact_chief_and_its_confirmation_turns_it_on() {
+    let mut bench = team_bench();
+    let startup = start(&mut bench, "start");
+    let attempt = startup["id"].as_str().unwrap().to_string();
+    crate::chief::tick(&mut bench.registry, crate::teams::now_ms()).unwrap();
+    report_reserved_chief(&mut bench, &startup, startup["directory"].as_str().unwrap());
+    crate::chief::tick(&mut bench.registry, crate::teams::now_ms()).unwrap();
+    let session = verified(&mut bench, startup["session_id"].as_str().unwrap());
+    assert_eq!(shown_startup(&mut bench)["check_session"], json!(session));
+    let first = send_check(&mut bench, "check-1", &attempt).unwrap();
+    assert_eq!(send_check(&mut bench, "check-1", &attempt).unwrap(), first, "a repeated request replays");
+    assert_eq!(send_check(&mut bench, "check-2", &attempt).unwrap()["check"], first["check"], "a pending check is never sent twice");
+    assert_eq!(checks(&bench), 1);
+    assert!(crate::teams::request(&mut bench.registry, 20, AgentAction::Receive).unwrap().result.unwrap().is_null(), "another session never gets it");
+    let delivery = crate::teams::request(&mut bench.registry, 40, AgentAction::Receive).unwrap().result.unwrap();
+    assert_eq!(delivery["envelope"]["kind"], "chief_check");
+    assert!(delivery["text"].as_str().unwrap().contains("delivery check"), "{delivery}");
+    crate::teams::request(&mut bench.registry, 40, AgentAction::Receipt {
+        dispatch_id: delivery["dispatch_id"].as_str().unwrap().into(),
+        outcome: cockpit::teams::TransportOutcome::Received { native_id: format!("msg_cockpit{}", delivery["message_id"].as_str().unwrap()) },
+    }).unwrap().result.unwrap();
+    assert_eq!(shown_startup(&mut bench)["check"]["state"], "received");
+    crate::chief::tick(&mut bench.registry, crate::teams::now_ms()).unwrap();
+    assert_eq!(grants(&bench), 0, "a received check alone is not Theo's confirmation");
+    crate::teams::host(&mut bench.registry, std::process::id(), HostRequest::VerifyChiefAdmission {
+        session:session.clone(),adapter:"opencode-queued-v1".into(),evidence:"Theo saw the delivery check arrive".into(),
+    }).unwrap().result.unwrap();
+    for _ in 0..2 { crate::chief::tick(&mut bench.registry, crate::teams::now_ms()).unwrap(); }
+    let active = shown_startup(&mut bench);
+    assert_eq!(active["state"], "active");
+    assert_eq!(active["session"], json!(session));
+    assert_eq!(grants(&bench), 1);
+}
+
+#[test]
+fn a_verification_of_another_session_or_runtime_never_turns_the_chief_on() {
+    let mut bench = team_bench();
+    let startup = start(&mut bench, "start");
+    crate::chief::tick(&mut bench.registry, crate::teams::now_ms()).unwrap();
+    report_reserved_chief(&mut bench, &startup, startup["directory"].as_str().unwrap());
+    let other = verified(&mut bench, OPENCODE_SESSION);
+    crate::teams::host(&mut bench.registry, std::process::id(), HostRequest::VerifyChiefAdmission {
+        session:other,adapter:"opencode-queued-v1".into(),evidence:"Another session's check".into(),
+    }).unwrap().result.unwrap();
+    let mut earlier = verified(&mut bench, startup["session_id"].as_str().unwrap());
+    earlier.runtime = "runtime-chief-earlier".into();
+    cockpit::chief::store::verify_admission(bench.registry.teams.as_mut().unwrap(), &earlier, "opencode-queued-v1", "An earlier runtime's check", 1).unwrap();
+    for _ in 0..2 { crate::chief::tick(&mut bench.registry, crate::teams::now_ms()).unwrap(); }
+    assert_eq!(shown_startup(&mut bench)["state"], "checking");
+    assert_eq!(grants(&bench), 0);
+}
+
 #[test]
 fn chief_report_from_another_folder_cannot_activate_the_reservation() {
     let mut bench = team_bench();

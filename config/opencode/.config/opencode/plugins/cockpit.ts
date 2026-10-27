@@ -275,6 +275,8 @@ export default {
         ? `${envelope?.source === "theo" ? "Theo's answer" : "Chief answer"}: ${visible(envelope?.text)}`
         : envelope?.kind === "chief_correction"
         ? `Theo's correction: ${visible(envelope?.text)}`
+        : envelope?.kind === "chief_check"
+        ? "Cockpit delivery check: a test message from Theo"
         : envelope?.scope_kind === "link"
         ? `Link message from ${visible(envelope?.sender?.session_id)} (${visible(envelope?.sender?.project)}): ${visible(envelope?.body)}`
         : `Team message from ${plain(envelope?.sender?.role)} (${plain(envelope?.sender?.agent)}): ${plain(envelope?.body)}`

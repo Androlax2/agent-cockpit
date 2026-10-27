@@ -409,6 +409,9 @@ pub fn request(registry: &mut Registry, peer: u32, action: AgentAction) -> Resul
                 dispatch = cockpit::chief::store::claim_form_reply(connection, &sender, idle_turn, boundary, now_ms())?;
             }
             if let (None, Some(turn)) = (&dispatch, &turn) {
+                dispatch = cockpit::chief::store::claim_check(connection, &sender, turn, now_ms())?;
+            }
+            if let (None, Some(turn)) = (&dispatch, &turn) {
                 dispatch = cockpit::chief::store::claim(connection, &sender, turn, now_ms())?;
             }
             Ok(TeamReply { request_id: "receive".into(), result: Ok(dispatch.map_or(Value::Null, |dispatch| json!({

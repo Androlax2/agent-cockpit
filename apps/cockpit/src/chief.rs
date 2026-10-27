@@ -56,6 +56,10 @@ pub const CHIEF_ANSWER_BOUNDARY: &str = "Chief answer on Theo's behalf. It autho
 pub const THEO_ANSWER_LABEL: &str = "Answer from Theo, sent through the cockpit Chief view.";
 /// What the host appends to Theo's correction of an earlier Chief answer.
 pub const CORRECTION_LABEL: &str = "Correction from Theo, sent through the cockpit Chief view. Treat it as a new instruction inside your current task. If following it means undoing work or changing the task's scope, stop and ask Theo.";
+/// Why a started Chief waits: its exact session has no recorded native admission verification yet.
+pub const ADMISSION_REQUIRED: &str = "host live OpenCode draft/queue verification is required before chief activation";
+/// The adapter Theo's confirmed delivery check verifies.
+pub const ADMISSION_ADAPTER: &str = "opencode-queued-v1";
 /// How long a stopped agent keeps its stop to itself (or to Theo) before a Chief answer may reach it.
 pub const CHIEF_ANSWER_GRACE_S: i64 = 30;
 // Reserve space for the TeamReply wrapper and cursors beneath the agent transport's 65,536 bytes.
@@ -139,6 +143,9 @@ pub enum ChiefHostAction {
     Start { request_id: String, previous_attempt: Option<String> },
     /// Theo's confirmation, after checking, that no session remains for an unresolved startup attempt.
     SettleStartup { request_id: String, attempt: String, expected_revision: i64, evidence: ReconciliationEvidence },
+    /// Theo's test message to the exact live session of an unresolved startup attempt, which he then
+    /// confirms he saw arrive (VerifyChiefAdmission). Never a launch.
+    SendCheck { request_id: String, attempt: String },
     Enable { request_id: String, session: VerifiedSession },
     Pause { request_id: String, expected_epoch: String },
     Resume { request_id: String, expected_epoch: String },
@@ -248,7 +255,7 @@ impl ChiefAgentAction {
 impl ChiefHostAction {
     pub fn validate(&self) -> Result<(), TeamError> {
         let request_id = match self {
-            Self::Start { request_id, .. } | Self::SettleStartup { request_id, .. } | Self::Enable { request_id, .. } | Self::Pause { request_id, .. } | Self::Resume { request_id, .. }
+            Self::Start { request_id, .. } | Self::SettleStartup { request_id, .. } | Self::SendCheck { request_id, .. } | Self::Enable { request_id, .. } | Self::Pause { request_id, .. } | Self::Resume { request_id, .. }
             | Self::Disable { request_id, .. } | Self::Resolve { request_id, .. } | Self::AnswerDecision { request_id, .. } | Self::RequestSummary { request_id }
             | Self::ReconcileDelivery {request_id,..} | Self::ReconcileLaunch {request_id,..} | Self::Overrule { request_id, .. }
             | Self::DeleteHabit { request_id, .. } | Self::RestoreHabit { request_id, .. } | Self::RescopeHabit { request_id, .. } => request_id,
@@ -256,6 +263,7 @@ impl ChiefHostAction {
         key(request_id)?;
         match self {
             Self::Start { previous_attempt, .. } => previous_attempt.as_deref().map_or(Ok(()), key),
+            Self::SendCheck { attempt, .. } => key(attempt),
             Self::Enable { session: verified, .. } => session(verified),
             Self::Pause { expected_epoch, .. } | Self::Resume { expected_epoch, .. } | Self::Disable { expected_epoch, .. } => key(expected_epoch),
             Self::ReconcileDelivery {message:target,expected_revision,evidence,..} | Self::ReconcileLaunch {token:target,expected_revision,evidence,..}

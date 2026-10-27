@@ -214,15 +214,23 @@ pub struct ChiefView {
     pending_start: Option<(crate::chief::ChiefHostAction, Option<String>)>,
     startup_error: Option<String>,
     startup_scroll: usize,
+    /// The delivery check Theo said did not arrive, and the one he confirmed: each answers one check once.
+    check_declined: Option<String>,
+    check_confirmed: Option<String>,
+    check_error: Option<String>,
 }
+/// Where Theo's delivery check of a started Chief stands, as the host snapshot and his answer show it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DeliveryCheck { Offer, Sending, Ask, Declined }
 /// `Change` is sent at once, without a review: a habit edit Theo can undo. `HabitsSeen` saves when Theo saw his habits (epoch ms).
-pub enum Effect { None, Close, Start(crate::chief::ChiefHostAction), Submit(Vec<crate::chief::ChiefHostAction>), Summary, Change(crate::chief::ChiefHostAction), HabitsSeen(i64) }
+/// `SendCheck` sends Theo's test message; `ConfirmCheck` records, for that exact session, that he saw it arrive.
+pub enum Effect { None, Close, Start(crate::chief::ChiefHostAction), SendCheck(crate::chief::ChiefHostAction), ConfirmCheck(crate::teams::VerifiedSession, String), Submit(Vec<crate::chief::ChiefHostAction>), Summary, Change(crate::chief::ChiefHostAction), HabitsSeen(i64) }
 
 impl ChiefView {
     pub fn new(snapshot: Value) -> Self {
         Self {snapshot,frames:vec![Frame::Browse {page:Page::Root,selected:Some("decisions".into())}],
             message:String::new(),suspended:false,page_step:1,read_error:None,card_count:0,habits_seen_ms:None,undo:None,selection_before_change:None,
-            pending_start:None,startup_error:None,startup_scroll:0}
+            pending_start:None,startup_error:None,startup_scroll:0,check_declined:None,check_confirmed:None,check_error:None}
     }
     fn records(&self, kind: &str) -> Vec<Value> {
         self.snapshot["records"].as_array().into_iter().flatten().filter(|record|record["kind"]==kind).cloned().collect()
@@ -340,6 +348,46 @@ impl ChiefView {
         self.suspend();
         true
     }
+    /// Offered only on Checking, and only for the exact live session the host names as waiting for its check.
+    fn delivery_check(&self) -> Option<DeliveryCheck> {
+        let startup=&self.snapshot["startup"];
+        if !self.startup_screen() || self.startup_phase()!="checking" || !startup["check_session"].is_object() {return None;}
+        let check=&startup["check"];
+        let id=check["id"].as_str();
+        Some(match check["state"].as_str() {
+            None=>DeliveryCheck::Offer,
+            Some("queued"|"submitting")=>DeliveryCheck::Sending,
+            Some("received") if check["session"]==startup["check_session"] && id!=self.check_declined.as_deref() && id!=self.check_confirmed.as_deref()=>DeliveryCheck::Ask,
+            Some("received") if id==self.check_confirmed.as_deref()=>DeliveryCheck::Sending,
+            _=>DeliveryCheck::Declined,
+        })
+    }
+    fn delivery_check_key(&mut self, key: &Key) -> Effect {
+        let Some(stage)=self.delivery_check() else {return Effect::None};
+        let startup=&self.snapshot["startup"];
+        let check_id=startup["check"]["id"].as_str().map(str::to_string);
+        match (key,stage) {
+            (Key::Char('t'),DeliveryCheck::Offer|DeliveryCheck::Declined)=>{
+                let attempt=startup["id"].as_str().unwrap_or_default().to_string();
+                // Named after the check it follows: a repeated key replays the same request on the host.
+                let request_id=format!("chief-check-{attempt}-after-{}",check_id.as_deref().unwrap_or("none"));
+                self.check_error=None;
+                Effect::SendCheck(crate::chief::ChiefHostAction::SendCheck {request_id,attempt})
+            },
+            (Key::Char('y'),DeliveryCheck::Ask)=>{
+                let Some(id)=check_id else {return Effect::None};
+                let Ok(session)=serde_json::from_value::<crate::teams::VerifiedSession>(startup["check"]["session"].clone()) else {return Effect::None};
+                self.check_confirmed=Some(id.clone());self.check_error=None;
+                Effect::ConfirmCheck(session,format!("Theo confirmed in the Cockpit that delivery check {id} (native msg_cockpit{id}) appeared in the Chief pane."))
+            },
+            (Key::Char('n'),DeliveryCheck::Ask)=>{self.check_declined=check_id;self.check_error=None;Effect::None},
+            _=>Effect::None,
+        }
+    }
+    pub fn check_failed(&mut self, error: String) {
+        self.check_confirmed=None;
+        self.check_error=Some(escape_hiding(&error,"",""));
+    }
     pub fn startup_lines(&self) -> Vec<String> {
         let (heading, explanation, helper)=match self.startup_phase() {
             "off"=>("Chief is off","Chief handles routine questions from your agents and brings important decisions to you.","Creates its own OpenCode session in a dedicated folder."),
@@ -354,6 +402,15 @@ impl ChiefView {
             lines.push(escape_hiding(error,"",""));
         }
         lines.push(String::new());
+        match self.delivery_check() {
+            Some(DeliveryCheck::Offer)=>lines.extend(["[t] Send test message".into(),String::new()]),
+            Some(DeliveryCheck::Declined)=>lines.extend(["Not verified. You can send another test message.".into(),String::new(),"[t] Send test message".into(),String::new()]),
+            Some(DeliveryCheck::Sending)=>lines.extend(["Sending test message…".into(),String::new()]),
+            Some(DeliveryCheck::Ask)=>lines.extend(["Test message sent. Look at the Chief pane: did it appear?".into(),String::new(),
+                "[y] It arrived".into(),"[n] Didn't arrive".into(),String::new()]),
+            None=>{},
+        }
+        if let Some(error)=&self.check_error {lines.extend([error.clone(),String::new()]);}
         if let Some(action)=self.startup_action_label() {lines.push(format!("[c] {action}"));lines.push(String::new());}
         else if self.startup_phase()=="starting" {lines.push("Starting…".into());lines.push(String::new());}
         lines.push(helper.into());
@@ -473,6 +530,8 @@ impl ChiefView {
     }
     pub fn submission_pending(&self, key: &Key) -> bool {
         (*key==Key::Char('c') && self.startup_root() && self.startup_action_label().is_some())
+            || (*key==Key::Char('t') && matches!(self.delivery_check(),Some(DeliveryCheck::Offer|DeliveryCheck::Declined)))
+            || (*key==Key::Char('y') && self.delivery_check()==Some(DeliveryCheck::Ask))
             || (*key==Key::Char('y') && matches!(self.frames.last(),Some(Frame::Review {confirm:true,invalid:false,..})))
             || (*key==Key::Ctrl('s') && matches!(self.frames.last(),Some(Frame::Note {intent:Intent::Overrule(_),note,..}) if !note.trim().is_empty()))
     }
@@ -652,6 +711,7 @@ impl ChiefView {
     }
     pub fn handle(&mut self, key: Key) -> Effect {
         if self.startup_root() {
+            if self.startup_screen() && matches!(key,Key::Char('t'|'y'|'n')) {return self.delivery_check_key(&key);}
             if key==Key::Char('c') {
                 // Resending the unconfirmed request keeps its id: the host replays it instead of starting twice.
                 if self.startup_phase()=="unconfirmed" {

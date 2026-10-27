@@ -112,6 +112,87 @@ fn reopening_chief_tracks_the_host_attempt_without_launching() {
     assert!(host.mutations().is_empty());
 }
 
+const ADMISSION_WAIT: &str = "host live OpenCode draft/queue verification is required before chief activation";
+fn checking(check: Value) -> Value {
+    json!({"id":"attempt-1","state":"checking","can_retry":false,"error":ADMISSION_WAIT,"check_session":worker()["session"],"check":check})
+}
+fn received_check() -> Value { json!({"id":"check-1","state":"received","session":worker()["session"]}) }
+fn verifications(host: &Host) -> Vec<Value> {
+    host.requests.lock().unwrap().iter().filter(|request|request["request"]=="verify_chief_admission").cloned().collect()
+}
+
+#[test]
+fn checking_offers_no_test_message_before_the_chief_session_is_live() {
+    let host = Host::new(vec![]);
+    let mut startup = checking(Value::Null); startup["check_session"] = Value::Null;
+    host.snapshot.lock().unwrap()["startup"] = startup;
+    let (mut app, mut screen) = host.open();
+    assert!(!rendered(&mut app, 100, 24).contains("Send test message"));
+    keys(&mut app, &mut screen, &[Key::Char('t'),Key::Char('y'),Key::Char('n')]);
+    assert!(host.mutations().is_empty() && verifications(&host).is_empty());
+}
+
+#[test]
+fn t_sends_one_test_message_for_the_attempt_and_a_repeat_reuses_its_request() {
+    let host = Host::new(vec![]);
+    host.snapshot.lock().unwrap()["startup"] = checking(Value::Null);
+    let (mut app, mut screen) = host.open();
+    assert!(rendered(&mut app, 100, 24).contains("[t] Send test message"));
+    keys(&mut app, &mut screen, &[Key::Char('t'),Key::Char('t')]);
+    let mutations = host.mutations();
+    assert_eq!(mutations.len(), 2);
+    assert_eq!(mutations[0]["action"]["action"], "send_check");
+    assert_eq!(mutations[0]["action"]["attempt"], "attempt-1");
+    assert_eq!(mutations[0]["action"]["request_id"], mutations[1]["action"]["request_id"], "the host replays a repeated request");
+    host.snapshot.lock().unwrap()["startup"] = checking(json!({"id":"check-1","state":"queued","session":worker()["session"]}));
+    app.handle(Key::Char('t'), &mut screen);
+    assert_eq!(host.mutations().len(), 2, "no second test while one is on its way");
+    assert!(verifications(&host).is_empty());
+}
+
+#[test]
+fn y_without_a_received_test_message_does_nothing() {
+    for check in [Value::Null, json!({"id":"check-1","state":"queued","session":worker()["session"]})] {
+        let host = Host::new(vec![]);
+        host.snapshot.lock().unwrap()["startup"] = checking(check);
+        let (mut app, mut screen) = host.open();
+        app.handle(Key::Char('y'), &mut screen);
+        assert!(verifications(&host).is_empty());
+    }
+}
+
+#[test]
+fn a_received_test_message_asks_theo_and_y_verifies_that_exact_session() {
+    let host = Host::new(vec![]);
+    host.snapshot.lock().unwrap()["startup"] = checking(received_check());
+    let (mut app, mut screen) = host.open();
+    let shown = rendered(&mut app, 100, 24);
+    for expected in ["Test message sent. Look at the Chief pane: did it appear?","[y] It arrived","[n] Didn't arrive"] {assert!(shown.contains(expected), "{expected}: {shown}");}
+    app.handle(Key::Enter, &mut screen);
+    assert!(verifications(&host).is_empty(), "Enter confirms nothing");
+    keys(&mut app, &mut screen, &[Key::Char('y'),Key::Char('y')]);
+    let recorded = verifications(&host);
+    assert_eq!(recorded.len(), 1);
+    assert_eq!(recorded[0]["session"], worker()["session"]);
+    assert_eq!(recorded[0]["adapter"], "opencode-queued-v1");
+    assert!(recorded[0]["evidence"].as_str().unwrap().contains("check-1"));
+}
+
+#[test]
+fn n_does_not_verify_and_offers_another_test_message() {
+    let host = Host::new(vec![]);
+    host.snapshot.lock().unwrap()["startup"] = checking(received_check());
+    let (mut app, mut screen) = host.open();
+    app.handle(Key::Char('n'), &mut screen);
+    assert!(verifications(&host).is_empty());
+    let shown = rendered(&mut app, 100, 24);
+    assert!(shown.contains("Not verified. You can send another test message.") && shown.contains("[t] Send test message"), "{shown}");
+    app.handle(Key::Char('y'), &mut screen);
+    assert!(verifications(&host).is_empty(), "y after n confirms nothing");
+    app.handle(Key::Char('t'), &mut screen);
+    assert_eq!(host.mutations()[0]["action"]["action"], "send_check");
+}
+
 #[test]
 fn checking_names_the_admission_wait_in_plain_words() {
     let host = Host::new(vec![]);
