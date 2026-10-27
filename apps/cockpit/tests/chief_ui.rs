@@ -224,6 +224,28 @@ fn the_startup_screen_hides_the_status_view_behind_it() {
         let line = startup[row].trim();
         assert!(line.is_empty() || startup_copy.contains(&line), "Status text survives on row {row}: {line:?}\n{startup:#?}");
     }
+    assert_one_background(&mut app, width, height, 1..height-1, &[]);
+}
+
+/// Apart from the designed highlights in `highlights`, the cleared cells and the text cells of `rows`
+/// share one background: no boxes behind the text.
+fn assert_one_background(app: &mut App, width: u16, height: u16, rows: std::ops::Range<u16>, highlights: &[ratatui::style::Color]) {
+    let mut buffer = Buffer::empty(Rect::new(0,0,width,height)); app.render(&mut buffer);
+    let mut text = std::collections::BTreeSet::new(); let mut blank = std::collections::BTreeSet::new();
+    for row in rows { for column in 0..width {
+        let cell = &buffer[(column,row)];
+        if highlights.contains(&cell.bg) {continue;}
+        if cell.symbol().trim().is_empty() {blank.insert(format!("{:?}",cell.bg));} else {text.insert(format!("{:?}",cell.bg));}
+    }}
+    assert_eq!(text.len(), 1, "text backgrounds: {text:?}");
+    assert_eq!(text, blank, "text and cleared cells differ in background");
+}
+
+#[test]
+fn the_chief_view_box_has_one_background_behind_its_text() {
+    let host = Host::new(vec![chief("active",true)]);
+    let (mut app, _) = host.open();
+    assert_one_background(&mut app, 100, 30, 2..28, &[ratatui::style::Color::Indexed(cockpit::app::BG_HIGHLIGHT)]);
 }
 
 #[test]

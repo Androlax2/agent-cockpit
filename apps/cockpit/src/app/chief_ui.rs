@@ -115,7 +115,7 @@ pub(super) fn draw(view: &mut ChiefView, buffer: &mut Buffer) {
     if view.startup_screen() {draw_startup(view,buffer);return;}
     let (top,bottom)=(HEADER_LINES,height-2);let inner=width.saturating_sub(4) as usize;let body=inner.saturating_sub(2).max(1);
     for row in top..=bottom {
-        put(buffer,row,1,&" ".repeat((width-2) as usize),on(FG,BLACK));
+        put(buffer,row,1,&" ".repeat((width-2) as usize),style(FG));
         put(buffer,row,1,"│",style(BLUE));put(buffer,row,width-2,"│",style(BLUE));
     }
     put(buffer,top,1,&format!("┌{}┐","─".repeat(inner)),style(BLUE));
@@ -151,7 +151,7 @@ fn draw_startup(view: &mut ChiefView, buffer: &mut Buffer) {
     let (width,height)=(buffer.area.width,buffer.area.height);
     let body=width.saturating_sub(6) as usize;
     let top=HEADER_LINES;
-    for row in top..height-1 {put(buffer,row,0,&" ".repeat(width as usize),on(FG,BLACK));}
+    for row in top..height-1 {put(buffer,row,0,&" ".repeat(width as usize),style(FG));}
     put(buffer,top,2,"‹ Status",style(BLUE));
     let mut lines=Vec::new();
     for (index,line) in view.startup_lines().iter().enumerate() {
