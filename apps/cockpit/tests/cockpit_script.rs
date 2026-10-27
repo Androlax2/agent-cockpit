@@ -1089,6 +1089,19 @@ fn doctor_flags_an_opencode_sandbox_that_hides_its_own_data() {
 }
 
 #[test]
+fn doctor_flags_an_enabled_shared_opencode_service() {
+    for (disabled, verdict) in [("false", "FAIL"), ("true", "ok")] {
+        let manager = Manager::new();
+        let binary = manager.sandbox.root.join("opencode");
+        write_executable(&binary, &format!(
+            "#!/bin/sh\ncase \"$*\" in\n  --version) echo 'opencode v2.1.4' ;;\n  'service get disabled') echo {disabled} ;;\n  *) exit 2 ;;\nesac\n"));
+        let env = vec![("OPENCODE_BINARY", path_str(&binary)), ("XDG_DATA_HOME", path_str(&manager.sandbox.root.join("data")))];
+        let line = doctor_line_with(&manager, "shared service", &env);
+        assert!(line.trim().starts_with(verdict), "disabled={disabled}: {line}");
+    }
+}
+
+#[test]
 fn compact_is_typed_only_at_the_prompt() {
     let manager = Manager::new();
     assert_eq!(manager.run(&["compact", SESSION_A], &[("SHIM_PANE_TEXT", IDLE)]).status.code(), Some(0));

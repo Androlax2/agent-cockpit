@@ -239,6 +239,15 @@ agent_opencode_doctor() {
     fi
     version=$("$binary" --version 2>/dev/null || true)
     report ok "installed: ${version:-version unknown}"
+    # A shared service started inside one project's sandbox resumes every project's interrupted
+    # sessions it can see there, with that sandbox's rights (todo 4438c0a9). The cockpit's sessions
+    # run --standalone; the setting makes every other opencode command private too.
+    # ~/.config/opencode is read-only in the sandbox, so no session can turn it back on.
+    if [[ $("$binary" service get disabled 2>/dev/null) == true ]]; then
+        report ok "shared service disabled: every opencode command runs its own server"
+    else
+        report fail "shared service enabled: one started in a sandbox resumes other projects' sessions there" "$binary service set disabled true"
+    fi
     # The newest log that loaded any plugin says whether the cockpit's was among them.
     newest_log=$(grep -l 'msg="loading plugin"' "${XDG_DATA_HOME:-$HOME/.local/share}"/opencode/log/*.log 2>/dev/null | xargs -r ls -t 2>/dev/null | head -1 || true)
     if [[ -z $newest_log ]]; then
