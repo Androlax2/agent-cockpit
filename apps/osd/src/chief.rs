@@ -38,25 +38,36 @@ pub(crate) fn native_telemetry(registry: &mut Registry, sender: &VerifiedSession
     Ok(TeamReply { request_id:"native-telemetry".into(),result:Ok(serde_json::json!({"recorded":true})) })
 }
 
-pub(crate) fn legacy_auto_ready(registry: &mut Registry, worker: Option<&str>, project: &str) -> bool {
+/// Whether the queue may hand `project`'s work to `worker`, or to a fresh session when there is none;
+/// otherwise the reason it may not. A fresh session waits until no session of the project is live,
+/// unless the Chief asked for one (`is_chief_requested`).
+pub(crate) fn legacy_auto_ready(registry: &mut Registry, worker: Option<&str>, project: &str, is_chief_requested: bool) -> Result<(), &'static str> {
     let now = teams::now_ms();
-    if !cockpit::settings::is_on("todo-queue") || registry.system.gaming() { return false; }
-    let Some((viewed, active, gaming, observed)) = &registry.chief_focus else { return false };
-    if *observed > now || now - observed > 30_000 || *gaming || (*active && viewed.is_empty()) { return false; }
-    if registry.pending_host_request_for(worker,project) { return false; }
+    if !cockpit::settings::is_on("todo-queue") { return Err("the todo queue is off"); }
+    if registry.system.gaming() { return Err("paused while gaming"); }
+    let Some((viewed, active, gaming, observed)) = &registry.chief_focus else { return Err("no cockpit focus report yet") };
+    if *observed > now || now - observed > 30_000 { return Err("the cockpit focus report is stale"); }
+    if *gaming { return Err("paused while gaming"); }
+    if *active && viewed.is_empty() { return Err("the viewed session is unknown"); }
+    if registry.pending_host_request_for(worker,project) { return Err("an ask-to-run or guide request is waiting in this project"); }
     let Some(worker) = worker else {
-        return !registry.sessions.values().any(|entry| !entry.runtime.is_empty() && registry.system.runtime_is_live(&entry.runtime)
+        if is_chief_requested { return Ok(()); }
+        let is_project_live = registry.sessions.values().any(|entry| !entry.runtime.is_empty() && registry.system.runtime_is_live(&entry.runtime)
             && teams::canonical_project(&entry.cwd).is_ok_and(|current| current == project));
+        return if is_project_live { Err("a session of this project is running") } else { Ok(()) };
     };
-    if teams::sleep_operation_is_live(worker).unwrap_or(true) { return false; }
-    if (*active && viewed == worker) || cockpit::prompts::count(worker) > 0 || cockpit::prompts::restart_wanted(worker) { return false; }
+    if teams::sleep_operation_is_live(worker).unwrap_or(true) { return Err("the session is going to sleep"); }
+    if *active && viewed == worker { return Err("Theo is viewing the session"); }
+    if cockpit::prompts::count(worker) > 0 || cockpit::prompts::restart_wanted(worker) { return Err("a message or restart waits for the session"); }
     let Some(entry) = registry.sessions.get(worker).filter(|entry| !entry.runtime.is_empty() && registry.system.runtime_is_live(&entry.runtime)) else {
-        return cockpit::sleep::asleep().iter().any(|note| note.session == worker && !note.remote
+        let is_asleep_idle = cockpit::sleep::asleep().iter().any(|note| note.session == worker && !note.remote
             && now / 1000 - note.idle_since >= cockpit::queue::QUEUE_IDLE_S
             && teams::canonical_project(&note.cwd).is_ok_and(|current|current==project));
+        return if is_asleep_idle { Ok(()) } else { Err("the session is neither live nor asleep long enough") };
     };
-    entry.state == "waiting" && !entry.needs_input && !entry.terminal && entry.agents == 0 && entry.background == 0
-        && now / 1000 - entry.since as i64 >= cockpit::queue::QUEUE_IDLE_S
+    let is_idle = entry.state == "waiting" && !entry.needs_input && !entry.terminal && entry.agents == 0 && entry.background == 0
+        && now / 1000 - entry.since as i64 >= cockpit::queue::QUEUE_IDLE_S;
+    if is_idle { Ok(()) } else { Err("the session is not idle") }
 }
 
 pub(crate) fn workers(registry: &mut Registry) -> Result<Vec<WorkerState>, TeamError> {
@@ -175,7 +186,16 @@ pub fn request(registry: &mut Registry, peer: u32, request: ChiefAgentAction) ->
     let live = workers(registry)?;
     let sessions = live.iter().map(|worker| worker.session.clone()).collect::<Vec<_>>();
     let sender = teams::verified_sender(registry, peer, &sessions)?;
-    store::agent(registry.teams.as_mut().expect("opened above"), &sender, &request, &live, teams::now_ms())
+    let reply = store::agent(registry.teams.as_mut().expect("opened above"), &sender, &request, &live, teams::now_ms())?;
+    if let ChiefAgentAction::StartSession { todo, project, reason } = &request {
+        let refusal = reply.result.as_ref().err().map(|error| error.message.as_str());
+        cockpit::audit::record("daemon", "chief.session_start_requested", if refusal.is_none() { "ok" } else { "refused" },
+            serde_json::json!({"session": sender.session_id, "task_id": todo, "project": project, "reason": reason, "refusal": refusal}));
+        if refusal.is_none() {
+            cockpit::util::log_as("daemon", "INFO", &format!("chief: asked for a fresh session for {todo} in {project}: {reason}"));
+        }
+    }
+    Ok(reply)
 }
 
 pub fn host(registry: &mut Registry, action: &ChiefHostAction) -> Result<TeamReply, TeamError> {

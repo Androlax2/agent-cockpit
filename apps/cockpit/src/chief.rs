@@ -111,7 +111,15 @@ pub enum ChiefAgentAction {
     AddHabit { text: String, project: Option<String>, source_id: String, reason: String },
     /// Hand an open stop to Theo, who answers it from the Chief view.
     Escalate { stop: String, category: EscalationCategory, reason: String, #[serde(default)] suggested_answer: Option<String> },
+    /// Ask the host to start a fresh session for a todo another project handed over and queued, when
+    /// no session of `project` (its folder name) can take it. Grants the session no extra permission.
+    StartSession { todo: String, project: String, reason: String },
 }
+
+/// How long a Chief's session start request stays open for the queue to act on.
+pub const SESSION_START_OPEN_MS: i64 = 10 * 60 * 1000;
+/// How many session starts the Chief may request in any rolling hour, across all projects.
+pub const SESSION_STARTS_PER_HOUR: i64 = 3;
 
 /// Why the Chief did not answer a stop itself.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -252,6 +260,14 @@ impl ChiefAgentAction {
                 key(stop)?; text(reason, 300)?;
                 if let Some(suggestion) = suggested_answer { text(suggestion, 2000)?; without_host_labels(suggestion)?; }
                 Ok(())
+            },
+            Self::StartSession { todo, project, reason } => {
+                if todo.len() != 8 || !todo.bytes().all(|byte| byte.is_ascii_hexdigit()) { return Err(invalid("a todo id is 8 hex characters")); }
+                if project.is_empty() || project.len() > 128 || project.starts_with('.')
+                    || !project.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.')) {
+                    return Err(invalid("a project is its folder name: letters, digits, -, _ or ."));
+                }
+                text(reason, 300)
             },
         }
     }

@@ -1491,3 +1491,143 @@ fn the_todo_list_is_only_read_when_a_session_is_at_a_stop_boundary() {
     assert_eq!(loads, 1);
     assert_eq!(stop_states(&bench).len(), 1);
 }
+
+/// A todo another project handed to project-a and queued, as `cockpit-todo add --project` files it.
+fn handed_todo(bench: &Bench, id: &str, queued_by: &str) -> String {
+    let directory = bench.registry.sessions[SESSION_B].cwd.clone();
+    let mut todos: serde_json::Value = serde_json::from_str(&fs::read_to_string(cockpit::paths::todo()).unwrap()).unwrap();
+    todos["items"].as_array_mut().unwrap().push(json!({"id":id,"project":"project-a","cwd":directory,"text":"Fix the Figma MCP","status":"todo","queued_by":queued_by}));
+    let mut queued = todos["queued"].as_array().cloned().unwrap_or_default();
+    queued.push(json!(id));
+    todos["queued"] = json!(queued);
+    fs::write(cockpit::paths::todo(), todos.to_string()).unwrap();
+    id.into()
+}
+
+fn admitted_chief_bench() -> Bench {
+    let mut bench = team_bench();
+    enable(&mut bench, OPENCODE_SESSION);
+    admit_chief(&mut bench);
+    bench
+}
+
+fn chief_starts_session(bench: &mut Bench, peer: u32, todo: &str, project: &str) -> Result<serde_json::Value, cockpit::teams::TeamError> {
+    crate::teams::request(&mut bench.registry, peer, AgentAction::Chief { request: ChiefAgentAction::StartSession {
+        todo: todo.into(), project: project.into(), reason: "Theo needs the Figma MCP fix today.".into(),
+    }}).and_then(|reply| reply.result)
+}
+
+/// What the queue asks before it starts a fresh session for a handed todo.
+fn reserve_fresh_session(bench: &mut Bench, todo: &str) -> Result<serde_json::Value, cockpit::teams::TeamError> {
+    let directory = bench.registry.sessions[SESSION_B].cwd.clone();
+    crate::teams::host(&mut bench.registry, std::process::id(), HostRequest::ReserveTask {
+        task_id: todo.into(), directory, worker: None, automatic: true,
+    }).and_then(|reply| reply.result)
+}
+
+fn session_start_states(bench: &Bench) -> Vec<String> {
+    bench.registry.teams.as_ref().unwrap().prepare("SELECT state FROM chief_session_starts ORDER BY created_at,id").unwrap()
+        .query_map([], |row| row.get(0)).unwrap().collect::<Result<Vec<_>, _>>().unwrap()
+}
+
+#[test]
+fn a_queued_handed_todo_gets_no_fresh_session_while_its_project_runs_and_the_refusal_says_why() {
+    let mut bench = admitted_chief_bench();
+    let todo = handed_todo(&bench, "aa919cfe", "a cockpit-chief session (ses_e82b)");
+    let refusal = reserve_fresh_session(&mut bench, &todo).unwrap_err();
+    assert_eq!(refusal.code, ErrorCode::Conflict);
+    assert!(refusal.message.ends_with(": a session of this project is running"), "{}", refusal.message);
+}
+
+#[test]
+fn the_chief_can_start_a_fresh_session_for_a_queued_handed_todo_while_its_project_runs() {
+    let mut bench = admitted_chief_bench();
+    let todo = handed_todo(&bench, "aa919cfe", "a cockpit-chief session (ses_e82b)");
+    let requested = chief_starts_session(&mut bench, 20, &todo, "project-a").unwrap();
+    assert_eq!(requested["state"], "requested");
+    let reserved = reserve_fresh_session(&mut bench, &todo).unwrap();
+    assert!(reserved["reservation"].as_str().is_some_and(|token| !token.is_empty()));
+    assert_eq!(session_start_states(&bench), vec!["started"]);
+    let notice = format!("chief-session-{}", requested["request"].as_str().unwrap());
+    assert_eq!(bench.notice_title(&notice).as_deref(), Some("Chief · started a session in project-a"));
+}
+
+#[test]
+fn a_started_chief_request_does_not_start_a_second_session() {
+    let mut bench = admitted_chief_bench();
+    let todo = handed_todo(&bench, "aa919cfe", "a cockpit-chief session (ses_e82b)");
+    chief_starts_session(&mut bench, 20, &todo, "project-a").unwrap();
+    reserve_fresh_session(&mut bench, &todo).unwrap();
+    assert_eq!(reserve_fresh_session(&mut bench, &todo).unwrap_err().code, ErrorCode::Conflict);
+}
+
+#[test]
+fn the_chief_cannot_start_a_session_for_theos_own_queued_todo() {
+    let mut bench = admitted_chief_bench();
+    let todo = handed_todo(&bench, "bb919cfe", "");
+    assert_eq!(chief_starts_session(&mut bench, 20, &todo, "project-a").unwrap_err().code, ErrorCode::Conflict);
+    assert!(session_start_states(&bench).is_empty());
+}
+
+#[test]
+fn the_chief_cannot_start_a_session_for_an_unknown_todo() {
+    let mut bench = admitted_chief_bench();
+    assert_eq!(chief_starts_session(&mut bench, 20, "cc919cfe", "project-a").unwrap_err().code, ErrorCode::NotFound);
+}
+
+#[test]
+fn the_chief_names_the_project_the_todo_belongs_to() {
+    let mut bench = admitted_chief_bench();
+    let todo = handed_todo(&bench, "aa919cfe", "a cockpit-chief session (ses_e82b)");
+    assert_eq!(chief_starts_session(&mut bench, 20, &todo, "project-b").unwrap_err().code, ErrorCode::Conflict);
+}
+
+#[test]
+fn only_one_chief_session_start_waits_per_project() {
+    let mut bench = admitted_chief_bench();
+    let first = handed_todo(&bench, "aa919cfe", "a cockpit-chief session (ses_e82b)");
+    let second = handed_todo(&bench, "dd919cfe", "a cockpit-chief session (ses_e82b)");
+    chief_starts_session(&mut bench, 20, &first, "project-a").unwrap();
+    assert_eq!(chief_starts_session(&mut bench, 20, &second, "project-a").unwrap_err().code, ErrorCode::Conflict);
+}
+
+#[test]
+fn the_chief_requests_at_most_three_session_starts_an_hour() {
+    let mut bench = admitted_chief_bench();
+    let todo = handed_todo(&bench, "aa919cfe", "a cockpit-chief session (ses_e82b)");
+    let recently = crate::teams::now_ms() - 50 * 60 * 1000;
+    for id in ["earlier-1", "earlier-2", "earlier-3"] {
+        bench.registry.teams.as_ref().unwrap().execute("INSERT INTO chief_session_starts(id,epoch,project,task_id,reason,state,created_at)
+            VALUES (?1,'epoch','path:/elsewhere','00000000','Earlier.','started',?2)", (id, recently)).unwrap();
+    }
+    assert_eq!(chief_starts_session(&mut bench, 20, &todo, "project-a").unwrap_err().code, ErrorCode::Limit);
+}
+
+#[test]
+fn an_expired_chief_request_no_longer_starts_a_session() {
+    let mut bench = admitted_chief_bench();
+    let todo = handed_todo(&bench, "aa919cfe", "a cockpit-chief session (ses_e82b)");
+    chief_starts_session(&mut bench, 20, &todo, "project-a").unwrap();
+    bench.registry.teams.as_ref().unwrap().execute("UPDATE chief_session_starts SET created_at=created_at-?1", [cockpit::chief::SESSION_START_OPEN_MS]).unwrap();
+    assert_eq!(reserve_fresh_session(&mut bench, &todo).unwrap_err().code, ErrorCode::Conflict);
+    assert_eq!(session_start_states(&bench), vec!["requested"]);
+}
+
+#[test]
+fn a_chief_request_still_waits_for_the_other_queue_checks() {
+    let mut bench = admitted_chief_bench();
+    let todo = handed_todo(&bench, "aa919cfe", "a cockpit-chief session (ses_e82b)");
+    chief_starts_session(&mut bench, 20, &todo, "project-a").unwrap();
+    bench.registry.chief_focus.as_mut().unwrap().3 -= 31_000;
+    let refusal = reserve_fresh_session(&mut bench, &todo).unwrap_err();
+    assert!(refusal.message.ends_with(": the cockpit focus report is stale"), "{}", refusal.message);
+    assert_eq!(session_start_states(&bench), vec!["requested"]);
+}
+
+#[test]
+fn a_session_without_the_chief_grant_cannot_start_sessions() {
+    let mut bench = admitted_chief_bench();
+    let todo = handed_todo(&bench, "aa919cfe", "a cockpit-chief session (ses_e82b)");
+    assert_eq!(chief_starts_session(&mut bench, 10, &todo, "project-a").unwrap_err().code, ErrorCode::Unauthorized);
+    assert!(session_start_states(&bench).is_empty());
+}

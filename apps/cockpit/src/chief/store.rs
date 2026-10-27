@@ -29,6 +29,16 @@ pub(crate) fn upgrade_to_17(connection: &Connection) -> Result<(), TeamError> {
     Ok(())
 }
 
+/// Created on every open, like the sleep tables: the Chief's requests to start a fresh session for a
+/// queued todo, and which reservation acted on each.
+pub(crate) fn ensure_session_starts(connection: &Connection) -> Result<(), TeamError> {
+    connection.execute_batch("CREATE TABLE IF NOT EXISTS chief_session_starts (
+        id TEXT PRIMARY KEY, epoch TEXT NOT NULL, project TEXT NOT NULL, task_id TEXT NOT NULL, reason TEXT NOT NULL,
+        state TEXT NOT NULL CHECK(state IN ('requested','started','expired')), token TEXT,
+        created_at INTEGER NOT NULL, started_at INTEGER);")?;
+    Ok(())
+}
+
 /// Protected host startup state; absence never means an in-flight launch failed.
 pub fn startup(connection: &Connection) -> Result<Option<Value>, TeamError> {
     // An activated attempt whose grant was later disabled is over: Start may begin a new one.
@@ -921,6 +931,45 @@ fn escalate_stop(connection: &Connection, epoch: &str, stop: &str, category: Esc
     Ok(json!({"decision":id,"revision":1,"stop":stop,"state":"escalated"}))
 }
 
+/// Records the Chief's request; the queue's next pass starts the session through the usual
+/// reservation, which then skips only the rule that no session of the project may be live.
+fn request_session_start(connection: &Connection, todos: &crate::todo::TodoList, epoch: &str, todo: &str, project: &str, reason: &str, now_ms: i64) -> Result<Value, TeamError> {
+    let item = todos.items.iter().find(|item| item.id() == todo).ok_or_else(|| TeamError::new(ErrorCode::NotFound, "no todo has this id"))?;
+    // The same items the queue starts fresh sessions for: Theo's own queued items wait for a session he starts.
+    let is_handed = !item.queued_by().is_empty() || item.is_blocked_report();
+    if item.status() != "todo" || !todos.is_queued(todo) || !is_handed || item.is_waiting() || item.is_design() {
+        return Err(conflict("the Chief starts sessions only for queued todos another project handed over, still to do and waiting on nothing"));
+    }
+    let canonical = crate::teams::canonical_project(&item.cwd())?;
+    if canonical.rsplit('/').next() != Some(project) { return Err(conflict("the todo belongs to another project")); }
+    connection.execute("UPDATE chief_session_starts SET state='expired' WHERE state='requested' AND created_at<=?1",
+        [now_ms.saturating_sub(super::SESSION_START_OPEN_MS)])?;
+    if connection.query_row("SELECT EXISTS(SELECT 1 FROM chief_session_starts WHERE state='requested' AND project=?1)", [&canonical], |row| row.get::<_, bool>(0))? {
+        return Err(conflict("a session start already waits in this project"));
+    }
+    let recent: i64 = connection.query_row("SELECT count(*) FROM chief_session_starts WHERE created_at>?1", [now_ms.saturating_sub(3_600_000)], |row| row.get(0))?;
+    if recent >= super::SESSION_STARTS_PER_HOUR {
+        return Err(TeamError::new(ErrorCode::Limit, "the Chief may request at most 3 session starts an hour"));
+    }
+    let id = crate::teams::store::identifier()?;
+    connection.execute("INSERT INTO chief_session_starts(id,epoch,project,task_id,reason,state,created_at) VALUES (?1,?2,?3,?4,?5,'requested',?6)",
+        params![id, epoch, canonical, todo, reason, now_ms])?;
+    coordination_event(connection, "session_start_requested", &json!({"source":"chief","request":id,"project":canonical,"task_id":todo,"reason":reason}), now_ms)?;
+    Ok(json!({"request": id, "state": "requested", "project": canonical, "todo": todo}))
+}
+
+/// The open Chief request to start a session for this task, as (request id, reason).
+pub fn open_session_start(connection: &Connection, project: &str, task_id: &str, now_ms: i64) -> Result<Option<(String, String)>, TeamError> {
+    Ok(connection.query_row("SELECT id,reason FROM chief_session_starts WHERE state='requested' AND project=?1 AND task_id=?2 AND created_at>?3",
+        params![project, task_id, now_ms.saturating_sub(super::SESSION_START_OPEN_MS)], |row| Ok((row.get(0)?, row.get(1)?))).optional()?)
+}
+
+pub fn mark_session_started(connection: &Connection, request: &str, token: &str, now_ms: i64) -> Result<(), TeamError> {
+    let changed = connection.execute("UPDATE chief_session_starts SET state='started',token=?2,started_at=?3 WHERE id=?1 AND state='requested'", params![request, token, now_ms])?;
+    if changed != 1 { return Err(conflict("the Chief's session start request is no longer open")); }
+    coordination_event(connection, "session_started", &json!({"source":"host","request":request,"reservation":token}), now_ms)
+}
+
 fn excerpt(text: &str, maximum: usize) -> String {
     if text.chars().count() <= maximum { return text.to_string(); }
     let mut shortened: String = text.chars().take(maximum - 1).collect();
@@ -989,7 +1038,7 @@ fn schedule_wake(connection: &Connection, now_ms: i64) -> Result<(), TeamError> 
             session_id:row.get(1)?,agent:row.get(2)?,project:row.get(3)?,runtime:row.get(4)?},row.get(5)?,row.get(6)?,row.get(7)?))).optional()?;
     let Some((epoch,chief,delivered,last_admitted,failed)) = grant else {return Ok(())};
     if failed || last_admitted.is_some_and(|last|now_ms<last.saturating_add(30_000)) {return Ok(())}
-    let pending: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM chief_events WHERE seq>?1 AND kind NOT IN ('status','coordinate','reprioritized','habit_changed'))",[delivered],|row|row.get(0))?;
+    let pending: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM chief_events WHERE seq>?1 AND kind NOT IN ('status','coordinate','reprioritized','habit_changed','session_start_requested','session_started'))",[delivered],|row|row.get(0))?;
     if !pending {return Ok(())}
     let exists: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM chief_inbox WHERE chief_epoch=?1 AND json_extract(envelope,'$.kind')='chief_wake' AND state IN ('queued','submitting','uncertain'))",[&epoch],|row|row.get(0))?;
     if exists {return Ok(())}
@@ -1371,6 +1420,10 @@ pub fn agent(connection: &mut Connection, sender: &VerifiedSession, action: &Chi
             ChiefAgentAction::AnswerForm { stop, choice, reason, habits } => queue_answer(&transaction, live, AnswerAuthor::Chief { epoch: &epoch, habits }, stop, Reply::FormChoice(choice), reason, now_ms)?,
             ChiefAgentAction::AddHabit { text, project, source_id, reason } => add_habit(&transaction, text, project.as_deref(), source_id, reason, now_ms)?,
             ChiefAgentAction::Escalate { stop, category, reason, suggested_answer } => escalate_stop(&transaction, &epoch, stop, *category, reason, suggested_answer.as_deref(), now_ms)?,
+            ChiefAgentAction::StartSession { todo, project, reason } => {
+                let todos = crate::todo::TodoList::load_checked().map_err(|error| TeamError::new(ErrorCode::Storage, error))?;
+                request_session_start(&transaction, &todos, &epoch, todo, project, reason, now_ms)?
+            },
         };
         transaction.commit()?;
         Ok(response)

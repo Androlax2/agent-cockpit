@@ -441,6 +441,20 @@ pub fn request(registry: &mut Registry, peer: u32, action: AgentAction) -> Resul
     result
 }
 
+/// Settles the Chief's request once the queue reserved its fresh session, and tells Theo.
+fn chief_session_started(registry: &mut Registry, task: &cockpit::teams::TaskKey, request: &str, reason: &str, token: &str) -> Result<(), TeamError> {
+    cockpit::chief::store::mark_session_started(registry.teams.as_ref().expect("reserved above"), request, token, now_ms())?;
+    let project = task.project.rsplit('/').next().unwrap_or(&task.project);
+    cockpit::util::log_as("daemon", "INFO", &format!("chief: fresh session reserved for {} in {project}: {reason}", task.task_id));
+    cockpit::audit::record("daemon", "chief.session_started", "ok", json!({"request": request, "task_id": task.task_id, "project": task.project, "reason": reason}));
+    registry.banners.raise_notice(&crate::registry::Notice {
+        id: format!("chief-session-{request}"),
+        title: format!("Chief · started a session in {project}"),
+        message: format!("For todo {}: {}. No permission has been granted.", task.task_id, cockpit::approval::escape_hiding(reason, "", "")),
+    });
+    Ok(())
+}
+
 /// The host socket is for programs in the daemon's own PID namespace: every sandbox has its own.
 pub fn host_peer_allowed(table: &dyn crate::registry::Processes, pid: &str) -> bool {
     let own = table.pid_namespace("self");
@@ -520,8 +534,14 @@ pub fn host(registry: &mut Registry, peer: u32, request: cockpit::teams::HostReq
             let live = live_sessions(registry)?;
             let task = cockpit::teams::TaskKey { project: canonical_project(&directory)?, task_id };
             task.validate()?;
-            if automatic && !crate::chief::legacy_auto_ready(registry,worker.as_deref(),&task.project) {
-                return Err(TeamError::new(ErrorCode::Conflict,"automatic legacy admission is no longer ready"));
+            let chief_request = match (&worker, registry.teams.as_ref()) {
+                (None, Some(connection)) => cockpit::chief::store::open_session_start(connection, &task.project, &task.task_id, now_ms())?,
+                _ => None,
+            };
+            if automatic {
+                if let Err(reason) = crate::chief::legacy_auto_ready(registry,worker.as_deref(),&task.project,chief_request.is_some()) {
+                    return Err(TeamError::new(ErrorCode::Conflict,format!("automatic legacy admission is no longer ready: {reason}")));
+                }
             }
             let todos = cockpit::todo::TodoList::load();
             let item = todos.items.iter().find(|item| item.id() == task.task_id);
@@ -550,6 +570,9 @@ pub fn host(registry: &mut Registry, peer: u32, request: cockpit::teams::HostReq
                 if designer != item.is_some_and(|item| item.is_design()) { return Err(unauthorized()); }
             }
             let token = cockpit::chief::store::reserve_legacy(registry.teams.as_mut().unwrap(), &task, worker.as_deref(), now_ms())?;
+            if let Some((request, reason)) = chief_request {
+                chief_session_started(registry, &task, &request, &reason, &token)?;
+            }
             Ok(TeamReply { request_id: "reserve-task".into(), result: Ok(json!({"reservation":token})) })
         },
         cockpit::teams::HostRequest::ReserveResume { session, directory } => {

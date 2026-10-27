@@ -86,6 +86,7 @@ fn migrate_with(connection: &mut Connection, create: bool) -> Result<(), TeamErr
     crate::chief::store::upgrade_to_15(&transaction)?;
     crate::chief::store::upgrade_to_16(&transaction)?;
     crate::chief::store::upgrade_to_17(&transaction)?;
+    crate::chief::store::ensure_session_starts(&transaction)?;
     crate::chief::store::clear_dispatch_leftovers(&transaction)?;
     transaction.commit()?;
     Ok(())

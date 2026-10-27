@@ -85,3 +85,16 @@ fn context_pages_reject_oversize_records_instead_of_truncating() {
     assert!(page.as_array().unwrap().len() < 50);
     assert_eq!(page[0]["brief"].as_str().unwrap().chars().count(), 4000);
 }
+
+#[test]
+fn start_session_names_one_todo_id_its_project_folder_and_a_short_reason() {
+    let start = |todo: &str, project: &str, reason: &str| serde_json::from_value::<ChiefAgentAction>(json!({"action":"start_session","todo":todo,"project":project,"reason":reason})).unwrap();
+    assert!(start("aa919cfe", "agent-cockpit", "Theo needs it today.").validate().is_ok());
+    for (todo, project, reason) in [("aa919cf", "agent-cockpit", "Urgent."), ("aa919cfz", "agent-cockpit", "Urgent."), ("owner/repo#12", "agent-cockpit", "Urgent."),
+        ("aa919cfe", "../agent-cockpit", "Urgent."), ("aa919cfe", "path:/home/theo", "Urgent."), ("aa919cfe", "", "Urgent."),
+        ("aa919cfe", "agent-cockpit", ""), ("aa919cfe", "agent-cockpit", &"x".repeat(301))] {
+        assert!(start(todo, project, reason).validate().is_err(), "{todo} {project} {}", reason.len());
+    }
+    assert!(serde_json::from_value::<ChiefAgentAction>(json!({"action":"start_session","todo":"aa919cfe","project":"agent-cockpit","reason":"Urgent.","agent":"claude"})).is_err(),
+        "the Chief cannot choose the agent");
+}
