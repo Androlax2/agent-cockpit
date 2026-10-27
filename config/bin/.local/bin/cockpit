@@ -734,6 +734,10 @@ record_stuck_exit() { # tmux-session pane id
 exit_session() {
     local id=$1 pane target
     audit_event manager session.exit asked "session=$id"
+    if agent_opencode_is_session_id "$id"; then
+        exit_opencode_conversation "$id"
+        return
+    fi
     if [[ $id == claude-retry-* ]]; then
         [[ $id == *"#"* ]] && { echo "cockpit: refusing session name $id" >&2; return 1; }
         target=$id
@@ -2843,7 +2847,7 @@ case ${1:-attach} in
             "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/cockpit-subscription" cancel-session "$2" || exit
         fi
         # A live pane first: a note can outlive its process by the length of the sleep's exit.
-        if [[ -z $(session_field "${2:?usage: cockpit exit <session-id>}" tmux_pane) ]] && is_asleep "$2"; then
+        if [[ -z $(session_field "${2:?usage: cockpit exit <session-id>}" tmux_pane) ]] && is_asleep "$2" && ! agent_opencode_is_session_id "$2"; then
             is_exiting_asleep=true
         fi
         # Explicit ending revokes handoff even if process shutdown subsequently fails.

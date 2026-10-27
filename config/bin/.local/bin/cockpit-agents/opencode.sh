@@ -42,8 +42,11 @@ OPENCODE_EPILOGUE='attempt=1; while :; do started=$(date +%s); "$@" && exit; cod
 # different pane. Do not use it to authorize either another launch or exit keys.
 opencode_conversation_panes() { # session-id; target<TAB>pane for each live managed copy
     local inventory target pane dead identity
-    inventory=$(tmux list-panes -a -F '#{session_name}	#{pane_id}	#{pane_dead}') || {
-        echo "cockpit: cannot inspect OpenCode's managed panes" >&2
+    inventory=$(LC_ALL=C tmux list-panes -a -F '#{session_name}	#{pane_id}	#{pane_dead}' 2>&1) || {
+        case $inventory in
+            'error connecting to '*' (No such file or directory)'|'no server running on '*) return 0 ;;
+        esac
+        printf "cockpit: cannot inspect OpenCode's managed panes: %s\n" "$inventory" >&2
         return 1
     }
     while IFS=$'\t' read -r target pane dead; do
@@ -201,6 +204,32 @@ agent_opencode_restart() { # id dir [effort] [detached]
 agent_opencode_restore() { # dir id
     start_opencode "$1" "$2" "" >/dev/null
 }
+
+exit_opencode_conversation() ( # id
+    local id=$1 copies target pane identity remaining failed=0
+    agent_opencode_is_session_id "$id" || { echo "cockpit: not an OpenCode session id" >&2; return 1; }
+    umask 077
+    exec 8>"${XDG_RUNTIME_DIR:-/tmp}/cockpit-opencode-session-$id.lock"
+    flock 8 || return
+    copies=$(opencode_conversation_panes "$id") || return
+    [[ -n $copies ]] || return 0
+    while IFS=$'\t' read -r target pane; do
+        identity=$(tmux show-environment -t "=$target" CLAUDE_CODE_SESSION_ID) || { failed=1; continue; }
+        if [[ $identity != "CLAUDE_CODE_SESSION_ID=$id" ]]; then
+            echo "cockpit: OpenCode pane $pane changed identity; it was not closed" >&2
+            failed=1
+            continue
+        fi
+        thaw_frozen_pane "$pane"
+        agent_opencode_exit "$target" "$pane" "$id" || failed=1
+    done <<< "$copies"
+    remaining=$(opencode_conversation_panes "$id") || return
+    if [[ -n $remaining ]]; then
+        echo "cockpit: a managed copy of OpenCode conversation $id is still running" >&2
+        return 1
+    fi
+    return "$failed"
+)
 
 # Escape twice interrupts a turn, Ctrl-C clears typed input, Ctrl-C at an empty prompt exits. Two
 # rounds with a one-second grace each, then force-close.
