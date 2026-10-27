@@ -409,6 +409,35 @@ fn go_build_cache_stays_in_the_sandbox_instead_of_the_host_home() {
     }
 }
 
+const GIT_IDENTITY_VARIABLES: [&str; 4] = ["GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"];
+
+#[test]
+fn the_hosts_git_identity_reaches_every_agent_without_mounting_its_git_config() {
+    for &agent in AGENTS.iter() {
+        let launch = Launch::new();
+        fs::write(launch.sandbox.home.join(".gitconfig"), "[user]\n\tname = Host Person\n\temail = host@example.invalid\n").unwrap();
+        let started = launch.run_agent(agent, &[("GIT_CONFIG_NOSYSTEM", "1"), ("GIT_AUTHOR_EMAIL", "inherited@example.invalid")], &[]);
+        let environment = fs::read_to_string(launch.sandbox.home.join(format!("{agent}-environment"))).unwrap();
+        for (name, value) in [("GIT_AUTHOR_NAME", "Host Person"), ("GIT_AUTHOR_EMAIL", "host@example.invalid"),
+                              ("GIT_COMMITTER_NAME", "Host Person"), ("GIT_COMMITTER_EMAIL", "host@example.invalid")] {
+            assert!(environment.lines().any(|line| line == format!("{name}={value}")), "{agent}: {name} is not the host's");
+        }
+        assert!(!started.contains(".gitconfig"), "{agent}: {started}");
+    }
+}
+
+#[test]
+fn without_a_host_git_identity_no_agent_gets_one() {
+    for &agent in AGENTS.iter() {
+        let launch = Launch::new();
+        launch.run_agent(agent, &[("GIT_CONFIG_NOSYSTEM", "1"), ("GIT_AUTHOR_NAME", "Inherited"), ("GIT_COMMITTER_EMAIL", "inherited@example.invalid")], &[]);
+        let environment = fs::read_to_string(launch.sandbox.home.join(format!("{agent}-environment"))).unwrap();
+        for name in GIT_IDENTITY_VARIABLES {
+            assert!(!environment.lines().any(|line| line.starts_with(&format!("{name}="))), "{agent}: {name} was set");
+        }
+    }
+}
+
 #[test]
 fn go_module_cache_stays_in_the_sandbox_instead_of_the_host_gopath() {
     for &agent in AGENTS.iter() {

@@ -256,6 +256,19 @@ export CARGO_HTTP_CAINFO="$ca_dir/bundle.pem"
 # The leading ":" keeps PHP's own scan directory and adds ours after it.
 export PHP_INI_SCAN_DIR=":$ca_dir/php"
 
+# The sandbox cannot read ~/.gitconfig (a link into the hidden dotfiles), so commits there had no
+# author. Hand over the identity the host's git uses for this checkout, two values and no mount;
+# without one, none: git then refuses to commit instead of using an inherited or guessed author.
+unset GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
+git_user_name=$(git -C "$project_root" config --get user.name 2>/dev/null) || git_user_name=
+git_user_email=$(git -C "$project_root" config --get user.email 2>/dev/null) || git_user_email=
+if [ -n "$git_user_name" ] && [ -n "$git_user_email" ]; then
+    export GIT_AUTHOR_NAME="$git_user_name" GIT_COMMITTER_NAME="$git_user_name"
+    export GIT_AUTHOR_EMAIL="$git_user_email" GIT_COMMITTER_EMAIL="$git_user_email"
+else
+    echo "$agent launcher: no git user.name and user.email on the host; commits in this session will fail." >&2
+fi
+
 # Image paste: the Wayland socket stays hidden from the sandbox. A stand-in wl-paste asks the
 # clipboard-image bridge (a user service serving PNG images only). The stand-in lives in the
 # dotfiles, which the sandbox cannot see, so it is copied to ~/.cache/agent-shims (readable, not
