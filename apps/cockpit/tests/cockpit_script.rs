@@ -4803,7 +4803,44 @@ fn team_ordinary_restart_does_not_pass_team_resume_permit() {
         ("COCKPIT_TEAM_RESUME", TEAM_RESUME), ("SHIM_PANE_TEXT", IDLE), ("SHIM_EXIT_AFTER", "1")]);
     assert!(output.status.success(), "{}", stderr(&output));
     assert!(!manager.tmux_calls("new-session").join("\n").contains(TEAM_RESUME));
-    assert!(manager.calls("cockpit-team").is_empty());
+    // The host refuses (the shim's default): the restart goes ahead and carries no permit.
+    assert_eq!(manager.calls("cockpit-team"), [format!("cockpit-team restart-prepare {SESSION_A}")]);
+    assert!(!manager.tmux_calls("new-session").join("\n").contains("COCKPIT_TEAM_RESUME="));
+}
+
+const RESTART_PERMIT: &str = "0123456789abcdef0123456789abcdef";
+
+impl Manager {
+    /// The host grants a restart permit; any other team request succeeds silently.
+    fn grant_restart_permit(&self) {
+        self.sandbox.shim("cockpit-team", &format!(r#"[[ $1 == restart-prepare ]] && echo '{{"token":"{RESTART_PERMIT}"}}'; exit 0"#));
+    }
+}
+
+#[test]
+fn team_restart_relaunches_with_the_hosts_restart_permit() {
+    for (id, agent, detached) in [(SESSION_A, "claude", ""), (SESSION_A, "claude", "detached"), (OPENCODE_SESSION, "opencode", "detached")] {
+        let manager = Manager::new();
+        if agent == "opencode" { manager.with_opencode_session("waiting"); }
+        manager.grant_restart_permit();
+        let output = manager.run(&["restart", id, "", detached], &[("SHIM_PANE_TEXT", IDLE), ("SHIM_EXIT_AFTER", "1"), ("SHIM_CLAUDE_EXIT_AFTER", "1")]);
+        assert!(output.status.success(), "{agent} {detached}: {}", stderr(&output));
+        let calls = manager.calls("tmux");
+        let prepare = manager.calls("cockpit-team");
+        assert_eq!(prepare, [format!("cockpit-team restart-prepare {id}")], "{agent} {detached}");
+        let launch = calls.iter().find(|call| call.contains(&format!("COCKPIT_TEAM_RESUME={RESTART_PERMIT}")));
+        assert!(launch.is_some(), "{agent} {detached}: {calls:?}");
+        assert!(!manager.log_lines().join("\n").contains(RESTART_PERMIT));
+    }
+}
+
+#[test]
+fn team_failed_restart_cancels_its_restart_permit() {
+    let manager = Manager::new();
+    manager.grant_restart_permit();
+    manager.sandbox.shim("tmux", &format!("{FAKE_TMUX}\n[[ $1 == new-session ]] && exit 1\nexit 0"));
+    manager.run(&["restart", SESSION_A, "", "detached"], &[("SHIM_PANE_TEXT", IDLE), ("SHIM_EXIT_AFTER", "1")]);
+    assert!(manager.calls("cockpit-team").contains(&format!("cockpit-team sleep-cancel {SESSION_A}")), "{:?}", manager.calls("cockpit-team"));
 }
 
 #[test]

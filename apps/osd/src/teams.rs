@@ -93,8 +93,10 @@ pub(crate) fn live_sessions(registry: &mut Registry) -> Result<Vec<VerifiedSessi
         let connection = registry.teams.as_mut().expect("opened above");
         let Some(permit) = store::sleep::permit(connection, &token)? else { continue };
         let is_acknowledgement = permit.state == "bound" && permit.replacement_runtime.as_deref() == Some(&session.runtime);
-        if is_acknowledgement || (permit.note_recorded && !registry.system.runtime_is_live(&permit.old_runtime)
-            && matching_sleep_note(&permit, now_ms())) {
+        let is_old_gone = !registry.system.runtime_is_live(&permit.old_runtime);
+        let is_woken = permit.kind == "sleep" && permit.note_recorded && is_old_gone && matching_sleep_note(&permit, now_ms());
+        let is_restarted = permit.kind == "restart" && permit.state == "prepared" && is_old_gone && !ended(&permit.session_id);
+        if is_acknowledgement || is_woken || is_restarted {
             store::sleep::bind(connection, &token, session, &checkout, now_ms())?;
         }
     }
@@ -166,6 +168,11 @@ fn reconcile_sleep(registry: &mut Registry) -> Result<(), TeamError> {
     let connection = registry.teams.as_mut().expect("opened above");
     store::sleep::expire_wakes(connection, now_ms())?;
     for permit in store::sleep::prepared_records(connection)? {
+        // A restart has no note or operation lock: its relaunch binds it or its lifetime ends it.
+        if permit.kind == "restart" {
+            if permit.expires_at <= now_ms() { store::sleep::cancel(connection, &permit.session_id, &permit.token)?; }
+            continue;
+        }
         let is_old_live = registry.system.runtime_is_live(&permit.old_runtime);
         // The inherited kernel lock outlives a killed manager while an exit helper still runs.
         // Never reopen delivery on a clock while that operation can still exit the old runtime.
@@ -469,6 +476,9 @@ pub fn host(registry: &mut Registry, peer: u32, request: cockpit::teams::HostReq
         if cockpit::agents::of_session_id(session_id).is_none() { return Err(unauthorized()); }
         verify_sleep_operation(peer, session_id)?;
     }
+    if matches!(&request, cockpit::teams::HostRequest::PrepareRestart { .. }) && !host_peer_allowed(&crate::registry::Proc, &peer.to_string()) {
+        return Err(unauthorized());
+    }
     match request {
         cockpit::teams::HostRequest::Control { action } => host_control(registry, &action),
         cockpit::teams::HostRequest::Snapshot => Ok(TeamReply { request_id: "snapshot".into(), result: Ok(host_snapshot(registry)?) }),
@@ -597,22 +607,25 @@ pub fn host(registry: &mut Registry, peer: u32, request: cockpit::teams::HostReq
 fn sleep_control(registry: &mut Registry, request: cockpit::teams::HostRequest) -> Result<TeamReply, TeamError> {
     use cockpit::teams::HostRequest;
     let is_recording = matches!(&request, HostRequest::SleepRecorded { .. });
+    let is_restart = matches!(&request, HostRequest::PrepareRestart { .. });
     let live = live_sessions(registry)?;
     let session_id = match &request {
         HostRequest::PrepareSleep { session_id } | HostRequest::CancelSleep { session_id, .. }
         | HostRequest::SleepRecorded { session_id, .. } | HostRequest::BeginWake { session_id, .. }
-        | HostRequest::SleepStatus { session_id, .. } => session_id,
+        | HostRequest::SleepStatus { session_id, .. } | HostRequest::PrepareRestart { session_id } => session_id,
         _ => unreachable!(),
     };
     if cockpit::agents::of_session_id(session_id).is_none() {
         return Err(TeamError::new(ErrorCode::Invalid, "invalid sleep session id"));
     }
     let result = match request {
-        HostRequest::PrepareSleep { session_id } => {
+        HostRequest::PrepareSleep { session_id } | HostRequest::PrepareRestart { session_id } => {
             let member = live.iter().find(|member| member.session_id == session_id).ok_or_else(unauthorized)?;
             let entry = registry.sessions.get(&session_id).ok_or_else(unauthorized)?;
             let checkout = fs::canonicalize(&entry.cwd)?.to_string_lossy().into_owned();
-            let token = store::sleep::prepare(registry.teams.as_mut().expect("opened above"), member, &checkout, now_ms())?;
+            let connection = registry.teams.as_mut().expect("opened above");
+            let token = if is_restart { store::sleep::prepare_restart(connection, member, &checkout, now_ms())? }
+                        else { store::sleep::prepare(connection, member, &checkout, now_ms())? };
             json!({"token":token})
         },
         HostRequest::CancelSleep { session_id, token } => {

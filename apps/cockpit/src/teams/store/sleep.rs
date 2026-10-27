@@ -5,6 +5,8 @@ use rusqlite::TransactionBehavior;
 
 const LIFETIME_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 const WAKE_TIMEOUT_MS: i64 = 90_000;
+/// A restart's exit and relaunch take seconds; the column gives up on a report after 90 s.
+const RESTART_LIFETIME_MS: i64 = 5 * 60 * 1000;
 
 #[derive(Clone)]
 pub struct SleepPermit {
@@ -21,6 +23,8 @@ pub struct SleepPermit {
     pub state: String,
     pub replacement_runtime: Option<String>,
     pub note_recorded: bool,
+    /// "sleep", or "restart": a `cockpit restart` the host itself drives, with no sleep note.
+    pub kind: String,
 }
 
 pub(super) fn migrate(connection: &Connection) -> Result<(), TeamError> {
@@ -31,9 +35,10 @@ pub(super) fn migrate(connection: &Connection) -> Result<(), TeamError> {
         replacement_runtime TEXT, started_at INTEGER, error TEXT NOT NULL DEFAULT '', note_recorded INTEGER NOT NULL DEFAULT 0);
         CREATE UNIQUE INDEX IF NOT EXISTS one_sleep_continuation ON sleep_permits(session_id)
             WHERE state IN ('prepared','launch_requested','waking','failed');")?;
-    let has_recorded = connection.prepare("PRAGMA table_info(sleep_permits)")?.query_map([], |row| row.get::<_, String>(1))?
-        .collect::<Result<Vec<_>, _>>()?.iter().any(|name| name == "note_recorded");
-    if !has_recorded { connection.execute("ALTER TABLE sleep_permits ADD COLUMN note_recorded INTEGER NOT NULL DEFAULT 0", [])?; }
+    let columns = connection.prepare("PRAGMA table_info(sleep_permits)")?.query_map([], |row| row.get::<_, String>(1))?
+        .collect::<Result<Vec<_>, _>>()?;
+    if !columns.iter().any(|name| name == "note_recorded") { connection.execute("ALTER TABLE sleep_permits ADD COLUMN note_recorded INTEGER NOT NULL DEFAULT 0", [])?; }
+    if !columns.iter().any(|name| name == "kind") { connection.execute("ALTER TABLE sleep_permits ADD COLUMN kind TEXT NOT NULL DEFAULT 'sleep'", [])?; }
     Ok(())
 }
 
@@ -42,11 +47,11 @@ fn read_permit(row: &rusqlite::Row<'_>) -> rusqlite::Result<SleepPermit> {
     let role = role_of(&role).ok_or_else(|| rusqlite::Error::InvalidColumnType(7, "role".into(), rusqlite::types::Type::Text))?;
     Ok(SleepPermit { token: row.get(0)?, session_id: row.get(1)?, agent: row.get(2)?, project: row.get(3)?,
         checkout: row.get(4)?, old_runtime: row.get(5)?, task_key: row.get(6)?, role, epoch: row.get(8)?,
-        expires_at: row.get(9)?, state: row.get(10)?, replacement_runtime: row.get(11)?, note_recorded: row.get(12)? })
+        expires_at: row.get(9)?, state: row.get(10)?, replacement_runtime: row.get(11)?, note_recorded: row.get(12)?, kind: row.get(13)? })
 }
 
 pub fn permit(connection: &Connection, token: &str) -> Result<Option<SleepPermit>, TeamError> {
-    Ok(connection.query_row("SELECT token,session_id,agent,project,checkout,old_runtime,task_key,role,epoch,expires_at,state,replacement_runtime,note_recorded
+    Ok(connection.query_row("SELECT token,session_id,agent,project,checkout,old_runtime,task_key,role,epoch,expires_at,state,replacement_runtime,note_recorded,kind
         FROM sleep_permits WHERE token=?1", [token], read_permit).optional()?)
 }
 
@@ -68,6 +73,15 @@ pub(crate) fn guard_sender(connection: &Connection, session: &str) -> Result<(),
 }
 
 pub fn prepare(connection: &mut Connection, member: &VerifiedSession, checkout: &str, now_ms: i64) -> Result<Option<String>, TeamError> {
+    prepare_continuation(connection, member, checkout, now_ms, "sleep", LIFETIME_MS)
+}
+
+/// The daemon binds it only to a relaunch of the same session in `checkout`, once `old_runtime` died.
+pub fn prepare_restart(connection: &mut Connection, member: &VerifiedSession, checkout: &str, now_ms: i64) -> Result<Option<String>, TeamError> {
+    prepare_continuation(connection, member, checkout, now_ms, "restart", RESTART_LIFETIME_MS)
+}
+
+fn prepare_continuation(connection: &mut Connection, member: &VerifiedSession, checkout: &str, now_ms: i64, kind: &str, lifetime_ms: i64) -> Result<Option<String>, TeamError> {
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let identity: Option<(String, String, String, String, String, String)> = transaction.query_row(
         "SELECT m.task_key,m.role,m.epoch,m.agent,m.runtime,t.project FROM members m JOIN teams t ON t.task_key=m.task_key WHERE m.session_id=?1",
@@ -84,7 +98,7 @@ pub fn prepare(connection: &mut Connection, member: &VerifiedSession, checkout: 
         [&member.session_id], |row| row.get(0)).optional()?;
     if let Some(token) = existing {
         let existing = permit(&transaction, &token)?.expect("selected permit");
-        if existing.state == "prepared" && existing.expires_at > now_ms && existing.checkout == checkout
+        if existing.state == "prepared" && existing.kind == kind && existing.expires_at > now_ms && existing.checkout == checkout
             && membership_matches(&transaction, &existing, &runtime)? { return Ok(Some(token)); }
         return Err(TeamError::new(ErrorCode::Conflict, "sleep continuation already exists or expired; cancel it first"));
     }
@@ -94,10 +108,10 @@ pub fn prepare(connection: &mut Connection, member: &VerifiedSession, checkout: 
         params![task_key, member.session_id], |row| row.get(0))?;
     if pending { return Err(TeamError::new(ErrorCode::Conflict, "pending team delivery prevents sleep")); }
     let token = identifier()?;
-    let expires_at = now_ms.checked_add(LIFETIME_MS).ok_or_else(|| TeamError::new(ErrorCode::Invalid, "invalid sleep time"))?;
-    transaction.execute("INSERT INTO sleep_permits (token,session_id,agent,project,checkout,old_runtime,task_key,role,epoch,expires_at,state)
-        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,'prepared')",
-        params![token, member.session_id, agent, project, checkout, runtime, task_key, role, epoch, expires_at])?;
+    let expires_at = now_ms.checked_add(lifetime_ms).ok_or_else(|| TeamError::new(ErrorCode::Invalid, "invalid sleep time"))?;
+    transaction.execute("INSERT INTO sleep_permits (token,session_id,agent,project,checkout,old_runtime,task_key,role,epoch,expires_at,state,kind)
+        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,'prepared',?11)",
+        params![token, member.session_id, agent, project, checkout, runtime, task_key, role, epoch, expires_at, kind])?;
     transaction.commit()?;
     Ok(Some(token))
 }
@@ -139,7 +153,7 @@ pub fn bind(connection: &mut Connection, token: &str, replacement: &VerifiedSess
 
 /// Protected records for host note reconciliation; failed launches are included, never retried.
 pub fn prepared_records(connection: &Connection) -> Result<Vec<SleepPermit>, TeamError> {
-    let mut statement = connection.prepare("SELECT token,session_id,agent,project,checkout,old_runtime,task_key,role,epoch,expires_at,state,replacement_runtime,note_recorded
+    let mut statement = connection.prepare("SELECT token,session_id,agent,project,checkout,old_runtime,task_key,role,epoch,expires_at,state,replacement_runtime,note_recorded,kind
         FROM sleep_permits WHERE state IN ('prepared','launch_requested','waking','failed') ORDER BY expires_at,token")?;
     Ok(statement.query_map([], read_permit)?.collect::<Result<_, _>>()?)
 }
@@ -154,7 +168,7 @@ pub fn record_note(connection: &mut Connection, session: &str, token: &str) -> R
 pub fn pending_wakes(connection: &Connection, now_ms: i64) -> Result<Vec<SleepPermit>, TeamError> {
     let mut wakes = Vec::new();
     for permit in prepared_records(connection)? {
-        if permit.state != "prepared" || permit.expires_at <= now_ms || !membership_matches(connection, &permit, &permit.old_runtime)? { continue; }
+        if permit.kind != "sleep" || permit.state != "prepared" || permit.expires_at <= now_ms || !membership_matches(connection, &permit, &permit.old_runtime)? { continue; }
         let deliverable: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM messages q
             JOIN members s ON s.task_key=q.task_key AND s.session_id=q.sender AND s.epoch=q.sender_epoch
             WHERE q.scope_kind='team' AND q.recipient=?1 AND q.task_key=?2 AND q.recipient_epoch=?3 AND q.recipient_runtime=?4

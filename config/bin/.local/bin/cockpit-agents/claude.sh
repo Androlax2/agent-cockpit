@@ -80,15 +80,16 @@ agent_claude_detached() { # dir prompt
 }
 
 agent_claude_resume() { # dir id [effort]
-    local effort_flags=()
+    local effort_flags=() resume_environment=()
     if [[ -n ${3:-} ]]; then
         require_effort "$3"
         effort_flags=(--effort "$3")
     fi
+    if [[ -n ${launch_team_resume:-} ]]; then resume_environment+=(COCKPIT_TEAM_RESUME="$launch_team_resume"); fi
     ensure_manager
     loading_overlay "Resuming $(basename "$1")${3:+ · effort $3} …" "$1" "$2"
     tmux respawn-pane -k -t "$(viewer_pane)" -c "$1" \
-        env -u TMUX -u TMUX_PANE -u COCKPIT_TEAM_RESUME COCKPIT_INSIDE=1 COCKPIT_CREDITS="$launch_credits" COCKPIT_TEAM_SPAWN="$launch_team_spawn" \
+        env -u TMUX -u TMUX_PANE -u COCKPIT_TEAM_RESUME COCKPIT_INSIDE=1 COCKPIT_CREDITS="$launch_credits" COCKPIT_TEAM_SPAWN="$launch_team_spawn" "${resume_environment[@]}" \
         fish -ic 'echo; echo "  ⟳ Resuming the conversation in $PWD …"; echo; claude --resume $argv'"$CLAUDE_LAUNCH_EPILOGUE" -- "$2" "${effort_flags[@]}"
     : > "$CURRENT"
     label_panes "$(basename "$1")"

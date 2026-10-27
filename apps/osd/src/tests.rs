@@ -1230,6 +1230,93 @@ fn verified_sleep_replacement_rejoins_before_startup_recovery() {
     assert_eq!(cockpit::teams::store::approved_runtimes(bench.registry.teams.as_ref().unwrap(), SESSION_A).unwrap(), ["runtime-40"]);
 }
 
+fn prepare_restart(bench: &mut Bench, session: &str) -> String {
+    let request = serde_json::from_value(json!({"request":"prepare_restart","session_id":session})).unwrap();
+    let result = crate::teams::host(&mut bench.registry, std::process::id(), request).unwrap().result.unwrap();
+    result["token"].as_str().expect("a member's restart gets a permit").to_string()
+}
+
+fn designer_notices_developer(bench: &mut Bench, peer: u32, key: &str) -> Result<Value, cockpit::teams::TeamError> {
+    use cockpit::teams::{AgentAction, MessageKind, Submission, TaskKey};
+    let task = TaskKey { project: crate::teams::canonical_project(&bench.fixture.root.join("home/IdeaProjects/project-a").to_string_lossy()).unwrap(), task_id: "1d3fd318".into() };
+    let message = Submission { task, submission_key: key.into(), recipient: OPENCODE_SESSION.into(), kind: MessageKind::Notice,
+        body: "The handoff is in DESIGN.md.".into(), thread_id: None, handoff_id: None };
+    crate::teams::request(&mut bench.registry, peer, AgentAction::Send { message }).and_then(|reply| reply.result)
+}
+
+#[test]
+fn a_cockpit_restart_keeps_the_team_membership() {
+    use cockpit::teams::AgentAction;
+    let mut bench = linked_team_bench();
+    let before = crate::teams::request(&mut bench.registry, 10, AgentAction::Context).unwrap().result.unwrap();
+    let token = prepare_restart(&mut bench, SESSION_A);
+    crate::teams::host_snapshot(&mut bench.registry).unwrap();
+    bench.world.borrow_mut().sender_runtimes.remove(&10);
+    resumed_session_reports(&mut bench, &token);
+    let after = crate::teams::request(&mut bench.registry, 40, AgentAction::Context).unwrap().result.unwrap();
+    assert_eq!(after, before, "same task, roles and teammates after the restart");
+    designer_notices_developer(&mut bench, 40, "after-restart").unwrap();
+    assert_eq!(cockpit::teams::store::approved_runtimes(bench.registry.teams.as_ref().unwrap(), SESSION_A).unwrap(), ["runtime-40"]);
+}
+
+#[test]
+fn a_relaunch_without_a_restart_permit_still_needs_fresh_approval() {
+    use cockpit::teams::AgentAction;
+    let mut bench = linked_team_bench();
+    bench.world.borrow_mut().sender_runtimes.remove(&10);
+    spawned_session_reports(&mut bench, 40, SESSION_A, "");
+    let context = crate::teams::request(&mut bench.registry, 40, AgentAction::Context).unwrap().result.unwrap();
+    assert!(context["task"].is_null(), "{context}");
+    let refused = designer_notices_developer(&mut bench, 40, "unpermitted").unwrap_err();
+    assert_eq!(refused.message, "no approved task messaging link");
+}
+
+#[test]
+fn a_restart_permit_binds_one_relaunch_only() {
+    let mut bench = linked_team_bench();
+    let token = prepare_restart(&mut bench, SESSION_A);
+    bench.world.borrow_mut().sender_runtimes.remove(&10);
+    resumed_session_reports(&mut bench, &token);
+    crate::teams::live_sessions(&mut bench.registry).unwrap();
+    bench.world.borrow_mut().sender_runtimes.remove(&40);
+    bench.world.borrow_mut().resume_tokens.insert(41, token);
+    spawned_session_reports(&mut bench, 41, SESSION_A, "");
+    crate::teams::live_sessions(&mut bench.registry).unwrap();
+    assert_eq!(cockpit::teams::store::approved_runtimes(bench.registry.teams.as_ref().unwrap(), SESSION_A).unwrap(), ["runtime-40"]);
+    assert!(designer_notices_developer(&mut bench, 41, "reused-permit").is_err());
+}
+
+#[test]
+fn a_restart_permit_is_not_taken_while_the_old_process_lives() {
+    let mut bench = linked_team_bench();
+    let token = prepare_restart(&mut bench, SESSION_A);
+    // Registry loss lets the replacement report while the old launch still runs.
+    bench.registry.sessions.remove(SESSION_A);
+    resumed_session_reports(&mut bench, &token);
+    crate::teams::live_sessions(&mut bench.registry).unwrap();
+    assert_eq!(cockpit::teams::store::approved_runtimes(bench.registry.teams.as_ref().unwrap(), SESSION_A).unwrap(), ["runtime-10"]);
+}
+
+#[test]
+fn a_restart_permit_is_not_taken_in_another_folder() {
+    let mut bench = linked_team_bench();
+    let token = prepare_restart(&mut bench, SESSION_A);
+    bench.world.borrow_mut().sender_runtimes.remove(&10);
+    let other_checkout = bench.fixture.root.join("home/IdeaProjects/.parallel/project-a/other");
+    fs::create_dir_all(&other_checkout).unwrap();
+    let mut world = bench.world.borrow_mut();
+    world.resume_tokens.insert(40, token);
+    world.sender_targets.insert(40, target(&[("tmux_pane", "%40")]));
+    world.sender_runtimes.insert(40, "runtime-40".into());
+    world.sender_directories.insert(40, other_checkout.to_string_lossy().into());
+    drop(world);
+    let report = parse_session(&json!({"session":SESSION_A,"agent":"claude","project":"project-a","state":"waiting"}).to_string()).unwrap();
+    bench.registry.report_from(report, 40).unwrap();
+    crate::teams::live_sessions(&mut bench.registry).unwrap();
+    assert_eq!(cockpit::teams::store::approved_runtimes(bench.registry.teams.as_ref().unwrap(), SESSION_A).unwrap(), ["runtime-10"]);
+    assert!(designer_notices_developer(&mut bench, 40, "other-folder").is_err());
+}
+
 #[test]
 fn resume_refuses_live_old_runtime_or_different_checkout() {
     let mut bench = linked_team_bench();

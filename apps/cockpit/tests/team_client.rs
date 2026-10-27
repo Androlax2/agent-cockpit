@@ -10,7 +10,7 @@ use std::time::Duration;
 #[test]
 fn sleep_cli_uses_host_socket_and_stdin_tokens() {
     for (verb, request) in [("sleep-prepare", "prepare_sleep"), ("sleep-cancel", "cancel_sleep"),
-        ("sleep-begin-wake", "begin_wake"), ("sleep-status", "sleep_status"), ("sleep-recorded", "sleep_recorded")] {
+        ("sleep-begin-wake", "begin_wake"), ("sleep-status", "sleep_status"), ("sleep-recorded", "sleep_recorded"), ("restart-prepare", "prepare_restart")] {
         let sandbox = Sandbox::new();
         let folder = sandbox.runtime.join("claude-team-host");
         std::fs::create_dir_all(&folder).unwrap();
@@ -18,7 +18,7 @@ fn sleep_cli_uses_host_socket_and_stdin_tokens() {
         listener.set_nonblocking(true).unwrap();
         let mut child = sandbox.command(env!("CARGO_BIN_EXE_cockpit-team"), &[]).args([verb, "aaaaaaaa-0000-4000-8000-000000000000"])
             .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
-        if verb != "sleep-prepare" { child.stdin.take().unwrap().write_all(json!({"token":"a".repeat(32)}).to_string().as_bytes()).unwrap(); }
+        if !verb.ends_with("-prepare") { child.stdin.take().unwrap().write_all(json!({"token":"a".repeat(32)}).to_string().as_bytes()).unwrap(); }
         drop(child.stdin.take());
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         let sent = loop {

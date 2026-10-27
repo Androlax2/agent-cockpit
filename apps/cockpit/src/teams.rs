@@ -144,6 +144,9 @@ pub enum HostRequest {
     CancelSleep { session_id: String, token: String },
     BeginWake { session_id: String, token: String },
     SleepStatus { session_id: String, token: String },
+    /// `cockpit restart` keeps a member's team through its own exit and relaunch; cancel and
+    /// status go through the sleep requests, which name the permit by its token.
+    PrepareRestart { session_id: String },
     Chief { action: crate::chief::ChiefHostAction },
     ChiefSnapshot { after: i64, limit: usize, #[serde(default)] generation: Option<String> },
     ChiefAudit { after: i64, limit: usize, #[serde(default)] generation: Option<String> },

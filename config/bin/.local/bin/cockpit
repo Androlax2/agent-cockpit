@@ -1478,7 +1478,7 @@ restore_remote_control() { # id woke_at
 # Exit it and bring it back in its directory; each agent says how (agent_*_restart). An effort or a
 # billing is refused for an agent without the feature.
 restart_session() { # id [effort] [detached] [credits|subscription]
-    local id=$1 effort=${2:-} detached=${3:-} billing=${4:-} directory note
+    local id=$1 effort=${2:-} detached=${3:-} billing=${4:-} directory note permit launch_team_resume=
     "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/cockpit-subscription" cancel-session "$id" || return
     # A live pane first: a note can outlive its process by the length of the sleep's exit.
     if [[ -z $(session_field "$id" tmux_pane) ]] && is_asleep "$id"; then
@@ -1495,6 +1495,16 @@ restart_session() { # id [effort] [detached] [credits|subscription]
     [[ -z $effort ]] || require_feature "$id" effort "effort" || return 1
     [[ -z $billing ]] || require_feature "$id" billing "billing" || return 1
     [[ $id =~ ^[A-Za-z0-9_-]+$ ]] || { echo "cockpit: refusing session id $id" >&2; return 1; }
+    # A team member keeps its membership through this restart only: the host binds the permit to
+    # the relaunch once the old process is gone, in the same folder. Agents that can sleep are the
+    # ones whose launches carry it. Refused or unavailable, the restart goes ahead without it.
+    if agent_can "$(agent_of_session "$id")" sleep; then
+        if permit=$(cockpit-team restart-prepare "$id" 2>/dev/null); then
+            launch_team_resume=$(jq -r '.token | select(type == "string" and test("^[0-9a-f]{32}$"))' <<< "$permit" 2>/dev/null) || launch_team_resume=""
+        else
+            log_event WARN sessions "$(session_field "$id" project) restarts without its team membership: the host refused or could not be reached"
+        fi
+    fi
     note="$RESTARTING_DIR/$id"
     mkdir -p "$RESTARTING_DIR"
     printf '%s\n%s\n%s\n%s\n' "$(date +%s)" "$(session_field "$id" project)" "$directory" "$(session_field "$id" tmux_pane)" > "$note"
@@ -1504,6 +1514,7 @@ restart_session() { # id [effort] [detached] [credits|subscription]
     fi
     if ! "agent_$(agent_of_session "$id")_restart" "$id" "$directory" "$effort" "$detached" "$billing"; then
         rm -f "$note"
+        [[ -z $launch_team_resume ]] || cancel_sleep_permit "$id" "{\"token\":\"$launch_team_resume\"}"
         return 1
     fi
 }

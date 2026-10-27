@@ -82,6 +82,7 @@ fn sleep_request(arguments: &[String]) -> Result<cockpit::teams::HostRequest, St
     }
     let session_id = arguments[1].clone();
     if arguments[0] == "sleep-prepare" { return Ok(HostRequest::PrepareSleep { session_id }); }
+    if arguments[0] == "restart-prepare" { return Ok(HostRequest::PrepareRestart { session_id }); }
     #[derive(serde::Deserialize)]
     #[serde(deny_unknown_fields)]
     struct Token { token: String }
@@ -161,7 +162,7 @@ fn watch() -> i32 {
 
 fn main() {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
-    if arguments.first().is_some_and(|verb| verb.starts_with("sleep-")) {
+    if arguments.first().is_some_and(|verb| verb.starts_with("sleep-") || verb == "restart-prepare") {
         let request = sleep_request(&arguments).unwrap_or_else(|error| { eprintln!("cockpit-team: {error}"); std::process::exit(2) });
         match client::host_request(&request).and_then(|reply| reply.result) {
             Ok(result) => println!("{result}"),
