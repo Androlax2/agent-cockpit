@@ -62,6 +62,8 @@ pub const ADMISSION_REQUIRED: &str = "host live OpenCode draft/queue verificatio
 pub const ADMISSION_ADAPTER: &str = "opencode-queued-v1";
 /// How long a stopped agent keeps its stop to itself (or to Theo) before a Chief answer may reach it.
 pub const CHIEF_ANSWER_GRACE_S: i64 = 30;
+/// How long `l` later hides an escalated question, on the desktop and the phone alike.
+pub const CHIEF_LATER_MS: i64 = 20 * 60 * 1000;
 // Reserve space for the TeamReply wrapper and cursors beneath the agent transport's 65,536 bytes.
 const CONTEXT_BYTES: usize = 60_000;
 
@@ -155,6 +157,8 @@ pub enum ChiefHostAction {
     Resolve { request_id: String, decision: String, expected_revision: i64, resolution: String },
     /// Theo's answer to an escalated stop: resolves the decision and queues the text for the stopped agent.
     AnswerDecision { request_id: String, decision: String, expected_revision: i64, answer: String },
+    /// Theo puts an escalated question off for `CHIEF_LATER_MS`; it stays open and comes back.
+    LaterDecision { request_id: String, decision: String, expected_revision: i64 },
     /// Theo's correction of a sent answer: queued for the session that got the answer, once per answer.
     Overrule { request_id: String, answer: String, correction: String },
     /// Theo deletes a habit; the Chief stops using it and never adds it back by itself.
@@ -256,7 +260,7 @@ impl ChiefHostAction {
     pub fn validate(&self) -> Result<(), TeamError> {
         let request_id = match self {
             Self::Start { request_id, .. } | Self::SettleStartup { request_id, .. } | Self::SendCheck { request_id, .. } | Self::Enable { request_id, .. } | Self::Pause { request_id, .. } | Self::Resume { request_id, .. }
-            | Self::Disable { request_id, .. } | Self::Resolve { request_id, .. } | Self::AnswerDecision { request_id, .. } | Self::RequestSummary { request_id }
+            | Self::Disable { request_id, .. } | Self::Resolve { request_id, .. } | Self::AnswerDecision { request_id, .. } | Self::LaterDecision { request_id, .. } | Self::RequestSummary { request_id }
             | Self::ReconcileDelivery {request_id,..} | Self::ReconcileLaunch {request_id,..} | Self::Overrule { request_id, .. }
             | Self::DeleteHabit { request_id, .. } | Self::RestoreHabit { request_id, .. } | Self::RescopeHabit { request_id, .. } => request_id,
         };
@@ -273,6 +277,7 @@ impl ChiefHostAction {
             },
             Self::Resolve { decision, expected_revision, resolution, .. } => { key(decision)?; positive(*expected_revision)?; text(resolution, 1000) },
             Self::AnswerDecision { decision, expected_revision, answer, .. } => { key(decision)?; positive(*expected_revision)?; text(answer, 4000) },
+            Self::LaterDecision { decision, expected_revision, .. } => { key(decision)?; positive(*expected_revision) },
             Self::Overrule { answer, correction, .. } => {
                 key(answer)?; text(correction, 2000)?;
                 if correction.contains('\n') { return Err(invalid("a correction is a single line")); }

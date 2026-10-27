@@ -190,6 +190,19 @@ fn the_phone_chief_action_requires_the_displayed_revision_and_page_header() {
 }
 
 #[test]
+fn the_phone_can_put_off_the_displayed_chief_question_but_not_a_changed_one() {
+    let remote=Remote::start();let host=remote.chief_host();let secret=remote.paired();
+    let shown=remote.get_json(&secret,"/api/chief");
+    assert_eq!(shown["escalations"][0]["later_until_ms"],Value::Null);
+    let payload=json!({"action":{"action":"later_decision","request_id":"phone-later","decision":"decision-1","expected_revision":4},"expected":shown["escalations"][0]});
+    let (status,body)=remote.post_json(&secret,"/api/chief",payload.clone());
+    assert_eq!(status,200,"{body}");assert_eq!(host.mutations.lock().unwrap()[0]["action"],payload["action"]);
+    host.snapshot.lock().unwrap()["records"][0]["revision"]=json!(5);
+    let (status,_)=remote.post_json(&secret,"/api/chief",payload);
+    assert_ne!(status,200);assert_eq!(host.mutations.lock().unwrap().len(),1);
+}
+
+#[test]
 fn the_phone_chief_refuses_unlisted_actions_and_invalid_answers() {
     let remote=Remote::start();let host=remote.chief_host();let secret=remote.paired();
     for action in [json!({"action":"disable","request_id":"phone-disable","expected_epoch":"epoch"}),

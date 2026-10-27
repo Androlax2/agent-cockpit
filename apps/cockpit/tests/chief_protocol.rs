@@ -3,6 +3,14 @@ use cockpit::teams::{AgentAction, Role};
 use serde_json::json;
 
 #[test]
+fn later_names_one_decision_at_an_exact_revision() {
+    let later = |revision: i64| serde_json::from_value::<ChiefHostAction>(json!({"action":"later_decision","request_id":"later-1","decision":"decision-1","expected_revision":revision})).unwrap();
+    assert!(later(1).validate().is_ok());
+    assert!(later(0).validate().is_err());
+    assert!(serde_json::from_value::<ChiefHostAction>(json!({"action":"later_decision","request_id":"later-1","decision":"decision-1","expected_revision":1,"minutes":60})).is_err());
+}
+
+#[test]
 fn chief_start_only_accepts_a_host_request_and_an_exact_retry_reference() {
     let start = json!({"action":"start","request_id":"start-1","previous_attempt":null});
     let action = serde_json::from_value::<ChiefHostAction>(start.clone()).expect("host Start action");

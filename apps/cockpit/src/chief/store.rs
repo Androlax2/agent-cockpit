@@ -18,6 +18,17 @@ pub(crate) fn upgrade_to_16(connection: &Connection) -> Result<(), TeamError> {
     Ok(())
 }
 
+/// Version 17 lets Theo put an escalated question off: `later_until` (epoch ms), NULL when not deferred.
+pub(crate) fn upgrade_to_17(connection: &Connection) -> Result<(), TeamError> {
+    let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version >= 17 { return Ok(()); }
+    if !has_column(connection, "chief_decisions", "later_until")? {
+        connection.execute_batch("ALTER TABLE chief_decisions ADD COLUMN later_until INTEGER;")?;
+    }
+    connection.execute_batch("PRAGMA user_version=17;")?;
+    Ok(())
+}
+
 /// Protected host startup state; absence never means an in-flight launch failed.
 pub fn startup(connection: &Connection) -> Result<Option<Value>, TeamError> {
     // An activated attempt whose grant was later disabled is over: Start may begin a new one.
@@ -73,7 +84,7 @@ pub fn host(connection: &mut Connection, action: &ChiefHostAction, live: &[Worke
         ChiefHostAction::Start { request_id, .. } | ChiefHostAction::SettleStartup { request_id, .. } | ChiefHostAction::SendCheck { request_id, .. }
         | ChiefHostAction::Enable { request_id, .. } | ChiefHostAction::Pause { request_id, .. }
         | ChiefHostAction::Resume { request_id, .. } | ChiefHostAction::Disable { request_id, .. }
-        | ChiefHostAction::Resolve { request_id, .. } | ChiefHostAction::AnswerDecision { request_id, .. } | ChiefHostAction::RequestSummary { request_id }
+        | ChiefHostAction::Resolve { request_id, .. } | ChiefHostAction::AnswerDecision { request_id, .. } | ChiefHostAction::LaterDecision { request_id, .. } | ChiefHostAction::RequestSummary { request_id }
         | ChiefHostAction::ReconcileDelivery {request_id,..} | ChiefHostAction::ReconcileLaunch {request_id,..} | ChiefHostAction::Overrule { request_id, .. }
         | ChiefHostAction::DeleteHabit { request_id, .. } | ChiefHostAction::RestoreHabit { request_id, .. } | ChiefHostAction::RescopeHabit { request_id, .. } => request_id.clone(),
     };
@@ -88,7 +99,7 @@ pub fn host(connection: &mut Connection, action: &ChiefHostAction, live: &[Worke
             return Ok(serde_json::from_str(&response)?);
         }
         let response = host_action(&transaction, action, live, now_ms)?;
-        if !matches!(action,ChiefHostAction::Start {..}|ChiefHostAction::SendCheck {..}|ChiefHostAction::Enable {..}|ChiefHostAction::Resolve {..}|ChiefHostAction::AnswerDecision {..}|ChiefHostAction::Overrule {..}|ChiefHostAction::RequestSummary {..}
+        if !matches!(action,ChiefHostAction::Start {..}|ChiefHostAction::SendCheck {..}|ChiefHostAction::Enable {..}|ChiefHostAction::Resolve {..}|ChiefHostAction::AnswerDecision {..}|ChiefHostAction::LaterDecision {..}|ChiefHostAction::Overrule {..}|ChiefHostAction::RequestSummary {..}
             |ChiefHostAction::DeleteHabit {..}|ChiefHostAction::RestoreHabit {..}|ChiefHostAction::RescopeHabit {..}) {
             coordination_event(&transaction,"host_control_changed",&json!({"source":"host","request_id":request_id}),now_ms)?;
         }
@@ -225,6 +236,14 @@ fn host_action(connection: &Connection, action: &ChiefHostAction, live: &[Worker
                 params![decision,expected_revision,format!("Answered by Theo: {answer}"),now_ms])?;
             coordination_event(connection,"decision_resolved",&json!({"decision":decision,"decision_revision":expected_revision+1,"answer":queued["answer"]}),now_ms)?;
             Ok(json!({"decision":decision,"state":"resolved","answer":queued["answer"],"delivery":"queued","grants_authority":false}))
+        },
+        ChiefHostAction::LaterDecision { decision, expected_revision, .. } => {
+            let until = now_ms.saturating_add(super::CHIEF_LATER_MS);
+            if connection.execute("UPDATE chief_decisions SET later_until=?3 WHERE id=?1 AND revision=?2 AND state='open' AND stop_id IS NOT NULL",
+                params![decision,expected_revision,until])? != 1 {
+                return Err(conflict("decision revision is stale, already answered or not an escalated question"));
+            }
+            Ok(json!({"decision":decision,"state":"open","later_until_ms":until}))
         },
         ChiefHostAction::Overrule { answer, correction, .. } => queue_correction(connection, live, answer, correction, now_ms),
         ChiefHostAction::DeleteHabit { habit, .. } => change_habit(connection, habit, HabitChange::State("deleted"), now_ms),
@@ -1583,7 +1602,7 @@ fn review_records(connection: &Connection, live: &[WorkerState], after: i64, lim
             'agent',m.agent,'runtime',m.runtime,'project',t.project),'role',m.role,'epoch',m.epoch,'team_revision',t.revision) FROM members m JOIN teams t ON t.task_key=m.task_key
         UNION ALL SELECT 7,id,json_object('kind','decision','id',id,'scope_key',scope_key,'decision_key',decision_key,
             'question',question,'recommendation',recommendation,'state',state,'revision',revision,'resolution',resolution,'created_at_ms',created_at,'resolved_at_ms',resolved_at,
-            'session_id',session_id,'stop_id',stop_id,'category',category,'suggested_answer',suggested_answer) FROM chief_decisions WHERE ?4 OR state='open'
+            'session_id',session_id,'stop_id',stop_id,'category',category,'suggested_answer',suggested_answer,'later_until_ms',later_until) FROM chief_decisions WHERE ?4 OR state='open'
         UNION ALL SELECT 10,id,json_object('kind','delivery','id',id,'event_id',event_id,'recipient',recipient,'recipient_runtime',recipient_runtime,
             'recipient_epoch',recipient_epoch,'delivery_kind',kind,'envelope',json(envelope),'state',state,'native_id',native_id,'receipt',json(receipt),
             'started_at_ms',started_at,'finished_at_ms',finished_at) FROM chief_delivery_attempts WHERE ?4 OR state IN ('submitting','uncertain')

@@ -598,7 +598,7 @@ fn chief_fields(record: &Value, fields: &[&str]) -> Value {
 
 fn chief_display_record(record: &Value) -> Value {
     match record["kind"].as_str() {
-        Some("decision") => chief_fields(record,&["id","revision","state","session_id","category","question","recommendation","suggested_answer"]),
+        Some("decision") => chief_fields(record,&["id","revision","state","session_id","category","question","recommendation","suggested_answer","later_until_ms"]),
         Some("answer") => {
             let mut shown=chief_fields(record,&["id","session_id","project","question","answer","reason","source","delivery","created_at_ms"]);
             shown["overrule"]=if record["overrule"].is_null() {Value::Null} else {chief_fields(&record["overrule"],&["id","correction","delivery","created_at_ms"])};
@@ -632,7 +632,7 @@ pub fn chief_action(payload: Value) -> Result<String,Value> {
         let action:ChiefHostAction=serde_json::from_value(payload["action"].clone()).map_err(|error|format!("Invalid Chief action: {error}"))?;
         action.validate().map_err(|error|error.message)?;
         let (kind,id)=match &action {
-            ChiefHostAction::AnswerDecision {decision,..}=>("decision",decision),
+            ChiefHostAction::AnswerDecision {decision,..}|ChiefHostAction::LaterDecision {decision,..}=>("decision",decision),
             ChiefHostAction::Overrule {answer,..}=>("answer",answer),
             ChiefHostAction::DeleteHabit {habit,..}|ChiefHostAction::RestoreHabit {habit,..}|ChiefHostAction::RescopeHabit {habit,..}=>("habit",habit),
             _=>return Err("This Chief action is not available from the phone".into()),
@@ -643,7 +643,7 @@ pub fn chief_action(payload: Value) -> Result<String,Value> {
         if payload["expected"].is_null() || chief_display_record(record)!=payload["expected"] {
             return Err("Chief record changed. Refresh and read it again.".into());
         }
-        if let ChiefHostAction::AnswerDecision {expected_revision,..}=&action {
+        if let ChiefHostAction::AnswerDecision {expected_revision,..}|ChiefHostAction::LaterDecision {expected_revision,..}=&action {
             if record["state"]!="open" || !record["stop_id"].is_string() || record["revision"].as_i64()!=Some(*expected_revision) {
                 return Err("Chief decision changed or cannot be answered.".into());
             }

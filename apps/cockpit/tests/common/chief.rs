@@ -24,6 +24,7 @@ pub fn restore_version_12_dispatch_schema(connection: &Connection) {
         ALTER TABLE chief_decisions DROP COLUMN stop_id;
         ALTER TABLE chief_decisions DROP COLUMN category;
         ALTER TABLE chief_decisions DROP COLUMN suggested_answer;
+        ALTER TABLE chief_decisions DROP COLUMN later_until;
         CREATE TABLE chief_worker_bindings (
             session_id TEXT NOT NULL, agent TEXT NOT NULL, project TEXT NOT NULL, runtime TEXT NOT NULL,
             epoch TEXT NOT NULL UNIQUE, role TEXT NOT NULL CHECK(role IN ('designer','developer','qa')),

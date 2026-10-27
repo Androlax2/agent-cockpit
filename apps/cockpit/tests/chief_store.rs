@@ -135,7 +135,7 @@ fn chief_migration_keeps_sleep_continuations_available_on_every_reopen() {
     drop(connection);
     let connection = store::open(&path).unwrap();
     assert!(store::sleep::prepared_records(&connection).unwrap().is_empty());
-    assert_eq!(connection.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0)).unwrap(), 16);
+    assert_eq!(connection.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0)).unwrap(), 17);
 }
 
 fn chief_session(id: &str) -> VerifiedSession {
@@ -205,7 +205,7 @@ fn migration_preserves_v2_links_messages_and_spawns() {
     let mut connection = v2();
     let before: Vec<_> = ["teams", "members", "messages", "spawns"].map(|table| rows(&connection, table)).into();
     migrate(&mut connection).unwrap();
-    assert_eq!(version(&connection), 16);
+    assert_eq!(version(&connection), 17);
     for (table, expected) in ["teams", "members", "messages", "spawns"].into_iter().zip(before) {
         assert_eq!(rows(&connection, table), expected, "changed {table}");
     }
@@ -218,15 +218,15 @@ fn migration_reopen_is_idempotent() {
     let schema = rows(&connection, "sqlite_master");
     migrate(&mut connection).unwrap();
     assert_eq!(rows(&connection, "sqlite_master"), schema);
-    assert_eq!(version(&connection), 16);
+    assert_eq!(version(&connection), 17);
 }
 
 #[test]
 fn future_schema_is_refused() {
     let mut connection = Connection::open_in_memory().unwrap();
-    connection.execute_batch("PRAGMA user_version=16;").unwrap();
+    connection.execute_batch("PRAGMA user_version=18;").unwrap();
     assert!(migrate(&mut connection).is_err());
-    assert_eq!(version(&connection), 16);
+    assert_eq!(version(&connection), 18);
     assert!(rows(&connection, "sqlite_master").is_empty());
 }
 
@@ -251,7 +251,7 @@ fn version_ten_upgrade_preserves_chief_and_team_messages_and_receipts() {
         .query_map([], |row| row.get::<_, String>(0)).unwrap().collect::<Result<Vec<_>, _>>().unwrap();
     let before: Vec<_> = tables.iter().map(|table| rows(&connection, table)).collect();
     migrate(&mut connection).unwrap();
-    assert_eq!(version(&connection), 16);
+    assert_eq!(version(&connection), 17);
     for (table, expected) in tables.iter().zip(before) {
         assert_eq!(rows(&connection, table), expected, "changed {table}");
     }
@@ -259,7 +259,7 @@ fn version_ten_upgrade_preserves_chief_and_team_messages_and_receipts() {
     assert_eq!(scope, ("team".into(), None));
     assert_eq!(connection.query_row("SELECT last_idle_turn FROM delivery_recipients WHERE session_id='session-a'", [], |row| row.get::<_, String>(0)).unwrap(), "turn-a");
     migrate(&mut connection).unwrap();
-    assert_eq!(version(&connection), 16);
+    assert_eq!(version(&connection), 17);
 }
 
 #[test]
@@ -353,7 +353,7 @@ fn version_12_with_dispatch_leftovers_upgrades_to_13_keeping_wakes_and_decisions
 
     migrate(&mut connection).unwrap();
 
-    assert_eq!(version(&connection), 16);
+    assert_eq!(version(&connection), 17);
     for table in DROPPED_DISPATCH_TABLES { assert!(!table_exists(&connection, table), "{table} survived"); }
     for table in ["chief_stops", "chief_answers"] { assert!(table_exists(&connection, table), "{table} missing"); }
     for table in ["chief_inbox", "chief_delivery_attempts"] { assert!(!columns(&connection, table).contains(&"assignment".to_string()), "{table} kept assignment"); }
@@ -377,15 +377,15 @@ fn version_12_with_dispatch_leftovers_upgrades_to_13_keeping_wakes_and_decisions
     let before = snapshot(&connection);
     migrate(&mut connection).unwrap();
     assert_eq!(before, snapshot(&connection));
-    assert_eq!(version(&connection), 16);
+    assert_eq!(version(&connection), 17);
 }
 
 #[test]
-fn a_fresh_database_is_created_at_version_16() {
+fn a_fresh_database_is_created_at_version_17() {
     let mut fresh = Connection::open_in_memory().unwrap();
     fresh.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
     migrate(&mut fresh).unwrap();
-    assert_eq!(version(&fresh), 16);
+    assert_eq!(version(&fresh), 17);
     for table in DROPPED_DISPATCH_TABLES { assert!(!table_exists(&fresh, table), "{table} exists in a fresh database"); }
     let dangling: i64 = fresh.query_row("SELECT count(*) FROM sqlite_master WHERE sql LIKE '%chief_assignments%' OR sql LIKE '%chief_work_revisions%'", [], |row| row.get(0)).unwrap();
     assert_eq!(dangling, 0);
@@ -406,9 +406,9 @@ fn open_uses_current_migration_and_keeps_private_path_checks() {
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
     let database = path.join("teams.sqlite");
     let connection = store::open(&database).unwrap();
-    assert_eq!(version(&connection), 16);
+    assert_eq!(version(&connection), 17);
     drop(connection);
-    assert_eq!(version(&store::open(&database).unwrap()), 16);
+    assert_eq!(version(&store::open(&database).unwrap()), 17);
     std::fs::set_permissions(&database, std::fs::Permissions::from_mode(0o644)).unwrap();
     assert!(store::open(&database).is_err());
     std::fs::remove_file(&database).unwrap();
@@ -622,7 +622,7 @@ fn version_13_upgrades_to_14_with_an_empty_overrule_log() {
 
     migrate(&mut connection).unwrap();
 
-    assert_eq!(version(&connection), 16);
+    assert_eq!(version(&connection), 17);
     assert!(table_exists(&connection, "chief_overrules"));
     for index in ["chief_answers_by_session", "chief_answers_by_created_at"] {
         assert!(index_exists(&connection, index), "{index} missing after the upgrade");
@@ -632,7 +632,7 @@ fn version_13_upgrades_to_14_with_an_empty_overrule_log() {
     let before = (schema_shape(&connection), rows(&connection, "chief_answers"));
     migrate(&mut connection).unwrap();
     assert_eq!(before, (schema_shape(&connection), rows(&connection, "chief_answers")));
-    assert_eq!(version(&connection), 16);
+    assert_eq!(version(&connection), 17);
 }
 
 #[test]
@@ -873,7 +873,7 @@ fn version_14_upgrades_to_15_with_an_empty_habit_list() {
 
     migrate(&mut connection).unwrap();
 
-    assert_eq!(version(&connection), 16);
+    assert_eq!(version(&connection), 17);
     assert!(table_exists(&connection, "chief_habits"));
     assert!(index_exists(&connection, "chief_habits_by_state"));
     assert_eq!(rows(&connection, "chief_habits").len(), 0);
@@ -882,7 +882,7 @@ fn version_14_upgrades_to_15_with_an_empty_habit_list() {
     let before = (schema_shape(&connection), rows(&connection, "chief_answers"));
     migrate(&mut connection).unwrap();
     assert_eq!(before, (schema_shape(&connection), rows(&connection, "chief_answers")));
-    assert_eq!(version(&connection), 16);
+    assert_eq!(version(&connection), 17);
 }
 
 #[test]
@@ -987,4 +987,55 @@ fn habit_changes_move_the_review_generation() {
         assert!(!seen.contains(&current), "step {index} did not move the generation");
         seen.push(current);
     }
+}
+
+fn open_escalation(connection: &Connection, id: &str) {
+    insert_stop(connection, &format!("stop-{id}"), "session-a", "task-a", 10);
+    connection.execute("INSERT INTO chief_decisions(id,scope_key,decision_key,question,recommendation,state,revision,created_at,session_id,stop_id,category,suggested_answer)
+        VALUES (?1,'chief-epoch',?2,'Restart osd?','The guide blocks the restart.','open',1,10,'session-a',?3,'not_sure','Go on.')",
+        rusqlite::params![id, format!("stop-{id}"), format!("stop-{id}")]).unwrap();
+}
+
+fn later(connection: &mut Connection, decision: &str, revision: i64, now_ms: i64) -> Result<serde_json::Value, cockpit::teams::TeamError> {
+    let action: ChiefHostAction = serde_json::from_value(serde_json::json!({"action":"later_decision","request_id":format!("later-{decision}-{revision}-{now_ms}"),"decision":decision,"expected_revision":revision})).expect("LaterDecision protocol");
+    cockpit::chief::store::host(connection, &action, &[], now_ms).unwrap().result
+}
+
+fn decision_record(connection: &Connection, id: &str) -> serde_json::Value {
+    cockpit::chief::store::snapshot(connection, &[], 0, 50).unwrap()["records"].as_array().unwrap().iter()
+        .find(|record| record["kind"] == "decision" && record["id"] == id).cloned().expect("decision projected")
+}
+
+#[test]
+fn later_hides_an_open_escalation_for_twenty_minutes_without_answering_it() {
+    let mut connection = migrated();
+    open_escalation(&connection, "decision-a");
+    assert_eq!(decision_record(&connection, "decision-a")["later_until_ms"], serde_json::Value::Null);
+    later(&mut connection, "decision-a", 1, 1_000).unwrap();
+    let record = decision_record(&connection, "decision-a");
+    assert_eq!(record["later_until_ms"], 1_201_000);
+    assert_eq!(record["state"], "open");
+    assert_eq!(record["revision"], 1);
+}
+
+#[test]
+fn later_refuses_a_stale_or_answered_escalation() {
+    let mut connection = migrated();
+    open_escalation(&connection, "decision-a");
+    assert_eq!(later(&mut connection, "decision-a", 2, 1_000).unwrap_err().code, ErrorCode::Conflict);
+    connection.execute("UPDATE chief_decisions SET state='resolved',revision=2 WHERE id='decision-a'", []).unwrap();
+    assert_eq!(later(&mut connection, "decision-a", 2, 1_000).unwrap_err().code, ErrorCode::Conflict);
+}
+
+#[test]
+fn a_populated_version_16_database_upgrades_to_17_keeping_its_decisions() {
+    let sandbox = common::sandbox::Sandbox::new();
+    let path = sandbox.home.join("protected/v16.db");
+    let connection = store::open(&path).unwrap();
+    open_escalation(&connection, "decision-a");
+    connection.execute_batch("ALTER TABLE chief_decisions DROP COLUMN later_until; PRAGMA user_version=16;").unwrap();
+    drop(connection);
+    let connection = store::open(&path).unwrap();
+    assert_eq!(version(&connection), 17);
+    assert_eq!(decision_record(&connection, "decision-a")["suggested_answer"], "Go on.");
 }
