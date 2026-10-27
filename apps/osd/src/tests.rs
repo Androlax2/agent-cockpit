@@ -1275,6 +1275,20 @@ fn a_cockpit_restart_keeps_the_team_membership() {
 }
 
 #[test]
+fn a_cockpit_restart_with_an_undelivered_message_keeps_the_membership_and_the_message() {
+    use cockpit::teams::AgentAction;
+    let mut bench = linked_team_bench();
+    designer_notices_developer(&mut bench, 10, "waiting-for-the-developer").unwrap();
+    let token = prepare_restart(&mut bench, SESSION_A);
+    bench.world.borrow_mut().sender_runtimes.remove(&10);
+    resumed_session_reports(&mut bench, &token);
+    let after = crate::teams::request(&mut bench.registry, 40, AgentAction::Context).unwrap().result.unwrap();
+    assert_eq!(after["task"]["task_id"], "1d3fd318", "{after}");
+    let delivery = crate::teams::request(&mut bench.registry, 20, AgentAction::Receive).unwrap().result.unwrap();
+    assert!(delivery["dispatch_id"].is_string(), "{delivery}");
+}
+
+#[test]
 fn a_relaunch_without_a_restart_permit_still_needs_fresh_approval() {
     use cockpit::teams::AgentAction;
     let mut bench = linked_team_bench();

@@ -292,6 +292,29 @@ fn restart_never_takes_over_a_membership_whose_bound_process_still_runs() {
 }
 
 #[test]
+fn a_restart_carries_queued_team_messages_both_ways() {
+    for is_restarting_sender in [true, false] {
+        let sandbox = Sandbox::new();
+        let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+        linked(&mut connection);
+        if is_restarting_sender {
+            let outgoing = AgentAction::Send { message: Submission { task: task(), submission_key: "queued".into(), recipient: DEVELOPER.into(),
+                kind: MessageKind::Notice, body: "Frames are ready.".into(), thread_id: None, handoff_id: None } };
+            store::accept(&mut connection, &live()[0], &outgoing, 3000).unwrap();
+        } else {
+            store::accept(&mut connection, &live()[1], &message("queued"), 3000).unwrap();
+        }
+        let (token, _) = store::sleep::prepare_restart(&mut connection, &live()[0], SLEEP_CHECKOUT, 3001, &|_| false).unwrap();
+        let mut current = live();
+        current[0].runtime = "replacement".into();
+        assert!(store::sleep::bind(&mut connection, &token.unwrap(), &current[0], SLEEP_CHECKOUT, 3002).unwrap());
+        let recipient = if is_restarting_sender { &current[1] } else { &current[0] };
+        let dispatch = store::claim(&mut connection, recipient, "idle", &current, 3003).unwrap();
+        assert!(dispatch.is_some(), "sender restarted: {is_restarting_sender}");
+    }
+}
+
+#[test]
 fn restart_recovery_never_moves_a_membership_paused_for_sleep() {
     let sandbox = Sandbox::new();
     let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();

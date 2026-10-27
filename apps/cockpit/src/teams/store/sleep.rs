@@ -123,10 +123,14 @@ fn prepare_continuation(connection: &mut Connection, member: &VerifiedSession, c
             && membership_matches(&transaction, &existing, &runtime)? { return Ok(Some(token)); }
         return Err(TeamError::new(ErrorCode::Conflict, "sleep continuation already exists or expired; cancel it first"));
     }
+    // A restart binds within minutes and moves this task's queued team messages with it (bind and
+    // the sender's epoch-only delivery check), so only those may wait through it; a sleep may last days.
+    let carries_queued_team_messages = kind == "restart";
     let pending: bool = transaction.query_row("SELECT EXISTS(SELECT 1 FROM messages WHERE (scope_kind='link' OR (scope_kind='team' AND task_key=?1)) AND
-        (sender=?2 OR recipient=?2) AND state IN ('queued','ready','submitting','uncertain'))
+        (sender=?2 OR recipient=?2) AND state IN ('queued','ready','submitting','uncertain')
+        AND NOT (?3 AND scope_kind='team' AND task_key=?1 AND state='queued'))
         OR EXISTS(SELECT 1 FROM chief_inbox WHERE recipient=?2 AND state IN ('queued','submitting','uncertain'))",
-        params![task_key, member.session_id], |row| row.get(0))?;
+        params![task_key, member.session_id, carries_queued_team_messages], |row| row.get(0))?;
     if pending { return Err(TeamError::new(ErrorCode::Conflict, "pending team delivery prevents sleep")); }
     let token = identifier()?;
     let expires_at = now_ms.checked_add(lifetime_ms).ok_or_else(|| TeamError::new(ErrorCode::Invalid, "invalid sleep time"))?;
