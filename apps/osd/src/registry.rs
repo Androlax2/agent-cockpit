@@ -1974,8 +1974,14 @@ pub fn output_within(command: &[&str], timeout: Duration) -> Option<(i32, String
     if command[0] == "hyprctl" {
         cockpit::util::refresh_hyprland_instance();
     }
-    let mut child = Command::new(command[0]).args(&command[1..]).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().ok()?;
     let started = Instant::now();
+    let output = wait_for_output(command, timeout, started);
+    crate::load::record_spawn(command[0], started.elapsed());
+    output
+}
+
+fn wait_for_output(command: &[&str], timeout: Duration, started: Instant) -> Option<(i32, String, String)> {
+    let mut child = Command::new(command[0]).args(&command[1..]).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().ok()?;
     loop {
         match child.try_wait() {
             Ok(Some(_)) => break,

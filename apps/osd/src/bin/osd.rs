@@ -76,7 +76,7 @@ fn report_load() {
     LOAD.with(|meter| {
         let mut meter = meter.borrow_mut();
         let level = if meter.busy_percent(elapsed) > osd::load::BUSY_WARN_PERCENT { "WARN" } else { "INFO" };
-        cockpit::util::log_as("daemon", level, &meter.summary(elapsed));
+        cockpit::util::log_as("daemon", level, &format!("{}; commands run: {}", meter.summary(elapsed), osd::load::take_spawns()));
         meter.clear();
     });
 }

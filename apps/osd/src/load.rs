@@ -3,8 +3,29 @@
 //! second kept osd at 30-45% CPU for an hour on 2026-10-27, and nothing said so.
 
 use serde_json::Value;
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::time::Duration;
+
+thread_local! {
+    /// The commands this thread ran and waited for, by program: their CPU is the daemon's children's.
+    static SPAWNS: RefCell<LoadMeter> = RefCell::default();
+}
+
+pub fn record_spawn(program: &str, took: Duration) {
+    let name = std::path::Path::new(program).file_name().and_then(|name| name.to_str()).unwrap_or("other");
+    SPAWNS.with(|spawns| spawns.borrow_mut().record(name, took));
+}
+
+/// The commands run since the last call, as "name Nx Mms" parts, costliest first; then forgotten.
+pub fn take_spawns() -> String {
+    SPAWNS.with(|spawns| {
+        let mut spawns = spawns.borrow_mut();
+        let listed = spawns.listed();
+        spawns.clear();
+        listed
+    })
+}
 
 /// Busy time above this share of the minute is logged as a warning, not as information.
 pub const BUSY_WARN_PERCENT: f64 = 5.0;
@@ -34,12 +55,15 @@ impl LoadMeter {
 
     /// One line: total busy time, then the costliest kinds with their counts.
     pub fn summary(&self, elapsed: Duration) -> String {
+        format!("load over {}s: busy {}ms ({:.1}%); {}", elapsed.as_secs(), self.busy().as_millis(),
+                self.busy_percent(elapsed), self.listed())
+    }
+
+    fn listed(&self) -> String {
         let mut kinds: Vec<_> = self.by_kind.iter().collect();
         kinds.sort_by(|left, right| right.1.1.cmp(&left.1.1).then(left.0.cmp(right.0)));
-        let shown: Vec<String> = kinds.iter().take(KINDS_SHOWN)
-            .map(|(kind, (count, took))| format!("{kind} {count}x {}ms", took.as_millis())).collect();
-        format!("load over {}s: busy {}ms ({:.1}%); {}", elapsed.as_secs(), self.busy().as_millis(),
-                self.busy_percent(elapsed), shown.join(", "))
+        kinds.iter().take(KINDS_SHOWN)
+            .map(|(kind, (count, took))| format!("{kind} {count}x {}ms", took.as_millis())).collect::<Vec<_>>().join(", ")
     }
 
     pub fn clear(&mut self) {
@@ -76,6 +100,15 @@ mod tests {
         let mut meter = LoadMeter::default();
         meter.record("tick", Duration::from_secs(3));
         assert_eq!(meter.busy_percent(Duration::from_secs(60)), 5.0);
+    }
+
+    #[test]
+    fn spawns_are_listed_by_program_name_and_forgotten_once_taken() {
+        record_spawn("/usr/bin/pkill", Duration::from_millis(6));
+        record_spawn("pkill", Duration::from_millis(6));
+        record_spawn("hyprctl", Duration::from_millis(3));
+        assert_eq!(take_spawns(), "pkill 2x 12ms, hyprctl 1x 3ms");
+        assert_eq!(take_spawns(), "");
     }
 
     #[test]
