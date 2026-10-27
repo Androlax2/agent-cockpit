@@ -1348,6 +1348,80 @@ fn a_stop_without_an_open_todo_is_ignored() {
     }
 }
 
+fn stop_task_ids(bench: &Bench) -> Vec<String> {
+    let connection = bench.registry.teams.as_ref().unwrap();
+    let mut statement = connection.prepare("SELECT task_id FROM chief_stops ORDER BY created_at,rowid").unwrap();
+    statement.query_map([], |row| row.get(0)).unwrap().collect::<Result<_, _>>().unwrap()
+}
+
+#[test]
+fn a_session_asking_for_an_answer_with_no_todo_in_progress_is_a_stop_without_a_task() {
+    let mut bench = stop_bench();
+    let entry = bench.registry.sessions.get_mut(STOPPED_WORKER).unwrap();
+    entry.state = "needs-you".into(); entry.needs_input = true;
+    report_worker_permissions(&mut bench, 1, 0);
+    bench.registry.tick_queues();
+    let boundary = format!("needs-you:{}", bench.registry.sessions[STOPPED_WORKER].since as i64);
+    assert_eq!(stop_states(&bench), [(boundary, "open".to_string())]);
+    assert_eq!(stop_task_ids(&bench), [String::new()]);
+    assert_eq!(stop_event_count(&bench), 1, "the Chief is woken for it");
+}
+
+#[test]
+fn a_session_that_only_finished_its_turn_with_no_todo_is_no_stop() {
+    let mut bench = stop_bench();
+    report_worker_permissions(&mut bench, 1, 0);
+    bench.registry.tick_queues();
+    assert!(stop_states(&bench).is_empty());
+}
+
+fn chief_answers(bench: &mut Bench, stop: &str) {
+    let action = AgentAction::Chief { request: ChiefAgentAction::Answer { stop: stop.into(), text: "Use option A.".into(), reason: "The task says so.".into(), habits: vec![] } };
+    crate::teams::request(&mut bench.registry, 20, action).unwrap().result.unwrap();
+}
+
+fn answer_inbox_states(bench: &Bench) -> Vec<String> {
+    let connection = bench.registry.teams.as_ref().unwrap();
+    let mut statement = connection.prepare("SELECT state FROM chief_inbox WHERE json_extract(envelope,'$.kind')='chief_answer' ORDER BY rowid").unwrap();
+    statement.query_map([], |row| row.get(0)).unwrap().collect::<Result<_, _>>().unwrap()
+}
+
+/// The worker resumes on its own, then stops again on the same todo.
+fn resume_and_stop_again(bench: &mut Bench) {
+    let entry = bench.registry.sessions.get_mut(STOPPED_WORKER).unwrap();
+    entry.state = "working".into(); entry.since += 5.0;
+    bench.registry.tick_queues();
+    let entry = bench.registry.sessions.get_mut(STOPPED_WORKER).unwrap();
+    entry.state = "waiting".into(); entry.since += 5.0;
+    bench.registry.tick_queues();
+}
+
+#[test]
+fn a_queued_answer_survives_a_brief_resume_and_answers_the_next_stop_on_the_same_todo() {
+    let mut bench = stop_bench();
+    assign_doing_todo(&bench, STOPPED_WORKER);
+    bench.registry.tick_queues();
+    let stop: String = bench.registry.teams.as_ref().unwrap().query_row("SELECT id FROM chief_stops", [], |row| row.get(0)).unwrap();
+    chief_answers(&mut bench, &stop);
+    resume_and_stop_again(&mut bench);
+    let states: Vec<String> = stop_states(&bench).into_iter().map(|(_, state)| state).collect();
+    assert_eq!(states, ["superseded", "answered"]);
+    assert_eq!(answer_inbox_states(&bench), ["queued"]);
+}
+
+#[test]
+fn a_queued_answer_is_cancelled_when_its_session_is_gone() {
+    let mut bench = stop_bench();
+    assign_doing_todo(&bench, STOPPED_WORKER);
+    bench.registry.tick_queues();
+    let stop: String = bench.registry.teams.as_ref().unwrap().query_row("SELECT id FROM chief_stops", [], |row| row.get(0)).unwrap();
+    chief_answers(&mut bench, &stop);
+    bench.registry.sessions.get_mut(STOPPED_WORKER).unwrap().runtime.clear();
+    bench.world.borrow_mut().sender_runtimes.remove(&STOPPED_WORKER_PEER);
+    bench.registry.tick_queues();
+    assert_eq!(answer_inbox_states(&bench), ["cancelled"]);
+}
+
 #[test]
 fn only_other_opencode_sessions_than_the_chief_can_stop() {
     let mut bench = stop_bench();

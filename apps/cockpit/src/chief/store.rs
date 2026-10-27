@@ -650,17 +650,59 @@ pub fn sessions_with_open_stops(connection: &Connection) -> Result<Vec<String>, 
 /// Closes every open or escalated stop of the session except the one at `current_boundary`; `None`
 /// closes them all (the agent resumed, or is no longer stopped on an open task). An escalated stop
 /// takes its open decision with it: nothing is left to answer.
-/// An answered stop goes too while its answer still waits in the inbox: that answer is cancelled.
+/// An answered stop whose chat answer still waits in the inbox stays answered: a session that only
+/// resumed briefly gets that answer at its next stop on the same task (`record_stop`). Only a session
+/// that is gone loses it (`close_stops_of_gone_session`). A queued form reply is cancelled: its form is gone.
 pub fn supersede_stops(connection: &Connection, session_id: &str, current_boundary: Option<&str>) -> Result<(), TeamError> {
-    let undelivered = connection.prepare("SELECT i.id FROM chief_inbox i JOIN chief_stops s ON s.id=json_extract(i.envelope,'$.stop')
-        WHERE i.state='queued' AND json_extract(i.envelope,'$.kind') IN ('chief_answer','chief_form_reply') AND s.session_id=?1 AND s.state='answered' AND (?2 IS NULL OR s.boundary<>?2)")?
-        .query_map(params![session_id, current_boundary], |row| row.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?;
-    for message in undelivered { cancel_answer(connection, &message)?; }
+    for message in queued_replies_of(connection, session_id, current_boundary)? {
+        let kind: Option<String> = connection.query_row("SELECT json_extract(envelope,'$.kind') FROM chief_inbox WHERE id=?1", [&message], |row| row.get(0))?;
+        if kind.as_deref() == Some("chief_form_reply") { cancel_answer(connection, &message)?; }
+    }
     connection.execute("UPDATE chief_decisions SET state='superseded',revision=revision+1 WHERE state='open' AND stop_id IN
         (SELECT id FROM chief_stops WHERE session_id=?1 AND state='escalated' AND (?2 IS NULL OR boundary<>?2))", params![session_id, current_boundary])?;
     connection.execute("UPDATE chief_stops SET state='superseded' WHERE session_id=?1 AND state IN ('open','escalated') AND (?2 IS NULL OR boundary<>?2)",
         params![session_id, current_boundary])?;
     Ok(())
+}
+
+/// The session is no longer live: its stops close and every answer still queued for it is cancelled.
+pub fn close_stops_of_gone_session(connection: &Connection, session_id: &str) -> Result<(), TeamError> {
+    for message in queued_replies_of(connection, session_id, None)? { cancel_answer(connection, &message)?; }
+    supersede_stops(connection, session_id, None)
+}
+
+/// The inbox rows of answers and form replies still queued for the session's answered stops, oldest
+/// first; `except_boundary` leaves out the stop at that boundary.
+fn queued_replies_of(connection: &Connection, session_id: &str, except_boundary: Option<&str>) -> Result<Vec<String>, TeamError> {
+    Ok(connection.prepare("SELECT i.id FROM chief_inbox i JOIN chief_stops s ON s.id=json_extract(i.envelope,'$.stop')
+        WHERE i.state='queued' AND json_extract(i.envelope,'$.kind') IN ('chief_answer','chief_form_reply') AND s.session_id=?1 AND s.state='answered'
+        AND (?2 IS NULL OR s.boundary<>?2) ORDER BY i.rowid")?
+        .query_map(params![session_id, except_boundary], |row| row.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?)
+}
+
+/// Moves a chat answer still queued for an earlier stop of this runtime and task to its new stop, which
+/// it then answers; the envelope names the question it was written for. Anything else (a form reply,
+/// whose form is gone, or an answer for another runtime or task) is cancelled. Returns whether an
+/// answer was carried.
+fn carry_queued_answers(connection: &Connection, stop: &str, session: &VerifiedSession, boundary: &str, task_id: &str) -> Result<bool, TeamError> {
+    let mut is_carried = false;
+    for message in queued_replies_of(connection, &session.session_id, Some(boundary))? {
+        let envelope: String = connection.query_row("SELECT envelope FROM chief_inbox WHERE id=?1", [&message], |row| row.get(0))?;
+        let mut envelope: Value = serde_json::from_str(&envelope)?;
+        let earlier: (String, String, String) = connection.query_row("SELECT s.runtime,s.task_id,a.question FROM chief_answers a JOIN chief_stops s ON s.id=a.stop_id WHERE a.id=?1",
+            [envelope["answer"].as_str()], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
+        let (runtime, earlier_task, question) = earlier;
+        let is_carriable = envelope["kind"] == "chief_answer" && runtime == session.runtime && !task_id.is_empty() && earlier_task == task_id;
+        if !is_carriable { cancel_answer(connection, &message)?; continue; }
+        let earlier_stop = envelope["stop"].as_str().unwrap_or_default().to_string();
+        envelope["stop"] = json!(stop);
+        if envelope.get("earlier_question").is_none() { envelope["earlier_question"] = json!(question); }
+        connection.execute("UPDATE chief_inbox SET envelope=?2 WHERE id=?1", params![message, envelope.to_string()])?;
+        connection.execute("UPDATE chief_stops SET state='superseded' WHERE id=?1 AND state='answered'", [earlier_stop])?;
+        is_carried = true;
+    }
+    if is_carried { connection.execute("UPDATE chief_stops SET state='answered' WHERE id=?1", [stop])?; }
+    Ok(is_carried)
 }
 
 /// Withdraws a queued answer that can no longer reach the stop it answers, and that stop with it.
@@ -993,6 +1035,9 @@ fn excerpt(text: &str, maximum: usize) -> String {
 /// Stores a stop and wakes the Chief for it. `None` when this boundary was already recorded.
 /// The bundle is stored as a JSON object: the Chief receives it nested in a Context record, where an
 /// escaped string would cost more bytes than the bundle's own size bound allows.
+/// An empty `task.task_id` is a session asking for an answer with no todo in progress. A stop that
+/// takes over an answer still queued for this task (`carry_queued_answers`) is answered already and
+/// wakes no one.
 pub fn record_stop(connection: &mut Connection, session: &VerifiedSession, boundary: &str, task: &crate::teams::TaskKey,
     bundle: &super::bundle::StopBundle, now_ms: i64) -> Result<Option<String>, TeamError> {
     let transaction = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -1001,8 +1046,10 @@ pub fn record_stop(connection: &mut Connection, session: &VerifiedSession, bound
     let id = crate::teams::store::identifier()?;
     transaction.execute("INSERT INTO chief_stops(id,session_id,runtime,boundary,project,task_id,bundle,state,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,'open',?8)",
         params![id, session.session_id, session.runtime, boundary, task.project, task.task_id, serde_json::to_string(bundle)?, now_ms])?;
-    coordination_event(&transaction, "stop_detected", &json!({"stop":id,"session":session.session_id}), now_ms)?;
-    schedule_wake(&transaction, now_ms)?;
+    if !carry_queued_answers(&transaction, &id, session, boundary, &task.task_id)? {
+        coordination_event(&transaction, "stop_detected", &json!({"stop":id,"session":session.session_id}), now_ms)?;
+        schedule_wake(&transaction, now_ms)?;
+    }
     transaction.commit()?;
     Ok(Some(id))
 }
@@ -1244,8 +1291,13 @@ fn claim_reply(connection: &mut Connection, recipient: &VerifiedSession, idle_tu
         } else {
             let stop: Option<(String, String, String)> = transaction.query_row("SELECT runtime,boundary,state FROM chief_stops WHERE id=?1", [envelope["stop"].as_str()],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).optional()?;
-            let answers_this_stop = identity == *recipient && stop.is_some_and(|(runtime, stop_boundary, state)|
-                state == "answered" && runtime == recipient.runtime && stop_boundary == boundary);
+            let is_answer_of_this_runtime = identity == *recipient && stop.as_ref().is_some_and(|(runtime, _, state)| state == "answered" && *runtime == recipient.runtime);
+            // The session stopped again before the daemon recorded the new stop: the answer waits for it (`carry_queued_answers`).
+            if kind == "chief_answer" && is_answer_of_this_runtime && stop.as_ref().is_some_and(|(_, stop_boundary, _)| stop_boundary != boundary) {
+                transaction.commit()?;
+                return Ok(None);
+            }
+            let answers_this_stop = is_answer_of_this_runtime && stop.is_some_and(|(_, stop_boundary, _)| stop_boundary == boundary);
             // Theo corrected the session after the Chief wrote this chat answer: the Chief must not contradict him.
             // A form reply is never cancelled here: the correction is claimed only at a chat stop, so the
             // session would stay on its form.

@@ -802,27 +802,76 @@ fn a_superseded_stop_cannot_be_answered() {
     assert!(inbox_states(&connection).is_empty());
 }
 
+/// The worker resumed after `STOP_BOUNDARY` and stopped again at `NEXT_STOP`; its grace ends at `NEXT_GRACE_END_MS`.
+const NEXT_STOP: &str = "waiting:1005";
+const NEXT_GRACE_END_MS: i64 = 1_036_000;
+
+fn other_task() -> cockpit::teams::TaskKey { cockpit::teams::TaskKey {project:"path:/a".into(),task_id:"2e4ae429".into()} }
+
 #[test]
-fn an_agent_that_resumes_before_the_grace_never_gets_the_answer() {
+fn an_agent_that_resumes_before_the_grace_keeps_its_queued_answer() {
     let (mut connection,live,stop) = answer_bench();
     answer_option_a(&mut connection,&live,&stop);
     store::supersede_stops(&connection,&live[1].session.session_id,None).unwrap();
+    assert_eq!(stop_state(&connection,&stop),"answered");
+    assert_eq!(inbox_states(&connection),["queued"]);
+    assert_eq!(store::sessions_with_open_stops(&connection).unwrap(),[live[1].session.session_id.clone()]);
+}
+
+#[test]
+fn a_queued_answer_reaches_the_next_stop_on_the_same_task_naming_the_earlier_question() {
+    let (mut connection,live,stop) = answer_bench();
+    answer_option_a(&mut connection,&live,&stop);
+    store::supersede_stops(&connection,&live[1].session.session_id,None).unwrap();
+    let next = store::record_stop(&mut connection,&live[1].session,NEXT_STOP,&stopped_task(),&stop_bundle_fixture("Shall I also update the docs?"),1_006_000).unwrap().unwrap();
+    assert_eq!((stop_state(&connection,&stop),stop_state(&connection,&next)),("superseded".to_string(),"answered".to_string()));
+    let mut observed = live.to_vec();
+    for worker in &mut observed {worker.observed_at_ms=NEXT_GRACE_END_MS;}
+    store::observe(&mut connection,&observed,NEXT_GRACE_END_MS).unwrap();
+    let dispatch = store::claim_answer(&mut connection,&live[1].session,NEXT_STOP,NEXT_STOP,NEXT_GRACE_END_MS).unwrap().expect("the carried answer goes out at the new stop");
+    let text = cockpit::teams::envelope_text(&dispatch.envelope);
+    assert!(text.starts_with("Answer to your earlier question (\"Which option do you want?\"), which reached you only now: Use option A."),"{text}");
+    assert!(text.ends_with(cockpit::chief::CHIEF_ANSWER_BOUNDARY),"{text}");
+}
+
+#[test]
+fn a_stop_that_takes_over_a_queued_answer_does_not_wake_the_chief() {
+    let (mut connection,live,stop) = answer_bench();
+    answer_option_a(&mut connection,&live,&stop);
+    store::record_stop(&mut connection,&live[1].session,NEXT_STOP,&stopped_task(),&stop_bundle_fixture("Shall I also update the docs?"),1_006_000).unwrap().unwrap();
+    assert_eq!(connection.query_row("SELECT count(*) FROM chief_events WHERE kind='stop_detected'",[],|row|row.get::<_,i64>(0)).unwrap(),1,"only the first stop is news to the Chief");
+}
+
+#[test]
+fn a_queued_answer_is_cancelled_when_the_next_stop_is_on_another_task() {
+    let (mut connection,live,stop) = answer_bench();
+    answer_option_a(&mut connection,&live,&stop);
+    let next = store::record_stop(&mut connection,&live[1].session,NEXT_STOP,&other_task(),&stop_bundle_fixture("Which file?"),1_006_000).unwrap().unwrap();
+    assert_eq!(answer_log(&connection)[0].5,"cancelled");
+    assert_eq!(inbox_states(&connection),["cancelled"]);
+    assert_eq!((stop_state(&connection,&stop),stop_state(&connection,&next)),("superseded".to_string(),"open".to_string()));
+}
+
+#[test]
+fn a_queued_answer_is_cancelled_when_the_session_is_gone() {
+    let (mut connection,live,stop) = answer_bench();
+    answer_option_a(&mut connection,&live,&stop);
+    store::close_stops_of_gone_session(&connection,&live[1].session.session_id).unwrap();
     assert_eq!(stop_state(&connection,&stop),"superseded");
     assert_eq!(answer_log(&connection)[0].5,"cancelled");
     assert_eq!(inbox_states(&connection),["cancelled"]);
-    assert!(claim_answer_at(&mut connection,&live,&[],GRACE_END_MS).is_none());
     assert!(store::sessions_with_open_stops(&connection).unwrap().is_empty());
 }
 
 #[test]
-fn an_answer_for_an_older_boundary_is_cancelled_at_claim() {
+fn an_answer_for_an_older_boundary_waits_at_claim_for_the_new_stop() {
     let (mut connection,live,stop) = answer_bench();
     answer_option_a(&mut connection,&live,&stop);
     store::observe(&mut connection,&live.iter().cloned().map(|mut worker|{worker.observed_at_ms=GRACE_END_MS+5_000;worker}).collect::<Vec<_>>(),GRACE_END_MS+5_000).unwrap();
-    assert!(store::claim_answer(&mut connection,&live[1].session,"waiting:1005","waiting:1005",GRACE_END_MS+5_000).unwrap().is_none());
-    assert_eq!(answer_log(&connection)[0].5,"cancelled");
-    assert_eq!(inbox_states(&connection),["cancelled"]);
-    assert_eq!(stop_state(&connection,&stop),"superseded");
+    assert!(store::claim_answer(&mut connection,&live[1].session,NEXT_STOP,NEXT_STOP,GRACE_END_MS+5_000).unwrap().is_none());
+    assert_eq!(answer_log(&connection)[0].5,"queued");
+    assert_eq!(inbox_states(&connection),["queued"]);
+    assert_eq!(stop_state(&connection,&stop),"answered");
 }
 
 #[test]
@@ -1474,7 +1523,7 @@ fn an_answer_not_sent_yet_cannot_be_overruled() {
     let error = overrule(&mut connection,&live,&answer,CORRECTION,30_300).unwrap_err();
     assert_eq!(error.code,ErrorCode::Conflict);
     assert!(error.message.contains("not sent yet"),"{}",error.message);
-    store::supersede_stops(&connection,&live[1].session.session_id,None).unwrap();
+    store::close_stops_of_gone_session(&connection,&live[1].session.session_id).unwrap();
     let error = overrule(&mut connection,&live,&answer,CORRECTION,30_400).unwrap_err();
     assert_eq!(error.code,ErrorCode::Conflict);
     assert!(error.message.contains("cancelled"),"{}",error.message);
@@ -2086,7 +2135,7 @@ fn conversation_stop(connection: &mut Connection, live: &[WorkerState], messages
         history.execute("insert into session_message values (?1,?2,?3,?4,?5)",rusqlite::params![format!("m{index}"),live[1].session.session_id,role,index as i64+1,data.to_string()]).unwrap();
     }
     let todo = cockpit::todo::Item(json!({"id":WORKER_TASK,"text":"Fix login","notes":"","status":"doing"}).as_object().unwrap().clone());
-    let bundle = cockpit::chief::bundle::stop_bundle(&path,&live[1].session.session_id,&todo,vec![]).unwrap();
+    let bundle = cockpit::chief::bundle::stop_bundle(&path,&live[1].session.session_id,Some(&todo),vec![]).unwrap();
     store::record_stop(connection,&live[1].session,"waiting:1000",&stopped_task(),&bundle,30_100).unwrap().unwrap()
 }
 

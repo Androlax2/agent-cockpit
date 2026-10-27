@@ -43,7 +43,7 @@ fn todo_item(text: &str, notes: &str) -> Item {
 }
 
 fn bundle_of(database: &Path) -> cockpit::chief::bundle::StopBundle {
-    stop_bundle(database, SESSION, &todo_item("Fix login", "Keep the old API"), Vec::new()).unwrap()
+    stop_bundle(database, SESSION, Some(&todo_item("Fix login", "Keep the old API")), Vec::new()).unwrap()
 }
 
 #[test]
@@ -80,7 +80,7 @@ fn a_bundle_masks_tokens_and_escapes_hiding_characters() {
     database.assistant("Done\u{202e}gnp.exe");
     database.add(SESSION, "assistant", json!({"content": [{"type": "tool", "name": "question", "state": {"status": "running", "input": {"questions": [
         {"header": format!("Token {TOKEN}"), "question": "Pick\u{202e}", "options": [{"label": format!("Use {TOKEN}"), "description": "d"}]}]}}}]}));
-    let bundle = stop_bundle(&database.path, SESSION, &todo_item(&format!("Fix with GITHUB_TOKEN={TOKEN}"), "note\u{200b}s"), Vec::new()).unwrap();
+    let bundle = stop_bundle(&database.path, SESSION, Some(&todo_item(&format!("Fix with GITHUB_TOKEN={TOKEN}"), "note\u{200b}s")), Vec::new()).unwrap();
     let everything = serde_json::to_string(&bundle).unwrap();
     assert!(!everything.contains("ghp_0123"), "{everything}");
     assert!(everything.contains("[redacted]"));
@@ -142,7 +142,7 @@ fn an_oversized_form_and_task_stay_inside_the_bundle_budget() {
     database.assistant(&"a".repeat(5_000));
     database.add(SESSION, "assistant", running_question(json!([
         {"header": "h".repeat(5_000), "question": "q".repeat(20_000), "options": options}])));
-    let bundle = stop_bundle(&database.path, SESSION, &todo_item(&"t".repeat(50_000), &"n".repeat(50_000)), Vec::new()).unwrap();
+    let bundle = stop_bundle(&database.path, SESSION, Some(&todo_item(&"t".repeat(50_000), &"n".repeat(50_000))), Vec::new()).unwrap();
     let question = bundle.question.as_ref().unwrap();
     assert!(question.header.chars().count() <= 200);
     assert!(question.question.chars().count() <= 1_000);
@@ -161,7 +161,7 @@ fn escape_heavy_text_cannot_push_the_serialised_bundle_over_its_budget() {
     }
     database.add(SESSION, "assistant", running_question(json!([
         {"header": hidden, "question": hidden, "options": (0..20).map(|_| json!({"label": hidden})).collect::<Vec<_>>()}])));
-    let bundle = stop_bundle(&database.path, SESSION, &todo_item(&hidden, &hidden), Vec::new()).unwrap();
+    let bundle = stop_bundle(&database.path, SESSION, Some(&todo_item(&hidden, &hidden)), Vec::new()).unwrap();
     assert!(serde_json::to_string(&bundle).unwrap().len() <= 16_000);
     assert!(!bundle.recent.is_empty());
 }
@@ -191,7 +191,7 @@ fn synthetic_text_is_read_from_the_text_field_only() {
 fn a_session_without_conversation_rows_yields_an_error_not_an_empty_bundle() {
     let mut database = Database::new();
     database.add("ses_other", "user", json!({"text": "Someone else's work"}));
-    assert!(stop_bundle(&database.path, SESSION, &todo_item("Fix login", ""), Vec::new()).is_err());
+    assert!(stop_bundle(&database.path, SESSION, Some(&todo_item("Fix login", "")), Vec::new()).is_err());
 }
 
 #[test]
@@ -238,7 +238,7 @@ fn only_the_last_twenty_messages_are_kept() {
 #[test]
 fn a_missing_database_yields_an_error_not_an_empty_bundle() {
     let sandbox = common::sandbox::Sandbox::new();
-    let error = stop_bundle(&sandbox.home.join("absent.db"), SESSION, &todo_item("Fix login", ""), Vec::new()).unwrap_err();
+    let error = stop_bundle(&sandbox.home.join("absent.db"), SESSION, Some(&todo_item("Fix login", "")), Vec::new()).unwrap_err();
     assert_eq!(error.code, ErrorCode::Unavailable);
 }
 
@@ -247,7 +247,7 @@ fn an_unreadable_database_yields_an_error_not_an_empty_bundle() {
     let sandbox = common::sandbox::Sandbox::new();
     let path = sandbox.home.join("garbage.db");
     std::fs::write(&path, "not a database at all, just text").unwrap();
-    assert!(stop_bundle(&path, SESSION, &todo_item("Fix login", ""), Vec::new()).is_err());
+    assert!(stop_bundle(&path, SESSION, Some(&todo_item("Fix login", "")), Vec::new()).is_err());
 }
 
 fn project_with(files: &[(&str, &str)]) -> (common::sandbox::Sandbox, PathBuf) {
@@ -274,7 +274,7 @@ fn a_bundle_carries_the_projects_instruction_files_masked_and_capped() {
     assert_eq!(instructions[1].text, "Be brief\\u202e.");
     let mut database = Database::new();
     database.assistant("Which option?");
-    let bundle = stop_bundle(&database.path, SESSION, &todo_item("Fix login", ""), instructions.clone()).unwrap();
+    let bundle = stop_bundle(&database.path, SESSION, Some(&todo_item("Fix login", "")), instructions.clone()).unwrap();
     assert_eq!(bundle.instructions, instructions);
     let instruction_bytes = serde_json::to_string(&bundle.instructions).unwrap().len();
     assert!(instruction_bytes <= 2 * 6_100, "{instruction_bytes}");
@@ -287,7 +287,7 @@ fn instruction_files_have_their_own_budget_beside_the_conversation() {
     let hidden = "\u{202e}\"\\".repeat(5_000);
     let (_sandbox, root) = project_with(&[("AGENTS.md", &hidden), ("CLAUDE.md", &hidden)]);
     let (instructions, _) = instruction_files(&root);
-    let mut bundle = stop_bundle(&database.path, SESSION, &todo_item(&"t".repeat(50_000), &"n".repeat(50_000)), instructions).unwrap();
+    let mut bundle = stop_bundle(&database.path, SESSION, Some(&todo_item(&"t".repeat(50_000), &"n".repeat(50_000))), instructions).unwrap();
     assert_eq!(bundle.instructions.len(), 2);
     assert!(bundle.instructions.iter().all(|file| serde_json::to_string(&file.text).unwrap().len() <= 6_002));
     assert!(serde_json::to_string(&bundle).unwrap().len() <= 16_000 + 12_100);

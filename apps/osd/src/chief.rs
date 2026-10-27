@@ -298,8 +298,9 @@ fn observe_stops(registry: &mut Registry, live: &[WorkerState], now_ms: i64) -> 
 }
 
 /// Withdraws Theo's corrections whose session is gone or restarted, closes the stops of sessions that
-/// moved on, and, while a Chief is enabled, records a stop for every
-/// OpenCode session other than the Chief that sits at a stop boundary while its todo is in progress.
+/// moved on (cancelling queued answers only for sessions that are gone), and, while a Chief is enabled,
+/// records a stop for every OpenCode session other than the Chief that sits at a stop boundary while
+/// its todo is in progress, or that asks for an answer with no todo in progress.
 /// A stop whose bundle cannot be built is not recorded; it is retried after a backoff and logged once
 /// per boundary. The todo list is read only when some session is at a stop boundary.
 ///
@@ -310,9 +311,11 @@ pub(crate) fn observe_stops_with(registry: &mut Registry, live: &[WorkerState], 
     store::cancel_stranded_corrections(registry.teams.as_mut().expect("workers_at opens the protected store"), live, now_ms)?;
     let connection = registry.teams.as_ref().expect("workers_at opens the protected store");
     for session_id in store::sessions_with_open_stops(connection)? {
-        let is_live = live.iter().any(|worker| worker.session.session_id == session_id);
-        let current = is_live.then(|| state_boundary(registry, &session_id)).flatten();
-        store::supersede_stops(connection, &session_id, current.as_deref())?;
+        if !live.iter().any(|worker| worker.session.session_id == session_id) {
+            store::close_stops_of_gone_session(connection, &session_id)?;
+            continue;
+        }
+        store::supersede_stops(connection, &session_id, state_boundary(registry, &session_id).as_deref())?;
     }
     let Some(chief) = store::chief_session(connection)? else { return Ok(()) };
     let candidates: Vec<(VerifiedSession, String)> = live.iter()
@@ -320,9 +323,12 @@ pub(crate) fn observe_stops_with(registry: &mut Registry, live: &[WorkerState], 
         .filter_map(|worker| Some((worker.session.clone(), stop_boundary(registry, &worker.session, now_ms)?)))
         .collect();
     let todos = (!candidates.is_empty()).then(load_todos);
-    let stopped: Vec<(VerifiedSession, String, cockpit::todo::Item)> = candidates.into_iter().filter_map(|(session, boundary)| {
-        let item = todos.as_ref()?.items.iter().find(|item| item.status() == "doing" && item.session() == session.session_id)?;
-        Some((session, boundary, item.clone()))
+    // A session with no todo in progress is stopped for the Chief only while it asks for an answer
+    // (cockpit-needs-input): one that merely finished its turn has nothing to answer.
+    let stopped: Vec<(VerifiedSession, String, Option<cockpit::todo::Item>)> = candidates.into_iter().filter_map(|(session, boundary)| {
+        let item = todos.as_ref()?.items.iter().find(|item| item.status() == "doing" && item.session() == session.session_id).cloned();
+        let asks_for_answer = registry.sessions.get(&session.session_id).is_some_and(|entry| entry.state == "needs-you" && entry.needs_input);
+        (item.is_some() || asks_for_answer).then_some((session, boundary, item))
     }).collect();
     let connection = registry.teams.as_mut().expect("workers_at opens the protected store");
     for (session, boundary, item) in &stopped {
@@ -333,9 +339,9 @@ pub(crate) fn observe_stops_with(registry: &mut Registry, live: &[WorkerState], 
         if failure.is_none() {
             for warning in warnings { cockpit::util::log_as("daemon", "WARN", &format!("chief stop for {} at {boundary}: {warning}", session.session_id)); }
         }
-        match cockpit::chief::bundle::stop_bundle(&cockpit::paths::opencode_database(), &session.session_id, item, instructions) {
+        match cockpit::chief::bundle::stop_bundle(&cockpit::paths::opencode_database(), &session.session_id, item.as_ref(), instructions) {
             Ok(bundle) => {
-                let task = TaskKey { project: session.project.clone(), task_id: item.id() };
+                let task = TaskKey { project: session.project.clone(), task_id: item.as_ref().map(cockpit::todo::Item::id).unwrap_or_default() };
                 store::record_stop(connection, session, boundary, &task, &bundle, now_ms)?;
             },
             Err(error) => {

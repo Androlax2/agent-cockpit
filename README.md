@@ -241,9 +241,10 @@ records. `c` on a session card opens the Answers list of that session directly.
 ### Stopped agents
 
 When an OpenCode session stops (waiting, or at a question of its own) while its todo is in
-progress, the daemon records the stop and wakes the Chief with a masked account of it:
-the last 20 conversation messages, the todo text and notes, and the question form the agent
-has open. Tool output and attachments never reach the Chief, and secrets are masked. A
+progress, or asks for an answer (`cockpit-needs-input`) with no todo in progress, the daemon
+records the stop and wakes the Chief with a masked account of it: the last 20 conversation
+messages, the todo text and notes (none without a todo; its `task_id` is empty), and the
+question form the agent has open. Tool output and attachments never reach the Chief, and secrets are masked. A
 permission prompt is never a stop. The record is closed as soon as the agent moves on, even
 while the Chief is disabled; a daemon restart or a gap in the session's telemetry does not close it.
 
@@ -254,8 +255,10 @@ For each stop the Chief does one of these things:
   answer waits at least 30 seconds after the stop, so you or the agent can act first, and then
   goes through the session's native queued inbox, which never types into a draft. It is held
   while you view the session, a prompt of yours is queued, a permission prompt is open or
-  you are gaming. If the agent resumed meanwhile, or the session was restarted, it is dropped
-  and never sent. A paused Chief's answer waits: after **Resume** it goes out if the agent
+  you are gaming. If the agent resumed meanwhile, the answer waits for its next stop on the
+  same todo and goes out there, opened with "Answer to your earlier question (…)"; the next
+  stop is then answered already and does not wake the Chief. A stop on another todo, a
+  restarted session or a session that ended drops it unsent. A paused Chief's answer waits: after **Resume** it goes out if the agent
   still sits at the same stop. Disabling the Chief drops its unsent answers. An open question
   form (`question` tool) is never answered with a chat message.
 - **Answers a question form** (`answer_form`: stop, choice, a one-line reason), only for a form

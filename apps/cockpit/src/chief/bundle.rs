@@ -236,7 +236,8 @@ fn read_instruction_file(path: &Path) -> std::io::Result<Option<String>> {
 }
 
 /// `instructions` come from `instruction_files`; they sit beside the conversation's budget, not inside it.
-pub fn stop_bundle(database: &Path, session_id: &str, todo: &crate::todo::Item, instructions: Vec<InstructionFile>) -> Result<StopBundle, TeamError> {
+/// A session asking for an answer with no todo in progress has no task text or notes.
+pub fn stop_bundle(database: &Path, session_id: &str, todo: Option<&crate::todo::Item>, instructions: Vec<InstructionFile>) -> Result<StopBundle, TeamError> {
     let connection = Connection::open_with_flags(database, OpenFlags::SQLITE_OPEN_READ_ONLY)
         .map_err(|_| unavailable("conversation history is unavailable"))?;
     connection.busy_timeout(Duration::from_millis(200)).map_err(|_| unavailable("conversation history is unavailable"))?;
@@ -269,8 +270,8 @@ pub fn stop_bundle(database: &Path, session_id: &str, todo: &crate::todo::Item, 
         question,
         last_assistant,
         recent: newest_first.into_iter().rev().collect(),
-        task_text: limited(&todo.text(), TASK_TEXT_LIMIT),
-        task_notes: limited(&todo.notes(), TASK_NOTES_LIMIT),
+        task_text: todo.map(|todo| limited(&todo.text(), TASK_TEXT_LIMIT)).unwrap_or_default(),
+        task_notes: todo.map(|todo| limited(&todo.notes(), TASK_NOTES_LIMIT)).unwrap_or_default(),
         instructions: Vec::new(),
     };
     fit_to_budget(&mut bundle)?;
