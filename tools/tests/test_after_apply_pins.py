@@ -129,6 +129,17 @@ class AfterApplyPinTests(unittest.TestCase):
                 self.assertEqual(progress.read_text(), '{"step":2}')
                 self.assertFalse(progress.with_suffix(".result").exists())
 
+    def test_overlapping_applies_both_finish_their_service_migration(self):
+        # A slow relink holds each run between its --prepare and --services steps.
+        self.fake(self.bin / "stow", "sleep 1")
+        git(self.repository, "commit", "-q", "--allow-empty", "-m", "Something else")
+        command = ["make", "-s", "-C", str(self.repository), "after-apply", f"BEFORE={self.before}"]
+        runs = [subprocess.Popen(command, env=self.environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                for _ in range(2)]
+        outputs = [run.communicate(timeout=60) for run in runs]
+        for run, (stdout, stderr) in zip(runs, outputs):
+            self.assertEqual(run.returncode, 0, stdout + stderr)
+
     def test_every_apply_checks_greyproxy_conversation_tracking_is_off(self):
         git(self.repository, "commit", "-q", "--allow-empty", "-m", "Something else")
         result = self.after_apply()

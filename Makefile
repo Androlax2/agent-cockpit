@@ -8,8 +8,13 @@ SHELL := /bin/bash
 stow = cd config && stow -v --no-folding -t ~
 packages = $(shell ls config)
 build_runner = python3 config/bin/.local/bin/agent-build
+# One install at a time: overlapping runs share migrate-cockpit-names.py's service snapshot, and the
+# first run's --services deleted it under the other (2026-10-27). Usage: $(call serialized,<target>).
+install_lock = $${XDG_RUNTIME_DIR:-/run/user/$$(id -u)}/cockpit-install.lock
+serialized = flock -n "$(install_lock)" true || echo "Waiting for another install or apply to finish …"; \
+	flock "$(install_lock)" $(MAKE) --no-print-directory $(1)
 
-.PHONY: help build test install system after-apply handoff-install greywall-patch greyproxy-patch
+.PHONY: help build test install install-serialized system after-apply after-apply-serialized handoff-install greywall-patch greyproxy-patch
 
 help:
 	@use_color=0; if [ -t 1 ] && [ -z "$${NO_COLOR:-}" ]; then use_color=1; fi; \
@@ -25,7 +30,10 @@ test: ## Build the OSD classifier and run the test suite
 	$(build_runner) cargo build --release --quiet --manifest-path apps/Cargo.toml -p osd --bin osd
 	$(build_runner) cargo nextest run --release --cargo-quiet --status-level fail --manifest-path apps/Cargo.toml
 
-install: build ## Link every package into your home and reload the user units
+install: ## Link every package into your home and reload the user units
+	@$(call serialized,install-serialized)
+
+install-serialized: build
 	python3 tools/migrate-cockpit-names.py --prepare
 	$(stow) --restow $(packages)
 	python3 tools/migrate-cockpit-names.py --apply
@@ -42,6 +50,9 @@ system: ## [sudo] Copy system/ into /: each changed file shows its diff and asks
 # conversation tracking (a core of CPU with busy sessions) cannot be kept off.
 after-apply: ## Relink, rebuild and reload when apps/ changed, rebuild greywall or greyproxy when its pin did: make after-apply BEFORE=<commit>
 	@test -n "$(BEFORE)" || { echo "usage: make after-apply BEFORE=<commit before the apply>"; exit 2; }
+	@$(call serialized,after-apply-serialized BEFORE="$(BEFORE)")
+
+after-apply-serialized:
 	python3 tools/migrate-cockpit-names.py --prepare
 	@if ! git diff --quiet "$(BEFORE)" HEAD -- apps; then $(MAKE) build; fi
 	$(stow) --restow $(packages)
