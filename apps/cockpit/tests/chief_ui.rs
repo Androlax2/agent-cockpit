@@ -1786,7 +1786,7 @@ fn leaving_write_my_own_keeps_the_draft_for_later() {
 
 #[test]
 fn status_h_opens_habits_even_when_a_question_waits() {
-    let host = inbox_host(vec![inbox_question("decision-a", 3, Some("Go on.")), habit("habit-a","Always run the tests first.",Some(PROJECT),SEEN_AT_MS)]);
+    let _host = inbox_host(vec![inbox_question("decision-a", 3, Some("Go on.")), habit("habit-a","Always run the tests first.",Some(PROJECT),SEEN_AT_MS)]);
     let mut app = App::new(); let mut screen = TestScreen::default();
     keys(&mut app, &mut screen, &[Key::Esc, Key::Char('s'), Key::Char('h')]);
     let shown = rendered(&mut app, 100, 40);

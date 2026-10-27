@@ -16,11 +16,38 @@ use std::time::Duration;
 const ANSWERED: u8 = 0;
 const TIMED_OUT: u8 = 1;
 const SIGTERM: i32 = 15;
+/// The look page 09 (frame 2075) gives the card; Theo's claude-idle.css still styles the rest.
+const CARD_CSS: &str = ".claude-idle .countdown { color: #e0af68; font-size: 72px; font-weight: 700; }
+.claude-idle .title { font-size: 28px; font-weight: 700; }
+.claude-idle .hint, .claude-idle .status { color: #979fbe; }";
+
+/// What keeps going and what waits for Theo while the screen is locked, from the cockpit's session list.
+fn status_line(rows: &[serde_json::Value]) -> Option<String> {
+    let state = |row: &serde_json::Value| row.get("state").and_then(serde_json::Value::as_str).unwrap_or("").to_string();
+    let working = rows.iter().filter(|row| state(row) == "working").count();
+    let asking: Vec<&serde_json::Value> = rows.iter().filter(|row| state(row) == "needs-you").collect();
+    let mut parts = Vec::new();
+    match working {
+        0 => {},
+        1 => parts.push("1 session keeps working while it's locked".to_string()),
+        count => parts.push(format!("{count} sessions keep working while it's locked")),
+    }
+    if let Some(first) = asking.first() {
+        let ask = ["detail", "request"].iter().find_map(|key| first.get(*key).and_then(serde_json::Value::as_str).map(str::trim).filter(|text| !text.is_empty()))
+            .map(|text| cockpit::approval::escape_hiding(&cockpit::util::collapse(text), "", ""));
+        let need = if asking.len() == 1 { "1 needs you".to_string() } else { format!("{} need you", asking.len()) };
+        parts.push(match ask { Some(ask) => format!("{need}: {}", ask.chars().take(80).collect::<String>()), None => need });
+    }
+    (!parts.is_empty()).then(|| parts.join(" · "))
+}
 
 fn activate(app: &Application, seconds: u32, outcome: Rc<Cell<u8>>) {
     let provider = CssProvider::new();
     provider.load_from_path(cockpit::paths::home().join(".config/hypr/scripts/claude-idle.css"));
     gtk4::style_context_add_provider_for_display(&gdk::Display::default().expect("a display"), &provider, gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION);
+    let card_style = CssProvider::new();
+    card_style.load_from_data(CARD_CSS);
+    gtk4::style_context_add_provider_for_display(&gdk::Display::default().expect("a display"), &card_style, gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION + 1);
 
     let window = Window::builder().application(app).title("Still there?").build();
     window.add_css_class("claude-idle");
@@ -36,13 +63,20 @@ fn activate(app: &Application, seconds: u32, outcome: Rc<Cell<u8>>) {
     countdown.add_css_class("countdown");
     let title = Label::new(Some("Still there?"));
     title.add_css_class("title");
-    let hint = Label::new(Some("The screen locks when the count reaches zero.\nAny key, click or move keeps the session on screen."));
+    let hint = Label::new(Some("The screen locks at zero. Press any key or move the mouse to stay."));
     hint.add_css_class("hint");
     hint.set_justify(Justification::Center);
     let card = GtkBox::builder().orientation(Orientation::Vertical).spacing(18).halign(Align::Center).valign(Align::Center).build();
     card.add_css_class("card");
     for widget in [&countdown, &title, &hint] {
         card.append(widget);
+    }
+    if let Some(line) = status_line(&cockpit::remote::snapshot_sessions()) {
+        let status = Label::new(Some(&line));
+        status.add_css_class("status");
+        status.set_justify(Justification::Center);
+        status.set_wrap(true);
+        card.append(&status);
     }
     window.set_child(Some(&card));
 
@@ -101,4 +135,25 @@ fn main() -> glib::ExitCode {
     });
     app.run_with_args::<&str>(&[]);
     glib::ExitCode::from(outcome.get())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn the_screen_says_what_keeps_working_and_what_needs_theo() {
+        let rows = [json!({"state":"working"}), json!({"state":"working"}), json!({"state":"waiting"}), json!({"state":"working"}),
+            json!({"state":"needs-you","detail":"Approve cockpit apply","request":"older"})];
+        assert_eq!(status_line(&rows).as_deref(), Some("3 sessions keep working while it's locked · 1 needs you: Approve cockpit apply"));
+    }
+
+    #[test]
+    fn one_working_session_reads_in_the_singular_and_nothing_running_says_nothing() {
+        assert_eq!(status_line(&[json!({"state":"working"})]).as_deref(), Some("1 session keeps working while it's locked"));
+        assert_eq!(status_line(&[json!({"state":"waiting"})]), None);
+        assert_eq!(status_line(&[json!({"state":"needs-you","request":"Allow network?"}), json!({"state":"needs-you","request":"Pick one"})]).as_deref(),
+            Some("2 need you: Allow network?"));
+    }
 }

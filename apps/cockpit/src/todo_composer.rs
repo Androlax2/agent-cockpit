@@ -1,6 +1,6 @@
 //! A TODO draft owns its text and focus until App saves or discards it.
 
-use crate::app::{Key, BLACK, BLUE, FG, FG_DARK, RED, color, fit, put, style, width_of};
+use crate::app::{Key, BG_HIGHLIGHT, BLACK, BLUE, FG, FG_DARK, RED, YELLOW, color, fit, put, style, width_of};
 use crate::todo::{Category, Item};
 use ratatui::buffer::Buffer;
 use ratatui::style::Modifier;
@@ -148,9 +148,8 @@ impl TodoComposer {
             Key::Esc => return Outcome::Cancel,
             Key::Ctrl('s') => return Outcome::Save,
             Key::Ctrl('v') => self.paste_image(),
-            Key::Enter if self.focus == 3 => return Outcome::Save,
-            Key::Tab => self.focus = (self.focus + 1) % 4,
-            Key::BackTab => self.focus = (self.focus + 3) % 4,
+            Key::Tab => self.focus = (self.focus + 1) % 3,
+            Key::BackTab => self.focus = (self.focus + 2) % 3,
             Key::Left | Key::Right | Key::Up | Key::Down if self.focus == 0 => {
                 let current = self.category.and_then(|category| Category::ALL.iter().position(|candidate| *candidate == category));
                 let backward = matches!(key, Key::Left | Key::Up);
@@ -178,28 +177,76 @@ impl TodoComposer {
         }
     }
 
+    /// A card over the column (page 09, frame 1958): the kind as chips, outlined title and notes, key caps.
     pub fn draw(&self, buffer: &mut Buffer) {
         let (width, height) = (buffer.area.width, buffer.area.height);
-        for row in 0..height { put(buffer, row, 0, &" ".repeat(width.saturating_sub(1) as usize), style(FG).bg(color(BLACK))); }
+        for row in 0..height { put(buffer, row, 0, &" ".repeat(width.saturating_sub(1) as usize), style(FG)); }
         if width < 32 || height < 14 {
             let hint = if self.is_cancelling { "Cancelled · Esc retries cleanup" } else { "Resize to 32×14 · Esc cancels" };
             put(buffer, height / 2, 1, &fit(hint, width.saturating_sub(3) as usize), style(BLUE));
             return;
         }
-        let inner = width.saturating_sub(6) as usize;
-        let heading = if self.is_cancelling { "TODO cancelled · cleanup pending" } else if self.id.is_some() { "Edit TODO" } else { "Add TODO" };
-        put(buffer, 1, 2, &fit(&format!("{heading} · {}", self.project), inner), style(BLUE).add_modifier(Modifier::BOLD));
-        let label = |focus| style(if self.focus == focus { BLUE } else { FG_DARK }).add_modifier(Modifier::BOLD);
-        let kind = self.category.map(Category::label).unwrap_or("Unknown (keep)");
-        put(buffer, 3, 2, &fit(&format!("{}Kind  ‹ {kind} ›", if self.focus == 0 { "> " } else { "  " }), inner), label(0));
-        put(buffer, 5, 2, "Title", label(1));
-        self.title.draw(buffer, 6, 3, inner, 1, self.focus == 1 && !self.is_cancelling);
-        put(buffer, 8, 2, "Notes (optional)", label(2));
-        self.notes.draw(buffer, 9, 3, inner, (height - 13) as usize, self.focus == 2 && !self.is_cancelling);
-        let button = if self.is_cancelling { "[ Esc Retry cleanup ]" } else if self.id.is_some() { "[ Save changes ]" } else { "[ Add TODO ]" };
-        put(buffer, height - 4, 2, button, label(3));
-        put(buffer, height - 3, 2, &fit(&self.error, inner), style(RED));
-        let hints = if self.is_cancelling { "Esc Retry cleanup · input disabled" } else { "CMD+S Save · CMD+V Image · Esc Cancel · Tab fields" };
-        put(buffer, height - 2, 2, &fit(hints, inner), style(FG_DARK));
+        let (left, right) = (1u16, width.saturating_sub(2));
+        let inner = (right - left).saturating_sub(3) as usize;
+        let border = style(FG_DARK);
+        put(buffer, 0, left, &format!("╭{}╮", "─".repeat((right - left - 1) as usize)), border);
+        for row in 1..height - 1 { put(buffer, row, left, "│", border); put(buffer, row, right, "│", border); }
+        put(buffer, height - 1, left, &format!("╰{}╯", "─".repeat((right - left - 1) as usize)), border);
+        let text_left = left + 2;
+        let heading = if self.is_cancelling { "Todo cancelled · cleanup pending" } else if self.id.is_some() { "Edit a todo" } else { "Add a todo" };
+        put(buffer, 1, text_left, &fit(&format!("{heading} · {}", self.project), inner), style(FG).add_modifier(Modifier::BOLD));
+        let label = |focus: usize| style(if self.focus == focus { BLUE } else { FG_DARK }).add_modifier(Modifier::BOLD);
+        put(buffer, 3, text_left, "KIND", label(0));
+        let mut row = 4u16;
+        let mut column = 0usize;
+        for kind in Category::ALL {
+            let chip = format!(" {} ", kind.label());
+            if column > 0 && column + width_of(&chip) > inner { row += 1; column = 0; }
+            let chip_style = if Some(kind) == self.category { style(BLACK).bg(color(BLUE)).add_modifier(Modifier::BOLD) } else { style(FG_DARK).bg(color(BG_HIGHLIGHT)) };
+            put(buffer, row, text_left + column as u16, &chip, chip_style);
+            column += width_of(&chip) + 1;
+        }
+        if self.category.is_none() { put(buffer, row + 1, text_left, "Unknown kind (kept)", style(FG_DARK)); row += 1; }
+        let title_top = row + 2;
+        put(buffer, title_top, text_left, "TITLE", label(1));
+        let outline = |buffer: &mut Buffer, top: u16, rows: u16, focused: bool| {
+            let line = style(if focused { BLUE } else { FG_DARK });
+            put(buffer, top, text_left, &format!("┌{}┐", "─".repeat(inner.saturating_sub(2))), line);
+            for offset in 1..=rows { put(buffer, top + offset, text_left, "│", line); put(buffer, top + offset, text_left + inner as u16 - 1, "│", line); }
+            put(buffer, top + rows + 1, text_left, &format!("└{}┘", "─".repeat(inner.saturating_sub(2))), line);
+        };
+        outline(buffer, title_top + 1, 1, self.focus == 1);
+        self.title.draw(buffer, title_top + 2, text_left + 2, inner.saturating_sub(4), 1, self.focus == 1 && !self.is_cancelling);
+        let notes_top = title_top + 4;
+        put(buffer, notes_top, text_left, "NOTES (optional)", label(2));
+        // The keys wrap between keys onto a second line when the card is narrow.
+        let keys = [("⌘S", "save", true), ("tab", "next field", false), ("←→", "kind", false), ("⌘V", "image", false), ("esc", "cancel", false)];
+        let mut key_rows: Vec<Vec<(String, &str, bool)>> = vec![Vec::new()];
+        let mut column = 0usize;
+        for (key, what, primary) in keys {
+            let cap = format!(" {key} ");
+            let item = width_of(&cap) + 1 + width_of(what) + 2;
+            if column > 0 && column + item > inner { key_rows.push(Vec::new()); column = 0; }
+            key_rows.last_mut().unwrap().push((cap, what, primary));
+            column += item;
+        }
+        let keys_top = height - 1 - key_rows.len() as u16;
+        let notes_rows = keys_top.saturating_sub(notes_top + 4).max(1);
+        outline(buffer, notes_top + 1, notes_rows, self.focus == 2);
+        self.notes.draw(buffer, notes_top + 2, text_left + 2, inner.saturating_sub(4), notes_rows as usize, self.focus == 2 && !self.is_cancelling);
+        put(buffer, keys_top - 1, text_left, &fit(&self.error, inner), style(RED));
+        if self.is_cancelling {
+            put(buffer, keys_top, text_left, &fit("Esc retries cleanup · input disabled", inner), style(FG_DARK));
+            return;
+        }
+        for (offset, row_keys) in key_rows.iter().enumerate() {
+            let mut column = 0usize;
+            for (cap, what, primary) in row_keys {
+                let cap_style = if *primary { style(BLACK).bg(color(YELLOW)) } else { style(FG).bg(color(BG_HIGHLIGHT)) }.add_modifier(Modifier::BOLD);
+                put(buffer, keys_top + offset as u16, text_left + column as u16, cap, cap_style);
+                put(buffer, keys_top + offset as u16, text_left + (column + width_of(cap) + 1) as u16, what, style(FG_DARK));
+                column += width_of(cap) + 1 + width_of(what) + 2;
+            }
+        }
     }
 }

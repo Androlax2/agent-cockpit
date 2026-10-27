@@ -11,7 +11,8 @@
 //! project's answers folder its sandbox reads, and the result names it.
 //! XDG_RUNTIME_DIR moves the daemon's copies (tests).
 
-use cockpit::app::{put, style, width_of};
+use cockpit::app::{BG_HIGHLIGHT, BLACK, FG, FG_DARK, color, put, style, width_of};
+const AMBER: u8 = cockpit::app::YELLOW;
 use cockpit::approval::{self, BOLD, DIM, RED, RESET, YELLOW};
 use cockpit::util::now_secs;
 use crossterm::event::{self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEventKind, KeyModifiers};
@@ -33,10 +34,8 @@ const MAX_AGE_S: i64 = 2 * 3600; // a guide can wait in the queue behind another
 const MAX_STEPS: usize = 60;
 const MAX_TEXT: usize = 2000;
 const STEP_FIELDS: [&str; 6] = ["text", "section", "open", "copy", "ask", "run"];
-const HINTS: [&str; 2] = ["⏎ next   ↑ back   ⌘O open   ⌘Y copy   ⌘R run", "⌘V image   ⌘S stuck: send my note now   Esc close"];
 const MAX_IMAGE_BYTES: usize = 20 * 1024 * 1024;
 const PNG_SIGNATURE: [u8; 8] = [137, 80, 78, 71, 13, 10, 26, 10];
-const CYAN: u8 = 6;
 const BLUE: u8 = 4;
 const GREEN: u8 = 2;
 const RED_INDEX: u8 = 1;
@@ -100,6 +99,8 @@ struct Guide {
     steps: Vec<Map<String, Value>>,
     cwd: String,
     project: String,
+    /// The task of the session that asked, as the cockpit names it; None when unknown.
+    task: Option<String>,
     /// Where Theo's answer and progress go: the folder the guide names (approval::answers_dir).
     answers_folder: PathBuf,
     position: usize,
@@ -120,7 +121,7 @@ impl Guide {
         let title = guide.get("title").and_then(Value::as_str).filter(|t| !t.is_empty()).unwrap_or("Steps from Claude").to_string();
         // The project comes from the daemon's copy: the one of the folder the session's sandbox started in.
         let project = guide.get("project").and_then(Value::as_str).unwrap_or("?").to_string();
-        Guide { id: id.into(), title, steps, project, cwd, answers_folder, position: 0, done: BTreeSet::new(),
+        Guide { id: id.into(), title, steps, project, task: None, cwd, answers_folder, position: 0, done: BTreeSet::new(),
                 answers: BTreeMap::new(), notes: BTreeMap::new(), runs: BTreeMap::new(), images: BTreeMap::new(), images_saved: 0 }
     }
 
@@ -234,7 +235,7 @@ fn render_step(guide: &Guide, width: usize) -> Vec<(String, Style)> {
     let mut lines = Vec::new();
     let section = guide.field("section");
     if !section.is_empty() {
-        lines.push((shown(&section).chars().take(width).collect(), style(CYAN).add_modifier(Modifier::BOLD)));
+        lines.push((shown(&section).to_uppercase().chars().take(width).collect(), style(BLUE).add_modifier(Modifier::BOLD)));
         lines.push((String::new(), Style::default()));
     }
     for paragraph in guide.field("text").split('\n') {
@@ -244,15 +245,17 @@ fn render_step(guide: &Guide, width: usize) -> Vec<(String, Style)> {
         lines.push((String::new(), Style::default()));
         lines.push(("⚠ hidden characters, shown as \\uXXXX".into(), style(RED_INDEX).add_modifier(Modifier::BOLD)));
     }
-    let details: Vec<(&str, String, &str)> = [("link", link_of(guide.step()), "⌘O opens"), ("copy", guide.field("copy"), "⌘Y copies"),
-                                               ("run", guide.field("run"), "⌘R runs (⏎ too)")]
-        .into_iter().filter(|(_, value, _)| !value.is_empty()).collect();
-    if !details.is_empty() {
+    // Each link, value or command in a card of its own: what it is, the value, and the key that uses it.
+    let details: Vec<(&str, String, &str, &str)> = [("LINK", link_of(guide.step()), "⌘O", "open in the browser"), ("COPY", guide.field("copy"), "⌘Y", "copy it"),
+                                               ("RUN", guide.field("run"), "⌘R", "run it (⏎ too)")]
+        .into_iter().filter(|(_, value, _, _)| !value.is_empty()).collect();
+    let card = style(FG).bg(color(BG_HIGHLIGHT));
+    let card_line = |text: String| -> String { let room = width.saturating_sub(1); let pad = room.saturating_sub(width_of(&text)); format!("{text}{}", " ".repeat(pad)) };
+    for (label, value, key, what) in details {
         lines.push((String::new(), Style::default()));
-    }
-    for (label, value, key) in details {
-        lines.push((format!("  {label} · {key}"), style(BLUE)));
-        lines.extend(wrap(&value, 4).into_iter().map(|line| (line, Style::default())));
+        lines.push((card_line(format!(" {label}")), card.add_modifier(Modifier::DIM)));
+        lines.extend(wrap(&value, 1).into_iter().map(|line| (card_line(line), card)));
+        lines.push((card_line(format!(" {key} {what}")), card.add_modifier(Modifier::BOLD)));
     }
     if let Some(run) = guide.runs.get(&guide.position) {
         let outcome = if run.get("status").and_then(Value::as_str) == Some("declined") { "declined".to_string() } else { format!("exit {}", run.get("exit").cloned().unwrap_or(json!(""))) };
@@ -272,17 +275,17 @@ fn render_question(guide: &Guide, width: usize) -> (Vec<String>, Style) {
     if ask.is_empty() {
         return (vec![format!("A note for Claude about this step (optional){images}")], style(BLUE).add_modifier(Modifier::DIM));
     }
-    (approval::wrap(&format!("Claude asks: {}{images}", shown(&ask)), width.max(10)), style(BLUE).add_modifier(Modifier::BOLD))
+    (approval::wrap(&format!("The agent asks: {}{images}", shown(&ask)), width.max(10)), style(BLUE).add_modifier(Modifier::BOLD))
 }
 
 fn draw(buffer: &mut Buffer, guide: &Guide, draft: &str, message: &str) -> (u16, u16) {
     let (width, height) = (buffer.area.width as usize, buffer.area.height as usize);
-    let counter = format!("step {} of {}", guide.position + 1, guide.steps.len());
+    let counter = format!("{} of {}", guide.position + 1, guide.steps.len());
     put(buffer, 0, 1, &shown(&guide.title).chars().take(width.saturating_sub(counter.len() + 4).max(1)).collect::<String>(), Style::default().add_modifier(Modifier::BOLD));
-    put(buffer, 0, width.saturating_sub(counter.len() + 2) as u16, &counter, style(CYAN));
-    let done = if guide.done.is_empty() { String::new() } else { format!(" · {} done", guide.done.len()) };
-    put(buffer, 1, 1, &format!("Claude · {}{done}", guide.project), Style::default().add_modifier(Modifier::DIM));
-    put(buffer, 2, 1, &"─".repeat(width.saturating_sub(3)), Style::default().add_modifier(Modifier::DIM));
+    put(buffer, 0, width.saturating_sub(counter.len() + 2) as u16, &counter, style(BLUE));
+    let from = match &guide.task { Some(task) => format!("from {} › {}", guide.project, shown(task)), None => format!("from {}", guide.project) };
+    put(buffer, 1, 1, &from.chars().take(width.saturating_sub(3)).collect::<String>(), style(FG_DARK));
+    draw_progress(buffer, guide, 2, width.saturating_sub(3));
     let box_width = width.saturating_sub(6).max(10);
     let mut box_lines = approval::wrap(draft, box_width);
     if draft.ends_with(' ') && !box_lines.is_empty() {
@@ -309,18 +312,59 @@ fn draw(buffer: &mut Buffer, guide: &Guide, draft: &str, message: &str) -> (u16,
         put(buffer, (question_top + row) as u16, 2, line, question_style);
     }
     let rule = "─".repeat(width.saturating_sub(4));
-    put(buffer, box_top as u16, 1, &format!("┌{rule}┐"), Style::default().add_modifier(Modifier::DIM));
+    put(buffer, box_top as u16, 1, &format!("┌{rule}┐"), style(BLUE));
     for (row, line) in box_lines.iter().enumerate() {
         let padding = width.saturating_sub(6).saturating_sub(width_of(line));
-        put(buffer, (box_top + 1 + row) as u16, 1, &format!("│ {line}{} │", " ".repeat(padding)), Style::default());
+        put(buffer, (box_top + 1 + row) as u16, 1, "│", style(BLUE));
+        put(buffer, (box_top + 1 + row) as u16, 2, &format!(" {line}{} ", " ".repeat(padding)), Style::default());
+        put(buffer, (box_top + 1 + row) as u16, (width.saturating_sub(2)) as u16, "│", style(BLUE));
     }
-    put(buffer, (box_top + 1 + box_lines.len()) as u16, 1, &format!("└{rule}┘"), Style::default().add_modifier(Modifier::DIM));
+    put(buffer, (box_top + 1 + box_lines.len()) as u16, 1, &format!("└{rule}┘"), style(BLUE));
     put(buffer, height.saturating_sub(3) as u16, 2, message, style(GREEN));
-    for (offset, hint) in HINTS.iter().enumerate() {
-        put(buffer, (height.saturating_sub(2) + offset) as u16, 2, hint, Style::default().add_modifier(Modifier::DIM));
-    }
+    draw_keys(buffer, &footer_keys(guide), height.saturating_sub(2) as u16, width);
     let last = box_lines.last().map(|line| width_of(line)).unwrap_or(0);
     ((3 + last).min(width.saturating_sub(3)) as u16, (box_top + box_lines.len()) as u16)
+}
+
+/// The task of the session that asked, from the cockpit's list: only the session the daemon verified.
+fn session_task(guide: &Value) -> Option<String> {
+    let session = guide.get("verified_session").and_then(Value::as_str)?;
+    cockpit::remote::snapshot_sessions().into_iter().find(|row| row.get("session").and_then(Value::as_str) == Some(session))
+        .and_then(|row| ["label", "task"].iter().find_map(|key| row.get(*key).and_then(Value::as_str).map(str::trim).filter(|text| !text.is_empty()).map(str::to_string)))
+}
+
+/// One segment per step: done green, the step on screen blue, the rest dim.
+fn draw_progress(buffer: &mut Buffer, guide: &Guide, row: u16, room: usize) {
+    let count = guide.steps.len().max(1);
+    let segment = (room.saturating_sub(count - 1) / count).max(1);
+    for index in 0..count {
+        let column = 1 + index * (segment + 1);
+        if column + segment > room + 1 { break; }
+        let colour = if guide.done.contains(&index) { GREEN } else if index == guide.position { BLUE } else { FG_DARK };
+        put(buffer, row, column as u16, &"▬".repeat(segment), style(colour));
+    }
+}
+
+/// The footer's keys: next is the primary one; I'm stuck is always there, run only on a step with a command.
+fn footer_keys(guide: &Guide) -> Vec<(&'static str, &'static str, bool)> {
+    let mut keys = vec![("⏎", "next", true), ("↑", "back", false)];
+    if !guide.field("run").is_empty() { keys.push(("⌘R", "run", false)); }
+    keys.extend([("⌘V", "image", false), ("⌘S", "I'm stuck", false), ("esc", "close", false)]);
+    keys
+}
+
+/// Key caps on two rows from `top`, wrapping between keys.
+fn draw_keys(buffer: &mut Buffer, keys: &[(&str, &str, bool)], top: u16, width: usize) {
+    let (mut row, mut column) = (top, 2usize);
+    for (key, label, primary) in keys {
+        let cap = format!(" {key} ");
+        let item = width_of(&cap) + 1 + width_of(label) + 2;
+        if column > 2 && column + item > width.saturating_sub(1) { row += 1; column = 2; }
+        let cap_style = if *primary { style(BLACK).bg(color(AMBER)) } else { style(FG).bg(color(BG_HIGHLIGHT)) }.add_modifier(Modifier::BOLD);
+        put(buffer, row, column as u16, &cap, cap_style);
+        put(buffer, row, (column + width_of(&cap) + 1) as u16, label, style(FG_DARK));
+        column += item;
+    }
 }
 
 /// The step's command, through the ask-to-run approval: shown escaped, Decline by default.
@@ -537,7 +581,11 @@ fn main() {
         std::process::exit(1);
     }
     let mut guide = match read_guide(&arguments[0]) {
-        Ok((found, answers_folder)) => Guide::new(&arguments[0], &found, answers_folder),
+        Ok((found, answers_folder)) => {
+            let mut guide = Guide::new(&arguments[0], &found, answers_folder);
+            guide.task = session_task(&found);
+            guide
+        },
         Err(reason) => {
             println!("Cannot show guide {}: {reason}.", arguments[0]);
             // The pause keeps the window open long enough to read; piped output has no reader to wait for.
@@ -608,6 +656,65 @@ mod tests {
             .collect::<Vec<_>>().join(" ");
         let words_on_screen: Vec<&str> = screen.split_whitespace().collect();
         assert!(words_on_screen.windows(2).any(|pair| pair == ["Paste", "it"]) && words_on_screen.contains(&"whole."), "{screen}");
+    }
+
+    fn screen(guide: &Guide, width: u16, height: u16) -> (Buffer, Vec<String>) {
+        let mut buffer = Buffer::empty(ratatui::layout::Rect::new(0, 0, width, height));
+        draw(&mut buffer, guide, "", "");
+        let rows = (0..height).map(|row| (0..width).map(|column| buffer[(column, row)].symbol()).collect::<String>()).collect();
+        (buffer, rows)
+    }
+
+    fn nas_guide() -> Guide {
+        let mut guide = guide(json!([{"text": "Find the router"}, {"text": "Open the router page and add a DHCP reservation for the NAS.", "section": "Router",
+            "open": "http://192.168.1.1/dhcp", "copy": "AA:BB:CC:11:22:33", "ask": "Which IP did the router give?"},
+            {"text": "c"}, {"text": "d"}, {"text": "e"}]));
+        guide.title = "Set up the NAS proxy".into();
+        guide.project = "homelab".into();
+        guide.task = Some("NAS proxy recovery".into());
+        guide.done.insert(0);
+        guide.position = 1;
+        guide
+    }
+
+    #[test]
+    fn the_header_names_the_step_count_and_where_the_guide_comes_from() {
+        let (_, rows) = screen(&nas_guide(), 56, 40);
+        assert!(rows[0].contains("Set up the NAS proxy") && rows[0].trim_end().ends_with("2 of 5"), "{rows:#?}");
+        assert!(rows[1].contains("from homelab › NAS proxy recovery"), "{rows:#?}");
+    }
+
+    #[test]
+    fn the_progress_bar_shows_done_current_and_remaining_steps() {
+        let (buffer, rows) = screen(&nas_guide(), 56, 40);
+        let bar = rows.iter().position(|row| row.contains('▬')).expect("a progress bar");
+        let colours: Vec<_> = (0..56).filter(|column| buffer[(*column, bar as u16)].symbol() == "▬")
+            .map(|column| buffer[(column, bar as u16)].fg).collect();
+        assert_eq!(colours.first(), Some(&cockpit::app::color(GREEN)));
+        assert!(colours.contains(&cockpit::app::color(BLUE)), "{colours:?}");
+        assert_eq!(colours.last(), Some(&cockpit::app::color(cockpit::app::FG_DARK)));
+    }
+
+    #[test]
+    fn links_and_values_sit_in_cards_with_their_key_and_the_agent_asks_above_the_box() {
+        let (_, rows) = screen(&nas_guide(), 56, 44);
+        let text = rows.join("\n");
+        for expected in ["ROUTER", "LINK", "http://192.168.1.1/dhcp", "⌘O", "open in the browser", "COPY", "AA:BB:CC:11:22:33", "⌘Y", "copy it",
+            "The agent asks: Which IP did the router give?"] {
+            assert!(text.contains(expected), "{expected}: {text}");
+        }
+    }
+
+    #[test]
+    fn the_footer_shows_key_caps_with_i_am_stuck_always_and_run_only_on_a_command_step() {
+        let mut guide = nas_guide();
+        let (_, rows) = screen(&guide, 72, 40);
+        let footer = rows[rows.len() - 2..].join(" ");
+        for expected in ["next", "back", "image", "I'm stuck", "close"] { assert!(footer.contains(expected), "{expected}: {footer}"); }
+        assert!(!footer.contains("run"), "{footer}");
+        guide.steps[1].insert("run".into(), json!("make check"));
+        let (_, rows) = screen(&guide, 72, 40);
+        assert!(rows[rows.len() - 2..].join(" ").contains("run"));
     }
 
     #[test]

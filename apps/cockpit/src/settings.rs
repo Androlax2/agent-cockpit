@@ -12,7 +12,7 @@ use std::process::Command;
 /// there), and what it does.
 pub const SETTINGS: [(&str, &str); 7] = [
     ("phone-on-lock", "Phone on lock"),
-    ("todo-queue", "Todo queue (Q)"),
+    ("todo-queue", "Todo queue"),
     ("error-handoff", "Error hand-off"),
     ("freeze-while-gaming", "Freeze while gaming"),
     ("idle-lock", "Lock workspace 6 idle"),
@@ -24,8 +24,26 @@ pub const LAUNCH_SETTINGS: [(&str, &str); 4] = [
     ("default-agent", "Default agent"),
     ("opencode-model", "OpenCode model"),
     ("opencode-effort", "OpenCode effort"),
-    ("idle-sleep-after", "Sleep after (minutes)"),
+    ("idle-sleep-after", "Sleep idle sessions after"),
 ];
+
+/// The one dim line under each setting in the S menu (page 09, frame 2002).
+pub fn explanation(name: &str) -> &'static str {
+    match name {
+        "default-agent" => "what N starts",
+        "opencode-model" => "the model new OpenCode sessions use",
+        "opencode-effort" => "how hard it thinks; per model",
+        "idle-sleep-after" => "frees memory; wakes on your message",
+        "todo-queue" => "start queued todos by themselves",
+        "error-handoff" => "a session that errors hands its work to a fresh one",
+        "freeze-while-gaming" => "hold banners and new work",
+        "idle-lock" => "lock the screen after the idle countdown",
+        "daily-digest" => "one summary each morning",
+        "idle-sleep" => "exit idle sessions to free memory",
+        "phone-on-lock" => "send what needs you to the phone while locked",
+        _ => "",
+    }
+}
 
 pub fn launch_value(name: &str) -> Result<String, String> {
     let fallback = if name == "default-agent" { "claude" } else { "" };

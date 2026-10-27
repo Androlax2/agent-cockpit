@@ -2033,11 +2033,11 @@ fn settings_group_sessions_first_then_automation_then_phone() {
     let fixture = Fixture::new();
     let mut app = fixture.app();
     app.handle(Key::Char('S'), &mut FakeScreen::default());
-    let rows = settings_screen_rows(&render(&mut app, 60, 40));
+    let rows = settings_screen_rows(&render(&mut app, 60, 60));
     let row_of = |label: &str| rows.iter().position(|row| row.contains(label)).unwrap_or_else(|| panic!("missing {label}"));
     for (before, after) in [
-        ("Sessions", "Default agent"), ("OpenCode effort", "Automation"),
-        ("Automation", "Todo queue"), ("Daily digest", "Phone on lock"),
+        ("SESSIONS", "Default agent"), ("OpenCode effort", "AUTOMATION"),
+        ("AUTOMATION", "Todo queue"), ("Daily digest", "Phone on lock"),
         ("Phone on lock", "Pair a phone"),
     ] {
         assert!(row_of(before) < row_of(after), "{before} must precede {after}: {rows:?}");
@@ -2057,16 +2057,16 @@ fn opening_settings_selects_the_default_agent_and_marks_keyboard_selection() {
 }
 
 #[test]
-fn settings_values_share_one_column_across_sections() {
+fn settings_values_end_at_one_column_across_sections() {
     let fixture = Fixture::new();
     fixture.write("state/cockpit/settings.json", r#"{"default-agent":"opencode","opencode-model":"openai/gpt-6.1-sol","opencode-effort":"medium","todo-queue":false}"#);
     let mut app = fixture.app();
     app.handle(Key::Char('S'), &mut FakeScreen::default());
     let rows = settings_screen_rows(&render(&mut app, 60, 40));
-    let columns: Vec<usize> = [("Default agent", "opencode"), ("OpenCode model", "openai/gpt-6.1-sol"),
-        ("OpenCode effort", "medium"), ("Todo queue", "off")].iter().map(|(label, value)| {
+    let columns: Vec<usize> = [("Default agent", "opencode ▾"), ("OpenCode model", "openai/gpt-6.1-sol ▾"),
+        ("OpenCode effort", "medium ▾"), ("Todo queue", "off")].iter().map(|(label, value)| {
             let row = rows.iter().find(|row| row.contains(label)).unwrap();
-            row.chars().collect::<Vec<_>>().windows(value.chars().count()).position(|characters| characters.iter().collect::<String>() == *value).unwrap()
+            row.chars().collect::<Vec<_>>().windows(value.chars().count()).position(|characters| characters.iter().collect::<String>() == *value).unwrap() + value.chars().count()
         }).collect();
     assert!(columns.iter().all(|column| *column == columns[0]), "unaligned columns: {columns:?}");
 }
@@ -2078,7 +2078,7 @@ fn settings_sections_have_a_blank_line_between_groups() {
     app.handle(Key::Char('S'), &mut FakeScreen::default());
     let buffer = render(&mut app, 60, 40);
     let rows = settings_screen_rows(&buffer);
-    for section in ["Automation", "Phone"] {
+    for section in ["AUTOMATION", "PHONE"] {
         let row = rows.iter().position(|row| row.contains(section)).unwrap();
         let content: String = (4..56).map(|column| buffer[(column, row as u16 - 1)].symbol()).collect();
         assert!(content.trim().is_empty(), "no space above {section}: {content:?}");
@@ -2094,9 +2094,9 @@ fn settings_distinguish_selected_values_enabled_and_disabled_toggles_by_color() 
     let buffer = render(&mut app, 60, 40);
     let rows = settings_screen_rows(&buffer);
     for (label, value, color) in [
-        ("Default agent", "opencode", crate::app::CYAN),
-        ("OpenCode model", "openai/gpt-6.1-sol", crate::app::CYAN),
-        ("OpenCode effort", "medium", crate::app::CYAN),
+        ("Default agent", "opencode", crate::app::BLUE),
+        ("OpenCode model", "openai/gpt-6.1-sol", crate::app::BLUE),
+        ("OpenCode effort", "medium", crate::app::BLUE),
         ("Error hand-off", "on", crate::app::GREEN),
         ("Todo queue", "off", crate::app::FG_DARK),
     ] {
@@ -2307,8 +2307,8 @@ fn the_settings_menu_lists_the_paired_phones_under_phone() {
     phone_page(&fixture, json!([phone("iPhone", "aa11"), phone("iPad", "bb22")]));
     let mut app = fixture.app();
     app.handle(Key::Char('S'), &mut FakeScreen::default());
-    let drawn = format!("{:?}", render(&mut app, 60, 40));
-    for shown in ["Phone", "Pair a phone (QR code)", "iPhone", "iPad", "seen now"] {
+    let drawn = format!("{:?}", render(&mut app, 60, 60));
+    for shown in ["PHONE", "Pair a phone", "QR code", "iPhone", "iPad", "seen now"] {
         assert!(drawn.contains(shown), "{shown} missing");
     }
 }
@@ -6974,7 +6974,9 @@ fn todo_composer_add_saves_one_complete_item_without_external_editor_or_picker()
     let screen = &mut FakeScreen::default();
     app.handle(Key::Char('t'), screen);
     let form = buffer_text(&render(&mut app, 60, 30));
-    assert!(form.contains("Kind") && form.contains("Title") && form.contains("Notes") && form.contains("Add TODO"), "{form}");
+    for expected in ["Add a todo · runway", "KIND", "Task", "Feature", "Bug", "Improvement", "Chore", "Research", "TITLE", "NOTES (optional)", "save", "next field", "kind", "image", "cancel"] {
+        assert!(form.contains(expected), "{expected}: {form}");
+    }
     assert!(TodoList::load().items.is_empty());
     type_in_app(&mut app, "Fix café 界 qtdjk123?");
     app.handle(Key::BackTab, screen);
@@ -7048,8 +7050,7 @@ fn todo_composer_validates_title_and_edits_unicode_at_the_cursor() {
     type_in_app(&mut app, "é");
     app.handle(Key::Tab, screen);
     type_in_app(&mut app, "one\ntwo");
-    app.handle(Key::Tab, screen);
-    app.handle(Key::Enter, screen);
+    app.handle(Key::Ctrl('s'), screen);
     let item = &TodoList::load().items[0];
     assert_eq!((item.text(), item.notes()), ("aéb".into(), "one\ntwo".into()));
 }
@@ -7162,7 +7163,12 @@ fn todo_composer_keeps_focus_and_draft_at_all_terminal_sizes() {
     for (width, height) in [(40, 14), (60, 30), (100, 40), (130, 50), (20, 8), (1, 1), (0, 0)] {
         let buffer = render(&mut app, width, height);
         if width >= 32 {
-            let cursor_cells: Vec<_> = buffer.content.iter().filter(|cell| cell.bg == crate::app::color(crate::app::BLUE)).collect();
+            // The selected kind chip is blue too: the cursor is the one blue cell that is not a chip's.
+            let chips = ["Task", "Feature", "Bug", "Improvement", "Chore", "Research"];
+            let cursor_cells: Vec<_> = (0..height).flat_map(|row| (0..width).map(move |column| (column, row)))
+                .filter(|(column, row)| buffer[(*column, *row)].bg == crate::app::color(crate::app::BLUE))
+                .filter(|(_, row)| { let line: String = (0..width).map(|column| buffer[(column, *row)].symbol()).collect(); !chips.iter().filter(|chip| line.contains(*chip)).nth(1).is_some() })
+                .collect();
             assert_eq!(cursor_cells.len(), 1, "cursor missing or outside field at {width}x{height}");
         } else if width == 20 {
             assert!(buffer_text(&buffer).contains("Resize"));
@@ -12424,7 +12430,26 @@ fn the_settings_menu_has_one_background_behind_its_text() {
     let bottom = rows.iter().position(|row| row.contains('╰')).expect("settings end") as u16;
     let left = rows[top as usize].chars().position(|symbol| symbol == '╭').unwrap() as u16;
     let right = rows[top as usize].chars().position(|symbol| symbol == '╮').unwrap() as u16;
-    assert_one_background(&buffer, top + 1..bottom, left + 1..right, &[DESIGNED_HIGHLIGHT]);
+    // The highlight behind the selected row and key caps, and the amber primary key cap, are designed.
+    assert_one_background(&buffer, top + 1..bottom, left + 1..right, &[DESIGNED_HIGHLIGHT, ratatui::style::Color::Indexed(crate::app::YELLOW)]);
+}
+
+#[test]
+fn every_setting_explains_itself_on_a_dim_line_under_its_name() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    app.handle(Key::Char('S'), &mut FakeScreen::default());
+    let buffer = render(&mut app, 60, 60);
+    let rows = settings_screen_rows(&buffer);
+    for (name, explanation) in [("Default agent", "what N starts"), ("Todo queue", "start queued todos by themselves"),
+        ("Freeze while gaming", "hold banners and new work"), ("Daily digest", "one summary each morning")] {
+        let row = rows.iter().position(|row| row.contains(name)).unwrap_or_else(|| panic!("{name}: {rows:#?}"));
+        assert!(rows[row + 1].contains(explanation), "{name}: {}", rows[row + 1]);
+        let column = rows[row + 1].find(explanation).map(|byte| rows[row + 1][..byte].chars().count()).unwrap() as u16;
+        assert_eq!(buffer[(column, row as u16 + 1)].fg, ratatui::style::Color::Indexed(crate::app::FG_DARK), "{name}");
+    }
+    let footer = rows.iter().find(|row| row.contains("change")).expect("key caps");
+    assert!(footer.contains("move") && footer.contains("close"), "{footer}");
 }
 
 // ---- Key map (DESIGN.md "Key map", todo 86822093) ----
@@ -12467,4 +12492,22 @@ fn i_opens_an_ideas_details_like_enter() {
     assert_ne!(list, by_enter, "Enter opens details");
     app.handle(Key::Char('i'), &mut FakeScreen::default());
     assert_eq!(settings_screen_rows(&render(&mut app, 160, 45)).join("\n"), by_enter);
+}
+
+#[test]
+fn the_todo_form_is_a_card_over_the_column_with_kind_chips() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "working", "runway", "/r/runway", 1)]));
+    fixture.view(SESSION_A);
+    let mut app = fixture.app();
+    app.focus_panel(3);
+    app.handle(Key::Char('t'), &mut FakeScreen::default());
+    let buffer = render(&mut app, 60, 30);
+    let rows = buffer_rows(&buffer);
+    assert!(rows.iter().any(|row| row.contains('╭')) && rows.iter().any(|row| row.contains('╰')), "a card with a border: {rows:#?}");
+    let chips = rows.iter().position(|row| row.contains("Feature")).expect("kind chips");
+    let task = rows[chips].find("Task").unwrap();
+    let task_column = rows[chips][..task].chars().count() as u16;
+    assert_eq!(buffer[(task_column, chips as u16)].bg, crate::app::color(crate::app::BLUE), "the selected kind is a blue chip");
+    assert!(!rows.iter().any(|row| row.contains("[ Add")), "no button row: ⌘S saves");
 }

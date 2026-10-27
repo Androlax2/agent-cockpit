@@ -612,7 +612,9 @@ enum SettingsLine {
     Space,
     Section(&'static str),
     Health,
+    /// A row's name and value, then its one dim line under it.
     Choice(usize),
+    Explain(usize),
 }
 
 impl SettingsMenu {
@@ -652,6 +654,17 @@ impl SettingsMenu {
         }
     }
 
+    /// What a row says under its name: its explanation, a phone's last visit, the pairing's terms.
+    fn explanation(&self, index: usize) -> String {
+        match self.row(index) {
+            SettingsRow::Setting(setting) => settings::explanation(SETTINGS[setting].0).into(),
+            SettingsRow::Launch(setting) => settings::explanation(LAUNCH_SETTINGS[setting].0).into(),
+            SettingsRow::PairPhone => "QR code, 10 minutes".into(),
+            SettingsRow::Phone(phone) => format!("seen {}", remote::seen_ago(self.phones[phone].get("last_seen").and_then(Value::as_i64))),
+        }
+    }
+
+    /// Grouped settings (page 09, frame 2002): uppercase sections, a dim line under each row, values at the right.
     fn draw(&mut self, buffer: &mut Buffer) {
         let width = buffer.area.width;
         let top = HEADER_LINES;
@@ -660,50 +673,43 @@ impl SettingsMenu {
         let mut lines = Vec::new();
         for index in 0..self.row_count() {
             match self.row(index) {
-                SettingsRow::Launch(0) => lines.push(SettingsLine::Section("Sessions")),
+                SettingsRow::Launch(0) => lines.push(SettingsLine::Section("SESSIONS")),
                 SettingsRow::Setting(1) => {
                     lines.push(SettingsLine::Space);
-                    lines.push(SettingsLine::Section("Automation"));
+                    lines.push(SettingsLine::Section("AUTOMATION"));
                 }
                 SettingsRow::Setting(0) => {
                     lines.push(SettingsLine::Space);
-                    lines.push(SettingsLine::Section("Phone"));
+                    lines.push(SettingsLine::Section("PHONE"));
                     lines.push(SettingsLine::Health);
                 }
                 _ => {}
             }
             lines.push(SettingsLine::Choice(index));
+            lines.push(SettingsLine::Explain(index));
         }
         let box_height = (lines.len() as u16 + 4).min(buffer.area.height - top - 1);
         let body_height = (box_height - 4) as usize;
         let selected_line = lines.iter().position(|line| matches!(line, SettingsLine::Choice(index) if *index == self.selected)).unwrap_or(0);
         self.scroll = self.scroll.min(lines.len().saturating_sub(body_height));
         if selected_line < self.scroll { self.scroll = selected_line; }
-        if selected_line >= self.scroll + body_height { self.scroll = selected_line + 1 - body_height; }
+        if selected_line + 1 >= self.scroll + body_height { self.scroll = (selected_line + 2).saturating_sub(body_height); }
         let menu_width = width.saturating_sub(4).min(54);
         let left = width.saturating_sub(3 + menu_width).max(1);
         let right = left + menu_width - 1;
         self.area = (top, left, top + box_height - 1, right);
         let frame = on(FG_DARK, BLACK);
         let ground = on(FG, BLACK);
-        let dim = on(FG_DARK, BLACK);
-        let heading = on(BLUE, BLACK).add_modifier(Modifier::BOLD);
+        let heading = on(FG_DARK, BLACK).add_modifier(Modifier::BOLD);
         let inner = menu_width.saturating_sub(2) as usize;
-        let value_left = left + if menu_width >= 44 { 26 } else { menu_width / 2 };
-        let label_width = value_left.saturating_sub(left + 5) as usize;
-        let value_width = right.saturating_sub(value_left + 3) as usize;
         let blank = |buffer: &mut Buffer, row: u16| put(buffer, row, left, &format!("│{}│", " ".repeat(inner)), frame);
         put(buffer, top, left, &format!("╭{}╮", "─".repeat(inner)), frame);
-        put(buffer, top, left + 2, " Settings ", heading);
+        put(buffer, top, left + 2, " Settings ", on(FG, BLACK).add_modifier(Modifier::BOLD));
         let mut row = top + 1;
         for line in lines.iter().skip(self.scroll).take(body_height) {
             blank(buffer, row);
             let index = match line {
-                SettingsLine::Section(label) => {
-                    put(buffer, row, left + 2, &format!("{label} {}", "─".repeat(inner.saturating_sub(label.len() + 4))), heading);
-                    row += 1;
-                    continue;
-                }
+                SettingsLine::Section(label) => { put(buffer, row, left + 2, label, heading); row += 1; continue; }
                 SettingsLine::Space => { row += 1; continue; }
                 SettingsLine::Health => {
                     let (health, color) = self.health_line();
@@ -711,60 +717,65 @@ impl SettingsMenu {
                     row += 1;
                     continue;
                 }
-                SettingsLine::Choice(index) => *index,
+                SettingsLine::Choice(index) | SettingsLine::Explain(index) => *index,
             };
             let chosen = index == self.selected;
             let background = if chosen { BG_HIGHLIGHT } else { BLACK };
-            let text_style = if chosen { on(FG, background).add_modifier(Modifier::BOLD) } else { ground };
             put(buffer, row, left + 1, &" ".repeat(inner), on(FG, background));
+            self.rows.insert(row, index);
+            if let SettingsLine::Explain(_) = line {
+                put(buffer, row, left + 4, &fit(&self.explanation(index), inner.saturating_sub(5)), on(FG_DARK, background));
+                row += 1;
+                continue;
+            }
+            let text_style = if chosen { on(FG, background).add_modifier(Modifier::BOLD) } else { ground };
             if chosen { put(buffer, row, left + 2, "›", on(BLUE, background).add_modifier(Modifier::BOLD)); }
-            match self.row(index) {
+            let (label, value, value_style) = match self.row(index) {
                 SettingsRow::Setting(setting) => {
-                    let (name, label) = SETTINGS[setting];
-                    let is_on = settings::is_on(name);
-                    put(buffer, row, left + 4, &fit(label, label_width), text_style);
-                    let state_color = if is_on { GREEN } else if chosen { FG } else { FG_DARK };
-                    let state_style = on(state_color, background).add_modifier(if is_on || chosen { Modifier::BOLD } else { Modifier::empty() });
-                    put(buffer, row, value_left, if is_on { "on" } else { "off" }, state_style);
+                    let is_on = settings::is_on(SETTINGS[setting].0);
+                    (SETTINGS[setting].1.to_string(), if is_on { " on " } else { " off " }.to_string(),
+                     if is_on { on(GREEN, background).add_modifier(Modifier::BOLD) } else { on(if chosen { FG } else { FG_DARK }, background) })
                 }
                 SettingsRow::Launch(setting) => {
                     let (name, label) = LAUNCH_SETTINGS[setting];
                     let (value, color) = match settings::launch_value(name) {
-                        Ok(value) if value.is_empty() && name == "idle-sleep-after" => (sleep::DEFAULT_AFTER_MIN.to_string(), FG_DARK),
+                        Ok(value) if value.is_empty() && name == "idle-sleep-after" => (format!("{} min", sleep::DEFAULT_AFTER_MIN), FG_DARK),
                         Ok(value) if value.is_empty() => ("OpenCode default".into(), FG_DARK),
-                        Ok(value) => (value, CYAN),
+                        Ok(value) if name == "idle-sleep-after" => (format!("{value} min"), BLUE),
+                        Ok(value) if name == "default-agent" => (agents::find(&value).map_or(value.clone(), |agent| agent.label.to_string()), BLUE),
+                        Ok(value) => (value, BLUE),
                         Err(error) => (error, RED),
                     };
-                    put(buffer, row, left + 4, &fit(label, label_width), text_style);
-                    put(buffer, row, value_left, &fit(&value, value_width), on(color, background).add_modifier(Modifier::BOLD));
-                    put(buffer, row, right - 2, "▾", on(FG_DARK, background));
+                    (label.to_string(), format!(" {value} ▾ "), on(color, background).add_modifier(Modifier::BOLD))
                 }
-                SettingsRow::PairPhone => put(buffer, row, left + 4, &fit("Pair a phone (QR code)", inner - 4), text_style),
-                SettingsRow::Phone(phone) => {
-                    let phone = &self.phones[phone];
-                    let seen = format!("seen {}", remote::seen_ago(phone.get("last_seen").and_then(Value::as_i64)));
-                    let seen_width = seen.width().min(inner / 2);
-                    put(buffer, row, left + 4, &fit(phone["name"].as_str().unwrap_or(""), inner.saturating_sub(seen_width + 5)), text_style);
-                    put(buffer, row, right - seen_width as u16 - 1, &fit(&seen, seen_width), on(FG_DARK, background));
-                }
-            }
-            self.rows.insert(row, index);
+                SettingsRow::PairPhone => ("Pair a phone".to_string(), " ⏎ ".to_string(), on(FG_DARK, background)),
+                SettingsRow::Phone(phone) => (self.phones[phone]["name"].as_str().unwrap_or("").to_string(),
+                    if chosen { " x forget ".to_string() } else { String::new() }, on(BLUE, background).add_modifier(Modifier::BOLD)),
+            };
+            let value = fit(&value, inner / 2);
+            let value_width = value.width();
+            put(buffer, row, left + 4, &fit(&label, inner.saturating_sub(value_width + 6)), text_style);
+            put(buffer, row, right.saturating_sub(value_width as u16 + 1), &value, value_style);
             row += 1;
         }
-        while row < top + box_height - 3 { blank(buffer, row); row += 1; }
+        while row < top + box_height - 2 { blank(buffer, row); row += 1; }
         blank(buffer, row);
-        put(buffer, row, left + 2, &fit("↑↓ move   esc close", inner - 2), dim);
-        row += 1;
-        blank(buffer, row);
-        let keys = match self.row(self.selected) {
-            SettingsRow::Phone(_) => "x forget phone",
-            SettingsRow::Launch(1 | 2) => "⏎ choose   d reset to default",
-            SettingsRow::Launch(3) => "⏎ next delay",
-            SettingsRow::Launch(_) => "⏎ choose agent",
-            SettingsRow::PairPhone => "⏎ pair phone",
-            SettingsRow::Setting(_) => "⏎ toggle",
-        };
-        put(buffer, row, left + 2, &fit(keys, inner - 2), ground);
+        let mut keys = vec![("↑↓", "move", false), ("⏎", "change", true)];
+        match self.row(self.selected) {
+            SettingsRow::Launch(1 | 2) => keys.push(("d", "default", false)),
+            SettingsRow::Phone(_) => keys.push(("x", "forget", false)),
+            _ => {}
+        }
+        keys.push(("esc", "close", false));
+        let mut column = left + 2;
+        for (key, what, primary) in keys {
+            let cap = format!(" {key} ");
+            if column as usize + cap.width() + what.width() + 2 > right as usize { break; }
+            put(buffer, row, column, &cap, if primary { on(BLACK, YELLOW) } else { on(FG, BG_HIGHLIGHT) }.add_modifier(Modifier::BOLD));
+            column += cap.width() as u16 + 1;
+            put(buffer, row, column, what, on(FG_DARK, BLACK));
+            column += what.width() as u16 + 2;
+        }
         put(buffer, row + 1, left, &format!("╰{}╯", "─".repeat(inner)), frame);
     }
 

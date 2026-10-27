@@ -91,8 +91,8 @@ fn native_todo_form_decodes_paste_resize_cancel_and_command_s() {
     fixture.terminal.pump(5.0, Some(b"Todo"));
     assert!(contains(&fixture.terminal.screen, b"\x1b[?2004h"), "bracketed paste was not enabled");
     fixture.terminal.type_keys(b"2t");
-    fixture.terminal.pump(5.0, Some(b"Add TODO"));
-    assert!(contains(&fixture.terminal.screen, b"Add TODO"), "{}", String::from_utf8_lossy(&fixture.terminal.screen));
+    fixture.terminal.pump(5.0, Some(b"Add a todo"));
+    assert!(contains(&fixture.terminal.screen, b"Add a todo"), "{}", String::from_utf8_lossy(&fixture.terminal.screen));
     fixture.terminal.type_keys("\x1b[200~qtdjk123 café 界\x1b[201~".as_bytes());
     fixture.terminal.type_keys(b"\x1b[Z\x1b[C\x1b[C\t\t");
     fixture.terminal.type_keys(b"\x1b[200~first\nsecond\x1b[201~");
@@ -141,7 +141,7 @@ fn reviewed_native_form_saves_to_its_origin_after_the_view_changes() {
         fixture.view_session("aaaaaaaa-0000-4000-8000-000000000000");
         fixture.pick_kind("Feature");
         fixture.terminal.screen.clear();
-        let form_title: &[u8] = if edit { b"Edit TODO" } else { b"Add TODO" };
+        let form_title: &[u8] = if edit { b"Edit a todo" } else { b"Add a todo" };
         fixture.terminal.type_keys(if edit { b"e" } else { b"t" });
         fixture.terminal.pump(5.0, Some(form_title));
         assert!(contains(&fixture.terminal.screen, form_title), "{}", String::from_utf8_lossy(&fixture.terminal.screen));
@@ -173,7 +173,7 @@ fn integrated_native_terminal_recovers_a_crashed_draft_and_releases_the_reload_l
     let mut fixture = ComposerTerminal::new();
     fixture.terminal.pump(5.0, Some(b"Todo"));
     fixture.terminal.type_keys(b"2t");
-    fixture.terminal.pump(5.0, Some(b"Add TODO"));
+    fixture.terminal.pump(5.0, Some(b"Add a todo"));
     fixture.terminal.type_keys("\x1b[200~Recovered café 界\x1b[201~".as_bytes());
     fixture.terminal.type_keys(b"\x1b[Z\x1b[C\x1b[C\t\t");
     fixture.terminal.type_keys(b"\x1b[200~first\nsecond\x1b[201~");
@@ -205,7 +205,7 @@ fn reviewed_native_terminal_cancel_cleanup_rejects_input_and_save_for_add_and_ed
         let mut fixture = ComposerTerminal::new();
         fixture.terminal.pump(5.0, Some(b"Todo"));
         fixture.terminal.type_keys(b"2t");
-        fixture.terminal.pump(5.0, Some(b"Add TODO"));
+        fixture.terminal.pump(5.0, Some(b"Add a todo"));
         if edit {
             fixture.terminal.type_keys(b"original title\x13");
             fixture.terminal.pump(0.4, None);
