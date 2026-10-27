@@ -288,11 +288,11 @@ fn ordinary_spawned_qa_keeps_findings_only_reporting_and_automatic_exit() {
 }
 
 /// A worker stopped long enough ago for the answer grace, its stop recorded, and a Chief turn admitted.
+/// Like every worker in production, it has no queued-admission verification of its own: only the Chief does.
 fn admitted_stop_bench() -> (Bench, String) {
     let mut bench = stop_bench();
     assign_doing_todo(&bench, STOPPED_WORKER);
     bench.registry.sessions.get_mut(STOPPED_WORKER).unwrap().since = (crate::teams::now_ms()/1000-40) as f64;
-    verify_admission(&mut bench, STOPPED_WORKER);
     let worker = verified(&mut bench, STOPPED_WORKER);
     crate::teams::host(&mut bench.registry, std::process::id(), HostRequest::ChiefNativeObservation {
         session: worker, idle: true, pending_input: false, observed_at_ms: crate::teams::now_ms(),
@@ -357,6 +357,40 @@ fn theos_answer_to_an_escalation_is_delivered_natively_even_after_the_chief_is_d
     assert_eq!(admitted[0]["description"], "Theo's answer: Use the staging credentials and tell me which.");
     assert_eq!(answer_delivery(&bench), "received");
     assert_eq!(count(&bench, "SELECT count(*) FROM chief_answers WHERE source='theo'"), 1);
+}
+
+fn worker_blockers(bench: &mut Bench) -> Vec<String> {
+    crate::chief::workers(&mut bench.registry).unwrap().into_iter()
+        .find(|worker| worker.session.session_id == STOPPED_WORKER).unwrap().blocked_by
+}
+
+#[test]
+fn theos_answer_reaches_a_worker_that_never_had_its_own_admission_verification() {
+    let (mut bench, stop) = admitted_stop_bench();
+    assert!(worker_blockers(&mut bench).contains(&"live_queued_admission_verification_required".to_string()));
+    let decision = escalate_stop(&mut bench, &stop);
+    host(&mut bench, ChiefHostAction::AnswerDecision { request_id: "theo-answers-unverified".into(), decision: decision.clone(),
+        expected_revision: 1, answer: "Build the backend part now.".into() });
+    let delivery = crate::teams::request(&mut bench.registry, STOPPED_WORKER_PEER, AgentAction::Receive).unwrap().result.unwrap();
+    assert_eq!(delivery["envelope"]["kind"], "chief_answer", "{delivery}");
+    assert_eq!(delivery["envelope"]["source"], "theo");
+}
+
+#[test]
+fn the_chief_sees_whether_theos_answer_to_an_escalation_reached_the_session() {
+    let (mut bench, stop) = admitted_stop_bench();
+    let decision = escalate_stop(&mut bench, &stop);
+    host(&mut bench, ChiefHostAction::AnswerDecision { request_id: "theo-answers-tracked".into(), decision: decision.clone(),
+        expected_revision: 1, answer: "Keep the old API.".into() });
+    let answer_delivery_seen_by_chief = |bench: &mut Bench| {
+        let context = crate::teams::request(&mut bench.registry, 20, AgentAction::Chief { request: ChiefAgentAction::ContextSnapshot {
+            after: 0, limit: 50, generation: None } }).unwrap().result.unwrap();
+        context["records"].as_array().unwrap().iter().find(|record| record["kind"] == "decision" && record["id"] == decision.as_str())
+            .map(|record| (record["state"].clone(), record["answer_delivery"].clone())).unwrap()
+    };
+    assert_eq!(answer_delivery_seen_by_chief(&mut bench), (json!("resolved"), json!("queued")), "resolved is not delivered");
+    assert_eq!(native_inbox(&mut bench, STOPPED_WORKER_PEER, STOPPED_WORKER).len(), 1);
+    assert_eq!(answer_delivery_seen_by_chief(&mut bench), (json!("resolved"), json!("received")));
 }
 
 fn escalate_stop(bench: &mut Bench, stop: &str) -> String {

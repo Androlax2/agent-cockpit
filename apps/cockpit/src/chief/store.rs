@@ -1128,10 +1128,16 @@ pub fn claim_check(connection: &mut Connection, recipient: &VerifiedSession, idl
 /// Readiness reasons a Chief answer may ignore: the answer is meant for a session that just stopped
 /// (the idle guard), sits at its own question (`human_input`) and works on a todo (its observed
 /// reservation). The osd turn gate already refused permission prompts.
-const ANSWER_IGNORES: [&str; 3] = ["idle_guard", "human_input", "legacy_work_in_progress"];
+///
+/// Only the Chief's own session ever gets a queued-admission verification (Theo's delivery check), so
+/// `live_queued_admission_verification_required` is on every worker and would hold every reply
+/// forever. A reply needs no such check: only the plugin's receipt under the reply's own stable id
+/// settles it as received, and anything else turns it uncertain with a host delivery decision.
+const ANSWER_IGNORES: [&str; 4] = ["idle_guard", "human_input", "legacy_work_in_progress", "live_queued_admission_verification_required"];
 /// A form reply goes to a session waiting on the very form it settles, whose runtime still runs the
 /// turn that asked (`native_busy_at_form`; a plain `native_busy` still holds it).
-const FORM_REPLY_IGNORES: [&str; 5] = ["idle_guard", "human_input", "legacy_work_in_progress", "native_form_pending", "native_busy_at_form"];
+const FORM_REPLY_IGNORES: [&str; 6] = ["idle_guard", "human_input", "legacy_work_in_progress", "live_queued_admission_verification_required",
+    "native_form_pending", "native_busy_at_form"];
 
 /// Hands the stopped session the answer to its stop. `boundary` is the session's current stop
 /// boundary (`state:since`, whole seconds) as the daemon sees it, and `idle_turn` the same idle period
@@ -1502,12 +1508,14 @@ fn context_records(connection: &Connection, live: &[WorkerState]) -> Result<Vec<
             "project": worker.session.project, "role": worker.role, "ready": worker.ready, "blocked_by": worker.blocked_by}));
     }
     // `answer_id` names Theo's answer to an escalated stop, so the Chief can give it as a habit's source.
-    records.extend(connection.prepare("SELECT d.id,d.state,d.revision,d.resolution,
-            (SELECT a.id FROM chief_answers a WHERE a.stop_id=d.stop_id AND a.source='theo' ORDER BY a.created_at DESC,a.rowid DESC LIMIT 1)
-            FROM chief_decisions d ORDER BY d.created_at,d.id")?
+    // `answer_delivery` says whether that answer reached the session: a resolved escalation alone does not.
+    records.extend(connection.prepare("WITH latest AS (SELECT d.id,d.state,d.revision,d.resolution,
+            (SELECT a.id FROM chief_answers a WHERE a.stop_id=d.stop_id AND a.source='theo' ORDER BY a.created_at DESC,a.rowid DESC LIMIT 1) AS answer,d.created_at
+            FROM chief_decisions d)
+            SELECT l.id,l.state,l.revision,l.resolution,l.answer,(SELECT delivery FROM chief_answers WHERE id=l.answer) FROM latest l ORDER BY l.created_at,l.id")?
         .query_map([],|row|Ok(json!({"kind":"decision","source":"protected_host_control","id":row.get::<_,String>(0)?,
             "state":row.get::<_,String>(1)?,"revision":row.get::<_,i64>(2)?,"resolution":row.get::<_,Option<String>>(3)?,"resolution_grants_authority":false,
-            "answer_id":row.get::<_,Option<String>>(4)?})))?
+            "answer_id":row.get::<_,Option<String>>(4)?,"answer_delivery":row.get::<_,Option<String>>(5)?})))?
         .collect::<Result<Vec<_>,_>>()?);
     for record in &mut records {
         if record.get("source").is_none() {record["source"]=json!(if record["kind"]=="worker" {"daemon_derived_availability"} else {"protected_host_approval"});}
