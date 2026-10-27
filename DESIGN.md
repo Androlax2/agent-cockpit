@@ -185,7 +185,8 @@ in the canvas), 16/15 body, 13-14 secondary, as today.
   (subscription + API + unknown), then the clock. This supersedes the Cost-reporting header rule
   (`API ≈ $ today` only), by Theo's decision: he wants the estimate even on subscription. Status
   keeps the three-row split and adds the total.
-- Tabs `[1] Sessions (badge) · [2] Todo (badge) · [3] Ideas (badge)`; `s` opens Status over the
+- Tabs `[1] Sessions (badge) · [2] Todo (badge) · [3] Ideas (badge) · [4] Teams · [5] Chief`
+  (Round 4); `s` opens Status over the
   column (usage, spending, Chief, pull requests, services). Pull requests move into Status.
 - Proposed todos move out of Todo into Ideas (one place). Done today folds (`d`).
 - Every key is drawn as a key cap (selection background, bold key); footers list the view's keys.
@@ -210,7 +211,7 @@ characters shown as `⟨U+200B⟩`), password, running (`▶ Running your approv
 **Chief** (spec `docs/superpowers/specs/2026-10-24-autonomous-chief-design.md`): escalation pinned
 (`Chief needs you · Security|Scope|Not sure`, the agent's question, why, `◆ Chief suggests`; `a`
 use suggestion, `w` write own); `Chief ✓N` on cards → answers list (`c`), overrule (`o`) with a
-preview of the habit it creates; habits list (`x` delete, `p` project); Status → Chief block.
+preview of the habit it creates; habits list (`x` delete, `p` project); the 5 Chief tab (Round 4).
 
 ### Components
 
@@ -278,13 +279,13 @@ These are on page `10 Remaining surfaces` (previews 14-17), every frame `readyFo
   - Session: `m` `w` `z` `R` `x`.
 
   The same keys work on the selected card.
-- **Chief main view** (`s` → Chief, frame `2284`):
+- **Chief main view** (`s` → Chief, frame `2284`; superseded by the 5 Chief tab, Round 4):
   - On/off with today's numbers and the session it runs as;
   - keys: `c` pause/resume, `p` pick another chief, `r` summary now, `l` log, `h` habits;
   - uncertain deliveries are NEEDS YOU rows (`y` it arrived / `x` stop safely);
   - the chief picker shows readable names and says in words why a row can't be chief
     (todo `0b6cba5b`).
-- **Team view** (`i` on a team, frame `2335`):
+- **Team view** (`i` on a team, frame `2335`; superseded by the 4 Teams tab, Round 4):
   - members with role, activity and state;
   - link requests (`y` / `n` / `e` edit purpose) and failed starts or deliveries (`d` retry /
     `c` cancel) as NEEDS YOU rows;
@@ -310,6 +311,40 @@ These are on page `10 Remaining surfaces` (previews 14-17), every frame `readyFo
   - pairing with 6 digit boxes, the time left, tries, and Pair;
   - Wake stays a button on an asleep card.
 
+### Round 4: Teams and Chief tabs
+
+Todo `03f69165`. Page `11 Teams & Chief tabs (wireframe)` (brief, Theo's answers and sources in
+its Notes frame), page `12 Teams & Chief tabs (visual)`, previews 18-19. Ready for dev on page 12: `3409`, `3670`,
+`3553`, `3737`, `3803`, `3811`, `3973`. They supersede page 10 frames `2284` (Chief main view) and
+`2335` (Team view), and page 05 frame `1128` (Status → Chief), which are no longer ready for dev.
+
+- **Tabs** `[1] Sessions · [2] Todo · [3] Ideas · [4] Teams · [5] Chief` (frame `3811`). Teams
+  and Chief badges: the needs-you count in amber; otherwise Teams shows the number of live teams
+  (plain) and Chief shows `●` on (green) or `○` off. To fit 60 cells, tabs drop the extra cell
+  before and after each one; when the row still overflows, inactive tabs fold to key cap + badge,
+  from the right, and the open tab never folds. Names come back as soon as they fit.
+- **4 Teams** (frame `3409`): list on top, the selected team below, nothing to open. List groups:
+  NEEDS YOU, WORKING, then `▸ Ended today · N` folded (`D`). Team card: glyph, task, badges, age;
+  line 2 `project › task · Role ● Role ○`; the amber bar names the ask. Below the divider, the
+  selected team: MEMBERS (role, activity, state), NEEDS YOU (link requests, failed starts,
+  failed deliveries), IN FLIGHT (queued, unread, cancelled messages and handoffs), RECENT (the
+  last 3 events, including restarts that keep, lose or recover a membership).
+- **Inside a team** (`⏎`, frame `3670`): `j` `k` move across members and rows, `⏎` on a member
+  opens its session, `y` `n` `e` / `d` `c` act on the selected needs-you row, `l` full log, `u`
+  unlink, `esc` back to the list. These keys do nothing from the team list.
+- **5 Chief** (frame `3553`): the state card (on/off, today's numbers, the session it runs as),
+  keys `c` pause/resume, `p` pick another chief, `r` summary now, `l` answer log, `h` habits;
+  NEEDS YOU (uncertain deliveries, `y` / `x` / `i`); NOW (what it is deciding or waiting for);
+  TODAY (answers, escalations, pauses; `⏎` opens that session, `o` overrules an answer).
+- **Sessions** (frame `3737`): the team block stays (teams are never split) but keeps only role,
+  doing now and age per member, plus `5 team details`. `i` on a team opens 5 with that team
+  selected. **Status** keeps one Chief line pointing to 5 (frame `3803`).
+- Member states: live (blue `●`), asleep (`◌`, dim), gone (red `✕`, with `⏎ re-attach`), planned
+  (`○`, dim). Team names are cyan. Selected rows use foreground text on the selection background.
+- Edge states (frame `3973`): no teams, team data unavailable (red, `R retry`, never shown as
+  independent sessions), loading, long task names, ended team, Chief off, no chief yet, a quiet day.
+- Not in this round: the phone versions of both tabs.
+
 **Rule conflicts, settled by Theo:**
 
 - Keep "Tell me when it finishes" (a phone opt-in per session), the daily digest, and the
@@ -332,7 +367,7 @@ answer anything.** Approving happens in the pinned ask once the session is open 
 
 | Key | Where | Does | Was |
 |---|---|---|---|
-| `1` `2` `3` | everywhere (also CMD+1/2/3 from the session) | Sessions, Todo, Ideas tabs | 0-4 panels; F1-F4 and Tab panel cycling go |
+| `1` `2` `3` `4` `5` | everywhere (also CMD+1…5 from the session) | Sessions, Todo, Ideas, Teams, Chief tabs | 0-4 panels; F1-F4 and Tab panel cycling go |
 | `s` | everywhere | Status overlay (usage, spending, Chief, PRs, phone, services) | `s` slept the session: now `z` |
 | `?` | everywhere | help for the current tab + legend | same |
 | `esc` | everywhere | close / back | same |
@@ -359,7 +394,8 @@ answer anything.** Approving happens in the pinned ask once the session is open 
 | `y` / `n` / `i` | pinned ask (session focused) | approve / decline / details | approval pane keys move here |
 | `a` / `w` | pinned Chief escalation | use the suggestion / write my own | `a` no longer starts sessions |
 | `⏎` / `o` | Status → pull requests | start a review session / open on GitHub | `c` in the old PR panel |
-| `c` `l` `h` | Status → Chief | on/off, answer log, habits | new |
+| `c` `p` `r` `l` `h` | 5 Chief tab | pause/resume, pick chief, summary, answer log, habits | new; was Status → Chief |
+| `⏎` / `esc` | 4 Teams tab | into the selected team / back to the list | new |
 | `c` | Sessions card with `Chief ✓N` | that session's Chief answers | new |
 | `/` and `:` | — | removed (Theo: no search, better help) | `/` find, `:` palette |
 
