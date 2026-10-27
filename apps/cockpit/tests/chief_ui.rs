@@ -302,7 +302,7 @@ fn an_unconfirmed_start_is_resent_with_the_same_request_and_never_claims_a_sessi
     let (mut app, mut screen) = host.open();
     app.handle(Key::Char('c'), &mut screen);
     let shown = rendered(&mut app, 80, 24);
-    assert!(shown.contains("not confirmed") && !shown.contains("may have started"), "{shown}");
+    assert!(shown.contains("Cockpit hasn't confirmed this start yet.") && shown.contains("It can't start a second Chief.") && !shown.contains("may have started"), "{shown}");
     app.handle(Key::Char('c'), &mut screen);
     let mutations = host.mutations();
     assert_eq!(mutations.len(), 2);
@@ -319,7 +319,7 @@ fn closing_and_reopening_keeps_an_unacknowledged_chief_start_as_the_same_request
     open_chief(&mut app, &mut screen);
     assert_eq!(host.mutations().len(), 1);
     let shown = rendered(&mut app, 80, 24);
-    assert!(shown.contains("not confirmed") && shown.contains("acknowledgement lost"), "{shown}");
+    assert!(shown.contains("Cockpit hasn't confirmed this start yet.") && shown.contains("acknowledgement lost"), "{shown}");
     app.handle(Key::Char('c'), &mut screen);
     let mutations = host.mutations();
     assert_eq!(mutations[0]["action"]["request_id"], mutations[1]["action"]["request_id"]);

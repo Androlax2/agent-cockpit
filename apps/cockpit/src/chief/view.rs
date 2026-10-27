@@ -394,7 +394,7 @@ impl ChiefView {
             "starting"=>("Starting Chief…","Opening its OpenCode session.","You can leave this view. We'll keep track of this launch."),
             "failed"=>("Chief could not start","","No session remains. You can try again."),
             "unavailable"=>("Chief status unavailable","Waiting for a trustworthy host snapshot.","You can leave this view while we check."),
-            "unconfirmed"=>("Checking Chief…","The host has not confirmed this start yet.","Sends the same request again; it cannot start a second Chief."),
+            "unconfirmed"=>("Checking Chief…","Cockpit hasn't confirmed this start yet.","Sends the same start again. It can't start a second Chief."),
             _=>("Checking Chief…","Its session may have started. Waiting to confirm that Chief is ready.","You can leave this view while we check."),
         };
         let mut lines=vec![heading.into(),String::new(),explanation.into()];
