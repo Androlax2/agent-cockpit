@@ -271,9 +271,40 @@ fn a_subagents_session_shows_on_its_roots_card_and_never_ends_the_turn() {
         finished(CHILD),
         prompt(CHILD, "subtask prompt"),
     ]), "");
-    let expected: Vec<(String, String)> = [("SessionStart", ROOT), ("PostToolUse", ROOT), ("Notification", ROOT)]
+    let expected: Vec<(String, String)> = [("SessionStart", ROOT), ("Notification", ROOT), ("PostToolUse", ROOT), ("Notification", ROOT), ("Notification", ROOT)]
         .iter().map(|(name, session)| (name.to_string(), session.to_string())).collect();
     assert_eq!(events_of(&run), expected);
+}
+
+fn background_task_counts(run: &Run) -> Vec<Vec<String>> {
+    run.payloads.iter().filter(|payload| payload["notification_type"] == "background_work")
+        .map(|payload| payload["background_tasks"].as_array().unwrap().iter().map(|task| task["type"].as_str().unwrap().to_string()).collect())
+        .collect()
+}
+
+#[test]
+fn a_background_subagent_keeps_the_root_busy_after_its_turn_ends() {
+    let run = run(json!([
+        created(ROOT, None), created(CHILD, Some(ROOT)),
+        event("session.execution.started", json!({"sessionID": ROOT})),
+        event("session.execution.started", json!({"sessionID": CHILD})),
+        finished(ROOT),
+        finished(CHILD),
+    ]), "");
+    let stop = run.payloads.iter().find(|payload| payload["hook_event_name"] == "Stop").unwrap();
+    assert_eq!(stop["background_tasks"], json!([{"type": "subagent"}]));
+    assert_eq!(background_task_counts(&run), [vec!["subagent".to_string()], vec![]]);
+}
+
+#[test]
+fn deleting_a_running_subagent_clears_it_from_the_root() {
+    let run = run(json!([
+        created(ROOT, None), created(CHILD, Some(ROOT)),
+        event("session.execution.started", json!({"sessionID": CHILD})),
+        event("session.deleted", json!({"sessionID": CHILD})),
+        finished(CHILD),
+    ]), "");
+    assert_eq!(background_task_counts(&run), [vec!["subagent".to_string()], vec![]]);
 }
 
 #[test]

@@ -116,9 +116,12 @@ export default {
     if (cockpitSession?.startsWith("ses")) report(cockpitSession, { hook_event_name: "SessionStart" })
 
     const isTopLevel = (sessionID: string) => !parentOf.has(sessionID)
-    const backgroundTasks = (sessionID: string) => [...shells.values()]
-      .filter((owner) => rootOf(owner) === rootOf(sessionID))
-      .map(() => ({ type: "shell" }))
+    // A subagent's session while it executes: a background one outlives its root's turn.
+    const runningSubagents = new Set<string>()
+    const backgroundTasks = (sessionID: string) => [
+      ...[...runningSubagents].filter((child) => rootOf(child) === rootOf(sessionID)).map(() => ({ type: "subagent" })),
+      ...[...shells.values()].filter((owner) => rootOf(owner) === rootOf(sessionID)).map(() => ({ type: "shell" })),
+    ]
     const reportBackground = (sessionID: string) => report(sessionID, {
       hook_event_name: "Notification", notification_type: "background_work", message: "",
       background_tasks: backgroundTasks(sessionID),
@@ -164,25 +167,36 @@ export default {
         case "session.execution.started":
           // Synthetic turns can finish without tools; they still consume an idle period.
           if (isTopLevel(data.sessionID)) report(data.sessionID, { hook_event_name: "UserPromptSubmit", source: "system" })
+          else if (!runningSubagents.has(data.sessionID)) {
+            runningSubagents.add(data.sessionID)
+            reportBackground(data.sessionID)
+          }
           break
         case "session.execution.succeeded":
         case "session.execution.failed":
         case "session.execution.interrupted":
           pendingBilling.delete(data.sessionID)
           if (isTopLevel(data.sessionID)) report(data.sessionID, { hook_event_name: "Stop", background_tasks: backgroundTasks(data.sessionID) })
+          else if (runningSubagents.delete(data.sessionID)) reportBackground(data.sessionID)
           break
         case "session.deleted": {
           pendingBilling.delete(data.sessionID)
           const root = rootOf(data.sessionID)
-          let removedShell = false
+          let removedBackground = false
           for (const [id, owner] of shells) {
             if (owner === data.sessionID || (isTopLevel(data.sessionID) && rootOf(owner) === root)) {
               shells.delete(id)
-              removedShell = true
+              removedBackground = true
+            }
+          }
+          for (const child of runningSubagents) {
+            if (child === data.sessionID || (isTopLevel(data.sessionID) && rootOf(child) === root)) {
+              runningSubagents.delete(child)
+              removedBackground = true
             }
           }
           if (isTopLevel(data.sessionID) && started.delete(data.sessionID)) send(data.sessionID, { hook_event_name: "SessionEnd" })
-          else if (removedShell && started.has(root)) reportBackground(root)
+          else if (removedBackground && started.has(root)) reportBackground(root)
           break
         }
         case "permission.asked":
