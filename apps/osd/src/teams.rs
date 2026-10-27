@@ -337,7 +337,8 @@ pub fn request(registry: &mut Registry, peer: u32, action: AgentAction) -> Resul
     let form_turn = registry.sessions.get(&sender.session_id)
         .filter(|entry| entry.state == "needs-you" && !entry.needs_input)
         .and_then(|entry| Some((format!("{}:{}", entry.state, entry.since), crate::chief::stop_boundary(registry, &sender, now_ms())?)));
-    let chief_live = if matches!(action, AgentAction::Receive) { crate::chief::workers_among(registry, live.clone(), now_ms(), true)? } else { Vec::new() };
+    // Not observed here: the Receive below records this observation right before its claims.
+    let chief_live = if matches!(action, AgentAction::Receive) { crate::chief::workers_among(registry, live.clone(), now_ms(), false)? } else { Vec::new() };
     let is_subscription_held = matches!(action, AgentAction::Receive)
         && cockpit::subscription_fallback::message_target(&sender.session_id)
             .map_err(|error| TeamError::new(ErrorCode::Unavailable, format!("subscription messaging is paused: {error}")))?.1;
