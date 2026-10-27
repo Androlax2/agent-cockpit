@@ -14,7 +14,7 @@ install_lock = $${XDG_RUNTIME_DIR:-/run/user/$$(id -u)}/cockpit-install.lock
 serialized = flock -n "$(install_lock)" true || echo "Waiting for another install or apply to finish …"; \
 	flock "$(install_lock)" $(MAKE) --no-print-directory $(1)
 
-.PHONY: help build test install install-serialized system after-apply after-apply-serialized handoff-install greywall-patch greyproxy-patch
+.PHONY: help build test test-serialized install install-serialized system after-apply after-apply-serialized handoff-install greywall-patch greyproxy-patch
 
 help:
 	@use_color=0; if [ -t 1 ] && [ -z "$${NO_COLOR:-}" ]; then use_color=1; fi; \
@@ -25,7 +25,12 @@ help:
 build: ## Build the Rust programs in apps/ (the column, the osd daemon, the approval terminal, the guide, the sandbox commands)
 	$(build_runner) cargo build --release --manifest-path apps/Cargo.toml
 
-test: ## Build the OSD classifier and run the test suite
+# One full run at a time across clones (tools/full-test-lock.py); targeted runs stay unlocked. The
+# launcher shares this folder with every sandbox.
+test: ## Build the OSD classifier and run the test suite, one full run at a time across clones
+	@python3 tools/full-test-lock.py "$(HOME)/.cache/cockpit/test-lock" "$(CURDIR)" $(MAKE) --no-print-directory test-serialized
+
+test-serialized:
 	python3 -m unittest discover -s tools/tests -p 'test_*.py'
 	$(build_runner) cargo build --release --quiet --manifest-path apps/Cargo.toml -p osd --bin osd
 	$(build_runner) cargo nextest run --release --cargo-quiet --status-level fail --manifest-path apps/Cargo.toml

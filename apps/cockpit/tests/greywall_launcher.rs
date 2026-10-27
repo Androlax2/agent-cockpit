@@ -409,6 +409,19 @@ fn go_build_cache_stays_in_the_sandbox_instead_of_the_host_home() {
     }
 }
 
+#[test]
+fn every_sandbox_shares_the_full_test_lock_folder() {
+    // agent-cockpit's make test takes turns across clones through a lock in this folder
+    // (tools/full-test-lock.py); a sandbox that cannot write it runs its tests unlocked.
+    for &agent in AGENTS.iter() {
+        let launch = Launch::new();
+        let started = launch.run_agent(agent, &[], &[]);
+        let lock_folder = launch.sandbox.home.join(".cache/cockpit/test-lock");
+        assert!(lock_folder.is_dir(), "{agent} did not create {}", lock_folder.display());
+        assert!(started.contains(&format!("--allow-path {} ", lock_folder.display())), "{agent}: {started}");
+    }
+}
+
 const GIT_IDENTITY_VARIABLES: [&str; 4] = ["GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"];
 
 #[test]

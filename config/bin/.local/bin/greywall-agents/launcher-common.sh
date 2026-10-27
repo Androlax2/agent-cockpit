@@ -99,6 +99,10 @@ for cache_name in runs designs; do
     cockpit_cache=$(prepare_cockpit_folder "$HOME/.cache/cockpit/$cache_name" "$HOME/.cache/claude/$cache_name") || exit 1
     greywall_options="$greywall_options --allow-path $cockpit_cache"
 done
+# agent-cockpit's make test: one full run at a time across every clone (tools/full-test-lock.py).
+test_lock_dir="$HOME/.cache/cockpit/test-lock"
+mkdir -p -m 700 "$test_lock_dir" || exit 1
+greywall_options="$greywall_options --allow-path $test_lock_dir"
 
 # Greywall's private /tmp keeps Go verification writable without exposing the host's build
 # or module caches to writes or letting a session poison artifacts used outside the sandbox.
