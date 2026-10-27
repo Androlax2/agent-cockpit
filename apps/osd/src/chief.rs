@@ -299,6 +299,51 @@ fn state_boundary(registry: &Registry, session_id: &str) -> Option<String> {
     matches!(entry.state.as_str(), "waiting" | "needs-you").then(|| format!("{}:{}", entry.state, entry.since as i64))
 }
 
+/// Attention alone is deferred; admission and delivery still see the real blocked session state.
+pub(crate) fn question_grace_deadlines(registry: &mut Registry, now_ms: i64) -> Result<std::collections::HashMap<String, i64>, TeamError> {
+    let mut deadlines = std::collections::HashMap::new();
+    if registry.chief_fault.is_some() { return Ok(deadlines); }
+    if !registry.sessions.values().any(|entry| entry.agent == "opencode" && entry.state == "needs-you"
+        && (0..cockpit::chief::QUESTION_GRACE_S).contains(&(now_ms / 1000).saturating_sub(entry.since as i64))) { return Ok(deadlines); }
+    let Some(connection) = registry.teams.as_ref() else { return Ok(deadlines) };
+    let chiefs = connection.prepare("SELECT g.session_id,g.agent,g.project,g.runtime FROM chief_grants g JOIN chief_coordination c USING(epoch)
+        WHERE g.state='active' AND c.failed=0")?.query_map([], |row| Ok(VerifiedSession {
+            session_id: row.get(0)?, agent: row.get(1)?, project: row.get(2)?, runtime: row.get(3)?,
+        }))?
+        .collect::<Result<Vec<_>, _>>()?;
+    let Some(chief) = chiefs.first() else { return Ok(deadlines) };
+    let has_native_proof = registry.chief_native.get(&chief.session_id).is_some_and(|(identity, _, _, at)| identity == chief
+        && *at <= now_ms && now_ms - at <= 30_000)
+        || registry.chief_telemetry.get(&chief.session_id).is_some_and(|sample| sample.session == *chief
+            && sample.counts.is_some() && sample.received_at_ms <= now_ms && now_ms - sample.received_at_ms <= 30_000);
+    if !has_native_proof || !store::admission_verified(connection, chief)?
+        || !registry.sessions.get(&chief.session_id).is_some_and(|entry| entry.runtime == chief.runtime && entry.agent == "opencode")
+        || !registry.system.runtime_is_live(&chief.runtime) { return Ok(deadlines); }
+    let now = now_ms / 1000;
+    for (session, entry) in &registry.sessions {
+        if session == &chief.session_id || entry.agent != "opencode" || entry.state != "needs-you" || entry.runtime.is_empty() { continue; }
+        let since = entry.since as i64;
+        let until = since.saturating_add(cockpit::chief::QUESTION_GRACE_S);
+        if now < since || now >= until { continue; }
+        let counts = registry.chief_telemetry.get(session)
+            .filter(|sample| sample.session.runtime == entry.runtime && sample.received_at_ms <= now_ms
+                && now_ms - sample.received_at_ms <= 30_000 && sample.received_at_ms >= since.saturating_add(1).saturating_mul(1000))
+            .and_then(|sample| sample.counts.as_ref());
+        // Notification identity wins over cached counts: a form sample cannot classify a later permission.
+        if counts.is_some_and(|counts| counts.pending_permissions > 0)
+            || !(entry.needs_input || entry.question_form) { continue; }
+        let boundary = format!("needs-you:{since}");
+        if registry.chief_stop_failures.get(session).is_some_and(|(failed, _)| failed == &boundary) { continue; }
+        let needs_theo: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM chief_stops s
+            WHERE s.session_id=?1 AND s.runtime=?2 AND s.boundary=?3 AND (s.state IN ('escalated','superseded')
+                OR EXISTS(SELECT 1 FROM chief_answers a WHERE a.stop_id=s.id AND a.delivery IN ('uncertain','cancelled'))
+                OR EXISTS(SELECT 1 FROM chief_inbox i WHERE json_extract(i.envelope,'$.stop')=s.id AND i.state IN ('failed','uncertain','cancelled'))))",
+            (session, &entry.runtime, &boundary), |row| row.get(0))?;
+        if !needs_theo { deadlines.insert(session.clone(), until); }
+    }
+    Ok(deadlines)
+}
+
 /// A stop whose bundle failed is retried at most this often; each try opens the conversation database
 /// on the tick thread.
 const STOP_BUNDLE_RETRY_MS: i64 = 60_000;

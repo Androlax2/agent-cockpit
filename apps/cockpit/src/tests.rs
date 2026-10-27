@@ -2481,6 +2481,41 @@ fn a_card_reads_doing_now_then_project_and_task_then_the_ask() {
 }
 
 #[test]
+fn chief_question_grace_hides_only_the_cards_attention_not_its_blocked_state() {
+    let fixture = Fixture::new();
+    let now = util::now_secs();
+    let mut row = opencode_session("needs-you", "runway", 0);
+    row["since"] = json!(now - 1);
+    row["needs_input"] = json!(true);
+    row["request"] = json!("Which layout?");
+    row["chief_question_until"] = json!(now + 59);
+    fixture.snapshot(json!([row]));
+    let app = fixture.app();
+    assert!(card_text(&app, 0).contains("Chief is reviewing"));
+    assert!(!app.panels[1].lines.iter().any(|line| line.fill.is_some()));
+    assert_eq!(app.sessions[0].state, "needs-you");
+    assert!(app.sessions[0].needs_input);
+}
+
+#[test]
+fn expired_or_invalid_chief_grace_and_host_approvals_still_show_the_ask() {
+    for case in ["expired", "too long", "approval", "input"] {
+        let fixture = Fixture::new();
+        let now = util::now_secs();
+        let mut row = opencode_session("needs-you", "runway", 0);
+        row["since"] = json!(now - 1);
+        row["needs_input"] = json!(true);
+        row["request"] = json!("Which layout?");
+        row["chief_question_until"] = json!(match case { "expired" => now - 1, "too long" => now + 3600, _ => now + 59 });
+        if matches!(case, "approval" | "input") { row["ask_to_run"] = json!(case); }
+        fixture.snapshot(json!([row]));
+        let app = fixture.app();
+        assert!(app.panels[1].lines.iter().any(|line| line.fill.is_some()), "{case}");
+        assert!(!card_text(&app, 0).contains("Chief is reviewing"), "{case}");
+    }
+}
+
+#[test]
 fn needs_you_lists_the_oldest_ask_first() {
     let fixture = Fixture::new();
     let mut newer = session(SESSION_A, "needs-you", "opusline", "/r/opusline", 1);

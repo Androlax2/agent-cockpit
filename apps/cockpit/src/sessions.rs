@@ -146,6 +146,8 @@ pub struct Session {
     pub session: String,
     pub state: String,
     pub needs_input: bool,
+    /// Host-only attention deadline; never changes admission, question content or permission state.
+    pub chief_question_until: Option<i64>,
     pub project: String,
     pub cwd: String,
     pub task: String,
@@ -212,7 +214,14 @@ fn text(row: &Value, key: &str) -> String {
 
 impl Session {
     pub fn needs_attention(&self) -> bool {
-        self.needs_input || self.state == "needs-you" || matches!(self.ask_to_run.as_str(), "approval" | "input")
+        matches!(self.ask_to_run.as_str(), "approval" | "input")
+            || (!self.chief_is_reviewing(now_secs()) && (self.needs_input || self.state == "needs-you"))
+    }
+
+    pub fn chief_is_reviewing(&self, now: i64) -> bool {
+        self.state == "needs-you" && !matches!(self.ask_to_run.as_str(), "approval" | "input")
+            && self.chief_question_until.is_some_and(|until| now >= self.since && now < until
+                && until <= self.since.saturating_add(crate::chief::QUESTION_GRACE_S))
     }
 
     pub fn is_external(&self) -> bool {
@@ -225,6 +234,7 @@ impl Session {
             session,
             state: row.get("state").and_then(Value::as_str).unwrap_or("waiting").into(),
             needs_input: row.get("needs_input").and_then(Value::as_bool).unwrap_or(false),
+            chief_question_until: row.get("chief_question_until").and_then(Value::as_i64),
             project: row.get("project").and_then(Value::as_str).unwrap_or("?").into(),
             cwd: text(row, "cwd"),
             task: text(row, "task"),
@@ -556,6 +566,7 @@ pub fn activity_label(session: &Session) -> &'static str {
         "input" => return "Input needed",
         _ => {}
     }
+    if session.chief_is_reviewing(now_secs()) { return "Chief is reviewing"; }
     if session.state == "needs-you" {
         return "Needs you";
     }

@@ -63,6 +63,8 @@ pub const ADMISSION_REQUIRED: &str = "host live OpenCode draft/queue verificatio
 pub const ADMISSION_ADAPTER: &str = "opencode-queued-v1";
 /// How long a stopped agent keeps its stop to itself (or to Theo) before a Chief answer may reach it.
 pub const CHIEF_ANSWER_GRACE_S: i64 = 30;
+/// Maximum time an eligible question may wait for Chief triage before it asks Theo.
+pub const QUESTION_GRACE_S: i64 = 60;
 /// How long `l` later hides an escalated question, on the desktop and the phone alike.
 pub const CHIEF_LATER_MS: i64 = 20 * 60 * 1000;
 // Reserve space for the TeamReply wrapper and cursors beneath the agent transport's 65,536 bytes.

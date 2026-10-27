@@ -602,7 +602,7 @@ function decide(approval, run, note) {
 
 // A session waiting on a reply or a dialog, or with a command asking to run, counts once.
 function sessionsNeedingYou() {
-  const waiting = new Set(state.sessions.filter((session) => session.state === "needs-you").map((session) => session.session));
+  const waiting = new Set(state.sessions.filter((session) => groupOf(session) === "needs-you").map((session) => session.session));
   for (const approval of state.approvals) waiting.add(approval.session || approval.id);
   for (const input of state.inputs || []) waiting.add(input.id);
   for (const escalation of chiefRecords("escalations")) waiting.add(escalation.session_id);
@@ -652,15 +652,24 @@ function askOf(session) {
   return { text: session.needs_input ? "Answer a question" : "An answer or permission is needed", verb: "Answer" };
 }
 
+function chiefIsReviewing(session) {
+  const now = Math.floor(Date.now() / 1000);
+  return session.chief_reviewing && session.state === "needs-you" && !["approval", "input"].includes(session.ask_to_run)
+    && Number.isSafeInteger(session.chief_question_until) && now >= session.since && now < session.chief_question_until
+    && session.chief_question_until <= session.since + 60;
+}
+
 function groupOf(session) {
   if (chiefRecords("escalations").some(record => record.session_id === session.session)) return "needs-you";
   if (state.approvals.some((approval) => approval.session === session.session)) return "needs-you";
+  if (session.chief_reviewing && !chiefIsReviewing(session) && session.state === "needs-you") return "needs-you";
   return session.group || (session.state === "needs-you" ? "needs-you" : session.state === "working" ? "working" : "quiet");
 }
 
 // Line 1 of a card: its sign, what it does now, and how long it has (or "no update 18m").
 function nowLine(session, group) {
   if (session.state === "asleep") return { glyph: "☾", text: "Asleep", age: age(session.since) };
+  if (chiefIsReviewing(session) && group !== "needs-you") return { glyph: "·", text: "Chief is reviewing", age: age(session.since) };
   if (group === "needs-you") return { glyph: "!", text: session.doing || "Waiting for you", age: age(session.since) };
   if (group === "working") {
     const stale = session.stale_for ? `no update ${age(Date.now() / 1000 - session.stale_for)}` : "";
@@ -1693,6 +1702,11 @@ function detailLook() {
 }
 
 async function refresh() {
+  // Expire the cached grace before awaiting the network, even when that request hangs or fails.
+  if (state.sessions.some((session) => session.chief_reviewing && !chiefIsReviewing(session))) {
+    updateAttentionBadge();
+    if (tab === "sessions" && opened === null) renderList();
+  }
   try {
     const response = await call("GET", "/api/state");
     if (response.status === 401) { isPaired = false; renderPairing(await response.text()); return; }

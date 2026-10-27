@@ -1262,6 +1262,199 @@ fn report_worker_permissions(bench: &mut Bench, sequence: i64, permissions: u32)
     crate::teams::request(&mut bench.registry, STOPPED_WORKER_PEER, action).unwrap().result.unwrap();
 }
 
+fn ask_worker_question(bench: &mut Bench, needs_input: bool) {
+    let directory = bench.registry.sessions[STOPPED_WORKER].cwd.clone();
+    let report = parse_session(&json!({"session":STOPPED_WORKER,"agent":"opencode","project":"project-a","cwd":directory,
+        "state":"needs-you","needs_input":needs_input,"message":"Which option?","sticky":true}).to_string()).unwrap();
+    bench.registry.report_from(report, STOPPED_WORKER_PEER).unwrap();
+}
+
+#[test]
+fn a_question_waits_for_chief_triage_before_any_needs_you_banner() {
+    let mut bench = stop_bench();
+    ask_worker_question(&mut bench, true);
+    assert!(!bench.raised().contains(&STOPPED_WORKER.to_string()));
+    let row = bench.snapshot().into_iter().find(|row| row["session"] == STOPPED_WORKER).unwrap();
+    assert_eq!(row["state"], "needs-you", "attention deferral must not make blocked work look idle to admission");
+    assert_eq!(row["needs_input"], true);
+    let card = cockpit::sessions::Session::from_value(&row).unwrap();
+    assert!(!card.needs_attention(), "the same grace must reach the session card");
+}
+
+#[test]
+fn permission_dialogs_still_raise_a_banner_with_chief_on() {
+    let mut bench = stop_bench();
+    ask_worker_question(&mut bench, false);
+    assert!(bench.raised().contains(&STOPPED_WORKER.to_string()));
+    let row = bench.snapshot().into_iter().find(|row| row["session"] == STOPPED_WORKER).unwrap();
+    assert!(cockpit::sessions::Session::from_value(&row).unwrap().needs_attention());
+}
+
+#[test]
+fn a_native_form_is_deferred_but_its_next_permission_notification_is_not() {
+    let mut bench = stop_bench();
+    let directory = bench.registry.sessions[STOPPED_WORKER].cwd.clone();
+    for is_form in [true, false] {
+        let report = parse_session(&json!({"session":STOPPED_WORKER,"agent":"opencode","project":"project-a","cwd":directory,
+            "state":"needs-you","needs_input":false,"question_form":is_form,"message":if is_form { "Choose A or B" } else { "Allow tool execution?" },"sticky":true}).to_string()).unwrap();
+        bench.registry.report_from(report, STOPPED_WORKER_PEER).unwrap();
+        if is_form {
+            assert!(!bench.raised().contains(&STOPPED_WORKER.to_string()));
+            bench.registry.sessions.get_mut(STOPPED_WORKER).unwrap().since -= 2.0;
+            report_worker_permissions(&mut bench, 1, 0);
+            let sample = bench.registry.chief_telemetry.get_mut(STOPPED_WORKER).unwrap();
+            sample.counts.as_mut().unwrap().pending_forms = 1;
+        } else {
+            assert!(bench.raised().contains(&STOPPED_WORKER.to_string()), "a permission event overrides even a cached form sample");
+        }
+    }
+}
+
+#[test]
+fn an_unavailable_native_chief_cannot_hide_questions() {
+    for failure in ["missing sample", "unverified admission"] {
+        let mut bench = stop_bench();
+        ask_worker_question(&mut bench, true);
+        if failure == "missing sample" {
+            bench.registry.chief_native.remove(OPENCODE_SESSION);
+            bench.registry.chief_telemetry.remove(OPENCODE_SESSION);
+        } else {
+            bench.registry.teams.as_ref().unwrap().execute("DELETE FROM chief_admission_verifications", []).unwrap();
+        }
+        bench.registry.refresh_chief_questions(crate::teams::now_ms());
+        assert!(bench.raised().contains(&STOPPED_WORKER.to_string()), "{failure}");
+    }
+}
+
+#[test]
+fn chief_question_grace_expires_without_another_worker_report() {
+    let mut bench = stop_bench();
+    ask_worker_question(&mut bench, true);
+    let since = bench.registry.sessions[STOPPED_WORKER].since as i64;
+    bench.registry.chief_native.get_mut(OPENCODE_SESSION).unwrap().3 = (since + 59) * 1000;
+    assert!(!bench.registry.refresh_chief_questions((since + 59) * 1000));
+    assert!(!bench.raised().contains(&STOPPED_WORKER.to_string()));
+    assert!(bench.registry.refresh_chief_questions((since + 60) * 1000));
+    assert!(bench.raised().contains(&STOPPED_WORKER.to_string()));
+    assert!(!bench.registry.refresh_chief_questions((since + 61) * 1000));
+    assert_eq!(bench.raised().iter().filter(|session| *session == STOPPED_WORKER).count(), 1);
+}
+
+#[test]
+fn repeated_question_reports_do_not_renew_chief_grace() {
+    let mut bench = stop_bench();
+    ask_worker_question(&mut bench, true);
+    let deadline = bench.snapshot().into_iter().find(|row| row["session"] == STOPPED_WORKER).unwrap()["chief_question_until"].clone();
+    ask_worker_question(&mut bench, true);
+    let row = bench.snapshot().into_iter().find(|row| row["session"] == STOPPED_WORKER).unwrap();
+    assert_eq!(row["chief_question_until"], deadline);
+    assert!(!bench.raised().contains(&STOPPED_WORKER.to_string()));
+}
+
+#[test]
+fn chief_question_grace_ends_when_chief_is_off_paused_failed_or_gone() {
+    for state in ["disabled", "paused", "failed", "gone"] {
+        let mut bench = stop_bench();
+        ask_worker_question(&mut bench, true);
+        match state {
+            "disabled" | "paused" => { bench.registry.teams.as_ref().unwrap().execute("UPDATE chief_grants SET state=?1", [state]).unwrap(); },
+            "failed" => { bench.registry.teams.as_ref().unwrap().execute("UPDATE chief_coordination SET failed=1", []).unwrap(); },
+            "gone" => { bench.registry.sessions.remove(OPENCODE_SESSION); },
+            _ => unreachable!(),
+        }
+        assert!(bench.registry.refresh_chief_questions(crate::teams::now_ms()), "{state}");
+        assert!(bench.raised().contains(&STOPPED_WORKER.to_string()), "{state}");
+    }
+}
+
+#[test]
+fn an_identical_question_report_publishes_chiefs_changed_attention_state() {
+    let mut bench = stop_bench();
+    ask_worker_question(&mut bench, true);
+    bench.registry.teams.as_ref().unwrap().execute("UPDATE chief_grants SET state='paused'", []).unwrap();
+    ask_worker_question(&mut bench, true);
+    for after_tick in [false, true] {
+        if after_tick { bench.registry.tick_queues(); }
+        let row = bench.snapshot().into_iter().find(|row| row["session"] == STOPPED_WORKER).unwrap();
+        assert!(cockpit::sessions::Session::from_value(&row).unwrap().needs_attention(), "after tick: {after_tick}");
+    }
+}
+
+fn record_worker_question(bench: &mut Bench) -> String {
+    let worker = verified(bench, STOPPED_WORKER);
+    let boundary = format!("needs-you:{}", bench.registry.sessions[STOPPED_WORKER].since as i64);
+    let task = cockpit::teams::TaskKey { project: worker.project.clone(), task_id: String::new() };
+    let bundle = cockpit::chief::bundle::stop_bundle(&cockpit::paths::opencode_database(), STOPPED_WORKER, None, vec![]).unwrap();
+    cockpit::chief::store::record_stop(bench.registry.teams.as_mut().unwrap(), &worker, &boundary, &task, &bundle, crate::teams::now_ms()).unwrap().unwrap()
+}
+
+#[test]
+fn chief_escalation_surfaces_the_question_before_the_grace_expires() {
+    let mut bench = stop_bench();
+    ask_worker_question(&mut bench, true);
+    let stop = record_worker_question(&mut bench);
+    crate::teams::request(&mut bench.registry, 20, AgentAction::Chief { request: ChiefAgentAction::Escalate {
+        stop, category: cockpit::chief::EscalationCategory::NotSure, reason: "Theo must choose.".into(), suggested_answer: None,
+    }}).unwrap().result.unwrap();
+    bench.registry.tick_queues();
+    assert!(bench.raised().contains(&STOPPED_WORKER.to_string()));
+    let row = bench.snapshot().into_iter().find(|row| row["session"] == STOPPED_WORKER).unwrap();
+    assert!(cockpit::sessions::Session::from_value(&row).unwrap().needs_attention());
+}
+
+#[test]
+fn an_uncertain_chief_answer_surfaces_the_question_instead_of_hiding_it() {
+    let mut bench = stop_bench();
+    ask_worker_question(&mut bench, true);
+    let stop = record_worker_question(&mut bench);
+    chief_answers(&mut bench, &stop);
+    bench.registry.teams.as_ref().unwrap().execute("UPDATE chief_answers SET delivery='uncertain'", []).unwrap();
+    bench.registry.tick_queues();
+    assert!(bench.raised().contains(&STOPPED_WORKER.to_string()));
+}
+
+#[test]
+fn a_worker_that_resumes_after_a_chief_answer_never_raises_its_question_banner() {
+    let mut bench = stop_bench();
+    ask_worker_question(&mut bench, true);
+    let stop = record_worker_question(&mut bench);
+    chief_answers(&mut bench, &stop);
+    bench.registry.teams.as_ref().unwrap().execute("UPDATE chief_answers SET delivery='received'", []).unwrap();
+    let directory = bench.registry.sessions[STOPPED_WORKER].cwd.clone();
+    let report = parse_session(&json!({"session":STOPPED_WORKER,"agent":"opencode","project":"project-a","cwd":directory,
+        "state":"working","needs_input":false}).to_string()).unwrap();
+    bench.registry.report_from(report, STOPPED_WORKER_PEER).unwrap();
+    bench.registry.refresh_chief_questions(crate::teams::now_ms() + 61_000);
+    assert!(!bench.raised().contains(&STOPPED_WORKER.to_string()));
+}
+
+#[test]
+fn chief_storage_or_bundle_failures_surface_deferred_questions() {
+    for failure in ["storage", "bundle"] {
+        let mut bench = stop_bench();
+        ask_worker_question(&mut bench, true);
+        if failure == "storage" {
+            bench.registry.teams.as_ref().unwrap().execute("ALTER TABLE chief_coordination RENAME TO unavailable_coordination", []).unwrap();
+        } else {
+            let since = bench.registry.sessions[STOPPED_WORKER].since as i64;
+            bench.registry.chief_stop_failures.insert(STOPPED_WORKER.into(), (format!("needs-you:{since}"), crate::teams::now_ms()));
+        }
+        assert!(bench.registry.refresh_chief_questions(crate::teams::now_ms()), "{failure}");
+        assert!(bench.raised().contains(&STOPPED_WORKER.to_string()), "{failure}");
+    }
+}
+
+#[test]
+fn a_deferred_question_banner_is_not_lost_on_daemon_restart() {
+    let mut bench = stop_bench();
+    ask_worker_question(&mut bench, true);
+    let since = bench.registry.sessions[STOPPED_WORKER].since as i64;
+    bench.world.borrow_mut().live_ids.extend([STOPPED_WORKER.into(), OPENCODE_SESSION.into()]);
+    bench.registry = Registry::new(Box::new(FakeSystem(bench.world.clone())), Box::new(FakeBanners(bench.shown.clone())));
+    bench.registry.refresh_chief_questions((since + 61) * 1000);
+    assert!(bench.raised().contains(&STOPPED_WORKER.to_string()));
+}
+
 fn stop_states(bench: &Bench) -> Vec<(String, String)> {
     let connection = bench.registry.teams.as_ref().unwrap();
     let mut statement = connection.prepare("SELECT boundary,state FROM chief_stops ORDER BY created_at,rowid").unwrap();

@@ -407,6 +407,20 @@ fn a_real_dialog_overrides_an_already_published_chat_question() {
 }
 
 #[test]
+fn native_question_forms_and_permissions_have_distinct_attention_kinds() {
+    for (agent, notification, is_form) in [("opencode", "elicitation_dialog", true), ("opencode", "permission_prompt", false),
+        ("opencode", "worker_permission_prompt", false), ("claude", "elicitation_dialog", false)] {
+        let mut test = HookTest::new();
+        let payload = with_session(json!({"hook_event_name":"Notification","notification_type":notification,"message":"Input requested"}), "/x/proj");
+        let result = test.run_hook(payload, &[("COCKPIT_AGENT", agent)]);
+        assert!(result.status.success(), "{}", stderr(&result));
+        let row = test.received().remove(0);
+        assert_eq!(row["question_form"], is_form, "{agent} {notification}");
+        assert_eq!(row["needs_input"], false);
+    }
+}
+
+#[test]
 fn lifecycle_resets_clear_an_explicit_question() {
     for event in ["UserPromptSubmit", "SessionStart", "SessionEnd"] {
         for has_finished in [false, true] {

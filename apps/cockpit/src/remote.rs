@@ -683,6 +683,8 @@ pub fn state() -> Value {
         "agent": Some(text(row, "agent")).filter(|agent| !agent.is_empty()).unwrap_or_else(|| agents::DEFAULT.into()),
         "features": agents::get(&text(row, "agent")).feature_names(),
         "group": sessions::attention_group(&session),
+        "chief_reviewing": session.chief_is_reviewing(now),
+        "chief_question_until": session.chief_question_until,
         "ask_to_run": session.ask_to_run.clone(),
         "doing": doing_of(&session, now),
         "doing_since": sessions::doing_now(&session, now).map(|doing| doing.at),

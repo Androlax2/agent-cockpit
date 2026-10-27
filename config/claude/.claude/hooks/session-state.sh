@@ -244,6 +244,7 @@ credits=false
 # opencode's plugin says so; Claude's hooks say nothing, which the daemon takes for claude.
 agent=${COCKPIT_AGENT:-}
 needs_input=
+question_form=
 case $event in
     TaskLabel)
         if ! label=$(jq -er '.label | select(type == "string")
@@ -315,7 +316,8 @@ case $event in
         case $(jq -r '.notification_type // ""' <<<"$payload") in
             background_work) read -r agents background < <(background_of "$payload") || true ;;
             permission_prompt | worker_permission_prompt | elicitation_dialog | elicitation_url_dialog | agent_needs_input)
-                state=needs-you; sticky=true; needs_input=false ;;
+                state=needs-you; sticky=true; needs_input=false; question_form=false
+                if [[ $agent == opencode && $(jq -r '.notification_type' <<<"$payload") == elicitation_dialog ]]; then question_form=true; fi ;;
             idle_prompt) state=waiting; sticky=true ;;
             agent_completed | push_notification) state=waiting ;;
             *) state= ;;
@@ -394,7 +396,7 @@ esac
 report=$(jq -cn \
     --arg session "$session" --arg state "$state" --arg project "$project" --arg cwd "$cwd" \
     --arg task "$task" --arg label "$label" --arg doing "$doing" --arg last_tool "$last_tool" --arg message "$message" --arg outcome "$outcome" --argjson sticky "$sticky" --argjson terminal "$terminal" --argjson credits "$credits" --arg unpushed "$unpushed" --arg agents "$agents" --arg background "$background" --arg apps "$(craft_apps)" --arg agent "$agent" \
-    --arg needs_input "$needs_input" --arg kitty_pid "${KITTY_PID:-}" --arg kitty_window "${KITTY_WINDOW_ID:-}" \
+    --arg needs_input "$needs_input" --arg question_form "$question_form" --arg kitty_pid "${KITTY_PID:-}" --arg kitty_window "${KITTY_WINDOW_ID:-}" \
     --arg turn_id "$turn_id" --argjson turn_complete "$turn_complete" \
     --arg quota_stopped "$quota_stopped" \
     --arg repository "$repository" --arg branch "$branch" --argjson repository_reported "$repository_reported" \
@@ -407,6 +409,7 @@ report=$(jq -cn \
       | if $agent == "" then . else .agent = $agent end
       | if $quota_stopped == "" then . else .quota_stopped = ($quota_stopped == "true") end
       | if $needs_input == "" then . else .needs_input = ($needs_input == "true") end
+      | if $question_form == "" then . else .question_form = ($question_form == "true") end
       | if $turn_complete then .turn_id = $turn_id | .turn_complete = true else . end
       | if $repository_reported then .repository = $repository | .branch = $branch else . end
      | .apps = $apps | .credits = $credits')

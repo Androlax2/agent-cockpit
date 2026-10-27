@@ -252,6 +252,14 @@ question form the agent has open. Tool output and attachments never reach the Ch
 permission prompt is never a stop. The record is closed as soon as the agent moves on, even
 while the Chief is disabled; a daemon restart or a gap in the session's telemetry does not close it.
 
+While the Chief is active and available, eligible questions show **Chief is reviewing** instead
+of an amber ask on the desktop and phone, and their away banner waits. This lasts at most
+60 seconds from the original stop, including time spent waiting for an answer to be delivered;
+repeated reports and daemon restarts never renew it. Escalation, a failed or uncertain delivery,
+Chief Off/Pause, or a storage/bundle failure brings the ask back sooner. Permission prompts and
+host command approvals still appear immediately. The session remains blocked throughout: this
+changes attention only, never what it may execute.
+
 For each stop the Chief does one of these things:
 
 - **Nothing**, when the agent asks nothing.

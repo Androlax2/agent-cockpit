@@ -64,6 +64,7 @@ async function startPage({ sessions, approvals = [], inputs = [], messages = [],
     fetch: async (path, options = {}) => {
       server.requests.push({ path, method: options.method });
       if (path === "/api/state" && server.unpaired) return { status: 401, ok: false, text: async () => "Pair this phone again" };
+      if (path === "/api/state" && server.stateError) return { status: 503, ok: false, text: async () => "Offline" };
       if (options.method === "POST") server.posts.push({ path, body: options.body === undefined ? undefined : JSON.parse(options.body) });
       if (path === "/api/chief" && options.method === "POST" && server.chiefPost) return server.chiefPost();
       if (path === "/api/chief" && options.method !== "POST" && server.chiefFetch) return server.chiefFetch();
@@ -431,6 +432,36 @@ const tests = {
     page.server.sessions = [];
     await page.run("refresh()"); await settle();
     assert.equal(page.location.hash, "");
+  },
+
+  async "Chief triage keeps questions out of the phone attention badge until fallback"() {
+    const now = Math.floor(Date.now() / 1000);
+    const question = { session: "s1", project: "Shop", agent: "opencode", state: "needs-you", needs_input: true,
+      request: "Which layout?", group: "quiet", chief_reviewing: true, chief_question_until: now + 59, since: now - 1, features: [] };
+    const page = await startPage({ sessions: [question] });
+    const tab = page.document.getElementById("tab-sessions");
+    assert.equal(tab.querySelector(".badge").hidden, true);
+    page.roots.list.querySelector(".show-quiet").onclick();
+    assert.ok(page.roots.list.textContent.includes("Chief is reviewing"));
+    assert.equal(page.roots.list.querySelector(".ask-bar"), null);
+    page.server.sessions = [{ ...question, group: "needs-you", chief_reviewing: false }];
+    await page.run("refresh()"); await settle();
+    assert.equal(tab.querySelector(".badge").hidden, false);
+    assert.ok(page.roots.list.querySelector(".ask-bar"));
+  },
+
+  async "Chief grace expires locally when the phone cannot refresh"() {
+    const now = Math.floor(Date.now() / 1000);
+    const page = await startPage({ sessions: [{ session: "s1", project: "Shop", agent: "opencode", state: "needs-you", needs_input: true,
+      request: "Which layout?", group: "quiet", chief_reviewing: true, chief_question_until: now + 59, since: now - 1, features: [] }] });
+    const tab = page.document.getElementById("tab-sessions");
+    assert.equal(tab.querySelector(".badge").hidden, true);
+    page.server.stateError = true;
+    page.run(`Date.now = () => ${(now + 61) * 1000}`);
+    await page.run("refresh()"); await settle();
+    assert.equal(page.document.getElementById("updated").dataset.state, "offline");
+    assert.equal(tab.querySelector(".badge").hidden, false);
+    assert.ok(page.roots.list.querySelector(".ask-bar"));
   },
 
   async "the sessions tab counts each session that needs you once"() {

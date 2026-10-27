@@ -150,6 +150,7 @@ pub struct Report {
     pub sticky: bool,
     /// An explicit blocking chat question, independent of the agent's on-screen dialog state.
     pub needs_input: Option<bool>,
+    pub question_form: Option<bool>,
     pub quota_stopped: Option<bool>,
     /// Started with "this terminal" (the claude function's t): the cockpit shows it but leaves it out
     /// of what acts on every session (restart-all, the reboot restore, the queue, the hand-off).
@@ -221,6 +222,9 @@ pub fn parse_session(raw: &str) -> Result<Report, String> {
     if report.get("needs_input").is_some_and(|value| !value.is_boolean()) {
         return Err("session.needs_input is not true or false".into());
     }
+    if report.get("question_form").is_some_and(|value| !value.is_boolean()) {
+        return Err("session.question_form is not true or false".into());
+    }
     if report.get("turn_complete").is_some_and(|value| !value.is_boolean()) {
         return Err("session.turn_complete is not true or false".into());
     }
@@ -275,6 +279,7 @@ pub fn parse_session(raw: &str) -> Result<Report, String> {
         terminal: report.get("terminal").and_then(Value::as_bool).unwrap_or(false),
         credits: report.get("credits").and_then(Value::as_bool),
         needs_input: report.get("needs_input").and_then(Value::as_bool),
+        question_form: report.get("question_form").and_then(Value::as_bool),
         quota_stopped: report.get("quota_stopped").and_then(Value::as_bool),
         unpushed: report.get("unpushed").and_then(Value::as_u64),
         agents: report.get("agents").and_then(Value::as_u64),
@@ -1176,6 +1181,7 @@ impl GuideRequests {
 pub struct Entry {
     pub state: String,
     pub needs_input: bool,
+    pub question_form: bool,
     pub quota_stopped: bool,
     pub project: String,
     pub cwd: String,
@@ -1232,6 +1238,8 @@ pub struct Registry {
     pub(crate) chief_focus: Option<(String, bool, bool, i64)>,
     pub(crate) chief_fault: Option<String>,
     pub(crate) chief_attention_presentations: HashMap<String, bool>,
+    chief_question_deadlines: HashMap<String, i64>,
+    chief_question_banners: HashMap<String, (String, i64, Banner)>,
     pub(crate) chief_native: HashMap<String, (cockpit::teams::VerifiedSession, bool, bool, i64)>,
     pub(crate) chief_telemetry: HashMap<String, crate::chief::NativeTelemetryObservation>,
     /// Session -> (stop boundary, time of the last failed bundle): logged once, retried after a backoff.
@@ -1267,7 +1275,7 @@ impl Registry {
     pub fn new(system: Box<dyn System>, banners: Box<dyn Banners>) -> Self {
         let mut registry = Registry { system, banners, sessions: BTreeMap::new(), held: BTreeMap::new(), runs: RunRequests::default(),
                                       guides: GuideRequests::default(), recent_written: (0.0, Vec::new()), project_cache: HashMap::new(), teams: None,
-                                      chief_focus: None, chief_fault: None, chief_attention_presentations: HashMap::new(), chief_native: HashMap::new(), chief_telemetry: HashMap::new(),
+                                      chief_focus: None, chief_fault: None, chief_attention_presentations: HashMap::new(), chief_question_deadlines: HashMap::new(), chief_question_banners: HashMap::new(), chief_native: HashMap::new(), chief_telemetry: HashMap::new(),
                                       chief_stop_failures: HashMap::new(), resolved_todos: Default::default(), live_session_passes: 0, live_session_cache: None };
         registry.load_snapshot();
         registry.runs.recover(registry.system.as_mut());
@@ -1411,11 +1419,53 @@ impl Registry {
                 }
             },
         }
+        let attention_changed = self.refresh_chief_questions(crate::teams::now_ms());
         let phases = self.runs.session_phases();
         self.runs.tick(self.system.as_mut(), self.banners.as_mut());
         self.guides.tick(self.system.as_mut(), self.banners.as_mut());
-        if phases != self.runs.session_phases() {
+        if attention_changed || phases != self.runs.session_phases() {
             self.publish();
+        }
+    }
+
+    pub(crate) fn refresh_chief_questions(&mut self, now_ms: i64) -> bool {
+        let deadlines = crate::chief::question_grace_deadlines(self, now_ms).unwrap_or_else(|error| {
+            log(&format!("Chief question triage unavailable; showing questions: {}", error.message));
+            HashMap::new()
+        });
+        let changed = deadlines != self.chief_question_deadlines;
+        for session in deadlines.keys().filter(|session| !self.chief_question_deadlines.contains_key(*session)) {
+            let entry = &self.sessions[session];
+            if !entry.request.is_empty() {
+                let banner = Banner { session: session.clone(), title: format!("Claude · {}", entry.project), message: entry.request.clone(), sticky: true };
+                self.chief_question_banners.insert(session.clone(), (entry.runtime.clone(), entry.since as i64, banner));
+                self.held.remove(session);
+                if self.banners.showing(session) { self.banners.drop_banner(session); }
+            }
+        }
+        self.chief_question_deadlines = deadlines;
+        for (session, (runtime, since, banner)) in std::mem::take(&mut self.chief_question_banners) {
+            let is_same_question = self.sessions.get(&session).is_some_and(|entry| entry.state == "needs-you"
+                && entry.runtime == runtime && entry.since as i64 == since && entry.request == banner.message);
+            if !is_same_question { continue; }
+            if self.chief_question_deadlines.contains_key(&session) {
+                self.chief_question_banners.insert(session, (runtime, since, banner));
+            } else {
+                self.show_session_banner(banner);
+            }
+        }
+        changed
+    }
+
+    fn show_session_banner(&mut self, banner: Banner) {
+        if self.system.claude_workspace_active() { return; }
+        let short: String = banner.session.chars().take(8).collect();
+        if self.system.quiet() {
+            log(&format!("banner held (meeting or game) for {short} ({}): {}", banner.title, banner.message));
+            self.held.insert(banner.session.clone(), banner);
+        } else {
+            log(&format!("banner {}for {short} ({}): {}", if banner.sticky { "sticky " } else { "" }, banner.title, banner.message));
+            self.banners.raise_banner(&banner);
         }
     }
 
@@ -1531,6 +1581,10 @@ impl Registry {
                 changed = true;
             }
         }
+        let question_form = if entry.state == "needs-you" {
+            report.question_form.unwrap_or(entry.question_form && report.needs_input.is_none())
+        } else { false };
+        if entry.question_form != question_form { entry.question_form = question_form; changed = true; }
         if let Some(task) = &report.task {
             if &entry.task != task {
                 entry.task = task.clone();
@@ -1662,6 +1716,7 @@ impl Registry {
         let tmux_pane = entry.target.get("tmux_pane").cloned();
         self.sessions.insert(session.clone(), entry);
         self.drop_pane_predecessors(&session, tmux_pane.as_deref());
+        changed |= self.refresh_chief_questions(crate::teams::now_ms());
 
         match message {
             None if report.label.is_some() || report.doing.is_some() => {}
@@ -1670,18 +1725,15 @@ impl Registry {
                 self.banners.drop_banner(&session);
                 self.held.remove(&session);
             }
-            Some(message) if !self.system.claude_workspace_active() => {
+            Some(message) => {
                 let banner = Banner { session: session.clone(), title: format!("Claude · {project}"), message: message.clone(), sticky: report.sticky };
-                let short: String = session.chars().take(8).collect();
-                if self.system.quiet() {
-                    self.held.insert(session.clone(), banner);
-                    log(&format!("banner held (meeting or game) for {short} ({project}): {message}"));
+                if self.chief_question_deadlines.contains_key(&session) {
+                    let entry = &self.sessions[&session];
+                    self.chief_question_banners.insert(session.clone(), (entry.runtime.clone(), entry.since as i64, banner));
                 } else {
-                    self.banners.raise_banner(&banner);
-                    log(&format!("banner {}for {short} ({project}): {message}", if report.sticky { "sticky " } else { "" }));
+                    self.show_session_banner(banner);
                 }
             }
-            Some(_) => {}
         }
         // The window a session moved away from loses its tag unless another session still lives
         // there; the new one is tagged.
@@ -1774,6 +1826,7 @@ impl Registry {
             return;
         }
         self.held.remove(session);
+        self.chief_question_banners.remove(session);
         self.banners.drop_banner(session);
     }
 
@@ -1805,7 +1858,7 @@ impl Registry {
             let mut row = json!({"session": session, "state": entry.state, "project": entry.project, "cwd": entry.cwd, "task": entry.task, "label": entry.label,
                                  "doing": entry.doing, "doing_at": entry.doing_at as i64, "last_tool": entry.last_tool, "last_tool_at": entry.last_tool_at as i64,
                                  "since": entry.since as i64, "started": entry.started as i64, "update": entry.update,
-                                  "request": entry.request, "detail": entry.detail, "full_request": entry.full_request, "outcome": entry.outcome, "needs_input": entry.needs_input, "quota_stopped":entry.quota_stopped,
+                                   "request": entry.request, "detail": entry.detail, "full_request": entry.full_request, "outcome": entry.outcome, "needs_input": entry.needs_input, "question_form": entry.question_form, "quota_stopped":entry.quota_stopped,
                                   "repository": entry.repository, "branch": entry.branch, "last_result": entry.last_result, "reports_turns": entry.reports_turns,
                                  "terminal": entry.terminal, "credits": entry.credits, "unpushed": entry.unpushed,
                                   "agents": entry.agents, "background": entry.background, "apps": entry.apps, "agent": entry.agent,
@@ -1818,6 +1871,9 @@ impl Registry {
             }
             if !entry.runtime.is_empty() {
                 row["runtime"] = json!(entry.runtime);
+            }
+            if let Some(until) = self.chief_question_deadlines.get(session) {
+                row["chief_question_until"] = json!(until);
             }
             row
         }).collect();
@@ -1911,6 +1967,7 @@ impl Registry {
                 Ok((session, Entry {
                     state, project: project.into(), cwd, task: row.get("task").and_then(Value::as_str).unwrap_or("").into(), since,
                     needs_input: row.get("needs_input").and_then(Value::as_bool).unwrap_or(false),
+                    question_form: row.get("question_form").and_then(Value::as_bool).unwrap_or(false),
                     quota_stopped: row.get("quota_stopped").and_then(Value::as_bool).unwrap_or(false),
                     label,
                     doing_at: if doing.is_empty() { 0.0 } else { row.get("doing_at").and_then(Value::as_f64).unwrap_or(0.0) },
@@ -1943,6 +2000,11 @@ impl Registry {
                     }
                     entry.project = self.project_of(&entry.cwd.clone(), &entry.project.clone());
                     entry.target = self.resolve_target(entry.target.clone());
+                    // A deferred banner survives a daemon crash, but its original stop clock does not restart.
+                    if row.get("chief_question_until").and_then(Value::as_i64).is_some() && entry.state == "needs-you" && !entry.request.is_empty() {
+                        let banner = Banner { session: session.clone(), title: format!("Claude · {}", entry.project), message: entry.request.clone(), sticky: true };
+                        self.chief_question_banners.insert(session.clone(), (entry.runtime.clone(), entry.since as i64, banner));
+                    }
                     self.sessions.insert(session, entry);
                 }
                 Err(error) => log(&format!("skipping snapshot row {row}: {error}")),

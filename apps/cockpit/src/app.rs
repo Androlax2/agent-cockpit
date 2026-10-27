@@ -2351,6 +2351,7 @@ impl App {
             return card;
         }
         match sessions::activity_label(session) {
+            "Chief is reviewing" => card.doing = "Chief is reviewing".into(),
             "Command running" => {
                 (card.glyph, card.tint, card.doing) = ("▶", BLUE, "Running your approved command".into());
             },
