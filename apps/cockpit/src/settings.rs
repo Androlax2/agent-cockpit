@@ -31,16 +31,16 @@ pub const LAUNCH_SETTINGS: [(&str, &str); 4] = [
 pub fn explanation(name: &str) -> &'static str {
     match name {
         "default-agent" => "what N starts",
-        "opencode-model" => "the model new OpenCode sessions use",
-        "opencode-effort" => "how hard it thinks; per model",
+        "opencode-model" => "the model new OpenCode sessions start with",
+        "opencode-effort" => "how much it thinks before answering; the choices depend on the model",
         "idle-sleep-after" => "frees memory; wakes on your message",
         "todo-queue" => "start queued todos by themselves",
-        "error-handoff" => "a session that errors hands its work to a fresh one",
+        "error-handoff" => "send errors from the cockpit log to a session that fixes them",
         "freeze-while-gaming" => "hold banners and new work",
-        "idle-lock" => "lock the screen after the idle countdown",
+        "idle-lock" => "lock the screen when the Still there? countdown ends",
         "daily-digest" => "one summary each morning",
-        "idle-sleep" => "exit idle sessions to free memory",
-        "phone-on-lock" => "send what needs you to the phone while locked",
+        "idle-sleep" => "close quiet sessions to free memory; opening one brings it back",
+        "phone-on-lock" => "send needs-you to your phone while the computer is locked",
         _ => "",
     }
 }
