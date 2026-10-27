@@ -92,6 +92,21 @@ agent-docker-remove: ## [no undo] Delete a project's agent daemon, its user, ima
 agent-docker-status: ## [read-only] List the agent Docker daemons and whether their sockets are up
 	@$(agent_docker) status
 
+agent_browser = $(HOME)/.cache/agent-browser
+playwright_version = 1.64.1
+
+.PHONY: agent-browser agent-forward
+
+# ~/.cache is read-only inside every sandbox, so sessions can use this browser but not alter it.
+agent-browser: ## Give every sandbox headless Chromium through Playwright for Python: ~/.cache/agent-browser/bin/python
+	uv venv --allow-existing --python /usr/bin/python3 $(agent_browser)
+	uv pip install --python $(agent_browser)/bin/python playwright==$(playwright_version)
+	$(agent_browser)/bin/playwright install chromium
+
+agent-forward: ## Forward host ports into a project's sandboxes (new sessions): make agent-forward PROJECT=stadeo PORTS="8088" DAYS=30
+	@test -n "$(PROJECT)" -a -n "$(PORTS)" || { echo 'usage: make agent-forward PROJECT=<folder in ~/IdeaProjects> PORTS="<port>..." [DAYS=30]'; exit 2; }
+	@tools/agent-forward.sh "$(PROJECT)" "$(or $(DAYS),30)" $(PORTS)
+
 .PHONY: agent-anthropic-key agent-opencode-key
 
 agent-anthropic-key: ## Store the Console API key that credits sessions (the cockpit's $) bill instead of the subscription; asks for it

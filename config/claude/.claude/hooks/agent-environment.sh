@@ -68,6 +68,14 @@ describe_image_paste() {
     fi
 }
 
+describe_browser() {
+    if [[ -x ~/.cache/agent-browser/bin/python ]]; then
+        echo "- Browser: headless Chromium through Playwright for Python: run scripts with ~/.cache/agent-browser/bin/python (set viewport and color_scheme per page). If an app's host port does not answer on localhost, ask Theo to run \`make -C ${COCKPIT_REPOSITORY} agent-forward PROJECT=${project_name} PORTS=\"<port>\"\` and the session restarts."
+    else
+        echo "- Browser: not set up. If the task needs browser checks, ask Theo to run \`make -C ${COCKPIT_REPOSITORY} agent-browser\`."
+    fi
+}
+
 # Designs in FigCraft: the interface is designed before it is built (the design-first skill).
 describe_design() {
     local designs
@@ -93,6 +101,7 @@ describe_sandbox
 describe_docker
 describe_github
 describe_image_paste
+describe_browser
 describe_design
 describe_ask_to_run
 exit 0

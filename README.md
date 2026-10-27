@@ -454,6 +454,12 @@ make -C ~/agent-cockpit system    # [sudo] the agent-docker units
 git clone ~/agent-cockpit ~/IdeaProjects/agent-cockpit   # where sessions work
 ```
 
+Browser checks: `make agent-browser` installs Playwright for Python into `~/.cache/agent-browser`
+(read-only in every sandbox; Chromium from `~/.cache/ms-playwright`), and
+`make agent-forward PROJECT=stadeo PORTS="8088" DAYS=30` lets that project's new sessions reach the
+host's port 8088 on localhost. Sessions then run their Playwright scripts with
+`~/.cache/agent-browser/bin/python`.
+
 The running copy, `~/agent-cockpit`, changes only through `cockpit apply <clone>` after a yes.
 The machine's own configuration (Hyprland, Waybar, fish, tmux, Claude's rules and skills) is in
 [dotfiles](https://github.com/Androlax2/dotfiles), which calls the cockpit by its commands.
