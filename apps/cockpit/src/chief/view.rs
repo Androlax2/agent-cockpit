@@ -278,6 +278,7 @@ impl ChiefView {
             Outcome::Close=>{self.close_inbox();if self.frames.is_empty() {Effect::Close} else {Effect::None}},
         }
     }
+    pub fn leave_inbox(&mut self) {self.close_inbox();}
     fn close_inbox(&mut self) {
         if matches!(self.frames.last(),Some(Frame::Inbox)) {self.frames.pop();}
         self.inbox=None;

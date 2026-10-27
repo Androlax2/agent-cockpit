@@ -2763,14 +2763,14 @@ impl App {
 
     pub(crate) fn sessions_hints(&self) -> Vec<(&'static str, &'static str)> {
         if self.selected_session().is_none() && self.sidebar_rows.get(self.panels[1].selected).is_some() {
-            return vec![("⏎", "fold/unfold team"), ("n", "Next needing me"), ("/", "find"), ("i", "team details")];
+            return vec![("⏎", "fold/unfold team"), ("n", "Next needing me"), ("i", "team details")];
         }
         let selected = self.selected_session().unwrap_or_default();
         let mut hints = Vec::new();
         if selected.update {
-            hints.push(("r", "restart to apply the update"));
+            hints.push(("R", "restart to apply the update"));
         } else if !sessions::changed_since_start(&selected, &self.start_files).is_empty() {
-            hints.push(("r", "restart to pick up the change"));
+            hints.push(("R", "restart to pick up the change"));
         }
         if selected.facts.context.is_some_and(|c| c >= CONTEXT_COMPACT_AT) {
             hints.push(("C", "/compact"));
@@ -2783,7 +2783,7 @@ impl App {
         } else if selected.unpushed > 0 {
             hints.push(("U", "push"));
         }
-        hints.extend([("⏎", "open"), ("n", "Next needing me"), ("/", "find"), ("i", "details")]);
+        hints.extend([("⏎", "open"), ("n", "Next needing me"), ("i", "details")]);
         if self.chief_answers.contains_key(&selected.session) { hints.push(("c", "Chief answers")); }
         hints.extend([("e", "effort"), ("g", "git"), ("+", "another"), ("x", "exit")]);
         if !selected.session.is_empty() && selected.is_external() {
@@ -2885,7 +2885,8 @@ impl App {
             Key::Char('m') => self.toggle_remote(),
             Key::Char('d') => self.drop_queued(screen),
             Key::Char('k') => self.open_team_view(),
-            Key::Char('r' | 'R') => match known {
+            Key::Char('r') => "R restarts the session; r only runs the todo a blocked card waits on".into(),
+            Key::Char('R') => match known {
                 Some(s) if self.confirm(screen, &format!("restart {}? same conversation, new process", s.project)) => {
                     manager_in_background(&["restart", &s.session]);
                     format!("restarting {} …", s.project)
@@ -2944,7 +2945,7 @@ impl App {
                     let _ = util::spawn_detached(Command::new("xdg-open").arg(&design.url));
                     format!("opening {} …", design.title)
                 }
-                None => "no canvas: the design action in the : list starts a design session".into(),
+                None => "no canvas: N, then Claude Design canvas, starts a design session".into(),
             },
             Key::Char('g') => match session {
                 Some(s) if s.cwd.is_empty() => "no directory known for this session".into(),
@@ -3371,7 +3372,7 @@ impl App {
                 self.build_todo();
                 if approved { "approved: it is in To do now".into() } else { "declined: it will not be proposed again".into() }
             }
-            Key::Enter => {
+            Key::Enter | Key::Char('i') => {
                 self.session_details = Some(SessionDetails {
                     title: "Idea".into(),
                     text: format!("{}\n\n{}", self.idea_source(&item), todo_details(&Entry::Typed(item))),
@@ -3826,7 +3827,7 @@ impl App {
     fn panel_hints(&self, index: usize) -> Vec<(&'static str, &'static str)> {
         match index {
             0 => {
-                let mut hints = vec![("Esc", "close"), ("p", "pull requests"), ("c", "chief"), ("l", "answer log")];
+                let mut hints = vec![("Esc", "close"), ("p", "pull requests"), ("c", "chief"), ("l", "answer log"), ("h", "habits")];
                 if !self.status_selection_lost && let Some(Some(action)) = self.status_actions.get(self.panels[0].selected) {
                     hints.insert(0, ("⏎", action.hint()));
                 }
@@ -3834,7 +3835,7 @@ impl App {
             },
             1 => self.sessions_hints(),
             2 => vec![("⏎", "review"), ("o", "GitHub"), ("l", "later / bring back"), ("t", "trail"), ("Esc", "close")],
-            4 => vec![("y", "approve"), ("n", "decline"), ("⏎", "details")],
+            4 => vec![("y", "approve"), ("n", "decline"), ("i", "details")],
             _ => self.todo_hints(),
         }
     }
@@ -3868,7 +3869,7 @@ impl App {
                       ("✓ ● ✗", "CI passing, running, failing"), ("approved", "review state: approved, changes (requested), review (required)")],
             4 => vec![("y", "approve the selected idea: it moves to its project's To do, without starting work"),
                       ("n", "decline the selected idea; the declined title will not be proposed again"),
-                      ("⏎", "the full idea, reason, notes and source session from any project")],
+                      ("i ⏎", "the full idea, reason, notes and source session from any project")],
             _ => vec![("⏎", "the item's details: title, notes, why Claude proposed it, who filed it, when"),
                       ("[ ]", "previous / next tab: Open (Proposed, To do and In progress together) · Proposed · To do · In progress · Done"),
                       ("h", "hand the item over: the session on screen if it is on the item's project (a parallel clone too), Claude Code or opencode alike, else the project's running session, or a new one using the default agent"),
@@ -4364,6 +4365,8 @@ impl App {
                 Key::Char('l') => self.open_chief_answers(None),
                 Key::Char('h') => {
                     let message=self.open_chief_view();
+                    // Habits asked for directly: the question inbox stays one esc away.
+                    if let Some(view)=self.chief_view.as_mut() {view.leave_inbox();}
                     self.handle_chief_key(Key::Char('h'));
                     message
                 },

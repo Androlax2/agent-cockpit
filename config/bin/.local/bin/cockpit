@@ -61,7 +61,7 @@
 #                                a session reviewing that pull request in its own clone (the sidebar's c)
 #   cockpit label-state <state>
 #                                colour the viewer's title line by the viewed session's state (the sidebar)
-#   cockpit focus-viewer move the cursor into the viewer pane (the sidebar's l / Right)
+#   cockpit focus-viewer move the cursor into the viewer pane (the sidebar's Right)
 #   cockpit prepare              create the manager's tmux session without a window (login autostart)
 #   cockpit reload               restart the sidebar in place (after editing it), and the OSD daemon
 #                                and the phone page when they run an older build than the one on disk

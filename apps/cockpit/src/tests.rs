@@ -1895,7 +1895,7 @@ fn an_updated_session_shows_its_badge_and_the_restart_hint() {
     fixture.snapshot(json!([row]));
     let app = fixture.app();
     assert!(app.panels[1].fixed_bottom.iter().flat_map(|line| &line.right).any(|part| part.text == "⬆ update"));
-    assert!(app.sessions_hints().contains(&("r", "restart to apply the update")));
+    assert!(app.sessions_hints().contains(&("R", "restart to apply the update")));
 }
 
 #[test]
@@ -9224,7 +9224,7 @@ fn a_session_left_behind_by_a_change_puts_restart_first() {
     fixture.snapshot(json!([session(SESSION_A, "waiting", "dotfiles", "/r/dotfiles", 100)]));
     let mut app = fixture.app();
     app.start_files = vec![("CLAUDE.md", 500.0)];
-    assert_eq!(app.sessions_hints()[0], ("r", "restart to pick up the change"));
+    assert_eq!(app.sessions_hints()[0], ("R", "restart to pick up the change"));
 }
 
 #[test]
@@ -9236,8 +9236,8 @@ fn every_need_of_a_session_shows_before_the_everyday_keys() {
     fixture.snapshot(json!([row]));
     fixture.write(&format!("home/.cache/claude/statusline-{SESSION_A}.json"), r#"{"context": 93}"#);
     let app = fixture.app();
-    assert_eq!(first_hint_keys(&app, 4), ["r", "C", "U", "⏎"]);
-    assert_eq!(app.sessions_hints().iter().filter(|(key, _)| *key == "r").count(), 1);
+    assert_eq!(first_hint_keys(&app, 4), ["R", "C", "U", "⏎"]);
+    assert_eq!(app.sessions_hints().iter().filter(|(key, _)| *key == "R").count(), 1);
 }
 
 #[test]
@@ -12425,4 +12425,46 @@ fn the_settings_menu_has_one_background_behind_its_text() {
     let left = rows[top as usize].chars().position(|symbol| symbol == '╭').unwrap() as u16;
     let right = rows[top as usize].chars().position(|symbol| symbol == '╮').unwrap() as u16;
     assert_one_background(&buffer, top + 1..bottom, left + 1..right, &[DESIGNED_HIGHLIGHT]);
+}
+
+// ---- Key map (DESIGN.md "Key map", todo 86822093) ----
+
+#[test]
+fn lowercase_r_no_longer_restarts_a_session_only_capital_r_does() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "opusline", "/r/opusline", 1)]));
+    let mut app = fixture.app();
+    app.focus_panel(1);
+    app.handle(Key::Char('r'), &mut FakeScreen::answering(&[Key::Char('y')]));
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    assert!(!fixture.calls("cockpit").iter().any(|call| call.contains("restart")), "{:?}", fixture.calls("cockpit"));
+    assert!(app.message.contains("R restarts"), "{}", app.message);
+    app.handle(Key::Char('R'), &mut FakeScreen::answering(&[Key::Char('y')]));
+    assert!(fixture.wait_for_calls("cockpit", 1).iter().any(|call| call.contains("restart")));
+}
+
+#[test]
+fn the_sessions_footer_offers_no_find_and_capital_r_for_restarts() {
+    let fixture = Fixture::new();
+    let mut updated = session(SESSION_A, "waiting", "opusline", "/r/opusline", 1);
+    updated["update"] = json!(true);
+    fixture.snapshot(json!([updated]));
+    let mut app = fixture.app();
+    app.focus_panel(1);
+    let hints = app.sessions_hints();
+    assert!(hints.iter().all(|(key, _)| *key != "/" && *key != "r"), "{hints:?}");
+    assert!(hints.contains(&("R", "restart to apply the update")), "{hints:?}");
+}
+
+#[test]
+fn i_opens_an_ideas_details_like_enter() {
+    let (_fixture, mut app) = ideas_fixture();
+    open_ideas(&mut app);
+    app.handle(Key::Enter, &mut FakeScreen::default());
+    let by_enter = settings_screen_rows(&render(&mut app, 160, 45)).join("\n");
+    app.handle(Key::Esc, &mut FakeScreen::default());
+    let list = settings_screen_rows(&render(&mut app, 160, 45)).join("\n");
+    assert_ne!(list, by_enter, "Enter opens details");
+    app.handle(Key::Char('i'), &mut FakeScreen::default());
+    assert_eq!(settings_screen_rows(&render(&mut app, 160, 45)).join("\n"), by_enter);
 }
