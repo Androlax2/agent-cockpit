@@ -298,7 +298,10 @@ older). The daemon accepts any todo still to do, queued or not, filed by you or 
 except one that waits on other todos or is for the designer. A todo a session of the Chief's own
 project filed needs your Q first: the Chief cannot start work it gave itself. Such a todo arrives
 already queued, so press Q twice (out, then back in) to approve it. At most one request waits
-per project, and the Chief may ask 3 times an hour. The queue's next pass then starts the session as
+per todo, so several todos of one project can start together. The Chief may ask 6 times an hour;
+change that with `cockpit setting chief-starts-per-hour <1-60>`. Todos you queued yourself with Q
+do not count against it: the Q is recorded by the host, so a Chief cannot claim it for you. An
+invalid value refuses every request until you fix it. The queue's next pass then starts the session as
 usual, with your default agent and the usual queue prompt; every other queue check still
 applies, and the session gets no extra permission. A request the queue does not act on within
 10 minutes lapses. Each request and start is logged and audited

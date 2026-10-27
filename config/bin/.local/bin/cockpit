@@ -82,6 +82,8 @@
 #                                todo-queue, error-handoff, freeze-while-gaming, idle-lock, daily-digest,
 #                                idle-sleep (off: idle sessions stay running); idle-sleep-after <minutes>
 #                                (30 or more, default 60) is how long a session idles before it sleeps
+#                                chief-starts-per-hour <1-60> (default 6) caps the sessions the Chief may ask
+#                                for in an hour; todos you queued with Q do not count
 #   cockpit remote <id>          toggle Remote Control for one session (the remote action of the sidebar's : list)
 #   cockpit restore <dir> <id> […]
 #                                resume those sessions one after the other (the sidebar's B after a reboot)
@@ -926,7 +928,7 @@ PHONE_AWAY="${XDG_RUNTIME_DIR:-/tmp}/cockpit-remote-away"
 # same names (apps/cockpit/src/settings.rs).
 SETTINGS_FILE="${COCKPIT_STATE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}}/cockpit/settings.json"
 KNOWN_SETTINGS=(phone-on-lock todo-queue error-handoff freeze-while-gaming idle-lock daily-digest idle-sleep)
-LAUNCH_SETTINGS=(default-agent opencode-model opencode-effort idle-sleep-after)
+LAUNCH_SETTINGS=(default-agent opencode-model opencode-effort idle-sleep-after chief-starts-per-hour)
 
 launch_setting_value() { # name
     local fallback=""
@@ -946,6 +948,7 @@ validate_launch_setting() { # name value
         opencode-model) [[ -z $2 || $2 =~ ^[^/#[:space:][:cntrl:]]+/[^#[:space:][:cntrl:]]+$ ]] ;;
         opencode-effort) [[ -z $2 || $2 =~ ^[^/#[:space:][:cntrl:]]+$ ]] ;;
         idle-sleep-after) [[ $2 =~ ^[1-9][0-9]{1,5}$ ]] && (( $2 >= 30 )) ;;
+        chief-starts-per-hour) [[ -z $2 || ( $2 =~ ^[1-9][0-9]?$ && $2 -le 60 ) ]] ;;
     esac || { echo "cockpit: invalid $1: $2" >&2; return 1; }
 }
 

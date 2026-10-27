@@ -119,8 +119,10 @@ pub enum ChiefAgentAction {
 
 /// How long a Chief's session start request stays open for the queue to act on.
 pub const SESSION_START_OPEN_MS: i64 = 10 * 60 * 1000;
-/// How many session starts the Chief may request in any rolling hour, across all projects.
-pub const SESSION_STARTS_PER_HOUR: i64 = 3;
+/// How many session starts the Chief may request in any rolling hour, across all projects, unless
+/// Theo's chief-starts-per-hour setting says otherwise. Todos Theo queued himself do not count.
+pub const DEFAULT_SESSION_STARTS_PER_HOUR: i64 = 6;
+pub const MAX_SESSION_STARTS_PER_HOUR: i64 = 60;
 
 /// Why the Chief did not answer a stop itself.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

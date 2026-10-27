@@ -36,6 +36,9 @@ pub(crate) fn ensure_session_starts(connection: &Connection) -> Result<(), TeamE
         id TEXT PRIMARY KEY, epoch TEXT NOT NULL, project TEXT NOT NULL, task_id TEXT NOT NULL, reason TEXT NOT NULL,
         state TEXT NOT NULL CHECK(state IN ('requested','started','expired')), token TEXT,
         created_at INTEGER NOT NULL, started_at INTEGER);")?;
+    if !has_column(connection, "chief_session_starts", "theo_queued")? {
+        connection.execute_batch("ALTER TABLE chief_session_starts ADD COLUMN theo_queued INTEGER NOT NULL DEFAULT 0;")?;
+    }
     Ok(())
 }
 
@@ -985,31 +988,33 @@ fn escalate_stop(connection: &Connection, epoch: &str, stop: &str, category: Esc
 /// reservation, which then skips only the rule that no session of the project may be live.
 /// Any todo still to do qualifies, queued or not, except one waiting on others or for the designer;
 /// one a session of the Chief's own project filed needs Theo's Q first, so the Chief cannot start
-/// work it gave itself.
-fn request_session_start(connection: &Connection, todos: &crate::todo::TodoList, chief_project: &str, epoch: &str, todo: &str, project: &str, reason: &str, now_ms: i64) -> Result<Value, TeamError> {
+/// work it gave itself. Todos Theo queued himself with Q do not count against `starts_per_hour`:
+/// the Q is host-recorded, so it holds where the Chief's word that Theo asked would not.
+fn request_session_start(connection: &Connection, todos: &crate::todo::TodoList, chief_project: &str, epoch: &str, todo: &str, project: &str, reason: &str, starts_per_hour: i64, now_ms: i64) -> Result<Value, TeamError> {
     let item = todos.items.iter().find(|item| item.id() == todo).ok_or_else(|| TeamError::new(ErrorCode::NotFound, "no todo has this id"))?;
     if item.status() != "todo" || item.is_waiting() || item.is_design() {
         return Err(conflict("the Chief starts sessions only for todos still to do, waiting on nothing and not for the designer"));
     }
     let chief_folder = chief_project.rsplit('/').next().unwrap_or(chief_project);
-    if item.is_filed_from(chief_folder) && !(todos.is_queued(todo) && item.is_queued_by_theo()) {
+    let is_theo_queued = todos.is_queued(todo) && item.is_queued_by_theo();
+    if item.is_filed_from(chief_folder) && !is_theo_queued {
         return Err(conflict("a todo the Chief filed waits until Theo queues it with Q"));
     }
     let canonical = crate::teams::canonical_project(&item.cwd())?;
     if canonical.rsplit('/').next() != Some(project) { return Err(conflict("the todo belongs to another project")); }
     connection.execute("UPDATE chief_session_starts SET state='expired' WHERE state='requested' AND created_at<=?1",
         [now_ms.saturating_sub(super::SESSION_START_OPEN_MS)])?;
-    if connection.query_row("SELECT EXISTS(SELECT 1 FROM chief_session_starts WHERE state='requested' AND project=?1)", [&canonical], |row| row.get::<_, bool>(0))? {
-        return Err(conflict("a session start already waits in this project"));
+    if connection.query_row("SELECT EXISTS(SELECT 1 FROM chief_session_starts WHERE state='requested' AND project=?1 AND task_id=?2)", params![canonical, todo], |row| row.get::<_, bool>(0))? {
+        return Err(conflict("a session start already waits for this todo"));
     }
-    let recent: i64 = connection.query_row("SELECT count(*) FROM chief_session_starts WHERE created_at>?1", [now_ms.saturating_sub(3_600_000)], |row| row.get(0))?;
-    if recent >= super::SESSION_STARTS_PER_HOUR {
-        return Err(TeamError::new(ErrorCode::Limit, "the Chief may request at most 3 session starts an hour"));
+    let recent: i64 = connection.query_row("SELECT count(*) FROM chief_session_starts WHERE created_at>?1 AND theo_queued=0", [now_ms.saturating_sub(3_600_000)], |row| row.get(0))?;
+    if !is_theo_queued && recent >= starts_per_hour {
+        return Err(TeamError::new(ErrorCode::Limit, &format!("the Chief may request at most {starts_per_hour} session starts an hour (Theo's chief-starts-per-hour); todos Theo queued with Q do not count")));
     }
     let id = crate::teams::store::identifier()?;
-    connection.execute("INSERT INTO chief_session_starts(id,epoch,project,task_id,reason,state,created_at) VALUES (?1,?2,?3,?4,?5,'requested',?6)",
-        params![id, epoch, canonical, todo, reason, now_ms])?;
-    coordination_event(connection, "session_start_requested", &json!({"source":"chief","request":id,"project":canonical,"task_id":todo,"reason":reason}), now_ms)?;
+    connection.execute("INSERT INTO chief_session_starts(id,epoch,project,task_id,reason,state,created_at,theo_queued) VALUES (?1,?2,?3,?4,?5,'requested',?6,?7)",
+        params![id, epoch, canonical, todo, reason, now_ms, is_theo_queued])?;
+    coordination_event(connection, "session_start_requested", &json!({"source":"chief","request":id,"project":canonical,"task_id":todo,"reason":reason,"theo_queued":is_theo_queued}), now_ms)?;
     Ok(json!({"request": id, "state": "requested", "project": canonical, "todo": todo}))
 }
 
@@ -1495,7 +1500,8 @@ pub fn agent(connection: &mut Connection, sender: &VerifiedSession, action: &Chi
             ChiefAgentAction::Escalate { stop, category, reason, suggested_answer } => escalate_stop(&transaction, &epoch, stop, *category, reason, suggested_answer.as_deref(), now_ms)?,
             ChiefAgentAction::StartSession { todo, project, reason } => {
                 let todos = crate::todo::TodoList::load_checked().map_err(|error| TeamError::new(ErrorCode::Storage, error))?;
-                request_session_start(&transaction, &todos, &sender.project, &epoch, todo, project, reason, now_ms)?
+                let starts_per_hour = crate::settings::chief_starts_per_hour().map_err(|error| TeamError::new(ErrorCode::Storage, &error))?;
+                request_session_start(&transaction, &todos, &sender.project, &epoch, todo, project, reason, starts_per_hour, now_ms)?
             },
         };
         transaction.commit()?;

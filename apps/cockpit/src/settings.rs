@@ -60,6 +60,18 @@ pub fn launch_value(name: &str) -> Result<String, String> {
     }
 }
 
+/// The chief-starts-per-hour setting, set with `cockpit setting` (not in the S menu). An invalid
+/// value is an error, never the default: it is a limit, so a typo must not silently change it.
+pub fn chief_starts_per_hour() -> Result<i64, String> {
+    use crate::chief::{DEFAULT_SESSION_STARTS_PER_HOUR, MAX_SESSION_STARTS_PER_HOUR};
+    let value = launch_value("chief-starts-per-hour").map_err(|error| format!("chief-starts-per-hour: {error}"))?;
+    if value.is_empty() { return Ok(DEFAULT_SESSION_STARTS_PER_HOUR); }
+    match value.parse::<i64>() {
+        Ok(count) if (1..=MAX_SESSION_STARTS_PER_HOUR).contains(&count) => Ok(count),
+        _ => Err(format!("invalid chief-starts-per-hour {value:?} in settings.json: expected 1 to {MAX_SESSION_STARTS_PER_HOUR}")),
+    }
+}
+
 pub fn launch_agent() -> Result<String, String> {
     let name = launch_value("default-agent")?;
     crate::agents::find(&name).ok_or_else(|| format!("invalid default-agent: {name}"))?;

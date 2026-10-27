@@ -5154,6 +5154,24 @@ fn idle_sleep_after_takes_minutes_of_thirty_or_more() {
 }
 
 #[test]
+fn chief_starts_per_hour_takes_one_to_sixty_or_empty_for_the_default() {
+    let manager = Manager::new();
+    let file = manager.sandbox.state.join("cockpit/settings.json");
+    for count in ["1", "12", "60", ""] {
+        let result = manager.run(&["setting", "chief-starts-per-hour", count], &[]);
+        assert!(result.status.success(), "{count:?}: {}", stderr(&result));
+        assert_eq!(stdout(&manager.run(&["setting", "chief-starts-per-hour"], &[])).trim(), format!("chief-starts-per-hour: {count}").trim());
+    }
+    let saved = fs::read_to_string(&file).unwrap();
+    for count in ["0", "61", "06", "-1", "six"] {
+        let result = manager.run(&["setting", "chief-starts-per-hour", count], &[]);
+        assert!(!result.status.success(), "{count:?}");
+        assert!(stderr(&result).contains("invalid chief-starts-per-hour"), "{count:?}: {}", stderr(&result));
+        assert_eq!(fs::read_to_string(&file).unwrap(), saved);
+    }
+}
+
+#[test]
 fn idle_sleep_is_a_switch_that_starts_on() {
     let manager = Manager::new();
     assert_eq!(stdout(&manager.run(&["setting", "idle-sleep"], &[])).trim(), "idle-sleep: on");

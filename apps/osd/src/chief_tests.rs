@@ -1709,23 +1709,91 @@ fn the_chief_names_the_project_the_todo_belongs_to() {
 }
 
 #[test]
-fn only_one_chief_session_start_waits_per_project() {
+fn the_chief_can_ask_for_sessions_for_several_todos_of_one_project_at_once() {
     let mut bench = admitted_chief_bench();
-    let first = handed_todo(&bench, "aa919cfe", "a cockpit-chief session (ses_e82b)");
-    let second = handed_todo(&bench, "dd919cfe", "a cockpit-chief session (ses_e82b)");
-    chief_starts_session(&mut bench, 20, &first, "project-a").unwrap();
-    assert_eq!(chief_starts_session(&mut bench, 20, &second, "project-a").unwrap_err().code, ErrorCode::Conflict);
+    for id in ["aa919cfe", "dd919cfe", "ee919cfe"] {
+        let todo = handed_todo(&bench, id, "a cockpit-chief session (ses_e82b)");
+        chief_starts_session(&mut bench, 20, &todo, "project-a").unwrap();
+    }
+    assert_eq!(session_start_states(&bench), vec!["requested"; 3]);
 }
 
 #[test]
-fn the_chief_requests_at_most_three_session_starts_an_hour() {
+fn only_one_chief_session_start_waits_per_todo() {
     let mut bench = admitted_chief_bench();
     let todo = handed_todo(&bench, "aa919cfe", "a cockpit-chief session (ses_e82b)");
+    chief_starts_session(&mut bench, 20, &todo, "project-a").unwrap();
+    assert_eq!(chief_starts_session(&mut bench, 20, &todo, "project-a").unwrap_err().code, ErrorCode::Conflict);
+}
+
+/// Session starts the Chief asked for 50 minutes ago, inside the rolling hour.
+fn earlier_session_starts(bench: &Bench, count: usize, is_theo_queued: bool) {
     let recently = crate::teams::now_ms() - 50 * 60 * 1000;
-    for id in ["earlier-1", "earlier-2", "earlier-3"] {
-        bench.registry.teams.as_ref().unwrap().execute("INSERT INTO chief_session_starts(id,epoch,project,task_id,reason,state,created_at)
-            VALUES (?1,'epoch','path:/elsewhere','00000000','Earlier.','started',?2)", (id, recently)).unwrap();
+    for index in 0..count {
+        bench.registry.teams.as_ref().unwrap().execute("INSERT INTO chief_session_starts(id,epoch,project,task_id,reason,state,created_at,theo_queued)
+            VALUES (?1,'epoch','path:/elsewhere','00000000','Earlier.','started',?2,?3)", (format!("earlier-{index}"), recently, is_theo_queued)).unwrap();
     }
+}
+
+fn set_chief_starts_per_hour(value: &str) {
+    fs::write(cockpit::paths::settings(), json!({"chief-starts-per-hour": value}).to_string()).unwrap();
+}
+
+#[test]
+fn the_chief_requests_at_most_six_session_starts_an_hour_by_default() {
+    for (earlier, is_refused) in [(5, false), (6, true)] {
+        let mut bench = admitted_chief_bench();
+        let todo = handed_todo(&bench, "aa919cfe", "a cockpit-chief session (ses_e82b)");
+        earlier_session_starts(&bench, earlier, false);
+        let reply = chief_starts_session(&mut bench, 20, &todo, "project-a");
+        assert_eq!(reply.err().map(|error| error.code), is_refused.then_some(ErrorCode::Limit), "{earlier} earlier starts");
+    }
+}
+
+#[test]
+fn the_hourly_cap_follows_theos_chief_starts_per_hour_setting() {
+    let mut bench = admitted_chief_bench();
+    set_chief_starts_per_hour("2");
+    let todo = handed_todo(&bench, "aa919cfe", "a cockpit-chief session (ses_e82b)");
+    earlier_session_starts(&bench, 2, false);
+    let refusal = chief_starts_session(&mut bench, 20, &todo, "project-a").unwrap_err();
+    assert_eq!(refusal.code, ErrorCode::Limit);
+    assert!(refusal.message.contains("at most 2 session starts an hour"), "{}", refusal.message);
+}
+
+#[test]
+fn an_invalid_chief_starts_per_hour_setting_refuses_the_start_and_names_the_setting() {
+    for value in ["0", "61", "six", "-1"] {
+        let mut bench = admitted_chief_bench();
+        set_chief_starts_per_hour(value);
+        let todo = handed_todo(&bench, "aa919cfe", "a cockpit-chief session (ses_e82b)");
+        let refusal = chief_starts_session(&mut bench, 20, &todo, "project-a").unwrap_err();
+        assert!(refusal.message.contains("chief-starts-per-hour"), "{value:?}: {}", refusal.message);
+        assert!(session_start_states(&bench).is_empty());
+    }
+}
+
+#[test]
+fn a_todo_theo_queued_himself_starts_even_when_the_hourly_cap_is_reached() {
+    let mut bench = admitted_chief_bench();
+    earlier_session_starts(&bench, 6, false);
+    let todo = project_todo(&bench, "bb919cfe", json!({"queued_by_theo":true}), true);
+    chief_starts_session(&mut bench, 20, &todo, "project-a").unwrap();
+}
+
+#[test]
+fn starts_for_todos_theo_queued_do_not_count_against_the_hourly_cap() {
+    let mut bench = admitted_chief_bench();
+    earlier_session_starts(&bench, 6, true);
+    let todo = handed_todo(&bench, "aa919cfe", "a cockpit-chief session (ses_e82b)");
+    chief_starts_session(&mut bench, 20, &todo, "project-a").unwrap();
+}
+
+#[test]
+fn a_theo_queued_mark_on_a_todo_out_of_the_queue_still_counts_against_the_cap() {
+    let mut bench = admitted_chief_bench();
+    earlier_session_starts(&bench, 6, false);
+    let todo = project_todo(&bench, "bb919cfe", json!({"queued_by_theo":true}), false);
     assert_eq!(chief_starts_session(&mut bench, 20, &todo, "project-a").unwrap_err().code, ErrorCode::Limit);
 }
 
