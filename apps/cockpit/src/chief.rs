@@ -174,6 +174,8 @@ pub enum ChiefHostAction {
     /// confirms he saw arrive (VerifyChiefAdmission). Never a launch.
     SendCheck { request_id: String, attempt: String },
     Enable { request_id: String, session: VerifiedSession },
+    /// Explicit host approval for a fresh runtime of the same conversation; never a continuation grant.
+    Recover { request_id: String, expected_epoch: String, expected_revision: i64, session: VerifiedSession },
     Pause { request_id: String, expected_epoch: String },
     Resume { request_id: String, expected_epoch: String },
     Disable { request_id: String, expected_epoch: String },
@@ -301,7 +303,7 @@ fn todo_id(todo: &str) -> Result<(), TeamError> {
 impl ChiefHostAction {
     pub fn validate(&self) -> Result<(), TeamError> {
         let request_id = match self {
-            Self::Start { request_id, .. } | Self::SettleStartup { request_id, .. } | Self::SendCheck { request_id, .. } | Self::Enable { request_id, .. } | Self::Pause { request_id, .. } | Self::Resume { request_id, .. }
+            Self::Start { request_id, .. } | Self::SettleStartup { request_id, .. } | Self::SendCheck { request_id, .. } | Self::Enable { request_id, .. } | Self::Recover { request_id, .. } | Self::Pause { request_id, .. } | Self::Resume { request_id, .. }
             | Self::Disable { request_id, .. } | Self::Resolve { request_id, .. } | Self::AnswerDecision { request_id, .. } | Self::LaterDecision { request_id, .. } | Self::RequestSummary { request_id }
             | Self::ReconcileDelivery {request_id,..} | Self::ReconcileLaunch {request_id,..} | Self::Overrule { request_id, .. }
             | Self::DeleteHabit { request_id, .. } | Self::RestoreHabit { request_id, .. } | Self::RescopeHabit { request_id, .. } => request_id,
@@ -311,6 +313,9 @@ impl ChiefHostAction {
             Self::Start { previous_attempt, .. } => previous_attempt.as_deref().map_or(Ok(()), key),
             Self::SendCheck { attempt, .. } => key(attempt),
             Self::Enable { session: verified, .. } => session(verified),
+            Self::Recover { expected_epoch, expected_revision, session: verified, .. } => {
+                key(expected_epoch)?; positive(*expected_revision)?; session(verified)
+            },
             Self::Pause { expected_epoch, .. } | Self::Resume { expected_epoch, .. } | Self::Disable { expected_epoch, .. } => key(expected_epoch),
             Self::ReconcileDelivery {message:target,expected_revision,evidence,..} | Self::ReconcileLaunch {token:target,expected_revision,evidence,..}
             | Self::SettleStartup {attempt:target,expected_revision,evidence,..} => {

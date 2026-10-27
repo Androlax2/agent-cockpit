@@ -8,6 +8,7 @@ const HELP: &str = r#"cockpit-team context            your task, your role and y
 cockpit-team <action> < action.json   propose, recruit, send, assess or handoff; the JSON's "action" names the same one
 cockpit-team chief < action.json      nested {"action":"chief","request":{...}} agent request
 cockpit-team chief-host < request.json   host only: {"request":"chief","action":{...}} or chief_snapshot
+cockpit-team recovery-review <session-id>   host only: print an exact recovery request; never submit or verify
 
 Recipients are session ids from `context`, never role names. Use each submission_key once
 (letters, digits, - or _): resending the same one is a no-op. Task is the object `context` shows.
@@ -103,6 +104,39 @@ fn sleep_request(arguments: &[String]) -> Result<cockpit::teams::HostRequest, St
     })
 }
 
+fn recovery_review(session_id: &str) -> Result<cockpit::teams::HostRequest, cockpit::teams::TeamError> {
+    use cockpit::{chief::{ChiefHostAction, ADMISSION_ADAPTER}, teams::{ErrorCode, HostRequest, TeamError, VerifiedSession}};
+    let unavailable=|message|TeamError::new(ErrorCode::Unavailable,message);
+    if cockpit::agents::of_session_id(session_id).map(|agent|agent.name)!=Some("opencode") {
+        return Err(unavailable("Chief recovery requires an OpenCode conversation id"));
+    }
+    let snapshot=cockpit::chief::host_snapshot()?;
+    let records=snapshot["records"].as_array().ok_or_else(||unavailable("Chief host records are missing"))?;
+    let chiefs=records.iter().filter(|record|record["kind"]=="chief" && matches!(record["state"].as_str(),Some("active"|"paused"))).collect::<Vec<_>>();
+    let workers=records.iter().filter(|record|record["kind"]=="worker" && record["session"]["session_id"]==session_id).collect::<Vec<_>>();
+    let ([chief],[worker])=(chiefs.as_slice(),workers.as_slice()) else { return Err(unavailable("recovery needs exactly one retained Chief grant and one live replacement")); };
+    let previous:VerifiedSession=serde_json::from_value(chief["session"].clone())?;
+    let session:VerifiedSession=serde_json::from_value(worker["session"].clone())?;
+    if previous.session_id!=session_id || previous.agent!=session.agent || previous.project!=session.project || previous.runtime==session.runtime {
+        return Err(unavailable("recovery must name a new runtime of the same Chief conversation, agent and project"));
+    }
+    let now=chrono::Utc::now().timestamp_millis();
+    if !worker["observed_at_ms"].as_i64().is_some_and(|observed|observed<=now && now.saturating_sub(observed)<=30_000) {
+        return Err(unavailable("the replacement Chief runtime needs a fresh host observation"));
+    }
+    if !records.iter().any(|record|record["kind"]=="admission" && record["session"]==worker["session"] && record["adapter"]==ADMISSION_ADAPTER
+        && record["verified_at_ms"].as_i64().is_some_and(|verified|verified<=now && now.saturating_sub(verified)<=300_000)) {
+        return Err(unavailable("first perform and record this exact runtime's host native draft/queue verification; recovery requires evidence from the last five minutes"));
+    }
+    let action=ChiefHostAction::Recover {
+        request_id:format!("chief-recovery-{}",cockpit::util::token_hex(12)),
+        expected_epoch:chief["epoch"].as_str().ok_or_else(||unavailable("retained Chief epoch is missing"))?.into(),
+        expected_revision:chief["revision"].as_i64().ok_or_else(||unavailable("retained Chief revision is missing"))?,session,
+    };
+    action.validate()?;
+    Ok(HostRequest::Chief {action})
+}
+
 /// Claude's background hook (asyncRewake, at SessionStart and Stop): waits for this session's next
 /// approved message, which the daemon hands out only while the session is idle, then wakes Claude
 /// with it (exit 2, the text on stderr). This cannot prove acceptance after the hook exits: chief
@@ -162,6 +196,15 @@ fn watch() -> i32 {
 
 fn main() {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
+    if arguments.first().is_some_and(|verb|verb=="recovery-review") {
+        let result=if arguments.len()==2 {recovery_review(&arguments[1])}
+            else {Err(cockpit::teams::TeamError::new(cockpit::teams::ErrorCode::Invalid,"usage: cockpit-team recovery-review <session-id>"))};
+        match result.and_then(|request|serde_json::to_string_pretty(&request).map_err(Into::into)) {
+            Ok(review)=>println!("{review}"),
+            Err(error)=>{eprintln!("cockpit-team: {}",escape_hiding(&error.to_string(),"",""));std::process::exit(1);},
+        }
+        return;
+    }
     if arguments.first().is_some_and(|verb| verb.starts_with("sleep-") || verb == "restart-prepare") {
         let request = sleep_request(&arguments).unwrap_or_else(|error| { eprintln!("cockpit-team: {error}"); std::process::exit(2) });
         match client::host_request(&request).and_then(|reply| reply.result) {
@@ -200,11 +243,13 @@ fn main() {
                 return Err(cockpit::teams::TeamError::new(cockpit::teams::ErrorCode::Invalid, "chief-host requires a chief host request"));
             }
             if matches!(&request,cockpit::teams::HostRequest::Chief {action:cockpit::chief::ChiefHostAction::ReconcileDelivery {..}
-                | cockpit::chief::ChiefHostAction::ReconcileLaunch {..} | cockpit::chief::ChiefHostAction::SettleStartup {..}}) {
+                | cockpit::chief::ChiefHostAction::ReconcileLaunch {..} | cockpit::chief::ChiefHostAction::SettleStartup {..} | cockpit::chief::ChiefHostAction::Recover {..}}) {
                 use std::io::{BufRead,Write};
-                eprintln!("Host confirmation of exact stopped-target evidence:\n{}",escape_hiding(&serde_json::to_string_pretty(&request)?,"",""));
+                let recovery=matches!(&request,cockpit::teams::HostRequest::Chief {action:cockpit::chief::ChiefHostAction::Recover {..}});
+                let heading=if recovery {"Host confirmation of exact Chief recovery"} else {"Host confirmation of exact stopped-target evidence"};
+                eprintln!("{heading}:\n{}",escape_hiding(&serde_json::to_string_pretty(&request)?,"",""));
                 let mut terminal = std::fs::OpenOptions::new().read(true).write(true).open("/dev/tty")?;
-                terminal.write_all(b"Confirm exactly this host reconciliation? [y/N] ")?;
+                terminal.write_all(if recovery {b"Confirm exactly this Chief recovery? [y/N] "} else {b"Confirm exactly this host reconciliation? [y/N] "})?;
                 terminal.flush()?;
                 let mut answer = String::new();
                 std::io::BufReader::new(terminal).read_line(&mut answer)?;

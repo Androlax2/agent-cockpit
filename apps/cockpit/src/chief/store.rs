@@ -110,7 +110,7 @@ pub fn require_non_chief(connection: &Connection, session: &str) -> Result<(), T
 pub fn host(connection: &mut Connection, action: &ChiefHostAction, live: &[WorkerState], now_ms: i64) -> Result<TeamReply, TeamError> {
     let request_id = match action {
         ChiefHostAction::Start { request_id, .. } | ChiefHostAction::SettleStartup { request_id, .. } | ChiefHostAction::SendCheck { request_id, .. }
-        | ChiefHostAction::Enable { request_id, .. } | ChiefHostAction::Pause { request_id, .. }
+        | ChiefHostAction::Enable { request_id, .. } | ChiefHostAction::Recover { request_id, .. } | ChiefHostAction::Pause { request_id, .. }
         | ChiefHostAction::Resume { request_id, .. } | ChiefHostAction::Disable { request_id, .. }
         | ChiefHostAction::Resolve { request_id, .. } | ChiefHostAction::AnswerDecision { request_id, .. } | ChiefHostAction::LaterDecision { request_id, .. } | ChiefHostAction::RequestSummary { request_id }
         | ChiefHostAction::ReconcileDelivery {request_id,..} | ChiefHostAction::ReconcileLaunch {request_id,..} | ChiefHostAction::Overrule { request_id, .. }
@@ -201,6 +201,39 @@ fn host_action(connection: &Connection, action: &ChiefHostAction, live: &[Worker
             coordination_event(connection,"bootstrap",&json!({"epoch":epoch}),now_ms)?;
             schedule_wake(connection,now_ms)?;
             Ok(json!({"epoch": epoch, "state": "active"}))
+        },
+        ChiefHostAction::Recover { request_id, expected_epoch, expected_revision, session } => {
+            let previous: Option<(VerifiedSession, String)> = connection.query_row(
+                "SELECT session_id,agent,project,runtime,state FROM chief_grants WHERE epoch=?1 AND revision=?2 AND state IN ('active','paused')",
+                params![expected_epoch,expected_revision], |row| Ok((VerifiedSession {
+                    session_id:row.get(0)?,agent:row.get(1)?,project:row.get(2)?,runtime:row.get(3)?,
+                },row.get(4)?))).optional()?;
+            let Some((previous, state)) = previous else { return Err(conflict("exact retained Chief grant revision is required")); };
+            if previous.session_id!=session.session_id || previous.agent!=session.agent || previous.project!=session.project
+                || previous.runtime==session.runtime || session.agent!="opencode" || is_product_worker(connection,&session.session_id)? {
+                return Err(unauthorized());
+            }
+            let matching = live.iter().filter(|worker|worker.session.session_id==session.session_id).collect::<Vec<_>>();
+            if !matches!(matching.as_slice(), [worker] if worker.session==*session && worker.observed_at_ms<=now_ms && now_ms.saturating_sub(worker.observed_at_ms)<=30_000) {
+                return Err(unauthorized());
+            }
+            let verified: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM chief_admission_verifications
+                WHERE identity=?1 AND adapter='opencode-queued-v1' AND verified_at<=?2 AND verified_at>=?3)",
+                params![serde_json::to_string(session)?,now_ms,now_ms.saturating_sub(300_000)], |row|row.get(0))?;
+            if !verified { return Err(TeamError::new(ErrorCode::Unavailable,"Chief recovery requires this exact runtime's host native admission verification from the last five minutes")); }
+            // Reuse revocation cleanup inside this same transaction; in-flight/uncertain deliveries remain untouched.
+            host_action(connection,&ChiefHostAction::Disable {request_id:request_id.clone(),expected_epoch:expected_epoch.clone()},live,now_ms)?;
+            // Retire future request authority, not its already-reserved launch or reconciliation token.
+            let retired_requests=connection.execute("UPDATE chief_session_starts SET state='expired' WHERE epoch=?1 AND state='requested'",[expected_epoch])?;
+            let epoch=crate::teams::store::identifier()?;
+            let approval_hash=crate::audit::sha256_hex(&serde_json::to_vec(action)?);
+            connection.execute("INSERT INTO chief_grants VALUES (?1,?2,?3,?4,?5,?1,1,?6,?7,?8)",
+                params![epoch,session.session_id,session.agent,session.project,session.runtime,state,approval_hash,now_ms])?;
+            connection.execute("INSERT INTO chief_coordination(epoch) VALUES (?1)",[&epoch])?;
+            coordination_event(connection,"recovered",&json!({"request_id":request_id,"previous_epoch":expected_epoch,"previous_session":previous,"epoch":epoch,"session":session,"state":state,"retired_requests":retired_requests}),now_ms)?;
+            coordination_event(connection,"bootstrap",&json!({"epoch":epoch}),now_ms)?;
+            schedule_wake(connection,now_ms)?;
+            Ok(json!({"previous_epoch":expected_epoch,"epoch":epoch,"session":session,"state":state}))
         },
         ChiefHostAction::Pause { expected_epoch, .. } | ChiefHostAction::Resume { expected_epoch, .. } | ChiefHostAction::Disable { expected_epoch, .. } => {
             let state: Option<String> = connection.query_row("SELECT state FROM chief_grants WHERE epoch=?1 AND state!='disabled'", [expected_epoch], |row| row.get(0)).optional()?;

@@ -211,6 +211,16 @@ pub fn request(registry: &mut Registry, peer: u32, request: ChiefAgentAction) ->
 pub fn host(registry: &mut Registry, action: &ChiefHostAction) -> Result<TeamReply, TeamError> {
     // Host recovery controls must remain reachable when observation hits a decision-capacity fault.
     let live = workers_at(registry,teams::now_ms(),false)?;
+    if let ChiefHostAction::Recover { request_id, expected_epoch, .. } = action {
+        let connection=registry.teams.as_ref().expect("opened above");
+        let replay=connection.query_row("SELECT EXISTS(SELECT 1 FROM chief_actions WHERE request_id=?1)",[request_id],|row|row.get::<_,bool>(0))?;
+        if !replay {
+            let previous: Option<String>=connection.query_row("SELECT (SELECT runtime FROM chief_grants WHERE epoch=?1 AND state IN ('active','paused'))",[expected_epoch],|row|row.get(0))?;
+            if previous.as_deref().is_some_and(|runtime|registry.system.runtime_is_live(runtime)) {
+                return Ok(TeamReply {request_id:request_id.clone(),result:Err(TeamError::new(cockpit::teams::ErrorCode::Conflict,"the previous Chief launcher is still alive; recovery is refused"))});
+            }
+        }
+    }
     if let ChiefHostAction::Enable { request_id, session } = action {
         let connection = registry.teams.as_ref().expect("opened above");
         // Preserve authentication errors; a valid enable still cannot activate unverified admission.

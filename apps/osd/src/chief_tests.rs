@@ -572,6 +572,46 @@ fn chief_resume_requires_the_original_runtime_and_replacement_requires_a_new_hos
     assert!(context(&mut bench, 10).unwrap().result.is_ok());
 }
 
+fn recovery_action(epoch: &str, session: &VerifiedSession) -> ChiefHostAction {
+    serde_json::from_value(json!({"action":"recover","request_id":"recover","expected_epoch":epoch,"expected_revision":1,"session":session})).expect("Recover protocol")
+}
+
+#[test]
+fn chief_recovery_requires_dead_old_launcher_even_when_it_is_missing_from_the_registry() {
+    let mut bench=team_bench();
+    let epoch=enable(&mut bench,OPENCODE_SESSION)["epoch"].as_str().unwrap().to_string();
+    bench.world.borrow_mut().sender_runtimes.insert(99,"runtime-20".into());
+    bench.world.borrow_mut().sender_runtimes.insert(20,"boot-b:20:100".into());
+    bench.registry.sessions.get_mut(OPENCODE_SESSION).unwrap().runtime="boot-b:20:100".into();
+    let replacement=verified(&mut bench,OPENCODE_SESSION);
+    crate::teams::host(&mut bench.registry,std::process::id(),HostRequest::VerifyChiefAdmission {session:replacement.clone(),adapter:"opencode-queued-v1".into(),evidence:"Controlled fixture".into()}).unwrap().result.unwrap();
+    let result=crate::chief::host(&mut bench.registry,&recovery_action(&epoch,&replacement)).unwrap().result;
+    assert_eq!(result.unwrap_err().code,ErrorCode::Conflict);
+    bench.world.borrow_mut().sender_runtimes.remove(&99);
+    let result=crate::chief::host(&mut bench.registry,&recovery_action(&epoch,&replacement)).unwrap().result.unwrap();
+    assert_ne!(result["epoch"],epoch);
+    assert!(context(&mut bench,20).unwrap().result.is_ok());
+}
+
+#[test]
+fn a_restored_chief_needs_its_own_new_admission_and_explicit_host_recovery() {
+    let mut bench=team_bench();
+    let epoch=enable(&mut bench,OPENCODE_SESSION)["epoch"].as_str().unwrap().to_string();
+    bench.world.borrow_mut().sender_runtimes.insert(20,"new-boot:20:100".into());
+    bench.registry.sessions.get_mut(OPENCODE_SESSION).unwrap().runtime="new-boot:20:100".into();
+    bench.registry.teams=None;
+    let replacement=verified(&mut bench,OPENCODE_SESSION);
+    crate::chief::tick(&mut bench.registry,crate::teams::now_ms()).unwrap();
+    assert_eq!(context(&mut bench,20).unwrap().result.unwrap_err().code,ErrorCode::Unauthorized);
+    assert!(crate::chief::host(&mut bench.registry,&recovery_action(&epoch,&replacement)).unwrap().result.is_err());
+    crate::teams::host(&mut bench.registry,std::process::id(),HostRequest::VerifyChiefAdmission {session:replacement.clone(),adapter:"opencode-queued-v1".into(),evidence:"Controlled reboot fixture".into()}).unwrap().result.unwrap();
+    assert_eq!(context(&mut bench,20).unwrap().result.unwrap_err().code,ErrorCode::Unauthorized);
+    crate::chief::host(&mut bench.registry,&recovery_action(&epoch,&replacement)).unwrap().result.unwrap();
+    assert!(context(&mut bench,20).unwrap().result.is_ok());
+    let result=crate::chief::host(&mut bench.registry,&recovery_action(&epoch,&replacement)).unwrap().result.unwrap();
+    assert_ne!(result["epoch"],epoch,"replay returns a receipt, not a new activation");
+}
+
 /// Files 12 adds in project-b through the report socket as `peer`; returns how many were saved
 /// and the reason the first refused one gave in its receipt.
 fn file_handoffs_in_project_b(bench: &mut Bench, peer: u32, forged: serde_json::Value) -> (usize, serde_json::Value) {
@@ -1804,6 +1844,28 @@ fn reserve_fresh_session(bench: &mut Bench, todo: &str) -> Result<serde_json::Va
 fn session_start_states(bench: &Bench) -> Vec<String> {
     bench.registry.teams.as_ref().unwrap().prepare("SELECT state FROM chief_session_starts ORDER BY created_at,id").unwrap()
         .query_map([], |row| row.get(0)).unwrap().collect::<Result<Vec<_>, _>>().unwrap()
+}
+
+#[test]
+fn recovering_an_active_or_paused_chief_retires_its_unexecuted_launch_requests() {
+    for paused in [false,true] {
+        let mut bench=admitted_chief_bench();
+        let todo=project_todo(&bench,"aa919cfe",json!({}),true);
+        chief_starts_session(&mut bench,20,&todo,"project-a").unwrap();
+        let epoch:String=bench.registry.teams.as_ref().unwrap().query_row("SELECT epoch FROM chief_grants WHERE state='active'",[],|row|row.get(0)).unwrap();
+        if paused {
+            crate::chief::host(&mut bench.registry,&ChiefHostAction::Pause {request_id:"pause".into(),expected_epoch:epoch.clone()}).unwrap().result.unwrap();
+        }
+        bench.world.borrow_mut().sender_runtimes.insert(20,"boot-b:20:100".into());
+        bench.registry.sessions.get_mut(OPENCODE_SESSION).unwrap().runtime="boot-b:20:100".into();
+        let replacement=verified(&mut bench,OPENCODE_SESSION);
+        crate::teams::host(&mut bench.registry,std::process::id(),HostRequest::VerifyChiefAdmission {session:replacement.clone(),adapter:"opencode-queued-v1".into(),evidence:"Controlled recovery fixture".into()}).unwrap().result.unwrap();
+        crate::chief::host(&mut bench.registry,&ChiefHostAction::Recover {request_id:"recover".into(),expected_epoch:epoch,expected_revision:if paused {2} else {1},session:replacement}).unwrap().result.unwrap();
+        let reserved=reserve_fresh_session(&mut bench,&todo);
+        assert!(reserved.is_err(),"paused {paused}: retired Chief request must not bypass the live-project guard: {reserved:?}");
+        assert_eq!(session_start_states(&bench),vec!["expired"]);
+        assert!(bench.registry.teams.as_ref().unwrap().query_row("SELECT NOT EXISTS(SELECT 1 FROM legacy_launches)",[],|row|row.get::<_,bool>(0)).unwrap());
+    }
 }
 
 fn chief_gives_todo(bench: &mut Bench, todo: &str, session: &str) -> Result<serde_json::Value, cockpit::teams::TeamError> {
