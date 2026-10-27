@@ -12,4 +12,19 @@
   --color-amber: #E0AF68;
   --color-red: #F7768E;
   --color-purple: #BB9AF7;
+  --space-0: 0;
+  --space-4: 4;
+  --space-8: 8;
+  --space-12: 12;
+  --space-16: 16;
+  --radius-control: 8;
+  --radius-panel: 6;
+  --size-touch: 44;
+  --type-desktop: 12;
+  --type-desktop-heading: 13;
+  --type-phone: 16;
+  --type-phone-heading: 20;
+  --type-phone-small: 14;
+  --font-desktop: "JetBrainsMono Nerd Font";
+  --font-phone: "Noto Sans";
 }

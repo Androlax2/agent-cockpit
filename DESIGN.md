@@ -231,8 +231,9 @@ nothing for Theo), `! N` (needs you) or nothing. Phone pushes follow the same ru
 session's pinned ask.
 
 **Finding and starting** (page `08`, preview 11). There is no search. `:` goes away and each of its
-actions moves to a card, to session details (`i`) or to Status; the attention filter, queue and
-updates are replaced by the grouping. `?` shows the current tab's keys, the global keys and a legend
+actions moves to a card, to session details (`i`) or to Status. The attention filter is replaced
+by grouping; queue explanations and updates retain explicit homes (see Palette action homes below).
+`?` shows the current tab's keys, the global keys and a legend
 of the signs. Most work starts from a todo (`r`). `N` starts a blank session: project (recent
 first), agent, first message, own clone. `i` shows why, where and who, what is around the session
 (Chief answers, links, queued messages), Theo's private note, and the session's actions. `l`
@@ -248,6 +249,13 @@ session, Chief escalation.
 - Todo form: a card instead of a black full-screen overlay, the kind as chips.
 - Settings: grouped cards, a one-line explanation per row, on/off pills.
 - "Still there?": a big amber countdown, plus which sessions keep working and what needs Theo.
+- Build notes (answered for the Developer, 2026-10-27):
+  - Every Settings row gets a one-line explanation of what the setting really does, checked
+    against the code.
+  - The Todo form drops its button row but keeps a key-cap footer, `⌘S save · esc cancel`. ←→
+    change the kind only while the kind chips have focus.
+  - The "Still there?" styles live in the repository.
+  - The guide shows `⌘R run` only on steps that have a command.
 
 **Focus aids** (a "back from a break" recap, a single-task view, a digest screen, quiet hours): Theo
 does not want them for now. Don't build them.
@@ -376,8 +384,9 @@ answer anything.** Approving happens in the pinned ask once the session is open 
 | `esc` | everywhere | close / back | same |
 | `n` | Sessions | next session that needs you | same |
 | `⏎` / `→` | Sessions | open the session (focus its pane and pinned ask) | same; `l` no longer does this |
-| `L` | Sessions | later: hide this ask 20 min, never approves | new (`l` stays vim-right inside lists) |
+| `l` | Sessions | later: hide this ask 20 min, or bring a deferred ask back; never approves | Theo confirmed lowercase `l`; use arrows for navigation |
 | `i` | Sessions, Todo, Ideas | details of the selected item | Todo `i` "in progress" moves into Todo details |
+| `I` | Sessions (card and `i` details) | open the images from the session's latest reply in a floating viewer on workspace 6 (Theo, Option A, 2026-10-27). Several images: one viewer, first image shown, arrows browse. None: footer “No images in its latest reply.” Listed in `?` help and in the `i` Session group | new |
 | `p` | Sessions | pin: pinned cards come first **inside their group**, marked `⚲` | same key; pins no longer jump above NEEDS YOU |
 | `z` | Sessions | put the session to sleep | was `s` |
 | `R` | Sessions | restart the session (confirm) | was `r`; CMD+R (restart all stale) stays |
@@ -401,6 +410,138 @@ answer anything.** Approving happens in the pinned ask once the session is open 
 | `⏎` / `esc` | 4 Teams tab | into the selected team / back to the list | new |
 | `c` | Sessions card with `Chief ✓N` | that session's Chief answers | new |
 | `/` and `:` | — | removed (Theo: no search, better help) | `/` find, `:` palette |
+
+### Palette action homes · approved 26 October 2026
+
+Task `5a82d5dd`. Theo approved page `13 Palette homes · approved` in
+`design-plans/cockpit-session-list.figcraft`. The following wireframes are `readyForDev`.
+Use the existing terminal styling and `design/tokens.cockpit-ui.{json,css}`; the greyscale
+wireframes specify placements and behavior, not a replacement visual system.
+
+| Frame | Home | Approved actions |
+|---|---|---|
+| `4048` | Status → Services / Utilities | Select Claude or Codex service and Enter opens its existing official status URL. Utilities has Daily digest and Clones review/cleanup, each opened with Enter. |
+| `4064` | `N` New session | Keep the applied form, with Claude Code, Codex and OpenCode for blank sessions. Add an explicit Blank session / Claude Design canvas starting option. |
+| `4087` | Todo row and `i` details | `T` opens the selected task's existing trail; lowercase `t` remains Add. |
+| `4099` | Status → focused PR row | `l` Later for 20 minutes, or Bring back now when deferred; `t` task trail; Enter review and `o` GitHub remain. |
+| `4113` | Sessions and selected-session details | `u` opens existing Updates; `Q` opens existing queue explanations; `v` marks the selected session's displayed updates reviewed. |
+
+- Status retains its existing usage, spending, Chief and PR sections. Digest runs the existing
+  action and keeps its daily schedule; do not create a new digest screen. Clones opens the existing
+  review/cleanup flow with its current eligibility rules and scheduled behavior.
+- Canvas mode accepts a canvas link and project, reusing the existing canvas launcher. Show its
+  actual agent/clone behavior; do not expose settings the launcher cannot honor. Invalid links
+  leave the form open with the error. Blank-session fields, clone choice and CMD+S submit remain.
+- PRs deferred until later remain visible and selectable, with their return time. Later never
+  marks a PR reviewed. Preserve revision-change behavior and explain when a missing revision
+  makes deferral unavailable. PR keys apply only to the focused PR context, not Chief's log.
+- Sessions `u` and `Q` open the existing cross-session views, including archived return notes,
+  unseen results/questions, queued work and waiting reasons. Grouping does not replace this data.
+  `v` acknowledges the selected session's displayed update identities, never answers or approves;
+  updates arriving later remain unseen. Show empty and unavailable states explicitly.
+- The attention-filter palette entry is replaced by Needs you grouping and `n` next. Deferred
+  asks remain counted and reachable in Quiet. Preserve grouped teams, the applied grouped session
+  details and scrolling help. `k` remains Links on both session cards and details; lowercase `l`
+  remains Later / Bring back. Todo `Q` still queues/unqueues a task; Sessions `Q` explains the queue.
+
+All thirteen `PALETTE_ONLY` entries have replacements above: attention-filter; defer-20m;
+bring-back; PR and Todo task-trail; queue; updates; reviewed; digest; design; clones;
+status-page; codex-status-page. Remove `:` only when these replacements are reachable and
+documented in each context's help. Keep the existing non-palette card/detail actions reachable.
+
+### Chief startup handoff
+
+Task `1f838f53`; flow approved in preview `20-chief-startup-wireframe.png` and
+`docs/superpowers/plans/2026-10-27-chief-startup.md`. Page `15 Chief startup · visual review`
+contains the visual mappings below: the desktop frames are built (`completed`), the phone frames
+are `readyForDev` (todo `d6f4d98a`). Previews 21 and 22 retain the styling review; preview 23
+records the final desktop key cap and dedicated-folder copy.
+
+| Host state / condition | Desktop frame | Phone 390 / 320 frames | Content and action |
+|---|---|---|---|
+| Verified Off, no unresolved attempt | `4191` | `4267` / `4339` | “Chief is off”; “Chief handles routine questions from your agents and brings important decisions to you.” One “Start Chief” action; no session picker. |
+| Start submitted, acknowledgement pending, or `starting` | `4202` | `4276` / `4348` | “Starting Chief…”; action unavailable immediately. Keep tracking the same attempt. |
+| `checking`, uncertain launch, or activation not verified | `4211` | `4285` / `4357` | “Checking Chief…”; show the actual reported reason when present. No Start or Try again. |
+| Verified activation and active grant observed | `4218` | `4292` / `4364` | Transition to the existing On view. These frames illustrate the transition, not a replacement screen or a timed success interstitial. |
+| Confirmed failure with host `can_retry` | `4256` | `4326` / `4371` | “Chief could not start”; actual error and “Try again”. The 320 frame demonstrates long error wrapping. |
+
+- Start creates its own OpenCode session in the host-owned dedicated folder automatically.
+  Helper copy: “Creates its own OpenCode session in a dedicated folder.” No folder, agent,
+  model or session picker. Use host defaults and the approved launch contract.
+- Desktop Chief Off: `c` activates **Start Chief**. In confirmed retryable failure, the same
+  `c` activates **Try again**. Render `c` as the existing key cap alongside the action label.
+  These bindings apply only inside the Chief view; Sessions `c` still opens Chief answers.
+  Enter does not start, retry or approve. Escape returns to Status without cancelling startup.
+  Starting/Checking consume repeated activation without another launch or queued request.
+- Phone: explicit tap on Start Chief or Try again; Back returns to Status without cancelling.
+  Keep named native controls, visible focus and the existing accessible button keyboard behavior.
+  Opening, refreshing, closing or reopening the view never initiates a launch.
+- A failed snapshot read is not Off: retain any known attempt and show that status is unavailable;
+  without a trustworthy snapshot, expose no launch/retry action. A timeout or absent report is
+  uncertainty, not proof of failure. Show actual errors as escaped text; wrap long causes.
+- If the session exists but activation fails, keep Checking with the actual reason and follow
+  that exact session. Never offer another launch. Try again requires the latest failed attempt
+  and the host's authoritative confirmation that no running or late-launching session can remain.
+  Show “No session was started” only when that precise claim is known; otherwise use
+  “No session remains. You can try again.”
+- Preserve existing On/paused controls, answers, habits, reviewed replacement/disable behavior
+  and the deferred desktop pinned escalations. Startup does not reinterpret paused as Off.
+- **Start not acknowledged** (the Start request's reply was lost): heading “Checking Chief…”,
+  “Cockpit hasn't confirmed this start yet.”, action `c` **Send again**, helper “Sends the same
+  start again. It can't start a second Chief.” Resends the same request ID only.
+- **Delivery check while Checking** (Theo, Option B, 2026-10-27). When the host reports that
+  activation waits for proof that the exact Chief session receives messages, Checking reads
+  “Waiting to confirm Chief can receive messages from your agents.” and offers, on desktop,
+  `t` **Send test message** (to that exact session only). After the host confirms it was sent:
+  “Test message sent. Look at the Chief pane: did it appear?” with `y` **It arrived** and `n`
+  **Didn't arrive**. `y` records the verification for that session; activation then follows the
+  normal path (On only after the active grant is observed). `n` keeps Checking with “Not
+  verified. You can send another test message.” and offers `t` again. Enter confirms nothing;
+  Escape returns to Status and keeps the attempt. Phone: the same two steps as buttons, “It
+  arrived” needs a second tap. Never offer the check before the session is live, never for
+  another session, and never as a new launch. Reuse the Checking frames (`4211`, `4285`, `4357`)
+  with these lines; blue for the action, no amber.
+- Use existing Cockpit colour variables and the exported spacing/type variables in
+  `design/tokens.cockpit-ui.{json,css}`. Blue is action/progress, green verified On, red failure;
+  amber remains reserved for needs-you. Announce meaningful status changes without moving focus.
+
+### Chief inbox
+
+Approved by Theo on 2026-10-27; it replaces the raw Chief detail view for escalations
+(wireframe page `16 Chief inbox · wireframe`, visual page `17 Chief inbox · visual review`,
+previews 24-27; built, frames `completed`). Goal: answer what the Chief sends you one question
+at a time, with a small context and the suggestion broken into steps.
+
+| Frame | State | Content and keys |
+|---|---|---|
+| `4546` | Question | “! Chief needs you · 1 of N” (amber) with progress dots; `project › task` (project colour); category in words and age; “What's going on” (at most 2 lines); “◆ Chief suggests · N steps” (purple) as a numbered list; `a` do this, step by step (amber key), `w` write my own, `l` later, `i` full details; dim “Written by the Chief: check it before acting.” |
+| `4579` | Step by step | “Step k of N” (blue) in a blue-outlined box: the step in bold, one help line, a helper key when the Cockpit can do it (`g` show the guide), `d` done, next step. Then the remaining steps dim. `esc` back to the question. |
+| `4608` | Last step | Done steps ticked and dim. “Step N of N · send to the agent”: the exact message, `y` send (amber), `e` edit first. Enter never sends. |
+| `4631` | Write my own | An answer box, “Goes to `project › task`, exactly as written.”, `⌘S` send, `esc` back. |
+| `4653` | Sent | “✓ Sent to …” (blue), a preview of the next question, `n` next question, `esc` stop here. Never moves on by itself. |
+| `4671` | Empty | “✓ Nothing needs you”, today's count, `l` what it answered, `h` habits, `esc` back. |
+| `4687` | Phone | The same question card; “Do this, step by step” (amber), “Write my own” and “Later” buttons (44px), “Full details ›”. Sending needs a second tap. |
+
+- Entry points: Status → Chief (`s`, then `c`) opens the inbox when something needs Theo; the
+  pinned ask on the session's card opens the same question. `l` later hides it 20 minutes and
+  never answers; it comes back.
+- Steps that only Theo can do are ticked by Theo (`d`). Only the last step sends anything, and
+  only the message shown. A step never runs a command on its own.
+- `i` full details keeps the raw source, category, reason and the untrusted-narrative note.
+- Phone: the same stages as desktop, one screen each, in the page-15 phone styles. Sending (from
+  the last step or from Write my own) needs a second tap.
+- A step may carry one optional helper from a fixed list the Cockpit owns: `open_guide` (`g`,
+  “show the guide”) and `open_session` (`o`, “open the session”). Helpers only navigate. A
+  missing or unknown helper means a plain step.
+- `e` on the last step opens Write my own with the message filled in; Esc returns to the last
+  step with the message unchanged.
+- Later is remembered by the host, so desktop and phone agree. Ticked steps stay ticked until
+  the question is answered; losing them on a restart is acceptable.
+- **Build dependency:** the Chief must provide a short situation (2 lines at most) and its
+  suggestion as a list of steps, the last of which is the message to send. Until it does, show
+  the suggestion as one step and the reason as the situation.
+- Components: `Inbox key cap` (Default / Primary) and `Inbox phone button` (Primary / Secondary)
+  on page 17. Tokens: `design/tokens.cockpit-ui.{json,css}`.
 
 ### Build dependencies and open points
 
