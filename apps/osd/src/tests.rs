@@ -2749,6 +2749,25 @@ fn a_finished_turn_shows_what_the_hook_found_it_did() {
 }
 
 #[test]
+fn a_finished_turn_raises_no_banner_only_needs_you_does() {
+    let mut bench = Bench::new();
+    bench.report(SESSION_A, json!({"state": "working"}));
+    bench.report(SESSION_A, json!({"state": "waiting", "message": "Finished, waiting for you", "outcome": "1 commit"}));
+    assert!(bench.raised().is_empty(), "{:?}", bench.raised());
+    assert_eq!(bench.snapshot()[0]["outcome"], "1 commit", "the card still shows what the turn left");
+}
+
+#[test]
+fn a_finished_turn_takes_down_the_needs_you_banner_it_answered() {
+    let mut bench = Bench::new();
+    bench.report(SESSION_A, json!({"state": "needs-you", "message": "Claude needs your permission to use Bash", "sticky": true}));
+    assert_eq!(bench.raised(), [SESSION_A]);
+    bench.report(SESSION_A, json!({"state": "waiting", "message": "Finished, waiting for you", "outcome": "no changes"}));
+    assert_eq!(bench.raised(), [SESSION_A], "no second banner");
+    assert!(bench.dropped().contains(&SESSION_A.to_string()));
+}
+
+#[test]
 fn a_new_turn_forgets_the_last_outcome() {
     let mut bench = Bench::new();
     bench.report(SESSION_A, json!({"state": "waiting", "message": "Finished, waiting for you", "outcome": "no changes"}));

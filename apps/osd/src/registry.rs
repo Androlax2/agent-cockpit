@@ -1537,9 +1537,9 @@ impl Registry {
         let mut message = report.message.clone();
         if message.as_deref() == Some(FINISHED_MESSAGE) {
             entry.outcome = report.outcome.clone().unwrap_or_default();
-            if !entry.outcome.is_empty() {
-                message = Some(format!("Finished · {}", entry.outcome));
-            }
+            // Only needs-you interrupts (Theo, 2026-10-25): a finished turn raises no banner and takes
+            // down the one it answered. The card keeps the outcome; the phone tells only when asked to.
+            message = None;
             changed = true;
         }
         let project = entry.project.clone();
