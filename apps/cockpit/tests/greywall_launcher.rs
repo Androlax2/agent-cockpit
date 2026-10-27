@@ -806,6 +806,20 @@ fn a_parallel_clone_uses_its_repositorys_proxy_identity() {
 }
 
 #[test]
+fn a_parallel_clone_gets_its_repositorys_port_forwards() {
+    let launch = Launch::new();
+    let grants = launch.sandbox.home.join(".config/greywall-agents/forward");
+    fs::create_dir_all(&grants).unwrap();
+    fs::write(grants.join("proj-a"), "4102444800 18088\n").unwrap();
+    for folder in ["IdeaProjects/proj-a", "IdeaProjects/.parallel/proj-a/qa-1"] {
+        let (started, _) = start_claude_in(&launch, folder);
+        assert!(started.contains("--forward 18088"), "{folder}: {started}");
+    }
+    let (started, _) = start_claude_in(&launch, "IdeaProjects/.parallel/proj-b/qa-1");
+    assert!(!started.contains("--forward 18088"), "{started}");
+}
+
+#[test]
 fn a_project_name_becomes_a_proxy_identity_of_letters_digits_and_dashes() {
     let launch = Launch::new();
     let (started, _) = start_claude_in(&launch, "IdeaProjects/site.v2+beta");

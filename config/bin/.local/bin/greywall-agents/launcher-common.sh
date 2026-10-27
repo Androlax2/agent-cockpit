@@ -397,9 +397,8 @@ fi
 # its own access. Content: "<expiry epoch> <port>...", e.g.
 #   ~/.config/greywall-agents/forward/opusline  ->  1760817600 3000 8088 8025
 # A running session keeps its forwards until it exits; the expiry only stops
-# new sessions from getting them.
-forward_root=$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null || printf '%s' "$PWD")
-forward_file="$HOME/.config/greywall-agents/forward/$(basename "$forward_root")"
+# new sessions from getting them. Parallel clones share their repository's file.
+forward_file="$HOME/.config/greywall-agents/forward/$project_name"
 if [ -r "$forward_file" ]; then
     read -r forward_until forward_ports < "$forward_file"
     if [ "$(date +%s)" -lt "$forward_until" ]; then
