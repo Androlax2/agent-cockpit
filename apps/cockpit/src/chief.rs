@@ -111,8 +111,9 @@ pub enum ChiefAgentAction {
     AddHabit { text: String, project: Option<String>, source_id: String, reason: String },
     /// Hand an open stop to Theo, who answers it from the Chief view.
     Escalate { stop: String, category: EscalationCategory, reason: String, #[serde(default)] suggested_answer: Option<String> },
-    /// Ask the host to start a fresh session for a todo another project handed over and queued, when
-    /// no session of `project` (its folder name) can take it. Grants the session no extra permission.
+    /// Ask the host to start a fresh session for an open todo of `project` (its folder name), queued
+    /// or not; one the Chief's own project filed only once Theo queued it. Grants the session no
+    /// extra permission.
     StartSession { todo: String, project: String, reason: String },
 }
 

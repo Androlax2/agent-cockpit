@@ -1494,12 +1494,21 @@ fn the_todo_list_is_only_read_when_a_session_is_at_a_stop_boundary() {
 
 /// A todo another project handed to project-a and queued, as `cockpit-todo add --project` files it.
 fn handed_todo(bench: &Bench, id: &str, queued_by: &str) -> String {
+    project_todo(bench, id, json!({"queued_by":queued_by}), true)
+}
+
+/// A todo of project-a (the Chief's own project in this bench) still to do, with `fields` on top.
+fn project_todo(bench: &Bench, id: &str, fields: serde_json::Value, is_queued: bool) -> String {
     let directory = bench.registry.sessions[SESSION_B].cwd.clone();
     let mut todos: serde_json::Value = serde_json::from_str(&fs::read_to_string(cockpit::paths::todo()).unwrap()).unwrap();
-    todos["items"].as_array_mut().unwrap().push(json!({"id":id,"project":"project-a","cwd":directory,"text":"Fix the Figma MCP","status":"todo","queued_by":queued_by}));
-    let mut queued = todos["queued"].as_array().cloned().unwrap_or_default();
-    queued.push(json!(id));
-    todos["queued"] = json!(queued);
+    let mut item = json!({"id":id,"project":"project-a","cwd":directory,"text":"Fix the Figma MCP","status":"todo"});
+    item.as_object_mut().unwrap().extend(fields.as_object().unwrap().clone());
+    todos["items"].as_array_mut().unwrap().push(item);
+    if is_queued {
+        let mut queued = todos["queued"].as_array().cloned().unwrap_or_default();
+        queued.push(json!(id));
+        todos["queued"] = json!(queued);
+    }
     fs::write(cockpit::paths::todo(), todos.to_string()).unwrap();
     id.into()
 }
@@ -1562,11 +1571,54 @@ fn a_started_chief_request_does_not_start_a_second_session() {
 }
 
 #[test]
-fn the_chief_cannot_start_a_session_for_theos_own_queued_todo() {
+fn the_chief_can_start_a_session_for_todos_theo_or_another_project_filed_queued_or_not() {
+    for (fields, is_queued) in [
+        (json!({}), true),
+        (json!({}), false),
+        (json!({"source":"session ses_other","reporter":"project-b","link":"project-b→project-a"}), false),
+    ] {
+        let mut bench = admitted_chief_bench();
+        let todo = project_todo(&bench, "bb919cfe", fields.clone(), is_queued);
+        chief_starts_session(&mut bench, 20, &todo, "project-a").unwrap_or_else(|error| panic!("{fields} queued {is_queued}: {}", error.message));
+        reserve_fresh_session(&mut bench, &todo).unwrap();
+        assert_eq!(session_start_states(&bench), vec!["started"], "{fields} queued {is_queued}");
+    }
+}
+
+#[test]
+fn the_chief_cannot_start_a_session_for_a_todo_that_waits_or_is_for_the_designer_or_is_not_to_do() {
+    for fields in [json!({"after":["ee919cfe"]}), json!({"kind":"design"}), json!({"status":"doing"}), json!({"status":"proposed"})] {
+        let mut bench = admitted_chief_bench();
+        let todo = project_todo(&bench, "bb919cfe", fields.clone(), true);
+        assert_eq!(chief_starts_session(&mut bench, 20, &todo, "project-a").unwrap_err().code, ErrorCode::Conflict, "{fields}");
+        assert!(session_start_states(&bench).is_empty());
+    }
+}
+
+#[test]
+fn the_chief_cannot_start_a_session_for_a_todo_its_own_project_filed_until_theo_queues_it() {
+    for (fields, is_queued) in [
+        (json!({"source":"session ses_chief"}), false),
+        (json!({"source":"session ses_chief","queued_by":"a project-a session (ses_chie) (project-a→project-b)"}), true),
+        (json!({"source":"session ses_chief","reporter":"project-a","link":"project-a→project-a"}), true),
+        (json!({"source":"session ses_chief","queued_by_theo":true}), false),
+    ] {
+        let mut bench = admitted_chief_bench();
+        let todo = project_todo(&bench, "bb919cfe", fields.clone(), is_queued);
+        let refusal = chief_starts_session(&mut bench, 20, &todo, "project-a").unwrap_err();
+        assert_eq!(refusal.code, ErrorCode::Conflict, "{fields} queued {is_queued}");
+        assert!(refusal.message.contains("until Theo queues it"), "{}", refusal.message);
+        assert!(session_start_states(&bench).is_empty());
+    }
+}
+
+#[test]
+fn the_chief_can_start_a_session_for_a_todo_its_own_project_filed_once_theo_queued_it() {
     let mut bench = admitted_chief_bench();
-    let todo = handed_todo(&bench, "bb919cfe", "");
-    assert_eq!(chief_starts_session(&mut bench, 20, &todo, "project-a").unwrap_err().code, ErrorCode::Conflict);
-    assert!(session_start_states(&bench).is_empty());
+    let todo = project_todo(&bench, "bb919cfe", json!({"source":"session ses_chief","queued_by_theo":true}), true);
+    chief_starts_session(&mut bench, 20, &todo, "project-a").unwrap();
+    reserve_fresh_session(&mut bench, &todo).unwrap();
+    assert_eq!(session_start_states(&bench), vec!["started"]);
 }
 
 #[test]

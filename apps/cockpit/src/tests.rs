@@ -10301,6 +10301,54 @@ fn theos_own_queued_items_never_start_a_session() {
     assert!(fixture.calls("cockpit").is_empty());
 }
 
+/// What the daemon records when the Chief asks for a session for `id` (chief::store::request_session_start).
+fn chief_asks_for_a_session(id: &str, created_at_ms: i64) {
+    let connection = crate::teams::store::open(&crate::paths::team_database()).unwrap();
+    connection.execute("INSERT INTO chief_session_starts(id,epoch,project,task_id,reason,state,created_at) VALUES ('request-1','epoch','path:/p',?1,'Urgent.','requested',?2)",
+        rusqlite::params![id, created_at_ms]).unwrap();
+}
+
+#[test]
+fn a_todo_the_chief_asked_for_starts_a_session_even_when_nobody_queued_it() {
+    let fixture = Fixture::new();
+    let (_, greyproxy) = greywall_and_greyproxy(&fixture);
+    let mut app = fixture.app();
+    app.gaming = || false;
+    let id = app.todos.add("greyproxy", &greyproxy.display().to_string(), "Theo's own item");
+    chief_asks_for_a_session(&id, chrono::Utc::now().timestamp_millis());
+    app.dispatch_queue();
+    let calls = fixture.wait_for_calls("cockpit", 1);
+    assert!(calls[0].starts_with(&format!("cockpit --agent claude background {} ", greyproxy.display())), "{calls:?}");
+    assert_eq!(app.todos.status_of(&id), "doing");
+}
+
+#[test]
+fn a_lapsed_chief_request_starts_no_session() {
+    let fixture = Fixture::new();
+    let (_, greyproxy) = greywall_and_greyproxy(&fixture);
+    let mut app = fixture.app();
+    app.gaming = || false;
+    let id = app.todos.add("greyproxy", &greyproxy.display().to_string(), "Theo's own item");
+    chief_asks_for_a_session(&id, chrono::Utc::now().timestamp_millis() - crate::chief::SESSION_START_OPEN_MS - 1000);
+    app.dispatch_queue();
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(fixture.calls("cockpit").is_empty());
+    assert_eq!(app.todos.status_of(&id), "todo");
+}
+
+#[test]
+fn theos_q_marks_the_item_as_queued_by_him_and_taking_it_out_clears_the_mark() {
+    let _fixture = Fixture::new();
+    let mut todos = TodoList::load();
+    let id = todos.add("homelab", "/r/homelab", "bump postgres");
+    let is_marked = |todos: &TodoList| todos.items.iter().find(|item| item.id() == id).unwrap().is_queued_by_theo();
+    assert!(!is_marked(&todos));
+    todos.toggle_queued(&id);
+    assert!(is_marked(&todos));
+    todos.toggle_queued(&id);
+    assert!(!is_marked(&todos));
+}
+
 #[test]
 fn a_proposal_for_a_name_that_is_not_a_project_checkout_is_refused() {
     let fixture = Fixture::new();

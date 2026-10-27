@@ -933,12 +933,17 @@ fn escalate_stop(connection: &Connection, epoch: &str, stop: &str, category: Esc
 
 /// Records the Chief's request; the queue's next pass starts the session through the usual
 /// reservation, which then skips only the rule that no session of the project may be live.
-fn request_session_start(connection: &Connection, todos: &crate::todo::TodoList, epoch: &str, todo: &str, project: &str, reason: &str, now_ms: i64) -> Result<Value, TeamError> {
+/// Any todo still to do qualifies, queued or not, except one waiting on others or for the designer;
+/// one a session of the Chief's own project filed needs Theo's Q first, so the Chief cannot start
+/// work it gave itself.
+fn request_session_start(connection: &Connection, todos: &crate::todo::TodoList, chief_project: &str, epoch: &str, todo: &str, project: &str, reason: &str, now_ms: i64) -> Result<Value, TeamError> {
     let item = todos.items.iter().find(|item| item.id() == todo).ok_or_else(|| TeamError::new(ErrorCode::NotFound, "no todo has this id"))?;
-    // The same items the queue starts fresh sessions for: Theo's own queued items wait for a session he starts.
-    let is_handed = !item.queued_by().is_empty() || item.is_blocked_report();
-    if item.status() != "todo" || !todos.is_queued(todo) || !is_handed || item.is_waiting() || item.is_design() {
-        return Err(conflict("the Chief starts sessions only for queued todos another project handed over, still to do and waiting on nothing"));
+    if item.status() != "todo" || item.is_waiting() || item.is_design() {
+        return Err(conflict("the Chief starts sessions only for todos still to do, waiting on nothing and not for the designer"));
+    }
+    let chief_folder = chief_project.rsplit('/').next().unwrap_or(chief_project);
+    if item.is_filed_from(chief_folder) && !(todos.is_queued(todo) && item.is_queued_by_theo()) {
+        return Err(conflict("a todo the Chief filed waits until Theo queues it with Q"));
     }
     let canonical = crate::teams::canonical_project(&item.cwd())?;
     if canonical.rsplit('/').next() != Some(project) { return Err(conflict("the todo belongs to another project")); }
@@ -962,6 +967,14 @@ fn request_session_start(connection: &Connection, todos: &crate::todo::TodoList,
 pub fn open_session_start(connection: &Connection, project: &str, task_id: &str, now_ms: i64) -> Result<Option<(String, String)>, TeamError> {
     Ok(connection.query_row("SELECT id,reason FROM chief_session_starts WHERE state='requested' AND project=?1 AND task_id=?2 AND created_at>?3",
         params![project, task_id, now_ms.saturating_sub(super::SESSION_START_OPEN_MS)], |row| Ok((row.get(0)?, row.get(1)?))).optional()?)
+}
+
+/// The todo ids the Chief asked a session for that the queue has not acted on yet: the queue starts
+/// them even when Theo did not queue them.
+pub fn open_session_start_tasks(connection: &Connection, now_ms: i64) -> Result<std::collections::HashSet<String>, TeamError> {
+    Ok(connection.prepare("SELECT task_id FROM chief_session_starts WHERE state='requested' AND created_at>?1")?
+        .query_map([now_ms.saturating_sub(super::SESSION_START_OPEN_MS)], |row| row.get(0))?
+        .collect::<Result<_, _>>()?)
 }
 
 pub fn mark_session_started(connection: &Connection, request: &str, token: &str, now_ms: i64) -> Result<(), TeamError> {
@@ -1422,7 +1435,7 @@ pub fn agent(connection: &mut Connection, sender: &VerifiedSession, action: &Chi
             ChiefAgentAction::Escalate { stop, category, reason, suggested_answer } => escalate_stop(&transaction, &epoch, stop, *category, reason, suggested_answer.as_deref(), now_ms)?,
             ChiefAgentAction::StartSession { todo, project, reason } => {
                 let todos = crate::todo::TodoList::load_checked().map_err(|error| TeamError::new(ErrorCode::Storage, error))?;
-                request_session_start(&transaction, &todos, &epoch, todo, project, reason, now_ms)?
+                request_session_start(&transaction, &todos, &sender.project, &epoch, todo, project, reason, now_ms)?
             },
         };
         transaction.commit()?;

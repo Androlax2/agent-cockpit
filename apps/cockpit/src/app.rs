@@ -944,6 +944,10 @@ pub struct App {
     /// Handed items the scheduler refused: retried at the next queue check, not on every tick,
     /// where each refusal cost the daemon a full live-session scan (about 25 a second).
     handed_refused: HashSet<String>,
+    /// The todos the Chief asked a fresh session for (chief_session_starts), read again at most
+    /// every queue check: they start like handed work, queued or not.
+    chief_requested: HashSet<String>,
+    pub(crate) chief_requests_checked: f64,
     pub(crate) sleep_checked: f64,
     /// session -> the idle start `cockpit sleep` was asked about: a refusal is not asked again
     /// until the session worked and went idle again.
@@ -1056,7 +1060,7 @@ impl App {
             claude_status: ProviderStatus::default(), codex_status: ProviderStatus::new(Provider::Codex), panels: Default::default(), focus: 1, previous_panel: 1,
             help_open: false, help_scroll: 0, has_pane_focus: true, message, exiting: Vec::new(), restarting_cards: HashMap::new(), labelled: Default::default(), menu: None, session_details: None, todo_composer: None, new_session: None, settings_menu: None, team_view: None, chief_view: None, team_attention: 0, team_roles: HashMap::new(), qa_sessions: HashSet::new(), team_known: false, team_checked: 0.0,
             team_links: TeamLinks::Loading, sidebar_rows: Vec::new(), tab_ranges: Vec::new(), collapsed_teams: HashSet::new(), sidebar_selection_lost: false, sidebar_session_tasks: HashMap::new(), pairing: None, restore: Vec::new(),
-            held: Vec::new(), held_since: None, held_checked: 0.0, notices: Vec::new(), is_confirming: false, queue_checked: 0.0, handed_refused: HashSet::new(), sleep_checked: 0.0, sleep_asked: HashMap::new(), gaming: util::gaming,
+            held: Vec::new(), held_since: None, held_checked: 0.0, notices: Vec::new(), is_confirming: false, queue_checked: 0.0, handed_refused: HashSet::new(), chief_requested: HashSet::new(), chief_requests_checked: 0.0, sleep_checked: 0.0, sleep_asked: HashMap::new(), gaming: util::gaming,
             disk_usage: util::fullest_disk, disk: None, disk_checked: 0.0, restore_checked: 0.0, start_files: Vec::new(),
             width: DEFAULT_COLUMN_WIDTH, sessions: Vec::new(), running_sessions: Vec::new(), windows: Vec::new(), quota_rows: Vec::new(), review_rows: Vec::new(), todo_entries: Vec::new(), idea_entries: Vec::new(),
             session_task_titles: HashMap::new(), session_branches: HashMap::new(),
@@ -1351,7 +1355,11 @@ impl App {
     /// screen in the cockpit: he may be about to type in it.
     pub fn dispatch_queue(&mut self) {
         let now = util::now();
-        if self.todos.queued.is_empty() {
+        if now - self.chief_requests_checked >= QUEUE_CHECK_S {
+            self.chief_requests_checked = now;
+            self.chief_requested = chief_requested_starts();
+        }
+        if self.todos.queued.is_empty() && self.chief_requested.is_empty() {
             return;
         }
         let is_check_due = now - self.queue_checked >= QUEUE_CHECK_S;
@@ -1397,14 +1405,17 @@ impl App {
     }
 
     /// Handed work and setup blockers get fresh background sessions on every tick, before idle
-    /// sessions can absorb them. Theo's own Q items keep waiting for a session he starts.
+    /// sessions can absorb them. Theo's own Q items keep waiting for a session he starts, unless the
+    /// Chief asked for one (queued or not).
     /// The handed items that could start a session now: not refused since the last queue check,
     /// and not in a project whose subscription handoff is under way.
     fn handed_work(&self) -> Vec<Entry> {
         let mut handed: Vec<Entry> = self.todos.items.iter()
-            .filter(|item| item.status() == "todo" && self.todos.is_queued(&item.id())
-                && (!item.queued_by().is_empty() || item.is_blocked_report()) && !item.is_waiting() && !item.is_design()
-                && !self.handed_refused.contains(&item.id()))
+            .filter(|item| {
+                let is_handed = self.todos.is_queued(&item.id()) && (!item.queued_by().is_empty() || item.is_blocked_report());
+                item.status() == "todo" && (is_handed || self.chief_requested.contains(&item.id()))
+                    && !item.is_waiting() && !item.is_design() && !self.handed_refused.contains(&item.id())
+            })
             .filter(|item| {
                 let project = project_name(&util::repository_root(&item.cwd()));
                 self.subscription_error.is_none() && !self.subscription_directories.iter().any(|directory| project_name(&util::repository_root(directory)) == project)
@@ -1448,8 +1459,11 @@ impl App {
                 continue;
             }
             if let Err(error) = self.record_task_assignment(&entry, None) { self.continuity_error = Some(error); }
-            util::log_event("INFO", &format!("queue: started a fresh session in {project} for {} ({})", item.id(), item.queued_by()));
-            crate::audit::record("column", "queue.session_started", "ok", serde_json::json!({"id": item.id(), "project": project, "queued_by": item.queued_by()}));
+            let is_chief_requested = self.chief_requested.contains(&item.id());
+            let started_by = if is_chief_requested { "the Chief asked".to_string() } else { item.queued_by() };
+            util::log_event("INFO", &format!("queue: started a fresh session in {project} for {} ({started_by})", item.id()));
+            crate::audit::record("column", "queue.session_started", "ok", serde_json::json!({"id": item.id(), "project": project,
+                "queued_by": item.queued_by(), "chief_requested": is_chief_requested}));
             self.message = format!("queue: started a session in {project} for handed work");
         }
     }
@@ -5015,6 +5029,19 @@ fn provider_status_lines(status: &ProviderStatus, room: usize) -> Vec<Line> {
         }
     }
     lines
+}
+
+/// The todos the Chief asked a fresh session for; none when the team store is missing or unreadable.
+fn chief_requested_starts() -> HashSet<String> {
+    let requested = crate::teams::store::open_existing(&crate::paths::team_database())
+        .and_then(|connection| match connection {
+            Some(connection) => crate::chief::store::open_session_start_tasks(&connection, chrono::Utc::now().timestamp_millis()),
+            None => Ok(HashSet::new()),
+        });
+    requested.unwrap_or_else(|error| {
+        util::log_event("WARN", &format!("queue: cannot read the Chief's session start requests: {}", error.message));
+        HashSet::new()
+    })
 }
 
 /// Ends a session gracefully through the manager, or closes its terminal window when it never

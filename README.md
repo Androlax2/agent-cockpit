@@ -281,14 +281,17 @@ Each answer is logged (session, stop, the question's first 300 characters, the a
 reason, who wrote it, and whether it was queued, received, uncertain or cancelled). A delivery
 whose outcome is uncertain is never resent.
 
-### Starting a session for a queued todo
+### Letting the Chief start a session for a todo
 
 The queue starts a fresh session for a todo another project handed over only when no session
-of its project runs. When one waits behind busy sessions and the Chief judges it urgent, the
-Chief can ask for one (`start_session`: the todo's 8-character id, its project's folder name,
-a reason of at most 300 characters). The daemon accepts the request only for a todo that is
-handed over, queued, still to do and waiting on nothing (never your own Q items), at most one
-waiting request per project and 3 an hour. The queue's next pass then starts the session as
+of its project runs, and never for your own items. When a todo waits and the Chief judges it
+urgent, the Chief can ask for one (`start_session`: the todo's 8-character id, its project's
+folder name, a reason of at most 300 characters), most urgent first (higher priority, then
+older). The daemon accepts any todo still to do, queued or not, filed by you or by any session,
+except one that waits on other todos or is for the designer. A todo a session of the Chief's own
+project filed needs your Q first: the Chief cannot start work it gave itself. Such a todo arrives
+already queued, so press Q twice (out, then back in) to approve it. At most one request waits
+per project, and the Chief may ask 3 times an hour. The queue's next pass then starts the session as
 usual, with your default agent and the usual queue prompt; every other queue check still
 applies, and the session gets no extra permission. A request the queue does not act on within
 10 minutes lapses. Each request and start is logged and audited

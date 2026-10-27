@@ -202,6 +202,12 @@ impl Item {
     pub fn result(&self) -> String { self.text_of("result") }
     /// Why it joined the queue without Theo's Q: the link it came through or the item it waited on.
     pub fn queued_by(&self) -> String { self.text_of("queued_by") }
+    /// Theo queued it himself with Q; a session's filing or a released wait never sets it.
+    pub fn is_queued_by_theo(&self) -> bool { self.0.get("queued_by_theo").and_then(Value::as_bool).unwrap_or(false) }
+    /// A session of `project` filed it: in its own list, handed it across, or reported a block.
+    pub fn is_filed_from(&self, project: &str) -> bool {
+        !self.source().is_empty() && (self.reporter() == project || (self.reporter().is_empty() && self.project() == project))
+    }
     /// The results of the items it waited on, as their sessions wrote them.
     pub fn inputs(&self) -> Vec<Map<String, Value>> {
         self.0.get("inputs").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_object).cloned().collect()
@@ -608,6 +614,9 @@ impl TodoList {
     /// Queues the item or issue, or takes it out of the queue; true when it is now queued.
     pub fn toggle_queued(&mut self, key: &str) -> bool {
         let queued = if self.queued.remove(key) { false } else { self.queued.insert(key.to_string()) };
+        if let Some(item) = self.items.iter_mut().find(|item| item.id() == key) {
+            if queued { item.0.insert("queued_by_theo".into(), json!(true)); } else { item.0.remove("queued_by_theo"); }
+        }
         self.save();
         queued
     }
