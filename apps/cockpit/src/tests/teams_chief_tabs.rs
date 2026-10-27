@@ -298,3 +298,28 @@ fn team_names_on_the_cards_are_cyan() {
     let card = app.panels[TEAMS_PANEL].lines.iter().find(|line| line.item.is_some() && line.texts().contains("Session list redesign")).unwrap();
     assert_eq!(card.segments[1].2.fg, Some(crate::app::color(crate::app::CYAN)));
 }
+
+#[test]
+fn the_open_tab_stays_when_amber_tabs_cannot_fit_beside_it() {
+    let fixture = Fixture::new();
+    let mut state = team_state();
+    state["chief_badge"] = json!({"state": "active", "needs_you": 3});
+    let (mut app, _) = team_app(&fixture, state);
+    press(&mut app, &[Key::F(5)]);
+    for width in [24, 20] {
+        let tabs = tabs_row(&mut app, width);
+        assert!(tabs.contains(" 5  Chief"), "width {width}: {tabs}");
+    }
+}
+
+#[test]
+fn a_teams_full_log_keeps_links_its_members_take_part_in() {
+    let fixture = Fixture::new();
+    let mut state = team_state();
+    state["link_proposals"].as_array_mut().unwrap().push(json!({"proposal_id": "lp3", "sender": "outsider", "status": "closed",
+        "task": {"project": "path:/r/other", "task_id": "77"}, "participants": [{"session_id": "outsider"}, {"session_id": OPENCODE_SESSION}]}));
+    let (mut app, _) = team_app(&fixture, state);
+    press(&mut app, &[Key::Char('4'), Key::Enter, Key::Char('l')]);
+    let proposals: Vec<Value> = app.team_view.as_ref().unwrap().snapshot["link_proposals"].as_array().unwrap().iter().map(|proposal| proposal["proposal_id"].clone()).collect();
+    assert_eq!(proposals, [json!("lp1"), json!("lp3")]);
+}

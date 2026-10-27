@@ -4295,6 +4295,14 @@ impl App {
                 if TAB_PANELS[index] != self.focus && may_fold(index) && shown[index] > level { shown[index] = level; }
             }
         }
+        // The open tab never goes: past that, amber tabs give way, the farthest from it first.
+        let open = TAB_PANELS.iter().position(|panel| *panel == self.focus);
+        let mut by_distance: Vec<usize> = (0..5).filter(|index| Some(*index) != open).collect();
+        by_distance.sort_by_key(|index| std::cmp::Reverse(open.map_or(0, |open| index.abs_diff(open))));
+        for index in by_distance {
+            if total(&shown) <= width { break; }
+            shown[index] = 0;
+        }
         put(buffer, row, 0, &" ".repeat(width.saturating_sub(1) as usize), Style::default());
         let mut column = 0u16;
         for index in (0..5).filter(|index| shown[*index] > 0) {
