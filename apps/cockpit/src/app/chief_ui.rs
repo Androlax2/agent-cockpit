@@ -10,7 +10,7 @@ impl App {
     pub(super) fn open_chief_view(&mut self) -> String {
         if let Some(view)=self.chief_view.as_mut() {view.suspended=false;self.refresh_chief_view();return String::new();}
         match snapshot() {
-            Ok(snapshot)=>{let mut view=ChiefView::new(snapshot);view.habits_seen_ms=crate::chief::habits_seen_ms();self.chief_view=Some(view);String::new()},
+            Ok(snapshot)=>{let mut view=ChiefView::new(snapshot);view.habits_seen_ms=crate::chief::habits_seen_ms();view.open_inbox();self.chief_view=Some(view);String::new()},
             Err(error)=>{
                 let mut view=ChiefView::new(json!({"records":[]}));
                 view.read_failed(format!("Chief view unavailable: {}",error.message));
@@ -44,6 +44,18 @@ impl App {
         if view.submission_pending(&key) && !self.refresh_chief_view() {return true;}
         let effect=self.chief_view.as_mut().expect("Chief is open").handle(key);
         match effect {
+            Effect::InboxSend(action)=> {
+                let result=crate::teams::client::host_request(&HostRequest::Chief {action}).and_then(|reply|reply.result);
+                self.refresh_chief_view();
+                let view=self.chief_view.as_mut().expect("Chief is open");
+                match result {Ok(_)=>view.inbox_sent(),Err(error)=>view.inbox_failed(&format!("Not sent: {}. It may have arrived; check before sending again.",error.message))}
+            },
+            Effect::InboxLater(action)=> {
+                let result=crate::teams::client::host_request(&HostRequest::Chief {action}).and_then(|reply|reply.result);
+                self.refresh_chief_view();
+                let view=self.chief_view.as_mut().expect("Chief is open");
+                match result {Ok(_)=>view.inbox_later_done(),Err(error)=>view.inbox_failed(&format!("Not put off: {}",error.message))}
+            },
             Effect::None=>{},Effect::Close=> {
                 if !self.chief_view.as_mut().expect("Chief is open").suspend_pending_start() {self.chief_view=None;}
             },
@@ -113,6 +125,7 @@ pub(super) fn draw(view: &mut ChiefView, buffer: &mut Buffer) {
     let (width,height)=(buffer.area.width,buffer.area.height);
     if width<8 || height<8 {return;}
     if view.startup_screen() {draw_startup(view,buffer);return;}
+    if view.inbox_active() {draw_inbox(view,buffer);return;}
     let (top,bottom)=(HEADER_LINES,height-2);let inner=width.saturating_sub(4) as usize;let body=inner.saturating_sub(2).max(1);
     for row in top..=bottom {
         put(buffer,row,1,&" ".repeat((width-2) as usize),style(FG));
@@ -177,4 +190,64 @@ fn draw_startup(view: &mut ChiefView, buffer: &mut Buffer) {
 fn is_startup_action(line: &str) -> bool {
     let bytes=line.as_bytes();
     bytes.len()>4 && bytes[0]==b'[' && bytes[1].is_ascii_lowercase() && bytes[2]==b']' && bytes[3]==b' '
+}
+
+fn ink_style(ink: crate::chief::inbox::Ink) -> Style {
+    use crate::chief::inbox::Ink;
+    match ink {
+        Ink::Normal=>style(FG), Ink::Bold=>bold(FG), Ink::Dim=>dim(FG_DARK), Ink::Heading=>bold(FG_DARK),
+        Ink::Attention=>bold(YELLOW), Ink::Blue=>bold(BLUE), Ink::Suggests=>bold(MAGENTA), Ink::Project(color)=>bold(color),
+        Ink::Key=>on(FG,BG_HIGHLIGHT), Ink::PrimaryKey=>on(BLACK,YELLOW), Ink::Current=>style(FG),
+    }
+}
+
+/// The inbox card (frames 3097-3222): wrapped text, key caps that wrap between keys, the current step outlined in blue.
+fn draw_inbox(view: &mut ChiefView, buffer: &mut Buffer) {
+    use crate::chief::inbox::{Ink, Line};
+    let (width,height)=(buffer.area.width,buffer.area.height);
+    let top=HEADER_LINES;
+    for row in top..height-1 {put(buffer,row,0,&" ".repeat(width as usize),style(FG));}
+    put(buffer,top,2,"‹ Chief",style(BLUE));
+    let body=width.saturating_sub(6).max(8) as usize;
+    let mut rows: Vec<Vec<(String,Style)>>=Vec::new();
+    for line in view.inbox_lines() {
+        match line {
+            Line::Blank=>rows.push(Vec::new()),
+            Line::Text(segments) if segments.len()==1 && segments[0].1==Ink::Current=>{
+                for text in wrap_detail_text(&segments[0].0,body.saturating_sub(2)) {rows.push(vec![("▎ ".into(),style(BLUE)),(text,style(FG))]);}
+            },
+            Line::Text(segments) if segments.len()==1=>{
+                let ink=ink_style(segments[0].1);
+                for text in wrap_detail_text(&segments[0].0,body) {rows.push(vec![(text,ink)]);}
+            },
+            Line::Text(segments)=>{
+                let joined: String=segments.iter().map(|(text,_)|text.as_str()).collect();
+                if width_of(&joined)<=body {rows.push(segments.into_iter().map(|(text,ink)|(text,ink_style(ink))).collect());}
+                else {for text in wrap_detail_text(&joined,body) {rows.push(vec![(text,ink_style(segments[0].1))]);}}
+            },
+            Line::Keys(keys)=>{
+                let mut row: Vec<(String,Style)>=Vec::new();let mut used=0;
+                for (cap,label,primary) in keys {
+                    let item=width_of(&cap)+2+1+width_of(&label)+2;
+                    if used>0 && used+item>body {rows.push(std::mem::take(&mut row));used=0;}
+                    row.push((format!(" {cap} "),ink_style(if primary {Ink::PrimaryKey} else {Ink::Key})));
+                    row.push((format!(" {label}  "),dim(FG_DARK)));
+                    used+=item;
+                }
+                if !row.is_empty() {rows.push(row);}
+            },
+        }
+    }
+    let available=height.saturating_sub(top+3) as usize;
+    view.page_step=available.max(1).min(5);
+    let first=view.clamp_scroll(rows.len().saturating_sub(available));
+    for (offset,segments) in rows.iter().skip(first).take(available).enumerate() {
+        let row=top+2+offset as u16;let mut column=3u16;
+        for (text,appearance) in segments {
+            let room=(width as usize).saturating_sub(column as usize+1);
+            let shown=fit(text,room);
+            put(buffer,row,column,&shown,*appearance);
+            column+=width_of(&shown) as u16;
+        }
+    }
 }

@@ -666,9 +666,7 @@ fn escalation(suggestion: Option<&str>) -> Value {
 #[test]
 fn a_decision_with_a_suggestion_offers_send_suggestion_and_write_my_own() {
     let host=Host::new(vec![escalation(Some("Keep the old API."))]);let (mut app,mut screen)=host.open();
-    app.handle(Key::Enter,&mut screen);
-    let list=rendered(&mut app,160,40);assert!(list.contains("scope")&&list.contains("Which option do you want?"),"{list}");
-    app.handle(Key::Enter,&mut screen);
+    app.handle(Key::Char('i'),&mut screen);
     let detail=rendered(&mut app,160,60);
     for expected in ["scope","Changing the API is outside the task.","Which option do you want?","Keep the old API."] {assert!(detail.contains(expected),"{expected}: {detail}");}
     app.handle(Key::Enter,&mut screen);
@@ -683,7 +681,7 @@ fn a_decision_with_a_suggestion_offers_send_suggestion_and_write_my_own() {
 #[test]
 fn a_decision_without_a_suggestion_only_offers_to_write_an_answer() {
     let host=Host::new(vec![escalation(None)]);let (mut app,mut screen)=host.open();
-    keys(&mut app,&mut screen,&[Key::Enter,Key::Enter,Key::Enter]);
+    keys(&mut app,&mut screen,&[Key::Char('i'),Key::Enter]);
     let actions=rendered(&mut app,160,40);
     assert!(actions.contains("Write my own answer")&&!actions.contains("Send the suggestion"),"{actions}");
 }
@@ -699,7 +697,7 @@ fn a_plain_decision_offers_no_answer_to_an_agent() {
 #[test]
 fn the_answer_review_shows_the_exact_text_to_send() {
     let host=Host::new(vec![escalation(Some("Keep the old API."))]);let (mut app,mut screen)=host.open();
-    keys(&mut app,&mut screen,&[Key::Enter,Key::Enter,Key::Enter,Key::Down,Key::Enter]);
+    keys(&mut app,&mut screen,&[Key::Char('i'),Key::Enter,Key::Down,Key::Enter]);
     type_note(&mut app,&mut screen,"Use option B, then run the tests.");
     assert!(host.mutations().is_empty(),"typing the answer sends nothing");
     let review=rendered(&mut app,220,80);
@@ -756,7 +754,8 @@ fn open_answers(host: &Host) -> (App, TestScreen) {
 #[test]
 fn the_root_shows_needs_you_and_answers_counts() {
     let host=Host::new(vec![decision(),escalation(None),answer("answer-1","received"),answer("answer-2","queued"),answer("answer-3","uncertain")]);
-    let (mut app,_)=host.open();
+    let (mut app,mut screen)=host.open();
+    app.handle(Key::Esc,&mut screen);
     let text=rendered(&mut app,120,45);
     for expected in ["Needs you · 2","Answers · 3"] {assert!(text.contains(expected),"{expected}: {text}");}
     assert!(!text.contains("Decisions"),"{text}");
@@ -968,9 +967,9 @@ fn answers_name_the_session_not_its_id() {
     let mut escalated=escalation(None);escalated["session_id"]=json!(SESSION);
     let host=Host::new(vec![answer("answer-1","received"),escalated]);name_the_session(&host,"Fix the login bug · a-long-canonical-project");
     let (mut app,mut screen)=host.open();
-    let needs_you={app.handle(Key::Enter,&mut screen);rendered(&mut app,160,45)};
-    assert!(needs_you.contains("Fix the login bug · a-long-canonical-project")&&!needs_you.contains(SESSION),"{needs_you}");
-    keys(&mut app,&mut screen,&[Key::Enter]);
+    let needs_you=rendered(&mut app,160,45);
+    assert!(needs_you.contains("a-long-canonical-project › Fix the login bug")&&!needs_you.contains(SESSION),"{needs_you}");
+    keys(&mut app,&mut screen,&[Key::Char('i')]);
     let detail=rendered(&mut app,160,60);assert!(detail.contains("Session: Fix the login bug · a-long-canonical-project"),"{detail}");
     keys(&mut app,&mut screen,&[Key::Esc,Key::Esc,Key::Down,Key::Enter]);
     let list=rendered(&mut app,160,45);assert!(list.contains("Fix the login bug · a-long-canonical-project")&&!list.contains(SESSION),"{list}");
@@ -1061,7 +1060,7 @@ fn a_tall_row_at_the_bottom_still_fits_the_window() {
 fn an_escalation_detail_shows_no_raw_record_json() {
     let mut escalated=escalation(Some("Keep the old API."));escalated["session_id"]=json!(SESSION);
     let host=Host::new(vec![escalated]);name_the_session(&host,"Fix the login bug · project");
-    let (mut app,mut screen)=host.open();keys(&mut app,&mut screen,&[Key::Enter,Key::Enter]);
+    let (mut app,mut screen)=host.open();keys(&mut app,&mut screen,&[Key::Char('i')]);
     let detail=rendered(&mut app,160,60);
     assert!(detail.contains("Session: Fix the login bug · project")&&detail.contains("Keep the old API."),"{detail}");
     for forbidden in ["session_id",SESSION,"{","\"kind\""] {assert!(!detail.contains(forbidden),"{forbidden}: {detail}");}
@@ -1460,4 +1459,199 @@ fn a_failed_restore_selects_the_row_it_left() {
     app.handle(Key::Char('u'),&mut screen);
     assert!(rendered(&mut app,120,45).contains("habit not found"));
     assert!(selected_line(&mut app).contains("Habit B."),"{:#?}",lines_of(&mut app,120,45));
+}
+
+// ---- Chief inbox (DESIGN.md "Chief inbox", frames 3097-3222) ----
+
+fn inbox_question(id: &str, revision: i64, suggestion: Option<&str>) -> Value {
+    let mut record = escalation(suggestion);
+    record["id"] = json!(id); record["revision"] = json!(revision);
+    record["category"] = json!("not_sure");
+    record["recommendation"] = json!("The fix is in, but osd won't restart while your guide is open.");
+    record["created_at_ms"] = json!(chrono::Utc::now().timestamp_millis() - 240_000);
+    record
+}
+fn two_steps(id: &str) -> Value {
+    let mut record = inbox_question(id, 3, Some("Go on."));
+    record["situation"] = json!("The agent can't finish its last check.");
+    record["steps"] = json!([{"text":"Close your Stadeo guide"},{"text":"Tell the agent to go on","message":"Go on: restart osd and run your check."}]);
+    record
+}
+fn inbox_host(records: Vec<Value>) -> Host {
+    let host = Host::new(records);
+    name_the_session(&host, "Persist Stadeo team · agent-cockpit");
+    host.snapshot.lock().unwrap()["today"] = json!({"answered":5,"escalated":1});
+    host
+}
+
+#[test]
+fn status_chief_opens_the_question_card_when_the_chief_needs_theo() {
+    let host = inbox_host(vec![inbox_question("decision-a", 3, Some("Go on."))]);
+    let (mut app, _) = host.open();
+    let card = rendered(&mut app, 100, 40);
+    for expected in ["! Chief needs you · 1 of 1", "agent-cockpit › Persist Stadeo team", "Not sure · asked 4m ago", "WHAT'S GOING ON",
+        "osd won't restart", "◆ CHIEF SUGGESTS · 1 step", "1 Go on.", "do this, step by step", "write my own", "later", "full details",
+        "Written by the Chief: check it before acting."] {
+        assert!(card.contains(expected), "{expected}: {card}");
+    }
+}
+
+#[test]
+fn without_a_question_status_chief_opens_the_chief_root() {
+    let host = inbox_host(vec![]);
+    let (mut app, _) = host.open();
+    assert!(!rendered(&mut app, 100, 40).contains("Chief needs you"));
+}
+
+#[test]
+fn a_deferred_question_is_not_counted_until_it_comes_back() {
+    let mut deferred = inbox_question("decision-b", 3, Some("Wait."));
+    deferred["later_until_ms"] = json!(chrono::Utc::now().timestamp_millis() + 600_000);
+    let mut returned = inbox_question("decision-c", 3, Some("Retry."));
+    returned["later_until_ms"] = json!(chrono::Utc::now().timestamp_millis() - 1_000);
+    let host = inbox_host(vec![inbox_question("decision-a", 3, Some("Go on.")), deferred, returned]);
+    let (mut app, _) = host.open();
+    assert!(rendered(&mut app, 100, 40).contains("1 of 2"));
+}
+
+#[test]
+fn steps_are_done_one_by_one_and_only_y_on_the_last_sends_its_exact_message() {
+    let host = inbox_host(vec![two_steps("decision-a")]);
+    let (mut app, mut screen) = host.open();
+    assert!(rendered(&mut app, 100, 40).contains("◆ CHIEF SUGGESTS · 2 steps"));
+    app.handle(Key::Char('a'), &mut screen);
+    let step = rendered(&mut app, 100, 40);
+    assert!(step.contains("STEP 1 OF 2") && step.contains("Close your Stadeo guide") && step.contains("done, next step") && step.contains("THEN"), "{step}");
+    keys(&mut app, &mut screen, &[Key::Char('y'), Key::Enter]);
+    assert!(host.mutations().is_empty());
+    app.handle(Key::Char('d'), &mut screen);
+    let last = rendered(&mut app, 100, 40);
+    assert!(last.contains("✓ Close your Stadeo guide") && last.contains("STEP 2 OF 2 · SEND TO THE AGENT")
+        && last.contains("Go on: restart osd and run your check.") && last.contains("Enter never sends."), "{last}");
+    app.handle(Key::Enter, &mut screen);
+    assert!(host.mutations().is_empty());
+    app.handle(Key::Char('y'), &mut screen);
+    let mutations = host.mutations();
+    assert_eq!(mutations.len(), 1);
+    let action = &mutations[0]["action"];
+    assert_eq!((&action["action"], &action["decision"], &action["expected_revision"], &action["answer"]),
+        (&json!("answer_decision"), &json!("decision-a"), &json!(3), &json!("Go on: restart osd and run your check.")));
+}
+
+#[test]
+fn without_chief_steps_the_suggestion_is_one_step_and_the_reason_the_situation() {
+    let host = inbox_host(vec![inbox_question("decision-a", 3, Some("Go on."))]);
+    let (mut app, mut screen) = host.open();
+    app.handle(Key::Char('a'), &mut screen);
+    assert!(rendered(&mut app, 100, 40).contains("STEP 1 OF 1 · SEND TO THE AGENT"));
+    app.handle(Key::Char('y'), &mut screen);
+    assert_eq!(host.mutations()[0]["action"]["answer"], "Go on.");
+}
+
+#[test]
+fn a_question_without_a_suggestion_offers_only_write_my_own() {
+    let host = inbox_host(vec![inbox_question("decision-a", 3, None)]);
+    let (mut app, mut screen) = host.open();
+    let card = rendered(&mut app, 100, 40);
+    assert!(!card.contains("do this, step by step") && card.contains("write my own"), "{card}");
+    app.handle(Key::Char('a'), &mut screen);
+    assert!(!rendered(&mut app, 100, 40).contains("STEP 1"));
+}
+
+#[test]
+fn write_my_own_sends_exactly_what_theo_typed_with_cmd_s() {
+    let host = inbox_host(vec![inbox_question("decision-a", 3, Some("Go on."))]);
+    let (mut app, mut screen) = host.open();
+    app.handle(Key::Char('w'), &mut screen);
+    app.handle(Key::Paste("Wait, I'll restart osd myself.".into()), &mut screen);
+    let box_ = rendered(&mut app, 100, 40);
+    assert!(box_.contains("YOUR ANSWER") && box_.contains("Goes to agent-cockpit › Persist Stadeo team, exactly as written."), "{box_}");
+    app.handle(Key::Enter, &mut screen);
+    assert!(host.mutations().is_empty());
+    app.handle(Key::Ctrl('s'), &mut screen);
+    assert_eq!(host.mutations()[0]["action"]["answer"], "Wait, I'll restart osd myself.\n");
+}
+
+#[test]
+fn edit_first_prefills_the_message_and_esc_returns_to_the_last_step_unchanged() {
+    let host = inbox_host(vec![inbox_question("decision-a", 3, Some("Go on."))]);
+    let (mut app, mut screen) = host.open();
+    keys(&mut app, &mut screen, &[Key::Char('a'), Key::Char('e')]);
+    assert!(rendered(&mut app, 100, 40).contains("YOUR ANSWER"));
+    keys(&mut app, &mut screen, &[Key::Backspace, Key::Esc]);
+    let last = rendered(&mut app, 100, 40);
+    assert!(last.contains("SEND TO THE AGENT") && last.contains("Go on."), "{last}");
+    app.handle(Key::Char('y'), &mut screen);
+    assert_eq!(host.mutations()[0]["action"]["answer"], "Go on.");
+}
+
+#[test]
+fn after_sending_the_inbox_waits_for_n_before_the_next_question() {
+    let host = inbox_host(vec![inbox_question("decision-a", 3, Some("Go on.")), inbox_question("decision-b", 2, Some("Allow it."))]);
+    host.after_mutations.lock().unwrap().push_back(vec![inbox_question("decision-b", 2, Some("Allow it."))]);
+    let (mut app, mut screen) = host.open();
+    keys(&mut app, &mut screen, &[Key::Char('a'), Key::Char('y')]);
+    let sent = rendered(&mut app, 100, 40);
+    assert!(sent.contains("✓ Sent to agent-cockpit › Persist Stadeo team") && sent.contains("NEXT · 1 OF 1") && sent.contains("next question")
+        && sent.contains("stop here") && !sent.contains("WHAT'S GOING ON"), "{sent}");
+    app.handle(Key::Char('n'), &mut screen);
+    let next = rendered(&mut app, 100, 40);
+    assert!(next.contains("! Chief needs you · 1 of 1") && next.contains("Allow it."), "{next}");
+}
+
+#[test]
+fn the_last_sent_question_leaves_the_empty_card_with_todays_count() {
+    let host = inbox_host(vec![inbox_question("decision-a", 3, Some("Go on."))]);
+    host.after_mutations.lock().unwrap().push_back(vec![]);
+    let (mut app, mut screen) = host.open();
+    keys(&mut app, &mut screen, &[Key::Char('a'), Key::Char('y'), Key::Char('n')]);
+    let empty = rendered(&mut app, 100, 40);
+    assert!(empty.contains("✓ Nothing needs you") && empty.contains("The Chief answered 5 questions today.") && empty.contains("what it answered"), "{empty}");
+}
+
+#[test]
+fn later_puts_the_question_off_through_the_host_without_answering() {
+    let host = inbox_host(vec![inbox_question("decision-a", 3, Some("Go on."))]);
+    let (mut app, mut screen) = host.open();
+    app.handle(Key::Char('l'), &mut screen);
+    let mutations = host.mutations();
+    assert_eq!(mutations.len(), 1);
+    assert_eq!((&mutations[0]["action"]["action"], &mutations[0]["action"]["decision"], &mutations[0]["action"]["expected_revision"]),
+        (&json!("later_decision"), &json!("decision-a"), &json!(3)));
+}
+
+#[test]
+fn a_question_that_changed_while_on_a_step_returns_to_the_card_and_never_sends_the_old_revision() {
+    let host = inbox_host(vec![two_steps("decision-a")]);
+    let (mut app, mut screen) = host.open();
+    keys(&mut app, &mut screen, &[Key::Char('a'), Key::Char('d')]);
+    let mut changed = two_steps("decision-a"); changed["revision"] = json!(4);
+    host.snapshot.lock().unwrap()["records"] = json!([changed]);
+    app.handle(Key::Char('y'), &mut screen);
+    assert!(host.mutations().is_empty());
+    let card = rendered(&mut app, 100, 40);
+    assert!(card.contains("This question changed. Read it again.") && card.contains("WHAT'S GOING ON"), "{card}");
+}
+
+#[test]
+fn full_details_keeps_the_raw_source_and_esc_returns_to_the_card() {
+    let host = inbox_host(vec![inbox_question("decision-a", 3, Some("Go on."))]);
+    let (mut app, mut screen) = host.open();
+    app.handle(Key::Char('i'), &mut screen);
+    let detail = rendered(&mut app, 120, 50);
+    assert!(detail.contains("Why the Chief escalated") && detail.contains("untrusted narrative"), "{detail}");
+    app.handle(Key::Esc, &mut screen);
+    assert!(rendered(&mut app, 100, 40).contains("! Chief needs you"));
+}
+
+#[test]
+fn a_narrow_column_wraps_the_card_and_keeps_its_keys() {
+    let mut record = two_steps("decision-a");
+    record["situation"] = json!("The fix is in, but the agent can't finish its last check: osd won't restart while your Stadeo guide is open, so it waits for you.");
+    let host = inbox_host(vec![record]);
+    let (mut app, mut screen) = host.open();
+    app.handle(Key::Char('a'), &mut screen);
+    app.handle(Key::Char('d'), &mut screen);
+    let last = lines_of(&mut app, 40, 22).join("\n");
+    assert!(last.contains("send") && last.contains("edit first"), "{last}");
 }

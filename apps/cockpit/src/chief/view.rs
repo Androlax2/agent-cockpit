@@ -194,6 +194,8 @@ enum Frame {
     Review {actions:Vec<Value>, guards:Vec<Guard>, content:String, scroll:usize, confirm:bool, invalid:bool},
     Summary {scroll:usize},
     Results {content:String, scroll:usize},
+    /// The Chief inbox: its state lives in `ChiefView::inbox`.
+    Inbox,
 }
 pub struct ChiefView {
     pub snapshot: Value,
@@ -218,22 +220,68 @@ pub struct ChiefView {
     check_declined: Option<String>,
     check_confirmed: Option<String>,
     check_error: Option<String>,
+    inbox: Option<super::inbox::Inbox>,
+    inbox_scroll: usize,
 }
 /// Where Theo's delivery check of a started Chief stands, as the host snapshot and his answer show it.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum DeliveryCheck { Offer, Sending, Ask, Declined }
 /// `Change` is sent at once, without a review: a habit edit Theo can undo. `HabitsSeen` saves when Theo saw his habits (epoch ms).
 /// `SendCheck` sends Theo's test message; `ConfirmCheck` records, for that exact session, that he saw it arrive.
-pub enum Effect { None, Close, Start(crate::chief::ChiefHostAction), SendCheck(crate::chief::ChiefHostAction), ConfirmCheck(crate::teams::VerifiedSession, String), Submit(Vec<crate::chief::ChiefHostAction>), Summary, Change(crate::chief::ChiefHostAction), HabitsSeen(i64) }
+pub enum Effect { None, Close, InboxSend(crate::chief::ChiefHostAction), InboxLater(crate::chief::ChiefHostAction), Start(crate::chief::ChiefHostAction), SendCheck(crate::chief::ChiefHostAction), ConfirmCheck(crate::teams::VerifiedSession, String), Submit(Vec<crate::chief::ChiefHostAction>), Summary, Change(crate::chief::ChiefHostAction), HabitsSeen(i64) }
 
 impl ChiefView {
     pub fn new(snapshot: Value) -> Self {
         Self {snapshot,frames:vec![Frame::Browse {page:Page::Root,selected:Some("decisions".into())}],
             message:String::new(),suspended:false,page_step:1,read_error:None,card_count:0,habits_seen_ms:None,undo:None,selection_before_change:None,
-            pending_start:None,startup_error:None,startup_scroll:0,check_declined:None,check_confirmed:None,check_error:None}
+            pending_start:None,startup_error:None,startup_scroll:0,check_declined:None,check_confirmed:None,check_error:None,inbox:None,inbox_scroll:0}
     }
     fn records(&self, kind: &str) -> Vec<Value> {
         self.snapshot["records"].as_array().into_iter().flatten().filter(|record|record["kind"]==kind).cloned().collect()
+    }
+    fn now_ms() -> i64 {(crate::util::now()*1000.0) as i64}
+    /// Opens the inbox on the oldest question that needs Theo; false when none does.
+    pub fn open_inbox(&mut self) -> bool {
+        if super::inbox::questions(&self.snapshot,Self::now_ms()).is_empty() {return false;}
+        self.inbox=Some(super::inbox::Inbox::new(&self.snapshot,Self::now_ms()));self.inbox_scroll=0;
+        self.frames.push(Frame::Inbox);
+        true
+    }
+    pub fn inbox_active(&self) -> bool {matches!(self.frames.last(),Some(Frame::Inbox)) && self.inbox.is_some()}
+    pub fn inbox_lines(&self) -> Vec<super::inbox::Line> {
+        self.inbox.as_ref().map(|inbox|inbox.lines(&self.snapshot,Self::now_ms())).unwrap_or_default()
+    }
+    pub fn inbox_sent(&mut self) {let snapshot=self.snapshot.clone(); if let Some(inbox)=self.inbox.as_mut() {inbox.sent(&snapshot);} self.inbox_scroll=0;}
+    pub fn inbox_later_done(&mut self) {let snapshot=self.snapshot.clone(); if let Some(inbox)=self.inbox.as_mut() {inbox.later_done(&snapshot,Self::now_ms());} self.inbox_scroll=0;}
+    pub fn inbox_failed(&mut self, message: &str) {if let Some(inbox)=self.inbox.as_mut() {inbox.failed(message);}}
+    fn inbox_key(&mut self, key: Key) -> Effect {
+        use super::inbox::Outcome;
+        match key {
+            Key::PageDown=>{self.inbox_scroll=self.inbox_scroll.saturating_add(self.page_step);return Effect::None;},
+            Key::PageUp=>{self.inbox_scroll=self.inbox_scroll.saturating_sub(self.page_step);return Effect::None;},
+            _=>{},
+        }
+        let snapshot=self.snapshot.clone();
+        let Some(inbox)=self.inbox.as_mut() else {return Effect::None};
+        let before=inbox.stage.clone();
+        let outcome=inbox.handle(key,&snapshot,Self::now_ms());
+        if inbox.stage!=before {self.inbox_scroll=0;}
+        match outcome {
+            Outcome::None=>Effect::None,
+            Outcome::Send(action)=>Effect::InboxSend(action),
+            Outcome::Later(action)=>Effect::InboxLater(action),
+            Outcome::Details(record)=>{
+                let actions=Some(Page::DecisionActions(record.clone()));
+                self.frames.push(Frame::Detail {record,actions,scroll:0});Effect::None
+            },
+            Outcome::Answers=>{self.close_inbox();self.open(Page::Answers(None));Effect::None},
+            Outcome::Habits=>{self.close_inbox();self.open_habits()},
+            Outcome::Close=>{self.close_inbox();if self.frames.is_empty() {Effect::Close} else {Effect::None}},
+        }
+    }
+    fn close_inbox(&mut self) {
+        if matches!(self.frames.last(),Some(Frame::Inbox)) {self.frames.pop();}
+        self.inbox=None;
     }
     /// The answers page replaces whatever is open, so the view closes back to where Theo came from.
     pub fn open_answers(&mut self, session_id: Option<String>) {
@@ -502,6 +550,9 @@ impl ChiefView {
                 self.invalidate("Reviewed records changed or disappeared. Cancel and review again.");
             }
         }
+        let now=Self::now_ms();
+        let snapshot=self.snapshot.clone();
+        if let Some(inbox)=self.inbox.as_mut() {inbox.refresh(&snapshot,now);}
         self.prune_missing_details();
     }
     fn prune_missing_details(&mut self) {
@@ -529,7 +580,8 @@ impl ChiefView {
         self.message=message.into();
     }
     pub fn submission_pending(&self, key: &Key) -> bool {
-        (*key==Key::Char('c') && self.startup_root() && self.startup_action_label().is_some())
+        (self.inbox_active() && self.inbox.as_ref().is_some_and(|inbox|inbox.awaits_send(key)))
+            || (*key==Key::Char('c') && self.startup_root() && self.startup_action_label().is_some())
             || (*key==Key::Char('t') && matches!(self.delivery_check(),Some(DeliveryCheck::Offer|DeliveryCheck::Declined)))
             || (*key==Key::Char('y') && self.delivery_check()==Some(DeliveryCheck::Ask))
             || (*key==Key::Char('y') && matches!(self.frames.last(),Some(Frame::Review {confirm:true,invalid:false,..})))
@@ -738,6 +790,7 @@ impl ChiefView {
                 if matches!(key,Key::PageDown|Key::PageUp) {return Effect::None;}
             }
         }
+        if self.inbox_active() {return self.inbox_key(key);}
         self.message.clear();
         let undo=self.undo.take();
         self.selection_before_change=None;
@@ -775,6 +828,7 @@ impl ChiefView {
                         }
                     },
                     Key::Char('x'|'u'|'p') if matches!(page,Page::Habits(_))=>return self.habit_key(&key,&rows,index,undo),
+                    Key::Enter if matches!(page,Page::Root) && index.is_some_and(|index|rows[index].key=="decisions") && self.open_inbox()=>{},
                     Key::Enter => if let Some(index)=index {match rows[index].operation.clone() {
                         Operation::Open(Page::Habits(_))=>return self.open_habits(),
                         Operation::Open(page)=>self.open(page),
@@ -842,6 +896,7 @@ impl ChiefView {
                 _=>self.scroll(&key),
             },
             Frame::Summary {..}|Frame::Results {..}=>if key==Key::Esc {self.frames.pop();} else {self.scroll(&key);},
+            Frame::Inbox=>{},
         }
         self.prune_missing_details();
         if self.frames.is_empty() {Effect::Close} else {Effect::None}
@@ -852,9 +907,10 @@ impl ChiefView {
     }
     pub fn clamp_scroll(&mut self, maximum: usize) -> usize {
         if self.startup_screen() {self.startup_scroll=self.startup_scroll.min(maximum);return self.startup_scroll;}
+        if self.inbox_active() {self.inbox_scroll=self.inbox_scroll.min(maximum);return self.inbox_scroll;}
         match self.frames.last_mut() {Some(Frame::Note {scroll,..}|Frame::Detail {scroll,..}|Frame::Review {scroll,..}|Frame::Assertion {scroll,..}|Frame::Summary {scroll}|Frame::Results {scroll,..})=>{*scroll=(*scroll).min(maximum);*scroll},_=>0}
     }
-    pub fn is_list(&self) -> bool {!self.startup_screen() && matches!(self.frames.last(),Some(Frame::Browse {..}))}
+    pub fn is_list(&self) -> bool {!self.startup_screen() && !self.inbox_active() && matches!(self.frames.last(),Some(Frame::Browse {..}))}
     pub fn list_window(&self, height: usize) -> (String,Vec<ListLine>) {
         let Some(Frame::Browse {page,selected})=self.frames.last() else {return (String::new(),Vec::new())};
         let caption=match page {
@@ -964,7 +1020,7 @@ impl ChiefView {
                 if summary.is_empty() {lines.push("Summary unavailable — host has no result.".into());} else {for record in summary {lines.push(shown(&record));}}
                 lines.push(String::new());
                 lines.extend(self.answers_since_lines(since_ms));
-            },Some(Frame::Results {content,..})=>lines.push(content.clone()),None=>{},
+            },Some(Frame::Results {content,..})=>lines.push(content.clone()),Some(Frame::Inbox)|None=>{},
         }
         lines
     }

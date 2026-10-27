@@ -3,6 +3,7 @@
 pub mod bundle;
 pub mod store;
 pub mod view;
+pub mod inbox;
 pub use store::reconcile_todos;
 
 use crate::teams::{ErrorCode, Role, TeamError, VerifiedSession};
