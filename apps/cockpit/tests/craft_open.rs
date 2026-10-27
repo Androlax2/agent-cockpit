@@ -24,13 +24,39 @@ impl Craft {
         sandbox.shim("setsid", "shift; \"$@\" &");
         sandbox.shim("figcraft", r#"printf '%s\n' "${XDG_CONFIG_HOME:-}" >> "$HOME/config-homes"
 exec python3 -c '
-import os, socket, sys, time
+import json, os, socket, sys
+from pathlib import Path
 listener = socket.socket()
 listener.bind(("127.0.0.1", int(sys.argv[sys.argv.index("--control") + 1])))
 listener.listen()
+documents = json.loads(os.environ.get("SHIM_FIGCRAFT_DOCUMENTS", "[{\"active\":true,\"dirty\":false,\"index\":0,\"name\":\"Untitled\",\"path\":null}]"))
+record = Path(os.environ["XDG_CONFIG_HOME"]) / "documents.json"
+record.write_text(json.dumps(documents))
 with open(os.environ["HOME"] + "/figcraft-pids", "a") as record:
     record.write(str(os.getpid()) + "\n")
-time.sleep(60)
+while True:
+    connection, _ = listener.accept()
+    with connection:
+        for line in connection.makefile("rb"):
+            request = json.loads(line)
+            with open(os.environ["HOME"] + "/figcraft-requests", "a") as log:
+                log.write(json.dumps(request) + "\n")
+            command = request["params"]["command"]
+            reply = {"id": request["id"], "ok": True}
+            if request["method"] != "engine.execute" or request["params"]["window"] != 0:
+                reply.update(ok=False, error="unexpected control request")
+            elif command == "doc.list":
+                reply["result"] = documents
+            elif command == "file.rename":
+                if os.environ.get("SHIM_FIGCRAFT_RENAME_ERROR"):
+                    reply.update(ok=False, error="fixture rename failed")
+                else:
+                    documents[0]["name"] = request["params"]["params"]["name"]
+                    (Path(os.environ["XDG_CONFIG_HOME"]) / "documents.json").write_text(json.dumps(documents))
+                    reply["result"] = {}
+            else:
+                reply.update(ok=False, error="unexpected command")
+            connection.sendall((json.dumps(reply) + "\n").encode())
 ' "$@""#);
         sandbox.shim("pgrep", r#"case " $* " in
 *" figcraft "*) cat "$HOME/figcraft-pids" 2>/dev/null; printf '%s\n' "${SHIM_FIGCRAFT_PID:-}" ;;
@@ -62,6 +88,11 @@ esac"#);
         let calls = self.sandbox.calls("figcraft");
         let words: Vec<_> = calls[index].split_whitespace().collect();
         words[words.iter().position(|word| *word == "--control").unwrap() + 1].parse().unwrap()
+    }
+
+    fn documents(&self, index: usize) -> serde_json::Value {
+        let path = self.sandbox.home.join(format!(".config/greywall-agents/figcraft/instances/{}/config/documents.json", self.started_port(index)));
+        serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap()
     }
 }
 
@@ -192,6 +223,57 @@ fn figcraft_starts_with_its_files_limited_to_the_project() {
     assert_eq!(output.status.code(), Some(0), "{}{}", stdout(&output), stderr(&output));
     let started = craft.sandbox.calls("figcraft").pop().expect("not started");
     assert!(started.ends_with(&format!("--automation-read-root {0} --automation-write-root {0}", craft.project.display())), "{started}");
+}
+
+#[test]
+fn new_documents_use_the_project_name_including_parallel_clones() {
+    let craft = Craft::new();
+    let clone = craft.other_project(".parallel/opusline/parallel-1");
+    let custom_clone = craft.other_project("custom-clones/opusline/parallel-2");
+    let quoted_name = craft.other_project("a \"project\"");
+    for (index, project) in [&craft.project, &clone, &custom_clone, &quoted_name].iter().enumerate() {
+        let clones = craft.sandbox.home.join("IdeaProjects/custom-clones");
+        let extra = if index == 2 { vec![("COCKPIT_CLONES", clones.to_str().unwrap())] } else { vec![] };
+        let output = craft.command(project, &["figcraft", "--workspace", "2"], &extra).output().unwrap();
+        assert!(output.status.success(), "{}{}", stdout(&output), stderr(&output));
+        assert_eq!(craft.documents(index)[0]["name"], if index == 3 { "a \"project\"" } else { "opusline" });
+    }
+}
+
+#[test]
+fn saved_recovered_or_renamed_documents_are_never_renamed() {
+    use serde_json::json;
+    for documents in [
+        json!([{"active":true,"dirty":false,"index":0,"name":"Saved design","path":"/saved.figcraft"}]),
+        json!([{"active":true,"dirty":false,"index":0,"name":"Untitled","path":"/saved.figcraft"}]),
+        json!([{"active":true,"dirty":true,"index":0,"name":"Untitled","path":null}]),
+        json!([{"active":true,"dirty":false,"index":0,"name":"My design","path":null}]),
+        json!([{"active":true,"dirty":false,"index":0,"name":"Untitled","path":null},
+               {"active":false,"dirty":true,"index":1,"name":"Recovered","path":null}]),
+    ] {
+        let craft = Craft::new();
+        let output = craft.run(&["figcraft", "--workspace", "2"], &[("SHIM_FIGCRAFT_DOCUMENTS", &documents.to_string())]);
+        assert!(output.status.success(), "{}{}", stdout(&output), stderr(&output));
+        assert_eq!(craft.documents(0), documents);
+    }
+}
+
+#[test]
+fn reopening_a_window_does_not_rename_its_document_again() {
+    let craft = Craft::new();
+    assert!(craft.run(&["figcraft", "--workspace", "2"], &[]).status.success());
+    let before = fs::read(craft.sandbox.home.join("figcraft-requests")).unwrap();
+    assert!(craft.run(&["figcraft", "--workspace", "3"], &[]).status.success());
+    assert_eq!(fs::read(craft.sandbox.home.join("figcraft-requests")).unwrap(), before);
+}
+
+#[test]
+fn a_failed_document_rename_is_reported_without_reconnecting_the_session() {
+    let craft = Craft::new();
+    let output = craft.run(&["figcraft", "--workspace", "2", "--session", SESSION_A], &[("SHIM_FIGCRAFT_RENAME_ERROR", "1")]);
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("fixture rename failed"), "{}", stderr(&output));
+    assert!(!craft.sandbox.state.join("cockpit/restart-when-idle").exists());
 }
 
 #[test]
