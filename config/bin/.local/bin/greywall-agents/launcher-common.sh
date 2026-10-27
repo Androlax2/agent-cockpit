@@ -109,6 +109,9 @@ greywall_options="$greywall_options --allow-path $test_lock_dir"
 export GOCACHE=/tmp/greywall-go-build
 export GOMODCACHE=/tmp/greywall-go-mod
 
+# Cargo must download and unpack crates without changing the host's read-only registry cache.
+export CARGO_HOME=/tmp/greywall-cargo
+
 # A folder's name the way Claude names its folder in ~/.claude/projects: every character but a
 # letter or a digit becomes "-".
 folder_slug() {

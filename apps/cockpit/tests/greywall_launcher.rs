@@ -453,6 +453,23 @@ fn without_a_host_git_identity_no_agent_gets_one() {
 }
 
 #[test]
+fn cargo_registry_cache_stays_in_the_sandbox_instead_of_the_host_home() {
+    for &agent in AGENTS.iter() {
+        for inherited_cache in ["", "/host/custom-cargo-home"] {
+            let launch = Launch::new();
+            let started = launch.run_agent(agent, &[("CARGO_HOME", inherited_cache)], &[]);
+            let environment = agent_environment(&launch, agent);
+            assert!(environment.lines().any(|line| line == "CARGO_HOME=/tmp/greywall-cargo"),
+                "{agent} did not redirect Cargo's writable registry (inherited {inherited_cache:?})");
+            assert!(!started.contains("--allow-path /tmp/greywall-cargo"), "{started}");
+            assert!(!started.contains("--allow-path /host/custom-cargo-home"), "{started}");
+            assert!(!started.contains(&format!("--allow-path {}", launch.sandbox.home.join(".cargo").display())), "{started}");
+            assert!(!launch.sandbox.home.join(".cargo/registry").exists());
+        }
+    }
+}
+
+#[test]
 fn go_module_cache_stays_in_the_sandbox_instead_of_the_host_gopath() {
     for &agent in AGENTS.iter() {
         for inherited_cache in ["", "/host/custom-go-mod-cache"] {
