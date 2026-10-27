@@ -8641,6 +8641,69 @@ fn an_enabled_chief_keeps_the_todo_queue_sending() {
     assert_eq!(fixture.wait_for_calls("cockpit", 2).len(), 2);
 }
 
+/// A host that refuses the reservation of `refused` with `refusal` and grants every other one.
+fn queue_host_refusing(fixture: &Fixture, refused: String, refusal: &'static str) -> HostRequests {
+    use std::io::{Read, Write};
+    let mut connection = rusqlite::Connection::open_in_memory().unwrap();
+    crate::chief::store::migrate(&mut connection).unwrap();
+    let requests = HostRequests::default();
+    let recorded = requests.clone();
+    fixture.serve(move |mut stream| {
+        let mut text = String::new();
+        let _ = stream.read_to_string(&mut text);
+        let request: Value = serde_json::from_str(&text).unwrap();
+        let result = match request["request"].as_str() {
+            Some("snapshot") => json!({"Ok": {"members": []}}),
+            Some("reserve_task") if request["task_id"] == refused.as_str() => json!({"Err": {"code": "conflict", "message": refusal}}),
+            Some("reserve_task") => {
+                let task = crate::teams::TaskKey { project: format!("path:{}", request["directory"].as_str().unwrap()), task_id: request["task_id"].as_str().unwrap().into() };
+                json!(crate::chief::store::reserve_legacy(&mut connection, &task, request["worker"].as_str(), 0).map(|token| json!({"reservation": token})))
+            },
+            Some("settle_reservation") => json!(crate::chief::store::settle_launch(&mut connection, request["token"].as_str().unwrap(),
+                request["expected_revision"].as_i64().unwrap(), request["outcome"].as_str().unwrap())),
+            _ => json!({"Ok": {"recorded": true}}),
+        };
+        recorded.lock().unwrap().push(request);
+        let _ = stream.write_all(json!({"request_id": "x", "result": result}).to_string().as_bytes());
+    });
+    requests
+}
+
+/// An idle session and two queued items of its project, the first ahead of the second.
+fn two_queued_items(fixture: &Fixture) -> (App, String, String) {
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "runway", "/r/runway", util::now_secs() - 600)]));
+    let mut app = fixture.app();
+    app.gaming = || false;
+    let first = app.todos.add("runway", "/r/runway", "stuck at the head of the queue");
+    app.todos.change_priority(&first, 1);
+    app.todos.toggle_queued(&first);
+    let second = app.todos.add("runway", "/r/runway", "next in the queue");
+    app.todos.toggle_queued(&second);
+    (app, first, second)
+}
+
+#[test]
+fn an_item_the_host_refuses_does_not_hold_back_the_next_queued_item() {
+    let fixture = Fixture::new();
+    let (mut app, first, second) = two_queued_items(&fixture);
+    queue_host_refusing(&fixture, first.clone(), "work already reserved by legacy: ses_gone");
+    app.dispatch_queue();
+    assert_eq!(app.todos.status_of(&first), "todo");
+    assert_eq!(app.todos.status_of(&second), "doing");
+    let log = fs::read_to_string(fixture.path("state/cockpit/log")).unwrap_or_default();
+    assert!(log.contains(&format!("queue: {first} not given to runway (")), "the refusal names the item and the session: {log}");
+}
+
+#[test]
+fn a_session_the_host_finds_not_ready_is_offered_no_further_item() {
+    let fixture = Fixture::new();
+    let (mut app, first, second) = two_queued_items(&fixture);
+    let requests = queue_host_refusing(&fixture, first.clone(), "automatic legacy admission is no longer ready: the session is not idle");
+    app.dispatch_queue();
+    assert_eq!(app.todos.status_of(&second), "todo");
+    assert_eq!(requests.lock().unwrap().iter().filter(|request| request["request"] == "reserve_task").count(), 1);
+}
+
 #[test]
 fn the_todo_queue_never_offers_work_to_the_chief_session() {
     let fixture = Fixture::new();

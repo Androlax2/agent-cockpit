@@ -1383,24 +1383,41 @@ impl App {
             .filter(|session| queue::block(session, &context, self.todos.busy(&session.session), prompts::count(&session.session) > 0).is_none())
             .collect();
         for session in idle {
-            let Some(entry) = self.next_queued(&session) else { continue };
+            self.give_queued_work(&session, now);
+        }
+    }
+
+    /// Gives the idle session the first of its project's queued items the host lets it take. A
+    /// refused item (still reserved, or another team's task) does not hold back the ones after it;
+    /// a refusal of the session itself ends the pass for it.
+    fn give_queued_work(&mut self, session: &Session, now: f64) {
+        for entry in queue::candidates(session, &self.todos, &self.reviews.issues(), &self.reviews.checkouts) {
             let (key, text) = match &entry {
                 Entry::Typed(item) => (item.id(), todo::prompt_of(&entry)),
                 Entry::Issue { issue, .. } => (issue.key(), todo::prompt_of(&entry)),
             };
-            let token=match queue::reserve_task(&session.cwd,&key,Some(&session.session),true) {Ok(token)=>token,Err(error)=>{util::log_event("WARN",&format!("queue: {error}"));continue;}};
+            let short_session = &session.session[..8.min(session.session.len())];
+            let token = match queue::reserve_task(&session.cwd, &key, Some(&session.session), true) {
+                Ok(token) => token,
+                Err(error) => {
+                    util::log_event("WARN", &format!("queue: {key} not given to {} ({short_session}): {error}", session.project));
+                    if error.starts_with(queue::SESSION_NOT_READY) { return; }
+                    continue;
+                }
+            };
             if let Err(error) = queue::launch_reserved(&token,&["say", &session.session, &todo::with_todo_note(&text, &key)],false) {
                 util::log_event("WARN", &format!("queue: cannot give {key} to {}: {error}", session.project));
-                continue;
+                return;
             }
             if !self.todos.set_status(&key, "doing", &session.session) {
                 self.message = format!("queue: sent {key}, but cannot save its status");
-                continue;
+                return;
             }
-            if let Err(error) = self.record_task_assignment(&entry, Some(&session)) { self.continuity_error = Some(error); }
-            util::log_event("INFO", &format!("queue: {key} given to {} ({}), idle for {} min", session.project,
-                                             &session.session[..8.min(session.session.len())], (now as i64 - session.since) / 60));
+            if let Err(error) = self.record_task_assignment(&entry, Some(session)) { self.continuity_error = Some(error); }
+            util::log_event("INFO", &format!("queue: {key} given to {} ({short_session}), idle for {} min", session.project,
+                                             (now as i64 - session.since) / 60));
             self.message = format!("queue: gave {} its next item", session.project);
+            return;
         }
     }
 
@@ -1466,13 +1483,6 @@ impl App {
                 "queued_by": item.queued_by(), "chief_requested": is_chief_requested}));
             self.message = format!("queue: started a session in {project} for handed work");
         }
-    }
-
-    /// The project's first queued item still to do: typed items of its project, issues of its
-    /// repository.
-    fn next_queued(&self, session: &Session) -> Option<Entry> {
-        queue::candidates(session, &self.todos, &self.reviews.issues(), &self.reviews.checkouts).into_iter()
-            .next()
     }
 
     /// Everything read again (sessions, usage, plan), then drawn.

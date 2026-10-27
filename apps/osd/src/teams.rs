@@ -540,7 +540,7 @@ pub fn host(registry: &mut Registry, peer: u32, request: cockpit::teams::HostReq
             };
             if automatic {
                 if let Err(reason) = crate::chief::legacy_auto_ready(registry,worker.as_deref(),&task.project,chief_request.is_some()) {
-                    return Err(TeamError::new(ErrorCode::Conflict,format!("automatic legacy admission is no longer ready: {reason}")));
+                    return Err(TeamError::new(ErrorCode::Conflict,format!("{}: {reason}", cockpit::queue::SESSION_NOT_READY)));
                 }
             }
             let todos = cockpit::todo::TodoList::load();

@@ -6,6 +6,9 @@ use std::{collections::{BTreeMap, HashSet}, fmt};
 /// Leave time to read a finished turn before giving an unwatched session more work.
 pub const QUEUE_IDLE_S: i64 = 300;
 pub const QUEUE_CHECK_S: f64 = 30.0;
+/// How the host starts refusing an automatic reservation because of the session (or, for a fresh
+/// session, the project), not the item: trying the next item would be refused the same way.
+pub const SESSION_NOT_READY: &str = "automatic legacy admission is no longer ready";
 
 pub struct QueueContext {
     pub now: i64,

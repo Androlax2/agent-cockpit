@@ -147,3 +147,65 @@ fn chief_host_cli_uses_host_socket_and_never_falls_back_to_agent_authority() {
     assert!(!child.wait_with_output().unwrap().status.success());
     assert_eq!(requests.lock().unwrap().len(), 1);
 }
+
+fn todo_item(task_id: &str, status: &str, session: &str) -> cockpit::todo::TodoList {
+    let mut todos = cockpit::todo::TodoList::default();
+    todos.items.push(cockpit::todo::Item(serde_json::json!({"id":task_id, "text":"queued work", "cwd":"/project-a",
+        "status":status, "session":session}).as_object().unwrap().clone()));
+    todos
+}
+
+/// The queue's launch to session b, settled as the column settles a delivered `say`.
+fn submitted_launch(connection: &mut Connection, task_id: &str, at: i64) -> String {
+    let token = store::reserve_legacy(connection, &task(task_id), Some(&session('b').session_id), at).unwrap();
+    connection.execute("UPDATE legacy_launches SET created_at=?2 WHERE token=?1", rusqlite::params![token, at]).unwrap();
+    for (revision, outcome) in [(1, "begin"), (2, "submitted")] { store::settle_launch(connection, &token, revision, outcome).unwrap(); }
+    token
+}
+
+#[test]
+fn a_todo_back_in_to_do_frees_the_launch_its_old_session_held() {
+    let (mut connection, _) = setup();
+    submitted_launch(&mut connection, "cccccccc", NOW);
+    store::reconcile_todos(&mut connection, &todo_item("cccccccc", "todo", &session('b').session_id), NOW + store::SUBMITTED_LAUNCH_GRACE_MS).unwrap();
+    store::reserve_legacy(&mut connection, &task("cccccccc"), Some(&session('c').session_id), NOW).unwrap();
+}
+
+#[test]
+fn a_launch_just_submitted_keeps_its_todo_until_the_queue_marks_it_in_progress() {
+    let (mut connection, _) = setup();
+    submitted_launch(&mut connection, "cccccccc", NOW);
+    store::reconcile_todos(&mut connection, &todo_item("cccccccc", "todo", ""), NOW + 1_000).unwrap();
+    assert!(store::reserve_legacy(&mut connection, &task("cccccccc"), Some(&session('c').session_id), NOW).is_err());
+}
+
+#[test]
+fn an_uncertain_launch_keeps_its_todo_reserved_for_the_host_to_settle() {
+    let (mut connection, _) = setup();
+    let token = store::reserve_legacy(&mut connection, &task("cccccccc"), Some(&session('b').session_id), NOW).unwrap();
+    store::settle_launch(&mut connection, &token, 1, "begin").unwrap();
+    store::settle_launch(&mut connection, &token, 2, "uncertain").unwrap();
+    store::reconcile_todos(&mut connection, &todo_item("cccccccc", "todo", ""), NOW + 10 * store::SUBMITTED_LAUNCH_GRACE_MS).unwrap();
+    assert!(store::reserve_legacy(&mut connection, &task("cccccccc"), Some(&session('c').session_id), NOW).is_err());
+}
+
+#[test]
+fn a_todo_that_was_in_progress_and_is_back_in_to_do_is_free_again() {
+    let (mut connection, _) = setup();
+    store::reconcile_todos(&mut connection, &todo_item("cccccccc", "doing", &session('b').session_id), NOW).unwrap();
+    store::reconcile_todos(&mut connection, &todo_item("cccccccc", "todo", &session('b').session_id), NOW).unwrap();
+    store::reserve_legacy(&mut connection, &task("cccccccc"), Some(&session('c').session_id), NOW).unwrap();
+}
+
+#[test]
+fn a_team_member_is_refused_another_tasks_todo_with_a_reason_that_says_so() {
+    let (connection, _) = setup();
+    let member = session('b');
+    let team_task = serde_json::to_string(&task("aaaaaaaa")).unwrap();
+    connection.execute("INSERT INTO teams VALUES (?1,'path:/project-a','aaaaaaaa',1)", [&team_task]).unwrap();
+    connection.execute("INSERT INTO members VALUES (?1,?2,'developer',?3,?4,'member-epoch',NULL)",
+        rusqlite::params![team_task, member.session_id, member.agent, member.runtime]).unwrap();
+    store::require_task_mapping(&connection, &member, &task("aaaaaaaa")).unwrap();
+    let refusal = store::require_task_mapping(&connection, &member, &task("cccccccc")).unwrap_err();
+    assert_eq!(refusal.message, "the session works in the team of another task");
+}

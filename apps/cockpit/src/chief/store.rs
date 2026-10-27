@@ -1797,7 +1797,10 @@ pub fn require_task_mapping(connection: &Connection, session: &VerifiedSession, 
     let member: Option<(String,String,String)> = connection.query_row("SELECT task_key,runtime,agent FROM members WHERE session_id=?1", [&session.session_id],
         |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?))).optional()?;
     if let Some((key,runtime,agent)) = member {
-        if serde_json::from_str::<crate::teams::TaskKey>(&key)? != *task || runtime != session.runtime || agent != session.agent { return Err(unauthorized()); }
+        if runtime != session.runtime || agent != session.agent { return Err(unauthorized()); }
+        if serde_json::from_str::<crate::teams::TaskKey>(&key)? != *task {
+            return Err(TeamError::new(ErrorCode::Unauthorized, "the session works in the team of another task"));
+        }
     }
     Ok(())
 }
@@ -1876,8 +1879,14 @@ pub fn release_manual(connection: &mut Connection, project: &str, task: &str, ex
     Ok(())
 }
 
-/// Observe todo status in the shared scheduling reservations.
-pub fn reconcile_todos(connection: &mut Connection, todos: &crate::todo::TodoList, _now_ms: i64) -> Result<(), TeamError> {
+/// How long a submitted launch keeps its todo reserved while the todo still reads To do: the queue
+/// marks the todo in progress right after the launch, so a todo still To do past this went back.
+pub const SUBMITTED_LAUNCH_GRACE_MS: i64 = 60_000;
+
+/// Observe todo status in the shared scheduling reservations. A todo back in To do (its session
+/// ended or gave it back) loses the reservation its old session held, or no session could ever
+/// take it again; a launch still in flight or uncertain keeps it.
+pub fn reconcile_todos(connection: &mut Connection, todos: &crate::todo::TodoList, now_ms: i64) -> Result<(), TeamError> {
     let transaction = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     for item in &todos.items {
         let project = format!("path:{}", item.cwd());
@@ -1889,6 +1898,10 @@ pub fn reconcile_todos(connection: &mut Connection, todos: &crate::todo::TodoLis
         } else if item.status() == "done" {
             crate::teams::store::release_completed_task(&transaction, Some(&project), &task)?;
             transaction.execute("DELETE FROM scheduling_reservations WHERE project=?1 AND task_id=?2 AND token NOT IN (SELECT token FROM legacy_launches WHERE state IN ('reserved','submitting','uncertain'))", params![project,task])?;
+        } else if item.status() == "todo" {
+            transaction.execute("DELETE FROM scheduling_reservations WHERE project=?1 AND task_id=?2 AND (owner='observed'
+                OR token IN (SELECT token FROM legacy_launches WHERE state='submitted' AND created_at<=?3))",
+                params![project,task,now_ms.saturating_sub(SUBMITTED_LAUNCH_GRACE_MS)])?;
         }
     }
     for (task, issue) in &todos.issues {
