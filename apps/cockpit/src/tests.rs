@@ -12359,3 +12359,70 @@ fn help_on_sessions_lists_capital_i() {
     let text = buffer_rows(&render(&mut app, 120, 80)).join("\n");
     assert!(text.contains("open the images from its latest reply"), "{text}");
 }
+
+/// Apart from the designed highlights in `highlights`, the cleared cells and the text cells of the
+/// area share one background: no boxes behind the text.
+fn assert_one_background(buffer: &Buffer, rows: std::ops::Range<u16>, columns: std::ops::Range<u16>, highlights: &[ratatui::style::Color]) {
+    let (mut text, mut blank) = (std::collections::BTreeSet::new(), std::collections::BTreeSet::new());
+    for row in rows { for column in columns.clone() {
+        let cell = &buffer[(column, row)];
+        if highlights.contains(&cell.bg) { continue; }
+        if cell.symbol().trim().is_empty() { blank.insert(format!("{:?}", cell.bg)); } else { text.insert(format!("{:?}", cell.bg)); }
+    }}
+    assert_eq!(text.len(), 1, "text backgrounds: {text:?}");
+    assert_eq!(text, blank, "text and cleared cells differ in background");
+}
+
+const DESIGNED_HIGHLIGHT: ratatui::style::Color = ratatui::style::Color::Indexed(crate::app::BG_HIGHLIGHT);
+
+#[test]
+fn the_new_session_form_has_one_background_behind_its_text() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    app.handle(Key::Char('N'), &mut FakeScreen::default());
+    let buffer = render(&mut app, 80, 30);
+    assert!(buffer_rows(&buffer).join("\n").contains("START FROM"));
+    assert_one_background(&buffer, 2..28, 2..78, &[DESIGNED_HIGHLIGHT]);
+}
+
+#[test]
+fn session_details_have_one_background_behind_their_text() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "project-a", "/r/project-a", 1)]));
+    let mut app = fixture.app();
+    app.handle(Key::Char('i'), &mut FakeScreen::default());
+    let buffer = render(&mut app, 80, 30);
+    assert!(buffer_rows(&buffer).iter().any(|row| row.contains('┌')), "details are open");
+    assert_one_background(&buffer, 2..28, 2..78, &[DESIGNED_HIGHLIGHT]);
+}
+
+#[test]
+fn help_has_one_background_behind_its_text() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    app.handle(Key::Char('?'), &mut FakeScreen::default());
+    assert!(app.help_open);
+    assert_one_background(&render(&mut app, 80, 30), 2..28, 0..79, &[DESIGNED_HIGHLIGHT]);
+}
+
+#[test]
+fn the_team_view_has_one_background_behind_its_text() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    app.team_view = Some(crate::teams::view::TeamView::new(json!({})));
+    assert_one_background(&render(&mut app, 80, 30), 2..28, 2..78, &[DESIGNED_HIGHLIGHT]);
+}
+
+#[test]
+fn the_settings_menu_has_one_background_behind_its_text() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    app.handle(Key::Char('S'), &mut FakeScreen::default());
+    let buffer = render(&mut app, 80, 40);
+    let rows = buffer_rows(&buffer);
+    let top = rows.iter().position(|row| row.contains('╭')).expect("settings are open") as u16;
+    let bottom = rows.iter().position(|row| row.contains('╰')).expect("settings end") as u16;
+    let left = rows[top as usize].chars().position(|symbol| symbol == '╭').unwrap() as u16;
+    let right = rows[top as usize].chars().position(|symbol| symbol == '╮').unwrap() as u16;
+    assert_one_background(&buffer, top + 1..bottom, left + 1..right, &[DESIGNED_HIGHLIGHT]);
+}

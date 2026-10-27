@@ -443,7 +443,7 @@ impl SessionDetails {
         let rows = self.rows(body_width);
         self.scroll = self.scroll.min(rows.len().saturating_sub(body_height));
         for row in top..=bottom {
-            put(buffer, row, 1, &" ".repeat((width - 2) as usize), on(FG, BLACK));
+            put(buffer, row, 1, &" ".repeat((width - 2) as usize), style(FG));
             put(buffer, row, 1, "│", style(BLUE));
             put(buffer, row, width - 2, "│", style(BLUE));
         }
@@ -4230,7 +4230,7 @@ impl App {
         let box_height = height.saturating_sub(HEADER_LINES + 1);
         let last = HEADER_LINES + box_height.saturating_sub(1);
         for line in 0..box_height {
-            put(buffer, HEADER_LINES + line, 0, &" ".repeat(width.saturating_sub(1) as usize), on(FG, BLACK));
+            put(buffer, HEADER_LINES + line, 0, &" ".repeat(width.saturating_sub(1) as usize), style(FG));
         }
         let key_width = sections.iter().flat_map(|(_, entries)| entries.iter()).map(|(key, _)| width_of(key)).max().unwrap_or(1) as u16 + 2;
         let label_width = width.saturating_sub(key_width + 5) as usize;
@@ -5106,7 +5106,7 @@ fn draw_team_view(view: &crate::teams::view::TeamView, buffer: &mut Buffer) {
     let inner = width.saturating_sub(4) as usize;
     let body = inner.saturating_sub(2).max(2);
     for row in top..=bottom {
-        put(buffer, row, 1, &" ".repeat((width - 2) as usize), on(FG, BLACK));
+        put(buffer, row, 1, &" ".repeat((width - 2) as usize), style(FG));
         put(buffer, row, 1, "│", style(BLUE));
         put(buffer, row, width - 2, "│", style(BLUE));
     }
