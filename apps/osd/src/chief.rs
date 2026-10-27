@@ -153,6 +153,24 @@ pub(crate) fn workers_among(registry: &mut Registry, live: Vec<VerifiedSession>,
     Ok(workers)
 }
 
+/// The active grant's epoch when the report-socket sender is the verified chief runtime. Any doubt
+/// (no store, no unique live session, a store error) means no chief: the ordinary limits apply.
+pub(crate) fn active_epoch_of(registry: &mut Registry, peer: u32) -> Option<String> {
+    if registry.teams.is_none() && !cockpit::paths::team_database().is_file() { return None; }
+    let result = teams::live_sessions(registry).and_then(|live| {
+        let sender = teams::verified_sender(registry, peer, &live)?;
+        store::active_epoch(registry.teams.as_ref().expect("live_sessions opens the protected store"), &sender)
+    });
+    match result {
+        Ok(epoch) => epoch,
+        Err(error) if error.code == ErrorCode::Unauthorized => None,
+        Err(error) => {
+            crate::registry::log(&format!("chief grant lookup for a todo filing failed, ordinary limits apply: {}", error.message));
+            None
+        },
+    }
+}
+
 pub fn request(registry: &mut Registry, peer: u32, request: ChiefAgentAction) -> Result<TeamReply, TeamError> {
     let live = workers(registry)?;
     let sessions = live.iter().map(|worker| worker.session.clone()).collect::<Vec<_>>();

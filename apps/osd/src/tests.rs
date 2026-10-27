@@ -4070,7 +4070,7 @@ fn concurrent_host_approvals_and_filings_survive_queue_extraction() {
                 if writer < 2 {
                     cockpit::todo_requests::approve(&format!("{index:012x}")).unwrap();
                 } else {
-                    queue_todo_update(&json!({"action": "add", "text": format!("ordinary {index}"), "notes": notes}).to_string(), &folder).unwrap();
+                    queue_todo_update(&json!({"action": "add", "text": format!("ordinary {index}"), "notes": notes}).to_string(), &folder, None).unwrap();
                 }
             }
         }));

@@ -572,6 +572,61 @@ fn chief_resume_requires_the_original_runtime_and_replacement_requires_a_new_hos
     assert!(context(&mut bench, 10).unwrap().result.is_ok());
 }
 
+/// Files 12 adds in project-b through the report socket as `peer`; returns how many were saved
+/// and the reason the first refused one gave in its receipt.
+fn file_handoffs_in_project_b(bench: &mut Bench, peer: u32, forged: serde_json::Value) -> (usize, serde_json::Value) {
+    fs::create_dir_all(bench.fixture.root.join("home/IdeaProjects/project-b/.git")).unwrap();
+    let started_in = bench.world.borrow().sender_directories[&peer].clone();
+    let key = crate::registry::answers_key_of(Path::new(&started_in));
+    let mut todos = cockpit::todo::TodoList::load();
+    let mut saved = 0;
+    let mut refusal = serde_json::Value::Null;
+    for number in 0..12 {
+        let request_id = format!("{number:012x}");
+        let mut raw = json!({"action": "add", "project": "project-b", "text": format!("Chief work {number}"), "request_id": request_id});
+        raw.as_object_mut().unwrap().extend(forged.as_object().unwrap().clone());
+        bench.registry.request_from("todo-update", &raw.to_string(), peer).unwrap();
+        saved += todos.apply_updates();
+        let receipt = cockpit::util::read_json(&cockpit::approval::answers_dir(&key, "todos").join(format!("{request_id}.json"))).unwrap();
+        if receipt["outcome"] == "rejected" && refusal.is_null() { refusal = receipt; }
+    }
+    (saved, refusal)
+}
+
+#[test]
+fn the_active_chief_may_keep_ten_filings_open_in_another_project() {
+    let mut bench = team_bench();
+    enable(&mut bench, SESSION_A);
+    let (saved, refusal) = file_handoffs_in_project_b(&mut bench, 10, json!({}));
+    assert_eq!(saved, 10);
+    assert!(refusal["reason"].as_str().unwrap().ends_with("10 already open"), "{refusal}");
+    assert_eq!(refusal["can_approve"], true);
+}
+
+#[test]
+fn another_session_of_the_chiefs_project_keeps_three_even_naming_the_epoch() {
+    let mut bench = team_bench();
+    let epoch = enable(&mut bench, SESSION_A)["epoch"].clone();
+    let (saved, refusal) = file_handoffs_in_project_b(&mut bench, 30, json!({"chief_epoch": epoch}));
+    assert_eq!(saved, 3);
+    assert!(refusal["reason"].as_str().unwrap().ends_with("3 already open"), "{refusal}");
+    assert_eq!(refusal["can_approve"], true);
+}
+
+#[test]
+fn a_paused_chief_keeps_three_filings_open_in_another_project() {
+    let mut bench = team_bench();
+    let epoch = enable(&mut bench, SESSION_A)["epoch"].as_str().unwrap().to_string();
+    crate::teams::host(&mut bench.registry, std::process::id(), HostRequest::Chief { action: ChiefHostAction::Pause { request_id: "pause".into(), expected_epoch: epoch } }).unwrap().result.unwrap();
+    assert_eq!(file_handoffs_in_project_b(&mut bench, 10, json!({})).0, 3);
+}
+
+#[test]
+fn a_session_without_a_chief_store_keeps_three_filings_open_in_another_project() {
+    let mut bench = team_bench();
+    assert_eq!(file_handoffs_in_project_b(&mut bench, 10, json!({"chief_epoch": "forged"})).0, 3);
+}
+
 #[test]
 fn chief_agent_wire_rejects_forged_identity_role_and_approval_fields() {
     for extra in ["sender", "runtime", "role", "approval_hash"] {

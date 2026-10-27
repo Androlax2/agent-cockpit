@@ -58,6 +58,9 @@ const DONE_KEPT_DAYS: i64 = 7;
 /// Open items one project files in another project's list (claude-todo stack,
 /// claude-todo propose --project).
 const ELSEWHERE_OPEN_MAX: usize = 3;
+/// The cap for add/propose --project from the active Chief: the daemon stamps `chief_epoch` only
+/// after verifying the sender holds the active grant, so another session of its project keeps 3.
+const CHIEF_ELSEWHERE_OPEN_MAX: usize = 10;
 /// Updates read per apply: the rest of a flood is dropped, and logged.
 const APPLY_MAX_LINES: usize = 200;
 
@@ -99,6 +102,10 @@ fn normalized(title: &str) -> String {
 
 /// The repositories of the sandbox stack, each with its own list (claude-todo stack <repo>).
 pub const STACK_REPOS: [&str; 2] = ["greywall", "greyproxy"];
+
+fn elsewhere_open_max(update: &Map<String, Value>) -> usize {
+    if update.get("chief_epoch").and_then(Value::as_str).is_some_and(|epoch| !epoch.is_empty()) { CHIEF_ELSEWHERE_OPEN_MAX } else { ELSEWHERE_OPEN_MAX }
+}
 
 fn stack_checkout(repo: &str) -> Option<std::path::PathBuf> {
     match repo {
@@ -1035,7 +1042,7 @@ impl TodoList {
         if !checkout.is_dir() {
             return Err(format!("{repo} report from {reporter} refused: no {repo} checkout at {}", checkout.display()));
         }
-        self.file_proposal_in(&checkout, update, session, started_in, reporter, "stack.proposed", None)
+        self.file_proposal_in(&checkout, update, session, started_in, reporter, "stack.proposed", None, ELSEWHERE_OPEN_MAX)
     }
 
     /// A proposal for another project (claude-todo propose --project <name>): it lands as Proposed in
@@ -1044,7 +1051,7 @@ impl TodoList {
     fn file_proposal_for(&mut self, target: &str, update: &Map<String, Value>, session: &str, started_in: &str, reporter: &str) -> Result<(), String> {
         let checkout = project_checkout(target)
             .ok_or_else(|| format!("proposal from {reporter} refused: no project checkout named {:?}", target.chars().take(60).collect::<String>()))?;
-        self.file_proposal_in(&checkout, update, session, started_in, reporter, "proposal.elsewhere", None)
+        self.file_proposal_in(&checkout, update, session, started_in, reporter, "proposal.elsewhere", None, elsewhere_open_max(update))
     }
 
     /// Work for another project (claude-todo add --project): To do and queued in its list, or, while
@@ -1054,7 +1061,7 @@ impl TodoList {
         let checkout = project_checkout(target)
             .ok_or_else(|| format!("add from {reporter} refused: no project checkout named {:?}", target.chars().take(60).collect::<String>()))?;
         let label = format!("{reporter}→{}", project_name(&checkout.to_string_lossy()));
-        self.file_proposal_in(&checkout, update, session, started_in, reporter, "link.filed", Some(label))
+        self.file_proposal_in(&checkout, update, session, started_in, reporter, "link.filed", Some(label), elsewhere_open_max(update))
     }
 
     /// The items an update names in "after": typed ids of any project, at most five. Those not
@@ -1126,7 +1133,7 @@ impl TodoList {
     /// Theo approves.
     #[allow(clippy::too_many_arguments)]
     fn file_proposal_in(&mut self, checkout: &std::path::Path, update: &Map<String, Value>, session: &str, started_in: &str, reporter: &str,
-                        audit_event: &str, link: Option<String>) -> Result<(), String> {
+                        audit_event: &str, link: Option<String>, open_max: usize) -> Result<(), String> {
         let is_direct = link.is_some();
         let category = match update.get("category") {
             None => None,
@@ -1155,8 +1162,8 @@ impl TodoList {
             return Ok(());
         }
         let is_approved = is_direct && crate::todo_requests::is_approved(update);
-        if !is_approved && open_reports.len() >= ELSEWHERE_OPEN_MAX {
-            return Err(format!("proposal from {reporter} for {project} dropped: {ELSEWHERE_OPEN_MAX} already open"));
+        if !is_approved && open_reports.len() >= open_max {
+            return Err(format!("proposal from {reporter} for {project} dropped: {open_max} already open"));
         }
         let id = self.add_unsaved(&project, &checkout.to_string_lossy(), &title);
         if let Some(item) = self.items.iter_mut().find(|item| item.id() == id) {

@@ -77,7 +77,8 @@ const USAGE: &str = "    cockpit-todo list [--all]        the items of this dire
 
 Filing commands wait up to five seconds for a saved result. Rejections exit 1 with the reason.
 Unconfirmed requests exit 124: check cockpit-todo receipt <request-id>; do not file a duplicate.
-Blocker reports and cross-project filings allow three open items per reporting project; there is no daily limit.";
+Blocker reports and cross-project filings allow three open items per reporting project (ten for add/propose
+--project from the active Chief session); there is no daily limit.";
 
 fn todo_path() -> PathBuf {
     paths::cockpit_env("COCKPIT_TODO_PATH", "CLAUDE_TODO_PATH").map(PathBuf::from).unwrap_or_else(|_| paths::todo())

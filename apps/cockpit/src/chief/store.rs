@@ -286,6 +286,12 @@ pub fn runtime(connection: &Connection, session: &str) -> Result<Option<String>,
     Ok(if runtimes.len() == 1 { runtimes.into_iter().next() } else { None })
 }
 
+/// The epoch of the active grant held by exactly this verified session; paused or disabled grants have none.
+pub fn active_epoch(connection: &Connection, session: &VerifiedSession) -> Result<Option<String>, TeamError> {
+    Ok(connection.query_row("SELECT epoch FROM chief_grants WHERE session_id=?1 AND agent=?2 AND project=?3 AND runtime=?4 AND state='active'",
+        params![session.session_id, session.agent, session.project, session.runtime], |row| row.get(0)).optional()?)
+}
+
 pub fn worker_role(connection: &Connection, session: &VerifiedSession) -> Result<Option<crate::teams::Role>, TeamError> {
     let member: Option<String> = connection.query_row("SELECT m.role FROM members m JOIN teams t ON t.task_key=m.task_key WHERE m.session_id=?1 AND m.runtime=?2 AND m.agent=?3 AND t.project=?4",
         params![session.session_id,session.runtime,session.agent,session.project], |row| row.get(0)).optional()?;

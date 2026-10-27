@@ -105,7 +105,7 @@ pub fn finish(request: &Value, outcome: &str, item: Option<&crate::todo::Item>, 
     if outcome != "accepted" && util::read_json(&path).is_some_and(|receipt| receipt["outcome"] == "accepted") { return; }
     let state = item.map(|item| if queued { "queued" } else if !item.after().is_empty() { "waiting" } else { "saved" });
     let can_approve = outcome == "rejected" && fields.get("action").and_then(Value::as_str) == Some("add")
-        && fields.get("project").and_then(Value::as_str).is_some() && reason.ends_with("3 already open");
+        && fields.get("project").and_then(Value::as_str).is_some() && reason.ends_with(" already open");
     let receipt = json!({"request_id": id, "outcome": outcome, "id": item.map(|item| item.id()),
                          "project": item.map(|item| item.project()).or_else(|| fields.get("project").and_then(Value::as_str).map(str::to_string)),
                           "state": state, "status": item.map(|item| item.status()), "reason": reason, "can_approve": can_approve});

@@ -485,7 +485,8 @@ const TODO_UPDATE_MAX_BYTES: usize = 65_536;
 /// (cockpit::todo::Todo::apply_updates) in the runtime directory, where no sandbox reaches, with the
 /// folder its sandbox started in: that folder, never one the update names, decides the project
 /// (security audit 2026-10-19, M4). The queue has a size cap: a session cannot flood the list.
-pub fn queue_todo_update(raw: &str, started_in: &str) -> Result<(), String> {
+/// `chief_epoch` is the active grant the daemon verified for the sender, never one the update names.
+pub fn queue_todo_update(raw: &str, started_in: &str, chief_epoch: Option<&str>) -> Result<(), String> {
     if raw.len() > TODO_UPDATE_MAX_BYTES {
         return Err(format!("longer than {TODO_UPDATE_MAX_BYTES} bytes"));
     }
@@ -493,6 +494,10 @@ pub fn queue_todo_update(raw: &str, started_in: &str) -> Result<(), String> {
         Ok(Value::Object(update)) => update,
         _ => return Err("not a JSON object".into()),
     };
+    update.remove("chief_epoch");
+    if let Some(epoch) = chief_epoch {
+        update.insert("chief_epoch".into(), json!(epoch));
+    }
     if matches!(update.get("action").and_then(Value::as_str), Some("add" | "propose")) {
         if let Some(target) = update.get("project").and_then(Value::as_str) {
             if cockpit::todo::project_checkout(target).is_none() {
@@ -1251,7 +1256,8 @@ impl Registry {
     fn take_request(&mut self, kind: &str, raw: &str, started_in: &str, sender: u32) -> Result<(), String> {
         let started_in = started_in.to_string();
         if kind == "todo-update" {
-            return queue_todo_update(raw, &started_in);
+            let chief_epoch = crate::chief::active_epoch_of(self, sender);
+            return queue_todo_update(raw, &started_in, chief_epoch.as_deref());
         }
         if self.waiting_from(&started_in) >= WAITING_PER_FOLDER_MAX {
             return Err(format!("{WAITING_PER_FOLDER_MAX} requests from this session's folder already wait for Theo"));
