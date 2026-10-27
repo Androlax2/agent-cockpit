@@ -1,9 +1,11 @@
 //! Images a session shows in its phone chat: an agent reply's line `![alt](path)` names a file in
 //! the session's folder. Only such a line, in a reply the phone's conversation window holds, makes
 //! a file readable, and only a PNG, JPEG, GIF or WebP inside that folder, at most IMAGE_MAX bytes.
+//! The column's `I` opens the latest reply's images under the same rules (latest_reply_images).
 
 use super::{conversation, session_row, text};
 use regex::Regex;
+use serde_json::Value;
 use std::fs::OpenOptions;
 use std::io::Read;
 use std::os::unix::fs::OpenOptionsExt;
@@ -39,6 +41,17 @@ pub fn shared_image(id: &str, message_id: &str, index: usize) -> Result<(&'stati
     let path = image_paths(reply["text"].as_str().unwrap_or("")).into_iter().nth(index).ok_or("this reply shows no such image")?;
     let row = session_row(id).ok_or("no such session")?;
     read_inside(Path::new(&text(&row, "cwd")), &path)
+}
+
+/// The images session `id`'s latest reply names (its assistant messages since the last question),
+/// each read from `folder` under the phone's rules: its path, then its type and bytes or why not.
+pub fn latest_reply_images(id: &str, folder: &str) -> Result<Vec<(String, Result<(&'static str, Vec<u8>), String>)>, String> {
+    let history = conversation(id)?;
+    let messages = history["messages"].as_array().cloned().unwrap_or_default();
+    let reply: Vec<&Value> = messages.iter().rev().skip_while(|message| message["role"] != "assistant")
+        .take_while(|message| message["role"] == "assistant").collect();
+    Ok(reply.into_iter().rev().flat_map(|message| image_paths(message["text"].as_str().unwrap_or("")))
+        .map(|path| { let image = read_inside(Path::new(folder), &path); (path, image) }).collect())
 }
 
 /// `path` (relative to `folder`, or absolute) when it resolves inside `folder` and is an image.

@@ -3407,7 +3407,7 @@ fn request_detail_popup_uses_the_complete_capture_not_the_card_summary() {
     let mut app = fixture.app();
     app.handle(Key::Char('i'), &mut FakeScreen::default());
     app.handle(Key::Char('G'), &mut FakeScreen::default());
-    let rendered = buffer_rows(&render(&mut app, 80, 20)).join("\n");
+    let rendered = buffer_rows(&render(&mut app, 80, 21)).join("\n");
     assert!(rendered.contains("COMPLETE_REQUEST_END"));
     assert!(fixture.calls("cockpit").is_empty());
 }
@@ -12250,4 +12250,112 @@ fn c_in_the_session_details_without_chief_answers_does_nothing() {
     app.handle(Key::Char('c'), &mut FakeScreen::default());
     let rendered = buffer_rows(&render(&mut app, 100, 40)).join("\n");
     assert!(rendered.contains("WHERE & WHO") && !rendered.contains("Answers ·"), "{rendered}");
+}
+
+// ---- Images from the latest reply (I) ----
+
+const PNG_BYTES: &[u8] = b"\x89PNG\r\n\x1a\nfirst";
+
+/// A session in `work/` whose transcript holds an older reply, a question, then `latest` (split
+/// in two records around a tool call, as Claude writes a turn).
+fn session_with_latest_reply(fixture: &Fixture, latest: &str) -> PathBuf {
+    let folder = fixture.path("work");
+    fs::create_dir_all(folder.join("previews")).unwrap();
+    fixture.snapshot(json!([session(SESSION_A, "waiting", "work", folder.to_str().unwrap(), 1)]));
+    let reply = |uuid: &str, text: &str| json!({"type": "assistant", "uuid": uuid, "message": {"content": [{"type": "text", "text": text}]}}).to_string();
+    let lines = [
+        reply("r1", "Older:\n![Old](previews/old.png)"),
+        json!({"type": "user", "uuid": "u1", "message": {"content": "show me"}}).to_string(),
+        reply("r2", "First part"),
+        json!({"type": "user", "uuid": "t1", "message": {"content": [{"type": "tool_result", "content": "ok"}]}}).to_string(),
+        reply("r3", latest),
+    ];
+    fixture.write(&format!("home/.claude/projects/p/{SESSION_A}.jsonl"), &(lines.join("\n") + "\n"));
+    folder
+}
+
+fn viewer_calls(fixture: &Fixture) -> Vec<String> {
+    fixture.calls("hyprctl").into_iter().filter(|call| call.contains("loupe")).collect()
+}
+
+#[test]
+fn capital_i_opens_the_latest_replys_images_in_one_floating_viewer_on_workspace_6() {
+    let fixture = Fixture::new();
+    let folder = session_with_latest_reply(&fixture, "Here:\n![Inbox](previews/a.png)\n![More](previews/b.png)");
+    fs::write(folder.join("previews/old.png"), PNG_BYTES).unwrap();
+    fs::write(folder.join("previews/a.png"), PNG_BYTES).unwrap();
+    fs::write(folder.join("previews/b.png"), b"\xff\xd8\xffsecond").unwrap();
+    let mut app = fixture.app();
+    app.handle(Key::Char('I'), &mut FakeScreen::default());
+    let calls = viewer_calls(&fixture);
+    assert_eq!(calls.len(), 1, "{calls:?} {}", app.message);
+    let first = regex::Regex::new(r#"hl\.exec_cmd\("loupe (/[^"]+/01\.png)", \{ workspace = "6", float = true \}\)"#).unwrap()
+        .captures(&calls[0]).unwrap_or_else(|| panic!("{}", calls[0]))[1].to_string();
+    let copies = Path::new(&first).parent().unwrap();
+    assert!(copies.starts_with(fixture.path("run")), "{first}");
+    assert_eq!(fs::metadata(copies).unwrap().permissions().mode() & 0o777, 0o700);
+    let mut names: Vec<String> = fs::read_dir(copies).unwrap().map(|entry| entry.unwrap().file_name().into_string().unwrap()).collect();
+    names.sort();
+    assert_eq!(names, ["01.png", "02.jpg"]);
+    assert_eq!(fs::read(copies.join("01.png")).unwrap(), PNG_BYTES);
+    assert_eq!(app.message, "opening 2 images from work");
+}
+
+#[test]
+fn capital_i_says_so_when_the_latest_reply_shows_no_image() {
+    let fixture = Fixture::new();
+    session_with_latest_reply(&fixture, "Nothing to see, only `![code](x.png)` inline");
+    let mut app = fixture.app();
+    app.handle(Key::Char('I'), &mut FakeScreen::default());
+    assert_eq!(app.message, "No images in its latest reply.");
+    assert!(viewer_calls(&fixture).is_empty());
+}
+
+#[test]
+fn capital_i_refuses_images_outside_the_session_folder_symlinked_out_or_not_raster() {
+    let fixture = Fixture::new();
+    let folder = session_with_latest_reply(&fixture, "![Escape](../secret.png)\n![Link](previews/link.png)\n![Fake](previews/fake.png)");
+    fs::write(fixture.path("secret.png"), PNG_BYTES).unwrap();
+    std::os::unix::fs::symlink(fixture.path("secret.png"), folder.join("previews/link.png")).unwrap();
+    fs::write(folder.join("previews/fake.png"), "<svg/>").unwrap();
+    let mut app = fixture.app();
+    app.handle(Key::Char('I'), &mut FakeScreen::default());
+    assert!(viewer_calls(&fixture).is_empty(), "{:?}", viewer_calls(&fixture));
+    assert_eq!(app.message, "../secret.png is outside the session's folder; previews/link.png is outside the session's folder; \
+        previews/fake.png is not a PNG, JPEG, GIF or WebP image");
+}
+
+#[test]
+fn capital_i_opens_what_it_may_and_names_what_it_refused() {
+    let fixture = Fixture::new();
+    let folder = session_with_latest_reply(&fixture, "![Escape](../secret.png)\n![Ok](previews/a.png)");
+    fs::write(fixture.path("secret.png"), PNG_BYTES).unwrap();
+    fs::write(folder.join("previews/a.png"), PNG_BYTES).unwrap();
+    let mut app = fixture.app();
+    app.handle(Key::Char('I'), &mut FakeScreen::default());
+    assert_eq!(viewer_calls(&fixture).len(), 1);
+    assert_eq!(app.message, "opening 1 image from work; ../secret.png is outside the session's folder");
+}
+
+#[test]
+fn capital_i_in_session_details_is_listed_and_opens_the_images() {
+    let fixture = Fixture::new();
+    let folder = session_with_latest_reply(&fixture, "![Inbox](previews/a.png)");
+    fs::write(folder.join("previews/a.png"), PNG_BYTES).unwrap();
+    let mut app = fixture.app();
+    app.handle(Key::Char('i'), &mut FakeScreen::default());
+    let rendered = buffer_rows(&render(&mut app, 100, 50)).join("\n");
+    assert!(rendered.contains("I  images"), "{rendered}");
+    app.handle(Key::Char('I'), &mut FakeScreen::default());
+    assert_eq!(viewer_calls(&fixture).len(), 1, "{}", app.message);
+}
+
+#[test]
+fn help_on_sessions_lists_capital_i() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    app.focus_panel(1);
+    app.handle(Key::Char('?'), &mut FakeScreen::default());
+    let text = buffer_rows(&render(&mut app, 120, 80)).join("\n");
+    assert!(text.contains("open the images from its latest reply"), "{text}");
 }

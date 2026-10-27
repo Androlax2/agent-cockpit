@@ -408,7 +408,7 @@ struct SessionDetails {
 const SESSION_DETAIL_KEYS: [(&str, &[(&str, &str)]); 3] = [
     ("WORK", &[("e", "effort"), ("$", "billing: subscription / API"), ("C", "/compact"), ("c", "Chief answers"), ("k", "links"), ("d", "drop queued"), ("u", "updates"), ("Q", "queue explanations"), ("v", "mark displayed updates reviewed")]),
     ("CODE", &[("g", "lazygit"), ("U", "push / apply"), ("+", "parallel clone"), ("o", "design canvas"), ("t", "task trail")]),
-    ("SESSION", &[("m", "remote control"), ("w", "my note"), ("z", "sleep"), ("R", "restart"), ("x", "end")]),
+    ("SESSION", &[("I", "images"), ("m", "remote control"), ("w", "my note"), ("z", "sleep"), ("R", "restart"), ("x", "end")]),
 ];
 
 enum DetailRow {
@@ -2802,6 +2802,7 @@ impl App {
     fn sessions_help() -> Vec<(&'static str, &'static str)> {
         vec![("⏎", "open the selected session"), ("n", "next session that needs you"),
              ("l", "later: hide this ask for 20 min (never approves)"), ("i", "details of the selected session"),
+             ("I", "open the images from its latest reply in a viewer"),
               ("N", "new session: blank or Claude Design canvas"), ("R", "restart the session"), ("x", "end the session"),
              ("p", "pin: first inside its group"), ("r", "on a blocked card: run the todo it waits on"), ("⌘R", "restart every session that lacks a change (⟳), once it waits"),
              ("B", "after a reboot: bring back the sessions that were running"),
@@ -2861,6 +2862,7 @@ impl App {
                 self.mark_result_seen(&s.session).unwrap_or(opened)
             }).unwrap_or_default(),
             Key::Char('i') => { self.open_session_details(); String::new() }
+            Key::Char('I') => session.map(|s| open_reply_images(&s)).unwrap_or_default(),
             Key::Char('c') => match session {
                 Some(s) => self.open_chief_answers(Some(&s.session)),
                 None => String::new(),
@@ -4998,6 +5000,65 @@ fn kill_session(session: &Session) -> String {
     let report = serde_json::json!({"session": session.session, "state": "gone", "project": session.project});
     let _ = Command::new("osd-show").arg(format!("session {report}")).status();
     format!("nothing to kill for {}: removed it from the list", session.project)
+}
+
+/// `I` on a card: the images its latest reply names, copied privately (the phone's rules: inside
+/// its folder, raster by their bytes, 10 MB) and opened in one floating loupe on workspace 6. The
+/// copies sit alone in a folder of their own, so loupe's arrows browse exactly them.
+fn open_reply_images(session: &Session) -> String {
+    let images = match remote::latest_reply_images(&session.session, &session.cwd) {
+        Ok(images) => images,
+        Err(error) => return error,
+    };
+    if images.is_empty() { return "No images in its latest reply.".into(); }
+    let refused: Vec<String> = images.iter().filter_map(|(_, image)| image.as_ref().err().cloned()).collect();
+    let readable: Vec<(&'static str, Vec<u8>)> = images.into_iter().filter_map(|(_, image)| image.ok()).collect();
+    if readable.is_empty() { return refused.join("; "); }
+    let first = match copy_privately(&readable) {
+        Ok(first) => first,
+        Err(error) => return format!("cannot copy the images: {error}"),
+    };
+    let first = first.to_string_lossy();
+    // The path reaches a shell through Hyprland's exec: only characters sh takes literally.
+    if !first.chars().all(|character| character.is_ascii_alphanumeric() || "/._-".contains(character)) {
+        return format!("cannot open {first:?} safely");
+    }
+    util::refresh_hyprland_instance();
+    let launch = format!("hl.exec_cmd(\"loupe {first}\", {{ workspace = \"6\", float = true }})");
+    let count = readable.len();
+    let opening = format!("opening {count} image{} from {}", if count == 1 { "" } else { "s" }, session.project);
+    match Command::new("hyprctl").args(["eval", &launch]).output() {
+        Ok(output) if output.status.success() && refused.is_empty() => opening,
+        Ok(output) if output.status.success() => format!("{opening}; {}", refused.join("; ")),
+        Ok(output) => {
+            let text = if output.stderr.is_empty() { output.stdout } else { output.stderr };
+            format!("hyprctl: {}", String::from_utf8_lossy(&text).trim().chars().take(60).collect::<String>())
+        }
+        Err(error) => format!("hyprctl: {error}"),
+    }
+}
+
+/// The images written as 01.png, 02.jpg… in a new 0700 folder under the runtime directory; the
+/// first one's path. Folders from earlier presses go after a day.
+fn copy_privately(images: &[(&'static str, Vec<u8>)]) -> io::Result<PathBuf> {
+    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+    let root = paths::runtime_dir().join("cockpit-images");
+    fs::DirBuilder::new().recursive(true).mode(0o700).create(&root)?;
+    for entry in fs::read_dir(&root)?.flatten() {
+        let is_old = entry.metadata().and_then(|metadata| metadata.modified())
+            .is_ok_and(|modified| modified.elapsed().is_ok_and(|age| age > Duration::from_secs(86_400)));
+        if is_old { let _ = fs::remove_dir_all(entry.path()); }
+    }
+    let folder = root.join(util::token_hex(8));
+    fs::DirBuilder::new().mode(0o700).create(&folder)?;
+    let mut paths = Vec::new();
+    for (index, (content_type, bytes)) in images.iter().enumerate() {
+        let extension = content_type.trim_start_matches("image/").replace("jpeg", "jpg");
+        let path = folder.join(format!("{:02}.{extension}", index + 1));
+        fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&path)?.write_all(bytes)?;
+        paths.push(path);
+    }
+    Ok(paths.swap_remove(0))
 }
 
 /// hyprctl eval of OPEN_IN_SCRATCHPAD (scratchpads.lua): a cockpit web window, on a page.
