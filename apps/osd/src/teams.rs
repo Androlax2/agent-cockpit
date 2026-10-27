@@ -14,6 +14,38 @@ pub(crate) fn now_ms() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|elapsed| elapsed.as_millis() as i64).unwrap_or(0)
 }
 
+/// The todo list with each item's cwd resolved to its canonical project, reread only when
+/// todo.json changes. Every team request and tick reconciles it: a full reload with its project
+/// lookups cost about 7 ms each, a few hundred times a minute.
+#[derive(Default)]
+pub(crate) struct ResolvedTodos {
+    stamp: Option<(i64, i64, i64, i64, u64, u64)>,
+    todos: cockpit::todo::TodoList,
+    pub(crate) loads: u64,
+}
+
+impl ResolvedTodos {
+    pub(crate) fn current(&mut self) -> &cockpit::todo::TodoList {
+        let stamp = fs::metadata(cockpit::paths::todo()).ok()
+            .map(|file| (file.mtime(), file.mtime_nsec(), file.ctime(), file.ctime_nsec(), file.len(), file.ino()));
+        if self.loads == 0 || stamp.is_none() || stamp != self.stamp {
+            self.todos = resolve_projects(cockpit::todo::TodoList::load());
+            self.stamp = stamp;
+            self.loads += 1;
+        }
+        &self.todos
+    }
+}
+
+fn resolve_projects(mut todos: cockpit::todo::TodoList) -> cockpit::todo::TodoList {
+    for item in &mut todos.items {
+        if let Ok(project) = canonical_project(&item.cwd()) {
+            item.0.insert("cwd".into(), json!(project.trim_start_matches("path:")));
+        }
+    }
+    todos
+}
+
 fn unauthorized() -> TeamError {
     TeamError::new(ErrorCode::Unauthorized, "this process is not a verified live cockpit session")
 }
@@ -71,13 +103,8 @@ pub(crate) fn live_sessions(registry: &mut Registry) -> Result<Vec<VerifiedSessi
         start_spawns(registry)?;
     }
     cockpit::chief::store::observe_resumed(registry.teams.as_ref().expect("opened above"), &live)?;
-    let mut todos = cockpit::todo::TodoList::load();
-    for item in &mut todos.items {
-        if let Ok(project) = canonical_project(&item.cwd()) {
-            item.0.insert("cwd".into(), json!(project.trim_start_matches("path:")));
-        }
-    }
-    cockpit::chief::store::reconcile_todos(registry.teams.as_mut().expect("opened above"), &todos, now_ms())?;
+    let todos = registry.resolved_todos.current();
+    cockpit::chief::store::reconcile_todos(registry.teams.as_mut().expect("opened above"), todos, now_ms())?;
     // A session the cockpit started for an approved team takes its role at its first verified request.
     let tokens: Vec<(String, VerifiedSession)> = live.iter().filter_map(|session| registry.sessions.get(&session.session_id)
         .filter(|entry| !entry.spawn_token.is_empty()).map(|entry| (entry.spawn_token.clone(), session.clone()))).collect();

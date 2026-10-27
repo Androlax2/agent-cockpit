@@ -219,6 +219,30 @@ fn team_bench() -> Bench {
     bench
 }
 
+fn reservations_of(bench: &Bench, task: &str) -> i64 {
+    bench.registry.teams.as_ref().unwrap()
+        .query_row("SELECT count(*) FROM scheduling_reservations WHERE task_id=?1", [task], |row| row.get(0)).unwrap()
+}
+
+#[test]
+fn team_requests_reuse_the_todo_list_while_todo_json_is_unchanged() {
+    let mut bench = team_bench();
+    crate::teams::live_sessions(&mut bench.registry).unwrap();
+    let loads = bench.registry.resolved_todos.loads;
+    for _ in 0..5 { crate::teams::request(&mut bench.registry, 10, cockpit::teams::AgentAction::Context).unwrap(); }
+    assert_eq!(bench.registry.resolved_todos.loads, loads);
+}
+
+#[test]
+fn a_changed_todo_json_is_reconciled_at_the_next_team_request() {
+    let mut bench = team_bench();
+    crate::teams::live_sessions(&mut bench.registry).unwrap();
+    assert_eq!(reservations_of(&bench, "1d3fd318"), 1);
+    fs::write(cockpit::paths::todo(), json!({"items":[{"id":"1d3fd318","project":"project-a","text":"Team task","status":"done"}]}).to_string()).unwrap();
+    crate::teams::request(&mut bench.registry, 10, cockpit::teams::AgentAction::Context).unwrap();
+    assert_eq!(reservations_of(&bench, "1d3fd318"), 0);
+}
+
 #[test]
 fn team_context_exposes_only_own_identity_before_link_approval() {
     let mut bench = team_bench();
