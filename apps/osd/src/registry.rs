@@ -1128,6 +1128,8 @@ pub struct Registry {
     pub(crate) resolved_todos: crate::teams::ResolvedTodos,
     /// How many live-session passes ran: the budget tests hold each request to its share.
     pub(crate) live_session_passes: u64,
+    /// Only Receive/NativeTelemetry polls may reuse this; authority-changing requests stay fresh.
+    pub(crate) live_session_cache: Option<(Instant, Vec<cockpit::teams::VerifiedSession>)>,
 }
 
 pub fn snapshot_path() -> PathBuf {
@@ -1155,7 +1157,7 @@ impl Registry {
         let mut registry = Registry { system, banners, sessions: BTreeMap::new(), held: BTreeMap::new(), runs: RunRequests::default(),
                                       guides: GuideRequests::default(), recent_written: (0.0, Vec::new()), project_cache: HashMap::new(), teams: None,
                                       chief_focus: None, chief_fault: None, chief_attention_presentations: HashMap::new(), chief_native: HashMap::new(), chief_telemetry: HashMap::new(),
-                                      chief_stop_failures: HashMap::new(), resolved_todos: Default::default(), live_session_passes: 0 };
+                                      chief_stop_failures: HashMap::new(), resolved_todos: Default::default(), live_session_passes: 0, live_session_cache: None };
         registry.load_snapshot();
         registry
     }
@@ -1366,6 +1368,7 @@ impl Registry {
     }
 
     pub fn update(&mut self, report: Report) {
+        self.live_session_cache = None;
         let session = report.session.clone();
         if report.state.as_deref() == Some("gone") {
             self.remove(&session);
@@ -1663,6 +1666,7 @@ impl Registry {
     }
 
     pub fn remove(&mut self, session: &str) {
+        self.live_session_cache = None;
         self.held.remove(session);
         let Some(entry) = self.sessions.remove(session) else { return };
         self.banners.drop_banner(session);
@@ -1713,6 +1717,7 @@ impl Registry {
     }
 
     pub fn publish(&mut self) {
+        self.live_session_cache = None;
         let path = snapshot_path();
         let _ = cockpit::util::write_json(&path, &json!({"sessions": self.snapshot_rows()}));
         self.remember_sessions();

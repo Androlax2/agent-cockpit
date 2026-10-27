@@ -8,7 +8,7 @@ use std::fs;
 use std::io::Read;
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub(crate) fn now_ms() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|elapsed| elapsed.as_millis() as i64).unwrap_or(0)
@@ -75,6 +75,7 @@ fn open_and_restore(registry: &mut Registry) -> Result<bool, TeamError> {
 }
 
 pub(crate) fn live_sessions(registry: &mut Registry) -> Result<Vec<VerifiedSession>, TeamError> {
+    registry.live_session_cache = None;
     registry.live_session_passes += 1;
     let is_opened = open_and_restore(registry)?;
     let rows: Vec<(String, String, String, String)> = registry.sessions.iter()
@@ -117,6 +118,21 @@ pub(crate) fn live_sessions(registry: &mut Registry) -> Result<Vec<VerifiedSessi
             crate::registry::log(&format!("team start for {} not bound: {error}", session.session_id));
         }
     }
+    Ok(live)
+}
+
+fn polled_live_sessions(registry: &mut Registry) -> Result<Vec<VerifiedSession>, TeamError> {
+    if registry.teams.is_some()
+        && let Some((checked_at, live)) = &registry.live_session_cache
+        && checked_at.elapsed() < Duration::from_secs(1) {
+        let live = live.clone();
+        // An inherited sleep-operation lock can end between polls; do not delay unpausing delivery.
+        reconcile_sleep(registry)?;
+        return Ok(live);
+    }
+    let checked_at = Instant::now();
+    let live = live_sessions(registry)?;
+    registry.live_session_cache = Some((checked_at, live.clone()));
     Ok(live)
 }
 
@@ -305,10 +321,12 @@ fn record(kind: &str, sender: Option<&VerifiedSession>, is_ok: bool) {
 }
 
 pub fn request(registry: &mut Registry, peer: u32, action: AgentAction) -> Result<TeamReply, TeamError> {
+    let is_poll = matches!(&action, AgentAction::Receive | AgentAction::NativeTelemetry { .. });
+    if !is_poll { registry.live_session_cache = None; }
     if let AgentAction::Chief { request } = action {
         return crate::chief::request(registry, peer, request);
     }
-    let live = live_sessions(registry)?;
+    let live = if is_poll { polled_live_sessions(registry)? } else { live_sessions(registry)? };
     let sender = match verified_sender(registry, peer, &live) {
         Ok(sender) => sender,
         Err(error) => {
@@ -505,6 +523,7 @@ pub fn host_snapshot(registry: &mut Registry) -> Result<Value, TeamError> {
 }
 
 pub fn host(registry: &mut Registry, peer: u32, request: cockpit::teams::HostRequest) -> Result<TeamReply, TeamError> {
+    registry.live_session_cache = None;
     if let cockpit::teams::HostRequest::PrepareSleep { session_id } = &request {
         if cockpit::agents::of_session_id(session_id).is_none() { return Err(unauthorized()); }
         verify_sleep_operation(peer, session_id)?;

@@ -257,6 +257,90 @@ fn each_polled_team_request_runs_one_live_session_pass() {
 }
 
 #[test]
+fn repeated_team_polls_reuse_one_live_session_pass() {
+    use cockpit::teams::AgentAction;
+    let mut bench = team_bench();
+    let passes = bench.registry.live_session_passes;
+    for sequence in 1..=5 {
+        crate::teams::request(&mut bench.registry, 10, AgentAction::Receive).unwrap();
+        crate::teams::request(&mut bench.registry, 20, AgentAction::NativeTelemetry { sequence, counts: None }).unwrap();
+    }
+    assert_eq!(bench.registry.live_session_passes - passes, 1);
+}
+
+#[test]
+fn team_poll_cache_expires_after_one_second() {
+    use cockpit::teams::AgentAction;
+    let mut bench = team_bench();
+    crate::teams::request(&mut bench.registry, 10, AgentAction::Receive).unwrap();
+    let passes = bench.registry.live_session_passes;
+    std::thread::sleep(std::time::Duration::from_millis(1050));
+    crate::teams::request(&mut bench.registry, 10, AgentAction::Receive).unwrap();
+    assert_eq!(bench.registry.live_session_passes - passes, 1);
+}
+
+#[test]
+fn a_session_report_invalidates_the_next_team_poll() {
+    use cockpit::teams::AgentAction;
+    let mut bench = team_bench();
+    crate::teams::request(&mut bench.registry, 10, AgentAction::Receive).unwrap();
+    let passes = bench.registry.live_session_passes;
+    bench.world.borrow_mut().sender_targets.insert(40, target(&[("tmux_pane", "%40")]));
+    bench.world.borrow_mut().sender_directories.insert(40, bench.registry.sessions[SESSION_A].cwd.clone());
+    bench.world.borrow_mut().sender_runtimes.insert(40, "runtime-40".into());
+    let report = parse_session(&json!({"session":SESSION_C,"project":"project-a","state":"waiting"}).to_string()).unwrap();
+    bench.registry.report_from(report, 40).unwrap();
+    crate::teams::request(&mut bench.registry, 40, AgentAction::Receive).unwrap();
+    crate::teams::request(&mut bench.registry, 40, AgentAction::Receive).unwrap();
+    assert_eq!(bench.registry.live_session_passes - passes, 1);
+}
+
+#[test]
+fn a_removed_session_cannot_receive_through_the_poll_cache() {
+    use cockpit::teams::{AgentAction, ErrorCode};
+    let mut bench = team_bench();
+    crate::teams::request(&mut bench.registry, 10, AgentAction::Receive).unwrap();
+    bench.registry.remove(SESSION_A);
+    assert_eq!(crate::teams::request(&mut bench.registry, 10, AgentAction::Receive).unwrap_err().code, ErrorCode::Unauthorized);
+}
+
+#[test]
+fn team_poll_cache_never_reuses_a_peers_runtime_proof() {
+    use cockpit::teams::{AgentAction, ErrorCode};
+    let mut bench = team_bench();
+    crate::teams::request(&mut bench.registry, 10, AgentAction::Receive).unwrap();
+    let passes = bench.registry.live_session_passes;
+    bench.world.borrow_mut().sender_runtimes.insert(10, "replacement-runtime".into());
+    assert_eq!(crate::teams::request(&mut bench.registry, 10, AgentAction::Receive).unwrap_err().code, ErrorCode::Unauthorized);
+    assert_eq!(bench.registry.live_session_passes, passes);
+}
+
+#[test]
+fn non_polling_team_requests_always_refresh_liveness() {
+    use cockpit::teams::AgentAction;
+    let mut bench = team_bench();
+    crate::teams::request(&mut bench.registry, 10, AgentAction::Receive).unwrap();
+    let passes = bench.registry.live_session_passes;
+    crate::teams::request(&mut bench.registry, 10, AgentAction::Context).unwrap();
+    assert_eq!(bench.registry.live_session_passes - passes, 1);
+    crate::teams::request(&mut bench.registry, 10, AgentAction::Receive).unwrap();
+    crate::teams::request(&mut bench.registry, 10, AgentAction::Receive).unwrap();
+    assert_eq!(bench.registry.live_session_passes - passes, 2);
+}
+
+#[test]
+fn host_requests_invalidate_the_next_team_poll() {
+    use cockpit::teams::{AgentAction, HostRequest};
+    let mut bench = team_bench();
+    crate::teams::request(&mut bench.registry, 10, AgentAction::Receive).unwrap();
+    crate::teams::host(&mut bench.registry, 0, HostRequest::Snapshot).unwrap();
+    let passes = bench.registry.live_session_passes;
+    crate::teams::request(&mut bench.registry, 10, AgentAction::Receive).unwrap();
+    crate::teams::request(&mut bench.registry, 10, AgentAction::Receive).unwrap();
+    assert_eq!(bench.registry.live_session_passes - passes, 1);
+}
+
+#[test]
 fn a_changed_todo_json_is_reconciled_at_the_next_team_request() {
     let mut bench = team_bench();
     crate::teams::live_sessions(&mut bench.registry).unwrap();
@@ -396,8 +480,15 @@ fn agent_team_proposals_remain_pending_until_the_host_approves_the_exact_mapping
     let pending = crate::teams::request(&mut bench.registry, 10, AgentAction::Propose {proposal}).unwrap().result.unwrap();
     let own = crate::teams::request(&mut bench.registry, 10, AgentAction::Context).unwrap().result.unwrap();
     assert!(own["members"].as_array().unwrap().is_empty());
+    crate::teams::request(&mut bench.registry, 10, AgentAction::Receive).unwrap();
+    let passes = bench.registry.live_session_passes;
     crate::teams::host_control(&mut bench.registry, &HostAction::Approve {request_id:"host-approval".into(),
         proposal_id:pending["proposal_id"].as_str().unwrap().into(),expected_revision:1,mapping_hash:pending["mapping_hash"].as_str().unwrap().into()}).unwrap();
+    assert_eq!(bench.registry.live_session_passes - passes, 1);
+    let passes = bench.registry.live_session_passes;
+    crate::teams::request(&mut bench.registry, 10, AgentAction::Receive).unwrap();
+    crate::teams::request(&mut bench.registry, 10, AgentAction::Receive).unwrap();
+    assert_eq!(bench.registry.live_session_passes - passes, 1);
     let own = crate::teams::request(&mut bench.registry, 10, AgentAction::Context).unwrap().result.unwrap();
     assert_eq!(own["members"].as_array().unwrap().len(), 2);
 }
