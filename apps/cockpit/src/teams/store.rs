@@ -644,7 +644,10 @@ pub(super) fn guard_sender_budget(connection: &Connection, sender: &str, now_ms:
         (SELECT count(*) FROM proposals WHERE sender=?1 AND created_at>?2) +
         (SELECT count(*) FROM link_proposals WHERE sender=?1 AND created_at>?2)",
         params![sender, now_ms.saturating_sub(60_000)], |row| row.get(0))?;
-    if recent >= 10 { return Err(TeamError::new(ErrorCode::Limit, "collaboration sender rate limit reached")); }
+    if recent >= 10 {
+        return Err(TeamError::new(ErrorCode::Limit,
+            "collaboration sender rate limit reached (10 new submissions per rolling minute); this submission was not accepted; wait 60 seconds, then retry with the same submission key and unchanged contents if authorization is still valid"));
+    }
     Ok(())
 }
 

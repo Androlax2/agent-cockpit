@@ -45,6 +45,13 @@ Purpose is one nonblank line, at most 1,000 characters; body is nonblank, at mos
 100 pending messages per exact TODO, and one recipient/runtime idle-turn gate.
 Each requester can have 10 pending proposals; each participant 10 active links.
 
+A sender-rate refusal means that submission was not accepted. Wait 60 seconds,
+then retry once with the same submission key and unchanged contents, provided
+the link and task are still authorized. The budget expires automatically; there
+is no manual reset. Do not switch sessions, links or routes to evade it. Accepted
+replays are free, but a successful submission is not proof that its recipient has
+received or reviewed it. A partial file transfer is not a completed review.
+
 ## Host controls
 
 Open `:` → `team`; existing team controls remain available.

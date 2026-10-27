@@ -804,6 +804,26 @@ fn link_proposal_limits_validate_keys_and_count_pending_requests() {
 }
 
 #[test]
+fn rate_limited_link_messages_can_resume_with_the_same_key_after_the_window() {
+    if isolated("rate_limited_link_messages_can_resume_with_the_same_key_after_the_window") { return; }
+    let (mut connection, _, live, proposal) = proposal_fixture();
+    let link = activate(&mut connection, &live[0], &proposal, &live);
+    // The proposal at 0 plus nine messages fill the shared sender budget.
+    for index in 1..=9 {
+        links::accept(&mut connection, &live[0], &note(&link, &format!("chunk-{index}")), &live, index * 1000).unwrap();
+    }
+    let unsent = note(&link, "unsent-chunk");
+    let error = links::accept(&mut connection, &live[0], &unsent, &live, 10_000).unwrap_err();
+    assert_eq!(error.code, ErrorCode::Limit);
+    assert!(error.message.contains("wait 60 seconds"), "{}", error.message);
+    assert!(error.message.contains("same submission key"), "{}", error.message);
+    assert_eq!(links::accept(&mut connection, &live[0], &unsent, &live, 59_999).unwrap_err().code, ErrorCode::Limit);
+    let accepted = links::accept(&mut connection, &live[0], &unsent, &live, 60_000).unwrap().result.unwrap();
+    assert_eq!(links::accept(&mut connection, &live[0], &unsent, &live, 60_000).unwrap().result.unwrap(), accepted);
+    assert_eq!(links::accept(&mut connection, &live[0], &note(&link, "next-chunk"), &live, 60_000).unwrap_err().code, ErrorCode::Limit);
+}
+
+#[test]
 fn link_and_team_traffic_share_one_sender_budget_and_replays_are_free() {
     if isolated("link_and_team_traffic_share_one_sender_budget_and_replays_are_free") { return; }
     let (mut connection, _, live, proposal) = proposal_fixture();
