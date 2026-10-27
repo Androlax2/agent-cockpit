@@ -11,6 +11,7 @@
 # 48cd9da rejects symlinked hooks-path ancestors before creating directories (#20).
 # 4a06012 keeps whole-checkout read-only startup free of Git and IDE/agent writes (#21).
 # 7173822 sends the in-sandbox DNS and proxy socat bridges' stderr to /dev/null (#22).
+# 7c06d51 moves Linux launch scripts and wrapper inputs out of oversized shell arguments (#23).
 #   make greywall-patch
 # Move the pins below to the next tip of that branch, or to an upstream release once it ships them.
 # Sessions started before the install keep the old mounts: restart them afterwards.
@@ -19,8 +20,8 @@ set -euo pipefail
 build_dir="${XDG_CACHE_HOME:-$HOME/.cache}/dotfiles-build/greywall"
 target="$HOME/.local/bin/greywall"
 
-greywall_commit=7173822d591b7d52ab740418bbdace6aa079f25e # branch dotfiles
-greywall_sha256=049892907449e1d8a89dfaa13f262e174d62a1080e663b036a716d3a10a3ff6c
+greywall_commit=7c06d51afd26cbc90a32c82375a393570c22ffc7 # branch dotfiles
+greywall_sha256=4fb512bcd02515af39d273953aabcf60c704827afb491a6f987ea6b8170067a1
 # The tun2socks greywall embeds, as its Makefile pins it (same file v0.3.7's release ships).
 tun2socks_url=https://github.com/xjasonlyu/tun2socks/releases/download/v2.5.2/tun2socks-linux-amd64.zip
 tun2socks_sha256=4aa7737009a9f06b9f4957c4fc12932ae0cd2039471d2ae4e5d4666ffeb40a2e
