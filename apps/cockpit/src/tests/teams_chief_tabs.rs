@@ -252,7 +252,7 @@ fn the_sessions_team_block_keeps_role_doing_now_and_age_and_points_to_teams() {
 }
 
 #[test]
-fn narrow_tabs_never_drop_an_amber_badge() {
+fn narrow_tabs_keep_amber_badges_after_everything_else_folds() {
     let fixture = Fixture::new();
     let mut state = team_state();
     state["chief_badge"] = json!({"state": "active", "needs_you": 3});

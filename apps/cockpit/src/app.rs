@@ -4274,6 +4274,7 @@ impl App {
     /// `1 Sessions 2  2 Todo 5  3 Ideas 3  4 Teams 1  5 Chief ●`: key caps and badges, the open tab
     /// on the selection background, its subtitle at the right when there is room. Too wide for the
     /// column, the inactive tabs fold to key cap and badge from the right; the open one never does.
+    /// Amber badges go last: only below about 24 cells, the farthest from the open tab first.
     fn draw_tabs(&mut self, buffer: &mut Buffer, row: u16, width: u16) {
         const NAMES: [&str; 5] = ["Sessions", "Todo", "Ideas", "Teams", "Chief"];
         let badges = self.tab_badges();
@@ -4298,7 +4299,7 @@ impl App {
         // The open tab never goes: past that, amber tabs give way, the farthest from it first.
         let open = TAB_PANELS.iter().position(|panel| *panel == self.focus);
         let mut by_distance: Vec<usize> = (0..5).filter(|index| Some(*index) != open).collect();
-        by_distance.sort_by_key(|index| std::cmp::Reverse(open.map_or(0, |open| index.abs_diff(open))));
+        by_distance.sort_by_key(|index| (std::cmp::Reverse(open.map_or(0, |open| index.abs_diff(open))), std::cmp::Reverse(*index)));
         for index in by_distance {
             if total(&shown) <= width { break; }
             shown[index] = 0;
