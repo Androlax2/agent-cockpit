@@ -61,7 +61,8 @@ impl Host {
                     if let Some(records)=changes.lock().unwrap().pop_front() {state.lock().unwrap()["records"]=json!(records);}
                     replies.lock().unwrap().pop_front().unwrap_or_else(||json!({"recorded":true}))
                 };
-            let result = if let Some(message)=result["error"].as_str() {Err(cockpit::teams::TeamError::new(cockpit::teams::ErrorCode::Storage,message))} else {Ok(result)};
+            let code = if result["code"]=="conflict" {cockpit::teams::ErrorCode::Conflict} else {cockpit::teams::ErrorCode::Storage};
+            let result = if let Some(message)=result["error"].as_str() {Err(cockpit::teams::TeamError::new(code,message))} else {Ok(result)};
             let reply = serde_json::to_value(cockpit::teams::TeamReply {request_id:"fixture".into(),result}).unwrap();
             stream.write_all(reply.to_string().as_bytes()).unwrap();
         });
@@ -1654,4 +1655,62 @@ fn a_narrow_column_wraps_the_card_and_keeps_its_keys() {
     app.handle(Key::Char('d'), &mut screen);
     let last = lines_of(&mut app, 40, 22).join("\n");
     assert!(last.contains("send") && last.contains("edit first"), "{last}");
+}
+
+#[test]
+fn the_sent_card_names_where_the_answer_went_when_it_was_the_last_question() {
+    let host = inbox_host(vec![inbox_question("decision-a", 3, Some("Go on."))]);
+    host.after_mutations.lock().unwrap().push_back(vec![]);
+    let (mut app, mut screen) = host.open();
+    keys(&mut app, &mut screen, &[Key::Char('a'), Key::Char('y')]);
+    let sent = rendered(&mut app, 100, 40);
+    assert!(sent.contains("✓ Sent to agent-cockpit › Persist Stadeo team"), "{sent}");
+}
+
+#[test]
+fn the_sent_card_names_the_answered_session_not_the_next_one() {
+    let mut other = inbox_question("decision-b", 2, Some("Allow it."));
+    other["session_id"] = json!("ses_otherSession000000000");
+    other["created_at_ms"] = json!(chrono::Utc::now().timestamp_millis() - 60_000);
+    let host = inbox_host(vec![inbox_question("decision-a", 3, Some("Go on.")), other.clone()]);
+    host.snapshot.lock().unwrap()["session_names"] = json!({SESSION: "Persist Stadeo team · agent-cockpit", "ses_otherSession000000000": "Game launcher · stray-coop"});
+    host.after_mutations.lock().unwrap().push_back(vec![other]);
+    let (mut app, mut screen) = host.open();
+    keys(&mut app, &mut screen, &[Key::Char('a'), Key::Char('y')]);
+    let sent = rendered(&mut app, 100, 40);
+    assert!(sent.contains("✓ Sent to agent-cockpit › Persist Stadeo team") && sent.contains("stray-coop › Game launcher"), "{sent}");
+}
+
+#[test]
+fn a_short_column_keeps_the_question_keys_and_says_there_is_more() {
+    let mut record = two_steps("decision-a");
+    record["situation"] = json!("The fix is in, but the agent can't finish its last check: osd won't restart while your Stadeo guide is open, so it waits for you to close it first.");
+    let host = inbox_host(vec![record]);
+    let (mut app, _) = host.open();
+    let card = lines_of(&mut app, 40, 18).join("\n");
+    assert!(card.contains("do this") && card.contains("write my own") && card.contains("more"), "{card}");
+}
+
+#[test]
+fn the_empty_card_shows_a_question_that_arrives_while_it_is_open() {
+    let host = inbox_host(vec![inbox_question("decision-a", 3, Some("Go on."))]);
+    host.after_mutations.lock().unwrap().push_back(vec![]);
+    let (mut app, mut screen) = host.open();
+    keys(&mut app, &mut screen, &[Key::Char('a'), Key::Char('y'), Key::Char('n')]);
+    assert!(rendered(&mut app, 100, 40).contains("Nothing needs you"));
+    app.handle(Key::Tab, &mut screen);
+    host.snapshot.lock().unwrap()["records"] = json!([inbox_question("decision-new", 1, Some("Retry."))]);
+    open_chief(&mut app, &mut screen);
+    let card = rendered(&mut app, 100, 40);
+    assert!(card.contains("! Chief needs you · 1 of 1") && card.contains("Retry."), "{card}");
+}
+
+#[test]
+fn a_definite_refusal_says_nothing_was_sent() {
+    let host = inbox_host(vec![inbox_question("decision-a", 3, Some("Go on."))]);
+    host.mutation_replies.lock().unwrap().push_back(json!({"error":"decision revision is stale or already answered","code":"conflict"}));
+    let (mut app, mut screen) = host.open();
+    keys(&mut app, &mut screen, &[Key::Char('a'), Key::Char('y')]);
+    let card = rendered(&mut app, 100, 40);
+    assert!(card.contains("decision revision is stale") && card.contains("Nothing was sent.") && !card.contains("may have arrived"), "{card}");
 }

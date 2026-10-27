@@ -109,7 +109,9 @@ impl Inbox {
 
     /// The host's view changed: a question answered elsewhere or changed sends Theo back to read.
     pub fn refresh(&mut self, snapshot: &Value, now_ms: i64) {
-        if matches!(self.stage,Stage::Sent {..}|Stage::Empty) {return;}
+        // "Nothing needs you" must not stay up once something does.
+        if self.stage==Stage::Empty {self.show_first(snapshot,now_ms);return;}
+        if matches!(self.stage,Stage::Sent {..}) {return;}
         match self.current(snapshot) {
             Some(record) if record["state"]=="open" && record["revision"].as_i64()==self.read_revision=>{},
             Some(record) if record["state"]=="open"=>{

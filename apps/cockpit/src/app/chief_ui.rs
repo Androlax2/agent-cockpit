@@ -46,9 +46,14 @@ impl App {
         match effect {
             Effect::InboxSend(action)=> {
                 let result=crate::teams::client::host_request(&HostRequest::Chief {action}).and_then(|reply|reply.result);
+                // Before the refresh: it moves past the answered question, and the card names where the answer went.
+                if result.is_ok() {self.chief_view.as_mut().expect("Chief is open").inbox_sent();}
                 self.refresh_chief_view();
-                let view=self.chief_view.as_mut().expect("Chief is open");
-                match result {Ok(_)=>view.inbox_sent(),Err(error)=>view.inbox_failed(&format!("Not sent: {}. It may have arrived; check before sending again.",error.message))}
+                if let Err(error)=result {
+                    let notice=if error.code==crate::teams::ErrorCode::Conflict {format!("Not sent: {}. Nothing was sent.",error.message)}
+                        else {format!("Not sent: {}. It may have arrived; check before sending again.",error.message)};
+                    self.chief_view.as_mut().expect("Chief is open").inbox_failed(&notice);
+                }
             },
             Effect::InboxLater(action)=> {
                 let result=crate::teams::client::host_request(&HostRequest::Chief {action}).and_then(|reply|reply.result);
@@ -210,7 +215,12 @@ fn draw_inbox(view: &mut ChiefView, buffer: &mut Buffer) {
     put(buffer,top,2,"‹ Chief",style(BLUE));
     let body=width.saturating_sub(6).max(8) as usize;
     let mut rows: Vec<Vec<(String,Style)>>=Vec::new();
-    for line in view.inbox_lines() {
+    let lines=view.inbox_lines();
+    // The card's own actions stay on screen; the text above them scrolls.
+    let pinned=lines.iter().rposition(|line|matches!(line,Line::Keys(_)));
+    let mut pinned_rows=0..0;
+    for (index,line) in lines.into_iter().enumerate() {
+        let before=rows.len();
         match line {
             Line::Blank=>rows.push(Vec::new()),
             Line::Text(segments) if segments.len()==1 && segments[0].1==Ink::Current=>{
@@ -237,17 +247,35 @@ fn draw_inbox(view: &mut ChiefView, buffer: &mut Buffer) {
                 if !row.is_empty() {rows.push(row);}
             },
         }
+        if Some(index)==pinned {pinned_rows=before..rows.len();}
     }
-    let available=height.saturating_sub(top+3) as usize;
+    let total=height.saturating_sub(top+3) as usize;
+    let mut body=rows;
+    let pinned_block: Vec<Vec<(String,Style)>>=body.drain(pinned_rows).collect();
+    let reserved=if pinned_block.is_empty() {0} else {pinned_block.len()+1};
+    let mut available=total.saturating_sub(reserved).max(1);
+    let overflows=body.len()>available;
+    if overflows {available=available.saturating_sub(1).max(1);}
     view.page_step=available.max(1).min(5);
-    let first=view.clamp_scroll(rows.len().saturating_sub(available));
-    for (offset,segments) in rows.iter().skip(first).take(available).enumerate() {
-        let row=top+2+offset as u16;let mut column=3u16;
+    let first=view.clamp_scroll(body.len().saturating_sub(available));
+    let draw_row=|buffer: &mut Buffer,row: u16,segments: &Vec<(String,Style)>| {
+        let mut column=3u16;
         for (text,appearance) in segments {
             let room=(width as usize).saturating_sub(column as usize+1);
             let shown=fit(text,room);
             put(buffer,row,column,&shown,*appearance);
             column+=width_of(&shown) as u16;
         }
+    };
+    for (offset,segments) in body.iter().skip(first).take(available).enumerate() {draw_row(buffer,top+2+offset as u16,segments);}
+    let mut row=top+2+available.min(body.len().saturating_sub(first)) as u16;
+    if overflows {
+        let below=body.len().saturating_sub(first+available);
+        put(buffer,row,3,if below>0 {"↓ more · PgDn"} else {"↑ more · PgUp"},dim(FG_DARK));
+        row+=1;
+    }
+    if !pinned_block.is_empty() {
+        row+=1;
+        for segments in &pinned_block {draw_row(buffer,row,segments);row+=1;}
     }
 }

@@ -187,7 +187,8 @@ function inboxShowFirst(notice = "") {
 }
 
 function openInbox(decision = null, stage = "question", opener = null) {
-  const record = decision && inboxQuestions().find(question => question.id === decision);
+  // An explicit tap opens that question even while it is put off.
+  const record = decision && chiefRecords("escalations").find(question => question.id === decision);
   if (record) inbox = { decision: record.id, revision: record.revision, stage, done: inbox?.done || {}, text: "", fromLast: false, sentTo: "", notice: "", armed: false };
   else inboxShowFirst();
   openChief("inbox", null, opener);
@@ -197,6 +198,7 @@ function inboxCurrent() { return chiefRecords("escalations").find(record => reco
 
 /// A question that changed or went away sends Theo back to read; nothing old is sent.
 function inboxCheck() {
+  if (inbox?.stage === "empty" && inboxQuestions().length) { inboxShowFirst(); return; }
   if (!inbox || ["sent", "empty"].includes(inbox.stage)) return;
   const current = inboxCurrent();
   if (!current) { delete inbox.done[inbox.decision]; inboxShowFirst("That question was answered or withdrawn elsewhere."); return; }
@@ -216,7 +218,7 @@ async function inboxPost(action, record, onSent) {
   await refreshChief(); renderSessionChief();
   if (result.ok) { onSent(); renderChief(); return; }
   // An uncertain outcome may have reached the agent: no second send of this question from here.
-  if (result.outcome_uncertain !== false) inbox.uncertain = inbox.decision;
+  if (action.action === "answer_decision" && result.outcome_uncertain !== false) inbox.uncertain = inbox.decision;
   inboxGo({ notice: result.outcome_uncertain === false ? `${result.message} Nothing was sent.` : `${result.message} It may have arrived; refresh and check before anything else.` });
 }
 
@@ -284,7 +286,8 @@ function renderInbox(box) {
     return;
   }
   if (!record) { card.append(element("p", "task", "This question is no longer available.")); return; }
-  inboxContext(card, record, Math.max(open.length, 1), Math.max(0, open.findIndex(question => question.id === record.id)));
+  const position = open.findIndex(question => question.id === record.id);
+  inboxContext(card, record, position < 0 ? open.length + 1 : open.length, position < 0 ? open.length : position);
   if (inbox.stage === "question") {
     card.append(element("p", "chief-heading", "What's going on"), element("p", "message-text", (record.situation || record.recommendation || "").trim()));
     if (steps.length) {

@@ -257,6 +257,37 @@ const tests = {
     assert.equal(page.server.posts.length, 0);
   },
 
+  async "a deferred question opened from its session shows that question, not another"() {
+    const chief = inboxChief();
+    chief.escalations[0].later_until_ms = Date.now() + 600000;
+    chief.escalations.push({ ...chief.escalations[0], id: "d2", session_id: "s2", question: "OTHER QUESTION", later_until_ms: null });
+    const page = await startPage({ sessions: SESSIONS, chief });
+    page.run('openSession("s1")'); await settle();
+    page.button(page.roots.detail, "Write my own answer").onclick(); await settle();
+    assert.equal(page.run("inbox.decision"), "d1");
+    assert.ok(page.roots.chief.textContent.includes("Your answer"));
+  },
+
+  async "the empty inbox shows a question that arrives while it is open"() {
+    const chief = inboxChief(); chief.escalations = [];
+    const page = await startPage({ sessions: SESSIONS, chief });
+    page.run('openInbox()'); await settle();
+    assert.ok(page.roots.chief.textContent.includes("Nothing needs you"));
+    page.server.chief.escalations = inboxChief().escalations;
+    await page.run("refresh()"); await settle();
+    assert.ok(page.roots.chief.textContent.includes("! Chief needs you · 1 of 1"));
+  },
+
+  async "an uncertain Later does not block answering the question"() {
+    const page = await startPage({ sessions: SESSIONS, chief: inboxChief() });
+    page.server.chiefPost = async () => ({ ok: false, status: 503, json: async () => ({ ok: false, message: "Host lost", outcome_uncertain: true }) });
+    page.run('openInbox()'); await settle();
+    await page.button(page.roots.chief, "Later").onclick(); await settle();
+    page.button(page.roots.chief, "Write my own").onclick(); await settle();
+    const input = page.roots.chief.querySelector(".chief-input"); input.value = "Done"; input.oninput();
+    assert.equal(page.button(page.roots.chief, "Send").disabled, false);
+  },
+
   async "Chief escalations are session scoped and submit the exact suggestion once"() {
     const chief = { status: "Active", counts: [], answers: [], habits: [], escalations: [
       { id: "d1", revision: 4, session_id: "s1", category: "security", question: "Rotate token?", recommendation: "Security needs you.", suggested_answer: "Rotate it." },
