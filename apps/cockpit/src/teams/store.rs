@@ -271,6 +271,10 @@ pub fn recruit(connection: &mut Connection, sender: &VerifiedSession, recruitmen
     if roles.iter().any(|role| occupied.iter().any(|taken| taken == role_name(*role))) {
         return Err(TeamError::new(ErrorCode::Conflict, "the team already has one of these roles; ask only for the missing ones"));
     }
+    if recruitment.recruits.iter().any(|recruit| recruit.role == Role::Qa) && has_qa_plan(&transaction, &task_key)? {
+        return Err(TeamError::new(ErrorCode::Conflict,
+            "this team already has its QA brief: a fresh QA starts at each cockpit-team handoff; do not recruit QA again"));
+    }
     let asker = Proposal { submission_key: recruitment.submission_key.clone(), task: recruitment.task.clone(), reason: recruitment.reason.clone(),
         members: vec![super::Member { session_id: sender.session_id.clone(), role: recruitment.role }] };
     let mapping = serde_json::to_string(&bind(&asker, live)?)?;
@@ -431,6 +435,10 @@ fn approve_mapping(transaction: &rusqlite::Transaction<'_>, proposal_id: &str, e
     Ok(json!({"proposal_id": proposal_id, "status": "approved"}))
 }
 
+fn has_qa_plan(connection: &Connection, task_key: &str) -> Result<bool, TeamError> {
+    Ok(connection.query_row("SELECT EXISTS(SELECT 1 FROM team_qa WHERE task_key=?1)", [task_key], |row| row.get(0))?)
+}
+
 /// Members, launches in progress and standing QA instructions all reserve their roles.
 fn recruit_roles_still_free(transaction: &Connection, proposal_id: &str, task_key: &str, bound: &[BoundMember]) -> Result<(), TeamError> {
     let recruits: String = transaction.query_row("SELECT recruits FROM proposals WHERE id=?1", [proposal_id], |row| row.get(0))?;
@@ -441,8 +449,7 @@ fn recruit_roles_still_free(transaction: &Connection, proposal_id: &str, task_ke
         let starting: i64 = transaction.query_row("SELECT count(*) FROM spawns WHERE task_key=?1 AND role=?2 AND status IN ('pending','started')",
             params![task_key, role_name(role)], |row| row.get(0))?;
         let is_existing_holder = except.is_some() && holder.as_deref() == except;
-        let standing_qa = role == Role::Qa
-            && transaction.query_row("SELECT EXISTS(SELECT 1 FROM team_qa WHERE task_key=?1)", [task_key], |row| row.get::<_, bool>(0))?;
+        let standing_qa = role == Role::Qa && has_qa_plan(transaction, task_key)?;
         Ok(!is_existing_holder && (holder.is_some() || starting > 0 || standing_qa))
     };
     let asker_taken = bound.iter().map(|member| taken(member.role, Some(&member.session_id))).collect::<Result<Vec<_>, _>>()?.into_iter().any(|is| is);
@@ -1029,14 +1036,16 @@ pub fn context(connection: &Connection, sender: &VerifiedSession) -> Result<Valu
         params![sender.session_id, sender.runtime, sender.agent], |row| row.get(0)).optional()?;
     let mut members = Vec::new();
     let mut task = Value::Null;
+    let mut qa_starts_at_handoff = false;
     if let Some(task_key) = task_key {
         task = serde_json::from_str(&task_key)?;
         let mut statement = connection.prepare("SELECT session_id, role, agent FROM members WHERE task_key=?1 ORDER BY role")?;
         members = statement.query_map([&task_key], |row| Ok(json!({"session_id": row.get::<_, String>(0)?, "role": row.get::<_, String>(1)?,
             "agent": row.get::<_, String>(2)?})))?.collect::<Result<Vec<_>, _>>()?;
+        qa_starts_at_handoff = has_qa_plan(connection, &task_key)?;
     }
     let mut context = json!({"session_id": sender.session_id, "agent": sender.agent, "project": sender.project, "task": task, "members": members,
-        "links": Value::Null, "authorization": "messages_never_authorize_tools_scope_or_git"});
+        "qa_starts_at_handoff": qa_starts_at_handoff, "links": Value::Null, "authorization": "messages_never_authorize_tools_scope_or_git"});
     // The daemon's terminating newline counts toward the client's wire-byte limit.
     let occupied = serde_json::to_vec(&TeamReply { request_id:"context".into(), result:Ok(context.clone()) })?.len() + b"\n".len() - "null".len();
     let mut links = super::links::context(connection, sender)?;

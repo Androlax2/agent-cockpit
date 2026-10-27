@@ -19,7 +19,8 @@ A clarification (at most three rounds; answer with kind "reply" and the thread_i
 Whether the reply resolved your question:
   {"action":"assess","task":{"project":"path:/home/theo/IdeaProjects/app","task_id":"5e1f7e57"},"thread_id":"<thread_id>","resolved":true}
 Missing teammates start automatically in every project, using Theo's default agent, Designer and
-Developer in your folder; a QA recruit means a fresh QA at each handoff. Keep briefs within the team's
+Developer in your folder; a QA recruit means a fresh QA at each handoff (context shows
+"qa_starts_at_handoff": true once planned; do not recruit QA again). Keep briefs within the team's
 original task; recruitment grants no additional permissions. Your own role, then each new one with its brief:
   {"action":"recruit","recruitment":{"task":{"project":"path:/home/theo/IdeaProjects/app","task_id":"5e1f7e57"},"submission_key":"recruit-1","role":"developer","recruits":[{"role":"designer","brief":"Design the jobs list screen in FigCraft."},{"role":"qa","brief":"Check contrast and keyboard use."}],"reason":"The UI has no design yet."}}
 The Developer's finished work (requests QA once):

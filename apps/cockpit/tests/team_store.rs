@@ -1459,6 +1459,25 @@ fn recruitment_cannot_overwrite_the_teams_standing_qa() {
 }
 
 #[test]
+fn a_second_qa_recruit_is_told_that_qa_starts_at_handoff() {
+    let sandbox = Sandbox::new();
+    let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+    recruit(&mut connection, 1, &recruitment("qa1", Role::Developer, &[(Role::Qa, "Review this task")]), "claude").unwrap();
+    let error = recruit(&mut connection, 1, &recruitment("qa2", Role::Developer, &[(Role::Qa, "Review this task")]), "claude").unwrap_err();
+    assert!(error.message.contains("starts at each cockpit-team handoff"), "{}", error.message);
+}
+
+#[test]
+fn context_shows_that_qa_starts_at_handoff_only_when_planned() {
+    let sandbox = Sandbox::new();
+    let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+    recruit(&mut connection, 1, &recruitment("design", Role::Developer, &[(Role::Designer, "Design it")]), "claude").unwrap();
+    assert_eq!(store::context(&connection, &live()[1]).unwrap()["qa_starts_at_handoff"], false);
+    recruit(&mut connection, 1, &recruitment("qa", Role::Developer, &[(Role::Qa, "Review this task")]), "claude").unwrap();
+    assert_eq!(store::context(&connection, &live()[1]).unwrap()["qa_starts_at_handoff"], true);
+}
+
+#[test]
 fn a_recruited_qa_can_fill_another_missing_role() {
     let sandbox = Sandbox::new();
     let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
