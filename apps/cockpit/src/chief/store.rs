@@ -1949,7 +1949,8 @@ pub const SUBMITTED_LAUNCH_GRACE_MS: i64 = 60_000;
 pub fn reconcile_todos(connection: &mut Connection, todos: &crate::todo::TodoList, now_ms: i64) -> Result<(), TeamError> {
     let transaction = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     for item in &todos.items {
-        let project = format!("path:{}", item.cwd());
+        // Match team admission for clones/subdirectories; retain literal keys for removed checkouts.
+        let project = crate::teams::canonical_project(&item.cwd()).unwrap_or_else(|_| format!("path:{}", item.cwd()));
         let task = item.id();
         if item.status() == "doing" {
             transaction.execute("INSERT OR IGNORE INTO scheduling_reservations VALUES (?1,?2,?3,?4,'observed')",

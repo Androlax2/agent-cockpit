@@ -3,6 +3,9 @@ use cockpit::todo::{Item, TodoList};
 use serde_json::json;
 use std::collections::HashMap;
 
+#[path = "common/sandbox.rs"]
+mod sandbox;
+
 fn session() -> VerifiedSession {
     VerifiedSession { session_id: "ses_3f2a9c0b1ffeQkTz8mWn4rJd2L".into(), agent: "opencode".into(),
         project: "path:/project-a".into(), runtime: "original-runtime".into() }
@@ -51,6 +54,46 @@ fn completed_todos_release_stale_runtime_membership_for_new_recruitment() {
         }
         recruit(&mut connection, &sender, &request("1f838f53")).unwrap();
         assert_eq!(store::context(&connection, &sender).unwrap()["task"]["task_id"], "1f838f53");
+    }
+}
+
+#[test]
+fn completing_work_in_a_parallel_clone_releases_its_canonical_team() {
+    if std::env::var_os("CLONE_TEAM_LIFECYCLE_CHILD").is_none() {
+        let sandbox = sandbox::Sandbox::new();
+        let output = sandbox.command(std::env::current_exe().unwrap(), &[("CLONE_TEAM_LIFECYCLE_CHILD", "1")])
+            .args(["--exact", "completing_work_in_a_parallel_clone_releases_its_canonical_team", "--nocapture"]).output().unwrap();
+        assert!(output.status.success(), "{}\n{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+        return;
+    }
+    let primary = cockpit::paths::home().join("IdeaProjects/project-a");
+    let clone = cockpit::paths::clones_dir().join("project-a/todo-014f67c1");
+    let unrelated = cockpit::paths::home().join("unrelated/project-a");
+    for directory in [&primary, &clone, &unrelated] {
+        std::fs::create_dir_all(directory.join(".git")).unwrap();
+    }
+    for checkout in [&clone, &primary.join("src"), &unrelated] {
+        std::fs::create_dir_all(checkout).unwrap();
+        let mut sender = session();
+        sender.project = format!("path:{}", primary.display());
+        let mut original = request("014f67c1");
+        original.task.project = sender.project.clone();
+        let mut connection = store::Connection::open_in_memory().unwrap();
+        store::migrate(&mut connection).unwrap();
+        recruit(&mut connection, &sender, &original).unwrap();
+        sender.runtime = "restarted-runtime".into();
+        assert!(store::context(&connection, &sender).unwrap()["task"].is_null());
+        let mut completed = todos("014f67c1", "done");
+        completed.items[0].0.insert("cwd".into(), json!(checkout));
+        cockpit::chief::store::reconcile_todos(&mut connection, &completed, 2000).unwrap();
+        let mut next = request("1f838f53");
+        next.task.project = sender.project.clone();
+        if checkout == &unrelated {
+            assert_eq!(recruit(&mut connection, &sender, &next).unwrap_err().code, ErrorCode::Conflict);
+        } else {
+            recruit(&mut connection, &sender, &next).unwrap();
+            assert_eq!(store::context(&connection, &sender).unwrap()["task"]["task_id"], "1f838f53");
+        }
     }
 }
 
