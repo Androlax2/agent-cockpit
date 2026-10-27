@@ -1513,7 +1513,7 @@ fn event_context(connection: &Connection, live: &[WorkerState], epoch: &str, aft
     let remaining = context_remaining(connection,epoch,turn.as_ref())?;
     if remaining==0 {return Err(TeamError::new(ErrorCode::Limit,"chief turn event-record budget exhausted"))}
     let mut result = if after==0 || after<head.saturating_sub(1000) || after>through {
-        context_recovery_snapshot(connection,live,after,limit.min(remaining))?
+        context_recovery_snapshot(connection,live,epoch,through,after,limit.min(remaining),now_ms)?
     } else {
         let events = connection.prepare("SELECT seq,source,kind,body FROM chief_events WHERE seq>?1 AND seq<=?2 ORDER BY seq LIMIT ?3")?
             .query_map(params![after,through,limit.min(remaining) as i64],|row|Ok((row.get::<_,i64>(0)?,row.get::<_,String>(1)?,row.get::<_,String>(2)?,row.get::<_,String>(3)?)))?
@@ -1536,7 +1536,7 @@ fn event_context(connection: &Connection, live: &[WorkerState], epoch: &str, aft
             let source = if origin=="host" {"host"} else {"agent_report_not_evidence"};
             records.push(json!({"sequence":sequence,"source":source,"kind":kind,"decision_id":decision_id,"decision_revision":decision_revision}));
         }
-        if needs_snapshot {context_recovery_snapshot(connection,live,after,limit.min(remaining))?}
+        if needs_snapshot {context_recovery_snapshot(connection,live,epoch,through,after,limit.min(remaining),now_ms)?}
         else {
             let page = super::context_page(&records,limit.min(remaining))?;
             let next = page.as_array().and_then(|records|records.last()).and_then(|record|record["sequence"].as_i64()).unwrap_or(after);
@@ -1558,11 +1558,12 @@ fn event_context(connection: &Connection, live: &[WorkerState], epoch: &str, aft
     Ok(result)
 }
 
-fn context_recovery_snapshot(connection: &Connection, live: &[WorkerState], after: i64, limit: usize) -> Result<Value, TeamError> {
-    let mut result = context_snapshot(connection,live,0,limit)?;
+fn context_recovery_snapshot(connection: &Connection, live: &[WorkerState], epoch: &str, event_cursor: i64, after: i64, limit: usize, now_ms: i64) -> Result<Value, TeamError> {
+    let (generation,records) = freeze_context(connection,live,epoch,event_cursor,now_ms)?;
+    let mut result = context_snapshot(&records,0,limit)?;
     result["snapshot_required"] = json!(true);
     result["snapshot_next"] = result["next"].clone();
-    result["snapshot_generation"] = json!(context_generation(connection,live)?);
+    result["snapshot_generation"] = json!(generation);
     result["next"] = json!(after);
     Ok(result)
 }
@@ -1573,17 +1574,28 @@ fn review_generation(connection: &Connection, live: &[WorkerState], now_ms: i64)
 }
 
 fn bounded_chief_snapshot(connection: &Connection, live: &[WorkerState], epoch: &str, after: i64, limit: usize, generation: Option<&str>, now_ms: i64) -> Result<Value, TeamError> {
-    let current_generation = context_generation(connection,live)?;
-    if (after>0 && generation.is_none()) || generation.is_some_and(|expected|expected!=current_generation) {
-        return Ok(json!({"records":[],"snapshot_required":true,"invalidated":true,"next":0,"generation":current_generation}));
-    }
+    super::validate_cursor(after,limit)?;
     let turn = current_turn(connection,epoch)?;
+    let (generation,event_cursor,records) = match generation {
+        None if after==0 => {
+            let head: i64 = connection.query_row("SELECT coalesce(max(seq),0) FROM chief_events",[],|row|row.get(0))?;
+            let event_cursor = turn.as_ref().map_or(head,|(_,through,_,_)|*through);
+            let (generation,records) = freeze_context(connection,live,epoch,event_cursor,now_ms)?;
+            (generation,event_cursor,records)
+        },
+        None => return Ok(invalidated_snapshot()),
+        Some(expected) => {
+            let frozen: Option<(i64,String)> = connection.query_row("SELECT event_cursor,records FROM chief_context_snapshots WHERE epoch=?1 AND generation=?2",
+                params![epoch,expected],|row|Ok((row.get(0)?,row.get(1)?))).optional()?;
+            let Some((event_cursor,encoded)) = frozen else {return Ok(invalidated_snapshot())};
+            (expected.to_owned(),event_cursor,serde_json::from_str::<Vec<Value>>(&encoded)?)
+        },
+    };
     let remaining = context_remaining(connection,epoch,turn.as_ref())?;
     if remaining==0 {return Err(TeamError::new(ErrorCode::Limit,"chief turn event-record budget exhausted"))}
-    let mut page = context_snapshot(connection,live,after,limit.min(remaining))?;
-    let head: i64 = connection.query_row("SELECT coalesce(max(seq),0) FROM chief_events",[],|row|row.get(0))?;
-    page["event_cursor"] = json!(turn.as_ref().map_or(head,|(_,through,_,_)|*through));
-    page["generation"] = json!(current_generation);
+    let mut page = context_snapshot(&records,after,limit.min(remaining))?;
+    page["event_cursor"] = json!(event_cursor);
+    page["generation"] = json!(generation);
     page["cursor_kind"] = json!("snapshot_offset");
     page["bootstrap_pending"] = json!(turn.is_none());
     if let Some((dispatch,_,_,_)) = turn {
@@ -1609,13 +1621,31 @@ fn context_continuation(connection: &Connection, dispatch: &str, continuation: &
     Ok(())
 }
 
-fn context_generation(connection: &Connection, live: &[WorkerState]) -> Result<String, TeamError> {
-    Ok(crate::audit::sha256_hex(&serde_json::to_vec(&context_records(connection,live)?)?))
+fn invalidated_snapshot() -> Value {
+    json!({"records":[],"snapshot_required":true,"invalidated":true,"next":0,"generation":null})
 }
 
-fn context_snapshot(connection: &Connection, live: &[WorkerState], after: i64, limit: usize) -> Result<Value, TeamError> {
-    super::validate_cursor(after, limit)?;
+/// Pages after the first are served from this frozen copy, so live churn between turns cannot invalidate them;
+/// the Chief catches up on later changes through the event feed from the frozen event_cursor.
+/// Only the newest snapshot is kept: one active Chief grant at a time, and a new freeze retires the old copy.
+fn freeze_context(connection: &Connection, live: &[WorkerState], epoch: &str, event_cursor: i64, now_ms: i64) -> Result<(String, Vec<Value>), TeamError> {
     let records = context_records(connection,live)?;
+    let encoded = serde_json::to_string(&records)?;
+    let generation = crate::audit::sha256_hex(encoded.as_bytes());
+    connection.execute("DELETE FROM chief_context_snapshots",[])?;
+    connection.execute("INSERT INTO chief_context_snapshots(epoch,generation,event_cursor,records,created_at) VALUES (?1,?2,?3,?4,?5)",
+        params![epoch,generation,event_cursor,encoded,now_ms])?;
+    Ok((generation,records))
+}
+
+pub(crate) fn ensure_context_snapshots(connection: &Connection) -> Result<(), TeamError> {
+    connection.execute_batch("CREATE TABLE IF NOT EXISTS chief_context_snapshots (
+        epoch TEXT PRIMARY KEY, generation TEXT NOT NULL, event_cursor INTEGER NOT NULL, records TEXT NOT NULL, created_at INTEGER NOT NULL);")?;
+    Ok(())
+}
+
+fn context_snapshot(records: &[Value], after: i64, limit: usize) -> Result<Value, TeamError> {
+    super::validate_cursor(after, limit)?;
     let start = usize::try_from(after).unwrap_or(usize::MAX).min(records.len());
     let page = super::context_page(&records[start..], limit)?;
     let next = start + page.as_array().expect("context page is an array").len();
