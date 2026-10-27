@@ -95,6 +95,21 @@ fn typing_claude_explicitly_keeps_claude_when_the_global_default_changes() {
 }
 
 #[test]
+fn fish_claude_runs_configuration_subcommands_without_asking_or_the_retry_wrapper() {
+    let terminal = Terminal::new();
+    terminal.sandbox.shim("cockpit", "");
+    terminal.sandbox.shim("node", "");
+    terminal.sandbox.shim("claude", "");
+    let script = format!("source '{}'; function isatty; return 0; end; claude mcp add --scope user --transport http figma https://mcp.figma.com/mcp",
+        repo().join("config/fish/.config/fish/functions/claude.fish").display());
+    let output = terminal.sandbox.run_with_input("fish", &["--no-config", "-c", &script], &[], "");
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(terminal.sandbox.calls("claude"), ["claude mcp add --scope user --transport http figma https://mcp.figma.com/mcp"]);
+    assert!(terminal.sandbox.calls("cockpit").is_empty());
+    assert!(terminal.sandbox.calls("node").is_empty());
+}
+
+#[test]
 fn fish_terminal_choice_attaches_the_existing_process_without_changing_ownership() {
     let terminal = Terminal::new();
     terminal.panes(&["claude-retry-opencode-123"]);

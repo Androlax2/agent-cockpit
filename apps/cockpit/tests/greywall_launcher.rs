@@ -630,6 +630,26 @@ fn claude_never_loads_a_development_channel() {
 }
 
 #[test]
+fn claude_configuration_subcommands_run_sandboxed_without_the_session_options() {
+    // claude mcp add hung, then failed on "unknown option '--mcp-config'" (todo aa919cfe).
+    for subcommand in [&["mcp", "add", "--scope", "user", "--transport", "http", "figma", "https://mcp.figma.com/mcp"][..],
+                       &["mcp", "list"], &["plugin", "list"], &["auth", "status"], &["doctor"]] {
+        let launch = Launch::new();
+        launch.run_agent("claude", &[], subcommand);
+        let arguments = fs::read_to_string(launch.sandbox.home.join("claude-arguments")).unwrap();
+        assert_eq!(arguments.lines().collect::<Vec<_>>(), subcommand, "{subcommand:?}");
+    }
+}
+
+#[test]
+fn claude_sessions_with_a_prompt_keep_the_session_options() {
+    let launch = Launch::new();
+    launch.run_agent("claude", &[], &["mcp servers are broken, fix them"]);
+    let arguments = fs::read_to_string(launch.sandbox.home.join("claude-arguments")).unwrap();
+    assert!(arguments.lines().any(|argument| argument == "--mcp-config"), "{arguments}");
+}
+
+#[test]
 fn generic_port_grants_cannot_forward_another_checkouts_reserved_figcraft_port() {
     let launch = Launch::new();
     let foreign = launch.sandbox.home.join("IdeaProjects/proj-b");

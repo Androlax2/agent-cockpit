@@ -1,4 +1,10 @@
 function claude
+    # Configuration subcommands (claude mcp add ...) are no session: no prompt, and no auto-retry
+    # wrapper, which would open a tmux session for them. They still run sandboxed.
+    if contains -- "$argv[1]" mcp plugin plugins auth doctor auto-mode
+        command claude $argv
+        return
+    end
     set -lx CLAUDE_AUTO_RETRY_ACTIVE 1
     # An interactive `claude` from any terminal asks where to run: Enter (or m) opens it in the
     # session manager on its workspace (~/.local/bin/cockpit), t runs it in this terminal,

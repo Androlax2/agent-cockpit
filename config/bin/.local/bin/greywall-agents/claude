@@ -64,5 +64,12 @@ for argument in "$@"; do
     case "$argument" in --settings|--settings=*|--setting-sources|--setting-sources=*) COCKPIT_SUBSCRIPTION_ACCOUNT= ;; esac
 done
 export COCKPIT_SUBSCRIPTION_ACCOUNT
+# Claude's configuration subcommands (claude mcp add, claude plugin list...) reject the session's
+# options ("unknown option '--mcp-config'"): they run in the same sandbox without them.
+case "${1:-}" in
+    mcp|plugin|plugins|auth|doctor|auto-mode)
+        # shellcheck disable=SC2086
+        exec "$HOME/.local/bin/greywall" $greywall_options -- "$HOME/.local/bin/claude" "$@" ;;
+esac
 # shellcheck disable=SC2086
 exec "$HOME/.local/bin/greywall" $greywall_options -- "$HOME/.local/bin/claude" "$@" --mcp-config "$figcraft_mcp_config" --settings "$team_settings"
