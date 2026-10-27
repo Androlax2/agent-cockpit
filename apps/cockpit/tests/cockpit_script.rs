@@ -4378,6 +4378,25 @@ fn apply_logs_the_install_failure_details_without_undoing_the_commits() {
 }
 
 #[test]
+fn apply_refuses_before_asking_when_theo_types_the_answer_but_the_output_is_piped() {
+    // Todo 0d52ce50: `cockpit apply … | tail` hid the patches and the question; applies waited for hours.
+    for pipeline in ["cockpit apply \"$1\" | cat; exit ${PIPESTATUS[0]}", "cockpit apply \"$1\" 2>&1 | cat; exit ${PIPESTATUS[0]}"] {
+        let manager = Manager::new();
+        let (live, work) = (manager.sandbox.home.join("agent-cockpit"), manager.sandbox.home.join("IdeaProjects/agent-cockpit"));
+        reviewed_pair(&live, &work);
+        let environment: Vec<(&str, &Path)> = manager.sandbox.env.iter().map(|(name, value)| (name.as_str(), Path::new(value))).collect();
+        let work_path = path_str(&work);
+        let mut terminal = common::Terminal::start(Path::new("bash"), &["-c", pipeline, "bash", &work_path], &environment);
+        let status = terminal.wait_for_exit(20.0);
+        let screen = String::from_utf8_lossy(&terminal.screen).to_string();
+        assert_eq!(status.code(), Some(1), "{pipeline}: {screen}");
+        assert!(screen.contains("Refused:") && !screen.contains("[y/N]"), "{pipeline}: {screen}");
+        assert_eq!(git_output(&live, &["log", "-1", "--format=%s"]), "init", "{pipeline}");
+        assert_eq!(fs::read_dir(work.join(".outgoing")).unwrap().count(), 1, "{pipeline}");
+    }
+}
+
+#[test]
 fn apply_takes_only_the_clone() {
     let manager = Manager::new();
     let live = manager.sandbox.home.join("agent-cockpit");

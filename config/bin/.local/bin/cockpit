@@ -2584,6 +2584,14 @@ apply_reviewed() { # [clone]
         if [[ $log_command == apply-dotfiles || $log_command == apply ]]; then log_failure_level=WARN; fi
         return 1
     fi
+    # Typed answers with the review piped away (cockpit apply … | tail): the patches and the question
+    # never reached the screen, and applies waited for hours (todo 0d52ce50). An answer fed on stdin
+    # (tests, scripts) has no one to hide them from.
+    if [[ -t 0 ]] && { [[ ! -t 1 ]] || [[ ! -t 2 ]]; }; then
+        echo "Refused: cockpit apply asks for your yes after showing the patches, but its output goes to a pipe or a file, where you would not see them. Run it without | or a redirection." >&2
+        if [[ $log_command == apply-dotfiles || $log_command == apply ]]; then log_failure_level=WARN; fi
+        return 1
+    fi
     subjects=$(grep -h '^Subject: ' "$copies"/*.patch | sed 's/^Subject: //' | cat -v)
     echo "$count commit(s) for $live, the running copy of $name the host runs:"
     sed 's/^/  /' <<< "$subjects"
