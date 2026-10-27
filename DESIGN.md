@@ -356,6 +356,26 @@ its Notes frame), page `12 Teams & Chief tabs (visual)`, previews 18-19. Ready f
   events that carry a time today (handoffs, escalations, starts, Chief answers).
 - Not in this round: the phone versions of both tabs.
 
+### Pinned Chief conversation card
+
+Design todo `ecc46429`. Theo approved wireframe page `18 Pinned Chief (wireframe)` and visual
+page `19 Pinned Chief (visual)` (renumbered after preserving the concurrent Chief inbox designs).
+Ready-for-dev frames: desktop `8739`, phone `8776`, states `8795`.
+Preview: `design-plans/previews/20-pinned-chief.png`.
+
+- Chief is a specific agent Theo talks to directly. Pin its card above **all** Sessions attention
+  groups on desktop and phone. Remove its duplicate from the ordinary session list and team rows;
+  identify it from the configured Chief session, never from a matching name or project directory.
+- Purple `◆ Chief` replaces the raw tool/project headline. Show On, Checking or Off and the open
+  decision count. Zero reads “No open decisions”; unavailable data is unknown, not zero.
+- Enter on desktop and tapping “Talk to Chief” on phone open its conversation. Desktop `5` opens
+  the Chief dashboard separately. Turning Chief off does not disable its live conversation.
+- Amber only marks “needs you”, not ordinary open decisions. Keep the pinned card in place when
+  Checking, Off or unavailable. If no Chief is selected, show setup rather than a fake conversation.
+  A telemetry outage must not disable a conversation that is still live.
+- Keep the existing Cockpit colour variables and terminal font; phone card uses system text and a
+  44 px talk button. The Chief dashboard and other sessions retain their existing behaviour.
+
 **Rule conflicts, settled by Theo:**
 
 - Keep "Tell me when it finishes" (a phone opt-in per session), the daily digest, and the
