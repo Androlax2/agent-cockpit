@@ -874,6 +874,12 @@ say_to_session() { # id message
         echo "queued until subscription ownership is bound"
         return 0
     fi
+    # A sandboxed session has neither the list nor the tmux server: typing into another session's
+    # pane stays host-only. Its supported route to the Chief is the team socket.
+    if [[ ! -r $SNAPSHOT ]]; then
+        echo "cockpit: cannot read the session list ($SNAPSHOT): cockpit say runs on the host; from a sandbox, report to the Chief with cockpit-team chief (cockpit-team --help)" >&2
+        return 1
+    fi
     pane=$(session_field "$id" tmux_pane)
     if [[ -z $pane ]]; then
         # Asleep, or restarting with no pane yet: the message waits for the new process.

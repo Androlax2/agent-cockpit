@@ -1347,6 +1347,17 @@ fn say_refuses_while_a_dialog_is_open_and_keeps_the_text_out_of_the_log() {
 }
 
 #[test]
+fn say_without_the_session_snapshot_fails_with_a_reason_instead_of_a_silent_exit() {
+    let manager = Manager::new();
+    fs::remove_file(&manager.snapshot).unwrap();
+    let result = manager.run(&["say", SESSION_A, "the snapshot is ready"], &[]);
+    assert_eq!(result.status.code(), Some(1));
+    let reason = stderr(&result);
+    assert!(reason.contains("cannot read the session list") && reason.contains("cockpit-team chief"), "{reason}");
+    assert!(manager.tmux_calls("send-keys").is_empty());
+}
+
+#[test]
 fn opencode_accepts_an_answer_to_an_explicit_chat_question() {
     let manager = Manager::new();
     fs::write(&manager.snapshot, json!({"sessions": [{"session": OPENCODE_SESSION,
