@@ -23,7 +23,7 @@ help:
 ##@ Build and install
 
 build: ## Build the Rust programs in apps/ (the column, the osd daemon, the approval terminal, the guide, the sandbox commands)
-	$(build_runner) cargo build --release --manifest-path apps/Cargo.toml
+	$(build_runner) cargo build --release --locked --manifest-path apps/Cargo.toml
 
 # One full run at a time across clones (tools/full-test-lock.py); targeted runs stay unlocked. The
 # launcher shares this folder with every sandbox.
@@ -32,8 +32,57 @@ test: ## Build the OSD classifier and run the test suite, one full run at a time
 
 test-serialized:
 	python3 -m unittest discover -s tools/tests -p 'test_*.py'
-	$(build_runner) cargo build --release --quiet --manifest-path apps/Cargo.toml -p osd --bin osd
-	$(build_runner) cargo nextest run --release --cargo-quiet --status-level fail --manifest-path apps/Cargo.toml
+	$(build_runner) cargo build --release --locked --quiet --manifest-path apps/Cargo.toml -p osd --bin osd
+	$(build_runner) cargo nextest run --release --locked --cargo-quiet --status-level fail --manifest-path apps/Cargo.toml
+
+.PHONY: fmt-check clippy doc
+
+fmt-check: ## Check Rust formatting without changing source
+	$(build_runner) cargo fmt --manifest-path apps/Cargo.toml --all -- --check
+
+clippy: ## Lint every Rust target with warnings treated as errors
+	$(build_runner) cargo clippy --manifest-path apps/Cargo.toml --workspace --all-targets --locked -- -D warnings
+
+doc: ## Check private and public Rust documentation
+	RUSTDOCFLAGS="-D warnings" $(build_runner) cargo doc --manifest-path apps/Cargo.toml --workspace --no-deps --document-private-items --locked
+
+.PHONY: deny
+
+deny: ## Check dependency advisories, licenses and sources with the reviewed policy
+	$(build_runner) cargo deny --manifest-path apps/Cargo.toml --locked --config .cargo/deny.toml check
+
+.PHONY: lint-python lint-shell lint-js lint-markdown lint-lua
+
+lint-python: ## Check Python style and formatting, including extensionless commands
+	python3 tools/quality.py python
+
+lint-shell: ## Check POSIX/Bash scripts and fish with their own tools
+	python3 tools/quality.py shell
+	python3 tools/quality.py fish
+
+lint-js: ## Check JavaScript and TypeScript
+	python3 tools/quality.py js
+
+lint-markdown: ## Check Markdown style
+	python3 tools/quality.py markdown
+
+.PHONY: check-links
+
+check-links: ## Check local Markdown links and heading anchors without network requests
+	python3 tools/quality.py links
+
+.PHONY: typos
+
+typos: ## Check spelling in tracked files
+	python3 tools/quality.py typos
+
+.PHONY: ci
+.NOTPARALLEL: ci
+
+ci: fmt-check clippy doc lint-python lint-shell lint-js lint-markdown lint-lua check-links typos deny test ## Run the shared quality and regression gate
+
+lint-lua: ## Check Lua syntax without executing desktop configuration
+	python3 tools/quality.py lua
 
 install: ## Link every package into your home and reload the user units
 	@$(call serialized,install-serialized)
