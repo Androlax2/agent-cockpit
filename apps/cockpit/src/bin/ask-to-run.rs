@@ -8,7 +8,8 @@
 //! daemon keeps a copy out of the sandbox's reach and opens an approval terminal outside the sandbox
 //! (claude-run-approve). Nothing runs until
 //! Theo reads the command there and answers y. --why is required: a few plain sentences shown under
-//! the command, saying what it does, why it is needed and what to expect. Prints the command's
+//! the command, saying what it does, why it is needed and what to expect. A command fish cannot
+//! parse (Bash heredocs, `if …; then … fi`) is refused with exit 2 before Theo is asked. Prints the command's
 //! output and exits with its status; 125 when Theo declines, 124 when the wait runs out (9 minutes,
 //! under the Bash tool's 10), 126 when no daemon reads the requests (fall back to a fish block).
 //! While it waits it touches <id>.waiting every few seconds: the daemon drops an approval nobody
@@ -105,6 +106,28 @@ fn wait_for_result(answers_key: &str, id: &str) -> i32 {
     exit
 }
 
+/// The approval terminal runs the command with fish: a Bash heredoc or `if …; then … fi` would
+/// only fail there, after Theo was interrupted. fish parses it here without running it.
+fn refuse_what_fish_cannot_parse(command: &str) {
+    let parsed = std::process::Command::new("fish").args(["--no-config", "--no-execute", "-c", command])
+        .stdin(std::process::Stdio::null()).output();
+    let parsed = match parsed {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            eprintln!("ask-to-run: cannot check the command with fish ({error}); asking Theo unchecked.");
+            return;
+        }
+    };
+    if parsed.status.success() {
+        return;
+    }
+    eprintln!("ask-to-run: the approval terminal runs fish, and fish cannot parse this command:\n{}\n\
+               Nothing was sent to Theo. Write the commands to a script file in the project or .handoff/ and \
+               ask to run it with its interpreter (bash script.sh), or use fish syntax.",
+              String::from_utf8_lossy(&parsed.stderr).trim_end());
+    std::process::exit(2);
+}
+
 fn main() {
     let Some(answers_key) = approval::own_answers_key() else {
         println!("{} Give Theo the command as a fish block meanwhile.", approval::NO_ANSWERS_KEY);
@@ -144,6 +167,7 @@ fn main() {
                    Theo should expect. It is shown under the command in his approval window.\n{USAGE}");
         std::process::exit(2);
     }
+    refuse_what_fish_cannot_parse(&arguments[0]);
     let id = token_hex(6);
     let session = cockpit::agents::current_session_id().unwrap_or_else(|error| {
         eprintln!("ask-to-run: {error}");

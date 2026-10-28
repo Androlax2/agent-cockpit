@@ -145,7 +145,7 @@ the cockpit is closed. PR deferral requires a known head revision. NEEDS YOU, WO
 
 | Command (inside a session) | What happens outside |
 | --- | --- |
-| `ask-to-run --why '…' '<command>'` | An approval terminal shows the command and Claude's explanation, in a pane under the session in the cockpit and in a floating window elsewhere. Nothing runs without "Run it"; the output then goes back to Claude, with tokens, keys, passwords and credentials replaced by `[redacted]` first. Hidden characters are shown escaped |
+| `ask-to-run --why '…' '<command>'` | An approval terminal shows the command and Claude's explanation, in a pane under the session in the cockpit and in a floating window elsewhere. Nothing runs without "Run it"; the output then goes back to Claude, with tokens, keys, passwords and credentials replaced by `[redacted]` first. Hidden characters are shown escaped. The command runs in fish: one fish cannot parse (a Bash heredoc, `if …; then … fi`) is refused before you are asked |
 | `ask-to-guide` | Steps I do by hand (a browser, a console) in a floating window, one at a time, with links to open, values to copy and questions to answer; `⌘V` attaches a clipboard image to a step; the answers, images, or the step I got stuck on go back to Claude |
 | `claude-todo start/done/add` | Updates the Todo panel |
 | `claude-needs-input '<question>'` | Marks the session as needing your answer, with the question on its card. Claude and OpenCode keep it through tool completion, turn end and idle notifications; your next message clears it |
