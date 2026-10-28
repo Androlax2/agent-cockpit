@@ -1314,8 +1314,8 @@ fn schedule_wake(connection: &Connection, now_ms: i64) -> Result<(), TeamError> 
             session_id:row.get(1)?,agent:row.get(2)?,project:row.get(3)?,runtime:row.get(4)?},row.get(5)?,row.get(6)?,row.get(7)?))).optional()?;
     let Some((epoch,chief,delivered,last_admitted,failed)) = grant else {return Ok(())};
     if failed || last_admitted.is_some_and(|last|now_ms<last.saturating_add(30_000)) {return Ok(())}
-    let pending: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM chief_events WHERE seq>?1 AND kind NOT IN ('status','coordinate','reprioritized','habit_changed','session_start_requested','session_started'))",[delivered],|row|row.get(0))?;
-    if !pending {return Ok(())}
+    // A turn that ended before reading what it admitted gets a bounded re-wake: no new event would wake it.
+    if !material_pending(connection,delivered)? && !needs_unread_retry(connection,&epoch)? {return Ok(())}
     let exists: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM chief_inbox WHERE chief_epoch=?1 AND json_extract(envelope,'$.kind')='chief_wake' AND state IN ('queued','submitting','uncertain'))",[&epoch],|row|row.get(0))?;
     if exists {return Ok(())}
     let id = crate::teams::store::identifier()?;
@@ -1323,6 +1323,26 @@ fn schedule_wake(connection: &Connection, now_ms: i64) -> Result<(), TeamError> 
     connection.execute("INSERT INTO chief_inbox(id,chief_epoch,recipient,recipient_identity,recipient_epoch,work,envelope,state,next_at) VALUES (?1,?2,?3,?4,?2,'null',?5,'queued',?6)",
         params![id,epoch,chief.session_id,serde_json::to_string(&chief)?,envelope.to_string(),now_ms])?;
     Ok(())
+}
+
+fn material_pending(connection: &Connection, delivered: i64) -> Result<bool, TeamError> {
+    Ok(connection.query_row("SELECT EXISTS(SELECT 1 FROM chief_events WHERE seq>?1 AND kind NOT IN ('status','coordinate','reprioritized','habit_changed','session_start_requested','session_started'))",[delivered],|row|row.get(0))?)
+}
+
+fn needs_unread_retry(connection: &Connection, epoch: &str) -> Result<bool, TeamError> {
+    Ok(latest_turn_behind(connection,epoch)? && unread_context(connection,epoch)?.1<UNREAD_CONTEXT_TURNS)
+}
+
+/// Once re-waking has not got the Chief reading, Theo sees why coordination stopped, once per read position.
+fn notice_unread_context(connection: &Connection, epoch: &str, chief: &VerifiedSession, live: &[WorkerState], now_ms: i64) -> Result<(), TeamError> {
+    let (position,stalled) = unread_context(connection,epoch)?;
+    if stalled<UNREAD_CONTEXT_TURNS || !wake_ready(connection,chief,live,now_ms)? {return Ok(())}
+    let position = position.unwrap_or(0);
+    let notice = decision_record(connection,&format!("host-context-{epoch}"),"context_unread",
+        &format!("The Chief ended {UNREAD_CONTEXT_TURNS} admitted turns in a row without reading its coordination Context to the end; it has read through event {position}. Stopped sessions, questions and stalled work after that event may be unhandled. The host no longer re-wakes it for them; only new events wake it."),
+        &format!("Ask the Chief to read Context with after:{position} and report the exact error if it cannot. Do not relax budgets or resend uncertain deliveries; route a persistent failure to the existing Chief context repair todo."),now_ms);
+    // A full decision list is already in front of Theo; failing here would also stop every material wake.
+    match notice { Err(error) if error.code==ErrorCode::Limit => Ok(()), other => other.map(|_|()) }
 }
 
 fn observe_coordination(connection: &Connection, live: &[WorkerState], now_ms: i64) -> Result<(), TeamError> {
@@ -1357,6 +1377,9 @@ fn observe_coordination(connection: &Connection, live: &[WorkerState], now_ms: i
     connection.execute("UPDATE legacy_launches SET state='uncertain',revision=revision+1 WHERE state IN ('reserved','submitting') AND created_at<=?1",[now_ms.saturating_sub(30_000)])?;
     let launches=connection.prepare("SELECT token FROM legacy_launches WHERE state='uncertain'")?.query_map([],|row|row.get::<_,String>(0))?.collect::<Result<Vec<_>,_>>()?;
     for token in launches {decision_record(connection,&format!("host-launch-{token}"),"launch","Exact legacy launch is not conclusively settled; ownership remains reserved.","Inspect this exact launch token. Handling retains ownership; only an explicit safe-stop assertion can release unknown execution.",now_ms)?;}
+    let active: Option<(String,VerifiedSession)> = connection.query_row("SELECT epoch,session_id,agent,project,runtime FROM chief_grants WHERE state='active'",[],
+        |row|Ok((row.get(0)?,VerifiedSession {session_id:row.get(1)?,agent:row.get(2)?,project:row.get(3)?,runtime:row.get(4)?}))).optional()?;
+    if let Some((epoch,chief)) = active {notice_unread_context(connection,&epoch,&chief,live,now_ms)?;}
     schedule_wake(connection,now_ms)
 }
 
@@ -1404,12 +1427,22 @@ pub fn claim(connection: &mut Connection, recipient: &VerifiedSession, idle_turn
         } else if envelope["kind"]=="chief_wake" {
             let active: bool = transaction.query_row("SELECT EXISTS(SELECT 1 FROM chief_grants WHERE epoch=?1 AND state='active' AND session_id=?2 AND runtime=?3)",params![chief_epoch,identity.session_id,identity.runtime],|row|row.get(0))?;
             let used_boundary: bool = transaction.query_row("SELECT EXISTS(SELECT 1 FROM chief_turns WHERE epoch=?1 AND idle_turn=?2)",params![chief_epoch,idle_turn],|row|row.get(0))?;
-            if !active || used_boundary { InboxValidation::Deferred }
+            let delivered: Option<i64> = transaction.query_row("SELECT delivered_seq FROM chief_coordination WHERE epoch=?1",[&chief_epoch],|row|row.get(0)).optional()?;
+            // A re-wake the Chief no longer needs, because it read on before the wake reached it.
+            let needed = active && (material_pending(&transaction,delivered.unwrap_or(0))? || needs_unread_retry(&transaction,&chief_epoch)?);
+            if active && !needed { InboxValidation::Obsolete }
+            else if !active || used_boundary { InboxValidation::Deferred }
             else if wake_ready(&transaction,&identity,&live,now_ms)? {
                 let through: i64 = transaction.query_row("SELECT coalesce(max(seq),0) FROM chief_events",[],|row|row.get(0))?;
                 envelope["through_seq"] = json!(through);
                 let continuation: Option<String> = transaction.query_row("SELECT body FROM chief_events WHERE source='host' AND kind='context_backlog' AND json_extract(body,'$.epoch')=?1 AND seq>(SELECT delivered_seq FROM chief_coordination WHERE epoch=?1) ORDER BY seq DESC LIMIT 1",[&chief_epoch],|row|row.get(0)).optional()?;
-                envelope["context_continuation"] = continuation.map(|body|serde_json::from_str::<Value>(&body)).transpose()?.unwrap_or(Value::Null);
+                let position = unread_context(&transaction,&chief_epoch)?.0.filter(|position|*position>0 && *position<through);
+                envelope["context_continuation"] = match (continuation,position) {
+                    (Some(body),_) => serde_json::from_str::<Value>(&body)?,
+                    // Without it the wake's after:0 restarts a full snapshot instead of reading on from the Chief's position.
+                    (None,Some(position)) => json!({"resume_after":position,"epoch":chief_epoch}),
+                    (None,None) => Value::Null,
+                };
                 envelope["summary_requests"] = json!(transaction.prepare("SELECT id FROM chief_summary_requests WHERE state='queued' AND epoch=?1 ORDER BY created_at LIMIT 1")?
                     .query_map([&chief_epoch],|row|row.get::<_,String>(0))?.collect::<Result<Vec<_>,_>>()?);
                 transaction.execute("UPDATE chief_inbox SET envelope=?2 WHERE id=?1",params![message_id,envelope.to_string()])?;
@@ -1664,7 +1697,8 @@ pub fn finish_for(connection: &mut Connection, recipient: &VerifiedSession, disp
         TransportOutcome::Received {native_id} if state=="submitting" && !transaction.query_row("SELECT EXISTS(SELECT 1 FROM chief_turns WHERE epoch=?1 AND native_id=?2)",params![epoch,native_id],|row|row.get::<_,bool>(0))? => {
             let active: bool = transaction.query_row("SELECT EXISTS(SELECT 1 FROM chief_grants WHERE epoch=?1 AND state='active' AND session_id=?2 AND runtime=?3)",params![epoch,recipient.session_id,recipient.runtime],|row|row.get(0))?;
             if active && recipient.agent=="opencode" && admission_verified(&transaction,recipient)? {
-                transaction.execute("INSERT OR IGNORE INTO chief_turns(dispatch_id,epoch,idle_turn,native_id,through_seq,admitted_at) VALUES (?1,?2,?3,?4,?5,?6)",
+                transaction.execute("INSERT OR IGNORE INTO chief_turns(dispatch_id,epoch,idle_turn,native_id,through_seq,admitted_at,read_through)
+                    VALUES (?1,?2,?3,?4,?5,?6,(SELECT coalesce(max(read_through),0) FROM chief_turns WHERE epoch=?2))",
                     params![dispatch_id,epoch,turn,native_id,envelope["through_seq"].as_i64(),now_ms])?;
                 transaction.execute("UPDATE chief_coordination SET delivered_seq=max(delivered_seq,?2),last_admitted_at=?3 WHERE epoch=?1",params![epoch,envelope["through_seq"].as_i64(),now_ms])?;
                 transaction.execute("UPDATE chief_summary_requests SET state='pending',deadline=?3 WHERE epoch=?1 AND state='queued' AND deadline>?4
@@ -1834,6 +1868,8 @@ fn event_context(connection: &Connection, live: &[WorkerState], epoch: &str, aft
     if let Some((dispatch,_,_,_)) = turn {
         let count = result["records"].as_array().map_or(0,Vec::len);
         connection.execute("UPDATE chief_turns SET records=records+?2 WHERE dispatch_id=?1",params![dispatch,count as i64])?;
+        let read = if result["has_more"]==false {Some(through)} else if result["snapshot_required"]==false {result["next"].as_i64()} else {None};
+        if let Some(read) = read {record_read(connection,&dispatch,read)?;}
         if count==remaining && result["has_more"]==true {
             let continuation = if result["snapshot_required"]==true {json!({"snapshot_after":result["snapshot_next"],"generation":result["snapshot_generation"]})}
                 else {json!({"resume_after":result["next"]})};
@@ -1889,6 +1925,7 @@ fn bounded_chief_snapshot(connection: &Connection, live: &[WorkerState], epoch: 
     if let Some((dispatch,_,_,_)) = turn {
         let count = page["records"].as_array().map_or(0,Vec::len);
         connection.execute("UPDATE chief_turns SET records=records+?2 WHERE dispatch_id=?1",params![dispatch,count as i64])?;
+        if page["has_more"]==false {record_read(connection,&dispatch,event_cursor)?;}
         if count==remaining && page["has_more"]==true {context_continuation(connection,&dispatch,&json!({"snapshot_after":page["next"],"generation":page["generation"]}),now_ms)?;}
     } else {connection.execute("UPDATE chief_coordination SET preview_records=preview_records+?2 WHERE epoch=?1",params![epoch,page["records"].as_array().map_or(0,Vec::len) as i64])?;}
     Ok(page)
@@ -1898,6 +1935,30 @@ fn context_remaining(connection: &Connection, epoch: &str, turn: Option<&(String
     let records = if let Some((_,_,_,records)) = turn {*records}
         else {connection.query_row("SELECT preview_records FROM chief_coordination WHERE epoch=?1",[epoch],|row|row.get::<_,i64>(0))?};
     Ok(50i64.saturating_sub(records).max(0) as usize)
+}
+
+fn record_read(connection: &Connection, dispatch: &str, read_through: i64) -> Result<(), TeamError> {
+    connection.execute("UPDATE chief_turns SET read_through=max(coalesce(read_through,0),?2) WHERE dispatch_id=?1",params![dispatch,read_through])?;
+    Ok(())
+}
+
+/// Admitted Context turns re-woken without new material events before the host stops and asks Theo.
+const UNREAD_CONTEXT_TURNS: usize = 3;
+
+/// The Chief's read position, and how many of its latest turns in a row ended before it read the
+/// Context they admitted while record budget was left. A turn that spent its whole budget made progress.
+fn unread_context(connection: &Connection, epoch: &str) -> Result<(Option<i64>, usize), TeamError> {
+    let turns = connection.prepare("SELECT through_seq,records,read_through FROM chief_turns WHERE epoch=?1 ORDER BY rowid DESC LIMIT ?2")?
+        .query_map(params![epoch,UNREAD_CONTEXT_TURNS as i64],|row|Ok((row.get::<_,i64>(0)?,row.get::<_,i64>(1)?,row.get::<_,Option<i64>>(2)?)))?
+        .collect::<Result<Vec<_>,_>>()?;
+    let position = turns.first().and_then(|(_,_,read)|*read);
+    let stalled = turns.iter().take_while(|(through,records,read)|read.is_some_and(|read|read<*through) && *records<50).count();
+    Ok((position,stalled))
+}
+
+fn latest_turn_behind(connection: &Connection, epoch: &str) -> Result<bool, TeamError> {
+    Ok(connection.query_row("SELECT read_through<through_seq FROM chief_turns WHERE epoch=?1 ORDER BY rowid DESC LIMIT 1",[epoch],
+        |row|row.get::<_,Option<bool>>(0)).optional()?.flatten().unwrap_or(false))
 }
 
 fn context_continuation(connection: &Connection, dispatch: &str, continuation: &Value, now_ms: i64) -> Result<(), TeamError> {
@@ -1929,6 +1990,12 @@ fn freeze_context(connection: &Connection, live: &[WorkerState], epoch: &str, ev
 pub(crate) fn ensure_context_snapshots(connection: &Connection) -> Result<(), TeamError> {
     connection.execute_batch("CREATE TABLE IF NOT EXISTS chief_context_snapshots (
         epoch TEXT PRIMARY KEY, generation TEXT NOT NULL, event_cursor INTEGER NOT NULL, records TEXT NOT NULL, created_at INTEGER NOT NULL);")?;
+    // `read_through`: the event sequence the Chief has read Context through, as of this turn. NULL only on
+    // turns admitted before this column existed: their progress is unknown, so they never count as stalled.
+    // Later turns start from the epoch's furthest read, or 0 when there is none.
+    let columns = connection.prepare("PRAGMA table_info(chief_turns)")?.query_map([], |row| row.get::<_, String>(1))?
+        .collect::<Result<Vec<_>, _>>()?;
+    if !columns.iter().any(|name| name == "read_through") { connection.execute("ALTER TABLE chief_turns ADD COLUMN read_through INTEGER", [])?; }
     Ok(())
 }
 

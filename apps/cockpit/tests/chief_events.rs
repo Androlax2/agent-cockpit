@@ -54,6 +54,13 @@ fn admit_events(connection: &mut Connection, live: &[WorkerState], turn: &str, n
     wake
 }
 
+/// The Chief reads the Context its admitted turn delivered, so no unread-context re-wake is due.
+fn read_all_context(connection: &mut Connection, live: &[WorkerState], now: i64) -> Value {
+    let context = store::agent(connection,&live[0].session,&ChiefAgentAction::Context {after:0,limit:50},live,now).unwrap().result.unwrap();
+    assert_eq!(context["has_more"],false,"{context}");
+    context
+}
+
 fn context_decision(connection: &Connection, id: &str, state: &str, created_at: i64, resolved_at: Option<i64>) {
     connection.execute("INSERT INTO chief_decisions(id,scope_key,decision_key,question,recommendation,state,revision,created_at,resolved_at)
         VALUES (?1,?1,'key','Host decision','Review only',?2,1,?3,?4)",rusqlite::params![id,state,created_at,resolved_at]).unwrap();
@@ -404,6 +411,7 @@ fn a_failed_second_wake_cannot_reuse_the_previous_allowance() {
 #[test]
 fn chief_running_then_idle_is_not_its_own_material_wake_source() {
     let (mut connection,mut live) = setup(); enable_events(&mut connection,&live); admit_events(&mut connection,&live,"bootstrap",100);
+    read_all_context(&mut connection,&live,100);
     live[0].blocked_by=vec!["native_busy".into()];
     store::observe(&mut connection,&live,101).unwrap();
     live[0].blocked_by=vec![];
@@ -2058,6 +2066,7 @@ fn habit_steps() -> [ChiefHostAction; 3] {
 #[test]
 fn a_habit_change_wakes_no_chief_but_moves_the_review_generation() {
     let (mut connection,mut live) = setup(); enable_events(&mut connection,&live); admit_events(&mut connection,&live,"bootstrap",100);
+    read_all_context(&mut connection,&live,100);
     seed_habit(&connection,"habit-a");
     for worker in &mut live {worker.observed_at_ms=30_100;}
     for (index,step) in habit_steps().into_iter().enumerate() {
@@ -2416,4 +2425,160 @@ fn a_launch_prompt_then_a_message_theo_typed_is_a_habit_source() {
     let stop = conversation_stop(&mut connection,&live,&[("user",launch),("assistant","Which option?".into()),("user","Always use option B.".into())]);
     add_habit(&mut connection,&live,"Always use option B.",Some("path:/a"),&stop).unwrap();
     assert_eq!(habit_provenance(&connection)[0].0,"theo_message");
+}
+
+fn observed_at(live: &mut [WorkerState], now: i64) {
+    for worker in live.iter_mut() {worker.observed_at_ms=now;}
+}
+
+fn unread_notices(connection: &Connection) -> Vec<(String,i64,String)> {
+    connection.prepare("SELECT state,revision,question FROM chief_decisions WHERE decision_key='context_unread' ORDER BY rowid").unwrap()
+        .query_map([],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?))).unwrap().collect::<Result<_,_>>().unwrap()
+}
+
+#[test]
+fn a_stop_behind_more_history_than_one_turn_reaches_the_chief_and_its_answer_is_delivered() {
+    let (mut connection,mut live) = setup(); enable_events(&mut connection,&live);
+    store::verify_admission(&mut connection,&live[1].session,"opencode-queued-v1","Controlled fixture, not live proof",100).unwrap();
+    for index in 0..77 { context_decision(&connection,&format!("open-{index}"),"open",50,None); }
+    for index in 0..30 { context_decision(&connection,&format!("resolved-{index}"),"resolved",40,Some(60)); }
+    admit_events(&mut connection,&live,"bootstrap",100);
+    let first = store::agent(&mut connection,&live[0].session,&ChiefAgentAction::Context {after:0,limit:50},&live,100).unwrap().result.unwrap();
+    assert_eq!((first["snapshot_required"].clone(),first["has_more"].clone()),(json!(true),json!(true)));
+    observed_at(&mut live,30_100);
+    let stop = store::record_stop(&mut connection,&live[1].session,STOP_BOUNDARY,&stopped_task(),&stop_bundle_fixture("Which option do you want?"),30_100).unwrap().unwrap();
+    let second_wake = admit_events(&mut connection,&live,"snapshot-rest",30_100);
+    assert_eq!(second_wake.envelope["context_continuation"]["snapshot_after"],first["snapshot_next"]);
+    let rest = store::agent(&mut connection,&live[0].session,&ChiefAgentAction::ContextSnapshot {
+        after:first["snapshot_next"].as_i64().unwrap(),limit:50,generation:Some(first["snapshot_generation"].as_str().unwrap().into()),
+    },&live,30_100).unwrap().result.unwrap();
+    assert_eq!((rest["records"].as_array().unwrap().len(),rest["has_more"].clone()),(50,json!(false)),"the old snapshot ends exactly at the turn budget");
+    assert!(stopped_records(&rest).is_empty(),"the frozen snapshot predates the stop");
+    assert_eq!(store::agent(&mut connection,&live[0].session,&ChiefAgentAction::Context {after:rest["event_cursor"].as_i64().unwrap(),limit:50},&live,30_100)
+        .unwrap().result.unwrap_err().code,ErrorCode::Limit);
+    observed_at(&mut live,60_100);
+    let resumed = admit_events(&mut connection,&live,"unread-stop",60_100);
+    assert_eq!(resumed.envelope["context_continuation"]["resume_after"],rest["event_cursor"],"{}",resumed.envelope);
+    let context = store::agent(&mut connection,&live[0].session,&ChiefAgentAction::Context {after:rest["event_cursor"].as_i64().unwrap(),limit:50},&live,60_100).unwrap().result.unwrap();
+    assert_eq!(stopped_records(&context)[0]["stop"],stop.as_str(),"{context}");
+    assert_eq!(stopped_records(&context)[0]["bundle"]["last_assistant"],"Which option do you want?");
+    store::agent(&mut connection,&live[0].session,&ChiefAgentAction::Answer {stop:stop.clone(),text:"Use option A.".into(),
+        reason:"The task notes say to keep the old API.".into(),habits:vec![]},&live,60_200).unwrap().result.unwrap();
+    let dispatch = claim_answer_at(&mut connection,&live,&[],GRACE_END_MS).expect("the answer reaches the stopped session");
+    store::finish_for(&mut connection,&live[1].session,&dispatch.id,&cockpit::teams::TransportOutcome::Received {native_id:format!("msg_cockpit{}",dispatch.message_id)},GRACE_END_MS).unwrap();
+    assert_eq!(answer_log(&connection)[0].5,"received");
+    assert!(unread_notices(&connection).is_empty());
+}
+
+#[test]
+fn a_wake_after_a_caught_up_turn_resumes_from_the_chiefs_position_instead_of_a_new_snapshot() {
+    let (mut connection,mut live) = setup(); enable_events(&mut connection,&live); admit_events(&mut connection,&live,"bootstrap",100);
+    let caught_up = read_all_context(&mut connection,&live,100);
+    observed_at(&mut live,30_100);
+    store::record_stop(&mut connection,&live[1].session,STOP_BOUNDARY,&stopped_task(),&stop_bundle_fixture("Which option?"),30_100).unwrap().unwrap();
+    let wake = admit_events(&mut connection,&live,"new-stop",30_100);
+    assert_eq!(wake.envelope["context_continuation"]["resume_after"],caught_up["event_cursor"]);
+}
+
+#[test]
+fn a_chief_that_stops_reading_is_rewoken_a_bounded_number_of_times_then_shown_to_theo_once() {
+    let (mut connection,mut live) = setup(); enable_events(&mut connection,&live); admit_events(&mut connection,&live,"bootstrap",100);
+    observed_at(&mut live,30_100);
+    admit_events(&mut connection,&live,"unread-retry-1",30_100);
+    assert!(unread_notices(&connection).is_empty());
+    observed_at(&mut live,60_100);
+    admit_events(&mut connection,&live,"unread-retry-2",60_100);
+    for now in [90_100,120_100,150_100] {
+        observed_at(&mut live,now);
+        store::observe(&mut connection,&live,now).unwrap();
+        assert!(store::claim(&mut connection,&live[0].session,&format!("unread-{now}"),now).unwrap().is_none(),"re-waking stops after three unread turns");
+    }
+    let notices = unread_notices(&connection);
+    assert_eq!(notices.len(),1,"{notices:?}");
+    assert_eq!((notices[0].0.as_str(),notices[0].1),("open",1),"an unchanged blocker is not repeated");
+    assert!(notices[0].2.contains("read through event 0"),"{}",notices[0].2);
+    assert_eq!(connection.query_row("SELECT count(*) FROM chief_attention a JOIN chief_decisions d ON d.id=a.decision WHERE d.decision_key='context_unread'",[],|row|row.get::<_,i64>(0)).unwrap(),1);
+}
+
+#[test]
+fn a_busy_chief_is_not_reported_as_leaving_context_unread() {
+    let (mut connection,mut live) = setup(); enable_events(&mut connection,&live); admit_events(&mut connection,&live,"bootstrap",100);
+    observed_at(&mut live,30_100); admit_events(&mut connection,&live,"unread-retry-1",30_100);
+    observed_at(&mut live,60_100); admit_events(&mut connection,&live,"unread-retry-2",60_100);
+    live[0].ready=false;
+    live[0].blocked_by=vec!["native_busy".into()];
+    observed_at(&mut live,90_100);
+    store::observe(&mut connection,&live,90_100).unwrap();
+    assert!(unread_notices(&connection).is_empty(),"its turn may still be reading");
+}
+
+#[test]
+fn a_snapshot_read_across_full_budget_turns_is_progress_not_an_unread_notice() {
+    let (mut connection,mut live) = setup(); enable_events(&mut connection,&live);
+    for index in 0..95 { context_decision(&connection,&format!("open-{index}"),"open",50,None); }
+    for index in 0..20 { context_decision(&connection,&format!("resolved-{index}"),"resolved",40,Some(60)); }
+    admit_events(&mut connection,&live,"bootstrap",100);
+    let mut page = store::agent(&mut connection,&live[0].session,&ChiefAgentAction::Context {after:0,limit:50},&live,100).unwrap().result.unwrap();
+    let (generation,mut after) = (page["snapshot_generation"].clone(),page["snapshot_next"].as_i64().unwrap());
+    for (turn,now) in [("snapshot-2",30_100),("snapshot-3",60_100)] {
+        observed_at(&mut live,now);
+        let wake = admit_events(&mut connection,&live,turn,now);
+        assert_eq!(wake.envelope["context_continuation"]["snapshot_after"],after);
+        page = store::agent(&mut connection,&live[0].session,&ChiefAgentAction::ContextSnapshot {after,limit:50,generation:Some(generation.as_str().unwrap().into())},&live,now).unwrap().result.unwrap();
+        after = page["next"].as_i64().unwrap();
+        assert!(unread_notices(&connection).is_empty());
+    }
+    assert_eq!(page["has_more"],false);
+    let delta = store::agent(&mut connection,&live[0].session,&ChiefAgentAction::Context {after:page["event_cursor"].as_i64().unwrap(),limit:50},&live,60_100).unwrap().result.unwrap();
+    assert_eq!((delta["snapshot_required"].clone(),delta["has_more"].clone()),(json!(false),json!(false)),"{delta}");
+    observed_at(&mut live,90_100);
+    store::observe(&mut connection,&live,90_100).unwrap();
+    assert!(store::claim(&mut connection,&live[0].session,"caught-up",90_100).unwrap().is_none());
+    assert!(unread_notices(&connection).is_empty());
+}
+
+#[test]
+fn a_paused_chief_is_not_rewoken_for_unread_context() {
+    let (mut connection,mut live) = setup(); let grant = enable_events(&mut connection,&live); admit_events(&mut connection,&live,"bootstrap",100);
+    store::host(&mut connection,&ChiefHostAction::Pause {request_id:"pause-unread".into(),expected_epoch:grant["epoch"].as_str().unwrap().into()},&live,200).unwrap().result.unwrap();
+    observed_at(&mut live,30_100);
+    store::observe(&mut connection,&live,30_100).unwrap();
+    assert_eq!(queued_wakes(&connection),0);
+    assert!(unread_notices(&connection).is_empty());
+}
+
+#[test]
+fn an_unread_rewake_is_dropped_when_the_chief_read_on_before_it_arrived() {
+    let (mut connection,mut live) = setup(); enable_events(&mut connection,&live); admit_events(&mut connection,&live,"bootstrap",100);
+    observed_at(&mut live,30_100);
+    store::observe(&mut connection,&live,30_100).unwrap();
+    assert_eq!(queued_wakes(&connection),1);
+    read_all_context(&mut connection,&live,30_100);
+    assert!(store::claim(&mut connection,&live[0].session,"read-meanwhile",30_200).unwrap().is_none());
+    assert_eq!(queued_wakes(&connection),0);
+}
+
+#[test]
+fn a_full_decision_list_does_not_stop_material_wakes_after_unread_turns() {
+    let (mut connection,mut live) = setup(); enable_events(&mut connection,&live); admit_events(&mut connection,&live,"bootstrap",100);
+    observed_at(&mut live,30_100); admit_events(&mut connection,&live,"unread-retry-1",30_100);
+    observed_at(&mut live,60_100); admit_events(&mut connection,&live,"unread-retry-2",60_100);
+    for index in 0..100 { context_decision(&connection,&format!("open-{index}"),"open",50,None); }
+    observed_at(&mut live,90_100);
+    store::observe(&mut connection,&live,90_100).unwrap();
+    assert!(unread_notices(&connection).is_empty());
+    store::record_stop(&mut connection,&live[1].session,STOP_BOUNDARY,&stopped_task(),&stop_bundle_fixture("Which option?"),90_100).unwrap().unwrap();
+    admit_events(&mut connection,&live,"stop-despite-full-decisions",90_100);
+}
+
+#[test]
+fn turns_admitted_before_the_upgrade_never_trigger_an_unread_rewake() {
+    let (mut connection,mut live) = setup(); enable_events(&mut connection,&live); admit_events(&mut connection,&live,"legacy",100);
+    connection.execute_batch("ALTER TABLE chief_turns DROP COLUMN read_through;").unwrap();
+    store::migrate(&mut connection).unwrap();
+    let legacy: Option<i64> = connection.query_row("SELECT read_through FROM chief_turns",[],|row|row.get(0)).unwrap();
+    assert_eq!(legacy,None);
+    observed_at(&mut live,30_100);
+    store::observe(&mut connection,&live,30_100).unwrap();
+    assert_eq!(queued_wakes(&connection),0);
 }
