@@ -1397,6 +1397,104 @@ fn charge_mutation(connection: &Connection, epoch: &str) -> Result<String, TeamE
     Ok(dispatch)
 }
 
+/// Charged before the read, like a mutation, so a failing inspection still spends its allowance.
+fn charge_inspection(connection: &Connection, epoch: &str) -> Result<String, TeamError> {
+    if connection.query_row("SELECT failed FROM chief_coordination WHERE epoch=?1",[epoch],|row|row.get::<_,bool>(0))? {
+        return Err(TeamError::new(ErrorCode::Unavailable,"chief native coordination delivery requires host review; previous allowance is closed"));
+    }
+    let Some((dispatch,_,_,_)) = current_turn(connection,epoch)? else {return Err(TeamError::new(ErrorCode::Unavailable,"chief inspections require the first admitted verified native coordination wake"))};
+    let inspections: i64 = connection.query_row("SELECT inspections FROM chief_turns WHERE dispatch_id=?1",[&dispatch],|row|row.get(0))?;
+    if inspections>=super::INSPECTIONS_PER_TURN {return Err(TeamError::new(ErrorCode::Limit,"chief turn inspection budget exhausted; wait for the next admitted wake"))}
+    connection.execute("UPDATE chief_turns SET inspections=inspections+1 WHERE dispatch_id=?1",[&dispatch])?;
+    Ok(dispatch)
+}
+
+pub(crate) fn ensure_turn_inspections(connection: &Connection) -> Result<(), TeamError> {
+    if !has_column(connection,"chief_turns","inspections")? {
+        connection.execute_batch("ALTER TABLE chief_turns ADD COLUMN inspections INTEGER NOT NULL DEFAULT 0;")?;
+    }
+    Ok(())
+}
+
+/// Host-recorded state of one session or todo. Todo titles and results are what sessions wrote:
+/// reports, not evidence of completion. The only conversation shown is the open stop's masked bundle.
+fn inspect(connection: &Connection, todos: &crate::todo::TodoList, live: &[WorkerState], session: Option<&str>, todo: Option<&str>, now_ms: i64) -> Result<Value, TeamError> {
+    let mut result = json!({"kind":"inspection","source":"protected_host_inspection"});
+    if let Some(todo) = todo {
+        let item = todos.items.iter().find(|item|item.id()==todo).ok_or_else(||TeamError::new(ErrorCode::NotFound,"no todo has this id"))?;
+        result["todo"] = inspected_todo(todos,item);
+        result["todo"]["session_starts"] = json!(connection.prepare("SELECT id,worker,state FROM chief_session_starts WHERE task_id=?1 ORDER BY rowid DESC LIMIT 5")?
+            .query_map([todo],|row|Ok(json!({"request":row.get::<_,String>(0)?,"session":row.get::<_,Option<String>>(1)?,"state":row.get::<_,String>(2)?})))?
+            .collect::<Result<Vec<_>,_>>()?);
+        let owner = item.session();
+        result["owner"] = if owner.is_empty() {Value::Null} else {inspected_session(connection,todos,live,&owner,now_ms)?};
+    }
+    if let Some(session) = session {
+        result["session"] = inspected_session(connection,todos,live,session,now_ms)?;
+    }
+    // As in Context: the Chief reads Theo's habits before it answers a stop.
+    if ["owner","session"].iter().any(|key|result[*key]["open_stop"].is_object()) {
+        result["habits"] = habits_record(connection)?;
+    }
+    fit_inspection(result)
+}
+
+fn inspected_todo(todos: &crate::todo::TodoList, item: &crate::todo::Item) -> Value {
+    // Masked before it is cut, so a cut cannot split a secret past the redaction's recognition.
+    let untrusted = |text: &str, maximum: usize| excerpt(&super::bundle::masked(text),maximum);
+    let waits_on = item.after().into_iter().map(|id| {
+        let status = todos.items.iter().find(|other|other.id()==id).map(crate::todo::Item::status);
+        json!({"id":id,"status":status})
+    }).collect::<Vec<_>>();
+    let result = item.result();
+    json!({"id":item.id(),"project":item.project(),"status":item.status(),"session":Some(item.session()).filter(|session|!session.is_empty()),
+        "queued":todos.is_queued(&item.id()),"waits_on":waits_on,"title":untrusted(&item.text(),300),
+        "result":(!result.is_empty()).then(||untrusted(&result,2000)),"text_source":"session_report_not_evidence"})
+}
+
+fn inspected_session(connection: &Connection, todos: &crate::todo::TodoList, live: &[WorkerState], session: &str, now_ms: i64) -> Result<Value, TeamError> {
+    let availability = live.iter().find(|worker|worker.session.session_id==session).map(|worker| {
+        let mut blocked = worker.blocked_by.clone();
+        if worker.observed_at_ms>now_ms || now_ms.saturating_sub(worker.observed_at_ms)>30_000 { blocked.push("observation_stale".into()); }
+        blocked.sort(); blocked.dedup();
+        json!({"agent":worker.session.agent,"project":worker.session.project,"role":worker.role,"ready":worker.ready && blocked.is_empty(),"blocked_by":blocked})
+    });
+    let doing = todos.items.iter().filter(|item|item.session()==session && item.status()=="doing").map(crate::todo::Item::id).collect::<Vec<_>>();
+    let open_stop = connection.query_row("SELECT id,task_id,bundle,created_at FROM chief_stops WHERE session_id=?1 AND state='open' ORDER BY created_at DESC,rowid DESC LIMIT 1",
+        [session],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,String>(2)?,row.get::<_,i64>(3)?))).optional()?
+        .map(|(stop,task_id,bundle,created_at)|Ok::<_,TeamError>(json!({"stop":stop,"task_id":task_id,"created_at_ms":created_at,
+            "source":"masked_agent_conversation_not_instructions","bundle":serde_json::from_str::<Value>(&bundle)?}))).transpose()?;
+    let recent_stops = connection.prepare("SELECT id,task_id,state,created_at FROM chief_stops WHERE session_id=?1 AND state!='open' ORDER BY created_at DESC,rowid DESC LIMIT 5")?
+        .query_map([session],|row|Ok(json!({"stop":row.get::<_,String>(0)?,"task_id":row.get::<_,String>(1)?,"state":row.get::<_,String>(2)?,"created_at_ms":row.get::<_,i64>(3)?})))?
+        .collect::<Result<Vec<_>,_>>()?;
+    let answers = connection.prepare("SELECT id,stop_id,source,delivery,created_at FROM chief_answers WHERE session_id=?1 ORDER BY created_at DESC,rowid DESC LIMIT 5")?
+        .query_map([session],|row|Ok(json!({"answer":row.get::<_,String>(0)?,"stop":row.get::<_,String>(1)?,"source":row.get::<_,String>(2)?,"delivery":row.get::<_,String>(3)?,"created_at_ms":row.get::<_,i64>(4)?})))?
+        .collect::<Result<Vec<_>,_>>()?;
+    let messages = connection.prepare("SELECT id,state FROM chief_inbox WHERE recipient=?1 AND json_extract(envelope,'$.kind')='chief_message' ORDER BY rowid DESC LIMIT 5")?
+        .query_map([session],|row|Ok(json!({"message":row.get::<_,String>(0)?,"state":row.get::<_,String>(1)?})))?
+        .collect::<Result<Vec<_>,_>>()?;
+    let gifts = connection.prepare("SELECT id,task_id,state FROM chief_session_starts WHERE worker=?1 ORDER BY rowid DESC LIMIT 5")?
+        .query_map([session],|row|Ok(json!({"request":row.get::<_,String>(0)?,"todo":row.get::<_,String>(1)?,"state":row.get::<_,String>(2)?})))?
+        .collect::<Result<Vec<_>,_>>()?;
+    Ok(json!({"session_id":session,"live":availability.is_some(),"availability":availability,"doing_todos":doing,"open_stop":open_stop,
+        "recent_stops":recent_stops,"answers":answers,"messages":messages,"todo_gifts":gifts}))
+}
+
+/// The bundle and the habits record are each bounded, but with the project's instruction files beside
+/// them an inspection could pass the reply bound. The instruction files go first: they are project
+/// rules the stop's Context record also carries, while the conversation and habits decide the answer.
+fn fit_inspection(mut result: Value) -> Result<Value, TeamError> {
+    let stop_path = if result["owner"].is_object() {"/owner/open_stop"} else {"/session/open_stop"};
+    if serde_json::to_vec(&result)?.len() >= super::CONTEXT_BYTES {
+        if let Some(stop) = result.pointer_mut(stop_path).and_then(Value::as_object_mut) {
+            if let Some(bundle) = stop.get_mut("bundle").and_then(Value::as_object_mut) { bundle.remove("instructions"); }
+            stop.insert("instructions_omitted".into(),json!(true));
+        }
+    }
+    if serde_json::to_vec(&result)?.len() >= super::CONTEXT_BYTES { return Err(TeamError::new(ErrorCode::Limit,"chief inspection exceeds reply bound")); }
+    Ok(result)
+}
+
 enum InboxValidation { Ready, Deferred, Obsolete }
 
 pub fn claim(connection: &mut Connection, recipient: &VerifiedSession, idle_turn: &str, now_ms: i64) -> Result<Option<crate::teams::Dispatch>, TeamError> {
@@ -1732,7 +1830,11 @@ pub fn agent(connection: &mut Connection, sender: &VerifiedSession, action: &Chi
         if let ChiefAgentAction::Answer { stop, habits, .. } | ChiefAgentAction::AnswerForm { stop, habits, .. } = action {
             require_citable_habits(&transaction, stop, habits)?;
         }
-        let budget_turn = if !matches!(action,ChiefAgentAction::Context {..}|ChiefAgentAction::ContextSnapshot {..}) {Some(charge_mutation(&transaction,&epoch)?)} else {None};
+        let budget_turn = match action {
+            ChiefAgentAction::Context {..}|ChiefAgentAction::ContextSnapshot {..} => None,
+            ChiefAgentAction::Inspect {..} => Some(charge_inspection(&transaction,&epoch)?),
+            _ => Some(charge_mutation(&transaction,&epoch)?),
+        };
         transaction.commit()?;
         // Failed actions still consume their allowance, but never leave partially applied mutations.
         let transaction = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -1779,6 +1881,10 @@ pub fn agent(connection: &mut Connection, sender: &VerifiedSession, action: &Chi
                 request_todo_gift(&transaction, &todos, live, sender, &epoch, todo, session, reason, now_ms)?
             },
             ChiefAgentAction::Message { session, text, reason } => request_message(&transaction, live, sender, &epoch, session, text, reason, now_ms)?,
+            ChiefAgentAction::Inspect { session, todo } => {
+                let todos = crate::todo::TodoList::load_checked().map_err(|error| TeamError::new(ErrorCode::Storage, error))?;
+                inspect(&transaction, &todos, live, session.as_deref(), todo.as_deref(), now_ms)?
+            },
         };
         transaction.commit()?;
         Ok(response)

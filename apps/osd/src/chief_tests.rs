@@ -6,6 +6,8 @@ use cockpit::teams::{AgentAction, ErrorCode, HostRequest, VerifiedSession};
 mod workflow;
 #[path = "chief_completion_tests.rs"]
 mod completion;
+#[path = "chief_inspect_tests.rs"]
+mod inspect;
 
 fn start(bench: &mut Bench, request: &str) -> serde_json::Value {
     crate::teams::host(&mut bench.registry, std::process::id(), HostRequest::Chief {

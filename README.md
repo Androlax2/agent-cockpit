@@ -343,6 +343,23 @@ resume the session's existing task without reassigning it. A native receipt prov
 not task completion; an uncertain delivery is never resent. Requests are logged and audited without a
 banner, and Chief context records show its delivery state.
 
+### Following a session or todo to completion
+
+The Chief can look at one known session or todo even after its 50 Context records for the turn are
+spent:
+
+```json
+{"action":"chief","request":{"action":"inspect","todo":"5779dac9"}}
+{"action":"chief","request":{"action":"inspect","session":"ses_worker"}}
+```
+
+It returns the todo's status, owner and what it waits on, and for the owner (or the named session):
+whether it is live, its readiness and blockers, its open stop with the masked bundle, and the
+delivery state of the Chief's recent answers, messages and todo gifts. Runtime identities stay out.
+It is read-only, grants nothing, needs an admitted wake, and allows five per turn beside the record
+and mutation budgets. A todo's title and result are what sessions wrote: a report, not evidence.
+The Chief treats a todo as complete only once its status is done.
+
 Gifts and unclaimed messages lapse after ten minutes and are bound to the session runtime they
 named: a restarted conversation does not inherit them. Neither action wakes a sleeping session.
 Chief snapshot page one freezes the record list and event cursor; later pages read that copy,

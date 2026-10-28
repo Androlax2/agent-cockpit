@@ -95,7 +95,7 @@ fn is_theos_message(text: &str, is_first: bool) -> bool {
 
 fn unavailable(message: &str) -> TeamError { TeamError::new(ErrorCode::Unavailable, message) }
 
-fn masked(text: &str) -> String {
+pub(crate) fn masked(text: &str) -> String {
     let (redacted, _) = redact_secrets(text);
     escape_hiding(&redacted, "", "")
 }
