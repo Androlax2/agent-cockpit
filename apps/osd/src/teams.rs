@@ -109,6 +109,7 @@ pub(crate) fn live_sessions(registry: &mut Registry) -> Result<Vec<VerifiedSessi
     cockpit::chief::store::observe_resumed(registry.teams.as_ref().expect("opened above"), &live)?;
     let todos = registry.resolved_todos.current();
     cockpit::chief::store::reconcile_todos(registry.teams.as_mut().expect("opened above"), todos, now_ms())?;
+    cockpit::chief::store::record_todo_completions(registry.teams.as_mut().expect("opened above"), todos, now_ms())?;
     // A session the cockpit started for an approved team takes its role at its first verified request.
     let tokens: Vec<(String, VerifiedSession)> = live.iter().filter_map(|session| registry.sessions.get(&session.session_id)
         .filter(|entry| !entry.spawn_token.is_empty()).map(|entry| (entry.spawn_token.clone(), session.clone()))).collect();

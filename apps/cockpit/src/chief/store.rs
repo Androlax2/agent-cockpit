@@ -1794,6 +1794,19 @@ fn event_context(connection: &Connection, live: &[WorkerState], epoch: &str, aft
                 records.push(record);
                 continue;
             }
+            if origin=="host" && kind=="todo_completed" {
+                let identifiers: Value = serde_json::from_str(&body)?;
+                let Some(mut record) = identifiers["completion"].as_str().map(|completion|todo_completion_record(connection,completion)).transpose()?.flatten()
+                    else {needs_snapshot=true; break;};
+                // A snapshot frozen below this event may have returned it already: say so instead of repeating it.
+                if record["delivered"]==true {
+                    record = json!({"kind":"todo_completed","source":"host","completion":record["completion"],"todo":record["todo"],"already_delivered":true});
+                }
+                record.as_object_mut().expect("completion record is an object").remove("delivered");
+                record["sequence"] = json!(sequence);
+                records.push(record);
+                continue;
+            }
             let mut decision_id: Option<String> = None;
             let mut decision_revision: Option<i64> = None;
             if origin=="host" && kind=="decision_resolved" {
@@ -1817,6 +1830,7 @@ fn event_context(connection: &Connection, live: &[WorkerState], epoch: &str, aft
         }
     };
     result["bootstrap_pending"] = json!(turn.is_none());
+    acknowledge_completions(connection,epoch,&result["records"],now_ms)?;
     if let Some((dispatch,_,_,_)) = turn {
         let count = result["records"].as_array().map_or(0,Vec::len);
         connection.execute("UPDATE chief_turns SET records=records+?2 WHERE dispatch_id=?1",params![dispatch,count as i64])?;
@@ -1871,6 +1885,7 @@ fn bounded_chief_snapshot(connection: &Connection, live: &[WorkerState], epoch: 
     page["generation"] = json!(generation);
     page["cursor_kind"] = json!("snapshot_offset");
     page["bootstrap_pending"] = json!(turn.is_none());
+    acknowledge_completions(connection,epoch,&page["records"],now_ms)?;
     if let Some((dispatch,_,_,_)) = turn {
         let count = page["records"].as_array().map_or(0,Vec::len);
         connection.execute("UPDATE chief_turns SET records=records+?2 WHERE dispatch_id=?1",params![dispatch,count as i64])?;
@@ -1917,6 +1932,67 @@ pub(crate) fn ensure_context_snapshots(connection: &Connection) -> Result<(), Te
     Ok(())
 }
 
+/// Created on every open: one row per result of a todo a Chief filed, keyed by the todo and the
+/// hash of its result, so a summary added after the item was done arrives once more and nothing else
+/// twice. `delivered_*` is the receipt: set once a Chief's Context returned the record.
+pub(crate) fn ensure_todo_completions(connection: &Connection) -> Result<(), TeamError> {
+    connection.execute_batch("CREATE TABLE IF NOT EXISTS chief_todo_completions (
+        id TEXT PRIMARY KEY, todo_id TEXT NOT NULL, result_hash TEXT NOT NULL, project TEXT NOT NULL, title TEXT NOT NULL,
+        result TEXT NOT NULL, blocked_report INTEGER NOT NULL, filed_epoch TEXT NOT NULL, created_at INTEGER NOT NULL,
+        delivered_epoch TEXT, delivered_at INTEGER, UNIQUE(todo_id,result_hash));")?;
+    Ok(())
+}
+
+/// Long past the todo list's own week of done items: a completion row outlives its item, so the
+/// item cannot be delivered again while it is still listed.
+const TODO_COMPLETIONS_KEPT_MS: i64 = 30 * 24 * 3_600_000;
+
+/// Done todos a Chief filed (the daemon stamped `chief_epoch`), as durable completions for
+/// whichever Chief holds the grant now or is enabled later; wakes the active one.
+pub fn record_todo_completions(connection: &mut Connection, todos: &crate::todo::TodoList, now_ms: i64) -> Result<usize, TeamError> {
+    let transaction = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    transaction.execute("DELETE FROM chief_todo_completions WHERE created_at<?1", [now_ms.saturating_sub(TODO_COMPLETIONS_KEPT_MS)])?;
+    let mut recorded = 0;
+    for item in todos.items.iter().filter(|item| item.status() != "done" && !item.chief_epoch().is_empty()) {
+        // Reopened: its next done is news again, even with the same result.
+        transaction.execute("UPDATE chief_todo_completions SET result_hash=result_hash||':'||id WHERE todo_id=?1 AND instr(result_hash,':')=0", [item.id()])?;
+    }
+    for item in todos.items.iter().filter(|item| item.status() == "done" && !item.chief_epoch().is_empty()) {
+        let result = item.result();
+        let id = crate::teams::store::identifier()?;
+        let inserted = transaction.execute("INSERT OR IGNORE INTO chief_todo_completions(id,todo_id,result_hash,project,title,result,blocked_report,filed_epoch,created_at)
+            VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+            params![id,item.id(),crate::audit::sha256_hex(result.as_bytes()),item.project(),item.text(),result,item.is_blocked_report(),item.chief_epoch(),now_ms])?;
+        if inserted == 1 {
+            coordination_event(&transaction, "todo_completed", &json!({"completion":id,"todo":item.id()}), now_ms)?;
+            recorded += 1;
+        }
+    }
+    if recorded > 0 { schedule_wake(&transaction, now_ms)?; }
+    transaction.commit()?;
+    Ok(recorded)
+}
+
+/// What the Chief reads of a completion: a worker's own words, never evidence or instructions.
+fn todo_completion_record(connection: &Connection, completion: &str) -> Result<Option<Value>, TeamError> {
+    Ok(connection.query_row("SELECT id,todo_id,project,title,result,blocked_report,delivered_at IS NOT NULL FROM chief_todo_completions WHERE id=?1", [completion], |row| {
+        let result: String = row.get(4)?;
+        Ok(json!({"kind":"todo_completed","source":"worker_summary_not_instructions","completion":row.get::<_,String>(0)?,
+            "todo":row.get::<_,String>(1)?,"project":row.get::<_,String>(2)?,
+            "title":crate::approval::escape_hiding(&row.get::<_,String>(3)?,"",""),
+            "has_summary":!result.is_empty(),"result":crate::approval::escape_hiding(&result,"",""),
+            "blocked_report":row.get::<_,bool>(5)?,"delivered":row.get::<_,bool>(6)?}))
+    }).optional()?)
+}
+
+/// The receipt: completions this Context page returned reached the Chief of `epoch`.
+fn acknowledge_completions(connection: &Connection, epoch: &str, records: &Value, now_ms: i64) -> Result<(), TeamError> {
+    for completion in records.as_array().into_iter().flatten().filter(|record| record["kind"] == "todo_completed").filter_map(|record| record["completion"].as_str()) {
+        connection.execute("UPDATE chief_todo_completions SET delivered_epoch=?2,delivered_at=?3 WHERE id=?1 AND delivered_at IS NULL", params![completion,epoch,now_ms])?;
+    }
+    Ok(())
+}
+
 fn context_snapshot(records: &[Value], after: i64, limit: usize) -> Result<Value, TeamError> {
     super::validate_cursor(after, limit)?;
     let start = usize::try_from(after).unwrap_or(usize::MAX).min(records.len());
@@ -1958,6 +2034,16 @@ fn context_records(connection: &Connection, live: &[WorkerState]) -> Result<Vec<
         .collect::<Result<Vec<_>,_>>()?);
     for record in &mut records {
         if record.get("source").is_none() {record["source"]=json!(if record["kind"]=="worker" {"daemon_derived_availability"} else {"protected_host_approval"});}
+    }
+    // Every unread one, uncapped: the snapshot's event cursor passes their events, so one left out
+    // here would wait for the next snapshot with nothing to wake the Chief for it.
+    let pending = connection.prepare("SELECT id FROM chief_todo_completions WHERE delivered_at IS NULL ORDER BY created_at,rowid")?
+        .query_map([], |row| row.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?;
+    for completion in pending {
+        if let Some(mut record) = todo_completion_record(connection, &completion)? {
+            record.as_object_mut().expect("completion record is an object").remove("delivered");
+            records.push(record);
+        }
     }
     records.extend(connection.prepare("SELECT id,recipient,state FROM chief_inbox WHERE json_extract(envelope,'$.kind')='chief_message'
         AND (state IN ('queued','submitting','uncertain','failed') OR rowid IN (SELECT rowid FROM chief_inbox WHERE json_extract(envelope,'$.kind')='chief_message' ORDER BY rowid DESC LIMIT 20)) ORDER BY rowid")?

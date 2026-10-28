@@ -107,6 +107,12 @@ fn elsewhere_open_max(update: &Map<String, Value>) -> usize {
     if update.get("chief_epoch").and_then(Value::as_str).is_some_and(|epoch| !epoch.is_empty()) { CHIEF_ELSEWHERE_OPEN_MAX } else { ELSEWHERE_OPEN_MAX }
 }
 
+fn stamp_chief_origin(item: &mut Item, update: &Map<String, Value>) {
+    if let Some(epoch) = update.get("chief_epoch").and_then(Value::as_str).filter(|epoch| !epoch.is_empty()) {
+        item.0.insert("chief_epoch".into(), json!(epoch));
+    }
+}
+
 fn stack_checkout(repo: &str) -> Option<std::path::PathBuf> {
     match repo {
         "greywall" => Some(paths::greywall_work()),
@@ -180,6 +186,9 @@ impl Item {
     pub fn is_design(&self) -> bool { self.text_of("kind") == "design" }
     /// A session elsewhere could not do something because of the setup (claude-todo blocked).
     pub fn is_blocked_report(&self) -> bool { self.text_of("kind") == "blocked" }
+    /// The Chief grant the daemon verified for the session that filed it (never one the filing
+    /// names): its completion goes to whichever Chief holds the grant then, not to that session.
+    pub fn chief_epoch(&self) -> String { self.text_of("chief_epoch") }
     /// The project whose session filed a blocked report.
     pub fn reporter(&self) -> String { self.text_of("reporter") }
     /// The images pasted into the notes: "[Image N]" there is N here.
@@ -436,6 +445,15 @@ fn tell_reporter_to_retry(item: &Item) {
 /// way as a fixed blocked report.
 fn tell_filer_it_is_done(item: &Item) {
     tell_reporter(item, &done_prompt(item), "link.done");
+}
+
+/// An item the Chief filed: the daemon hands its result to the Chief holding the grant now
+/// (chief::store::record_todo_completions), so the session that filed it, maybe a Chief since
+/// replaced, gets no prompt of its own.
+fn leave_to_the_current_chief(item: &Item) {
+    let id = item.id();
+    util::log_event("INFO", &format!("todo {id} done: filed by the Chief, its result goes to the current Chief's context"));
+    crate::audit::record("column", "chief.done", "routed", json!({"id": id, "chief_epoch": item.chief_epoch(), "session": item.text_of("reporter_session")}));
 }
 
 fn tell_reporter(item: &Item, message: &str, audit_event: &str) {
@@ -958,7 +976,9 @@ impl TodoList {
             *self = updated;
             if let Some(item) = reopening { reopen_item(&item, &guard).map_err(std::io::Error::other)?; }
             if let Some(finished) = finished {
-                if finished.is_blocked_report() {
+                if !finished.chief_epoch().is_empty() {
+                    leave_to_the_current_chief(&finished);
+                } else if finished.is_blocked_report() {
                     tell_reporter_to_retry(&finished);
                 } else if !finished.link().is_empty() {
                     tell_filer_it_is_done(&finished);
@@ -1030,6 +1050,7 @@ impl TodoList {
             item.0.insert("source".into(), json!(if session.is_empty() { "a session".to_string() } else { format!("session {session}") }));
             item.0.insert("reporter_session".into(), json!(session));
             item.0.insert("started_in".into(), json!(started_in));
+            stamp_chief_origin(item, update);
         }
         self.queued.insert(id.clone());
         self.remember_filing(&id, update);
@@ -1197,6 +1218,7 @@ impl TodoList {
                 item.0.insert("reporter_session".into(), json!(session));
                 item.0.insert("started_in".into(), json!(started_in));
             }
+            stamp_chief_origin(item, update);
             if !pending.is_empty() {
                 item.0.insert("after".into(), json!(pending));
             }
@@ -1354,6 +1376,7 @@ impl TodoList {
             if let Some(item) = self.items.iter_mut().find(|item| item.id() == id) {
                 item.0.insert("source".into(), json!(if session.is_empty() { "a session".to_string() } else { format!("session {session}") }));
                 item.0.insert("notes".into(), json!(field("notes", NOTES_MAX)));
+                stamp_chief_origin(item, &update);
                 if let Some(category) = category {
                     item.0.insert("category".into(), json!(category.as_str()));
                 }
