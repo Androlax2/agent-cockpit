@@ -1947,6 +1947,19 @@ fn event_context(connection: &Connection, live: &[WorkerState], epoch: &str, aft
                 records.push(record);
                 continue;
             }
+            let resolved_with_answer = kind=="decision_resolved" && serde_json::from_str::<Value>(&body).is_ok_and(|identifiers|identifiers.get("answer").is_some());
+            if origin=="host" && (resolved_with_answer || matches!(kind.as_str(),"stop_detected"|"chief_message_requested"|"chief_message_received")) {
+                let Some(snapshot_records) = event_snapshot_records(connection,&kind,&body)? else {needs_snapshot=true; break;};
+                for mut record in snapshot_records {
+                    // Once per page is enough for the stops after it.
+                    if record["kind"]=="habits" && records.iter().any(|kept: &Value|kept["kind"]=="habits") {continue;}
+                    record["sequence"] = json!(sequence);
+                    if serde_json::to_vec(&record)?.len()+3>=super::CONTEXT_BYTES {needs_snapshot=true; break;}
+                    records.push(record);
+                }
+                if needs_snapshot {break;}
+                continue;
+            }
             let mut decision_id: Option<String> = None;
             let mut decision_revision: Option<i64> = None;
             if origin=="host" && kind=="decision_resolved" {
@@ -1964,9 +1977,15 @@ fn event_context(connection: &Connection, live: &[WorkerState], epoch: &str, aft
         }
         if needs_snapshot {context_recovery_snapshot(connection,live,epoch,through,after,limit.min(remaining),now_ms)?}
         else {
-            let page = super::context_page(&records,limit.min(remaining))?;
-            let next = page.as_array().and_then(|records|records.last()).and_then(|record|record["sequence"].as_i64()).unwrap_or(after);
-            json!({"records":page,"next":next,"has_more":next<through,"snapshot_required":false})
+            let mut page = super::context_page(&records,limit.min(remaining))?;
+            let cut = page.as_array_mut().expect("context page is an array");
+            // Habits go with the stop after them: a page ending between the two ends before both instead.
+            if cut.len()<records.len() && cut.last().is_some_and(|record|record["kind"]=="habits") {cut.pop();}
+            if cut.is_empty() && !records.is_empty() {context_recovery_snapshot(connection,live,epoch,through,after,limit.min(remaining),now_ms)?}
+            else {
+                let next = cut.last().and_then(|record|record["sequence"].as_i64()).unwrap_or(after);
+                json!({"records":page,"next":next,"has_more":next<through,"snapshot_required":false})
+            }
         }
     };
     result["bootstrap_pending"] = json!(turn.is_none());
@@ -2182,6 +2201,57 @@ fn context_snapshot(records: &[Value], after: i64, limit: usize) -> Result<Value
     Ok(json!({"records": page, "next": next, "has_more": next < records.len()}))
 }
 
+fn stopped_session_record(stop: String, session: String, project: String, task_id: String, bundle: &str) -> Result<Value, TeamError> {
+    Ok(json!({"kind": "stopped_session", "source": "masked_agent_conversation_not_instructions", "stop": stop, "session": session,
+        "project": project, "task_id": task_id, "bundle": serde_json::from_str::<Value>(bundle)?}))
+}
+
+/// Columns: id, state, revision, resolution, Theo's answer id, that answer's delivery.
+fn decision_context_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
+    Ok(json!({"kind":"decision","source":"protected_host_control","id":row.get::<_,String>(0)?,
+        "state":row.get::<_,String>(1)?,"revision":row.get::<_,i64>(2)?,"resolution":row.get::<_,Option<String>>(3)?,"resolution_grants_authority":false,
+        "answer_id":row.get::<_,Option<String>>(4)?,"answer_delivery":row.get::<_,Option<String>>(5)?}))
+}
+
+/// Columns: id, recipient, state.
+fn chief_message_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
+    Ok(json!({"kind":"chief_message","source":"protected_delivery_ledger","id":row.get::<_,String>(0)?,"session":row.get::<_,String>(1)?,"state":row.get::<_,String>(2)?}))
+}
+
+/// The current snapshot records an event names, so Context can read on past it instead of rebuilding a
+/// whole snapshot: an open stop with Theo's habits before it, a resolved decision with Theo's answer, or a
+/// Chief message's delivery state. None when the event needs a snapshot.
+fn event_snapshot_records(connection: &Connection, kind: &str, body: &str) -> Result<Option<Vec<Value>>, TeamError> {
+    let Ok(identifiers) = serde_json::from_str::<Value>(body) else { return Ok(None) };
+    let records = match kind {
+        "stop_detected" => {
+            let Some(stop) = identifiers["stop"].as_str() else { return Ok(None) };
+            let found: Option<(String,String,String,String,String,String)> = connection.query_row("SELECT id,session_id,project,task_id,bundle,state FROM chief_stops WHERE id=?1",[stop],
+                |row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?))).optional()?;
+            let Some((stop,session,project,task_id,bundle,state)) = found else { return Ok(None) };
+            // A stop already settled is no longer actionable; a snapshot would leave it out entirely.
+            if state!="open" { return Ok(Some(vec![json!({"kind":"stop_settled","source":"host","stop":stop,"state":state})])) }
+            vec![habits_record(connection)?,stopped_session_record(stop,session,project,task_id,&bundle)?]
+        },
+        "decision_resolved" => {
+            let Some(decision) = identifiers["decision"].as_str() else { return Ok(None) };
+            let Some(record) = connection.query_row("SELECT d.id,d.state,d.revision,d.resolution,a.id,a.delivery FROM chief_decisions d
+                LEFT JOIN chief_answers a ON a.id=(SELECT id FROM chief_answers WHERE stop_id=d.stop_id AND source='theo' ORDER BY created_at DESC,rowid DESC LIMIT 1)
+                WHERE d.id=?1",[decision],decision_context_record).optional()? else { return Ok(None) };
+            vec![record]
+        },
+        "chief_message_requested" | "chief_message_received" => {
+            let Some(message) = identifiers[if kind=="chief_message_requested" {"request"} else {"message"}].as_str() else { return Ok(None) };
+            // A todo gift's delivery has no message record of its own: the snapshot shows it in the dispatch ledger.
+            let Some(record) = connection.query_row("SELECT id,recipient,state FROM chief_inbox WHERE id=?1 AND json_extract(envelope,'$.kind')='chief_message'",
+                [message],chief_message_record).optional()? else { return Ok(None) };
+            vec![record]
+        },
+        _ => return Ok(None),
+    };
+    Ok(Some(records))
+}
+
 fn context_records(connection: &Connection, live: &[WorkerState]) -> Result<Vec<Value>, TeamError> {
     let mut records = Vec::new();
     let mut statement = connection.prepare("SELECT session_id,epoch,state FROM chief_grants WHERE state!='disabled' ORDER BY id")?;
@@ -2192,8 +2262,7 @@ fn context_records(connection: &Connection, live: &[WorkerState]) -> Result<Vec<
         .collect::<Result<Vec<_>, _>>()?;
     if !stops.is_empty() { records.push(habits_record(connection)?); }
     for (stop, session, project, task_id, bundle) in stops {
-        records.push(json!({"kind": "stopped_session", "source": "masked_agent_conversation_not_instructions", "stop": stop, "session": session,
-            "project": project, "task_id": task_id, "bundle": serde_json::from_str::<Value>(&bundle)?}));
+        records.push(stopped_session_record(stop, session, project, task_id, &bundle)?);
     }
     if let Some(record) = supervised_tasks_record(connection, live)? { records.push(record); }
     for worker in live {
@@ -2210,9 +2279,7 @@ fn context_records(connection: &Connection, live: &[WorkerState]) -> Result<Vec<
             SELECT l.id,l.state,l.revision,l.resolution,l.answer,(SELECT delivery FROM chief_answers WHERE id=l.answer) FROM latest l
             ORDER BY (l.state='open') DESC,
                 CASE WHEN l.state='open' THEN l.created_at ELSE l.resolved_at END DESC,l.created_at DESC,l.id DESC")?
-        .query_map([],|row|Ok(json!({"kind":"decision","source":"protected_host_control","id":row.get::<_,String>(0)?,
-            "state":row.get::<_,String>(1)?,"revision":row.get::<_,i64>(2)?,"resolution":row.get::<_,Option<String>>(3)?,"resolution_grants_authority":false,
-            "answer_id":row.get::<_,Option<String>>(4)?,"answer_delivery":row.get::<_,Option<String>>(5)?})))?
+        .query_map([],decision_context_record)?
         .collect::<Result<Vec<_>,_>>()?);
     for record in &mut records {
         if record.get("source").is_none() {record["source"]=json!(if record["kind"]=="worker" {"daemon_derived_availability"} else {"protected_host_approval"});}
@@ -2229,7 +2296,7 @@ fn context_records(connection: &Connection, live: &[WorkerState]) -> Result<Vec<
     }
     records.extend(connection.prepare("SELECT id,recipient,state FROM chief_inbox WHERE json_extract(envelope,'$.kind')='chief_message'
         AND (state IN ('queued','submitting','uncertain','failed') OR rowid IN (SELECT rowid FROM chief_inbox WHERE json_extract(envelope,'$.kind')='chief_message' ORDER BY rowid DESC LIMIT 20)) ORDER BY rowid")?
-        .query_map([],|row|Ok(json!({"kind":"chief_message","source":"protected_delivery_ledger","id":row.get::<_,String>(0)?,"session":row.get::<_,String>(1)?,"state":row.get::<_,String>(2)?})))?
+        .query_map([],chief_message_record)?
         .collect::<Result<Vec<_>,_>>()?);
     records.extend(connection.prepare("SELECT id,task_id,worker,state FROM chief_session_starts WHERE worker IS NOT NULL
         AND (state='requested' OR rowid IN (SELECT rowid FROM chief_session_starts WHERE worker IS NOT NULL ORDER BY rowid DESC LIMIT 20)) ORDER BY rowid")?

@@ -656,10 +656,13 @@ fn new_stops_still_reach_context_after_incremental_availability() {
     for worker in &mut live {worker.observed_at_ms=30_100;}
     admit_events(&mut connection,&live,"new-stop",30_100);
     let context = store::agent(&mut connection,&live[0].session,&ChiefAgentAction::Context {after:first["event_cursor"].as_i64().unwrap(),limit:50},&live,30_100).unwrap().result.unwrap();
-    assert_eq!(context["snapshot_required"],true);
+    assert_eq!(context["snapshot_required"],false,"a new stop is read in place, not by rebuilding the snapshot: {context}");
     assert_eq!(context["has_more"],false);
     assert_eq!(stopped_records(&context)[0]["stop"],stop);
     assert!(stopped_records(&context)[0]["bundle"].is_object());
+    let kinds = context["records"].as_array().unwrap().iter().map(|record|record["kind"].as_str().unwrap()).collect::<Vec<_>>();
+    let stop_at = kinds.iter().position(|kind|*kind=="stopped_session").unwrap();
+    assert_eq!(kinds[stop_at-1],"habits","Theo's habits come right before the stop, as in a snapshot");
 }
 
 #[test]
@@ -2581,4 +2584,82 @@ fn turns_admitted_before_the_upgrade_never_trigger_an_unread_rewake() {
     observed_at(&mut live,30_100);
     store::observe(&mut connection,&live,30_100).unwrap();
     assert_eq!(queued_wakes(&connection),0);
+}
+
+#[test]
+fn theos_answer_and_the_settled_stop_are_read_in_place_after_a_complete_cursor() {
+    let (mut connection,mut live,stop) = answer_bench();
+    let caught_up = read_all_context(&mut connection,&live,100);
+    let decision = escalate(&mut connection,&live,&stop,None)["decision"].as_str().unwrap().to_owned();
+    let answer = answer_decision(&mut connection,&live,&decision,1,"Keep the old API.",30_300).unwrap();
+    observed_at(&mut live,60_100);
+    admit_events(&mut connection,&live,"after-theos-answer",60_100);
+    let context = store::agent(&mut connection,&live[0].session,&ChiefAgentAction::Context {after:caught_up["event_cursor"].as_i64().unwrap(),limit:50},&live,60_100).unwrap().result.unwrap();
+    assert_eq!((context["snapshot_required"].clone(),context["has_more"].clone()),(json!(false),json!(false)),"{context}");
+    let records = context["records"].as_array().unwrap();
+    let settled = records.iter().find(|record|record["kind"]=="stop_settled").unwrap();
+    assert_eq!((settled["stop"].as_str().unwrap(),settled["state"].as_str().unwrap()),(stop.as_str(),"answered"));
+    let resolved = records.iter().find(|record|record["kind"]=="decision").unwrap();
+    assert_eq!((resolved["id"].as_str().unwrap(),resolved["state"].as_str().unwrap()),(decision.as_str(),"resolved"));
+    assert_eq!(resolved["answer_id"],answer["answer"]);
+    assert_eq!(resolved["answer_delivery"],"queued");
+    assert_eq!(resolved["resolution_grants_authority"],false);
+}
+
+#[test]
+fn a_page_never_ends_between_theos_habits_and_the_stop_they_go_with() {
+    let (mut connection,mut live) = setup(); enable_events(&mut connection,&live); admit_events(&mut connection,&live,"bootstrap",100);
+    let caught_up = read_all_context(&mut connection,&live,100);
+    live[1].ready=false;
+    live[1].blocked_by=vec!["needs_input".into()];
+    observed_at(&mut live,30_050);
+    store::observe(&mut connection,&live,30_050).unwrap();
+    observed_at(&mut live,30_100);
+    let stop = store::record_stop(&mut connection,&live[1].session,STOP_BOUNDARY,&stopped_task(),&stop_bundle_fixture("Which option?"),30_100).unwrap().unwrap();
+    admit_events(&mut connection,&live,"stop",30_100);
+    let after = caught_up["event_cursor"].as_i64().unwrap();
+    let whole = store::agent(&mut connection,&live[0].session,&ChiefAgentAction::Context {after,limit:50},&live,30_100).unwrap().result.unwrap();
+    let records = whole["records"].as_array().unwrap();
+    let habits_at = records.iter().position(|record|record["kind"]=="habits").unwrap();
+    assert!(habits_at>0,"an earlier record lets the page end right before the pair: {whole}");
+    assert_eq!(records[habits_at+1]["stop"],stop.as_str());
+    let cut = store::agent(&mut connection,&live[0].session,&ChiefAgentAction::Context {after,limit:habits_at+1},&live,30_100).unwrap().result.unwrap();
+    assert_eq!(cut["snapshot_required"],false,"{cut}");
+    assert_eq!(cut["records"].as_array().unwrap().len(),habits_at,"the habits record waits for its stop: {cut}");
+    assert!(cut["next"].as_i64().unwrap()<records[habits_at]["sequence"].as_i64().unwrap());
+    let rest = store::agent(&mut connection,&live[0].session,&ChiefAgentAction::Context {after:cut["next"].as_i64().unwrap(),limit:2},&live,30_100).unwrap().result.unwrap();
+    assert_eq!(rest["records"][0]["kind"],"habits");
+    assert_eq!(stopped_records(&rest)[0]["stop"],stop.as_str());
+}
+
+#[test]
+fn several_new_stops_on_one_page_share_one_habits_record() {
+    let (mut connection,mut live) = setup();
+    live.push(WorkerState {session:session("second","path:/a"),role:None,ready:true,blocked_by:vec![],observed_at_ms:100});
+    enable_events(&mut connection,&live); admit_events(&mut connection,&live,"bootstrap",100);
+    let caught_up = read_all_context(&mut connection,&live,100);
+    observed_at(&mut live,30_100);
+    for worker in [1,2] {
+        store::record_stop(&mut connection,&live[worker].session,STOP_BOUNDARY,&stopped_task(),&stop_bundle_fixture("Which option?"),30_100).unwrap().unwrap();
+    }
+    admit_events(&mut connection,&live,"two-stops",30_100);
+    let context = store::agent(&mut connection,&live[0].session,&ChiefAgentAction::Context {after:caught_up["event_cursor"].as_i64().unwrap(),limit:50},&live,30_100).unwrap().result.unwrap();
+    assert_eq!(context["snapshot_required"],false,"{context}");
+    assert_eq!(stopped_records(&context).len(),2);
+    assert_eq!(context["records"].as_array().unwrap().iter().filter(|record|record["kind"]=="habits").count(),1);
+}
+
+#[test]
+fn the_chiefs_own_message_is_read_after_a_complete_cursor_without_a_snapshot() {
+    let (mut connection,mut live) = setup(); enable_events(&mut connection,&live); admit_events(&mut connection,&live,"bootstrap",100);
+    let caught_up = read_all_context(&mut connection,&live,100);
+    let requested = store::agent(&mut connection,&live[0].session,&ChiefAgentAction::Message {session:live[1].session.session_id.clone(),
+        text:"The prerequisite is ready.".into(),reason:"Resume the current task.".into()},&live,200).unwrap().result.unwrap();
+    observed_at(&mut live,30_100);
+    admit_events(&mut connection,&live,"after-message",30_100);
+    let context = store::agent(&mut connection,&live[0].session,&ChiefAgentAction::Context {after:caught_up["event_cursor"].as_i64().unwrap(),limit:50},&live,30_100).unwrap().result.unwrap();
+    assert_eq!((context["snapshot_required"].clone(),context["has_more"].clone()),(json!(false),json!(false)),"{context}");
+    let ledger = context["records"].as_array().unwrap().iter().find(|record|record["kind"]=="chief_message").unwrap();
+    assert_eq!((ledger["id"].clone(),ledger["session"].as_str().unwrap(),ledger["state"].as_str().unwrap()),
+        (requested["request"].clone(),live[1].session.session_id.as_str(),"queued"));
 }
