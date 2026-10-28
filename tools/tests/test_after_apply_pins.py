@@ -1,20 +1,22 @@
 import http.server
 import json
 import os
-from pathlib import Path
 import shutil
 import subprocess
 import tempfile
 import threading
 import unittest
-
+from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 
 
 def git(directory, *arguments):
-    subprocess.run(["git", "-C", str(directory), "-c", "user.email=t@t", "-c", "user.name=t", *arguments],
-                   check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(directory), "-c", "user.email=t@t", "-c", "user.name=t", *arguments],
+        check=True,
+        capture_output=True,
+    )
 
 
 VERSION_LINE = {"greywall": "  Commit:  {commit}", "greyproxy": "  commit: {commit}"}
@@ -37,8 +39,12 @@ class AfterApplyPinTests(unittest.TestCase):
         git(self.repository, "init", "-q", "-b", "main")
         git(self.repository, "add", ".")
         git(self.repository, "commit", "-qm", "start")
-        self.before = subprocess.run(["git", "-C", str(self.repository), "rev-parse", "HEAD"],
-                                     check=True, capture_output=True, text=True).stdout.strip()
+        self.before = subprocess.run(
+            ["git", "-C", str(self.repository), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
         self.bin = root / "bin"
         self.bin.mkdir()
         self.log = root / "calls"
@@ -46,15 +52,24 @@ class AfterApplyPinTests(unittest.TestCase):
         (self.home / ".local/bin").mkdir(parents=True)
         for command in ["stow"]:
             self.fake(self.bin / command, "exit 0")
-        self.fake(self.bin / "systemctl", 'case "$2" in show) echo not-found; exit 0;; is-active|is-enabled) exit 1;; esac; exit 0')
+        self.fake(
+            self.bin / "systemctl",
+            'case "$2" in show) echo not-found; exit 0;; is-active|is-enabled) exit 1;; esac; exit 0',
+        )
         self.fake(self.bin / "curl", """printf '{"conversations":{"enabled":false}}'""")
         runtime = root / "run"
         runtime.mkdir()
         state = self.home / ".local/state"
         state.mkdir(parents=True)
-        self.environment = {**os.environ, "PATH": f"{self.bin}:{os.environ['PATH']}", "HOME": str(self.home),
-                            "XDG_RUNTIME_DIR": str(runtime), "XDG_STATE_HOME": str(state), "COCKPIT_STATE_HOME": str(state),
-                            "XDG_DATA_HOME": str(self.home / ".local/share")}
+        self.environment = {
+            **os.environ,
+            "PATH": f"{self.bin}:{os.environ['PATH']}",
+            "HOME": str(self.home),
+            "XDG_RUNTIME_DIR": str(runtime),
+            "XDG_STATE_HOME": str(state),
+            "COCKPIT_STATE_HOME": str(state),
+            "XDG_DATA_HOME": str(self.home / ".local/share"),
+        }
         for tool in VERSION_LINE:
             self.install(tool, self.pinned(tool))
 
@@ -67,7 +82,11 @@ class AfterApplyPinTests(unittest.TestCase):
 
     def pinned(self, tool):
         build = (self.repository / f"packages/{tool}/build.sh").read_text()
-        return next(line.split("=")[1][:40] for line in build.splitlines() if line.startswith(f"{tool}_commit="))
+        return next(
+            line.split("=")[1][:40]
+            for line in build.splitlines()
+            if line.startswith(f"{tool}_commit=")
+        )
 
     def install(self, tool, commit):
         line = VERSION_LINE[tool].format(commit=commit)
@@ -79,12 +98,17 @@ class AfterApplyPinTests(unittest.TestCase):
         line = VERSION_LINE[tool].format(commit=new_pin)
         (self.repository / f"packages/{tool}/build.sh").write_text(
             f"#!/bin/sh\n{tool}_commit={new_pin}\necho rebuilt {tool} >> {self.log}\n"
-            f"printf '#!/bin/sh\\nprintf \"{line}\\\\n\"\\n' > \"$HOME/.local/bin/{tool}\"\n")
+            f'printf \'#!/bin/sh\\nprintf "{line}\\\\n"\\n\' > "$HOME/.local/bin/{tool}"\n'
+        )
         git(self.repository, "commit", "-qam", f"Move the {tool} pin")
 
     def after_apply(self):
-        return subprocess.run(["make", "-s", "-C", str(self.repository), "after-apply", f"BEFORE={self.before}"],
-                              env=self.environment, capture_output=True, text=True)
+        return subprocess.run(
+            ["make", "-s", "-C", str(self.repository), "after-apply", f"BEFORE={self.before}"],
+            env=self.environment,
+            capture_output=True,
+            text=True,
+        )
 
     def calls(self):
         return self.log.read_text().splitlines() if self.log.exists() else []
@@ -107,14 +131,18 @@ class AfterApplyPinTests(unittest.TestCase):
         git(self.repository, "commit", "-q", "--allow-empty", "-m", "Something else")
         result = self.after_apply()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertFalse([call for call in self.calls() if call.startswith("rebuilt")], self.calls())
+        self.assertFalse(
+            [call for call in self.calls() if call.startswith("rebuilt")], self.calls()
+        )
 
     def test_another_sessions_open_guide_does_not_block_an_unrelated_deployment(self):
         runtime = Path(self.environment["XDG_RUNTIME_DIR"])
         requests = runtime / "cockpit-requests"
         requests.mkdir()
         request = requests / "012345abcdef.guide"
-        content = json.dumps({"answers": "project-one", "session": "session-one", "title": "Approve test app"})
+        content = json.dumps(
+            {"answers": "project-one", "session": "session-one", "title": "Approve test app"}
+        )
         request.write_text(content)
         progress = runtime / "cockpit-answers/project-one/guides/012345abcdef.progress"
         progress.parent.mkdir(parents=True)
@@ -134,10 +162,18 @@ class AfterApplyPinTests(unittest.TestCase):
         self.fake(self.bin / "stow", "sleep 1")
         git(self.repository, "commit", "-q", "--allow-empty", "-m", "Something else")
         command = ["make", "-s", "-C", str(self.repository), "after-apply", f"BEFORE={self.before}"]
-        runs = [subprocess.Popen(command, env=self.environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-                for _ in range(2)]
+        runs = [
+            subprocess.Popen(
+                command,
+                env=self.environment,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            for _ in range(2)
+        ]
         outputs = [run.communicate(timeout=60) for run in runs]
-        for run, (stdout, stderr) in zip(runs, outputs):
+        for run, (stdout, stderr) in zip(runs, outputs, strict=True):
             self.assertEqual(run.returncode, 0, stdout + stderr)
 
     def test_every_apply_checks_greyproxy_conversation_tracking_is_off(self):
@@ -169,8 +205,12 @@ class GreyproxyRestartTests(unittest.TestCase):
         self.bin = root / "bin"
         self.bin.mkdir()
         self.log = root / "calls"
-        self.environment = {**os.environ, "PATH": f"{self.bin}:{os.environ['PATH']}", "HOME": str(root),
-                            "GREYPROXY_HEALTH_WAIT_S": "2"}
+        self.environment = {
+            **os.environ,
+            "PATH": f"{self.bin}:{os.environ['PATH']}",
+            "HOME": str(root),
+            "GREYPROXY_HEALTH_WAIT_S": "2",
+        }
 
     def tearDown(self):
         self.directory.cleanup()
@@ -181,7 +221,12 @@ class GreyproxyRestartTests(unittest.TestCase):
         path.chmod(0o755)
 
     def restart(self):
-        return subprocess.run([str(REPO / "packages/greyproxy/restart.sh")], env=self.environment, capture_output=True, text=True)
+        return subprocess.run(
+            [str(REPO / "packages/greyproxy/restart.sh")],
+            env=self.environment,
+            capture_output=True,
+            text=True,
+        )
 
     def test_a_healthy_restart_succeeds(self):
         self.fake("systemctl", "exit 0")
@@ -242,8 +287,11 @@ class GreyproxySettingsTests(unittest.TestCase):
         self.server = http.server.HTTPServer(("127.0.0.1", 0), FakeGreyproxySettings)
         self.server.tracking, self.server.refuses, self.server.requests = True, False, []
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
-        self.environment = {**os.environ, "GREYPROXY_DATA_HOME": str(self.data_home),
-                            "GREYPROXY_API_URL": f"http://127.0.0.1:{self.server.server_port}/api"}
+        self.environment = {
+            **os.environ,
+            "GREYPROXY_DATA_HOME": str(self.data_home),
+            "GREYPROXY_API_URL": f"http://127.0.0.1:{self.server.server_port}/api",
+        }
 
     def tearDown(self):
         self.server.shutdown()
@@ -251,7 +299,12 @@ class GreyproxySettingsTests(unittest.TestCase):
         self.directory.cleanup()
 
     def settings(self):
-        return subprocess.run([str(REPO / "packages/greyproxy/settings.sh")], env=self.environment, capture_output=True, text=True)
+        return subprocess.run(
+            [str(REPO / "packages/greyproxy/settings.sh")],
+            env=self.environment,
+            capture_output=True,
+            text=True,
+        )
 
     def test_tracking_left_on_is_turned_off(self):
         result = self.settings()

@@ -1,14 +1,15 @@
 import os
-from pathlib import Path
 import subprocess
 import unittest
-
+from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 SCRIPT = REPO / "tools/agent-docker.sh"
 
 
-@unittest.skipIf(os.geteuid() == 0, "the refusals are checked before sudo; as root they would touch real folders")
+@unittest.skipIf(
+    os.geteuid() == 0, "the refusals are checked before sudo; as root they would touch real folders"
+)
 class AgentDockerGrantTests(unittest.TestCase):
     def grant(self, *arguments):
         return subprocess.run([str(SCRIPT), "grant", *arguments], capture_output=True, text=True)
