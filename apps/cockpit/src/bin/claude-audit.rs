@@ -1,9 +1,11 @@
 //! claude-audit: the audit log (cockpit::audit), for the scripts outside the sandbox and for Theo.
 //!
+//! ```text
 //!     claude-audit record <component> <event> <outcome> [key=value | fp:key=value ...]
 //!                                     one event; values are text, an fp: one is kept only as its
 //!                                     hash and length (cockpit' audit events)
 //!     claude-audit verify             walks the hash chain; exit 1 at the first break, named
+//! ```
 //!
 //! The log is ~/.local/state/claude-audit (greywall hides it from every sandbox).
 
@@ -18,7 +20,10 @@ fn main() {
     let status = match words.as_slice() {
         ["verify"] => match audit::verify() {
             Ok(count) => {
-                println!("The chain holds: {count} line(s) in {}.", audit::dir().display());
+                println!(
+                    "The chain holds: {count} line(s) in {}.",
+                    audit::dir().display()
+                );
                 0
             }
             Err(reason) => {

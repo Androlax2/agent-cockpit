@@ -20,15 +20,24 @@ pub enum Provider {
 
 impl Provider {
     pub fn url(self) -> String {
-        match self { Self::Claude => paths::claude_status_url(), Self::Codex => paths::codex_status_url() }
+        match self {
+            Self::Claude => paths::claude_status_url(),
+            Self::Codex => paths::codex_status_url(),
+        }
     }
 
     pub fn host(self) -> &'static str {
-        match self { Self::Claude => "status.claude.com", Self::Codex => "status.openai.com" }
+        match self {
+            Self::Claude => "status.claude.com",
+            Self::Codex => "status.openai.com",
+        }
     }
 
     pub fn label(self) -> &'static str {
-        match self { Self::Claude => "Claude Status", Self::Codex => "Codex Status" }
+        match self {
+            Self::Claude => "Claude Status",
+            Self::Codex => "Codex Status",
+        }
     }
 }
 
@@ -43,20 +52,45 @@ pub struct Summary {
 pub fn parse(summary: &Value) -> Summary {
     let text = |value: Option<&Value>| value.and_then(Value::as_str).unwrap_or("").to_string();
     let status = summary.get("status");
-    let components = summary.get("components").and_then(Value::as_array).cloned().unwrap_or_default();
-    let incidents = summary.get("incidents").and_then(Value::as_array).cloned().unwrap_or_default();
+    let components = summary
+        .get("components")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let incidents = summary
+        .get("incidents")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
     Summary {
         indicator: text(status.and_then(|s| s.get("indicator"))),
         description: text(status.and_then(|s| s.get("description"))),
-        degraded: components.iter()
+        degraded: components
+            .iter()
             .filter(|c| !c.get("group").and_then(Value::as_bool).unwrap_or(false))
             .filter(|c| c.get("status").and_then(Value::as_str) != Some("operational"))
-            .map(|c| (c.get("name").and_then(Value::as_str).unwrap_or("?").to_string(),
-                      c.get("status").and_then(Value::as_str).unwrap_or("?").replace('_', " ")))
+            .map(|c| {
+                (
+                    c.get("name")
+                        .and_then(Value::as_str)
+                        .unwrap_or("?")
+                        .to_string(),
+                    c.get("status")
+                        .and_then(Value::as_str)
+                        .unwrap_or("?")
+                        .replace('_', " "),
+                )
+            })
             .collect(),
-        incidents: incidents.iter()
+        incidents: incidents
+            .iter()
             .filter(|i| i.get("status").and_then(Value::as_str) != Some("resolved"))
-            .map(|i| i.get("name").and_then(Value::as_str).unwrap_or("?").to_string())
+            .map(|i| {
+                i.get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("?")
+                    .to_string()
+            })
             .collect(),
     }
 }
@@ -79,15 +113,24 @@ fn fetch(url: &str) -> Result<Value, String> {
     let body = if let Some(path) = url.strip_prefix("file://") {
         std::fs::read_to_string(path).map_err(|error| error.kind().to_string())?
     } else {
-        let mut response = ureq::get(url).header("User-Agent", "cockpit").call().map_err(|error| error.to_string())?;
-        response.body_mut().read_to_string().map_err(|error| error.to_string())?
+        let mut response = ureq::get(url)
+            .header("User-Agent", "cockpit")
+            .call()
+            .map_err(|error| error.to_string())?;
+        response
+            .body_mut()
+            .read_to_string()
+            .map_err(|error| error.to_string())?
     };
     serde_json::from_str(&body).map_err(|_| "not JSON".to_string())
 }
 
 impl ProviderStatus {
     pub fn new(provider: Provider) -> Self {
-        Self { provider, ..Self::default() }
+        Self {
+            provider,
+            ..Self::default()
+        }
     }
 
     pub fn tick(&self) {
@@ -113,7 +156,11 @@ impl ProviderStatus {
                     state.current = current.clone();
                 }
                 if error != state.error {
-                    if error.is_empty() { util::log_event("INFO", &format!("{} reachable again", provider.host())) } else { util::log_event("WARN", &error) }
+                    if error.is_empty() {
+                        util::log_event("INFO", &format!("{} reachable again", provider.host()))
+                    } else {
+                        util::log_event("WARN", &error)
+                    }
                 }
                 state.error = error;
                 state.fetched_at = now();
@@ -121,12 +168,19 @@ impl ProviderStatus {
                 crate::app::refresh::background_changed();
                 previous
             };
-            if let Some(current) = current {
-                if previous.map(|p| p.indicator) != Some(current.indicator.clone()) {
-                    // Provider outages are not cockpit bugs for the error hand-off.
-                    let level = if current.indicator == "none" { "INFO" } else { "WARN" };
-                    util::log_event(level, &format!("{}: {}", provider.label(), current.description));
-                }
+            if let Some(current) = current
+                && previous.map(|p| p.indicator) != Some(current.indicator.clone())
+            {
+                // Provider outages are not cockpit bugs for the error hand-off.
+                let level = if current.indicator == "none" {
+                    "INFO"
+                } else {
+                    "WARN"
+                };
+                util::log_event(
+                    level,
+                    &format!("{}: {}", provider.label(), current.description),
+                );
             }
         });
     }
@@ -162,7 +216,10 @@ mod tests {
             "incidents": [{"name": "Elevated errors", "status": "investigating"}, {"name": "Old", "status": "resolved"}]});
         let parsed = parse(&summary);
         assert_eq!(parsed.indicator, "minor");
-        assert_eq!(parsed.degraded, vec![("Claude Code".to_string(), "partial outage".to_string())]);
+        assert_eq!(
+            parsed.degraded,
+            vec![("Claude Code".to_string(), "partial outage".to_string())]
+        );
         assert_eq!(parsed.incidents, vec!["Elevated errors".to_string()]);
     }
 }

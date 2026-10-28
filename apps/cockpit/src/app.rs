@@ -3,35 +3,42 @@
 
 use crate::agents::{self, Feature};
 use crate::continuity::Continuity;
+mod chief_tab;
+mod chief_ui;
 mod continuity_ui;
 mod new_session;
-mod chief_ui;
-mod chief_tab;
-mod teams_tab;
 pub mod refresh;
+mod teams_tab;
 use crate::costs::Costs;
 use crate::errors::ErrorReporter;
 use crate::paths;
-use crate::reviews::{self, Review, Reviews};
-use crate::sessions::{self, CONTEXT_COMPACT_AT, History, PastSession, Restorable, Session, ViewState};
-use crate::settings::{self, LAUNCH_SETTINGS, SETTINGS};
-use crate::status::{self, Provider, ProviderStatus};
-use crate::todo::{self, Entry, TodoList};
-use crate::todo_composer::{TodoComposer, Outcome};
-use crate::usage::{self, BudgetAlerts, Refresher, Window};
 use crate::prompts;
 use crate::queue::{self, QUEUE_CHECK_S};
+use crate::reviews::{self, Review, Reviews};
+use crate::sessions::{
+    self, CONTEXT_COMPACT_AT, History, PastSession, Restorable, Session, ViewState,
+};
+use crate::settings::{self, LAUNCH_SETTINGS, SETTINGS};
 use crate::sleep;
+use crate::status::{self, Provider, ProviderStatus};
+use crate::todo::{self, Entry, TodoList};
+use crate::todo_composer::{Outcome, TodoComposer};
+use crate::usage::{self, BudgetAlerts, Refresher, Window};
+use crate::util::{
+    self, age, current_session, manager, manager_in_background, money, now, project_name,
+    start_directory,
+};
 use crate::{approval, remote};
-use crate::util::{self, age, current_session, manager, manager_in_background, money, now, project_name, start_directory};
-use serde_json::Value;
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind};
+use crossterm::event::{
+    self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
+};
 use ratatui::buffer::Buffer;
 use ratatui::style::{Color, Modifier, Style};
+use serde_json::Value;
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::fs;
 use std::io::{self, Write};
 use std::path::PathBuf;
-use std::fs;
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -68,8 +75,13 @@ const RESTORE_CHECK_S: f64 = 30.0;
 const TIME_LABEL: &str = "Active time";
 /// The Todo panel's tabs: the statuses each one shows. Open merges everything not done yet.
 // Proposals live in the Ideas tab: Open shows only work Theo agreed to.
-const TODO_TABS: [(&str, &[&str]); 5] = [("Open", &["todo", "doing"]), ("Proposed", &[todo::PROPOSED]), ("To do", &["todo"]),
-                                         ("In progress", &["doing"]), ("Done", &["done"])];
+const TODO_TABS: [(&str, &[&str]); 5] = [
+    ("Open", &["todo", "doing"]),
+    ("Proposed", &[todo::PROPOSED]),
+    ("To do", &["todo"]),
+    ("In progress", &["doing"]),
+    ("Done", &["done"]),
+];
 const TODO_TAB_OPEN: usize = 0;
 const TODO_TAB_PROPOSED: usize = 1;
 const TODO_TAB_TO_DO: usize = 2;
@@ -77,42 +89,81 @@ const TODO_TAB_IN_PROGRESS: usize = 3;
 const EDITOR_HELP_MARK: &str = "#── everything from this line on is left out ──";
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 pub const EFFORT_LEVELS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
-const PANEL_NAMES: [&str; 7] = ["Status", "Sessions", "Pull requests", "Todo", "Ideas", "Teams", "Chief"];
+const PANEL_NAMES: [&str; 7] = [
+    "Status",
+    "Sessions",
+    "Pull requests",
+    "Todo",
+    "Ideas",
+    "Teams",
+    "Chief",
+];
 /// The tabs' panels, in the order of their keys 1 to 5.
 const TAB_PANELS: [usize; 5] = [1, 3, 4, TEAMS_PANEL, CHIEF_PANEL];
 pub(crate) const TEAMS_PANEL: usize = 5;
 pub(crate) const CHIEF_PANEL: usize = 6;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum StatusAction { ClaudeStatus, CodexStatus, Digest, Clones }
+enum StatusAction {
+    ClaudeStatus,
+    CodexStatus,
+    Digest,
+    Clones,
+}
 
 impl StatusAction {
     fn hint(self) -> &'static str {
         match self {
-            Self::ClaudeStatus => "Claude status page", Self::CodexStatus => "Codex status page",
-            Self::Digest => "daily digest", Self::Clones => "clones review",
+            Self::ClaudeStatus => "Claude status page",
+            Self::CodexStatus => "Codex status page",
+            Self::Digest => "daily digest",
+            Self::Clones => "clones review",
         }
     }
 }
 const GLOBAL_HINTS: [(&str, &str); 2] = [("s", "status"), ("?", "help")];
+type HelpSection = (&'static str, Vec<(&'static str, &'static str)>);
+
 /// ⌘ in key hints: the physical Command key, which keyd turns into Ctrl (system/etc/keyd).
 const GLOBAL_HELP: &[(&str, &str)] = &[
-    ("1 2 3 4 5", "Sessions · Todo · Ideas · Teams · Chief"), ("s", "Status: usage, spending, Chief, PRs, phone"),
-    ("?", "this help (for the tab you're on)"), ("esc", "close / back"),
+    ("1 2 3 4 5", "Sessions · Todo · Ideas · Teams · Chief"),
+    ("s", "Status: usage, spending, Chief, PRs, phone"),
+    ("?", "this help (for the tab you're on)"),
+    ("esc", "close / back"),
     ("N", "new session: blank or Claude Design canvas"),
     ("H", "resume a past session, searched by project and prompt"),
-    ("S", "settings: default agent, models, on/off choices, phone pairing"),
-    ("P W G", "windows on top: pull requests, Claude on the web, greyproxy"),
-    ("⌘1 ⌘2 ⌘3", "a tab from inside the session"), ("→ ←", "into the session and back"),
+    (
+        "S",
+        "settings: default agent, models, on/off choices, phone pairing",
+    ),
+    (
+        "P W G",
+        "windows on top: pull requests, Claude on the web, greyproxy",
+    ),
+    ("⌘1 ⌘2 ⌘3", "a tab from inside the session"),
+    ("→ ←", "into the session and back"),
     ("q", "close the column; sessions keep running"),
 ];
 /// What the signs on a session card mean: Sessions help's last section.
 const LEGEND: &[(&str, &str)] = &[
-    ("!", "needs you"), ("◐", "working"), ("✓", "finished"), ("☾", "asleep"), ("↳", "waits on a todo"),
-    ("⇄", "linked"), ("◆", "the Chief"), ("▶", "your approved command runs"), ("‖", "later: its ask is hidden"),
-    ("●", "finished with a result you haven't opened"), ("○", "idle: waiting for your next message"),
-    ("⟳", "restart needed (or restarting)"), ("⚲", "pinned"), ("↑2", "unpushed commits"), ("✉2", "queued messages"),
-    ("⬆", "update available"), ("$", "billed to API credits"), ("·", "state unknown: no report"),
+    ("!", "needs you"),
+    ("◐", "working"),
+    ("✓", "finished"),
+    ("☾", "asleep"),
+    ("↳", "waits on a todo"),
+    ("⇄", "linked"),
+    ("◆", "the Chief"),
+    ("▶", "your approved command runs"),
+    ("‖", "later: its ask is hidden"),
+    ("●", "finished with a result you haven't opened"),
+    ("○", "idle: waiting for your next message"),
+    ("⟳", "restart needed (or restarting)"),
+    ("⚲", "pinned"),
+    ("↑2", "unpushed commits"),
+    ("✉2", "queued messages"),
+    ("⬆", "update available"),
+    ("$", "billed to API credits"),
+    ("·", "state unknown: no report"),
 ];
 
 pub fn color(index: u8) -> Color {
@@ -140,11 +191,22 @@ pub fn project_color(project: &str) -> u8 {
 }
 
 fn context_color(percentage: Option<f64>) -> u8 {
-    match percentage { None => FG_DARK, Some(p) if p >= 80.0 => RED, Some(p) if p >= 50.0 => YELLOW, Some(_) => GREEN }
+    match percentage {
+        None => FG_DARK,
+        Some(p) if p >= 80.0 => RED,
+        Some(p) if p >= 50.0 => YELLOW,
+        Some(_) => GREEN,
+    }
 }
 
 fn claude_status_color(indicator: &str) -> u8 {
-    match indicator { "none" => GREEN, "minor" => YELLOW, "major" | "critical" => RED, "maintenance" => CYAN, _ => YELLOW }
+    match indicator {
+        "none" => GREEN,
+        "minor" => YELLOW,
+        "major" | "critical" => RED,
+        "maintenance" => CYAN,
+        _ => YELLOW,
+    }
 }
 
 pub fn width_of(text: &str) -> usize {
@@ -204,7 +266,11 @@ fn session_card_right_room(width: u16, title_column: usize) -> usize {
 }
 
 fn part(text: impl Into<String>, style: Style) -> Part {
-    Part { text: text.into(), style, action: None }
+    Part {
+        text: text.into(),
+        style,
+        action: None,
+    }
 }
 
 /// One rendered line of a panel: segments at columns inside the box, right-aligned parts, the
@@ -222,12 +288,18 @@ pub struct Line {
 
 impl Line {
     fn new(segments: Vec<(u16, String, Style)>) -> Self {
-        Self { segments, ..Self::default() }
+        Self {
+            segments,
+            ..Self::default()
+        }
     }
 
     #[cfg(test)]
     pub fn texts(&self) -> String {
-        self.segments.iter().map(|(_, text, _)| text.as_str()).collect()
+        self.segments
+            .iter()
+            .map(|(_, text, _)| text.as_str())
+            .collect()
     }
 }
 
@@ -237,11 +309,19 @@ fn segment(column: u16, text: impl Into<String>, style: Style) -> (u16, String, 
 
 /// Where a session stands for Theo: the session list's groups, in their order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Attention { NeedsYou, Working, Quiet }
+pub enum Attention {
+    NeedsYou,
+    Working,
+    Quiet,
+}
 
 impl Attention {
     fn heading(self) -> &'static str {
-        match self { Attention::NeedsYou => "NEEDS YOU", Attention::Working => "WORKING", Attention::Quiet => "QUIET" }
+        match self {
+            Attention::NeedsYou => "NEEDS YOU",
+            Attention::Working => "WORKING",
+            Attention::Quiet => "QUIET",
+        }
     }
 }
 
@@ -276,9 +356,20 @@ const NOTICES_SHOWN: usize = 2;
 const CARD_BADGES_SHOWN: usize = 2;
 
 fn notice_line(notice: &Notice) -> Line {
-    let right = if notice.key.is_empty() { Vec::new() } else { vec![part(notice.key, dim(FG_DARK))] };
-    Line { segments: vec![segment(0, notice.glyph, bold(notice.tint)), segment(2, notice.text.clone(), style(FG))],
-           right, accent: Some(bold(notice.tint)), ..Line::default() }
+    let right = if notice.key.is_empty() {
+        Vec::new()
+    } else {
+        vec![part(notice.key, dim(FG_DARK))]
+    };
+    Line {
+        segments: vec![
+            segment(0, notice.glyph, bold(notice.tint)),
+            segment(2, notice.text.clone(), style(FG)),
+        ],
+        right,
+        accent: Some(bold(notice.tint)),
+        ..Line::default()
+    }
 }
 
 fn plural(count: usize) -> &'static str {
@@ -286,21 +377,46 @@ fn plural(count: usize) -> &'static str {
 }
 
 /// Requests greyproxy holds, as a NEEDS YOU card: only Theo can allow or deny them. Its entries
-/// read "<sandbox> → host:port" (sessions::greyproxy_held).
+/// read `<sandbox> → host:port` (sessions::greyproxy_held).
 fn greyproxy_card(held: &[String], since: i64) -> Vec<Line> {
     let accent = Some(bold(YELLOW));
-    let sandboxes: BTreeSet<&str> = held.iter().map(|entry| entry.split_once(" → ").map_or("", |(sandbox, _)| sandbox)).collect();
+    let sandboxes: BTreeSet<&str> = held
+        .iter()
+        .map(|entry| entry.split_once(" → ").map_or("", |(sandbox, _)| sandbox))
+        .collect();
     let why = match sandboxes.iter().next() {
         Some(sandbox) if sandboxes.len() == 1 && !sandbox.is_empty() => {
-            let destinations: Vec<&str> = held.iter().filter_map(|entry| entry.split_once(" → ").map(|(_, destination)| destination)).collect();
+            let destinations: Vec<&str> = held
+                .iter()
+                .filter_map(|entry| entry.split_once(" → ").map(|(_, destination)| destination))
+                .collect();
             why_segments(sandbox, &destinations.join(", "))
-        },
+        }
         _ => why_segments("greyproxy", &held.join(", ")),
     };
     vec![
-        Line { segments: vec![segment(0, "!", bold(YELLOW)), segment(2, format!("greyproxy held {} request{}", held.len(), plural(held.len())), bold(FG))],
-               right: vec![part(util::age(since), dim(FG_DARK))], accent, ..Line::default() },
-        Line { segments: why, accent, ..Line::default() },
+        Line {
+            segments: vec![
+                segment(0, "!", bold(YELLOW)),
+                segment(
+                    2,
+                    format!(
+                        "greyproxy held {} request{}",
+                        held.len(),
+                        plural(held.len())
+                    ),
+                    bold(FG),
+                ),
+            ],
+            right: vec![part(util::age(since), dim(FG_DARK))],
+            accent,
+            ..Line::default()
+        },
+        Line {
+            segments: why,
+            accent,
+            ..Line::default()
+        },
         ask_bar(None, "Allow or deny in greyproxy", "", "G review"),
         Line::default(),
     ]
@@ -321,9 +437,22 @@ fn why_segments(project: &str, task: &str) -> Vec<(u16, String, Style)> {
 /// Line 3 of a card that needs Theo: the exact ask on an amber bar, with the key that acts on it.
 fn ask_bar(item: Option<usize>, ask: &str, count: &str, key_hint: &str) -> Line {
     let bar = on(BLACK, YELLOW);
-    let text = if count.is_empty() { ask.to_string() } else { format!("{ask}   {count}") };
-    Line { segments: vec![segment(2, format!(" {text}"), bar.add_modifier(Modifier::BOLD))],
-           right: vec![part(format!("{key_hint} "), bar)], item, accent: Some(bold(YELLOW)), fill: Some((2, bar)) }
+    let text = if count.is_empty() {
+        ask.to_string()
+    } else {
+        format!("{ask}   {count}")
+    };
+    Line {
+        segments: vec![segment(
+            2,
+            format!(" {text}"),
+            bar.add_modifier(Modifier::BOLD),
+        )],
+        right: vec![part(format!("{key_hint} "), bar)],
+        item,
+        accent: Some(bold(YELLOW)),
+        fill: Some((2, bar)),
+    }
 }
 
 #[derive(Default)]
@@ -336,7 +465,11 @@ pub struct PanelState {
     pub scroll: usize,
 }
 
-enum TeamLinks { Loading, Ready(Value), Unavailable }
+enum TeamLinks {
+    Loading,
+    Ready(Value),
+    Unavailable,
+}
 
 impl PanelState {
     fn content_height(&self) -> usize {
@@ -344,11 +477,19 @@ impl PanelState {
     }
 
     fn clamp(&mut self) {
-        self.selected = if self.items == 0 { 0 } else { self.selected.min(self.items - 1) };
+        self.selected = if self.items == 0 {
+            0
+        } else {
+            self.selected.min(self.items - 1)
+        };
     }
 
     fn move_by(&mut self, delta: i64) {
-        self.selected = if self.items == 0 { 0 } else { (self.selected as i64 + delta).clamp(0, self.items as i64 - 1) as usize };
+        self.selected = if self.items == 0 {
+            0
+        } else {
+            (self.selected as i64 + delta).clamp(0, self.items as i64 - 1) as usize
+        };
     }
 
     fn keep_selected_visible(&mut self, inner_height: usize) {
@@ -357,7 +498,11 @@ impl PanelState {
             self.scroll = 0;
             return;
         }
-        let target = self.lines.iter().position(|line| line.item == Some(self.selected)).unwrap_or(0);
+        let target = self
+            .lines
+            .iter()
+            .position(|line| line.item == Some(self.selected))
+            .unwrap_or(0);
         if target < self.scroll {
             self.scroll = target.saturating_sub(1);
         } else if target >= self.scroll + inner_height {
@@ -385,7 +530,11 @@ pub enum Key {
     Left,
     Right,
     F(u8),
-    Click { x: u16, y: u16, double: bool },
+    Click {
+        x: u16,
+        y: u16,
+        double: bool,
+    },
     /// tmux moved its focus into the column or out of it (focus-events).
     FocusGained,
     FocusLost,
@@ -412,9 +561,41 @@ struct SessionDetails {
 
 /// Session details' keys, grouped as frame 2200 draws them; they work on the selected card too.
 const SESSION_DETAIL_KEYS: [(&str, &[(&str, &str)]); 3] = [
-    ("WORK", &[("e", "effort"), ("$", "billing: subscription / API"), ("C", "/compact"), ("c", "Chief answers"), ("k", "links"), ("d", "drop queued"), ("u", "updates"), ("Q", "queue explanations"), ("v", "mark displayed updates reviewed")]),
-    ("CODE", &[("g", "lazygit"), ("U", "push / apply"), ("+", "parallel clone"), ("o", "design canvas"), ("t", "task trail")]),
-    ("SESSION", &[("I", "images"), ("m", "remote control"), ("w", "my note"), ("z", "sleep"), ("R", "restart"), ("x", "end")]),
+    (
+        "WORK",
+        &[
+            ("e", "effort"),
+            ("$", "billing: subscription / API"),
+            ("C", "/compact"),
+            ("c", "Chief answers"),
+            ("k", "links"),
+            ("d", "drop queued"),
+            ("u", "updates"),
+            ("Q", "queue explanations"),
+            ("v", "mark displayed updates reviewed"),
+        ],
+    ),
+    (
+        "CODE",
+        &[
+            ("g", "lazygit"),
+            ("U", "push / apply"),
+            ("+", "parallel clone"),
+            ("o", "design canvas"),
+            ("t", "task trail"),
+        ],
+    ),
+    (
+        "SESSION",
+        &[
+            ("I", "images"),
+            ("m", "remote control"),
+            ("w", "my note"),
+            ("z", "sleep"),
+            ("R", "restart"),
+            ("x", "end"),
+        ],
+    ),
 ];
 
 enum DetailRow {
@@ -425,22 +606,33 @@ enum DetailRow {
 
 fn is_detail_heading(line: &str) -> bool {
     let heading = line.split(" (").next().unwrap_or(line);
-    heading.len() > 2 && heading.chars().all(|character| character.is_ascii_uppercase() || " &".contains(character))
+    heading.len() > 2
+        && heading
+            .chars()
+            .all(|character| character.is_ascii_uppercase() || " &".contains(character))
 }
 
 #[derive(Clone)]
 enum DetailAction {
-    Reviewed { session: String, identities: Vec<String> },
+    Reviewed {
+        session: String,
+        identities: Vec<String>,
+    },
     OpenSession(String),
     OpenTask(String),
     OpenPr(String),
-    ResumeSession { session: String, cwd: String },
+    ResumeSession {
+        session: String,
+        cwd: String,
+    },
 }
 
 impl SessionDetails {
     fn draw(&mut self, buffer: &mut Buffer) {
         let (width, height) = (buffer.area.width, buffer.area.height);
-        if width < 8 || height < 6 { return; }
+        if width < 8 || height < 6 {
+            return;
+        }
         let top = HEADER_LINES;
         let bottom = height - 2;
         let inner = width.saturating_sub(4) as usize;
@@ -453,23 +645,61 @@ impl SessionDetails {
             put(buffer, row, 1, "│", style(BLUE));
             put(buffer, row, width - 2, "│", style(BLUE));
         }
-        put(buffer, top, 1, &format!("┌{}┐", "─".repeat(inner)), style(BLUE));
-        put(buffer, top, 3, &fit(&self.title, inner.saturating_sub(2)), bold(BLUE));
-        let why_rows = if self.lead.is_some() { rows.iter().position(|row| matches!(row, DetailRow::Text(text) if text.is_empty())).unwrap_or(0) } else { 0 };
+        put(
+            buffer,
+            top,
+            1,
+            &format!("┌{}┐", "─".repeat(inner)),
+            style(BLUE),
+        );
+        put(
+            buffer,
+            top,
+            3,
+            &fit(&self.title, inner.saturating_sub(2)),
+            bold(BLUE),
+        );
+        let why_rows = if self.lead.is_some() {
+            rows.iter()
+                .position(|row| matches!(row, DetailRow::Text(text) if text.is_empty()))
+                .unwrap_or(0)
+        } else {
+            0
+        };
         for (offset, line) in rows.iter().enumerate().skip(self.scroll).take(body_height) {
             let row = top + 1 + (offset - self.scroll) as u16;
             match line {
-                DetailRow::Heading(text) => { put(buffer, row, 3, text, bold(FG_DARK)); }
-                DetailRow::Text(text) if offset < why_rows => {
-                    let project = self.lead.as_deref().filter(|project| offset == 0 && text.starts_with(*project)).unwrap_or("");
-                    put(buffer, row, 3, &text[..project.len()], bold(BLUE));
-                    put(buffer, row, 3 + width_of(project) as u16, &text[project.len()..], style(FG_DARK));
+                DetailRow::Heading(text) => {
+                    put(buffer, row, 3, text, bold(FG_DARK));
                 }
-                DetailRow::Text(text) => { put(buffer, row, 3, text, style(FG)); }
+                DetailRow::Text(text) if offset < why_rows => {
+                    let project = self
+                        .lead
+                        .as_deref()
+                        .filter(|project| offset == 0 && text.starts_with(*project))
+                        .unwrap_or("");
+                    put(buffer, row, 3, &text[..project.len()], bold(BLUE));
+                    put(
+                        buffer,
+                        row,
+                        3 + width_of(project) as u16,
+                        &text[project.len()..],
+                        style(FG_DARK),
+                    );
+                }
+                DetailRow::Text(text) => {
+                    put(buffer, row, 3, text, style(FG));
+                }
                 DetailRow::Keys(keys) => {
                     let mut column = 3;
                     for (key, label) in keys {
-                        put(buffer, row, column, &format!(" {key} "), on(FG, BG_HIGHLIGHT).add_modifier(Modifier::BOLD));
+                        put(
+                            buffer,
+                            row,
+                            column,
+                            &format!(" {key} "),
+                            on(FG, BG_HIGHLIGHT).add_modifier(Modifier::BOLD),
+                        );
                         column += width_of(key) as u16 + 3;
                         put(buffer, row, column, label, style(FG_DARK));
                         column += width_of(label) as u16 + 2;
@@ -477,23 +707,66 @@ impl SessionDetails {
                 }
             }
         }
-        let progress = format!("{}–{} / {}", self.scroll + 1, (self.scroll + body_height).min(rows.len()), rows.len());
+        let progress = format!(
+            "{}–{} / {}",
+            self.scroll + 1,
+            (self.scroll + body_height).min(rows.len()),
+            rows.len()
+        );
         if bottom - 2 > top + body_height as u16 {
-            put(buffer, bottom - 2, 3, &fit(&progress, body_width), dim(FG_DARK));
+            put(
+                buffer,
+                bottom - 2,
+                3,
+                &fit(&progress, body_width),
+                dim(FG_DARK),
+            );
         }
-        let footer = if self.session.is_some() { "esc back · the same keys work on the selected card without opening i" }
-            else if self.actions.is_empty() { "↑↓ scroll  g/G top/end  Esc close" } else { "↑↓ scroll  Enter actions  Esc close" };
-        put(buffer, bottom - 1, 3, &fit(footer, body_width), dim(FG_DARK));
-        put(buffer, bottom, 1, &format!("└{}┘", "─".repeat(inner)), style(BLUE));
+        let footer = if self.session.is_some() {
+            "esc back · the same keys work on the selected card without opening i"
+        } else if self.actions.is_empty() {
+            "↑↓ scroll  g/G top/end  Esc close"
+        } else {
+            "↑↓ scroll  Enter actions  Esc close"
+        };
+        put(
+            buffer,
+            bottom - 1,
+            3,
+            &fit(footer, body_width),
+            dim(FG_DARK),
+        );
+        put(
+            buffer,
+            bottom,
+            1,
+            &format!("└{}┘", "─".repeat(inner)),
+            style(BLUE),
+        );
     }
 
     /// The text wrapped to `width` (capitalised lines become headings), then each key group
     /// flowed into as few rows of key caps as fit.
     fn rows(&self, width: usize) -> Vec<DetailRow> {
-        let mut rows: Vec<DetailRow> = wrap_detail_text(&self.text, width).into_iter()
-            .map(|line| if is_detail_heading(&line) { DetailRow::Heading(line) } else { DetailRow::Text(line) }).collect();
+        let mut rows: Vec<DetailRow> = wrap_detail_text(&self.text, width)
+            .into_iter()
+            .map(|line| {
+                if is_detail_heading(&line) {
+                    DetailRow::Heading(line)
+                } else {
+                    DetailRow::Text(line)
+                }
+            })
+            .collect();
         // One blank line, not two, between the text and the first group of keys.
-        while self.session.is_some() && rows.len() > 1 && rows[rows.len() - 2..].iter().all(|row| matches!(row, DetailRow::Text(text) if text.is_empty())) { rows.pop(); }
+        while self.session.is_some()
+            && rows.len() > 1
+            && rows[rows.len() - 2..]
+                .iter()
+                .all(|row| matches!(row, DetailRow::Text(text) if text.is_empty()))
+        {
+            rows.pop();
+        }
         for (heading, keys) in &self.key_groups {
             rows.push(DetailRow::Heading((*heading).into()));
             let mut current: Vec<(&str, &str)> = Vec::new();
@@ -507,7 +780,9 @@ impl SessionDetails {
                 current.push((key, label));
                 used += cell;
             }
-            if !current.is_empty() { rows.push(DetailRow::Keys(current)); }
+            if !current.is_empty() {
+                rows.push(DetailRow::Keys(current));
+            }
         }
         rows
     }
@@ -551,42 +826,120 @@ const MENU_WIDTH: u16 = 30;
 impl EffortMenu {
     fn new(session: Session, anchor_row: u16) -> Self {
         let current = session.facts.effort.clone();
-        let selected = EFFORT_LEVELS.iter().position(|level| *level == current).unwrap_or(2);
-        Self { session, anchor_row, current, selected, rows: HashMap::new(), area: (0, 0, 0, 0) }
+        let selected = EFFORT_LEVELS
+            .iter()
+            .position(|level| *level == current)
+            .unwrap_or(2);
+        Self {
+            session,
+            anchor_row,
+            current,
+            selected,
+            rows: HashMap::new(),
+            area: (0, 0, 0, 0),
+        }
     }
 
     fn draw(&mut self, buffer: &mut Buffer) {
         let (width, height) = (buffer.area.width, buffer.area.height);
         let box_height = EFFORT_LEVELS.len() as u16 + 3;
-        let top = if self.anchor_row + 1 + box_height < height.saturating_sub(1) { self.anchor_row + 1 } else { self.anchor_row.saturating_sub(box_height).max(1) };
+        let top = if self.anchor_row + 1 + box_height < height.saturating_sub(1) {
+            self.anchor_row + 1
+        } else {
+            self.anchor_row.saturating_sub(box_height).max(1)
+        };
         let left = width.saturating_sub(3 + MENU_WIDTH).max(1);
         let right = left + MENU_WIDTH - 1;
         self.area = (top, left, top + box_height - 1, right);
         let frame = on(BLUE, BG_HIGHLIGHT).add_modifier(Modifier::BOLD);
         let ground = on(FG, BG_HIGHLIGHT);
         let inner = (MENU_WIDTH - 2) as usize;
-        put(buffer, top, left, &format!("╭{}╮", "─".repeat(inner)), frame);
-        let title: String = format!(" Effort · {} ", self.session.project).chars().take(inner - 2).collect();
+        put(
+            buffer,
+            top,
+            left,
+            &format!("╭{}╮", "─".repeat(inner)),
+            frame,
+        );
+        let title: String = format!(" Effort · {} ", self.session.project)
+            .chars()
+            .take(inner - 2)
+            .collect();
         put(buffer, top, left + 2, &title, frame);
         self.rows.clear();
         for (index, level) in EFFORT_LEVELS.iter().enumerate() {
             let row = top + 1 + index as u16;
             let chosen = index == self.selected;
-            put(buffer, row, left, &format!("│{}│", " ".repeat(inner)), frame);
-            put(buffer, row, left + 1, &" ".repeat(inner), if chosen { on(BG_HIGHLIGHT, BLUE) } else { ground });
+            put(
+                buffer,
+                row,
+                left,
+                &format!("│{}│", " ".repeat(inner)),
+                frame,
+            );
+            put(
+                buffer,
+                row,
+                left + 1,
+                &" ".repeat(inner),
+                if chosen {
+                    on(BG_HIGHLIGHT, BLUE)
+                } else {
+                    ground
+                },
+            );
             let is_current = *level == self.current;
-            let text_style = if chosen { on(BG_HIGHLIGHT, BLUE).add_modifier(Modifier::BOLD) }
-                             else if is_current { on(GREEN, BG_HIGHLIGHT).add_modifier(Modifier::BOLD) } else { ground };
-            put(buffer, row, left + 2, &format!("{} {level}", if is_current { "●" } else { " " }), text_style);
+            let text_style = if chosen {
+                on(BG_HIGHLIGHT, BLUE).add_modifier(Modifier::BOLD)
+            } else if is_current {
+                on(GREEN, BG_HIGHLIGHT).add_modifier(Modifier::BOLD)
+            } else {
+                ground
+            };
+            put(
+                buffer,
+                row,
+                left + 2,
+                &format!("{} {level}", if is_current { "●" } else { " " }),
+                text_style,
+            );
             if is_current {
-                put(buffer, row, right - 9, "current", if chosen { on(BG_HIGHLIGHT, BLUE) } else { on(FG_DARK, BG_HIGHLIGHT) });
+                put(
+                    buffer,
+                    row,
+                    right - 9,
+                    "current",
+                    if chosen {
+                        on(BG_HIGHLIGHT, BLUE)
+                    } else {
+                        on(FG_DARK, BG_HIGHLIGHT)
+                    },
+                );
             }
             self.rows.insert(row, index);
         }
         let note_row = top + 1 + EFFORT_LEVELS.len() as u16;
-        put(buffer, note_row, left, &format!("│{}│", " ".repeat(inner)), frame);
-        put(buffer, note_row, left + 2, "⏎ restarts on it  esc", on(FG_DARK, BG_HIGHLIGHT).add_modifier(Modifier::DIM));
-        put(buffer, note_row + 1, left, &format!("╰{}╯", "─".repeat(inner)), frame);
+        put(
+            buffer,
+            note_row,
+            left,
+            &format!("│{}│", " ".repeat(inner)),
+            frame,
+        );
+        put(
+            buffer,
+            note_row,
+            left + 2,
+            "⏎ restarts on it  esc",
+            on(FG_DARK, BG_HIGHLIGHT).add_modifier(Modifier::DIM),
+        );
+        put(
+            buffer,
+            note_row + 1,
+            left,
+            &format!("╰{}╯", "─".repeat(inner)),
+            frame,
+        );
     }
 
     fn contains(&self, x: u16, y: u16) -> bool {
@@ -638,9 +991,19 @@ impl SettingsMenu {
         // Half a second at worst, off the key's path: the menu shows "checking" meanwhile.
         std::thread::spawn(move || {
             let health = (remote::server_answers(), remote::is_published());
-            *shared.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(health);
+            *shared
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(health);
         });
-        Self { selected: 0, rows: HashMap::new(), area: (0, 0, 0, 0), phones: remote::phones(), phone_health, catalog: None, scroll: 0 }
+        Self {
+            selected: 0,
+            rows: HashMap::new(),
+            area: (0, 0, 0, 0),
+            phones: remote::phones(),
+            phone_health,
+            catalog: None,
+            scroll: 0,
+        }
     }
 
     fn row_count(&self) -> usize {
@@ -659,7 +1022,11 @@ impl SettingsMenu {
     }
 
     fn health_line(&self) -> (String, u8) {
-        match *self.phone_health.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) {
+        match *self
+            .phone_health
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+        {
             None => ("server … checking".into(), FG_DARK),
             Some((false, _)) => ("server ● down".into(), RED),
             Some((true, Some(false))) => ("server ● up · not on tailnet".into(), YELLOW),
@@ -672,9 +1039,14 @@ impl SettingsMenu {
     fn explanation(&self, index: usize) -> String {
         match self.row(index) {
             SettingsRow::Setting(setting) => settings::explanation(SETTINGS[setting].0).into(),
-            SettingsRow::Launch(setting) => settings::explanation(LAUNCH_SETTINGS[setting].0).into(),
+            SettingsRow::Launch(setting) => {
+                settings::explanation(LAUNCH_SETTINGS[setting].0).into()
+            }
             SettingsRow::PairPhone => "QR code, 10 minutes".into(),
-            SettingsRow::Phone(phone) => format!("seen {}", remote::seen_ago(self.phones[phone].get("last_seen").and_then(Value::as_i64))),
+            SettingsRow::Phone(phone) => format!(
+                "seen {}",
+                remote::seen_ago(self.phones[phone].get("last_seen").and_then(Value::as_i64))
+            ),
         }
     }
 
@@ -683,7 +1055,9 @@ impl SettingsMenu {
         let width = buffer.area.width;
         let top = HEADER_LINES;
         self.rows.clear();
-        if width < 16 || buffer.area.height < top + 6 { return; }
+        if width < 16 || buffer.area.height < top + 6 {
+            return;
+        }
         let mut lines = Vec::new();
         for index in 0..self.row_count() {
             match self.row(index) {
@@ -704,10 +1078,17 @@ impl SettingsMenu {
         }
         let box_height = (lines.len() as u16 + 4).min(buffer.area.height - top - 1);
         let body_height = (box_height - 4) as usize;
-        let selected_line = lines.iter().position(|line| matches!(line, SettingsLine::Choice(index) if *index == self.selected)).unwrap_or(0);
+        let selected_line = lines
+            .iter()
+            .position(|line| matches!(line, SettingsLine::Choice(index) if *index == self.selected))
+            .unwrap_or(0);
         self.scroll = self.scroll.min(lines.len().saturating_sub(body_height));
-        if selected_line < self.scroll { self.scroll = selected_line; }
-        if selected_line + 1 >= self.scroll + body_height { self.scroll = (selected_line + 2).saturating_sub(body_height); }
+        if selected_line < self.scroll {
+            self.scroll = selected_line;
+        }
+        if selected_line + 1 >= self.scroll + body_height {
+            self.scroll = (selected_line + 2).saturating_sub(body_height);
+        }
         let menu_width = width.saturating_sub(4).min(54);
         let left = width.saturating_sub(3 + menu_width).max(1);
         let right = left + menu_width - 1;
@@ -716,18 +1097,51 @@ impl SettingsMenu {
         let ground = on(FG, BLACK);
         let heading = on(FG_DARK, BLACK).add_modifier(Modifier::BOLD);
         let inner = menu_width.saturating_sub(2) as usize;
-        let blank = |buffer: &mut Buffer, row: u16| put(buffer, row, left, &format!("│{}│", " ".repeat(inner)), frame);
-        put(buffer, top, left, &format!("╭{}╮", "─".repeat(inner)), frame);
-        put(buffer, top, left + 2, " Settings ", on(FG, BLACK).add_modifier(Modifier::BOLD));
+        let blank = |buffer: &mut Buffer, row: u16| {
+            put(
+                buffer,
+                row,
+                left,
+                &format!("│{}│", " ".repeat(inner)),
+                frame,
+            )
+        };
+        put(
+            buffer,
+            top,
+            left,
+            &format!("╭{}╮", "─".repeat(inner)),
+            frame,
+        );
+        put(
+            buffer,
+            top,
+            left + 2,
+            " Settings ",
+            on(FG, BLACK).add_modifier(Modifier::BOLD),
+        );
         let mut row = top + 1;
         for line in lines.iter().skip(self.scroll).take(body_height) {
             blank(buffer, row);
             let index = match line {
-                SettingsLine::Section(label) => { put(buffer, row, left + 2, label, heading); row += 1; continue; }
-                SettingsLine::Space => { row += 1; continue; }
+                SettingsLine::Section(label) => {
+                    put(buffer, row, left + 2, label, heading);
+                    row += 1;
+                    continue;
+                }
+                SettingsLine::Space => {
+                    row += 1;
+                    continue;
+                }
                 SettingsLine::Health => {
                     let (health, color) = self.health_line();
-                    put(buffer, row, left + 4, &fit(&health, inner - 4), on(color, BLACK));
+                    put(
+                        buffer,
+                        row,
+                        left + 4,
+                        &fit(&health, inner - 4),
+                        on(color, BLACK),
+                    );
                     row += 1;
                     continue;
                 }
@@ -735,44 +1149,114 @@ impl SettingsMenu {
             };
             let chosen = index == self.selected;
             let background = if chosen { BG_HIGHLIGHT } else { BLACK };
-            put(buffer, row, left + 1, &" ".repeat(inner), on(FG, background));
+            put(
+                buffer,
+                row,
+                left + 1,
+                &" ".repeat(inner),
+                on(FG, background),
+            );
             self.rows.insert(row, index);
             if let SettingsLine::Explain(_) = line {
-                put(buffer, row, left + 4, &fit(&self.explanation(index), inner.saturating_sub(5)), on(FG_DARK, background));
+                put(
+                    buffer,
+                    row,
+                    left + 4,
+                    &fit(&self.explanation(index), inner.saturating_sub(5)),
+                    on(FG_DARK, background),
+                );
                 row += 1;
                 continue;
             }
-            let text_style = if chosen { on(FG, background).add_modifier(Modifier::BOLD) } else { ground };
-            if chosen { put(buffer, row, left + 2, "›", on(BLUE, background).add_modifier(Modifier::BOLD)); }
+            let text_style = if chosen {
+                on(FG, background).add_modifier(Modifier::BOLD)
+            } else {
+                ground
+            };
+            if chosen {
+                put(
+                    buffer,
+                    row,
+                    left + 2,
+                    "›",
+                    on(BLUE, background).add_modifier(Modifier::BOLD),
+                );
+            }
             let (label, value, value_style) = match self.row(index) {
                 SettingsRow::Setting(setting) => {
                     let is_on = settings::is_on(SETTINGS[setting].0);
-                    (SETTINGS[setting].1.to_string(), if is_on { " on " } else { " off " }.to_string(),
-                     if is_on { on(GREEN, background).add_modifier(Modifier::BOLD) } else { on(if chosen { FG } else { FG_DARK }, background) })
+                    (
+                        SETTINGS[setting].1.to_string(),
+                        if is_on { " on " } else { " off " }.to_string(),
+                        if is_on {
+                            on(GREEN, background).add_modifier(Modifier::BOLD)
+                        } else {
+                            on(if chosen { FG } else { FG_DARK }, background)
+                        },
+                    )
                 }
                 SettingsRow::Launch(setting) => {
                     let (name, label) = LAUNCH_SETTINGS[setting];
                     let (value, color) = match settings::launch_value(name) {
-                        Ok(value) if value.is_empty() && name == "idle-sleep-after" => (format!("{} min", sleep::DEFAULT_AFTER_MIN), FG_DARK),
+                        Ok(value) if value.is_empty() && name == "idle-sleep-after" => {
+                            (format!("{} min", sleep::DEFAULT_AFTER_MIN), FG_DARK)
+                        }
                         Ok(value) if value.is_empty() => ("OpenCode default".into(), FG_DARK),
                         Ok(value) if name == "idle-sleep-after" => (format!("{value} min"), BLUE),
-                        Ok(value) if name == "default-agent" => (agents::find(&value).map_or(value.clone(), |agent| agent.label.to_string()), BLUE),
+                        Ok(value) if name == "default-agent" => (
+                            agents::find(&value)
+                                .map_or(value.clone(), |agent| agent.label.to_string()),
+                            BLUE,
+                        ),
                         Ok(value) => (value, BLUE),
                         Err(error) => (error, RED),
                     };
-                    (label.to_string(), format!(" {value} ▾ "), on(color, background).add_modifier(Modifier::BOLD))
+                    (
+                        label.to_string(),
+                        format!(" {value} ▾ "),
+                        on(color, background).add_modifier(Modifier::BOLD),
+                    )
                 }
-                SettingsRow::PairPhone => ("Pair a phone".to_string(), " ⏎ ".to_string(), on(FG_DARK, background)),
-                SettingsRow::Phone(phone) => (self.phones[phone]["name"].as_str().unwrap_or("").to_string(),
-                    if chosen { " x forget ".to_string() } else { String::new() }, on(BLUE, background).add_modifier(Modifier::BOLD)),
+                SettingsRow::PairPhone => (
+                    "Pair a phone".to_string(),
+                    " ⏎ ".to_string(),
+                    on(FG_DARK, background),
+                ),
+                SettingsRow::Phone(phone) => (
+                    self.phones[phone]["name"]
+                        .as_str()
+                        .unwrap_or("")
+                        .to_string(),
+                    if chosen {
+                        " x forget ".to_string()
+                    } else {
+                        String::new()
+                    },
+                    on(BLUE, background).add_modifier(Modifier::BOLD),
+                ),
             };
             let value = fit(&value, inner / 2);
             let value_width = value.width();
-            put(buffer, row, left + 4, &fit(&label, inner.saturating_sub(value_width + 6)), text_style);
-            put(buffer, row, right.saturating_sub(value_width as u16 + 1), &value, value_style);
+            put(
+                buffer,
+                row,
+                left + 4,
+                &fit(&label, inner.saturating_sub(value_width + 6)),
+                text_style,
+            );
+            put(
+                buffer,
+                row,
+                right.saturating_sub(value_width as u16 + 1),
+                &value,
+                value_style,
+            );
             row += 1;
         }
-        while row < top + box_height - 2 { blank(buffer, row); row += 1; }
+        while row < top + box_height - 2 {
+            blank(buffer, row);
+            row += 1;
+        }
         blank(buffer, row);
         let mut keys = vec![("↑↓", "move", false), ("⏎", "change", true)];
         match self.row(self.selected) {
@@ -784,13 +1268,32 @@ impl SettingsMenu {
         let mut column = left + 2;
         for (key, what, primary) in keys {
             let cap = format!(" {key} ");
-            if column as usize + cap.width() + what.width() + 2 > right as usize { break; }
-            put(buffer, row, column, &cap, if primary { on(BLACK, YELLOW) } else { on(FG, BG_HIGHLIGHT) }.add_modifier(Modifier::BOLD));
+            if column as usize + cap.width() + what.width() + 2 > right as usize {
+                break;
+            }
+            put(
+                buffer,
+                row,
+                column,
+                &cap,
+                if primary {
+                    on(BLACK, YELLOW)
+                } else {
+                    on(FG, BG_HIGHLIGHT)
+                }
+                .add_modifier(Modifier::BOLD),
+            );
             column += cap.width() as u16 + 1;
             put(buffer, row, column, what, on(FG_DARK, BLACK));
             column += what.width() as u16 + 2;
         }
-        put(buffer, row + 1, left, &format!("╰{}╯", "─".repeat(inner)), frame);
+        put(
+            buffer,
+            row + 1,
+            left,
+            &format!("╰{}╯", "─".repeat(inner)),
+            frame,
+        );
     }
 
     fn contains(&self, x: u16, y: u16) -> bool {
@@ -814,41 +1317,108 @@ impl Pairing {
         let (width, height) = (buffer.area.width, buffer.area.height);
         let ground = on(FG, BG_HIGHLIGHT);
         for line in HEADER_LINES..height.saturating_sub(1) {
-            put(buffer, line, 0, &" ".repeat(width.saturating_sub(1) as usize), ground);
+            put(
+                buffer,
+                line,
+                0,
+                &" ".repeat(width.saturating_sub(1) as usize),
+                ground,
+            );
         }
         let mut row = HEADER_LINES + 1;
         if let Some(name) = &self.paired {
-            put(buffer, row, 2, &format!("{name} is paired ✓"), on(GREEN, BG_HIGHLIGHT).add_modifier(Modifier::BOLD));
-            put(buffer, row + 2, 2, "any key closes", on(FG_DARK, BG_HIGHLIGHT).add_modifier(Modifier::DIM));
+            put(
+                buffer,
+                row,
+                2,
+                &format!("{name} is paired ✓"),
+                on(GREEN, BG_HIGHLIGHT).add_modifier(Modifier::BOLD),
+            );
+            put(
+                buffer,
+                row + 2,
+                2,
+                "any key closes",
+                on(FG_DARK, BG_HIGHLIGHT).add_modifier(Modifier::DIM),
+            );
             return;
         }
-        put(buffer, row, 2, "Pair a phone", on(MAGENTA, BG_HIGHLIGHT).add_modifier(Modifier::BOLD));
+        put(
+            buffer,
+            row,
+            2,
+            "Pair a phone",
+            on(MAGENTA, BG_HIGHLIGHT).add_modifier(Modifier::BOLD),
+        );
         row += 2;
         // A scanned link opens in Safari, never in the Home Screen app: that app takes the digits.
-        put(buffer, row, 2, "Home Screen app: type", on(FG, BG_HIGHLIGHT));
-        put(buffer, row, 24, &format!("{} {}", &self.digits[..3], &self.digits[3..]), on(YELLOW, BG_HIGHLIGHT).add_modifier(Modifier::BOLD));
-        put(buffer, row, 33, "(2 minutes, 5 tries)", on(FG_DARK, BG_HIGHLIGHT));
+        put(
+            buffer,
+            row,
+            2,
+            "Home Screen app: type",
+            on(FG, BG_HIGHLIGHT),
+        );
+        put(
+            buffer,
+            row,
+            24,
+            &format!("{} {}", &self.digits[..3], &self.digits[3..]),
+            on(YELLOW, BG_HIGHLIGHT).add_modifier(Modifier::BOLD),
+        );
+        put(
+            buffer,
+            row,
+            33,
+            "(2 minutes, 5 tries)",
+            on(FG_DARK, BG_HIGHLIGHT),
+        );
         row += 1;
-        put(buffer, row, 2, "Browser: scan within 10 minutes, once", on(FG, BG_HIGHLIGHT));
+        put(
+            buffer,
+            row,
+            2,
+            "Browser: scan within 10 minutes, once",
+            on(FG, BG_HIGHLIGHT),
+        );
         row += 2;
         let modules = self.modules.as_ref().filter(|modules| {
-            modules[0].len() as u16 + 4 <= width && (modules.len() as u16).div_ceil(2) + row + 4 <= height
+            modules[0].len() as u16 + 4 <= width
+                && (modules.len() as u16).div_ceil(2) + row + 4 <= height
         });
         match modules {
             // Two module rows per terminal row (▀: the top one in the foreground), in true black and
             // white whatever the theme, for the phone's camera.
             Some(modules) => {
-                let shade = |is_dark: bool| if is_dark { Color::Rgb(0, 0, 0) } else { Color::Rgb(255, 255, 255) };
+                let shade = |is_dark: bool| {
+                    if is_dark {
+                        Color::Rgb(0, 0, 0)
+                    } else {
+                        Color::Rgb(255, 255, 255)
+                    }
+                };
                 for pair in modules.chunks(2) {
                     for (column, &is_dark) in pair[0].iter().enumerate() {
                         let below = pair.get(1).is_some_and(|next| next[column]);
-                        put(buffer, row, 2 + column as u16, "▀", Style::default().fg(shade(is_dark)).bg(shade(below)));
+                        put(
+                            buffer,
+                            row,
+                            2 + column as u16,
+                            "▀",
+                            Style::default().fg(shade(is_dark)).bg(shade(below)),
+                        );
                     }
                     row += 1;
                 }
             }
             None => {
-                put(buffer, row, 2, "No room for the QR code here (or qrencode is missing): open the link on the phone.", on(YELLOW, BG_HIGHLIGHT));
+                put(
+                    buffer,
+                    row,
+                    2,
+                    "No room for the QR code here (or qrencode is missing): open the link on the phone.",
+                    on(YELLOW, BG_HIGHLIGHT),
+                );
                 row += 1;
             }
         }
@@ -857,7 +1427,13 @@ impl Pairing {
             put(buffer, row, 2, &line, on(FG_DARK, BG_HIGHLIGHT));
             row += 1;
         }
-        put(buffer, row + 1, 2, "any key closes (the link keeps working until it is used or expires)", on(FG_DARK, BG_HIGHLIGHT).add_modifier(Modifier::DIM));
+        put(
+            buffer,
+            row + 1,
+            2,
+            "any key closes (the link keeps working until it is used or expires)",
+            on(FG_DARK, BG_HIGHLIGHT).add_modifier(Modifier::DIM),
+        );
     }
 }
 
@@ -1059,34 +1635,129 @@ impl App {
         let mut todos = TodoList::load();
         let (message, todo_recovery_pending) = match crate::todo_editor::recover(&mut todos) {
             Ok(Some(0)) => (String::new(), false),
-            Ok(Some(count)) => (format!("recovered {count} TODO draft(s) in their original projects"), false),
+            Ok(Some(count)) => (
+                format!("recovered {count} TODO draft(s) in their original projects"),
+                false,
+            ),
             Ok(None) => (String::new(), true),
-            Err(error) => (format!("TODO draft recovery failed; drafts kept: {error}"), false),
+            Err(error) => (
+                format!("TODO draft recovery failed; drafts kept: {error}"),
+                false,
+            ),
         };
         Self {
             continuity: Continuity::load(&paths::continuity()),
             continuity_error: None,
-            status_actions: Vec::new(), status_selection_lost: false,
-            history: History::default(), view: ViewState::load(), usage: Refresher::new(), alerts: BudgetAlerts::new(util::send_notice),
-            costs: Costs::default(), reviews: Reviews::default(), todos, errors: ErrorReporter::new(),
-            claude_status: ProviderStatus::default(), codex_status: ProviderStatus::new(Provider::Codex), panels: Default::default(), focus: 1, previous_panel: 1,
-            help_open: false, help_scroll: 0, has_pane_focus: true, message, exiting: Vec::new(), restarting_cards: HashMap::new(), labelled: Default::default(), menu: None, session_details: None, todo_composer: None, new_session: None, settings_menu: None, team_view: None, chief_view: None, team_attention: 0, team_roles: HashMap::new(), qa_sessions: HashSet::new(), team_known: false, team_checked: 0.0,
-            team_links: TeamLinks::Loading, teams_tab: Default::default(), chief_tab_rows: Vec::new(), sidebar_rows: Vec::new(), tab_ranges: Vec::new(), collapsed_teams: HashSet::new(), sidebar_selection_lost: false, sidebar_session_tasks: HashMap::new(), pairing: None, restore: Vec::new(),
-            held: Vec::new(), held_since: None, held_checked: 0.0, notices: Vec::new(), is_confirming: false, queue_checked: 0.0, handed_refused: HashSet::new(), chief_requested: HashSet::new(), chief_requests_checked: 0.0, sleep_checked: 0.0, sleep_asked: HashMap::new(), gaming: util::gaming,
-            disk_usage: util::fullest_disk, disk: None, disk_checked: 0.0, restore_checked: 0.0, start_files: Vec::new(),
-            width: DEFAULT_COLUMN_WIDTH, sessions: Vec::new(), running_sessions: Vec::new(), windows: Vec::new(), quota_rows: Vec::new(), review_rows: Vec::new(), todo_entries: Vec::new(), idea_entries: Vec::new(),
-            session_task_titles: HashMap::new(), session_branches: HashMap::new(),
-            session_queued: HashMap::new(), chief_answers: HashMap::new(), chief_status: Err("Not read yet".into()), chief_habits_seen_ms: None, chief_check_answers: Default::default(), session_roots: HashMap::new(),
-            todo_scope: String::new(), shown_session: String::new(), todo_tab: TODO_TAB_OPEN, todo_tabs: HashMap::new(), todo_categories: HashMap::new(), saved_todo_scope: None, todo_jump: None, todo_counts: [0; 5], prompts_sent: HashMap::new(), subscription_held: HashSet::new(), subscription_directories: HashSet::new(), subscription_error: None, craft_roots: HashMap::new(), hit_lines: HashMap::new(), hit_actions: HashMap::new(),
-            subscription_polled_at: None, subscription_waiting_shown: HashMap::new(),
-            gathered: None, pending: Vec::new(), plan: String::new(), craft_checked: 0.0, running_copies_unpushed: HashMap::new(), running_copies_checked: 0.0, todo_recovery_pending,
+            status_actions: Vec::new(),
+            status_selection_lost: false,
+            history: History::default(),
+            view: ViewState::load(),
+            usage: Refresher::new(),
+            alerts: BudgetAlerts::new(util::send_notice),
+            costs: Costs::default(),
+            reviews: Reviews::default(),
+            todos,
+            errors: ErrorReporter::new(),
+            claude_status: ProviderStatus::default(),
+            codex_status: ProviderStatus::new(Provider::Codex),
+            panels: Default::default(),
+            focus: 1,
+            previous_panel: 1,
+            help_open: false,
+            help_scroll: 0,
+            has_pane_focus: true,
+            message,
+            exiting: Vec::new(),
+            restarting_cards: HashMap::new(),
+            labelled: Default::default(),
+            menu: None,
+            session_details: None,
+            todo_composer: None,
+            new_session: None,
+            settings_menu: None,
+            team_view: None,
+            chief_view: None,
+            team_attention: 0,
+            team_roles: HashMap::new(),
+            qa_sessions: HashSet::new(),
+            team_known: false,
+            team_checked: 0.0,
+            team_links: TeamLinks::Loading,
+            teams_tab: Default::default(),
+            chief_tab_rows: Vec::new(),
+            sidebar_rows: Vec::new(),
+            tab_ranges: Vec::new(),
+            collapsed_teams: HashSet::new(),
+            sidebar_selection_lost: false,
+            sidebar_session_tasks: HashMap::new(),
+            pairing: None,
+            restore: Vec::new(),
+            held: Vec::new(),
+            held_since: None,
+            held_checked: 0.0,
+            notices: Vec::new(),
+            is_confirming: false,
+            queue_checked: 0.0,
+            handed_refused: HashSet::new(),
+            chief_requested: HashSet::new(),
+            chief_requests_checked: 0.0,
+            sleep_checked: 0.0,
+            sleep_asked: HashMap::new(),
+            gaming: util::gaming,
+            disk_usage: util::fullest_disk,
+            disk: None,
+            disk_checked: 0.0,
+            restore_checked: 0.0,
+            start_files: Vec::new(),
+            width: DEFAULT_COLUMN_WIDTH,
+            sessions: Vec::new(),
+            running_sessions: Vec::new(),
+            windows: Vec::new(),
+            quota_rows: Vec::new(),
+            review_rows: Vec::new(),
+            todo_entries: Vec::new(),
+            idea_entries: Vec::new(),
+            session_task_titles: HashMap::new(),
+            session_branches: HashMap::new(),
+            session_queued: HashMap::new(),
+            chief_answers: HashMap::new(),
+            chief_status: Err("Not read yet".into()),
+            chief_habits_seen_ms: None,
+            chief_check_answers: Default::default(),
+            session_roots: HashMap::new(),
+            todo_scope: String::new(),
+            shown_session: String::new(),
+            todo_tab: TODO_TAB_OPEN,
+            todo_tabs: HashMap::new(),
+            todo_categories: HashMap::new(),
+            saved_todo_scope: None,
+            todo_jump: None,
+            todo_counts: [0; 5],
+            prompts_sent: HashMap::new(),
+            subscription_held: HashSet::new(),
+            subscription_directories: HashSet::new(),
+            subscription_error: None,
+            craft_roots: HashMap::new(),
+            hit_lines: HashMap::new(),
+            hit_actions: HashMap::new(),
+            subscription_polled_at: None,
+            subscription_waiting_shown: HashMap::new(),
+            gathered: None,
+            pending: Vec::new(),
+            plan: String::new(),
+            craft_checked: 0.0,
+            running_copies_unpushed: HashMap::new(),
+            running_copies_checked: 0.0,
+            todo_recovery_pending,
         }
     }
 
     /// A panel taking the focus shows from its top: while small it scrolled to keep its selection
     /// in view, and that scroll would otherwise stay once it is big again.
     pub fn focus_panel(&mut self, index: usize) {
-        if matches!(index, 0 | CHIEF_PANEL) { self.refresh_chief_status(); }
+        if matches!(index, 0 | CHIEF_PANEL) {
+            self.refresh_chief_status();
+        }
         if index == CHIEF_PANEL {
             // Back on the Chief: what was left open there (Tab away from a review) shows again.
             if self.chief_view.as_ref().is_some_and(|view| view.suspended) {
@@ -1118,7 +1789,10 @@ impl App {
                 Ok(None) => (),
                 Ok(Some(count)) => {
                     self.todo_recovery_pending = false;
-                    if count > 0 { self.message = format!("recovered {count} TODO draft(s) in their original projects"); }
+                    if count > 0 {
+                        self.message =
+                            format!("recovered {count} TODO draft(s) in their original projects");
+                    }
                 }
                 Err(error) => {
                     self.todo_recovery_pending = false;
@@ -1128,8 +1802,12 @@ impl App {
         }
         self.todos.apply_updates();
         self.check_team();
-        self.errors.tick(|| sessions::reported().into_iter()
-            .filter(|session| !self.qa_sessions.contains(&session.session)).collect());
+        self.errors.tick(|| {
+            sessions::reported()
+                .into_iter()
+                .filter(|session| !self.qa_sessions.contains(&session.session))
+                .collect()
+        });
         self.claude_status.tick();
         self.codex_status.tick();
         self.usage.tick(false);
@@ -1150,11 +1828,17 @@ impl App {
     /// up to 500): the column keeps answering keys meanwhile (security audit 2026-10-19,
     /// performance 2). Its error, if any, shows once it ends (collect_manager).
     pub(crate) fn manager_async(&mut self, arguments: &[&str]) -> String {
-        let started = Command::new("cockpit").args(arguments).env("COCKPIT_LOG_STDERR", "1")
-            .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).spawn();
+        let started = Command::new("cockpit")
+            .args(arguments)
+            .env("COCKPIT_LOG_STDERR", "1")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn();
         match started {
             Ok(child) => {
-                self.pending.push((command_name(arguments).to_string(), child));
+                self.pending
+                    .push((command_name(arguments).to_string(), child));
                 String::new()
             }
             Err(error) => format!("cockpit {}: {error}", command_name(arguments)),
@@ -1169,13 +1853,23 @@ impl App {
             return format!("{} is already asleep", session.project);
         }
         if session.terminal {
-            return format!("{} runs in its own terminal: the cockpit could not wake it", session.project);
+            return format!(
+                "{} runs in its own terminal: the cockpit could not wake it",
+                session.project
+            );
         }
         if !self.team_known {
-            return format!("cannot tell yet whether {} is in a team: try again in a moment", session.project);
+            return format!(
+                "cannot tell yet whether {} is in a team: try again in a moment",
+                session.project
+            );
         }
-        let started = Command::new("cockpit").args(["sleep", &session.session])
-            .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).spawn();
+        let started = Command::new("cockpit")
+            .args(["sleep", &session.session])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn();
         match started {
             Ok(child) => {
                 self.pending.push(("sleep".into(), child));
@@ -1205,12 +1899,25 @@ impl App {
                     }
                     let last = errors.trim().lines().last().unwrap_or("").to_string();
                     // `s` on a session that must stay awake: cockpit logged why at INFO.
-                    if command == "sleep" && status.code() == Some(SLEEP_REFUSED) && !last.is_empty() {
+                    if command == "sleep"
+                        && status.code() == Some(SLEEP_REFUSED)
+                        && !last.is_empty()
+                    {
                         self.message = last;
                         continue;
                     }
-                    util::log_event("ERROR", &format!("cockpit {command}: {}", if last.is_empty() { "failed" } else { &last }));
-                    self.message = if last.is_empty() { format!("cockpit {command} failed") } else { last };
+                    util::log_event(
+                        "ERROR",
+                        &format!(
+                            "cockpit {command}: {}",
+                            if last.is_empty() { "failed" } else { &last }
+                        ),
+                    );
+                    self.message = if last.is_empty() {
+                        format!("cockpit {command} failed")
+                    } else {
+                        last
+                    };
                 }
                 Err(error) => {
                     has_ended = true;
@@ -1223,21 +1930,43 @@ impl App {
 
     pub fn poll_subscription_routes(&mut self) {
         let now = util::now();
-        if self.subscription_polled_at.is_some_and(|last| now - last < 60.0)
-            || self.pending.iter().any(|(command, _)| command == "subscription-sweep") { return; }
+        if self
+            .subscription_polled_at
+            .is_some_and(|last| now - last < 60.0)
+            || self
+                .pending
+                .iter()
+                .any(|(command, _)| command == "subscription-sweep")
+        {
+            return;
+        }
         self.subscription_polled_at = Some(now);
         let error = self.manager_async(&["subscription-sweep"]);
-        if !error.is_empty() { util::log_event("WARN", &error); }
+        if !error.is_empty() {
+            util::log_event("WARN", &error);
+        }
     }
 
     fn show_subscription_waiting(&mut self, routes: &[crate::subscription_fallback::Route]) {
-        let waiting: HashMap<String, String> = routes.iter()
-            .filter_map(|route| Some((route.original.session.clone(), route.waiting.clone()?))).collect();
+        let waiting: HashMap<String, String> = routes
+            .iter()
+            .filter_map(|route| Some((route.original.session.clone(), route.waiting.clone()?)))
+            .collect();
         use crate::subscription_fallback::Phase;
-        for route in routes.iter().filter(|route| matches!(route.phase, Phase::Active | Phase::Pending(_))) {
-            let Some(reason) = &route.waiting else { continue };
-            if self.subscription_waiting_shown.get(&route.original.session) == Some(reason) { continue; }
-            self.message = format!("{}: subscription switch waiting: {reason}", project_name(&util::repository_root(&route.directory)));
+        for route in routes
+            .iter()
+            .filter(|route| matches!(route.phase, Phase::Active | Phase::Pending(_)))
+        {
+            let Some(reason) = &route.waiting else {
+                continue;
+            };
+            if self.subscription_waiting_shown.get(&route.original.session) == Some(reason) {
+                continue;
+            }
+            self.message = format!(
+                "{}: subscription switch waiting: {reason}",
+                project_name(&util::repository_root(&route.directory))
+            );
         }
         self.subscription_waiting_shown = waiting;
     }
@@ -1248,28 +1977,47 @@ impl App {
             let routes = subscription_fallback::read_routes(&paths::subscription_routes())?;
             self.subscription_held.clear();
             self.subscription_directories.clear();
-            for route in routes.iter().filter(|route| matches!(route.original.selection.agent.as_str(), "claude" | "codex")) {
-                if matches!(route.phase, Phase::Cancelled | Phase::Completed) { continue; }
-                self.subscription_held.extend(route.retired_sessions.iter().cloned());
-                if route.original.session != route.current.session { self.subscription_held.insert(route.original.session.clone()); }
+            for route in routes.iter().filter(|route| {
+                matches!(route.original.selection.agent.as_str(), "claude" | "codex")
+            }) {
+                if matches!(route.phase, Phase::Cancelled | Phase::Completed) {
+                    continue;
+                }
+                self.subscription_held
+                    .extend(route.retired_sessions.iter().cloned());
+                if route.original.session != route.current.session {
+                    self.subscription_held
+                        .insert(route.original.session.clone());
+                }
                 match &route.phase {
                     Phase::Pending(pending) => {
                         self.subscription_held.insert(route.current.session.clone());
-                        self.subscription_directories.insert(route.directory.clone());
-                        if pending.direction == Direction::Return { self.subscription_held.insert(route.original.session.clone()); }
-                        if let Some(replacement) = &pending.replacement { self.subscription_held.insert(replacement.session.clone()); }
+                        self.subscription_directories
+                            .insert(route.directory.clone());
+                        if pending.direction == Direction::Return {
+                            self.subscription_held
+                                .insert(route.original.session.clone());
+                        }
+                        if let Some(replacement) = &pending.replacement {
+                            self.subscription_held.insert(replacement.session.clone());
+                        }
                     }
                     Phase::Paused(_) => {
                         self.subscription_held.insert(route.current.session.clone());
-                        self.subscription_directories.insert(route.directory.clone());
+                        self.subscription_directories
+                            .insert(route.directory.clone());
                     }
                     Phase::Active => {
                         if route.awaiting_initial_admission() {
                             self.subscription_held.insert(route.current.session.clone());
-                            self.subscription_directories.insert(route.directory.clone());
+                            self.subscription_directories
+                                .insert(route.directory.clone());
                         }
                         for retired in &route.retired_sessions {
-                            prompts::transfer_subscription_prompts(retired, &route.current.session)?;
+                            prompts::transfer_subscription_prompts(
+                                retired,
+                                &route.current.session,
+                            )?;
                         }
                     }
                     Phase::Cancelled | Phase::Completed => unreachable!(),
@@ -1281,7 +2029,10 @@ impl App {
         let error = result.err();
         if error != self.subscription_error {
             if let Some(error) = &error {
-                util::log_event("WARN", &format!("automatic native actions paused: subscription routing: {error}"));
+                util::log_event(
+                    "WARN",
+                    &format!("automatic native actions paused: subscription routing: {error}"),
+                );
                 self.message = format!("Subscription routing paused: {error}");
             }
             self.subscription_error = error;
@@ -1290,24 +2041,44 @@ impl App {
 
     fn subscription_holds(&self, session: &Session) -> bool {
         matches!(session.agent.as_str(), "claude" | "codex")
-            && (self.subscription_error.is_some() || self.subscription_held.contains(&session.session))
+            && (self.subscription_error.is_some()
+                || self.subscription_held.contains(&session.session))
     }
 
     /// A session craft-open asked to restart (its figcraft-app server had exited at its start) is
     /// restarted once its turn ends, in a tmux session of its own; its queued prompt then waits for
     /// the restarted session. A terminal session is its terminal's: it is only told in the log.
     fn dispatch_restarts(&mut self) {
-        let ready: Vec<Session> = self.running_sessions.iter()
-            .filter(|session| !self.subscription_holds(session) && !session.is_external() && session.state == "waiting" && prompts::restart_wanted(&session.session)).cloned().collect();
+        let ready: Vec<Session> = self
+            .running_sessions
+            .iter()
+            .filter(|session| {
+                !self.subscription_holds(session)
+                    && !session.is_external()
+                    && session.state == "waiting"
+                    && prompts::restart_wanted(&session.session)
+            })
+            .cloned()
+            .collect();
         for session in ready {
             prompts::restart_done(&session.session);
             if session.terminal {
-                util::log_event("WARN", &format!("{} waited for a restart at the end of its turn, but runs in its own terminal: restart it there", session.project));
+                util::log_event(
+                    "WARN",
+                    &format!(
+                        "{} waited for a restart at the end of its turn, but runs in its own terminal: restart it there",
+                        session.project
+                    ),
+                );
                 continue;
             }
             manager_in_background(&["restart", &session.session, "", "detached"]);
-            self.prompts_sent.insert(session.session.clone(), util::now() as i64);
-            util::log_event("INFO", &format!("{} restarted at the end of its turn", session.project));
+            self.prompts_sent
+                .insert(session.session.clone(), util::now() as i64);
+            util::log_event(
+                "INFO",
+                &format!("{} restarted at the end of its turn", session.project),
+            );
         }
     }
 
@@ -1324,19 +2095,42 @@ impl App {
             match crate::subscription_fallback::has_native_inbox(&session.session) {
                 Ok(true) => continue,
                 Ok(false) => (),
-                Err(error) => { util::log_event("WARN", &format!("native message delivery paused: {error}")); continue; },
+                Err(error) => {
+                    util::log_event("WARN", &format!("native message delivery paused: {error}"));
+                    continue;
+                }
             }
-            let Some((text, path)) = prompts::oldest(&session.session) else { continue };
+            let Some((text, path)) = prompts::oldest(&session.session) else {
+                continue;
+            };
             let error = manager(&["say", &session.session, &text]);
             if !error.is_empty() {
-                util::log_event("WARN", &format!("queued prompt for {} not sent yet: {error}", session.project));
+                util::log_event(
+                    "WARN",
+                    &format!(
+                        "queued prompt for {} not sent yet: {error}",
+                        session.project
+                    ),
+                );
                 continue;
             }
             let _ = std::fs::remove_file(&path);
-            self.prompts_sent.insert(session.session.clone(), util::now() as i64);
-            util::log_event("INFO", &format!("queued prompt sent to {} at the end of its turn", session.project));
-            crate::audit::record("column", "prompt.sent", "ok", serde_json::json!({"session": session.session, "project": session.project,
-                                                                     "text": crate::audit::fingerprint(&text)}));
+            self.prompts_sent
+                .insert(session.session.clone(), util::now() as i64);
+            util::log_event(
+                "INFO",
+                &format!(
+                    "queued prompt sent to {} at the end of its turn",
+                    session.project
+                ),
+            );
+            crate::audit::record(
+                "column",
+                "prompt.sent",
+                "ok",
+                serde_json::json!({"session": session.session, "project": session.project,
+                                                                     "text": crate::audit::fingerprint(&text)}),
+            );
         }
     }
 
@@ -1349,21 +2143,41 @@ impl App {
         }
         self.sleep_checked = now;
         for note in sleep::expire(now as i64) {
-            util::log_event("INFO", &format!("{} asleep for over a week, forgotten", note.project));
+            util::log_event(
+                "INFO",
+                &format!("{} asleep for over a week, forgotten", note.project),
+            );
         }
         if !self.team_known {
             return;
         }
         let context = sleep::SleepContext {
-            now: now as i64, enabled: settings::is_on("idle-sleep"), after_s: sleep::after_minutes() * 60,
+            now: now as i64,
+            enabled: settings::is_on("idle-sleep"),
+            after_s: sleep::after_minutes() * 60,
             viewed: current_session(),
         };
-        let eligible: Vec<Session> = self.running_sessions.iter()
+        let eligible: Vec<Session> = self
+            .running_sessions
+            .iter()
             .filter(|session| !self.subscription_holds(session))
             .filter(|session| self.sleep_asked.get(&session.session) != Some(&session.since))
-            .filter(|session| sleep::block(session, &context, self.todos.busy(&session.session), prompts::count(&session.session) > 0).is_none())
-            .cloned().collect();
-        self.sleep_asked.retain(|asked, _| self.running_sessions.iter().any(|session| &session.session == asked));
+            .filter(|session| {
+                sleep::block(
+                    session,
+                    &context,
+                    self.todos.busy(&session.session),
+                    prompts::count(&session.session) > 0,
+                )
+                .is_none()
+            })
+            .cloned()
+            .collect();
+        self.sleep_asked.retain(|asked, _| {
+            self.running_sessions
+                .iter()
+                .any(|session| &session.session == asked)
+        });
         for session in eligible {
             manager_in_background(&["sleep", &session.session]);
             self.sleep_asked.insert(session.session, session.since);
@@ -1398,9 +2212,19 @@ impl App {
             return;
         }
         self.queue_checked = now;
-        let idle: Vec<Session> = self.all_sessions().into_iter()
+        let idle: Vec<Session> = self
+            .all_sessions()
+            .into_iter()
             .filter(|session| !self.subscription_holds(session))
-            .filter(|session| queue::block(session, &context, self.todos.busy(&session.session), prompts::count(&session.session) > 0).is_none())
+            .filter(|session| {
+                queue::block(
+                    session,
+                    &context,
+                    self.todos.busy(&session.session),
+                    prompts::count(&session.session) > 0,
+                )
+                .is_none()
+            })
             .collect();
         for session in idle {
             self.give_queued_work(&session, now);
@@ -1411,31 +2235,60 @@ impl App {
     /// refused item (still reserved, or another team's task) does not hold back the ones after it;
     /// a refusal of the session itself ends the pass for it.
     fn give_queued_work(&mut self, session: &Session, now: f64) {
-        for entry in queue::candidates(session, &self.todos, &self.reviews.issues(), &self.reviews.checkouts) {
+        for entry in queue::candidates(
+            session,
+            &self.todos,
+            &self.reviews.issues(),
+            &self.reviews.checkouts,
+        ) {
             let (key, text) = match &entry {
                 Entry::Typed(item) => (item.id(), todo::prompt_of(&entry)),
                 Entry::Issue { issue, .. } => (issue.key(), todo::prompt_of(&entry)),
             };
             let short_session = &session.session[..8.min(session.session.len())];
-            let token = match queue::reserve_task(&session.cwd, &key, Some(&session.session), true) {
+            let token = match queue::reserve_task(&session.cwd, &key, Some(&session.session), true)
+            {
                 Ok(token) => token,
                 Err(error) => {
-                    util::log_event("WARN", &format!("queue: {key} not given to {} ({short_session}): {error}", session.project));
-                    if error.starts_with(queue::SESSION_NOT_READY) { return; }
+                    util::log_event(
+                        "WARN",
+                        &format!(
+                            "queue: {key} not given to {} ({short_session}): {error}",
+                            session.project
+                        ),
+                    );
+                    if error.starts_with(queue::SESSION_NOT_READY) {
+                        return;
+                    }
                     continue;
                 }
             };
-            if let Err(error) = queue::launch_reserved(&token,&["say", &session.session, &todo::with_todo_note(&text, &key)],false) {
-                util::log_event("WARN", &format!("queue: cannot give {key} to {}: {error}", session.project));
+            if let Err(error) = queue::launch_reserved(
+                &token,
+                &["say", &session.session, &todo::with_todo_note(&text, &key)],
+                false,
+            ) {
+                util::log_event(
+                    "WARN",
+                    &format!("queue: cannot give {key} to {}: {error}", session.project),
+                );
                 return;
             }
             if !self.todos.set_status(&key, "doing", &session.session) {
                 self.message = format!("queue: sent {key}, but cannot save its status");
                 return;
             }
-            if let Err(error) = self.record_task_assignment(&entry, Some(session)) { self.continuity_error = Some(error); }
-            util::log_event("INFO", &format!("queue: {key} given to {} ({short_session}), idle for {} min", session.project,
-                                             (now as i64 - session.since) / 60));
+            if let Err(error) = self.record_task_assignment(&entry, Some(session)) {
+                self.continuity_error = Some(error);
+            }
+            util::log_event(
+                "INFO",
+                &format!(
+                    "queue: {key} given to {} ({short_session}), idle for {} min",
+                    session.project,
+                    (now as i64 - session.since) / 60
+                ),
+            );
             self.message = format!("queue: gave {} its next item", session.project);
             return;
         }
@@ -1447,22 +2300,37 @@ impl App {
     /// The handed items that could start a session now: not refused since the last queue check,
     /// and not in a project whose subscription handoff is under way.
     fn handed_work(&self) -> Vec<Entry> {
-        let mut handed: Vec<Entry> = self.todos.items.iter()
-            .filter(|item| {
-                let is_handed = self.todos.is_queued(&item.id()) && (!item.queued_by().is_empty() || item.is_blocked_report());
-                item.status() == "todo" && (is_handed || self.chief_requested.contains(&item.id()))
-                    && !item.is_waiting() && !item.is_design() && !self.handed_refused.contains(&item.id())
-            })
-            .filter(|item| {
-                let project = project_name(&util::repository_root(&item.cwd()));
-                self.subscription_error.is_none() && !self.subscription_directories.iter().any(|directory| project_name(&util::repository_root(directory)) == project)
-            })
-            .map(|item| Entry::Typed(item.clone())).collect();
+        let mut handed: Vec<Entry> =
+            self.todos
+                .items
+                .iter()
+                .filter(|item| {
+                    let is_handed = self.todos.is_queued(&item.id())
+                        && (!item.queued_by().is_empty() || item.is_blocked_report());
+                    item.status() == "todo"
+                        && (is_handed || self.chief_requested.contains(&item.id()))
+                        && !item.is_waiting()
+                        && !item.is_design()
+                        && !self.handed_refused.contains(&item.id())
+                })
+                .filter(|item| {
+                    let project = project_name(&util::repository_root(&item.cwd()));
+                    self.subscription_error.is_none()
+                        && !self.subscription_directories.iter().any(|directory| {
+                            project_name(&util::repository_root(directory)) == project
+                        })
+                })
+                .map(|item| Entry::Typed(item.clone()))
+                .collect();
         handed.sort_by(todo::queue_order);
         handed
     }
 
-    fn start_sessions_for_handed_work(&mut self, context: &queue::QueueContext, handed: Vec<Entry>) {
+    fn start_sessions_for_handed_work(
+        &mut self,
+        context: &queue::QueueContext,
+        handed: Vec<Entry>,
+    ) {
         if !context.enabled || context.gaming || !context.host_available {
             return;
         }
@@ -1472,35 +2340,83 @@ impl App {
             let directory = match start_directory(&item.cwd()) {
                 Ok(directory) => directory,
                 Err(error) => {
-                    util::log_event("WARN", &format!("queue: cannot start a session for {}: {error}", item.id()));
+                    util::log_event(
+                        "WARN",
+                        &format!("queue: cannot start a session for {}: {error}", item.id()),
+                    );
                     self.handed_refused.insert(item.id());
-                    continue
+                    continue;
                 }
             };
             let agent = match settings::launch_agent() {
                 Ok(agent) => agent,
-                Err(error) => { util::log_event("WARN", &format!("queue: cannot start a session for {}: {error}", item.id())); return }
+                Err(error) => {
+                    util::log_event(
+                        "WARN",
+                        &format!("queue: cannot start a session for {}: {error}", item.id()),
+                    );
+                    return;
+                }
             };
-            let token=match queue::reserve_task(&directory,&item.id(),None,true) {Ok(token)=>token,Err(error)=>{
-                util::log_event("WARN",&format!("queue: {} not started, retried at the next queue check: {error}", item.id()));
-                self.handed_refused.insert(item.id());
-                continue;
-            }};
-            if let Err(error)=queue::launch_reserved(&token,&["--agent", &agent, "background", &directory, &todo::with_todo_note(&todo::prompt_of(&entry), &item.id())],true) {
-                util::log_event("WARN",&error);
+            let token = match queue::reserve_task(&directory, &item.id(), None, true) {
+                Ok(token) => token,
+                Err(error) => {
+                    util::log_event(
+                        "WARN",
+                        &format!(
+                            "queue: {} not started, retried at the next queue check: {error}",
+                            item.id()
+                        ),
+                    );
+                    self.handed_refused.insert(item.id());
+                    continue;
+                }
+            };
+            if let Err(error) = queue::launch_reserved(
+                &token,
+                &[
+                    "--agent",
+                    &agent,
+                    "background",
+                    &directory,
+                    &todo::with_todo_note(&todo::prompt_of(&entry), &item.id()),
+                ],
+                true,
+            ) {
+                util::log_event("WARN", &error);
                 self.handed_refused.insert(item.id());
                 continue;
             }
             if !self.todos.set_status(&item.id(), "doing", "") {
-                self.message = format!("queue: started session, but cannot save status for {}", item.id());
+                self.message = format!(
+                    "queue: started session, but cannot save status for {}",
+                    item.id()
+                );
                 continue;
             }
-            if let Err(error) = self.record_task_assignment(&entry, None) { self.continuity_error = Some(error); }
+            if let Err(error) = self.record_task_assignment(&entry, None) {
+                self.continuity_error = Some(error);
+            }
             let is_chief_requested = self.chief_requested.contains(&item.id());
-            let started_by = if is_chief_requested { "the Chief asked".to_string() } else { item.queued_by() };
-            util::log_event("INFO", &format!("queue: started a fresh session in {project} for {} ({started_by})", item.id()));
-            crate::audit::record("column", "queue.session_started", "ok", serde_json::json!({"id": item.id(), "project": project,
-                "queued_by": item.queued_by(), "chief_requested": is_chief_requested}));
+            let started_by = if is_chief_requested {
+                "the Chief asked".to_string()
+            } else {
+                item.queued_by()
+            };
+            util::log_event(
+                "INFO",
+                &format!(
+                    "queue: started a fresh session in {project} for {} ({started_by})",
+                    item.id()
+                ),
+            );
+            crate::audit::record(
+                "column",
+                "queue.session_started",
+                "ok",
+                serde_json::json!({"id": item.id(), "project": project,
+                "queued_by": item.queued_by(), "chief_requested": is_chief_requested}),
+            );
             self.message = format!("queue: started a session in {project} for handed work");
         }
     }
@@ -1530,7 +2446,9 @@ impl App {
         self.build_todo();
         self.build_ideas();
         self.build_teams();
-        if self.focus == CHIEF_PANEL { self.build_chief_tab(); }
+        if self.focus == CHIEF_PANEL {
+            self.build_chief_tab();
+        }
     }
 
     /// A duration as the column shows it: "42m", "3h05", then "34h".
@@ -1550,14 +2468,28 @@ impl App {
             return None;
         }
         let short = Self::duration_text;
-        Some(if today >= 60.0 { format!("⏱ {} today · {}", short(today), short(all_time)) } else { format!("⏱ {}", short(all_time)) })
+        Some(if today >= 60.0 {
+            format!("⏱ {} today · {}", short(today), short(all_time))
+        } else {
+            format!("⏱ {}", short(all_time))
+        })
     }
 
     /// The viewed session's state goes to the manager (its title line's colour) when it changes.
     fn push_viewed_state(&mut self) {
         let viewed = current_session();
-        let state = self.running_sessions.iter().find(|s| s.session == viewed)
-            .map(|session| if session.needs_input { "needs-you".into() } else { session.state.clone() }).unwrap_or_default();
+        let state = self
+            .running_sessions
+            .iter()
+            .find(|s| s.session == viewed)
+            .map(|session| {
+                if session.needs_input {
+                    "needs-you".into()
+                } else {
+                    session.state.clone()
+                }
+            })
+            .unwrap_or_default();
         if (viewed.clone(), state.clone()) == self.labelled {
             return;
         }
@@ -1574,24 +2506,56 @@ impl App {
         let previous_selection = self.panels[0].selected;
         self.status_actions = vec![None; self.quota_rows.len()];
         let room = self.width.saturating_sub(4) as usize;
-        let labels: Vec<_> = self.quota_rows.iter().map(|quota| {
-            let window = quota.label.split_once(" · ").map_or("Quota", |(_, window)| window);
-            match window {
-                "5h" => "5-hour".into(),
-                "week" => "Weekly".into(),
-                _ => window.replace(" this week", " weekly"),
-            }
-        }).collect();
-        let capacities: Vec<_> = self.quota_rows.iter().map(|quota| match (quota.state.as_str(), quota.remaining) {
-            ("Available", Some(remaining)) => format!("{remaining}%"),
-            ("Stale", Some(remaining)) => format!("Stale · last {remaining}%"),
-            (state, Some(remaining)) => format!("{remaining}% {state}"),
-            (state, None) => state.into(),
-        }).collect();
-        let label_width = labels.iter().map(|label| width_of(label)).max().unwrap_or(0);
-        let capacity_width = capacities.iter().map(|text| width_of(text)).chain([4]).max().unwrap_or(4);
-        let forecast_width = self.quota_rows.iter().map(|quota| width_of(quota.forecast.text())).chain([11]).max().unwrap_or(11);
-        let reset_width = self.quota_rows.iter().map(|quota| width_of(quota.resets.trim_start_matches("resets in "))).chain([9]).max().unwrap_or(9);
+        let labels: Vec<_> = self
+            .quota_rows
+            .iter()
+            .map(|quota| {
+                let window = quota
+                    .label
+                    .split_once(" · ")
+                    .map_or("Quota", |(_, window)| window);
+                match window {
+                    "5h" => "5-hour".into(),
+                    "week" => "Weekly".into(),
+                    _ => window.replace(" this week", " weekly"),
+                }
+            })
+            .collect();
+        let capacities: Vec<_> = self
+            .quota_rows
+            .iter()
+            .map(|quota| match (quota.state.as_str(), quota.remaining) {
+                ("Available", Some(remaining)) => format!("{remaining}%"),
+                ("Stale", Some(remaining)) => format!("Stale · last {remaining}%"),
+                (state, Some(remaining)) => format!("{remaining}% {state}"),
+                (state, None) => state.into(),
+            })
+            .collect();
+        let label_width = labels
+            .iter()
+            .map(|label| width_of(label))
+            .max()
+            .unwrap_or(0);
+        let capacity_width = capacities
+            .iter()
+            .map(|text| width_of(text))
+            .chain([4])
+            .max()
+            .unwrap_or(4);
+        let forecast_width = self
+            .quota_rows
+            .iter()
+            .map(|quota| width_of(quota.forecast.text()))
+            .chain([11])
+            .max()
+            .unwrap_or(11);
+        let reset_width = self
+            .quota_rows
+            .iter()
+            .map(|quota| width_of(quota.resets.trim_start_matches("resets in ")))
+            .chain([9])
+            .max()
+            .unwrap_or(9);
         let capacity_column = 2 + label_width + 2;
         let forecast_column = capacity_column + capacity_width + 2;
         let reset_column = forecast_column + forecast_width + 2;
@@ -1603,23 +2567,39 @@ impl App {
             for notice in &self.notices {
                 lines.push(notice_line(notice));
                 if !notice.detail.is_empty() {
-                    lines.push(Line { segments: vec![segment(2, notice.detail.clone(), dim(FG_DARK))], accent: Some(bold(notice.tint)), ..Line::default() });
+                    lines.push(Line {
+                        segments: vec![segment(2, notice.detail.clone(), dim(FG_DARK))],
+                        accent: Some(bold(notice.tint)),
+                        ..Line::default()
+                    });
                 }
             }
             lines.push(Line::default());
         }
         lines.push(Line::new(vec![segment(0, "USAGE", bold(FG_DARK))]));
         if full_table {
-            lines.push(Line::new(vec![segment(capacity_column as u16, "LEFT", dim(FG_DARK)),
-                segment(forecast_column as u16, "RUNS OUT IN", dim(FG_DARK)), segment(reset_column as u16, "RESETS IN", dim(FG_DARK))]));
+            lines.push(Line::new(vec![
+                segment(capacity_column as u16, "LEFT", dim(FG_DARK)),
+                segment(forecast_column as u16, "RUNS OUT IN", dim(FG_DARK)),
+                segment(reset_column as u16, "RESETS IN", dim(FG_DARK)),
+            ]));
         } else {
-            lines.push(Line::new(vec![segment(0, "LEFT · remaining capacity", dim(FG_DARK))]));
+            lines.push(Line::new(vec![segment(
+                0,
+                "LEFT · remaining capacity",
+                dim(FG_DARK),
+            )]));
         }
         let mut previous_provider = "";
         for (index, quota) in self.quota_rows.iter().enumerate() {
-            let provider = quota.label.split_once(" · ").map_or(quota.label.as_str(), |(provider, _)| provider);
+            let provider = quota
+                .label
+                .split_once(" · ")
+                .map_or(quota.label.as_str(), |(provider, _)| provider);
             if provider != previous_provider {
-                if !previous_provider.is_empty() { lines.push(Line::default()); }
+                if !previous_provider.is_empty() {
+                    lines.push(Line::default());
+                }
                 lines.push(Line::new(vec![segment(0, provider, bold(FG))]));
                 previous_provider = provider;
             }
@@ -1637,19 +2617,42 @@ impl App {
                 usage::Forecast::Depletion(_) => bold(YELLOW),
                 _ => dim(FG_DARK),
             };
-            let reset = if quota.resets.is_empty() { "—" } else { quota.resets.trim_start_matches("resets in ") };
-            let mut row = Line { item: Some(index), ..Line::default() };
+            let reset = if quota.resets.is_empty() {
+                "—"
+            } else {
+                quota.resets.trim_start_matches("resets in ")
+            };
+            let mut row = Line {
+                item: Some(index),
+                ..Line::default()
+            };
             if capacity_column + capacity_width <= room {
-                row.segments = vec![segment(2, &labels[index], style(FG)), segment(capacity_column as u16, &capacities[index], tint)];
+                row.segments = vec![
+                    segment(2, &labels[index], style(FG)),
+                    segment(capacity_column as u16, &capacities[index], tint),
+                ];
             } else {
                 for label in wrap_detail_text(&labels[index], room.saturating_sub(2).max(2)) {
-                    lines.push(Line { segments: vec![segment(2, label, style(FG))], item: Some(index), ..Line::default() });
+                    lines.push(Line {
+                        segments: vec![segment(2, label, style(FG))],
+                        item: Some(index),
+                        ..Line::default()
+                    });
                 }
-                row.segments = vec![segment(4, fit(&capacities[index], room.saturating_sub(4)), tint)];
+                row.segments = vec![segment(
+                    4,
+                    fit(&capacities[index], room.saturating_sub(4)),
+                    tint,
+                )];
             }
             if full_table {
-                row.segments.push(segment(forecast_column as u16, quota.forecast.text(), forecast_tint));
-                row.segments.push(segment(reset_column as u16, reset, dim(FG_DARK)));
+                row.segments.push(segment(
+                    forecast_column as u16,
+                    quota.forecast.text(),
+                    forecast_tint,
+                ));
+                row.segments
+                    .push(segment(reset_column as u16, reset, dim(FG_DARK)));
             }
             lines.push(row);
             if !full_table {
@@ -1658,15 +2661,25 @@ impl App {
                     usage::Forecast::Immediate => "May run out now".into(),
                     _ => format!("Runs out in {}", quota.forecast.text()),
                 };
-                for (text, tint) in [(forecast, forecast_tint), (format!("Resets in {reset}"), dim(FG_DARK))] {
+                for (text, tint) in [
+                    (forecast, forecast_tint),
+                    (format!("Resets in {reset}"), dim(FG_DARK)),
+                ] {
                     for text in wrap_detail_text(&text, room.saturating_sub(4).max(2)) {
-                        lines.push(Line { segments: vec![segment(4, text, tint)], item: Some(index), ..Line::default() });
+                        lines.push(Line {
+                            segments: vec![segment(4, text, tint)],
+                            item: Some(index),
+                            ..Line::default()
+                        });
                     }
                 }
             }
         }
         lines.push(Line::default());
-        for text in wrap_detail_text("Estimates use window-average pace. — = no estimate.", room.max(2)) {
+        for text in wrap_detail_text(
+            "Estimates use window-average pace. — = no estimate.",
+            room.max(2),
+        ) {
             lines.push(Line::new(vec![segment(0, text, dim(FG_DARK))]));
         }
         let billing = self.costs.billing_totals();
@@ -1675,51 +2688,106 @@ impl App {
         let mut spending = Vec::new();
         let has_priced_replies = billing.recorded_replies > billing.unpriced_replies;
         if billing.recorded_replies > 0 {
-            for (label, totals) in [("API credits (est.)", billing.api), ("Subscription (API value)", billing.subscription),
-                ("Unknown billing (API value)", billing.unknown)] {
-                let amounts = if has_priced_replies { [totals.today, totals.week, totals.month].map(money) }
-                    else { std::array::from_fn(|_| "—".into()) };
+            for (label, totals) in [
+                ("API credits (est.)", billing.api),
+                ("Subscription (API value)", billing.subscription),
+                ("Unknown billing (API value)", billing.unknown),
+            ] {
+                let amounts = if has_priced_replies {
+                    [totals.today, totals.week, totals.month].map(money)
+                } else {
+                    std::array::from_fn(|_| "—".into())
+                };
                 spending.push((label, amounts, bold(MAGENTA)));
             }
-            let total = [0, 1, 2].map(|period| [billing.api, billing.subscription, billing.unknown].iter()
-                .map(|totals| [totals.today, totals.week, totals.month][period]).sum::<f64>());
-            let amounts = if has_priced_replies { total.map(money) } else { std::array::from_fn(|_| "—".into()) };
+            let total = [0, 1, 2].map(|period| {
+                [billing.api, billing.subscription, billing.unknown]
+                    .iter()
+                    .map(|totals| [totals.today, totals.week, totals.month][period])
+                    .sum::<f64>()
+            });
+            let amounts = if has_priced_replies {
+                total.map(money)
+            } else {
+                std::array::from_fn(|_| "—".into())
+            };
             spending.push(("≈ Total at API prices", amounts, bold(MAGENTA)));
         }
         if together.month >= 60.0 {
-            spending.push((TIME_LABEL, [together.today, together.week, together.month].map(Self::duration_text), bold(CYAN)));
+            spending.push((
+                TIME_LABEL,
+                [together.today, together.week, together.month].map(Self::duration_text),
+                bold(CYAN),
+            ));
         }
         let error = self.costs.error();
         let all_time = self.costs.all_time();
         {
             lines.push(Line::default());
-            for text in wrap_detail_text("SPENDING · token-based estimates, not your bill", room.max(2)) {
+            for text in wrap_detail_text(
+                "SPENDING · token-based estimates, not your bill",
+                room.max(2),
+            ) {
                 lines.push(Line::new(vec![segment(0, text, bold(FG_DARK))]));
             }
             if self.costs.is_loading() {
                 lines.push(Line::new(vec![segment(0, "Loading usage…", dim(FG_DARK))]));
             } else if billing.recorded_replies == 0 && error.is_empty() {
-                lines.push(Line::new(vec![segment(0, "No recorded usage", dim(FG_DARK))]));
+                lines.push(Line::new(vec![segment(
+                    0,
+                    "No recorded usage",
+                    dim(FG_DARK),
+                )]));
             }
             if billing.unpriced_replies > 0 {
-                let warning = format!("Incomplete estimate: {} unpriced replies; amounts exclude them.", billing.unpriced_replies);
+                let warning = format!(
+                    "Incomplete estimate: {} unpriced replies; amounts exclude them.",
+                    billing.unpriced_replies
+                );
                 for text in wrap_detail_text(&warning, room.max(2)) {
                     lines.push(Line::new(vec![segment(0, text, style(YELLOW))]));
                 }
             }
-            let label_width = spending.iter().map(|(label, _, _)| width_of(label)).chain([width_of("All-time API value")]).max().unwrap_or(0);
-            let amount_width = spending.iter().flat_map(|(_, amounts, _)| amounts.iter().map(|text| width_of(text))).chain([5]).max().unwrap_or(5);
-            let columns = [0, 1, 2].map(|index| (label_width + 2 + index * (amount_width + 2)) as u16);
+            let label_width = spending
+                .iter()
+                .map(|(label, _, _)| width_of(label))
+                .chain([width_of("All-time API value")])
+                .max()
+                .unwrap_or(0);
+            let amount_width = spending
+                .iter()
+                .flat_map(|(_, amounts, _)| amounts.iter().map(|text| width_of(text)))
+                .chain([5])
+                .max()
+                .unwrap_or(5);
+            let columns =
+                [0, 1, 2].map(|index| (label_width + 2 + index * (amount_width + 2)) as u16);
             let periods = ["TODAY", "WEEK", "MONTH"];
             if columns[2] as usize + amount_width <= room {
                 if !spending.is_empty() {
-                    lines.push(Line::new(periods.iter().enumerate().map(|(index, period)|
-                        segment(columns[index] + (amount_width - width_of(period)) as u16, *period, dim(FG_DARK))).collect()));
+                    lines.push(Line::new(
+                        periods
+                            .iter()
+                            .enumerate()
+                            .map(|(index, period)| {
+                                segment(
+                                    columns[index] + (amount_width - width_of(period)) as u16,
+                                    *period,
+                                    dim(FG_DARK),
+                                )
+                            })
+                            .collect(),
+                    ));
                 }
                 for (label, amounts, tint) in spending {
                     let mut segments = vec![segment(0, label, style(FG))];
-                    segments.extend(amounts.iter().enumerate().map(|(index, amount)|
-                        segment(columns[index] + (amount_width - width_of(amount)) as u16, amount, tint)));
+                    segments.extend(amounts.iter().enumerate().map(|(index, amount)| {
+                        segment(
+                            columns[index] + (amount_width - width_of(amount)) as u16,
+                            amount,
+                            tint,
+                        )
+                    }));
                     lines.push(Line::new(segments));
                 }
             } else {
@@ -1728,7 +2796,10 @@ impl App {
                         lines.push(Line::new(vec![segment(0, text, style(FG))]));
                     }
                     for (period, amount) in periods.iter().zip(amounts) {
-                        for text in wrap_detail_text(&format!("{period}  {amount}"), room.saturating_sub(2).max(2)) {
+                        for text in wrap_detail_text(
+                            &format!("{period}  {amount}"),
+                            room.saturating_sub(2).max(2),
+                        ) {
                             lines.push(Line::new(vec![segment(2, text, tint)]));
                         }
                     }
@@ -1738,14 +2809,24 @@ impl App {
                 let amount = format!("≈ {}", money(all_time));
                 let label = "All-time API value";
                 if label_width + 2 + width_of(&amount) <= room {
-                    lines.push(Line::new(vec![segment(0, label, style(FG)), segment(label_width as u16 + 2, amount, bold(MAGENTA))]));
+                    lines.push(Line::new(vec![
+                        segment(0, label, style(FG)),
+                        segment(label_width as u16 + 2, amount, bold(MAGENTA)),
+                    ]));
                 } else {
-                    for text in wrap_detail_text(label, room.max(2)) { lines.push(Line::new(vec![segment(0, text, style(FG))])); }
-                    for text in wrap_detail_text(&amount, room.saturating_sub(2).max(2)) { lines.push(Line::new(vec![segment(2, text, bold(MAGENTA))])); }
+                    for text in wrap_detail_text(label, room.max(2)) {
+                        lines.push(Line::new(vec![segment(0, text, style(FG))]));
+                    }
+                    for text in wrap_detail_text(&amount, room.saturating_sub(2).max(2)) {
+                        lines.push(Line::new(vec![segment(2, text, bold(MAGENTA))]));
+                    }
                 }
             }
             if billing.recorded_replies > 0 {
-                for explanation in ["Subscription = API-price value, not a subscription charge.", "Unknown = billing mode unverified; includes historical records."] {
+                for explanation in [
+                    "Subscription = API-price value, not a subscription charge.",
+                    "Unknown = billing mode unverified; includes historical records.",
+                ] {
                     for text in wrap_detail_text(explanation, room.max(2)) {
                         lines.push(Line::new(vec![segment(0, text, dim(FG_DARK))]));
                     }
@@ -1755,18 +2836,33 @@ impl App {
                 lines.push(Line::new(vec![segment(0, text, style(YELLOW))]));
             }
         }
-        let mut projects: Vec<String> = self.running_sessions.iter().map(|session| session.project.clone()).collect();
+        let mut projects: Vec<String> = self
+            .running_sessions
+            .iter()
+            .map(|session| session.project.clone())
+            .collect();
         projects.sort();
         projects.dedup();
-        let project_times: Vec<(String, String)> = projects.into_iter()
-            .filter_map(|project| Self::time_spent_text(self.costs.time_spent(&project)).map(|time| (project, time))).collect();
+        let project_times: Vec<(String, String)> = projects
+            .into_iter()
+            .filter_map(|project| {
+                Self::time_spent_text(self.costs.time_spent(&project)).map(|time| (project, time))
+            })
+            .collect();
         if !project_times.is_empty() {
             lines.push(Line::default());
-            lines.push(Line::new(vec![segment(0, "TIME BY PROJECT", bold(FG_DARK))]));
+            lines.push(Line::new(vec![segment(
+                0,
+                "TIME BY PROJECT",
+                bold(FG_DARK),
+            )]));
             for (project, time) in project_times {
                 let project = crate::teams::sidebar::shown(&project);
                 let column = width_of(&project) as u16 + 2;
-                lines.push(Line::new(vec![segment(0, project.clone(), bold(project_color(&project))), segment(column, time, dim(FG_DARK))]));
+                lines.push(Line::new(vec![
+                    segment(0, project.clone(), bold(project_color(&project))),
+                    segment(column, time, dim(FG_DARK)),
+                ]));
             }
         }
         lines.push(Line::default());
@@ -1774,28 +2870,58 @@ impl App {
         lines.push(Line::new(vec![segment(0, "CHIEF", bold(FG_DARK))]));
         let chief_line = match &self.chief_status {
             Ok(snapshot) => chief_tab::status_line(snapshot),
-            Err(error) => format!("Chief unavailable · {}", crate::chief::view::one_line(error, 160)),
+            Err(error) => format!(
+                "Chief unavailable · {}",
+                crate::chief::view::one_line(error, 160)
+            ),
         };
-        lines.push(Line { segments: vec![segment(0, chief_line, style(FG))],
-            right: vec![part(" 5 ", on(FG, BG_HIGHLIGHT).add_modifier(Modifier::BOLD)), part("Chief tab", dim(FG_DARK))], ..Line::default() });
+        lines.push(Line {
+            segments: vec![segment(0, chief_line, style(FG))],
+            right: vec![
+                part(" 5 ", on(FG, BG_HIGHLIGHT).add_modifier(Modifier::BOLD)),
+                part("Chief tab", dim(FG_DARK)),
+            ],
+            ..Line::default()
+        });
         lines.push(Line::default());
         lines.push(Line::new(vec![segment(0, "SERVICES", bold(FG_DARK))]));
-        for (provider, action) in [(&self.claude_status, StatusAction::ClaudeStatus), (&self.codex_status, StatusAction::CodexStatus)] {
+        for (provider, action) in [
+            (&self.claude_status, StatusAction::ClaudeStatus),
+            (&self.codex_status, StatusAction::CodexStatus),
+        ] {
             let index = self.status_actions.len();
             self.status_actions.push(Some(action));
-            lines.extend(provider_status_lines(provider, room).into_iter().map(|mut line| { line.item = Some(index); line }));
+            lines.extend(
+                provider_status_lines(provider, room)
+                    .into_iter()
+                    .map(|mut line| {
+                        line.item = Some(index);
+                        line
+                    }),
+            );
         }
         lines.push(Line::default());
         lines.push(Line::new(vec![segment(0, "UTILITIES", bold(FG_DARK))]));
-        for (label, action) in [("Daily digest", StatusAction::Digest), ("Clones review / cleanup", StatusAction::Clones)] {
+        for (label, action) in [
+            ("Daily digest", StatusAction::Digest),
+            ("Clones review / cleanup", StatusAction::Clones),
+        ] {
             let index = self.status_actions.len();
             self.status_actions.push(Some(action));
-            lines.push(Line { segments: vec![segment(0, label, style(FG))], item: Some(index), ..Default::default() });
+            lines.push(Line {
+                segments: vec![segment(0, label, style(FG))],
+                item: Some(index),
+                ..Default::default()
+            });
         }
         let panel = &mut self.panels[0];
         panel.items = self.status_actions.len();
         if let Some(Some(action)) = selected_action {
-            panel.selected = self.status_actions.iter().position(|candidate| *candidate == Some(action)).expect("all Status actions remain available");
+            panel.selected = self
+                .status_actions
+                .iter()
+                .position(|candidate| *candidate == Some(action))
+                .expect("all Status actions remain available");
         } else if selected_action == Some(None) && previous_selection >= self.quota_rows.len() {
             self.status_selection_lost = true;
         }
@@ -1821,7 +2947,13 @@ impl App {
         }
         match util::manager_child(&["exit", &session.session]) {
             Ok(child) => {
-                self.exiting.push(Exiting { session: session.session.clone(), tmux_pane: session.tmux_pane.clone(), project: session.project.clone(), child, ended_at: None });
+                self.exiting.push(Exiting {
+                    session: session.session.clone(),
+                    tmux_pane: session.tmux_pane.clone(),
+                    project: session.project.clone(),
+                    child,
+                    ended_at: None,
+                });
                 format!("exiting {} …", session.project)
             }
             Err(error) => format!("⚠ cannot exit {}: {error}", session.project),
@@ -1836,7 +2968,10 @@ impl App {
         let mut warnings = Vec::new();
         let mut is_pending = |exit: &mut Exiting| {
             // The hook can disappear before tmux closes, leaving a fallback card with a new ID.
-            if !running.iter().any(|s| s.session == exit.session || s.tmux_pane == exit.tmux_pane) {
+            if !running
+                .iter()
+                .any(|s| s.session == exit.session || s.tmux_pane == exit.tmux_pane)
+            {
                 return false;
             }
             if exit.ended_at.is_none() {
@@ -1844,7 +2979,10 @@ impl App {
                     Ok(None) => return true,
                     Ok(Some(status)) if status.success() => exit.ended_at = Some(now),
                     Ok(Some(status)) => {
-                        warnings.push(format!("⚠ {} did not exit ({status}): see ~/.local/state/cockpit/log", exit.project));
+                        warnings.push(format!(
+                            "⚠ {} did not exit ({status}): see ~/.local/state/cockpit/log",
+                            exit.project
+                        ));
                         return false;
                     }
                     Err(error) => {
@@ -1853,8 +2991,14 @@ impl App {
                     }
                 }
             }
-            if exit.ended_at.is_some_and(|ended| now - ended > EXIT_SETTLE_S) {
-                warnings.push(format!("⚠ {} still reports after its exit: it may live on elsewhere", exit.project));
+            if exit
+                .ended_at
+                .is_some_and(|ended| now - ended > EXIT_SETTLE_S)
+            {
+                warnings.push(format!(
+                    "⚠ {} still reports after its exit: it may live on elsewhere",
+                    exit.project
+                ));
                 return false;
             }
             true
@@ -1876,47 +3020,81 @@ impl App {
     /// per tick, never on a key press (security audit 2026-10-19, performance 1).
     fn gather_sessions(&mut self) -> Gathered {
         let mut running: Vec<Session> = sessions::running();
-        let known: Vec<String> = running.iter().map(|session| session.conversation.as_ref().unwrap_or(&session.session))
-            .filter(|session_id| agents::is_session_id(session_id)).cloned().collect();
+        let known: Vec<String> = running
+            .iter()
+            .map(|session| session.conversation.as_ref().unwrap_or(&session.session))
+            .filter(|session_id| agents::is_session_id(session_id))
+            .cloned()
+            .collect();
         self.history.load_titles(&known, TITLES_PER_TICK);
         for session in &mut running {
             if session.state != "unknown" {
                 session.facts = sessions::statusline_facts(&session.session);
             }
-            session.title = self.history.title(session.conversation.as_deref().unwrap_or(&session.session));
+            session.title = self
+                .history
+                .title(session.conversation.as_deref().unwrap_or(&session.session));
             session.design = sessions::design_of(&session.session);
             session.role = sessions::role_of(&session.session);
         }
-        let running_copies: HashSet<PathBuf> = running.iter().filter_map(|s| sessions::running_copy_of(&s.cwd)).collect();
+        let running_copies: HashSet<PathBuf> = running
+            .iter()
+            .filter_map(|s| sessions::running_copy_of(&s.cwd))
+            .collect();
         self.observe_task_trails(&running);
-        if util::read_json(&paths::snapshot()).is_some_and(|snapshot| snapshot.get("sessions").is_some_and(Value::is_array)) {
-            if let Ok(continuity) = &mut self.continuity {
-                match continuity.observe_sessions(&running, util::now_secs()) {
-                    Ok(true) => self.continuity_error = None,
-                    Ok(false) => {},
-                    Err(error) => self.continuity_error = Some(error),
-                }
+        if util::read_json(&paths::snapshot())
+            .is_some_and(|snapshot| snapshot.get("sessions").is_some_and(Value::is_array))
+            && let Ok(continuity) = &mut self.continuity
+        {
+            match continuity.observe_sessions(&running, util::now_secs()) {
+                Ok(true) => self.continuity_error = None,
+                Ok(false) => {}
+                Err(error) => self.continuity_error = Some(error),
             }
         }
         Gathered {
-            branches: running.iter().map(|session| (session.session.clone(), util::git_branch(&session.cwd))).collect(),
-            queued: running.iter().map(|session| (session.session.clone(), prompts::count(&session.session))).collect(),
-            roots: running.iter().map(|session| (session.session.clone(), util::repository_root(&session.cwd))).collect(),
+            branches: running
+                .iter()
+                .map(|session| (session.session.clone(), util::git_branch(&session.cwd)))
+                .collect(),
+            queued: running
+                .iter()
+                .map(|session| (session.session.clone(), prompts::count(&session.session)))
+                .collect(),
+            roots: running
+                .iter()
+                .map(|session| (session.session.clone(), util::repository_root(&session.cwd)))
+                .collect(),
             running,
-            paused: std::fs::read_to_string(paths::game_frozen()).map(|list| list.lines().filter(|line| !line.trim().is_empty()).count()).unwrap_or(0),
+            paused: std::fs::read_to_string(paths::game_frozen())
+                .map(|list| list.lines().filter(|line| !line.trim().is_empty()).count())
+                .unwrap_or(0),
             start_files: sessions::start_file_mtimes(),
             // What a running copy holds and GitHub lacks: U on a card of its clones pushes it
             // (apply_run). Counted here, out of the sandbox, in the running copy no session writes;
             // only for the cards on screen, and like craft_roots at most every CRAFT_CHECK_S.
             running_copies_unpushed: if now() - self.running_copies_checked >= CRAFT_CHECK_S {
                 self.running_copies_checked = now();
-                running_copies.into_iter().map(|live| { let count = sessions::running_copy_unpushed(&live); (live, count) }).collect()
+                running_copies
+                    .into_iter()
+                    .map(|live| {
+                        let count = sessions::running_copy_unpushed(&live);
+                        (live, count)
+                    })
+                    .collect()
             } else {
-                self.running_copies_unpushed.iter().filter(|(live, _)| running_copies.contains(*live)).map(|(live, count)| (live.clone(), *count)).collect()
+                self.running_copies_unpushed
+                    .iter()
+                    .filter(|(live, _)| running_copies.contains(*live))
+                    .map(|(live, count)| (live.clone(), *count))
+                    .collect()
             },
             craft_roots: if now() - self.craft_checked >= CRAFT_CHECK_S {
                 self.craft_checked = now();
-                ["figcraft"].iter().filter_map(|app| Some((app.to_string(), sessions::craft_roots(app)?))).collect()
+                ["figcraft"]
+                    .iter()
+                    .filter_map(|app| Some((app.to_string(), sessions::craft_roots(app)?)))
+                    .collect()
             } else {
                 self.craft_roots.clone()
             },
@@ -1927,12 +3105,23 @@ impl App {
     /// process is gone and the new one has not reported: without it the column selected and viewed
     /// the next card, which also killed a restart launching in the session pane. The new process's
     /// card takes the selection over.
-    fn hold_restarting_cards(&mut self, running: &mut Vec<Session>, selected_id: &mut Option<String>) {
+    fn hold_restarting_cards(
+        &mut self,
+        running: &mut Vec<Session>,
+        selected_id: &mut Option<String>,
+    ) {
         let mut held = HashMap::new();
         for restart in sessions::restarts() {
-            let previous = self.restarting_cards.remove(&restart.session)
-                .or_else(|| self.running_sessions.iter().find(|session| session.session == restart.session).cloned());
-            let old_pane = previous.as_ref().map(|card| card.tmux_pane.clone()).unwrap_or_default();
+            let previous = self.restarting_cards.remove(&restart.session).or_else(|| {
+                self.running_sessions
+                    .iter()
+                    .find(|session| session.session == restart.session)
+                    .cloned()
+            });
+            let old_pane = previous
+                .as_ref()
+                .map(|card| card.tmux_pane.clone())
+                .unwrap_or_default();
             if let Some(replacement) = restart.replacement(running, &old_pane) {
                 if selected_id.as_deref() == Some(restart.session.as_str()) {
                     *selected_id = Some(replacement.session.clone());
@@ -1941,16 +3130,32 @@ impl App {
                 continue;
             }
             if now() as i64 - restart.since > RESTART_TIMEOUT_S {
-                util::log_event("WARN", &format!("{} did not report within {RESTART_TIMEOUT_S}s of its restart", restart.project));
-                self.message = format!("⚠ {} did not come back from its restart: cockpit logs", restart.project);
+                util::log_event(
+                    "WARN",
+                    &format!(
+                        "{} did not report within {RESTART_TIMEOUT_S}s of its restart",
+                        restart.project
+                    ),
+                );
+                self.message = format!(
+                    "⚠ {} did not come back from its restart: cockpit logs",
+                    restart.project
+                );
                 sessions::end_restart(&restart.session);
                 continue;
             }
             running.retain(|session| !restart.is_unreported_launch(session));
-            let still_running = running.iter().position(|session| session.session == restart.session).map(|index| running.remove(index));
+            let still_running = running
+                .iter()
+                .position(|session| session.session == restart.session)
+                .map(|index| running.remove(index));
             let mut card = still_running.or(previous).unwrap_or_else(|| Session {
-                session: restart.session.clone(), project: restart.project.clone(), cwd: restart.cwd.clone(),
-                since: restart.since, started: Some(restart.since), ..Session::default()
+                session: restart.session.clone(),
+                project: restart.project.clone(),
+                cwd: restart.cwd.clone(),
+                since: restart.since,
+                started: Some(restart.since),
+                ..Session::default()
             });
             card.restarting = true;
             card.state = "unknown".into();
@@ -1966,11 +3171,25 @@ impl App {
     /// after the sleep) is stale. While the old process still shows, or a wake is under way
     /// (the restarting card), that card stands and the note adds none.
     fn add_asleep_cards(&self, running: &mut Vec<Session>) {
-        let waking: HashSet<String> = sessions::restarts().into_iter().map(|restart| restart.session).collect();
+        let waking: HashSet<String> = sessions::restarts()
+            .into_iter()
+            .map(|restart| restart.session)
+            .collect();
         for note in sleep::asleep() {
-            if waking.contains(&note.session) { continue; }
-            match running.iter().find(|session| session.session == note.session) {
-                Some(session) if session.started.is_some_and(|started| started >= note.slept_at) => sleep::forget(&note.session),
+            if waking.contains(&note.session) {
+                continue;
+            }
+            match running
+                .iter()
+                .find(|session| session.session == note.session)
+            {
+                Some(session)
+                    if session
+                        .started
+                        .is_some_and(|started| started >= note.slept_at) =>
+                {
+                    sleep::forget(&note.session)
+                }
                 Some(_) => {}
                 None => running.push(note.card()),
             }
@@ -1982,7 +3201,9 @@ impl App {
         let selected_row = self.sidebar_rows.get(self.panels[1].selected).cloned();
         let selected_team = selected_row.as_ref().and_then(|row| match row {
             SidebarRow::Team { task } | SidebarRow::PlannedQa { task } => Some(task.clone()),
-            SidebarRow::Session { session_id } => self.sidebar_session_tasks.get(session_id).cloned(),
+            SidebarRow::Session { session_id } => {
+                self.sidebar_session_tasks.get(session_id).cloned()
+            }
         });
         let mut selected_id = self.selected_session().map(|session| session.session);
         let gathered = match self.gathered.take() {
@@ -1994,7 +3215,13 @@ impl App {
         self.session_queued = gathered.queued.clone();
         self.session_roots = gathered.roots.clone();
         self.settle_exits(&running);
-        running.retain(|s| !s.is_external() && !self.exiting.iter().any(|exit| exit.session == s.session || exit.tmux_pane == s.tmux_pane));
+        running.retain(|s| {
+            !s.is_external()
+                && !self
+                    .exiting
+                    .iter()
+                    .any(|exit| exit.session == s.session || exit.tmux_pane == s.tmux_pane)
+        });
         self.hold_restarting_cards(&mut running, &mut selected_id);
         self.add_asleep_cards(&mut running);
         for session in &mut running {
@@ -2004,18 +3231,37 @@ impl App {
         // A card keeps its place: pinned first, then in the order the sessions started.
         let running = sessions::grouped_by_project(running);
         let mut rows = match &self.team_links {
-            TeamLinks::Ready(snapshot) => sidebar::grouped_rows(snapshot, &running, &self.collapsed_teams).unwrap_or_default(),
-            _ => running.iter().map(|session| SidebarRow::Session { session_id: session.session.clone() }).collect(),
+            TeamLinks::Ready(snapshot) => {
+                sidebar::grouped_rows(snapshot, &running, &self.collapsed_teams).unwrap_or_default()
+            }
+            _ => running
+                .iter()
+                .map(|session| SidebarRow::Session {
+                    session_id: session.session.clone(),
+                })
+                .collect(),
         };
         if let TeamLinks::Ready(snapshot) = &self.team_links {
-            let hidden_tasks: Vec<_> = rows.iter().filter_map(|row| match row {
-                SidebarRow::Team { task } if self.team_is_inactive(snapshot, task, &running) => Some(task.clone()),
-                _ => None,
-            }).collect();
+            let hidden_tasks: Vec<_> = rows
+                .iter()
+                .filter_map(|row| match row {
+                    SidebarRow::Team { task }
+                        if self.team_is_inactive(snapshot, task, &running) =>
+                    {
+                        Some(task.clone())
+                    }
+                    _ => None,
+                })
+                .collect();
             rows.retain(|row| match row {
-                SidebarRow::Team { task } | SidebarRow::PlannedQa { task } => !hidden_tasks.contains(task),
-                SidebarRow::Session { session_id } => !running.iter().find(|session| session.session == *session_id)
-                    .and_then(|session| sidebar::member_task(snapshot, session)).is_some_and(|task| hidden_tasks.contains(&task)),
+                SidebarRow::Team { task } | SidebarRow::PlannedQa { task } => {
+                    !hidden_tasks.contains(task)
+                }
+                SidebarRow::Session { session_id } => !running
+                    .iter()
+                    .find(|session| session.session == *session_id)
+                    .and_then(|session| sidebar::member_task(snapshot, session))
+                    .is_some_and(|task| hidden_tasks.contains(&task)),
             });
         }
         // Grouped by attention across projects (NEEDS YOU, WORKING, QUIET); a team stays one block.
@@ -2023,45 +3269,105 @@ impl App {
         let mut blocks: Vec<(Attention, (bool, i64), Vec<SidebarRow>)> = Vec::new();
         for row in rows {
             let team_task = match (&self.team_links, &row) {
-                (TeamLinks::Ready(_), SidebarRow::Team { task } | SidebarRow::PlannedQa { task }) => Some(task.clone()),
-                (TeamLinks::Ready(snapshot), SidebarRow::Session { session_id }) => running.iter().find(|session| session.session == *session_id)
+                (
+                    TeamLinks::Ready(_),
+                    SidebarRow::Team { task } | SidebarRow::PlannedQa { task },
+                ) => Some(task.clone()),
+                (TeamLinks::Ready(snapshot), SidebarRow::Session { session_id }) => running
+                    .iter()
+                    .find(|session| session.session == *session_id)
                     .and_then(|session| sidebar::member_task(snapshot, session)),
                 _ => None,
             };
             let joins_team = team_task.is_some() && !matches!(row, SidebarRow::Team { .. }) && blocks.last().is_some_and(|(_, _, block)|
                 matches!(block.first(), Some(SidebarRow::Team { task }) if Some(task) == team_task.as_ref()));
-            if joins_team { blocks.last_mut().unwrap().2.push(row); } else { blocks.push((Attention::Quiet, (false, 0), vec![row])); }
+            if joins_team {
+                blocks.last_mut().unwrap().2.push(row);
+            } else {
+                blocks.push((Attention::Quiet, (false, 0), vec![row]));
+            }
         }
         for (group, oldest_ask, block) in &mut blocks {
-            let members: Vec<&Session> = block.iter().filter_map(|row| match row {
-                SidebarRow::Session { session_id } => running.iter().find(|session| session.session == *session_id), _ => None }).collect();
+            let members: Vec<&Session> = block
+                .iter()
+                .filter_map(|row| match row {
+                    SidebarRow::Session { session_id } => running
+                        .iter()
+                        .find(|session| session.session == *session_id),
+                    _ => None,
+                })
+                .collect();
             let team_needs_you = matches!((&self.team_links, block.first()), (TeamLinks::Ready(snapshot), Some(SidebarRow::Team { task })) if sidebar::attention(snapshot, task).is_some());
-            *group = members.iter().map(|session| self.session_attention(session, now_secs)).min().unwrap_or(Attention::Quiet);
-            if team_needs_you { *group = Attention::NeedsYou; }
+            *group = members
+                .iter()
+                .map(|session| self.session_attention(session, now_secs))
+                .min()
+                .unwrap_or(Attention::Quiet);
+            if team_needs_you {
+                *group = Attention::NeedsYou;
+            }
             let is_pinned = members.iter().any(|session| session.pinned);
-            let oldest = members.iter().filter(|session| self.is_actionable(session, now_secs)).map(|session| session.since).min().unwrap_or(0);
-            *oldest_ask = (!is_pinned, if *group == Attention::NeedsYou { oldest } else { 0 });
+            let oldest = members
+                .iter()
+                .filter(|session| self.is_actionable(session, now_secs))
+                .map(|session| session.since)
+                .min()
+                .unwrap_or(0);
+            *oldest_ask = (
+                !is_pinned,
+                if *group == Attention::NeedsYou {
+                    oldest
+                } else {
+                    0
+                },
+            );
         }
         // Pinned first inside their group, then the oldest ask first in NEEDS YOU; the others keep their places.
         blocks.sort_by_key(|(group, order, _)| (*group, *order));
         let mut blocks_per_group: HashMap<Attention, usize> = HashMap::new();
-        for (group, _, _) in &blocks { *blocks_per_group.entry(*group).or_default() += 1; }
-        let row_groups: Vec<Attention> = blocks.iter().flat_map(|(group, _, block)| std::iter::repeat_n(*group, block.len())).collect();
-        let row_ends_block: Vec<bool> = blocks.iter().flat_map(|(_, _, block)| (0..block.len()).map(move |position| position + 1 == block.len())).collect();
+        for (group, _, _) in &blocks {
+            *blocks_per_group.entry(*group).or_default() += 1;
+        }
+        let row_groups: Vec<Attention> = blocks
+            .iter()
+            .flat_map(|(group, _, block)| std::iter::repeat_n(*group, block.len()))
+            .collect();
+        let row_ends_block: Vec<bool> = blocks
+            .iter()
+            .flat_map(|(_, _, block)| {
+                (0..block.len()).map(move |position| position + 1 == block.len())
+            })
+            .collect();
         let rows: Vec<SidebarRow> = blocks.into_iter().flat_map(|(_, _, block)| block).collect();
         let current = current_session();
         let mut lines = Vec::new();
         if now() - self.restore_checked > RESTORE_CHECK_S {
             self.restore_checked = now();
-            self.restore = sessions::restore_offer(&self.view, &self.running_sessions.iter().map(|s| s.session.clone()).collect());
+            self.restore = sessions::restore_offer(
+                &self.view,
+                &self
+                    .running_sessions
+                    .iter()
+                    .map(|s| s.session.clone())
+                    .collect(),
+            );
         }
         if now() - self.held_checked > GREYPROXY_POLL_S {
             self.held_checked = now();
             let held = sessions::greyproxy_held(&paths::greyproxy_db());
             for host in held.iter().filter(|host| !self.held.contains(host)) {
-                crate::audit::record("column", "greyproxy.held", "waiting", serde_json::json!({"destination": host}));
+                crate::audit::record(
+                    "column",
+                    "greyproxy.held",
+                    "waiting",
+                    serde_json::json!({"destination": host}),
+                );
             }
-            self.held_since = if held.is_empty() { None } else { self.held_since.or(Some(util::now_secs())) };
+            self.held_since = if held.is_empty() {
+                None
+            } else {
+                self.held_since.or(Some(util::now_secs()))
+            };
             self.held = held;
         }
         if now() - self.disk_checked > DISK_CHECK_S {
@@ -2079,20 +3385,41 @@ impl App {
             lines.push(notice_line(notice));
         }
         if self.notices.len() > NOTICES_SHOWN {
-            lines.push(Line::new(vec![segment(0, format!("+{} more · s for Status", self.notices.len() - NOTICES_SHOWN), dim(FG_DARK))]));
+            lines.push(Line::new(vec![segment(
+                0,
+                format!(
+                    "+{} more · s for Status",
+                    self.notices.len() - NOTICES_SHOWN
+                ),
+                dim(FG_DARK),
+            )]));
         }
-        if !self.notices.is_empty() { lines.push(Line::default()); }
+        if !self.notices.is_empty() {
+            lines.push(Line::default());
+        }
         self.session_task_titles.clear();
         for session in &running {
-            let branch = self.session_branches.get(&session.session).map(String::as_str).unwrap_or("");
-            self.session_task_titles.insert(session.session.clone(), self.session_task_title(session, branch));
+            let branch = self
+                .session_branches
+                .get(&session.session)
+                .map(String::as_str)
+                .unwrap_or("");
+            self.session_task_titles.insert(
+                session.session.clone(),
+                self.session_task_title(session, branch),
+            );
         }
         let link_notice = match &self.team_links {
             TeamLinks::Loading => Some("Loading team links…"),
             TeamLinks::Unavailable => Some("Team links unavailable"),
-            TeamLinks::Ready(snapshot) if !rows.iter().any(|row| matches!(row, SidebarRow::Team { .. })) && sidebar::list(snapshot, "members").is_empty() => {
+            TeamLinks::Ready(snapshot)
+                if !rows
+                    .iter()
+                    .any(|row| matches!(row, SidebarRow::Team { .. }))
+                    && sidebar::list(snapshot, "members").is_empty() =>
+            {
                 Some("No linked teams")
-            },
+            }
             _ => None,
         };
         let mut group = None;
@@ -2101,23 +3428,53 @@ impl App {
         let held_cards = usize::from(!self.held.is_empty());
         if held_cards > 0 {
             group = Some(Attention::NeedsYou);
-            let count = blocks_per_group.get(&Attention::NeedsYou).copied().unwrap_or(0) + held_cards;
-            lines.push(Line::new(vec![segment(0, format!("{} · {count}", Attention::NeedsYou.heading()), bold(YELLOW))]));
-            lines.extend(greyproxy_card(&self.held, self.held_since.unwrap_or(now_secs)));
+            let count = blocks_per_group
+                .get(&Attention::NeedsYou)
+                .copied()
+                .unwrap_or(0)
+                + held_cards;
+            lines.push(Line::new(vec![segment(
+                0,
+                format!("{} · {count}", Attention::NeedsYou.heading()),
+                bold(YELLOW),
+            )]));
+            lines.extend(greyproxy_card(
+                &self.held,
+                self.held_since.unwrap_or(now_secs),
+            ));
         }
         for (index, row) in rows.iter().enumerate() {
-            let session = if let SidebarRow::Session { session_id } = row { running.iter().find(|session| session.session == *session_id) } else { None };
+            let session = if let SidebarRow::Session { session_id } = row {
+                running
+                    .iter()
+                    .find(|session| session.session == *session_id)
+            } else {
+                None
+            };
             let team_task = match (&self.team_links, row) {
-                (TeamLinks::Ready(_), SidebarRow::Team { task } | SidebarRow::PlannedQa { task }) => Some(task.clone()),
-                (TeamLinks::Ready(snapshot), _) => session.and_then(|session| sidebar::member_task(snapshot, session)),
+                (
+                    TeamLinks::Ready(_),
+                    SidebarRow::Team { task } | SidebarRow::PlannedQa { task },
+                ) => Some(task.clone()),
+                (TeamLinks::Ready(snapshot), _) => {
+                    session.and_then(|session| sidebar::member_task(snapshot, session))
+                }
                 _ => None,
             };
             let row_group = row_groups.get(index).copied().unwrap_or(Attention::Quiet);
             if group != Some(row_group) {
                 group = Some(row_group);
                 let count = blocks_per_group.get(&row_group).copied().unwrap_or(0);
-                let tint = if row_group == Attention::NeedsYou { bold(YELLOW) } else { bold(FG_DARK) };
-                lines.push(Line::new(vec![segment(0, format!("{} · {count}", row_group.heading()), tint)]));
+                let tint = if row_group == Attention::NeedsYou {
+                    bold(YELLOW)
+                } else {
+                    bold(FG_DARK)
+                };
+                lines.push(Line::new(vec![segment(
+                    0,
+                    format!("{} · {count}", row_group.heading()),
+                    tint,
+                )]));
             }
             if let (TeamLinks::Ready(snapshot), Some(task)) = (&self.team_links, &team_task) {
                 match row {
@@ -2128,112 +3485,303 @@ impl App {
                         let is_folded = self.collapsed_teams.contains(&sidebar::task_key(task));
                         let marker = if is_folded { "▸" } else { "▾" };
                         let accent = (row_group == Attention::NeedsYou).then_some(bold(YELLOW));
-                        lines.push(Line { segments: vec![segment(0, format!("{marker} {}", self.team_task_title(snapshot, task)), bold(CYAN))],
-                            right: vec![part(" 4 ", on(FG, BG_HIGHLIGHT).add_modifier(Modifier::BOLD)), part("team details", dim(FG_DARK))],
-                            item: Some(index), accent, ..Line::default() });
-                        let project = sidebar::shown(&sidebar::project_name(snapshot, task, &running));
-                        lines.push(Line { segments: vec![segment(2, format!("{project} › {}", sidebar::shown(&task.task_id)), dim(FG_DARK))], item: Some(index), accent, ..Line::default() });
-                        team_ask = sidebar::attention(snapshot, task).map(|reason| ask_bar(Some(index), &format!("! {}", reason.trim_start_matches("Needs you: ")), "", "⏎ answer"));
+                        lines.push(Line {
+                            segments: vec![segment(
+                                0,
+                                format!("{marker} {}", self.team_task_title(snapshot, task)),
+                                bold(CYAN),
+                            )],
+                            right: vec![
+                                part(" 4 ", on(FG, BG_HIGHLIGHT).add_modifier(Modifier::BOLD)),
+                                part("team details", dim(FG_DARK)),
+                            ],
+                            item: Some(index),
+                            accent,
+                            ..Line::default()
+                        });
+                        let project =
+                            sidebar::shown(&sidebar::project_name(snapshot, task, &running));
+                        lines.push(Line {
+                            segments: vec![segment(
+                                2,
+                                format!("{project} › {}", sidebar::shown(&task.task_id)),
+                                dim(FG_DARK),
+                            )],
+                            item: Some(index),
+                            accent,
+                            ..Line::default()
+                        });
+                        team_ask = sidebar::attention(snapshot, task).map(|reason| {
+                            ask_bar(
+                                Some(index),
+                                &format!("! {}", reason.trim_start_matches("Needs you: ")),
+                                "",
+                                "⏎ answer",
+                            )
+                        });
                         if members == 0 || is_folded {
                             lines.extend(team_ask.take());
                             lines.push(Line::default());
                         }
                         continue;
-                    },
+                    }
                     SidebarRow::PlannedQa { .. } => {
                         let (text, status) = match sidebar::qa_status(snapshot, task).as_str() {
-                            "QA planned · Fresh reviewer starts at handoff" => ("Starts at the next handoff".to_string(), "planned"),
+                            "QA planned · Fresh reviewer starts at handoff" => {
+                                ("Starts at the next handoff".to_string(), "planned")
+                            }
                             other => (other.trim_start_matches("QA ").to_string(), ""),
                         };
-                        lines.push(Line { segments: vec![segment(1, "○", dim(FG_DARK)), segment(3, "QA", style(FG_DARK)), segment(14, text, dim(FG_DARK))],
-                            right: vec![part(status, dim(FG_DARK))], item: Some(index), ..Line::default() });
+                        lines.push(Line {
+                            segments: vec![
+                                segment(1, "○", dim(FG_DARK)),
+                                segment(3, "QA", style(FG_DARK)),
+                                segment(14, text, dim(FG_DARK)),
+                            ],
+                            right: vec![part(status, dim(FG_DARK))],
+                            item: Some(index),
+                            ..Line::default()
+                        });
                         if row_ends_block.get(index).copied().unwrap_or(true) {
                             lines.extend(team_ask.take());
                             lines.push(Line::default());
                         }
                         continue;
-                    },
+                    }
                     SidebarRow::Session { .. } => {
                         let Some(session) = session else { continue };
-                        let role = sidebar::membership(snapshot, session).and_then(sidebar::role).map(sidebar::role_label).unwrap_or("Member");
+                        let role = sidebar::membership(snapshot, session)
+                            .and_then(sidebar::role)
+                            .map(sidebar::role_label)
+                            .unwrap_or("Member");
                         let accent = (session.session == current).then_some(style(BLUE));
                         let card = self.session_card(session, now_secs);
-                        let (glyph, tint) = if card.ask.is_some() { ("!", YELLOW) } else if session.asleep.is_some() { ("◌", FG_DARK) }
-                            else if session.restarting { ("⟳", BLUE) } else { ("●", BLUE) };
+                        let (glyph, tint) = if card.ask.is_some() {
+                            ("!", YELLOW)
+                        } else if session.asleep.is_some() {
+                            ("◌", FG_DARK)
+                        } else if session.restarting {
+                            ("⟳", BLUE)
+                        } else {
+                            ("●", BLUE)
+                        };
                         // A member's own step while it works, else its title: the line still says which session it is.
-                        let has_step = card.group == Attention::Working && sessions::doing_now(session, now_secs).is_some();
-                        let shown = if has_step || card.ask.is_some() || session.asleep.is_some() || session.restarting { card.doing.clone() }
-                            else { sidebar::shown(self.session_display_title(session)) };
-                        let age_tint = if card.group == Attention::Working { style(BLUE) } else { dim(FG_DARK) };
-                        lines.push(Line { segments: vec![segment(1, glyph, bold(tint)), segment(3, role, bold(FG)), segment(14, shown, style(FG))],
-                            right: vec![part(card.age.clone(), age_tint)], item: Some(index), accent, ..Line::default() });
-                        if let Some((ask, verb)) = &card.ask { lines.push(ask_bar(Some(index), &format!("! {role}: {ask}"), &card.ask_count, &format!("⏎ {verb}"))); }
+                        let has_step = card.group == Attention::Working
+                            && sessions::doing_now(session, now_secs).is_some();
+                        let shown = if has_step
+                            || card.ask.is_some()
+                            || session.asleep.is_some()
+                            || session.restarting
+                        {
+                            card.doing.clone()
+                        } else {
+                            sidebar::shown(self.session_display_title(session))
+                        };
+                        let age_tint = if card.group == Attention::Working {
+                            style(BLUE)
+                        } else {
+                            dim(FG_DARK)
+                        };
+                        lines.push(Line {
+                            segments: vec![
+                                segment(1, glyph, bold(tint)),
+                                segment(3, role, bold(FG)),
+                                segment(14, shown, style(FG)),
+                            ],
+                            right: vec![part(card.age.clone(), age_tint)],
+                            item: Some(index),
+                            accent,
+                            ..Line::default()
+                        });
+                        if let Some((ask, verb)) = &card.ask {
+                            lines.push(ask_bar(
+                                Some(index),
+                                &format!("! {role}: {ask}"),
+                                &card.ask_count,
+                                &format!("⏎ {verb}"),
+                            ));
+                        }
                         if row_ends_block.get(index).copied().unwrap_or(true) {
                             lines.extend(team_ask.take());
                             lines.push(Line::default());
                         }
                         continue;
-                    },
+                    }
                 }
             }
             let Some(session) = session else { continue };
             let card = self.session_card(session, now_secs);
-            let accent = if card.ask.is_some() { Some(bold(YELLOW)) } else { (session.session == current).then_some(bold(BLUE)) };
-            let task_title = self.session_task_title(session, self.session_branches.get(&session.session).map(String::as_str).unwrap_or(""));
-            self.session_task_titles.insert(session.session.clone(), task_title);
-            let text_style = if card.group == Attention::Quiet && !card.bright { style(FG_DARK) } else { bold(FG) };
+            let accent = if card.ask.is_some() {
+                Some(bold(YELLOW))
+            } else {
+                (session.session == current).then_some(bold(BLUE))
+            };
+            let task_title = self.session_task_title(
+                session,
+                self.session_branches
+                    .get(&session.session)
+                    .map(String::as_str)
+                    .unwrap_or(""),
+            );
+            self.session_task_titles
+                .insert(session.session.clone(), task_title);
+            let text_style = if card.group == Attention::Quiet && !card.bright {
+                style(FG_DARK)
+            } else {
+                bold(FG)
+            };
             // Until the grouping replaces continuity updates (todo f192c901), a new question stays marked; an
             // unseen result is the card's own state (session_card).
-            let updates = self.continuity.as_ref().ok().map(|state| state.updates()).unwrap_or_default();
+            let updates = self
+                .continuity
+                .as_ref()
+                .ok()
+                .map(|state| state.updates())
+                .unwrap_or_default();
             // Chief ✓N leads line one when it fits beside the age, else it opens line two.
-            let chief_count = self.chief_answers.get(&session.session).map(|answers| format!("Chief ✓{}", answers.count));
+            let chief_count = self
+                .chief_answers
+                .get(&session.session)
+                .map(|answers| format!("Chief ✓{}", answers.count));
             let (chief_on_line_one, chief_on_line_two) = match chief_count {
-                Some(count) if width_of(&count) + 2 + width_of(&card.age) <= session_card_right_room(self.width, 2) => (Some(count), None),
+                Some(count)
+                    if width_of(&count) + 2 + width_of(&card.age)
+                        <= session_card_right_room(self.width, 2) =>
+                {
+                    (Some(count), None)
+                }
                 other => (None, other),
             };
-            let mut right: Vec<Part> = chief_on_line_one.into_iter().map(|count| part(count, dim(FG_DARK))).collect();
-            right.extend(updates.iter().filter(|update| update.session == session.session && update.kind == crate::continuity::UpdateKind::Question)
-                .map(|_| part("new question", style(MAGENTA))));
+            let mut right: Vec<Part> = chief_on_line_one
+                .into_iter()
+                .map(|count| part(count, dim(FG_DARK)))
+                .collect();
+            right.extend(
+                updates
+                    .iter()
+                    .filter(|update| {
+                        update.session == session.session
+                            && update.kind == crate::continuity::UpdateKind::Question
+                    })
+                    .map(|_| part("new question", style(MAGENTA))),
+            );
             // The badges give way before the age does.
             let room = session_card_right_room(self.width, 2);
-            let parts_width = |parts: &[Part]| parts.iter().map(|part| width_of(&part.text) + 2).sum::<usize>();
-            let mut badges: Vec<Part> = if session.restarting { Vec::new() } else { self.card_badges(session) }
-                .into_iter().take(CARD_BADGES_SHOWN).map(|badge| part(badge, style(FG_DARK))).collect();
-            while !badges.is_empty() && parts_width(&right) + parts_width(&badges) + width_of(&card.age) > room { badges.pop(); }
+            let parts_width = |parts: &[Part]| {
+                parts
+                    .iter()
+                    .map(|part| width_of(&part.text) + 2)
+                    .sum::<usize>()
+            };
+            let mut badges: Vec<Part> = if session.restarting {
+                Vec::new()
+            } else {
+                self.card_badges(session)
+            }
+            .into_iter()
+            .take(CARD_BADGES_SHOWN)
+            .map(|badge| part(badge, style(FG_DARK)))
+            .collect();
+            while !badges.is_empty()
+                && parts_width(&right) + parts_width(&badges) + width_of(&card.age) > room
+            {
+                badges.pop();
+            }
             right.extend(badges);
-            right.push(part(card.age.clone(), if card.stale { style(FG) } else { dim(FG_DARK) }));
-            lines.push(Line { segments: vec![segment(0, card.glyph, bold(card.tint)), segment(2, card.doing.clone(), text_style)],
-                right, item: Some(index), accent, ..Line::default() });
-            let mut why = why_segments(&session.project, &sidebar::shown(self.session_display_title(session)));
+            right.push(part(
+                card.age.clone(),
+                if card.stale { style(FG) } else { dim(FG_DARK) },
+            ));
+            lines.push(Line {
+                segments: vec![
+                    segment(0, card.glyph, bold(card.tint)),
+                    segment(2, card.doing.clone(), text_style),
+                ],
+                right,
+                item: Some(index),
+                accent,
+                ..Line::default()
+            });
+            let mut why = why_segments(
+                &session.project,
+                &sidebar::shown(self.session_display_title(session)),
+            );
             if let Some(count) = chief_on_line_two {
                 let shift = width_of(&count) as u16 + 3;
-                for segment in &mut why { segment.0 += shift; }
+                for segment in &mut why {
+                    segment.0 += shift;
+                }
                 why.insert(0, segment(2, format!("{count} · "), dim(FG_DARK)));
             }
-            if session.pinned { why.insert(0, segment(0, "⚲", dim(FG_DARK))); }
-            lines.push(Line { segments: why, item: Some(index), accent, ..Line::default() });
-            if let Some((ask, verb)) = &card.ask { lines.push(ask_bar(Some(index), ask, &card.ask_count, &format!("⏎ {verb}"))); }
-            if selected_id.as_deref() == Some(session.session.as_str()) && session.asleep.is_none() {
+            if session.pinned {
+                why.insert(0, segment(0, "⚲", dim(FG_DARK)));
+            }
+            lines.push(Line {
+                segments: why,
+                item: Some(index),
+                accent,
+                ..Line::default()
+            });
+            if let Some((ask, verb)) = &card.ask {
+                lines.push(ask_bar(
+                    Some(index),
+                    ask,
+                    &card.ask_count,
+                    &format!("⏎ {verb}"),
+                ));
+            }
+            if selected_id.as_deref() == Some(session.session.as_str()) && session.asleep.is_none()
+            {
                 let meta = sidebar::shown(&self.card_meta(session));
-                for text in wrap_detail_text(&meta, (self.width as usize).saturating_sub(8).max(8)).into_iter().take(2) {
-                    lines.push(Line { segments: vec![segment(2, text, dim(FG_DARK))], item: Some(index), accent, ..Line::default() });
+                for text in wrap_detail_text(&meta, (self.width as usize).saturating_sub(8).max(8))
+                    .into_iter()
+                    .take(2)
+                {
+                    lines.push(Line {
+                        segments: vec![segment(2, text, dim(FG_DARK))],
+                        item: Some(index),
+                        accent,
+                        ..Line::default()
+                    });
                 }
             }
             lines.push(Line::default());
         }
         if rows.is_empty() {
-            lines.push(Line::new(vec![segment(0, "No running session.", dim(FG_DARK))]));
-            lines.push(Line::new(vec![segment(0, format!("a  start one in a project{}", link_notice.map(|notice| format!(" · {notice}")).unwrap_or_default()), dim(FG_DARK))]));
+            lines.push(Line::new(vec![segment(
+                0,
+                "No running session.",
+                dim(FG_DARK),
+            )]));
+            lines.push(Line::new(vec![segment(
+                0,
+                format!(
+                    "a  start one in a project{}",
+                    link_notice
+                        .map(|notice| format!(" · {notice}"))
+                        .unwrap_or_default()
+                ),
+                dim(FG_DARK),
+            )]));
         } else if let Some(notice) = link_notice {
             lines.push(Line::new(vec![segment(0, notice, style(FG_DARK))]));
         }
         self.sessions = running;
         // In the list's order, so walking the sessions follows what Theo sees.
-        let row_position = |session: &Session| rows.iter().position(|row| matches!(row, SidebarRow::Session { session_id } if *session_id == session.session)).unwrap_or(usize::MAX);
+        let row_position = |session: &Session| {
+            rows.iter().position(|row| matches!(row, SidebarRow::Session { session_id } if *session_id == session.session)).unwrap_or(usize::MAX)
+        };
         self.sessions.sort_by_key(|session| row_position(session));
         self.sidebar_rows = rows;
         self.sidebar_session_tasks = match &self.team_links {
-            TeamLinks::Ready(snapshot) => self.sessions.iter().filter_map(|session| sidebar::member_task(snapshot, session).map(|task| (session.session.clone(),task))).collect(),
+            TeamLinks::Ready(snapshot) => self
+                .sessions
+                .iter()
+                .filter_map(|session| {
+                    sidebar::member_task(snapshot, session)
+                        .map(|task| (session.session.clone(), task))
+                })
+                .collect(),
             _ => HashMap::new(),
         };
         let panel = &mut self.panels[1];
@@ -2241,7 +3789,9 @@ impl App {
             .or_else(|| selected_row.as_ref().and_then(|selected| self.sidebar_rows.iter().position(|row| row == selected)))
             .or_else(|| selected_team.as_ref().and_then(|task| self.sidebar_rows.iter().position(|row| matches!(row, SidebarRow::Team { task: candidate } if candidate == task))))
             .or_else(|| selected_row.is_none().then(|| self.sidebar_rows.iter().position(|row| matches!(row, SidebarRow::Session { .. }))).flatten());
-        if selected_team.is_some() && selected_index.is_none() { self.sidebar_selection_lost = true; }
+        if selected_team.is_some() && selected_index.is_none() {
+            self.sidebar_selection_lost = true;
+        }
         if let Some(index) = selected_index {
             panel.selected = index;
         }
@@ -2250,10 +3800,21 @@ impl App {
         panel.lines = lines;
         self.panels[1].fixed_top = self.session_summary_lines();
         self.panels[1].fixed_bottom = self.selected_session_detail_lines();
-        if selected_team.is_none() && selected_id.as_ref().is_some_and(|id| !self.all_sessions().iter().any(|session| session.session == *id)) && selected_index.is_none()
-            && !is_viewer_loading() {
+        if selected_team.is_none()
+            && selected_id.as_ref().is_some_and(|id| {
+                !self
+                    .all_sessions()
+                    .iter()
+                    .any(|session| session.session == *id)
+            })
+            && selected_index.is_none()
+            && !is_viewer_loading()
+        {
             // Viewing an asleep card wakes it, and moving the selection never does.
-            if let Some(session) = self.selected_session().filter(|session| session.asleep.is_none()) {
+            if let Some(session) = self
+                .selected_session()
+                .filter(|session| session.asleep.is_none())
+            {
                 let error = self.manager_async(&["view", &session.session]);
                 if !error.is_empty() {
                     self.message = error;
@@ -2267,23 +3828,75 @@ impl App {
         let mut notices = Vec::new();
         let (claude, _) = self.claude_status.snapshot();
         if let Some(claude) = claude.filter(|c| !c.indicator.is_empty() && c.indicator != "none") {
-            let mut details: Vec<String> = claude.degraded.iter().take(2).map(|(name, state)| format!("{name}: {state}")).collect();
+            let mut details: Vec<String> = claude
+                .degraded
+                .iter()
+                .take(2)
+                .map(|(name, state)| format!("{name}: {state}"))
+                .collect();
             details.extend(claude.incidents.iter().take(1).cloned());
-            let tint = if claude.indicator == "maintenance" { BLUE } else { RED };
-            notices.push(Notice { glyph: "!", tint, text: format!("Claude: {}", claude.description), key: "s status", detail: details.join(" · ") });
+            let tint = if claude.indicator == "maintenance" {
+                BLUE
+            } else {
+                RED
+            };
+            notices.push(Notice {
+                glyph: "!",
+                tint,
+                text: format!("Claude: {}", claude.description),
+                key: "s status",
+                detail: details.join(" · "),
+            });
         }
         if paused > 0 {
-            notices.push(Notice { glyph: "‖", tint: BLUE, text: format!("{paused} session{} paused while you game · resume after", plural(paused)),
-                key: "", detail: "they resume where they stopped when the game ends".into() });
+            notices.push(Notice {
+                glyph: "‖",
+                tint: BLUE,
+                text: format!(
+                    "{paused} session{} paused while you game · resume after",
+                    plural(paused)
+                ),
+                key: "",
+                detail: "they resume where they stopped when the game ends".into(),
+            });
         }
-        if let Some((mount, used)) = self.disk.as_ref().filter(|(_, used)| *used >= DISK_WARNING_PERCENT) {
-            notices.push(Notice { glyph: "▲", tint: RED, text: format!("Disk {used:.0}% full on {mount}"), key: "",
-                detail: "make -C ~/dotfiles disk shows what uses it".into() });
+        if let Some((mount, used)) = self
+            .disk
+            .as_ref()
+            .filter(|(_, used)| *used >= DISK_WARNING_PERCENT)
+        {
+            notices.push(Notice {
+                glyph: "▲",
+                tint: RED,
+                text: format!("Disk {used:.0}% full on {mount}"),
+                key: "",
+                detail: "make -C ~/dotfiles disk shows what uses it".into(),
+            });
         }
         if !self.restore.is_empty() {
-            let names = self.restore.iter().map(|r| if r.project.is_empty() { "?" } else { r.project.as_str() }).collect::<Vec<_>>().join(", ");
-            notices.push(Notice { glyph: "↺", tint: BLUE, text: format!("{} session{} ran before the restart", self.restore.len(), plural(self.restore.len())),
-                key: "B restore", detail: format!("{names}: B brings them back, one after the other") });
+            let names = self
+                .restore
+                .iter()
+                .map(|r| {
+                    if r.project.is_empty() {
+                        "?"
+                    } else {
+                        r.project.as_str()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            notices.push(Notice {
+                glyph: "↺",
+                tint: BLUE,
+                text: format!(
+                    "{} session{} ran before the restart",
+                    self.restore.len(),
+                    plural(self.restore.len())
+                ),
+                key: "B restore",
+                detail: format!("{names}: B brings them back, one after the other"),
+            });
         }
         notices
     }
@@ -2304,11 +3917,24 @@ impl App {
     fn session_card(&self, session: &Session, now: i64) -> Card {
         let group = self.session_attention(session, now);
         let doing_now = sessions::doing_now(session, now);
-        let doing_text = doing_now.as_ref().map(|doing| crate::teams::sidebar::shown(&doing.text));
+        let doing_text = doing_now
+            .as_ref()
+            .map(|doing| crate::teams::sidebar::shown(&doing.text));
         let stale_for = doing_now.as_ref().and_then(|doing| doing.stale_for);
-        let mut card = Card { group, glyph: "·", tint: FG_DARK, doing: String::new(), age: util::age(session.since), stale: false, bright: false, ask: None, ask_count: String::new() };
+        let mut card = Card {
+            group,
+            glyph: "·",
+            tint: FG_DARK,
+            doing: String::new(),
+            age: util::age(session.since),
+            stale: false,
+            bright: false,
+            ask: None,
+            ask_count: String::new(),
+        };
         if let Some(slept_at) = session.asleep {
-            (card.glyph, card.tint, card.doing, card.age) = ("☾", GREEN, "Asleep".into(), util::age(slept_at));
+            (card.glyph, card.tint, card.doing, card.age) =
+                ("☾", GREEN, "Asleep".into(), util::age(slept_at));
             return card;
         }
         if group == Attention::NeedsYou {
@@ -2327,7 +3953,9 @@ impl App {
             if asks.is_empty() {
                 asks.push(("Answer a question".into(), "answer"));
             }
-            if asks.len() > 1 { card.ask_count = format!("1 of {}", asks.len()); }
+            if asks.len() > 1 {
+                card.ask_count = format!("1 of {}", asks.len());
+            }
             card.ask = asks.into_iter().next();
             (card.glyph, card.tint) = ("!", YELLOW);
             card.doing = doing_text.unwrap_or_else(|| "Waiting for you".into());
@@ -2339,7 +3967,9 @@ impl App {
         }
         if let Some((badge, detail)) = self.session_dependency_activity(session) {
             card.glyph = "↳";
-            card.doing = detail.replacen("Waiting on TODO", "Waiting on", 1).replacen("Blocked by TODO", "Blocked by", 1);
+            card.doing = detail
+                .replacen("Waiting on TODO", "Waiting on", 1)
+                .replacen("Blocked by TODO", "Blocked by", 1);
             if badge == "Waiting on TODO" {
                 card.age = "queued".into();
             } else {
@@ -2355,31 +3985,51 @@ impl App {
         match sessions::activity_label(session) {
             "Chief is reviewing" => card.doing = "Chief is reviewing".into(),
             "Command running" => {
-                (card.glyph, card.tint, card.doing) = ("▶", BLUE, "Running your approved command".into());
-            },
+                (card.glyph, card.tint, card.doing) =
+                    ("▶", BLUE, "Running your approved command".into());
+            }
             "Working" => {
                 (card.glyph, card.tint) = ("◐", BLUE);
                 card.doing = doing_text.unwrap_or_else(|| "Working".into());
                 if let Some(stale_for) = stale_for {
-                    (card.age, card.stale) = (format!("no update {}", util::duration(stale_for)), true);
+                    (card.age, card.stale) =
+                        (format!("no update {}", util::duration(stale_for)), true);
                 } else if let Some(doing) = &doing_now {
                     card.age = util::age(doing.at);
                 }
-            },
+            }
             "Ready" if self.has_new_result(session) => {
-                (card.glyph, card.tint, card.doing, card.bright) = ("●", GREEN, "Finished · new result".into(), true);
-            },
+                (card.glyph, card.tint, card.doing, card.bright) =
+                    ("●", GREEN, "Finished · new result".into(), true);
+            }
             "Ready" if sessions::is_idle(session, now) => {
                 card.glyph = "○";
-                card.doing = format!("Idle {} · waiting for your next message", util::duration(now - session.since));
-            },
+                card.doing = format!(
+                    "Idle {} · waiting for your next message",
+                    util::duration(now - session.since)
+                );
+            }
             "Ready" => {
                 (card.glyph, card.tint) = ("✓", GREEN);
-                let outcome = session.last_result.as_ref().map(|result| result.outcome.trim()).filter(|outcome| !outcome.is_empty())
+                let outcome = session
+                    .last_result
+                    .as_ref()
+                    .map(|result| result.outcome.trim())
+                    .filter(|outcome| !outcome.is_empty())
                     .or(Some(session.outcome.trim()).filter(|outcome| !outcome.is_empty()));
-                card.doing = match outcome { Some(outcome) => format!("Finished · {}", crate::teams::sidebar::shown(outcome)), None => "Finished".into() };
-            },
-            _ if session.since > 0 => card.doing = format!("State unknown (no report for {})", util::duration(now - session.since)),
+                card.doing = match outcome {
+                    Some(outcome) => {
+                        format!("Finished · {}", crate::teams::sidebar::shown(outcome))
+                    }
+                    None => "Finished".into(),
+                };
+            }
+            _ if session.since > 0 => {
+                card.doing = format!(
+                    "State unknown (no report for {})",
+                    util::duration(now - session.since)
+                )
+            }
             _ => card.doing = "State unknown (no report yet)".into(),
         }
         card
@@ -2387,22 +4037,44 @@ impl App {
 
     /// A result the session finished that Theo has not opened yet (continuity updates).
     fn has_new_result(&self, session: &Session) -> bool {
-        self.continuity.as_ref().is_ok_and(|continuity| continuity.updates().iter()
-            .any(|update| update.session == session.session && update.kind == crate::continuity::UpdateKind::Result))
+        self.continuity.as_ref().is_ok_and(|continuity| {
+            continuity.updates().iter().any(|update| {
+                update.session == session.session
+                    && update.kind == crate::continuity::UpdateKind::Result
+            })
+        })
     }
 
     /// A card's line-1 badges, the most urgent first: restart needed, unpushed, queued, update, API credits.
     fn card_badges(&self, session: &Session) -> Vec<String> {
         let mut badges = Vec::new();
-        if !session.is_external() && !sessions::changed_since_start(session, &self.start_files).is_empty() {
+        if !session.is_external()
+            && !sessions::changed_since_start(session, &self.start_files).is_empty()
+        {
             badges.push("⟳".to_string());
         }
-        let unpushed = if session.unpushed > 0 { session.unpushed as usize } else { self.running_copy_unpushed(&session.cwd) };
-        if unpushed > 0 { badges.push(format!("↑{unpushed}")); }
-        let queued = self.session_queued.get(&session.session).copied().unwrap_or(0);
-        if queued > 0 { badges.push(format!("✉{queued}")); }
-        if session.update { badges.push("⬆".into()); }
-        if session.credits { badges.push("$".into()); }
+        let unpushed = if session.unpushed > 0 {
+            session.unpushed as usize
+        } else {
+            self.running_copy_unpushed(&session.cwd)
+        };
+        if unpushed > 0 {
+            badges.push(format!("↑{unpushed}"));
+        }
+        let queued = self
+            .session_queued
+            .get(&session.session)
+            .copied()
+            .unwrap_or(0);
+        if queued > 0 {
+            badges.push(format!("✉{queued}"));
+        }
+        if session.update {
+            badges.push("⬆".into());
+        }
+        if session.credits {
+            badges.push("$".into());
+        }
         badges
     }
 
@@ -2411,42 +4083,92 @@ impl App {
     fn card_meta(&self, session: &Session) -> String {
         let facts = &session.facts;
         let mut parts = vec![session.agent().label.to_string()];
-        if !facts.model.is_empty() { parts.push(facts.model.clone()); }
-        if !facts.effort.is_empty() { parts.push(facts.effort.clone()); }
-        if let Some(context) = facts.context { parts.push(format!("ctx {}%", context.round())); }
+        if !facts.model.is_empty() {
+            parts.push(facts.model.clone());
+        }
+        if !facts.effort.is_empty() {
+            parts.push(facts.effort.clone());
+        }
+        if let Some(context) = facts.context {
+            parts.push(format!("ctx {}%", context.round()));
+        }
         parts.extend(sessions::background_badge(session));
-        if facts.remote { parts.push("⇅ remote".into()); }
-        if session.terminal { parts.push("▭ terminal".into()); }
-        if let Some(design) = &session.design { parts.push(format!("◆ {}", design.title)); }
-        parts.push(if session.credits { "$ API".into() } else { "subscription".into() });
+        if facts.remote {
+            parts.push("⇅ remote".into());
+        }
+        if session.terminal {
+            parts.push("▭ terminal".into());
+        }
+        if let Some(design) = &session.design {
+            parts.push(format!("◆ {}", design.title));
+        }
+        parts.push(if session.credits {
+            "$ API".into()
+        } else {
+            "subscription".into()
+        });
         parts.join(" · ")
     }
 
     /// The todo a blocked card waits on that nobody runs: `r` on the card starts it.
     fn stopped_blocker(&self, session: &Session) -> Option<todo::Item> {
-        let branch_id = self.session_branches.get(&session.session).and_then(|branch| branch.strip_prefix("todo-"));
-        self.todos.items.iter()
-            .filter(|item| item.status() != "done" && (item.session() == session.session
-                || (branch_id == Some(item.id().as_str()) && item.project() == session.project)))
+        let branch_id = self
+            .session_branches
+            .get(&session.session)
+            .and_then(|branch| branch.strip_prefix("todo-"));
+        self.todos
+            .items
+            .iter()
+            .filter(|item| {
+                item.status() != "done"
+                    && (item.session() == session.session
+                        || (branch_id == Some(item.id().as_str())
+                            && item.project() == session.project))
+            })
             .flat_map(|item| item.after())
-            .find_map(|id| self.todos.items.iter().find(|item| item.id() == id && !matches!(item.status().as_str(), "done" | "doing")).cloned())
+            .find_map(|id| {
+                self.todos
+                    .items
+                    .iter()
+                    .find(|item| {
+                        item.id() == id && !matches!(item.status().as_str(), "done" | "doing")
+                    })
+                    .cloned()
+            })
     }
 
     fn session_dependency_activity(&self, session: &Session) -> Option<(&'static str, String)> {
-        if session.asleep.is_some() || session.needs_attention() || sessions::activity_label(session) != "Ready" {
+        if session.asleep.is_some()
+            || session.needs_attention()
+            || sessions::activity_label(session) != "Ready"
+        {
             return None;
         }
-        let branch_id = self.session_branches.get(&session.session).and_then(|branch| branch.strip_prefix("todo-"));
+        let branch_id = self
+            .session_branches
+            .get(&session.session)
+            .and_then(|branch| branch.strip_prefix("todo-"));
         let mut seen = HashSet::new();
-        let mut blockers: Vec<_> = self.todos.items.iter()
-            .filter(|item| item.status() != "done" && (item.session() == session.session
-                || (branch_id == Some(item.id().as_str()) && item.project() == session.project)))
-            .flat_map(|item| item.after()).filter(|id| seen.insert(id.clone()))
-            .filter_map(|id| match self.todos.items.iter().find(|item| item.id() == id) {
-                Some(item) if item.status() == "done" => None,
-                Some(item) => Some((item.status() == "doing", util::collapse(&item.text()))),
-                None => Some((false, id)),
-            }).collect();
+        let mut blockers: Vec<_> = self
+            .todos
+            .items
+            .iter()
+            .filter(|item| {
+                item.status() != "done"
+                    && (item.session() == session.session
+                        || (branch_id == Some(item.id().as_str())
+                            && item.project() == session.project))
+            })
+            .flat_map(|item| item.after())
+            .filter(|id| seen.insert(id.clone()))
+            .filter_map(
+                |id| match self.todos.items.iter().find(|item| item.id() == id) {
+                    Some(item) if item.status() == "done" => None,
+                    Some(item) => Some((item.status() == "doing", util::collapse(&item.text()))),
+                    None => Some((false, id)),
+                },
+            )
+            .collect();
         blockers.sort_by_key(|(is_running, _)| *is_running);
         let (is_running, title) = blockers.first()?;
         let (badge, prefix) = if *is_running {
@@ -2455,7 +4177,9 @@ impl App {
             ("Blocked · TODO not running", "Blocked by TODO")
         };
         let mut detail = format!("{prefix}: {title}");
-        if blockers.len() > 1 { detail += &format!(" · +{} more", blockers.len() - 1); }
+        if blockers.len() > 1 {
+            detail += &format!(" · +{} more", blockers.len() - 1);
+        }
         Some((badge, detail))
     }
 
@@ -2464,54 +4188,116 @@ impl App {
         if !title.is_empty() {
             return title;
         }
-        if let Some(title) = branch.strip_prefix("todo-")
-            .and_then(|id| self.todos.items.iter().find(|item| item.id() == id && item.project() == session.project))
-            .map(|item| util::collapse(&item.text())).filter(|title| !title.is_empty()) {
+        if let Some(title) = branch
+            .strip_prefix("todo-")
+            .and_then(|id| {
+                self.todos
+                    .items
+                    .iter()
+                    .find(|item| item.id() == id && item.project() == session.project)
+            })
+            .map(|item| util::collapse(&item.text()))
+            .filter(|title| !title.is_empty())
+        {
             return title;
         }
-        if branch.is_empty() { session.project.clone() } else { branch.into() }
+        if branch.is_empty() {
+            session.project.clone()
+        } else {
+            branch.into()
+        }
     }
 
     fn session_display_title<'a>(&'a self, session: &'a Session) -> &'a str {
         if !session.label.is_empty() {
             return &session.label;
         }
-        self.session_task_titles.get(&session.session).map(String::as_str).unwrap_or(&session.project)
+        self.session_task_titles
+            .get(&session.session)
+            .map(String::as_str)
+            .unwrap_or(&session.project)
     }
 
     fn selected_session_detail_lines(&self) -> Vec<Line> {
         use crate::teams::sidebar::{self, SidebarRow};
         if self.sidebar_selection_lost {
-            return vec![Line::new(vec![segment(0, "Selected member unavailable · choose a row", style(YELLOW))])];
+            return vec![Line::new(vec![segment(
+                0,
+                "Selected member unavailable · choose a row",
+                style(YELLOW),
+            )])];
         }
-        if let (TeamLinks::Ready(snapshot), Some(SidebarRow::Team { task } | SidebarRow::PlannedQa { task })) =
-            (&self.team_links, self.sidebar_rows.get(self.panels[1].selected)) {
-            return vec![Line::new(vec![segment(0, format!("Selected team: {}", self.team_task_title(snapshot, task)), bold(CYAN))]),
-                Line::new(vec![segment(0, sidebar::shown(&format!("{} / {}", task.project, task.task_id)), style(FG_DARK))]),
-                Line::new(vec![segment(0, sidebar::attention(snapshot, task).unwrap_or_else(|| sidebar::handoff_summary(snapshot, task)), style(FG_DARK))])];
+        if let (
+            TeamLinks::Ready(snapshot),
+            Some(SidebarRow::Team { task } | SidebarRow::PlannedQa { task }),
+        ) = (
+            &self.team_links,
+            self.sidebar_rows.get(self.panels[1].selected),
+        ) {
+            return vec![
+                Line::new(vec![segment(
+                    0,
+                    format!("Selected team: {}", self.team_task_title(snapshot, task)),
+                    bold(CYAN),
+                )]),
+                Line::new(vec![segment(
+                    0,
+                    sidebar::shown(&format!("{} / {}", task.project, task.task_id)),
+                    style(FG_DARK),
+                )]),
+                Line::new(vec![segment(
+                    0,
+                    sidebar::attention(snapshot, task)
+                        .unwrap_or_else(|| sidebar::handoff_summary(snapshot, task)),
+                    style(FG_DARK),
+                )]),
+            ];
         }
-        let Some(selected) = self.selected_session() else { return vec![] };
+        let Some(selected) = self.selected_session() else {
+            return vec![];
+        };
         let session = &selected;
-        let branch = self.session_branches.get(&session.session).map(String::as_str).unwrap_or("");
-        let task_title = self.session_task_titles.get(&session.session).map(String::as_str).unwrap_or(&session.project);
+        let branch = self
+            .session_branches
+            .get(&session.session)
+            .map(String::as_str)
+            .unwrap_or("");
+        let task_title = self
+            .session_task_titles
+            .get(&session.session)
+            .map(String::as_str)
+            .unwrap_or(&session.project);
         let mut lines = Vec::new();
         let needs_attention = session.needs_attention();
         let facts = &session.facts;
         let mut badges = Vec::new();
         if !session.ask_to_run.is_empty() {
-            let tint = if session.ask_to_run == "running" { BLUE } else { YELLOW };
-            badges.push(part(format!("ask-to-run: {}", session.ask_to_run), bold(tint)));
+            let tint = if session.ask_to_run == "running" {
+                BLUE
+            } else {
+                YELLOW
+            };
+            badges.push(part(
+                format!("ask-to-run: {}", session.ask_to_run),
+                bold(tint),
+            ));
         }
         if session.is_external() {
             badges.push(part("external", bold(CYAN)));
         }
-        if !session.is_external() && facts.context.is_some_and(|context| context >= CONTEXT_COMPACT_AT) {
+        if !session.is_external()
+            && facts
+                .context
+                .is_some_and(|context| context >= CONTEXT_COMPACT_AT)
+        {
             badges.push(part("/compact", bold(BLUE)));
         }
         if session.update {
             badges.push(part("⬆ update", bold(GREEN)));
         }
-        if !session.is_external() && !sessions::changed_since_start(session, &self.start_files).is_empty() {
+        if !session.is_external()
+            && !sessions::changed_since_start(session, &self.start_files).is_empty()
+        {
             badges.push(part("⟳ restart", bold(BLUE)));
         }
         if facts.remote {
@@ -2536,8 +4322,14 @@ impl App {
         }
         // Launchers attach every craft server; show only instances serving this checkout.
         for app in session.apps.split_whitespace() {
-            let Some((name, "on")) = app.split_once(':') else { continue };
-            let serves_it = self.craft_roots.get(name).is_none_or(|roots| self.session_roots.get(&session.session).is_some_and(|root| roots.contains(root)));
+            let Some((name, "on")) = app.split_once(':') else {
+                continue;
+            };
+            let serves_it = self.craft_roots.get(name).is_none_or(|roots| {
+                self.session_roots
+                    .get(&session.session)
+                    .is_some_and(|root| roots.contains(root))
+            });
             if serves_it {
                 badges.push(part(format!("◆ {name}"), bold(GREEN)));
             }
@@ -2545,17 +4337,28 @@ impl App {
         if let Some(background) = sessions::background_badge(session) {
             badges.push(part(background, bold(BLUE)));
         }
-        let queued = self.session_queued.get(&session.session).copied().unwrap_or(0);
+        let queued = self
+            .session_queued
+            .get(&session.session)
+            .copied()
+            .unwrap_or(0);
         if queued > 0 {
             badges.push(part(format!("✉ {queued} queued"), bold(CYAN)));
         }
         if session.unpushed > 0 {
-            let count = if sessions::is_reviewed_clone(&session.cwd) { "unapplied" } else { "unpushed" };
+            let count = if sessions::is_reviewed_clone(&session.cwd) {
+                "unapplied"
+            } else {
+                "unpushed"
+            };
             badges.push(part(format!("↑{} {count}", session.unpushed), bold(BLUE)));
         }
         let running_copy_unpushed = self.running_copy_unpushed(&session.cwd);
         if running_copy_unpushed > 0 {
-            badges.push(part(format!("↑{running_copy_unpushed} unpushed"), bold(BLUE)));
+            badges.push(part(
+                format!("↑{running_copy_unpushed} unpushed"),
+                bold(BLUE),
+            ));
         }
         if session.pinned {
             badges.push(part("⚲", dim(FG_DARK)));
@@ -2567,20 +4370,54 @@ impl App {
         let mut right = Vec::new();
         if session.state != "unknown" {
             if !session.is_external() {
-                let effort = if facts.effort.is_empty() { "effort" } else { facts.effort.as_str() };
-                right.push(Part { text: format!("{effort} ▾"), style: style(CYAN), action: Some("effort") });
+                let effort = if facts.effort.is_empty() {
+                    "effort"
+                } else {
+                    facts.effort.as_str()
+                };
+                right.push(Part {
+                    text: format!("{effort} ▾"),
+                    style: style(CYAN),
+                    action: Some("effort"),
+                });
             }
             right.push(part(&facts.model, dim(FG_DARK)));
-            right.push(part(facts.context.map(|c| format!("{}%", c.round())).unwrap_or_default(), bold(context_color(facts.context))));
+            right.push(part(
+                facts
+                    .context
+                    .map(|c| format!("{}%", c.round()))
+                    .unwrap_or_default(),
+                bold(context_color(facts.context)),
+            ));
         }
         right.retain(|p| !p.text.is_empty());
-        lines.push(Line { segments: vec![segment(0, format!("Selected: {task_title}"), bold(BLUE))], right: vec![Part { text: "i Full details".into(), style: style(CYAN), action: Some("session-details") }], ..Line::default() });
-        let location = if branch.is_empty() { session.project.clone() } else { format!("{} / {branch}", session.project) };
-        lines.push(Line { segments: vec![segment(0, location, dim(FG_DARK))], right, ..Line::default() });
-        if let Ok(continuity) = &self.continuity {
-            if let Some(note) = continuity.note(&session.session) {
-                lines.push(Line::new(vec![segment(0, format!("Your note: {note}"), style(CYAN))]));
-            }
+        lines.push(Line {
+            segments: vec![segment(0, format!("Selected: {task_title}"), bold(BLUE))],
+            right: vec![Part {
+                text: "i Full details".into(),
+                style: style(CYAN),
+                action: Some("session-details"),
+            }],
+            ..Line::default()
+        });
+        let location = if branch.is_empty() {
+            session.project.clone()
+        } else {
+            format!("{} / {branch}", session.project)
+        };
+        lines.push(Line {
+            segments: vec![segment(0, location, dim(FG_DARK))],
+            right,
+            ..Line::default()
+        });
+        if let Ok(continuity) = &self.continuity
+            && let Some(note) = continuity.note(&session.session)
+        {
+            lines.push(Line::new(vec![segment(
+                0,
+                format!("Your note: {note}"),
+                style(CYAN),
+            )]));
         }
         if let Some(design) = &session.design {
             badges.push(part(format!("◆ {}", design.title), style(MAGENTA)));
@@ -2598,20 +4435,55 @@ impl App {
             if index == 1 && wrapped.len() > 2 {
                 text = format!("{}…", fit(&text, (self.width as usize).saturating_sub(6)));
             }
-            lines.push(Line::new(vec![segment(0, text, if needs_attention { style(YELLOW) } else { dim(FG_DARK) })]));
+            lines.push(Line::new(vec![segment(
+                0,
+                text,
+                if needs_attention {
+                    style(YELLOW)
+                } else {
+                    dim(FG_DARK)
+                },
+            )]));
         }
-        lines.push(Line { right: badges, ..Line::default() });
-        if let TeamLinks::Ready(snapshot) = &self.team_links {
-            if let Some(member) = sidebar::membership(snapshot, session) {
-                if let Some(task) = sidebar::task_of(member) {
-                    let role = sidebar::role(member).map(sidebar::role_label).unwrap_or("Member");
-                    lines.insert(0, Line::new(vec![segment(0, format!("{} / {role} · {}", self.team_task_title(snapshot, &task), self.session_display_title(session)), bold(CYAN))]));
-                    lines.push(Line::new(vec![segment(0, format!("{} · {} · {}", session.agent, session.session, task.task_id), style(FG_DARK))]));
-                    lines.push(Line::new(vec![segment(0, sidebar::handoff_summary(snapshot, &task), style(FG_DARK))]));
-                    for line in &mut lines {
-                        for (_, text, _) in &mut line.segments { *text = sidebar::shown(text); }
-                        for part in &mut line.right { part.text = sidebar::shown(&part.text); }
-                    }
+        lines.push(Line {
+            right: badges,
+            ..Line::default()
+        });
+        if let TeamLinks::Ready(snapshot) = &self.team_links
+            && let Some(member) = sidebar::membership(snapshot, session)
+            && let Some(task) = sidebar::task_of(member)
+        {
+            let role = sidebar::role(member)
+                .map(sidebar::role_label)
+                .unwrap_or("Member");
+            lines.insert(
+                0,
+                Line::new(vec![segment(
+                    0,
+                    format!(
+                        "{} / {role} · {}",
+                        self.team_task_title(snapshot, &task),
+                        self.session_display_title(session)
+                    ),
+                    bold(CYAN),
+                )]),
+            );
+            lines.push(Line::new(vec![segment(
+                0,
+                format!("{} · {} · {}", session.agent, session.session, task.task_id),
+                style(FG_DARK),
+            )]));
+            lines.push(Line::new(vec![segment(
+                0,
+                sidebar::handoff_summary(snapshot, &task),
+                style(FG_DARK),
+            )]));
+            for line in &mut lines {
+                for (_, text, _) in &mut line.segments {
+                    *text = sidebar::shown(text);
+                }
+                for part in &mut line.right {
+                    part.text = sidebar::shown(&part.text);
                 }
             }
         }
@@ -2621,12 +4493,27 @@ impl App {
     fn session_summary_lines(&self) -> Vec<Line> {
         let now = util::now_secs();
         // One bucket per session, in the cards' precedence, so the counts cannot overlap.
-        let (mut needing, mut working, mut ready, mut idle, mut asleep, mut unknown, mut waiting, mut blocked) = (0, 0, 0, 0, 0, 0, 0, 0);
+        let (
+            mut needing,
+            mut working,
+            mut ready,
+            mut idle,
+            mut asleep,
+            mut unknown,
+            mut waiting,
+            mut blocked,
+        ) = (0, 0, 0, 0, 0, 0, 0, 0);
         for session in self.all_sessions() {
             if session.needs_attention() {
-                if self.session_deferred_until(&session, now).is_none() { needing += 1; }
+                if self.session_deferred_until(&session, now).is_none() {
+                    needing += 1;
+                }
             } else if let Some((badge, _)) = self.session_dependency_activity(&session) {
-                if badge == "Waiting on TODO" { waiting += 1; } else { blocked += 1; }
+                if badge == "Waiting on TODO" {
+                    waiting += 1;
+                } else {
+                    blocked += 1;
+                }
             } else if sessions::is_idle(&session, now) {
                 idle += 1;
             } else if session.asleep.is_some() {
@@ -2640,16 +4527,28 @@ impl App {
             }
         }
         needing += usize::from(!self.held.is_empty());
-        let mut attention: String = if needing == 0 { "Nothing needs you".into() } else { format!("! {needing} need you") };
+        let mut attention: String = if needing == 0 {
+            "Nothing needs you".into()
+        } else {
+            format!("! {needing} need you")
+        };
         if let Ok(continuity) = &self.continuity {
             let unseen = continuity.updates().len();
-            if unseen > 0 { attention += &format!(" · {unseen} unseen"); }
+            if unseen > 0 {
+                attention += &format!(" · {unseen} unseen");
+            }
             let deferred = continuity.deferred_count(util::now_secs());
-            if deferred > 0 { attention += &format!(" · {deferred} deferred"); }
+            if deferred > 0 {
+                attention += &format!(" · {deferred} deferred");
+            }
         }
         let mut counts = format!("{working} working · {ready} ready");
-        if waiting > 0 { counts += &format!(" · {waiting} waiting on TODO"); }
-        if blocked > 0 { counts += &format!(" · {blocked} blocked"); }
+        if waiting > 0 {
+            counts += &format!(" · {waiting} waiting on TODO");
+        }
+        if blocked > 0 {
+            counts += &format!(" · {blocked} blocked");
+        }
         if idle > 0 {
             counts += &format!(" · {idle} idle");
         }
@@ -2659,43 +4558,110 @@ impl App {
         if unknown > 0 {
             counts += &format!(" · {unknown} unknown");
         }
-        let outdated = self.running_sessions.iter().filter(|session| !sessions::changed_since_start(session, &self.start_files).is_empty()).count();
+        let outdated = self
+            .running_sessions
+            .iter()
+            .filter(|session| !sessions::changed_since_start(session, &self.start_files).is_empty())
+            .count();
         if outdated > 0 {
             counts += &format!(" · {outdated} restart available");
         }
         if self.team_attention > 0 {
-            counts += &format!(" · team: {} {} you (4 Teams)", self.team_attention, if self.team_attention == 1 { "needs" } else { "need" });
+            counts += &format!(
+                " · team: {} {} you (4 Teams)",
+                self.team_attention,
+                if self.team_attention == 1 {
+                    "needs"
+                } else {
+                    "need"
+                }
+            );
         }
         vec![
-            Line::new(vec![segment(0, attention, bold(if needing > 0 { YELLOW } else { FG_DARK }))]),
-            Line { segments: vec![segment(0, counts, dim(FG_DARK))], right: vec![Part { text: "n Next needing me".into(), style: style(if needing > 0 { YELLOW } else { FG_DARK }), action: (needing > 0).then_some("next-attention") }], ..Line::default() },
+            Line::new(vec![segment(
+                0,
+                attention,
+                bold(if needing > 0 { YELLOW } else { FG_DARK }),
+            )]),
+            Line {
+                segments: vec![segment(0, counts, dim(FG_DARK))],
+                right: vec![Part {
+                    text: "n Next needing me".into(),
+                    style: style(if needing > 0 { YELLOW } else { FG_DARK }),
+                    action: (needing > 0).then_some("next-attention"),
+                }],
+                ..Line::default()
+            },
         ]
     }
 
     pub(crate) fn selected_session(&self) -> Option<Session> {
-        if self.sidebar_selection_lost { return None; }
-        let crate::teams::sidebar::SidebarRow::Session { session_id } = self.sidebar_rows.get(self.panels[1].selected)? else { return None };
-        self.sessions.iter().find(|session| session.session == *session_id).cloned()
+        if self.sidebar_selection_lost {
+            return None;
+        }
+        let crate::teams::sidebar::SidebarRow::Session { session_id } =
+            self.sidebar_rows.get(self.panels[1].selected)?
+        else {
+            return None;
+        };
+        self.sessions
+            .iter()
+            .find(|session| session.session == *session_id)
+            .cloned()
     }
 
-    fn team_is_inactive(&self, snapshot: &Value, task: &crate::teams::TaskKey, sessions: &[Session]) -> bool {
-        let is_done = self.todos.items.iter().any(|item| item.id() == task.task_id && item.status() == "done" && !item.cwd().is_empty()
-            && (task.project == format!("path:{}", item.cwd())
-                || crate::teams::sidebar::list(snapshot, "sessions").iter().any(|session| session["project"] == task.project && session["cwd"] == item.cwd())));
-        is_done && crate::teams::sidebar::attention(snapshot, task).is_none()
-            && !sessions.iter().any(|session| crate::teams::sidebar::member_task(snapshot, session).as_ref() == Some(task)
-                && session.asleep.is_none() && (session.needs_attention() || sessions::activity_label(session) != "Ready"))
+    fn team_is_inactive(
+        &self,
+        snapshot: &Value,
+        task: &crate::teams::TaskKey,
+        sessions: &[Session],
+    ) -> bool {
+        let is_done = self.todos.items.iter().any(|item| {
+            item.id() == task.task_id
+                && item.status() == "done"
+                && !item.cwd().is_empty()
+                && (task.project == format!("path:{}", item.cwd())
+                    || crate::teams::sidebar::list(snapshot, "sessions")
+                        .iter()
+                        .any(|session| {
+                            session["project"] == task.project && session["cwd"] == item.cwd()
+                        }))
+        });
+        is_done
+            && crate::teams::sidebar::attention(snapshot, task).is_none()
+            && !sessions.iter().any(|session| {
+                crate::teams::sidebar::member_task(snapshot, session).as_ref() == Some(task)
+                    && session.asleep.is_none()
+                    && (session.needs_attention() || sessions::activity_label(session) != "Ready")
+            })
     }
 
     fn team_task_title(&self, snapshot: &Value, task: &crate::teams::TaskKey) -> String {
         use crate::teams::sidebar;
-        let belongs = |cwd: &str| !cwd.is_empty() && (task.project == format!("path:{cwd}")
-            || sidebar::list(snapshot, "sessions").iter().any(|session| session["project"] == task.project && session["cwd"] == cwd));
-        if let Some(item) = self.todos.items.iter().find(|item| item.id() == task.task_id && belongs(&item.cwd())) {
-            if !item.text().trim().is_empty() { return sidebar::shown(&item.text()); }
+        let belongs = |cwd: &str| {
+            !cwd.is_empty()
+                && (task.project == format!("path:{cwd}")
+                    || sidebar::list(snapshot, "sessions")
+                        .iter()
+                        .any(|session| session["project"] == task.project && session["cwd"] == cwd))
+        };
+        if let Some(item) = self
+            .todos
+            .items
+            .iter()
+            .find(|item| item.id() == task.task_id && belongs(&item.cwd()))
+            && !item.text().trim().is_empty()
+        {
+            return sidebar::shown(&item.text());
         }
-        if let Some(issue) = self.reviews.issues().iter().find(|issue| issue.key() == task.task_id
-            && self.reviews.checkouts.get(&issue.full_repository).is_some_and(|cwd| belongs(cwd))) {
+        if let Some(issue) = self.reviews.issues().iter().find(|issue| {
+            issue.key() == task.task_id
+                && self
+                    .reviews
+                    .checkouts
+                    .get(&issue.full_repository)
+                    .is_some_and(|cwd| belongs(cwd))
+        }) {
             return sidebar::shown(&issue.title);
         }
         sidebar::shown(&task.task_id)
@@ -2705,12 +4671,19 @@ impl App {
         use crate::teams::sidebar::{self, SidebarRow};
         let task = match &target {
             SidebarRow::Team { task } => Some(task.clone()),
-            SidebarRow::Session { session_id } => self.sessions.iter().find(|session| session.session == *session_id).and_then(|session| match &self.team_links {
-                TeamLinks::Ready(snapshot) => sidebar::member_task(snapshot, session), _ => None,
-            }),
+            SidebarRow::Session { session_id } => self
+                .sessions
+                .iter()
+                .find(|session| session.session == *session_id)
+                .and_then(|session| match &self.team_links {
+                    TeamLinks::Ready(snapshot) => sidebar::member_task(snapshot, session),
+                    _ => None,
+                }),
             _ => None,
         };
-        if let Some(task) = task { self.collapsed_teams.remove(&sidebar::task_key(&task)); }
+        if let Some(task) = task {
+            self.collapsed_teams.remove(&sidebar::task_key(&task));
+        }
         self.build_sessions();
         if let Some(index) = self.sidebar_rows.iter().position(|row| row == &target) {
             self.panels[1].selected = index;
@@ -2724,8 +4697,16 @@ impl App {
     fn next_sidebar_attention(&mut self) -> String {
         use crate::teams::sidebar::{self, SidebarRow};
         let rows = match &self.team_links {
-            TeamLinks::Ready(snapshot) => sidebar::grouped_rows(snapshot, &self.sessions, &HashSet::new()).unwrap_or_default(),
-            _ => self.sessions.iter().map(|session| SidebarRow::Session { session_id:session.session.clone() }).collect(),
+            TeamLinks::Ready(snapshot) => {
+                sidebar::grouped_rows(snapshot, &self.sessions, &HashSet::new()).unwrap_or_default()
+            }
+            _ => self
+                .sessions
+                .iter()
+                .map(|session| SidebarRow::Session {
+                    session_id: session.session.clone(),
+                })
+                .collect(),
         };
         let current = self.sidebar_rows.get(self.panels[1].selected);
         let selected_index = current.and_then(|current| rows.iter().position(|row| row == current));
@@ -2735,68 +4716,172 @@ impl App {
                 && !self.sessions.iter().any(|session| sidebar::member_task(snapshot, session).as_ref() == Some(task) && self.is_actionable(session, util::now_secs()))),
             _ => false,
         }).collect();
-        let Some((_, target)) = candidates.iter().find(|(index, _)| selected_index.is_none_or(|selected| *index > selected)).or(candidates.first()) else {
-            if !self.held.is_empty() { return "only greyproxy needs you: G reviews its held requests".into(); }
+        let Some((_, target)) = candidates
+            .iter()
+            .find(|(index, _)| selected_index.is_none_or(|selected| *index > selected))
+            .or(candidates.first())
+        else {
+            if !self.held.is_empty() {
+                return "only greyproxy needs you: G reviews its held requests".into();
+            }
             return "nothing needs you".into();
         };
         let target = (*target).clone();
-        if !self.select_sidebar_target(target.clone()) { return "Selected session unavailable; choose a row".into(); }
+        if !self.select_sidebar_target(target.clone()) {
+            return "Selected session unavailable; choose a row".into();
+        }
         if let SidebarRow::Session { session_id } = target {
             let attended = self.manager_async(&["attend", &session_id]);
             self.mark_result_seen(&session_id).unwrap_or(attended)
-        } else { String::new() }
+        } else {
+            String::new()
+        }
     }
 
     fn open_session_details(&mut self) {
-        let Some(selected) = self.selected_session() else { return };
+        let Some(selected) = self.selected_session() else {
+            return;
+        };
         let session = &selected;
         let now = util::now_secs();
         let card = self.session_card(session, now);
-        let original = self.session_task_titles.get(&session.session).map(String::as_str).unwrap_or(&session.project);
-        let branch = self.session_branches.get(&session.session).map(String::as_str).unwrap_or("");
+        let original = self
+            .session_task_titles
+            .get(&session.session)
+            .map(String::as_str)
+            .unwrap_or(&session.project);
+        let branch = self
+            .session_branches
+            .get(&session.session)
+            .map(String::as_str)
+            .unwrap_or("");
         let shown = self.session_display_title(session);
-        let todo = self.todos.items.iter().find(|item| item.session() == session.session).map(|item| item.id())
-            .or_else(|| branch.strip_prefix("todo-").filter(|id| self.todos.items.iter().any(|item| item.id() == *id)).map(str::to_string));
-        let mut text = if shown == session.project { session.project.clone() } else { format!("{} › {shown}", session.project) };
-        if let Some(todo) = &todo { text += &format!(" · todo {todo}"); }
+        let todo = self
+            .todos
+            .items
+            .iter()
+            .find(|item| item.session() == session.session)
+            .map(|item| item.id())
+            .or_else(|| {
+                branch
+                    .strip_prefix("todo-")
+                    .filter(|id| self.todos.items.iter().any(|item| item.id() == *id))
+                    .map(str::to_string)
+            });
+        let mut text = if shown == session.project {
+            session.project.clone()
+        } else {
+            format!("{} › {shown}", session.project)
+        };
+        if let Some(todo) = &todo {
+            text += &format!(" · todo {todo}");
+        }
         text += "\n";
-        if original != self.session_display_title(session) && original != session.project { text += &format!("Task: {original}\n"); }
+        if original != self.session_display_title(session) && original != session.project {
+            text += &format!("Task: {original}\n");
+        }
         text += "\nWHERE & WHO\n";
         let mut place = Vec::new();
         if sessions::clone_name(&session.cwd).is_some() || !branch.is_empty() {
-            if let Some(clone) = sessions::clone_name(&session.cwd) { place.push(format!("clone {clone}")); }
-            if !branch.is_empty() { place.push(format!("branch {branch}")); }
-        } else if !session.cwd.is_empty() { place.push(session.cwd.clone()); }
-        if session.unpushed > 0 { place.push(format!("↑{} unpushed", session.unpushed)); }
-        if !place.is_empty() { text += &format!("{}\n", place.join(" · ")); }
+            if let Some(clone) = sessions::clone_name(&session.cwd) {
+                place.push(format!("clone {clone}"));
+            }
+            if !branch.is_empty() {
+                place.push(format!("branch {branch}"));
+            }
+        } else if !session.cwd.is_empty() {
+            place.push(session.cwd.clone());
+        }
+        if session.unpushed > 0 {
+            place.push(format!("↑{} unpushed", session.unpushed));
+        }
+        if !place.is_empty() {
+            text += &format!("{}\n", place.join(" · "));
+        }
         let facts = &session.facts;
         let mut who = vec![session.agent().label.to_string()];
-        if !facts.model.is_empty() { who.push(facts.model.clone()); }
-        if !facts.effort.is_empty() { who.push(format!("effort {}", facts.effort)); }
-        if let Some(context) = facts.context { who.push(format!("ctx {}%", context.round())); }
-        if session.since > 0 {
-            who.push(format!("since {}", chrono::DateTime::from_timestamp(session.since, 0)
-                .map(|time| time.with_timezone(&chrono::Local).format("%H:%M").to_string()).unwrap_or_default()));
+        if !facts.model.is_empty() {
+            who.push(facts.model.clone());
         }
-        let plan = if session.credits { "API credits".to_string() }
-            else if session.agent().name == "claude" && !self.plan.is_empty() { format!("Claude {} (subscription)", self.plan) }
-            else { "subscription".to_string() };
-        let cost = self.costs.session_today(&session.session).map(|cost| format!(" · ≈ ${cost:.2} at API prices today")).unwrap_or_default();
+        if !facts.effort.is_empty() {
+            who.push(format!("effort {}", facts.effort));
+        }
+        if let Some(context) = facts.context {
+            who.push(format!("ctx {}%", context.round()));
+        }
+        if session.since > 0 {
+            who.push(format!(
+                "since {}",
+                chrono::DateTime::from_timestamp(session.since, 0)
+                    .map(|time| time
+                        .with_timezone(&chrono::Local)
+                        .format("%H:%M")
+                        .to_string())
+                    .unwrap_or_default()
+            ));
+        }
+        let plan = if session.credits {
+            "API credits".to_string()
+        } else if session.agent().name == "claude" && !self.plan.is_empty() {
+            format!("Claude {} (subscription)", self.plan)
+        } else {
+            "subscription".to_string()
+        };
+        let cost = self
+            .costs
+            .session_today(&session.session)
+            .map(|cost| format!(" · ≈ ${cost:.2} at API prices today"))
+            .unwrap_or_default();
         text += &format!("{}\nBilling: {plan}{cost}\n\nAROUND IT\n", who.join(" · "));
         let mut around = Vec::new();
-        if let Some(answers) = self.chief_answers.get(&session.session) { around.push(format!("◆ Chief answered {}", answers.count)); }
-        if let Some(team) = self.team_roles.get(&session.session) { around.push(format!("⇄ {team}")); }
-        let queued = self.session_queued.get(&session.session).copied().unwrap_or(0);
-        if queued > 0 { around.push(format!("✉ {queued} queued message{}", if queued == 1 { "" } else { "s" })); }
-        if let Some(background) = sessions::background_badge(session) { around.push(format!("◷ {background}")); }
-        if facts.remote { around.push("⇅ remote control on".into()); }
-        text += &format!("{}\n\nMY NOTE (never sent to the agent)\n", if around.is_empty() { "nothing else around it".into() } else { around.join(" · ") });
-        let note = self.continuity.as_ref().ok().and_then(|continuity| continuity.note(&session.session).map(str::to_string));
-        text += &format!("{}\n\n", note.unwrap_or_else(|| "none · w writes one".into()));
+        if let Some(answers) = self.chief_answers.get(&session.session) {
+            around.push(format!("◆ Chief answered {}", answers.count));
+        }
+        if let Some(team) = self.team_roles.get(&session.session) {
+            around.push(format!("⇄ {team}"));
+        }
+        let queued = self
+            .session_queued
+            .get(&session.session)
+            .copied()
+            .unwrap_or(0);
+        if queued > 0 {
+            around.push(format!(
+                "✉ {queued} queued message{}",
+                if queued == 1 { "" } else { "s" }
+            ));
+        }
+        if let Some(background) = sessions::background_badge(session) {
+            around.push(format!("◷ {background}"));
+        }
+        if facts.remote {
+            around.push("⇅ remote control on".into());
+        }
+        text += &format!(
+            "{}\n\nMY NOTE (never sent to the agent)\n",
+            if around.is_empty() {
+                "nothing else around it".into()
+            } else {
+                around.join(" · ")
+            }
+        );
+        let note = self
+            .continuity
+            .as_ref()
+            .ok()
+            .and_then(|continuity| continuity.note(&session.session).map(str::to_string));
+        text += &format!(
+            "{}\n\n",
+            note.unwrap_or_else(|| "none · w writes one".into())
+        );
         if session.needs_attention() {
-            let request = if !session.full_request.is_empty() { session.full_request.clone() }
-                else if !session.request.is_empty() { session.request.clone() }
-                else { sessions::activity_text(session) };
+            let request = if !session.full_request.is_empty() {
+                session.full_request.clone()
+            } else if !session.request.is_empty() {
+                session.request.clone()
+            } else {
+                sessions::activity_text(session)
+            };
             text += &format!("ITS ASK\n{request}\n\n");
         }
         if !session.outcome.is_empty() {
@@ -2806,35 +4891,75 @@ impl App {
             let room = (self.width as usize).saturating_sub(6).max(2);
             text += "CHIEF ANSWERS\n";
             for answer in answers.recent.iter().take(3) {
-                for line in crate::chief::view::recent_answer_lines(answer, room) { text += &format!("{line}\n"); }
+                for line in crate::chief::view::recent_answer_lines(answer, room) {
+                    text += &format!("{line}\n");
+                }
             }
             text += "c all answers\n\n";
         }
-        if let TeamLinks::Ready(snapshot) = &self.team_links {
-            if let Some(task) = crate::teams::sidebar::member_task(snapshot, session) {
-                let member = crate::teams::sidebar::membership(snapshot, session).expect("task came from membership");
-                text += &format!("Session: {}\nAgent: {}\nTeam: {} / {}\nRole: {}\n{}\n", session.session, session.agent,
-                    task.project, task.task_id, member["role"].as_str().unwrap_or("Member"), crate::teams::sidebar::handoff_summary(snapshot, &task));
-                text = crate::approval::escape_hiding(&text, "", "");
-            }
+        if let TeamLinks::Ready(snapshot) = &self.team_links
+            && let Some(task) = crate::teams::sidebar::member_task(snapshot, session)
+        {
+            let member = crate::teams::sidebar::membership(snapshot, session)
+                .expect("task came from membership");
+            text += &format!(
+                "Session: {}\nAgent: {}\nTeam: {} / {}\nRole: {}\n{}\n",
+                session.session,
+                session.agent,
+                task.project,
+                task.task_id,
+                member["role"].as_str().unwrap_or("Member"),
+                crate::teams::sidebar::handoff_summary(snapshot, &task)
+            );
+            text = crate::approval::escape_hiding(&text, "", "");
         }
-        if session.last_result.is_none() && !session.reports_turns { text += "Result tracking unavailable; restart to enable\n\n"; }
+        if session.last_result.is_none() && !session.reports_turns {
+            text += "Result tracking unavailable; restart to enable\n\n";
+        }
         let agent = session.agent();
-        let key_groups = SESSION_DETAIL_KEYS.iter().map(|(heading, keys)| (*heading, keys.iter().copied().filter(|(key, _)| {
-            let key = Key::Char(key.chars().next().unwrap());
-            !(session.is_external() && session_key_requires_terminal(key.clone()))
-                && (key != Key::Char('c') || self.chief_answers.contains_key(&session.session))
-                && key_feature(key, agent).is_none_or(|(feature, _)| agent.can(feature))
-        }).collect())).collect();
+        let key_groups = SESSION_DETAIL_KEYS
+            .iter()
+            .map(|(heading, keys)| {
+                (
+                    *heading,
+                    keys.iter()
+                        .copied()
+                        .filter(|(key, _)| {
+                            let key = Key::Char(key.chars().next().unwrap());
+                            !(session.is_external() && session_key_requires_terminal(key.clone()))
+                                && (key != Key::Char('c')
+                                    || self.chief_answers.contains_key(&session.session))
+                                && key_feature(key, agent)
+                                    .is_none_or(|(feature, _)| agent.can(feature))
+                        })
+                        .collect(),
+                )
+            })
+            .collect();
         let displayed_updates = match &self.continuity {
-            Ok(state) => state.updates().into_iter().filter(|update| update.session == session.session).map(|update| {
-                text += &format!("\nUNSEEN UPDATE\n{}\n", update.text);
-                update.identity
-            }).collect(),
-            Err(error) => { text += &format!("\nUpdates unavailable: {error}\n"); Vec::new() }
+            Ok(state) => state
+                .updates()
+                .into_iter()
+                .filter(|update| update.session == session.session)
+                .map(|update| {
+                    text += &format!("\nUNSEEN UPDATE\n{}\n", update.text);
+                    update.identity
+                })
+                .collect(),
+            Err(error) => {
+                text += &format!("\nUpdates unavailable: {error}\n");
+                Vec::new()
+            }
         };
-        self.session_details = Some(SessionDetails { title: format!("{} {}", card.glyph, card.doing), text, session: Some(session.session.clone()),
-            key_groups, displayed_updates, lead: Some(session.project.clone()), ..Default::default() });
+        self.session_details = Some(SessionDetails {
+            title: format!("{} {}", card.glyph, card.doing),
+            text,
+            session: Some(session.session.clone()),
+            key_groups,
+            displayed_updates,
+            lead: Some(session.project.clone()),
+            ..Default::default()
+        });
     }
 
     /// The selected session's keys, most pressing first: what its card asks for (an approval, a
@@ -2842,12 +4967,20 @@ impl App {
     /// when the column is narrow, so the order is what keeps the useful keys on screen.
     /// What the running copy a card's clone applies to holds and GitHub lacks; 0 for other cards.
     fn running_copy_unpushed(&self, cwd: &str) -> usize {
-        sessions::running_copy_of(cwd).and_then(|live| self.running_copies_unpushed.get(&live).copied()).unwrap_or(0)
+        sessions::running_copy_of(cwd)
+            .and_then(|live| self.running_copies_unpushed.get(&live).copied())
+            .unwrap_or(0)
     }
 
     pub(crate) fn sessions_hints(&self) -> Vec<(&'static str, &'static str)> {
-        if self.selected_session().is_none() && self.sidebar_rows.get(self.panels[1].selected).is_some() {
-            return vec![("⏎", "fold/unfold team"), ("n", "Next needing me"), ("i", "team details")];
+        if self.selected_session().is_none()
+            && self.sidebar_rows.get(self.panels[1].selected).is_some()
+        {
+            return vec![
+                ("⏎", "fold/unfold team"),
+                ("n", "Next needing me"),
+                ("i", "team details"),
+            ];
         }
         let selected = self.selected_session().unwrap_or_default();
         let mut hints = Vec::new();
@@ -2856,22 +4989,48 @@ impl App {
         } else if !sessions::changed_since_start(&selected, &self.start_files).is_empty() {
             hints.push(("R", "restart to pick up the change"));
         }
-        if selected.facts.context.is_some_and(|c| c >= CONTEXT_COMPACT_AT) {
+        if selected
+            .facts
+            .context
+            .is_some_and(|c| c >= CONTEXT_COMPACT_AT)
+        {
             hints.push(("C", "/compact"));
         }
         if selected.design.is_some() {
             hints.push(("o", "canvas"));
         }
-        if sessions::is_reviewed_clone(&selected.cwd) && (selected.unpushed > 0 || self.running_copy_unpushed(&selected.cwd) > 0) {
-            hints.push(("U", if selected.unpushed > 0 { "apply" } else { "push" }));
+        if sessions::is_reviewed_clone(&selected.cwd)
+            && (selected.unpushed > 0 || self.running_copy_unpushed(&selected.cwd) > 0)
+        {
+            hints.push((
+                "U",
+                if selected.unpushed > 0 {
+                    "apply"
+                } else {
+                    "push"
+                },
+            ));
         } else if selected.unpushed > 0 {
             hints.push(("U", "push"));
         }
         hints.extend([("⏎", "open"), ("n", "Next needing me"), ("i", "details")]);
-        if self.chief_answers.contains_key(&selected.session) { hints.push(("c", "Chief answers")); }
-        hints.extend([("e", "effort"), ("g", "git"), ("+", "another"), ("x", "exit")]);
+        if self.chief_answers.contains_key(&selected.session) {
+            hints.push(("c", "Chief answers"));
+        }
+        hints.extend([
+            ("e", "effort"),
+            ("g", "git"),
+            ("+", "another"),
+            ("x", "exit"),
+        ]);
         if !selected.session.is_empty() && selected.is_external() {
-            hints.retain(|(key, _)| !session_key_requires_terminal(if *key == "⏎" { Key::Enter } else { Key::Char(key.chars().next().unwrap()) }));
+            hints.retain(|(key, _)| {
+                !session_key_requires_terminal(if *key == "⏎" {
+                    Key::Enter
+                } else {
+                    Key::Char(key.chars().next().unwrap())
+                })
+            });
             if self.attention_indices(util::now_secs()).is_empty() {
                 hints.retain(|(key, _)| *key != "n");
             }
@@ -2879,20 +5038,49 @@ impl App {
         let mut seen = std::collections::HashSet::new();
         hints.retain(|(key, _)| seen.insert(*key));
         let agent = selected.agent();
-        hints.retain(|(key, _)| key.chars().next().and_then(|key| key_feature(Key::Char(key), agent)).is_none_or(|(feature, _)| agent.can(feature)));
+        hints.retain(|(key, _)| {
+            key.chars()
+                .next()
+                .and_then(|key| key_feature(Key::Char(key), agent))
+                .is_none_or(|(feature, _)| agent.can(feature))
+        });
         hints
     }
 
     fn sessions_help() -> Vec<(&'static str, &'static str)> {
-        vec![("⏎", "open the selected session"), ("n", "next session that needs you"),
-             ("l", "later: hide this ask for 20 min (never approves)"), ("i", "details of the selected session"),
-             ("I", "open the images from its latest reply in a viewer"),
-              ("N", "new session: blank or Claude Design canvas"), ("R", "restart the session"), ("x", "end the session"),
-             ("p", "pin: first inside its group"), ("r", "on a blocked card: run the todo it waits on"), ("⌘R", "restart every session that lacks a change (⟳), once it waits"),
-             ("B", "after a reboot: bring back the sessions that were running"),
-             ("u", "updates: unseen results, questions and archived return notes"),
-             ("Q", "queue: what is waiting and why"), ("v", "mark displayed updates reviewed; never answer or approve"),
-             ("", "its other keys (effort, push, note, sleep…) are listed in i and work on the card too")]
+        vec![
+            ("⏎", "open the selected session"),
+            ("n", "next session that needs you"),
+            ("l", "later: hide this ask for 20 min (never approves)"),
+            ("i", "details of the selected session"),
+            ("I", "open the images from its latest reply in a viewer"),
+            ("N", "new session: blank or Claude Design canvas"),
+            ("R", "restart the session"),
+            ("x", "end the session"),
+            ("p", "pin: first inside its group"),
+            ("r", "on a blocked card: run the todo it waits on"),
+            (
+                "⌘R",
+                "restart every session that lacks a change (⟳), once it waits",
+            ),
+            (
+                "B",
+                "after a reboot: bring back the sessions that were running",
+            ),
+            (
+                "u",
+                "updates: unseen results, questions and archived return notes",
+            ),
+            ("Q", "queue: what is waiting and why"),
+            (
+                "v",
+                "mark displayed updates reviewed; never answer or approve",
+            ),
+            (
+                "",
+                "its other keys (effort, push, note, sleep…) are listed in i and work on the card too",
+            ),
+        ]
     }
 
     pub(crate) fn handle_sessions(&mut self, key: Key, screen: &mut dyn Screen) -> String {
@@ -2903,49 +5091,94 @@ impl App {
             Key::Char('v') => return self.run_continuity_action("reviewed", screen),
             _ => {}
         }
-        if key == Key::Char('n') { return self.next_sidebar_attention(); }
-        if !self.sidebar_selection_lost {
-            if let Some(SidebarRow::Team { task } | SidebarRow::PlannedQa { task }) = self.sidebar_rows.get(self.panels[1].selected).cloned() {
-                if key == Key::Char('i') { return self.open_teams_tab_on(&task); }
-                if key == Key::Enter && matches!(self.sidebar_rows.get(self.panels[1].selected), Some(SidebarRow::Team { .. })) {
-                    let key = sidebar::task_key(&task);
-                    if !self.collapsed_teams.remove(&key) { self.collapsed_teams.insert(key); }
-                    self.build_sessions();
-                    return String::new();
+        if key == Key::Char('n') {
+            return self.next_sidebar_attention();
+        }
+        if !self.sidebar_selection_lost
+            && let Some(SidebarRow::Team { task } | SidebarRow::PlannedQa { task }) =
+                self.sidebar_rows.get(self.panels[1].selected).cloned()
+        {
+            if key == Key::Char('i') {
+                return self.open_teams_tab_on(&task);
+            }
+            if key == Key::Enter
+                && matches!(
+                    self.sidebar_rows.get(self.panels[1].selected),
+                    Some(SidebarRow::Team { .. })
+                )
+            {
+                let key = sidebar::task_key(&task);
+                if !self.collapsed_teams.remove(&key) {
+                    self.collapsed_teams.insert(key);
                 }
+                self.build_sessions();
+                return String::new();
             }
         }
         let session = self.selected_session();
-        if let Some(s) = session.as_ref().filter(|s| s.restarting) && matches!(key, Key::Enter | Key::Char('r' | 'R' | 'e' | '$' | 'C' | 'x' | 'z')) {
+        if let Some(s) = session.as_ref().filter(|s| s.restarting)
+            && matches!(
+                key,
+                Key::Enter | Key::Char('r' | 'R' | 'e' | '$' | 'C' | 'x' | 'z')
+            )
+        {
             return format!("{} is restarting: wait for it to come back", s.project);
         }
-        if session.as_ref().is_some_and(|session| session.is_external()) && session_key_requires_terminal(key.clone()) {
+        if session
+            .as_ref()
+            .is_some_and(|session| session.is_external())
+            && session_key_requires_terminal(key.clone())
+        {
             return "external session: no terminal target; use its own window".into();
         }
-        if let Some(s) = session.as_ref() && let Some((feature, what)) = key_feature(key.clone(), s.agent()) {
+        if let Some(s) = session.as_ref()
+            && let Some((feature, what)) = key_feature(key.clone(), s.agent())
+        {
             let agent = s.agent();
             if !agent.can(feature) {
-                return format!("{what} is not {}'s to do: {} runs {}, do it in its pane", agent.label, s.project, agent.name);
+                return format!(
+                    "{what} is not {}'s to do: {} runs {}, do it in its pane",
+                    agent.label, s.project, agent.name
+                );
             }
         }
         // On a blocked card `r` runs the todo it waits on; on the others it still restarts (as `R`).
         let blocker = if key == Key::Char('r') {
-            session.as_ref().filter(|s| self.session_dependency_activity(s).is_some_and(|(badge, _)| badge != "Waiting on TODO"))
+            session
+                .as_ref()
+                .filter(|s| {
+                    self.session_dependency_activity(s)
+                        .is_some_and(|(badge, _)| badge != "Waiting on TODO")
+                })
                 .and_then(|s| self.stopped_blocker(s))
-        } else { None };
+        } else {
+            None
+        };
         if let Some(item) = blocker {
-            if item.status() == todo::PROPOSED { return "its todo is still a proposal: approve it in Ideas first".into(); }
+            if item.status() == todo::PROPOSED {
+                return "its todo is still a proposal: approve it in Ideas first".into();
+            }
             let title = util::collapse(&item.text());
-            if !self.confirm(screen, &format!("run its todo \"{title}\" now? a new session starts on it")) { return String::new(); }
+            if !self.confirm(
+                screen,
+                &format!("run its todo \"{title}\" now? a new session starts on it"),
+            ) {
+                return String::new();
+            }
             return self.hand_to_new_session(&Entry::Typed(item), screen);
         }
         let known = session.as_ref().filter(|s| s.state != "unknown").cloned();
         match key {
-            Key::Enter => session.map(|s| {
-                let opened = self.manager_async(&["open", &s.session]);
-                self.mark_result_seen(&s.session).unwrap_or(opened)
-            }).unwrap_or_default(),
-            Key::Char('i') => { self.open_session_details(); String::new() }
+            Key::Enter => session
+                .map(|s| {
+                    let opened = self.manager_async(&["open", &s.session]);
+                    self.mark_result_seen(&s.session).unwrap_or(opened)
+                })
+                .unwrap_or_default(),
+            Key::Char('i') => {
+                self.open_session_details();
+                String::new()
+            }
             Key::Char('I') => session.map(|s| open_reply_images(&s)).unwrap_or_default(),
             Key::Char('c') => match session {
                 Some(s) => self.open_chief_answers(Some(&s.session)),
@@ -2969,9 +5202,16 @@ impl App {
             Key::Char('m') => self.toggle_remote(),
             Key::Char('d') => self.drop_queued(screen),
             Key::Char('k') => self.open_team_view(),
-            Key::Char('r') => "R restarts the session; r only runs the todo a blocked card waits on".into(),
+            Key::Char('r') => {
+                "R restarts the session; r only runs the todo a blocked card waits on".into()
+            }
             Key::Char('R') => match known {
-                Some(s) if self.confirm(screen, &format!("restart {}? same conversation, new process", s.project)) => {
+                Some(s)
+                    if self.confirm(
+                        screen,
+                        &format!("restart {}? same conversation, new process", s.project),
+                    ) =>
+                {
                     manager_in_background(&["restart", &s.session]);
                     format!("restarting {} …", s.project)
                 }
@@ -2979,14 +5219,23 @@ impl App {
             },
             Key::Ctrl('r') => self.restart_all(screen),
             Key::Char('e') => match session {
-                Some(s) if s.agent().can(Feature::Variants) => self.manager_async(&["variants", &s.session]),
+                Some(s) if s.agent().can(Feature::Variants) => {
+                    self.manager_async(&["variants", &s.session])
+                }
                 Some(s) => self.open_effort_menu(s, None),
                 None => String::new(),
             },
             Key::Char('$') => match known {
                 Some(s) => {
-                    let (billing, label) = if s.credits { ("subscription", "the subscription") } else { ("credits", "API credits") };
-                    if !self.confirm(screen, &format!("restart {} on {label}? same conversation", s.project)) {
+                    let (billing, label) = if s.credits {
+                        ("subscription", "the subscription")
+                    } else {
+                        ("credits", "API credits")
+                    };
+                    if !self.confirm(
+                        screen,
+                        &format!("restart {} on {label}? same conversation", s.project),
+                    ) {
                         return String::new();
                     }
                     manager_in_background(&["billing", &s.session, billing]);
@@ -2995,7 +5244,11 @@ impl App {
                 None => String::new(),
             },
             Key::Char('B') if !self.restore.is_empty() => {
-                let pairs: Vec<String> = self.restore.iter().flat_map(|r| [r.cwd.clone(), r.session.clone()]).collect();
+                let pairs: Vec<String> = self
+                    .restore
+                    .iter()
+                    .flat_map(|r| [r.cwd.clone(), r.session.clone()])
+                    .collect();
                 let mut arguments = vec!["restore"];
                 arguments.extend(pairs.iter().map(String::as_str));
                 manager_in_background(&arguments);
@@ -3003,15 +5256,27 @@ impl App {
                 self.view.save();
                 let count = self.restore.len();
                 self.restore.clear();
-                format!("bringing back {count} session{} …", if count != 1 { "s" } else { "" })
+                format!(
+                    "bringing back {count} session{} …",
+                    if count != 1 { "s" } else { "" }
+                )
             }
             Key::Char('+') => match session {
                 Some(s) if s.cwd.is_empty() => "no directory known for this session".into(),
                 Some(s) => {
                     let suggested = chrono::Local::now().format("parallel-%H%M").to_string();
-                    let typed = input_line(screen, &format!("branch for another {} session (Enter: {suggested})> ", s.project));
+                    let typed = input_line(
+                        screen,
+                        &format!(
+                            "branch for another {} session (Enter: {suggested})> ",
+                            s.project
+                        ),
+                    );
                     let branch = if typed.is_empty() { suggested } else { typed };
-                    let agent = match settings::launch_agent() { Ok(agent) => agent, Err(error) => return error };
+                    let agent = match settings::launch_agent() {
+                        Ok(agent) => agent,
+                        Err(error) => return error,
+                    };
                     manager_in_background(&["--agent", &agent, "parallel", &s.cwd, &branch]);
                     format!("cloning {} for {branch} …", s.project)
                 }
@@ -3020,7 +5285,11 @@ impl App {
             Key::Char('C') => match known {
                 Some(s) => {
                     let error = manager(&["compact", &s.session]);
-                    if error.is_empty() { format!("/compact sent to {}", s.project) } else { error }
+                    if error.is_empty() {
+                        format!("/compact sent to {}", s.project)
+                    } else {
+                        error
+                    }
                 }
                 None => String::new(),
             },
@@ -3048,7 +5317,9 @@ impl App {
                 None => String::new(),
             },
             Key::Char('x') => match session {
-                Some(s) if self.confirm(screen, &format!("exit {}?", s.project)) => self.exit_session(&s),
+                Some(s) if self.confirm(screen, &format!("exit {}?", s.project)) => {
+                    self.exit_session(&s)
+                }
                 _ => String::new(),
             },
             Key::Char('z') => match known {
@@ -3065,16 +5336,43 @@ impl App {
     pub(crate) fn restart_all(&mut self, screen: &mut dyn Screen) -> String {
         // Only the sessions started before a change they do not have yet (the "⟳ restart" badge);
         // a terminal session is its terminal's and is left alone.
-        let stale: Vec<&Session> = self.running_sessions.iter()
-            .filter(|s| !s.is_external() && !s.terminal && !sessions::changed_since_start(s, &self.start_files).is_empty()).collect();
-        let ready: Vec<Session> = stale.iter().filter(|s| s.state == "waiting").map(|s| (*s).clone()).collect();
-        let busy: Vec<Session> = stale.iter().filter(|s| s.state == "working" || s.state == "needs-you").map(|s| (*s).clone()).collect();
+        let stale: Vec<&Session> = self
+            .running_sessions
+            .iter()
+            .filter(|s| {
+                !s.is_external()
+                    && !s.terminal
+                    && !sessions::changed_since_start(s, &self.start_files).is_empty()
+            })
+            .collect();
+        let ready: Vec<Session> = stale
+            .iter()
+            .filter(|s| s.state == "waiting")
+            .map(|s| (*s).clone())
+            .collect();
+        let busy: Vec<Session> = stale
+            .iter()
+            .filter(|s| s.state == "working" || s.state == "needs-you")
+            .map(|s| (*s).clone())
+            .collect();
         if ready.is_empty() && busy.is_empty() {
             return "no session needs a restart".into();
         }
         let plural = |count: usize| if count > 1 { "s" } else { "" };
-        let now_part = if ready.is_empty() { String::new() } else { format!("restart {} session{} now", ready.len(), plural(ready.len())) };
-        let later_part = if busy.is_empty() { String::new() } else { format!("{} busy one{} at the end of its turn", busy.len(), plural(busy.len())) };
+        let now_part = if ready.is_empty() {
+            String::new()
+        } else {
+            format!("restart {} session{} now", ready.len(), plural(ready.len()))
+        };
+        let later_part = if busy.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "{} busy one{} at the end of its turn",
+                busy.len(),
+                plural(busy.len())
+            )
+        };
         let question = match (now_part.is_empty(), later_part.is_empty()) {
             (false, false) => format!("{now_part}, {later_part}?"),
             (true, _) => format!("restart {later_part}?"),
@@ -3089,7 +5387,13 @@ impl App {
             match prompts::want_restart(&session.session) {
                 Ok(()) => queued.push(session.project.as_str()),
                 Err(error) => {
-                    util::log_event("WARN", &format!("restart-all could not queue {} for the end of its turn: {error}", session.project));
+                    util::log_event(
+                        "WARN",
+                        &format!(
+                            "restart-all could not queue {} for the end of its turn: {error}",
+                            session.project
+                        ),
+                    );
                     not_queued.push(format!("{} ({error})", session.project));
                 }
             }
@@ -3099,12 +5403,24 @@ impl App {
             arguments.extend(ready.iter().map(|s| s.session.as_str()));
             manager_in_background(&arguments);
         }
-        let mut message = if ready.is_empty() { String::new() } else { format!("restarting {} …", ready.len()) };
+        let mut message = if ready.is_empty() {
+            String::new()
+        } else {
+            format!("restarting {} …", ready.len())
+        };
         if !queued.is_empty() {
-            message += &format!("{}at the end of their turn: {}", if message.is_empty() { "" } else { " " }, queued.join(", "));
+            message += &format!(
+                "{}at the end of their turn: {}",
+                if message.is_empty() { "" } else { " " },
+                queued.join(", ")
+            );
         }
         if !not_queued.is_empty() {
-            message += &format!("{}not queued, restart by hand: {}", if message.is_empty() { "" } else { " " }, not_queued.join(", "));
+            message += &format!(
+                "{}not queued, restart by hand: {}",
+                if message.is_empty() { "" } else { " " },
+                not_queued.join(", ")
+            );
         }
         message
     }
@@ -3119,20 +5435,32 @@ impl App {
         // Under the card's last line, so the card and its effort stay readable above the menu.
         let selected = self.panels[1].selected;
         let anchor = anchor_row.unwrap_or_else(|| {
-            self.hit_lines.iter().filter(|(_, (panel, item))| *panel == 1 && *item == Some(selected)).map(|(row, _)| *row).max().unwrap_or(HEADER_LINES)
+            self.hit_lines
+                .iter()
+                .filter(|(_, (panel, item))| *panel == 1 && *item == Some(selected))
+                .map(|(row, _)| *row)
+                .max()
+                .unwrap_or(HEADER_LINES)
         });
         self.menu = Some(EffortMenu::new(session, anchor));
         String::new()
     }
 
     fn choose_effort(&mut self, screen: &mut dyn Screen) -> String {
-        let Some(menu) = self.menu.take() else { return String::new() };
+        let Some(menu) = self.menu.take() else {
+            return String::new();
+        };
         let level = EFFORT_LEVELS[menu.selected];
         let session = menu.session;
         if level == menu.current {
             return format!("{} already runs on {level}", session.project);
         }
-        if session.state == "working" && !self.confirm(screen, &format!("{} is working: restart it on {level}?", session.project)) {
+        if session.state == "working"
+            && !self.confirm(
+                screen,
+                &format!("{} is working: restart it on {level}?", session.project),
+            )
+        {
             return String::new();
         }
         manager_in_background(&["restart", &session.session, level]);
@@ -3141,7 +5469,9 @@ impl App {
 
     /// Keys and clicks while the effort menu is open; anything else closes it.
     fn handle_menu(&mut self, key: Key, screen: &mut dyn Screen) -> String {
-        let Some(menu) = self.menu.as_mut() else { return String::new() };
+        let Some(menu) = self.menu.as_mut() else {
+            return String::new();
+        };
         match key {
             Key::Click { x, y, .. } => {
                 if let Some(index) = menu.rows.get(&y).copied() {
@@ -3152,7 +5482,9 @@ impl App {
                     self.menu = None;
                 }
             }
-            Key::Char('j') | Key::Down => menu.selected = (menu.selected + 1).min(EFFORT_LEVELS.len() - 1),
+            Key::Char('j') | Key::Down => {
+                menu.selected = (menu.selected + 1).min(EFFORT_LEVELS.len() - 1)
+            }
             Key::Char('k') | Key::Up => menu.selected = menu.selected.saturating_sub(1),
             Key::Char(digit @ '1'..='5') => {
                 menu.selected = digit as usize - '1' as usize;
@@ -3168,12 +5500,18 @@ impl App {
         let (name, label) = SETTINGS[index];
         let wanted = if settings::is_on(name) { "off" } else { "on" };
         let failure = manager(&["setting", name, wanted]);
-        if failure.is_empty() { format!("{label}: {wanted}") } else { failure }
+        if failure.is_empty() {
+            format!("{label}: {wanted}")
+        } else {
+            failure
+        }
     }
 
     /// What Enter or a click does on a row of the settings menu.
     fn choose_settings_row(&mut self, index: usize, screen: &mut dyn Screen) -> String {
-        let Some(menu) = self.settings_menu.as_ref() else { return String::new() };
+        let Some(menu) = self.settings_menu.as_ref() else {
+            return String::new();
+        };
         match menu.row(index) {
             SettingsRow::Setting(setting) => self.toggle_setting(setting),
             SettingsRow::Launch(setting) => self.choose_launch_setting(setting, screen),
@@ -3188,37 +5526,82 @@ impl App {
     fn choose_launch_setting(&mut self, index: usize, screen: &mut dyn Screen) -> String {
         let (name, label) = LAUNCH_SETTINGS[index];
         if name == "default-agent" {
-            let Some(agent) = screen.outside(&mut || pick_agent()) else { return String::new() };
-            if agents::find(&agent).is_none() { return format!("invalid default-agent: {agent}"); }
+            let Some(agent) = screen.outside(&mut || pick_agent()) else {
+                return String::new();
+            };
+            if agents::find(&agent).is_none() {
+                return format!("invalid default-agent: {agent}");
+            }
             let error = manager(&["setting", name, &agent]);
-            return if error.is_empty() { format!("{label}: {agent}") } else { error };
+            return if error.is_empty() {
+                format!("{label}: {agent}")
+            } else {
+                error
+            };
         }
         if name == "idle-sleep-after" {
             let current = sleep::after_minutes();
-            let next = SLEEP_AFTER_CHOICES.iter().copied().find(|minutes| *minutes > current).unwrap_or(SLEEP_AFTER_CHOICES[0]);
+            let next = SLEEP_AFTER_CHOICES
+                .iter()
+                .copied()
+                .find(|minutes| *minutes > current)
+                .unwrap_or(SLEEP_AFTER_CHOICES[0]);
             let error = manager(&["setting", name, &next.to_string()]);
-            return if error.is_empty() { format!("{label}: {next}") } else { error };
+            return if error.is_empty() {
+                format!("{label}: {next}")
+            } else {
+                error
+            };
         }
         let selected_model = if name == "opencode-effort" {
-            match settings::launch_value("opencode-model") { Ok(model) => model, Err(error) => return error }
-        } else { String::new() };
-        if name == "opencode-effort" && selected_model.is_empty() { return "pick an OpenCode model before its effort".into(); }
-        let menu = self.settings_menu.as_ref().expect("the settings menu is open");
+            match settings::launch_value("opencode-model") {
+                Ok(model) => model,
+                Err(error) => return error,
+            }
+        } else {
+            String::new()
+        };
+        if name == "opencode-effort" && selected_model.is_empty() {
+            return "pick an OpenCode model before its effort".into();
+        }
+        let menu = self
+            .settings_menu
+            .as_ref()
+            .expect("the settings menu is open");
         let Some(catalog) = &menu.catalog else {
             let viewed = current_session();
-            let directory = self.running_sessions.iter().find(|session| session.session == viewed).map(|session| session.cwd.clone())
-                .or_else(|| self.selected_session().map(|session| session.cwd)).filter(|directory| !directory.is_empty());
-            let Some(directory) = directory.or_else(|| screen.outside(&mut || pick_project()).filter(|directory| !directory.is_empty())) else { return String::new() };
+            let directory = self
+                .running_sessions
+                .iter()
+                .find(|session| session.session == viewed)
+                .map(|session| session.cwd.clone())
+                .or_else(|| self.selected_session().map(|session| session.cwd))
+                .filter(|directory| !directory.is_empty());
+            let Some(directory) = directory.or_else(|| {
+                screen
+                    .outside(&mut || pick_project())
+                    .filter(|directory| !directory.is_empty())
+            }) else {
+                return String::new();
+            };
             let catalog = Arc::new(Mutex::new(None));
             let shared = catalog.clone();
             std::thread::spawn(move || {
                 let result = settings::load_models(&directory);
-                *shared.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(result);
+                *shared
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(result);
             });
-            self.settings_menu.as_mut().expect("the settings menu is open").catalog = Some(catalog);
+            self.settings_menu
+                .as_mut()
+                .expect("the settings menu is open")
+                .catalog = Some(catalog);
             return "loading OpenCode models … press Enter again when ready".into();
         };
-        let result = catalog.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
+        let result = catalog
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
         let models = match result {
             None => return "loading OpenCode models … press Enter again when ready".into(),
             Some(Err(error)) => return format!("cannot load OpenCode models: {error}"),
@@ -3228,23 +5611,44 @@ impl App {
         if name == "opencode-model" {
             choices.extend(models.iter().map(settings::ModelChoice::reference));
         } else {
-            let Some(model) = models.iter().find(|model| model.reference() == selected_model) else {
+            let Some(model) = models
+                .iter()
+                .find(|model| model.reference() == selected_model)
+            else {
                 return format!("OpenCode model unavailable in this project: {selected_model}");
             };
             choices.extend(model.variants.iter().map(|variant| variant.id.clone()));
         }
-        let Some(choice) = screen.outside(&mut || fzf(&format!("{label}> "), &choices, &[])) else { return String::new() };
-        if !choices.contains(&choice) { return format!("invalid {label}: {choice}"); }
-        let value = if choice == "OpenCode default" { "" } else { &choice };
+        let Some(choice) = screen.outside(&mut || fzf(&format!("{label}> "), &choices, &[])) else {
+            return String::new();
+        };
+        if !choices.contains(&choice) {
+            return format!("invalid {label}: {choice}");
+        }
+        let value = if choice == "OpenCode default" {
+            ""
+        } else {
+            &choice
+        };
         let error = manager(&["setting", name, value]);
-        if error.is_empty() { format!("{label}: {choice}") } else { error }
+        if error.is_empty() {
+            format!("{label}: {choice}")
+        } else {
+            error
+        }
     }
 
     /// The QR code of a new one-time pairing link, over the column.
     fn start_pairing(&mut self) -> String {
         match remote::pairing_link("") {
             Ok((link, digits)) => {
-                self.pairing = Some(Pairing { modules: remote::qr_modules(&link), link, digits, phones_before: remote::phones().len(), paired: None });
+                self.pairing = Some(Pairing {
+                    modules: remote::qr_modules(&link),
+                    link,
+                    digits,
+                    phones_before: remote::phones().len(),
+                    paired: None,
+                });
                 String::new()
             }
             Err(error) => format!("cannot pair a phone: {error}"),
@@ -3252,9 +5656,19 @@ impl App {
     }
 
     fn forget_phone(&mut self, phone: usize, screen: &mut dyn Screen) -> String {
-        let Some(chosen) = self.settings_menu.as_ref().and_then(|menu| menu.phones.get(phone)).cloned() else { return String::new() };
+        let Some(chosen) = self
+            .settings_menu
+            .as_ref()
+            .and_then(|menu| menu.phones.get(phone))
+            .cloned()
+        else {
+            return String::new();
+        };
         let name = chosen["name"].as_str().unwrap_or("").to_string();
-        if !self.confirm(screen, &format!("Forget {name}? It needs a new pairing to come back.")) {
+        if !self.confirm(
+            screen,
+            &format!("Forget {name}? It needs a new pairing to come back."),
+        ) {
             return String::new();
         }
         let outcome = match remote::unpair(chosen["id"].as_str().unwrap_or("")) {
@@ -3270,7 +5684,9 @@ impl App {
 
     /// Keys and clicks while the settings menu is open; anything else closes it.
     fn handle_settings_menu(&mut self, key: Key, screen: &mut dyn Screen) -> String {
-        let Some(menu) = self.settings_menu.as_mut() else { return String::new() };
+        let Some(menu) = self.settings_menu.as_mut() else {
+            return String::new();
+        };
         match key {
             Key::Click { x, y, .. } => {
                 if let Some(index) = menu.rows.get(&y).copied() {
@@ -3281,7 +5697,9 @@ impl App {
                     self.settings_menu = None;
                 }
             }
-            Key::Char('j') | Key::Down => menu.selected = (menu.selected + 1).min(menu.row_count() - 1),
+            Key::Char('j') | Key::Down => {
+                menu.selected = (menu.selected + 1).min(menu.row_count() - 1)
+            }
             Key::Char('k') | Key::Up => menu.selected = menu.selected.saturating_sub(1),
             Key::Enter | Key::Char(' ') => {
                 let index = menu.selected;
@@ -3296,7 +5714,11 @@ impl App {
                 if let SettingsRow::Launch(setting @ (1 | 2)) = menu.row(menu.selected) {
                     let (name, label) = LAUNCH_SETTINGS[setting];
                     let error = manager(&["setting", name, ""]);
-                    return if error.is_empty() { format!("{label}: OpenCode default") } else { error };
+                    return if error.is_empty() {
+                        format!("{label}: OpenCode default")
+                    } else {
+                        error
+                    };
                 }
             }
             _ => self.settings_menu = None,
@@ -3306,10 +5728,19 @@ impl App {
 
     /// Once the phone opened the pairing link, the overlay says so.
     fn watch_pairing(&mut self) {
-        let Some(pairing) = self.pairing.as_mut().filter(|pairing| pairing.paired.is_none()) else { return };
+        let Some(pairing) = self
+            .pairing
+            .as_mut()
+            .filter(|pairing| pairing.paired.is_none())
+        else {
+            return;
+        };
         let phones = remote::phones();
         if phones.len() > pairing.phones_before {
-            pairing.paired = phones.last().and_then(|phone| phone["name"].as_str()).map(str::to_string);
+            pairing.paired = phones
+                .last()
+                .and_then(|phone| phone["name"].as_str())
+                .map(str::to_string);
         }
     }
 
@@ -3322,15 +5753,26 @@ impl App {
         if !error.is_empty() {
             lines.push(Line::new(vec![segment(0, error, style(YELLOW))]));
         } else if self.review_rows.is_empty() && !loading {
-            lines.push(Line::new(vec![segment(0, "No open pull request here.", dim(FG_DARK))]));
+            lines.push(Line::new(vec![segment(
+                0,
+                "No open pull request here.",
+                dim(FG_DARK),
+            )]));
         }
         for (index, row) in self.review_rows.iter().enumerate() {
             let label = format!("{}#{}", row.repository, row.number);
             let mut right = Vec::new();
-            if let Ok(state) = &self.continuity {
-                if let Some(expiry) = crate::continuity::DeferralTarget::review(row).and_then(|target| state.deferred_until(&target, util::now_secs())) {
-                    right.push(part(format!("Later · back in {}", util::duration((expiry - util::now_secs()).max(0))), style(CYAN)));
-                }
+            if let Ok(state) = &self.continuity
+                && let Some(expiry) = crate::continuity::DeferralTarget::review(row)
+                    .and_then(|target| state.deferred_until(&target, util::now_secs()))
+            {
+                right.push(part(
+                    format!(
+                        "Later · back in {}",
+                        util::duration((expiry - util::now_secs()).max(0))
+                    ),
+                    style(CYAN),
+                ));
             }
             if row.draft {
                 right.push(part("draft", dim(FG_DARK)));
@@ -3349,8 +5791,16 @@ impl App {
             }
             right.push(part(reviews::review_age(&row.updated), dim(FG_DARK)));
             right.retain(|p| !p.text.is_empty());
-            lines.push(Line { segments: vec![segment(0, &label, bold(MAGENTA)), segment(1 + width_of(&label) as u16, &row.title, style(FG_DARK))],
-                              right, item: Some(index), accent: None, fill: None });
+            lines.push(Line {
+                segments: vec![
+                    segment(0, &label, bold(MAGENTA)),
+                    segment(1 + width_of(&label) as u16, &row.title, style(FG_DARK)),
+                ],
+                right,
+                item: Some(index),
+                accent: None,
+                fill: None,
+            });
         }
         let panel = &mut self.panels[2];
         panel.items = self.review_rows.len();
@@ -3363,11 +5813,22 @@ impl App {
         if self.review_rows.is_empty() {
             return Vec::new();
         }
-        let count = |state: fn(&Review) -> bool| self.review_rows.iter().filter(|row| state(row)).count();
+        let count =
+            |state: fn(&Review) -> bool| self.review_rows.iter().filter(|row| state(row)).count();
         let mut counts = vec![(format!("{} open", self.review_rows.len()), bold(FG_DARK))];
-        for (number, label, count_style) in [(count(|row| row.ci == "failing"), "✗", bold(RED)),
-                                             (count(|row| row.review == "CHANGES_REQUESTED"), "changes", style(RED)),
-                                             (count(|row| row.review == "REVIEW_REQUIRED"), "review", style(YELLOW))] {
+        for (number, label, count_style) in [
+            (count(|row| row.ci == "failing"), "✗", bold(RED)),
+            (
+                count(|row| row.review == "CHANGES_REQUESTED"),
+                "changes",
+                style(RED),
+            ),
+            (
+                count(|row| row.review == "REVIEW_REQUIRED"),
+                "review",
+                style(YELLOW),
+            ),
+        ] {
             if number > 0 {
                 counts.push((format!("{label} {number}"), count_style));
             }
@@ -3376,23 +5837,58 @@ impl App {
     }
 
     fn reviews_subtitle(&self) -> String {
-        let scope = self.reviews.repositories.iter().map(|r| r.rsplit('/').next().unwrap_or("")).collect::<Vec<_>>().join(", ");
-        let scope = if scope.is_empty() { "awaiting my review".to_string() } else { scope };
-        scope + if self.reviews.current().2 { "  ⟳" } else { "" }
+        let scope = self
+            .reviews
+            .repositories
+            .iter()
+            .map(|r| r.rsplit('/').next().unwrap_or(""))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let scope = if scope.is_empty() {
+            "awaiting my review".to_string()
+        } else {
+            scope
+        };
+        scope
+            + if self.reviews.current().2 {
+                "  ⟳"
+            } else {
+                ""
+            }
     }
 
     pub(crate) fn handle_reviews(&mut self, key: Key, screen: &mut dyn Screen) -> String {
         let row = self.review_rows.get(self.panels[2].selected).cloned();
         match key {
-            Key::Char('o') => row.map(|row| open_in_scratchpad("prs", &row.url)).unwrap_or_default(),
+            Key::Char('o') => row
+                .map(|row| open_in_scratchpad("prs", &row.url))
+                .unwrap_or_default(),
             Key::Char('l') => self.toggle_later(),
             Key::Char('t') => self.run_continuity_action("task-trail", screen),
             Key::Enter => match row {
-                Some(row) => match self.reviews.checkouts.iter().find(|(repository, _)| repository.eq_ignore_ascii_case(&row.full_repository)).map(|(_, checkout)| checkout) {
-                    None => format!("no local checkout of {}: start a session there first", row.repository),
+                Some(row) => match self
+                    .reviews
+                    .checkouts
+                    .iter()
+                    .find(|(repository, _)| repository.eq_ignore_ascii_case(&row.full_repository))
+                    .map(|(_, checkout)| checkout)
+                {
+                    None => format!(
+                        "no local checkout of {}: start a session there first",
+                        row.repository
+                    ),
                     Some(checkout) => {
-                        let agent = match settings::launch_agent() { Ok(agent) => agent, Err(error) => return error };
-                        manager_in_background(&["--agent", &agent, "review", checkout, &row.number.to_string()]);
+                        let agent = match settings::launch_agent() {
+                            Ok(agent) => agent,
+                            Err(error) => return error,
+                        };
+                        manager_in_background(&[
+                            "--agent",
+                            &agent,
+                            "review",
+                            checkout,
+                            &row.number.to_string(),
+                        ]);
                         format!("preparing a review of {}#{} …", row.repository, row.number)
                     }
                 },
@@ -3405,41 +5901,86 @@ impl App {
     // ---- Todo ----
 
     fn build_ideas(&mut self) {
-        let selected = self.idea_entries.get(self.panels[4].selected).map(todo::Item::id);
-        let mut entries: Vec<_> = self.todos.items.iter().filter(|item| item.status() == todo::PROPOSED).cloned().collect();
+        let selected = self
+            .idea_entries
+            .get(self.panels[4].selected)
+            .map(todo::Item::id);
+        let mut entries: Vec<_> = self
+            .todos
+            .items
+            .iter()
+            .filter(|item| item.status() == todo::PROPOSED)
+            .cloned()
+            .collect();
         entries.sort_by_key(|item| (-item.priority(), item.created()));
         let mut lines = Vec::new();
         if entries.is_empty() {
-            lines.push(Line::new(vec![segment(0, "No ideas waiting for your approval.", dim(FG_DARK))]));
+            lines.push(Line::new(vec![segment(
+                0,
+                "No ideas waiting for your approval.",
+                dim(FG_DARK),
+            )]));
         }
         for (index, item) in entries.iter().enumerate() {
-            let category = item.category().map_or("Unknown kind", |category| category.label());
-            let reason = if item.why().is_empty() { "No reason provided".to_string() } else { util::collapse(&item.why()) };
-            for (text, tint) in [(format!("? {}", item.text()), bold(MAGENTA)),
-                                 (format!("{} · {category}", item.project()), bold(project_color(&item.project()))),
-                                 (self.idea_source(item), style(FG_DARK)),
-                                 (format!("Why: {reason}"), style(FG))] {
-                lines.push(Line { segments: vec![segment(0, text, tint)], item: Some(index), ..Line::default() });
+            let category = item
+                .category()
+                .map_or("Unknown kind", |category| category.label());
+            let reason = if item.why().is_empty() {
+                "No reason provided".to_string()
+            } else {
+                util::collapse(&item.why())
+            };
+            for (text, tint) in [
+                (format!("? {}", item.text()), bold(MAGENTA)),
+                (
+                    format!("{} · {category}", item.project()),
+                    bold(project_color(&item.project())),
+                ),
+                (self.idea_source(item), style(FG_DARK)),
+                (format!("Why: {reason}"), style(FG)),
+            ] {
+                lines.push(Line {
+                    segments: vec![segment(0, text, tint)],
+                    item: Some(index),
+                    ..Line::default()
+                });
             }
             lines.push(Line::default());
         }
         let panel = &mut self.panels[4];
         panel.items = entries.len();
-        panel.selected = selected.and_then(|id| entries.iter().position(|item| item.id() == id)).unwrap_or(panel.selected);
+        panel.selected = selected
+            .and_then(|id| entries.iter().position(|item| item.id() == id))
+            .unwrap_or(panel.selected);
         panel.clamp();
         panel.lines = lines;
-        panel.fixed_top = vec![Line::new(vec![segment(0, "y Approve  n Decline  Enter Details", dim(FG_DARK))])];
+        panel.fixed_top = vec![Line::new(vec![segment(
+            0,
+            "y Approve  n Decline  Enter Details",
+            dim(FG_DARK),
+        )])];
         self.idea_entries = entries;
     }
 
     fn idea_source(&self, item: &todo::Item) -> String {
         let source = item.source();
-        let Some(identity) = source.strip_prefix("session ").filter(|identity| !identity.is_empty()) else {
+        let Some(identity) = source
+            .strip_prefix("session ")
+            .filter(|identity| !identity.is_empty())
+        else {
             return "Unknown session".into();
         };
-        match self.all_sessions().iter().find(|session| session.session == identity) {
+        match self
+            .all_sessions()
+            .iter()
+            .find(|session| session.session == identity)
+        {
             Some(session) => {
-                let label = if session.label.is_empty() { String::new() } else { format!(" · {}", session.label) };
+                let label = if session.label.is_empty() {
+                    String::new()
+                } else {
+                    format!(" · {}", session.label)
+                };
                 format!("From {}{label} · {source}", session.project)
             }
             None => format!("{source} · not running"),
@@ -3447,20 +5988,37 @@ impl App {
     }
 
     fn handle_ideas(&mut self, key: Key) -> String {
-        let Some(item) = self.idea_entries.get(self.panels[4].selected).cloned() else { return String::new(); };
+        let Some(item) = self.idea_entries.get(self.panels[4].selected).cloned() else {
+            return String::new();
+        };
         match key {
             Key::Char('y') | Key::Char('n') => {
                 let approved = key == Key::Char('y');
-                if approved { self.todos.approve(&item.id()); } else { self.todos.decline(&item.id()); }
+                if approved {
+                    self.todos.approve(&item.id());
+                } else {
+                    self.todos.decline(&item.id());
+                }
                 self.build_ideas();
                 self.build_todo();
-                if approved { "approved: it is in To do now".into() } else { "declined: it will not be proposed again".into() }
+                if approved {
+                    "approved: it is in To do now".into()
+                } else {
+                    "declined: it will not be proposed again".into()
+                }
             }
             Key::Enter | Key::Char('i') => {
                 self.session_details = Some(SessionDetails {
                     title: "Idea".into(),
-                    text: format!("{}\n\n{}", self.idea_source(&item), todo_details(&Entry::Typed(item))),
-                    scroll: 0, actions: Vec::new(), chief_answers_of: None, ..Default::default()
+                    text: format!(
+                        "{}\n\n{}",
+                        self.idea_source(&item),
+                        todo_details(&Entry::Typed(item))
+                    ),
+                    scroll: 0,
+                    actions: Vec::new(),
+                    chief_answers_of: None,
+                    ..Default::default()
                 });
                 String::new()
             }
@@ -3471,59 +6029,126 @@ impl App {
     fn build_todo(&mut self) {
         // Like the issues: the viewed session's project only, every project when none is viewed.
         let viewed = current_session();
-        if self.todo_jump.as_ref().is_some_and(|(source, _)| *source != viewed) { self.todo_jump = None; }
-        if self.saved_todo_scope.as_ref().is_some_and(|scope| scope.viewed_session != viewed) {
+        if self
+            .todo_jump
+            .as_ref()
+            .is_some_and(|(source, _)| *source != viewed)
+        {
+            self.todo_jump = None;
+        }
+        if self
+            .saved_todo_scope
+            .as_ref()
+            .is_some_and(|scope| scope.viewed_session != viewed)
+        {
             self.saved_todo_scope = None;
         }
-        self.todo_scope = self.todo_jump.as_ref().and_then(|(_, key)| self.todos.items.iter().find(|item| item.id() == *key).map(|item| item.project()))
-            .or_else(|| self.saved_todo_scope.as_ref().map(|scope| scope.project.clone()))
-            .or_else(|| self.running_sessions.iter().find(|s| s.session == viewed).map(|s| s.project.clone())).unwrap_or_default();
-        self.todo_tab = self.todo_tabs.get(&self.todo_owner()).copied().unwrap_or(TODO_TAB_OPEN);
+        self.todo_scope = self
+            .todo_jump
+            .as_ref()
+            .and_then(|(_, key)| {
+                self.todos
+                    .items
+                    .iter()
+                    .find(|item| item.id() == *key)
+                    .map(|item| item.project())
+            })
+            .or_else(|| {
+                self.saved_todo_scope
+                    .as_ref()
+                    .map(|scope| scope.project.clone())
+            })
+            .or_else(|| {
+                self.running_sessions
+                    .iter()
+                    .find(|s| s.session == viewed)
+                    .map(|s| s.project.clone())
+            })
+            .unwrap_or_default();
+        self.todo_tab = self
+            .todo_tabs
+            .get(&self.todo_owner())
+            .copied()
+            .unwrap_or(TODO_TAB_OPEN);
         let scope = self.todo_scope.clone();
-        let mut entries: Vec<Entry> = self.todos.items.iter()
+        let mut entries: Vec<Entry> = self
+            .todos
+            .items
+            .iter()
             .filter(|item| scope.is_empty() || item.project() == scope)
             .map(|item| Entry::Typed(item.clone()))
             .collect();
         for issue in self.reviews.issues() {
-            if self.saved_todo_scope.is_some() && issue.repository != scope { continue; }
+            if self.saved_todo_scope.is_some() && issue.repository != scope {
+                continue;
+            }
             let status = self.todos.status_of(&issue.key());
             let priority = todo::issue_priority(&issue.labels);
-            entries.push(Entry::Issue { issue, status, priority });
+            entries.push(Entry::Issue {
+                issue,
+                status,
+                priority,
+            });
         }
         entries.sort_by(todo::todo_order);
         if let Some(category) = self.todo_category_filter() {
-            entries.retain(|entry| matches!(entry, Entry::Typed(item) if item.category() == Some(category)));
+            entries.retain(
+                |entry| matches!(entry, Entry::Typed(item) if item.category() == Some(category)),
+            );
         }
         for (index, (_, statuses)) in TODO_TABS.iter().enumerate() {
-            self.todo_counts[index] = entries.iter().filter(|entry| statuses.contains(&entry.status().as_str())).count();
+            self.todo_counts[index] = entries
+                .iter()
+                .filter(|entry| statuses.contains(&entry.status().as_str()))
+                .count();
         }
         let shown_statuses = TODO_TABS[self.todo_tab].1;
         entries.retain(|entry| shown_statuses.contains(&entry.status().as_str()));
         if self.todo_tab == TODO_TAB_OPEN {
-            entries.sort_by_key(|entry| match entry.status().as_str() { "doing" => 0, todo::PROPOSED => 1, _ => 2 });
+            entries.sort_by_key(|entry| match entry.status().as_str() {
+                "doing" => 0,
+                todo::PROPOSED => 1,
+                _ => 2,
+            });
         }
         let mut lines = Vec::new();
         if entries.is_empty() {
             let empty = if self.todo_category_filter().is_some() {
                 "Nothing here matches the kind filter. f changes it; [ ] switch tabs."
-            } else { match shown_statuses {
-                [_, _, ..] => "Nothing open. ] next tab.",
-                [todo::PROPOSED] => "No idea from Claude waiting for you. ] next tab.",
-                ["doing"] => "Nothing in progress. ] next tab.",
-                ["done"] => "Nothing done in the last 7 days.",
-                _ => "Nothing to do. t adds an item for the viewed project; [ ] switch tabs.",
-            }};
+            } else {
+                match shown_statuses {
+                    [_, _, ..] => "Nothing open. ] next tab.",
+                    [todo::PROPOSED] => "No idea from Claude waiting for you. ] next tab.",
+                    ["doing"] => "Nothing in progress. ] next tab.",
+                    ["done"] => "Nothing done in the last 7 days.",
+                    _ => "Nothing to do. t adds an item for the viewed project; [ ] switch tabs.",
+                }
+            };
             lines.push(Line::new(vec![segment(0, empty, dim(FG_DARK))]));
         }
         for (index, entry) in entries.iter().enumerate() {
             let status = entry.status();
-            if self.todo_tab == TODO_TAB_OPEN && (index == 0 || entries[index - 1].status() != status) {
-                let heading = match status.as_str() { "doing" => "In progress", todo::PROPOSED => "Proposed", _ => "To do" };
+            if self.todo_tab == TODO_TAB_OPEN
+                && (index == 0 || entries[index - 1].status() != status)
+            {
+                let heading = match status.as_str() {
+                    "doing" => "In progress",
+                    todo::PROPOSED => "Proposed",
+                    _ => "To do",
+                };
                 lines.push(Line::new(vec![segment(0, heading, bold(FG_DARK))]));
             }
             let done = status == "done";
-            let mark = if done { String::new() } else { todo::priority_mark(entry.priority()) };
-            let mark_style = if entry.priority() > todo::PRIORITY_NORMAL { bold(RED) } else { dim(FG_DARK) };
+            let mark = if done {
+                String::new()
+            } else {
+                todo::priority_mark(entry.priority())
+            };
+            let mark_style = if entry.priority() > todo::PRIORITY_NORMAL {
+                bold(RED)
+            } else {
+                dim(FG_DARK)
+            };
             let start = 19;
             let (glyph, glyph_style) = match status.as_str() {
                 "doing" => ("◐", bold(BLUE)),
@@ -3533,13 +6158,23 @@ impl App {
             };
             let faded = done.then(|| dim(FG_DARK));
             let queued = status == "todo" && self.todos.is_queued(&entry.key());
-            let mut right = if queued { vec![part("Q", bold(CYAN))] } else { vec![] };
+            let mut right = if queued {
+                vec![part("Q", bold(CYAN))]
+            } else {
+                vec![]
+            };
             if let Entry::Typed(item) = entry {
                 if item.is_design() {
-                    right = vec![part(if queued { "✎Q" } else { "✎" }, faded.unwrap_or(bold(MAGENTA)))];
+                    right = vec![part(
+                        if queued { "✎Q" } else { "✎" },
+                        faded.unwrap_or(bold(MAGENTA)),
+                    )];
                 }
                 if item.is_blocked_report() {
-                    right = vec![part(if queued { "⛔Q" } else { "⛔" }, faded.unwrap_or(bold(RED)))];
+                    right = vec![part(
+                        if queued { "⛔Q" } else { "⛔" },
+                        faded.unwrap_or(bold(RED)),
+                    )];
                 }
                 if !item.link().is_empty() {
                     right.insert(0, part("↔", faded.unwrap_or(bold(CYAN))));
@@ -3550,22 +6185,80 @@ impl App {
             }
             let line = match entry {
                 Entry::Typed(item) => Line {
-                    segments: vec![segment(0, glyph, glyph_style), segment(2, &mark, mark_style),
-                                   segment(7, match item.category() { Some(todo::Category::Task) => "", Some(category) => category.label(), None => "Unknown ?" }, faded.unwrap_or(style(if item.category() == Some(todo::Category::Bug) { RED } else { FG_DARK }))),
-                                   segment(start, if scope.is_empty() { format!("{} {}", fit(&item.project(), 9), item.text()) } else { item.text() }, faded.unwrap_or(style(FG)))],
-                    right, item: Some(index), accent: None, fill: None,
+                    segments: vec![
+                        segment(0, glyph, glyph_style),
+                        segment(2, &mark, mark_style),
+                        segment(
+                            7,
+                            match item.category() {
+                                Some(todo::Category::Task) => "",
+                                Some(category) => category.label(),
+                                None => "Unknown ?",
+                            },
+                            faded.unwrap_or(style(
+                                if item.category() == Some(todo::Category::Bug) {
+                                    RED
+                                } else {
+                                    FG_DARK
+                                },
+                            )),
+                        ),
+                        segment(
+                            start,
+                            if scope.is_empty() {
+                                format!("{} {}", fit(&item.project(), 9), item.text())
+                            } else {
+                                item.text()
+                            },
+                            faded.unwrap_or(style(FG)),
+                        ),
+                    ],
+                    right,
+                    item: Some(index),
+                    accent: None,
+                    fill: None,
                 },
                 Entry::Issue { issue, .. } => {
                     let label = format!("{}#{}", issue.repository, issue.number);
-                    let labels = issue.labels.iter().take(2).cloned().collect::<Vec<_>>().join(", ");
-                    let (glyph, glyph_style) = if status == "todo" { ("◇", style(MAGENTA)) } else { (glyph, glyph_style) };
-                    let right = if !right.is_empty() { right } else if !labels.is_empty() { vec![part(labels, dim(FG_DARK))] } else { vec![] };
-                    let right = if queued && status == "todo" { vec![part("Q", bold(CYAN))] } else { right };
+                    let labels = issue
+                        .labels
+                        .iter()
+                        .take(2)
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let (glyph, glyph_style) = if status == "todo" {
+                        ("◇", style(MAGENTA))
+                    } else {
+                        (glyph, glyph_style)
+                    };
+                    let right = if !right.is_empty() {
+                        right
+                    } else if !labels.is_empty() {
+                        vec![part(labels, dim(FG_DARK))]
+                    } else {
+                        vec![]
+                    };
+                    let right = if queued && status == "todo" {
+                        vec![part("Q", bold(CYAN))]
+                    } else {
+                        right
+                    };
                     Line {
-                        segments: vec![segment(0, glyph, glyph_style), segment(2, &mark, mark_style),
-                                       segment(7, &label, faded.unwrap_or(bold(MAGENTA))),
-                                       segment(8 + width_of(&label) as u16, &issue.title, faded.unwrap_or(style(FG_DARK)))],
-                        right, item: Some(index), accent: None, fill: None,
+                        segments: vec![
+                            segment(0, glyph, glyph_style),
+                            segment(2, &mark, mark_style),
+                            segment(7, &label, faded.unwrap_or(bold(MAGENTA))),
+                            segment(
+                                8 + width_of(&label) as u16,
+                                &issue.title,
+                                faded.unwrap_or(style(FG_DARK)),
+                            ),
+                        ],
+                        right,
+                        item: Some(index),
+                        accent: None,
+                        fill: None,
                     }
                 }
             };
@@ -3582,55 +6275,112 @@ impl App {
         let mut tabs = Vec::new();
         let mut column = 0;
         if let Some(scope) = &self.saved_todo_scope {
-            let active_width = width_of(&format!(" {} {} ", TODO_TABS[self.todo_tab].0, self.todo_counts[self.todo_tab]));
+            let active_width = width_of(&format!(
+                " {} {} ",
+                TODO_TABS[self.todo_tab].0, self.todo_counts[self.todo_tab]
+            ));
             let project_room = (self.width as usize).saturating_sub(4 + 10 + active_width + 1);
             let context = format!("saved: {} · ", fit(&scope.project, project_room));
             column = width_of(&context) as u16;
             tabs.push(segment(0, context, bold(CYAN)));
         }
-        for index in std::iter::once(self.todo_tab).chain((0..TODO_TABS.len()).filter(|index| *index != self.todo_tab)) {
+        for index in std::iter::once(self.todo_tab)
+            .chain((0..TODO_TABS.len()).filter(|index| *index != self.todo_tab))
+        {
             let text = format!(" {} {} ", TODO_TABS[index].0, self.todo_counts[index]);
-            let tint = if index == self.todo_tab { on(BLACK, BLUE) }
-                else if index == TODO_TAB_PROPOSED && self.todo_counts[index] > 0 { on(BLACK, MAGENTA) } else { dim(FG_DARK) };
+            let tint = if index == self.todo_tab {
+                on(BLACK, BLUE)
+            } else if index == TODO_TAB_PROPOSED && self.todo_counts[index] > 0 {
+                on(BLACK, MAGENTA)
+            } else {
+                dim(FG_DARK)
+            };
             tabs.push(segment(column, &text, tint));
             column += width_of(&text) as u16 + 1;
         }
-        self.panels[3].fixed_top = vec![Line::new(tabs), Line::new(vec![segment(0, self.todo_subtitle(), dim(FG_DARK))])];
+        self.panels[3].fixed_top = vec![
+            Line::new(tabs),
+            Line::new(vec![segment(0, self.todo_subtitle(), dim(FG_DARK))]),
+        ];
         self.panels[3].fixed_bottom.clear();
-        if self.focus != 3 || height < 11 { return; }
-        let Some(entry) = self.todo_entries.get(self.panels[3].selected) else { return; };
-        let (title, context, notes) = match entry {
-            Entry::Typed(item) => (item.text(), todo_context(item), item.notes().lines().find(|line| !line.trim().is_empty()).unwrap_or("No notes · e Edit · Enter Details").to_string()),
-            Entry::Issue { issue, status, .. } => (issue.title.clone(), format!("GitHub · {status} · {}#{}", issue.repository, issue.number), issue.url.clone()),
+        if self.focus != 3 || height < 11 {
+            return;
+        }
+        let Some(entry) = self.todo_entries.get(self.panels[3].selected) else {
+            return;
         };
-        self.panels[3].fixed_bottom = vec![Line::new(vec![segment(0, title, bold(FG))]), Line::new(vec![segment(0, context, dim(FG_DARK))]), Line::new(vec![segment(0, notes, dim(FG_DARK))])];
+        let (title, context, notes) = match entry {
+            Entry::Typed(item) => (
+                item.text(),
+                todo_context(item),
+                item.notes()
+                    .lines()
+                    .find(|line| !line.trim().is_empty())
+                    .unwrap_or("No notes · e Edit · Enter Details")
+                    .to_string(),
+            ),
+            Entry::Issue { issue, status, .. } => (
+                issue.title.clone(),
+                format!("GitHub · {status} · {}#{}", issue.repository, issue.number),
+                issue.url.clone(),
+            ),
+        };
+        self.panels[3].fixed_bottom = vec![
+            Line::new(vec![segment(0, title, bold(FG))]),
+            Line::new(vec![segment(0, context, dim(FG_DARK))]),
+            Line::new(vec![segment(0, notes, dim(FG_DARK))]),
+        ];
     }
 
     /// Keep the filter ahead of the scope: long project names must not hide it.
     fn todo_subtitle(&self) -> String {
-        let scope = if self.todo_scope.is_empty() { "all projects" } else { self.todo_scope.as_str() };
+        let scope = if self.todo_scope.is_empty() {
+            "all projects"
+        } else {
+            self.todo_scope.as_str()
+        };
         let queued = self.todos.queued.len();
-        let queue = if queued > 0 { format!(" · {queued} queued") } else { String::new() };
-        let category = self.todo_category_filter().map(|category| format!("kind: {} · ", category.label())).unwrap_or_default();
-        let saved = if self.saved_todo_scope.is_some() { "saved: " } else { "" };
+        let queue = if queued > 0 {
+            format!(" · {queued} queued")
+        } else {
+            String::new()
+        };
+        let category = self
+            .todo_category_filter()
+            .map(|category| format!("kind: {} · ", category.label()))
+            .unwrap_or_default();
+        let saved = if self.saved_todo_scope.is_some() {
+            "saved: "
+        } else {
+            ""
+        };
         format!("{category}{saved}{scope}{queue}")
     }
 
     fn todo_owner(&self) -> String {
         let viewed = current_session();
-        self.saved_todo_scope.as_ref().filter(|scope| scope.viewed_session == viewed)
+        self.saved_todo_scope
+            .as_ref()
+            .filter(|scope| scope.viewed_session == viewed)
             .map_or(viewed, |scope| scope.owner_session.clone())
     }
 
     fn todo_category_filter(&self) -> Option<todo::Category> {
-        self.todo_categories.get(&self.todo_owner()).copied().flatten()
+        self.todo_categories
+            .get(&self.todo_owner())
+            .copied()
+            .flatten()
     }
 
     fn reveal_todo(&mut self, id: &str) {
-        if let Some(category) = self.todo_category_filter() {
-            if self.todos.items.iter().any(|item| item.id() == id && item.category() != Some(category)) {
-                self.todo_categories.insert(self.todo_owner(), None);
-            }
+        if let Some(category) = self.todo_category_filter()
+            && self
+                .todos
+                .items
+                .iter()
+                .any(|item| item.id() == id && item.category() != Some(category))
+        {
+            self.todo_categories.insert(self.todo_owner(), None);
         }
         self.build_todo();
         if let Some(index) = self.todo_entries.iter().position(|entry| entry.key() == id) {
@@ -3644,7 +6394,9 @@ impl App {
     }
 
     fn switch_todo_tab(&mut self, step: isize) {
-        self.show_todo_tab((self.todo_tab as isize + step).rem_euclid(TODO_TABS.len() as isize) as usize);
+        self.show_todo_tab(
+            (self.todo_tab as isize + step).rem_euclid(TODO_TABS.len() as isize) as usize,
+        );
         self.panels[3].selected = 0;
         self.build_todo();
     }
@@ -3656,18 +6408,30 @@ impl App {
             Key::Char('T') => self.run_continuity_action("task-trail", screen),
             Key::Char('i') => {
                 if let Some(entry) = entry {
-                    self.session_details = Some(SessionDetails { title: "Todo details".into(), text: todo_details(&entry),
-                        todo: Some(crate::continuity::task_key(&entry)), key_groups: vec![("ACTIONS", vec![("T", "task trail"), ("i", "in progress / back to do")])], ..Default::default() });
+                    self.session_details = Some(SessionDetails {
+                        title: "Todo details".into(),
+                        text: todo_details(&entry),
+                        todo: Some(crate::continuity::task_key(&entry)),
+                        key_groups: vec![(
+                            "ACTIONS",
+                            vec![("T", "task trail"), ("i", "in progress / back to do")],
+                        )],
+                        ..Default::default()
+                    });
                 }
                 String::new()
-            },
+            }
             Key::Esc if self.saved_todo_scope.is_some() => {
                 self.saved_todo_scope = None;
                 self.build_todo();
                 String::new()
             }
             Key::Char('t') => {
-                let viewed = self.running_sessions.iter().find(|s| s.session == viewed && !s.cwd.is_empty()).cloned();
+                let viewed = self
+                    .running_sessions
+                    .iter()
+                    .find(|s| s.session == viewed && !s.cwd.is_empty())
+                    .cloned();
                 let directory = match &viewed {
                     Some(session) => session.cwd.clone(),
                     None => screen.outside(&mut || pick_project()).unwrap_or_default(),
@@ -3675,7 +6439,9 @@ impl App {
                 if directory.is_empty() {
                     return String::new();
                 }
-                let project = viewed.map(|s| s.project).unwrap_or_else(|| project_name(&directory));
+                let project = viewed
+                    .map(|s| s.project)
+                    .unwrap_or_else(|| project_name(&directory));
                 match TodoComposer::new(project, directory, current_session(), None) {
                     Ok(composer) => self.todo_composer = Some(composer),
                     Err(error) => return format!("cannot protect the TODO draft: {error}"),
@@ -3692,7 +6458,12 @@ impl App {
             }
             Key::Char('e') => match entry {
                 Some(Entry::Typed(item)) => {
-                    match TodoComposer::new(item.project(), item.cwd(), self.todo_owner(), Some(&item)) {
+                    match TodoComposer::new(
+                        item.project(),
+                        item.cwd(),
+                        self.todo_owner(),
+                        Some(&item),
+                    ) {
                         Ok(composer) => self.todo_composer = Some(composer),
                         Err(error) => return format!("cannot protect the TODO draft: {error}"),
                     }
@@ -3703,8 +6474,14 @@ impl App {
             },
             Key::Char('K') => match entry {
                 Some(Entry::Typed(item)) => {
-                    let Some(chosen) = screen.outside(&mut || pick_todo_kind(item.category(), false)) else { return "unchanged".into() };
-                    let Some(category) = todo::Category::parse(&chosen.to_lowercase()) else { return "unchanged: invalid kind".into() };
+                    let Some(chosen) =
+                        screen.outside(&mut || pick_todo_kind(item.category(), false))
+                    else {
+                        return "unchanged".into();
+                    };
+                    let Some(category) = todo::Category::parse(&chosen.to_lowercase()) else {
+                        return "unchanged: invalid kind".into();
+                    };
                     self.todos.set_category(&item.id(), category);
                     self.reveal_todo(&item.id());
                     format!("kind: {}", category.label())
@@ -3714,7 +6491,12 @@ impl App {
             },
             Key::Char('m') => match entry {
                 Some(Entry::Typed(item)) => {
-                    let Some(directory) = screen.outside(&mut || pick_project()).filter(|directory| !directory.is_empty()) else { return "unchanged".into() };
+                    let Some(directory) = screen
+                        .outside(&mut || pick_project())
+                        .filter(|directory| !directory.is_empty())
+                    else {
+                        return "unchanged".into();
+                    };
                     let project = project_name(&directory);
                     match self.todos.move_to(&item.id(), &project, &directory) {
                         Ok(()) => {
@@ -3728,9 +6510,17 @@ impl App {
                 None => String::new(),
             },
             Key::Char('f') => {
-                let Some(chosen) = screen.outside(&mut || pick_todo_kind(self.todo_category_filter(), true)) else { return String::new() };
-                let category = if chosen == "All" { None } else {
-                    let Some(category) = todo::Category::parse(&chosen.to_lowercase()) else { return "invalid kind filter".into() };
+                let Some(chosen) =
+                    screen.outside(&mut || pick_todo_kind(self.todo_category_filter(), true))
+                else {
+                    return String::new();
+                };
+                let category = if chosen == "All" {
+                    None
+                } else {
+                    let Some(category) = todo::Category::parse(&chosen.to_lowercase()) else {
+                        return "invalid kind filter".into();
+                    };
                     Some(category)
                 };
                 self.todo_categories.insert(self.todo_owner(), category);
@@ -3764,30 +6554,46 @@ impl App {
             },
             Key::Char('x') => match entry {
                 Some(Entry::Typed(item)) => {
-                    let token=self.todos.manual_reservation(&item.id());
-                    if let Err(error) = self.todos.remove(&item.id()) { return format!("cannot remove TODO: {error}"); }
-                    if let Err(error)=queue::release_manual(&item.cwd(),&item.id(),token.as_deref()) {return error;}
+                    let token = self.todos.manual_reservation(&item.id());
+                    if let Err(error) = self.todos.remove(&item.id()) {
+                        return format!("cannot remove TODO: {error}");
+                    }
+                    if let Err(error) =
+                        queue::release_manual(&item.cwd(), &item.id(), token.as_deref())
+                    {
+                        return error;
+                    }
                     "removed".into()
                 }
                 _ => String::new(),
             },
-            Key::Char('d') => entry.map(|entry| self.toggle_todo_status(&entry, "done")).unwrap_or_default(),
+            Key::Char('d') => entry
+                .map(|entry| self.toggle_todo_status(&entry, "done"))
+                .unwrap_or_default(),
             Key::Char(pressed @ ('+' | '-')) => match entry {
                 Some(Entry::Typed(item)) => {
-                    self.todos.change_priority(&item.id(), if pressed == '+' { 1 } else { -1 });
+                    self.todos
+                        .change_priority(&item.id(), if pressed == '+' { 1 } else { -1 });
                     self.build_todo();
-                    if let Some(index) = self.todo_entries.iter().position(|e| e.key() == item.id()) {
+                    if let Some(index) = self.todo_entries.iter().position(|e| e.key() == item.id())
+                    {
                         self.panels[3].selected = index;
                     }
                     String::new()
                 }
-                Some(Entry::Issue { .. }) => "an issue's priority comes from its labels on GitHub".into(),
+                Some(Entry::Issue { .. }) => {
+                    "an issue's priority comes from its labels on GitHub".into()
+                }
                 None => String::new(),
             },
             Key::Enter => self.handle_todo(Key::Char('i'), screen),
             Key::Char('Q') => match entry {
                 Some(entry) if entry.status() == "todo" => {
-                    if self.todos.toggle_queued(&entry.key()) { "queued: an idle session of its project takes it up".into() } else { "out of the queue".into() }
+                    if self.todos.toggle_queued(&entry.key()) {
+                        "queued: an idle session of its project takes it up".into()
+                    } else {
+                        "out of the queue".into()
+                    }
                 }
                 Some(_) => "only items still to do can be queued".into(),
                 None => String::new(),
@@ -3797,32 +6603,87 @@ impl App {
     }
 
     fn toggle_todo_status(&mut self, entry: &Entry, target: &str) -> String {
-        let status = if self.todos.status_of(&entry.key()) == target { "todo" } else { target };
-        let directory = match entry { Entry::Typed(item) => item.cwd(), Entry::Issue { issue, .. } => self.reviews.checkouts.get(&issue.full_repository).cloned().unwrap_or_default() };
+        let status = if self.todos.status_of(&entry.key()) == target {
+            "todo"
+        } else {
+            target
+        };
+        let directory = match entry {
+            Entry::Typed(item) => item.cwd(),
+            Entry::Issue { issue, .. } => self
+                .reviews
+                .checkouts
+                .get(&issue.full_repository)
+                .cloned()
+                .unwrap_or_default(),
+        };
         let mut token = self.todos.manual_reservation(&entry.key());
         if status == "doing" {
-            token = Some(match queue::reserve_manual(&directory, &entry.key()) { Ok(token) => token, Err(error) => return error });
-            self.todos.record_manual_reservation(&entry.key(), token.as_deref().expect("reservation obtained"));
+            token = Some(match queue::reserve_manual(&directory, &entry.key()) {
+                Ok(token) => token,
+                Err(error) => return error,
+            });
+            self.todos.record_manual_reservation(
+                &entry.key(),
+                token.as_deref().expect("reservation obtained"),
+            );
         }
         if !self.todos.set_status(&entry.key(), status, "") {
-            if status == "doing" { if let Err(error) = queue::release_manual(&directory, &entry.key(), token.as_deref()) { return error; } }
+            if status == "doing"
+                && let Err(error) =
+                    queue::release_manual(&directory, &entry.key(), token.as_deref())
+            {
+                return error;
+            }
             return "cannot mark TODO; check the log".into();
         }
-        if status == "doing" { self.todos.record_manual_reservation(&entry.key(), token.as_deref().expect("reservation obtained")); }
-        if status != "doing" { if let Err(error) = queue::release_manual(&directory, &entry.key(), token.as_deref()) { return error; } }
-        match status { "doing" => "in progress", "done" => "done", _ => "back to do" }.into()
+        if status == "doing" {
+            self.todos.record_manual_reservation(
+                &entry.key(),
+                token.as_deref().expect("reservation obtained"),
+            );
+        }
+        if status != "doing"
+            && let Err(error) = queue::release_manual(&directory, &entry.key(), token.as_deref())
+        {
+            return error;
+        }
+        match status {
+            "doing" => "in progress",
+            "done" => "done",
+            _ => "back to do",
+        }
+        .into()
     }
 
     /// The item to the project's running session, or to a new one; then it is in progress.
     pub fn hand_to_claude(&mut self, entry: &Entry, _screen: &mut dyn Screen) -> String {
         let (directory, text, repository) = match entry {
             Entry::Typed(item) => (item.cwd(), todo::prompt_of(entry), String::new()),
-            Entry::Issue { issue, .. } => (self.reviews.checkouts.get(&issue.full_repository).cloned().unwrap_or_default(), todo::prompt_of(entry), issue.repository.clone()),
+            Entry::Issue { issue, .. } => (
+                self.reviews
+                    .checkouts
+                    .get(&issue.full_repository)
+                    .cloned()
+                    .unwrap_or_default(),
+                todo::prompt_of(entry),
+                issue.repository.clone(),
+            ),
         };
         if directory.is_empty() {
-            return format!("no local checkout of {}: start a session there first", if repository.is_empty() { "?" } else { &repository });
+            return format!(
+                "no local checkout of {}: start a session there first",
+                if repository.is_empty() {
+                    "?"
+                } else {
+                    &repository
+                }
+            );
         }
-        let directory = match start_directory(&directory) { Ok(directory) => directory, Err(error) => return error };
+        let directory = match start_directory(&directory) {
+            Ok(directory) => directory,
+            Err(error) => return error,
+        };
         let key = entry.key();
         let text = todo::with_todo_note(&text, &key);
         // A design to-do goes to the project's designer session, wherever its checkout is; any
@@ -3834,32 +6695,78 @@ impl App {
             _ => None,
         };
         let is_design = design_project.is_some();
-        let mut candidates = self.running_sessions.iter().filter(|session| !self.qa_sessions.contains(&session.session) && session.state != "unknown" && match &design_project {
-            Some(project) => session.role == "designer" && session.project == *project,
-            None => session.cwd == directory && session.role != "designer",
+        let mut candidates = self.running_sessions.iter().filter(|session| {
+            !self.qa_sessions.contains(&session.session)
+                && session.state != "unknown"
+                && match &design_project {
+                    Some(project) => session.role == "designer" && session.project == *project,
+                    None => session.cwd == directory && session.role != "designer",
+                }
         });
-        let viewed = if is_design { None } else { self.viewed_session_for(entry) };
-        let running = viewed.or_else(|| candidates.clone().find(|session| !session.is_external()).cloned());
+        let viewed = if is_design {
+            None
+        } else {
+            self.viewed_session_for(entry)
+        };
+        let running = viewed.or_else(|| {
+            candidates
+                .clone()
+                .find(|session| !session.is_external())
+                .cloned()
+        });
         if running.is_none() && candidates.any(|session| session.is_external()) {
             return "external session: no terminal target; use its own window".into();
         };
-        let text = if is_design && running.is_none() { format!("Load the figcraft-design skill first. {text}") } else { text };
-        let agent=if running.is_none() {match settings::launch_agent() {Ok(agent)=>Some(agent),Err(error)=>return error}} else {None};
-        let token=match queue::reserve_task(&directory,&key,running.as_ref().map(|session|session.session.as_str()),false) {Ok(token)=>token,Err(error)=>return error};
+        let text = if is_design && running.is_none() {
+            format!("Load the figcraft-design skill first. {text}")
+        } else {
+            text
+        };
+        let agent = if running.is_none() {
+            match settings::launch_agent() {
+                Ok(agent) => Some(agent),
+                Err(error) => return error,
+            }
+        } else {
+            None
+        };
+        let token = match queue::reserve_task(
+            &directory,
+            &key,
+            running.as_ref().map(|session| session.session.as_str()),
+            false,
+        ) {
+            Ok(token) => token,
+            Err(error) => return error,
+        };
         let outcome = match &running {
             Some(session) => {
-                if let Err(error)=queue::launch_reserved(&token,&["say", &session.session, &text],false) {return error;}
+                if let Err(error) =
+                    queue::launch_reserved(&token, &["say", &session.session, &text], false)
+                {
+                    return error;
+                }
                 format!("sent to {}", session.project)
             }
             None => {
                 let agent = agent.expect("launch agent validated before reservation");
                 // Out of sight, as a card of its own (cockpit background): in the session pane
                 // it replaced the session on screen, and the Todo panel lost its project.
-                if let Err(error)=queue::launch_reserved(&token,&["--agent", &agent, "background", &directory, &text],true) {return error;}
+                if let Err(error) = queue::launch_reserved(
+                    &token,
+                    &["--agent", &agent, "background", &directory, &text],
+                    true,
+                ) {
+                    return error;
+                }
                 format!("starting a session in {}", project_name(&directory))
             }
         };
-        if !self.todos.set_status(&key, "doing", running.as_ref().map(|s| s.session.as_str()).unwrap_or("")) {
+        if !self.todos.set_status(
+            &key,
+            "doing",
+            running.as_ref().map(|s| s.session.as_str()).unwrap_or(""),
+        ) {
             return format!("{outcome}; cannot save TODO status");
         }
         if let Err(error) = self.record_task_assignment(entry, running.as_ref()) {
@@ -3875,33 +6782,65 @@ impl App {
     pub fn hand_to_new_session(&mut self, entry: &Entry, _screen: &mut dyn Screen) -> String {
         let directory = match entry {
             Entry::Typed(item) => item.cwd(),
-            Entry::Issue { issue, .. } => self.reviews.checkouts.get(&issue.full_repository).cloned().unwrap_or_default(),
+            Entry::Issue { issue, .. } => self
+                .reviews
+                .checkouts
+                .get(&issue.full_repository)
+                .cloned()
+                .unwrap_or_default(),
         };
         if directory.is_empty() {
             return "no local checkout of this issue's repository: clone it first".into();
         }
-        let directory = match start_directory(&directory) { Ok(directory) => directory, Err(error) => return error };
-        let agent = match settings::launch_agent() { Ok(agent) => agent, Err(error) => return error };
+        let directory = match start_directory(&directory) {
+            Ok(directory) => directory,
+            Err(error) => return error,
+        };
+        let agent = match settings::launch_agent() {
+            Ok(agent) => agent,
+            Err(error) => return error,
+        };
         let key = entry.key();
         let (branch, text) = todo::handoff_of(entry);
-        let token=match queue::reserve_task(&directory,&key,None,false) {Ok(token)=>token,Err(error)=>return error};
-        if let Err(error)=queue::launch_reserved(&token,&["--agent", &agent, "parallel", &directory, &branch, &text],true) {return error;}
+        let token = match queue::reserve_task(&directory, &key, None, false) {
+            Ok(token) => token,
+            Err(error) => return error,
+        };
+        if let Err(error) = queue::launch_reserved(
+            &token,
+            &["--agent", &agent, "parallel", &directory, &branch, &text],
+            true,
+        ) {
+            return error;
+        }
         if !self.todos.set_status(&key, "doing", "") {
             return "starting a new session; cannot save TODO status".into();
         }
-        if let Err(error) = self.record_task_assignment(entry, None) { self.continuity_error = Some(error); }
-        format!("starting a new session in a clone of {} (branch {branch})", project_name(&directory))
+        if let Err(error) = self.record_task_assignment(entry, None) {
+            self.continuity_error = Some(error);
+        }
+        format!(
+            "starting a new session in a clone of {} (branch {branch})",
+            project_name(&directory)
+        )
     }
 
     /// The session in the session pane, when it can take this item: running, not the designer, and
     /// on the item's project (by name, as the Todo list is narrowed) or the issue's repository.
     fn viewed_session_for(&self, entry: &Entry) -> Option<Session> {
         let viewed = current_session();
-        let session = self.running_sessions.iter().find(|s| !s.is_external() && !self.qa_sessions.contains(&s.session)
-            && s.session == viewed && s.state != "unknown" && s.role != "designer")?;
+        let session = self.running_sessions.iter().find(|s| {
+            !s.is_external()
+                && !self.qa_sessions.contains(&s.session)
+                && s.session == viewed
+                && s.state != "unknown"
+                && s.role != "designer"
+        })?;
         let belongs = match entry {
             Entry::Typed(item) => item.project() == session.project,
-            Entry::Issue { issue, .. } => self.reviews.repositories.contains(&issue.full_repository),
+            Entry::Issue { issue, .. } => {
+                self.reviews.repositories.contains(&issue.full_repository)
+            }
         };
         belongs.then(|| session.clone())
     }
@@ -3912,13 +6851,21 @@ impl App {
         match index {
             0 => {
                 let mut hints = vec![("Esc", "close"), ("p", "pull requests"), ("5", "Chief tab")];
-                if !self.status_selection_lost && let Some(Some(action)) = self.status_actions.get(self.panels[0].selected) {
+                if !self.status_selection_lost
+                    && let Some(Some(action)) = self.status_actions.get(self.panels[0].selected)
+                {
                     hints.insert(0, ("⏎", action.hint()));
                 }
                 hints
-            },
+            }
             1 => self.sessions_hints(),
-            2 => vec![("⏎", "review"), ("o", "GitHub"), ("l", "later / bring back"), ("t", "trail"), ("Esc", "close")],
+            2 => vec![
+                ("⏎", "review"),
+                ("o", "GitHub"),
+                ("l", "later / bring back"),
+                ("t", "trail"),
+                ("Esc", "close"),
+            ],
             4 => vec![("y", "approve"), ("n", "decline"), ("i", "details")],
             TEAMS_PANEL => self.teams_hints(),
             CHIEF_PANEL => self.chief_tab_hints(),
@@ -3929,16 +6876,47 @@ impl App {
     /// Each tab's keys, the one that moves its items along first.
     /// In the Open tab, the selected item's status picks them.
     pub(crate) fn todo_hints(&self) -> Vec<(&'static str, &'static str)> {
-        let selected_status = self.todo_entries.get(self.panels[3].selected).map(Entry::status);
+        let selected_status = self
+            .todo_entries
+            .get(self.panels[3].selected)
+            .map(Entry::status);
         let status = match TODO_TABS[self.todo_tab].1 {
             [only] => *only,
             _ => selected_status.as_deref().unwrap_or("todo"),
         };
         let mut hints = match status {
-            todo::PROPOSED => vec![("y", "approve"), ("n", "decline"), ("⏎", "details"), ("e", "edit"), ("[ ]", "tabs")],
-            "doing" => vec![("d", "done"), ("i", "details"), ("T", "trail"), ("e", "edit"), ("t", "add"), ("[ ]", "tabs")],
-            "done" => vec![("⏎", "details"), ("d", "back to to do"), ("t", "add"), ("[ ]", "tabs")],
-            _ => vec![("r", "run now"), ("h", "to a session"), ("i", "details"), ("T", "trail"), ("Q", "queue"), ("d", "done"), ("e", "edit"), ("t", "add"), ("[ ]", "tabs")],
+            todo::PROPOSED => vec![
+                ("y", "approve"),
+                ("n", "decline"),
+                ("⏎", "details"),
+                ("e", "edit"),
+                ("[ ]", "tabs"),
+            ],
+            "doing" => vec![
+                ("d", "done"),
+                ("i", "details"),
+                ("T", "trail"),
+                ("e", "edit"),
+                ("t", "add"),
+                ("[ ]", "tabs"),
+            ],
+            "done" => vec![
+                ("⏎", "details"),
+                ("d", "back to to do"),
+                ("t", "add"),
+                ("[ ]", "tabs"),
+            ],
+            _ => vec![
+                ("r", "run now"),
+                ("h", "to a session"),
+                ("i", "details"),
+                ("T", "trail"),
+                ("Q", "queue"),
+                ("d", "done"),
+                ("e", "edit"),
+                ("t", "add"),
+                ("[ ]", "tabs"),
+            ],
         };
         hints.extend([("K", "kind"), ("m", "move"), ("f", "filter kind")]);
         hints
@@ -3946,35 +6924,124 @@ impl App {
 
     fn panel_help(index: usize) -> Vec<(&'static str, &'static str)> {
         match index {
-            0 => vec![("⏎", "open selected service status, daily digest or clones review"), ("↑↓", "select a service or utility"), ("p", "its pull requests"), ("5", "the Chief tab: on / off, answers, habits"), ("s", "back to the tab")],
+            0 => vec![
+                (
+                    "⏎",
+                    "open selected service status, daily digest or clones review",
+                ),
+                ("↑↓", "select a service or utility"),
+                ("p", "its pull requests"),
+                ("5", "the Chief tab: on / off, answers, habits"),
+                ("s", "back to the tab"),
+            ],
             1 => Self::sessions_help(),
-            2 => vec![("o", "open the pull request in the pull requests window"),
-                      ("⏎", "a session reviewing it, in its own clone of the repository, using the default agent"),
-                      ("l", "later for 20 minutes / bring back now; never marks reviewed"), ("t", "task trail for this pull request"),
-                      ("P", "the pull requests window on the viewed session's repository (or your review requests)"),
-                      ("✓ ● ✗", "CI passing, running, failing"), ("approved", "review state: approved, changes (requested), review (required)")],
-            4 => vec![("y", "approve the selected idea: it moves to its project's To do, without starting work"),
-                      ("n", "decline the selected idea; the declined title will not be proposed again"),
-                      ("i ⏎", "the full idea, reason, notes and source session from any project")],
+            2 => vec![
+                ("o", "open the pull request in the pull requests window"),
+                (
+                    "⏎",
+                    "a session reviewing it, in its own clone of the repository, using the default agent",
+                ),
+                (
+                    "l",
+                    "later for 20 minutes / bring back now; never marks reviewed",
+                ),
+                ("t", "task trail for this pull request"),
+                (
+                    "P",
+                    "the pull requests window on the viewed session's repository (or your review requests)",
+                ),
+                ("✓ ● ✗", "CI passing, running, failing"),
+                (
+                    "approved",
+                    "review state: approved, changes (requested), review (required)",
+                ),
+            ],
+            4 => vec![
+                (
+                    "y",
+                    "approve the selected idea: it moves to its project's To do, without starting work",
+                ),
+                (
+                    "n",
+                    "decline the selected idea; the declined title will not be proposed again",
+                ),
+                (
+                    "i ⏎",
+                    "the full idea, reason, notes and source session from any project",
+                ),
+            ],
             TEAMS_PANEL => teams_tab::help(),
             CHIEF_PANEL => chief_tab::help(),
-            _ => vec![("⏎", "the item's details: title, notes, why Claude proposed it, who filed it, when"),
-                      ("[ ]", "previous / next tab: Open (Proposed, To do and In progress together) · Proposed · To do · In progress · Done"),
-                      ("h", "hand the item over: the session on screen if it is on the item's project (a parallel clone too), Claude Code or opencode alike, else the project's running session, or a new one using the default agent"),
-                      ("r", "run now: a new session on it using the default agent, in a parallel clone of its repository on a branch named after it (todo-<id>, issue-<n>), never a running one"),
-                      ("e", "edit Kind, Title and Notes in one form; Tab / Shift+Tab fields, arrows choose Kind; CMD+S saves, Esc cancels"),
-                      ("K", "change kind: Task, Feature, Bug, Improvement, Chore, Research; Design/Blocked routing stays unchanged"),
-                      ("m", "move a typed item to another project, picked like a new session's; not while it is in progress"),
-                      ("f", "filter by kind, or All (including GitHub issues); each viewed session keeps its filter"),
-                      ("y n", "approve or decline an idea Claude proposed; a declined idea is not proposed again"),
-                      ("Q", "queue it (again: unqueue): a session of its project idle for 5 min at its prompt takes the first queued item, by priority, one at a time"),
-                      ("t", "add an item for the viewed session's project (or pick a project): Kind, Title and Notes; CMD+S saves, Esc cancels"),
-                      ("i", "details; i inside details marks in progress / back to do"), ("T", "task trail (also inside details)"),
-                      ("d", "mark done, or back to to do; done items stay 7 days, dimmed at the bottom"),
-                      ("+", "raise a typed item's priority: ! then !! up to !!!!"), ("-", "lower it"), ("x", "remove a typed item"),
-                      ("! ↓", "raised and low priority; an issue's comes from its labels (P0/P1/urgent/high, P3/P4/low)"),
-                      ("? • ◐ ✓", "proposed · to do · in progress · done; ◇ an open GitHub issue still to do"),
-                      ("", "Agents mark items with cockpit-todo (start, done, add) and propose ideas (propose)")],
+            _ => vec![
+                (
+                    "⏎",
+                    "the item's details: title, notes, why Claude proposed it, who filed it, when",
+                ),
+                (
+                    "[ ]",
+                    "previous / next tab: Open (Proposed, To do and In progress together) · Proposed · To do · In progress · Done",
+                ),
+                (
+                    "h",
+                    "hand the item over: the session on screen if it is on the item's project (a parallel clone too), Claude Code or opencode alike, else the project's running session, or a new one using the default agent",
+                ),
+                (
+                    "r",
+                    "run now: a new session on it using the default agent, in a parallel clone of its repository on a branch named after it (todo-<id>, issue-<n>), never a running one",
+                ),
+                (
+                    "e",
+                    "edit Kind, Title and Notes in one form; Tab / Shift+Tab fields, arrows choose Kind; CMD+S saves, Esc cancels",
+                ),
+                (
+                    "K",
+                    "change kind: Task, Feature, Bug, Improvement, Chore, Research; Design/Blocked routing stays unchanged",
+                ),
+                (
+                    "m",
+                    "move a typed item to another project, picked like a new session's; not while it is in progress",
+                ),
+                (
+                    "f",
+                    "filter by kind, or All (including GitHub issues); each viewed session keeps its filter",
+                ),
+                (
+                    "y n",
+                    "approve or decline an idea Claude proposed; a declined idea is not proposed again",
+                ),
+                (
+                    "Q",
+                    "queue it (again: unqueue): a session of its project idle for 5 min at its prompt takes the first queued item, by priority, one at a time",
+                ),
+                (
+                    "t",
+                    "add an item for the viewed session's project (or pick a project): Kind, Title and Notes; CMD+S saves, Esc cancels",
+                ),
+                (
+                    "i",
+                    "details; i inside details marks in progress / back to do",
+                ),
+                ("T", "task trail (also inside details)"),
+                (
+                    "d",
+                    "mark done, or back to to do; done items stay 7 days, dimmed at the bottom",
+                ),
+                ("+", "raise a typed item's priority: ! then !! up to !!!!"),
+                ("-", "lower it"),
+                ("x", "remove a typed item"),
+                (
+                    "! ↓",
+                    "raised and low priority; an issue's comes from its labels (P0/P1/urgent/high, P3/P4/low)",
+                ),
+                (
+                    "? • ◐ ✓",
+                    "proposed · to do · in progress · done; ◇ an open GitHub issue still to do",
+                ),
+                (
+                    "",
+                    "Agents mark items with cockpit-todo (start, done, add) and propose ideas (propose)",
+                ),
+            ],
         }
     }
 
@@ -3995,7 +7062,8 @@ impl App {
         let available = height.saturating_sub(HEADER_LINES + 1);
         let mut heights = vec![0; PANEL_NAMES.len()];
         if self.is_status_open() {
-            let reviews = (self.panels[2].content_height() as u16 + 2).clamp(MIN_PANEL_LINES, (available / 3).max(MIN_PANEL_LINES));
+            let reviews = (self.panels[2].content_height() as u16 + 2)
+                .clamp(MIN_PANEL_LINES, (available / 3).max(MIN_PANEL_LINES));
             heights[2] = reviews.min(available / 2);
             heights[0] = available - heights[2];
         } else {
@@ -4017,7 +7085,9 @@ impl App {
         // The Teams tab's divider is as wide as the column.
         let is_resized = self.width != width;
         self.width = width;
-        if is_resized && self.focus == TEAMS_PANEL { self.build_teams(); }
+        if is_resized && self.focus == TEAMS_PANEL {
+            self.build_teams();
+        }
         self.panels[1].fixed_top = self.session_summary_lines();
         self.panels[1].fixed_bottom = self.selected_session_detail_lines();
         self.todo_fixed_lines(self.layout(height)[3]);
@@ -4030,9 +7100,21 @@ impl App {
         self.draw_tabs(buffer, HEADER_LINES, width);
         self.draw_footer(buffer, height.saturating_sub(1), width);
         if let Err(error) = &self.continuity {
-            put(buffer, height.saturating_sub(1), 0, &format!("Continuity unavailable: {error}"), bold(RED));
+            put(
+                buffer,
+                height.saturating_sub(1),
+                0,
+                &format!("Continuity unavailable: {error}"),
+                bold(RED),
+            );
         } else if let Some(error) = &self.continuity_error {
-            put(buffer, height.saturating_sub(1), 0, &format!("Continuity unavailable: {error}"), bold(RED));
+            put(
+                buffer,
+                height.saturating_sub(1),
+                0,
+                &format!("Continuity unavailable: {error}"),
+                bold(RED),
+            );
         }
         if let Some(menu) = self.menu.as_mut() {
             menu.draw(buffer);
@@ -4083,17 +7165,43 @@ impl App {
         let focused = self.has_pane_focus && index == self.focus;
         let inner_height = (height - 2) as usize;
         let subtitle_text = self.subtitle(index);
-        let counts = if index == 2 { self.review_counts() } else { Vec::new() };
+        let counts = if index == 2 {
+            self.review_counts()
+        } else {
+            Vec::new()
+        };
         let inner = (width - 3) as usize;
         // No boxes: the tabs row sits over a tab's first row; pull requests get a section heading in Status.
-        let label = if index == 2 { format!("PULL REQUESTS · {}", self.panels[2].items) } else { String::new() };
+        let label = if index == 2 {
+            format!("PULL REQUESTS · {}", self.panels[2].items)
+        } else {
+            String::new()
+        };
         if index == 2 {
-            put(buffer, top, 2, &label, bold(if focused { BLUE } else { FG_DARK }));
+            put(
+                buffer,
+                top,
+                2,
+                &label,
+                bold(if focused { BLUE } else { FG_DARK }),
+            );
             self.hit_lines.insert(top, (index, None));
         }
         let panel = &mut self.panels[index];
-        let fixed_top_height = panel.fixed_top.len().min(if inner_height >= 4 { 2 } else if inner_height >= 2 { 1 } else { 0 });
-        let fixed_bottom_height = if inner_height >= fixed_top_height + panel.fixed_bottom.len() + if index == 3 { 4 } else { 2 } { panel.fixed_bottom.len() } else { 0 };
+        let fixed_top_height = panel.fixed_top.len().min(if inner_height >= 4 {
+            2
+        } else if inner_height >= 2 {
+            1
+        } else {
+            0
+        });
+        let fixed_bottom_height = if inner_height
+            >= fixed_top_height + panel.fixed_bottom.len() + if index == 3 { 4 } else { 2 }
+        {
+            panel.fixed_bottom.len()
+        } else {
+            0
+        };
         let scrolling_height = inner_height.saturating_sub(fixed_top_height + fixed_bottom_height);
         panel.keep_selected_visible(scrolling_height);
         let mut title_end = 2 + width_of(&label);
@@ -4102,82 +7210,174 @@ impl App {
             put(buffer, top, title_end as u16, " ·", dim(FG_DARK));
             title_end += 2;
             for (text, count_style) in &counts {
-                put(buffer, top, title_end as u16, &format!(" {text}"), *count_style);
+                put(
+                    buffer,
+                    top,
+                    title_end as u16,
+                    &format!(" {text}"),
+                    *count_style,
+                );
                 title_end += 1 + width_of(text);
             }
         }
-        let subtitle = fit(&subtitle_text, (width as usize).saturating_sub(6 + title_end));
+        let subtitle = fit(
+            &subtitle_text,
+            (width as usize).saturating_sub(6 + title_end),
+        );
         if index == 2 && !subtitle.is_empty() {
-            put(buffer, top, title_end as u16, &format!(" · {subtitle} "), dim(FG_DARK));
+            put(
+                buffer,
+                top,
+                title_end as u16,
+                &format!(" · {subtitle} "),
+                dim(FG_DARK),
+            );
         }
         for offset in 0..inner_height {
             let row = top + 1 + offset as u16;
             let line = if offset < fixed_top_height {
                 panel.fixed_top.get(offset)
             } else if offset >= fixed_top_height + scrolling_height {
-                panel.fixed_bottom.get(offset - fixed_top_height - scrolling_height)
+                panel
+                    .fixed_bottom
+                    .get(offset - fixed_top_height - scrolling_height)
             } else {
                 panel.lines.get(panel.scroll + offset - fixed_top_height)
             };
             let Some(line) = line else { continue };
             let mut issue_line;
-            let line = if index == 3 && let Some(Entry::Issue { issue, .. }) = line.item.and_then(|item| self.todo_entries.get(item)) {
+            let line = if index == 3
+                && let Some(Entry::Issue { issue, .. }) =
+                    line.item.and_then(|item| self.todo_entries.get(item))
+            {
                 // Reserve a title excerpt and Q before allocating repository identity space.
-                let marker_room = if line.right.iter().any(|part| part.text == "Q") { 3 } else { 0 };
+                let marker_room = if line.right.iter().any(|part| part.text == "Q") {
+                    3
+                } else {
+                    0
+                };
                 let identity_room = (width as usize).saturating_sub(4 + 7 + 1 + 12 + marker_room);
                 let number = format!("#{}", issue.number);
-                let identity = format!("{}{}", fit(&issue.repository, identity_room.saturating_sub(width_of(&number))), number);
+                let identity = format!(
+                    "{}{}",
+                    fit(
+                        &issue.repository,
+                        identity_room.saturating_sub(width_of(&number))
+                    ),
+                    number
+                );
                 issue_line = line.clone();
                 issue_line.segments[2].1 = identity.clone();
                 issue_line.segments[3].0 = 8 + width_of(&identity) as u16;
                 &issue_line
-            } else { line };
+            } else {
+                line
+            };
             let highlighted = focused && line.item.is_some() && line.item == Some(panel.selected);
             let recolor = |style: Style, fg: u8| -> Style {
-                if !highlighted || line.fill.is_some() { return style; }
-                if index == 0 { return style.bg(color(BG_HIGHLIGHT)); }
+                if !highlighted || line.fill.is_some() {
+                    return style;
+                }
+                if index == 0 {
+                    return style.bg(color(BG_HIGHLIGHT));
+                }
                 let linked_member = index == 1 && line.item.and_then(|item| self.sidebar_rows.get(item)).is_some_and(|row| match row {
                     crate::teams::sidebar::SidebarRow::Session { session_id } => matches!(&self.team_links, TeamLinks::Ready(snapshot)
                         if self.sessions.iter().find(|session| session.session == *session_id).is_some_and(|session| crate::teams::sidebar::membership(snapshot, session).is_some())),
                     _ => false,
                 });
-                if linked_member { return style.fg(color(FG)).bg(color(BG_HIGHLIGHT)).remove_modifier(Modifier::DIM); }
-                let preserve_state = matches!(index, 1 | TEAMS_PANEL | CHIEF_PANEL) && (style.fg == Some(color(RED)) || style.fg == Some(color(BLUE)) || style.fg == Some(color(YELLOW)));
-                if preserve_state { style.bg(color(BG_HIGHLIGHT)) } else { style.fg(color(fg)).bg(color(BG_HIGHLIGHT)) }
+                if linked_member {
+                    return style
+                        .fg(color(FG))
+                        .bg(color(BG_HIGHLIGHT))
+                        .remove_modifier(Modifier::DIM);
+                }
+                let preserve_state = matches!(index, 1 | TEAMS_PANEL | CHIEF_PANEL)
+                    && (style.fg == Some(color(RED))
+                        || style.fg == Some(color(BLUE))
+                        || style.fg == Some(color(YELLOW)));
+                if preserve_state {
+                    style.bg(color(BG_HIGHLIGHT))
+                } else {
+                    style.fg(color(fg)).bg(color(BG_HIGHLIGHT))
+                }
             };
             if highlighted {
                 put(buffer, row, 1, &" ".repeat(inner), on(FG, BG_HIGHLIGHT));
             }
             if let Some((column, fill)) = line.fill {
-                put(buffer, row, 2 + column, &" ".repeat(inner.saturating_sub(2 + column as usize)), fill);
+                put(
+                    buffer,
+                    row,
+                    2 + column,
+                    &" ".repeat(inner.saturating_sub(2 + column as usize)),
+                    fill,
+                );
             }
             if let Some(accent) = line.accent {
                 put(buffer, row, 1, "▌", recolor(accent, BLUE));
             }
             let mut right_width = 0;
             let right_room = if index == 1 && line.item.is_some() {
-                let title_column = line.segments.iter().map(|(column, _, _)| *column as usize).max().unwrap_or(0);
+                let title_column = line
+                    .segments
+                    .iter()
+                    .map(|(column, _, _)| *column as usize)
+                    .max()
+                    .unwrap_or(0);
                 session_card_right_room(width, title_column)
             } else if index == 3 && line.item.is_some() {
-                let title_column = line.segments.last().map(|segment| segment.0 as usize).unwrap_or(0);
+                let title_column = line
+                    .segments
+                    .last()
+                    .map(|segment| segment.0 as usize)
+                    .unwrap_or(0);
                 (width as usize).saturating_sub(4 + title_column + 12 + 2)
             } else {
                 inner.saturating_sub(1)
             };
-            let right: Vec<_> = line.right.iter().take_while(|part| {
-                let needed = width_of(&part.text) + if right_width == 0 { 0 } else { 2 };
-                if right_width + needed > right_room { return false; }
-                right_width += needed;
-                true
-            }).collect();
+            let right: Vec<_> = line
+                .right
+                .iter()
+                .take_while(|part| {
+                    let needed = width_of(&part.text) + if right_width == 0 { 0 } else { 2 };
+                    if right_width + needed > right_room {
+                        return false;
+                    }
+                    right_width += needed;
+                    true
+                })
+                .collect();
             for (position, (column, text, tint)) in line.segments.iter().enumerate() {
-                let room = (width as i64 - 4 - *column as i64 - if right_width > 0 { right_width as i64 + 2 } else { 0 }).max(0) as usize;
-                let room = line.segments.get(position + 1).map_or(room, |next| room.min(next.0.saturating_sub(*column) as usize));
-                put(buffer, row, 2 + column, &fit(text, room), recolor(*tint, FG));
+                let room = (width as i64
+                    - 4
+                    - *column as i64
+                    - if right_width > 0 {
+                        right_width as i64 + 2
+                    } else {
+                        0
+                    })
+                .max(0) as usize;
+                let room = line.segments.get(position + 1).map_or(room, |next| {
+                    room.min(next.0.saturating_sub(*column) as usize)
+                });
+                put(
+                    buffer,
+                    row,
+                    2 + column,
+                    &fit(text, room),
+                    recolor(*tint, FG),
+                );
             }
             let mut column = (width as i64 - 3 - right_width as i64).max(2) as u16;
             for part in right {
-                put(buffer, row, column, &part.text, recolor(part.style, FG_DARK));
+                put(
+                    buffer,
+                    row,
+                    column,
+                    &part.text,
+                    recolor(part.style, FG_DARK),
+                );
                 let end = column + width_of(&part.text) as u16;
                 if let Some(action) = part.action {
                     self.hit_actions.insert(row, (column, end, action));
@@ -4189,11 +7389,23 @@ impl App {
         let hidden_below = panel.lines.len() as i64 - panel.scroll as i64 - scrolling_height as i64;
         if hidden_below > 0 && scrolling_height > 0 {
             let note = format!(" ▼ {hidden_below} ");
-            put(buffer, top + height - 1, width - 3 - width_of(&note) as u16, &note, dim(FG_DARK));
+            put(
+                buffer,
+                top + height - 1,
+                width - 3 - width_of(&note) as u16,
+                &note,
+                dim(FG_DARK),
+            );
         }
         if panel.scroll > 0 {
             let note = format!(" ▲ {} ", panel.scroll);
-            put(buffer, top, width - 3 - width_of(&note) as u16, &note, dim(FG_DARK));
+            put(
+                buffer,
+                top,
+                width - 3 - width_of(&note) as u16,
+                &note,
+                dim(FG_DARK),
+            );
         }
     }
 
@@ -4201,49 +7413,103 @@ impl App {
     /// low), then ≈ $ today at API prices for all usage, then the clock. Chips give way first.
     fn draw_header(&mut self, buffer: &mut Buffer, width: u16) {
         let mut chips: Vec<(String, Style)> = Vec::new();
-        for (provider, status) in [("Claude", &self.claude_status), ("Codex", &self.codex_status)] {
+        for (provider, status) in [
+            ("Claude", &self.claude_status),
+            ("Codex", &self.codex_status),
+        ] {
             let (service, error) = status.snapshot();
-            let has_outage = service.as_ref().is_some_and(|summary| summary.indicator != "none"
-                || !summary.degraded.is_empty() || !summary.incidents.is_empty()) || !error.is_empty();
-            let rows: Vec<&usage::QuotaRow> = self.quota_rows.iter().filter(|row| row.label.split(" · ").next() == Some(provider)).collect();
-            let Some(tightest) = rows.iter().min_by_key(|row| (match row.state.as_str() {
-                "Blocked" | "Exhausted" => 0, "Low" => 1, "Stale" | "Unknown" => 2, _ => 3,
-            }, row.remaining.unwrap_or(100))) else { continue };
-            let name = if provider == "Claude" && !self.plan.is_empty() { format!("Claude {}", self.plan) } else { provider.to_string() };
+            let has_outage = service.as_ref().is_some_and(|summary| {
+                summary.indicator != "none"
+                    || !summary.degraded.is_empty()
+                    || !summary.incidents.is_empty()
+            }) || !error.is_empty();
+            let rows: Vec<&usage::QuotaRow> = self
+                .quota_rows
+                .iter()
+                .filter(|row| row.label.split(" · ").next() == Some(provider))
+                .collect();
+            let Some(tightest) = rows.iter().min_by_key(|row| {
+                (
+                    match row.state.as_str() {
+                        "Blocked" | "Exhausted" => 0,
+                        "Low" => 1,
+                        "Stale" | "Unknown" => 2,
+                        _ => 3,
+                    },
+                    row.remaining.unwrap_or(100),
+                )
+            }) else {
+                continue;
+            };
+            let name = if provider == "Claude" && !self.plan.is_empty() {
+                format!("Claude {}", self.plan)
+            } else {
+                provider.to_string()
+            };
             let is_low = matches!(tightest.state.as_str(), "Low" | "Exhausted" | "Blocked");
             // A fuel gauge of what is left, as Status's LEFT column.
             let chip = match tightest.remaining {
                 Some(remaining) if matches!(tightest.state.as_str(), "Available" | "Low") => {
                     let left = remaining.clamp(0, 100);
                     let filled = ((left as f64 / 25.0).ceil() as usize).min(4);
-                    format!("{name} {}{} {left}%", "▮".repeat(filled), "▯".repeat(4 - filled))
-                },
+                    format!(
+                        "{name} {}{} {left}%",
+                        "▮".repeat(filled),
+                        "▯".repeat(4 - filled)
+                    )
+                }
                 _ => format!("{name} {}", tightest.state.to_lowercase()),
             };
-            let chip = if has_outage { format!("! {chip}") } else { chip };
-            chips.push((chip, if is_low || has_outage { bold(RED) } else { style(FG) }));
+            let chip = if has_outage {
+                format!("! {chip}")
+            } else {
+                chip
+            };
+            chips.push((
+                chip,
+                if is_low || has_outage {
+                    bold(RED)
+                } else {
+                    style(FG)
+                },
+            ));
         }
         let billing = self.costs.billing_totals();
         let total_today = billing.api.today + billing.subscription.today + billing.unknown.today;
-        let cost = if billing.recorded_replies > billing.unpriced_replies && total_today > 0.0 { format!("≈ {} today", money(total_today)) } else { String::new() };
+        let cost = if billing.recorded_replies > billing.unpriced_replies && total_today > 0.0 {
+            format!("≈ {} today", money(total_today))
+        } else {
+            String::new()
+        };
         let clock = chrono::Local::now().format("%H:%M").to_string();
         let mut right = width.saturating_sub(2);
         let mut right_parts: Vec<(String, Style)> = vec![(clock, style(FG_DARK))];
-        if !cost.is_empty() { right_parts.push((cost, bold(MAGENTA))); }
+        if !cost.is_empty() {
+            right_parts.push((cost, bold(MAGENTA)));
+        }
         let mut column = 2u16;
         let mut chips_end = column;
         for (text, tint) in &chips {
             let needed = width_of(text) as u16;
-            let room_for_right: u16 = right_parts.iter().map(|(text, _)| width_of(text) as u16 + 2).sum();
-            if column + needed + room_for_right > width.saturating_sub(1) { break; }
+            let room_for_right: u16 = right_parts
+                .iter()
+                .map(|(text, _)| width_of(text) as u16 + 2)
+                .sum();
+            if column + needed + room_for_right > width.saturating_sub(1) {
+                break;
+            }
             put(buffer, 0, column, text, *tint);
             column += needed + 2;
             chips_end = column.saturating_sub(2);
         }
-        if chips_end > 2 { self.hit_actions.insert(0, (2, chips_end, "status")); }
+        if chips_end > 2 {
+            self.hit_actions.insert(0, (2, chips_end, "status"));
+        }
         for (text, tint) in right_parts {
             let needed = width_of(&text) as u16;
-            if right < column + needed { break; }
+            if right < column + needed {
+                break;
+            }
             right -= needed;
             put(buffer, 0, right, &text, tint);
             right = right.saturating_sub(2);
@@ -4254,15 +7520,35 @@ impl App {
     /// proposals, Teams' live teams and the Chief on (green ●) or off (○).
     fn tab_badges(&self) -> [(String, Style); 5] {
         let amber = on(BLACK, YELLOW).add_modifier(Modifier::BOLD);
-        let count = |count: usize, tint: Style| if count > 0 { (count.to_string(), tint) } else { (String::new(), tint) };
-        let needing = self.running_sessions.iter().filter(|session| self.is_actionable(session, util::now_secs())).count() + usize::from(!self.held.is_empty());
+        let count = |count: usize, tint: Style| {
+            if count > 0 {
+                (count.to_string(), tint)
+            } else {
+                (String::new(), tint)
+            }
+        };
+        let needing = self
+            .running_sessions
+            .iter()
+            .filter(|session| self.is_actionable(session, util::now_secs()))
+            .count()
+            + usize::from(!self.held.is_empty());
         let open_todos = self.todo_counts[TODO_TAB_TO_DO] + self.todo_counts[TODO_TAB_IN_PROGRESS];
-        let teams = if self.teams_tab.needs_you > 0 { count(self.teams_tab.needs_you, amber) } else { count(self.teams_tab.live, style(FG_DARK)) };
+        let teams = if self.teams_tab.needs_you > 0 {
+            count(self.teams_tab.needs_you, amber)
+        } else {
+            count(self.teams_tab.live, style(FG_DARK))
+        };
         // None: neither snapshot answered, which is not the same as off.
         let chief_badge = match (&self.team_links, &self.chief_status) {
-            (_, Ok(snapshot)) if matches!(self.focus, 0 | CHIEF_PANEL) => Some((chief_tab::needs_you(snapshot), chief_tab::has_active_grant(snapshot))),
-            (TeamLinks::Ready(snapshot), _) if snapshot["chief_badge"].is_object() =>
-                Some((snapshot["chief_badge"]["needs_you"].as_u64().unwrap_or(0) as usize, snapshot["chief_badge"]["state"] == "active")),
+            (_, Ok(snapshot)) if matches!(self.focus, 0 | CHIEF_PANEL) => Some((
+                chief_tab::needs_you(snapshot),
+                chief_tab::has_active_grant(snapshot),
+            )),
+            (TeamLinks::Ready(snapshot), _) if snapshot["chief_badge"].is_object() => Some((
+                snapshot["chief_badge"]["needs_you"].as_u64().unwrap_or(0) as usize,
+                snapshot["chief_badge"]["state"] == "active",
+            )),
             _ => None,
         };
         let chief = match chief_badge {
@@ -4271,7 +7557,16 @@ impl App {
             Some((_, false)) => ("○".into(), style(FG_DARK)),
             None => ("?".into(), dim(FG_DARK)),
         };
-        [count(needing, amber), count(open_todos, style(FG_DARK)), count(self.idea_entries.len(), on(BLACK, MAGENTA).add_modifier(Modifier::BOLD)), teams, chief]
+        [
+            count(needing, amber),
+            count(open_todos, style(FG_DARK)),
+            count(
+                self.idea_entries.len(),
+                on(BLACK, MAGENTA).add_modifier(Modifier::BOLD),
+            ),
+            teams,
+            chief,
+        ]
     }
 
     /// `1 Sessions 2  2 Todo 5  3 Ideas 3  4 Teams 1  5 Chief ●`: key caps and badges, the open tab
@@ -4281,7 +7576,13 @@ impl App {
     fn draw_tabs(&mut self, buffer: &mut Buffer, row: u16, width: u16) {
         const NAMES: [&str; 5] = ["Sessions", "Todo", "Ideas", "Teams", "Chief"];
         let badges = self.tab_badges();
-        let badge_width = |index: usize| if badges[index].0.is_empty() { 0 } else { 1 + 2 + width_of(&badges[index].0) as u16 };
+        let badge_width = |index: usize| {
+            if badges[index].0.is_empty() {
+                0
+            } else {
+                1 + 2 + width_of(&badges[index].0) as u16
+            }
+        };
         // How much of each tab shows: 3 in full, 2 key cap and badge, 1 key cap, 0 nothing.
         let mut shown = [3u8; 5];
         let tab_width = |index: usize, shown: u8| match shown {
@@ -4290,33 +7591,74 @@ impl App {
             1 => 3,
             _ => 0,
         };
-        let total = |shown: &[u8; 5]| (0..5).filter(|index| shown[*index] > 0).map(|index| tab_width(index, shown[index]) + 1).sum::<u16>();
+        let total = |shown: &[u8; 5]| {
+            (0..5)
+                .filter(|index| shown[*index] > 0)
+                .map(|index| tab_width(index, shown[index]) + 1)
+                .sum::<u16>()
+        };
         // Names go first, then plain badges, then tabs with nothing for Theo; an amber badge stays.
-        let is_amber = |index: usize| !badges[index].0.is_empty() && badges[index].1.bg == Some(color(YELLOW));
-        for (level, may_fold) in [(2, &(|_: usize| true) as &dyn Fn(usize) -> bool), (1, &|index| !is_amber(index)), (0, &|index| !is_amber(index))] {
+        let is_amber =
+            |index: usize| !badges[index].0.is_empty() && badges[index].1.bg == Some(color(YELLOW));
+        for (level, may_fold) in [
+            (2, &(|_: usize| true) as &dyn Fn(usize) -> bool),
+            (1, &|index| !is_amber(index)),
+            (0, &|index| !is_amber(index)),
+        ] {
             for index in (0..5).rev() {
-                if total(&shown) <= width { break; }
-                if TAB_PANELS[index] != self.focus && may_fold(index) && shown[index] > level { shown[index] = level; }
+                if total(&shown) <= width {
+                    break;
+                }
+                if TAB_PANELS[index] != self.focus && may_fold(index) && shown[index] > level {
+                    shown[index] = level;
+                }
             }
         }
         // The open tab never goes: past that, amber tabs give way, the farthest from it first.
         let open = TAB_PANELS.iter().position(|panel| *panel == self.focus);
         let mut by_distance: Vec<usize> = (0..5).filter(|index| Some(*index) != open).collect();
-        by_distance.sort_by_key(|index| (std::cmp::Reverse(open.map_or(0, |open| index.abs_diff(open))), std::cmp::Reverse(*index)));
+        by_distance.sort_by_key(|index| {
+            (
+                std::cmp::Reverse(open.map_or(0, |open| index.abs_diff(open))),
+                std::cmp::Reverse(*index),
+            )
+        });
         for index in by_distance {
-            if total(&shown) <= width { break; }
+            if total(&shown) <= width {
+                break;
+            }
             shown[index] = 0;
         }
-        put(buffer, row, 0, &" ".repeat(width.saturating_sub(1) as usize), Style::default());
+        put(
+            buffer,
+            row,
+            0,
+            &" ".repeat(width.saturating_sub(1) as usize),
+            Style::default(),
+        );
         let mut column = 0u16;
         for index in (0..5).filter(|index| shown[*index] > 0) {
             let panel = TAB_PANELS[index];
             let is_open = self.focus == panel;
             let tab_width = tab_width(index, shown[index]);
-            if column + tab_width >= width { break; }
-            let ground = if is_open { on(FG, BG_HIGHLIGHT).add_modifier(Modifier::BOLD) } else { style(FG_DARK) };
-            if is_open { put(buffer, row, column, &" ".repeat(tab_width as usize), ground); }
-            put(buffer, row, column, &format!(" {} ", index + 1), on(FG, BG_HIGHLIGHT).add_modifier(Modifier::BOLD));
+            if column + tab_width >= width {
+                break;
+            }
+            let ground = if is_open {
+                on(FG, BG_HIGHLIGHT).add_modifier(Modifier::BOLD)
+            } else {
+                style(FG_DARK)
+            };
+            if is_open {
+                put(buffer, row, column, &" ".repeat(tab_width as usize), ground);
+            }
+            put(
+                buffer,
+                row,
+                column,
+                &format!(" {} ", index + 1),
+                on(FG, BG_HIGHLIGHT).add_modifier(Modifier::BOLD),
+            );
             let mut end = column + 3;
             if shown[index] == 3 {
                 put(buffer, row, end + 1, NAMES[index], ground);
@@ -4324,37 +7666,75 @@ impl App {
             }
             let (badge, tint) = &badges[index];
             if !badge.is_empty() && shown[index] >= 2 {
-                let tint = if is_open && tint.bg.is_none() { tint.bg(color(BG_HIGHLIGHT)) } else { *tint };
+                let tint = if is_open && tint.bg.is_none() {
+                    tint.bg(color(BG_HIGHLIGHT))
+                } else {
+                    *tint
+                };
                 put(buffer, row, end + 1, &format!(" {badge} "), tint);
             }
-            self.tab_ranges.push((column, column + tab_width + 1, panel));
+            self.tab_ranges
+                .push((column, column + tab_width + 1, panel));
             column += tab_width + 1;
         }
         // Todo shows its scope and filter on its own first lines.
-        let subtitle = if self.is_status_open() { "Status".to_string() } else if self.focus == 3 { String::new() } else { self.subtitle(self.focus) };
+        let subtitle = if self.is_status_open() {
+            "Status".to_string()
+        } else if self.focus == 3 {
+            String::new()
+        } else {
+            self.subtitle(self.focus)
+        };
         let has_scroll_note = self.panels[self.focus].scroll > 0;
         let room = (width as usize).saturating_sub(column as usize + 3);
         if !subtitle.is_empty() && !has_scroll_note && room > 6 {
             let text = fit(&subtitle, room);
-            put(buffer, row, width.saturating_sub(2 + width_of(&text) as u16), &text, dim(FG_DARK));
+            put(
+                buffer,
+                row,
+                width.saturating_sub(2 + width_of(&text) as u16),
+                &text,
+                dim(FG_DARK),
+            );
         }
         self.hit_lines.remove(&row);
     }
 
     fn draw_footer(&self, buffer: &mut Buffer, row: u16, width: u16) {
         if !self.message.is_empty() {
-            put(buffer, row, 2, &self.message, style(if self.is_confirming { BLUE } else { FG }));
+            put(
+                buffer,
+                row,
+                2,
+                &self.message,
+                style(if self.is_confirming { BLUE } else { FG }),
+            );
             return;
         }
         let mut column = 2u16;
-        let details = if self.focus == 3 && self.saved_todo_scope.is_some() { vec![("Esc", "viewed project"), ("Enter", "Details")] }
-            else if self.focus == 3 { vec![("Enter", "Details")] } else { Vec::new() };
-        for (key, label) in details.into_iter().chain(self.panel_hints(self.focus)).chain(GLOBAL_HINTS) {
+        let details = if self.focus == 3 && self.saved_todo_scope.is_some() {
+            vec![("Esc", "viewed project"), ("Enter", "Details")]
+        } else if self.focus == 3 {
+            vec![("Enter", "Details")]
+        } else {
+            Vec::new()
+        };
+        for (key, label) in details
+            .into_iter()
+            .chain(self.panel_hints(self.focus))
+            .chain(GLOBAL_HINTS)
+        {
             if column as usize + width_of(key) + width_of(label) + 5 > width as usize {
                 break;
             }
             // Every key drawn as a key cap.
-            put(buffer, row, column, &format!(" {key} "), on(FG, BG_HIGHLIGHT).add_modifier(Modifier::BOLD));
+            put(
+                buffer,
+                row,
+                column,
+                &format!(" {key} "),
+                on(FG, BG_HIGHLIGHT).add_modifier(Modifier::BOLD),
+            );
             column += width_of(key) as u16 + 3;
             put(buffer, row, column, label, dim(FG_DARK));
             column += width_of(label) as u16 + 2;
@@ -4363,12 +7743,18 @@ impl App {
 
     /// `?`: the open tab's keys, then the keys that work everywhere (minus those the tab already
     /// lists), then, on Sessions, what the card signs mean.
-    pub(crate) fn help_sections(&self) -> (String, Vec<(&'static str, Vec<(&'static str, &'static str)>)>) {
+    pub(crate) fn help_sections(&self) -> (String, Vec<HelpSection>) {
         let tab = if self.is_status_open() { 0 } else { self.focus };
         let this_tab = Self::panel_help(tab);
-        let everywhere = GLOBAL_HELP.iter().copied().filter(|(key, _)| !this_tab.iter().any(|(own, _)| own == key)).collect();
+        let everywhere = GLOBAL_HELP
+            .iter()
+            .copied()
+            .filter(|(key, _)| !this_tab.iter().any(|(own, _)| own == key))
+            .collect();
         let mut sections = vec![("THIS TAB", this_tab), ("EVERYWHERE", everywhere)];
-        if tab == 1 { sections.push(("WHAT THE SIGNS MEAN", LEGEND.to_vec())); }
+        if tab == 1 {
+            sections.push(("WHAT THE SIGNS MEAN", LEGEND.to_vec()));
+        }
         (format!("Help · {}", PANEL_NAMES[tab]), sections)
     }
 
@@ -4378,18 +7764,37 @@ impl App {
         let box_height = height.saturating_sub(HEADER_LINES + 1);
         let last = HEADER_LINES + box_height.saturating_sub(1);
         for line in 0..box_height {
-            put(buffer, HEADER_LINES + line, 0, &" ".repeat(width.saturating_sub(1) as usize), style(FG));
+            put(
+                buffer,
+                HEADER_LINES + line,
+                0,
+                &" ".repeat(width.saturating_sub(1) as usize),
+                style(FG),
+            );
         }
-        let key_width = sections.iter().flat_map(|(_, entries)| entries.iter()).map(|(key, _)| width_of(key)).max().unwrap_or(1) as u16 + 2;
+        let key_width = sections
+            .iter()
+            .flat_map(|(_, entries)| entries.iter())
+            .map(|(key, _)| width_of(key))
+            .max()
+            .unwrap_or(1) as u16
+            + 2;
         let label_width = width.saturating_sub(key_width + 5) as usize;
         let mut lines = vec![Line::new(vec![segment(2, title, bold(FG))])];
         for (heading, entries) in sections {
             lines.push(Line::new(vec![segment(2, heading, bold(FG_DARK))]));
             for (key, label) in entries {
-                for (index, piece) in approval::wrap(label, label_width.max(8)).into_iter().enumerate() {
+                for (index, piece) in approval::wrap(label, label_width.max(8))
+                    .into_iter()
+                    .enumerate()
+                {
                     let mut parts = Vec::new();
                     if index == 0 && !key.is_empty() {
-                        parts.push(segment(2, format!(" {key} "), on(FG, BG_HIGHLIGHT).add_modifier(Modifier::BOLD)));
+                        parts.push(segment(
+                            2,
+                            format!(" {key} "),
+                            on(FG, BG_HIGHLIGHT).add_modifier(Modifier::BOLD),
+                        ));
                     }
                     parts.push(segment(2 + key_width + 1, piece, style(FG_DARK)));
                     lines.push(Line::new(parts));
@@ -4398,12 +7803,29 @@ impl App {
         }
         let visible = last.saturating_sub(HEADER_LINES + 1) as usize;
         self.help_scroll = self.help_scroll.min(lines.len().saturating_sub(visible));
-        for (index, line) in lines.iter().skip(self.help_scroll).take(visible).enumerate() {
+        for (index, line) in lines
+            .iter()
+            .skip(self.help_scroll)
+            .take(visible)
+            .enumerate()
+        {
             for (column, text, tint) in &line.segments {
-                put(buffer, HEADER_LINES + 1 + index as u16, *column, text, *tint);
+                put(
+                    buffer,
+                    HEADER_LINES + 1 + index as u16,
+                    *column,
+                    text,
+                    *tint,
+                );
             }
         }
-        put(buffer, last, 2, " esc ", on(FG, BG_HIGHLIGHT).add_modifier(Modifier::BOLD));
+        put(
+            buffer,
+            last,
+            2,
+            " esc ",
+            on(FG, BG_HIGHLIGHT).add_modifier(Modifier::BOLD),
+        );
         put(buffer, last, 8, "close · ↑↓ scroll", dim(FG_DARK));
     }
 
@@ -4422,7 +7844,9 @@ impl App {
         if let Some(mut composer) = self.todo_composer.take() {
             match composer.handle(key) {
                 Outcome::Editing => {
-                    if let Err(error) = composer.checkpoint() { composer.error = format!("Draft checkpoint failed: {error}"); }
+                    if let Err(error) = composer.checkpoint() {
+                        composer.error = format!("Draft checkpoint failed: {error}");
+                    }
                     self.todo_composer = Some(composer);
                 }
                 Outcome::Cancel => {
@@ -4430,59 +7854,88 @@ impl App {
                         composer.error = format!("Cannot discard draft: {error}");
                         self.todo_composer = Some(composer);
                     }
-                },
-                Outcome::Save => {
-                    match composer.save(&mut self.todos) {
-                        Ok(id) => {
-                            let viewed = current_session();
-                            self.saved_todo_scope = (composer.owner_session != viewed).then(|| SavedTodoScope {
-                                viewed_session: viewed, owner_session: composer.owner_session.clone(), project: composer.project.clone(),
-                            });
-                            if composer.id.is_none() { self.show_todo_tab(TODO_TAB_TO_DO); }
-                            self.reveal_todo(&id);
-                            self.message = if self.saved_todo_scope.is_some() { "saved · Esc returns to viewed project" } else { "saved" }.into();
-                        }
-                        Err(error) => { composer.error = error; self.todo_composer = Some(composer); }
-                    }
                 }
+                Outcome::Save => match composer.save(&mut self.todos) {
+                    Ok(id) => {
+                        let viewed = current_session();
+                        self.saved_todo_scope =
+                            (composer.owner_session != viewed).then(|| SavedTodoScope {
+                                viewed_session: viewed,
+                                owner_session: composer.owner_session.clone(),
+                                project: composer.project.clone(),
+                            });
+                        if composer.id.is_none() {
+                            self.show_todo_tab(TODO_TAB_TO_DO);
+                        }
+                        self.reveal_todo(&id);
+                        self.message = if self.saved_todo_scope.is_some() {
+                            "saved · Esc returns to viewed project"
+                        } else {
+                            "saved"
+                        }
+                        .into();
+                    }
+                    Err(error) => {
+                        composer.error = error;
+                        self.todo_composer = Some(composer);
+                    }
+                },
             }
         }
     }
 
     fn handle_click(&mut self, x: u16, y: u16, double: bool, screen: &mut dyn Screen) {
-        if y == HEADER_LINES {
-            if let Some((_, _, panel)) = self.tab_ranges.iter().find(|(start, end, _)| (*start..*end).contains(&x)).copied() {
-                self.focus_panel(panel);
-                return;
-            }
+        if y == HEADER_LINES
+            && let Some((_, _, panel)) = self
+                .tab_ranges
+                .iter()
+                .find(|(start, end, _)| (*start..*end).contains(&x))
+                .copied()
+        {
+            self.focus_panel(panel);
+            return;
         }
-        if let Some((start, end, action @ ("next-attention" | "session-details"))) = self.hit_actions.get(&y).copied() {
-            if (start..end).contains(&x) {
-                self.focus_panel(1);
-                self.message = self.handle_sessions(Key::Char(if action == "next-attention" { 'n' } else { 'i' }), screen);
-                return;
-            }
+        if let Some((start, end, action @ ("next-attention" | "session-details"))) =
+            self.hit_actions.get(&y).copied()
+            && (start..end).contains(&x)
+        {
+            self.focus_panel(1);
+            self.message = self.handle_sessions(
+                Key::Char(if action == "next-attention" { 'n' } else { 'i' }),
+                screen,
+            );
+            return;
         }
-        if let Some((start, end, "status")) = self.hit_actions.get(&y).copied() {
-            if (start..end).contains(&x) {
-                self.focus_panel(if self.focus == 0 { self.previous_panel } else { 0 });
-                return;
-            }
+        if let Some((start, end, "status")) = self.hit_actions.get(&y).copied()
+            && (start..end).contains(&x)
+        {
+            self.focus_panel(if self.focus == 0 {
+                self.previous_panel
+            } else {
+                0
+            });
+            return;
         }
-        let Some((panel_index, item)) = self.hit_lines.get(&y).copied() else { return };
+        let Some((panel_index, item)) = self.hit_lines.get(&y).copied() else {
+            return;
+        };
         self.focus_panel(panel_index);
         if let Some(item) = item {
             self.panels[panel_index].selected = item;
-            if panel_index == 0 { self.status_selection_lost = false; }
-            if panel_index == 1 { self.sidebar_selection_lost = false; }
-        }
-        if let Some((start, end, "effort")) = self.hit_actions.get(&y).copied() {
-            if (start..end).contains(&x) {
-                if let Some(session) = self.selected_session() {
-                    self.message = self.open_effort_menu(session, Some(y));
-                }
-                return;
+            if panel_index == 0 {
+                self.status_selection_lost = false;
             }
+            if panel_index == 1 {
+                self.sidebar_selection_lost = false;
+            }
+        }
+        if let Some((start, end, "effort")) = self.hit_actions.get(&y).copied()
+            && (start..end).contains(&x)
+        {
+            if let Some(session) = self.selected_session() {
+                self.message = self.open_effort_menu(session, Some(y));
+            }
+            return;
         }
         if double && item.is_some() {
             self.message = self.handle_panel(Key::Enter, screen);
@@ -4493,21 +7946,34 @@ impl App {
         match self.focus {
             0 => match key {
                 Key::Enter => {
-                    if self.status_selection_lost { return "Status selection changed: choose a row".into(); }
-                    match self.status_actions.get(self.panels[0].selected).copied().flatten() {
+                    if self.status_selection_lost {
+                        return "Status selection changed: choose a row".into();
+                    }
+                    match self
+                        .status_actions
+                        .get(self.panels[0].selected)
+                        .copied()
+                        .flatten()
+                    {
                         Some(StatusAction::ClaudeStatus) => {
-                            let _ = util::spawn_detached(Command::new("xdg-open").arg(status::PAGE));
+                            let _ =
+                                util::spawn_detached(Command::new("xdg-open").arg(status::PAGE));
                             "opening status.claude.com …".into()
-                        },
+                        }
                         Some(StatusAction::CodexStatus) => {
-                            let _ = util::spawn_detached(Command::new("xdg-open").arg(status::CODEX_PAGE));
+                            let _ = util::spawn_detached(
+                                Command::new("xdg-open").arg(status::CODEX_PAGE),
+                            );
                             "opening status.openai.com …".into()
-                        },
+                        }
                         Some(StatusAction::Digest) => self.manager_async(&["digest"]),
-                        Some(StatusAction::Clones) => { manager_in_background(&["clones"]); String::new() },
+                        Some(StatusAction::Clones) => {
+                            manager_in_background(&["clones"]);
+                            String::new()
+                        }
                         None => String::new(),
                     }
-                },
+                }
                 _ => String::new(),
             },
             1 => self.handle_sessions(key, screen),
@@ -4520,7 +7986,9 @@ impl App {
     }
 
     pub fn handle(&mut self, key: Key, screen: &mut dyn Screen) {
-        if key == Key::Resize { return; }
+        if key == Key::Resize {
+            return;
+        }
         if matches!(key, Key::FocusGained | Key::FocusLost) {
             self.has_pane_focus = key == Key::FocusGained;
             return;
@@ -4534,15 +8002,28 @@ impl App {
             self.message = self.handle_new_session(key);
             return;
         }
-        if matches!(key, Key::Paste(_)) && self.chief_view.as_ref().is_none_or(|view|view.suspended) { return; }
-        if let Some(todo) = self.session_details.as_ref().and_then(|details| details.todo.clone()) {
+        if matches!(key, Key::Paste(_))
+            && self.chief_view.as_ref().is_none_or(|view| view.suspended)
+        {
+            return;
+        }
+        if let Some(todo) = self
+            .session_details
+            .as_ref()
+            .and_then(|details| details.todo.clone())
+        {
             if key == Key::Char('T') {
-                self.message = self.open_task_trail(crate::continuity::TrailTarget::Task(todo), screen);
+                self.message =
+                    self.open_task_trail(crate::continuity::TrailTarget::Task(todo), screen);
                 return;
             }
             if key == Key::Char('i') {
                 self.session_details = None;
-                let Some(index) = self.todo_entries.iter().position(|entry| crate::continuity::task_key(entry) == todo) else {
+                let Some(index) = self
+                    .todo_entries
+                    .iter()
+                    .position(|entry| crate::continuity::task_key(entry) == todo)
+                else {
                     self.message = "This todo is no longer available".into();
                     return;
                 };
@@ -4553,12 +8034,21 @@ impl App {
                 return;
             }
         }
-        if self.session_details.as_ref().is_some_and(|details| !details.actions.is_empty()) && key == Key::Enter {
+        if self
+            .session_details
+            .as_ref()
+            .is_some_and(|details| !details.actions.is_empty())
+            && key == Key::Enter
+        {
             self.message = self.pick_detail_action(screen);
             return;
         }
         // Session details: its keys close it and act on the session, as on the card.
-        if let Some(details) = self.session_details.as_ref().filter(|details| details.session.is_some()) {
+        if let Some(details) = self
+            .session_details
+            .as_ref()
+            .filter(|details| details.session.is_some())
+        {
             let is_detail_key = matches!(&key, Key::Char(character) if details.key_groups.iter()
                 .any(|(_, keys)| keys.iter().any(|(own, _)| own.starts_with(*character))));
             if is_detail_key {
@@ -4570,8 +8060,13 @@ impl App {
                     return;
                 }
                 self.message = if key == Key::Char('v') {
-                    self.review_updates(session.as_deref().expect("session details have a target"), &displayed_updates)
-                } else { self.handle_sessions(key, screen) };
+                    self.review_updates(
+                        session.as_deref().expect("session details have a target"),
+                        &displayed_updates,
+                    )
+                } else {
+                    self.handle_sessions(key, screen)
+                };
                 return;
             }
         }
@@ -4584,10 +8079,12 @@ impl App {
                 Key::Char('g') => details.scroll = 0,
                 Key::Char('G') => details.scroll = usize::MAX,
                 Key::Esc | Key::Enter | Key::Char('i') => self.session_details = None,
-                Key::Char('c') => if let Some(session) = details.chief_answers_of.take() {
-                    self.session_details = None;
-                    self.message = self.open_chief_answers(Some(&session));
-                },
+                Key::Char('c') => {
+                    if let Some(session) = details.chief_answers_of.take() {
+                        self.session_details = None;
+                        self.message = self.open_chief_answers(Some(&session));
+                    }
+                }
                 _ => {}
             }
             return;
@@ -4626,48 +8123,81 @@ impl App {
         }
         match key {
             Key::Click { x, y, double } => self.handle_click(x, y, double, screen),
-            Key::Char('s') => self.focus_panel(if self.is_status_open() { self.previous_panel } else { 0 }),
+            Key::Char('s') => self.focus_panel(if self.is_status_open() {
+                self.previous_panel
+            } else {
+                0
+            }),
             Key::Esc if self.is_status_open() => self.focus_panel(self.previous_panel),
             Key::Char('p') if self.focus == 0 => self.focus_panel(2),
             // "4 team details" on a team block: the Teams tab opens on that team.
             Key::Char('4') if self.focus == 1 && self.selected_sidebar_task().is_some() => {
                 let task = self.selected_sidebar_task().expect("checked above");
                 self.message = self.open_teams_tab_on(&task);
-            },
-            Key::Char(digit @ '1'..='5') => self.focus_panel(TAB_PANELS[digit as usize - '1' as usize]),
+            }
+            Key::Char(digit @ '1'..='5') => {
+                self.focus_panel(TAB_PANELS[digit as usize - '1' as usize])
+            }
             Key::Char('j') | Key::Down => {
                 self.panels[self.focus].move_by(1);
-                if self.focus == 0 { self.status_selection_lost = false; }
-                if self.focus == 1 { self.sidebar_selection_lost = false; }
-            },
+                if self.focus == 0 {
+                    self.status_selection_lost = false;
+                }
+                if self.focus == 1 {
+                    self.sidebar_selection_lost = false;
+                }
+            }
             // In Sessions `k` opens the selected card's links (Theo, 2026-10-26); ↑ moves up there.
             Key::Char('k') if self.focus != 1 => {
                 self.panels[self.focus].move_by(-1);
-                if self.focus == 0 { self.status_selection_lost = false; }
-            },
+                if self.focus == 0 {
+                    self.status_selection_lost = false;
+                }
+            }
             Key::Up => {
                 self.panels[self.focus].move_by(-1);
-                if self.focus == 0 { self.status_selection_lost = false; }
-                if self.focus == 1 { self.sidebar_selection_lost = false; }
-            },
+                if self.focus == 0 {
+                    self.status_selection_lost = false;
+                }
+                if self.focus == 1 {
+                    self.sidebar_selection_lost = false;
+                }
+            }
             // From any panel, as ← comes back from the session (tmux.conf).
-            Key::Right => { let _ = Command::new("cockpit").arg("focus-viewer").status(); }
-            Key::Char('?') => { self.help_open = true; self.help_scroll = 0; }
+            Key::Right => {
+                let _ = Command::new("cockpit").arg("focus-viewer").status();
+            }
+            Key::Char('?') => {
+                self.help_open = true;
+                self.help_scroll = 0;
+            }
             Key::Char('N') => self.open_new_session(),
             Key::Char('S') => self.settings_menu = Some(SettingsMenu::new()),
             Key::Char('H') => {
                 let past = self.past_sessions();
-                if let Some(index) = screen.outside(&mut || pick_past_session(&past)).and_then(|chosen| chosen.parse::<usize>().ok()) {
+                if let Some(index) = screen
+                    .outside(&mut || pick_past_session(&past))
+                    .and_then(|chosen| chosen.parse::<usize>().ok())
+                {
                     let chosen = &past[index].0;
                     self.message = match queue::reserve_resume(&chosen.cwd, &chosen.session) {
-                        Ok(token) => match queue::launch_reserved(&token,&["resume", &chosen.cwd, &chosen.session],true) {Ok(())=>"resuming conversation".into(),Err(error)=>error},
+                        Ok(token) => match queue::launch_reserved(
+                            &token,
+                            &["resume", &chosen.cwd, &chosen.session],
+                            true,
+                        ) {
+                            Ok(()) => "resuming conversation".into(),
+                            Err(error) => error,
+                        },
                         Err(error) => error,
                     };
                 }
             }
             Key::Char('P') => self.message = self.manager_async(&["prs"]),
             Key::Char('W') => self.message = open_in_scratchpad("claude", ""),
-            Key::Char('G') => self.message = open_in_scratchpad("greyproxy", "http://localhost:43080/pending"),
+            Key::Char('G') => {
+                self.message = open_in_scratchpad("greyproxy", "http://localhost:43080/pending")
+            }
             Key::Char('q') | Key::Ctrl('c') => {
                 if self.confirm(screen, "close the manager window? sessions keep running") {
                     let _ = Command::new("tmux").arg("detach-client").status();
@@ -4677,17 +8207,34 @@ impl App {
         }
     }
 
-    fn launch_design_session(&mut self, directory: &str, canvas_link: &str) -> Result<String, String> {
-        let url = sessions::canvas_address(canvas_link).ok_or_else(|| "not a canvas link: claude.ai/artifact/<id>, or a chat link with ?artifact=<id>".to_string())?;
+    fn launch_design_session(
+        &mut self,
+        directory: &str,
+        canvas_link: &str,
+    ) -> Result<String, String> {
+        let url = sessions::canvas_address(canvas_link).ok_or_else(|| {
+            "not a canvas link: claude.ai/artifact/<id>, or a chat link with ?artifact=<id>"
+                .to_string()
+        })?;
         manager_in_background(&["new", directory, &sessions::design_prompt(&url)]);
-        Ok(format!("starting a design session in {} …", project_name(directory)))
+        Ok(format!(
+            "starting a design session in {} …",
+            project_name(directory)
+        ))
     }
 
     /// `m` on a card: Remote Control (phone / claude.ai/code) on or off.
     fn toggle_remote(&mut self) -> String {
         match self.selected_session().filter(|s| s.state != "unknown") {
-            Some(s) if s.is_external() => "external session: no terminal target; use its own window".into(),
-            Some(s) if !s.agent().can(Feature::RemoteControl) => format!("Remote Control is not {}'s to do: {} runs {}", s.agent().label, s.project, s.agent().name),
+            Some(s) if s.is_external() => {
+                "external session: no terminal target; use its own window".into()
+            }
+            Some(s) if !s.agent().can(Feature::RemoteControl) => format!(
+                "Remote Control is not {}'s to do: {} runs {}",
+                s.agent().label,
+                s.project,
+                s.agent().name
+            ),
             Some(s) => {
                 manager_in_background(&["remote", &s.session]);
                 format!("toggling remote control for {} …", s.project)
@@ -4700,7 +8247,16 @@ impl App {
     fn drop_queued(&mut self, screen: &mut dyn Screen) -> String {
         match self.selected_session().filter(|s| s.state != "unknown") {
             Some(s) if prompts::count(&s.session) == 0 => "no prompt queued for it".into(),
-            Some(s) if self.confirm(screen, &format!("drop the {} prompt(s) queued for {}?", prompts::count(&s.session), s.project)) => {
+            Some(s)
+                if self.confirm(
+                    screen,
+                    &format!(
+                        "drop the {} prompt(s) queued for {}?",
+                        prompts::count(&s.session),
+                        s.project
+                    ),
+                ) =>
+            {
                 prompts::clear(&s.session);
                 "queued prompts dropped".into()
             }
@@ -4709,28 +8265,39 @@ impl App {
     }
 
     fn team_control(action: crate::teams::HostAction) -> Result<Value, crate::teams::TeamError> {
-        crate::teams::client::host_request(&crate::teams::HostRequest::Control { action }).and_then(|reply| reply.result)
+        crate::teams::client::host_request(&crate::teams::HostRequest::Control { action })
+            .and_then(|reply| reply.result)
     }
 
     fn team_snapshot() -> Result<Value, crate::teams::TeamError> {
-        crate::teams::client::host_request(&crate::teams::HostRequest::Snapshot).and_then(|reply| reply.result)
+        crate::teams::client::host_request(&crate::teams::HostRequest::Snapshot)
+            .and_then(|reply| reply.result)
     }
 
     /// Every 10 s: what in the linked teams waits for Theo, and each member's role, for the cards.
     pub(crate) fn check_team(&mut self) {
         let now = util::now();
-        if now - self.team_checked < 10.0 { return; }
+        if now - self.team_checked < 10.0 {
+            return;
+        }
         self.team_checked = now;
         self.chief_answers.clear();
         // The full Chief snapshot is read only while it shows; the tab's badge comes with the team snapshot.
-        if matches!(self.focus, 0 | CHIEF_PANEL) { self.refresh_chief_status(); }
-        if self.chief_view.is_some() { self.refresh_chief_view(); }
+        if matches!(self.focus, 0 | CHIEF_PANEL) {
+            self.refresh_chief_status();
+        }
+        if self.chief_view.is_some() {
+            self.refresh_chief_view();
+        }
         util::refresh_hyprland_instance();
         let workspace = util::output_of("hyprctl", &["-j", "activeworkspace"])
-            .and_then(|text| serde_json::from_str::<Value>(&text).ok()).and_then(|workspace|workspace["id"].as_i64());
+            .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+            .and_then(|workspace| workspace["id"].as_i64());
         if let Some(workspace) = workspace {
             let _ = crate::teams::client::host_request(&crate::teams::HostRequest::ChiefFocus {
-                viewed:current_session(), workspace_active:workspace == util::CLAUDE_WORKSPACE, gaming:(self.gaming)(),
+                viewed: current_session(),
+                workspace_active: workspace == util::CLAUDE_WORKSPACE,
+                gaming: (self.gaming)(),
             });
         }
         if !paths::team_host_socket().exists() {
@@ -4755,17 +8322,45 @@ impl App {
             return;
         }
         self.team_known = true;
-        self.chief_answers = snapshot["chief_answers"].as_array().into_iter().flatten().filter_map(|entry| {
-            let count = entry["count"].as_u64().filter(|count| *count > 0)? as usize;
-            Some((entry["session_id"].as_str()?.to_string(), ChiefAnswers { count, recent: entry["recent"].as_array().cloned().unwrap_or_default() }))
-        }).collect();
+        self.chief_answers = snapshot["chief_answers"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|entry| {
+                let count = entry["count"].as_u64().filter(|count| *count > 0)? as usize;
+                Some((
+                    entry["session_id"].as_str()?.to_string(),
+                    ChiefAnswers {
+                        count,
+                        recent: entry["recent"].as_array().cloned().unwrap_or_default(),
+                    },
+                ))
+            })
+            .collect();
         self.team_attention = crate::teams::view::TeamView::attention(&snapshot);
-        self.qa_sessions = snapshot["members"].as_array().into_iter().flatten()
+        self.qa_sessions = snapshot["members"]
+            .as_array()
+            .into_iter()
+            .flatten()
             .chain(snapshot["spawns"].as_array().into_iter().flatten())
             .filter(|row| row["role"] == "qa")
-            .filter_map(|row| row["session_id"].as_str().map(str::to_string)).collect();
-        self.team_roles = snapshot["members"].as_array().into_iter().flatten().filter_map(|member| Some((member["session_id"].as_str()?.to_string(),
-            format!("team {} · {}", member["role"].as_str()?, member["task_id"].as_str()?)))).collect();
+            .filter_map(|row| row["session_id"].as_str().map(str::to_string))
+            .collect();
+        self.team_roles = snapshot["members"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|member| {
+                Some((
+                    member["session_id"].as_str()?.to_string(),
+                    format!(
+                        "team {} · {}",
+                        member["role"].as_str()?,
+                        member["task_id"].as_str()?
+                    ),
+                ))
+            })
+            .collect();
         self.team_links = TeamLinks::Ready(snapshot);
     }
 
@@ -4774,7 +8369,7 @@ impl App {
             Ok(snapshot) => {
                 self.team_view = Some(crate::teams::view::TeamView::new(snapshot));
                 String::new()
-            },
+            }
             Err(error) => format!("Team view: {}", error.message),
         }
     }
@@ -4784,49 +8379,86 @@ impl App {
         let snapshot = match Self::team_snapshot() {
             Ok(snapshot) => snapshot,
             Err(error) => {
-                if let Some(view) = self.team_view.as_mut() { view.snapshot_error = Some(crate::approval::escape_hiding(&error.message, "", "")); }
+                if let Some(view) = self.team_view.as_mut() {
+                    view.snapshot_error =
+                        Some(crate::approval::escape_hiding(&error.message, "", ""));
+                }
                 return;
-            },
+            }
         };
         if let Some(view) = self.team_view.as_mut() {
             view.snapshot = snapshot;
             view.snapshot_error = None;
             view.detail_scroll = 0;
             let rows = view.rows();
-            view.selected = if to_request { 0 } else { view.selected.min(rows.len().saturating_sub(1)) };
+            view.selected = if to_request {
+                0
+            } else {
+                view.selected.min(rows.len().saturating_sub(1))
+            };
         }
     }
 
     fn handle_team_view(&mut self, key: Key, screen: &mut dyn Screen) -> String {
-        let Some(view) = self.team_view.as_mut() else { return String::new() };
-        if view.snapshot_error.is_some() && (key == Key::Char('l') || (matches!(view.selected_row(), Some(crate::teams::view::Row::LinkProposal(_) | crate::teams::view::Row::Link(_)))
-            && matches!(key, Key::Char('a' | 'e' | 'x' | 'u')))) {
+        let Some(view) = self.team_view.as_mut() else {
+            return String::new();
+        };
+        if view.snapshot_error.is_some()
+            && (key == Key::Char('l')
+                || (matches!(
+                    view.selected_row(),
+                    Some(
+                        crate::teams::view::Row::LinkProposal(_) | crate::teams::view::Row::Link(_)
+                    )
+                ) && matches!(key, Key::Char('a' | 'e' | 'x' | 'u'))))
+        {
             return "Collaboration status unavailable: r refresh before changing links".into();
         }
         match key {
             Key::Esc | Key::Char('q') => {
                 self.team_view = None;
                 String::new()
-            },
+            }
             Key::Tab => {
                 view.is_history = !view.is_history;
                 view.selected = 0;
                 view.detail_scroll = 0;
                 String::new()
-            },
-            Key::Char('j') | Key::Down => { view.move_by(1); String::new() },
-            Key::Char('k') | Key::Up => { view.move_by(-1); String::new() },
-            Key::Right => {
-                let lines = view.detail().iter().flat_map(|text| wrap_detail_text(text, self.width.saturating_sub(6).max(2) as usize)).count();
-                view.detail_scroll = view.detail_scroll.saturating_add(1).min(lines.saturating_sub(1));
+            }
+            Key::Char('j') | Key::Down => {
+                view.move_by(1);
                 String::new()
-            },
-            Key::Left => { view.detail_scroll = view.detail_scroll.saturating_sub(1); String::new() },
+            }
+            Key::Char('k') | Key::Up => {
+                view.move_by(-1);
+                String::new()
+            }
+            Key::Right => {
+                let lines = view
+                    .detail()
+                    .iter()
+                    .flat_map(|text| {
+                        wrap_detail_text(text, self.width.saturating_sub(6).max(2) as usize)
+                    })
+                    .count();
+                view.detail_scroll = view
+                    .detail_scroll
+                    .saturating_add(1)
+                    .min(lines.saturating_sub(1));
+                String::new()
+            }
+            Key::Left => {
+                view.detail_scroll = view.detail_scroll.saturating_sub(1);
+                String::new()
+            }
             Key::Char('r') => {
                 self.refresh_team_view(false);
-                self.team_view.as_ref().and_then(|view| view.snapshot_error.as_ref())
-                    .map(|error| format!("Collaboration snapshot unavailable: {error}")).unwrap_or_default()
-            },
+                self.team_view
+                    .as_ref()
+                    .and_then(|view| view.snapshot_error.as_ref())
+                    .map(|error| format!("Collaboration snapshot unavailable: {error}"))
+                    .unwrap_or_default()
+            }
             Key::Char('n') => self.create_team_request(screen),
             Key::Char('l') => self.create_link_request(screen),
             _ => match view.selected_row() {
@@ -4836,59 +8468,140 @@ impl App {
         }
     }
 
-    fn team_row_action(&mut self, row: crate::teams::view::Row, key: Key, screen: &mut dyn Screen) -> String {
+    fn team_row_action(
+        &mut self,
+        row: crate::teams::view::Row,
+        key: Key,
+        screen: &mut dyn Screen,
+    ) -> String {
         use crate::teams::{HostAction, TaskKey, view::Row};
         let token = || format!("cockpit-{}", util::token_hex(8));
         let view = self.team_view.as_ref().expect("the Team view is open");
         let outcome = match (row, key) {
-            (Row::LinkProposal(index), key @ Key::Char('a' | 'e' | 'x')) => return self.link_request_action(index, key, screen),
+            (Row::LinkProposal(index), key @ Key::Char('a' | 'e' | 'x')) => {
+                return self.link_request_action(index, key, screen);
+            }
             (Row::Link(index), Key::Char('u')) if view.link(index)["state"] == "active" => {
-                let link_id = view.link(index)["link_id"].as_str().unwrap_or("").to_string();
+                let link_id = view.link(index)["link_id"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string();
                 if !self.confirm(screen, &format!("revoke link {link_id}? queued messages and safe retries are cancelled; submitted messages cannot be recalled")) { return String::new() }
-                return self.finish_link_action(HostAction::LinkRevoke { request_id:token(), link_id }, "link revoked; queued messages and safe retries cancelled");
-            },
-            (Row::Proposal(index), Key::Char('a')) => return self.approve_team_request(index, screen),
+                return self.finish_link_action(
+                    HostAction::LinkRevoke {
+                        request_id: token(),
+                        link_id,
+                    },
+                    "link revoked; queued messages and safe retries cancelled",
+                );
+            }
+            (Row::Proposal(index), Key::Char('a')) => {
+                return self.approve_team_request(index, screen);
+            }
             (Row::Proposal(index), Key::Char('e')) => return self.edit_team_request(index, screen),
             (Row::Proposal(index), Key::Char('x')) => {
                 let proposal = view.proposal(index).clone();
-                if !self.confirm(screen, "reject this team request? no links are made") { return String::new() }
-                Self::team_control(HostAction::Reject { request_id: token(), proposal_id: proposal["proposal_id"].as_str().unwrap_or("").into(),
-                    expected_revision: proposal["revision"].as_i64().unwrap_or(0) }).map(|_| "request rejected: no links were made".to_string())
-            },
+                if !self.confirm(screen, "reject this team request? no links are made") {
+                    return String::new();
+                }
+                Self::team_control(HostAction::Reject {
+                    request_id: token(),
+                    proposal_id: proposal["proposal_id"].as_str().unwrap_or("").into(),
+                    expected_revision: proposal["revision"].as_i64().unwrap_or(0),
+                })
+                .map(|_| "request rejected: no links were made".to_string())
+            }
             (Row::Member(index), Key::Char('u')) => {
                 let member = view.member(index).clone();
                 let text = |key: &str| member[key].as_str().unwrap_or("").to_string();
-                if !self.confirm(screen, &format!("unlink {} {}? its pending messages and retries are cancelled", text("role"), text("session_id"))) {
+                if !self.confirm(
+                    screen,
+                    &format!(
+                        "unlink {} {}? its pending messages and retries are cancelled",
+                        text("role"),
+                        text("session_id")
+                    ),
+                ) {
                     return String::new();
                 }
-                Self::team_control(HostAction::Unlink { request_id: token(), task: TaskKey { project: text("project"), task_id: text("task_id") },
-                    session_id: text("session_id") }).map(|_| "unlinked: it can no longer message the team".to_string())
-            },
+                Self::team_control(HostAction::Unlink {
+                    request_id: token(),
+                    task: TaskKey {
+                        project: text("project"),
+                        task_id: text("task_id"),
+                    },
+                    session_id: text("session_id"),
+                })
+                .map(|_| "unlinked: it can no longer message the team".to_string())
+            }
             (Row::Escalation(index), Key::Char('s')) => {
-                let thread_id = view.escalation(index)["thread_id"].as_str().unwrap_or("").to_string();
+                let thread_id = view.escalation(index)["thread_id"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string();
                 let note = input_line(screen, "resolution note for the team (empty cancels)> ");
-                if note.trim().is_empty() { return String::new() }
-                Self::team_control(HostAction::Resolve { request_id: token(), thread_id, note }).map(|_| "escalation resolved".to_string())
-            },
+                if note.trim().is_empty() {
+                    return String::new();
+                }
+                Self::team_control(HostAction::Resolve {
+                    request_id: token(),
+                    thread_id,
+                    note,
+                })
+                .map(|_| "escalation resolved".to_string())
+            }
             (Row::FailedStart(index), Key::Char('d')) => {
-                let spawn_token = view.snapshot["spawns"][index]["token"].as_str().unwrap_or("").to_string();
-                if !self.confirm(screen, "dismiss this team start? it is not started again either way") { return String::new() }
-                Self::team_control(HostAction::Dismiss { request_id: token(), token: spawn_token }).map(|_| "dismissed".to_string())
-            },
+                let spawn_token = view.snapshot["spawns"][index]["token"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string();
+                if !self.confirm(
+                    screen,
+                    "dismiss this team start? it is not started again either way",
+                ) {
+                    return String::new();
+                }
+                Self::team_control(HostAction::Dismiss {
+                    request_id: token(),
+                    token: spawn_token,
+                })
+                .map(|_| "dismissed".to_string())
+            }
             (Row::Uncertain(index), Key::Char(choice @ ('h' | 'c'))) => {
-                let message_id = view.message(index)["message_id"].as_str().unwrap_or("").to_string();
-                let (decision, question) = if choice == 'h' { ("handled", "it reached the session: mark it handled?") }
-                                           else { ("cancel", "cancel this delivery? it is not sent again") };
-                if !self.confirm(screen, question) { return String::new() }
-                Self::team_control(HostAction::Reconcile { request_id: token(), message_id, decision: decision.into() })
-                    .map(|_| format!("delivery {decision}"))
-            },
+                let message_id = view.message(index)["message_id"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string();
+                let (decision, question) = if choice == 'h' {
+                    ("handled", "it reached the session: mark it handled?")
+                } else {
+                    ("cancel", "cancel this delivery? it is not sent again")
+                };
+                if !self.confirm(screen, question) {
+                    return String::new();
+                }
+                Self::team_control(HostAction::Reconcile {
+                    request_id: token(),
+                    message_id,
+                    decision: decision.into(),
+                })
+                .map(|_| format!("delivery {decision}"))
+            }
             (Row::FailedDelivery(index), Key::Char('c')) => {
-                let message_id = view.message(index)["message_id"].as_str().unwrap_or("").to_string();
-                if !self.confirm(screen, "cancel this failed delivery? it is not sent again") { return String::new() }
-                Self::team_control(HostAction::Reconcile { request_id: token(), message_id, decision: "cancel".into() })
-                    .map(|_| "failed delivery cancelled".to_string())
-            },
+                let message_id = view.message(index)["message_id"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string();
+                if !self.confirm(screen, "cancel this failed delivery? it is not sent again") {
+                    return String::new();
+                }
+                Self::team_control(HostAction::Reconcile {
+                    request_id: token(),
+                    message_id,
+                    decision: "cancel".into(),
+                })
+                .map(|_| "failed delivery cancelled".to_string())
+            }
             _ => return String::new(),
         };
         self.refresh_team_view(false);
@@ -4901,89 +8614,227 @@ impl App {
         match outcome {
             Ok(receipt) => {
                 if let Some(view) = self.team_view.as_mut() {
-                    if receipt["status"] == "pending" { view.is_history = false; }
+                    if receipt["status"] == "pending" {
+                        view.is_history = false;
+                    }
                     if let Some(index) = view.rows().iter().position(|row| match row {
-                        crate::teams::view::Row::LinkProposal(index) => view.link_proposal(*index)["proposal_id"] == receipt["proposal_id"],
-                        crate::teams::view::Row::Link(index) => view.link(*index)["link_id"] == receipt["link_id"],
+                        crate::teams::view::Row::LinkProposal(index) => {
+                            view.link_proposal(*index)["proposal_id"] == receipt["proposal_id"]
+                        }
+                        crate::teams::view::Row::Link(index) => {
+                            view.link(*index)["link_id"] == receipt["link_id"]
+                        }
                         _ => false,
                     }) {
                         view.selected = index;
                     }
                 }
                 success.into()
-            },
-            Err(error) => format!("Link action {}: {}. Refresh to inspect current status; no automatic retry.",
-                if error.code == crate::teams::ErrorCode::Unavailable { "outcome unknown" } else { "failed" },
-                crate::approval::escape_hiding(&error.message, "", "")),
+            }
+            Err(error) => format!(
+                "Link action {}: {}. Refresh to inspect current status; no automatic retry.",
+                if error.code == crate::teams::ErrorCode::Unavailable {
+                    "outcome unknown"
+                } else {
+                    "failed"
+                },
+                crate::approval::escape_hiding(&error.message, "", "")
+            ),
         }
     }
 
     fn link_request_action(&mut self, index: usize, key: Key, screen: &mut dyn Screen) -> String {
         use crate::teams::HostAction;
-        let proposal = self.team_view.as_ref().expect("collaboration view open").link_proposal(index).clone();
-        if proposal["status"] != "pending" { return String::new() }
-        let Some(proposal_id) = proposal["proposal_id"].as_str() else { return "Link request identity unavailable".into() };
-        let Some(expected_revision) = proposal["revision"].as_i64() else { return "Link request revision unavailable".into() };
+        let proposal = self
+            .team_view
+            .as_ref()
+            .expect("collaboration view open")
+            .link_proposal(index)
+            .clone();
+        if proposal["status"] != "pending" {
+            return String::new();
+        }
+        let Some(proposal_id) = proposal["proposal_id"].as_str() else {
+            return "Link request identity unavailable".into();
+        };
+        let Some(expected_revision) = proposal["revision"].as_i64() else {
+            return "Link request revision unavailable".into();
+        };
         let request_id = format!("cockpit-{}", util::token_hex(8));
         let (action, success) = match key {
             Key::Char('a') => {
-                let Some(mapping_hash) = proposal["mapping_hash"].as_str() else { return "Link request hash unavailable".into() };
-                if !self.confirm(screen, "approve exactly this link revision/hash, pair, TODO and purpose? messaging only; no team role") { return String::new() }
-                (HostAction::LinkApprove {request_id,proposal_id:proposal_id.into(),expected_revision,mapping_hash:mapping_hash.into()},
-                    "link approved: messaging-only for this exact pair and shared TODO")
-            },
-            Key::Char('x') => {
-                if !self.confirm(screen, "reject this exact link request? no messaging permission is granted") { return String::new() }
-                (HostAction::LinkReject {request_id,proposal_id:proposal_id.into(),expected_revision},"link request rejected")
-            },
-            Key::Char('e') => {
-                let Some(requester) = proposal["sender"].as_str() else { return "Link requester unavailable".into() };
-                let replacement = match self.pick_link(screen,Some(requester)) {
-                    Ok(Some((_, replacement))) => replacement, Ok(None) => return String::new(), Err(error) => return error,
+                let Some(mapping_hash) = proposal["mapping_hash"].as_str() else {
+                    return "Link request hash unavailable".into();
                 };
-                (HostAction::LinkEdit {request_id,proposal_id:proposal_id.into(),expected_revision,replacement},
-                    "edited: the new revision needs its own approval (a)")
-            },
+                if !self.confirm(screen, "approve exactly this link revision/hash, pair, TODO and purpose? messaging only; no team role") { return String::new() }
+                (
+                    HostAction::LinkApprove {
+                        request_id,
+                        proposal_id: proposal_id.into(),
+                        expected_revision,
+                        mapping_hash: mapping_hash.into(),
+                    },
+                    "link approved: messaging-only for this exact pair and shared TODO",
+                )
+            }
+            Key::Char('x') => {
+                if !self.confirm(
+                    screen,
+                    "reject this exact link request? no messaging permission is granted",
+                ) {
+                    return String::new();
+                }
+                (
+                    HostAction::LinkReject {
+                        request_id,
+                        proposal_id: proposal_id.into(),
+                        expected_revision,
+                    },
+                    "link request rejected",
+                )
+            }
+            Key::Char('e') => {
+                let Some(requester) = proposal["sender"].as_str() else {
+                    return "Link requester unavailable".into();
+                };
+                let replacement = match self.pick_link(screen, Some(requester)) {
+                    Ok(Some((_, replacement))) => replacement,
+                    Ok(None) => return String::new(),
+                    Err(error) => return error,
+                };
+                (
+                    HostAction::LinkEdit {
+                        request_id,
+                        proposal_id: proposal_id.into(),
+                        expected_revision,
+                        replacement,
+                    },
+                    "edited: the new revision needs its own approval (a)",
+                )
+            }
             _ => return String::new(),
         };
-        self.finish_link_action(action,success)
+        self.finish_link_action(action, success)
     }
 
     /// Only the host's verified live registry is offered, never free-form participant IDs.
-    fn pick_link(&mut self, screen: &mut dyn Screen, requester: Option<&str>) -> Result<Option<(String, crate::teams::LinkProposal)>, String> {
+    fn pick_link(
+        &mut self,
+        screen: &mut dyn Screen,
+        requester: Option<&str>,
+    ) -> Result<Option<(String, crate::teams::LinkProposal)>, String> {
         use crate::teams::{LinkProposal, TaskKey};
         let snapshot = Self::team_snapshot().map_err(|error| error.message)?;
-        let sessions = snapshot["sessions"].as_array().ok_or("verified live sessions unavailable")?;
-        let display = |value: &str| crate::approval::escape_hiding(value, "", "").replace(['\n','\r','\t'], " ");
-        let choices = |exclude: Option<&str>| sessions.iter().filter(|session| session["session_id"].as_str() != exclude)
-            .filter_map(|session| Some(format!("{}\t{} · {} · {}", session["session_id"].as_str()?,
-                display(session["agent"].as_str()?), display(session["project"].as_str()?), display(session["label"].as_str().unwrap_or(""))))).collect::<Vec<_>>();
-        let requester = if let Some(requester) = requester { requester.to_string() } else {
-            let Some(picked) = screen.outside(&mut || fzf("link first session> ", &choices(None), &["--delimiter", "\t", "--with-nth", "1.."])) else { return Ok(None) };
+        let sessions = snapshot["sessions"]
+            .as_array()
+            .ok_or("verified live sessions unavailable")?;
+        let display = |value: &str| {
+            crate::approval::escape_hiding(value, "", "").replace(['\n', '\r', '\t'], " ")
+        };
+        let choices = |exclude: Option<&str>| {
+            sessions
+                .iter()
+                .filter(|session| session["session_id"].as_str() != exclude)
+                .filter_map(|session| {
+                    Some(format!(
+                        "{}\t{} · {} · {}",
+                        session["session_id"].as_str()?,
+                        display(session["agent"].as_str()?),
+                        display(session["project"].as_str()?),
+                        display(session["label"].as_str().unwrap_or(""))
+                    ))
+                })
+                .collect::<Vec<_>>()
+        };
+        let requester = if let Some(requester) = requester {
+            requester.to_string()
+        } else {
+            let Some(picked) = screen.outside(&mut || {
+                fzf(
+                    "link first session> ",
+                    &choices(None),
+                    &["--delimiter", "\t", "--with-nth", "1.."],
+                )
+            }) else {
+                return Ok(None);
+            };
             picked.split('\t').next().unwrap_or("").to_string()
         };
-        let first = sessions.iter().find(|session| session["session_id"] == requester).ok_or("requester is not a verified live session")?;
-        let Some(picked) = screen.outside(&mut || fzf("link peer session> ", &choices(Some(&requester)), &["--delimiter", "\t", "--with-nth", "1.."])) else { return Ok(None) };
+        let first = sessions
+            .iter()
+            .find(|session| session["session_id"] == requester)
+            .ok_or("requester is not a verified live session")?;
+        let Some(picked) = screen.outside(&mut || {
+            fzf(
+                "link peer session> ",
+                &choices(Some(&requester)),
+                &["--delimiter", "\t", "--with-nth", "1.."],
+            )
+        }) else {
+            return Ok(None);
+        };
         let peer_id = picked.split('\t').next().unwrap_or("");
-        let peer = sessions.iter().find(|session| session["session_id"] == peer_id && peer_id != requester).ok_or("peer is not a distinct verified live session")?;
-        let owners: Vec<String> = [first, peer].iter().filter_map(|session| session["project"].as_str()).map(|project| format!("{project}\t{project}")).collect();
-        let Some(owner) = screen.outside(&mut || fzf("shared TODO owning project> ", &owners, &["--delimiter", "\t", "--with-nth", "2.."])) else { return Ok(None) };
+        let peer = sessions
+            .iter()
+            .find(|session| session["session_id"] == peer_id && peer_id != requester)
+            .ok_or("peer is not a distinct verified live session")?;
+        let owners: Vec<String> = [first, peer]
+            .iter()
+            .filter_map(|session| session["project"].as_str())
+            .map(|project| format!("{project}\t{project}"))
+            .collect();
+        let Some(owner) = screen.outside(&mut || {
+            fzf(
+                "shared TODO owning project> ",
+                &owners,
+                &["--delimiter", "\t", "--with-nth", "2.."],
+            )
+        }) else {
+            return Ok(None);
+        };
         let owner = owner.split('\t').next().unwrap_or("");
-        if ![first, peer].iter().any(|session| session["project"] == owner) { return Err("TODO owner must be one of the verified participant projects".into()) }
-        let task_id = input_line(screen,"shared local TODO id (empty cancels)> ");
-        if task_id.trim().is_empty() { return Ok(None) }
-        let purpose = input_line(screen,"link purpose (empty cancels)> ");
-        if purpose.trim().is_empty() { return Ok(None) }
-        Ok(Some((requester,LinkProposal {submission_key:format!("host-{}",util::token_hex(8)),
-            task:TaskKey {project:owner.into(),task_id:task_id.trim().into()},peer_session_id:peer_id.into(),purpose})))
+        if ![first, peer]
+            .iter()
+            .any(|session| session["project"] == owner)
+        {
+            return Err("TODO owner must be one of the verified participant projects".into());
+        }
+        let task_id = input_line(screen, "shared local TODO id (empty cancels)> ");
+        if task_id.trim().is_empty() {
+            return Ok(None);
+        }
+        let purpose = input_line(screen, "link purpose (empty cancels)> ");
+        if purpose.trim().is_empty() {
+            return Ok(None);
+        }
+        Ok(Some((
+            requester,
+            LinkProposal {
+                submission_key: format!("host-{}", util::token_hex(8)),
+                task: TaskKey {
+                    project: owner.into(),
+                    task_id: task_id.trim().into(),
+                },
+                peer_session_id: peer_id.into(),
+                purpose,
+            },
+        )))
     }
 
     fn create_link_request(&mut self, screen: &mut dyn Screen) -> String {
-        let (requester_session_id, proposal) = match self.pick_link(screen,None) {
-            Ok(Some(request)) => request, Ok(None) => return String::new(), Err(error) => return error,
+        let (requester_session_id, proposal) = match self.pick_link(screen, None) {
+            Ok(Some(request)) => request,
+            Ok(None) => return String::new(),
+            Err(error) => return error,
         };
-        self.finish_link_action(crate::teams::HostAction::LinkPropose {request_id:format!("cockpit-{}",util::token_hex(8)),requester_session_id,proposal},
-            "link request created: review its exact mapping, then a approves it")
+        self.finish_link_action(
+            crate::teams::HostAction::LinkPropose {
+                request_id: format!("cockpit-{}", util::token_hex(8)),
+                requester_session_id,
+                proposal,
+            },
+            "link request created: review its exact mapping, then a approves it",
+        )
     }
 
     fn approve_team_request(&mut self, index: usize, screen: &mut dyn Screen) -> String {
@@ -4992,87 +8843,197 @@ impl App {
         let proposal = view.proposal(index).clone();
         let mapping = view.mapping(index);
         let text = |key: &str| proposal[key].as_str().unwrap_or("").to_string();
-        if !self.confirm(screen, "approve exactly the request shown?") { return String::new() }
-        let approval = HostAction::Approve { request_id: format!("cockpit-{}", util::token_hex(8)), proposal_id: text("proposal_id"),
-            expected_revision: proposal["revision"].as_i64().unwrap_or(0), mapping_hash: text("mapping_hash") };
+        if !self.confirm(screen, "approve exactly the request shown?") {
+            return String::new();
+        }
+        let approval = HostAction::Approve {
+            request_id: format!("cockpit-{}", util::token_hex(8)),
+            proposal_id: text("proposal_id"),
+            expected_revision: proposal["revision"].as_i64().unwrap_or(0),
+            mapping_hash: text("mapping_hash"),
+        };
         match Self::team_control(approval) {
             Ok(_) => {
                 self.refresh_team_view(false);
                 "team approved: only these sessions can message each other about this task".into()
-            },
+            }
             Err(error) if error.message.contains("runtime changed") => {
                 // Restarted members: the same task, sessions and roles, bound to their new launches.
-                let members = mapping.iter().filter_map(|member| Some(Member {
-                    session_id: member["session_id"].as_str()?.to_string(),
-                    role: serde_json::from_value::<Role>(member["role"].clone()).ok()?,
-                })).collect();
-                let replacement = Proposal { submission_key: format!("rebind-{}", util::token_hex(8)),
-                    task: TaskKey { project: text("project"), task_id: text("task_id") }, members, reason: text("reason") };
-                let edit = HostAction::Edit { request_id: format!("cockpit-{}", util::token_hex(8)), proposal_id: text("proposal_id"),
-                    expected_revision: proposal["revision"].as_i64().unwrap_or(0), replacement };
+                let members = mapping
+                    .iter()
+                    .filter_map(|member| {
+                        Some(Member {
+                            session_id: member["session_id"].as_str()?.to_string(),
+                            role: serde_json::from_value::<Role>(member["role"].clone()).ok()?,
+                        })
+                    })
+                    .collect();
+                let replacement = Proposal {
+                    submission_key: format!("rebind-{}", util::token_hex(8)),
+                    task: TaskKey {
+                        project: text("project"),
+                        task_id: text("task_id"),
+                    },
+                    members,
+                    reason: text("reason"),
+                };
+                let edit = HostAction::Edit {
+                    request_id: format!("cockpit-{}", util::token_hex(8)),
+                    proposal_id: text("proposal_id"),
+                    expected_revision: proposal["revision"].as_i64().unwrap_or(0),
+                    replacement,
+                };
                 match Self::team_control(edit) {
                     Ok(_) => {
                         self.refresh_team_view(true);
-                        "the sessions restarted: review the same request again, then a approves it".into()
-                    },
+                        "the sessions restarted: review the same request again, then a approves it"
+                            .into()
+                    }
                     Err(error) => error.message,
                 }
-            },
+            }
             Err(error) => error.message,
         }
     }
 
     /// Task id, then a session per role among the verified live ones of one project ("-" for none).
-    fn pick_team(&mut self, screen: &mut dyn Screen) -> Result<Option<(crate::teams::TaskKey, Vec<crate::teams::Member>)>, String> {
+    fn pick_team(
+        &mut self,
+        screen: &mut dyn Screen,
+    ) -> Result<Option<(crate::teams::TaskKey, Vec<crate::teams::Member>)>, String> {
         use crate::teams::{Member, Role, TaskKey};
-        let task_id = input_line(screen, "task id for the team (todo id or owner/repo#N, empty cancels)> ");
-        if task_id.trim().is_empty() { return Ok(None) }
-        let sessions = self.team_view.as_ref().expect("the Team view is open").sessions().to_vec();
-        let (mut project, mut members): (Option<String>, Vec<Member>) = (None, Vec::new());
-        for (role, name) in [(Role::Designer, "designer"), (Role::Developer, "developer"), (Role::Qa, "qa")] {
-            let choices: Vec<String> = sessions.iter()
-                .filter(|session| project.as_ref().is_none_or(|project| session["project"] == project.as_str()))
-                .filter(|session| !members.iter().any(|member| session["session_id"] == member.session_id.as_str()))
-                .map(|session| format!("{}\t{}  {}  {}", session["session_id"].as_str().unwrap_or(""), session["agent"].as_str().unwrap_or(""),
-                    session["project_name"].as_str().unwrap_or(""), session["label"].as_str().unwrap_or("")))
-                .chain(std::iter::once("-\t(no one)".to_string())).collect();
-            let Some(picked) = screen.outside(&mut || fzf(&format!("{name}> "), &choices, &["--delimiter", "\t", "--with-nth", "2.."])) else { return Ok(None) };
-            let id = picked.split('\t').next().unwrap_or("").to_string();
-            if id == "-" { continue }
-            let session = sessions.iter().find(|session| session["session_id"] == id.as_str()).ok_or("that session is not a verified live one")?;
-            project.get_or_insert_with(|| session["project"].as_str().unwrap_or("").to_string());
-            members.push(Member { session_id: id, role });
+        let task_id = input_line(
+            screen,
+            "task id for the team (todo id or owner/repo#N, empty cancels)> ",
+        );
+        if task_id.trim().is_empty() {
+            return Ok(None);
         }
-        if members.len() < 2 { return Err("a team needs at least two members".into()) }
-        Ok(Some((TaskKey { project: project.unwrap_or_default(), task_id: task_id.trim().into() }, members)))
+        let sessions = self
+            .team_view
+            .as_ref()
+            .expect("the Team view is open")
+            .sessions()
+            .to_vec();
+        let (mut project, mut members): (Option<String>, Vec<Member>) = (None, Vec::new());
+        for (role, name) in [
+            (Role::Designer, "designer"),
+            (Role::Developer, "developer"),
+            (Role::Qa, "qa"),
+        ] {
+            let choices: Vec<String> = sessions
+                .iter()
+                .filter(|session| {
+                    project
+                        .as_ref()
+                        .is_none_or(|project| session["project"] == project.as_str())
+                })
+                .filter(|session| {
+                    !members
+                        .iter()
+                        .any(|member| session["session_id"] == member.session_id.as_str())
+                })
+                .map(|session| {
+                    format!(
+                        "{}\t{}  {}  {}",
+                        session["session_id"].as_str().unwrap_or(""),
+                        session["agent"].as_str().unwrap_or(""),
+                        session["project_name"].as_str().unwrap_or(""),
+                        session["label"].as_str().unwrap_or("")
+                    )
+                })
+                .chain(std::iter::once("-\t(no one)".to_string()))
+                .collect();
+            let Some(picked) = screen.outside(&mut || {
+                fzf(
+                    &format!("{name}> "),
+                    &choices,
+                    &["--delimiter", "\t", "--with-nth", "2.."],
+                )
+            }) else {
+                return Ok(None);
+            };
+            let id = picked.split('\t').next().unwrap_or("").to_string();
+            if id == "-" {
+                continue;
+            }
+            let session = sessions
+                .iter()
+                .find(|session| session["session_id"] == id.as_str())
+                .ok_or("that session is not a verified live one")?;
+            project.get_or_insert_with(|| session["project"].as_str().unwrap_or("").to_string());
+            members.push(Member {
+                session_id: id,
+                role,
+            });
+        }
+        if members.len() < 2 {
+            return Err("a team needs at least two members".into());
+        }
+        Ok(Some((
+            TaskKey {
+                project: project.unwrap_or_default(),
+                task_id: task_id.trim().into(),
+            },
+            members,
+        )))
     }
 
     fn create_team_request(&mut self, screen: &mut dyn Screen) -> String {
         use crate::teams::{HostAction, Proposal};
-        let (task, members) = match self.pick_team(screen) { Ok(Some(team)) => team, Ok(None) => return String::new(), Err(error) => return error };
-        let proposal = Proposal { submission_key: format!("host-{}", util::token_hex(8)), task, members, reason: "Created by Theo in the cockpit".into() };
-        match Self::team_control(HostAction::Propose { request_id: format!("cockpit-{}", util::token_hex(8)), proposal }) {
+        let (task, members) = match self.pick_team(screen) {
+            Ok(Some(team)) => team,
+            Ok(None) => return String::new(),
+            Err(error) => return error,
+        };
+        let proposal = Proposal {
+            submission_key: format!("host-{}", util::token_hex(8)),
+            task,
+            members,
+            reason: "Created by Theo in the cockpit".into(),
+        };
+        match Self::team_control(HostAction::Propose {
+            request_id: format!("cockpit-{}", util::token_hex(8)),
+            proposal,
+        }) {
             Ok(_) => {
                 self.refresh_team_view(true);
                 "request created: review its exact mapping, then a approves it".into()
-            },
+            }
             Err(error) => error.message,
         }
     }
 
     fn edit_team_request(&mut self, index: usize, screen: &mut dyn Screen) -> String {
         use crate::teams::{HostAction, Proposal};
-        let proposal = self.team_view.as_ref().expect("the Team view is open").proposal(index).clone();
-        let (task, members) = match self.pick_team(screen) { Ok(Some(team)) => team, Ok(None) => return String::new(), Err(error) => return error };
-        let replacement = Proposal { submission_key: format!("edit-{}", util::token_hex(8)), task, members,
-            reason: proposal["reason"].as_str().unwrap_or("").to_string() };
-        let edit = HostAction::Edit { request_id: format!("cockpit-{}", util::token_hex(8)), proposal_id: proposal["proposal_id"].as_str().unwrap_or("").into(),
-            expected_revision: proposal["revision"].as_i64().unwrap_or(0), replacement };
+        let proposal = self
+            .team_view
+            .as_ref()
+            .expect("the Team view is open")
+            .proposal(index)
+            .clone();
+        let (task, members) = match self.pick_team(screen) {
+            Ok(Some(team)) => team,
+            Ok(None) => return String::new(),
+            Err(error) => return error,
+        };
+        let replacement = Proposal {
+            submission_key: format!("edit-{}", util::token_hex(8)),
+            task,
+            members,
+            reason: proposal["reason"].as_str().unwrap_or("").to_string(),
+        };
+        let edit = HostAction::Edit {
+            request_id: format!("cockpit-{}", util::token_hex(8)),
+            proposal_id: proposal["proposal_id"].as_str().unwrap_or("").into(),
+            expected_revision: proposal["revision"].as_i64().unwrap_or(0),
+            replacement,
+        };
         match Self::team_control(edit) {
             Ok(_) => {
                 self.refresh_team_view(true);
                 "edited: the new revision needs its own approval (a)".into()
-            },
+            }
             Err(error) => error.message,
         }
     }
@@ -5081,16 +9042,36 @@ impl App {
     /// Claude's past sessions and opencode's, newest first, the running ones left out.
     pub(crate) fn past_sessions(&mut self) -> Vec<(PastSession, String)> {
         self.history.refresh();
-        let running: Vec<&str> = self.running_sessions.iter().map(|s| s.session.as_str()).collect();
-        let mut past: Vec<(PastSession, String)> = self.history.entries.iter()
-            .map(|entry| (entry.clone(), self.history.title(&entry.session))).collect();
+        let running: Vec<&str> = self
+            .running_sessions
+            .iter()
+            .map(|s| s.session.as_str())
+            .collect();
+        let mut past: Vec<(PastSession, String)> = self
+            .history
+            .entries
+            .iter()
+            .map(|entry| (entry.clone(), self.history.title(&entry.session)))
+            .collect();
         match sessions::opencode_past_sessions(&paths::opencode_database()) {
             Ok(opencode) => past.extend(opencode),
-            Err(error) => util::log_event("ERROR", &format!("H: opencode's past sessions left out ({}): {error}", paths::opencode_database().display())),
+            Err(error) => util::log_event(
+                "ERROR",
+                &format!(
+                    "H: opencode's past sessions left out ({}): {error}",
+                    paths::opencode_database().display()
+                ),
+            ),
         }
         past.retain(|(entry, _)| !running.contains(&entry.session.as_str()));
-        past.sort_by(|a, b| b.0.since.cmp(&a.0.since));
+        past.sort_by_key(|entry| std::cmp::Reverse(entry.0.since));
         past
+    }
+}
+
+impl Default for App {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -5100,29 +9081,57 @@ fn provider_status_lines(status: &ProviderStatus, room: usize) -> Vec<Line> {
     let column = width_of(label) + 2;
     let mut lines = Vec::new();
     let Some(current) = current else {
-        let text = if !error.is_empty() { error } else if status.provider.url().is_empty() { "not checked".into() } else { format!("checking {} …", status.provider.host()) };
-        for (index, text) in wrap_detail_text(&text, room.saturating_sub(column).max(2)).into_iter().enumerate() {
+        let text = if !error.is_empty() {
+            error
+        } else if status.provider.url().is_empty() {
+            "not checked".into()
+        } else {
+            format!("checking {} …", status.provider.host())
+        };
+        for (index, text) in wrap_detail_text(&text, room.saturating_sub(column).max(2))
+            .into_iter()
+            .enumerate()
+        {
             let mut segments = Vec::new();
-            if index == 0 { segments.push(segment(0, label, style(FG))); }
+            if index == 0 {
+                segments.push(segment(0, label, style(FG)));
+            }
             segments.push(segment(column as u16, text, dim(FG_DARK)));
             lines.push(Line::new(segments));
         }
         return lines;
     };
     let tint = bold(claude_status_color(&current.indicator));
-    let description = if current.indicator == "none" && current.degraded.is_empty() && current.incidents.is_empty() {
+    let description = if current.indicator == "none"
+        && current.degraded.is_empty()
+        && current.incidents.is_empty()
+    {
         "Operational".into()
     } else {
         current.description
     };
-    let description = format!("● {description}{}", if error.is_empty() { "" } else { " (stale)" });
-    for (index, text) in wrap_detail_text(&description, room.saturating_sub(column).max(2)).into_iter().enumerate() {
+    let description = format!(
+        "● {description}{}",
+        if error.is_empty() { "" } else { " (stale)" }
+    );
+    for (index, text) in wrap_detail_text(&description, room.saturating_sub(column).max(2))
+        .into_iter()
+        .enumerate()
+    {
         let mut segments = Vec::new();
-        if index == 0 { segments.push(segment(0, label, style(FG))); }
+        if index == 0 {
+            segments.push(segment(0, label, style(FG)));
+        }
         segments.push(segment(column as u16, text, tint));
         lines.push(Line::new(segments));
     }
-    for detail in current.degraded.iter().take(3).map(|(name, state)| format!("{name}: {state}")).chain(current.incidents.into_iter().take(2)) {
+    for detail in current
+        .degraded
+        .iter()
+        .take(3)
+        .map(|(name, state)| format!("{name}: {state}"))
+        .chain(current.incidents.into_iter().take(2))
+    {
         for text in wrap_detail_text(&detail, room.saturating_sub(2).max(2)) {
             lines.push(Line::new(vec![segment(2, text, tint)]));
         }
@@ -5137,13 +9146,24 @@ fn provider_status_lines(status: &ProviderStatus, room: usize) -> Vec<Line> {
 
 /// The todos the Chief asked a fresh session for; none when the team store is missing or unreadable.
 fn chief_requested_starts() -> HashSet<String> {
-    let requested = crate::teams::store::open_existing(&crate::paths::team_database())
-        .and_then(|connection| match connection {
-            Some(connection) => crate::chief::store::open_session_start_tasks(&connection, chrono::Utc::now().timestamp_millis()),
-            None => Ok(HashSet::new()),
+    let requested =
+        crate::teams::store::open_existing(&crate::paths::team_database()).and_then(|connection| {
+            match connection {
+                Some(connection) => crate::chief::store::open_session_start_tasks(
+                    &connection,
+                    chrono::Utc::now().timestamp_millis(),
+                ),
+                None => Ok(HashSet::new()),
+            }
         });
     requested.unwrap_or_else(|error| {
-        util::log_event("WARN", &format!("queue: cannot read the Chief's session start requests: {}", error.message));
+        util::log_event(
+            "WARN",
+            &format!(
+                "queue: cannot read the Chief's session start requests: {}",
+                error.message
+            ),
+        );
         HashSet::new()
     })
 }
@@ -5154,14 +9174,25 @@ fn chief_requested_starts() -> HashSet<String> {
 fn kill_session(session: &Session) -> String {
     if !session.kitty_pid.is_empty() {
         util::refresh_hyprland_instance();
-        let close = format!("hl.dsp.window.close({{ window = \"pid:{}\" }})", session.kitty_pid);
+        let close = format!(
+            "hl.dsp.window.close({{ window = \"pid:{}\" }})",
+            session.kitty_pid
+        );
         let _ = Command::new("hyprctl").args(["dispatch", &close]).output();
-        return format!("no tmux session for {}: closed its terminal window instead", session.project);
+        return format!(
+            "no tmux session for {}: closed its terminal window instead",
+            session.project
+        );
     }
     // Nothing to kill: if its hook is still alive it comes back, the sign it lives elsewhere.
     let report = serde_json::json!({"session": session.session, "state": "gone", "project": session.project});
-    let _ = Command::new("osd-show").arg(format!("session {report}")).status();
-    format!("nothing to kill for {}: removed it from the list", session.project)
+    let _ = Command::new("osd-show")
+        .arg(format!("session {report}"))
+        .status();
+    format!(
+        "nothing to kill for {}: removed it from the list",
+        session.project
+    )
 }
 
 /// `I` on a card: the images its latest reply names, copied privately (the phone's rules: inside
@@ -5172,29 +9203,57 @@ fn open_reply_images(session: &Session) -> String {
         Ok(images) => images,
         Err(error) => return error,
     };
-    if images.is_empty() { return "No images in its latest reply.".into(); }
-    let refused: Vec<String> = images.iter().filter_map(|(_, image)| image.as_ref().err().cloned()).collect();
-    let readable: Vec<(&'static str, Vec<u8>)> = images.into_iter().filter_map(|(_, image)| image.ok()).collect();
-    if readable.is_empty() { return refused.join("; "); }
+    if images.is_empty() {
+        return "No images in its latest reply.".into();
+    }
+    let refused: Vec<String> = images
+        .iter()
+        .filter_map(|(_, image)| image.as_ref().err().cloned())
+        .collect();
+    let readable: Vec<(&'static str, Vec<u8>)> = images
+        .into_iter()
+        .filter_map(|(_, image)| image.ok())
+        .collect();
+    if readable.is_empty() {
+        return refused.join("; ");
+    }
     let first = match copy_privately(&readable) {
         Ok(first) => first,
         Err(error) => return format!("cannot copy the images: {error}"),
     };
     let first = first.to_string_lossy();
     // The path reaches a shell through Hyprland's exec: only characters sh takes literally.
-    if !first.chars().all(|character| character.is_ascii_alphanumeric() || "/._-".contains(character)) {
+    if !first
+        .chars()
+        .all(|character| character.is_ascii_alphanumeric() || "/._-".contains(character))
+    {
         return format!("cannot open {first:?} safely");
     }
     util::refresh_hyprland_instance();
     let launch = format!("hl.exec_cmd(\"loupe {first}\", {{ workspace = \"6\", float = true }})");
     let count = readable.len();
-    let opening = format!("opening {count} image{} from {}", if count == 1 { "" } else { "s" }, session.project);
+    let opening = format!(
+        "opening {count} image{} from {}",
+        if count == 1 { "" } else { "s" },
+        session.project
+    );
     match Command::new("hyprctl").args(["eval", &launch]).output() {
         Ok(output) if output.status.success() && refused.is_empty() => opening,
         Ok(output) if output.status.success() => format!("{opening}; {}", refused.join("; ")),
         Ok(output) => {
-            let text = if output.stderr.is_empty() { output.stdout } else { output.stderr };
-            format!("hyprctl: {}", String::from_utf8_lossy(&text).trim().chars().take(60).collect::<String>())
+            let text = if output.stderr.is_empty() {
+                output.stdout
+            } else {
+                output.stderr
+            };
+            format!(
+                "hyprctl: {}",
+                String::from_utf8_lossy(&text)
+                    .trim()
+                    .chars()
+                    .take(60)
+                    .collect::<String>()
+            )
         }
         Err(error) => format!("hyprctl: {error}"),
     }
@@ -5205,19 +9264,37 @@ fn open_reply_images(session: &Session) -> String {
 fn copy_privately(images: &[(&'static str, Vec<u8>)]) -> io::Result<PathBuf> {
     use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
     let root = paths::runtime_dir().join("cockpit-images");
-    fs::DirBuilder::new().recursive(true).mode(0o700).create(&root)?;
+    fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&root)?;
     for entry in fs::read_dir(&root)?.flatten() {
-        let is_old = entry.metadata().and_then(|metadata| metadata.modified())
-            .is_ok_and(|modified| modified.elapsed().is_ok_and(|age| age > Duration::from_secs(86_400)));
-        if is_old { let _ = fs::remove_dir_all(entry.path()); }
+        let is_old = entry
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .is_ok_and(|modified| {
+                modified
+                    .elapsed()
+                    .is_ok_and(|age| age > Duration::from_secs(86_400))
+            });
+        if is_old {
+            let _ = fs::remove_dir_all(entry.path());
+        }
     }
     let folder = root.join(util::token_hex(8));
     fs::DirBuilder::new().mode(0o700).create(&folder)?;
     let mut paths = Vec::new();
     for (index, (content_type, bytes)) in images.iter().enumerate() {
-        let extension = content_type.trim_start_matches("image/").replace("jpeg", "jpg");
+        let extension = content_type
+            .trim_start_matches("image/")
+            .replace("jpeg", "jpg");
         let path = folder.join(format!("{:02}.{extension}", index + 1));
-        fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&path)?.write_all(bytes)?;
+        fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)?
+            .write_all(bytes)?;
         paths.push(path);
     }
     Ok(paths.swap_remove(0))
@@ -5231,8 +9308,16 @@ pub fn scratchpad_call(name: &str, page: &str) -> Result<Vec<String>, String> {
     if !page.is_empty() && (!address.is_match(page) || page.contains(['"', '\\', '$', '`'])) {
         return Err(format!("not a page address: {page:?}"));
     }
-    let arguments = if page.is_empty() { format!("\"{name}\"") } else { format!("\"{name}\", \"{page}\"") };
-    Ok(vec!["hyprctl".into(), "eval".into(), format!("OPEN_IN_SCRATCHPAD({arguments})")])
+    let arguments = if page.is_empty() {
+        format!("\"{name}\"")
+    } else {
+        format!("\"{name}\", \"{page}\"")
+    };
+    Ok(vec![
+        "hyprctl".into(),
+        "eval".into(),
+        format!("OPEN_IN_SCRATCHPAD({arguments})"),
+    ])
 }
 
 fn open_in_scratchpad(name: &str, page: &str) -> String {
@@ -5244,8 +9329,19 @@ fn open_in_scratchpad(name: &str, page: &str) -> String {
     match Command::new(&call[0]).args(&call[1..]).output() {
         Ok(output) if output.status.success() => String::new(),
         Ok(output) => {
-            let text = if output.stderr.is_empty() { output.stdout } else { output.stderr };
-            format!("hyprctl: {}", String::from_utf8_lossy(&text).trim().chars().take(60).collect::<String>())
+            let text = if output.stderr.is_empty() {
+                output.stdout
+            } else {
+                output.stderr
+            };
+            format!(
+                "hyprctl: {}",
+                String::from_utf8_lossy(&text)
+                    .trim()
+                    .chars()
+                    .take(60)
+                    .collect::<String>()
+            )
         }
         Err(error) => format!("hyprctl: {error}"),
     }
@@ -5256,14 +9352,21 @@ fn open_in_scratchpad(name: &str, page: &str) -> String {
 /// and kill it. Only for as long as cockpit' loading screen waits (60 s), so a state file
 /// left behind cannot stop the column from following.
 fn is_viewer_loading() -> bool {
-    fs::metadata(paths::loading_state()).and_then(|metadata| metadata.modified())
-        .is_ok_and(|modified| modified.elapsed().is_ok_and(|age| age < Duration::from_secs(60)))
+    fs::metadata(paths::loading_state())
+        .and_then(|metadata| metadata.modified())
+        .is_ok_and(|modified| {
+            modified
+                .elapsed()
+                .is_ok_and(|age| age < Duration::from_secs(60))
+        })
 }
 
 /// The Team view over the column: its rows, then the selected one in full (wrapped, never cut).
 fn draw_team_view(view: &crate::teams::view::TeamView, buffer: &mut Buffer) {
     let (width, height) = (buffer.area.width, buffer.area.height);
-    if width < 12 || height < 8 { return; }
+    if width < 12 || height < 8 {
+        return;
+    }
     let (top, bottom) = (HEADER_LINES, height - 2);
     let inner = width.saturating_sub(4) as usize;
     let body = inner.saturating_sub(2).max(2);
@@ -5272,53 +9375,127 @@ fn draw_team_view(view: &crate::teams::view::TeamView, buffer: &mut Buffer) {
         put(buffer, row, 1, "│", style(BLUE));
         put(buffer, row, width - 2, "│", style(BLUE));
     }
-    put(buffer, top, 1, &format!("┌{}┐", "─".repeat(inner)), style(BLUE));
-    let title = if view.is_history { "Team · link and message history" } else { "Team · requests, members and links" };
-    put(buffer, top, 3, &fit(title, inner.saturating_sub(2)), bold(BLUE));
+    put(
+        buffer,
+        top,
+        1,
+        &format!("┌{}┐", "─".repeat(inner)),
+        style(BLUE),
+    );
+    let title = if view.is_history {
+        "Team · link and message history"
+    } else {
+        "Team · requests, members and links"
+    };
+    put(
+        buffer,
+        top,
+        3,
+        &fit(title, inner.saturating_sub(2)),
+        bold(BLUE),
+    );
     let rows = view.rows();
     let list_height = (rows.len() as u16).min((bottom - top) / 3).max(1);
     let mut line = top + 1;
     if view.snapshot_error.is_some() {
-        put(buffer, line, 3, &fit("Collaboration unavailable · stale snapshot (r refresh)", body), style(YELLOW));
+        put(
+            buffer,
+            line,
+            3,
+            &fit(
+                "Collaboration unavailable · stale snapshot (r refresh)",
+                body,
+            ),
+            style(YELLOW),
+        );
         line += 1;
     }
     if rows.is_empty() {
         put(buffer, line, 3, &fit("nothing here", body), dim(FG_DARK));
     }
     let first = view.selected.saturating_sub(list_height as usize - 1);
-    for (index, row) in rows.iter().enumerate().skip(first).take(list_height as usize) {
+    for (index, row) in rows
+        .iter()
+        .enumerate()
+        .skip(first)
+        .take(list_height as usize)
+    {
         let selected = index == view.selected;
-        put(buffer, line, 3, &fit(&view.row_text(*row), body), if selected { on(FG, BG_HIGHLIGHT) } else { style(FG) });
+        put(
+            buffer,
+            line,
+            3,
+            &fit(&view.row_text(*row), body),
+            if selected {
+                on(FG, BG_HIGHLIGHT)
+            } else {
+                style(FG)
+            },
+        );
         line += 1;
     }
     line += 1;
-    for text in view.detail().iter().flat_map(|text| wrap_detail_text(text, body)).skip(view.detail_scroll) {
-        if line >= bottom - 1 { break; }
+    for text in view
+        .detail()
+        .iter()
+        .flat_map(|text| wrap_detail_text(text, body))
+        .skip(view.detail_scroll)
+    {
+        if line >= bottom - 1 {
+            break;
+        }
         put(buffer, line, 3, &text, style(FG));
         line += 1;
     }
-    put(buffer, bottom - 1, 3, &fit("Tab history · j/k rows · ←/→ detail · n team · l link · r refresh · Esc close", body), dim(FG_DARK));
-    put(buffer, bottom, 1, &format!("└{}┘", "─".repeat(inner)), style(BLUE));
+    put(
+        buffer,
+        bottom - 1,
+        3,
+        &fit(
+            "Tab history · j/k rows · ←/→ detail · n team · l link · r refresh · Esc close",
+            body,
+        ),
+        dim(FG_DARK),
+    );
+    put(
+        buffer,
+        bottom,
+        1,
+        &format!("└{}┘", "─".repeat(inner)),
+        style(BLUE),
+    );
 }
 
 /// Every picker keeps its list's order unless `extra` turns sorting back on (a later --sort wins).
 pub(crate) fn fzf_arguments<'a>(prompt: &'a str, extra: &[&'a str]) -> Vec<&'a str> {
-    ["--prompt", prompt, "--height", "100%", "--no-sort"].into_iter().chain(extra.iter().copied()).collect()
+    ["--prompt", prompt, "--height", "100%", "--no-sort"]
+        .into_iter()
+        .chain(extra.iter().copied())
+        .collect()
 }
 
 fn fzf(prompt: &str, lines: &[String], extra: &[&str]) -> Option<String> {
-    let mut child = Command::new("fzf").args(fzf_arguments(prompt, extra))
-        .stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().ok()?;
+    let mut child = Command::new("fzf")
+        .args(fzf_arguments(prompt, extra))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .ok()?;
     if let Some(mut stdin) = child.stdin.take() {
         let _ = stdin.write_all(lines.join("\n").as_bytes());
     }
     let output = child.wait_with_output().ok()?;
-    let chosen = String::from_utf8_lossy(&output.stdout).trim_end_matches('\n').to_string();
+    let chosen = String::from_utf8_lossy(&output.stdout)
+        .trim_end_matches('\n')
+        .to_string();
     (output.status.success() && !chosen.is_empty()).then_some(chosen)
 }
 
 fn session_key_requires_terminal(key: Key) -> bool {
-    matches!(key, Key::Enter | Key::Char('r' | 'R' | 'e' | '$' | 'C' | 'x' | 'z' | 'm'))
+    matches!(
+        key,
+        Key::Enter | Key::Char('r' | 'R' | 'e' | '$' | 'C' | 'x' | 'z' | 'm')
+    )
 }
 
 /// The card keys that need a feature of the session's agent, and what they do, named for a
@@ -5326,7 +9503,9 @@ fn session_key_requires_terminal(key: Key) -> bool {
 fn key_feature(key: Key, agent: &agents::Agent) -> Option<(Feature, &'static str)> {
     match key {
         Key::Char('z') => Some((Feature::Sleep, "sleeping")),
-        Key::Char('e') if agent.can(Feature::Variants) => Some((Feature::Variants, "the model variant picker")),
+        Key::Char('e') if agent.can(Feature::Variants) => {
+            Some((Feature::Variants, "the model variant picker"))
+        }
         Key::Char('e') => Some((Feature::Effort, "the effort level")),
         Key::Char('$') => Some((Feature::Billing, "billing to API credits")),
         Key::Char('C') => Some((Feature::Compact, "/compact")),
@@ -5335,7 +9514,7 @@ fn key_feature(key: Key, agent: &agents::Agent) -> Option<(Feature, &'static str
     }
 }
 
-/// The cockpit command in `arguments`, past a leading --agent <name>.
+/// The cockpit command in `arguments`, past a leading `--agent <name>`.
 fn command_name<'a>(arguments: &[&'a str]) -> &'a str {
     match arguments {
         ["--agent", _, command, ..] => command,
@@ -5348,14 +9527,30 @@ fn pick_project() -> Option<String> {
 }
 
 fn pick_todo_kind(current: Option<todo::Category>, include_all: bool) -> Option<String> {
-    let mut choices: Vec<String> = todo::Category::ALL.iter().map(|category| category.label().to_string()).collect();
-    if include_all { choices.insert(0, "All".into()); }
+    let mut choices: Vec<String> = todo::Category::ALL
+        .iter()
+        .map(|category| category.label().to_string())
+        .collect();
+    if include_all {
+        choices.insert(0, "All".into());
+    }
     if let Some(category) = current {
-        let index = choices.iter().position(|label| label == category.label()).unwrap();
+        let index = choices
+            .iter()
+            .position(|label| label == category.label())
+            .unwrap();
         let selected = choices.remove(index);
         choices.insert(0, selected);
     }
-    fzf(if include_all { "filter kind> " } else { "kind> " }, &choices, &[])
+    fzf(
+        if include_all {
+            "filter kind> "
+        } else {
+            "kind> "
+        },
+        &choices,
+        &[],
+    )
 }
 
 /// The agent a new session runs (agents::AGENTS); None when the pick is cancelled, and then
@@ -5367,12 +9562,37 @@ fn pick_agent() -> Option<String> {
 
 /// The index of the chosen past session.
 fn pick_past_session(past: &[(PastSession, String)]) -> Option<String> {
-    let lines: Vec<String> = past.iter().enumerate().map(|(index, (entry, title))| {
-        let when = chrono::DateTime::from_timestamp(entry.since, 0).map(|t| t.with_timezone(&chrono::Local).format("%d %b %H:%M").to_string()).unwrap_or_default();
-        let badge = agents::of_session_id(&entry.session).and_then(|agent| agent.badge).map(|badge| format!("{badge}  ")).unwrap_or_default();
-        format!("{index}\t{when}  {:<18} {badge}{}", entry.project, if title.is_empty() { &entry.prompt } else { title })
-    }).collect();
-    let chosen = fzf("resume> ", &lines, &["--delimiter", "\t", "--with-nth", "2.."])?;
+    let lines: Vec<String> = past
+        .iter()
+        .enumerate()
+        .map(|(index, (entry, title))| {
+            let when = chrono::DateTime::from_timestamp(entry.since, 0)
+                .map(|t| {
+                    t.with_timezone(&chrono::Local)
+                        .format("%d %b %H:%M")
+                        .to_string()
+                })
+                .unwrap_or_default();
+            let badge = agents::of_session_id(&entry.session)
+                .and_then(|agent| agent.badge)
+                .map(|badge| format!("{badge}  "))
+                .unwrap_or_default();
+            format!(
+                "{index}\t{when}  {:<18} {badge}{}",
+                entry.project,
+                if title.is_empty() {
+                    &entry.prompt
+                } else {
+                    title
+                }
+            )
+        })
+        .collect();
+    let chosen = fzf(
+        "resume> ",
+        &lines,
+        &["--delimiter", "\t", "--with-nth", "2.."],
+    )?;
     chosen.split('\t').next().map(str::to_string)
 }
 
@@ -5380,9 +9600,14 @@ fn pick_past_session(past: &[(PastSession, String)]) -> Option<String> {
 /// The editor's file: the title on the first line, the notes below, then help (Claude's reason
 /// for a proposal included) that is left out when read back.
 pub(crate) fn editor_text(title: &str, notes: &str, why: &str) -> String {
-    let mut text = format!("{title}\n\n{notes}\n\n{EDITOR_HELP_MARK}\n# First line: the title. Below it: the notes, as long as needed.\n# Save and quit to keep it; an empty title cancels.\n");
+    let mut text = format!(
+        "{title}\n\n{notes}\n\n{EDITOR_HELP_MARK}\n# First line: the title. Below it: the notes, as long as needed.\n# Save and quit to keep it; an empty title cancels.\n"
+    );
     if !why.is_empty() {
-        text.push_str(&format!("# Why Claude proposed it:\n# {}\n", why.replace('\n', "\n# ")));
+        text.push_str(&format!(
+            "# Why Claude proposed it:\n# {}\n",
+            why.replace('\n', "\n# ")
+        ));
     }
     text
 }
@@ -5400,12 +9625,26 @@ pub(crate) fn parse_editor_text(text: &str) -> Option<(String, String)> {
 }
 
 fn todo_context(item: &todo::Item) -> String {
-    let category = item.category().map(|category| category.label().to_string()).unwrap_or_else(|| format!("Unknown: {}", item.0["category"]));
-    let source = if !item.source().is_empty() { "Claude" } else if item.status() == todo::PROPOSED { "unknown session" } else { "you" };
-    let routing = if item.is_design() { " · Design".to_string() }
-        else if item.is_blocked_report() { format!(" · setup report from {}", item.reporter()) }
-        else if !item.link().is_empty() { format!(" · from a {} session ({})", item.reporter(), item.link()) }
-        else { " · standard routing".to_string() };
+    let category = item
+        .category()
+        .map(|category| category.label().to_string())
+        .unwrap_or_else(|| format!("Unknown: {}", item.0["category"]));
+    let source = if !item.source().is_empty() {
+        "Claude"
+    } else if item.status() == todo::PROPOSED {
+        "unknown session"
+    } else {
+        "you"
+    };
+    let routing = if item.is_design() {
+        " · Design".to_string()
+    } else if item.is_blocked_report() {
+        format!(" · setup report from {}", item.reporter())
+    } else if !item.link().is_empty() {
+        format!(" · from a {} session ({})", item.reporter(), item.link())
+    } else {
+        " · standard routing".to_string()
+    };
     format!("{category} · {} · {source}{routing}", item.status())
 }
 
@@ -5413,12 +9652,34 @@ fn todo_context(item: &todo::Item) -> String {
 pub(crate) fn todo_details(entry: &Entry) -> String {
     match entry {
         Entry::Typed(item) => {
-            let status = match item.status().as_str() { todo::PROPOSED => "proposed by Claude", "doing" => "in progress", "done" => "done", _ => "to do" };
-            let created = chrono::DateTime::from_timestamp(item.created(), 0).map(|time| time.with_timezone(&chrono::Local).format("%d/%m %H:%M").to_string()).unwrap_or_default();
-            let filed = if !item.source().is_empty() { format!("Claude ({})", item.source()) }
-                else if item.status() == todo::PROPOSED { "an unknown session".into() } else { "you".into() };
-            let mut text = format!("{}\n\n{} · {status} · filed by {filed} on {created}\n", item.text(), item.project());
-            let category = item.category().map(|category| category.label().to_string())
+            let status = match item.status().as_str() {
+                todo::PROPOSED => "proposed by Claude",
+                "doing" => "in progress",
+                "done" => "done",
+                _ => "to do",
+            };
+            let created = chrono::DateTime::from_timestamp(item.created(), 0)
+                .map(|time| {
+                    time.with_timezone(&chrono::Local)
+                        .format("%d/%m %H:%M")
+                        .to_string()
+                })
+                .unwrap_or_default();
+            let filed = if !item.source().is_empty() {
+                format!("Claude ({})", item.source())
+            } else if item.status() == todo::PROPOSED {
+                "an unknown session".into()
+            } else {
+                "you".into()
+            };
+            let mut text = format!(
+                "{}\n\n{} · {status} · filed by {filed} on {created}\n",
+                item.text(),
+                item.project()
+            );
+            let category = item
+                .category()
+                .map(|category| category.label().to_string())
                 .unwrap_or_else(|| format!("Unknown: {}", item.0["category"]));
             text.push_str(&format!("Kind: {category}\n"));
             text.push_str(&format!("{}\n", todo_context(item)));
@@ -5427,15 +9688,36 @@ pub(crate) fn todo_details(entry: &Entry) -> String {
             }
             text.push_str(&handoff_details(item));
             let notes = item.notes();
-            text.push_str(&format!("\nNotes\n{}\n", if notes.is_empty() { "(none: e adds some)" } else { notes.as_str() }));
+            text.push_str(&format!(
+                "\nNotes\n{}\n",
+                if notes.is_empty() {
+                    "(none: e adds some)"
+                } else {
+                    notes.as_str()
+                }
+            ));
             for (number, file) in item.images() {
-                text.push_str(&format!("{} {}\n", crate::todo_images::marker(number), crate::todo_images::path_of(&file).display()));
+                text.push_str(&format!(
+                    "{} {}\n",
+                    crate::todo_images::marker(number),
+                    crate::todo_images::path_of(&file).display()
+                ));
             }
-            text.push_str(if item.status() == todo::PROPOSED { "\nIn the column: y approve · n decline · e edit\n" } else { "\nIn the column: e edit · h hand to a session · d done\n" });
+            text.push_str(if item.status() == todo::PROPOSED {
+                "\nIn the column: y approve · n decline · e edit\n"
+            } else {
+                "\nIn the column: e edit · h hand to a session · d done\n"
+            });
             text
         }
-        Entry::Issue { issue, status, .. } => format!("{}#{} {}\n\n{status} · labels: {}\n\n{}\n", issue.repository, issue.number, issue.title,
-                                                       issue.labels.join(", "), issue.url),
+        Entry::Issue { issue, status, .. } => format!(
+            "{}#{} {}\n\n{status} · labels: {}\n\n{}\n",
+            issue.repository,
+            issue.number,
+            issue.title,
+            issue.labels.join(", "),
+            issue.url
+        ),
     }
 }
 
@@ -5447,12 +9729,30 @@ fn handoff_details(item: &todo::Item) -> String {
     }
     let after = item.after();
     if !after.is_empty() {
-        text.push_str(&format!("\nWaits on (joins the queue once they are done; h hands it anyway)\n{}\n", after.join(", ")));
+        text.push_str(&format!(
+            "\nWaits on (joins the queue once they are done; h hands it anyway)\n{}\n",
+            after.join(", ")
+        ));
     }
     for input in item.inputs() {
-        let field = |key: &str| input.get(key).and_then(serde_json::Value::as_str).unwrap_or("").to_string();
-        text.push_str(&format!("\nDone before it: {} in {} ({})\n{}\n", field("id"), field("project"), field("text"),
-                               if field("result").is_empty() { "(no summary)".to_string() } else { field("result") }));
+        let field = |key: &str| {
+            input
+                .get(key)
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("")
+                .to_string()
+        };
+        text.push_str(&format!(
+            "\nDone before it: {} in {} ({})\n{}\n",
+            field("id"),
+            field("project"),
+            field("text"),
+            if field("result").is_empty() {
+                "(no summary)".to_string()
+            } else {
+                field("result")
+            }
+        ));
     }
     if !item.result().is_empty() {
         text.push_str(&format!("\nResult, from its session\n{}\n", item.result()));
@@ -5489,28 +9789,32 @@ pub(crate) fn edit_line(line: &mut String, code: KeyCode, modifiers: KeyModifier
 /// A one-line prompt under the column, read key by key in raw mode: in the terminal's own line
 /// mode a Ctrl+C killed the whole column ("Pane is dead (signal 2)").
 fn input_line(screen: &mut dyn Screen, prompt: &str) -> String {
-    screen.outside(&mut || {
-        let _ = crossterm::terminal::enable_raw_mode();
-        let mut line = String::new();
-        let outcome = loop {
-            print!("\r\x1b[2K  {prompt}{line}");
-            let _ = io::stdout().flush();
-            let step = match event::read() {
-                Ok(Event::Key(key)) if key.kind != KeyEventKind::Release => edit_line(&mut line, key.code, key.modifiers),
-                Ok(Event::Paste(pasted)) => {
-                    line.push_str(&pasted.replace(['\n', '\r'], " "));
-                    LineEdit::Typing
+    screen
+        .outside(&mut || {
+            let _ = crossterm::terminal::enable_raw_mode();
+            let mut line = String::new();
+            let outcome = loop {
+                print!("\r\x1b[2K  {prompt}{line}");
+                let _ = io::stdout().flush();
+                let step = match event::read() {
+                    Ok(Event::Key(key)) if key.kind != KeyEventKind::Release => {
+                        edit_line(&mut line, key.code, key.modifiers)
+                    }
+                    Ok(Event::Paste(pasted)) => {
+                        line.push_str(&pasted.replace(['\n', '\r'], " "));
+                        LineEdit::Typing
+                    }
+                    Ok(_) => LineEdit::Typing,
+                    Err(_) => LineEdit::Cancelled,
+                };
+                if step != LineEdit::Typing {
+                    break step;
                 }
-                Ok(_) => LineEdit::Typing,
-                Err(_) => LineEdit::Cancelled,
             };
-            if step != LineEdit::Typing {
-                break step;
-            }
-        };
-        let _ = crossterm::terminal::disable_raw_mode();
-        (outcome == LineEdit::Done).then(|| line.trim().to_string())
-    }).unwrap_or_default()
+            let _ = crossterm::terminal::disable_raw_mode();
+            (outcome == LineEdit::Done).then(|| line.trim().to_string())
+        })
+        .unwrap_or_default()
 }
 
 /// The column out of focus: every cell dim, and the filled ones (chips, highlights) on the grey
@@ -5561,9 +9865,14 @@ pub fn read_key(timeout: Option<Duration>, last_click: &mut Option<(Instant, u16
                 });
             }
             Event::Mouse(mouse) if mouse.kind == MouseEventKind::Down(MouseButton::Left) => {
-                let double = last_click.is_some_and(|(at, row)| row == mouse.row && at.elapsed() < DOUBLE_CLICK);
+                let double = last_click
+                    .is_some_and(|(at, row)| row == mouse.row && at.elapsed() < DOUBLE_CLICK);
                 *last_click = Some((Instant::now(), mouse.row));
-                return Some(Key::Click { x: mouse.column, y: mouse.row, double });
+                return Some(Key::Click {
+                    x: mouse.column,
+                    y: mouse.row,
+                    double,
+                });
             }
             Event::FocusGained => return Some(Key::FocusGained),
             Event::Paste(text) => return Some(Key::Paste(text)),

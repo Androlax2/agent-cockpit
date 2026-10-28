@@ -1,4 +1,4 @@
-//! cockpit-guide <id>: steps an agent handed Theo to do by hand (ask-to-guide), one at a time.
+//! `cockpit-guide <id>`: steps an agent handed Theo to do by hand (ask-to-guide), one at a time.
 //!
 //! Started by the OSD daemon outside the sandbox, in a floating kitty window of its own (class
 //! cockpit-guide) that Theo moves wherever he needs it. The guide comes from the sandbox: it is read
@@ -6,7 +6,7 @@
 //! are copied only on Ctrl+Y; a run: step goes through the same approval as ask-to-run: nothing runs
 //! without Theo's "Run it". The text box under the step is always open: the answer when the step
 //! asks something, else a note to Claude. When every step is done, or Theo is stuck or closes the
-//! guide, the result goes back to Claude; <id>.progress tells a waiting Claude where Theo is.
+//! guide, the result goes back to Claude; `<id>.progress` tells a waiting Claude where Theo is.
 //! Ctrl+V attaches the clipboard's PNG image to the step: it is saved beside the result, in the
 //! project's answers folder its sandbox reads, and the result names it.
 //! XDG_RUNTIME_DIR moves the daemon's copies (tests).
@@ -15,8 +15,12 @@ use cockpit::app::{BG_HIGHLIGHT, BLACK, FG, FG_DARK, color, put, style, width_of
 const AMBER: u8 = cockpit::app::YELLOW;
 use cockpit::approval::{self, BOLD, DIM, RED, RESET, YELLOW};
 use cockpit::util::now_secs;
-use crossterm::event::{self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEventKind, KeyModifiers};
-use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode};
+use crossterm::event::{
+    self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEventKind, KeyModifiers,
+};
+use crossterm::terminal::{
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+};
 use crossterm::{cursor, execute};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
@@ -45,20 +49,35 @@ fn read_guide(id: &str) -> Result<(Value, PathBuf), String> {
     if !approval::valid_id(id) {
         return Err("not a guide id".into());
     }
-    let text = std::fs::read_to_string(approval::held_request(id, "guide")).map_err(|error| error.to_string())?;
+    let text = std::fs::read_to_string(approval::held_request(id, "guide"))
+        .map_err(|error| error.to_string())?;
     let guide: Value = serde_json::from_str(&text).map_err(|error| error.to_string())?;
     let answers_folder = approval::request_answers_dir(&guide, "guides")
         .ok_or("it names no answers folder (its session started before answers went per project: restart it)")?;
     if answers_folder.join(format!("{id}.result")).exists() {
         return Err("already answered".into());
     }
-    if !guide.is_object() || now_secs() - guide.get("requested_at").and_then(Value::as_i64).unwrap_or(0) > MAX_AGE_S {
+    if !guide.is_object()
+        || now_secs()
+            - guide
+                .get("requested_at")
+                .and_then(Value::as_i64)
+                .unwrap_or(0)
+            > MAX_AGE_S
+    {
         return Err("older than two hours".into());
     }
-    let steps = guide.get("steps").and_then(Value::as_array).filter(|steps| !steps.is_empty() && steps.len() <= MAX_STEPS)
+    let steps = guide
+        .get("steps")
+        .and_then(Value::as_array)
+        .filter(|steps| !steps.is_empty() && steps.len() <= MAX_STEPS)
         .ok_or("no steps, or too many")?;
     for step in steps {
-        if !step.get("text").and_then(Value::as_str).is_some_and(|text| !text.trim().is_empty()) {
+        if !step
+            .get("text")
+            .and_then(Value::as_str)
+            .is_some_and(|text| !text.trim().is_empty())
+        {
             return Err("a step without text".into());
         }
         let fields_ok = STEP_FIELDS.iter().all(|field| match step.get(*field) {
@@ -84,12 +103,23 @@ fn shown(text: &str) -> String {
 /// The link Ctrl+O opens: the step's open: value, else the first link in its text; http(s) only.
 fn link_of(step: &Map<String, Value>) -> String {
     let link = Regex::new(r#"https?://[^\s<>"')]+"#).unwrap();
-    let candidate = match step.get("open").and_then(Value::as_str).filter(|open| !open.is_empty()) {
+    let candidate = match step
+        .get("open")
+        .and_then(Value::as_str)
+        .filter(|open| !open.is_empty())
+    {
         Some(open) => open.to_string(),
-        None => link.find(step.get("text").and_then(Value::as_str).unwrap_or("")).map(|found| found.as_str().to_string()).unwrap_or_default(),
+        None => link
+            .find(step.get("text").and_then(Value::as_str).unwrap_or(""))
+            .map(|found| found.as_str().to_string())
+            .unwrap_or_default(),
     };
     let whole = Regex::new(r#"^https?://[^\s<>"')]+$"#).unwrap();
-    if whole.is_match(&candidate) { candidate } else { String::new() }
+    if whole.is_match(&candidate) {
+        candidate
+    } else {
+        String::new()
+    }
 }
 
 /// Where Theo is: the step on screen, the steps done, his answers, notes and the commands run.
@@ -115,14 +145,45 @@ struct Guide {
 
 impl Guide {
     fn new(id: &str, guide: &Value, answers_folder: PathBuf) -> Self {
-        let steps = guide["steps"].as_array().unwrap().iter().filter_map(|step| step.as_object().cloned()).collect();
-        let cwd = guide.get("cwd").and_then(Value::as_str).and_then(approval::resolved_directory)
+        let steps = guide["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|step| step.as_object().cloned())
+            .collect();
+        let cwd = guide
+            .get("cwd")
+            .and_then(Value::as_str)
+            .and_then(approval::resolved_directory)
             .unwrap_or_else(|| cockpit::paths::home().to_string_lossy().into_owned());
-        let title = guide.get("title").and_then(Value::as_str).filter(|t| !t.is_empty()).unwrap_or("Steps from Claude").to_string();
+        let title = guide
+            .get("title")
+            .and_then(Value::as_str)
+            .filter(|t| !t.is_empty())
+            .unwrap_or("Steps from Claude")
+            .to_string();
         // The project comes from the daemon's copy: the one of the folder the session's sandbox started in.
-        let project = guide.get("project").and_then(Value::as_str).unwrap_or("?").to_string();
-        Guide { id: id.into(), title, steps, project, task: None, cwd, answers_folder, position: 0, done: BTreeSet::new(),
-                answers: BTreeMap::new(), notes: BTreeMap::new(), runs: BTreeMap::new(), images: BTreeMap::new(), images_saved: 0 }
+        let project = guide
+            .get("project")
+            .and_then(Value::as_str)
+            .unwrap_or("?")
+            .to_string();
+        Guide {
+            id: id.into(),
+            title,
+            steps,
+            project,
+            task: None,
+            cwd,
+            answers_folder,
+            position: 0,
+            done: BTreeSet::new(),
+            answers: BTreeMap::new(),
+            notes: BTreeMap::new(),
+            runs: BTreeMap::new(),
+            images: BTreeMap::new(),
+            images_saved: 0,
+        }
     }
 
     fn step(&self) -> &Map<String, Value> {
@@ -130,25 +191,42 @@ impl Guide {
     }
 
     fn field(&self, name: &str) -> String {
-        self.step().get(name).and_then(Value::as_str).unwrap_or("").to_string()
+        self.step()
+            .get(name)
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string()
     }
 
     fn move_by(&mut self, offset: i64) {
-        self.position = (self.position as i64 + offset).clamp(0, self.steps.len() as i64 - 1) as usize;
+        self.position =
+            (self.position as i64 + offset).clamp(0, self.steps.len() as i64 - 1) as usize;
     }
 
     /// Marks the step on screen done and moves to the next one not done; true when all are.
     fn mark_done(&mut self) -> bool {
         self.done.insert(self.position);
-        let remaining: Vec<usize> = (0..self.steps.len()).filter(|index| !self.done.contains(index)).collect();
-        let Some(first) = remaining.first().copied() else { return true };
-        self.position = remaining.iter().copied().find(|index| *index > self.position).unwrap_or(first);
+        let remaining: Vec<usize> = (0..self.steps.len())
+            .filter(|index| !self.done.contains(index))
+            .collect();
+        let Some(first) = remaining.first().copied() else {
+            return true;
+        };
+        self.position = remaining
+            .iter()
+            .copied()
+            .find(|index| *index > self.position)
+            .unwrap_or(first);
         false
     }
 
     /// What the box holds for the step on screen: its answer, or its note to Claude.
     fn typed(&self) -> String {
-        let source = if self.field("ask").is_empty() { &self.notes } else { &self.answers };
+        let source = if self.field("ask").is_empty() {
+            &self.notes
+        } else {
+            &self.answers
+        };
         source.get(&self.position).cloned().unwrap_or_default()
     }
 
@@ -174,9 +252,14 @@ impl Guide {
             return Err("the image is over 20 MiB".into());
         }
         let name = format!("{}-image{}.png", self.id, self.images_saved + 1);
-        let mut file = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(self.answers_folder.join(&name))
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(self.answers_folder.join(&name))
             .map_err(|error| format!("cannot save the image: {error}"))?;
-        file.write_all(png).map_err(|error| format!("cannot save the image: {error}"))?;
+        file.write_all(png)
+            .map_err(|error| format!("cannot save the image: {error}"))?;
         self.images_saved += 1;
         self.images.entry(self.position).or_default().push(name);
         Ok(())
@@ -184,8 +267,12 @@ impl Guide {
 
     /// Takes back the step's last image; false when it has none.
     fn remove_last_image(&mut self) -> bool {
-        let Some(attached) = self.images.get_mut(&self.position) else { return false };
-        let Some(name) = attached.pop() else { return false };
+        let Some(attached) = self.images.get_mut(&self.position) else {
+            return false;
+        };
+        let Some(name) = attached.pop() else {
+            return false;
+        };
         if attached.is_empty() {
             self.images.remove(&self.position);
         }
@@ -218,10 +305,28 @@ fn finish(guide: &Guide, status: &str, note: &str) {
     let _ = approval::write_json(&guide.file("result"), &guide.result(status, note));
     let _ = std::fs::remove_file(guide.file("progress"));
     approval::send_host(&format!("notice-clear guide-{}", guide.id));
-    let note_part = if note.is_empty() { String::new() } else { format!(" ({})", note.chars().take(80).collect::<String>()) };
-    approval::log("INFO", &format!("guide {} for {}: {status} at step {}/{}{note_part}", guide.id, guide.project, guide.position + 1, guide.steps.len()));
-    cockpit::audit::record("guide", "guide.finished", status, json!({"id": guide.id, "project": guide.project, "step": guide.position + 1,
-                                                                   "total": guide.steps.len(), "note": cockpit::audit::fingerprint(note)}));
+    let note_part = if note.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", note.chars().take(80).collect::<String>())
+    };
+    approval::log(
+        "INFO",
+        &format!(
+            "guide {} for {}: {status} at step {}/{}{note_part}",
+            guide.id,
+            guide.project,
+            guide.position + 1,
+            guide.steps.len()
+        ),
+    );
+    cockpit::audit::record(
+        "guide",
+        "guide.finished",
+        status,
+        json!({"id": guide.id, "project": guide.project, "step": guide.position + 1,
+                                                                   "total": guide.steps.len(), "note": cockpit::audit::fingerprint(note)}),
+    );
 }
 
 /// The step on screen as (text, style) lines: its section, its text, its link, value and command
@@ -229,36 +334,75 @@ fn finish(guide: &Guide, status: &str, note: &str) {
 fn render_step(guide: &Guide, width: usize) -> Vec<(String, Style)> {
     let wrap = |text: &str, indent: usize| -> Vec<String> {
         let lines = approval::wrap(&shown(text), width.saturating_sub(indent).max(10));
-        if lines.is_empty() { vec![String::new()] } else { lines.into_iter().map(|line| format!("{}{line}", " ".repeat(indent))).collect() }
+        if lines.is_empty() {
+            vec![String::new()]
+        } else {
+            lines
+                .into_iter()
+                .map(|line| format!("{}{line}", " ".repeat(indent)))
+                .collect()
+        }
     };
     let bold = Style::default().add_modifier(Modifier::BOLD);
     let mut lines = Vec::new();
     let section = guide.field("section");
     if !section.is_empty() {
-        lines.push((shown(&section).to_uppercase().chars().take(width).collect(), style(BLUE).add_modifier(Modifier::BOLD)));
+        lines.push((
+            shown(&section).to_uppercase().chars().take(width).collect(),
+            style(BLUE).add_modifier(Modifier::BOLD),
+        ));
         lines.push((String::new(), Style::default()));
     }
     for paragraph in guide.field("text").split('\n') {
         lines.extend(wrap(paragraph, 0).into_iter().map(|line| (line, bold)));
     }
-    if STEP_FIELDS.iter().any(|field| { let value = guide.field(field); shown(&value) != value }) {
+    if STEP_FIELDS.iter().any(|field| {
+        let value = guide.field(field);
+        shown(&value) != value
+    }) {
         lines.push((String::new(), Style::default()));
-        lines.push(("⚠ hidden characters, shown as \\uXXXX".into(), style(RED_INDEX).add_modifier(Modifier::BOLD)));
+        lines.push((
+            "⚠ hidden characters, shown as \\uXXXX".into(),
+            style(RED_INDEX).add_modifier(Modifier::BOLD),
+        ));
     }
     // Each link, value or command in a card of its own: what it is, the value, and the key that uses it.
-    let details: Vec<(&str, String, &str, &str)> = [("LINK", link_of(guide.step()), "⌘O", "open in the browser"), ("COPY", guide.field("copy"), "⌘Y", "copy it"),
-                                               ("RUN", guide.field("run"), "⌘R", "run it (⏎ too)")]
-        .into_iter().filter(|(_, value, _, _)| !value.is_empty()).collect();
+    let details: Vec<(&str, String, &str, &str)> = [
+        ("LINK", link_of(guide.step()), "⌘O", "open in the browser"),
+        ("COPY", guide.field("copy"), "⌘Y", "copy it"),
+        ("RUN", guide.field("run"), "⌘R", "run it (⏎ too)"),
+    ]
+    .into_iter()
+    .filter(|(_, value, _, _)| !value.is_empty())
+    .collect();
     let card = style(FG).bg(color(BG_HIGHLIGHT));
-    let card_line = |text: String| -> String { let room = width.saturating_sub(1); let pad = room.saturating_sub(width_of(&text)); format!("{text}{}", " ".repeat(pad)) };
+    let card_line = |text: String| -> String {
+        let room = width.saturating_sub(1);
+        let pad = room.saturating_sub(width_of(&text));
+        format!("{text}{}", " ".repeat(pad))
+    };
     for (label, value, key, what) in details {
         lines.push((String::new(), Style::default()));
-        lines.push((card_line(format!(" {label}")), card.add_modifier(Modifier::DIM)));
-        lines.extend(wrap(&value, 1).into_iter().map(|line| (card_line(line), card)));
-        lines.push((card_line(format!(" {key} {what}")), card.add_modifier(Modifier::BOLD)));
+        lines.push((
+            card_line(format!(" {label}")),
+            card.add_modifier(Modifier::DIM),
+        ));
+        lines.extend(
+            wrap(&value, 1)
+                .into_iter()
+                .map(|line| (card_line(line), card)),
+        );
+        lines.push((
+            card_line(format!(" {key} {what}")),
+            card.add_modifier(Modifier::BOLD),
+        ));
     }
     if let Some(run) = guide.runs.get(&guide.position) {
-        let outcome = if run.get("status").and_then(Value::as_str) == Some("declined") { "declined".to_string() } else { format!("exit {}", run.get("exit").cloned().unwrap_or(json!(""))) };
+        let outcome = if run.get("status").and_then(Value::as_str) == Some("declined") {
+            "declined".to_string()
+        } else {
+            format!("exit {}", run.get("exit").cloned().unwrap_or(json!("")))
+        };
         lines.push((format!("  ↳ {outcome}"), style(GREEN)));
     }
     lines
@@ -273,18 +417,56 @@ fn render_question(guide: &Guide, width: usize) -> (Vec<String>, Style) {
         None => String::new(),
     };
     if ask.is_empty() {
-        return (vec![format!("A note for Claude about this step (optional){images}")], style(BLUE).add_modifier(Modifier::DIM));
+        return (
+            vec![format!(
+                "A note for Claude about this step (optional){images}"
+            )],
+            style(BLUE).add_modifier(Modifier::DIM),
+        );
     }
-    (approval::wrap(&format!("The agent asks: {}{images}", shown(&ask)), width.max(10)), style(BLUE).add_modifier(Modifier::BOLD))
+    (
+        approval::wrap(
+            &format!("The agent asks: {}{images}", shown(&ask)),
+            width.max(10),
+        ),
+        style(BLUE).add_modifier(Modifier::BOLD),
+    )
 }
 
 fn draw(buffer: &mut Buffer, guide: &Guide, draft: &str, message: &str) -> (u16, u16) {
     let (width, height) = (buffer.area.width as usize, buffer.area.height as usize);
     let counter = format!("{} of {}", guide.position + 1, guide.steps.len());
-    put(buffer, 0, 1, &shown(&guide.title).chars().take(width.saturating_sub(counter.len() + 4).max(1)).collect::<String>(), Style::default().add_modifier(Modifier::BOLD));
-    put(buffer, 0, width.saturating_sub(counter.len() + 2) as u16, &counter, style(BLUE));
-    let from = match &guide.task { Some(task) => format!("from {} › {}", guide.project, shown(task)), None => format!("from {}", guide.project) };
-    put(buffer, 1, 1, &from.chars().take(width.saturating_sub(3)).collect::<String>(), style(FG_DARK));
+    put(
+        buffer,
+        0,
+        1,
+        &shown(&guide.title)
+            .chars()
+            .take(width.saturating_sub(counter.len() + 4).max(1))
+            .collect::<String>(),
+        Style::default().add_modifier(Modifier::BOLD),
+    );
+    put(
+        buffer,
+        0,
+        width.saturating_sub(counter.len() + 2) as u16,
+        &counter,
+        style(BLUE),
+    );
+    let from = match &guide.task {
+        Some(task) => format!("from {} › {}", guide.project, shown(task)),
+        None => format!("from {}", guide.project),
+    };
+    put(
+        buffer,
+        1,
+        1,
+        &from
+            .chars()
+            .take(width.saturating_sub(3))
+            .collect::<String>(),
+        style(FG_DARK),
+    );
     draw_progress(buffer, guide, 2, width.saturating_sub(3));
     let box_width = width.saturating_sub(6).max(10);
     let mut box_lines = approval::wrap(draft, box_width);
@@ -305,7 +487,11 @@ fn draw(buffer: &mut Buffer, guide: &Guide, draft: &str, message: &str) -> (u16,
         question_lines[question_room - 1].push_str(" …");
     }
     let question_top = box_top.saturating_sub(question_lines.len());
-    for (row, (text, line_style)) in render_step(guide, width.saturating_sub(4)).into_iter().take(question_top.saturating_sub(4)).enumerate() {
+    for (row, (text, line_style)) in render_step(guide, width.saturating_sub(4))
+        .into_iter()
+        .take(question_top.saturating_sub(4))
+        .enumerate()
+    {
         put(buffer, 4 + row as u16, 2, &text, line_style);
     }
     for (row, line) in question_lines.iter().enumerate() {
@@ -316,21 +502,63 @@ fn draw(buffer: &mut Buffer, guide: &Guide, draft: &str, message: &str) -> (u16,
     for (row, line) in box_lines.iter().enumerate() {
         let padding = width.saturating_sub(6).saturating_sub(width_of(line));
         put(buffer, (box_top + 1 + row) as u16, 1, "│", style(BLUE));
-        put(buffer, (box_top + 1 + row) as u16, 2, &format!(" {line}{} ", " ".repeat(padding)), Style::default());
-        put(buffer, (box_top + 1 + row) as u16, (width.saturating_sub(2)) as u16, "│", style(BLUE));
+        put(
+            buffer,
+            (box_top + 1 + row) as u16,
+            2,
+            &format!(" {line}{} ", " ".repeat(padding)),
+            Style::default(),
+        );
+        put(
+            buffer,
+            (box_top + 1 + row) as u16,
+            (width.saturating_sub(2)) as u16,
+            "│",
+            style(BLUE),
+        );
     }
-    put(buffer, (box_top + 1 + box_lines.len()) as u16, 1, &format!("└{rule}┘"), style(BLUE));
-    put(buffer, height.saturating_sub(3) as u16, 2, message, style(GREEN));
-    draw_keys(buffer, &footer_keys(guide), height.saturating_sub(2) as u16, width);
+    put(
+        buffer,
+        (box_top + 1 + box_lines.len()) as u16,
+        1,
+        &format!("└{rule}┘"),
+        style(BLUE),
+    );
+    put(
+        buffer,
+        height.saturating_sub(3) as u16,
+        2,
+        message,
+        style(GREEN),
+    );
+    draw_keys(
+        buffer,
+        &footer_keys(guide),
+        height.saturating_sub(2) as u16,
+        width,
+    );
     let last = box_lines.last().map(|line| width_of(line)).unwrap_or(0);
-    ((3 + last).min(width.saturating_sub(3)) as u16, (box_top + box_lines.len()) as u16)
+    (
+        (3 + last).min(width.saturating_sub(3)) as u16,
+        (box_top + box_lines.len()) as u16,
+    )
 }
 
 /// The task of the session that asked, from the cockpit's list: only the session the daemon verified.
 fn session_task(guide: &Value) -> Option<String> {
     let session = guide.get("verified_session").and_then(Value::as_str)?;
-    cockpit::remote::snapshot_sessions().into_iter().find(|row| row.get("session").and_then(Value::as_str) == Some(session))
-        .and_then(|row| ["label", "task"].iter().find_map(|key| row.get(*key).and_then(Value::as_str).map(str::trim).filter(|text| !text.is_empty()).map(str::to_string)))
+    cockpit::remote::snapshot_sessions()
+        .into_iter()
+        .find(|row| row.get("session").and_then(Value::as_str) == Some(session))
+        .and_then(|row| {
+            ["label", "task"].iter().find_map(|key| {
+                row.get(*key)
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|text| !text.is_empty())
+                    .map(str::to_string)
+            })
+        })
 }
 
 /// One segment per step: done green, the step on screen blue, the rest dim.
@@ -339,17 +567,37 @@ fn draw_progress(buffer: &mut Buffer, guide: &Guide, row: u16, room: usize) {
     let segment = (room.saturating_sub(count - 1) / count).max(1);
     for index in 0..count {
         let column = 1 + index * (segment + 1);
-        if column + segment > room + 1 { break; }
-        let colour = if guide.done.contains(&index) { GREEN } else if index == guide.position { BLUE } else { FG_DARK };
-        put(buffer, row, column as u16, &"▬".repeat(segment), style(colour));
+        if column + segment > room + 1 {
+            break;
+        }
+        let colour = if guide.done.contains(&index) {
+            GREEN
+        } else if index == guide.position {
+            BLUE
+        } else {
+            FG_DARK
+        };
+        put(
+            buffer,
+            row,
+            column as u16,
+            &"▬".repeat(segment),
+            style(colour),
+        );
     }
 }
 
 /// The footer's keys: next is the primary one; I'm stuck is always there, run only on a step with a command.
 fn footer_keys(guide: &Guide) -> Vec<(&'static str, &'static str, bool)> {
     let mut keys = vec![("⏎", "next", true), ("↑", "back", false)];
-    if !guide.field("run").is_empty() { keys.push(("⌘R", "run", false)); }
-    keys.extend([("⌘V", "image", false), ("⌘S", "I'm stuck", false), ("esc", "close", false)]);
+    if !guide.field("run").is_empty() {
+        keys.push(("⌘R", "run", false));
+    }
+    keys.extend([
+        ("⌘V", "image", false),
+        ("⌘S", "I'm stuck", false),
+        ("esc", "close", false),
+    ]);
     keys
 }
 
@@ -359,10 +607,24 @@ fn draw_keys(buffer: &mut Buffer, keys: &[(&str, &str, bool)], top: u16, width: 
     for (key, label, primary) in keys {
         let cap = format!(" {key} ");
         let item = width_of(&cap) + 1 + width_of(label) + 2;
-        if column > 2 && column + item > width.saturating_sub(1) { row += 1; column = 2; }
-        let cap_style = if *primary { style(BLACK).bg(color(AMBER)) } else { style(FG).bg(color(BG_HIGHLIGHT)) }.add_modifier(Modifier::BOLD);
+        if column > 2 && column + item > width.saturating_sub(1) {
+            row += 1;
+            column = 2;
+        }
+        let cap_style = if *primary {
+            style(BLACK).bg(color(AMBER))
+        } else {
+            style(FG).bg(color(BG_HIGHLIGHT))
+        }
+        .add_modifier(Modifier::BOLD);
         put(buffer, row, column as u16, &cap, cap_style);
-        put(buffer, row, (column + width_of(&cap) + 1) as u16, label, style(FG_DARK));
+        put(
+            buffer,
+            row,
+            (column + width_of(&cap) + 1) as u16,
+            label,
+            style(FG_DARK),
+        );
         column += item;
     }
 }
@@ -372,22 +634,43 @@ fn run_step(guide: &mut Guide) {
     let original = guide.field("run");
     let mut command = original.clone();
     if let Err(error) = approval::enter_directory(&guide.cwd) {
-        println!("{RED}cannot enter {}: {error}{RESET}", approval::escape_hiding(&guide.cwd, "", ""));
+        println!(
+            "{RED}cannot enter {}: {error}{RESET}",
+            approval::escape_hiding(&guide.cwd, "", "")
+        );
         return;
     }
     let shown_cwd = approval::escape_hiding(&guide.cwd, RED, &format!("{RESET}{DIM}"));
-    println!("\n{BOLD}Step {} of the guide{RESET} asks you to run, in {DIM}{shown_cwd}{RESET}:\n", guide.position + 1);
+    println!(
+        "\n{BOLD}Step {} of the guide{RESET} asks you to run, in {DIM}{shown_cwd}{RESET}:\n",
+        guide.position + 1
+    );
     let answer = loop {
         let (text, hiding) = approval::visible_command(&command);
-        println!("{}\n", text.split('\n').map(|line| format!("  {BOLD}{line}{RESET}")).collect::<Vec<_>>().join("\n"));
+        println!(
+            "{}\n",
+            text.split('\n')
+                .map(|line| format!("  {BOLD}{line}{RESET}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
         if hiding {
-            println!("{RED}{BOLD}This command contains hidden characters or blank-line padding (shown in red). Decline unless you know why.{RESET}\n");
+            println!(
+                "{RED}{BOLD}This command contains hidden characters or blank-line padding (shown in red). Decline unless you know why.{RESET}\n"
+            );
         }
         let foreign = approval::non_ascii(&command);
         if !foreign.is_empty() {
-            println!("{YELLOW}Characters outside ASCII (a lookalike letter can change a command): {}{RESET}\n", foreign.join(", "));
+            println!(
+                "{YELLOW}Characters outside ASCII (a lookalike letter can change a command): {}{RESET}\n",
+                foreign.join(", ")
+            );
         }
-        let answer = approval::choose("Run it?", &[("n", "Decline"), ("y", "Run it"), ("e", "Edit it first")], "n");
+        let answer = approval::choose(
+            "Run it?",
+            &[("n", "Decline"), ("y", "Run it"), ("e", "Edit it first")],
+            "n",
+        );
         if answer != "e" {
             break answer;
         }
@@ -395,28 +678,51 @@ fn run_step(guide: &mut Guide) {
             command = edited;
         }
     };
-    let edited = if command != original { json!(command) } else { Value::Null };
+    let edited = if command != original {
+        json!(command)
+    } else {
+        Value::Null
+    };
     let mut run = Map::new();
     run.insert("command".into(), json!(original));
     run.insert("edited_command".into(), edited);
     let step_id = format!("{}-step{}", guide.id, guide.position + 1);
     if answer != "y" {
-        cockpit::audit::record("guide", "guide.run_declined", "declined", json!({"id": step_id, "project": guide.project, "command": cockpit::audit::fingerprint(&command)}));
+        cockpit::audit::record(
+            "guide",
+            "guide.run_declined",
+            "declined",
+            json!({"id": step_id, "project": guide.project, "command": cockpit::audit::fingerprint(&command)}),
+        );
         run.insert("status".into(), json!("declined"));
         guide.runs.insert(guide.position, run);
         return;
     }
     cockpit::audit::keep_command(&step_id, &original, &command);
-    cockpit::audit::record("guide", "guide.run_approved", "approved", json!({"id": step_id, "project": guide.project, "cwd": guide.cwd,
-                                                                            "edited": command != original, "command": cockpit::audit::fingerprint(&command)}));
-    let log_path = approval::log_dir().join(format!("guide-{}-{}.log", guide.id, guide.position + 1));
+    cockpit::audit::record(
+        "guide",
+        "guide.run_approved",
+        "approved",
+        json!({"id": step_id, "project": guide.project, "cwd": guide.cwd,
+                                                                            "edited": command != original, "command": cockpit::audit::fingerprint(&command)}),
+    );
+    let log_path =
+        approval::log_dir().join(format!("guide-{}-{}.log", guide.id, guide.position + 1));
     let exit_code = approval::run(&command, "", &log_path, None);
-    cockpit::audit::record("guide", "guide.run_ran", if exit_code == 0 { "ok" } else { "failed" }, json!({"id": step_id, "project": guide.project, "exit": exit_code}));
+    cockpit::audit::record(
+        "guide",
+        "guide.run_ran",
+        if exit_code == 0 { "ok" } else { "failed" },
+        json!({"id": step_id, "project": guide.project, "exit": exit_code}),
+    );
     println!("{DIM}─── {RESET}exit {exit_code}");
     // Like ask-to-run: the output always goes back, secrets taken out first.
     let (output, redacted) = approval::redact_secrets(&approval::recorded_output(&log_path));
     if redacted > 0 {
-        println!("{redacted} secret-looking value{} redacted before the output went to Claude.", if redacted == 1 { "" } else { "s" });
+        println!(
+            "{redacted} secret-looking value{} redacted before the output went to Claude.",
+            if redacted == 1 { "" } else { "s" }
+        );
     }
     run.insert("status".into(), json!("ran"));
     run.insert("exit".into(), json!(exit_code));
@@ -427,7 +733,11 @@ fn run_step(guide: &mut Guide) {
 }
 
 fn copy(value: &str) -> String {
-    let child = Command::new("wl-copy").stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
+    let child = Command::new("wl-copy")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
     match child {
         Ok(mut child) => {
             if let Some(mut stdin) = child.stdin.take() {
@@ -435,7 +745,10 @@ fn copy(value: &str) -> String {
             }
             match child.wait() {
                 Ok(status) if status.success() => "copied".into(),
-                Ok(status) => format!("cannot copy: wl-copy exited {}", status.code().unwrap_or(-1)),
+                Ok(status) => format!(
+                    "cannot copy: wl-copy exited {}",
+                    status.code().unwrap_or(-1)
+                ),
                 Err(error) => format!("cannot copy: {error}"),
             }
         }
@@ -445,15 +758,27 @@ fn copy(value: &str) -> String {
 
 /// The clipboard's PNG image; never its text.
 fn clipboard_png() -> Result<Vec<u8>, String> {
-    let types = Command::new("wl-paste").arg("--list-types").stderr(Stdio::null()).output()
+    let types = Command::new("wl-paste")
+        .arg("--list-types")
+        .stderr(Stdio::null())
+        .output()
         .map_err(|error| format!("cannot read the clipboard: {error}"))?;
-    if !String::from_utf8_lossy(&types.stdout).lines().any(|found| found == "image/png") {
+    if !String::from_utf8_lossy(&types.stdout)
+        .lines()
+        .any(|found| found == "image/png")
+    {
         return Err("no image in the clipboard (⌘⇧V pastes text)".into());
     }
-    let image = Command::new("wl-paste").args(["--no-newline", "--type", "image/png"]).stderr(Stdio::null()).output()
+    let image = Command::new("wl-paste")
+        .args(["--no-newline", "--type", "image/png"])
+        .stderr(Stdio::null())
+        .output()
         .map_err(|error| format!("cannot read the clipboard: {error}"))?;
     if !image.status.success() {
-        return Err(format!("cannot read the clipboard: wl-paste exited {}", image.status.code().unwrap_or(-1)));
+        return Err(format!(
+            "cannot read the clipboard: wl-paste exited {}",
+            image.status.code().unwrap_or(-1)
+        ));
     }
     Ok(image.stdout)
 }
@@ -466,7 +791,12 @@ fn paste_image(guide: &mut Guide) -> String {
 }
 
 fn open_link(link: &str) -> String {
-    match Command::new("xdg-open").arg(link).stdout(Stdio::null()).stderr(Stdio::null()).spawn() {
+    match Command::new("xdg-open")
+        .arg(link)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    {
         Ok(_) => "opened in the browser".into(),
         Err(error) => format!("cannot open: {error}"),
     }
@@ -479,11 +809,19 @@ fn enter() -> io::Result<()> {
 
 fn leave() -> io::Result<()> {
     disable_raw_mode()?;
-    execute!(io::stdout(), DisableBracketedPaste, LeaveAlternateScreen, cursor::Show)
+    execute!(
+        io::stdout(),
+        DisableBracketedPaste,
+        LeaveAlternateScreen,
+        cursor::Show
+    )
 }
 
 /// Leaves the guide's screen for a plain terminal (prompts, a command's output), then comes back.
-fn outside<T>(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, action: impl FnOnce() -> T) -> T {
+fn outside<T>(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    action: impl FnOnce() -> T,
+) -> T {
     let _ = leave();
     let result = action();
     let _ = enter();
@@ -500,7 +838,11 @@ fn run_loop(guide: &mut Guide) -> io::Result<String> {
         let _ = approval::write_json(&guide.file("progress"), &guide.progress());
         let mut cursor_at = (0, 0);
         terminal.draw(|frame| cursor_at = draw(frame.buffer_mut(), guide, &draft, &message))?;
-        execute!(io::stdout(), cursor::MoveTo(cursor_at.0, cursor_at.1), cursor::Show)?;
+        execute!(
+            io::stdout(),
+            cursor::MoveTo(cursor_at.0, cursor_at.1),
+            cursor::Show
+        )?;
         let event = event::read()?;
         message.clear();
         let key = match event {
@@ -536,15 +878,25 @@ fn run_loop(guide: &mut Guide) -> io::Result<String> {
                     message = "image removed".into();
                 }
             }
-            KeyCode::Backspace => { draft.pop(); }
+            KeyCode::Backspace => {
+                draft.pop();
+            }
             KeyCode::Char('v') if control => message = paste_image(guide),
             KeyCode::Char('o') if control => {
                 let link = link_of(guide.step());
-                message = if link.is_empty() { "no link on this step".into() } else { open_link(&link) };
+                message = if link.is_empty() {
+                    "no link on this step".into()
+                } else {
+                    open_link(&link)
+                };
             }
             KeyCode::Char('y') if control => {
                 let value = guide.field("copy");
-                message = if value.is_empty() { "nothing to copy on this step".into() } else { copy(&value) };
+                message = if value.is_empty() {
+                    "nothing to copy on this step".into()
+                } else {
+                    copy(&value)
+                };
             }
             KeyCode::Char('r') if control => {
                 if !guide.field("run").is_empty() {
@@ -553,15 +905,24 @@ fn run_loop(guide: &mut Guide) -> io::Result<String> {
             }
             KeyCode::Char('s') if control => {
                 guide.submit(&draft);
-                let note = if draft.trim().is_empty() { "(no note)".to_string() } else { draft.trim().to_string() };
+                let note = if draft.trim().is_empty() {
+                    "(no note)".to_string()
+                } else {
+                    draft.trim().to_string()
+                };
                 finish(guide, "stuck", &note);
                 leave()?;
                 return Ok("Claude is told where you are stuck.".into());
             }
             KeyCode::Esc | KeyCode::Char('c') if key.code == KeyCode::Esc || control => {
                 guide.submit(&draft);
-                let closing = outside(&mut terminal, || approval::choose("Close the guide? Claude is told where you stopped.",
-                                                                            &[("n", "Keep going"), ("y", "Close it")], "n"));
+                let closing = outside(&mut terminal, || {
+                    approval::choose(
+                        "Close the guide? Claude is told where you stopped.",
+                        &[("n", "Keep going"), ("y", "Close it")],
+                        "n",
+                    )
+                });
                 if closing == "y" {
                     finish(guide, "closed", "");
                     leave()?;
@@ -585,7 +946,7 @@ fn main() {
             let mut guide = Guide::new(&arguments[0], &found, answers_folder);
             guide.task = session_task(&found);
             guide
-        },
+        }
         Err(reason) => {
             println!("Cannot show guide {}: {reason}.", arguments[0]);
             // The pause keeps the window open long enough to read; piped output has no reader to wait for.
@@ -610,7 +971,11 @@ mod tests {
     use super::*;
 
     fn guide(steps: Value) -> Guide {
-        Guide::new("aaaaaaaaaaaa", &json!({"title": "Key", "cwd": "/", "steps": steps}), std::env::temp_dir())
+        Guide::new(
+            "aaaaaaaaaaaa",
+            &json!({"title": "Key", "cwd": "/", "steps": steps}),
+            std::env::temp_dir(),
+        )
     }
 
     #[test]
@@ -626,11 +991,15 @@ mod tests {
 
     #[test]
     fn the_box_is_the_answer_on_a_question_and_a_note_elsewhere() {
-        let mut guide = guide(json!([{"text": "Log in"}, {"text": "Answer", "ask": "Which email?"}]));
+        let mut guide =
+            guide(json!([{"text": "Log in"}, {"text": "Answer", "ask": "Which email?"}]));
         guide.submit("  login   done  ");
         guide.move_by(1);
         guide.submit("a@b");
-        assert_eq!((guide.notes.get(&0).cloned(), guide.answers.get(&1).cloned()), (Some("login done".into()), Some("a@b".into())));
+        assert_eq!(
+            (guide.notes.get(&0).cloned(), guide.answers.get(&1).cloned()),
+            (Some("login done".into()), Some("a@b".into()))
+        );
         guide.move_by(-1);
         assert_eq!(guide.typed(), "login done");
         guide.submit("");
@@ -640,7 +1009,10 @@ mod tests {
     #[test]
     fn hidden_characters_are_shown_escaped_and_flagged() {
         let guide = guide(json!([{"text": "Run\u{202e} this", "copy": "a\u{1b}[2Kb"}]));
-        let text: String = render_step(&guide, 50).into_iter().map(|(line, _)| line + "\n").collect();
+        let text: String = render_step(&guide, 50)
+            .into_iter()
+            .map(|(line, _)| line + "\n")
+            .collect();
         assert!(!text.contains('\u{202e}') && !text.contains('\u{1b}'));
         assert!(text.contains("\\u202e") && text.contains("hidden characters"));
     }
@@ -652,23 +1024,42 @@ mod tests {
         let mut buffer = Buffer::empty(ratatui::layout::Rect::new(0, 0, 40, 30));
         draw(&mut buffer, &guide, "", "");
         let screen: String = (0..buffer.area.height)
-            .map(|row| (0..buffer.area.width).map(|column| buffer[(column, row)].symbol()).collect::<String>())
-            .collect::<Vec<_>>().join(" ");
+            .map(|row| {
+                (0..buffer.area.width)
+                    .map(|column| buffer[(column, row)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
         let words_on_screen: Vec<&str> = screen.split_whitespace().collect();
-        assert!(words_on_screen.windows(2).any(|pair| pair == ["Paste", "it"]) && words_on_screen.contains(&"whole."), "{screen}");
+        assert!(
+            words_on_screen
+                .windows(2)
+                .any(|pair| pair == ["Paste", "it"])
+                && words_on_screen.contains(&"whole."),
+            "{screen}"
+        );
     }
 
     fn screen(guide: &Guide, width: u16, height: u16) -> (Buffer, Vec<String>) {
         let mut buffer = Buffer::empty(ratatui::layout::Rect::new(0, 0, width, height));
         draw(&mut buffer, guide, "", "");
-        let rows = (0..height).map(|row| (0..width).map(|column| buffer[(column, row)].symbol()).collect::<String>()).collect();
+        let rows = (0..height)
+            .map(|row| {
+                (0..width)
+                    .map(|column| buffer[(column, row)].symbol())
+                    .collect::<String>()
+            })
+            .collect();
         (buffer, rows)
     }
 
     fn nas_guide() -> Guide {
-        let mut guide = guide(json!([{"text": "Find the router"}, {"text": "Open the router page and add a DHCP reservation for the NAS.", "section": "Router",
+        let mut guide = guide(
+            json!([{"text": "Find the router"}, {"text": "Open the router page and add a DHCP reservation for the NAS.", "section": "Router",
             "open": "http://192.168.1.1/dhcp", "copy": "AA:BB:CC:11:22:33", "ask": "Which IP did the router give?"},
-            {"text": "c"}, {"text": "d"}, {"text": "e"}]));
+            {"text": "c"}, {"text": "d"}, {"text": "e"}]),
+        );
         guide.title = "Set up the NAS proxy".into();
         guide.project = "homelab".into();
         guide.task = Some("NAS proxy recovery".into());
@@ -680,27 +1071,51 @@ mod tests {
     #[test]
     fn the_header_names_the_step_count_and_where_the_guide_comes_from() {
         let (_, rows) = screen(&nas_guide(), 56, 40);
-        assert!(rows[0].contains("Set up the NAS proxy") && rows[0].trim_end().ends_with("2 of 5"), "{rows:#?}");
-        assert!(rows[1].contains("from homelab › NAS proxy recovery"), "{rows:#?}");
+        assert!(
+            rows[0].contains("Set up the NAS proxy") && rows[0].trim_end().ends_with("2 of 5"),
+            "{rows:#?}"
+        );
+        assert!(
+            rows[1].contains("from homelab › NAS proxy recovery"),
+            "{rows:#?}"
+        );
     }
 
     #[test]
     fn the_progress_bar_shows_done_current_and_remaining_steps() {
         let (buffer, rows) = screen(&nas_guide(), 56, 40);
-        let bar = rows.iter().position(|row| row.contains('▬')).expect("a progress bar");
-        let colours: Vec<_> = (0..56).filter(|column| buffer[(*column, bar as u16)].symbol() == "▬")
-            .map(|column| buffer[(column, bar as u16)].fg).collect();
+        let bar = rows
+            .iter()
+            .position(|row| row.contains('▬'))
+            .expect("a progress bar");
+        let colours: Vec<_> = (0..56)
+            .filter(|column| buffer[(*column, bar as u16)].symbol() == "▬")
+            .map(|column| buffer[(column, bar as u16)].fg)
+            .collect();
         assert_eq!(colours.first(), Some(&cockpit::app::color(GREEN)));
         assert!(colours.contains(&cockpit::app::color(BLUE)), "{colours:?}");
-        assert_eq!(colours.last(), Some(&cockpit::app::color(cockpit::app::FG_DARK)));
+        assert_eq!(
+            colours.last(),
+            Some(&cockpit::app::color(cockpit::app::FG_DARK))
+        );
     }
 
     #[test]
     fn links_and_values_sit_in_cards_with_their_key_and_the_agent_asks_above_the_box() {
         let (_, rows) = screen(&nas_guide(), 56, 44);
         let text = rows.join("\n");
-        for expected in ["ROUTER", "LINK", "http://192.168.1.1/dhcp", "⌘O", "open in the browser", "COPY", "AA:BB:CC:11:22:33", "⌘Y", "copy it",
-            "The agent asks: Which IP did the router give?"] {
+        for expected in [
+            "ROUTER",
+            "LINK",
+            "http://192.168.1.1/dhcp",
+            "⌘O",
+            "open in the browser",
+            "COPY",
+            "AA:BB:CC:11:22:33",
+            "⌘Y",
+            "copy it",
+            "The agent asks: Which IP did the router give?",
+        ] {
             assert!(text.contains(expected), "{expected}: {text}");
         }
     }
@@ -710,7 +1125,9 @@ mod tests {
         let mut guide = nas_guide();
         let (_, rows) = screen(&guide, 72, 40);
         let footer = rows[rows.len() - 2..].join(" ");
-        for expected in ["next", "back", "image", "I'm stuck", "close"] { assert!(footer.contains(expected), "{expected}: {footer}"); }
+        for expected in ["next", "back", "image", "I'm stuck", "close"] {
+            assert!(footer.contains(expected), "{expected}: {footer}");
+        }
         assert!(!footer.contains("run"), "{footer}");
         guide.steps[1].insert("run".into(), json!("make check"));
         let (_, rows) = screen(&guide, 72, 40);
@@ -720,16 +1137,30 @@ mod tests {
     #[test]
     fn only_http_links_open() {
         let step = |value: Value| value.as_object().unwrap().clone();
-        assert_eq!(link_of(&step(json!({"text": "Go to https://example.com/x."}))), "https://example.com/x.");
-        assert_eq!(link_of(&step(json!({"text": "x", "open": "javascript:alert(1)"}))), "");
-        assert_eq!(link_of(&step(json!({"text": "x", "open": "file:///etc/passwd"}))), "");
+        assert_eq!(
+            link_of(&step(json!({"text": "Go to https://example.com/x."}))),
+            "https://example.com/x."
+        );
+        assert_eq!(
+            link_of(&step(json!({"text": "x", "open": "javascript:alert(1)"}))),
+            ""
+        );
+        assert_eq!(
+            link_of(&step(json!({"text": "x", "open": "file:///etc/passwd"}))),
+            ""
+        );
     }
 
     fn guide_with_own_folder(name: &str) -> Guide {
-        let folder = std::env::temp_dir().join(format!("claude-guide-{name}-{}", std::process::id()));
+        let folder =
+            std::env::temp_dir().join(format!("claude-guide-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&folder);
         std::fs::create_dir_all(&folder).unwrap();
-        Guide::new("aaaaaaaaaaaa", &json!({"title": "Key", "cwd": "/", "steps": [{"text": "a"}, {"text": "b"}]}), folder)
+        Guide::new(
+            "aaaaaaaaaaaa",
+            &json!({"title": "Key", "cwd": "/", "steps": [{"text": "a"}, {"text": "b"}]}),
+            folder,
+        )
     }
 
     fn png() -> Vec<u8> {
@@ -744,8 +1175,14 @@ mod tests {
         let saved = guide.answers_folder.join("aaaaaaaaaaaa-image1.png");
         assert_eq!(std::fs::read(&saved).unwrap(), png());
         use std::os::unix::fs::PermissionsExt;
-        assert_eq!(std::fs::metadata(&saved).unwrap().permissions().mode() & 0o777, 0o600);
-        assert_eq!(guide.result("done", "")["images"], json!([{"step": 2, "file": "aaaaaaaaaaaa-image1.png"}]));
+        assert_eq!(
+            std::fs::metadata(&saved).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(
+            guide.result("done", "")["images"],
+            json!([{"step": 2, "file": "aaaaaaaaaaaa-image1.png"}])
+        );
     }
 
     #[test]
@@ -760,15 +1197,25 @@ mod tests {
         let mut guide = guide_with_own_folder("remove");
         guide.attach_image(&png()).unwrap();
         assert!(guide.remove_last_image());
-        assert!(!guide.answers_folder.join("aaaaaaaaaaaa-image1.png").exists());
+        assert!(
+            !guide
+                .answers_folder
+                .join("aaaaaaaaaaaa-image1.png")
+                .exists()
+        );
         assert!(!guide.remove_last_image());
         guide.attach_image(&png()).unwrap();
-        assert_eq!(guide.images.get(&0), Some(&vec!["aaaaaaaaaaaa-image2.png".to_string()]));
+        assert_eq!(
+            guide.images.get(&0),
+            Some(&vec!["aaaaaaaaaaaa-image2.png".to_string()])
+        );
     }
 
     #[test]
     fn the_result_carries_answers_notes_runs_and_where_theo_stopped() {
-        let mut guide = guide(json!([{"text": "a"}, {"text": "b", "ask": "Which email?"}, {"text": "c", "run": "make check"}]));
+        let mut guide = guide(
+            json!([{"text": "a"}, {"text": "b", "ask": "Which email?"}, {"text": "c", "run": "make check"}]),
+        );
         guide.answers.insert(1, "a@b".into());
         guide.notes.insert(0, "slow page".into());
         let mut run = Map::new();
@@ -776,8 +1223,18 @@ mod tests {
         guide.runs.insert(2, run);
         guide.position = 1;
         let result = guide.result("stuck", "no email shown");
-        assert_eq!((result["status"].as_str(), result["step"].as_i64(), result["note"].as_str()), (Some("stuck"), Some(2), Some("no email shown")));
-        assert_eq!(result["answers"], json!([{"step": 2, "question": "Which email?", "answer": "a@b"}]));
+        assert_eq!(
+            (
+                result["status"].as_str(),
+                result["step"].as_i64(),
+                result["note"].as_str()
+            ),
+            (Some("stuck"), Some(2), Some("no email shown"))
+        );
+        assert_eq!(
+            result["answers"],
+            json!([{"step": 2, "question": "Which email?", "answer": "a@b"}])
+        );
         assert_eq!(result["notes"], json!([{"step": 1, "note": "slow page"}]));
         assert_eq!(result["runs"][0]["step"], 3);
     }

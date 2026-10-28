@@ -19,14 +19,24 @@ const CONTEXT_LINES: usize = 40;
 
 /// The error without its time and with ids and numbers masked: the same failure, whichever session.
 pub fn signature(line: &str) -> String {
-    static VARYING: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| Regex::new(r"[0-9a-f]{8}-[0-9a-f-]{27}|[0-9a-f]{12,}|\d+").unwrap());
+    static VARYING: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        Regex::new(r"[0-9a-f]{8}-[0-9a-f-]{27}|[0-9a-f]{12,}|\d+").unwrap()
+    });
     let masked = &*VARYING;
-    let message = if line.get(..4).is_some_and(|start| start.chars().all(|c| c.is_ascii_digit())) && line.contains(' ') {
+    let message = if line
+        .get(..4)
+        .is_some_and(|start| start.chars().all(|c| c.is_ascii_digit()))
+        && line.contains(' ')
+    {
         line.split_once(' ').map(|(_, rest)| rest).unwrap_or(line)
     } else {
         line
     };
-    masked.replace_all(message.trim(), "#").chars().take(200).collect()
+    masked
+        .replace_all(message.trim(), "#")
+        .chars()
+        .take(200)
+        .collect()
 }
 
 /// Log lines quote text other sessions chose (projects, banner messages, from any sandbox): they go
@@ -40,27 +50,40 @@ fn fenced(text: &str) -> String {
 }
 
 /// How every error hand-off begins, typed into a session or as a new one's first message.
-pub const HANDOFF_START: &str = "cockpit logged an error (sent automatically by the cockpit's error hand-off).";
+pub const HANDOFF_START: &str =
+    "cockpit logged an error (sent automatically by the cockpit's error hand-off).";
 
-pub fn is_handoff(text: &str) -> bool { text.starts_with(HANDOFF_START) }
+pub fn is_handoff(text: &str) -> bool {
+    text.starts_with(HANDOFF_START)
+}
 
 pub fn prompt(error: &str, context: &[String]) -> String {
-    format!("{HANDOFF_START} Find the cause in \
+    format!(
+        "{HANDOFF_START} Find the cause in \
              agent-cockpit and fix it, with a regression test. Ask me before anything that needs ask-to-run. {UNTRUSTED}\n\n\
-             Error:\n{}\n\nThe log before it (~/.local/state/cockpit/log):\n{}", fenced(error), fenced(&context.join("\n")))
+             Error:\n{}\n\nThe log before it (~/.local/state/cockpit/log):\n{}",
+        fenced(error),
+        fenced(&context.join("\n"))
+    )
 }
 
 /// The one line `say` can type: the instructions, and where the error and its log wait.
 fn message(report_path: &str) -> String {
-    format!("{HANDOFF_START} Find the cause in \
+    format!(
+        "{HANDOFF_START} Find the cause in \
              agent-cockpit and fix it, with a regression test. Ask me before anything that needs ask-to-run. {UNTRUSTED} \
-             The error and the log before it: {report_path}")
+             The error and the log before it: {report_path}"
+    )
 }
 
 fn write_report(prompt: &str) -> std::io::Result<String> {
     let directory = paths::error_report_dir();
     fs::create_dir_all(&directory)?;
-    let path = directory.join(format!("{}-{}.md", chrono::Local::now().format("%Y%m%dT%H%M%S"), util::token_hex(3)));
+    let path = directory.join(format!(
+        "{}-{}.md",
+        chrono::Local::now().format("%Y%m%dT%H%M%S"),
+        util::token_hex(3)
+    ));
     fs::write(&path, format!("{prompt}\n"))?;
     Ok(path.to_string_lossy().into_owned())
 }
@@ -74,22 +97,34 @@ pub struct ErrorReporter {
 
 impl ErrorReporter {
     pub fn new() -> Self {
-        let mut state = match util::read_json(&paths::error_reports()) { Some(value @ Value::Object(_)) => value, _ => json!({}) };
+        let mut state = match util::read_json(&paths::error_reports()) {
+            Some(value @ Value::Object(_)) => value,
+            _ => json!({}),
+        };
         if !state.get("sent").is_some_and(Value::is_object) {
             state["sent"] = json!({});
         }
         let offset = fs::metadata(paths::log()).map(|m| m.len()).unwrap_or(0);
-        Self { checked_at: 0.0, state, offset, gaming: util::gaming }
+        Self {
+            checked_at: 0.0,
+            state,
+            offset,
+            gaming: util::gaming,
+        }
     }
 
     /// The ERROR lines logged since the last look, each with the lines before it.
     pub fn new_errors(&mut self) -> Vec<(String, Vec<String>)> {
         let path = paths::log();
-        let Ok(size) = fs::metadata(&path).map(|m| m.len()) else { return Vec::new() };
+        let Ok(size) = fs::metadata(&path).map(|m| m.len()) else {
+            return Vec::new();
+        };
         if size < self.offset {
             self.offset = 0; // rotated
         }
-        let Ok(mut file) = fs::File::open(&path) else { return Vec::new() };
+        let Ok(mut file) = fs::File::open(&path) else {
+            return Vec::new();
+        };
         let start = self.offset.saturating_sub(20_000);
         let mut bytes = Vec::new();
         if file.seek(SeekFrom::Start(start)).is_err() || file.read_to_end(&mut bytes).is_err() {
@@ -99,13 +134,20 @@ impl ErrorReporter {
         let earlier_text = String::from_utf8_lossy(&bytes[..split]);
         let earlier: Vec<String> = earlier_text.lines().map(str::to_string).collect();
         let earlier = earlier[earlier.len().saturating_sub(CONTEXT_LINES)..].to_vec();
-        let fresh: Vec<String> = String::from_utf8_lossy(&bytes[split..]).lines().map(str::to_string).collect();
+        let fresh: Vec<String> = String::from_utf8_lossy(&bytes[split..])
+            .lines()
+            .map(str::to_string)
+            .collect();
         self.offset = size;
         let mut errors = Vec::new();
         for (index, line) in fresh.iter().enumerate() {
             // The level field: INFO lines quoting an error are no new error.
             if line.split(' ').nth(1) == Some("ERROR") {
-                let mut context: Vec<String> = earlier.iter().chain(fresh[..index].iter()).cloned().collect();
+                let mut context: Vec<String> = earlier
+                    .iter()
+                    .chain(fresh[..index].iter())
+                    .cloned()
+                    .collect();
                 context = context[context.len().saturating_sub(CONTEXT_LINES)..].to_vec();
                 errors.push((line.clone(), context));
             }
@@ -115,8 +157,12 @@ impl ErrorReporter {
 
     fn due(&self, signature: &str, time: f64) -> bool {
         let sent = self.state["sent"].as_object().cloned().unwrap_or_default();
-        let today = sent.values().filter(|stamp| time - stamp.as_f64().unwrap_or(0.0) < 24.0 * 3600.0).count();
-        time - sent.get(signature).and_then(Value::as_f64).unwrap_or(0.0) >= REPEAT_S && today < PER_DAY
+        let today = sent
+            .values()
+            .filter(|stamp| time - stamp.as_f64().unwrap_or(0.0) < 24.0 * 3600.0)
+            .count();
+        time - sent.get(signature).and_then(Value::as_f64).unwrap_or(0.0) >= REPEAT_S
+            && today < PER_DAY
     }
 
     /// `sessions` is asked only when the check is due: the snapshot is not parsed on every tick.
@@ -126,11 +172,26 @@ impl ErrorReporter {
         }
         let sessions = &sessions();
         self.checked_at = now();
-        let mut pending: Vec<Value> = self.state.get("pending").and_then(Value::as_array).cloned().unwrap_or_default();
-        pending.extend(self.new_errors().into_iter().map(|(error, context)| json!({"error": error, "context": context})));
+        let mut pending: Vec<Value> = self
+            .state
+            .get("pending")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        pending.extend(
+            self.new_errors()
+                .into_iter()
+                .map(|(error, context)| json!({"error": error, "context": context})),
+        );
         // Dropped, not kept for later: turning it back on must not start a burst of old reports.
         if !pending.is_empty() && !settings::is_on("error-handoff") {
-            util::log_event("INFO", &format!("error-handoff is off: {} error(s) not handed over", pending.len()));
+            util::log_event(
+                "INFO",
+                &format!(
+                    "error-handoff is off: {} error(s) not handed over",
+                    pending.len()
+                ),
+            );
             self.state["pending"] = json!([]);
             self.save();
             return;
@@ -141,8 +202,18 @@ impl ErrorReporter {
             return;
         }
         for report in pending {
-            let error = report.get("error").and_then(Value::as_str).unwrap_or("").to_string();
-            let context: Vec<String> = report.get("context").and_then(Value::as_array).into_iter().flatten().filter_map(|l| l.as_str().map(str::to_string)).collect();
+            let error = report
+                .get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let context: Vec<String> = report
+                .get("context")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|l| l.as_str().map(str::to_string))
+                .collect();
             let signature = signature(&error);
             if !self.due(&signature, now()) {
                 continue;
@@ -159,22 +230,51 @@ impl ErrorReporter {
         let short: String = signature(error).chars().take(120).collect();
         // By folder: any session can name its project "agent-cockpit".
         let cockpit_work = paths::cockpit_work().to_string_lossy().into_owned();
-        if let Some(waiting) = sessions.iter().find(|session| util::repository_root(&session.cwd) == cockpit_work && session.state == "waiting" && !session.terminal) {
+        if let Some(waiting) = sessions.iter().find(|session| {
+            util::repository_root(&session.cwd) == cockpit_work
+                && session.state == "waiting"
+                && !session.terminal
+        }) {
             let problem = match write_report(&prompt) {
                 Ok(path) => util::manager(&["say", &waiting.session, &message(&path)]),
                 Err(error) => format!("report not written: {error}"),
             };
             let id: String = waiting.session.chars().take(8).collect();
             if problem.is_empty() {
-                util::log_event("INFO", &format!("error handed to agent-cockpit session {id}: {short}"));
-                crate::audit::record("column", "error.handoff", "said", json!({"session": waiting.session, "error": crate::audit::fingerprint(error)}));
+                util::log_event(
+                    "INFO",
+                    &format!("error handed to agent-cockpit session {id}: {short}"),
+                );
+                crate::audit::record(
+                    "column",
+                    "error.handoff",
+                    "said",
+                    json!({"session": waiting.session, "error": crate::audit::fingerprint(error)}),
+                );
                 return;
             }
-            util::log_event("WARN", &format!("error hand-off to agent-cockpit session {id} failed ({problem}); starting a new session"));
+            util::log_event(
+                "WARN",
+                &format!(
+                    "error hand-off to agent-cockpit session {id} failed ({problem}); starting a new session"
+                ),
+            );
         }
-        util::manager_in_background(&["background", &paths::cockpit_work().to_string_lossy(), &prompt]);
-        util::log_event("INFO", &format!("error handed to a new agent-cockpit session: {short}"));
-        crate::audit::record("column", "error.handoff", "new-session", json!({"error": crate::audit::fingerprint(error)}));
+        util::manager_in_background(&[
+            "background",
+            &paths::cockpit_work().to_string_lossy(),
+            &prompt,
+        ]);
+        util::log_event(
+            "INFO",
+            &format!("error handed to a new agent-cockpit session: {short}"),
+        );
+        crate::audit::record(
+            "column",
+            "error.handoff",
+            "new-session",
+            json!({"error": crate::audit::fingerprint(error)}),
+        );
     }
 
     fn save(&mut self) {
@@ -183,8 +283,17 @@ impl ErrorReporter {
             sent.retain(|_, stamp| time - stamp.as_f64().unwrap_or(0.0) < 7.0 * 24.0 * 3600.0);
         }
         if let Err(error) = util::write_json(&paths::error_reports(), &self.state) {
-            util::log_event("WARN", &format!("cannot save {}: {error}", paths::error_reports().display()));
+            util::log_event(
+                "WARN",
+                &format!("cannot save {}: {error}", paths::error_reports().display()),
+            );
         }
+    }
+}
+
+impl Default for ErrorReporter {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -194,7 +303,13 @@ mod tests {
 
     #[test]
     fn ids_and_numbers_are_masked_in_the_signature() {
-        assert_eq!(signature("2026-10-18T13:03:32+02:00 ERROR manager: cockpit: 5a0bb934-9e25-4b52-af1f-f4fb8752dfcd did not exit"),
-                   signature("2026-10-18T13:15:58+02:00 ERROR manager: cockpit: 4e0eda6a-202a-4c97-af82-c6e19e431f15 did not exit"));
+        assert_eq!(
+            signature(
+                "2026-10-18T13:03:32+02:00 ERROR manager: cockpit: 5a0bb934-9e25-4b52-af1f-f4fb8752dfcd did not exit"
+            ),
+            signature(
+                "2026-10-18T13:15:58+02:00 ERROR manager: cockpit: 4e0eda6a-202a-4c97-af82-c6e19e431f15 did not exit"
+            )
+        );
     }
 }

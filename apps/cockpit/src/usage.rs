@@ -12,98 +12,177 @@ use std::process::Command;
 pub const USAGE_REFRESH_S: f64 = 300.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SubscriptionCapacity { Available, Exhausted, Unknown }
+pub enum SubscriptionCapacity {
+    Available,
+    Exhausted,
+    Unknown,
+}
 
 /// Routing needs raw, account-matched evidence; rounded display rows cannot establish capacity.
 /// Claude collectors must attach the same-account live OAuth profile as `routing_profile`;
 /// `fetched` must be no newer than either observation, never the cached CLI account metadata.
-pub fn subscription_capacity_of(provider: &str, model: &str, usage: &Value, fetched: i64,
-                                failed: Option<i64>, now: i64, account_matches: bool) -> SubscriptionCapacity {
+pub fn subscription_capacity_of(
+    provider: &str,
+    model: &str,
+    usage: &Value,
+    fetched: i64,
+    failed: Option<i64>,
+    now: i64,
+    account_matches: bool,
+) -> SubscriptionCapacity {
     use SubscriptionCapacity::*;
-    if !account_matches || fetched > now || now.saturating_sub(fetched) > 600 || failed.is_some_and(|failed| failed >= fetched) {
+    if !account_matches
+        || fetched > now
+        || now.saturating_sub(fetched) > 600
+        || failed.is_some_and(|failed| failed >= fetched)
+    {
         return Unknown;
     }
-    let classify = |percent: Option<f64>, reset: Option<i64>| {
-        match (percent, reset) {
-            (Some(percent), Some(reset)) if (0.0..=100.0).contains(&percent) && reset > now => {
-                if percent == 100.0 { Exhausted } else { Available }
-            },
-            _ => Unknown,
+    let classify = |percent: Option<f64>, reset: Option<i64>| match (percent, reset) {
+        (Some(percent), Some(reset)) if (0.0..=100.0).contains(&percent) && reset > now => {
+            if percent == 100.0 {
+                Exhausted
+            } else {
+                Available
+            }
         }
+        _ => Unknown,
     };
-    let claude_window = |window: &Value, percent: &str| classify(window[percent].as_f64(),
-        window["resets_at"].as_str().and_then(parse_time).map(|time| time.timestamp()));
+    let claude_window = |window: &Value, percent: &str| {
+        classify(
+            window[percent].as_f64(),
+            window["resets_at"]
+                .as_str()
+                .and_then(parse_time)
+                .map(|time| time.timestamp()),
+        )
+    };
     let mut states = Vec::new();
     match provider {
         "claude" | "anthropic" => {
-            if usage.get("limits").is_some_and(|limits| !limits.is_array()) { return Unknown; }
-            let Some(family) = ["opus", "sonnet", "haiku"].into_iter().find(|family| model.starts_with(&format!("claude-{family}-"))) else {
+            if usage.get("limits").is_some_and(|limits| !limits.is_array()) {
+                return Unknown;
+            }
+            let Some(family) = ["opus", "sonnet", "haiku"]
+                .into_iter()
+                .find(|family| model.starts_with(&format!("claude-{family}-")))
+            else {
                 return Unknown;
             };
             if let Some(limits) = usage["limits"].as_array() {
                 // An exhausted all-model window is conclusive even when another scope is unknown.
-                if limits.iter().any(|limit| matches!(limit["kind"].as_str(), Some("session" | "weekly_all"))
-                    && claude_window(limit, "percent") == Exhausted) { return Exhausted; }
+                if limits.iter().any(|limit| {
+                    matches!(limit["kind"].as_str(), Some("session" | "weekly_all"))
+                        && claude_window(limit, "percent") == Exhausted
+                }) {
+                    return Exhausted;
+                }
                 for limit in limits {
                     match limit["kind"].as_str() {
-                        Some("session" | "weekly_all") => states.push(claude_window(limit, "percent")),
+                        Some("session" | "weekly_all") => {
+                            states.push(claude_window(limit, "percent"))
+                        }
                         Some("weekly_scoped") => {
-                            let Some(scope) = limit["scope"]["model"]["display_name"].as_str() else { return Unknown };
-                            let scope = scope.to_lowercase();
-                            let Some(scoped_family) = ["opus", "sonnet", "haiku"].into_iter().find(|known| scope == *known || scope.starts_with(&format!("claude {known}"))) else {
+                            let Some(scope) = limit["scope"]["model"]["display_name"].as_str()
+                            else {
                                 return Unknown;
                             };
-                            if scoped_family == family { states.push(claude_window(limit, "percent")); }
-                        },
+                            let scope = scope.to_lowercase();
+                            let Some(scoped_family) =
+                                ["opus", "sonnet", "haiku"].into_iter().find(|known| {
+                                    scope == *known || scope.starts_with(&format!("claude {known}"))
+                                })
+                            else {
+                                return Unknown;
+                            };
+                            if scoped_family == family {
+                                states.push(claude_window(limit, "percent"));
+                            }
+                        }
                         _ => return Unknown,
                     }
                 }
             } else {
-                for key in ["five_hour".to_string(), "seven_day".into(), format!("seven_day_{family}")] {
+                for key in [
+                    "five_hour".to_string(),
+                    "seven_day".into(),
+                    format!("seven_day_{family}"),
+                ] {
                     if let Some(window) = usage.get(&key).filter(|window| !window.is_null()) {
                         states.push(claude_window(window, "utilization"));
                     }
                 }
                 if let Some(scoped) = usage.get("model_scoped") {
-                    let Some(scoped) = scoped.as_array() else { return Unknown };
+                    let Some(scoped) = scoped.as_array() else {
+                        return Unknown;
+                    };
                     for window in scoped {
-                        let Some(name) = window["display_name"].as_str() else { return Unknown };
-                        let name = name.to_lowercase();
-                        let Some(scoped_family) = ["opus", "sonnet", "haiku"].into_iter().find(|known| name == *known || name.starts_with(&format!("claude {known}"))) else {
+                        let Some(name) = window["display_name"].as_str() else {
                             return Unknown;
                         };
-                        if scoped_family == family { states.push(claude_window(window, "utilization")); }
+                        let name = name.to_lowercase();
+                        let Some(scoped_family) =
+                            ["opus", "sonnet", "haiku"].into_iter().find(|known| {
+                                name == *known || name.starts_with(&format!("claude {known}"))
+                            })
+                        else {
+                            return Unknown;
+                        };
+                        if scoped_family == family {
+                            states.push(claude_window(window, "utilization"));
+                        }
                     }
                 }
             }
-        },
+        }
         "codex" | "openai" => {
-            let Some(allowed) = usage["ordinary_usage_allowed"].as_bool() else { return Unknown };
+            let Some(allowed) = usage["ordinary_usage_allowed"].as_bool() else {
+                return Unknown;
+            };
             let limits = &usage["rate_limit"];
             for key in ["primary_window", "secondary_window"] {
                 if let Some(window) = limits.get(key).filter(|window| !window.is_null()) {
-                    states.push(classify(window["used_percent"].as_f64(), window["reset_at"].as_i64()));
+                    states.push(classify(
+                        window["used_percent"].as_f64(),
+                        window["reset_at"].as_i64(),
+                    ));
                 }
             }
-            if states.is_empty() || states.contains(&Unknown) { return Unknown; }
-            if !allowed || limits["allowed"].as_bool() == Some(false) || limits["limit_reached"].as_bool() == Some(true) {
+            if states.is_empty() || states.contains(&Unknown) {
+                return Unknown;
+            }
+            if !allowed
+                || limits["allowed"].as_bool() == Some(false)
+                || limits["limit_reached"].as_bool() == Some(true)
+            {
                 return Exhausted;
             }
-        },
+        }
         _ => return Unknown,
     }
-    if states.is_empty() || states.contains(&Unknown) { Unknown }
-    else if states.contains(&Exhausted) { Exhausted }
-    else if matches!(provider, "claude" | "anthropic")
-        && usage["routing_profile"]["organization"]["has_extra_usage_enabled"].as_bool() != Some(false) { Unknown }
-    else { Available }
+    if states.is_empty() || states.contains(&Unknown) {
+        Unknown
+    } else if states.contains(&Exhausted) {
+        Exhausted
+    } else if matches!(provider, "claude" | "anthropic")
+        && usage["routing_profile"]["organization"]["has_extra_usage_enabled"].as_bool()
+            != Some(false)
+    {
+        Unknown
+    } else {
+        Available
+    }
 }
 
 const REPORT_BAR_WIDTH: usize = 40;
 const ALERT_THRESHOLDS: [i64; 2] = [80, 95];
 /// The flat windows: the older shape of the response, used only without its "limits" list.
-const WINDOWS: [(&str, &str); 4] = [("five_hour", "Current session"), ("seven_day", "This week"),
-                                    ("seven_day_opus", "Opus this week"), ("seven_day_sonnet", "Sonnet this week")];
+const WINDOWS: [(&str, &str); 4] = [
+    ("five_hour", "Current session"),
+    ("seven_day", "This week"),
+    ("seven_day_opus", "Opus this week"),
+    ("seven_day_sonnet", "Sonnet this week"),
+];
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Window {
@@ -123,7 +202,10 @@ pub fn cache() -> Value {
 }
 
 fn rounded(value: Option<&Value>) -> Option<i64> {
-    value.and_then(Value::as_f64).filter(|number| (0.0..=100.0).contains(number)).map(|number| number.round() as i64)
+    value
+        .and_then(Value::as_f64)
+        .filter(|number| (0.0..=100.0).contains(number))
+        .map(|number| number.round() as i64)
 }
 
 #[derive(Clone, Debug)]
@@ -166,88 +248,161 @@ impl QuotaRow {
 
 /// The last confirmed subscription quotas. Errors and elapsed resets cannot imply new capacity.
 pub fn quota_rows() -> Vec<QuotaRow> {
-    let claude = windows().into_iter().map(|mut window| {
-        window.label = match window.key.as_str() {
-            "five_hour" | "session" => "5h".into(),
-            "seven_day" | "weekly_all" => "week".into(),
-            _ => window.label,
-        };
-        let seconds = match window.key.as_str() {
-            "five_hour" | "session" => Some(18000),
-            "seven_day" | "weekly_all" => Some(604800),
-            _ => None,
-        };
-        (window, seconds)
-    }).collect();
+    let claude = windows()
+        .into_iter()
+        .map(|mut window| {
+            window.label = match window.key.as_str() {
+                "five_hour" | "session" => "5h".into(),
+                "seven_day" | "weekly_all" => "week".into(),
+                _ => window.label,
+            };
+            let seconds = match window.key.as_str() {
+                "five_hour" | "session" => Some(18000),
+                "seven_day" | "weekly_all" => Some(604800),
+                _ => None,
+            };
+            (window, seconds)
+        })
+        .collect();
     let mut rows = provider_quota_rows("Claude", claude, &paths::usage_cache(), false);
     let codex = read_json(&paths::codex_usage_cache()).unwrap_or(Value::Null);
     let limits = &codex["rate_limit"];
-    let windows = ["primary_window", "secondary_window"].into_iter().filter_map(|key| {
-        let window = limits.get(key).filter(|window| window.is_object())?;
-        let label = match window["limit_window_seconds"].as_i64() {
-            Some(604800) => "week".into(),
-            Some(seconds) if seconds > 0 && seconds % 86400 == 0 => format!("{}d", seconds / 86400),
-            Some(seconds) if seconds > 0 && seconds % 3600 == 0 => format!("{}h", seconds / 3600),
-            Some(seconds) if seconds > 0 && seconds % 60 == 0 => format!("{}m", seconds / 60),
-            Some(seconds) if seconds > 0 => format!("{seconds}s"),
-            _ => key.trim_end_matches("_window").into(),
-        };
-        let resets_at = window["reset_at"].as_i64().and_then(|stamp| chrono::DateTime::from_timestamp(stamp, 0)).map(|moment| moment.to_rfc3339());
-        Some((Window { key: key.into(), label, percentage: rounded(window.get("used_percent")), resets: reset_time(resets_at.as_deref()),
-                       resets_at, note: String::new() }, window["limit_window_seconds"].as_i64()))
-    }).collect();
-    let blocked = limits["allowed"].as_bool() == Some(false) || limits["limit_reached"].as_bool() == Some(true);
-    rows.extend(provider_quota_rows("Codex", windows, &paths::codex_usage_cache(), blocked));
+    let windows = ["primary_window", "secondary_window"]
+        .into_iter()
+        .filter_map(|key| {
+            let window = limits.get(key).filter(|window| window.is_object())?;
+            let label = match window["limit_window_seconds"].as_i64() {
+                Some(604800) => "week".into(),
+                Some(seconds) if seconds > 0 && seconds % 86400 == 0 => {
+                    format!("{}d", seconds / 86400)
+                }
+                Some(seconds) if seconds > 0 && seconds % 3600 == 0 => {
+                    format!("{}h", seconds / 3600)
+                }
+                Some(seconds) if seconds > 0 && seconds % 60 == 0 => format!("{}m", seconds / 60),
+                Some(seconds) if seconds > 0 => format!("{seconds}s"),
+                _ => key.trim_end_matches("_window").into(),
+            };
+            let resets_at = window["reset_at"]
+                .as_i64()
+                .and_then(|stamp| chrono::DateTime::from_timestamp(stamp, 0))
+                .map(|moment| moment.to_rfc3339());
+            Some((
+                Window {
+                    key: key.into(),
+                    label,
+                    percentage: rounded(window.get("used_percent")),
+                    resets: reset_time(resets_at.as_deref()),
+                    resets_at,
+                    note: String::new(),
+                },
+                window["limit_window_seconds"].as_i64(),
+            ))
+        })
+        .collect();
+    let blocked = limits["allowed"].as_bool() == Some(false)
+        || limits["limit_reached"].as_bool() == Some(true);
+    rows.extend(provider_quota_rows(
+        "Codex",
+        windows,
+        &paths::codex_usage_cache(),
+        blocked,
+    ));
     rows
 }
 
-fn provider_quota_rows(provider: &str, windows: Vec<(Window, Option<i64>)>, cache: &std::path::Path, blocked: bool) -> Vec<QuotaRow> {
-    let fetched = fs::metadata(cache).and_then(|metadata| metadata.modified()).ok();
-    let failed = fs::metadata(cache.with_file_name(format!("{}-usage-error.json", provider.to_lowercase())))
-        .and_then(|metadata| metadata.modified()).ok();
+fn provider_quota_rows(
+    provider: &str,
+    windows: Vec<(Window, Option<i64>)>,
+    cache: &std::path::Path,
+    blocked: bool,
+) -> Vec<QuotaRow> {
+    let fetched = fs::metadata(cache)
+        .and_then(|metadata| metadata.modified())
+        .ok();
+    let failed =
+        fs::metadata(cache.with_file_name(format!("{}-usage-error.json", provider.to_lowercase())))
+            .and_then(|metadata| metadata.modified())
+            .ok();
     let stale = fetched.is_none_or(|stamp| stamp.elapsed().map_or(true, |age| age.as_secs() > 600))
         || failed.is_some_and(|error| fetched.is_none_or(|stamp| error >= stamp));
     if windows.is_empty() {
-        return vec![QuotaRow { label: provider.into(), state: if blocked && !stale { "Blocked" } else { "Unknown" }.into(),
-                              remaining: None, resets: String::new(), forecast: Forecast::Unavailable }];
+        return vec![QuotaRow {
+            label: provider.into(),
+            state: if blocked && !stale {
+                "Blocked"
+            } else {
+                "Unknown"
+            }
+            .into(),
+            remaining: None,
+            resets: String::new(),
+            forecast: Forecast::Unavailable,
+        }];
     }
-    windows.into_iter().map(|(window, seconds)| {
-        let remaining = window.percentage.map(|used| 100 - used);
-        let reset_passed = window.resets_at.as_deref().and_then(parse_time).is_some_and(|reset| reset <= Utc::now());
-        let state = match remaining {
-            None => "Unknown",
-            Some(_) if stale || reset_passed => "Stale",
-            Some(_) if blocked => "Blocked",
-            Some(0) => "Exhausted",
-            Some(1..=20) => "Low",
-            Some(_) => "Available",
-        };
-        let resets = match time_left(&window).as_str() {
-            "" => String::new(),
-            "now" => "reset pending".into(),
-            left => format!("resets in {left}"),
-        };
-        let forecast = if matches!(state, "Available" | "Low") {
-            window_forecast(&window, seconds, fetched)
-        } else {
-            Forecast::Unavailable
-        };
-        QuotaRow { label: format!("{provider} · {}", window.label), state: state.into(), remaining, resets, forecast }
-    }).collect()
+    windows
+        .into_iter()
+        .map(|(window, seconds)| {
+            let remaining = window.percentage.map(|used| 100 - used);
+            let reset_passed = window
+                .resets_at
+                .as_deref()
+                .and_then(parse_time)
+                .is_some_and(|reset| reset <= Utc::now());
+            let state = match remaining {
+                None => "Unknown",
+                Some(_) if stale || reset_passed => "Stale",
+                Some(_) if blocked => "Blocked",
+                Some(0) => "Exhausted",
+                Some(1..=20) => "Low",
+                Some(_) => "Available",
+            };
+            let resets = match time_left(&window).as_str() {
+                "" => String::new(),
+                "now" => "reset pending".into(),
+                left => format!("resets in {left}"),
+            };
+            let forecast = if matches!(state, "Available" | "Low") {
+                window_forecast(&window, seconds, fetched)
+            } else {
+                Forecast::Unavailable
+            };
+            QuotaRow {
+                label: format!("{provider} · {}", window.label),
+                state: state.into(),
+                remaining,
+                resets,
+                forecast,
+            }
+        })
+        .collect()
 }
 
-fn window_forecast(window: &Window, seconds: Option<i64>, fetched: Option<std::time::SystemTime>) -> Forecast {
-    let Some(used) = window.percentage else { return Forecast::Unavailable };
-    let Some(seconds) = seconds else { return Forecast::Unavailable };
-    let Some(reset) = window.resets_at.as_deref().and_then(parse_time) else { return Forecast::Unavailable };
-    let Some(fetched) = fetched.map(chrono::DateTime::<Utc>::from) else { return Forecast::Unavailable };
+fn window_forecast(
+    window: &Window,
+    seconds: Option<i64>,
+    fetched: Option<std::time::SystemTime>,
+) -> Forecast {
+    let Some(used) = window.percentage else {
+        return Forecast::Unavailable;
+    };
+    let Some(seconds) = seconds else {
+        return Forecast::Unavailable;
+    };
+    let Some(reset) = window.resets_at.as_deref().and_then(parse_time) else {
+        return Forecast::Unavailable;
+    };
+    let Some(fetched) = fetched.map(chrono::DateTime::<Utc>::from) else {
+        return Forecast::Unavailable;
+    };
     let elapsed = seconds as f64 - (reset - fetched).num_milliseconds() as f64 / 1000.0;
     if !(1..100).contains(&used) || seconds <= 0 || elapsed <= 0.0 || elapsed >= seconds as f64 {
         return Forecast::Unavailable;
     }
     // Anchor the pace to the fetch, not the redraw: an unchanged cache is not new usage evidence.
     let current = Utc::now();
-    let left = elapsed * (100 - used) as f64 / used as f64 - (current - fetched).num_milliseconds() as f64 / 1000.0;
+    let left = elapsed * (100 - used) as f64 / used as f64
+        - (current - fetched).num_milliseconds() as f64 / 1000.0;
     if left >= (reset - current).num_milliseconds() as f64 / 1000.0 {
         return Forecast::UntilReset;
     }
@@ -272,7 +427,11 @@ pub fn windows() -> Vec<Window> {
 
 pub fn windows_of(usage: &Value) -> Vec<Window> {
     if let Some(limits) = usage.get("limits").and_then(Value::as_array) {
-        return limits.iter().filter(|limit| limit.is_object()).map(limit_window).collect();
+        return limits
+            .iter()
+            .filter(|limit| limit.is_object())
+            .map(limit_window)
+            .collect();
     }
     let mut rows: Vec<(String, String, &Value)> = Vec::new();
     for (key, label) in WINDOWS {
@@ -283,7 +442,10 @@ pub fn windows_of(usage: &Value) -> Vec<Window> {
     if let Some(object) = usage.as_object() {
         let mut others: Vec<_> = object
             .iter()
-            .filter(|(key, window)| !WINDOWS.iter().any(|(known, _)| known == key) && window.get("utilization").is_some())
+            .filter(|(key, window)| {
+                !WINDOWS.iter().any(|(known, _)| known == key)
+                    && window.get("utilization").is_some()
+            })
             .collect();
         others.sort_by(|a, b| a.0.cmp(b.0));
         for (key, window) in others {
@@ -292,16 +454,33 @@ pub fn windows_of(usage: &Value) -> Vec<Window> {
     }
     if let Some(scoped) = usage.get("model_scoped").and_then(Value::as_array) {
         for (index, window) in scoped.iter().enumerate() {
-            let name = window.get("display_name").and_then(Value::as_str).filter(|n| !n.is_empty()).unwrap_or("Model");
-            rows.push((format!("model-{index}"), format!("{name} this week"), window));
+            let name = window
+                .get("display_name")
+                .and_then(Value::as_str)
+                .filter(|n| !n.is_empty())
+                .unwrap_or("Model");
+            rows.push((
+                format!("model-{index}"),
+                format!("{name} this week"),
+                window,
+            ));
         }
     }
     rows.into_iter()
         .filter(|(_, _, window)| window.is_object())
         .map(|(key, label, window)| {
-            let resets_at = window.get("resets_at").and_then(Value::as_str).map(str::to_string);
-            Window { key, label, percentage: rounded(window.get("utilization")), resets: reset_time(resets_at.as_deref()),
-                     resets_at, note: String::new() }
+            let resets_at = window
+                .get("resets_at")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            Window {
+                key,
+                label,
+                percentage: rounded(window.get("utilization")),
+                resets: reset_time(resets_at.as_deref()),
+                resets_at,
+                note: String::new(),
+            }
         })
         .collect()
 }
@@ -312,22 +491,48 @@ fn limit_window(limit: &Value) -> Window {
     let scope = limit.get("scope");
     let scoped_name = ["model", "surface"]
         .iter()
-        .filter_map(|part| scope.and_then(|scope| scope.get(part)).and_then(|part| part.get("display_name")).and_then(Value::as_str))
+        .filter_map(|part| {
+            scope
+                .and_then(|scope| scope.get(part))
+                .and_then(|part| part.get("display_name"))
+                .and_then(Value::as_str)
+        })
         .find(|name| !name.is_empty())
         .unwrap_or("");
     let (label, note) = match kind {
         "session" => ("Current session".to_string(), String::new()),
         "weekly_all" => ("This week".to_string(), String::new()),
-        _ if !scoped_name.is_empty() => (format!("{scoped_name} this week"), format!("separate weekly limit for {scoped_name}")),
+        _ if !scoped_name.is_empty() => (
+            format!("{scoped_name} this week"),
+            format!("separate weekly limit for {scoped_name}"),
+        ),
         _ => {
             let words = kind.replace('_', " ");
-            (if words.is_empty() { "Limit".into() } else { capitalize(&words) }, String::new())
+            (
+                if words.is_empty() {
+                    "Limit".into()
+                } else {
+                    capitalize(&words)
+                },
+                String::new(),
+            )
         }
     };
-    let resets_at = limit.get("resets_at").and_then(Value::as_str).map(str::to_string);
+    let resets_at = limit
+        .get("resets_at")
+        .and_then(Value::as_str)
+        .map(str::to_string);
     Window {
-        key: if scoped_name.is_empty() { kind.to_string() } else { format!("{kind}:{scoped_name}") },
-        label, percentage: rounded(limit.get("percent")), resets: reset_time(resets_at.as_deref()), resets_at, note,
+        key: if scoped_name.is_empty() {
+            kind.to_string()
+        } else {
+            format!("{kind}:{scoped_name}")
+        },
+        label,
+        percentage: rounded(limit.get("percent")),
+        resets: reset_time(resets_at.as_deref()),
+        resets_at,
+        note,
     }
 }
 
@@ -350,14 +555,22 @@ fn label_of(key: &str) -> String {
 
 /// "15:00" when the window resets within a day, else "Mon 09:00"; empty when unknown.
 pub fn reset_time(stamp: Option<&str>) -> String {
-    let Some(moment) = stamp.and_then(parse_time) else { return String::new() };
+    let Some(moment) = stamp.and_then(parse_time) else {
+        return String::new();
+    };
     let local = moment.with_timezone(&Local);
-    if moment - Utc::now() < Duration::days(1) { local.format("%H:%M").to_string() } else { local.format("%a %H:%M").to_string() }
+    if moment - Utc::now() < Duration::days(1) {
+        local.format("%H:%M").to_string()
+    } else {
+        local.format("%a %H:%M").to_string()
+    }
 }
 
 /// "2d 3h", "2h 13m" or "7m" until the window resets; "now" when past; empty when unknown.
 pub fn time_left(window: &Window) -> String {
-    let Some(moment) = window.resets_at.as_deref().and_then(parse_time) else { return String::new() };
+    let Some(moment) = window.resets_at.as_deref().and_then(parse_time) else {
+        return String::new();
+    };
     let remaining = (moment - Utc::now()).num_seconds();
     if remaining <= 0 {
         return "now".into();
@@ -396,7 +609,13 @@ pub fn resets_in(window: &Window) -> String {
 
 pub fn plan() -> String {
     util::read_untrusted_json(&paths::credentials())
-        .and_then(|credentials| credentials.get("claudeAiOauth")?.get("subscriptionType")?.as_str().map(capitalize))
+        .and_then(|credentials| {
+            credentials
+                .get("claudeAiOauth")?
+                .get("subscriptionType")?
+                .as_str()
+                .map(capitalize)
+        })
         .unwrap_or_default()
 }
 
@@ -412,10 +631,18 @@ pub fn bar(percentage: Option<i64>, width: usize) -> String {
 
 /// Where this week's usage went (Claude Code, Chats, Cowork …), non-zero rows only.
 fn breakdown(usage: &Value) -> Vec<(String, i64)> {
-    usage.pointer("/seven_day_breakdown/rows").and_then(Value::as_array).into_iter().flatten()
+    usage
+        .pointer("/seven_day_breakdown/rows")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
         .filter_map(|row| {
             let percent = row.get("percent")?.as_f64()?;
-            let name = row.get("display_name").or_else(|| row.get("key")).and_then(Value::as_str).unwrap_or("?");
+            let name = row
+                .get("display_name")
+                .or_else(|| row.get("key"))
+                .and_then(Value::as_str)
+                .unwrap_or("?");
             (percent > 0.0).then(|| (name.to_string(), percent.round() as i64))
         })
         .collect()
@@ -429,15 +656,30 @@ fn credits(usage: &Value) -> String {
         let exponent = amount.get("exponent").and_then(Value::as_i64).unwrap_or(2);
         let value = minor / 10f64.powi(exponent as i32);
         let currency = amount.get("currency").and_then(Value::as_str).unwrap_or("");
-        let symbol = match currency { "EUR" => "€".to_string(), "USD" => "$".into(), "GBP" => "£".into(), other => format!("{other} ") };
-        Some(if value.fract() == 0.0 { format!("{symbol}{value:.0}") } else { format!("{symbol}{value:.2}") })
+        let symbol = match currency {
+            "EUR" => "€".to_string(),
+            "USD" => "$".into(),
+            "GBP" => "£".into(),
+            other => format!("{other} "),
+        };
+        Some(if value.fract() == 0.0 {
+            format!("{symbol}{value:.0}")
+        } else {
+            format!("{symbol}{value:.2}")
+        })
     };
-    let Some(used) = spend.get("used").and_then(|used| money(used)) else { return String::new() };
-    let mut text = match spend.get("limit").and_then(|limit| money(limit)) {
+    let Some(used) = spend.get("used").and_then(money) else {
+        return String::new();
+    };
+    let mut text = match spend.get("limit").and_then(money) {
         Some(limit) => format!("{used} of {limit} usage credits"),
         None => format!("{used} usage credits"),
     };
-    if !spend.get("enabled").and_then(Value::as_bool).unwrap_or(false) {
+    if !spend
+        .get("enabled")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
         text += "  (off)";
     }
     text
@@ -454,37 +696,82 @@ pub fn report_lines(columns: usize) -> Vec<String> {
     };
     let width = columns.saturating_sub(30).clamp(10, REPORT_BAR_WIDTH);
     let plan = plan();
-    let mut lines = vec![String::new(), format!("  {bold}\x1b[34mClaude usage{reset}  {dim}{}{reset}", if plan.is_empty() { "plan unknown" } else { &plan }), String::new()];
+    let mut lines = vec![
+        String::new(),
+        format!(
+            "  {bold}\x1b[34mClaude usage{reset}  {dim}{}{reset}",
+            if plan.is_empty() {
+                "plan unknown"
+            } else {
+                &plan
+            }
+        ),
+        String::new(),
+    ];
     let usage = cache();
     let windows = windows_of(&usage);
     if windows.is_empty() {
-        lines.push(format!("  {dim}No usage fetched yet. r in the Status panel fetches it.{reset}"));
+        lines.push(format!(
+            "  {dim}No usage fetched yet. r in the Status panel fetches it.{reset}"
+        ));
     }
     for window in &windows {
         let tint = colour(window.percentage);
-        let filled = window.percentage.map(|p| ((p as f64 / 100.0 * width as f64).round() as usize).min(width)).unwrap_or(0);
-        let bar = format!("{tint}{}{dim}{}{reset}", "█".repeat(filled), "░".repeat(width - filled));
-        let value = window.percentage.map(|p| format!("{p:3}%")).unwrap_or_else(|| "   –".into());
-        let note = if window.note.is_empty() { String::new() } else { format!("  {dim}{}{reset}", window.note) };
+        let filled = window
+            .percentage
+            .map(|p| ((p as f64 / 100.0 * width as f64).round() as usize).min(width))
+            .unwrap_or(0);
+        let bar = format!(
+            "{tint}{}{dim}{}{reset}",
+            "█".repeat(filled),
+            "░".repeat(width - filled)
+        );
+        let value = window
+            .percentage
+            .map(|p| format!("{p:3}%"))
+            .unwrap_or_else(|| "   –".into());
+        let note = if window.note.is_empty() {
+            String::new()
+        } else {
+            format!("  {dim}{}{reset}", window.note)
+        };
         lines.push(format!("  {bold}{}{reset}{note}", window.label));
-        lines.push(format!("  {bar}  {tint}{bold}{value}{reset}  {dim}{}{reset}", resets_in(window)));
+        lines.push(format!(
+            "  {bar}  {tint}{bold}{value}{reset}  {dim}{}{reset}",
+            resets_in(window)
+        ));
         lines.push(String::new());
     }
     let parts = breakdown(&usage);
     if !parts.is_empty() {
         lines.push(format!("  {bold}This week by product{reset}"));
-        lines.push("  ".to_string() + &parts.iter().map(|(name, percent)| format!("{name} {dim}{percent}%{reset}")).collect::<Vec<_>>().join("   "));
+        lines.push(
+            "  ".to_string()
+                + &parts
+                    .iter()
+                    .map(|(name, percent)| format!("{name} {dim}{percent}%{reset}"))
+                    .collect::<Vec<_>>()
+                    .join("   "),
+        );
         lines.push(String::new());
     }
     let credits = credits(&usage);
     if !credits.is_empty() {
-        lines.push(format!("  {bold}Usage credits{reset}  {dim}{credits}{reset}"));
+        lines.push(format!(
+            "  {bold}Usage credits{reset}  {dim}{credits}{reset}"
+        ));
         lines.push(String::new());
     }
     if let Ok(modified) = fs::metadata(paths::usage_cache()).and_then(|m| m.modified()) {
-        let fetched = modified.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
-        lines.push(format!("  {dim}Fetched {} ago, refreshed every {} min. Pick a session to replace this.{reset}",
-                           util::age(fetched), USAGE_REFRESH_S as i64 / 60));
+        let fetched = modified
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        lines.push(format!(
+            "  {dim}Fetched {} ago, refreshed every {} min. Pick a session to replace this.{reset}",
+            util::age(fetched),
+            USAGE_REFRESH_S as i64 / 60
+        ));
     }
     lines
 }
@@ -492,8 +779,10 @@ pub fn report_lines(columns: usize) -> Vec<String> {
 /// cockpit usage: redraws the report until the pane is replaced.
 pub fn report_forever() -> ! {
     loop {
-        let columns = crossterm::terminal::size().map(|(columns, _)| columns as usize).unwrap_or(80);
-        print!("\x1b[2J\x1b[H{}\n", report_lines(columns).join("\n"));
+        let columns = crossterm::terminal::size()
+            .map(|(columns, _)| columns as usize)
+            .unwrap_or(80);
+        println!("\x1b[2J\x1b[H{}", report_lines(columns).join("\n"));
         use std::io::Write;
         let _ = std::io::stdout().flush();
         std::thread::sleep(std::time::Duration::from_secs(30));
@@ -519,15 +808,25 @@ impl Refresher {
         if script.exists() {
             let mut command = Command::new(script);
             command.arg("five_hour");
-            if force { command.arg("--force"); }
+            if force {
+                command.arg("--force");
+            }
             let _ = util::spawn_detached(&mut command);
         }
         let script = paths::home().join(".config/waybar/scripts/codex-usage.sh");
         if script.exists() {
             let mut command = Command::new(script);
-            if force { command.arg("--force"); }
+            if force {
+                command.arg("--force");
+            }
             let _ = util::spawn_detached(&mut command);
         }
+    }
+}
+
+impl Default for Refresher {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -541,7 +840,13 @@ pub struct BudgetAlerts {
 impl BudgetAlerts {
     pub fn new(send: fn(&Value) -> bool) -> Self {
         let fired = read_json(&paths::alerts())
-            .and_then(|saved| saved.as_array().map(|keys| keys.iter().filter_map(|key| key.as_str().map(str::to_string)).collect()))
+            .and_then(|saved| {
+                saved.as_array().map(|keys| {
+                    keys.iter()
+                        .filter_map(|key| key.as_str().map(str::to_string))
+                        .collect()
+                })
+            })
             .unwrap_or_default();
         Self { fired, send }
     }
@@ -551,17 +856,33 @@ impl BudgetAlerts {
         let mut changed = false;
         for window in windows {
             for threshold in ALERT_THRESHOLDS {
-                let key = format!("{}:{threshold}:{}", window.key, alert_reset_key(window.resets_at.as_deref()));
+                let key = format!(
+                    "{}:{threshold}:{}",
+                    window.key,
+                    alert_reset_key(window.resets_at.as_deref())
+                );
                 live.insert(key.clone());
-                let Some(percentage) = window.percentage else { continue };
+                let Some(percentage) = window.percentage else {
+                    continue;
+                };
                 if percentage < threshold || self.fired.contains(&key) {
                     continue;
                 }
                 let resets = resets_in(window);
-                let message = if resets.is_empty() { "the plan's limit is close".to_string() } else { capitalize_first(&resets) };
+                let message = if resets.is_empty() {
+                    "the plan's limit is close".to_string()
+                } else {
+                    capitalize_first(&resets)
+                };
                 let notice = json!({"id": format!("claude-usage-{threshold}"), "title": format!("Claude · {} at {percentage}%", window.label), "message": message});
                 if (self.send)(&notice) {
-                    util::log_event("INFO", &format!("budget alert: {} at {percentage}% (threshold {threshold}%)", window.label));
+                    util::log_event(
+                        "INFO",
+                        &format!(
+                            "budget alert: {} at {percentage}% (threshold {threshold}%)",
+                            window.label
+                        ),
+                    );
                     self.fired.insert(key);
                     changed = true;
                 }
@@ -577,7 +898,10 @@ impl BudgetAlerts {
             }
         }
         if changed {
-            let _ = util::write_json(&paths::alerts(), &json!(self.fired.iter().collect::<Vec<_>>()));
+            let _ = util::write_json(
+                &paths::alerts(),
+                &json!(self.fired.iter().collect::<Vec<_>>()),
+            );
         }
     }
 }
@@ -585,10 +909,16 @@ impl BudgetAlerts {
 /// The reset time to the nearest minute: the API's fraction of a second changes between fetches
 /// ("23:59:59.630773", then "00:00:00.104311"), which made every fetch look like a new window.
 fn alert_reset_key(stamp: Option<&str>) -> String {
-    let Some(stamp) = stamp else { return String::new() };
-    let Some(moment) = parse_time(stamp) else { return stamp.to_string() };
+    let Some(stamp) = stamp else {
+        return String::new();
+    };
+    let Some(moment) = parse_time(stamp) else {
+        return stamp.to_string();
+    };
     let minute = (moment.timestamp() + 30).div_euclid(60) * 60;
-    DateTime::<Utc>::from_timestamp(minute, 0).map(|rounded| rounded.to_rfc3339()).unwrap_or_else(|| stamp.to_string())
+    DateTime::<Utc>::from_timestamp(minute, 0)
+        .map(|rounded| rounded.to_rfc3339())
+        .unwrap_or_else(|| stamp.to_string())
 }
 
 fn capitalize_first(text: &str) -> String {
@@ -607,9 +937,19 @@ mod tests {
     fn flat_windows_fall_back_without_a_limits_list() {
         let usage = json!({"five_hour": {"utilization": 37.4, "resets_at": "2026-10-20T09:00:00Z"}, "seven_day": {"utilization": 72},
                            "seven_day_opus": null, "seven_day_fable": {"utilization": 12}, "model_scoped": [{"display_name": "Sonnet", "utilization": 5}]});
-        let labels: Vec<_> = windows_of(&usage).into_iter().map(|w| (w.label, w.percentage)).collect();
-        assert_eq!(labels, vec![("Current session".into(), Some(37)), ("This week".into(), Some(72)),
-                                ("Fable this week".into(), Some(12)), ("Sonnet this week".into(), Some(5))]);
+        let labels: Vec<_> = windows_of(&usage)
+            .into_iter()
+            .map(|w| (w.label, w.percentage))
+            .collect();
+        assert_eq!(
+            labels,
+            vec![
+                ("Current session".into(), Some(37)),
+                ("This week".into(), Some(72)),
+                ("Fable this week".into(), Some(12)),
+                ("Sonnet this week".into(), Some(5))
+            ]
+        );
     }
 
     #[test]
@@ -617,7 +957,10 @@ mod tests {
         let usage = json!({"limits": [{"kind": "session", "percent": 15}, {"kind": "weekly_scoped", "percent": 65, "scope": {"model": {"display_name": "Fable"}}}]});
         let windows = windows_of(&usage);
         assert_eq!(windows[0].label, "Current session");
-        assert_eq!((windows[1].label.as_str(), windows[1].key.as_str()), ("Fable this week", "weekly_scoped:Fable"));
+        assert_eq!(
+            (windows[1].label.as_str(), windows[1].key.as_str()),
+            ("Fable this week", "weekly_scoped:Fable")
+        );
     }
 
     #[test]
