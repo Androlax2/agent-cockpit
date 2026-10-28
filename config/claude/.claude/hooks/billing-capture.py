@@ -6,11 +6,11 @@ import fcntl
 import hashlib
 import json
 import os
-from pathlib import Path
 import re
 import stat
 import sys
 import tempfile
+from pathlib import Path
 
 MAX_RECORD_BYTES = 4096
 
@@ -44,10 +44,10 @@ def save(record):
             output.write(payload)
         try:
             os.link(temporary, destination)
-        except FileExistsError:
+        except FileExistsError as error:
             with open_regular(destination) as existing:
                 if existing.read(MAX_RECORD_BYTES + 1) != payload:
-                    raise ValueError("billing record conflicts with its filename")
+                    raise ValueError("billing record conflicts with its filename") from error
     finally:
         os.unlink(temporary)
 
@@ -70,13 +70,22 @@ def capture_lines(transcript, mode, started):
             record = json.loads(line)
             message = record.get("message", {})
             model = message.get("model", "")
-            if not isinstance(message.get("usage"), dict) or not isinstance(model, str) or not model or model.startswith("<"):
+            if (
+                not isinstance(message.get("usage"), dict)
+                or not isinstance(model, str)
+                or not model
+                or model.startswith("<")
+            ):
                 continue
             if timestamp(record["timestamp"]) < started:
                 continue
             message_id = message.get("id") if isinstance(message.get("id"), str) else ""
             request_id = record.get("requestId") if isinstance(record.get("requestId"), str) else ""
-            key = message_id + ":" + request_id if message_id or request_id else "line:" + hashlib.sha1(line).hexdigest()
+            key = (
+                message_id + ":" + request_id
+                if message_id or request_id
+                else "line:" + hashlib.sha1(line).hexdigest()
+            )
         except (ValueError, TypeError, KeyError, AttributeError):
             continue
         save({"key": key, "billing": mode})
@@ -94,8 +103,12 @@ def boundary_digest(transcript, offset):
 def open_cursor(path):
     directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
-        descriptor = os.open(path.name, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK,
-                             0o600, dir_fd=directory)
+        descriptor = os.open(
+            path.name,
+            os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK,
+            0o600,
+            dir_fd=directory,
+        )
     finally:
         os.close(directory)
     return os.fdopen(descriptor, "r+b")
@@ -121,16 +134,28 @@ def capture_transcript(mode, since, path):
         with open_regular(path) as transcript:
             metadata = os.fstat(transcript.fileno())
             offset = cached.get("offset") if isinstance(cached, dict) else None
-            if not (type(offset) is int and 0 <= offset <= metadata.st_size
-                    and cached.get("device") == metadata.st_dev and cached.get("inode") == metadata.st_ino
-                    and not (cached.get("size") == metadata.st_size and cached.get("mtime_ns") != metadata.st_mtime_ns)
-                    and cached.get("boundary") == boundary_digest(transcript, offset)):
+            if not (
+                type(offset) is int
+                and 0 <= offset <= metadata.st_size
+                and cached.get("device") == metadata.st_dev
+                and cached.get("inode") == metadata.st_ino
+                and not (
+                    cached.get("size") == metadata.st_size
+                    and cached.get("mtime_ns") != metadata.st_mtime_ns
+                )
+                and cached.get("boundary") == boundary_digest(transcript, offset)
+            ):
                 offset = 0
             transcript.seek(offset)
             offset = capture_lines(transcript, mode, started)
-            state = {"device": metadata.st_dev, "inode": metadata.st_ino, "offset": offset,
-                     "size": metadata.st_size, "mtime_ns": metadata.st_mtime_ns,
-                     "boundary": boundary_digest(transcript, offset)}
+            state = {
+                "device": metadata.st_dev,
+                "inode": metadata.st_ino,
+                "offset": offset,
+                "size": metadata.st_size,
+                "mtime_ns": metadata.st_mtime_ns,
+                "boundary": boundary_digest(transcript, offset),
+            }
         cursor.seek(0)
         cursor.write(json.dumps(state, separators=(",", ":")).encode())
         cursor.truncate()
@@ -146,7 +171,9 @@ def main():
     elif len(arguments) == 4 and arguments[0] == "record-transcript-billing":
         capture_transcript(*arguments[1:])
     else:
-        raise ValueError("expected record-billing or record-transcript-billing <mode> <since> <path>")
+        raise ValueError(
+            "expected record-billing or record-transcript-billing <mode> <since> <path>"
+        )
 
 
 if __name__ == "__main__":

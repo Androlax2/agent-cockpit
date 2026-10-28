@@ -2,12 +2,11 @@
 
 import json
 import os
-from pathlib import Path
-import subprocess
 import socket
+import subprocess
 import tempfile
 import unittest
-
+from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 MIGRATION = REPO / "tools/migrate-cockpit-names.py"
@@ -23,12 +22,19 @@ class MigrationTests(unittest.TestCase):
         self.runtime = self.root / "run"
         self.state.mkdir(parents=True)
         self.runtime.mkdir()
-        self.environment = dict(os.environ, HOME=str(self.home), XDG_STATE_HOME=str(self.state),
-                                COCKPIT_STATE_HOME=str(self.state), XDG_RUNTIME_DIR=str(self.runtime),
-                                XDG_DATA_HOME=str(self.home / ".local/share"))
+        self.environment = dict(
+            os.environ,
+            HOME=str(self.home),
+            XDG_STATE_HOME=str(self.state),
+            COCKPIT_STATE_HOME=str(self.state),
+            XDG_RUNTIME_DIR=str(self.runtime),
+            XDG_DATA_HOME=str(self.home / ".local/share"),
+        )
 
     def run_migration(self, mode="--apply"):
-        return subprocess.run(["python3", MIGRATION, mode], env=self.environment, capture_output=True, text=True)
+        return subprocess.run(
+            ["python3", MIGRATION, mode], env=self.environment, capture_output=True, text=True
+        )
 
     def seed(self, path, text="private-data"):
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -106,7 +112,9 @@ class MigrationTests(unittest.TestCase):
                         self.assertEqual(connection.recv(100), b"session report")
 
     def test_an_existing_timer_stamp_is_preserved(self):
-        old = self.seed(self.home / ".local/share/systemd/timers/stamp-claude-health-check.timer", "last run")
+        old = self.seed(
+            self.home / ".local/share/systemd/timers/stamp-claude-health-check.timer", "last run"
+        )
         timestamp = old.stat().st_mtime_ns
         result = self.run_migration()
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -120,7 +128,10 @@ class MigrationTests(unittest.TestCase):
         result = self.run_migration()
         self.assertEqual(result.returncode, 0, result.stderr)
         canonical = self.home / ".cache/cockpit/runs"
-        self.assertFalse(old.parent.is_symlink(), "old parent-mounted sandboxes must not follow a link outside their mount")
+        self.assertFalse(
+            old.parent.is_symlink(),
+            "old parent-mounted sandboxes must not follow a link outside their mount",
+        )
         self.assertTrue(canonical.is_symlink())
         self.assertEqual(canonical.stat().st_ino, inode)
         self.assertEqual((canonical / old.name).read_text(), "private-data")
@@ -143,30 +154,46 @@ class MigrationTests(unittest.TestCase):
 
     def test_pending_approvals_keep_their_original_request_through_migration(self):
         self.seed(self.state / "claude-remote/devices.json")
-        self.seed(self.runtime / "claude-runs/012345abcdef.asking", json.dumps({"command": "echo hello"}))
+        self.seed(
+            self.runtime / "claude-runs/012345abcdef.asking", json.dumps({"command": "echo hello"})
+        )
         output = self.run_migration()
         self.assertEqual(output.returncode, 0, output.stderr)
-        self.assertEqual((self.runtime / "claude-runs/012345abcdef.asking").read_bytes(),
-                         (self.runtime / "cockpit-runs/012345abcdef.asking").read_bytes())
+        self.assertEqual(
+            (self.runtime / "claude-runs/012345abcdef.asking").read_bytes(),
+            (self.runtime / "cockpit-runs/012345abcdef.asking").read_bytes(),
+        )
         self.assertFalse((self.state / "claude-remote").is_symlink())
 
     def test_an_unfinished_guide_survives_path_migration_without_losing_progress(self):
-        request = self.seed(self.runtime / "claude-requests/012345abcdef.guide",
-                            json.dumps({"answers": "project-one", "session": "session-one", "steps": []}))
-        progress = self.seed(self.runtime / "claude-answers/project-one/guides/012345abcdef.progress", '{"step":2}')
+        request = self.seed(
+            self.runtime / "claude-requests/012345abcdef.guide",
+            json.dumps({"answers": "project-one", "session": "session-one", "steps": []}),
+        )
+        progress = self.seed(
+            self.runtime / "claude-answers/project-one/guides/012345abcdef.progress", '{"step":2}'
+        )
         inodes = (request.stat().st_ino, progress.stat().st_ino)
         output = self.run_migration()
         self.assertEqual(output.returncode, 0, output.stderr)
         canonical_request = self.runtime / "cockpit-requests" / request.name
         canonical_progress = self.runtime / "cockpit-answers/project-one/guides" / progress.name
-        self.assertEqual((canonical_request.stat().st_ino, canonical_progress.stat().st_ino), inodes)
+        self.assertEqual(
+            (canonical_request.stat().st_ino, canonical_progress.stat().st_ino), inodes
+        )
         self.assertEqual(canonical_progress.read_text(), '{"step":2}')
-        self.assertFalse(progress.with_suffix(".result").exists(), "migration must not answer the guide")
+        self.assertFalse(
+            progress.with_suffix(".result").exists(), "migration must not answer the guide"
+        )
         self.assertEqual(self.run_migration().returncode, 0)
 
     def test_only_the_daemon_restart_is_blocked_and_identifies_the_guide_owner(self):
-        self.seed(self.runtime / "cockpit-requests/012345abcdef.guide",
-                  json.dumps({"answers": "project-one", "session": "session-one", "title": "Approve test app"}))
+        self.seed(
+            self.runtime / "cockpit-requests/012345abcdef.guide",
+            json.dumps(
+                {"answers": "project-one", "session": "session-one", "title": "Approve test app"}
+            ),
+        )
         output = self.run_migration("--check-guides")
         self.assertNotEqual(output.returncode, 0)
         self.assertIn("in-flight guide", output.stderr)
@@ -181,13 +208,21 @@ class MigrationTests(unittest.TestCase):
         self.assertIn("no valid answer folder", output.stderr)
 
     def test_a_completed_guide_does_not_block_deployment(self):
-        self.seed(self.runtime / "claude-requests/012345abcdef.guide", json.dumps({"answers": "project-one"}))
-        self.seed(self.runtime / "claude-answers/project-one/guides/012345abcdef.result", '{"status":"done"}')
+        self.seed(
+            self.runtime / "claude-requests/012345abcdef.guide",
+            json.dumps({"answers": "project-one"}),
+        )
+        self.seed(
+            self.runtime / "claude-answers/project-one/guides/012345abcdef.result",
+            '{"status":"done"}',
+        )
         output = self.run_migration()
         self.assertEqual(output.returncode, 0, output.stderr)
 
     def test_queue_consumption_cannot_remove_a_compatibility_symlink_or_block_a_retry(self):
-        old = self.seed(self.runtime / "claude-todo-updates.jsonl", '{"action":"add","text":"once"}\n')
+        old = self.seed(
+            self.runtime / "claude-todo-updates.jsonl", '{"action":"add","text":"once"}\n'
+        )
         output = self.run_migration()
         self.assertEqual(output.returncode, 0, output.stderr)
         self.assertFalse(old.is_symlink(), "a consumer renames and deletes this queue")
@@ -219,7 +254,7 @@ class MigrationTests(unittest.TestCase):
         self.units.write_text(json.dumps(units))
         shim = self.root / "bin/systemctl"
         shim.parent.mkdir()
-        shim.write_text('''#!/usr/bin/env python3
+        shim.write_text("""#!/usr/bin/env python3
 import json, os, sys
 from pathlib import Path
 path = Path(os.environ["TEST_UNITS"])
@@ -248,9 +283,11 @@ elif action in ["enable", "disable"]: state["enabled"] = action == "enable"
 else: sys.exit(9)
 units.setdefault("calls", []).append([action, unit])
 path.write_text(json.dumps(units))
-''')
+""")
         shim.chmod(0o755)
-        self.environment.update(TEST_UNITS=str(self.units), PATH=f"{shim.parent}:{os.environ['PATH']}")
+        self.environment.update(
+            TEST_UNITS=str(self.units), PATH=f"{shim.parent}:{os.environ['PATH']}"
+        )
 
     def apply_service_migration(self):
         for mode in ["--prepare", "--apply", "--services"]:
@@ -259,16 +296,27 @@ path.write_text(json.dumps(units))
         return json.loads(self.units.read_text())
 
     def test_active_legacy_phone_and_timer_transfer_without_duplicate_units(self):
-        self.service_fixture({"claude-remote.service": {"active": True, "enabled": True},
-                              "claude-health-check.timer": {"active": True, "enabled": True}})
+        self.service_fixture(
+            {
+                "claude-remote.service": {"active": True, "enabled": True},
+                "claude-health-check.timer": {"active": True, "enabled": True},
+            }
+        )
         units = self.apply_service_migration()
         self.assertEqual(units["cockpit-remote.service"], {"active": True, "enabled": True})
         self.assertEqual(units["cockpit-health-check.timer"], {"active": True, "enabled": True})
         self.assertEqual(units["claude-remote.service"], {"active": False, "enabled": False})
         calls = units["calls"]
-        self.assertLess(calls.index(["stop", "claude-remote.service"]), calls.index(["start", "cockpit-remote.service"]))
+        self.assertLess(
+            calls.index(["stop", "claude-remote.service"]),
+            calls.index(["start", "cockpit-remote.service"]),
+        )
         again = self.apply_service_migration()
-        self.assertEqual(again["calls"].count(["start", "cockpit-remote.service"]), 1, "an already-migrated service was restarted")
+        self.assertEqual(
+            again["calls"].count(["start", "cockpit-remote.service"]),
+            1,
+            "an already-migrated service was restarted",
+        )
 
     def test_inactive_disabled_services_stay_inactive_and_disabled(self):
         self.service_fixture({})
@@ -288,15 +336,26 @@ path.write_text(json.dumps(units))
         self.assertNotIn("calls", units)
 
     def test_activating_legacy_services_are_stopped_before_the_new_services_start(self):
-        self.service_fixture({"claude-remote.service": {"active": False, "state": "activating", "enabled": True},
-                              "claude-health-check.service": {"active": False, "state": "activating", "enabled": False}})
+        self.service_fixture(
+            {
+                "claude-remote.service": {"active": False, "state": "activating", "enabled": True},
+                "claude-health-check.service": {
+                    "active": False,
+                    "state": "activating",
+                    "enabled": False,
+                },
+            }
+        )
         units = self.apply_service_migration()
         self.assertEqual(units["claude-remote.service"]["state"], "inactive")
         self.assertTrue(units["cockpit-remote.service"]["active"])
         self.assertEqual(units["claude-health-check.service"]["state"], "inactive")
         self.assertTrue(units["cockpit-health-check.service"]["active"])
         calls = units["calls"]
-        self.assertLess(calls.index(["stop", "claude-remote.service"]), calls.index(["start", "cockpit-remote.service"]))
+        self.assertLess(
+            calls.index(["stop", "claude-remote.service"]),
+            calls.index(["start", "cockpit-remote.service"]),
+        )
 
     def test_a_failed_start_retains_original_intent_for_a_successful_retry(self):
         self.service_fixture({"claude-remote.service": {"active": True, "enabled": True}})

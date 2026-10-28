@@ -8,14 +8,13 @@ No commands, sessions, pairing secrets or todo items from the host are used.
 
 import json
 import os
-from pathlib import Path
 import re
 import subprocess
 import tempfile
 import unittest
+from pathlib import Path
 
 from playwright.sync_api import expect, sync_playwright
-
 
 REPO = Path(__file__).resolve().parents[3]
 BINARY = REPO / "apps/target/release/cockpit-remote"
@@ -45,30 +44,50 @@ class MobileBrowserTests(unittest.TestCase):
             folder.mkdir()
         self.project = self.home / "IdeaProjects/shop"
         self.project.mkdir(parents=True)
-        self.environment = dict(os.environ, HOME=str(self.home),
-                                XDG_RUNTIME_DIR=str(self.runtime), XDG_STATE_HOME=str(self.state),
-                                COCKPIT_STATE_HOME=str(self.state),
-                                COCKPIT_REMOTE_DIR=str(self.state / "cockpit-remote"),
-                                COCKPIT_REMOTE_ADDRESS="127.0.0.1:0", CLAUDE_AUDIT_JOURNAL="off",
-                                PATH=f"{self.shims}:{os.environ['PATH']}")
-        self.shim("tailscale", "echo '{\"Self\":{\"DNSName\":\"test.ts.net\"}}'")
+        self.environment = dict(
+            os.environ,
+            HOME=str(self.home),
+            XDG_RUNTIME_DIR=str(self.runtime),
+            XDG_STATE_HOME=str(self.state),
+            COCKPIT_STATE_HOME=str(self.state),
+            COCKPIT_REMOTE_DIR=str(self.state / "cockpit-remote"),
+            COCKPIT_REMOTE_ADDRESS="127.0.0.1:0",
+            CLAUDE_AUDIT_JOURNAL="off",
+            PATH=f"{self.shims}:{os.environ['PATH']}",
+        )
+        self.shim("tailscale", 'echo \'{"Self":{"DNSName":"test.ts.net"}}\'')
         self.shim("qrencode", "exit 0")
         self.shim("cockpit", 'printf "%s\\n" "$*" >> "$XDG_RUNTIME_DIR/actions"')
-        self.shim("tmux", 'if [ "$1" = capture-pane ]; then cat "$XDG_RUNTIME_DIR/pane.txt"; '
-                          'else printf "%s\\n" "$*" >> "$XDG_RUNTIME_DIR/keys"; fi')
+        self.shim(
+            "tmux",
+            'if [ "$1" = capture-pane ]; then cat "$XDG_RUNTIME_DIR/pane.txt"; '
+            'else printf "%s\\n" "$*" >> "$XDG_RUNTIME_DIR/keys"; fi',
+        )
         self.shim("gh", "echo '[]'")
         self.snapshot()
         transcripts = self.home / ".claude/projects/shop"
         transcripts.mkdir(parents=True)
-        (transcripts / f"{SESSION}.jsonl").write_text(json.dumps({"uuid": "user1", "type": "user", "message": {"content": "Fix checkout"}}) + "\n")
+        (transcripts / f"{SESSION}.jsonl").write_text(
+            json.dumps({"uuid": "user1", "type": "user", "message": {"content": "Fix checkout"}})
+            + "\n"
+        )
         (self.runtime / "pane.txt").write_text("\x1b[32mReady\x1b[0m\n❯ \n")
-        self.server = subprocess.Popen([str(BINARY), "serve"], env=self.environment,
-                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        self.server = subprocess.Popen(
+            [str(BINARY), "serve"],
+            env=self.environment,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
         self.addCleanup(self.stop_server)
         address = self.server.stdout.readline().strip().rsplit(" ", 1)[-1]
         self.url = f"http://{address}"
-        self.context = self.browser.new_context(viewport={"width": 390, "height": 844},
-                                                is_mobile=True, has_touch=True, service_workers="block")
+        self.context = self.browser.new_context(
+            viewport={"width": 390, "height": 844},
+            is_mobile=True,
+            has_touch=True,
+            service_workers="block",
+        )
         self.addCleanup(self.context.close)
         self.page = self.context.new_page()
         self.page.set_default_timeout(2500)
@@ -86,8 +105,15 @@ class MobileBrowserTests(unittest.TestCase):
 
     def snapshot(self, sessions=None):
         if sessions is None:
-            sessions = [{"session": SESSION, "project": "shop", "state": "waiting",
-                         "task": "Fix checkout", "tmux_pane": "%4"}]
+            sessions = [
+                {
+                    "session": SESSION,
+                    "project": "shop",
+                    "state": "waiting",
+                    "task": "Fix checkout",
+                    "tmux_pane": "%4",
+                }
+            ]
         path = self.runtime / "cockpit.json"
         temporary = path.with_suffix(".tmp")
         temporary.write_text(json.dumps({"sessions": sessions}))
@@ -167,8 +193,17 @@ class MobileBrowserTests(unittest.TestCase):
     def test_polling_preserves_a_draft(self):
         self.open_detail()
         self.page.locator("#detail textarea").fill("Keep my draft")
-        self.snapshot([{"session": SESSION, "project": "shop", "state": "working",
-                        "task": "Changed task", "tmux_pane": "%4"}])
+        self.snapshot(
+            [
+                {
+                    "session": SESSION,
+                    "project": "shop",
+                    "state": "working",
+                    "task": "Changed task",
+                    "tmux_pane": "%4",
+                }
+            ]
+        )
         self.refresh()
         expect(self.page.locator("#detail textarea")).to_have_value("Keep my draft")
 
@@ -184,8 +219,16 @@ class MobileBrowserTests(unittest.TestCase):
     def test_approval_feedback_survives_polling(self):
         runs = self.runtime / "claude-runs"
         runs.mkdir()
-        (runs / "0123456789ab.asking").write_text(json.dumps({"id": "0123456789ab", "project": "shop",
-                                                                  "cwd": str(self.project), "command": "echo hello"}))
+        (runs / "0123456789ab.asking").write_text(
+            json.dumps(
+                {
+                    "id": "0123456789ab",
+                    "project": "shop",
+                    "cwd": str(self.project),
+                    "command": "echo hello",
+                }
+            )
+        )
         self.open_paired()
         self.page.get_by_role("button", name="Decline", exact=True).tap()
         expect(self.page.locator("#approvals .note")).to_contain_text("Declined")
@@ -195,8 +238,17 @@ class MobileBrowserTests(unittest.TestCase):
     def test_confirmation_does_not_lose_the_terminal(self):
         runs = self.runtime / "claude-runs"
         runs.mkdir()
-        (runs / "0123456789ab.asking").write_text(json.dumps({"id": "0123456789ab", "project": "shop", "session": SESSION,
-                                                                  "cwd": str(self.project), "command": "echo hello"}))
+        (runs / "0123456789ab.asking").write_text(
+            json.dumps(
+                {
+                    "id": "0123456789ab",
+                    "project": "shop",
+                    "session": SESSION,
+                    "cwd": str(self.project),
+                    "command": "echo hello",
+                }
+            )
+        )
         self.open_detail()
         self.page.get_by_role("button", name="Run", exact=True).tap()
         expect(self.page.locator("#screen")).to_contain_text("Ready")
@@ -208,16 +260,31 @@ class MobileBrowserTests(unittest.TestCase):
         expect(self.page.locator("#chat-actions .note")).to_contain_text("Approved")
 
     def test_phone_widths_do_not_scroll_sideways(self):
-        self.snapshot([{"session": SESSION, "project": "long-project-" * 12, "state": "waiting", "tmux_pane": "%4"}])
+        self.snapshot(
+            [
+                {
+                    "session": SESSION,
+                    "project": "long-project-" * 12,
+                    "state": "waiting",
+                    "tmux_pane": "%4",
+                }
+            ]
+        )
         self.open_paired()
         for width in [320, 375, 390, 430, 768]:
             with self.subTest(width=width):
                 self.page.set_viewport_size({"width": width, "height": 844})
-                self.assertLessEqual(self.page.evaluate("document.documentElement.scrollWidth"), width)
+                self.assertLessEqual(
+                    self.page.evaluate("document.documentElement.scrollWidth"), width
+                )
 
     def test_all_work_tabs_load(self):
         self.open_paired()
-        for label, heading in [("Todo", "New task"), ("Pull requests", "No open pull request."), ("Usage", "Cost estimate (API prices)")]:
+        for label, heading in [
+            ("Todo", "New task"),
+            ("Pull requests", "No open pull request."),
+            ("Usage", "Cost estimate (API prices)"),
+        ]:
             with self.subTest(tab=label):
                 self.page.get_by_role("button", name=label, exact=True).tap()
                 expect(self.page.locator("#work")).to_contain_text(heading)
@@ -234,7 +301,9 @@ class MobileBrowserTests(unittest.TestCase):
 
     def test_revoked_pairing_hides_session_details(self):
         self.open_detail()
-        subprocess.check_call([str(BINARY), "unpair"], env=self.environment, stdout=subprocess.DEVNULL)
+        subprocess.check_call(
+            [str(BINARY), "unpair"], env=self.environment, stdout=subprocess.DEVNULL
+        )
         self.refresh()
         expect(self.page.locator("#pairing")).to_be_visible()
         expect(self.page.locator("#detail")).to_be_hidden()
@@ -257,7 +326,9 @@ class MobileBrowserTests(unittest.TestCase):
         self.page.locator("#detail textarea").fill("Only for shop")
         self.page.get_by_role("button", name="‹ Sessions").tap()
         second = "bbbbbbbb-0000-4000-8000-000000000000"
-        self.snapshot([{"session": second, "project": "other", "state": "waiting", "tmux_pane": "%5"}])
+        self.snapshot(
+            [{"session": second, "project": "other", "state": "waiting", "tmux_pane": "%5"}]
+        )
         self.refresh()
         self.page.locator("#list .card").tap()
         expect(self.page.locator("#detail textarea")).to_have_value("")
@@ -286,7 +357,9 @@ class MobileBrowserTests(unittest.TestCase):
 
     def test_an_expired_pairing_is_reported_when_sending(self):
         self.open_detail()
-        subprocess.check_call([str(BINARY), "unpair"], env=self.environment, stdout=subprocess.DEVNULL)
+        subprocess.check_call(
+            [str(BINARY), "unpair"], env=self.environment, stdout=subprocess.DEVNULL
+        )
         self.page.locator("#detail textarea").fill("Keep this message")
         self.page.get_by_role("button", name="Send", exact=True).tap()
         expect(self.page.locator("#pairing")).to_be_visible()
@@ -301,14 +374,25 @@ class MobileBrowserTests(unittest.TestCase):
         self.page.get_by_placeholder("Notes (optional)").fill("Phone regression")
         with self.page.expect_response("**/api/todos"):
             self.page.get_by_role("button", name="Add", exact=True).tap()
-        update = json.loads((self.runtime / "cockpit-todo-updates.jsonl").read_text().splitlines()[0])
+        update = json.loads(
+            (self.runtime / "cockpit-todo-updates.jsonl").read_text().splitlines()[0]
+        )
         self.assertEqual((update["text"], update["category"]), ("Fix cart", "bug"))
         expect(self.page.get_by_placeholder("A new item")).to_have_value("")
 
     def todo_items(self, items):
         todo = self.state / "cockpit/todo.json"
         todo.parent.mkdir(parents=True)
-        todo.write_text(json.dumps({"items": [dict({"cwd": str(self.project), "status": "todo", "created": 1}, **item) for item in items]}))
+        todo.write_text(
+            json.dumps(
+                {
+                    "items": [
+                        dict({"cwd": str(self.project), "status": "todo", "created": 1}, **item)
+                        for item in items
+                    ]
+                }
+            )
+        )
 
     def test_marking_a_todo_done_takes_two_taps(self):
         self.todo_items([{"id": "aaaa1111", "project": "shop", "text": "Fix cart"}])
@@ -319,14 +403,20 @@ class MobileBrowserTests(unittest.TestCase):
         self.assertFalse((self.runtime / "cockpit-todo-updates.jsonl").exists())
         with self.page.expect_response("**/api/todos/aaaa1111/done"):
             self.page.get_by_role("button", name="Tap again: done", exact=True).tap()
-        update = json.loads((self.runtime / "cockpit-todo-updates.jsonl").read_text().splitlines()[0])
+        update = json.loads(
+            (self.runtime / "cockpit-todo-updates.jsonl").read_text().splitlines()[0]
+        )
         self.assertEqual((update["action"], update["id"]), ("done", "aaaa1111"))
 
     def test_the_project_filter_shows_only_its_items(self):
         other = self.home / "IdeaProjects/blog"
         other.mkdir(parents=True)
-        self.todo_items([{"id": "aaaa1111", "project": "shop", "text": "Fix cart"},
-                         {"id": "bbbb2222", "project": "blog", "cwd": str(other), "text": "Write post"}])
+        self.todo_items(
+            [
+                {"id": "aaaa1111", "project": "shop", "text": "Fix cart"},
+                {"id": "bbbb2222", "project": "blog", "cwd": str(other), "text": "Write post"},
+            ]
+        )
         self.open_paired()
         self.page.get_by_role("button", name="Todo", exact=True).tap()
         expect(self.page.locator("#work .todo-card")).to_have_count(2)
@@ -335,19 +425,41 @@ class MobileBrowserTests(unittest.TestCase):
         expect(self.page.locator("#work .todo-card")).to_contain_text("Write post")
 
     def test_items_in_progress_come_first_and_cannot_start_again(self):
-        self.todo_items([{"id": "aaaa1111", "project": "shop", "text": "Fix cart"},
-                         {"id": "bbbb2222", "project": "shop", "text": "Ship tax", "status": "doing"}])
+        self.todo_items(
+            [
+                {"id": "aaaa1111", "project": "shop", "text": "Fix cart"},
+                {"id": "bbbb2222", "project": "shop", "text": "Ship tax", "status": "doing"},
+            ]
+        )
         self.open_paired()
         self.page.get_by_role("button", name="Todo", exact=True).tap()
         expect(self.page.locator("#work h2").first).to_have_text("In progress · 1")
         self.page.locator("#work .todo-card summary").first.tap()
-        expect(self.page.locator("#work .todo-card").first.get_by_role("button", name="Start in a new session")).to_have_count(0)
+        expect(
+            self.page.locator("#work .todo-card").first.get_by_role(
+                "button", name="Start in a new session"
+            )
+        ).to_have_count(0)
 
     def test_a_todo_starts_with_the_selected_agent(self):
         todo = self.state / "cockpit/todo.json"
         todo.parent.mkdir(parents=True)
-        todo.write_text(json.dumps({"items": [{"id": "aaaa1111", "project": "shop", "cwd": str(self.project),
-                                                "text": "Fix cart", "status": "todo", "created": 1}]}))
+        todo.write_text(
+            json.dumps(
+                {
+                    "items": [
+                        {
+                            "id": "aaaa1111",
+                            "project": "shop",
+                            "cwd": str(self.project),
+                            "text": "Fix cart",
+                            "status": "todo",
+                            "created": 1,
+                        }
+                    ]
+                }
+            )
+        )
         self.open_paired()
         self.page.get_by_role("button", name="Todo", exact=True).tap()
         self.page.locator("#work .card").tap()
@@ -358,11 +470,16 @@ class MobileBrowserTests(unittest.TestCase):
 
     def test_terminal_updates_preserve_colours_and_escape_markup(self):
         self.open_detail()
-        (self.runtime / "pane.txt").write_text("\x1b[32mUpdated <img src=x onerror=alert(1)>\x1b[0m\n")
+        (self.runtime / "pane.txt").write_text(
+            "\x1b[32mUpdated <img src=x onerror=alert(1)>\x1b[0m\n"
+        )
         self.page.evaluate("loadScreen()")
         expect(self.page.locator("#screen")).to_contain_text("Updated <img")
         expect(self.page.locator("#screen img")).to_have_count(0)
-        self.assertEqual(self.page.locator("#screen span").first.evaluate("node => node.style.color"), "rgb(158, 206, 106)")
+        self.assertEqual(
+            self.page.locator("#screen span").first.evaluate("node => node.style.color"),
+            "rgb(158, 206, 106)",
+        )
 
     def test_failed_project_loading_shows_an_error(self):
         self.open_paired()
@@ -380,7 +497,9 @@ class MobileBrowserTests(unittest.TestCase):
         self.assertIn(f"say {SESSION} Review cart", (self.runtime / "actions").read_text())
 
     def test_a_working_session_queues_a_message(self):
-        self.snapshot([{"session": SESSION, "project": "shop", "state": "working", "tmux_pane": "%4"}])
+        self.snapshot(
+            [{"session": SESSION, "project": "shop", "state": "working", "tmux_pane": "%4"}]
+        )
         self.open_detail()
         self.page.locator("#detail textarea").fill("Then check tax")
         self.page.get_by_role("button", name="Queue", exact=True).tap()
@@ -393,10 +512,14 @@ class MobileBrowserTests(unittest.TestCase):
         expect(self.page.locator("#reply-hint")).to_have_count(0)
         self.page.get_by_role("button", name="Send", exact=True).tap()
         expect(self.page.locator("#send-note")).to_contain_text("sent")
-        self.assertIn(f"say {SESSION} First line\n\n  Second line", (self.runtime / "actions").read_text())
+        self.assertIn(
+            f"say {SESSION} First line\n\n  Second line", (self.runtime / "actions").read_text()
+        )
 
     def test_interrupt_requires_two_taps(self):
-        self.snapshot([{"session": SESSION, "project": "shop", "state": "working", "tmux_pane": "%4"}])
+        self.snapshot(
+            [{"session": SESSION, "project": "shop", "state": "working", "tmux_pane": "%4"}]
+        )
         self.open_detail()
         self.page.get_by_role("button", name="Interrupt", exact=True).tap()
         self.assertFalse((self.runtime / "keys").exists())
@@ -405,8 +528,12 @@ class MobileBrowserTests(unittest.TestCase):
         self.assertIn("send-keys -t %4 Escape", (self.runtime / "keys").read_text())
 
     def test_yes_and_no_answer_the_real_dialog(self):
-        self.snapshot([{"session": SESSION, "project": "shop", "state": "needs-you", "tmux_pane": "%4"}])
-        (self.runtime / "pane.txt").write_text("Bash command\nDo you want to proceed?\n❯ 1. Yes\n  2. No\nReady\n")
+        self.snapshot(
+            [{"session": SESSION, "project": "shop", "state": "needs-you", "tmux_pane": "%4"}]
+        )
+        (self.runtime / "pane.txt").write_text(
+            "Bash command\nDo you want to proceed?\n❯ 1. Yes\n  2. No\nReady\n"
+        )
         self.open_detail()
         for label, key, result in [("Yes", "Enter", "approved"), ("No", "Escape", "declined")]:
             with self.subTest(answer=label):
@@ -415,18 +542,40 @@ class MobileBrowserTests(unittest.TestCase):
                 self.assertIn(f"send-keys -t %4 {key}", (self.runtime / "keys").read_text())
 
     def test_opencode_permission_is_answered_from_the_phone(self):
-        self.snapshot([{"session": SESSION, "project": "shop", "agent": "opencode",
-                        "state": "needs-you", "tmux_pane": "%4"}])
-        (self.runtime / "pane.txt").write_text("┃ △ Permission required\n┃   $ npm test\n┃   Allow once   Always allow   Reject\n")
+        self.snapshot(
+            [
+                {
+                    "session": SESSION,
+                    "project": "shop",
+                    "agent": "opencode",
+                    "state": "needs-you",
+                    "tmux_pane": "%4",
+                }
+            ]
+        )
+        (self.runtime / "pane.txt").write_text(
+            "┃ △ Permission required\n┃   $ npm test\n┃   Allow once   Always allow   Reject\n"
+        )
         self.open_detail()
-        expect(self.page.get_by_role("button", name="Remote Control: off", exact=True)).to_have_count(0)
+        expect(
+            self.page.get_by_role("button", name="Remote Control: off", exact=True)
+        ).to_have_count(0)
         self.page.get_by_role("button", name="Yes", exact=True).tap()
         expect(self.page.locator("#chat-actions .note")).to_have_text("approved")
         self.assertIn("send-keys -t %4 Enter", (self.runtime / "keys").read_text())
 
     def test_codex_permission_must_be_answered_on_the_computer(self):
-        self.snapshot([{"session": SESSION, "project": "shop", "agent": "codex",
-                        "state": "needs-you", "tmux_pane": "%4"}])
+        self.snapshot(
+            [
+                {
+                    "session": SESSION,
+                    "project": "shop",
+                    "agent": "codex",
+                    "state": "needs-you",
+                    "tmux_pane": "%4",
+                }
+            ]
+        )
         self.open_detail()
         expect(self.page.get_by_role("button", name="Yes", exact=True)).to_have_count(0)
         expect(self.page.locator("#detail")).to_contain_text("must be answered on the computer")
@@ -455,8 +604,16 @@ class MobileBrowserTests(unittest.TestCase):
     def test_an_ended_approval_disappears_after_its_action(self):
         runs = self.runtime / "claude-runs"
         runs.mkdir()
-        (runs / "0123456789ab.asking").write_text(json.dumps({"id": "0123456789ab", "project": "shop",
-                                                                  "cwd": str(self.project), "command": "echo hello"}))
+        (runs / "0123456789ab.asking").write_text(
+            json.dumps(
+                {
+                    "id": "0123456789ab",
+                    "project": "shop",
+                    "cwd": str(self.project),
+                    "command": "echo hello",
+                }
+            )
+        )
         self.open_paired()
         self.shim("tmux", 'if [ "$1" = has-session ]; then exit 1; fi')
         self.page.get_by_role("button", name="Decline", exact=True).tap()
@@ -480,8 +637,12 @@ class MobileBrowserTests(unittest.TestCase):
     def test_navigation_marks_the_current_section(self):
         self.open_paired()
         self.page.get_by_role("button", name="Todo", exact=True).tap()
-        expect(self.page.get_by_role("button", name="Todo", exact=True)).to_have_attribute("aria-current", "page")
-        expect(self.page.get_by_role("button", name="Sessions", exact=True)).not_to_have_attribute("aria-current", "page")
+        expect(self.page.get_by_role("button", name="Todo", exact=True)).to_have_attribute(
+            "aria-current", "page"
+        )
+        expect(self.page.get_by_role("button", name="Sessions", exact=True)).not_to_have_attribute(
+            "aria-current", "page"
+        )
 
     def test_failed_work_tab_can_be_retried(self):
         self.open_paired()
@@ -495,8 +656,23 @@ class MobileBrowserTests(unittest.TestCase):
     def test_todo_expansion_is_keyboard_accessible(self):
         todo = self.state / "cockpit/todo.json"
         todo.parent.mkdir(parents=True)
-        todo.write_text(json.dumps({"items": [{"id": "aaaa1111", "project": "shop", "cwd": str(self.project),
-                                                "text": "Fix cart", "notes": "Use the phone", "status": "todo", "created": 1}]}))
+        todo.write_text(
+            json.dumps(
+                {
+                    "items": [
+                        {
+                            "id": "aaaa1111",
+                            "project": "shop",
+                            "cwd": str(self.project),
+                            "text": "Fix cart",
+                            "notes": "Use the phone",
+                            "status": "todo",
+                            "created": 1,
+                        }
+                    ]
+                }
+            )
+        )
         self.open_paired()
         self.page.get_by_role("button", name="Todo", exact=True).tap()
         summary = self.page.locator("#work summary")
@@ -533,7 +709,9 @@ class MobileBrowserTests(unittest.TestCase):
 
     def test_screen_recovers_without_losing_its_last_output(self):
         self.open_detail()
-        self.page.route("**/api/screen/*", lambda route: route.fulfill(status=409, body="pane closed"))
+        self.page.route(
+            "**/api/screen/*", lambda route: route.fulfill(status=409, body="pane closed")
+        )
         self.page.evaluate("loadScreen()")
         expect(self.page.locator("#screen-note")).to_contain_text("pane closed")
         expect(self.page.locator("#screen")).to_contain_text("Ready")
@@ -544,18 +722,48 @@ class MobileBrowserTests(unittest.TestCase):
     def test_long_todo_and_pull_names_fit_a_small_phone(self):
         todo = self.state / "cockpit/todo.json"
         todo.parent.mkdir(parents=True)
-        todo.write_text(json.dumps({"items": [{"id": "aaaa1111", "project": "shop", "cwd": str(self.project),
-                                                "text": "Unbroken" * 50, "status": "todo", "created": 1}]}))
-        self.shim("gh", "echo '" + json.dumps([{"number": 7, "title": "Fix cart", "url": "https://github.com/o/shop/pull/7",
-                                                 "repository": {"name": "shop", "nameWithOwner": "LongName" * 20},
-                                                 "author": {"login": "sam"}, "updatedAt": "2026-10-19T10:00:00Z"}]) + "'")
+        todo.write_text(
+            json.dumps(
+                {
+                    "items": [
+                        {
+                            "id": "aaaa1111",
+                            "project": "shop",
+                            "cwd": str(self.project),
+                            "text": "Unbroken" * 50,
+                            "status": "todo",
+                            "created": 1,
+                        }
+                    ]
+                }
+            )
+        )
+        self.shim(
+            "gh",
+            "echo '"
+            + json.dumps(
+                [
+                    {
+                        "number": 7,
+                        "title": "Fix cart",
+                        "url": "https://github.com/o/shop/pull/7",
+                        "repository": {"name": "shop", "nameWithOwner": "LongName" * 20},
+                        "author": {"login": "sam"},
+                        "updatedAt": "2026-10-19T10:00:00Z",
+                    }
+                ]
+            )
+            + "'",
+        )
         self.open_paired()
         self.page.set_viewport_size({"width": 320, "height": 640})
         for label, content in [("Todo", "Unbroken"), ("Pull requests", "longname")]:
             with self.subTest(tab=label):
                 self.page.get_by_role("button", name=label, exact=True).tap()
                 expect(self.page.locator("#work .card")).to_contain_text(content)
-                self.assertLessEqual(self.page.evaluate("document.documentElement.scrollWidth"), 320)
+                self.assertLessEqual(
+                    self.page.evaluate("document.documentElement.scrollWidth"), 320
+                )
 
     def test_screenshot_at_phone_size(self):
         self.open_paired()
@@ -570,8 +778,17 @@ class MobileBrowserTests(unittest.TestCase):
             runs = self.runtime / "claude-runs"
             runs.mkdir()
             asking = runs / "0123456789ab.asking"
-            asking.write_text(json.dumps({"id": "0123456789ab", "project": "shop", "cwd": str(self.project),
-                                          "command": "make test", "why": "Check the checkout changes before applying them."}))
+            asking.write_text(
+                json.dumps(
+                    {
+                        "id": "0123456789ab",
+                        "project": "shop",
+                        "cwd": str(self.project),
+                        "command": "make test",
+                        "why": "Check the checkout changes before applying them.",
+                    }
+                )
+            )
             self.refresh()
             expect(self.page.locator("#approvals .card")).to_be_visible()
             self.page.screenshot(path=str(Path(folder) / "approval.png"), full_page=True)
@@ -580,11 +797,17 @@ class MobileBrowserTests(unittest.TestCase):
             self.page.locator("#list .card").tap()
             expect(self.page.locator("#screen")).to_contain_text("Ready")
             self.page.screenshot(path=str(Path(folder) / "detail.png"), full_page=True)
-            for label, content in [("Todo", "New task"), ("Pull requests", "No open pull request."),
-                                   ("Usage", "Cost estimate (API prices)")]:
+            for label, content in [
+                ("Todo", "New task"),
+                ("Pull requests", "No open pull request."),
+                ("Usage", "Cost estimate (API prices)"),
+            ]:
                 self.page.get_by_role("button", name=label, exact=True).tap()
                 expect(self.page.locator("#work")).to_contain_text(content)
-                self.page.screenshot(path=str(Path(folder) / f"{label.lower().replace(' ', '-')}.png"), full_page=True)
+                self.page.screenshot(
+                    path=str(Path(folder) / f"{label.lower().replace(' ', '-')}.png"),
+                    full_page=True,
+                )
 
 
 if __name__ == "__main__":

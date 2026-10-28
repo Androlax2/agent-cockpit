@@ -1,13 +1,12 @@
 import importlib.util
 import json
 import os
-from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
-
 
 HELPER = Path(__file__).resolve().parents[2] / "config/claude/.claude/hooks/billing-capture.py"
 SPEC = importlib.util.spec_from_file_location("billing_capture", HELPER)
@@ -17,9 +16,18 @@ SINCE = "2026-10-23T10:00:00Z"
 
 
 def reply(message_id, newline=True):
-    return json.dumps({"timestamp": "2026-10-23T10:01:00Z", "requestId": "request",
-                       "message": {"id": message_id, "model": "claude-opus-5-5",
-                                   "usage": {"output_tokens": 10}, "content": "private conversation"}}).encode() + (b"\n" if newline else b"")
+    return json.dumps(
+        {
+            "timestamp": "2026-10-23T10:01:00Z",
+            "requestId": "request",
+            "message": {
+                "id": message_id,
+                "model": "claude-opus-5-5",
+                "usage": {"output_tokens": 10},
+                "content": "private conversation",
+            },
+        }
+    ).encode() + (b"\n" if newline else b"")
 
 
 class CountingInput:
@@ -71,8 +79,10 @@ class BillingCaptureTests(unittest.TestCase):
         capture.capture_transcript(mode, since, str(self.transcript))
 
     def records(self):
-        return {tuple(sorted(json.loads(path.read_text()).items()))
-                for path in (self.home / ".cache/claude/billing").glob("*.json")}
+        return {
+            tuple(sorted(json.loads(path.read_text()).items()))
+            for path in (self.home / ".cache/claude/billing").glob("*.json")
+        }
 
     def assert_record(self, key, mode="api"):
         self.assertIn(tuple(sorted({"key": key, "billing": mode}.items())), self.records())
@@ -82,7 +92,11 @@ class BillingCaptureTests(unittest.TestCase):
         self.run_capture()
         counter = [0]
         open_regular = capture.open_regular
-        with patch.object(capture, "open_regular", side_effect=lambda path: CountingInput(open_regular(path), counter)):
+        with patch.object(
+            capture,
+            "open_regular",
+            side_effect=lambda path: CountingInput(open_regular(path), counter),
+        ):
             self.run_capture()
         self.assertLess(counter[0], 4096)
         self.assert_record("first:request")
@@ -100,7 +114,11 @@ class BillingCaptureTests(unittest.TestCase):
 
     def test_launch_and_mode_have_independent_cursors(self):
         self.transcript.write_bytes(reply("first"))
-        for mode, since in [("api", SINCE), ("subscription", SINCE), ("api", "2026-10-23T10:00:30Z")]:
+        for mode, since in [
+            ("api", SINCE),
+            ("subscription", SINCE),
+            ("api", "2026-10-23T10:00:30Z"),
+        ]:
             self.run_capture(mode, since)
         self.assert_record("first:request", "api")
         self.assert_record("first:request", "subscription")
@@ -109,7 +127,9 @@ class BillingCaptureTests(unittest.TestCase):
     def test_truncation_replacement_and_boundary_rewrite_replay_new_replies(self):
         for change in ["truncate", "replace", "rewrite"]:
             with self.subTest(change=change):
-                self.transcript.write_bytes(reply("original") + (reply("padding") if change == "truncate" else b""))
+                self.transcript.write_bytes(
+                    reply("original") + (reply("padding") if change == "truncate" else b"")
+                )
                 self.run_capture()
                 replacement = reply("new-" + change)
                 if change == "replace":
@@ -166,8 +186,21 @@ class BillingCaptureTests(unittest.TestCase):
 
     def test_concurrent_cli_captures_preserve_all_evidence(self):
         self.transcript.write_bytes(b"".join(reply(str(index)) for index in range(100)))
-        processes = [subprocess.Popen([sys.executable, str(HELPER), "record-transcript-billing", "api", SINCE, str(self.transcript)],
-                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE) for _ in range(4)]
+        processes = [
+            subprocess.Popen(
+                [
+                    sys.executable,
+                    str(HELPER),
+                    "record-transcript-billing",
+                    "api",
+                    SINCE,
+                    str(self.transcript),
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            for _ in range(4)
+        ]
         for process in processes:
             _, errors = process.communicate(timeout=10)
             self.assertEqual(process.returncode, 0, errors)
@@ -193,7 +226,9 @@ class BillingCaptureTests(unittest.TestCase):
             nonlocal replaced
             if not replaced and (Path(path) == directory or Path(path).parent == directory):
                 replaced = True
-                descriptor = open_file(path, *arguments, **keywords) if Path(path) == directory else None
+                descriptor = (
+                    open_file(path, *arguments, **keywords) if Path(path) == directory else None
+                )
                 directory.rename(self.home / "original-cursors")
                 directory.symlink_to(outside)
                 if descriptor is not None:
